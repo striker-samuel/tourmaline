@@ -25,8 +25,11 @@
 // same mapping, so captures cannot drift from it). A primary-miss ray
 // returns the analytic sky gradient (SkyRadiance); a primary hit returns
 // the sun-bounce field (TraceIncoming, NEE sun at every vertex including
-// the primary hit). Secondary sky after bounces is not tracked (minor
-// indoors; the sky through windows after one bounce is second-order).
+// the primary hit). Captures store sky-relative colors (radiance /
+// skyIntensity, like PakCooker --cubemap): the shader applies the runtime
+// iblIntensity, so bakes track the IBL slider with no recook. Secondary
+// sky after bounces is not tracked (minor indoors; the sky through windows
+// after one bounce is second-order).
 //
 // --test-pattern skips the scene import and writes an RGBA8 test cubemap
 // with the shared GenerateCubemapFacePixels math (face order/orientation
@@ -544,6 +547,7 @@ int main(int argc, char** argv) {
 		std::string vfsPath;
 		std::filesystem::path file;
 		size_t bytes = 0;
+		bool isManifest = false; // text placement rows, not a KTX cube
 	};
 	std::vector<Baked> baked;
 
@@ -632,6 +636,15 @@ int main(int argc, char** argv) {
 				<< positions.back().z << ")\n";
 		}
 
+		// Runtime budget: the lit shader scans at most 32 probe rows per
+		// pixel (manifest parse clamps there). Extra captures still cost
+		// bake time + disk and are never consumed.
+		if (positions.size() > 32) {
+			std::cerr << "WARNING: " << positions.size()
+				<< " captures exceed the 32-probe runtime budget (only the"
+				<< " first 32 manifest rows are consumed)\n";
+		}
+
 		smvk::ThreadPool pool(args.threads ? args.threads : std::thread::hardware_concurrency());
 
 		baked.reserve(positions.size());
@@ -642,6 +655,11 @@ int main(int argc, char** argv) {
 				: args.name + "_" + std::to_string(cap);
 			const std::string vfsPath = smvk::CubemapVfsPath(captureName);
 			const std::filesystem::path file = HostPath(args.outDir, vfsPath);
+
+			// Store sky-relative colors (1 / skyIntensity, same convention
+			// as PakCooker --cubemap): the shader applies the runtime
+			// iblIntensity, so bakes track the IBL slider with no recook.
+			const float cubemapScale = 1.0f / std::max(args.skyIntensity, 1e-4f);
 
 			// Trace 6 HDR faces (one deterministic sample per texel).
 			std::vector<float> faces[smvk::kCubemapFaceCount];
@@ -672,6 +690,7 @@ int main(int argc, char** argv) {
 							} else {
 								L = traceScene.TraceIncoming(origin, dir, rng, args.bounces);
 							}
+							L *= cubemapScale;
 							float* px = &faces[f][(size_t(y) * S + x) * 4];
 							px[0] = L.x;
 							px[1] = L.y;
@@ -729,6 +748,41 @@ int main(int argc, char** argv) {
 				<< "  " << sizeOnDisk << " B" << std::endl;
 		}
 
+		// Multi-probe placement manifest (grid mode): the runtime cannot
+		// guess capture positions from KTX blobs alone. Same text format
+		// the pak cook embeds; single captures need none (the runtime
+		// centers a global probe itself). Positions are cook/world meters
+		// (trace BVH space = World::ComputeSceneBounds space).
+		if (positions.size() > 1) {
+			std::vector<smvk::CubemapManifestEntry> rows;
+			rows.reserve(positions.size());
+			for (size_t cap = 0; cap < positions.size(); ++cap) {
+				const std::string captureName = args.name + "_" + std::to_string(cap);
+				smvk::CubemapManifestEntry e{};
+				e.vfsPath = smvk::CubemapVfsPath(captureName);
+				e.position = positions[cap];
+				e.influenceRadius = 10.0f;
+				e.fadeRadius = 5.0f;
+				rows.push_back(std::move(e));
+			}
+			const std::string text = smvk::CubemapManifestSerialize(rows);
+			const std::filesystem::path mfile =
+				HostPath(args.outDir, smvk::CubemapManifestVfsPath(args.name));
+			std::error_code mec;
+			std::filesystem::create_directories(mfile.parent_path(), mec);
+			std::ofstream mf(mfile, std::ios::binary | std::ios::trunc);
+			if (!mf || !(mf << text)) {
+				std::cerr << "FAILED manifest write: " << mfile << std::endl;
+				return 1;
+			}
+			std::cout << "baked(manifest) "
+				<< smvk::CubemapManifestVfsPath(args.name)
+				<< "  probes=" << rows.size() << std::endl;
+			baked.push_back(Baked{
+				smvk::CubemapManifestVfsPath(args.name), mfile,
+				text.size(), true });
+		}
+
 		const auto t1 = std::chrono::steady_clock::now();
 		std::cout << "CubemapBaker capture total: "
 			<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
@@ -765,7 +819,21 @@ int main(int argc, char** argv) {
 		size_t failures = 0;
 
 		// 1. Written files decode with the expected cube layout.
+		// Manifest rows are text, not KTX: parse them instead.
 		for (const Baked& b : baked) {
+			if (b.isManifest) {
+				auto disk = ReadFileBytes(b.file);
+				std::string merr;
+				std::vector<smvk::CubemapManifestEntry> rows;
+				if (!disk || !smvk::CubemapManifestParse(
+						std::string_view(reinterpret_cast<const char*>(disk->data()), disk->size()),
+						rows, merr)) {
+					std::cerr << "verify FAILED manifest " << b.vfsPath << ": "
+						<< merr << std::endl;
+					++failures;
+				}
+				continue;
+			}
 			std::string verr;
 			if (!VerifyCubemapKtx2(b.file, expectedLevels, !args.testPattern, verr)) {
 				std::cerr << "verify FAILED " << b.vfsPath << ": "

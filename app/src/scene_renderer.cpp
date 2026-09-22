@@ -363,6 +363,12 @@ static constexpr uint32_t FP_MAX_PER_TILE = 8;
 // with the shader defines MAX_FP_DECALS / MAX_FP_DECALS_PER_TILE.
 static constexpr uint32_t FP_MAX_DECALS = 256;
 static constexpr uint32_t FP_MAX_DECALS_PER_TILE = 16;
+// Reflection probes share the tiling (parallel per-tile lists, see
+// ForwardPlusProbeTile*): global probe cap (upload order widest-first) +
+// per-tile list cap. Must stay in sync with the shader defines
+// MAX_FP_PROBES / MAX_FP_PROBES_PER_TILE.
+static constexpr uint32_t FP_MAX_PROBES = 32;
+static constexpr uint32_t FP_MAX_PROBES_PER_TILE = 8;
 
 static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	smvk::ForwardPlusDesc d{};
@@ -371,6 +377,8 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	d.maxLightsPerTile = FP_MAX_PER_TILE;
 	d.maxDecals = FP_MAX_DECALS;
 	d.maxDecalsPerTile = FP_MAX_DECALS_PER_TILE;
+	d.maxProbes = FP_MAX_PROBES;
+	d.maxProbesPerTile = FP_MAX_PROBES_PER_TILE;
 	d.name = "forwardplus";
 	return d;
 }
@@ -2345,31 +2353,214 @@ void SceneRenderer::Shutdown() {
 	// ---------------------------------------------------------------------------
 	void SceneRenderer::LoadCubemaps(smvk::OverlayVfs& vfs) {
 		m_cubemaps.entries.clear();
-		
-		// Try to load a scene-specific cubemap first, then fall back to "sky"
-		std::vector<std::string> cubemapNames = { 
+		m_cubemapProbes.clear();
+		m_cubemapProbesDirty = true;
+
+		// Clamp sampler for TextureCube sampling (cube seams must not wrap;
+		// linear min/mag + linear mips for the GGX-prefiltered chains).
+		// Created once — GetOrCreateSampler dedupes, so this is cheap after
+		// the first scene load. The shader reads it via FrameUniforms
+		// (cubemapSampler), never samplers[0] (Repeat would bleed seams).
+		m_cubemapSampler = m_context->GetOrCreateSampler(smvk::CubemapSampler());
+
+		// Try a scene-specific bake first, then the "sky" fallback.
+		const std::vector<std::string> cubemapBases = {
 			std::string(m_scene.id ? m_scene.id : ""),
 			"sky"
 		};
-		
-		for (const auto& name : cubemapNames) {
-			if (name.empty())
+
+		bool fileBakeFound = false;
+		for (const auto& base : cubemapBases) {
+			if (base.empty())
 				continue;
-			
-			if (m_cubemaps.Load(*m_context, vfs, name)) {
-				const auto* entry = m_cubemaps.Find(name);
-				if (entry && entry->bindless >= 0) {
-					std::cerr << "[Cubemap] loaded '" << name << "' (bindless=" << entry->bindless
-						<< ", size=" << entry->size << "x" << entry->size
-						<< ", mips=" << entry->mipLevels << ")\n";
-					// Use the first successfully loaded cubemap
-					break;
+
+			// 1. Grid manifest: the cook writes
+			//    textures/cubemaps/<base>.cubemanifest when one capture
+			//    bakes N > 1 probes (<base>_0.ktx2, ...). Positions ride
+			//    the manifest in cook/world meters (trace BVH space =
+			//    World::ComputeSceneBounds space — both apply the scene
+			//    global transforms).
+			if (auto manifestBytes = vfs.TryRead(smvk::CubemapManifestVfsPath(base))) {
+				std::string mErr;
+				std::vector<smvk::CubemapManifestEntry> rows;
+				const std::string_view text(
+					reinterpret_cast<const char*>(manifestBytes->data()),
+					manifestBytes->size());
+				if (!smvk::CubemapManifestParse(text, rows, mErr)) {
+					std::cerr << "[Cubemap] manifest rejected '"
+						<< smvk::CubemapManifestVfsPath(base) << "': "
+						<< mErr << "\n";
+					continue;
 				}
-			} else {
-				std::cerr << "[Cubemap] no baked cubemap '" << name
-					<< "' - using analytic sky specular (bake with tools/cubemap_baker/CubemapBaker)\n";
+				size_t loaded = 0;
+				m_cubemapProbes.reserve(rows.size());
+				for (const auto& row : rows) {
+					// Derive the library name from the KTX basename so the
+					// entry key stays human-readable (e.g. "sponza_3").
+					std::string entryName = row.vfsPath;
+					if (auto slash = entryName.find_last_of('/'); slash != std::string::npos)
+						entryName = entryName.substr(slash + 1);
+					if (auto dot = entryName.find_last_of('.'); dot != std::string::npos)
+						entryName = entryName.substr(0, dot);
+					if (!vfs.TryRead(row.vfsPath)) {
+						std::cerr << "[Cubemap] manifest row missing: "
+							<< row.vfsPath << " - skipped\n";
+						continue;
+					}
+					if (!m_cubemaps.Load(*m_context, vfs, entryName, row.vfsPath)) {
+						std::cerr << "[Cubemap] manifest row load failed: "
+							<< row.vfsPath << " - skipped\n";
+						continue;
+					}
+					const auto* entry = m_cubemaps.Find(entryName);
+					if (!entry || entry->bindless < 0)
+						continue;
+					if (!entry->baked) {
+						// Decode failed and Load fell back to the neon
+						// procedural pattern: never place that as a grid
+						// probe (recook the row instead).
+						std::cerr << "[Cubemap] manifest row not a cubemap: "
+							<< row.vfsPath << " - skipped\n";
+						m_cubemaps.entries.erase(entryName);
+						continue;
+					}
+					CubemapProbeGpu p{};
+					p.posInfluence = glm::vec4(row.position, row.influenceRadius);
+					p.fadeCubemap = glm::vec4(row.fadeRadius,
+						static_cast<float>(entry->bindless),
+						static_cast<float>(entry->mipLevels), 0.0f);
+					m_cubemapProbes.push_back(p);
+					++loaded;
+				}
+				if (loaded == 0) {
+					std::cerr << "[Cubemap] manifest '" << base
+						<< "' loaded 0 probes - trying next candidate\n";
+					m_cubemapProbes.clear();
+					continue;
+				}
+				std::cerr << "[Cubemap] loaded manifest '" << base << "': "
+					<< loaded << "/" << rows.size() << " probes\n";
+				fileBakeFound = true;
+				break;
+			}
+
+			// 2. Single capture: textures/cubemaps/<base>.ktx2. Probe rows
+			//    are built after the loop (global probe at the cached scene
+			//    center) so manifest + single paths share one upload.
+			if (vfs.TryRead(smvk::CubemapVfsPath(base))) {
+				if (m_cubemaps.Load(*m_context, vfs, base)) {
+					if (const auto* entry = m_cubemaps.Find(base);
+						entry && entry->bindless >= 0) {
+						std::cerr << "[Cubemap] loaded '" << base << "' (bindless=" << entry->bindless
+							<< ", size=" << entry->size << "x" << entry->size
+							<< ", mips=" << entry->mipLevels
+							<< (entry->baked ? ", baked" : ", PROCEDURAL fallback") << ")\n";
+						fileBakeFound = true;
+						break;
+					}
+				}
+			}
+
+			// 3. Legacy grid without a manifest (old paks): <base>_N.ktx2.
+			//    Positions are unknown, so only the first capture becomes
+			//    the global probe; the rest still load (keeps their
+			//    bindless slots valid) but warn to recook for placement.
+			bool legacyAny = false;
+			for (uint32_t n = 0; n < 32; ++n) {
+				const std::string name = base + "_" + std::to_string(n);
+				if (!vfs.TryRead(smvk::CubemapVfsPath(name)))
+					break;
+				if (m_cubemaps.Load(*m_context, vfs, name) && m_cubemaps.Find(name)) {
+					legacyAny = true;
+				}
+			}
+			if (legacyAny) {
+				std::cerr << "[Cubemap] legacy grid '" << base
+					<< "_N' without a manifest: using '" << base
+					<< "_0' as the global probe - recook with --cubemap-grid for placement\n";
+				fileBakeFound = true;
+				break;
 			}
 		}
+
+		if (!fileBakeFound) {
+			std::cerr << "[Cubemap] no baked cubemap for '"
+				<< (m_scene.id ? m_scene.id : "?")
+				<< "' or 'sky' - specular IBL uses the analytic sky"
+				<< " (bake with tools/cubemap_baker/CubemapBaker or PakCooker --cubemap on)\n";
+			if (!m_context->SupportsEvsm()) {
+				std::cerr << "[Cubemap] note: RGBA32F cubemap filtering is untested on this"
+					<< " device (EVSM unsupported) - baked cubemaps may sample unfiltered\n";
+			}
+		}
+
+		// Build the cached probe rows ONCE per scene load (never per frame):
+		//  - manifest path already filled m_cubemapProbes above;
+		//  - single/legacy path centers one global probe on the scene bounds.
+		if (fileBakeFound && m_cubemapProbes.empty() && !m_cubemaps.entries.empty()) {
+			const ::Aabb bounds = m_world ? m_world->ComputeSceneBounds()
+				: ::Aabb::empty();
+			glm::vec3 center{ 0.0f };
+			float radius = 10.0f;
+			if (bounds.mn.x <= bounds.mx.x && bounds.mn.y <= bounds.mx.y && bounds.mn.z <= bounds.mx.z) {
+				center = (bounds.mn + bounds.mx) * 0.5f;
+				radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
+				radius = std::max(radius, 1.0f);
+			}
+			// First loaded entry wins (insertion order: base, then base_0...).
+			for (const auto& [name, entry] : m_cubemaps.entries) {
+				if (entry.bindless < 0)
+					continue;
+				CubemapProbeGpu p{};
+				p.posInfluence = glm::vec4(center, radius * 2.0f);
+				p.fadeCubemap = glm::vec4(radius * 0.5f,
+					static_cast<float>(entry.bindless),
+					static_cast<float>(entry.mipLevels), 0.0f);
+				m_cubemapProbes.push_back(p);
+				std::cerr << "[Cubemap] global probe '" << name
+					<< "' at (" << center.x << "," << center.y << "," << center.z
+					<< ") r=" << radius << (entry.baked ? " (baked)" : " (PROCEDURAL test pattern)") << "\n";
+				break;
+			}
+		}
+
+		// PERF: widest influence first. The lit-shader probe loop breaks at
+		// the first full-weight row (exact: nothing beats weight 1.0, ties
+		// keep the first row), so the common inside-a-probe case costs one
+		// 32-byte iteration instead of a full scan.
+		std::sort(m_cubemapProbes.begin(), m_cubemapProbes.end(),
+			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
+				return a.posInfluence.w > b.posInfluence.w;
+			});
+
+		RefreshReflectionProbes();
+	}
+
+	// (Re)creates the reflection-probe storage buffer from the cached
+	// m_cubemapProbes rows and uploads it once. Per-frame code only reads
+	// the BDA + count — no scene-bounds walk, no upload in the hot loop.
+	void SceneRenderer::RefreshReflectionProbes() {
+		if (!m_cubemapProbesDirty && !m_reflProbeBuffer.empty())
+			return;
+		m_cubemapProbesDirty = false;
+		if (m_cubemapProbes.empty()) {
+			// No probes: keep the buffer around (FrameUniforms carries count
+			// 0) but publish no rows.
+			return;
+		}
+		const size_t rows = std::min<size_t>(m_cubemapProbes.size(), 32);
+		if (m_reflProbeBuffer.empty()) {
+			m_reflProbeBuffer = m_context->CreateBuffer(
+				32 * sizeof(CubemapProbeGpu),
+				smvk::BufferType_Storage,
+				"reflection probes"
+			);
+			m_reflProbeLogical = m_rendergraph->AddExternalBuffer(m_reflProbeBuffer, "reflection probes");
+		}
+		m_context->UploadDataToBuffer(m_reflProbeBuffer, m_cubemapProbes.data(),
+			rows * sizeof(CubemapProbeGpu),
+			smvk::PipelineStage(smvk::PipelineStageBit_Fragment),
+			smvk::AccessFlags::ShaderRead);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -2772,54 +2963,57 @@ void SceneRenderer::Shutdown() {
 		// sky dome / shadows are unaffected.
 		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 
-		// Reflection cubemap for specular IBL (global fallback)
-		if (!m_cubemaps.entries.empty()) {
-			// Use the first loaded cubemap
+		// Reflection cubemap for specular IBL (global fallback) + probes.
+		// The probe rows are cached + uploaded once per scene load
+		// (LoadCubemaps/RefreshReflectionProbes) — this frame only publishes
+		// the BDA + count + the UI knobs. Disabled UI (or nothing loaded)
+		// publishes "none" so shaders take the analytic sky path.
+		data.cubemapIndex = UINT32_MAX;
+		data.cubemapSampler = m_cubemapSampler;
+		data.cubemapIntensity = m_cubemapEnabled ? m_cubemapIntensity : 0.0f;
+		data.cubemapDebug = static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
+		data.cubemapLodBias = m_cubemapLodBias;
+		if (m_cubemapEnabled && !m_cubemaps.entries.empty()) {
+			// Global fallback = first loaded entry (matches the probe
+			// cache's global-probe choice in LoadCubemaps).
 			for (const auto& [name, entry] : m_cubemaps.entries) {
 				if (entry.bindless >= 0) {
 					data.cubemapIndex = static_cast<uint32_t>(entry.bindless);
 					break;
 				}
 			}
+		}
+		if (m_reflProbeBuffer.empty() || !m_cubemapEnabled || m_cubemapProbes.empty()) {
+			data.reflectionProbes = 0;
+			data.reflectionProbeCount = 0;
 		} else {
-			data.cubemapIndex = UINT32_MAX;
+			data.reflectionProbes = m_context->GetBufferDeviceAddress(m_reflProbeBuffer);
+			// PERF clamp: the lit shader scans up to this many 32-byte rows
+			// per pixel (widest influence first + break on full weight, so
+			// the common case costs one row). Lower on weak GPUs.
+			data.reflectionProbeCount = static_cast<uint32_t>(
+				std::min<size_t>({ m_cubemapProbes.size(),
+					static_cast<size_t>(std::clamp(m_cubemapMaxProbes, 1, 32)), 32 }));
 		}
-
-		// Reflection probes for local specular IBL - create buffer on first use
-		if (m_reflProbeBuffer.empty()) {
-			m_reflProbeBuffer = m_context->CreateBuffer(
-				32 * sizeof(glm::vec4) * 3, // ReflectionProbe = 3 vec4
-				smvk::BufferType_Storage,
-				"reflection probes"
-			);
-			m_reflProbeLogical = m_rendergraph->AddExternalBuffer(m_reflProbeBuffer, "reflection probes");
-		}
-		
-		data.reflectionProbes = m_context->GetBufferDeviceAddress(m_reflProbeBuffer);
-		data.reflectionProbeCount = 0;
-		
-		if (data.cubemapIndex != UINT32_MAX) {
-			// Scene bounds center as probe position
-			const ::Aabb bounds = m_world->ComputeSceneBounds();
-			glm::vec3 sceneCenter = (bounds.mn + bounds.mx) * 0.5f;
-			float sceneRadius = glm::length(bounds.mx - bounds.mn) * 0.5f;
-			
-			// Upload single probe
-			struct ReflProbe {
-				glm::vec4 posInfluence;
-				glm::vec4 fadeCubemap;
-				glm::vec4 pad;
-			};
-			ReflProbe probe;
-			probe.posInfluence = glm::vec4(sceneCenter, sceneRadius * 2.0f);
-			probe.fadeCubemap = glm::vec4(sceneRadius * 0.5f, static_cast<float>(data.cubemapIndex), 0.0f, 0.0f);
-			probe.pad = glm::vec4(0.0f);
-			
-			m_context->UploadDataToBuffer(m_reflProbeBuffer, &probe, sizeof(ReflProbe),
-				smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment),
-				smvk::AccessFlags::ShaderRead);
-			
-			data.reflectionProbeCount = 1;
+		// ---- Forward+ tiled reflection probes (bucketed specular IBL) ----
+		// Contract with the cull + shading shaders (see forwardplus.cs.hlsl
+		// + environment.hlsli): probeMaxPerTile > 0 only when the tile-cull
+		// dispatch runs this frame (ProbeTileListsWanted gates both), so the
+		// tile lists are always fresh when consumed. The BDAs ride along
+		// whenever the builder is valid (stale lists are never read: the
+		// lit shader falls back to the global scan on stride 0).
+		data.probeTileCounts = 0;
+		data.probeTileIndices = 0;
+		data.probeMaxPerTile = 0;
+		data.probePad_[0] = data.probePad_[1] = data.probePad_[2] = 0;
+		if (m_viewportResources.forwardPlus.Valid()) {
+			data.probeTileCounts =
+				m_viewportResources.forwardPlus.ProbeTileCountsAddress(*m_context);
+			data.probeTileIndices =
+				m_viewportResources.forwardPlus.ProbeTileIndicesAddress(*m_context);
+			if (ProbeTileListsWanted())
+				data.probeMaxPerTile =
+					m_viewportResources.forwardPlus.desc.maxProbesPerTile;
 		}
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
@@ -6088,8 +6282,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// the per-tile decal lists, so splats work in BOTH shading paths).
 	const bool dsOn = DsActive();
 	const bool decalListsNeeded = DecalsActive() && m_decalFrameCount > 0;
+	// Reflection probes bucket like decals: their tile lists are refreshed
+	// by the SAME forward+ cull dispatch, so when probes are loaded the
+	// dispatch runs even under deferred shadows (lightCount 0; the probe
+	// leg still fills the per-tile probe lists for bucketed specular IBL).
+	const bool probeListsWanted = ProbeTileListsWanted();
 	rfPB = bench_clk::now();
-	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded))
+	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted))
 		m_fpRenderer.AppendTileCull(fc, dsOn ? 0u : UINT32_MAX);
 	if (dsOn)
 		AppendDeferredShadowPhases(fb.frameIndex,
@@ -7372,6 +7571,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		decalRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 		mainPass.AddBufferHint(m_resources.decalsLogical, decalRead);
 	}
+	// Probe tile lists are read by Main in BOTH shading paths, exactly like
+	// the decal lists: probeListsWanted gates the dispatch and the
+	// FrameUniforms stride together, so fresh lists are always present here.
+	if (probeListsWanted) {
+		smvk::ForwardPlus::AddProbeTileReadHints(mainPass,
+			m_viewportResources.forwardPlus.probeTileCountsLogical,
+			m_viewportResources.forwardPlus.probeTileIndicesLogical);
+	}
 		{
 			smvk::BufferSyncRequest fpLightRead{};
 			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -8506,6 +8713,73 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					if (!m_skydome.ShadersValid())
 						ImGui::TextDisabled("Sky program missing ï¿½ dome skipped");
 				}
+				if (ImGui::CollapsingHeader("Reflection cubemaps (specular IBL)")) {
+					ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
+					ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
+					ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
+					ImGui::SliderInt("Max probes / pixel", &m_cubemapMaxProbes, 1, 32);
+					if (m_cubemapMaxProbes < 1) m_cubemapMaxProbes = 1;
+					if (m_cubemapMaxProbes > 32) m_cubemapMaxProbes = 32;
+					ImGui::Checkbox("Probe locations overlay", &m_cubemapShowProbes);
+					if (m_cubemapShowProbes)
+						ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
+					{
+						static const char* const kCubeDbgNames[3] = {
+							"Off", "Cubemap only (no Fresnel)", "Probe weight heat",
+						};
+						int dbgIdx = std::clamp(m_cubemapDebug, 0, 2);
+						if (ImGui::Combo("Cubemap debug", &dbgIdx, kCubeDbgNames, 3))
+							m_cubemapDebug = std::clamp(dbgIdx, 0, 2);
+					}
+					size_t bakedCount = 0, procCount = 0;
+					for (const auto& [name, entry] : m_cubemaps.entries) {
+						if (entry.bindless >= 0 && !entry.texture.empty())
+							(entry.baked ? bakedCount : procCount)++;
+					}
+					ImGui::Text("Cubemaps: %u (baked %u, procedural %u)  Probes: %u / %d scanned  Sampler: %u",
+						(unsigned)m_cubemaps.entries.size(),
+						(unsigned)bakedCount, (unsigned)procCount,
+						(unsigned)m_cubemapProbes.size(),
+						std::clamp(m_cubemapMaxProbes, 1, 32), m_cubemapSampler);
+					{
+						const int scanned = (int)std::min<size_t>(m_cubemapProbes.size(),
+							static_cast<size_t>(std::clamp(m_cubemapMaxProbes, 1, 32)));
+						const bool tiled = ProbeTileListsWanted();
+						ImGui::Text("Tiled probes: %s (stride %u, tiles %ux%u)",
+							tiled ? "fresh" : "stale (global scan)",
+							tiled ? m_viewportResources.forwardPlus.desc.maxProbesPerTile : 0,
+							m_viewportResources.forwardPlus.tileCountX,
+							m_viewportResources.forwardPlus.tileCountY);
+						ImGui::TextDisabled("Probe rows are 32 B; pixels scan their tile's list"
+							" (widest-first, stop at full weight). Stale lists fall back to"
+							" the global scan (worst %d rows = %d B/px).",
+							scanned, scanned * 32);
+					}
+					for (const auto& [name, entry] : m_cubemaps.entries) {
+						ImGui::BulletText("%s: %upx mips=%u bindless=%d %s",
+							name.c_str(), entry.size, entry.mipLevels, entry.bindless,
+							entry.baked ? "(baked)" : "(PROCEDURAL test pattern)");
+					}
+					for (size_t i = 0; i < m_cubemapProbes.size() && i < 32; ++i) {
+						const auto& p = m_cubemapProbes[i];
+						ImGui::BulletText("probe %u: pos=(%.1f,%.1f,%.1f) r=%.1f fade=%.1f cube=%d mips=%.0f",
+							(unsigned)i,
+							p.posInfluence.x, p.posInfluence.y, p.posInfluence.z,
+							p.posInfluence.w, p.fadeCubemap.x,
+							(int)p.fadeCubemap.y, (double)p.fadeCubemap.z);
+					}
+					if (procCount > 0)
+						ImGui::TextDisabled("PROCEDURAL entries are the neon test pattern (face-orientation check),"
+							" not a bake - expect wrong specular until cooked.");
+					if (m_cubemaps.entries.empty())
+						ImGui::TextDisabled("No cubemap: specular IBL uses the analytic sky."
+							" Bake with PakCooker --cubemap on (grid writes a .cubemanifest).");
+					ImGui::TextDisabled("Specular IBL is independent of the ambient-source isolation"
+						" (N cycles isolate diffuse only); its switches are this panel"
+						" (toggle/intensity) plus the Environment IBL intensity.");
+					ImGui::TextDisabled("Probes upload once per scene load (see [Cubemap] log lines);"
+						" intensity/debug/LOD apply instantly.");
+				}
 				if (ImGui::CollapsingHeader("GI ï¿½ ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// Ambient source (N cycles): All -> Lightmaps -> Probes
 					// -> SkyIbl -> Off — single-source isolation for
@@ -9622,6 +9896,78 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					<< " cull=" << (m_giProbeOcclusionCull ? "on" : "off")
 					<< " cache=" << m_giProbeCullCache.size() << "\n";
 			}
+		}
+
+		// Reflection-probe location overlay (cubemap panel toggle): one
+		// marker per cached probe row — center dot + index, solid ring =
+		// full-weight influence, dim ring = fade extent. Bright green =
+		// camera inside influence, yellow = in fade, gray = out of range:
+		// fly to the chrome ball and the covering probe lights up. Answers
+		// "is there a cubemap near X?" at a glance, including embedded
+		// probes (markers inside walls) the bake should have culled.
+		if (m_cubemapShowProbes && !m_cubemapProbes.empty()) {
+			ImDrawList* cdl = ImGui::GetForegroundDrawList();
+			const ImVec2 cdisp = ImGui::GetIO().DisplaySize;
+			const glm::vec3 ccamPos = m_cameraPositioner.cameraPosition_;
+			const float cmaxDist = std::max(m_cubemapOverlayMaxDist, 1.0f);
+			const float cmaxDist2 = cmaxDist * cmaxDist;
+			uint32_t cdrawn = 0;
+			for (uint32_t ci = 0; ci < m_cubemapProbes.size() && cdrawn < 64; ++ci) {
+				const CubemapProbeGpu& pr = m_cubemapProbes[ci];
+				const glm::vec3 ppos(pr.posInfluence.x, pr.posInfluence.y, pr.posInfluence.z);
+				const float influence = pr.posInfluence.w;
+				const float fade = pr.fadeCubemap.x;
+				const glm::vec3 dc = ppos - ccamPos;
+				if (glm::dot(dc, dc) > cmaxDist2)
+					continue;
+				const glm::vec4 cclip = m_unjitteredViewProj * glm::vec4(ppos, 1.0f);
+				if (cclip.w <= 1e-4f)
+					continue;
+				const glm::vec3 cndc = glm::vec3(cclip) / cclip.w;
+				if (std::abs(cndc.x) > 1.0f || std::abs(cndc.y) > 1.0f)
+					continue;
+				const ImVec2 cpt(
+					(cndc.x * 0.5f + 0.5f) * cdisp.x,
+					(cndc.y * 0.5f + 0.5f) * cdisp.y);
+				const float cdist = std::sqrt(glm::dot(dc, dc));
+				ImU32 col;
+				if (cdist <= influence)
+					col = IM_COL32(80, 255, 120, 230);
+				else if (fade > 0.0f && cdist <= influence + fade)
+					col = IM_COL32(255, 220, 80, 230);
+				else
+					col = IM_COL32(120, 140, 160, 160);
+				// Influence ring: project a world-X offset of one radius.
+				const glm::vec4 eclip = m_unjitteredViewProj
+					* glm::vec4(ppos + glm::vec3(std::max(influence, 0.01f), 0.0f, 0.0f), 1.0f);
+				if (eclip.w > 1e-4f) {
+					const glm::vec3 endc = glm::vec3(eclip) / eclip.w;
+					const ImVec2 ept(
+						(endc.x * 0.5f + 0.5f) * cdisp.x,
+						(endc.y * 0.5f + 0.5f) * cdisp.y);
+					const float rPx = std::sqrt((ept.x - cpt.x) * (ept.x - cpt.x)
+						+ (ept.y - cpt.y) * (ept.y - cpt.y));
+					if (rPx > 2.0f && rPx < 4000.0f) {
+						cdl->AddCircle(cpt, rPx, col & IM_COL32(255, 255, 255, 90), 48);
+						if (fade > 0.0f) {
+							const float fr = rPx * (influence + fade) / std::max(influence, 1e-3f);
+							if (fr < 4000.0f)
+								cdl->AddCircle(cpt, fr, col & IM_COL32(255, 255, 255, 45), 48);
+						}
+					}
+				}
+				cdl->AddCircleFilled(cpt, 3.5f, col);
+				char clab[16];
+				snprintf(clab, sizeof(clab), "C%u", ci);
+				cdl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f), col, clab);
+				++cdrawn;
+			}
+			char ccap[160];
+			snprintf(ccap, sizeof(ccap), "Cubemap probes: %u drawn (<= %.0fm, %s)",
+				cdrawn, cmaxDist,
+				ProbeTileListsWanted() ? "tile lists fresh" : "tile lists STALE (global scan)");
+			cdl->AddText(ImVec2(8.0f + 1.0f, 58.0f + 1.0f), IM_COL32(0, 0, 0, 200), ccap);
+			cdl->AddText(ImVec2(8.0f, 58.0f), IM_COL32_WHITE, ccap);
 		}
 
 #if defined(DS_DEBUG_VIZ)

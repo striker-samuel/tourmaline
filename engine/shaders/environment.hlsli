@@ -63,23 +63,97 @@ float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)
 
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
 // F0-weighted reflections, rougher surfaces fade out.
-// Uses reflection probes (nearest by world position) if available,
-// otherwise falls back to global cubemapIndex, then analytic sky.
+// Probe selection is tile-bucketed when the Forward+ cull filed per-tile
+// probe lists (tileIdx != 0xffffffffu and probeMaxPerTile > 0): the pixel
+// then scans only its tile's handful of entries. Otherwise (stale lists)
+// it falls back to the global widest-first scan with break-on-full-weight.
+// Either way the baked chains are GGX-preconvolved (roughness =
+// mip/(mips-1)), so sampling selects the LOD from the material roughness
+// (+ the UI LOD bias); the clamp sampler avoids cube-seam wrap bleeding.
+// tileIdx is the caller's 16px-tile index (same tiling as the FP light
+// lists), or 0xffffffffu when the caller has no tile (global scan).
 float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
-    float3 worldPos, FrameUniforms frame)
+    float3 worldPos, FrameUniforms frame, uint tileIdx)
 {
-    float ibl = max(env.ground.w, 0.0f) * env.fogEndAndFlags.w;
+    // Specular gate: iblIntensity (ground.w) ONLY. Deliberately NOT the
+    // fogEndAndFlags.w diffuse-isolation flag (ambient modes): smooth
+    // surfaces cannot do mirrors from the broad baked lobes, so they keep
+    // env reflections in every mode (see the lightmap/probe specular code
+    // that lerps toward this). Gating this to zero would turn every chrome
+    // ball black in Probes/Lightmaps/Off modes. The cubemap toggle rides
+    // useBaked below (off = analytic sky, never black).
+    float ibl = max(env.ground.w, 0.0f);
     if (ibl <= 0.0f)
         return float3(0.0f, 0.0f, 0.0f);
-    
-    float3 envCol;
+    // Baked-cubemap kill switch (UI): off falls back to the analytic sky,
+    // never to black — probe-covered pixels must not go dark just because
+    // the bake is disabled.
+    bool useBaked = frame.cubemapIntensity > 0.0f;
+    uint cubeDbg = frame.cubemapDebug;
+
+    SamplerState cubeSampler = samplers[NonUniformResourceIndex(frame.cubemapSampler)];
+    float lodBias = frame.cubemapLodBias;
+
+    float3 envCol = float3(0.0f, 0.0f, 0.0f);
     bool foundProbe = false;
-    
-    // Find nearest reflection probe within influence radius
     float bestWeight = 0.0f;
     uint bestProbeIndex = 0xffffffffu;
-    
-    if (frame.reflectionProbeCount > 0) {
+
+    // Tile-bucketed fast path. The cull's outer-sphere test is conservative
+    // (influence + fade vs tile frustum + depth range), so a tile miss
+    // implies a global miss: when the lists are fresh and the tile finds
+    // nothing, the pixel takes the analytic sky directly with no fallback
+    // scan. Overflow (count > perTile) drops far locals — the accepted
+    // Forward+ trade-off, same as lights/decals.
+    bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
+        && frame.probeMaxPerTile > 0u && frame.reflectionProbeCount > 0u;
+    if (tileFresh) {
+        ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
+        uint perTile = min(frame.probeMaxPerTile, (uint)MAX_FP_PROBES_PER_TILE);
+        uint stride = max(frame.probeMaxPerTile, 1u);
+        uint listCount = min(frame.probeTileCounts.Get().counts[tileIdx], perTile);
+        [loop]
+        for (uint s = 0; s < listCount; ++s) {
+            uint pi = frame.probeTileIndices.Get().indices[tileIdx * stride + s];
+            if (pi >= frame.reflectionProbeCount)
+                continue;
+            ReflectionProbe probe = probeBuf.probes[pi];
+            if ((uint)probe.fadeCubemap.y == 0xffffffffu)
+                continue;
+            float dist = length(worldPos - probe.posInfluence.xyz);
+            float influenceRadius = probe.posInfluence.w;
+            float fadeRadius = probe.fadeCubemap.x;
+            float weight = 0.0f;
+            if (dist <= influenceRadius) {
+                weight = 1.0f;
+            } else if (fadeRadius > 0.0f && dist <= influenceRadius + fadeRadius) {
+                weight = 1.0f - (dist - influenceRadius) / fadeRadius;
+            }
+            if (weight > bestWeight) {
+                bestWeight = weight;
+                bestProbeIndex = pi;
+                if (bestWeight >= 1.0f)
+                    break;
+            }
+        }
+        if (bestWeight > 0.0f && bestProbeIndex != 0xffffffffu) {
+            ReflectionProbe best = probeBuf.probes[bestProbeIndex];
+            uint cubemapIdx = (uint)best.fadeCubemap.y;
+            float mips = max(best.fadeCubemap.z, 1.0f);
+            float lod = clamp(roughness * (mips - 1.0f) + lodBias, 0.0f, mips - 1.0f);
+            TextureCube cubemap = cubemaps[NonUniformResourceIndex(cubemapIdx)];
+            envCol = cubemap.SampleLevel(cubeSampler, R, lod).rgb;
+            foundProbe = true;
+        }
+    }
+
+    // Find nearest reflection probe within influence radius.
+    // PERF: this global scan runs per lit pixel over BDA-backed rows, so it
+    // is frame-rate memory bandwidth — it only runs when the tile lists are
+    // stale (probeMaxPerTile == 0). Rows are 32 bytes, widest-influence
+    // first, break at the first full-weight probe (exact: nothing beats
+    // weight 1.0, ties keep the first row).
+    if (!tileFresh && !foundProbe && useBaked && frame.reflectionProbeCount > 0) {
         ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
         [loop]
         for (uint i = 0; i < frame.reflectionProbeCount; ++i) {
@@ -88,39 +162,46 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
             float influenceRadius = probe.posInfluence.w;
             float fadeRadius = probe.fadeCubemap.x;
             uint cubemapIdx = (uint)probe.fadeCubemap.y;
-            
+
             if (cubemapIdx == 0xffffffffu) continue;
-            
+
             float dist = length(worldPos - probePos);
             float weight = 0.0f;
             if (dist <= influenceRadius) {
                 weight = 1.0f;
-            } else if (dist <= influenceRadius + fadeRadius) {
+            } else if (fadeRadius > 0.0f && dist <= influenceRadius + fadeRadius) {
                 weight = 1.0f - (dist - influenceRadius) / fadeRadius;
             }
-            
+
             if (weight > bestWeight) {
                 bestWeight = weight;
                 bestProbeIndex = i;
+                if (bestWeight >= 1.0f)
+                    break;
             }
         }
-        
+
         if (bestWeight > 0.0f && bestProbeIndex != 0xffffffffu) {
-            // Sample the nearest probe's cubemap
-            uint cubemapIdx = (uint)probeBuf.probes[bestProbeIndex].fadeCubemap.y;
+            // Sample the nearest probe's GGX chain at the roughness LOD.
+            ReflectionProbe best = probeBuf.probes[bestProbeIndex];
+            uint cubemapIdx = (uint)best.fadeCubemap.y;
+            float mips = max(best.fadeCubemap.z, 1.0f);
+            float lod = clamp(roughness * (mips - 1.0f) + lodBias, 0.0f, mips - 1.0f);
             TextureCube cubemap = cubemaps[NonUniformResourceIndex(cubemapIdx)];
-            envCol = cubemap.Sample(samplers[0], R).rgb;
+            envCol = cubemap.SampleLevel(cubeSampler, R, lod).rgb;
             foundProbe = true;
         }
     }
-    
-    if (!foundProbe && frame.cubemapIndex != 0xffffffffu) {
-        // Fallback to global cubemap
+
+    if (!foundProbe && useBaked && frame.cubemapIndex != 0xffffffffu) {
+        // Fallback to global cubemap (sharp LOD + UI bias; no per-probe
+        // mip count is carried for this path, so bias only).
         TextureCube cubemap = cubemaps[NonUniformResourceIndex(frame.cubemapIndex)];
-        envCol = cubemap.Sample(samplers[0], R).rgb;
+        envCol = cubemap.SampleLevel(cubeSampler, R, max(lodBias, 0.0f)).rgb;
         foundProbe = true;
+        bestWeight = 1.0f;
     }
-    
+
     if (!foundProbe) {
         // Fallback to analytic sky
         float3 zenith = env.skyZenith.rgb;
@@ -129,8 +210,24 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         float3 skyPart = lerp(horizon, zenith, pow(saturate(R.y), 1.5f));
         float3 gndPart = lerp(horizon, groundCol, saturate(-R.y * 2.0f));
         envCol = R.y >= 0.0f ? skyPart : gndPart;
+    } else {
+        // Baked cubemap: UI intensity. Convention: bakes store sky-relative
+        // colors (cook divides out skyIntensity), so the shader applies ibl
+        // uniformly to baked and analytic paths below — the IBL slider
+        // scales both, and no bake-time intensity is frozen in.
+        envCol *= max(frame.cubemapIntensity, 0.0f);
     }
-    
+
+    // Debug views (UI): raw cubemap without Fresnel/roughness weighting,
+    // or the probe blend weight as heat.
+    if (cubeDbg == 1u && foundProbe) {
+        return envCol * ibl;
+    }
+    if (cubeDbg == 2u) {
+        float w = foundProbe ? bestWeight : 0.0f;
+        return float3(w, 1.0f - abs(w - 0.5f) * 2.0f * 0.5f, 1.0f - w) * ibl;
+    }
+
     float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
     return envCol * ibl * F * (gloss * gloss * 0.9f + 0.1f);
 }

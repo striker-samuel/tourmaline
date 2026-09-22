@@ -439,12 +439,17 @@ struct FrameUniforms
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
 	// Reflection cubemap for specular IBL (bindless TextureCube index).
-	uint32_t cubemapIndex = UINT32_MAX;
-	float cubemapPad_[3] = {};
+	// NOTE: this 16-byte block must stay exactly 16 bytes (offsets
+	// asserted below): index + sampler + intensity + debug. Growing it
+	// shifts probes/DS/GI/evsm and corrupts shadow reads on the GPU.
+	uint32_t cubemapIndex = UINT32_MAX; // 640 global fallback cubemap
+	uint32_t cubemapSampler = 0;        // 644 clamp sampler for TextureCube
+	float cubemapIntensity = 1.0f;      // 648 specular IBL scale (UI)
+	uint32_t cubemapDebug = 0;          // 652 0 off, 1 cubemap-only, 2 probe weight
 	// Reflection probes for local specular IBL: GPU buffer pointer + count.
 	uint64_t reflectionProbes = 0;     // 656 buffer address (ReflectionProbe[]), 0 = none
 	uint32_t reflectionProbeCount = 0; // 664 number of valid probes
-	// (implicit 4-byte pad here aligns dsTileState to 672)
+	float cubemapLodBias = 0.0f;       // 668 added to roughness LOD (UI; was implicit pad)
 	// ---- Deferred shadows (tiled/zBin pipeline, see
 	// smvk::DeferredShadows + deferredshadow*.hlsli). Raw BDAs: the HLSL
 	// side declares matching vk::BufferPointer fields. dsEnabled flips the
@@ -509,6 +514,16 @@ struct FrameUniforms
 	uint32_t regCount = 0;          // 1048 active volumes
 	uint32_t regEnabled = 0;        // 1052 1 = grid branch active
 	uint32_t regPad_[4] = {};       // 1056 16-align tail (mirrors HLSL regPad)
+	// ---- Forward+ tiled reflection probes (specular IBL bucketing) ----
+	// Per-tile probe-index lists over the same tiling as the FP light/decal
+	// lists, filled by the tile-cull dispatch. probeMaxPerTile is the list
+	// stride AND the freshness gate: 0 = cull did not run this frame, lit
+	// shader falls back to the global probe scan. Appended here (32 bytes,
+	// 16-aligned) so every offset asserted below stays frozen.
+	uint64_t probeTileCounts = 0;    // 1104 per-tile probe counts
+	uint64_t probeTileIndices = 0;   // 1112 per-tile probe indices (stride below)
+	uint32_t probeMaxPerTile = 0;    // 1120 list stride, 0 = stale
+	uint32_t probePad_[3] = {};      // 1124 16-align tail (mirrors HLSL probePad)
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -562,9 +577,12 @@ static_assert(offsetof(FrameUniforms, aoTextureIndex) == 492);
 static_assert(offsetof(FrameUniforms, aoIntensity) == 496);
 static_assert(offsetof(FrameUniforms, env) == 512);
 static_assert(offsetof(FrameUniforms, cubemapIndex) == 640);
+static_assert(offsetof(FrameUniforms, cubemapSampler) == 644);
+static_assert(offsetof(FrameUniforms, cubemapIntensity) == 648);
+static_assert(offsetof(FrameUniforms, cubemapDebug) == 652);
 static_assert(offsetof(FrameUniforms, reflectionProbes) == 656);      // 656 buffer address
 static_assert(offsetof(FrameUniforms, reflectionProbeCount) == 664);  // 664 count
-// (implicit 4-byte pad aligns dsTileState to 672)
+static_assert(offsetof(FrameUniforms, cubemapLodBias) == 668);        // 668 LOD bias (was implicit pad)
 static_assert(offsetof(FrameUniforms, dsTileState) == 672);           // 672
 static_assert(offsetof(FrameUniforms, dsLightList) == 680);           // 680
 static_assert(offsetof(FrameUniforms, dsVisibility) == 688);          // 688
@@ -592,13 +610,17 @@ static_assert(offsetof(FrameUniforms, regLayers) == 856);             // 856
 static_assert(offsetof(FrameUniforms, regCount) == 1080);             // 1080
 static_assert(offsetof(FrameUniforms, regEnabled) == 1084);           // 1084
 static_assert(offsetof(FrameUniforms, regPad_) == 1088);              // 1088
+static_assert(offsetof(FrameUniforms, probeTileCounts) == 1104);      // 1104
+static_assert(offsetof(FrameUniforms, probeTileIndices) == 1112);     // 1112
+static_assert(offsetof(FrameUniforms, probeMaxPerTile) == 1120);      // 1120
+static_assert(offsetof(FrameUniforms, probePad_) == 1124);            // 1124
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 1104);          // 1104
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1112);     // 1112
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 1120);          // 1120
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 1124);         // 1124
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1128);         // 1128
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1132);     // 1132
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 1136);          // 1136
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1144);     // 1144
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 1152);          // 1152
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 1156);         // 1156
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1160);         // 1160
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1164);     // 1164
 #endif
 
 // Resources
@@ -1208,6 +1230,37 @@ protected:
 	smvk::CubemapLibrary m_cubemaps{}; // reflection cubemaps for IBL
 	smvk::Holder<smvk::BufferHandle> m_reflProbeBuffer; // reflection probe buffer
 	smvk::LogicalBufferHandle m_reflProbeLogical{};
+	// ---- Reflection cubemap UI + cached probe upload ----
+	// The probe buffer is uploaded ONCE per scene load (RefreshReflectionProbes),
+	// never per frame: UpdateFrameUniforms only publishes the BDA + count +
+	// the sampler/intensity/debug/LOD knobs below. m_cubemapProbesDirty is
+	// set by LoadCubemaps (new scene / new bake).
+	bool m_cubemapEnabled = true;   // specular IBL on/off (UI)
+	float m_cubemapIntensity = 1.0f;// specular IBL scale (UI, FrameUniforms)
+	float m_cubemapLodBias = 0.0f;  // added to roughness LOD (UI, FrameUniforms)
+	int m_cubemapDebug = 0;         // 0 off, 1 cubemap-only, 2 probe weight (UI)
+	int m_cubemapMaxProbes = 32;    // probes scanned per pixel, 1..32 (UI perf clamp)
+	bool m_cubemapShowProbes = false; // overlay: probe positions + influence rings (UI)
+	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
+	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
+	struct CubemapProbeGpu {
+		glm::vec4 posInfluence{ 0.0f }; // xyz = center (world), w = influence radius
+		glm::vec4 fadeCubemap{ 0.0f };  // x = fade, y = cubemap idx bits, z = mipLevels, w = pad
+	};
+	static_assert(sizeof(CubemapProbeGpu) == 32);
+	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached GPU probe rows (<= 32 consumed)
+	bool m_cubemapProbesDirty = true;
+	void RefreshReflectionProbes(); // (re)creates + uploads m_reflProbeBuffer from m_cubemapProbes
+	void LoadCubemaps(smvk::OverlayVfs& vfs);
+	// Single gate for the tile-bucketed probe path: the forward+ tile cull
+	// files per-tile probe lists (fresh 0-counts when disabled), and
+	// FrameUniforms.probeMaxPerTile publishes stride-or-0 so the lit shader
+	// and the read hints can never disagree with the dispatch below.
+	bool ProbeTileListsWanted() const {
+		return m_cubemapEnabled && !m_cubemapProbes.empty()
+			&& m_passes.forwardPlusCull
+			&& m_viewportResources.forwardPlus.Valid();
+	}
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
@@ -1407,7 +1460,7 @@ protected:
 			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
-	void LoadCubemaps(smvk::OverlayVfs& vfs);
+	// (LoadCubemaps declared with the cubemap members above.)
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
 	// output). Loaded once at scene init from the registry lightmap
 	// (gi/<name>.sglm, else content/gi/<scene>.sglm):

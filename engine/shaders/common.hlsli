@@ -303,12 +303,32 @@ struct ForwardPlusDecalTileIndexBuffer
     uint indices[MAX_FP_TILES * MAX_FP_DECALS_PER_TILE];
 };
 
-// Reflection probe for local specular IBL (48 bytes).
+// ---- Forward+ tiled reflection probes (specular IBL bucketing) ----
+// The same tile frustum cull that files light/decal lists also files one
+// probe-index list per tile (conservative outer sphere = influence + fade,
+// widest-influence upload order). The lit shader then scans only its tile's
+// handful of entries instead of all 32 probe rows per pixel. Entries are
+// indices into ReflectionProbeBuffer.probes (0..31).
+#define MAX_FP_PROBES 32
+#define MAX_FP_PROBES_PER_TILE 8
+
+struct ForwardPlusProbeTileCountBuffer
+{
+    uint counts[MAX_FP_TILES];
+};
+
+struct ForwardPlusProbeTileIndexBuffer
+{
+    uint indices[MAX_FP_TILES * MAX_FP_PROBES_PER_TILE];
+};
+
+// Reflection probe for local specular IBL (32 bytes — kept tight on
+// purpose: the lit shader scans these per pixel, so every byte is
+// frame-rate memory bandwidth).
 // Passed via a storage buffer (ReflectionProbeBuffer) from FrameUniforms.
 struct ReflectionProbe {
     float4 posInfluence;  // xyz = position, w = influenceRadius
-    float4 fadeCubemap;   // x = fadeRadius, y = cubemapIndex, zw = pad
-    float4 pad;
+    float4 fadeCubemap;   // x = fadeRadius, y = cubemapIndex, z = mipLevels, w = pad
 };
 
 struct ReflectionProbeBuffer {
@@ -318,9 +338,11 @@ struct ReflectionProbeBuffer {
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
-// there): env at 512, cubemap at 640, deferred-shadow fields at 656, SG-GI fields at 688,
-// decal fields at 736, lightmap/regular-volume fields at 768 (release
-// prefix = 1072 B); visualizer fields (DS_DEBUG_VIZ only) follow at 1072.
+// there): env at 512, cubemap block at 640, probe block at 656,
+// deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
+// decal fields at 752, lightmap fields at 784, regular-volume fields at
+// 848, probe tile-list fields at 1104; visualizer fields (DS_DEBUG_VIZ
+// only) follow at 1136.
 struct FrameUniforms
 {
     float4x4 view;
@@ -359,36 +381,45 @@ struct FrameUniforms
     EnvironmentFrameData env;
 
     // Reflection cubemap for specular IBL (bindless TextureCube index).
+    // NOTE: this 16-byte block must stay exactly 16 bytes (offsets
+    // asserted in App/scene_renderer.h): index + sampler + intensity +
+    // debug. Everything after it (probes at 656, DS at 672, ...) shifts
+    // otherwise and evsmMode/shadow addresses read garbage.
     uint cubemapIndex;
-    float3 cubemapPad;
+    uint cubemapSampler;   // bindless sampler index (clamp-to-edge, linear mips)
+    float cubemapIntensity; // specular IBL scale (UI)
+    uint cubemapDebug;      // 0 off, 1 cubemap-only, 2 probe weight
 
     // Reflection probes for local specular IBL: GPU buffer pointer + count.
+    // NOTE: exactly 16 bytes (BDA + count + bias) so dsTileState stays at
+    // 672. A wider pad here shifts every downstream field by 4 and breaks
+    // EVSM/DS/GI reads (that was the "shadows break with cubemaps" bug).
     vk::BufferPointer<ReflectionProbeBuffer> reflectionProbes;
     uint reflectionProbeCount;
-    uint reflPad[2];
+    float cubemapLodBias; // added to the roughness-derived cubemap LOD (UI)
 
     // ---- Deferred shadows (tiled/zBin pipeline, see deferredshadow*.hlsli).
     // Consumer-side view of this frame's per-flight buffers; the app
     // flips dsEnabled per frame (A/B against the inline forward+ path).
-    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 656 {slot,count,approx,early}/tile
-    vk::BufferPointer<DsLightListBuffer> dsLightList;  // 664 final entries
-    vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 672 64B slots
-    uint dsTileCountX;                                 // 680 8px tiles/row
-    uint dsEnabled;                                    // 684 1 = consume lists
+    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 672 {slot,count,approx,early}/tile
+    vk::BufferPointer<DsLightListBuffer> dsLightList;  // 680 final entries
+    vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 688 64B slots
+    uint dsTileCountX;                                 // 696 8px tiles/row
+    uint dsEnabled;                                    // 700 1 = consume lists
     // ---- SG-GI baked probe volume (see sggi.hlsli + Engine/GI). Static
     // buffers uploaded once at scene load; giEnabled flips every frame.
     // giIntensity scales the ambient contribution, giDebug selects the
     // F8 irradiance debug view (1 = flat probe diffuse, pre-exposure).
     // The release layout keeps the 720 B prefix property: these fields
     // precede the DS visualizer tail below.
-    vk::BufferPointer<SgGiProbesBuffer> giProbes;   // 688 probe array (96 B each)
-    vk::BufferPointer<SgGiGrid> giGrid;            // 696 level descriptors
-    vk::BufferPointer<SgGiCellsBuffer> giCells;    // 704 uint2 (start,count)/cell
-    vk::BufferPointer<SgGiIndexBuffer> giIndices;   // 712 u32 probe index list
-    uint giEnabled;                                 // 720 1 = sample probes for ambient
-    float giIntensity;                              // 724 ambient scale
-    uint giDebug;                                    // 728 0 off, 1 irradiance view
-    uint evsmMode;                                   // 732 0 = PCF depth, 1 = EVSM moments (was padding)
+    vk::BufferPointer<SgGiProbesBuffer> giProbes;   // 704 probe array (96 B each)
+    vk::BufferPointer<SgGiGrid> giGrid;            // 712 level descriptors
+    vk::BufferPointer<SgGiCellsBuffer> giCells;    // 720 uint2 (start,count)/cell
+    vk::BufferPointer<SgGiIndexBuffer> giIndices;   // 728 u32 probe index list
+    uint giEnabled;                                 // 736 1 = sample probes for ambient
+    float giIntensity;                              // 740 ambient scale
+    uint giDebug;                                    // 744 0 off, 1 irradiance view
+    uint evsmMode;                                   // 748 0 = PCF depth, 1 = EVSM moments (was padding)
     // ---- Forward+ decals (tiled projected splats, see ForwardPlusDecal).
     // decals points at this frame's flight slice of the app decal ring;
     // the tile lists are the ForwardPlus builder's decal buffers, refreshed
@@ -398,11 +429,11 @@ struct FrameUniforms
     // every tile even with no decals, so the shading pass never sees
     // stale lists). decalMaxPerTile is the list stride (matches the
     // builder allocation).
-    vk::BufferPointer<ForwardPlusDecalBuffer> decals;        // 720
-    vk::BufferPointer<ForwardPlusDecalTileCountBuffer> decalTileCounts; // 728
-    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 736
-    uint decalCount;                                         // 744 0 = decals off
-    uint decalMaxPerTile;                                    // 748 list stride
+    vk::BufferPointer<ForwardPlusDecalBuffer> decals;        // 752
+    vk::BufferPointer<ForwardPlusDecalTileCountBuffer> decalTileCounts; // 760
+    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 768
+    uint decalCount;                                         // 776 0 = decals off
+    uint decalMaxPerTile;                                    // 780 list stride
     // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h).
     // The atlas layers ride the bindless Texture2D array; the atlas-space
     // UVs are COOKED into the mesh's texCoord2 and the lobe count rides
@@ -413,32 +444,42 @@ struct FrameUniforms
     // classic 9 RGBA16F stream layers (half h = lobe*3 + channel ->
     // layer h/4), 1 = BC6H one-texture-per-lobe (12 slots, texture l =
     // lobe l, .rgb = the amplitude). ----
-    uint lmLayers[12];                                       // 752 atlas bindless slots
-uint lmEnabled;                                          // 816 1 = lightmap branch active
-    uint lmLayerKind;                                        // 820 0 = RGBA16F stream, 1 = BC6H per-lobe
-    uint2 lmPad;                                              // 824 (align regObbs to 8)
+    uint lmLayers[12];                                       // 784 atlas bindless slots
+uint lmEnabled;                                          // 832 1 = lightmap branch active
+    uint lmLayerKind;                                        // 836 0 = RGBA16F stream, 1 = BC6H per-lobe
+    uint2 lmPad;                                              // 840 (align regObbs to 8)
     // ---- SG regular 3D probe volumes (DYNAMIC objects; Ready-at-Dawn
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
     // hardware trilinear filtering between neighboring probes. ----
-    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 832 OBB array
-    uint regLayers[56];                                       // 840 8 volumes x 7 layer slots
-    uint regCount;                                             // 1064 active volumes
-    uint regEnabled;                                           // 1068 1 = grid branch active
-    uint4 regPad;                                              // 1072 (16-align tail)
+    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 848 OBB array
+    uint regLayers[56];                                       // 856 8 volumes x 7 layer slots
+    uint regCount;                                             // 1080 active volumes
+    uint regEnabled;                                           // 1084 1 = grid branch active
+    uint4 regPad;                                              // 1088 (16-align tail)
+    // ---- Forward+ tiled reflection probes (specular IBL bucketing; see
+    // forwardplus.cs.hlsl). Per-tile probe-index lists over the same 16px
+    // tiling as the light/decal lists. probeMaxPerTile is the list stride
+    // AND the freshness gate: 0 means the cull did not run this frame, so
+    // the lit shader falls back to the global probe scan. Appended here so
+    // every offset above stays frozen (32 bytes, 16-aligned).
+    vk::BufferPointer<ForwardPlusProbeTileCountBuffer> probeTileCounts;   // 1104
+    vk::BufferPointer<ForwardPlusProbeTileIndexBuffer> probeTileIndices;  // 1112
+    uint probeMaxPerTile;                                                 // 1120 stride, 0 = stale
+    uint3 probePad;                                                       // 1124 (16-align tail)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (1088 B) is a
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (1136 B) is a
     // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1088 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1096 phase-2 masks
-    uint dsDebugMode;      // 1104 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 1108 selected light (sorted index)
-    uint dsDebugFlags;     // 1112 bit0 = blend over lit
-    uint dsDebugCountCeil; // 1116 count-heat ceiling (lights)
-    uint4 dsDebugPad;      // 1120 (16-align tail)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1136 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1144 phase-2 masks
+    uint dsDebugMode;      // 1152 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 1156 selected light (sorted index)
+    uint dsDebugFlags;     // 1160 bit0 = blend over lit
+    uint dsDebugCountCeil; // 1164 count-heat ceiling (lights)
+    uint4 dsDebugPad;      // 1168 (16-align tail)
 #endif
 };
 

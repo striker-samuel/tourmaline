@@ -202,6 +202,14 @@ struct ForwardPlusDesc {
 	// MAX_FP_DECALS_PER_TILE defines.
 	uint32_t maxDecals = 256;
 	uint32_t maxDecalsPerTile = 16;
+	// Reflection probes share the light tiling (same tile size / tile
+	// counts): the cull pass files parallel per-tile probe index lists in
+	// the same dispatch. maxProbes caps the culled rows (matches the
+	// runtime probe buffer size); maxProbesPerTile is the list stride.
+	// Must stay in sync with the shader MAX_FP_PROBES /
+	// MAX_FP_PROBES_PER_TILE defines.
+	uint32_t maxProbes = 32;
+	uint32_t maxProbesPerTile = 8;
 	const char* name = "forwardplus";
 };
 
@@ -244,6 +252,12 @@ struct ForwardPlus {
 	Holder<BufferHandle> decalTileIndicesBuffer;
 	LogicalBufferHandle decalTileCountsLogical{};
 	LogicalBufferHandle decalTileIndicesLogical{};
+	// Probe tile lists (same tiling as light/decal lists; the cull pass
+	// fills them in the same dispatch). Entries are probe-buffer indices.
+	Holder<BufferHandle> probeTileCountsBuffer;
+	Holder<BufferHandle> probeTileIndicesBuffer;
+	LogicalBufferHandle probeTileCountsLogical{};
+	LogicalBufferHandle probeTileIndicesLogical{};
 
 	// Depth bindless (sampled D32 as float in compute). Rebuilt when the
 	// depth view handle changes (swapchain recreate).
@@ -333,6 +347,13 @@ struct ForwardPlus {
 			"forwardplus decalTileIndices");
 		if (decalCounts.empty() || decalIndices.empty())
 			return false;
+		Holder<BufferHandle> probeCounts = ctx.CreateBuffer(
+			sizeof(uint32_t) * tiles, BufferType_Storage, "forwardplus probeTileCounts");
+		Holder<BufferHandle> probeIndices = ctx.CreateBuffer(
+			sizeof(uint32_t) * tiles * d.maxProbesPerTile, BufferType_Storage,
+			"forwardplus probeTileIndices");
+		if (probeCounts.empty() || probeIndices.empty())
+			return false;
 
 		LogicalBufferHandle countsLogical = rg.AddExternalBuffer(counts, "forwardplus tileCounts");
 		if (countsLogical.empty())
@@ -353,6 +374,19 @@ struct ForwardPlus {
 				rg.FreeBuffer(decalIndicesLogical);
 			return false;
 		}
+		LogicalBufferHandle probeCountsLogical = rg.AddExternalBuffer(probeCounts, "forwardplus probeTileCounts");
+		LogicalBufferHandle probeIndicesLogical = rg.AddExternalBuffer(probeIndices, "forwardplus probeTileIndices");
+		if (probeCountsLogical.empty() || probeIndicesLogical.empty()) {
+			rg.FreeBuffer(countsLogical);
+			rg.FreeBuffer(indicesLogical);
+			rg.FreeBuffer(decalCountsLogical);
+			rg.FreeBuffer(decalIndicesLogical);
+			if (!probeCountsLogical.empty())
+				rg.FreeBuffer(probeCountsLogical);
+			if (!probeIndicesLogical.empty())
+				rg.FreeBuffer(probeIndicesLogical);
+			return false;
+		}
 
 		desc = d;
 		extent = swapExtent;
@@ -367,6 +401,10 @@ struct ForwardPlus {
 		decalTileIndicesBuffer = std::move(decalIndices);
 		decalTileCountsLogical = decalCountsLogical;
 		decalTileIndicesLogical = decalIndicesLogical;
+		probeTileCountsBuffer = std::move(probeCounts);
+		probeTileIndicesBuffer = std::move(probeIndices);
+		probeTileCountsLogical = probeCountsLogical;
+		probeTileIndicesLogical = probeIndicesLogical;
 
 		if (!depthView.empty()) {
 			depthViewHandle = depthView;
@@ -389,10 +427,16 @@ struct ForwardPlus {
 			rg.FreeBuffer(decalTileCountsLogical);
 		if (!decalTileIndicesLogical.empty())
 			rg.FreeBuffer(decalTileIndicesLogical);
+		if (!probeTileCountsLogical.empty())
+			rg.FreeBuffer(probeTileCountsLogical);
+		if (!probeTileIndicesLogical.empty())
+			rg.FreeBuffer(probeTileIndicesLogical);
 		tileCountsLogical = {};
 		tileIndicesLogical = {};
 		decalTileCountsLogical = {};
 		decalTileIndicesLogical = {};
+		probeTileCountsLogical = {};
+		probeTileIndicesLogical = {};
 		depthBindlessIndex = UINT32_MAX;
 		depthBindless = {};
 		depthViewHandle = {};
@@ -400,6 +444,8 @@ struct ForwardPlus {
 		tileIndicesBuffer = {};
 		decalTileCountsBuffer = {};
 		decalTileIndicesBuffer = {};
+		probeTileCountsBuffer = {};
+		probeTileIndicesBuffer = {};
 		extent = { 0, 0 };
 		tileCountX = tileCountY = tileCount = 0;
 	}
@@ -418,6 +464,7 @@ struct ForwardPlus {
 			desc.tileSize == d.tileSize && desc.maxLights == d.maxLights &&
 			desc.maxLightsPerTile == d.maxLightsPerTile &&
 			desc.maxDecals == d.maxDecals && desc.maxDecalsPerTile == d.maxDecalsPerTile &&
+			desc.maxProbes == d.maxProbes && desc.maxProbesPerTile == d.maxProbesPerTile &&
 			tileCountX == wantX && tileCountY == wantY;
 		if (shapeOk) {
 			desc = d;
@@ -443,6 +490,12 @@ struct ForwardPlus {
 	}
 	uint64_t DecalTileIndicesAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(decalTileIndicesBuffer);
+	}
+	uint64_t ProbeTileCountsAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(probeTileCountsBuffer);
+	}
+	uint64_t ProbeTileIndicesAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(probeTileIndicesBuffer);
 	}
 
 	// ---- Pass shells (caller sets the recording func) ----
@@ -502,6 +555,8 @@ struct ForwardPlus {
 		pass.AddBufferHint(tileIndicesLogical, tileWrite);
 		pass.AddBufferHint(decalTileCountsLogical, tileWrite);
 		pass.AddBufferHint(decalTileIndicesLogical, tileWrite);
+		pass.AddBufferHint(probeTileCountsLogical, tileWrite);
+		pass.AddBufferHint(probeTileIndicesLogical, tileWrite);
 		return pass;
 	}
 
@@ -520,6 +575,13 @@ struct ForwardPlus {
 	// counts + indices even when the light lists come from the
 	// deferred-shadow pipeline).
 	static void AddDecalTileReadHints(RenderPass& mainPass,
+		LogicalBufferHandle countsLogical, LogicalBufferHandle indicesLogical) {
+		AddTileReadHints(mainPass, countsLogical, indicesLogical);
+	}
+
+	// Probe-list sibling of AddTileReadHints (Main samples the probe tile
+	// counts + indices for bucketed specular IBL).
+	static void AddProbeTileReadHints(RenderPass& mainPass,
 		LogicalBufferHandle countsLogical, LogicalBufferHandle indicesLogical) {
 		AddTileReadHints(mainPass, countsLogical, indicesLogical);
 	}

@@ -407,7 +407,17 @@ PSOut mainPS(PSIn IN)
 
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get())
+    // Tile index for the bucketed probe path (same tiling as the FP lists;
+    // 0xffffffffu = no tile -> global probe scan in EvaluateSpecularEnv).
+    uint specTileIdx = 0xffffffffu;
+    {
+        uint specTs = max(pc.fpTileSize, 1u);
+        uint stx = (uint)(IN.clipPos.x / (float)specTs);
+        uint sty = (uint)(IN.clipPos.y / (float)specTs);
+        if (stx < pc.fpTileCountX)
+            specTileIdx = sty * pc.fpTileCountX + stx;
+    }
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx)
         * occlusion * ao;
 
     float3 color = direct + ambient + ambientSpec;

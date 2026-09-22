@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -105,6 +106,31 @@ std::vector<uint8_t> GenerateCubemapFacePixels(CubemapFace face, uint32_t size);
 
 // VFS path of a baked cubemap, e.g. "textures/cubemaps/sky.ktx2".
 std::string CubemapVfsPath(const std::string& name);
+
+// VFS path of a baked probe manifest, e.g.
+// "textures/cubemaps/sponza.cubemanifest". The manifest is written by the
+// cook (PakCooker --cubemap / CubemapBaker) alongside the KTX files when a
+// capture bakes MORE than one probe (grid mode): one text line per probe,
+// "<vfsPath> <x> <y> <z> <influence> <fade>", positions in the same world
+// meters the trace BVH uses (cook applies the scene global transforms, so
+// this matches World::ComputeSceneBounds space at runtime). Single-probe
+// bakes need no manifest (the runtime centers a global probe itself).
+std::string CubemapManifestVfsPath(const std::string& name);
+
+// One manifest row: which KTX to load + where its probe lives.
+struct CubemapManifestEntry {
+	std::string vfsPath;
+	glm::vec3 position{ 0.0f };
+	float influenceRadius = 10.0f;
+	float fadeRadius = 5.0f;
+};
+
+// Serializes entries to the manifest text format (one row per line).
+std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries);
+
+// Parses manifest text; returns false + err on any malformed line.
+bool CubemapManifestParse(std::string_view text,
+	std::vector<CubemapManifestEntry>& out, std::string& err);
 
 // Sampler for cubemap sampling: clamp-to-edge on all axes (cube seams
 // must not wrap), linear min/mag + linear mips for prefiltered chains.

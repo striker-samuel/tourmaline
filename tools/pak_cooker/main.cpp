@@ -274,7 +274,9 @@ struct Args {
 	                                     // bounds center at cubemapHeight)
 	float cubemapHeight = 1.5f;
 	float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
-	float cubemapIblIntensity = 20.0f; // IBL intensity to bake at (match analytic IBL)
+	// NOTE: captures store sky-relative colors (radiance / skyIntensity);
+	// the shader applies the runtime iblIntensity, so there is no
+	// bake-time intensity knob by design.
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -625,9 +627,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.cubemapGrid = std::stof(v);
 		}
 		else if (a == "--cubemap-ibl-intensity") {
-			std::string v;
-			if (!need(v)) return false;
-			out.cubemapIblIntensity = std::stof(v);
+			// Removed: captures store sky-relative colors by design (the
+			// shader applies the runtime iblIntensity). Reject explicitly
+			// rather than silently ignoring a stale script flag.
+			std::cerr << "--cubemap-ibl-intensity was removed (captures are"
+				" sky-relative; use the runtime IBL intensity)\n";
+			return false;
 		}
 		else if (a == "--dump-pak") {
 			if (!need(out.dumpPak)) return false;
@@ -689,11 +694,14 @@ void Usage() {
 		<< "          [--cubemap on|off --cubemap-name <name>\n"
 		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
-		<< "           --cubemap-grid 8.0 --cubemap-ibl-intensity 20.0]:\n"
+		<< "           --cubemap-grid 8.0]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
 		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
-		<< "          specular). One capture per --cubemap-pos (default:\n"
+		<< "          specular). Captures store sky-relative colors (the\n"
+		<< "          shader applies the runtime IBL intensity, so bakes\n"
+		<< "          track the IBL slider with no recook). One capture per\n"
+		<< "          --cubemap-pos (default:\n"
 		<< "          scene-bounds center at +height). If --cubemap-grid > 0,\n"
 		<< "          captures a 3D grid of probes at that spacing (meters)\n"
 		<< "          within the scene bounds; embedded as Texture blobs at\n"
@@ -1859,29 +1867,66 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			// Generate 3D grid of probe positions
 			const float spacing = args.cubemapGrid;
 			const float yBase = bmin.y + args.cubemapHeight;
-			
+
 			int nx = std::max(1, int(std::ceil((bmax.x - bmin.x) / spacing)));
 			int ny = std::max(1, int(std::ceil((bmax.y - bmin.y) / spacing)));
 			int nz = std::max(1, int(std::ceil((bmax.z - bmin.z) / spacing)));
-			
+
 			std::cerr << "  [CUBE] generating " << nx << "x" << ny << "x" << nz
 				<< " grid at " << spacing << "m spacing = " << (nx * ny * nz) << " probes\n";
-			
+
 			for (int iz = 0; iz < nz; ++iz) {
 				for (int iy = 0; iy < ny; ++iy) {
 					for (int ix = 0; ix < nx; ++ix) {
 						float x = bmin.x + (ix + 0.5f) * spacing;
 						float y = yBase + iy * spacing;
 						float z = bmin.z + (iz + 0.5f) * spacing;
-						
+
 						// Clamp to bounds
 						x = std::clamp(x, bmin.x, bmax.x);
 						y = std::clamp(y, bmin.y, bmax.y);
 						z = std::clamp(z, bmin.z, bmax.z);
-						
+
 						positions.emplace_back(x, y, z);
 					}
 				}
+			}
+
+			// Occupancy cull: a grid point buried inside solid geometry
+			// captures mostly wall interior (dark, wrong for its neighbors)
+			// and can win nearest-probe ties over open-air probes. Drop a
+			// grid point only when it is clearly embedded: all six axial
+			// rays blocked within 0.3 m. Corridor/air probes always survive
+			// (at least one axis escapes). Explicit --cubemap-pos points
+			// are never culled (artist placed).
+			{
+				std::vector<glm::vec3> open;
+				open.reserve(positions.size());
+				size_t dropped = 0;
+				const glm::vec3 axes[6] = {
+					{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
+					{ 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+				};
+				for (const glm::vec3& p : positions) {
+					bool embedded = true;
+					for (const glm::vec3& a : axes) {
+						smvk::gi::TriangleBvh::Hit h{};
+						if (!traceScene.Bvh().Raycast(p, a, 0.3f, h)) {
+							embedded = false;
+							break;
+						}
+					}
+					if (embedded) {
+						++dropped;
+						std::cerr << "  [CUBE] dropping embedded grid probe ("
+							<< p.x << "," << p.y << "," << p.z << ")\n";
+					} else {
+						open.push_back(p);
+					}
+				}
+				positions.swap(open);
+				std::cerr << "  [CUBE] grid occupancy: kept " << positions.size()
+					<< ", dropped " << dropped << " embedded\n" << std::flush;
 			}
 		} else {
 			// Single probe at bounds center (original behavior)
@@ -1899,6 +1944,21 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	if (base.empty())
 		base = "sky";
 
+	// Runtime budget: the lit shader scans at most 32 probe rows per pixel
+	// (see SceneRenderer::LoadCubemaps + environment.hlsli). Captures past
+	// 32 still cost bake time + ~2 MB pak each and are never consumed.
+	if (positions.empty()) {
+		std::cerr << "  [CUBE] WARNING: no capture positions survived"
+			" (all grid points embedded?) - no cubemaps baked\n" << std::flush;
+		return true;
+	}
+	if (positions.size() > 32) {
+		std::cerr << "  [CUBE] WARNING: " << positions.size()
+			<< " captures exceed the 32-probe runtime budget (only the first"
+			<< " 32 manifest rows are consumed) - increase --cubemap-grid"
+			<< " spacing to cover the scene with fewer, wider probes\n" << std::flush;
+	}
+
 	const uint32_t S = args.cubemapSize;
 	const uint32_t levels = smvk::CubemapFullMipCount(S);
 	smvk::ThreadPool pool(0);
@@ -1908,9 +1968,12 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		const std::string captureName = positions.size() == 1
 			? base : base + "_" + std::to_string(cap);
 
-		// Scale cubemap radiance to IBL space (iblIntensity / skyIntensity).
-	// SkyRadiance returns 0..1 * skyIntensity; analytic IBL uses iblIntensity.
-	const float cubemapScale = args.cubemapIblIntensity / std::max(args.skyIntensity, 1e-4f);
+		// Store sky-relative colors (1 / skyIntensity): the shader applies
+		// iblIntensity uniformly to baked and analytic specular alike, so
+		// the runtime IBL slider scales both and no bake-time intensity is
+		// frozen into the capture. (Baking at IBL scale instead would apply
+		// iblIntensity twice — once frozen, once in-shader.)
+		const float cubemapScale = 1.0f / std::max(args.skyIntensity, 1e-4f);
 
 	// Trace 6 HDR base faces (one deterministic sample per texel;
 		// per-texel seeds independent of thread scheduling).
@@ -1981,6 +2044,40 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			<< " origin=(" << origin.x << "," << origin.y << "," << origin.z
 			<< ")  " << ktx.size() << " B\n" << std::flush;
 		out.emplace_back(vfsPath, std::move(ktx));
+	}
+
+	// Multi-probe placement manifest: the runtime cannot guess grid
+	// positions from KTX blobs alone, so list every capture with its
+	// cook/world-space origin + influence/fade radii. Served as a Texture
+	// blob (PakBackend serves Texture blobs by VFS path) and consumed by
+	// SceneRenderer::LoadCubemaps. Single captures need none (the runtime
+	// centers a global probe on the scene bounds itself).
+	if (positions.size() > 1) {
+		// Tight radii on purpose: the lit shader scans every covering
+		// probe (and the tile cull files all of them), so fat spheres make
+		// each pixel pay for ~15 neighbors. influence = half the grid
+		// spacing covers each point ~3-4x with a small fade for the seams.
+		// Explicit --cubemap-pos lists keep the broad 10/5 defaults.
+		const bool gridded = args.cubemapPos.empty() && args.cubemapGrid > 0.0f;
+		const float influence = gridded ? args.cubemapGrid * 0.5f : 10.0f;
+		const float fade = gridded ? args.cubemapGrid * 0.25f : 5.0f;
+		std::vector<smvk::CubemapManifestEntry> rows;
+		rows.reserve(positions.size());
+		for (size_t cap = 0; cap < positions.size(); ++cap) {
+			const std::string captureName = base + "_" + std::to_string(cap);
+			smvk::CubemapManifestEntry e{};
+			e.vfsPath = smvk::CubemapVfsPath(captureName);
+			e.position = positions[cap];
+			e.influenceRadius = influence;
+			e.fadeRadius = fade;
+			rows.push_back(std::move(e));
+		}
+		const std::string text = smvk::CubemapManifestSerialize(rows);
+		const std::string manifestPath = smvk::CubemapManifestVfsPath(base);
+		out.emplace_back(manifestPath,
+			std::vector<uint8_t>(text.begin(), text.end()));
+		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
+			<< rows.size() << " influence=" << influence << " fade=" << fade << "\n" << std::flush;
 	}
 
 	const double secs = std::chrono::duration<double>(
@@ -3773,7 +3870,9 @@ int main(int argc, char** argv) {
 	// Preconvolved cubemaps ride as Texture blobs under their VFS paths
 	// (PakBackend serves them; CubemapLibrary::Load resolves them). Added
 	// after the cluster serialize so the cook stages above never see
-	// synthetic textures in the asset pool.
+	// synthetic textures in the asset pool. The .cubemanifest (if any) is
+	// text inside a Texture payload — served by path, decoded by the
+	// cubemap manifest parser, never as an image.
 	for (auto& [vfsPath, ktx] : cubemapKtx) {
 		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
 			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(ktx));
@@ -3782,8 +3881,11 @@ int main(int argc, char** argv) {
 			std::cerr << "Cubemap AddBlob failed: " << vfsPath << std::endl;
 			return 1;
 		}
-		std::cout << "Embedded cubemap " << vfsPath
-			<< " (" << ktx.size() << " B ktx2)\n";
+		const bool isManifest = vfsPath.size() >= 13
+			&& vfsPath.compare(vfsPath.size() - 13, 13, ".cubemanifest") == 0;
+		std::cout << (isManifest ? "Embedded cubemap manifest " : "Embedded cubemap ")
+			<< vfsPath << " (" << ktx.size() << " B"
+			<< (isManifest ? " text" : " ktx2") << ")\n";
 	}
 	std::vector<uint8_t> pak = writer.Finalize();
 

@@ -935,9 +935,19 @@ PSOut mainPS(PSIn IN)
     // through the uncovered lerp below).
     float3 ambient = float3(0.0f, 0.0f, 0.0f);
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
+    // Tile index for the bucketed probe path (same 16px tiling as the FP
+    // light/decal lists; 0xffffffffu = no tile -> global probe scan).
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get()) * occlusion * ao;
+    uint specTileIdx = 0xffffffffu;
+    {
+        uint specTs = max(pc.fpTileSize, 1u);
+        uint stx = (uint)(IN.clipPos.x / (float)specTs);
+        uint sty = (uint)(IN.clipPos.y / (float)specTs);
+        if (stx < pc.fpTileCountX)
+            specTileIdx = sty * pc.fpTileCountX + stx;
+    }
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx) * occlusion * ao;
 
     // ---------------------------------------------------------------
     // Baked ambient: exactly ONE source per pixel, by priority:

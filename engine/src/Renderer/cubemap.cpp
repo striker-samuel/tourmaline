@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 
@@ -45,6 +46,77 @@ std::vector<uint8_t> GenerateCubemapFacePixels(CubemapFace face, uint32_t size) 
 
 std::string CubemapVfsPath(const std::string& name) {
 	return "textures/cubemaps/" + name + ".ktx2";
+}
+
+std::string CubemapManifestVfsPath(const std::string& name) {
+	return "textures/cubemaps/" + name + ".cubemanifest";
+}
+
+std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries) {
+	std::string out;
+	char buf[256];
+	for (const auto& e : entries) {
+		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g\n",
+			e.vfsPath.c_str(),
+			(double)e.position.x, (double)e.position.y, (double)e.position.z,
+			(double)e.influenceRadius, (double)e.fadeRadius);
+		out += buf;
+	}
+	return out;
+}
+
+bool CubemapManifestParse(std::string_view text,
+	std::vector<CubemapManifestEntry>& out, std::string& err) {
+	out.clear();
+	size_t pos = 0;
+	size_t lineNo = 0;
+	while (pos < text.size()) {
+		size_t end = text.find('\n', pos);
+		if (end == std::string_view::npos)
+			end = text.size();
+		std::string_view line = text.substr(pos, end - pos);
+		pos = end + 1;
+		++lineNo;
+		// Trim trailing \r + whitespace-only lines.
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+			line.remove_suffix(1);
+		size_t first = 0;
+		while (first < line.size() && (line[first] == ' ' || line[first] == '\t'))
+			++first;
+		if (first >= line.size() || line[first] == '#')
+			continue;
+		line.remove_prefix(first);
+		CubemapManifestEntry e{};
+		char path[224] = {};
+		float x = 0, y = 0, z = 0, inf = 0, fade = 0;
+		const std::string tmp(line);
+		if (std::sscanf(tmp.c_str(), "%223s %f %f %f %f %f",
+				path, &x, &y, &z, &inf, &fade) != 6) {
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade'";
+			out.clear();
+			return false;
+		}
+		if (inf <= 0.0f || fade < 0.0f) {
+			err = "line " + std::to_string(lineNo) + ": influence must be > 0, fade >= 0";
+			out.clear();
+			return false;
+		}
+		e.vfsPath = path;
+		e.position = glm::vec3(x, y, z);
+		e.influenceRadius = inf;
+		e.fadeRadius = fade;
+		out.push_back(std::move(e));
+	}
+	if (out.empty()) {
+		err = "manifest has no probe rows";
+		return false;
+	}
+	if (out.size() > 32) {
+		err = "manifest lists " + std::to_string(out.size()) + " probes (runtime consumes 32)";
+		// Not fatal: the runtime clamps to 32. Still report success.
+		out.resize(32);
+	}
+	return true;
 }
 
 SamplerCreateInfo CubemapSampler() noexcept {

@@ -102,6 +102,44 @@ void TestProceduralFaces() {
 void TestVfsPath() {
 	Check(smvk::CubemapVfsPath("sky") == "textures/cubemaps/sky.ktx2",
 		"cubemap.vfspath");
+	Check(smvk::CubemapManifestVfsPath("sponza") == "textures/cubemaps/sponza.cubemanifest",
+		"cubemap.manifest-vfspath");
+}
+
+void TestManifestRoundtrip() {
+	// Serialize -> parse must recover every row (cook -> runtime path).
+	std::vector<smvk::CubemapManifestEntry> in(2);
+	in[0].vfsPath = "textures/cubemaps/sponza_0.ktx2";
+	in[0].position = glm::vec3(1.5f, 2.0f, -3.25f);
+	in[0].influenceRadius = 6.0f;
+	in[0].fadeRadius = 3.0f;
+	in[1].vfsPath = "textures/cubemaps/sponza_1.ktx2";
+	in[1].position = glm::vec3(-4.0f, 2.0f, 8.0f);
+	in[1].influenceRadius = 6.0f;
+	in[1].fadeRadius = 3.0f;
+	const std::string text = smvk::CubemapManifestSerialize(in);
+	std::vector<smvk::CubemapManifestEntry> out;
+	std::string err;
+	Check(smvk::CubemapManifestParse(text, out, err), "cubemap.manifest-parse");
+	bool ok = out.size() == 2 && err.empty();
+	for (size_t i = 0; ok && i < 2; ++i) {
+		ok = out[i].vfsPath == in[i].vfsPath
+			&& std::abs(out[i].position.x - in[i].position.x) < 1e-4f
+			&& std::abs(out[i].position.y - in[i].position.y) < 1e-4f
+			&& std::abs(out[i].position.z - in[i].position.z) < 1e-4f
+			&& std::abs(out[i].influenceRadius - in[i].influenceRadius) < 1e-4f
+			&& std::abs(out[i].fadeRadius - in[i].fadeRadius) < 1e-4f;
+	}
+	Check(ok, "cubemap.manifest-roundtrip");
+	// Malformed lines + bad radii must be rejected, never half-loaded.
+	std::vector<smvk::CubemapManifestEntry> bad;
+	Check(!smvk::CubemapManifestParse("not-a-row\n", bad, err)
+		&& bad.empty(), "cubemap.manifest-reject-garbage");
+	Check(!smvk::CubemapManifestParse(
+		"textures/cubemaps/a.ktx2 0 0 0 0 1\n", bad, err)
+		&& bad.empty(), "cubemap.manifest-reject-zero-influence");
+	Check(!smvk::CubemapManifestParse("", bad, err)
+		&& bad.empty(), "cubemap.manifest-reject-empty");
 }
 
 void TestDirectionRoundtrip() {
@@ -253,6 +291,7 @@ int main() {
 	TestFaceDominance();
 	TestProceduralFaces();
 	TestVfsPath();
+	TestManifestRoundtrip();
 	TestDirectionRoundtrip();
 	TestPrefilterUniform();
 	TestPrefilterDeterminism();
