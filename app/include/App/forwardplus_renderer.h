@@ -44,7 +44,15 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	// Split for the temporal pipeline (T5): the prepass is skipped when the
 	// seed primed depth, and the tile cull runs after depth pass 2 so it
 	// sees complete depth. AppendPasses = Prepass + TileCull (legacy order).
-	void AppendPrepass(smvk::FrameContext& fc);
+	// fallbackOnly (Northlight depth split): skip items whose selected LOD
+	// the gfx filter owns (fc.gfxLodFilterable) — the seed pass covers
+	// their prev∩curr clusters and the remainder pass the newly visible
+	// curr−prev ones (each cluster depthed exactly once, masked with the
+	// real alpha test). The remaining direct-fallback items (unregistered
+	// meshes/LODs, unknown-material clusters, shader-LOD vertex-lit
+	// instances) keep their depth coverage, preserving the 1x Main
+	// read-only contract.
+	void AppendPrepass(smvk::FrameContext& fc, bool fallbackOnly = false);
 	// lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
 	// lights; any other value limits the light leg (the deferred-shadow
 	// pipeline passes 0 — its shading consumes the DS lists, but the decal
@@ -52,9 +60,11 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	void AppendTileCull(smvk::FrameContext& fc,
 		uint32_t lightCountOverride = UINT32_MAX);
 	// Option A occluder prepass: fills fc.hizDepthView (Clear, VS-only,
-	// solid opaque only) with big occluders at their crudest LOD for the
-	// HZB build. MASK cutout is skipped (holes = poor occluders + FS
-	// cost); small items are skipped via the occluderMin* thresholds.
+	// solid opaque only) with big occluders at their SELECTED LOD for the
+	// HZB build — the occluder rasterizes the same surface Main draws, so
+	// occluder coverage can never be nearer than the rendered geometry.
+	// MASK cutout is skipped (holes = poor occluders + FS cost); small
+	// items are skipped via the occluderMin* thresholds.
 	// Missing occluders only cost culling efficiency (false visibles),
 	// never correctness: Main/SSAO/tile-cull read the full depth.
 	void AppendOccluderPrepass(smvk::FrameContext& fc);

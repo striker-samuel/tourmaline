@@ -1803,13 +1803,13 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 		|| push.indirect == 0) {
 		static uint64_t s_nullBdaWarns = 0;
 		if ((s_nullBdaWarns++ % 300) == 0) {
-			SMVK_DEBUG_LOG(
+			std::fprintf(stderr,
 				"[GfxFilter] refusing dispatch: null BDA (pos=%llx idx=%llx cl=%llx "
 				"batch=%llx draw=%llx filt=%llx ind=%llx). Check buffer usage flags.\n",
 				(unsigned long long)push.positions, (unsigned long long)push.indices,
-				(unsigned long long)push.clusters, (unsigned long long)push.batches,
-				(unsigned long long)push.draws, (unsigned long long)push.filtered,
-				(unsigned long long)push.indirect);
+				(unsigned long long)push.clusters,
+				(unsigned long long)push.batches, (unsigned long long)push.draws,
+				(unsigned long long)push.filtered, (unsigned long long)push.indirect);
 		}
 		return;
 	}
@@ -1819,6 +1819,14 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	push.width = v.width;
 	push.height = v.height;
 	push.batchCount = v.batchCount;
+	// TEMP-DIAG (Release-visible): dispatch sanity for the white-speck hunt.
+	// (Moved AFTER the assignments above so the flags print the real value.)
+	{
+		static uint64_t s_dispatches = 0;
+		if ((s_dispatches++ % 300) == 0)
+			std::fprintf(stderr, "[GfxFilter] dispatch ok: view=%u batches=%u "
+				"flags=0x%x slice=%u\n", view, v.batchCount, push.cullFlags, f);
+	}
 	// T4 occlusion/contribution inputs (0/empty disables the tests in the
 	// shader; the null-BDA guard above already covers the buffer set).
 	// Current flight's HZB slice (same rule as every other ringed buffer).

@@ -10,6 +10,8 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
+
 namespace app {
 
 struct AppFrameContext : public smvk::FrameContext {
@@ -52,6 +54,17 @@ struct AppFrameContext : public smvk::FrameContext {
 	// (Main + MotionVectors branch on the mode directly today; kept here
 	// for frame renderers that need it without reaching into SceneRenderer.)
 	bool ditheredTransparency = true;
+	// Northlight depth split (filter on + seed primed depth): when set,
+	// the prepass runs FALLBACK-ONLY — items whose selected LOD the gfx
+	// filter owns are skipped, because the filter's temporal depth set
+	// covers them: the seed pass draws their prev∩curr clusters and the
+	// remainder pass the newly visible curr−prev ones (each cluster
+	// depthed exactly once, masked with the real alpha test).
+	// Resolver: (node, worldMesh, lodIdx) -> the filter owns this item's
+	// depth (registered gfx mesh, not a shader-LOD vertex-lit level —
+	// those draw direct and keep their prepass depth).
+	// Cleared (null) for full-prepass frames.
+	std::function<bool(NodeId, uint32_t, uint32_t)> gfxLodFilterable{};
 };
 
 } // namespace app

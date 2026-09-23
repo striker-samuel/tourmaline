@@ -14,6 +14,8 @@
 #include <Engine/Renderer/renderview.h>
 #include <App/push_constants.h>
 
+#include <functional>
+
 namespace app {
 
 // Debug-view pushes (share the global [0,256) push range; must mirror the
@@ -41,6 +43,16 @@ struct GfxConfig {
 		// cutout pyramid poison over-culls foliage visible through its own
 		// holes (sky-through flicker). Checkbox in the culling panel.
 		| smvk::gfx::CullFlagBit_HzbSkipMasked;
+};
+
+// Depth-phase raster state per material, resolved at RECORD time (the
+// resolver reads the live World): masked depth phases must rasterize
+// exactly the faces the shaded pass draws (alpha test + material cull),
+// else depth contains fragments Main never draws (over-occlusion behind
+// single-sided cutout cards).
+struct MaterialDepthState {
+	smvk::CullMode cullMode = smvk::CullMode::None;
+	bool alphaTested = false;
 };
 
 struct GfxRenderer : public smvk::IFrameRenderer {
@@ -160,6 +172,21 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Wireframe flat-line FS module (default_wire.frag): pairs with the
 	// filtered VS for the wireframe twin of FilteredProgram().
 	void ConfigureWireFrag(smvk::ShaderModuleHandle wireFrag) { wireFrag_ = wireFrag; }
+	// Material depth-phase state resolver (cull + alpha-tested flag) for
+	// the range-based depth recorders (seed/remainder/shadow ranges):
+	// those walks only carry a material id, and the material table
+	// lives in the app's World. Lazily invoked at record time; unset
+	// resolver keeps the legacy blanket (Cull None, treated alpha-tested).
+	void ConfigureMaterialDepth(
+		std::function<MaterialDepthState(uint32_t)> resolve) {
+		materialDepth_ = std::move(resolve);
+	}
+
+	[[nodiscard]] MaterialDepthState MaterialDepth(uint32_t materialId) const {
+		if (materialDepth_)
+			return materialDepth_(materialId);
+		return { smvk::CullMode::None, true };
+	}
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
 	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,
@@ -303,7 +330,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		uint64_t renderViewsAddr, uint32_t renderViewIndex,
 		const PushConstants& depthPC);
 	// Depth pass 2 over the remainder list (call after AppendFilterDispatch
-	// when RemainderPending; Load/Store over seeded depth).
+	// when RemainderPending; Load/Store over seeded depth). The Northlight
+	// depth split uses this pass as the newly-visible (disocclusion/LOD
+	// flip) depth writer for BOTH buckets: the seed covers prev∩curr and
+	// this covers curr−prev, each filterable cluster depthed exactly once
+	// (the masked ranges run the real alpha test with the proven
+	// CPU-command machinery — the indirect alpha-tested draw through the
+	// filter's GPU commands misrasterizes depth, see the white-speck
+	// regression notes in scene_renderer's split block).
 	void AppendRemainderPass(smvk::FrameContext& fc);
 	[[nodiscard]] bool RemainderPending() const { return remainderPending_; }
 
@@ -387,6 +421,9 @@ private:
 	smvk::ShaderModuleHandle mainFrag_{};
 	smvk::ShaderModuleHandle seedFrag_{};
 	smvk::ShaderModuleHandle shadowSeedFrag_{};
+	// Material -> depth raster state (ConfigureMaterialDepth). Resolved at
+	// record time so it always sees the live World/material table.
+	std::function<MaterialDepthState(uint32_t)> materialDepth_{};
 	smvk::ShaderModuleHandle mainA2CFrag_{};
 	smvk::ShaderModuleHandle wireFrag_{};
 	// Lightmap chart transform GPU mirror (see EnsureChartXforms).

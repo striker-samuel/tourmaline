@@ -934,11 +934,35 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(lodShEnv) == 0)
 				m_lodShaderEnabled = false;
 		}
+		// Debug: kill the Northlight depth split (VULKANTOY_SPLIT=0 falls
+		// back to the legacy flow: full prepass before the HZB, remainder
+		// pass after the filter). A/B which assembly owns a regression.
+		if (const char* splitEnv = std::getenv("VULKANTOY_SPLIT")) {
+			if (std::atoi(splitEnv) == 0)
+				m_splitDisabled = true;
+		}
 		// Headless wireframe opt-in (VULKANTOY_WIREFRAME=1) for capture/A-B
 		// runs without UI interaction; the P toggle stays live after.
 		if (const char* wfEnv = std::getenv("VULKANTOY_WIREFRAME")) {
 			if (std::atoi(wfEnv) == 1)
 				m_wireframe = true;
+		}
+		// Headless filter cull-flags override (hex, base-0 auto): A/B the
+		// GPU filter stages without UI interaction. Bits mirror
+		// smvk::gfx::CullFlagBits (e.g. 0xb = degenerate|backface|frustum,
+		// 0x4b adds HZB occlusion, 0x24b the default + MASK exclusion).
+		if (const char* cullEnv = std::getenv("VULKANTOY_CULLFLAGS")) {
+			const unsigned long long flags =
+				std::strtoull(cullEnv, nullptr, 0);
+			m_gfxRenderer.config.cullFlags =
+				static_cast<smvk::gfx::CullFlags>(flags);
+		}
+		// Debug: one-shot [GfxAudit] indirect dump at frame N (stderr,
+		// stalls; per-batch GPU kill reasons for bisecting the filter).
+		if (const char* audEnv = std::getenv("VULKANTOY_AUDIT")) {
+			const int auditFrame = std::atoi(audEnv);
+			if (auditFrame >= 0)
+				m_auditAtFrame = auditFrame;
 		}
 		// Headless debug-view select (lit|unlit|meshlets|cascades|lods|vertexcolors).
 		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
@@ -1961,9 +1985,22 @@ bool SceneRenderer::Initialize() {
 			m_gfxRenderer.ConfigureSeedFrag(!m_resources.shadowMaskedFragRevShader.empty()
 				? m_resources.shadowMaskedFragRevShader
 				: m_resources.shadowMaskedFragShader);
-			// Shadow-atlas seed masked phase is normal-Z (clear 1.0,
-			// LessEqual): the plain shadow.frag module.
-			m_gfxRenderer.ConfigureShadowSeedFrag(m_resources.shadowMaskedFragShader);
+		// Shadow-atlas seed masked phase is normal-Z (clear 1.0,
+		// LessEqual): the plain shadow.frag module.
+		m_gfxRenderer.ConfigureShadowSeedFrag(m_resources.shadowMaskedFragShader);
+		// Material depth-phase state (cull + alpha-tested) for the range-
+		// based depth recorders (seed/remainder/shadow/filtered depth).
+		// Resolved lazily at record time so it always sees the live World.
+		m_gfxRenderer.ConfigureMaterialDepth(
+			[this](uint32_t materialId) -> app::MaterialDepthState {
+				if (!m_world)
+					return {};
+				const smvk::Material* mat = m_world->GetMaterial(materialId);
+				if (!mat)
+					return {};
+				return { mat->pipeline.raster.cullMode,
+					mat->shadingModel == smvk::ShadingModel::Masked };
+			});
 			// A2C filtered program for Masked ranges in 2x MSAA Main.
 			if (!m_resources.fragA2CShader.empty())
 				m_gfxRenderer.ConfigureA2CFrag(m_resources.fragA2CShader);
@@ -4897,11 +4934,39 @@ void SceneRenderer::Shutdown() {
 	void SceneRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered) {
+		// Phase 2 masked pipeline: cull follows the material raster so
+		// the shadow depth contains exactly the faces the main view draws
+		// (single-sided cutout has no backface shadow depth). Rebinds
+		// only on cull changes (CommandBuffer dedupes identical states).
+		smvk::CullMode boundShadowMaskedCull = smvk::CullMode::FrontAndBack;
+		auto ensureShadowMaskedPipeline = [&](smvk::CullMode cull) {
+			if (cull == boundShadowMaskedCull)
+				return;
+			cmd.BindRenderPipeline(
+				m_resources.shadowMaskedProgram,
+				smvk::VertexFormat::StaticVertexFormat,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::LessEqual,
+					.writeEnable = true,
+					.depthTestEnable = true,
+					.depthBiasEnable = false,
+					.depthBiasConstantFactor = 0.0f,
+					.depthBiasClamp = 0.0f,
+					.depthBiasSlopeFactor = 0.0f
+				},
+				smvk::StencilSettings{},
+				smvk::BlendSettings{},
+				smvk::MSAASettings{},
+				smvk::RasterSettings{ .cullMode = cull }
+			);
+			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+			boundShadowMaskedCull = cull;
+		};
 		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
 			// Indirect path: registered casters are covered by the per-view
-			// command list â€” only unfilterable meshes rasterize here.
+			// command list — only unfilterable meshes rasterize here.
 			if (skipFiltered
 				&& m_gfxRenderer.GfxMeshForLod(item.mesh,
 					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
@@ -4910,6 +4975,12 @@ void SceneRenderer::Shutdown() {
 			// phase split used to pay.
 			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
 				return;
+			if (maskedPhase) {
+				smvk::CullMode cull = smvk::CullMode::None;
+				if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+					cull = mat->pipeline.raster.cullMode;
+				ensureShadowMaskedPipeline(cull);
+			}
 			auto& model = m_world->scene.globalTransform[item.node];
 			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 			if (!meshDesc) return;
@@ -4964,28 +5035,8 @@ void SceneRenderer::Shutdown() {
 			| smvk::IteratorFlagBit_Opaque
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
 		// Phase 2: MASK cutout casters, alpha-tested program so foliage
-		// casts leaf-shaped shadows instead of full quads. Cull off: masked
-		// foliage is double-sided in the main view.
-		cmd.BindRenderPipeline(
-			m_resources.shadowMaskedProgram,
-			smvk::VertexFormat::StaticVertexFormat,
-			smvk::DepthSettings{
-				.depthFunc = smvk::CompareOp::LessEqual,
-				.writeEnable = true,
-				.depthTestEnable = true,
-				.depthBiasEnable = false,
-				.depthBiasConstantFactor = 0.0f,
-				.depthBiasClamp = 0.0f,
-				.depthBiasSlopeFactor = 0.0f
-			},
-			smvk::StencilSettings{},
-			smvk::BlendSettings{},
-			smvk::MSAASettings{},
-			smvk::RasterSettings{
-				.cullMode = smvk::CullMode::None
-			}
-		);
-		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		// casts leaf-shaped shadows instead of full quads. The pipeline
+		// binds lazily per material cull (ensureShadowMaskedPipeline).
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 			| smvk::IteratorFlagBit_Opaque
@@ -5004,6 +5055,33 @@ void SceneRenderer::Shutdown() {
 		// binds the full alpha-tested program. Binding the full FS for
 		// opaque measured ~30x the PCF pass (base-color sample +
 		// TS_ReportUsage atomic at 2xMSAA rates over a 2048^2 tile).
+		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
+		// Phase 2 masked pipeline: cull follows the material raster
+		// (matching the main view); rebinds only on cull changes.
+		smvk::CullMode boundMomentsMaskedCull = smvk::CullMode::FrontAndBack;
+		auto ensureMomentsMaskedPipeline = [&](smvk::CullMode cull) {
+			if (cull == boundMomentsMaskedCull)
+				return;
+			cmd.BindRenderPipeline(
+				momentsProgram,
+				smvk::VertexFormat::StaticVertexFormat,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::LessEqual,
+					.writeEnable = true,
+					.depthTestEnable = true,
+					.depthBiasEnable = false,
+					.depthBiasConstantFactor = 0.0f,
+					.depthBiasClamp = 0.0f,
+					.depthBiasSlopeFactor = 0.0f
+				},
+				smvk::StencilSettings{},
+				smvk::BlendSettings{},
+				msaa2x,
+				smvk::RasterSettings{ .cullMode = cull }
+			);
+			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+			boundMomentsMaskedCull = cull;
+		};
 		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
@@ -5013,6 +5091,12 @@ void SceneRenderer::Shutdown() {
 				return;
 			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
 				return;
+			if (maskedPhase) {
+				smvk::CullMode cull = smvk::CullMode::None;
+				if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+					cull = mat->pipeline.raster.cullMode;
+				ensureMomentsMaskedPipeline(cull);
+			}
 			auto& model = m_world->scene.globalTransform[item.node];
 			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 			if (!meshDesc) return;
@@ -5039,8 +5123,7 @@ void SceneRenderer::Shutdown() {
 				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
 		};
-		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
-		// Phase 1: solid casters (cull back) â€” cheap opaque program.
+		// Phase 1: solid casters (cull back), cheap opaque program.
 		cmd.BindRenderPipeline(
 			opaqueProgram ? *opaqueProgram : momentsProgram,
 			smvk::VertexFormat::StaticVertexFormat,
@@ -5065,29 +5148,10 @@ void SceneRenderer::Shutdown() {
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 			| smvk::IteratorFlagBit_Opaque
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-		// Phase 2: MASK cutout casters (cull none, full alpha-tested
-		// moments program â€” the FS discards under the cutoff like
-		// shadow.frag so foliage casts leaf-shaped moments).
-		cmd.BindRenderPipeline(
-			momentsProgram,
-			smvk::VertexFormat::StaticVertexFormat,
-			smvk::DepthSettings{
-				.depthFunc = smvk::CompareOp::LessEqual,
-				.writeEnable = true,
-				.depthTestEnable = true,
-				.depthBiasEnable = false,
-				.depthBiasConstantFactor = 0.0f,
-				.depthBiasClamp = 0.0f,
-				.depthBiasSlopeFactor = 0.0f
-			},
-			smvk::StencilSettings{},
-			smvk::BlendSettings{},
-			msaa2x,
-			smvk::RasterSettings{
-				.cullMode = smvk::CullMode::None
-			}
-		);
-		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		// Phase 2: MASK cutout casters (full alpha-tested moments program
+		// - the FS discards under the cutoff like shadow.frag so foliage
+		// casts leaf-shaped moments). The pipeline binds lazily per
+		// material cull (ensureMomentsMaskedPipeline above).
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 			| smvk::IteratorFlagBit_Opaque
@@ -6183,9 +6247,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		fc.decals = m_resources.decalsLogical;
 		fc.decalCount = m_decalFrameCount;
 
-		// ---- GPU-driven filter + temporal seed (before depth prepass) ----
+		// ---- GPU-driven filter + temporal seed ----
 		// Runs after fc.pc/depthView are built (the seed pass captures
-		// frame addresses) but before the prepass (seed writes depth first).
+		// frame addresses); the seed writes depth FIRST. When the seed
+		// primed depth, the Northlight depth split below builds the HZB
+		// over that seed-only occluder depth, culls the rest, and only
+		// then completes depth (fallback prepass + filtered ranges).
 		// gfxSlot stays invalid when the filter is off so stale slots from
 		// earlier frames can never leak into consume hints or debug views.
 		gfxSlot = smvk::RenderViewSet::kInvalidIndex;
@@ -6238,41 +6305,99 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 		fc.seedDepthPrimed = gfxFilterOn && m_gfxRenderer.SeededThisFrame();
 		// Option A split: the occluder prepass fills hizDepth (Clear,
-		// independent of the seed) for the HZB build below; the full
-		// prepass fills renderDepth (Load when seeded) for Main, SSAO,
-		// tile-cull and deferred shadows. Skipped while the culling view
-		// is frozen (the held pyramid must not be rebuilt).
+		// independent of the seed) for the HZB build below; renderDepth
+		// (seeded) serves Main, SSAO, tile-cull and deferred shadows.
+		// Skipped while the culling view is frozen (the held pyramid
+		// must not be rebuilt).
 		const bool hizOccluderOn = gfxFilterOn && m_hizOccluderDepth
 			&& !cullingFrozen && !fc.hizDepthView.empty();
 		if (hizOccluderOn)
 			m_fpRenderer.AppendOccluderPrepass(fc);
-		// Depth prepass (Loads seeded depth when primed, Clears otherwise).
-		if (m_passes.forwardPlusPrepass)
-			m_fpRenderer.AppendPrepass(fc);
 
-		// HZB build over the occluder depth (Option A) or the full depth
-		// (legacy), filter compute dispatch (reads this frame's HZB),
-		// then depth pass 2 over newly visible clusters for the full
-		// depth. No HZB refresh after the remainder: the pyramid is
-		// occluder-only and already complete, so remainder/full-prepass
-		// writes must not invalidate it. Tile cull / deferred shadows
-		// below still run over the complete full depth.
-		// Held while the culling view is frozen (frozen footprints must test
-		// against the frozen pyramid, not live depth).
-		if (gfxFilterOn) {
-			if (!cullingFrozen) {
-				if (hizOccluderOn)
-					m_gfxRenderer.AppendHizPasses(fc,
-						m_viewportResources.hizDepth.logicalView,
-						m_viewportResources.hizDepth.bindlessIndex);
-				else
-					m_gfxRenderer.AppendHizPasses(fc,
-						m_viewportResources.renderDepth.logicalView,
-						m_viewportResources.forwardPlus.depthBindlessIndex);
-			}
+		// Northlight depth split (filter on + seed primed depth): the HZB
+		// is built over the SEED-ONLY depth (the known-visible occluder
+		// set rasterized at the current LOD with the real alpha test),
+		// so the filter's occlusion test is live for the first time.
+		// Without the split (full prepass before the HZB) the occlusion
+		// test is a structural no-op: every CPU-visible cluster's own
+		// depth is already inside its footprint texels (the MIN-reduce
+		// keeps through the cluster's own fragments), so nothing can ever
+		// be culled — which is why T4 occlusion looked permanently silent.
+		//
+		// Depth assembly afterwards (every filterable cluster depthed
+		// EXACTLY ONCE, no full prepass walk):
+		//   seed      prev∩curr clusters (occluders: opaque VS-only +
+		//             masked alpha-tested) — drawn in AppendPasses above.
+		//   remainder curr−prev clusters (newly visible: disocclusion,
+		//             LOD flips, frustum entries) — the T5 CPU-command
+		//             pass after the filter. It ignores the GPU verdicts
+		//             (draws all curr−prev even if occluded), but that set
+		//             is exactly the disocclusion candidates the seed-only
+		//             HZB cannot prove occluded anyway.
+		//   fallback  prepass walks ONLY the unfilterable rest: unregistered
+		//             meshes/LOD levels, material-less meshes and shader-LOD
+		//             vertex-lit instances (fallbackOnly=true below).
+		// No indirect alpha-tested draws: drawing the MASKED ranges through
+		// the filter's GPU-written commands misrasterizes depth (the
+		// opaque-white regression; bisected — any depth write from that
+		// combination poisons Main's 1x read-only test), and the seed +
+		// remainder pair covers masked depth with the proven CPU-command
+		// machinery, one draw per cluster. Tile cull / deferred shadows /
+		// AO below run over this complete depth (filter-culled clusters are
+		// not rendered anywhere, so their absence from depth is correct).
+		// Held while the culling view is frozen (frozen footprints must
+		// test against the frozen pyramid, not live depth).
+		const bool depthSplit = gfxFilterOn && fc.seedDepthPrimed
+			&& !m_splitDisabled;
+		fc.gfxLodFilterable = depthSplit
+			? std::function<bool(NodeId, uint32_t, uint32_t)>(
+				[this](NodeId node, uint32_t worldMesh, uint32_t lodIdx) {
+					// Shader-LOD vertex-lit levels draw direct in Main —
+					// the prepass must keep covering them.
+					if (ShaderLodActive()
+						&& m_world->LodShaderAt(worldMesh, lodIdx)
+							== smvk::LodShader::VertexLit)
+						return false;
+					(void)node;
+					return m_gfxRenderer.GfxMeshForLod(worldMesh, lodIdx)
+						!= UINT32_MAX;
+				})
+			: std::function<bool(NodeId, uint32_t, uint32_t)>{};
+		auto appendHizPasses = [&]() {
+			if (hizOccluderOn)
+				m_gfxRenderer.AppendHizPasses(fc,
+					m_viewportResources.hizDepth.logicalView,
+					m_viewportResources.hizDepth.bindlessIndex);
+			else
+				m_gfxRenderer.AppendHizPasses(fc,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.forwardPlus.depthBindlessIndex);
+		};
+		if (depthSplit) {
+			// Seed (prev-visible occluders, current LOD, alpha-tested) ->
+			// HZB over that depth -> filter culls the rest.
+			if (!cullingFrozen)
+				appendHizPasses();
 			m_gfxRenderer.AppendFilterDispatch(fc);
+			// Depth pass 2: slim direct fallback (Loads the seeded depth)
+			// + the remainder (newly visible clusters, both buckets).
+			if (m_passes.forwardPlusPrepass)
+				m_fpRenderer.AppendPrepass(fc, /*fallbackOnly=*/true);
 			if (m_gfxRenderer.RemainderPending()) {
 				m_gfxRenderer.AppendRemainderPass(fc);
+			}
+		}
+		else {
+			// Full prepass before the HZB (Clear when not seeded).
+			if (m_passes.forwardPlusPrepass)
+				m_fpRenderer.AppendPrepass(fc);
+			if (gfxFilterOn) {
+				if (!cullingFrozen)
+					appendHizPasses();
+				m_gfxRenderer.AppendFilterDispatch(fc);
+				if (m_gfxRenderer.RemainderPending()) {
+					m_gfxRenderer.AppendRemainderPass(fc);
+				}
 			}
 		}
 	// ---- Light culling ----
@@ -6471,7 +6596,33 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress, liveMainCullView](smvk::CommandBuffer& cmd)
 			{
 				// GPU context + pass scope come from RenderGraph::Execute.
-			auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase, bool ignoreFilter = false) {
+				// 1x depth stays read-only in both phases (prepass owns it).
+			const smvk::DepthSettings motionDepth{
+				.depthFunc = smvk::CompareOp::GreaterEqual,
+				.writeEnable = false,
+				.depthTestEnable = true,
+			};
+			// Phase 2 masked pipeline: cull follows the material raster so
+			// motion coverage matches Main (single-sided cutout culls
+			// back; double-sided keeps Cull None). Rebinds only on cull
+			// changes (the CommandBuffer dedupes identical states).
+			smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
+			auto ensureMotionMaskedPipeline = [&](smvk::CullMode cull) {
+				if (cull == boundMotionMaskedCull)
+					return;
+				cmd.BindRenderPipeline(
+					m_viewportResources.motionVectors.program,
+					smvk::VertexFormat::StaticVertexFormat,
+					motionDepth,
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Opaque(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = cull }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				boundMotionMaskedCull = cull;
+			};
+		auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase, bool ignoreFilter = false) {
 				if (item.material == smvk::World::kInvalidIndex)
 					return;
 				// Static filtered nodes are covered by the HZB-culled
@@ -6499,10 +6650,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							return; // no history: prev == curr, indirect covers it
 						}
 					}
-					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
-						return;
-					auto& model = m_world->scene.globalTransform[item.node];
-					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+					return;
+				if (maskedPhase) {
+					smvk::CullMode cull = smvk::CullMode::None;
+					if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+						cull = mat->pipeline.raster.cullMode;
+					ensureMotionMaskedPipeline(cull);
+				}
+				auto& model = m_world->scene.globalTransform[item.node];
+				smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 					if (!meshDesc) return;
 					PushConstants objectPC{};
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
@@ -6525,27 +6682,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 					};
 				};
-				// 1x depth stays read-only in both phases (prepass owns it).
-				const smvk::DepthSettings motionDepth{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = false,
-					.depthTestEnable = true,
-				};
 				// Filtered static path: one HZB-culled multi-draw per
 				// material over the compacted index list (model matrices
 				// come from the draws buffer via SV_InstanceID; materialId
 				// is pushed per range for the FS alpha test). Cull follows
-				// the material (double-sided/MASK -> None, else Back).
+				// the material raster so motion coverage matches Main.
 				if (motionFilteredActive) {
 					const auto& motionRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 					for (uint32_t ri = 0; ri < (uint32_t)motionRanges.size(); ++ri) {
 						const uint32_t materialId = motionRanges[ri].material;
 						smvk::CullMode cull = smvk::CullMode::Back;
-						if (smvk::Material* rmat = m_world->GetMaterial(materialId)) {
-							if (rmat->isDoubleSided()
-								|| rmat->shadingModel == smvk::ShadingModel::Masked)
-								cull = smvk::CullMode::None;
-						}
+						if (smvk::Material* rmat = m_world->GetMaterial(materialId))
+							cull = rmat->pipeline.raster.cullMode;
 						cmd.BindRenderPipeline(
 							m_gfxRenderer.FilteredMotionProgram(),
 							smvk::VertexFormat::StaticVertexFormat,
@@ -6583,17 +6731,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				| smvk::IteratorFlagBit_Opaque
 				| smvk::IteratorFlagBit_StaticVertexFmt
 				, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
-				// Phase 2: MASK cutout, cull off (foliage is double-sided).
-				cmd.BindRenderPipeline(
-					m_viewportResources.motionVectors.program,
-					smvk::VertexFormat::StaticVertexFormat,
-					motionDepth,
-					smvk::StencilSettings{},
-					smvk::BlendSettings::Opaque(),
-					smvk::MSAASettings::Count1(),
-					smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
-				);
-		cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				// Phase 2: MASK cutout — the pipeline binds lazily per
+				// material cull (ensureMotionMaskedPipeline above).
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable
 			| smvk::IteratorFlagBit_Opaque
@@ -9739,7 +9878,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s src=%s",
 						hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
 						cullingFrozen ? "FROZEN" : "live",
-						m_hizOccluderDepth ? "occluder" : "full");
+						m_hizOccluderDepth ? "occluder"
+							: (m_gfxRenderer.SeededThisFrame() ? "seed" : "full"));
 					if (!occOn)
 						ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
 					else if (hm == 0)
@@ -10122,7 +10262,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
 		// One-shot indirect audit (debug): downloads this frame's filter
 		// commands + HZB after Execute so the GPU results are final. Stalls
-		// (device-idle wait); button-pressed only.
+		// (device-idle wait); button-pressed or VULKANTOY_AUDIT=<frame>.
+		if (m_auditAtFrame >= 0 && m_frameCounter == (uint64_t)m_auditAtFrame) {
+			m_auditAtFrame = -1;
+			m_dumpIndirectAudit = true;
+		}
 		if (m_dumpIndirectAudit) {
 			m_dumpIndirectAudit = false;
 			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {

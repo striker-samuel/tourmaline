@@ -194,7 +194,9 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 		PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
 		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 	}
-	// Phase 2: MASK cutout (alpha-tested FS, cull off).
+	// Phase 2: MASK cutout (alpha-tested FS). Cull follows the material
+	// raster: single-sided cutout must not write backface depth the
+	// shaded pass never draws; double-sided keeps Cull None.
 	for (size_t ri = 0; ri < ranges.size(); ++ri) {
 		const smvk::gfx::SeedRange& r = ranges[ri];
 		if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
@@ -213,7 +215,8 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 			smvk::StencilSettings{},
 			smvk::BlendSettings{},
 			smvk::MSAASettings{},
-			smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			smvk::RasterSettings{
+				.cullMode = MaterialDepth(r.material).cullMode }
 		);
 		PushConstants matPC{};
 		matPC.materialId = r.material;
@@ -407,8 +410,9 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManag
 		PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
 		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 	}
-	// Phase 2: MASK cutout casters (alpha-tested FS, cull off — masked
-	// foliage is double-sided in the direct path).
+	// Phase 2: MASK cutout casters (alpha-tested FS — masked cutout casts
+	// leaf-shaped shadows). Cull follows the material raster, matching
+	// the main view (single-sided cutout has no backface depth anywhere).
 	for (const smvk::gfx::SeedRange& r : ranges) {
 		if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
 			continue;
@@ -429,7 +433,8 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManag
 			smvk::StencilSettings{},
 			smvk::BlendSettings{},
 			smvk::MSAASettings{},
-			smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			smvk::RasterSettings{
+				.cullMode = MaterialDepth(r.material).cullMode }
 		);
 		PushConstants matPC{};
 		matPC.materialId = r.material;
@@ -1042,6 +1047,36 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 			cmds.data(), cmds.size() * sizeof(SeedCommand))) {
 		SMVK_DEBUG_LOG( "[GfxAudit] slot %u: indirect download failed.\n", slot);
 		return;
+	}
+	// Release-visible compact summary (the detailed lines below are
+	// SMVK_DEBUG_LOG = Debug-only): killed/kept counts split by draw-set
+	// bucket, so headless A/B runs can diff the GPU verdicts.
+	{
+		uint32_t killedOpaque = 0, keptOpaque = 0;
+		uint32_t killedMasked = 0, keptMasked = 0;
+		uint32_t keptMaskedTris = 0;
+		for (uint32_t i = 0; i < v.batchCount && i < v.batches.size(); ++i) {
+			const Batch& b = v.batches[i];
+			if (b.draw >= v.drawConstants.size())
+				continue;
+			const bool masked =
+				(v.drawConstants[b.draw].drawSet & DrawSetBit_Masked) != 0;
+			const bool killed = (cmds[i].indexCount == 0);
+			if (masked) {
+				if (killed) ++killedMasked; else {
+					++keptMasked;
+					keptMaskedTris += cmds[i].indexCount / 3;
+				}
+			}
+			else {
+				if (killed) ++killedOpaque; else ++keptOpaque;
+			}
+		}
+		std::fprintf(stderr,
+			"[GfxAudit] summary slot=%u batches=%u | opaque kept=%u killed=%u | "
+			"masked kept=%u killed=%u (keptTris=%u)\n",
+			slot, v.batchCount, keptOpaque, killedOpaque,
+			keptMasked, killedMasked, keptMaskedTris);
 	}
 	// GPU HZB pyramid for the CPU mirror.
 	std::vector<float> hzb;

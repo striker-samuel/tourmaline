@@ -38,7 +38,8 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 	AppendTileCull(fc);
 }
 
-void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
+void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
+	bool fallbackOnly) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (!fp)
 		return;
@@ -54,14 +55,16 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 
 	// Temporal seed already primed depth (Clear in the seed pass): the
 	// direct prepass must Load it, not Clear it. It still draws every
-	// *visible* opaque node — the seed/remainder lists only cover filtered
-	// meshes, so skipping here would leave direct-fallback geometry
-	// (unregistered meshes, unknown-material masked clusters) out of depth.
-	// That breaks the 1x Main path (read-only depth test) and the tile
-	// cull min/max, while the 2x MSAA path (own transient depth) hides it.
-	// Frustum culling below only removes off-screen nodes, so on-screen
-	// fallback geometry is still covered. Newly visible filtered geometry
-	// additionally lands in depth pass 2.
+	// *visible* opaque node the filter's temporal set does not cover —
+	// the Northlight depth split passes fallbackOnly=true so the seed
+	// (prev∩curr clusters) + remainder (newly visible clusters) own
+	// their filterable items' depth (one alpha-tested draw per masked
+	// cluster; no full masked walk), and this walk covers the rest:
+	// unregistered meshes/LOD levels, unknown-material clusters and
+	// shader-LOD vertex-lit instances. That keeps the 1x Main read-only
+	// path and the tile-cull min/max over complete depth. Frustum
+	// culling below only removes off-screen nodes, so on-screen fallback
+	// geometry is still covered.
 	const bool seeded = fc.seedDepthPrimed;
 	// Depth is opaque-only (solid + MASK cutout). AlphaMode::Blend
 	// transparent is excluded in both modes (dithered and blended) so it
@@ -81,6 +84,9 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	const smvk::LogicalImageViewHandle depthView = fc.depthView;
 	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
+	// Null on full-prepass frames (fallbackOnly stays false then).
+	const std::function<bool(NodeId, uint32_t, uint32_t)> lodFilterable =
+		fc.gfxLodFilterable;
 
 	// ---- CPU frustum culling for the prepass ----
 	// Static nodes: single frustumCullBVH walk over the World's cached
@@ -116,9 +122,37 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear);
-		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs, staticMask, mainView, hasMainView](smvk::CommandBuffer& cmd)
+		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
+			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
+			// Phase 2 masked pipeline: cull follows the material raster
+			// (single-sided cutout must not write backface depth the
+			// shaded pass never draws; double-sided keeps Cull None).
+			// boundMaskedCull starts at a never-bound sentinel; rebinds
+			// only on cull changes and the CommandBuffer dedupes identical
+			// pipeline states, so the common all-double-sided scene pays
+			// one bind.
+			smvk::CullMode boundMaskedCull = smvk::CullMode::FrontAndBack;
+			auto ensureMaskedPipeline = [&](smvk::CullMode cull) {
+				if (cull == boundMaskedCull)
+					return;
+				cmd.BindRenderPipeline(
+					prepassMaskedProgram,
+					smvk::VertexFormat::StaticVertexFormat,
+					smvk::DepthSettings{
+						.depthFunc = smvk::CompareOp::GreaterEqual,
+						.writeEnable = true,
+						.depthTestEnable = true,
+					},
+					smvk::StencilSettings{},
+					smvk::BlendSettings{},
+					smvk::MSAASettings{},
+					smvk::RasterSettings{ .cullMode = cull }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+				boundMaskedCull = cull;
+			};
 			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 				// Masked (cutout) flag replaces the per-node material
 				// fetch the phase split used to pay. Material-less meshes
@@ -126,6 +160,28 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				// the old mat == nullptr path).
 				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
 					return;
+				// Fallback-only mode (Northlight depth split): the gfx
+				// filter's temporal set owns this item's depth — the seed
+				// pass covers its prev∩curr clusters and the remainder
+				// pass the newly visible curr−prev ones (both drawn with
+				// the proven CPU-command machinery, each cluster once).
+				// This walk only covers the unfilterable rest: unregistered
+				// meshes/LOD levels, unknown-material clusters and shader-LOD
+				// vertex-lit instances. MASKED items are NOT exempted: the
+				// seed/remainder masked draws run the real alpha test with
+				// material cull (see RecordDepthList), and re-walking the
+				// full masked set here would double the alpha-tested raster
+				// the split exists to avoid.
+				// Material-less meshes keep their defensive depth draw
+				// (the filter never pushes them; nothing shades them).
+				if (fallbackOnly && lodFilterable
+					&& item.material != smvk::World::kInvalidIndex) {
+					const uint32_t lod = lodEnabled
+						? world->LodIndexForNode(item.node, item.mesh, lodInputs)
+						: 0u;
+					if (lodFilterable(item.node, item.mesh, lod))
+						return;
+				}
 				// Static frustum cull: O(1) mask lookup from the single
 				// frustumCullBVH walk at Append time (dynamic nodes are
 				// always 1 here and get sphere-tested below).
@@ -139,7 +195,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				// against the guarded main-view planes (mirrors
 				// GfxRenderer::FilterMainView). Keep the instance when
 				// EITHER the base or the selected LOD sibling intersects so
-				// halfrate LOD flips can never open a 1-frame depth hole.
+				// LOD flips can never open a 1-frame depth hole.
 				if (hasMainView
 					&& (item.flags & smvk::IteratorFlagBit_Static) == 0) {
 					if (smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh)) {
@@ -187,6 +243,10 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				PushConstants objectPC{};
 				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 				if (maskedPhase) {
+					smvk::CullMode cull = smvk::CullMode::None;
+					if (const smvk::Material* mat = world->GetMaterial(item.material))
+						cull = mat->pipeline.raster.cullMode;
+					ensureMaskedPipeline(cull);
 					objectPC.materialId = item.material;
 					cmd.PushConstants(offsetof(PushConstants, materialId),
 						sizeof(objectPC.materialId), &objectPC.materialId,
@@ -220,23 +280,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			| smvk::IteratorFlagBit_StaticVertexFmt
 			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
 			// Phase 2: MASK cutout, alpha-tested so holes keep
-			// background depth. Cull off: foliage is double-sided.
-			cmd.BindRenderPipeline(
-				prepassMaskedProgram,
-				smvk::VertexFormat::StaticVertexFormat,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{
-					.cullMode = smvk::CullMode::None
-				}
-			);
-		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+			// background depth. The pipeline binds lazily per material
+			// cull (ensureMaskedPipeline above).
 		world->forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable
 			| smvk::IteratorFlagBit_Opaque
@@ -269,6 +314,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 	const float minPixels = occluderMinPixels;
 	const float minRadius = occluderMinRadius;
 	const glm::vec3 eye = fc.eye;
+	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
 	const float viewportHeight = fc.lodInputs.viewportHeight > 0.0f
 		? fc.lodInputs.viewportHeight : (float)fc.extent.height;
@@ -302,7 +348,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "OccluderDepth",
 			smvk::AttachmentLoadOp::Clear);
 		occluder.SetRecordingFunc([this, depthPC, world, staticMask, mainView, hasMainView,
-			minPixels, minRadius, eye, viewportHeight, tanHalfFov](smvk::CommandBuffer& cmd)
+			minPixels, minRadius, eye, lodEnabled, lodInputs, viewportHeight, tanHalfFov](smvk::CommandBuffer& cmd)
 		{
 			auto drawOccluderNode = [&](const smvk::World::RenderItem& item) {
 				// Solid opaque only: skip MASK cutout (holes) entirely.
@@ -339,15 +385,22 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 							return;
 					}
 				}
-				// Crudest LOD: cheapest raster for the silhouette. Safe
-				// direction for HZB (conservative): simplifier siblings
-				// shrink the surface, so occluder depth lands at or
-				// behind the true surface -> fewer culls, never holes.
-				// Missing siblings fall back to LOD0 via GetLodMesh.
+				// SELECTED LOD: the occluder rasterizes the same surface
+				// Main draws, so occluder coverage can never be nearer
+				// than the rendered geometry. (The old crudest-LOD pick
+				// relied on "simplifier siblings shrink the surface" —
+				// meshopt does not guarantee that: error is two-sided, and
+				// a coarse bulge in front of the drawn surface over-culls
+				// the gap behind it.) Shares the per-node LOD decision
+				// cache with every other consumer; missing siblings fall
+				// back to LOD0 via GetLodMesh.
 				smvk::StaticMesh* meshDesc = baseDesc;
-				const uint32_t chainLen = world->LodChainLength(item.mesh);
-				if (chainLen > 1)
-					meshDesc = world->GetLodMesh(item.mesh, chainLen - 1);
+				if (lodEnabled) {
+					const uint32_t lod = world->LodIndexForNode(
+						item.node, item.mesh, lodInputs);
+					if (smvk::StaticMesh* sel = world->GetLodMesh(item.mesh, lod))
+						meshDesc = sel;
+				}
 				if (!meshDesc)
 					return;
 				PushConstants objectPC{};

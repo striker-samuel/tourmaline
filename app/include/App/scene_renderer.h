@@ -1153,6 +1153,13 @@ protected:
 	// frame; false = the World's halfrate parity split (perf A/B; also
 	// VULKANTOY_LODFULL=0 at startup).
 	bool m_lodFullRate = true;
+	// Debug: VULKANTOY_SPLIT=0 forces the legacy depth assembly (full
+	// prepass before the HZB + remainder pass) even when the seed primed
+	// depth — bisects regressions between the split and the rest.
+	bool m_splitDisabled = false;
+	// Debug: one-shot [GfxAudit] dump at this frame (VULKANTOY_AUDIT=N;
+	// same stderr dump as the UI button; stalls the GPU).
+	int m_auditAtFrame = -1;
 	uint64_t m_lodDraws = 0;     // direct draws this frame
 	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
