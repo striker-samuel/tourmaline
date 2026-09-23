@@ -1854,6 +1854,10 @@ protected:
 	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
+	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
+	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
+	// Exposure section; applied per-frame onto the tonemapDesc push.
+	uint32_t m_tonemapMode = smvk::kTonemapACES;
 	// ---- AO (half-res depth-only, runs before Main, composites in opaque
 	// ambient; see ssao.h / gtao.h / sao.h). O cycles No AO -> SSAO -> GTAO -> SAO. ----
 	enum class AoMode : int { None = 0, Ssao = 1, Gtao = 2, Sao = 3 };

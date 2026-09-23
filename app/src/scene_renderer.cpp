@@ -112,8 +112,8 @@ static smvk::BloomDesc MakeBloomDesc() {
 // -----------------------------------------------------------------------------
 // Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
 // -----------------------------------------------------------------------------
-static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 â‰ˆ HDR 5 pre-ACES
-static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
+static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 ≈ HDR 5 pre-tonemap
+static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7
 
 static smvk::TonemapDesc MakeTonemapDesc() {
 	smvk::TonemapDesc d{};
@@ -8668,6 +8668,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 		smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
 		tonemapDesc.exposure = frameExposure;
+		tonemapDesc.tonemapMode = m_tonemapMode;
 		auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
 			*m_rendergraph,
 			sceneHdrView,
@@ -8897,8 +8898,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					else
 						ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
 				}
-				if (ImGui::CollapsingHeader("Exposure ï¿½ histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
+					{
+						static const char* const kTonemapNames[4] =
+							{ "Reinhard", "ACES", "Uncharted2", "GT7" };
+						int tonemapIdx = std::clamp(static_cast<int>(m_tonemapMode), 0, 3);
+						if (ImGui::Combo("Tonemap operator", &tonemapIdx, kTonemapNames, 4)) {
+							m_tonemapMode = static_cast<uint32_t>(std::clamp(tonemapIdx, 0, 3));
+							m_viewportResources.tonemap.desc.tonemapMode = m_tonemapMode;
+						}
+						ImGui::TextDisabled("GT7: Polyphony Digital SDR (250-nit paper white, ICtCp chroma preserve).");
+					}
 					ImGui::SliderFloat("Manual exposure", &m_manualExposure,
 						0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
 					ImGui::SliderFloat("EV bias", &m_exposureEvBias, -4.0f, 4.0f, "%.1f");

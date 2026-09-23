@@ -1,5 +1,5 @@
 #pragma once
-// HDR -> LDR tonemapper (fullscreen triangle, ACES / Reinhard / Uncharted2).
+// HDR -> LDR tonemapper (fullscreen triangle, ACES / Reinhard / Uncharted2 / GT7).
 //
 // Ports the pattern used by BloomChain / CascadedShadowAtlas into one place:
 // default shader program ownership + push layout + rendergraph pass setup.
@@ -37,7 +37,7 @@ struct TonemapPush {
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
 	float exposure = 0.02f;
-	uint32_t tonemapMode = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
+	uint32_t tonemapMode = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7
 	uint32_t bloomTextureIndex = UINT32_MAX; // UINT32_MAX = disabled
 	float bloomIntensity = 0.0f;
 	uint32_t debugView = 0; // 0=scene, 1=motion vectors (motionTextureIndex)
@@ -64,6 +64,7 @@ static_assert(sizeof(TonemapPush) == 64);
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
 inline constexpr uint32_t kTonemapUncharted2 = 2;
+inline constexpr uint32_t kTonemapGT7 = 3;
 
 struct TonemapDesc {
 	float exposure = 0.02f;
