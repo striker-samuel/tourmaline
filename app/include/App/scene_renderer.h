@@ -55,6 +55,7 @@
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssao.h>
 #include <Engine/Rendergraph/gtao.h>
+#include <Engine/Rendergraph/sao.h>
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -129,7 +130,7 @@ struct ScenePassConfig {
 	bool dof = true;                // depth-of-field (low single-pass / HQ bokeh)
 	bool ssr = true;                // screen-space reflections (depth-reconstructed)
 	bool volumetric = true;         // raymarched GI-probe volumetric fog (HDR composite)
-	bool ssao = true;               // AO master switch (SSAO or GTAO per AoMode)
+	bool ssao = true;               // AO master switch (SSAO/GTAO/SAO per AoMode)
 	bool bloom = true;              // HDR bloom chain
 	bool exposure = true;           // histogram meter + CPU eye adaptation
 	bool tonemap = true;            // HDR -> swapchain tonemap
@@ -744,6 +745,7 @@ struct ViewportResources {
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::Gtao gtao; // half-res GTAO horizon-search targets + programs + passes
+	smvk::Sao sao; // half-res SAO spiral-tap targets + programs + passes
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
@@ -881,7 +883,7 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_O)) {
 			m_aoMode = static_cast<AoMode>(
-				(static_cast<int>(m_aoMode) + 1) % 3); // None -> Ssao -> Gtao
+				(static_cast<int>(m_aoMode) + 1) % 4); // None -> Ssao -> Gtao -> Sao
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_B)) {
 			m_bloomEnabled = !m_bloomEnabled;
@@ -1853,10 +1855,10 @@ protected:
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	// ---- AO (half-res depth-only, runs before Main, composites in opaque
-	// ambient; see ssao.h / gtao.h). O cycles No AO -> SSAO -> GTAO. ----
-	enum class AoMode : int { None = 0, Ssao = 1, Gtao = 2 };
+	// ambient; see ssao.h / gtao.h / sao.h). O cycles No AO -> SSAO -> GTAO -> SAO. ----
+	enum class AoMode : int { None = 0, Ssao = 1, Gtao = 2, Sao = 3 };
 	AoMode m_aoMode = AoMode::Ssao;
-	float m_ssaoRadius = 0.5f; // view-space sample radius (m, shared SSAO/GTAO)
+	float m_ssaoRadius = 0.5f; // view-space sample radius (m, shared SSAO/GTAO/SAO)
 	float m_ssaoBias = 0.025f; // self-occlusion / horizon bias
 	float m_ssaoIntensity = 1.0f; // ambient composite strength (default_lit.frag)
 	float m_ssaoMaxDistance = 25.0f; // fade-out distance (m)
@@ -1865,7 +1867,9 @@ protected:
 	int m_gtaoSlices = 3; // GTAO slice directions 1..8
 	int m_gtaoSteps = 4; // GTAO taps per slice side 1..8
 	float m_gtaoThickness = 1.0f; // GTAO thin-occluder falloff (m); 0 = off
-	// Compat: SSAO on/off maps onto AoMode (None vs Ssao); GTAO counts as on.
+	int m_saoSamples = 11; // SAO spiral taps 1..32
+	int m_saoSpiralTurns = 7; // SAO extra spiral twist 1..16
+	// Compat: SSAO on/off maps onto AoMode (None vs Ssao); GTAO/SAO count as on.
 	[[nodiscard]] bool SsaoEnabled() const { return m_aoMode != AoMode::None; }
 	// ---- Forward+ light debug overlay (drawn in the ImGui UI pass) ----
 	// CPU copy of the last light set (positions/colors/types), projected

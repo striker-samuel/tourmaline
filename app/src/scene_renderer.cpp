@@ -36,6 +36,7 @@
 #include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/ssao.h>
+#include <Engine/Rendergraph/sao.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
@@ -291,6 +292,32 @@ static smvk::GtaoDesc MakeGtaoDesc() {
 	d.rawName = "gtaoRaw";
 	d.blurName = "gtaoBlur";
 	d.composeName = "gtaoComposed";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// SAO config (half-res spiral-tap volume obscurance, see Engine/Rendergraph/sao.h).
+// Same consumer path as SSAO/GTAO (blur + depth-guided compose + opaque ambient),
+// only the raw pass differs. Shares radius/bias/intensity/maxDistance/blur
+// with SSAO; sampleCount/spiralTurns are SAO-specific.
+// -----------------------------------------------------------------------------
+static constexpr uint32_t SAO_SAMPLES = 11; // spiral taps 1..32
+static constexpr uint32_t SAO_SPIRAL_TURNS = 7; // extra spiral twist 1..16
+
+static smvk::SaoDesc MakeSaoDesc() {
+	smvk::SaoDesc d{};
+	d.format = smvk::Format::R8_UNorm;
+	d.radius = SSAO_RADIUS;
+	d.bias = SSAO_BIAS;
+	d.intensity = SSAO_INTENSITY;
+	d.maxDistance = SSAO_MAX_DISTANCE;
+	d.sampleCount = SAO_SAMPLES;
+	d.spiralTurns = SAO_SPIRAL_TURNS;
+	d.blurSharpness = SSAO_BLUR_SHARPNESS;
+	d.name = "sao";
+	d.rawName = "saoRaw";
+	d.blurName = "saoBlur";
+	d.composeName = "saoComposed";
 	return d;
 }
 
@@ -2988,18 +3015,20 @@ void SceneRenderer::Shutdown() {
 		// effective exposure (auto-adapted or manual) for future readers.
 		data.exposure = FrameExposure();
 		// AO consumption (lighting-pass ambient; see ao.hlsli +
-		// default_lit.frag.hlsl): the SsaoCompose/GtaoCompose pass already
+		// default_lit.frag.hlsl): the SsaoCompose/GtaoCompose/SaoCompose pass already
 		// upscaled the AO to full res with depth authority, so the fragment
 		// only .Loads it. Mirrors the AO pass gate below so the shader flag
 		// and the emitted passes always agree.
-		const bool useGtao = m_aoMode == AoMode::Gtao;
 		const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None
 			&& m_ssaoIntensity > 0.0f;
 		const bool ssaoReady = m_viewportResources.ssao.Valid();
 		const bool gtaoReady = m_viewportResources.gtao.Valid();
-		const bool aoOn = aoWanted && (useGtao ? gtaoReady : ssaoReady);
+		const bool saoReady = m_viewportResources.sao.Valid();
+		const bool aoOn = aoWanted && (m_aoMode == AoMode::Gtao ? gtaoReady
+			: m_aoMode == AoMode::Sao ? saoReady : ssaoReady);
 		data.aoTextureIndex = aoOn
-			? (useGtao ? m_viewportResources.gtao.OutputBindless()
+			? (m_aoMode == AoMode::Gtao ? m_viewportResources.gtao.OutputBindless()
+				: m_aoMode == AoMode::Sao ? m_viewportResources.sao.OutputBindless()
 			           : m_viewportResources.ssao.OutputBindless())
 			: UINT32_MAX;
 		data.aoIntensity = aoOn ? m_ssaoIntensity : 0.0f;
@@ -5279,6 +5308,7 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
 		m_viewportResources.gtao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeGtaoDesc());
+		m_viewportResources.sao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSaoDesc());
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
@@ -5677,6 +5707,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
 		m_viewportResources.gtao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeGtaoDesc());
+		m_viewportResources.sao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSaoDesc());
 		smvk::MsaaDesc frameMsaaDesc{};
 		frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
@@ -6862,7 +6893,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		.maxAnisotropy = 1.0f
 	});
 	// ---------------------------------------------------------------------
-	// AO â€“ half-res depth-only AO (SSAO, see ssao.h; GTAO, see gtao.h).
+	// AO – half-res depth-only AO (SSAO, see ssao.h; GTAO, see gtao.h;
+	// SAO, see sao.h).
 	// Runs BEFORE Main: every depth-writing pass (Forward+ prepass, gfx
 	// remainder, motion vectors) is done, so the 1x prepass depth is final.
 	// Depth is opaque-only (transparent excluded by design) so glass reveals
@@ -6873,11 +6905,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// ---------------------------------------------------------------------
 	smvk::LogicalImageViewHandle aoView{};
 	{
-		const bool useGtao = m_aoMode == AoMode::Gtao;
 		SMVK_PROFILE_CATEGORY("AO", Optick::Category::Rendering);
 		const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None
 			&& m_ssaoIntensity > 0.0f;
-		if (aoWanted && !useGtao && m_viewportResources.ssao.Valid()) {
+		if (aoWanted && m_aoMode == AoMode::Ssao && m_viewportResources.ssao.Valid()) {
 			smvk::SsaoDesc ssaoDesc = MakeSsaoDesc();
 			ssaoDesc.radius = m_ssaoRadius;
 			ssaoDesc.bias = m_ssaoBias;
@@ -6896,7 +6927,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				"Ssao",
 				"SsaoBlur");
 			aoView = m_viewportResources.ssao.OutputView();
-		} else if (aoWanted && useGtao && m_viewportResources.gtao.Valid()) {
+		} else if (aoWanted && m_aoMode == AoMode::Gtao && m_viewportResources.gtao.Valid()) {
 			smvk::GtaoDesc gtaoDesc = MakeGtaoDesc();
 			gtaoDesc.radius = m_ssaoRadius;
 			gtaoDesc.bias = m_ssaoBias;
@@ -6917,6 +6948,26 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				"Gtao",
 				"GtaoBlur");
 			aoView = m_viewportResources.gtao.OutputView();
+		} else if (aoWanted && m_aoMode == AoMode::Sao && m_viewportResources.sao.Valid()) {
+			smvk::SaoDesc saoDesc = MakeSaoDesc();
+			saoDesc.radius = m_ssaoRadius;
+			saoDesc.bias = m_ssaoBias;
+			saoDesc.intensity = m_ssaoIntensity;
+			saoDesc.maxDistance = m_ssaoMaxDistance;
+			saoDesc.sampleCount = (uint32_t)m_saoSamples;
+			saoDesc.spiralTurns = (uint32_t)m_saoSpiralTurns;
+			saoDesc.blurSharpness = m_ssaoBlurSharpness;
+			saoDesc.nearPlane = frameData.nearPlane;
+			m_viewportResources.sao.AddSaoPasses(
+				*m_rendergraph,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				frameUniformsAddress,
+				linearSampler,
+				saoDesc,
+				"Sao",
+				"SaoBlur");
+			aoView = m_viewportResources.sao.OutputView();
 		}
 	}
 
@@ -8990,11 +9041,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
 					{
-						static const char* const kAoNames[3] =
-							{ "No AO", "SSAO", "GTAO" };
+						static const char* const kAoNames[4] =
+							{ "No AO", "SSAO", "GTAO", "SAO" };
 						int aoIdx = static_cast<int>(m_aoMode);
-						if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 3))
-							m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 2));
+						if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 4))
+							m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 3));
 						ImGui::TextDisabled("O cycles AO: %s (half-res, depth only)",
 							kAoNames[static_cast<int>(m_aoMode)]);
 					}
@@ -9006,10 +9057,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
 						if (m_aoMode == AoMode::Ssao) {
 							ImGui::SliderInt("SSAO samples", &m_ssaoSamples, 1, 32);
-						} else {
+						} else if (m_aoMode == AoMode::Gtao) {
 							ImGui::SliderInt("GTAO slices", &m_gtaoSlices, 1, 8);
 							ImGui::SliderInt("GTAO steps / slice", &m_gtaoSteps, 1, 8);
 							ImGui::SliderFloat("GTAO thickness (m)", &m_gtaoThickness, 0.0f, 5.0f);
+						} else {
+							ImGui::SliderInt("SAO samples", &m_saoSamples, 1, 32);
+							ImGui::SliderInt("SAO spiral turns", &m_saoSpiralTurns, 1, 16);
 						}
 					}
 					ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
@@ -9812,28 +9866,38 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("Motion blur: gather along motion vectors, pre-tonemap HDR");
 					const auto& ssao = m_viewportResources.ssao;
 					const auto& gtao = m_viewportResources.gtao;
+					const auto& sao = m_viewportResources.sao;
 					{
-						static const char* const kAoNames[3] =
-							{ "No AO", "SSAO", "GTAO" };
+						static const char* const kAoNames[4] =
+							{ "No AO", "SSAO", "GTAO", "SAO" };
 						ImGui::TextDisabled("AO mode: %s",
 							kAoNames[static_cast<int>(m_aoMode)]);
 					}
 					if (m_aoMode == AoMode::Ssao) {
 						if (!ssao.Valid())
-							ImGui::TextDisabled("SSAO target/shaders missing â€” no AO");
+							ImGui::TextDisabled("SSAO target/shaders missing — no AO");
 						else
 							ImGui::Text("SSAO: half %ux%u (full %ux%u)",
 								ssao.halfExtent.width, ssao.halfExtent.height,
 								ssao.fullExtent.width, ssao.fullExtent.height);
 					} else if (m_aoMode == AoMode::Gtao) {
 						if (!gtao.Valid())
-							ImGui::TextDisabled("GTAO target/shaders missing â€” no AO");
+							ImGui::TextDisabled("GTAO target/shaders missing — no AO");
 						else
 							ImGui::Text("GTAO: half %ux%u (full %ux%u) %ux%u",
 								gtao.halfExtent.width, gtao.halfExtent.height,
 								gtao.fullExtent.width, gtao.fullExtent.height,
 								(uint32_t)std::clamp(m_gtaoSlices, 1, 8),
 								(uint32_t)std::clamp(m_gtaoSteps, 1, 8));
+					} else if (m_aoMode == AoMode::Sao) {
+						if (!sao.Valid())
+							ImGui::TextDisabled("SAO target/shaders missing — no AO");
+						else
+							ImGui::Text("SAO: half %ux%u (full %ux%u) %u taps %u turns",
+								sao.halfExtent.width, sao.halfExtent.height,
+								sao.fullExtent.width, sao.fullExtent.height,
+								(uint32_t)std::clamp(m_saoSamples, 1, 32),
+								(uint32_t)std::clamp(m_saoSpiralTurns, 1, 16));
 					}
 					if (!m_viewportResources.dof.Valid())
 						ImGui::TextDisabled("DOF targets/shaders missing - sharp HDR");
@@ -9948,7 +10012,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_input.gamepadName(0).c_str());
 				else
 					ImGui::TextDisabled("[Gamepad] none connected");
-				ImGui::TextDisabled("Keys: M blur  O AO (No/SSAO/GTAO)  B bloom  X exposure  V vectors");
+				ImGui::TextDisabled("Keys: M blur  O AO (No/SSAO/GTAO/SAO)  B bloom  X exposure  V vectors");
 				ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
 				ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
 				ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
