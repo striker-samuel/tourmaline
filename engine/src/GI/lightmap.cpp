@@ -175,57 +175,10 @@ glm::vec3 SgLightmapIrradianceFitted(const glm::vec3& amp, const glm::vec3& axis
 	return normIrr * (2.0f * kPi * amp / lambda);
 }
 
-namespace {
-
-// GGX visibility term evaluated at the warped lobe center (BakingLab
-// SpecularTermSGWarp uses GGX_V1, the Smith height-correlated V1 approx).
-inline float GgxV1(float m2, float nDotX) {
-	return 2.0f * nDotX
-		/ (nDotX + SafeSqrt(m2 + (1.0f - m2) * nDotX * nDotX));
-}
-
-} // namespace
-
-glm::vec3 SgLightmapSpecularLobe(const glm::vec3& amp, const glm::vec3& axis,
-	float sharpness, const glm::vec3& n, const glm::vec3& view,
-	float roughness, const glm::vec3& specAlbedo) {
-	// SG-warped NDF approximation (BakingLab SpecularTermSGWarp core).
-	const float m = std::clamp(roughness, 0.045f, 1.0f);
-	const float m2 = m * m;
-	// DistributionTermSG: NDF as an SG around n, sharpness 2/m^2,
-	// amplitude 1/(pi*m^2).
-	const float ndfSharp = 2.0f / m2;
-	const float ndfAmp = 1.0f / (kPi * m2);
-	// WarpDistributionSG: rotate the NDF SG into the lighting domain
-	// (half-angle -> reflection), amplitude preserved, sharpness scaled.
-	const float nDotV = std::max(glm::dot(n, view), 0.0f);
-	glm::vec3 warpAxis = glm::reflect(-view, n);
-	const float warpLen = glm::length(warpAxis);
-	warpAxis = warpLen > 1e-6f ? warpAxis / warpLen : n;
-	const float warpSharp = ndfSharp / (4.0f * std::max(nDotV, 0.1f));
-	// SGInnerProduct(warpedNDF-as-SG, lobe): both SGs, closed form.
-	// warpedNDF SG = (amp=ndfAmp, axis=warpAxis, sharp=warpSharp).
-	const glm::vec3 sum = warpSharp * warpAxis + sharpness * axis;
-	const float lp = glm::length(sum);
-	if (lp < 1e-6f)
-		return glm::vec3(0.0f);
-	const float expo = std::exp(lp - warpSharp - sharpness);
-	const float other = 1.0f - std::exp(-2.0f * lp);
-	const glm::vec3 inner = ndfAmp * amp * expo * (2.0f * kPi * other / lp);
-	// Visibility + Fresnel + cosine at the warped lobe center.
-	const float nDotL = std::clamp(glm::dot(n, warpAxis), 0.0f, 1.0f);
-	glm::vec3 h = warpAxis + view;
-	const float hLen = glm::length(h);
-	h = hLen > 1e-6f ? h / hLen : n;
-	glm::vec3 out = inner;
-	out *= GgxV1(m2, nDotL) * GgxV1(m2, nDotV);
-	out *= specAlbedo + (glm::vec3(1.0f) - specAlbedo)
-		* std::pow(1.0f - std::clamp(glm::dot(warpAxis, h), 0.0f, 1.0f), 5.0f);
-	// Fade out spec below 0.1% albedo (BakingLab), then the cosine term.
-	out *= std::clamp(Luminance(specAlbedo) * 333.0f, 0.0f, 1.0f);
-	out *= nDotL;
-	return glm::max(out, glm::vec3(0.0f));
-}
+// (The BakingLab warped-NDF lobe — per-lobe reflect, two GGX V1 roots,
+// pow5 Fresnel — was replaced by the reflection-SG product integral in
+// SgLightmapSpecular below, mirroring the runtime shader diet; see the
+// sg_lightmap.hlsli header note.)
 
 glm::vec3 SgLightmapDiffuse(const glm::vec3* amps, uint32_t lobeCount,
 	const glm::vec3& n) {
@@ -239,15 +192,27 @@ glm::vec3 SgLightmapDiffuse(const glm::vec3* amps, uint32_t lobeCount,
 }
 
 glm::vec3 SgLightmapSpecular(const glm::vec3* amps, uint32_t lobeCount,
-	const glm::vec3& n, const glm::vec3& view, float roughness,
-	const glm::vec3& specAlbedo) {
+	const glm::vec3& r, float roughness) {
+	// Reflection-SG product integral (the SgGiSpecular model, sggi.hlsli):
+	// the GGX reflection kernel is approximated by a normalized SG around
+	// the reflection vector (sharpness 1/(4 alpha^2)) and each lightmap
+	// lobe integrates against it in closed form. Caller supplies Fresnel.
 	const SgBasisTable* t = BasisFor(lobeCount);
 	if (!t)
 		return glm::vec3(0.0f);
+	const float a = std::clamp(roughness, 0.04f, 1.0f);
+	const float alpha = a * a;
+	const float specSharp = 1.0f / (4.0f * alpha * alpha + 1e-4f);
+	const float specNorm = specSharp / (kPi * 2.0f * (1.0f - std::exp(-2.0f * specSharp)));
 	glm::vec3 sum(0.0f);
-	for (uint32_t i = 0; i < t->lobeCount; ++i)
-		sum += SgLightmapSpecularLobe(amps[i], t->axes[i], t->sharpness,
-			n, view, roughness, specAlbedo);
+	for (uint32_t i = 0; i < t->lobeCount; ++i) {
+		const glm::vec3 s = specSharp * r + t->sharpness * t->axes[i];
+		const float lp = glm::length(s);
+		if (lp < 1e-6f)
+			continue;
+		sum += amps[i] * (specNorm * std::exp(lp - specSharp - t->sharpness)
+			* (kPi * 2.0f / lp) * (1.0f - std::exp(-2.0f * lp)));
+	}
 	return sum;
 }
 

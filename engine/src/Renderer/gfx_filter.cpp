@@ -1617,14 +1617,21 @@ void BuildBatches(State& s, uint32_t view) {
 	SMVK_PROFILE_RENDER("GfxBuildBatches");
 	SMVK_PROFILE_TAG("draws", v.draws.size());
 
-	// Sort draws by material (stable: submission order kept per material).
-	// Commands are emitted in this order, so each material owns one
-	// contiguous indirect range (single multi-draw per material).
+	// Sort draws by (material, lightmap lobe class) — stable, so submission
+	// order is kept within a class. Commands are emitted in this order, so
+	// each (material, lobeCount) pair owns one contiguous indirect range
+	// (single multi-draw per material per lobe class). The Main filtered
+	// leg binds the matching lit program once per range: the generic lit
+	// FS, or the SG_LM_LOBE_COUNT-specialized twin when every draw in the
+	// range shares one cooked count (the shader then drops the runtime
+	// basis dispatch and folds the evaluation loops).
 	std::vector<uint32_t>& order = v.drawOrderScratch;
 	order.resize(v.draws.size());
 	std::iota(order.begin(), order.end(), 0u);
 	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-		return v.draws[a].material < v.draws[b].material;
+		if (v.draws[a].material != v.draws[b].material)
+			return v.draws[a].material < v.draws[b].material;
+		return v.draws[a].lmChunk < v.draws[b].lmChunk;
 	});
 
 	v.drawConstants.reserve(v.draws.size());
@@ -1642,20 +1649,23 @@ void BuildBatches(State& s, uint32_t view) {
 
 	uint32_t batchSlot = 0;
 	uint32_t cmdMaterial = UINT32_MAX;
+	uint32_t cmdLobes = UINT32_MAX;
 	uint32_t rangeStart = 0;
 	for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
 		const DrawRequest& d = v.draws[order[sorted]];
 		const Mesh& mesh = s.meshes[d.mesh];
-		if (d.material != cmdMaterial) {
+		if (d.material != cmdMaterial || d.lmChunk != cmdLobes) {
 			if (cmdMaterial != UINT32_MAX) {
 				MaterialRange r{};
 				r.material = cmdMaterial;
 				r.firstCommand = rangeStart;
 				r.commandCount = batchSlot - rangeStart;
+				r.lobeCount = cmdLobes;
 				if (r.commandCount > 0)
 					v.materialRanges.push_back(r);
 			}
 			cmdMaterial = d.material;
+			cmdLobes = d.lmChunk;
 			rangeStart = batchSlot;
 		}
 		if (batchSlot >= kMaxBatches) {
@@ -1701,6 +1711,7 @@ void BuildBatches(State& s, uint32_t view) {
 		r.material = cmdMaterial;
 		r.firstCommand = rangeStart;
 		r.commandCount = batchSlot - rangeStart;
+		r.lobeCount = cmdLobes;
 		v.materialRanges.push_back(r);
 	}
 	v.batchCount = batchSlot;

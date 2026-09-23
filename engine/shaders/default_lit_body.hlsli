@@ -1011,8 +1011,15 @@ PSOut mainPS(PSIn IN)
             const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (lmRoughW > 0.0f)
             {
-                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, geomN, V,
-                    shadingRoughness, Fenv) * lmScale * occlusion * ao;
+                // Reflection-SG specular (SgGiSpecular's model): anchored
+                // to the GEOMETRIC normal like the diffuse above (the SG
+                // reconstruction is only constrained around the surface
+                // orientation the amplitudes were fit for), Fresnel
+                // applied once here instead of per-lobe. The roughness
+                // early-out keeps smooth surfaces on the env cubemap.
+                const float3 Rlm = reflect(-V, geomN);
+                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, Rlm,
+                    shadingRoughness) * lmScale * Fenv * occlusion * ao;
                 ambientSpec = lerp(ambientSpec, lmSpec, lmRoughW);
             }
         }

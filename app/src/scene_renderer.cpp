@@ -1317,6 +1317,22 @@ bool SceneRenderer::Initialize() {
 	catch (...) {
 		std::cerr << "[SceneRenderer] default_lit_a2c unavailable - masked MSAA keeps the discard test\n";
 	}
+	// Fixed-lobe lit FS twins (SG permutations for the Main filtered
+	// leg): per-count SG evaluation without the runtime basis dispatch.
+	// Non-fatal: a missing variant keeps that count on the generic lit.
+	for (uint32_t li = 0; li < app::GfxRenderer::LitSgVariantCount(); ++li) {
+		try {
+			const std::string path = std::string("shaders/default_lit.frag.hlsl.sg")
+				+ std::to_string(app::GfxRenderer::LitSgVariantLobes(li)) + ".spv";
+			auto sgCode = readContentFile(contentVfs, path);
+			m_resources.fragLitSgModules[li] =
+				m_context->CreateShaderModule(sgCode, "fragLitSg");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] SG lobe-count lit variant "
+				<< li << " unavailable - count falls back to generic lit\n";
+		}
+	}
 	if (!m_resources.fragA2CShader.empty()) {
 		m_resources.mainProgramA2C = {
 			.shaders = {
@@ -1979,6 +1995,8 @@ bool SceneRenderer::Initialize() {
 		// toggle stays as the runtime A/B switch.
 		if (m_passes.gfxFilter && m_useGfxFilter) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
+			for (uint32_t li = 0; li < app::GfxRenderer::LitSgVariantCount(); ++li)
+				m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
 			// Main-view seed masked phase is reversed-Z: prefer the
 			// conservative shadow_rev module (falls back to the normal-Z
 			// shadow.frag module â€” perf hint, not correctness).
@@ -7010,14 +7028,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				return m_resources.mainWireProgram.shaderCount == 2
 					? m_resources.mainWireProgram : prog;
 			}
-			if (&prog == &m_gfxRenderer.FilteredProgram()
-				|| &prog == &m_gfxRenderer.FilteredProgramA2C()) {
+			// Generic lit, A2C twin and every fixed-lobe twin all shade
+			// through the lit FS family -> the same flat twin.
+			if (m_gfxRenderer.IsFilteredLitProgram(prog)) {
 				return m_gfxRenderer.FilteredWireValid()
 					? m_gfxRenderer.FilteredWireProgram() : prog;
 			}
 			if (&prog == &m_resources.vertexLitProgram) {
 				return m_resources.vertexLitWireProgram.shaderCount == 2
 					? m_resources.vertexLitWireProgram : prog;
+			}
+			if (m_gfxRenderer.IsFilteredLitProgram(prog)) {
+				return m_gfxRenderer.FilteredWireValid()
+					? m_gfxRenderer.FilteredWireProgram() : prog;
 			}
 			return prog;
 		};
@@ -7384,9 +7407,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 		if (gfxActive && !bypassFilter) {
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
+			// TEMP-DIAG: per-frame census of which lit program each
+			// material range binds (generic vs fixed-lobe twin).
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
-				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram(),
+				// Fixed-lobe lit twin for the range's cooked count: the SG
+				// evaluation folds to literals. Falls back to the generic
+				// lit program for mixed/unlightmapped ranges (incl. the
+				// A2C leg, which intentionally stays generic).
+				smvk::ShaderProgram& litProg =
+					m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount);
+				bindForMaterial(materialId, litProg,
 					m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
 				PushConstants matPC{};
 				matPC.materialId = materialId;

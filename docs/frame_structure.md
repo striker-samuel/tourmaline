@@ -146,6 +146,7 @@ split.
 | Knob | Effect |
 | --- | --- |
 | `VULKANTOY_SPLIT=0` | force legacy depth assembly (A/B) |
+| preset `x64-Release-ShaderDebug` | Release C++ with shaders compiled `-O3 -Zi -fspv-debug=vulkan` (SPIR-V debug info for RenderDoc & friends; `VULKANTOY_SHADER_DEBUG=ON`, DXC forbids `-Zi`+`-Zs` together so `-Zi` it is) |
 | `VULKANTOY_CULLFLAGS=hex` | override the GPU filter cull flags (bits mirror `smvk::gfx::CullFlagBits`; 0x24b = default incl. MASK exclusion) |
 | `VULKANTOY_AUDIT=<frame>` | one-shot `[GfxAudit]` indirect-verdict dump to stderr (per-batch kill reasons + kept/killed summary; stalls the GPU) |
 | `VULKANTOY_HIZ=0` | kill the Option A occluder-depth source |

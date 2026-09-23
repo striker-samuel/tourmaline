@@ -294,7 +294,7 @@ struct CookedSceneLights {
 // Point lights are pure GPU lights (no scene nodes / emissive balls);
 // the ImGui overlay draws them as colored points + indices.
 struct ForwardPlusDemo {
-	bool enabled = true;
+	bool enabled = false;
 	// Grid defaults sit at the UI slider maxima (12x8x12 -> 1152 grid
 	// lights, clamped to FP_MAX_LIGHTS minus the spot reserve): the dense
 	// crowd is the stress case the deferred-shadow pipeline is built for.
@@ -641,6 +641,11 @@ struct AppResources {
 	// discard variant everywhere.
 	smvk::Holder<smvk::ShaderModuleHandle> fragA2CShader;
 	smvk::ShaderProgram mainProgramA2C;
+	// Fixed-lobe lit FS twins (default_lit SG_LM_LOBE_COUNT variants):
+	// same VS + per-count SG evaluation, bound per filtered material
+	// range (see GfxRenderer::FilteredLitProgram). Missing modules leave
+	// that count on the generic lit program.
+	smvk::Holder<smvk::ShaderModuleHandle> fragLitSgModules[4];
 	// Debug-view fragment programs (F2/F4/F6): same default.vert VS, flat FS.
 	// Loaded alongside main; missing modules leave the program at
 	// shaderCount 0 and the view falls back to Lit.

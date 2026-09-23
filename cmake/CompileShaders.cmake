@@ -64,7 +64,7 @@ endfunction()
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   set(options)
   set(oneValueArgs)
-  set(multiValueArgs INCLUDE_DIRS)
+  set(multiValueArgs INCLUDE_DIRS VARIANTS)
   cmake_parse_arguments(CS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
@@ -148,6 +148,15 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 # (fatal error, no .spv emitted). -fspv-debug=vulkan keeps
                 # line info without embedded source and validates clean.
                 list(APPEND _COMMON -Od -Zi -Qembed_debug -fspv-debug=vulkan)
+            elseif (SHADER_DEBUG_ON)
+                # Release + shader debug (x64-Release-ShaderDebug preset,
+                # VULKANTOY_SHADER_DEBUG=ON): release -O3 shader codegen
+                # with SPIR-V debug info instead of the stripped lean
+                # modules — names/lines/source paths survive for RenderDoc
+                # & friends. Same proven -Zi + -fspv-debug=vulkan pairing
+                # as the Debug branch, just not -Od. (DXC forbids -Zi and
+                # -Zs together; -Zi is the SPIR-V-embedding one.)
+                list(APPEND _COMMON -O3 -Zi -fspv-debug=vulkan)
             else()
                 list(APPEND _COMMON -O3 -Qstrip_debug)
             endif()
@@ -183,6 +192,45 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 COMMENT "Compiling HLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
                 VERBATIM
             )
+            # Fixed-count shader permutations (e.g. SG_LM_LOBE_COUNT):
+            # CS_VARIANTS entries are "<basename>|<output suffix>|
+            # DEFINE[=v][|...]", e.g.
+            #   "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+            # emits ${BINARY_DIR}/default_lit.frag.hlsl.sg6.spv compiled with
+            # -DSG_LM_LOBE_COUNT=6 on top of the same flags/entry/profile as
+            # the base output. Lets one source ship several baked-constant
+            # programs the app binds per material range. HLSL/DXC only.
+            foreach(_VSPEC ${CS_VARIANTS})
+                string(REPLACE "|" ";" _VPARTS "${_VSPEC}")
+                list(LENGTH _VPARTS _VLEN)
+                if (_VLEN LESS 3)
+                    message(WARNING "[Shaders] malformed VARIANTS entry "
+                        "(need file|suffix|DEFINE[=v]): ${_VSPEC}")
+                    continue()
+                endif()
+                list(GET _VPARTS 0 _VFILE)
+                list(GET _VPARTS 1 _VSUFFIX)
+                if (NOT "${FILE_NAME}" STREQUAL "${_VFILE}")
+                    continue()
+                endif()
+                set(_VARIANT_OUTPUT "${BINARY_DIR}/${FILE_NAME}${_VSUFFIX}.spv")
+                set(_VARIANT_FLAGS "")
+                math(EXPR _VLAST "${_VLEN} - 1")
+                foreach(_VI RANGE 2 ${_VLAST})
+                    list(GET _VPARTS ${_VI} _VDEF)
+                    list(APPEND _VARIANT_FLAGS "-D${_VDEF}")
+                endforeach()
+                add_custom_command(
+                    OUTPUT "${_VARIANT_OUTPUT}"
+                    COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ DXC: ${FILE_NAME}${_VSUFFIX} [${_PROFILE}]"
+                    COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} ${_VARIANT_FLAGS} -Fo "${_VARIANT_OUTPUT}" "${SHADER}"
+                    COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ DXC OK: ${FILE_NAME}${_VSUFFIX}"
+                    DEPENDS "${SHADER}" ${SHADER_HEADERS}
+                    COMMENT "Compiling HLSL ${FILE_NAME}${_VSUFFIX} → SPIR-V (Vulkan 1.3)"
+                    VERBATIM
+                )
+                list(APPEND COMPILED_SHADERS "${_VARIANT_OUTPUT}")
+            endforeach()
         else()
             # --- GLSL via glslc → SPIR-V ---
             set(_GLSLC_FLAGS --target-env=vulkan1.3)  # bump to vulkan1.4 when ready
@@ -203,7 +251,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
             )
         endif()
 
-        list(APPEND COMPILED_SHADERS "${OUTPUT_FILE}")
+    list(APPEND COMPILED_SHADERS "${OUTPUT_FILE}")
     endforeach()
 
     add_custom_target(${TARGET_NAME}_shaders ALL DEPENDS ${COMPILED_SHADERS})

@@ -152,6 +152,27 @@ endif()
 message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
   " (VULKANTOY_DS_VIZ='${VULKANTOY_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
 
+# --- Shader debug information (-Zi) ---------------------------------------------
+# Release tree whose shaders carry SPIR-V debug info (names/lines/source
+# paths via NonSemantic.Shader.DebugInfo.100 — RenderDoc & friends) instead
+# of the lean -Qstrip_debug modules. C++ codegen stays Release (-O2).
+#   unset/-DVULKANTOY_SHADER_DEBUG=OFF -> OFF (Release keeps -O3 + strip)
+#   Debug trees already carry debug info via their own CompileShaders branch
+#   -DVULKANTOY_SHADER_DEBUG=ON -> shaders compile -O3 -Zi -fspv-debug=vulkan
+#     in a Release tree (the x64-Release-ShaderDebug CMakeSettings preset).
+# NOTE: DXC's -Zi and -Zs are mutually exclusive ("Cannot specify both");
+# -Zi is the flag that embeds debug info in the SPIR-V itself, so that is
+# what this flavor uses.
+set(VULKANTOY_SHADER_DEBUG OFF CACHE BOOL
+    "Compile shaders with -Zi SPIR-V debug info in Release trees")
+if(VULKANTOY_SHADER_DEBUG AND NOT CMAKE_BUILD_TYPE MATCHES "Debug")
+  set(SHADER_DEBUG_ON ON)
+else()
+  set(SHADER_DEBUG_ON OFF)
+endif()
+message(STATUS "Shader debug info (-Zi): ${SHADER_DEBUG_ON}"
+  " (VULKANTOY_SHADER_DEBUG='${VULKANTOY_SHADER_DEBUG}', build type '${CMAKE_BUILD_TYPE}')")
+
 # --- Optick profiler ----------------------------------------------------------
 option(ENABLE_OPTICK "Enable Optick CPU/GPU profiling" ON)
 if(ENABLE_OPTICK)

@@ -93,19 +93,17 @@ glm::vec3 LightmapAxis(uint32_t lobeCount, uint32_t lobe);
 glm::vec3 SgLightmapIrradianceFitted(const glm::vec3& amp, const glm::vec3& axis,
 	float sharpness, const glm::vec3& n);
 
-// WarpDistributionSG + SGInnerProduct specular for one lobe (BakingLab
-// SpecularTermSGWarp core, without the visibility/Fresnel/cosine terms the
-// runtime shader applies itself).
-glm::vec3 SgLightmapSpecularLobe(const glm::vec3& amp, const glm::vec3& axis,
-	float sharpness, const glm::vec3& n, const glm::vec3& view,
-	float roughness, const glm::vec3& specAlbedo);
-
 // Full-chunk evaluation helpers (sum over lobes).
 glm::vec3 SgLightmapDiffuse(const glm::vec3* amps, uint32_t lobeCount,
 	const glm::vec3& n);
+// Rough specular: reflection-SG product integral (the SgGiSpecular model) —
+// the GGX reflection kernel approximated by a normalized SG around the
+// reflection vector, each lobe integrating against it analytically.
+// Caller supplies Fresnel once. Replaces the old BakingLab warped-NDF
+// lobe (per-lobe reflect + GGX V1 roots + pow5 Fresnel), which dominated
+// the lit fragment shader.
 glm::vec3 SgLightmapSpecular(const glm::vec3* amps, uint32_t lobeCount,
-	const glm::vec3& n, const glm::vec3& view, float roughness,
-	const glm::vec3& specAlbedo);
+	const glm::vec3& r, float roughness);
 
 // ---------------------------------------------------------------------------
 // Fitting (fixed per-count basis, diagonal projection — same production

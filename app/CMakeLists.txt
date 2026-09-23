@@ -152,6 +152,15 @@ compile_shaders(
     "${ENGINE_SHADERS_DIR}"
     "${APP_INCLUDE_DIR}"
     "${APP_DIR}"
+  # Fixed-count lit permutations: the Main filtered leg binds the lit FS
+  # matching each material range's cooked lobe count (see GfxRenderer::
+  # FilteredLitProgram), so the shader's SG evaluation folds to literals.
+  # Output: default_lit.frag.hlsl.sg{5,6,9,12}.spv next to the base module.
+  VARIANTS
+    "default_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
+    "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+    "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
+    "default_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
 )
 
 # compile_shaders() already emits the ALL target "App_shaders" over these

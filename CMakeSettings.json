@@ -32,6 +32,17 @@
       "cmakeCommandArgs": "-DVULKANTOY_DS_VIZ=ON",
       "buildCommandArgs": "",
       "ctestCommandArgs": ""
+    },
+    {
+      "name": "x64-Release-ShaderDebug",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${projectDir}\\out\\build\\${name}",
+      "installRoot": "${projectDir}\\out\\install\\${name}",
+      "cmakeCommandArgs": "-DVULKANTOY_SHADER_DEBUG=ON",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": ""
     }
   ]
 }

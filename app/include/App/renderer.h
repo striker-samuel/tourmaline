@@ -65,6 +65,15 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// MSAASettings::Count2A2C(). Zero discard in the FS module so the
 	// driver keeps the early depth test.
 	smvk::ShaderProgram filteredProgramA2C{};
+	// Fixed-lobe-count twins of filteredProgram (same filtered VS + the
+	// SG_LM_LOBE_COUNT-specialized lit FS, index 0..3 = counts 5/6/9/12):
+	// the Main filtered leg binds the twin matching each material range's
+	// cooked lobe count, so the SG evaluation folds to literals. A missing
+	// module (Ensure builds only configured ones) leaves shaderCount 0
+	// and that count falls back to the generic FilteredProgram(). The A2C
+	// leg, the direct leg and the debug views intentionally stay generic.
+	smvk::ShaderModuleHandle litFragSgModules_[4]{};
+	smvk::ShaderProgram filteredLitSg_[4]{};
 	// Wireframe (P) twin of filteredProgram (same VS + default_wire.frag):
 	// Main binds it instead of the lit A2C/filtered programs while the
 	// wireframe raster override is on, so line pixels skip the heavy lit
@@ -161,6 +170,21 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 
 	void ConfigureFrag(smvk::ShaderModuleHandle mainFrag) { mainFrag_ = mainFrag; }
+	// Fixed-lobe lit FS module for one cooked lobe count (variantIndex
+	// 0..3 = counts 5/6/9/12, see LitSgVariantLobes; other inputs are
+	// rejected). Called once per available variant module at init; missing
+	// variants stay empty and fall back to the generic lit FS per range.
+	void ConfigureLitFragSg(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			litFragSgModules_[variantIndex] = frag;
+	}
+	static constexpr uint32_t LitSgVariantCount() { return 4; }
+	// Cooked lobe counts in variant order (matches the .sgN.spv suffixes
+	// and the scene's module load loop).
+	static constexpr uint32_t LitSgVariantLobes(uint32_t variantIndex) {
+		return variantIndex == 0 ? 5u : variantIndex == 1 ? 6u
+			: variantIndex == 2 ? 9u : 12u;
+	}
 	void ConfigureSeedFrag(smvk::ShaderModuleHandle seedFrag) { seedFrag_ = seedFrag; }
 	// Normal-Z shadow.frag module for the shadow-atlas seed masked phase
 	// (ConfigureSeedFrag carries the reversed-Z twin for the main-view
@@ -260,6 +284,27 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return worldMesh < meshMap_.size() && meshMap_[worldMesh] != UINT32_MAX;
 	}
 		[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
+	// Lit program for a material range's cooked lobe count: the matching
+	// fixed-count twin when built, else the generic FilteredProgram()
+	// (unknown/mixed counts incl. 0xFFFFFFFFu = unlightmapped draws).
+	[[nodiscard]] smvk::ShaderProgram& FilteredLitProgram(uint32_t lobeCount) {
+		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
+			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+		if (li <= 3 && filteredLitSg_[li].shaderCount == 2)
+			return filteredLitSg_[li];
+		return filteredProgram;
+	}
+	// True for the generic lit program, its A2C twin and every built
+	// lobe-count twin — the wireframe override resolves all of them to
+	// the flat twin (wireTwinOf in the Main pass).
+	[[nodiscard]] bool IsFilteredLitProgram(const smvk::ShaderProgram& prog) const {
+		if (&prog == &filteredProgram || &prog == &filteredProgramA2C)
+			return true;
+		for (uint32_t li = 0; li < 4; ++li)
+			if (&prog == &filteredLitSg_[li])
+				return true;
+		return false;
+	}
 	// A2C twin for Masked material ranges in 2x MSAA Main (invalid when
 	// ConfigureA2CFrag was never called / module creation failed).
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgramA2C() { return filteredProgramA2C; }

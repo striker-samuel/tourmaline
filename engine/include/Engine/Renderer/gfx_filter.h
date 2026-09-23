@@ -220,11 +220,18 @@ struct UvFlatVsPushTail {
 };
 static_assert(sizeof(UvFlatVsPushTail) == 16);
 
-// One indirect command range per material (commands sorted by material).
+// One indirect command range per (material, lightmap lobe class)
+// (commands sorted by both keys): a single multi-draw per range, and
+// the Main filtered leg binds the matching lit program (the generic
+// one, or the SG_LM_LOBE_COUNT-specialized twin for uniform-lobe
+// ranges) exactly once per range.
 struct MaterialRange {
 	uint32_t material = 0;
 	uint32_t firstCommand = 0;
 	uint32_t commandCount = 0;
+	// Cooked SG-lightmap lobe count shared by every draw in the range
+	// (5/6/9/12; 0xFFFFFFFFu = mixed/none — bind the generic lit FS).
+	uint32_t lobeCount = 0xFFFFFFFFu;
 };
 
 struct Stats {

@@ -95,6 +95,17 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 		smvk::Shader fs{ .module = wireFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		filteredWireProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 	}
+	// Fixed-lobe lit twins (same filtered VS + the SG-permuted lit FS):
+	// built only for configured modules; Main falls back to the generic
+	// filtered program per missing range class.
+	for (uint32_t li = 0; li < 4; ++li) {
+		if (filteredLitSg_[li].shaderCount == 0
+			&& !filteredVsModule.empty() && !litFragSgModules_[li].empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = litFragSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredLitSg_[li] = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+	}
 	// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 	// emits a single entry point per file). Missing seed frag
 	// (ConfigureSeedFrag not called) disables seeding but leaves the

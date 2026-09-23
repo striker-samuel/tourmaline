@@ -326,6 +326,111 @@ void TestBatching() {
 	Check(refsOk, "gfx.batch.refs-valid");
 	Check(covered == out.batchCount, "gfx.batch.ranges-cover");
 	Check(out.materialRanges.size() == 2, "gfx.batch.two-materials");
+	// Default DrawRequests carry no lightmap (0xFFFFFFFFu), so the new
+	// lobe grouping must not split these ranges.
+	bool lobesDefault = true;
+	for (size_t i = 0; i < out.materialRanges.size(); ++i)
+		lobesDefault = lobesDefault
+			&& out.materialRanges[i].lobeCount == 0xFFFFFFFFu;
+	Check(lobesDefault, "gfx.batch.ranges-default-lobes");
+}
+
+// ---------------------------------------------------------------------------
+// T3b: material ranges split by (material, lightmap lobe class).
+//
+// The Main filtered leg binds one lit program per range — the generic
+// lit FS or the SG_LM_LOBE_COUNT-specialized twin — so draws sharing a
+// material but carrying different cooked lobe counts must land in
+// different ranges, each stamped with its uniform count.
+// ---------------------------------------------------------------------------
+
+void TestLobeGrouping() {
+	using namespace smvk::gfx;
+	State s{};
+	// Two single-triangle meshes (each cooks to exactly 1 cluster).
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	Check(m0 == 0 && m1 == 1, "gfx.lobe.mesh-ids");
+
+	// Camera in front (+Z looking -Z): both front-facing, fully in frustum.
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	v.cullFlags = CullFlagBit_Degenerate;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	// 4 draws, ONE material, THREE lobe classes (shuffled): the range
+	// must split by (material, lobe) even though the material is shared.
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 12u);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 0xFFFFFFFFu);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 6u);
+	BuildBatches(s, 0);
+
+	const View& out = s.views[0];
+	Check(out.batchCount == 4, "gfx.lobe.count");
+	const uint32_t expectLobes[3] = { 6u, 12u, 0xFFFFFFFFu };
+	const uint32_t expectCmds[3] = { 2, 1, 1 };
+	uint32_t covered = 0;
+	bool grouped = out.materialRanges.size() == 3;
+	for (size_t i = 0; grouped && i < out.materialRanges.size(); ++i) {
+		const MaterialRange& r = out.materialRanges[i];
+		grouped = grouped
+			&& r.material == 3
+			&& r.lobeCount == expectLobes[i]
+			&& r.commandCount == expectCmds[i]
+			&& r.firstCommand == covered;
+		for (uint32_t k = 0; grouped && k < r.commandCount; ++k) {
+			const Batch& b = out.batches[r.firstCommand + k];
+			grouped = grouped
+				&& b.draw < out.drawConstants.size()
+				&& out.drawConstants[b.draw].lmChunk == r.lobeCount;
+		}
+		covered += r.commandCount;
+	}
+	Check(grouped, "gfx.lobe.split");
+	Check(covered == out.batchCount, "gfx.lobe.cover");
+
+	// Material stays the major key: (7,6) sorts after every (3,*).
+	State s2{};
+	const uint32_t n0 = RegisterMeshFromUpload(s2, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	smvk::RenderViewSet views2;
+	views2.NewFrame();
+	const uint32_t rv2 = views2.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	View v2{};
+	v2.renderView = &views2.Get(rv2);
+	v2.eye = eye;
+	v2.width = 800;
+	v2.height = 600;
+	v2.viewProj = views2.Get(rv2).m_viewProjectionMatrix;
+	v2.cullFlags = CullFlagBit_Degenerate;
+	s2.views.push_back(std::move(v2));
+	s2.viewCount = 1;
+	PushDraw(s2, 0, n0, glm::mat4(1.0f), 7, 0, DrawSetBit_Opaque, 6u);
+	PushDraw(s2, 0, n0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque, 9u);
+	BuildBatches(s2, 0);
+	const View& out2 = s2.views[0];
+	bool orderOk = out2.materialRanges.size() == 2
+		&& out2.materialRanges[0].material == 3
+		&& out2.materialRanges[0].lobeCount == 9u
+		&& out2.materialRanges[1].material == 7
+		&& out2.materialRanges[1].lobeCount == 6u;
+	Check(orderOk, "gfx.lobe.material-major");
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,6 +1751,7 @@ int main() {
 	TestWindingSign();
 	TestRegistration();
 	TestBatching();
+	TestLobeGrouping();
 	TestPreCull();
 	TestTwoSided();
 	TestTemporalSnapshot();
