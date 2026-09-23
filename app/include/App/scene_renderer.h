@@ -200,6 +200,21 @@ enum class AaMode : int {
 };
 
 // ---------------------------------------------------------------------------
+// Texture filtering mode (renderer-configurable, UI toggle).
+// Bilinear  = linear min/mag, nearest-between-mips (VK_SAMPLER_MIPMAP_MODE_NEAREST).
+// Trilinear = linear min/mag, linear-between-mips (default).
+// Applies to the bindless texture samplers (slot 0 Repeat + slot 2 Clamp,
+// which also covers cubemaps via dedup) through in-place sampler recreate.
+// ---------------------------------------------------------------------------
+enum class TextureFiltering : int {
+	Bilinear = 0,
+	Trilinear = 1,
+};
+inline const char* TextureFilteringName(TextureFiltering m) {
+	return m == TextureFiltering::Bilinear ? "Bilinear" : "Trilinear";
+}
+
+// ---------------------------------------------------------------------------
 // Ambient / GI source selection (N cycles): exactly one active source set
 // for clean isolation — All is the production state, the rest isolate a
 // single GI contribution for bisection. The ambient is the only thing
@@ -1317,6 +1332,40 @@ protected:
 	// diameter (m_evsmSpotLightSize) with PCSS similar-triangles. 0 = hard.
 	float m_evsmSoftness = 1.0f;
 	float m_evsmSpotLightSize = 0.35f; // m, matches the demo PCSS light size
+	// ---- Directional CSM tuning (UI, Quality tab) ----
+	// Tile resolution recreates the depth + EVSM moment atlases on change
+	// (one-time hitch via the idempotent per-frame Ensure).
+	uint32_t m_cascadeResolution = 2048; // per-cascade tile (512..4096)
+	// Split blend for ComputeCascadeSplits: 0 = linear, 1 = logarithmic.
+	float m_cascadeLambda = 0.8f;
+	// Shadow range cap (m). 0 = scene farClip; otherwise clamped to
+	// [near + 1, scene farClip] and used as the split far plane, so the
+	// cascades concentrate where the slider says.
+	float m_cascadeMaxDistance = 0.0f;
+	// Multipliers over the engine's per-cascade auto bias (texel-scaled:
+	// normalBias ~1.25 texels world, depth bias ~0.5 texels / depthRange).
+	float m_cascadeDepthBiasScale = 1.0f;
+	float m_cascadeNormalBiasScale = 1.0f;
+	// Effective split far plane (see m_cascadeMaxDistance).
+	float CascadeFar() const {
+		if (m_cascadeMaxDistance > 0.0f)
+			return std::clamp(m_cascadeMaxDistance,
+				default_near_clip + 1.0f, m_scene.farClip);
+		return m_scene.farClip;
+	}
+	// Live tile extent (atlas after Ensure; falls back to the selected
+	// resolution before the first Ensure).
+	smvk::Extent2D CascadeTileExtent() const {
+		const auto& atlas = m_viewportResources.directionalShadows;
+		if (atlas.tileExtent.width != 0 && atlas.tileExtent.height != 0)
+			return atlas.tileExtent;
+		return { m_cascadeResolution, m_cascadeResolution };
+	}
+	// Last built per-cascade splits + applied biases (filled by
+	// UpdateLights every frame; read by the shadow UI sections).
+	float m_cascadeSplitsDbg[5] = {};
+	float m_cascadeBiasDbg[4] = {};
+	float m_cascadeNormalBiasDbg[4] = {};
 	bool EvsmActive() const {
 		return m_evsmEnabled
 			&& m_viewportResources.evsmDir.Valid()
@@ -1694,6 +1743,16 @@ protected:
 	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
 	// camera jitter (UpdateFrameUniforms) and the temporal resolve.
 	AaMode m_aaMode = AaMode::SmaaT2x;
+	// Texture filtering (bilinear <-> trilinear, UI toggle + shortcut).
+	// Default trilinear (linear-between-mips); applied in-place to the
+	// bindless texture samplers (see ApplyTextureFiltering).
+	TextureFiltering m_textureFiltering = TextureFiltering::Trilinear;
+	TextureFiltering GetTextureFiltering() const { return m_textureFiltering; }
+	void SetTextureFiltering(TextureFiltering mode);
+	// (Re)applies m_textureFiltering to sampler slots 0 (Repeat) + 2
+	// (Clamp/cubemap). Safe to call every frame (no-op when already set);
+	// call after sampler creation and whenever the UI changes the mode.
+	void ApplyTextureFiltering();
 	// Opt-in alpha-to-coverage for Masked cutout in MSAA 2x Main
 	// (VULKANTOY_A2C=1, default off). Bench data (bistro foliage view,
 	// RTX 5070 Ti): A2C moves the masked coverage/depth test after the FS

@@ -80,8 +80,6 @@ static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::strin
 // Engine/Rendergraph/cascadedshadowmap.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
-static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades)
-static constexpr float CASCADE_LAMBDA = 0.8f; // 0 = linear, 1 = pure logarithmic (1.0 starves the far cascade)
 static constexpr float CASCADE_Z_PADDING = 10.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no stencil on the directional atlas
 
@@ -363,12 +361,12 @@ static smvk::Extent2D ScaledExtent(smvk::Extent2D base, float scale) {
 // punch holes. Shadow views stay exact (their projections never jitter).
 static constexpr float kMainViewCullGuardPx = 1.0f;
 
-static smvk::CascadedShadowMapDesc MakeShadowDesc() {
+static smvk::CascadedShadowMapDesc MakeShadowDesc(uint32_t resolution, float lambda) {
 	smvk::CascadedShadowMapDesc d{};
 	d.cascadeCount = NUM_CASCADES;
-	d.cascadeResolution = CASCADE_RES;
+	d.cascadeResolution = resolution;
 	d.format = SHADOW_FORMAT;
-	d.lambda = CASCADE_LAMBDA;
+	d.lambda = lambda;
 	d.zPadding = CASCADE_Z_PADDING;
 	d.name = "shadowMapAtlas";
 	return d;
@@ -451,9 +449,9 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 // Tile counts/resolutions mirror the PCF atlases so the same lightVP math
 // (BuildDirectionalLight / BuildSpotTile) drives both representations.
 // -----------------------------------------------------------------------------
-static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline) {
+static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline, uint32_t tileResolution) {
 	smvk::EvsmDesc d{};
-	d.tileResolution = CASCADE_RES;
+	d.tileResolution = tileResolution;
 	d.tileCount = NUM_CASCADES;
 	d.momentsFormat = smvk::Format::RGBA32_Float;
 	d.depthFormat = smvk::Format::D32_Float;
@@ -649,6 +647,17 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// m_msaaAlphaToCoverage).
 	if (const char* a2cEnv = std::getenv("VULKANTOY_A2C")) {
 		m_msaaAlphaToCoverage = std::atoi(a2cEnv) != 0;
+	}
+	// Texture filtering default for headless A/B (bilinear | trilinear).
+	// The ImGui combo stays live after; applied every RenderFrame.
+	if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
+		if (!_stricmp(filtEnv, "bilinear"))
+			m_textureFiltering = TextureFiltering::Bilinear;
+		else if (!_stricmp(filtEnv, "trilinear"))
+			m_textureFiltering = TextureFiltering::Trilinear;
+		else
+			std::cerr << "[SceneRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
+				"bilinear|trilinear): " << filtEnv << "\n";
 	}
 	// Point the FPS camera at the scene's default viewpoint (Camera keeps a
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
@@ -1014,6 +1023,14 @@ bool SceneRenderer::Initialize() {
 			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
 			else if (aa == "t2x") m_aaMode = AaMode::SmaaT2x;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
+		}
+		// Texture filtering override for A/B runs without UI interaction
+		// (bilinear | trilinear). The ImGui combo stays live after.
+		if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
+			const std::string_view f = trimEnv(filtEnv);
+			if (f == "bilinear") m_textureFiltering = TextureFiltering::Bilinear;
+			else if (f == "trilinear") m_textureFiltering = TextureFiltering::Trilinear;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TEXTURE_FILTER value: " << f << "\n";
 		}
 
 		// DLSS quality-mode override for A/B runs (off | ultraperf | perf |
@@ -2120,7 +2137,7 @@ bool SceneRenderer::Initialize() {
 		// resolution (see RenderFrame); the swapchain-owned depth is unused.
 
 		// Directional cascade atlas + default shadow program (builder owns Ensure).
-		if (!m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph, MakeShadowDesc())) {
+		if (!m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph, MakeShadowDesc(m_cascadeResolution, m_cascadeLambda))) {
 			std::cerr << "[SceneRenderer] Failed to create cascaded shadow atlas\n";
 			return false;
 		}
@@ -2135,7 +2152,7 @@ bool SceneRenderer::Initialize() {
 	if (!m_context->SupportsEvsm()) {
 		std::cerr << "[SceneRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) – PCF shadows\n";
 	}
-	if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline))) {
+	if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
 		std::cerr << "[SceneRenderer] EVSM directional atlas unavailable – PCF fallback\n";
 	}
 	if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
@@ -3247,7 +3264,7 @@ void SceneRenderer::Shutdown() {
 		// ---- Cascade builder (engine) ----
 		auto invView = glm::inverse(cameraView);
 		auto invProj = glm::inverse(cameraProj);
-				auto splits = smvk::ComputeCascadeSplits(default_near_clip, m_scene.farClip, CASCADE_LAMBDA, NUM_CASCADES);
+		auto splits = smvk::ComputeCascadeSplits(default_near_clip, CascadeFar(), m_cascadeLambda, NUM_CASCADES);
 
 		smvk::GpuDirectionalLightDescription dir =
 			m_viewportResources.directionalShadows.BuildDirectionalLight(
@@ -3263,6 +3280,18 @@ void SceneRenderer::Shutdown() {
 				// angular radius becomes the physical penumbra angle.
 				std::tan(glm::radians(m_env.sunDiscSizeDeg)),
 				m_evsmSoftness);
+		// UI bias scales over the engine's texel-scaled per-cascade bias.
+		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+			dir.cascades[i].bias *= m_cascadeDepthBiasScale;
+			dir.cascades[i].normalBias *= m_cascadeNormalBiasScale;
+		}
+		// Mirrors for the shadow UI sections (ranges + applied biases).
+		for (uint32_t i = 0; i <= NUM_CASCADES; ++i)
+			m_cascadeSplitsDbg[i] = splits[i];
+		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+			m_cascadeBiasDbg[i] = dir.cascades[i].bias;
+			m_cascadeNormalBiasDbg[i] = dir.cascades[i].normalBias;
+		}
 		// Keep lights[0].lightVP in sync for legacy single-cascade path / debug
 		std::memcpy(light.lightVP, dir.lightVP, sizeof(light.lightVP));
 
@@ -5644,6 +5673,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
 	m_frameCounter += 1;
 	m_rendergraph->NewFrame();
+	// Texture filtering (bilinear <-> trilinear) is renderer state: enforce
+	// the selected mipmap mode on the bindless sampler slots every frame
+	// (no-op when already set; recreates slots 0 + 2 on change).
+	ApplyTextureFiltering();
 	const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
 	// DLSS owns the internal resolution when requested and runnable: the
 	// driver-recommended optimal render size replaces the renderScale
@@ -5754,12 +5787,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// resolve; device support is still gated at the Main pass).
 		// DLSS replaces all AA when active.
 		m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x) && !dlssUsable;
-			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
-			// EVSM atlases follow the pipeline-mode member so flipping
-			// m_evsmPipeline (OneFrameLag <-> SameFrame) takes effect on
-			// the next frame without a restart (Ensure is a no-op in
-			// steady state; shaders persist across the flip).
-			m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline));
+		// Directional cascade atlas follows the UI tile resolution (Ensure
+		// is a no-op in steady state; recreates once on slider change).
+		m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph,
+			MakeShadowDesc(m_cascadeResolution, m_cascadeLambda));
+		m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
+		// EVSM atlases follow the pipeline-mode member so flipping
+		// m_evsmPipeline (OneFrameLag <-> SameFrame) takes effect on
+		// the next frame without a restart (Ensure is a no-op in
+		// steady state; shaders persist across the flip).
+		m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution));
 			m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
 			// Soft shadows: the softness knob drives the PREFILTER width â€”
 			// the dominant visible softness (stride-dilated Gaussian; the
@@ -5902,7 +5939,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			kMainViewCullGuardPx);
 		const uint32_t cascadeViewBase = m_renderViews.AllocateDirectionalLightViews(
 			dirLight,
-			{ static_cast<float>(CASCADE_RES), static_cast<float>(CASCADE_RES) });
+			{ static_cast<float>(CascadeTileExtent().width), static_cast<float>(CascadeTileExtent().height) });
 		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
 		for (const smvk::GpuCascadeDescription& tile : m_spotShadowTiles) {
 			const uint32_t view = m_renderViews.AllocateSpotShadowView(
@@ -6087,7 +6124,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					*m_context, *m_rendergraph,
 					m_renderViews.Get(cascadeViewBase + ci),
 					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-					CASCADE_RES, CASCADE_RES);
+					CascadeTileExtent().width, CascadeTileExtent().height);
 		if (spotViewsValid)
 			for (uint32_t si = 0; si < spotSlotCount; ++si)
 				spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
@@ -8897,6 +8934,22 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("Screen-door: depth-writing, order-independent (SMAA T2x integrates it).");
 					else
 						ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
+					// Texture filtering (renderer state): bilinear = linear
+					// within a mip, nearest between mips; trilinear adds
+					// linear between mips (default). Applies to the bindless
+					// texture samplers (slots 0 + 2) via in-place recreate.
+					{
+						const char* filtNames[] = { "Bilinear", "Trilinear" };
+						int filtIdx = (m_textureFiltering == TextureFiltering::Bilinear) ? 0 : 1;
+						if (ImGui::Combo("Texture filtering", &filtIdx, filtNames, 2))
+							SetTextureFiltering(filtIdx == 0
+								? TextureFiltering::Bilinear
+								: TextureFiltering::Trilinear);
+						if (filtIdx == 0)
+							ImGui::TextDisabled("Bilinear: sharper mip transitions, slight shimmer at grazing angles.");
+						else
+							ImGui::TextDisabled("Trilinear: smooth mip blends (default).");
+					}
 				}
 				if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
@@ -9253,6 +9306,39 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("Pool %u particles, emit+sim+draw all compute/GPU "
 					"resident (dead slots collapse in the VS).",
 					(unsigned)PARTICLE_MAX);
+			}
+				if (ImGui::CollapsingHeader("Directional CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
+				// Tile resolution (depth + EVSM moment atlases recreate once
+				// on change via the per-frame Ensure; one-time hitch).
+				{
+					const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
+					const char* resNames[] = { "512", "1024", "2048", "4096" };
+					int resIdx = 2;
+					for (int i = 0; i < 4; ++i)
+						if (resOptions[i] == m_cascadeResolution)
+							resIdx = i;
+					if (ImGui::Combo("Cascade resolution", &resIdx, resNames, 4))
+						m_cascadeResolution = resOptions[std::clamp(resIdx, 0, 3)];
+					const auto tile = CascadeTileExtent();
+					ImGui::TextDisabled("Live tile %ux%u (atlas %ux%u).",
+						tile.width, tile.height,
+						m_viewportResources.directionalShadows.atlasExtent.width,
+						m_viewportResources.directionalShadows.atlasExtent.height);
+				}
+				ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
+				ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");
+				ImGui::SliderFloat("Shadow distance (m, 0 = scene far)", &m_cascadeMaxDistance, 0.0f, 500.0f, "%.0f");
+				ImGui::Text("Effective far: %.1f m (scene far %.1f m)",
+					(double)CascadeFar(), (double)m_scene.farClip);
+				ImGui::SliderFloat("Depth bias scale", &m_cascadeDepthBiasScale, 0.0f, 4.0f, "%.2f");
+				ImGui::SliderFloat("Normal bias scale", &m_cascadeNormalBiasScale, 0.0f, 4.0f, "%.2f");
+				ImGui::TextDisabled("Scales the texel-sized per-cascade auto bias "
+					"(up = fewer acne, more peter-panning).");
+				for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+					ImGui::Text(" cascade %u: [%.2f .. %.2f] depthBias %.5f normalBias %.4f",
+						i, (double)m_cascadeSplitsDbg[i], (double)m_cascadeSplitsDbg[i + 1],
+						(double)m_cascadeBiasDbg[i], (double)m_cascadeNormalBiasDbg[i]);
+				}
 			}
 				if (ImGui::CollapsingHeader("Spot shadows + cookies", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Spot shadows (per-light flag)", &m_fpDemo.spotShadowsEnabled);
@@ -9735,13 +9821,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					}
 				}
 				if (ImGui::CollapsingHeader("Shadows ï¿½ CSM + spots + deferred", ImGuiTreeNodeFlags_DefaultOpen)) {
-					auto splits = smvk::ComputeCascadeSplits(default_near_clip, m_scene.farClip, CASCADE_LAMBDA, NUM_CASCADES);
 					const auto& atlas = m_viewportResources.directionalShadows;
-					ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u",
-						NUM_CASCADES, CASCADE_RES, CASCADE_RES,
-						atlas.atlasExtent.width, atlas.atlasExtent.height);
+					ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u  lambda %.2f  far %.1fm",
+						NUM_CASCADES, CascadeTileExtent().width, CascadeTileExtent().height,
+						atlas.atlasExtent.width, atlas.atlasExtent.height,
+						(double)m_cascadeLambda, (double)CascadeFar());
 					for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
-						ImGui::Text(" cascade %u: [%.2f .. %.2f] splitEnd %.2f", i, splits[i], splits[i + 1], splits[i + 1]);
+						ImGui::Text(" cascade %u: [%.2f .. %.2f] depthBias %.5f normalBias %.4f",
+							i, (double)m_cascadeSplitsDbg[i], (double)m_cascadeSplitsDbg[i + 1],
+							(double)m_cascadeBiasDbg[i], (double)m_cascadeNormalBiasDbg[i]);
 					}
 					const glm::vec3 toSunDbg = m_env.SunDirectionToSun();
 					ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
@@ -10887,6 +10975,42 @@ void SceneRenderer::SetUIMode(bool ui)
 		// When returning to FPS, sync positioner to the virtual cursor so
 		// the first relative delta doesn't yank the camera.
 		m_cameraPositioner.resetMousePosition(m_virtualMouse);
+	}
+}
+
+void SceneRenderer::SetTextureFiltering(TextureFiltering mode)
+{
+	if (m_textureFiltering == mode)
+		return;
+	m_textureFiltering = mode;
+	ApplyTextureFiltering();
+}
+
+void SceneRenderer::ApplyTextureFiltering()
+{
+	if (!m_context)
+		return;
+	// Bilinear = linear within a mip, nearest between mips.
+	// Trilinear = linear within + linear between (default).
+	const smvk::MipmapMode mipMode = (m_textureFiltering == TextureFiltering::Bilinear)
+		? smvk::MipmapMode::Nearest
+		: smvk::MipmapMode::Linear;
+	// Slot 0: default Repeat sampler (material albedo/normal/metalness/...,
+	// shaders hardcode samplers[0]). Slot 2: clamp sampler (lightmap
+	// atlases, 3D probe volumes via samplers[2], cubemaps via dedup).
+	// Both are recreated in place so the bindless indices stay stable.
+	if (m_context->GetSamplerCount() > 0) {
+		smvk::SamplerCreateInfo repeatCi{};
+		repeatCi.mipmapMode = mipMode;
+		m_context->RecreateSampler(0, repeatCi);
+	}
+	if (m_context->GetSamplerCount() > 2) {
+		smvk::SamplerCreateInfo clampCi{};
+		clampCi.addressU = smvk::AddressMode::ClampToEdge;
+		clampCi.addressV = smvk::AddressMode::ClampToEdge;
+		clampCi.addressW = smvk::AddressMode::ClampToEdge;
+		clampCi.mipmapMode = mipMode;
+		m_context->RecreateSampler(2, clampCi);
 	}
 }
 

@@ -763,6 +763,13 @@ namespace smvk {
 		uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
 		VkSampler GetVkSampler(uint32_t index) const;
 		uint32_t GetSamplerCount() const;
+		// In-place sampler replacement: destroys the VkSampler at `index`
+		// and creates a new one from `ci`, keeping the descriptor-array
+		// slot stable (shaders hardcode slots 0/1/2). Marks samplers dirty
+		// so UpdateDescriptors rewrites the bindless sampler array.
+		// Used by the texture-filtering toggle (bilinear <-> trilinear).
+		// Returns false when index is out of range.
+		bool RecreateSampler(uint32_t index, const SamplerCreateInfo& ci);
 		Submitter* GetTransferSubmitter() const noexcept { return m_transferSubmitter; }
 		Submitter* GetGraphicsSubmitter() const noexcept { return m_submitter; }
 		Submitter* GetComputeSubmitter() const noexcept { return m_computeSubmitter != nullptr ? m_computeSubmitter : m_submitter; }
@@ -1140,6 +1147,13 @@ namespace smvk {
 		// Asserts if MAX_SAMPLERS would be exceeded (sampler count is a
 		// physical limit – caller must stay within budget).
 		uint32_t GetOrCreate(const SamplerCreateInfo& ci);
+
+		// In-place replacement at an existing slot (see
+		// VulkanResourceManager::RecreateSampler). Keeps the slot index
+		// stable; the new description is ALSO mapped to the slot (the old
+		// mapping is kept, so per-frame GetOrCreate(defaultCI) calls keep
+		// deduping here instead of leaking new slots).
+		bool Recreate(uint32_t index, const SamplerCreateInfo& ci);
 
 		// Read-only access for descriptor uploads.
 		uint32_t size() const noexcept { std::lock_guard<std::mutex> lock(mutex_); return static_cast<uint32_t>(samplers_.size()); }

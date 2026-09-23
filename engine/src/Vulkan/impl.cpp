@@ -6679,6 +6679,11 @@ VkSampler smvk::VulkanResourceManager::GetVkSampler(uint32_t index) const {
 uint32_t smvk::VulkanResourceManager::GetSamplerCount() const {
 	return samplerCache_ ? samplerCache_->size() : 0;
 }
+bool smvk::VulkanResourceManager::RecreateSampler(uint32_t index, const SamplerCreateInfo& ci) {
+	if (!samplerCache_)
+		return false;
+	return samplerCache_->Recreate(index, ci);
+}
 // ============================================================================
 // Sync bookkeeping – per-thread shards, lock-free hot path.
 // Shard is decoded from the handle index so each thread only touches its
@@ -9011,6 +9016,30 @@ VkSampler smvk::VulkanSamplerCache::at(uint32_t index) const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	assert(index < samplers_.size());
 	return samplers_[index];
+}
+bool smvk::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo& ci) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (index >= samplers_.size())
+		return false;
+	if (infos_[index] == ci)
+		return true; // already the requested filtering
+	VkSampler sampler = VK_NULL_HANDLE;
+	CreateSampler(ci, sampler);
+	if (sampler == VK_NULL_HANDLE)
+		return false;
+	if (samplers_[index] != VK_NULL_HANDLE)
+		vkDestroySampler(device_, samplers_[index], nullptr);
+	samplers_[index] = sampler;
+	// Point the new CI at this slot WITHOUT erasing the previous CI
+	// mapping for it: many passes call GetOrCreateSampler(defaultCI) every
+	// frame and must keep deduping to this stable slot (no new slots, no
+	// MAX_SAMPLERS leak across toggles). The slot holds "the current mode"
+	// — every CI ever installed here resolves to it, so postfx taps follow
+	// the toggle exactly like the hardcoded samplers[0]/[2] material paths.
+	infos_[index] = ci;
+	map_[ci] = index;
+	if (rm_) rm_->m_needToUpdateSamplers = true;
+	return true;
 }
 void smvk::VulkanSamplerCache::Clear() {
 	std::lock_guard<std::mutex> lock(mutex_);
