@@ -1564,6 +1564,11 @@ protected:
 	// (below) or the fallback ambient. Missing file = not baked yet
 	// (non-fatal).
 	bool m_lmLoaded = false;
+	// UI toggle for the DEPRECATED lightmap branch. Default OFF since
+	// the probes-only pivot: legacy .sglm content keeps loading (so old
+	// paks stay viewable) but the lit shader ignores it unless the user
+	// opts back in through the Bake-panel checkbox.
+	bool m_lmEnabled = false;
 	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
 	// Atlas texture mirrors: 12 slots — the uncompressed path fills 9
 	// (kLightmapLayerCount RGBA16F stream layers, kind 0), the BC6H
@@ -1571,7 +1576,9 @@ protected:
 	smvk::Holder<smvk::TextureHandle> m_lmLayers[12];
 	uint32_t m_lmLayerSlots[12] = {}; // bindless slots (FrameUniforms.lmLayers)
 	uint32_t m_lmLayerKind = 0;       // FrameUniforms.lmLayerKind mirror
-	bool LmActive() const { return m_lmLoaded && LmWanted(); }
+	bool LmActive() const {
+		return m_lmLoaded && m_lmEnabled && LmWanted();
+	}
 	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).

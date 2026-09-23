@@ -9823,12 +9823,20 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						"green = regular grid (legacy), blue = octree world field, "
 						"cyan = convex volume blended, magenta = none");
 				}
-				if (m_cvolLoaded) {
-					ImGui::Checkbox("Convex GI volumes", &m_cvolEnabled);
-					ImGui::TextDisabled("stacked probe volumes blend over the "
-						"octree by priority (gi/<scene>.cvmanifest)");
-				}
+			if (m_cvolLoaded) {
+				ImGui::Checkbox("Convex GI volumes", &m_cvolEnabled);
+				ImGui::TextDisabled("stacked probe volumes blend over the "
+					"octree by priority (gi/<scene>.cvmanifest)");
 			}
+			// Deprecated lightmaps: legacy .sglm content keeps loading
+			// but the branch is OFF until opted back in (default off
+			// since the probes-only pivot).
+			if (m_lmLoaded) {
+				ImGui::Checkbox("Lightmaps (deprecated)", &m_lmEnabled);
+				ImGui::TextDisabled("legacy .sglm content only; cooking is "
+					"disabled (probes-only pivot)");
+			}
+		}
 				}
 #if defined(DS_DEBUG_VIZ)
 				// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).
