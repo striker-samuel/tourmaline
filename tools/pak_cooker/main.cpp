@@ -79,6 +79,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <cstdio>
@@ -1719,7 +1720,8 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	const smvk::gi::SgLightmapAtlas& atlas, uint32_t gutter,
 	uint32_t fallbackLobes, std::vector<uint32_t>& outChartOf,
 	std::vector<glm::vec4>& outXforms,
-	uint64_t& seamDups, uint32_t& unchartedTris) {
+	uint64_t& seamDups, uint32_t& unchartedTris,
+	const char* auditLabel = nullptr, bool isTransfer = false) {
 	const size_t triCount = upload.indices.size() / 3;
 	const std::vector<uint32_t>& triChart = chartRes.triChart;
 	const std::vector<glm::vec2>& cornerUv = chartRes.cornerChartUv;
@@ -1733,6 +1735,316 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	std::vector<uint32_t> newIndices;
 	newIndices.reserve(upload.indices.size());
 	unchartedTris = 0;
+	// Colocal-UV invariant audit (chart-LOCAL uvs, before stamping):
+	// same chart + colocated positions => identical chart-local UV
+	// (the per-chart rect map is one affine transform, so the atlas-UV
+	// invariant from GenerateLightmapChartsXatlas carries through).
+	// Tight colocality mirrors xatlas's own epsilon (MeshDecl default
+	// 1.192092896e-07, per-component |da-db| <= eps*max(1,|a|,|b|)) in
+	// WORLD space — conservative vs the cook's density-scaled xatlas
+	// input (scale >= 1 only shrinks xatlas's world-space threshold,
+	// so a pair xatlas saw as split can still read as tight here;
+	// such residue, if any, is small-delta by construction). Pairs in
+	// the (tight, 1e-4] gap are importer-slop candidates: counted as
+	// slopSame/slopCross, never flagged. auditLabel distinguishes the
+	// chart SOURCE ("src ...": a hit is a real chart/stamp bug) from
+	// LOD-transfer stamps ("xfer ...": closest-point projection may
+	// legitimately snap colocated target verts apart — reported as
+	// XFER-DIVERGENT, informational). Case B (different chart) is
+	// expected; counted with the stitcher context (dotN vs
+	// kNormalGate 0.7): pairs the post-bake stitch refuses to
+	// reconcile. dist2 prints on every sample line so loose-box
+	// residue is identifiable without a recook.
+	{
+		constexpr float kXatlasEps = 1.192092896e-07f;
+		constexpr float kCell = 1e-4f; // slop-band radius (world)
+		constexpr float kCell2 = 1e-8f;
+		constexpr float kUvEps2 = 1e-10f; // (1e-5)^2, chart-local [0,1]
+		constexpr float kNormalGate = 0.7f; // mirrors StitchSgLightmapSeams
+		constexpr uint32_t kMaxPrints = 8;
+		const char* lbl = auditLabel ? auditLabel : "?";
+		const bool isXfer = isTransfer;
+		auto colocated = [&](const glm::vec3& a, const glm::vec3& b) {
+			return std::fabs(a.x - b.x)
+				<= kXatlasEps * std::max(1.0f,
+					std::max(std::fabs(a.x), std::fabs(b.x)))
+				&& std::fabs(a.y - b.y)
+				<= kXatlasEps * std::max(1.0f,
+					std::max(std::fabs(a.y), std::fabs(b.y)))
+				&& std::fabs(a.z - b.z)
+				<= kXatlasEps * std::max(1.0f,
+					std::max(std::fabs(a.z), std::fabs(b.z)));
+		};
+		struct Cell {
+			int x, y, z;
+			bool operator==(const Cell& o) const {
+				return x == o.x && y == o.y && z == o.z;
+			}
+		};
+		struct CellHash {
+			size_t operator()(const Cell& c) const noexcept {
+				size_t h = std::hash<int>{}(c.x);
+				h ^= std::hash<int>{}(c.y) + 0x9e3779b9u + (h << 6)
+					+ (h >> 2);
+				h ^= std::hash<int>{}(c.z) + 0x9e3779b9u + (h << 6)
+					+ (h >> 2);
+				return h;
+			}
+		};
+		std::unordered_map<Cell, std::vector<uint32_t>, CellHash> grid;
+		grid.reserve(triCount * 3 * 2 + 16);
+		uint64_t badA = 0, xferDiv = 0, seamB = 0, seamBgated = 0;
+		uint64_t slopSame = 0, slopCross = 0, tightPairs = 0;
+		uint32_t printedA = 0, printedB = 0;
+		// ---- Case C probe: SG coefficients immediately on each side ----
+		// For each colocated cross-chart pair, sample both chunks through
+		// SgLightmapAtlas::Sample (the hardware bilinear mirror, uv
+		// converted chart-inner [0,1] -> payload-rect [0,1]) and
+		// measure the rendered discontinuity: L2 over the full SG
+		// amplitude vector. Void sampling is NOT this probe's domain:
+		// in-rect unclaimed texels are dilated (margin ring), beyond-
+		// rect bleed is the bc6hopt prefill's job — so each side is
+		// flagged claimed/dilated (primary texel) and the deltas are
+		// bucketed by dotN: gated (<= 0.7: the crease population the
+		// OLD stitch gate refused) vs ungated (> 0.7: the stitched
+		// control), plus the opp sub-bucket (<= 0: still refused by
+		// the 0.0 stitch gate — the residual after the A/B).
+		// Per-chart claimed-texel map (BuildTexelOf-equivalent), lazy.
+		std::vector<std::vector<uint32_t>> chartCov(
+			chartRes.charts.size());
+		auto sampleSide = [&](uint32_t localChart, const glm::vec2& cUv,
+			glm::vec3* amps, bool& claimed) -> bool {
+			claimed = false;
+			if (localChart >= chartRes.charts.size())
+				return false;
+			const uint32_t chunk = chunkBase + localChart;
+			if (chunk >= atlas.chunks.size()
+				|| chunk >= atlas.payloads.size())
+				return false;
+			const auto& pp = atlas.payloads[chunk];
+			if (pp.width <= 2 * gutter || pp.height <= 2 * gutter)
+				return false;
+			const float iw = float(pp.width - 2 * gutter);
+			const float ih = float(pp.height - 2 * gutter);
+			const float cx = glm::clamp(cUv.x, 0.0f, 1.0f);
+			const float cy = glm::clamp(cUv.y, 0.0f, 1.0f);
+			const glm::vec2 full(
+				(float(gutter) + cx * iw) / float(pp.width),
+				(float(gutter) + cy * ih) / float(pp.height));
+			if (!atlas.Sample(chunk, full, amps))
+				return false;
+			if (chartCov[localChart].empty()) {
+				auto& cov = chartCov[localChart];
+				cov.assign(size_t(pp.width) * pp.height, 0xFFFFFFFFu);
+				const auto& txs = chartRes.charts[localChart].texels;
+				for (uint32_t i = 0; i < txs.size(); ++i) {
+					const int x = int(std::floor(txs[i].uv.x));
+					const int y = int(std::floor(txs[i].uv.y));
+					if (x < 0 || y < 0 || x >= int(pp.width)
+						|| y >= int(pp.height))
+						continue;
+					cov[size_t(y) * pp.width + size_t(x)] = i;
+				}
+			}
+			const int px = glm::clamp(
+				int(std::floor(float(gutter) + cx * iw)),
+				0, int(pp.width) - 1);
+			const int py = glm::clamp(
+				int(std::floor(float(gutter) + cy * ih)),
+				0, int(pp.height) - 1);
+			claimed = chartCov[localChart][size_t(py) * pp.width
+				+ size_t(px)] != 0xFFFFFFFFu;
+			return true;
+		};
+		uint64_t sgPairs = 0, sgBothClaimed = 0, sgDilated = 0,
+			sgUnsampleable = 0;
+		uint64_t sgGatedN = 0, sgUngatedN = 0, sgOppN = 0;
+		double sgGatedSum = 0.0, sgUngatedSum = 0.0, sgOppSum = 0.0;
+		float sgGatedMax = 0.0f, sgUngatedMax = 0.0f, sgOppMax = 0.0f;
+		for (size_t t = 0; t < triCount; ++t) {
+			if (t >= triChart.size() || triChart[t] == 0xFFFFFFFFu)
+				continue;
+			for (int k = 0; k < 3; ++k) {
+				const size_t ci = t * 3 + k;
+				if (ci >= cornerUv.size())
+					continue;
+				const uint32_t vi = upload.indices[ci];
+				if (vi >= upload.vertices.size())
+					continue;
+				const glm::vec3& pa = upload.vertices[vi].pos;
+				const glm::vec2& ua = cornerUv[ci];
+				const Cell base{
+					int(std::floor(pa.x / kCell)),
+					int(std::floor(pa.y / kCell)),
+					int(std::floor(pa.z / kCell)),
+				};
+				for (int dx = -1; dx <= 1; ++dx)
+					for (int dy = -1; dy <= 1; ++dy)
+						for (int dz = -1; dz <= 1; ++dz) {
+							const Cell nb{ base.x + dx, base.y + dy,
+								base.z + dz };
+							const auto it = grid.find(nb);
+							if (it == grid.end())
+								continue;
+							for (uint32_t prev : it->second) {
+								const size_t tb = prev / 3;
+								const int kb = int(prev % 3);
+								if (triChart[tb] == 0xFFFFFFFFu)
+									continue;
+								const uint32_t vj =
+									upload.indices[tb * 3 + kb];
+								if (vj >= upload.vertices.size())
+									continue;
+								const glm::vec3& pb =
+									upload.vertices[vj].pos;
+								const glm::vec3 d = pa - pb;
+								const float d2 = glm::dot(d, d);
+								if (d2 >= kCell2)
+									continue;
+								const glm::vec2& ub = cornerUv[tb * 3 + kb];
+								if (!colocated(pa, pb)) {
+									if (triChart[tb] == triChart[t])
+										++slopSame;
+									else
+										++slopCross;
+									continue;
+								}
+								++tightPairs;
+								if (triChart[tb] == triChart[t]) {
+									const glm::vec2 du = ua - ub;
+									if (glm::dot(du, du) > kUvEps2) {
+										if (isXfer)
+											++xferDiv;
+										else
+											++badA;
+										if (printedA < kMaxPrints) {
+											++printedA;
+											std::fprintf(stderr,
+												"[LM] %s SAME-CHART COLOCAL UV "
+												"(%s): chart=%u dist2=%g "
+												"uvA=(%f,%f) uvB=(%f,%f) "
+												"P=(%f,%f,%f)\n",
+												isXfer ? "XFER-DIVERGENT" : "BAD",
+												lbl, triChart[t], double(d2),
+												ua.x, ua.y, ub.x, ub.y,
+												pa.x, pa.y, pa.z);
+										}
+									}
+								} else {
+									++seamB;
+									const float dotN = glm::dot(
+										upload.vertices[vi].normal,
+										upload.vertices[vj].normal);
+									if (dotN <= kNormalGate)
+										++seamBgated;
+									// Case C probe (see above).
+									glm::vec3 ampsA[smvk::gi::kLightmapMaxLobes];
+									glm::vec3 ampsB[smvk::gi::kLightmapMaxLobes];
+									bool clA = false, clB = false;
+									const bool okA = sampleSide(triChart[t], ua,
+										ampsA, clA);
+									const bool okB = sampleSide(triChart[tb],
+										ub, ampsB, clB);
+									float sgDelta = -1.0f, sgMag = 0.0f;
+									if (okA && okB) {
+										++sgPairs;
+										if (clA && clB)
+											++sgBothClaimed;
+										else
+											++sgDilated;
+										float d2 = 0.0f, mA2 = 0.0f, mB2 = 0.0f;
+										for (uint32_t l = 0;
+											l < smvk::gi::kLightmapMaxLobes;
+											++l) {
+											const glm::vec3 d =
+												ampsA[l] - ampsB[l];
+											d2 += glm::dot(d, d);
+											mA2 += glm::dot(ampsA[l],
+												ampsA[l]);
+											mB2 += glm::dot(ampsB[l],
+												ampsB[l]);
+										}
+										sgDelta = std::sqrt(d2);
+										sgMag = std::sqrt(std::max(mA2, mB2));
+									if (dotN <= kNormalGate) {
+										++sgGatedN;
+										sgGatedSum += sgDelta;
+										sgGatedMax = std::max(sgGatedMax,
+											sgDelta);
+										if (dotN <= 0.0f) {
+											++sgOppN;
+											sgOppSum += sgDelta;
+											sgOppMax = std::max(sgOppMax,
+												sgDelta);
+										}
+									} else {
+										++sgUngatedN;
+										sgUngatedSum += sgDelta;
+										sgUngatedMax = std::max(
+											sgUngatedMax, sgDelta);
+									}
+									} else {
+										++sgUnsampleable;
+									}
+									if (printedB < kMaxPrints) {
+										++printedB;
+										std::fprintf(stderr,
+											"[LM] seam (%s) P=(%f,%f,%f) "
+											"chart %u/%u dist2=%g "
+											"dotN=%f uvA=(%f,%f) uvB=(%f,%f)"
+											"%s sgDelta=%g mag=%g "
+											"claimed=%d/%d\n",
+											lbl, pa.x, pa.y, pa.z,
+											triChart[tb], triChart[t],
+											double(d2),
+											dotN, ua.x, ua.y, ub.x, ub.y,
+											sgDelta >= 0.0f ? "" : " [unsampled]",
+											double(sgDelta), double(sgMag),
+											clA ? 1 : 0, clB ? 1 : 0);
+									}
+								}
+							}
+						}
+				grid[base].push_back(uint32_t(ci));
+			}
+		}
+		if (badA > 0 || xferDiv > 0 || seamB > 0 || slopSame > 0) {
+			std::fprintf(stderr,
+				"[LM] stamp colocal audit (%s): tris %zu tight %llu "
+				"badA %llu xferDiv %llu seamB %llu (gated %llu) "
+				"slopSame %llu slopCross %llu\n",
+				lbl, triCount,
+				(unsigned long long)tightPairs,
+				(unsigned long long)badA,
+				(unsigned long long)xferDiv,
+				(unsigned long long)seamB,
+				(unsigned long long)seamBgated,
+				(unsigned long long)slopSame,
+				(unsigned long long)slopCross);
+		}
+		if (sgPairs > 0) {
+			std::fprintf(stderr,
+				"[LM] seam sg audit (%s): measured %llu "
+				"(bothClaimed %llu dilated %llu unsampleable %llu) "
+				"gated %llu: delta mean %g max %g "
+				"(opp %llu: mean %g max %g) | "
+				"ungated %llu: mean %g max %g\n",
+				lbl,
+				(unsigned long long)sgPairs,
+				(unsigned long long)sgBothClaimed,
+				(unsigned long long)sgDilated,
+				(unsigned long long)sgUnsampleable,
+				(unsigned long long)sgGatedN,
+				sgGatedN ? sgGatedSum / double(sgGatedN) : 0.0,
+				double(sgGatedMax),
+				(unsigned long long)sgOppN,
+				sgOppN ? sgOppSum / double(sgOppN) : 0.0,
+				double(sgOppMax),
+				(unsigned long long)sgUngatedN,
+				sgUngatedN ? sgUngatedSum / double(sgUngatedN) : 0.0,
+				double(sgUngatedMax));
+		}
+	}
 	for (size_t t = 0; t < triCount; ++t) {
 		const uint32_t chartIdx = t < triChart.size()
 			? triChart[t] : 0xFFFFFFFFu;
@@ -3433,7 +3745,8 @@ int main(int argc, char** argv) {
 			uint32_t uncharted = 0;
 			const uint32_t lobes = StampLightmapUvs(*srcUpload, w.chart,
 				w.chunkBase, atlas, lmGutter, args.lmLobes,
-				chartOf, xforms, seamDups, uncharted);
+				chartOf, xforms, seamDups, uncharted,
+				("src node " + std::to_string(w.node)).c_str(), false);
 			lmTexelStamped.insert(w.handle.index());
 			if (uncharted != 0)
 				std::cerr << "  [LM] stamp node " << w.node
@@ -3490,7 +3803,9 @@ int main(int argc, char** argv) {
 			uint32_t unch = 0;
 			const uint32_t lobesT = StampLightmapUvs(*up, xfer,
 				w.chunkBase, atlas, lmGutter, lobes,
-				dummy, xferXforms, seamDups, unch);
+				dummy, xferXforms, seamDups, unch,
+				("xfer node " + std::to_string(w.node)
+					+ " pool " + std::to_string(th.index())).c_str(), true);
 			lmTexelStamped.insert(th.index());
 				if (unch != 0)
 					std::cerr << "  [LM] transfer stamp node " << w.node

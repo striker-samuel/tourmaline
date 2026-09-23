@@ -232,6 +232,25 @@ void EditorApp::DrawMenuBar() {
 			Redo();
 		ImGui::EndMenu();
 	}
+	if (ImGui::BeginMenu("Mode")) {
+		// vi-style modal operation: the ACTIVE mode's keymap interprets
+		// keys (editor_modal.cpp); 1-4 switch modes from any mode.
+		const struct {
+			EditorMode m; const char* key; const char* hint;
+		} modes[] = {
+			{ EditorMode::Layout, "1", "object editing: gizmos, selection" },
+			{ EditorMode::Lighting, "2", "sun/env + lightmap views" },
+			{ EditorMode::Test, "3", "cook, run in App, debug views" },
+			{ EditorMode::Profile, "4", "perf (stub)" },
+		};
+		for (const auto& e : modes)
+			if (ImGui::MenuItem(EditorModeName(e.m), e.key, m_mode == e.m))
+				SetMode(e.m);
+		ImGui::Separator();
+		ImGui::TextDisabled("Modal (vi-style): the active mode interprets");
+		ImGui::TextDisabled("keys; the viewport legend shows the mode line.");
+		ImGui::EndMenu();
+	}
 	if (ImGui::BeginMenu("View")) {
 		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
 			ActiveViewMode() == ViewMode::Unlit))
@@ -241,10 +260,10 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Lit + shadows", "F3",
 			ActiveViewMode() == ViewMode::LitShadows))
 			ActiveViewMode() = ViewMode::LitShadows;
-		if (ImGui::MenuItem("Baked irradiance", "F8",
+		if (ImGui::MenuItem("Baked irradiance", "F8 (LIGHTING)",
 			ActiveViewMode() == ViewMode::Baked, m_lmGpu))
 			ActiveViewMode() = ViewMode::Baked;
-		if (ImGui::MenuItem("Meshlets", "F4",
+		if (ImGui::MenuItem("Meshlets", "F4 (TEST)",
 			ActiveViewMode() == ViewMode::Meshlets)) {
 			ActiveViewMode() = ViewMode::Meshlets;
 			if (!m_meshletDebugHasData && !EnsureMeshletDebug())
@@ -258,7 +277,7 @@ void EditorApp::DrawMenuBar() {
 				meshletModes, 2);
 		}
 		ImGui::Separator();
-		ImGui::MenuItem("Wireframe (all)", "Z", &m_wireframeAll);
+		ImGui::MenuItem("Wireframe (all)", "Z (LAYOUT)", &m_wireframeAll);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
 			m_vpLayout = 0;
@@ -291,17 +310,17 @@ void EditorApp::DrawMenuBar() {
 				"(translate: grid cell)");
 		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("UV0", "F9", ActiveViewMode() == ViewMode::Uv0))
+		if (ImGui::MenuItem("UV0", "F9 (TEST)", ActiveViewMode() == ViewMode::Uv0))
 			ActiveViewMode() = ViewMode::Uv0;
-		if (ImGui::MenuItem("UV1 (lightmap)", "F10", ActiveViewMode() == ViewMode::Uv1))
+		if (ImGui::MenuItem("UV1 (lightmap)", "F10 (LIGHTING)", ActiveViewMode() == ViewMode::Uv1))
 			ActiveViewMode() = ViewMode::Uv1;
-		if (ImGui::MenuItem("Vertex colors", "F6",
+		if (ImGui::MenuItem("Vertex colors", "F6 (TEST)",
 			ActiveViewMode() == ViewMode::VertexColors))
 			ActiveViewMode() = ViewMode::VertexColors;
 		ImGui::Separator();
 		if (ImGui::MenuItem(
 				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
-				"F5"))
+				"F5 (LIGHTING)"))
 			m_secondView = SecondView((int(m_secondView) + 1) % 3);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Translate gizmo", "W",
@@ -347,7 +366,7 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		ImGui::MenuItem("Viewport legend", nullptr, &m_showOverlay);
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
-		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
+		if (ImGui::MenuItem("Light gizmos", "L (LIGHTING)", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
 		if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 			m_uiMode = !m_uiMode;
@@ -2498,6 +2517,30 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
 		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoInputs)) {
+		// vi-style mode line (like vi's "-- INSERT --"), colored per
+		// mode, with that mode's key hints; the shared/global hints sit
+		// under the status lines.
+		switch (m_mode) {
+		case EditorMode::Layout:
+			ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f),
+				"-- LAYOUT --  W/E/R gizmo  G cycle  Q select radial  "
+				"Z wireframe  F frame sel  Shift+F all  Up/Down node");
+			break;
+		case EditorMode::Lighting:
+			ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+				"-- LIGHTING --  [ ] sun azim  - = sun elev  , . sun int  "
+				"L light gizmos  F8 baked  F10 lm-UV  F5 inset");
+			break;
+		case EditorMode::Test:
+			ImGui::TextColored(ImVec4(0.40f, 0.80f, 0.95f, 1.0f),
+				"-- TEST --  P run in App  C cook  T tex mode  F4 meshlets  "
+				"F6 vcolors  F9 UV0");
+			break;
+		case EditorMode::Profile:
+			ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.65f, 1.0f),
+				"-- PROFILE --  stub: bindings wired later (O logs)");
+			break;
+		}
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
 			ViewModeName(ActiveViewMode()),
 			m_wireframeAll ? " (wire)" : "",
@@ -2522,13 +2565,11 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 			ImGui::TextDisabled("meshlet color: %s",
 				m_debugMeshletMode == 0 ? "random per meshlet"
 				: "cone-cutoff heat");
-		ImGui::TextDisabled("F1/F2/F3/F4/F8 view  F5 inset  F6/F9/F10 debug");
-		ImGui::TextDisabled("W/E/R move-rotate-scale  Z wireframe  I ui  L lights");
-		ImGui::TextDisabled("Q select radial  Up/Down cycle node");
-		ImGui::TextDisabled("F frame sel  Shift+F frame all  (flat pane: F resets)");
+		ImGui::TextDisabled("1/2/3/4 mode  F1/F2/F3 shading  V quad  I ui");
 		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
 		ImGui::TextDisabled("flat pane: MMB pan  wheel zoom  click=face/vert");
-		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu",
+		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu"
+			"  |  Ctrl+Alt+S save+",
 			UndoDepth(), RedoDepth());
 	}
 	ImGui::End();

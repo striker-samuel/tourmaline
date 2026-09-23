@@ -498,7 +498,7 @@ struct FrameUniforms
 	// shadow_map_index / spotShadowMapIndex fields then address the
 	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
 	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
-	uint32_t evsmMode = 0;      // 716
+	uint32_t evsmMode = 1;      // 716
 	// ---- Forward+ decals (tiled projected splats, see
 	// smvk::ForwardPlusDecal + forwardplus.cs.hlsl). decals points at
 	// this frame's flight slice of the decal ring; the tile lists are the
@@ -1313,7 +1313,7 @@ protected:
 	// symmetric warp-space bias compensation, dense prefilter, 9-tap soft
 	// penumbra). Falls back to PCF automatically when unsupported/invalid.
 	// Opt out with VULKANTOY_EVSM=0 or the ImGui checkbox.
-	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
+	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
@@ -1652,6 +1652,7 @@ protected:
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
+	bool m_motionBlurTileDilation = true; // CoD:AW tile max + 5x5 dilate prepasses
 	// ---- Depth-of-field pass (HDR, post-motion-blur, pre-bloom) ----
 	bool m_dofEnabled = false; // opt-in: off keeps the reference sharp look
 	bool m_dofHqBokeh = false; // false = low single-pass Poisson, true = CoC + 48-tap hex bokeh
@@ -1916,11 +1917,11 @@ protected:
 	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
-	uint32_t m_tonemapMode = smvk::kTonemapACES;
+	uint32_t m_tonemapMode = smvk::kTonemapGT7;
 	// ---- AO (half-res depth-only, runs before Main, composites in opaque
 	// ambient; see ssao.h / gtao.h / sao.h). O cycles No AO -> SSAO -> GTAO -> SAO. ----
 	enum class AoMode : int { None = 0, Ssao = 1, Gtao = 2, Sao = 3 };
-	AoMode m_aoMode = AoMode::Ssao;
+	AoMode m_aoMode = AoMode::Sao;
 	float m_ssaoRadius = 0.5f; // view-space sample radius (m, shared SSAO/GTAO/SAO)
 	float m_ssaoBias = 0.025f; // self-occlusion / horizon bias
 	float m_ssaoIntensity = 1.0f; // ambient composite strength (default_lit.frag)

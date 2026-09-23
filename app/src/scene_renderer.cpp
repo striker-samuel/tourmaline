@@ -154,6 +154,7 @@ static smvk::MotionBlurDesc MakeMotionBlurDesc() {
 	d.sampleCount = MOTIONBLUR_SAMPLES;
 	d.maxRadiusPx = MOTIONBLUR_MAX_RADIUS_PX;
 	d.velocityScale = MOTIONBLUR_VELOCITY_SCALE;
+	d.tileDilation = true; // CoD:AW tile max + 5x5 dilate prepasses
 	d.name = "motionBlur";
 	return d;
 }
@@ -7948,10 +7949,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		});
 	}
 
-	// ---------------------------------------------------------------------
-	// Motion blur â€“ velocity gather in HDR (see motionblur.h). Runs after
-	// Main, before Bloom/Tonemap so both consume the blurred HDR.
-	// ---------------------------------------------------------------------
+		// ---------------------------------------------------------------------
+		// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
+		// Main, before Bloom/Tonemap so both consume the blurred HDR. With
+		// tile dilation on, two tiny compute prepasses (per-tile max
+		// velocity + 5x5 dilate) run ahead of the gather so revealed
+		// background streaks with the foreground that vacated it.
+		// ---------------------------------------------------------------------
 		// Scene HDR for downstream passes: blurred output when the pass ran,
 		// sharp HDR otherwise (no copy when disabled).
 		smvk::LogicalImageViewHandle sceneHdrView = m_viewportResources.hdr.logicalView;
@@ -7962,6 +7966,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			blurDesc.sampleCount = (uint32_t)m_motionBlurSamples;
 			blurDesc.maxRadiusPx = m_motionBlurMaxRadius;
 			blurDesc.velocityScale = m_motionBlurStrength;
+			blurDesc.tileDilation = m_motionBlurTileDilation;
 			const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
 				&& m_viewportResources.motionBlur.Valid()
 				&& m_viewportResources.motionVectors.Valid();
@@ -9130,12 +9135,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							ImGui::SliderInt("SAO spiral turns", &m_saoSpiralTurns, 1, 16);
 						}
 					}
-					ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
-					if (m_motionBlurEnabled) {
-						ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
-						ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
-						ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
-					}
+				ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
+				if (m_motionBlurEnabled) {
+					ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
+					ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
+					ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
+					ImGui::Checkbox("Tile dilation (16px tiles, 5x5)", &m_motionBlurTileDilation);
+					ImGui::TextDisabled("IGN-jittered taps (CoD:AW); dilation streaks\n"
+						"revealed background with the foreground that vacated it.");
+				}
 				}
 				if (ImGui::CollapsingHeader("Depth of field + SSR", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Depth of field (HDR CoC blur)", &m_dofEnabled);

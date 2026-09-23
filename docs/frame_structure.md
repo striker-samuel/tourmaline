@@ -30,7 +30,9 @@ G2 graphics   ForwardPlusDepth                        fallback-only prepass
 G2 graphics   GfxRemainderDepth                       newly visible (T5, when pending)
 G2 compute    ForwardPlusCull / Ds phases / particles tile lists + light cull
 G2 graphics   MotionVectors, Ssao(+Blur/Compose), Main, ParticlesDraw,
-              MotionBlur, Bloom chain, Tonemap, SMAA, ImGui, UiComposite
+               MotionBlurTiles + MotionBlurTileDilate (compute, CoD:AW
+               tile-dilated velocity prepass), MotionBlur, Bloom chain,
+               Tonemap, SMAA, ImGui, UiComposite
 ```
 
 The rule the split implements (from the Alan Wake 2 / Northlight design):

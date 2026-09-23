@@ -169,6 +169,19 @@ set_target_properties(ParticlesTests PROPERTIES
 
 add_test(NAME particles_tests COMMAND ParticlesTests)
 
+add_executable(MotionBlurTests test_motionblur.cpp)
+
+target_link_libraries(MotionBlurTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(MotionBlurTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME motionblur_tests COMMAND MotionBlurTests)
+
 project(TourTests)
 
 add_executable(TourTests test_tour.cpp)
@@ -214,5 +227,6 @@ vulkantoy_stage_sdl3(StreamingTests)
 vulkantoy_stage_sdl3(DeferredShadowTests)
 vulkantoy_stage_sdl3(CubemapTests)
 vulkantoy_stage_sdl3(ParticlesTests)
+vulkantoy_stage_sdl3(MotionBlurTests)
 vulkantoy_stage_sdl3(TourTests)
 vulkantoy_stage_sdl3(FlintbaseTests)

@@ -1509,107 +1509,12 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 
 	UpdateUvPaneInput(); // flat-UV panes: MMB pan + wheel zoom (own transform)
 	UpdateCamera(delta_time_s);
-	if (!m_uiMode || !(m_imgui && m_imgui->WantsCaptureKeyboard())) {
-		// Function keys match App's debug views (see SceneRenderer):
-		// F1 lit, F2 unlit, F6 vertex colors, F8 baked irradiance (App's
-		// GI key), F9 base-UV, F10 lightmap-UV. F3 is editor-only (lit +
-		// shadows), F4 is the meshlet debug view and F5 cycles the UV
-		// side-strip (no App equivalent).
-		if (m_input.isKeyPressed(GLFW_KEY_F1))
-			ActiveViewMode() = ViewMode::Lit;
-		if (m_input.isKeyPressed(GLFW_KEY_F2))
-			ActiveViewMode() = ViewMode::Unlit;
-		if (m_input.isKeyPressed(GLFW_KEY_F3))
-			ActiveViewMode() = ViewMode::LitShadows;
-		if (m_input.isKeyPressed(GLFW_KEY_F4)) {
-			ActiveViewMode() = ViewMode::Meshlets;
-			if (!m_meshletDebugHasData && !EnsureMeshletDebug())
-				Log("Meshlet view: no cooked meshlets in this scene "
-					"(cook with --meshlets or a pak cooked with meshlets); "
-					"meshes show as flat fallbacks.");
-		}
-		if (m_input.isKeyPressed(GLFW_KEY_F9))
-			ActiveViewMode() = ViewMode::Uv0;
-		if (m_input.isKeyPressed(GLFW_KEY_F10))
-			ActiveViewMode() = ViewMode::Uv1;
-		if (m_input.isKeyPressed(GLFW_KEY_F6))
-			ActiveViewMode() = ViewMode::VertexColors;
-		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
-			if (m_lmGpu)
-				ActiveViewMode() = ViewMode::Baked;
-			else
-				Log("Baked view needs a lightmap atlas (open a baked pak).");
-		}
-		if (m_input.isKeyPressed(GLFW_KEY_F5))
-			m_secondView = SecondView((int(m_secondView) + 1) % 3);
-		// V: single <-> quad (four cameras) layout toggle.
-		if (m_input.isKeyPressed(GLFW_KEY_V))
-			m_vpLayout = (m_vpLayout == 0) ? 1 : 0;
-		if (m_input.isKeyPressed(GLFW_KEY_I))
-			m_uiMode = !m_uiMode;
-		if (m_input.isKeyPressed(GLFW_KEY_L))
-			m_showLightGizmos = !m_showLightGizmos;
-		if (m_input.isKeyPressed(GLFW_KEY_G))
-			m_gizmoMode = GizmoMode((int(m_gizmoMode) + 1) % 3);
-		// Maya/Unity gizmo keys: W move, E rotate, R scale (plus 1/2/3).
-		if (m_input.isKeyPressed(GLFW_KEY_W))
-			m_gizmoMode = GizmoMode::Translate;
-		if (m_input.isKeyPressed(GLFW_KEY_E))
-			m_gizmoMode = GizmoMode::Rotate;
-		if (m_input.isKeyPressed(GLFW_KEY_R))
-			m_gizmoMode = GizmoMode::Scale;
-		if (m_input.isKeyPressed(GLFW_KEY_1))
-			m_gizmoMode = GizmoMode::Translate;
-		if (m_input.isKeyPressed(GLFW_KEY_2))
-			m_gizmoMode = GizmoMode::Rotate;
-		if (m_input.isKeyPressed(GLFW_KEY_3))
-			m_gizmoMode = GizmoMode::Scale;
-		// Wireframe toggle (Blender-style Z; Ctrl+Z stays undo).
-		if (m_input.isKeyPressed(GLFW_KEY_Z)) {
-			const bool ctrl = m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL) ||
-				m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL);
-			if (!ctrl)
-				m_wireframeAll = !m_wireframeAll;
-		}
-		if (m_input.isKeyPressed(GLFW_KEY_F)) {
-			const bool shift = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-				m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-			if (IsFlatUvViewMode(ActiveViewMode()) && !shift) {
-				// Flat pane: reset navigation (zoom 1, pan 0).
-				m_uvZoom[m_activeVp] = 1.0f;
-				m_uvPan[m_activeVp] = glm::vec2(0.0f);
-				Log("UV pane reset (zoom 1, pan 0).");
-			}
-			else if (shift)
-				FrameAll();
-			else
-				FrameSelection();
-		}
-		// Q: selection-mode radial (Mesh/Face/Vertex, highlight only).
-		if (m_input.isKeyPressed(GLFW_KEY_Q))
-			m_showSelRadial = true;
-		// Inspector Up/Down cycling (optional toggle, off while typing).
-		if (m_inspectorCycle) {
-			if (m_input.isKeyPressed(GLFW_KEY_UP))
-				SelectPrevNode();
-			if (m_input.isKeyPressed(GLFW_KEY_DOWN))
-				SelectNextNode();
-		}
-		const bool ctrl = m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL);
-		const bool shift = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-		const bool alt = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
-		if (ctrl && m_input.isKeyPressed(GLFW_KEY_Z) && !shift)
-			Undo();
-		if (ctrl && ((m_input.isKeyPressed(GLFW_KEY_Z) && shift) ||
-			m_input.isKeyPressed(GLFW_KEY_Y)))
-			Redo();
-		// Maya-style incremental tour save: <stem>.0001.tour, ...
-		if (ctrl && alt && m_input.isKeyPressed(GLFW_KEY_S))
-			SaveTourIncremental();
-	}
+	// vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
+	// (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
+	// keys, with a global fallback table (mode switches, shading F1-F3,
+	// undo/redo/save, window toggles). Skipped while ImGui wants the
+	// keyboard (typing) or the Q radial popup is open.
+	UpdateModalInput();
 
 	const uint32_t flight = uint32_t(fb.imageIndex) % m_flightCount;
 	UpdateTextureStreaming(extent);

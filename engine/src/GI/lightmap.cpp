@@ -774,6 +774,134 @@ bool GenerateLightmapChartsXatlas(
 			if (!valid)
 				triChart[t] = 0xFFFFFFFFu;
 		}
+		// Same-chart colocal-UV invariant audit (xatlas output, BEFORE
+		// chart-local conversion): for every pair of triangle corners,
+		// same chart + colocated positions => identical atlas UV.
+		// Different normals do NOT excuse a mismatch here (normals are
+		// not fed to xatlas, and StampLightmapUvs stamps per corner).
+		// Colocality uses xatlas's own epsilon semantics (MeshDecl
+		// default 1.192092896e-07, per-component
+		// |da-db| <= eps*max(1,|a|,|b|)); pairs that are merely
+		// near-colocal (importer slop, within 1e-4 but outside xatlas
+		// epsilon) are counted separately as slop, NOT flagged BAD.
+		{
+			constexpr float kXatlasEps = 1.192092896e-07f;
+			constexpr float kCell = 1e-4f; // > tight diameter + slop radius
+			constexpr float kSlop2 = 1e-8f; // (1e-4)^2, scaled space
+			constexpr float kUvEps2 = 1e-6f; // (1e-3 texel)^2
+			constexpr uint32_t kMaxPrints = 8;
+			auto colocated = [&](const glm::vec3& a,
+				const glm::vec3& b) {
+				return std::fabs(a.x - b.x)
+					<= kXatlasEps * std::max(1.0f,
+						std::max(std::fabs(a.x), std::fabs(b.x)))
+					&& std::fabs(a.y - b.y)
+					<= kXatlasEps * std::max(1.0f,
+						std::max(std::fabs(a.y), std::fabs(b.y)))
+					&& std::fabs(a.z - b.z)
+					<= kXatlasEps * std::max(1.0f,
+						std::max(std::fabs(a.z), std::fabs(b.z)));
+			};
+			struct Cell {
+				int x, y, z;
+				bool operator==(const Cell& o) const {
+					return x == o.x && y == o.y && z == o.z;
+				}
+			};
+			struct CellHash {
+				size_t operator()(const Cell& c) const noexcept {
+					size_t h = std::hash<int>{}(c.x);
+					h ^= std::hash<int>{}(c.y) + 0x9e3779b9u + (h << 6)
+						+ (h >> 2);
+					h ^= std::hash<int>{}(c.z) + 0x9e3779b9u + (h << 6)
+						+ (h >> 2);
+					return h;
+				}
+			};
+			std::unordered_map<Cell, std::vector<uint32_t>, CellHash> grid;
+			grid.reserve(size_t(triCount) * 3 * 2 + 16);
+			uint64_t tightPairs = 0, badPairs = 0, slopPairs = 0;
+			uint32_t printed = 0;
+			for (uint32_t t = 0; t < triCount; ++t) {
+				const uint32_t ca = triChart[t];
+				if (ca == 0xFFFFFFFFu)
+					continue;
+				for (int k = 0; k < 3; ++k) {
+					const uint32_t vi = upload.indices[size_t(t) * 3 + k];
+					if (vi >= job.posScaled.size())
+						continue;
+					const glm::vec3& pa = job.posScaled[vi];
+					const glm::vec2& ua =
+						cornerAtlasUv[size_t(t) * 3 + k];
+					const Cell base{
+						int(std::floor(pa.x / kCell)),
+						int(std::floor(pa.y / kCell)),
+						int(std::floor(pa.z / kCell)),
+					};
+					for (int dx = -1; dx <= 1; ++dx)
+						for (int dy = -1; dy <= 1; ++dy)
+							for (int dz = -1; dz <= 1; ++dz) {
+								const Cell nb{ base.x + dx, base.y + dy,
+									base.z + dz };
+								const auto it = grid.find(nb);
+								if (it == grid.end())
+									continue;
+								for (uint32_t prev : it->second) {
+									const uint32_t tb = prev / 3;
+									const int kb = int(prev % 3);
+									if (triChart[tb] != ca)
+										continue; // case B: cross-chart,
+										          // expected, ignore
+									const uint32_t vj = upload.indices[
+										size_t(tb) * 3 + kb];
+									if (vj >= job.posScaled.size())
+										continue;
+									const glm::vec3& pb =
+										job.posScaled[vj];
+									const glm::vec3 d = pa - pb;
+									const float d2 = glm::dot(d, d);
+									if (d2 >= kSlop2)
+										continue;
+									if (!colocated(pa, pb)) {
+										++slopPairs; // importer slop:
+										             // close but not
+										             // xatlas-colocal
+										continue;
+									}
+									++tightPairs;
+									const glm::vec2& ub =
+										cornerAtlasUv[size_t(tb) * 3 + kb];
+									const glm::vec2 du = ua - ub;
+									if (glm::dot(du, du) > kUvEps2) {
+										++badPairs;
+										if (printed < kMaxPrints) {
+											++printed;
+											std::fprintf(stderr,
+												"[LM] BAD SAME-CHART COLOCAL UV: "
+												"mesh %zu chart=%u "
+												"tri %u+%u corner %d+%d "
+												"dist2=%g uvA=(%f,%f) uvB=(%f,%f) "
+												"P=(%f,%f,%f)\n",
+												job.inputIdx, ca, tb, t, kb, k,
+												double(d2), ua.x, ua.y, ub.x, ub.y,
+												pa.x, pa.y, pa.z);
+										}
+									}
+								}
+							}
+					grid[base].push_back(t * 3 + k);
+				}
+			}
+			if (badPairs > 0 || slopPairs > 0) {
+				std::fprintf(stderr,
+					"[LM] colocal-uv audit mesh %zu: tris %u tightPairs %llu "
+					"bad %llu slop %llu\n",
+					job.inputIdx, triCount,
+					(unsigned long long)tightPairs,
+					(unsigned long long)badPairs,
+					(unsigned long long)slopPairs);
+			}
+		}
 		std::vector<glm::vec2> cMin(chartCount,
 			glm::vec2(std::numeric_limits<float>::max()));
 		std::vector<glm::vec2> cMax(chartCount,
@@ -3150,8 +3278,13 @@ bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
 	if (outBlended)
 		*outBlended = 0;
 	// Normal gate: only same-facing surfaces blend (protects thin
-	// double-sided geometry: curtain front/back, column opposites).
-	constexpr float kNormalGate = 0.7f;
+	// double-sided geometry: curtain front/back, column opposites —
+	// those pairs sit at dotN ~ -1). 0.0 excludes ONLY near-opposite
+	// normals: the old 0.7 gate abandoned every crease-split seam
+	// (dotN 0..0.7), which the stamp-side sg audit measured at 4.3x
+	// the stitched discontinuity (Sponza prim.101 class, dotN ~ 0.02);
+	// those now stitch while front/back pairs stay protected.
+	constexpr float kNormalGate = 0.0f;
 	// Search radius per boundary texel, in its own chunk's world texel
 	// sizes; grid cells sized to the run's largest so the sphere never
 	// spans more than ~2 cells per axis.

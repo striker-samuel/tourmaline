@@ -74,8 +74,8 @@ void EditorApp::SelectNextNode() {
 
 void EditorApp::UpdateUvPaneInput() {
 	// Flat-UV pane navigation (pan/zoom in UV units, centered):
-	// MMB-drag pans, wheel zooms at the cursor, F resets (handled with
-	// the 3D framing keys in RenderFrame). 3D cameras are untouched.
+	// MMB-drag pans, wheel zooms at the cursor, F resets (the frame
+	// bindings in editor_modal.cpp). 3D cameras are untouched.
 	SetupDefaultCameras();
 	const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
 	if (uiEats)
@@ -115,7 +115,9 @@ void EditorApp::DrawSelectionRadial() {
 		ImGui::SetNextWindowPos(m_selRadialPos, ImGuiCond_Always);
 		m_showSelRadial = false;
 	}
-	if (!ImGui::BeginPopup("##selRadial"))
+	const bool radialOpen = ImGui::BeginPopup("##selRadial");
+	m_selRadialOpen = radialOpen; // modal keys pause while it owns 1/2/3
+	if (!radialOpen)
 		return;
 	ImGui::TextDisabled("Select mode (Q)");
 	ImGui::Separator();

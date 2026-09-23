@@ -15,6 +15,10 @@
 //     the edited scene to a .pak via PakCooker --tour (deterministic
 //     replay bake, full lightmap support).
 //
+// Operation is MODAL (vi-style): one ACTIVE mode (LAYOUT / LIGHTING /
+// TEST / PROFILE) interprets the keys; 1-4 switch modes anywhere (see
+// editor_modal.cpp for the keymaps + dispatch).
+//
 // VIP: the editor never reimplements cooking or baking — the .tour command
 // log is the interchange, PakCooker replays it onto a fresh import.
 
@@ -190,6 +194,44 @@ inline const char* SelModeName(SelMode m) {
 inline bool IsFlatUvViewMode(ViewMode m) {
 	return m == ViewMode::FlatUv0 || m == ViewMode::FlatUv1;
 }
+
+// ---------------------------------------------------------------------------
+// vi-style MODAL operation. One ACTIVE mode interprets every key via its
+// own keymap (per-mode table first, global fallback; see editor_modal.cpp).
+// Keys 1-4 switch modes from ANY mode; the viewport legend shows the mode
+// line (like vi's "-- INSERT --"). PROFILE is a stub: the mode, dispatch
+// and enter/exit hooks exist so the capture/stats wiring can land later
+// without touching the keymap plumbing again.
+// ---------------------------------------------------------------------------
+enum class EditorMode : int {
+	Layout = 0,   // object-level editing: gizmos, selection, framing
+	Lighting = 1, // sun/env + lightmap authoring: lm views, sun nudges
+	Test = 2,     // verify: cook, run in App, debug views, tex residency
+	Profile = 3,  // perf capture (stub — architecture only for now)
+};
+inline const char* EditorModeName(EditorMode m) {
+	switch (m) {
+	case EditorMode::Layout: return "LAYOUT";
+	case EditorMode::Lighting: return "LIGHTING";
+	case EditorMode::Test: return "TEST";
+	case EditorMode::Profile: return "PROFILE";
+	}
+	return "?";
+}
+// Exact-match modifier bits for ModalBinding::mods (all listed modifiers
+// must be held, all unlisted ones released).
+inline constexpr uint8_t kModalCtrl = 1;
+inline constexpr uint8_t kModalShift = 2;
+inline constexpr uint8_t kModalAlt = 4;
+
+// One keymap row. `run` fires on an exact key+modifier match; `label`
+// documents the action (help/UI). Tables live in editor_modal.cpp.
+struct ModalBinding {
+	int key = 0;                              // SDL scancode (GLFW_KEY_*)
+	uint8_t mods = 0;                         // kModal{Ctrl,Shift,Alt} bits
+	void (EditorApp::*run)() = nullptr;       // fires on exact match
+	const char* label = "";                   // action name (docs/help)
+};
 
 // ---------------------------------------------------------------------------
 // Cook settings (mirrors the PakCooker flags the editor drives).
@@ -433,6 +475,59 @@ private:
 	int m_vpBoxVp = 0;              // viewport the box started in
 	void FinishBoxSelect();        // apply on release
 	void DrawViewportChrome();     // borders + labels + box rect (ImGui)
+
+	// ---- modal operation (editor_modal.cpp) ----
+	// One binding table per mode + one global table. Dispatch (per frame,
+	// from RenderFrame): exact key+modifier match; the ACTIVE mode's
+	// table runs first (it can shadow globals), the global table is the
+	// fallback. Unmapped keys are ignored. Rows are ModalBinding (see
+	// the struct above the class).
+	void SetMode(EditorMode m);  // no-op when unchanged; hooks + log
+	void UpdateModalInput();     // per-frame key dispatch (RenderFrame)
+	void OnModeEnter(EditorMode m); // hook: PROFILE wiring lands here
+	void OnModeExit(EditorMode m);  // hook (empty for now)
+	// Binding handlers (one per table entry; see editor_modal.cpp).
+	void ModalModeLayout();
+	void ModalModeLighting();
+	void ModalModeTest();
+	void ModalModeProfile();
+	void ModalViewLit();
+	void ModalViewUnlit();
+	void ModalViewLitShadows();
+	void ModalVpLayoutToggle();
+	void ModalUiToggle();
+	void ModalUndo();
+	void ModalRedo();
+	void ModalSaveIncremental();
+	void ModalGizmoTranslate();
+	void ModalGizmoRotate();
+	void ModalGizmoScale();
+	void ModalGizmoCycle();
+	void ModalSelRadial();
+	void ModalWireframeToggle();
+	void ModalFrameSel();
+	void ModalFrameAll();
+	void ModalCycleNodePrev();
+	void ModalCycleNodeNext();
+	void ModalViewUv0();
+	void ModalLightGizmosToggle();
+	void ModalViewBaked();
+	void ModalViewLmUv();
+	void ModalUvInsetCycle();
+	void ModalSunAzimuthNeg();
+	void ModalSunAzimuthPos();
+	void ModalSunElevationNeg();
+	void ModalSunElevationPos();
+	void ModalSunIntensityNeg();
+	void ModalSunIntensityPos();
+	void ModalRunInApp();
+	void ModalCook();
+	void ModalViewMeshlets();
+	void ModalViewVertexColors();
+	void ModalTexModeCycle();
+	void ModalProfileStub();
+	EditorMode m_mode = EditorMode::Layout;
+	bool m_selRadialOpen = false; // Q radial owns 1/2/3 while open
 
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
