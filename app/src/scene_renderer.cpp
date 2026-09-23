@@ -2960,21 +2960,23 @@ void SceneRenderer::Shutdown() {
 				<< "' (bake: GiBaker --cv-spec <file>)\n";
 			return;
 		}
-		// Line-separated .cvol vfs paths.
+		// Line-separated .cvol vfs paths ('#' comments and blanks skipped —
+		// GiBaker writes a header comment into the manifest).
 		std::vector<std::string> lines;
 		{
 			std::string cur;
 			for (char c : manifestBytes) {
 				if (c == '\n' || c == '\r') {
-					if (!cur.empty()) {
+					while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\t'))
+						cur.pop_back();
+					if (!cur.empty() && cur[0] != '#')
 						lines.push_back(cur);
-						cur.clear();
-					}
+					cur.clear();
 				} else {
 					cur.push_back(c);
 				}
 			}
-			if (!cur.empty())
+			if (!cur.empty() && cur[0] != '#')
 				lines.push_back(cur);
 		}
 		constexpr uint32_t kMaxVolumes = 8; // SG_CV_MAX_VOLUMES
