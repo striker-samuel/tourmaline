@@ -2,6 +2,8 @@
 #include "common.hlsli"
 #include "environment.hlsli"
 #include "sggi.hlsli"
+#include "sg_regular.hlsli"
+#include "sg_cvol.hlsli"
 #include "dof.hlsli"
 
 struct PSIn
@@ -168,17 +170,44 @@ PSOut mainPS(PSIn IN)
         if (vp.heightFalloff > 0.0)
             sigma *= exp(-max(wpos.y - vp.heightBase, 0.0) * vp.heightFalloff);
 
-        // Ambient in-scatter: probe field where covered, sky-IBL fallback
-        // where not (same discipline as default_lit -- never additive).
+        // Ambient in-scatter: the same stacked-probe blend as the lit
+        // path — octree world field base, convex volumes compositing
+        // over it by ordered priority (the mean is linear in the amps,
+        // so lerping the per-source means is exact), sky-IBL fallback
+        // where nothing covers (same discipline as default_lit --
+        // never additive).
         float3 ambient = float3(0.0, 0.0, 0.0);
         if (giOn > 0.5)
         {
             float3 amps[SG_GI_LOBES];
             float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-            if (SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL))
-                ambient = VolGiMean(amps) * giStrength;
-            else
-                ambient = EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
+            const bool octreeCovered =
+                SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL);
+            float3 ambientE = octreeCovered ? VolGiMean(amps)
+                : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
+                    * 0.31831;
+            bool covered = octreeCovered;
+            if (frame.cvolEnabled != 0u)
+            {
+                const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+                [loop]
+                for (uint v = 0; v < volCount; ++v)
+                {
+                    const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[v];
+                    const float w = SgCvWeight(vol, wpos);
+                    [branch]
+                    if (w > 0.0)
+                    {
+                        float3 volAmps[SG_GI_LOBES];
+                        SgCvSampleVolume(frame, v, wpos, volAmps);
+                        ambientE = lerp(ambientE, VolGiMean(volAmps), w);
+                        covered = true;
+                    }
+                }
+            }
+            ambient = covered
+                ? ambientE * giStrength
+                : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
                     * (0.31831 * giStrength);
         }
         else

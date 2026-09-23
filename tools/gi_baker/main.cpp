@@ -42,6 +42,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,6 +52,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h> // lightmap-chain diagnostic (--lm-probe)
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
@@ -110,6 +112,14 @@ struct Args {
 	bool scanInterior = false;    // enclosure map + enclosed-component boxes
 	// Static spot lights for the bake (same spec as PakCooker --spot).
 	std::vector<std::string> spots;
+	// Convex GI volumes (the probes-only pivot's confined-space path):
+	// --cv-spec authoring file, baked by sparse radiance+depth captures
+	// + cubemap reprojection into dense probe grids (BO3 pipeline).
+	// Empty cvSpec = no convex bake.
+	std::string cvSpec;
+	uint32_t cvDirs = 1536;       // capture direction count (6*16^2)
+	float cvCaptureSpacing = 0.0f; // 0 = 3x probe spacing per volume
+	uint32_t cvSmoothing = 1;     // Laplacian volume-smoothing passes
 };
 
 bool ParseArgs(int argc, char** argv, Args& out) {
@@ -186,6 +196,14 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--print-bounds") { out.printBounds = true; }
 		else if (a == "--scan-interior") { out.scanInterior = true; }
+		else if (a == "--cv-spec") { if (!need(out.cvSpec, i)) return false; }
+		else if (a == "--cv-dirs") { if (!needU(out.cvDirs, i)) return false; }
+		else if (a == "--cv-smoothing") { if (!needU(out.cvSmoothing, i)) return false; }
+		else if (a == "--cv-capture-spacing") {
+			std::string v;
+			if (!need(v, i)) return false;
+			out.cvCaptureSpacing = std::stof(v);
+		}
 		else if (a == "--lm-probe") { if (!needU(out.lmProbe, i)) return false; }
 		else if (a == "--help" || a == "-h") {
 			return false;
@@ -227,6 +245,22 @@ void Usage() {
 		<< "         PakCooker --lightmap on (writes gi/<scene>.sglm itself).\n"
 		<< "GiBaker --scene bistro --print-bounds | --scan-interior:\n"
 		<< "         scene AABB / enclosure map to place bar/street boxes.\n"
+		<< "GiBaker --scene bistro --cv-spec volumes.txt\n"
+		<< "         [--cv-dirs 1536] [--cv-capture-spacing 0]\n"
+		<< "         [--cv-smoothing 1]: bake STACKED CONVEX GI volumes\n"
+		<< "         (probes-only pivot; BO3-style sparse radiance+depth\n"
+		<< "         captures reprojected into dense probe grids).\n"
+		<< "         Spec file, one `volume <name>` block each:\n"
+		<< "           volume bar\n"
+		<< "             box 9.4,-1,0.6 28.4,5.5,18.6 [0.1,0.1]\n"
+		<< "             plane 0,0,1,-3.2 2.0 2.0     # doorway fade\n"
+		<< "             face-fade 2 0.1 0.1          # retune plane #2\n"
+		<< "             priority 10\n"
+		<< "             spacing 0.5\n"
+		<< "             capture-spacing 1.5\n"
+		<< "         Writes gi/<scene>_<name>.cvol + updates the runtime\n"
+		<< "         manifest gi/<scene>.cvmanifest (one vfs path per line).\n"
+		<< "         Volumes blend over the .sggi world field by priority.\n"
 		<< "GiBaker --scene bistro --lm-probe N --uniform-albedo off\n"
 		<< "         [--sun-... --sky-intensity ...]: lightmap-chain diagnostic\n"
 		<< "         (authored-pack charts -> rasterize -> bake) on N meshes;\n"
@@ -708,6 +742,140 @@ std::optional<std::string> SceneGltf(const std::string& id) {
 	return std::nullopt;
 }
 
+// ---------------------------------------------------------------------------
+// Convex-volume spec (--cv-spec): authoring format for stacked probe
+// volumes. One `volume <name>` block per volume; keys inside a block:
+//   box <min> <max> [inside,outside]   six planes from an AABB (fades
+//                                      default 0.1/0.1; min/max "x,y,z")
+//   plane <n.x,n.y,n.z,d> [in [out]]    extra clipping plane (inside:
+//                                      n.P + d <= 0), own fades
+//   face-fade <planeIndex> <in> <out>  retune one plane's fades
+//   priority <n>                        higher wins (composited later)
+//   spacing <m>                        dense probe grid spacing
+//   capture-spacing <m>                capture lattice (default 3x spacing)
+// ---------------------------------------------------------------------------
+struct CvSpecVolume {
+	smvk::gi::CvVolumeDef def;
+	float spacing = 0.5f;
+	float captureSpacing = 0.0f;
+};
+
+bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
+	std::string& err) {
+	std::ifstream in(hostPath);
+	if (!in) {
+		err = "cannot open spec " + hostPath;
+		return false;
+	}
+	auto parseVec3 = [](const std::string& s, glm::vec3& v) {
+		return std::sscanf(s.c_str(), "%f,%f,%f", &v.x, &v.y, &v.z) == 3;
+	};
+	int unnamed = 0;
+	std::string line;
+	int lineNo = 0;
+	std::optional<size_t> curIdx;
+	while (std::getline(in, line)) {
+		++lineNo;
+		const size_t hash = line.find('#');
+		if (hash != std::string::npos)
+			line = line.substr(0, hash);
+		std::istringstream ss(line);
+		std::string key;
+		if (!(ss >> key) || key.empty())
+			continue;
+		auto fail = [&](const std::string& why) {
+			err = "cv-spec:" + std::to_string(lineNo) + ": " + why;
+			return false;
+		};
+		if (key == "volume") {
+			CvSpecVolume v{};
+			if (!(ss >> v.def.name) || v.def.name.empty()) {
+				v.def.name = "vol" + std::to_string(unnamed++);
+				ss.clear();
+			}
+			out.push_back(std::move(v));
+			curIdx = out.size() - 1;
+			continue;
+		}
+		if (!curIdx)
+			return fail("key '" + key + "' outside a volume block");
+		CvSpecVolume& v = out[*curIdx];
+		if (key == "box") {
+			std::string mn, mx, fades;
+			glm::vec3 bmn, bmx;
+			if (!(ss >> mn >> mx) || !parseVec3(mn, bmn) || !parseVec3(mx, bmx))
+				return fail("box wants <x,y,z> <x,y,z> [in,out]");
+			float inF = 0.1f, outF = 0.1f;
+			if ((ss >> fades) && std::sscanf(fades.c_str(), "%f,%f",
+					&inF, &outF) != 2)
+				return fail("box fades want <in,out>");
+			auto planes = smvk::gi::CvBoxPlanes(bmn, bmx, inF, outF);
+			v.def.planes.insert(v.def.planes.end(),
+				planes.begin(), planes.end());
+		} else if (key == "plane") {
+			std::string spec, sIn, sOut;
+			if (!(ss >> spec))
+				return fail("plane wants <nx,ny,nz,d> [in [out]]");
+			smvk::gi::CvPlane p{};
+			glm::vec3 n;
+			if (!parseVec3(spec, n) || !(ss >> p.d))
+				return fail("plane wants <nx,ny,nz,d> [in [out]]");
+			if (std::abs(glm::length(n)) < 1e-3f)
+				return fail("plane normal is zero");
+			p.normal = glm::normalize(n);
+			p.insideFade = 0.1f;
+			p.outsideFade = 0.1f;
+			if ((ss >> sIn))
+				p.insideFade = std::stof(sIn);
+			if ((ss >> sOut))
+				p.outsideFade = std::stof(sOut);
+			v.def.planes.push_back(p);
+		} else if (key == "face-fade") {
+			int idx = -1;
+			std::string sIn, sOut;
+			if (!(ss >> idx >> sIn >> sOut))
+				return fail("face-fade wants <planeIndex> <in> <out>");
+			if (idx < 0 || idx >= int(v.def.planes.size()))
+				return fail("face-fade plane index out of range");
+			v.def.planes[size_t(idx)].insideFade = std::stof(sIn);
+			v.def.planes[size_t(idx)].outsideFade = std::stof(sOut);
+		} else if (key == "priority") {
+			if (!(ss >> v.def.priority))
+				return fail("priority wants <n>");
+		} else if (key == "spacing") {
+			if (!(ss >> v.spacing) || v.spacing <= 0.0f)
+				return fail("spacing wants <meters>");
+		} else if (key == "capture-spacing") {
+			if (!(ss >> v.captureSpacing) || v.captureSpacing <= 0.0f)
+				return fail("capture-spacing wants <meters>");
+		} else {
+			return fail("unknown key '" + key + "'");
+		}
+	}
+	if (out.empty()) {
+		err = "cv-spec has no volume blocks";
+		return false;
+	}
+	for (const CvSpecVolume& v : out) {
+		if (v.def.planes.empty()) {
+			err = "volume '" + v.def.name + "' has no planes";
+			return false;
+		}
+		if (v.def.planes.size() > smvk::gi::kCvMaxPlanes) {
+			err = "volume '" + v.def.name + "' exceeds "
+				+ std::to_string(smvk::gi::kCvMaxPlanes) + " planes";
+			return false;
+		}
+		glm::vec3 mn, mx;
+		if (!v.def.Bounds(mn, mx)) {
+			err = "volume '" + v.def.name
+				+ "' planes do not bound a closed region";
+			return false;
+		}
+	}
+	return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1042,9 +1210,118 @@ int main(int argc, char** argv) {
 			if (reloaded.VoxelCount() != rvol.VoxelCount())
 				return 1;
 		}
-		// Fall through to the adaptive bake only when the user asked
-		// for it explicitly (both --out and --regular-out = A/B pair
-		// in one invocation). A regular-only run passes no --out.
+		// Fall through only when another stage was requested explicitly
+		// (--out adaptive A/B or a --cv-spec convex bake pending below).
+		// A regular-only run passes no --out.
+		if (!args.outExplicit && args.cvSpec.empty()) {
+			const auto t1 = std::chrono::steady_clock::now();
+			std::cout << "GiBaker total: "
+				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
+			return 0;
+		}
+	}
+
+	// Convex-volume bake (probes-only pivot; --cv-spec). Author stacked
+	// convex volumes (per-plane fades + priority), bake each dense probe
+	// grid from sparse radiance+depth captures by cubemap reprojection
+	// (BO3 pipeline), write gi/<scene>_<name>.cvol and update the runtime
+	// manifest gi/<scene>.cvmanifest. Runs in addition to whatever else
+	// was asked for; like --regular-out, a cvol-only run (no --out) exits
+	// after this block.
+	if (!args.cvSpec.empty()) {
+		std::vector<CvSpecVolume> specVols;
+		std::string specErr;
+		if (!ParseCvSpec(args.cvSpec, specVols, specErr)) {
+			std::cerr << "Bad --cv-spec: " << specErr << std::endl;
+			return 2;
+		}
+		if (specVols.size() > 8) {
+			std::cerr << "--cv-spec lists " << specVols.size()
+				<< " volumes; the runtime manifest caps at 8\n";
+			return 2;
+		}
+		std::vector<std::string> manifestLines;
+		for (CvSpecVolume& spec : specVols) {
+			smvk::gi::CvBakeConfig cfg{};
+			cfg.captureDirs = std::max(args.cvDirs, 64u);
+			cfg.maxBounces = args.bounces;
+			cfg.captureSpacing = args.cvCaptureSpacing > 0.0f
+				? args.cvCaptureSpacing : spec.captureSpacing;
+			cfg.smoothingPasses = args.cvSmoothing;
+			cfg.threadCount = args.threads;
+			std::cout << "  [CV] volume '" << spec.def.name << "': priority="
+				<< spec.def.priority << " spacing=" << spec.spacing
+				<< " planes=" << spec.def.planes.size() << "\n";
+			smvk::gi::CvVolume vol;
+			smvk::gi::CvBakeStats stats;
+			if (!smvk::gi::BakeCvVolume(traceScene, spec.def, spec.spacing,
+					cfg, vol, stats,
+					[](const char* line) { std::cout << line; })) {
+				std::cerr << "Convex bake failed for '" << spec.def.name
+					<< "'\n";
+				return 1;
+			}
+			const std::string outPath = (std::filesystem::path(args.contentDir)
+				/ "gi" / (sceneId + "_" + spec.def.name + ".cvol"))
+				.generic_string();
+			{
+				std::filesystem::path out(outPath);
+				std::error_code ec;
+				std::filesystem::create_directories(out.parent_path(), ec);
+			}
+			std::string werr;
+			if (!vol.WriteFile(outPath, werr)) {
+				std::cerr << "Convex write failed: " << werr << std::endl;
+				return 1;
+			}
+			std::cout << "Wrote " << outPath << " ("
+				<< std::filesystem::file_size(outPath) << " B on disk)\n";
+			if (args.verify) {
+				smvk::gi::CvVolume reloaded;
+				std::string verr;
+				if (!smvk::gi::CvVolume::ReadFile(outPath, reloaded, verr)) {
+					std::cerr << "Convex verify: reload failed: " << verr
+						<< std::endl;
+					return 1;
+				}
+				std::cout << "  verify: " << reloaded.VoxelCount()
+					<< " voxels, " << reloaded.def.planes.size()
+					<< " planes reloaded OK\n";
+				if (reloaded.VoxelCount() != vol.VoxelCount())
+					return 1;
+			}
+			manifestLines.push_back("gi/" + sceneId + "_" + spec.def.name
+				+ ".cvol");
+		}
+		// Runtime manifest (one vfs path per line): merge with the
+		// existing file so hand-edited entries survive re-bakes.
+		{
+			const std::string manifestPath = (std::filesystem::path(args.contentDir)
+				/ "gi" / (sceneId + ".cvmanifest")).generic_string();
+			std::vector<std::string> lines;
+			{
+				std::ifstream in(manifestPath);
+				std::string cur;
+				while (std::getline(in, cur)) {
+					while (!cur.empty() && (cur.back() == '\r' || cur.back() == ' '))
+						cur.pop_back();
+					if (!cur.empty() && cur[0] != '#'
+						&& std::find(lines.begin(), lines.end(), cur) == lines.end())
+						lines.push_back(cur);
+				}
+			}
+			for (const std::string& add : manifestLines)
+				if (std::find(lines.begin(), lines.end(), add) == lines.end())
+					lines.push_back(add);
+			std::ofstream out(manifestPath, std::ios::trunc);
+			out << "# convex GI volumes (GiBaker --cv-spec; one vfs path per line)\n";
+			for (const std::string& l : lines)
+				out << l << "\n";
+			std::cout << "Manifest " << manifestPath << ": " << lines.size()
+				<< " volume(s)\n";
+		}
+		// A cvol-only run (no --out) is done; --out falls through to the
+		// adaptive world-field bake (the .sggi and .cvol files pair up).
 		if (!args.outExplicit) {
 			const auto t1 = std::chrono::steady_clock::now();
 			std::cout << "GiBaker total: "

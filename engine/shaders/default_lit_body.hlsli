@@ -957,20 +957,31 @@ PSOut mainPS(PSIn IN)
     float3 ambientSpec = envSpec;
 
     // ---------------------------------------------------------------
-    // Baked ambient: exactly ONE source per pixel, by priority:
-    //   1. STATIC draws (per-draw lobe count from the gfx draw ring;
-    //      the atlas-space uv is the cooked texCoord2) sample the 2D SG
-    //      lightmap atlas (HW-bilinear amplitudes, Hill-fitted diffuse +
-    //      warped-NDF specular).
-    //   2. DYNAMIC draws inside an artist OBB sample the regular 3D SG
-    //      probe grids (HW-trilinear between neighboring probes).
-    //   3. Anything else falls to the adaptive octree probe volume.
-    // All three carry the same baked field (sky + sun + static spots,
-    // real materials). The analytic sky IBL is the FALLBACK for pixels
-    // no baked source covers (below) — never an additive base on
-    // covered pixels. No source double-counts: lower-priority sources
-    // are skipped once one hits; the SkyIbl ambient mode simply
-    // disables every baked source so every pixel falls back.
+    // Baked ambient. Since the probes-only GI pivot the production
+    // path is STACKED PROBE FIELDS (lightmaps are deprecated: the
+    // cook no longer produces them; the branch below stays for
+    // already-cooked content):
+    //   1. (legacy) STATIC draws with cooked chart uvs sample the 2D
+    //      SG lightmap atlas.
+    //   2. (legacy) dynamic draws inside an artist OBB sample the
+    //      regular 3D probe grids (.sgrv content).
+    //   3. THE path: the sparse octree world field is sampled
+    //      INDEPENDENTLY, then authored convex probe volumes
+    //      (BO3-style cubemap-reprojection grids, .cvol) composite
+    //      over it by ordered priority:
+    //          E = octree-or-sky base
+    //          for v in volumes (low -> high priority):
+    //              E = lerp(E, E_volume, v.Weight(P))
+    //      A shading point samples each density level on its own;
+    //      levels never share interpolation neighbors (that creates
+    //      resolution-dependent gradients where supports change
+    //      abruptly), and the per-plane fades blend through
+    //      doorways/openings — never through walls.
+    // All sources carry the same baked field (sky + sun + static
+    // spots, real materials). The analytic sky IBL is the FALLBACK
+    // for pixels no baked source covers (below) — never an additive
+    // base on covered pixels; it is also the BLEND BASE where a
+    // partially-covering volume fades over uncovered space.
     // ---------------------------------------------------------------
     uint giSource = 0u;            // 0 = none, 1 = lightmap, 2 = grid, 3 = probes
     float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)
@@ -1054,15 +1065,72 @@ PSOut mainPS(PSIn IN)
             }
         }
     }
-    if (giSource == 0u && frame.giEnabled != 0u)
+    if (giSource == 0u && (frame.giEnabled != 0u || frame.cvolEnabled != 0u))
     {
-        float3 giAmps[SG_GI_LOBES];
+        // World field: sparse octree, sampled on its own.
+        float3 octAmps[SG_GI_LOBES];
         float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-        if (SgGiSample(frame, IN.worldPos, giAmps, dbgW, dbgC, dbgF, dbgL))
+        bool octreeCovered = false;
+        if (frame.giEnabled != 0u)
+            octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
+        const float giScale = max(frame.giIntensity, 0.0f);
+        // Irradiance-space blend chain. The base is the analytic sky —
+        // the universal fallback — so a volume fading in over
+        // uncovered outdoor space transitions through the sky instead of
+        // through garbage; a fully-inside pixel (w -> 1) takes the
+        // volume's field alone.
+        float3 E = irradiance;
+        bool covered = octreeCovered;
+        if (octreeCovered)
+            E = SgGiDiffuseIrradiance(octAmps, N);
+        // Amp-space twin of the chain for the rough-glossy SG specular
+        // (both evaluations are linear in the amplitudes, so amp-space
+        // and irradiance-space lerps agree). The sky has no SG
+        // representation: while only volumes cover, the current volume's
+        // amplitudes are the best available specular field; once the
+        // octree covers, the chain lerps normally.
+        float3 specAmps[SG_GI_LOBES];
+        [unroll]
+        for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
+            specAmps[sA] = octreeCovered ? octAmps[sA] : float3(0.0, 0.0, 0.0);
+        uint volHits = 0u;
+        if (frame.cvolEnabled != 0u)
         {
-            const float giScale = max(frame.giIntensity, 0.0f);
-            const float3 giE = SgGiDiffuseIrradiance(giAmps, N) * giScale;
-            giSource = 3u;
+            // App uploads priority-sorted (low first): later volumes
+            // override earlier ones — the FOX override-volume rule.
+            const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+            [loop]
+            for (uint v = 0; v < volCount; ++v)
+            {
+                const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[v];
+                const float w = SgCvWeight(vol, IN.worldPos);
+                [branch]
+                if (w > 0.0)
+                {
+                    float3 volAmps[SG_GI_LOBES];
+                    SgCvSampleVolume(frame, v, IN.worldPos, volAmps);
+                    E = lerp(E, SgGiDiffuseIrradiance(volAmps, N), w);
+                    if (covered)
+                    {
+                        [unroll]
+                        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
+                            specAmps[sB] = lerp(specAmps[sB], volAmps[sB], w);
+                    }
+                    else
+                    {
+                        [unroll]
+                        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
+                            specAmps[sB] = volAmps[sB];
+                    }
+                    covered = true;
+                    ++volHits;
+                }
+            }
+        }
+        if (covered)
+        {
+            const float3 giE = E * giScale;
+            giSource = (volHits > 0u) ? 4u : 3u;
             bakedE = giE;
             envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
             ambientSpec = envSpec * envVis;
@@ -1071,18 +1139,16 @@ PSOut mainPS(PSIn IN)
             // as emissive glow once alpha-blended over the background.
             if (!isBlendMat)
                 ambient += kD * baseColor * (giE / PI) * occlusion * ao;
-            // Same high crossover as the regular grids above (0.45): the
-            // volume lobes are ambient-resolution fits — the sun rides
-            // them as a broad smear, so anything smoother than genuinely
-            // rough keeps the prefiltered cubemap (broad lobes cannot do
-            // mirrors, and their blurred-sun estimate rims smooth metals
-            // like a searchlight). The per-texel lightmap fit keeps its
-            // own lower crossover.
+            // Same high crossover as the regular grids (0.45): the
+            // volume/octree lobes are ambient-resolution fits — the sun
+            // rides them as a broad smear, so anything smoother than
+            // genuinely rough keeps the prefiltered cubemap. The
+            // per-texel lightmap fit keeps its own lower crossover.
             const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (roughW > 0.0f)
             {
                 const float3 giSpecular =
-                    SgGiSpecular(giAmps, R, shadingRoughness) * giScale
+                    SgGiSpecular(specAmps, R, shadingRoughness) * giScale
                     * Fenv * occlusion * ao;
                 ambientSpec = lerp(ambientSpec, giSpecular, roughW);
             }
@@ -1107,7 +1173,8 @@ PSOut mainPS(PSIn IN)
     //   1 = flat irradiance of whichever source lit this pixel (no
     //       albedo, exposure-scaled) — coverage + brightness at a glance.
     //   2 = source palette (the static/dynamic separation): red =
-    //       lightmap, green = regular grid, blue = probe volume.
+    //       lightmap (deprecated), green = regular grid (legacy), blue =
+    //       octree world field, cyan = convex volume blended in.
     //   Magenta = no baked source at this pixel (sky fallback only).
     // The old probe-bisect modes (level isolation, coverage palettes,
     // disagreement heat, ...) are gone — bake-side analysis belongs to
@@ -1128,6 +1195,7 @@ PSOut mainPS(PSIn IN)
         }
         float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)
             : (giSource == 2u) ? float3(0.0f, 1.0f, 0.0f)
+            : (giSource == 4u) ? float3(0.0f, 1.0f, 1.0f)
             : float3(0.0f, 0.25f, 1.0f);
         OUT.outColor = float4(SanitizeHdr(pal
             * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);

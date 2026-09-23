@@ -144,6 +144,11 @@ struct SgFitAccumulator {
 	float gram[kSgLobeCount][kSgLobeCount] = {};
 	glm::vec3 rhs[kSgLobeCount] = {};
 	uint32_t sampleCount = 0;
+	// Production bakes that only ever Solve() (diagonal projection) can
+	// skip the Gram accumulation (45 mults/sample): the cubemap-
+	// reprojection bake gathers thousands of texel samples per probe
+	// and never reads the Gram.
+	bool accumulateGram = true;
 
 	void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight) {
 		// Quarantine: one non-finite radiance sample (NaN shading normal,
@@ -156,8 +161,9 @@ struct SgFitAccumulator {
 			b[i] = SgBasisValue(i, dir);
 		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
 			rhs[i] += radiance * (b[i] * weight);
-			for (uint32_t k = i; k < kSgLobeCount; ++k)
-				gram[i][k] += b[i] * b[k] * weight;
+			if (accumulateGram)
+				for (uint32_t k = i; k < kSgLobeCount; ++k)
+					gram[i][k] += b[i] * b[k] * weight;
 		}
 		++sampleCount;
 	}

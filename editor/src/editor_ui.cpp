@@ -1998,31 +1998,19 @@ void EditorApp::DrawCookPanel() {
 	ImGui::SameLine();
 	if (ImGui::Checkbox("LODs", &m_cook.lods))
 		cookTouched = true;
-	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
-		cookTouched = true;
+	// Lightmaps are DEPRECATED (probes-only GI pivot): the cooker
+	// force-disables the bake, so the checkbox is inert. Keep the row
+	// visible for old tours (the flag persists in the cook block) but
+	// grayed out.
+	ImGui::BeginDisabled(true);
+	ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap);
+	ImGui::EndDisabled();
 	if (m_cook.lightmap) {
-		if (ImGui::SliderFloat("Texel size (m/texel)",
-				&m_cook.lmMetersPerTexel, 0.02f, 0.5f, "%.3f"))
-			cookTouched = true;
-		ImGui::SameLine();
-		ImGui::TextDisabled("(%.1f tex/m)", 1.0f / m_cook.lmMetersPerTexel);
-		int lobes = int(m_cook.lmLobes);
-		if (ImGui::SliderInt("Lobes", &lobes, 5, 12)) {
-			m_cook.lmLobes = uint32_t(lobes);
-			cookTouched = true;
-		}
-		int rays = int(m_cook.lmRays);
-		if (ImGui::SliderInt("Rays/texel", &rays, 16, 2048)) {
-			m_cook.lmRays = uint32_t(rays);
-			cookTouched = true;
-		}
-		if (ImGui::SliderFloat("Sun az", &m_cook.sunAzimuth, 0.0f, 360.0f))
-			cookTouched = true;
-		if (ImGui::SliderFloat("Sun el", &m_cook.sunElevation, 0.0f, 90.0f))
-			cookTouched = true;
-		if (ImGui::SliderFloat("Sun I", &m_cook.sunIntensity, 0.0f, 50000.0f))
-			cookTouched = true;
+		m_cook.lightmap = false;
+		cookTouched = true;
 	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(deprecated: probes only - GiBaker .sggi + .cvol)");
 	if (cookTouched)
 		SaveTour(); // persist the cook block (not undoable)
 	ImGui::TextDisabled("tour: %s (%zu commands)",

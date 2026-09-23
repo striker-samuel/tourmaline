@@ -444,19 +444,33 @@ uint lmEnabled;                                          // 832 1 = lightmap bra
     uint regCount;                                             // 1080 active volumes
     uint regEnabled;                                           // 1084 1 = grid branch active
     uint4 regPad;                                              // 1088 (16-align tail)
+    // ---- Convex GI volumes (Engine/GI/cubemap_volume.h; BO3-style
+    // cubemap-reprojection bake, TPP/HZD-style stacked volumes). Up to
+    // SG_CV_MAX_VOLUMES volumes from gi/<scene>.cvmanifest, each a
+    // dense SG probe grid in 7 RGBA16F 3D textures (hardware trilinear)
+    // plus an inline convex plane set with per-plane fades + priority.
+    // The app uploads them priority-sorted (LOW first); the lit chain
+    // composites ordered: E = lerp(E, E_volume, weight) per volume on
+    // top of the octree/sky base — density levels never share
+    // interpolation neighbors. ----
+    vk::BufferPointer<CvVolumesBuffer> cvolVolumes;           // 1104 volume array (560 B each)
+    uint cvolLayers[56];                                       // 1112 8 volumes x 7 layer slots
+    uint cvolCount;                                            // 1336 active volumes
+    uint cvolEnabled;                                          // 1340 1 = convex-volume branch active
+    uint4 cvolPad;                                             // 1344 (16-align tail)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (1104 B) is a
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (1360 B) is a
     // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1104 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1112 phase-2 masks
-    uint dsDebugMode;      // 1120 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 1124 selected light (sorted index)
-    uint dsDebugFlags;     // 1128 bit0 = blend over lit
-    uint dsDebugCountCeil; // 1132 count-heat ceiling (lights)
-    uint4 dsDebugPad;      // 1136 (16-align tail)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1360 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1368 phase-2 masks
+    uint dsDebugMode;      // 1376 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 1380 selected light (sorted index)
+    uint dsDebugFlags;     // 1384 bit0 = blend over lit
+    uint dsDebugCountCeil; // 1388 count-heat ceiling (lights)
+    uint4 dsDebugPad;      // 1392 (16-align tail)
 #endif
 };
 

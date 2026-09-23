@@ -2106,6 +2106,11 @@ bool SceneRenderer::Initialize() {
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
 		LoadGiRegularVolumes(contentVfs);
+		// Convex GI volumes (dense probe grids in authored convex shapes,
+		// cooked by cubemap reprojection; GiBaker --cv-spec). Composited
+		// over the octree world field by priority at runtime. Missing
+		// manifest is the normal state (no bake yet) - non-fatal.
+		LoadCvolumes(contentVfs);
 		// Reflection cubemaps for specular IBL (cubemap_baker output):
 		// replaces the analytic sky specular with captured environment.
 		// Missing file is non-fatal (falls back to analytic sky).
@@ -2915,17 +2920,189 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
+	// ---------------------------------------------------------------------------
+	// Convex GI volumes (Engine/GI/cubemap_volume.h; GiBaker --cv-spec).
+	// Loads content/gi/<scene>.cvmanifest: one .cvol vfs path per line, up
+	// to SG_CV_MAX_VOLUMES (8). Each volume uploads 7 RGBA16F 3D textures
+	// (dense probe grid, hardware trilinear) + one 560 B descriptor with
+	// the convex plane set INLINE (per-plane fades) + priority. Volumes are
+	// uploaded priority-sorted (LOW first) so the shader's ordered
+	// compositing is a plain loop — later volumes override earlier ones
+	// (FOX override-volume rule). Missing manifest = "not baked yet" -
+	// non-fatal.
+	// ---------------------------------------------------------------------------
+	struct CvolPlaneGpu {
+		float normal_d[4]; // xyz plane normal, w = d (inside n.P + d <= 0)
+		float fades[4];    // x insideFade, y outsideFade, zw pad
+	};
+	struct CvolVolumeGpu {
+		float gridMin_spacing[4]; // xyz lattice origin, w spacing
+		uint32_t dims_priority[4]; // xyz dims, w priority
+		uint32_t planeCount_pad[4]; // x plane count
+		CvolPlaneGpu planes[16]; // SG_CV_MAX_PLANES (sg_lightmap_types.hlsli)
+	};
+	static_assert(sizeof(CvolVolumeGpu) == 560);
+
+	void SceneRenderer::LoadCvolumes(smvk::OverlayVfs& vfs) {
+		m_cvolLoaded = false;
+		m_cvolEnabled = false;
+		m_cvolVolumes.clear();
+		m_cvolVolumesBuffer = {};
+		m_cvolVolumesAddress = 0;
+
+		const std::string manifestPath =
+			std::string("gi/") + m_scene.id + ".cvmanifest";
+		std::vector<uint8_t> manifestBytes;
+		try {
+			manifestBytes = vfs.ReadBinary(manifestPath);
+		} catch (...) {
+			std::cerr << "[CV] no convex-volume manifest '" << manifestPath
+				<< "' (bake: GiBaker --cv-spec <file>)\n";
+			return;
+		}
+		// Line-separated .cvol vfs paths.
+		std::vector<std::string> lines;
+		{
+			std::string cur;
+			for (char c : manifestBytes) {
+				if (c == '\n' || c == '\r') {
+					if (!cur.empty()) {
+						lines.push_back(cur);
+						cur.clear();
+					}
+				} else {
+					cur.push_back(c);
+				}
+			}
+			if (!cur.empty())
+				lines.push_back(cur);
+		}
+		constexpr uint32_t kMaxVolumes = 8; // SG_CV_MAX_VOLUMES
+		for (const std::string& line : lines) {
+			if (m_cvolVolumes.size() >= kMaxVolumes) {
+				std::cerr << "[CV] manifest lists more than " << kMaxVolumes
+					<< " volumes - extra entries ignored\n";
+				break;
+			}
+			std::vector<uint8_t> volBytes;
+			try {
+				volBytes = vfs.ReadBinary(line);
+			} catch (...) {
+				std::cerr << "[CV] missing volume '" << line << "' - skipped\n";
+				continue;
+			}
+			CvolVolume cv{};
+			std::string verr;
+			if (!cv.volume.ReadFromMemory(volBytes, verr)) {
+				std::cerr << "[CV] volume rejected: " << verr << "\n";
+				continue;
+			}
+			// 7 RGBA16F 3D textures (bindless; volumeTextures mirror).
+			std::vector<uint16_t> layers[7];
+			cv.volume.PackGpuLayers(layers);
+			bool ok = true;
+			for (uint32_t t = 0; t < 7; ++t) {
+				smvk::ImageCreateInfo ci{};
+				ci.type = smvk::ImageType::Image3D;
+				ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+					cv.volume.dims[2] };
+				ci.format = smvk::Format::RGBA16_Float;
+				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "cvol layer";
+				auto tex = m_context->CreateTexture(ci, layers[t].data());
+				if (tex.empty()) {
+					std::cerr << "[CV] layer " << t << " creation failed\n";
+					ok = false;
+					break;
+				}
+				cv.layers[t] = std::move(tex);
+				cv.layerSlots[t] = m_context->GetTextureBindlessIndex(cv.layers[t]);
+			}
+			if (!ok)
+				continue;
+			// Coefficients are now resident on the GPU; drop the CPU copy.
+			cv.volume.coeffs.clear();
+			cv.volume.coeffs.shrink_to_fit();
+			m_cvolVolumes.push_back(std::move(cv));
+		}
+		if (m_cvolVolumes.empty()) {
+			std::cerr << "[CV] no volumes loaded\n";
+			return;
+		}
+
+		// Priority sort (stable, LOW first): the shader composites in
+		// upload order, so later entries win — the FOX override rule.
+		std::stable_sort(m_cvolVolumes.begin(), m_cvolVolumes.end(),
+			[](const CvolVolume& a, const CvolVolume& b) {
+				return a.volume.def.priority < b.volume.def.priority;
+			});
+
+		// Descriptor buffer (float4/uint4-padded layout, see CvolVolumeGpu).
+		std::vector<CvolVolumeGpu> descs(m_cvolVolumes.size());
+		for (size_t v = 0; v < m_cvolVolumes.size(); ++v) {
+			const smvk::gi::CvVolume& vol = m_cvolVolumes[v].volume;
+			CvolVolumeGpu& g = descs[v];
+			g.gridMin_spacing[0] = vol.gridMin.x;
+			g.gridMin_spacing[1] = vol.gridMin.y;
+			g.gridMin_spacing[2] = vol.gridMin.z;
+			g.gridMin_spacing[3] = vol.spacing;
+			g.dims_priority[0] = vol.dims[0];
+			g.dims_priority[1] = vol.dims[1];
+			g.dims_priority[2] = vol.dims[2];
+			g.dims_priority[3] = vol.def.priority;
+			const uint32_t planeCount = std::min<uint32_t>(
+				uint32_t(vol.def.planes.size()), 16u);
+			g.planeCount_pad[0] = planeCount;
+			for (uint32_t p = 0; p < planeCount; ++p) {
+				const smvk::gi::CvPlane& pl = vol.def.planes[p];
+				g.planes[p].normal_d[0] = pl.normal.x;
+				g.planes[p].normal_d[1] = pl.normal.y;
+				g.planes[p].normal_d[2] = pl.normal.z;
+				g.planes[p].normal_d[3] = pl.d;
+				g.planes[p].fades[0] = pl.insideFade;
+				g.planes[p].fades[1] = pl.outsideFade;
+				g.planes[p].fades[2] = 0.0f;
+				g.planes[p].fades[3] = 0.0f;
+			}
+		}
+		constexpr smvk::PipelineStage kCvStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
+		m_cvolVolumesBuffer = m_context->CreateBuffer(
+			descs.size() * sizeof(CvolVolumeGpu), smvk::BufferType_Storage,
+			"cvol volumes");
+		m_context->UploadDataToBuffer(m_cvolVolumesBuffer, descs.data(),
+			descs.size() * sizeof(CvolVolumeGpu), kCvStages,
+			smvk::AccessFlags::ShaderRead);
+		m_cvolVolumesAddress = m_context->GetBufferDeviceAddress(m_cvolVolumesBuffer);
+
+		m_cvolLoaded = true;
+		m_cvolEnabled = true; // on by default when baked; UI can toggle
+		std::cerr << "[CV] loaded " << m_cvolVolumes.size()
+			<< " convex volume(s) from '" << manifestPath << "'\n";
+		for (const auto& cv : m_cvolVolumes) {
+			const auto& d = cv.volume.def;
+			std::cerr << "  dims=" << cv.volume.dims[0] << "x" << cv.volume.dims[1]
+				<< "x" << cv.volume.dims[2] << " spacing=" << cv.volume.spacing
+				<< " planes=" << d.planes.size() << " priority=" << d.priority;
+			if (!d.name.empty())
+				std::cerr << " name='" << d.name << "'";
+			std::cerr << "\n";
+		}
+	}
+
 	void SceneRenderer::DegradeAmbientForMissingSources() {
 		// Single-source isolation modes whose source did not load fall
 		// back to another baked source (or the sky IBL) instead of being
 		// silently empty. All/SkyIbl/Off never need this.
 		if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
-			m_ambientMode = (m_giLoaded || m_regLoaded)
+			m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
 				? AmbientMode::Probes : AmbientMode::SkyIbl;
 			std::cerr << "[Scene] no lightmaps - ambient degraded to "
 				<< AmbientModeName(m_ambientMode) << "\n";
 		} else if (m_ambientMode == AmbientMode::Probes
-			&& !m_giLoaded && !m_regLoaded) {
+			&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
 			m_ambientMode = m_lmLoaded
 				? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
 			std::cerr << "[Scene] no probes - ambient degraded to "
@@ -3184,6 +3361,31 @@ void SceneRenderer::Shutdown() {
 			data.regCount = 0u;
 			data.regEnabled = 0u;
 		}
+		// Convex GI volumes (probes-only pivot's confined-space path).
+		// CvolActive() gates the upload (loaded + UI toggle + probes
+		// ambient mode); the volumes ride the same giIntensity scale as
+		// the octree. Buffers/slots publish whenever loaded so the
+		// shader flag and GPU contents can never disagree.
+		if (m_cvolLoaded && m_cvolEnabled) {
+			data.cvolVolumes = m_cvolVolumesAddress;
+			const uint32_t n = std::min<uint32_t>(
+				uint32_t(m_cvolVolumes.size()), 8u);
+			for (uint32_t v = 0; v < n; ++v)
+				for (uint32_t t = 0; t < 7; ++t)
+					data.cvolLayers[v * 7u + t] = m_cvolVolumes[v].layerSlots[t];
+			data.cvolCount = n;
+			data.cvolEnabled = ProbesWanted() ? 1u : 0u;
+		} else {
+			data.cvolVolumes = 0;
+			for (uint32_t& slot : data.cvolLayers)
+				slot = UINT32_MAX;
+			data.cvolCount = 0u;
+			data.cvolEnabled = 0u;
+		}
+		data.cvolPad_[0] = 0;
+		data.cvolPad_[1] = 0;
+		data.cvolPad_[2] = 0;
+		data.cvolPad_[3] = 0;
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
 		// ---- Forward+ decals (tiled projected splats) ----
@@ -9605,23 +9807,28 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						if (m_giProbeOcclusionCull)
 							ImGui::TextDisabled("hides probes behind geometry (one-time import hitch)");
 					}
-				if (m_giLoaded || m_lmLoaded || m_regLoaded) {
-					const char* dbgNames[3] = { "Off", "Baked irradiance",
-						"GI source" };
-					int dbgIdx = m_giDebug;
-					if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
-						m_giDebug = std::clamp(dbgIdx, 0, 2);
-					if (m_giDebug == 1) {
-						ImGui::TextDisabled("flat irradiance of the active source "
-							"(lightmap/grid/probes); magenta = none\n"
-							"works in EVERY ambient mode (N): isolate the source "
-							"with N, then read it here");
-					} else if (m_giDebug == 2) {
-						ImGui::TextDisabled("source palette: red = lightmap, "
-							"green = regular grid, blue = probe volume, "
-							"magenta = none (static/dynamic separation)");
-					}
+			if (m_giLoaded || m_lmLoaded || m_regLoaded || m_cvolLoaded) {
+				const char* dbgNames[3] = { "Off", "Baked irradiance",
+					"GI source" };
+				int dbgIdx = m_giDebug;
+				if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
+					m_giDebug = std::clamp(dbgIdx, 0, 2);
+				if (m_giDebug == 1) {
+					ImGui::TextDisabled("flat irradiance of the active source "
+						"(lightmap/grid/probes); magenta = none\n"
+						"works in EVERY ambient mode (N): isolate the source "
+						"with N, then read it here");
+				} else if (m_giDebug == 2) {
+					ImGui::TextDisabled("source palette: red = lightmap (deprecated), "
+						"green = regular grid (legacy), blue = octree world field, "
+						"cyan = convex volume blended, magenta = none");
 				}
+				if (m_cvolLoaded) {
+					ImGui::Checkbox("Convex GI volumes", &m_cvolEnabled);
+					ImGui::TextDisabled("stacked probe volumes blend over the "
+						"octree by priority (gi/<scene>.cvmanifest)");
+				}
+			}
 				}
 #if defined(DS_DEBUG_VIZ)
 				// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).

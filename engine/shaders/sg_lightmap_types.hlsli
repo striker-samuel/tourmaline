@@ -33,3 +33,27 @@ struct SgRegularObbGpu
 };
 
 struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
+
+// Convex GI volume (cubemap_volume.h) GPU types. Sampling helpers live in
+// sg_cvol.hlsli. The plane set is INLINE (up to SG_CV_MAX_PLANES fixed
+// slots per volume; 560 B each) so a volume is one BDA fetch — no plane
+// indirection on the per-pixel blend path.
+#define SG_CV_MAX_VOLUMES 8
+#define SG_CV_LAYERS 7     // RGBA16F 3D textures per volume (sgrv layout)
+#define SG_CV_MAX_PLANES 16
+
+struct CvPlaneGpu
+{
+    float4 normal_d;   // xyz plane normal, w = d (inside: dot(n,P) + d <= 0)
+    float4 fades;      // x = insideFade, y = outsideFade, zw pad
+};
+
+struct CvVolumeGpu
+{
+    float4 gridMin_spacing; // xyz lattice origin (AABB of the convex region), w probe spacing (m)
+    uint4 dims_priority;    // xyz lattice resolution, w priority (app uploads priority-sorted, low first)
+    uint4 planeCount_pad;   // x = plane count
+    CvPlaneGpu planes[SG_CV_MAX_PLANES];
+};
+
+struct CvVolumesBuffer { CvVolumeGpu volumes[SG_CV_MAX_VOLUMES]; };

@@ -27,6 +27,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
@@ -536,6 +537,18 @@ struct FrameUniforms
 	uint32_t regCount = 0;          // 1048 active volumes
 	uint32_t regEnabled = 0;        // 1052 1 = grid branch active
 	uint32_t regPad_[4] = {};       // 1056 16-align tail (mirrors HLSL regPad)
+	// ---- Convex GI volumes (Engine/GI/cubemap_volume.h; BO3-style
+	// cubemap-reprojection dense grids in convex authored volumes with
+	// per-plane fades + priority). Loaded from gi/<scene>.cvmanifest (up
+	// to SG_CV_MAX_VOLUMES); each volume = 7 RGBA16F 3D textures
+	// (hardware trilinear) + one 560 B descriptor (planes inline).
+	// Uploaded priority-sorted (low first) so the shader's ordered
+	// compositing is a simple loop. ----
+	uint64_t cvolVolumes = 0;       // 1104 CvVolumeGpu array (BDA)
+	uint32_t cvolLayers[56] = {};  // 1112 8 volumes x 7 layer slots
+	uint32_t cvolCount = 0;         // 1336 active volumes
+	uint32_t cvolEnabled = 0;      // 1340 1 = convex-volume branch active
+	uint32_t cvolPad_[4] = {};      // 1344 16-align tail (mirrors HLSL cvolPad)
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -547,25 +560,28 @@ struct FrameUniforms
 	// phase-1 (CPU) and phase-2 (GPU) TileGroup light masks the
 	// light-scoped modes re-query; dsDebug* select mode / light / flags /
 	// heat scale. ----
-	uint64_t dsTileMasks = 0;      // 1072 phase-1 CPU TileGroup masks (viz)
-	uint64_t dsTileGroupMasks = 0; // 1080 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 1088 app::DsDebugViz (0 = off)
-	uint32_t dsDebugLight = 0;     // 1092 selected light (sorted index)
-	uint32_t dsDebugFlags = 0;     // 1096 bit0 = blend over lit
-	uint32_t dsDebugCountCeil = 32; // 1100 count-heat ceiling (lights)
-	uint32_t dsDebugPad_[4] = {};  // 1104 16-align tail (mirrors HLSL)
+	uint64_t dsTileMasks = 0;      // 1360 phase-1 CPU TileGroup masks (viz)
+	uint64_t dsTileGroupMasks = 0; // 1368 phase-2 GPU TileGroup masks (viz)
+	uint32_t dsDebugMode = 0;      // 1376 app::DsDebugViz (0 = off)
+	uint32_t dsDebugLight = 0;     // 1380 selected light (sorted index)
+	uint32_t dsDebugFlags = 0;     // 1384 bit0 = blend over lit
+	uint32_t dsDebugCountCeil = 32; // 1388 count-heat ceiling (lights)
+	uint32_t dsDebugPad_[4] = {};  // 1392 16-align tail (mirrors HLSL)
 #endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
 // match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
 // SG-GI block sits between the DS core and the decal block; the lightmap +
-// regular-volume block follows the decals; the DS visualizer tail is last
-// so the release layout stays a strict prefix of the debug one.
-// Release prefix: 2120 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
+// regular-volume block follows the decals; the convex-volume block follows
+// that; the DS visualizer tail is last so the release layout stays a
+// strict prefix of the debug one.
+// Release prefix: 1360 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
 //   + 32 (near/far/exposure/ao) + 128 (env) + 16 (cubemap) + 1028 (reflection probes)
 //   + 32 (DS) + 48 (GI) + 32 (decals) + 56 (lmLayers/lmEnabled/lmLayerKind/pads)
-//   + 256 (regLayers) + 24 (regObbs/regCount/regEnabled/regPad). Debug tail: +48.
+//   + 256 (regLayers) + 24 (regObbs/regCount/regEnabled/regPad)
+//   + 256 (cvolLayers) + 24 (cvolVolumes/cvolCount/cvolEnabled/cvolPad).
+//   Debug tail: +48.
 #if defined(DS_DEBUG_VIZ)
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 #else
@@ -625,13 +641,18 @@ static_assert(offsetof(FrameUniforms, regLayers) == 856);             // 856
 static_assert(offsetof(FrameUniforms, regCount) == 1080);             // 1080
 static_assert(offsetof(FrameUniforms, regEnabled) == 1084);           // 1084
 static_assert(offsetof(FrameUniforms, regPad_) == 1088);              // 1088
+static_assert(offsetof(FrameUniforms, cvolVolumes) == 1104);          // 1104
+static_assert(offsetof(FrameUniforms, cvolLayers) == 1112);           // 1112
+static_assert(offsetof(FrameUniforms, cvolCount) == 1336);            // 1336
+static_assert(offsetof(FrameUniforms, cvolEnabled) == 1340);          // 1340
+static_assert(offsetof(FrameUniforms, cvolPad_) == 1344);             // 1344
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 1104);          // 1104
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1112);     // 1112
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 1120);          // 1120
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 1124);         // 1124
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1128);         // 1128
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1132);     // 1132
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 1360);          // 1360
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1368);     // 1368
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 1376);          // 1376
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 1380);        // 1380
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1384);        // 1384
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1388);    // 1388
 #endif
 
 // Resources
@@ -1569,6 +1590,27 @@ protected:
 	uint64_t m_regObbsAddress = 0;
 	bool RegActive() const { return m_regLoaded && m_regEnabled; }
 	void LoadGiRegularVolumes(smvk::OverlayVfs& vfs);
+	// ---- Convex GI volumes (Engine/GI/cubemap_volume.h; the probes-only
+	// pivot's confined-space path). Loaded from content/gi/<scene>.cvmanifest:
+	// up to 8 volumes, each 7 RGBA16F 3D textures (dense probe grid, HW
+	// trilinear) + one descriptor (convex planes + per-plane fades +
+	// priority). The lit shader composites them ordered over the sparse
+	// octree world field (volumes BLEND by priority — never cross-
+	// interpolated with the octree's neighbors). ----
+	bool m_cvolLoaded = false;
+	bool m_cvolEnabled = false;       // UI toggle (confined-volume GI)
+	struct CvolVolume {
+		smvk::gi::CvVolume volume;       // CPU mirror (def; coeffs freed)
+		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
+		uint32_t layerSlots[7] = {};    // bindless slots
+	};
+	std::vector<CvolVolume> m_cvolVolumes;
+	smvk::Holder<smvk::BufferHandle> m_cvolVolumesBuffer;
+	uint64_t m_cvolVolumesAddress = 0;
+	bool CvolActive() const {
+		return m_cvolLoaded && m_cvolEnabled && ProbesWanted();
+	}
+	void LoadCvolumes(smvk::OverlayVfs& vfs);
 	// Degrades single-source ambient modes whose source did not load
 	// (called once after all three GI loaders at scene init): keeps the
 	// isolation states meaningful instead of silently empty.

@@ -1,6 +1,16 @@
 #pragma once
 // 2D SG lightmaps for STATIC geometry (companion to the dynamic-object path).
 //
+// ============================ DEPRECATED =====================================
+// Lightmaps are DEPRECATED (probes-only GI pivot): the cooker no longer
+// produces .sglm atlases (PakCooker --lightmap is force-disabled) and new
+// content must use the sparse octree (.sggi) + convex probe volumes
+// (.cvol, cubemap_volume.h). This module stays so EXISTING cooked paks
+// with lightmaps keep rendering (the runtime loader and shader branch
+// are untouched) and so the format remains documented; do not build new
+// pipelines on it.
+// ===========================================================================
+//
 // Design (The Order:1886 / BakingLab lineage, see reference/BakingLab):
 //  - Static meshes are split into chunks (one chunk per static mesh / merged
 //    static block). Each chunk owns a 2D atlas rect and a lobe count of

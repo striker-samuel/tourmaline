@@ -2689,6 +2689,17 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
+	// LIGHTMAP COOKING IS DEPRECATED (probes-only GI pivot). The bake
+	// stage below is force-disabled; existing cooked .sglm content keeps
+	// rendering at runtime. New bakes: GiBaker .sggi (sparse octree world
+	// field) + --cv-spec convex probe volumes (.cvol).
+	if (args.lightmap) {
+		std::cerr << "[LM] DEPRECATED: lightmap cooking is disabled "
+			"(probes-only GI pivot); --lightmap ignored. "
+			"Bake GiBaker .sggi + .cvol volumes instead.\n";
+		args.lightmap = false;
+	}
+
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
 		std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
@@ -2907,7 +2918,14 @@ int main(int argc, char** argv) {
 			};
 			use("meshopt", args.meshopt, k.meshopt);
 			use("lods", args.lods, k.lods);
-			use("lightmap", args.lightmap, k.lightmap);
+			// Lightmap cooking is DEPRECATED + force-disabled (probes-only
+			// GI pivot; see the main-entry gate). The tour cook block keeps
+			// the key for format compatibility, but a saved `lightmap on`
+			// can no longer re-enable the bake.
+			if (k.lightmap && !args.explicitSet.contains("lightmap"))
+				std::cerr << "[LM] tour cook block requested lightmaps - "
+					"DEPRECATED and disabled (probes-only GI pivot)\n";
+			use("lightmap", args.lightmap, false);
 			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
 			use("lmLobes", args.lmLobes, k.lmLobes);
 			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);

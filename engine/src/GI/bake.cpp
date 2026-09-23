@@ -259,7 +259,7 @@ glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 }
 
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
-	Pcg32& rng, uint32_t maxDepth) const {
+	Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist) const {
 	// Baked field: sun + static spot NEE at every diffuse vertex
 	// (including the primary hit — the light a lit surface reflects toward
 	// the probe IS indirect at the probe), plus the analytic sky on miss
@@ -285,6 +285,10 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 			L += throughput * SkyRadiance(d);
 			break;
 		}
+		// First-hit distance for the capture path (transmissive surfaces
+		// count: they are geometry; see the header note).
+		if (depth == 0 && outPrimaryDist)
+			*outPrimaryDist = h.t;
 		const glm::vec3 pos = p + d * h.t;
 		glm::vec3 tn = bvh_.TriangleNormal(h.tri);
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;

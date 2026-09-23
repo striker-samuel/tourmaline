@@ -162,8 +162,13 @@ public:
 	// surfaces passed through with per-surface tinting. `maxDepth` =
 	// diffuse bounce vertices after the first hit. Emissive stays
 	// runtime-only.
+	// Optional outPrimaryDist: distance to the FIRST surface hit along
+	// dir from origin (transmissive surfaces count — they are geometry;
+	// sky leaves the caller's value untouched, so pre-fill a sentinel).
+	// The cubemap-reprojection captures (cubemap_volume.cpp) record it
+	// as the capture depth for the parallax-shift reprojection.
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
-		Pcg32& rng, uint32_t maxDepth) const;
+		Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist = nullptr) const;
 
 	// Monte-Carlo cosine-hemisphere irradiance estimate at a point
 	// (reference for the error-driven refinement; same sources as
