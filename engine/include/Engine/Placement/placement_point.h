@@ -49,7 +49,8 @@ struct RenderInstance {
 	glm::vec3 scale{ 1.0f };    // 12
 	uint32_t prototypeId = 0;   // 4
 	uint32_t stableLow = 0;     // low 32 bits of StableID.lo (identity for overrides/debug)
-	uint32_t customB = 0;       // packed extra rotation / flags
+	uint32_t customB = 0;       // MVP: original candidateIndex (lets GPU constraint
+	                            // passes recompute the full StableID without an ID buffer)
 };
 static_assert(sizeof(RenderInstance) == 40, "RenderInstance size changed — update HLSL mirror");
 

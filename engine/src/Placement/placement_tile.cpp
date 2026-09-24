@@ -159,13 +159,26 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 		in.scale = glm::vec3(sc);
 		in.prototypeId = proto;
 		in.stableLow = id.w[0];
-		in.customB = 0;
+		in.customB = i; // candidate index: GPU constraint passes recompute IDs
 		accepted.push_back(in);
 		acceptedIds.push_back(id);
 	}
 
-	if (layer.config.minSpacing > 0.0f && accepted.size() > 1)
-		ApplyMinDistance(accepted, acceptedIds, layer.config.minSpacing);
+	if (layer.config.minSpacing > 0.0f && accepted.size() > 1) {
+		// Constraint volume covers the tile that spawned these candidates.
+		// Grid candidates live in [grid.origin, +extent]; mesh candidates
+		// may overshoot and skip via the out-of-volume rule (same on GPU).
+		ConstraintVolume vol;
+		vol.spacing = layer.config.minSpacing;
+		if (layer.domainKind == DomainKind::Grid && layer.grid) {
+			vol.origin = glm::vec3(layer.grid->origin.x, layer.grid->origin.y - 64.0f,
+				layer.grid->origin.z);
+			vol.dimX = (uint32_t)(layer.grid->extent.x / vol.spacing) + 2;
+			vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
+			vol.dimZ = (uint32_t)(layer.grid->extent.y / vol.spacing) + 2;
+		}
+		ApplyMinDistance(accepted, acceptedIds, layer.config.minSpacing, vol);
+	}
 	return accepted;
 }
 
@@ -182,59 +195,103 @@ struct CellKeyHash { size_t operator()(const CellKey& k) const {
 } // namespace
 
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
-	const std::vector<StableID>& ids, float spacing) {
+	const std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume) {
 	if (instances.empty() || spacing <= 0.0f) return;
 	const size_t n = instances.size();
-	// Phase A: hash into cells, keep highest-priority index per cell.
-	std::unordered_map<CellKey, size_t, CellKeyHash> winner;
-	winner.reserve(n * 2);
-	auto cellOf = [spacing](const glm::vec3& p) -> CellKey {
-		return CellKey{ (int32_t)std::floor(p.x / spacing),
-			(int32_t)std::floor(p.y / spacing),
-			(int32_t)std::floor(p.z / spacing) };
+	const bool bounded = volume.dimX > 0 && volume.dimY > 0 && volume.dimZ > 0
+		&& volume.spacing > 0.0f;
+	const float cs = bounded ? volume.spacing : spacing;
+
+	struct EKey { int64_t a, b, c; bool operator==(const EKey& o) const {
+		return a == o.a && b == o.b && c == o.c; } };
+	struct EKeyHash { size_t operator()(const EKey& k) const {
+		uint32_t h = SplitMix32((uint32_t)(k.a & 0xFFFFFFFF) + 0x9e3779b9u);
+		h = HashMix32(h, (uint32_t)(k.b & 0xFFFFFFFF));
+		h = HashMix32(h, (uint32_t)(k.c & 0xFFFFFFFF));
+		return (size_t)h;
+	} };
+
+	// Volume-cell coords of p; false when outside a bounded volume.
+	// Unbounded volumes use absolute spacing-sized cells instead.
+	auto volCell = [&](const glm::vec3& p, int64_t& ox, int64_t& oy, int64_t& oz) -> bool {
+		if (!bounded) {
+			ox = (int64_t)std::floor(p.x / cs);
+			oy = (int64_t)std::floor(p.y / cs);
+			oz = (int64_t)std::floor(p.z / cs);
+			return true;
+		}
+		ox = (int64_t)std::floor((p.x - volume.origin.x) / volume.spacing);
+		oy = (int64_t)std::floor((p.y - volume.origin.y) / volume.spacing);
+		oz = (int64_t)std::floor((p.z - volume.origin.z) / volume.spacing);
+		return ox >= 0 && oy >= 0 && oz >= 0
+			&& ox < (int64_t)volume.dimX && oy < (int64_t)volume.dimY
+			&& oz < (int64_t)volume.dimZ;
 	};
+	// Elector key from cell coords: volume-linear when bounded (exact for
+	// any origin alignment), raw coords otherwise.
+	auto keyFor = [&](int64_t ix, int64_t iy, int64_t iz) -> EKey {
+		if (bounded)
+			return EKey{ (iz * (int64_t)volume.dimY + iy) * (int64_t)volume.dimX + ix, 0, 0 };
+		return EKey{ ix, iy, iz };
+	};
+
+	// Phase 1 — elect: per key, argmax (priority, tie -> smaller index).
+	std::unordered_map<EKey, size_t, EKeyHash> winner;
+	winner.reserve(n * 2);
+	std::vector<uint8_t> inVolume(n, 1);
+	std::vector<int64_t> coX(n, 0), coY(n, 0), coZ(n, 0);
 	for (size_t i = 0; i < n; ++i) {
-		CellKey c = cellOf(instances[i].position);
-		auto it = winner.find(c);
-		if (it == winner.end()) winner[c] = i;
-		else if (PriorityOf(ids[i]) > PriorityOf(ids[it->second])) it->second = i;
+		int64_t ix, iy, iz;
+		if (!volCell(instances[i].position, ix, iy, iz)) { inVolume[i] = 0; continue; }
+		coX[i] = ix; coY[i] = iy; coZ[i] = iz;
+		EKey k = keyFor(ix, iy, iz);
+		auto it = winner.find(k);
+		if (it == winner.end()) {
+			winner[k] = i;
+		} else {
+			size_t j = it->second;
+			uint64_t pi = PriorityOf(ids[i]), pj = PriorityOf(ids[j]);
+			if (pi > pj || (pi == pj && i < j)) it->second = i;
+		}
 	}
-	// Phase B: winners test 27-neighbourhood; lower priority dies on conflict.
-	// Resolution order is ascending candidate index (deterministic on all
-	// platforms — never unordered_map iteration order, which is not portable).
+	// Phase 2 — kill vs the winner snapshot (order-free: reads never
+	// observe concurrent writes, so any thread order agrees bit-exactly).
+	std::vector<uint8_t> alive(n, 0);
+	for (auto& [k, idx] : winner) alive[idx] = 1;
+	const float minD2 = spacing * spacing;
 	std::vector<size_t> order;
 	order.reserve(winner.size());
-	for (auto& [c, idx] : winner) order.push_back(idx);
-	std::sort(order.begin(), order.end());
-	std::vector<uint8_t> alive(n, 0);
-	for (size_t idx : order) alive[idx] = 1;
-	const float minD2 = spacing * spacing;
-	for (size_t oi = 0; oi < order.size(); ++oi) {
-		size_t idx = order[oi];
-		if (!alive[idx]) continue;
-		CellKey c = cellOf(instances[idx].position);
+	for (auto& [k, idx] : winner) order.push_back(idx);
+	std::sort(order.begin(), order.end()); // deterministic traversal only
+	for (size_t idx : order) {
+		// Neighbourhood walk in cell-COORDINATE space: any conflicting
+		// partner (dist < spacing <= cell size) is at most one cell away
+		// per axis, whatever the volume alignment. Bounded neighbours get
+		// bounds-checked (outside -> no winner there).
 		for (int dx = -1; dx <= 1; ++dx)
 			for (int dy = -1; dy <= 1; ++dy)
 				for (int dz = -1; dz <= 1; ++dz) {
-					auto it = winner.find(CellKey{ c.x + dx, c.y + dy, c.z + dz });
-					if (it == winner.end() || it->second == idx || !alive[it->second]) continue;
+					int64_t nx = coX[idx] + dx, ny = coY[idx] + dy, nz = coZ[idx] + dz;
+					if (bounded && (nx < 0 || ny < 0 || nz < 0
+						|| nx >= (int64_t)volume.dimX || ny >= (int64_t)volume.dimY
+						|| nz >= (int64_t)volume.dimZ))
+						continue;
+					auto it = winner.find(keyFor(nx, ny, nz));
+					if (it == winner.end() || it->second == idx) continue;
 					size_t j = it->second;
 					glm::vec3 d = instances[idx].position - instances[j].position;
 					if (glm::dot(d, d) < minD2) {
-						// Lower priority dies. If j dies, it stays dead;
-						// if idx dies, stop testing it further.
-						if (PriorityOf(ids[idx]) >= PriorityOf(ids[j])) alive[j] = 0;
-						else { alive[idx] = 0; goto nextWinner; }
+						uint64_t pi = PriorityOf(ids[idx]), pj = PriorityOf(ids[j]);
+						if (pj > pi || (pj == pi && j < idx)) { alive[idx] = 0; goto nextCand; }
 					}
 				}
-	nextWinner:;
+	nextCand:;
 	}
-	// Compact survivors in ascending candidate-index order (deterministic).
+	// Compact: survivors plus out-of-volume skips, ascending index order.
 	std::vector<RenderInstance> kept;
 	kept.reserve(n);
-	// Deterministic output order: ascending candidate-index order.
 	for (size_t i = 0; i < n; ++i)
-		if (alive[i]) kept.push_back(instances[i]);
+		if (alive[i] || !inVolume[i]) kept.push_back(instances[i]);
 	instances.swap(kept);
 }
 

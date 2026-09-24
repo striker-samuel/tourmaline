@@ -117,8 +117,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     inst.scale = float3(sc, sc, sc);
     inst.prototypeId = proto;
     inst.stableLow = id.x;
-    inst.customB = 0;
-
+    inst.customB = i; // candidate index: constraint passes recompute IDs
     uint slot;
     InterlockedAdd(pc.outCount.Get().count, 1u, slot);
     pc.outInstances.Get().items[slot] = inst;

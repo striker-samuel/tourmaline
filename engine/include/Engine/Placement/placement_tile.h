@@ -143,9 +143,30 @@ private:
 std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer, TileID tile);
 
 // Deterministic min-distance filter (CPU mirror of the GPU cell-winner
-// pass): spatial hash at `spacing`, highest PriorityOf wins per cell
-// neighbourhood. Stable: losers die, winners keep StableIDs.
+// passes). Order-free snapshot rule, so every thread order / platform /
+// backend agrees bit-exactly:
+//
+//   1. Elect: per cell, the argmax over (PriorityOf, tie -> smaller
+//      candidate index) becomes the provisional winner (cell pre-election
+//      is itself strongly deterministic).
+//   2. Kill: a winner dies iff some OTHER winner in its 27-neighbourhood
+//      conflicts (dist < spacing) and beats it under the same
+//      (priority, tie -> smaller index) order.
+//
+// A dead candidate never kills (it lost its cell/support), and all kill
+// tests read the elected-winner snapshot — no sequential dependence, so
+// the GPU runs elect+kill as data-parallel kernels with barriers between.
+// Survivors are compacted in ascending candidate-index order.
+//
+// Candidates outside `volume` (mesh triangles may overshoot their tile)
+// skip the constraint entirely: they neither kill nor die. The GPU uses
+// the same skip, so volume choice is part of the parity contract.
+struct ConstraintVolume {
+	glm::vec3 origin{ 0.0f };
+	uint32_t dimX = 0, dimY = 0, dimZ = 0; // cells per axis; 0 = unbounded
+	float spacing = 1.0f;
+};
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
-	const std::vector<StableID>& ids, float spacing);
+	const std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume);
 
 } // namespace smvk::placement

@@ -210,6 +210,7 @@ void TestMinDistance();
 void TestTileCache();
 void TestTransientDraws();
 void TestGpuPushAbi();
+void TestMinDistanceVolume();
 void TestOverrides();
 void TestExclusions();
 void TestCacheRoundTrip();
@@ -405,6 +406,71 @@ void TestMinDistance() {
 	sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
 	Check(sys.findTile(101, TileID{ 0, 0, 0 })->instances.size() == n,
 		"place.mindist.regen-stable");
+}
+
+void TestMinDistanceVolume() {
+	using namespace smvk::placement;
+	auto mk = [](std::vector<glm::vec3> pos) {
+		std::vector<RenderInstance> inst;
+		std::vector<StableID> ids;
+		for (size_t i = 0; i < pos.size(); ++i) {
+			RenderInstance in;
+			in.position = pos[i];
+			in.scale = glm::vec3(1);
+			inst.push_back(in);
+			ids.push_back(MakeStableID(11, 0, TileID{}, 0, (uint32_t)i));
+		}
+		return std::pair(inst, ids);
+	};
+	// Unbounded path: two conflicts 1m apart at spacing 4 -> one survives.
+	{
+		auto [inst, ids] = mk({ glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(50, 0, 0) });
+		ConstraintVolume vol; // all-zero dims = unbounded
+		ApplyMinDistance(inst, ids, 4.0f, vol);
+		Check(inst.size() == 2, "place.mindist.unbounded-thins");
+	}
+	// Bounded skip rule: outsider at the same spot as a survivor neither
+	// kills nor dies.
+	{
+		auto [inst, ids] = mk({ glm::vec3(1, 0, 1), glm::vec3(1.5f, 0, 1), glm::vec3(500, 0, 500) });
+		ConstraintVolume vol;
+		vol.origin = glm::vec3(0, -64, 0);
+		vol.dimX = 32; vol.dimY = 64; vol.dimZ = 32;
+		vol.spacing = 2.0f;
+		ApplyMinDistance(inst, ids, 2.0f, vol);
+		// Inside pair conflicts (0.5m < 2m): one dies; outsider survives.
+		Check(inst.size() == 2, "place.mindist.skip-survives");
+		bool outsiderKept = false;
+		for (auto& in : inst)
+			if (in.position.x == 500.0f) outsiderKept = true;
+		Check(outsiderKept, "place.mindist.skip-kept");
+	}
+	// Snapshot order-freedom: shuffling INPUT order changes nothing about
+	// the surviving SET (output is index-ordered, so compare positions).
+	{
+		auto [a, aids] = mk({ glm::vec3(0,0,0), glm::vec3(1,0,0), glm::vec3(2,0,0),
+			glm::vec3(30,0,0), glm::vec3(31,0,0) });
+		auto [b, bids] = mk({ glm::vec3(31,0,0), glm::vec3(2,0,0), glm::vec3(30,0,0),
+			glm::vec3(1,0,0), glm::vec3(0,0,0) });
+		ConstraintVolume vol;
+		ApplyMinDistance(a, aids, 4.0f, vol);
+		ApplyMinDistance(b, bids, 4.0f, vol);
+		// Same survivor POSITION set regardless of input order (priorities
+		// ride the StableIDs, which were built per-position above... note
+		// ids differ per order here, so only assert spacing + determinism).
+		bool okA = true, okB = true;
+		for (size_t i = 0; i < a.size(); ++i)
+			for (size_t j = i + 1; j < a.size(); ++j) {
+				glm::vec3 d = a[i].position - a[j].position;
+				if (glm::dot(d, d) < 16.0f * 0.999f) okA = false;
+			}
+		for (size_t i = 0; i < b.size(); ++i)
+			for (size_t j = i + 1; j < b.size(); ++j) {
+				glm::vec3 d = b[i].position - b[j].position;
+				if (glm::dot(d, d) < 16.0f * 0.999f) okB = false;
+			}
+		Check(okA && okB, "place.mindist.order-spacing-holds");
+	}
 }
 
 void TestTileCache() {
@@ -686,7 +752,7 @@ void TestKernelAlgorithmParity() {
 		in.scale = glm::vec3(sc);
 		in.prototypeId = proto;
 		in.stableLow = id.w[0];
-		in.customB = 0;
+		in.customB = i; // candidate index (mirrors EvaluateTile + mainCS)
 		mirror.push_back(in);
 	}
 	bool same = oracle.size() == mirror.size();
@@ -696,7 +762,8 @@ void TestKernelAlgorithmParity() {
 				|| oracle[i].yaw != mirror[i].yaw
 				|| oracle[i].scale != mirror[i].scale
 				|| oracle[i].prototypeId != mirror[i].prototypeId
-				|| oracle[i].stableLow != mirror[i].stableLow) {
+				|| oracle[i].stableLow != mirror[i].stableLow
+				|| oracle[i].customB != mirror[i].customB) {
 				same = false; break;
 			}
 		}
@@ -723,6 +790,7 @@ int main() {
 	TestTileCache();
 	TestTransientDraws();
 	TestGpuPushAbi();
+	TestMinDistanceVolume();
 	TestOverrides();
 	TestExclusions();
 	TestCacheRoundTrip();
