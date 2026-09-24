@@ -21,6 +21,7 @@
 #include <Engine/Placement/placement_override.h>
 #include <Engine/Placement/placement_physics.h>
 #include <Engine/Placement/placement_tile.h>
+#include <Engine/Placement/placement_terrain.h>
 #include <Engine/Rendergraph/placement_pass.h>
 
 namespace {
@@ -226,6 +227,7 @@ void TestHfKernelParity();
 void TestConBridge();
 void TestConBruteForce();
 void TestDrawFeed();
+void TestTerrainUpload();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -1248,6 +1250,67 @@ void TestDrawFeed() {
 		"place.draw.radius-sane");
 }
 
+void TestTerrainUpload() {
+	using namespace smvk::placement;
+	TerrainParams p;
+	p.origin = glm::vec2(10, 20);
+	p.size = 32.0f;
+	p.res = 9;
+	p.height = 5.0f;
+	p.freq = 0.05f;
+	p.seed = 42;
+	smvk::StaticMeshUpload up;
+	Check(BuildTerrainUpload(p, up), "place.terr.upload-ok");
+	Check(up.vertices.size() == 81, "place.terr.vert-count");
+	Check(up.indices.size() == 8u * 8u * 6u, "place.terr.index-count");
+	Check(up.surfaces.size() == 1, "place.terr.single-surface");
+	Check(up.surfaces[0].firstIndex == 0 && up.surfaces[0].baseVertex == 0
+		&& up.surfaces[0].indexCount == up.indices.size(), "place.terr.surface-range");
+	// Local frame: x/z in [0,size].
+	bool frameOk = up.aabbMin.x == 0.0f && up.aabbMin.z == 0.0f
+		&& up.aabbMax.x == 32.0f && up.aabbMax.z == 32.0f;
+	Check(frameOk, "place.terr.local-frame");
+	Check(up.aabbMin.y >= 0.0f && up.aabbMax.y <= 5.0f, "place.terr.height-range");
+	// Normals unit, indices in range, UVs in [0,1].
+	bool blobOk = true;
+	for (const smvk::StaticVertex& v : up.vertices) {
+		if (std::abs(glm::length(v.normal) - 1.0f) > 1e-4f) { blobOk = false; break; }
+		if (v.texCoord.x < 0.0f || v.texCoord.x > 1.0f
+			|| v.texCoord.y < 0.0f || v.texCoord.y > 1.0f) { blobOk = false; break; }
+	}
+	for (uint32_t ix : up.indices)
+		if (ix >= up.vertices.size()) { blobOk = false; break; }
+	Check(blobOk, "place.terr.blob-valid");
+	// Winding: first triangle's geometric normal points +Y (front from above).
+	{
+		const glm::vec3& a = up.vertices[up.indices[0]].pos;
+		const glm::vec3& b = up.vertices[up.indices[1]].pos;
+		const glm::vec3& c = up.vertices[up.indices[2]].pos;
+		const glm::vec3 fn = glm::cross(b - a, c - a);
+		Check(fn.y > 0.0f, "place.terr.winding-up");
+	}
+	// Determinism: identical positions on rebuild.
+	smvk::StaticMeshUpload up2;
+	Check(BuildTerrainUpload(p, up2), "place.terrain.rebuild-ok");
+	bool same = up2.vertices.size() == up.vertices.size();
+	if (same) {
+		for (size_t k = 0; k < up.vertices.size(); ++k)
+			if (up2.vertices[k].pos != up.vertices[k].pos) { same = false; break; }
+	}
+	Check(same, "place.terr.deterministic");
+	// Vertex heights match the heightfield at absolute coords (interior
+	// verts; the far edge clamps to avoid OOB reads by design).
+	HeightfieldData hf = BuildTerrainHeights(p);
+	bool match = true;
+	for (uint32_t z = 0; z + 1 < 9; ++z)
+		for (uint32_t x = 0; x + 1 < 9; ++x) {
+			const smvk::StaticVertex& v = up.vertices[z * 9 + x];
+			const float h = hf.sampleHeight(10.0f + v.pos.x, 20.0f + v.pos.z);
+			if (std::abs(h - v.pos.y) > 1e-4f) { match = false; break; }
+		}
+	Check(match, "place.terr.matches-field");
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -1280,6 +1343,7 @@ int main() {
 	TestConBridge();
 	TestConBruteForce();
 	TestDrawFeed();
+	TestTerrainUpload();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }

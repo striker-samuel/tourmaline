@@ -252,8 +252,8 @@ void TestTerrain() {
 	Check(cr.terrain.res == 64, "pe.terrain.default-res");
 	Check(cr.terrain.size == 64.0f, "pe.terrain.default-size");
 	// Field generation: dims, range, determinism.
-	HeightfieldData a = GenerateTerrainField(cr.terrain);
-	HeightfieldData b = GenerateTerrainField(cr.terrain);
+	HeightfieldData a = BuildTerrainHeights(cr.terrain);
+	HeightfieldData b = BuildTerrainHeights(cr.terrain);
 	Check(a.valid(), "pe.terrain.valid");
 	Check(a.width == 64 && a.height == 64, "pe.terrain.dims");
 	bool inRange = true, varies = false;
@@ -265,12 +265,12 @@ void TestTerrain() {
 	Check(inRange, "pe.terrain.range-deterministic");
 	Check(varies, "pe.terrain.hills-vary");
 	// Res clamp: tiny -> 8, huge -> 256.
-	TerrainSpec lo = cr.terrain;
-	lo.res = 2;
-	Check(GenerateTerrainField(lo).width == 8, "pe.terrain.clamp-lo");
-	TerrainSpec hi = cr.terrain;
-	hi.res = 1000;
-	Check(GenerateTerrainField(hi).width == 256, "pe.terrain.clamp-hi");
+	TerrainParams lo = cr.terrain;
+	lo.res = 0;
+	Check(BuildTerrainHeights(lo).width == 2, "pe.terrain.clamp-lo");
+	TerrainParams hi = cr.terrain;
+	hi.res = 100000;
+	Check(BuildTerrainHeights(hi).width == 512, "pe.terrain.clamp-hi");
 	// Domain sampling lands on the field.
 	HeightfieldDomain dom;
 	dom.field = &a;

@@ -257,6 +257,13 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateLight(c);
 		break;
 	}
+	case EditVerb::CreateTerrain: {
+		if (forward)
+			ExecCreateTerrain(c);
+		else
+			ExecUncreateTerrain(c);
+		break;
+	}
 	case EditVerb::SetLightAttr: {
 		const std::string& attr = c.lightAttr;
 		if (forward)
@@ -322,27 +329,51 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	return -1;
 }
 
-void EditorApp::DraftCreateLight(bool spot) {
+std::string EditorApp::UniqueTerrainName() const {
+	const char* base = "Terrain";
+	int n = 1;
+	if (m_world)
+		for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
+			if (m_world->scene.meshForNode.contains(i)) {
+				const smvk::StaticMesh* m = GetMesh(i);
+				if (m && m->geometry.vertexCount > 0) {
+					const auto& geo = m->geometry;
+					if (geo.aabbMax.x - geo.aabbMin.x > geo.aabbMax.y - geo.aabbMin.y * 2.0f)
+						++n;
+				}
+			}
+	return std::string(base) + "_" + std::to_string(n);
+}
+
+int EditorApp::CreatedTerrainIndex(uint32_t worldNode) const {
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateTerrain)
+			continue;
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+void EditorApp::DraftCreateTerrain(const TerrainDraft& d) {
 	if (!m_world) {
-		Log("Create light: no scene open.");
+		Log("Create terrain: no scene open.");
 		return;
 	}
 	EditCmd c{};
-	c.verb = EditVerb::CreateLight;
+	c.verb = EditVerb::CreateTerrain;
 	c.node = UINT32_MAX; // assigned at forward execution
 	const uint32_t sel = m_selected;
 	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
 		? sel : DefaultCreateParent();
-	c.afterText = UniqueLightName(spot);
-	c.afterVec = ActiveCam().target;
-	c.lightType = spot ? 2u : 1u;
-	c.lightColor = glm::vec3(1.0f, 0.95f, 0.85f);
-	c.lightIntensity = spot ? 1500.0f : 800.0f;
-	c.lightRange = 25.0f;
-	c.lightInnerDeg = 20.0f;
-	c.lightOuterDeg = 35.0f;
-	c.lightStatic = false; // dynamic: visible in the viewport immediately
-	c.lightShadow = spot;  // spots default to shadow-casting (points can't)
+	c.afterText = d.name;
+	c.afterVec = d.origin;
+	c.vec4 = glm::vec4(d.size, float(d.res), d.height, d.freq);
+	c.number = double(d.seed);
+	c.material = d.material;
 	Do(c);
 }
 
@@ -842,6 +873,34 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			? 1u : 0u;
 		return true;
 	}
+	case EditVerb::CreateTerrain: {
+		// Emit the LIVE create state: the node may have moved and its
+		// params may have been attr-edited after creation (those later
+		// Material/Transform/etc commands re-emit harmlessly).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			// World root has no cluster id: the primary cluster's root
+			// (id 0) is the replay-stable equivalent.
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		const glm::vec3 t = glm::vec3(
+			app.m_world->scene.localTransform[created][3]);
+		out.verb = smvk::tour::Verb::CreateTerrain;
+		out.node = uint32_t(pp);
+		out.text = c.afterText;
+		out.vec = t;
+		out.vec4 = c.vec4; // (size, res, height, freq)
+		out.number = c.number; // seed
+		out.material = c.material;
+		return true;
+	}
 	case EditVerb::SetLightAttr: {
 		const int k = app.CreatedLightIndex(c.node);
 		if (k >= 0) {
@@ -999,15 +1058,40 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	return true;
 }
 
-// Build a live EditCmd from a tour command (cluster->world), capturing the
-// exact before-state from the live world for undo.
 bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd& out) {
 	out = EditCmd{};
 	const uint32_t wn = app.ClusterToWorld(tc.node);
-	auto needNode = [&]() {
-		if (wn == UINT32_MAX || wn >= app.m_world->scene.hierarchy.size())
+	auto needNode = [&](uint32_t n = wn) -> bool {
+		if ((n & smvk::tour::kCreateTerrainRefBase) != 0) {
+			const uint32_t k = n & ~smvk::tour::kCreateTerrainRefBase;
+			if (k >= app.m_tourCreatedTerrainNodes.size())
+				return false;
+			out.node = app.m_tourCreatedTerrainNodes[k];
+			return true;
+		}
+		if ((n & smvk::tour::kCreateLightRefBase) != 0) {
+			const uint32_t k = n & ~smvk::tour::kCreateLightRefBase;
+			if (k >= app.m_tourCreatedNodes.size())
+				return false;
+			out.node = app.m_tourCreatedNodes[k];
+			return true;
+		}
+		if (n == UINT32_MAX || n >= app.m_world->scene.hierarchy.size())
 			return false;
-		out.node = wn;
+		out.node = n;
+		return true;
+	};
+	auto needNodeWithTerrain = [&](uint32_t n) {
+		if ((n & smvk::tour::kCreateTerrainRefBase) != 0) {
+			const uint32_t k = n & ~smvk::tour::kCreateTerrainRefBase;
+			if (k >= app.m_tourCreatedTerrainNodes.size())
+				return false;
+			out.node = app.m_tourCreatedTerrainNodes[k];
+			return true;
+		}
+		if (n == UINT32_MAX || n >= app.m_world->scene.hierarchy.size())
+			return false;
+		out.node = n;
 		return true;
 	};
 	switch (tc.verb) {
@@ -1131,6 +1215,20 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.lightOuterDeg = float(tc.number);
 		out.lightStatic = tc.flag;
 		out.lightShadow = tc.node2 != 0;
+		return true;
+	}
+	case smvk::tour::Verb::CreateTerrain: {
+		const uint32_t wp = app.ClusterToWorld(tc.node);
+		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+			return false;
+		out.verb = EditVerb::CreateTerrain;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.vec4 = tc.vec4; // (size, res, height, freq)
+		out.number = tc.number; // seed
+		out.material = tc.material;
 		return true;
 	}
 	case smvk::tour::Verb::SetLightAttr: {
@@ -1305,6 +1403,148 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 		return false;
 	Log("Tour opened: " + path);
 	return true;
+}
+
+// Created terrain (procedural mesh).
+//
+// A created terrain is a WORLD node appended to the live scene plus a
+// StaticMesh upload in the primary cluster, linked through world mesh
+// locations — so the outliner, inspector, gizmos and the cooked-mesh
+// census all pick it up with no special cases. Undo removes the node
+// when it is still the childless tail (ids stay stable); otherwise the
+// terrain is tombstoned (hidden + detached) for the same reason.
+// Tour persistence: CreateTerrain carries the creation (CmdToTour emits
+// the LIVE params, so post-creation edits ride along); generic verbs
+// (Rename/SetTranslate/.../Parent) address later creates via
+// kCreateTerrainRefBase (creation order).
+// ---------------------------------------------------------------------------
+void EditorApp::ExecCreateTerrain(EditCmd& c) {
+	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	scene.localTransform[size_t(created)] = glm::translate(glm::mat4(1.0f), c.afterVec);
+	// Name (the nodeNames pool is grow-only, like Rename).
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	// Build and upload the terrain mesh.
+	TerrainParams tp{};
+	tp.origin = glm::vec2(0.0f, 0.0f);
+	tp.size = std::max(c.vec4.x, 1.0f);
+	tp.res = std::clamp(uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
+	tp.height = std::max(c.vec4.z, 0.0f);
+	tp.freq = std::max(c.vec4.w, 1e-4f);
+	tp.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
+	StaticMeshUpload upload;
+	if (!BuildTerrainUpload(tp, upload)) {
+		Log("Terrain mesh build failed.");
+		return;
+	}
+	const ClusterStaticMeshHandle mh = m_world->clusters[0]->UploadStaticMesh(upload);
+	if (!mh.valid()) {
+		Log("Terrain mesh upload failed.");
+		return;
+	}
+	cluster.RegisterMeshUri(
+		std::string("terrain/") + c.afterText, mh);
+	scene.meshForNode[uint32_t(created)] = mh.index();
+	scene.materialForNode[uint32_t(created)] = c.material;
+	if (m_replayingTour)
+		m_tourCreatedTerrainNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	Log("Created terrain '" + c.afterText + "' (#" + std::to_string(created) + ").");
+}
+
+void EditorApp::ExecUncreateTerrain(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	auto meshIt = scene.meshForNode.find(n);
+	const bool meshTail = meshIt != scene.meshForNode.end()
+		&& meshIt->second + 1 == m_world->clusters[0]->staticMeshes.size();
+	if (tail && childless) {
+		// Physical removal: pop every vector addNode grew (flag arrays
+		// only when they are exactly node-sized — empty/mismatched
+		// means "default", which needs no entry).
+		if (meshIt != scene.meshForNode.end()) {
+			if (meshTail) {
+				const auto& mh = m_world->clusters[0]->staticMeshes.get(
+					smvk::ClusterStaticMeshHandle(meshIt->second));
+				if (mh.valid())
+					m_world->clusters[0]->DestroyMesh(
+						smvk::ClusterStaticMeshHandle(meshIt->second));
+			}
+		}
+		scene.meshForNode.erase(n);
+		scene.materialForNode.erase(n);
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			// Refresh the cached tail on the (possibly new) first child.
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid terrain creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the mesh instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.meshForNode.erase(n);
+		scene.materialForNode.erase(n);
+		Log("Undid terrain creation (#" + std::to_string(n) +
+		 "): hidden, ids kept stable (pool entry retained).");
+	}
 }
 
 } // namespace editor

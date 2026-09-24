@@ -18,6 +18,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Placement/placement_terrain.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk::tour {
@@ -239,6 +240,17 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
 				<< " " << c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
 				<< " " << c.number << " " << (c.flag ? 1 : 0) << " " << c.node2;
+			break;
+		}
+		case Verb::CreateTerrain: {
+			// -t packs position + mesh params: x y z size res height
+			// freq seed (8 values); -m is the cluster material pool index.
+			f << "createTerrain -p " << c.node << " -name " << Quote(c.text)
+				<< " -at terrain"
+				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+				<< " " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z
+				<< " " << c.vec4.w << " " << c.number
+				<< " -m " << c.material;
 			break;
 		}
 		case Verb::SetLightAttr: {
@@ -807,6 +819,32 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.flag = v[7] != 0.0;
 			c.node2 = v[8] != 0.0 ? 1u : 0u;
 		}
+		else if (verb == "createTerrain" && fl.hasP && fl.hasName && fl.hasAt
+			&& fl.hasM && fl.t.size() >= 8) {
+			// -t packs: x y z size res height freq seed.
+			if (fl.at != "terrain") {
+				err = "line " + std::to_string(lineNo) + ": createTerrain wants -at terrain";
+				return false;
+			}
+			double v[8] = {};
+			for (int k = 0; k < 8; ++k)
+				if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+					err = "line " + std::to_string(lineNo) + ": bad createTerrain value";
+					return false;
+				}
+			if (v[3] <= 0.0 || v[4] < 2.0 || v[4] > 512.0 || v[5] < 0.0
+				|| v[6] <= 0.0 || v[7] < 0.0) {
+				err = "line " + std::to_string(lineNo) + ": createTerrain params out of range";
+				return false;
+			}
+			c.verb = Verb::CreateTerrain;
+			c.node = fl.p;
+			c.text = fl.name;
+			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), float(v[6]));
+			c.number = v[7];
+			c.material = fl.m;
+		}
 		else if (verb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 			static const char* kAttrs[] = { "color", "intensity", "range",
 				"inner", "outer", "static", "shadow", "name", "position",
@@ -1020,14 +1058,35 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Creation-order ids for SetLightAttr refs (kCreateLightRefBase | k):
 	// created light nodes have no cluster id until replayed.
 	std::vector<uint32_t> createdLights;
+	// Same scheme for created terrain (kCreateTerrainRefBase | k),
+	// resolved for the generic verbs below (Rename/SetTranslate/...
+	// /Parent) so post-creation edits replay onto the rebuilt node.
+	std::vector<uint32_t> createdTerrains;
+	auto resolveNode = [&](uint32_t n, const Command& c, uint32_t& out) {
+		if ((n & kCreateTerrainRefBase) != 0) {
+			const uint32_t k = n & ~kCreateTerrainRefBase;
+			if (k >= createdTerrains.size()) {
+				if (err)
+					*err = "tour: terrain ref out of range: " + std::to_string(k);
+				return false;
+			}
+			out = createdTerrains[k];
+			return true;
+		}
+		if (!checkNode(n, c))
+			return false;
+		out = n;
+		return true;
+	};
 	for (const Command& c : doc.commands) {
 		switch (c.verb) {
 		case Verb::Rename: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
-			scene.nameForNode[c.node] = id;
+			scene.nameForNode[target] = id;
 			break;
 		}
 		case Verb::SetTranslate:
@@ -1040,7 +1099,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			break; // handled in the second pass below
 		}
 		case Verb::AssignMaterial: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
 			if (!CookMaterial(cluster, c.material)) {
 				if (err)
@@ -1048,7 +1108,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 						std::to_string(c.material);
 				return false;
 			}
-			scene.materialForNode[c.node] = c.material;
+			scene.materialForNode[target] = c.material;
 			break;
 		}
 		case Verb::SetMatAttr: {
@@ -1063,39 +1123,39 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			break;
 		}
 		case Verb::SetNoLightmap: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
 			if (scene.noLightmap.size() != scene.hierarchy.size())
 				scene.noLightmap.assign(scene.hierarchy.size(), 0);
-			scene.noLightmap[c.node] = c.flag ? 1 : 0;
+			scene.noLightmap[target] = c.flag ? 1 : 0;
 			break;
 		}
 		case Verb::SetDitherCloseup: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
 			if (scene.ditherCloseup.size() != scene.hierarchy.size())
 				scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
-			scene.ditherCloseup[c.node] = c.flag ? 1 : 0;
+			scene.ditherCloseup[target] = c.flag ? 1 : 0;
 			break;
 		}
 		case Verb::SetVisibility: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
 			if (scene.hidden.size() != scene.hierarchy.size())
 				scene.hidden.assign(scene.hierarchy.size(), 0);
-			scene.hidden[c.node] = c.flag ? 1 : 0;
+			scene.hidden[target] = c.flag ? 1 : 0;
 			break;
 		}
 		case Verb::Parent: {
-			if (!checkNode(c.node, c))
+			uint32_t target = 0, newParent = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
-			if (c.node2 >= scene.hierarchy.size()) {
-				if (err)
-					*err = "tour: parent id out of range: " +
-						std::to_string(c.node2);
+			if (!resolveNode(c.node2, c, newParent))
 				return false;
-			}
-			TourReparent(scene, c.node, c.node2);
+			TourReparent(scene, target, newParent);
 			break;
 		}
 		case Verb::CreateLight: {
@@ -1138,6 +1198,64 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.nameForNode[uint32_t(newId)] = nameId;
 			scene.lightForNode[uint32_t(newId)] = poolIdx;
 			createdLights.push_back(uint32_t(newId));
+			break;
+		}
+		case Verb::CreateTerrain: {
+			// Editor-authored procedural terrain: append a node under the
+			// recorded parent + an uploaded grid mesh + material link.
+			// Mesh params ride the verb (CookMaterial validates); the node
+			// id joins createdTerrains for -ref addressing below.
+			if (c.node >= scene.hierarchy.size()) {
+				if (err)
+					*err = "tour: createTerrain parent out of range: " +
+						std::to_string(c.node);
+				return false;
+			}
+			if (!CookMaterial(cluster, c.material)) {
+				if (err)
+					*err = "tour: createTerrain material out of range: " +
+						std::to_string(c.material);
+				return false;
+			}
+			smvk::placement::TerrainParams tp{};
+			tp.origin = glm::vec2(0.0f, 0.0f);
+			tp.size = std::max(c.vec4.x, 1.0f);
+			tp.res = std::clamp(uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
+			tp.height = std::max(c.vec4.z, 0.0f);
+			tp.freq = std::max(c.vec4.w, 1e-4f);
+			tp.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
+			smvk::StaticMeshUpload upload;
+			if (!smvk::placement::BuildTerrainUpload(tp, upload)) {
+				if (err)
+					*err = "tour: createTerrain mesh build failed";
+				return false;
+			}
+			const int level = scene.hierarchy[c.node].level + 1;
+			const int newId = addNode(scene, int(c.node), level);
+			if (newId < 0) {
+				if (err)
+					*err = "tour: createTerrain failed under parent " +
+						std::to_string(c.node);
+				return false;
+			}
+			// Node origin carries the terrain placement (local mesh spans
+			// [0,size] on x/z); world space matches the placement domain.
+			scene.localTransform[size_t(newId)] =
+				glm::translate(glm::mat4(1.0f), c.vec);
+			const ClusterStaticMeshHandle mh = cluster.UploadStaticMesh(upload);
+			if (!mh.valid()) {
+				if (err)
+					*err = "tour: createTerrain upload failed";
+				return false;
+			}
+			cluster.RegisterMeshUri(
+				std::string("terrain/") + c.text, mh);
+			const uint32_t nameId = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.text);
+			scene.nameForNode[uint32_t(newId)] = nameId;
+			scene.meshForNode[uint32_t(newId)] = mh.index();
+			scene.materialForNode[uint32_t(newId)] = c.material;
+			createdTerrains.push_back(uint32_t(newId));
 			break;
 		}
 		case Verb::SetLightAttr: {
@@ -1244,12 +1362,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			if (c.verb != Verb::SetTranslate && c.verb != Verb::SetRotate &&
 				c.verb != Verb::SetScale)
 				continue;
-			if (c.node >= scene.hierarchy.size()) {
-				if (err)
-					*err = "tour: node id out of range: " + std::to_string(c.node);
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target))
 				return false;
-			}
-			Triple& t = triples[c.node];
+			Triple& t = triples[target];
 			if (c.verb == Verb::SetTranslate) {
 				t.hasT = true;
 				t.t = c.vec;
@@ -1262,8 +1378,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				t.hasS = true;
 				t.s = c.vec;
 			}
-			if (!c.name.empty() && getNodeName(scene, int(c.node)) != c.name)
-				warn("tour: node " + std::to_string(c.node) + " name mismatch");
+			if (!c.name.empty() && getNodeName(scene, int(target)) != c.name)
+				warn("tour: node " + std::to_string(target) + " name mismatch");
 		}
 		for (auto& [node, t] : triples) {
 			// Decompose current local, replace touched channels, rebuild.
@@ -1371,44 +1487,68 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 
 std::string Describe(const Command& c) {
 	char buf[256];
+	// Created-terrain refs render readably (raw ids would print the
+	// 0x40000000 base bit).
+	char tgt[32], tgt2[32];
+	auto target = [&](uint32_t n, char* out) {
+		if ((n & kCreateTerrainRefBase) != 0)
+			std::snprintf(out, 32, "terrain%u", n & ~kCreateTerrainRefBase);
+		else
+			std::snprintf(out, 32, "#%u", n);
+	};
 	switch (c.verb) {
 	case Verb::Rename:
-		std::snprintf(buf, sizeof(buf), "rename #%u -> '%s'", c.node, c.text.c_str());
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "rename %s -> '%s'", tgt, c.text.c_str());
 		break;
 	case Verb::SetTranslate:
-		std::snprintf(buf, sizeof(buf), "translate #%u (%.2f %.2f %.2f)",
-			c.node, c.vec.x, c.vec.y, c.vec.z);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "translate %s (%.2f %.2f %.2f)",
+			tgt, c.vec.x, c.vec.y, c.vec.z);
 		break;
 	case Verb::SetRotate:
-		std::snprintf(buf, sizeof(buf), "rotate #%u (%.1f %.1f %.1f)",
-			c.node, c.vec.x, c.vec.y, c.vec.z);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "rotate %s (%.1f %.1f %.1f)",
+			tgt, c.vec.x, c.vec.y, c.vec.z);
 		break;
 	case Verb::SetScale:
-		std::snprintf(buf, sizeof(buf), "scale #%u (%.2f %.2f %.2f)",
-			c.node, c.vec.x, c.vec.y, c.vec.z);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "scale %s (%.2f %.2f %.2f)",
+			tgt, c.vec.x, c.vec.y, c.vec.z);
 		break;
 	case Verb::AssignMaterial:
-		std::snprintf(buf, sizeof(buf), "material #%u -> mat.%u", c.node, c.material);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "material %s -> mat.%u", tgt, c.material);
 		break;
 	case Verb::SetMatAttr:
 		std::snprintf(buf, sizeof(buf), "mat.%u.%s", c.material, c.text.c_str());
 		break;
 	case Verb::SetNoLightmap:
-		std::snprintf(buf, sizeof(buf), "noLightmap #%u = %d", c.node, c.flag ? 1 : 0);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "noLightmap %s = %d", tgt, c.flag ? 1 : 0);
 		break;
 	case Verb::SetDitherCloseup:
-		std::snprintf(buf, sizeof(buf), "ditherCloseup #%u = %d", c.node, c.flag ? 1 : 0);
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "ditherCloseup %s = %d", tgt, c.flag ? 1 : 0);
 		break;
 	case Verb::SetVisibility:
-		std::snprintf(buf, sizeof(buf), "visibility #%u = %s", c.node,
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "visibility %s = %s", tgt,
 			c.flag ? "hidden" : "visible");
 		break;
 	case Verb::Parent:
-		std::snprintf(buf, sizeof(buf), "parent #%u under #%u", c.node, c.node2);
+		target(c.node, tgt);
+		target(c.node2, tgt2);
+		std::snprintf(buf, sizeof(buf), "parent %s under %s", tgt, tgt2);
 		break;
 	case Verb::CreateLight:
 		std::snprintf(buf, sizeof(buf), "createLight '%s' (%s) under #%u",
 			c.text.c_str(), c.vec4.x >= 1.5f ? "spot" : "point", c.node);
+		break;
+	case Verb::CreateTerrain:
+		std::snprintf(buf, sizeof(buf),
+			"createTerrain '%s' (%.0fm %.0f %.1fm @%.3f) under #%u",
+			c.text.c_str(), c.vec4.x, c.vec4.y, c.vec4.z, c.vec4.w, c.node);
 		break;
 	case Verb::SetLightAttr: {
 		char tgt[32];

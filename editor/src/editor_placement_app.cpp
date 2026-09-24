@@ -167,7 +167,7 @@ void EditorApp::RefreshPlacementPreview() {
 		lb.grid = &gridStorage;
 	}
 	else if (cr.domainKind == DomainKind::Heightfield) {
-		terrainStorage = GenerateTerrainField(cr.terrain);
+		terrainStorage = BuildTerrainHeights(cr.terrain);
 		terrainDom.field = &terrainStorage;
 		terrainDom.extentMin = cr.terrain.origin;
 		terrainDom.extentMax = cr.terrain.origin + glm::vec2(cr.terrain.size);

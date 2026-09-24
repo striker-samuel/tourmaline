@@ -96,6 +96,29 @@ bool EditorApp::Initialize() {
 	// Cluster::UploadStaticMesh. Without this, the first glTF import
 	// crashes in vmaVirtualAllocate on a null m_staticVertexBlock.
 	smvk::AllocateStaticVertexFmt(*m_context);
+	{
+		namespace fs = std::filesystem;
+		char* docs = nullptr;
+		// SHGetKnownFolderPath is Windows-specific; fallback to getenv on others
+		std::string docsPath;
+#if defined(_WIN32)
+		PWSTR path = nullptr;
+		if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &path))) {
+			docsPath = std::filesystem::path(path).string();
+			CoTaskMemFree(path);
+		}
+#else
+		const char* home = std::getenv("HOME");
+		if (home) docsPath = std::filesystem::path(home) / "Documents";
+#endif
+		if (!docsPath.empty()) {
+			m_prefsPath = (std::filesystem::path(docsPath) / "tourmalineEditor" / "editor.prefs").string();
+		} else {
+			// Fallback: next to the exe
+			m_prefsPath = "editor.prefs";
+		}
+	}
+	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
 	SetRelativeMouseMode(false);
 
 	m_imgui = std::make_unique<smvk::ImGuiOverlay>();
@@ -114,6 +137,8 @@ bool EditorApp::Initialize() {
 	// Tourmaline Editor branding: window title + generated logo icon.
 	ApplyTourmalineBranding();
 
+	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
+
 	if (!m_pendingGltf.empty()) {
 		const std::string p = m_pendingGltf;
 		m_pendingGltf.clear();
@@ -126,6 +151,7 @@ bool EditorApp::Initialize() {
 }
 
 void EditorApp::Shutdown() {
+	SavePrefs(); // save editor prefs on close
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
 	PollCookProcess();
@@ -173,6 +199,90 @@ void EditorApp::Shutdown() {
 	m_shadowProgram = {};
 	m_lineProgram = {};
 	Super::Shutdown();
+}
+
+void EditorApp::LoadPrefs() {
+	if (m_prefsPath.empty())
+		return;
+	std::ifstream in(m_prefsPath);
+	if (!in) return;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (line.rfind("leftW=", 0) == 0) m_leftW = std::stof(line.substr(6));
+		else if (line.rfind("rightW=", 0) == 0) m_rightW = std::stof(line.substr(7));
+		else if (line.rfind("bottomH=", 0) == 0) m_bottomH = std::stof(line.substr(8));
+	}
+}
+
+void EditorApp::SavePrefs() {
+	if (m_prefsPath.empty())
+		return;
+	std::filesystem::create_directories(std::filesystem::path(m_prefsPath).parent_path());
+	std::ofstream out(m_prefsPath);
+	if (!out) return;
+	out << "leftW=" << m_leftW << "\n";
+	out << "rightW=" << m_rightW << "\n";
+	out << "bottomH=" << m_bottomH << "\n";
+}
+
+void EditorApp::CloseScene() {
+	if (!m_world)
+		return;
+	SavePrefs();
+	m_world.reset();
+	m_gltfPath.clear();
+	m_gltfHostPath.clear();
+	m_pakPath.clear();
+	m_pakImage.clear();
+	m_pakReader.reset();
+	m_pakScenes.clear();
+	m_pakSceneIndex = 0;
+	m_hasSglm = false;
+	m_sglmPath.clear();
+	m_sglmStatus = "no atlas loaded";
+	m_sglmBuf[0] = '\0';
+	ClearSglmLayers();
+	m_cvolPreviews.clear();
+	m_cvolPreviewMode = 0;
+	m_overrideRules.clear();
+	m_nextOverrideId = 1;
+	m_refPlaceholders.clear();
+	m_refPlaceholders.shrink_to_fit();
+	m_references.clear();
+	m_refPhCluster.clear();
+	m_selected = UINT32_MAX;
+	m_selection.clear();
+	ClearHistory();
+	m_overrideRules.clear();
+	m_nextOverrideId = 1;
+	m_envByNode.clear();
+	m_envCurrent = UINT32_MAX;
+	m_materialFocus = UINT32_MAX;
+	m_materialTrail.clear();
+	m_placement.graphs.clear();
+	m_placement.active = 0;
+	m_placement.nextGraph = 1;
+	m_placement.selected = -1;
+	m_placement.selectedLink = -1;
+	m_placement.linkFrom = -1;
+	m_placement.linkFromPin.clear();
+	m_placement.pan[0] = 0.0f; m_placement.pan[1] = 0.0f;
+	m_placement.undoStack.clear();
+	m_placement.undoPos = -1;
+	m_placement.preview = {};
+	m_placement.showGraph = false;
+	m_placement.showOverlay = true;
+	m_placement.showRejected = true;
+	m_overrideRules.clear();
+	m_nextOverrideId = 1;
+	m_envByNode.clear();
+	m_envCurrent = UINT32_MAX;
+	m_materialFocus = UINT32_MAX;
+	m_materialTrail.clear();
+	m_selected = UINT32_MAX;
+	m_selection.clear();
+	ClearSelection();
+	Log("Scene closed.");
 }
 
 bool EditorApp::LoadGltfIntoWorld(const std::string& path) {

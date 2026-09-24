@@ -28,10 +28,19 @@ enum class EditVerb : uint8_t {
 	SetDitherCloseup, // subtree dither on camera closeup
 	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
 	Parent, // world parent id
-	CreateLight, // append a light node (world); params below. c.node =
+ 	CreateLight, // append a light node (world); params below. c.node =
 	             // CREATED world id once forward-executed (UINT32_MAX
 	             // before); c.node2 = parent world id
-	SetLightAttr, // light property edit; c.node = light node (world),
+ 	CreateTerrain, // append a procedural terrain mesh node (world).
+ 	             // Mesh params ride vec4/number (tour-shaped, immutable
+ 	             // after creation): vec4 = (size[m], res, height[m],
+ 	             // freq[1/m]), number = noise seed. c.node = CREATED
+ 	             // world id once forward-executed; c.node2 = parent;
+ 	             // material = world material idx; afterVec = local
+ 	             // position (= terrain origin corner); afterText = name.
+ 	             // Post-creation edits address it via tour
+ 	             // kCreateTerrainRefBase (see CreatedTerrainIndex).
+ 	SetLightAttr, // light property edit; c.node = light node (world),
 	              // lightAttr selects the channel (see below)
 };
 

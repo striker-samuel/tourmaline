@@ -100,6 +100,11 @@ enum class Verb : uint8_t {
 	                // "static","shadow","name"); vec4 = color value;
 	                // number = scalar (cone angles in DEGREES); flag =
 	                // flag value; name = new name (attr "name" only)
+	CreateTerrain,  // node = PARENT cluster id; text = terrain name;
+	                // vec = local position (node origin); vec4 = (size[m],
+	                // res[samples/side], height[m], freq[1/m]);
+	                // number = noise seed (integer-valued double);
+	                // material = cluster material pool index
 };
 
 // Clarisse-style wide override attribute (regex selector over node
@@ -171,6 +176,12 @@ struct Command {
 // replay: cook ApplyTourToCluster keeps local created ids; the editor
 // TourToCmd keeps live world ids (m_tourCreatedNodes).
 inline constexpr uint32_t kCreateLightRefBase = 0x80000000u;
+
+// Same scheme for terrain created by an earlier CreateTerrain: generic
+// verbs (Rename/SetTranslate/.../Parent) address created terrain nodes
+// via kCreateTerrainRefBase | k (k-th CreateTerrain in file order).
+// Disjoint bit from the light base; a node carries at most one.
+inline constexpr uint32_t kCreateTerrainRefBase = 0x40000000u;
 
 struct Doc {
 	int version = kTourVersion;

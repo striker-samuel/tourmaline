@@ -222,6 +222,9 @@ void EditorApp::DrawMenuBar() {
 			!m_runRunning && !RunArgs().empty()))
 			RunInApp();
 		ImGui::Separator();
+		if (ImGui::MenuItem("Close"))
+			CloseScene();
+		ImGui::Separator();
 		if (ImGui::MenuItem("Quit"))
 			RequestClose();
 		ImGui::EndMenu();
@@ -235,6 +238,8 @@ void EditorApp::DrawMenuBar() {
 			DraftCreateLight(false);
 		if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
 			DraftCreateLight(true);
+		if (ImGui::MenuItem("Terrain", nullptr, false, canCreate))
+			DraftCreateTerrain({});
 		if (!canCreate)
 			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
@@ -1452,7 +1457,6 @@ void EditorApp::DrawInspector() {
 	// Material focus page: the Inspector is "traveling" in a material.
 	if (m_world && m_materialFocus != UINT32_MAX) {
 		DrawMaterialFocusPage();
-		DrawEnvPanel();
 		return;
 	}
 	// World pseudo-node page (global render settings, not a scene node).
@@ -1464,9 +1468,10 @@ void EditorApp::DrawInspector() {
 		m_selected >= m_world->scene.hierarchy.size()) {
 		ImGui::TextDisabled("Nothing selected.");
 		ImGui::TextWrapped("Click a mesh in the viewport or pick a node in the outliner. "
-			"Drag nodes onto each other to reparent. All edits are undoable (Ctrl+Z).");
+			"Drag nodes onto each other to reparent. All edits are undoable (Ctrl+Z). "
+			"Global settings (sun, IBL, exposure) live on the World node at the "
+			"top of the outliner.");
 		DrawCameraSection();
-		DrawEnvPanel();
 		return;
 	}
 	Scene& scene = m_world->scene;
@@ -1971,9 +1976,9 @@ void EditorApp::DrawInspector() {
 	// Scene reference block (placeholder nodes).
 	DrawReferenceSection(node);
 
-	// Editor camera (active viewport) + environment (IBL) settings.
+	// Editor camera (active viewport). Environment *settings* live only
+	// on the World node; per-node env UI above just picks the IBL source.
 	DrawCameraSection();
-	DrawEnvPanel();
 }
 
 void EditorApp::DrawCameraSection() {
@@ -2597,4 +2602,52 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	}
 }
 
+} // namespace editor
+
+void EditorApp::DrawCreateTerrainDialog() {
+	if (!ImGui::BeginPopupModal("Create Terrain", nullptr,
+			ImGuiWindowFlags_NoCollapse))
+		return;
+	ImGui::Text("Create a procedural terrain mesh (heightfield grid).");
+	ImGui::Separator();
+	ImGui::SetNextItemWidth(300.0f);
+	if (ImGui::InputText("Name", m_terrainNameBuf, sizeof(m_terrainNameBuf),
+			ImGuiInputTextFlags_EnterReturnsTrue))
+		;
+	ImGui::DragFloat3("Origin (x, 0, z)", m_terrainOrigin, 0.5f);
+	ImGui::DragFloat("Size (m)", &m_terrainSize, 0.5f, 1.0f, 1024.0f);
+	int res = m_terrainRes;
+	if (ImGui::DragInt("Resolution (samples/side)", &res, 1.0f, 8, 512))
+		m_terrainRes = res;
+	ImGui::DragFloat("Hill height (m)", &m_terrainHeight, 0.1f, 0.0f, 128.0f);
+	ImGui::DragFloat("Hill frequency", &m_terrainFreq, 0.002f, 0.0005f, 1.0f, "%.4f");
+	int seed = m_terrainSeed;
+	if (ImGui::DragInt("Noise seed", &seed, 1, 1, 1000000))
+		m_terrainSeed = seed;
+	if (ImGui::IsItemActivated()) m_terrainMat = (m_selected != UINT32_MAX && m_selected < m_world->materialLocations.size()) ? m_selected : 0;
+	ImGui::TextDisabled("Material: %s",
+		m_terrainMat != UINT32_MAX ? std::to_string(m_terrainMat).c_str() : "(use selected)");
+	ImGui::Separator();
+	if (ImGui::Button("Create")) {
+		TerrainDraft d{};
+		d.name = m_terrainNameBuf;
+		d.origin = glm::vec3(m_terrainOrigin[0], 0.0f, m_terrainOrigin[1]);
+		d.size = m_terrainSize;
+		d.res = uint32_t(m_terrainRes);
+		d.height = m_terrainHeight;
+		d.freq = m_terrainFreq;
+		d.seed = m_terrainSeed;
+		d.material = m_terrainMat;
+		d.parent = m_selected;
+		DraftCreateTerrain(d);
+		m_showTerrainDialog = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel")) {
+		m_showTerrainDialog = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndPopup();
+}
 } // namespace editor

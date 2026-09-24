@@ -439,33 +439,6 @@ struct Ctx {
 };
 } // namespace
 
-HeightfieldData GenerateTerrainField(const TerrainSpec& spec) {
-	HeightfieldData hf;
-	const uint32_t res = std::clamp(spec.res, 8u, 256u);
-	const float size = std::max(spec.size, 1.0f);
-	const float height = std::max(spec.height, 0.0f);
-	const float freq = std::max(spec.freq, 1e-4f);
-	hf.width = res;
-	hf.height = res;
-	hf.origin = glm::vec3(spec.origin.x, 0.0f, spec.origin.y);
-	const float sp = size / float(res - 1);
-	hf.spacing = glm::vec2(sp, sp);
-	hf.heights.resize((size_t)res * res);
-	// Rolling hills: two value-noise octaves, deterministic in (spec.seed).
-	// Output range is [0, height].
-	for (uint32_t z = 0; z < res; ++z) {
-		for (uint32_t x = 0; x < res; ++x) {
-			const float wx = spec.origin.x + float(x) * sp;
-			const float wz = spec.origin.y + float(z) * sp;
-			const float n1 = ValueNoise2D(wx * freq, wz * freq, spec.seed);
-			const float n2 = ValueNoise2D(wx * freq * 3.7f + 11.3f,
-				wz * freq * 3.7f + 7.1f, spec.seed ^ 0x9e3779b9ULL);
-			hf.heights[(size_t)z * res + x] = height * (0.7f * n1 + 0.3f * n2);
-		}
-	}
-	return hf;
-}
-
 CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 	CompileResult r;
 	// Exactly one Layer (MVP: single-layer preview).

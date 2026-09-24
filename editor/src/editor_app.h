@@ -612,14 +612,25 @@ private:
 	// backing for setLightAttr -ref addressing (TourToCmd) and the
 	// save-time creation index (CmdToTour). Rebuilt on every replay.
 	std::vector<uint32_t> m_tourCreatedNodes;
+	// Same scheme for history-created terrain (tour CreateTerrain file
+	// order): generic verbs address them via kCreateTerrainRefBase.
+	// Rebuilt on every replay alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedTerrainNodes;
 	// Creation-order index of a live created light (-1 when the node is
 	// not a history create): the -ref value CmdToTour emits.
 	int CreatedLightIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created terrain, same contract.
+	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Tour-stable default parent for new lights: the primary cluster's
 	// root (WorldToCluster maps it to cluster id 0), else world root.
 	uint32_t DefaultCreateParent() const;
 	// Unique "Point_N"/"Spot_N" name over the live world lights.
 	std::string UniqueLightName(bool spot) const;
+	// Unique "Terrain_N" name over the live world terrains.
+	std::string UniqueTerrainName() const;
+	// Creation-order index of a live created terrain (-1 when the node is
+	// not a history create): the -ref value CmdToTour emits.
+	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Live command helpers (editor_commands.cpp).
 	void ReadLocalTRS(uint32_t node, glm::vec3& t, glm::vec3& rDeg,
 		glm::vec3& s) const;
@@ -654,6 +665,8 @@ private:
 	// when it differs, replays the commands into a fresh stack, adopts
 	// the cook block. The opened file becomes the save target.
 	bool OpenTourFile(const std::string& path);
+	// Close the current scene (reset to empty state), saving prefs.
+	void CloseScene();
 	// Resolve a tour's source path: as-is, relative to the tour file's
 	// dir, else relative to the content root. Empty when unresolvable.
 	std::string ResolveTourSource(const std::string& tourPath,
@@ -663,6 +676,38 @@ private:
 	bool ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePath);
 	// Create menu: point/spot light at the active camera target.
 	void DraftCreateLight(bool spot);
+	// Create menu: procedural terrain mesh. Draft params come from the
+	// Create-terrain dialog (origin/size/res/height/freq/seed + material);
+	// the mesh is fully procedural, so creation is exactly replayable.
+	struct TerrainDraft {
+		std::string name = "Terrain";
+		glm::vec3 origin{ 0.0f }; // node translation (= terrain corner)
+		float size = 64.0f;
+		uint32_t res = 64;
+		float height = 8.0f;
+		float freq = 0.02f;
+		uint64_t seed = 1;
+		uint32_t material = UINT32_MAX; // world mat idx (resolved at draft)
+		uint32_t parent = UINT32_MAX;   // world node (resolved at draft)
+	};
+	void DraftCreateTerrain(const TerrainDraft& d);
+	std::string UniqueTerrainName() const;
+	// Created-terrain execution (ExecCmd cases): append/remove the world
+	// node + cluster mesh upload + draw state. ExecCreateTerrain records
+	// the assigned id back into the command (c.node).
+	void ExecCreateTerrain(EditCmd& c);
+	void ExecUncreateTerrain(EditCmd& c);
+	// Create-terrain dialog state (File > Create > Terrain).
+	bool m_showTerrainDialog = false;
+	char m_terrainNameBuf[128] = "";
+	float m_terrainOrigin[3] = { 0.0f, 0.0f, 0.0f };
+	float m_terrainSize = 64.0f;
+	int m_terrainRes = 64;
+	float m_terrainHeight = 8.0f;
+	float m_terrainFreq = 0.02f;
+	int m_terrainSeed = 1;
+	int m_terrainMat = 0; // world material index
+	void DrawCreateTerrainDialog();
 	// Light property channels ("color","intensity","range","inner",
 	// "outer","position","rotation","static","shadow","name") — the
 	// inspector's before-state + live-write path for SetLightAttr
@@ -899,6 +944,7 @@ private:
 	std::string m_gltfPath;
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
+	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
 	// ---- cooked pak state (kept alive: PakReader borrows these bytes) ----
 	std::string m_pakPath; // empty when the scene came from glTF
 	std::vector<uint8_t> m_pakImage;
