@@ -439,6 +439,15 @@ private:
 	void AddToSelection(uint32_t node);
 	void ClearSelection();
 	void ClearSubSelection(); // clears face/vertex highlight only
+	// World pseudo-selection: the Outliner's "World" entry (global render
+	// settings) is NOT a hierarchy node — it never enters m_selection /
+	// m_selected (which stay UINT32_MAX), so gizmos, picking, drags and
+	// commands keep working unchanged. Mutually exclusive with node
+	// selection: selecting either clears the other.
+	bool m_worldSelected = false;
+	void SelectWorldNode();
+	// First directional (sun) light node, or UINT32_MAX (World panel).
+	uint32_t FindSunNode() const;
 	void SelectPrevNode(); // inspector Up/Prev (hierarchy order)
 	void SelectNextNode(); // inspector Down/Next
 	// Sub-object pick (brute force, no accel structures): closest triangle
@@ -540,6 +549,7 @@ private:
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
 	void DrawInspector();
+	void DrawWorldPanel(); // Inspector page for the World pseudo-node
 	// Material editor page (m_materialFocus travel) + camera section.
 	void DrawMaterialFocusPage();
 	void DrawCameraSection(); // active viewport's editor camera settings

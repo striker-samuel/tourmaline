@@ -20,6 +20,7 @@ bool EditorApp::IsSelected(uint32_t node) const {
 }
 
 void EditorApp::SetSelection(uint32_t node) {
+	m_worldSelected = false;
 	m_selection.clear();
 	if (node != UINT32_MAX) {
 		m_selection.push_back(node);
@@ -155,14 +156,38 @@ void EditorApp::DrawSelectionRadial() {
 void EditorApp::AddToSelection(uint32_t node) {
 	if (node == UINT32_MAX || IsSelected(node))
 		return;
+	m_worldSelected = false;
 	m_selection.push_back(node);
 	m_selected = node; // newest = primary
 }
 
 void EditorApp::ClearSelection() {
+	m_worldSelected = false;
 	m_selection.clear();
 	m_selected = UINT32_MAX;
 	ClearSubSelection();
+}
+
+void EditorApp::SelectWorldNode() {
+	// Pseudo-selection (see m_worldSelected): clears the node selection
+	// without touching the hierarchy. m_selected stays UINT32_MAX so
+	// every consumer keeps its existing no-selection behavior.
+	m_selection.clear();
+	m_selected = UINT32_MAX;
+	ClearSubSelection();
+	m_worldSelected = true;
+}
+
+uint32_t EditorApp::FindSunNode() const {
+	if (!m_world)
+		return UINT32_MAX;
+	for (const auto& [node, li] : m_world->scene.lightForNode) {
+		(void)li;
+		if (const ::SceneLight* L = FindNodeLight(node))
+			if (L->type == ::SceneLight::Type::Directional)
+				return node;
+	}
+	return UINT32_MAX;
 }
 
 void EditorApp::FinishBoxSelect() {

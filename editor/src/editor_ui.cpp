@@ -595,13 +595,29 @@ void EditorApp::DrawSceneOutliner() {
 	ImGui::InputTextWithHint("##filter", "filter nodes...",
 		m_filterBuf, sizeof(m_filterBuf));
 	const bool filtering = m_filterBuf[0] != '\0';
+	std::string selName = "-";
+	if (m_worldSelected)
+		selName = "World";
+	else if (m_selected != UINT32_MAX)
+		selName = getNodeName(m_world->scene, int(m_selected));
 	ImGui::TextDisabled("nodes: %zu  selected: %s",
-		m_world->scene.hierarchy.size(),
-		m_selected == UINT32_MAX ? "-" : getNodeName(m_world->scene,
-			int(m_selected)).c_str());
+		m_world->scene.hierarchy.size(), selName.c_str());
 	ImGui::Separator();
 	ImGui::Separator();
 	ImGui::BeginChild("##tree");
+	// World pseudo-node: global render settings. Pinned above the tree,
+	// never part of it — no children, no drag&drop, no rename/delete.
+	// (Filtered out by the node filter like everything else.)
+	if (!filtering || std::string("World").find(m_filterBuf) != std::string::npos) {
+		ImGui::PushID("worldnode");
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
+		if (ImGui::Selectable("World [globals]", m_worldSelected))
+			SelectWorldNode();
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+		if (!filtering)
+			ImGui::Separator();
+	}
 	if (filtering) {
 		for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
 			const std::string name = getNodeName(m_world->scene, int(n));
@@ -1437,6 +1453,11 @@ void EditorApp::DrawInspector() {
 	if (m_world && m_materialFocus != UINT32_MAX) {
 		DrawMaterialFocusPage();
 		DrawEnvPanel();
+		return;
+	}
+	// World pseudo-node page (global render settings, not a scene node).
+	if (m_worldSelected) {
+		DrawWorldPanel();
 		return;
 	}
 	if (!m_world || m_selected == UINT32_MAX ||

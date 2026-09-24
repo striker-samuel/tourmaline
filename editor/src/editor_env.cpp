@@ -111,6 +111,88 @@ void EditorApp::DrawEnvPanel() {
 	}
 }
 
+void EditorApp::DrawWorldPanel() {
+	ImGui::Text("World");
+	ImGui::TextDisabled(
+		"Not a scene node: global render settings. No transform, no "
+		"reparent, no delete. Sun edits below are undoable light "
+		"commands; the environment rides editorSet tour lines.");
+	// ---- scene sun (directional light, if the scene has one) ----
+	ImGui::Separator();
+	ImGui::Text("Sun (directional)");
+	const uint32_t sun = FindSunNode();
+	if (sun == UINT32_MAX || !m_world) {
+		ImGui::TextDisabled("No directional light in the scene.");
+		ImGui::TextDisabled("Import one (KHR punctual) to drive scene "
+			"sunlight; the IBL sun below always lights the viewport.");
+	}
+	else if (glm::vec3 aimWs(0.0f);
+		const ::SceneLight* li = FindNodeLight(sun, &aimWs)) {
+		ImGui::Text("'%s' (#%u)", li->name.c_str(), sun);
+		ImGui::SameLine();
+		if (ImGui::Button("Select node"))
+			SetSelection(sun);
+		ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
+			-aimWs.y, -aimWs.z,
+			m_hasCookedSun && m_cookedSunName == li->name
+			? " — seeds the editor IBL default" : "");
+		if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
+			ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+		// Same coalesced-drag SetLightAttr pattern as the node inspector
+		// (lux units for directionals), so cooks replay the edits.
+		auto beginSunDrag = [&](const char* attr) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetLightAttr ||
+				m_pending.cmd.node != sun || m_pending.cmd.lightAttr != attr))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetLightAttr;
+				m_pending.cmd.node = sun;
+				m_pending.cmd.lightAttr = attr;
+				ReadNodeLightAttr(sun, attr, m_pending.cmd.beforeVec4,
+					m_pending.cmd.beforeNum, m_pending.cmd.beforeFlag,
+					m_pending.cmd.beforeText);
+			}
+		};
+		auto endSunDrag = [&](const char* attr) {
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.verb == EditVerb::SetLightAttr &&
+				m_pending.cmd.node == sun &&
+				m_pending.cmd.lightAttr == attr)
+				FinishDrag();
+		};
+		glm::vec3 scol = li->color;
+		if (ImGui::ColorEdit3("Sun color", &scol.x)) {
+			beginSunDrag("color");
+			WriteNodeLightAttr(sun, "color", glm::vec4(scol, 1.0f), 0, false, {});
+			m_pending.cmd.vec4 = glm::vec4(scol, 1.0f);
+		}
+		endSunDrag("color");
+		float sint = li->intensity;
+		if (ImGui::DragFloat("Sun intensity (lux)", &sint, 10.0f, 0.0f,
+				2e5f, "%.0f")) {
+			beginSunDrag("intensity");
+			WriteNodeLightAttr(sun, "intensity", glm::vec4(0), sint, false, {});
+			m_pending.cmd.number = sint;
+		}
+		endSunDrag("intensity");
+		bool sstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+		if (ImGui::Checkbox("Static sun (bake-only)", &sstatic)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetLightAttr;
+			c.node = sun;
+			c.lightAttr = "static";
+			c.afterFlag = sstatic;
+			ReadNodeLightAttr(sun, "static", c.beforeVec4, c.beforeNum,
+				c.beforeFlag, c.beforeText);
+			Do(c);
+		}
+	}
+	// ---- image-based lighting + atmosphere (editor viewport) ----
+	DrawEnvPanel();
+}
+
 void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 	// Keys carry CLUSTER-space node ids (stable across the deterministic
 	// import, like every other tour id). Each node group starts with
