@@ -66,6 +66,13 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
     ImGui::SetCurrentContext(imguiCtx);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // The HOST owns the keyboard (editor modal keys, placement-graph Del).
+    // With nav-capture on (the default), io.WantCaptureKeyboard reads true
+    // whenever any window is focused (io.NavActive), which would starve
+    // every app-side key handler — see UpdateModalInput's guard, which
+    // means to test "an ImGui input is active (typing/dragging) or a
+    // modal is open", not "a window has focus".
+    io.ConfigNavCaptureKeyboard = false;
     // Enable docking / viewports optionally:
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;

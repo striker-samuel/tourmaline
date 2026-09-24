@@ -47,6 +47,19 @@ enum class EditVerb : uint8_t {
  	              // the captured before-patch (terrainBefore + box).
  	SetLightAttr, // light property edit; c.node = light node (world),
  	              // lightAttr selects the channel (see below)
+ 	Delete,      // remove an editor node from the LIVE scene (Maya
+ 	              // delete): mesh/material/light links and draw entries
+ 	              // drop so nothing draws, picks, bakes or cooks it;
+ 	              // the node id joins the deleted set (outliner filters
+ 	              // it). NO hiding and NO renumbering — pool resources
+ 	              // are never reclaimed, only the links; undo restores
+ 	              // the exact prior state. c.node = deleted node (a
+ 	              // terrain GROUP cascades over its tiles); the light's
+ 	              // world index rides number; per-node map links ride
+ 	              // delNodeMaps; tile draw entries ride delDrawItems
+ 	              // (packed quintuples). Tour: cluster-backed nodes
+ 	              // persist as Verb::Delete; editor-created nodes are
+ 	              // dropped via the creates' live-state emission.
 };
 
 struct EditCmd {
@@ -96,6 +109,14 @@ struct EditCmd {
 	std::vector<float> terrainBefore;
 	uint32_t terrainBoxX0 = 0, terrainBoxZ0 = 0;
 	uint32_t terrainBoxW = 0, terrainBoxH = 0;
+	// Delete payload: per-node scene-map links captured at first forward
+	// execution — (node, hasMesh, mesh, hasMat, mat) quintuples (hasMesh/
+	// hasMat 0/1; erased links read 0). Restored exactly by undo.
+	std::vector<uint32_t> delNodeMaps;
+	// Delete payload: captured tile draw entries as packed quintuples
+	// (position, node, mesh, material, flags) — recorded at first
+	// forward execution, reused by redos, restored exactly by undo.
+	std::vector<uint32_t> delDrawItems;
 };
 
 class EditorApp; // command execution lives on the app (world access).

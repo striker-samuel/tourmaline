@@ -162,6 +162,11 @@ bool EditorApp::Initialize() {
 }
 
 void EditorApp::Shutdown() {
+	// Flush the working tour to the project .tour on exit (per-edit
+	// saves went to the %APPDATA% autosave) — same contract as
+	// CloseScene, so closing the editor never loses edits.
+	if (m_world && !TourTarget().empty())
+		SaveTour();
 	SavePrefs(); // save editor prefs on close
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
@@ -219,9 +224,20 @@ void EditorApp::LoadPrefs() {
 	if (!in) return;
 	std::string line;
 	while (std::getline(in, line)) {
-		if (line.rfind("leftW=", 0) == 0) m_leftW = std::stof(line.substr(6));
-		else if (line.rfind("rightW=", 0) == 0) m_rightW = std::stof(line.substr(7));
-		else if (line.rfind("bottomH=", 0) == 0) m_bottomH = std::stof(line.substr(8));
+		// Same clamps as the panel splitters (a corrupt/hand-edited
+		// prefs line must not degenerate the layout — a sub-tab-height
+		// dock, for instance, made the console tab look dead).
+		try {
+			if (line.rfind("leftW=", 0) == 0)
+				m_leftW = std::clamp(std::stof(line.substr(6)), 200.0f, 720.0f);
+			else if (line.rfind("rightW=", 0) == 0)
+				m_rightW = std::clamp(std::stof(line.substr(7)), 200.0f, 720.0f);
+			else if (line.rfind("bottomH=", 0) == 0)
+				m_bottomH = std::clamp(std::stof(line.substr(8)), 120.0f, 600.0f);
+		}
+		catch (...) {
+			// corrupt line: keep the default
+		}
 	}
 }
 
@@ -280,7 +296,16 @@ void EditorApp::CloseScene() {
 	m_placement.showGraph = false;
 	m_placement.showOverlay = true;
 	m_placement.showRejected = true;
+	// Flush the working state to the project .tour on close (per-edit
+	// saves went to the %APPDATA% autosave; this is the one place the
+	// real file catches up without an explicit save).
+	if (m_world && !TourTarget().empty())
+		SaveTour();
 	m_terrainGroups.clear();
+	m_deletedNodes.clear();
+	m_images.clear();
+	m_nextImageId = 1;
+	m_refIssues.clear();
 	m_defaultMatWorld = UINT32_MAX;
 	ClearSelection();
 	ClearHistory();
@@ -346,6 +371,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_references.clear();
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
+	m_refIssues.clear();
 	{
 		smvk::tour::Doc refDoc;
 		std::string refErr;
@@ -353,8 +379,12 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 		std::filesystem::path masterTour =
 			std::filesystem::path(path);
 		masterTour.replace_extension(".tour");
-		if (std::filesystem::exists(masterTour) &&
-			smvk::tour::LoadTour(masterTour.string(), refDoc, refErr,
+		// Crash recovery parity: references bind from the same latest
+		// tour the command stack replays from (a newer autosave wins).
+		const std::string latestTour =
+			LatestTourPath(masterTour.string());
+		if (!latestTour.empty()
+			&& smvk::tour::LoadTour(latestTour, refDoc, refErr,
 				&refWarns)) {
 			for (auto& w : refWarns)
 				Log(w);
@@ -365,7 +395,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 					m_context.get(), m_textureStreamer.get(),
 					nullptr /* host files */,
 					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-					&m_refPhCluster);
+					&m_refPhCluster, &m_refIssues);
 				Log("References: bound " + std::to_string(applied) +
 					" reference subtree(s) (" +
 					std::to_string(refDoc.references.size()) +
@@ -412,6 +442,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_selected = UINT32_MAX;
 	ClearHistory();
 	m_terrainGroups.clear(); // fresh world: stale group grids die with it
+	m_deletedNodes.clear(); // fresh world: deletes die with it
+	m_images.clear(); // fresh world: image defs die with it
+	m_nextImageId = 1;
+	m_refIssues.clear();
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -564,6 +598,10 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	m_selected = UINT32_MAX;
 	ClearHistory();
 	m_terrainGroups.clear(); // fresh world: stale group grids die with it
+	m_deletedNodes.clear(); // fresh world: deletes die with it
+	m_images.clear(); // fresh world: image defs die with it
+	m_nextImageId = 1;
+	m_refIssues.clear();
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
 	m_nextOverrideId = 1;

@@ -252,6 +252,11 @@ void EditorApp::UpdateModalInput() {
 			"viewport: single/quad", "V" },
 		{ GLFW_KEY_I, 0, kScopeGlobal, &EditorApp::ModalUiToggle,
 			"ui: panels on/off", "I" },
+		{ GLFW_KEY_DELETE, 0, kScopeGlobal, &EditorApp::ModalDelete,
+			"delete: selection", "Del" },
+		{ GLFW_KEY_H, kModalCtrl, kScopeGlobal,
+			&EditorApp::ModalToggleVisibility,
+			"visibility: hide/unhide selection", "Ctrl+H" },
 		{ GLFW_KEY_Z, kModalCtrl, kScopeGlobal, &EditorApp::ModalUndo,
 			"undo", "Ctrl+Z" },
 		{ GLFW_KEY_Z, kModalCtrl | kModalShift, kScopeGlobal,
@@ -321,6 +326,52 @@ void EditorApp::ModalVpLayoutToggle() {
 		m_activeVp = 0;
 }
 void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
+
+void EditorApp::ModalDelete() {
+	// The placement graph window owns Del while its hierarchy is
+	// focused (the canvas deletes graph nodes/wires there); the modal
+	// binding serves the world selection otherwise. The flag is set by
+	// DrawPlacementGraph (last frame's focus).
+	if (m_imguiFocusInPlacementGraph)
+		return;
+	DeleteSelection();
+}
+
+void EditorApp::ModalToggleVisibility() {
+	// Ctrl+H: toggle the selection's self-hidden flag. All nodes follow
+	// the PRIMARY's inverse (a mixed selection hides when the primary
+	// is visible, unhides when it is hidden) — predictable bulk edit.
+	if (!m_world || m_worldSelected)
+		return;
+	std::vector<uint32_t> targets(m_selection);
+	if (targets.empty() && m_selected != UINT32_MAX)
+		targets.push_back(m_selected);
+	if (targets.empty())
+		return;
+	bool hide = false;
+	const uint32_t primary = m_selected != UINT32_MAX ? m_selected
+		: targets[0];
+	if (primary < m_world->scene.hierarchy.size())
+		hide = IsVisibleNode(m_world->scene, int(primary));
+	int n = 0;
+	for (uint32_t t : targets) {
+		if (t == UINT32_MAX || t >= m_world->scene.hierarchy.size()
+			|| m_deletedNodes.contains(t))
+			continue;
+		EditCmd c{};
+		c.verb = EditVerb::SetVisibility;
+		c.node = t;
+		const bool hidden = IsHiddenNode(m_world->scene, int(t));
+		c.afterFlag = hide;
+		c.beforeFlag = hidden;
+		Do(c);
+		++n;
+	}
+	if (n > 0)
+		Log(std::string("Visibility: ") + (hide ? "hid" : "showed") + " "
+			+ std::to_string(n) + " node" + (n > 1 ? "s" : "")
+			+ " (Ctrl+H toggles).");
+}
 
 void EditorApp::ModalUndo() { Undo(); }
 void EditorApp::ModalRedo() { Redo(); }

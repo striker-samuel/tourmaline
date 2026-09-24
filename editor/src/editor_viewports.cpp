@@ -434,6 +434,11 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 	float* value, float minV, float maxV, bool flip) {
 	ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
 	ImGui::SetNextWindowSize(sz, ImGuiCond_Always);
+	// API-sized strip: beat the style's 32x32 window minimum (it made
+	// the 6px strips ~32px tall, swallowing the bottom dock's tab strip
+	// — tab clicks hit the splitter instead) and kill the padding.
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 	ImGui::Begin(id, nullptr,
 		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
@@ -448,6 +453,7 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 		*value = std::clamp(*value + (flip ? -delta : delta), minV, maxV);
 	}
 	ImGui::End();
+	ImGui::PopStyleVar(2);
 	return ImGui::IsItemHovered();
 }
 

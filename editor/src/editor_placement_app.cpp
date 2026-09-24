@@ -172,7 +172,7 @@ void EditorApp::RefreshPlacementPreview() {
 		bool live = false;
 		if (cr.terrainBind != UINT32_MAX) {
 			auto it = m_terrainGroups.find(cr.terrainBind);
-			if (it != m_terrainGroups.end()) {
+			if (it != m_terrainGroups.end() && !it->second.deleted) {
 				terrainStorage = it->second.data.heights;
 				live = true;
 			}
@@ -180,7 +180,7 @@ void EditorApp::RefreshPlacementPreview() {
 				pv.ok = false;
 				pv.error = "Terrain node binds group #"
 					+ std::to_string(cr.terrainBind)
-					+ " which no longer exists (re-bind or unbind).";
+					+ " which no longer exists (deleted, or re-bind/unbind).";
 				pv.dirty = false;
 				return;
 			}

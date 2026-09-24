@@ -111,6 +111,10 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	m_menuH = menuBarH + toolbarH;
 	const float menuH = m_menuH; // panels/viewport math use the combined offset
 	const float vh = float(ImGui::GetIO().DisplaySize.y);
+	// Del-key routing resets here: DrawPlacementGraph re-sets it when its
+	// window hierarchy holds the keyboard focus (ModalDelete vs the
+	// graph's own node/wire delete).
+	m_imguiFocusInPlacementGraph = false;
 
 	// Panels are siblings of the central viewport (never on top of it):
 	// RenderFrame renders only the rect between them. I hides every
@@ -158,12 +162,17 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 				DrawTexturePanel();
 				ImGui::EndTabItem();
 			}
-			if (ImGui::BeginTabItem("Material")) {
-				m_rightTab = 5;
-				DrawMaterialEditor();
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
+		if (ImGui::BeginTabItem("Material")) {
+			m_rightTab = 5;
+			DrawMaterialEditor();
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("Images")) {
+			m_rightTab = 6;
+			DrawImagesTab();
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
 		}
 	}
 	ImGui::End();
@@ -216,10 +225,15 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::MenuItem("Add scene reference...", nullptr, false,
 				!m_gltfPath.empty() && !HasPakExtension(m_gltfPath))) {
-			std::snprintf(m_refSourceBuf, sizeof(m_refSourceBuf), "%s", "");
-			std::snprintf(m_refNameBuf, sizeof(m_refNameBuf), "%s", "");
-			m_showRefDialog = true;
+			// File browser pick (.gltf/.tour; the name defaults to the
+			// path stem, the reference binds into its own namespace).
+			std::string picked;
+			if (NativeOpenFile(picked) && !picked.empty())
+				AddSceneReference(picked, {});
 		}
+		if (ImGui::MenuItem("Reference editor...", nullptr,
+				m_showReferencesPanel))
+			m_showReferencesPanel = !m_showReferencesPanel;
 		if (ImGui::MenuItem("Save tour...")) {
 			std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 				"%s", TourTarget().c_str());
@@ -256,6 +270,14 @@ void EditorApp::DrawMenuBar() {
 			m_terrainMat = UINT32_MAX;
 			m_showTerrainDialog = true;
 		}
+		if (ImGui::MenuItem("Image...", nullptr, false, canCreate)) {
+			// Maya file node: an image definition (path + sampling
+			// settings) held OUTSIDE the DAG — editor-only state until
+			// a material uses it.
+			std::string picked;
+			if (NativeOpenFile(picked, true) && !picked.empty())
+				AddImageDef(picked);
+		}
 		if (!canCreate)
 			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
@@ -267,8 +289,17 @@ void EditorApp::DrawMenuBar() {
 			!ul.empty()))
 			Undo();
 		if (ImGui::MenuItem(("Redo " + rl).c_str(), "Ctrl+Shift+Z", false,
-			!rl.empty()))
+				!rl.empty()))
 			Redo();
+		ImGui::Separator();
+		// Del-key twin (modal registry 'Del'): deletes the editor-created
+		// content in the selection (created lights, terrain groups);
+		// imports/references are refused with a log (ids must stay
+		// stable — hide those instead).
+		if (ImGui::MenuItem("Delete selection", "Del", false,
+				m_world && (m_selected != UINT32_MAX
+					|| !m_selection.empty())))
+			DeleteSelection();
 		ImGui::Separator();
 		// Collapse the stack to the current state: superseded per-node /
 		// per-attr edits drop (their LAST occurrence already carries the
@@ -421,8 +452,6 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
 			m_showFlintbasePanel = !m_showFlintbasePanel;
-		if (ImGui::MenuItem("Reference editor", nullptr, m_showReferencesPanel))
-			m_showReferencesPanel = !m_showReferencesPanel;
 		if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 			m_placement.showGraph = !m_placement.showGraph;
 		ImGui::Separator();
@@ -446,12 +475,6 @@ void EditorApp::DrawMenuBar() {
 		ImGui::EndMenu();
 	}
 
-	if (m_showRefDialog) {
-		ImGui::OpenPopup("Add scene reference");
-		m_showRefDialog = false;
-		m_refAddFailed = false;
-	}
-	DrawAddReferenceDialog();
 	if (m_showSaveDialog) {
 		ImGui::OpenPopup("Save tour as");
 		m_showSaveDialog = false;
@@ -812,8 +835,11 @@ void EditorApp::DrawSceneOutliner() {
 		selName = "World";
 	else if (m_selected != UINT32_MAX)
 		selName = getNodeName(m_world->scene, int(m_selected));
-	ImGui::TextDisabled("nodes: %zu  selected: %s",
-		m_world->scene.hierarchy.size(), selName.c_str());
+	ImGui::TextDisabled("nodes: %zu%s  selected: %s",
+		m_world->scene.hierarchy.size(),
+		m_deletedNodes.empty() ? ""
+			: (" (" + std::to_string(m_deletedNodes.size()) + " deleted)").c_str(),
+		selName.c_str());
 	ImGui::Separator();
 	ImGui::Separator();
 	ImGui::BeginChild("##tree");
@@ -832,6 +858,8 @@ void EditorApp::DrawSceneOutliner() {
 	}
 	if (filtering) {
 		for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
+			if (m_deletedNodes.contains(n))
+				continue; // deleted (Maya delete): out of the live scene
 			const std::string name = getNodeName(m_world->scene, int(n));
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
@@ -1131,6 +1159,8 @@ void EditorApp::DrawPakBox() {
 
 void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
+	if (m_deletedNodes.contains(node))
+		return; // deleted (Maya delete): out of the live scene
 	const Scene& scene = m_world->scene;
 	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);
@@ -1152,7 +1182,8 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s",
+		name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
@@ -2275,7 +2306,7 @@ void EditorApp::DrawCookPanel() {
 	ImGui::SameLine();
 	ImGui::TextDisabled("(deprecated: probes only - GiBaker .sggi + .cvol)");
 	if (cookTouched)
-		SaveTour(); // persist the cook block (not undoable)
+		AutosaveTour(); // persist the cook block (not undoable)
 	ImGui::TextDisabled("tour: %s (%zu commands)",
 		TourTarget().empty() ? "-" : std::filesystem::path(TourTarget())
 		.filename().string().c_str(),
@@ -2749,6 +2780,89 @@ void EditorApp::DrawConsolePanel() {
 	if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 8.0f)
 		ImGui::SetScrollHereY(1.0f);
 	ImGui::EndChild();
+}
+
+// ---- Images tab (scene image definitions, Maya file nodes) -------------
+// Editor-only image declarations OUTSIDE the DAG (like materials): a
+// path + sampling settings each. A material that uses one mints the
+// cluster texture resource at use time; until then these are authoring
+// state, persisted as img.* editorSettings (never cooked).
+void EditorApp::DrawImagesTab() {
+	if (ImGui::Button("Add image...")) {
+		std::string picked;
+		if (NativeOpenFile(picked, true) && !picked.empty())
+			AddImageDef(picked);
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("%zu image(s) — outside the DAG, editor-only",
+		m_images.size());
+	if (m_images.empty()) {
+		ImGui::TextDisabled("Create > Image... adds one; a material that");
+		ImGui::TextDisabled("uses an image mints its cluster texture.");
+		return;
+	}
+	int pendingRemove = -1;
+	ImGui::BeginChild("##imglist", ImVec2(0, 0), false);
+	for (size_t i = 0; i < m_images.size(); ++i) {
+		ImageDef& img = m_images[i];
+		ImGui::PushID(int(i));
+		ImGui::Separator();
+		ImGui::SetNextItemWidth(-120.0f);
+		char nameBuf[128];
+		std::snprintf(nameBuf, sizeof(nameBuf), "%s", img.name.c_str());
+		if (ImGui::InputText("##imgname", nameBuf, sizeof(nameBuf))) {
+			img.name = nameBuf;
+			AutosaveTour();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Remove"))
+			pendingRemove = int(i);
+		{
+			char pathBuf[512];
+			std::snprintf(pathBuf, sizeof(pathBuf), "%s", img.path.c_str());
+			ImGui::SetNextItemWidth(-120.0f);
+			ImGui::InputText("##imgpath", pathBuf, sizeof(pathBuf),
+				ImGuiInputTextFlags_ReadOnly);
+			ImGui::SameLine();
+			if (ImGui::Button("Browse...")) {
+				std::string picked;
+				if (NativeOpenFile(picked, true) && !picked.empty()
+					&& picked != img.path) {
+					img.path = picked;
+					AutosaveTour();
+				}
+			}
+		}
+		static const char* kWrapNames[] = { "repeat", "clamp edge",
+			"mirrored repeat" };
+		static const char* kCsNames[] = { "sRGB", "linear" };
+		static const char* kFilterNames[] = { "linear", "nearest" };
+		ImGui::SetNextItemWidth(-4.0f);
+		int w = img.wrap;
+		if (ImGui::Combo("Tiling (wrap)##imgwrap", &w, kWrapNames, 3)
+			&& w != img.wrap) {
+			img.wrap = w;
+			AutosaveTour();
+		}
+		ImGui::SetNextItemWidth(-4.0f);
+		int cs = img.colorspace;
+		if (ImGui::Combo("Colorspace##imgcs", &cs, kCsNames, 2)
+			&& cs != img.colorspace) {
+			img.colorspace = cs;
+			AutosaveTour();
+		}
+		ImGui::SetNextItemWidth(-4.0f);
+		int f = img.filter;
+		if (ImGui::Combo("Filter##imgfilter", &f, kFilterNames, 2)
+			&& f != img.filter) {
+			img.filter = f;
+			AutosaveTour();
+		}
+		ImGui::PopID();
+	}
+	ImGui::EndChild();
+	if (pendingRemove >= 0)
+		RemoveImageDefAt(size_t(pendingRemove));
 }
 
 void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {

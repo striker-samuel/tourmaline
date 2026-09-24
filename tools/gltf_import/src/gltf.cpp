@@ -2014,14 +2014,21 @@ size_t ApplySceneReferences(
 	const smvk::MeshOptConfig& meshOpt,
 	const smvk::MeshletConfig& meshlets,
 	int coordFix,
-	std::vector<int>* outPlaceholderNodes) {
+	std::vector<int>* outPlaceholderNodes,
+	std::vector<std::string>* outIssues) {
 	(void)ctx;
+	auto issue = [&](const std::string& msg) {
+		if (outIssues)
+			outIssues->push_back(msg);
+	};
 	if (doc.references.empty())
 		return 0;
 	struct Level {
 		smvk::tour::Doc doc;        // owning copy (nested docs parsed fresh)
 		std::string baseDir;        // resolve relative sources against this
 		std::vector<std::string> chain; // normalized sources up the chain
+		std::string nsPrefix;       // reference-namespace chain ("a:b:")
+		                             // applied to THIS level's inlines
 		int depth = 0;
 		uint32_t nodeBase = 0; // owner-space offset of THIS level's scene
 		                       // (0 for the owner itself): nested reference
@@ -2048,8 +2055,10 @@ size_t ApplySceneReferences(
 				continue;
 			}
 			if (cur.depth >= kMaxRefDepth) {
-				std::cerr << "[References] depth cap reached at '" <<
-					r.source << "' (skipped)\n";
+				const std::string m = "[References] depth cap reached at '" +
+					r.source + "' (skipped)";
+				std::cerr << m << "\n";
+				issue(m);
 				++warnings;
 				continue;
 			}
@@ -2087,28 +2096,36 @@ size_t ApplySceneReferences(
 						tourResolved = hp.generic_string();
 				}
 				if (tourResolved.empty()) {
-					std::cerr << "[References] cannot resolve tour '" <<
-						r.source << "' (skipped)\n";
+					const std::string m = "[References] cannot resolve tour '" +
+						r.source + "' (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
 					++warnings;
 					continue;
 				}
 				std::string tourText;
 				if (!ReadTourTextAt(tourResolved, vfs, tourText)) {
-					std::cerr << "[References] cannot read tour '" <<
-						tourResolved << "' (skipped)\n";
+					const std::string m = "[References] cannot read tour '" +
+						tourResolved + "' (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
 					++warnings;
 					continue;
 				}
 				std::string tourErr;
 				if (!smvk::tour::LoadTourFromString(tourText, refTour, tourErr)) {
-					std::cerr << "[References] tour parse failed '" <<
-						tourResolved << "': " << tourErr << " (skipped)\n";
+					const std::string m = "[References] tour parse failed '" +
+						tourResolved + "': " + tourErr + " (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
 					++warnings;
 					continue;
 				}
 				if (refTour.source.empty()) {
-					std::cerr << "[References] tour '" << tourResolved <<
-						"' names no source scene (skipped)\n";
+					const std::string m = "[References] tour '" + tourResolved +
+						"' names no source scene (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
 					++warnings;
 					continue;
 				}
@@ -2170,8 +2187,10 @@ size_t ApplySceneReferences(
 				}
 			}
 			if (!ok) {
-				std::cerr << "[References] cannot resolve '" << modelSource <<
-					"' (skipped)\n";
+				const std::string m = "[References] cannot resolve '" +
+					modelSource + "' (skipped)";
+				std::cerr << m << "\n";
+				issue(m);
 				++warnings;
 				continue;
 			}
@@ -2269,16 +2288,54 @@ size_t ApplySceneReferences(
 						rule.material += matBase;
 					sub.overrides.push_back(std::move(rule));
 				}
+				// Non-strict replay: a failing command is reported and
+				// skipped, never aborting the rest (a partially-broken
+				// reference keeps its geometry + every valid edit).
+				std::vector<std::string> replayWarns;
 				std::string replayErr;
-				if (!smvk::tour::ApplyTourToCluster(cluster, sub, nullptr,
-						&replayErr)) {
-					std::cerr << "[References] tour replay failed for '" <<
-						resolved << "': " << replayErr <<
-						" (geometry kept, edits skipped)\n";
+				if (!smvk::tour::ApplyTourToCluster(cluster, sub, &replayWarns,
+						&replayErr, false)) {
+					const std::string m = "[References] tour replay failed for '" +
+						resolved + "': " + replayErr + " (geometry kept)";
+					std::cerr << m << "\n";
+					issue(m);
 					++warnings;
 				}
+			for (const std::string& w : replayWarns) {
+				const std::string m = "[References] '" + resolved + "': " + w;
+				std::cerr << m << "\n";
+				issue(m);
+				++warnings;
 			}
-			++applied;
+		}
+		// Reference namespace (Maya): every node below the placeholder
+		// takes '<chain><refName>:' so the master's overrides can target
+		// a single reference with one name regex ('ns:.*'). The ROOT
+		// namespace is the master tour itself (its own nodes carry no
+		// prefix). Nested references queue with the extended chain, so
+		// their nodes read 'outer:inner:name'. Runs AFTER the source
+		// tour's replay: its verify-names and its own wide overrides
+		// matched the un-prefixed names.
+		{
+			const std::string ns = cur.nsPrefix + name + ":";
+			std::vector<uint32_t> stack;
+			for (int ch = cluster.scene.hierarchy[size_t(ph)].firstChild;
+				ch >= 0;
+				ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
+				stack.push_back(uint32_t(ch));
+			while (!stack.empty()) {
+				const uint32_t v = stack.back();
+				stack.pop_back();
+				const std::string nm = getNodeName(cluster.scene, int(v));
+				if (!nm.empty())
+					setNodeName(cluster.scene, int(v), ns + nm);
+				for (int ch = cluster.scene.hierarchy[v].firstChild;
+					ch >= 0;
+					ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
+					stack.push_back(uint32_t(ch));
+			}
+		}
+		++applied;
 			std::cout << "[References] inlined '" << resolved << "' under " <<
 				"node " << parentNode << " (placeholder " << ph << ")\n";
 			// Nesting: follow further references with the subtree's
@@ -2307,16 +2364,17 @@ size_t ApplySceneReferences(
 					}
 				}
 			}
-			if (nestedDoc && !nestedDoc->references.empty()) {
-				Level next{};
-				next.doc = *nestedDoc;
-				next.baseDir = baseDir;
-				next.chain = cur.chain;
-				next.chain.push_back(norm);
-				next.depth = cur.depth + 1;
-				next.nodeBase = subtreeBase;
-				queue.push_back(std::move(next));
-			}
+		if (nestedDoc && !nestedDoc->references.empty()) {
+			Level next{};
+			next.doc = *nestedDoc;
+			next.baseDir = baseDir;
+			next.chain = cur.chain;
+			next.chain.push_back(norm);
+			next.nsPrefix = cur.nsPrefix + name + ":";
+			next.depth = cur.depth + 1;
+			next.nodeBase = subtreeBase;
+			queue.push_back(std::move(next));
+		}
 		}
 	}
 	if (applied != 0) {

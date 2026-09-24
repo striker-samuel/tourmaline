@@ -343,7 +343,7 @@ bool EditorApp::AddOverrideRule(smvk::tour::OverrideAttr attr,
 			.material = 0, .enabled = back.enabled }) +
 		", matched " + std::to_string(back.lastMatches) + " nodes, wrote " +
 		std::to_string(back.applied.size()) + ").");
-	SaveTour();
+	AutosaveTour();
 	return true;
 }
 
@@ -354,7 +354,7 @@ bool EditorApp::DeleteOverrideRule(uint32_t id) {
 		UnapplyOverrideRule(*it);
 		m_overrideRules.erase(it);
 		Log("Override #" + std::to_string(id) + " deleted.");
-		SaveTour();
+		AutosaveTour();
 		return true;
 	}
 	return false;
@@ -376,7 +376,7 @@ bool EditorApp::SetOverrideEnabled(uint32_t id, bool enabled) {
 		}
 		Log("Override #" + std::to_string(id) +
 			(enabled ? " enabled." : " disabled."));
-		SaveTour();
+		AutosaveTour();
 		return true;
 	}
 	return false;
@@ -394,7 +394,7 @@ bool EditorApp::SetOverrideFlag(uint32_t id, bool flag) {
 			ApplyOverrideRule(r);
 		Log("Override #" + std::to_string(id) + " value -> " +
 			(flag ? "on" : "off") + ".");
-		SaveTour();
+		AutosaveTour();
 		return true;
 	}
 	return false;
@@ -414,7 +414,7 @@ bool EditorApp::MoveOverrideRule(uint32_t id, int dir) {
 		std::swap(m_overrideRules[i], m_overrideRules[size_t(j)]);
 		ReapplyAllOverrides();
 		Log("Override #" + std::to_string(id) + " moved.");
-		SaveTour();
+		AutosaveTour();
 		return true;
 	}
 	return false;
@@ -440,7 +440,7 @@ bool EditorApp::RetargetOverrideRule(uint32_t id,
 		r.lastError.clear();
 		if (r.enabled)
 			ApplyOverrideRule(r);
-		SaveTour();
+		AutosaveTour();
 		return true;
 	}
 	return false;
@@ -626,7 +626,7 @@ bool EditorApp::ClearLocalOverrides(uint32_t node,
 		m_history.erase(m_history.begin() + ptrdiff_t(i));
 	m_historyCursor -= idx.size();
 	ReassertWideOverrides(node); // a matching wide rule resumes, if any
-	SaveTour();
+	AutosaveTour();
 	Log("Override: cleared " + std::to_string(idx.size()) + " local " +
 		smvk::tour::OverrideAttrName(attr) + " command(s) on node " +
 		std::to_string(node) + " (now inherited).");

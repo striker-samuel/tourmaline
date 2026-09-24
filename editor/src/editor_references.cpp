@@ -71,6 +71,13 @@ bool EditorApp::AddSceneReference(const std::string& source,
 			"to author references).");
 		return false;
 	}
+	if (HasPakExtension(source)) {
+		// Sources must be .gltf or .tour: paks are cooked blobs, not
+		// referenceable scenes (no import, no tour to replay).
+		Log("References: sources must be .gltf or .tour (paks are "
+			"cooked, not referenceable).");
+		return false;
+	}
 	// Resolve like the loader will (as-is, then beside the master scene)
 	// so the dialog feedback is honest.
 	std::error_code ec;
@@ -165,32 +172,37 @@ static bool RefSourceExists(const std::string& gltfHostPath,
 void EditorApp::DrawReferencesPanel() {
 	if (!m_showReferencesPanel)
 		return;
-	ImGui::SetNextWindowSize(ImVec2(680, 380), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin("References", &m_showReferencesPanel)) {
+	ImGui::SetNextWindowSize(ImVec2(720, 420), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Reference editor", &m_showReferencesPanel)) {
 		ImGui::End();
 		return;
 	}
+	// Add = a file browser (.gltf/.tour pick; the name defaults to the
+	// path stem — Maya-style namespaces apply at bind time).
 	if (ImGui::Button("Add reference...")) {
-		m_refSourceBuf[0] = '\0';
-		m_refNameBuf[0] = '\0';
-		ImGui::OpenPopup("Add scene reference");
+		std::string picked;
+		if (NativeOpenFile(picked) && !picked.empty())
+			AddSceneReference(picked, {});
 	}
-	ImGui::SameLine();
-	if (ImGui::Button("Reload all") && !m_gltfPath.empty())
-		OpenScene(m_gltfPath);
 	ImGui::SameLine();
 	ImGui::TextDisabled("%zu reference(s)%s", m_references.size(),
 		m_gltfPath.empty() ? " (no scene open)" : "");
+	ImGui::SameLine();
+	ImGui::TextDisabled("read-only trees; edits layer ON TOP (visibility/"
+		"TRS/attrs) — root namespace = this tour");
 	// Mutating actions rebind the world (reload): never inside the row
 	// loop — collect and apply after the table.
 	int pendingRemove = -1;
 	int pendingToggle = -1;
 	bool pendingToggleVal = false;
 	int pendingReplace = -1;
+	int pendingReload = -1;
 	if (ImGui::BeginTable("##refed",
-			5,
+			6,
 			ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
 				ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
+		ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed,
+			58.0f);
 		ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
 			74.0f);
 		ImGui::TableSetupColumn("Name");
@@ -208,6 +220,13 @@ void EditorApp::DrawReferencesPanel() {
 			const bool isTour = RefExt(r.source) == "tour";
 			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
+			ImGui::PushID(int(i));
+			bool en = r.enabled;
+			if (ImGui::Checkbox("##en", &en)) {
+				pendingToggle = int(i);
+				pendingToggleVal = en;
+			}
+			ImGui::TableSetColumnIndex(1);
 			if (!r.enabled)
 				ImGui::TextDisabled("unloaded");
 			else if (!fileOk)
@@ -219,25 +238,23 @@ void EditorApp::DrawReferencesPanel() {
 			else
 				ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f),
 					"loaded");
-			ImGui::TableSetColumnIndex(1);
+			ImGui::TableSetColumnIndex(2);
 			ImGui::Text("%s", r.name.c_str());
 			ImGui::SameLine();
 			ImGui::TextDisabled("[%s]", isTour ? "tour" : "gltf");
-			ImGui::TableSetColumnIndex(2);
-			ImGui::TextDisabled("%s", r.source.c_str());
 			ImGui::TableSetColumnIndex(3);
+			ImGui::TextDisabled("%s", r.source.c_str());
+			ImGui::TableSetColumnIndex(4);
 			ImGui::Text("%d",
 				(bound && m_world)
 					? RefSubtreeSize(m_world->scene, ph)
 					: 0);
-			ImGui::TableSetColumnIndex(4);
-			ImGui::PushID(int(i));
+			ImGui::TableSetColumnIndex(5);
 			if (bound && ImGui::SmallButton("Select"))
 				m_selected = ph;
 			ImGui::SameLine();
-			if (ImGui::SmallButton(r.enabled ? "Unload" : "Load")) {
-				pendingToggle = int(i);
-				pendingToggleVal = !r.enabled;
+			if (ImGui::SmallButton("Reload")) {
+				pendingReload = int(i);
 			}
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Replace..."))
@@ -253,6 +270,15 @@ void EditorApp::DrawReferencesPanel() {
 		RemoveSceneReferenceAt(size_t(pendingRemove));
 	if (pendingToggle >= 0)
 		SetSceneReferenceEnabled(size_t(pendingToggle), pendingToggleVal);
+	if (pendingReload >= 0
+		&& !m_gltfPath.empty()
+		&& size_t(pendingReload) < m_references.size()) {
+		// Rebind the whole scene (references bind at import; the
+		// reloaded source's edited .tour re-inlines fresh).
+		Log("Reference reload: '" + m_references[size_t(pendingReload)].source
+			+ "' — rebinding.");
+		OpenScene(m_gltfPath);
+	}
 	if (pendingReplace >= 0) {
 		std::string picked;
 		if (NativeOpenFile(picked) && !picked.empty()
@@ -263,6 +289,18 @@ void EditorApp::DrawReferencesPanel() {
 			if (!m_gltfPath.empty())
 				OpenScene(m_gltfPath);
 		}
+	}
+	// Failed reference commands (from the last bind): a partially-
+	// broken reference must never take the scene down — it lands here.
+	if (!m_refIssues.empty()) {
+		ImGui::Separator();
+		ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+			"%zu reference issue(s) from the last bind:",
+			m_refIssues.size());
+		ImGui::BeginChild("##refissues", ImVec2(0, 120), true);
+		for (const std::string& issue : m_refIssues)
+			ImGui::BulletText("%s", issue.c_str());
+		ImGui::EndChild();
 	}
 	ImGui::End();
 }
@@ -294,42 +332,6 @@ void EditorApp::DrawReferenceSection(uint32_t node) {
 	}
 	ImGui::TextDisabled(
 		"Add more: File > Add scene reference... (parent = selection)");
-}
-
-void EditorApp::DrawAddReferenceDialog() {
-	if (!ImGui::BeginPopupModal("Add scene reference", nullptr,
-			ImGuiWindowFlags_NoCollapse))
-		return;
-	ImGui::SetNextItemWidth(420.0f);
-	ImGui::InputTextWithHint("##refsrc", "referenced .gltf/.tour (relative to "
-		"this scene or absolute)", m_refSourceBuf, sizeof(m_refSourceBuf));
-	ImGui::InputTextWithHint("##refname", "name (optional)",
-		m_refNameBuf, sizeof(m_refNameBuf));
-	ImGui::TextDisabled("parent: %s",
-		(m_selected != UINT32_MAX && WorldToCluster(m_selected) >= 0)
-		? ("cluster node " + std::to_string(WorldToCluster(m_selected))).c_str()
-		: "cluster root (nothing selected)");
-	if (ImGui::Button("Add")) {
-		if (AddSceneReference(m_refSourceBuf, m_refNameBuf)) {
-			m_refSourceBuf[0] = '\0';
-			m_refNameBuf[0] = '\0';
-			m_refAddFailed = false;
-			ImGui::CloseCurrentPopup();
-		}
-		else {
-			// Stay open: AddSceneReference logs the reason to the
-			// Console, and the inline hint below points there. (This
-			// used to close silently, looking like a dead button.)
-			m_refAddFailed = true;
-		}
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Cancel"))
-		ImGui::CloseCurrentPopup();
-	if (m_refAddFailed)
-		ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1),
-			"Could not add — see Console for why (bad path? pak scene?).");
-	ImGui::EndPopup();
 }
 
 } // namespace editor

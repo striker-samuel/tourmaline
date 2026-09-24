@@ -512,6 +512,11 @@ private:
 	void ModalUndo();
 	void ModalRedo();
 	void ModalSaveIncremental();
+	void ModalDelete(); // Del: DeleteSelection() (skipped while the
+	                     // placement graph window owns the keyboard —
+	                     // its canvas Del removes graph nodes instead)
+	void ModalToggleVisibility(); // Ctrl+H: hide/unhide the selection
+	                               // (all nodes follow the primary's inverse)
 	void ModalGizmoTranslate();
 	void ModalGizmoRotate();
 	void ModalGizmoScale();
@@ -634,6 +639,12 @@ private:
 	// order): generic verbs address them via kCreateTerrainRefBase.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedTerrainNodes;
+	// Reference binding issues from the last scene load
+	// (ApplySceneReferences collects them: unresolved sources, tour
+	// parse failures, skipped commands inside a referenced .tour,
+	// cycles). The Reference editor lists them; a partially-broken
+	// reference never aborts the load.
+	std::vector<std::string> m_refIssues;
 	// ---- created terrain groups (live editor state) ----
 	// One entry per created terrain group, keyed by the GROUP world id.
 	// The global grid is authoritative: painting edits it, tile meshes
@@ -642,6 +653,10 @@ private:
 	struct TerrainGroup {
 		smvk::placement::TerrainGroupData data;
 		std::vector<uint32_t> tileNodes; // world ids, [tz * tilesX + tx]
+		// True while tombstoned by a Delete command: the tour's
+		// live-state CreateTerrain emission skips the group (deleted
+		// content drops out of the file, like detached created lights).
+		bool deleted = false;
 	};
 	std::unordered_map<uint32_t, TerrainGroup> m_terrainGroups;
 	// GROUP world id of a group-or-tile node (UINT32_MAX when none).
@@ -672,11 +687,47 @@ private:
 		glm::vec3& s) const;
 	void WriteLocalTRS(uint32_t node, const glm::vec3& t,
 		const glm::vec3& rDeg, const glm::vec3& s);
+	// ---- scene image definitions (Maya file nodes, editor-only) ----
+	// Images live OUTSIDE the DAG, like materials: pure editor state
+	// (a path + sampling settings), never hierarchy nodes. A material
+	// that uses one mints the cluster texture resource (with its pool
+	// handle) at use time. Persistence rides the tour's editorSettings
+	// (never cooked) like the placement graphs; the Images inspector
+	// tab authors them (Create > Image... browses + adds).
+	struct ImageDef {
+		uint64_t id = 0;
+		std::string name;   // display name (defaults to the path stem)
+		std::string path;   // source image (filesystem path)
+		int wrap = 0;       // tiling: 0 repeat, 1 clamp-edge, 2 mirrored
+		int colorspace = 0; // 0 sRGB, 1 linear
+		int filter = 0;     // 0 linear, 1 nearest
+	};
+	std::vector<ImageDef> m_images;
+	uint64_t m_nextImageId = 1;
+	void AddImageDef(const std::string& path); // Create > Image... (browse)
+	void RemoveImageDefAt(size_t idx);         // Images tab rows
+	void DrawImagesTab();                     // Inspector "Images" tab
+	void SaveImagesToDoc(smvk::tour::Doc& doc) const;
+	void LoadImagesFromDoc(const smvk::tour::Doc& doc);
 	// Created-light execution (ExecCmd cases): append/remove the world
 	// node + pool definition. ExecCreateLight records the assigned id
 	// back into the command (c.node).
 	void ExecCreateLight(EditCmd& c);
 	void ExecUncreateLight(EditCmd& c);
+	// Delete execution (ExecCmd cases): remove/restore a node from the
+	// live scene. Links (meshForNode/materialForNode/lightForNode) and
+	// draw entries drop; the node id joins/leaves m_deletedNodes; ids
+	// stay stable and pool resources are never reclaimed. Captured
+	// state (light index, map links, draw entries at their positions)
+	// rides c.number / c.delNodeMaps / c.delDrawItems for the exact
+	// undo. Terrain groups cascade over their tiles.
+	void ExecDelete(EditCmd& c);
+	void ExecUndelete(EditCmd& c);
+	// Delete key / Edit menu: delete every selected deletable node
+	// (any scene node except the root, reference placeholders and the
+	// World pseudo-node; terrain tiles resolve to their group), logging
+	// refusals.
+	void DeleteSelection();
 	void ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		glm::vec4& v4, double& num);
 	void WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
@@ -697,6 +748,15 @@ private:
 	bool SaveTourTo(const std::string& path); // becomes the target
 	bool SaveTourIncremental(); // Maya-style <stem>.NNNN.tour, becomes target
 	bool LoadTour(); // replay file into the stack (undoable)
+	// Per-edit autosave: the working state lands in
+	// %APPDATA%/tourmalineEditor/autosave/<stem>.tour — the project's
+	// .tour is only written by explicit saves (save/save-as/incremental)
+	// and scene close. LatestTourPath() prefers the autosave when it is
+	// newer, so crash-recovery and never-explicitly-saved scenes reload
+	// correctly.
+	std::string AutosavePath() const;
+	bool AutosaveTour();
+	std::string LatestTourPath(const std::string& tourPath) const;
 	// Open an arbitrary .tour file (File menu): loads its source scene
 	// when it differs, replays the commands into a fresh stack, adopts
 	// the cook block. The opened file becomes the save target.
@@ -927,7 +987,6 @@ private:
 	// breaks when a bind fails, so the panel never relies on it alone.
 	uint32_t RefPlaceholderNode(size_t idx) const;
 	void DrawReferenceSection(uint32_t node); // Inspector block
-	void DrawAddReferenceDialog();
 	// Maya-style Reference Editor (editor_references.cpp): list/status
 	// + add/remove/replace/reload/enable per reference.
 	bool m_showReferencesPanel = false;
@@ -1054,9 +1113,20 @@ private:
 	SecondView m_secondView = SecondView::Off;
 	GizmoMode m_gizmoMode = GizmoMode::Translate;
 	uint32_t m_selected = UINT32_MAX; // world node id (primary selection)
+	// Deleted nodes (Maya delete, EditVerb::Delete): links dropped from
+	// the live scene, ids kept (no renumbering). Drives the outliner
+	// filter; undo/redo and tour replay add/remove entries in lockstep
+	// with ExecDelete/ExecUndelete. Cleared with the world (import /
+	// CloseScene reset it) and rebuilt by Delete commands at replay.
+	std::unordered_set<uint32_t> m_deletedNodes;
 	uint32_t m_revealNode = UINT32_MAX; // outliner reveal request (viewport pick)
 	bool m_wireOverlay = true;
 	bool m_uiMode = true; // false = fullscreen viewport (camera control)
+	// True while the focused ImGui window sits inside the Placement Graph
+	// window hierarchy (drawn last frame): ModalDelete defers to the
+	// graph's own Del handler (node/wire removal) instead of the world
+	// selection. Updated by DrawPlacementGraph, reset in DrawUI.
+	bool m_imguiFocusInPlacementGraph = false;
 	bool m_showLightGizmos = true; // viewport markers for light nodes
 	// ---- convex GI volume preview (LIGHTING mode, 'V' cycles; loaded
 	// from the .cvmanifest next to the opened pak) ----
@@ -1281,14 +1351,10 @@ private:
 	std::future<PublishResult> m_publishFuture{};
 
 	// ---- add-reference dialog state ----
-	bool m_showRefDialog = false;
-	char m_refSourceBuf[512] = "";
-	char m_refNameBuf[128] = "";
-	bool m_refAddFailed = false; // last Add attempt failed (details in Console)
 };
 
 // Native Windows open dialog (editor_native_dialog.cpp): single entry
 // point for .gltf/.pak/.tour, starts in C:/. False on cancel/failure.
-bool NativeOpenFile(std::string& outPath);
+	bool NativeOpenFile(std::string& outPath, bool images = false);
 
 } // namespace editor

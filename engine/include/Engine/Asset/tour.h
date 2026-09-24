@@ -16,6 +16,8 @@
 //   setNoLightmap -n 45 -v 1;                       # update (bake flag)
 //   setVisibility -n 45 -v 1;                       # update (hidden flag)
 //   parent -n 45 -p 12;                             # update (topology)
+//   delete -n 45;                                   # remove node from the
+//                                                   # live scene (ids stay)
 //   override -pattern "Building_.*" -at visibility -v 1 -enabled on;   # wide
 //   override -pattern "Tree.*" -at material -m 3 -enabled on;          # wide
 //   cook -outPak "content/paks/bistro.pak" ...;     # cook settings (not undo)
@@ -109,6 +111,12 @@ enum class Verb : uint8_t {
 	                // text = op ("raise","lower","flatten","smooth"); vec4 =
 	                // (worldX, worldZ, radius, flattenTarget); number =
 	                // strength (m for raise/lower, 0..1 blend otherwise)
+	Delete,         // node = cluster node id to remove from the live
+	                // scene: mesh/material/light links drop so nothing
+	                // draws, picks, bakes or cooks it (Maya delete). Ids
+	                // stay stable (no renumbering — later commands may
+	                // still address the node); pool resources are never
+	                // reclaimed, only the LINKS are erased.
 };
 
 // Clarisse-style wide override attribute (regex selector over node
@@ -220,9 +228,13 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 // Replay node/material commands onto a freshly imported cook Cluster
 // (cluster-space ids apply directly). Runs BEFORE meshopt/LOD/bake so pool
 // indices match the import. Returns false on structural errors (bad node /
-// material ids); name mismatches only warn.
+// material ids); name mismatches only warn. strict = false (reference
+// replay): a failed command is REPORTED into `warnings` and skipped
+// instead of aborting — a partially-broken reference must not take the
+// whole scene down (ApplySceneReferences surfaces the list to the editor).
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
-	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr);
+	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
+	bool strict = true);
 
 // Structural reparent on any Scene (shared by the editor live path and the
 // cook replay path). Index-preserving: no nodes are added/removed, only

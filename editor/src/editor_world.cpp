@@ -40,6 +40,8 @@ void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
 void EditorApp::RefreshNodeDrawState(uint32_t node) {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return;
+	if (m_deletedNodes.contains(node))
+		return; // deleted: links stay dropped (no wide-override resurrect)
 	Scene& scene = m_world->scene;
 	if (!scene.meshForNode.contains(node))
 		return;

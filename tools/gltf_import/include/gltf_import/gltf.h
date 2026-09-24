@@ -197,7 +197,11 @@ size_t ApplySceneReferences(
 	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
 	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
 	int coordFix = 0,
-	std::vector<int>* outPlaceholderNodes = nullptr);
+	std::vector<int>* outPlaceholderNodes = nullptr,
+	// Every failure (unresolved source, parse error, skipped command in
+	// a referenced .tour, cycle...) collected for the editor's reference
+	// list; nullptr keeps the stderr-only behavior.
+	std::vector<std::string>* outIssues = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,

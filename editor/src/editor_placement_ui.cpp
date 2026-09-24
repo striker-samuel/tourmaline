@@ -79,10 +79,14 @@ void WireCurve(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thick) {
 // ---- selected-node params -------------------------------------------------------
 void EditorApp::PushPlacementUndo() {
 	m_placement.pushUndo();
+	AutosaveTour(); // graphs ride the tour doc (img.*/place.* settings)
 }
 void EditorApp::DirtyPlacementOnEdit() {
-	if (ImGui::IsItemEdited() || ImGui::IsItemDeactivatedAfterEdit())
+	if (ImGui::IsItemEdited() || ImGui::IsItemDeactivatedAfterEdit()) {
 		MarkPlacementDirty();
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			AutosaveTour(); // once per finished edit, not per tick
+	}
 }
 
 void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
@@ -354,6 +358,11 @@ void EditorApp::DrawPlacementGraph() {
 		ImGui::End();
 		return;
 	}
+	// Keyboard-focus ownership of the Del key: while any window of this
+	// hierarchy is focused, the canvas's own Del (node/wire removal)
+	// wins and ModalDelete stands down. Reset by DrawUI each frame.
+	m_imguiFocusInPlacementGraph =
+		ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 	// Toolbar: graph select/add/delete, undo/redo, badges, preview controls.
 	{
 		if (ImGui::BeginCombo("Graph", doc ? doc->name.c_str() : "-")) {
@@ -635,8 +644,12 @@ void EditorApp::DrawPlacementGraph() {
 			}
 			ImGui::EndPopup();
 		}
-		// Delete key.
-		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)
+		// Delete key. Focus may sit anywhere in this window hierarchy:
+		// toolbar controls (Graph combo, New/Undo/...) live in the PARENT
+		// window, so a canvas-only focus check made Del dead after using
+		// them. RootAndChild covers parent + canvas + panels; the
+		// !IsAnyItemActive() guard still blocks text fields and drags.
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
 			&& !ImGui::IsAnyItemActive()
 			&& (ImGui::IsKeyPressed(ImGuiKey_Delete)
 				|| ImGui::IsKeyPressed(ImGuiKey_Backspace))) {

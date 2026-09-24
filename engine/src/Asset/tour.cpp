@@ -230,6 +230,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		case Verb::SetVisibility:
 			f << "setVisibility -n " << c.node << " -v " << FlagVal(c.flag);
 			break;
+		case Verb::Delete:
+			f << "delete -n " << c.node;
+			break;
 		case Verb::Parent:
 			f << "parent -n " << c.node << " -p " << c.node2;
 			break;
@@ -810,6 +813,13 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.node2 = fl.p;
 		}
+		else if (verb == "delete" && fl.hasN) {
+			// Maya delete: drop the node's live-scene links (mesh/
+			// material/light). Ids stay stable; resources are not
+			// reclaimed.
+			c.verb = Verb::Delete;
+			c.node = fl.n;
+		}
 		else if (verb == "createLight" && fl.hasP && fl.hasName && fl.hasAt
 			&& fl.t.size() >= 9) {
 			// -t packs: x y z intensity range innerDeg outerDeg
@@ -1099,10 +1109,24 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 }
 
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
-	std::vector<std::string>* warnings, std::string* err) {
+	std::vector<std::string>* warnings, std::string* err, bool strict) {
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
+	};
+	// Per-command failure: strict (default) aborts with *err (already
+	// set by the failing path); reference replay (strict=false) reports
+	// the command and moves on so one bad command cannot drop the rest
+	// of a referenced scene's edits.
+	auto failCmd = [&](const Command& c) -> bool {
+		if (strict)
+			return false; // *err stays as the abort reason
+		warn((err && !err->empty() ? *err
+				: std::string("tour: command failed"))
+			+ " (skipped: " + Describe(c) + ")");
+		if (err)
+			err->clear();
+		return true;
 	};
 	Scene& scene = cluster.scene;
 	auto checkNode = [&](uint32_t n, const Command& c) {
@@ -1155,8 +1179,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		switch (c.verb) {
 		case Verb::Rename: {
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
 			scene.nameForNode[target] = id;
@@ -1173,13 +1200,18 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::AssignMaterial: {
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			if (!CookMaterial(cluster, c.material)) {
 				if (err)
 					*err = "tour: material out of range: " +
 						std::to_string(c.material);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			scene.materialForNode[target] = c.material;
 			break;
@@ -1190,15 +1222,20 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (err)
 					*err = "tour: material out of range: " +
 						std::to_string(c.material);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			ApplyMatAttr(*mat, c);
 			break;
 		}
 		case Verb::SetNoLightmap: {
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			if (scene.noLightmap.size() != scene.hierarchy.size())
 				scene.noLightmap.assign(scene.hierarchy.size(), 0);
 			scene.noLightmap[target] = c.flag ? 1 : 0;
@@ -1206,8 +1243,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::SetDitherCloseup: {
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			if (scene.ditherCloseup.size() != scene.hierarchy.size())
 				scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 			scene.ditherCloseup[target] = c.flag ? 1 : 0;
@@ -1215,8 +1255,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::SetVisibility: {
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			if (scene.hidden.size() != scene.hierarchy.size())
 				scene.hidden.assign(scene.hierarchy.size(), 0);
 			scene.hidden[target] = c.flag ? 1 : 0;
@@ -1224,11 +1267,33 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::Parent: {
 			uint32_t target = 0, newParent = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
-			if (!resolveNode(c.node2, c, newParent))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			if (!resolveNode(c.node2, c, newParent)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			TourReparent(scene, target, newParent);
+			break;
+		}
+		case Verb::Delete: {
+			// Maya delete at cook replay: drop the node's live links
+			// (mesh/material/light) so nothing draws, bakes or packs it.
+			// Ids stay stable (later commands may still address the
+			// node); the pool resources are never reclaimed.
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			scene.meshForNode.erase(target);
+			scene.materialForNode.erase(target);
+			scene.lightForNode.erase(target);
 			break;
 		}
 		case Verb::CreateLight: {
@@ -1239,7 +1304,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (err)
 					*err = "tour: createLight parent out of range: " +
 						std::to_string(c.node);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			const int level = scene.hierarchy[c.node].level + 1;
 			const int newId = addNode(scene, int(c.node), level);
@@ -1247,7 +1314,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (err)
 					*err = "tour: createLight failed under parent " +
 						std::to_string(c.node);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			scene.localTransform[size_t(newId)] =
 				glm::translate(glm::mat4(1.0f), c.vec);
@@ -1283,7 +1352,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				if (err)
 					*err = "tour: createTerrain parent out of range: " +
 						std::to_string(c.node);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			uint32_t material = c.material;
 			if (!CookMaterial(cluster, material)) {
@@ -1347,7 +1418,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					if (tileId < 0) {
 						if (err)
 							*err = "tour: createTerrain tile node failed";
-						return false;
+						if (!failCmd(c))
+							return false;
+						break;
 					}
 					scene.localTransform[size_t(tileId)] = glm::translate(
 						glm::mat4(1.0f),
@@ -1369,7 +1442,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				|| k >= terrainGroups.size()) {
 				if (err)
 					*err = "tour: terrainPaint ref out of range";
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			TourTerrainGroup& state = terrainGroups[k];
 			smvk::placement::TerrainBrushOp op;
@@ -1410,26 +1485,34 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					if (err)
 						*err = "tour: setLightAttr ref out of range: " +
 							std::to_string(k);
-					return false;
+					if (!failCmd(c))
+						return false;
+					break;
 				}
 				target = createdLights[k];
 			}
 			else if (!checkNode(target, c)) {
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			auto lit = scene.lightForNode.find(target);
 			if (lit == scene.lightForNode.end()) {
 				if (err)
 					*err = "tour: setLightAttr on non-light node " +
 						std::to_string(target);
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			SceneLight* def = cluster.lights.get(
 				cluster.lights.getHandle(lit->second));
 			if (!def) {
 				if (err)
 					*err = "tour: setLightAttr bad light pool index";
-				return false;
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			if (c.text == "color") {
 				def->color = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
@@ -1509,16 +1592,28 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				smvk::StaticMeshUpload upload;
 				if (!smvk::placement::BuildTerrainTileUpload(
 						state.data, tx, tz, upload)) {
-					if (err)
-						*err = "tour: terrain tile mesh build failed";
-					return false;
+					if (strict) {
+						if (err)
+							*err = "tour: terrain tile mesh build failed";
+						return false;
+					}
+					warn("tour: terrain tile mesh build failed (tile "
+						+ std::to_string(tx) + "_" + std::to_string(tz)
+						+ ")");
+					continue;
 				}
 				const ClusterStaticMeshHandle mh =
 					cluster.UploadStaticMesh(upload);
 				if (!mh.valid()) {
-					if (err)
-						*err = "tour: terrain tile upload failed";
-					return false;
+					if (strict) {
+						if (err)
+							*err = "tour: terrain tile upload failed";
+						return false;
+					}
+					warn("tour: terrain tile upload failed (tile "
+						+ std::to_string(tx) + "_" + std::to_string(tz)
+						+ ")");
+					continue;
 				}
 				const uint32_t tileNode =
 					state.tileNodes[size_t(tz) * tX + tx];
@@ -1542,8 +1637,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				c.verb != Verb::SetScale)
 				continue;
 			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target))
-				return false;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
 			Triple& t = triples[target];
 			if (c.verb == Verb::SetTranslate) {
 				t.hasT = true;
@@ -1743,6 +1841,10 @@ std::string Describe(const Command& c) {
 		std::snprintf(buf, sizeof(buf), "light.%s.%s", tgt, c.text.c_str());
 		break;
 	}
+	case Verb::Delete:
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "delete %s", tgt);
+		break;
 	}
 	return buf;
 }

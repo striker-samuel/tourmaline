@@ -13,6 +13,8 @@
 #include <map>
 #include <string>
 
+#include <algorithm>
+
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -308,6 +310,13 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUnterrainPaint(c);
 		break;
 	}
+	case EditVerb::Delete: {
+		if (forward)
+			ExecDelete(c);
+		else
+			ExecUndelete(c);
+		break;
+	}
 	}
 }
 
@@ -351,11 +360,17 @@ std::string EditorApp::UniqueLightName(bool spot) const {
 int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	// Creation-order index among history creates at/below the cursor:
 	// the -ref value CmdToTour emits for SetLightAttr on created nodes.
+	// Deleted (detached) creates are skipped: their CreateLight is
+	// dropped from the tour (live-state emission), so the file's -ref
+	// space only spans ALIVE creates — this keeps save-time indices and
+	// replay-time m_tourCreatedNodes addressing identical.
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateLight)
 			continue;
+		if (!m_world || !m_world->scene.lightForNode.contains(h.node))
+			continue; // deleted (tombstoned): not in the file's ref space
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -381,11 +396,17 @@ std::string EditorApp::UniqueTerrainName() const {
 }
 
 int EditorApp::CreatedTerrainIndex(uint32_t worldNode) const {
+	// Same contract as CreatedLightIndex: alive creates only (deleted
+	// groups' CreateTerrain is dropped from the tour, so the file's
+	// TerrainPaint -ref space spans the survivors).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateTerrain)
 			continue;
+		auto it = m_terrainGroups.find(h.node);
+		if (it == m_terrainGroups.end() || it->second.deleted)
+			continue; // deleted (tombstoned): not in the file's ref space
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -568,6 +589,222 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Delete (Del key / Edit menu, Maya delete): remove a node from the LIVE
+// scene. Links drop — meshForNode/materialForNode (draw state), lightForNode
+// (light census/gizmos/cook), drawItems (draws/picks/box-select) — and the
+// node id joins m_deletedNodes so the outliner filters it. NO hiding, NO
+// renumbering: ids stay stable (later commands still address the node) and
+// pool resources are never reclaimed, only the links. A terrain GROUP
+// deletes as a unit (group + every tile). Undo restores the exact prior
+// state from the captured links/entries. Tour: cluster-backed nodes persist
+// as Verb::Delete (delete -n <id>), replayed by the editor AND PakCooker;
+// editor-created nodes (no cluster id) instead vanish from the file through
+// the creates' live-state emission.
+// ---------------------------------------------------------------------------
+void EditorApp::ExecDelete(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n == 0 || n >= scene.hierarchy.size())
+		return; // 0 = scene root: never a delete target
+	if (m_deletedNodes.contains(n))
+		return; // already deleted (idempotent replay)
+	// Delete set: group + tiles as one unit; everything else per-node.
+	std::vector<uint32_t> nodes{ n };
+	auto git = m_terrainGroups.find(n);
+	if (git != m_terrainGroups.end()) {
+		git->second.deleted = true;
+		nodes.insert(nodes.end(), git->second.tileNodes.begin(),
+			git->second.tileNodes.end());
+	}
+	// Capture the exact prior state ONCE (first forward exec; redos
+	// reuse — LIFO undo guarantees the live vectors are back to this
+	// exact state whenever the capture is needed again).
+	if (c.delNodeMaps.empty()) {
+		auto captureMaps = [&](uint32_t id) {
+			uint32_t hasMesh = 0, mesh = 0, hasMat = 0, mat = 0;
+			auto m = scene.meshForNode.find(id);
+			if (m != scene.meshForNode.end()) {
+				hasMesh = 1;
+				mesh = m->second;
+			}
+			auto a = scene.materialForNode.find(id);
+			if (a != scene.materialForNode.end()) {
+				hasMat = 1;
+				mat = a->second;
+			}
+			c.delNodeMaps.insert(c.delNodeMaps.end(),
+				{ id, hasMesh, mesh, hasMat, mat });
+		};
+		captureMaps(n);
+		if (git != m_terrainGroups.end())
+			for (uint32_t t : git->second.tileNodes)
+				captureMaps(t);
+		// Light link (created or imported): the world index rides the
+		// command (-1 = none); the pool entry itself stays alive.
+		auto lit = scene.lightForNode.find(n);
+		c.number = (lit != scene.lightForNode.end())
+			? double(lit->second) : -1.0;
+		// Draw entries (position, node, mesh, material, flags).
+		for (uint32_t id : nodes)
+			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
+				if (m_world->drawItems[i].node == id) {
+					const smvk::World::RenderItem& item =
+						m_world->drawItems[i];
+					c.delDrawItems.insert(c.delDrawItems.end(),
+						{ uint32_t(i), item.node, item.mesh,
+						  item.material, item.flags });
+				}
+	}
+	// Unlink: maps, light, draw entries; the ids join the deleted set.
+	auto dropSelected = [&](uint32_t id) {
+		for (size_t i = m_selection.size(); i-- > 0;)
+			if (m_selection[i] == id)
+				m_selection.erase(m_selection.begin() + ptrdiff_t(i));
+		if (m_selected == id)
+			m_selected = m_selection.empty()
+				? UINT32_MAX : m_selection.back();
+	};
+	for (uint32_t id : nodes) {
+		scene.meshForNode.erase(id);
+		scene.materialForNode.erase(id);
+		m_deletedNodes.insert(id);
+		for (size_t i = m_world->drawItems.size(); i-- > 0;)
+			if (m_world->drawItems[i].node == id) {
+				m_world->drawItems.erase(m_world->drawItems.begin()
+					+ ptrdiff_t(i));
+				m_world->itemFlags.erase(m_world->itemFlags.begin()
+					+ ptrdiff_t(i));
+			}
+		dropSelected(id);
+	}
+	scene.lightForNode.erase(n);
+	m_world->flagLists.clear();
+	Log("Deleted '" + getNodeName(scene, int(n)) + "' (#" +
+		std::to_string(n) + ") — Ctrl+Z restores it.");
+}
+
+void EditorApp::ExecUndelete(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	// Restore the captured links (order-free): mesh/material maps and
+	// deleted-set membership per node, the light link, then the draw
+	// entries at their ORIGINAL positions in ascending order (every
+	// earlier reinsert already restored its shift, so each index lands
+	// exactly where it was).
+	for (size_t k = 0; k + 4 < c.delNodeMaps.size(); k += 5) {
+		const uint32_t id = c.delNodeMaps[k];
+		if (c.delNodeMaps[k + 1])
+			scene.meshForNode[id] = c.delNodeMaps[k + 2];
+		if (c.delNodeMaps[k + 3])
+			scene.materialForNode[id] = c.delNodeMaps[k + 4];
+		m_deletedNodes.erase(id);
+	}
+	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
+		scene.lightForNode[n] = uint32_t(c.number);
+	std::vector<size_t> order;
+	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
+		order.push_back(k);
+	std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+		return c.delDrawItems[a] < c.delDrawItems[b];
+	});
+	for (size_t k : order) {
+		const uint32_t pos = c.delDrawItems[k];
+		smvk::World::RenderItem item{ c.delDrawItems[k + 1],
+			c.delDrawItems[k + 2], c.delDrawItems[k + 3],
+			c.delDrawItems[k + 4] };
+		m_world->drawItems.insert(m_world->drawItems.begin()
+			+ ptrdiff_t(pos), item);
+		m_world->itemFlags.insert(m_world->itemFlags.begin()
+			+ ptrdiff_t(pos), item.flags);
+	}
+	m_world->flagLists.clear();
+	auto git = m_terrainGroups.find(n);
+	if (git != m_terrainGroups.end())
+		git->second.deleted = false; // restored: paints/rebuilds live again
+	m_selected = n; // like creates: restored content selects
+	Log("Undid delete: '" + getNodeName(scene, int(n)) + "' (#" +
+		std::to_string(n) + ") restored.");
+}
+
+void EditorApp::DeleteSelection() {
+	if (!m_world) {
+		Log("Delete: no scene open.");
+		return;
+	}
+	if (m_worldSelected) {
+		Log("Delete: 'World' holds global settings (not a scene node).");
+		return;
+	}
+	std::vector<uint32_t> targets(m_selection);
+	if (targets.empty() && m_selected != UINT32_MAX)
+		targets.push_back(m_selected);
+	if (targets.empty()) {
+		Log("Delete: nothing selected.");
+		return;
+	}
+	int deleted = 0;
+	std::vector<uint32_t> handled; // ids dispatched (dedupe tiles/groups)
+	auto dispatch = [&](uint32_t id) {
+		for (uint32_t h : handled)
+			if (h == id)
+				return false;
+		handled.push_back(id);
+		EditCmd c{};
+		c.verb = EditVerb::Delete;
+		c.node = id;
+		Do(c);
+		++deleted;
+		return true;
+	};
+	for (uint32_t n : targets) {
+		if (n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
+			continue;
+		if (m_deletedNodes.contains(n))
+			continue; // already deleted
+		if (n == 0) {
+			Log("Delete: the scene root stays (delete children instead).");
+			continue;
+		}
+		if (IsRefPlaceholder(n)) {
+			// The placeholder IS the reference binding anchor: dropping
+			// it would orphan the linked scene on reload. Maya parity:
+			// remove/unload the reference, not its node.
+			Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
+				"' is a reference placeholder — remove the reference "
+				"itself (References panel).");
+			continue;
+		}
+		// Terrain TILE (viewport picks select tiles — the group node
+		// carries no mesh): resolve to the GROUP. Deleting part of a
+		// terrain deletes the terrain.
+		const uint32_t group = TerrainGroupOf(n);
+		if (group != UINT32_MAX && !m_terrainGroups.contains(n)) {
+			auto g = m_terrainGroups.find(group);
+			if (g != m_terrainGroups.end() && !g->second.deleted
+				&& !m_deletedNodes.contains(group) && dispatch(group))
+				Log("Delete: tile selection resolves to terrain group #"
+					+ std::to_string(group) + ".");
+			continue;
+		}
+		// Any other node deletes (created lights, created terrain
+		// groups, imported meshes/lights/suns, plain transforms).
+		auto git = m_terrainGroups.find(n);
+		if (git != m_terrainGroups.end() && git->second.deleted)
+			continue; // group already deleted (its tiles may still be selected)
+		dispatch(n);
+	}
+	if (deleted > 0)
+		Log("Delete: removed " + std::to_string(deleted) + " node"
+			+ (deleted > 1 ? "s" : "") + ".");
+}
+
 bool EditorApp::ReadNodeLightAttr(uint32_t node, const std::string& attr,
 	glm::vec4& v4, double& num, bool& flag, std::string& text) const {
 	v4 = glm::vec4(0.0f);
@@ -681,7 +918,7 @@ void EditorApp::Do(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	SaveTour();
+	AutosaveTour();
 }
 
 void EditorApp::PushDone(EditCmd c) {
@@ -702,7 +939,7 @@ void EditorApp::PushDone(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	SaveTour();
+	AutosaveTour();
 }
 
 bool EditorApp::Undo() {
@@ -711,7 +948,7 @@ bool EditorApp::Undo() {
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
-	SaveTour();
+	AutosaveTour();
 	return true;
 }
 
@@ -730,7 +967,7 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
-	SaveTour();
+	AutosaveTour();
 	return true;
 }
 
@@ -850,6 +1087,9 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::Parent: return "reparent";
 	case editor::EditVerb::CreateLight: return "create light";
 	case editor::EditVerb::SetLightAttr: return "light edit";
+	case editor::EditVerb::CreateTerrain: return "create terrain";
+	case editor::EditVerb::TerrainPaint: return "terrain paint";
+	case editor::EditVerb::Delete: return "delete";
 	}
 	return "?";
 }
@@ -1031,6 +1271,13 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
+		// Deleted (tombstoned) group: drop the creation from the file
+		// entirely — the created-light detached precedent.
+		{
+			auto git = app.m_terrainGroups.find(created);
+			if (git != app.m_terrainGroups.end() && git->second.deleted)
+				return false;
+		}
 		int pp = app.WorldToCluster(c.beforeParent);
 		if (pp < 0) {
 			// World root has no cluster id: the primary cluster's root
@@ -1089,6 +1336,19 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::Delete: {
+		// Cluster-backed nodes persist as a first-class Maya delete
+		// (delete -n <id>): replayed by the editor AND PakCooker, so a
+		// deleted imported node stays deleted after reload AND out of
+		// the cooked pak. Editor-created nodes (created lights, terrain
+		// groups/tiles — no cluster id) are never written: their creates
+		// are dropped by the live-state emission above, removing them
+		// from the file entirely.
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::Delete;
+		return true;
+	}
 	}
 	return false;
 }
@@ -1115,6 +1375,65 @@ std::string EditorApp::TourTarget() const {
 
 bool EditorApp::SaveTour() {
 	return SaveTourTo(TourTarget());
+}
+
+// Per-edit persistence target: the full tour state lands in an autosave
+// file under %APPDATA% (never the project's .tour — explicit saves,
+// save-as, incremental saves and scene close are the only writers of
+// that; see AutosaveTour vs SaveTour). Crash recovery: LoadTour prefers
+// the autosave when it is newer than the target file.
+std::string EditorApp::AutosavePath() const {
+	const std::string target = TourTarget();
+	if (target.empty())
+		return {};
+	namespace fs = std::filesystem;
+	const char* appData = std::getenv("APPDATA");
+	if (!appData || !*appData)
+		appData = std::getenv("HOME");
+	if (!appData || !*appData)
+		return {};
+	fs::path dir = fs::path(appData) / "tourmalineEditor" / "autosave";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	if (ec)
+		return {};
+	// Stem carries the scene identity (a per-scene autosave slot).
+	std::string stem = fs::path(target).stem().string();
+	return (dir / (stem + ".tour")).generic_string();
+}
+
+bool EditorApp::AutosaveTour() {
+	const std::string path = AutosavePath();
+	if (path.empty())
+		return false;
+	// Same doc as a real save, but the target stays untouched: reuse
+	// the builder through SaveTourTo and restore the previous target.
+	const std::string target = m_tourPath;
+	const bool ok = SaveTourTo(path);
+	m_tourPath = target;
+	return ok;
+}
+
+std::string EditorApp::LatestTourPath(const std::string& tourPath) const {
+	if (tourPath.empty())
+		return {};
+	const std::string as = AutosavePath();
+	if (as.empty())
+		return tourPath;
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const bool asExists = fs::exists(fs::path(as), ec);
+	if (!asExists)
+		return tourPath;
+	if (!fs::exists(fs::path(tourPath), ec))
+		return as; // never explicitly saved: the autosave is the doc
+	const auto tAs = fs::last_write_time(fs::path(as), ec);
+	if (ec)
+		return tourPath;
+	const auto tTour = fs::last_write_time(fs::path(tourPath), ec);
+	if (ec)
+		return tourPath;
+	return (tAs > tTour) ? as : tourPath;
 }
 
 bool EditorApp::SaveTourIncremental() {
@@ -1190,6 +1509,15 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.source = m_gltfPath;
 	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
 	for (size_t i = 0; i < m_historyCursor; ++i) {
+		// Editor-created Delete targets (no cluster id: created lights,
+		// terrain groups/tiles) never persist — their creates are
+		// dropped by the live-state emission, which removes them from
+		// the file. Skipped silently here: the unmapped-command log
+		// below is for translation misses. Cluster-backed deletes map
+		// through CmdToTour below (Verb::Delete).
+		if (m_history[i].verb == EditVerb::Delete
+			&& WorldToCluster(m_history[i].node) < 0)
+			continue;
 		smvk::tour::Command tc{};
 		if (!CmdToTour(*this, m_history[i], tc)) {
 			Log("tour: skipping unmapped command #" + std::to_string(i));
@@ -1200,6 +1528,7 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	SaveOverridesToDoc(doc);
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
+	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
 	doc.references = m_references; // scene references (loader binds them)
 	doc.hasCook = true;
 	doc.cook.outPak = m_cook.outPak;
@@ -1360,6 +1689,15 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			app.m_world->scene.hierarchy[node].parent);
 		return true;
 	}
+	case smvk::tour::Verb::Delete: {
+		if (!needNode())
+			return false;
+		// Live-state capture happens at ExecCmd time (ExecDelete
+		// records the links/entries from the live world), so the
+		// replayed command is exactly undoable like a session delete.
+		out.verb = EditVerb::Delete;
+		return true;
+	}
 	case smvk::tour::Verb::CreateLight: {
 		const uint32_t wp = app.ClusterToWorld(tc.node);
 		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
@@ -1447,11 +1785,15 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 }
 
 bool EditorApp::LoadTour() {
-	const std::string tp = TourPath();
-	if (tp.empty() || !m_world)
+	const std::string fallback = TourPath();
+	if (fallback.empty() || !m_world)
 		return false;
-	if (!std::filesystem::exists(tp))
-		return true; // no tour yet: clean history
+	// Crash recovery: a newer autosave (or one without an explicit save
+	// at all) IS the current document.
+	const std::string tp = LatestTourPath(fallback);
+	if (tp != fallback)
+		Log("tour: recovering from the autosave (newer than "
+			+ fallback + ").");
 	smvk::tour::Doc doc;
 	std::string err;
 	std::vector<std::string> warns;
@@ -1518,6 +1860,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	LoadOverridesFromDoc(doc);
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
+	LoadImagesFromDoc(doc); // image definitions (img.* editorSet lines)
 	// References were already bound at import (LoadGltfIntoWorld runs
 	// ApplySceneReferences on this same file); mirror the list so the
 	// editor state matches the parsed doc exactly.
@@ -1526,9 +1869,106 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// Scene image definitions (Maya file nodes, editor-only): images live
+// OUTSIDE the DAG like materials — pure editor state, persisted as
+// img.* editorSettings (never cooked). A material using one mints the
+// cluster texture resource at use time; until then these are authoring
+// references (path + tiling/colorspace/filter).
+// ---------------------------------------------------------------------------
+void EditorApp::AddImageDef(const std::string& path) {
+	if (path.empty())
+		return;
+	std::string stem = path;
+	const size_t slash = stem.find_last_of("/\\");
+	if (slash != std::string::npos)
+		stem = stem.substr(slash + 1);
+	const size_t dot = stem.find_last_of('.');
+	if (dot != std::string::npos)
+		stem = stem.substr(0, dot);
+	ImageDef def;
+	def.id = m_nextImageId++;
+	def.name = stem;
+	def.path = path;
+	m_images.push_back(std::move(def));
+	AutosaveTour();
+	Log("Image added: '" + path + "'.");
+}
+
+void EditorApp::RemoveImageDefAt(size_t idx) {
+	if (idx >= m_images.size())
+		return;
+	Log("Image removed: '" + m_images[idx].name + "'.");
+	m_images.erase(m_images.begin() + ptrdiff_t(idx));
+	AutosaveTour();
+}
+
+void EditorApp::SaveImagesToDoc(smvk::tour::Doc& doc) const {
+	auto put = [&](const std::string& key, const std::string& val) {
+		doc.editorSettings.emplace_back(key, val);
+	};
+	put("img.next", std::to_string(m_nextImageId));
+	for (const ImageDef& img : m_images) {
+		const std::string base = "img." + std::to_string(img.id);
+		put(base + ".name", img.name);
+		put(base + ".path", img.path);
+		put(base + ".wrap", std::to_string(img.wrap));
+		put(base + ".cs", std::to_string(img.colorspace));
+		put(base + ".filter", std::to_string(img.filter));
+	}
+}
+
+void EditorApp::LoadImagesFromDoc(const smvk::tour::Doc& doc) {
+	auto u64 = [](const std::string& s, uint64_t fb) {
+		try { return s.empty() ? fb : std::stoull(s); }
+		catch (...) { return fb; }
+	};
+	auto toI = [](const std::string& s, int fb) {
+		try { return s.empty() ? fb : std::stoi(s); }
+		catch (...) { return fb; }
+	};
+	// Parse into (id, key, value) first, then fold per-id records.
+	std::map<uint64_t, ImageDef> defs;
+	uint64_t nextId = 1;
+	for (const auto& [key, val] : doc.editorSettings) {
+		if (key == "img.next") {
+			nextId = u64(val, 1);
+			continue;
+		}
+		if (key.rfind("img.", 0) != 0)
+			continue;
+		const size_t idEnd = key.find('.', 4);
+		if (idEnd == std::string::npos)
+			continue;
+		const uint64_t id = u64(key.substr(4, idEnd - 4), 0);
+		if (id == 0)
+			continue;
+		ImageDef& def = defs[id];
+		def.id = id;
+		const std::string attr = key.substr(idEnd + 1);
+		if (attr == "name")
+			def.name = val;
+		else if (attr == "path")
+			def.path = val;
+		else if (attr == "wrap")
+			def.wrap = toI(val, 0);
+		else if (attr == "cs")
+			def.colorspace = toI(val, 0);
+		else if (attr == "filter")
+			def.filter = toI(val, 0);
+	}
+	m_images.clear();
+	for (auto& [id, def] : defs) {
+		if (def.path.empty())
+			continue; // half-written record: skip
+		m_images.push_back(def);
+	}
+	m_nextImageId = std::max(nextId, m_images.empty() ? 1
+		: m_images.back().id + 1);
+}
+
 std::string EditorApp::ResolveTourSource(const std::string& tourPath,
-	const std::string& source) const {
-	namespace fs = std::filesystem;
+	const std::string& source) const {	namespace fs = std::filesystem;
 	if (source.empty())
 		return {};
 	std::error_code ec;
@@ -1688,6 +2128,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 	scene.nameForNode[uint32_t(group)] = nameId;
 	// Group state: global grid from the params; tiles as children.
 	TerrainGroup& g = m_terrainGroups[uint32_t(group)];
+	g.deleted = false; // (re)creation: alive even when redoing over a tombstone
 	g.data.params.origin = glm::vec2(c.afterVec.x, c.afterVec.z);
 	g.data.params.size = std::max(c.vec4.x, 1.0f);
 	g.data.params.res = std::clamp(
@@ -1799,8 +2240,8 @@ void EditorApp::ExecUncreateTerrain(EditCmd& c) {
 
 void EditorApp::ExecTerrainPaint(EditCmd& c) {
 	auto it = m_terrainGroups.find(c.node);
-	if (it == m_terrainGroups.end())
-		return;
+	if (it == m_terrainGroups.end() || it->second.deleted)
+		return; // deleted group: its tiles don't draw — stamps are moot
 	TerrainGroup& g = it->second;
 	smvk::placement::TerrainBrushOp op;
 	if (c.terrainOp == "raise")

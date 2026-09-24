@@ -13,7 +13,7 @@
 
 namespace editor {
 
-bool NativeOpenFile(std::string& outPath) {
+bool NativeOpenFile(std::string& outPath, bool images) {
 	// COM for the shell dialog (the editor otherwise avoids COM).
 	const HRESULT coInit = CoInitializeEx(nullptr,
 		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -31,9 +31,17 @@ bool NativeOpenFile(std::string& outPath) {
 			{ L"Tour files", L"*.tour" },
 			{ L"All files", L"*.*" },
 		};
-		dlg->SetFileTypes(
-			static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])),
-			kFilters);
+		static const COMDLG_FILTERSPEC kImageFilters[] = {
+			{ L"Image files", L"*.ktx2;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.exr;*.hdr" },
+			{ L"KTX2 textures", L"*.ktx2" },
+			{ L"PNG", L"*.png" },
+			{ L"All files", L"*.*" },
+		};
+		const COMDLG_FILTERSPEC* filters = images ? kImageFilters : kFilters;
+		UINT filterCount = images
+			? static_cast<UINT>(sizeof(kImageFilters) / sizeof(kImageFilters[0]))
+			: static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0]));
+		dlg->SetFileTypes(filterCount, filters);
 		dlg->SetFileTypeIndex(1);
 		// Start in C:/; fall back to the default folder on failure.
 		IShellItem* startDir = nullptr;

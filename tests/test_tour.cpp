@@ -722,12 +722,90 @@ void TestTerrainVerbs() {
 		parseBad, err), "terrain paint parser rejects bad op");
 }
 
+// Maya delete: round-trip in the .tour + cook replay drops the node's
+// live links while ids stay addressable by later commands.
+void TestDelete() {
+	smvk::tour::Doc doc;
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::Delete;
+	c.node = 45;
+	c.name = "Shop_Wall";
+	doc.commands.push_back(c);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "delete save");
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "delete load");
+	Check(back.commands.size() == 1 &&
+		back.commands[0].verb == smvk::tour::Verb::Delete &&
+		back.commands[0].node == 45, "delete round-trip");
+	Check(smvk::tour::Describe(back.commands[0]).find("delete #45")
+		!= std::string::npos, "delete describe");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+
+	// Cook replay: mesh/material/light links drop; the node itself (and
+	// every later command addressing it) survives — ids stay stable.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	const int g0 = addNode(cluster->scene, root, 1);
+	const int g1 = addNode(cluster->scene, root, 1);
+	setNodeName(cluster->scene, g0, "Wall");
+	setNodeName(cluster->scene, g1, "Floor");
+	smvk::MaterialCreateInfo ci{};
+	ci.baseColorFactor = glm::vec4(1.0f);
+	const smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+	cluster->scene.meshForNode[uint32_t(g0)] = 0;
+	cluster->scene.materialForNode[uint32_t(g0)] = m0.index();
+	cluster->scene.materialForNode[uint32_t(g1)] = m0.index();
+	::SceneLight def{};
+	def.type = ::SceneLight::Type::Point;
+	def.name = "L";
+	const uint32_t lIdx =
+		cluster->lights.create(std::move(def)).index();
+	cluster->scene.lightForNode[uint32_t(g0)] = lIdx;
+
+	smvk::tour::Doc doc2;
+	smvk::tour::Command d{};
+	d.verb = smvk::tour::Verb::Delete;
+	d.node = uint32_t(g0);
+	d.name = "Wall";
+	doc2.commands.push_back(d);
+	smvk::tour::Command r2{};
+	r2.verb = smvk::tour::Verb::Rename; // ids stay addressable after
+	r2.node = uint32_t(g0);             // the delete (Maya parity)
+	r2.text = "Deleted_Wall";
+	doc2.commands.push_back(r2);
+	Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
+		"delete replay ok");
+	Check(!cluster->scene.meshForNode.contains(uint32_t(g0)),
+		"delete drops mesh link");
+	Check(!cluster->scene.materialForNode.contains(uint32_t(g0)),
+		"delete drops material link");
+	Check(!cluster->scene.lightForNode.contains(uint32_t(g0)),
+		"delete drops light link");
+	Check(getNodeName(cluster->scene, g0) == "Deleted_Wall",
+		"delete keeps ids stable");
+	Check(cluster->scene.materialForNode[uint32_t(g1)] == m0.index(),
+		"delete leaves siblings alone");
+
+	smvk::tour::Doc bad;
+	smvk::tour::Command bd{};
+	bd.verb = smvk::tour::Verb::Delete;
+	bd.node = 9999;
+	bad.commands.push_back(bd);
+	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+		"delete rejects bad node");
+}
+
 } // namespace
 
 int main() {
 	TestRoundTrip();
 	TestUnknownVerbSkipped();
 	TestReparent();
+	TestDelete();
 	TestReplay();
 	TestReferences();
 	TestTourReferences();
