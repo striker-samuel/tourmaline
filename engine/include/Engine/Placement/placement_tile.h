@@ -64,9 +64,12 @@ struct DependencyVersions {
 struct PlacementTile {
 	TileKey key;
 	TileState state = TileState::Unloaded;
-	std::vector<RenderInstance> instances; // resident output (SoA later if needed)
+	std::vector<RenderInstance> instances; // resident output, SORTED by (prototypeId, StableID)
 	DependencyVersions deps;               // versions at generation time
 	uint64_t lastAccess = 0;               // LRU stamp (PlacementSystem::tick_)
+	glm::vec3 boundsMin{ 0.0f };           // cached instance bounds (coarse cull)
+	glm::vec3 boundsMax{ 0.0f };
+	uint64_t aliveBDA = 0; // GPU flag2 buffer for constraint-filtered tiles (0 = all alive)
 };
 
 // How to feed candidates into a tile (MVP: fixed-count stratified/grid).
@@ -131,6 +134,14 @@ public:
 	// Test/debug access.
 	const PlacementTile* findTile(uint64_t programId, TileID tile) const;
 
+	// Iteration over resident tiles of one layer (draw feed, streaming).
+	template<typename Func>
+	void forEachResidentTile(uint64_t programId, Func&& func) const {
+		for (const auto& [key, tile] : tiles_)
+			if (key.programId == programId && tile.state == TileState::Resident)
+				func(key, tile);
+	}
+
 private:
 	std::unordered_map<uint64_t, LayerBinding> layers_;
 	std::unordered_map<TileKey, PlacementTile, TileKeyHash> tiles_;
@@ -139,8 +150,18 @@ private:
 
 // Standalone (testable) tile evaluation used by generateTile and — via
 // parity tests — by the GPU kernels. Runs: candidates → sample → eval →
-// accept → optional min-distance → prototype + transform.
-std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer, TileID tile);
+// accept → optional min-distance → prototype + transform. When idsOut is
+// non-null, receives the StableIDs parallel to the returned instances
+// (post-constraint, same order).
+std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer,
+	TileID tile, std::vector<StableID>* idsOut = nullptr);
+
+// Draw-path order: sorts instances (+ids) by (prototypeId, StableID) so
+// each prototype forms one contiguous run. Fully deterministic.
+void SortInstancesForDraw(std::vector<RenderInstance>& instances, std::vector<StableID>& ids);
+
+// Cached coarse-cull bounds for a tile (call after generation/sort).
+void ComputeTileBounds(PlacementTile& tile);
 
 // Deterministic min-distance filter (CPU mirror of the GPU cell-winner
 // passes). Order-free snapshot rule, so every thread order / platform /
@@ -172,7 +193,7 @@ struct ConstraintVolume {
 	float spacing = 1.0f;
 };
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
-	const std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume);
+	std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume);
 
 // Constraint volume for a layer's tile evaluation. Grid layers get a
 // bounded volume covering the tile (+2 stagnant cells, 128m height band);

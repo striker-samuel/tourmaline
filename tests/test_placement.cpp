@@ -14,6 +14,7 @@
 #include <Engine/Placement/placement_prototype.h>
 #include <Engine/Placement/placement_cache.h>
 #include <Engine/Placement/placement_domain.h>
+#include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_eval.h>
 #include <Engine/Placement/placement_gpu.h>
 #include <Engine/Placement/placement_ir.h>
@@ -224,6 +225,7 @@ void TestMeshKernelParity();
 void TestHfKernelParity();
 void TestConBridge();
 void TestConBruteForce();
+void TestDrawFeed();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -1098,8 +1100,9 @@ void TestConBruteForce() {
 		std::vector<RenderInstance> inst;
 		for (auto& p : pos) { RenderInstance in; in.position = p; in.scale = glm::vec3(1); inst.push_back(in); }
 		std::vector<RenderInstance> instCopy = inst;
+		std::vector<StableID> idsCopy = ids; // ApplyMinDistance compacts ids in parallel
 		ApplyMinDistance(inst, ids, 2.0f, vol);
-		std::vector<uint32_t> ref = BruteForceSurvivors(pos, ids, 2.0f, vol);
+		std::vector<uint32_t> ref = BruteForceSurvivors(pos, idsCopy, 2.0f, vol);
 		bool same = inst.size() == ref.size();
 		if (same) {
 			// Both ascending-index ordered: compare positions directly.
@@ -1119,8 +1122,9 @@ void TestConBruteForce() {
 		ConstraintVolume unvol;
 		unvol.spacing = 2.0f;
 		std::vector<RenderInstance> inst2 = instCopy;
-		ApplyMinDistance(inst2, ids, 2.0f, unvol);
-		std::vector<uint32_t> ref2 = BruteForceSurvivors(pos, ids, 2.0f, unvol);
+		std::vector<StableID> ids2 = idsCopy;
+		ApplyMinDistance(inst2, ids2, 2.0f, unvol);
+		std::vector<uint32_t> ref2 = BruteForceSurvivors(pos, idsCopy, 2.0f, unvol);
 		bool same2 = inst2.size() == ref2.size();
 		if (same2) {
 			size_t ri = 0;
@@ -1142,6 +1146,106 @@ void TestConBruteForce() {
 		ApplyMinDistance(empty, emptyIds, 2.0f, vol);
 		Check(empty.empty(), "place.con.brute-empty");
 	}
+}
+
+void TestDrawFeed() {
+	using namespace smvk::placement;
+	Check(sizeof(PlacementVsPush) == 32, "place.draw.push-32B");
+	Check(offsetof(PlacementVsPush, alive) == 8, "place.draw.alive-offset");
+	Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
+	Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
+	// Matrix convention: yaw=0 -> identity rotation + translation.
+	glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
+	Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");
+	Check(std::abs(m0[0].x - 2.0f) < 1e-6f && std::abs(m0[1].y - 2.0f) < 1e-6f,
+		"place.draw.matrix-scale");
+	Check(std::abs(m0[0].z) < 1e-6f && std::abs(m0[2].x) < 1e-6f, "place.draw.matrix-yaw0");
+	// yaw=pi/2 rotates +X to -Z (right-handed RotY, matches the VS).
+	glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), 1.5707963f, glm::vec3(1));
+	Check(std::abs(m1[0].x) < 1e-5f && std::abs(m1[0].z + 1.0f) < 1e-5f,
+		"place.draw.matrix-yaw90");
+	// Round-trip through the VS formula implicitly: column-major layout.
+	Check(m1[3] == glm::vec4(0, 0, 0, 1), "place.draw.matrix-origin");
+
+	// Multi-prototype tile: sorted runs, bounds, coarse cull.
+	GridDomain grid;
+	grid.origin = glm::vec3(0, 0, 0);
+	grid.extent = glm::vec2(64, 64);
+	grid.cellsX = 16; grid.cellsZ = 16;
+	PlacementSystem sys;
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 55;
+	lb.program.graphSeed = 31337;
+	lb.program.nodeId = 1;
+	lb.program.instrs = { OpConst(0.9f) };
+	lb.program.acceptIndex = 0;
+	lb.domainKind = DomainKind::Grid;
+	lb.grid = &grid;
+	lb.config.candidatesPerTile = 1024;
+	Prototype p0; p0.weight = 1.0f;
+	Prototype p1; p1.weight = 1.0f;
+	Prototype p2; p2.weight = 1.0f;
+	lb.prototypes.add(p0); lb.prototypes.add(p1); lb.prototypes.add(p2);
+	sys.registerLayer(lb);
+	DependencyVersions deps;
+	TileID t{ 0, 0, 0 };
+	sys.generateTile(55, t, deps);
+	const PlacementTile* tile = sys.findTile(55, t);
+	Check(tile && !tile->instances.empty(), "place.draw.tile-nonempty");
+	// Sorted by (proto, StableID): protos non-decreasing.
+	bool sorted = true;
+	if (tile) {
+		for (size_t i = 1; i < tile->instances.size(); ++i)
+			if (tile->instances[i].prototypeId < tile->instances[i - 1].prototypeId)
+				{ sorted = false; break; }
+	}
+	Check(sorted, "place.draw.sorted-by-proto");
+	// Bounds enclose everything.
+	bool enclosed = true;
+	if (tile) {
+		for (auto& in : tile->instances) {
+			if (in.position.x < tile->boundsMin.x || in.position.x > tile->boundsMax.x
+				|| in.position.y < tile->boundsMin.y || in.position.y > tile->boundsMax.y
+				|| in.position.z < tile->boundsMin.z || in.position.z > tile->boundsMax.z)
+				{ enclosed = false; break; }
+		}
+	}
+	Check(enclosed, "place.draw.bounds-enclose");
+	// Collect: runs cover all instances, contiguous, proto-matching.
+	std::vector<TileDrawSet> sets;
+	CollectTileDrawSets(sys, 55, nullptr, sets);
+	Check(sets.size() == 1, "place.draw.one-set");
+	bool runsOk = false;
+	if (!sets.empty()) {
+		size_t total = 0;
+		runsOk = true;
+		for (auto& r : sets[0].runs) {
+			total += r.count;
+			for (uint32_t k = 0; k < r.count; ++k)
+				if (tile->instances[r.start + k].prototypeId != r.prototypeId)
+					runsOk = false;
+		}
+		runsOk = runsOk && total == tile->instances.size();
+		// Proto-ascending across runs.
+		for (size_t k = 1; k < sets[0].runs.size(); ++k)
+			if (sets[0].runs[k].prototypeId <= sets[0].runs[k - 1].prototypeId)
+				runsOk = false;
+	}
+	Check(runsOk, "place.draw.runs-cover");
+	// Coarse cull: rejecting test yields nothing; accepting yields the set.
+	std::vector<TileDrawSet> culled;
+	CollectTileDrawSets(sys, 55,
+		[](const glm::vec3&, float) { return false; }, culled);
+	Check(culled.empty(), "place.draw.coarse-cull-empty");
+	// aliveBDA passthrough (white-box: GPU-constrained tiles carry flag2).
+	const_cast<PlacementTile*>(tile)->aliveBDA = 0xDEAD;
+	std::vector<TileDrawSet> alive;
+	CollectTileDrawSets(sys, 55, nullptr, alive);
+	Check(!alive.empty() && alive[0].aliveBDA == 0xDEAD, "place.draw.alive-passthrough");
+	const_cast<PlacementTile*>(tile)->aliveBDA = 0;
+	// Radius sane: covers the 64m tile, not absurd.
+	Check(!alive.empty() && alive[0].radius > 30.0f && alive[0].radius < 100.0f,
+		"place.draw.radius-sane");
 }
 
 int main() {
@@ -1175,6 +1279,7 @@ int main() {
 	TestHfKernelParity();
 	TestConBridge();
 	TestConBruteForce();
+	TestDrawFeed();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }

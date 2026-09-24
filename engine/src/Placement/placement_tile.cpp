@@ -31,10 +31,16 @@ size_t PlacementSystem::generateTile(uint64_t programId, TileID tile, const Depe
 	PlacementTile& t = tiles_[key]; // creates on demand
 	t.key = key;
 	t.state = TileState::Generating;
-	t.instances = EvaluateTile(it->second, tile);
+	std::vector<StableID> ids;
+	t.instances = EvaluateTile(it->second, tile, &ids);
+	// Sort for the instanced draw path: contiguous per-prototype runs.
+	// Key (prototypeId, StableID) is fully deterministic, so regen and
+	// cross-platform order agree exactly.
+	SortInstancesForDraw(t.instances, ids);
 	t.deps = deps;
 	t.state = TileState::Resident;
 	t.lastAccess = ++tick_;
+	ComputeTileBounds(t);
 	return t.instances.size();
 }
 
@@ -114,7 +120,8 @@ const PlacementTile* PlacementSystem::findTile(uint64_t programId, TileID tile) 
 	return it != tiles_.end() ? &it->second : nullptr;
 }
 
-std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer, TileID tile) {
+std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer,
+	TileID tile, std::vector<StableID>* idsOut) {
 	std::vector<RenderInstance> accepted;
 	std::vector<StableID> acceptedIds;
 	const uint32_t n = layer.config.candidatesPerTile;
@@ -167,6 +174,7 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 	if (layer.config.minSpacing > 0.0f && accepted.size() > 1)
 		ApplyMinDistance(accepted, acceptedIds, layer.config.minSpacing,
 			ConstraintVolumeForLayer(layer));
+	if (idsOut) *idsOut = acceptedIds;
 	return accepted;
 }
 
@@ -199,7 +207,7 @@ struct CellKeyHash { size_t operator()(const CellKey& k) const {
 } // namespace
 
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
-	const std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume) {
+	std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume) {
 	if (instances.empty() || spacing <= 0.0f) return;
 	const size_t n = instances.size();
 	const bool bounded = volume.dimX > 0 && volume.dimY > 0 && volume.dimZ > 0
@@ -292,11 +300,52 @@ void ApplyMinDistance(std::vector<RenderInstance>& instances,
 	nextCand:;
 	}
 	// Compact: survivors plus out-of-volume skips, ascending index order.
+	// ids compact in parallel so they stay aligned with instances.
 	std::vector<RenderInstance> kept;
 	kept.reserve(n);
+	std::vector<StableID> keptIds;
+	keptIds.reserve(n);
 	for (size_t i = 0; i < n; ++i)
-		if (alive[i] || !inVolume[i]) kept.push_back(instances[i]);
+		if (alive[i] || !inVolume[i]) { kept.push_back(instances[i]); keptIds.push_back(ids[i]); }
 	instances.swap(kept);
+	ids.swap(keptIds);
+}
+
+void SortInstancesForDraw(std::vector<RenderInstance>& instances, std::vector<StableID>& ids) {
+	const size_t n = instances.size();
+	if (n < 2 || ids.size() != n) return;
+	std::vector<size_t> order(n);
+	for (size_t i = 0; i < n; ++i) order[i] = i;
+	auto less = [&](size_t a, size_t b) {
+		if (instances[a].prototypeId != instances[b].prototypeId)
+			return instances[a].prototypeId < instances[b].prototypeId;
+		for (int w = 0; w < 4; ++w)
+			if (ids[a].w[w] != ids[b].w[w]) return ids[a].w[w] < ids[b].w[w];
+		return false;
+	};
+	std::sort(order.begin(), order.end(), less);
+	std::vector<RenderInstance> si;
+	si.reserve(n);
+	std::vector<StableID> sj;
+	sj.reserve(n);
+	for (size_t k : order) { si.push_back(instances[k]); sj.push_back(ids[k]); }
+	instances.swap(si);
+	ids.swap(sj);
+}
+
+void ComputeTileBounds(PlacementTile& tile) {
+	if (tile.instances.empty()) {
+		tile.boundsMin = tile.boundsMax = glm::vec3(0.0f);
+		return;
+	}
+	glm::vec3 mn = tile.instances[0].position;
+	glm::vec3 mx = mn;
+	for (const RenderInstance& in : tile.instances) {
+		mn = glm::min(mn, in.position);
+		mx = glm::max(mx, in.position);
+	}
+	tile.boundsMin = mn;
+	tile.boundsMax = mx;
 }
 
 } // namespace smvk::placement
