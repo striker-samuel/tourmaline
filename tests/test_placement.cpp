@@ -19,6 +19,7 @@
 #include <Engine/Placement/placement_override.h>
 #include <Engine/Placement/placement_physics.h>
 #include <Engine/Placement/placement_tile.h>
+#include <Engine/Rendergraph/placement_pass.h>
 
 namespace {
 int g_failures = 0;
@@ -214,6 +215,8 @@ void TestExclusions();
 void TestCacheRoundTrip();
 void TestPhysicsQuery();
 void TestPromotion();
+void TestPushBridge();
+void TestKernelAlgorithmParity();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -588,6 +591,120 @@ void TestPromotion() {
 	Check(reg.promotedCount() == 0, "place.promo.clear");
 }
 
+void TestPushBridge() {
+	using namespace smvk::placement;
+	GridDomain grid;
+	grid.origin = glm::vec3(10, 2, 30);
+	grid.extent = glm::vec2(64, 64);
+	grid.cellsX = 16; grid.cellsZ = 8;
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 7;
+	lb.program.graphSeed = 0x123456789ABCull;
+	lb.program.nodeId = 3;
+	lb.program.instrs = { OpConst(0.35f) };
+	lb.program.acceptIndex = 0;
+	lb.domainKind = DomainKind::Grid;
+	lb.grid = &grid;
+	lb.config.candidatesPerTile = 2048;
+	Prototype oak; oak.weight = 3.0f;
+	Prototype pine; pine.weight = 1.0f;
+	lb.prototypes.add(oak); lb.prototypes.add(pine);
+	float d = 0.0f;
+	Check(PlacementPass::TryExtractConstDensity(lb.program, d) && d == 0.35f,
+		"place.bridge.const-density");
+	PlacementProgram multi;
+	multi.instrs = { OpConst(0.5f), OpConst(0.5f) };
+	multi.acceptIndex = 1;
+	Check(!PlacementPass::TryExtractConstDensity(multi, d), "place.bridge.multi-fallback");
+	PlacementTilePush push;
+	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, 0x1000, 0x2000, push),
+		"place.bridge.build-ok");
+	Check(push.seedLo == 0x56789ABCul && push.seedHi == 0x1234u, "place.bridge.seed-split");
+	Check(push.nodeId == 3 && push.candidateCount == 2048, "place.bridge.ids");
+	Check(push.tileX == 1 && push.tileY == 2 && push.tileZ == 3, "place.bridge.tile");
+	Check(push.gridOrigin == glm::vec3(10, 2, 30) && push.cellsX == 16 && push.cellsZ == 8,
+		"place.bridge.grid");
+	Check(push.density == 0.35f && push.noiseAmp == 0.0f, "place.bridge.density");
+	Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
+		"place.bridge.weights");
+	Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
+	// Mesh layer (no kernel yet) refuses honestly.
+	PlacementSystem::LayerBinding mlb = lb;
+	mlb.domainKind = DomainKind::MeshSurface;
+	mlb.grid = nullptr;
+	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, 0, 0, push), "place.bridge.mesh-refuses");
+	// Empty prototype table -> single default weight.
+	PlacementSystem::LayerBinding elb = lb;
+	elb.prototypes.clear();
+	Check(PlacementPass::BuildTilePush(elb, TileID{}, 0, 0, push)
+		&& push.protoCount == 1 && push.weightsA.x == 1.0f, "place.bridge.empty-proto");
+}
+
+// From-scratch reimplementation of placement_tile.cs.hlsl's documented
+// algorithm (grid path, const density, no noise). Agreement with
+// EvaluateTile() proves the KERNEL's algorithm matches the CPU oracle;
+// HLSL-vs-C++ hash bit-parity itself needs on-device readback via
+// PlacementPass::DownloadTile (exists, not runnable headless).
+void TestKernelAlgorithmParity() {
+	using namespace smvk::placement;
+	GridDomain grid;
+	grid.origin = glm::vec3(0, 0, 0);
+	grid.extent = glm::vec2(64, 64);
+	grid.cellsX = 16; grid.cellsZ = 16;
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 9;
+	lb.program.graphSeed = 777;
+	lb.program.nodeId = 2;
+	lb.program.instrs = { OpConst(0.45f) };
+	lb.program.acceptIndex = 0;
+	lb.domainKind = DomainKind::Grid;
+	lb.grid = &grid;
+	lb.config.candidatesPerTile = 1500;
+	lb.config.minScale = 0.7f; lb.config.maxScale = 1.3f;
+	Prototype a; a.weight = 2.0f;
+	Prototype b; b.weight = 1.0f;
+	Prototype c; c.weight = 1.0f;
+	lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
+
+	auto oracle = EvaluateTile(lb, TileID{ 4, 0, 5 });
+
+	// Kernel mirror (same steps as mainCS, written independently).
+	std::vector<RenderInstance> mirror;
+	const uint32_t N = lb.config.candidatesPerTile;
+	for (uint32_t i = 0; i < N; ++i) {
+		StableID id = MakeStableID(777, 2, TileID{ 4, 0, 5 }, 0, i);
+		DomainSample s = grid.sample(id, i);
+		float q = QuantizeDensity(0.45f);
+		bool keep = (q >= 1.0f) || (Random01(id, RandomChannel::Density) < q);
+		if (!keep) continue;
+		float rv = Random01(id, RandomChannel::Variant);
+		uint32_t proto = lb.prototypes.select(rv).value_or(0);
+		RenderInstance in;
+		in.position = s.p;
+		in.yaw = YawFromId(id);
+		float sc = UniformScaleFromId(id, 0.7f, 1.3f);
+		in.scale = glm::vec3(sc);
+		in.prototypeId = proto;
+		in.stableLow = id.w[0];
+		in.customB = 0;
+		mirror.push_back(in);
+	}
+	bool same = oracle.size() == mirror.size();
+	if (same) {
+		for (size_t i = 0; i < oracle.size(); ++i) {
+			if (oracle[i].position != mirror[i].position
+				|| oracle[i].yaw != mirror[i].yaw
+				|| oracle[i].scale != mirror[i].scale
+				|| oracle[i].prototypeId != mirror[i].prototypeId
+				|| oracle[i].stableLow != mirror[i].stableLow) {
+				same = false; break;
+			}
+		}
+	}
+	Check(same, "place.kernel.algorithm-parity");
+	Check(!oracle.empty(), "place.kernel.nonempty");
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -611,6 +728,8 @@ int main() {
 	TestCacheRoundTrip();
 	TestPhysicsQuery();
 	TestPromotion();
+	TestPushBridge();
+	TestKernelAlgorithmParity();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }
