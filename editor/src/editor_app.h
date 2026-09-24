@@ -56,6 +56,8 @@
 
 #include "editor_commands.h"
 
+#include "editor_placement.h"
+
 namespace editor {
 
 // Menu-bar gem mark (editor_branding.cpp): vector twin of
@@ -856,6 +858,29 @@ private:
 	// editorSet persistence (tour editorSettings; cluster-space node ids).
 	void SaveEnvToDoc(smvk::tour::Doc& doc) const;
 	void LoadEnvFromDoc(const smvk::tour::Doc& doc);
+
+	// ---- procedural placement (PlacementGraph authoring, NEVER cooked) --
+	// Clarisse-style scatter graphs: domain -> fields -> accept ->
+	// prototype/transform/spacing -> Layer. Compiles to the engine's
+	// PlacementProgram (CPU oracle + GPU runtime); the viewport shows a
+	// live CPU point preview with per-StableID trace. Persisted as
+	// place.* editorSettings in the .tour, skipped by ApplyTourToCluster
+	// like every other editorSet line.
+	void DrawPlacementGraph();   // canvas window (View menu toggle)
+	void DrawPlacementParams(placement::GraphDoc& doc, placement::PNode& n);
+	void DrawPlacementOverlay(); // viewport point preview
+	void SavePlacementToDoc(smvk::tour::Doc& doc) const;
+	void LoadPlacementFromDoc(const smvk::tour::Doc& doc);
+	void MarkPlacementDirty();
+	void RefreshPlacementPreview();
+	void PushPlacementUndo();      // snapshot placement doc (undo)
+	void DirtyPlacementOnEdit();   // MarkPlacementDirty when active item edited
+	// Extracts a world-space mesh (kept glTF primitive) for Mesh-domain
+	// nodes. False for pak scenes (no CPU geometry kept) and oversized
+	// meshes (>200k tris).
+	bool ExtractPlacementMesh(uint32_t worldNode,
+		smvk::placement::PlacementMeshData& out) const;
+	placement::EditorDoc m_placement;
 
 	// ---- source scene ----
 	// m_gltfPath is the scene identity (a //flintbase/ scheme path when

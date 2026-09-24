@@ -190,6 +190,8 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawPlayBar();
 	DrawFlintbasePanel();
 	DrawReferencesPanel(); // Maya-style reference list (View menu)
+	if (m_placement.showGraph)
+		DrawPlacementGraph();
 }
 
 void EditorApp::DrawMenuBar() {
@@ -381,6 +383,8 @@ void EditorApp::DrawMenuBar() {
 			m_showFlintbasePanel = !m_showFlintbasePanel;
 		if (ImGui::MenuItem("Reference editor", nullptr, m_showReferencesPanel))
 			m_showReferencesPanel = !m_showReferencesPanel;
+		if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
+			m_placement.showGraph = !m_placement.showGraph;
 		ImGui::Separator();
 		ImGui::MenuItem("Viewport legend", nullptr, &m_showOverlay);
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);

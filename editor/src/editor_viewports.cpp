@@ -334,6 +334,7 @@ void EditorApp::DrawViewportChrome() {
 	}
 	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
 	DrawCvolPreviewOverlay();
+	DrawPlacementOverlay();
 }
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each

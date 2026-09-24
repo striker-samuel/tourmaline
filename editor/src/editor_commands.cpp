@@ -973,6 +973,7 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	}
 	SaveOverridesToDoc(doc);
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
+	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	doc.references = m_references; // scene references (loader binds them)
 	doc.hasCook = true;
 	doc.cook.outPak = m_cook.outPak;
@@ -1239,6 +1240,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		std::to_string(doc.commands.size()) + " commands.");
 	LoadOverridesFromDoc(doc);
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
+	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
 	// References were already bound at import (LoadGltfIntoWorld runs
 	// ApplySceneReferences on this same file); mirror the list so the
 	// editor state matches the parsed doc exactly.
