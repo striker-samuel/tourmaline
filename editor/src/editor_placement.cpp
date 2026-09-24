@@ -41,13 +41,15 @@ const char* NodeKindName(NodeKind k) {
 	case NodeKind::Transform: return "Transform";
 	case NodeKind::Spacing: return "Min Distance";
 	case NodeKind::Layer: return "Layer (Output)";
+	case NodeKind::Terrain: return "Terrain";
 	default: return "?";
 	}
 }
 const char* NodeKindCategory(NodeKind k) {
 	switch (k) {
 	case NodeKind::Grid:
-	case NodeKind::Mesh: return "Domain";
+	case NodeKind::Mesh:
+	case NodeKind::Terrain: return "Domain";
 	case NodeKind::Density:
 	case NodeKind::Noise:
 	case NodeKind::Slope:
@@ -107,7 +109,8 @@ std::vector<PinDef> NodeInputs(NodeKind k) {
 std::vector<PinDef> NodeOutputs(NodeKind k) {
 	switch (k) {
 	case NodeKind::Grid:
-	case NodeKind::Mesh: return { { "domain", PinType::Domain } };
+	case NodeKind::Mesh:
+	case NodeKind::Terrain: return { { "domain", PinType::Domain } };
 	case NodeKind::Prototypes: return { { "protos", PinType::Protos } };
 	case NodeKind::Transform: return { { "xform", PinType::Xform } };
 	case NodeKind::Spacing: return { { "spacing", PinType::Spacing } };
@@ -159,6 +162,7 @@ void DefaultParams(PNode& n) {
 	case NodeKind::Transform: n.f = { 0.8f, 1.2f }; break;
 	case NodeKind::Spacing: n.f = { 0.0f }; break;
 	case NodeKind::Layer: n.f = { 4096 }; n.s = { "1234" }; break;
+	case NodeKind::Terrain: n.f = { 0, 0, 64, 64, 8, 0.02f }; n.i = { 1 }; break;
 	default: break;
 	}
 }
@@ -435,6 +439,33 @@ struct Ctx {
 };
 } // namespace
 
+HeightfieldData GenerateTerrainField(const TerrainSpec& spec) {
+	HeightfieldData hf;
+	const uint32_t res = std::clamp(spec.res, 8u, 256u);
+	const float size = std::max(spec.size, 1.0f);
+	const float height = std::max(spec.height, 0.0f);
+	const float freq = std::max(spec.freq, 1e-4f);
+	hf.width = res;
+	hf.height = res;
+	hf.origin = glm::vec3(spec.origin.x, 0.0f, spec.origin.y);
+	const float sp = size / float(res - 1);
+	hf.spacing = glm::vec2(sp, sp);
+	hf.heights.resize((size_t)res * res);
+	// Rolling hills: two value-noise octaves, deterministic in (spec.seed).
+	// Output range is [0, height].
+	for (uint32_t z = 0; z < res; ++z) {
+		for (uint32_t x = 0; x < res; ++x) {
+			const float wx = spec.origin.x + float(x) * sp;
+			const float wz = spec.origin.y + float(z) * sp;
+			const float n1 = ValueNoise2D(wx * freq, wz * freq, spec.seed);
+			const float n2 = ValueNoise2D(wx * freq * 3.7f + 11.3f,
+				wz * freq * 3.7f + 7.1f, spec.seed ^ 0x9e3779b9ULL);
+			hf.heights[(size_t)z * res + x] = height * (0.7f * n1 + 0.3f * n2);
+		}
+	}
+	return hf;
+}
+
 CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 	CompileResult r;
 	// Exactly one Layer (MVP: single-layer preview).
@@ -464,7 +495,20 @@ CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 		if (wn < 0) { r.error = "Mesh node has no scene node bound (use 'Use selected')"; return r; }
 		r.meshNode = (uint32_t)wn;
 	}
-	else { r.error = "Layer.domain must come from a Grid or Mesh node"; return r; }
+	else if (dn->kind == NodeKind::Terrain) {
+		r.domainKind = DomainKind::Heightfield;
+		const auto& F = dn->f;
+		r.terrain.origin = glm::vec2(F.size() > 0 ? F[0] : 0,
+			F.size() > 1 ? F[1] : 0);
+		r.terrain.size = F.size() > 2 ? std::max(1.0f, F[2]) : 64.0f;
+		r.terrain.res = F.size() > 3
+			? std::clamp((uint32_t)std::max(1.0f, F[3]), 8u, 256u) : 64;
+		r.terrain.height = F.size() > 4 ? std::max(0.0f, F[4]) : 8.0f;
+		r.terrain.freq = F.size() > 5 ? std::max(1e-4f, F[5]) : 0.02f;
+		r.terrain.seed = dn->i.size() > 0 && dn->i[0] >= 0
+			? (uint64_t)(uint32_t)dn->i[0] : 1;
+	}
+	else { r.error = "Layer.domain must come from a Grid, Mesh or Terrain node"; return r; }
 	// Density expression (Accept preferred, field auto-wrapped at scale 1).
 	const PLink* yl = doc.inputLink(layer.id, "density");
 	if (!yl) { r.error = "Layer.density is unlinked"; return r; }

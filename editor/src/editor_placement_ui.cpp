@@ -131,6 +131,35 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			ImGui::TextDisabled("Extracts the node's glTF primitive at compile.");
 		break;
 	}
+	case NodeKind::Terrain: {
+		if (F.size() < 6) F = { 0, 0, 64, 64, 8, 0.02f };
+		if (n.i.empty()) n.i = { 1 };
+		float o[2] = { F[0], F[1] };
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		if (ImGui::DragFloat2("Origin XZ", o, 0.5f)) { F[0] = o[0]; F[1] = o[1]; }
+		DirtyPlacementOnEdit();
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		if (ImGui::DragFloat("Size (m)", &F[2], 0.5f, 1.0f, 1024.0f)) {}
+		DirtyPlacementOnEdit();
+		float res = F[3];
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		if (ImGui::DragFloat("Resolution", &res, 1.0f, 8.0f, 256.0f, "%.0f"))
+			F[3] = std::floor(res);
+		DirtyPlacementOnEdit();
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		ImGui::DragFloat("Hill height (m)", &F[4], 0.1f, 0.0f, 128.0f);
+		DirtyPlacementOnEdit();
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		ImGui::DragFloat("Hill frequency", &F[5], 0.002f, 0.0005f, 1.0f, "%.4f");
+		DirtyPlacementOnEdit();
+		int seed = n.i[0];
+		if (ImGui::IsItemActivated()) PushPlacementUndo();
+		if (ImGui::InputInt("Noise seed", &seed)) n.i[0] = seed;
+		DirtyPlacementOnEdit();
+		ImGui::TextDisabled("Analytic hills (two value-noise octaves). "
+			"Needs no scene geometry.");
+		break;
+	}
 	case NodeKind::Density: {
 		if (F.empty()) F = { 0.5f };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
@@ -245,6 +274,8 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			MarkPlacementDirty();
 		}
 		ImGui::TextDisabled("%u rows (GPU kernel limit: 8).", (unsigned)n.s.size());
+		ImGui::TextDisabled("URIs resolve to scene meshes at runtime "
+			"(first cluster match wins); weight = pick share, radius = spacing.");
 		break;
 	}
 	case NodeKind::Transform: {
@@ -560,7 +591,12 @@ void EditorApp::DrawPlacementGraph() {
 					ImGui::TextDisabled("%s", cat);
 					lastCat = cat;
 				}
-				if (ImGui::MenuItem(NodeKindName(kind))) {
+				char addLabel[64];
+				// ## suffix: the visible name stays clean while the ID can
+				// never collide even if two kinds ever share a name.
+				std::snprintf(addLabel, sizeof(addLabel), "%s##addnode%d",
+					NodeKindName(kind), k);
+				if (ImGui::MenuItem(addLabel)) {
 					m_placement.pushUndo();
 					const uint32_t nid = doc->addNode(kind,
 						mouse.x - origin.x - m_placement.pan[0] - kNodeW * 0.5f,
@@ -637,7 +673,9 @@ void EditorApp::DrawPlacementGraph() {
 				// Re-evaluate the field program at this point: per-node values.
 				DomainSample s = (pv.domainKind == DomainKind::Grid)
 					? pv.grid.sample(pp.id, pp.candidate)
-					: SampleMeshSurface(pv.mesh, pp.id);
+					: (pv.domainKind == DomainKind::Heightfield
+						? pv.terrainDom.sample(pp.id)
+						: SampleMeshSurface(pv.mesh, pp.id));
 				std::vector<float> values = EvaluateProgram(pv.compiled.program, s);
 				if (ImGui::BeginTable("##ptracevals", 2,
 					ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -650,9 +688,13 @@ void EditorApp::DrawPlacementGraph() {
 						int enid = vi < pv.compiled.instrToNode.size()
 							? pv.compiled.instrToNode[vi] : -1;
 						const PNode* en = enid >= 0 ? doc->find((uint32_t)enid) : nullptr;
-						char nb[64];
-						std::snprintf(nb, sizeof(nb), "%s #%d",
-							en ? NodeKindName(en->kind) : "?", enid);
+						char nb[80];
+						// vi in the visible label AND the ID: one editor node
+						// can own several instructions (Accept scale-folding
+						// emits two), and identical labels would share an ID.
+						std::snprintf(nb, sizeof(nb), "v%u: %s #%d##trace%u",
+							(unsigned)vi, en ? NodeKindName(en->kind) : "?",
+							enid, (unsigned)vi);
 						if (ImGui::Selectable(nb, false,
 							ImGuiSelectableFlags_SpanAllColumns))
 							if (en) m_placement.selected = enid;
@@ -724,15 +766,25 @@ void EditorApp::DrawPlacementOverlay() {
 					ImVec2(s.x + 1.5f, s.y + 1.5f), col);
 			}
 		}
-		// Grid tile bounds (ground rect + label).
-		if (pv.domainKind == DomainKind::Grid) {
-			const GridDomain& g = pv.grid;
-			const float y = g.origin.y;
+		// Scatter-rect bounds (ground rect + label): grid tile or terrain field.
+		if (pv.domainKind == DomainKind::Grid
+			|| pv.domainKind == DomainKind::Heightfield) {
+			float x0, z0, x1, z1, y;
+			if (pv.domainKind == DomainKind::Grid) {
+				const GridDomain& g = pv.grid;
+				x0 = g.origin.x; z0 = g.origin.z;
+				x1 = g.origin.x + g.extent.x; z1 = g.origin.z + g.extent.y;
+				y = g.origin.y;
+			}
+			else {
+				const HeightfieldDomain& h = pv.terrainDom;
+				x0 = h.extentMin.x; z0 = h.extentMin.y;
+				x1 = h.extentMax.x; z1 = h.extentMax.y;
+				y = 0.5f * (pv.terrainField.sampleHeight(x0, z0)
+					+ pv.terrainField.sampleHeight(x1, z1));
+			}
 			glm::vec3 corners[4] = {
-				{ g.origin.x, y, g.origin.z },
-				{ g.origin.x + g.extent.x, y, g.origin.z },
-				{ g.origin.x + g.extent.x, y, g.origin.z + g.extent.y },
-				{ g.origin.x, y, g.origin.z + g.extent.y },
+				{ x0, y, z0 }, { x1, y, z0 }, { x1, y, z1 }, { x0, y, z1 },
 			};
 			ImVec2 s[4];
 			bool ok = true;

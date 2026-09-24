@@ -231,6 +231,66 @@ void TestRoundTrip() {
 	Check(!ParseGraph("N 3 99\n", back), "pe.rt.garbage-rejected");
 }
 
+void TestTerrain() {
+	// Swap the scaffold's Grid for a Terrain node and rewire.
+	GraphDoc doc;
+	BuildDefaultGraph(doc);
+	uint32_t gridId = 0, layerId = 0;
+	for (const auto& [id, n] : doc.nodes) {
+		if (n.kind == NodeKind::Grid) gridId = id;
+		if (n.kind == NodeKind::Layer) layerId = id;
+	}
+	Check(gridId != 0 && layerId != 0, "pe.terrain.scaffold-ids");
+	doc.removeNode(gridId);
+	const uint32_t terr = doc.addNode(NodeKind::Terrain, 20, 120);
+	Check(doc.addLink(terr, "domain", layerId, "domain") != 0,
+		"pe.terrain.rewire");
+	CompileResult cr = CompileGraph(doc, 11);
+	Check(cr.ok, "pe.terrain.compiles");
+	if (!cr.ok) std::cout << "  err: " << cr.error << "\n";
+	Check(cr.domainKind == DomainKind::Heightfield, "pe.terrain.kind");
+	Check(cr.terrain.res == 64, "pe.terrain.default-res");
+	Check(cr.terrain.size == 64.0f, "pe.terrain.default-size");
+	// Field generation: dims, range, determinism.
+	HeightfieldData a = GenerateTerrainField(cr.terrain);
+	HeightfieldData b = GenerateTerrainField(cr.terrain);
+	Check(a.valid(), "pe.terrain.valid");
+	Check(a.width == 64 && a.height == 64, "pe.terrain.dims");
+	bool inRange = true, varies = false;
+	for (size_t k = 0; k < a.heights.size(); ++k) {
+		if (a.heights[k] != b.heights[k]) { inRange = false; break; }
+		if (a.heights[k] < 0.0f || a.heights[k] > cr.terrain.height) inRange = false;
+		if (k > 0 && a.heights[k] != a.heights[0]) varies = true;
+	}
+	Check(inRange, "pe.terrain.range-deterministic");
+	Check(varies, "pe.terrain.hills-vary");
+	// Res clamp: tiny -> 8, huge -> 256.
+	TerrainSpec lo = cr.terrain;
+	lo.res = 2;
+	Check(GenerateTerrainField(lo).width == 8, "pe.terrain.clamp-lo");
+	TerrainSpec hi = cr.terrain;
+	hi.res = 1000;
+	Check(GenerateTerrainField(hi).width == 256, "pe.terrain.clamp-hi");
+	// Domain sampling lands on the field.
+	HeightfieldDomain dom;
+	dom.field = &a;
+	dom.extentMin = glm::vec2(0, 0);
+	dom.extentMax = glm::vec2(64, 64);
+	StableID id = MakeStableID(1, 0, TileID{}, 0, 0);
+	DomainSample s = dom.sample(id);
+	Check(std::abs(s.p.y - a.sampleHeight(s.p.x, s.p.z)) < 1e-5f,
+		"pe.terrain.sample-on-field");
+	// Round-trip preserves the Terrain node (kind 20 + seed int).
+	const std::string text = SerializeGraph(doc);
+	GraphDoc back;
+	Check(ParseGraph(text, back), "pe.terrain.roundtrip-parses");
+	const PNode* tn = back.find(terr);
+	Check(tn && tn->kind == NodeKind::Terrain, "pe.terrain.roundtrip-kind");
+	CompileResult cr2 = CompileGraph(back, 11);
+	Check(cr2.ok && cr2.domainKind == DomainKind::Heightfield,
+		"pe.terrain.roundtrip-compiles");
+}
+
 void TestUndo() {
 	EditorDoc ed;
 	const uint64_t gid = ed.addGraph("Undo");
@@ -277,6 +337,7 @@ int main() {
 	TestCycle();
 	TestErrors();
 	TestRoundTrip();
+	TestTerrain();
 	TestUndo();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;

@@ -313,12 +313,22 @@ void EditorApp::DrawAddReferenceDialog() {
 		if (AddSceneReference(m_refSourceBuf, m_refNameBuf)) {
 			m_refSourceBuf[0] = '\0';
 			m_refNameBuf[0] = '\0';
+			m_refAddFailed = false;
+			ImGui::CloseCurrentPopup();
 		}
-		ImGui::CloseCurrentPopup();
+		else {
+			// Stay open: AddSceneReference logs the reason to the
+			// Console, and the inline hint below points there. (This
+			// used to close silently, looking like a dead button.)
+			m_refAddFailed = true;
+		}
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Cancel"))
 		ImGui::CloseCurrentPopup();
+	if (m_refAddFailed)
+		ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1),
+			"Could not add — see Console for why (bad path? pak scene?).");
 	ImGui::EndPopup();
 }
 

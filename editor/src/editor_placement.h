@@ -83,7 +83,9 @@ enum class NodeKind : int {
 	Spacing = 18,   // min-distance. f: minSpacing (0 = off)
 	Layer = 19,     // output sink. in domain,density,protos,xform,spacing.
 	                // f: candidates. s: seedU64.
-	Count = 20,
+	Terrain = 20,   // domain: analytic heightfield. f: ox,oz,size,res,height,freq. i: seed32
+	                // (appended after Layer: kind ints are serialized)
+	Count = 21,
 };
 
 const char* NodeKindName(NodeKind k);
@@ -151,6 +153,19 @@ std::string SerializeGraph(const GraphDoc& doc); // multi-line (undo snapshots)
 bool ParseGraph(const std::string& text, GraphDoc& out);
 
 // ---- compiler ------------------------------------------------------------
+// Analytic terrain specification (Terrain node): generates a HeightfieldData
+// at preview/cook time via GenerateTerrainField. Plain data: safe to copy.
+struct TerrainSpec {
+	glm::vec2 origin{ 0.0f, 0.0f }; // world XZ of texel (0,0)
+	float size = 64.0f;             // square extent in meters
+	uint32_t res = 64;              // samples per side (8..256)
+	float height = 8.0f;            // max hill height in meters
+	float freq = 0.02f;             // noise frequency (1/m)
+	uint64_t seed = 1;              // noise seed (32-bit from the node)
+};
+// Builds the heightfield described by spec. Deterministic: same spec ->
+// identical samples (engine ValueNoise2D lattice hash).
+smvk::placement::HeightfieldData GenerateTerrainField(const TerrainSpec& spec);
 struct CompileResult {
 	bool ok = false;
 	std::string error;   // first error (UI shows it)
@@ -161,6 +176,7 @@ struct CompileResult {
 	smvk::placement::PrototypeTable prototypes;
 	smvk::placement::GridDomain grid; // valid when domainKind == Grid
 	uint32_t meshNode = UINT32_MAX;   // valid when domainKind == MeshSurface
+	TerrainSpec terrain;              // valid when domainKind == Heightfield
 	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
 	uint64_t seed = 0;
 	bool gpuOk = true;      // MVP: always true; framework for BAKE_ONLY
@@ -185,6 +201,8 @@ struct PreviewCache {
 	uint64_t layerKey = 0;
 	smvk::placement::GridDomain grid;   // bound domain (for trace re-eval)
 	smvk::placement::PlacementMeshData mesh;
+	smvk::placement::HeightfieldData terrainField; // generated analytic terrain
+	smvk::placement::HeightfieldDomain terrainDom; // points at terrainField
 	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
 	std::vector<PreviewPoint> accepted; // sorted (system order)
 	std::vector<PreviewPoint> rejected; // capped sample

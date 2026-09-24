@@ -409,6 +409,7 @@ void EditorApp::DrawMenuBar() {
 	if (m_showRefDialog) {
 		ImGui::OpenPopup("Add scene reference");
 		m_showRefDialog = false;
+		m_refAddFailed = false;
 	}
 	DrawAddReferenceDialog();
 	if (m_showSaveDialog) {

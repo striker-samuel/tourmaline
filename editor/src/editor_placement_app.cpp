@@ -160,9 +160,21 @@ void EditorApp::RefreshPlacementPreview() {
 	lb.domainKind = cr.domainKind;
 	GridDomain gridStorage;
 	PlacementMeshData meshStorage;
+	HeightfieldData terrainStorage;
+	HeightfieldDomain terrainDom;
 	if (cr.domainKind == DomainKind::Grid) {
 		gridStorage = cr.grid;
 		lb.grid = &gridStorage;
+	}
+	else if (cr.domainKind == DomainKind::Heightfield) {
+		terrainStorage = GenerateTerrainField(cr.terrain);
+		terrainDom.field = &terrainStorage;
+		terrainDom.extentMin = cr.terrain.origin;
+		terrainDom.extentMax = cr.terrain.origin + glm::vec2(cr.terrain.size);
+		lb.heightfield = &terrainDom;
+		pv.terrainField = terrainStorage;
+		pv.terrainDom = terrainDom;
+		pv.terrainDom.field = &pv.terrainField; // re-point at the cache copy
 	}
 	else {
 		if (!ExtractPlacementMesh(cr.meshNode, meshStorage)) {
@@ -196,7 +208,9 @@ void EditorApp::RefreshPlacementPreview() {
 			TileID{ 0, 0, 0 }, 0, i);
 		DomainSample s = (cr.domainKind == DomainKind::Grid)
 			? gridStorage.sample(id, i)
-			: SampleMeshSurface(meshStorage, id);
+			: (cr.domainKind == DomainKind::Heightfield
+				? terrainDom.sample(id)
+				: SampleMeshSurface(meshStorage, id));
 		std::vector<float> values = EvaluateProgram(cr.program, s);
 		if (!AcceptCandidate(values[cr.program.acceptIndex], id, cr.config.densityScale)) {
 			pv.rejected.push_back(PreviewPoint{ s.p, 0, i, id });
@@ -224,6 +238,8 @@ void EditorApp::RefreshPlacementPreview() {
 	}
 	if (pv.meshTris > 0)
 		pv.stats += "  [mesh: " + std::to_string(pv.meshTris) + " tris]";
+	if (cr.domainKind == DomainKind::Heightfield)
+		pv.stats += "  [terrain: " + std::to_string(cr.terrain.res) + "^2]";
 	for (const auto& [proto, cnt] : perProto)
 		pv.stats += "  p" + std::to_string(proto) + ":" + std::to_string(cnt);
 	pv.ok = true;

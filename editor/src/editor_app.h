@@ -1157,6 +1157,7 @@ private:
 	bool m_showRefDialog = false;
 	char m_refSourceBuf[512] = "";
 	char m_refNameBuf[128] = "";
+	bool m_refAddFailed = false; // last Add attempt failed (details in Console)
 };
 
 // Native Windows open dialog (editor_native_dialog.cpp): single entry
