@@ -161,6 +161,11 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 // Candidates outside `volume` (mesh triangles may overshoot their tile)
 // skip the constraint entirely: they neither kill nor die. The GPU uses
 // the same skip, so volume choice is part of the parity contract.
+//
+// NOTE on cell boundaries: positions within 1 ulp of an integer cell
+// boundary may round to different cells on CPU (double floor) vs GPU
+// (float floor). Measure-zero input, visual determinism still holds,
+// strong determinism holds everywhere else.
 struct ConstraintVolume {
 	glm::vec3 origin{ 0.0f };
 	uint32_t dimX = 0, dimY = 0, dimZ = 0; // cells per axis; 0 = unbounded
@@ -168,5 +173,11 @@ struct ConstraintVolume {
 };
 void ApplyMinDistance(std::vector<RenderInstance>& instances,
 	const std::vector<StableID>& ids, float spacing, const ConstraintVolume& volume);
+
+// Constraint volume for a layer's tile evaluation. Grid layers get a
+// bounded volume covering the tile (+2 stagnant cells, 128m height band);
+// everything else is unbounded (CPU exact-map path; GPU falls back to
+// CPU constraint — see PlacementConstraint::VolumeFitsGpu).
+ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& layer);
 
 } // namespace smvk::placement

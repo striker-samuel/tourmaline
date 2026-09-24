@@ -550,4 +550,241 @@ struct PlacementScatterPrograms {
 	}
 };
 
+// ---- GPU min-distance constraint --------------------------------------
+// Scratch + programs + pass shells for the build/elect/kill trio. One
+// shared scratch set (tile-gen dispatches are sequential per queue).
+// Consume contract: instances + flag2[].y (alive) masks; compaction to a
+// dense list happens at consume time (readback filter or cull kernel).
+struct PlacementConstraint {
+	uint32_t maxInstances = kPlacementConMaxInstances;
+	uint32_t maxCells = kPlacementConMaxCells;
+
+	Holder<BufferHandle> headBuffer, nextBuffer, flag2Buffer, paramsBuffer;
+	LogicalBufferHandle headLogical{}, nextLogical{}, flag2Logical{}, paramsLogical{};
+
+	Holder<ShaderModuleHandle> buildModule, electModule, killModule;
+	ShaderProgram buildProgram{}, electProgram{}, killProgram{};
+
+	[[nodiscard]] bool Valid() const {
+		return !headBuffer.empty() && !nextBuffer.empty() && !flag2Buffer.empty()
+			&& !paramsBuffer.empty() && !headLogical.empty() && !nextLogical.empty()
+			&& !flag2Logical.empty() && !paramsLogical.empty();
+	}
+	[[nodiscard]] bool ShadersValid() const {
+		return buildProgram.shaderCount != 0 && electProgram.shaderCount != 0
+			&& killProgram.shaderCount != 0 && !buildModule.empty()
+			&& !electModule.empty() && !killModule.empty();
+	}
+
+	bool EnsureShaders(ResourceManager& ctx,
+		const char* buildCsPath = kPlacementConBuildCsPath,
+		const char* electCsPath = kPlacementConElectCsPath,
+		const char* killCsPath = kPlacementConKillCsPath) {
+		if (ShadersValid()) return true;
+		try {
+			if (buildModule.empty())
+				buildModule = ctx.CreateShaderModule(
+					readFile(buildCsPath ? buildCsPath : kPlacementConBuildCsPath),
+					"placementConBuildCS");
+			if (electModule.empty())
+				electModule = ctx.CreateShaderModule(
+					readFile(electCsPath ? electCsPath : kPlacementConElectCsPath),
+					"placementConElectCS");
+			if (killModule.empty())
+				killModule = ctx.CreateShaderModule(
+					readFile(killCsPath ? killCsPath : kPlacementConKillCsPath),
+					"placementConKillCS");
+		} catch (...) {
+			return false;
+		}
+		if (buildModule.empty() || electModule.empty() || killModule.empty()) return false;
+		Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		buildProgram = { .shaders = { b }, .shaderCount = 1 };
+		Shader e{ .module = electModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		electProgram = { .shaders = { e }, .shaderCount = 1 };
+		Shader k{ .module = killModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		killProgram = { .shaders = { k }, .shaderCount = 1 };
+		return true;
+	}
+
+	bool Create(ResourceManager& ctx, RenderGraph& rg,
+		uint32_t maxInst = kPlacementConMaxInstances,
+		uint32_t cells = kPlacementConMaxCells) {
+		if (maxInst == 0 || cells == 0) return false;
+		Destroy(rg);
+		Holder<BufferHandle> head = ctx.CreateBuffer(sizeof(uint32_t) * cells,
+			BufferType_Storage, "placement con head");
+		Holder<BufferHandle> next = ctx.CreateBuffer(sizeof(uint32_t) * maxInst,
+			BufferType_Storage, "placement con next");
+		Holder<BufferHandle> flag2 = ctx.CreateBuffer(sizeof(uint32_t) * 2 * maxInst,
+			BufferType_Storage, "placement con flags");
+		Holder<BufferHandle> prm = ctx.CreateBuffer(sizeof(PlacementConParams),
+			BufferType_Storage, "placement con params");
+		if (head.empty() || next.empty() || flag2.empty() || prm.empty()) return false;
+		LogicalBufferHandle headL = rg.AddExternalBuffer(head, "placement con head");
+		LogicalBufferHandle nextL = rg.AddExternalBuffer(next, "placement con next");
+		LogicalBufferHandle flag2L = rg.AddExternalBuffer(flag2, "placement con flags");
+		LogicalBufferHandle prmL = rg.AddExternalBuffer(prm, "placement con params");
+		if (headL.empty() || nextL.empty() || flag2L.empty() || prmL.empty()) {
+			rg.FreeBuffer(headL); rg.FreeBuffer(nextL);
+			rg.FreeBuffer(flag2L); rg.FreeBuffer(prmL);
+			return false;
+		}
+		maxInstances = maxInst;
+		maxCells = cells;
+		headBuffer = std::move(head);
+		nextBuffer = std::move(next);
+		flag2Buffer = std::move(flag2);
+		paramsBuffer = std::move(prm);
+		headLogical = headL; nextLogical = nextL;
+		flag2Logical = flag2L; paramsLogical = prmL;
+		Clear(ctx);
+		return EnsureShaders(ctx);
+	}
+
+	void Destroy(RenderGraph& rg) {
+		for (LogicalBufferHandle l : { headLogical, nextLogical, flag2Logical, paramsLogical })
+			if (!l.empty()) rg.FreeBuffer(l);
+		headLogical = {}; nextLogical = {}; flag2Logical = {}; paramsLogical = {};
+		headBuffer = {}; nextBuffer = {}; flag2Buffer = {}; paramsBuffer = {};
+		buildProgram = {}; electProgram = {}; killProgram = {};
+		buildModule = {}; electModule = {}; killModule = {};
+	}
+
+	// Primes scratch: head=EMPTY, next=0, flag2=0 (~2MB uploads; tile-gen
+	// cadence only, never per-frame).
+	void Clear(ResourceManager& ctx) const {
+		assert(Valid());
+		std::vector<uint32_t> empty(maxCells, 0xFFFFFFFFu);
+		ctx.UploadDataToBuffer(headBuffer, empty.data(), sizeof(uint32_t) * maxCells,
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		std::vector<uint32_t> zeros(maxInstances * 2, 0);
+		ctx.UploadDataToBuffer(nextBuffer, zeros.data(), sizeof(uint32_t) * maxInstances,
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		ctx.UploadDataToBuffer(flag2Buffer, zeros.data(), sizeof(uint32_t) * maxInstances * 2,
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+	}
+
+	void UploadParams(ResourceManager& ctx, const PlacementConParams& p) const {
+		assert(Valid());
+		ctx.UploadDataToBuffer(paramsBuffer, &p, sizeof(p),
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+	}
+
+	uint64_t HeadAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(headBuffer);
+	}
+	uint64_t NextAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(nextBuffer);
+	}
+	uint64_t Flag2Address(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(flag2Buffer);
+	}
+	uint64_t ParamsAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(paramsBuffer);
+	}
+
+	// Pass shells. Barrier edges (rendergraph-emitted):
+	//   build: instances+countBuf+params read; head/next RW.
+	//   elect: instances+head+next+countBuf+params read; flag2 RW.
+	//   kill:  instances+head+next+flag2+countBuf+params read... flag2 is
+	//          read (.x snapshot) AND written (.y) -> RW hint. The .x
+	//          snapshot is stable because elect completed (pass edge) and
+	//          kill never writes .x.
+	static RenderPass& AddBuildPass(RenderGraph& rg, const PlacementConstraint& con,
+		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+		const char* name = "PlacementConBuild") {
+		RenderPass& rp = rg.AddComputePass(name);
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(instancesLogical, read);
+		rp.AddBufferHint(countLogical, read);
+		rp.AddBufferHint(con.paramsLogical, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(con.headLogical, rw);
+		rp.AddBufferHint(con.nextLogical, rw);
+		return rp;
+	}
+	static RenderPass& AddElectPass(RenderGraph& rg, const PlacementConstraint& con,
+		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+		const char* name = "PlacementConElect") {
+		RenderPass& rp = rg.AddComputePass(name);
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(instancesLogical, read);
+		rp.AddBufferHint(countLogical, read);
+		rp.AddBufferHint(con.paramsLogical, read);
+		rp.AddBufferHint(con.headLogical, read);
+		rp.AddBufferHint(con.nextLogical, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(con.flag2Logical, rw);
+		return rp;
+	}
+	static RenderPass& AddKillPass(RenderGraph& rg, const PlacementConstraint& con,
+		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+		const char* name = "PlacementConKill") {
+		RenderPass& rp = rg.AddComputePass(name);
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(instancesLogical, read);
+		rp.AddBufferHint(countLogical, read);
+		rp.AddBufferHint(con.paramsLogical, read);
+		rp.AddBufferHint(con.headLogical, read);
+		rp.AddBufferHint(con.nextLogical, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(con.flag2Logical, rw);
+		return rp;
+	}
+
+	static void PushAndDispatchCon(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementConPush& push, uint32_t count) {
+		if (count == 0) return;
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch((count + 63) / 64, 1, 1);
+	}
+
+	// GPU eligibility: bounded grid-layer volumes with dims fitting the
+	// scratch grid. Anything else (mesh overshoot, tiny spacings) falls
+	// back to the CPU constraint — same result class, caller decides.
+	static bool VolumeFitsGpu(const ConstraintVolume& vol) {
+		return vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f
+			&& vol.dimX <= 64 && vol.dimY <= 64 && vol.dimZ <= 64
+			&& (uint64_t)vol.dimX * vol.dimY * vol.dimZ <= kPlacementConMaxCells;
+	}
+	// Pure-CPU con params fill (headless-testable).
+	static bool FillConParams(const PlacementSystem::LayerBinding& layer,
+		const ConstraintVolume& vol, PlacementConParams& out) {
+		if (!VolumeFitsGpu(vol)) return false;
+		out = PlacementConParams{};
+		out.origin = vol.origin;
+		out.spacing = vol.spacing;
+		out.dimX = vol.dimX; out.dimY = vol.dimY; out.dimZ = vol.dimZ;
+		out.seedLo = (uint32_t)(layer.program.graphSeed & 0xFFFFFFFFull);
+		out.seedHi = (uint32_t)(layer.program.graphSeed >> 32);
+		out.nodeId = layer.program.nodeId;
+		return true;
+	}
+	static bool BuildConPush(uint64_t instancesBDA, uint64_t headBDA, uint64_t nextBDA,
+		uint64_t flag2BDA, uint64_t paramsBDA, uint64_t countBDA, PlacementConPush& out) {
+		out = PlacementConPush{};
+		out.instances = instancesBDA;
+		out.head = headBDA;
+		out.next = nextBDA;
+		out.flag2 = flag2BDA;
+		out.params = paramsBDA;
+		out.countBuf = countBDA;
+		return true;
+	}
+};
+
 } // namespace smvk::placement

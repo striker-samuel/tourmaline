@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <vector>
 
@@ -221,6 +222,8 @@ void TestKernelAlgorithmParity();
 void TestScatterParams();
 void TestMeshKernelParity();
 void TestHfKernelParity();
+void TestConBridge();
+void TestConBruteForce();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -951,6 +954,196 @@ void TestHfKernelParity() {
 	Check(!oracle.empty(), "place.hfkernel.nonempty");
 }
 
+void TestConBridge() {
+	using namespace smvk::placement;
+	Check(sizeof(PlacementConParams) == 64, "place.con.params-64B");
+	Check(sizeof(PlacementConPush) == 64, "place.con.push-64B");
+	Check(offsetof(PlacementConPush, flag2) == 24, "place.con.flag2-offset");
+	Check(offsetof(PlacementConPush, countBuf) == 40, "place.con.count-offset");
+	Check(kPlacementConMaxCells == 262144, "place.con.max-cells");
+	// Volume eligibility.
+	ConstraintVolume ok;
+	ok.origin = glm::vec3(0, -64, 0);
+	ok.dimX = 18; ok.dimY = 34; ok.dimZ = 18;
+	ok.spacing = 4.0f;
+	Check(PlacementConstraint::VolumeFitsGpu(ok), "place.con.fits");
+	ConstraintVolume unbounded; // zero dims
+	unbounded.spacing = 4.0f;
+	Check(!PlacementConstraint::VolumeFitsGpu(unbounded), "place.con.unbounded-refuses");
+	ConstraintVolume huge = ok;
+	huge.dimX = 65;
+	Check(!PlacementConstraint::VolumeFitsGpu(huge), "place.con.dim-refuses");
+	ConstraintVolume cells = ok;
+	cells.dimX = 64; cells.dimY = 64; cells.dimZ = 64; // 262144 cells exactly
+	Check(PlacementConstraint::VolumeFitsGpu(cells), "place.con.max-exact-fits");
+	cells.dimZ = 65; // 266240 > max
+	Check(!PlacementConstraint::VolumeFitsGpu(cells), "place.con.cellcount-refuses");
+	// Params fill + push build.
+	PlacementSystem::LayerBinding lb;
+	lb.program.graphSeed = 0xFEDCBA9876543210ull;
+	lb.program.nodeId = 9;
+	PlacementConParams prm;
+	Check(PlacementConstraint::FillConParams(lb, ok, prm), "place.con.fill-ok");
+	Check(prm.seedLo == 0x76543210ul && prm.seedHi == 0xFEDCBA98ul, "place.con.fill-seed");
+	Check(prm.nodeId == 9 && prm.spacing == 4.0f, "place.con.fill-ids");
+	Check(prm.dimX == 18 && prm.dimY == 34 && prm.dimZ == 18, "place.con.fill-dims");
+	Check(prm.tileX == 0 && prm.tileY == 0 && prm.tileZ == 0, "place.con.fill-tile-zero");
+	Check(!PlacementConstraint::FillConParams(lb, unbounded, prm), "place.con.fill-refuses");
+	PlacementConPush push;
+	Check(PlacementConstraint::BuildConPush(1, 2, 3, 4, 5, 6, push), "place.con.push-ok");
+	Check(push.instances == 1 && push.head == 2 && push.next == 3 && push.flag2 == 4
+		&& push.params == 5 && push.countBuf == 6, "place.con.push-bda");
+	// Layer volume helper: grid bounded, mesh unbounded.
+	GridDomain grid;
+	grid.origin = glm::vec3(0, 0, 0);
+	grid.extent = glm::vec2(64, 64);
+	PlacementSystem::LayerBinding glb;
+	glb.domainKind = DomainKind::Grid;
+	glb.grid = &grid;
+	glb.config.minSpacing = 4.0f;
+	ConstraintVolume gv = ConstraintVolumeForLayer(glb);
+	Check(gv.dimX == 18 && gv.dimZ == 18 && gv.spacing == 4.0f, "place.con.layer-grid-vol");
+	Check(PlacementConstraint::VolumeFitsGpu(gv), "place.con.layer-grid-fits");
+	PlacementMeshData mesh;
+	PlacementSystem::LayerBinding mlb;
+	mlb.domainKind = DomainKind::MeshSurface;
+	mlb.mesh = &mesh;
+	mlb.config.minSpacing = 4.0f;
+	ConstraintVolume mv = ConstraintVolumeForLayer(mlb);
+	Check(mv.dimX == 0 && mv.spacing == 4.0f, "place.con.layer-mesh-unbounded");
+}
+
+namespace {
+// Independent O(n^2) reference for the snapshot rule: no grids, no maps,
+// no shared code with ApplyMinDistance. Bounded volumes use an explicit
+// linear key; unbounded uses raw cell coords.
+std::vector<uint32_t> BruteForceSurvivors(const std::vector<glm::vec3>& pos,
+	const std::vector<smvk::placement::StableID>& ids, float spacing,
+	const smvk::placement::ConstraintVolume& vol) {
+	using namespace smvk::placement;
+	const size_t n = pos.size();
+	const bool bounded = vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f;
+	const float cs = bounded ? vol.spacing : spacing;
+	struct Cell { int64_t x, y, z; };
+	std::vector<Cell> cells(n);
+	std::vector<uint8_t> inVol(n, 1);
+	for (size_t i = 0; i < n; ++i) {
+		if (bounded) {
+			int64_t ix = (int64_t)std::floor((pos[i].x - vol.origin.x) / vol.spacing);
+			int64_t iy = (int64_t)std::floor((pos[i].y - vol.origin.y) / vol.spacing);
+			int64_t iz = (int64_t)std::floor((pos[i].z - vol.origin.z) / vol.spacing);
+			cells[i] = { ix, iy, iz };
+			if (ix < 0 || iy < 0 || iz < 0 || ix >= vol.dimX || iy >= vol.dimY || iz >= vol.dimZ)
+				inVol[i] = 0;
+		} else {
+			cells[i] = { (int64_t)std::floor(pos[i].x / cs),
+				(int64_t)std::floor(pos[i].y / cs),
+				(int64_t)std::floor(pos[i].z / cs) };
+		}
+	}
+	auto beats = [&](size_t a, size_t b) { // true when b beats a
+		uint64_t pa = PriorityOf(ids[a]), pb = PriorityOf(ids[b]);
+		return pb > pa || (pb == pa && b < a);
+	};
+	std::vector<uint8_t> winner(n, 0);
+	for (size_t i = 0; i < n; ++i) {
+		if (!inVol[i]) continue;
+		bool win = true;
+		for (size_t j = 0; j < n; ++j) {
+			if (j == i || !inVol[j]) continue;
+			if (cells[j].x == cells[i].x && cells[j].y == cells[i].y && cells[j].z == cells[i].z
+				&& beats(i, j)) { win = false; break; }
+		}
+		winner[i] = win ? 1 : 0;
+	}
+	std::vector<uint8_t> alive(n, 0);
+	const float minD2 = spacing * spacing;
+	for (size_t i = 0; i < n; ++i) {
+		if (!winner[i]) continue;
+		bool live = true;
+		for (size_t j = 0; j < n; ++j) {
+			if (j == i || !winner[j]) continue;
+			glm::vec3 d = pos[i] - pos[j];
+			if (glm::dot(d, d) < minD2 && beats(i, j)) { live = false; break; }
+		}
+		alive[i] = live ? 1 : 0;
+	}
+	std::vector<uint32_t> out;
+	for (size_t i = 0; i < n; ++i)
+		if (alive[i] || !inVol[i]) out.push_back((uint32_t)i);
+	return out;
+}
+}
+
+void TestConBruteForce() {
+	using namespace smvk::placement;
+	// Seeded pseudo-random point sets (SplitMix32 chain — hermetic, no <random>).
+	for (uint32_t trial = 0; trial < 6; ++trial) {
+		uint32_t s = 0xC0FFEEu + trial * 0x9e3779b9u;
+		auto rnd = [&]() { s = SplitMix32(s + 0x85ebca6bu); return (s >> 8) * (1.0f / 16777216.0f); };
+		const size_t N = 120 + trial * 40;
+		std::vector<glm::vec3> pos;
+		std::vector<StableID> ids;
+		for (size_t i = 0; i < N; ++i) {
+			float x = rnd() * 40.0f, z = rnd() * 40.0f;
+			if (trial % 2 == 1 && i % 7 == 0) { x += 500.0f; z += 500.0f; } // outsiders
+			pos.push_back(glm::vec3(x, 0.0f, z));
+			ids.push_back(MakeStableID(1000 + trial, 3, TileID{ 0, 0, 0 }, 0, (uint32_t)i));
+		}
+		// Bounded.
+		ConstraintVolume vol;
+		vol.origin = glm::vec3(0, -64, 0);
+		vol.dimX = 22; vol.dimY = 66; vol.dimZ = 22;
+		vol.spacing = 2.0f;
+		std::vector<RenderInstance> inst;
+		for (auto& p : pos) { RenderInstance in; in.position = p; in.scale = glm::vec3(1); inst.push_back(in); }
+		std::vector<RenderInstance> instCopy = inst;
+		ApplyMinDistance(inst, ids, 2.0f, vol);
+		std::vector<uint32_t> ref = BruteForceSurvivors(pos, ids, 2.0f, vol);
+		bool same = inst.size() == ref.size();
+		if (same) {
+			// Both ascending-index ordered: compare positions directly.
+			size_t ri = 0;
+			for (size_t i = 0; i < pos.size() && same; ++i) {
+				bool kept = (ri < ref.size() && ref[ri] == i);
+				if (kept) {
+					if (inst[ri].position != pos[i]) same = false;
+					++ri;
+				}
+			}
+		}
+		char name[64];
+		snprintf(name, sizeof(name), "place.con.brute-bounded-%u", trial);
+		Check(same, name);
+		// Unbounded.
+		ConstraintVolume unvol;
+		unvol.spacing = 2.0f;
+		std::vector<RenderInstance> inst2 = instCopy;
+		ApplyMinDistance(inst2, ids, 2.0f, unvol);
+		std::vector<uint32_t> ref2 = BruteForceSurvivors(pos, ids, 2.0f, unvol);
+		bool same2 = inst2.size() == ref2.size();
+		if (same2) {
+			size_t ri = 0;
+			for (size_t i = 0; i < pos.size() && same2; ++i) {
+				if (ri < ref2.size() && ref2[ri] == i) {
+					if (inst2[ri].position != pos[i]) same2 = false;
+					++ri;
+				}
+			}
+		}
+		snprintf(name, sizeof(name), "place.con.brute-unbounded-%u", trial);
+		Check(same2, name);
+	}
+	// Degenerate inputs.
+	{
+		std::vector<RenderInstance> empty;
+		std::vector<StableID> emptyIds;
+		ConstraintVolume vol;
+		ApplyMinDistance(empty, emptyIds, 2.0f, vol);
+		Check(empty.empty(), "place.con.brute-empty");
+	}
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -980,6 +1173,8 @@ int main() {
 	TestScatterParams();
 	TestMeshKernelParity();
 	TestHfKernelParity();
+	TestConBridge();
+	TestConBruteForce();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }

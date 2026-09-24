@@ -61,6 +61,37 @@ inline uint32_t PlacementDispatchGroups(uint32_t candidateCount) {
 inline constexpr const char* kPlacementTileCsPath = "content/shaders/placement_tile.cs.hlsl.spv";
 inline constexpr const char* kPlacementMeshTileCsPath = "content/shaders/placement_mesh_tile.cs.hlsl.spv";
 inline constexpr const char* kPlacementHfTileCsPath = "content/shaders/placement_hf_tile.cs.hlsl.spv";
+inline constexpr const char* kPlacementConBuildCsPath = "content/shaders/placement_con_build.cs.hlsl.spv";
+inline constexpr const char* kPlacementConElectCsPath = "content/shaders/placement_con_elect.cs.hlsl.spv";
+inline constexpr const char* kPlacementConKillCsPath = "content/shaders/placement_con_kill.cs.hlsl.spv";
+
+inline constexpr uint32_t kPlacementConMaxInstances = 65536;
+inline constexpr uint32_t kPlacementConMaxCells = 262144; // 64^3
+
+// Must match placement_constraint.hlsli PlacementConParams (64 bytes).
+struct PlacementConParams {
+	glm::vec3 origin{ 0.0f };
+	float spacing = 1.0f;
+	uint32_t dimX = 0, dimY = 0, dimZ = 0;
+	uint32_t pad0 = 0;
+	uint32_t seedLo = 0, seedHi = 0, nodeId = 0;
+	uint32_t pad1 = 0;
+	int32_t tileX = 0, tileY = 0, tileZ = 0;
+	uint32_t pad2 = 0;
+};
+static_assert(sizeof(PlacementConParams) == 64, "PlacementConParams moved — update placement_constraint.hlsli");
+
+// Must match the constraint kernels' push (64 bytes).
+struct PlacementConPush {
+	uint64_t instances = 0;
+	uint64_t head = 0;
+	uint64_t next = 0;
+	uint64_t flag2 = 0;
+	uint64_t params = 0;
+	uint64_t countBuf = 0;
+	uint32_t pad[4] = {};
+};
+static_assert(sizeof(PlacementConPush) == 64, "PlacementConPush moved — update constraint kernels");
 
 // ---- Mesh / heightfield scatter path ----------------------------------
 // The grid kernel carries everything inline in its 144B push (engine

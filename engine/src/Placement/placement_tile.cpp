@@ -164,22 +164,26 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 		acceptedIds.push_back(id);
 	}
 
-	if (layer.config.minSpacing > 0.0f && accepted.size() > 1) {
-		// Constraint volume covers the tile that spawned these candidates.
-		// Grid candidates live in [grid.origin, +extent]; mesh candidates
-		// may overshoot and skip via the out-of-volume rule (same on GPU).
-		ConstraintVolume vol;
-		vol.spacing = layer.config.minSpacing;
-		if (layer.domainKind == DomainKind::Grid && layer.grid) {
-			vol.origin = glm::vec3(layer.grid->origin.x, layer.grid->origin.y - 64.0f,
-				layer.grid->origin.z);
-			vol.dimX = (uint32_t)(layer.grid->extent.x / vol.spacing) + 2;
-			vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
-			vol.dimZ = (uint32_t)(layer.grid->extent.y / vol.spacing) + 2;
-		}
-		ApplyMinDistance(accepted, acceptedIds, layer.config.minSpacing, vol);
-	}
+	if (layer.config.minSpacing > 0.0f && accepted.size() > 1)
+		ApplyMinDistance(accepted, acceptedIds, layer.config.minSpacing,
+			ConstraintVolumeForLayer(layer));
 	return accepted;
+}
+
+ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& layer) {
+	ConstraintVolume vol;
+	vol.spacing = layer.config.minSpacing;
+	// Constraint volume covers the tile that spawned these candidates.
+	// Grid candidates live in [grid.origin, +extent]; mesh candidates
+	// may overshoot and skip via the out-of-volume rule (same on GPU).
+	if (layer.domainKind == DomainKind::Grid && layer.grid) {
+		vol.origin = glm::vec3(layer.grid->origin.x, layer.grid->origin.y - 64.0f,
+			layer.grid->origin.z);
+		vol.dimX = (uint32_t)(layer.grid->extent.x / vol.spacing) + 2;
+		vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
+		vol.dimZ = (uint32_t)(layer.grid->extent.y / vol.spacing) + 2;
+	}
+	return vol;
 }
 
 namespace {
