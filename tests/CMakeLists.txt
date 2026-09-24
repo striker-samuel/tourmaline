@@ -216,6 +216,19 @@ set_target_properties(FlintbaseTests PROPERTIES
 # Re-enable when the flintbase client/backend is next looked at.
 #add_test(NAME flintbase_tests COMMAND FlintbaseTests)
 
+add_executable(PlacementTests test_placement.cpp)
+
+target_link_libraries(PlacementTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(PlacementTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME placement_tests COMMAND PlacementTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -233,3 +246,4 @@ vulkantoy_stage_sdl3(ParticlesTests)
 vulkantoy_stage_sdl3(MotionBlurTests)
 vulkantoy_stage_sdl3(TourTests)
 vulkantoy_stage_sdl3(FlintbaseTests)
+vulkantoy_stage_sdl3(PlacementTests)
