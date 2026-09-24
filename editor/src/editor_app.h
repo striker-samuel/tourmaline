@@ -546,6 +546,14 @@ private:
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
 	void DrawMenuBar();
+	// ---- tool topbar (tabbed toolbar below the menu bar) --------------
+	// Ribbon-lite: a tab strip of TOOL TYPES (Select / Transform /
+	// Terrain / Placement / Modes) with the active tab's controls in a
+	// second row. Hides with the panels (m_uiMode); the combined
+	// menu+toolbar offset feeds m_menuH so panels, splitters and the
+	// viewport rects shift together.
+	int m_toolTab = 0; // 0 Select, 1 Transform, 2 Terrain, 3 Placement, 4 Modes
+	float DrawToolTabs(float top); // renders the toolbar; returns height
 	void DrawOutliner();
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);

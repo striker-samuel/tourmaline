@@ -457,7 +457,8 @@ void EditorApp::DrawPanelSplitters() {
 	// Thin grab strips between the panels and the viewport (drag to
 	// resize; the constants in editor_app.h are the defaults).
 	const ImVec2 ds = ImGui::GetIO().DisplaySize;
-	const float menuH = ImGui::GetFrameHeight();
+	// m_menuH = menu bar + tool topbar (the panels start below both).
+	const float menuH = m_menuH;
 	// Column splitters stop at the bottom dock (drag there resizes the
 	// side panel without fighting the dock's own handle).
 	const float colH = ds.y - menuH - m_bottomH;

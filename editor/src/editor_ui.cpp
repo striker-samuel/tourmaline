@@ -102,8 +102,14 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		DrawMenuBar();
 		ImGui::EndMainMenuBar();
 	}
-	const float menuH = ImGui::GetFrameHeight();
-	m_menuH = menuH; // cached for ComputeViewportRect (pre-NewFrame use)
+	// Tool topbar: tabbed toolbar directly under the menu bar (hidden
+	// with the panels via m_uiMode). Everything below keys off the
+	// combined menu+toolbar offset (m_menuH), so panels, splitters and
+	// the rendered viewport rects stay in lockstep.
+	const float menuBarH = ImGui::GetFrameHeight();
+	const float toolbarH = m_uiMode ? DrawToolTabs(menuBarH) : 0.0f;
+	m_menuH = menuBarH + toolbarH;
+	const float menuH = m_menuH; // panels/viewport math use the combined offset
 	const float vh = float(ImGui::GetIO().DisplaySize.y);
 
 	// Panels are siblings of the central viewport (never on top of it):
@@ -456,6 +462,173 @@ void EditorApp::DrawMenuBar() {
 	// m_showTerrainDialog stays true while the modal is up (the dialog
 	// clears it on Create/Cancel); OpenPopup is idempotent.
 	DrawCreateTerrainDialog();
+}
+
+// ---- tool topbar --------------------------------------------------------
+// Tab strip of tool types + one row of the active tab's controls. Returns
+// the toolbar's height (0 when the window fails to draw). The toolbar is
+// chrome: NoMove/NoBringToFront, fixed under the menu bar, hidden with
+// the panels (m_uiMode) so fullscreen viewports keep only the menu bar.
+float EditorApp::DrawToolTabs(float top) {
+	const float frame = ImGui::GetFrameHeight();
+	const float stripH = ImGui::GetFrameHeightWithSpacing();
+	const float rowH = frame + 8.0f;
+	const float h = stripH + rowH;
+	ImGui::SetNextWindowPos(ImVec2(0.0f, top), ImGuiCond_Always);
+	ImGui::SetNextWindowSize(
+		ImVec2(float(ImGui::GetIO().DisplaySize.x), h), ImGuiCond_Always);
+	if (!ImGui::Begin("##toptabs", nullptr,
+		ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+		ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+		ImGuiWindowFlags_NoSavedSettings |
+		ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav)) {
+		ImGui::End();
+		return 0.0f;
+	}
+	// Radio helper: enum-class values over an int temp.
+	auto radioEnum = [](const char* label, int* v, int id) {
+		return ImGui::RadioButton(label, v, id);
+	};
+	if (ImGui::BeginTabBar("##toolTabs",
+			ImGuiTabBarFlags_FittingPolicyScroll)) {
+		// ---- Select ----------------------------------------------------
+		if (ImGui::BeginTabItem("Select")) {
+			m_toolTab = 0;
+			int sel = int(m_selMode);
+			if (radioEnum("Mesh", &sel, 0)) { }
+			ImGui::SameLine();
+			if (radioEnum("Face", &sel, 1)) { }
+			ImGui::SameLine();
+			if (radioEnum("Vertex", &sel, 2)) { }
+			if (sel != int(m_selMode)) {
+				m_selMode = SelMode(sel);
+				ClearSubSelection();
+			}
+			ImGui::SameLine();
+			ImGui::TextDisabled("Q radial |");
+			ImGui::SameLine();
+			if (ImGui::Button("Frame (F)"))
+				FrameSelection();
+			ImGui::SameLine();
+			if (ImGui::Button("Clear##sel"))
+				ClearSelection();
+			ImGui::EndTabItem();
+		}
+		// ---- Transform -------------------------------------------------
+		if (ImGui::BeginTabItem("Transform")) {
+			m_toolTab = 1;
+			int g = int(m_gizmoMode);
+			if (radioEnum("Move", &g, 0)) m_gizmoMode = GizmoMode::Translate;
+			ImGui::SameLine();
+			if (radioEnum("Rotate", &g, 1)) m_gizmoMode = GizmoMode::Rotate;
+			ImGui::SameLine();
+			if (radioEnum("Scale", &g, 2)) m_gizmoMode = GizmoMode::Scale;
+			ImGui::SameLine();
+			ImGui::TextDisabled("click gizmo axes to drag |");
+			ImGui::SameLine();
+			ImGui::TextDisabled("sel: %s",
+				(m_world && m_selected != UINT32_MAX)
+				? getNodeName(m_world->scene, int(m_selected)).c_str()
+				: "-");
+			ImGui::EndTabItem();
+		}
+		// ---- Terrain ---------------------------------------------------
+		if (ImGui::BeginTabItem("Terrain")) {
+			m_toolTab = 2;
+			const bool hasWorld = m_world != nullptr;
+			if (!hasWorld)
+				ImGui::BeginDisabled();
+			if (ImGui::Button("Create...##terr")) {
+				std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf),
+					"%s", UniqueTerrainName().c_str());
+				m_terrainMat = UINT32_MAX;
+				m_showTerrainDialog = true;
+			}
+			ImGui::SameLine();
+			const uint32_t group = hasWorld
+				? TerrainGroupOf(m_selected) : UINT32_MAX;
+			if (group == UINT32_MAX)
+				ImGui::BeginDisabled();
+			ImGui::Checkbox("Paint##terr", &m_paintTerrain);
+			if (group == UINT32_MAX)
+				ImGui::EndDisabled();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Paints the SELECTED terrain group "
+					"(LMB in a 3D viewport).");
+			if (!hasWorld)
+				ImGui::EndDisabled();
+			ImGui::SameLine();
+			static const char* kOps[] = { "Raise", "Lower", "Flatten",
+				"Smooth" };
+			int op = std::clamp(m_paintOp, 0, 3);
+			for (int k = 0; k < 4; ++k) {
+				if (k > 0)
+					ImGui::SameLine();
+				if (radioEnum(kOps[k], &op, k))
+					m_paintOp = k;
+			}
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(120.0f);
+			ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f, 256.0f,
+				"%.1f m");
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(120.0f);
+			ImGui::DragFloat("S##terr", &m_paintStrength, 0.01f, 0.01f,
+				64.0f, "%.2f");
+			ImGui::SameLine();
+			ImGui::TextDisabled("brush on %s",
+				group != UINT32_MAX
+				? ("group #" + std::to_string(group)).c_str()
+				: "(select a terrain)");
+			ImGui::EndTabItem();
+		}
+		// ---- Placement -------------------------------------------------
+		if (ImGui::BeginTabItem("Placement")) {
+			m_toolTab = 3;
+			ImGui::Checkbox("Graph##tool", &m_placement.showGraph);
+			ImGui::SameLine();
+			ImGui::Checkbox("Overlay##tool", &m_placement.showOverlay);
+			ImGui::SameLine();
+			ImGui::Checkbox("Rejected##tool", &m_placement.showRejected);
+			ImGui::SameLine();
+			if (ImGui::Button("Refresh##tool"))
+				MarkPlacementDirty();
+			ImGui::SameLine();
+			if (ImGui::Button("New graph##tool")) {
+				m_placement.pushUndo();
+				m_placement.addGraph("");
+				MarkPlacementDirty();
+			}
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s",
+				m_placement.preview.ok ? "compiled OK"
+				: m_placement.preview.error.empty()
+					? "no graph" : m_placement.preview.error.c_str());
+			ImGui::EndTabItem();
+		}
+		// ---- Modes -----------------------------------------------------
+		if (ImGui::BeginTabItem("Modes")) {
+			m_toolTab = 4;
+			int modeSel = int(m_mode);
+			if (radioEnum("Layout", &modeSel, 0))
+				SetMode(EditorMode::Layout);
+			ImGui::SameLine();
+			if (radioEnum("Lighting", &modeSel, 1))
+				SetMode(EditorMode::Lighting);
+			ImGui::SameLine();
+			if (radioEnum("Test", &modeSel, 2))
+				SetMode(EditorMode::Test);
+			ImGui::SameLine();
+			if (radioEnum("Profile", &modeSel, 3))
+				SetMode(EditorMode::Profile);
+			ImGui::SameLine();
+			ImGui::TextDisabled("keys 1-4 anywhere");
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+	ImGui::End();
+	return h;
 }
 
 void EditorApp::DrawSaveDialog() {
@@ -2001,8 +2174,9 @@ void EditorApp::DrawInspector() {
 				256.0f);
 			ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f,
 				64.0f, "%.2f");
-			ImGui::Checkbox("Paint mode (LMB paints this terrain)",
-				&m_paintTerrain);
+			if (ImGui::Checkbox("Paint mode (LMB paints this terrain)",
+					&m_paintTerrain) && m_paintTerrain)
+				m_toolTab = 2; // surface the Terrain toolbar tab
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("While on, LMB in a 3D viewport paints "
 					"the selected terrain instead of picking. Each stamp "
@@ -2495,10 +2669,10 @@ void EditorApp::DrawUvPanel() {
 // scene in the runtime App (registry scenes only). While App runs the
 // button is disabled — close App to finish (its log streams to Console).
 void EditorApp::DrawPlayBar() {
-	const float menuH = ImGui::GetFrameHeight();
 	// Centered over the central viewport rect (m_vp is set by RenderFrame).
+	// m_menuH = menu bar + tool topbar (updated earlier this frame).
 	const float cx = m_vp.x + m_vp.w * 0.5f;
-	ImGui::SetNextWindowPos(ImVec2(cx, menuH + 6), ImGuiCond_Always,
+	ImGui::SetNextWindowPos(ImVec2(cx, m_menuH + 6), ImGuiCond_Always,
 		ImVec2(0.5f, 0.0f));
 	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 	if (ImGui::Begin("##playbar", nullptr,
@@ -2583,11 +2757,11 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	// hideable via the View menu or the active panel's chip button.
 	if (!m_showOverlay)
 		return;
-	const float menuH = ImGui::GetFrameHeight();
 	// Top-left of the CENTRAL viewport rect (m_vp is set by RenderFrame).
-	// Quad layout: sit BELOW the per-viewport camera chips.
+	// m_menuH = menu bar + tool topbar. Quad layout: sit BELOW the
+	// per-viewport camera chips.
 	ImGui::SetNextWindowPos(ImVec2(m_vp.x + 12,
-		menuH + 8 + (m_vpLayout == 1 ? 34.0f : 0.0f)), ImGuiCond_Always);
+		m_menuH + 8 + (m_vpLayout == 1 ? 34.0f : 0.0f)), ImGuiCond_Always);
 	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 	if (ImGui::Begin("##overlay", nullptr,
 		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
@@ -2651,7 +2825,7 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	if (SecondViewActive() && m_vpLayout == 0) {
 		uint32_t stripX = 0;
 		InsetStrip(m_vp, stripX);
-		ImGui::SetNextWindowPos(ImVec2(float(stripX) + 8, menuH + 8),
+		ImGui::SetNextWindowPos(ImVec2(float(stripX) + 8, m_menuH + 8),
 			ImGuiCond_Always);
 		ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 		if (ImGui::Begin("##insetlabel", nullptr,
