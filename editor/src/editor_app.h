@@ -628,9 +628,6 @@ private:
 	std::string UniqueLightName(bool spot) const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
-	// Creation-order index of a live created terrain (-1 when the node is
-	// not a history create): the -ref value CmdToTour emits.
-	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Live command helpers (editor_commands.cpp).
 	void ReadLocalTRS(uint32_t node, glm::vec3& t, glm::vec3& rDeg,
 		glm::vec3& s) const;
@@ -667,6 +664,10 @@ private:
 	bool OpenTourFile(const std::string& path);
 	// Close the current scene (reset to empty state), saving prefs.
 	void CloseScene();
+	// Editor preferences: Documents/tourmalineEditor/editor.prefs
+	// (resolved in Initialize). Auto-saved on Shutdown and CloseScene.
+	void LoadPrefs();
+	void SavePrefs();
 	// Resolve a tour's source path: as-is, relative to the tour file's
 	// dir, else relative to the content root. Empty when unresolvable.
 	std::string ResolveTourSource(const std::string& tourPath,
@@ -691,7 +692,6 @@ private:
 		uint32_t parent = UINT32_MAX;   // world node (resolved at draft)
 	};
 	void DraftCreateTerrain(const TerrainDraft& d);
-	std::string UniqueTerrainName() const;
 	// Created-terrain execution (ExecCmd cases): append/remove the world
 	// node + cluster mesh upload + draw state. ExecCreateTerrain records
 	// the assigned id back into the command (c.node).
@@ -706,7 +706,7 @@ private:
 	float m_terrainHeight = 8.0f;
 	float m_terrainFreq = 0.02f;
 	int m_terrainSeed = 1;
-	int m_terrainMat = 0; // world material index
+	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
 	// Light property channels ("color","intensity","range","inner",
 	// "outer","position","rotation","static","shadow","name") — the

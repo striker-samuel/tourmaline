@@ -238,8 +238,13 @@ void EditorApp::DrawMenuBar() {
 			DraftCreateLight(false);
 		if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
 			DraftCreateLight(true);
-		if (ImGui::MenuItem("Terrain", nullptr, false, canCreate))
-			DraftCreateTerrain({});
+		if (ImGui::MenuItem("Terrain...", nullptr, false, canCreate)) {
+			// Seed the dialog defaults (name, material) once per open.
+			std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf), "%s",
+				UniqueTerrainName().c_str());
+			m_terrainMat = UINT32_MAX;
+			m_showTerrainDialog = true;
+		}
 		if (!canCreate)
 			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
@@ -422,6 +427,11 @@ void EditorApp::DrawMenuBar() {
 		m_showSaveDialog = false;
 	}
 	DrawSaveDialog();
+	if (m_showTerrainDialog)
+		ImGui::OpenPopup("Create Terrain");
+	// m_showTerrainDialog stays true while the modal is up (the dialog
+	// clears it on Create/Cancel); OpenPopup is idempotent.
+	DrawCreateTerrainDialog();
 }
 
 void EditorApp::DrawSaveDialog() {
@@ -2602,9 +2612,7 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	}
 }
 
-} // namespace editor
-
-void EditorApp::DrawCreateTerrainDialog() {
+	void EditorApp::DrawCreateTerrainDialog() {
 	if (!ImGui::BeginPopupModal("Create Terrain", nullptr,
 			ImGuiWindowFlags_NoCollapse))
 		return;
@@ -2624,14 +2632,36 @@ void EditorApp::DrawCreateTerrainDialog() {
 	int seed = m_terrainSeed;
 	if (ImGui::DragInt("Noise seed", &seed, 1, 1, 1000000))
 		m_terrainSeed = seed;
-	if (ImGui::IsItemActivated()) m_terrainMat = (m_selected != UINT32_MAX && m_selected < m_world->materialLocations.size()) ? m_selected : 0;
-	ImGui::TextDisabled("Material: %s",
-		m_terrainMat != UINT32_MAX ? std::to_string(m_terrainMat).c_str() : "(use selected)");
+	// Material combo over the live world materials (0 = first material).
+	if (m_world && !m_world->materialLocations.empty()) {
+		if (m_terrainMat == UINT32_MAX)
+			m_terrainMat = 0;
+		std::string preview = "mat." + std::to_string(m_terrainMat);
+		if (ImGui::BeginCombo("Material", preview.c_str())) {
+			for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
+				const auto& loc = m_world->materialLocations[i];
+				std::string uri = loc.cluster
+					? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+					: "";
+				char item[320];
+				std::snprintf(item, sizeof(item), "%u: %s", i,
+					uri.empty() ? "(unnamed)" : uri.c_str());
+				if (ImGui::Selectable(item, m_terrainMat == i))
+					m_terrainMat = i;
+			}
+			ImGui::EndCombo();
+		}
+	}
+	else {
+		ImGui::TextDisabled("Material: (scene has no materials)");
+		m_terrainMat = UINT32_MAX;
+	}
 	ImGui::Separator();
 	if (ImGui::Button("Create")) {
 		TerrainDraft d{};
 		d.name = m_terrainNameBuf;
-		d.origin = glm::vec3(m_terrainOrigin[0], 0.0f, m_terrainOrigin[1]);
+		d.origin = glm::vec3(m_terrainOrigin[0], m_terrainOrigin[1],
+			m_terrainOrigin[2]);
 		d.size = m_terrainSize;
 		d.res = uint32_t(m_terrainRes);
 		d.height = m_terrainHeight;
@@ -2650,4 +2680,5 @@ void EditorApp::DrawCreateTerrainDialog() {
 	}
 	ImGui::EndPopup();
 }
+
 } // namespace editor

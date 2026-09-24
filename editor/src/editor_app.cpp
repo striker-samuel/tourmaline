@@ -1,6 +1,13 @@
 // EditorApp: init / frame loop / scene loading / frame-data upload.
 // Rendering passes live in editor_render.cpp, UI in editor_ui.cpp.
 
+// Editor app implementation. NOMINMAX must precede EVERY include: the
+// prefs path helper pulls <shlobj.h> -> <windows.h>, whose min/max
+// macros would poison every std::min/std::max in this TU.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "editor_app.h"
 
 #include <algorithm>
@@ -9,6 +16,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+
+#if defined(_WIN32)
+#include <shlobj.h> // SHGetKnownFolderPath/FOLDERID_Documents (prefs path)
+#endif
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -250,11 +261,6 @@ void EditorApp::CloseScene() {
 	m_refPlaceholders.shrink_to_fit();
 	m_references.clear();
 	m_refPhCluster.clear();
-	m_selected = UINT32_MAX;
-	m_selection.clear();
-	ClearHistory();
-	m_overrideRules.clear();
-	m_nextOverrideId = 1;
 	m_envByNode.clear();
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
@@ -266,22 +272,16 @@ void EditorApp::CloseScene() {
 	m_placement.selectedLink = -1;
 	m_placement.linkFrom = -1;
 	m_placement.linkFromPin.clear();
-	m_placement.pan[0] = 0.0f; m_placement.pan[1] = 0.0f;
+	m_placement.pan[0] = 0.0f;
+	m_placement.pan[1] = 0.0f;
 	m_placement.undoStack.clear();
 	m_placement.undoPos = -1;
 	m_placement.preview = {};
 	m_placement.showGraph = false;
 	m_placement.showOverlay = true;
 	m_placement.showRejected = true;
-	m_overrideRules.clear();
-	m_nextOverrideId = 1;
-	m_envByNode.clear();
-	m_envCurrent = UINT32_MAX;
-	m_materialFocus = UINT32_MAX;
-	m_materialTrail.clear();
-	m_selected = UINT32_MAX;
-	m_selection.clear();
 	ClearSelection();
+	ClearHistory();
 	Log("Scene closed.");
 }
 
