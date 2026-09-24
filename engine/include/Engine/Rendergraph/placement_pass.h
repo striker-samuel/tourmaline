@@ -221,8 +221,8 @@ struct PlacementPass {
 
 	// ---- CPU LayerBinding -> GPU push ----------------------------------
 	// Extracts a constant density when the program is a single Const
-	// (the kernel MVP's supported shape); otherwise falls back to 0.5
-	// and the caller is expected to upgrade the kernel, not the data.
+	// (the kernels' supported shape); otherwise falls back to 0.5 and
+	// the caller is expected to upgrade the kernel, not the data.
 	static bool TryExtractConstDensity(const PlacementProgram& prog, float& out) {
 		if (prog.instrs.size() == 1 && prog.acceptIndex == 0
 			&& prog.instrs[0].op == FieldOp::Const) {
@@ -264,6 +264,289 @@ struct PlacementPass {
 		for (size_t i = 0; i < n; ++i) *w[i] = layer.prototypes.at(i).weight;
 		if (n == 0) { out.protoCount = 1; out.weightsA.x = 1.0f; }
 		return true;
+	}
+}; // struct PlacementPass
+
+// ---- Mesh / heightfield domain GPU data -------------------------------
+// Padded uploads (float4 positions/normals) + BDAs + params fill. The
+// HLSL views (placement_domains.hlsli) interpret raw bytes; the float4
+// padding keeps CPU/GPU array strides unambiguous by construction.
+
+inline constexpr uint32_t kPlacementMaxMeshVerts = 65536;
+inline constexpr uint32_t kPlacementMaxMeshTris = 131072;
+inline constexpr uint32_t kPlacementMaxHfTexels = 1048576;
+
+struct ScatterBDAs {
+	uint64_t pos = 0, nrm = 0, uv = 0, idx = 0, prob = 0, alias = 0;
+	uint64_t heights = 0;
+};
+
+struct PlacementMeshGpu {
+	Holder<BufferHandle> pos, nrm, uv, idx, prob, alias;
+	LogicalBufferHandle posL{}, nrmL{}, uvL{}, idxL{}, probL{}, aliasL{};
+	uint32_t vertCount = 0;
+	uint32_t triCount = 0;
+	bool hasNormals = false;
+	bool hasUVs = false;
+
+	[[nodiscard]] bool Valid() const {
+		return !pos.empty() && !idx.empty() && !prob.empty() && !alias.empty()
+			&& !posL.empty() && !idxL.empty() && !probL.empty() && !aliasL.empty()
+			&& triCount > 0;
+	}
+	void Destroy(RenderGraph& rg) {
+		for (LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
+			if (!l.empty()) rg.FreeBuffer(l);
+		posL = {}; nrmL = {}; uvL = {}; idxL = {}; probL = {}; aliasL = {};
+		pos = {}; nrm = {}; uv = {}; idx = {}; prob = {}; alias = {};
+		vertCount = triCount = 0;
+		hasNormals = hasUVs = false;
+	}
+
+	// Uploads (converting vec3 -> float4). Builds the alias table when
+	// missing. Returns false when the mesh exceeds GPU bounds or is empty.
+	bool Upload(ResourceManager& ctx, RenderGraph& rg, PlacementMeshData& mesh) {
+		Destroy(rg);
+		const size_t tris = mesh.triangleCount();
+		if (tris == 0 || tris > kPlacementMaxMeshTris) return false;
+		if (mesh.positions.empty()) return false;
+		uint32_t maxIdx = 0;
+		for (uint32_t i : mesh.indices) maxIdx = maxIdx > i ? maxIdx : i;
+		const uint32_t verts = maxIdx + 1;
+		if (verts == 0 || verts > kPlacementMaxMeshVerts) return false;
+		if (!mesh.hasAlias()) BuildMeshAliasTable(mesh);
+		hasNormals = mesh.normals.size() > maxIdx;
+		hasUVs = mesh.uvs.size() > maxIdx;
+
+		std::vector<glm::vec4> pos4(verts, glm::vec4(0.0f));
+		for (uint32_t v = 0; v < verts && v < mesh.positions.size(); ++v)
+			pos4[v] = glm::vec4(mesh.positions[v], 0.0f);
+		std::vector<glm::vec4> nrm4;
+		if (hasNormals) {
+			nrm4.assign(verts, glm::vec4(0, 1, 0, 0));
+			for (uint32_t v = 0; v < verts; ++v) nrm4[v] = glm::vec4(mesh.normals[v], 0.0f);
+		}
+		std::vector<glm::vec2> uv2;
+		if (hasUVs) {
+			uv2.assign(verts, glm::vec2(0.0f));
+			for (uint32_t v = 0; v < verts; ++v) uv2[v] = mesh.uvs[v];
+		}
+		auto make = [&](size_t bytes, const char* name) {
+			Holder<BufferHandle> b = ctx.CreateBuffer(bytes, BufferType_Storage, name);
+			return b;
+		};
+		pos = make(sizeof(glm::vec4) * verts, "placement mesh pos");
+		nrm = hasNormals ? make(sizeof(glm::vec4) * verts, "placement mesh nrm") : Holder<BufferHandle>{};
+		uv = hasUVs ? make(sizeof(glm::vec2) * verts, "placement mesh uv") : Holder<BufferHandle>{};
+		idx = make(sizeof(uint32_t) * tris * 3, "placement mesh idx");
+		prob = make(sizeof(float) * tris, "placement mesh prob");
+		alias = make(sizeof(uint32_t) * tris, "placement mesh alias");
+		if (pos.empty() || idx.empty() || prob.empty() || alias.empty()
+			|| (hasNormals && nrm.empty()) || (hasUVs && uv.empty()))
+			return false;
+		posL = rg.AddExternalBuffer(pos, "placement mesh pos");
+		nrmL = hasNormals ? rg.AddExternalBuffer(nrm, "placement mesh nrm") : LogicalBufferHandle{};
+		uvL = hasUVs ? rg.AddExternalBuffer(uv, "placement mesh uv") : LogicalBufferHandle{};
+		idxL = rg.AddExternalBuffer(idx, "placement mesh idx");
+		probL = rg.AddExternalBuffer(prob, "placement mesh prob");
+		aliasL = rg.AddExternalBuffer(alias, "placement mesh alias");
+		if (posL.empty() || idxL.empty() || probL.empty() || aliasL.empty()) return false;
+		ctx.UploadDataToBuffer(pos, pos4.data(), sizeof(glm::vec4) * verts,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		if (hasNormals) ctx.UploadDataToBuffer(nrm, nrm4.data(), sizeof(glm::vec4) * verts,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		if (hasUVs) ctx.UploadDataToBuffer(uv, uv2.data(), sizeof(glm::vec2) * verts,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		ctx.UploadDataToBuffer(idx, mesh.indices.data(), sizeof(uint32_t) * tris * 3,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		ctx.UploadDataToBuffer(prob, mesh.aliasProb.data(), sizeof(float) * tris,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		ctx.UploadDataToBuffer(alias, mesh.aliasIndex.data(), sizeof(uint32_t) * tris,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		vertCount = verts;
+		triCount = (uint32_t)tris;
+		return true;
+	}
+
+	ScatterBDAs Addresses(ResourceManager& ctx) const {
+		ScatterBDAs b;
+		b.pos = ctx.GetBufferDeviceAddress(pos);
+		b.nrm = hasNormals ? ctx.GetBufferDeviceAddress(nrm) : 0;
+		b.uv = hasUVs ? ctx.GetBufferDeviceAddress(uv) : 0;
+		b.idx = ctx.GetBufferDeviceAddress(idx);
+		b.prob = ctx.GetBufferDeviceAddress(prob);
+		b.alias = ctx.GetBufferDeviceAddress(alias);
+		return b;
+	}
+	// Read-only logicals for scatter-pass hints (null entries skipped).
+	std::vector<LogicalBufferHandle> ReadLogicals() const {
+		std::vector<LogicalBufferHandle> out;
+		for (LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
+			if (!l.empty()) out.push_back(l);
+		return out;
+	}
+};
+
+struct PlacementHeightfieldGpu {
+	Holder<BufferHandle> heights;
+	LogicalBufferHandle heightsL{};
+	uint32_t w = 0, h = 0;
+
+	[[nodiscard]] bool Valid() const {
+		return !heights.empty() && !heightsL.empty() && w >= 2 && h >= 2;
+	}
+	void Destroy(RenderGraph& rg) {
+		if (!heightsL.empty()) rg.FreeBuffer(heightsL);
+		heightsL = {};
+		heights = {};
+		w = h = 0;
+	}
+	bool Upload(ResourceManager& ctx, RenderGraph& rg, const HeightfieldData& hf) {
+		Destroy(rg);
+		if (!hf.valid()) return false;
+		if ((uint64_t)hf.width * hf.height > kPlacementMaxHfTexels) return false;
+		heights = ctx.CreateBuffer(sizeof(float) * hf.heights.size(),
+			BufferType_Storage, "placement heightfield");
+		if (heights.empty()) return false;
+		heightsL = rg.AddExternalBuffer(heights, "placement heightfield");
+		if (heightsL.empty()) return false;
+		ctx.UploadDataToBuffer(heights, hf.heights.data(),
+			sizeof(float) * hf.heights.size(),
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		w = hf.width; h = hf.height;
+		return true;
+	}
+	uint64_t Address(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(heights);
+	}
+};
+
+// Pure-CPU params fill (headless-testable; BDAs wired by the caller from
+// the structs above + PlacementPass slot addresses).
+inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
+	const ScatterBDAs& bdas, PlacementDomainParams& out) {
+	out = PlacementDomainParams{};
+	float density = 0.5f;
+	PlacementPass::TryExtractConstDensity(layer.program, density);
+	out.density = density;
+	out.noiseAmp = 0.0f;
+	out.minScale = layer.config.minScale;
+	out.maxScale = layer.config.maxScale;
+	const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();
+	out.protoCount = (uint32_t)(n == 0 ? 1 : n);
+	for (size_t i = 0; i < n; ++i) out.weights[i] = layer.prototypes.at(i).weight;
+	if (n == 0) out.weights[0] = 1.0f;
+	if (layer.domainKind == DomainKind::MeshSurface && layer.mesh) {
+		out.domainKind = kPlacementScatterDomain_Mesh;
+		out.triCount = (uint32_t)layer.mesh->triangleCount();
+		uint32_t maxIdx = 0;
+		for (uint32_t i : layer.mesh->indices) maxIdx = maxIdx > i ? maxIdx : i;
+		out.vertCount = maxIdx + 1;
+		if (!layer.mesh->normals.empty()) out.flags |= kPlacementFlag_HasNormals;
+		if (!layer.mesh->uvs.empty()) out.flags |= kPlacementFlag_HasUVs;
+		out.posBDA = bdas.pos; out.nrmBDA = bdas.nrm; out.uvBDA = bdas.uv;
+		out.idxBDA = bdas.idx; out.probBDA = bdas.prob; out.aliasBDA = bdas.alias;
+		return out.triCount > 0;
+	}
+	if (layer.domainKind == DomainKind::Heightfield && layer.heightfield
+		&& layer.heightfield->field) {
+		const HeightfieldData* hf = layer.heightfield->field;
+		out.domainKind = kPlacementScatterDomain_Heightfield;
+		out.heightsBDA = bdas.heights;
+		out.hfW = hf->width; out.hfH = hf->height;
+		out.hfOX = hf->origin.x; out.hfOZ = hf->origin.z;
+		out.hfSX = hf->spacing.x; out.hfSZ = hf->spacing.y;
+		out.extMinX = layer.heightfield->extentMin.x;
+		out.extMinZ = layer.heightfield->extentMin.y;
+		out.extMaxX = layer.heightfield->extentMax.x;
+		out.extMaxZ = layer.heightfield->extentMax.y;
+		return hf->valid();
+	}
+	return false;
+}
+
+inline bool BuildScatterPush(const PlacementSystem::LayerBinding& layer,
+	TileID tile, uint64_t instancesBDA, uint64_t countBDA, uint64_t paramsBDA,
+	PlacementScatterPush& out) {
+	out = PlacementScatterPush{};
+	out.outInstances = instancesBDA;
+	out.outCount = countBDA;
+	out.params = paramsBDA;
+	out.seedLo = (uint32_t)(layer.program.graphSeed & 0xFFFFFFFFull);
+	out.seedHi = (uint32_t)(layer.program.graphSeed >> 32);
+	out.nodeId = layer.program.nodeId;
+	out.candidateCount = layer.config.candidatesPerTile;
+	out.tileX = tile.x; out.tileY = tile.y; out.tileZ = tile.z;
+	return true;
+}
+
+// Scatter program management: mesh + heightfield tile kernels. Lives
+// outside PlacementPass (which owns the tile slots) because domain data
+// has its own lifetime (asset-cooked, shared across slots).
+struct PlacementScatterPrograms {
+	Holder<ShaderModuleHandle> meshModule, hfModule;
+	ShaderProgram meshProgram{}, hfProgram{};
+
+	[[nodiscard]] bool Valid() const {
+		return meshProgram.shaderCount != 0 && hfProgram.shaderCount != 0
+			&& !meshModule.empty() && !hfModule.empty();
+	}
+	bool Ensure(ResourceManager& ctx,
+		const char* meshCsPath = kPlacementMeshTileCsPath,
+		const char* hfCsPath = kPlacementHfTileCsPath) {
+		if (Valid()) return true;
+		try {
+			if (meshModule.empty())
+				meshModule = ctx.CreateShaderModule(
+					readFile(meshCsPath ? meshCsPath : kPlacementMeshTileCsPath),
+					"placementMeshTileCS");
+			if (hfModule.empty())
+				hfModule = ctx.CreateShaderModule(
+					readFile(hfCsPath ? hfCsPath : kPlacementHfTileCsPath),
+					"placementHfTileCS");
+		} catch (...) {
+			return false;
+		}
+		if (meshModule.empty() || hfModule.empty()) return false;
+		Shader mcs{ .module = meshModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		meshProgram = { .shaders = { mcs }, .shaderCount = 1 };
+		Shader hcs{ .module = hfModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		hfProgram = { .shaders = { hcs }, .shaderCount = 1 };
+		return true;
+	}
+	void Destroy() {
+		meshProgram = ShaderProgram{};
+		hfProgram = ShaderProgram{};
+		meshModule = {};
+		hfModule = {};
+	}
+	// Scatter eval pass shell over a PlacementPass tile slot: slot buffers
+	// RW + domain/params buffers read-only (rendergraph emits the edges).
+	static RenderPass& AddScatterPass(RenderGraph& rg, const PlacementPass& pass,
+		uint32_t slot, const std::vector<LogicalBufferHandle>& domainReads,
+		LogicalBufferHandle paramsLogical, const char* name = "PlacementScatter") {
+		assert(pass.Valid() && slot < pass.tileSlots);
+		RenderPass& rp = rg.AddComputePass(name);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(pass.instanceLogicals[slot], rw);
+		rp.AddBufferHint(pass.countLogicals[slot], rw);
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		for (LogicalBufferHandle l : domainReads)
+			if (!l.empty()) rp.AddBufferHint(l, read);
+		if (!paramsLogical.empty()) rp.AddBufferHint(paramsLogical, read);
+		return rp;
+	}
+	// Recording helper (mirrors PlacementPass::PushAndDispatch).
+	static void PushAndDispatchScatter(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementScatterPush& push) {
+		if (push.candidateCount == 0) return;
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch(PlacementDispatchGroups(push.candidateCount), 1, 1);
 	}
 };
 

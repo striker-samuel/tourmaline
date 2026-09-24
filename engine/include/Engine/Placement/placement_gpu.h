@@ -59,5 +59,67 @@ inline uint32_t PlacementDispatchGroups(uint32_t candidateCount) {
 }
 
 inline constexpr const char* kPlacementTileCsPath = "content/shaders/placement_tile.cs.hlsl.spv";
+inline constexpr const char* kPlacementMeshTileCsPath = "content/shaders/placement_mesh_tile.cs.hlsl.spv";
+inline constexpr const char* kPlacementHfTileCsPath = "content/shaders/placement_hf_tile.cs.hlsl.spv";
+
+// ---- Mesh / heightfield scatter path ----------------------------------
+// The grid kernel carries everything inline in its 144B push (engine
+// precedent: FilterPush is 200B). Mesh/heightfield descriptors don't fit
+// that budget, so they live in a device-side params struct addressed by
+// a compact 64B push. Domain data layouts are padded for unambiguous
+// CPU/GPU agreement: positions/normals as float4 arrays (never float3,
+// whose HLSL array stride is layout-dependent), uvs float2, the rest
+// scalars.
+
+inline constexpr uint32_t kPlacementScatterDomain_Mesh = 1;
+inline constexpr uint32_t kPlacementScatterDomain_Heightfield = 2;
+
+inline constexpr uint32_t kPlacementFlag_HasNormals = 1u << 0;
+inline constexpr uint32_t kPlacementFlag_HasUVs = 1u << 1;
+
+// Must match placement_domains.hlsli PlacementDomainParams (176 bytes).
+struct PlacementDomainParams {
+	float density = 0.5f;
+	float noiseAmp = 0.0f;
+	float noiseFreq = 0.02f;
+	float minScale = 0.8f;
+	float maxScale = 1.0f;
+	uint32_t protoCount = 1;
+	uint32_t padA[2] = {};
+	float weights[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };
+	uint32_t domainKind = 0;
+	uint32_t triCount = 0;
+	uint32_t vertCount = 0;
+	uint32_t flags = 0;
+	uint64_t posBDA = 0;   // float4[vertCount]
+	uint64_t nrmBDA = 0;   // float4[vertCount], 0 when absent
+	uint64_t uvBDA = 0;    // float2[vertCount], 0 when absent
+	uint64_t idxBDA = 0;   // uint32[triCount*3]
+	uint64_t probBDA = 0;  // float[triCount] alias keep-probability
+	uint64_t aliasBDA = 0; // uint32[triCount] alias fallback
+	uint64_t heightsBDA = 0; // float[hfW*hfH], heightfield only
+	uint32_t hfW = 0;
+	uint32_t hfH = 0;
+	float hfOX = 0.0f, hfOZ = 0.0f; // world origin of texel (0,0)
+	float hfSX = 1.0f, hfSZ = 1.0f; // meters per texel
+	float extMinX = 0.0f, extMinZ = 0.0f; // scatter rect (world XZ)
+	float extMaxX = 64.0f, extMaxZ = 64.0f;
+};
+static_assert(sizeof(PlacementDomainParams) == 176, "PlacementDomainParams moved — update placement_domains.hlsli");
+
+// Must match the scatter kernels' push (64 bytes).
+struct PlacementScatterPush {
+	uint64_t outInstances = 0;
+	uint64_t outCount = 0;
+	uint64_t params = 0; // BDA of PlacementDomainParams
+	uint64_t pad0 = 0;
+	uint32_t seedLo = 0;
+	uint32_t seedHi = 0;
+	uint32_t nodeId = 0;
+	uint32_t candidateCount = 0;
+	int32_t tileX = 0, tileY = 0, tileZ = 0;
+	uint32_t flags = 0;
+};
+static_assert(sizeof(PlacementScatterPush) == 64, "PlacementScatterPush moved — update scatter kernels");
 
 } // namespace smvk::placement

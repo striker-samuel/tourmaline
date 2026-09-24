@@ -102,4 +102,16 @@ struct PlacementRenderInstance {
     uint customB;
 };
 
+// Per-tile output: instance array (fixed bound, BDA view allocates
+// nothing) + single-uint append counter.
+struct PlacementInstanceBuffer
+{
+    PlacementRenderInstance items[65536];
+};
+
+struct PlacementCountBuffer
+{
+    uint count;
+};
+
 #endif

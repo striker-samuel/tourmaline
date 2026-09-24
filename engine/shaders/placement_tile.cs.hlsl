@@ -11,16 +11,6 @@
 #include "placement_common.hlsli"
 #include "placement_field.hlsli"
 
-struct PlacementInstanceBuffer
-{
-    PlacementRenderInstance items[65536];
-};
-
-struct PlacementCountBuffer
-{
-    uint count;
-};
-
 // Must match C++ PlacementTilePush (144 bytes).
 struct PlacementTilePush
 {

@@ -218,6 +218,9 @@ void TestPhysicsQuery();
 void TestPromotion();
 void TestPushBridge();
 void TestKernelAlgorithmParity();
+void TestScatterParams();
+void TestMeshKernelParity();
+void TestHfKernelParity();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -772,6 +775,182 @@ void TestKernelAlgorithmParity() {
 	Check(!oracle.empty(), "place.kernel.nonempty");
 }
 
+void TestScatterParams() {
+	using namespace smvk::placement;
+	Check(sizeof(PlacementDomainParams) == 176, "place.scatter.params-176B");
+	Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
+	Check(offsetof(PlacementScatterPush, params) == 16, "place.scatter.params-bda");
+	Check(offsetof(PlacementScatterPush, candidateCount) == 44, "place.scatter.count");
+	// Mesh mapping.
+	PlacementMeshData mesh;
+	mesh.positions = { glm::vec3(0,0,0), glm::vec3(1,0,0), glm::vec3(0,0,1) };
+	mesh.normals = { glm::vec3(0,1,0), glm::vec3(0,1,0), glm::vec3(0,1,0) };
+	mesh.indices = { 0, 1, 2 };
+	BuildMeshAliasTable(mesh);
+	PlacementSystem::LayerBinding mlb;
+	mlb.programId = 21;
+	mlb.program.graphSeed = 5;
+	mlb.program.instrs = { OpConst(0.7f) };
+	mlb.program.acceptIndex = 0;
+	mlb.domainKind = DomainKind::MeshSurface;
+	mlb.mesh = &mesh;
+	mlb.config.candidatesPerTile = 64;
+	ScatterBDAs b{ 11, 22, 0, 33, 44, 55, 0 };
+	PlacementDomainParams prm;
+	Check(FillScatterParams(mlb, b, prm), "place.scatter.mesh-ok");
+	Check(prm.domainKind == kPlacementScatterDomain_Mesh, "place.scatter.mesh-kind");
+	Check(prm.triCount == 1 && prm.vertCount == 3, "place.scatter.mesh-counts");
+	Check((prm.flags & kPlacementFlag_HasNormals) != 0, "place.scatter.mesh-normals");
+	Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
+	Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
+	Check(prm.density == 0.7f, "place.scatter.mesh-density");
+	// Heightfield mapping.
+	HeightfieldData hf;
+	hf.width = 3; hf.height = 3;
+	hf.origin = glm::vec3(100, 0, 200);
+	hf.spacing = glm::vec2(2.0f, 2.0f);
+	hf.heights.assign(9, 1.0f);
+	HeightfieldDomain hdom;
+	hdom.field = &hf;
+	hdom.extentMin = glm::vec2(100, 200);
+	hdom.extentMax = glm::vec2(104, 204);
+	PlacementSystem::LayerBinding hlb;
+	hlb.program.graphSeed = 6;
+	hlb.program.instrs = { OpConst(0.4f) };
+	hlb.program.acceptIndex = 0;
+	hlb.domainKind = DomainKind::Heightfield;
+	hlb.heightfield = &hdom;
+	hlb.config.candidatesPerTile = 32;
+	ScatterBDAs hb{ 0, 0, 0, 0, 0, 0, 77 };
+	PlacementDomainParams hprm;
+	Check(FillScatterParams(hlb, hb, hprm), "place.scatter.hf-ok");
+	Check(hprm.domainKind == kPlacementScatterDomain_Heightfield, "place.scatter.hf-kind");
+	Check(hprm.hfW == 3 && hprm.hfH == 3, "place.scatter.hf-dims");
+	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
+	Check(hprm.hfSX == 2.0f && hprm.extMaxX == 104.0f, "place.scatter.hf-extent");
+	Check(hprm.heightsBDA == 77, "place.scatter.hf-bda");
+	// Grid layer refuses scatter params (has its own kernel+push).
+	GridDomain grid;
+	PlacementSystem::LayerBinding glb;
+	glb.domainKind = DomainKind::Grid;
+	glb.grid = &grid;
+	glb.program.instrs = { OpConst(0.5f) };
+	glb.program.acceptIndex = 0;
+	PlacementDomainParams gprm;
+	Check(!FillScatterParams(glb, hb, gprm), "place.scatter.grid-refuses");
+	// Push build.
+	PlacementScatterPush push;
+	Check(BuildScatterPush(mlb, TileID{ 7, 0, 8 }, 0xAAA, 0xBBB, 0xCCC, push),
+		"place.scatter.push-ok");
+	Check(push.params == 0xCCC && push.outInstances == 0xAAA && push.outCount == 0xBBB,
+		"place.scatter.push-bda");
+	Check(push.seedLo == 5 && push.nodeId == 0 && push.candidateCount == 64,
+		"place.scatter.push-ids");
+	Check(push.tileX == 7 && push.tileZ == 8, "place.scatter.push-tile");
+}
+
+void TestMeshKernelParity() {
+	using namespace smvk::placement;
+	// Independent reimplementation of placement_mesh_tile.cs.hlsl mainCS.
+	PlacementMeshData mesh;
+	mesh.positions = { glm::vec3(0,0,0), glm::vec3(10,0,0), glm::vec3(0,0,10),
+		glm::vec3(20,0,0), glm::vec3(21,0,0), glm::vec3(20,0,1) };
+	mesh.indices = { 0, 1, 2, 3, 4, 5 };
+	BuildMeshAliasTable(mesh);
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 31;
+	lb.program.graphSeed = 4242;
+	lb.program.nodeId = 1;
+	lb.program.instrs = { OpConst(0.6f) };
+	lb.program.acceptIndex = 0;
+	lb.domainKind = DomainKind::MeshSurface;
+	lb.mesh = &mesh;
+	lb.config.candidatesPerTile = 800;
+	lb.config.minScale = 0.9f; lb.config.maxScale = 1.1f;
+	Prototype p; p.weight = 1.0f;
+	lb.prototypes.add(p);
+	auto oracle = EvaluateTile(lb, TileID{ 0, 0, 0 });
+	std::vector<RenderInstance> mirror;
+	for (uint32_t i = 0; i < 800; ++i) {
+		StableID id = MakeStableID(4242, 1, TileID{ 0, 0, 0 }, 0, i);
+		DomainSample s = SampleMeshSurface(mesh, id);
+		float q = QuantizeDensity(0.6f);
+		if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q)) continue;
+		RenderInstance in;
+		in.position = s.p;
+		in.yaw = YawFromId(id);
+		float sc = UniformScaleFromId(id, 0.9f, 1.1f);
+		in.scale = glm::vec3(sc);
+		in.prototypeId = 0;
+		in.stableLow = id.w[0];
+		in.customB = i;
+		mirror.push_back(in);
+	}
+	bool same = oracle.size() == mirror.size();
+	if (same) {
+		for (size_t i = 0; i < oracle.size(); ++i)
+			if (oracle[i].position != mirror[i].position
+				|| oracle[i].yaw != mirror[i].yaw
+				|| oracle[i].stableLow != mirror[i].stableLow
+				|| oracle[i].customB != mirror[i].customB) { same = false; break; }
+	}
+	Check(same, "place.meshkernel.parity");
+	Check(!oracle.empty(), "place.meshkernel.nonempty");
+}
+
+void TestHfKernelParity() {
+	using namespace smvk::placement;
+	HeightfieldData hf;
+	hf.width = 5; hf.height = 5;
+	hf.origin = glm::vec3(0, 0, 0);
+	hf.spacing = glm::vec2(1.0f, 1.0f);
+	hf.heights.resize(25);
+	for (uint32_t z = 0; z < 5; ++z)
+		for (uint32_t x = 0; x < 5; ++x)
+			hf.heights[z * 5 + x] = (float)(x * x) * 0.1f + (float)z * 0.3f;
+	HeightfieldDomain dom;
+	dom.field = &hf;
+	dom.extentMin = glm::vec2(0, 0);
+	dom.extentMax = glm::vec2(4, 4);
+	PlacementSystem::LayerBinding lb;
+	lb.programId = 32;
+	lb.program.graphSeed = 99;
+	lb.program.nodeId = 4;
+	lb.program.instrs = { OpConst(0.8f) };
+	lb.program.acceptIndex = 0;
+	lb.domainKind = DomainKind::Heightfield;
+	lb.heightfield = &dom;
+	lb.config.candidatesPerTile = 500;
+	Prototype p; p.weight = 1.0f;
+	lb.prototypes.add(p);
+	auto oracle = EvaluateTile(lb, TileID{ 1, 0, 1 });
+	std::vector<RenderInstance> mirror;
+	for (uint32_t i = 0; i < 500; ++i) {
+		StableID id = MakeStableID(99, 4, TileID{ 1, 0, 1 }, 0, i);
+		DomainSample s = dom.sample(id);
+		float q = QuantizeDensity(0.8f);
+		if (q < 1.0f && !(Random01(id, RandomChannel::Density) < q)) continue;
+		RenderInstance in;
+		in.position = s.p;
+		in.yaw = YawFromId(id);
+		float sc = UniformScaleFromId(id, 0.8f, 1.2f);
+		in.scale = glm::vec3(sc);
+		in.prototypeId = 0;
+		in.stableLow = id.w[0];
+		in.customB = i;
+		mirror.push_back(in);
+	}
+	bool same = oracle.size() == mirror.size();
+	if (same) {
+		for (size_t i = 0; i < oracle.size(); ++i)
+			if (oracle[i].position != mirror[i].position
+				|| oracle[i].yaw != mirror[i].yaw
+				|| oracle[i].stableLow != mirror[i].stableLow) { same = false; break; }
+	}
+	Check(same, "place.hfkernel.parity");
+	Check(!oracle.empty(), "place.hfkernel.nonempty");
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -798,6 +977,9 @@ int main() {
 	TestPromotion();
 	TestPushBridge();
 	TestKernelAlgorithmParity();
+	TestScatterParams();
+	TestMeshKernelParity();
+	TestHfKernelParity();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }
