@@ -28,12 +28,18 @@ enum class EditVerb : uint8_t {
 	SetDitherCloseup, // subtree dither on camera closeup
 	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
 	Parent, // world parent id
+	CreateLight, // append a light node (world); params below. c.node =
+	             // CREATED world id once forward-executed (UINT32_MAX
+	             // before); c.node2 = parent world id
+	SetLightAttr, // light property edit; c.node = light node (world),
+	              // lightAttr selects the channel (see below)
 };
 
 struct EditCmd {
 	EditVerb verb = EditVerb::Rename;
 	uint32_t node = UINT32_MAX;  // world node
-	uint32_t node2 = UINT32_MAX; // Parent: new parent (world)
+	uint32_t node2 = UINT32_MAX; // Parent: new parent (world);
+	                             // CreateLight: parent (world)
 	uint32_t material = UINT32_MAX; // AssignMaterial: new mat (world idx)
 	// SetMatAttr target + value:
 	uint32_t matWorld = UINT32_MAX;
@@ -51,6 +57,23 @@ struct EditCmd {
 	bool beforeFlag = false, afterFlag = false;
 	uint32_t beforeMaterial = UINT32_MAX; // AssignMaterial undo (world idx)
 	uint32_t beforeParent = UINT32_MAX;   // Parent undo (world id)
+	// CreateLight payload (live-world domain: type 1 = point, 2 = spot;
+	// cone angles in DEGREES, editor convention; position in afterVec;
+	// name in afterText; parent in node2):
+	uint32_t lightType = 0;
+	glm::vec3 lightColor{ 1.0f, 1.0f, 1.0f };
+	float lightIntensity = 0.0f;
+	float lightRange = 0.0f; // 0 = infinite
+	float lightInnerDeg = 0.0f;
+	float lightOuterDeg = 0.0f;
+	bool lightStatic = false; // bake-only (kSceneLightFlag_Static)
+	bool lightShadow = false; // spot shadow request (spots only)
+	// SetLightAttr channel ("color","intensity","range","inner","outer",
+	// "static","shadow","name"). Value rides vec4 (color) / number
+	// (scalars, degrees for cones) / afterFlag (static/shadow) /
+	// afterText (name); before-state rides beforeVec4 / beforeNum /
+	// beforeFlag / beforeText.
+	std::string lightAttr;
 };
 
 class EditorApp; // command execution lives on the app (world access).

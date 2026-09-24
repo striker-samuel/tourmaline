@@ -10,17 +10,19 @@
 #include <filesystem>
 #include <string>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/Asset/tour.h>
 #include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
 
 namespace editor {
 
 void EditorApp::ReadLocalTRS(uint32_t node, glm::vec3& t,
-	glm::vec3& rDeg, glm::vec3& s) {
+	glm::vec3& rDeg, glm::vec3& s) const {
 	const glm::mat4& m = m_world->scene.localTransform[node];
 	t = glm::vec3(m[3]);
 	glm::vec3 skew;
@@ -175,7 +177,7 @@ int EditorApp::ClusterMatToWorld(uint32_t poolIdx) const {
 	return -1;
 }
 
-void EditorApp::ExecCmd(const EditCmd& c, bool forward) {
+void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
@@ -248,10 +250,328 @@ void EditorApp::ExecCmd(const EditCmd& c, bool forward) {
 		ReparentNode(c.node, forward ? c.node2 : c.beforeParent);
 		break;
 	}
+	case EditVerb::CreateLight: {
+		if (forward)
+			ExecCreateLight(c);
+		else
+			ExecUncreateLight(c);
+		break;
+	}
+	case EditVerb::SetLightAttr: {
+		const std::string& attr = c.lightAttr;
+		if (forward)
+			WriteNodeLightAttr(c.node, attr, c.vec4, c.number,
+				c.afterFlag, c.afterText);
+		else
+			WriteNodeLightAttr(c.node, attr, c.beforeVec4, c.beforeNum,
+				c.beforeFlag, c.beforeText);
+		break;
+	}
 	}
 }
 
-void EditorApp::Do(const EditCmd& c) {
+// ---------------------------------------------------------------------------
+// Created lights (point/spot).
+//
+// A created light is a WORLD node appended to the live scene plus a
+// SceneLight definition in the primary cluster's lights pool, linked
+// through world lightLocations — so gizmos (RecordGizmoPass), the
+// inspector (FindNodeLight), the outliner tags and the cooked-lights
+// census all pick it up with no special cases. Undo removes the node
+// when it is still the childless tail (ids stay stable); otherwise the
+// light is tombstoned (hidden + detached) for the same reason.
+// Tour persistence: CreateLight carries the creation (CmdToTour emits
+// the LIVE params, so post-creation edits ride along); SetLightAttr
+// addresses later creates via kCreateLightRefBase (creation order).
+// ---------------------------------------------------------------------------
+uint32_t EditorApp::DefaultCreateParent() const {
+	if (!m_world || m_world->scene.hierarchy.empty())
+		return UINT32_MAX;
+	// The primary cluster's root: WorldToCluster maps it to cluster id
+	// 0, so the tour stays replayable on a fresh import.
+	if (m_clusterBase != UINT32_MAX
+		&& m_clusterBase < m_world->scene.hierarchy.size())
+		return m_clusterBase;
+	return 0;
+}
+
+std::string EditorApp::UniqueLightName(bool spot) const {
+	const char* base = spot ? "Spot" : "Point";
+	int n = 1;
+	if (m_world)
+		for (const auto& [node, li] : m_world->scene.lightForNode) {
+			const ::SceneLight* L = FindNodeLight(node, nullptr);
+			if (L && (L->type == ::SceneLight::Type::Spot) == spot)
+				++n;
+		}
+	return std::string(base) + "_" + std::to_string(n);
+}
+
+int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
+	// Creation-order index among history creates at/below the cursor:
+	// the -ref value CmdToTour emits for SetLightAttr on created nodes.
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateLight)
+			continue;
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+void EditorApp::DraftCreateLight(bool spot) {
+	if (!m_world) {
+		Log("Create light: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateLight;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueLightName(spot);
+	c.afterVec = ActiveCam().target;
+	c.lightType = spot ? 2u : 1u;
+	c.lightColor = glm::vec3(1.0f, 0.95f, 0.85f);
+	c.lightIntensity = spot ? 1500.0f : 800.0f;
+	c.lightRange = 25.0f;
+	c.lightInnerDeg = 20.0f;
+	c.lightOuterDeg = 35.0f;
+	c.lightStatic = false; // dynamic: visible in the viewport immediately
+	c.lightShadow = spot;  // spots default to shadow-casting (points can't)
+	Do(c);
+}
+
+void EditorApp::ExecCreateLight(EditCmd& c) {
+	if (!m_world || m_world->clusters.empty()
+		|| !m_world->clusters[0])
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	scene.localTransform[size_t(created)] =
+		glm::translate(glm::mat4(1.0f), c.afterVec);
+	// Name (the nodeNames pool is grow-only, like Rename).
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	// Pool definition on the primary cluster (FindNodeLight resolves
+	// world lights through lightLocations -> cluster + handle).
+	::SceneLight def{};
+	def.type = c.lightType == 2u
+		? ::SceneLight::Type::Spot : ::SceneLight::Type::Point;
+	def.color = c.lightColor;
+	def.intensity = std::max(c.lightIntensity, 0.0f);
+	def.range = std::max(c.lightRange, 0.0f);
+	def.innerConeAngle = glm::radians(std::clamp(c.lightInnerDeg, 0.0f, 89.0f));
+	def.outerConeAngle = glm::radians(std::clamp(c.lightOuterDeg, 0.0f, 89.0f));
+	if (c.lightStatic)
+		def.flags |= ::SceneLight::kSceneLightFlag_Static;
+	if (c.lightShadow && def.type == ::SceneLight::Type::Spot)
+		def.flags |= ::SceneLight::kSceneLightFlag_CastShadow;
+	def.name = c.afterText;
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	auto handle = cl->lights.create(std::move(def));
+	const uint32_t worldLightIdx = uint32_t(m_world->lightLocations.size());
+	m_world->lightLocations.push_back({ cl, handle });
+	scene.lightForNode[uint32_t(created)] = worldLightIdx;
+	if (m_replayingTour)
+		m_tourCreatedNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created %s light '%s' (#%u)",
+		c.lightType == 2u ? "spot" : "point", c.afterText.c_str(),
+		uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateLight(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	auto lit = scene.lightForNode.find(n);
+	const bool lightTail = lit != scene.lightForNode.end()
+		&& lit->second + 1 == m_world->lightLocations.size();
+	if (tail && childless) {
+		// Physical removal: pop every vector addNode grew (flag arrays
+		// only when they are exactly node-sized — empty/mismatched
+		// means "default", which needs no entry).
+		if (lit != scene.lightForNode.end()) {
+			if (lightTail) {
+				const auto& loc = m_world->lightLocations[lit->second];
+				if (loc.cluster)
+					loc.cluster->lights.destroy(loc.handle);
+				m_world->lightLocations.pop_back();
+			}
+			scene.lightForNode.erase(n);
+		}
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			// Refresh the cached tail on the (possibly new) first child.
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid light creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the light instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.lightForNode.erase(n);
+		Log("Undid light creation (#" + std::to_string(n) +
+		 "): hidden, ids kept stable (pool entry retained).");
+	}
+}
+
+bool EditorApp::ReadNodeLightAttr(uint32_t node, const std::string& attr,
+	glm::vec4& v4, double& num, bool& flag, std::string& text) const {
+	v4 = glm::vec4(0.0f);
+	num = 0.0;
+	flag = false;
+	text.clear();
+	const ::SceneLight* L = FindNodeLight(node, nullptr);
+	if (!L)
+		return false;
+	if (attr == "color") {
+		v4 = glm::vec4(L->color, 1.0f);
+	} else if (attr == "intensity") {
+		num = double(L->intensity);
+	} else if (attr == "range") {
+		num = double(L->range);
+	} else if (attr == "inner") {
+		num = double(glm::degrees(L->innerConeAngle));
+	} else if (attr == "outer") {
+		num = double(glm::degrees(L->outerConeAngle));
+	} else if (attr == "static") {
+		flag = (L->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+	} else if (attr == "shadow") {
+		flag = (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
+	} else if (attr == "name") {
+		text = L->name;
+	} else if (attr == "position" || attr == "rotation") {
+		if (!m_world || node >= m_world->scene.hierarchy.size())
+			return false;
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		v4 = glm::vec4(attr == "position" ? t : r, 1.0f);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
+	const glm::vec4& v4, double num, bool flag, const std::string& text) {
+	if (!m_world)
+		return false;
+	Scene& scene = m_world->scene;
+	auto lit = scene.lightForNode.find(node);
+	if (lit == scene.lightForNode.end()
+		|| lit->second >= m_world->lightLocations.size())
+		return false;
+	const auto& loc = m_world->lightLocations[lit->second];
+	if (!loc.cluster)
+		return false;
+	::SceneLight* L = loc.cluster->lights.get(loc.handle);
+	if (!L)
+		return false;
+	if (attr == "color") {
+		L->color = glm::vec3(v4.x, v4.y, v4.z);
+	} else if (attr == "intensity") {
+		L->intensity = std::max(float(num), 0.0f);
+	} else if (attr == "range") {
+		L->range = std::max(float(num), 0.0f);
+	} else if (attr == "inner") {
+		L->innerConeAngle = glm::radians(std::clamp(float(num), 0.0f, 89.0f));
+	} else if (attr == "outer") {
+		L->outerConeAngle = glm::radians(std::clamp(float(num), 0.0f, 89.0f));
+	} else if (attr == "static") {
+		if (flag)
+			L->flags |= ::SceneLight::kSceneLightFlag_Static;
+		else
+			L->flags &= ~::SceneLight::kSceneLightFlag_Static;
+	} else if (attr == "shadow") {
+		if (flag)
+			L->flags |= ::SceneLight::kSceneLightFlag_CastShadow;
+		else
+			L->flags &= ~::SceneLight::kSceneLightFlag_CastShadow;
+	} else if (attr == "name") {
+		L->name = text;
+		const uint32_t id = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(text);
+		scene.nameForNode[node] = id;
+	} else if (attr == "position" || attr == "rotation") {
+		if (node >= scene.hierarchy.size())
+			return false;
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		if (attr == "position")
+			t = glm::vec3(v4.x, v4.y, v4.z);
+		else
+			r = glm::vec3(v4.x, v4.y, v4.z);
+		scene.localTransform[node] = LocalMatrixFromTRS(t, r, s);
+		markAsChanged(scene, int(node));
+		recalculateGlobalTransforms(scene);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	if (c.verb == EditVerb::SetVisibility)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
@@ -272,7 +592,7 @@ void EditorApp::Do(const EditCmd& c) {
 	SaveTour();
 }
 
-void EditorApp::PushDone(const EditCmd& c) {
+void EditorApp::PushDone(EditCmd c) {
 	// Already executed live (drag path): just record + save.
 	if (c.verb == EditVerb::SetVisibility)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
@@ -347,6 +667,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetDitherCloseup: return "dither flag";
 	case editor::EditVerb::SetVisibility: return "visibility";
 	case editor::EditVerb::Parent: return "reparent";
+	case editor::EditVerb::CreateLight: return "create light";
+	case editor::EditVerb::SetLightAttr: return "light edit";
 	}
 	return "?";
 }
@@ -382,24 +704,40 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		return true;
 	};
 	switch (c.verb) {
-	case EditVerb::Rename:
+	case EditVerb::Rename: {
+		const int k = app.CreatedLightIndex(c.node);
+		if (k >= 0) {
+			out.verb = smvk::tour::Verb::SetLightAttr;
+			out.node = smvk::tour::kCreateLightRefBase | uint32_t(k);
+			out.text = "name";
+			out.name = c.afterText;
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Rename;
 		out.text = c.afterText;
 		return true;
+	}
 	case EditVerb::Translate:
+	case EditVerb::Rotate: {
+		// Created-light nodes own no cluster id: persist moves/aims as
+		// light-attr triples (-ref addressing) so gizmo edits survive.
+		const int k = app.CreatedLightIndex(c.node);
+		if (k >= 0) {
+			out.verb = smvk::tour::Verb::SetLightAttr;
+			out.node = smvk::tour::kCreateLightRefBase | uint32_t(k);
+			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
+			out.vec4 = glm::vec4(c.afterVec, 1.0f);
+			return true;
+		}
 		if (!needNode())
 			return false;
-		out.verb = smvk::tour::Verb::SetTranslate;
+		out.verb = (c.verb == EditVerb::Translate)
+			? smvk::tour::Verb::SetTranslate : smvk::tour::Verb::SetRotate;
 		out.vec = c.afterVec;
 		return true;
-	case EditVerb::Rotate:
-		if (!needNode())
-			return false;
-		out.verb = smvk::tour::Verb::SetRotate;
-		out.vec = c.afterVec;
-		return true;
+	}
 	case EditVerb::Scale:
 		if (!needNode())
 			return false;
@@ -467,6 +805,62 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::Parent;
 		out.node2 = uint32_t(pn);
 		out.name = getNodeName(app.m_world->scene, int(c.node));
+		return true;
+	}
+	case EditVerb::CreateLight: {
+		// Emit the LIVE create state: the node may have moved and its
+		// params may have been attr-edited after creation (those later
+		// SetLightAttr commands re-emit harmlessly and idempotently).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		const ::SceneLight* L = app.FindNodeLight(created, nullptr);
+		if (!L)
+			return false; // detached (tombstoned): nothing to persist
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			// World root has no cluster id: the primary cluster's root
+			// (id 0) is the replay-stable equivalent.
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		const glm::vec3 t = glm::vec3(
+			app.m_world->scene.localTransform[created][3]);
+		out.verb = smvk::tour::Verb::CreateLight;
+		out.node = uint32_t(pp);
+		out.text = L->name;
+		out.vec = t;
+		out.vec4 = glm::vec4(
+			L->type == ::SceneLight::Type::Spot ? 2.0f : 1.0f,
+			L->intensity, L->range, glm::degrees(L->innerConeAngle));
+		out.number = double(glm::degrees(L->outerConeAngle));
+		out.flag = (L->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+		out.node2 = (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0
+			? 1u : 0u;
+		return true;
+	}
+	case EditVerb::SetLightAttr: {
+		const int k = app.CreatedLightIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateLightRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetLightAttr;
+		out.text = c.lightAttr;
+		if (c.lightAttr == "color" || c.lightAttr == "position"
+			|| c.lightAttr == "rotation") {
+			out.vec4 = c.vec4;
+		} else if (c.lightAttr == "name") {
+			out.name = c.afterText;
+		} else if (c.lightAttr == "static" || c.lightAttr == "shadow") {
+			out.flag = c.afterFlag;
+		} else {
+			out.number = c.number;
+		}
 		return true;
 	}
 	}
@@ -717,6 +1111,59 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			app.m_world->scene.hierarchy[wn].parent);
 		return true;
 	}
+	case smvk::tour::Verb::CreateLight: {
+		const uint32_t wp = app.ClusterToWorld(tc.node);
+		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+			return false;
+		out.verb = EditVerb::CreateLight;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.lightType = (tc.vec4.x >= 1.5f) ? 2u : 1u;
+		// Creation default (matches DraftCreateLight); a non-default
+		// color always travels as its own SetLightAttr(color) command.
+		out.lightColor = glm::vec3(1.0f, 0.95f, 0.85f);
+		out.lightIntensity = tc.vec4.y;
+		out.lightRange = tc.vec4.z;
+		out.lightInnerDeg = tc.vec4.w;
+		out.lightOuterDeg = float(tc.number);
+		out.lightStatic = tc.flag;
+		out.lightShadow = tc.node2 != 0;
+		return true;
+	}
+	case smvk::tour::Verb::SetLightAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateLightRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateLightRefBase;
+			if (k >= app.m_tourCreatedNodes.size())
+				return false;
+			target = app.m_tourCreatedNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		out.verb = EditVerb::SetLightAttr;
+		out.node = target;
+		out.lightAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeLightAttr(target, tc.text, out.beforeVec4,
+				out.beforeNum, out.beforeFlag, out.beforeText))
+			return false;
+		if (tc.text == "color" || tc.text == "position"
+			|| tc.text == "rotation") {
+			out.vec4 = tc.vec4;
+		} else if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else if (tc.text == "static" || tc.text == "shadow") {
+			out.afterFlag = tc.flag;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
 	}
 	return false;
 }
@@ -736,8 +1183,15 @@ bool EditorApp::LoadTour() {
 	}
 	for (auto& w : warns)
 		Log(w);
+	return ReplayTourDoc(doc, m_gltfPath);
+}
+
+bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
+	const std::string& sourcePath) {
+	if (!m_world)
+		return false;
 	if (!doc.fingerprint.empty()) {
-		const std::string now = smvk::tour::Fingerprint(m_gltfPath);
+		const std::string now = smvk::tour::Fingerprint(sourcePath);
 		if (!now.empty() && now != doc.fingerprint)
 			Log("tour: source changed since save (ids may have shifted)");
 	}
@@ -762,6 +1216,8 @@ bool EditorApp::LoadTour() {
 	// exact and the whole tour stays undoable). Wide rules load AFTER the
 	// direct commands so locals win over matching regex (more specific
 	// wins); rules skip locally-overridden nodes when they apply.
+	m_tourCreatedNodes.clear();
+	m_replayingTour = true;
 	ClearHistory();
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -777,6 +1233,7 @@ bool EditorApp::LoadTour() {
 		m_history.push_back(c);
 		++applied;
 	}
+	m_replayingTour = false;
 	m_historyCursor = m_history.size();
 	Log("tour: applied " + std::to_string(applied) + "/" +
 		std::to_string(doc.commands.size()) + " commands.");
@@ -787,6 +1244,64 @@ bool EditorApp::LoadTour() {
 	// editor state matches the parsed doc exactly.
 	if (!doc.references.empty())
 		m_references = doc.references;
+	return true;
+}
+
+std::string EditorApp::ResolveTourSource(const std::string& tourPath,
+	const std::string& source) const {
+	namespace fs = std::filesystem;
+	if (source.empty())
+		return {};
+	std::error_code ec;
+	if (fs::is_regular_file(source, ec))
+		return source;
+	const fs::path cand = fs::path(tourPath).parent_path() / source;
+	if (fs::is_regular_file(cand, ec))
+		return cand.string();
+	// VFS-style content-relative path ("models/..."): try the current
+	// content root, then the working-dir content tree.
+	const std::string root = ResolveVfsRoot();
+	if (!root.empty() && root != ".") {
+		const fs::path rooted = fs::path(root) / source;
+		if (fs::is_regular_file(rooted, ec))
+			return rooted.string();
+	}
+	return source; // let the loader report the failure
+}
+
+bool EditorApp::OpenTourFile(const std::string& path) {
+	smvk::tour::Doc doc;
+	std::string err;
+	std::vector<std::string> warns;
+	if (!smvk::tour::LoadTour(path, doc, err, &warns)) {
+		Log("tour open failed: " + err);
+		return false;
+	}
+	for (auto& w : warns)
+		Log(w);
+	// The tour names its source: load it when it differs from (or when
+	// nothing is open). Replay lands on the fresh import underneath.
+	if (!doc.source.empty()) {
+		const std::string src = ResolveTourSource(path, doc.source);
+		if (!src.empty() && src != m_gltfPath) {
+			const bool ok = HasPakExtension(src)
+				? LoadPakIntoWorld(src) : LoadGltfIntoWorld(src);
+			if (!ok) {
+				Log("tour open: failed to load source '" + src + "'");
+				return false;
+			}
+		} else if (!m_world) {
+			Log("tour open: no scene open and no loadable source.");
+			return false;
+		}
+	} else if (!m_world) {
+		Log("tour open: tour has no source and no scene is open.");
+		return false;
+	}
+	m_tourPath = path; // the opened file becomes the save target
+	if (!ReplayTourDoc(doc, doc.source.empty() ? m_gltfPath : doc.source))
+		return false;
+	Log("Tour opened: " + path);
 	return true;
 }
 

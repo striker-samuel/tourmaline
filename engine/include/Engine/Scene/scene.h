@@ -47,6 +47,14 @@ struct SceneLight {
 	// would double the direct term). Directionals: the first static one
 	// also seeds the bake sun.
 	static constexpr uint32_t kSceneLightFlag_Static = 1 << 0;
+	// Cast-shadow request (authored in the editor light inspector; spots
+	// ONLY — the spot-shadow atlas has no point-light path, points ignore
+	// it). The runtime forward+ set honors it when assigning the
+	// kMaxSpotShadows tiles (kForwardPlusFlag_CastShadow). Imported
+	// (glTF/pak) lights never carry it — cooked lights never cast today —
+	// so existing content is unaffected; editor-created spots default it
+	// on for the useful case.
+	static constexpr uint32_t kSceneLightFlag_CastShadow = 1 << 1;
 	Type type = Type::Point;
 	glm::vec3 color{ 1.0f, 1.0f, 1.0f };
 	// Units match the runtime shaders (see Renderer/light.h):

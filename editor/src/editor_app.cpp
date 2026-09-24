@@ -17,6 +17,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/Renderer/mesh.h>
 #include <gltf_import/gltf.h>
 #include <Engine/core.h>
@@ -65,6 +66,17 @@ bool EditorApp::OpenScene(const std::string& path) {
 	if (HasPakExtension(path))
 		return LoadPakIntoWorld(path);
 	return LoadGltfIntoWorld(path);
+}
+
+// Open-dialog dispatch: .tour files replay into the stack (source auto-
+// loads when it differs); everything else is a scene open.
+bool EditorApp::OpenAnySceneFile(const std::string& path) {
+	if (path.size() >= 5) {
+		const std::string ext = path.substr(path.size() - 5);
+		if (ext == ".tour" || ext == ".TOUR")
+			return OpenTourFile(path);
+	}
+	return OpenScene(path);
 }
 
 bool EditorApp::OpenPak(const std::string& pakPath) {
@@ -454,6 +466,8 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 
 	// Baked lightmap atlas next to the pak: content/gi/<stem>.sglm.
 	TryLoadSiblingSglm(path);
+	// Convex GI volume sidecars (probes-only pivot preview data).
+	TryLoadCvolumes(path);
 	RebuildCookedLights(); // census + seeds the viewport sun from the pak
 
 	const ::Aabb bounds = m_world->ComputeSceneBounds();
@@ -561,6 +575,137 @@ void EditorApp::ClearSglmLayers() {
 		s = UINT32_MAX;
 	m_lmLayerKind = 0;
 	m_lmGpu = false;
+}
+
+// ---------------------------------------------------------------------------
+// Convex GI volume preview data (probes-only pivot). Loads the
+// gi/<stem>.cvmanifest + .cvol sidecars next to the opened pak and
+// builds each volume's hull: the bake AABB (gridMin..gridMin + dims*
+// spacing) clipped by the volume's plane set (3D Sutherland-Hodgman).
+// The hull feeds the LIGHTING-mode view option (wireframe / translucent
+// fill, color-coded by priority) — draw lives in DrawCvolPreviewOverlay
+// (editor_viewports.cpp).
+// ---------------------------------------------------------------------------
+bool EditorApp::TryLoadCvolumes(const std::string& pakPath) {
+	m_cvolPreviews.clear();
+	namespace fs = std::filesystem;
+	const fs::path pak(pakPath);
+	const std::string stem = pak.stem().string();
+	if (stem.empty())
+		return false;
+	// Manifest candidates (same sibling convention as the sglm probe).
+	std::vector<fs::path> manifests;
+	manifests.push_back(
+		(pak.parent_path() / ".." / "gi" / (stem + ".cvmanifest"))
+			.lexically_normal());
+	manifests.push_back((fs::path("content") / "gi" / (stem + ".cvmanifest")));
+	fs::path manifestPath;
+	std::error_code ec;
+	for (const fs::path& m : manifests)
+		if (fs::is_regular_file(m, ec)) {
+			manifestPath = m;
+			break;
+		}
+	if (manifestPath.empty())
+		return false;
+	// One .cvol vfs path per line ('#' comments skipped). Lines are
+	// relative to the CONTENT ROOT (the manifest's parent's parent).
+	std::ifstream in(manifestPath);
+	if (!in)
+		return false;
+	const fs::path contentRoot = manifestPath.parent_path().parent_path();
+	std::string line;
+	int loaded = 0;
+	while (std::getline(in, line)) {
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		fs::path volPath = fs::path(line);
+		if (volPath.is_relative())
+			volPath = (contentRoot / volPath).lexically_normal();
+		smvk::gi::CvVolume vol;
+		std::string err;
+		if (!smvk::gi::CvVolume::ReadFile(volPath.string(), vol, err)) {
+			Log("Convex volume load failed '" + volPath.string() + "': " + err);
+			continue;
+		}
+		CvolPreview pv;
+		pv.name = volPath.stem().string();
+		pv.priority = vol.def.priority;
+		pv.gridMin = vol.gridMin;
+		pv.gridMax = vol.gridMin
+			+ glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2]) * vol.spacing;
+		// Hull: start with the 6 AABB faces, clip every polygon by every
+		// plane (inside: n.P + d <= 0). Orientation does not matter for
+		// the preview (wireframe + X-ray fill).
+		{
+			const glm::vec3 mn = pv.gridMin, mx = pv.gridMax;
+			const glm::vec3 q[8] = {
+				{ mn.x, mn.y, mn.z }, { mx.x, mn.y, mn.z },
+				{ mx.x, mx.y, mn.z }, { mn.x, mx.y, mn.z },
+				{ mn.x, mn.y, mx.z }, { mx.x, mn.y, mx.z },
+				{ mx.x, mx.y, mx.z }, { mn.x, mx.y, mx.z },
+			};
+			static const int kFaces[6][4] = {
+				{ 0, 1, 2, 3 }, { 5, 4, 7, 6 }, { 4, 0, 3, 7 },
+				{ 1, 5, 6, 2 }, { 3, 2, 6, 7 }, { 4, 5, 1, 0 },
+			};
+			std::vector<std::vector<glm::vec3>> polys;
+			for (int f = 0; f < 6; ++f)
+				polys.push_back({ q[kFaces[f][0]], q[kFaces[f][1]],
+					q[kFaces[f][2]], q[kFaces[f][3]] });
+			for (const smvk::gi::CvPlane& plane : vol.def.planes) {
+				const auto inside = [&](const glm::vec3& p) {
+					return glm::dot(plane.normal, p) + plane.d <= 0.0f;
+				};
+				std::vector<std::vector<glm::vec3>> clipped;
+				for (std::vector<glm::vec3>& poly : polys) {
+					if (poly.size() < 3)
+						continue;
+					std::vector<glm::vec3> out;
+					out.reserve(poly.size() + 1);
+					for (size_t i = 0; i < poly.size(); ++i) {
+						const glm::vec3& a = poly[i];
+						const glm::vec3& b = poly[(i + 1) % poly.size()];
+						const bool inA = inside(a), inB = inside(b);
+						if (inA)
+							out.push_back(a);
+						if (inA != inB) {
+							const float da = glm::dot(plane.normal, a) + plane.d;
+							const float db = glm::dot(plane.normal, b) + plane.d;
+							const float t = da / (da - db);
+							out.push_back(glm::mix(a, b, std::clamp(t, 0.0f, 1.0f)));
+						}
+					}
+					if (out.size() >= 3)
+						clipped.push_back(std::move(out));
+				}
+				polys = std::move(clipped);
+				if (polys.empty())
+					break;
+			}
+			pv.polys = std::move(polys);
+		}
+		glm::vec3 centroidSum(0.0f);
+		int centroidCount = 0;
+		for (const auto& poly : pv.polys)
+			for (const glm::vec3& p : poly) {
+				centroidSum += p;
+				++centroidCount;
+			}
+		pv.center = centroidCount > 0
+			? centroidSum / float(centroidCount) : pv.gridMin;
+		m_cvolPreviews.push_back(std::move(pv));
+		++loaded;
+	}
+	if (loaded > 0) {
+		Log("Convex GI volumes: loaded " + std::to_string(loaded)
+			+ " from '" + manifestPath.string() + "' (J in LIGHTING toggles "
+			+ "the preview)");
+		return true;
+	}
+	return false;
 }
 
 void EditorApp::UploadSglmLayers() {

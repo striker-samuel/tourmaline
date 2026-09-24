@@ -410,6 +410,209 @@ void TestReferences() {
 	fs::remove_all(dir, ec);
 }
 
+void TestTourReferences() {
+	// .tour as a reference source: the authored scene imports, then its
+	// tour commands replay with id offsets (rename/transform/createLight
+	// + setLightAttr -ref). Disabled references stay unbound.
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "vulkantoy_tourrefs";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	auto writeGltf = [&](const char* file, const char* nodeName) {
+		const fs::path p = dir / file;
+		std::ofstream f(p, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"" << nodeName << "\"}]}";
+		return p;
+	};
+	writeGltf("sub.gltf", "Box");
+	writeGltf("gear.gltf", "Gear");
+	// The referenced tour: rename + move its node, nest a gltf, create
+	// a light and tune it via -ref.
+	{
+		std::ofstream f(dir / "sub.tour", std::ios::binary | std::ios::trunc);
+		f << "source -p \"sub.gltf\";\n"
+			"rename -n 0 \"BoxRenamed\";\n"
+			"setAttr -n 0 -at translate -t 5 0 0;\n"
+			"reference -n 0 -source \"gear.gltf\" -name \"gear\";\n"
+			"createLight -p 0 -name \"Sub Spot\" -at spot -t 1 2 3 100 10 15 30 0 1;\n"
+			"setLightAttr -ref 0 -at intensity -v 200;\n";
+	}
+	auto freshCluster = []() {
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+		return cluster;
+	};
+	// Master references the .tour (enabled by default).
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "sub.tour";
+	r.name = "sub";
+	doc.references.push_back(r);
+	std::string err;
+	std::vector<std::string> warns;
+	auto cluster = freshCluster();
+	std::vector<int> ph;
+	const size_t applied = ApplySceneReferences(*cluster, doc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph);
+	// sub inlined + its tour replayed + nested gear inlined.
+	Check(applied == 2, "tourref applied (sub + nested gear)");
+	Check(ph.size() == 1, "tourref placeholder list");
+	// Id layout: 0 root, 1 "REF sub", 2 BoxRenamed, 3 created light
+	// (+ gear placeholder + Gear appended after).
+	Check(findNodeByName(cluster->scene, "REF sub") == 1,
+		"tourref placeholder");
+	Check(findNodeByName(cluster->scene, "BoxRenamed") == 2,
+		"tourref replayed rename with offset");
+	Check(cluster->scene.hierarchy[size_t(2)].parent == 1,
+		"tourref subtree parent");
+	Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
+		"tourref replayed transform with offset");
+	Check(findNodeByName(cluster->scene, "Sub Spot") == 3,
+		"tourref created light with offset parent");
+	const uint32_t lightNode = 3;
+	auto lit = cluster->scene.lightForNode.find(lightNode);
+	Check(lit != cluster->scene.lightForNode.end(), "tourref light link");
+	if (lit != cluster->scene.lightForNode.end()) {
+		const ::SceneLight* L = cluster->lights.get(
+			cluster->lights.getHandle(lit->second));
+		Check(L && L->type == ::SceneLight::Type::Spot
+			&& L->intensity == 200.0f
+			&& (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0,
+			"tourref -ref attr applied in replay");
+	}
+	Check(findNodeByName(cluster->scene, "REF gear") >= 0,
+		"tourref nested placeholder");
+	Check(findNodeByName(cluster->scene, "Gear") >= 0,
+		"tourref nested subtree");
+
+	// Disabled reference: nothing binds.
+	smvk::tour::Doc offDoc;
+	smvk::tour::ReferenceCmd off{};
+	off.parent = 0;
+	off.source = "sub.tour";
+	off.name = "sub";
+	off.enabled = false;
+	offDoc.references.push_back(off);
+	auto clusterOff = freshCluster();
+	const size_t offApplied = ApplySceneReferences(*clusterOff, offDoc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
+	Check(offApplied == 0, "tourref disabled skips bind");
+	Check(findNodeByName(clusterOff->scene, "REF sub") < 0,
+		"tourref disabled has no placeholder");
+
+	// -enabled round-trips (absent = enabled).
+	smvk::tour::Doc rtDoc;
+	rtDoc.references.push_back(off);
+	std::string rtErr;
+	Check(smvk::tour::SaveTour((dir / "rt.tour").string(), rtDoc, rtErr),
+		"tourref enabled save");
+	smvk::tour::Doc rtBack;
+	Check(smvk::tour::LoadTour((dir / "rt.tour").string(), rtBack, rtErr),
+		"tourref enabled load");
+	Check(rtBack.references.size() == 1 && !rtBack.references[0].enabled,
+		"tourref enabled flag roundtrip");
+	// Cleanup.
+	fs::remove_all(dir, ec);
+}
+
+void TestLightVerbs() {
+	// Editor-authored lights: createLight/setLightAttr round-trip through
+	// Editor-authored lights: createLight/setLightAttr round-trip through
+	// the .tour file, then replay onto a cook cluster (create appends a
+	// node + pool definition; -ref addressing hits creation order).
+	smvk::tour::Doc doc;
+	doc.source = "models/x.gltf";
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateLight;
+	c.node = 0; // parent: cluster root
+	c.text = "Key Spot";
+	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+	c.vec4 = glm::vec4(2.0f, 1500.0f, 25.0f, 20.0f); // spot, I, range, inner
+	c.number = 35.0; // outer
+	c.flag = false;  // dynamic
+	c.node2 = 1;     // shadow
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetLightAttr;
+	c.node = smvk::tour::kCreateLightRefBase | 0u;
+	c.text = "intensity";
+	c.number = 2000.0;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetLightAttr;
+	c.node = smvk::tour::kCreateLightRefBase | 0u;
+	c.text = "color";
+	c.vec4 = glm::vec4(1.0f, 0.5f, 0.25f, 1.0f);
+	doc.commands.push_back(c);
+
+	std::string err;
+	std::vector<std::string> warns;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "light tour save");
+	smvk::tour::Doc back;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "light tour load");
+	Check(back.commands.size() == 3, "light tour command count");
+	const smvk::tour::Command& rc = back.commands[0];
+	Check(rc.verb == smvk::tour::Verb::CreateLight && rc.node == 0
+		&& rc.text == "Key Spot" && rc.vec4.x == 2.0f
+		&& rc.vec4.y == 1500.0f && rc.number == 35.0 && !rc.flag
+		&& rc.node2 == 1, "light create roundtrip");
+	Check(back.commands[1].verb == smvk::tour::Verb::SetLightAttr
+		&& back.commands[1].node == (smvk::tour::kCreateLightRefBase | 0u)
+		&& back.commands[1].text == "intensity"
+		&& back.commands[1].number == 2000.0, "light attr roundtrip");
+
+	// Replay: root + one imported node; create under root.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	setNodeName(cluster->scene, root, "Root");
+	const size_t beforeNodes = cluster->scene.hierarchy.size();
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"light replay ok");
+	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
+		"light replay appends node");
+	const uint32_t newNode = uint32_t(beforeNodes);
+	Check(cluster->scene.hierarchy[newNode].parent == root,
+		"light replay parent");
+	Check(getNodeName(cluster->scene, int(newNode)) == "Key Spot",
+		"light replay name");
+	auto lit = cluster->scene.lightForNode.find(newNode);
+	Check(lit != cluster->scene.lightForNode.end(), "light replay link");
+	const ::SceneLight* L = cluster->lights.get(
+		cluster->lights.getHandle(lit->second));
+	bool params = L && L->type == ::SceneLight::Type::Spot
+		&& L->intensity == 2000.0f && L->range == 25.0f
+		&& std::abs(L->innerConeAngle - glm::radians(20.0f)) < 1e-4f
+		&& std::abs(L->outerConeAngle - glm::radians(35.0f)) < 1e-4f
+		&& (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0
+		&& (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0
+		&& L->color == glm::vec3(1.0f, 0.5f, 0.25f);
+	Check(params, "light replay params (-ref intensity + color applied)");
+	Check(cluster->scene.localTransform[newNode][3].x == 1.0f,
+		"light replay position");
+
+	// Out-of-range -ref fails loudly; unknown attr fails at parse.
+	smvk::tour::Doc bad;
+	smvk::tour::Command bc{};
+	bc.verb = smvk::tour::Verb::SetLightAttr;
+	bc.node = smvk::tour::kCreateLightRefBase | 5u;
+	bc.text = "intensity";
+	bc.number = 1.0;
+	bad.commands.push_back(bc);
+	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+		"light replay rejects bad ref");
+	smvk::tour::Doc parseBad;
+	Check(!smvk::tour::LoadTourFromString(
+		"setLightAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+		"light parser rejects bad attr");
+}
+
 } // namespace
 
 int main() {
@@ -418,6 +621,8 @@ int main() {
 	TestReparent();
 	TestReplay();
 	TestReferences();
+	TestTourReferences();
+	TestLightVerbs();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

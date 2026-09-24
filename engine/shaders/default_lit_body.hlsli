@@ -1067,20 +1067,44 @@ PSOut mainPS(PSIn IN)
     }
     if (giSource == 0u && (frame.giEnabled != 0u || frame.cvolEnabled != 0u))
     {
+        const float giScale = max(frame.giIntensity, 0.0f);
+        float3 E;
+        float3 specAmps[SG_GI_LOBES];
+        bool covered = false;
+        uint volHits = 0u;
+        // FULL-COVER FAST PATH: when the highest-priority volume owns
+        // the pixel (weight == 1 on every plane), the ordered lerp
+        // discards every earlier sample — the 100k-probe-class octree
+        // gather included. The weight pass is plane math only (no
+        // texture taps), so deep-inside pixels pay ONE volume sample
+        // (7 trilinear taps) instead of the octree walk + blends.
+        const uint fullVol = SgCvFullVolumeIndex(frame, IN.worldPos);
+        if (fullVol != 0xFFFFFFFFu)
+        {
+            float3 volAmps[SG_GI_LOBES];
+            SgCvSampleVolume(frame, fullVol, IN.worldPos, volAmps);
+            E = SgGiDiffuseIrradiance(volAmps, N);
+            [unroll]
+            for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
+                specAmps[sB] = volAmps[sB];
+            covered = true;
+            volHits = 1u;
+        }
+        else
+        {
         // World field: sparse octree, sampled on its own.
         float3 octAmps[SG_GI_LOBES];
         float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
         bool octreeCovered = false;
         if (frame.giEnabled != 0u)
             octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
-        const float giScale = max(frame.giIntensity, 0.0f);
         // Irradiance-space blend chain. The base is the analytic sky —
         // the universal fallback — so a volume fading in over
         // uncovered outdoor space transitions through the sky instead of
         // through garbage; a fully-inside pixel (w -> 1) takes the
         // volume's field alone.
-        float3 E = irradiance;
-        bool covered = octreeCovered;
+        E = irradiance;
+        covered = octreeCovered;
         if (octreeCovered)
             E = SgGiDiffuseIrradiance(octAmps, N);
         // Amp-space twin of the chain for the rough-glossy SG specular
@@ -1089,11 +1113,9 @@ PSOut mainPS(PSIn IN)
         // representation: while only volumes cover, the current volume's
         // amplitudes are the best available specular field; once the
         // octree covers, the chain lerps normally.
-        float3 specAmps[SG_GI_LOBES];
         [unroll]
         for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
             specAmps[sA] = octreeCovered ? octAmps[sA] : float3(0.0, 0.0, 0.0);
-        uint volHits = 0u;
         if (frame.cvolEnabled != 0u)
         {
             // App uploads priority-sorted (low first): later volumes
@@ -1126,6 +1148,7 @@ PSOut mainPS(PSIn IN)
                     ++volHits;
                 }
             }
+        }
         }
         if (covered)
         {

@@ -332,6 +332,71 @@ void EditorApp::DrawViewportChrome() {
 		ImGui::End();
 		ImGui::PopID();
 	}
+	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
+	DrawCvolPreviewOverlay();
+}
+
+// X-ray preview of the convex GI volumes (probes-only pivot): each
+// volume's hull (bake AABB clipped by its plane set, built in
+// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport —
+// wireframe at mode 1, + translucent priority-coded fill at mode 2.
+// Foreground = no depth, so the volumes read through geometry (the
+// point of the view: authoring shapes against walls/roofs).
+void EditorApp::DrawCvolPreviewOverlay() {
+	if (m_cvolPreviewMode == 0 || m_cvolPreviews.empty())
+		return;
+	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	// Priority -> stable hue (stacked override volumes read at a glance).
+	const auto priorityColor = [](uint32_t priority, int alpha) {
+		const float hue = std::fmod(float(priority) * 0.13f, 1.0f);
+		ImColor c = ImColor::HSV(hue, 0.7f, 1.0f);
+		c.Value.w = float(alpha) / 255.0f;
+		return (ImU32)c;
+	};
+	for (int i = 0; i < ViewportCount(); ++i) {
+		const EditorViewport& vp = m_viewports[i];
+		if (IsFlatUvViewMode(vp.viewMode))
+			continue;
+		const glm::mat4 vpm = vp.viewProj;
+		const auto project = [&](const glm::vec3& w, ImVec2& out) {
+			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+			if (c.w <= 1e-6f)
+				return false; // behind the camera
+			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+			return true;
+		};
+		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
+			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		for (const CvolPreview& cv : m_cvolPreviews) {
+			const ImU32 wire = priorityColor(cv.priority, 220);
+			const ImU32 fill = priorityColor(cv.priority, 42);
+			for (const auto& poly : cv.polys) {
+				if (poly.size() < 3)
+					continue;
+				ImVec2 a, b;
+				for (size_t k = 0; k < poly.size(); ++k)
+					if (project(poly[k], a)
+						&& project(poly[(k + 1) % poly.size()], b))
+						dl->AddLine(a, b, wire, 1.5f);
+				if (m_cvolPreviewMode >= 2) {
+					ImVec2 c0, c1, c2;
+					if (project(poly[0], c0))
+						for (size_t k = 1; k + 1 < poly.size(); ++k)
+							if (project(poly[k], c1) && project(poly[k + 1], c2))
+								dl->AddTriangleFilled(c0, c1, c2, fill);
+				}
+			}
+			ImVec2 c;
+			if (project(cv.center, c)) {
+				char label[96];
+				std::snprintf(label, sizeof(label), "%s  p%u",
+					cv.name.c_str(), cv.priority);
+				dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
+			}
+		}
+		dl->PopClipRect();
+	}
 }
 
 // ---- panel resize splitters ---------------------------------------------

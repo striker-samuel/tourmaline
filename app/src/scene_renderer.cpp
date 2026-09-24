@@ -4020,6 +4020,11 @@ void SceneRenderer::Shutdown() {
 				sl.innerAngle = L.innerConeAngle;
 				sl.outerAngle = L.outerConeAngle;
 				sl.type = (int32_t)smvk::kForwardPlusSpot;
+				// Editor-authored shadow request (SceneLight cast-shadow
+				// flag; points ignore shadow fields): the frame's spot
+				// tile selection honors the request.
+				if ((L.flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0)
+					sl.flags |= smvk::kForwardPlusFlag_CastShadow;
 				sl.shadowTile = -1;
 				sl.shadowMapIndex = -1;
 				sl.cookieIndex = -1;

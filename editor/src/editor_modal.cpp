@@ -1,30 +1,28 @@
 // vi-style modal input: the ACTIVE mode's keymap interprets keys.
 //
-// Architecture:
-//   - One GLOBAL table (mode switches 1-4, shading F1-F3, window toggles,
-//     undo/redo/save) + one table per mode (LAYOUT / LIGHTING / TEST /
-//     PROFILE). Bindings are exact key+modifier matches pointing at tiny
-//     EditorApp handlers, so a key can mean different things per mode
-//     (like vi's normal/insert) and the tables stay the single source of
-//     truth for what a key does.
-//   - The tables are function-local statics inside UpdateModalInput (a
-//     member function): they address PRIVATE handlers, so they must live
-//     in member scope. Built once, read every frame.
-//   - UpdateModalInput() (called from RenderFrame, before DrawUI) walks
-//     the ACTIVE mode's table first (modes may shadow globals), then the
-//     global table. A key fires at most once per frame.
+// Architecture (see modal_bindings.h — the single registry):
+//   - EVERY binding lives in kModalBindings exactly once, with the
+//     modes it belongs to (mode rows first, globals last). Dispatch,
+//     the viewport legend and the conflict validator all read that
+//     list, so a key can never be silently double-assigned.
+//   - UpdateModalInput() (called from RenderFrame, before DrawUI) makes
+//     one pass over the registry: a row fires on exact key+modifier
+//     match when it applies to the active mode. A key fires at most
+//     once per frame.
 //   - Keys are skipped while ImGui wants the keyboard (typing into a
 //     field) or while the Q radial popup is open (it owns 1/2/3).
 //   - PROFILE is a stub: the mode + dispatch + OnModeEnter/OnModeExit
 //     hooks exist and one placeholder binding proves the path; capture /
-//     frame-stats bindings land in kProfile later.
+//     frame-stats bindings land in kModalBindings later.
 //
 // Adding a binding: write a tiny handler below, declare it in
-// editor_app.h next to the others, add the row to a table.
+// editor_app.h next to the others, append one row to kModalBindings.
 
 #include "editor_app.h"
+#include "modal_bindings.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -35,7 +33,7 @@ namespace editor {
 namespace {
 
 template <size_t N>
-constexpr size_t CountOf(const ModalBinding (&arr)[N]) { return N; }
+constexpr size_t CountOf(const ModalBindingDef (&arr)[N]) { return N; }
 
 bool ModsMatch(uint8_t mods, bool ctrl, bool shift, bool alt) {
 	return ((mods & kModalCtrl) != 0) == ctrl &&
@@ -66,6 +64,80 @@ void EditorApp::OnModeExit(EditorMode) {
 	// PROFILE wiring point: stop the capture when leaving Profile.
 }
 
+namespace {
+// File-scope view of the central registry (modal_bindings.h): the
+// master array itself is a function-local static inside
+// UpdateModalInput (so the table sits next to the dispatch that reads
+// it); published here once for the legend + validator below.
+const ModalBindingDef* g_modalBindings = nullptr;
+size_t g_modalBindingCount = 0;
+} // namespace
+
+size_t ModalBindingCount() { return g_modalBindingCount; }
+
+const ModalBindingDef& ModalBindingAt(size_t i) {
+	return g_modalBindings[i];
+}
+
+bool ModalBindingApplies(const ModalBindingDef& b, EditorMode mode) {
+	if ((b.scopes & kScopeGlobal) != 0)
+		return true;
+	switch (mode) {
+	case EditorMode::Layout: return (b.scopes & kScopeLayout) != 0;
+	case EditorMode::Lighting: return (b.scopes & kScopeLighting) != 0;
+	case EditorMode::Test: return (b.scopes & kScopeTest) != 0;
+	case EditorMode::Profile: return (b.scopes & kScopeProfile) != 0;
+	}
+	return false;
+}
+
+// Conflict validator: every same-(key,mods) pair that resolves in a
+// common mode is reported — a deliberate mode-over-global shadow is a
+// WARNING (must stay the exception), anything else is an ERROR.
+// Debug builds assert (fail fast in dev); Release only logs.
+int EditorApp::ValidateModalBindings() {
+	int errors = 0;
+	const size_t n = ModalBindingCount();
+	for (size_t i = 0; i < n; ++i) {
+		const ModalBindingDef& a = ModalBindingAt(i);
+		if (!a.run)
+			continue;
+		for (size_t j = i + 1; j < n; ++j) {
+			const ModalBindingDef& b = ModalBindingAt(j);
+			if (!b.run || a.key != b.key || a.mods != b.mods)
+				continue;
+			bool common = false;
+			for (int m = 0; m < 4 && !common; ++m) {
+				const EditorMode mode = EditorMode(m);
+				common = ModalBindingApplies(a, mode)
+					&& ModalBindingApplies(b, mode);
+			}
+			if (!common)
+				continue;
+			const bool aGlobal = (a.scopes & kScopeGlobal) != 0;
+			const bool bGlobal = (b.scopes & kScopeGlobal) != 0;
+			char buf[320];
+			if (aGlobal != bGlobal) {
+				std::snprintf(buf, sizeof(buf),
+					"modal keys: '%s' shadows global '%s' (%s overrides)",
+					aGlobal ? b.label : a.label,
+					aGlobal ? a.label : b.label, b.keycap);
+				Log(std::string("WARNING ") + buf);
+			} else {
+				std::snprintf(buf, sizeof(buf),
+					"modal keys: CONFLICT '%s' vs '%s' (key %s)",
+					a.label, b.label, a.keycap);
+				Log(std::string("ERROR ") + buf);
+				++errors;
+			}
+		}
+	}
+	if (errors == 0)
+		Log("modal keys: validated (" + std::to_string(n) + " bindings).");
+	assert(errors == 0 && "modal key conflicts (see log)");
+	return errors;
+}
+
 void EditorApp::UpdateModalInput() {
 	// Keys belong to ImGui while typing into a field, and to the Q
 	// radial popup while it is open (its 1/2/3 must not switch modes).
@@ -80,144 +152,150 @@ void EditorApp::UpdateModalInput() {
 	const bool alt = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
 
-	// ---- keymap tables (see the file header) --------------------------
-	static const ModalBinding kGlobal[] = {
-		// Mode switches (1-4): reachable from ANY mode, vi-style. The
-		// shading trio + window toggles + document ops stay global so
-		// they work like vi's ctrl-keys in every mode.
-		{ GLFW_KEY_1, 0, &EditorApp::ModalModeLayout, "mode: LAYOUT" },
-		{ GLFW_KEY_2, 0, &EditorApp::ModalModeLighting, "mode: LIGHTING" },
-		{ GLFW_KEY_3, 0, &EditorApp::ModalModeTest, "mode: TEST" },
-		{ GLFW_KEY_4, 0, &EditorApp::ModalModeProfile, "mode: PROFILE" },
-		{ GLFW_KEY_F1, 0, &EditorApp::ModalViewLit, "view: lit" },
-		{ GLFW_KEY_F2, 0, &EditorApp::ModalViewUnlit, "view: unlit" },
-		{ GLFW_KEY_F3, 0, &EditorApp::ModalViewLitShadows,
-			"view: lit+shadows" },
-		{ GLFW_KEY_V, 0, &EditorApp::ModalVpLayoutToggle,
-			"viewport: single/quad" },
-		{ GLFW_KEY_I, 0, &EditorApp::ModalUiToggle, "ui: panels on/off" },
-		{ GLFW_KEY_Z, kModalCtrl, &EditorApp::ModalUndo, "undo" },
-		{ GLFW_KEY_Z, kModalCtrl | kModalShift, &EditorApp::ModalRedo,
-			"redo" },
-		{ GLFW_KEY_Y, kModalCtrl, &EditorApp::ModalRedo, "redo" },
-		{ GLFW_KEY_S, kModalCtrl | kModalAlt,
-			&EditorApp::ModalSaveIncremental, "tour: save incremental" },
+	// ---- central key registry (modal_bindings.h: the single place) ----
+	// Every binding lives here exactly once, with the modes it belongs
+	// to. Mode-specific rows come first, globals last: on a shared key
+	// the first matching row wins (so a mode entry shadows a global —
+	// the validator flags those, and same-scope duplicates are errors).
+	static const ModalBindingDef kModalBindings[] = {
+		// LAYOUT: object-level editing (mirrors the old kLayout table).
+		{ GLFW_KEY_W, 0, kScopeLayout, &EditorApp::ModalGizmoTranslate,
+			"gizmo: translate", "W" },
+		{ GLFW_KEY_E, 0, kScopeLayout, &EditorApp::ModalGizmoRotate,
+			"gizmo: rotate", "E" },
+		{ GLFW_KEY_R, 0, kScopeLayout, &EditorApp::ModalGizmoScale,
+			"gizmo: scale", "R" },
+		{ GLFW_KEY_G, 0, kScopeLayout, &EditorApp::ModalGizmoCycle,
+			"gizmo: cycle", "G" },
+		{ GLFW_KEY_Q, 0, kScopeLayout, &EditorApp::ModalSelRadial,
+			"select: radial (Mesh/Face/Vertex)", "Q" },
+		{ GLFW_KEY_Z, 0, kScopeLayout, &EditorApp::ModalWireframeToggle,
+			"view: wireframe all", "Z" },
+		{ GLFW_KEY_F, 0, kScopeLayout, &EditorApp::ModalFrameSel,
+			"frame selection", "F" },
+		{ GLFW_KEY_F, kModalShift, kScopeLayout, &EditorApp::ModalFrameAll,
+			"frame all", "Shift+F" },
+		{ GLFW_KEY_UP, 0, kScopeLayout, &EditorApp::ModalCycleNodePrev,
+			"selection: previous node", "Up" },
+		{ GLFW_KEY_DOWN, 0, kScopeLayout, &EditorApp::ModalCycleNodeNext,
+			"selection: next node", "Down" },
+		{ GLFW_KEY_F9, 0, kScopeLayout, &EditorApp::ModalViewUv0,
+			"view: UV0", "F9" },
+		// LIGHTING: sun/env + lightmap authoring (old kLighting table).
+		{ GLFW_KEY_W, 0, kScopeLighting, &EditorApp::ModalGizmoTranslate,
+			"gizmo: translate", "W" },
+		{ GLFW_KEY_E, 0, kScopeLighting, &EditorApp::ModalGizmoRotate,
+			"gizmo: rotate", "E" },
+		{ GLFW_KEY_R, 0, kScopeLighting, &EditorApp::ModalGizmoScale,
+			"gizmo: scale", "R" },
+		{ GLFW_KEY_G, 0, kScopeLighting, &EditorApp::ModalGizmoCycle,
+			"gizmo: cycle", "G" },
+		{ GLFW_KEY_F, 0, kScopeLighting, &EditorApp::ModalFrameSel,
+			"frame selection", "F" },
+		{ GLFW_KEY_F, kModalShift, kScopeLighting, &EditorApp::ModalFrameAll,
+			"frame all", "Shift+F" },
+		{ GLFW_KEY_L, 0, kScopeLighting, &EditorApp::ModalLightGizmosToggle,
+			"light gizmos", "L" },
+		{ GLFW_KEY_J, 0, kScopeLighting, &EditorApp::ModalCvolPreviewCycle,
+			"view: GI volumes (off/wire/solid)", "J" },
+		{ GLFW_KEY_F8, 0, kScopeLighting, &EditorApp::ModalViewBaked,
+			"view: baked irradiance", "F8" },
+		{ GLFW_KEY_F10, 0, kScopeLighting, &EditorApp::ModalViewLmUv,
+			"view: lightmap UV", "F10" },
+		{ GLFW_KEY_F5, 0, kScopeLighting, &EditorApp::ModalUvInsetCycle,
+			"UV inset: cycle", "F5" },
+		{ GLFW_KEY_LEFT_BRACKET, 0, kScopeLighting,
+			&EditorApp::ModalSunAzimuthNeg, "sun azimuth -5", "[" },
+		{ GLFW_KEY_RIGHT_BRACKET, 0, kScopeLighting,
+			&EditorApp::ModalSunAzimuthPos, "sun azimuth +5", "]" },
+		{ GLFW_KEY_MINUS, 0, kScopeLighting,
+			&EditorApp::ModalSunElevationNeg, "sun elevation -2", "-" },
+		{ GLFW_KEY_EQUAL, 0, kScopeLighting,
+			&EditorApp::ModalSunElevationPos, "sun elevation +2", "=" },
+		{ GLFW_KEY_COMMA, 0, kScopeLighting,
+			&EditorApp::ModalSunIntensityNeg, "sun intensity /1.25", "," },
+		{ GLFW_KEY_PERIOD, 0, kScopeLighting,
+			&EditorApp::ModalSunIntensityPos, "sun intensity *1.25", "." },
+		// TEST: verify (old kTest table).
+		{ GLFW_KEY_P, 0, kScopeTest, &EditorApp::ModalRunInApp,
+			"run in App", "P" },
+		{ GLFW_KEY_C, 0, kScopeTest, &EditorApp::ModalCook,
+			"cook to .pak", "C" },
+		{ GLFW_KEY_T, 0, kScopeTest, &EditorApp::ModalTexModeCycle,
+			"textures: residency mode", "T" },
+		{ GLFW_KEY_F4, 0, kScopeTest, &EditorApp::ModalViewMeshlets,
+			"view: meshlets", "F4" },
+		{ GLFW_KEY_F6, 0, kScopeTest, &EditorApp::ModalViewVertexColors,
+			"view: vertex colors", "F6" },
+		{ GLFW_KEY_F9, 0, kScopeTest, &EditorApp::ModalViewUv0,
+			"view: UV0", "F9" },
+		// PROFILE: stub (old kProfile table).
+		{ GLFW_KEY_O, 0, kScopeProfile, &EditorApp::ModalProfileStub,
+			"profile: placeholder", "O" },
+		// GLOBAL: mode switches, shading trio, window toggles, document
+		// ops — reachable from ANY mode (old kGlobal table, kept last).
+		{ GLFW_KEY_1, 0, kScopeGlobal, &EditorApp::ModalModeLayout,
+			"mode: LAYOUT", "1" },
+		{ GLFW_KEY_2, 0, kScopeGlobal, &EditorApp::ModalModeLighting,
+			"mode: LIGHTING", "2" },
+		{ GLFW_KEY_3, 0, kScopeGlobal, &EditorApp::ModalModeTest,
+			"mode: TEST", "3" },
+		{ GLFW_KEY_4, 0, kScopeGlobal, &EditorApp::ModalModeProfile,
+			"mode: PROFILE", "4" },
+		{ GLFW_KEY_F1, 0, kScopeGlobal, &EditorApp::ModalViewLit,
+			"view: lit", "F1" },
+		{ GLFW_KEY_F2, 0, kScopeGlobal, &EditorApp::ModalViewUnlit,
+			"view: unlit", "F2" },
+		{ GLFW_KEY_F3, 0, kScopeGlobal, &EditorApp::ModalViewLitShadows,
+			"view: lit+shadows", "F3" },
+		{ GLFW_KEY_V, 0, kScopeGlobal, &EditorApp::ModalVpLayoutToggle,
+			"viewport: single/quad", "V" },
+		{ GLFW_KEY_I, 0, kScopeGlobal, &EditorApp::ModalUiToggle,
+			"ui: panels on/off", "I" },
+		{ GLFW_KEY_Z, kModalCtrl, kScopeGlobal, &EditorApp::ModalUndo,
+			"undo", "Ctrl+Z" },
+		{ GLFW_KEY_Z, kModalCtrl | kModalShift, kScopeGlobal,
+			&EditorApp::ModalRedo, "redo", "Ctrl+Shift+Z" },
+		{ GLFW_KEY_Y, kModalCtrl, kScopeGlobal, &EditorApp::ModalRedo,
+			"redo", "Ctrl+Y" },
+		{ GLFW_KEY_S, kModalCtrl | kModalAlt, kScopeGlobal,
+			&EditorApp::ModalSaveIncremental, "tour: save incremental",
+			"Ctrl+Alt+S" },
 	};
-	// LAYOUT: the "normal" mode — object-level editing (gizmos,
-	// selection, framing, wireframe, UV0 check).
-	static const ModalBinding kLayout[] = {
-		{ GLFW_KEY_W, 0, &EditorApp::ModalGizmoTranslate,
-			"gizmo: translate" },
-		{ GLFW_KEY_E, 0, &EditorApp::ModalGizmoRotate, "gizmo: rotate" },
-		{ GLFW_KEY_R, 0, &EditorApp::ModalGizmoScale, "gizmo: scale" },
-		{ GLFW_KEY_G, 0, &EditorApp::ModalGizmoCycle, "gizmo: cycle" },
-		{ GLFW_KEY_Q, 0, &EditorApp::ModalSelRadial,
-			"select: radial (Mesh/Face/Vertex)" },
-		{ GLFW_KEY_Z, 0, &EditorApp::ModalWireframeToggle,
-			"view: wireframe all" },
-		{ GLFW_KEY_F, 0, &EditorApp::ModalFrameSel,
-			"frame selection (flat pane: reset UV nav)" },
-		{ GLFW_KEY_F, kModalShift, &EditorApp::ModalFrameAll,
-			"frame all" },
-		{ GLFW_KEY_UP, 0, &EditorApp::ModalCycleNodePrev,
-			"selection: previous node" },
-		{ GLFW_KEY_DOWN, 0, &EditorApp::ModalCycleNodeNext,
-			"selection: next node" },
-		{ GLFW_KEY_F9, 0, &EditorApp::ModalViewUv0, "view: UV0" },
-	};
-	// LIGHTING: sun/env + lightmap authoring. Lights are nodes, so the
-	// object-manipulation core (gizmo + framing) stays usable here (like
-	// vi's hjkl surviving into visual mode); on top of that: lightmap
-	// views, light gizmos and sun nudges on CurrentEnv() (editor IBL —
-	// viewport-only, never cooked).
-	static const ModalBinding kLighting[] = {
-		{ GLFW_KEY_W, 0, &EditorApp::ModalGizmoTranslate,
-			"gizmo: translate" },
-		{ GLFW_KEY_E, 0, &EditorApp::ModalGizmoRotate, "gizmo: rotate" },
-		{ GLFW_KEY_R, 0, &EditorApp::ModalGizmoScale, "gizmo: scale" },
-		{ GLFW_KEY_G, 0, &EditorApp::ModalGizmoCycle, "gizmo: cycle" },
-		{ GLFW_KEY_F, 0, &EditorApp::ModalFrameSel,
-			"frame selection (flat pane: reset UV nav)" },
-		{ GLFW_KEY_F, kModalShift, &EditorApp::ModalFrameAll,
-			"frame all" },
-		{ GLFW_KEY_L, 0, &EditorApp::ModalLightGizmosToggle,
-			"light gizmos" },
-		{ GLFW_KEY_F8, 0, &EditorApp::ModalViewBaked,
-			"view: baked irradiance" },
-		{ GLFW_KEY_F10, 0, &EditorApp::ModalViewLmUv,
-			"view: lightmap UV" },
-		{ GLFW_KEY_F5, 0, &EditorApp::ModalUvInsetCycle,
-			"UV inset: cycle" },
-		{ GLFW_KEY_LEFT_BRACKET, 0, &EditorApp::ModalSunAzimuthNeg,
-			"sun azimuth -5" },
-		{ GLFW_KEY_RIGHT_BRACKET, 0, &EditorApp::ModalSunAzimuthPos,
-			"sun azimuth +5" },
-		{ GLFW_KEY_MINUS, 0, &EditorApp::ModalSunElevationNeg,
-			"sun elevation -2" },
-		{ GLFW_KEY_EQUAL, 0, &EditorApp::ModalSunElevationPos,
-			"sun elevation +2" },
-		{ GLFW_KEY_COMMA, 0, &EditorApp::ModalSunIntensityNeg,
-			"sun intensity /1.25" },
-		{ GLFW_KEY_PERIOD, 0, &EditorApp::ModalSunIntensityPos,
-			"sun intensity *1.25" },
-	};
+
+	// Publish the registry for the file-scope accessors (first frame;
+	// idempotent — the legend and validator read through it).
+	if (!g_modalBindings) {
+		g_modalBindings = kModalBindings;
+		g_modalBindingCount = CountOf(kModalBindings);
+		static const bool kKeysChecked = (ValidateModalBindings(), true);
+		(void)kKeysChecked;
+	}
+	// (master list above; the per-mode tables are gone — every row
+	// lives in kModalBindings exactly once with its scope bits).
 	// TEST: verify (cook / run in App / debug views / tex residency).
-	static const ModalBinding kTest[] = {
-		{ GLFW_KEY_P, 0, &EditorApp::ModalRunInApp, "run in App" },
-		{ GLFW_KEY_C, 0, &EditorApp::ModalCook, "cook to .pak" },
-		{ GLFW_KEY_T, 0, &EditorApp::ModalTexModeCycle,
-			"textures: residency mode" },
-		{ GLFW_KEY_F4, 0, &EditorApp::ModalViewMeshlets,
-			"view: meshlets" },
-		{ GLFW_KEY_F6, 0, &EditorApp::ModalViewVertexColors,
-			"view: vertex colors" },
-		{ GLFW_KEY_F9, 0, &EditorApp::ModalViewUv0, "view: UV0" },
-	};
 	// PROFILE: perf capture (STUB). Architecture only for now: the table
 	// + dispatch + OnModeEnter hook prove the path; Optick capture /
 	// frame-stat bindings land here later.
-	static const ModalBinding kProfile[] = {
-		{ GLFW_KEY_O, 0, &EditorApp::ModalProfileStub,
-			"profile: placeholder" },
-	};
 
-	const ModalBinding* modeTable = nullptr;
-	size_t modeCount = 0;
-	switch (m_mode) {
-	case EditorMode::Layout:
-		modeTable = kLayout;
-		modeCount = CountOf(kLayout);
-		break;
-	case EditorMode::Lighting:
-		modeTable = kLighting;
-		modeCount = CountOf(kLighting);
-		break;
-	case EditorMode::Test:
-		modeTable = kTest;
-		modeCount = CountOf(kTest);
-		break;
-	case EditorMode::Profile:
-		modeTable = kProfile;
-		modeCount = CountOf(kProfile);
-		break;
-	}
-
-	// A key fires at most once per frame (even if two tables list it).
+	// A key fires at most once per frame (even if two rows list it).
+	// Single pass over the central registry: a row fires when it
+	// belongs to the active mode (or is global) with an exact
+	// key+modifier match. File order is priority (mode rows precede
+	// globals in kModalBindings).
 	bool consumed[Input::KeyCount] = {};
-	const auto dispatch = [&](const ModalBinding* table, size_t count) {
-		for (size_t i = 0; i < count; ++i) {
-			const ModalBinding& b = table[i];
-			if (!b.run || consumed[b.key] || !m_input.isKeyPressed(b.key))
-				continue;
-			if (ModsMatch(b.mods, ctrl, shift, alt)) {
-				consumed[b.key] = true;
-				(this->*b.run)();
-			}
+	const size_t bindingCount = ModalBindingCount();
+	for (size_t i = 0; i < bindingCount; ++i) {
+		const ModalBindingDef& b = ModalBindingAt(i);
+		if (!b.run || consumed[b.key] || !m_input.isKeyPressed(b.key))
+			continue;
+		if (!ModalBindingApplies(b, m_mode))
+			continue;
+		if (ModsMatch(b.mods, ctrl, shift, alt)) {
+			consumed[b.key] = true;
+			(this->*b.run)();
 		}
-	};
-	if (modeTable)
-		dispatch(modeTable, modeCount); // mode table first (shadows)
-	dispatch(kGlobal, CountOf(kGlobal)); // global fallback
+	}
 }
 
 // ---- mode switches ----
@@ -235,7 +313,13 @@ void EditorApp::ModalViewLitShadows() {
 	ActiveViewMode() = ViewMode::LitShadows;
 }
 
-void EditorApp::ModalVpLayoutToggle() { m_vpLayout = (m_vpLayout == 0) ? 1 : 0; }
+void EditorApp::ModalVpLayoutToggle() {
+	m_vpLayout = (m_vpLayout == 0) ? 1 : 0;
+	// Single layout shows viewport 0 only: make it the current one so
+	// the active camera/view-mode/inspector track the visible panel.
+	if (m_vpLayout == 0)
+		m_activeVp = 0;
+}
 void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
 
 void EditorApp::ModalUndo() { Undo(); }
@@ -285,6 +369,20 @@ void EditorApp::ModalViewUv0() { ActiveViewMode() = ViewMode::Uv0; }
 
 void EditorApp::ModalLightGizmosToggle() {
 	m_showLightGizmos = !m_showLightGizmos;
+}
+
+void EditorApp::ModalCvolPreviewCycle() {
+	// Off -> wireframe -> wireframe + translucent fill (the convex GI
+	// volumes baked by GiBaker --cv-spec; color-coded by priority).
+	static const char* kNames[3] = { "off", "wireframe", "solid" };
+	m_cvolPreviewMode = (m_cvolPreviewMode + 1) % 3;
+	if (m_cvolPreviews.empty() && m_cvolPreviewMode != 0) {
+		Log("GI volume preview: no .cvmanifest sidecars loaded "
+			"(bake GiBaker --cv-spec next to the pak).");
+	} else {
+		Log("GI volume preview: " + std::string(kNames[m_cvolPreviewMode])
+			+ " (" + std::to_string(m_cvolPreviews.size()) + " volume(s))");
+	}
 }
 
 void EditorApp::ModalViewBaked() {

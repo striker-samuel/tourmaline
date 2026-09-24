@@ -1,0 +1,72 @@
+// Native Windows file-open dialog (IFileOpenDialog): the single "Open
+// file" entry point for scenes (.gltf), cooked paks (.pak) and tours
+// (.tour). Starts in C:/ with an extension filter; the picked path feeds
+// OpenAnySceneFile, which dispatches by extension. Replaces the old
+// custom ImGui browser (one dialog for every open type now).
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#include <shobjidl.h> // IFileOpenDialog
+
+#include <string>
+
+namespace editor {
+
+bool NativeOpenFile(std::string& outPath) {
+	// COM for the shell dialog (the editor otherwise avoids COM).
+	const HRESULT coInit = CoInitializeEx(nullptr,
+		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+	const bool coOwns = SUCCEEDED(coInit);
+	if (FAILED(coInit) && coInit != RPC_E_CHANGED_MODE)
+		return false;
+	bool ok = false;
+	IFileOpenDialog* dlg = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+		static const COMDLG_FILTERSPEC kFilters[] = {
+			{ L"Scene files", L"*.gltf;*.pak;*.tour" },
+			{ L"glTF scenes", L"*.gltf" },
+			{ L"Cooked paks", L"*.pak" },
+			{ L"Tour files", L"*.tour" },
+			{ L"All files", L"*.*" },
+		};
+		dlg->SetFileTypes(
+			static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])),
+			kFilters);
+		dlg->SetFileTypeIndex(1);
+		// Start in C:/; fall back to the default folder on failure.
+		IShellItem* startDir = nullptr;
+		if (SUCCEEDED(SHCreateItemFromParsingName(L"C:\\", nullptr,
+				IID_PPV_ARGS(&startDir)))) {
+			dlg->SetFolder(startDir);
+			startDir->Release();
+		}
+		if (SUCCEEDED(dlg->Show(nullptr))) {
+			IShellItem* item = nullptr;
+			if (SUCCEEDED(dlg->GetResult(&item))) {
+				PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
+						&path))) {
+					const int n = WideCharToMultiByte(CP_UTF8, 0, path, -1,
+						nullptr, 0, nullptr, nullptr);
+					if (n > 1) {
+						std::string utf8(size_t(n) - 1, '\0');
+						WideCharToMultiByte(CP_UTF8, 0, path, -1,
+							utf8.data(), n, nullptr, nullptr);
+						outPath = std::move(utf8);
+						ok = true;
+					}
+					CoTaskMemFree(path);
+				}
+				item->Release();
+			}
+		}
+		dlg->Release();
+	}
+	if (coOwns)
+		CoUninitialize();
+	return ok;
+}
+
+} // namespace editor

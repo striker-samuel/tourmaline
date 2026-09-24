@@ -89,6 +89,17 @@ enum class Verb : uint8_t {
 	SetDitherCloseup, // flag (subtree dither on camera closeup)
 	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
 	Parent,         // node2 = new parent (cluster node id)
+	CreateLight,    // node = PARENT cluster id; text = light name;
+	                // vec = local position; vec4 = (typeFloat [1=point,
+	                // 2=spot], intensity [cd], range [m, 0=inf],
+	                // innerConeDeg); number = outerConeDeg; flag =
+	                // static bake-only; node2 = shadow request (0/1)
+	SetLightAttr,   // node = target cluster id, or a created-light ref
+	                // (kCreateLightRefBase | k — see below); text = attr
+	                // ("color","intensity","range","inner","outer",
+	                // "static","shadow","name"); vec4 = color value;
+	                // number = scalar (cone angles in DEGREES); flag =
+	                // flag value; name = new name (attr "name" only)
 };
 
 // Clarisse-style wide override attribute (regex selector over node
@@ -120,24 +131,46 @@ struct OverrideRule {
 // wheel asset.
 struct ReferenceCmd {
 	uint32_t parent = 0;      // placeholder's parent (cluster node id)
-	std::string source;       // referenced .gltf (owner-relative or as-is)
+	std::string source;       // referenced scene: .gltf (raw geometry) or
+	                          // .tour (the authored scene — its source gltf
+	                          // is imported, then its tour commands replay
+	                          // with id offsets; see ApplySceneReferences)
 	std::string name;         // placeholder node name ("REF <name>")
 	glm::vec3 translate{ 0.0f }; // optional placement offset
 	bool hasTranslate = false;
+	bool enabled = true;      // false = unloaded (kept in the list, not
+	                          // bound; Maya-style load/unload)
 };
 
 struct Command {
 	Verb verb = Verb::Rename;
 	uint32_t node = 0;     // cluster node id (node verbs)
-	uint32_t node2 = 0;    // Parent: new parent cluster node id
+	uint32_t node2 = 0;    // Parent: new parent cluster node id;
+	                       // CreateLight: shadow request (0/1)
 	uint32_t material = 0; // AssignMaterial / SetMatAttr: cluster pool index
-	std::string text;      // Rename: new name; SetMatAttr: attr name
-	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale
-	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive)
-	double number = 0.0;   // mat scalar attr value
-	bool flag = false;     // SetNoLightmap / SetDitherCloseup value
-	std::string name;      // recorded node name (verify-only)
+	std::string text;      // Rename: new name; SetMatAttr/SetLightAttr:
+	                       // attr name; CreateLight: light name
+	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale /
+	                       // CreateLight local position
+	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive);
+	                        // CreateLight: (typeFloat, intensity, range,
+	                        // innerConeDeg); SetLightAttr "color": rgb
+	double number = 0.0;   // mat scalar attr value; CreateLight:
+	                       // outerConeDeg; SetLightAttr scalar value
+	bool flag = false;     // SetNoLightmap / SetDitherCloseup value;
+	                       // CreateLight: static bake-only;
+	                       // SetLightAttr static/shadow value
+	std::string name;      // recorded node name (verify-only);
+	                       // SetLightAttr "name": the NEW name
 };
+
+// SetLightAttr addressing for lights created by an earlier CreateLight
+// verb in the same doc (they own no cluster id until replayed):
+// node = kCreateLightRefBase | k references the k-th CreateLight
+// command (0-based file order). Maintained as a creation-order list at
+// replay: cook ApplyTourToCluster keeps local created ids; the editor
+// TourToCmd keeps live world ids (m_tourCreatedNodes).
+inline constexpr uint32_t kCreateLightRefBase = 0x80000000u;
 
 struct Doc {
 	int version = kTourVersion;

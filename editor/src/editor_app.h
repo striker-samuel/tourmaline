@@ -218,20 +218,12 @@ inline const char* EditorModeName(EditorMode m) {
 	}
 	return "?";
 }
-// Exact-match modifier bits for ModalBinding::mods (all listed modifiers
-// must be held, all unlisted ones released).
+// Exact-match modifier bits for ModalBindingDef::mods (all listed
+// modifiers must be held, all unlisted ones released; see
+// modal_bindings.h).
 inline constexpr uint8_t kModalCtrl = 1;
 inline constexpr uint8_t kModalShift = 2;
 inline constexpr uint8_t kModalAlt = 4;
-
-// One keymap row. `run` fires on an exact key+modifier match; `label`
-// documents the action (help/UI). Tables live in editor_modal.cpp.
-struct ModalBinding {
-	int key = 0;                              // SDL scancode (GLFW_KEY_*)
-	uint8_t mods = 0;                         // kModal{Ctrl,Shift,Alt} bits
-	void (EditorApp::*run)() = nullptr;       // fires on exact match
-	const char* label = "";                   // action name (docs/help)
-};
 
 // ---------------------------------------------------------------------------
 // Cook settings (mirrors the PakCooker flags the editor drives).
@@ -261,6 +253,8 @@ public:
 
 	bool OpenScene(const std::string& path); // dispatches .pak vs .gltf
 	bool OpenPak(const std::string& pakPath); // accepts "file.pak:N" too
+	// Open-dialog dispatch: .tour replays (OpenTourFile), else OpenScene.
+	bool OpenAnySceneFile(const std::string& path);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
 	void SetOutPak(const std::string& p) { m_cook.outPak = p; }
 
@@ -285,6 +279,10 @@ private:
 	bool LoadPakIntoWorld(const std::string& path,
 		uint32_t sceneIndex = 0); // cooked pak, GPU world
 	bool TryLoadSiblingSglm(const std::string& pakPath); // gi/<stem>.sglm
+	// Convex GI volume sidecars (probes-only pivot): gi/<stem>.cvmanifest
+	// + .cvol next to the opened pak. Builds the preview hulls (AABB
+	// clipped by the volume's planes) for the LIGHTING-mode view option.
+	bool TryLoadCvolumes(const std::string& pakPath);
 	static bool HasPakExtension(const std::string& path);
 	void UpdateTextureStreaming(smvk::Extent2D renderExtent);
 	void RebuildNodeIndex(); // world-node -> cluster/prim mapping for picking
@@ -476,14 +474,17 @@ private:
 	void FinishBoxSelect();        // apply on release
 	void DrawViewportChrome();     // borders + labels + box rect (ImGui)
 
-	// ---- modal operation (editor_modal.cpp) ----
-	// One binding table per mode + one global table. Dispatch (per frame,
-	// from RenderFrame): exact key+modifier match; the ACTIVE mode's
-	// table runs first (it can shadow globals), the global table is the
-	// fallback. Unmapped keys are ignored. Rows are ModalBinding (see
-	// the struct above the class).
+	// ---- modal operation (editor_modal.cpp + modal_bindings.h) ----
+	// One central registry (kModalBindings): every binding lives there
+	// exactly once with its scope bits. Dispatch (per frame, from
+	// RenderFrame): single pass, exact key+modifier match, file order
+	// is priority. Unmapped keys are ignored. Rows are ModalBindingDef
+	// (see modal_bindings.h).
 	void SetMode(EditorMode m);  // no-op when unchanged; hooks + log
 	void UpdateModalInput();     // per-frame key dispatch (RenderFrame)
+	// Central-registry validator (editor_modal.cpp): reports same-key
+	// overlaps; Debug asserts. Runs once (first UpdateModalInput).
+	int ValidateModalBindings();
 	void OnModeEnter(EditorMode m); // hook: PROFILE wiring lands here
 	void OnModeExit(EditorMode m);  // hook (empty for now)
 	// Binding handlers (one per table entry; see editor_modal.cpp).
@@ -511,6 +512,7 @@ private:
 	void ModalCycleNodeNext();
 	void ModalViewUv0();
 	void ModalLightGizmosToggle();
+	void ModalCvolPreviewCycle(); // LIGHTING 'V': off -> wireframe -> solid
 	void ModalViewBaked();
 	void ModalViewLmUv();
 	void ModalUvInsetCycle();
@@ -532,7 +534,6 @@ private:
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
 	void DrawMenuBar();
-	void DrawOpenDialog(); // file browser modal (Open glTF)
 	void DrawOutliner();
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
@@ -568,12 +569,13 @@ private:
 
 	// ---- commands + tour (editor_commands.cpp) ----
 	// Execute a command forward (do/redo) or backward (undo) against the
-	// live world. No stack changes.
-	void ExecCmd(const EditCmd& c, bool forward);
+	// live world. No stack changes. By value: CreateLight records its
+	// assigned world id back into the command (redo stability).
+	void ExecCmd(EditCmd& c, bool forward);
 	// Do: execute + push (truncates redo) + save tour.
-	void Do(const EditCmd& c);
+	void Do(EditCmd c);
 	// Push an already-executed edit (gizmo/inspector live drags).
-	void PushDone(const EditCmd& c);
+	void PushDone(EditCmd c);
 	bool Undo();
 	bool Redo();
 	void ClearHistory();
@@ -591,11 +593,31 @@ private:
 	std::vector<EditCmd> m_history;
 	size_t m_historyCursor = 0; // next redo index (commands[cursor..] = redo)
 	static constexpr size_t kHistoryCap = 300;
+	// True while a tour doc is being replayed (LoadTour/OpenTourFile):
+	// ExecCreateLight records live ids into m_tourCreatedNodes then.
+	bool m_replayingTour = false;
+	// Live ids of history-created lights, in tour CreateLight file order:
+	// backing for setLightAttr -ref addressing (TourToCmd) and the
+	// save-time creation index (CmdToTour). Rebuilt on every replay.
+	std::vector<uint32_t> m_tourCreatedNodes;
+	// Creation-order index of a live created light (-1 when the node is
+	// not a history create): the -ref value CmdToTour emits.
+	int CreatedLightIndex(uint32_t worldNode) const;
+	// Tour-stable default parent for new lights: the primary cluster's
+	// root (WorldToCluster maps it to cluster id 0), else world root.
+	uint32_t DefaultCreateParent() const;
+	// Unique "Point_N"/"Spot_N" name over the live world lights.
+	std::string UniqueLightName(bool spot) const;
 	// Live command helpers (editor_commands.cpp).
 	void ReadLocalTRS(uint32_t node, glm::vec3& t, glm::vec3& rDeg,
-		glm::vec3& s);
+		glm::vec3& s) const;
 	void WriteLocalTRS(uint32_t node, const glm::vec3& t,
 		const glm::vec3& rDeg, const glm::vec3& s);
+	// Created-light execution (ExecCmd cases): append/remove the world
+	// node + pool definition. ExecCreateLight records the assigned id
+	// back into the command (c.node).
+	void ExecCreateLight(EditCmd& c);
+	void ExecUncreateLight(EditCmd& c);
 	void ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		glm::vec4& v4, double& num);
 	void WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
@@ -616,6 +638,27 @@ private:
 	bool SaveTourTo(const std::string& path); // becomes the target
 	bool SaveTourIncremental(); // Maya-style <stem>.NNNN.tour, becomes target
 	bool LoadTour(); // replay file into the stack (undoable)
+	// Open an arbitrary .tour file (File menu): loads its source scene
+	// when it differs, replays the commands into a fresh stack, adopts
+	// the cook block. The opened file becomes the save target.
+	bool OpenTourFile(const std::string& path);
+	// Resolve a tour's source path: as-is, relative to the tour file's
+	// dir, else relative to the content root. Empty when unresolvable.
+	std::string ResolveTourSource(const std::string& tourPath,
+		const std::string& source) const;
+	// Shared replay tail (LoadTour + OpenTourFile): fingerprint check vs
+	// sourcePath, cook-block adopt, history rebuild, overrides/env/refs.
+	bool ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePath);
+	// Create menu: point/spot light at the active camera target.
+	void DraftCreateLight(bool spot);
+	// Light property channels ("color","intensity","range","inner",
+	// "outer","position","rotation","static","shadow","name") — the
+	// inspector's before-state + live-write path for SetLightAttr
+	// (degrees for cones/rotation). False when the node has no light.
+	bool ReadNodeLightAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, bool& flag, std::string& text) const;
+	bool WriteNodeLightAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, bool flag, const std::string& text);
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -748,9 +791,19 @@ private:
 	std::vector<int> m_refPhCluster; // cluster ids until the base maps
 	bool AddSceneReference(const std::string& source, const std::string& name);
 	bool RemoveSceneReference(uint32_t refWorldNode);
+	bool RemoveSceneReferenceAt(size_t idx); // panel path (index-exact)
+	bool SetSceneReferenceEnabled(size_t idx, bool enabled); // + rebind
 	bool IsRefPlaceholder(uint32_t node) const;
+	// Placeholder world node for list entry idx (name match, index
+	// fallback; UINT32_MAX when unbound). The index-parallel assumption
+	// breaks when a bind fails, so the panel never relies on it alone.
+	uint32_t RefPlaceholderNode(size_t idx) const;
 	void DrawReferenceSection(uint32_t node); // Inspector block
 	void DrawAddReferenceDialog();
+	// Maya-style Reference Editor (editor_references.cpp): list/status
+	// + add/remove/replace/reload/enable per reference.
+	bool m_showReferencesPanel = false;
+	void DrawReferencesPanel();
 
 	// ---- Tourmaline branding (editor_branding.cpp) ----
 	// Window title + SDL window icon (tourmaline_logo.png, generated on
@@ -853,6 +906,22 @@ private:
 	bool m_wireOverlay = true;
 	bool m_uiMode = true; // false = fullscreen viewport (camera control)
 	bool m_showLightGizmos = true; // viewport markers for light nodes
+	// ---- convex GI volume preview (LIGHTING mode, 'V' cycles; loaded
+	// from the .cvmanifest next to the opened pak) ----
+	// 0 = off, 1 = wireframe, 2 = wireframe + translucent fill.
+	// Color-coded by PRIORITY (hue = priority * 0.13 mod 1) so stacked
+	// override volumes read at a glance.
+	int m_cvolPreviewMode = 0;
+	struct CvolPreview {
+		std::string name;    // sidecar file stem
+		uint32_t priority = 0;
+		glm::vec3 gridMin{ 0.0f }; // bake AABB (gridMin..gridMax)
+		glm::vec3 gridMax{ 0.0f };
+		glm::vec3 center{ 0.0f }; // hull centroid (label anchor)
+		std::vector<std::vector<glm::vec3>> polys; // convex hull polygons
+	};
+	std::vector<CvolPreview> m_cvolPreviews;
+	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
 	bool m_showOverlay = true;  // legend on the ACTIVE panel (toggle:
@@ -1027,8 +1096,6 @@ private:
 	std::future<CookResult> m_cookFuture{};
 	std::future<CookResult> m_runFuture{}; // Run-in-App worker (see above)
 	// ---- ui state ----
-	bool m_showOpenDialog = false;
-	char m_openPathBuf[512] = "content/models/Sponza/sponza.gltf";
 	char m_filterBuf[128] = "";
 	// Outliner tabs (Scene graph vs VFS browser) + VFS selection.
 	// m_vfsSel: "" none; "disk:<full>" disk entry; "pak:" loaded-pak root;
@@ -1043,10 +1110,8 @@ private:
 	void DrawVfsDir(const std::string& dir, int depth);
 	void DrawUvPanel();
 	void DrawPakBox(); // contextual pak actions (VFS selection only)
-	std::string ResolveVfsRoot();
+	std::string ResolveVfsRoot() const;
 	bool PakSelected() const; // outliner selection is pak-related
-	std::string m_browseDir; // file browser cwd (reset each open)
-	std::string m_browseSel; // file browser selection (full path)
 
 	// ---- flintbase panel state ----
 	bool m_showFlintbasePanel = false;
@@ -1068,5 +1133,9 @@ private:
 	char m_refSourceBuf[512] = "";
 	char m_refNameBuf[128] = "";
 };
+
+// Native Windows open dialog (editor_native_dialog.cpp): single entry
+// point for .gltf/.pak/.tour, starts in C:/. False on cancel/failure.
+bool NativeOpenFile(std::string& outPath);
 
 } // namespace editor

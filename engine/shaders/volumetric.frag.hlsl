@@ -179,14 +179,30 @@ PSOut mainPS(PSIn IN)
         float3 ambient = float3(0.0, 0.0, 0.0);
         if (giOn > 0.5)
         {
+            float3 ambientE;
+            bool covered;
+            // Full-cover fast path (see default_lit_body): a volume that
+            // owns the segment supersedes the octree gather entirely —
+            // the march multiplies this by up to vp.steps, so the skip
+            // pays off most here.
+            const uint fullVol = SgCvFullVolumeIndex(frame, wpos);
+            if (fullVol != 0xFFFFFFFFu)
+            {
+                float3 volAmps[SG_GI_LOBES];
+                SgCvSampleVolume(frame, fullVol, wpos, volAmps);
+                ambientE = VolGiMean(volAmps);
+                covered = true;
+            }
+            else
+            {
             float3 amps[SG_GI_LOBES];
             float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
             const bool octreeCovered =
                 SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL);
-            float3 ambientE = octreeCovered ? VolGiMean(amps)
+            ambientE = octreeCovered ? VolGiMean(amps)
                 : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
                     * 0.31831;
-            bool covered = octreeCovered;
+            covered = octreeCovered;
             if (frame.cvolEnabled != 0u)
             {
                 const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
@@ -204,6 +220,7 @@ PSOut mainPS(PSIn IN)
                         covered = true;
                     }
                 }
+            }
             }
             ambient = covered
                 ? ambientE * giStrength

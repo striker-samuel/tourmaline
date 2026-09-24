@@ -1953,6 +1953,37 @@ std::string ReferenceTourPathFor(const std::filesystem::path& src) {
 	return t.generic_string();
 }
 
+// ".tour" source (any case): an authored scene — its source gltf is
+// imported, then its tour commands replay with id offsets.
+bool IsTourSource(const std::string& source) {
+	const size_t dot = source.find_last_of('.');
+	if (dot == std::string::npos)
+		return false;
+	std::string ext = source.substr(dot);
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	return ext == ".tour";
+}
+
+// Read a whole tour file (VFS when vfs != null, else host fs).
+bool ReadTourTextAt(const std::string& tourPath,
+	const smvk::OverlayVfs* vfs, std::string& out) {
+	if (vfs) {
+		if (auto b = vfs->TryRead(tourPath)) {
+			out.assign(reinterpret_cast<const char*>(b->data()), b->size());
+			return true;
+		}
+		return false;
+	}
+	std::ifstream tf(tourPath, std::ios::binary);
+	if (!tf)
+		return false;
+	std::stringstream ss;
+	ss << tf.rdbuf();
+	out = ss.str();
+	return true;
+}
+
 // glTF root nodes of a model (default scene, else unreferenced roots).
 std::vector<int> GltfRootNodesOf(const tinygltf::Model& model) {
 	if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
@@ -1992,6 +2023,9 @@ size_t ApplySceneReferences(
 		std::string baseDir;        // resolve relative sources against this
 		std::vector<std::string> chain; // normalized sources up the chain
 		int depth = 0;
+		uint32_t nodeBase = 0; // owner-space offset of THIS level's scene
+		                       // (0 for the owner itself): nested reference
+		                       // parents address their own scene's ids
 	};
 	constexpr int kMaxRefDepth = 8;
 	std::vector<Level> queue;
@@ -2008,23 +2042,101 @@ size_t ApplySceneReferences(
 		Level cur = std::move(queue.front());
 		queue.erase(queue.begin());
 		for (const auto& r : cur.doc.references) {
+			if (!r.enabled) {
+				std::cout << "[References] disabled '" << r.source <<
+					"' (unloaded, kept in the list)\n";
+				continue;
+			}
 			if (cur.depth >= kMaxRefDepth) {
 				std::cerr << "[References] depth cap reached at '" <<
 					r.source << "' (skipped)\n";
 				++warnings;
 				continue;
 			}
-			// Resolve the source (as-is, then owner-relative).
+			// Parent ids live in THIS level's scene space: level 0 IS
+			// owner space; deeper levels carry the offset their scene
+			// was inlined with (the old code treated every parent as an
+			// owner id, silently misparenting nested references).
+			const uint64_t pRaw = (cur.depth == 0)
+				? uint64_t(r.parent)
+				: uint64_t(cur.nodeBase) + uint64_t(r.parent);
+			// Resolve the source (as-is, then owner-relative). A .tour
+			// source is an authored scene: parse it now; its `source`
+			// gltf (resolved against the tour's dir first) is what gets
+			// imported below, then its commands replay with offsets.
+			smvk::tour::Doc refTour;
+			bool haveRefTour = false;
+			std::string refTourDir;
+			std::string modelSource = r.source;
+			if (IsTourSource(r.source)) {
+				std::string tourResolved;
+				if (vfs) {
+					std::string p = smvk::NormalizeAssetUri(
+						smvk::StringViewT(r.source)).Str();
+					if (!vfs->Exists(p) && !cur.baseDir.empty())
+						p = smvk::vfs::Join(cur.baseDir, r.source);
+					if (vfs->Exists(p))
+						tourResolved = p;
+				}
+				else {
+					std::filesystem::path hp(r.source);
+					std::error_code ec;
+					if (!std::filesystem::exists(hp, ec) && !cur.baseDir.empty())
+						hp = std::filesystem::path(cur.baseDir) / r.source;
+					if (std::filesystem::exists(hp, ec))
+						tourResolved = hp.generic_string();
+				}
+				if (tourResolved.empty()) {
+					std::cerr << "[References] cannot resolve tour '" <<
+						r.source << "' (skipped)\n";
+					++warnings;
+					continue;
+				}
+				std::string tourText;
+				if (!ReadTourTextAt(tourResolved, vfs, tourText)) {
+					std::cerr << "[References] cannot read tour '" <<
+						tourResolved << "' (skipped)\n";
+					++warnings;
+					continue;
+				}
+				std::string tourErr;
+				if (!smvk::tour::LoadTourFromString(tourText, refTour, tourErr)) {
+					std::cerr << "[References] tour parse failed '" <<
+						tourResolved << "': " << tourErr << " (skipped)\n";
+					++warnings;
+					continue;
+				}
+				if (refTour.source.empty()) {
+					std::cerr << "[References] tour '" << tourResolved <<
+						"' names no source scene (skipped)\n";
+					++warnings;
+					continue;
+				}
+				haveRefTour = true;
+				refTourDir = smvk::vfs::BaseDir(tourResolved);
+				modelSource = refTour.source;
+			}
 			std::string resolved;   // canonical path (host or vfs)
 			std::string baseDir;   // source dir for ITS references
 			tinygltf::Model model;
 			bool ok = false;
+			// Candidate dirs: the tour's own dir first (tour sources),
+			// then the level's base dir. (Unchanged single-base behavior
+			// for plain .gltf references.)
+			std::vector<std::string> tryBases;
+			if (haveRefTour && !refTourDir.empty())
+				tryBases.push_back(refTourDir);
+			if (!cur.baseDir.empty())
+				tryBases.push_back(cur.baseDir);
 			if (vfs) {
-				std::string p = smvk::NormalizeAssetUri(
-					smvk::StringViewT(r.source)).Str();
-				if (!vfs->Exists(p) && !cur.baseDir.empty())
-					p = smvk::vfs::Join(cur.baseDir, r.source);
-				if (vfs->Exists(p)) {
+				std::vector<std::string> candidates;
+				candidates.push_back(smvk::NormalizeAssetUri(
+					smvk::StringViewT(modelSource)).Str());
+				for (const std::string& b : tryBases)
+					candidates.push_back(smvk::vfs::Join(b, modelSource));
+				for (const std::string& p : candidates) {
+					if (!vfs->Exists(p))
+						continue;
 					try {
 						model = LoadGltfModelFromVfs(*vfs, p);
 						resolved = p;
@@ -2035,23 +2147,30 @@ size_t ApplySceneReferences(
 						std::cerr << "[References] '" << p << "': " <<
 							e.what() << "\n";
 					}
+					if (ok)
+						break;
 				}
 			}
 			else {
-				std::filesystem::path hp(r.source);
-				std::error_code ec;
-				if (!std::filesystem::exists(hp, ec) && !cur.baseDir.empty())
-					hp = std::filesystem::path(cur.baseDir) / r.source;
-				if (std::filesystem::exists(hp, ec)) {
+				std::vector<std::filesystem::path> candidates;
+				candidates.emplace_back(modelSource);
+				for (const std::string& b : tryBases)
+					candidates.push_back(
+						std::filesystem::path(b) / modelSource);
+				for (const std::filesystem::path& hp : candidates) {
+					std::error_code ec;
+					if (!std::filesystem::exists(hp, ec))
+						continue;
 					if (LoadModelFromAsciiFile(model, hp.string().c_str())) {
 						resolved = hp.generic_string();
 						baseDir = hp.parent_path().generic_string();
 						ok = true;
+						break;
 					}
 				}
 			}
 			if (!ok) {
-				std::cerr << "[References] cannot resolve '" << r.source <<
+				std::cerr << "[References] cannot resolve '" << modelSource <<
 					"' (skipped)\n";
 				++warnings;
 				continue;
@@ -2071,9 +2190,10 @@ size_t ApplySceneReferences(
 				++warnings;
 				continue;
 			}
-			// Placeholder group node under the recorded parent.
-			const int parentNode = (r.parent <
-				uint32_t(cluster.scene.hierarchy.size())) ? int(r.parent) : 0;
+			// Placeholder group node under the recorded parent (level-space
+			// parent resolved to owner space above).
+			const int parentNode = (pRaw <
+				uint64_t(cluster.scene.hierarchy.size())) ? int(pRaw) : 0;
 			const int level = cluster.scene.hierarchy[size_t(parentNode)].level + 1;
 			const int ph = addNode(cluster.scene, parentNode, level);
 			std::string name = r.name.empty()
@@ -2087,6 +2207,9 @@ size_t ApplySceneReferences(
 			}
 			if (cur.depth == 0 && outPlaceholderNodes)
 				outPlaceholderNodes->push_back(ph);
+			// Pool bases for .tour replay (captured before the subtree
+			// lands; the subtree's own tour ids translate by these).
+			const uint32_t matBaseBefore = cluster.materials.numObjects();
 			// Import the referenced scene beneath the placeholder.
 			{
 				GltfToSceneImporter importer{ cluster, model,
@@ -2113,39 +2236,86 @@ size_t ApplySceneReferences(
 				for (int gltfNode : roots)
 					importer.importUnder(gltfNode, ph, level + 1);
 			}
+			// Id offsets for .tour replay: the import above is
+			// deterministic (same traversal as the referenced scene's own
+			// import), so its cluster ids land at base + id; materials
+			// append in first-use order the same way. The replay's
+			// name verification warns if the bake ever drifts.
+			const uint32_t subtreeBase = uint32_t(ph) + 1u;
+			const uint32_t matBase = matBaseBefore;
+			if (haveRefTour && !refTour.commands.empty()) {
+				smvk::tour::Doc sub;
+				sub.commands.reserve(refTour.commands.size());
+				for (const auto& c : refTour.commands) {
+					smvk::tour::Command t = c;
+					const bool refAddr =
+						(t.verb == smvk::tour::Verb::SetLightAttr)
+						&& ((t.node & smvk::tour::kCreateLightRefBase) != 0);
+					if (!refAddr)
+						t.node += subtreeBase;
+					if (t.verb == smvk::tour::Verb::Parent)
+						t.node2 += subtreeBase;
+					// NOTE: CreateLight.node2 is the shadow bit, not a
+					// node — only .node (the parent) shifts.
+					if (t.verb == smvk::tour::Verb::AssignMaterial
+						|| t.verb == smvk::tour::Verb::SetMatAttr)
+						t.material += matBase;
+					sub.commands.push_back(std::move(t));
+				}
+				sub.overrides.reserve(refTour.overrides.size());
+				for (const auto& o : refTour.overrides) {
+					smvk::tour::OverrideRule rule = o;
+					if (rule.attr == smvk::tour::OverrideAttr::Material)
+						rule.material += matBase;
+					sub.overrides.push_back(std::move(rule));
+				}
+				std::string replayErr;
+				if (!smvk::tour::ApplyTourToCluster(cluster, sub, nullptr,
+						&replayErr)) {
+					std::cerr << "[References] tour replay failed for '" <<
+						resolved << "': " << replayErr <<
+						" (geometry kept, edits skipped)\n";
+					++warnings;
+				}
+			}
 			++applied;
 			std::cout << "[References] inlined '" << resolved << "' under " <<
 				"node " << parentNode << " (placeholder " << ph << ")\n";
-			// Nesting: the referenced source's OWN tour may reference more.
-			const std::string tourPath = ReferenceTourPathFor(
-				std::filesystem::path(resolved));
-			std::string tourText;
-			if (vfs) {
-				if (auto b = vfs->TryRead(tourPath))
-					tourText.assign(reinterpret_cast<const char*>(b->data()),
-						b->size());
+			// Nesting: follow further references with the subtree's
+			// offset. .tour sources carry their own doc; .gltf sources
+			// use the sibling <stem>.tour (existing behavior — its
+			// commands stay ignored, only its references are followed).
+			const smvk::tour::Doc* nestedDoc = nullptr;
+			smvk::tour::Doc siblingTour;
+			if (haveRefTour) {
+				nestedDoc = &refTour;
 			}
 			else {
-				std::ifstream tf(tourPath, std::ios::binary);
-				if (tf) {
-					std::stringstream ss;
-					ss << tf.rdbuf();
-					tourText = ss.str();
+				const std::string tourPath = ReferenceTourPathFor(
+					std::filesystem::path(resolved));
+				std::string tourText;
+				if (ReadTourTextAt(tourPath, vfs, tourText)) {
+					std::string err;
+					if (smvk::tour::LoadTourFromString(tourText, siblingTour,
+							err)
+						&& !siblingTour.references.empty()) {
+						nestedDoc = &siblingTour;
+					}
+					else if (!err.empty()) {
+						std::cerr << "[References] sibling tour parse failed '"
+							<< tourPath << "': " << err << "\n";
+					}
 				}
 			}
-			if (!tourText.empty()) {
-				smvk::tour::Doc nested;
-				std::string err;
-				if (smvk::tour::LoadTourFromString(tourText, nested, err) &&
-					!nested.references.empty()) {
-					Level next{};
-					next.doc = std::move(nested);
-					next.baseDir = baseDir;
-					next.chain = cur.chain;
-					next.chain.push_back(norm);
-					next.depth = cur.depth + 1;
-					queue.push_back(std::move(next));
-				}
+			if (nestedDoc && !nestedDoc->references.empty()) {
+				Level next{};
+				next.doc = *nestedDoc;
+				next.baseDir = baseDir;
+				next.chain = cur.chain;
+				next.chain.push_back(norm);
+				next.depth = cur.depth + 1;
+				next.nodeBase = subtreeBase;
+				queue.push_back(std::move(next));
 			}
 		}
 	}

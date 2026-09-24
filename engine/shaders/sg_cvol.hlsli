@@ -53,6 +53,29 @@ float SgCvWeight(CvVolumeGpu v, float3 pos)
     return w;
 }
 
+// Highest-priority volume whose weight is EXACTLY 1 at pos (deep
+// inside every fade). Ordered compositing makes its field the FINAL
+// result: lerp(E, E_vol, 1) = E_vol discards everything sampled before
+// it, so callers can skip the octree world-field gather (the most
+// expensive part of the ambient chain) and every lower-priority volume.
+// Returns 0xFFFFFFFF when no volume fully owns the pixel. Weight pass
+// only: 6 plane smoothsteps per volume, no texture taps.
+uint SgCvFullVolumeIndex(FrameUniforms frame, float3 pos)
+{
+    if (frame.cvolEnabled == 0u)
+        return 0xFFFFFFFFu;
+    const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+    uint full = 0xFFFFFFFFu;
+    [loop]
+    for (uint v = 0; v < volCount; ++v)
+    {
+        const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[v];
+        if (SgCvWeight(vol, pos) >= 1.0)
+            full = v; // keep the LAST (highest-priority) one
+    }
+    return full;
+}
+
 // World position -> lattice uvw in [0,1]^3 (clamped: the fade band
 // extends a little past the AABB, clamp-to-edge keeps those taps
 // defined; the weight function scales their contribution anyway).

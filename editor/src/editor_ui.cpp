@@ -5,6 +5,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "modal_bindings.h"
 
 #include <cstring>
 #include <algorithm>
@@ -188,16 +189,18 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 	DrawPlayBar();
 	DrawFlintbasePanel();
+	DrawReferencesPanel(); // Maya-style reference list (View menu)
 }
 
 void EditorApp::DrawMenuBar() {
 	if (ImGui::BeginMenu("File")) {
-		if (ImGui::MenuItem("Open scene... (.gltf/.pak)"))
-			m_showOpenDialog = true;
-		if (ImGui::MenuItem("Open glTF..."))
-			m_showOpenDialog = true;
-		if (ImGui::MenuItem("Open .pak (cooked)..."))
-			m_showOpenDialog = true;
+		// Single entry point: native dialog (.gltf/.pak/.tour, starts
+		// in C:/), dispatched by extension (tours replay into the stack).
+		if (ImGui::MenuItem("Open file...")) {
+			std::string picked;
+			if (NativeOpenFile(picked) && !picked.empty())
+				OpenAnySceneFile(picked);
+		}
 		if (ImGui::MenuItem("Add scene reference...", nullptr, false,
 				!m_gltfPath.empty() && !HasPakExtension(m_gltfPath))) {
 			std::snprintf(m_refSourceBuf, sizeof(m_refSourceBuf), "%s", "");
@@ -219,6 +222,19 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		if (ImGui::MenuItem("Quit"))
 			RequestClose();
+		ImGui::EndMenu();
+	}
+	if (ImGui::BeginMenu("Create")) {
+		// Editor-authored punctual lights (point/spot): appended as world
+		// nodes with pool definitions (undoable), persisted as
+		// createLight/setLightAttr tour verbs so cooks replay them.
+		const bool canCreate = m_world != nullptr;
+		if (ImGui::MenuItem("Point light", nullptr, false, canCreate))
+			DraftCreateLight(false);
+		if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
+			DraftCreateLight(true);
+		if (!canCreate)
+			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("Edit")) {
@@ -363,21 +379,29 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
 			m_showFlintbasePanel = !m_showFlintbasePanel;
+		if (ImGui::MenuItem("Reference editor", nullptr, m_showReferencesPanel))
+			m_showReferencesPanel = !m_showReferencesPanel;
 		ImGui::Separator();
 		ImGui::MenuItem("Viewport legend", nullptr, &m_showOverlay);
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Light gizmos", "L (LIGHTING)", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
+		{
+			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
+			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
+			if (ImGui::BeginCombo("GI volumes (J)",
+					cvNames[m_cvolPreviewMode])) {
+				for (int i = 0; i < 3; ++i)
+					if (ImGui::Selectable(cvNames[i], m_cvolPreviewMode == i))
+						m_cvolPreviewMode = i;
+				ImGui::EndCombo();
+			}
+		}
 		if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 			m_uiMode = !m_uiMode;
 		ImGui::EndMenu();
 	}
 
-	if (m_showOpenDialog) {
-		ImGui::OpenPopup("Open scene");
-		m_showOpenDialog = false;
-	}
-	DrawOpenDialog();
 	if (m_showRefDialog) {
 		ImGui::OpenPopup("Add scene reference");
 		m_showRefDialog = false;
@@ -388,127 +412,6 @@ void EditorApp::DrawMenuBar() {
 		m_showSaveDialog = false;
 	}
 	DrawSaveDialog();
-}
-
-void EditorApp::DrawOpenDialog() {
-	namespace fs = std::filesystem;
-	ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
-	if (!ImGui::BeginPopupModal("Open scene", nullptr,
-		ImGuiWindowFlags_NoCollapse))
-		return;
-	auto closeDlg = [&]() {
-		m_browseDir.clear();
-		m_browseSel.clear();
-		ImGui::CloseCurrentPopup();
-	};
-	if (m_browseDir.empty()) {
-		// First frame: start from the path field's parent dir.
-		std::error_code ec;
-		fs::path d = fs::path(m_openPathBuf).parent_path();
-		if (d.empty())
-			d = fs::current_path(ec);
-		if (!fs::is_directory(d, ec))
-			d = ".";
-		m_browseDir = d.string();
-	}
-	ImGui::InputText("##path", m_openPathBuf, sizeof(m_openPathBuf));
-	ImGui::SameLine();
-	if (ImGui::Button("Up")) {
-		std::error_code ec;
-		fs::path p(m_browseDir);
-		if (p.has_parent_path()) {
-			fs::path up = p.parent_path();
-			if (fs::is_directory(up, ec))
-				m_browseDir = up.string();
-		}
-		m_browseSel.clear();
-	}
-	ImGui::TextDisabled("%s", m_browseDir.c_str());
-	ImGui::BeginChild("##browse", ImVec2(0, -60), true);
-	{
-		std::error_code ec;
-		std::vector<fs::directory_entry> dirs, files;
-		for (fs::directory_iterator it(m_browseDir, ec), end;
-			!ec && it != end; it.increment(ec)) {
-			const fs::directory_entry& e = *it;
-			if (e.is_directory(ec))
-				dirs.push_back(e);
-			else if (e.is_regular_file(ec)) {
-				const std::string ext =
-					e.path().extension().string();
-				if (ext == ".gltf" || ext == ".GLTF" ||
-					ext == ".pak" || ext == ".PAK")
-					files.push_back(e);
-			}
-		}
-		auto byName = [](const fs::directory_entry& a,
-			const fs::directory_entry& b) {
-			return a.path().filename().string() <
-				b.path().filename().string();
-		};
-		std::sort(dirs.begin(), dirs.end(), byName);
-		std::sort(files.begin(), files.end(), byName);
-		// Parent entry.
-		if (ImGui::Selectable("[..]", false,
-			ImGuiSelectableFlags_AllowDoubleClick)) {
-			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-				fs::path p(m_browseDir);
-				if (p.has_parent_path()) {
-					fs::path up = p.parent_path();
-					if (fs::is_directory(up, ec))
-						m_browseDir = up.string();
-				}
-				m_browseSel.clear();
-			}
-		}
-		char label[512];
-		for (auto& d : dirs) {
-			const std::string name = d.path().filename().string();
-			std::snprintf(label, sizeof(label), "[%s]", name.c_str());
-			if (ImGui::Selectable(label, false,
-				ImGuiSelectableFlags_AllowDoubleClick)) {
-				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-					m_browseDir = d.path().string();
-					m_browseSel.clear();
-				}
-			}
-		}
-		for (auto& f : files) {
-			const std::string full = f.path().string();
-			const std::string name = f.path().filename().string();
-			const bool sel = (m_browseSel == full);
-			if (ImGui::Selectable(name.c_str(), sel,
-				ImGuiSelectableFlags_AllowDoubleClick)) {
-				m_browseSel = full;
-				std::snprintf(m_openPathBuf, sizeof(m_openPathBuf),
-					"%s", full.c_str());
-			}
-			if (sel)
-				ImGui::SetItemDefaultFocus();
-			if (ImGui::IsItemHovered() &&
-				ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-				OpenScene(full);
-				closeDlg();
-				ImGui::EndChild();
-				ImGui::EndPopup();
-				return;
-			}
-		}
-	}
-	ImGui::EndChild();
-	ImGui::TextDisabled("%s",
-		m_browseSel.empty() ? "no file selected" : m_browseSel.c_str());
-	if (ImGui::Button("Open")) {
-		if (!m_browseSel.empty())
-			std::snprintf(m_openPathBuf, sizeof(m_openPathBuf),
-				"%s", m_browseSel.c_str());
-		OpenScene(m_openPathBuf);
-		closeDlg();
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Cancel"))
-		closeDlg();
-	ImGui::EndPopup();
 }
 
 void EditorApp::DrawSaveDialog() {
@@ -632,7 +535,7 @@ void EditorApp::DrawSaveDialog() {
 	ImGui::EndPopup();
 }
 
-std::string EditorApp::ResolveVfsRoot() {
+std::string EditorApp::ResolveVfsRoot() const {
 	// Prefer the content dir the current scene came from, else ./content.
 	std::string posix = m_gltfPath;
 	for (char& c : posix)
@@ -1887,6 +1790,98 @@ void EditorApp::DrawInspector() {
 		}
 		if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
 			ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+		// ---- editable light properties (point/spot): SetLightAttr,
+		// undoable, persisted as setLightAttr tour verbs so cooks replay
+		// them. Sliders coalesce one command per drag (mattr pattern);
+		// checkboxes commit immediately. ----
+		if (li->type != ::SceneLight::Type::Directional) {
+			const bool isSpot = li->type == ::SceneLight::Type::Spot;
+			auto beginLightDrag = [&](const char* attr) {
+				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetLightAttr ||
+					m_pending.cmd.node != node || m_pending.cmd.lightAttr != attr))
+					FinalizePending();
+				if (!m_pending.active) {
+					m_pending.active = true;
+					m_pending.cmd = EditCmd{};
+					m_pending.cmd.verb = EditVerb::SetLightAttr;
+					m_pending.cmd.node = node;
+					m_pending.cmd.lightAttr = attr;
+					ReadNodeLightAttr(node, attr, m_pending.cmd.beforeVec4,
+						m_pending.cmd.beforeNum, m_pending.cmd.beforeFlag,
+						m_pending.cmd.beforeText);
+				}
+			};
+			auto endLightDrag = [&](const char* attr) {
+				if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+					m_pending.cmd.verb == EditVerb::SetLightAttr &&
+					m_pending.cmd.node == node &&
+					m_pending.cmd.lightAttr == attr)
+					FinishDrag();
+			};
+			glm::vec3 lcol = li->color;
+			if (ImGui::ColorEdit3("Light color", &lcol.x)) {
+				beginLightDrag("color");
+				WriteNodeLightAttr(node, "color", glm::vec4(lcol, 1.0f), 0, false, {});
+				m_pending.cmd.vec4 = glm::vec4(lcol, 1.0f);
+			}
+			endLightDrag("color");
+			float lint = li->intensity;
+			if (ImGui::DragFloat("Intensity (cd)", &lint, 1.0f, 0.0f, 1e7f, "%.1f")) {
+				beginLightDrag("intensity");
+				WriteNodeLightAttr(node, "intensity", glm::vec4(0), lint, false, {});
+				m_pending.cmd.number = lint;
+			}
+			endLightDrag("intensity");
+			float lrange = li->range;
+			if (ImGui::DragFloat("Range (m, 0 = inf)", &lrange, 0.1f, 0.0f, 500.0f, "%.1f")) {
+				beginLightDrag("range");
+				WriteNodeLightAttr(node, "range", glm::vec4(0), lrange, false, {});
+				m_pending.cmd.number = lrange;
+			}
+			endLightDrag("range");
+			if (isSpot) {
+				float inner = glm::degrees(li->innerConeAngle);
+				if (ImGui::SliderFloat("Inner cone (deg)", &inner, 0.0f, 89.0f, "%.1f")) {
+					beginLightDrag("inner");
+					WriteNodeLightAttr(node, "inner", glm::vec4(0), inner, false, {});
+					m_pending.cmd.number = inner;
+				}
+				endLightDrag("inner");
+				float outer = glm::degrees(li->outerConeAngle);
+				if (ImGui::SliderFloat("Outer cone (deg)", &outer, 0.0f, 89.0f, "%.1f")) {
+					beginLightDrag("outer");
+					WriteNodeLightAttr(node, "outer", glm::vec4(0), outer, false, {});
+					m_pending.cmd.number = outer;
+				}
+				endLightDrag("outer");
+			}
+			bool lstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+			if (ImGui::Checkbox("Static (bake-only)", &lstatic)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetLightAttr;
+				c.node = node;
+				c.lightAttr = "static";
+				c.afterFlag = lstatic;
+				ReadNodeLightAttr(node, "static", c.beforeVec4, c.beforeNum,
+					c.beforeFlag, c.beforeText);
+				Do(c);
+			}
+			if (isSpot) {
+				bool lshadow = (li->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
+				if (ImGui::Checkbox("Cast shadows", &lshadow)) {
+					EditCmd c{};
+					c.verb = EditVerb::SetLightAttr;
+					c.node = node;
+					c.lightAttr = "shadow";
+					c.afterFlag = lshadow;
+					ReadNodeLightAttr(node, "shadow", c.beforeVec4, c.beforeNum,
+						c.beforeFlag, c.beforeText);
+					Do(c);
+				}
+			} else {
+				ImGui::TextDisabled("points cannot cast shadows (spot atlas only)");
+			}
+		}
 	}
 
 	// Lightmap participation.
@@ -2506,29 +2501,25 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoInputs)) {
 		// vi-style mode line (like vi's "-- INSERT --"), colored per
-		// mode, with that mode's key hints; the shared/global hints sit
-		// under the status lines.
-		switch (m_mode) {
-		case EditorMode::Layout:
-			ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f),
-				"-- LAYOUT --  W/E/R gizmo  G cycle  Q select radial  "
-				"Z wireframe  F frame sel  Shift+F all  Up/Down node");
-			break;
-		case EditorMode::Lighting:
-			ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
-				"-- LIGHTING --  [ ] sun azim  - = sun elev  , . sun int  "
-				"L light gizmos  F8 baked  F10 lm-UV  F5 inset");
-			break;
-		case EditorMode::Test:
-			ImGui::TextColored(ImVec4(0.40f, 0.80f, 0.95f, 1.0f),
-				"-- TEST --  P run in App  C cook  T tex mode  F4 meshlets  "
-				"F6 vcolors  F9 UV0");
-			break;
-		case EditorMode::Profile:
-			ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.65f, 1.0f),
-				"-- PROFILE --  stub: bindings wired later (O logs)");
-			break;
+		// mode. Key hints are GENERATED from the central registry
+		// (modal_bindings.h) so they can never drift from the real
+		// bindings; the shared/global hints sit under the status lines.
+		std::string modeKeys, globalKeys;
+		for (size_t bi = 0; bi < ModalBindingCount(); ++bi) {
+			const ModalBindingDef& b = ModalBindingAt(bi);
+			if (!b.run || !ModalBindingApplies(b, m_mode))
+				continue;
+			std::string& dst = ((b.scopes & kScopeGlobal) != 0)
+				? globalKeys : modeKeys;
+			dst += std::string(b.keycap) + " " + b.label + "  ";
 		}
+		const ImVec4 modeCol =
+			(m_mode == EditorMode::Layout) ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
+			: (m_mode == EditorMode::Lighting) ? ImVec4(0.95f, 0.75f, 0.35f, 1.0f)
+			: (m_mode == EditorMode::Test) ? ImVec4(0.40f, 0.80f, 0.95f, 1.0f)
+			: ImVec4(0.95f, 0.45f, 0.65f, 1.0f);
+		ImGui::TextColored(modeCol, "-- %s --  %s",
+			EditorModeName(m_mode), modeKeys.c_str());
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
 			ViewModeName(ActiveViewMode()),
 			m_wireframeAll ? " (wire)" : "",
@@ -2553,7 +2544,7 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 			ImGui::TextDisabled("meshlet color: %s",
 				m_debugMeshletMode == 0 ? "random per meshlet"
 				: "cone-cutoff heat");
-		ImGui::TextDisabled("1/2/3/4 mode  F1/F2/F3 shading  V quad  I ui");
+		ImGui::TextDisabled("%s", globalKeys.c_str());
 		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
 		ImGui::TextDisabled("flat pane: MMB pan  wheel zoom  click=face/vert");
 		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu"

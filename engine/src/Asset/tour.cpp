@@ -231,6 +231,34 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		case Verb::Parent:
 			f << "parent -n " << c.node << " -p " << c.node2;
 			break;
+		case Verb::CreateLight: {
+			// -t packs position + every scalar: x y z intensity range
+			// innerDeg outerDeg static01 shadow01 (9 values).
+			f << "createLight -p " << c.node << " -name " << Quote(c.text)
+				<< " -at " << (c.vec4.x >= 1.5f ? "spot" : "point")
+				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+				<< " " << c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
+				<< " " << c.number << " " << (c.flag ? 1 : 0) << " " << c.node2;
+			break;
+		}
+		case Verb::SetLightAttr: {
+			f << "setLightAttr ";
+			if ((c.node & kCreateLightRefBase) != 0)
+				f << "-ref " << (c.node & ~kCreateLightRefBase);
+			else
+				f << "-n " << c.node;
+			f << " -at " << c.text;
+			if (c.text == "color" || c.text == "position"
+				|| c.text == "rotation")
+				f << " -t " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z;
+			else if (c.text == "name")
+				f << " -v " << Quote(c.name);
+			else if (c.text == "static" || c.text == "shadow")
+				f << " -v " << (c.flag ? "on" : "off");
+			else
+				f << " -v " << c.number;
+			break;
+		}
 		}
 		if (!c.name.empty())
 			f << " // " << c.name;
@@ -262,6 +290,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		if (r.hasTranslate)
 			f << " -t " << r.translate.x << " " << r.translate.y
 				<< " " << r.translate.z;
+		if (!r.enabled)
+			f << " -enabled off";
 		f << ";\n";
 	}
 	if (doc.hasCook) {
@@ -296,6 +326,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 // -n <id> / -m <id> / -p <id> / -at <name> / -t <nums...> / -v <num|word>
 // -pattern <regex> / -enabled <on|off> (override rules only)
 // -source <path> / -name <word> (reference lines only)
+// -ref <k> (setLightAttr on the k-th createLight in the doc)
 struct Flags {
 	bool hasN = false, hasM = false, hasP = false, hasAt = false;
 	uint32_t n = 0, m = 0, p = 0;
@@ -303,6 +334,8 @@ struct Flags {
 	std::vector<std::string> t; // -t values
 	std::string v;              // -v value (raw)
 	bool hasV = false;
+	bool hasRef = false;
+	uint32_t ref = 0; // createLight creation-order index
 	std::string pattern;
 	bool hasPattern = false;
 	bool enabled = true;
@@ -363,7 +396,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				return w == "-n" || w == "-m" || w == "-p" ||
 					w == "-at" || w == "-t" || w == "-v" ||
 					w == "-pattern" || w == "-enabled" ||
-					w == "-fingerprint";
+					w == "-fingerprint" || w == "-ref";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -383,6 +416,19 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.v = toks[i + 1];
 			if (!f.v.empty() && f.v.back() == ';')
 				f.v.pop_back();
+			i += 2;
+		}
+		else if (k == "-ref" && i + 1 < toks.size()) {
+			std::string idTok = toks[i + 1];
+			if (!idTok.empty() && idTok.back() == ';')
+				idTok.pop_back();
+			uint32_t v = 0;
+			if (!ParseU32(idTok, v)) {
+				err = "line " + std::to_string(lineNo) + ": bad ref '" + toks[i + 1] + "'";
+				return false;
+			}
+			f.hasRef = true;
+			f.ref = v;
 			i += 2;
 		}
 		else if (k == "-pattern" && i + 1 < toks.size()) {
@@ -728,6 +774,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				r.translate = glm::vec3(float(x), float(y), float(z));
 				r.hasTranslate = true;
 			}
+			r.enabled = fl.hasEnabled ? fl.enabled : true;
 			doc.references.push_back(std::move(r));
 			continue;
 		}
@@ -735,6 +782,80 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.verb = Verb::Parent;
 			c.node = fl.n;
 			c.node2 = fl.p;
+		}
+		else if (verb == "createLight" && fl.hasP && fl.hasName && fl.hasAt
+			&& fl.t.size() >= 9) {
+			// -t packs: x y z intensity range innerDeg outerDeg
+			// static01 shadow01.
+			if (fl.at != "point" && fl.at != "spot") {
+				err = "line " + std::to_string(lineNo) + ": createLight wants -at point|spot";
+				return false;
+			}
+			double v[9] = {};
+			for (int k = 0; k < 9; ++k)
+				if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+					err = "line " + std::to_string(lineNo) + ": bad createLight value";
+					return false;
+				}
+			c.verb = Verb::CreateLight;
+			c.node = fl.p;
+			c.text = fl.name;
+			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+			c.vec4 = glm::vec4(fl.at == "spot" ? 2.0f : 1.0f,
+				float(v[3]), float(v[4]), float(v[5]));
+			c.number = v[6];
+			c.flag = v[7] != 0.0;
+			c.node2 = v[8] != 0.0 ? 1u : 0u;
+		}
+		else if (verb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+			static const char* kAttrs[] = { "color", "intensity", "range",
+				"inner", "outer", "static", "shadow", "name", "position",
+				"rotation" };
+			bool known = false;
+			for (const char* a : kAttrs)
+				if (fl.at == a) {
+					known = true;
+					break;
+				}
+			if (!known) {
+				err = "line " + std::to_string(lineNo) + ": bad light attr '" + fl.at + "'";
+				return false;
+			}
+			c.verb = Verb::SetLightAttr;
+			c.node = fl.hasRef ? (kCreateLightRefBase | fl.ref) : fl.n;
+			c.text = fl.at;
+			if (fl.at == "color" || fl.at == "position" || fl.at == "rotation") {
+				if (fl.t.size() < 3) {
+					err = "line " + std::to_string(lineNo) + ": light triple wants 3 values";
+					return false;
+				}
+				double r = 0, g = 0, b = 0;
+				if (!ParseDouble(fl.t[0], r) || !ParseDouble(fl.t[1], g) ||
+					!ParseDouble(fl.t[2], b)) {
+					err = "line " + std::to_string(lineNo) + ": bad light triple";
+					return false;
+				}
+				c.vec4 = glm::vec4(float(r), float(g), float(b), 1.0f);
+			}
+			else if (fl.at == "name") {
+				c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			}
+			else if (fl.at == "static" || fl.at == "shadow") {
+				bool on = false;
+				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+				if (!ParseFlagWord(w, on)) {
+					err = "line " + std::to_string(lineNo) + ": bad flag '" + w + "'";
+					return false;
+				}
+				c.flag = on;
+			}
+			else {
+				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+				if (!ParseDouble(w, c.number)) {
+					err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+					return false;
+				}
+			}
 		}
 		else {
 			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
@@ -896,6 +1017,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				getNodeName(scene, int(n)) + "', tour recorded '" + c.name + "'");
 		return true;
 	};
+	// Creation-order ids for SetLightAttr refs (kCreateLightRefBase | k):
+	// created light nodes have no cluster id until replayed.
+	std::vector<uint32_t> createdLights;
 	for (const Command& c : doc.commands) {
 		switch (c.verb) {
 		case Verb::Rename: {
@@ -972,6 +1096,138 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			}
 			TourReparent(scene, c.node, c.node2);
+			break;
+		}
+		case Verb::CreateLight: {
+			// Editor-authored punctual light: append a node under the
+			// recorded parent + a lights-pool definition. Angles ride in
+			// degrees (editor convention); the runtime converts.
+			if (c.node >= scene.hierarchy.size()) {
+				if (err)
+					*err = "tour: createLight parent out of range: " +
+						std::to_string(c.node);
+				return false;
+			}
+			const int level = scene.hierarchy[c.node].level + 1;
+			const int newId = addNode(scene, int(c.node), level);
+			if (newId < 0) {
+				if (err)
+					*err = "tour: createLight failed under parent " +
+						std::to_string(c.node);
+				return false;
+			}
+			scene.localTransform[size_t(newId)] =
+				glm::translate(glm::mat4(1.0f), c.vec);
+			SceneLight def{};
+			def.type = c.vec4.x >= 1.5f
+				? SceneLight::Type::Spot : SceneLight::Type::Point;
+			def.intensity = std::max(c.vec4.y, 0.0f);
+			def.range = std::max(c.vec4.z, 0.0f);
+			def.innerConeAngle = glm::radians(std::clamp(c.vec4.w, 0.0f, 89.0f));
+			def.outerConeAngle = glm::radians(
+				std::clamp(float(c.number), 0.0f, 89.0f));
+			if (c.flag)
+				def.flags |= SceneLight::kSceneLightFlag_Static;
+			if (c.node2 != 0)
+				def.flags |= SceneLight::kSceneLightFlag_CastShadow;
+			def.name = c.text;
+			const uint32_t poolIdx =
+				cluster.lights.create(std::move(def)).index();
+			const uint32_t nameId = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.text);
+			scene.nameForNode[uint32_t(newId)] = nameId;
+			scene.lightForNode[uint32_t(newId)] = poolIdx;
+			createdLights.push_back(uint32_t(newId));
+			break;
+		}
+		case Verb::SetLightAttr: {
+			uint32_t target = c.node;
+			if ((target & kCreateLightRefBase) != 0) {
+				const uint32_t k = target & ~kCreateLightRefBase;
+				if (k >= createdLights.size()) {
+					if (err)
+						*err = "tour: setLightAttr ref out of range: " +
+							std::to_string(k);
+					return false;
+				}
+				target = createdLights[k];
+			}
+			else if (!checkNode(target, c)) {
+				return false;
+			}
+			auto lit = scene.lightForNode.find(target);
+			if (lit == scene.lightForNode.end()) {
+				if (err)
+					*err = "tour: setLightAttr on non-light node " +
+						std::to_string(target);
+				return false;
+			}
+			SceneLight* def = cluster.lights.get(
+				cluster.lights.getHandle(lit->second));
+			if (!def) {
+				if (err)
+					*err = "tour: setLightAttr bad light pool index";
+				return false;
+			}
+			if (c.text == "color") {
+				def->color = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			}
+			else if (c.text == "intensity") {
+				def->intensity = std::max(float(c.number), 0.0f);
+			}
+			else if (c.text == "range") {
+				def->range = std::max(float(c.number), 0.0f);
+			}
+			else if (c.text == "inner") {
+				def->innerConeAngle = glm::radians(
+					std::clamp(float(c.number), 0.0f, 89.0f));
+			}
+			else if (c.text == "outer") {
+				def->outerConeAngle = glm::radians(
+					std::clamp(float(c.number), 0.0f, 89.0f));
+			}
+			else if (c.text == "static") {
+				if (c.flag)
+					def->flags |= SceneLight::kSceneLightFlag_Static;
+				else
+					def->flags &= ~SceneLight::kSceneLightFlag_Static;
+			}
+			else if (c.text == "shadow") {
+				if (c.flag)
+					def->flags |= SceneLight::kSceneLightFlag_CastShadow;
+				else
+					def->flags &= ~SceneLight::kSceneLightFlag_CastShadow;
+			}
+			else if (c.text == "name") {
+				def->name = c.name;
+				const uint32_t id = uint32_t(scene.nodeNames.size());
+				scene.nodeNames.push_back(c.name);
+				scene.nameForNode[target] = id;
+			}
+			else if (c.text == "position" || c.text == "rotation") {
+				// Rebuild the node's local TRS with one channel replaced
+				// (editor TRS convention: Rz*Ry*Rx, degrees).
+				glm::vec3 skew, t, s;
+				glm::vec4 persp;
+				glm::quat q;
+				glm::decompose(scene.localTransform[target], s, q, t,
+					skew, persp);
+				glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+				if (c.text == "position")
+					t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+				else
+					e = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+				glm::mat4 m(1.0f);
+				m = glm::translate(m, t);
+				m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+				m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+				m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+				m = glm::scale(m, s);
+				scene.localTransform[target] = m;
+			}
+			else {
+				warn("tour: unknown light attr '" + c.text + "' (skipped)");
+			}
 			break;
 		}
 		}
@@ -1150,6 +1406,19 @@ std::string Describe(const Command& c) {
 	case Verb::Parent:
 		std::snprintf(buf, sizeof(buf), "parent #%u under #%u", c.node, c.node2);
 		break;
+	case Verb::CreateLight:
+		std::snprintf(buf, sizeof(buf), "createLight '%s' (%s) under #%u",
+			c.text.c_str(), c.vec4.x >= 1.5f ? "spot" : "point", c.node);
+		break;
+	case Verb::SetLightAttr: {
+		char tgt[32];
+		if ((c.node & kCreateLightRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateLightRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "light.%s.%s", tgt, c.text.c_str());
+		break;
+	}
 	}
 	return buf;
 }
