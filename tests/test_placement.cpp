@@ -228,6 +228,9 @@ void TestConBridge();
 void TestConBruteForce();
 void TestDrawFeed();
 void TestTerrainUpload();
+void TestTerrainGroups();
+void TestTerrainBrush();
+void TestTerrainRaycast();
 
 void TestFieldEval() {
 	using namespace smvk::placement;
@@ -1311,6 +1314,137 @@ void TestTerrainUpload() {
 	Check(match, "place.terr.matches-field");
 }
 
+void TestTerrainGroups() {
+	using namespace smvk::placement;
+	// 64m, 65 samples, 2x2 tiles: each tile spans 32 intervals; tile 0
+	// covers samples [0..32], tile 1 [32..64] — shared edge sample.
+	TerrainGroupData g;
+	g.params.origin = glm::vec2(10, 20);
+	g.params.size = 64.0f;
+	g.params.res = 65;
+	g.params.height = 5.0f;
+	g.params.freq = 0.05f;
+	g.params.seed = 42;
+	g.tilesX = 2;
+	g.tilesZ = 2;
+	g.heights = BuildTerrainHeights(g.params);
+	uint32_t x0, x1, z0, z1;
+	TerrainTileRange(g, 0, 0, x0, x1, z0, z1);
+	Check(x0 == 0 && x1 == 32 && z0 == 0 && z1 == 32, "place.tgroup.range00");
+	TerrainTileRange(g, 1, 1, x0, x1, z0, z1);
+	Check(x0 == 32 && x1 == 64 && z0 == 32 && z1 == 64, "place.tgroup.range11");
+	// Edge continuity: tile00's last COLUMN (global x=32) matches tile
+	// (1,0)'s first column — same global samples => identical heights
+	// and normals across the shared border.
+	smvk::StaticMeshUpload t00, t10;
+	Check(BuildTerrainTileUpload(g, 0, 0, t00), "place.tgroup.upload00");
+	Check(BuildTerrainTileUpload(g, 1, 0, t10), "place.tgroup.upload10");
+	Check(t00.vertices.size() == 33u * 33u, "place.tgroup.tile-verts");
+	Check(t00.aabbMin.x == 0.0f && t00.aabbMax.x == 32.0f
+		&& t00.aabbMin.z == 0.0f && t00.aabbMax.z == 32.0f,
+		"place.tgroup.tile-frame");
+	bool edge = true;
+	for (uint32_t k = 0; k < 33; ++k) {
+		const auto& a = t00.vertices[k * 33 + 32]; // x=32 edge of tile00
+		const auto& b = t10.vertices[k * 33 + 0];  // x=32 edge of tile10
+		if (a.pos.y != b.pos.y || a.normal != b.normal) { edge = false; break; }
+	}
+	Check(edge, "place.tgroup.edge-continuity");
+	// Degenerate tile index rejected.
+	smvk::StaticMeshUpload dummy;
+	Check(!BuildTerrainTileUpload(g, 2, 0, dummy), "place.tgroup.bad-tile");
+	// 1x1 group == legacy single-node upload (same vertex count/AABB).
+	smvk::StaticMeshUpload single, t11;
+	Check(BuildTerrainTileUpload(g, 1, 1, t11), "place.tgroup.upload11");
+	Check(BuildTerrainUpload(g.params, single), "place.tgroup.single-ok");
+	Check(single.vertices.size() == 65u * 65u, "place.tgroup.single-verts");
+}
+
+void TestTerrainBrush() {
+	using namespace smvk::placement;
+	// Flat field: deterministic raise/flatten/smooth checks.
+	TerrainGroupData g;
+	g.params.origin = glm::vec2(0, 0);
+	g.params.size = 64.0f;
+	g.params.res = 65;
+	g.tilesX = 2;
+	g.tilesZ = 2;
+	g.heights.width = 65;
+	g.heights.height = 65;
+	g.heights.origin = glm::vec3(0, 0, 0);
+	g.heights.spacing = glm::vec2(1.0f, 1.0f);
+	g.heights.heights.assign(65 * 65, 0.0f);
+	// Raise at center: center rises by strength, far samples untouched.
+	TerrainBrushStamp(g, TerrainBrushOp::Raise, 32.0f, 32.0f, 4.0f, 1.0f, 0.0f);
+	Check(g.heights.heights[32 * 65 + 32] == 1.0f, "place.brush.raise-center");
+	Check(g.heights.heights[0] == 0.0f, "place.brush.raise-far-untouched");
+	// Undo box round-trip restores the pre-stamp state exactly.
+	uint32_t x0, x1, z0, z1;
+	TerrainBrushBox(g, 32.0f, 32.0f, 4.0f, x0, x1, z0, z1);
+	std::vector<float> box;
+	uint32_t bw, bh;
+	TerrainCopyBox(g, x0, x1, z0, z1, box, bw, bh);
+	for (float& v : box) v = 0.0f; // "before" was all-zero
+	TerrainWriteBox(g, x0, x1, z0, z1, box, bw);
+	Check(g.heights.heights[32 * 65 + 32] == 0.0f, "place.brush.undo-restores");
+	// Determinism: identical stamps from identical starts.
+	TerrainGroupData a = g, b = g;
+	TerrainBrushStamp(a, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
+	TerrainBrushStamp(b, TerrainBrushOp::Raise, 10.5f, 12.25f, 6.0f, 2.0f, 0.0f);
+	bool same = a.heights.heights == b.heights.heights;
+	Check(same, "place.brush.deterministic");
+	// Flatten pulls toward the target.
+	TerrainBrushStamp(a, TerrainBrushOp::Flatten, 10.5f, 12.25f, 6.0f, 1.0f, 0.0f);
+	const float after = a.heights.heights[12 * 65 + 10];
+	Check(after > 0.0f && after < 2.0f, "place.brush.flatten-blends");
+	// Smooth reduces the max slope magnitude (3x3 averaging).
+	TerrainGroupData s;
+	s.params = g.params;
+	s.heights = g.heights;
+	s.heights.heights.assign(65 * 65, 0.0f);
+	s.heights.heights[32 * 65 + 32] = 10.0f; // spike
+	TerrainBrushStamp(s, TerrainBrushOp::Smooth, 32.0f, 32.0f, 3.0f, 1.0f, 0.0f);
+	Check(s.heights.heights[32 * 65 + 32] < 10.0f, "place.brush.smooth-softens");
+	Check(s.heights.heights[32 * 65 + 31] > 0.0f, "place.brush.smooth-spreads");
+	// Touched tiles: a stamp in the NW quadrant of a 2x2 split touches
+	// exactly tile (0,0).
+	std::vector<uint32_t> tiles;
+	TerrainBrushTouchedTiles(0, 8, 0, 8, 65, 2, 2, tiles);
+	Check(tiles.size() == 1 && tiles[0] == 0u, "place.brush.tiles-one");
+	// Across both shared edges: touches all four tiles of the 2x2 split.
+	TerrainBrushTouchedTiles(30, 34, 30, 34, 65, 2, 2, tiles);
+	Check(tiles.size() == 4, "place.brush.tiles-across-edge");
+	bool hasAll = tiles[0] == 0u
+		&& tiles[1] == (1u | (0u << 16))
+		&& tiles[2] == (0u | (1u << 16))
+		&& tiles[3] == (1u | (1u << 16));
+	Check(hasAll, "place.brush.tiles-packed");
+}
+
+void TestTerrainRaycast() {
+	using namespace smvk::placement;
+	HeightfieldData hf;
+	hf.width = 65;
+	hf.height = 65;
+	hf.origin = glm::vec3(0, 0, 0);
+	hf.spacing = glm::vec2(1.0f, 1.0f);
+	hf.heights.assign(65 * 65, 5.0f); // flat plateau at y=5
+	float t = 0.0f;
+	// Straight down from above: hits the plateau.
+	Check(TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, -1, 0),
+		100.0f, t), "place.raycast.hits");
+	Check(std::abs(t - 45.0f) < 0.05f, "place.raycast.t");
+	// Above the plateau looking up: miss.
+	Check(!TerrainRaycast(hf, glm::vec3(32, 50, 32), glm::vec3(0, 1, 0),
+		100.0f, t), "place.raycast.miss");
+	// Grazing ray beyond maxDist: miss.
+	Check(!TerrainRaycast(hf, glm::vec3(-500, 6, 0), glm::vec3(0, 0, 1),
+		10.0f, t), "place.raycast.maxdist");
+	// Origin below the surface: immediate hit at t=0.
+	Check(TerrainRaycast(hf, glm::vec3(32, 1, 32), glm::vec3(0, 1, 0),
+		100.0f, t) && t == 0.0f, "place.raycast.start-under");
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -1344,6 +1478,9 @@ int main() {
 	TestConBruteForce();
 	TestDrawFeed();
 	TestTerrainUpload();
+	TestTerrainGroups();
+	TestTerrainBrush();
+	TestTerrainRaycast();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }

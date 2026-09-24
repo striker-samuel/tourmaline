@@ -280,6 +280,8 @@ void EditorApp::CloseScene() {
 	m_placement.showGraph = false;
 	m_placement.showOverlay = true;
 	m_placement.showRejected = true;
+	m_terrainGroups.clear();
+	m_defaultMatWorld = UINT32_MAX;
 	ClearSelection();
 	ClearHistory();
 	Log("Scene closed.");
@@ -409,6 +411,8 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	ClearTexPreview();
 	m_selected = UINT32_MAX;
 	ClearHistory();
+	m_terrainGroups.clear(); // fresh world: stale group grids die with it
+	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
 	m_envByNode.clear(); // env nodes restored by LoadTour (editorSet)
@@ -436,6 +440,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	Log("Loading tour...");
 	LoadTour(); // replays <stem>.tour into the undo stack when present
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
+	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
 	// Fit the default perspective camera to the scene bounds.
 	const ::Aabb bounds = m_world->ComputeSceneBounds();
@@ -558,6 +563,8 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	ClearTexPreview();
 	m_selected = UINT32_MAX;
 	ClearHistory();
+	m_terrainGroups.clear(); // fresh world: stale group grids die with it
+	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
 	m_nextOverrideId = 1;
 	m_envByNode.clear(); // pak loads replay no tour: default IBL stands
@@ -579,6 +586,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	// Convex GI volume sidecars (probes-only pivot preview data).
 	TryLoadCvolumes(path);
 	RebuildCookedLights(); // census + seeds the viewport sun from the pak
+	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
 	const ::Aabb bounds = m_world->ComputeSceneBounds();
 	if (bounds.mx.x >= bounds.mn.x) {

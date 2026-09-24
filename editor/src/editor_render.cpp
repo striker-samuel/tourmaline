@@ -1559,6 +1559,42 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			ClearSelection();
 		}
 	}
+	// ---- terrain height painting --------------------------------------
+	// Paint mode replaces the LMB press path entirely: no box select, no
+	// gizmo grab, no picking. One stamp per click; drags stamp at
+	// radius-spaced intervals along the surface.
+	const bool painting = !activeFlat && m_world && m_paintTerrain
+		&& !altNav && !inInset && inVp && !uiEats;
+	if (painting) {
+		// Fresh press always stamps (drag spacing applies within one
+		// stroke only).
+		if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT))
+			m_paintLast = glm::vec2(-1e9f, -1e9f);
+		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+			const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
+			glm::vec3 rayOrigin;
+			const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
+				m_viewports[m_activeVp].viewProj, rayOrigin);
+			const uint32_t group = TerrainGroupOf(m_selected);
+			auto it = m_terrainGroups.find(group);
+			float tHit = 0.0f;
+			if (group != UINT32_MAX && it != m_terrainGroups.end()
+				&& smvk::placement::TerrainRaycast(it->second.data.heights,
+					rayOrigin, rayDir, 5000.0f, tHit)) {
+				const glm::vec3 hit = rayOrigin + rayDir * tHit;
+				const glm::vec2 hitXZ(hit.x, hit.z);
+				const float spacing = std::max(m_paintRadius * 0.5f, 0.25f);
+				if (m_paintLast.x < -1e8f
+					|| glm::length(hitXZ - m_paintLast) >= spacing) {
+					PaintTerrainAt(rayOrigin, rayDir);
+					m_paintLast = hitXZ;
+				}
+			}
+		}
+		else {
+			m_paintLast = glm::vec2(-1e9f, -1e9f);
+		}
+	}
 	// Rubber-band multiselect: press on empty space (no gizmo grab),
 	// drag past a few pixels -> box; release selects all nodes whose
 	// projected AABB intersects. Shift adds to the current selection.

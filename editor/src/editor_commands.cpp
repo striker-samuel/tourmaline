@@ -8,6 +8,9 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <string>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -17,6 +20,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Utils/texture_loader.h>
 #include <Engine/Vfs/vfs.h>
 
 namespace editor {
@@ -82,6 +86,18 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 			float(mat->values.layerMaterials.w));
 		num = double(mat->values.layerMaterials.w);
 	}
+	// Texture slots: RHI pool indices (-1 none) — the same domain both
+	// sides of the tour boundary (materials store pool indices).
+	else if (attr == "baseColorTex")
+		num = double(mat->values.textures.x);
+	else if (attr == "metallicRoughTex")
+		num = double(mat->values.textures.y);
+	else if (attr == "normalTex")
+		num = double(mat->values.textures.z);
+	else if (attr == "occlusionTex")
+		num = double(mat->values.textures.w);
+	else if (attr == "emissiveTex")
+		num = double(mat->values.textures2.x);
 }
 
 void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
@@ -125,6 +141,17 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->values.layerMaterials = glm::ivec4(
 			int(v4.x), int(v4.y), int(v4.z), int(v4.w));
 	}
+	// Texture slots: pool indices, -1 clears (see ReadSharedMatAttr).
+	else if (attr == "baseColorTex")
+		mat->values.textures.x = int(num);
+	else if (attr == "metallicRoughTex")
+		mat->values.textures.y = int(num);
+	else if (attr == "normalTex")
+		mat->values.textures.z = int(num);
+	else if (attr == "occlusionTex")
+		mat->values.textures.w = int(num);
+	else if (attr == "emissiveTex")
+		mat->values.textures2.x = int(num);
 	mat->rebuildPipeline();
 	RefreshMaterialNodes(matWorld);
 }
@@ -274,6 +301,13 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				c.beforeFlag, c.beforeText);
 		break;
 	}
+	case EditVerb::TerrainPaint: {
+		if (forward)
+			ExecTerrainPaint(c);
+		else
+			ExecUnterrainPaint(c);
+		break;
+	}
 	}
 }
 
@@ -367,9 +401,11 @@ void EditorApp::DraftCreateTerrain(const TerrainDraft& d) {
 	EditCmd c{};
 	c.verb = EditVerb::CreateTerrain;
 	c.node = UINT32_MAX; // assigned at forward execution
-	const uint32_t sel = m_selected;
-	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
-		? sel : DefaultCreateParent();
+	c.node2 = (d.tilesX & 0xFFFFu) | ((d.tilesZ & 0xFFFFu) << 16);
+	// Parent rides beforeParent (node2 is the tile split now).
+	c.beforeParent = (m_selected != UINT32_MAX
+		&& m_selected < m_world->scene.hierarchy.size())
+		? m_selected : DefaultCreateParent();
 	c.afterText = d.name;
 	c.afterVec = d.origin;
 	c.vec4 = glm::vec4(d.size, float(d.res), d.height, d.freq);
@@ -703,6 +739,95 @@ void EditorApp::ClearHistory() {
 	m_historyCursor = 0;
 }
 
+size_t EditorApp::CoalesceHistory() {
+	if (m_historyCursor < 2)
+		return 0;
+	// Last-occurrence collapse. Every kept command stays at its ORIGINAL
+	// position; only superseded same-key predecessors (and the redo tail)
+	// drop. Correctness rests on two replay properties: (1) every
+	// collapsible class is last-wins — the tour's transform pass collects
+	// per-channel triples and attr/material assignments overwrite — so an
+	// earlier same-key command contributes nothing once a later one
+	// exists; (2) keeping the LAST occurrence at its own position
+	// preserves the replay-time context (recorded verify names, refs)
+	// exactly as the mid-history state looked when that command ran.
+	//
+	// Creates and terrain paint stamps always stay: creates are structure
+	// (later -ref addressing counts them) and paint stamps are an ordered
+	// cumulative bake.
+	//
+	// Key classes:
+	//   (verb, node)              Rename/Translate/Rotate/Scale/Parent/
+	//                              SetVisibility/SetNoLightmap/
+	//                              SetDitherCloseup/AssignMaterial
+	//   (SetMatAttr, mat, attr)    shared material value edits
+	//   (SetLightAttr, node, attr) light property edits
+	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
+	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
+	for (size_t i = 0; i < m_historyCursor; ++i) {
+		const EditCmd& c = m_history[i];
+		switch (c.verb) {
+		case EditVerb::Rename:
+		case EditVerb::Translate:
+		case EditVerb::Rotate:
+		case EditVerb::Scale:
+		case EditVerb::Parent:
+		case EditVerb::SetVisibility:
+		case EditVerb::SetNoLightmap:
+		case EditVerb::SetDitherCloseup:
+		case EditVerb::AssignMaterial:
+			lastByNode[{ int(c.verb), c.node }] = i;
+			break;
+		case EditVerb::SetMatAttr:
+			lastByAttr[{ int(c.verb), c.matWorld, c.attr }] = i;
+			break;
+		case EditVerb::SetLightAttr:
+			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
+			break;
+		default:
+			break; // Create*/TerrainPaint: always keep
+		}
+	}
+	std::vector<EditCmd> kept;
+	kept.reserve(m_historyCursor);
+	size_t dropped = m_history.size() - m_historyCursor; // redo tail
+	for (size_t i = 0; i < m_historyCursor; ++i) {
+		const EditCmd& c = m_history[i];
+		bool superseded = false;
+		switch (c.verb) {
+		case EditVerb::Rename:
+		case EditVerb::Translate:
+		case EditVerb::Rotate:
+		case EditVerb::Scale:
+		case EditVerb::Parent:
+		case EditVerb::SetVisibility:
+		case EditVerb::SetNoLightmap:
+		case EditVerb::SetDitherCloseup:
+		case EditVerb::AssignMaterial:
+			superseded = lastByNode[{ int(c.verb), c.node }] != i;
+			break;
+		case EditVerb::SetMatAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.matWorld, c.attr }] != i;
+			break;
+		case EditVerb::SetLightAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
+			break;
+		default:
+			break;
+		}
+		if (superseded)
+			++dropped;
+		else
+			kept.push_back(c);
+	}
+	m_history = std::move(kept);
+	m_historyCursor = m_history.size();
+	SaveTour();
+	return dropped;
+}
+
 size_t EditorApp::UndoDepth() const {
 	return m_historyCursor;
 }
@@ -899,18 +1024,18 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		return true;
 	}
 	case EditVerb::CreateTerrain: {
-		// Emit the LIVE create state: the node may have moved and its
-		// params may have been attr-edited after creation (those later
-		// Material/Transform/etc commands re-emit harmlessly).
+		// Emit the LIVE create state: the group may have moved and its
+		// tiles may have been re-material-edited after creation (those
+		// later AssignMaterial/SetTranslate commands ride along).
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
-		int pp = app.WorldToCluster(c.node2);
+		int pp = app.WorldToCluster(c.beforeParent);
 		if (pp < 0) {
 			// World root has no cluster id: the primary cluster's root
 			// (id 0) is the replay-stable equivalent.
-			if (c.node2 == 0)
+			if (c.beforeParent == 0)
 				pp = 0;
 			else
 				return false;
@@ -921,9 +1046,26 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.node = uint32_t(pp);
 		out.text = c.afterText;
 		out.vec = t;
-		out.vec4 = c.vec4; // (size, res, height, freq)
-		out.number = c.number; // seed
-		out.material = c.material;
+		out.vec4 = c.vec4;         // (size, res, height, freq)
+		out.number = c.number;    // seed
+		out.node2 = c.node2;       // tilesX | (tilesZ << 16)
+		const int pm = app.WorldMatToCluster(c.material);
+		// Unmappable (editor default / none) emits a sentinel; the cook
+		// mints the same deterministic default material on miss.
+		out.material = (pm >= 0) ? uint32_t(pm) : 0xFFFFFFFFu;
+		return true;
+	}
+	case EditVerb::TerrainPaint: {
+		// Every paint stamp is tour state (deterministic replay: the seed
+		// grid + ordered stamps rebuild identical heights).
+		const int k = app.CreatedTerrainIndex(c.node);
+		if (k < 0)
+			return false;
+		out.verb = smvk::tour::Verb::TerrainPaint;
+		out.node = smvk::tour::kCreateTerrainRefBase | uint32_t(k);
+		out.text = c.terrainOp;
+		out.vec4 = c.vec4;      // (worldX, worldZ, radius, target)
+		out.number = c.number;  // strength
 		return true;
 	}
 	case EditVerb::SetLightAttr: {
@@ -1245,12 +1387,27 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			return false;
 		out.verb = EditVerb::CreateTerrain;
 		out.node = UINT32_MAX; // assigned at forward execution
-		out.node2 = wp;        // parent (world)
+		// Parent rides beforeParent (node2 is the tile split).
+		out.beforeParent = wp;
+		out.node2 = tc.node2;  // tilesX | (tilesZ << 16)
 		out.afterText = tc.text;
 		out.afterVec = tc.vec;
 		out.vec4 = tc.vec4; // (size, res, height, freq)
 		out.number = tc.number; // seed
-		out.material = tc.material;
+		const int wm = app.ClusterMatToWorld(tc.material);
+		out.material = (wm >= 0) ? uint32_t(wm) : UINT32_MAX;
+		return true;
+	}
+	case smvk::tour::Verb::TerrainPaint: {
+		const uint32_t k = tc.node & ~smvk::tour::kCreateTerrainRefBase;
+		if ((tc.node & smvk::tour::kCreateTerrainRefBase) == 0
+			|| k >= app.m_tourCreatedTerrainNodes.size())
+			return false;
+		out.verb = EditVerb::TerrainPaint;
+		out.node = app.m_tourCreatedTerrainNodes[k]; // group world id
+		out.terrainOp = tc.text;
+		out.vec4 = tc.vec4;      // (worldX, worldZ, radius, target)
+		out.number = tc.number;  // strength
 		return true;
 	}
 	case smvk::tour::Verb::SetLightAttr: {
@@ -1427,95 +1584,186 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 	return true;
 }
 
-// Created terrain (procedural mesh).
+// Created terrain groups (procedural mesh + height painting).
 //
-// A created terrain is a WORLD node appended to the live scene plus a
-// StaticMesh upload in the primary cluster, linked through world mesh
-// locations — so the outliner, inspector, gizmos and the cooked-mesh
-// census all pick it up with no special cases. Undo removes the node
-// when it is still the childless tail (ids stay stable); otherwise the
-// terrain is tombstoned (hidden + detached) for the same reason.
+// A created terrain is a GROUP world node plus tilesX*tilesZ tile child
+// nodes, each with a StaticMesh upload in the primary cluster linked
+// through world mesh locations — the outliner, inspector, gizmos and
+// picking all pick it up with no special cases. The GLOBAL height grid
+// (TerrainGroupData) is the authoritative state: painting edits it and
+// rebuilds the touched tile meshes (world mesh indices stay stable);
+// the placement Terrain domain samples it so scatter previews land on
+// the PAINTED surface.
+//
+// Undo tombstones the GROUP (hidden + tile draw entries removed — the
+// subtree stays hidden through IsVisibleNode's hierarchical walk);
+// ids stay stable, matching the created-light precedent.
 // Tour persistence: CreateTerrain carries the creation (CmdToTour emits
-// the LIVE params, so post-creation edits ride along); generic verbs
-// (Rename/SetTranslate/.../Parent) address later creates via
-// kCreateTerrainRefBase (creation order).
+// the LIVE params); TerrainPaint carries every brush stamp (determinis-
+// tic replay: same seed grid + same ordered stamps = same heights);
+// generic verbs address the group via kCreateTerrainRefBase.
 // ---------------------------------------------------------------------------
+uint32_t EditorApp::TerrainGroupOf(uint32_t node) const {
+	if (node == UINT32_MAX)
+		return UINT32_MAX;
+	if (m_terrainGroups.contains(node))
+		return node;
+	// Tile: resolve through the parent (tiles are direct children).
+	if (m_world && node < m_world->scene.hierarchy.size()) {
+		const int p = m_world->scene.hierarchy[node].parent;
+		if (p >= 0 && m_terrainGroups.contains(uint32_t(p)))
+			return uint32_t(p);
+	}
+	return UINT32_MAX;
+}
+
+bool EditorApp::RebuildTerrainTiles(uint32_t groupNode, uint32_t x0,
+	uint32_t x1, uint32_t z0, uint32_t z1) {
+	auto it = m_terrainGroups.find(groupNode);
+	if (it == m_terrainGroups.end() || !m_world)
+		return false;
+	TerrainGroup& g = it->second;
+	Scene& scene = m_world->scene;
+	std::vector<uint32_t> touched;
+	smvk::placement::TerrainBrushTouchedTiles(x0, x1, z0, z1,
+		g.data.heights.width, g.data.tilesX, g.data.tilesZ, touched);
+	bool ok = true;
+	for (uint32_t packed : touched) {
+		const uint32_t tx = packed & 0xFFFFu;
+		const uint32_t tz = packed >> 16;
+		const uint32_t tileNode = g.tileNodes[size_t(tz) * g.data.tilesX + tx];
+		auto meshIt = scene.meshForNode.find(tileNode);
+		if (meshIt == scene.meshForNode.end())
+			continue;
+		const uint32_t worldMeshIdx = meshIt->second;
+		if (worldMeshIdx >= m_world->meshLocations.size())
+			continue;
+		smvk::StaticMeshUpload upload;
+		if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz, upload)) {
+			Log("Terrain tile rebuild failed.");
+			ok = false;
+			continue;
+		}
+		const auto& loc = m_world->meshLocations[worldMeshIdx];
+		smvk::Cluster* cl = loc.cluster ? loc.cluster
+			: m_world->clusters[0].get();
+		if (loc.cluster)
+			loc.cluster->DestroyMesh(loc.handle);
+		const smvk::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+		if (!mh.valid()) {
+			Log("Terrain tile upload failed.");
+			ok = false;
+			continue;
+		}
+		cl->RegisterMeshUri("terrain/" + std::to_string(groupNode)
+			+ "_" + std::to_string(tx) + "_" + std::to_string(tz), mh);
+		m_world->meshLocations[worldMeshIdx] = { cl, mh };
+		// World mesh index unchanged: drawItems/flags stay valid.
+	}
+	return ok;
+}
+
 void EditorApp::ExecCreateTerrain(EditCmd& c) {
 	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
 		return;
 	Scene& scene = m_world->scene;
-	uint32_t parent = c.node2;
-	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
-		parent = DefaultCreateParent();
-	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+	// Parent rides beforeParent (node2 packs the tile split). The draft
+	// resolves it pre-execution; undo/replay read it back untouched.
+	uint32_t parentNode = c.beforeParent;
+	if (parentNode == UINT32_MAX || parentNode >= scene.hierarchy.size())
+		parentNode = DefaultCreateParent();
+	const int level = (parentNode == UINT32_MAX
+		|| parentNode >= scene.hierarchy.size()) ? 0
+		: scene.hierarchy[parentNode].level + 1;
+	const int group = addNode(scene,
+		parentNode == UINT32_MAX || parentNode >= scene.hierarchy.size()
+			? -1 : int(parentNode), level);
+	if (group < 0)
 		return;
-	const int level = (parent == UINT32_MAX) ? 0
-		: scene.hierarchy[parent].level + 1;
-	const int created = addNode(scene,
-		parent == UINT32_MAX ? -1 : int(parent), level);
-	if (created < 0)
-		return;
-	c.node = uint32_t(created);
-	scene.localTransform[size_t(created)] = glm::translate(glm::mat4(1.0f), c.afterVec);
-	// Name (the nodeNames pool is grow-only, like Rename).
+	c.node = uint32_t(group);
+	scene.localTransform[size_t(group)] =
+		glm::translate(glm::mat4(1.0f), c.afterVec);
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
-	// Build and upload the terrain mesh.
-	smvk::placement::TerrainParams tp{};
-	tp.origin = glm::vec2(0.0f, 0.0f);
-	tp.size = std::max(c.vec4.x, 1.0f);
-	tp.res = std::clamp(uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
-	tp.height = std::max(c.vec4.z, 0.0f);
-	tp.freq = std::max(c.vec4.w, 1e-4f);
-	tp.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
-	smvk::StaticMeshUpload upload;
-	if (!smvk::placement::BuildTerrainUpload(tp, upload)) {
-		Log("Terrain mesh build failed.");
-		return;
-	}
-	smvk::Cluster* cl = m_world->clusters[0].get();
-	const smvk::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
-	if (!mh.valid()) {
-		Log("Terrain mesh upload failed.");
-		return;
-	}
-	cl->RegisterMeshUri(std::string("terrain/") + c.afterText, mh);
-	// World wiring (mirrors World::ResolveAndFixup_clusters): meshForNode
-	// holds WORLD indices into meshLocations — never pool indices.
-	const uint32_t worldMeshIdx = uint32_t(m_world->meshLocations.size());
-	m_world->meshLocations.push_back({ cl, mh });
-	scene.meshForNode[uint32_t(created)] = worldMeshIdx;
-	if (c.material != UINT32_MAX
+	scene.nameForNode[uint32_t(group)] = nameId;
+	// Group state: global grid from the params; tiles as children.
+	TerrainGroup& g = m_terrainGroups[uint32_t(group)];
+	g.data.params.origin = glm::vec2(c.afterVec.x, c.afterVec.z);
+	g.data.params.size = std::max(c.vec4.x, 1.0f);
+	g.data.params.res = std::clamp(
+		uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
+	g.data.params.height = std::max(c.vec4.z, 0.0f);
+	g.data.params.freq = std::max(c.vec4.w, 1e-4f);
+	g.data.params.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
+	g.data.tilesX = std::clamp(uint32_t(std::max(c.node2 & 0xFFFFu, 1u)),
+		1u, smvk::placement::kTerrainMaxTiles);
+	g.data.tilesZ = std::clamp(
+		uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
+		1u, smvk::placement::kTerrainMaxTiles);
+	g.data.heights = smvk::placement::BuildTerrainHeights(g.data.params);
+	g.tileNodes.resize(size_t(g.data.tilesX) * g.data.tilesZ);
+	const uint32_t material = (c.material != UINT32_MAX
 		&& c.material < m_world->materialLocations.size())
-		scene.materialForNode[uint32_t(created)] = c.material;
-	// Draw-list append (drawItems is material-sorted at build; a tail
-	// entry just costs one extra bind later). RefreshNodeDrawState then
-	// settles the material-driven flag bits on the new entry.
-	{
-		if (m_world->flags.size() <= size_t(created))
-			m_world->flags.resize(size_t(created) + 1, 0);
-		smvk::IteratorFlags f = smvk::IteratorFlags(
-			smvk::IteratorFlagBit_Renderable |
-			smvk::IteratorFlagBit_StaticVertexFmt |
-			smvk::IteratorFlagBit_Opaque |
-			smvk::IteratorFlagBit_CastShadow);
-		m_world->flags[size_t(created)] = f;
-		auto matIt = scene.materialForNode.find(uint32_t(created));
-		const uint32_t matIdx = (matIt != scene.materialForNode.end())
-			? matIt->second : smvk::World::kInvalidIndex;
-		m_world->drawItems.push_back(smvk::World::RenderItem{
-			uint32_t(created), worldMeshIdx, matIdx, f });
-		m_world->itemFlags.push_back(f);
-		m_world->flagLists.clear();
-		RefreshNodeDrawState(uint32_t(created));
-	}
+		? c.material : EnsureDefaultMaterial();
+	const float tileW = g.data.params.size / float(g.data.tilesX);
+	const float tileH = g.data.params.size / float(g.data.tilesZ);
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	// Tile children: node + mesh + world wiring + draw entry each.
+	for (uint32_t tz = 0; tz < g.data.tilesZ; ++tz)
+		for (uint32_t tx = 0; tx < g.data.tilesX; ++tx) {
+			const int tileId = addNode(scene, group, level + 1);
+			if (tileId < 0)
+				return;
+			const uint32_t t = uint32_t(tileId);
+			scene.localTransform[size_t(t)] = glm::translate(
+				glm::mat4(1.0f),
+				glm::vec3(float(tx) * tileW, 0.0f, float(tz) * tileH));
+			const uint32_t tName = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.afterText + "_" + std::to_string(tx)
+				+ "_" + std::to_string(tz));
+			scene.nameForNode[t] = tName;
+			smvk::StaticMeshUpload upload;
+			if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz,
+					upload)) {
+				Log("Terrain tile build failed.");
+				return;
+			}
+			const smvk::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+			if (!mh.valid()) {
+				Log("Terrain tile upload failed.");
+				return;
+			}
+			cl->RegisterMeshUri("terrain/" + std::to_string(group)
+				+ "_" + std::to_string(tx) + "_" + std::to_string(tz), mh);
+			const uint32_t worldMeshIdx =
+				uint32_t(m_world->meshLocations.size());
+			m_world->meshLocations.push_back({ cl, mh });
+			scene.meshForNode[t] = worldMeshIdx;
+			scene.materialForNode[t] = material;
+			if (m_world->flags.size() <= size_t(t))
+				m_world->flags.resize(size_t(t) + 1, 0);
+			m_world->flags[size_t(t)] = smvk::IteratorFlags(
+				smvk::IteratorFlagBit_Renderable |
+				smvk::IteratorFlagBit_StaticVertexFmt |
+				smvk::IteratorFlagBit_Opaque |
+				smvk::IteratorFlagBit_CastShadow);
+			m_world->drawItems.push_back(smvk::World::RenderItem{
+				t, worldMeshIdx, material,
+				m_world->flags[size_t(t)] });
+			m_world->itemFlags.push_back(m_world->flags[size_t(t)]);
+			g.tileNodes[size_t(tz) * g.data.tilesX + tx] = t;
+		}
+	m_world->flagLists.clear();
+	for (uint32_t t : g.tileNodes)
+		RefreshNodeDrawState(t);
 	if (m_replayingTour)
-		m_tourCreatedTerrainNodes.push_back(uint32_t(created));
-	markAsChanged(scene, created);
+		m_tourCreatedTerrainNodes.push_back(uint32_t(group));
+	markAsChanged(scene, group);
 	recalculateGlobalTransforms(scene);
-	m_selected = uint32_t(created);
-	Log("Created terrain '" + c.afterText + "' (#" + std::to_string(created) + ").");
+	m_selected = uint32_t(group);
+	Log("Created terrain '" + c.afterText + "' (#" + std::to_string(group)
+		+ ", " + std::to_string(g.data.tilesX) + "x"
+		+ std::to_string(g.data.tilesZ) + " tiles).");
 }
 
 void EditorApp::ExecUncreateTerrain(EditCmd& c) {
@@ -1525,96 +1773,167 @@ void EditorApp::ExecUncreateTerrain(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
-	const bool childless = scene.hierarchy[n].firstChild < 0;
-	// World mesh slot (meshForNode holds WORLD indices into meshLocations).
-	auto meshIt = scene.meshForNode.find(n);
-	const uint32_t worldMeshIdx = (meshIt != scene.meshForNode.end())
-		? meshIt->second : UINT32_MAX;
-	const bool meshTail = worldMeshIdx != UINT32_MAX
-		&& worldMeshIdx + 1 == m_world->meshLocations.size();
-	// drawItems entry for this node (appended at creation).
-	size_t drawIdx = SIZE_MAX;
-	for (size_t i = m_world->drawItems.size(); i-- > 0;)
-		if (m_world->drawItems[i].node == n) {
-			drawIdx = i;
-			break;
-		}
-	const bool drawTail = drawIdx != SIZE_MAX
-		&& drawIdx + 1 == m_world->drawItems.size();
-	if (tail && childless && meshTail && drawTail) {
-		// Physical removal (the created-terrain common case): pop the
-		// mesh location, draw entry and node; destroy the cluster mesh.
-		if (worldMeshIdx != UINT32_MAX) {
-			const auto& loc = m_world->meshLocations[worldMeshIdx];
-			if (loc.cluster)
-				loc.cluster->DestroyMesh(loc.handle);
-			m_world->meshLocations.pop_back();
-		}
-		if (drawIdx != SIZE_MAX) {
-			m_world->drawItems.pop_back();
-			m_world->itemFlags.pop_back();
-		}
-		m_world->flagLists.clear();
-		scene.meshForNode.erase(n);
-		scene.materialForNode.erase(n);
-		scene.nameForNode.erase(n);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
+	auto it = m_terrainGroups.find(n);
+	if (it == m_terrainGroups.end())
+		return;
+	// Tombstone the GROUP: hidden hides the subtree (IsVisibleNode walks
+	// ancestors), and removing the tile draw entries stops draws/picks.
+	// Ids stay stable (created-light precedent).
+	MarkHidden(scene, int(n));
+	for (uint32_t t : it->second.tileNodes) {
+		scene.meshForNode.erase(t);
+		scene.materialForNode.erase(t);
+		for (size_t i = m_world->drawItems.size(); i-- > 0;)
+			if (m_world->drawItems[i].node == t) {
+				m_world->drawItems.erase(m_world->drawItems.begin()
+					+ ptrdiff_t(i));
+				m_world->itemFlags.erase(m_world->itemFlags.begin()
+					+ ptrdiff_t(i));
+				break;
 			}
-			// Refresh the cached tail on the (possibly new) first child.
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid terrain creation (#" + std::to_string(n) + ").");
-	} else {
-		// Non-tail (or interleaved with other edits): keep ids stable —
-		// hide the node, detach the mesh + draw entry (mid-vector erase
-		// keeps drawItems/itemFlags index-aligned), pool entry retained.
-		MarkHidden(scene, int(n));
-		scene.meshForNode.erase(n);
-		scene.materialForNode.erase(n);
-		if (drawIdx != SIZE_MAX) {
-			m_world->drawItems.erase(m_world->drawItems.begin()
-				+ ptrdiff_t(drawIdx));
-			m_world->itemFlags.erase(m_world->itemFlags.begin()
-				+ ptrdiff_t(drawIdx));
-			m_world->flagLists.clear();
-		}
-		Log("Undid terrain creation (#" + std::to_string(n) +
-		 "): hidden, ids kept stable (pool entry retained).");
 	}
+	m_world->flagLists.clear();
+	Log("Undid terrain creation (#" + std::to_string(n)
+		+ "): hidden, ids kept stable (pool entries retained).");
+}
+
+void EditorApp::ExecTerrainPaint(EditCmd& c) {
+	auto it = m_terrainGroups.find(c.node);
+	if (it == m_terrainGroups.end())
+		return;
+	TerrainGroup& g = it->second;
+	smvk::placement::TerrainBrushOp op;
+	if (c.terrainOp == "raise")
+		op = smvk::placement::TerrainBrushOp::Raise;
+	else if (c.terrainOp == "lower")
+		op = smvk::placement::TerrainBrushOp::Lower;
+	else if (c.terrainOp == "flatten")
+		op = smvk::placement::TerrainBrushOp::Flatten;
+	else if (c.terrainOp == "smooth")
+		op = smvk::placement::TerrainBrushOp::Smooth;
+	else
+		return;
+	// Capture the before-patch once (first forward exec); redos reuse it.
+	if (c.terrainBefore.empty()) {
+		uint32_t x0, x1, z0, z1;
+		smvk::placement::TerrainBrushBox(g.data, c.vec4.x, c.vec4.y,
+			c.vec4.z, x0, x1, z0, z1);
+		smvk::placement::TerrainCopyBox(g.data, x0, x1, z0, z1,
+			c.terrainBefore, c.terrainBoxW, c.terrainBoxH);
+		c.terrainBoxX0 = x0;
+		c.terrainBoxZ0 = z0;
+	}
+	smvk::placement::TerrainBrushStamp(g.data, op, c.vec4.x, c.vec4.y,
+		c.vec4.z, float(c.number), c.vec4.w);
+	RebuildTerrainTiles(c.node, c.terrainBoxX0,
+		c.terrainBoxX0 + c.terrainBoxW - 1, c.terrainBoxZ0,
+		c.terrainBoxZ0 + c.terrainBoxH - 1);
+	// Painted terrain changed: bound placement graphs re-preview.
+	MarkPlacementDirty();
+}
+
+int EditorApp::AddTextureFromFile(const std::string& path) {
+	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0]
+		|| !m_context)
+		return -1;
+	// Read the payload first (the cluster keeps the source bytes for
+	// cook re-embeds; the URI IS the file path — a filepath ref).
+	std::ifstream in(path, std::ios::binary);
+	if (!in) {
+		Log("Material editor: cannot open texture '" + path + "'.");
+		return -1;
+	}
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (bytes.empty()) {
+		Log("Material editor: texture file is empty: " + path);
+		return -1;
+	}
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	auto holder = smvk::LoadKtxTextureMemory(*m_context, bytes.data(),
+		bytes.size(), path);
+	if (!holder.valid()) {
+		Log("Material editor: KTX2 load failed: " + path);
+		return -1;
+	}
+	const smvk::TextureHandle h = holder;
+	cl->textures.create(std::move(holder));
+	cl->RegisterTextureUri(path, h);
+	cl->SetTextureSource(path, std::move(bytes));
+	// Refresh pool->RHI-handle + bindless maps so the renderer can bind
+	// the new texture this frame.
+	RebuildTexHandleMap();
+	Log("Material editor: added texture '" + path + "' (pool "
+		+ std::to_string(h.index()) + ").");
+	return int(h.index());
+}
+
+void EditorApp::ExecUnterrainPaint(EditCmd& c) {
+	auto it = m_terrainGroups.find(c.node);
+	if (it == m_terrainGroups.end() || c.terrainBefore.empty())
+		return;
+	TerrainGroup& g = it->second;
+	smvk::placement::TerrainWriteBox(g.data, c.terrainBoxX0,
+		c.terrainBoxX0 + c.terrainBoxW - 1, c.terrainBoxZ0,
+		c.terrainBoxZ0 + c.terrainBoxH - 1, c.terrainBefore,
+		c.terrainBoxW);
+	RebuildTerrainTiles(c.node, c.terrainBoxX0,
+		c.terrainBoxX0 + c.terrainBoxW - 1, c.terrainBoxZ0,
+		c.terrainBoxZ0 + c.terrainBoxH - 1);
+}
+
+uint32_t EditorApp::EnsureDefaultMaterial() {
+	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+		return UINT32_MAX;
+	if (m_defaultMatWorld != UINT32_MAX
+		&& m_defaultMatWorld < m_world->materialLocations.size())
+		return m_defaultMatWorld;
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	// Reuse an existing pool entry when the URI is already registered
+	// (e.g. a pak scene cooked from a tour that minted one).
+	if (auto hit = cl->FindMaterialByUri("editor://default")) {
+		const uint32_t worldIdx = uint32_t(m_world->materialLocations.size());
+		m_world->materialLocations.push_back({ cl, *hit });
+		m_defaultMatWorld = worldIdx;
+		return worldIdx;
+	}
+	smvk::Material def{};
+	def.values.params.y = 0.0f;  // metallic
+	def.values.params.z = 0.9f; // roughness: soft default
+	def.rebuildPipeline();
+	const smvk::ClusterMaterialHandle h = cl->materials.create(std::move(def));
+	cl->RegisterMaterialUri("editor://default", h);
+	const uint32_t worldIdx = uint32_t(m_world->materialLocations.size());
+	m_world->materialLocations.push_back({ cl, h });
+	m_defaultMatWorld = worldIdx;
+	return worldIdx;
+}
+
+bool EditorApp::PaintTerrainAt(const glm::vec3& origin, const glm::vec3& dir) {
+	const uint32_t group = TerrainGroupOf(m_selected);
+	if (group == UINT32_MAX)
+		return false;
+	auto it = m_terrainGroups.find(group);
+	if (it == m_terrainGroups.end())
+		return false;
+	// Ray against the group's global grid (world space).
+	float t = 0.0f;
+	if (!smvk::placement::TerrainRaycast(it->second.data.heights,
+			origin, dir, 5000.0f, t))
+		return false;
+	const glm::vec3 hit = origin + dir * t;
+	static const char* kOps[] = { "raise", "lower", "flatten", "smooth" };
+	EditCmd c{};
+	c.verb = EditVerb::TerrainPaint;
+	c.node = group;
+	c.terrainOp = kOps[std::clamp(m_paintOp, 0, 3)];
+	c.vec4 = glm::vec4(hit.x, hit.z, m_paintRadius, 0.0f);
+	// Flatten pulls toward the height under the cursor (intuitive default).
+	if (m_paintOp == 2)
+		c.vec4.w = it->second.data.heights.sampleHeight(hit.x, hit.z);
+	c.number = double(m_paintStrength);
+	Do(c);
+	return true;
 }
 
 } // namespace editor

@@ -84,7 +84,10 @@ enum class NodeKind : int {
 	Spacing = 18,   // min-distance. f: minSpacing (0 = off)
 	Layer = 19,     // output sink. in domain,density,protos,xform,spacing.
 	                // f: candidates. s: seedU64.
-	Terrain = 20,   // domain: analytic heightfield. f: ox,oz,size,res,height,freq. i: seed32
+	Terrain = 20,   // domain: heightfield. f: ox,oz,size,res,height,freq
+	                // (analytic fallback when unbound). i[0] = seed32,
+	                // i[1] = bound terrain GROUP world node (-1 = analytic:
+	                // when bound, the LIVE painted heights drive previews)
 	                // (appended after Layer: kind ints are serialized)
 	Count = 21,
 };
@@ -168,6 +171,8 @@ struct CompileResult {
 	smvk::placement::GridDomain grid; // valid when domainKind == Grid
 	uint32_t meshNode = UINT32_MAX;   // valid when domainKind == MeshSurface
 	smvk::placement::TerrainParams terrain; // valid when Heightfield
+	uint32_t terrainBind = UINT32_MAX; // Heightfield: LIVE terrain group
+	                                   // world node (painted heights)
 	smvk::placement::DomainKind domainKind = smvk::placement::DomainKind::Grid;
 	uint64_t seed = 0;
 	bool gpuOk = true;      // MVP: always true; framework for BAKE_ONLY

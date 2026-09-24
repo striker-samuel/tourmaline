@@ -101,10 +101,14 @@ enum class Verb : uint8_t {
 	                // number = scalar (cone angles in DEGREES); flag =
 	                // flag value; name = new name (attr "name" only)
 	CreateTerrain,  // node = PARENT cluster id; text = terrain name;
-	                // vec = local position (node origin); vec4 = (size[m],
-	                // res[samples/side], height[m], freq[1/m]);
-	                // number = noise seed (integer-valued double);
-	                // material = cluster material pool index
+	                // vec = local position (group origin corner); vec4 =
+	                // (size[m], res[samples/side], height[m], freq[1/m]);
+	                // number = noise seed; material = cluster material pool
+	                // index; node2 = tilesX | (tilesZ << 16) (tile split)
+	TerrainPaint,   // node = kCreateTerrainRefBase | k (k-th createTerrain);
+	                // text = op ("raise","lower","flatten","smooth"); vec4 =
+	                // (worldX, worldZ, radius, flattenTarget); number =
+	                // strength (m for raise/lower, 0..1 blend otherwise)
 };
 
 // Clarisse-style wide override attribute (regex selector over node

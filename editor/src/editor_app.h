@@ -54,6 +54,7 @@
 
 #include <imgui.h> // menu-bar gem mark + inspector pages
 
+#include <Engine/Placement/placement_terrain.h>
 #include "editor_commands.h"
 
 #include "editor_placement.h"
@@ -590,6 +591,15 @@ private:
 	void PushDone(EditCmd c);
 	bool Undo();
 	bool Redo();
+	// Collapse the history to the current state: for every collapsible
+	// command class (per-node transform/rename/flag/material edits,
+	// per-material attr edits, per-light attr edits) keeps ONLY the last
+	// occurrence — the state that survives — and drops the superseded
+	// earlier duplicates plus the redo tail. Creates and terrain paint
+	// stamps are structure/ordered-bake and always kept. The result
+	// replays to the identical scene state with a lighter .tour. NOT
+	// undoable (structural, like ClearHistory). Returns commands dropped.
+	size_t CoalesceHistory();
 	void ClearHistory();
 	size_t UndoDepth() const;
 	size_t RedoDepth() const;
@@ -616,6 +626,27 @@ private:
 	// order): generic verbs address them via kCreateTerrainRefBase.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedTerrainNodes;
+	// ---- created terrain groups (live editor state) ----
+	// One entry per created terrain group, keyed by the GROUP world id.
+	// The global grid is authoritative: painting edits it, tile meshes
+	// rebuild from it, and the placement Terrain domain samples it (the
+	// preview scatters over the PAINTED surface, not the analytic one).
+	struct TerrainGroup {
+		smvk::placement::TerrainGroupData data;
+		std::vector<uint32_t> tileNodes; // world ids, [tz * tilesX + tx]
+	};
+	std::unordered_map<uint32_t, TerrainGroup> m_terrainGroups;
+	// GROUP world id of a group-or-tile node (UINT32_MAX when none).
+	uint32_t TerrainGroupOf(uint32_t node) const;
+	// Rebuilds the touched tiles' meshes from the group grid (destroy old
+	// handle + upload new; world mesh indices stay stable so drawItems
+	// need no churn). Returns false when a tile upload fails.
+	bool RebuildTerrainTiles(uint32_t groupNode, uint32_t x0, uint32_t x1,
+		uint32_t z0, uint32_t z1);
+	// TerrainPaint execution (ExecCmd cases): stamp + tile rebuild.
+	// Forward captures the before-patch on first execution (redos reuse).
+	void ExecTerrainPaint(EditCmd& c);
+	void ExecUnterrainPaint(EditCmd& c);
 	// Creation-order index of a live created light (-1 when the node is
 	// not a history create): the -ref value CmdToTour emits.
 	int CreatedLightIndex(uint32_t worldNode) const;
@@ -678,25 +709,33 @@ private:
 	// Create menu: point/spot light at the active camera target.
 	void DraftCreateLight(bool spot);
 	// Create menu: procedural terrain mesh. Draft params come from the
-	// Create-terrain dialog (origin/size/res/height/freq/seed + material);
-	// the mesh is fully procedural, so creation is exactly replayable.
+	// Create-terrain dialog (origin/size/res/height/freq/seed/tiles +
+	// material); the mesh is fully procedural, so creation is exactly
+	// replayable.
 	struct TerrainDraft {
 		std::string name = "Terrain";
-		glm::vec3 origin{ 0.0f }; // node translation (= terrain corner)
+		glm::vec3 origin{ 0.0f }; // node translation (= group corner)
 		float size = 64.0f;
-		uint32_t res = 64;
+		uint32_t res = 64;        // GLOBAL grid samples per side
 		float height = 8.0f;
 		float freq = 0.02f;
 		uint64_t seed = 1;
+		uint32_t tilesX = 1;
+		uint32_t tilesZ = 1;
 		uint32_t material = UINT32_MAX; // world mat idx (resolved at draft)
 		uint32_t parent = UINT32_MAX;   // world node (resolved at draft)
 	};
 	void DraftCreateTerrain(const TerrainDraft& d);
-	// Created-terrain execution (ExecCmd cases): append/remove the world
-	// node + cluster mesh upload + draw state. ExecCreateTerrain records
-	// the assigned id back into the command (c.node).
+	// Created-terrain execution (ExecCmd cases): append/remove the group
+	// node + tile mesh nodes + draw state. ExecCreateTerrain records the
+	// assigned group id back into the command (c.node).
 	void ExecCreateTerrain(EditCmd& c);
 	void ExecUncreateTerrain(EditCmd& c);
+	// Editor fallback material ("editor://default"): created on scene
+	// load when missing, always in the pool so Create Terrain and the
+	// material editor have something valid to bind. World material index.
+	uint32_t EnsureDefaultMaterial();
+	uint32_t m_defaultMatWorld = UINT32_MAX;
 	// Create-terrain dialog state (File > Create > Terrain).
 	bool m_showTerrainDialog = false;
 	char m_terrainNameBuf[128] = "";
@@ -706,8 +745,32 @@ private:
 	float m_terrainHeight = 8.0f;
 	float m_terrainFreq = 0.02f;
 	int m_terrainSeed = 1;
+	int m_terrainTilesX = 1;
+	int m_terrainTilesZ = 1;
 	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
+	// ---- heightfield painting ----
+	// When on, LMB in a 3D viewport paints the SELECTED terrain group
+	// (group or any tile selects it) instead of picking. One stamp per
+	// click; drag stamps at radius-spaced intervals.
+	bool m_paintTerrain = false;
+	int m_paintOp = 0;            // 0 raise, 1 lower, 2 flatten, 3 smooth
+	float m_paintRadius = 8.0f;
+	float m_paintStrength = 0.5f;
+	glm::vec2 m_paintLast{ -1e9f, -1e9f }; // world XZ of last drag stamp
+	bool PaintTerrainAt(const glm::vec3& origin, const glm::vec3& dir);
+	// ---- material editor (right-dock tab) ----
+	// Lists materials + their textures; textures can be added as file
+	// path refs (KTX2 loaded into the cluster texture pool, path kept
+	// as the URI) and assigned to material slots. Layer slots ride the
+	// existing "layers" shared attr.
+	uint32_t m_matEditorSel = UINT32_MAX; // world material index
+	char m_matTexPathBuf[512] = "";
+	void DrawMaterialEditor();
+	// Loads a KTX2 file into the primary cluster's texture pool with
+	// the file path as its URI (+ stashes source bytes for cook).
+	// Returns the RHI pool index, or -1 on failure (reason logged).
+	int AddTextureFromFile(const std::string& path);
 	// Light property channels ("color","intensity","range","inner",
 	// "outer","position","rotation","static","shadow","name") — the
 	// inspector's before-state + live-write path for SetLightAttr

@@ -162,7 +162,7 @@ void DefaultParams(PNode& n) {
 	case NodeKind::Transform: n.f = { 0.8f, 1.2f }; break;
 	case NodeKind::Spacing: n.f = { 0.0f }; break;
 	case NodeKind::Layer: n.f = { 4096 }; n.s = { "1234" }; break;
-	case NodeKind::Terrain: n.f = { 0, 0, 64, 64, 8, 0.02f }; n.i = { 1 }; break;
+	case NodeKind::Terrain: n.f = { 0, 0, 64, 64, 8, 0.02f }; n.i = { 1, -1 }; break;
 	default: break;
 	}
 }
@@ -480,6 +480,11 @@ CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 		r.terrain.freq = F.size() > 5 ? std::max(1e-4f, F[5]) : 0.02f;
 		r.terrain.seed = dn->i.size() > 0 && dn->i[0] >= 0
 			? (uint64_t)(uint32_t)dn->i[0] : 1;
+		// Live-terrain binding (i[1]): a created terrain group world node.
+		// When set, previews/evaluation sample the group's LIVE painted
+		// grid (see RefreshPlacementPreview) instead of the analytic one.
+		r.terrainBind = (dn->i.size() > 1 && dn->i[1] >= 0)
+			? (uint32_t)dn->i[1] : UINT32_MAX;
 	}
 	else { r.error = "Layer.domain must come from a Grid, Mesh or Terrain node"; return r; }
 	// Density expression (Accept preferred, field auto-wrapped at scale 1).

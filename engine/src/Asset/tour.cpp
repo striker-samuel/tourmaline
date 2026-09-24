@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -244,13 +245,27 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		}
 		case Verb::CreateTerrain: {
 			// -t packs position + mesh params: x y z size res height
-			// freq seed (8 values); -m is the cluster material pool index.
+			// freq seed tilesX tilesZ (10 values); -m is the cluster
+			// material pool index; the tile split rides node2 packed as
+			// tilesX | (tilesZ << 16).
 			f << "createTerrain -p " << c.node << " -name " << Quote(c.text)
 				<< " -at terrain"
 				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
 				<< " " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z
 				<< " " << c.vec4.w << " " << c.number
+				<< " " << (c.node2 & 0xFFFFu)
+				<< " " << ((c.node2 >> 16) & 0xFFFFu)
 				<< " -m " << c.material;
+			break;
+		}
+		case Verb::TerrainPaint: {
+			// -t packs: worldX worldZ radius flattenTarget (4 values);
+			// -v carries strength; -ref names the k-th createTerrain.
+			f << "terrainPaint -ref " << (c.node & ~kCreateTerrainRefBase)
+				<< " -at " << c.text
+				<< " -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z << " " << c.vec4.w
+				<< " -v " << c.number;
 			break;
 		}
 		case Verb::SetLightAttr: {
@@ -820,20 +835,21 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node2 = v[8] != 0.0 ? 1u : 0u;
 		}
 		else if (verb == "createTerrain" && fl.hasP && fl.hasName && fl.hasAt
-			&& fl.hasM && fl.t.size() >= 8) {
-			// -t packs: x y z size res height freq seed.
+			&& fl.hasM && fl.t.size() >= 10) {
+			// -t packs: x y z size res height freq seed tilesX tilesZ.
 			if (fl.at != "terrain") {
 				err = "line " + std::to_string(lineNo) + ": createTerrain wants -at terrain";
 				return false;
 			}
-			double v[8] = {};
-			for (int k = 0; k < 8; ++k)
+			double v[10] = {};
+			for (int k = 0; k < 10; ++k)
 				if (!ParseDouble(fl.t[size_t(k)], v[k])) {
 					err = "line " + std::to_string(lineNo) + ": bad createTerrain value";
 					return false;
 				}
 			if (v[3] <= 0.0 || v[4] < 2.0 || v[4] > 512.0 || v[5] < 0.0
-				|| v[6] <= 0.0 || v[7] < 0.0) {
+				|| v[6] <= 0.0 || v[7] < 0.0 || v[8] < 1.0 || v[8] > 16.0
+				|| v[9] < 1.0 || v[9] > 16.0) {
 				err = "line " + std::to_string(lineNo) + ": createTerrain params out of range";
 				return false;
 			}
@@ -844,6 +860,39 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), float(v[6]));
 			c.number = v[7];
 			c.material = fl.m;
+			c.node2 = (uint32_t(v[8]) & 0xFFFFu)
+				| ((uint32_t(v[9]) & 0xFFFFu) << 16);
+		}
+		else if (verb == "terrainPaint" && fl.hasRef && fl.hasAt
+			&& fl.t.size() >= 4 && fl.hasV) {
+			// -t packs: worldX worldZ radius flattenTarget; -v = strength.
+			static const char* kOps[] = { "raise", "lower", "flatten", "smooth" };
+			bool known = false;
+			for (const char* a : kOps)
+				if (fl.at == a) {
+					known = true;
+					break;
+				}
+			if (!known) {
+				err = "line " + std::to_string(lineNo) + ": terrainPaint wants -at raise|lower|flatten|smooth";
+				return false;
+			}
+			double v[4] = {};
+			for (int k = 0; k < 4; ++k)
+				if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+					err = "line " + std::to_string(lineNo) + ": bad terrainPaint value";
+					return false;
+				}
+			double strength = 0.0;
+			if (!ParseDouble(fl.v, strength)) {
+				err = "line " + std::to_string(lineNo) + ": bad terrainPaint strength";
+				return false;
+			}
+			c.verb = Verb::TerrainPaint;
+			c.node = kCreateTerrainRefBase | fl.ref;
+			c.text = fl.at;
+			c.vec4 = glm::vec4(float(v[0]), float(v[1]), float(v[2]), float(v[3]));
+			c.number = strength;
 		}
 		else if (verb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 			static const char* kAttrs[] = { "color", "intensity", "range",
@@ -1025,6 +1074,18 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 		mat.values.layerMaterials = glm::ivec4(
 			int(c.vec4.x), int(c.vec4.y), int(c.vec4.z), int(c.vec4.w));
 	}
+	// Texture slots (RHI pool indices at runtime, cook-table ids when
+	// cooking — the same integer domain MaterialValues stores). -1 clears.
+	else if (at == "baseColorTex")
+		mat.values.textures.x = int(c.number);
+	else if (at == "metallicRoughTex")
+		mat.values.textures.y = int(c.number);
+	else if (at == "normalTex")
+		mat.values.textures.z = int(c.number);
+	else if (at == "occlusionTex")
+		mat.values.textures.w = int(c.number);
+	else if (at == "emissiveTex")
+		mat.values.textures2.x = int(c.number);
 	else if (at == "alphaMode") {
 		mat.alphaMode = (c.number < 0.5) ? AlphaMode::Opaque
 			: (c.number < 1.5) ? AlphaMode::Mask : AlphaMode::Blend;
@@ -1062,6 +1123,18 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// resolved for the generic verbs below (Rename/SetTranslate/...
 	// /Parent) so post-creation edits replay onto the rebuilt node.
 	std::vector<uint32_t> createdTerrains;
+	// Live terrain group state during replay: heights bake through every
+	// terrainPaint stamp; tile meshes upload from the FINAL grid in the
+	// post-loop pass below (dirty = tiles touched by stamps; a group with
+	// no stamps uploads every tile once).
+	struct TourTerrainGroup {
+		smvk::placement::TerrainGroupData data;
+		uint32_t groupNode = 0;
+		uint32_t material = 0;
+		std::vector<uint32_t> tileNodes; // [tz * tilesX + tx]
+		std::set<uint32_t> dirty;        // packed tx | (tz << 16)
+	};
+	std::vector<TourTerrainGroup> terrainGroups;
 	auto resolveNode = [&](uint32_t n, const Command& c, uint32_t& out) {
 		if ((n & kCreateTerrainRefBase) != 0) {
 			const uint32_t k = n & ~kCreateTerrainRefBase;
@@ -1201,35 +1274,47 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			break;
 		}
 		case Verb::CreateTerrain: {
-			// Editor-authored procedural terrain: append a node under the
-			// recorded parent + an uploaded grid mesh + material link.
-			// Mesh params ride the verb (CookMaterial validates); the node
-			// id joins createdTerrains for -ref addressing below.
+			// Editor-authored procedural terrain: a GROUP node under the
+			// recorded parent + tilesX*tilesZ tile children. Tile meshes
+			// upload in the post-loop pass so later terrainPaint stamps
+			// bake into them (heights are final by then). The group node
+			// id joins createdTerrains for -ref addressing.
 			if (c.node >= scene.hierarchy.size()) {
 				if (err)
 					*err = "tour: createTerrain parent out of range: " +
 						std::to_string(c.node);
 				return false;
 			}
-			if (!CookMaterial(cluster, c.material)) {
-				if (err)
-					*err = "tour: createTerrain material out of range: " +
-						std::to_string(c.material);
-				return false;
+			uint32_t material = c.material;
+			if (!CookMaterial(cluster, material)) {
+				// Editor fallback: scenes authored with the editor's
+				// default material cook against a fresh import that does
+				// not carry it. Mint the same deterministic default here
+				// (same URI, same values) so the tour replays.
+				warn("tour: createTerrain material out of range: " +
+					std::to_string(c.material)
+					+ " — creating the editor default material");
+				Material def{};
+				def.rebuildPipeline();
+				const ClusterMaterialHandle dh =
+					cluster.materials.create(std::move(def));
+				cluster.RegisterMaterialUri("editor://default", dh);
+				material = dh.index();
 			}
-			smvk::placement::TerrainParams tp{};
-			tp.origin = glm::vec2(0.0f, 0.0f);
-			tp.size = std::max(c.vec4.x, 1.0f);
-			tp.res = std::clamp(uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
-			tp.height = std::max(c.vec4.z, 0.0f);
-			tp.freq = std::max(c.vec4.w, 1e-4f);
-			tp.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
-			smvk::StaticMeshUpload upload;
-			if (!smvk::placement::BuildTerrainUpload(tp, upload)) {
-				if (err)
-					*err = "tour: createTerrain mesh build failed";
-				return false;
-			}
+			smvk::placement::TerrainGroupData tg;
+			tg.params.origin = glm::vec2(c.vec.x, c.vec.z);
+			tg.params.size = std::max(c.vec4.x, 1.0f);
+			tg.params.res = std::clamp(
+				uint32_t(std::max(c.vec4.y, 2.0f)), 2u, 512u);
+			tg.params.height = std::max(c.vec4.z, 0.0f);
+			tg.params.freq = std::max(c.vec4.w, 1e-4f);
+			tg.params.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
+			tg.tilesX = std::clamp(uint32_t(std::max(c.node2 & 0xFFFFu, 1u)),
+				1u, smvk::placement::kTerrainMaxTiles);
+			tg.tilesZ = std::clamp(uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
+				1u, smvk::placement::kTerrainMaxTiles);
+			tg.heights = smvk::placement::BuildTerrainHeights(tg.params);
+			// Group node (no mesh; the transform carries the origin).
 			const int level = scene.hierarchy[c.node].level + 1;
 			const int newId = addNode(scene, int(c.node), level);
 			if (newId < 0) {
@@ -1238,24 +1323,83 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 						std::to_string(c.node);
 				return false;
 			}
-			// Node origin carries the terrain placement (local mesh spans
-			// [0,size] on x/z); world space matches the placement domain.
 			scene.localTransform[size_t(newId)] =
 				glm::translate(glm::mat4(1.0f), c.vec);
-			const ClusterStaticMeshHandle mh = cluster.UploadStaticMesh(upload);
-			if (!mh.valid()) {
-				if (err)
-					*err = "tour: createTerrain upload failed";
-				return false;
-			}
-			cluster.RegisterMeshUri(
-				std::string("terrain/") + c.text, mh);
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
 			scene.nameForNode[uint32_t(newId)] = nameId;
-			scene.meshForNode[uint32_t(newId)] = mh.index();
-			scene.materialForNode[uint32_t(newId)] = c.material;
 			createdTerrains.push_back(uint32_t(newId));
+			// Tile child nodes (positioned by their grid offset).
+			TourTerrainGroup& state = terrainGroups.emplace_back();
+			state.data = std::move(tg);
+			state.groupNode = uint32_t(newId);
+			state.material = material;
+			state.tileNodes.resize(size_t(state.data.tilesX)
+				* state.data.tilesZ);
+			const float tileW = state.data.params.size
+				/ float(state.data.tilesX);
+			const float tileH = state.data.params.size
+				/ float(state.data.tilesZ);
+			const int tileLevel = level + 1;
+			for (uint32_t tz = 0; tz < state.data.tilesZ; ++tz)
+				for (uint32_t tx = 0; tx < state.data.tilesX; ++tx) {
+					const int tileId = addNode(scene, newId, tileLevel);
+					if (tileId < 0) {
+						if (err)
+							*err = "tour: createTerrain tile node failed";
+						return false;
+					}
+					scene.localTransform[size_t(tileId)] = glm::translate(
+						glm::mat4(1.0f),
+						glm::vec3(float(tx) * tileW, 0.0f, float(tz) * tileH));
+					const uint32_t tileNameId = uint32_t(scene.nodeNames.size());
+					scene.nodeNames.push_back(c.text + "_" + std::to_string(tx)
+						+ "_" + std::to_string(tz));
+					scene.nameForNode[uint32_t(tileId)] = tileNameId;
+					state.tileNodes[size_t(tz) * state.data.tilesX + tx] =
+						uint32_t(tileId);
+				}
+			break;
+		}
+		case Verb::TerrainPaint: {
+			// One brush stamp onto a created terrain group's global grid.
+			// Meshes upload in the post-loop pass (tiles marked dirty).
+			const uint32_t k = c.node & ~kCreateTerrainRefBase;
+			if ((c.node & kCreateTerrainRefBase) == 0
+				|| k >= terrainGroups.size()) {
+				if (err)
+					*err = "tour: terrainPaint ref out of range";
+				return false;
+			}
+			TourTerrainGroup& state = terrainGroups[k];
+			smvk::placement::TerrainBrushOp op;
+			if (c.text == "raise")
+				op = smvk::placement::TerrainBrushOp::Raise;
+			else if (c.text == "lower")
+				op = smvk::placement::TerrainBrushOp::Lower;
+			else if (c.text == "flatten")
+				op = smvk::placement::TerrainBrushOp::Flatten;
+			else if (c.text == "smooth")
+				op = smvk::placement::TerrainBrushOp::Smooth;
+			else {
+				if (err)
+					*err = "tour: terrainPaint wants -at raise|lower|flatten|smooth";
+				return false;
+			}
+			// -t packs: worldX worldZ radius strength target.
+			smvk::placement::TerrainBrushStamp(state.data, op,
+				float(c.vec4.x), float(c.vec4.y), float(c.vec4.z),
+				float(c.number), float(c.vec4.w));
+			// Mark the touched tiles dirty.
+			uint32_t x0, x1, z0, z1;
+			smvk::placement::TerrainBrushBox(state.data, float(c.vec4.x),
+				float(c.vec4.y), float(c.vec4.z), x0, x1, z0, z1);
+			std::vector<uint32_t> touched;
+			smvk::placement::TerrainBrushTouchedTiles(x0, x1, z0, z1,
+				state.data.heights.width, state.data.tilesX,
+				state.data.tilesZ, touched);
+			for (uint32_t t : touched)
+				state.dirty.insert(t);
 			break;
 		}
 		case Verb::SetLightAttr: {
@@ -1349,6 +1493,41 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			break;
 		}
 		}
+	}
+	// Terrain tile upload pass: every group's heights are final now (all
+	// terrainPaint stamps applied); meshes must come from the baked grid.
+	// Groups with no stamps upload every tile; painted groups upload the
+	// dirty set only (identical result — unpainted tiles already match).
+	for (TourTerrainGroup& state : terrainGroups) {
+		const uint32_t tX = state.data.tilesX;
+		const uint32_t tZ = state.data.tilesZ;
+		for (uint32_t tz = 0; tz < tZ; ++tz)
+			for (uint32_t tx = 0; tx < tX; ++tx) {
+				const uint32_t packed = tx | (tz << 16);
+				if (!state.dirty.empty() && !state.dirty.contains(packed))
+					continue;
+				smvk::StaticMeshUpload upload;
+				if (!smvk::placement::BuildTerrainTileUpload(
+						state.data, tx, tz, upload)) {
+					if (err)
+						*err = "tour: terrain tile mesh build failed";
+					return false;
+				}
+				const ClusterStaticMeshHandle mh =
+					cluster.UploadStaticMesh(upload);
+				if (!mh.valid()) {
+					if (err)
+						*err = "tour: terrain tile upload failed";
+					return false;
+				}
+				const uint32_t tileNode =
+					state.tileNodes[size_t(tz) * tX + tx];
+				cluster.RegisterMeshUri("terrain/" + std::to_string(
+					state.groupNode) + "_" + std::to_string(tx) + "_"
+					+ std::to_string(tz), mh);
+				scene.meshForNode[tileNode] = mh.index();
+				scene.materialForNode[tileNode] = state.material;
+			}
 	}
 	// Transform pass: collect per-node TRS triples (tour order = last wins
 	// per channel), then rebuild each touched node's local matrix.
@@ -1547,8 +1726,13 @@ std::string Describe(const Command& c) {
 		break;
 	case Verb::CreateTerrain:
 		std::snprintf(buf, sizeof(buf),
-			"createTerrain '%s' (%.0fm %.0f %.1fm @%.3f) under #%u",
-			c.text.c_str(), c.vec4.x, c.vec4.y, c.vec4.z, c.vec4.w, c.node);
+			"createTerrain '%s' (%.0fm %.0f %.1fm @%.3f, %ux%u tiles) under #%u",
+			c.text.c_str(), c.vec4.x, c.vec4.y, c.vec4.z, c.vec4.w,
+			c.node2 & 0xFFFFu, (c.node2 >> 16) & 0xFFFFu, c.node);
+		break;
+	case Verb::TerrainPaint:
+		std::snprintf(buf, sizeof(buf), "terrainPaint.%s (r=%.1f s=%.2f)",
+			c.text.c_str(), c.vec4.z, c.number);
 		break;
 	case Verb::SetLightAttr: {
 		char tgt[32];

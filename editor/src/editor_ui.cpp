@@ -152,6 +152,11 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 				DrawTexturePanel();
 				ImGui::EndTabItem();
 			}
+			if (ImGui::BeginTabItem("Material")) {
+				m_rightTab = 5;
+				DrawMaterialEditor();
+				ImGui::EndTabItem();
+			}
 			ImGui::EndTabBar();
 		}
 	}
@@ -258,6 +263,25 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem(("Redo " + rl).c_str(), "Ctrl+Shift+Z", false,
 			!rl.empty()))
 			Redo();
+		ImGui::Separator();
+		// Collapse the stack to the current state: superseded per-node /
+		// per-attr edits drop (their LAST occurrence already carries the
+		// live state), the redo tail clears, the .tour lightens. Creates
+		// and terrain paint stamps stay (structure / ordered bake). NOT
+		// undoable — same contract as Maya's delete-history.
+		if (ImGui::MenuItem(
+				("Coalesce history (" + std::to_string(UndoDepth())
+					+ " cmds)").c_str(),
+				nullptr, false, UndoDepth() > 1)) {
+			const size_t dropped = CoalesceHistory();
+			Log("Coalesced history: " + std::to_string(UndoDepth())
+				+ " commands kept, " + std::to_string(dropped)
+				+ " dropped (redo tail cleared).");
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Keeps only the last edit per node/attr "
+				"channel — the surviving state — so the tour replays "
+				"identically from fewer commands.");
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("Mode")) {
@@ -1958,6 +1982,35 @@ void EditorApp::DrawInspector() {
 		ImGui::TextDisabled("effective: %s", inherited ? "dithered" : "off");
 	}
 
+	// Terrain group/tile: height paint controls (editor paint mode).
+	if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
+		ImGui::Separator();
+		auto it = m_terrainGroups.find(group);
+		if (it != m_terrainGroups.end()) {
+			ImGui::Text("Terrain '%s'  (%ux%u tiles)",
+				getNodeName(scene, int(group)).c_str(),
+				it->second.data.tilesX, it->second.data.tilesZ);
+			ImGui::TextDisabled("%u x %u samples, %.0f m, group #%u",
+				it->second.data.heights.width,
+				it->second.data.heights.height,
+				it->second.data.params.size, group);
+			static const char* kOps[] = { "Raise", "Lower", "Flatten",
+				"Smooth" };
+			ImGui::Combo("Brush", &m_paintOp, kOps, 4);
+			ImGui::DragFloat("Radius (m)", &m_paintRadius, 0.25f, 0.5f,
+				256.0f);
+			ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f,
+				64.0f, "%.2f");
+			ImGui::Checkbox("Paint mode (LMB paints this terrain)",
+				&m_paintTerrain);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("While on, LMB in a 3D viewport paints "
+					"the selected terrain instead of picking. Each stamp "
+					"is one undoable command; paint persists as tour "
+					"terrainPaint verbs (deterministic replay).");
+		}
+	}
+
 	// Clarisse-style override summary for this node (visibility control +
 	// per-attr inherited/local/wide badges + wide-rule matches).
 	DrawInspectorOverrides(node);
@@ -2632,11 +2685,30 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	int seed = m_terrainSeed;
 	if (ImGui::DragInt("Noise seed", &seed, 1, 1, 1000000))
 		m_terrainSeed = seed;
-	// Material combo over the live world materials (0 = first material).
+	int tX = m_terrainTilesX, tZ = m_terrainTilesZ;
+	if (ImGui::DragInt("Tiles X", &tX, 1.0f, 1, 16, "%.0f"))
+		m_terrainTilesX = tX;
+	if (ImGui::DragInt("Tiles Z", &tZ, 1.0f, 1, 16, "%.0f"))
+		m_terrainTilesZ = tZ;
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Tile split: each tile is its own mesh node "
+			"(per-tile materials/texture layers); edges stay continuous.");
+	// Material combo over the live world materials; the editor default
+	// (editor://default) is the fallback and the dialog's default pick.
 	if (m_world && !m_world->materialLocations.empty()) {
-		if (m_terrainMat == UINT32_MAX)
-			m_terrainMat = 0;
+		const uint32_t def = EnsureDefaultMaterial();
+		if (m_terrainMat == UINT32_MAX
+			|| m_terrainMat >= m_world->materialLocations.size())
+			m_terrainMat = def != UINT32_MAX ? def : 0;
 		std::string preview = "mat." + std::to_string(m_terrainMat);
+		if (auto* M = m_world->GetMaterial(m_terrainMat)) {
+			const auto& loc = m_world->materialLocations[m_terrainMat];
+			const std::string uri = loc.cluster
+				? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+				: "";
+			preview += " " + uri;
+			(void)M;
+		}
 		if (ImGui::BeginCombo("Material", preview.c_str())) {
 			for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
 				const auto& loc = m_world->materialLocations[i];
@@ -2667,8 +2739,9 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		d.height = m_terrainHeight;
 		d.freq = m_terrainFreq;
 		d.seed = m_terrainSeed;
+		d.tilesX = uint32_t(m_terrainTilesX);
+		d.tilesZ = uint32_t(m_terrainTilesZ);
 		d.material = m_terrainMat;
-		d.parent = m_selected;
 		DraftCreateTerrain(d);
 		m_showTerrainDialog = false;
 		ImGui::CloseCurrentPopup();
@@ -2679,6 +2752,218 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		ImGui::CloseCurrentPopup();
 	}
 	ImGui::EndPopup();
+}
+
+// ---- Material editor (right-dock tab) ---------------------------------
+// Texture-centric material authoring: pick a material, assign its PBR
+// texture slots from the cluster texture registry, manage layers, and add
+// textures as FILE PATH refs (KTX2 loads into the pool with the path as
+// the URI — cook re-embeds the stashed bytes). Deeper per-material pages
+// (emissive/alpha/flags/travel) live in the material focus page.
+void EditorApp::DrawMaterialEditor() {
+	if (!m_world || m_world->materialLocations.empty()) {
+		ImGui::TextDisabled("No materials (open a scene).");
+		return;
+	}
+	smvk::Cluster* cl = m_world->clusters.empty()
+		? nullptr : m_world->clusters[0].get();
+	// Material picker.
+	if (m_matEditorSel == UINT32_MAX
+		|| m_matEditorSel >= m_world->materialLocations.size())
+		m_matEditorSel = m_defaultMatWorld != UINT32_MAX
+			? m_defaultMatWorld : 0;
+	{
+		const auto& loc = m_world->materialLocations[m_matEditorSel];
+		std::string preview = "mat." + std::to_string(m_matEditorSel);
+		if (loc.cluster) {
+			const std::string uri =
+				std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
+			if (!uri.empty())
+				preview += " " + uri;
+		}
+		if (ImGui::BeginCombo("Material", preview.c_str())) {
+			for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
+				const auto& l2 = m_world->materialLocations[i];
+				std::string uri = l2.cluster
+					? std::string(l2.cluster->GetMaterialUri(l2.handle).Str())
+					: "";
+				char item[320];
+				std::snprintf(item, sizeof(item), "%u: %s", i,
+					uri.empty() ? "(unnamed)" : uri.c_str());
+				if (ImGui::Selectable(item, m_matEditorSel == i))
+					m_matEditorSel = i;
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Focus >>")) {
+			m_materialTrail.push_back(m_materialFocus);
+			m_materialFocus = m_matEditorSel;
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Opens the full material page in the "
+				"Inspector (emissive, alpha, flags, layer travel).");
+	}
+	const uint32_t mat = m_matEditorSel;
+	smvk::Material* m = m_world->GetMaterial(mat);
+	if (!m) {
+		ImGui::TextDisabled("Material resolve failed.");
+		return;
+	}
+	// ---- PBR texture slots -------------------------------------------
+	// Slot attrs are pool-index scalars (-1 = none); the combo lists the
+	// cluster's registered textures (file path refs included).
+	ImGui::Separator();
+	ImGui::Text("Texture slots");
+	struct SlotDef { const char* label; const char* attr; int* slot; };
+	// Pointer copies read live values per frame (post-Do refresh).
+	int tBC = m->values.textures.x, tMR = m->values.textures.y;
+	int tN = m->values.textures.z, tO = m->values.textures.w;
+	int tE = m->values.textures2.x;
+	const SlotDef slots[] = {
+		{ "Base color", "baseColorTex", &tBC },
+		{ "Metallic-rough", "metallicRoughTex", &tMR },
+		{ "Normal", "normalTex", &tN },
+		{ "Occlusion", "occlusionTex", &tO },
+		{ "Emissive", "emissiveTex", &tE },
+	};
+	std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
+	if (cl)
+		texList = cl->ListTextureUris();
+	for (const SlotDef& s : slots) {
+		ImGui::PushID(s.attr);
+		std::string preview = *s.slot >= 0
+			? ("tex." + std::to_string(*s.slot)) : std::string("(none)");
+		// Reverse-lookup a friendly URI for the preview.
+		if (*s.slot >= 0)
+			for (const auto& [uri, th] : texList)
+				if (int(th.index()) == *s.slot) {
+					preview = uri.Str();
+					break;
+				}
+		if (ImGui::BeginCombo(s.label, preview.c_str())) {
+			if (ImGui::Selectable("(none)", *s.slot < 0)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = s.attr;
+				c.number = -1.0;
+				ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
+				Do(c);
+			}
+			for (const auto& [uri, th] : texList) {
+				char item[420];
+				std::snprintf(item, sizeof(item), "%u: %s",
+					uint32_t(th.index()), uri.Str().c_str());
+				if (ImGui::Selectable(item, *s.slot == int(th.index()))) {
+					EditCmd c{};
+					c.verb = EditVerb::SetMatAttr;
+					c.matWorld = mat;
+					c.attr = s.attr;
+					c.number = double(th.index());
+					ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
+					Do(c);
+				}
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::PopID();
+	}
+	// ---- Layers ------------------------------------------------------
+	ImGui::Separator();
+	ImGui::Text("Layers (vertex-color blending)");
+	ImGui::TextDisabled("RGBA weights blend layers 1..3 over this "
+		"material (layer 0).");
+	{
+		glm::ivec4 lm = m->values.layerMaterials;
+		const uint32_t count = uint32_t(m_world->materialLocations.size());
+		for (int slot = 0; slot < 3; ++slot) {
+			ImGui::PushID(slot);
+			int cur = lm[slot];
+			std::string preview = (cur >= 0 && uint32_t(cur) < count)
+				? ("mat." + std::to_string(cur)) : std::string("(none)");
+			char comboLabel[32];
+			std::snprintf(comboLabel, sizeof(comboLabel), "Layer %d",
+				slot + 1);
+			if (ImGui::BeginCombo(comboLabel, preview.c_str())) {
+				if (ImGui::Selectable("(none)", cur < 0))
+					cur = -1;
+				for (uint32_t i = 0; i < count; ++i) {
+					if (i == mat)
+						continue; // this material is layer 0
+					const auto& loc = m_world->materialLocations[i];
+					std::string uri = loc.cluster
+						? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+						: "";
+					char item[320];
+					std::snprintf(item, sizeof(item), "%u: %s", i,
+						uri.empty() ? "(unnamed)" : uri.c_str());
+					if (ImGui::Selectable(item, cur == int(i)))
+						cur = int(i);
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::PopID();
+			if (cur != lm[slot]) {
+				glm::ivec4 nl = lm;
+				nl[slot] = cur;
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = "layers";
+				glm::vec4 v4;
+				double num = 0.0;
+				ReadSharedMatAttr(mat, "layers", v4, num);
+				c.beforeVec4 = v4;
+				c.beforeNum = num;
+				c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
+					float(nl.w));
+				c.number = double(nl.w);
+				Do(c);
+			}
+		}
+		int layerCount = lm.w;
+		if (ImGui::SliderInt("Active layers", &layerCount, 0, 4)) {
+			glm::ivec4 nl = lm;
+			nl.w = layerCount;
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "layers";
+			glm::vec4 v4;
+			double num = 0.0;
+			ReadSharedMatAttr(mat, "layers", v4, num);
+			c.beforeVec4 = v4;
+			c.beforeNum = num;
+			c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
+				float(nl.w));
+			c.number = double(nl.w);
+			Do(c);
+		}
+	}
+	// ---- Texture registry (file path refs) ----------------------------
+	ImGui::Separator();
+	ImGui::Text("Textures (%zu)", texList.size());
+	for (const auto& [uri, th] : texList) {
+		ImGui::BulletText("%u  %s", uint32_t(th.index()), uri.Str().c_str());
+	}
+	ImGui::SetNextItemWidth(-90.0f);
+	ImGui::InputTextWithHint("##matTexPath", "KTX2 file path...",
+		m_matTexPathBuf, sizeof(m_matTexPathBuf));
+	ImGui::SameLine();
+	if (ImGui::Button("Add...##tex")) {
+		if (m_matTexPathBuf[0] != '\0') {
+			// Native file dialog would be nicer; the path field is the
+			// direct ref (also exactly what the URI becomes).
+			if (AddTextureFromFile(m_matTexPathBuf) >= 0)
+				m_matTexPathBuf[0] = '\0';
+		}
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Loads the KTX2 into the texture pool with the "
+			"file path as its URI (a filepath ref). Source bytes are "
+			"stashed so cooks re-embed them.");
+	ImGui::TextDisabled("Slots store pool indices; -1 clears a slot.");
 }
 
 } // namespace editor

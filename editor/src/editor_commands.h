@@ -31,17 +31,22 @@ enum class EditVerb : uint8_t {
  	CreateLight, // append a light node (world); params below. c.node =
 	             // CREATED world id once forward-executed (UINT32_MAX
 	             // before); c.node2 = parent world id
- 	CreateTerrain, // append a procedural terrain mesh node (world).
- 	             // Mesh params ride vec4/number (tour-shaped, immutable
- 	             // after creation): vec4 = (size[m], res, height[m],
- 	             // freq[1/m]), number = noise seed. c.node = CREATED
- 	             // world id once forward-executed; c.node2 = parent;
- 	             // material = world material idx; afterVec = local
- 	             // position (= terrain origin corner); afterText = name.
- 	             // Post-creation edits address it via tour
- 	             // kCreateTerrainRefBase (see CreatedTerrainIndex).
+  CreateTerrain, // append a procedural terrain GROUP node + tilesX*tilesZ
+  	             // tile mesh nodes (world). Group params ride vec4/number
+  	             // (tour-shaped, immutable after creation): vec4 = (size
+  	             // [m], res, height[m], freq[1/m]), number = noise seed;
+  	             // node2 = tilesX | (tilesZ << 16). c.node = CREATED
+  	             // group world id once forward-executed; material = world
+  	             // material idx; afterVec = local position (group origin
+  	             // corner); afterText = name. Post-creation edits address
+  	             // it via tour kCreateTerrainRefBase (CreatedTerrainIndex).
+ 	TerrainPaint, // one height brush stamp on a created terrain group.
+ 	              // c.node = group world id; terrainOp = "raise"|"lower"|
+ 	              // "flatten"|"smooth"; vec4 = (worldX, worldZ, radius,
+ 	              // flattenTarget); number = strength. Exact undo rides
+ 	              // the captured before-patch (terrainBefore + box).
  	SetLightAttr, // light property edit; c.node = light node (world),
-	              // lightAttr selects the channel (see below)
+ 	              // lightAttr selects the channel (see below)
 };
 
 struct EditCmd {
@@ -83,6 +88,14 @@ struct EditCmd {
 	// afterText (name); before-state rides beforeVec4 / beforeNum /
 	// beforeFlag / beforeText.
 	std::string lightAttr;
+	// TerrainPaint payload: op name above; before-patch = the pre-stamp
+	// sample box (row-major, x-major within rows), captured at first
+	// forward execution and reused by undo. Box coords are inclusive
+	// global-grid sample indices.
+	std::string terrainOp;
+	std::vector<float> terrainBefore;
+	uint32_t terrainBoxX0 = 0, terrainBoxZ0 = 0;
+	uint32_t terrainBoxW = 0, terrainBoxH = 0;
 };
 
 class EditorApp; // command execution lives on the app (world access).

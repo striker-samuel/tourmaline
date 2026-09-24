@@ -613,6 +613,115 @@ void TestLightVerbs() {
 		"light parser rejects bad attr");
 }
 
+void TestTerrainVerbs() {
+	// createTerrain (group + tiles) + terrainPaint: file round-trip, then
+	// cook replay — heights bake through the stamps into the tile meshes.
+	smvk::tour::Doc doc;
+	doc.source = "models/x.gltf";
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateTerrain;
+	c.node = 0; // parent: cluster root
+	c.text = "Terrain_1";
+	c.vec = glm::vec3(10.0f, 0.0f, 20.0f);
+	c.vec4 = glm::vec4(32.0f, 17.0f, 4.0f, 0.05f); // size, res, height, freq
+	c.number = 7.0;                                // seed
+	c.node2 = 2u | (2u << 16);                     // 2x2 tiles
+	c.material = 0;                                // out-of-range -> default
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::TerrainPaint;
+	c.node = smvk::tour::kCreateTerrainRefBase | 0u;
+	c.text = "raise";
+	c.vec4 = glm::vec4(26.0f, 36.0f, 4.0f, 0.0f); // worldX, worldZ, radius, target
+	c.number = 2.0;                               // strength
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::TerrainPaint;
+	c.node = smvk::tour::kCreateTerrainRefBase | 0u;
+	c.text = "smooth";
+	c.vec4 = glm::vec4(26.0f, 36.0f, 6.0f, 0.0f);
+	c.number = 1.0;
+	doc.commands.push_back(c);
+
+	std::string err;
+	std::vector<std::string> warns;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "terrain tour save");
+	smvk::tour::Doc back;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"terrain tour load");
+	Check(back.commands.size() == 3, "terrain tour command count");
+	const smvk::tour::Command& rc = back.commands[0];
+	Check(rc.verb == smvk::tour::Verb::CreateTerrain && rc.node == 0
+		&& rc.text == "Terrain_1" && rc.vec4.x == 32.0f
+		&& rc.vec4.y == 17.0f && rc.number == 7.0
+		&& (rc.node2 & 0xFFFFu) == 2u
+		&& ((rc.node2 >> 16) & 0xFFFFu) == 2u, "terrain create roundtrip");
+	const smvk::tour::Command& rp = back.commands[1];
+	Check(rp.verb == smvk::tour::Verb::TerrainPaint
+		&& rp.node == (smvk::tour::kCreateTerrainRefBase | 0u)
+		&& rp.text == "raise" && rp.number == 2.0,
+		"terrain paint roundtrip");
+
+	// Replay onto a cook cluster: group + 4 tile children + meshes from
+	// the POST-PAINT heights. Material 0 is out of range -> the cook
+	// mints the editor default (warned, not failed).
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	setNodeName(cluster->scene, root, "Root");
+	const size_t beforeNodes = cluster->scene.hierarchy.size();
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"terrain replay ok");
+	const size_t added = cluster->scene.hierarchy.size() - beforeNodes;
+	Check(added == 1 + 4, "terrain replay group+4 tiles");
+	const uint32_t group = uint32_t(beforeNodes);
+	Check(cluster->scene.hierarchy[group].parent == root,
+		"terrain replay group parent");
+	Check(getNodeName(cluster->scene, int(group)) == "Terrain_1",
+		"terrain replay group name");
+	uint32_t tileMeshes = 0;
+	for (const auto& [n, m] : cluster->scene.meshForNode) {
+		(void)m;
+		if (n == group)
+			continue; // the group node carries no mesh
+		if (cluster->scene.hierarchy[n].parent == int(group))
+			++tileMeshes;
+	}
+	Check(tileMeshes == 4, "terrain replay 4 tile meshes");
+	// Default material minted: group tiles reference a valid pool id.
+	bool matOk = true;
+	for (const auto& [n, mi] : cluster->scene.meshForNode) {
+		auto it = cluster->scene.materialForNode.find(n);
+		if (it == cluster->scene.materialForNode.end()
+			|| !cluster->materials.get(cluster->materials.getHandle(it->second)))
+			matOk = false;
+	}
+	Check(matOk, "terrain replay default material minted");
+	// Post-loop mesh upload happened (heights baked through 2 stamps).
+	const uint32_t nodes = uint32_t(cluster->scene.hierarchy.size());
+	uint32_t withMesh = 0;
+	for (uint32_t n = 0; n < nodes; ++n)
+		if (cluster->scene.meshForNode.contains(n))
+			++withMesh;
+	Check(withMesh == 4, "terrain replay meshes uploaded post-pass");
+
+	// Out-of-range paint ref fails loudly; bad op fails at parse.
+	smvk::tour::Doc bad;
+	smvk::tour::Command bc{};
+	bc.verb = smvk::tour::Verb::TerrainPaint;
+	bc.node = smvk::tour::kCreateTerrainRefBase | 5u;
+	bc.text = "raise";
+	bc.vec4 = glm::vec4(1, 1, 1, 0);
+	bc.number = 1.0;
+	bad.commands.push_back(bc);
+	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+		"terrain paint rejects bad ref");
+	smvk::tour::Doc parseBad;
+	Check(!smvk::tour::LoadTourFromString(
+		"terrainPaint -ref 0 -at frobnicate -t 1 1 1 0 -v 1;\n",
+		parseBad, err), "terrain paint parser rejects bad op");
+}
+
 } // namespace
 
 int main() {
@@ -623,6 +732,7 @@ int main() {
 	TestReferences();
 	TestTourReferences();
 	TestLightVerbs();
+	TestTerrainVerbs();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

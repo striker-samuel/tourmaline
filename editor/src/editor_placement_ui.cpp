@@ -156,8 +156,36 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
 		if (ImGui::InputInt("Noise seed", &seed)) n.i[0] = seed;
 		DirtyPlacementOnEdit();
-		ImGui::TextDisabled("Analytic hills (two value-noise octaves). "
-			"Needs no scene geometry.");
+		// Live terrain binding: scatter over a CREATED (painted) terrain
+		// group instead of the analytic hills.
+		if (n.i.size() < 2) n.i.resize(2, -1);
+		ImGui::Separator();
+		if (n.i[1] >= 0 && m_terrainGroups.contains((uint32_t)n.i[1])) {
+			ImGui::Text("Bound to live terrain group #%u", (uint32_t)n.i[1]);
+			ImGui::TextDisabled("Previews and scatter sample the PAINTED "
+				"heights; painting marks this preview dirty.");
+			if (ImGui::Button("Unbind (analytic)")) {
+				PushPlacementUndo();
+				n.i[1] = -1;
+				MarkPlacementDirty();
+			}
+		}
+		else {
+			ImGui::TextDisabled("Unbound: analytic hills (two value-noise "
+				"octaves, no scene geometry).");
+			if (ImGui::Button("Use selected (bind live terrain)")) {
+				const uint32_t group = TerrainGroupOf(m_selected);
+				if (group != UINT32_MAX) {
+					PushPlacementUndo();
+					n.i[1] = int(group);
+					MarkPlacementDirty();
+				}
+				else {
+					Log("placement: select a terrain group (or one of its "
+						"tiles) first.");
+				}
+			}
+		}
 		break;
 	}
 	case NodeKind::Density: {

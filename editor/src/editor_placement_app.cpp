@@ -167,10 +167,32 @@ void EditorApp::RefreshPlacementPreview() {
 		lb.grid = &gridStorage;
 	}
 	else if (cr.domainKind == DomainKind::Heightfield) {
-		terrainStorage = BuildTerrainHeights(cr.terrain);
+		// Bound to a live terrain group? Scatter over the PAINTED heights
+		// (a copy — paints mark the preview dirty for a rebuild).
+		bool live = false;
+		if (cr.terrainBind != UINT32_MAX) {
+			auto it = m_terrainGroups.find(cr.terrainBind);
+			if (it != m_terrainGroups.end()) {
+				terrainStorage = it->second.data.heights;
+				live = true;
+			}
+			else {
+				pv.ok = false;
+				pv.error = "Terrain node binds group #"
+					+ std::to_string(cr.terrainBind)
+					+ " which no longer exists (re-bind or unbind).";
+				pv.dirty = false;
+				return;
+			}
+		}
+		if (!live)
+			terrainStorage = BuildTerrainHeights(cr.terrain);
 		terrainDom.field = &terrainStorage;
-		terrainDom.extentMin = cr.terrain.origin;
-		terrainDom.extentMax = cr.terrain.origin + glm::vec2(cr.terrain.size);
+		terrainDom.extentMin = glm::vec2(terrainStorage.origin.x,
+			terrainStorage.origin.z);
+		terrainDom.extentMax = terrainDom.extentMin + glm::vec2(
+			float(terrainStorage.width - 1) * terrainStorage.spacing.x,
+			float(terrainStorage.height - 1) * terrainStorage.spacing.y);
 		lb.heightfield = &terrainDom;
 		pv.terrainField = terrainStorage;
 		pv.terrainDom = terrainDom;
