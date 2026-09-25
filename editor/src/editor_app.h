@@ -233,6 +233,7 @@ inline constexpr uint8_t kModalAlt = 4;
 // ---------------------------------------------------------------------------
 struct CookSettings {
 	std::string outPak = "content/paks/edited.pak";
+	std::string contentDir = "content";
 	bool meshopt = true;
 	bool lods = false;
 	bool lightmap = false;
@@ -247,6 +248,12 @@ struct CookSettings {
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
+	// Cubemap captures
+	bool cubemap = false;
+	std::string cubemapName;
+	uint32_t cubemapSize = 128;
+	uint32_t cubemapRays = 128;
+	uint32_t cubemapBounces = 3;
 };
 
 class EditorApp : public smvk::AppImpl {
@@ -857,6 +864,11 @@ private:
 	// Create-terrain dialog state (File > Create > Terrain).
 	bool m_showTerrainDialog = false;
 	char m_terrainNameBuf[128] = "";
+	// Cook dialog (File > Cook...)
+	bool m_showCookDialog = false;
+	char m_cookOutPakBuf[512] = "";
+	char m_cookContentDirBuf[512] = "content";
+	char m_cookCubemapNameBuf[128] = "";
 	float m_terrainOrigin[3] = { 0.0f, 0.0f, 0.0f };
 	float m_terrainSize = 64.0f;
 	int m_terrainRes = 64;
@@ -867,6 +879,8 @@ private:
 	int m_terrainTilesZ = 1;
 	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
+	void ShowCookDialog();
+	void DrawCookDialog();
 	// ---- heightfield painting ----
 	// When on, LMB in a 3D viewport paints the SELECTED terrain group
 	// (group or any tile selects it) instead of picking. One stamp per

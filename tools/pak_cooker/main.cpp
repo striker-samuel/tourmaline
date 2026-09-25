@@ -744,15 +744,35 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 	}
 	if (!out.dumpPak.empty())
 		return true; // inspection mode needs no cook inputs
-	if (out.inVfs.empty() || out.outPak.empty()) {
-		std::cerr << "Required: --in-vfs <model vfs path> --out-pak <host path>" << std::endl;
+	if (out.dumpPak.empty() && out.inVfs.empty() && out.tour.empty()) {
+		std::cerr << "Required: --in-vfs <model vfs path> OR --tour <scene.tour>, and --out-pak <host path>" << std::endl;
 		return false;
+	}
+	if (out.outPak.empty()) {
+		std::cerr << "Required: --out-pak <host path>" << std::endl;
+		return false;
+	}
+	// If --in-vfs not given but --tour is, load the tour to get its source.
+	if (out.inVfs.empty() && !out.tour.empty()) {
+		smvk::tour::Doc tour;
+		std::string terr;
+		std::vector<std::string> twarn;
+		if (!smvk::tour::LoadTour(out.tour, tour, terr, &twarn)) {
+			std::cerr << "Tour load failed (for source resolution): " << terr << std::endl;
+			return false;
+		}
+		if (tour.source.empty()) {
+			std::cerr << "Tour has no source glTF (cannot infer --in-vfs)\n";
+			return false;
+		}
+		out.inVfs = tour.source;
+		std::cout << "Resolved --in-vfs from tour: " << out.inVfs << "\n";
 	}
 	return true;
 }
 
 void Usage() {
-	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
+	std::cout << "PakCooker --content-dir content [--in-vfs models/Sponza/sponza.gltf] [--tour scenes/sponza.tour]\n"
 		<< "          --out-pak content/paks/sponza.pak [--scene-index N] [--meshopt on|off]\n"
 		<< "          (default cooks ALL glTF scenes: one Scene blob each\n"
 		<< "          (#scene, #scene.1, ...) sharing one asset pool; the\n"
@@ -773,8 +793,8 @@ void Usage() {
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000 --sky-intensity 600\n"
 		<< "           --lm-lod-lock attr|hard\n"
-			<< "           --lm-denoise on|off (DEPRECATED)"
-			<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
+		<< "           --lm-denoise on|off (DEPRECATED)"
+		<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
 		<< "           --lm-debug-pink on|off\n"
 		<< "           --lm-stitch on|off\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
@@ -801,34 +821,33 @@ void Usage() {
 		<< "          scales them with the cubemap panel intensity, so a\n"
 		<< "          mirror matches the sun-lit scene; no bake-time\n"
 		<< "          intensity is frozen in). One capture per\n"
-		<< "          --cubemap-pos (default:\n"
-		<< "          scene-bounds center at +height). If --cubemap-grid > 0,\n"
-		<< "          captures a uniform 3D grid of probes at that spacing\n"
-		<< "          (meters) within the scene bounds; --cubemap-octree on\n"
-		<< "          replaces the lattice with sparse adaptive placement\n"
-		<< "          (open volumes stay coarse, near-surface cells refine\n"
-		<< "          to --cubemap-octree-min at depth --cubemap-octree-depth,\n"
-		<< "          embedded centers drop, growth stops at 32 probes).\n"
-		<< "          --cubemap-extra-pos appends artist-PINNED probes after\n"
-		<< "          placement (manifest 'pin' rows sort first at load, so\n"
-		<< "          they win weight ties — e.g. a capture at the chrome\n"
-		<< "          ball; influence --cubemap-extra-radius, fade half).\n"
-		<< "          --cubemap-spp averages N transport paths per texel so\n"
-		<< "          the bounce field is coherent GI (1 spp = speckle),\n"
-		<< "          matching the multi-ray lightmap look.\n"
-		<< "          Multi captures write textures/cubemaps/<name>.cubemanifest\n"
-		<< "          (positions + radii) next to the KTX blobs; embedded as\n"
-		<< "          Texture blobs at\n"
-		<< "          textures/cubemaps/<name>[_N].ktx2 (name defaults to the\n"
-		<< "          out-pak stem). Debug PNGs (<name>_N.png faces,\n"
-		<< "          <name>_N_mips.png prefilter stack, <name>_probes.png\n"
-		<< "          top-down placement map) land loose in\n"
-		<< "          <contentDir>/textures/cubemaps/. Needs exactly one\n"
-		<< "          cooked scene, like --lightmap.\n"
+		<< "          --cubemap-pos (default: scene-bounds center at +height).\n"
+		<< "          If --cubemap-grid > 0, captures a uniform 3D grid\n"
+		<< "          of probes at that spacing (meters) within the scene\n"
+		<< "          bounds; --cubemap-octree on replaces the lattice with\n"
+		<< "          sparse adaptive placement (open volumes stay coarse,\n"
+		<< "          near-surface cells refine to --cubemap-octree-min at\n"
+		<< "          depth --cubemap-octree-depth, embedded centers drop,\n"
+		<< "          growth stops at 32 probes). --cubemap-extra-pos\n"
+		<< "          appends artist-PINNED probes after placement (manifest\n"
+		<< "          'pin' rows sort first at load, so they win weight ties\n"
+		<< "          -- e.g. a capture at the chrome ball; influence\n"
+		<< "          --cubemap-extra-radius, fade half). --cubemap-spp\n"
+		<< "          averages N transport paths per texel so the bounce\n"
+		<< "          field is coherent GI (1 spp = speckle), matching the\n"
+		<< "          multi-ray lightmap look. Multi captures write\n"
+		<< "          textures/cubemaps/<name>.cubemanifest (positions +\n"
+		<< "          radii) next to the KTX blobs; embedded as Texture\n"
+		<< "          blobs at textures/cubemaps/<name>[_N].ktx2 (name\n"
+		<< "          defaults to the out-pak stem). Debug PNGs\n"
+		<< "          (<name>_N.png faces, <name>_N_mips.png prefilter stack,\n"
+		<< "          <name>_probes.png top-down placement map) land loose\n"
+		<< "          in <contentDir>/textures/cubemaps/. Needs exactly\n"
+		<< "          one cooked scene, like --lightmap.\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
-		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
-		<< "materials; transmissive (Blend) meshes pass light through.\n"
+		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots +\n"
+		<< "real materials; transmissive (Blend) meshes pass light through.\n"
 		<< "--lm-meters-per-texel is a WORLD-space request (m/texel; 0.25 =\n"
 		<< "one texel per 25 cm = 4 texels/m; scaled nodes like sponza's\n"
 		<< "0.008 root convert through their world scale. --lm-density\n"
@@ -851,7 +870,9 @@ void Usage() {
 		<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
 		<< "onto the imported cluster before cooking. Tour cook settings\n"
 		<< "fill flags the CLI did not set (CLI wins). Deterministic:\n"
-		<< "source glTF + tour in, identical pak out.\n";
+		<< "source glTF + tour in, identical pak out. Can be used as the\n"
+		<< "PRIMARY input (with no --in-vfs) — the tour's 'source' field\n"
+		<< "provides the glTF path." << std::endl;
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -2903,21 +2924,71 @@ int main(int argc, char** argv) {
 		}
 		for (auto& w : twarn)
 			std::cerr << "Tour warning: " << w << std::endl;
-		// Source sanity: the tour names the glTF it was authored against.
+		// If inVfs wasn't explicitly given, resolve the tour's source
+		// as a filesystem path (relative to the tour file's dir, else
+		// the content dir). The VFS is NOT used for the primary import.
+		std::string sourcePath;
 		if (!tour.source.empty()) {
-			const auto base = [](const std::string& p) {
-				const size_t s = p.find_last_of("/\\");
-				return (s == std::string::npos) ? p : p.substr(s + 1);
-			};
-			if (base(tour.source) != base(args.inVfs))
-				std::cerr << "Tour warning: authored for '" << tour.source
-					<< "' but cooking '" << args.inVfs << "'\n";
-			const std::string fpNow =
-				smvk::tour::Fingerprint(args.contentDir + "/" + tour.source);
-			if (!tour.fingerprint.empty() && !fpNow.empty() &&
-				fpNow != tour.fingerprint)
-				std::cerr << "Tour warning: source file changed since the tour "
-					"was saved (ids may have shifted)\n";
+			std::filesystem::path tourPath(args.tour);
+			std::filesystem::path contentDir(args.contentDir);
+			sourcePath = (tourPath.parent_path() / tour.source).lexically_normal().string();
+			if (!std::filesystem::exists(sourcePath)) {
+				sourcePath = (contentDir / tour.source).lexically_normal().string();
+			}
+			// If inVfs was empty, use the resolved source path
+			if (args.inVfs.empty())
+				args.inVfs = tour.source; // keep the tour's source string for compat
+			std::cout << "Tour source resolved to: " << sourcePath << "\n";
+		}
+		// Re-import the primary scene using the resolved filesystem path
+		// (not through VFS) so it works without a VFS mount.
+		if (!sourcePath.empty()) {
+			try {
+				tinygltf::Model model;
+				if (!LoadModelFromAsciiFile(model, sourcePath.c_str())) {
+					std::cerr << "Failed to load tour source glTF: " << sourcePath << std::endl;
+					return 1;
+				}
+				// Replace the first cluster with a fresh import using HostTextureSource
+				// (direct filesystem reads) instead of VFS-based import.
+				cluster = new smvk::Cluster(nullptr);
+				cluster->SetCookMode(true);
+				GltfToSceneImporter importer(*cluster, model,
+					std::filesystem::path(sourcePath));
+				importer.setTextureSource(
+					std::make_shared<HostTextureSource>(
+						std::filesystem::path(sourcePath).parent_path()));
+				importer.setMeshOptConfig(opt);
+				importer.setMeshletConfig(importMeshletCfg);
+				importer.setModelUriBase(sourcePath);
+				importer.preloadTextures();
+				// Determine root nodes from the default scene (same logic as GltfToClusterFromVfs)
+				std::vector<int> gltfRoots;
+				if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
+					gltfRoots = model.scenes[model.defaultScene].nodes;
+				}
+				else if (!model.scenes.empty()) {
+					gltfRoots = model.scenes.front().nodes;
+				}
+				else {
+					std::vector<bool> referenced(model.nodes.size());
+					for (const auto& n : model.nodes)
+						for (int c : n.children)
+							if (c >= 0 && c < (int)model.nodes.size())
+								referenced[c] = true;
+					for (int i = 0; i < (int)model.nodes.size(); ++i)
+						if (!referenced[i])
+							gltfRoots.push_back(i);
+				}
+				for (int gltfNode : gltfRoots)
+					importer.import(gltfNode);
+				sceneClusters[0].reset(cluster);
+				cluster = sceneClusters[0].get();
+			}
+			catch (const std::exception& e) {
+				std::cerr << "Tour source import failed: " << e.what() << std::endl;
+				return 1;
+			}
 		}
 		if (tour.hasCook) {
 			const auto& k = tour.cook;

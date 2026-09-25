@@ -243,8 +243,9 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
 			SaveTourIncremental();
-		if (ImGui::MenuItem("Cook to .pak"))
-			CookToPak();
+		if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
+			ShowCookDialog();
+		}
 		if (ImGui::MenuItem("Run in App", nullptr, false,
 			!m_runRunning && !RunArgs().empty()))
 			RunInApp();
@@ -498,6 +499,9 @@ void EditorApp::DrawMenuBar() {
 	// m_showTerrainDialog stays true while the modal is up (the dialog
 	// clears it on Create/Cancel); OpenPopup is idempotent.
 	DrawCreateTerrainDialog();
+	if (m_showCookDialog)
+		ImGui::OpenPopup("Cook to .pak");
+	DrawCookDialog();
 }
 
 // ---- tool topbar --------------------------------------------------------
@@ -3238,6 +3242,139 @@ void EditorApp::DrawCreateTerrainDialog() {
 	ImGui::SameLine();
 	if (ImGui::Button("Cancel")) {
 		m_showTerrainDialog = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndPopup();
+}
+
+void EditorApp::ShowCookDialog() {
+	if (!m_world) {
+		Log("Cook: no scene open.");
+		return;
+	}
+	if (m_cookOutPakBuf[0] == '\0') {
+		std::filesystem::path p(m_gltfPath);
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf),
+			"content/paks/%s.pak", p.stem().string().c_str());
+	}
+	if (m_cookContentDirBuf[0] == '\0') {
+		std::snprintf(m_cookContentDirBuf, sizeof(m_cookContentDirBuf),
+			"content");
+	}
+	m_showCookDialog = true;
+	ImGui::OpenPopup("Cook to .pak");
+}
+
+void EditorApp::DrawCookDialog() {
+	if (!m_showCookDialog)
+		return;
+	if (!ImGui::BeginPopupModal("Cook to .pak", &m_showCookDialog,
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+
+	ImGui::Text("Export the current scene + tour edits to a cooked .pak.");
+	ImGui::Separator();
+
+	ImGui::Text("Output .pak path (relative to content/ or absolute):");
+	ImGui::SetNextItemWidth(500.0f);
+	ImGui::InputText("##outPak", m_cookOutPakBuf, sizeof(m_cookOutPakBuf));
+
+	ImGui::Text("Content root (for VFS resolution):");
+	ImGui::SetNextItemWidth(500.0f);
+	ImGui::InputText("##contentDir", m_cookContentDirBuf, sizeof(m_cookContentDirBuf));
+
+	ImGui::Separator();
+	ImGui::Text("Quality settings (CLI overrides tour defaults):");
+
+	if (ImGui::Checkbox("MeshOpt (meshoptimizer)", &m_cook.meshopt))
+		AutosaveTour();
+	ImGui::SameLine();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Reorder vertices/indices for GPU cache efficiency.");
+
+	if (ImGui::Checkbox("Generate LODs", &m_cook.lods))
+		AutosaveTour();
+	ImGui::SameLine();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Build mesh LOD chains (3 levels) via meshoptimizer.");
+
+	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
+		AutosaveTour();
+	if (m_cook.lightmap) {
+		ImGui::Indent();
+		int pres = m_cook.lmProxyRes;
+		if (ImGui::DragInt("Voxel proxy resolution", &pres, 1.0f, 0, 256)) {
+			m_cook.lmProxyRes = pres;
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Voxel-remesh scene proxy grid (0 = legacy per-mesh path).");
+
+		float mpt = m_cook.lmMetersPerTexel;
+		if (ImGui::DragFloat("Meters per texel", &mpt, 0.01f, 0.01f, 1.0f, "%.3f")) {
+			m_cook.lmMetersPerTexel = mpt;
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("World-space lightmap texel density (m/texel).");
+
+		int lobes = m_cook.lmLobes;
+		if (ImGui::DragInt("Max SG lobes", &lobes, 1.0f, 5, 12)) {
+			m_cook.lmLobes = std::clamp(lobes, 5, 12);
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Preferred max SG bases per texel (5-12).");
+
+		int atlasW = m_cook.lmAtlasWidth;
+		if (ImGui::DragInt("Atlas width (px)", &atlasW, 64.0f, 256, 8192)) {
+			m_cook.lmAtlasWidth = std::clamp(atlasW, 256, 8192);
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Lightmap atlas width; height grows with content.");
+
+		int rays = m_cook.lmRays;
+		if (ImGui::DragInt("Rays per texel", &rays, 8.0f, 64, 8192)) {
+			m_cook.lmRays = std::clamp(rays, 64, 8192);
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Path-traced rays per lightmap texel (quality).");
+
+		ImGui::Unindent();
+	}
+
+	if (ImGui::Checkbox("Cubemap captures", &m_cook.cubemap))
+		AutosaveTour();
+	if (m_cook.cubemap) {
+		ImGui::Indent();
+		ImGui::InputText("Cubemap name", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
+		if (ImGui::IsItemDeactivatedAfterEdit())
+			m_cook.cubemapName = m_cookCubemapNameBuf;
+		int size = m_cook.cubemapSize;
+		if (ImGui::DragInt("Size", &size, 32.0f, 64, 2048)) {
+			m_cook.cubemapSize = std::clamp(size, 64, 2048);
+			AutosaveTour();
+		}
+		int rays = m_cook.cubemapRays;
+		if (ImGui::DragInt("Rays per texel", &rays, 8.0f, 1, 4096)) {
+			m_cook.cubemapRays = std::clamp(rays, 1, 4096);
+			AutosaveTour();
+		}
+		ImGui::Unindent();
+	}
+
+	ImGui::Separator();
+	if (ImGui::Button("Cook")) {
+		m_cook.outPak = m_cookOutPakBuf;
+		CookToPak();
+		m_showCookDialog = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel")) {
+		m_showCookDialog = false;
 		ImGui::CloseCurrentPopup();
 	}
 	ImGui::EndPopup();

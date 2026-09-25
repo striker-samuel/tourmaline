@@ -2214,7 +2214,12 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 			std::filesystem::create_directories(parent, ec);
 	}
 	smvk::tour::Doc doc;
-	doc.source = m_gltfPath;
+	// VFS paths use forward slashes (POSIX). The cooker's VFS
+	// resolver expects this format.
+	std::string posixSource = m_gltfPath;
+	for (char& c : posixSource)
+		if (c == '\\') c = '/';
+	doc.source = posixSource;
 	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
 	// UUID pre-pass: nodes addressed by uuid or symbolic -p need a
 	// file-stable identity recorded. Assign missing ones NOW into the

@@ -82,6 +82,11 @@ void EditorApp::CookToPak() {
 		}
 	}
 	CookSettings cook = m_cook;
+	// Auto-generate output path if empty: content/paks/<stem>.pak
+	if (cook.outPak.empty() && !m_gltfPath.empty()) {
+		std::filesystem::path p(m_gltfPath);
+		cook.outPak = ("content/paks/" + p.stem().string() + ".pak");
+	}
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
 	m_cookFuture = std::async(std::launch::async,
@@ -98,16 +103,20 @@ void EditorApp::CookToPak() {
 				"PakCooker.exe";
 			if (!std::filesystem::exists(cooker))
 				cooker = "PakCooker.exe"; // PATH fallback
-			// Required paths + tour on the CLI; everything else rides the
-			// tour's cook block (CLI wins when both are given).
-			// Args go through QuoteArg (blanket quoting breaks cmd.exe).
-			std::ostringstream cmd;
-			cmd << QuoteArg(cooker.string())
-				<< " --content-dir " << QuoteArg(contentDir)
-				<< " --in-vfs " << QuoteArg(inVfs)
-				<< " --out-pak " << QuoteArg(cook.outPak)
-				<< " --tour " << QuoteArg(tourPath)
-				<< " 2>&1";
+// Required paths + tour on the CLI; everything else rides the
+// tour's cook block (CLI wins when both are given).
+// If we have a tour loaded, use it as the PRIMARY input (PakCooker
+// resolves its 'source' field as --in-vfs). Else fall back to --in-vfs.
+std::ostringstream cmd;
+cmd << QuoteArg(cooker.string())
+	<< " --content-dir " << QuoteArg(cook.contentDir);
+if (!tourPath.empty()) {
+	cmd << " --tour " << QuoteArg(tourPath);
+} else {
+	cmd << " --in-vfs " << QuoteArg(inVfs);
+}
+cmd << " --out-pak " << QuoteArg(cook.outPak)
+	<< " 2>&1";
 			log << "cook: " << cmd.str() << "\n";
 #ifdef _WIN32
 			FILE* pipe = _popen(cmd.str().c_str(), "r");
