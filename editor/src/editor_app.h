@@ -238,8 +238,9 @@ struct CookSettings {
 	bool lightmap = false;
 	float lmMetersPerTexel = 0.25f; // chart density (m/texel)
 	uint32_t lmLobes = 12;
-	uint32_t lmAtlasWidth = 2048;   // FIXED atlas width; height grows
+	uint32_t lmAtlasWidth = 1024;   // FIXED atlas width; height grows
 	uint32_t lmRays = 256;
+	int lmProxyRes = 256; // voxel-remesh scene proxy (0 = legacy per-mesh)
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw; // extra --lm-exclude keywords (comma separated)
 	float sunAzimuth = 30.0f;

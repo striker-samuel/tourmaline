@@ -513,6 +513,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -lmLobes " << k.lmLobes
 			<< " -lmAtlasWidth " << k.lmAtlasWidth
 			<< " -lmRays " << k.lmRays
+			<< " -lmProxyRes " << k.lmProxyRes
 			<< " -lmExcludeSmall " << k.lmExcludeSmall
 			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
 			<< " -sunAzimuth " << k.sunAzimuth
@@ -919,6 +920,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 			else if (get("-lmRays", v))
 					k.lmRays = uint32_t(std::stoul(v));
+				else if (get("-lmProxyRes", v))
+					k.lmProxyRes = std::clamp(std::stoi(v), 0, 256);
 				else if (get("-lmExcludeSmall", v))
 					k.lmExcludeSmall = std::stof(v);
 				else if (get("-lmExcludeKw", v))

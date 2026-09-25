@@ -2351,19 +2351,20 @@ void EditorApp::DrawCookPanel() {
 	ImGui::SameLine();
 	if (ImGui::Checkbox("LODs", &m_cook.lods))
 		cookTouched = true;
-	// Lightmaps are DEPRECATED (probes-only GI pivot): the cooker
-	// force-disables the bake, so the checkbox is inert. Keep the row
-	// visible for old tours (the flag persists in the cook block) but
-	// grayed out.
-	ImGui::BeginDisabled(true);
-	ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap);
-	ImGui::EndDisabled();
-	if (m_cook.lightmap) {
-		m_cook.lightmap = false;
+	// Lightmaps bake through the voxel-remesh scene proxy (one proxy
+	// bake, UV-transferred to the real meshes).
+	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
 		cookTouched = true;
+	if (m_cook.lightmap) {
+		int pres = m_cook.lmProxyRes;
+		if (ImGui::SliderInt("Proxy res", &pres, 0, 256)) {
+			m_cook.lmProxyRes = pres;
+			cookTouched = true;
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"Voxel-remesh proxy grid (0 = legacy per-mesh path).");
 	}
-	ImGui::SameLine();
-	ImGui::TextDisabled("(deprecated: probes only - GiBaker .sggi + .cvol)");
 	if (cookTouched)
 		AutosaveTour(); // persist the cook block (not undoable)
 	ImGui::TextDisabled("tour: %s (%zu commands)",

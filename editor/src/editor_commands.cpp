@@ -1942,6 +1942,7 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.lmLobes = m_cook.lmLobes;
 	doc.cook.lmAtlasWidth = m_cook.lmAtlasWidth;
 	doc.cook.lmRays = m_cook.lmRays;
+	doc.cook.lmProxyRes = m_cook.lmProxyRes;
 	doc.cook.lmExcludeSmall = m_cook.lmExcludeSmall;
 	doc.cook.lmExcludeKw = m_cook.lmExcludeKw;
 	doc.cook.sunAzimuth = m_cook.sunAzimuth;
@@ -2347,6 +2348,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.lmLobes = doc.cook.lmLobes;
 		m_cook.lmAtlasWidth = doc.cook.lmAtlasWidth;
 		m_cook.lmRays = doc.cook.lmRays;
+		m_cook.lmProxyRes = doc.cook.lmProxyRes;
 		m_cook.lmExcludeSmall = doc.cook.lmExcludeSmall;
 		m_cook.lmExcludeKw = doc.cook.lmExcludeKw;
 		m_cook.sunAzimuth = doc.cook.sunAzimuth;

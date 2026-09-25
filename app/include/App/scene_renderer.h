@@ -1564,10 +1564,10 @@ protected:
 	// (below) or the fallback ambient. Missing file = not baked yet
 	// (non-fatal).
 	bool m_lmLoaded = false;
-	// UI toggle for the DEPRECATED lightmap branch. Default OFF since
-	// the probes-only pivot: legacy .sglm content keeps loading (so old
-	// paks stay viewable) but the lit shader ignores it unless the user
-	// opts back in through the Bake-panel checkbox.
+	// UI toggle for the lightmap branch (proxy-baked .sglm atlases:
+	// PakCooker --lightmap bakes a voxel-remesh scene proxy once and
+	// UV-transfers the layout to the real meshes). Default OFF: the
+	// lit shader ignores loaded lightmaps until opted in here.
 	bool m_lmEnabled = false;
 	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
 	// Atlas texture mirrors: 12 slots — the uncompressed path fills 9

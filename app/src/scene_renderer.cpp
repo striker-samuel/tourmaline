@@ -9835,13 +9835,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("stacked probe volumes blend over the "
 					"octree by priority (gi/<scene>.cvmanifest)");
 			}
-			// Deprecated lightmaps: legacy .sglm content keeps loading
-			// but the branch is OFF until opted back in (default off
-			// since the probes-only pivot).
+			// Lightmaps: proxy-baked .sglm atlas content (PakCooker
+			// --lightmap: one voxel-remesh proxy bake, UV-transferred
+			// to the real meshes). Off until opted in per view.
 			if (m_lmLoaded) {
-				ImGui::Checkbox("Lightmaps (deprecated)", &m_lmEnabled);
-				ImGui::TextDisabled("legacy .sglm content only; cooking is "
-					"disabled (probes-only pivot)");
+				ImGui::Checkbox("Lightmaps", &m_lmEnabled);
 			}
 		}
 				}

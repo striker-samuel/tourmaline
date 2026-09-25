@@ -16,11 +16,12 @@ rem per-vertex lightmap UVs + per-mesh lobe counts INTO the pak and writes
 rem the atlas to F:\content\gi\sponza.sglm alongside. A pak cooked without
 rem it carries lmChunk=-1 everywhere (F8 palette goes all-green) while a
 rem stale sponza.sglm lingers next to it.
-rem The atlas width is fixed at the default 2048 (--lm-atlas-width); the
-rem height grows with the content up to --lm-max-height 8192 (2048x8192
-rem = 16M texels, ~1.1 GiB of RGBA16F layers at the cap) — no texel
-rem budget anymore, the density search only runs if the height cap
-rem overflows. 0.03125 m/texel = the old 32 texels/m default.
+rem The atlas width is fixed at the default 1024 (--lm-atlas-width); the
+rem height grows with the content up to --lm-max-height 8192 (1024x8192
+rem = 8M texels at the cap) — no texel budget anymore, the density
+rem search only runs if the height cap overflows. 0.03125 m/texel = the
+rem old 32 texels/m default. The bake charts a voxel-remesh scene proxy
+rem once (--lm-proxy-res 256) and UV-transfers the layout to the meshes.
 rem Payload compression defaults to bc6hopt (Frostbite invalid-texel
 rem prefill + BC6H blocks, one texture per lobe, ~8x smaller GPU
 rem footprint than RGBA16F; --lm-compress uncompressed opts out).

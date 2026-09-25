@@ -7,7 +7,7 @@
 //             [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
 //             [--compress on|off] [--lz4-accel 1]
 //             [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
-//              --lm-atlas-width 2048 --lm-gutter 1
+//              --lm-atlas-width 1024 --lm-gutter 1
 //              --lm-rays 1024
 //              --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
 //              --lm-lod-lock attr|hard
@@ -40,14 +40,15 @@
 // the fallback for uncovered pixels only — the ambient sum starts
 // empty, no blind ambient added on covered pixels).
 //
-// LOD + lightmap interaction: with --lods on, the model is Frostbite-style:
-// siblings cook FIRST, each mesh's LOD0 upload charts + bakes the WHOLE
-// chain (one bake, one atlas level — the atlas stops growing per level),
-// and every sibling level inherits the layout through UV transfer
-// (TransferLightmapCharts: closest-point projection onto the LOD0
-// surface). All LODs sample the same rects, so LOD switches never
-// re-light. Either way meshlets are built once, after ALL stamping,
-// from the final topology.
+// LOD + lightmap interaction: with --lods on, siblings cook AFTER the
+// bake from the final stamped uploads (they inherit chart uvs through
+// the simplifier's vertex remap). The bake itself always charts + bakes
+// a voxel-remesh scene proxy ONCE (meshopt_remesh solid at
+// --lm-proxy-res) and every real mesh inherits the layout through UV
+// transfer (TransferLightmapCharts: closest-point projection onto the
+// proxy surface). All meshes sample the same proxy rects, so LOD
+// switches never re-light. --lm-proxy-res 0 keeps the legacy per-mesh
+// LOD0 path for A/B only.
 //
 // Denoising (DEPRECATED, off by default): with --lm-denoise on, the
 // fitted per-lobe amplitude layers are denoised with Intel Open Image
@@ -117,6 +118,7 @@
 #include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
+#include <meshoptimizer.h>
 
 #include "lm_denoise.h"
 #include "lm_png.h"
@@ -170,7 +172,7 @@ struct Args {
 	// past this width; content that does not fit the width lowers the
 	// density. The HEIGHT grows with content (rows appended at the
 	// bottom) up to --lm-max-height.
-	uint32_t lmAtlasWidth = 2048;
+	uint32_t lmAtlasWidth = 1024;
 // Atlas height cap (texels): past this the density convergence lowers
 // the density (or drops meshes at the floor). 8192 keeps
 // the 9 RGBA16F layers inside typical 2D texture limits; test cooks
@@ -192,6 +194,14 @@ struct Args {
 		smvk::gi::SgLightmapCompression::Bc6HOpt;
 	uint32_t lmRays = 1024;      // radiance samples per texel
 	uint32_t lmBounces = 3;
+	// Voxel-remesh scene proxy (bake once on the proxy, UV-transfer to
+	// the real meshes): merged world-space soup of all bake-eligible
+	// meshes is remeshed with meshopt_remesh (solid, Solve) at this
+	// voxel-grid resolution [4..256], then charted + baked once. Every
+	// real mesh inherits the layout via TransferLightmapCharts
+	// (closest-point projection onto the proxy). 0 = legacy per-mesh
+	// LOD0 path (kept for A/B only).
+	int lmProxyRes = 256;
 	// Per-mesh lobe selection budget: relative RMS degradation from the
 	// preferred-count reconstruction the mesh may cost by dropping
 	// lobes. 0.15 keeps contrast-heavy meshes at 9-12 and lets smooth
@@ -503,6 +513,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmBounces = static_cast<uint32_t>(std::stoul(v));
 		}
+		else if (a == "--lm-proxy-res") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmProxyRes = std::clamp(std::stoi(v), 0, 256);
+			out.explicitSet.insert("lmProxyRes");
+		}
 		else if (a == "--lm-lobe-relerr") {
 			std::string v;
 			if (!need(v)) return false;
@@ -749,8 +765,9 @@ void Usage() {
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
 		<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
-		<< "           --lm-atlas-width 2048 --lm-max-height 8192\n"
+		<< "           --lm-atlas-width 1024 --lm-max-height 8192\n"
 		<< "           --lm-gutter 1 --lm-rays 1024\n"
+		<< "           --lm-proxy-res 256 (voxel-remesh scene proxy; 0 = legacy per-mesh)\n"
 		<< "           --lm-compress bc6hopt|bc6h|uncompressed\n"
 		<< "           --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
@@ -2689,16 +2706,10 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
-	// LIGHTMAP COOKING IS DEPRECATED (probes-only GI pivot). The bake
-	// stage below is force-disabled; existing cooked .sglm content keeps
-	// rendering at runtime. New bakes: GiBaker .sggi (sparse octree world
-	// field) + --cv-spec convex probe volumes (.cvol).
-	if (args.lightmap) {
-		std::cerr << "[LM] DEPRECATED: lightmap cooking is disabled "
-			"(probes-only GI pivot); --lightmap ignored. "
-			"Bake GiBaker .sggi + .cvol volumes instead.\n";
-		args.lightmap = false;
-	}
+	// Lightmap bake (voxel-remesh proxy path): --lightmap on charts +
+	// bakes a meshopt_remesh solid proxy of the scene once, then
+	// UV-transfers the layout onto the real meshes. Needs exactly one
+	// cooked scene (checked below).
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
@@ -2918,18 +2929,12 @@ int main(int argc, char** argv) {
 			};
 			use("meshopt", args.meshopt, k.meshopt);
 			use("lods", args.lods, k.lods);
-			// Lightmap cooking is DEPRECATED + force-disabled (probes-only
-			// GI pivot; see the main-entry gate). The tour cook block keeps
-			// the key for format compatibility, but a saved `lightmap on`
-			// can no longer re-enable the bake.
-			if (k.lightmap && !args.explicitSet.contains("lightmap"))
-				std::cerr << "[LM] tour cook block requested lightmaps - "
-					"DEPRECATED and disabled (probes-only GI pivot)\n";
-			use("lightmap", args.lightmap, false);
+			use("lightmap", args.lightmap, k.lightmap);
 			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
 			use("lmLobes", args.lmLobes, k.lmLobes);
 			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
 			use("lmRays", args.lmRays, k.lmRays);
+			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
 			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
 			use("sunAzimuth", args.sunAzimuth, k.sunAzimuth);
 			use("sunElevation", args.sunElevation, k.sunElevation);
@@ -3296,6 +3301,353 @@ int main(int argc, char** argv) {
 		work.push_back(std::move(w));
 	}
 
+		// ---- Voxel-remesh scene proxy (bake once, transfer to real meshes) ----
+		// Merges all bake-eligible meshes in WORLD space, remeshes the soup
+		// with meshopt_remesh (solid + Solve) at --lm-proxy-res, charts +
+		// bakes the proxy ONCE (uniform lobe count: the atlas is shared, so
+		// per-mesh lobe selection cannot apply), then every real mesh
+		// inherits the layout via TransferLightmapCharts (closest-point
+		// projection onto the proxy, world-space on both sides). LOD
+		// siblings are NOT pre-cooked here; they are generated post-bake
+		// from the stamped uploads by the shared sibling stage below.
+		// --lm-proxy-res 0 keeps the legacy per-mesh LOD0 path for A/B.
+		bool proxyBaked = false;
+		SgLightmapChartResult proxyChart;
+		uint32_t proxyChunkBase = 0;
+		SgLightmapBakeStats lstats{};
+		uint32_t lmMeshes = 0;
+		uint64_t seamDups = 0;
+		if (args.lmProxyRes > 0 && !work.empty()) {
+			const int proxyRes = std::clamp(args.lmProxyRes, 4, 256);
+			// Merge eligible uploads in world space.
+			std::vector<float> soupPos;
+			std::vector<uint32_t> soupIdx;
+			{
+				size_t nv = 0, ni = 0;
+				for (const LmWork& w : work) {
+					const smvk::StaticMeshUpload* up =
+						cluster->GetRetainedUpload(w.handle);
+					if (up) {
+						nv += up->vertices.size();
+						ni += up->indices.size();
+					}
+				}
+				soupPos.reserve(nv * 3);
+				soupIdx.reserve(ni);
+				for (const LmWork& w : work) {
+					const smvk::StaticMeshUpload* up =
+						cluster->GetRetainedUpload(w.handle);
+					if (!up || up->vertices.empty()
+						|| up->indices.empty())
+						continue;
+					const glm::mat4& g =
+						cluster->scene.globalTransform[w.node];
+					const uint32_t base =
+						uint32_t(soupPos.size() / 3);
+					for (const smvk::StaticVertex& v : up->vertices) {
+						const glm::vec3 wp =
+							glm::vec3(g * glm::vec4(v.pos, 1.0f));
+						soupPos.push_back(wp.x);
+						soupPos.push_back(wp.y);
+						soupPos.push_back(wp.z);
+					}
+					for (uint32_t ix : up->indices)
+						soupIdx.push_back(base + ix);
+				}
+			}
+			std::cerr << "  [LM] proxy: merged soup verts="
+				<< (soupPos.size() / 3) << " tris="
+				<< (soupIdx.size() / 3) << " res=" << proxyRes
+				<< "\n" << std::flush;
+			if (!soupPos.empty() && !soupIdx.empty()) {
+				size_t cap = meshopt_remesh(nullptr, 0,
+					soupIdx.data(), soupIdx.size(),
+					soupPos.data(), soupPos.size() / 3, 12,
+					proxyRes, meshopt_RemeshSolve);
+				std::cerr << "  [LM] proxy: remesh capacity=" << cap
+					<< "\n" << std::flush;
+				if (cap > 0 && cap <= 4000000) {
+					std::vector<float> triSoup(cap * 9, 0.0f);
+					const size_t ntri = meshopt_remesh(triSoup.data(),
+						cap, soupIdx.data(), soupIdx.size(),
+						soupPos.data(), soupPos.size() / 3, 12,
+						proxyRes, meshopt_RemeshSolve);
+					std::cerr << "  [LM] proxy: remeshed tris=" << ntri
+						<< "\n" << std::flush;
+					if (ntri > 0) {
+						smvk::StaticMeshUpload proxyUp;
+						proxyUp.vertices.resize(ntri * 3);
+						proxyUp.indices.resize(ntri * 3);
+						for (size_t i = 0; i < ntri * 3; ++i) {
+							smvk::StaticVertex v{};
+							v.pos = glm::vec3(triSoup[i * 3 + 0],
+								triSoup[i * 3 + 1], triSoup[i * 3 + 2]);
+							v.color = glm::vec4(1.0f);
+							proxyUp.vertices[i] = v;
+							proxyUp.indices[i] = uint32_t(i);
+						}
+						smvk::ComputeSmoothNormals(proxyUp);
+						// Chart the proxy (single input, already world
+						// space): halve the density until the fixed-width
+						// atlas + height cap fit.
+						const uint32_t atlasW =
+							(std::max<uint32_t>(args.lmAtlasWidth, 256)
+								+ 3u) & ~3u;
+						const uint32_t kMaxAtlasH = args.lmMaxHeight;
+						SgLightmapXatlasOptions pxopts;
+						pxopts.gutterTexels = lmGutter;
+						pxopts.deferTexelRaster = true;
+						SgLightmapXatlasMeshInput pin;
+						pin.upload = &proxyUp;
+						pin.meshKey = 0;
+						pin.densityScale = 1.0f;
+						SgLightmapXatlasLevel bestLv;
+						float fitD = 0.0f;
+						float probeD = baseDensity;
+						for (int round = 0; round < 32; ++round) {
+							pxopts.metersPerTexel =
+								1.0f / std::max(probeD, 1e-3f);
+							SgLightmapXatlasLevel lv;
+							std::string xerr;
+							const std::vector<
+								SgLightmapXatlasMeshInput> pins{ pin };
+							if (!GenerateLightmapChartsXatlas(pins,
+									pxopts, lv, xerr)) {
+								std::cerr << "  [LM] proxy xatlas "
+									<< probeD << " texels/m failed: "
+									<< xerr << "\n" << std::flush;
+							} else {
+								std::string rerr;
+								const RepackStatus rs =
+									RepackXatlasLevel(lv, atlasW,
+										kMaxAtlasH, rerr);
+								if (rs == RepackStatus::Ok) {
+									SgLightmapAtlas probe;
+									std::vector<uint32_t> dummy;
+									std::string aerr;
+									if (AppendXatlasLevelToAtlas(probe,
+											lv, { 0u }, args.lmLobes,
+											atlasW, kMaxAtlasH, dummy,
+											aerr)) {
+										bestLv = std::move(lv);
+										fitD = probeD;
+										break;
+									}
+									std::cerr << "  [LM] proxy probe "
+										<< probeD << " overflow: " << aerr
+										<< "\n" << std::flush;
+								} else if (rs
+									== RepackStatus::InternalError) {
+									std::cerr << "[LM] proxy repack "
+										"internal error: " << rerr << "\n"
+										<< std::flush;
+									break;
+								} else {
+									std::cerr << "  [LM] proxy repack "
+										<< probeD << ": " << rerr << "\n"
+										<< std::flush;
+								}
+							}
+							if (probeD <= 1.0f)
+								break;
+							probeD = std::max(probeD * 0.5f, 1.0f);
+						}
+						if (fitD > 0.0f && !bestLv.meshes.empty()
+							&& bestLv.meshes[0].ok) {
+							std::string rerr;
+							const std::vector<
+								SgLightmapXatlasMeshInput> pins{ pin };
+							if (!RasterizeLightmapPackTexels(pins,
+									bestLv, lmGutter, rerr)) {
+								std::cerr << "[LM] proxy rasterize "
+									"failed: " << rerr << "\n" << std::flush;
+							} else {
+								atlas = SgLightmapAtlas{};
+								std::vector<uint32_t> bases;
+								std::string aerr;
+								if (!AppendXatlasLevelToAtlas(atlas,
+										bestLv, { 0u }, args.lmLobes,
+										atlasW, kMaxAtlasH, bases,
+										aerr)) {
+									std::cerr << "[LM] proxy atlas "
+										"append regressed: " << aerr << "\n"
+										<< std::flush;
+								} else {
+									atlas.width = atlasW;
+									proxyChart = std::move(
+										bestLv.meshes[0].chart);
+									proxyChunkBase = bases.empty()
+										? 0 : bases[0];
+									std::cerr << "  [LM] proxy charted: "
+										<< "density=" << fitD << " texels/m "
+										<< "charts="
+										<< proxyChart.charts.size()
+										<< " atlas=" << atlas.width << "x"
+										<< atlas.height << "\n" << std::flush;
+									// Bake the proxy charts (world space
+									// already): uniform lobe count, one
+									// shared pool batch.
+									SgLightmapBakeConfig pcfg{};
+									pcfg.raysPerTexel = std::max<uint32_t>(
+										args.lmRays, 16);
+									pcfg.maxBounces = std::min<uint32_t>(
+										std::max<uint32_t>(args.lmBounces,
+											1), 8);
+									pcfg.lobeRelError = 0.0f;
+									pcfg.chooseLobeCount = false;
+									std::vector<std::vector<
+										SgLightmapTexel>> pTex;
+									std::vector<SgLightmapChunkBatch>
+										pBatches;
+									pTex.reserve(
+										proxyChart.charts.size());
+									pBatches.reserve(
+										proxyChart.charts.size());
+									for (uint32_t ci = 0;
+										ci < proxyChart.charts.size();
+										++ci) {
+										std::vector<SgLightmapTexel>& tx =
+											pTex.emplace_back(
+												proxyChart.charts[ci]
+													.texels);
+										SgLightmapChunkBatch b{};
+										b.payload = &atlas.payloads[
+											proxyChunkBase + ci];
+										b.texels = &tx;
+										b.meshKey = 0;
+										b.chunkMeta = &atlas.chunks[
+											proxyChunkBase + ci];
+										pBatches.push_back(b);
+									}
+									if (BakeSgLightmapChunks(traceScene,
+											args.lmLobes,
+											std::span<const
+												SgLightmapChunkBatch>(
+												pBatches), pcfg, lstats,
+											[](const char* line) {
+												std::cout << line;
+											})) {
+										if (args.lmStitch) {
+											uint64_t stitched = 0;
+											std::string serr;
+											if (!StitchSgLightmapSeams(
+													std::span<const
+														SgLightmapChunkBatch>(
+														pBatches), 0.5f,
+													&stitched, serr))
+												std::cerr << "[LM] proxy "
+													"stitch failed: "
+													<< serr << "\n"
+													<< std::flush;
+											else
+												std::cerr << "  [LM] proxy "
+													"stitch: " << stitched
+													<< " blended\n"
+													<< std::flush;
+										}
+										// Transfer to every real mesh +
+										// stamp (world-space both sides).
+										uint32_t okMeshes = 0;
+										for (LmWork& w : work) {
+											smvk::StaticMeshUpload*
+												realUp =
+												const_cast<smvk::
+													StaticMeshUpload*>(
+													cluster->
+														GetRetainedUpload(
+															w.handle));
+											if (!realUp
+												|| realUp->vertices.empty()
+												|| realUp->indices.empty())
+												continue;
+											const glm::mat4& g = cluster->
+												scene.globalTransform[
+													w.node];
+											const glm::mat3 g3(g);
+											smvk::StaticMeshUpload worldTgt;
+											worldTgt.vertices =
+												realUp->vertices;
+											worldTgt.indices =
+												realUp->indices;
+											for (smvk::StaticVertex& v :
+												worldTgt.vertices) {
+												v.pos = glm::vec3(g *
+													glm::vec4(v.pos,
+														1.0f));
+												v.normal = glm::normalize(
+													g3 * v.normal);
+											}
+											SgLightmapChartResult xfer;
+											std::string terr;
+											SgLightmapTransferStats tstat;
+											if (!TransferLightmapCharts(
+													proxyUp, proxyChart,
+													worldTgt, xfer, terr,
+													&tstat)) {
+												std::cerr << "  [LM] proxy "
+													"xfer failed node "
+													<< w.node << ": "
+													<< terr << "\n"
+													<< std::flush;
+												continue;
+											}
+											std::vector<uint32_t> chartOf;
+											std::vector<glm::vec4> xforms;
+											uint32_t uncharted = 0;
+											const uint32_t lobes =
+												StampLightmapUvs(*realUp,
+													xfer, proxyChunkBase,
+													atlas, lmGutter,
+													args.lmLobes, chartOf,
+													xforms, seamDups,
+													uncharted,
+													("proxy node "
+														+ std::to_string(
+															w.node))
+														.c_str(), true);
+											lmTexelStamped.insert(
+												w.handle.index());
+											if (smvk::StaticMesh* m =
+													cluster->staticMeshes
+														.get(w.handle)) {
+												m->lmChunk = lobes;
+												m->lmChartXforms =
+													std::move(xforms);
+											}
+											w.chart = std::move(xfer);
+											w.chunkBase = proxyChunkBase;
+											w.density = fitD;
+											++okMeshes;
+											++lmMeshes;
+										}
+										std::cerr << "  [LM] proxy "
+											"transferred: " << okMeshes
+											<< "/" << work.size()
+											<< " meshes\n" << std::flush;
+										proxyBaked = okMeshes != 0;
+									} else {
+										std::cerr << "[LM] proxy bake "
+											"failed\n" << std::flush;
+									}
+								}
+							}
+						} else {
+							std::cerr << "[LM] proxy charting failed "
+								"(falling back to per-mesh path)\n"
+								<< std::flush;
+						}
+					}
+				} else {
+					std::cerr << "[LM] proxy remesh produced no usable "
+						"triangles (falling back to per-mesh path)\n"
+						<< std::flush;
+				}
+			} else {
+				std::cerr << "[LM] proxy soup empty (falling back to "
+					"per-mesh path)\n" << std::flush;
+			}
+		}
+
 		// ---- Frostbite LOD sources (--lods on) ----
 		// Siblings cook FIRST: every mesh charts + bakes its OWN upload
 		// (LOD0) exactly once — one bake, one atlas level — and every
@@ -3303,8 +3655,9 @@ int main(int argc, char** argv) {
 		// All LODs sample the same rects, so LOD switches never
 		// re-light and the atlas stops growing per level. LOD0's charts
 		// are the transfer source for the whole chain; the simplifier
-		// runs chart-free.
-		if (args.lods && !work.empty()) {
+		// runs chart-free. Skipped when the proxy baked: siblings are
+		// generated post-bake from the stamped uploads instead.
+		if (!proxyBaked && args.lods && !work.empty()) {
 			smvk::MeshOptConfig lodOpt = opt;
 			lodOpt.generateLods = true;
 			smvk::CookLodSiblingsOptions sibOpts;
@@ -3359,8 +3712,9 @@ int main(int argc, char** argv) {
 				<< "siblings)\n" << std::flush;
 		}
 
-		if (!work.empty()) {
-			// Xatlas pack convergence: one xatlas chart+pack over ALL
+		if (!proxyBaked && !work.empty()) {
+			// Xatlas pack convergence (LEGACY per-mesh path; the proxy
+			// path above charts + bakes the remeshed scene proxy once):
 			// meshes per probe (world-prescaled positions under a single
 			// world texelsPerUnit, bruteForce always on), stacked into a
 			// fresh atlas of the FIXED cook width (xatlas packs its own
@@ -3671,17 +4025,13 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		// Bake every chart (sun + spots + materials + pass-through glass)
-		// in ONE shared-pool batch, then stamp the results into the
-		// retained uploads: per-corner chart-local texCoord2 + chart ids
-		// + per-chart atlas transforms + the mesh's lobe count (lmChunk).
+		// Bake every chart (LEGACY per-mesh path; skipped when the proxy
+		// baked above). Shared-pool batch, then stamp into the uploads.
+		if (!proxyBaked) {
 		SgLightmapBakeConfig lcfg{};
 		lcfg.raysPerTexel = std::max<uint32_t>(args.lmRays, 16);
 		lcfg.maxBounces = std::min<uint32_t>(std::max<uint32_t>(args.lmBounces, 1), 8);
 		lcfg.lobeRelError = std::max(args.lmLobeRelErr, 0.0f);
-		SgLightmapBakeStats lstats{};
-		uint32_t lmMeshes = 0;
-		uint64_t seamDups = 0;
 		{
 			// World-space texels per chart (chart positions are
 			// node-local; the trace scene is world-space).
@@ -3841,6 +4191,7 @@ int main(int argc, char** argv) {
 			// this final stamped topology, never a pre-stamp layout.
 			++lmMeshes;
 		}
+		} // end legacy per-mesh bake+stamp (skipped when proxy baked)
 
 
 

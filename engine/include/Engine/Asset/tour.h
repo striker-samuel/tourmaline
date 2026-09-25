@@ -75,8 +75,11 @@ struct TourCook {
 	float lmMetersPerTexel = 0.25f;
 	uint32_t lmLobes = 12;
 	// FIXED atlas width; the atlas height grows with the content.
-	uint32_t lmAtlasWidth = 2048;
+	uint32_t lmAtlasWidth = 1024;
 	uint32_t lmRays = 256;
+	// Voxel-remesh scene proxy resolution (meshopt_remesh grid [4..256];
+	// 0 = legacy per-mesh LOD0 path, kept for A/B only).
+	int lmProxyRes = 256;
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw;
 	float sunAzimuth = 30.0f;
