@@ -2479,6 +2479,26 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// Placement-derived rows come first and are never pinned.
 	pinned.insert(pinned.begin(), positions.size() - pinned.size(), 0);
 
+	// AUTHORED captures (tour createCubemap / editor cubemap nodes):
+	// pinned probes harvested from the definition's cluster — position
+	// = the node's world transform, influence = the node-local radius
+	// (fade = radius/2, the CLI pin rule). Appended after the CLI
+	// --cubemap-extra-pos pins, same manifest semantics.
+	for (const auto& [node, def] : cluster.scene.cubemapForNode) {
+		if (node >= cluster.scene.globalTransform.size())
+			continue;
+		const glm::vec3 p(cluster.scene.globalTransform[node][3]);
+		if (!positions.empty() && radii.size() != positions.size())
+			radii.resize(positions.size(), glm::vec2(10.0f, 5.0f));
+		positions.push_back(p);
+		radii.emplace_back(def.radius, def.radius * 0.5f);
+		pinned.push_back(1);
+		std::cerr << "  [CUBE] authored pinned probe ('"
+			<< getNodeName(cluster.scene, int(node)) << "' @" << p.x
+			<< "," << p.y << "," << p.z << ") r=" << def.radius << "\n"
+			<< std::flush;
+	}
+
 	// Runtime budget: the lit shader walks at most 32 probe entries per
 	// pixel (tile lists; see environment.hlsli). Captures past 32 still
 	// cost bake time + ~2 MB pak each; the manifest truncation keeps the
@@ -2662,7 +2682,8 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		out.emplace_back(manifestPath,
 			std::vector<uint8_t>(text.begin(), text.end()));
 		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
-			<< rows.size() << " pinned=" << args.cubemapExtraPos.size()
+			<< rows.size() << " pinned="
+			<< size_t(std::count(pinned.begin(), pinned.end(), 1))
 			<< "\n" << std::flush;
 	}
 

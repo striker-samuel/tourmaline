@@ -57,6 +57,8 @@
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Asset/tour.h>
+#include <Engine/Scene/scene.h>
 #include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -67,6 +69,8 @@ struct Args {
 	std::string contentDir = "content";
 	std::string scene;    // sponza | bistro | bistro-niagara
 	std::string inVfs;    // arbitrary model (overrides --scene input)
+	std::string tour;     // definition tour: root reference = the source,
+	                      // cvolume nodes = the convex bake inputs
 	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
 	uint32_t rays = 1024;
 	uint32_t bounces = 3;
@@ -148,6 +152,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		if (a == "--content-dir") { if (!need(out.contentDir, i)) return false; }
 		else if (a == "--scene") { if (!need(out.scene, i)) return false; }
 		else if (a == "--in-vfs") { if (!need(out.inVfs, i)) return false; }
+		else if (a == "--tour") { if (!need(out.tour, i)) return false; }
 		else if (a == "--out") { if (!need(out.out, i)) return false; out.outExplicit = true; }
 		else if (a == "--rays") { if (!needU(out.rays, i)) return false; }
 		else if (a == "--bounces") { if (!needU(out.bounces, i)) return false; }
@@ -213,8 +218,10 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			return false;
 		}
 	}
-	if (out.analyze.empty() && out.inVfs.empty() && out.scene.empty()) {
-		std::cerr << "Required: --scene <id>, --in-vfs <model.gltf>, or --analyze <file.sggi>" << std::endl;
+	if (out.analyze.empty() && out.inVfs.empty() && out.scene.empty()
+		&& out.tour.empty()) {
+		std::cerr << "Required: --scene <id>, --in-vfs <model.gltf>,"
+			<< " --tour <def.tour>, or --analyze <file.sggi>" << std::endl;
 		return false;
 	}
 	return true;
@@ -902,11 +909,25 @@ int main(int argc, char** argv) {
 
 	std::string inVfs = args.inVfs;
 	std::string sceneId = args.scene;
-	if (inVfs.empty()) {
+	// --tour: the DEFINITION is the input (root reference #0 = the
+	// source glTF, cvolume nodes = the convex bake inputs). The
+	// cluster builds exactly like the editor / PakCooker do it; the
+	// scene id defaults to the tour stem (gi/<id>_* outputs). --in-vfs
+	// / --scene are ignored for the import.
+	const bool haveTour = !args.tour.empty();
+	if (haveTour) {
+		if (sceneId.empty()) {
+			const std::filesystem::path tp(args.tour);
+			sceneId = tp.stem().string();
+			if (sceneId.empty())
+				sceneId = "scene";
+		}
+	} else if (inVfs.empty()) {
 		auto mapped = SceneGltf(sceneId);
 		if (!mapped) {
 			std::cerr << "Unknown --scene '" << sceneId
-				<< "' (sponza | bistro | bistro-niagara) or use --in-vfs" << std::endl;
+				<< "' (sponza | bistro | bistro-niagara) or use --in-vfs"
+				<< " or --tour" << std::endl;
 			return 2;
 		}
 		inVfs = *mapped;
@@ -918,20 +939,88 @@ int main(int argc, char** argv) {
 			/ (sceneId + ".sggi")).generic_string();
 	}
 
-	std::cout << "GiBaker: scene '" << sceneId << "' from " << inVfs
+	std::cout << "GiBaker: scene '" << sceneId << "' from "
+		<< (haveTour ? args.tour : inVfs)
 		<< " -> " << args.out << "\n";
 
-	// GPU-free cook-mode Cluster (same import as PakCooker / the runtime's
-	// glTF fallback; full-res geometry, retained CPU uploads).
+	// GPU-free cook-mode Cluster. --tour builds the DEFINITION (empty
+	// root + reference bind + command replay, host-path resolution —
+	// identical to the editor / PakCooker, so authored cvolume nodes
+	// land on the same deterministic ids); otherwise the legacy VFS
+	// glTF import.
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetCookMode(true);
-	try {
-		GltfToClusterFromVfs(nullptr, vfs, inVfs, *cluster,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{});
-	} catch (const std::exception& e) {
-		std::cerr << "Import failed: " << e.what() << std::endl;
-		return 1;
+	smvk::tour::Doc tour;
+	if (haveTour) {
+		std::string terr;
+		std::vector<std::string> twarn;
+		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
+			std::cerr << "Tour load failed: " << terr << std::endl;
+			return 1;
+		}
+		for (const std::string& w : twarn)
+			std::cerr << "Tour warning: " << w << std::endl;
+		try {
+			addNode(cluster->scene, -1, 0); // empty scene root
+			if (!tour.references.empty())
+				ApplySceneReferences(*cluster, tour,
+					smvk::vfs::BaseDir(tour.references[0].source),
+					nullptr, nullptr,
+					nullptr /* HOST bind — editor parity */,
+					smvk::MeshOptConfig{}, smvk::MeshletConfig{},
+					0, nullptr);
+			std::vector<std::string> rwarn;
+			std::string rerr;
+			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
+					&rerr)) {
+				std::cerr << "Tour replay failed: " << rerr << std::endl;
+				return 1;
+			}
+			for (const std::string& w : rwarn)
+				std::cerr << "Tour replay warning: " << w << std::endl;
+			std::cout << "Tour replayed: " << tour.commands.size()
+				<< " commands\n";
+		} catch (const std::exception& e) {
+			std::cerr << "Definition build failed: " << e.what()
+				<< std::endl;
+			return 1;
+		}
+	} else {
+		try {
+			GltfToClusterFromVfs(nullptr, vfs, inVfs, *cluster,
+				smvk::MeshOptConfig{}, smvk::MeshletConfig{});
+		} catch (const std::exception& e) {
+			std::cerr << "Import failed: " << e.what() << std::endl;
+			return 1;
+		}
 	}
+
+	// Authored convex volumes (editor Create > Convex volume, tour
+	// cvolume nodes): the definition's bake inputs. The node's WORLD
+	// transform carries the box (translate = center, basis lengths =
+	// full extents, axis-aligned — rotation ignored by design); the
+	// node-local def carries the bake params (priority/spacing/fades).
+	std::vector<CvSpecVolume> tourCvols;
+	for (const auto& [node, def] : cluster->scene.cvolForNode) {
+		if (node >= cluster->scene.globalTransform.size())
+			continue;
+		CvSpecVolume v{};
+		const glm::mat4& g = cluster->scene.globalTransform[node];
+		const glm::vec3 c(g[3]);
+		const glm::vec3 half(0.5f * glm::vec3(glm::length(g[0]),
+			glm::length(g[1]), glm::length(g[2])));
+		v.def.name = getNodeName(cluster->scene, int(node));
+		if (v.def.name.empty())
+			v.def.name = "cvol" + std::to_string(node);
+		v.def.priority = def.priority;
+		v.spacing = def.spacing;
+		v.def.planes = smvk::gi::CvBoxPlanes(c - half, c + half,
+			def.insideFade, def.outsideFade);
+		tourCvols.push_back(std::move(v));
+	}
+	if (!tourCvols.empty())
+		std::cout << "  authored cvolumes: " << tourCvols.size()
+			<< " (tour nodes)\n";
 
 	// Optional texture averaging (role-agnostic per-texture average:
 	// baseColor tints albedo, emissive tints emission, metallicRoughness
@@ -1211,9 +1300,9 @@ int main(int argc, char** argv) {
 				return 1;
 		}
 		// Fall through only when another stage was requested explicitly
-		// (--out adaptive A/B or a --cv-spec convex bake pending below).
-		// A regular-only run passes no --out.
-		if (!args.outExplicit && args.cvSpec.empty()) {
+		// (--out adaptive A/B or a convex bake pending below: --cv-spec
+		// or authored tour cvolumes). A regular-only run passes no --out.
+		if (!args.outExplicit && args.cvSpec.empty() && tourCvols.empty()) {
 			const auto t1 = std::chrono::steady_clock::now();
 			std::cout << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
@@ -1221,22 +1310,28 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Convex-volume bake (probes-only pivot; --cv-spec). Author stacked
-	// convex volumes (per-plane fades + priority), bake each dense probe
-	// grid from sparse radiance+depth captures by cubemap reprojection
-	// (BO3 pipeline), write gi/<scene>_<name>.cvol and update the runtime
-	// manifest gi/<scene>.cvmanifest. Runs in addition to whatever else
-	// was asked for; like --regular-out, a cvol-only run (no --out) exits
+	// Convex-volume bake (probes-only pivot). Sources stack: authored
+	// tour cvolume nodes (--tour, the definition) + hand-written
+	// --cv-spec entries. Bake each dense probe grid from sparse
+	// radiance+depth captures by cubemap reprojection (BO3 pipeline),
+	// write gi/<scene>_<name>.cvol and update the runtime manifest
+	// gi/<scene>.cvmanifest. Runs in addition to whatever else was
+	// asked for; like --regular-out, a cvol-only run (no --out) exits
 	// after this block.
-	if (!args.cvSpec.empty()) {
+	if (!args.cvSpec.empty() || !tourCvols.empty()) {
 		std::vector<CvSpecVolume> specVols;
 		std::string specErr;
-		if (!ParseCvSpec(args.cvSpec, specVols, specErr)) {
+		if (!args.cvSpec.empty()
+			&& !ParseCvSpec(args.cvSpec, specVols, specErr)) {
 			std::cerr << "Bad --cv-spec: " << specErr << std::endl;
 			return 2;
 		}
+		// Authored tour volumes lead (the definition is the source of
+		// truth); --cv-spec entries append for hand-tuning extras.
+		specVols.insert(specVols.begin(),
+			tourCvols.begin(), tourCvols.end());
 		if (specVols.size() > 8) {
-			std::cerr << "--cv-spec lists " << specVols.size()
+			std::cerr << "convex bake lists " << specVols.size()
 				<< " volumes; the runtime manifest caps at 8\n";
 			return 2;
 		}

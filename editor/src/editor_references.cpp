@@ -127,6 +127,11 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
 		if (CreatedCvolIndex(n) >= 0 && underRef(n))
 			displaced.push_back(n);
 	}
+	for (const auto& [n, cm] : m_world->scene.cubemapForNode) {
+		(void)cm;
+		if (CreatedCubemapIndex(n) >= 0 && underRef(n))
+			displaced.push_back(n);
+	}
 	for (const auto& [g, tg] : m_terrainGroups) {
 		(void)tg;
 		if (underRef(g))

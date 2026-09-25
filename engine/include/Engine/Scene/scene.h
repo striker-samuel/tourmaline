@@ -80,6 +80,16 @@ struct SceneCvol {
 	float outsideFade = 0.1f;// blend width outside each face (m)
 };
 
+// Authored cubemap capture (editor cubemap node / tour createCubemap):
+// an artist-PINNED specular probe position. The POSITION rides the
+// node's transform (translate, world-resolved); this carries the
+// influence radius. Baked by PakCooker's --cubemap stage as a 'pin'
+// row (sorted first at load — a pinned probe wins weight ties, e.g.
+// the capture exactly at a chrome ball). Node-local like SceneCvol.
+struct SceneCubemap {
+	float radius = 1.5f;   // influence radius (m); fade = radius/2
+};
+
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -102,6 +112,10 @@ struct Scene {
 	// Recorded by tour replay + cook; a future gi_baker --tour pass
 	// harvests these as bake inputs. Never cooked into the pak today.
 	std::unordered_map<NodeId, SceneCvol> cvolForNode;
+	// Node -> authored cubemap capture params (tour createCubemap /
+	// editor cubemap node): pinned specular probe positions harvested
+	// by the cook's --cubemap stage. Position = node translate.
+	std::unordered_map<NodeId, SceneCubemap> cubemapForNode;
 	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
 	// editor for nodes a Delete line addresses (persisted as `uuid`
 	// lines ahead of the deletes) and recorded back by replay and

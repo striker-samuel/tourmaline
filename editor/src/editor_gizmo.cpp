@@ -358,6 +358,37 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
+	// Cubemap capture markers: one X-ray diamond + influence circle
+	// per authored capture node (position = node translate, radius =
+	// the def; fade = radius/2 — a dashed feel is overkill, one ring
+	// reads). Magenta reads apart from lights (orange/cyan/yellow)
+	// and cvolumes (priority hues); the selection draws bright.
+	if (m_showCubemapGizmos && !m_world->scene.cubemapForNode.empty()) {
+		const glm::vec3 eye = EditorCamEye(ActiveCam());
+		for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+			if (node >= m_world->scene.hierarchy.size()
+				|| node >= m_world->scene.globalTransform.size())
+				continue;
+			const glm::vec3 p =
+				glm::vec3(m_world->scene.globalTransform[node][3]);
+			float s = glm::distance(eye, p) * 0.035f;
+			if (!(s > 1e-5f))
+				continue;
+			if (node == m_selected)
+				s *= 1.6f; // selected marker reads bigger
+			LineBatch b;
+			b.depthTest = false; // X-ray: pin probes inside geometry
+			b.color = (node == m_selected)
+				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
+				: glm::vec4(0.9f, 0.3f, 1.0f, 1.0f);
+			AddDiamond(b, p, s);
+			// Influence ring (horizontal): the weight-tie radius.
+			AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
+				def.radius, 48);
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
 	// Build batches: selection AABB (yellow) + gizmo axes.
 	if (m_selected == UINT32_MAX ||
 		m_selected >= m_world->scene.hierarchy.size()) {

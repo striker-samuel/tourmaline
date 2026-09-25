@@ -344,6 +344,23 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				c.beforeText);
 		break;
 	}
+	case EditVerb::CreateCubemap: {
+		if (forward)
+			ExecCreateCubemap(c);
+		else
+			ExecUncreateCubemap(c);
+		break;
+	}
+	case EditVerb::SetCubemapAttr: {
+		const std::string& attr = c.cubemapAttr;
+		if (forward)
+			WriteNodeCubemapAttr(c.node, attr, c.vec4, c.number,
+				c.afterText);
+		else
+			WriteNodeCubemapAttr(c.node, attr, c.beforeVec4,
+				c.beforeNum, c.beforeText);
+		break;
+	}
 	}
 }
 
@@ -439,6 +456,39 @@ std::string EditorApp::UniqueCvolName() const {
 		}
 	}
 	return "CVol_" + std::to_string(n);
+}
+
+int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
+	// Same contract as CreatedCvolIndex, for the cubemap-capture family.
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateCubemap)
+			continue;
+		if (!m_world || !m_world->scene.cubemapForNode.contains(h.node))
+			continue; // deleted (tombstoned): not in the file's ref space
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+std::string EditorApp::UniqueCubemapName() const {
+	// Next free "Cube_N" over live node names (1-based).
+	int n = 1;
+	if (m_world) {
+		for (;;) {
+			const std::string want = "Cube_" + std::to_string(n);
+			bool taken = false;
+			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+				taken = getNodeName(m_world->scene, int(i)) == want;
+			if (!taken)
+				break;
+			++n;
+		}
+	}
+	return "Cube_" + std::to_string(n);
 }
 
 std::string EditorApp::UniqueTerrainName() const {
@@ -795,6 +845,136 @@ void EditorApp::ExecUncreateCvolume(EditCmd& c) {
 }
 
 // ---------------------------------------------------------------------------
+// Created cubemap captures (pinned specular probe nodes).
+//
+// A created capture is a WORLD transform node (translate = the pinned
+// probe position) plus a node-local SceneCubemap definition in
+// scene.cubemapForNode — gizmos, the inspector, the outliner and the
+// cook's --cubemap harvest all pick it up with no special cases. Undo
+// removes the node when it is still the childless tail (ids stay
+// stable); otherwise the node is tombstoned (hidden + def detached).
+// Tour persistence: CreateCubemap carries the creation (CmdToTour
+// emits the LIVE params); SetCubemapAttr addresses later creates via
+// kCreateCubemapRefBase (creation order).
+// ---------------------------------------------------------------------------
+void EditorApp::DraftCreateCubemap() {
+	if (!m_world) {
+		Log("Create cubemap capture: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateCubemap;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueCubemapName();
+	c.afterVec = ActiveCam().target;
+	c.cubemapRadius = 1.5f;
+	Do(c);
+}
+
+void EditorApp::ExecCreateCubemap(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	// TRS = translate only (the pinned probe position; scale/rotation
+	// carry no meaning for a capture).
+	scene.localTransform[size_t(created)] =
+		glm::translate(glm::mat4(1.0f), c.afterVec);
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	::SceneCubemap def{};
+	def.radius = std::max(c.cubemapRadius, 1e-2f);
+	scene.cubemapForNode[uint32_t(created)] = def;
+	if (m_replayingTour)
+		m_tourCreatedCubemapNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created cubemap capture '%s' (#%u)",
+		c.afterText.c_str(), uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateCubemap(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	if (tail && childless) {
+		// Physical removal: pop every vector addNode grew (flag arrays
+		// only when they are exactly node-sized — empty/mismatched
+		// means "default", which needs no entry).
+		scene.cubemapForNode.erase(n);
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid cubemap creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the def instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.cubemapForNode.erase(n);
+		Log("Undid cubemap creation (#" + std::to_string(n) +
+			"): hidden, ids kept stable (def retained in the command).");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Delete (Del key / Edit menu, Maya delete): remove a node from the LIVE
 // scene. Links drop — meshForNode/materialForNode (draw state), lightForNode
 // (light census/gizmos/cook), drawItems (draws/picks/box-select) — and the
@@ -862,6 +1042,14 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			c.beforeVec4 = glm::vec4(float(cvit->second.priority),
 				cvit->second.spacing, cvit->second.insideFade,
 				cvit->second.outsideFade);
+		// Cubemap capture def (created or replayed): presence rides
+		// beforeCubemap, the radius rides beforeNum (the light index
+		// in c.number above is exclusive — a capture node has no
+		// light; a light node has no capture).
+		auto cmit = scene.cubemapForNode.find(n);
+		c.beforeCubemap = (cmit != scene.cubemapForNode.end());
+		if (c.beforeCubemap)
+			c.beforeNum = double(cmit->second.radius);
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -886,6 +1074,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		scene.meshForNode.erase(id);
 		scene.materialForNode.erase(id);
 		scene.cvolForNode.erase(id);
+		scene.cubemapForNode.erase(id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -927,6 +1116,9 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	if (c.beforeFlag)
 		scene.cvolForNode[n] = ::SceneCvol{ uint32_t(c.beforeVec4.x),
 			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w };
+	if (c.beforeCubemap)
+		scene.cubemapForNode[n] =
+			::SceneCubemap{ float(c.beforeNum) };
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -1314,6 +1506,60 @@ bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
 	return true;
 }
 
+bool EditorApp::ReadNodeCubemapAttr(uint32_t node, const std::string& attr,
+	glm::vec4& v4, double& num, std::string& text) const {
+	v4 = glm::vec4(0.0f);
+	num = 0.0;
+	text.clear();
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	const Scene& scene = m_world->scene;
+	auto it = scene.cubemapForNode.find(node);
+	if (it == scene.cubemapForNode.end())
+		return false;
+	const ::SceneCubemap& def = it->second;
+	if (attr == "radius") {
+		num = double(def.radius);
+	} else if (attr == "name") {
+		text = getNodeName(scene, int(node));
+	} else if (attr == "position") {
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		v4 = glm::vec4(t, 1.0f);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
+	const glm::vec4& v4, double num, const std::string& text) {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	Scene& scene = m_world->scene;
+	auto it = scene.cubemapForNode.find(node);
+	if (it == scene.cubemapForNode.end())
+		return false;
+	::SceneCubemap& def = it->second;
+	if (attr == "radius") {
+		def.radius = std::max(float(num), 1e-2f);
+	} else if (attr == "name") {
+		const uint32_t id = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(text);
+		scene.nameForNode[node] = id;
+	} else if (attr == "position") {
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		t = glm::vec3(v4.x, v4.y, v4.z);
+		scene.localTransform[node] = LocalMatrixFromTRS(t, r, s);
+		markAsChanged(scene, int(node));
+		recalculateGlobalTransforms(scene);
+	} else {
+		return false;
+	}
+	return true;
+}
+
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	if (c.verb == EditVerb::SetVisibility)
@@ -1423,6 +1669,9 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetCvolAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
 			break;
+		case EditVerb::SetCubemapAttr:
+			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
+			break;
 		default:
 			break;
 		}
@@ -1455,6 +1704,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetCvolAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
+			break;
+		case EditVerb::SetCubemapAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] != i;
 			break;
 		default:
 			break;
@@ -1514,6 +1767,9 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetCvolAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
 			break;
+		case EditVerb::SetCubemapAttr:
+			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
+			break;
 		default:
 			break; // Create*/TerrainPaint: always keep
 		}
@@ -1547,6 +1803,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetCvolAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
+			break;
+		case EditVerb::SetCubemapAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] != i;
 			break;
 		default:
 			break;
@@ -1590,6 +1850,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::CreateTransform: return "create transform";
 	case editor::EditVerb::CreateCVolume: return "create cvolume";
 	case editor::EditVerb::SetCvolAttr: return "cvolume edit";
+	case editor::EditVerb::CreateCubemap: return "create cubemap";
+	case editor::EditVerb::SetCubemapAttr: return "cubemap edit";
 	}
 	return "?";
 }
@@ -1665,6 +1927,15 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.name = c.afterText;
 			return true;
 		}
+		// Created-cubemap captures: same treatment.
+		const int kc = app.CreatedCubemapIndex(c.node);
+		if (kc >= 0) {
+			out.verb = smvk::tour::Verb::SetCubemapAttr;
+			out.node = smvk::tour::kCreateCubemapRefBase | uint32_t(kc);
+			out.text = "name";
+			out.name = c.afterText;
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Rename;
@@ -1688,6 +1959,16 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (kv >= 0) {
 			out.verb = smvk::tour::Verb::SetCvolAttr;
 			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
+			out.vec4 = glm::vec4(c.afterVec, 1.0f);
+			return true;
+		}
+		// Created-cubemap captures: position channel only (rotation is
+		// meaningless for a probe, but the lowering keeps parity).
+		const int kc = app.CreatedCubemapIndex(c.node);
+		if (kc >= 0) {
+			out.verb = smvk::tour::Verb::SetCubemapAttr;
+			out.node = smvk::tour::kCreateCubemapRefBase | uint32_t(kc);
 			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
@@ -1975,6 +2256,55 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			|| c.cvolAttr == "size") {
 			out.vec4 = c.vec4;
 		} else if (c.cvolAttr == "name") {
+			out.name = c.afterText;
+		} else {
+			out.number = c.number;
+		}
+		return true;
+	}
+	case EditVerb::CreateCubemap: {
+		// Emit the LIVE create state: the node may have moved and its
+		// radius may have been attr-edited after creation (those later
+		// SetCubemapAttr commands re-emit harmlessly and idempotently).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		auto cmit = app.m_world->scene.cubemapForNode.find(created);
+		if (cmit == app.m_world->scene.cubemapForNode.end())
+			return false; // detached (tombstoned): nothing to persist
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "cubemap";
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.node2);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		out.number = double(cmit->second.radius);
+		return true;
+	}
+	case EditVerb::SetCubemapAttr: {
+		const int k = app.CreatedCubemapIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateCubemapRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetCubemapAttr;
+		out.text = c.cubemapAttr;
+		if (c.cubemapAttr == "position") {
+			out.vec4 = c.vec4;
+		} else if (c.cubemapAttr == "name") {
 			out.name = c.afterText;
 		} else {
 			out.number = c.number;
@@ -2293,7 +2623,8 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		else if (c.verb == EditVerb::CreateLight
 			|| c.verb == EditVerb::CreateTerrain
 			|| c.verb == EditVerb::CreateTransform
-			|| c.verb == EditVerb::CreateCVolume) {
+			|| c.verb == EditVerb::CreateCVolume
+			|| c.verb == EditVerb::CreateCubemap) {
 			ensureUuid(c.node2);
 		}
 	}
@@ -2600,6 +2931,15 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
 			return true;
 		}
+		if (tn == "cubemap") {
+			out.verb = EditVerb::CreateCubemap;
+			out.node = UINT32_MAX;
+			out.node2 = wp;
+			out.afterText = tc.text;
+			out.afterVec = tc.vec;
+			out.cubemapRadius = std::max(float(tc.number), 1e-2f);
+			return true;
+		}
 		if (tn == "terrain") {
 			out.verb = EditVerb::CreateTerrain;
 			out.node = UINT32_MAX;
@@ -2701,6 +3041,27 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.cvolSpacing = std::max(tc.vec4.y, 1e-3f);
 		out.cvolInsideFade = std::max(tc.vec4.z, 0.0f);
 		out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
+		return true;
+	}
+	case smvk::tour::Verb::CreateCubemap: {
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
+		out.verb = EditVerb::CreateCubemap;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.cubemapRadius = std::max(float(tc.number), 1e-2f);
 		return true;
 	}
 	case smvk::tour::Verb::CreateTerrain: {
@@ -2805,6 +3166,37 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetCubemapAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateCubemapRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateCubemapRefBase;
+			if (k >= app.m_tourCreatedCubemapNodes.size())
+				return false;
+			target = app.m_tourCreatedCubemapNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!app.m_world->scene.cubemapForNode.contains(target))
+			return false; // not a capture: orphan, preserved verbatim
+		out.verb = EditVerb::SetCubemapAttr;
+		out.node = target;
+		out.cubemapAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeCubemapAttr(target, tc.text, out.beforeVec4,
+				out.beforeNum, out.beforeText))
+			return false;
+		if (tc.text == "position") {
+			out.vec4 = tc.vec4;
+		} else if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
 	}
 	return false;
 }
@@ -2861,6 +3253,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// wins); rules skip locally-overridden nodes when they apply.
 	m_tourCreatedNodes.clear();
 	m_tourCreatedCvolNodes.clear();
+	m_tourCreatedCubemapNodes.clear();
 	m_replayingTour = true;
 	ClearHistory();
 	m_overrideRules.clear();

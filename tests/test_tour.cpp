@@ -1017,6 +1017,116 @@ void TestCvolVerbs() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
+// Authored cubemap captures (pinned specular probes): createCubemap/
+// setCubemapAttr round-trip, cook replay (node + node-local def,
+// -ref addressing), delete drops the def, unified form lowers.
+void TestCubemapVerbs() {
+	smvk::tour::Doc doc;
+	doc.source = "models/x.gltf";
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateCubemap;
+	c.node = 0; // parent: cluster root
+	c.text = "Cube_1";
+	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+	c.number = 1.5; // influence radius
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetCubemapAttr;
+	c.node = smvk::tour::kCreateCubemapRefBase | 0u;
+	c.text = "radius";
+	c.number = 2.5;
+	doc.commands.push_back(c);
+
+	std::string err;
+	std::vector<std::string> warns;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "cube tour save");
+	std::ifstream in(TempTour(), std::ios::binary);
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	in.close();
+	Check(text.find("createCubemap -p 0 -name \"Cube_1\"")
+		!= std::string::npos, "cube legacy create line");
+	Check(text.find("setCubemapAttr -ref 0 -at radius -v 2.5")
+		!= std::string::npos, "cube tabulated attr line");
+	smvk::tour::Doc back;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"cube tour load");
+	Check(back.commands.size() == 2, "cube tour command count");
+	Check(back.commands[0].verb == smvk::tour::Verb::CreateCubemap
+		&& back.commands[0].text == "Cube_1"
+		&& back.commands[0].number == 1.5, "cube create roundtrip");
+	Check(back.commands[1].verb == smvk::tour::Verb::SetCubemapAttr
+		&& back.commands[1].node == (smvk::tour::kCreateCubemapRefBase | 0u)
+		&& back.commands[1].number == 2.5, "cube attr roundtrip");
+	Check(!smvk::tour::Describe(back.commands[0]).empty()
+		&& !smvk::tour::Describe(back.commands[1]).empty(),
+		"cube describe");
+
+	// Replay onto a cook cluster.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	setNodeName(cluster->scene, root, "Root");
+	const size_t beforeNodes = cluster->scene.hierarchy.size();
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"cube replay ok");
+	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
+		"cube replay appends node");
+	const uint32_t newNode = uint32_t(beforeNodes);
+	Check(getNodeName(cluster->scene, int(newNode)) == "Cube_1",
+		"cube replay name");
+	auto cmit = cluster->scene.cubemapForNode.find(newNode);
+	Check(cmit != cluster->scene.cubemapForNode.end(), "cube replay link");
+	Check(cmit != cluster->scene.cubemapForNode.end()
+		&& cmit->second.radius == 2.5f,
+		"cube replay params (-ref radius applied)");
+	Check(cluster->scene.localTransform[newNode][3].y == 2.0f,
+		"cube replay position");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+
+	// Unified form lowers; type table knows the DAG kind.
+	smvk::tour::Doc uni;
+	Check(smvk::tour::LoadTourFromString(
+		"createNode -at cubemap -p 0 -name \"U\" -t 0 2 0 -v 1.5;\n",
+		uni, err), "cube unified loads");
+	Check(uni.commands.size() == 1
+		&& uni.commands[0].verb == smvk::tour::Verb::CreateCubemap
+		&& uni.commands[0].number == 1.5, "cube unified lowers");
+	const smvk::tour::CreateNodeType* t =
+		smvk::tour::FindCreateNodeType("cubemap");
+	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag,
+		"cube node type");
+
+	// Delete drops the def (nothing pins it).
+	smvk::tour::Doc del;
+	smvk::tour::Command dc{};
+	dc.verb = smvk::tour::Verb::Delete;
+	dc.node = newNode;
+	dc.name = "Cube_1";
+	del.commands.push_back(dc);
+	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
+		"cube delete replay ok");
+	Check(!cluster->scene.cubemapForNode.contains(newNode),
+		"cube delete drops def");
+
+	// Out-of-range -ref fails loudly; unknown attr fails at parse.
+	smvk::tour::Doc bad;
+	smvk::tour::Command bc{};
+	bc.verb = smvk::tour::Verb::SetCubemapAttr;
+	bc.node = smvk::tour::kCreateCubemapRefBase | 5u;
+	bc.text = "radius";
+	bc.number = 1.0;
+	bad.commands.push_back(bc);
+	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+		"cube replay rejects bad ref");
+	smvk::tour::Doc parseBad;
+	Check(!smvk::tour::LoadTourFromString(
+		"setCubemapAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+		"cube parser rejects bad attr");
+}
+
 // Unified createNode form: new files write `createNode -at <type>`;
 // DAG types lower to the legacy verbs at parse (single replay path);
 // system types (material/file/image/camera) parse, validate, and skip
@@ -1025,7 +1135,7 @@ void TestCvolVerbs() {
 void TestCreateNode() {
 	// Type table: DAG vs system knowledge lives on the type.
 	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 9,
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 10,
 		"createnode table size");
 	const smvk::tour::CreateNodeType* t =
 		smvk::tour::FindCreateNodeType("spotLight");
@@ -1552,6 +1662,7 @@ int main() {
 	TestLightVerbs();
 	TestTerrainVerbs();
 	TestCvolVerbs();
+	TestCubemapVerbs();
 	TestRootReference();
 	TestCreateNode();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";

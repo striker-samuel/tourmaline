@@ -94,6 +94,10 @@ void EditorApp::CookToPak() {
 	CookSettings cook = m_cook;
 	cook.contentDir = contentDir;
 	cook.inVfs = inVfs;
+	// Does the definition carry authored convex volumes? (Drives the
+	// GiBaker stage below — skipped silently when nothing to bake.)
+	const bool giHasCvols = m_world
+		&& !m_world->scene.cvolForNode.empty();
 	// Auto-generate output path if empty: content/paks/<stem>.pak
 	if (cook.outPak.empty() && !m_gltfPath.empty()) {
 		std::filesystem::path p(m_gltfPath);
@@ -102,7 +106,7 @@ void EditorApp::CookToPak() {
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
 	m_cookFuture = std::async(std::launch::async,
-		[cook, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, giHasCvols, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			std::ostringstream log;
 			// PakCooker next to Editor.exe.
@@ -149,6 +153,55 @@ cmd << " --out-pak " << QuoteArg(cook.outPak)
 #endif
 			log << "cook: PakCooker exit=" << rc << "\n";
 			r.ok = (rc == 0);
+			// GI BAKE STAGE: authored convex volumes (tour cvolume
+			// nodes) bake as part of the cook — GiBaker consumes the
+			// SAME definition tour (root reference + nodes), keyed to
+			// the PAK STEM so gi/<stem>.cvmanifest matches what the
+			// editor/App loaders look for next to the pak. Skipped
+			// when the pak failed or the definition has no cvolumes.
+			if (r.ok && cook.giCvol && !giHasCvols) {
+				// nothing authored: skip silently
+			}
+			else if (r.ok && cook.giCvol) {
+				std::filesystem::path baker =
+					std::filesystem::path(exePath).parent_path() /
+					"GiBaker.exe";
+				if (!std::filesystem::exists(baker))
+					baker = "GiBaker.exe";
+				const std::string pakStem =
+					std::filesystem::path(cook.outPak).stem().string();
+				std::ostringstream gi;
+				gi << QuoteArg(baker.string())
+					<< " --content-dir " << QuoteArg(contentDir)
+					<< " --scene " << QuoteArg(pakStem)
+					<< " --tour " << QuoteArg(tempTourPath)
+					<< " 2>&1";
+				log << "cook-gi: " << gi.str() << "\n";
+#ifdef _WIN32
+				FILE* gpipe = _popen(gi.str().c_str(), "r");
+#else
+				FILE* gpipe = popen(gi.str().c_str(), "r");
+#endif
+				if (!gpipe) {
+					log << "cook-gi: failed to spawn GiBaker\n";
+				}
+				else {
+					while (std::fgets(buf.data(), int(buf.size()), gpipe))
+						log << buf.data();
+#ifdef _WIN32
+					const int grc = _pclose(gpipe);
+#else
+					const int grc = pclose(gpipe);
+#endif
+					log << "cook-gi: GiBaker exit=" << grc << "\n";
+					// The pak is the cook's product; a GI bake failure
+					// degrades lighting (not the pak) — reported, not
+					// fatal.
+					if (grc != 0)
+						log << "cook-gi: GI bake FAILED (pak is OK; "
+							"see log above)\n";
+				}
+			}
 			r.log = log.str();
 			// Cleanup temp tour file.
 			std::error_code ec;

@@ -269,6 +269,9 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
 				canCreate))
 			DraftCreateCVolume();
+		if (ImGui::MenuItem("Cubemap capture (pinned)", nullptr, false,
+				canCreate))
+			DraftCreateCubemap();
 		if (ImGui::MenuItem("Terrain...", nullptr, false, canCreate)) {
 			// Seed the dialog defaults (name, material) once per open.
 			std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf), "%s",
@@ -467,6 +470,9 @@ void EditorApp::DrawMenuBar() {
 			m_showLightGizmos = !m_showLightGizmos;
 		if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
 			m_showCvolGizmos = !m_showCvolGizmos;
+		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
+				m_showCubemapGizmos))
+			m_showCubemapGizmos = !m_showCubemapGizmos;
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -890,6 +896,7 @@ void EditorApp::DrawSceneOutliner() {
 			m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 			FindNodeLight(n) ? " [light]" : "",
 			m_world->scene.cvolForNode.contains(n) ? " [cvol]" : "",
+			m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
 			IsEnvNode(n) ? " [env]" : "",
 			IsRefPlaceholder(n) ? " [ref]" : "",
 			!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
@@ -1205,6 +1212,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		scene.cvolForNode.contains(node) ? " [cvol]" : "",
+		scene.cubemapForNode.contains(node) ? " [cube]" : "",
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 		IsEnvNode(node) ? " [env]" : "",
@@ -1841,6 +1849,56 @@ void EditorApp::DrawCvolSection(uint32_t node) {
 		"these (priority/spacing/fades) + the box");
 }
 
+void EditorApp::DrawCubemapSection(uint32_t node) {
+	// Authored cubemap capture on this node (editor cubemap node): a
+	// PINNED specular probe. Position = the node's translate (gizmo);
+	// the influence radius below. Baked by the cook's --cubemap stage
+	// as a 'pin' row (wins weight ties at load).
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return;
+	Scene& scene = m_world->scene;
+	auto it = scene.cubemapForNode.find(node);
+	if (it == scene.cubemapForNode.end())
+		return;
+	::SceneCubemap& def = it->second;
+	ImGui::Separator();
+	ImGui::Text("Cubemap capture: '%s'",
+		getNodeName(scene, int(node)).c_str());
+	ImGui::TextDisabled("pinned probe — wins weight ties at load");
+	auto beginCubeDrag = [&](const char* attr) {
+		if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCubemapAttr ||
+			m_pending.cmd.node != node || m_pending.cmd.cubemapAttr != attr))
+			FinalizePending();
+		if (!m_pending.active) {
+			m_pending.active = true;
+			m_pending.cmd = EditCmd{};
+			m_pending.cmd.verb = EditVerb::SetCubemapAttr;
+			m_pending.cmd.node = node;
+			m_pending.cmd.cubemapAttr = attr;
+			ReadNodeCubemapAttr(node, attr, m_pending.cmd.beforeVec4,
+				m_pending.cmd.beforeNum, m_pending.cmd.beforeText);
+		}
+	};
+	auto endCubeDrag = [&](const char* attr) {
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.verb == EditVerb::SetCubemapAttr &&
+			m_pending.cmd.node == node &&
+			m_pending.cmd.cubemapAttr == attr)
+			FinishDrag();
+	};
+	float radius = def.radius;
+	if (ImGui::DragFloat("Influence radius (m)", &radius, 0.05f,
+			0.05f, 100.0f, "%.2f")) {
+		beginCubeDrag("radius");
+		WriteNodeCubemapAttr(node, "radius", glm::vec4(0),
+			double(radius), {});
+		m_pending.cmd.number = double(radius);
+	}
+	endCubeDrag("radius");
+	ImGui::TextDisabled("fade = radius/2; position = node translate "
+		"(gizmo); bake: Cook panel > Cubemap captures (pinned rows)");
+}
+
 void EditorApp::DrawInspector() {
 	SetupDefaultCameras();
 	// Material focus page: the Inspector is "traveling" in a material.
@@ -2306,6 +2364,8 @@ void EditorApp::DrawInspector() {
 
 	// Authored convex GI volume on this node (cvolume inspector).
 	DrawCvolSection(node);
+	// Authored cubemap capture on this node (pinned probe inspector).
+	DrawCubemapSection(node);
 
 	// Lightmap participation.
 	{
@@ -3357,6 +3417,8 @@ void EditorApp::DrawCookDialog() {
 	if (m_cook.cubemap) {
 		ImGui::Indent();
 		ImGui::InputText("Cubemap name", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Blank = the pak stem (auto).");
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			m_cook.cubemapName = m_cookCubemapNameBuf;
 		int size = m_cook.cubemapSize;
@@ -3371,6 +3433,18 @@ void EditorApp::DrawCookDialog() {
 		}
 		ImGui::Unindent();
 	}
+
+	ImGui::Separator();
+	ImGui::Text("GI (probes)");
+	if (ImGui::Checkbox("Convex volumes (bake authored)", &m_cook.giCvol))
+		AutosaveTour();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Cvolume nodes bake with the cook (GiBaker):\n"
+			"gi/<pak-stem>_*.cvol + .cvmanifest sidecars.\n"
+			"Skipped when the definition has no cvolumes.");
+	ImGui::SameLine();
+	ImGui::TextDisabled("%u authored",
+		m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
 
 	ImGui::Separator();
 	if (m_cookRunning) {

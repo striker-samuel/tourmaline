@@ -178,6 +178,16 @@ enum class Verb : uint8_t {
 	                // "position","rotation","size","name"); number =
 	                // scalar value; vec4 = triple value (position/
 	                // rotation-deg/size); name = new name (attr "name").
+ 	CreateCubemap,  // node = PARENT cluster id; text = capture name;
+	                // vec = local position (pinned probe); number =
+	                // influence radius (m). An authored cubemap capture:
+	                // the cook's --cubemap stage bakes it as a 'pin' row
+	                // (wins weight ties at load).
+ 	SetCubemapAttr, // node = target cluster id, or a created-capture ref
+	                // (kCreateCubemapRefBase | k — see below); text =
+	                // attr ("position","radius","name"); number =
+	                // scalar (radius); vec4 = triple (position); name =
+	                // new name (attr "name").
  };
 
 // Node-type table for createNode -at (Maya node types): whether the
@@ -298,6 +308,11 @@ inline constexpr uint32_t kCreateTerrainRefBase = 0x40000000u;
 // kCreateCvolRefBase | k (k-th CreateCVolume in file order). Disjoint
 // from both bases above; a node carries at most one.
 inline constexpr uint32_t kCreateCvolRefBase = 0x20000000u;
+
+// Same scheme for cubemap captures created by an earlier CreateCubemap:
+// SetCubemapAttr addresses them via kCreateCubemapRefBase | k (k-th
+// CreateCubemap in file order). Disjoint from all bases above.
+inline constexpr uint32_t kCreateCubemapRefBase = 0x10000000u;
 
 struct Doc {
 	int version = kTourVersion;

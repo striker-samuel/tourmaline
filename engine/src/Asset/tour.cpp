@@ -208,6 +208,12 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 					<< " " << c.vec4.z << " " << c.vec4.w << " -s "
 					<< c.svec.x << " " << c.svec.y << " " << c.svec.z;
 			}
+			else if (c.nodeType == "cubemap") {
+				// -t packs local position (pinned probe: x y z);
+				// -v packs the influence radius (m).
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " -v " << c.number;
+			}
 			// System types (material/file/image/camera) carry no
 			// payload: the line above is the whole record.
 			break;
@@ -290,6 +296,20 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
 		break;
 	}
+	case Verb::CreateCubemap: {
+		// -t packs local position (pinned probe: x y z); -v packs
+		// the influence radius (m). -p is the parent: bare id
+		// (legacy) or quoted name/path/uuid.
+		f << "createCubemap -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " -v " << c.number;
+		break;
+	}
 	case Verb::TerrainPaint: {
 		// -t packs: worldX worldZ radius flattenTarget (4 values);
 		// -v carries strength; -ref names the k-th createTerrain.
@@ -332,6 +352,25 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << " -at " << c.text;
 		if (c.text == "position" || c.text == "rotation"
 			|| c.text == "size")
+			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z;
+		else if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else
+			f << " -v " << c.number;
+		break;
+	}
+	case Verb::SetCubemapAttr: {
+		// Same addressing shape as setCvolAttr (-ref k of the k-th
+		// createCubemap, else -n cluster id). Position rides -t;
+		// name rides -v as a string; radius rides -v.
+		f << "setCubemapAttr ";
+		if ((c.node & kCreateCubemapRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateCubemapRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "position")
 			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
 				<< " " << c.vec4.z;
 		else if (c.text == "name")
@@ -502,6 +541,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			return 1;
 		if (c.verb == Verb::CreateCVolume)
 			return 2;
+		if (c.verb == Verb::CreateCubemap)
+			return 3;
 		if (c.verb == Verb::CreateNode) {
 			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
 				return 0;
@@ -509,6 +550,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 1;
 			if (c.nodeType == "cvolume")
 				return 2;
+			if (c.nodeType == "cubemap")
+				return 3;
 		}
 		return -1;
 	};
@@ -539,7 +582,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 					&& (d.node & ~kCreateTerrainRefBase) == k)
 				|| (family == 2 && d.verb == Verb::SetCvolAttr
 					&& (d.node & kCreateCvolRefBase) != 0
-					&& (d.node & ~kCreateCvolRefBase) == k);
+					&& (d.node & ~kCreateCvolRefBase) == k)
+				|| (family == 3 && d.verb == Verb::SetCubemapAttr
+					&& (d.node & kCreateCubemapRefBase) != 0
+					&& (d.node & ~kCreateCubemapRefBase) == k);
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -837,6 +883,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "spotLight", CreateNodeKind::Dag },
 	{ "terrain", CreateNodeKind::Dag },
 	{ "cvolume", CreateNodeKind::Dag },
+	{ "cubemap", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
 	{ "image", CreateNodeKind::System },
@@ -1058,6 +1105,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			effVerb = "createTerrain";
 		else if (tn == "cvolume")
 			effVerb = "createCvolume";
+		else if (tn == "cubemap")
+			effVerb = "createCubemap";
 		else
 			effVerb = "createLight"; // pointLight | spotLight
 			// Legacy light -at vocabulary for the shared branch below.
@@ -1375,6 +1424,41 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]),
 			float(v[6]));
 	}
+	else if (effVerb == "createCubemap" && (fl.hasP || fl.hasPStr)
+		&& fl.hasName && fl.t.size() >= 3 && fl.hasV) {
+		// -t packs: x y z (pinned probe position); -v packs the
+		// influence radius (m). -at is accepted and must read
+		// "cubemap" when present (unified-form echo).
+		if (fl.hasAt && fl.at != "cubemap") {
+			err = "line " + std::to_string(lineNo) + ": createCubemap wants -at cubemap";
+			return false;
+		}
+		double v[3] = {};
+		for (int k = 0; k < 3; ++k)
+			if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad createCubemap position";
+				return false;
+			}
+		double radius = 0.0;
+		if (!ParseDouble(fl.v, radius)) {
+			err = "line " + std::to_string(lineNo)
+				+ ": bad createCubemap radius";
+			return false;
+		}
+		if (radius <= 0.0) {
+			err = "line " + std::to_string(lineNo)
+				+ ": createCubemap radius must be > 0";
+			return false;
+		}
+		c.verb = Verb::CreateCubemap;
+		c.node = fl.hasP ? fl.p : 0;
+		if (fl.hasPStr)
+			c.parentRef = fl.pStr;
+		c.text = fl.name;
+		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+		c.number = radius;
+	}
 		else if (effVerb == "terrainPaint" && fl.hasRef && fl.hasAt
 			&& fl.t.size() >= 4 && fl.hasV) {
 			// -t packs: worldX worldZ radius flattenTarget; -v = strength.
@@ -1498,7 +1582,46 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
+	else if (effVerb == "setCubemapAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		static const char* kAttrs[] = { "position", "radius", "name" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			err = "line " + std::to_string(lineNo) + ": bad cubemap attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetCubemapAttr;
+		c.node = fl.hasRef ? (kCreateCubemapRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (fl.at == "position") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo) + ": cubemap triple wants 3 values";
+				return false;
+			}
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo) + ": bad cubemap triple";
+				return false;
+			}
+			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
+		}
+		else if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
 		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+		}
+	}
+	else {
 			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
 				verb + "' (skipped)");
 			continue;
@@ -1690,6 +1813,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created convex volumes (kCreateCvolRefBase | k),
 	// resolved by SetCvolAttr below.
 	std::vector<uint32_t> createdCvols;
+	// Same scheme for created cubemap captures (kCreateCubemapRefBase |
+	// k), resolved by SetCubemapAttr below.
+	std::vector<uint32_t> createdCubemaps;
 	// Same scheme for created terrain (kCreateTerrainRefBase | k),
 	// resolved for the generic verbs below (Rename/SetTranslate/...
 	// /Parent) so post-creation edits replay onto the rebuilt node.
@@ -1868,6 +1994,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.materialForNode.erase(target);
 			scene.lightForNode.erase(target);
 			scene.cvolForNode.erase(target);
+			scene.cubemapForNode.erase(target);
 			break;
 		}
 		case Verb::SetUuid: {
@@ -2002,6 +2129,38 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		scene.nodeNames.push_back(c.text);
 		scene.nameForNode[uint32_t(newId)] = nameId;
 		createdCvols.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::CreateCubemap: {
+		// Authored cubemap capture: append a node under the recorded
+		// parent (translate = pinned probe position) + a node-local
+		// SceneCubemap definition (influence radius). The cook's
+		// --cubemap stage harvests these as 'pin' rows.
+		uint32_t parent = 0;
+		if (!resolveParent(c, "createCubemap", c.node, parent)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		const int level = scene.hierarchy[parent].level + 1;
+		const int newId = addNode(scene, int(parent), level);
+		if (newId < 0) {
+			if (err)
+				*err = "tour: createCubemap failed under parent " +
+					std::to_string(parent);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		scene.localTransform[size_t(newId)] =
+			glm::translate(glm::mat4(1.0f), c.vec);
+		SceneCubemap def{};
+		def.radius = std::max(float(c.number), 1e-2f);
+		scene.cubemapForNode[uint32_t(newId)] = def;
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(c.text);
+		scene.nameForNode[uint32_t(newId)] = nameId;
+		createdCubemaps.push_back(uint32_t(newId));
 		break;
 	}
 		case Verb::CreateTerrain: {
@@ -2315,6 +2474,66 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		break;
 	}
+	case Verb::SetCubemapAttr: {
+		uint32_t target = c.node;
+		if ((target & kCreateCubemapRefBase) != 0) {
+			const uint32_t k = target & ~kCreateCubemapRefBase;
+			if (k >= createdCubemaps.size()) {
+				if (err)
+					*err = "tour: setCubemapAttr ref out of range: " +
+						std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdCubemaps[k];
+		}
+		else if (!checkNode(target, c)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		auto cmit = scene.cubemapForNode.find(target);
+		if (cmit == scene.cubemapForNode.end()) {
+			if (err)
+				*err = "tour: setCubemapAttr on non-cubemap node " +
+					std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		SceneCubemap& def = cmit->second;
+		if (c.text == "radius") {
+			def.radius = std::max(float(c.number), 1e-2f);
+		}
+		else if (c.text == "name") {
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			scene.nameForNode[target] = id;
+		}
+		else if (c.text == "position") {
+			// Rebuild the node's local TRS with the translate channel
+			// replaced (editor TRS convention).
+			glm::vec3 skew, t, s;
+			glm::vec4 persp;
+			glm::quat q;
+			glm::decompose(scene.localTransform[target], s, q, t,
+				skew, persp);
+			glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+			t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, t);
+			m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, s);
+			scene.localTransform[target] = m;
+		}
+		else {
+			warn("tour: unknown cubemap attr '" + c.text + "' (skipped)");
+		}
+		break;
+	}
 		case Verb::CreateNode: {
 			// System node types (material/file/image/camera): parsed +
 			// validated up front; replay defers to the editor — reported
@@ -2583,6 +2802,20 @@ std::string Describe(const Command& c) {
 			c.text.c_str(), c.svec.x, uint32_t(c.vec4.x), c.vec4.y,
 			c.node);
 		break;
+	case Verb::CreateCubemap:
+		std::snprintf(buf, sizeof(buf),
+			"createCubemap '%s' (r=%.1fm) under #%u",
+			c.text.c_str(), float(c.number), c.node);
+		break;
+	case Verb::SetCubemapAttr: {
+		char tgt[32];
+		if ((c.node & kCreateCubemapRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateCubemapRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "cube.%s.%s", tgt, c.text.c_str());
+		break;
+	}
 	case Verb::SetCvolAttr: {
 		char tgt[32];
 		if ((c.node & kCreateCvolRefBase) != 0)

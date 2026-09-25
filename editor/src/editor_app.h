@@ -255,6 +255,10 @@ struct CookSettings {
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	uint32_t cubemapBounces = 3;
+	// GI bake stage: authored convex volumes (cvol nodes) bake with
+	// the cook via GiBaker — sidecars gi/<pak-stem>_* keyed to the
+	// pak stem. No-op when the definition carries no cvolumes.
+	bool giCvol = true;
 };
 
 class EditorApp : public smvk::AppImpl {
@@ -654,6 +658,10 @@ private:
 	// file order): setCvolAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedCvolNodes;
+	// Same scheme for history-created cubemap captures (tour
+	// CreateCubemap file order): setCubemapAttr -ref addressing.
+	// Rebuilt on every replay alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedCubemapNodes;
 	// Same scheme for history-created terrain (tour CreateTerrain file
 	// order): generic verbs address them via kCreateTerrainRefBase.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
@@ -716,6 +724,9 @@ private:
 	int CreatedLightIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created convex volume, same contract.
 	int CreatedCvolIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created cubemap capture, same
+	// contract.
+	int CreatedCubemapIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created terrain, same contract.
 	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Tour-stable default parent for new lights: the primary cluster's
@@ -725,6 +736,8 @@ private:
 	std::string UniqueLightName(bool spot) const;
 	// Unique "CVol_N" name over the live world cvolume nodes.
 	std::string UniqueCvolName() const;
+	// Unique "Cube_N" name over the live world cubemap captures.
+	std::string UniqueCubemapName() const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
 	// Live command helpers (editor_commands.cpp).
@@ -920,6 +933,13 @@ private:
 		glm::vec4& v4, double& num, std::string& text) const;
 	bool WriteNodeCvolAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, const std::string& text);
+	// Cubemap-capture property channels ("position","radius","name") —
+	// the inspector's before-state + live-write path for
+	// SetCubemapAttr. False when the node has no capture def.
+	bool ReadNodeCubemapAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, std::string& text) const;
+	bool WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, const std::string& text);
 	// World-space authoring box of a cvolume node (center = global
 	// translate, full extents = global scale, axis-aligned — rotation
 	// ignored by design). False when the node has no cvol.
@@ -927,16 +947,29 @@ private:
 	// Inspector "Convex volume" section for cvolume nodes (priority /
 	// spacing / fades via undoable SetCvolAttr; shape via the transform).
 	void DrawCvolSection(uint32_t node);
+	// Inspector "Cubemap capture" section for capture nodes (radius
+	// via undoable SetCubemapAttr; position via the transform).
+	void DrawCubemapSection(uint32_t node);
 	// Create menu: convex GI volume box at the active camera target
 	// (8 m box, priority 0, 0.5 m spacing, 0.1 m fades).
 	void DraftCreateCVolume();
+	// Create menu: pinned cubemap capture at the active camera target
+	// (influence radius 1.5 m; baked as a 'pin' row by the cook).
+	void DraftCreateCubemap();
 	// Created-cvolume execution (ExecCmd cases): append/remove the world
 	// node + node-local SceneCvol definition. ExecCreateCVolume records
 	// the assigned id back into the command (c.node).
 	void ExecCreateCVolume(EditCmd& c);
 	void ExecUncreateCvolume(EditCmd& c);
+	// Created-cubemap execution (ExecCmd cases): append/remove the world
+	// node + node-local SceneCubemap definition. ExecCreateCubemap
+	// records the assigned id back into the command (c.node).
+	void ExecCreateCubemap(EditCmd& c);
+	void ExecUncreateCubemap(EditCmd& c);
 	// Viewport boxes for cvolume nodes (editor_gizmo.cpp batches).
 	bool m_showCvolGizmos = true;
+	// Viewport markers for cubemap capture nodes (diamond + radius).
+	bool m_showCubemapGizmos = true;
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.

@@ -83,6 +83,15 @@ enum class EditVerb : uint8_t {
   	              // position/rotation/size/name channels).
   	SetCvolAttr, // cvolume property edit; c.node = cvolume node
   	              // (world), cvolAttr selects the channel (see below).
+  	CreateCubemap, // append a cubemap capture node (world): a pinned
+  	              // specular probe position + node-local SceneCubemap
+  	              // definition (m_cubemapForNode). c.node = CREATED
+  	              // world id once forward-executed (UINT32_MAX
+  	              // before); c.node2 = parent world id; afterText =
+  	              // name; afterVec = local position; number = radius.
+  	SetCubemapAttr, // cubemap capture edit; c.node = capture node
+  	              // (world), cubemapAttr selects the channel
+  	              // ("position","radius","name").
  };
 
 struct EditCmd {
@@ -140,6 +149,13 @@ struct EditCmd {
 	// afterText (name); before-state rides beforeNum / beforeVec4 /
 	// beforeText.
 	std::string cvolAttr;
+	// CreateCubemap payload (live-world domain; pinned probe position
+	// in afterVec, name in afterText, parent in node2):
+	float cubemapRadius = 1.5f; // influence radius (m), fade = r/2
+	// SetCubemapAttr channel ("position","radius","name"). Value rides
+	// number (radius) / vec4 (position triple) / afterText (name);
+	// before-state rides beforeNum / beforeVec4 / beforeText.
+	std::string cubemapAttr;
 	// TerrainPaint payload: op name above; before-patch = the pre-stamp
 	// sample box (row-major, x-major within rows), captured at first
 	// forward execution and reused by undo. Box coords are inclusive
@@ -152,6 +168,10 @@ struct EditCmd {
 	// execution — (node, hasMesh, mesh, hasMat, mat) quintuples (hasMesh/
 	// hasMat 0/1; erased links read 0). Restored exactly by undo.
 	std::vector<uint32_t> delNodeMaps;
+	// Delete payload: cubemap capture def presence (radius in
+	// beforeNum) — the cvol def uses beforeFlag/beforeVec4; a node
+	// carries at most one of the two kinds.
+	bool beforeCubemap = false;
 	// Delete payload: captured tile draw entries as packed quintuples
 	// (position, node, mesh, material, flags) — recorded at first
 	// forward execution, reused by redos, restored exactly by undo.
