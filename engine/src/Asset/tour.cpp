@@ -393,8 +393,11 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		f << "//Name: " << name << "\n";
 		f << "//Last modified: " << stamp << "\n";
 	}
-	f << "source -p " << Quote(doc.source)
-		<< " -fingerprint " << Quote(doc.fingerprint) << ";\n";
+	// `source` is DEPRECATED (geometry may come entirely from
+	// references): written only when the session actually has one.
+	if (!doc.source.empty() || !doc.fingerprint.empty())
+		f << "source -p " << Quote(doc.source)
+			<< " -fingerprint " << Quote(doc.fingerprint) << ";\n";
 	// References FIRST (Maya file-block order), then the fileInfo
 	// constants block, then the command list.
 	for (const ReferenceCmd& r : doc.references) {

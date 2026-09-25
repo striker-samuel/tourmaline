@@ -278,7 +278,8 @@ private:
 	void UploadMaterials(uint32_t flight);
 
 	// ---- scene ----
-	bool LoadGltfIntoWorld(const std::string& path);
+	bool LoadGltfIntoWorld(const std::string& path,
+		const std::string& tourOverride = {});
 	bool LoadPakIntoWorld(const std::string& path,
 		uint32_t sceneIndex = 0); // cooked pak, GPU world
 	bool TryLoadSiblingSglm(const std::string& pakPath); // gi/<stem>.sglm
@@ -1021,6 +1022,12 @@ private:
 	bool RemoveSceneReference(uint32_t refWorldNode);
 	bool RemoveSceneReferenceAt(size_t idx); // panel path (index-exact)
 	bool SetSceneReferenceEnabled(size_t idx, bool enabled);
+	// Reference reload WITHOUT touching the real tour file: snapshots
+	// the working doc to a temp tour, rebinds through it (fresh import
+	// + replay), then restores cameras/selection/save-target. A plain
+	// OpenScene would replay the stale on-disk file and lose unsaved
+	// edits — the temp snapshot is the reload's document instead.
+	bool ReloadReferencesViaTemp();
 	// Reference displacement placeholders (Maya unload stand-ins):
 	// created content under a disabled reference moves to a root
 	// placeholder transform (original parent's local values); re-enable
@@ -1170,6 +1177,13 @@ private:
 	uint32_t m_revealNode = UINT32_MAX; // outliner reveal request (viewport pick)
 	bool m_wireOverlay = true;
 	bool m_uiMode = true; // false = fullscreen viewport (camera control)
+	// Tour dirty flag (window-title "*" + save prompts): set whenever
+	// the working tour doc moves ahead of the last explicit save
+	// (AutosaveTour fires exactly on those paths), cleared by explicit
+	// saves, clean loads and scene close.
+	bool m_tourDirty = false;
+	std::string m_lastWindowTitle; // change-detected SDL title cache
+	void UpdateWindowTitle(); // "Tourmaline Editor — <scene> [*]"
 	// True while the focused ImGui window sits inside the Placement Graph
 	// window hierarchy (drawn last frame): ModalDelete defers to the
 	// graph's own Del handler (node/wire removal) instead of the world
@@ -1307,7 +1321,9 @@ private:
 
 	// ---- gizmo drag state ----
 	bool m_gizmoDragging = false;
-	int m_gizmoAxis = -1; // 0/1/2 = X/Y/Z
+	int m_gizmoAxis = -1; // 0/1/2 = X/Y/Z axes; 3/4/5 = YZ/XZ/XY planes
+	                      // (translate/scale two-axis handles); 6 =
+	                      // rotate arcball (free rotation inside the sphere)
 	glm::vec3 m_dragGrabPoint{ 0.0f };
 	glm::vec3 m_dragNodeOrigin{ 0.0f };
 	glm::mat4 m_dragBaseMat{ 1.0f }; // baseline local matrix (undo)
@@ -1319,6 +1335,8 @@ private:
 	glm::vec3 m_dragCurS{ 1.0f };
 	glm::vec3 m_dragPlaneN{ 0.0f, 1.0f, 0.0f };
 	float m_dragLastX = 0.0f;
+	float m_dragLastY = 0.0f; // arcball previous mouse (viewport-local)
+	glm::quat m_dragArcQ{ 1.0f, 0.0f, 0.0f, 0.0f }; // arcball accumulator
 	float m_dragBaseAngle = 0.0f; // accumulated rotate radians
 	float m_dragStartDist = 1.0f;
 	// Gizmo/AABB line upload buffer.

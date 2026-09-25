@@ -83,6 +83,12 @@ struct Scene {
 	// indirection meshForNode uses — and the world transform resolves
 	// from globalTransform[node] at use time.
 	std::unordered_map<NodeId, uint32_t> lightForNode;
+	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
+	// editor for nodes a Delete line addresses (persisted as `uuid`
+	// lines ahead of the deletes) and recorded back by replay and
+	// cook: deletes resolve through it, stable across re-imports that
+	// shift numeric ids. Empty = the node has none.
+	std::unordered_map<NodeId, std::string> uuidForNode;
 
 	std::vector<std::string> nodeNames;
 	std::vector<std::string> materialNames;

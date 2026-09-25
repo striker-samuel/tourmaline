@@ -94,7 +94,7 @@ std::string LogoPath() {
 void EditorApp::ApplyTourmalineBranding() {
 	if (!window)
 		return;
-	SDL_SetWindowTitle(window, "Tourmaline Editor");
+	UpdateWindowTitle();
 
 	// Generate the logo once (idempotent), then load it as the icon.
 	const std::string path = LogoPath();
@@ -122,6 +122,36 @@ void EditorApp::ApplyTourmalineBranding() {
 			"' (icon skipped).");
 	}
 	stbi_image_free(data);
+}
+
+// Window title: current scene plus a Maya-style dirty star ("... *"
+// while the working tour is ahead of the last explicit save).
+// Change-detected: SDL only hears about it when the text changes.
+void EditorApp::UpdateWindowTitle() {
+	if (!window)
+		return;
+	std::string title = "Tourmaline Editor";
+	if (m_world) {
+		// The TOUR is the document (not the source asset): prefer its
+		// filename; fall back to the loaded source when no tour target
+		// exists yet.
+		std::string scene;
+		if (!TourTarget().empty())
+			scene = std::filesystem::path(TourTarget()).filename().string();
+		else if (!m_gltfPath.empty())
+			scene = std::filesystem::path(m_gltfPath).filename().string();
+		else if (!m_pakPath.empty())
+			scene = std::filesystem::path(m_pakPath).filename().string();
+		if (!scene.empty()) {
+			title += " — " + scene;
+			if (m_tourDirty)
+				title += " *";
+		}
+	}
+	if (title != m_lastWindowTitle) {
+		m_lastWindowTitle = title;
+		SDL_SetWindowTitle(window, title.c_str());
+	}
 }
 
 void DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h) {

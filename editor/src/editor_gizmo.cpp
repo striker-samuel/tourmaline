@@ -47,6 +47,19 @@ float DistPointSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b) {
 	return glm::length(p - (a + ab * t));
 }
 
+// Point in convex screen-space quad (same-side test, edge-inclusive
+// so glancing-angle thin quads stay grabbable) — plane-handle picking.
+bool PointInQuad(glm::vec2 p, glm::vec2 q0, glm::vec2 q1, glm::vec2 q2,
+	glm::vec2 q3) {
+	auto side = [](glm::vec2 a, glm::vec2 b, glm::vec2 c) {
+		return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+	};
+	const float s0 = side(q0, q1, p), s1 = side(q1, q2, p);
+	const float s2 = side(q2, q3, p), s3 = side(q3, q0, p);
+	return (s0 >= 0.0f && s1 >= 0.0f && s2 >= 0.0f && s3 >= 0.0f)
+		|| (s0 <= 0.0f && s1 <= 0.0f && s2 <= 0.0f && s3 <= 0.0f);
+}
+
 void AddCircle(LineBatch& b, const glm::vec3& center, const glm::vec3& u,
 	const glm::vec3& v, float r, int segs = 48) {
 	for (int i = 0; i < segs; ++i) {
@@ -392,6 +405,47 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 		batches.push_back(std::move(b));
 		}
+		if (m_gizmoMode != GizmoMode::Rotate) {
+			// Plane handles (two-axis drags): wire quads spanned by each
+			// axis pair at 0.35*s, tinted by the FIXED (normal) axis —
+			// the axis that does not move. Translate planes live in the
+			// world frame, scale planes in the node's local frame.
+			const float qd = s * 0.35f;
+			for (int n = 0; n < 3; ++n) {
+				const int a = (n + 1) % 3, b = (n + 2) % 3;
+				const glm::vec3 axA =
+					(m_gizmoMode == GizmoMode::Translate ? axesW[a] : axesL[a]);
+				const glm::vec3 axB =
+					(m_gizmoMode == GizmoMode::Translate ? axesW[b] : axesL[b]);
+				LineBatch pb;
+				pb.color = (m_gizmoDragging && m_gizmoAxis == 3 + n)
+					? glm::vec4(1, 1, 0, 1) : axisColors[n];
+				const glm::vec3 p00 = O;
+				const glm::vec3 p10 = O + axA * qd;
+				const glm::vec3 p11 = O + axA * qd + axB * qd;
+				const glm::vec3 p01 = O + axB * qd;
+				pb.verts.push_back({ p00 });
+				pb.verts.push_back({ p10 });
+				pb.verts.push_back({ p10 });
+				pb.verts.push_back({ p11 });
+				pb.verts.push_back({ p11 });
+				pb.verts.push_back({ p01 });
+				pb.verts.push_back({ p01 });
+				pb.verts.push_back({ p00 });
+				batches.push_back(std::move(pb));
+			}
+		}
+		if (m_gizmoMode != GizmoMode::Rotate) {
+			// Uniform center cube: all three axes at once (translate =
+			// full 3D move, scale = uniform factor). Idle light gray,
+			// yellow while dragged.
+			LineBatch cb;
+			cb.color = (m_gizmoDragging && m_gizmoAxis == 7)
+				? glm::vec4(1, 1, 0, 1) : glm::vec4(0.75f, 0.75f, 0.8f, 1);
+			const glm::vec3 ch(s * 0.055f);
+			AddBox(cb, O - ch, O + ch);
+			batches.push_back(std::move(cb));
+		}
 		// Sub-object highlight (3D viewports, wire mode included): the
 		// selected triangle (yellow loop, on top) or vertex (cyan diamond
 		// + cross, on top). Selection only — never edits geometry.
@@ -555,27 +609,30 @@ bool EditorApp::GizmoHandleInput() {
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
 
 	if (!m_gizmoDragging) {
-		// Hit test: nearest axis segment in screen pixels.
+		// Hit test. Rotate: the axis whose PROJECTED ring passes
+		// closest to the mouse wins (48 samples, thick invisible grab);
+		// clicks inside the sphere but off the rings grab the arcball
+		// (free rotation). Translate/scale: plane quads first (two-axis
+		// handles), then the axis shafts.
 		int best = -1;
-		float bestD = 10.0f;
-		for (int i = 0; i < 3; ++i) {
-			glm::vec3 ax = axesW[i];
-			if (useLocal) {
-				ax = glm::vec3(global * glm::vec4(axesW[i], 0.0f));
-				if (glm::length(ax) < 1e-6f)
-					continue;
-				ax = glm::normalize(ax);
-			}
-			glm::vec3 end = O + ax * s;
-			if (m_gizmoMode == GizmoMode::Rotate) {
-				// Rings: accept grabs near the projected circle — sample it.
+		const glm::vec2 oPx = ToScreen(O, viewProj, extent);
+		if (m_gizmoMode == GizmoMode::Rotate) {
+			float bestD = 15.0f;
+			for (int i = 0; i < 3; ++i) {
+				glm::vec3 ax = axesW[i];
+				if (useLocal) {
+					ax = glm::vec3(global * glm::vec4(axesW[i], 0.0f));
+					if (glm::length(ax) < 1e-6f)
+						continue;
+					ax = glm::normalize(ax);
+				}
 				const glm::vec3 u = glm::normalize(
 					std::fabs(ax.y) < 0.9f ? glm::cross(ax, glm::vec3(0, 1, 0))
 					: glm::cross(ax, glm::vec3(1, 0, 0)));
 				const glm::vec3 v = glm::cross(ax, u);
-				for (int k = 0; k < 24; ++k) {
-					const float a0 = float(k) / 24 * 6.2831853f;
-					const float a1 = float(k + 1) / 24 * 6.2831853f;
+				for (int k = 0; k < 48; ++k) {
+					const float a0 = float(k) / 48 * 6.2831853f;
+					const float a1 = float(k + 1) / 48 * 6.2831853f;
 					const glm::vec2 p0 = ToScreen(O + (u * std::cos(a0) + v * std::sin(a0)) * s,
 						viewProj, extent);
 					const glm::vec2 p1 = ToScreen(O + (u * std::cos(a1) + v * std::sin(a1)) * s,
@@ -586,17 +643,82 @@ bool EditorApp::GizmoHandleInput() {
 						best = i;
 					}
 				}
-				continue;
 			}
-		const glm::vec2 tipPx = ToScreen(end, viewProj, extent);
-		float d = DistPointSeg({ mx, my },
-			ToScreen(O, viewProj, extent), tipPx);
-		// Generous grab on the head (arrow tip / scale cube).
-		if (glm::length(glm::vec2(mx, my) - tipPx) < 16.0f)
-			d = 0.0f;
-			if (d < bestD) {
-				bestD = d;
-				best = i;
+			if (best < 0) {
+				// Arcball zone: inside the projected sphere, off the
+				// rings — unconstrained rotation (DCC style).
+				const glm::mat4 invVP = glm::inverse(viewProj);
+				const glm::vec3 camRightW =
+					glm::normalize(glm::vec3(invVP[0]));
+				const float radiusPx = glm::length(
+					ToScreen(O + camRightW * s, viewProj, extent) - oPx);
+				if (radiusPx > 4.0f
+					&& glm::length(glm::vec2(mx, my) - oPx) < radiusPx)
+					best = 6;
+			}
+		}
+		else {
+			// Uniform center cube first (all three axes at once):
+			// explicit click on the cube wins over the shafts.
+			if (glm::length(glm::vec2(mx, my) - oPx) < 12.0f) {
+				best = 7;
+			}
+			else {
+			const float qd = s * 0.35f;
+			float bestPlaneD = FLT_MAX;
+			int bestPlane = -1;
+			for (int n = 0; n < 3; ++n) {
+				const int a = (n + 1) % 3, b = (n + 2) % 3;
+				glm::vec3 axA = axesW[a], axB = axesW[b];
+				if (useLocal) {
+					axA = glm::vec3(global * glm::vec4(axesW[a], 0.0f));
+					axB = glm::vec3(global * glm::vec4(axesW[b], 0.0f));
+					if (glm::length(axA) < 1e-6f
+						|| glm::length(axB) < 1e-6f)
+						continue;
+					axA = glm::normalize(axA);
+					axB = glm::normalize(axB);
+				}
+				const glm::vec2 q0 = oPx;
+				const glm::vec2 q1 = ToScreen(O + axA * qd, viewProj, extent);
+				const glm::vec2 q2 = ToScreen(O + axA * qd + axB * qd,
+					viewProj, extent);
+				const glm::vec2 q3 = ToScreen(O + axB * qd, viewProj, extent);
+				if (PointInQuad({ mx, my }, q0, q1, q2, q3)) {
+					const float d = glm::length(glm::vec2(mx, my)
+						- (q0 + q1 + q2 + q3) * 0.25f);
+					if (d < bestPlaneD) {
+						bestPlaneD = d;
+						bestPlane = n;
+					}
+				}
+			}
+			if (bestPlane >= 0) {
+				best = 3 + bestPlane;
+			}
+			else {
+				float bestD = 10.0f;
+				for (int i = 0; i < 3; ++i) {
+					glm::vec3 ax = axesW[i];
+					if (useLocal) {
+						ax = glm::vec3(global * glm::vec4(axesW[i], 0.0f));
+						if (glm::length(ax) < 1e-6f)
+							continue;
+						ax = glm::normalize(ax);
+					}
+					glm::vec3 end = O + ax * s;
+					const glm::vec2 tipPx = ToScreen(end, viewProj, extent);
+					float d = DistPointSeg({ mx, my },
+						ToScreen(O, viewProj, extent), tipPx);
+					// Generous grab on the head (arrow tip / scale cube).
+					if (glm::length(glm::vec2(mx, my) - tipPx) < 16.0f)
+						d = 0.0f;
+					if (d < bestD) {
+						bestD = d;
+						best = i;
+					}
+				}
+			}
 			}
 		}
 		if (best < 0)
@@ -613,15 +735,49 @@ bool EditorApp::GizmoHandleInput() {
 		m_dragGrabPoint = O;
 		m_dragNodeOrigin = O;
 		m_dragLastX = mx;
+		m_dragLastY = my;
 		m_dragStartDist = s;
-		// Ray-plane for translate/scale: plane through O facing the camera
-		// around the axis (axis-plane drag).
+		m_dragArcQ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		if (best == 6) {
+			// Arcball: sphere-tracked below, no grab plane needed.
+			m_dragBaseAngle = 0.0f;
+			return true;
+		}
+		// Ray-plane for translate/scale: single axes drag in the plane
+		// containing the axis and facing the camera (axis-plane drag);
+		// plane handles drag in the axis-pair plane itself; the uniform
+		// cube drags in the camera-facing plane through the origin.
 		glm::vec3 origin;
 		const glm::vec3 ray = MouseRay(mx, my, extent, viewProj, origin);
-		glm::vec3 ax = useLocal
-			? glm::normalize(glm::vec3(global * glm::vec4(axesW[best], 0.0f))) : axesW[best];
-		const glm::vec3 camDir = glm::normalize(O - EditorCamEye(ActiveCam()));
-		m_dragPlaneN = glm::normalize(glm::cross(ax, glm::cross(camDir, ax)));
+		if (best == 7) {
+			const glm::vec3 camDir =
+				glm::normalize(O - EditorCamEye(ActiveCam()));
+			m_dragPlaneN = camDir;
+		}
+		else if (best >= 3) {
+			const int n = best - 3;
+			glm::vec3 nrm = axesW[n];
+			if (useLocal) {
+				nrm = glm::vec3(global * glm::vec4(axesW[n], 0.0f));
+				if (glm::length(nrm) < 1e-6f)
+					nrm = axesW[n];
+				else
+					nrm = glm::normalize(nrm);
+			}
+			m_dragPlaneN = nrm;
+		}
+		else {
+			glm::vec3 ax = axesW[best];
+			if (useLocal) {
+				ax = glm::vec3(global * glm::vec4(axesW[best], 0.0f));
+				if (glm::length(ax) < 1e-6f)
+					ax = axesW[best];
+				else
+					ax = glm::normalize(ax);
+			}
+			const glm::vec3 camDir = glm::normalize(O - EditorCamEye(ActiveCam()));
+			m_dragPlaneN = glm::normalize(glm::cross(ax, glm::cross(camDir, ax)));
+		}
 		const float denom = glm::dot(ray, m_dragPlaneN);
 		if (std::fabs(denom) > 1e-9f) {
 			const float t = glm::dot(O - origin, m_dragPlaneN) / denom;
@@ -660,10 +816,10 @@ bool EditorApp::GizmoHandleInput() {
 		return true;
 	}
 	const int axIdx = m_gizmoAxis;
-	if (axIdx < 0 || axIdx > 2)
+	if (axIdx < 0 || axIdx > 6)
 		return true;
 	glm::vec3 ax = useLocal
-		? glm::vec3(global * glm::vec4(axesW[axIdx], 0.0f)) : axesW[axIdx];
+		? glm::vec3(global * glm::vec4(axesW[std::min(axIdx, 2)], 0.0f)) : axesW[std::min(axIdx, 2)];
 	if (glm::length(ax) < 1e-9f)
 		return true;
 	ax = glm::normalize(ax);
@@ -676,17 +832,35 @@ bool EditorApp::GizmoHandleInput() {
 			const float t = glm::dot(O - origin, m_dragPlaneN) / denom;
 			if (t > 0.0f) {
 				const glm::vec3 cur = origin + ray * t;
-				const float d = glm::dot(cur - m_dragGrabPoint, ax);
 				// World delta -> parent-local delta (rotation part only).
 				const int parent = m_world->scene.hierarchy[m_selected].parent;
-				glm::vec3 dLocal = ax * d;
-				if (parent >= 0) {
+				auto toLocal = [&](const glm::vec3& w) {
+					if (parent < 0)
+						return w;
 					const glm::mat3 pw(m_world->scene.globalTransform[parent]);
 					const float det = glm::determinant(pw);
-					if (std::fabs(det) > 1e-12f)
-						dLocal = glm::inverse(pw) * (ax * d);
+					return (std::fabs(det) > 1e-12f)
+						? glm::inverse(pw) * w : w;
+				};
+				if (axIdx == 7) {
+					// Uniform cube: full 3D move (no axis projection).
+					const glm::vec3 dW = cur - m_dragGrabPoint;
+					m_dragCurT = m_dragBaseT + toLocal(dW);
 				}
-				m_dragCurT = m_dragBaseT + dLocal;
+				else if (axIdx <= 2) {
+					const float d = glm::dot(cur - m_dragGrabPoint, ax);
+					m_dragCurT = m_dragBaseT + toLocal(ax * d);
+				}
+				else {
+					// Plane handle: move on both tangent axes at once.
+					const int n = axIdx - 3;
+					const int a = (n + 1) % 3, b = (n + 2) % 3;
+					const glm::vec3 axA = axesW[a], axB = axesW[b];
+					const glm::vec3 dvec = cur - m_dragGrabPoint;
+					const glm::vec3 dW = axA * glm::dot(dvec, axA)
+						+ axB * glm::dot(dvec, axB);
+					m_dragCurT = m_dragBaseT + toLocal(dW);
+				}
 				// Shift = grid snap: translate steps to the grid cell.
 				if (shiftHeld && m_gridSize > 0.0f) {
 					const float inv = 1.0f / m_gridSize;
@@ -698,6 +872,64 @@ bool EditorApp::GizmoHandleInput() {
 		}
 	}
 	else if (m_gizmoMode == GizmoMode::Rotate) {
+		if (axIdx == 6) {
+			// Arcball: map the mouse delta onto the unit sphere in
+			// camera space (around the projected gizmo center) and
+			// accumulate the rotation. The camera-space delta becomes
+			// a local-space delta through the parent world orientation.
+			const glm::mat4 invVP = glm::inverse(viewProj);
+			const glm::vec3 camRightW =
+				glm::normalize(glm::vec3(invVP[0]));
+			const glm::vec3 camUpW =
+				glm::normalize(glm::vec3(invVP[1]));
+			const glm::vec2 centerPx = ToScreen(O, viewProj, extent);
+			const float radiusPx = glm::max(glm::length(
+				ToScreen(O + camRightW * s, viewProj, extent) - centerPx),
+				4.0f);
+			auto toSphere = [&](float x, float y) {
+				glm::vec2 p((x - centerPx.x) / radiusPx,
+					-(y - centerPx.y) / radiusPx);
+				const float l2 = glm::dot(p, p);
+				if (l2 <= 1.0f)
+					return glm::vec3(p.x, p.y, std::sqrt(1.0f - l2));
+				const float l = std::sqrt(l2);
+				return glm::vec3(p.x / l, p.y / l, 0.0f); // rim clamp
+			};
+			const glm::vec3 v0 = toSphere(m_dragLastX, m_dragLastY);
+			const glm::vec3 v1 = toSphere(mx, my);
+			m_dragLastX = mx;
+			m_dragLastY = my;
+			const glm::vec3 cr = glm::cross(v0, v1);
+			if (glm::length(cr) > 1e-9f) {
+				const float ang = std::acos(std::clamp(
+					glm::dot(v0, v1), -1.0f, 1.0f));
+				const glm::vec3 axisW = glm::normalize(
+					camRightW * cr.x + camUpW * cr.y
+					+ glm::normalize(glm::cross(camRightW, camUpW)) * cr.z);
+				// Camera-space delta -> parent-local delta: the node's
+				// world orientation is qParentWorld * qLocal.
+				const int parent =
+					m_world->scene.hierarchy[m_selected].parent;
+				const glm::mat4& pwM = (parent >= 0)
+					? m_world->scene.globalTransform[parent]
+					: glm::mat4(1.0f);
+				const glm::quat qParentW = glm::quat_cast(glm::mat3(pwM));
+				const glm::quat dq = glm::angleAxis(ang, axisW);
+				m_dragArcQ = dq * m_dragArcQ;
+				const glm::quat qLocal =
+					glm::inverse(qParentW) * m_dragArcQ * qParentW
+					* glm::quat_cast(glm::mat3(m_dragBaseMat));
+				// Back to the editor's euler storage (same order
+				// fidelity as ReadLocalTRS: eulerAngles XYZ read,
+				// Rz*Ry*Rx write — see LocalMatrixFromTRS).
+				m_dragCurR = glm::degrees(glm::eulerAngles(qLocal));
+				m_dragCurT = m_dragBaseT;
+				m_dragCurS = m_dragBaseS;
+				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR,
+					m_dragCurS);
+			}
+			return true;
+		}
 		const float dx = mx - m_dragLastX;
 		m_dragLastX = mx;
 		m_dragBaseAngle += dx * 0.008f; // radians per pixel
@@ -713,26 +945,75 @@ bool EditorApp::GizmoHandleInput() {
 		glm::vec3 origin;
 		const glm::vec3 ray = MouseRay(mx, my, extent, viewProj, origin);
 		const float denom = glm::dot(ray, m_dragPlaneN);
-		float ratio = 1.0f;
 		if (std::fabs(denom) > 1e-9f) {
 			const float t = glm::dot(O - origin, m_dragPlaneN) / denom;
 			if (t > 0.0f) {
 				const glm::vec3 cur = origin + ray * t;
-				const float d0 = glm::dot(m_dragGrabPoint - m_dragNodeOrigin, ax);
-				const float d1 = glm::dot(cur - m_dragNodeOrigin, ax);
-				if (std::fabs(d0) > 1e-6f)
-					ratio = std::clamp(d1 / d0, 0.05f, 50.0f);
-				else
-					ratio = std::clamp(1.0f + (d1 / m_dragStartDist), 0.05f, 50.0f);
-				// Shift = scale snap (e.g. 0.1 steps).
-				if (shiftHeld && m_snapScaleStep > 0.0f)
-					ratio = std::round(ratio / m_snapScaleStep) * m_snapScaleStep;
-				ratio = std::clamp(ratio, 0.05f, 50.0f);
+				m_dragCurS = m_dragBaseS;
+				if (axIdx == 7) {
+					// Uniform cube: single factor from the screen-space
+					// radial distance (drag outward to grow).
+					const glm::vec2 centerPx =
+						ToScreen(O, viewProj, extent);
+					const glm::vec2 grabPx =
+						ToScreen(m_dragGrabPoint, viewProj, extent);
+					const float r0 = glm::max(
+						glm::length(grabPx - centerPx), 8.0f);
+					const float r1 = glm::length(
+						glm::vec2(mx, my) - centerPx);
+					float ratio = std::clamp(r1 / r0, 0.05f, 50.0f);
+					if (shiftHeld && m_snapScaleStep > 0.0f)
+						ratio = std::round(ratio / m_snapScaleStep)
+							* m_snapScaleStep;
+					ratio = std::clamp(ratio, 0.05f, 50.0f);
+					m_dragCurS = m_dragBaseS * ratio;
+				}
+				else if (axIdx <= 2) {
+					float ratio = 1.0f;
+					const float d0 = glm::dot(m_dragGrabPoint - m_dragNodeOrigin, ax);
+					const float d1 = glm::dot(cur - m_dragNodeOrigin, ax);
+					if (std::fabs(d0) > 1e-6f)
+						ratio = std::clamp(d1 / d0, 0.05f, 50.0f);
+					else
+						ratio = std::clamp(1.0f + (d1 / m_dragStartDist), 0.05f, 50.0f);
+					// Shift = scale snap (e.g. 0.1 steps).
+					if (shiftHeld && m_snapScaleStep > 0.0f)
+						ratio = std::round(ratio / m_snapScaleStep) * m_snapScaleStep;
+					ratio = std::clamp(ratio, 0.05f, 50.0f);
+					m_dragCurS[axIdx] = m_dragBaseS[axIdx] * ratio;
+				}
+				else {
+					// Plane handle: per-tangent-axis ratios (local
+					// frame — scale planes are drawn local).
+					const int n = axIdx - 3;
+					const int comps[2] = { (n + 1) % 3, (n + 2) % 3 };
+					for (int k = 0; k < 2; ++k) {
+						const int ci = comps[k];
+						glm::vec3 axK = glm::vec3(global
+							* glm::vec4(axesW[ci], 0.0f));
+						if (glm::length(axK) < 1e-6f)
+							continue;
+						axK = glm::normalize(axK);
+						const float d0 = glm::dot(
+							m_dragGrabPoint - m_dragNodeOrigin, axK);
+						const float d1 = glm::dot(
+							cur - m_dragNodeOrigin, axK);
+						float ratio = 1.0f;
+						if (std::fabs(d0) > 1e-6f)
+							ratio = std::clamp(d1 / d0, 0.05f, 50.0f);
+						else
+							ratio = std::clamp(1.0f + (d1 / m_dragStartDist),
+								0.05f, 50.0f);
+						if (shiftHeld && m_snapScaleStep > 0.0f)
+							ratio = std::round(ratio / m_snapScaleStep)
+								* m_snapScaleStep;
+						ratio = std::clamp(ratio, 0.05f, 50.0f);
+						m_dragCurS[ci] = m_dragBaseS[ci] * ratio;
+					}
+				}
+				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 			}
 		}
-		m_dragCurS = m_dragBaseS;
-		m_dragCurS[axIdx] = m_dragBaseS[axIdx] * ratio;
-		WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 	}
 	return true;
 }

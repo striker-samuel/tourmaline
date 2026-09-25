@@ -356,10 +356,18 @@ void EditorApp::ModalToggleVisibility() {
 	if (primary < m_world->scene.hierarchy.size())
 		hide = IsVisibleNode(m_world->scene, int(primary));
 	int n = 0;
+	int skippedRef = 0;
 	for (uint32_t t : targets) {
 		if (t == UINT32_MAX || t >= m_world->scene.hierarchy.size()
 			|| m_deletedNodes.contains(t))
 			continue;
+		if (IsRefPlaceholder(t)) {
+			// Placeholder visibility is owned by the reference's
+			// `enabled` bool (Reference editor checkbox) — never by
+			// visibility commands.
+			++skippedRef;
+			continue;
+		}
 		EditCmd c{};
 		c.verb = EditVerb::SetVisibility;
 		c.node = t;
@@ -369,6 +377,9 @@ void EditorApp::ModalToggleVisibility() {
 		Do(c);
 		++n;
 	}
+	if (skippedRef > 0)
+		Log("Visibility: reference placeholder(s) skipped — use the "
+			"reference checkbox (File > Reference editor).");
 	if (n > 0)
 		Log(std::string("Visibility: ") + (hide ? "hid" : "showed") + " "
 			+ std::to_string(n) + " node" + (n > 1 ? "s" : "")

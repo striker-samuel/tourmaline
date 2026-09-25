@@ -336,12 +336,16 @@ bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
 		RestoreRefPlaceholders(idx);
 	}
 	if (m_world && ph != UINT32_MAX) {
-		EditCmd c{};
-		c.verb = EditVerb::SetVisibility;
-		c.node = ph;
-		c.afterFlag = !enabled; // disabled = hidden subtree
-		c.beforeFlag = enabled;
-		Do(c); // autosaves (the flag rides the same doc)
+		// The ENABLED flag (the reference line's bool attr) is the
+		// single source of truth — deliberately NOT a SetVisibility
+		// command (those belong to user-authored visibility edits and
+		// would fight the flag on every toggle/reload). Apply the
+		// hide/show straight onto the scene instead.
+		if (enabled)
+			ClearHidden(m_world->scene, int(ph));
+		else
+			MarkHidden(m_world->scene, int(ph));
+		AutosaveTour(); // the flag rides the same doc
 		Log(std::string("Reference ") + (enabled ? "shown" : "hidden")
 			+ ": '" + m_references[idx].source + "' (placeholder #"
 			+ std::to_string(ph) + ", kept in the scene).");
@@ -381,6 +385,72 @@ static bool RefSourceExists(const std::string& gltfHostPath,
 			fs::path(gltfHostPath).parent_path() / source, ec))
 		return true;
 	return false;
+}
+
+bool EditorApp::ReloadReferencesViaTemp() {
+	if (m_gltfPath.empty() || !m_world)
+		return false;
+	// Snapshot the UI + save state a full rebind would otherwise reset:
+	// cameras (the loader refits viewport 0), selection (ids are
+	// deterministic when the reference set is unchanged), the save-as
+	// target (the loader resets it to the default) and the dirty flag
+	// (the replay clears it, but unsaved edits are still unsaved).
+	const std::vector<EditorCam> savedCams = m_editorCams;
+	const uint32_t savedSelected = m_selected;
+	const std::vector<uint32_t> savedSelection = m_selection;
+	const std::string savedTourPath = m_tourPath;
+	const bool savedDirty = m_tourDirty;
+	// The working doc — history, orphans, overrides, env, placement,
+	// images, reference list + flags — lands in a TEMP tour (never the
+	// real file: reload must not save, and the on-disk file may be
+	// stale behind the autosave). SaveTourTo retargets m_tourPath and
+	// clears the dirty flag as a side effect — restore both at once.
+	namespace fs = std::filesystem;
+	std::string stem = "scene";
+	try {
+		stem = fs::path(m_gltfPath).stem().string();
+		if (stem.empty())
+			stem = "scene";
+	}
+	catch (...) {}
+	std::error_code ec;
+	fs::path tmp = fs::temp_directory_path(ec) /
+		("tourmaline_" + stem + "_reload.tour");
+	if (ec)
+		return false;
+	if (!SaveTourTo(tmp.generic_string())) {
+		Log("Reference reload: snapshot failed — reload cancelled.");
+		m_tourPath = savedTourPath;
+		m_tourDirty = savedDirty;
+		return false;
+	}
+	m_tourPath = savedTourPath;
+	m_tourDirty = savedDirty;
+	Log("Reference reload: rebinding through a temp snapshot (the tour file is untouched).");
+	const bool ok = LoadGltfIntoWorld(m_gltfPath, tmp.generic_string());
+	std::error_code rmEc;
+	fs::remove(tmp, rmEc);
+	// Restore the session frame around the fresh bind (ids are stable
+	// when the reference set did not structurally change; anything
+	// out of bounds after a source edit is dropped, not crashed on).
+	m_tourPath = savedTourPath;
+	m_tourDirty = savedDirty;
+	if (!savedCams.empty())
+		m_editorCams = savedCams;
+	if (ok && m_world) {
+		const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+		if (savedSelected != UINT32_MAX && savedSelected < n) {
+			m_selected = savedSelected;
+			m_selection.clear();
+			for (uint32_t s : savedSelection)
+				if (s < n)
+					m_selection.push_back(s);
+		}
+		else {
+			ClearSelection();
+		}
+	}
+	return ok;
 }
 
 void EditorApp::DrawReferencesPanel() {
@@ -498,11 +568,12 @@ void EditorApp::DrawReferencesPanel() {
 	if (pendingReload >= 0
 		&& !m_gltfPath.empty()
 		&& size_t(pendingReload) < m_references.size()) {
-		// Rebind the whole scene (references bind at import; the
-		// reloaded source's edited .tour re-inlines fresh).
+		// Rebind through a temp snapshot of the WORKING doc (never the
+		// stale on-disk file, never an implicit save): unsaved edits,
+		// reference flags, cameras and selection all survive.
 		Log("Reference reload: '" + m_references[size_t(pendingReload)].source
 			+ "' — rebinding.");
-		OpenScene(m_gltfPath);
+		ReloadReferencesViaTemp();
 	}
 	if (pendingReplace >= 0) {
 		std::string picked;

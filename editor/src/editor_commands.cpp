@@ -1413,6 +1413,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	case EditVerb::SetVisibility:
 		if (!needNode())
 			return false;
+		// Reference placeholders are owned by the reference line's
+		// `enabled` bool — their visibility never persists as a
+		// command (this also purges legacy placeholder lines).
+		if (app.IsRefPlaceholder(c.node))
+			return false;
 		out.verb = smvk::tour::Verb::SetVisibility;
 		out.flag = c.afterFlag;
 		return true;
@@ -1699,6 +1704,10 @@ bool EditorApp::AutosaveTour() {
 	const std::string path = AutosavePath();
 	if (path.empty())
 		return false;
+	// The working doc moved ahead of the last explicit save (every
+	// AutosaveTour call site mutates tour state): mark dirty for the
+	// window-title star. Explicit saves clear it (SaveTourTo below).
+	m_tourDirty = true;
 	// Same doc as a real save, but the target stays untouched: reuse
 	// the builder through SaveTourTo and restore the previous target.
 	const std::string target = m_tourPath;
@@ -1897,6 +1906,11 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		if (m_history[i].verb == EditVerb::Delete
 			&& WorldToCluster(m_history[i].node) < 0)
 			continue;
+		// Placeholder visibility rides the reference line's `enabled`
+		// bool — never the command log (purges legacy toggle lines).
+		if (m_history[i].verb == EditVerb::SetVisibility
+			&& IsRefPlaceholder(m_history[i].node))
+			continue;
 		smvk::tour::Command tc{};
 		if (!CmdToTour(*this, m_history[i], tc)) {
 			Log("tour: skipping unmapped command #" + std::to_string(i));
@@ -1940,6 +1954,10 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		return false;
 	}
 	m_tourPath = tp;
+	// Explicit project-file writes (anything but the autosave slot)
+	// clear the dirty star; the autosave path never does.
+	if (tp != AutosavePath())
+		m_tourDirty = false;
 	return true;
 }
 
@@ -2389,6 +2407,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		+ (m_orphanTourCmds.empty() ? std::string()
 			: " (kept " + std::to_string(m_orphanTourCmds.size())
 				+ " unresolved for later)."));
+	m_tourDirty = false; // fresh replay matches its file
 	LoadOverridesFromDoc(doc);
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
@@ -2546,8 +2565,13 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 			return false;
 		}
 	} else if (!m_world) {
-		Log("tour open: tour has no source and no scene is open.");
-		return false;
+		// Sourceless tour (the `source` mechanism is deprecated —
+		// geometry may come entirely from references): build an empty
+		// world bound against THIS tour file, then replay below.
+		if (!LoadGltfIntoWorld({}, path)) {
+			Log("tour open: failed to build an empty world.");
+			return false;
+		}
 	}
 	m_tourPath = path; // the opened file becomes the save target
 	if (!ReplayTourDoc(doc, doc.source.empty() ? m_gltfPath : doc.source))

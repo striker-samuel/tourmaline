@@ -310,24 +310,34 @@ void EditorApp::CloseScene() {
 	m_defaultMatWorld = UINT32_MAX;
 	ClearSelection();
 	ClearHistory();
+	m_tourDirty = false;
 	Log("Scene closed.");
 }
 
-bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
-	// Scheme paths keep their //flintbase/ identity in m_gltfPath but
-	// load (and fingerprint) from the resolved storage file.
+bool EditorApp::LoadGltfIntoWorld(const std::string& path,
+	const std::string& tourOverride) {
+	// Empty path = sourceless tour (DEPRECATED source mechanism): no
+	// glTF to import — an empty world whose geometry comes entirely
+	// from references. tourOverride pins the reference lookup to the
+	// opened tour file (otherwise <stem>.tour next to the source,
+	// which does not exist here).
 	std::string loadPath = path;
-	if (smvk::vfs::HasFlintbasePrefix(path)) {
-		loadPath = smvk::FlintbaseHostPath(path);
-		if (loadPath.empty()) {
-			Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
+	tinygltf::Model model;
+	const bool haveModel = !path.empty();
+	if (haveModel) {
+		// Scheme paths keep their //flintbase/ identity in m_gltfPath
+		// but load (and fingerprint) from the resolved storage file.
+		if (smvk::vfs::HasFlintbasePrefix(path)) {
+			loadPath = smvk::FlintbaseHostPath(path);
+			if (loadPath.empty()) {
+				Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
+				return false;
+			}
+		}
+		if (!LoadModelFromAsciiFile(model, loadPath.c_str())) {
+			Log("Failed to load glTF: " + loadPath);
 			return false;
 		}
-	}
-	tinygltf::Model model;
-	if (!LoadModelFromAsciiFile(model, loadPath.c_str())) {
-		Log("Failed to load glTF: " + loadPath);
-		return false;
 	}
 	WaitForDeviceIdle();
 	// Fresh streamer per load: entries view the old cluster's stashed
@@ -352,17 +362,25 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	}
 	m_world = std::make_unique<smvk::World>();
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
-	Log(std::string("Importing geometry/materials (textures: ") +
-		(m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming") : "full") +
-		")...");
-	try {
-		GltfToCluster(*m_context, model, loadPath, cluster,
-			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, glm::mat4(1.0f),
-			m_textureStreamer.get());
+	if (haveModel) {
+		Log(std::string("Importing geometry/materials (textures: ") +
+			(m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming") : "full") +
+			")...");
+		try {
+			GltfToCluster(*m_context, model, loadPath, cluster,
+				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, glm::mat4(1.0f),
+				m_textureStreamer.get());
+		}
+		catch (const std::exception& e) {
+			Log(std::string("Import failed: ") + e.what());
+			return false;
+		}
 	}
-	catch (const std::exception& e) {
-		Log(std::string("Import failed: ") + e.what());
-		return false;
+	else {
+		// Sourceless tour: empty cluster root (importer parity) —
+		// references below supply all geometry.
+		addNode(cluster.scene, -1, 0);
+		Log("Empty world (no source scene): geometry comes from references.");
 	}
 	// Clarisse-style nested scene references: the master tour's
 	// `reference` lines bind HERE (placeholder nodes + inlined subtrees,
@@ -378,11 +396,15 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 		smvk::tour::Doc refDoc;
 		std::string refErr;
 		std::vector<std::string> refWarns;
-		std::filesystem::path masterTour =
-			std::filesystem::path(path);
-		masterTour.replace_extension(".tour");
 		// The tour FILE (never the autosave): recovery from an autosave
 		// is an explicit user choice (recovery dialog), never silent.
+		// An explicit tourOverride (sourceless opens) pins the lookup
+		// to the opened file; otherwise <stem>.tour next to the source.
+		std::filesystem::path masterTour = tourOverride.empty()
+			? std::filesystem::path(path)
+			: std::filesystem::path(tourOverride);
+		if (tourOverride.empty())
+			masterTour.replace_extension(".tour");
 		const std::string latestTour = masterTour.string();
 		if (!latestTour.empty()
 			&& smvk::tour::LoadTour(latestTour, refDoc, refErr,
@@ -428,7 +450,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_vfsRoot.clear(); // re-resolved lazily by the VFS tab
 	m_vfsSel.clear();
 	m_gltfModel = std::move(model);
-	m_hasGltfModel = true;
+	m_hasGltfModel = haveModel; // sourceless: no model, AABB picking
 	m_pakPath.clear();
 	m_pakImage.clear();
 	m_pakReader.reset();
@@ -475,10 +497,32 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	Log("Indexing nodes for picking...");
 	RebuildNodeIndex();
 	Log("Loading tour...");
-	LoadTour(); // replays <stem>.tour into the undo stack when present
-	// A newer (or orphan) autosave never loads silently: offer recovery
-	// as an explicit choice instead (recovery dialog).
-	CheckAutosaveOffer();
+	if (!tourOverride.empty() && haveModel) {
+		// Temp-doc reload (reference Reload): the snapshot — not the
+		// on-disk file — is the document. No autosave offer either:
+		// the temp already IS the latest working state.
+		smvk::tour::Doc tmpDoc;
+		std::string tmpErr;
+		std::vector<std::string> tmpWarns;
+		if (smvk::tour::LoadTour(tourOverride, tmpDoc, tmpErr,
+				&tmpWarns)) {
+			for (auto& w : tmpWarns)
+				Log(w);
+			ReplayTourDoc(tmpDoc, path);
+		}
+		else {
+			Log("reload snapshot unreadable (" + tmpErr
+				+ ") — falling back to the tour file.");
+			LoadTour();
+			CheckAutosaveOffer();
+		}
+	}
+	else {
+		LoadTour(); // replays <stem>.tour into the undo stack when present
+		// A newer (or orphan) autosave never loads silently: offer recovery
+		// as an explicit choice instead (recovery dialog).
+		CheckAutosaveOffer();
+	}
 	// Reference checkbox = the placeholder visibility AUTHORITY, applied
 	// AFTER the tour replay: disabled refs hide their subtrees (nodes
 	// kept, ids stable — the per-frame visibility filters stop draws/

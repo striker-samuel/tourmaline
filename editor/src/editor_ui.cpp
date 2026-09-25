@@ -115,6 +115,8 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	// window hierarchy holds the keyboard focus (ModalDelete vs the
 	// graph's own node/wire delete).
 	m_imguiFocusInPlacementGraph = false;
+	// Window title tracks the scene + dirty star (change-detected).
+	UpdateWindowTitle();
 
 	// Panels are siblings of the central viewport (never on top of it):
 	// RenderFrame renders only the rect between them. I hides every

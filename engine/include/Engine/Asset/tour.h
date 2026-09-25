@@ -269,7 +269,10 @@ inline constexpr uint32_t kCreateTerrainRefBase = 0x40000000u;
 
 struct Doc {
 	int version = kTourVersion;
-	std::string source;      // source glTF path (as written by the editor)
+	std::string source;      // source glTF path (DEPRECATED: geometry may
+	                         // come entirely from references — may be
+	                         // empty; the loader builds an empty world
+	                         // then binds references + replays commands)
 	std::string fingerprint; // size+mtime of source at save (warn on mismatch)
 	std::vector<Command> commands;
 	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
