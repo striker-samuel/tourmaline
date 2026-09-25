@@ -532,6 +532,135 @@ void TestReferences() {
 	fs::remove_all(dir, ec);
 }
 
+// ROOT references: the scene's own glTF rides as reference #0 in the
+// definition doc — inlined under the scene root with NO placeholder and
+// NO namespace, so cluster ids/names match a direct import exactly
+// (editor + cook build identical worlds). Round-trips as
+// `reference -root -source "..."`.
+void TestRootReference() {
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "vulkantoy_rootref";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	const fs::path gltf = dir / "scene.gltf";
+	{
+		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scenes\":[{\"nodes\":[0,1]}],"
+			"\"nodes\":[{\"name\":\"Alpha\"},{\"name\":\"Beta\"}]}";
+	}
+	std::string err;
+	// Round-trip: writer emits `reference -root`, parser reads it back.
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd root{};
+	root.root = true;
+	root.source = "scene.gltf";
+	root.name = "scene";
+	doc.references.push_back(root);
+	smvk::tour::ReferenceCmd other{};
+	other.parent = 0;
+	other.source = "extra.gltf";
+	other.name = "extra";
+	doc.references.push_back(other);
+	const std::string tourPath = (dir / "def.tour").string();
+	Check(smvk::tour::SaveTour(tourPath, doc, err), "rootref save");
+	{
+		std::ifstream f(tourPath, std::ios::binary);
+		std::stringstream ss;
+		ss << f.rdbuf();
+		const std::string text = ss.str();
+		Check(text.find("reference -root -n 0 -source \"scene.gltf\"")
+			!= std::string::npos, "rootref -root line");
+	}
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(tourPath, back, err, &warns),
+		"rootref load");
+	Check(back.references.size() == 2, "rootref count");
+	if (back.references.size() == 2) {
+		Check(back.references[0].root && back.references[0].source == "scene.gltf",
+			"rootref roundtrip");
+		Check(!back.references[1].root, "rootref second stays normal");
+	}
+	// Bind parity A: definition build (empty root + root reference).
+	auto defCluster = std::make_unique<smvk::Cluster>(nullptr);
+	defCluster->SetCookMode(true);
+	addNode(defCluster->scene, -1, 0);
+	std::vector<int> defPh;
+	std::vector<std::string> defResolved;
+	smvk::tour::Doc defDoc; // root ref only (extra.gltf does not exist)
+	defDoc.references.push_back(root);
+	const size_t applied = ApplySceneReferences(*defCluster, defDoc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &defPh,
+		nullptr, &defResolved);
+	Check(applied == 1, "rootref applied");
+	// No placeholder: the sentinel entry is -1 (root refs anchor at
+	// the scene root).
+	Check(defPh.size() == 1 && defPh[0] == -1, "rootref placeholder sentinel");
+	// Bind parity B: direct import of the same glTF.
+	tinygltf::Model model;
+	Check(LoadModelFromAsciiFile(model, gltf.string().c_str()),
+		"rootref parse for direct import");
+	auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
+	dirCluster->SetCookMode(true);
+	addNode(dirCluster->scene, -1, 0);
+	{
+		GltfToSceneImporter importer(*dirCluster, model, gltf);
+		importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
+		// Direct-import roots: default scene's nodes, first-scene
+		// fallback (the same traversal GltfToCluster uses).
+		std::vector<int> gltfRoots;
+		if (model.defaultScene >= 0
+			&& model.defaultScene < (int)model.scenes.size())
+			gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
+		else if (!model.scenes.empty())
+			gltfRoots = model.scenes.front().nodes;
+		for (int gltfNode : gltfRoots)
+			importer.import(gltfNode);
+	}
+	// IDENTICAL builds: same node count, same names at the same ids
+	// (no placeholder node, no namespace prefix).
+	Check(defCluster->scene.hierarchy.size()
+			== dirCluster->scene.hierarchy.size(),
+		"rootref parity node count");
+	bool namesMatch = true;
+	for (size_t n = 0;
+		n < defCluster->scene.hierarchy.size()
+			&& n < dirCluster->scene.hierarchy.size(); ++n)
+		namesMatch = namesMatch && getNodeName(defCluster->scene, int(n))
+			== getNodeName(dirCluster->scene, int(n));
+	Check(namesMatch, "rootref parity names/ids (no placeholder, no ns)");
+	Check(findNodeByName(defCluster->scene, "Alpha") == 1,
+		"rootref first glTF root at id 1");
+	Check(findNodeByName(defCluster->scene, "REF scene") < 0,
+		"rootref makes no placeholder");
+	// Root + normal reference together: the normal one keeps its
+	// placeholder and namespace; the root one stays bare.
+	{
+		std::ofstream f(dir / "extra.gltf", std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"Extra\"}]}";
+	}
+	{
+		auto both = std::make_unique<smvk::Cluster>(nullptr);
+		both->SetCookMode(true);
+		addNode(both->scene, -1, 0);
+		std::vector<int> ph2;
+		const size_t bothApplied = ApplySceneReferences(*both, back,
+			dir.generic_string(), nullptr, nullptr, nullptr,
+			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph2,
+			nullptr, nullptr);
+		Check(bothApplied == 2, "rootref mixed applied");
+		Check(ph2.size() == 2 && ph2[0] == -1 && ph2[1] >= 0,
+			"rootref mixed placeholders");
+		Check(findNodeByName(both->scene, "extra:Extra") >= 0,
+			"rootref normal ref still namespaced");
+	}
+	fs::remove_all(dir, ec);
+}
+
 void TestTourReferences() {
 	// .tour as a reference source: the authored scene imports, then its
 	// tour commands replay with id offsets (rename/transform/createLight
@@ -1423,6 +1552,7 @@ int main() {
 	TestLightVerbs();
 	TestTerrainVerbs();
 	TestCvolVerbs();
+	TestRootReference();
 	TestCreateNode();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;

@@ -232,6 +232,14 @@ struct ReferenceCmd {
 	bool hasTranslate = false;
 	bool enabled = true;      // false = unloaded (kept in the list, not
 	                          // bound; Maya-style load/unload)
+	// ROOT reference: the scene's OWN source glTF, kept in the document
+	// as reference #0 (the definition is self-contained — no separate
+	// `source` line). Inlined directly under the scene root with NO
+	// placeholder and NO namespace (Maya: the master file's own
+	// contents carry no prefix), so cluster ids match a direct source
+	// import exactly. Editor and cook build identical worlds from the
+	// identical doc. Never disabled/removed/replaced.
+	bool root = false;
 };
 
 struct Command {

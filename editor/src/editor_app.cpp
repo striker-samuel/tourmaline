@@ -323,7 +323,8 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// which does not exist here).
 	std::string loadPath = path;
 	tinygltf::Model model;
-	const bool haveModel = !path.empty();
+	bool haveModel = !path.empty(); // grows: tour opens parse the bound source
+	const bool directOpen = !path.empty(); // direct glTF open vs tour open
 	if (haveModel) {
 		// Scheme paths keep their //flintbase/ identity in m_gltfPath
 		// but load (and fingerprint) from the resolved storage file.
@@ -362,71 +363,89 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	}
 	m_world = std::make_unique<smvk::World>();
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
-	if (haveModel) {
-		Log(std::string("Importing geometry/materials (textures: ") +
-			(m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming") : "full") +
-			")...");
-		try {
-			GltfToCluster(*m_context, model, loadPath, cluster,
-				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, glm::mat4(1.0f),
-				m_textureStreamer.get());
-		}
-		catch (const std::exception& e) {
-			Log(std::string("Import failed: ") + e.what());
-			return false;
-		}
-	}
-	else {
-		// Sourceless tour: empty cluster root (importer parity) —
-		// references below supply all geometry.
-		addNode(cluster.scene, -1, 0);
-		Log("Empty world (no source scene): geometry comes from references.");
-	}
-	// Clarisse-style nested scene references: the master tour's
-	// `reference` lines bind HERE (placeholder nodes + inlined subtrees,
-	// recursion through each source's own tour) — before the world
-	// resolve, so the hierarchy nests (shot -> car -> wheel) and every
-	// later tour command / override addresses deterministic cluster ids.
+	// THE DEFINITION BUILD: the world assembles from the tour doc.
+	// Reference #0 is the source glTF itself (a ROOT reference — no
+	// placeholder, no namespace, cluster ids match a direct import
+	// exactly); every other reference inlines beneath it; the command
+	// log replays on top (below). No side imports: `path` non-empty
+	// is a direct glTF open (its file IS the root reference's
+	// source); empty means the opened tour carries the source.
+	addNode(cluster.scene, -1, 0); // empty scene root
+	Log(std::string("Binding scene definition (textures: ") +
+		(m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming") : "full") +
+		")...");
 	m_references.clear();
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
 	m_refIssues.clear();
 	m_refResolved.clear();
+	std::string rootSource; // bound source ("" = sourceless scene)
 	{
 		smvk::tour::Doc refDoc;
 		std::string refErr;
 		std::vector<std::string> refWarns;
 		// The tour FILE (never the autosave): recovery from an autosave
 		// is an explicit user choice (recovery dialog), never silent.
-		// An explicit tourOverride (sourceless opens) pins the lookup
-		// to the opened file; otherwise <stem>.tour next to the source.
+		// An explicit tourOverride (definition-tour opens / temp
+		// reloads) pins the lookup to that file; otherwise
+		// <stem>.tour next to the source.
 		std::filesystem::path masterTour = tourOverride.empty()
 			? std::filesystem::path(path)
 			: std::filesystem::path(tourOverride);
 		if (tourOverride.empty())
 			masterTour.replace_extension(".tour");
 		const std::string latestTour = masterTour.string();
-		if (!latestTour.empty()
-			&& smvk::tour::LoadTour(latestTour, refDoc, refErr,
-				&refWarns)) {
+		const bool haveDoc = !latestTour.empty()
+			&& smvk::tour::LoadTour(latestTour, refDoc, refErr, &refWarns);
+		if (haveDoc)
 			for (auto& w : refWarns)
 				Log(w);
-			if (!refDoc.references.empty()) {
-				const size_t applied = ApplySceneReferences(cluster, refDoc,
-					std::filesystem::path(loadPath).parent_path()
-						.generic_string(),
-					m_context.get(), m_textureStreamer.get(),
-					nullptr /* host files */,
-					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-					&m_refPhCluster, &m_refIssues, &m_refResolved);
-				Log("References: bound " + std::to_string(applied) +
-					" reference subtree(s) (" +
-					std::to_string(refDoc.references.size()) +
-					" top-level).");
-				// Editor-side mirror of the master list (save round-trip).
-				m_references = refDoc.references;
+		// The root reference leads the definition. Direct opens carry
+		// the source (the file the user opened wins over any recorded
+		// variant); tour opens take the doc's root reference as-is.
+		if (directOpen) {
+			smvk::tour::ReferenceCmd rootRef{};
+			rootRef.root = true;
+			rootRef.parent = 0;
+			rootRef.source = loadPath;
+			rootRef.name = std::filesystem::path(loadPath).stem().string();
+			if (haveDoc && !refDoc.references.empty()
+				&& refDoc.references[0].root)
+				refDoc.references[0] = rootRef;
+			else
+				refDoc.references.insert(refDoc.references.begin(),
+					rootRef);
+		}
+		if (!refDoc.references.empty()) {
+			const size_t applied = ApplySceneReferences(cluster, refDoc,
+				std::filesystem::path(loadPath).parent_path()
+					.generic_string(),
+				m_context.get(), m_textureStreamer.get(),
+				nullptr /* host files — cook-parity resolution */,
+				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+				&m_refPhCluster, &m_refIssues, &m_refResolved);
+			Log("Definition: bound " + std::to_string(applied) +
+				" reference subtree(s) (" +
+				std::to_string(refDoc.references.size()) +
+				" top-level).");
+			// Editor-side mirror of the definition (save round-trip).
+			m_references = refDoc.references;
+			if (m_references[0].root) {
+				rootSource = m_references[0].source;
+				// Canonical host path the source bound to (picking,
+				// Run-in-App, rebinds).
+				loadPath = (!m_refResolved.empty()
+					&& !m_refResolved[0].empty())
+					? m_refResolved[0] : rootSource;
 			}
 		}
+	}
+	// Tour-opened scenes: parse the bound source for CPU picking
+	// (direct opens parsed up front; the definition resolved the
+	// host path above).
+	if (!haveModel && !loadPath.empty()) {
+		if (LoadModelFromAsciiFile(model, loadPath.c_str()))
+			haveModel = true;
 	}
 	m_context->FlushUploads();
 	Log("Resolving world...");
@@ -444,7 +463,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		Log(sbuf);
 	}
 
-	m_gltfPath = path;
+	// Scene identity: the opened path (direct opens keep their identity,
+	// scheme paths included); tour opens take the definition's root
+	// reference source.
+	m_gltfPath = path.empty() ? rootSource : path;
 	m_gltfHostPath = loadPath;
 	m_tourPath = TourPath(); // fresh scene: default target (save-as changes it)
 	m_vfsRoot.clear(); // re-resolved lazily by the VFS tab
@@ -487,17 +509,20 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		1 + m_world->clusters[0]->scene.hierarchy.size())
 		m_clusterBase = 1;
 	// Map the reference placeholder CLUSTER ids -> world ids (cluster
-	// base just became valid).
+	// base just became valid). Root references carry a -1 sentinel (no
+	// placeholder by design) — mapped to UINT32_MAX so the parallel
+	// arrays stay index-aligned with m_references.
 	if (!m_refPhCluster.empty()) {
 		m_refPlaceholders.clear();
 		for (int cn : m_refPhCluster)
-			m_refPlaceholders.push_back(ClusterToWorld(uint32_t(cn)));
+			m_refPlaceholders.push_back(cn < 0
+				? UINT32_MAX : ClusterToWorld(uint32_t(cn)));
 		m_refPhCluster.clear();
 	}
 	Log("Indexing nodes for picking...");
 	RebuildNodeIndex();
 	Log("Loading tour...");
-	if (!tourOverride.empty() && haveModel) {
+	if (!tourOverride.empty() && directOpen) {
 		// Temp-doc reload (reference Reload): the snapshot — not the
 		// on-disk file — is the document. No autosave offer either:
 		// the temp already IS the latest working state.
@@ -516,6 +541,11 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 			LoadTour();
 			CheckAutosaveOffer();
 		}
+	}
+	else if (!tourOverride.empty()) {
+		// Opened definition tour: OpenTourFile replays its own doc
+		// right after this build — nothing loads here (a second load
+		// would double-apply the commands).
 	}
 	else {
 		LoadTour(); // replays <stem>.tour into the undo stack when present

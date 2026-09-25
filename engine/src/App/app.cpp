@@ -15,8 +15,15 @@
 
 
 bool smvk::App::Run() {
-	bool result = Initialize();
-	assert(result && "Failed to initialize");
+	if (!Initialize()) {
+		// HONOR the failure: MainLoop on a half-initialized renderer
+		// faults (the old assert compiles out in Release and the app
+		// limped on — or crashed — with no scene). Shutdown still runs
+		// so partial GPU state tears down while members are alive.
+		std::cerr << "[App] initialization failed — exiting\n";
+		Shutdown();
+		return false;
+	}
 	MainLoop();
 	// Ensure GPU idle and derived Holders are released while object is
 	// still fully constructed (all members alive). This avoids destroying

@@ -45,17 +45,25 @@ void EditorApp::CookToPak() {
 				: "Cook: no glTF loaded.");
 		return;
 	}
-	// Persist the command log (+ cook block) first; the cooker consumes it.
-	// SaveTour targets the live path (save-as aware); the cooker replays
-	// that same file, so a versioned .000N.tour cooks exactly it.
-	if (!SaveTour()) {
-		Log("Cook: tour save failed, aborting.");
-		return;
+	// Build a TEMP coalesced tour for cooking (don't overwrite the canonical .tour).
+	// The cooker will consume this temp tour; the live .tour stays untouched.
+	std::string tempTourPath;
+	{
+		namespace fs = std::filesystem;
+		fs::path tmp = fs::temp_directory_path() /
+			("tourmaline_cook_" + fs::path(m_gltfPath).stem().string() + ".tour");
+		std::error_code ec;
+		if (!SaveTourTo(tmp.generic_string())) {
+			Log("Cook: temp tour save failed, aborting.");
+			return;
+		}
+		tempTourPath = tmp.generic_string();
+		Log("Cook: temp tour saved '" + tempTourPath + "' (" +
+			std::to_string(m_historyCursor) + " commands).");
 	}
-	const std::string tourPath = TourTarget();
-	Log("Cook: tour saved '" + tourPath + "' (" +
-		std::to_string(m_historyCursor) + " commands).");
-	// Split the source path into --content-dir + --in-vfs for the cooker.
+	// contentDir = absolute path to the content root (parent of "content/").
+	// For F:\content\models\... -> F:\
+	// For //flintbase/ -> not used (flintbase handles its own resolution).
 	std::string contentDir, inVfs;
 	{
 		std::string posix = m_gltfPath;
@@ -63,25 +71,29 @@ void EditorApp::CookToPak() {
 			if (c == '\\')
 				c = '/';
 		if (smvk::vfs::HasFlintbasePrefix(posix)) {
-			// Scheme sources route through the cooker's Flintbase VFS
-			// mount; --content-dir is irrelevant for them.
-			contentDir = "content";
+			// Flintbase paths are resolved by the cooker's own VFS.
+			contentDir = std::filesystem::absolute("content").string();
 			inVfs = posix;
 		}
 		else {
-			const std::string marker = "content/models/";
+			const std::string marker = "content/";
 			const size_t at = posix.find(marker);
 			if (at != std::string::npos) {
-				contentDir = posix.substr(0, at + 8); // keep "content/"
-				inVfs = posix.substr(at + 8); // "models/..."
+				// contentDir = parent of "content/" so VFS mount works.
+				std::string parentPath = (at > 0) ? posix.substr(0, at) : ".";
+				contentDir = std::filesystem::absolute(parentPath).string();
+				inVfs = posix.substr(at); // "content/models/..."
 			}
 			else {
-				contentDir = std::filesystem::path(m_gltfHostPath).parent_path().string();
+				// Fallback: glTF host path's parent directory.
+				contentDir = std::filesystem::absolute(std::filesystem::path(m_gltfHostPath).parent_path()).string();
 				inVfs = std::filesystem::path(m_gltfHostPath).filename().string();
 			}
 		}
 	}
 	CookSettings cook = m_cook;
+	cook.contentDir = contentDir;
+	cook.inVfs = inVfs;
 	// Auto-generate output path if empty: content/paks/<stem>.pak
 	if (cook.outPak.empty() && !m_gltfPath.empty()) {
 		std::filesystem::path p(m_gltfPath);
@@ -90,7 +102,7 @@ void EditorApp::CookToPak() {
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
 	m_cookFuture = std::async(std::launch::async,
-		[cook, contentDir, inVfs, tourPath]() -> CookResult {
+		[cook, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			std::ostringstream log;
 			// PakCooker next to Editor.exe.
@@ -109,9 +121,9 @@ void EditorApp::CookToPak() {
 // resolves its 'source' field as --in-vfs). Else fall back to --in-vfs.
 std::ostringstream cmd;
 cmd << QuoteArg(cooker.string())
-	<< " --content-dir " << QuoteArg(cook.contentDir);
-if (!tourPath.empty()) {
-	cmd << " --tour " << QuoteArg(tourPath);
+	<< " --content-dir " << QuoteArg(contentDir);
+if (!tempTourPath.empty()) {
+	cmd << " --tour " << QuoteArg(tempTourPath);
 } else {
 	cmd << " --in-vfs " << QuoteArg(inVfs);
 }
@@ -138,6 +150,9 @@ cmd << " --out-pak " << QuoteArg(cook.outPak)
 			log << "cook: PakCooker exit=" << rc << "\n";
 			r.ok = (rc == 0);
 			r.log = log.str();
+			// Cleanup temp tour file.
+			std::error_code ec;
+			std::filesystem::remove(tempTourPath, ec);
 			return r;
 		});
 }

@@ -19,6 +19,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h> // GetModuleFileNameA (pak exe-relative resolution)
+#endif
+
 #include <Engine/core.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
@@ -1805,7 +1811,51 @@ bool SceneRenderer::Initialize() {
 		}
 		if (!m_forceGltf)
 		{
-			std::ifstream pakFile(scenePak, std::ios::binary | std::ios::ate);
+			// Pak path resolution: --pak accepts host paths AND
+			// vfs-style paths ("/content/..."). Windows reads a
+			// leading slash as DRIVE-relative ("F:/content/..." —
+			// almost never what was meant), so try as-is, then
+			// CWD-relative, then exe-relative, and open the first
+			// that exists. A missing pak is LOUD — the old silent
+			// ifstream skip fell through to a glTF fallback with an
+			// empty path (cryptic tinygltf error).
+			std::string pakOpenPath;
+			{
+				std::vector<std::string> candidates;
+				if (!scenePak.empty()) {
+					std::string rel = scenePak;
+					while (!rel.empty()
+						&& (rel.front() == '/' || rel.front() == '\\'))
+						rel.erase(rel.begin());
+					candidates.push_back(scenePak);
+					if (!rel.empty() && rel != scenePak) {
+						candidates.push_back(rel);
+						char exePath[1024] = {};
+#ifdef _WIN32
+						DWORD n = GetModuleFileNameA(nullptr, exePath,
+							DWORD(sizeof(exePath)));
+						(void)n;
+#endif
+						if (exePath[0])
+							candidates.push_back(
+								(std::filesystem::path(exePath)
+									.parent_path() / rel).string());
+					}
+				}
+				for (const std::string& c : candidates) {
+					std::error_code ec;
+					if (!c.empty() && std::filesystem::exists(
+							std::filesystem::path(c), ec)) {
+						pakOpenPath = c;
+						break;
+					}
+				}
+				if (pakOpenPath.empty() && !scenePak.empty())
+					std::cerr << "[SceneRenderer] pak not found: '"
+						<< scenePak << "' (tried as-is, CWD-relative and"
+						<< " exe-relative)" << std::endl;
+			}
+			std::ifstream pakFile(pakOpenPath, std::ios::binary | std::ios::ate);
 			if (pakFile) {
 				const auto pakEnd = pakFile.tellg();
 				if (pakEnd != std::ifstream::pos_type(-1)) {
@@ -1901,6 +1951,15 @@ bool SceneRenderer::Initialize() {
 			}
 		}
 		if (!loadedFromPak) {
+			// No pak (missing/forced) and no glTF source: a clear stop
+			// beats feeding tinygltf an empty path.
+			if (sceneGltf.empty()) {
+				std::cerr << "[SceneRenderer] nothing to load for scene '"
+					<< (m_scene.id ? m_scene.id : "?")
+					<< "': no pak opened and the scene has no glTF"
+					<< " source (see the errors above)" << std::endl;
+				return false;
+			}
 			tinygltf::Model model;
 			if (!LoadModelFromAsciiFile(model, sceneGltf.c_str())) {
 				return false;

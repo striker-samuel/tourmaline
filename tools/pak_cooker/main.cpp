@@ -752,22 +752,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		std::cerr << "Required: --out-pak <host path>" << std::endl;
 		return false;
 	}
-	// If --in-vfs not given but --tour is, load the tour to get its source.
-	if (out.inVfs.empty() && !out.tour.empty()) {
-		smvk::tour::Doc tour;
-		std::string terr;
-		std::vector<std::string> twarn;
-		if (!smvk::tour::LoadTour(out.tour, tour, terr, &twarn)) {
-			std::cerr << "Tour load failed (for source resolution): " << terr << std::endl;
-			return false;
-		}
-		if (tour.source.empty()) {
-			std::cerr << "Tour has no source glTF (cannot infer --in-vfs)\n";
-			return false;
-		}
-		out.inVfs = tour.source;
-		std::cout << "Resolved --in-vfs from tour: " << out.inVfs << "\n";
-	}
+	// --tour is the DEFINITION (self-contained: the source glTF rides
+	// as root reference #0) — no --in-vfs inference needed.
 	return true;
 }
 
@@ -2818,10 +2804,120 @@ int main(int argc, char** argv) {
 	if (args.lightmap)
 		importMeshletCfg.enabled = false;
 
-	// Scene selection (multi-scene paks: one Scene blob per glTF scene,
-	// shared asset pool; the runtime loads index 0 unless told otherwise).
-	struct SceneCook { int gltfIndex; std::string name; };
-	std::vector<SceneCook> toCook;
+	// Tour path: the doc IS the definition (root reference #0 = the
+	// source glTF, inlined under the scene root exactly like the
+	// editor binds it). No source resolution, no side imports — the
+	// reference machinery builds the whole scene.
+	std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
+	std::vector<std::string> sceneNames;
+	smvk::tour::Doc tour;
+	bool haveTour = false;
+
+	if (!args.tour.empty()) {
+		// Load tour: the DEFINITION (root reference = the source glTF,
+		// other references inline beneath it, commands replay on top).
+		std::string terr;
+		std::vector<std::string> twarn;
+		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
+			std::cerr << "Tour load failed: " << terr << std::endl;
+			return 1;
+		}
+		haveTour = true;
+		for (auto& w : twarn)
+			std::cerr << "Tour warning: " << w << std::endl;
+		// Apply tour cook defaults (CLI wins)
+		if (tour.hasCook) {
+			const auto& k = tour.cook;
+			auto use = [&](const char* key, auto& dst, auto val) {
+				if (!args.explicitSet.contains(key)) {
+					dst = val;
+					std::cout << "Tour cook default: " << key << "\n";
+				}
+			};
+			use("meshopt", args.meshopt, k.meshopt);
+			use("lods", args.lods, k.lods);
+			use("lightmap", args.lightmap, k.lightmap);
+			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
+			use("lmLobes", args.lmLobes, k.lmLobes);
+			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
+			use("lmRays", args.lmRays, k.lmRays);
+			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
+			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
+			use("sunAzimuth", args.sunAzimuth, k.sunAzimuth);
+			use("sunElevation", args.sunElevation, k.sunElevation);
+			use("sunIntensity", args.sunIntensity, k.sunIntensity);
+			use("skyIntensity", args.skyIntensity, k.skyIntensity);
+			use("cubemap", args.cubemap, k.cubemap);
+			use("cubemapName", args.cubemapName, k.cubemapName);
+			use("cubemapSize", args.cubemapSize, k.cubemapSize);
+			use("cubemapRays", args.cubemapRays, k.cubemapRays);
+			if (!k.lmExcludeKw.empty() &&
+				!args.explicitSet.contains("lmExclude")) {
+				if (!args.lmExclude.empty())
+					args.lmExclude += ",";
+				args.lmExclude += k.lmExcludeKw;
+				std::cout << "Tour cook default: lmExclude\n";
+			}
+		}
+		// Re-derive keyword list after the merge above.
+		args.lmExcludeKeywords.clear();
+		{
+			std::string low;
+			for (char ch : args.lmExclude)
+				low.push_back(char(std::tolower(uint8_t(ch))));
+			size_t pos = 0;
+			while (pos < low.size()) {
+				const size_t end = low.find(',', pos);
+				const std::string kw = low.substr(pos, end == std::string::npos
+					? std::string::npos : end - pos);
+				if (!kw.empty())
+					args.lmExcludeKeywords.push_back(kw);
+				pos = (end == std::string::npos) ? low.size() : end + 1;
+			}
+		}
+		opt.enabled = args.meshopt;
+		// DEFINITION BUILD — identical to the editor: empty scene root,
+		// then the reference bind (root reference #0 imports the source
+		// glTF under the scene root; the rest inline beneath it), then
+		// the command replay. HOST-path resolution (vfs = nullptr) so
+		// absolute and CWD-relative sources resolve exactly like the
+		// editor session that authored the tour (the cooker inherits
+		// the editor's working directory).
+		{
+			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+			cluster->SetCookMode(true);
+			addNode(cluster->scene, -1, 0); // empty scene root
+			if (!tour.references.empty()) {
+				const std::string ownerBase =
+					smvk::vfs::BaseDir(tour.references[0].source);
+				const size_t applied = ApplySceneReferences(*cluster, tour,
+					ownerBase, nullptr, nullptr,
+					nullptr /* HOST bind — editor parity */,
+					opt, importMeshletCfg, 0, nullptr);
+				std::cout << "Definition: bound " << applied
+					<< " reference subtree(s) ("
+					<< tour.references.size() << " top-level)\n";
+			}
+			std::vector<std::string> rwarn;
+			std::string rerr;
+			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
+					&rerr)) {
+				std::cerr << "Tour replay failed: " << rerr << std::endl;
+				return 1;
+			}
+			for (auto& w : rwarn)
+				std::cerr << "Tour replay warning: " << w << std::endl;
+			std::cout << "Tour replayed: " << tour.commands.size()
+				<< " commands from " << args.tour << "\n";
+			sceneNames.push_back("scene");
+			sceneClusters.push_back(std::move(cluster));
+		}
+	} else {
+		// No tour: original VFS-based multi-scene logic
+		// Scene selection (multi-scene paks: one Scene blob per glTF scene,
+		// shared asset pool; the runtime loads index 0 unless told otherwise).
+		struct SceneCook { int gltfIndex; std::string name; };
+		std::vector<SceneCook> toCook;
 	{
 		std::vector<std::string> gltfScenes;
 		std::string lerr;
@@ -2904,165 +3000,11 @@ int main(int argc, char** argv) {
 		sceneNames.push_back(sc.name);
 		sceneClusters.push_back(std::move(cluster));
 	}
+	} // close else block for VFS path
 	// Single-scene alias for the tour/collapse/bake stages below (written
 	// against one cluster; multi-scene loops reuse them per scene). Both
 	// cluster-> and *cluster forms keep working through the pointer.
 	smvk::Cluster* cluster = sceneClusters.front().get();
-
-	// .tour replay (editor overlay): deterministic CRUD commands applied to
-	// the freshly imported cook cluster — same ids, same importer — before
-	// collapse/LOD/bake/serialize. Tour cook settings fill any flag the CLI
-	// did not set explicitly (CLI wins). This is the mediaMolecule-style
-	// bake: source asset + edit log in, deterministic pak out.
-	if (!args.tour.empty()) {
-		smvk::tour::Doc tour;
-		std::string terr;
-		std::vector<std::string> twarn;
-		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
-			std::cerr << "Tour load failed: " << terr << std::endl;
-			return 1;
-		}
-		for (auto& w : twarn)
-			std::cerr << "Tour warning: " << w << std::endl;
-		// If inVfs wasn't explicitly given, resolve the tour's source
-		// as a filesystem path (relative to the tour file's dir, else
-		// the content dir). The VFS is NOT used for the primary import.
-		std::string sourcePath;
-		if (!tour.source.empty()) {
-			std::filesystem::path tourPath(args.tour);
-			std::filesystem::path contentDir(args.contentDir);
-			sourcePath = (tourPath.parent_path() / tour.source).lexically_normal().string();
-			if (!std::filesystem::exists(sourcePath)) {
-				sourcePath = (contentDir / tour.source).lexically_normal().string();
-			}
-			// If inVfs was empty, use the resolved source path
-			if (args.inVfs.empty())
-				args.inVfs = tour.source; // keep the tour's source string for compat
-			std::cout << "Tour source resolved to: " << sourcePath << "\n";
-		}
-		// Re-import the primary scene using the resolved filesystem path
-		// (not through VFS) so it works without a VFS mount.
-		if (!sourcePath.empty()) {
-			try {
-				tinygltf::Model model;
-				if (!LoadModelFromAsciiFile(model, sourcePath.c_str())) {
-					std::cerr << "Failed to load tour source glTF: " << sourcePath << std::endl;
-					return 1;
-				}
-				// Replace the first cluster with a fresh import using HostTextureSource
-				// (direct filesystem reads) instead of VFS-based import.
-				cluster = new smvk::Cluster(nullptr);
-				cluster->SetCookMode(true);
-				GltfToSceneImporter importer(*cluster, model,
-					std::filesystem::path(sourcePath));
-				importer.setTextureSource(
-					std::make_shared<HostTextureSource>(
-						std::filesystem::path(sourcePath).parent_path()));
-				importer.setMeshOptConfig(opt);
-				importer.setMeshletConfig(importMeshletCfg);
-				importer.setModelUriBase(sourcePath);
-				importer.preloadTextures();
-				// Determine root nodes from the default scene (same logic as GltfToClusterFromVfs)
-				std::vector<int> gltfRoots;
-				if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
-					gltfRoots = model.scenes[model.defaultScene].nodes;
-				}
-				else if (!model.scenes.empty()) {
-					gltfRoots = model.scenes.front().nodes;
-				}
-				else {
-					std::vector<bool> referenced(model.nodes.size());
-					for (const auto& n : model.nodes)
-						for (int c : n.children)
-							if (c >= 0 && c < (int)model.nodes.size())
-								referenced[c] = true;
-					for (int i = 0; i < (int)model.nodes.size(); ++i)
-						if (!referenced[i])
-							gltfRoots.push_back(i);
-				}
-				for (int gltfNode : gltfRoots)
-					importer.import(gltfNode);
-				sceneClusters[0].reset(cluster);
-				cluster = sceneClusters[0].get();
-			}
-			catch (const std::exception& e) {
-				std::cerr << "Tour source import failed: " << e.what() << std::endl;
-				return 1;
-			}
-		}
-		if (tour.hasCook) {
-			const auto& k = tour.cook;
-			auto use = [&](const char* key, auto& dst, auto val) {
-				if (!args.explicitSet.contains(key)) {
-					dst = val;
-					std::cout << "Tour cook default: " << key << "\n";
-				}
-			};
-			use("meshopt", args.meshopt, k.meshopt);
-			use("lods", args.lods, k.lods);
-			use("lightmap", args.lightmap, k.lightmap);
-			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
-			use("lmLobes", args.lmLobes, k.lmLobes);
-			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
-			use("lmRays", args.lmRays, k.lmRays);
-			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
-			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
-			use("sunAzimuth", args.sunAzimuth, k.sunAzimuth);
-			use("sunElevation", args.sunElevation, k.sunElevation);
-			use("sunIntensity", args.sunIntensity, k.sunIntensity);
-			use("skyIntensity", args.skyIntensity, k.skyIntensity);
-			use("cubemap", args.cubemap, k.cubemap);
-			use("cubemapName", args.cubemapName, k.cubemapName);
-			use("cubemapSize", args.cubemapSize, k.cubemapSize);
-			use("cubemapRays", args.cubemapRays, k.cubemapRays);
-			if (!k.lmExcludeKw.empty() &&
-				!args.explicitSet.contains("lmExclude")) {
-				if (!args.lmExclude.empty())
-					args.lmExclude += ",";
-				args.lmExclude += k.lmExcludeKw;
-				std::cout << "Tour cook default: lmExclude\n";
-			}
-			// Re-derive keyword list after the merge above.
-			args.lmExcludeKeywords.clear();
-			{
-				std::string low;
-				for (char ch : args.lmExclude)
-					low.push_back(char(std::tolower(uint8_t(ch))));
-				size_t pos = 0;
-				while (pos < low.size()) {
-					const size_t end = low.find(',', pos);
-					const std::string kw = low.substr(pos, end == std::string::npos
-						? std::string::npos : end - pos);
-					if (!kw.empty())
-						args.lmExcludeKeywords.push_back(kw);
-					pos = (end == std::string::npos) ? low.size() : end + 1;
-				}
-			}
-			opt.enabled = args.meshopt;
-		}
-	std::vector<std::string> rwarn;
-	std::string rerr;
-	// Clarisse-style nested scene references: inline the tour's
-	// `reference` lines (placeholder + referenced source subtrees,
-	// recursing through each source's own tour) BEFORE the command
-	// replay so its cluster-space ids address the assembled scene.
-	if (!tour.references.empty()) {
-		// Sources resolve as-is or relative to the master scene's VFS dir.
-		const size_t applied = ApplySceneReferences(*cluster, tour,
-			smvk::vfs::BaseDir(args.inVfs),
-			nullptr, nullptr, &vfs, opt, importMeshletCfg, 0, nullptr);
-		std::cout << "References inlined: " << applied << " subtree(s) ("
-			<< tour.references.size() << " top-level)\n";
-	}
-	if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn, &rerr)) {
-			std::cerr << "Tour replay failed: " << rerr << std::endl;
-			return 1;
-		}
-		for (auto& w : rwarn)
-			std::cerr << "Tour replay warning: " << w << std::endl;
-		std::cout << "Tour replayed: " << tour.commands.size()
-			<< " commands from " << args.tour << "\n";
-	}
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh
 	// blocks (world-baked verts, identity nodes). Runs before Serialize so

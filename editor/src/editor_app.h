@@ -234,6 +234,7 @@ inline constexpr uint8_t kModalAlt = 4;
 struct CookSettings {
 	std::string outPak = "content/paks/edited.pak";
 	std::string contentDir = "content";
+	std::string inVfs; // VFS path for --in-vfs when no tour
 	bool meshopt = true;
 	bool lods = false;
 	bool lightmap = false;
@@ -1470,5 +1471,6 @@ private:
 // Native Windows open dialog (editor_native_dialog.cpp): single entry
 // point for .gltf/.pak/.tour, starts in C:/. False on cancel/failure.
 	bool NativeOpenFile(std::string& outPath, bool images = false);
+	bool NativeSaveFile(std::string& outPath);
 
 } // namespace editor

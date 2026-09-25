@@ -2214,13 +2214,30 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 			std::filesystem::create_directories(parent, ec);
 	}
 	smvk::tour::Doc doc;
-	// VFS paths use forward slashes (POSIX). The cooker's VFS
-	// resolver expects this format.
-	std::string posixSource = m_gltfPath;
-	for (char& c : posixSource)
-		if (c == '\\') c = '/';
-	doc.source = posixSource;
-	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
+	// THE DEFINITION IS SELF-CONTAINED: no `source` line, no
+	// fingerprint — the scene's glTF rides as reference #0 (a ROOT
+	// reference), bound identically by the editor and the cooker.
+	// m_gltfPath/m_gltfHostPath stay editor-side identity/picking
+	// state only. (VFS paths use forward slashes — the cooker's
+	// resolver expects POSIX separators.)
+	doc.source.clear();
+	doc.fingerprint.clear();
+	if (!m_gltfHostPath.empty()) {
+		std::string posix = m_gltfHostPath;
+		for (char& c : posix)
+			if (c == '\\')
+				c = '/';
+		smvk::tour::ReferenceCmd rootRef{};
+		rootRef.root = true;
+		rootRef.parent = 0;
+		rootRef.source = posix;
+		rootRef.name = std::filesystem::path(posix).stem().string();
+		// Keep the root reference leading the definition (fresh source).
+		if (!m_references.empty() && m_references[0].root)
+			m_references[0] = rootRef;
+		else
+			m_references.insert(m_references.begin(), rootRef);
+	}
 	// UUID pre-pass: nodes addressed by uuid or symbolic -p need a
 	// file-stable identity recorded. Assign missing ones NOW into the
 	// world scene (deterministic from here: already-assigned ids are
@@ -3049,12 +3066,13 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 			Log("tour open: no scene open and no loadable source.");
 			return false;
 		}
-	} else if (!m_world) {
-		// Sourceless tour (the `source` mechanism is deprecated —
-		// geometry may come entirely from references): build an empty
-		// world bound against THIS tour file, then replay below.
+	} else {
+		// Definition tour (the scene's glTF rides as root reference
+		// #0): ALWAYS rebuild the world from the document — the bind
+		// and the replay below need the fresh deterministic ids, never
+		// whatever scene happens to be open.
 		if (!LoadGltfIntoWorld({}, path)) {
-			Log("tour open: failed to build an empty world.");
+			Log("tour open: failed to build the scene from the definition.");
 			return false;
 		}
 	}

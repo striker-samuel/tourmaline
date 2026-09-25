@@ -3278,6 +3278,13 @@ void EditorApp::DrawCookDialog() {
 	ImGui::Text("Output .pak path (relative to content/ or absolute):");
 	ImGui::SetNextItemWidth(500.0f);
 	ImGui::InputText("##outPak", m_cookOutPakBuf, sizeof(m_cookOutPakBuf));
+	ImGui::SameLine();
+	if (ImGui::Button("Browse...")) {
+		std::string picked;
+		if (NativeSaveFile(picked) && !picked.empty()) {
+			std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s", picked.c_str());
+		}
+	}
 
 	ImGui::Text("Content root (for VFS resolution):");
 	ImGui::SetNextItemWidth(500.0f);
@@ -3366,16 +3373,25 @@ void EditorApp::DrawCookDialog() {
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Cook")) {
-		m_cook.outPak = m_cookOutPakBuf;
-		CookToPak();
-		m_showCookDialog = false;
-		ImGui::CloseCurrentPopup();
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Cancel")) {
-		m_showCookDialog = false;
-		ImGui::CloseCurrentPopup();
+	if (m_cookRunning) {
+		ImGui::Text("Cooking...");
+		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate
+		if (ImGui::Button("Cancel")) {
+			// Note: async cook cannot be easily cancelled; just hide dialog
+			m_showCookDialog = false;
+			ImGui::CloseCurrentPopup();
+		}
+	} else {
+		if (ImGui::Button("Cook")) {
+			m_cook.outPak = m_cookOutPakBuf;
+			CookToPak();
+			// Keep dialog open to show progress
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Close")) {
+			m_showCookDialog = false;
+			ImGui::CloseCurrentPopup();
+		}
 	}
 	ImGui::EndPopup();
 }

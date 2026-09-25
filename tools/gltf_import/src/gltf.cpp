@@ -2228,23 +2228,36 @@ size_t ApplySceneReferences(
 			// (The raw tour string shows in the panel; this is the
 			// resolved sibling for path-solver/symlink users.)
 			noteResolved(resolved);
+			// ROOT references (the scene's own source, reference #0 in
+			// the definition doc): inlined DIRECTLY under the scene
+			// root — no placeholder, no namespace (Maya: the master
+			// file's own contents carry no prefix). Cluster ids match
+			// a direct source import exactly, so editor and cook
+			// builds are identical by construction.
+			const bool isRoot = r.root;
 			// Placeholder group node under the recorded parent (level-space
-			// parent resolved to owner space above).
-			const int parentNode = (pRaw <
-				uint64_t(cluster.scene.hierarchy.size())) ? int(pRaw) : 0;
+			// parent resolved to owner space above). Root references
+			// anchor at the scene root instead (ph stays 0 — the
+			// subtree offset math below keeps working).
+			const int parentNode = isRoot ? 0
+				: ((pRaw < uint64_t(cluster.scene.hierarchy.size()))
+					? int(pRaw) : 0);
 			const int level = cluster.scene.hierarchy[size_t(parentNode)].level + 1;
-			const int ph = addNode(cluster.scene, parentNode, level);
+			int ph = 0; // root anchor: the scene root node
 			std::string name = r.name.empty()
 				? std::filesystem::path(resolved).stem().string()
 				: r.name;
-			setNodeName(cluster.scene, ph, "REF " + name);
-			if (r.hasTranslate) {
-				glm::mat4 m(1.0f);
-				m[3] = glm::vec4(r.translate, 1.0f);
-				cluster.scene.localTransform[size_t(ph)] = m;
+			if (!isRoot) {
+				ph = addNode(cluster.scene, parentNode, level);
+				setNodeName(cluster.scene, ph, "REF " + name);
+				if (r.hasTranslate) {
+					glm::mat4 m(1.0f);
+					m[3] = glm::vec4(r.translate, 1.0f);
+					cluster.scene.localTransform[size_t(ph)] = m;
+				}
 			}
 			if (cur.depth == 0 && outPlaceholderNodes)
-				outPlaceholderNodes->push_back(ph);
+				outPlaceholderNodes->push_back(isRoot ? -1 : ph);
 			// Pool bases for .tour replay (captured before the subtree
 			// lands; the subtree's own tour ids translate by these).
 			const uint32_t matBaseBefore = cluster.materials.numObjects();
@@ -2271,8 +2284,12 @@ size_t ApplySceneReferences(
 					importer.setModelUriBase(n.Str());
 				importer.preloadTextures();
 				const std::vector<int> roots = GltfRootNodesOf(model);
+				// Root children sit AT `level` (direct-import parity:
+				// glTF roots under the scene root at level 1);
+				// placeholder children at level+1.
+				const int childLevel = isRoot ? level : level + 1;
 				for (int gltfNode : roots)
-					importer.importUnder(gltfNode, ph, level + 1);
+					importer.importUnder(gltfNode, ph, childLevel);
 			}
 			// Id offsets for .tour replay: the import above is
 			// deterministic (same traversal as the referenced scene's own
@@ -2331,11 +2348,12 @@ size_t ApplySceneReferences(
 		// takes '<chain><refName>:' so the master's overrides can target
 		// a single reference with one name regex ('ns:.*'). The ROOT
 		// namespace is the master tour itself (its own nodes carry no
-		// prefix). Nested references queue with the extended chain, so
-		// their nodes read 'outer:inner:name'. Runs AFTER the source
-		// tour's replay: its verify-names and its own wide overrides
-		// matched the un-prefixed names.
-		{
+		// prefix — root references skip this pass entirely). Nested
+		// references queue with the extended chain, so their nodes read
+		// 'outer:inner:name'. Runs AFTER the source tour's replay: its
+		// verify-names and its own wide overrides matched the
+		// un-prefixed names.
+		if (!isRoot) {
 			const std::string ns = cur.nsPrefix + name + ":";
 			std::vector<uint32_t> stack;
 			for (int ch = cluster.scene.hierarchy[size_t(ph)].firstChild;
@@ -2362,18 +2380,24 @@ size_t ApplySceneReferences(
 			// filter visibility per frame, so toggling is instant).
 		}
 		++applied;
-			std::cout << "[References] inlined '" << resolved << "' under " <<
-				"node " << parentNode << " (placeholder " << ph << ")\n";
+			std::cout << "[References] inlined '" << resolved << "' "
+				<< (isRoot
+					? "as the scene source (root)"
+					: ("under node " + std::to_string(parentNode)
+						+ " (placeholder " + std::to_string(ph) + ")"))
+				<< "\n";
 			// Nesting: follow further references with the subtree's
 			// offset. .tour sources carry their own doc; .gltf sources
 			// use the sibling <stem>.tour (existing behavior — its
 			// commands stay ignored, only its references are followed).
+			// ROOT references skip the sibling lookup: their sibling
+			// tour IS the master doc being applied (self-cycle).
 			const smvk::tour::Doc* nestedDoc = nullptr;
 			smvk::tour::Doc siblingTour;
 			if (haveRefTour) {
 				nestedDoc = &refTour;
 			}
-			else {
+			else if (!isRoot) {
 				const std::string tourPath = ReferenceTourPathFor(
 					std::filesystem::path(resolved));
 				std::string tourText;
@@ -2396,7 +2420,10 @@ size_t ApplySceneReferences(
 			next.baseDir = baseDir;
 			next.chain = cur.chain;
 			next.chain.push_back(norm);
-			next.nsPrefix = cur.nsPrefix + name + ":";
+			// Root references never extend the namespace chain (the
+			// master's own contents stay unprefixed at every depth).
+			next.nsPrefix = isRoot ? cur.nsPrefix
+				: cur.nsPrefix + name + ":";
 			next.depth = cur.depth + 1;
 			next.nodeBase = subtreeBase;
 			queue.push_back(std::move(next));

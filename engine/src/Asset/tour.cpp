@@ -448,7 +448,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// References FIRST (Maya file-block order), then the fileInfo
 	// constants block, then the command list.
 	for (const ReferenceCmd& r : doc.references) {
-		f << "reference -n " << r.parent
+		f << "reference";
+		if (r.root)
+			f << " -root"; // the scene's own source: no placeholder/ns
+		f << " -n " << r.parent
 			<< " -source " << Quote(r.source);
 		if (!r.name.empty())
 			f << " -name " << Quote(r.name);
@@ -618,6 +621,9 @@ struct Flags {
 	bool hasSource = false;
 	std::string name;
 	bool hasName = false;
+	bool root = false;     // -root (reference lines only: the scene's
+	                       // own source, inlined without placeholder/ns)
+	bool hasRoot = false;
 	std::string uuid;      // -uuid <hex> (delete addressing / uuid lines)
 	bool hasUuid = false;
 	std::string type;      // -type <datatype> (setAttr value flavor)
@@ -682,6 +688,11 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.at = toks[i + 1];
 			i += 2;
 		}
+		else if (k == "-root") {
+			f.hasRoot = true;
+			f.root = true;
+			++i;
+		}
 		else if (k == "-t") {
 			++i;
 			auto isFlag = [](const std::string& w) {
@@ -690,7 +701,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type";
+					w == "-type" || w == "-root";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -713,7 +724,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type";
+					w == "-type" || w == "-root";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1192,9 +1203,12 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			// Clarisse-style scene reference: placeholder under -n with a
 			// linked source; the gltf_import loader inlines the subtree
 			// (recursively, via each source's own tour) at scene build.
+			// -root marks the scene's OWN source (reference #0): inlined
+			// under the scene root, no placeholder, no namespace.
 			ReferenceCmd r{};
 			r.source = fl.source;
 			r.parent = fl.hasN ? fl.n : 0;
+			r.root = fl.hasRoot;
 			if (fl.hasName)
 				r.name = fl.name;
 			if (fl.t.size() >= 3) {

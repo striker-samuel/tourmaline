@@ -289,9 +289,10 @@ bool EditorApp::AddSceneReference(const std::string& source,
 	SaveTour(); // persist the reference list
 	Log("Reference added: '" + r.source + "' under cluster node " +
 		std::to_string(r.parent) + " — reloading to bind.");
-	// References bind at import: re-open the scene (deterministic ids
-	// keep every existing tour command + override valid).
-	return OpenScene(m_gltfPath);
+	// References bind at import: rebind through a temp snapshot of the
+	// WORKING doc (the on-disk target may be a save-as tour far from
+	// the source; the snapshot always carries the live list + edits).
+	return ReloadReferencesViaTemp();
 }
 
 bool EditorApp::RemoveSceneReference(uint32_t refWorldNode) {
@@ -306,18 +307,31 @@ bool EditorApp::RemoveSceneReference(uint32_t refWorldNode) {
 bool EditorApp::RemoveSceneReferenceAt(size_t idx) {
 	if (idx >= m_references.size())
 		return false;
+	if (m_references[idx].root) {
+		Log("Remove: reference '" + m_references[idx].name
+			+ "' is the scene source — the scene IS it (open a"
+			" different scene instead).");
+		return false;
+	}
 	const std::string src = m_references[idx].source;
 	m_references.erase(m_references.begin() + ptrdiff_t(idx));
 	SaveTour();
 	Log("Reference removed: '" + src + "' — reloading to rebind.");
 	if (m_gltfPath.empty())
 		return true;
-	return OpenScene(m_gltfPath);
+	// Rebind through the temp snapshot (live list + unsaved edits; the
+	// on-disk target may be a save-as tour far from the source).
+	return ReloadReferencesViaTemp();
 }
 
 bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
 	if (idx >= m_references.size())
 		return false;
+	if (m_references[idx].root) {
+		Log("The scene source is the scene — it cannot be"
+			" disabled (that would hide the entire scene).");
+		return false;
+	}
 	if (m_references[idx].enabled == enabled)
 		return true;
 	// Keep-in-scene toggle: DISABLE NEVER REMOVES the reference's nodes
@@ -369,11 +383,15 @@ bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
 uint32_t EditorApp::RefPlaceholderNode(size_t idx) const {
 	if (!m_world || idx >= m_references.size())
 		return UINT32_MAX;
+	// Root references (the scene source) carry no placeholder by
+	// design — their sentinel entry maps to UINT32_MAX.
+	if (m_references[idx].root)
+		return UINT32_MAX;
 	// Name match first (robust when a failed bind shifted the parallel
 	// index assumption), index fallback second.
 	const std::string want = "REF " + m_references[idx].name;
 	for (uint32_t ph : m_refPlaceholders)
-		if (getNodeName(m_world->scene, int(ph)) == want)
+		if (ph != UINT32_MAX && getNodeName(m_world->scene, int(ph)) == want)
 			return ph;
 	if (idx < m_refPlaceholders.size())
 		return m_refPlaceholders[idx];
@@ -503,6 +521,7 @@ void EditorApp::DrawReferencesPanel() {
 		ImGui::TableHeadersRow();
 		for (size_t i = 0; i < m_references.size(); ++i) {
 			const smvk::tour::ReferenceCmd& r = m_references[i];
+			const bool isRoot = r.root; // the scene's own source
 			const uint32_t ph = RefPlaceholderNode(i);
 			const bool bound = ph != UINT32_MAX;
 			const bool fileOk = RefSourceExists(m_gltfHostPath, r.source);
@@ -515,13 +534,22 @@ void EditorApp::DrawReferencesPanel() {
 			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
 			ImGui::PushID(int(i));
-			bool en = r.enabled;
-			if (ImGui::Checkbox("##en", &en)) {
-				pendingToggle = int(i);
-				pendingToggleVal = en;
+			if (isRoot) {
+				// The root reference IS the scene — no toggle.
+				ImGui::TextDisabled("(root)");
+			}
+			else {
+				bool en = r.enabled;
+				if (ImGui::Checkbox("##en", &en)) {
+					pendingToggle = int(i);
+					pendingToggleVal = en;
+				}
 			}
 			ImGui::TableSetColumnIndex(1);
-			if (!r.enabled)
+			if (isRoot)
+				ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
+					"source");
+			else if (!r.enabled)
 				ImGui::TextDisabled("hidden (kept)");
 			else if (!fileOk)
 				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
@@ -550,18 +578,23 @@ void EditorApp::DrawReferencesPanel() {
 					? RefSubtreeSize(m_world->scene, ph)
 					: 0);
 			ImGui::TableSetColumnIndex(5);
-			if (bound && ImGui::SmallButton("Select"))
-				m_selected = ph;
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Reload")) {
-				pendingReload = int(i);
+			if (!isRoot) {
+				if (bound && ImGui::SmallButton("Select"))
+					m_selected = ph;
+				ImGui::SameLine();
+				if (ImGui::SmallButton("Reload")) {
+					pendingReload = int(i);
+				}
+				ImGui::SameLine();
+				if (ImGui::SmallButton("Replace..."))
+					pendingReplace = int(i);
+				ImGui::SameLine();
+				if (ImGui::SmallButton("Remove"))
+					pendingRemove = int(i);
 			}
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Replace..."))
-				pendingReplace = int(i);
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Remove"))
-				pendingRemove = int(i);
+			else {
+				ImGui::TextDisabled("the scene itself");
+			}
 			ImGui::PopID();
 		}
 		ImGui::EndTable();
@@ -588,7 +621,7 @@ void EditorApp::DrawReferencesPanel() {
 			SaveTour();
 			Log("Reference replaced: '" + picked + "' — reloading to rebind.");
 			if (!m_gltfPath.empty())
-				OpenScene(m_gltfPath);
+				ReloadReferencesViaTemp();
 		}
 	}
 	// Failed reference commands (from the last bind): a partially-
