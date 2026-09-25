@@ -113,13 +113,18 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
 				return true;
 		return false;
 	};
-	// Created lights + terrain groups under this reference's subtree.
-	// (Displacement placeholders themselves always live at root, so
-	// they never qualify.)
+	// Created lights, cvolumes + terrain groups under this reference's
+	// subtree. (Displacement placeholders themselves always live at
+	// root, so they never qualify.)
 	std::vector<uint32_t> displaced;
 	for (const auto& [n, li] : m_world->scene.lightForNode) {
 		(void)li;
 		if (CreatedLightIndex(n) >= 0 && underRef(n))
+			displaced.push_back(n);
+	}
+	for (const auto& [n, cv] : m_world->scene.cvolForNode) {
+		(void)cv;
+		if (CreatedCvolIndex(n) >= 0 && underRef(n))
 			displaced.push_back(n);
 	}
 	for (const auto& [g, tg] : m_terrainGroups) {

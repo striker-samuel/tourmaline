@@ -313,6 +313,51 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
+	// Convex-volume boxes: one X-ray wire box per cvolume node (shape =
+	// node translate/scale), priority-hued like the GI preview overlay
+	// so authored and baked volumes read the same; the selection draws
+	// bright. Always visible — cvolume nodes carry no mesh to click.
+	if (m_showCvolGizmos && !m_world->scene.cvolForNode.empty()) {
+		const auto priorityRgb = [](uint32_t priority) {
+			// HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
+			// hue as DrawCvolPreviewOverlay's priorityColor).
+			const float h = std::fmod(float(priority) * 0.13f, 1.0f);
+			const float s = 0.7f, v = 1.0f;
+			const float c = v * s;
+			const float x = c * (1.0f - std::fabs(
+				std::fmod(h * 6.0f, 2.0f) - 1.0f));
+			const float m = v - c;
+			float r = 0, g = 0, b = 0;
+			const int sector = int(h * 6.0f) % 6;
+			if (sector == 0) { r = c; g = x; }
+			else if (sector == 1) { r = x; g = c; }
+			else if (sector == 2) { g = c; b = x; }
+			else if (sector == 3) { g = x; b = c; }
+			else if (sector == 4) { r = x; b = c; }
+			else { r = c; b = x; }
+			return glm::vec3(r + m, g + m, b + m);
+		};
+		for (const auto& [node, def] : m_world->scene.cvolForNode) {
+			glm::vec3 mn, mx;
+			if (!CvolBox(node, mn, mx))
+				continue;
+			LineBatch b;
+			b.depthTest = false; // X-ray: author shapes against walls
+			if (node == m_selected)
+				b.color = glm::vec4(1.0f, 0.9f, 0.3f, 1.0f);
+			else
+				b.color = glm::vec4(priorityRgb(def.priority), 1.0f);
+			AddBox(b, mn, mx);
+			// Center anchor diamond (the box itself has no mesh to
+			// click; the marker reads at a glance like light nodes).
+			const glm::vec3 c = (mn + mx) * 0.5f;
+			const float s = std::max(
+				glm::length(mx - mn) * 0.02f, 0.05f);
+			AddDiamond(b, c, s);
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
 	// Build batches: selection AABB (yellow) + gizmo axes.
 	if (m_selected == UINT32_MAX ||
 		m_selected >= m_world->scene.hierarchy.size()) {

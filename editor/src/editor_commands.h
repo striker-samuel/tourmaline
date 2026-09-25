@@ -60,16 +60,29 @@ enum class EditVerb : uint8_t {
  	              // (packed quintuples). Tour: cluster-backed nodes
  	              // persist as Verb::Delete; editor-created nodes are
  	              // dropped via the creates' live-state emission.
- 	CreateTransform, // append a plain transform node (world): no mesh,
- 	              // no light, no pool entry — a Maya group locator.
- 	              // c.node = CREATED world id once forward-executed
- 	              // (UINT32_MAX before); c.node2 = parent world id;
- 	              // afterText = name; afterVec = local position;
- 	              // vec4 = local rotation degrees; svec = local scale
- 	              // (glm::vec3, new EditCmd field). The reference
- 	              // system uses these as displacement placeholders
- 	              // (see editor_references.cpp): no other authoring
- 	              // creates them today.
+  	CreateTransform, // append a plain transform node (world): no mesh,
+  	              // no light, no pool entry — a Maya group locator.
+  	              // c.node = CREATED world id once forward-executed
+  	              // (UINT32_MAX before); c.node2 = parent world id;
+  	              // afterText = name; afterVec = local position;
+  	              // vec4 = local rotation degrees; svec = local scale
+  	              // (glm::vec3, new EditCmd field). The reference
+  	              // system uses these as displacement placeholders
+  	              // (see editor_references.cpp): no other authoring
+  	              // creates them today.
+  	CreateCVolume, // append a convex GI volume node (world): a DAG
+  	              // transform (translate = box center, scale = full
+  	              // extents, axis-aligned — rotation ignored) + a
+  	              // node-local SceneCvol definition (m_cvolForNode).
+  	              // c.node = CREATED world id once forward-executed
+  	              // (UINT32_MAX before); c.node2 = parent world id;
+  	              // afterText = name; afterVec = local position;
+  	              // svec = local size; priority/spacing/fades below.
+  	              // Post-creation edits ride SetCvolAttr (like
+  	              // lights: translate/rotate/scale/rename lower to
+  	              // position/rotation/size/name channels).
+  	SetCvolAttr, // cvolume property edit; c.node = cvolume node
+  	              // (world), cvolAttr selects the channel (see below).
  };
 
 struct EditCmd {
@@ -108,12 +121,25 @@ struct EditCmd {
 	float lightOuterDeg = 0.0f;
 	bool lightStatic = false; // bake-only (kSceneLightFlag_Static)
 	bool lightShadow = false; // spot shadow request (spots only)
-	// SetLightAttr channel ("color","intensity","range","inner","outer",
-	// "static","shadow","name"). Value rides vec4 (color) / number
-	// (scalars, degrees for cones) / afterFlag (static/shadow) /
-	// afterText (name); before-state rides beforeVec4 / beforeNum /
-	// beforeFlag / beforeText.
-	std::string lightAttr;
+ 	// SetLightAttr channel ("color","intensity","range","inner","outer",
+ 	// "static","shadow","name"). Value rides vec4 (color) / number
+ 	// (scalars, degrees for cones) / afterFlag (static/shadow) /
+ 	// afterText (name); before-state rides beforeVec4 / beforeNum /
+ 	// beforeFlag / beforeText.
+ 	std::string lightAttr;
+	// CreateCVolume payload (live-world domain; box center in
+	// afterVec, full-extents size in svec, name in afterText,
+	// parent in node2):
+	uint32_t cvolPriority = 0; // higher = composited later = wins
+	float cvolSpacing = 0.5f;  // dense probe grid spacing (m)
+	float cvolInsideFade = 0.1f;  // blend width inside each face (m)
+	float cvolOutsideFade = 0.1f; // blend width outside each face (m)
+	// SetCvolAttr channel ("priority","spacing","inside","outside",
+	// "position","rotation","size","name"). Value rides number
+	// (scalars) / vec4 (triples: position, rotation-deg, size) /
+	// afterText (name); before-state rides beforeNum / beforeVec4 /
+	// beforeText.
+	std::string cvolAttr;
 	// TerrainPaint payload: op name above; before-patch = the pre-stamp
 	// sample box (row-major, x-major within rows), captured at first
 	// forward execution and reused by undo. Box coords are inclusive

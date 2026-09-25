@@ -199,6 +199,15 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 					<< ((c.node2 >> 16) & 0xFFFFu) << " -m "
 					<< c.material;
 			}
+			else if (c.nodeType == "cvolume") {
+				// -t packs local position (box center: x y z) +
+				// priority spacing insideFade outsideFade
+				// (7 values); -s packs local size (full extents).
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " " << c.vec4.x << " " << c.vec4.y
+					<< " " << c.vec4.z << " " << c.vec4.w << " -s "
+					<< c.svec.x << " " << c.svec.y << " " << c.svec.z;
+			}
 			// System types (material/file/image/camera) carry no
 			// payload: the line above is the whole record.
 			break;
@@ -264,6 +273,23 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			<< " -m " << c.material;
 		break;
 	}
+	case Verb::CreateCVolume: {
+		// -t packs local position (box center: x y z) + priority
+		// spacing insideFade outsideFade (7 values); -s packs local
+		// size (full extents: sx sy sz). -p is the parent: bare id
+		// (legacy) or quoted name/path/uuid.
+		f << "createCvolume -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " " << c.vec4.x << " " << c.vec4.y << " "
+			<< c.vec4.z << " " << c.vec4.w
+			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
+		break;
+	}
 	case Verb::TerrainPaint: {
 		// -t packs: worldX worldZ radius flattenTarget (4 values);
 		// -v carries strength; -ref names the k-th createTerrain.
@@ -289,6 +315,27 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << " -type \"string\" -v " << Quote(c.name);
 		else if (c.text == "static" || c.text == "shadow")
 			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
+		break;
+	}
+	case Verb::SetCvolAttr: {
+		// Same addressing shape as setLightAttr (-ref k of the k-th
+		// createCvolume, else -n cluster id). Triples (position,
+		// rotation-deg, size) ride -t; name rides -v as a string;
+		// scalars (priority, spacing, inside, outside) ride -v.
+		f << "setCvolAttr ";
+		if ((c.node & kCreateCvolRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateCvolRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "position" || c.text == "rotation"
+			|| c.text == "size")
+			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z;
+		else if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
 		else
 			f << " -v " << c.number;
 		break;
@@ -438,21 +485,27 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
-	// create) and TerrainPaint (-ref k of the k-th terrain-family
-	// create) ride directly under their create, tab-indented.
-	// Families span both spellings (legacy createLight/createTerrain
-	// AND unified createNode pointLight/spotLight/terrain) in one
-	// file-order index each, so -ref indices resolve identically.
+	// create), TerrainPaint (-ref k of the k-th terrain-family create)
+	// and setCvolAttr (-ref k of the k-th cvolume-family create) ride
+	// directly under their create, tab-indented.
+	// Families span both spellings (legacy createLight/createTerrain/
+	// createCvolume AND unified createNode pointLight/spotLight/
+	// terrain/cvolume) in one file-order index each, so -ref indices
+	// resolve identically.
 	auto createFamily = [](const Command& c) -> int {
 		if (c.verb == Verb::CreateLight)
 			return 0;
 		if (c.verb == Verb::CreateTerrain)
 			return 1;
+		if (c.verb == Verb::CreateCVolume)
+			return 2;
 		if (c.verb == Verb::CreateNode) {
 			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
 				return 0;
 			if (c.nodeType == "terrain")
 				return 1;
+			if (c.nodeType == "cvolume")
+				return 2;
 		}
 		return -1;
 	};
@@ -480,7 +533,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 					&& (d.node & ~kCreateLightRefBase) == k)
 				|| (family == 1 && d.verb == Verb::TerrainPaint
 					&& (d.node & kCreateTerrainRefBase) != 0
-					&& (d.node & ~kCreateTerrainRefBase) == k);
+					&& (d.node & ~kCreateTerrainRefBase) == k)
+				|| (family == 2 && d.verb == Verb::SetCvolAttr
+					&& (d.node & kCreateCvolRefBase) != 0
+					&& (d.node & ~kCreateCvolRefBase) == k);
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -536,7 +592,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 // -n <id> / -m <id> / -p <id> / -at <name> / -t <nums...> / -v <num|word>
 // -pattern <regex> / -enabled <on|off> (override rules only)
 // -source <path> / -name <word> (reference lines only)
-// -ref <k> (setLightAttr on the k-th createLight in the doc)
+// -ref <k> (setLightAttr on the k-th createLight, terrainPaint on the
+// k-th createTerrain, setCvolAttr on the k-th createCvolume in the doc)
 // -uuid <hex> (delete addressing / uuid lines)
 // -type <datatype> (setAttr value flavor, informational)
 // -s <nums...> (createTransform scale triple)
@@ -768,6 +825,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "pointLight", CreateNodeKind::Dag },
 	{ "spotLight", CreateNodeKind::Dag },
 	{ "terrain", CreateNodeKind::Dag },
+	{ "cvolume", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
 	{ "image", CreateNodeKind::System },
@@ -982,13 +1040,15 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				doc.commands.push_back(std::move(c));
 				continue;
 			}
-			const std::string tn = t->name;
-			if (tn == "transform")
-				effVerb = "createTransform";
-			else if (tn == "terrain")
-				effVerb = "createTerrain";
-			else
-				effVerb = "createLight"; // pointLight | spotLight
+		const std::string tn = t->name;
+		if (tn == "transform")
+			effVerb = "createTransform";
+		else if (tn == "terrain")
+			effVerb = "createTerrain";
+		else if (tn == "cvolume")
+			effVerb = "createCvolume";
+		else
+			effVerb = "createLight"; // pointLight | spotLight
 			// Legacy light -at vocabulary for the shared branch below.
 			if (fl.at == "pointLight")
 				fl.at = "point";
@@ -1250,18 +1310,57 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				err = "line " + std::to_string(lineNo) + ": createTerrain params out of range";
 				return false;
 			}
-			c.verb = Verb::CreateTerrain;
-			c.node = fl.hasP ? fl.p : 0;
-			if (fl.hasPStr)
-				c.parentRef = fl.pStr;
-			c.text = fl.name;
-			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
-			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), float(v[6]));
-			c.number = v[7];
-			c.material = fl.m;
-			c.node2 = (uint32_t(v[8]) & 0xFFFFu)
-				| ((uint32_t(v[9]) & 0xFFFFu) << 16);
+		c.verb = Verb::CreateTerrain;
+		c.node = fl.hasP ? fl.p : 0;
+		if (fl.hasPStr)
+			c.parentRef = fl.pStr;
+		c.text = fl.name;
+		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+		c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), float(v[6]));
+		c.number = v[7];
+		c.material = fl.m;
+		c.node2 = (uint32_t(v[8]) & 0xFFFFu)
+			| ((uint32_t(v[9]) & 0xFFFFu) << 16);
+	}
+	else if (effVerb == "createCvolume" && (fl.hasP || fl.hasPStr)
+		&& fl.hasName && fl.t.size() >= 7 && fl.hasS
+		&& fl.svec.size() >= 3) {
+		// -t packs: x y z priority spacing insideFade outsideFade;
+		// -s packs: sx sy sz (full extents). -at is accepted and
+		// must read "cvolume" when present (unified-form echo).
+		if (fl.hasAt && fl.at != "cvolume") {
+			err = "line " + std::to_string(lineNo) + ": createCvolume wants -at cvolume";
+			return false;
 		}
+		double v[10] = {};
+		for (int k = 0; k < 7; ++k)
+			if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad createCvolume value";
+				return false;
+			}
+		double s[3] = { 1.0, 1.0, 1.0 };
+		for (int k = 0; k < 3; ++k)
+			if (!ParseDouble(fl.svec[size_t(k)], s[k])) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad createCvolume size";
+				return false;
+			}
+		if (s[0] <= 0.0 || s[1] <= 0.0 || s[2] <= 0.0 || v[4] <= 0.0
+			|| v[5] < 0.0 || v[6] < 0.0 || v[3] < 0.0) {
+			err = "line " + std::to_string(lineNo) + ": createCvolume params out of range";
+			return false;
+		}
+		c.verb = Verb::CreateCVolume;
+		c.node = fl.hasP ? fl.p : 0;
+		if (fl.hasPStr)
+			c.parentRef = fl.pStr;
+		c.text = fl.name;
+		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
+		c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]),
+			float(v[6]));
+	}
 		else if (effVerb == "terrainPaint" && fl.hasRef && fl.hasAt
 			&& fl.t.size() >= 4 && fl.hasV) {
 			// -t packs: worldX worldZ radius flattenTarget; -v = strength.
@@ -1307,42 +1406,84 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				err = "line " + std::to_string(lineNo) + ": bad light attr '" + fl.at + "'";
 				return false;
 			}
-			c.verb = Verb::SetLightAttr;
-			c.node = fl.hasRef ? (kCreateLightRefBase | fl.ref) : fl.n;
-			c.text = fl.at;
-			if (fl.at == "color" || fl.at == "position" || fl.at == "rotation") {
-				if (fl.t.size() < 3) {
-					err = "line " + std::to_string(lineNo) + ": light triple wants 3 values";
-					return false;
-				}
-				double r = 0, g = 0, b = 0;
-				if (!ParseDouble(fl.t[0], r) || !ParseDouble(fl.t[1], g) ||
-					!ParseDouble(fl.t[2], b)) {
-					err = "line " + std::to_string(lineNo) + ": bad light triple";
-					return false;
-				}
-				c.vec4 = glm::vec4(float(r), float(g), float(b), 1.0f);
+		c.verb = Verb::SetLightAttr;
+		c.node = fl.hasRef ? (kCreateLightRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (fl.at == "color" || fl.at == "position" || fl.at == "rotation") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo) + ": light triple wants 3 values";
+				return false;
 			}
-			else if (fl.at == "name") {
-				c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			double r = 0, g = 0, b = 0;
+			if (!ParseDouble(fl.t[0], r) || !ParseDouble(fl.t[1], g) ||
+				!ParseDouble(fl.t[2], b)) {
+				err = "line " + std::to_string(lineNo) + ": bad light triple";
+				return false;
 			}
-			else if (fl.at == "static" || fl.at == "shadow") {
-				bool on = false;
-				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
-				if (!ParseFlagWord(w, on)) {
-					err = "line " + std::to_string(lineNo) + ": bad flag '" + w + "'";
-					return false;
-				}
-				c.flag = on;
+			c.vec4 = glm::vec4(float(r), float(g), float(b), 1.0f);
+		}
+		else if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else if (fl.at == "static" || fl.at == "shadow") {
+			bool on = false;
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseFlagWord(w, on)) {
+				err = "line " + std::to_string(lineNo) + ": bad flag '" + w + "'";
+				return false;
 			}
-			else {
-				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
-				if (!ParseDouble(w, c.number)) {
-					err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
-					return false;
-				}
+			c.flag = on;
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
 			}
 		}
+	}
+	else if (effVerb == "setCvolAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		static const char* kAttrs[] = { "priority", "spacing",
+			"inside", "outside", "position", "rotation", "size",
+			"name" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			err = "line " + std::to_string(lineNo) + ": bad cvolume attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetCvolAttr;
+		c.node = fl.hasRef ? (kCreateCvolRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (fl.at == "position" || fl.at == "rotation"
+			|| fl.at == "size") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo) + ": cvolume triple wants 3 values";
+				return false;
+			}
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo) + ": bad cvolume triple";
+				return false;
+			}
+			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
+		}
+		else if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+		}
+	}
 		else {
 			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
 				verb + "' (skipped)");
@@ -1532,6 +1673,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Creation-order ids for SetLightAttr refs (kCreateLightRefBase | k):
 	// created light nodes have no cluster id until replayed.
 	std::vector<uint32_t> createdLights;
+	// Same scheme for created convex volumes (kCreateCvolRefBase | k),
+	// resolved by SetCvolAttr below.
+	std::vector<uint32_t> createdCvols;
 	// Same scheme for created terrain (kCreateTerrainRefBase | k),
 	// resolved for the generic verbs below (Rename/SetTranslate/...
 	// /Parent) so post-creation edits replay onto the rebuilt node.
@@ -1692,10 +1836,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::Delete: {
 			// Maya delete at cook replay: drop the node's live links
-			// (mesh/material/light) so nothing draws, bakes or packs it.
-			// Addressed by uuid (primary), name, then id — the file-
-			// stable identity chain (numeric ids may shift as reference
-			// sets change; names/uuids do not).
+			// (mesh/material/light/cvolume) so nothing draws, bakes
+			// or packs it. Addressed by uuid (primary), name, then
+			// id — the file-stable identity chain (numeric ids may
+			// shift as reference sets change; names/uuids do not).
 			uint32_t target = UINT32_MAX;
 			const bool hasId = c.node != UINT32_MAX;
 			if (!ResolveDeleteTarget(scene, c.uuid, c.name,
@@ -1709,6 +1853,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.meshForNode.erase(target);
 			scene.materialForNode.erase(target);
 			scene.lightForNode.erase(target);
+			scene.cvolForNode.erase(target);
 			break;
 		}
 		case Verb::SetUuid: {
@@ -1802,10 +1947,49 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
 			scene.nameForNode[uint32_t(newId)] = nameId;
-			scene.lightForNode[uint32_t(newId)] = poolIdx;
-			createdLights.push_back(uint32_t(newId));
+		scene.lightForNode[uint32_t(newId)] = poolIdx;
+		createdLights.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::CreateCVolume: {
+		// Authored convex GI volume: append a node under the recorded
+		// parent (TRS = translate + scale-as-size, axis-aligned) + a
+		// node-local SceneCvol definition. The shape resolves from
+		// the node's transform at use; rotation is ignored by
+		// design (gi_baker box-spec shape).
+		uint32_t parent = 0;
+		if (!resolveParent(c, "createCvolume", c.node, parent)) {
+			if (!failCmd(c))
+				return false;
 			break;
 		}
+		const int level = scene.hierarchy[parent].level + 1;
+		const int newId = addNode(scene, int(parent), level);
+		if (newId < 0) {
+			if (err)
+				*err = "tour: createCvolume failed under parent " +
+					std::to_string(parent);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		glm::mat4 m(1.0f);
+		m = glm::translate(m, c.vec);
+		m = glm::scale(m, glm::vec3(std::max(c.svec.x, 1e-3f),
+			std::max(c.svec.y, 1e-3f), std::max(c.svec.z, 1e-3f)));
+		scene.localTransform[size_t(newId)] = m;
+		SceneCvol def{};
+		def.priority = uint32_t(std::max(c.vec4.x, 0.0f));
+		def.spacing = std::max(c.vec4.y, 1e-3f);
+		def.insideFade = std::max(c.vec4.z, 0.0f);
+		def.outsideFade = std::max(c.vec4.w, 0.0f);
+		scene.cvolForNode[uint32_t(newId)] = def;
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(c.text);
+		scene.nameForNode[uint32_t(newId)] = nameId;
+		createdCvols.push_back(uint32_t(newId));
+		break;
+	}
 		case Verb::CreateTerrain: {
 			// Editor-authored procedural terrain: a GROUP node under the
 			// recorded parent + tilesX*tilesZ tile children. Tile meshes
@@ -2034,11 +2218,89 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				m = glm::scale(m, s);
 				scene.localTransform[target] = m;
 			}
-			else {
-				warn("tour: unknown light attr '" + c.text + "' (skipped)");
+		else {
+			warn("tour: unknown light attr '" + c.text + "' (skipped)");
+		}
+		break;
+	}
+	case Verb::SetCvolAttr: {
+		uint32_t target = c.node;
+		if ((target & kCreateCvolRefBase) != 0) {
+			const uint32_t k = target & ~kCreateCvolRefBase;
+			if (k >= createdCvols.size()) {
+				if (err)
+					*err = "tour: setCvolAttr ref out of range: " +
+						std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
 			}
+			target = createdCvols[k];
+		}
+		else if (!checkNode(target, c)) {
+			if (!failCmd(c))
+				return false;
 			break;
 		}
+		auto cvit = scene.cvolForNode.find(target);
+		if (cvit == scene.cvolForNode.end()) {
+			if (err)
+				*err = "tour: setCvolAttr on non-cvolume node " +
+					std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		SceneCvol& def = cvit->second;
+		if (c.text == "priority") {
+			def.priority = uint32_t(std::max(c.number, 0.0));
+		}
+		else if (c.text == "spacing") {
+			def.spacing = std::max(float(c.number), 1e-3f);
+		}
+		else if (c.text == "inside") {
+			def.insideFade = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "outside") {
+			def.outsideFade = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "name") {
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			scene.nameForNode[target] = id;
+		}
+		else if (c.text == "position" || c.text == "rotation"
+			|| c.text == "size") {
+			// Rebuild the node's local TRS with one channel
+			// replaced (editor TRS convention: Rz*Ry*Rx, degrees;
+			// size = full extents on the scale channel).
+			glm::vec3 skew, t, s;
+			glm::vec4 persp;
+			glm::quat q;
+			glm::decompose(scene.localTransform[target], s, q, t,
+				skew, persp);
+			glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+			if (c.text == "position")
+				t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			else if (c.text == "rotation")
+				e = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			else
+				s = glm::vec3(std::max(c.vec4.x, 1e-3f),
+					std::max(c.vec4.y, 1e-3f),
+					std::max(c.vec4.z, 1e-3f));
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, t);
+			m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, s);
+			scene.localTransform[target] = m;
+		}
+		else {
+			warn("tour: unknown cvolume attr '" + c.text + "' (skipped)");
+		}
+		break;
+	}
 		case Verb::CreateNode: {
 			// System node types (material/file/image/camera): parsed +
 			// validated up front; replay defers to the editor — reported
@@ -2301,6 +2563,21 @@ std::string Describe(const Command& c) {
 			c.text.c_str(), c.vec4.x, c.vec4.y, c.vec4.z, c.vec4.w,
 			c.node2 & 0xFFFFu, (c.node2 >> 16) & 0xFFFFu, c.node);
 		break;
+	case Verb::CreateCVolume:
+		std::snprintf(buf, sizeof(buf),
+			"createCvolume '%s' (%.1fm box, p%u s%.2f) under #%u",
+			c.text.c_str(), c.svec.x, uint32_t(c.vec4.x), c.vec4.y,
+			c.node);
+		break;
+	case Verb::SetCvolAttr: {
+		char tgt[32];
+		if ((c.node & kCreateCvolRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateCvolRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "cvol.%s.%s", tgt, c.text.c_str());
+		break;
+	}
 	case Verb::TerrainPaint:
 		std::snprintf(buf, sizeof(buf), "terrainPaint.%s (r=%.1f s=%.2f)",
 			c.text.c_str(), c.vec4.z, c.number);

@@ -67,6 +67,19 @@ struct SceneLight {
 	std::string name;
 };
 
+// Authored convex GI volume (editor cvolume node / tour createCvolume):
+// a box-shaped dense-probe region (gi_baker box-spec shape). The SHAPE
+// rides the node's transform (translate = box center, scale = full
+// extents, axis-aligned — rotation ignored); this carries the bake
+// params. Node-local like SceneLight (no pool); resolved against
+// globalTransform[node] at use so parenting applies like meshes.
+struct SceneCvol {
+	uint32_t priority = 0;   // higher = composited later = wins
+	float spacing = 0.5f;    // dense probe grid spacing (m)
+	float insideFade = 0.1f; // blend width inside each face (m)
+	float outsideFade = 0.1f;// blend width outside each face (m)
+};
+
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -83,6 +96,12 @@ struct Scene {
 	// indirection meshForNode uses — and the world transform resolves
 	// from globalTransform[node] at use time.
 	std::unordered_map<NodeId, uint32_t> lightForNode;
+	// Node -> authored convex GI volume params (tour createCvolume /
+	// editor cvolume node). The definition is node-local (a few floats
+	// — no pool indirection); the box shape rides the node's transform.
+	// Recorded by tour replay + cook; a future gi_baker --tour pass
+	// harvests these as bake inputs. Never cooked into the pak today.
+	std::unordered_map<NodeId, SceneCvol> cvolForNode;
 	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
 	// editor for nodes a Delete line addresses (persisted as `uuid`
 	// lines ahead of the deletes) and recorded back by replay and

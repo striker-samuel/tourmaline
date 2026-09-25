@@ -265,6 +265,9 @@ void EditorApp::DrawMenuBar() {
 			DraftCreateLight(false);
 		if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
 			DraftCreateLight(true);
+		if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
+				canCreate))
+			DraftCreateCVolume();
 		if (ImGui::MenuItem("Terrain...", nullptr, false, canCreate)) {
 			// Seed the dialog defaults (name, material) once per open.
 			std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf), "%s",
@@ -461,6 +464,8 @@ void EditorApp::DrawMenuBar() {
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Light gizmos", "L (LIGHTING)", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
+		if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
+			m_showCvolGizmos = !m_showCvolGizmos;
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -875,14 +880,15 @@ void EditorApp::DrawSceneOutliner() {
 				continue;
 			ImGui::PushID(int(n));
 			const bool sel = IsSelected(n);
-			char label[256];
-			std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s", n,
-				name.empty() ? "(unnamed)" : name.c_str(),
-				m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
-				FindNodeLight(n) ? " [light]" : "",
-				IsEnvNode(n) ? " [env]" : "",
-				IsRefPlaceholder(n) ? " [ref]" : "",
-				!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
+		char label[256];
+		std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s", n,
+			name.empty() ? "(unnamed)" : name.c_str(),
+			m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
+			FindNodeLight(n) ? " [light]" : "",
+			m_world->scene.cvolForNode.contains(n) ? " [cvol]" : "",
+			IsEnvNode(n) ? " [env]" : "",
+			IsRefPlaceholder(n) ? " [ref]" : "",
+			!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
 			if (ImGui::Selectable(label, sel)) {
 				// Click = replace selection; Ctrl/Shift-click = add.
 				if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)
@@ -1191,9 +1197,10 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s",
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s",
 		name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
+		scene.cvolForNode.contains(node) ? " [cvol]" : "",
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 		IsEnvNode(node) ? " [env]" : "",
@@ -1749,6 +1756,87 @@ void EditorApp::DrawMaterialFocusPage() {
 	}
 }
 
+void EditorApp::DrawCvolSection(uint32_t node) {
+	// Authored convex GI volume on this node (editor cvolume node):
+	// box shape from the node's TRS (translate = center, scale = full
+	// extents), bake params below. Undoable SetCvolAttr edits persisted
+	// as setCvolAttr tour verbs so cooks replay them.
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return;
+	Scene& scene = m_world->scene;
+	auto it = scene.cvolForNode.find(node);
+	if (it == scene.cvolForNode.end())
+		return;
+	::SceneCvol& def = it->second;
+	ImGui::Separator();
+	ImGui::Text("Convex volume: '%s'",
+		getNodeName(scene, int(node)).c_str());
+	glm::vec3 mn, mx;
+	if (CvolBox(node, mn, mx))
+		ImGui::TextDisabled("box (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f) m",
+			mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
+	ImGui::TextDisabled("shape = node translate/scale (gizmo or "
+		"transform); rotation ignored (axis-aligned)");
+	auto beginCvolDrag = [&](const char* attr) {
+		if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCvolAttr ||
+			m_pending.cmd.node != node || m_pending.cmd.cvolAttr != attr))
+			FinalizePending();
+		if (!m_pending.active) {
+			m_pending.active = true;
+			m_pending.cmd = EditCmd{};
+			m_pending.cmd.verb = EditVerb::SetCvolAttr;
+			m_pending.cmd.node = node;
+			m_pending.cmd.cvolAttr = attr;
+			ReadNodeCvolAttr(node, attr, m_pending.cmd.beforeVec4,
+				m_pending.cmd.beforeNum, m_pending.cmd.beforeText);
+		}
+	};
+	auto endCvolDrag = [&](const char* attr) {
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.verb == EditVerb::SetCvolAttr &&
+			m_pending.cmd.node == node &&
+			m_pending.cmd.cvolAttr == attr)
+			FinishDrag();
+	};
+	int prio = int(def.priority);
+	if (ImGui::DragInt("Priority (higher wins)", &prio, 0.2f, 0, 16)) {
+		prio = std::clamp(prio, 0, 255);
+		beginCvolDrag("priority");
+		WriteNodeCvolAttr(node, "priority", glm::vec4(0), double(prio), {});
+		m_pending.cmd.number = double(prio);
+	}
+	endCvolDrag("priority");
+	float spacing = def.spacing;
+	if (ImGui::DragFloat("Probe spacing (m)", &spacing, 0.01f, 0.05f,
+			4.0f, "%.2f")) {
+		beginCvolDrag("spacing");
+		WriteNodeCvolAttr(node, "spacing", glm::vec4(0), double(spacing),
+			{});
+		m_pending.cmd.number = double(spacing);
+	}
+	endCvolDrag("spacing");
+	float inside = def.insideFade;
+	if (ImGui::DragFloat("Inside fade (m)", &inside, 0.01f, 0.0f,
+			4.0f, "%.2f")) {
+		beginCvolDrag("inside");
+		WriteNodeCvolAttr(node, "inside", glm::vec4(0), double(inside),
+			{});
+		m_pending.cmd.number = double(inside);
+	}
+	endCvolDrag("inside");
+	float outside = def.outsideFade;
+	if (ImGui::DragFloat("Outside fade (m)", &outside, 0.01f, 0.0f,
+			4.0f, "%.2f")) {
+		beginCvolDrag("outside");
+		WriteNodeCvolAttr(node, "outside", glm::vec4(0), double(outside),
+			{});
+		m_pending.cmd.number = double(outside);
+	}
+	endCvolDrag("outside");
+	ImGui::TextDisabled("bake: a future gi_baker --tour pass harvests "
+		"these (priority/spacing/fades) + the box");
+}
+
 void EditorApp::DrawInspector() {
 	SetupDefaultCameras();
 	// Material focus page: the Inspector is "traveling" in a material.
@@ -2206,11 +2294,14 @@ void EditorApp::DrawInspector() {
 						c.beforeFlag, c.beforeText);
 					Do(c);
 				}
-			} else {
-				ImGui::TextDisabled("points cannot cast shadows (spot atlas only)");
-			}
+		} else {
+			ImGui::TextDisabled("points cannot cast shadows (spot atlas only)");
 		}
 	}
+	}
+
+	// Authored convex GI volume on this node (cvolume inspector).
+	DrawCvolSection(node);
 
 	// Lightmap participation.
 	{

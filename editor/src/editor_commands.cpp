@@ -327,6 +327,23 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateTransform(c);
 		break;
 	}
+	case EditVerb::CreateCVolume: {
+		if (forward)
+			ExecCreateCVolume(c);
+		else
+			ExecUncreateCvolume(c);
+		break;
+	}
+	case EditVerb::SetCvolAttr: {
+		const std::string& attr = c.cvolAttr;
+		if (forward)
+			WriteNodeCvolAttr(c.node, attr, c.vec4, c.number,
+				c.afterText);
+		else
+			WriteNodeCvolAttr(c.node, attr, c.beforeVec4, c.beforeNum,
+				c.beforeText);
+		break;
+	}
 	}
 }
 
@@ -386,6 +403,42 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 		++count;
 	}
 	return -1;
+}
+
+int EditorApp::CreatedCvolIndex(uint32_t worldNode) const {
+	// Same contract as CreatedLightIndex, for the cvolume family:
+	// alive creates only (a deleted cvolume's CreateCVolume is dropped
+	// from the tour, so the file's -ref space spans the survivors —
+	// save-time indices and replay-time m_tourCreatedCvolNodes match).
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateCVolume)
+			continue;
+		if (!m_world || !m_world->scene.cvolForNode.contains(h.node))
+			continue; // deleted (tombstoned): not in the file's ref space
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+std::string EditorApp::UniqueCvolName() const {
+	// Next free "CVol_N" over live node names (1-based).
+	int n = 1;
+	if (m_world) {
+		for (;;) {
+			const std::string want = "CVol_" + std::to_string(n);
+			bool taken = false;
+			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+				taken = getNodeName(m_world->scene, int(i)) == want;
+			if (!taken)
+				break;
+			++n;
+		}
+	}
+	return "CVol_" + std::to_string(n);
 }
 
 std::string EditorApp::UniqueTerrainName() const {
@@ -600,6 +653,148 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 }
 
 // ---------------------------------------------------------------------------
+// Created convex volumes (cvolume nodes).
+//
+// A created cvolume is a WORLD transform node (translate = box center,
+// scale = full extents, axis-aligned — rotation ignored by design) plus
+// a node-local SceneCvol definition in scene.cvolForNode — so gizmos,
+// the inspector, the outliner and the tour all pick it up with no
+// special cases. Undo removes the node when it is still the childless
+// tail (ids stay stable); otherwise the node is tombstoned (hidden +
+// def detached) for the same reason.
+// Tour persistence: CreateCVolume carries the creation (CmdToTour emits
+// the LIVE params, so post-creation edits ride along); SetCvolAttr
+// addresses later creates via kCreateCvolRefBase (creation order).
+// ---------------------------------------------------------------------------
+void EditorApp::DraftCreateCVolume() {
+	if (!m_world) {
+		Log("Create cvolume: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateCVolume;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueCvolName();
+	c.afterVec = ActiveCam().target;
+	c.svec = glm::vec3(8.0f); // 8 m authoring box
+	c.cvolPriority = 0;
+	c.cvolSpacing = 0.5f;
+	c.cvolInsideFade = 0.1f;
+	c.cvolOutsideFade = 0.1f;
+	Do(c);
+}
+
+void EditorApp::ExecCreateCVolume(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	// TRS = translate + scale-as-size (axis-aligned by design; any
+	// rotation the command carries is dropped — the volume shape
+	// never reads it).
+	scene.localTransform[size_t(created)] =
+		glm::translate(glm::mat4(1.0f), c.afterVec)
+		* glm::scale(glm::mat4(1.0f), glm::vec3(
+			std::max(c.svec.x, 1e-3f), std::max(c.svec.y, 1e-3f),
+			std::max(c.svec.z, 1e-3f)));
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	::SceneCvol def{};
+	def.priority = c.cvolPriority;
+	def.spacing = std::max(c.cvolSpacing, 1e-3f);
+	def.insideFade = std::max(c.cvolInsideFade, 0.0f);
+	def.outsideFade = std::max(c.cvolOutsideFade, 0.0f);
+	scene.cvolForNode[uint32_t(created)] = def;
+	if (m_replayingTour)
+		m_tourCreatedCvolNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created cvolume '%s' (#%u)",
+		c.afterText.c_str(), uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateCvolume(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	if (tail && childless) {
+		// Physical removal: pop every vector addNode grew (flag arrays
+		// only when they are exactly node-sized — empty/mismatched
+		// means "default", which needs no entry).
+		scene.cvolForNode.erase(n);
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid cvolume creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the def instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.cvolForNode.erase(n);
+		Log("Undid cvolume creation (#" + std::to_string(n) +
+			"): hidden, ids kept stable (def retained in the command).");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Delete (Del key / Edit menu, Maya delete): remove a node from the LIVE
 // scene. Links drop — meshForNode/materialForNode (draw state), lightForNode
 // (light census/gizmos/cook), drawItems (draws/picks/box-select) — and the
@@ -657,6 +852,16 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		auto lit = scene.lightForNode.find(n);
 		c.number = (lit != scene.lightForNode.end())
 			? double(lit->second) : -1.0;
+		// Cvolume def (created or replayed): node-local floats ride
+		// beforeVec4 (priority, spacing, inside, outside) + presence
+		// rides beforeFlag — the light-index precedent for the exact
+		// undo below.
+		auto cvit = scene.cvolForNode.find(n);
+		c.beforeFlag = (cvit != scene.cvolForNode.end());
+		if (c.beforeFlag)
+			c.beforeVec4 = glm::vec4(float(cvit->second.priority),
+				cvit->second.spacing, cvit->second.insideFade,
+				cvit->second.outsideFade);
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -680,6 +885,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 	for (uint32_t id : nodes) {
 		scene.meshForNode.erase(id);
 		scene.materialForNode.erase(id);
+		scene.cvolForNode.erase(id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -718,6 +924,9 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	}
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
 		scene.lightForNode[n] = uint32_t(c.number);
+	if (c.beforeFlag)
+		scene.cvolForNode[n] = ::SceneCvol{ uint32_t(c.beforeVec4.x),
+			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w };
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -1009,6 +1218,102 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
+bool EditorApp::ReadNodeCvolAttr(uint32_t node, const std::string& attr,
+	glm::vec4& v4, double& num, std::string& text) const {
+	v4 = glm::vec4(0.0f);
+	num = 0.0;
+	text.clear();
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	const Scene& scene = m_world->scene;
+	auto it = scene.cvolForNode.find(node);
+	if (it == scene.cvolForNode.end())
+		return false;
+	const ::SceneCvol& def = it->second;
+	if (attr == "priority") {
+		num = double(def.priority);
+	} else if (attr == "spacing") {
+		num = double(def.spacing);
+	} else if (attr == "inside") {
+		num = double(def.insideFade);
+	} else if (attr == "outside") {
+		num = double(def.outsideFade);
+	} else if (attr == "name") {
+		text = getNodeName(scene, int(node));
+	} else if (attr == "position" || attr == "rotation"
+		|| attr == "size") {
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		v4 = glm::vec4(attr == "position" ? t : (attr == "rotation" ? r : s),
+			1.0f);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::WriteNodeCvolAttr(uint32_t node, const std::string& attr,
+	const glm::vec4& v4, double num, const std::string& text) {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	Scene& scene = m_world->scene;
+	auto it = scene.cvolForNode.find(node);
+	if (it == scene.cvolForNode.end())
+		return false;
+	::SceneCvol& def = it->second;
+	if (attr == "priority") {
+		def.priority = uint32_t(std::max(num, 0.0));
+	} else if (attr == "spacing") {
+		def.spacing = std::max(float(num), 1e-3f);
+	} else if (attr == "inside") {
+		def.insideFade = std::max(float(num), 0.0f);
+	} else if (attr == "outside") {
+		def.outsideFade = std::max(float(num), 0.0f);
+	} else if (attr == "name") {
+		const uint32_t id = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(text);
+		scene.nameForNode[node] = id;
+	} else if (attr == "position" || attr == "rotation"
+		|| attr == "size") {
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		if (attr == "position")
+			t = glm::vec3(v4.x, v4.y, v4.z);
+		else if (attr == "rotation")
+			r = glm::vec3(v4.x, v4.y, v4.z);
+		else
+			s = glm::vec3(std::max(v4.x, 1e-3f), std::max(v4.y, 1e-3f),
+				std::max(v4.z, 1e-3f));
+		scene.localTransform[node] = LocalMatrixFromTRS(t, r, s);
+		markAsChanged(scene, int(node));
+		recalculateGlobalTransforms(scene);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	const Scene& scene = m_world->scene;
+	if (!scene.cvolForNode.contains(node))
+		return false;
+	if (node >= scene.globalTransform.size())
+		return false;
+	// Authoring box: center = global translate, full extents = global
+	// scale (basis lengths — exact for unrotated nodes, a conservative
+	// AABB otherwise). Rotation is ignored by design (gi_baker
+	// box-spec shape).
+	const glm::mat4& g = scene.globalTransform[node];
+	const glm::vec3 c(g[3]);
+	const glm::vec3 half(0.5f * glm::vec3(glm::length(g[0]),
+		glm::length(g[1]), glm::length(g[2])));
+	mn = c - half;
+	mx = c + half;
+	return true;
+}
+
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	if (c.verb == EditVerb::SetVisibility)
@@ -1115,6 +1420,9 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetLightAttr:
 			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
 			break;
+		case EditVerb::SetCvolAttr:
+			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
+			break;
 		default:
 			break;
 		}
@@ -1143,6 +1451,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetLightAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
+			break;
+		case EditVerb::SetCvolAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
 			break;
 		default:
 			break;
@@ -1176,6 +1488,7 @@ size_t EditorApp::CoalesceHistory() {
 	//                              SetDitherCloseup/AssignMaterial
 	//   (SetMatAttr, mat, attr)    shared material value edits
 	//   (SetLightAttr, node, attr) light property edits
+	//   (SetCvolAttr, node, attr)  convex-volume property edits
 	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
 	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
 	for (size_t i = 0; i < m_historyCursor; ++i) {
@@ -1197,6 +1510,9 @@ size_t EditorApp::CoalesceHistory() {
 			break;
 		case EditVerb::SetLightAttr:
 			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
+			break;
+		case EditVerb::SetCvolAttr:
+			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
 			break;
 		default:
 			break; // Create*/TerrainPaint: always keep
@@ -1227,6 +1543,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetLightAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
+			break;
+		case EditVerb::SetCvolAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
 			break;
 		default:
 			break;
@@ -1268,6 +1588,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::TerrainPaint: return "terrain paint";
 	case editor::EditVerb::Delete: return "delete";
 	case editor::EditVerb::CreateTransform: return "create transform";
+	case editor::EditVerb::CreateCVolume: return "create cvolume";
+	case editor::EditVerb::SetCvolAttr: return "cvolume edit";
 	}
 	return "?";
 }
@@ -1333,6 +1655,16 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.name = c.afterText;
 			return true;
 		}
+		// Created-cvolume nodes own no cluster id either: renames
+		// persist as cvolume-attr lines (-ref addressing).
+		const int kv = app.CreatedCvolIndex(c.node);
+		if (kv >= 0) {
+			out.verb = smvk::tour::Verb::SetCvolAttr;
+			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.text = "name";
+			out.name = c.afterText;
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Rename;
@@ -1351,6 +1683,15 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
 		}
+		// Created-cvolume nodes: same treatment (cvolume-attr triples).
+		const int kv = app.CreatedCvolIndex(c.node);
+		if (kv >= 0) {
+			out.verb = smvk::tour::Verb::SetCvolAttr;
+			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
+			out.vec4 = glm::vec4(c.afterVec, 1.0f);
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = (c.verb == EditVerb::Translate)
@@ -1358,12 +1699,22 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.vec = c.afterVec;
 		return true;
 	}
-	case EditVerb::Scale:
+	case EditVerb::Scale: {
+		// Created-cvolume size edits ride the size channel (-ref).
+		const int kv = app.CreatedCvolIndex(c.node);
+		if (kv >= 0) {
+			out.verb = smvk::tour::Verb::SetCvolAttr;
+			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.text = "size";
+			out.vec4 = glm::vec4(c.afterVec, 1.0f);
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetScale;
 		out.vec = c.afterVec;
 		return true;
+	}
 	case EditVerb::AssignMaterial: {
 		if (!needNode())
 			return false;
@@ -1575,14 +1926,69 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::CreateCVolume: {
+		// Emit the LIVE create state: the node may have moved/scaled
+		// and its params may have been attr-edited after creation
+		// (those later SetCvolAttr commands re-emit harmlessly and
+		// idempotently — the light precedent).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		auto cvit = app.m_world->scene.cvolForNode.find(created);
+		if (cvit == app.m_world->scene.cvolForNode.end())
+			return false; // detached (tombstoned): nothing to persist
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "cvolume";
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.node2);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		out.svec = glm::vec3(std::max(s.x, 1e-3f),
+			std::max(s.y, 1e-3f), std::max(s.z, 1e-3f));
+		out.vec4 = glm::vec4(float(cvit->second.priority),
+			cvit->second.spacing, cvit->second.insideFade,
+			cvit->second.outsideFade);
+		return true;
+	}
+	case EditVerb::SetCvolAttr: {
+		const int k = app.CreatedCvolIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetCvolAttr;
+		out.text = c.cvolAttr;
+		if (c.cvolAttr == "position" || c.cvolAttr == "rotation"
+			|| c.cvolAttr == "size") {
+			out.vec4 = c.vec4;
+		} else if (c.cvolAttr == "name") {
+			out.name = c.afterText;
+		} else {
+			out.number = c.number;
+		}
+		return true;
+	}
 	case EditVerb::Delete: {
 		// Cluster-backed nodes persist as a first-class Maya delete.
 		// Addressing: uuid (file-stable identity, assigned for every
 		// delete target by the SaveTourTo pre-pass), name (secondary,
 		// via needNode's verify-name side effect), numeric id as the
 		// legacy fallback/disambiguator. Editor-created nodes (created
-		// lights, terrain groups/tiles — no cluster id) are never
-		// written: their creates are dropped by the live-state
+		// lights, cvolumes, terrain groups/tiles — no cluster id) are
+		// never written: their creates are dropped by the live-state
 		// emission above, removing them from the file entirely.
 		if (!needNode())
 			return false;
@@ -1864,7 +2270,8 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		}
 		else if (c.verb == EditVerb::CreateLight
 			|| c.verb == EditVerb::CreateTerrain
-			|| c.verb == EditVerb::CreateTransform) {
+			|| c.verb == EditVerb::CreateTransform
+			|| c.verb == EditVerb::CreateCVolume) {
 			ensureUuid(c.node2);
 		}
 	}
@@ -2158,6 +2565,19 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			out.svec = tc.svec;
 			return true;
 		}
+		if (tn == "cvolume") {
+			out.verb = EditVerb::CreateCVolume;
+			out.node = UINT32_MAX;
+			out.node2 = wp;
+			out.afterText = tc.text;
+			out.afterVec = tc.vec;
+			out.svec = tc.svec;
+			out.cvolPriority = uint32_t(std::max(tc.vec4.x, 0.0f));
+			out.cvolSpacing = std::max(tc.vec4.y, 1e-3f);
+			out.cvolInsideFade = std::max(tc.vec4.z, 0.0f);
+			out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
+			return true;
+		}
 		if (tn == "terrain") {
 			out.verb = EditVerb::CreateTerrain;
 			out.node = UINT32_MAX;
@@ -2236,6 +2656,31 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.lightShadow = tc.node2 != 0;
 		return true;
 	}
+	case smvk::tour::Verb::CreateCVolume: {
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
+		out.verb = EditVerb::CreateCVolume;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.svec = tc.svec;
+		out.cvolPriority = uint32_t(std::max(tc.vec4.x, 0.0f));
+		out.cvolSpacing = std::max(tc.vec4.y, 1e-3f);
+		out.cvolInsideFade = std::max(tc.vec4.z, 0.0f);
+		out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
+		return true;
+	}
 	case smvk::tour::Verb::CreateTerrain: {
 		uint32_t wp = UINT32_MAX;
 		if (!tc.parentRef.empty()) {
@@ -2306,6 +2751,38 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetCvolAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateCvolRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateCvolRefBase;
+			if (k >= app.m_tourCreatedCvolNodes.size())
+				return false;
+			target = app.m_tourCreatedCvolNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!app.m_world->scene.cvolForNode.contains(target))
+			return false; // not a cvolume: orphan, preserved verbatim
+		out.verb = EditVerb::SetCvolAttr;
+		out.node = target;
+		out.cvolAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeCvolAttr(target, tc.text, out.beforeVec4,
+				out.beforeNum, out.beforeText))
+			return false;
+		if (tc.text == "position" || tc.text == "rotation"
+			|| tc.text == "size") {
+			out.vec4 = tc.vec4;
+		} else if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
 	}
 	return false;
 }
@@ -2361,6 +2838,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// direct commands so locals win over matching regex (more specific
 	// wins); rules skip locally-overridden nodes when they apply.
 	m_tourCreatedNodes.clear();
+	m_tourCreatedCvolNodes.clear();
 	m_replayingTour = true;
 	ClearHistory();
 	m_overrideRules.clear();

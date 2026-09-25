@@ -752,10 +752,151 @@ void TestLightVerbs() {
 // system types (material/file/image/camera) parse, validate, and skip
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
+void TestCvolVerbs() {
+	// Authored convex volumes: createCvolume/setCvolAttr round-trip
+	// through the .tour file, then replay onto a cook cluster (create
+	// appends a node + node-local def; -ref addressing hits creation
+	// order; delete drops the def link).
+	smvk::tour::Doc doc;
+	doc.source = "models/x.gltf";
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateCVolume;
+	c.node = 0; // parent: cluster root
+	c.text = "CVol_1";
+	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+	c.svec = glm::vec3(8.0f, 4.0f, 6.0f);
+	c.vec4 = glm::vec4(2.0f, 0.5f, 0.1f, 0.2f); // priority, spacing, in, out
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetCvolAttr;
+	c.node = smvk::tour::kCreateCvolRefBase | 0u;
+	c.text = "spacing";
+	c.number = 0.25;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetCvolAttr;
+	c.node = smvk::tour::kCreateCvolRefBase | 0u;
+	c.text = "size";
+	c.vec4 = glm::vec4(10.0f, 10.0f, 10.0f, 1.0f);
+	doc.commands.push_back(c);
+
+	std::string err;
+	std::vector<std::string> warns;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "cvol tour save");
+	std::ifstream in(TempTour(), std::ios::binary);
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	in.close();
+	Check(text.find("createCvolume -p 0 -name \"CVol_1\"") != std::string::npos,
+		"cvol legacy create line");
+	Check(text.find("setCvolAttr -ref 0 -at spacing -v 0.25") != std::string::npos,
+		"cvol tabulated attr line");
+	smvk::tour::Doc back;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "cvol tour load");
+	Check(back.commands.size() == 3, "cvol tour command count");
+	const smvk::tour::Command& rc = back.commands[0];
+	Check(rc.verb == smvk::tour::Verb::CreateCVolume && rc.node == 0
+		&& rc.text == "CVol_1" && rc.vec4.x == 2.0f
+		&& rc.vec4.y == 0.5f && rc.svec.x == 8.0f,
+		"cvol create roundtrip");
+	Check(back.commands[1].verb == smvk::tour::Verb::SetCvolAttr
+		&& back.commands[1].node == (smvk::tour::kCreateCvolRefBase | 0u)
+		&& back.commands[1].text == "spacing"
+		&& back.commands[1].number == 0.25, "cvol attr roundtrip");
+	Check(!smvk::tour::Describe(back.commands[0]).empty()
+		&& !smvk::tour::Describe(back.commands[1]).empty(),
+		"cvol describe");
+
+	// Replay: root + one imported node; create under root.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	setNodeName(cluster->scene, root, "Root");
+	const size_t beforeNodes = cluster->scene.hierarchy.size();
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"cvol replay ok");
+	Check(cluster->scene.hierarchy.size() == beforeNodes + 1,
+		"cvol replay appends node");
+	const uint32_t newNode = uint32_t(beforeNodes);
+	Check(cluster->scene.hierarchy[newNode].parent == root,
+		"cvol replay parent");
+	Check(getNodeName(cluster->scene, int(newNode)) == "CVol_1",
+		"cvol replay name");
+	auto cvit = cluster->scene.cvolForNode.find(newNode);
+	Check(cvit != cluster->scene.cvolForNode.end(), "cvol replay link");
+	Check(cvit != cluster->scene.cvolForNode.end()
+		&& cvit->second.priority == 2u
+		&& cvit->second.spacing == 0.25f
+		&& cvit->second.insideFade == 0.1f
+		&& cvit->second.outsideFade == 0.2f,
+		"cvol replay params (-ref spacing applied)");
+	Check(cluster->scene.localTransform[newNode][3].x == 1.0f
+		&& cluster->scene.localTransform[newNode][3].y == 2.0f,
+		"cvol replay position");
+	// Size attr rebuilt the scale channel (10 m box).
+	glm::vec3 sk, tt, ss3;
+	glm::vec4 pp;
+	glm::quat qq;
+	glm::decompose(cluster->scene.localTransform[newNode], ss3, qq,
+		tt, sk, pp);
+	Check(std::abs(ss3.x - 10.0f) < 1e-4f, "cvol replay size");
+
+	// Unified form lowers to the legacy verb at parse.
+	smvk::tour::Doc uni;
+	Check(smvk::tour::LoadTourFromString(
+		"createNode -at cvolume -p 0 -name \"U\" -t 0 0 0 1 0.5 0.1 0.1 -s 4 4 4;\n",
+		uni, err), "cvol unified loads");
+	Check(uni.commands.size() == 1
+		&& uni.commands[0].verb == smvk::tour::Verb::CreateCVolume
+		&& uni.commands[0].text == "U"
+		&& uni.commands[0].vec4.x == 1.0f,
+		"cvol unified lowers");
+	// Type table knows the DAG kind.
+	size_t tn = 0;
+	const smvk::tour::CreateNodeType* t = smvk::tour::FindCreateNodeType("cvolume");
+	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag, "cvol node type");
+	(void)tn;
+
+	// Delete drops the def link (Maya delete: nothing bakes it).
+	smvk::tour::Doc del;
+	smvk::tour::Command dc{};
+	dc.verb = smvk::tour::Verb::Delete;
+	dc.node = newNode;
+	dc.name = "CVol_1";
+	del.commands.push_back(dc);
+	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
+		"cvol delete replay ok");
+	Check(!cluster->scene.cvolForNode.contains(newNode),
+		"cvol delete drops def");
+
+	// Out-of-range -ref fails loudly; unknown attr fails at parse.
+	smvk::tour::Doc bad;
+	smvk::tour::Command bc{};
+	bc.verb = smvk::tour::Verb::SetCvolAttr;
+	bc.node = smvk::tour::kCreateCvolRefBase | 5u;
+	bc.text = "spacing";
+	bc.number = 1.0;
+	bad.commands.push_back(bc);
+	Check(!smvk::tour::ApplyTourToCluster(*cluster, bad, nullptr, &err),
+		"cvol replay rejects bad ref");
+	smvk::tour::Doc parseBad;
+	Check(!smvk::tour::LoadTourFromString(
+		"setCvolAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
+		"cvol parser rejects bad attr");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
+// Unified createNode form: new files write `createNode -at <type>`;
+// DAG types lower to the legacy verbs at parse (single replay path);
+// system types (material/file/image/camera) parse, validate, and skip
+// at replay; legacy createLight/createTerrain/createTransform lines
+// load unchanged.
 void TestCreateNode() {
 	// Type table: DAG vs system knowledge lives on the type.
 	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 8,
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 9,
 		"createnode table size");
 	const smvk::tour::CreateNodeType* t =
 		smvk::tour::FindCreateNodeType("spotLight");
@@ -1281,6 +1422,7 @@ int main() {
 	TestTourReferences();
 	TestLightVerbs();
 	TestTerrainVerbs();
+	TestCvolVerbs();
 	TestCreateNode();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;

@@ -155,17 +155,29 @@ enum class Verb : uint8_t {
  	                // (Legacy verb — new files write the unified
  	                // createNode form below.)
  	CreateNode,     // THE node verb (Maya createNode): -at names the
- 	                // node TYPE, the rest is per-type payload:
- 	                //   DAG types (hierarchy nodes — transform +
- 	                //   parentable): transform, pointLight, spotLight,
- 	                //   terrain. Replayed by cook + editor with full
- 	                //   create semantics (-ref bookkeeping included).
- 	                //   System types (no DAG presence — editor-managed
- 	                //   data): material, file, image, camera. Parsed +
- 	                //   validated, skipped at replay with a log.
- 	                // New files write ONLY this form; the legacy
- 	                // createLight/createTerrain/createTransform verbs
- 	                // still parse (backward compat).
+	                // node TYPE, the rest is per-type payload:
+	                //   DAG types (hierarchy nodes — transform +
+	                //   parentable): transform, pointLight, spotLight,
+	                //   terrain, cvolume. Replayed by cook + editor with
+	                //   full create semantics (-ref bookkeeping included).
+	                //   System types (no DAG presence — editor-managed
+	                //   data): material, file, image, camera. Parsed +
+	                //   validated, skipped at replay with a log.
+	                // New files write ONLY this form; the legacy
+	                // createLight/createTerrain/createTransform/
+	                // createCvolume verbs still parse (backward compat).
+ 	CreateCVolume,  // node = PARENT cluster id; text = volume name;
+	                // vec = local position (box center); svec = local
+	                // size (full extents, m); vec4 = (priority,
+	                // spacing[m], insideFade[m], outsideFade[m]).
+	                // An authored convex GI volume (gi_baker box spec
+	                // shape): axis-aligned, rotation ignored.
+ 	SetCvolAttr,    // node = target cluster id, or a created-volume ref
+	                // (kCreateCvolRefBase | k — see below); text = attr
+	                // ("priority","spacing","inside","outside",
+	                // "position","rotation","size","name"); number =
+	                // scalar value; vec4 = triple value (position/
+	                // rotation-deg/size); name = new name (attr "name").
  };
 
 // Node-type table for createNode -at (Maya node types): whether the
@@ -237,7 +249,8 @@ struct Command {
 	                       // attr name; CreateLight: light name
 	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale /
 	                       // CreateLight local position
-	glm::vec3 svec{ 1.0f, 1.0f, 1.0f }; // createTransform local scale
+	glm::vec3 svec{ 1.0f, 1.0f, 1.0f }; // createTransform local scale;
+	                       // CreateCVolume local size (full extents, m)
 	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive);
 	                        // CreateLight: (typeFloat, intensity, range,
 	                        // innerConeDeg); SetLightAttr "color": rgb
@@ -251,9 +264,10 @@ struct Command {
 	                       // Delete: secondary addressing key
 	std::string uuid;      // SetUuid: the recorded 32-hex identity;
 	                       // Delete: its PRIMARY addressing key
-	std::string nodeType;  // createNode -at type ("transform",
-	                       // "pointLight", "spotLight", "terrain",
-	                       // "material", "file", "image", "camera")
+ 	std::string nodeType;  // createNode -at type ("transform",
+ 	                       // "pointLight", "spotLight", "terrain",
+ 	                       // "cvolume", "material", "file", "image",
+ 	                       // "camera")
 };
 
 // SetLightAttr addressing for lights created by an earlier CreateLight
@@ -269,6 +283,13 @@ inline constexpr uint32_t kCreateLightRefBase = 0x80000000u;
 // via kCreateTerrainRefBase | k (k-th CreateTerrain in file order).
 // Disjoint bit from the light base; a node carries at most one.
 inline constexpr uint32_t kCreateTerrainRefBase = 0x40000000u;
+
+// Same scheme for convex volumes created by an earlier CreateCVolume:
+// SetCvolAttr (and only it — generic verbs on created volumes lower to
+// SetCvolAttr position/rotation/size/name at save) addresses them via
+// kCreateCvolRefBase | k (k-th CreateCVolume in file order). Disjoint
+// from both bases above; a node carries at most one.
+inline constexpr uint32_t kCreateCvolRefBase = 0x20000000u;
 
 struct Doc {
 	int version = kTourVersion;

@@ -642,6 +642,10 @@ private:
 	// backing for setLightAttr -ref addressing (TourToCmd) and the
 	// save-time creation index (CmdToTour). Rebuilt on every replay.
 	std::vector<uint32_t> m_tourCreatedNodes;
+	// Same scheme for history-created convex volumes (tour CreateCVolume
+	// file order): setCvolAttr -ref addressing. Rebuilt on every replay
+	// alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedCvolNodes;
 	// Same scheme for history-created terrain (tour CreateTerrain file
 	// order): generic verbs address them via kCreateTerrainRefBase.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
@@ -702,6 +706,8 @@ private:
 	// Creation-order index of a live created light (-1 when the node is
 	// not a history create): the -ref value CmdToTour emits.
 	int CreatedLightIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created convex volume, same contract.
+	int CreatedCvolIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created terrain, same contract.
 	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Tour-stable default parent for new lights: the primary cluster's
@@ -709,6 +715,8 @@ private:
 	uint32_t DefaultCreateParent() const;
 	// Unique "Point_N"/"Spot_N" name over the live world lights.
 	std::string UniqueLightName(bool spot) const;
+	// Unique "CVol_N" name over the live world cvolume nodes.
+	std::string UniqueCvolName() const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
 	// Live command helpers (editor_commands.cpp).
@@ -889,6 +897,31 @@ private:
 		glm::vec4& v4, double& num, bool& flag, std::string& text) const;
 	bool WriteNodeLightAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, bool flag, const std::string& text);
+	// Convex-volume property channels ("priority","spacing","inside",
+	// "outside","position","rotation","size","name") — the inspector's
+	// before-state + live-write path for SetCvolAttr (degrees for
+	// rotation, meters for triples). False when the node has no cvol.
+	bool ReadNodeCvolAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, std::string& text) const;
+	bool WriteNodeCvolAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, const std::string& text);
+	// World-space authoring box of a cvolume node (center = global
+	// translate, full extents = global scale, axis-aligned — rotation
+	// ignored by design). False when the node has no cvol.
+	bool CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const;
+	// Inspector "Convex volume" section for cvolume nodes (priority /
+	// spacing / fades via undoable SetCvolAttr; shape via the transform).
+	void DrawCvolSection(uint32_t node);
+	// Create menu: convex GI volume box at the active camera target
+	// (8 m box, priority 0, 0.5 m spacing, 0.1 m fades).
+	void DraftCreateCVolume();
+	// Created-cvolume execution (ExecCmd cases): append/remove the world
+	// node + node-local SceneCvol definition. ExecCreateCVolume records
+	// the assigned id back into the command (c.node).
+	void ExecCreateCVolume(EditCmd& c);
+	void ExecUncreateCvolume(EditCmd& c);
+	// Viewport boxes for cvolume nodes (editor_gizmo.cpp batches).
+	bool m_showCvolGizmos = true;
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.

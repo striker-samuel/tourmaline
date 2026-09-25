@@ -368,8 +368,15 @@ void EditorApp::DrawViewportChrome() {
 // wireframe at mode 1, + translucent priority-coded fill at mode 2.
 // Foreground = no depth, so the volumes read through geometry (the
 // point of the view: authoring shapes against walls/roofs).
+// Authored cvolume nodes label here too (their boxes ride the 3D
+// gizmo batches instead — depth-tested scene objects, all view
+// modes): name + priority at the box center, same priority hue.
 void EditorApp::DrawCvolPreviewOverlay() {
-	if (m_cvolPreviewMode == 0 || m_cvolPreviews.empty())
+	const bool showBaked = m_cvolPreviewMode != 0
+		&& !m_cvolPreviews.empty();
+	const bool showAuthored = m_showCvolGizmos && m_world
+		&& !m_world->scene.cvolForNode.empty();
+	if (!showBaked && !showAuthored)
 		return;
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
 	// Priority -> stable hue (stacked override volumes read at a glance).
@@ -394,6 +401,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 		};
 		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		if (showBaked)
 		for (const CvolPreview& cv : m_cvolPreviews) {
 			const ImU32 wire = priorityColor(cv.priority, 220);
 			const ImU32 fill = priorityColor(cv.priority, 42);
@@ -419,6 +427,26 @@ void EditorApp::DrawCvolPreviewOverlay() {
 				std::snprintf(label, sizeof(label), "%s  p%u",
 					cv.name.c_str(), cv.priority);
 				dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
+			}
+		}
+		if (showAuthored && m_world) {
+			// Authored boxes already draw as 3D gizmo wires; the
+			// overlay contributes the name/priority tag at the box
+			// center (same priority hue both places).
+			const Scene& scene = m_world->scene;
+			for (const auto& [node, def] : scene.cvolForNode) {
+				glm::vec3 mn, mx;
+				if (!CvolBox(node, mn, mx))
+					continue;
+				ImVec2 c;
+				if (project((mn + mx) * 0.5f, c)) {
+					char label[128];
+					std::snprintf(label, sizeof(label), "%s  p%u",
+						getNodeName(scene, int(node)).c_str(),
+						def.priority);
+					dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f),
+						priorityColor(def.priority, 220), label);
+				}
 			}
 		}
 		dl->PopClipRect();
