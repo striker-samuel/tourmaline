@@ -6,7 +6,10 @@
 
 #include "editor_app.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -315,6 +318,13 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecDelete(c);
 		else
 			ExecUndelete(c);
+		break;
+	}
+	case EditVerb::CreateTransform: {
+		if (forward)
+			ExecCreateTransform(c);
+		else
+			ExecUncreateTransform(c);
 		break;
 	}
 	}
@@ -805,6 +815,105 @@ void EditorApp::DeleteSelection() {
 			+ (deleted > 1 ? "s" : "") + ".");
 }
 
+// ---------------------------------------------------------------------------
+// CreateTransform: plain transform nodes (Maya group locators). No mesh,
+// no light, no pool entry — the reference system uses them as
+// displacement placeholders for created content parented under a
+// reference that gets disabled (see editor_references.cpp).
+// ---------------------------------------------------------------------------
+void EditorApp::ExecCreateTransform(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	// TRS rebuild (editor convention: Rz*Ry*Rx, degrees).
+	glm::mat4 m(1.0f);
+	m = glm::translate(m, c.afterVec);
+	m = glm::rotate(m, glm::radians(c.vec4.z), glm::vec3(0, 0, 1));
+	m = glm::rotate(m, glm::radians(c.vec4.y), glm::vec3(0, 1, 0));
+	m = glm::rotate(m, glm::radians(c.vec4.x), glm::vec3(1, 0, 0));
+	m = glm::scale(m, c.svec);
+	scene.localTransform[size_t(created)] = m;
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	Log("Created transform '" + c.afterText + "' (#"
+		+ std::to_string(created) + ").");
+}
+
+void EditorApp::ExecUncreateTransform(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	// A transform node carries no links: physical pop when it is still
+	// the childless tail (created-light precedent), else hide with ids
+	// kept stable.
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	if (tail && childless) {
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid transform creation (#" + std::to_string(n) + ").");
+	} else {
+		MarkHidden(scene, int(n));
+		Log("Undid transform creation (#" + std::to_string(n)
+			+ "): hidden, ids kept stable.");
+	}
+}
+
 bool EditorApp::ReadNodeLightAttr(uint32_t node, const std::string& attr,
 	glm::vec4& v4, double& num, bool& flag, std::string& text) const {
 	v4 = glm::vec4(0.0f);
@@ -976,6 +1085,74 @@ void EditorApp::ClearHistory() {
 	m_historyCursor = 0;
 }
 
+// Save-time coalescing (see SaveTourTo): the saved .tour keeps only
+// the state that survives — last occurrence per class at its original
+// position — so toggle pairs like hide/show/hide collapse to the final
+// state in the FILE. Same classes as CoalesceHistory; structural
+// commands (creates, paints, deletes, uuids) always stay. The live
+// stack, undo and the autosave are untouched (temporal memory keeps
+// everything).
+std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
+	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
+	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
+	for (size_t i = 0; i < m_historyCursor; ++i) {
+		const EditCmd& c = m_history[i];
+		switch (c.verb) {
+		case EditVerb::Rename:
+		case EditVerb::Translate:
+		case EditVerb::Rotate:
+		case EditVerb::Scale:
+		case EditVerb::Parent:
+		case EditVerb::SetVisibility:
+		case EditVerb::SetNoLightmap:
+		case EditVerb::SetDitherCloseup:
+		case EditVerb::AssignMaterial:
+			lastByNode[{ int(c.verb), c.node }] = i;
+			break;
+		case EditVerb::SetMatAttr:
+			lastByAttr[{ int(c.verb), c.matWorld, c.attr }] = i;
+			break;
+		case EditVerb::SetLightAttr:
+			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
+			break;
+		default:
+			break;
+		}
+	}
+	std::vector<size_t> kept;
+	kept.reserve(m_historyCursor);
+	for (size_t i = 0; i < m_historyCursor; ++i) {
+		const EditCmd& c = m_history[i];
+		bool superseded = false;
+		switch (c.verb) {
+		case EditVerb::Rename:
+		case EditVerb::Translate:
+		case EditVerb::Rotate:
+		case EditVerb::Scale:
+		case EditVerb::Parent:
+		case EditVerb::SetVisibility:
+		case EditVerb::SetNoLightmap:
+		case EditVerb::SetDitherCloseup:
+		case EditVerb::AssignMaterial:
+			superseded = lastByNode[{ int(c.verb), c.node }] != i;
+			break;
+		case EditVerb::SetMatAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.matWorld, c.attr }] != i;
+			break;
+		case EditVerb::SetLightAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
+			break;
+		default:
+			break;
+		}
+		if (!superseded)
+			kept.push_back(i);
+	}
+	return kept;
+}
+
 size_t EditorApp::CoalesceHistory() {
 	if (m_historyCursor < 2)
 		return 0;
@@ -1090,6 +1267,7 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::CreateTerrain: return "create terrain";
 	case editor::EditVerb::TerrainPaint: return "terrain paint";
 	case editor::EditVerb::Delete: return "delete";
+	case editor::EditVerb::CreateTransform: return "create transform";
 	}
 	return "?";
 }
@@ -1123,6 +1301,27 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.node = uint32_t(cn);
 		out.name = getNodeName(app.m_world->scene, int(c.node));
 		return true;
+	};
+	// Symbolic -p form for a parent (world id): recorded uuid hex when
+	// present (covers UNNAMED parents), else the shortest-unique
+	// name/path when named, else empty (numeric -p fallback). Follows
+	// the tour's string/dag rule: names first, uuids for the unnamed.
+	auto parentRefFor = [&](uint32_t worldParent) {
+		if (!app.m_world
+			|| worldParent >= app.m_world->scene.hierarchy.size())
+			return std::string();
+		const Scene& scene = app.m_world->scene;
+		const std::string nm = getNodeName(scene, int(worldParent));
+		if (!nm.empty()) {
+			const std::string p =
+				smvk::tour::DagShortestUniquePath(scene, worldParent);
+			if (!p.empty())
+				return p;
+		}
+		auto it = scene.uuidForNode.find(worldParent);
+		if (it != scene.uuidForNode.end())
+			return it->second;
+		return std::string();
 	};
 	switch (c.verb) {
 	case EditVerb::Rename: {
@@ -1225,6 +1424,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		out.verb = smvk::tour::Verb::Parent;
 		out.node2 = uint32_t(pn);
+		out.parentRef = parentRefFor(c.node2);
 		out.name = getNodeName(app.m_world->scene, int(c.node));
 		return true;
 	}
@@ -1252,6 +1452,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			app.m_world->scene.localTransform[created][3]);
 		out.verb = smvk::tour::Verb::CreateLight;
 		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.node2);
 		out.text = L->name;
 		out.vec = t;
 		out.vec4 = glm::vec4(
@@ -1291,6 +1492,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			app.m_world->scene.localTransform[created][3]);
 		out.verb = smvk::tour::Verb::CreateTerrain;
 		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.beforeParent);
 		out.text = c.afterText;
 		out.vec = t;
 		out.vec4 = c.vec4;         // (size, res, height, freq)
@@ -1300,6 +1502,34 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// Unmappable (editor default / none) emits a sentinel; the cook
 		// mints the same deterministic default material on miss.
 		out.material = (pm >= 0) ? uint32_t(pm) : 0xFFFFFFFFu;
+		return true;
+	}
+	case EditVerb::CreateTransform: {
+		// Emit the LIVE create state (transform nodes carry no links,
+		// so a deleted one must not emit — same tombstone contract as
+		// the detached-light check).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateTransform;
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.node2);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		out.vec4 = glm::vec4(r, 0.0f);
+		out.svec = s;
 		return true;
 	}
 	case EditVerb::TerrainPaint: {
@@ -1337,16 +1567,20 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		return true;
 	}
 	case EditVerb::Delete: {
-		// Cluster-backed nodes persist as a first-class Maya delete
-		// (delete -n <id>): replayed by the editor AND PakCooker, so a
-		// deleted imported node stays deleted after reload AND out of
-		// the cooked pak. Editor-created nodes (created lights, terrain
-		// groups/tiles — no cluster id) are never written: their creates
-		// are dropped by the live-state emission above, removing them
-		// from the file entirely.
+		// Cluster-backed nodes persist as a first-class Maya delete.
+		// Addressing: uuid (file-stable identity, assigned for every
+		// delete target by the SaveTourTo pre-pass), name (secondary,
+		// via needNode's verify-name side effect), numeric id as the
+		// legacy fallback/disambiguator. Editor-created nodes (created
+		// lights, terrain groups/tiles — no cluster id) are never
+		// written: their creates are dropped by the live-state
+		// emission above, removing them from the file entirely.
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Delete;
+		auto uit = app.m_world->scene.uuidForNode.find(c.node);
+		if (uit != app.m_world->scene.uuidForNode.end())
+			out.uuid = uit->second;
 		return true;
 	}
 	}
@@ -1374,7 +1608,62 @@ std::string EditorApp::TourTarget() const {
 }
 
 bool EditorApp::SaveTour() {
-	return SaveTourTo(TourTarget());
+	const bool ok = SaveTourTo(TourTarget());
+	if (ok)
+		ClearAutosave();
+	return ok;
+}
+
+// Autosave maintenance: an explicit save makes the pending autosave
+// redundant (Maya drops the autoSave file on manual save).
+void EditorApp::ClearAutosave() {
+	const std::string path = AutosavePath();
+	if (path.empty())
+		return;
+	std::error_code ec;
+	std::filesystem::remove(std::filesystem::path(path), ec);
+}
+
+// Autosave recovery offer: when a newer autosave exists for the loaded
+// tour (or an autosave with no tour file at all), arm the recovery
+// dialog instead of loading anything silently. NORMAL loads never
+// touch the autosave content.
+void EditorApp::CheckAutosaveOffer() {
+	m_showRecoverDialog = false;
+	m_recoverAutosave.clear();
+	m_recoverTour.clear();
+	m_recoverStamp.clear();
+	if (!m_world)
+		return;
+	const std::string tour = TourPath();
+	if (tour.empty())
+		return;
+	if (LatestTourPath(tour) == tour)
+		return; // no newer autosave: nothing to offer
+	m_showRecoverDialog = true;
+	m_recoverAutosave = AutosavePath();
+	m_recoverTour = tour;
+	m_recoverStamp = FileStamp(m_recoverAutosave);
+	Log("Autosave found (" + m_recoverStamp
+		+ ") — newer than " + tour + ".");
+}
+
+// Autosave timestamp for the recovery dialog (same style as the tour
+// header stamp: "Fri, Sep 26, 2026 09:12:04 AM", empty when unknown).
+static std::string FileStamp(const std::string& path) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	if (path.empty() || !fs::exists(fs::path(path), ec))
+		return {};
+	const auto ft = fs::last_write_time(fs::path(path), ec);
+	if (ec)
+		return {};
+	const std::time_t tt = std::chrono::system_clock::to_time_t(
+		std::chrono::clock_cast<std::chrono::system_clock>(ft));
+	char buf[64] = {};
+	if (std::tm* lt = std::localtime(&tt))
+		std::strftime(buf, sizeof(buf), "%a, %b %d, %Y %I:%M:%S %p", lt);
+	return buf;
 }
 
 // Per-edit persistence target: the full tour state lands in an autosave
@@ -1508,7 +1797,66 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	smvk::tour::Doc doc;
 	doc.source = m_gltfPath;
 	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
-	for (size_t i = 0; i < m_historyCursor; ++i) {
+	// UUID pre-pass: every cluster-backed Delete target needs a
+	// file-stable identity for the `uuid` addressing form. Assign
+	// missing ones NOW into the world scene (deterministic from here:
+	// already-assigned ids are kept).
+	Scene& scene = m_world->scene;
+	auto held = [&](const std::string& hex, uint32_t except) {
+		for (const auto& [n, u] : scene.uuidForNode)
+			if (u == hex && n != except)
+				return true;
+		return false;
+	};
+	for (size_t i : CoalescedSaveIndices()) {
+		const EditCmd& c = m_history[i];
+		if (c.verb != EditVerb::Delete)
+			continue;
+		const int cn = WorldToCluster(c.node);
+		if (cn < 0)
+			continue; // editor-created: dropped via live-state emission
+		auto uit = scene.uuidForNode.find(c.node);
+		if (uit != scene.uuidForNode.end() && !held(uit->second, c.node))
+			continue; // file-stable identity already in place
+		// Maya setUuid parity: never hand out a uuid another live
+		// node holds (regenerate; 128-bit collisions are ~impossible
+		// but stale/duplicated tour lines must not steal identity).
+		std::string hex;
+		do {
+			hex = smvk::tour::GenerateUuid();
+		} while (held(hex, c.node));
+		scene.uuidForNode[c.node] = hex;
+	}
+	// Emit the whole identity map (cluster-backed, node-id order —
+	// deterministic files): these feed the delete lines AND survive
+	// reloads. Without this, a reload drops the identities and the
+	// next save mints fresh ones (uuid churn: -uuid links would never
+	// match twice).
+	std::vector<uint32_t> uuidNodes;
+	for (const auto& [wnode, hex] : scene.uuidForNode) {
+		if (wnode >= scene.hierarchy.size())
+			continue;
+		if (WorldToCluster(wnode) < 0)
+			continue; // editor-created: nothing to address
+		uuidNodes.push_back(wnode);
+	}
+	std::sort(uuidNodes.begin(), uuidNodes.end());
+	for (uint32_t wnode : uuidNodes) {
+		smvk::tour::Command u{};
+		u.verb = smvk::tour::Verb::SetUuid;
+		u.node = uint32_t(WorldToCluster(wnode));
+		u.uuid = scene.uuidForNode[wnode];
+		u.name = getNodeName(scene, int(wnode));
+		doc.commands.push_back(std::move(u));
+	}
+	// Save-time coalescing: only the surviving state per class lands
+	// Save-time coalescing: only the surviving state per class lands
+	// in the FILE (toggle pairs like hide/show/hide collapse to the
+	// final command); the live stack, undo and the autosave keep
+	// everything. Structural commands never drop (same classes as
+	// CoalesceHistory).
+	const std::vector<size_t> kept = CoalescedSaveIndices();
+	for (size_t i : kept) {
 		// Editor-created Delete targets (no cluster id: created lights,
 		// terrain groups/tiles) never persist — their creates are
 		// dropped by the live-state emission, which removes them from
@@ -1525,13 +1873,23 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		}
 		doc.commands.push_back(std::move(tc));
 	}
+	// Orphans (unresolved at the last replay — e.g. edits on a replaced
+	// or failed reference): re-emit VERBATIM so they resolve again when
+	// their nodes come back. A reference round-trip must never erase
+	// edits from the file.
+	doc.commands.insert(doc.commands.end(),
+		m_orphanTourCmds.begin(), m_orphanTourCmds.end());
 	SaveOverridesToDoc(doc);
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
 	doc.references = m_references; // scene references (loader binds them)
 	doc.hasCook = true;
-	doc.cook.outPak = m_cook.outPak;
+	// Cook SETTINGS persist; the DESTINATION does not: outPak is
+	// machine/session state (entered per cook in the Cook panel),
+	// never scene state — a checked-in .tour must not pin a local
+	// output path.
+	doc.cook.outPak.clear();
 	doc.cook.meshopt = m_cook.meshopt;
 	doc.cook.lods = m_cook.lods;
 	doc.cook.lightmap = m_cook.lightmap;
@@ -1689,13 +2047,36 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			app.m_world->scene.hierarchy[node].parent);
 		return true;
 	}
-	case smvk::tour::Verb::Delete: {
-		if (!needNode())
+	case smvk::tour::Verb::CreateTransform: {
+		const uint32_t wp = app.ClusterToWorld(tc.node);
+		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
 			return false;
+		out.verb = EditVerb::CreateTransform;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.vec4 = glm::vec4(tc.vec4.x, tc.vec4.y, tc.vec4.z, 0.0f);
+		out.svec = tc.svec;
+		return true;
+	}
+	case smvk::tour::Verb::Delete: {
+		// uuid primary (file-stable identity across re-imports that
+		// shift numeric ids), name secondary, numeric id fallback
+		// (legacy lines + disambiguator for duplicated names).
 		// Live-state capture happens at ExecCmd time (ExecDelete
 		// records the links/entries from the live world), so the
 		// replayed command is exactly undoable like a session delete.
+		uint32_t target = UINT32_MAX;
+		const uint32_t w = app.ClusterToWorld(tc.node);
+		const uint32_t wid = (w != UINT32_MAX
+			&& w < app.m_world->scene.hierarchy.size())
+			? w : UINT32_MAX;
+		if (!smvk::tour::ResolveDeleteTarget(app.m_world->scene,
+				tc.uuid, tc.name, wid, target))
+			return false;
 		out.verb = EditVerb::Delete;
+		out.node = target;
 		return true;
 	}
 	case smvk::tour::Verb::CreateLight: {
@@ -1785,15 +2166,12 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 }
 
 bool EditorApp::LoadTour() {
-	const std::string fallback = TourPath();
-	if (fallback.empty() || !m_world)
+	const std::string tp = TourPath();
+	if (tp.empty() || !m_world)
 		return false;
-	// Crash recovery: a newer autosave (or one without an explicit save
-	// at all) IS the current document.
-	const std::string tp = LatestTourPath(fallback);
-	if (tp != fallback)
-		Log("tour: recovering from the autosave (newer than "
-			+ fallback + ").");
+	if (!std::filesystem::exists(tp))
+		return true; // no tour yet: clean history (an autosave, if any,
+	                 // is offered separately — never silently preferred)
 	smvk::tour::Doc doc;
 	std::string err;
 	std::vector<std::string> warns;
@@ -1841,12 +2219,37 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	ClearHistory();
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
+	m_orphanTourCmds.clear();
 	size_t applied = 0;
 	for (auto& tc : doc.commands) {
+		// `uuid` lines are structural persistence, not undoable edits:
+		// apply the identity straight onto the live scene (no history
+		// entry) so later deletes resolve through it. Maya setUuid
+		// parity: rejected when another live node already holds it.
+		if (tc.verb == smvk::tour::Verb::SetUuid) {
+			const uint32_t target = ClusterToWorld(tc.node);
+			if (target != UINT32_MAX
+				&& target < m_world->scene.hierarchy.size()
+				&& smvk::tour::SetNodeUuid(m_world->scene, target,
+					tc.uuid)) {
+				++applied;
+			}
+			else {
+				m_orphanTourCmds.push_back(tc);
+				Log("tour: keeping unresolved uuid line for later (" +
+					smvk::tour::Describe(tc) + ").");
+			}
+			continue;
+		}
 		EditCmd c{};
 		if (!TourToCmd(*this, tc, c)) {
-			Log("tour: skipping unmapped command (" +
-				smvk::tour::Describe(tc) + ")");
+			// Unresolvable (its node does not exist in this build):
+			// KEEP the raw command as an orphan so the next save
+			// re-emits it verbatim. A reload round-trip must never
+			// erase edits.
+			m_orphanTourCmds.push_back(tc);
+			Log("tour: keeping unresolved command for later (" +
+				smvk::tour::Describe(tc) + ").");
 			continue;
 		}
 		ExecCmd(c, true);
@@ -1855,8 +2258,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	}
 	m_replayingTour = false;
 	m_historyCursor = m_history.size();
-	Log("tour: applied " + std::to_string(applied) + "/" +
-		std::to_string(doc.commands.size()) + " commands.");
+	Log("tour: applied " + std::to_string(applied) + "/"
+		+ std::to_string(doc.commands.size()) + " commands"
+		+ (m_orphanTourCmds.empty() ? std::string()
+			: " (kept " + std::to_string(m_orphanTourCmds.size())
+				+ " unresolved for later)."));
 	LoadOverridesFromDoc(doc);
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)

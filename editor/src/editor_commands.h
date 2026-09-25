@@ -60,7 +60,17 @@ enum class EditVerb : uint8_t {
  	              // (packed quintuples). Tour: cluster-backed nodes
  	              // persist as Verb::Delete; editor-created nodes are
  	              // dropped via the creates' live-state emission.
-};
+ 	CreateTransform, // append a plain transform node (world): no mesh,
+ 	              // no light, no pool entry — a Maya group locator.
+ 	              // c.node = CREATED world id once forward-executed
+ 	              // (UINT32_MAX before); c.node2 = parent world id;
+ 	              // afterText = name; afterVec = local position;
+ 	              // vec4 = local rotation degrees; svec = local scale
+ 	              // (glm::vec3, new EditCmd field). The reference
+ 	              // system uses these as displacement placeholders
+ 	              // (see editor_references.cpp): no other authoring
+ 	              // creates them today.
+ };
 
 struct EditCmd {
 	EditVerb verb = EditVerb::Rename;
@@ -76,6 +86,9 @@ struct EditCmd {
 	// After-state (transforms as triple; rename text):
 	std::string afterText;
 	glm::vec3 afterVec{ 0.0f };
+	// CreateTransform local rotation (degrees) + scale. Also reused by
+	// ... nothing else: dedicated so transform creates stay exact.
+	glm::vec3 svec{ 1.0f, 1.0f, 1.0f };
 	// Before-state (exact inverse):
 	std::string beforeText;
 	glm::mat4 beforeMat{ 1.0f }; // transforms: full local matrix

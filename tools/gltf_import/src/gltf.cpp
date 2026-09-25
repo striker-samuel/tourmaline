@@ -2015,7 +2015,8 @@ size_t ApplySceneReferences(
 	const smvk::MeshletConfig& meshlets,
 	int coordFix,
 	std::vector<int>* outPlaceholderNodes,
-	std::vector<std::string>* outIssues) {
+	std::vector<std::string>* outIssues,
+	std::vector<std::string>* outResolvedSources) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -2049,11 +2050,25 @@ size_t ApplySceneReferences(
 		Level cur = std::move(queue.front());
 		queue.erase(queue.begin());
 		for (const auto& r : cur.doc.references) {
-			if (!r.enabled) {
-				std::cout << "[References] disabled '" << r.source <<
-					"' (unloaded, kept in the list)\n";
-				continue;
+			// One entry per top-level reference in OUT list order
+			// (filled with the canonical path once resolution is
+			// known; stays empty on every early exit): keeps the
+			// editor's parallel list aligned by construction.
+			size_t resolvedIdx = size_t(-1);
+			if (cur.depth == 0 && outResolvedSources) {
+				resolvedIdx = outResolvedSources->size();
+				outResolvedSources->push_back({});
 			}
+			auto noteResolved = [&](const std::string& canon) {
+				if (resolvedIdx != size_t(-1))
+					(*outResolvedSources)[resolvedIdx] = canon;
+			};
+			// Disabled references INLINE ANYWAY (keep-in-scene
+			// semantics): the placeholder + subtree always bind, so
+			// every cluster id stays STABLE across enable/disable
+			// toggles — edits made on the referenced nodes can never
+			// be orphaned by a toggle. Disabled only marks the
+			// placeholder subtree hidden (below).
 			if (cur.depth >= kMaxRefDepth) {
 				const std::string m = "[References] depth cap reached at '" +
 					r.source + "' (skipped)";
@@ -2209,6 +2224,10 @@ size_t ApplySceneReferences(
 				++warnings;
 				continue;
 			}
+			// Record the canonical model path the raw source bound to.
+			// (The raw tour string shows in the panel; this is the
+			// resolved sibling for path-solver/symlink users.)
+			noteResolved(resolved);
 			// Placeholder group node under the recorded parent (level-space
 			// parent resolved to owner space above).
 			const int parentNode = (pRaw <
@@ -2334,6 +2353,13 @@ size_t ApplySceneReferences(
 					ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
 					stack.push_back(uint32_t(ch));
 			}
+			// NOTE: the disabled flag NEVER touches the import here —
+			// the runtime world build excludes hidden nodes from its
+			// draw list at resolve time, so an import-side hide would
+			// permanently drop the reference's meshes (invisible AND
+			// un-restorable on re-enable). The EDITOR applies the
+			// disabled-hide on the resolved world instead (its passes
+			// filter visibility per frame, so toggling is instant).
 		}
 		++applied;
 			std::cout << "[References] inlined '" << resolved << "' under " <<

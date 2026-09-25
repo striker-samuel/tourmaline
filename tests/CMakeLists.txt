@@ -15,7 +15,9 @@ add_test(NAME asset_tests COMMAND AssetTests)
 
 # Placement editor model (engine-only TU: no ImGui, no EditorApp).
 add_executable(PlacementEditorTests test_placement_editor.cpp
+    ../editor/src/editor_dg.cpp
     ../editor/src/editor_placement.cpp
+    ../editor/src/editor_placement_dg.cpp
 )
 
 target_include_directories(PlacementEditorTests
@@ -33,6 +35,31 @@ set_target_properties(PlacementEditorTests PROPERTIES
 )
 
 add_test(NAME placement_editor_tests COMMAND PlacementEditorTests)
+
+# Maya-style DG core + the placement schemas on top of it (editor-only
+# TUs: schema registry, plug semantics, dirty propagation, named-attr
+# serialization).
+add_executable(DgTests test_dg.cpp
+    ../editor/src/editor_dg.cpp
+    ../editor/src/editor_placement.cpp
+    ../editor/src/editor_placement_dg.cpp
+)
+
+target_include_directories(DgTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/editor/src
+)
+
+target_link_libraries(DgTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(DgTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME dg_tests COMMAND DgTests)
 
 add_executable(SpirvReflectionTests test_spirv_reflection.cpp)
 

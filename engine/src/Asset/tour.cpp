@@ -7,8 +7,10 @@
 #include <cctype>
 #include <charconv>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -105,6 +107,163 @@ bool ParseDouble(const std::string& s, double& out) {
 
 const char* FlagVal(bool b) { return b ? "1" : "0"; }
 
+// One command line (Maya setAttr flavor: non-scalar values carry an
+// explicit -type — double3/float4/string/bool/enum; plain scalars stay
+// bare). `indent` prefixes the line: "" top-level, "\t" for -ref
+// properties tabulated under their create.
+static void WriteCommandLine(std::ostream& f, const Command& c,
+	const char* indent) {
+	f << indent;
+	switch (c.verb) {
+	case Verb::Rename:
+		f << "rename -n " << c.node << " " << Quote(c.text);
+		break;
+	case Verb::SetTranslate:
+		f << "setAttr -n " << c.node << " -at translate -type \"double3\" -t "
+			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+		break;
+	case Verb::SetRotate:
+		f << "setAttr -n " << c.node << " -at rotate -type \"double3\" -t "
+			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+		break;
+	case Verb::SetScale:
+		f << "setAttr -n " << c.node << " -at scale -type \"double3\" -t "
+			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+		break;
+	case Verb::AssignMaterial:
+		f << "assignMaterial -n " << c.node << " -m " << c.material;
+		break;
+	case Verb::SetMatAttr:
+		f << "setMatAttr -m " << c.material << " -at " << c.text;
+		if (c.text == "baseColor" || c.text == "emissive" ||
+			c.text == "layers")
+			f << " -type \"float4\" -t " << c.vec4.x << " " << c.vec4.y << " "
+				<< c.vec4.z << " " << c.vec4.w;
+		else if (c.text == "alphaMode")
+			f << " -t " << (c.number < 0.5 ? "opaque"
+				: c.number < 1.5 ? "mask" : "blend");
+		else
+			f << " -v " << c.number;
+		break;
+	case Verb::SetNoLightmap:
+		f << "setNoLightmap -n " << c.node << " -type \"bool\" -v "
+			<< FlagVal(c.flag);
+		break;
+	case Verb::SetDitherCloseup:
+		f << "setDitherCloseup -n " << c.node << " -type \"bool\" -v "
+			<< FlagVal(c.flag);
+		break;
+	case Verb::SetVisibility:
+		f << "setVisibility -n " << c.node << " -type \"bool\" -v "
+			<< FlagVal(c.flag);
+		break;
+	case Verb::Delete:
+		f << "delete";
+		if (!c.uuid.empty())
+			f << " -uuid " << c.uuid;
+		f << " -n " << c.node;
+		if (!c.name.empty())
+			f << " -name " << Quote(c.name);
+		break;
+		case Verb::SetUuid:
+			f << "uuid -n " << c.node << " -v " << c.uuid;
+			break;
+		case Verb::CreateTransform: {
+			// -t packs local position + rotation: x y z rx ry rz
+			// (rotation in degrees — editor convention); -s packs
+			// local scale sx sy sz. -p is the parent: bare id
+			// (legacy) or quoted name/path/uuid.
+			f << "createTransform -p ";
+			if (!c.parentRef.empty())
+				f << Quote(c.parentRef);
+			else
+				f << c.node;
+			f << " -name "
+				<< Quote(c.text) << " -t " << c.vec.x << " " << c.vec.y
+				<< " " << c.vec.z << " " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z << " -s " << c.svec.x << " "
+				<< c.svec.y << " " << c.svec.z;
+			break;
+		}
+		case Verb::Parent:
+			f << "parent -n " << c.node;
+			if (!c.parentRef.empty())
+				f << " -p " << Quote(c.parentRef);
+			else
+				f << " -p " << c.node2;
+			break;
+		case Verb::CreateLight: {
+			// -t packs position + every scalar: x y z intensity range
+			// innerDeg outerDeg static01 shadow01 (9 values). -p is the
+			// parent: bare id (legacy) or quoted name/path/uuid.
+			f << "createLight -p ";
+			if (!c.parentRef.empty())
+				f << Quote(c.parentRef);
+			else
+				f << c.node;
+			f << " -name " << Quote(c.text)
+			<< " -at " << (c.vec4.x >= 1.5f ? "spot" : "point")
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " " << c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
+			<< " " << c.number << " " << (c.flag ? 1 : 0) << " " << c.node2;
+		break;
+	}
+	case Verb::CreateTerrain: {
+		// -t packs position + mesh params: x y z size res height
+		// freq seed tilesX tilesZ (10 values); -m is the cluster
+		// material pool index; the tile split rides node2 packed as
+		// tilesX | (tilesZ << 16). -p is the parent: bare id
+		// (legacy) or quoted name/path/uuid.
+		f << "createTerrain -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -at terrain"
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z
+			<< " " << c.vec4.w << " " << c.number
+			<< " " << (c.node2 & 0xFFFFu)
+			<< " " << ((c.node2 >> 16) & 0xFFFFu)
+			<< " -m " << c.material;
+		break;
+	}
+	case Verb::TerrainPaint: {
+		// -t packs: worldX worldZ radius flattenTarget (4 values);
+		// -v carries strength; -ref names the k-th createTerrain.
+		f << "terrainPaint -ref " << (c.node & ~kCreateTerrainRefBase)
+			<< " -at " << c.text
+			<< " -t " << c.vec4.x << " " << c.vec4.y
+			<< " " << c.vec4.z << " " << c.vec4.w
+			<< " -v " << c.number;
+		break;
+	}
+	case Verb::SetLightAttr: {
+		f << "setLightAttr ";
+		if ((c.node & kCreateLightRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateLightRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "color" || c.text == "position"
+			|| c.text == "rotation")
+			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z;
+		else if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "static" || c.text == "shadow")
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
+		break;
+	}
+	}
+	if (!c.name.empty())
+		f << " // " << c.name;
+	f << ";\n";
+}
+
 } // namespace
 
 bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
@@ -184,115 +343,96 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		err = "cannot write: " + path;
 		return false;
 	}
-	f << "// .tour " << doc.version << " - VulkanToy editor scene (ASCII, Maya-style)\n";
-	f << "// source asset: " << doc.source << "\n";
-	f << "// node/material ids are cluster-space (import-deterministic)\n";
+	// Maya-style header: scene name + last-modified stamp (the old
+	// source-asset/cluster-space comment lines are gone).
+	{
+		std::string name = path;
+		const size_t slash = name.find_last_of("/\\");
+		if (slash != std::string::npos)
+			name = name.substr(slash + 1);
+		std::time_t now = std::time(nullptr);
+		char stamp[64] = {};
+		if (std::tm* lt = std::localtime(&now))
+			std::strftime(stamp, sizeof(stamp), "%a, %b %d, %Y %I:%M:%S %p",
+				lt);
+		f << "//Name: " << name << "\n";
+		f << "//Last modified: " << stamp << "\n";
+	}
 	f << "source -p " << Quote(doc.source)
 		<< " -fingerprint " << Quote(doc.fingerprint) << ";\n";
-	for (const Command& c : doc.commands) {
-		switch (c.verb) {
-		case Verb::Rename:
-			f << "rename -n " << c.node << " " << Quote(c.text);
-			break;
-		case Verb::SetTranslate:
-			f << "setAttr -n " << c.node << " -at translate -t "
-				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
-			break;
-		case Verb::SetRotate:
-			f << "setAttr -n " << c.node << " -at rotate -t "
-				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
-			break;
-		case Verb::SetScale:
-			f << "setAttr -n " << c.node << " -at scale -t "
-				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
-			break;
-		case Verb::AssignMaterial:
-			f << "assignMaterial -n " << c.node << " -m " << c.material;
-			break;
-		case Verb::SetMatAttr:
-			f << "setMatAttr -m " << c.material << " -at " << c.text;
-			if (c.text == "baseColor" || c.text == "emissive" ||
-				c.text == "layers")
-				f << " -t " << c.vec4.x << " " << c.vec4.y << " "
-					<< c.vec4.z << " " << c.vec4.w;
-			else if (c.text == "alphaMode")
-				f << " -t " << (c.number < 0.5 ? "opaque"
-					: c.number < 1.5 ? "mask" : "blend");
-			else
-				f << " -v " << c.number;
-			break;
-		case Verb::SetNoLightmap:
-			f << "setNoLightmap -n " << c.node << " -v " << FlagVal(c.flag);
-			break;
-		case Verb::SetDitherCloseup:
-			f << "setDitherCloseup -n " << c.node << " -v " << FlagVal(c.flag);
-			break;
-		case Verb::SetVisibility:
-			f << "setVisibility -n " << c.node << " -v " << FlagVal(c.flag);
-			break;
-		case Verb::Delete:
-			f << "delete -n " << c.node;
-			break;
-		case Verb::Parent:
-			f << "parent -n " << c.node << " -p " << c.node2;
-			break;
-		case Verb::CreateLight: {
-			// -t packs position + every scalar: x y z intensity range
-			// innerDeg outerDeg static01 shadow01 (9 values).
-			f << "createLight -p " << c.node << " -name " << Quote(c.text)
-				<< " -at " << (c.vec4.x >= 1.5f ? "spot" : "point")
-				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
-				<< " " << c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
-				<< " " << c.number << " " << (c.flag ? 1 : 0) << " " << c.node2;
-			break;
-		}
-		case Verb::CreateTerrain: {
-			// -t packs position + mesh params: x y z size res height
-			// freq seed tilesX tilesZ (10 values); -m is the cluster
-			// material pool index; the tile split rides node2 packed as
-			// tilesX | (tilesZ << 16).
-			f << "createTerrain -p " << c.node << " -name " << Quote(c.text)
-				<< " -at terrain"
-				<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
-				<< " " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z
-				<< " " << c.vec4.w << " " << c.number
-				<< " " << (c.node2 & 0xFFFFu)
-				<< " " << ((c.node2 >> 16) & 0xFFFFu)
-				<< " -m " << c.material;
-			break;
-		}
-		case Verb::TerrainPaint: {
-			// -t packs: worldX worldZ radius flattenTarget (4 values);
-			// -v carries strength; -ref names the k-th createTerrain.
-			f << "terrainPaint -ref " << (c.node & ~kCreateTerrainRefBase)
-				<< " -at " << c.text
-				<< " -t " << c.vec4.x << " " << c.vec4.y
-				<< " " << c.vec4.z << " " << c.vec4.w
-				<< " -v " << c.number;
-			break;
-		}
-		case Verb::SetLightAttr: {
-			f << "setLightAttr ";
-			if ((c.node & kCreateLightRefBase) != 0)
-				f << "-ref " << (c.node & ~kCreateLightRefBase);
-			else
-				f << "-n " << c.node;
-			f << " -at " << c.text;
-			if (c.text == "color" || c.text == "position"
-				|| c.text == "rotation")
-				f << " -t " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z;
-			else if (c.text == "name")
-				f << " -v " << Quote(c.name);
-			else if (c.text == "static" || c.text == "shadow")
-				f << " -v " << (c.flag ? "on" : "off");
-			else
-				f << " -v " << c.number;
-			break;
-		}
-		}
-		if (!c.name.empty())
-			f << " // " << c.name;
+	// References FIRST (Maya file-block order), then the fileInfo
+	// constants block, then the command list.
+	for (const ReferenceCmd& r : doc.references) {
+		f << "reference -n " << r.parent
+			<< " -source " << Quote(r.source);
+		if (!r.name.empty())
+			f << " -name " << Quote(r.name);
+		if (r.hasTranslate)
+			f << " -t " << r.translate.x << " " << r.translate.y
+				<< " " << r.translate.z;
+		if (!r.enabled)
+			f << " -enabled off";
 		f << ";\n";
+	}
+	// fileInfo constants (Maya fileInfo block): fixed format metadata,
+	// then anything the doc carries.
+	{
+		bool hasApp = false, hasProduct = false, hasVersion = false;
+		for (const auto& [k, v] : doc.fileInfo) {
+			if (k == "application")
+				hasApp = true;
+			if (k == "product")
+				hasProduct = true;
+			if (k == "version")
+				hasVersion = true;
+		}
+		if (!hasApp)
+			f << "fileInfo -k " << Quote("application")
+				<< " -v " << Quote("vulkantoy-tour") << ";\n";
+		if (!hasProduct)
+			f << "fileInfo -k " << Quote("product")
+				<< " -v " << Quote("VulkanToy") << ";\n";
+		if (!hasVersion)
+			f << "fileInfo -k " << Quote("version")
+				<< " -v " << Quote(std::to_string(kTourVersion)) << ";\n";
+		for (const auto& [k, v] : doc.fileInfo)
+			f << "fileInfo -k " << Quote(k) << " -v " << Quote(v) << ";\n";
+	}
+	// Tabulated create properties (Maya createNode + setAttr flavor):
+	// -ref-addressed setLightAttr (-ref k of the k-th createLight) and
+	// TerrainPaint (-ref k of the k-th createTerrain) ride directly
+	// under their create, tab-indented. Per-group file order is kept,
+	// so -ref indices resolve identically at replay.
+	std::vector<char> cmdConsumed(doc.commands.size(), 0);
+	for (size_t i = 0; i < doc.commands.size(); ++i) {
+		if (cmdConsumed[i])
+			continue;
+		const Command& c = doc.commands[i];
+		WriteCommandLine(f, c, "");
+		if (c.verb != Verb::CreateLight && c.verb != Verb::CreateTerrain)
+			continue;
+		// k = this create's file-order index within its verb family.
+		const bool isLight = c.verb == Verb::CreateLight;
+		size_t k = 0;
+		for (size_t m = 0; m < i; ++m)
+			if (doc.commands[m].verb == c.verb)
+				++k;
+		for (size_t j = 0; j < doc.commands.size(); ++j) {
+			if (cmdConsumed[j])
+				continue;
+			const Command& d = doc.commands[j];
+			const bool child =
+				(isLight && d.verb == Verb::SetLightAttr
+					&& (d.node & kCreateLightRefBase) != 0
+					&& (d.node & ~kCreateLightRefBase) == k)
+				|| (!isLight && d.verb == Verb::TerrainPaint
+					&& (d.node & kCreateTerrainRefBase) != 0
+					&& (d.node & ~kCreateTerrainRefBase) == k);
+			if (child) {
+				WriteCommandLine(f, d, "\t");
+				cmdConsumed[j] = 1;
+			}
+		}
 	}
 	// Wide Clarisse-style overrides (ordered; later wins at replay).
 	for (const OverrideRule& r : doc.overrides) {
@@ -308,22 +448,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
 	for (const auto& [k, v] : doc.editorSettings)
 		f << "editorSet -k " << Quote(k) << " -v " << Quote(v) << ";\n";
-	// Scene references (Clarisse-style): placeholder + linked source; the
-	// loader (gltf_import) inlines the subtree at import time, so the
-	// cooked geometry and every tour command addressing it stay
-	// deterministic (cluster-space ids).
-	for (const ReferenceCmd& r : doc.references) {
-		f << "reference -n " << r.parent
-			<< " -source " << Quote(r.source);
-		if (!r.name.empty())
-			f << " -name " << Quote(r.name);
-		if (r.hasTranslate)
-			f << " -t " << r.translate.x << " " << r.translate.y
-				<< " " << r.translate.z;
-		if (!r.enabled)
-			f << " -enabled off";
-		f << ";\n";
-	}
+	// (Scene references write up front, right after the source line —
+	// Maya file-block order.)
 	if (doc.hasCook) {
 		const TourCook& k = doc.cook;
 		f << "cook -outPak " << Quote(k.outPak)
@@ -360,8 +486,12 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 struct Flags {
 	bool hasN = false, hasM = false, hasP = false, hasAt = false;
 	uint32_t n = 0, m = 0, p = 0;
+	std::string pStr;   // -p symbolic form (name/path/uuid)
+	bool hasPStr = false;
 	std::string at;
 	std::vector<std::string> t; // -t values
+	std::vector<std::string> svec; // -s values (createTransform scale)
+	bool hasS = false;
 	std::string v;              // -v value (raw)
 	bool hasV = false;
 	bool hasRef = false;
@@ -374,6 +504,10 @@ struct Flags {
 	bool hasSource = false;
 	std::string name;
 	bool hasName = false;
+	std::string uuid;      // -uuid <hex> (delete addressing / uuid lines)
+	bool hasUuid = false;
+	std::string type;      // -type <datatype> (setAttr value flavor)
+	bool hasType = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -392,7 +526,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 	Flags& f, std::string& err, int lineNo) {
 	for (size_t i = from; i < toks.size();) {
 		const std::string& k = toks[i];
-		if ((k == "-n" || k == "-m" || k == "-p") && i + 1 < toks.size()) {
+		if ((k == "-n" || k == "-m") && i + 1 < toks.size()) {
 			std::string idTok = toks[i + 1];
 			if (!idTok.empty() && idTok.back() == ';')
 				idTok.pop_back();
@@ -405,13 +539,27 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				f.hasN = true;
 				f.n = v;
 			}
-			else if (k == "-m") {
+			else {
 				f.hasM = true;
 				f.m = v;
 			}
-			else {
+			i += 2;
+		}
+		else if (k == "-p" && i + 1 < toks.size()) {
+			// Parent: bare number (legacy id) or quoted name/path/uuid
+			// (symbolic form — string/dag addressing + uuid coverage
+			// for unnamed nodes).
+			std::string idTok = toks[i + 1];
+			if (!idTok.empty() && idTok.back() == ';')
+				idTok.pop_back();
+			uint32_t v = 0;
+			if (ParseU32(idTok, v)) {
 				f.hasP = true;
 				f.p = v;
+			}
+			else {
+				f.hasPStr = true;
+				f.pStr = idTok;
 			}
 			i += 2;
 		}
@@ -424,9 +572,11 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			++i;
 			auto isFlag = [](const std::string& w) {
 				return w == "-n" || w == "-m" || w == "-p" ||
-					w == "-at" || w == "-t" || w == "-v" ||
+					w == "-at" || w == "-t" || w == "-v" || w == "-s" ||
 					w == "-pattern" || w == "-enabled" ||
-					w == "-fingerprint" || w == "-ref";
+					w == "-fingerprint" || w == "-ref" ||
+					w == "-uuid" || w == "-source" || w == "-name" ||
+					w == "-type";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -440,6 +590,30 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				if (term)
 					break;
 			}
+		}
+		else if (k == "-s") {
+			++i;
+			auto isFlag = [](const std::string& w) {
+				return w == "-n" || w == "-m" || w == "-p" ||
+					w == "-at" || w == "-t" || w == "-v" || w == "-s" ||
+					w == "-pattern" || w == "-enabled" ||
+					w == "-fingerprint" || w == "-ref" ||
+					w == "-uuid" || w == "-source" || w == "-name" ||
+					w == "-type";
+			};
+			while (i < toks.size() && !isFlag(toks[i])) {
+				std::string v = toks[i];
+				bool term = false;
+				if (!v.empty() && v.back() == ';') {
+					v.pop_back();
+					term = true;
+				}
+				f.svec.push_back(v);
+				++i;
+				if (term)
+					break;
+			}
+			f.hasS = !f.svec.empty();
 		}
 		else if (k == "-v" && i + 1 < toks.size()) {
 			f.hasV = true;
@@ -491,6 +665,25 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.name = toks[i + 1];
 			if (!f.name.empty() && f.name.back() == ';')
 				f.name.pop_back();
+			i += 2;
+		}
+		else if (k == "-uuid" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasUuid = true;
+			f.uuid = w;
+			i += 2;
+		}
+		else if (k == "-type" && i + 1 < toks.size()) {
+			// Value datatype (Maya -type flavor: double3/float4/
+			// string/bool/enum) — informational for now: the values
+			// parse exactly as before.
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasType = true;
+			f.type = w;
 			i += 2;
 		}
 		else if (k == "-fingerprint" && i + 1 < toks.size()) {
@@ -582,6 +775,23 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 			if (!key.empty())
 				doc.editorSettings.emplace_back(key, val);
+			continue;
+		}
+		if (verb == "fileInfo") {
+			// fileInfo -k "<key>" -v "<value>"; format constants block.
+			std::string key, val;
+			for (size_t i = 1; i < toks.size(); ++i) {
+				if (toks[i] == "-k" && i + 1 < toks.size()) {
+					key = toks[i + 1];
+					++i;
+				}
+				else if (toks[i] == "-v" && i + 1 < toks.size()) {
+					val = toks[i + 1];
+					++i;
+				}
+			}
+			if (!key.empty())
+				doc.fileInfo.emplace_back(key, val);
 			continue;
 		}
 		if (verb == "cook") {
@@ -808,19 +1018,60 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			doc.references.push_back(std::move(r));
 			continue;
 		}
-		else if (verb == "parent" && fl.hasN && fl.hasP) {
+		else if (verb == "parent" && fl.hasN && (fl.hasP || fl.hasPStr)) {
 			c.verb = Verb::Parent;
 			c.node = fl.n;
-			c.node2 = fl.p;
+			c.node2 = fl.hasP ? fl.p : 0;
+			if (fl.hasPStr)
+				c.parentRef = fl.pStr;
 		}
-		else if (verb == "delete" && fl.hasN) {
-			// Maya delete: drop the node's live-scene links (mesh/
-			// material/light). Ids stay stable; resources are not
-			// reclaimed.
+		else if (verb == "delete" && (fl.hasN || fl.hasName || fl.hasUuid)) {
+			// Maya delete: drop the node's live-scene links. Ids stay
+			// stable; resources are not reclaimed. Addressing is
+			// uuid-primary (-uuid), name-secondary (-name), id fallback
+			// (-n, UINT32_MAX when the line carries no id).
 			c.verb = Verb::Delete;
-			c.node = fl.n;
+			c.node = fl.hasN ? fl.n : UINT32_MAX;
+			if (fl.hasName)
+				c.name = fl.name;
+			if (fl.hasUuid)
+				c.uuid = fl.uuid;
 		}
-		else if (verb == "createLight" && fl.hasP && fl.hasName && fl.hasAt
+		else if (verb == "uuid" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetUuid;
+			c.node = fl.n;
+			c.uuid = fl.v;
+		}
+		else if (verb == "createTransform" && (fl.hasP || fl.hasPStr)
+			&& fl.hasName && fl.t.size() >= 6 && fl.hasS
+			&& fl.svec.size() >= 3) {
+			// -t packs: x y z rx ry rz (rotation in degrees); -s
+			// packs: sx sy sz.
+			double v[6] = {};
+			for (int k = 0; k < 6; ++k)
+				if (!ParseDouble(fl.t[size_t(k)], v[k])) {
+					err = "line " + std::to_string(lineNo)
+						+ ": bad createTransform value";
+					return false;
+				}
+			double s[3] = { 1.0, 1.0, 1.0 };
+			for (int k = 0; k < 3; ++k)
+				if (!ParseDouble(fl.svec[size_t(k)], s[k])) {
+					err = "line " + std::to_string(lineNo)
+						+ ": bad createTransform scale";
+					return false;
+				}
+			c.verb = Verb::CreateTransform;
+			c.node = fl.hasP ? fl.p : 0;
+			if (fl.hasPStr)
+				c.parentRef = fl.pStr;
+			c.text = fl.name;
+			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), 0.0f);
+			c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
+		}
+		else if (verb == "createLight" && (fl.hasP || fl.hasPStr)
+			&& fl.hasName && fl.hasAt
 			&& fl.t.size() >= 9) {
 			// -t packs: x y z intensity range innerDeg outerDeg
 			// static01 shadow01.
@@ -835,7 +1086,9 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					return false;
 				}
 			c.verb = Verb::CreateLight;
-			c.node = fl.p;
+			c.node = fl.hasP ? fl.p : 0;
+			if (fl.hasPStr)
+				c.parentRef = fl.pStr;
 			c.text = fl.name;
 			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 			c.vec4 = glm::vec4(fl.at == "spot" ? 2.0f : 1.0f,
@@ -844,7 +1097,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.flag = v[7] != 0.0;
 			c.node2 = v[8] != 0.0 ? 1u : 0u;
 		}
-		else if (verb == "createTerrain" && fl.hasP && fl.hasName && fl.hasAt
+		else if (verb == "createTerrain" && (fl.hasP || fl.hasPStr)
+			&& fl.hasName && fl.hasAt
 			&& fl.hasM && fl.t.size() >= 10) {
 			// -t packs: x y z size res height freq seed tilesX tilesZ.
 			if (fl.at != "terrain") {
@@ -864,7 +1118,9 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				return false;
 			}
 			c.verb = Verb::CreateTerrain;
-			c.node = fl.p;
+			c.node = fl.hasP ? fl.p : 0;
+			if (fl.hasPStr)
+				c.parentRef = fl.pStr;
 			c.text = fl.name;
 			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), float(v[6]));
@@ -1175,6 +1431,27 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		out = n;
 		return true;
 	};
+	// Symbolic -p form (name/path/uuid) shared by Parent and the
+	// creates: resolves against the CURRENT scene so parents survive
+	// numeric id shifts; the bare numeric form is the legacy fast path.
+	// (parentId = the verb's parent slot: node2 for Parent, node for
+	// the creates.)
+	auto resolveParent = [&](const Command& c, const char* what,
+		uint32_t parentId, uint32_t& parent) -> bool {
+		if (!c.parentRef.empty()) {
+			if (ResolveParentTarget(scene, c.parentRef, parent))
+				return true;
+			if (err)
+				*err = std::string("tour: ") + what + " parent '"
+					+ c.parentRef + "' unresolved";
+			return false;
+		}
+		uint32_t target = 0;
+		if (!resolveNode(parentId, c, target))
+			return false;
+		parent = target;
+		return true;
+	};
 	for (const Command& c : doc.commands) {
 		switch (c.verb) {
 		case Verb::Rename: {
@@ -1272,7 +1549,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
-			if (!resolveNode(c.node2, c, newParent)) {
+			if (!resolveParent(c, "parent", c.node2, newParent)) {
 				if (!failCmd(c))
 					return false;
 				break;
@@ -1283,10 +1560,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		case Verb::Delete: {
 			// Maya delete at cook replay: drop the node's live links
 			// (mesh/material/light) so nothing draws, bakes or packs it.
-			// Ids stay stable (later commands may still address the
-			// node); the pool resources are never reclaimed.
-			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target)) {
+			// Addressed by uuid (primary), name, then id — the file-
+			// stable identity chain (numeric ids may shift as reference
+			// sets change; names/uuids do not).
+			uint32_t target = UINT32_MAX;
+			const bool hasId = c.node != UINT32_MAX;
+			if (!ResolveDeleteTarget(scene, c.uuid, c.name,
+					hasId ? c.node : UINT32_MAX, target)) {
+				if (err)
+					*err = "tour: delete target unresolved";
 				if (!failCmd(c))
 					return false;
 				break;
@@ -1296,24 +1578,73 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.lightForNode.erase(target);
 			break;
 		}
-		case Verb::CreateLight: {
-			// Editor-authored punctual light: append a node under the
-			// recorded parent + a lights-pool definition. Angles ride in
-			// degrees (editor convention); the runtime converts.
-			if (c.node >= scene.hierarchy.size()) {
-				if (err)
-					*err = "tour: createLight parent out of range: " +
-						std::to_string(c.node);
+		case Verb::SetUuid: {
+			// Record the file-stable identity for later deletes
+			// (Maya setUuid parity: rejected when another live node
+			// already holds it).
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target)) {
 				if (!failCmd(c))
 					return false;
 				break;
 			}
-			const int level = scene.hierarchy[c.node].level + 1;
-			const int newId = addNode(scene, int(c.node), level);
+			if (!SetNodeUuid(scene, target, c.uuid)) {
+				if (err)
+					*err = "tour: uuid already held by another live node";
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			break;
+		}
+		case Verb::CreateTransform: {
+			// Plain transform node (no mesh/light/pool entry): the
+			// editor's reference-displacement placeholders ride this.
+			uint32_t parent = 0;
+			if (!resolveParent(c, "createTransform", c.node, parent)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			const int level = scene.hierarchy[parent].level + 1;
+			const int newId = addNode(scene, int(parent), level);
+			if (newId < 0) {
+				if (err)
+					*err = "tour: createTransform failed under parent " +
+						std::to_string(parent);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			// TRS rebuild (editor convention: Rz*Ry*Rx, degrees).
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, c.vec);
+			m = glm::rotate(m, glm::radians(c.vec4.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(c.vec4.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(c.vec4.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, c.svec);
+			scene.localTransform[size_t(newId)] = m;
+			const uint32_t nameId = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.text);
+			scene.nameForNode[uint32_t(newId)] = nameId;
+			break;
+		}
+		case Verb::CreateLight: {
+			// Editor-authored punctual light: append a node under the
+			// recorded parent + a lights-pool definition. Angles ride in
+			// degrees (editor convention); the runtime converts.
+			uint32_t parent = 0;
+			if (!resolveParent(c, "createLight", c.node, parent)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			const int level = scene.hierarchy[parent].level + 1;
+			const int newId = addNode(scene, int(parent), level);
 			if (newId < 0) {
 				if (err)
 					*err = "tour: createLight failed under parent " +
-						std::to_string(c.node);
+						std::to_string(parent);
 				if (!failCmd(c))
 					return false;
 				break;
@@ -1348,10 +1679,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			// upload in the post-loop pass so later terrainPaint stamps
 			// bake into them (heights are final by then). The group node
 			// id joins createdTerrains for -ref addressing.
-			if (c.node >= scene.hierarchy.size()) {
-				if (err)
-					*err = "tour: createTerrain parent out of range: " +
-						std::to_string(c.node);
+			uint32_t parent = 0;
+			if (!resolveParent(c, "createTerrain", c.node, parent)) {
 				if (!failCmd(c))
 					return false;
 				break;
@@ -1386,13 +1715,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				1u, smvk::placement::kTerrainMaxTiles);
 			tg.heights = smvk::placement::BuildTerrainHeights(tg.params);
 			// Group node (no mesh; the transform carries the origin).
-			const int level = scene.hierarchy[c.node].level + 1;
-			const int newId = addNode(scene, int(c.node), level);
+			const int level = scene.hierarchy[parent].level + 1;
+			const int newId = addNode(scene, int(parent), level);
 			if (newId < 0) {
 				if (err)
 					*err = "tour: createTerrain failed under parent " +
-						std::to_string(c.node);
-				return false;
+						std::to_string(parent);
+				if (!failCmd(c))
+					return false;
+				break;
 			}
 			scene.localTransform[size_t(newId)] =
 				glm::translate(glm::mat4(1.0f), c.vec);
@@ -1841,12 +2172,238 @@ std::string Describe(const Command& c) {
 		std::snprintf(buf, sizeof(buf), "light.%s.%s", tgt, c.text.c_str());
 		break;
 	}
-	case Verb::Delete:
-		target(c.node, tgt);
-		std::snprintf(buf, sizeof(buf), "delete %s", tgt);
+	case Verb::Delete: {
+		if (!c.uuid.empty())
+			std::snprintf(buf, sizeof(buf), "delete '%s' [uuid %.8s..]",
+				c.name.empty() ? "?" : c.name.c_str(), c.uuid.c_str());
+		else {
+			target(c.node, tgt);
+			std::snprintf(buf, sizeof(buf), "delete %s", tgt);
+		}
+		break;
+	}
+	case Verb::SetUuid: {
+		std::snprintf(buf, sizeof(buf), "uuid #%u <- %.8s..", c.node,
+			c.uuid.c_str());
+		break;
+	}
+	case Verb::CreateTransform:
+		std::snprintf(buf, sizeof(buf), "createTransform '%s' under #%u",
+			c.text.c_str(), c.node);
 		break;
 	}
 	return buf;
+}
+
+std::string GenerateUuid() {
+	std::random_device rd;
+	std::mt19937_64 rng(rd());
+	const auto hex64 = [](uint64_t v, char* dst) {
+		static const char* k = "0123456789abcdef";
+		for (int i = 15; i >= 0; --i) {
+			dst[i] = k[v & 0xF];
+			v >>= 4;
+		}
+	};
+	char buf[33] = {};
+	hex64(rng(), buf);
+	hex64(rng(), buf + 16);
+	return std::string(buf, 32);
+}
+
+bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid) {
+	if (node >= scene.hierarchy.size() || uuid.empty())
+		return false;
+	// Maya setUuid parity: reject a uuid already held by ANOTHER live
+	// node. Re-setting the holder's own uuid is a no-op true.
+	for (const auto& [n, u] : scene.uuidForNode)
+		if (u == uuid) {
+			if (n == node)
+				return true;
+			return false;
+		}
+	scene.uuidForNode[node] = uuid;
+	return true;
+}
+
+static std::vector<std::string> SplitDagPath(const std::string& path) {
+	std::vector<std::string> comps;
+	size_t start = 0;
+	for (;;) {
+		const size_t slash = path.find('/', start);
+		std::string piece = path.substr(start,
+			slash == std::string::npos ? std::string::npos
+				: slash - start);
+		if (!piece.empty())
+			comps.push_back(piece);
+		if (slash == std::string::npos)
+			break;
+		start = slash + 1;
+	}
+	return comps;
+}
+
+std::string DagFullPath(const Scene& scene, uint32_t node) {
+	if (node >= scene.hierarchy.size())
+		return {};
+	// Root-to-node components (the unnamed root contributes nothing).
+	std::vector<std::string> comps;
+	for (int cur = int(node);
+		cur >= 0 && size_t(cur) < scene.hierarchy.size();
+		cur = scene.hierarchy[size_t(cur)].parent) {
+		const std::string nm = getNodeName(scene, cur);
+		if (!nm.empty() || comps.empty() || cur == 0)
+			comps.push_back(nm);
+	}
+	std::string path;
+	for (auto it = comps.rbegin(); it != comps.rend(); ++it) {
+		if (!path.empty())
+			path += '/';
+		path += *it;
+	}
+	return path;
+}
+
+static bool NodeMatchesSuffix(const Scene& scene, uint32_t node,
+	const std::vector<std::string>& comps) {
+	if (comps.empty())
+		return false;
+	if (getNodeName(scene, int(node)) != comps.back())
+		return false;
+	int cur = int(node);
+	for (int k = int(comps.size()) - 2; k >= 0; --k) {
+		const int p = (cur >= 0 && size_t(cur) < scene.hierarchy.size())
+			? scene.hierarchy[size_t(cur)].parent : -1;
+		if (p < 0 || getNodeName(scene, p) != comps[size_t(k)])
+			return false;
+		cur = p;
+	}
+	return true;
+}
+
+std::string DagShortestUniquePath(const Scene& scene, uint32_t node) {
+	// Maya partialPathName: shortest suffix that still names the node
+	// uniquely; the bare name when it already does; empty when even the
+	// full path is ambiguous.
+	if (node >= scene.hierarchy.size())
+		return {};
+	const std::string leaf = getNodeName(scene, int(node));
+	if (leaf.empty())
+		return {};
+	size_t unique = 0;
+	for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+		if (getNodeName(scene, int(n)) == leaf && ++unique > 1)
+			break;
+	if (unique == 1)
+		return leaf;
+	const std::vector<std::string> comps =
+		SplitDagPath(DagFullPath(scene, node));
+	for (size_t len = 2; len <= comps.size(); ++len) {
+		std::vector<std::string> suffix(comps.end() - len, comps.end());
+		size_t count = 0;
+		for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+			if (NodeMatchesSuffix(scene, n, suffix) && ++count > 1)
+				break;
+		if (count == 1) {
+			std::string out;
+			for (const std::string& c : suffix) {
+				if (!out.empty())
+					out += '/';
+				out += c;
+			}
+			return out;
+		}
+	}
+	return {};
+}
+
+static bool MatchDagPathSuffix(const Scene& scene, const std::string& path,
+	uint32_t& out) {
+	const std::vector<std::string> comps = SplitDagPath(path);
+	if (comps.empty())
+		return false;
+	for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+		if (NodeMatchesSuffix(scene, n, comps)) {
+			out = n;
+			return true;
+		}
+	return false;
+}
+
+bool ResolveDagPath(const Scene& scene, const std::string& path,
+	uint32_t& out) {
+	if (path.empty() || path.find('/') == std::string::npos)
+		return false;
+	return MatchDagPathSuffix(scene, path, out);
+}
+
+bool ResolveParentTarget(const Scene& scene, const std::string& ref,
+	uint32_t& out) {
+	if (ref.empty())
+		return false;
+	// 32-hex reads as a uuid first (writer prefers it for unnamed
+	// nodes); a short digit string can only be a legacy id (handled by
+	// the caller, never here).
+	if (ref.size() == 32) {
+		bool hex = true;
+		for (char ch : ref)
+			hex = hex && ((ch >= '0' && ch <= '9')
+				|| (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'));
+		if (hex) {
+			std::string lower = ref;
+			for (char& ch : lower)
+				ch = char(std::tolower((unsigned char)ch));
+			for (const auto& [n, u] : scene.uuidForNode)
+				if (u == lower && n < scene.hierarchy.size()) {
+					out = n;
+					return true;
+				}
+		}
+	}
+	// Name, then DAG path (both directions share the delete resolver's
+	// layers; UINT32_MAX id means "no numeric fallback").
+	return ResolveDeleteTarget(scene, {}, ref, UINT32_MAX, out);
+}
+
+bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
+	const std::string& name, uint32_t idFallback, uint32_t& out) {
+	// 1. UUID: exact match (file-stable identity across re-imports).
+	if (!uuid.empty()) {
+		for (const auto& [n, u] : scene.uuidForNode)
+			if (u == uuid && n < scene.hierarchy.size()) {
+				out = n;
+				return true;
+			}
+	}
+	// 2. NAME: unique full-name match; else a DAG path suffix.
+	if (!name.empty()) {
+		std::vector<uint32_t> hits;
+		for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+			if (getNodeName(scene, int(n)) == name)
+				hits.push_back(n);
+		if (hits.size() == 1) {
+			out = hits[0];
+			return true;
+		}
+		// MDagPath layer: full path or ancestor suffix ("grp/mesh",
+		// matched from any depth).
+		if (ResolveDagPath(scene, name, out))
+			return true;
+		// 3. id as disambiguator: valid and still naming this node.
+		if (idFallback != UINT32_MAX
+			&& idFallback < scene.hierarchy.size()
+			&& getNodeName(scene, int(idFallback)) == name) {
+			out = idFallback;
+			return true;
+		}
+		return false;
+	}
+	// 4. Legacy nameless form: the recorded id.
+	if (idFallback != UINT32_MAX && idFallback < scene.hierarchy.size()) {
+		out = idFallback;
+		return true;
+	}
+	return false;
 }
 
 } // namespace smvk::tour

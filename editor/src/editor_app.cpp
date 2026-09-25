@@ -306,6 +306,7 @@ void EditorApp::CloseScene() {
 	m_images.clear();
 	m_nextImageId = 1;
 	m_refIssues.clear();
+	m_refResolved.clear();
 	m_defaultMatWorld = UINT32_MAX;
 	ClearSelection();
 	ClearHistory();
@@ -372,6 +373,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
 	m_refIssues.clear();
+	m_refResolved.clear();
 	{
 		smvk::tour::Doc refDoc;
 		std::string refErr;
@@ -379,10 +381,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 		std::filesystem::path masterTour =
 			std::filesystem::path(path);
 		masterTour.replace_extension(".tour");
-		// Crash recovery parity: references bind from the same latest
-		// tour the command stack replays from (a newer autosave wins).
-		const std::string latestTour =
-			LatestTourPath(masterTour.string());
+		// The tour FILE (never the autosave): recovery from an autosave
+		// is an explicit user choice (recovery dialog), never silent.
+		const std::string latestTour = masterTour.string();
 		if (!latestTour.empty()
 			&& smvk::tour::LoadTour(latestTour, refDoc, refErr,
 				&refWarns)) {
@@ -395,7 +396,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 					m_context.get(), m_textureStreamer.get(),
 					nullptr /* host files */,
 					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-					&m_refPhCluster, &m_refIssues);
+					&m_refPhCluster, &m_refIssues, &m_refResolved);
 				Log("References: bound " + std::to_string(applied) +
 					" reference subtree(s) (" +
 					std::to_string(refDoc.references.size()) +
@@ -445,7 +446,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_deletedNodes.clear(); // fresh world: deletes die with it
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
-	m_refIssues.clear();
+	// (m_refIssues/m_refResolved are NOT cleared here: the reference
+	// bind above just filled them for THIS world — clearing would wipe
+	// the panel's reporting. They reset at load start/close instead.)
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -473,6 +476,17 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	RebuildNodeIndex();
 	Log("Loading tour...");
 	LoadTour(); // replays <stem>.tour into the undo stack when present
+	// A newer (or orphan) autosave never loads silently: offer recovery
+	// as an explicit choice instead (recovery dialog).
+	CheckAutosaveOffer();
+	// Reference checkbox = the placeholder visibility AUTHORITY, applied
+	// AFTER the tour replay: disabled refs hide their subtrees (nodes
+	// kept, ids stable — the per-frame visibility filters stop draws/
+	// picks and the outliner drops the tree), enabled refs clear any
+	// stale inherited/legacy hidden state (an old session's visibility
+	// command must never outvote the checkbox). Runs here because the
+	// placeholder WORLD ids (m_refPlaceholders) only resolve above.
+	RebuildDisabledRefHides();
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
@@ -602,6 +616,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
 	m_refIssues.clear();
+	m_refResolved.clear(); // fresh world: resolved sources die with it
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
 	m_nextOverrideId = 1;

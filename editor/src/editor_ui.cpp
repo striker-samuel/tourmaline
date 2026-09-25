@@ -480,6 +480,12 @@ void EditorApp::DrawMenuBar() {
 		m_showSaveDialog = false;
 	}
 	DrawSaveDialog();
+	if (m_showRecoverDialog) {
+		ImGui::OpenPopup("Recover autosave");
+		m_showRecoverDialog = false;
+		m_recoverArmed = true;
+	}
+	DrawRecoverDialog();
 	if (m_showTerrainDialog)
 		ImGui::OpenPopup("Create Terrain");
 	// m_showTerrainDialog stays true while the modal is up (the dialog
@@ -860,6 +866,8 @@ void EditorApp::DrawSceneOutliner() {
 		for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
 			if (m_deletedNodes.contains(n))
 				continue; // deleted (Maya delete): out of the live scene
+			if (InDisabledRefSubtree(n))
+				continue; // disabled reference tree: not shown, not read
 			const std::string name = getNodeName(m_world->scene, int(n));
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
@@ -1161,8 +1169,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
 	if (m_deletedNodes.contains(node))
 		return; // deleted (Maya delete): out of the live scene
-	const Scene& scene = m_world->scene;
-	const std::string name = getNodeName(scene, int(node));
+	const Scene& scene = m_world->scene;	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);
 	const bool sel = IsSelected(node);
 	ImGui::PushID(int(node));
@@ -1222,12 +1229,62 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	if (sel && node == m_revealNode)
 		ImGui::SetScrollHereY(0.5f);
 	if (open) {
-		for (int c = scene.hierarchy[node].firstChild; c != -1;
-			c = scene.hierarchy[c].nextSibling)
-			DrawOutlinerNode(uint32_t(c), expandSet);
+		// Disabled references keep their placeholder row (the anchor
+		// for re-enabling) but the TREE is not shown — the nodes stay
+		// in the scene (stable ids), just out of sight.
+		if (m_disabledRefRoots.contains(node)) {
+			ImGui::TextDisabled("    (reference disabled — %zu node(s) "
+				"hidden)",
+				RefSubtreeSizeForOutliner(node));
+		}
+		else {
+			for (int c = scene.hierarchy[node].firstChild; c != -1;
+				c = scene.hierarchy[c].nextSibling)
+				DrawOutlinerNode(uint32_t(c), expandSet);
+		}
 		ImGui::TreePop();
 	}
 	ImGui::PopID();
+}
+
+// Whether `node` sits inside (or is the root of) a DISABLED reference
+// subtree: the placeholder row stays, the tree does not.
+bool EditorApp::InDisabledRefSubtree(uint32_t node) const {
+	if (m_disabledRefRoots.empty() || !m_world
+		|| node >= m_world->scene.hierarchy.size())
+		return false;
+	// Walk ancestors (the placeholder itself counts as inside).
+	for (uint32_t n = node; n < m_world->scene.hierarchy.size();) {
+		if (m_disabledRefRoots.contains(n))
+			return true;
+		const int p = m_world->scene.hierarchy[n].parent;
+		if (p < 0)
+			return false;
+		n = uint32_t(p);
+	}
+	return false;
+}
+
+// Subtree size for the disabled-reference hint (child count below the
+// placeholder, excluding other deleted nodes).
+size_t EditorApp::RefSubtreeSizeForOutliner(uint32_t root) const {
+	if (!m_world || root >= m_world->scene.hierarchy.size())
+		return 0;
+	size_t n = 0;
+	std::vector<uint32_t> stack;
+	for (int c = m_world->scene.hierarchy[root].firstChild; c >= 0;
+		c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+		stack.push_back(uint32_t(c));
+	while (!stack.empty()) {
+		const uint32_t v = stack.back();
+		stack.pop_back();
+		if (!m_deletedNodes.contains(v))
+			++n;
+		for (int c = m_world->scene.hierarchy[v].firstChild; c >= 0;
+			c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+			stack.push_back(uint32_t(c));
+	}
+	return n;
 }
 
 // ---- Diffuse texture preview ------------------------------------------
@@ -2953,7 +3010,57 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	}
 }
 
-	void EditorApp::DrawCreateTerrainDialog() {
+	void EditorApp::DrawRecoverDialog() {
+	// Autosave recovery is NEVER silent: a newer (or orphan) autosave
+	// arms this modal at load; the user picks the document explicitly.
+	if (!m_recoverArmed)
+		return;
+	if (!ImGui::BeginPopupModal("Recover autosave", nullptr,
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+	ImGui::Text("An autosave is newer than the tour file.");
+	ImGui::TextDisabled("tour: %s", m_recoverTour.c_str());
+	ImGui::TextDisabled("autosave (%s): %s",
+		m_recoverStamp.empty() ? "unknown time" : m_recoverStamp.c_str(),
+		m_recoverAutosave.c_str());
+	if (ImGui::Button("Recover autosave")) {
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		if (m_world && smvk::tour::LoadTour(m_recoverAutosave, doc,
+				err, &warns)) {
+			for (auto& w : warns)
+				Log(w);
+			if (ReplayTourDoc(doc, m_gltfPath)) {
+				Log("Recovered from autosave: " + m_recoverAutosave);
+				// The content is live now (and the next edit
+				// re-autosaves): the stale file goes away.
+				std::error_code ec;
+				std::filesystem::remove(
+					std::filesystem::path(m_recoverAutosave), ec);
+			}
+			else {
+				Log("Autosave recovery failed (kept the tour file).");
+			}
+		}
+		else {
+			Log("Autosave recovery failed: " + err);
+		}
+		m_recoverArmed = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Keep tour file")) {
+		// The stale autosave stays on disk: it will offer again on the
+		// next open (until an explicit save clears it).
+		Log("Kept the tour file; the autosave stays pending.");
+		m_recoverArmed = false;
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndPopup();
+}
+
+void EditorApp::DrawCreateTerrainDialog() {
 	if (!ImGui::BeginPopupModal("Create Terrain", nullptr,
 			ImGuiWindowFlags_NoCollapse))
 		return;

@@ -5,6 +5,8 @@
 
 #include "editor_placement.h"
 
+#include "editor_dg.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -15,61 +17,21 @@ namespace {
 
 using namespace smvk::placement;
 using namespace detail;
+namespace dg = editor::dg;
 
 } // namespace
 
 // ---- names / pins -----------------------------------------------------------
+// The DG registry (editor_placement_dg.cpp) is the single source of
+// truth: names, categories, pins and defaults all read from the
+// registered TYPE schemas (the initialize()/addAttribute() layer).
 const char* NodeKindName(NodeKind k) {
-	switch (k) {
-	case NodeKind::Grid: return "Grid";
-	case NodeKind::Mesh: return "Mesh Surface";
-	case NodeKind::Density: return "Density";
-	case NodeKind::Noise: return "Noise";
-	case NodeKind::Slope: return "Slope Mask";
-	case NodeKind::Altitude: return "Altitude Mask";
-	case NodeKind::Add: return "Add";
-	case NodeKind::Mul: return "Multiply";
-	case NodeKind::Min: return "Min";
-	case NodeKind::Max: return "Max";
-	case NodeKind::Clamp: return "Clamp01";
-	case NodeKind::Remap: return "Remap";
-	case NodeKind::Smoothstep: return "Smoothstep";
-	case NodeKind::Power: return "Power";
-	case NodeKind::Invert: return "Invert";
-	case NodeKind::Accept: return "Accept";
-	case NodeKind::Prototypes: return "Prototypes";
-	case NodeKind::Transform: return "Transform";
-	case NodeKind::Spacing: return "Min Distance";
-	case NodeKind::Layer: return "Layer (Output)";
-	case NodeKind::Terrain: return "Terrain";
-	default: return "?";
-	}
+	const dg::NodeType* t = PlacementType(k);
+	return t ? t->name.c_str() : "?";
 }
 const char* NodeKindCategory(NodeKind k) {
-	switch (k) {
-	case NodeKind::Grid:
-	case NodeKind::Mesh:
-	case NodeKind::Terrain: return "Domain";
-	case NodeKind::Density:
-	case NodeKind::Noise:
-	case NodeKind::Slope:
-	case NodeKind::Altitude:
-	case NodeKind::Add:
-	case NodeKind::Mul:
-	case NodeKind::Min:
-	case NodeKind::Max:
-	case NodeKind::Clamp:
-	case NodeKind::Remap:
-	case NodeKind::Smoothstep:
-	case NodeKind::Power:
-	case NodeKind::Invert: return "Field";
-	case NodeKind::Accept:
-	case NodeKind::Prototypes:
-	case NodeKind::Transform:
-	case NodeKind::Spacing: return "Flow";
-	case NodeKind::Layer: return "Output";
-	default: return "?";
-	}
+	const dg::NodeType* t = PlacementType(k);
+	return t ? t->category.c_str() : "?";
 }
 uint32_t NodeKindCapabilities(NodeKind) {
 	return PlacementCapability_CPU | PlacementCapability_GPU;
@@ -84,40 +46,43 @@ const char* PinTypeName(PinType t) {
 	default: return "?";
 	}
 }
-std::vector<PinDef> NodeInputs(NodeKind k) {
-	switch (k) {
-	case NodeKind::Add:
-	case NodeKind::Mul:
-	case NodeKind::Min:
-	case NodeKind::Max:
-		return { { "a", PinType::Field }, { "b", PinType::Field } };
-	case NodeKind::Clamp:
-	case NodeKind::Invert:
-	case NodeKind::Power:
-	case NodeKind::Smoothstep:
-	case NodeKind::Remap:
-		return { { "x", PinType::Field } };
-	case NodeKind::Accept:
-		return { { "density", PinType::Field } };
-	case NodeKind::Layer:
-		return { { "domain", PinType::Domain }, { "density", PinType::Field },
-			{ "protos", PinType::Protos }, { "xform", PinType::Xform },
-			{ "spacing", PinType::Spacing } };
-	default: return {};
+namespace {
+dg::Channel PinChannel(PinType t) {
+	switch (t) {
+	case PinType::Domain: return dg::Channel::Domain;
+	case PinType::Field: return dg::Channel::Field;
+	case PinType::Protos: return dg::Channel::Protos;
+	case PinType::Xform: return dg::Channel::Xform;
+	case PinType::Spacing: return dg::Channel::Spacing;
 	}
+	return dg::Channel::None;
+}
+PinType ChannelPin(dg::Channel c) {
+	switch (c) {
+	case dg::Channel::Domain: return PinType::Domain;
+	case dg::Channel::Field: return PinType::Field;
+	case dg::Channel::Protos: return PinType::Protos;
+	case dg::Channel::Xform: return PinType::Xform;
+	case dg::Channel::Spacing: return PinType::Spacing;
+	}
+	return PinType::Field;
+}
+} // namespace
+std::vector<PinDef> NodeInputs(NodeKind k) {
+	std::vector<PinDef> pins;
+	if (const dg::NodeType* t = PlacementType(k))
+		for (const dg::AttributeDef& a : t->attrs)
+			if (a.is(dg::kAttrConnectable) && !a.is(dg::kAttrOutput))
+				pins.push_back({ a.longName, ChannelPin(a.channel) });
+	return pins;
 }
 std::vector<PinDef> NodeOutputs(NodeKind k) {
-	switch (k) {
-	case NodeKind::Grid:
-	case NodeKind::Mesh:
-	case NodeKind::Terrain: return { { "domain", PinType::Domain } };
-	case NodeKind::Prototypes: return { { "protos", PinType::Protos } };
-	case NodeKind::Transform: return { { "xform", PinType::Xform } };
-	case NodeKind::Spacing: return { { "spacing", PinType::Spacing } };
-	case NodeKind::Accept: return { { "out", PinType::Field } };
-	case NodeKind::Layer: return {};
-	default: return { { "out", PinType::Field } };
-	}
+	std::vector<PinDef> pins;
+	if (const dg::NodeType* t = PlacementType(k))
+		for (const dg::AttributeDef& a : t->attrs)
+			if (a.is(dg::kAttrConnectable) && a.is(dg::kAttrOutput))
+				pins.push_back({ a.longName, ChannelPin(a.channel) });
+	return pins;
 }
 
 // ---- GraphDoc ------------------------------------------------------------------
@@ -143,28 +108,40 @@ uint32_t GraphDoc::allocId() {
 	return id;
 }
 namespace {
+// Defaults come from the TYPE schema (the DataBlock's declared default
+// values) — the historical positional f/i/s layout, by slot.
 void DefaultParams(PNode& n) {
-	switch (n.kind) {
-	case NodeKind::Grid: n.f = { 0, 0, 0, 64, 64, 8, 8 }; break;
-	case NodeKind::Mesh: n.i = { -1 }; break;
-	case NodeKind::Density: n.f = { 0.5f }; break;
-	case NodeKind::Noise: n.f = { 0.02f, 0, 0 }; break;
-	case NodeKind::Slope: n.f = { 0, 40 }; break;
-	case NodeKind::Altitude: n.f = { 0, 5, 15, 25 }; break;
-	case NodeKind::Remap: n.f = { 0, 1, 0, 1 }; break;
-	case NodeKind::Smoothstep: n.f = { 0, 1 }; break;
-	case NodeKind::Power: n.f = { 2 }; break;
-	case NodeKind::Accept: n.f = { 1.0f }; break;
-	case NodeKind::Prototypes:
-		n.f = { 0, 35, 1.0f, 0.6f, 0.25f, 1.2f };
-		n.s = { "Oak", "Rock" };
-		break;
-	case NodeKind::Transform: n.f = { 0.8f, 1.2f }; break;
-	case NodeKind::Spacing: n.f = { 0.0f }; break;
-	case NodeKind::Layer: n.f = { 4096 }; n.s = { "1234" }; break;
-	case NodeKind::Terrain: n.f = { 0, 0, 64, 64, 8, 0.02f }; n.i = { 1, -1 }; break;
-	default: break;
+	const dg::NodeType* t = PlacementType(n.kind);
+	if (!t)
+		return;
+	uint32_t nd = 0, ni = 0, ns = 0;
+	for (const dg::AttributeDef& a : t->attrs) {
+		if (!a.is(dg::kAttrStorable))
+			continue; // pins hold no values
+		switch (a.type) {
+		case dg::AttrType::Double:
+			if (n.f.size() <= a.slot)
+				n.f.resize(a.slot + 1, 0.0f);
+			n.f[a.slot] = float(a.defDouble);
+			nd = std::max(nd, a.slot + 1);
+			break;
+		case dg::AttrType::Int:
+			if (n.i.size() <= a.slot)
+				n.i.resize(a.slot + 1, 0);
+			n.i[a.slot] = int(a.defInt);
+			ni = std::max(ni, a.slot + 1);
+			break;
+		case dg::AttrType::String:
+			if (n.s.size() <= a.slot)
+				n.s.resize(a.slot + 1);
+			n.s[a.slot] = a.defString;
+			ns = std::max(ns, a.slot + 1);
+			break;
+		}
 	}
+	n.f.resize(nd);
+	n.i.resize(ni);
+	n.s.resize(ns);
 }
 } // namespace
 uint32_t GraphDoc::addNode(NodeKind kind, float x, float y) {
@@ -190,16 +167,19 @@ uint32_t GraphDoc::addLink(uint32_t from, const std::string& fromPin,
 	const PNode* a = find(from);
 	const PNode* b = find(to);
 	if (!a || !b || from == to) return 0;
-	// Pin existence + type match.
-	PinType ft = PinType::Field;
-	bool fok = false;
-	for (const PinDef& p : NodeOutputs(a->kind))
-		if (p.name == fromPin) { ft = p.type; fok = true; }
-	PinType tt = PinType::Field;
-	bool tok = false;
-	for (const PinDef& p : NodeInputs(b->kind))
-		if (p.name == toPin) { tt = p.type; tok = true; }
-	if (!fok || !tok || ft != tt) return 0;
+	// Connection semantics live on PLUGS (the Maya contract): resolve
+	// both endpoints through the type schemas, then validate readable/
+	// writable/connectable + channel match in one place.
+	const dg::NodeType* ta = PlacementType(a->kind);
+	const dg::NodeType* tb = PlacementType(b->kind);
+	const dg::AttributeDef* outAttr =
+		ta ? ta->findOutput(fromPin.c_str()) : nullptr;
+	const dg::AttributeDef* inAttr =
+		tb ? tb->findInput(toPin.c_str()) : nullptr;
+	if (!outAttr || !inAttr)
+		return 0;
+	if (!dg::CanConnect(dg::Plug{ from, outAttr }, dg::Plug{ to, inAttr }))
+		return 0;
 	if (inputLink(to, toPin)) return 0; // inputs take one wire
 	PLink l;
 	l.id = allocId();
@@ -230,17 +210,39 @@ void BuildDefaultGraph(GraphDoc& doc) {
 }
 
 // ---- serialization ---------------------------------------------------------------
+// Node lines speak the DG: `n <type> <attr>=<value>... | <strAttr>=<v>...`
+// (attributes BY NAME, from the type schema — Maya setAttr flavor).
+// Legacy positional lines (`<kindInt> <nf> <f...> <ni> <i...> | <s...>`)
+// parse unchanged (slot-compatible schema keeps old files loadable).
 std::string SerializeNode(const PNode& n) {
-	std::string o = std::to_string((int)n.kind) + " " + std::to_string(n.f.size());
-	for (float v : n.f) o += " " + FStr(v);
-	o += " " + std::to_string(n.i.size());
-	for (int v : n.i) o += " " + std::to_string(v);
-	for (const std::string& s : n.s) o += " | " + s;
+	const dg::NodeType* t = PlacementType(n.kind);
+	if (!t)
+		return "0 0 0"; // unknown kind: minimal legacy line
+	std::string o = "n " + t->name;
+	for (const dg::AttributeDef& a : t->attrs) {
+		if (!a.is(dg::kAttrStorable) || a.type == dg::AttrType::String)
+			continue;
+		if (a.type == dg::AttrType::Double) {
+			const float v = (a.slot < n.f.size()) ? n.f[a.slot] : 0.0f;
+			o += " " + std::string(a.longName) + "=" + FStr(v);
+		}
+		else {
+			const int v = (a.slot < n.i.size()) ? n.i[a.slot] : 0;
+			o += " " + std::string(a.longName) + "=" + std::to_string(v);
+		}
+	}
+	for (const dg::AttributeDef& a : t->attrs) {
+		if (!a.is(dg::kAttrStorable) || a.type != dg::AttrType::String)
+			continue;
+		const std::string& v =
+			(a.slot < n.s.size()) ? n.s[a.slot] : std::string();
+		o += " | " + std::string(a.longName) + "=" + v;
+	}
 	return o;
 }
 bool ParseNode(const std::string& val, PNode& out) {
 	out.f.clear(); out.i.clear(); out.s.clear();
-	// Split off |-separated strings first.
+	// Split off |-separated pieces first (strings section).
 	std::vector<std::string> parts;
 	{
 		size_t start = 0;
@@ -256,6 +258,87 @@ bool ParseNode(const std::string& val, PNode& out) {
 			start = bar + 1;
 		}
 	}
+	// ---- named form: "n <type> <attr>=<v>..." ----
+	if (!parts[0].empty() && parts[0].rfind("n ", 0) == 0) {
+		std::istringstream head(parts[0]);
+		std::string marker, typeName;
+		if (!(head >> marker >> typeName))
+			return false;
+		const auto kind = KindOfTypeName(typeName);
+		if (!kind)
+			return false;
+		out.kind = *kind;
+		// Schema defaults first (same fill as DefaultParams), then the
+		// named overrides below.
+		{
+			const dg::NodeType* t = PlacementType(out.kind);
+			uint32_t nd = 0, ni = 0, ns = 0;
+			for (const dg::AttributeDef& a : t->attrs) {
+				if (!a.is(dg::kAttrStorable))
+					continue;
+				switch (a.type) {
+				case dg::AttrType::Double:
+					if (out.f.size() <= a.slot)
+						out.f.resize(a.slot + 1, 0.0f);
+					out.f[a.slot] = float(a.defDouble);
+					nd = std::max(nd, a.slot + 1);
+					break;
+				case dg::AttrType::Int:
+					if (out.i.size() <= a.slot)
+						out.i.resize(a.slot + 1, 0);
+					out.i[a.slot] = int(a.defInt);
+					ni = std::max(ni, a.slot + 1);
+					break;
+				case dg::AttrType::String:
+					if (out.s.size() <= a.slot)
+						out.s.resize(a.slot + 1);
+					out.s[a.slot] = a.defString;
+					ns = std::max(ns, a.slot + 1);
+					break;
+				}
+			}
+			out.f.resize(nd);
+			out.i.resize(ni);
+			out.s.resize(ns);
+		}
+		// Numeric/typed overrides: "<attr>=<value>" tokens.
+		auto applyAttr = [&](const std::string& tok) {
+			const size_t eq = tok.find('=');
+			if (eq == std::string::npos)
+				return;
+			const std::string name = tok.substr(0, eq);
+			const std::string value = tok.substr(eq + 1);
+			const dg::NodeType* t = PlacementType(out.kind);
+			const dg::AttributeDef* a = t ? t->findAttr(name.c_str())
+				: nullptr;
+			if (!a || !a->is(dg::kAttrStorable))
+				return; // unknown attr: forward-compat skip
+			switch (a->type) {
+			case dg::AttrType::Double:
+				SetAttr(out, name.c_str(), StrF(value, 0.0));
+				break;
+			case dg::AttrType::Int:
+				SetAttrI(out, name.c_str(), StrI(value, 0));
+				break;
+			case dg::AttrType::String:
+				SetAttrS(out, name.c_str(), value);
+				break;
+			}
+		};
+		{
+			std::istringstream nums(parts[0]);
+			std::string tok;
+			nums >> tok >> tok; // "n" + type name
+			while (nums >> tok)
+				applyAttr(tok);
+		}
+		// String overrides (| pieces after the first): "<attr>=<value>".
+		for (size_t k = 1; k < parts.size(); ++k)
+			if (!parts[k].empty())
+				applyAttr(parts[k]);
+		return true;
+	}
+	// ---- legacy positional form ----
 	std::istringstream head(parts[0]);
 	int kind = -1, nf = -1, ni = -1;
 	if (!(head >> kind >> nf)) return false;

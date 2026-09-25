@@ -614,6 +614,10 @@ private:
 	// undoable (structural, like ClearHistory). Returns commands dropped.
 	size_t CoalesceHistory();
 	void ClearHistory();
+	// Save-time coalesced command indices (see SaveTourTo): the saved
+	// file keeps only the surviving state per class; the live stack,
+	// undo and the autosave are untouched.
+	std::vector<size_t> CoalescedSaveIndices() const;
 	size_t UndoDepth() const;
 	size_t RedoDepth() const;
 	std::string UndoLabel() const;
@@ -645,6 +649,28 @@ private:
 	// cycles). The Reference editor lists them; a partially-broken
 	// reference never aborts the load.
 	std::vector<std::string> m_refIssues;
+	// Tour commands whose targets did not resolve at the last replay
+	// (e.g. edits on a reference whose source changed/failed): they
+	// stay OUT of the live history (nothing to execute against), but
+	// SaveTour re-emits them VERBATIM — a reference round-trip must
+	// never erase edits; they come alive when their nodes resolve
+	// again. Rebuilt by every ReplayTourDoc.
+	std::vector<smvk::tour::Command> m_orphanTourCmds;
+	// World ids of DISABLED reference placeholders (subtree hidden from
+	// the outliner; the nodes stay in the scene — stable ids). Rebuilt
+	// by RebuildDisabledRefHides on every load and reference toggle.
+	std::unordered_set<uint32_t> m_disabledRefRoots;
+	void RebuildDisabledRefHides();
+	// Canonical RESOLVED source per top-level reference (bind-time,
+	// parallel to m_references): the model path the tour's raw source
+	// string actually bound to (custom solvers/symlinks/decisions
+	// visible). Empty = the source did not resolve. Rebuilt on every
+	// load alongside the placeholders.
+	std::vector<std::string> m_refResolved;
+	// Outliner helpers: disabled reference trees are not shown/read —
+	// the placeholder row stays as the re-enable anchor.
+	bool InDisabledRefSubtree(uint32_t node) const;
+	size_t RefSubtreeSizeForOutliner(uint32_t root) const;
 	// ---- created terrain groups (live editor state) ----
 	// One entry per created terrain group, keyed by the GROUP world id.
 	// The global grid is authoritative: painting edits it, tile meshes
@@ -714,6 +740,11 @@ private:
 	// back into the command (c.node).
 	void ExecCreateLight(EditCmd& c);
 	void ExecUncreateLight(EditCmd& c);
+	// CreateTransform execution (ExecCmd cases): append/remove a plain
+	// transform node. ExecCreateTransform records the assigned id back
+	// into the command (c.node).
+	void ExecCreateTransform(EditCmd& c);
+	void ExecUncreateTransform(EditCmd& c);
 	// Delete execution (ExecCmd cases): remove/restore a node from the
 	// live scene. Links (meshForNode/materialForNode/lightForNode) and
 	// draw entries drop; the node id joins/leaves m_deletedNodes; ids
@@ -751,12 +782,20 @@ private:
 	// Per-edit autosave: the working state lands in
 	// %APPDATA%/tourmalineEditor/autosave/<stem>.tour — the project's
 	// .tour is only written by explicit saves (save/save-as/incremental)
-	// and scene close. LatestTourPath() prefers the autosave when it is
-	// newer, so crash-recovery and never-explicitly-saved scenes reload
-	// correctly.
+	// and scene close. Recovery from an autosave is NEVER silent: a
+	// newer (or orphan) autosave arms the recovery dialog instead
+	// (CheckAutosaveOffer, drawn by DrawRecoverDialog).
 	std::string AutosavePath() const;
 	bool AutosaveTour();
+	void ClearAutosave(); // drop the autosave (after an explicit save)
 	std::string LatestTourPath(const std::string& tourPath) const;
+	void CheckAutosaveOffer();
+	void DrawRecoverDialog(); // "recover the autosave?" modal
+	bool m_showRecoverDialog = false;
+	bool m_recoverArmed = false; // modal open (armed by the offer check)
+	std::string m_recoverAutosave; // autosave offered for recovery
+	std::string m_recoverTour;     // tour file it would replace
+	std::string m_recoverStamp;    // autosave timestamp (display)
 	// Open an arbitrary .tour file (File menu): loads its source scene
 	// when it differs, replays the commands into a fresh stack, adopts
 	// the cook block. The opened file becomes the save target.
@@ -980,7 +1019,15 @@ private:
 	bool AddSceneReference(const std::string& source, const std::string& name);
 	bool RemoveSceneReference(uint32_t refWorldNode);
 	bool RemoveSceneReferenceAt(size_t idx); // panel path (index-exact)
-	bool SetSceneReferenceEnabled(size_t idx, bool enabled); // + rebind
+	bool SetSceneReferenceEnabled(size_t idx, bool enabled);
+	// Reference displacement placeholders (Maya unload stand-ins):
+	// created content under a disabled reference moves to a root
+	// placeholder transform (original parent's local values); re-enable
+	// restores the parenting and deletes the placeholder. Placeholder
+	// names ("REFPH_<ref>_<parentId>") carry the restore mapping, so
+	// the dance survives save/load through plain tour commands.
+	void DisplaceCreatedUnderRef(size_t refIdx);
+	void RestoreRefPlaceholders(size_t refIdx); // + rebind
 	bool IsRefPlaceholder(uint32_t node) const;
 	// Placeholder world node for list entry idx (name match, index
 	// fallback; UINT32_MAX when unbound). The index-parallel assumption

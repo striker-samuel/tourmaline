@@ -201,7 +201,11 @@ size_t ApplySceneReferences(
 	// Every failure (unresolved source, parse error, skipped command in
 	// a referenced .tour, cycle...) collected for the editor's reference
 	// list; nullptr keeps the stderr-only behavior.
-	std::vector<std::string>* outIssues = nullptr);
+	std::vector<std::string>* outIssues = nullptr,
+	// Canonical RESOLVED source per top-level reference (in doc.references
+	// order; empty when the source did not resolve). Lets path-solver /
+	// symlink users verify what actually bound versus what the tour says.
+	std::vector<std::string>* outResolvedSources = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,

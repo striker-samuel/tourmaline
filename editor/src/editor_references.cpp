@@ -60,6 +60,187 @@ bool EditorApp::IsRefPlaceholder(uint32_t node) const {
 		node) != m_refPlaceholders.end();
 }
 
+namespace {
+
+// Displacement placeholder names: "REFPH_<ref>_<origParentWorldId>".
+// One placeholder per (reference, original parent): every displaced
+// created child that shared the parent gathers under it. The name
+// carries the restore mapping, so toggling survives save/load with no
+// extra persistence (the createTransform + parent commands replay).
+std::string RefPlaceholderName(const std::string& ref, uint32_t parent) {
+	return "REFPH_" + ref + "_" + std::to_string(parent);
+}
+bool ParseRefPlaceholder(const std::string& ref, const std::string& name,
+	uint32_t& parentOut) {
+	const std::string prefix = "REFPH_" + ref + "_";
+	if (name.rfind(prefix, 0) != 0)
+		return false;
+	const std::string tail = name.substr(prefix.size());
+	if (tail.empty())
+		return false;
+	try {
+		const size_t pos = tail.find_first_not_of("0123456789");
+		if (pos != std::string::npos)
+			return false;
+		parentOut = uint32_t(std::stoull(tail));
+		return true;
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+} // namespace
+
+void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
+	// A created node (light, terrain group) parented under a reference
+	// that gets DISABLED would inherit the hidden subtree. Move each
+	// affected node under a placeholder transform at ROOT carrying the
+	// original parent's local TRS values instead. Re-enable restores
+	// the original parenting and deletes the placeholder
+	// (RestoreRefPlaceholders).
+	if (!m_world || refIdx >= m_references.size())
+		return;
+	const uint32_t ph = RefPlaceholderNode(refIdx);
+	if (ph == UINT32_MAX)
+		return;
+	auto underRef = [&](uint32_t n) {
+		for (int a = (n < m_world->scene.hierarchy.size())
+				? m_world->scene.hierarchy[n].parent : -1;
+			a >= 0 && size_t(a) < m_world->scene.hierarchy.size();
+			a = m_world->scene.hierarchy[size_t(a)].parent)
+			if (uint32_t(a) == ph)
+				return true;
+		return false;
+	};
+	// Created lights + terrain groups under this reference's subtree.
+	// (Displacement placeholders themselves always live at root, so
+	// they never qualify.)
+	std::vector<uint32_t> displaced;
+	for (const auto& [n, li] : m_world->scene.lightForNode) {
+		(void)li;
+		if (CreatedLightIndex(n) >= 0 && underRef(n))
+			displaced.push_back(n);
+	}
+	for (const auto& [g, tg] : m_terrainGroups) {
+		(void)tg;
+		if (underRef(g))
+			displaced.push_back(g);
+	}
+	if (displaced.empty())
+		return;
+	// Group by original direct parent: one placeholder each.
+	std::map<uint32_t, std::vector<uint32_t>> byParent;
+	for (uint32_t n : displaced)
+		byParent[uint32_t(m_world->scene.hierarchy[n].parent)]
+			.push_back(n);
+	const std::string& refName = m_references[refIdx].name;
+	for (auto& [parent, nodes] : byParent) {
+		// Always mint a fresh placeholder (deterministic replay: the
+		// name may duplicate an older tombstoned one — harmless, the
+		// restore pass handles each independently).
+		glm::vec3 t, rDeg, s;
+		ReadLocalTRS(parent, t, rDeg, s);
+		EditCmd c{};
+		c.verb = EditVerb::CreateTransform;
+		c.node = UINT32_MAX; // assigned at forward execution
+		c.node2 = 0;         // world root
+		c.afterText = RefPlaceholderName(refName, parent);
+		c.afterVec = t;
+		c.vec4 = glm::vec4(rDeg, 0.0f);
+		c.svec = s;
+		Do(c);
+		const uint32_t holder = c.node;
+		for (uint32_t n : nodes) {
+			EditCmd p{};
+			p.verb = EditVerb::Parent;
+			p.node = n;
+			p.node2 = holder;
+			p.beforeParent = parent;
+			Do(p);
+		}
+	}
+	Log("Reference '" + refName + "': " + std::to_string(displaced.size())
+		+ " created node(s) moved under placeholder(s) at root.");
+}
+
+void EditorApp::RestoreRefPlaceholders(size_t refIdx) {
+	// Inverse of DisplaceCreatedUnderRef: every "REFPH_<ref>_<parent>"
+	// placeholder's children move back under <parent>; the placeholder
+	// itself deletes (tombstone — its createTransform stays silent in
+	// the file while deleted). Runs BEFORE the unhide so nothing pops.
+	if (!m_world || refIdx >= m_references.size())
+		return;
+	const std::string& refName = m_references[refIdx].name;
+	bool any = false;
+	for (uint32_t n = 0;
+		n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
+		uint32_t origParent = UINT32_MAX;
+		if (!ParseRefPlaceholder(refName,
+				getNodeName(m_world->scene, int(n)), origParent))
+			continue;
+		if (origParent >= m_world->scene.hierarchy.size()) {
+			Log("Reference '" + refName + "': placeholder #"
+				+ std::to_string(n) + " names a gone parent (skipped).");
+			continue;
+		}
+		std::vector<uint32_t> kids;
+		for (int c = m_world->scene.hierarchy[n].firstChild; c >= 0;
+			c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+			kids.push_back(uint32_t(c));
+		for (uint32_t k : kids) {
+			if (m_deletedNodes.contains(k))
+				continue; // deleted while displaced: stays deleted
+			EditCmd p{};
+			p.verb = EditVerb::Parent;
+			p.node = k;
+			p.node2 = origParent;
+			p.beforeParent = n;
+			Do(p);
+		}
+		if (!m_deletedNodes.contains(n)) {
+			EditCmd d{};
+			d.verb = EditVerb::Delete;
+			d.node = n;
+			Do(d);
+		}
+		any = true;
+	}
+	if (any)
+		Log("Reference '" + refName
+			+ "': placeholder(s) gone, original parenting restored.");
+}
+
+void EditorApp::RebuildDisabledRefHides() {
+	m_disabledRefRoots.clear();
+	if (!m_world)
+		return;
+	for (size_t i = 0; i < m_references.size(); ++i) {
+		const uint32_t ph = RefPlaceholderNode(i);
+		if (ph == UINT32_MAX || ph >= m_world->scene.hierarchy.size()) {
+			if (m_world)
+				Log("Reference '" + m_references[i].source
+					+ "': placeholder not bound — "
+					"checkbox toggles land on rebind.");
+			continue;
+		}
+		// The checkbox flag is the AUTHORITY for a reference
+		// placeholder's visibility — it runs AFTER the tour replay, so
+		// a stale/legacy visibility command on the placeholder can
+		// never outvote it. Disabled: hidden subtree on the RESOLVED
+		// world (the nodes stay — ids stable; the per-pass visibility
+		// filters stop drawing/picking and the outliner drops the
+		// tree; the runtime draw-list build is untouched). Enabled:
+		// clear any inherited hidden state.
+		if (m_references[i].enabled) {
+			ClearHidden(m_world->scene, int(ph));
+			continue;
+		}
+		MarkHidden(m_world->scene, int(ph));
+		m_disabledRefRoots.insert(ph);
+	}
+}
+
 bool EditorApp::AddSceneReference(const std::string& source,
 	const std::string& name) {
 	if (m_gltfPath.empty() || source.empty()) {
@@ -134,13 +315,46 @@ bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
 		return false;
 	if (m_references[idx].enabled == enabled)
 		return true;
+	// Keep-in-scene toggle: DISABLE NEVER REMOVES the reference's nodes
+	// — it hides the placeholder subtree. No re-import happens at all,
+	// so every cluster id (and therefore every edit made on top of the
+	// referenced nodes, master included) stays exactly where it was.
+	// The flag persists for the next import (ApplySceneReferences inlines
+	// disabled references too and marks the subtree hidden); the runtime
+	// state rides the ordinary undoable visibility command.
 	m_references[idx].enabled = enabled;
-	SaveTour();
-	Log(std::string("Reference ") + (enabled ? "loaded" : "unloaded")
-		+ ": '" + m_references[idx].source + "' — reloading to rebind.");
-	if (m_gltfPath.empty())
-		return true;
-	return OpenScene(m_gltfPath);
+	const uint32_t ph = RefPlaceholderNode(idx);
+	if (!enabled) {
+		// Displace FIRST (subtree still addressable): created content
+		// under the reference moves to root placeholders so it never
+		// inherits the hidden subtree; then the visibility command.
+		DisplaceCreatedUnderRef(idx);
+	}
+	else {
+		// Restore FIRST (still hidden, no visual pop): placeholders go
+		// away and original parenting returns; then the unhide.
+		RestoreRefPlaceholders(idx);
+	}
+	if (m_world && ph != UINT32_MAX) {
+		EditCmd c{};
+		c.verb = EditVerb::SetVisibility;
+		c.node = ph;
+		c.afterFlag = !enabled; // disabled = hidden subtree
+		c.beforeFlag = enabled;
+		Do(c); // autosaves (the flag rides the same doc)
+		Log(std::string("Reference ") + (enabled ? "shown" : "hidden")
+			+ ": '" + m_references[idx].source + "' (placeholder #"
+			+ std::to_string(ph) + ", kept in the scene).");
+	}
+	else {
+		AutosaveTour();
+		Log(std::string("Reference ") + (enabled ? "shown" : "hidden")
+			+ ": '" + m_references[idx].source
+			+ "' (placeholder not bound — enable/hide lands on rebind).");
+	}
+	// Outliner + world hide state follow the flag immediately.
+	RebuildDisabledRefHides();
+	return true;
 }
 
 uint32_t EditorApp::RefPlaceholderNode(size_t idx) const {
@@ -218,6 +432,11 @@ void EditorApp::DrawReferencesPanel() {
 			const bool bound = ph != UINT32_MAX;
 			const bool fileOk = RefSourceExists(m_gltfHostPath, r.source);
 			const bool isTour = RefExt(r.source) == "tour";
+			// Canonical RESOLVED source (bind-time): what the raw
+			// tour string actually bound to — path-solver/symlink
+			// users verify here. Empty = it did not resolve.
+			const std::string resolved = (i < m_refResolved.size())
+				? m_refResolved[i] : std::string();
 			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
 			ImGui::PushID(int(i));
@@ -228,7 +447,7 @@ void EditorApp::DrawReferencesPanel() {
 			}
 			ImGui::TableSetColumnIndex(1);
 			if (!r.enabled)
-				ImGui::TextDisabled("unloaded");
+				ImGui::TextDisabled("hidden (kept)");
 			else if (!fileOk)
 				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
 					"missing");
@@ -244,6 +463,12 @@ void EditorApp::DrawReferencesPanel() {
 			ImGui::TextDisabled("[%s]", isTour ? "tour" : "gltf");
 			ImGui::TableSetColumnIndex(3);
 			ImGui::TextDisabled("%s", r.source.c_str());
+			if (resolved.empty())
+				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
+					"(unresolved)");
+			else if (resolved != r.source)
+				ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
+					"-> %s", resolved.c_str());
 			ImGui::TableSetColumnIndex(4);
 			ImGui::Text("%d",
 				(bound && m_world)
@@ -320,14 +545,14 @@ void EditorApp::DrawReferenceSection(uint32_t node) {
 		ImGui::TextDisabled("source: %s", r.source.c_str());
 		ImGui::TextDisabled("[%s] %s",
 			RefExt(r.source) == "tour" ? "tour" : "gltf",
-			r.enabled ? "loaded" : "unloaded (kept in the list)");
+			r.enabled ? "shown" : "hidden (kept in the scene)");
 		ImGui::TextDisabled(
-			"structure + link kept (nested references resolve through the "
-			"source's own tour)");
+			"read-only tree; edits layer on top (visibility/TRS/attrs); "
+			"toggling never removes nodes (stable ids, edits survive)");
 		if (ImGui::Button("Remove reference (reload)"))
 			RemoveSceneReference(node);
 		ImGui::SameLine();
-		if (ImGui::Button(r.enabled ? "Unload" : "Load"))
+		if (ImGui::Button(r.enabled ? "Hide (keep)" : "Show"))
 			SetSceneReferenceEnabled(idx, !r.enabled);
 	}
 	ImGui::TextDisabled(

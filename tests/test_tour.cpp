@@ -170,6 +170,113 @@ void TestRoundTrip() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
+// Maya file-block shape: Name/Last-modified header (old source-asset
+// comments gone), references first, fileInfo constants, tabulated
+// create properties, -type on values — and the whole thing re-parses.
+void TestTourFormat() {
+	smvk::tour::Doc doc;
+	doc.source = "content/models/Bistro/bistro.gltf";
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "props/chair.gltf";
+	r.name = "chair";
+	doc.references.push_back(r);
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::SetVisibility;
+	c.node = 4;
+	c.flag = true;
+	doc.commands.push_back(c);
+	smvk::tour::Command cl{};
+	cl.verb = smvk::tour::Verb::CreateLight;
+	cl.node = 0;
+	cl.text = "Spot_1";
+	cl.vec = glm::vec3(1, 2, 3);
+	cl.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
+	cl.number = 30.0;
+	cl.flag = false;
+	cl.node2 = 1;
+	doc.commands.push_back(cl);
+	smvk::tour::Command sa{};
+	sa.verb = smvk::tour::Verb::SetLightAttr;
+	sa.node = smvk::tour::kCreateLightRefBase | 0u;
+	sa.text = "intensity";
+	sa.number = 1500.0;
+	doc.commands.push_back(sa);
+	smvk::tour::Command tr{};
+	tr.verb = smvk::tour::Verb::SetTranslate;
+	tr.node = 7;
+	tr.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+	doc.commands.push_back(tr);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "format save");
+	std::ifstream in(TempTour(), std::ios::binary);
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	in.close();
+	// Header: new lines in, old comment lines out.
+	Check(text.find("//Name: ") != std::string::npos, "format name header");
+	Check(text.find("//Last modified: ") != std::string::npos,
+		"format date header");
+	Check(text.find("// source asset:") == std::string::npos,
+		"format old source comment gone");
+	Check(text.find("cluster-space") == std::string::npos,
+		"format old cluster comment gone");
+	// Block order: references, then fileInfo, then commands.
+	const size_t refPos = text.find("reference -n 0");
+	const size_t fiPos = text.find("fileInfo");
+	const size_t createPos = text.find("createLight");
+	Check(refPos != std::string::npos && fiPos != std::string::npos
+		&& createPos != std::string::npos && refPos < fiPos
+		&& fiPos < createPos, "format block order");
+	Check(text.find("fileInfo -k \"application\"") != std::string::npos,
+		"format fileinfo application");
+	// Tabulated -ref property under its create + -type on values.
+	Check(text.find("\tsetLightAttr -ref 0 -at intensity")
+		!= std::string::npos, "format tabulated ref");
+	Check(text.find("-type \"double3\"") != std::string::npos,
+		"format type double3");
+	Check(text.find("-type \"bool\"") != std::string::npos,
+		"format type bool");
+	// The shaped file re-parses identically.
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"format reload");
+	Check(back.references.size() == 1
+		&& back.references[0].name == "chair", "format ref reload");
+	Check(back.fileInfo.size() >= 3, "format fileinfo reload");
+	Check(back.commands.size() == 4, "format command count");
+	if (back.commands.size() == 4) {
+		Check(back.commands[0].verb == smvk::tour::Verb::SetVisibility
+			&& back.commands[0].flag, "format visibility reload");
+		Check(back.commands[1].verb == smvk::tour::Verb::CreateLight
+			&& back.commands[1].text == "Spot_1",
+			"format create reload");
+		Check(back.commands[2].verb == smvk::tour::Verb::SetLightAttr
+			&& (back.commands[2].node
+				& smvk::tour::kCreateLightRefBase) != 0
+			&& back.commands[2].number == 1500.0,
+			"format tabulated ref reload");
+		Check(back.commands[3].verb == smvk::tour::Verb::SetTranslate,
+			"format translate reload");
+	}
+	// Legacy lines without -type still load.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "source -p \"x.gltf\";\n";
+		f << "setAttr -n 4 -at translate -t 1 2 3;\n";
+		f << "setVisibility -n 5 -v 1;\n";
+		f << "setLightAttr -ref 0 -at intensity -v 42;\n";
+	}
+	smvk::tour::Doc legacy;
+	Check(smvk::tour::LoadTour(TempTour(), legacy, err, &warns),
+		"format legacy loads");
+	Check(legacy.commands.size() == 3, "format legacy count");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 void TestUnknownVerbSkipped() {
 	const std::string tp = TempTour();
 	{
@@ -379,15 +486,30 @@ void TestReferences() {
 	cluster->SetCookMode(true);
 	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
 	std::vector<int> ph;
+	std::vector<std::string> resolved;
 	const size_t applied = ApplySceneReferences(*cluster, back,
 		dir.generic_string(), nullptr, nullptr, nullptr,
-		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph);
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
+		nullptr, &resolved);
 	Check(applied == 2, "ref nested applied (wheel + gear)");
 	Check(ph.size() == 1, "ref placeholder list");
 	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
-	Check(findNodeByName(cluster->scene, "Wheel") >= 0, "ref subtree imported");
+	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
+	// namespace is the master tour (its nodes carry no prefix).
+	Check(findNodeByName(cluster->scene, "wheel:Wheel") >= 0,
+		"ref subtree namespaced");
 	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-	Check(findNodeByName(cluster->scene, "Gear") >= 0, "ref nested subtree");
+	Check(findNodeByName(cluster->scene, "wheel:gear:Gear") >= 0,
+		"ref nested namespaced chain");
+	// Resolved sources: one canonical path per doc reference, in order
+	// (the raw string is what the file says; this is what bound).
+	Check(resolved.size() == back.references.size(),
+		"ref resolved count matches");
+	if (resolved.size() == back.references.size() && !resolved.empty()) {
+		Check(!resolved[0].empty()
+			&& resolved[0].find("wheel.gltf") != std::string::npos,
+			"ref resolved canonical path");
+	}
 	// Cycle guard: a scene whose tour references itself inlines once.
 	writeGltf("self.gltf", "Self");
 	{
@@ -466,13 +588,13 @@ void TestTourReferences() {
 	// (+ gear placeholder + Gear appended after).
 	Check(findNodeByName(cluster->scene, "REF sub") == 1,
 		"tourref placeholder");
-	Check(findNodeByName(cluster->scene, "BoxRenamed") == 2,
+	Check(findNodeByName(cluster->scene, "sub:BoxRenamed") == 2,
 		"tourref replayed rename with offset");
 	Check(cluster->scene.hierarchy[size_t(2)].parent == 1,
 		"tourref subtree parent");
 	Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
 		"tourref replayed transform with offset");
-	Check(findNodeByName(cluster->scene, "Sub Spot") == 3,
+	Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 3,
 		"tourref created light with offset parent");
 	const uint32_t lightNode = 3;
 	auto lit = cluster->scene.lightForNode.find(lightNode);
@@ -487,8 +609,8 @@ void TestTourReferences() {
 	}
 	Check(findNodeByName(cluster->scene, "REF gear") >= 0,
 		"tourref nested placeholder");
-	Check(findNodeByName(cluster->scene, "Gear") >= 0,
-		"tourref nested subtree");
+	Check(findNodeByName(cluster->scene, "sub:gear:Gear") >= 0,
+		"tourref nested namespaced chain");
 
 	// Disabled reference: nothing binds.
 	smvk::tour::Doc offDoc;
@@ -502,9 +624,21 @@ void TestTourReferences() {
 	const size_t offApplied = ApplySceneReferences(*clusterOff, offDoc,
 		dir.generic_string(), nullptr, nullptr, nullptr,
 		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
-	Check(offApplied == 0, "tourref disabled skips bind");
-	Check(findNodeByName(clusterOff->scene, "REF sub") < 0,
-		"tourref disabled has no placeholder");
+	// Keep-in-scene contract: disabled references STILL inline (every
+	// cluster id stays stable across enable/disable toggles, so edits
+	// on referenced nodes can never be orphaned). The disabled-HIDE is
+	// EDITOR-side on the resolved world: the runtime draw-list build
+	// excludes hidden nodes at resolve time, so an import-side hide
+	// would permanently drop the reference's meshes.
+	Check(offApplied == 2, "tourref disabled binds (kept in scene)");
+	const int offPh = findNodeByName(clusterOff->scene, "REF sub");
+	Check(offPh >= 0, "tourref disabled keeps placeholder");
+	Check(clusterOff->scene.hidden.size()
+			!= clusterOff->scene.hierarchy.size()
+		|| clusterOff->scene.hidden[size_t(offPh)] == 0,
+		"tourref disabled NOT hidden at import (draw list intact)");
+	Check(findNodeByName(clusterOff->scene, "sub:BoxRenamed") >= 0,
+		"tourref disabled keeps namespaced nodes");
 
 	// -enabled round-trips (absent = enabled).
 	smvk::tour::Doc rtDoc;
@@ -799,13 +933,242 @@ void TestDelete() {
 		"delete rejects bad node");
 }
 
+// Maya's four identity layers on one scene: MUuid (persistent, unique),
+// MObject (runtime numeric id), MDagPath (full + shortest-unique), and
+// human name+namespace addressing.
+void TestIdentityLayers() {
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0); // unnamed root
+	const int grpA = addNode(cluster->scene, root, 1);
+	const int grpB = addNode(cluster->scene, root, 1);
+	const int meshA = addNode(cluster->scene, grpA, 2);
+	const int meshB = addNode(cluster->scene, grpB, 2);
+	const int solo = addNode(cluster->scene, grpB, 2);
+	setNodeName(cluster->scene, grpA, "grpA");
+	setNodeName(cluster->scene, grpB, "grpB");
+	setNodeName(cluster->scene, meshA, "Mesh");
+	setNodeName(cluster->scene, meshB, "Mesh");
+	setNodeName(cluster->scene, solo, "Solo");
+	Scene& scene = cluster->scene;
+	// MDagPath: full path (unnamed root contributes nothing)...
+	Check(smvk::tour::DagFullPath(scene, uint32_t(meshA)) == "grpA/Mesh",
+		"dag full path");
+	Check(smvk::tour::DagFullPath(scene, uint32_t(root)).empty(),
+		"dag full path root empty");
+	// ...and shortest unique path (bare name when it already is unique).
+	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(meshA))
+		== "grpA/Mesh", "dag shortest duplicated");
+	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(solo))
+		== "Solo", "dag shortest unique-name");
+	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(grpA))
+		== "grpA", "dag shortest group");
+	uint32_t hit = UINT32_MAX;
+	Check(smvk::tour::ResolveDagPath(scene, "grpB/Mesh", hit)
+		&& hit == uint32_t(meshB), "dag resolve full");
+	Check(!smvk::tour::ResolveDagPath(scene, "Mesh", hit),
+		"dag resolve bare-name rejected");
+	Check(!smvk::tour::ResolveDagPath(scene, "nope/x", hit),
+		"dag resolve miss");
+	// MUuid: setUuid assigns; re-setting the holder is a no-op true;
+	// handing another live node's uuid to anyone is rejected.
+	const std::string hexA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const std::string hexB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA),
+		"uuid first assign");
+	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshA), hexA),
+		"uuid same-holder idempotent");
+	Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexA),
+		"uuid duplicate rejected");
+	Check(scene.uuidForNode[uint32_t(meshA)] == hexA,
+		"uuid holder keeps identity");
+	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexB),
+		"uuid other node ok");
+	Check(!smvk::tour::SetNodeUuid(scene, 9999, hexA),
+		"uuid out-of-range rejected");
+	Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshA), ""),
+		"uuid empty rejected");
+	// Cook level: a duplicated uuid line aborts strict replays and is
+	// reported+skipped in non-strict (reference) replays.
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command u1{};
+		u1.verb = smvk::tour::Verb::SetUuid;
+		u1.node = uint32_t(solo);
+		u1.uuid = "cccccccccccccccccccccccccccccccc";
+		doc.commands.push_back(u1);
+		smvk::tour::Command u2 = u1;
+		u2.node = uint32_t(grpA); // same hex, other node
+		doc.commands.push_back(u2);
+		std::string err;
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, nullptr,
+			&err), "uuid duplicate strict aborts");
+		std::vector<std::string> warns;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns,
+			nullptr, false), "uuid duplicate non-strict survives");
+		Check(!warns.empty(), "uuid duplicate non-strict reported");
+	}
+	// Delete through the layered resolver: uuid hit with a stale id
+	// AND a renamed node (uuids survive renames and hierarchy moves).
+	{
+		setNodeName(scene, meshA, "RenamedMesh");
+		cluster->scene.meshForNode[uint32_t(meshA)] = 0;
+		smvk::tour::Doc doc;
+		smvk::tour::Command d{};
+		d.verb = smvk::tour::Verb::Delete;
+		d.node = 9999; // stale id AND stale name on purpose
+		d.name = "Mesh";
+		d.uuid = hexA;
+		doc.commands.push_back(d);
+		std::string err;
+		std::vector<std::string> warns;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"uuid delete after rename");
+		Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+			"uuid delete unlinks renamed node");
+	}
+}
+
+// Maya delete addressing: uuid primary, name secondary, id fallback.
+void TestDeleteAddressing() {
+	auto freshCluster = []() {
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0); // root (unnamed)
+		return cluster;
+	};
+	auto cluster = freshCluster();
+	// root/grpA + root/grpB, each with a "Mesh" child (duplicated name).
+	const int grpA = addNode(cluster->scene, 0, 1);
+	const int grpB = addNode(cluster->scene, 0, 1);
+	const int meshA = addNode(cluster->scene, grpA, 2);
+	const int meshB = addNode(cluster->scene, grpB, 2);
+	setNodeName(cluster->scene, grpA, "grpA");
+	setNodeName(cluster->scene, grpB, "grpB");
+	setNodeName(cluster->scene, meshA, "Mesh");
+	setNodeName(cluster->scene, meshB, "Mesh");
+	cluster->scene.meshForNode[uint32_t(meshA)] = 0;
+	cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+	std::vector<std::string> warns;
+	std::string err;
+
+	// Writer form: delete -uuid <hex> -n <id> -name "<name>".
+	smvk::tour::Doc doc;
+	smvk::tour::Command u{};
+	u.verb = smvk::tour::Verb::SetUuid;
+	u.node = uint32_t(meshA);
+	u.uuid = "0123456789abcdef0123456789abcdef";
+	doc.commands.push_back(u);
+	smvk::tour::Command d{};
+	d.verb = smvk::tour::Verb::Delete;
+	d.node = uint32_t(meshA);
+	d.name = "Mesh";
+	d.uuid = "0123456789abcdef0123456789abcdef";
+	doc.commands.push_back(d);
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "uuid save");
+	smvk::tour::Doc back;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"uuid load");
+	Check(back.commands.size() == 2
+		&& back.commands[0].verb == smvk::tour::Verb::SetUuid
+		&& back.commands[0].uuid == d.uuid
+		&& back.commands[1].verb == smvk::tour::Verb::Delete
+		&& back.commands[1].uuid == d.uuid
+		&& back.commands[1].name == "Mesh", "uuid round-trip");
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"uuid replay ok");
+	// meshA unlinked through its uuid (the STALE numeric id 9999 in the
+	// variant below must not matter); meshB untouched.
+	Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+		"uuid delete unlinks");
+	Check(cluster->scene.meshForNode.contains(uint32_t(meshB)),
+		"uuid delete spares siblings");
+
+	// Stale id + valid uuid: uuid wins even when -n points elsewhere.
+	{
+		smvk::tour::Doc doc2;
+		smvk::tour::Command d2{};
+		d2.verb = smvk::tour::Verb::Delete;
+		d2.node = 9999;
+		d2.uuid = "fedcba9876543210fedcba9876543210";
+		doc2.commands.push_back(d2);
+		cluster->scene.uuidForNode[uint32_t(meshB)] = d2.uuid;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
+			"uuid wins over stale id");
+		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+			"uuid delete hits by uuid");
+	}
+	// DAG path disambiguates duplicated basenames: grpA/Mesh.
+	{
+		cluster->scene.meshForNode[uint32_t(meshA)] = 0;
+		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		smvk::tour::Doc doc3;
+		smvk::tour::Command d3{};
+		d3.verb = smvk::tour::Verb::Delete;
+		d3.node = 9999; // stale on purpose
+		d3.name = "grpA/Mesh";
+		doc3.commands.push_back(d3);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc3, &warns, &err),
+			"path delete ok");
+		Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+			"path delete hits right leaf");
+		Check(cluster->scene.meshForNode.contains(uint32_t(meshB)),
+			"path delete spares other leaf");
+	}
+	// Unique-name delete (no uuid, no useful id): name resolves.
+	// (meshB gets a unique name first; per-node delete never touches
+	// anything but the target's own links.)
+	{
+		setNodeName(cluster->scene, meshB, "Solo");
+		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		smvk::tour::Doc doc4;
+		smvk::tour::Command d4{};
+		d4.verb = smvk::tour::Verb::Delete;
+		d4.node = 9999;
+		d4.name = "Solo";
+		doc4.commands.push_back(d4);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc4, &warns, &err),
+			"name delete ok");
+		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+			"name delete unlinks");
+	}
+	// Legacy nameless delete still resolves by id.
+	{
+		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		smvk::tour::Doc doc5;
+		smvk::tour::Command d5{};
+		d5.verb = smvk::tour::Verb::Delete;
+		d5.node = uint32_t(meshB);
+		doc5.commands.push_back(d5);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc5, &warns, &err),
+			"legacy delete ok");
+		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+			"legacy delete unlinks");
+	}
+	// GenerateUuid: 32 lowercase hex, unique across calls.
+	{
+		const std::string a = smvk::tour::GenerateUuid();
+		const std::string b = smvk::tour::GenerateUuid();
+		bool hex = a.size() == 32 && b.size() == 32;
+		for (char ch : a + b)
+			hex = hex && ((ch >= '0' && ch <= '9')
+				|| (ch >= 'a' && ch <= 'f'));
+		Check(hex && a != b, "uuid generates unique hex");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 } // namespace
 
 int main() {
 	TestRoundTrip();
+	TestTourFormat();
 	TestUnknownVerbSkipped();
 	TestReparent();
 	TestDelete();
+	TestDeleteAddressing();
+	TestIdentityLayers();
 	TestReplay();
 	TestReferences();
 	TestTourReferences();

@@ -10,7 +10,13 @@
 //
 // Graphs persist as place.* editorSettings in the .tour (never cooked):
 //   place.graph.<gid>.name                     = <name>
-//   place.graph.<gid>.node.<nid>               = <kind> <nf> <f...> <ni> <i...> | <s0> | <s1> ...
+//   place.graph.<gid>.node.<nid>               = n <type> <attr>=<v>...
+//                                              | <strAttr>=<v>...
+//                                              (DG named attributes; the
+//                                              legacy positional form
+//                                              `<kind> <nf> <f...> <ni>
+//                                              <i...> | <s...>` parses
+//                                              unchanged — slot-compat)
 //   place.graph.<gid>.pos.<nid>                = <x> <y>
 //   place.graph.<gid>.link.<lid>               = <from> <fromPin> <to> <toPin>
 //   place.ui.active                            = <gid>
@@ -33,6 +39,8 @@
 #include <Engine/Placement/placement_point.h>
 #include <Engine/Placement/placement_prototype.h>
 #include <Engine/Placement/placement_terrain.h>
+
+#include "editor_dg.h" // Maya-style DG core (node types / attribute schemas)
 #include <Engine/Placement/placement_tile.h>
 
 namespace editor::placement {
@@ -143,6 +151,21 @@ struct GraphDoc {
 	bool removeLink(uint32_t id);
 };
 
+// ---- Maya-style DG wiring (editor_dg.h) --------------------------------
+// Each kind registers a node TYPE (attribute schema: pins + named
+// params, storage-slot-compatible with the positional f/i/s vectors —
+// the DataBlock). PlacementType is the single source of truth behind
+// NodeKindName/Category, NodeInputs/NodeOutputs and DefaultParams.
+const dg::NodeType* PlacementType(NodeKind kind);
+std::optional<NodeKind> KindOfTypeName(const std::string& typeName);
+// Typed value access THROUGH the schema (the MDataHandle side over the
+// PNode storage) — name-based, slot-resolved, size-safe.
+double GetAttr(const PNode& n, const char* name);
+void SetAttr(PNode& n, const char* name, double v);
+int64_t GetAttrI(const PNode& n, const char* name);
+void SetAttrI(PNode& n, const char* name, int64_t v);
+const std::string& GetAttrS(const PNode& n, const char* name);
+void SetAttrS(PNode& n, const char* name, const std::string& v);
 // Default scaffold: Grid -> Density -> Accept -> Layer plus Prototypes,
 // Transform, Spacing pre-wired. A new graph compiles and previews
 // immediately.

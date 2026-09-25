@@ -1,26 +1,38 @@
 #pragma once
 // .tour — VulkanToy editor scene overlay (ASCII, Maya .ma flavor).
 //
-// A .tour file is a human-readable, versioned list of CRUD commands applied
-// ON TOP of a source glTF (never a blob store: meshes/textures stay in the
-// source + loose files and are referenced by id/path only). Both the Editor
-// (live edits + undo) and PakCooker (--tour replay at cook time) speak it,
-// so what-you-see is byte-for-byte what gets cooked:
+// A .tour file is a human-readable list of CRUD commands applied ON TOP
+// of a source glTF (never a blob store: meshes/textures stay in the
+// source + loose files and are referenced by id/path only). Both the
+// Editor (live edits + undo) and PakCooker (--tour replay at cook time)
+// speak it, so what-you-see is what gets cooked:
 //
-//   // .tour 1 — hallway lookdev
+//   //Name: bistro.tour
+//   //Last modified: Fri, Sep 26, 2026 09:12:04 AM
 //   source -p "content/models/Bistro/bistro.gltf" -fingerprint "9f3a...";
+//   reference -n 0 -source "props/chair.gltf" -name "chair";  # refs FIRST
+//   fileInfo -k "application" -v "vulkantoy-tour";            # constants
+//   fileInfo -k "product" -v "VulkanToy";
+//   fileInfo -k "version" -v "1";
 //   rename -n 45 "Shop_Wall";                       # update (name)
-//   setAttr -n 45 -at translate -t 1.2 3.4 5.6;      # update (transform)
+//   setAttr -n 45 -at translate -type "double3" -t 1.2 3.4 5.6;
 //   assignMaterial -n 46 -m 12;                     # update (material link)
-//   setMatAttr -m 12 -at baseColor -t 1 0.5 0.2 1;   # update (mat value)
-//   setNoLightmap -n 45 -v 1;                       # update (bake flag)
-//   setVisibility -n 45 -v 1;                       # update (hidden flag)
+//   setMatAttr -m 12 -at baseColor -type "float4" -t 1 0.5 0.2 1;
+//   setNoLightmap -n 45 -type "bool" -v 1;          # update (bake flag)
+//   setVisibility -n 45 -type "bool" -v 1;          # update (hidden flag)
 //   parent -n 45 -p 12;                             # update (topology)
-//   delete -n 45;                                   # remove node from the
-//                                                   # live scene (ids stay)
+//   delete -uuid 9f3a... -n 45 -name "Shop_Wall";   # remove (uuid/name/id)
+//   createLight -p 0 -name "Spot_1" -at spot -t 1 2 3 1500 25 20 35 0 1;
+//       setLightAttr -ref 0 -at intensity -v 1500;  # tabulated: -ref
+//                                                   # props ride under
+//                                                   # their create
 //   override -pattern "Building_.*" -at visibility -v 1 -enabled on;   # wide
 //   override -pattern "Tree.*" -at material -m 3 -enabled on;          # wide
-//   cook -outPak "content/paks/bistro.pak" ...;     # cook settings (not undo)
+//   cook -outPak "" ...;   # cook settings (destination NOT persisted)
+//
+// Non-scalar setAttr values carry an explicit -type (double3/float4/
+// string/bool); plain scalars stay bare. Unknown verbs and unknown
+// -type flavors warn-and-skip (forward compatibility).
 //
 // Wide overrides (Clarisse-style) match node NAMES by ECMAScript regex and
 // apply after every direct command at replay; per-node local commands win
@@ -111,13 +123,33 @@ enum class Verb : uint8_t {
 	                // text = op ("raise","lower","flatten","smooth"); vec4 =
 	                // (worldX, worldZ, radius, flattenTarget); number =
 	                // strength (m for raise/lower, 0..1 blend otherwise)
-	Delete,         // node = cluster node id to remove from the live
-	                // scene: mesh/material/light links drop so nothing
-	                // draws, picks, bakes or cooks it (Maya delete). Ids
-	                // stay stable (no renumbering — later commands may
-	                // still address the node); pool resources are never
-	                // reclaimed, only the LINKS are erased.
-};
+ 	Delete,         // Maya delete: file-stable node identity —
+ 	                // uuid PRIMARY (see SetUuid), name secondary,
+ 	                // numeric id as legacy fallback/disambiguator:
+ 	                //   delete -uuid <hex> -n <id> -name "<name>"
+ 	                // (-uuid and/or -name may be absent in hand-written
+ 	                // or legacy lines). Resolution: exact uuid match
+ 	                // wins; else a unique full-name match; else a
+ 	                // '/'-separated ancestor path suffix ("grp/mesh",
+ 	                // matched from any depth); else the recorded id
+ 	                // when it still names the same node (disambiguator
+ 	                // for duplicated names) or for nameless legacy
+ 	                // deletes. Ids are never renumbered; pool resources
+ 	                // are never reclaimed — only the LINKS drop.
+ 	SetUuid,        // node = cluster node id; uuid = 32-hex file-stable
+ 	                // identity recorded on it (Scene::uuidForNode). The
+ 	                // editor assigns these for every node a Delete line
+ 	                // addresses and emits them BEFORE the delete lines;
+ 	                // replay/cook record them back onto the nodes.
+ 	CreateTransform, // node = PARENT cluster id; text = node name;
+ 	                // vec4 = (tx,ty,tz...) — see below. A plain transform
+ 	                // node (Maya group locator): no mesh, no light, no
+ 	                // pool entry. The editor uses these as reference-
+ 	                // displacement placeholders (see below); anything may
+ 	                // parent under them like any transform.
+ 	                // -t packs local TRS: x y z rx ry rz sx sy sz
+ 	                // (9 values, rotation in DEGREES, editor convention).
+ };
 
 // Clarisse-style wide override attribute (regex selector over node
 // names). Stored in Doc::overrides, evaluated AFTER direct commands at
@@ -164,11 +196,17 @@ struct Command {
 	uint32_t node = 0;     // cluster node id (node verbs)
 	uint32_t node2 = 0;    // Parent: new parent cluster node id;
 	                       // CreateLight: shadow request (0/1)
+	std::string parentRef; // -p as QUOTED name/path/uuid (symbolic parent
+	                       // form): for Parent/CreateLight/CreateTerrain/
+	                       // CreateTransform, the parent by human or uuid
+	                       // identity instead of a bare numeric id. Empty
+	                       // = numeric node2 form (legacy).
 	uint32_t material = 0; // AssignMaterial / SetMatAttr: cluster pool index
 	std::string text;      // Rename: new name; SetMatAttr/SetLightAttr:
 	                       // attr name; CreateLight: light name
 	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale /
 	                       // CreateLight local position
+	glm::vec3 svec{ 1.0f, 1.0f, 1.0f }; // createTransform local scale
 	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive);
 	                        // CreateLight: (typeFloat, intensity, range,
 	                        // innerConeDeg); SetLightAttr "color": rgb
@@ -179,6 +217,9 @@ struct Command {
 	                       // SetLightAttr static/shadow value
 	std::string name;      // recorded node name (verify-only);
 	                       // SetLightAttr "name": the NEW name
+	                       // Delete: secondary addressing key
+	std::string uuid;      // SetUuid: the recorded 32-hex identity;
+	                       // Delete: its PRIMARY addressing key
 };
 
 // SetLightAttr addressing for lights created by an earlier CreateLight
@@ -203,7 +244,12 @@ struct Doc {
 	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
 	// Scene references (ordered; the OWNING scene's level-1 list —
 	// deeper nesting comes from each referenced source's own tour).
+	// Written FIRST in the file (Maya file-block order).
 	std::vector<ReferenceCmd> references;
+	// fileInfo constants (Maya fileInfo block): fixed format metadata
+	// (application/product/version), then anything carried. Written
+	// right after the references.
+	std::vector<std::pair<std::string, std::string>> fileInfo;
 	// Editor-only settings (editorSet lines): viewport/env authoring state
 	// the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
 	// — the cook silently ignores this whole section (editor IBL and
@@ -245,6 +291,57 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent);
 // Human-readable one-liner per command (console/log use).
 std::string Describe(const Command& c);
 std::string DescribeOverride(const OverrideRule& r);
+
+// 128-bit random identity, 32 lowercase hex chars. Assigned by the
+// editor for every node a Delete line addresses (emitted as `uuid`
+// lines ahead of the deletes); replay/cook record them back onto the
+// nodes so deletes resolve through it — stable across re-imports that
+// shift numeric ids.
+std::string GenerateUuid();
+
+// Symbolic parent resolution (the -p quoted form): a uuid hex, a node
+// name, or a '/'-separated ancestor path — resolved against the CURRENT
+// scene, so parents survive numeric id shifts. False = nothing matched.
+bool ResolveParentTarget(const Scene& scene, const std::string& ref,
+	uint32_t& out);
+
+// Maya's identity layers, mapped onto this codebase (setUuid parity):
+//
+//   MUuid (persistent)      uuidForNode: saved in the scene, stable
+//                           across renames and hierarchy moves. Like
+//                           Maya, setUuid REJECTS a uuid already held
+//                           by another LIVE node (SetNodeUuid).
+//   MObject (runtime)       the numeric node id: valid only for the
+//                           live scene — never a file identity.
+//   MDagPath (location)     DagFullPath / DagShortestUniquePath below:
+//                           full and shortest-unique '/'-paths (Maya's
+//                           fullPathName/partialPathName). The ONLY way
+//                           to name a specific occurrence.
+//   name+namespace (human)  getNodeName (namespaced for references).
+//
+// Record a uuid on a node (Maya setUuid): false when another live node
+// already holds it (nothing assigned); true + assigned otherwise.
+// Re-assigning the SAME uuid to its current holder is a no-op true.
+bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid);
+// Full '/'-path from the hierarchy root ("grp/mesh"; the unnamed root
+// contributes nothing). Shortest path that still names the node
+// uniquely, or empty when even the full path is ambiguous.
+std::string DagFullPath(const Scene& scene, uint32_t node);
+std::string DagShortestUniquePath(const Scene& scene, uint32_t node);
+// Resolve a full path, a '/'-separated suffix from any depth, or a
+// bare name (unique match only).
+bool ResolveDagPath(const Scene& scene, const std::string& path,
+	uint32_t& out);
+
+// Delete addressing shared by the cook replay and the editor live
+// replay: uuid exact match wins; else a unique full-name match; else a
+// '/'-separated ancestor path suffix ("grp/mesh", matched from any
+// depth); else idFallback when it is not UINT32_MAX, still maps into
+// the scene, and (for named deletes) names the same node — the
+// disambiguator for duplicated names and the legacy path for nameless
+// deletes. False = nothing resolved (warn-and-skip).
+bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
+	const std::string& name, uint32_t idFallback, uint32_t& out);
 
 // Override helpers: attr name mapping + ECMAScript regex match over node
 // names (false on empty/bad patterns, never throws).
