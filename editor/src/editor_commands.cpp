@@ -1450,7 +1450,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		const glm::vec3 t = glm::vec3(
 			app.m_world->scene.localTransform[created][3]);
-		out.verb = smvk::tour::Verb::CreateLight;
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = (L->type == ::SceneLight::Type::Spot)
+			? "spotLight" : "pointLight";
 		out.node = uint32_t(pp);
 		out.parentRef = parentRefFor(c.node2);
 		out.text = L->name;
@@ -1490,7 +1492,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		const glm::vec3 t = glm::vec3(
 			app.m_world->scene.localTransform[created][3]);
-		out.verb = smvk::tour::Verb::CreateTerrain;
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "terrain";
 		out.node = uint32_t(pp);
 		out.parentRef = parentRefFor(c.beforeParent);
 		out.text = c.afterText;
@@ -1523,7 +1526,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		glm::vec3 t, r, s;
 		app.ReadLocalTRS(created, t, r, s);
-		out.verb = smvk::tour::Verb::CreateTransform;
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "transform";
 		out.node = uint32_t(pp);
 		out.parentRef = parentRefFor(c.node2);
 		out.text = getNodeName(app.m_world->scene, int(created));
@@ -1624,6 +1628,24 @@ void EditorApp::ClearAutosave() {
 	std::filesystem::remove(std::filesystem::path(path), ec);
 }
 
+// Autosave timestamp for the recovery dialog (same style as the tour
+// header stamp: "Fri, Sep 26, 2026 09:12:04 AM", empty when unknown).
+static std::string FileStamp(const std::string& path) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	if (path.empty() || !fs::exists(fs::path(path), ec))
+		return {};
+	const auto ft = fs::last_write_time(fs::path(path), ec);
+	if (ec)
+		return {};
+	const std::time_t tt = std::chrono::system_clock::to_time_t(
+		std::chrono::clock_cast<std::chrono::system_clock>(ft));
+	char buf[64] = {};
+	if (std::tm* lt = std::localtime(&tt))
+		std::strftime(buf, sizeof(buf), "%a, %b %d, %Y %I:%M:%S %p", lt);
+	return buf;
+}
+
 // Autosave recovery offer: when a newer autosave exists for the loaded
 // tour (or an autosave with no tour file at all), arm the recovery
 // dialog instead of loading anything silently. NORMAL loads never
@@ -1644,26 +1666,8 @@ void EditorApp::CheckAutosaveOffer() {
 	m_recoverAutosave = AutosavePath();
 	m_recoverTour = tour;
 	m_recoverStamp = FileStamp(m_recoverAutosave);
-	Log("Autosave found (" + m_recoverStamp
-		+ ") — newer than " + tour + ".");
-}
-
-// Autosave timestamp for the recovery dialog (same style as the tour
-// header stamp: "Fri, Sep 26, 2026 09:12:04 AM", empty when unknown).
-static std::string FileStamp(const std::string& path) {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (path.empty() || !fs::exists(fs::path(path), ec))
-		return {};
-	const auto ft = fs::last_write_time(fs::path(path), ec);
-	if (ec)
-		return {};
-	const std::time_t tt = std::chrono::system_clock::to_time_t(
-		std::chrono::clock_cast<std::chrono::system_clock>(ft));
-	char buf[64] = {};
-	if (std::tm* lt = std::localtime(&tt))
-		std::strftime(buf, sizeof(buf), "%a, %b %d, %Y %I:%M:%S %p", lt);
-	return buf;
+		Log("Autosave found (" + m_recoverStamp
+			+ ") — newer than " + tour + ".");
 }
 
 // Per-edit persistence target: the full tour state lands in an autosave
@@ -1797,10 +1801,12 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	smvk::tour::Doc doc;
 	doc.source = m_gltfPath;
 	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
-	// UUID pre-pass: every cluster-backed Delete target needs a
-	// file-stable identity for the `uuid` addressing form. Assign
-	// missing ones NOW into the world scene (deterministic from here:
-	// already-assigned ids are kept).
+	// UUID pre-pass: nodes addressed by uuid or symbolic -p need a
+	// file-stable identity recorded. Assign missing ones NOW into the
+	// world scene (deterministic from here: already-assigned ids are
+	// kept). Covers Delete targets AND symbolic parent targets (a
+	// parent addressed by uuid must exist in the file) — named parents
+	// resolve by name and need nothing.
 	Scene& scene = m_world->scene;
 	auto held = [&](const std::string& hex, uint32_t except) {
 		for (const auto& [n, u] : scene.uuidForNode)
@@ -1808,24 +1814,50 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 				return true;
 		return false;
 	};
-	for (size_t i : CoalescedSaveIndices()) {
-		const EditCmd& c = m_history[i];
-		if (c.verb != EditVerb::Delete)
-			continue;
-		const int cn = WorldToCluster(c.node);
-		if (cn < 0)
-			continue; // editor-created: dropped via live-state emission
-		auto uit = scene.uuidForNode.find(c.node);
-		if (uit != scene.uuidForNode.end() && !held(uit->second, c.node))
-			continue; // file-stable identity already in place
+	auto ensureUuid = [&](uint32_t wnode) {
+		if (wnode >= scene.hierarchy.size())
+			return;
+		// Named nodes ride names/paths in the symbolic -p slot — only
+		// UNNAMED targets need a recorded uuid to stay addressable.
+		if (!getNodeName(scene, int(wnode)).empty())
+			return;
+		if (scene.uuidForNode.contains(wnode))
+			return;
+		if (WorldToCluster(wnode) < 0)
+			return; // editor-created: nothing to address
 		// Maya setUuid parity: never hand out a uuid another live
 		// node holds (regenerate; 128-bit collisions are ~impossible
 		// but stale/duplicated tour lines must not steal identity).
 		std::string hex;
 		do {
 			hex = smvk::tour::GenerateUuid();
-		} while (held(hex, c.node));
-		scene.uuidForNode[c.node] = hex;
+		} while (held(hex, wnode));
+		scene.uuidForNode[wnode] = hex;
+	};
+	for (size_t i : CoalescedSaveIndices()) {
+		const EditCmd& c = m_history[i];
+		if (c.verb == EditVerb::Delete) {
+			const int cn = WorldToCluster(c.node);
+			if (cn < 0)
+				continue; // editor-created: dropped via live-state emission
+			auto uit = scene.uuidForNode.find(c.node);
+			if (uit != scene.uuidForNode.end()
+				&& !held(uit->second, c.node))
+				continue; // file-stable identity already in place
+			ensureUuid(c.node);
+			continue;
+		}
+		// Symbolic parents: unnamed targets need recorded uuids so
+		// the -p slot can carry them (named ones ride names/paths).
+		if (c.verb == EditVerb::Parent) {
+			ensureUuid(c.node);
+			ensureUuid(c.node2);
+		}
+		else if (c.verb == EditVerb::CreateLight
+			|| c.verb == EditVerb::CreateTerrain
+			|| c.verb == EditVerb::CreateTransform) {
+			ensureUuid(c.node2);
+		}
 	}
 	// Emit the whole identity map (cluster-backed, node-id order —
 	// deterministic files): these feed the delete lines AND survive
@@ -1849,7 +1881,6 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		u.name = getNodeName(scene, int(wnode));
 		doc.commands.push_back(std::move(u));
 	}
-	// Save-time coalescing: only the surviving state per class lands
 	// Save-time coalescing: only the surviving state per class lands
 	// in the FILE (toggle pairs like hide/show/hide collapse to the
 	// final command); the live stack, undo and the autosave keep
@@ -2036,11 +2067,18 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 	case smvk::tour::Verb::Parent: {
 		if (!needNode())
 			return false;
-		// New parent may itself be a created-terrain ref (replay of
-		// "parent terrain under terrain"); resolveRef handles both forms.
+		// New parent: symbolic -p form (name/path/uuid) resolves
+		// against the live world; numeric cluster id is the legacy
+		// path (created-terrain refs included, as before).
 		uint32_t wp = UINT32_MAX;
-		if (!resolveRef(tc.node2, wp))
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else if (!resolveRef(tc.node2, wp)) {
 			return false;
+		}
 		out.verb = EditVerb::Parent;
 		out.node2 = wp;
 		out.beforeParent = uint32_t(
@@ -2048,9 +2086,18 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		return true;
 	}
 	case smvk::tour::Verb::CreateTransform: {
-		const uint32_t wp = app.ClusterToWorld(tc.node);
-		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
-			return false;
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
 		out.verb = EditVerb::CreateTransform;
 		out.node = UINT32_MAX; // assigned at forward execution
 		out.node2 = wp;        // parent (world)
@@ -2058,6 +2105,67 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterVec = tc.vec;
 		out.vec4 = glm::vec4(tc.vec4.x, tc.vec4.y, tc.vec4.z, 0.0f);
 		out.svec = tc.svec;
+		return true;
+	}
+	case smvk::tour::Verb::CreateNode: {
+		// Defensive mapping for hand-built Docs (the parser lowers DAG
+		// createNode lines to the legacy verbs, so file input never
+		// lands here with a DAG type). System types are editor-managed:
+		// kept as orphans by the caller (preserved verbatim).
+		const smvk::tour::CreateNodeType* t =
+			smvk::tour::FindCreateNodeType(tc.nodeType);
+		if (!t || t->kind != smvk::tour::CreateNodeKind::Dag)
+			return false;
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
+		const std::string tn = t->name;
+		if (tn == "transform") {
+			out.verb = EditVerb::CreateTransform;
+			out.node = UINT32_MAX;
+			out.node2 = wp;
+			out.afterText = tc.text;
+			out.afterVec = tc.vec;
+			out.vec4 = glm::vec4(tc.vec4.x, tc.vec4.y, tc.vec4.z, 0.0f);
+			out.svec = tc.svec;
+			return true;
+		}
+		if (tn == "terrain") {
+			out.verb = EditVerb::CreateTerrain;
+			out.node = UINT32_MAX;
+			out.beforeParent = wp;
+			out.node2 = tc.node2;
+			out.afterText = tc.text;
+			out.afterVec = tc.vec;
+			out.vec4 = tc.vec4;
+			out.number = tc.number;
+			const int wm = app.ClusterMatToWorld(tc.material);
+			out.material = (wm >= 0) ? uint32_t(wm) : UINT32_MAX;
+			return true;
+		}
+		// pointLight | spotLight.
+		out.verb = EditVerb::CreateLight;
+		out.node = UINT32_MAX;
+		out.node2 = wp;
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.lightType = (tc.vec4.x >= 1.5f) ? 2u : 1u;
+		out.lightColor = glm::vec3(1.0f, 0.95f, 0.85f);
+		out.lightIntensity = tc.vec4.y;
+		out.lightRange = tc.vec4.z;
+		out.lightInnerDeg = tc.vec4.w;
+		out.lightOuterDeg = float(tc.number);
+		out.lightStatic = tc.flag;
+		out.lightShadow = tc.node2 != 0;
 		return true;
 	}
 	case smvk::tour::Verb::Delete: {
@@ -2080,9 +2188,18 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		return true;
 	}
 	case smvk::tour::Verb::CreateLight: {
-		const uint32_t wp = app.ClusterToWorld(tc.node);
-		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
-			return false;
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
 		out.verb = EditVerb::CreateLight;
 		out.node = UINT32_MAX; // assigned at forward execution
 		out.node2 = wp;        // parent (world)
@@ -2101,9 +2218,18 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		return true;
 	}
 	case smvk::tour::Verb::CreateTerrain: {
-		const uint32_t wp = app.ClusterToWorld(tc.node);
-		if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
-			return false;
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
 		out.verb = EditVerb::CreateTerrain;
 		out.node = UINT32_MAX; // assigned at forward execution
 		// Parent rides beforeParent (node2 is the tile split).

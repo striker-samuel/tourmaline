@@ -168,6 +168,41 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		case Verb::SetUuid:
 			f << "uuid -n " << c.node << " -v " << c.uuid;
 			break;
+		case Verb::CreateNode: {
+			// Unified form (new files write ONLY this): createNode
+			// -at <type> with the per-type payload below. -p is the
+			// parent: bare id (legacy) or quoted name/path/uuid.
+			f << "createNode -at " << c.nodeType << " -p ";
+			if (!c.parentRef.empty())
+				f << Quote(c.parentRef);
+			else
+				f << c.node;
+			f << " -name " << Quote(c.text);
+			if (c.nodeType == "transform") {
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " " << c.vec4.x << " " << c.vec4.y
+					<< " " << c.vec4.z << " -s " << c.svec.x << " "
+					<< c.svec.y << " " << c.svec.z;
+			}
+			else if (c.nodeType == "pointLight"
+				|| c.nodeType == "spotLight") {
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " " << c.vec4.y << " " << c.vec4.z
+					<< " " << c.vec4.w << " " << c.number << " "
+					<< (c.flag ? 1 : 0) << " " << c.node2;
+			}
+			else if (c.nodeType == "terrain") {
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " " << c.vec4.x << " " << c.vec4.y
+					<< " " << c.vec4.z << " " << c.vec4.w << " "
+					<< c.number << " " << (c.node2 & 0xFFFFu) << " "
+					<< ((c.node2 >> 16) & 0xFFFFu) << " -m "
+					<< c.material;
+			}
+			// System types (material/file/image/camera) carry no
+			// payload: the line above is the whole record.
+			break;
+		}
 		case Verb::CreateTransform: {
 			// -t packs local position + rotation: x y z rx ry rz
 			// (rotation in degrees — editor convention); -s packs
@@ -399,33 +434,48 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << "fileInfo -k " << Quote(k) << " -v " << Quote(v) << ";\n";
 	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
-	// -ref-addressed setLightAttr (-ref k of the k-th createLight) and
-	// TerrainPaint (-ref k of the k-th createTerrain) ride directly
-	// under their create, tab-indented. Per-group file order is kept,
-	// so -ref indices resolve identically at replay.
+	// -ref-addressed setLightAttr (-ref k of the k-th light-family
+	// create) and TerrainPaint (-ref k of the k-th terrain-family
+	// create) ride directly under their create, tab-indented.
+	// Families span both spellings (legacy createLight/createTerrain
+	// AND unified createNode pointLight/spotLight/terrain) in one
+	// file-order index each, so -ref indices resolve identically.
+	auto createFamily = [](const Command& c) -> int {
+		if (c.verb == Verb::CreateLight)
+			return 0;
+		if (c.verb == Verb::CreateTerrain)
+			return 1;
+		if (c.verb == Verb::CreateNode) {
+			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
+				return 0;
+			if (c.nodeType == "terrain")
+				return 1;
+		}
+		return -1;
+	};
 	std::vector<char> cmdConsumed(doc.commands.size(), 0);
 	for (size_t i = 0; i < doc.commands.size(); ++i) {
 		if (cmdConsumed[i])
 			continue;
 		const Command& c = doc.commands[i];
 		WriteCommandLine(f, c, "");
-		if (c.verb != Verb::CreateLight && c.verb != Verb::CreateTerrain)
+		const int family = createFamily(c);
+		if (family < 0)
 			continue;
-		// k = this create's file-order index within its verb family.
-		const bool isLight = c.verb == Verb::CreateLight;
+		// k = this create's file-order index within its family.
 		size_t k = 0;
 		for (size_t m = 0; m < i; ++m)
-			if (doc.commands[m].verb == c.verb)
+			if (createFamily(doc.commands[m]) == family)
 				++k;
 		for (size_t j = 0; j < doc.commands.size(); ++j) {
 			if (cmdConsumed[j])
 				continue;
 			const Command& d = doc.commands[j];
 			const bool child =
-				(isLight && d.verb == Verb::SetLightAttr
+				(family == 0 && d.verb == Verb::SetLightAttr
 					&& (d.node & kCreateLightRefBase) != 0
 					&& (d.node & ~kCreateLightRefBase) == k)
-				|| (!isLight && d.verb == Verb::TerrainPaint
+				|| (family == 1 && d.verb == Verb::TerrainPaint
 					&& (d.node & kCreateTerrainRefBase) != 0
 					&& (d.node & ~kCreateTerrainRefBase) == k);
 			if (child) {
@@ -483,6 +533,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 // -pattern <regex> / -enabled <on|off> (override rules only)
 // -source <path> / -name <word> (reference lines only)
 // -ref <k> (setLightAttr on the k-th createLight in the doc)
+// -uuid <hex> (delete addressing / uuid lines)
+// -type <datatype> (setAttr value flavor, informational)
+// -s <nums...> (createTransform scale triple)
 struct Flags {
 	bool hasN = false, hasM = false, hasP = false, hasAt = false;
 	uint32_t n = 0, m = 0, p = 0;
@@ -703,9 +756,39 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 	return true;
 }
 
+// createNode -at type table (Maya node types): DAG kinds take scene
+// presence (hierarchy node: transform + parentable), system kinds are
+// editor-managed data with no DAG node.
+static const CreateNodeType kCreateNodeTypes[] = {
+	{ "transform", CreateNodeKind::Dag },
+	{ "pointLight", CreateNodeKind::Dag },
+	{ "spotLight", CreateNodeKind::Dag },
+	{ "terrain", CreateNodeKind::Dag },
+	{ "material", CreateNodeKind::System },
+	{ "file", CreateNodeKind::System },
+	{ "image", CreateNodeKind::System },
+	{ "camera", CreateNodeKind::System },
+};
+
+const CreateNodeType* CreateNodeTypes(size_t& countOut) {
+	countOut = sizeof(kCreateNodeTypes) / sizeof(kCreateNodeTypes[0]);
+	return kCreateNodeTypes;
+}
+
+const CreateNodeType* FindCreateNodeType(const std::string& at) {
+	for (const CreateNodeType& t : kCreateNodeTypes)
+		if (at == t.name)
+			return &t;
+	// Legacy light aliases from the createLight -at vocabulary.
+	if (at == "point")
+		return &kCreateNodeTypes[1];
+	if (at == "spot")
+		return &kCreateNodeTypes[2];
+	return nullptr;
+}
+
 bool LoadTour(const std::string& path, Doc& doc, std::string& err,
-	std::vector<std::string>* warnings) {
-	std::ifstream f(path, std::ios::binary);
+	std::vector<std::string>* warnings) {	std::ifstream f(path, std::ios::binary);
 	if (!f) {
 		err = "cannot open: " + path;
 		return false;
@@ -862,12 +945,56 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		Flags fl{};
 		if (!ParseFlags(toks, 1, fl, err, lineNo))
 			return false;
-		if (verb == "rename" && fl.hasN && !fl.t.empty()) {
+		// createNode lowers DAG types to their legacy per-type verb
+		// (single payload path per shape downstream); system types
+		// (material/file/image/camera) stay CreateNode for the editor.
+		std::string effVerb = verb;
+		if (effVerb == "createNode") {
+			if (!fl.hasAt) {
+				err = "line " + std::to_string(lineNo)
+					+ ": createNode wants -at <type>";
+				return false;
+			}
+			const CreateNodeType* t = FindCreateNodeType(fl.at);
+			if (!t) {
+				err = "line " + std::to_string(lineNo)
+					+ ": unknown createNode type '" + fl.at + "'";
+				return false;
+			}
+			if (t->kind == CreateNodeKind::System) {
+				if (!fl.hasName) {
+					err = "line " + std::to_string(lineNo)
+						+ ": createNode system type wants -name";
+					return false;
+				}
+				c.verb = Verb::CreateNode;
+				c.nodeType = fl.at;
+				c.node = fl.hasP ? fl.p : 0;
+				if (fl.hasPStr)
+					c.parentRef = fl.pStr;
+				c.text = fl.name;
+				doc.commands.push_back(std::move(c));
+				continue;
+			}
+			const std::string tn = t->name;
+			if (tn == "transform")
+				effVerb = "createTransform";
+			else if (tn == "terrain")
+				effVerb = "createTerrain";
+			else
+				effVerb = "createLight"; // pointLight | spotLight
+			// Legacy light -at vocabulary for the shared branch below.
+			if (fl.at == "pointLight")
+				fl.at = "point";
+			if (fl.at == "spotLight")
+				fl.at = "spot";
+		}
+		if (effVerb == "rename" && fl.hasN && !fl.t.empty()) {
 			c.verb = Verb::Rename;
 			c.node = fl.n;
 			c.text = fl.t[0];
 		}
-		else if (verb == "setAttr" && fl.hasN && fl.hasAt && fl.t.size() >= 3) {
+		else if (effVerb == "setAttr" && fl.hasN && fl.hasAt && fl.t.size() >= 3) {
 			double x = 0, y = 0, z = 0;
 			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
 				!ParseDouble(fl.t[2], z)) {
@@ -888,12 +1015,12 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				continue;
 			}
 		}
-		else if (verb == "assignMaterial" && fl.hasN && fl.hasM) {
+		else if (effVerb == "assignMaterial" && fl.hasN && fl.hasM) {
 			c.verb = Verb::AssignMaterial;
 			c.node = fl.n;
 			c.material = fl.m;
 		}
-		else if (verb == "setMatAttr" && fl.hasM && fl.hasAt) {
+		else if (effVerb == "setMatAttr" && fl.hasM && fl.hasAt) {
 			c.verb = Verb::SetMatAttr;
 			c.material = fl.m;
 			c.text = fl.at;
@@ -923,17 +1050,17 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				}
 			}
 		}
-		else if (verb == "setNoLightmap" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setNoLightmap" && fl.hasN && fl.hasV) {
 			c.verb = Verb::SetNoLightmap;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (verb == "setDitherCloseup" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setDitherCloseup" && fl.hasN && fl.hasV) {
 			c.verb = Verb::SetDitherCloseup;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (verb == "setVisibility" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setVisibility" && fl.hasN && fl.hasV) {
 			bool b = false;
 			if (!ParseFlagWord(fl.v, b)) {
 				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
@@ -944,7 +1071,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.flag = b;
 		}
 		// setHidden is the legacy alias for setVisibility (hidden flag).
-		else if (verb == "setHidden" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setHidden" && fl.hasN && fl.hasV) {
 			bool b = false;
 			if (!ParseFlagWord(fl.v, b)) {
 				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
@@ -954,7 +1081,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.flag = b;
 		}
-		else if (verb == "override" && fl.hasPattern && fl.hasAt) {
+		else if (effVerb == "override" && fl.hasPattern && fl.hasAt) {
 			OverrideRule r{};
 			if (!OverrideAttrFromString(fl.at, r.attr)) {
 				warn("tour:" + std::to_string(lineNo) +
@@ -995,7 +1122,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			doc.overrides.push_back(std::move(r));
 			continue;
 		}
-		else if (verb == "reference" && fl.hasSource) {
+		else if (effVerb == "reference" && fl.hasSource) {
 			// Clarisse-style scene reference: placeholder under -n with a
 			// linked source; the gltf_import loader inlines the subtree
 			// (recursively, via each source's own tour) at scene build.
@@ -1018,14 +1145,14 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			doc.references.push_back(std::move(r));
 			continue;
 		}
-		else if (verb == "parent" && fl.hasN && (fl.hasP || fl.hasPStr)) {
+		else if (effVerb == "parent" && fl.hasN && (fl.hasP || fl.hasPStr)) {
 			c.verb = Verb::Parent;
 			c.node = fl.n;
 			c.node2 = fl.hasP ? fl.p : 0;
 			if (fl.hasPStr)
 				c.parentRef = fl.pStr;
 		}
-		else if (verb == "delete" && (fl.hasN || fl.hasName || fl.hasUuid)) {
+		else if (effVerb == "delete" && (fl.hasN || fl.hasName || fl.hasUuid)) {
 			// Maya delete: drop the node's live-scene links. Ids stay
 			// stable; resources are not reclaimed. Addressing is
 			// uuid-primary (-uuid), name-secondary (-name), id fallback
@@ -1037,12 +1164,12 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			if (fl.hasUuid)
 				c.uuid = fl.uuid;
 		}
-		else if (verb == "uuid" && fl.hasN && fl.hasV) {
+		else if (effVerb == "uuid" && fl.hasN && fl.hasV) {
 			c.verb = Verb::SetUuid;
 			c.node = fl.n;
 			c.uuid = fl.v;
 		}
-		else if (verb == "createTransform" && (fl.hasP || fl.hasPStr)
+		else if (effVerb == "createTransform" && (fl.hasP || fl.hasPStr)
 			&& fl.hasName && fl.t.size() >= 6 && fl.hasS
 			&& fl.svec.size() >= 3) {
 			// -t packs: x y z rx ry rz (rotation in degrees); -s
@@ -1070,7 +1197,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.vec4 = glm::vec4(float(v[3]), float(v[4]), float(v[5]), 0.0f);
 			c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
 		}
-		else if (verb == "createLight" && (fl.hasP || fl.hasPStr)
+		else if (effVerb == "createLight" && (fl.hasP || fl.hasPStr)
 			&& fl.hasName && fl.hasAt
 			&& fl.t.size() >= 9) {
 			// -t packs: x y z intensity range innerDeg outerDeg
@@ -1097,7 +1224,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.flag = v[7] != 0.0;
 			c.node2 = v[8] != 0.0 ? 1u : 0u;
 		}
-		else if (verb == "createTerrain" && (fl.hasP || fl.hasPStr)
+		else if (effVerb == "createTerrain" && (fl.hasP || fl.hasPStr)
 			&& fl.hasName && fl.hasAt
 			&& fl.hasM && fl.t.size() >= 10) {
 			// -t packs: x y z size res height freq seed tilesX tilesZ.
@@ -1129,7 +1256,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node2 = (uint32_t(v[8]) & 0xFFFFu)
 				| ((uint32_t(v[9]) & 0xFFFFu) << 16);
 		}
-		else if (verb == "terrainPaint" && fl.hasRef && fl.hasAt
+		else if (effVerb == "terrainPaint" && fl.hasRef && fl.hasAt
 			&& fl.t.size() >= 4 && fl.hasV) {
 			// -t packs: worldX worldZ radius flattenTarget; -v = strength.
 			static const char* kOps[] = { "raise", "lower", "flatten", "smooth" };
@@ -1160,7 +1287,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.vec4 = glm::vec4(float(v[0]), float(v[1]), float(v[2]), float(v[3]));
 			c.number = strength;
 		}
-		else if (verb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		else if (effVerb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 			static const char* kAttrs[] = { "color", "intensity", "range",
 				"inner", "outer", "static", "shadow", "name", "position",
 				"rotation" };
@@ -1906,6 +2033,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			break;
 		}
+		case Verb::CreateNode: {
+			// System node types (material/file/image/camera): parsed +
+			// validated up front; replay defers to the editor — reported
+			// here, never silently dropped. (DAG types lower to their
+			// legacy verbs at parse time and never reach this case.)
+			warn("tour: system node type '" + c.nodeType
+				+ "' skipped at cook ('" + c.text + "' — editor-managed)");
+			break;
+		}
 		}
 	}
 	// Terrain tile upload pass: every group's heights are final now (all
@@ -2187,9 +2323,9 @@ std::string Describe(const Command& c) {
 			c.uuid.c_str());
 		break;
 	}
-	case Verb::CreateTransform:
-		std::snprintf(buf, sizeof(buf), "createTransform '%s' under #%u",
-			c.text.c_str(), c.node);
+	case Verb::CreateNode:
+		std::snprintf(buf, sizeof(buf), "createNode %s '%s'",
+			c.nodeType.c_str(), c.text.c_str());
 		break;
 	}
 	return buf;

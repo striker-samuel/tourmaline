@@ -511,6 +511,7 @@ private:
 	void ModalUiToggle();
 	void ModalUndo();
 	void ModalRedo();
+	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
 	void ModalSaveIncremental();
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
 	                     // placement graph window owns the keyboard —

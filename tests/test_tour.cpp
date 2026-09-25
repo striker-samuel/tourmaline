@@ -747,6 +747,113 @@ void TestLightVerbs() {
 		"light parser rejects bad attr");
 }
 
+// Unified createNode form: new files write `createNode -at <type>`;
+// DAG types lower to the legacy verbs at parse (single replay path);
+// system types (material/file/image/camera) parse, validate, and skip
+// at replay; legacy createLight/createTerrain/createTransform lines
+// load unchanged.
+void TestCreateNode() {
+	// Type table: DAG vs system knowledge lives on the type.
+	size_t count = 0;
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 8,
+		"createnode table size");
+	const smvk::tour::CreateNodeType* t =
+		smvk::tour::FindCreateNodeType("spotLight");
+	Check(t && t->kind == smvk::tour::CreateNodeKind::Dag,
+		"createnode spotLight is dag");
+	Check(smvk::tour::FindCreateNodeType("material")
+		&& smvk::tour::FindCreateNodeType("material")->kind
+			== smvk::tour::CreateNodeKind::System,
+		"createnode material is system");
+	Check(smvk::tour::FindCreateNodeType("point") != nullptr,
+		"createnode legacy alias point");
+	Check(smvk::tour::FindCreateNodeType("nope") == nullptr,
+		"createnode unknown type misses");
+	// Writer emits the unified spelling per DAG type.
+	smvk::tour::Doc doc;
+	doc.source = "models/x.gltf";
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateNode;
+	c.nodeType = "spotLight";
+	c.node = 0;
+	c.text = "Spot_1";
+	c.vec = glm::vec3(1, 2, 3);
+	c.vec4 = glm::vec4(2.0f, 100.0f, 10.0f, 15.0f);
+	c.number = 30.0;
+	doc.commands.push_back(c);
+	smvk::tour::Command tr{};
+	tr.verb = smvk::tour::Verb::CreateNode;
+	tr.nodeType = "transform";
+	tr.node = 0;
+	tr.text = "Grp";
+	tr.vec = glm::vec3(4, 5, 6);
+	tr.vec4 = glm::vec4(0, 0, 0, 0.0f);
+	tr.svec = glm::vec3(1, 2, 3);
+	doc.commands.push_back(tr);
+	smvk::tour::Command img{};
+	img.verb = smvk::tour::Verb::CreateNode;
+	img.nodeType = "image";
+	img.node = 0;
+	img.text = "Ref";
+	doc.commands.push_back(img);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "createnode save");
+	std::ifstream in(TempTour(), std::ios::binary);
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	in.close();
+	Check(text.find("createNode -at spotLight -p 0 -name \"Spot_1\"")
+		!= std::string::npos, "createnode light unified line");
+	Check(text.find("createNode -at transform -p 0 -name \"Grp\"")
+		!= std::string::npos, "createnode transform unified line");
+	Check(text.find("createNode -at image -p 0 -name \"Ref\"")
+		!= std::string::npos, "createnode system unified line");
+	// Re-parse: DAG types lower to legacy verbs; system stays CreateNode.
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"createnode reload");
+	Check(back.commands.size() == 3, "createnode command count");
+	if (back.commands.size() == 3) {
+		Check(back.commands[0].verb == smvk::tour::Verb::CreateLight
+			&& back.commands[0].text == "Spot_1"
+			&& back.commands[0].vec4.y == 100.0f,
+			"createnode light lowers");
+		Check(back.commands[1].verb == smvk::tour::Verb::CreateTransform
+			&& back.commands[1].text == "Grp"
+			&& back.commands[1].svec.y == 2.0f,
+			"createnode transform lowers");
+		Check(back.commands[2].verb == smvk::tour::Verb::CreateNode
+			&& back.commands[2].nodeType == "image",
+			"createnode system stays");
+	}
+	// Cook replay: lowered light creates; system type warns+skips.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	addNode(cluster->scene, -1, 0);
+	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
+		"createnode replay ok");
+	Check(cluster->scene.lightForNode.size() == 1,
+		"createnode replay creates light");
+	Check(!warns.empty(), "createnode system replay reported");
+	// Unknown -at fails the file loudly.
+	smvk::tour::Doc parseBad;
+	Check(!smvk::tour::LoadTourFromString(
+		"createNode -at frobnicate -p 0 -name \"X\";\n", parseBad, err),
+		"createnode parser rejects bad type");
+	// Legacy spellings still load (backward compat).
+	smvk::tour::Doc legacy;
+	Check(smvk::tour::LoadTourFromString(
+		"createLight -p 0 -name \"L\" -at point -t 0 0 0 10 5 0 0 0 0;\n",
+		legacy, err), "createnode legacy loads");
+	Check(legacy.commands.size() == 1
+		&& legacy.commands[0].verb == smvk::tour::Verb::CreateLight,
+		"createnode legacy verb kept");
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 void TestTerrainVerbs() {
 	// createTerrain (group + tiles) + terrainPaint: file round-trip, then
 	// cook replay — heights bake through the stamps into the tile meshes.
@@ -1174,6 +1281,7 @@ int main() {
 	TestTourReferences();
 	TestLightVerbs();
 	TestTerrainVerbs();
+	TestCreateNode();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

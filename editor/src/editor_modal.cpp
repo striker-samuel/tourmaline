@@ -263,6 +263,8 @@ void EditorApp::UpdateModalInput() {
 			&EditorApp::ModalRedo, "redo", "Ctrl+Shift+Z" },
 		{ GLFW_KEY_Y, kModalCtrl, kScopeGlobal, &EditorApp::ModalRedo,
 			"redo", "Ctrl+Y" },
+		{ GLFW_KEY_S, kModalCtrl, kScopeGlobal, &EditorApp::ModalSave,
+			"tour: save", "Ctrl+S" },
 		{ GLFW_KEY_S, kModalCtrl | kModalAlt, kScopeGlobal,
 			&EditorApp::ModalSaveIncremental, "tour: save incremental",
 			"Ctrl+Alt+S" },
@@ -375,6 +377,10 @@ void EditorApp::ModalToggleVisibility() {
 
 void EditorApp::ModalUndo() { Undo(); }
 void EditorApp::ModalRedo() { Redo(); }
+void EditorApp::ModalSave() {
+	if (SaveTour())
+		Log("Tour saved: " + TourTarget());
+}
 void EditorApp::ModalSaveIncremental() { SaveTourIncremental(); }
 
 // ---- layout handlers ----

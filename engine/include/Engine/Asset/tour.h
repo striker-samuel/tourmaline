@@ -149,7 +149,35 @@ enum class Verb : uint8_t {
  	                // parent under them like any transform.
  	                // -t packs local TRS: x y z rx ry rz sx sy sz
  	                // (9 values, rotation in DEGREES, editor convention).
+ 	                // (Legacy verb — new files write the unified
+ 	                // createNode form below.)
+ 	CreateNode,     // THE node verb (Maya createNode): -at names the
+ 	                // node TYPE, the rest is per-type payload:
+ 	                //   DAG types (hierarchy nodes — transform +
+ 	                //   parentable): transform, pointLight, spotLight,
+ 	                //   terrain. Replayed by cook + editor with full
+ 	                //   create semantics (-ref bookkeeping included).
+ 	                //   System types (no DAG presence — editor-managed
+ 	                //   data): material, file, image, camera. Parsed +
+ 	                //   validated, skipped at replay with a log.
+ 	                // New files write ONLY this form; the legacy
+ 	                // createLight/createTerrain/createTransform verbs
+ 	                // still parse (backward compat).
  };
+
+// Node-type table for createNode -at (Maya node types): whether the
+// type takes DAG presence (hierarchy node: transform + parentable) or
+// is a system type (editor-managed data, no scene node).
+enum class CreateNodeKind : uint8_t { Dag, System };
+struct CreateNodeType {
+	const char* name;      // -at value ("transform", "pointLight", ...)
+	CreateNodeKind kind;
+};
+// The known types, in file order (index-stable for tooling).
+const CreateNodeType* CreateNodeTypes(size_t& countOut);
+// Lookup by -at value (accepts the legacy light aliases "point" and
+// "spot" for pointLight/spotLight). Null when unknown.
+const CreateNodeType* FindCreateNodeType(const std::string& at);
 
 // Clarisse-style wide override attribute (regex selector over node
 // names). Stored in Doc::overrides, evaluated AFTER direct commands at
@@ -220,6 +248,9 @@ struct Command {
 	                       // Delete: secondary addressing key
 	std::string uuid;      // SetUuid: the recorded 32-hex identity;
 	                       // Delete: its PRIMARY addressing key
+	std::string nodeType;  // createNode -at type ("transform",
+	                       // "pointLight", "spotLight", "terrain",
+	                       // "material", "file", "image", "camera")
 };
 
 // SetLightAttr addressing for lights created by an earlier CreateLight
