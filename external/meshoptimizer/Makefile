@@ -37,9 +37,9 @@ WASI_SDK?=/opt/wasi-sdk
 WASMCC?=$(WASI_SDK)/bin/clang++
 WASIROOT?=$(WASI_SDK)/share/wasi-sysroot
 
-WASM_FLAGS=--target=wasm32-wasi --sysroot=$(WASIROOT)
+WASM_FLAGS=--target=wasm32-wasi -Wno-deprecated --sysroot=$(WASIROOT) --no-wasm-opt
 WASM_FLAGS+=-Wall -Wextra
-WASM_FLAGS+=-O3 -DNDEBUG -nostartfiles -nostdlib -Wl,--no-entry -Wl,-s
+WASM_FLAGS+=-O3 -DNDEBUG -DMESHOPTIMIZER_VERTEXCODEC_ZEROCOPY -nostartfiles -nostdlib -Wl,--no-entry -Wl,-s
 WASM_FLAGS+=-mcpu=mvp # make sure clang doesn't use post-MVP features like sign extension
 WASM_FLAGS+=-fno-slp-vectorize -fno-vectorize -fno-unroll-loops
 WASM_FLAGS+=-Wl,-z -Wl,stack-size=36864 -Wl,--initial-memory=65536
@@ -51,11 +51,14 @@ WASM_DECODER_EXPORTS=meshopt_decodeVertexBuffer meshopt_decodeIndexBuffer meshop
 WASM_ENCODER_SOURCES=src/vertexcodec.cpp src/indexcodec.cpp src/vertexfilter.cpp src/vcacheoptimizer.cpp src/vfetchoptimizer.cpp src/spatialorder.cpp tools/wasmstubs.cpp
 WASM_ENCODER_EXPORTS=meshopt_encodeVertexBuffer meshopt_encodeVertexBufferBound meshopt_encodeVertexBufferLevel meshopt_encodeIndexBuffer meshopt_encodeIndexBufferBound meshopt_encodeIndexSequence meshopt_encodeIndexSequenceBound meshopt_encodeVertexVersion meshopt_encodeIndexVersion meshopt_encodeFilterOct meshopt_encodeFilterQuat meshopt_encodeFilterExp meshopt_encodeFilterColor meshopt_optimizeVertexCache meshopt_optimizeVertexCacheStrip meshopt_optimizeVertexFetchRemap meshopt_spatialSortRemap sbrk __wasm_call_ctors
 
-WASM_SIMPLIFIER_SOURCES=src/simplifier.cpp src/vfetchoptimizer.cpp tools/wasmstubs.cpp
-WASM_SIMPLIFIER_EXPORTS=meshopt_simplify meshopt_simplifyWithAttributes meshopt_simplifyWithUpdate meshopt_simplifyScale meshopt_simplifyPoints meshopt_simplifySloppy meshopt_simplifyPrune meshopt_optimizeVertexFetchRemap sbrk __wasm_call_ctors
+WASM_SIMPLIFIER_SOURCES=src/simplifier.cpp src/remesher.cpp src/vfetchoptimizer.cpp src/indexgenerator.cpp tools/wasmstubs.cpp
+WASM_SIMPLIFIER_EXPORTS=meshopt_simplify meshopt_simplifyWithAttributes meshopt_simplifyWithUpdate meshopt_simplifyScale meshopt_simplifyPoints meshopt_simplifySloppy meshopt_simplifyPrune meshopt_remesh meshopt_optimizeVertexFetchRemap meshopt_generatePositionRemap sbrk __wasm_call_ctors
 
-WASM_CLUSTERIZER_SOURCES=src/clusterizer.cpp tools/wasmstubs.cpp
-WASM_CLUSTERIZER_EXPORTS=meshopt_buildMeshletsBound meshopt_buildMeshlets meshopt_computeClusterBounds meshopt_computeMeshletBounds meshopt_computeSphereBounds meshopt_optimizeMeshlet sbrk __wasm_call_ctors
+WASM_CLUSTERIZER_SOURCES=src/clusterizer.cpp src/meshletutils.cpp tools/wasmstubs.cpp
+WASM_CLUSTERIZER_EXPORTS=meshopt_buildMeshletsBound meshopt_buildMeshletsFlex meshopt_buildMeshletsSpatial meshopt_computeClusterBounds meshopt_computeMeshletBounds meshopt_computeSphereBounds meshopt_optimizeMeshlet sbrk __wasm_call_ctors
+
+WASM_TANGENTS_SOURCES=src/tangentspace.cpp tools/wasmstubs.cpp
+WASM_TANGENTS_EXPORTS=meshopt_generateTangents meshopt_generateNormals sbrk __wasm_call_ctors
 
 ifneq ($(werror),)
 	CFLAGS+=-Werror
@@ -86,8 +89,12 @@ ifeq ($(config),coverage)
 	LDFLAGS+=-coverage
 endif
 
+ifeq ($(config),release-avx)
+	CXXFLAGS+=-O3 -DNDEBUG -mavx
+endif
+
 ifeq ($(config),release-avx512)
-	CXXFLAGS+=-O3 -DNDEBUG -mavx512vl -mavx512vbmi -mavx512vbmi2
+	CXXFLAGS+=-O3 -DNDEBUG -mavx512vl -mavx512vbmi -mavx512vbmi2 -mbmi2
 endif
 
 ifeq ($(config),release-scalar)
@@ -137,7 +144,7 @@ format:
 formatjs:
 	prettier -w js/*.js gltf/*.js demo/*.html js/*.ts
 
-js: js/meshopt_decoder.js js/meshopt_decoder.module.js js/meshopt_encoder.js js/meshopt_encoder.module.js js/meshopt_simplifier.js js/meshopt_simplifier.module.js js/meshopt_clusterizer.js js/meshopt_clusterizer.module.js
+js: js/meshopt_decoder.cjs js/meshopt_decoder.mjs js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js js/meshopt_tangents.js
 
 symbols: $(BUILD)/amalgamated.so
 	nm $< -U -g
@@ -159,7 +166,7 @@ $(BUILD)/gltfpack: $(GLTFPACK_OBJECTS) $(LIBRARY)
 gltfpack.wasm: gltf/library.wasm
 
 gltf/library.wasm: $(LIBRARY_SOURCES) $(GLTFPACK_SOURCES)
-	$(WASMCC) $^ -o $@ -Wall -Os -DNDEBUG --target=wasm32-wasi --sysroot=$(WASIROOT) -nostartfiles -Wl,--no-entry -Wl,--export=pack -Wl,--export=malloc -Wl,--export=free -Wl,--export=__wasm_call_ctors -Wl,-s -Wl,--allow-undefined-file=gltf/wasistubs.txt
+	$(WASMCC) $^ -o $@ -Wall -Os -DNDEBUG --target=wasm32-wasi -Wno-deprecated --sysroot=$(WASIROOT) -nostartfiles --no-wasm-opt -Wl,--no-entry -Wl,--export=pack -Wl,--export=malloc -Wl,--export=free -Wl,--export=__wasm_call_ctors -Wl,-s -Wl,--allow-undefined-file=gltf/wasistubs.txt
 
 build/decoder_base.wasm: $(WASM_DECODER_SOURCES)
 	@mkdir -p build
@@ -167,7 +174,7 @@ build/decoder_base.wasm: $(WASM_DECODER_SOURCES)
 
 build/decoder_simd.wasm: $(WASM_DECODER_SOURCES)
 	@mkdir -p build
-	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_DECODER_EXPORTS)) -o $@ -msimd128 -mbulk-memory
+	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_DECODER_EXPORTS)) -o $@ -msimd128 -mbulk-memory -DMESHOPTIMIZER_VERTEXFILTER_SIMDNOTAIL
 
 build/encoder.wasm: $(WASM_ENCODER_SOURCES)
 	@mkdir -p build
@@ -181,7 +188,11 @@ build/clusterizer.wasm: $(WASM_CLUSTERIZER_SOURCES)
 	@mkdir -p build
 	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_CLUSTERIZER_EXPORTS)) -lc -o $@
 
-js/meshopt_decoder.js: build/decoder_base.wasm build/decoder_simd.wasm tools/wasmpack.py
+build/tangents.wasm: $(WASM_TANGENTS_SOURCES)
+	@mkdir -p build
+	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_TANGENTS_EXPORTS)) -lc -o $@
+
+js/meshopt_decoder.mjs: build/decoder_base.wasm build/decoder_simd.wasm tools/wasmpack.py
 	sed -i "s#Built with clang.*#Built with $$($(WASMCC) --version | head -n 1 | sed 's/\s\+(.*//')#" $@
 	sed -i "s#Built from meshoptimizer .*#Built from meshoptimizer $$(cat src/meshoptimizer.h | grep -Po '(?<=version )[0-9.]+')#" $@
 	python3 tools/wasmpack.py patch $@ base <build/decoder_base.wasm
@@ -190,16 +201,19 @@ js/meshopt_decoder.js: build/decoder_base.wasm build/decoder_simd.wasm tools/was
 js/meshopt_encoder.js: build/encoder.wasm tools/wasmpack.py
 js/meshopt_simplifier.js: build/simplifier.wasm tools/wasmpack.py
 js/meshopt_clusterizer.js: build/clusterizer.wasm tools/wasmpack.py
+js/meshopt_tangents.js: build/tangents.wasm tools/wasmpack.py
 
-js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js:
+js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js js/meshopt_tangents.js:
 	sed -i "s#Built with clang.*#Built with $$($(WASMCC) --version | head -n 1 | sed 's/\s\+(.*//')#" $@
 	sed -i "s#Built from meshoptimizer .*#Built from meshoptimizer $$(cat src/meshoptimizer.h | grep -Po '(?<=version )[0-9.]+')#" $@
 	python3 tools/wasmpack.py patch $@ wasm <$<
 
-js/%.module.js: js/%.js
-	sed '\#// export!#q' <$< >$@
-	sed -i "/use strict.;/d" $@
-	sed -i "s#// export! \(.*\)#export { \\1 };#" $@
+js/meshopt_decoder.cjs: js/meshopt_decoder.mjs
+	sed '/export {/d' <$< >$@
+	echo "if (typeof exports === 'object' && typeof module === 'object') module.exports = MeshoptDecoder;" >>$@
+	echo "else if (typeof define === 'function' && define['amd']) define([], function () { return MeshoptDecoder; });" >>$@
+	echo "else if (typeof exports === 'object') exports['MeshoptDecoder'] = MeshoptDecoder;" >>$@
+	echo "else (typeof self !== 'undefined' ? self : this).MeshoptDecoder = MeshoptDecoder;" >>$@
 
 $(DEMO): $(DEMO_OBJECTS) $(LIBRARY)
 	$(CXX) $^ $(LDFLAGS) -o $@
@@ -225,10 +239,10 @@ codecbench-simd.wasm: tools/codecbench.cpp $(LIBRARY_SOURCES)
 codectest: tools/codectest.cpp $(LIBRARY)
 	$(CXX) $^ $(CXXFLAGS) $(LDFLAGS) -o $@
 
-codecfuzz: tools/codecfuzz.cpp src/vertexcodec.cpp src/indexcodec.cpp
+codecfuzz: tools/codecfuzz.cpp src/vertexcodec.cpp src/indexcodec.cpp src/meshletcodec.cpp
 	$(CXX) $^ -fsanitize=fuzzer,address,undefined -O1 -g -o $@
 
-clusterfuzz: tools/clusterfuzz.cpp src/clusterizer.cpp
+clusterfuzz: tools/clusterfuzz.cpp src/clusterizer.cpp src/partition.cpp
 	$(CXX) $^ -fsanitize=fuzzer,address,undefined -O1 -g -o $@
 
 simplifyfuzz: tools/simplifyfuzz.cpp src/simplifier.cpp

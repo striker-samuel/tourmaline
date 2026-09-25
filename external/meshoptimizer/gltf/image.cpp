@@ -1,6 +1,7 @@
 // This file is part of gltfpack; see gltfpack.h for version/license details
 #include "gltfpack.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static const char* kMimeTypes[][2] = {
@@ -174,7 +175,7 @@ static bool getDimensionsJpeg(const std::string& data, int& width, int& height)
 			continue; // no payload
 		}
 
-		// c0..c1 correspond to SOF0, SOF1
+		// c0/c2 correspond to SOF0/SOF2
 		if (marker == '\xc0' || marker == '\xc2')
 		{
 			if (offset + 10 > data.size())

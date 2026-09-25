@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <utility>
 
 #include <math.h>
 #include <stdint.h>
@@ -109,6 +110,13 @@ static void transformMesh(Mesh& target, const Mesh& mesh, const cgltf_node* node
 		{
 			for (size_t i = 0; i < stream.data.size(); ++i)
 				transformNormal(stream.data[i].f, source.data[i].f, transform);
+
+			if (det < 0)
+			{
+				// negative scale means we need to flip tangent frame handedness
+				for (size_t i = 0; i < stream.data.size(); ++i)
+					stream.data[i].f[3] = -stream.data[i].f[3];
+			}
 		}
 	}
 
@@ -174,9 +182,9 @@ bool compareMeshNodes(const Mesh& lhs, const Mesh& rhs)
 	return true;
 }
 
-static bool compareTransforms(const Transform& lhs, const Transform& rhs)
+static bool compareInstances(const Instance& lhs, const Instance& rhs)
 {
-	return memcmp(&lhs, &rhs, sizeof(Transform)) == 0;
+	return memcmp(&lhs, &rhs, sizeof(Instance)) == 0;
 }
 
 static bool canMergeMeshNodes(cgltf_node* lhs, cgltf_node* rhs, const Settings& settings)
@@ -223,7 +231,7 @@ static bool canMergeMeshes(const Mesh& lhs, const Mesh& rhs, const Settings& set
 		return false;
 
 	for (size_t i = 0; i < lhs.instances.size(); ++i)
-		if (!compareTransforms(lhs.instances[i], rhs.instances[i]))
+		if (!compareInstances(lhs.instances[i], rhs.instances[i]))
 			return false;
 
 	if (lhs.material != rhs.material)
@@ -633,66 +641,191 @@ void filterStreams(Mesh& mesh, const MaterialInfo& mi)
 	mesh.streams.resize(write);
 }
 
-struct QuantizedTBN
+static int getTangentTexcoord(const cgltf_material* material)
 {
-	int8_t nx, ny, nz, nw;
-	int8_t tx, ty, tz, tw;
-};
+	if (material->normal_texture.texture)
+		return material->normal_texture.texcoord;
+	if (material->has_clearcoat && material->clearcoat.clearcoat_normal_texture.texture)
+		return material->clearcoat.clearcoat_normal_texture.texcoord;
+	if (material->has_anisotropy && material->anisotropy.anisotropy_texture.texture)
+		return material->anisotropy.anisotropy_texture.texcoord;
+	return 0;
+}
 
-static void quantizeTBN(QuantizedTBN* target, size_t offset, const Attr* source, size_t size, int bits)
+static Stream& prepareTangentStream(Mesh& mesh, size_t vertex_count)
 {
-	int8_t* target8 = reinterpret_cast<int8_t*>(target) + offset;
+	// remove existing tangent streams, if any
+	// in particular removes morph target streams as we don't support morph tangent generation
+	for (size_t i = 0; i < mesh.streams.size();)
+		if (mesh.streams[i].type == cgltf_attribute_type_tangent)
+			mesh.streams.erase(mesh.streams.begin() + i);
+		else
+			++i;
 
-	for (size_t i = 0; i < size; ++i)
+	mesh.streams.push_back(Stream());
+
+	Stream& tangent = mesh.streams.back();
+	tangent.type = cgltf_attribute_type_tangent;
+	tangent.data.resize(vertex_count);
+
+	return tangent;
+}
+
+template <int N>
+static void splitVertices(Mesh& mesh, Stream& target, const float* data)
+{
+	size_t vertex_count = target.data.size();
+
+	// seed each vertex with one of its corner values; the loop below fixes any mismatches
+	for (size_t i = 0; i < mesh.indices.size(); ++i)
+		memcpy(target.data[mesh.indices[i]].f, &data[i * N], N * sizeof(float));
+
+	std::vector<unsigned int> splits(vertex_count, ~0u);
+
+	for (size_t i = 0; i < mesh.indices.size(); ++i)
 	{
-		target8[i * sizeof(QuantizedTBN) + 0] = int8_t(meshopt_quantizeSnorm(source[i].f[0], bits));
-		target8[i * sizeof(QuantizedTBN) + 1] = int8_t(meshopt_quantizeSnorm(source[i].f[1], bits));
-		target8[i * sizeof(QuantizedTBN) + 2] = int8_t(meshopt_quantizeSnorm(source[i].f[2], bits));
-		target8[i * sizeof(QuantizedTBN) + 3] = int8_t(meshopt_quantizeSnorm(source[i].f[3], bits));
+		Attr a = {};
+		memcpy(a.f, &data[i * N], N * sizeof(float));
+
+		unsigned int v = mesh.indices[i];
+		unsigned int sv = v;
+
+		// walk the chain of split copies looking for a vertex whose attribute matches
+		while (sv != ~0u && !(target.data[sv].f[0] == a.f[0] && target.data[sv].f[1] == a.f[1] && target.data[sv].f[2] == a.f[2] && target.data[sv].f[3] == a.f[3]))
+			sv = splits[sv];
+
+		// no match in chain: append a new split copy with the target attribute and chain it
+		if (sv == ~0u)
+		{
+			sv = unsigned(target.data.size());
+
+			for (Stream& stream : mesh.streams)
+				stream.data.push_back(stream.data[v]);
+
+			target.data[sv] = a;
+
+			splits.push_back(splits[v]);
+			splits[v] = sv;
+		}
+
+		mesh.indices[i] = sv;
 	}
 }
 
-static void reindexMesh(Mesh& mesh, bool quantize_tbn)
+void generateTangents(Mesh& mesh)
+{
+	if (mesh.type != cgltf_primitive_type_triangles || mesh.indices.empty() || !mesh.material)
+		return;
+
+	int texcoord = getTangentTexcoord(mesh.material);
+	Stream* positions = getStream(mesh, cgltf_attribute_type_position);
+	Stream* normals = getStream(mesh, cgltf_attribute_type_normal);
+	Stream* uvs = getStream(mesh, cgltf_attribute_type_texcoord, texcoord);
+
+	if (!positions || !normals || !uvs)
+		return;
+
+	size_t vertex_count = positions->data.size();
+	assert(normals->data.size() == vertex_count && uvs->data.size() == vertex_count);
+
+	std::vector<float> tangents(mesh.indices.size() * 4);
+	meshopt_generateTangents(tangents.data(), mesh.indices.data(), mesh.indices.size(), positions->data[0].f, vertex_count, sizeof(Attr), normals->data[0].f, sizeof(Attr), uvs->data[0].f, sizeof(Attr), 0);
+
+	// note: potentially invalidates positions/normals/uvs but we no longer use these
+	Stream& tangent = prepareTangentStream(mesh, vertex_count);
+
+	splitVertices<4>(mesh, tangent, tangents.data());
+}
+
+void generateNormals(Mesh& mesh, float crease_angle)
+{
+#ifdef GLTFPACK_NO_EXPERIMENTAL
+	// disabled until meshopt_generateNormals becomes stable
+	(void)mesh;
+	(void)crease_angle;
+#else
+	if (mesh.type != cgltf_primitive_type_triangles || mesh.indices.empty() || mesh.targets || getStream(mesh, cgltf_attribute_type_normal))
+		return;
+
+	Stream* positions = getStream(mesh, cgltf_attribute_type_position);
+	if (!positions)
+		return;
+
+	size_t vertex_count = positions->data.size();
+
+	std::vector<float> normals(mesh.indices.size() * 3);
+	meshopt_generateNormals(normals.data(), mesh.indices.data(), mesh.indices.size(), positions->data[0].f, vertex_count, sizeof(Attr), crease_angle * (3.14159265f / 180.f), 1.5f);
+
+	// note: potentially invalidates positions but we no longer use these
+	mesh.streams.push_back(Stream());
+
+	Stream& normal = mesh.streams.back();
+	normal.type = cgltf_attribute_type_normal;
+	normal.data.resize(vertex_count);
+
+	splitVertices<3>(mesh, normal, normals.data());
+#endif
+}
+
+static float reindexTolerance(cgltf_attribute_type type, const Settings& settings)
+{
+	switch (type)
+	{
+	case cgltf_attribute_type_normal:
+	case cgltf_attribute_type_tangent:
+		return std::max(2e-4f, settings.quantize ? 1.f / float(1 << settings.nrm_bits) : 0.f);
+
+	case cgltf_attribute_type_texcoord:
+		return std::max(5e-5f, settings.quantize ? 0.5f / float(1 << settings.tex_bits) : 0.f);
+
+	case cgltf_attribute_type_color:
+		return 0.5f / float(1 << settings.col_bits);
+
+	case cgltf_attribute_type_weights:
+		return 0.5f / 256.f;
+
+	default:
+		return 0.f;
+	}
+}
+
+static void reindexMesh(Mesh& mesh, const Settings& settings)
 {
 	size_t total_vertices = mesh.streams[0].data.size();
 	size_t total_indices = mesh.indices.size();
 
-	std::vector<QuantizedTBN> qtbn;
+	Stream* positions = getStream(mesh, cgltf_attribute_type_position);
+	if (!positions)
+		return;
 
-	std::vector<meshopt_Stream> streams;
+	std::vector<std::pair<const Attr*, float> > streams;
+	streams.reserve(mesh.streams.size());
+
 	for (size_t i = 0; i < mesh.streams.size(); ++i)
 	{
 		const Stream& attr = mesh.streams[i];
-		if (attr.target)
+		if (attr.type == cgltf_attribute_type_position || attr.target)
 			continue;
 
-		assert(attr.data.size() == total_vertices);
-
-		if (quantize_tbn && (attr.type == cgltf_attribute_type_normal || attr.type == cgltf_attribute_type_tangent))
-		{
-			if (qtbn.empty())
-			{
-				qtbn.resize(total_vertices);
-
-				meshopt_Stream stream = {&qtbn[0], sizeof(QuantizedTBN), sizeof(QuantizedTBN)};
-				streams.push_back(stream);
-			}
-
-			size_t offset = attr.type == cgltf_attribute_type_normal ? offsetof(QuantizedTBN, nx) : offsetof(QuantizedTBN, tx);
-			quantizeTBN(&qtbn[0], offset, &attr.data[0], total_vertices, /* bits= */ 8);
-		}
-		else
-		{
-			meshopt_Stream stream = {&attr.data[0], sizeof(Attr), sizeof(Attr)};
-			streams.push_back(stream);
-		}
+		streams.push_back(std::make_pair(attr.data.data(), reindexTolerance(attr.type, settings)));
 	}
 
-	if (streams.empty())
-		return;
-
 	std::vector<unsigned int> remap(total_vertices);
-	size_t unique_vertices = meshopt_generateVertexRemapMulti(&remap[0], &mesh.indices[0], total_indices, total_vertices, &streams[0], streams.size());
+	size_t unique_vertices = meshopt_generateVertexRemapCustom(&remap[0], &mesh.indices[0], total_indices, positions->data[0].f, total_vertices, sizeof(Attr),
+	    [&streams](unsigned int lhs, unsigned int rhs) -> bool
+	    {
+		    for (auto& sp : streams)
+		    {
+			    const Attr* data = sp.first;
+			    float dx = fabsf(data[lhs].f[0] - data[rhs].f[0]), dy = fabsf(data[lhs].f[1] - data[rhs].f[1]);
+			    float dz = fabsf(data[lhs].f[2] - data[rhs].f[2]), dw = fabsf(data[lhs].f[3] - data[rhs].f[3]);
+
+			    if (dx > sp.second || dy > sp.second || dz > sp.second || dw > sp.second)
+				    return false;
+		    }
+
+		    return true;
+	    });
 	assert(unique_vertices <= total_vertices);
 
 	meshopt_remapIndexBuffer(&mesh.indices[0], &mesh.indices[0], total_indices, &remap[0]);
@@ -731,9 +864,9 @@ static void filterTriangles(Mesh& mesh)
 	mesh.indices.resize(write);
 }
 
-static void simplifyAttributes(std::vector<float>& attrs, float* attrw, size_t stride, Mesh& mesh)
+static void simplifyAttributes(std::vector<float>& attrs, float* attrw, size_t stride, Mesh& mesh, float uv_weight)
 {
-	assert(stride >= 6); // normal + color
+	assert(stride >= 8); // normal + color + UV
 
 	size_t vertex_count = mesh.streams[0].data.size();
 
@@ -767,6 +900,62 @@ static void simplifyAttributes(std::vector<float>& attrs, float* attrw, size_t s
 
 		attrw[3] = attrw[4] = attrw[5] = 1.0f;
 	}
+
+	if (const Stream* attr = getStream(mesh, cgltf_attribute_type_texcoord))
+	{
+		const Attr* a = attr->data.data();
+		for (size_t i = 0; i < vertex_count; ++i)
+		{
+			data[i * stride + 6] = a[i].f[0];
+			data[i * stride + 7] = a[i].f[1];
+		}
+		attrw[6] = attrw[7] = uv_weight;
+	}
+}
+
+static void simplifyUpdate(const std::vector<float>& attrs, size_t stride, Mesh& mesh)
+{
+	size_t vertex_count = mesh.streams[0].data.size();
+	const float* data = attrs.data();
+
+	if (Stream* attr = getStream(mesh, cgltf_attribute_type_normal))
+	{
+		Attr* a = attr->data.data();
+
+		for (size_t i = 0; i < vertex_count; ++i)
+		{
+			float nx = data[i * stride + 0], ny = data[i * stride + 1], nz = data[i * stride + 2];
+			float nl = sqrtf(nx * nx + ny * ny + nz * nz);
+			float ns = nl > 0.f ? 1.f / nl : 0.f;
+			a[i].f[0] = nx * ns;
+			a[i].f[1] = ny * ns;
+			a[i].f[2] = nz * ns;
+		}
+	}
+
+	if (Stream* attr = getStream(mesh, cgltf_attribute_type_color))
+	{
+		Attr* a = attr->data.data();
+
+		for (size_t i = 0; i < vertex_count; ++i)
+		{
+			float cs = a[i].f[3] > 0.f ? 1.f / a[i].f[3] : 0.f;
+			a[i].f[0] = std::max(0.f, std::min(1.f, data[i * stride + 3] * cs));
+			a[i].f[1] = std::max(0.f, std::min(1.f, data[i * stride + 4] * cs));
+			a[i].f[2] = std::max(0.f, std::min(1.f, data[i * stride + 5] * cs));
+		}
+	}
+
+	if (Stream* attr = getStream(mesh, cgltf_attribute_type_texcoord))
+	{
+		Attr* a = attr->data.data();
+
+		for (size_t i = 0; i < vertex_count; ++i)
+		{
+			a[i].f[0] = data[i * stride + 6];
+			a[i].f[1] = data[i * stride + 7];
+		}
+	}
 }
 
 static void simplifyProtect(std::vector<unsigned char>& locks, Mesh& mesh, size_t presplit_vertices)
@@ -795,21 +984,6 @@ static void simplifyProtect(std::vector<unsigned char>& locks, Mesh& mesh, size_
 				data[i] |= meshopt_SimplifyVertex_Protect;
 		}
 	}
-
-	// protect sharp edges (to avoid collapses with high error mostly)
-	if (Stream* attr = getStream(mesh, cgltf_attribute_type_normal))
-	{
-		Attr* a = attr->data.data();
-
-		for (size_t i = 0; i < vertex_count; ++i)
-		{
-			unsigned int r = remap[i];
-
-			if (r != i && (a[i].f[0] * a[r].f[0] + a[i].f[1] * a[r].f[1] + a[i].f[2] * a[r].f[2]) < 0.25f)
-				data[i] |= meshopt_SimplifyVertex_Protect;
-		}
-	}
-
 	// protect all vertices that were artificially split on the UV mirror edges
 	for (size_t i = presplit_vertices; i < vertex_count; ++i)
 		data[i] |= meshopt_SimplifyVertex_Protect;
@@ -887,22 +1061,21 @@ static void simplifyUvSplit(Mesh& mesh, std::vector<unsigned int>& remap)
 	}
 }
 
-static void simplifyMesh(Mesh& mesh, float threshold, float error, bool attributes, bool aggressive, bool lock_borders, bool permissive)
+static void simplifyMesh(Mesh& mesh, float threshold, float error, bool aggressive, bool lock_borders, bool permissive, bool update)
 {
 	assert(mesh.type == cgltf_primitive_type_triangles);
 
 	if (mesh.indices.empty())
 		return;
 
-	const Stream* positions = getStream(mesh, cgltf_attribute_type_position);
+	Stream* positions = getStream(mesh, cgltf_attribute_type_position);
 	if (!positions)
 		return;
 
 	size_t presplit_vertices = positions->data.size();
 
 	std::vector<unsigned int> uvremap;
-	if (attributes)
-		simplifyUvSplit(mesh, uvremap);
+	simplifyUvSplit(mesh, uvremap);
 
 	size_t vertex_count = positions->data.size();
 
@@ -924,20 +1097,25 @@ static void simplifyMesh(Mesh& mesh, float threshold, float error, bool attribut
 
 	std::vector<unsigned int> indices(mesh.indices.size());
 
-	float attrw[6] = {};
+	float attrw[8] = {};
 	std::vector<float> attrs;
-	if (attributes)
-		simplifyAttributes(attrs, attrw, sizeof(attrw) / sizeof(attrw[0]), mesh);
+	simplifyAttributes(attrs, attrw, sizeof(attrw) / sizeof(attrw[0]), mesh, update ? 1.f : 0.f);
 
 	std::vector<unsigned char> locks;
-	if (attributes && permissive)
+	if (permissive)
 		simplifyProtect(locks, mesh, presplit_vertices);
 
-	if (attributes)
+	// for now we disable simplify-with-update if the mesh has a second texture coordinate since we don't currently update it and moving vertices may create UV distortion
+	if (update && !mesh.targets && !getStream(mesh, cgltf_attribute_type_texcoord, 1))
+	{
+		indices = mesh.indices;
+		indices.resize(meshopt_simplifyWithUpdate(&indices[0], indices.size(), positions->data[0].f, vertex_count, sizeof(Attr),
+		    attrs.data(), sizeof(attrw), attrw, sizeof(attrw) / sizeof(attrw[0]), permissive ? locks.data() : NULL, target_index_count, target_error, options));
+		simplifyUpdate(attrs, sizeof(attrw) / sizeof(attrw[0]), mesh);
+	}
+	else
 		indices.resize(meshopt_simplifyWithAttributes(&indices[0], &mesh.indices[0], mesh.indices.size(), positions->data[0].f, vertex_count, sizeof(Attr),
 		    attrs.data(), sizeof(attrw), attrw, sizeof(attrw) / sizeof(attrw[0]), permissive ? locks.data() : NULL, target_index_count, target_error, options));
-	else
-		indices.resize(meshopt_simplify(&indices[0], &mesh.indices[0], mesh.indices.size(), positions->data[0].f, vertex_count, sizeof(Attr), target_index_count, target_error, options));
 
 	mesh.indices.swap(indices);
 
@@ -1158,13 +1336,12 @@ void processMesh(Mesh& mesh, const Settings& settings)
 
 	case cgltf_primitive_type_triangles:
 		filterBones(mesh);
-		reindexMesh(mesh, settings.quantize && !settings.nrm_float);
+		reindexMesh(mesh, settings);
 		filterTriangles(mesh);
 
 		if (settings.simplify_ratio < 1)
 		{
-			float error = settings.simplify_scaled ? settings.simplify_error / mesh.quality : settings.simplify_error;
-			simplifyMesh(mesh, settings.simplify_ratio, error, settings.simplify_attributes, settings.simplify_aggressive, settings.simplify_lock_borders, settings.simplify_permissive);
+			simplifyMesh(mesh, settings.simplify_ratio, settings.simplify_error / mesh.quality, settings.simplify_aggressive, settings.simplify_lock_borders, settings.simplify_permissive, settings.simplify_update);
 		}
 
 		optimizeMesh(mesh, settings.compressmore);
@@ -1208,8 +1385,8 @@ void computeMeshQuality(std::vector<Mesh>& meshes)
 			node_maxscale = std::max(node_maxscale, getScale(transform));
 		}
 
-		for (const Transform& xf : mesh.instances)
-			node_maxscale = std::max(node_maxscale, getScale(xf.data));
+		for (const Instance& xf : mesh.instances)
+			node_maxscale = std::max(node_maxscale, getScale(xf.transform));
 
 		scales[i] = node_maxscale == 0.f ? geometry_scale : node_maxscale * geometry_scale;
 		maxscale = std::max(maxscale, scales[i]);
@@ -1219,7 +1396,7 @@ void computeMeshQuality(std::vector<Mesh>& meshes)
 		meshes[i].quality = (scales[i] == 0.f || maxscale == 0.f) ? 1.f : scales[i] / maxscale;
 }
 
-bool hasAlpha(const Mesh& mesh)
+bool hasVertexAlpha(const Mesh& mesh)
 {
 	const Stream* color = getStream(const_cast<Mesh&>(mesh), cgltf_attribute_type_color);
 	if (!color)
@@ -1227,6 +1404,15 @@ bool hasAlpha(const Mesh& mesh)
 
 	for (size_t i = 0; i < color->data.size(); ++i)
 		if (color->data[i].f[3] < 1.f)
+			return true;
+
+	return false;
+}
+
+bool hasInstanceAlpha(const std::vector<Instance>& instances)
+{
+	for (const Instance& instance : instances)
+		if (instance.color[3] < 1.f)
 			return true;
 
 	return false;

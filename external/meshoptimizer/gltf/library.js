@@ -157,7 +157,6 @@ var wasi = {
 		var heap = getHeap();
 		var name = getString(heap.buffer, path, path_len);
 
-		var heap = getHeap();
 		for (var i = 0; i < 64; ++i) heap.setUint8(buf + i, 0);
 
 		heap.setUint8(buf + 16, name == '.' ? 3 : 4);
@@ -218,14 +217,14 @@ var wasi = {
 				break;
 
 			case 2:
-				newposition = fds[fd].size;
+				newposition = fds[fd].size + offset;
 				break;
 
 			default:
 				return WASI_EINVAL;
 		}
 
-		if (newposition > fds[fd].size) {
+		if (newposition < 0 || newposition > fds[fd].size) {
 			return WASI_EINVAL;
 		}
 
@@ -345,28 +344,12 @@ function uploadArgv(argv) {
 }
 
 // Automatic initialization for node.js
-if (typeof window === 'undefined' && typeof process !== 'undefined' && process.release.name === 'node') {
-	var fs = require('fs');
-	var util = require('util');
-
-	// Node versions before v12 don't support TextEncoder/TextDecoder natively, but util. provides compatible replacements
-	if (typeof TextEncoder === 'undefined' && typeof TextDecoder === 'undefined') {
-		TextEncoder = util.TextEncoder;
-		TextDecoder = util.TextDecoder;
-	}
-
-	init(fs.readFileSync(__dirname + '/library.wasm'));
+if (typeof process !== 'undefined' && process.release && process.release.name === 'node') {
+	init(
+		import('node:fs').then(function (fs) {
+			return fs.readFileSync(new URL('./library.wasm', import.meta.url));
+		})
+	);
 }
 
-// UMD
-(function (root, factory) {
-	if (typeof define === 'function' && define.amd) {
-		define([], factory);
-	} else if (typeof module === 'object' && module.exports) {
-		module.exports = factory();
-	} else {
-		root.gltfpack = factory();
-	}
-})(typeof self !== 'undefined' ? self : this, function () {
-	return { init: init, pack: pack };
-});
+export { init, pack };
