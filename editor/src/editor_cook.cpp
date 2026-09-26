@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 
 #ifdef _WIN32
@@ -63,6 +65,28 @@ void EditorApp::CookToPak() {
 		tempTourPath = tmp.generic_string();
 		Log("Cook: temp tour saved '" + tempTourPath + "' (" +
 			std::to_string(m_historyCursor) + " commands).");
+		// Definition fingerprint (the scene artifact's cache source
+		// key): the temp tour bytes with the volatile "//Last
+		// modified:" header line stripped — deterministic per
+		// definition CONTENT, so identical states hit the cache.
+		m_cookDefHash.clear();
+		std::ifstream tf(tempTourPath, std::ios::binary);
+		if (tf) {
+			std::string text((std::istreambuf_iterator<char>(tf)),
+				std::istreambuf_iterator<char>());
+			// Hash with the timestamp line removed.
+			std::string scan = text;
+			const size_t lineAt = scan.find("//Last modified:");
+			if (lineAt != std::string::npos) {
+				const size_t lineEnd = scan.find('\n', lineAt);
+				if (lineEnd != std::string::npos)
+					scan.erase(lineAt, lineEnd - lineAt + 1);
+				else
+					scan.erase(lineAt);
+			}
+			m_cookDefHash = smvk::cache::HashBytes(scan.data(),
+				scan.size());
+		}
 	}
 	// contentDir = absolute path to the content root (parent of "content/").
 	// For F:\content\models\... -> F:\
@@ -352,6 +376,14 @@ void EditorApp::PollCookProcess() {
 			Log(line);
 	}
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
+	// WYSIWYG: display the cooked pak (main thread — Vulkan loads).
+	// The pak write + GI stage completed before the process exited, so
+	// the bytes on disk are final; the preview keeps the edit source
+	// one click away (File > Back to edit source).
+	if (r.ok && m_previewAfterCook && !m_cook.outPak.empty()) {
+		Log("WYSIWYG: opening the cooked result for preview...");
+		PreviewCookedResult(m_cook.outPak);
+	}
 	// The cook dialog shows its own progress; close it on finish
 	// (DrawCookDialog consumes the flag inside the begin block).
 	m_cookJustFinished = true;

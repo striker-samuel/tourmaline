@@ -268,6 +268,10 @@ void EditorApp::UpdateModalInput() {
 		{ GLFW_KEY_S, kModalCtrl | kModalAlt, kScopeGlobal,
 			&EditorApp::ModalSaveIncremental, "tour: save incremental",
 			"Ctrl+Alt+S" },
+		{ GLFW_KEY_E, kModalCtrl | kModalAlt, kScopeGlobal,
+			&EditorApp::ModalBackToEditSource,
+			"wysiwyg: back to edit source (cooked preview)",
+			"Ctrl+Alt+E" },
 	};
 
 	// Publish the registry for the file-scope accessors (first frame;
@@ -328,6 +332,14 @@ void EditorApp::ModalVpLayoutToggle() {
 		m_activeVp = 0;
 }
 void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
+
+void EditorApp::ModalBackToEditSource() {
+	// Only meaningful while displaying a cooked preview (the banner
+	// states it); a no-op otherwise (same key doubles as gizmo-rotate
+	// E, but the exact-mods match keeps the rows disjoint).
+	if (!m_editSourceGltf.empty())
+		ReturnToEditSource();
+}
 
 void EditorApp::ModalDelete() {
 	// The placement graph window owns Del while its hierarchy is

@@ -280,6 +280,8 @@ void EditorApp::LoadPrefs() {
 				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
 			else if (section == "scratch" && key == "dir")
 				m_scratchRoot = val;
+			else if (section == "wysiwyg" && key == "preview")
+				m_previewAfterCook = (val == "1" || val == "true");
 		}
 		catch (...) {
 			// corrupt value: keep the default
@@ -299,6 +301,7 @@ void EditorApp::SavePrefs() {
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_scratchRoot.empty())
 		out << "[scratch]\ndir=" << m_scratchRoot << "\n";
+	out << "[wysiwyg]\npreview=" << (m_previewAfterCook ? 1 : 0) << "\n";
 }
 
 bool EditorApp::OpenCacheDb() {
@@ -332,6 +335,31 @@ bool EditorApp::OpenCacheDb() {
 	const uint64_t count = m_cacheDb.Count(cerr);
 	Log("Scratch disk: " + root + " (cache.db ready, "
 		+ std::to_string(count) + " artifact(s) registered)");
+	// Editor VFS: register the scratch class paks (the cooked-resource
+	// overlay the display path resolves through). ONLY tour + scratch
+	// mount here — never the release content tree (editor -> release
+	// is one-way; reading content/paks back would feed stale cooked
+	// content into authoring). The scene class mounts on preview
+	// (MountScratchSceneBackend); these are the resource classes.
+	for (const char* klass : { "texture", "mesh", "material", "light",
+			"camera" }) {
+		std::vector<uint8_t> img;
+		std::string rerr;
+		if (!m_store->ReadPakImage(klass, img, rerr))
+			continue; // no artifacts of this class yet
+		auto image = std::make_shared<const std::vector<uint8_t>>(
+			std::move(img));
+		std::string berr;
+		auto backend = smvk::PakBackend::Open(image,
+			std::string("scratch-") + klass, berr);
+		if (!backend)
+			continue; // stale/corrupt class pak: cache, disposable
+		const std::string name = std::string("scratch-") + klass;
+		m_editorVfs.Unmount(name);
+		m_editorVfs.Mount(backend, 20, name);
+		Log("Editor VFS: '" + name + "' registered (cooked "
+			+ std::string(klass) + " artifacts).");
+	}
 	return true;
 }
 
@@ -339,11 +367,13 @@ void EditorApp::CloseScene() {
 	if (!m_world)
 		return;
 	SavePrefs();
+	m_editSourceGltf.clear();
+	m_previewPakPath.clear();
 	m_world.reset();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
 	m_pakPath.clear();
-	m_pakImage.clear();
+	m_pakImage.reset();
 	m_pakReader.reset();
 	m_pakScenes.clear();
 	m_pakSceneIndex = 0;
@@ -433,6 +463,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_textureStreamer.reset();
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
+	// Fresh edit context: any prior cooked preview relationship ends.
+	m_editSourceGltf.clear();
+	m_previewPakPath.clear();
 	if (m_textureStreamingEnabled && m_texMode != TexMode::Full) {
 		smvk::TextureStreamerConfig streamCfg;
 		streamCfg.budgetBytes = 256ull * 1024 * 1024;
@@ -560,7 +593,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_gltfModel = std::move(model);
 	m_hasGltfModel = haveModel; // sourceless: no model, AABB picking
 	m_pakPath.clear();
-	m_pakImage.clear();
+	m_pakImage.reset();
 	m_pakReader.reset();
 	m_pakScenes.clear();
 	m_pakSceneIndex = 0;
@@ -673,13 +706,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 
 bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	uint32_t sceneIndex) {
-	// Cooked .pak: same path as App's SceneRenderer (PakReader +
-	// LoadClusterFromPak + Resolve). Pak textures upload fully at load,
-	// so the glTF texture streamer is dropped. Picking falls back to
-	// AABB (no glTF model kept); tour replay is skipped (tours are
-	// authored against the source glTF, not the cooked pak).
-	// The image + parsed reader stay members (never re-parsed per frame:
-	// Open decompresses).
+	// Host-file pak open (manual inspection). The bytes are read ONCE
+	// into a shared image; the display core below never touches the
+	// file again.
 	std::ifstream f(path, std::ios::binary | std::ios::ate);
 	if (!f) {
 		Log("Failed to open pak: " + path);
@@ -691,22 +720,37 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 		return false;
 	}
 	f.seekg(0);
-	m_pakImage.assign(static_cast<size_t>(end), 0);
-	if (!f.read(reinterpret_cast<char*>(m_pakImage.data()),
-			static_cast<std::streamsize>(m_pakImage.size()))) {
+	auto image = std::make_shared<std::vector<uint8_t>>(
+		static_cast<size_t>(end), 0);
+	if (!f.read(reinterpret_cast<char*>(image->data()),
+			static_cast<std::streamsize>(image->size()))) {
 		Log("Pak read failed: " + path);
-		m_pakImage.clear();
 		return false;
 	}
+	return LoadPakFromImage(std::move(image), path, sceneIndex);
+}
+
+bool EditorApp::LoadPakFromImage(
+	std::shared_ptr<std::vector<uint8_t>> image,
+	const std::string& displayPath, uint32_t sceneIndex) {
+	// Cooked .pak display core: same path as App's SceneRenderer
+	// (PakReader + LoadClusterFromPak + Resolve; the renderer renders a
+	// SCENE, index 0 by default — --pak parity). Pak textures upload
+	// fully at load, so the glTF texture streamer is dropped. Picking
+	// falls back to AABB (no glTF model kept); tour replay is skipped
+	// (tours are authored against the source glTF, not the cooked
+	// pak). The image + parsed reader stay members (never re-parsed
+	// per frame: Open decompresses).
+	m_pakImage = std::move(image);
 	m_pakReader.reset();
 	m_pakScenes.clear();
 	{
 		std::string pakErr;
 		m_pakReader = smvk::PakReader::Open(
-			std::span<const uint8_t>(m_pakImage), pakErr);
+			std::span<const uint8_t>(*m_pakImage), pakErr);
 		if (!m_pakReader) {
 			Log("Pak parse failed (" + pakErr + ")");
-			m_pakImage.clear();
+			m_pakImage.reset();
 			return false;
 		}
 	}
@@ -717,7 +761,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 		if (m_pakScenes.empty()) {
 			Log("Pak has no loadable scenes" +
 				std::string(lerr.empty() ? "" : (": " + lerr)));
-			m_pakImage.clear();
+			m_pakImage.reset();
 			m_pakReader.reset();
 			return false;
 		}
@@ -725,7 +769,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 			Log("Pak scene index " + std::to_string(sceneIndex) +
 				" out of range (" + std::to_string(m_pakScenes.size()) +
 				" scenes)");
-			m_pakImage.clear();
+			m_pakImage.reset();
 			m_pakReader.reset();
 			m_pakScenes.clear();
 			return false;
@@ -743,6 +787,10 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	m_textureStreamer.reset(); // pak path owns its textures; no streaming
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
+	// Plain pak opens carry no edit-source relationship (only the
+	// WYSIWYG preview flow restores it after the open).
+	m_editSourceGltf.clear();
+	m_previewPakPath.clear();
 	m_world = std::make_unique<smvk::World>();
 	try {
 		m_world->LoadClusterFromPak(*m_context, *m_pakReader, sceneIndex);
@@ -760,11 +808,11 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	// applies and is logged here).
 	RebuildTexHandleMap();
 
-	m_pakPath = path;
+	m_pakPath = displayPath;
 	// Keep the scene identity pointed at the pak so TourPath()/cook panel
 	// stay coherent, but mark it as cooked: no glTF picking, no tour.
-	m_gltfPath = path;
-	m_gltfHostPath = path;
+	m_gltfPath = displayPath;
+	m_gltfHostPath = displayPath;
 	m_tourPath = TourPath();
 	m_vfsRoot.clear();
 	m_vfsSel.clear();
@@ -800,9 +848,9 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	ClearSglmLayers(); // dropped before the sibling-atlas probe below
 
 	// Baked lightmap atlas next to the pak: content/gi/<stem>.sglm.
-	TryLoadSiblingSglm(path);
+	TryLoadSiblingSglm(displayPath);
 	// Convex GI volume sidecars (probes-only pivot preview data).
-	TryLoadCvolumes(path);
+	TryLoadCvolumes(displayPath);
 	RebuildCookedLights(); // census + seeds the viewport sun from the pak
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
@@ -818,13 +866,111 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	char buf[512];
 	std::snprintf(buf, sizeof(buf),
 		"Loaded pak '%s' scene[%u] (entries=%zu nodes=%zu meshes=%zu materials=%zu)%s",
-		path.c_str(), sceneIndex, entryCount,
+		displayPath.c_str(), sceneIndex, entryCount,
 		m_world->scene.hierarchy.size(),
 		m_world->meshLocations.size(), m_world->materialLocations.size(),
 		m_hasSglm ? " + sglm atlas" : " (no sglm atlas)");
 	Log(buf);
 	Log("Note: pak is read-only in the editor (edits/tour apply to the source glTF).");
 	return true;
+}
+
+void EditorApp::MountScratchSceneBackend() {
+	// Registers the scratch scene pak image as a PakBackend on the
+	// editor VFS (replacing the previous "scratch-scene"). ONLY tour +
+	// scratch ever mount here — the release content tree (content/)
+	// with its paks is a FORWARD output and is never read back.
+	m_editorVfs.Unmount("scratch-scene");
+	if (!m_pakImage || m_pakImage->empty())
+		return;
+	std::string err;
+	auto backend = smvk::PakBackend::Open(
+		std::shared_ptr<const std::vector<uint8_t>>(m_pakImage),
+		"scratch-scene", err);
+	if (!backend) {
+		Log("Editor VFS: scratch scene registration failed: " + err);
+		return;
+	}
+	m_editorVfs.Mount(backend, 10, "scratch-scene");
+	Log("Editor VFS: scratch scene registered (textures served from the scratch copy).");
+}
+
+void EditorApp::PreviewCookedResult(const std::string& pakPath) {
+	// WYSIWYG: display the COOKED scene — the scratch copy of the cook,
+	// NEVER the release pak (editor -> release is one-way forwards;
+	// reading content/paks back would feed stale cooked content into
+	// authoring). The pak bytes stage into the artifact store (class
+	// "scene", keyed by the definition fingerprint), and the preview
+	// loads scene 0 from the scratch image — the renderer renders a
+	// SCENE, the pak is its blob backing (--pak parity).
+	const std::string source = m_gltfHostPath;
+	const bool fromEdit = !source.empty() && !HasPakExtension(source);
+	// 1. Stage the cooked pak into the scratch (cache bookkeeping).
+	std::string stem = std::filesystem::path(pakPath).stem().string();
+	std::string serr;
+	bool staged = false;
+	if (m_store && !m_cookDefHash.empty()) {
+		std::ifstream f(pakPath, std::ios::binary | std::ios::ate);
+		if (f) {
+			const auto end = f.tellg();
+			f.seekg(0);
+			auto image = std::make_shared<std::vector<uint8_t>>(
+				static_cast<size_t>(end), 0);
+			if (f.read(reinterpret_cast<char*>(image->data()),
+					static_cast<std::streamsize>(image->size()))) {
+				if (m_store->Put("scene", stem,
+						std::span<const uint8_t>(*image), m_cookDefHash,
+						"{\"pak\":\"" + pakPath + "\"}", serr)
+					&& m_store->Flush(serr)) {
+					staged = true;
+					Log("Scratch: cooked scene staged + flushed ("
+						+ std::to_string(image->size()) + " B, uri '"
+						+ stem + "').");
+				}
+			}
+		}
+	}
+	// 2. Display from the SCRATCH copy (tour + scratch only — no
+	// release readback).
+	std::vector<uint8_t> scratchImage;
+	if (!m_store || !m_store->ReadPakImage("scene", scratchImage, serr)) {
+		Log("WYSIWYG preview needs the scratch cache (File > Scratch "
+			"disk...): " + serr);
+		return;
+	}
+	auto image = std::make_shared<std::vector<uint8_t>>(
+		std::move(scratchImage));
+	// The GI sidecars (sglm/cvols) are loose files baked next to the
+	// release pak by THIS cook — current outputs, not stale readback;
+	// displayPath carries the stem for their lookup.
+	if (!LoadPakFromImage(image, pakPath, 0))
+		return;
+	MountScratchSceneBackend();
+	if (fromEdit) {
+		m_editSourceGltf = source;
+		m_previewPakPath = pakPath;
+		Log("WYSIWYG: viewing the cooked scene (scratch copy) — "
+			"File > Back to edit source (Ctrl+Alt+E) to continue "
+			"editing.");
+	}
+	else {
+		Log("WYSIWYG: cooked scene staged"
+			+ std::string(staged ? "" : " (definition hash missing)")
+			+ "; displaying the scratch copy.");
+	}
+}
+
+void EditorApp::ReturnToEditSource() {
+	if (m_editSourceGltf.empty())
+		return;
+	const std::string source = m_editSourceGltf;
+	// LoadGltfIntoWorld clears the preview state; the tour replay
+	// restores the full edit stack (selection/gizmos/history).
+	if (!OpenScene(source)) {
+		Log("Back to edit source failed: " + source);
+		return;
+	}
+	Log("Back to editing: " + source);
 }
 
 bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {

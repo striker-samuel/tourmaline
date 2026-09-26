@@ -252,6 +252,11 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
 			ShowCookDialog();
 		}
+		// WYSIWYG: visible only while displaying a cooked preview —
+		// reopens the edit-source glTF (+ tour replay).
+		if (!m_editSourceGltf.empty()
+			&& ImGui::MenuItem("Back to edit source", "Ctrl+Alt+E"))
+			ReturnToEditSource();
 		if (ImGui::MenuItem("Run in App", nullptr, false,
 			!m_runRunning && !RunArgs().empty()))
 			RunInApp();
@@ -3432,6 +3437,15 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 			: ImVec4(0.95f, 0.45f, 0.65f, 1.0f);
 		ImGui::TextColored(modeCol, "-- %s --  %s",
 			EditorModeName(m_mode), modeKeys.c_str());
+		// WYSIWYG banner: the viewport currently displays the COOKED
+		// pak (read-only); the edit source is one click away.
+		if (PreviewingCooked()) {
+			ImGui::PushStyleColor(ImGuiCol_Text,
+				ImVec4(0.55f, 0.95f, 1.0f, 1.0f));
+			ImGui::Text("-- COOKED PREVIEW (WYSIWYG) -- read-only; "
+				"File > Back to edit source (Ctrl+Alt+E)");
+			ImGui::PopStyleColor();
+		}
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
 			ViewModeName(ActiveViewMode()),
 			m_wireframeAll ? " (wire)" : "",
@@ -3931,6 +3945,15 @@ void EditorApp::DrawCookDialog() {
 			"This is the slow stage (minutes on real scenes).");
 
 	ImGui::Separator();
+	if (ImGui::Checkbox("Preview cooked result (WYSIWYG)",
+			&m_previewAfterCook)) {
+		SavePrefs();
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("After the cook finishes, the viewport "
+			"displays the COOKED pak (cooked textures, LODs, "
+			"lightmaps/probes — the world-rendered content App "
+			"runs). 'Back to edit source' returns to editing.");
 	if (m_cookRunning) {
 		ImGui::Text("Cooking... (see Console)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate

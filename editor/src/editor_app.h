@@ -39,6 +39,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Flintbase/flintbase_client.h>
@@ -318,6 +319,12 @@ private:
 		const std::string& tourOverride = {});
 	bool LoadPakIntoWorld(const std::string& path,
 		uint32_t sceneIndex = 0); // cooked pak, GPU world
+	// Core cooked-scene display: the renderer renders a SCENE (the
+	// pak image just backs its blobs); sceneIndex picks it, 0 by
+	// default — App --pak parity. Shared by manual pak opens (host
+	// file) and the WYSIWYG preview (the scratch copy of the cook).
+	bool LoadPakFromImage(std::shared_ptr<std::vector<uint8_t>> image,
+		const std::string& displayPath, uint32_t sceneIndex);
 	bool TryLoadSiblingSglm(const std::string& pakPath); // gi/<stem>.sglm
 	// Convex GI volume sidecars (probes-only pivot): gi/<stem>.cvmanifest
 	// + .cvol next to the opened pak. Builds the preview hulls (AABB
@@ -586,6 +593,7 @@ private:
 	void ModalViewLitShadows();
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
+	void ModalBackToEditSource(); // Ctrl+Alt+E: leave the cooked preview
 	void ModalUndo();
 	void ModalRedo();
 	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
@@ -1349,6 +1357,20 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
+	// ---- WYSIWYG cooked preview (full render-parity loop) ----
+// Cook -> the viewport displays the COOKED pak (the same world-rendered
+// content App runs: cooked textures, LOD chains, meshlets, lightmaps/
+// probes sidecars, synthesized sun). The edit context (source glTF +
+// tour) survives the preview switch: ReturnToEditSource reopens it.
+	std::string m_editSourceGltf; // host path of the source being edited
+	std::string m_previewPakPath; // non-empty = displaying this cooked pak
+	bool m_previewAfterCook = true; // prefs [wysiwyg] preview
+	bool PreviewingCooked() const { return !m_previewPakPath.empty(); }
+	// Loads the cooked pak as the display world, keeping the edit
+	// source link (File > Back to edit source / the overlay banner).
+	void PreviewCookedResult(const std::string& pakPath);
+	// Reopens the edit-source glTF (+ tour replay): back to editing.
+	void ReturnToEditSource();
 	// ---- scratch disk (editor artifact cache) ----
 	// User-personalizable cache root (prefs [scratch] dir; default on
 	// F:\ to keep C: from burning). Holds cache.db (SQLite registry)
@@ -1365,7 +1387,25 @@ private:
 	void DrawScratchDialog(); // File > Scratch disk... modal
 	// ---- cooked pak state (kept alive: PakReader borrows these bytes) ----
 	std::string m_pakPath; // empty when the scene came from glTF
-	std::vector<uint8_t> m_pakImage;
+	// Pak bytes + the editor-VFS registration of the SAME image.
+	std::shared_ptr<std::vector<uint8_t>> m_pakImage;
+	// Editor VFS: the overlay the display path resolves through.
+	// ONLY tour + scratch ever mount here — NEVER the release content
+	// tree: editor -> release is one-way (forwards). The release pak
+	// (content/paks) is a pure output; reading it back would feed
+	// stale cooked content into authoring. The WYSIWYG preview
+	// therefore displays the SCRATCH copy of the cook (the artifact
+	// store's scene pak), registered as "scratch-scene" @10; the
+	// artifact store's per-class paks mount as "scratch-<class>" @20.
+	smvk::OverlayVfs m_editorVfs;
+	// Registers the scratch scene pak image (m_pakImage) as a
+	// PakBackend on the editor VFS under "scratch-scene" (replacing
+	// the previous registration).
+	void MountScratchSceneBackend();
+	// Cook definition fingerprint (the scene artifact's cache "source"
+	// key): the temp tour bytes with the volatile "//Last modified:"
+	// header line stripped — deterministic per definition content.
+	std::string m_cookDefHash;
 	// Parsed once per pak load (never per frame: Open decompresses).
 	std::optional<smvk::PakReader> m_pakReader;
 	std::vector<smvk::PakSceneInfo> m_pakScenes;
