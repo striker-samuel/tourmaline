@@ -2318,6 +2318,10 @@ bool SceneRenderer::Initialize() {
 
 		// ImGui overlay â€“ init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
+		// HOSTED PREVIEW: never create the overlay — the host (editor)
+		// owns the process's single ImGui context; a second context
+		// here would corrupt the host's UI.
+		if (!IsHosted()) {
 		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc imguiDesc{};
 		imguiDesc.fontPath = UI_FONT_PATH;
@@ -2332,9 +2336,13 @@ bool SceneRenderer::Initialize() {
 			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
 			imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		}
+		} else {
+			std::cerr << "[SceneRenderer] hosted preview: UI overlay "
+				"skipped (host owns ImGui)\n";
+		}
 
 		return true;
-	};
+};
 
 void SceneRenderer::Shutdown() {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.

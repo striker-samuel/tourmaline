@@ -30,6 +30,11 @@ struct Framebuffer {
 class Swapchain {
 public:
     Swapchain(ResourceManager& ctx, SDL_Window* window);
+    // HOSTED render target: an offscreen color image instead of a
+    // window surface (external composition — see VulkanSwapchain's
+    // hosted ctor). Acquire/submit run unchanged; "present" hands the
+    // image to the compositor (SHADER_READ) and never presents.
+    Swapchain(ResourceManager& ctx, Extent2D hostedExtent, Format colorFormat);
     ~Swapchain();
 
     Swapchain(const Swapchain&) = delete;
@@ -68,6 +73,9 @@ public:
     // split overlay. False until a full frame has retired.
     double GetGpuFrameMs() const;
     bool HasGpuTiming() const;
+    // Hosted-target view (stable handle, registered like a swapchain
+    // view) for external bindless composition. Empty when windowed.
+    ImageViewHandle HostedViewHandle() const;
     // Last vkQueuePresentKHR wall time (ms): FIFO VSync throttle, i.e.
     // wait rather than CPU work.
     double GetPresentWaitMs() const;

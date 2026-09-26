@@ -793,6 +793,28 @@ class SceneRenderer : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 public:
 	void Configure(SceneDesc scene, ScenePassConfig passes);
+
+	// HOSTED drive API (the editor embeds this renderer offscreen —
+	// App::RequestHostedBoot + the WYSIWYG compose pass). Public
+	// wrappers over the protected virtuals with the hosted invariant
+	// enforced at each step; windowed runs keep using Run().
+	bool HostedInitialize() {
+		if (!IsHosted())
+			return false;
+		return Initialize();
+	}
+	void HostedDrawFrame() {
+		if (!IsHosted())
+			return;
+		UpdateDeltaTime();
+		DrawFrame();
+	}
+	void HostedShutdown() {
+		if (!IsHosted())
+			return;
+		Shutdown();
+	}
+
 	const SceneDesc& GetScene() const { return m_scene; }
 	ScenePassConfig& Passes() { return m_passes; }
 	// Debug: skip the cooked pak and import the scene straight from the

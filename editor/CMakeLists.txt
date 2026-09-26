@@ -24,6 +24,7 @@ target_link_libraries(Editor
         engine
         gltf_import
         artifact_cache
+        appcore
         KTX::ktx
         OptickCore
 )
@@ -59,3 +60,20 @@ add_custom_command(TARGET Editor POST_BUILD
             "$<TARGET_FILE_DIR:Editor>/content/shaders"
     COMMENT "Syncing compiled shaders next to Editor.exe"
 )
+
+# Engine-shipped shaders (WYSIWYG compose blit lives in
+# engine/resources/shaders): same staging as App — engine_resources/
+# shaders next to the exe. The hosted SceneRenderer loads the scene
+# set from content/shaders; the editor's OWN passes (compose) load
+# from engine_resources/shaders.
+if(TARGET EngineRes_shaders)
+    add_dependencies(Editor EngineRes_shaders)
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:Editor>/engine_resources/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_BINARY_DIR}/engine_resources/shaders"
+                "$<TARGET_FILE_DIR:Editor>/engine_resources/shaders"
+        COMMENT "Syncing engine-shipped shaders next to Editor.exe"
+    )
+endif()

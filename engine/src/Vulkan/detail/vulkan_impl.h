@@ -873,6 +873,26 @@ namespace smvk {
 			VulkanResourceManager& context
 			, SDL_Window* window
 		);
+		// HOSTED render target: an offscreen color image instead of a
+		// window surface. Acquire/submit run unchanged (frame command
+		// pools, timeline retirement); "present" transitions the target
+		// to SHADER_READ and skips the queue present entirely — the
+		// image is consumed by an external compositor (the editor's
+		// WYSIWYG viewport). One image, one view, fixed extent
+		// (the compositor scales; Recreate is a no-op).
+		VulkanSwapchain(
+			VulkanResourceManager& context
+			, VkExtent2D hostedExtent
+			, Format colorFormat
+		);
+		bool hosted() const { return hosted_; }
+		// Bindless-composition access: the stable handle of the hosted
+		// target view (registered like a swapchain view so rendergraph
+		// resolves work unchanged).
+		ImageViewHandle HostedViewHandle() const {
+			return imageViewHandles_.empty() ? ImageViewHandle{}
+				: imageViewHandles_[0];
+		}
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 		VulkanSwapchain(VulkanSwapchain&&) = delete;
@@ -934,6 +954,13 @@ namespace smvk {
 		SDL_Window* window_ = nullptr;
 		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
 
+		// Hosted render-target mode (see the hosted ctor): the offscreen
+		// color image backing the "surface". Holder-owned through the
+		// context (in-place recreate support); raw views live in
+		// imageViews_ exactly like swapchain views.
+		bool hosted_ = false;
+		Holder<ImageHandle> hostedImage_;
+
 		Format surfaceFormat{};
 		Format depthFormat{};
 
@@ -957,6 +984,11 @@ namespace smvk {
 		uint64_t asyncC2GValue_[MAX_FRAMES_IN_FLIGHT] = {};
 		bool asyncSplitReady_[MAX_FRAMES_IN_FLIGHT] = {};
 		bool EnsureAsyncSplit(uint32_t flight); // false = no dedicated compute
+		// Shared frame-command setup (windowed + hosted ctors): pool
+		// per flight on the given graphics family.
+		void InitFrameCommands(uint32_t graphicsFamily);
+		// Hosted-mode "surface": the single offscreen color image.
+		void CreateHostedImage();
 #pragma endregion
 
 		bool framebufferResized = false;

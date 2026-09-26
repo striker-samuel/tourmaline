@@ -1359,18 +1359,44 @@ private:
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
 	// ---- WYSIWYG cooked preview (full render-parity loop) ----
-// Cook -> the viewport displays the COOKED pak (the same world-rendered
-// content App runs: cooked textures, LOD chains, meshlets, lightmaps/
-// probes sidecars, synthesized sun). The edit context (source glTF +
-// tour) survives the preview switch: ReturnToEditSource reopens it.
+// Cook -> the viewports render through a HOSTED app::SceneRenderer
+// (the classic world-rendered pattern, offscreen render target
+// composed into the viewport rects). The editor drives the hosted
+// frame between its own frames (device-idle boundaries — the two
+// renderers share ONE Vulkan context and its per-frame slots). The
+// edit world (source glTF + tour) STAYS LOADED underneath: outliner,
+// inspector and gizmos keep working; ReturnToEditSource stops the
+// hosted renderer and the editor scene passes come back.
 	std::string m_editSourceGltf; // host path of the source being edited
-	std::string m_previewPakPath; // non-empty = displaying this cooked pak
+	std::string m_previewPakPath; // non-empty = WYSIWYG preview active
 	bool m_previewAfterCook = true; // prefs [wysiwyg] preview
 	bool PreviewingCooked() const { return !m_previewPakPath.empty(); }
-	// Loads the cooked pak as the display world, keeping the edit
-	// source link (File > Back to edit source / the overlay banner).
+	// The hosted SceneRenderer instance (appcore). Null when off.
+	std::unique_ptr<app::SceneRenderer> m_wysiwyg;
+	// SceneDesc string storage (the struct holds const char* — the
+	// strings must outlive the renderer instance).
+	std::string m_wysiwygPakPath;
+	std::string m_wysiwygSceneId;
+	// Compose pass (editor_render.cpp): fullscreen blit of the hosted
+	// target into a viewport rect. Bindless slot over the hosted view.
+	smvk::ShaderProgram m_wysiwygProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygFsModule;
+	smvk::Holder<smvk::BindlessImageHandle> m_wysiwygBindless;
+	uint32_t m_wysiwygBindlessIndex = UINT32_MAX;
+	uint32_t m_wysiwygSamplerIndex = UINT32_MAX;
+	// Launch/stop the hosted renderer against the scratch scene pak.
+	// Launch keeps the edit world loaded; false + log on failure.
+	bool LaunchWysiwyg(const std::string& pakPath);
+	void StopWysiwyg();
+	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
+	// Draws the hosted target into one viewport rect (compose pass).
+	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
+		const ViewportRect& rect);
+	// Stages the cooked pak into the scratch (cache registry) and
+	// launches the hosted preview; keeps the edit world loaded.
 	void PreviewCookedResult(const std::string& pakPath);
-	// Reopens the edit-source glTF (+ tour replay): back to editing.
+	// Stops the hosted preview: back to editing (world already loaded).
 	void ReturnToEditSource();
 	// ---- scratch disk (editor artifact cache) ----
 	// User-personalizable cache root (prefs [scratch] dir; default on
@@ -1402,10 +1428,6 @@ private:
 	// store's scene pak), registered as "scratch-scene" @10; the
 	// artifact store's per-class paks mount as "scratch-<class>" @20.
 	smvk::OverlayVfs m_editorVfs;
-	// Registers the scratch scene pak image (m_pakImage) as a
-	// PakBackend on the editor VFS under "scratch-scene" (replacing
-	// the previous registration).
-	void MountScratchSceneBackend();
 	// Cook definition fingerprint (the scene artifact's cache "source"
 	// key): the temp tour bytes with the volatile "//Last modified:"
 	// header line stripped — deterministic per definition content.

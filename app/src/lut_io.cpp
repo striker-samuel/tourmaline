@@ -1,5 +1,11 @@
+// STATIC stb linkage: the symbols are internal to this TU so appcore
+// (shared by App.exe and the Editor) never collides with consumers
+// that compile their own stb_image implementation (the editor's
+// branding/logo path, lm_png).
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "../vendor/stb_image.h"
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../vendor/stb_image_write.h"
 

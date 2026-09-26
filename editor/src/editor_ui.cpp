@@ -858,15 +858,15 @@ bool EditorApp::PakSelected() const {
 }
 
 void EditorApp::DrawOutliner() {
+	// DEPRECATED: the cooked-VFS inspection tab (pak browsing +
+	// "in pak" orange rows) is gone — the WYSIWYG hosted preview
+	// (App-parity SceneRenderer over the scratch scene pak) replaced
+	// cooked-content inspection in the editor; tools/pak_browser.py
+	// remains the standalone pak inspector.
 	if (ImGui::BeginTabBar("##outlinerTabs")) {
 		if (ImGui::BeginTabItem("Scene")) {
 			m_outlinerTab = 0;
 			DrawSceneOutliner();
-			ImGui::EndTabItem();
-		}
-		if (ImGui::BeginTabItem("VFS")) {
-			m_outlinerTab = 1;
-			DrawVfsOutliner();
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -3437,13 +3437,14 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 			: ImVec4(0.95f, 0.45f, 0.65f, 1.0f);
 		ImGui::TextColored(modeCol, "-- %s --  %s",
 			EditorModeName(m_mode), modeKeys.c_str());
-		// WYSIWYG banner: the viewport currently displays the COOKED
-		// pak (read-only); the edit source is one click away.
+		// WYSIWYG banner: the viewports render through the HOSTED
+		// app::SceneRenderer (App parity) over the scratch copy of the
+		// cook; the edit world stays loaded underneath.
 		if (PreviewingCooked()) {
 			ImGui::PushStyleColor(ImGuiCol_Text,
 				ImVec4(0.55f, 0.95f, 1.0f, 1.0f));
-			ImGui::Text("-- COOKED PREVIEW (WYSIWYG) -- read-only; "
-				"File > Back to edit source (Ctrl+Alt+E)");
+			ImGui::Text("-- WYSIWYG (hosted SceneRenderer) -- "
+				"App-parity view; Ctrl+Alt+E back to editing");
 			ImGui::PopStyleColor();
 		}
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
@@ -3950,10 +3951,11 @@ void EditorApp::DrawCookDialog() {
 		SavePrefs();
 	}
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("After the cook finishes, the viewport "
-			"displays the COOKED pak (cooked textures, LODs, "
-			"lightmaps/probes — the world-rendered content App "
-			"runs). 'Back to edit source' returns to editing.");
+		ImGui::SetTooltip("After the cook finishes, a HOSTED "
+			"app::SceneRenderer (App parity: PBR, GI, cubemaps, post) "
+			"renders the scratch copy of the cook into the viewports.\n"
+			"The edit world stays loaded; Ctrl+Alt+E returns to "
+			"editing.");
 	if (m_cookRunning) {
 		ImGui::Text("Cooking... (see Console)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate

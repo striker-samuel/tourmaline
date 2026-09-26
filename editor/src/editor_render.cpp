@@ -1754,7 +1754,12 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	}
 
 	m_rendergraph->NewFrame();
-	if (ActiveViewMode() == ViewMode::LitShadows)
+	// WYSIWYG hosted preview: the viewports show the hosted
+	// SceneRenderer's target (compose pass); the editor's scene/gizmo
+	// passes pause while the preview runs (the edit world stays
+	// loaded — outliner/inspector/commands keep working).
+	const bool wysiwygPreview = PreviewingCooked() && m_wysiwyg != nullptr;
+	if (!wysiwygPreview && ActiveViewMode() == ViewMode::LitShadows)
 		RecordShadowPass(0);
 	// Window background: the viewport passes cover only their rects, so
 	// clear the whole window first (the dark chrome color shows through
@@ -1771,10 +1776,17 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 				smvk::ClearDepthStencil(0.0f, 0));
 		bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
 	}
-	for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
-		RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
-	RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-	RecordGizmoPass(m_swapViews[fb.imageIndex]);
+	if (wysiwygPreview) {
+		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
+			RecordWysiwygPass(m_swapViews[fb.imageIndex],
+				m_viewports[vpIdx].rect);
+	}
+	else {
+		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
+			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+		RecordInsetPass(m_swapViews[fb.imageIndex], flight);
+		RecordGizmoPass(m_swapViews[fb.imageIndex]);
+	}
 	// One-shot lightmap PNG export: renders the offscreen target this
 	// frame, then reads it back after the submit (button in Bake panel).
 	const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
@@ -1808,6 +1820,93 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		ExportLightmapPng();
 	}
 	++m_frameCounter;
+}
+
+// ---- WYSIWYG hosted-preview compose (editor_app.h) ----------------------
+// Fullscreen blit of the hosted SceneRenderer's offscreen target into
+// one viewport rect. The hosted renderer already produced the App's
+// final LDR frame (sRGB surface-format target): sampling decodes to
+// linear and the editor's sRGB swap re-encodes — identity passthrough,
+// no tonemap/exposure work here.
+
+bool EditorApp::EnsureWysiwygProgram() {
+	if (m_wysiwygProgram.shaderCount == 2)
+		return true;
+	if (m_wysiwygVsModule.empty() || m_wysiwygFsModule.empty()) {
+		try {
+			// ENGINE-SHIPPED shader set (engine/resources/shaders),
+			// staged as engine_resources/shaders next to the exe —
+			// distinct from the content/shaders scene set.
+			if (m_wysiwygVsModule.empty())
+				m_wysiwygVsModule = m_context->CreateShaderModule(
+					LoadSpv("engine_resources/shaders/wysiwyg.vert.hlsl.spv"),
+					"wysiwygVS");
+			if (m_wysiwygFsModule.empty())
+				m_wysiwygFsModule = m_context->CreateShaderModule(
+					LoadSpv("engine_resources/shaders/wysiwyg.frag.hlsl.spv"),
+					"wysiwygFS");
+		}
+		catch (const std::exception& e) {
+			std::cerr << "[Editor] WYSIWYG shader load failed: "
+				<< e.what() << "\n";
+			return false;
+		}
+	}
+	if (m_wysiwygVsModule.empty() || m_wysiwygFsModule.empty())
+		return false;
+	const smvk::Shader vs{
+		.module = m_wysiwygVsModule, .entryPoint = "mainVS",
+		.stage = smvk::ShaderStage::Vertex };
+	m_wysiwygProgram = { .shaders = { vs,
+		{ .module = m_wysiwygFsModule, .entryPoint = "mainPS",
+		  .stage = smvk::ShaderStage::Fragment } },
+		.shaderCount = 2 };
+	return true;
+}
+
+// HLSL mirror: WysiwygPush in wysiwyg.frag.hlsl (16 bytes).
+struct alignas(16) WysiwygGpuPush {
+	uint32_t textureIndex;
+	uint32_t samplerIndex;
+	float pad[2];
+};
+static_assert(sizeof(WysiwygGpuPush) == 16, "WysiwygPush layout");
+
+void EditorApp::RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
+	const ViewportRect& rect) {
+	if (!EnsureWysiwygProgram())
+		return;
+	if (rect.w <= 0.0f || rect.h <= 0.0f)
+		return;
+	if (m_wysiwygBindlessIndex == UINT32_MAX)
+		return; // hosted target not registered (teardown raced)
+	WysiwygGpuPush wp{};
+	wp.textureIndex = m_wysiwygBindlessIndex;
+	wp.samplerIndex = m_wysiwygSamplerIndex;
+	auto& pass = m_rendergraph->AddPass("WysiwygCompose")
+		.SetOffset(uint32_t(rect.x), uint32_t(rect.y))
+		.SetExtent(smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) })
+		.SetColor({ swapView },
+			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+			smvk::ClearColor(0, 0, 0, 1))
+		.SetDepth(m_depth.logicalView,
+			smvk::AttachmentLoadOp::DontCare,
+			smvk::AttachmentStoreOp::DontCare,
+			smvk::ClearDepthStencil(0.0f, 0));
+	pass.SetRecordingFunc([this, wp](smvk::CommandBuffer& cmd) {
+		cmd.BindRenderPipeline(m_wysiwygProgram,
+			smvk::VertexFormat::Empty,
+			// Depth off for the blit (DontCare attachment + Disabled()).
+			smvk::DepthSettings::Disabled(),
+			smvk::StencilSettings{},
+			smvk::BlendSettings::Opaque(),
+			smvk::MSAASettings{},
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+		cmd.PushConstants(0, sizeof(wp), &wp, smvk::ShaderStage::All);
+		// Fullscreen triangle (SV_VertexID) — the vert's uv covers
+		// [0,1]^2 across the rect.
+		cmd.Draw(3, 1, 0, 0);
+	});
 }
 
 } // namespace editor

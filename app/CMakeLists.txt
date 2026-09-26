@@ -1,12 +1,5 @@
 ﻿project(App)
 
-file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
-    src/*.cpp
-    include/App/*.h
-)
-
-add_executable(App ${APP_SOURCES})
-
 set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
 set(ENGINE_SHADERS_DIR "${CMAKE_SOURCE_DIR}/engine/shaders")
 set(APP_INCLUDE_DIR "${APP_DIR}/include")
@@ -14,6 +7,53 @@ set(APP_INCLUDE_DIR "${APP_DIR}/include")
 message(STATUS "APP_DIR = ${APP_DIR}")
 message(STATUS "ENGINE_SHADERS_DIR = ${ENGINE_SHADERS_DIR}")
 message(STATUS "APP_INCLUDE_DIR = ${APP_INCLUDE_DIR}")
+
+# ---------------------------------------------------------------------------
+# appcore: the SceneRenderer ("classic world rendered pattern") as a
+# static lib shared by App.exe and the Editor. The editor drives a
+# HOSTED instance (offscreen render target composed into its WYSIWYG
+# viewports — App::RequestHostedBoot); App runs it as its own window
+# (Run()). No behavior change for either consumer.
+# ---------------------------------------------------------------------------
+add_library(appcore STATIC
+    src/scene_renderer.cpp
+    src/renderer.cpp
+    src/forwardplus_renderer.cpp
+    src/lut_io.cpp
+)
+
+target_include_directories(appcore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        # stb (lut_io PNG readback).
+        ${CMAKE_SOURCE_DIR}/app/vendor
+)
+
+target_compile_definitions(appcore PRIVATE ENGINE_VULKAN)
+
+if(DS_VIZ_ON)
+    target_compile_definitions(appcore PRIVATE DS_DEBUG_VIZ=1)
+endif()
+
+target_link_libraries(appcore
+    PUBLIC
+        engine
+    PRIVATE
+        gltf_import
+        KTX::ktx
+        OptickCore
+)
+
+# ---------------------------------------------------------------------------
+# App.exe: thin entry + appcore.
+# ---------------------------------------------------------------------------
+add_executable(App src/main.cpp)
+
+set_target_properties(App PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
 
 
 add_custom_command(TARGET App POST_BUILD
@@ -94,6 +134,22 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/engine/resources")
     )
 endif()
 
+# Engine-shipped SHADERS (engine/resources/shaders, compiled by the
+# engine target into ${CMAKE_BINARY_DIR}/engine_resources/shaders):
+# the WYSIWYG compose blit first. Stage next to App.exe like the
+# engine resources above; the ALL target guarantees the spvs exist.
+if(TARGET EngineRes_shaders)
+    add_dependencies(App EngineRes_shaders)
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:App>/engine_resources/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_BINARY_DIR}/engine_resources/shaders"
+                "$<TARGET_FILE_DIR:App>/engine_resources/shaders"
+        COMMENT "Syncing engine-shipped shaders next to App.exe"
+    )
+endif()
+
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -113,17 +169,11 @@ endif()
 
 target_link_libraries(App
     PRIVATE
-        engine
+        appcore
         engine
         gltf_import
         KTX::ktx
         OptickCore
-        #meshoptimizer
-        #imgui_core
-        #imgui_backend_glfw
-        #imgui_backend_vulkan
-        #Vulkan::Vulkan
-        #nlohmann_json
 )
 
 # OptickCore is SHARED: stage its DLL next to App.exe

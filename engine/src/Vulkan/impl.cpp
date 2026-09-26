@@ -7559,14 +7559,101 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Windo
 	//We do pool per frame, because reset pool is faster than reseting indiviual commandBuffers.
 	//Also frame is a good lifetime unit/boundary of course!
 	QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
+	InitFrameCommands(indices.graphicsFamily.value());
+	CreateTimestampPools();
+}
+
+smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context,
+	VkExtent2D hostedExtent, Format colorFormat)
+	: ctx_(context)
+	, window_(nullptr)
+{
+	// Hosted render target (see vulkan_impl.h): no window, no surface,
+	// no swapchain — one offscreen color image the whole acquire/
+	// submit rhythm drives unchanged. Consumed by an external
+	// compositor (the editor's WYSIWYG viewport pass).
+	hosted_ = true;
+	depthFormat = fromVkFormat(findDepthFormat());
+	surfaceFormat = colorFormat;
+	extent_ = hostedExtent;
+	windowWidth = int(hostedExtent.width);
+	windowHeight = int(hostedExtent.height);
+	if (extent_.width == 0 || extent_.height == 0)
+		throw std::runtime_error("hosted swapchain extent is 0");
+	CreateHostedImage();
+	// Modest flight count: the compositor serializes against the
+	// host's frames anyway (device-idle boundaries), so deep
+	// pipelining buys nothing here.
+	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, 3u);
+	CreateDepthResources();
+	CreateSyncObjects();
+	// Graphics family WITHOUT a surface: present support is
+	// meaningless offscreen (findQueueFamilies queries the surface).
+	uint32_t graphicsFamily = UINT32_MAX;
+	{
+		uint32_t count = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count,
+			nullptr);
+		std::vector<VkQueueFamilyProperties> families(count);
+		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count,
+			families.data());
+		for (uint32_t i = 0; i < count; ++i)
+			if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+				graphicsFamily = i;
+				break;
+			}
+		if (graphicsFamily == UINT32_MAX)
+			throw std::runtime_error("no graphics queue family (hosted)");
+	}
+	InitFrameCommands(graphicsFamily);
+	CreateTimestampPools();
+}
+
+void smvk::VulkanSwapchain::CreateHostedImage() {
+	// The "surface": one color image, Holder-owned through the context
+	// (same in-place recreate pattern as the depth image). Usage adds
+	// Sampled so an external compositor reads it bindless.
+	ImageCreateInfo ci{};
+	ci.extent = { extent_.width, extent_.height };
+	ci.format = surfaceFormat;
+	ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+	ci.mipLevels = 1;
+	ci.arrayLayers = 1;
+	ci.name = "hosted target image";
+	hostedImage_ = ctx_.CreateImage(ci, nullptr);
+	if (hostedImage_.empty())
+		throw std::runtime_error("failed to create hosted target image");
+	const auto* image = ctx_.images_.get(hostedImage_);
+	if (!image)
+		throw std::runtime_error("hosted target image stale handle");
+	// Raw image + view land in the same vectors a real swapchain
+	// fills, so every consumer (rendergraph view resolution,
+	// GetCurrentImage barriers, view handles) works unchanged.
+	images_.assign(1, image->vkImage);
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image->vkImage;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = toVkFormat(surfaceFormat);
+	viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	VkImageView view = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
+	imageViews_.assign(1, view);
+	imageViewHandles_.clear();
+	imageViewHandles_.push_back(
+		ctx_.RegisterImageView(view, surfaceFormat, "hosted target view"));
+}
+
+void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
+	VkCommandPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolInfo.queueFamilyIndex = graphicsFamily;
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		VkCommandPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-		poolInfo.queueFamilyIndex = *indices.graphicsFamily;
+		VkCommandPoolCreateInfo perPool = poolInfo;
 		VK_CHECK(vkCreateCommandPool(
 			device_,
-			&poolInfo,
+			&perPool,
 			nullptr,
 			&perFrameCommandPools[i]
 		));
@@ -7578,7 +7665,6 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Windo
 		allocInfo.commandBufferCount = 1;
 		VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffers[i]));
 	}
-	CreateTimestampPools();
 }
 smvk::VulkanSwapchain::~VulkanSwapchain() {
 
@@ -7613,6 +7699,10 @@ void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
 }
 
 void smvk::VulkanSwapchain::Recreate() {
+	// Hosted: fixed extent by design — the compositor scales, and a
+	// "resize" would only churn the target for nothing.
+	if (hosted_)
+		return;
 	// No new sync objects. Should investigate, can iamge# change? on OOD
 	static uint64_t recreateCount = 0;
 	fprintf(stderr, "[swapchain] Recreate #%llu\n", (unsigned long long)++recreateCount);
@@ -8042,21 +8132,29 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	}
 
 	uint32_t imageIndex;
-	VkResult result = vkAcquireNextImageKHR(
-		device_,
-		vk_swapchain_,
-		UINT64_MAX,
-		imageAvailableSemaphores_[currentFrame_],
-		VK_NULL_HANDLE,
-		&imageIndex
-	);
-
-	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		Recreate();
-		return AcquireFramebuffer();
+	if (hosted_) {
+		// Hosted: one image, no acquire — the timeline wait above is
+		// the real frame gate (the compositor's device-idle
+		// boundaries serialize us against the host's frames).
+		imageIndex = 0;
 	}
-	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		throw std::runtime_error("failed to acquire swap chain image!");
+	else {
+		VkResult result = vkAcquireNextImageKHR(
+			device_,
+			vk_swapchain_,
+			UINT64_MAX,
+			imageAvailableSemaphores_[currentFrame_],
+			VK_NULL_HANDLE,
+			&imageIndex
+		);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			Recreate();
+			return AcquireFramebuffer();
+		}
+		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
 	}
 
 	SetCurrentImageIndex(imageIndex);
@@ -8124,11 +8222,14 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// (G2) records here. Single-submit frames use commandBuffer as before.
 	VkCommandBuffer tailCmd = (fb.splitCommandBuffer != VK_NULL_HANDLE)
 		? fb.splitCommandBuffer : fb.commandBuffer;
+	// Hosted: no PRESENT_SRC — hand the target to the external
+	// compositor as a sampled image (SHADER_READ).
 	ImageBarrier(
 		tailCmd,
 		GetCurrentImage(),
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		hosted_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		{
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.baseMipLevel = 0,
@@ -8195,13 +8296,19 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			++waitCount;
 		}
 	}
-	else {
+	else if (!hosted_) {
+		// Hosted mode: nothing signals the acquire semaphore (no
+		// vkAcquireNextImageKHR) — waiting on it would deadlock.
 		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
 		++waitCount;
 		if (timelineValue_ != 0) {
 			waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timelineSemaphore_, timelineValue_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
 			++waitCount;
 		}
+	}
+	else if (timelineValue_ != 0) {
+		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timelineSemaphore_, timelineValue_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+		++waitCount;
 	}
 	if (uploadTp.valid()) {
 		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, uploadTp.semaphore, uploadTp.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
@@ -8232,7 +8339,23 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	signalInfos[1].deviceIndex = 0;
 	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, tailCmd, 0 };
-	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo, 2, signalInfos };
+	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo,
+		hosted_ ? 1u : 2u, signalInfos };
+	if (hosted_) {
+		// HOSTED: submit + retire, no present. The binary
+		// renderFinished semaphore is NOT signaled (nothing waits it,
+		// and a binary semaphore can only signal once — re-signaling
+		// without a wait is invalid). The compositor's device-idle
+		// boundary retires this submit before the target is read.
+		std::mutex& mg = GetQueueMutex(graphicsQueue_);
+		std::lock_guard<std::mutex> lock(mg);
+		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+		frameTimelineValues_[currentFrame_] = signalValue;
+		imageTimelineValues_[currentImageIndex_] = signalValue;
+		ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
+		AdvanceFrame();
+		return;
+	}
 	{
 		// Single-threaded: all queue ops on render thread, but use per-queue mutex for correctness when transferQueue is distinct
 		std::mutex& mg = GetQueueMutex(graphicsQueue_);
@@ -9110,7 +9233,51 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 	return vctx.imageViews_.get(view->resolvedViewHandle)->vkView;
 }
 
+bool smvk::App::RequestHostedBoot(App& host, Extent2D targetExtent,
+	Format targetFormat) {
+	if (hostedInitialized_ || m_context)
+		return false; // already booted (windowed or hosted)
+	hostedBoot_ = true;
+	hostedHost_ = &host;
+	hostedExtent_ = targetExtent;
+	hostedFormat_ = targetFormat;
+	return true;
+}
+
+smvk::ImageViewHandle smvk::App::HostedTargetView() const {
+	if (!hostedBoot_ || !m_swapchain)
+		return {};
+	return m_swapchain->HostedViewHandle();
+}
+
 bool smvk::App::Initialize() {
+
+	if (hostedBoot_) {
+		// HOSTED BOOT (embedded render-service mode — see app.h): the
+		// host App owns the process's single Vulkan context (volk's
+		// globals forbid a second instance); borrow it and run our own
+		// hosted swapchain (offscreen render target) + rendergraph +
+		// world. No window, no SDL, no Streamline — the host owns all
+		// process-global state.
+		if (!hostedHost_ || !hostedHost_->m_context)
+			return false;
+		if (hostedExtent_.width == 0 || hostedExtent_.height == 0)
+			return false;
+		// Borrowed context: points at the host's manager without owning
+		// it — ~App RELEASES it (contextBorrowed_) so the default
+		// deleter never runs on the host's object.
+		m_context.reset(hostedHost_->m_context.get());
+		contextBorrowed_ = true;
+		m_swapchain = std::make_unique<Swapchain>(*m_context,
+			hostedExtent_, hostedFormat_);
+		m_rendergraph = std::make_unique<RenderGraph>(*m_context);
+		m_world = std::make_unique<World>();
+		hostedInitialized_ = true;
+		std::cerr << "[App] hosted boot: " << hostedExtent_.width << "x"
+			<< hostedExtent_.height << " offscreen target on the host's "
+			"context\n";
+		return true;
+	}
 
 	// NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
 	// runs before any Vulkan call and volk is pointed at the interposer's
@@ -9221,7 +9388,10 @@ void smvk::App::Shutdown() {
 	// VkDevice are destroyed (~App tears down m_context). The interposer
 	// DLL itself stays mapped until ~VulkanCore unloads it (DlssRelease)
 	// because volk/VMA still call through its proxies during teardown.
-	DlssShutdown();
+	// HOSTED: no Streamline was started and the HOST owns the process
+	// globals — nothing to quit here.
+	if (!contextBorrowed_)
+		DlssShutdown();
 }
 
 smvk::App::~App()
@@ -9230,6 +9400,12 @@ smvk::App::~App()
 	m_audio.Shutdown();
 	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
 	// (App holds them directly; window is last member so destroyed after Vulkan).
+	// HOSTED: the context is BORROWED — release it (the host owns and
+	// destroys it), never touch the host's window/SDL/Streamline state.
+	if (contextBorrowed_) {
+		m_context.release();
+		return;
+	}
 	if (window) {
 		SDL_DestroyWindow(window);
 		window = nullptr;

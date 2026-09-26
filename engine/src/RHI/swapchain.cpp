@@ -33,7 +33,17 @@ Swapchain::Swapchain(ResourceManager& ctx, SDL_Window* window) : impl_(std::make
     auto* vm = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
     impl_->vulkan = std::make_unique<VulkanSwapchain>(*vm, window);
 }
+Swapchain::Swapchain(ResourceManager& ctx, Extent2D hostedExtent,
+    Format colorFormat) : impl_(std::make_unique<Impl>()) {
+    // Hosted render target (see swapchain.h): offscreen composition.
+    auto* vm = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
+    impl_->vulkan = std::make_unique<VulkanSwapchain>(*vm,
+        VkExtent2D{ hostedExtent.width, hostedExtent.height }, colorFormat);
+}
 Swapchain::~Swapchain() = default;
+ImageViewHandle Swapchain::HostedViewHandle() const {
+    return impl_->vulkan->HostedViewHandle();
+}
 void Swapchain::Create() { impl_->vulkan->Create(); }
 void Swapchain::Recreate() { impl_->vulkan->Recreate(); }
 Extent2D Swapchain::GetExtent() const {
