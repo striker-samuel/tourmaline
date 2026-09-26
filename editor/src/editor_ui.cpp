@@ -2506,6 +2506,9 @@ void EditorApp::DrawCookPanel() {
 	ImGui::SameLine();
 	if (ImGui::Checkbox("LODs", &m_cook.lods))
 		cookTouched = true;
+	ImGui::SameLine();
+	if (ImGui::Checkbox("Meshlets", &m_cook.meshlets))
+		cookTouched = true;
 	// Lightmaps bake through the voxel-remesh scene proxy (one proxy
 	// bake, UV-transferred to the real meshes).
 	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
@@ -3363,7 +3366,60 @@ void EditorApp::DrawCookDialog() {
 		AutosaveTour();
 	ImGui::SameLine();
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Build mesh LOD chains (3 levels) via meshoptimizer.");
+		ImGui::SetTooltip("Build mesh LOD chains via meshoptimizer.");
+	if (m_cook.lods) {
+		ImGui::Indent();
+		char ratios[64];
+		std::snprintf(ratios, sizeof(ratios), "%s",
+			m_cook.lodRatios.c_str());
+		if (ImGui::InputText("LOD ratios (csv)", ratios,
+				sizeof(ratios),
+				ImGuiInputTextFlags_EnterReturnsTrue)) {
+			m_cook.lodRatios = ratios;
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Screen-size retention per level, e.g. "
+				"\"0.6,0.3,0.12\" (3 levels).");
+		float lerr = m_cook.lodError;
+		if (ImGui::DragFloat("LOD error", &lerr, 0.001f, 0.0f,
+				1.0f, "%.3f")) {
+			m_cook.lodError = lerr;
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Simplification target error (relative).");
+		ImGui::Unindent();
+	}
+
+	if (ImGui::Checkbox("Meshlets", &m_cook.meshlets))
+		AutosaveTour();
+	ImGui::SameLine();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Per-meshlet build over the cooked topology "
+			"(GPU mesh-shader friendly clusters).");
+	if (m_cook.meshlets) {
+		ImGui::Indent();
+		int mv = int(m_cook.meshletMaxVerts);
+		if (ImGui::DragInt("Max verts", &mv, 1.0f, 3, 255)) {
+			m_cook.meshletMaxVerts = uint32_t(std::clamp(mv, 3, 255));
+			AutosaveTour();
+		}
+		int mt = int(m_cook.meshletMaxTris);
+		if (ImGui::DragInt("Max tris", &mt, 1.0f, 1, 512)) {
+			m_cook.meshletMaxTris = uint32_t(std::clamp(mt, 1, 512));
+			AutosaveTour();
+		}
+		float cw = m_cook.meshletConeWeight;
+		if (ImGui::SliderFloat("Cone weight", &cw, 0.0f, 1.0f)) {
+			m_cook.meshletConeWeight = cw;
+			AutosaveTour();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Partitioning bias toward tighter cone "
+				"bounds (0 = cluster shape only).");
+		ImGui::Unindent();
+	}
 
 	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
 		AutosaveTour();

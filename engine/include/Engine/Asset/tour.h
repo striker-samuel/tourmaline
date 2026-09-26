@@ -69,6 +69,10 @@ struct TourCook {
 	std::string outPak;
 	bool meshopt = true;
 	bool lods = false;
+	// LOD chain detail (PakCooker --lod-ratios/--lod-error): the
+	// comma-separated ratio list and the simplification target error.
+	std::string lodRatios = "0.6,0.3,0.12";
+	float lodError = 0.02f;
 	bool lightmap = false;
 	// Chart density request, METERS PER TEXEL (0.25 = one texel per
 	// 25 cm). Legacy -lmDensity lines (texels/m) convert on load.
@@ -93,6 +97,13 @@ struct TourCook {
 	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
+	// Meshlet cook (PakCooker --meshlets stage): per-meshlet build
+	// over the cooked topology (max verts/tris per meshlet + the
+	// cone-weight partitioning bias, 0..1).
+	bool meshlets = false;
+	uint32_t meshletMaxVerts = 64;
+	uint32_t meshletMaxTris = 124;
+	float meshletConeWeight = 0.0f;
 };
 
 enum class Verb : uint8_t {

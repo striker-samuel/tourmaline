@@ -613,6 +613,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		f << "cook -outPak " << Quote(k.outPak)
 			<< " -meshopt " << (k.meshopt ? "on" : "off")
 			<< " -lods " << (k.lods ? "on" : "off")
+			<< " -lodRatios " << Quote(k.lodRatios)
+			<< " -lodError " << k.lodError
 			<< " -lightmap " << (k.lightmap ? "on" : "off")
 			<< " -lmMetersPerTexel " << k.lmMetersPerTexel
 			<< " -lmLobes " << k.lmLobes
@@ -629,6 +631,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -cubemapName " << Quote(k.cubemapName)
 			<< " -cubemapSize " << k.cubemapSize
 			<< " -cubemapRays " << k.cubemapRays
+			<< " -meshlets " << (k.meshlets ? "on" : "off")
+			<< " -meshletVerts " << k.meshletMaxVerts
+			<< " -meshletTris " << k.meshletMaxTris
+			<< " -meshletConeWeight " << k.meshletConeWeight
 			<< ";\n";
 	}
 	if (!f.good()) {
@@ -1010,15 +1016,19 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					}
 					return false;
 				};
-				std::string v;
-				if (get("-outPak", v))
-					k.outPak = v;
-				else if (get("-meshopt", v))
-					k.meshopt = (v == "on" || v == "1");
-				else if (get("-lods", v))
-					k.lods = (v == "on" || v == "1");
-			else if (get("-lightmap", v))
-				k.lightmap = (v == "on" || v == "1");
+			std::string v;
+			if (get("-outPak", v))
+				k.outPak = v;
+			else if (get("-meshopt", v))
+				k.meshopt = (v == "on" || v == "1");
+			else if (get("-lods", v))
+				k.lods = (v == "on" || v == "1");
+			else if (get("-lodRatios", v))
+				k.lodRatios = v;
+			else if (get("-lodError", v))
+				k.lodError = std::max(std::stof(v), 0.0f);
+		else if (get("-lightmap", v))
+			k.lightmap = (v == "on" || v == "1");
 			else if (get("-lmMetersPerTexel", v))
 				k.lmMetersPerTexel = std::max(std::stof(v), 1e-4f);
 			else if (get("-lmDensity", v)) {
@@ -1057,9 +1067,19 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				else if (get("-cubemapSize", v))
 					k.cubemapSize = std::max<uint32_t>(
 						uint32_t(std::stoul(v)), 4);
-				else if (get("-cubemapRays", v))
-					k.cubemapRays = std::max<uint32_t>(
-						uint32_t(std::stoul(v)), 1);
+			else if (get("-cubemapRays", v))
+				k.cubemapRays = std::max<uint32_t>(
+					uint32_t(std::stoul(v)), 1);
+			else if (get("-meshlets", v))
+				k.meshlets = (v == "on" || v == "1");
+			else if (get("-meshletVerts", v))
+				k.meshletMaxVerts = std::clamp<uint32_t>(
+					uint32_t(std::stoul(v)), 3, 255);
+			else if (get("-meshletTris", v))
+				k.meshletMaxTris = std::clamp<uint32_t>(
+					uint32_t(std::stoul(v)), 1, 512);
+			else if (get("-meshletConeWeight", v))
+				k.meshletConeWeight = std::clamp(std::stof(v), 0.0f, 1.0f);
 			}
 			continue;
 		}

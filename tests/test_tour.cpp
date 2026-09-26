@@ -119,6 +119,14 @@ void TestRoundTrip() {
 	doc.cook.lightmap = true;
 	doc.cook.lmMetersPerTexel = 0.125f;
 	doc.cook.lmExcludeKw = "tree,glass";
+	// Meshlet + LOD detail settings ride the cook block too.
+	doc.cook.lods = true;
+	doc.cook.lodRatios = "0.5,0.25,0.1";
+	doc.cook.lodError = 0.05f;
+	doc.cook.meshlets = true;
+	doc.cook.meshletMaxVerts = 100;
+	doc.cook.meshletMaxTris = 200;
+	doc.cook.meshletConeWeight = 0.5f;
 
 	std::string err;
 	Check(smvk::tour::SaveTour(TempTour(), doc, err), "tour save");
@@ -135,6 +143,13 @@ void TestRoundTrip() {
 	Check(back.cook.lightmap && back.cook.lmMetersPerTexel == 0.125f,
 		"tour cook bake");
 	Check(back.cook.lmExcludeKw == "tree,glass", "tour cook exclude");
+	Check(back.cook.lods && back.cook.lodRatios == "0.5,0.25,0.1"
+		&& std::abs(back.cook.lodError - 0.05f) < 1e-6f,
+		"tour cook lod detail");
+	Check(back.cook.meshlets && back.cook.meshletMaxVerts == 100
+		&& back.cook.meshletMaxTris == 200
+		&& std::abs(back.cook.meshletConeWeight - 0.5f) < 1e-6f,
+		"tour cook meshlet settings");
 	if (!back.commands.empty()) {
 		Check(back.commands[0].verb == smvk::tour::Verb::Rename &&
 			back.commands[0].text == "Shop \"Wall\"", "tour rename quoting");

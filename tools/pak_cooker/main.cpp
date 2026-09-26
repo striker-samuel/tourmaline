@@ -405,31 +405,37 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--lod-ratios") {
 			if (!need(out.lodRatios)) return false;
+			out.explicitSet.insert("lodRatios");
 		}
 		else if (a == "--lod-error") {
 			std::string v;
 			if (!need(v)) return false;
 			out.lodError = std::stof(v);
+			out.explicitSet.insert("lodError");
 		}
 		else if (a == "--meshlets") {
 			std::string v;
 			if (!need(v)) return false;
 			out.meshlets = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("meshlets");
 		}
 		else if (a == "--max-verts") {
 			std::string v;
 			if (!need(v)) return false;
 			out.maxVerts = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("maxVerts");
 		}
 		else if (a == "--max-tris") {
 			std::string v;
 			if (!need(v)) return false;
 			out.maxTris = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("maxTris");
 		}
 		else if (a == "--cone-weight") {
 			std::string v;
 			if (!need(v)) return false;
 			out.coneWeight = std::stof(v);
+			out.explicitSet.insert("coneWeight");
 		}
 		else if (a == "--collapse-static") {
 			std::string v;
@@ -2872,6 +2878,14 @@ int main(int argc, char** argv) {
 			use("cubemapName", args.cubemapName, k.cubemapName);
 			use("cubemapSize", args.cubemapSize, k.cubemapSize);
 			use("cubemapRays", args.cubemapRays, k.cubemapRays);
+			// LOD detail + meshlet settings ride the tour cook block
+			// the same way (CLI flags win when explicitly given).
+			use("lodRatios", args.lodRatios, k.lodRatios);
+			use("lodError", args.lodError, k.lodError);
+			use("meshlets", args.meshlets, k.meshlets);
+			use("maxVerts", args.maxVerts, k.meshletMaxVerts);
+			use("maxTris", args.maxTris, k.meshletMaxTris);
+			use("coneWeight", args.coneWeight, k.meshletConeWeight);
 			if (!k.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
 				if (!args.lmExclude.empty())
@@ -2896,7 +2910,19 @@ int main(int argc, char** argv) {
 				pos = (end == std::string::npos) ? low.size() : end + 1;
 			}
 		}
+		// Rebuild the meshopt/LOD/meshlet configs from the MERGED
+		// args (the pre-branch build read the pre-merge values; the
+		// tour block may have filled any of them).
 		opt.enabled = args.meshopt;
+		opt.lodRatios = ParseLodRatios(args.lodRatios);
+		opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
+		meshletCfg.enabled = args.meshlets;
+		meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
+		meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
+		meshletCfg.coneWeight = args.coneWeight;
+		importMeshletCfg = meshletCfg;
+		if (args.lightmap)
+			importMeshletCfg.enabled = false;
 		// DEFINITION BUILD — identical to the editor: empty scene root,
 		// then the reference bind (root reference #0 imports the source
 		// glTF under the scene root; the rest inline beneath it), then

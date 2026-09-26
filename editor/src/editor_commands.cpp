@@ -2697,6 +2697,8 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.outPak.clear();
 	doc.cook.meshopt = m_cook.meshopt;
 	doc.cook.lods = m_cook.lods;
+	doc.cook.lodRatios = m_cook.lodRatios;
+	doc.cook.lodError = m_cook.lodError;
 	doc.cook.lightmap = m_cook.lightmap;
 	doc.cook.lmMetersPerTexel = m_cook.lmMetersPerTexel;
 	doc.cook.lmLobes = m_cook.lmLobes;
@@ -2709,6 +2711,14 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.sunElevation = m_cook.sunElevation;
 	doc.cook.sunIntensity = m_cook.sunIntensity;
 	doc.cook.skyIntensity = m_cook.skyIntensity;
+	doc.cook.cubemap = m_cook.cubemap;
+	doc.cook.cubemapName = m_cook.cubemapName;
+	doc.cook.cubemapSize = m_cook.cubemapSize;
+	doc.cook.cubemapRays = m_cook.cubemapRays;
+	doc.cook.meshlets = m_cook.meshlets;
+	doc.cook.meshletMaxVerts = m_cook.meshletMaxVerts;
+	doc.cook.meshletMaxTris = m_cook.meshletMaxTris;
+	doc.cook.meshletConeWeight = m_cook.meshletConeWeight;
 	std::string err;
 	if (!smvk::tour::SaveTour(tp, doc, err)) {
 		Log("tour save failed: " + err);
@@ -3234,6 +3244,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.outPak = doc.cook.outPak;
 		m_cook.meshopt = doc.cook.meshopt;
 		m_cook.lods = doc.cook.lods;
+		m_cook.lodRatios = doc.cook.lodRatios;
+		m_cook.lodError = doc.cook.lodError;
 		m_cook.lightmap = doc.cook.lightmap;
 		m_cook.lmMetersPerTexel = doc.cook.lmMetersPerTexel;
 		m_cook.lmLobes = doc.cook.lmLobes;
@@ -3246,6 +3258,14 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.sunElevation = doc.cook.sunElevation;
 		m_cook.sunIntensity = doc.cook.sunIntensity;
 		m_cook.skyIntensity = doc.cook.skyIntensity;
+		m_cook.cubemap = doc.cook.cubemap;
+		m_cook.cubemapName = doc.cook.cubemapName;
+		m_cook.cubemapSize = doc.cook.cubemapSize;
+		m_cook.cubemapRays = doc.cook.cubemapRays;
+		m_cook.meshlets = doc.cook.meshlets;
+		m_cook.meshletMaxVerts = doc.cook.meshletMaxVerts;
+		m_cook.meshletMaxTris = doc.cook.meshletMaxTris;
+		m_cook.meshletConeWeight = doc.cook.meshletConeWeight;
 	}
 	// Replay into the stack (fresh import underneath, so before-states are
 	// exact and the whole tour stays undoable). Wide rules load AFTER the

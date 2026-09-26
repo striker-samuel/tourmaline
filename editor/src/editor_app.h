@@ -237,6 +237,8 @@ struct CookSettings {
 	std::string inVfs; // VFS path for --in-vfs when no tour
 	bool meshopt = true;
 	bool lods = false;
+	std::string lodRatios = "0.6,0.3,0.12"; // LOD chain ratios (csv)
+	float lodError = 0.02f;                  // simplification target error
 	bool lightmap = false;
 	float lmMetersPerTexel = 0.25f; // chart density (m/texel)
 	uint32_t lmLobes = 12;
@@ -259,6 +261,11 @@ struct CookSettings {
 	// the cook via GiBaker — sidecars gi/<pak-stem>_* keyed to the
 	// pak stem. No-op when the definition carries no cvolumes.
 	bool giCvol = true;
+	// Meshlet cook: per-meshlet build over the cooked topology.
+	bool meshlets = false;
+	uint32_t meshletMaxVerts = 64;
+	uint32_t meshletMaxTris = 124;
+	float meshletConeWeight = 0.0f;
 };
 
 class EditorApp : public smvk::AppImpl {
