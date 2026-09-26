@@ -2719,6 +2719,8 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.meshletMaxVerts = m_cook.meshletMaxVerts;
 	doc.cook.meshletMaxTris = m_cook.meshletMaxTris;
 	doc.cook.meshletConeWeight = m_cook.meshletConeWeight;
+	doc.cook.giCvol = m_cook.giCvol;
+	doc.cook.giWorld = m_cook.giWorld;
 	std::string err;
 	if (!smvk::tour::SaveTour(tp, doc, err)) {
 		Log("tour save failed: " + err);
@@ -3266,6 +3268,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.meshletMaxVerts = doc.cook.meshletMaxVerts;
 		m_cook.meshletMaxTris = doc.cook.meshletMaxTris;
 		m_cook.meshletConeWeight = doc.cook.meshletConeWeight;
+		m_cook.giCvol = doc.cook.giCvol;
+		m_cook.giWorld = doc.cook.giWorld;
 	}
 	// Replay into the stack (fresh import underneath, so before-states are
 	// exact and the whole tour stays undoable). Wide rules load AFTER the

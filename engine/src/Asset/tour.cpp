@@ -635,6 +635,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -meshletVerts " << k.meshletMaxVerts
 			<< " -meshletTris " << k.meshletMaxTris
 			<< " -meshletConeWeight " << k.meshletConeWeight
+			<< " -giCvol " << (k.giCvol ? "on" : "off")
+			<< " -giWorld " << (k.giWorld ? "on" : "off")
 			<< ";\n";
 	}
 	if (!f.good()) {
@@ -1080,6 +1082,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					uint32_t(std::stoul(v)), 1, 512);
 			else if (get("-meshletConeWeight", v))
 				k.meshletConeWeight = std::clamp(std::stof(v), 0.0f, 1.0f);
+			else if (get("-giCvol", v))
+				k.giCvol = (v == "on" || v == "1");
+			else if (get("-giWorld", v))
+				k.giWorld = (v == "on" || v == "1");
 			}
 			continue;
 		}

@@ -261,6 +261,11 @@ struct CookSettings {
 	// the cook via GiBaker — sidecars gi/<pak-stem>_* keyed to the
 	// pak stem. No-op when the definition carries no cvolumes.
 	bool giCvol = true;
+	// World-field bake: the adaptive probe octree (.sggi) bakes with
+	// the cook too (GiBaker --out gi/<pak-stem>.sggi). This is the
+	// global fallback the runtime samples outside any convex volume;
+	// it is the slow stage (minutes on real scenes).
+	bool giWorld = true;
 	// Meshlet cook: per-meshlet build over the cooked topology.
 	bool meshlets = false;
 	uint32_t meshletMaxVerts = 64;
@@ -890,6 +895,9 @@ private:
 	char m_cookOutPakBuf[512] = "";
 	char m_cookContentDirBuf[512] = "content";
 	char m_cookCubemapNameBuf[128] = "";
+	// Set by PollCookProcess when the async cook completes; the cook
+	// dialog consumes it inside its begin block and closes itself.
+	bool m_cookJustFinished = false;
 	float m_terrainOrigin[3] = { 0.0f, 0.0f, 0.0f };
 	float m_terrainSize = 64.0f;
 	int m_terrainRes = 64;
@@ -1301,9 +1309,9 @@ private:
 	                            // View menu or the panel chip button)
 	// ---- panel sizes (drag the splitters to resize; constants above
 	// are the defaults) ----
-	float m_leftW = kEditorLeftW;
-	float m_rightW = kEditorRightW;
-	float m_bottomH = kEditorBottomH;
+	float m_outlinerW = kEditorLeftW;
+	float m_inspectorW = kEditorRightW;
+	float m_bottomDockH = kEditorBottomH;
 	void DrawPanelSplitters(); // left/right/bottom resize handles
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;

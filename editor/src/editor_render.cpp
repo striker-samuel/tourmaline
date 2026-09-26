@@ -504,9 +504,9 @@ void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
 	area.x = 0.0f;
 	area.w = float(extent.width);
 	if (m_uiMode) {
-		area.x = m_leftW;
-		area.w = float(extent.width) - m_leftW - m_rightW;
-		area.h -= m_bottomH;
+		area.x = m_outlinerW;
+		area.w = float(extent.width) - m_outlinerW - m_inspectorW;
+		area.h -= m_bottomDockH;
 	}
 	area.w = std::max(area.w, 1.0f);
 	area.h = std::max(area.h, 1.0f);

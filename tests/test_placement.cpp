@@ -215,6 +215,8 @@ void TestTransientDraws();
 void TestGpuPushAbi();
 void TestMinDistanceVolume();
 void TestOverrides();
+void TestOverrideAllAttrs();
+void TestOverrideNodeFilter();
 void TestExclusions();
 void TestCacheRoundTrip();
 void TestPhysicsQuery();
@@ -578,6 +580,149 @@ void TestOverrides() {
 	size_t n = inst.size();
 	empty.apply(inst, ids);
 	Check(inst.size() == n, "place.override.empty-noop");
+}
+
+void TestOverrideAllAttrs() {
+	using namespace smvk::placement;
+	// Every mutable RenderInstance field is overridable through one
+	// exact rule: position, yaw, scale, prototypeId AND customB.
+	// (stableLow is identity, deliberately not overridable.)
+	std::vector<RenderInstance> inst(1);
+	std::vector<StableID> ids;
+	inst[0].position = glm::vec3(1, 2, 3);
+	inst[0].yaw = 0.25f;
+	inst[0].scale = glm::vec3(1);
+	inst[0].prototypeId = 0;
+	inst[0].customB = 7;
+	inst[0].stableLow = 1234;
+	ids.push_back(MakeStableID(1, 0, TileID{}, 0, 0));
+	OverrideLayer layer;
+	PlacementOverride o;
+	o.target = ids[0];
+	o.position = glm::vec3(9, 8, 7);
+	o.yaw = 1.5f;
+	o.scale = glm::vec3(2, 3, 4);
+	o.prototype = 11;
+	o.customB = 99;
+	layer.set(o);
+	layer.apply(inst, ids);
+	Check(inst.size() == 1, "place.override-all.kept");
+	Check(inst[0].position == glm::vec3(9, 8, 7), "place.override-all.position");
+	Check(inst[0].yaw == 1.5f, "place.override-all.yaw");
+	Check(inst[0].scale == glm::vec3(2, 3, 4), "place.override-all.scale");
+	Check(inst[0].prototypeId == 11, "place.override-all.proto");
+	Check(inst[0].customB == 99, "place.override-all.customB");
+	Check(inst[0].stableLow == 1234, "place.override-all.stableLow-kept");
+	Check(ids[0] == MakeStableID(1, 0, TileID{}, 0, 0), "place.override-all.id-kept");
+}
+
+namespace {
+std::pair<std::vector<smvk::placement::RenderInstance>,
+	std::vector<smvk::placement::StableID>> MakeOverrideTile() {
+	using namespace smvk::placement;
+	std::vector<RenderInstance> inst(3);
+	std::vector<StableID> ids;
+	for (int i = 0; i < 3; ++i) {
+		inst[i].position = glm::vec3((float)i, 0, 0);
+		inst[i].prototypeId = 0;
+		inst[i].customB = (uint32_t)i;
+		ids.push_back(MakeStableID(77, 5, TileID{}, 0, (uint32_t)i));
+	}
+	return { inst, ids };
+}
+}
+
+void TestOverrideNodeFilter() {
+	using namespace smvk::placement;
+	// Scoped bulk rule: only tiles from (seed 77, node 5) are touched.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride nr;
+		nr.scope.graphSeed = 77;
+		nr.scope.nodeId = 5;
+		nr.scale = glm::vec3(3.0f);
+		layer.addNodeRule(nr);
+		Check(layer.nodeRuleCount() == 1, "place.override-node.count");
+		// Legacy apply (no context): scoped rule is skipped, never
+		// misapplied to an unknown tile.
+		layer.apply(inst, ids);
+		Check(inst[0].scale == glm::vec3(1.0f), "place.override-node.legacy-skips-scoped");
+		// Matching context: all three instances scaled.
+		layer.apply(inst, ids, 77, 5);
+		Check(inst[0].scale == glm::vec3(3.0f) && inst[2].scale == glm::vec3(3.0f),
+			"place.override-node.match-applies");
+	}
+	// Wrong seed / wrong node: no touch.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride nr;
+		nr.scope.graphSeed = 77;
+		nr.scope.nodeId = 5;
+		nr.prototype = 4;
+		layer.addNodeRule(nr);
+		layer.apply(inst, ids, 78, 5);
+		layer.apply(inst, ids, 77, 6);
+		Check(inst[0].prototypeId == 0, "place.override-node.mismatch-skips");
+	}
+	// Later bulk rules win; exact rules win over all bulk rules.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride a; a.scope.nodeId = 5; a.prototype = 1;
+		NodeOverride b; b.scope.nodeId = 5; b.prototype = 2;
+		layer.addNodeRule(a);
+		layer.addNodeRule(b);
+		PlacementOverride exact;
+		exact.target = ids[0];
+		exact.prototype = 9;
+		layer.set(exact);
+		layer.apply(inst, ids, 1, 5);
+		Check(inst[1].prototypeId == 2, "place.override-node.later-wins");
+		Check(inst[0].prototypeId == 9, "place.override-node.exact-wins");
+	}
+	// Global (unscoped) bulk rules apply even through the legacy call.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride g; // empty scope = every tile
+		g.yaw = 0.5f;
+		layer.addNodeRule(g);
+		layer.apply(inst, ids);
+		Check(inst[0].yaw == 0.5f && inst[2].yaw == 0.5f,
+			"place.override-node.global-legacy");
+	}
+	// Bulk delete clears the scope; exact delete still works.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride del;
+		del.scope.nodeId = 5;
+		del.deleted = true;
+		layer.addNodeRule(del);
+		layer.apply(inst, ids, 77, 5);
+		Check(inst.empty() && ids.empty(), "place.override-node.bulk-delete");
+		Check(layer.removeNodeRule(0), "place.override-node.remove");
+		Check(layer.nodeRuleCount() == 0, "place.override-node.remove-count");
+		Check(!layer.removeNodeRule(7), "place.override-node.remove-bad");
+	}
+	// clear() drops exact and bulk rules together.
+	{
+		auto [inst, ids] = MakeOverrideTile();
+		OverrideLayer layer;
+		NodeOverride g;
+		g.prototype = 3;
+		layer.addNodeRule(g);
+		PlacementOverride exact;
+		exact.target = ids[0];
+		exact.prototype = 8;
+		layer.set(exact);
+		layer.clear();
+		layer.apply(inst, ids, 77, 5);
+		Check(inst[0].prototypeId == 0 && layer.size() == 0
+			&& layer.nodeRuleCount() == 0, "place.override-node.clear-all");
+	}
 }
 
 void TestExclusions() {
@@ -1465,6 +1610,8 @@ int main() {
 	TestGpuPushAbi();
 	TestMinDistanceVolume();
 	TestOverrides();
+	TestOverrideAllAttrs();
+	TestOverrideNodeFilter();
 	TestExclusions();
 	TestCacheRoundTrip();
 	TestPhysicsQuery();

@@ -457,7 +457,8 @@ void EditorApp::DrawCvolPreviewOverlay() {
 namespace {
 
 // One splitter handle: a 6px grab strip. `flip` inverts the drag (the
-// right/bottom panels grow toward the screen edge).
+// right/bottom panels grow toward the screen edge). Returns true on
+// the release frame (deactivated) so the caller can commit (prefs).
 bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 	float* value, float minV, float maxV, bool flip) {
 	ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
@@ -467,41 +468,59 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 	// — tab clicks hit the splitter instead) and kill the padding.
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-	ImGui::Begin(id, nullptr,
+	bool released = false;
+	if (ImGui::Begin(id, nullptr,
 		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
-		ImGuiWindowFlags_NoBackground);
-	ImGui::InvisibleButton("##grab", sz);
-	if (ImGui::IsItemHovered())
-		ImGui::SetMouseCursor(horizontal ? ImGuiMouseCursor_ResizeNS
-			: ImGuiMouseCursor_ResizeEW);
-	if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-		const ImVec2 d = ImGui::GetIO().MouseDelta;
-		const float delta = horizontal ? d.y : d.x;
-		*value = std::clamp(*value + (flip ? -delta : delta), minV, maxV);
+		ImGuiWindowFlags_NoBackground)) {
+		ImGui::InvisibleButton("##grab", sz);
+		if (ImGui::IsItemHovered())
+			ImGui::SetMouseCursor(horizontal ? ImGuiMouseCursor_ResizeNS
+				: ImGuiMouseCursor_ResizeEW);
+		// Explicit held-state drag: the press belongs to THIS strip
+		// (active id), the delta accumulates per frame while held, and
+		// the release ends the gesture exactly once. The strip window
+		// repositions from the value every frame, so it tracks the
+		// mouse 1:1 through the whole gesture — no jumps on grab or
+		// snap-back on release.
+		if (ImGui::IsItemActive()
+			&& ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+			const ImVec2 d = ImGui::GetIO().MouseDelta;
+			const float delta = horizontal ? d.y : d.x;
+			*value = std::clamp(*value + (flip ? -delta : delta),
+				minV, maxV);
+		}
+		released = ImGui::IsItemDeactivatedAfterEdit();
 	}
 	ImGui::End();
 	ImGui::PopStyleVar(2);
-	return ImGui::IsItemHovered();
+	return released;
 }
 
 } // namespace
 
 void EditorApp::DrawPanelSplitters() {
 	// Thin grab strips between the panels and the viewport (drag to
-	// resize; the constants in editor_app.h are the defaults).
+	// resize; the constants in editor_app.h are the defaults). The
+	// sizes commit to prefs on release, so a restart keeps the layout.
 	const ImVec2 ds = ImGui::GetIO().DisplaySize;
 	// m_menuH = menu bar + tool topbar (the panels start below both).
 	const float menuH = m_menuH;
 	// Column splitters stop at the bottom dock (drag there resizes the
 	// side panel without fighting the dock's own handle).
-	const float colH = ds.y - menuH - m_bottomH;
-	SplitterHandle("##splitL", ImVec2(m_leftW - 3.0f, menuH),
-		ImVec2(6.0f, colH), false, &m_leftW, 200.0f, 720.0f, false);
-	SplitterHandle("##splitR", ImVec2(ds.x - m_rightW - 3.0f, menuH),
-		ImVec2(6.0f, colH), false, &m_rightW, 200.0f, 720.0f, true);
-	SplitterHandle("##splitB", ImVec2(0.0f, ds.y - m_bottomH - 3.0f),
-		ImVec2(ds.x, 6.0f), true, &m_bottomH, 120.0f, 600.0f, true);
+	const float colH = ds.y - menuH - m_bottomDockH;
+	bool committed = false;
+	committed |= SplitterHandle("##splitL",
+		ImVec2(m_outlinerW - 3.0f, menuH),
+		ImVec2(6.0f, colH), false, &m_outlinerW, 200.0f, 720.0f, false);
+	committed |= SplitterHandle("##splitR",
+		ImVec2(ds.x - m_inspectorW - 3.0f, menuH),
+		ImVec2(6.0f, colH), false, &m_inspectorW, 200.0f, 720.0f, true);
+	committed |= SplitterHandle("##splitB",
+		ImVec2(0.0f, ds.y - m_bottomDockH - 3.0f),
+		ImVec2(ds.x, 6.0f), true, &m_bottomDockH, 120.0f, 600.0f, true);
+	if (committed)
+		SavePrefs();
 }
 
 } // namespace editor

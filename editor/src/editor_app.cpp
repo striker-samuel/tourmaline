@@ -140,6 +140,30 @@ bool EditorApp::Initialize() {
 	}
 	else {
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
+		// Opaque UI chrome: the dark theme leaves window/popup/menu
+		// surfaces slightly translucent (the 3D viewport bleeds
+		// through menus). The editor is a tool, not a game overlay —
+		// everything opaque. (The modal dimmer stays translucent by
+		// design.) Re-applied here, not in the shared overlay: the
+		// theme belongs to the app, and ApplyDpiScale preserves the
+		// colors it copies.
+		ImGuiStyle& style = ImGui::GetStyle();
+		style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+		style.Colors[ImGuiCol_ChildBg].w = 1.0f;
+		style.Colors[ImGuiCol_PopupBg].w = 1.0f;
+		style.Colors[ImGuiCol_MenuBarBg].w = 1.0f;
+		style.Colors[ImGuiCol_TitleBg].w = 1.0f;
+		style.Colors[ImGuiCol_TitleBgActive].w = 1.0f;
+		style.Colors[ImGuiCol_TitleBgCollapsed].w = 1.0f;
+		style.Colors[ImGuiCol_Tab].w = 1.0f;
+		style.Colors[ImGuiCol_TabHovered].w = 1.0f;
+		style.Colors[ImGuiCol_TabActive].w = 1.0f;
+		style.Colors[ImGuiCol_TabUnfocused].w = 1.0f;
+		style.Colors[ImGuiCol_TabUnfocusedActive].w = 1.0f;
+		style.Colors[ImGuiCol_FrameBg].w = 1.0f;
+		style.Colors[ImGuiCol_FrameBgHovered].w = 1.0f;
+		style.Colors[ImGuiCol_FrameBgActive].w = 1.0f;
+		style.Colors[ImGuiCol_ScrollbarBg].w = 1.0f;
 	}
 
 	// Default editor cameras (Perspective / Top ortho / Side ortho).
@@ -218,25 +242,46 @@ void EditorApp::Shutdown() {
 }
 
 void EditorApp::LoadPrefs() {
+	// Sectioned panel layout (px). No backward compat: anything
+	// unparseable (missing file, corrupt line, unknown key) keeps
+	// the in-code defaults below.
+	m_outlinerW = kEditorLeftW;
+	m_inspectorW = kEditorRightW;
+	m_bottomDockH = kEditorBottomH;
 	if (m_prefsPath.empty())
 		return;
 	std::ifstream in(m_prefsPath);
 	if (!in) return;
+	std::string section;
 	std::string line;
 	while (std::getline(in, line)) {
-		// Same clamps as the panel splitters (a corrupt/hand-edited
-		// prefs line must not degenerate the layout — a sub-tab-height
-		// dock, for instance, made the console tab look dead).
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#' || line[0] == ';')
+			continue;
+		if (line.front() == '[' && line.back() == ']') {
+			section = line.substr(1, line.size() - 2);
+			continue;
+		}
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue; // unknown line: defaults stand
+		const std::string key = line.substr(0, eq);
+		const std::string val = line.substr(eq + 1);
 		try {
-			if (line.rfind("leftW=", 0) == 0)
-				m_leftW = std::clamp(std::stof(line.substr(6)), 200.0f, 720.0f);
-			else if (line.rfind("rightW=", 0) == 0)
-				m_rightW = std::clamp(std::stof(line.substr(7)), 200.0f, 720.0f);
-			else if (line.rfind("bottomH=", 0) == 0)
-				m_bottomH = std::clamp(std::stof(line.substr(8)), 120.0f, 600.0f);
+			// Same clamps as the panel splitters (a hand-edited
+			// prefs value must not degenerate the layout — a
+			// sub-tab-height dock, for instance, made the console
+			// tab look dead).
+			if (section == "outliner" && key == "width")
+				m_outlinerW = std::clamp(std::stof(val), 200.0f, 720.0f);
+			else if (section == "inspector" && key == "width")
+				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
+			else if (section == "bottomDock" && key == "height")
+				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
 		}
 		catch (...) {
-			// corrupt line: keep the default
+			// corrupt value: keep the default
 		}
 	}
 }
@@ -247,9 +292,10 @@ void EditorApp::SavePrefs() {
 	std::filesystem::create_directories(std::filesystem::path(m_prefsPath).parent_path());
 	std::ofstream out(m_prefsPath);
 	if (!out) return;
-	out << "leftW=" << m_leftW << "\n";
-	out << "rightW=" << m_rightW << "\n";
-	out << "bottomH=" << m_bottomH << "\n";
+	out << "# Tourmaline Editor prefs (panel layout, px)\n";
+	out << "[outliner]\nwidth=" << m_outlinerW << "\n";
+	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
+	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 }
 
 void EditorApp::CloseScene() {

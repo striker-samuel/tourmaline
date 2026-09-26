@@ -104,6 +104,12 @@ struct TourCook {
 	uint32_t meshletMaxVerts = 64;
 	uint32_t meshletMaxTris = 124;
 	float meshletConeWeight = 0.0f;
+	// GI bakes (cook dialog, editor-driven): authored convex volumes
+	// (GiBaker cvol stage, gi/<pak-stem>_* sidecars) and the adaptive
+	// probe octree (GiBaker --out, gi/<pak-stem>.sggi — the runtime's
+	// global fallback outside any convex volume).
+	bool giCvol = true;
+	bool giWorld = true;
 };
 
 enum class Verb : uint8_t {

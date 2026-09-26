@@ -103,10 +103,16 @@ void EditorApp::CookToPak() {
 		std::filesystem::path p(m_gltfPath);
 		cook.outPak = ("content/paks/" + p.stem().string() + ".pak");
 	}
+	// contentRoot = the "content/" dir itself (gi/texture outputs land
+	// here — exactly what the editor/App loaders check next to the
+	// pak); the VFS base (contentDir) is its PARENT for the mount.
+	const std::string contentRoot = std::filesystem::absolute(
+		std::filesystem::path(cook.outPak).parent_path() / "..")
+		.lexically_normal().string();
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
 	m_cookFuture = std::async(std::launch::async,
-		[cook, giHasCvols, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, giHasCvols, contentRoot, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			std::ostringstream log;
 			// PakCooker next to Editor.exe.
@@ -153,16 +159,16 @@ cmd << " --out-pak " << QuoteArg(cook.outPak)
 #endif
 			log << "cook: PakCooker exit=" << rc << "\n";
 			r.ok = (rc == 0);
-			// GI BAKE STAGE: authored convex volumes (tour cvolume
-			// nodes) bake as part of the cook — GiBaker consumes the
-			// SAME definition tour (root reference + nodes), keyed to
-			// the PAK STEM so gi/<stem>.cvmanifest matches what the
-			// editor/App loaders look for next to the pak. Skipped
-			// when the pak failed or the definition has no cvolumes.
-			if (r.ok && cook.giCvol && !giHasCvols) {
-				// nothing authored: skip silently
-			}
-			else if (r.ok && cook.giCvol) {
+			// GI BAKE STAGE: the definition's GI bakes as part of the
+			// cook — GiBaker consumes the SAME definition tour (root
+			// reference + nodes), keyed to the PAK STEM so the
+			// sidecars land exactly where the editor/App loaders look
+			// next to the pak: gi/<stem>_*.cvol + .cvmanifest, and
+			// gi/<stem>.sggi for the world field. Skipped silently
+			// when nothing is requested.
+			const bool wantCvols = cook.giCvol && giHasCvols;
+			const bool wantWorld = cook.giWorld;
+			if (r.ok && (wantCvols || wantWorld)) {
 				std::filesystem::path baker =
 					std::filesystem::path(exePath).parent_path() /
 					"GiBaker.exe";
@@ -172,10 +178,13 @@ cmd << " --out-pak " << QuoteArg(cook.outPak)
 					std::filesystem::path(cook.outPak).stem().string();
 				std::ostringstream gi;
 				gi << QuoteArg(baker.string())
-					<< " --content-dir " << QuoteArg(contentDir)
+					<< " --content-dir " << QuoteArg(contentRoot)
 					<< " --scene " << QuoteArg(pakStem)
-					<< " --tour " << QuoteArg(tempTourPath)
-					<< " 2>&1";
+					<< " --tour " << QuoteArg(tempTourPath);
+				if (wantWorld)
+					gi << " --out " << QuoteArg(
+						(std::filesystem::path(contentRoot) / "gi" /
+							(pakStem + ".sggi")).generic_string());
 				log << "cook-gi: " << gi.str() << "\n";
 #ifdef _WIN32
 				FILE* gpipe = _popen(gi.str().c_str(), "r");
@@ -306,6 +315,9 @@ void EditorApp::PollCookProcess() {
 	while (std::getline(ss, line))
 		Log(line);
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
+	// The cook dialog shows its own progress; close it on finish
+	// (DrawCookDialog consumes the flag inside the begin block).
+	m_cookJustFinished = true;
 }
 
 } // namespace editor

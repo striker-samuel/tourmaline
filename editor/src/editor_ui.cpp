@@ -123,21 +123,23 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	// panel for a fullscreen viewport (the menu bar + overlay remain).
 	if (m_uiMode) {
 	ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-	ImGui::SetNextWindowSize(ImVec2(m_leftW, vh - menuH - m_bottomH),
+	ImGui::SetNextWindowSize(ImVec2(m_outlinerW, vh - menuH - m_bottomDockH),
 		ImGuiCond_Always);
 	if (ImGui::Begin("Outliner", nullptr,
-		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
+		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+		ImGuiWindowFlags_NoResize)) {
 		DrawOutliner();
 	}
 	ImGui::End();
 
 	ImGui::SetNextWindowPos(
-		ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_rightW, menuH),
+		ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_inspectorW, menuH),
 		ImGuiCond_Always);
-	ImGui::SetNextWindowSize(ImVec2(m_rightW, vh - menuH - m_bottomH),
+	ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - m_bottomDockH),
 		ImGuiCond_Always);
 	if (ImGui::Begin("Inspector", nullptr,
-		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
+		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+		ImGuiWindowFlags_NoResize)) {
 		if (ImGui::BeginTabBar("##rightTabs")) {
 			if (ImGui::BeginTabItem("Inspector")) {
 				m_rightTab = 0;
@@ -181,13 +183,13 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 
 	// Bottom dock (title-less, tabbed): the wide-override rule table
 	// lives next to the Console so both stay full-width.
-	ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomH), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomDockH), ImGuiCond_Always);
 	ImGui::SetNextWindowSize(
-		ImVec2(float(ImGui::GetIO().DisplaySize.x), m_bottomH),
+		ImVec2(float(ImGui::GetIO().DisplaySize.x), m_bottomDockH),
 		ImGuiCond_Always);
 	if (ImGui::Begin("BottomDock", nullptr,
 		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-		ImGuiWindowFlags_NoTitleBar)) {
+		ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
 		if (ImGui::BeginTabBar("##bottomTabs")) {
 			if (ImGui::BeginTabItem("Overrides")) {
 				m_bottomTab = 0;
@@ -3331,27 +3333,49 @@ void EditorApp::ShowCookDialog() {
 void EditorApp::DrawCookDialog() {
 	if (!m_showCookDialog)
 		return;
+	// Fixed first-appearance width: the modal auto-fits height, but a
+	// stable wide frame keeps labels and fields from colliding when
+	// sections (lightmaps/cubemaps/GI) expand or collapse.
+	ImGui::SetNextWindowSize(ImVec2(600, 0), ImGuiCond_Appearing);
 	if (!ImGui::BeginPopupModal("Cook to .pak", &m_showCookDialog,
 			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
 		return;
+	// Cook finished while the dialog was up (progress state): close
+	// itself — the completion lands in the Console either way.
+	if (m_cookJustFinished) {
+		m_cookJustFinished = false;
+		m_showCookDialog = false;
+		ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+		return;
+	}
 
 	ImGui::Text("Export the current scene + tour edits to a cooked .pak.");
 	ImGui::Separator();
 
+	// Labels ride their OWN lines and fields take the full width —
+	// shared label/widget lines collide in narrow modals.
 	ImGui::Text("Output .pak path (relative to content/ or absolute):");
-	ImGui::SetNextItemWidth(500.0f);
-	ImGui::InputText("##outPak", m_cookOutPakBuf, sizeof(m_cookOutPakBuf));
-	ImGui::SameLine();
-	if (ImGui::Button("Browse...")) {
-		std::string picked;
-		if (NativeSaveFile(picked) && !picked.empty()) {
-			std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s", picked.c_str());
+	{
+		const float browseW = 90.0f;
+		ImGui::SetNextItemWidth((std::max)(80.0f,
+			ImGui::GetContentRegionAvail().x - browseW));
+		ImGui::InputText("##outPak", m_cookOutPakBuf,
+			sizeof(m_cookOutPakBuf));
+		ImGui::SameLine();
+		if (ImGui::Button("Browse...")) {
+			std::string picked;
+			if (NativeSaveFile(picked) && !picked.empty()) {
+				std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf),
+					"%s", picked.c_str());
+			}
 		}
 	}
 
 	ImGui::Text("Content root (for VFS resolution):");
-	ImGui::SetNextItemWidth(500.0f);
-	ImGui::InputText("##contentDir", m_cookContentDirBuf, sizeof(m_cookContentDirBuf));
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	ImGui::InputText("##contentDir", m_cookContentDirBuf,
+		sizeof(m_cookContentDirBuf));
 
 	ImGui::Separator();
 	ImGui::Text("Quality settings (CLI overrides tour defaults):");
@@ -3369,20 +3393,23 @@ void EditorApp::DrawCookDialog() {
 		ImGui::SetTooltip("Build mesh LOD chains via meshoptimizer.");
 	if (m_cook.lods) {
 		ImGui::Indent();
+		ImGui::Text("LOD ratios (csv, e.g. \"0.6,0.3,0.12\"):");
 		char ratios[64];
 		std::snprintf(ratios, sizeof(ratios), "%s",
 			m_cook.lodRatios.c_str());
-		if (ImGui::InputText("LOD ratios (csv)", ratios,
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::InputText("##lodRatios", ratios,
 				sizeof(ratios),
 				ImGuiInputTextFlags_EnterReturnsTrue)) {
 			m_cook.lodRatios = ratios;
 			AutosaveTour();
 		}
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Screen-size retention per level, e.g. "
-				"\"0.6,0.3,0.12\" (3 levels).");
+			ImGui::SetTooltip("Screen-size retention per level.");
+		ImGui::Text("LOD error:");
 		float lerr = m_cook.lodError;
-		if (ImGui::DragFloat("LOD error", &lerr, 0.001f, 0.0f,
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragFloat("##lodError", &lerr, 0.001f, 0.0f,
 				1.0f, "%.3f")) {
 			m_cook.lodError = lerr;
 			AutosaveTour();
@@ -3400,18 +3427,24 @@ void EditorApp::DrawCookDialog() {
 			"(GPU mesh-shader friendly clusters).");
 	if (m_cook.meshlets) {
 		ImGui::Indent();
+		ImGui::Text("Max verts:");
 		int mv = int(m_cook.meshletMaxVerts);
-		if (ImGui::DragInt("Max verts", &mv, 1.0f, 3, 255)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##meshletVerts", &mv, 1.0f, 3, 255)) {
 			m_cook.meshletMaxVerts = uint32_t(std::clamp(mv, 3, 255));
 			AutosaveTour();
 		}
+		ImGui::Text("Max tris:");
 		int mt = int(m_cook.meshletMaxTris);
-		if (ImGui::DragInt("Max tris", &mt, 1.0f, 1, 512)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##meshletTris", &mt, 1.0f, 1, 512)) {
 			m_cook.meshletMaxTris = uint32_t(std::clamp(mt, 1, 512));
 			AutosaveTour();
 		}
+		ImGui::Text("Cone weight:");
 		float cw = m_cook.meshletConeWeight;
-		if (ImGui::SliderFloat("Cone weight", &cw, 0.0f, 1.0f)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::SliderFloat("##meshletCone", &cw, 0.0f, 1.0f)) {
 			m_cook.meshletConeWeight = cw;
 			AutosaveTour();
 		}
@@ -3425,40 +3458,50 @@ void EditorApp::DrawCookDialog() {
 		AutosaveTour();
 	if (m_cook.lightmap) {
 		ImGui::Indent();
+		ImGui::Text("Voxel proxy resolution:");
 		int pres = m_cook.lmProxyRes;
-		if (ImGui::DragInt("Voxel proxy resolution", &pres, 1.0f, 0, 256)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##lmProxyRes", &pres, 1.0f, 0, 256)) {
 			m_cook.lmProxyRes = pres;
 			AutosaveTour();
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Voxel-remesh scene proxy grid (0 = legacy per-mesh path).");
 
+		ImGui::Text("Meters per texel:");
 		float mpt = m_cook.lmMetersPerTexel;
-		if (ImGui::DragFloat("Meters per texel", &mpt, 0.01f, 0.01f, 1.0f, "%.3f")) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragFloat("##lmMpt", &mpt, 0.01f, 0.01f, 1.0f, "%.3f")) {
 			m_cook.lmMetersPerTexel = mpt;
 			AutosaveTour();
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("World-space lightmap texel density (m/texel).");
 
+		ImGui::Text("Max SG lobes:");
 		int lobes = m_cook.lmLobes;
-		if (ImGui::DragInt("Max SG lobes", &lobes, 1.0f, 5, 12)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##lmLobes", &lobes, 1.0f, 5, 12)) {
 			m_cook.lmLobes = std::clamp(lobes, 5, 12);
 			AutosaveTour();
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Preferred max SG bases per texel (5-12).");
 
+		ImGui::Text("Atlas width (px):");
 		int atlasW = m_cook.lmAtlasWidth;
-		if (ImGui::DragInt("Atlas width (px)", &atlasW, 64.0f, 256, 8192)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##lmAtlasW", &atlasW, 64.0f, 256, 8192)) {
 			m_cook.lmAtlasWidth = std::clamp(atlasW, 256, 8192);
 			AutosaveTour();
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Lightmap atlas width; height grows with content.");
 
+		ImGui::Text("Rays per texel:");
 		int rays = m_cook.lmRays;
-		if (ImGui::DragInt("Rays per texel", &rays, 8.0f, 64, 8192)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##lmRays", &rays, 8.0f, 64, 8192)) {
 			m_cook.lmRays = std::clamp(rays, 64, 8192);
 			AutosaveTour();
 		}
@@ -3472,18 +3515,23 @@ void EditorApp::DrawCookDialog() {
 		AutosaveTour();
 	if (m_cook.cubemap) {
 		ImGui::Indent();
-		ImGui::InputText("Cubemap name", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Blank = the pak stem (auto).");
+		ImGui::Text("Name (blank = pak stem):");
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputText("##cubemapName", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			m_cook.cubemapName = m_cookCubemapNameBuf;
+		ImGui::Text("Size:");
+		ImGui::Text("Size:");
 		int size = m_cook.cubemapSize;
-		if (ImGui::DragInt("Size", &size, 32.0f, 64, 2048)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##cubemapSize", &size, 32.0f, 64, 2048)) {
 			m_cook.cubemapSize = std::clamp(size, 64, 2048);
 			AutosaveTour();
 		}
+		ImGui::Text("Rays per texel:");
 		int rays = m_cook.cubemapRays;
-		if (ImGui::DragInt("Rays per texel", &rays, 8.0f, 1, 4096)) {
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt("##cubemapRays", &rays, 8.0f, 1, 4096)) {
 			m_cook.cubemapRays = std::clamp(rays, 1, 4096);
 			AutosaveTour();
 		}
@@ -3492,30 +3540,38 @@ void EditorApp::DrawCookDialog() {
 
 	ImGui::Separator();
 	ImGui::Text("GI (probes)");
+	ImGui::TextDisabled("%u cvolume node(s) authored in this scene",
+		m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
 	if (ImGui::Checkbox("Convex volumes (bake authored)", &m_cook.giCvol))
 		AutosaveTour();
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Cvolume nodes bake with the cook (GiBaker):\n"
 			"gi/<pak-stem>_*.cvol + .cvmanifest sidecars.\n"
 			"Skipped when the definition has no cvolumes.");
-	ImGui::SameLine();
-	ImGui::TextDisabled("%u authored",
-		m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
+	if (ImGui::Checkbox("World field (adaptive octree)", &m_cook.giWorld))
+		AutosaveTour();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("gi/<pak-stem>.sggi: the global fallback the\n"
+			"runtime samples outside any convex volume.\n"
+			"This is the slow stage (minutes on real scenes).");
 
 	ImGui::Separator();
 	if (m_cookRunning) {
-		ImGui::Text("Cooking...");
+		ImGui::Text("Cooking... (see Console)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate
-		if (ImGui::Button("Cancel")) {
-			// Note: async cook cannot be easily cancelled; just hide dialog
+		if (ImGui::Button("Hide")) {
+			// The cook keeps running; the dialog closes and the
+			// result lands in the Console either way.
 			m_showCookDialog = false;
 			ImGui::CloseCurrentPopup();
 		}
 	} else {
 		if (ImGui::Button("Cook")) {
 			m_cook.outPak = m_cookOutPakBuf;
+			m_cook.contentDir = m_cookContentDirBuf;
 			CookToPak();
-			// Keep dialog open to show progress
+			// The dialog stays up for the progress bar; PollCookProcess
+			// closes it on finish via m_cookJustFinished.
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Close")) {
