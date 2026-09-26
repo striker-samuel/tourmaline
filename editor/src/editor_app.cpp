@@ -132,6 +132,13 @@ bool EditorApp::Initialize() {
 	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
 	SetRelativeMouseMode(false);
 
+	// Scratch disk (editor artifact cache): open the registry before
+	// any scene work; a missing/unwritable root degrades to
+	// cache-off (the editor still runs — the cache is never a
+	// precondition).
+	OpenCacheDb();
+
+
 	m_imgui = std::make_unique<smvk::ImGuiOverlay>();
 	smvk::ImGuiOverlayDesc imguiDesc{};
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
@@ -271,6 +278,8 @@ void EditorApp::LoadPrefs() {
 				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
 			else if (section == "bottomDock" && key == "height")
 				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
+			else if (section == "scratch" && key == "dir")
+				m_scratchRoot = val;
 		}
 		catch (...) {
 			// corrupt value: keep the default
@@ -288,6 +297,36 @@ void EditorApp::SavePrefs() {
 	out << "[outliner]\nwidth=" << m_outlinerW << "\n";
 	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
+	if (!m_scratchRoot.empty())
+		out << "[scratch]\ndir=" << m_scratchRoot << "\n";
+}
+
+bool EditorApp::OpenCacheDb() {
+	m_cacheDb.Close();
+	// Prefs override first, machine default second (F:\ when present).
+	std::string root = m_scratchRoot;
+	if (root.empty())
+		root = smvk::cache::DefaultScratchRoot();
+	root = smvk::cache::EnsureScratchRoot(root);
+	if (root.empty()) {
+		m_scratchRoot.clear();
+		Log("Scratch disk unavailable — artifact cache disabled "
+			"(set one via File > Scratch disk...).");
+		return false;
+	}
+	m_scratchRoot = root;
+	std::error_code ec;
+	const std::filesystem::path dbPath =
+		std::filesystem::path(root) / "cache.db";
+	std::string err;
+	if (!m_cacheDb.Open(dbPath.generic_string(), err)) {
+		Log("Scratch cache db open failed: " + err);
+		return false;
+	}
+	std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
+		m_scratchRoot.c_str());
+	Log("Scratch disk: " + root + " (cache.db ready)");
+	return true;
 }
 
 void EditorApp::CloseScene() {

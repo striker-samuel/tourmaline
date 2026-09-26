@@ -90,6 +90,39 @@ endfunction()
 # GLM (header-only)
 add_subdirectory(external/glm)
 
+# --- SQLite (vendored SQLiteCpp + sqlite3 amalgamation) ----------------------
+# Backs the editor's artifact cache (scratch-disk registry). Plain static
+# libs: sqlite3.c compiled once, the SQLiteCpp RAII wrapper on top. No
+# shell/CLI pieces from the upstream project are built.
+add_library(sqlite3_amalgamation STATIC external/SQLiteCpp/sqlite3/sqlite3.c)
+target_include_directories(sqlite3_amalgamation
+    PUBLIC external/SQLiteCpp/sqlite3)
+# SQLiteCpp references the extension loader: the OMIT cuts break it.
+target_compile_definitions(sqlite3_amalgamation PRIVATE
+    SQLITE_ENABLE_COLUMN_METADATA)
+if(MSVC)
+    # Amalgamation is clean; keep the warning noise down.
+    target_compile_options(sqlite3_amalgamation PRIVATE /W0)
+endif()
+
+add_library(SQLiteCpp STATIC
+    external/SQLiteCpp/src/Backup.cpp
+    external/SQLiteCpp/src/Column.cpp
+    external/SQLiteCpp/src/Database.cpp
+    external/SQLiteCpp/src/Exception.cpp
+    external/SQLiteCpp/src/Savepoint.cpp
+    external/SQLiteCpp/src/Statement.cpp
+    external/SQLiteCpp/src/Transaction.cpp
+)
+target_include_directories(SQLiteCpp
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/external/SQLiteCpp/include
+)
+target_link_libraries(SQLiteCpp PUBLIC sqlite3_amalgamation)
+if(MSVC)
+    target_compile_options(SQLiteCpp PRIVATE /W3)
+endif()
+
 
 # --- KTX hinting --------------------------------------------------------------
 # Users can point CMake at KTX in several ways:
@@ -220,6 +253,7 @@ set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(tools/gltf_import)
+add_subdirectory(tools/artifact_cache)
 add_subdirectory(app)
 add_subdirectory(tools/pak_cooker)
 add_subdirectory(editor)

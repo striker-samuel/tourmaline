@@ -23,6 +23,7 @@ target_link_libraries(Editor
     PRIVATE
         engine
         gltf_import
+        artifact_cache
         KTX::ktx
         OptickCore
 )

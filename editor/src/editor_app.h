@@ -39,6 +39,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
+#include <artifact_cache/artifact_cache.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Flintbase/flintbase_client.h>
 #include <Engine/GI/lightmap.h>
@@ -1348,6 +1349,19 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
+	// ---- scratch disk (editor artifact cache) ----
+	// User-personalizable cache root (prefs [scratch] dir; default on
+	// F:\ to keep C: from burning). Holds cache.db (SQLite registry)
+	// + artifacts/ (per-class paks). Purely a CACHE: .tour -> final pak
+	// cooks never depend on it — it only accelerates processing.
+	smvk::cache::CacheDb m_cacheDb;
+	std::string m_scratchRoot; // normalized, exists
+	bool m_showScratchDialog = false;
+	char m_scratchBuf[512] = "";
+	// Opens (creating when missing) the scratch root + cache.db. Logs
+	// the location; the editor runs fine without a db (cache disabled).
+	bool OpenCacheDb();
+	void DrawScratchDialog(); // File > Scratch disk... modal
 	// ---- cooked pak state (kept alive: PakReader borrows these bytes) ----
 	std::string m_pakPath; // empty when the scene came from glTF
 	std::vector<uint8_t> m_pakImage;

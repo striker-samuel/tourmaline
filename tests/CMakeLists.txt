@@ -246,6 +246,21 @@ set_target_properties(TourTests PROPERTIES
 
 add_test(NAME tour_tests COMMAND TourTests)
 
+project(CacheTests)
+
+add_executable(CacheTests test_cache.cpp)
+
+target_link_libraries(CacheTests
+    PRIVATE
+        artifact_cache
+)
+
+set_target_properties(CacheTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME cache_tests COMMAND CacheTests)
+
 project(FlintbaseTests)
 
 add_executable(FlintbaseTests test_flintbase.cpp)
