@@ -68,6 +68,10 @@ enum class PakAssetKind : uint32_t {
 	// serve Texture blobs); read via ParseGiRegistryBlob / ListPakScenes
 	// style discovery, never via file reads.
 	Gi = 6,
+	// Authored camera (editor camera node). One blob per camera, keyed
+	// by its asset URI — loaded back into the Cluster cameras pool
+	// exactly like Light blobs (see cluster_serializer.cpp).
+	Camera = 7,
 };
 
 enum PakEntryFlags : uint32_t {

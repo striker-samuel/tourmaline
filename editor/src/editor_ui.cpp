@@ -214,6 +214,7 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawPlayBar();
 	DrawFlintbasePanel();
 	DrawReferencesPanel(); // Maya-style reference list (View menu)
+	DrawPathsPanel(); // consolidated file/path view (File menu)
 	if (m_placement.showGraph)
 		DrawPlacementGraph();
 }
@@ -238,6 +239,9 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
 			m_showReferencesPanel = !m_showReferencesPanel;
+		if (ImGui::MenuItem("Path editor...", nullptr,
+				m_showPathsPanel))
+			m_showPathsPanel = !m_showPathsPanel;
 		if (ImGui::MenuItem("Save tour...")) {
 			std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 				"%s", TourTarget().c_str());
@@ -274,6 +278,8 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cubemap capture (pinned)", nullptr, false,
 				canCreate))
 			DraftCreateCubemap();
+		if (ImGui::MenuItem("Camera", nullptr, false, canCreate))
+			DraftCreateCamera();
 		if (ImGui::MenuItem("Terrain...", nullptr, false, canCreate)) {
 			// Seed the dialog defaults (name, material) once per open.
 			std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf), "%s",
@@ -475,6 +481,9 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 				m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
+		if (ImGui::MenuItem("Camera frustums", nullptr,
+				m_showCameraGizmos))
+			m_showCameraGizmos = !m_showCameraGizmos;
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -847,13 +856,187 @@ void EditorApp::DrawOutliner() {
 	}
 }
 
+void EditorApp::ClearNonDagSelection() {
+	m_nonDagSel = NonDagSel{};
+	m_imageFocus = UINT32_MAX;
+}
+
+void EditorApp::SelectNonDag(NonDagKind kind, uint32_t index) {
+	// Single selection, mutually exclusive with node/World picks
+	// (SetSelection fans out to the non-DAG clear first).
+	SetSelection(UINT32_MAX);
+	m_nonDagSel.valid = true;
+	m_nonDagSel.kind = kind;
+	m_nonDagSel.index = index;
+	if (kind == NonDagKind::Material && m_world
+		&& index < m_world->materialLocations.size()) {
+		m_matEditorSel = index;
+		if (m_materialFocus != index) {
+			if (m_materialFocus != UINT32_MAX)
+				m_materialTrail.push_back(m_materialFocus);
+			m_materialFocus = index; // opens the material page
+		}
+	}
+	else if (kind == NonDagKind::Image) {
+		m_imageFocus = index; // Images-tab highlight (sticky)
+	}
+}
+
+void EditorApp::CollectNonDagEntries(std::vector<NonDagEntry>& out) const {
+	out.clear();
+	// Future node sets: add a NonDagKind value + one block here; the
+	// section rendering and picking below stay kind-driven.
+	for (size_t i = 0; i < m_images.size(); ++i) {
+		NonDagEntry e;
+		e.kind = NonDagKind::Image;
+		e.index = uint32_t(i);
+		const std::string& name = m_images[i].name;
+		std::string base = m_images[i].path;
+		const size_t s = base.find_last_of("/\\");
+		if (s != std::string::npos)
+			base = base.substr(s + 1);
+		e.label = "[file] " + (name.empty() ? base : name);
+		out.push_back(std::move(e));
+	}
+	if (m_world) {
+		for (uint32_t i = 0;
+			i < uint32_t(m_world->materialLocations.size()); ++i) {
+			const auto& loc = m_world->materialLocations[i];
+			if (!loc.cluster || !loc.handle.valid())
+				continue;
+			NonDagEntry e;
+			e.kind = NonDagKind::Material;
+			e.index = i;
+			e.label = "[mat] mat." + std::to_string(i) + " "
+				+ std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
+			out.push_back(std::move(e));
+		}
+	}
+}
+
+void EditorApp::DrawNonDagSection() {
+	SetupDefaultCameras();
+	std::vector<NonDagEntry> entries;
+	CollectNonDagEntries(entries);
+	const bool filtering = m_filterBuf[0] != '\0';
+	// Editor orbit cameras (virtual rows): click binds the ACTIVE
+	// viewport (same as its chip combo). These are session view state,
+	// never scene nodes — they don't select, don't cook, and stay out
+	// of the shift-range order.
+	auto drawEditorCamRow = [&](size_t ci) {
+		const EditorCam& ec = m_editorCams[ci];
+		const std::string label = "[editor] " + ec.name;
+		if (!filtering || label.find(m_filterBuf) != std::string::npos) {
+			ImGui::PushID(int(2000000 + ci));
+			const bool active = m_viewports[m_activeVp].camIdx == int(ci)
+				&& m_viewports[m_activeVp].boundNode < 0;
+			if (ImGui::Selectable(label.c_str(), active)) {
+				m_viewports[m_activeVp].camIdx = int(ci);
+				m_viewports[m_activeVp].boundNode = -1;
+				Log("Viewport " + std::to_string(m_activeVp)
+					+ " orbit camera: '" + ec.name + "'.");
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Editor orbit camera (session view "
+					"state, never cooked). Click binds the active "
+					"viewport; orbit with Alt+LMB/MMB/RMB.");
+			ImGui::PopID();
+		}
+	};
+	if (filtering) {
+		// Flat rows (same child as the node hits).
+		for (const NonDagEntry& e : entries) {
+			if (e.label.find(m_filterBuf) == std::string::npos)
+				continue;
+			std::string label = e.label;
+			if (e.kind == NonDagKind::Image) {
+				std::error_code ec;
+				if (!std::filesystem::exists(
+						std::filesystem::path(m_images[size_t(e.index)].path), ec))
+					label += " [missing]";
+			}
+			ImGui::PushID(int(1000000 + int(e.kind) * 100000 + e.index));
+			const bool sel = m_nonDagSel.valid
+				&& m_nonDagSel.kind == e.kind
+				&& m_nonDagSel.index == e.index;
+			if (ImGui::Selectable(label.c_str(), sel))
+				SelectNonDag(e.kind, e.index);
+			ImGui::PopID();
+		}
+		for (size_t ci = 0; ci < m_editorCams.size(); ++ci)
+			drawEditorCamRow(ci);
+		return;
+	}
+	ImGui::PushID("nondag");
+	const bool open = ImGui::TreeNodeEx("##root",
+		ImGuiTreeNodeFlags_DefaultOpen,
+		"Non-DAG (%zu)", entries.size());
+	if (!open) {
+		ImGui::PopID();
+		return;
+	}
+	auto drawGroup = [&](const char* title, NonDagKind kind) {
+		size_t n = 0;
+		for (const NonDagEntry& e : entries)
+			if (e.kind == kind)
+				++n;
+		if (n == 0)
+			return;
+		ImGui::PushID(title);
+		const bool gopen = ImGui::TreeNodeEx("##g",
+			ImGuiTreeNodeFlags_DefaultOpen, "%s (%zu)", title, n);
+		if (gopen) {
+			for (const NonDagEntry& e : entries) {
+				if (e.kind != kind)
+					continue;
+				std::string label = e.label;
+				if (e.kind == NonDagKind::Image) {
+					std::error_code ec;
+					if (!std::filesystem::exists(std::filesystem::path(
+							m_images[size_t(e.index)].path), ec))
+						label += " [missing]";
+				}
+				ImGui::PushID(int(e.index));
+				const bool sel = m_nonDagSel.valid
+					&& m_nonDagSel.kind == e.kind
+					&& m_nonDagSel.index == e.index;
+				if (ImGui::Selectable(label.c_str(), sel))
+					SelectNonDag(e.kind, e.index);
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+		ImGui::PopID();
+	};
+	drawGroup("Images", NonDagKind::Image);
+	drawGroup("Materials", NonDagKind::Material);
+	ImGui::PushID("editorcams");
+	const bool eopen = ImGui::TreeNodeEx("##g",
+		ImGuiTreeNodeFlags_DefaultOpen, "Editor (%zu)",
+		m_editorCams.size());
+	if (eopen) {
+		for (size_t ci = 0; ci < m_editorCams.size(); ++ci)
+			drawEditorCamRow(ci);
+		ImGui::TreePop();
+	}
+	ImGui::PopID();
+	ImGui::TreePop();
+	ImGui::PopID();
+}
+
 void EditorApp::DrawSceneOutliner() {
 	if (!m_world || m_world->scene.hierarchy.empty()) {
 		ImGui::TextDisabled("No scene. File > Open scene... (.gltf/.pak)");
 		return;
 	}
+	ImGui::SetNextItemWidth(-90.0f);
 	ImGui::InputTextWithHint("##filter", "filter nodes...",
 		m_filterBuf, sizeof(m_filterBuf));
+	ImGui::SameLine();
+	ImGui::Checkbox("non-DAG", &m_showNonDag);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Show non-scene rows (file/image nodes, "
+			"materials, editor orbit cameras) in this tree.");
 	const bool filtering = m_filterBuf[0] != '\0';
 	std::string selName = "-";
 	if (m_worldSelected)
@@ -867,6 +1050,7 @@ void EditorApp::DrawSceneOutliner() {
 		selName.c_str());
 	ImGui::Separator();
 	ImGui::Separator();
+	m_outlinerOrder.clear(); // rebuilt below (tree XOR filter rows)
 	ImGui::BeginChild("##tree");
 	// World pseudo-node: global render settings. Pinned above the tree,
 	// never part of it — no children, no drag&drop, no rename/delete.
@@ -881,6 +1065,8 @@ void EditorApp::DrawSceneOutliner() {
 		if (!filtering)
 			ImGui::Separator();
 	}
+	if (m_showNonDag && !filtering)
+		DrawNonDagSection();
 	if (filtering) {
 		for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
 			if (m_deletedNodes.contains(n))
@@ -890,22 +1076,27 @@ void EditorApp::DrawSceneOutliner() {
 			const std::string name = getNodeName(m_world->scene, int(n));
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
+			m_outlinerOrder.push_back(n); // visible-row order (shift-range)
 			ImGui::PushID(int(n));
 			const bool sel = IsSelected(n);
-		char label[256];
-		std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s", n,
+		char label[300];
+		std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s", n,
 			name.empty() ? "(unnamed)" : name.c_str(),
 			m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 			FindNodeLight(n) ? " [light]" : "",
 			m_world->scene.cvolForNode.contains(n) ? " [cvol]" : "",
 			m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
+			m_world->scene.cameraForNode.contains(n) ? " [camera]" : "",
 			IsEnvNode(n) ? " [env]" : "",
 			IsRefPlaceholder(n) ? " [ref]" : "",
 			!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
 			if (ImGui::Selectable(label, sel)) {
-				// Click = replace selection; Ctrl/Shift-click = add.
-				if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)
-					AddToSelection(n);
+				// Click = replace; ctrl-click = toggle one;
+				// shift-click = contiguous visible range.
+				if (ImGui::GetIO().KeyShift)
+					SelectRange(n);
+				else if (ImGui::GetIO().KeyCtrl)
+					ToggleSelection(n);
 				else
 					SetSelection(n);
 				m_revealNode = n;
@@ -914,6 +1105,8 @@ void EditorApp::DrawSceneOutliner() {
 				ImGui::SetScrollHereY(0.5f);
 			ImGui::PopID();
 		}
+		if (m_showNonDag)
+			DrawNonDagSection();
 	}
 	else {
 		// Reveal a viewport pick: force-open the ancestor chain so the
@@ -1190,6 +1383,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
 	if (m_deletedNodes.contains(node))
 		return; // deleted (Maya delete): out of the live scene
+	m_outlinerOrder.push_back(node); // visible-row order (shift-range)
 	const Scene& scene = m_world->scene;	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);
 	const bool sel = IsSelected(node);
@@ -1209,12 +1403,13 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Directional ? "sun" :
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
-	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s",
+	char label[300];
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s",
 		name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		scene.cvolForNode.contains(node) ? " [cvol]" : "",
 		scene.cubemapForNode.contains(node) ? " [cube]" : "",
+		scene.cameraForNode.contains(node) ? " [camera]" : "",
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 		IsEnvNode(node) ? " [env]" : "",
@@ -1244,8 +1439,12 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		ImGui::EndDragDropTarget();
 	}
 	if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-		if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)
-			AddToSelection(node);
+		// Click = replace; ctrl-click = toggle one; shift-click =
+		// contiguous visible range from the primary.
+		if (ImGui::GetIO().KeyShift)
+			SelectRange(node);
+		else if (ImGui::GetIO().KeyCtrl)
+			ToggleSelection(node);
 		else
 			SetSelection(node);
 	}
@@ -1901,6 +2100,97 @@ void EditorApp::DrawCubemapSection(uint32_t node) {
 		"(gizmo); bake: Cook panel > Cubemap captures (pinned rows)");
 }
 
+void EditorApp::DrawCamSection(uint32_t node) {
+	// Authored camera on this node (editor camera node): the LENS below;
+	// the pose is the node's transform (gizmo), forward = node -Z in
+	// world. Undoable SetCamAttr edits persisted as setCamAttr tour
+	// verbs so cooks replay them.
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return;
+	Scene& scene = m_world->scene;
+	if (!scene.cameraForNode.contains(node))
+		return;
+	ImGui::Separator();
+	ImGui::Text("Camera: '%s'",
+		getNodeName(scene, int(node)).c_str());
+	ImGui::TextDisabled("pose = node transform (gizmo), forward = -Z");
+	const ::SceneCamera* C = FindNodeCamera(node);
+	if (!C)
+		return;
+	auto beginCamDrag = [&](const char* attr) {
+		if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCamAttr ||
+			m_pending.cmd.node != node || m_pending.cmd.camAttr != attr))
+			FinalizePending();
+		if (!m_pending.active) {
+			m_pending.active = true;
+			m_pending.cmd = EditCmd{};
+			m_pending.cmd.verb = EditVerb::SetCamAttr;
+			m_pending.cmd.node = node;
+			m_pending.cmd.camAttr = attr;
+			ReadNodeCameraAttr(node, attr, m_pending.cmd.beforeVec4,
+				m_pending.cmd.beforeNum, m_pending.cmd.beforeText);
+		}
+	};
+	auto endCamDrag = [&](const char* attr) {
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.verb == EditVerb::SetCamAttr &&
+			m_pending.cmd.node == node &&
+			m_pending.cmd.camAttr == attr)
+			FinishDrag();
+	};
+	int proj = (C->projection
+		== ::SceneCamera::Projection::Orthographic) ? 1 : 0;
+	if (ImGui::Combo("Projection", &proj,
+			"Perspective\0Orthographic\0")) {
+		EditCmd c{};
+		c.verb = EditVerb::SetCamAttr;
+		c.node = node;
+		c.camAttr = "projection";
+		c.number = double(proj);
+		ReadNodeCameraAttr(node, "projection", c.beforeVec4,
+			c.beforeNum, c.beforeText);
+		Do(c);
+	}
+	if (proj == 0) {
+		float fov = C->fovYDeg;
+		if (ImGui::DragFloat("FOV (deg)", &fov, 1.0f, 1.0f, 179.0f,
+				"%.0f")) {
+			beginCamDrag("fovY");
+			WriteNodeCameraAttr(node, "fovY", glm::vec4(0),
+				double(fov), {});
+			m_pending.cmd.number = double(fov);
+		}
+		endCamDrag("fovY");
+	}
+	else {
+		float hh = C->orthoHalfH;
+		if (ImGui::DragFloat("Ortho half-height (m)", &hh, 0.25f,
+				0.01f, 100000.0f)) {
+			beginCamDrag("orthoHalfH");
+			WriteNodeCameraAttr(node, "orthoHalfH", glm::vec4(0),
+				double(hh), {});
+			m_pending.cmd.number = double(hh);
+		}
+		endCamDrag("orthoHalfH");
+	}
+	float nc = C->nearClip;
+	if (ImGui::DragFloat("Near clip", &nc, 0.005f, 0.0001f, 50.0f,
+			"%.4f")) {
+		beginCamDrag("near");
+		WriteNodeCameraAttr(node, "near", glm::vec4(0), double(nc), {});
+		m_pending.cmd.number = double(nc);
+	}
+	endCamDrag("near");
+	float fc = C->farClip;
+	if (ImGui::DragFloat("Far clip", &fc, 5.0f, 0.01f, 1000000.0f,
+			"%.0f")) {
+		beginCamDrag("far");
+		WriteNodeCameraAttr(node, "far", glm::vec4(0), double(fc), {});
+		m_pending.cmd.number = double(fc);
+	}
+	endCamDrag("far");
+}
+
 void EditorApp::DrawInspector() {
 	SetupDefaultCameras();
 	// Material focus page: the Inspector is "traveling" in a material.
@@ -1920,7 +2210,6 @@ void EditorApp::DrawInspector() {
 			"Drag nodes onto each other to reparent. All edits are undoable (Ctrl+Z). "
 			"Global settings (sun, IBL, exposure) live on the World node at the "
 			"top of the outliner.");
-		DrawCameraSection();
 		return;
 	}
 	Scene& scene = m_world->scene;
@@ -2368,6 +2657,8 @@ void EditorApp::DrawInspector() {
 	DrawCvolSection(node);
 	// Authored cubemap capture on this node (pinned probe inspector).
 	DrawCubemapSection(node);
+	// Authored camera on this node (lens inspector).
+	DrawCamSection(node);
 
 	// Lightmap participation.
 	{
@@ -2459,10 +2750,9 @@ void EditorApp::DrawInspector() {
 
 	// Scene reference block (placeholder nodes).
 	DrawReferenceSection(node);
-
-	// Editor camera (active viewport). Environment *settings* live only
-	// on the World node; per-node env UI above just picks the IBL source.
-	DrawCameraSection();
+	// NOTE: the active-viewport orbit camera used to live here; it moved
+	// to the World panel ("Viewport camera"). Node pages show authored
+	// state only — camera nodes get the lens section above instead.
 }
 
 void EditorApp::DrawCameraSection() {
@@ -3003,10 +3293,12 @@ void EditorApp::DrawConsolePanel() {
 }
 
 // ---- Images tab (scene image definitions, Maya file nodes) -------------
-// Editor-only image declarations OUTSIDE the DAG (like materials): a
-// path + sampling settings each. A material that uses one mints the
-// cluster texture resource at use time; until then these are authoring
-// state, persisted as img.* editorSettings (never cooked).
+// Image declarations OUTSIDE the DAG (like materials): a path +
+// sampling settings each. A material that uses one mints the cluster
+// texture resource at use time; until then these are authoring state.
+// Persisted as img.* editorSettings (legacy) AND cooked fileNode records
+// (path + colorspace + sampler intent — the cooker reads them for KTX
+// conversion); fileNodes win on load.
 void EditorApp::DrawImagesTab() {
 	if (ImGui::Button("Add image...")) {
 		std::string picked;
@@ -3027,6 +3319,12 @@ void EditorApp::DrawImagesTab() {
 		ImageDef& img = m_images[i];
 		ImGui::PushID(int(i));
 		ImGui::Separator();
+		if (m_imageFocus == i) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.25f, 1.0f));
+			ImGui::TextUnformatted(">> outliner selection");
+			ImGui::PopStyleColor();
+			ImGui::SetScrollHereY(0.5f);
+		}
 		ImGui::SetNextItemWidth(-120.0f);
 		char nameBuf[128];
 		std::snprintf(nameBuf, sizeof(nameBuf), "%s", img.name.c_str());
@@ -3454,6 +3752,14 @@ void EditorApp::DrawCookDialog() {
 		ImGui::Unindent();
 	}
 
+	if (ImGui::Checkbox("Auto-convert textures (KTX2)", &m_cook.autoKtx))
+		AutosaveTour();
+	ImGui::SameLine();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Non-KTX sources transcode in-process at cook "
+			"(file-node colorspace honored, `.ktx2` sidecar cached next "
+			"to the source). Off restores warn-and-skip.");
+
 	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
 		AutosaveTour();
 	if (m_cook.lightmap) {
@@ -3520,7 +3826,6 @@ void EditorApp::DrawCookDialog() {
 		ImGui::InputText("##cubemapName", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			m_cook.cubemapName = m_cookCubemapNameBuf;
-		ImGui::Text("Size:");
 		ImGui::Text("Size:");
 		int size = m_cook.cubemapSize;
 		ImGui::SetNextItemWidth(-FLT_MIN);

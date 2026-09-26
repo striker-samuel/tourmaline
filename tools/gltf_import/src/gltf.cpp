@@ -1,6 +1,7 @@
 #define TINYGLTF_IMPLEMENTATION
 
 #include <gltf_import/gltf.h>
+#include <ktx.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Utils/thread_pool.h>
@@ -11,6 +12,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -190,6 +192,127 @@ namespace {
 			return std::nullopt;
 		return bytes;
 	}
+	// VFS-style asset URI base for a model path. Relative/VFS paths
+	// normalize directly. Absolute host paths (drive-letter or
+	// posix-absolute) are rejected by NormalizeAssetUri — without a
+	// fallback modelUriBase stays empty and the importer silently drops
+	// mesh/material URIs, and with them LOD chains + meshlets (all
+	// gated on a non-empty base). Fall back to the `content/`-relative
+	// suffix when present (matches CLI cooks of the same file), else
+	// the bare filename. Deterministic for a given path, so the editor
+	// and the cooker agree.
+	inline std::string ResolveUriBase(const std::string& path) {
+		const smvk::StringViewT n =
+			smvk::NormalizeAssetUri(smvk::StringViewT(path));
+		if (!n.empty())
+			return smvk::AssetFilePart(n);
+		if (path.empty())
+			return {};
+		std::string posix = path;
+		for (char& c : posix)
+			if (c == '\\')
+				c = '/';
+		const std::string marker = "content/";
+		std::string fallback;
+		if (const size_t at = posix.find(marker); at != std::string::npos)
+			fallback = posix.substr(at + marker.size());
+		else
+			fallback = std::filesystem::path(posix).filename().generic_string();
+		const smvk::StringViewT fn =
+			smvk::NormalizeAssetUri(smvk::StringViewT(fallback));
+		if (fn.empty())
+			return {};
+		return smvk::AssetFilePart(fn);
+	}
+	// KTX2 file identifier (first 12 bytes) for payload validation.
+	inline bool IsKtx2Payload(const std::vector<uint8_t>& bytes) {
+		static constexpr uint8_t kMagic[12] = {
+			0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+		return bytes.size() >= 12 && memcmp(bytes.data(), kMagic, 12) == 0;
+	}
+	// ---- KTX auto-convert (file nodes + `.ktx2` sidecar cache) ----
+	// Lowercase basename / stem for file-node matching (editor image defs
+	// carry absolute host paths; glTF images carry relative URIs — the
+	// basename bridges them, like the staging scripts' stem keys).
+	inline std::string LowerStr(std::string s) {
+		for (char& c : s)
+			c = char(std::tolower(uint8_t(c)));
+		return s;
+	}
+	inline std::string BaseNameOf(const std::string& p) {
+		std::string posix = p;
+		for (char& c : posix)
+			if (c == '\\')
+				c = '/';
+		const size_t s = posix.find_last_of('/');
+		const std::string base =
+			(s == std::string::npos) ? posix : posix.substr(s + 1);
+		return LowerStr(base);
+	}
+	inline std::string StemOf(const std::string& p) {
+		const std::string base = BaseNameOf(p);
+		const size_t d = base.find_last_of('.');
+		return (d == std::string::npos) ? base : base.substr(0, d);
+	}
+	inline std::string ExtOf(const std::string& p) {
+		const size_t d = p.find_last_of('.');
+		const size_t s = p.find_last_of("/\\");
+		if (d == std::string::npos || (s != std::string::npos && d < s))
+			return {};
+		return LowerStr(p.substr(d));
+	}
+	// HDR sources (.hdr/.exr) need float pipelines the in-process
+	// transcoder doesn't have yet — stb would silently mangle them to
+	// LDR, so they stay skipped (status quo) until an RGBA16F path lands.
+	inline bool IsHdrImagePath(const std::string& p) {
+		const std::string e = ExtOf(p);
+		return e == ".hdr" || e == ".exr";
+	}
+	// True when sidecar KTX2 bytes carry a VTXfer stamp disagreeing with
+	// the requested transfer (or fail to parse at all — a torn sidecar
+	// must retranscode, never promote). Foreign sidecars (toktx, ...) carry
+	// no stamp and are trusted by mtime.
+	inline bool SidecarTransferMismatch(const std::vector<uint8_t>& ktx,
+		bool wantSrgb) {
+		ktxTexture2* tex = nullptr;
+		if (ktxTexture2_CreateFromMemory(ktx.data(), ktx.size(), 0, &tex)
+				!= KTX_SUCCESS
+			|| !tex) {
+			if (tex)
+				ktxTexture2_Destroy(tex);
+			return true;
+		}
+		unsigned int len = 0;
+		void* val = nullptr;
+		const bool found = ktxHashList_FindValue(&tex->kvDataHead, "VTXfer",
+			&len, &val) == KTX_SUCCESS;
+		bool mismatch = false;
+		if (found) {
+			const char* want = wantSrgb ? "srgb" : "linear";
+			const size_t wantLen = std::strlen(want);
+			mismatch = (len != wantLen)
+				|| std::memcmp(val, want, wantLen) != 0;
+		}
+		ktxTexture2_Destroy(tex);
+		return mismatch;
+	}
+	// GL sampler enums (core, stable): the file-node wrap/filter intent
+	// maps onto the stashed TextureSamplerDesc in the same vocabulary
+	// the glTF sampler path uses. Min filter assumes the generated chain.
+	inline void ApplyFileNodeSampler(smvk::TextureSamplerDesc& samp,
+		const smvk::tour::FileNode& fn) {
+		samp.wrapS = samp.wrapT = (fn.wrap == 1) ? 33071 // CLAMP_TO_EDGE
+			: (fn.wrap == 2) ? 33648 // MIRRORED_REPEAT
+			: 10497; // REPEAT
+		if (fn.filter != 0) {
+			samp.magFilter = 9728; // NEAREST
+			samp.minFilter = 9728; // NEAREST (no mips sampled)
+		}
+		else {
+			samp.magFilter = 9729; // LINEAR
+			samp.minFilter = 9987; // LINEAR_MIPMAP_LINEAR
+		}
+	}
 }; // namespace
 
 GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinygltf::Model& inModel, std::filesystem::path inGltfModelPath)
@@ -197,7 +320,7 @@ GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinyglt
 	, model(inModel)
 	, gltfModelPath(std::move(inGltfModelPath))
 	, textureSource(std::make_shared<HostTextureSource>(gltfModelPath.parent_path()))
-	, modelUriBase(smvk::vfs::Normalize(gltfModelPath.generic_string()))
+	, modelUriBase(ResolveUriBase(gltfModelPath.generic_string()))
 	, materialCache(inModel.materials.size())
 {
 	meshCache.resize(inModel.meshes.size());
@@ -215,9 +338,9 @@ void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source
 }
 
 void GltfToSceneImporter::setModelUriBase(const std::string& vfsPath) {
-	const smvk::StringViewT n = smvk::NormalizeAssetUri(vfsPath);
-	if (!n.empty())
-		modelUriBase = smvk::AssetFilePart(n);
+	const std::string base = ResolveUriBase(vfsPath);
+	if (!base.empty())
+		modelUriBase = base;
 }
 
 void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
@@ -226,6 +349,134 @@ void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
 
 void GltfToSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
 	meshletConfig = config;
+}
+
+void GltfToSceneImporter::setFileNodes(
+	const std::vector<smvk::tour::FileNode>& nodes) {
+	fileNodes_ = nodes;
+}
+
+const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(
+	const std::string& imageUri) const {
+	if (fileNodes_.empty() || imageUri.empty())
+		return nullptr;
+	const std::string base = BaseNameOf(imageUri);
+	const std::string stem = StemOf(imageUri);
+	for (const auto& fn : fileNodes_) { // exact basename first
+		if (!fn.path.empty() && BaseNameOf(fn.path) == base)
+			return &fn;
+	}
+	for (const auto& fn : fileNodes_) { // then stem / display name
+		if (!fn.path.empty() && StemOf(fn.path) == stem)
+			return &fn;
+		if (!fn.name.empty() && LowerStr(fn.name) == stem)
+			return &fn;
+	}
+	return nullptr;
+}
+
+bool GltfToSceneImporter::inferSrgb(int imageIndex) const {
+	if (imageIndex < 0)
+		return false;
+	auto uses = [&](int texIdx) {
+		return texIdx >= 0 && texIdx < int(model.textures.size())
+			&& model.textures[size_t(texIdx)].source == imageIndex;
+	};
+	for (const auto& m : model.materials) {
+		if (uses(m.pbrMetallicRoughness.baseColorTexture.index))
+			return true;
+		if (uses(m.emissiveTexture.index))
+			return true;
+	}
+	return false; // data maps (and unknown uses) stay linear
+}
+
+bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
+	std::vector<uint8_t> srcBytes, int imageIndex, std::vector<uint8_t>& out,
+	std::string& err) const {
+	out.clear();
+	if (IsKtx2Payload(srcBytes)) {
+		out = std::move(srcBytes);
+		return true;
+	}
+	// Off restores the old warn-and-skip wholesale (no promotion either:
+	// a stale sidecar must never override an explicit opt-out).
+	if (!autoKtx_) {
+		err = "not a KTX2 payload (auto-ktx off): " + imageUri;
+		return false;
+	}
+	// Conversion intent first: it validates the sidecar below (a
+	// colorspace change must invalidate the cache, not silently reuse it).
+	const smvk::tour::FileNode* fn = matchFileNode(imageUri);
+	const bool srgb = fn ? (fn->colorspace == 0) : inferSrgb(imageIndex);
+	// Host-backed sources can persist the conversion: `.ktx2` next to the
+	// source, reused while fresher (avoids recooks; the editor promotes
+	// the same sidecars at load).
+	std::optional<std::filesystem::path> hostPath;
+	if (textureSource)
+		hostPath = textureSource->HostPath(imageUri);
+	std::optional<std::filesystem::path> sidecar;
+	if (hostPath && !hostPath->empty()) {
+		std::filesystem::path sc = *hostPath;
+		sc.replace_extension(".ktx2");
+		sidecar = sc;
+		std::error_code ec;
+		if (std::filesystem::exists(sc, ec)
+			&& std::filesystem::exists(*hostPath, ec)) {
+			std::error_code ec2;
+			const auto tSide = std::filesystem::last_write_time(sc, ec2);
+			const auto tSrc = std::filesystem::last_write_time(*hostPath, ec2);
+			if (!ec2 && tSide >= tSrc) {
+				if (auto sb = ReadHostBytes(sc); sb && IsKtx2Payload(*sb)) {
+					if (SidecarTransferMismatch(*sb, srgb)) {
+						std::cerr << "KTX sidecar stale transfer, reconverting: "
+							<< sc.generic_string() << std::endl;
+					}
+					else {
+						std::cerr << "KTX promoted sidecar: "
+							<< sc.generic_string() << std::endl;
+						out = std::move(*sb);
+						return true;
+					}
+				}
+			}
+		}
+	}
+	if (IsHdrImagePath(imageUri)) {
+		err = "HDR source skipped (no float transcode yet): " + imageUri;
+		return false;
+	}
+	std::vector<uint8_t> ktx;
+	std::string terr;
+	if (!TranscodeImageToKtx2(srcBytes.data(), srcBytes.size(), srgb,
+			imageUri, ktx, terr)) {
+		err = terr;
+		return false;
+	}
+	std::cerr << "KTX converted (" << (srgb ? "srgb" : "linear") << " "
+		<< srcBytes.size() << " -> " << ktx.size() << " B): " << imageUri
+		<< std::endl;
+	if (sidecar) { // best-effort cache; the bytes are used regardless
+		std::error_code ec;
+		std::filesystem::create_directories(sidecar->parent_path(), ec);
+		std::ofstream f(*sidecar, std::ios::binary | std::ios::trunc);
+		if (f) {
+			f.write(reinterpret_cast<const char*>(ktx.data()),
+				std::streamsize(ktx.size()));
+			if (f.good())
+				std::cerr << "KTX sidecar cached: "
+					<< sidecar->generic_string() << std::endl;
+			else
+				std::cerr << "KTX sidecar write failed: "
+					<< sidecar->generic_string() << std::endl;
+		}
+		else {
+			std::cerr << "KTX sidecar write failed: "
+				<< sidecar->generic_string() << std::endl;
+		}
+	}
+	out = std::move(ktx);
+	return true;
 }
 
 namespace {
@@ -410,13 +661,6 @@ bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
 }
 } // namespace
 
-// KTX2 file identifier (first 12 bytes) for cook-time payload validation.
-inline bool IsKtx2Payload(const std::vector<uint8_t>& bytes) {
-	static constexpr uint8_t kMagic[12] = {
-		0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
-	return bytes.size() >= 12 && memcmp(bytes.data(), kMagic, 12) == 0;
-}
-
 // Single memory-decode texture path shared by preloadTextures and the
 // per-material fallback: bytes come from the configured TextureSource
 // (host files or VFS). Runtime clusters decode/upload via
@@ -443,15 +687,27 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 		return {};
 	}
 	const std::string identity = textureSource->ResolveIdentity(img.uri);
+	// File-node intent for this image (colorspace for conversion, sampler
+	// override below); null when no file node covers it.
+	const smvk::tour::FileNode* fn = matchFileNode(img.uri);
+	// KTX2 passes through; anything else promotes a fresh `.ktx2`
+	// sidecar or transcodes in-process (+caches the sidecar when
+	// host-backed). Unconvertible sources fail loudly here in both
+	// modes (cook mints below, runtime uploads below).
+	{
+		std::vector<uint8_t> ktx;
+		std::string kerr;
+		if (!resolveKtxBytes(img.uri, std::move(*bytes), imageIndex, ktx,
+				kerr)) {
+			std::cerr << (cluster.IsCookMode() ? "Cook: " : "Texture: ")
+				<< kerr << std::endl;
+			return {};
+		}
+		bytes = std::move(ktx);
+	}
 
 	smvk::TextureHandle h;
 	if (cluster.IsCookMode()) {
-		// GPU-free cook: validate the payload so broken references fail
-		// loudly at cook time, then mint a stable cook id.
-		if (!IsKtx2Payload(*bytes)) {
-			std::cerr << "Cook: not a KTX2 payload: " << img.uri << std::endl;
-			return {};
-		}
 		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
 	}
 	else {
@@ -498,6 +754,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 				samp.wrapT = ts.wrapT;
 			}
 		}
+		// A covering file node wins over the glTF sampler (authored
+		// tiling/filter intent travels with the image definition).
+		if (fn)
+			ApplyFileNodeSampler(samp, *fn);
 		cluster.RegisterTextureSampler(identity, samp);
 		// The streaming path already stashed the payload above (moved-from
 		// `bytes` is empty there); the full-res path stashes it here.
@@ -883,6 +1143,7 @@ void GltfToSceneImporter::preloadTextures()
 	struct Pending {
 		int imageIndex = -1;
 		int textureIndex = -1;
+		std::string uri; // glTF-relative image URI (sidecar + file-node key)
 		std::string identity;
 		std::vector<uint8_t> bytes;
 	};
@@ -905,6 +1166,7 @@ void GltfToSceneImporter::preloadTextures()
 		p.imageIndex = imageIndex;
 		auto tf = firstTextureForImage.find(imageIndex);
 		p.textureIndex = tf != firstTextureForImage.end() ? tf->second : -1;
+		p.uri = img.uri;
 		p.identity = textureSource->ResolveIdentity(img.uri);
 		p.bytes = std::move(*bytes);
 		pendings.push_back(std::move(p));
@@ -912,14 +1174,20 @@ void GltfToSceneImporter::preloadTextures()
 
 	if (pendings.empty()) return;
 
-	// Cook mode: no GPU at all — mint stable ids, register uri/sampler/
-	// source, done. Everything here is CPU-only so no threads are needed.
+	// Cook mode: no GPU at all — KTX2 passes through, anything else
+	// promotes a fresh `.ktx2` sidecar or transcodes in-process; then mint
+	// stable ids, register uri/sampler/source, done. Everything here is
+	// CPU-only so no threads are needed.
 	if (cluster.IsCookMode()) {
 		for (Pending& p : pendings) {
-			if (!IsKtx2Payload(p.bytes)) {
-				std::cerr << "Cook: not a KTX2 payload: " << p.identity << std::endl;
+			std::vector<uint8_t> ktx;
+			std::string kerr;
+			if (!resolveKtxBytes(p.uri, std::move(p.bytes), p.imageIndex,
+					ktx, kerr)) {
+				std::cerr << "Cook: " << kerr << std::endl;
 				continue;
 			}
+			p.bytes = std::move(ktx);
 			const smvk::TextureHandle h =
 				smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
 			textureCache[p.imageIndex] = h;
@@ -936,6 +1204,9 @@ void GltfToSceneImporter::preloadTextures()
 						samp.wrapT = ts.wrapT;
 					}
 				}
+				// A covering file node wins over the glTF sampler.
+				if (const smvk::tour::FileNode* fn = matchFileNode(p.uri))
+					ApplyFileNodeSampler(samp, *fn);
 				cluster.RegisterTextureSampler(p.identity, samp);
 				cluster.SetTextureSource(p.identity, std::move(p.bytes));
 			}
@@ -1750,6 +2021,13 @@ std::string HostTextureSource::ResolveIdentity(const std::string& imageUri) cons
 	return n.empty() ? imageUri : n.Str();
 }
 
+std::optional<std::filesystem::path> HostTextureSource::HostPath(
+	const std::string& imageUri) const {
+	if (imageUri.empty() || starts_with(imageUri, "data:"))
+		return std::nullopt;
+	return (baseDir_ / std::filesystem::path(imageUri)).lexically_normal();
+}
+
 VfsTextureSource::VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir)
 	: vfs_(vfs)
 	, vfsBaseDir_(std::move(vfsBaseDir)) {
@@ -1876,7 +2154,9 @@ void GltfToClusterFromVfs(
 	const smvk::MeshletConfig& meshlets,
 	int coordFix,
 	const glm::mat4& preTransform,
-	int gltfSceneIndex) {
+	int gltfSceneIndex,
+	bool autoKtx,
+	const std::vector<smvk::tour::FileNode>* fileNodes) {
 	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
 	tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
 	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
@@ -1887,6 +2167,9 @@ void GltfToClusterFromVfs(
 	importer.setModelUriBase(modelPath);
 	importer.setMeshOptConfig(meshOpt);
 	importer.setMeshletConfig(meshlets);
+	importer.setAutoKtx(autoKtx);
+	if (fileNodes)
+		importer.setFileNodes(*fileNodes);
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
 
@@ -2016,7 +2299,9 @@ size_t ApplySceneReferences(
 	int coordFix,
 	std::vector<int>* outPlaceholderNodes,
 	std::vector<std::string>* outIssues,
-	std::vector<std::string>* outResolvedSources) {
+	std::vector<std::string>* outResolvedSources,
+	bool autoKtx,
+	const std::vector<smvk::tour::FileNode>* fileNodes) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -2273,15 +2558,23 @@ size_t ApplySceneReferences(
 						std::filesystem::path(baseDir)));
 				importer.setMeshOptConfig(meshOpt);
 				importer.setMeshletConfig(meshlets);
+				importer.setAutoKtx(autoKtx);
+				// Nested tours carry their own file nodes; a level without
+				// any falls back to the top doc's set (or none).
+				if (!cur.doc.fileNodes.empty())
+					importer.setFileNodes(cur.doc.fileNodes);
+				else if (fileNodes)
+					importer.setFileNodes(*fileNodes);
 				importer.setCoordFix(coordFix);
 				if (streamer)
 					importer.setTextureStreamer(streamer);
-				const std::string asPosix =
-					std::filesystem::path(resolved).generic_string();
-				const smvk::StringViewT n =
-					smvk::NormalizeAssetUri(smvk::StringViewT(asPosix));
-				if (!n.empty())
-					importer.setModelUriBase(n.Str());
+			const std::string asPosix =
+				std::filesystem::path(resolved).generic_string();
+			// Unconditional: setModelUriBase falls back to a
+			// content-relative/filename base for absolute host paths
+			// (which NormalizeAssetUri rejects) so mesh URIs — and
+			// with them LOD chains + meshlets — survive the tour path.
+			importer.setModelUriBase(asPosix);
 				importer.preloadTextures();
 				const std::vector<int> roots = GltfRootNodesOf(model);
 				// Root children sit AT `level` (direct-import parity:

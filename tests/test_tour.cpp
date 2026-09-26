@@ -127,6 +127,11 @@ void TestRoundTrip() {
 	doc.cook.meshletMaxVerts = 100;
 	doc.cook.meshletMaxTris = 200;
 	doc.cook.meshletConeWeight = 0.5f;
+	// World-sun record rides the cook block too.
+	doc.cook.sunAzimuth = 120.0f;
+	doc.cook.sunElevation = 42.0f;
+	doc.cook.sunIntensity = 4242.0f;
+	doc.cook.sunColor = glm::vec3(1.0f, 0.5f, 0.25f);
 
 	std::string err;
 	Check(smvk::tour::SaveTour(TempTour(), doc, err), "tour save");
@@ -150,6 +155,13 @@ void TestRoundTrip() {
 		&& back.cook.meshletMaxTris == 200
 		&& std::abs(back.cook.meshletConeWeight - 0.5f) < 1e-6f,
 		"tour cook meshlet settings");
+	Check(std::abs(back.cook.sunAzimuth - 120.0f) < 1e-6f
+		&& std::abs(back.cook.sunElevation - 42.0f) < 1e-6f
+		&& std::abs(back.cook.sunIntensity - 4242.0f) < 1e-3f
+		&& std::abs(back.cook.sunColor.x - 1.0f) < 1e-6f
+		&& std::abs(back.cook.sunColor.y - 0.5f) < 1e-6f
+		&& std::abs(back.cook.sunColor.z - 0.25f) < 1e-6f,
+		"tour cook world sun");
 	if (!back.commands.empty()) {
 		Check(back.commands[0].verb == smvk::tour::Verb::Rename &&
 			back.commands[0].text == "Shop \"Wall\"", "tour rename quoting");
@@ -893,7 +905,7 @@ void TestLightVerbs() {
 
 // Unified createNode form: new files write `createNode -at <type>`;
 // DAG types lower to the legacy verbs at parse (single replay path);
-// system types (material/file/image/camera) parse, validate, and skip
+// system types (material/file/image) parse, validate, and skip
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
 void TestCvolVerbs() {
@@ -1144,7 +1156,7 @@ void TestCubemapVerbs() {
 
 // Unified createNode form: new files write `createNode -at <type>`;
 // DAG types lower to the legacy verbs at parse (single replay path);
-// system types (material/file/image/camera) parse, validate, and skip
+// system types (material/file/image) parse, validate, and skip
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
 void TestCreateNode() {
@@ -1661,10 +1673,171 @@ void TestDeleteAddressing() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
+void TestFileNodes() {
+	smvk::tour::Doc doc;
+	smvk::tour::FileNode fn;
+	fn.name = "Brick \"Wall\"";
+	fn.path = "textures/brick wall.png";
+	fn.colorspace = 0;
+	fn.wrap = 1;
+	fn.filter = 1;
+	doc.fileNodes.push_back(fn);
+	fn = smvk::tour::FileNode{};
+	fn.name = "rough";
+	fn.path = "F:/content/models/x/r.png";
+	fn.colorspace = 1;
+	fn.wrap = 2;
+	fn.filter = 0;
+	doc.fileNodes.push_back(fn);
+	doc.hasCook = true;
+	doc.cook.autoKtx = false;
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "filenode save");
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "filenode load");
+	Check(back.fileNodes.size() == 2, "filenode count");
+	if (back.fileNodes.size() == 2) {
+		Check(back.fileNodes[0].name == "Brick \"Wall\""
+			&& back.fileNodes[0].path == "textures/brick wall.png"
+			&& back.fileNodes[0].colorspace == 0
+			&& back.fileNodes[0].wrap == 1
+			&& back.fileNodes[0].filter == 1, "filenode srgb clamp nearest");
+		Check(back.fileNodes[1].name == "rough"
+			&& back.fileNodes[1].path == "F:/content/models/x/r.png"
+			&& back.fileNodes[1].colorspace == 1
+			&& back.fileNodes[1].wrap == 2
+			&& back.fileNodes[1].filter == 0, "filenode linear mirrored linear");
+	}
+	Check(back.hasCook && back.cook.autoKtx == false, "filenode cook autoktx");
+	// Numeric tolerance + missing-path skip via hand-written lines.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "fileNode -name \"n\" -path \"p.png\" -colorspace 1 -wrap 0 -filter 0;\n";
+		f << "fileNode -name \"noop\";\n";
+		f.close();
+		smvk::tour::Doc h;
+		std::vector<std::string> w2;
+		Check(smvk::tour::LoadTour(TempTour(), h, err, &w2), "filenode hand load");
+		Check(h.fileNodes.size() == 1 && h.fileNodes[0].colorspace == 1,
+			"filenode numeric + pathless skip");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
+void TestCamera() {
+	// Hand-built doc: full-lens create + -ref attrs (fov + position).
+	smvk::tour::Doc doc;
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateCamera;
+	c.node = 0;
+	c.text = "Shot_1";
+	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
+	c.svec = glm::vec3(10.0f, 20.0f, 30.0f);
+	c.vec4 = glm::vec4(0.0f, 35.0f, 0.5f, 500.0f);
+	c.number = 10.0;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetCamAttr;
+	c.node = smvk::tour::kCreateCameraRefBase | 0u;
+	c.text = "fovY";
+	c.number = 40.0;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetCamAttr;
+	c.node = smvk::tour::kCreateCameraRefBase | 0u;
+	c.text = "position";
+	c.vec4 = glm::vec4(4.0f, 5.0f, 6.0f, 1.0f);
+	doc.commands.push_back(c);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "camera save");
+	{
+		std::ifstream in(TempTour(), std::ios::binary);
+		std::stringstream ss;
+		ss << in.rdbuf();
+		const std::string text = ss.str();
+		Check(text.find("createCamera -p 0 -name \"Shot_1\"") != std::string::npos,
+			"camera create line");
+		Check(text.find("\tsetCamAttr -ref 0 -at fovY") != std::string::npos,
+			"camera tabulated ref");
+	}
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns), "camera load");
+	Check(back.commands.size() == 3, "camera command count");
+	if (back.commands.size() == 3) {
+		const auto& cc = back.commands[0];
+		Check(cc.verb == smvk::tour::Verb::CreateCamera
+			&& cc.text == "Shot_1" && cc.vec.x == 1.0f
+			&& cc.svec.y == 20.0f && cc.vec4.y == 35.0f,
+			"camera create payload");
+		Check(back.commands[1].verb == smvk::tour::Verb::SetCamAttr
+			&& back.commands[1].text == "fovY"
+			&& back.commands[1].number == 40.0, "camera fov attr");
+		Check(back.commands[2].text == "position"
+			&& back.commands[2].vec4.x == 4.0f, "camera position attr");
+	}
+	// Unified spelling lowers identically.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "createNode -at camera -p 0 -name \"U\" -t 0 1 2 0 0 0 1 35 0.5 500 8;\n";
+		f.close();
+		smvk::tour::Doc u;
+		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr), "camera unified load");
+		Check(u.commands.size() == 1
+			&& u.commands[0].verb == smvk::tour::Verb::CreateCamera
+			&& u.commands[0].vec4.x == 1.0f
+			&& u.commands[0].number == 8.0, "camera unified lowers");
+	}
+	// Lens validation rejects garbage.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "createCamera -p 0 -name \"B\" -t 0 0 0 0 0 0 0 0 0.5 500 8;\n";
+		f.close();
+		smvk::tour::Doc b;
+		Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr), "camera bad lens rejected");
+		std::ofstream f2(TempTour(), std::ios::binary | std::ios::trunc);
+		f2 << "setCamAttr -n 1 -at zoom -v 2;\n";
+		f2.close();
+		smvk::tour::Doc b2;
+		Check(!smvk::tour::LoadTour(TempTour(), b2, err, nullptr), "camera bad attr rejected");
+	}
+	// Replay: node + pool def + link + -ref attr + position.
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0);
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
+			"camera replay ok");
+		Check(cluster->scene.hierarchy.size() == 2, "camera replay node");
+		const auto it = cluster->scene.cameraForNode.find(1);
+		Check(it != cluster->scene.cameraForNode.end(), "camera replay link");
+		if (it != cluster->scene.cameraForNode.end()) {
+			const smvk::ClusterCameraHandle h =
+				cluster->cameras.getHandle(it->second);
+			const SceneCamera* def = cluster->cameras.get(h);
+			Check(def && def->fovYDeg == 40.0f
+				&& def->projection == SceneCamera::Projection::Perspective
+				&& def->name == "Shot_1", "camera replay lens+name");
+		}
+		// Position channel rebuilt the translate (rotation stayed 10/20/30).
+		const glm::vec3 t(cluster->scene.localTransform[1][3]);
+		Check(std::abs(t.x - 4.0f) < 1e-4f && std::abs(t.y - 5.0f) < 1e-4f
+			&& std::abs(t.z - 6.0f) < 1e-4f, "camera replay position");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 } // namespace
 
 int main() {
 	TestRoundTrip();
+	TestFileNodes();
+	TestCamera();
 	TestTourFormat();
 	TestUnknownVerbSkipped();
 	TestReparent();

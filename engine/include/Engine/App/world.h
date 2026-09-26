@@ -167,6 +167,13 @@ namespace smvk {
 		Cluster* cluster;
 		ClusterLightHandle handle;
 	};
+	// Authored cameras: pool assets like lights — scene.cameraForNode
+	// stores world indices into this table, each entry resolving back
+	// to the owning Cluster + handle.
+	struct CameraLocation {
+		Cluster* cluster;
+		ClusterCameraHandle handle;
+	};
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
@@ -174,6 +181,7 @@ namespace smvk {
 	std::vector<MaterialLocation> materialLocations;
 	std::vector<TextureLocation> textureLocations;
 	std::vector<LightLocation> lightLocations;
+	std::vector<CameraLocation> cameraLocations;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).

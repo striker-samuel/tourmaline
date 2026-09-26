@@ -136,6 +136,36 @@ const ::SceneLight* EditorApp::FindNodeLight(uint32_t node,
 	return l;
 }
 
+// Definition for a camera node (null when the node has none).
+// Resolves through world cameraLocations -> cluster cameras pool.
+const ::SceneCamera* EditorApp::FindNodeCamera(uint32_t node) const {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return nullptr;
+	const Scene& scene = m_world->scene;
+	auto cit = scene.cameraForNode.find(node);
+	if (cit == scene.cameraForNode.end() ||
+		cit->second >= m_world->cameraLocations.size())
+		return nullptr;
+	const auto& loc = m_world->cameraLocations[cit->second];
+	if (!loc.cluster || !loc.handle.valid())
+		return nullptr;
+	return loc.cluster->cameras.get(loc.handle);
+}
+
+uint32_t EditorApp::FindCameraNode() const {
+	// First camera node in hierarchy order (outliner order parity).
+	if (!m_world)
+		return UINT32_MAX;
+	uint32_t best = UINT32_MAX;
+	for (const auto& [node, ci] : m_world->scene.cameraForNode) {
+		(void)ci;
+		if (node < m_world->scene.hierarchy.size()
+			&& (best == UINT32_MAX || node < best))
+			best = node;
+	}
+	return best;
+}
+
 // Cooked-light census + viewport-sun seeding. First directional wins as
 // the sun (App parity); its sliders are seeded from the decoded aim so a
 // pak sun lights the viewport exactly as baked. Intensity is lux-scale in

@@ -5,18 +5,25 @@ project(GltfImport)
 # Static lib linked by PakCooker, GiBaker, CubemapBaker, Editor and App.
 add_library(gltf_import STATIC
     src/gltf.cpp
+    src/tex_transcode.cpp
 )
 
 target_include_directories(gltf_import
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+    # stb_image.h / stb_image_resize.h for the in-process KTX transcoder
+    # (xatlas thirdparty; implementations compile once in tex_transcode).
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/external/xatlas/source/thirdparty
 )
 
 # Engine types are the API (Cluster, VFS, GI bake options); tinygltf comes
-# via engine's public includes.
+# via engine's public includes. libktx is linked explicitly (engine keeps
+# it PRIVATE): the transcoder writes KTX2, and consumers link it through.
 target_link_libraries(gltf_import
     PUBLIC
         engine
+        KTX::ktx
 )
 
 target_compile_definitions(gltf_import PRIVATE ENGINE_VULKAN)

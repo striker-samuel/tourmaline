@@ -46,14 +46,17 @@ void EditorApp::CookToPak() {
 		return;
 	}
 	// Build a TEMP coalesced tour for cooking (don't overwrite the canonical .tour).
-	// The cooker will consume this temp tour; the live .tour stays untouched.
+	// The cooker consumes this temp tour as a snapshot: becomeTarget = false
+	// so the live target, dirty star and autosave slot stay untouched — after
+	// the cook the editor still points at the real scene. (The editor is
+	// locked during the cook, so the snapshot can't go stale mid-flight.)
 	std::string tempTourPath;
 	{
 		namespace fs = std::filesystem;
 		fs::path tmp = fs::temp_directory_path() /
 			("tourmaline_cook_" + fs::path(m_gltfPath).stem().string() + ".tour");
 		std::error_code ec;
-		if (!SaveTourTo(tmp.generic_string())) {
+		if (!SaveTourTo(tmp.generic_string(), false)) {
 			Log("Cook: temp tour save failed, aborting.");
 			return;
 		}
@@ -111,10 +114,29 @@ void EditorApp::CookToPak() {
 		.lexically_normal().string();
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
+	auto feed = std::make_shared<CookFeed>();
+	m_cookFeed = feed;
 	m_cookFuture = std::async(std::launch::async,
-		[cook, giHasCvols, contentRoot, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, giHasCvols, contentRoot, feed, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
-			std::ostringstream log;
+			// Live feed: each pipe line is pushed to the shared feed
+			// (mutex-guarded); PollCookProcess drains it on the main
+			// thread so the Console shows progress while the cook
+			// runs. r.log carries only the tail (exit codes) since
+			// the body was already streamed.
+			auto push = [feed](const std::string& line) {
+				std::lock_guard<std::mutex> lk(feed->mutex);
+				feed->lines.push_back(line);
+			};
+			auto pushPipe = [&push](FILE* pipe) {
+				std::array<char, 512> buf{};
+				while (std::fgets(buf.data(), int(buf.size()), pipe)) {
+					std::string line(buf.data());
+					while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+						line.pop_back();
+					push(line);
+				}
+			};
 			// PakCooker next to Editor.exe.
 			char exePath[1024] = {};
 #ifdef _WIN32
@@ -139,25 +161,22 @@ if (!tempTourPath.empty()) {
 }
 cmd << " --out-pak " << QuoteArg(cook.outPak)
 	<< " 2>&1";
-			log << "cook: " << cmd.str() << "\n";
+			push("cook: " + cmd.str());
 #ifdef _WIN32
 			FILE* pipe = _popen(cmd.str().c_str(), "r");
 #else
 			FILE* pipe = popen(cmd.str().c_str(), "r");
 #endif
 			if (!pipe) {
-				r.log = log.str() + "cook: failed to spawn PakCooker\n";
+				r.log = "cook: failed to spawn PakCooker\n";
 				return r;
 			}
-			std::array<char, 512> buf{};
-			while (std::fgets(buf.data(), int(buf.size()), pipe))
-				log << buf.data();
+			pushPipe(pipe);
 #ifdef _WIN32
 			const int rc = _pclose(pipe);
 #else
 			const int rc = pclose(pipe);
 #endif
-			log << "cook: PakCooker exit=" << rc << "\n";
 			r.ok = (rc == 0);
 			// GI BAKE STAGE: the definition's GI bakes as part of the
 			// cook — GiBaker consumes the SAME definition tour (root
@@ -185,33 +204,32 @@ cmd << " --out-pak " << QuoteArg(cook.outPak)
 					gi << " --out " << QuoteArg(
 						(std::filesystem::path(contentRoot) / "gi" /
 							(pakStem + ".sggi")).generic_string());
-				log << "cook-gi: " << gi.str() << "\n";
+				push("cook-gi: " + gi.str());
 #ifdef _WIN32
 				FILE* gpipe = _popen(gi.str().c_str(), "r");
 #else
 				FILE* gpipe = popen(gi.str().c_str(), "r");
 #endif
 				if (!gpipe) {
-					log << "cook-gi: failed to spawn GiBaker\n";
+					push("cook-gi: failed to spawn GiBaker");
 				}
 				else {
-					while (std::fgets(buf.data(), int(buf.size()), gpipe))
-						log << buf.data();
+					pushPipe(gpipe);
 #ifdef _WIN32
 					const int grc = _pclose(gpipe);
 #else
 					const int grc = pclose(gpipe);
 #endif
-					log << "cook-gi: GiBaker exit=" << grc << "\n";
+					push("cook-gi: GiBaker exit=" + std::to_string(grc));
 					// The pak is the cook's product; a GI bake failure
 					// degrades lighting (not the pak) — reported, not
 					// fatal.
 					if (grc != 0)
-						log << "cook-gi: GI bake FAILED (pak is OK; "
-							"see log above)\n";
+						push("cook-gi: GI bake FAILED (pak is OK; "
+							"see log above)");
 				}
 			}
-			r.log = log.str();
+			r.log = "cook: PakCooker exit=" + std::to_string(rc) + "\n";
 			// Cleanup temp tour file.
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
@@ -303,17 +321,36 @@ void EditorApp::PollRunProcess() {
 void EditorApp::PollCookProcess() {
 	if (!m_cookRunning)
 		return;
+	// Drain the live pipe feed every frame so the Console shows
+	// progress while the cook runs (stuck vs. working is visible).
+	auto drainFeed = [this]() {
+		std::shared_ptr<CookFeed> feed = m_cookFeed;
+		if (!feed)
+			return;
+		std::vector<std::string> ready;
+		{
+			std::lock_guard<std::mutex> lk(feed->mutex);
+			ready.swap(feed->lines);
+		}
+		for (auto& line : ready)
+			Log(line);
+	};
+	drainFeed();
 	if (!m_cookFuture.valid())
 		return;
 	if (m_cookFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 		return;
 	CookResult r = m_cookFuture.get();
 	m_cookRunning = false;
-	// Fan the captured log out line by line.
+	// Late lines that arrived between the drain above and completion.
+	drainFeed();
+	// Tail only (body was already streamed live).
 	std::istringstream ss(r.log);
 	std::string line;
-	while (std::getline(ss, line))
-		Log(line);
+	while (std::getline(ss, line)) {
+		if (!line.empty())
+			Log(line);
+	}
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
 	// The cook dialog shows its own progress; close it on finish
 	// (DrawCookDialog consumes the flag inside the begin block).

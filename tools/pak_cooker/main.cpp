@@ -92,6 +92,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <cmath>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -152,6 +154,10 @@ struct Args {
 	uint32_t maxVerts = 64;
 	uint32_t maxTris = 124;
 	float coneWeight = 0.0f;
+	// KTX auto-convert (on by default): non-KTX sources transcode
+	// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
+	// to the source). Off restores warn-and-skip for non-KTX payloads.
+	bool autoKtx = true;
 	// Collapse static subtrees into per-material mega-mesh blocks.
 	bool collapseStatic = false;
 	// Per-blob LZ4 compression (default on: only stores when it shrinks).
@@ -258,6 +264,10 @@ struct Args {
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
+	// World-sun color (linear RGB): with the angles/intensity above it IS
+	// the cooked world sun — the bake env AND the pak runtime sun (a
+	// directional is synthesized from it when the cluster has none).
+	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 	// Analytic sky IBL baked into the lightmap on open-sky rays
 	// (gradient only, no sun disc). Default mirrors the runtime
 	// EnvironmentSettings so covered pixels match the sky fallback
@@ -324,6 +334,64 @@ struct Args {
 	// node ids (repeatable) and include their local translation.
 	std::vector<uint32_t> dumpNodes;
 };
+
+// World sun: the pak's first directional is the runtime sun (the App
+// seeds its env from it, first-wins). Clusters that already carry one
+// (imported KHR punctual or tour-created/edited) are untouched; sunless
+// scenes get a "WorldSun" node synthesized from the cooked sun record so
+// the editor's world-sun settings travel pak -> App. Defaults mirror the
+// runtime env, so existing sunless content renders exactly as before —
+// now authored. Non-static by design: the bake harvests static lights
+// only, so the runtime sun never double-counts into lightmaps.
+void EnsureWorldSun(smvk::Cluster& cluster, const Args& args) {
+	bool hasDir = false;
+	cluster.lights.forEachHandle([&](smvk::ClusterLightHandle h) {
+		if (const SceneLight* l = cluster.lights.get(h))
+			if (l->type == SceneLight::Type::Directional)
+				hasDir = true;
+	});
+	if (hasDir || cluster.scene.hierarchy.empty())
+		return;
+	// toSun from compass azimuth (0 = +Z) + elevation — the same formula
+	// as EnvironmentSettings::SunDirectionToSun (unit by construction).
+	const float az = args.sunAzimuth * 0.01745329252f;
+	const float el = args.sunElevation * 0.01745329252f;
+	const float ce = std::cos(el);
+	const glm::vec3 toSun{ std::sin(az) * ce, std::sin(el),
+		std::cos(az) * ce };
+	// Node frame: the engine aim reads G*aimAxis with aimAxis = +Z at
+	// coordFix 0, so local +Z maps to -toSun (orthonormal basis, det +1).
+	const glm::vec3 z = -toSun;
+	glm::vec3 up(0.0f, 1.0f, 0.0f);
+	const float facing = glm::dot(z, up);
+	if (facing > 0.999f || facing < -0.999f)
+		up = glm::vec3(1.0f, 0.0f, 0.0f);
+	const glm::vec3 x = glm::normalize(glm::cross(up, z));
+	const glm::vec3 y = glm::cross(z, x);
+	glm::mat4 m(1.0f);
+	m[0] = glm::vec4(x, 0.0f);
+	m[1] = glm::vec4(y, 0.0f);
+	m[2] = glm::vec4(z, 0.0f);
+	const int node = addNode(cluster.scene, 0, 1);
+	cluster.scene.localTransform[size_t(node)] = m;
+	if (size_t(node) < cluster.scene.globalTransform.size())
+		cluster.scene.globalTransform[size_t(node)] = m; // root-child: global == local
+	setNodeName(cluster.scene, node, "WorldSun");
+	SceneLight sun{};
+	sun.type = SceneLight::Type::Directional;
+	sun.color = args.sunColor;
+	sun.intensity = args.sunIntensity;
+	sun.name = "WorldSun";
+	const auto h = cluster.CreateLight(std::move(sun));
+	if (!h.valid())
+		return;
+	cluster.RegisterLightUri("sun/world", h);
+	cluster.scene.lightForNode[uint32_t(node)] = h.index();
+	std::cout << "World sun synthesized: az=" << args.sunAzimuth
+		<< " el=" << args.sunElevation << " I=" << args.sunIntensity
+		<< " rgb=(" << args.sunColor.x << "," << args.sunColor.y
+		<< "," << args.sunColor.z << ")\n";
+}
 
 std::vector<float> ParseLodRatios(const std::string& s) {
 	std::vector<float> out;
@@ -441,6 +509,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.collapseStatic = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--auto-ktx") {
+			std::string v;
+			if (!need(v)) return false;
+			out.autoKtx = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("autoKtx");
 		}
 		else if (a == "--compress") {
 			std::string v;
@@ -622,6 +696,22 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.skyIntensity = std::stof(v);
 			out.explicitSet.insert("skyIntensity");
 		}
+		else if (a == "--sun-color") {
+			std::string v;
+			if (!need(v)) return false;
+			for (char& c : v)
+				if (c == ',')
+					c = ' ';
+			std::istringstream in(v);
+			glm::vec3 c = out.sunColor;
+			if (in >> c.x >> c.y >> c.z)
+				out.sunColor = c;
+			else {
+				std::cerr << "Bad --sun-color (want r,g,b): " << v << std::endl;
+				return false;
+			}
+			out.explicitSet.insert("sunColor");
+		}
 		else if (a == "--spot") {
 			std::string v;
 			if (!need(v)) return false;
@@ -774,6 +864,7 @@ void Usage() {
 		<< " [--dump-manifest on|off]\n"
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
+		<< "          [--auto-ktx on|off]\n"
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
 		<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
@@ -784,6 +875,7 @@ void Usage() {
 		<< "           --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000 --sky-intensity 600\n"
+		<< "           --sun-color 1,0.95,0.9\n"
 		<< "           --lm-lod-lock attr|hard\n"
 		<< "           --lm-denoise on|off (DEPRECATED)"
 		<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
@@ -792,6 +884,9 @@ void Usage() {
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
+		<< "          (world sun: when the scene carries no directional light,\n"
+		<< "           one is synthesized from the sun settings above, so the\n"
+		<< "           editor world sun travels pak -> App)\n"
 		<< "          [--gi-probe <name> ...]: registers probe sidecar names\n"
 		<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
 		<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
@@ -1437,11 +1532,31 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		std::cout << "\n";
 	}
 
-	// Scene graph (names + parent links + mesh/material/light pak ids + noLM).
-	// Layout mirrors cluster_serializer.cpp: u32 nodes | hierarchy (5xi32)
-	// | localTransforms (16xf32) | meshPairs | matPairs | namePairs |
-	// nodeNames | matNames | static section | noLM section (v3) |
-	// light pairs (v4; definitions are Light blobs) | name (v5).
+	// Cameras (blob: str uri | u32 projection | f32 fovY | f32 orthoHalfH
+	// | f32 near | f32 far | str name).
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Camera)) {
+		DumpCursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const uint32_t proj = c.u32();
+		const float fovY = c.f32(), halfH = c.f32();
+		const float nearClip = c.f32(), farClip = c.f32();
+		const std::string name = c.str();
+		if (!c.ok || proj > 1) {
+			std::cout << "    [truncated camera blob: " << e->path << "]\n";
+			continue;
+		}
+		std::cout << "    camera " << uri << " '" << name << "' "
+			<< (proj == 1 ? "ortho" : "persp")
+			<< " fovY=" << fovY << " halfH=" << halfH
+			<< " near=" << nearClip << " far=" << farClip << "\n";
+	}
+
+	// Scene graph (names + parent links + mesh/material/light/camera pak
+	// ids + noLM). Layout mirrors cluster_serializer.cpp: u32 nodes |
+	// hierarchy (5xi32) | localTransforms (16xf32) | meshPairs | matPairs
+	// | namePairs | nodeNames | matNames | static section | noLM (v3) |
+	// light pairs (v4) | name (v5) | dither (v6) | visibility (v7) |
+	// camera pairs (v8; definitions are Camera blobs).
 	// Scene blobs iterate in TOC order; the index + name come from the
 	// discovery table so multi-scene paks read per scene.
 	std::unordered_map<std::string, std::pair<size_t, std::string>> sceneInfo;
@@ -1510,6 +1625,7 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			(void)c.str();
 		std::vector<uint8_t> noLm, dither;
 		std::unordered_map<uint32_t, uint32_t> lightMap; // node -> light pak id
+		std::unordered_map<uint32_t, uint32_t> camMap; // node -> camera pak id
 		if (c.off < c.img.size()) {
 			const uint32_t sc = c.u32();
 			if (c.ok && sc == nodeCount) {
@@ -1552,6 +1668,27 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 							c.off += dc;
 						}
 					}
+					// ... then the v7 visibility section (skip: u32 + bytes).
+					if (c.ok && c.off < c.img.size()) {
+						const uint32_t hc = c.u32();
+						if (c.ok && hc == nodeCount &&
+							c.off + hc <= c.img.size())
+							c.off += hc;
+						else if (c.ok)
+							c.ok = false;
+					}
+					// ... then the v8 camera pairs (node, camPakId).
+					if (c.ok && c.off < c.img.size()) {
+						const uint32_t camPairs = c.u32();
+						if (!c.ok || camPairs > 1024 * 1024)
+							c.ok = false;
+						else {
+							for (uint32_t ci = 0; ci < camPairs && c.ok; ++ci) {
+								const uint32_t n = c.u32(), id = c.u32();
+								camMap[n] = id;
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1560,7 +1697,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			continue;
 		}
 		std::cout << "    scene nodes=" << nodeCount
-			<< " lightLinks=" << lightMap.size() << ":\n";
+			<< " lightLinks=" << lightMap.size()
+			<< " camLinks=" << camMap.size() << ":\n";
 		// Print mesh-bearing nodes + renamed/noLM/interesting ones. Full
 		// 9k-node dumps drown the signal; the tour verify path greps this.
 		// --dump-node <id> (repeatable) restricts to pinpoint ids and adds
@@ -1581,7 +1719,9 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			const bool ditherFlag = i < dither.size() && dither[i] != 0;
 			auto lit = lightMap.find(i);
 			const bool hasLight = lit != lightMap.end();
-			if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !ditherFlag)
+			auto cit = camMap.find(i);
+			const bool hasCam = cit != camMap.end();
+			if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !hasCam && !ditherFlag)
 				continue;
 			std::cout << "      node " << i << " '" << nm << "' parent=" << parent[i];
 			if (pinpoint)
@@ -1594,6 +1734,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				std::cout << " mat=" << mit->second;
 			if (hasLight)
 				std::cout << " light=" << lit->second;
+			if (hasCam)
+				std::cout << " cam=" << cit->second;
 			if (noLmFlag)
 				std::cout << " noLM=1";
 			if (ditherFlag)
@@ -2734,6 +2876,12 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 }
 
 int main(int argc, char** argv) {
+	// Unbuffered pipe output: the editor tails this process through a
+	// _popen pipe and streams each line live to its Console. Without
+	// this, stdout stays block-buffered when piped and no progress
+	// appears until the cook finishes (looks stuck).
+	std::cout << std::unitbuf;
+	std::cerr << std::unitbuf;
 	Args args;
 	if (!ParseArgs(argc, argv, args)) {
 		Usage();
@@ -2771,6 +2919,7 @@ int main(int argc, char** argv) {
 			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
 			<< " lights=" << reader->BlobsOfKind(smvk::PakAssetKind::Light).size()
+			<< " cameras=" << reader->BlobsOfKind(smvk::PakAssetKind::Camera).size()
 			<< " scenes=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< " gi=" << reader->BlobsOfKind(smvk::PakAssetKind::Gi).size()
 			<< "\n";
@@ -2874,6 +3023,7 @@ int main(int argc, char** argv) {
 			use("sunElevation", args.sunElevation, k.sunElevation);
 			use("sunIntensity", args.sunIntensity, k.sunIntensity);
 			use("skyIntensity", args.skyIntensity, k.skyIntensity);
+			use("sunColor", args.sunColor, k.sunColor);
 			use("cubemap", args.cubemap, k.cubemap);
 			use("cubemapName", args.cubemapName, k.cubemapName);
 			use("cubemapSize", args.cubemapSize, k.cubemapSize);
@@ -2886,6 +3036,7 @@ int main(int argc, char** argv) {
 			use("maxVerts", args.maxVerts, k.meshletMaxVerts);
 			use("maxTris", args.maxTris, k.meshletMaxTris);
 			use("coneWeight", args.coneWeight, k.meshletConeWeight);
+			use("autoKtx", args.autoKtx, k.autoKtx);
 			if (!k.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
 				if (!args.lmExclude.empty())
@@ -2937,10 +3088,11 @@ int main(int argc, char** argv) {
 			if (!tour.references.empty()) {
 				const std::string ownerBase =
 					smvk::vfs::BaseDir(tour.references[0].source);
-				const size_t applied = ApplySceneReferences(*cluster, tour,
-					ownerBase, nullptr, nullptr,
-					nullptr /* HOST bind — editor parity */,
-					opt, importMeshletCfg, 0, nullptr);
+			const size_t applied = ApplySceneReferences(*cluster, tour,
+				ownerBase, nullptr, nullptr,
+				nullptr /* HOST bind — editor parity */,
+				opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
+				args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes);
 				std::cout << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";
@@ -3022,7 +3174,8 @@ int main(int argc, char** argv) {
 
 		try {
 			GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster,
-				opt, importMeshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex);
+				opt, importMeshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex,
+				args.autoKtx);
 		}
 		catch (const std::exception& e) {
 			std::cerr << "Import failed (scene '" << sc.name
@@ -3052,6 +3205,12 @@ int main(int argc, char** argv) {
 	// against one cluster; multi-scene loops reuse them per scene). Both
 	// cluster-> and *cluster forms keep working through the pointer.
 	smvk::Cluster* cluster = sceneClusters.front().get();
+
+	// World sun per scene (App parity: first directional wins as the
+	// runtime sun). Authored directionals always survive; sunless scenes
+	// synthesize one from the cooked sun record.
+	for (auto& sc : sceneClusters)
+		EnsureWorldSun(*sc, args);
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh
 	// blocks (world-baked verts, identity nodes). Runs before Serialize so
@@ -4937,6 +5096,7 @@ int main(int argc, char** argv) {
 		<< " meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
 		<< " nodes=" << stats.nodes << " lights=" << stats.lights
+		<< " cameras=" << stats.cameras
 		<< " gi=" << stats.giBindings
 		<< " cubemaps=" << cubemapKtx.size()
 		<< " pak=" << pak.size() << " B"
@@ -4985,6 +5145,7 @@ int main(int argc, char** argv) {
 			<< " meshes=" << reader.BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader.BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader.BlobsOfKind(smvk::PakAssetKind::Texture).size()
+			<< " cameras=" << reader.BlobsOfKind(smvk::PakAssetKind::Camera).size()
 			<< " scene=" << reader.BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< (badPayloads ? " BAD PAYLOADS!" : " OK") << "\n";
 		if (badPayloads) {

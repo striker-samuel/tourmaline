@@ -214,8 +214,17 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 				f << " -t " << c.vec.x << " " << c.vec.y << " "
 					<< c.vec.z << " -v " << c.number;
 			}
-			// System types (material/file/image/camera) carry no
-			// payload: the line above is the whole record.
+			else if (c.nodeType == "camera") {
+				// -t packs local position + rotation-deg (x y z rx
+				// ry rz) + lens (projFloat fovY near far orthoHalfH).
+				f << " -t " << c.vec.x << " " << c.vec.y << " "
+					<< c.vec.z << " " << c.svec.x << " " << c.svec.y
+					<< " " << c.svec.z << " " << c.vec4.x << " "
+					<< c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
+					<< " " << c.number;
+			}
+			// System types (material/file/image) carry no payload:
+			// the line above is the whole record.
 			break;
 		}
 		case Verb::CreateTransform: {
@@ -308,6 +317,45 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << " -name " << Quote(c.text)
 			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
 			<< " -v " << c.number;
+		break;
+	}
+	case Verb::CreateCamera: {
+		// -t packs local position + rotation-deg (x y z rx ry rz) +
+		// lens (projFloat fovY near far orthoHalfH, 11 values); -at
+		// echoes "camera" (unified createNode form). -p is the parent:
+		// bare id (legacy) or quoted name/path/uuid.
+		f << "createCamera -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -at camera"
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " " << c.svec.x << " " << c.svec.y << " " << c.svec.z
+			<< " " << c.vec4.x << " " << c.vec4.y << " " << c.vec4.z
+			<< " " << c.vec4.w << " " << c.number;
+		break;
+	}
+	case Verb::SetCamAttr: {
+		// Same addressing shape as setLightAttr (-ref k of the k-th
+		// createCamera, else -n cluster id). Scalars ride -v; name
+		// rides -v as a string; projection rides -v as 0/1.
+		f << "setCamAttr ";
+		if ((c.node & kCreateCameraRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateCameraRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "position" || c.text == "rotation")
+			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z;
+		else if (c.text == "projection")
+			f << " -v " << (c.number >= 0.5 ? 1 : 0);
+		else
+			f << " -v " << c.number;
 		break;
 	}
 	case Verb::TerrainPaint: {
@@ -525,6 +573,24 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		for (const auto& [k, v] : doc.fileInfo)
 			f << "fileInfo -k " << Quote(k) << " -v " << Quote(v) << ";\n";
 	}
+	// File nodes (Maya file/image declarations): cooked records — the
+	// cooker consumes them for KTX conversion. One line per node.
+	for (const FileNode& fn : doc.fileNodes) {
+		if (fn.path.empty())
+			continue; // half-written record: skip (mirrors image load)
+		const char* cs = (fn.colorspace != 0) ? "linear" : "srgb";
+		const char* wrap = "repeat";
+		if (fn.wrap == 1)
+			wrap = "clamp";
+		else if (fn.wrap == 2)
+			wrap = "mirrored";
+		const char* filter = (fn.filter != 0) ? "nearest" : "linear";
+		f << "fileNode -name " << Quote(fn.name)
+			<< " -path " << Quote(fn.path)
+			<< " -colorspace " << cs
+			<< " -wrap " << wrap
+			<< " -filter " << filter << ";\n";
+	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
 	// create), TerrainPaint (-ref k of the k-th terrain-family create)
@@ -543,6 +609,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			return 2;
 		if (c.verb == Verb::CreateCubemap)
 			return 3;
+		if (c.verb == Verb::CreateCamera)
+			return 4;
 		if (c.verb == Verb::CreateNode) {
 			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
 				return 0;
@@ -552,6 +620,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 2;
 			if (c.nodeType == "cubemap")
 				return 3;
+			if (c.nodeType == "camera")
+				return 4;
 		}
 		return -1;
 	};
@@ -585,7 +655,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 					&& (d.node & ~kCreateCvolRefBase) == k)
 				|| (family == 3 && d.verb == Verb::SetCubemapAttr
 					&& (d.node & kCreateCubemapRefBase) != 0
-					&& (d.node & ~kCreateCubemapRefBase) == k);
+					&& (d.node & ~kCreateCubemapRefBase) == k)
+				|| (family == 4 && d.verb == Verb::SetCamAttr
+					&& (d.node & kCreateCameraRefBase) != 0
+					&& (d.node & ~kCreateCameraRefBase) == k);
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -627,6 +700,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -sunElevation " << k.sunElevation
 			<< " -sunIntensity " << k.sunIntensity
 			<< " -skyIntensity " << k.skyIntensity
+			<< " -sunColor " << Quote(std::to_string(k.sunColor.x) + " "
+				+ std::to_string(k.sunColor.y) + " "
+				+ std::to_string(k.sunColor.z))
 			<< " -cubemap " << (k.cubemap ? "on" : "off")
 			<< " -cubemapName " << Quote(k.cubemapName)
 			<< " -cubemapSize " << k.cubemapSize
@@ -637,6 +713,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -meshletConeWeight " << k.meshletConeWeight
 			<< " -giCvol " << (k.giCvol ? "on" : "off")
 			<< " -giWorld " << (k.giWorld ? "on" : "off")
+			<< " -autoKtx " << (k.autoKtx ? "on" : "off")
 			<< ";\n";
 	}
 	if (!f.good()) {
@@ -892,10 +969,10 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "terrain", CreateNodeKind::Dag },
 	{ "cvolume", CreateNodeKind::Dag },
 	{ "cubemap", CreateNodeKind::Dag },
+	{ "camera", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
 	{ "image", CreateNodeKind::System },
-	{ "camera", CreateNodeKind::System },
 };
 
 const CreateNodeType* CreateNodeTypes(size_t& countOut) {
@@ -1005,6 +1082,54 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				doc.fileInfo.emplace_back(key, val);
 			continue;
 		}
+		if (verb == "fileNode") {
+			// fileNode -name "<name>" -path "<path>"
+			//   -colorspace srgb|linear -wrap repeat|clamp|mirrored
+			//   -filter linear|nearest; cooked file/image declaration.
+			// Words and 0/1 numerics both accepted (forward tolerant).
+			FileNode fn;
+			auto lower = [](std::string s) {
+				for (char& c : s)
+					c = char(std::tolower(uint8_t(c)));
+				return s;
+			};
+			for (size_t i = 1; i < toks.size(); ++i) {
+				auto get = [&](const char* key, std::string& out) {
+					if (toks[i] == key && i + 1 < toks.size()) {
+						out = toks[i + 1];
+						if (!out.empty() && out.back() == ';')
+							out.pop_back();
+						++i;
+						return true;
+					}
+					return false;
+				};
+				std::string v;
+				if (get("-name", v))
+					fn.name = v;
+				else if (get("-path", v))
+					fn.path = v;
+				else if (get("-colorspace", v)) {
+					v = lower(v);
+					fn.colorspace = (v == "linear" || v == "lin" || v == "1") ? 1 : 0;
+				}
+				else if (get("-wrap", v)) {
+					v = lower(v);
+					fn.wrap = (v == "clamp" || v == "clamp-edge" || v == "clamp_edge" || v == "1") ? 1
+						: (v == "mirrored" || v == "mirror" || v == "mirrored-repeat" || v == "2") ? 2 : 0;
+				}
+				else if (get("-filter", v)) {
+					v = lower(v);
+					fn.filter = (v == "nearest" || v == "1") ? 1 : 0;
+				}
+			}
+			if (!fn.path.empty())
+				doc.fileNodes.push_back(std::move(fn));
+			else
+				warn("tour:" + std::to_string(lineNo) +
+					": fileNode without -path (skipped)");
+			continue;
+		}
 		if (verb == "cook") {
 			doc.hasCook = true;			TourCook& k = doc.cook;
 			for (size_t i = 1; i < toks.size(); ++i) {
@@ -1062,6 +1187,16 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					k.sunIntensity = std::stof(v);
 				else if (get("-skyIntensity", v))
 					k.skyIntensity = std::stof(v);
+				else if (get("-sunColor", v)) {
+					// "r g b" (also accepts "r,g,b", the CLI spelling).
+					for (char& c : v)
+						if (c == ',')
+							c = ' ';
+					std::istringstream in(v);
+					glm::vec3 c = k.sunColor;
+					if (in >> c.x >> c.y >> c.z)
+						k.sunColor = c;
+				}
 				else if (get("-cubemap", v))
 					k.cubemap = (v == "on" || v == "1");
 				else if (get("-cubemapName", v))
@@ -1086,6 +1221,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				k.giCvol = (v == "on" || v == "1");
 			else if (get("-giWorld", v))
 				k.giWorld = (v == "on" || v == "1");
+			else if (get("-autoKtx", v))
+				k.autoKtx = (v == "on" || v == "1");
 			}
 			continue;
 		}
@@ -1095,7 +1232,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			return false;
 		// createNode lowers DAG types to their legacy per-type verb
 		// (single payload path per shape downstream); system types
-		// (material/file/image/camera) stay CreateNode for the editor.
+		// (material/file/image) stay CreateNode for the editor.
 		std::string effVerb = verb;
 		if (effVerb == "createNode") {
 			if (!fl.hasAt) {
@@ -1133,6 +1270,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			effVerb = "createCvolume";
 		else if (tn == "cubemap")
 			effVerb = "createCubemap";
+		else if (tn == "camera")
+			effVerb = "createCamera";
 		else
 			effVerb = "createLight"; // pointLight | spotLight
 			// Legacy light -at vocabulary for the shared branch below.
@@ -1378,6 +1517,48 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.number = v[6];
 			c.flag = v[7] != 0.0;
 			c.node2 = v[8] != 0.0 ? 1u : 0u;
+		}
+		else if (effVerb == "createCamera" && (fl.hasP || fl.hasPStr)
+			&& fl.hasName && (fl.t.size() == 3 || fl.t.size() == 6
+				|| fl.t.size() == 11)) {
+			// -t packs: x y z [rx ry rz] [projFloat fovY near far
+			// orthoHalfH] (rotation in degrees, editor TRS convention;
+			// projFloat 0 = perspective, 1 = orthographic). -at is
+			// accepted and must read "camera" when present (unified
+			// createNode form).
+			if (fl.hasAt && fl.at != "camera") {
+				err = "line " + std::to_string(lineNo) + ": createCamera wants -at camera";
+				return false;
+			}
+			double v[11] = {};
+			for (size_t k = 0; k < fl.t.size(); ++k)
+				if (!ParseDouble(fl.t[k], v[k])) {
+					err = "line " + std::to_string(lineNo) + ": bad createCamera value";
+					return false;
+				}
+			if (fl.t.size() == 11
+				&& ((v[6] != 0.0 && v[6] != 1.0) || v[7] <= 0.0
+					|| v[7] >= 180.0 || v[8] <= 0.0 || v[9] <= v[8]
+					|| v[10] <= 0.0)) {
+				err = "line " + std::to_string(lineNo) + ": bad createCamera lens";
+				return false;
+			}
+			c.verb = Verb::CreateCamera;
+			c.node = fl.hasP ? fl.p : 0;
+			if (fl.hasPStr)
+				c.parentRef = fl.pStr;
+			c.text = fl.name;
+			c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+			if (fl.t.size() >= 6)
+				c.svec = glm::vec3(float(v[3]), float(v[4]), float(v[5]));
+			else
+				c.svec = glm::vec3(0.0f);
+			if (fl.t.size() == 11)
+				c.vec4 = glm::vec4(float(v[6]), float(v[7]), float(v[8]),
+					float(v[9]));
+			else
+				c.vec4 = glm::vec4(0.0f, 50.0f, 0.1f, 1000.0f);
+			c.number = (fl.t.size() == 11) ? v[10] : 10.0;
 		}
 		else if (effVerb == "createTerrain" && (fl.hasP || fl.hasPStr)
 			&& fl.hasName && fl.hasAt
@@ -1647,6 +1828,60 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
+	else if (effVerb == "setCamAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		static const char* kAttrs[] = { "projection", "fovY",
+			"orthoHalfH", "near", "far", "name", "position", "rotation" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			err = "line " + std::to_string(lineNo) + ": bad camera attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetCamAttr;
+		c.node = fl.hasRef ? (kCreateCameraRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else if (fl.at == "position" || fl.at == "rotation") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo) + ": camera triple wants 3 values";
+				return false;
+			}
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo) + ": bad camera triple";
+				return false;
+			}
+			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
+		}
+		else if (fl.at == "projection") {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			std::string low;
+			for (char ch : w)
+				low.push_back(char(std::tolower(uint8_t(ch))));
+			if (low == "orthographic" || low == "ortho" || low == "1")
+				c.number = 1.0;
+			else if (low == "perspective" || low == "persp" || low == "0")
+				c.number = 0.0;
+			else {
+				err = "line " + std::to_string(lineNo) + ": bad camera projection '" + w + "'";
+				return false;
+			}
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+		}
+	}
 	else {
 			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
 				verb + "' (skipped)");
@@ -1842,6 +2077,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created cubemap captures (kCreateCubemapRefBase |
 	// k), resolved by SetCubemapAttr below.
 	std::vector<uint32_t> createdCubemaps;
+	// Same scheme for created cameras (kCreateCameraRefBase | k),
+	// resolved by SetCamAttr below.
+	std::vector<uint32_t> createdCameras;
 	// Same scheme for created terrain (kCreateTerrainRefBase | k),
 	// resolved for the generic verbs below (Rename/SetTranslate/...
 	// /Parent) so post-creation edits replay onto the rebuilt node.
@@ -2187,6 +2425,52 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		scene.nodeNames.push_back(c.text);
 		scene.nameForNode[uint32_t(newId)] = nameId;
 		createdCubemaps.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::CreateCamera: {
+		// Authored camera node: append a node under the recorded parent
+		// (TRS = translate + rotation-deg, editor convention) + a
+		// cameras-pool lens definition. The pose resolves from the
+		// node's transform at use (viewport look-through, framing);
+		// forward = node -Z in world.
+		uint32_t parent = 0;
+		if (!resolveParent(c, "createCamera", c.node, parent)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		const int level = scene.hierarchy[parent].level + 1;
+		const int newId = addNode(scene, int(parent), level);
+		if (newId < 0) {
+			if (err)
+				*err = "tour: createCamera failed under parent " +
+					std::to_string(parent);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		glm::mat4 m(1.0f);
+		m = glm::translate(m, c.vec);
+		m = glm::rotate(m, glm::radians(c.svec.z), glm::vec3(0, 0, 1));
+		m = glm::rotate(m, glm::radians(c.svec.y), glm::vec3(0, 1, 0));
+		m = glm::rotate(m, glm::radians(c.svec.x), glm::vec3(1, 0, 0));
+		scene.localTransform[size_t(newId)] = m;
+		SceneCamera def{};
+		def.projection = (c.vec4.x >= 0.5f)
+			? SceneCamera::Projection::Orthographic
+			: SceneCamera::Projection::Perspective;
+		def.fovYDeg = std::clamp(c.vec4.y, 1.0f, 179.0f);
+		def.nearClip = std::max(c.vec4.z, 1e-4f);
+		def.farClip = std::max(c.vec4.w, def.nearClip * 1.1f + 1e-3f);
+		def.orthoHalfH = std::clamp(float(c.number), 1e-2f, 1e5f);
+		def.name = c.text;
+		const uint32_t poolIdx =
+			cluster.cameras.create(std::move(def)).index();
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(c.text);
+		scene.nameForNode[uint32_t(newId)] = nameId;
+		scene.cameraForNode[uint32_t(newId)] = poolIdx;
+		createdCameras.push_back(uint32_t(newId));
 		break;
 	}
 		case Verb::CreateTerrain: {
@@ -2560,8 +2844,97 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		break;
 	}
+	case Verb::SetCamAttr: {
+		uint32_t target = 0;
+		if ((c.node & kCreateCameraRefBase) != 0) {
+			const uint32_t k = c.node & ~kCreateCameraRefBase;
+			if (k >= createdCameras.size()) {
+				if (err)
+					*err = "tour: setCamAttr ref out of range: " +
+						std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdCameras[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		auto lit = scene.cameraForNode.find(target);
+		if (lit == scene.cameraForNode.end()) {
+			if (err)
+				*err = "tour: setCamAttr on non-camera node " +
+					std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		SceneCamera* def = cluster.cameras.get(
+			cluster.cameras.getHandle(lit->second));
+		if (!def) {
+			if (err)
+				*err = "tour: setCamAttr bad camera pool index";
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		if (c.text == "name") {
+			def->name = c.name;
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			scene.nameForNode[target] = id;
+		}
+		else if (c.text == "position" || c.text == "rotation") {
+			// Rebuild the node's local TRS with one channel replaced
+			// (editor TRS convention; mirrors the cubemap/cvolume path).
+			glm::vec3 skew, t, s;
+			glm::vec4 persp;
+			glm::quat q;
+			glm::decompose(scene.localTransform[target], s, q, t,
+				skew, persp);
+			glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+			if (c.text == "position")
+				t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			else
+				e = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, t);
+			m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, s);
+			scene.localTransform[target] = m;
+		}
+		else if (c.text == "projection") {
+			def->projection = (c.number >= 0.5)
+				? SceneCamera::Projection::Orthographic
+				: SceneCamera::Projection::Perspective;
+		}
+		else if (c.text == "fovY") {
+			def->fovYDeg = std::clamp(float(c.number), 1.0f, 179.0f);
+		}
+		else if (c.text == "orthoHalfH") {
+			def->orthoHalfH = std::clamp(float(c.number), 1e-2f, 1e5f);
+		}
+		else if (c.text == "near") {
+			def->nearClip = std::max(float(c.number), 1e-4f);
+			def->farClip = std::max(def->farClip,
+				def->nearClip * 1.1f + 1e-3f);
+		}
+		else if (c.text == "far") {
+			def->farClip = std::max(float(c.number),
+				def->nearClip * 1.1f + 1e-3f);
+		}
+		else {
+			warn("tour: unknown camera attr '" + c.text + "' (skipped)");
+		}
+		break;
+	}
 		case Verb::CreateNode: {
-			// System node types (material/file/image/camera): parsed +
+			// System node types (material/file/image): parsed +
 			// validated up front; replay defers to the editor — reported
 			// here, never silently dropped. (DAG types lower to their
 			// legacy verbs at parse time and never reach this case.)
@@ -2833,6 +3206,21 @@ std::string Describe(const Command& c) {
 			"createCubemap '%s' (r=%.1fm) under #%u",
 			c.text.c_str(), float(c.number), c.node);
 		break;
+	case Verb::CreateCamera:
+		std::snprintf(buf, sizeof(buf),
+			"createCamera '%s' (%s fov=%.0f) under #%u",
+			c.text.c_str(), c.vec4.x >= 0.5f ? "ortho" : "persp",
+			c.vec4.y, c.node);
+		break;
+	case Verb::SetCamAttr: {
+		char tgt[32];
+		if ((c.node & kCreateCameraRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateCameraRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "cam.%s.%s", tgt, c.text.c_str());
+		break;
+	}
 	case Verb::SetCubemapAttr: {
 		char tgt[32];
 		if ((c.node & kCreateCubemapRefBase) != 0)

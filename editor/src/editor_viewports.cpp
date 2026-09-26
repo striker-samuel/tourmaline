@@ -21,6 +21,7 @@ bool EditorApp::IsSelected(uint32_t node) const {
 
 void EditorApp::SetSelection(uint32_t node) {
 	m_worldSelected = false;
+	ClearNonDagSelection();
 	m_selection.clear();
 	if (node != UINT32_MAX) {
 		m_selection.push_back(node);
@@ -157,12 +158,61 @@ void EditorApp::AddToSelection(uint32_t node) {
 	if (node == UINT32_MAX || IsSelected(node))
 		return;
 	m_worldSelected = false;
+	ClearNonDagSelection();
 	m_selection.push_back(node);
 	m_selected = node; // newest = primary
 }
 
+void EditorApp::ToggleSelection(uint32_t node) {
+	if (node == UINT32_MAX)
+		return;
+	auto it = std::find(m_selection.begin(), m_selection.end(), node);
+	if (it != m_selection.end()) {
+		m_selection.erase(it);
+		if (m_selected == node)
+			m_selected = m_selection.empty()
+				? UINT32_MAX : m_selection.back();
+	}
+	else {
+		m_worldSelected = false;
+		ClearNonDagSelection();
+		m_selection.push_back(node);
+		m_selected = node;
+	}
+}
+
+void EditorApp::SelectRange(uint32_t node) {
+	// Shift-click: contiguous VISIBLE range between the primary and the
+	// clicked row (outliner order); falls back to single select when the
+	// anchor is gone (deleted/collapsed away).
+	m_worldSelected = false;
+	ClearNonDagSelection();
+	ClearSubSelection();
+	if (node < m_world->scene.hierarchy.size()) {
+		const auto it = std::find(m_outlinerOrder.begin(),
+			m_outlinerOrder.end(), node);
+		const auto anchor = std::find(m_outlinerOrder.begin(),
+			m_outlinerOrder.end(), m_selected);
+		if (it != m_outlinerOrder.end()
+			&& anchor != m_outlinerOrder.end()
+			&& m_selected != UINT32_MAX) {
+			size_t a = size_t(anchor - m_outlinerOrder.begin());
+			size_t b = size_t(it - m_outlinerOrder.begin());
+			if (a > b)
+				std::swap(a, b);
+			m_selection.clear();
+			for (size_t i = a; i <= b; ++i)
+				m_selection.push_back(m_outlinerOrder[i]);
+			m_selected = node;
+			return;
+		}
+	}
+	SetSelection(node);
+}
+
 void EditorApp::ClearSelection() {
 	m_worldSelected = false;
+	ClearNonDagSelection();
 	m_selection.clear();
 	m_selected = UINT32_MAX;
 	ClearSubSelection();
@@ -175,6 +225,7 @@ void EditorApp::SelectWorldNode() {
 	m_selection.clear();
 	m_selected = UINT32_MAX;
 	ClearSubSelection();
+	ClearNonDagSelection();
 	m_worldSelected = true;
 }
 
@@ -284,14 +335,68 @@ void EditorApp::DrawViewportChrome() {
 			ImGuiWindowFlags_NoSavedSettings |
 			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
 			ImGuiWindowFlags_NoNav)) {
-			// Camera combo: pick which editor camera this viewport uses.
-			if (ImGui::BeginCombo("##cam",
-					m_editorCams[vp.camIdx].name.c_str())) {
+			// Camera combo: free orbit cameras, or a locked look-through
+			// binding to a scene camera node (viewport follows the node
+			// until released back to an orbit camera).
+			std::string bindLabel;
+			bool bound = false;
+			uint32_t boundNode = UINT32_MAX;
+			if (vp.boundNode >= 0 && m_world
+				&& FindNodeCamera(uint32_t(vp.boundNode)) != nullptr) {
+				bound = true;
+				boundNode = uint32_t(vp.boundNode);
+				bindLabel = "Cam: "
+					+ getNodeName(m_world->scene, int(boundNode));
+			}
+			else {
+				bindLabel = m_editorCams[vp.camIdx].name;
+			}
+			if (ImGui::BeginCombo("##cam", bindLabel.c_str())) {
 				for (size_t c = 0; c < m_editorCams.size(); ++c)
 					if (ImGui::Selectable(m_editorCams[c].name.c_str(),
-							int(c) == vp.camIdx))
+							!bound && int(c) == vp.camIdx)) {
 						vp.camIdx = int(c);
+						vp.boundNode = -1;
+					}
+				// Scene cameras (hierarchy order, stable list).
+				if (m_world && !m_world->scene.cameraForNode.empty()) {
+					ImGui::Separator();
+					std::vector<uint32_t> camNodes;
+					for (const auto& [n, ci] : m_world->scene.cameraForNode) {
+						(void)ci;
+						if (n < m_world->scene.hierarchy.size()
+							&& !m_deletedNodes.contains(n))
+							camNodes.push_back(n);
+					}
+					std::sort(camNodes.begin(), camNodes.end());
+					for (uint32_t n : camNodes) {
+						const std::string item = "Cam: "
+							+ getNodeName(m_world->scene, int(n));
+						if (ImGui::Selectable(item.c_str(),
+								bound && boundNode == n)) {
+							vp.boundNode = int(n);
+							Log("Viewport " + std::to_string(i)
+								+ " look-through: '"
+								+ getNodeName(m_world->scene, int(n))
+								+ "' (#" + std::to_string(n) + ").");
+						}
+					}
+				}
+				else {
+					ImGui::TextDisabled("no scene cameras (Create > Camera)");
+				}
 				ImGui::EndCombo();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(bound
+					? "Locked look-through: viewport follows the camera "
+					  "node (orbit nav parked; move the node instead). "
+					  "Pick an orbit camera to release."
+					: "Free orbit. Bind a scene camera node for locked "
+					  "look-through.");
+			if (bound) {
+				ImGui::SameLine();
+				ImGui::TextDisabled("[locked]");
 			}
 			ImGui::SameLine();
 			// View type combo (this panel's shading/debug view).

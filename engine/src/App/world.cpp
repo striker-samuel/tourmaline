@@ -94,6 +94,7 @@ namespace smvk {
 		materialLocations.clear();
 		textureLocations.clear();
 		lightLocations.clear();
+		cameraLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
 		// World material dedup (see the materialForNode remap below).
@@ -294,6 +295,23 @@ namespace smvk {
 				LightLocation{ .cluster = &cluster, .handle = handle }
 			);
 			scene.lightForNode[worldNode] = worldLightIdx;
+		}
+
+		// Remap cameraForNode: cluster-local camera pool index -> world
+		// camera index. cameraLocations resolves back to Cluster + handle
+		// exactly like lightLocations (authored cameras are pool assets).
+		for (auto& [node, camIdx] : cs.cameraForNode) {
+			const uint32_t worldNode = node + nodeOffset;
+			const uint32_t worldCamIdx =
+				static_cast<uint32_t>(cameraLocations.size());
+
+			ClusterCameraHandle handle =
+				cluster.cameras.getHandle(camIdx);
+
+			cameraLocations.push_back(
+				CameraLocation{ .cluster = &cluster, .handle = handle }
+			);
+			scene.cameraForNode[worldNode] = worldCamIdx;
 		}
 
 		markAsChanged(scene, clusterRootNode);

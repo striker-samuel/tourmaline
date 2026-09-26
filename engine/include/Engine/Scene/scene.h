@@ -67,6 +67,22 @@ struct SceneLight {
 	std::string name;
 };
 
+// Authored camera (editor camera node / tour createCamera): a DAG
+// transform (position + orientation, engine space) + a node-local lens
+// definition. The lens lives in the owning Cluster's cameras pool when
+// pool-backed (cook path, like SceneLight) or in the editor world's
+// cameraLocations; the pose always resolves from the node's global
+// transform at use time. Forward = node -Z in world.
+struct SceneCamera {
+	enum class Projection : uint32_t { Perspective = 0, Orthographic = 1 };
+	Projection projection = Projection::Perspective;
+	float fovYDeg = 50.0f;     // perspective vertical field of view
+	float orthoHalfH = 10.0f;  // orthographic half-height (meters)
+	float nearClip = 0.1f;
+	float farClip = 1000.0f;
+	std::string name;
+};
+
 // Authored convex GI volume (editor cvolume node / tour createCvolume):
 // a box-shaped dense-probe region (gi_baker box-spec shape). The SHAPE
 // rides the node's transform (translate = box center, scale = full
@@ -106,6 +122,11 @@ struct Scene {
 	// indirection meshForNode uses — and the world transform resolves
 	// from globalTransform[node] at use time.
 	std::unordered_map<NodeId, uint32_t> lightForNode;
+	// Node -> Cluster camera pool index (authored camera node). The lens
+	// definition lives in the owning Cluster's cameras pool; the pose
+	// resolves from globalTransform[node] at use time (viewport
+	// look-through, framing). Forward = node -Z in world, engine space.
+	std::unordered_map<NodeId, uint32_t> cameraForNode;
 	// Node -> authored convex GI volume params (tour createCvolume /
 	// editor cvolume node). The definition is node-local (a few floats
 	// — no pool indirection); the box shape rides the node's transform.

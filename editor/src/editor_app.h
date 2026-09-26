@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -251,6 +252,11 @@ struct CookSettings {
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
+	// World-sun color (linear RGB): with the angles/intensity above it IS
+	// the cooked world sun — edited in the World panel when the scene has
+	// no directional, synthesized into the pak by the cooker, read by the
+	// App as its runtime sun.
+	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 	// Cubemap captures
 	bool cubemap = false;
 	std::string cubemapName;
@@ -271,6 +277,10 @@ struct CookSettings {
 	uint32_t meshletMaxVerts = 64;
 	uint32_t meshletMaxTris = 124;
 	float meshletConeWeight = 0.0f;
+	// KTX auto-convert: non-KTX sources transcode in-process at cook
+	// (`.ktx2` sidecar cached next to the source, file-node intent
+	// honored). Off restores warn-and-skip for non-KTX payloads.
+	bool autoKtx = true;
 };
 
 class EditorApp : public smvk::AppImpl {
@@ -429,6 +439,10 @@ private:
 		app::FrameUniforms frame{}; // CPU copy (picking/gizmo math)
 		glm::mat4 viewProj{ 1.0f };
 		uint64_t frameAddr = 0; // this flight's frame-uniform slice
+		// Locked look-through: scene camera node id this panel follows
+		// (-1 = free orbit via camIdx). Persists across undo (a deleted
+		// node falls back to orbit until it comes back).
+		int boundNode = -1;
 	};
 	std::vector<EditorCam> m_editorCams;   // Persp + Top + Side defaults
 	EditorViewport m_viewports[kMaxViewports];
@@ -436,6 +450,12 @@ private:
 	int m_activeVp = 0;  // hovered/last-active viewport index
 	int ViewportCount() const { return m_vpLayout == 1 ? kMaxViewports : 1; }
 	EditorCam& ActiveCam() { return m_editorCams[m_viewports[m_activeVp].camIdx]; }
+	// Locked look-through resolution: when viewport vp is bound to a
+	// live scene camera node, fills view/proj/eye/clips from the node's
+	// global pose + lens and returns true (callers fall back to the
+	// orbit camera otherwise).
+	bool BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
+		glm::vec3& eye, float& nearClip, float& farClip) const;
 	ViewMode& ActiveViewMode() { return m_viewports[m_activeVp].viewMode; }
 	ViewMode ActiveViewMode() const { return m_viewports[m_activeVp].viewMode; }
 	void SetupDefaultCameras();
@@ -464,7 +484,13 @@ private:
 	bool IsSelected(uint32_t node) const;
 	void SetSelection(uint32_t node);        // single
 	void AddToSelection(uint32_t node);
+	void ToggleSelection(uint32_t node);     // ctrl-click add/remove
+	void SelectRange(uint32_t node);         // shift-click visible range
 	void ClearSelection();
+	// Visible outliner row order this frame (DAG tree + filter rows;
+	// non-DAG rows excluded): shift-range addressing. Rebuilt every
+	// DrawSceneOutliner.
+	std::vector<uint32_t> m_outlinerOrder;
 	void ClearSubSelection(); // clears face/vertex highlight only
 	// World pseudo-selection: the Outliner's "World" entry (global render
 	// settings) is NOT a hierarchy node — it never enters m_selection /
@@ -473,6 +499,30 @@ private:
 	// selection: selecting either clears the other.
 	bool m_worldSelected = false;
 	void SelectWorldNode();
+	// Non-DAG selection (outliner "Non-DAG" section): images (file nodes)
+	// and materials live outside the hierarchy, so they never enter
+	// m_selection/m_selected either. Mutually exclusive with node and
+	// World selection: selecting any one clears the others. Extend
+	// NonDagKind + CollectNonDagEntries for future node sets — the
+	// section rendering and picking below stay kind-driven.
+	enum class NonDagKind : uint8_t { Image = 0, Material = 1 };
+	struct NonDagSel {
+		bool valid = false;
+		NonDagKind kind = NonDagKind::Image;
+		uint32_t index = UINT32_MAX; // image (m_images) or material (world) idx
+	};
+	struct NonDagEntry {
+		NonDagKind kind = NonDagKind::Image;
+		uint32_t index = UINT32_MAX;
+		std::string label;
+	};
+	NonDagSel m_nonDagSel;
+	uint32_t m_imageFocus = UINT32_MAX; // Images-tab highlight row
+	bool m_showNonDag = false;          // outliner non-DAG section toggle
+	void CollectNonDagEntries(std::vector<NonDagEntry>& out) const;
+	void SelectNonDag(NonDagKind kind, uint32_t index); // single
+	void ClearNonDagSelection();
+	void DrawNonDagSection(); // outliner section (tree + filter rows)
 	// First directional (sun) light node, or UINT32_MAX (World panel).
 	uint32_t FindSunNode() const;
 	void SelectPrevNode(); // inspector Up/Prev (hierarchy order)
@@ -678,6 +728,10 @@ private:
 	// order): generic verbs address them via kCreateTerrainRefBase.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedTerrainNodes;
+	// Same scheme for history-created cameras (tour CreateCamera file
+	// order): setCamAttr -ref addressing. Rebuilt on every replay
+	// alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedCameraNodes;
 	// Reference binding issues from the last scene load
 	// (ApplySceneReferences collects them: unresolved sources, tour
 	// parse failures, skipped commands inside a referenced .tour,
@@ -741,6 +795,8 @@ private:
 	int CreatedCubemapIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created terrain, same contract.
 	int CreatedTerrainIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created camera, same contract.
+	int CreatedCameraIndex(uint32_t worldNode) const;
 	// Tour-stable default parent for new lights: the primary cluster's
 	// root (WorldToCluster maps it to cluster id 0), else world root.
 	uint32_t DefaultCreateParent() const;
@@ -750,6 +806,8 @@ private:
 	std::string UniqueCvolName() const;
 	// Unique "Cube_N" name over the live world cubemap captures.
 	std::string UniqueCubemapName() const;
+	// Unique "Camera_N" name over the live world cameras.
+	std::string UniqueCameraName() const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
 	// Live command helpers (editor_commands.cpp).
@@ -820,7 +878,10 @@ private:
 	std::string TourPath() const; // default <stem>.tour next to the source
 	std::string TourTarget() const; // live save target (save-as aware)
 	bool SaveTour(); // -> current target
-	bool SaveTourTo(const std::string& path); // becomes the target
+	bool SaveTourTo(const std::string& path, bool becomeTarget = true);
+	// becomeTarget = false: snapshot write only (cook temp tour) — the
+	// live target, dirty star and autosave slot stay untouched, so the
+	// editor keeps pointing at the real scene after the cook.
 	bool SaveTourIncremental(); // Maya-style <stem>.NNNN.tour, becomes target
 	bool LoadTour(); // replay file into the stack (undoable)
 	// Per-edit autosave: the working state lands in
@@ -965,6 +1026,28 @@ private:
 	// Inspector "Cubemap capture" section for capture nodes (radius
 	// via undoable SetCubemapAttr; position via the transform).
 	void DrawCubemapSection(uint32_t node);
+	// Camera property channels ("projection","fovY","orthoHalfH",
+	// "near","far","name","position","rotation") — the inspector's
+	// before-state + live-write path for SetCamAttr (degrees for
+	// rotation). False when the node has no camera.
+	bool ReadNodeCameraAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, std::string& text) const;
+	bool WriteNodeCameraAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, const std::string& text);
+	// Inspector "Camera" section for camera nodes (lens via undoable
+	// SetCamAttr; pose via the transform + look-through).
+	void DrawCamSection(uint32_t node);
+	// Created-camera execution (ExecCmd cases): append/remove the world
+	// node + cameras-pool definition. ExecCreateCamera records the
+	// assigned id back into the command (c.node).
+	void ExecCreateCamera(EditCmd& c);
+	void ExecUncreateCamera(EditCmd& c);
+	// Create menu: camera at the active camera target (perspective,
+	// 50 deg, 0.1/1000 m).
+	void DraftCreateCamera();
+	// First camera node in the live world, or UINT32_MAX (World panel,
+	// viewport camera bindings).
+	uint32_t FindCameraNode() const;
 	// Create menu: convex GI volume box at the active camera target
 	// (8 m box, priority 0, 0.5 m spacing, 0.1 m fades).
 	void DraftCreateCVolume();
@@ -985,6 +1068,8 @@ private:
 	bool m_showCvolGizmos = true;
 	// Viewport markers for cubemap capture nodes (diamond + radius).
 	bool m_showCubemapGizmos = true;
+	// Viewport frustums for camera nodes (eye diamond + near/far box).
+	bool m_showCameraGizmos = true;
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1118,6 +1203,10 @@ private:
 	bool AddSceneReference(const std::string& source, const std::string& name);
 	bool RemoveSceneReference(uint32_t refWorldNode);
 	bool RemoveSceneReferenceAt(size_t idx); // panel path (index-exact)
+	// Bulk path (Delete key on several placeholders): erases all
+	// indices, then persists + rebinds ONCE. Returns false when
+	// nothing was removed.
+	bool RemoveSceneReferencesAt(std::vector<size_t> idxs);
 	bool SetSceneReferenceEnabled(size_t idx, bool enabled);
 	// Reference reload WITHOUT touching the real tour file: snapshots
 	// the working doc to a temp tour, rebinds through it (fresh import
@@ -1143,6 +1232,38 @@ private:
 	// + add/remove/replace/reload/enable per reference.
 	bool m_showReferencesPanel = false;
 	void DrawReferencesPanel();
+
+	// ---- Path editor (editor_paths.cpp) --------------------------------
+	// Consolidated view over EVERY file/path the scene depends on: the
+	// source glTF + tour, scene references, glTF image/buffer URIs,
+	// editor image definitions, cook outputs and the lightmap atlas.
+	// Missing files are highlighted; textures can be relinked live
+	// (undoable material-slot reassignment, File > Path editor) or
+	// copied into the place the glTF expects (permanent fix, cook-safe).
+	// Live relinks persist as path.remap.* editorSettings (editor-only,
+	// never cooked) and re-apply after every import.
+	struct PathRemap {
+		std::string oldUri; // glTF image uri as authored (e.g. "tex/a.ktx2")
+		std::string newPath; // replacement file picked by the user
+	};
+	std::vector<PathRemap> m_pathRemaps;
+	bool m_showPathsPanel = false;
+	void DrawPathsPanel();
+	void SavePathRemapsToDoc(smvk::tour::Doc& doc) const;
+	void LoadPathRemapsFromDoc(const smvk::tour::Doc& doc);
+	// Silent post-load fixup: re-mints remapped textures and fills
+	// still-missing material slots (no history entries — import repair).
+	void ApplyPathRemaps();
+	// Interactive relink of one glTF image: loads newPath, reassigns
+	// every material slot that wants imageIndex via undoable commands,
+	// records the remap and autosaves. Returns pool index or -1.
+	int RelinkTextureLive(int imageIndex, const std::string& newPath);
+	// glTF material N -> world material index (-1 when unmapped).
+	int GltfMatToWorld(int gltfMat) const;
+	char m_pathSearchDir[512] = "";
+	char m_pathPrefixFrom[256] = "";
+	char m_pathPrefixTo[256] = "";
+	int m_pathFilter = 0; // 0 all, 1 missing only
 
 	// ---- Tourmaline branding (editor_branding.cpp) ----
 	// Window title + SDL window icon (tourmaline_logo.png, generated on
@@ -1353,6 +1474,9 @@ private:
 	void RebuildCookedLights(); // + seeds m_envDefault's sun from the sun
 	const ::SceneLight* FindNodeLight(uint32_t node,
 		glm::vec3* outAimWs = nullptr) const; // + world aim for dir/spot
+	// Definition for a camera node (null when the node has none).
+	// Resolves through world cameraLocations -> cluster cameras pool.
+	const ::SceneCamera* FindNodeCamera(uint32_t node) const;
 
 	// ---- shading resources ----
 	// Frame ring holds one slice PER (flight, viewport): frameUniforms is
@@ -1480,6 +1604,16 @@ private:
 	struct CookResult { bool ok = false; std::string log; };
 	std::future<CookResult> m_cookFuture{};
 	std::future<CookResult> m_runFuture{}; // Run-in-App worker (see above)
+	// Live cook pipe: the async worker pushes one entry per output line
+	// (mutex-guarded); PollCookProcess drains it on the main thread so
+	// the Console shows progress while the cook runs instead of one
+	// dump at completion. Shared-ownership: the worker captures the
+	// feed by value so it never dangles if the EditorApp dies mid-cook.
+	struct CookFeed {
+		std::mutex mutex;
+		std::vector<std::string> lines;
+	};
+	std::shared_ptr<CookFeed> m_cookFeed;
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	// Outliner tabs (Scene graph vs VFS browser) + VFS selection.

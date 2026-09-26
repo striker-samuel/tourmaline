@@ -1506,6 +1506,10 @@ protected:
 	bool m_giProbeOcclusionCull = false; // overlay: hide probes occluded
 	                              // from the camera (CPU pick-BVH raycast;
 	                              // off = see through walls, debug intent)
+	bool m_giShowVolumeBounds = false; // GI volume AABB/OBB wireframe overlay
+	                              // (ImGui foreground, on top of the current
+	                              // view: octree bounds + regular OBBs +
+	                              // convex grid AABBs, no depth test)
 	glm::mat4 m_giProbeCullView = glm::mat4(0.0f); // view matrix the cache was built for
 	std::vector<char> m_giProbeCullCache; // per-probe: 0 occluded, 1 visible, 2 unknown
 	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);

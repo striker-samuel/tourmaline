@@ -162,11 +162,11 @@ bool SerializeClusters(
 	// of one model, so each unique blob is written once and every scene
 	// references the shared pak ids.
 	std::unordered_map<std::string, uint32_t> meshIdByUri, matIdByUri,
-		lightIdByUri;
+		lightIdByUri, camIdByUri;
 	std::unordered_set<std::string> texturesDone;
 	uint64_t textureBytes = 0;
 	struct LocalMaps {
-		std::unordered_map<uint32_t, uint32_t> mesh, mat, light;
+		std::unordered_map<uint32_t, uint32_t> mesh, mat, light, camera;
 	};
 	std::vector<LocalMaps> locals(clusters.size());
 
@@ -427,6 +427,45 @@ bool SerializeClusters(
 			return fail("invalid light uri: " + uri);
 	}
 
+	// --- Cameras (one blob per authored camera, URI-keyed like lights) --
+	std::vector<ClusterCameraHandle> cameraHandles;
+	{
+		// const_cast: Pool::forEachHandle is non-const (historic). It does
+		// not mutate when the functor only reads.
+		const_cast<Cluster&>(cluster).cameras.forEachHandle(
+			[&](ClusterCameraHandle h) { cameraHandles.push_back(h); });
+	}
+	for (uint32_t k = 0; k < cameraHandles.size(); ++k) {
+		const auto h = cameraHandles[k];
+		std::string uri = cluster.GetCameraUri(h).Str();
+		if (uri.empty())
+			uri = "<cluster-local>#camera." + std::to_string(h.index());
+		auto idIt = camIdByUri.find(uri);
+		if (idIt != camIdByUri.end()) {
+			local.camera[h.index()] = idIt->second;
+			continue;
+		}
+		const uint32_t pakId = static_cast<uint32_t>(camIdByUri.size());
+		camIdByUri[uri] = pakId;
+		local.camera[h.index()] = pakId;
+
+		const SceneCamera* c = const_cast<Cluster&>(cluster).cameras.get(h);
+		if (!c)
+			return fail("stale camera handle in pool");
+
+		std::vector<uint8_t> blob;
+		PutStr(blob, uri);
+		PutU32(blob, static_cast<uint32_t>(c->projection));
+		PutF32(blob, c->fovYDeg);
+		PutF32(blob, c->orthoHalfH);
+		PutF32(blob, c->nearClip);
+		PutF32(blob, c->farClip);
+		PutStr(blob, c->name);
+
+		if (!writer.AddBlob(PakAssetKind::Camera, uri, std::move(blob)))
+			return fail("invalid camera uri: " + uri);
+	}
+
 	// --- Scene ---------------------------------------------------------------
 	{
 		const Scene& scene = cluster.scene;
@@ -562,6 +601,25 @@ bool SerializeClusters(
 				blob.insert(blob.end(), nodeCount, 0);
 			}
 		}
+		// Per-node camera links (v8; v7 blobs end after visibility).
+		// Definitions are PakAssetKind::Camera blobs; this section
+		// carries only the node links as (node, camPakId) pairs in node
+		// order — the same pak-id indirection the lights section uses.
+		// Always written (possibly empty) so the layout is uniform.
+		{
+			std::vector<std::pair<uint32_t, uint32_t>> camPairs(
+				scene.cameraForNode.begin(), scene.cameraForNode.end());
+			std::sort(camPairs.begin(), camPairs.end());
+			PutU32(blob, static_cast<uint32_t>(camPairs.size()));
+			for (const auto& [node, localIdx] : camPairs) {
+				const auto it = local.camera.find(localIdx);
+				if (it == local.camera.end())
+					return fail("scene references unknown camera pool index " +
+						std::to_string(localIdx));
+				PutU32(blob, node);
+				PutU32(blob, it->second);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -612,6 +670,7 @@ bool SerializeClusters(
 		stats->textures = static_cast<uint32_t>(texturesDone.size());
 		stats->textureBytes = static_cast<uint32_t>(textureBytes);
 		stats->lights = static_cast<uint32_t>(lightIdByUri.size());
+		stats->cameras = static_cast<uint32_t>(camIdByUri.size());
 	}
 	return true;
 }
@@ -635,6 +694,7 @@ struct SceneLinkMaps {
 	const std::vector<ClusterStaticMeshHandle>* meshes = nullptr;
 	const std::vector<ClusterMaterialHandle>* materials = nullptr;
 	const std::vector<ClusterLightHandle>* lights = nullptr;
+	const std::vector<ClusterCameraHandle>* cameras = nullptr;
 };
 
 // Shared Scene-blob parse (see the v2/v3/v4/v5 trailing sections in the
@@ -820,6 +880,30 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		}
 		else {
 			scene.hidden.assign(nodeCount, 0);
+		}
+		// Per-node camera links (v8): u32 pairCount + (node, camPakId)
+		// pairs, remapped exactly like lights. v7 blobs end after the
+		// visibility section (no cameras).
+		if (c.off < c.img.size()) {
+			const uint32_t camPairCount = c.u32();
+			if (!c.ok || camPairCount > 1024 * 1024)
+				return fail("bad scene camera mapping");
+			for (uint32_t i = 0; i < camPairCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t pakId = c.u32();
+				if (!c.ok || node >= nodeCount)
+					return fail("bad scene camera mapping");
+				if (maps && maps->cameras) {
+					if (pakId >= maps->cameras->size())
+						return fail("bad scene camera mapping");
+					const ClusterCameraHandle h = (*maps->cameras)[pakId];
+					if (!h.valid())
+						return fail("scene references invalid camera pak id");
+					scene.cameraForNode[node] = h.index();
+				}
+			}
+			if (!c.ok)
+				return fail("truncated scene cameras section");
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
@@ -1224,6 +1308,44 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lightByPakId.push_back(h);
 	}
 
+	// --- Cameras (definitions; the Scene blob links nodes to pak ids) ----
+	// Loaded exactly like lights: one pool entry per blob, URI
+	// re-registered, and the scene's (node, pakId) pairs below remap to
+	// fresh pool handle indices.
+	const auto cameraEntries = reader.BlobsOfKind(PakAssetKind::Camera);
+	std::vector<ClusterCameraHandle> camByPakId;
+	camByPakId.reserve(cameraEntries.size());
+	for (const PakTocEntry* e : cameraEntries) {
+		Cursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const uint32_t proj = c.u32();
+		const float fovY = c.f32();
+		const float halfH = c.f32();
+		const float nearClip = c.f32();
+		const float farClip = c.f32();
+		const std::string name = c.str();
+		if (!c.ok)
+			return fail("truncated camera blob: " + e->path);
+		if (proj > 1)
+			return fail("bad camera projection in: " + e->path);
+		if (c.off != c.img.size())
+			return fail("trailing bytes in camera blob: " + e->path);
+		SceneCamera cam;
+		cam.projection = (proj == 1)
+			? SceneCamera::Projection::Orthographic
+			: SceneCamera::Projection::Perspective;
+		cam.fovYDeg = fovY;
+		cam.orthoHalfH = halfH;
+		cam.nearClip = nearClip;
+		cam.farClip = farClip;
+		cam.name = name;
+		const ClusterCameraHandle h = cluster->CreateCamera(std::move(cam));
+		if (!h.valid())
+			return fail("CreateCamera failed for: " + uri);
+		cluster->RegisterCameraUri(uri, h);
+		camByPakId.push_back(h);
+	}
+
 	// --- Cooked GI registry (named sidecars; 0..1 blobs, first wins) -----
 	for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::Gi)) {
 		std::vector<GiBinding> bindings;
@@ -1244,7 +1366,8 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			" out of range (" + std::to_string(sceneEntries.size()) +
 			" scene(s) in pak)");
 	{
-		SceneLinkMaps maps{ &meshByPakId, &matByPakId, &lightByPakId };
+		SceneLinkMaps maps{ &meshByPakId, &matByPakId, &lightByPakId,
+			&camByPakId };
 		std::string sceneName, perr;
 		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
 				cluster->scene, sceneName, &maps, perr))

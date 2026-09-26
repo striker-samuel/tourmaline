@@ -254,11 +254,21 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		m_context->GetBufferDeviceAddress(m_frameUniforms);
 	const size_t sliceStride = sizeof(app::FrameUniforms);
 	for (int vp = 0; vp < ViewportCount(); ++vp) {
-		const EditorCam& cam = m_editorCams[m_viewports[vp].camIdx];
 		const ViewportRect& rect = m_viewports[vp].rect;
 		const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
-		const glm::mat4 view = EditorCamView(cam);
-		const glm::mat4 proj = EditorCamProj(cam, aspect);
+		// Locked look-through wins over the orbit camera; unbound (or
+		// lost-node) viewports keep the existing orbit behavior.
+		glm::mat4 view, proj;
+		glm::vec3 eye;
+		float nearClip, farClip;
+		if (!BoundCameraView(vp, view, proj, eye, nearClip, farClip)) {
+			const EditorCam& cam = m_editorCams[m_viewports[vp].camIdx];
+			view = EditorCamView(cam);
+			proj = EditorCamProj(cam, aspect);
+			eye = EditorCamEye(cam);
+			nearClip = cam.nearClip;
+			farClip = cam.farClip;
+		}
 		const glm::mat4 viewProj = proj * view;
 
 		app::FrameUniforms frame{};
@@ -269,14 +279,14 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		frame.invProj = glm::inverse(proj);
 		frame.invViewProj = glm::inverse(viewProj);
 		frame.prevViewProj = viewProj;
-		frame.cameraPos = EditorCamEye(cam);
+		frame.cameraPos = eye;
 		frame.time = time_since_start_s;
 		frame.viewportSize = glm::vec2(rect.w, rect.h);
 		frame.invViewportSize = glm::vec2(
 			rect.w > 0.0f ? 1.0f / rect.w : 0.0f,
 			rect.h > 0.0f ? 1.0f / rect.h : 0.0f);
-		frame.nearPlane = cam.nearClip;
-		frame.farPlane = cam.farClip;
+		frame.nearPlane = nearClip;
+		frame.farPlane = farClip;
 		frame.exposure = CurrentEnv().exposure;
 		frame.aoTextureIndex = UINT32_MAX;
 		frame.aoIntensity = 0.0f;
@@ -469,6 +479,54 @@ glm::mat4 EditorCamProj(const EditorCam& c, float aspect) {
 	return proj;
 }
 
+// Locked look-through: viewport follows the bound scene camera node's
+// global pose + lens (forward = node -Z in world). False when unbound
+// or the node lost its camera (deleted/detached) — callers fall back
+// to the orbit camera, and the binding survives so undo restores it.
+bool EditorApp::BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
+	glm::vec3& eye, float& nearClip, float& farClip) const {
+	if (!m_world || vp < 0 || vp >= kMaxViewports)
+		return false;
+	const int bound = m_viewports[vp].boundNode;
+	if (bound < 0 || bound >= int(m_world->scene.hierarchy.size()))
+		return false;
+	const ::SceneCamera* C = FindNodeCamera(uint32_t(bound));
+	if (!C)
+		return false;
+	const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
+	eye = glm::vec3(G[3]);
+	glm::vec3 fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+	if (!(glm::length(fwd) > 1e-6f))
+		return false;
+	fwd = glm::normalize(fwd);
+	glm::vec3 up = glm::vec3(G * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+	if (!(glm::length(up) > 1e-6f)
+		|| std::abs(glm::dot(up, fwd)) > 0.999f)
+		up = (std::abs(fwd.y) > 0.999f) ? glm::vec3(1.0f, 0.0f, 0.0f)
+			: glm::vec3(0.0f, 1.0f, 0.0f);
+	else
+		up = glm::normalize(up);
+	view = glm::lookAt(eye, eye + fwd, up);
+	const ViewportRect& rect = m_viewports[vp].rect;
+	const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
+	nearClip = std::max(C->nearClip, 1e-4f);
+	farClip = std::max(C->farClip, nearClip * 1.1f + 1e-3f);
+	glm::mat4 p(1.0f);
+	if (C->projection == ::SceneCamera::Projection::Orthographic) {
+		const float h = std::max(C->orthoHalfH, 0.01f);
+		p = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h,
+			farClip, nearClip);
+	}
+	else {
+		p = MakeReversedZProjRH(glm::radians(
+			std::clamp(C->fovYDeg, 1.0f, 179.0f)), aspect,
+			nearClip, farClip);
+	}
+	p[1][1] *= -1.0f; // Vulkan Y-flip
+	proj = p;
+	return true;
+}
+
 void EditorApp::SetupDefaultCameras() {
 	if (!m_editorCams.empty())
 		return;
@@ -563,11 +621,34 @@ void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent
 	// Same camera as viewport 0, strip aspect: re-project m_lastFrame
 	// (viewport 0's frame) so the inset is undistorted.
 	SetupDefaultCameras();
-	const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
 	app::FrameUniforms frame = m_viewports[0].frame;
-	const glm::mat4 view = EditorCamView(cam);
-	glm::mat4 proj = EditorCamProj(cam,
-		float(stripExtent.width) / float(stripExtent.height));
+	// frame.view already follows the look-through binding (see
+	// UpdateFrameData); only the projection is re-derived for the strip
+	// aspect — from the bound lens when bound, else the orbit camera.
+	const float aspect = stripExtent.height
+		? float(stripExtent.width) / float(stripExtent.height) : 1.0f;
+	glm::mat4 proj = EditorCamProj(m_editorCams[m_viewports[0].camIdx],
+		aspect);
+	glm::mat4 view = frame.view;
+	if (m_viewports[0].boundNode >= 0) {
+		if (const ::SceneCamera* C = FindNodeCamera(
+				uint32_t(m_viewports[0].boundNode))) {
+			glm::mat4 p(1.0f);
+			if (C->projection
+				== ::SceneCamera::Projection::Orthographic) {
+				const float h = std::max(C->orthoHalfH, 0.01f);
+				p = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h,
+					frame.farPlane, frame.nearPlane);
+			}
+			else {
+				p = MakeReversedZProjRH(glm::radians(
+					std::clamp(C->fovYDeg, 1.0f, 179.0f)), aspect,
+					frame.nearPlane, frame.farPlane);
+			}
+			p[1][1] *= -1.0f;
+			proj = p;
+		}
+	}
 	const glm::mat4 viewProj = proj * view;
 	frame.view = view;
 	frame.proj = proj;

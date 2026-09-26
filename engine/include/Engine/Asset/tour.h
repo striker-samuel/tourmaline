@@ -90,6 +90,11 @@ struct TourCook {
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
+	// World-sun color (linear RGB): with the angles/intensity above it IS
+	// the cooked world sun — the lightmap bake env AND the pak runtime
+	// sun (the cooker synthesizes a directional from it when the cluster
+	// has none, so editor world-sun settings travel to the App).
+	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 	// Preconvolved specular cubemaps (PakCooker --cubemap stage: GGX
 	// mip chains embedded as textures/cubemaps/<name>.ktx2; empty name
 	// defaults to the out-pak stem).
@@ -110,6 +115,25 @@ struct TourCook {
 	// global fallback outside any convex volume).
 	bool giCvol = true;
 	bool giWorld = true;
+	// Auto-convert non-KTX textures to KTX2 at cook time (in-process
+	// stb decode + libktx write, `.ktx2` sidecar cached next to the
+	// source). Off restores the old warn-and-skip for non-KTX payloads.
+	bool autoKtx = true;
+};
+
+// Maya file node (the editor's image definition, promoted to a cooked
+// record): a texture source OUTSIDE the DAG with its sampling intent.
+// The cooker reads these for every converted texture — colorspace picks
+// the KTX2 transfer (sRGB vs linear), wrap/filter override the glTF
+// sampler on a match. Matched to glTF images by path basename, then
+// stem; unmatched images fall back to usage inference (baseColor /
+// emissive = sRGB, everything else linear).
+struct FileNode {
+	std::string name; // display name (defaults to the path stem)
+	std::string path; // source image (host path or VFS-relative)
+	int colorspace = 0; // 0 = sRGB (color/emissive), 1 = linear (data)
+	int wrap = 0;       // 0 = repeat, 1 = clamp-edge, 2 = mirrored-repeat
+	int filter = 0;     // 0 = linear, 1 = nearest
 };
 
 enum class Verb : uint8_t {
@@ -171,18 +195,19 @@ enum class Verb : uint8_t {
  	                // (9 values, rotation in DEGREES, editor convention).
  	                // (Legacy verb — new files write the unified
  	                // createNode form below.)
- 	CreateNode,     // THE node verb (Maya createNode): -at names the
-	                // node TYPE, the rest is per-type payload:
-	                //   DAG types (hierarchy nodes — transform +
-	                //   parentable): transform, pointLight, spotLight,
-	                //   terrain, cvolume. Replayed by cook + editor with
-	                //   full create semantics (-ref bookkeeping included).
-	                //   System types (no DAG presence — editor-managed
-	                //   data): material, file, image, camera. Parsed +
-	                //   validated, skipped at replay with a log.
-	                // New files write ONLY this form; the legacy
-	                // createLight/createTerrain/createTransform/
-	                // createCvolume verbs still parse (backward compat).
+  	CreateNode,     // THE node verb (Maya createNode): -at names the
+  	                // node TYPE, the rest is per-type payload:
+  	                //   DAG types (hierarchy nodes — transform +
+  	                //   parentable): transform, pointLight, spotLight,
+  	                //   terrain, cvolume, cubemap, camera. Replayed by
+  	                //   cook + editor with full create semantics (-ref
+  	                //   bookkeeping included).
+  	                //   System types (no DAG presence — editor-managed
+  	                //   data): material, file, image. Parsed +
+  	                //   validated, skipped at replay with a log.
+  	                // New files write ONLY this form; the legacy
+  	                // createLight/createTerrain/createTransform/
+  	                // createCvolume verbs still parse (backward compat).
  	CreateCVolume,  // node = PARENT cluster id; text = volume name;
 	                // vec = local position (box center); svec = local
 	                // size (full extents, m); vec4 = (priority,
@@ -195,16 +220,33 @@ enum class Verb : uint8_t {
 	                // "position","rotation","size","name"); number =
 	                // scalar value; vec4 = triple value (position/
 	                // rotation-deg/size); name = new name (attr "name").
- 	CreateCubemap,  // node = PARENT cluster id; text = capture name;
-	                // vec = local position (pinned probe); number =
-	                // influence radius (m). An authored cubemap capture:
-	                // the cook's --cubemap stage bakes it as a 'pin' row
-	                // (wins weight ties at load).
- 	SetCubemapAttr, // node = target cluster id, or a created-capture ref
-	                // (kCreateCubemapRefBase | k — see below); text =
-	                // attr ("position","radius","name"); number =
-	                // scalar (radius); vec4 = triple (position); name =
-	                // new name (attr "name").
+  	CreateCubemap,  // node = PARENT cluster id; text = capture name;
+  	               // vec = local position (pinned probe); number =
+  	               // influence radius (m). An authored cubemap capture:
+  	               // the cook's --cubemap stage bakes it as a 'pin' row
+  	               // (wins weight ties at load).
+  	SetCubemapAttr, // node = target cluster id, or a created-capture ref
+  	               // (kCreateCubemapRefBase | k — see below); text =
+  	               // attr ("position","radius","name"); number =
+  	               // scalar (radius); vec4 = triple (position); name =
+  	               // new name (attr "name").
+  	CreateCamera, // node = PARENT cluster id; text = camera name;
+  	              // vec = local position; svec = local rotation in
+  	              // DEGREES (editor TRS convention); vec4 =
+  	              // (projFloat [0 = perspective, 1 = orthographic],
+  	              // fovYDeg, nearClip, farClip); number = orthoHalfH
+  	              // (m, ortho only). An authored camera node: the lens
+  	              // lives in the cluster cameras pool, the pose rides
+  	              // the node transform (forward = node -Z in world).
+  	SetCamAttr,   // node = target cluster id, or a created-camera ref
+  	              // (kCreateCameraRefBase | k — see below); text = attr
+  	              // ("projection","fovY","orthoHalfH","near","far",
+  	              // "name","position","rotation"); number = scalar
+  	              // value (projection: 0/1); name = new name (attr
+  	              // "name" only); vec4 = triple (position/
+  	              // rotation-deg). Post-creation TRS edits on created
+  	              // cameras lower to position/rotation (their cluster
+  	              // ids don't exist until replay).
  };
 
 // Node-type table for createNode -at (Maya node types): whether the
@@ -331,6 +373,11 @@ inline constexpr uint32_t kCreateCvolRefBase = 0x20000000u;
 // CreateCubemap in file order). Disjoint from all bases above.
 inline constexpr uint32_t kCreateCubemapRefBase = 0x10000000u;
 
+// Same scheme for cameras created by an earlier CreateCamera:
+// SetCamAttr addresses them via kCreateCameraRefBase | k (k-th
+// CreateCamera in file order). Disjoint from all bases above.
+inline constexpr uint32_t kCreateCameraRefBase = 0x08000000u;
+
 struct Doc {
 	int version = kTourVersion;
 	std::string source;      // source glTF path (DEPRECATED: geometry may
@@ -344,6 +391,10 @@ struct Doc {
 	// deeper nesting comes from each referenced source's own tour).
 	// Written FIRST in the file (Maya file-block order).
 	std::vector<ReferenceCmd> references;
+	// File nodes (ordered Maya file/image declarations, editor-authored):
+	// cooked records — the cooker consumes them for KTX conversion
+	// (unlike editorSettings, which never cook).
+	std::vector<FileNode> fileNodes;
 	// fileInfo constants (Maya fileInfo block): fixed format metadata
 	// (application/product/version), then anything carried. Written
 	// right after the references.

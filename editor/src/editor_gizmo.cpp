@@ -389,6 +389,74 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
+	// Camera frustum markers: one X-ray eye diamond + near/far box per
+	// authored camera node (pose = node transform, forward = -Z). Green
+	// reads apart from lights (orange/cyan/yellow), cvolumes (priority
+	// hues) and cubemaps (magenta); the selection draws bright. Aspect
+	// follows the active viewport (schematic when panels disagree).
+	if (m_showCameraGizmos && !m_world->scene.cameraForNode.empty()) {
+		const glm::vec3 eye = EditorCamEye(ActiveCam());
+		const ViewportRect& ar = m_viewports[m_activeVp].rect;
+		const float aspect = ar.h > 0.0f ? ar.w / ar.h : 16.0f / 9.0f;
+		for (const auto& [node, ci] : m_world->scene.cameraForNode) {
+			const ::SceneCamera* C = FindNodeCamera(node);
+			if (!C || node >= m_world->scene.hierarchy.size()
+				|| node >= m_world->scene.globalTransform.size())
+				continue;
+			const glm::mat4& G = m_world->scene.globalTransform[node];
+			const glm::vec3 p = glm::vec3(G[3]);
+			glm::vec3 fwd = glm::vec3(G * glm::vec4(0, 0, -1, 0));
+			if (!(glm::length(fwd) > 1e-6f))
+				continue;
+			fwd = glm::normalize(fwd);
+			glm::vec3 right = glm::vec3(G * glm::vec4(1, 0, 0, 0));
+			if (!(glm::length(right) > 1e-6f))
+				right = glm::vec3(1, 0, 0);
+			right = glm::normalize(right);
+			glm::vec3 up = glm::cross(fwd, right);
+			if (!(glm::length(up) > 1e-6f))
+				continue;
+			up = glm::normalize(up);
+			float s = glm::distance(eye, p) * 0.035f;
+			if (!(s > 1e-5f))
+				continue;
+			if (node == m_selected)
+				s *= 1.6f; // selected marker reads bigger
+			// Frustum extent: half-height at a schematic depth tied to
+			// the marker size (depthTest off, so absolute depth is free).
+			const float depth = std::max(s * 12.0f, 0.5f);
+			float hh = 0.0f;
+			if (C->projection
+				== ::SceneCamera::Projection::Orthographic) {
+				hh = std::max(C->orthoHalfH, 0.01f);
+			}
+			else {
+				hh = std::tan(glm::radians(
+					std::clamp(C->fovYDeg, 1.0f, 179.0f)) * 0.5f)
+					* depth;
+			}
+			const float hw = hh * aspect;
+			const glm::vec3 fc = p + fwd * depth;
+			const glm::vec3 corners[4] = {
+				fc + up * hh - right * hw, fc + up * hh + right * hw,
+				fc - up * hh + right * hw, fc - up * hh - right * hw,
+			};
+			LineBatch b;
+			b.depthTest = false; // X-ray: frame cameras inside geometry
+			b.color = (node == m_selected)
+				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
+				: glm::vec4(0.3f, 1.0f, 0.55f, 1.0f);
+			AddDiamond(b, p, s);
+			for (int k = 0; k < 4; ++k) {
+				b.verts.push_back({ p });
+				b.verts.push_back({ corners[k] });
+				b.verts.push_back({ corners[k] });
+				b.verts.push_back({ corners[(k + 1) & 3] });
+			}
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
 	// Build batches: selection AABB (yellow) + gizmo axes.
 	if (m_selected == UINT32_MAX ||
 		m_selected >= m_world->scene.hierarchy.size()) {

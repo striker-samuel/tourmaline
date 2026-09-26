@@ -329,6 +329,40 @@ bool EditorApp::RemoveSceneReferenceAt(size_t idx) {
 	return ReloadReferencesViaTemp();
 }
 
+bool EditorApp::RemoveSceneReferencesAt(std::vector<size_t> idxs) {
+	// Dedupe, drop out-of-range + the root entry (the scene source is
+	// not removable — same guard as the single path above).
+	std::sort(idxs.begin(), idxs.end());
+	idxs.erase(std::unique(idxs.begin(), idxs.end()), idxs.end());
+	std::vector<size_t> doomed;
+	for (size_t idx : idxs) {
+		if (idx >= m_references.size())
+			continue;
+		if (m_references[idx].root) {
+			Log("Remove: reference '" + m_references[idx].name
+				+ "' is the scene source — the scene IS it (open a"
+				" different scene instead).");
+			continue;
+		}
+		doomed.push_back(idx);
+	}
+	if (doomed.empty())
+		return false;
+	// Erase descending so earlier indices stay valid.
+	std::sort(doomed.begin(), doomed.end(), std::greater<size_t>());
+	std::vector<std::string> srcs;
+	for (size_t idx : doomed) {
+		srcs.push_back(m_references[idx].source);
+		m_references.erase(m_references.begin() + ptrdiff_t(idx));
+	}
+	SaveTour();
+	for (const std::string& src : srcs)
+		Log("Reference removed: '" + src + "' — reloading to rebind.");
+	if (m_gltfPath.empty())
+		return true;
+	return ReloadReferencesViaTemp();
+}
+
 bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
 	if (idx >= m_references.size())
 		return false;

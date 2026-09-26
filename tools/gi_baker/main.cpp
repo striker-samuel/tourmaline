@@ -886,6 +886,10 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 } // namespace
 
 int main(int argc, char** argv) {
+	// Same live-pipe contract as PakCooker (see its main): the editor
+	// streams this output line-by-line while the bake runs.
+	std::cout << std::unitbuf;
+	std::cerr << std::unitbuf;
 	Args args;
 	if (!ParseArgs(argc, argv, args)) {
 		Usage();

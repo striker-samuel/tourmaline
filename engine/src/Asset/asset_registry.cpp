@@ -124,6 +124,14 @@ bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
 	return true;
 }
 
+bool Cluster::RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle) {
+	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
+	if (n.empty() || !handle.valid())
+		return false;
+	cameraByUri_.Insert(uriArena_.AllocateString(n), handle);
+	return true;
+}
+
 void Cluster::RegisterGiBinding(GiBinding::Kind kind, const std::string& name) {
 	if (!name.empty())
 		giBindings.push_back(GiBinding{ kind, name });
@@ -144,6 +152,7 @@ void Cluster::UnregisterUri(StringViewT uri) {
 	meshByUri_.Erase(n);
 	materialByUri_.Erase(n);
 	lightByUri_.Erase(n);
+	cameraByUri_.Erase(n);
 	textureByUri_.Erase(n);
 	textureSamplers_.Erase(n);
 	textureSources_.Erase(n);
@@ -176,6 +185,16 @@ std::optional<ClusterLightHandle> Cluster::FindLightByUri(StringViewT uri) const
 	if (n.empty())
 		return std::nullopt;
 	const ClusterLightHandle* hit = lightByUri_.Find(n);
+	if (!hit)
+		return std::nullopt;
+	return *hit;
+}
+
+std::optional<ClusterCameraHandle> Cluster::FindCameraByUri(StringViewT uri) const {
+	const StringViewT n = NormalizeAssetUri(uri);
+	if (n.empty())
+		return std::nullopt;
+	const ClusterCameraHandle* hit = cameraByUri_.Find(n);
 	if (!hit)
 		return std::nullopt;
 	return *hit;
@@ -224,8 +243,23 @@ StringViewT Cluster::GetLightUri(ClusterLightHandle handle) const {
 	return found;
 }
 
+StringViewT Cluster::GetCameraUri(ClusterCameraHandle handle) const {
+	if (!handle.valid())
+		return {};
+	StringViewT found;
+	cameraByUri_.ForEach([&](StringViewT uri, const ClusterCameraHandle& h) {
+		if (h == handle)
+			found = uri;
+	});
+	return found;
+}
+
 ClusterLightHandle Cluster::CreateLight(SceneLight def) {
 	return lights.create(std::move(def));
+}
+
+ClusterCameraHandle Cluster::CreateCamera(SceneCamera def) {
+	return cameras.create(std::move(def));
 }
 
 void Cluster::RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc) {

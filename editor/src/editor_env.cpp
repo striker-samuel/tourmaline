@@ -122,9 +122,36 @@ void EditorApp::DrawWorldPanel() {
 	ImGui::Text("Sun (directional)");
 	const uint32_t sun = FindSunNode();
 	if (sun == UINT32_MAX || !m_world) {
-		ImGui::TextDisabled("No directional light in the scene.");
-		ImGui::TextDisabled("Import one (KHR punctual) to drive scene "
-			"sunlight; the IBL sun below always lights the viewport.");
+		// Cooked world sun (no scene directional): these ARE the pak sun
+		// — the cooker synthesizes a directional from them so the world
+		// sun travels to the App. Same values drive the lightmap bake.
+		ImGui::TextDisabled("No directional light: cooked world sun.");
+		float az = m_cook.sunAzimuth;
+		if (ImGui::DragFloat("Sun azimuth", &az, 1.0f, 0.0f, 360.0f,
+				"%.1f")) {
+			m_cook.sunAzimuth = az;
+			AutosaveTour();
+		}
+		float el = m_cook.sunElevation;
+		if (ImGui::DragFloat("Sun elevation", &el, 1.0f, 0.0f, 90.0f,
+				"%.1f")) {
+			m_cook.sunElevation = el;
+			AutosaveTour();
+		}
+		float si = m_cook.sunIntensity;
+		if (ImGui::DragFloat("Sun intensity (lux)", &si, 10.0f, 0.0f,
+				2e5f, "%.0f")) {
+			m_cook.sunIntensity = si;
+			AutosaveTour();
+		}
+		glm::vec3 sc = m_cook.sunColor;
+		if (ImGui::ColorEdit3("Sun color", &sc.x)) {
+			m_cook.sunColor = sc;
+			AutosaveTour();
+		}
+		ImGui::TextDisabled("Import a KHR punctual directional to drive "
+			"scene sunlight per-node instead; the IBL sun below always "
+			"lights the viewport.");
 	}
 	else if (glm::vec3 aimWs(0.0f);
 		const ::SceneLight* li = FindNodeLight(sun, &aimWs)) {
@@ -191,6 +218,11 @@ void EditorApp::DrawWorldPanel() {
 	}
 	// ---- image-based lighting + atmosphere (editor viewport) ----
 	DrawEnvPanel();
+	// ---- active-viewport orbit camera (moved off the node pages) ----
+	// Free-orbit navigation state lives here on the World page; authored
+	// camera nodes (outliner [camera]) carry their own lens + pose and
+	// are bound per viewport from the viewport chips.
+	DrawCameraSection();
 }
 
 void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {

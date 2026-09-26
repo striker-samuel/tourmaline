@@ -361,6 +361,23 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				c.beforeNum, c.beforeText);
 		break;
 	}
+	case EditVerb::CreateCamera: {
+		if (forward)
+			ExecCreateCamera(c);
+		else
+			ExecUncreateCamera(c);
+		break;
+	}
+	case EditVerb::SetCamAttr: {
+		const std::string& attr = c.camAttr;
+		if (forward)
+			WriteNodeCameraAttr(c.node, attr, c.vec4, c.number,
+				c.afterText);
+		else
+			WriteNodeCameraAttr(c.node, attr, c.beforeVec4,
+				c.beforeNum, c.beforeText);
+		break;
+	}
 	}
 }
 
@@ -491,6 +508,41 @@ std::string EditorApp::UniqueCubemapName() const {
 	return "Cube_" + std::to_string(n);
 }
 
+int EditorApp::CreatedCameraIndex(uint32_t worldNode) const {
+	// Same contract as CreatedLightIndex, for the camera family: alive
+	// creates only (a deleted camera's CreateCamera is dropped from the
+	// tour, so the file's -ref space spans the survivors).
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateCamera)
+			continue;
+		if (!m_world || !m_world->scene.cameraForNode.contains(h.node))
+			continue; // deleted (tombstoned): not in the file's ref space
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+std::string EditorApp::UniqueCameraName() const {
+	// Next free "Camera_N" over live node names (1-based).
+	int n = 1;
+	if (m_world) {
+		for (;;) {
+			const std::string want = "Camera_" + std::to_string(n);
+			bool taken = false;
+			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+				taken = getNodeName(m_world->scene, int(i)) == want;
+			if (!taken)
+				break;
+			++n;
+		}
+	}
+	return "Camera_" + std::to_string(n);
+}
+
 std::string EditorApp::UniqueTerrainName() const {
 	// Next free "Terrain_N" over live node names (1-based).
 	int n = 1;
@@ -569,6 +621,39 @@ void EditorApp::DraftCreateLight(bool spot) {
 	c.lightOuterDeg = 35.0f;
 	c.lightStatic = false; // dynamic: visible in the viewport immediately
 	c.lightShadow = spot;  // spots default to shadow-casting (points can't)
+	Do(c);
+}
+
+void EditorApp::DraftCreateCamera() {
+	if (!m_world) {
+		Log("Create camera: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateCamera;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueCameraName();
+	// Spawn at the active camera target, aimed back at the active camera
+	// eye (so the first look-through frames what you were seeing).
+	const EditorCam& cam = ActiveCam();
+	c.afterVec = cam.target;
+	const glm::vec3 eye = EditorCamEye(cam);
+	glm::vec3 d = cam.target - eye;
+	if (glm::length(d) < 1e-6f)
+		d = glm::vec3(0.0f, 0.0f, -1.0f);
+	d = glm::normalize(d);
+	// Yaw/pitch for a -Z-forward node (editor TRS convention): yaw about
+	// Y from -Z, pitch about X. Matches the orbit-frame math below.
+	c.camRot = glm::vec3(glm::degrees(glm::asin(glm::clamp(d.y, -1.0f, 1.0f))),
+		glm::degrees(glm::atan(-d.x, -d.z)), 0.0f);
+	c.camProjection = (cam.type == EditorCam::Type::Orthographic) ? 1u : 0u;
+	c.camFovY = std::clamp(cam.fovYDeg, 1.0f, 179.0f);
+	c.camNear = std::max(cam.nearClip, 1e-4f);
+	c.camFar = std::max(cam.farClip, c.camNear * 1.1f + 1e-3f);
+	c.camOrthoHalfH = std::clamp(cam.orthoHalfH, 1e-2f, 1e5f);
 	Do(c);
 }
 
@@ -698,6 +783,147 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 		MarkHidden(scene, int(n));
 		scene.lightForNode.erase(n);
 		Log("Undid light creation (#" + std::to_string(n) +
+		 "): hidden, ids kept stable (pool entry retained).");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Created cameras.
+//
+// A created camera is a WORLD node appended to the live scene plus a
+// SceneCamera lens definition in the primary cluster's cameras pool,
+// linked through world cameraLocations — so gizmos, the inspector, the
+// outliner tags and the look-through path all pick it up with no special
+// cases. Undo removes the node when it is still the childless tail (ids
+// stay stable); otherwise the camera is tombstoned (hidden + detached)
+// for the same reason.
+// Tour persistence: CreateCamera carries the creation (CmdToTour emits
+// the LIVE pose + lens, so post-creation edits ride along); SetCamAttr
+// addresses later creates via kCreateCameraRefBase (creation order).
+// ---------------------------------------------------------------------------
+void EditorApp::ExecCreateCamera(EditCmd& c) {
+	if (!m_world || m_world->clusters.empty()
+		|| !m_world->clusters[0])
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	// TRS = translate + rotation-deg (editor convention; scale stays 1).
+	scene.localTransform[size_t(created)] = LocalMatrixFromTRS(
+		c.afterVec, c.camRot, glm::vec3(1.0f));
+	// Name (the nodeNames pool is grow-only, like Rename).
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	// Lens definition on the primary cluster (FindNodeCamera resolves
+	// world cameras through cameraLocations -> cluster + handle).
+	::SceneCamera def{};
+	def.projection = (c.camProjection != 0)
+		? ::SceneCamera::Projection::Orthographic
+		: ::SceneCamera::Projection::Perspective;
+	def.fovYDeg = std::clamp(c.camFovY, 1.0f, 179.0f);
+	def.nearClip = std::max(c.camNear, 1e-4f);
+	def.farClip = std::max(c.camFar, def.nearClip * 1.1f + 1e-3f);
+	def.orthoHalfH = std::clamp(c.camOrthoHalfH, 1e-2f, 1e5f);
+	def.name = c.afterText;
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	auto handle = cl->cameras.create(std::move(def));
+	const uint32_t worldCamIdx = uint32_t(m_world->cameraLocations.size());
+	m_world->cameraLocations.push_back({ cl, handle });
+	scene.cameraForNode[uint32_t(created)] = worldCamIdx;
+	if (m_replayingTour)
+		m_tourCreatedCameraNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created %s camera '%s' (#%u)",
+		c.camProjection != 0 ? "ortho" : "perspective",
+		c.afterText.c_str(), uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateCamera(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	auto cit = scene.cameraForNode.find(n);
+	const bool camTail = cit != scene.cameraForNode.end()
+		&& cit->second + 1 == m_world->cameraLocations.size();
+	if (tail && childless) {
+		// Physical removal: pop every vector addNode grew (flag arrays
+		// only when they are exactly node-sized — empty/mismatched
+		// means "default", which needs no entry).
+		if (cit != scene.cameraForNode.end()) {
+			if (camTail) {
+				const auto& loc = m_world->cameraLocations[cit->second];
+				if (loc.cluster)
+					loc.cluster->cameras.destroy(loc.handle);
+				m_world->cameraLocations.pop_back();
+			}
+			scene.cameraForNode.erase(n);
+		}
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			// Refresh the cached tail on the (possibly new) first child.
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid camera creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the camera instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.cameraForNode.erase(n);
+		Log("Undid camera creation (#" + std::to_string(n) +
 		 "): hidden, ids kept stable (pool entry retained).");
 	}
 }
@@ -1050,6 +1276,12 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		c.beforeCubemap = (cmit != scene.cubemapForNode.end());
 		if (c.beforeCubemap)
 			c.beforeNum = double(cmit->second.radius);
+		// Camera def (created or replayed): world camera index rides
+		// beforeCamIdx + presence rides beforeCamera; the pool entry
+		// itself stays alive like lights (links only).
+		auto camit = scene.cameraForNode.find(n);
+		c.beforeCamera = (camit != scene.cameraForNode.end());
+		c.beforeCamIdx = c.beforeCamera ? double(camit->second) : -1.0;
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -1075,6 +1307,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		scene.materialForNode.erase(id);
 		scene.cvolForNode.erase(id);
 		scene.cubemapForNode.erase(id);
+		scene.cameraForNode.erase(id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -1119,6 +1352,9 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	if (c.beforeCubemap)
 		scene.cubemapForNode[n] =
 			::SceneCubemap{ float(c.beforeNum) };
+	if (c.beforeCamera && c.beforeCamIdx >= 0.0
+		&& c.beforeCamIdx < double(m_world->cameraLocations.size()))
+		scene.cameraForNode[n] = uint32_t(c.beforeCamIdx);
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -1162,6 +1398,40 @@ void EditorApp::DeleteSelection() {
 	}
 	int deleted = 0;
 	std::vector<uint32_t> handled; // ids dispatched (dedupe tiles/groups)
+	// Reference placeholders in this Delete batch: Delete removes the
+	// whole reference (RemoveSceneReferencesAt, one rebind), not the
+	// node. Pre-scanned so subtree members below a doomed placeholder
+	// can be skipped inside the loop.
+	std::vector<size_t> refIdxs;
+	std::vector<uint32_t> refPhNodes;
+	for (uint32_t t : targets) {
+		if (t == UINT32_MAX || !m_world
+			|| t >= m_world->scene.hierarchy.size())
+			continue;
+		if (!IsRefPlaceholder(t))
+			continue;
+		auto it = std::find(m_refPlaceholders.begin(),
+			m_refPlaceholders.end(), t);
+		if (it != m_refPlaceholders.end()
+			&& std::find(refPhNodes.begin(), refPhNodes.end(), t)
+				== refPhNodes.end())
+			refPhNodes.push_back(t);
+	}
+	auto underRefRemoval = [&](uint32_t n) {
+		if (refPhNodes.empty() || !m_world)
+			return false;
+		for (uint32_t a = n;
+			a < m_world->scene.hierarchy.size();) {
+			for (uint32_t ph : refPhNodes)
+				if (a == ph)
+					return true;
+			const int p = m_world->scene.hierarchy[a].parent;
+			if (p < 0)
+				return false;
+			a = uint32_t(p);
+		}
+		return false;
+	};
 	auto dispatch = [&](uint32_t id) {
 		for (uint32_t h : handled)
 			if (h == id)
@@ -1184,12 +1454,31 @@ void EditorApp::DeleteSelection() {
 			continue;
 		}
 		if (IsRefPlaceholder(n)) {
-			// The placeholder IS the reference binding anchor: dropping
-			// it would orphan the linked scene on reload. Maya parity:
-			// remove/unload the reference, not its node.
+			// The placeholder IS the reference binding anchor: Delete
+			// removes the whole reference (definition + reload), not
+			// just the node. Collected below; bulk-removed after the
+			// ordinary deletes so one rebind covers everything.
+			auto it = std::find(m_refPlaceholders.begin(),
+				m_refPlaceholders.end(), n);
+			if (it == m_refPlaceholders.end()) {
+				Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
+					"' is a reference placeholder — remove the reference "
+					"itself (References panel).");
+				continue;
+			}
+			refIdxs.push_back(
+				size_t(std::distance(m_refPlaceholders.begin(), it)));
+			if (std::find(refPhNodes.begin(), refPhNodes.end(), n)
+				== refPhNodes.end())
+				refPhNodes.push_back(n);
+			continue;
+		}
+		// A node inside a reference subtree that is itself being
+		// removed vanishes with the reference — a per-node delete
+		// on top would only leave an orphan command behind.
+		if (underRefRemoval(n)) {
 			Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
-				"' is a reference placeholder — remove the reference "
-				"itself (References panel).");
+				"' goes away with its reference (skipped).");
 			continue;
 		}
 		// Terrain TILE (viewport picks select tiles — the group node
@@ -1214,6 +1503,16 @@ void EditorApp::DeleteSelection() {
 	if (deleted > 0)
 		Log("Delete: removed " + std::to_string(deleted) + " node"
 			+ (deleted > 1 ? "s" : "") + ".");
+	// Reference removals last: ordinary deletes above are already in
+	// the history, so the removal's temp-snapshot reload carries them.
+	// One rebind covers the whole batch (per-index removal would
+	// reload N times).
+	if (!refIdxs.empty()) {
+		std::sort(refIdxs.begin(), refIdxs.end());
+		refIdxs.erase(std::unique(refIdxs.begin(), refIdxs.end()),
+			refIdxs.end());
+		RemoveSceneReferencesAt(std::move(refIdxs));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1560,6 +1859,90 @@ bool EditorApp::WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
+bool EditorApp::ReadNodeCameraAttr(uint32_t node, const std::string& attr,
+	glm::vec4& v4, double& num, std::string& text) const {
+	v4 = glm::vec4(0.0f);
+	num = 0.0;
+	text.clear();
+	const ::SceneCamera* C = FindNodeCamera(node);
+	if (!C)
+		return false;
+	if (attr == "projection") {
+		num = (C->projection == ::SceneCamera::Projection::Orthographic)
+			? 1.0 : 0.0;
+	} else if (attr == "fovY") {
+		num = double(C->fovYDeg);
+	} else if (attr == "orthoHalfH") {
+		num = double(C->orthoHalfH);
+	} else if (attr == "near") {
+		num = double(C->nearClip);
+	} else if (attr == "far") {
+		num = double(C->farClip);
+	} else if (attr == "name") {
+		text = C->name;
+	} else if (attr == "position" || attr == "rotation") {
+		if (!m_world || node >= m_world->scene.hierarchy.size())
+			return false;
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		v4 = glm::vec4(attr == "position" ? t : r, 1.0f);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
+	const glm::vec4& v4, double num, const std::string& text) {
+	if (!m_world)
+		return false;
+	Scene& scene = m_world->scene;
+	auto cit = scene.cameraForNode.find(node);
+	if (cit == scene.cameraForNode.end()
+		|| cit->second >= m_world->cameraLocations.size())
+		return false;
+	const auto& loc = m_world->cameraLocations[cit->second];
+	if (!loc.cluster)
+		return false;
+	::SceneCamera* C = loc.cluster->cameras.get(loc.handle);
+	if (!C)
+		return false;
+	if (attr == "projection") {
+		C->projection = (num >= 0.5)
+			? ::SceneCamera::Projection::Orthographic
+			: ::SceneCamera::Projection::Perspective;
+	} else if (attr == "fovY") {
+		C->fovYDeg = std::clamp(float(num), 1.0f, 179.0f);
+	} else if (attr == "orthoHalfH") {
+		C->orthoHalfH = std::clamp(float(num), 1e-2f, 1e5f);
+	} else if (attr == "near") {
+		C->nearClip = std::max(float(num), 1e-4f);
+		C->farClip = std::max(C->farClip, C->nearClip * 1.1f + 1e-3f);
+	} else if (attr == "far") {
+		C->farClip = std::max(float(num), C->nearClip * 1.1f + 1e-3f);
+	} else if (attr == "name") {
+		C->name = text;
+		const uint32_t id = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(text);
+		scene.nameForNode[node] = id;
+	} else if (attr == "position" || attr == "rotation") {
+		if (node >= scene.hierarchy.size())
+			return false;
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		if (attr == "position")
+			t = glm::vec3(v4.x, v4.y, v4.z);
+		else
+			r = glm::vec3(v4.x, v4.y, v4.z);
+		scene.localTransform[node] = LocalMatrixFromTRS(t, r, s);
+		markAsChanged(scene, int(node));
+		recalculateGlobalTransforms(scene);
+	} else {
+		return false;
+	}
+	return true;
+}
+
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	if (c.verb == EditVerb::SetVisibility)
@@ -1672,6 +2055,9 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetCubemapAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
 			break;
+		case EditVerb::SetCamAttr:
+			lastByAttr[{ int(c.verb), c.node, c.camAttr }] = i;
+			break;
 		default:
 			break;
 		}
@@ -1709,6 +2095,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] != i;
 			break;
+		case EditVerb::SetCamAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.camAttr }] != i;
+			break;
 		default:
 			break;
 		}
@@ -1742,6 +2132,7 @@ size_t EditorApp::CoalesceHistory() {
 	//   (SetMatAttr, mat, attr)    shared material value edits
 	//   (SetLightAttr, node, attr) light property edits
 	//   (SetCvolAttr, node, attr)  convex-volume property edits
+	//   (SetCamAttr, node, attr)   camera property edits
 	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
 	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
 	for (size_t i = 0; i < m_historyCursor; ++i) {
@@ -1769,6 +2160,9 @@ size_t EditorApp::CoalesceHistory() {
 			break;
 		case EditVerb::SetCubemapAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
+			break;
+		case EditVerb::SetCamAttr:
+			lastByAttr[{ int(c.verb), c.node, c.camAttr }] = i;
 			break;
 		default:
 			break; // Create*/TerrainPaint: always keep
@@ -1807,6 +2201,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetCubemapAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] != i;
+			break;
+		case EditVerb::SetCamAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.camAttr }] != i;
 			break;
 		default:
 			break;
@@ -1936,6 +2334,15 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.name = c.afterText;
 			return true;
 		}
+		// Created cameras: renames persist as cam-attr lines.
+		const int kcam = app.CreatedCameraIndex(c.node);
+		if (kcam >= 0) {
+			out.verb = smvk::tour::Verb::SetCamAttr;
+			out.node = smvk::tour::kCreateCameraRefBase | uint32_t(kcam);
+			out.text = "name";
+			out.name = c.afterText;
+			return true;
+		}
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Rename;
@@ -1969,6 +2376,17 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (kc >= 0) {
 			out.verb = smvk::tour::Verb::SetCubemapAttr;
 			out.node = smvk::tour::kCreateCubemapRefBase | uint32_t(kc);
+			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
+			out.vec4 = glm::vec4(c.afterVec, 1.0f);
+			return true;
+		}
+		// Created cameras: moves/aims persist as cam-attr triples so
+		// gizmo edits survive (their cluster ids don't exist until
+		// replay, exactly like created lights).
+		const int kcam = app.CreatedCameraIndex(c.node);
+		if (kcam >= 0) {
+			out.verb = smvk::tour::Verb::SetCamAttr;
+			out.node = smvk::tour::kCreateCameraRefBase | uint32_t(kcam);
 			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
@@ -2311,6 +2729,60 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::CreateCamera: {
+		// Emit the LIVE create state: the node may have moved and its
+		// lens may have been attr-edited after creation (those later
+		// SetCamAttr commands re-emit harmlessly and idempotently).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		const ::SceneCamera* C = app.FindNodeCamera(created);
+		if (!C)
+			return false; // detached (tombstoned): nothing to persist
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		int pp = app.WorldToCluster(c.node2);
+		if (pp < 0) {
+			if (c.node2 == 0)
+				pp = 0;
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "camera";
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(c.node2);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		out.svec = r;
+		out.vec4 = glm::vec4(
+			C->projection == ::SceneCamera::Projection::Orthographic
+				? 1.0f : 0.0f,
+			C->fovYDeg, C->nearClip, C->farClip);
+		out.number = double(C->orthoHalfH);
+		return true;
+	}
+	case EditVerb::SetCamAttr: {
+		const int k = app.CreatedCameraIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateCameraRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetCamAttr;
+		out.text = c.camAttr;
+		if (c.camAttr == "position" || c.camAttr == "rotation") {
+			out.vec4 = c.vec4;
+		} else if (c.camAttr == "name") {
+			out.name = c.afterText;
+		} else {
+			out.number = c.number;
+		}
+		return true;
+	}
 	case EditVerb::Delete: {
 		// Cluster-backed nodes persist as a first-class Maya delete.
 		// Addressing: uuid (file-stable identity, assigned for every
@@ -2444,12 +2916,8 @@ bool EditorApp::AutosaveTour() {
 	// AutosaveTour call site mutates tour state): mark dirty for the
 	// window-title star. Explicit saves clear it (SaveTourTo below).
 	m_tourDirty = true;
-	// Same doc as a real save, but the target stays untouched: reuse
-	// the builder through SaveTourTo and restore the previous target.
-	const std::string target = m_tourPath;
-	const bool ok = SaveTourTo(path);
-	m_tourPath = target;
-	return ok;
+	// Same doc as a real save, but the target stays untouched.
+	return SaveTourTo(path, false);
 }
 
 std::string EditorApp::LatestTourPath(const std::string& tourPath) const {
@@ -2532,7 +3000,7 @@ bool EditorApp::SaveTourIncremental() {
 	return true;
 }
 
-bool EditorApp::SaveTourTo(const std::string& tp) {
+bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget) {
 	if (tp.empty() || !m_world)
 		return false;
 	{
@@ -2688,6 +3156,7 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
+	SavePathRemapsToDoc(doc); // path editor relinks — editor-only, never cooked
 	doc.references = m_references; // scene references (loader binds them)
 	doc.hasCook = true;
 	// Cook SETTINGS persist; the DESTINATION does not: outPak is
@@ -2711,6 +3180,7 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.sunElevation = m_cook.sunElevation;
 	doc.cook.sunIntensity = m_cook.sunIntensity;
 	doc.cook.skyIntensity = m_cook.skyIntensity;
+	doc.cook.sunColor = m_cook.sunColor;
 	doc.cook.cubemap = m_cook.cubemap;
 	doc.cook.cubemapName = m_cook.cubemapName;
 	doc.cook.cubemapSize = m_cook.cubemapSize;
@@ -2721,11 +3191,14 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.meshletConeWeight = m_cook.meshletConeWeight;
 	doc.cook.giCvol = m_cook.giCvol;
 	doc.cook.giWorld = m_cook.giWorld;
+	doc.cook.autoKtx = m_cook.autoKtx;
 	std::string err;
 	if (!smvk::tour::SaveTour(tp, doc, err)) {
 		Log("tour save failed: " + err);
 		return false;
 	}
+	if (!becomeTarget)
+		return true; // snapshot (cook temp tour): live target untouched
 	m_tourPath = tp;
 	// Explicit project-file writes (anything but the autosave slot)
 	// clear the dirty star; the autosave path never does.
@@ -2952,6 +3425,20 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			out.cubemapRadius = std::max(float(tc.number), 1e-2f);
 			return true;
 		}
+		if (tn == "camera") {
+			out.verb = EditVerb::CreateCamera;
+			out.node = UINT32_MAX;
+			out.node2 = wp;
+			out.afterText = tc.text;
+			out.afterVec = tc.vec;
+			out.camRot = tc.svec;
+			out.camProjection = (tc.vec4.x >= 0.5f) ? 1u : 0u;
+			out.camFovY = tc.vec4.y;
+			out.camNear = tc.vec4.z;
+			out.camFar = tc.vec4.w;
+			out.camOrthoHalfH = float(tc.number);
+			return true;
+		}
 		if (tn == "terrain") {
 			out.verb = EditVerb::CreateTerrain;
 			out.node = UINT32_MAX;
@@ -3074,6 +3561,32 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterText = tc.text;
 		out.afterVec = tc.vec;
 		out.cubemapRadius = std::max(float(tc.number), 1e-2f);
+		return true;
+	}
+	case smvk::tour::Verb::CreateCamera: {
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
+		out.verb = EditVerb::CreateCamera;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		out.camRot = tc.svec;
+		out.camProjection = (tc.vec4.x >= 0.5f) ? 1u : 0u;
+		out.camFovY = tc.vec4.y;
+		out.camNear = tc.vec4.z;
+		out.camFar = tc.vec4.w;
+		out.camOrthoHalfH = float(tc.number);
 		return true;
 	}
 	case smvk::tour::Verb::CreateTerrain: {
@@ -3209,6 +3722,37 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetCamAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateCameraRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateCameraRefBase;
+			if (k >= app.m_tourCreatedCameraNodes.size())
+				return false;
+			target = app.m_tourCreatedCameraNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!app.FindNodeCamera(target))
+			return false; // not a camera: orphan, preserved verbatim
+		out.verb = EditVerb::SetCamAttr;
+		out.node = target;
+		out.camAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeCameraAttr(target, tc.text, out.beforeVec4,
+				out.beforeNum, out.beforeText))
+			return false;
+		if (tc.text == "position" || tc.text == "rotation") {
+			out.vec4 = tc.vec4;
+		} else if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
 	}
 	return false;
 }
@@ -3260,6 +3804,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.sunElevation = doc.cook.sunElevation;
 		m_cook.sunIntensity = doc.cook.sunIntensity;
 		m_cook.skyIntensity = doc.cook.skyIntensity;
+		m_cook.sunColor = doc.cook.sunColor;
 		m_cook.cubemap = doc.cook.cubemap;
 		m_cook.cubemapName = doc.cook.cubemapName;
 		m_cook.cubemapSize = doc.cook.cubemapSize;
@@ -3270,6 +3815,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.meshletConeWeight = doc.cook.meshletConeWeight;
 		m_cook.giCvol = doc.cook.giCvol;
 		m_cook.giWorld = doc.cook.giWorld;
+		m_cook.autoKtx = doc.cook.autoKtx;
 	}
 	// Replay into the stack (fresh import underneath, so before-states are
 	// exact and the whole tour stays undoable). Wide rules load AFTER the
@@ -3278,6 +3824,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	m_tourCreatedNodes.clear();
 	m_tourCreatedCvolNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
+	m_tourCreatedCameraNodes.clear();
 	m_replayingTour = true;
 	ClearHistory();
 	m_overrideRules.clear();
@@ -3331,6 +3878,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
 	LoadImagesFromDoc(doc); // image definitions (img.* editorSet lines)
+	LoadPathRemapsFromDoc(doc); // path editor relinks (path.remap.* lines)
 	// References were already bound at import (LoadGltfIntoWorld runs
 	// ApplySceneReferences on this same file); mirror the list so the
 	// editor state matches the parsed doc exactly.
@@ -3340,11 +3888,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 }
 
 // ---------------------------------------------------------------------------
-// Scene image definitions (Maya file nodes, editor-only): images live
-// OUTSIDE the DAG like materials — pure editor state, persisted as
-// img.* editorSettings (never cooked). A material using one mints the
-// cluster texture resource at use time; until then these are authoring
-// references (path + tiling/colorspace/filter).
+// Scene image definitions (Maya file nodes): images live OUTSIDE the DAG
+// like materials — authoring references (path + tiling/colorspace/filter)
+// persisted as img.* editorSettings (legacy) AND cooked fileNode records
+// (the cooker reads them for KTX conversion; fileNodes win on load). A
+// material using one mints the cluster texture resource at use time.
 // ---------------------------------------------------------------------------
 void EditorApp::AddImageDef(const std::string& path) {
 	if (path.empty())
@@ -3386,9 +3934,45 @@ void EditorApp::SaveImagesToDoc(smvk::tour::Doc& doc) const {
 		put(base + ".cs", std::to_string(img.colorspace));
 		put(base + ".filter", std::to_string(img.filter));
 	}
+	// Cooked twin: image defs ARE file nodes — the cooker reads these
+	// for KTX conversion (path + colorspace + sampler intent). The img.*
+	// settings above stay for older builds; fileNodes win on load.
+	for (const ImageDef& img : m_images) {
+		if (img.path.empty())
+			continue;
+		smvk::tour::FileNode fn;
+		fn.name = img.name;
+		fn.path = img.path;
+		fn.colorspace = img.colorspace;
+		fn.wrap = img.wrap;
+		fn.filter = img.filter;
+		doc.fileNodes.push_back(std::move(fn));
+	}
 }
 
 void EditorApp::LoadImagesFromDoc(const smvk::tour::Doc& doc) {
+	// Cooked file nodes win: current files persist image defs as
+	// fileNode records (read by the cooker); legacy img.* settings cover
+	// older tours.
+	if (!doc.fileNodes.empty()) {
+		m_images.clear();
+		uint64_t id = 1;
+		for (const auto& fn : doc.fileNodes) {
+			if (fn.path.empty())
+				continue;
+			ImageDef def;
+			def.id = id++;
+			def.name = fn.name.empty()
+				? std::filesystem::path(fn.path).stem().string() : fn.name;
+			def.path = fn.path;
+			def.wrap = std::clamp(fn.wrap, 0, 2);
+			def.colorspace = std::clamp(fn.colorspace, 0, 1);
+			def.filter = std::clamp(fn.filter, 0, 1);
+			m_images.push_back(std::move(def));
+		}
+		m_nextImageId = id;
+		return;
+	}
 	auto u64 = [](const std::string& s, uint64_t fb) {
 		try { return s.empty() ? fb : std::stoull(s); }
 		catch (...) { return fb; }

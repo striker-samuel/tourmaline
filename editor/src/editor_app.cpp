@@ -140,30 +140,22 @@ bool EditorApp::Initialize() {
 	}
 	else {
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
-		// Opaque UI chrome: the dark theme leaves window/popup/menu
-		// surfaces slightly translucent (the 3D viewport bleeds
-		// through menus). The editor is a tool, not a game overlay —
-		// everything opaque. (The modal dimmer stays translucent by
-		// design.) Re-applied here, not in the shared overlay: the
-		// theme belongs to the app, and ApplyDpiScale preserves the
-		// colors it copies.
+		// Opaque menu/window surfaces: the dark theme leaves these
+		// slightly translucent (the 3D viewport bleeds through menus).
+		// ONLY the top-level surfaces change — every other entry keeps
+		// its theme alpha. Notably ChildBg stays transparent (it is
+		// transparent BLACK by design: forcing it opaque paints every
+		// child window black), and frames/scrollbars/tabs keep their
+		// designed translucency. Re-applied here, not in the shared
+		// overlay: the theme belongs to the app, and ApplyDpiScale
+		// preserves the colors it copies.
 		ImGuiStyle& style = ImGui::GetStyle();
 		style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-		style.Colors[ImGuiCol_ChildBg].w = 1.0f;
 		style.Colors[ImGuiCol_PopupBg].w = 1.0f;
 		style.Colors[ImGuiCol_MenuBarBg].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBg].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBgActive].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBgCollapsed].w = 1.0f;
-		style.Colors[ImGuiCol_Tab].w = 1.0f;
-		style.Colors[ImGuiCol_TabHovered].w = 1.0f;
-		style.Colors[ImGuiCol_TabActive].w = 1.0f;
-		style.Colors[ImGuiCol_TabUnfocused].w = 1.0f;
-		style.Colors[ImGuiCol_TabUnfocusedActive].w = 1.0f;
-		style.Colors[ImGuiCol_FrameBg].w = 1.0f;
-		style.Colors[ImGuiCol_FrameBgHovered].w = 1.0f;
-		style.Colors[ImGuiCol_FrameBgActive].w = 1.0f;
-		style.Colors[ImGuiCol_ScrollbarBg].w = 1.0f;
 	}
 
 	// Default editor cameras (Perspective / Top ortho / Side ortho).
@@ -327,6 +319,8 @@ void EditorApp::CloseScene() {
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
 	m_materialTrail.clear();
+	ClearNonDagSelection();
+	m_imageFocus = UINT32_MAX;
 	m_placement.graphs.clear();
 	m_placement.active = 0;
 	m_placement.nextGraph = 1;
@@ -351,6 +345,7 @@ void EditorApp::CloseScene() {
 	m_deletedNodes.clear();
 	m_images.clear();
 	m_nextImageId = 1;
+	m_pathRemaps.clear();
 	m_refIssues.clear();
 	m_refResolved.clear();
 	m_defaultMatWorld = UINT32_MAX;
@@ -536,6 +531,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_deletedNodes.clear(); // fresh world: deletes die with it
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
+	m_pathRemaps.clear(); // fresh world: relinks reload from the tour
 	// (m_refIssues/m_refResolved are NOT cleared here: the reference
 	// bind above just filled them for THIS world — clearing would wipe
 	// the panel's reporting. They reset at load start/close instead.)
@@ -546,6 +542,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX; // inspector navigation state
 	m_materialTrail.clear();
+	m_imageFocus = UINT32_MAX;
 	ClearSelection();
 	ResetMeshletDebug(); // cooked meshlets are per-scene
 	// Cluster base for tour id translation (single-cluster scenes only).
@@ -607,6 +604,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// command must never outvote the checkbox). Runs here because the
 	// placeholder WORLD ids (m_refPlaceholders) only resolve above.
 	RebuildDisabledRefHides();
+	ApplyPathRemaps(); // path editor relinks: fill still-missing slots
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
@@ -735,6 +733,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	m_deletedNodes.clear(); // fresh world: deletes die with it
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
+	m_pathRemaps.clear(); // pak scenes carry no glTF image list
 	m_refIssues.clear();
 	m_refResolved.clear(); // fresh world: resolved sources die with it
 	m_defaultMatWorld = UINT32_MAX;
@@ -744,6 +743,7 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
 	m_materialTrail.clear();
+	m_imageFocus = UINT32_MAX;
 	ClearSelection();
 	ResetMeshletDebug();
 	m_clusterBase = UINT32_MAX;
@@ -1339,6 +1339,15 @@ void EditorApp::UpdateCamera(float dt) {
 	// the 3D orbit camera never moves while a flat pane is active.
 	if (IsFlatUvViewMode(ActiveViewMode()))
 		return;
+	// Locked look-through: orbit navigation is parked while the active
+	// viewport follows a live camera node (move the node via gizmo or
+	// the transform inspector — the view tracks it). A lost node falls
+	// back to orbit, where navigation works again.
+	{
+		const int b = m_viewports[m_activeVp].boundNode;
+		if (b >= 0 && m_world && FindNodeCamera(uint32_t(b)) != nullptr)
+			return;
+	}
 	EditorCam& cam = ActiveCam();
 	const bool isOrtho = cam.type == EditorCam::Type::Orthographic;
 	const glm::vec3 fwd = glm::normalize(

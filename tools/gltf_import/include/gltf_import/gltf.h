@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -50,6 +51,13 @@ struct GltfToSceneImporter
 		virtual ~TextureSource() = default;
 		virtual std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) = 0;
 		virtual std::string ResolveIdentity(const std::string& imageUri) const = 0;
+		// Host filesystem path backing imageUri when the source is
+		// host-backed (sidecar cache placement); nullopt for VFS sources.
+		virtual std::optional<std::filesystem::path> HostPath(
+			const std::string& imageUri) const {
+			(void)imageUri;
+			return std::nullopt;
+		}
 	};
 	void setTextureSource(std::shared_ptr<TextureSource> source);
 	void setModelUriBase(const std::string& vfsPath);
@@ -58,6 +66,15 @@ struct GltfToSceneImporter
 	// getOrCreateMesh builds meshlets from the optimized upload and stamps
 	// them on the Cluster keyed by mesh URI.
 	void setMeshletConfig(const smvk::MeshletConfig& config);
+	// Cooked file nodes (tour fileNode records / editor image defs):
+	// per-texture colorspace + sampler intent for KTX conversion, matched
+	// to glTF images by path basename then stem. Empty = usage inference
+	// only (baseColor/emissive = sRGB, everything else linear).
+	void setFileNodes(const std::vector<smvk::tour::FileNode>& nodes);
+	// KTX auto-convert (default on): non-KTX sources transcode in-process
+	// (stb decode + libktx write, `.ktx2` sidecar cached next to the
+	// source). Off restores warn-and-skip for non-KTX payloads.
+	void setAutoKtx(bool enabled) { autoKtx_ = enabled; }
 	void setCoordFix(int mode) { coordFix_ = mode; }
 	void setPreTransform(const glm::mat4& m) { preTransform_ = m; }
 	// Multiplies the scene root's local transform by preTransform_ (left).
@@ -86,6 +103,8 @@ private:
 	std::string modelUriBase; // normalized VFS file part for asset URIs
 	smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
 	smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
+	bool autoKtx_ = true;
+	std::vector<smvk::tour::FileNode> fileNodes_;
 	int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
 	glm::mat4 preTransform_{ 1.0f };
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
@@ -98,6 +117,18 @@ private:
 	smvk::TextureStreamer* textureStreamer_ = nullptr;
 
 	smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
+	// KTX auto-convert: file-node match for an image URI (basename, then
+	// stem; null when no file node covers it).
+	const smvk::tour::FileNode* matchFileNode(const std::string& imageUri) const;
+	// Usage inference: true when any material samples the image as
+	// baseColor/emissive (sRGB); data maps (normal/metallic/roughness/
+	// occlusion) and unknown uses are linear.
+	bool inferSrgb(int imageIndex) const;
+	// KTX2 bytes for a source payload: KTX2 passes through; anything
+	// else promotes a fresh `.ktx2` sidecar or transcodes (+caches the
+	// sidecar when host-backed). False + err = keep today's skip.
+	bool resolveKtxBytes(const std::string& imageUri, std::vector<uint8_t> srcBytes,
+		int imageIndex, std::vector<uint8_t>& out, std::string& err) const;
 	smvk::ClusterMaterialHandle defaultMaterialHandle{};
 };
 
@@ -121,9 +152,19 @@ struct HostTextureSource final : GltfToSceneImporter::TextureSource {
 	explicit HostTextureSource(std::filesystem::path baseDir);
 	std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
 	std::string ResolveIdentity(const std::string& imageUri) const override;
+	std::optional<std::filesystem::path> HostPath(
+		const std::string& imageUri) const override;
 private:
 	std::filesystem::path baseDir_;
 };
+
+// In-process texture conversion (tex_transcode.cpp): stb-decodes LDR
+// sources (PNG/JPG/TGA/BMP/...) and writes an uncompressed RGBA8 KTX2
+// with a full mip chain (gamma-correct for sRGB) via libktx, attempting
+// zstd supercompression. False + err when the source isn't decodable
+// (HDR .hdr/.exr must be checked by the caller — stb would mangle them).
+bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
+	const std::string& logName, std::vector<uint8_t>& outKtx2, std::string& err);
 
 // VFS texture source (cooker path): reads through an OverlayVfs mounted
 // with the content tree; identity is the VFS path itself.
@@ -155,6 +196,9 @@ bool ListGltfScenesFromVfs(
 //   GltfToClusterFromVfs(nullptr, vfs, "models/Sponza/sponza.gltf", *cluster, opt);
 // gltfSceneIndex selects which glTF scene to import (<0 = default scene,
 // matching the historic behavior); out of range fails loudly.
+// autoKtx gates in-process KTX conversion of non-KTX sources (default on);
+// fileNodes carries cooked file-node records for conversion intent (null =
+// usage inference only — the VFS path has no tour).
 void GltfToClusterFromVfs(
 	smvk::ResourceManager* ctx,
 	const smvk::OverlayVfs& vfs,
@@ -164,7 +208,9 @@ void GltfToClusterFromVfs(
 	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
 	int coordFix = 0,
 	const glm::mat4& preTransform = glm::mat4(1.0f),
-	int gltfSceneIndex = -1);
+	int gltfSceneIndex = -1,
+	bool autoKtx = true,
+	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr);
 
 // ---------------------------------------------------------------------------
 // Clarisse-style nested SCENE REFERENCES.
@@ -187,7 +233,7 @@ void GltfToClusterFromVfs(
 // node ids in doc.references order (level-1 refs only). Returns the
 // number of references applied (level-1 + nested).
 // ---------------------------------------------------------------------------
-size_t ApplySceneReferences(
+	size_t ApplySceneReferences(
 	smvk::Cluster& cluster,
 	const smvk::tour::Doc& doc,
 	const std::string& ownerBaseDir,
@@ -205,7 +251,13 @@ size_t ApplySceneReferences(
 	// Canonical RESOLVED source per top-level reference (in doc.references
 	// order; empty when the source did not resolve). Lets path-solver /
 	// symlink users verify what actually bound versus what the tour says.
-	std::vector<std::string>* outResolvedSources = nullptr);
+	std::vector<std::string>* outResolvedSources = nullptr,
+	// KTX conversion: autoKtx gates in-process conversion of non-KTX
+	// sources (default on); fileNodes carries cooked file-node records
+	// for conversion intent (null = usage inference only). Appended last
+	// so existing positional callers keep compiling.
+	bool autoKtx = true,
+	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,
@@ -228,18 +280,13 @@ inline void GltfToCluster(
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
 	importer.setTextureStreamer(streamer);
-	// Stamp VFS-style asset URIs ("<path>#mat.N", "<path>#mesh.N/prim.M")
-	// when the host path normalizes (relative paths; absolute Windows
-	// paths stay URI-less, the previous behavior). URI-backed materials
-	// let tools (e.g. the glTF editor) map runtime materials back to
-	// glTF material indices exactly.
-	{
-		const std::string asPosix = inGltfModelPath.generic_string();
-		const smvk::StringViewT n =
-			smvk::NormalizeAssetUri(smvk::StringViewT(asPosix));
-		if (!n.empty())
-			importer.setModelUriBase(n.Str());
-	}
+	// Stamp VFS-style asset URIs ("<path>#mat.N", "<path>#mesh.N/prim.M").
+	// setModelUriBase falls back to a content-relative/filename base for
+	// absolute host paths (which NormalizeAssetUri rejects) so mesh URIs
+	// — and with them LOD chains + meshlets — are never silently dropped.
+	// URI-backed materials let tools (e.g. the glTF editor) map runtime
+	// materials back to glTF material indices exactly.
+	importer.setModelUriBase(inGltfModelPath.generic_string());
 
 	assert(out.scene.hierarchy.empty());
 

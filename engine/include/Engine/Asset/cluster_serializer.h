@@ -33,6 +33,10 @@ struct ClusterSerializeStats {
 	// PakAssetKind::Light blobs (one per light, URI-keyed); the Scene
 	// blob carries the node links as (node, pakId) pairs.
 	uint32_t lights = 0;
+	// Authored cameras persisted as PakAssetKind::Camera blobs (one per
+	// camera, URI-keyed); the Scene blob carries the node links as
+	// (node, pakId) pairs.
+	uint32_t cameras = 0;
 };
 
 // One scene entry of a pak (TOC order = scene index; index 0 is the

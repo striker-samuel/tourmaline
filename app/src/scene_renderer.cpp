@@ -9873,6 +9873,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						if (m_giProbeOcclusionCull)
 							ImGui::TextDisabled("hides probes behind geometry (one-time import hitch)");
 					}
+					ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
+					if (m_giShowVolumeBounds) {
+						ImGui::TextDisabled("octree AABB (cyan) + regular OBBs (green) +\n"
+							"convex grid AABBs (priority hue); no depth test,\n"
+							"drawn over the current view");
+					}
 			if (m_giLoaded || m_lmLoaded || m_regLoaded || m_cvolLoaded) {
 				const char* dbgNames[3] = { "Off", "Baked irradiance",
 					"GI source" };
@@ -10547,6 +10553,125 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					<< " cull=" << (m_giProbeOcclusionCull ? "on" : "off")
 					<< " cache=" << m_giProbeCullCache.size() << "\n";
 			}
+		}
+
+		// GI volume bounding-box wireframe (m_giShowVolumeBounds): AABB/OBB
+		// edges through the UNJITTERED viewProj into the ImGui foreground
+		// list, so they ride on top of the current view with no depth test
+		// (debug intent: authoring bounds against walls/roofs). Sources:
+		// octree world field (m_giVolume.boundsMin/Max, cyan), regular
+		// OBB volumes (green), convex grid AABBs (priority hue, like the
+		// editor LIGHTING preview). Edges whose both endpoints project
+		// (in front of the camera) draw; partially behind-camera boxes
+		// clip per-edge (may drop the crossing segment).
+		if (m_giShowVolumeBounds
+			&& (m_giLoaded || m_regLoaded || m_cvolLoaded)) {
+			ImDrawList* bdl = ImGui::GetForegroundDrawList();
+			const ImVec2 bdisp = ImGui::GetIO().DisplaySize;
+			const auto projectBox = [&](const glm::vec3& w, ImVec2& out) {
+				const glm::vec4 clip =
+					m_unjitteredViewProj * glm::vec4(w, 1.0f);
+				if (clip.w <= 1e-4f)
+					return false; // behind the camera
+				const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+				if (std::abs(ndc.x) > 1.2f || std::abs(ndc.y) > 1.2f
+					|| ndc.z < -1.0f || ndc.z > 1.0f)
+					return false; // off-screen / outside depth range
+				// viewProj is post-Y-flip (Vulkan y-down): NDC maps
+				// straight onto ImGui's y-down display space.
+				out.x = (ndc.x * 0.5f + 0.5f) * bdisp.x;
+				out.y = (ndc.y * 0.5f + 0.5f) * bdisp.y;
+				return true;
+			};
+			const auto drawBoxEdges = [&](const glm::vec3 q[8], ImU32 col) {
+				// q: mn/mx corners (x fast, then y, then z):
+				// 0..3 = z-min ring, 4..7 = z-max ring.
+				static const int kEdges[12][2] = {
+					{ 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+					{ 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+					{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+				};
+				for (const auto& e : kEdges) {
+					ImVec2 a, b;
+					if (projectBox(q[e[0]], a) && projectBox(q[e[1]], b))
+						bdl->AddLine(a, b, col, 1.5f);
+				}
+			};
+			const auto boxCorners = [](const glm::vec3& mn,
+				const glm::vec3& mx, glm::vec3 q[8]) {
+				q[0] = { mn.x, mn.y, mn.z }; q[1] = { mx.x, mn.y, mn.z };
+				q[2] = { mx.x, mx.y, mn.z }; q[3] = { mn.x, mx.y, mn.z };
+				q[4] = { mn.x, mn.y, mx.z }; q[5] = { mx.x, mn.y, mx.z };
+				q[6] = { mx.x, mx.y, mx.z }; q[7] = { mn.x, mx.y, mx.z };
+			};
+			uint32_t boxesDrawn = 0;
+			if (m_giLoaded && !m_giVolume.probes.empty()) {
+				glm::vec3 q[8];
+				boxCorners(m_giVolume.boundsMin, m_giVolume.boundsMax, q);
+				drawBoxEdges(q, IM_COL32(60, 200, 255, 220));
+				++boxesDrawn;
+				ImVec2 c;
+				if (projectBox(
+					(m_giVolume.boundsMin + m_giVolume.boundsMax) * 0.5f, c))
+					bdl->AddText(ImVec2(c.x + 5.0f, c.y - 8.0f),
+						IM_COL32(60, 200, 255, 220), "octree");
+			}
+			if (m_regLoaded) {
+				for (size_t vi = 0; vi < m_regVolumes.size(); ++vi) {
+					const auto& obb = m_regVolumes[vi].volume.obb;
+					const glm::vec3 ex = obb.axisX * obb.halfExtents.x;
+					const glm::vec3 ey = obb.axisY * obb.halfExtents.y;
+					const glm::vec3 ez = obb.axisZ * obb.halfExtents.z;
+					glm::vec3 q[8];
+					q[0] = obb.center - ex - ey - ez;
+					q[1] = obb.center + ex - ey - ez;
+					q[2] = obb.center + ex + ey - ez;
+					q[3] = obb.center - ex + ey - ez;
+					q[4] = obb.center - ex - ey + ez;
+					q[5] = obb.center + ex - ey + ez;
+					q[6] = obb.center + ex + ey + ez;
+					q[7] = obb.center - ex + ey + ez;
+					drawBoxEdges(q, IM_COL32(70, 230, 90, 220));
+					++boxesDrawn;
+					ImVec2 c;
+					if (projectBox(obb.center, c)) {
+						char lab[32];
+						snprintf(lab, sizeof(lab), "reg%u", (unsigned)vi);
+						bdl->AddText(ImVec2(c.x + 5.0f, c.y - 8.0f),
+							IM_COL32(70, 230, 90, 220), lab);
+					}
+				}
+			}
+			if (m_cvolLoaded) {
+				for (size_t vi = 0; vi < m_cvolVolumes.size(); ++vi) {
+					const auto& vol = m_cvolVolumes[vi].volume;
+					const glm::vec3 mn = vol.gridMin;
+					const glm::vec3 mx = vol.gridMin
+						+ glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2])
+						* vol.spacing;
+					glm::vec3 q[8];
+					boxCorners(mn, mx, q);
+					const float hue =
+						std::fmod(float(vol.def.priority) * 0.13f, 1.0f);
+					ImColor ic = ImColor::HSV(hue, 0.7f, 1.0f);
+					ic.Value.w = 220.0f / 255.0f;
+					drawBoxEdges(q, (ImU32)ic);
+					++boxesDrawn;
+					ImVec2 c;
+					if (projectBox((mn + mx) * 0.5f, c)) {
+						char lab[64];
+						snprintf(lab, sizeof(lab), "cv%u p%u",
+							(unsigned)vi, vol.def.priority);
+						bdl->AddText(ImVec2(c.x + 5.0f, c.y - 8.0f),
+							(ImU32)ic, lab);
+					}
+				}
+			}
+			char bcap[96];
+			snprintf(bcap, sizeof(bcap), "GI volumes: %u bounds", boxesDrawn);
+			bdl->AddText(ImVec2(8.0f + 1.0f, 36.0f + 1.0f),
+				IM_COL32(0, 0, 0, 200), bcap);
+			bdl->AddText(ImVec2(8.0f, 36.0f), IM_COL32_WHITE, bcap);
 		}
 
 		// Reflection-probe location overlay (cubemap panel toggle): one

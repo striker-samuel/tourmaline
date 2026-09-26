@@ -92,7 +92,17 @@ enum class EditVerb : uint8_t {
   	SetCubemapAttr, // cubemap capture edit; c.node = capture node
   	              // (world), cubemapAttr selects the channel
   	              // ("position","radius","name").
- };
+  	CreateCamera, // append a camera node (world): DAG transform +
+  	              // lens definition in the primary cluster's cameras
+  	              // pool (world cameraLocations). c.node = CREATED
+  	              // world id once forward-executed (UINT32_MAX
+  	              // before); c.node2 = parent world id; afterText =
+  	              // name; afterVec = local position; camRot = local
+  	              // rotation degrees; camProjection 0/1, camFovY,
+  	              // camNear, camFar, camOrthoHalfH = lens.
+  	SetCamAttr, // camera property edit; c.node = camera node (world),
+  	              // camAttr selects the channel (see below).
+};
 
 struct EditCmd {
 	EditVerb verb = EditVerb::Rename;
@@ -156,6 +166,20 @@ struct EditCmd {
 	// number (radius) / vec4 (position triple) / afterText (name);
 	// before-state rides beforeNum / beforeVec4 / beforeText.
 	std::string cubemapAttr;
+	// CreateCamera payload (live-world domain; pose in afterVec/camRot,
+	// name in afterText, parent in node2):
+	glm::vec3 camRot{ 0.0f }; // local rotation degrees (editor convention)
+	uint32_t camProjection = 0; // 0 = perspective, 1 = orthographic
+	float camFovY = 50.0f;      // perspective vertical fov (deg)
+	float camNear = 0.1f;
+	float camFar = 1000.0f;
+	float camOrthoHalfH = 10.0f; // ortho half-height (m)
+	// SetCamAttr channel ("projection","fovY","orthoHalfH","near",
+	// "far","name","position","rotation"). Value rides number (scalars,
+	// projection 0/1) / vec4 (position/rotation triples, degrees for
+	// rotation) / afterText (name); before-state rides beforeNum /
+	// beforeVec4 / beforeText.
+	std::string camAttr;
 	// TerrainPaint payload: op name above; before-patch = the pre-stamp
 	// sample box (row-major, x-major within rows), captured at first
 	// forward execution and reused by undo. Box coords are inclusive
@@ -172,6 +196,11 @@ struct EditCmd {
 	// beforeNum) — the cvol def uses beforeFlag/beforeVec4; a node
 	// carries at most one of the two kinds.
 	bool beforeCubemap = false;
+	// Delete payload: camera def presence (world camera index in
+	// beforeCamIdx); the pool entry stays alive like lights (links
+	// only — restored exactly by undo).
+	bool beforeCamera = false;
+	double beforeCamIdx = -1.0;
 	// Delete payload: captured tile draw entries as packed quintuples
 	// (position, node, mesh, material, flags) — recorded at first
 	// forward execution, reused by redos, restored exactly by undo.
