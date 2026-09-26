@@ -16,4 +16,8 @@ target_include_directories(artifact_cache
 target_link_libraries(artifact_cache
     PUBLIC
         SQLiteCpp
+    # AppendPakBlobs + pak constants (scratch paks are real paks: the
+    # editor VFS mounts them through PakBackend in the render phase).
+    PRIVATE
+        engine
 )

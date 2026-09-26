@@ -303,6 +303,7 @@ void EditorApp::SavePrefs() {
 
 bool EditorApp::OpenCacheDb() {
 	m_cacheDb.Close();
+	m_store.reset();
 	// Prefs override first, machine default second (F:\ when present).
 	std::string root = m_scratchRoot;
 	if (root.empty())
@@ -325,7 +326,12 @@ bool EditorApp::OpenCacheDb() {
 	}
 	std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
 		m_scratchRoot.c_str());
-	Log("Scratch disk: " + root + " (cache.db ready)");
+	m_store = std::make_unique<smvk::cache::ArtifactStore>(
+		m_scratchRoot, m_cacheDb);
+	std::string cerr;
+	const uint64_t count = m_cacheDb.Count(cerr);
+	Log("Scratch disk: " + root + " (cache.db ready, "
+		+ std::to_string(count) + " artifact(s) registered)");
 	return true;
 }
 

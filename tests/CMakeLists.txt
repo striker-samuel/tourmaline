@@ -253,6 +253,7 @@ add_executable(CacheTests test_cache.cpp)
 target_link_libraries(CacheTests
     PRIVATE
         artifact_cache
+        engine
 )
 
 set_target_properties(CacheTests PROPERTIES

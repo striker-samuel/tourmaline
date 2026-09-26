@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 #include <Engine/Asset/compression.h>
@@ -207,6 +209,291 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 	if (out.size() < kHeaderSize + kFooterSize)
 		throw std::runtime_error("PakWriter: image too small");
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// AppendPakBlobs (scratch store growth; see pak.h for the contract)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// TOC entry count/size helpers shared by the append path.
+size_t TocEntryBytes(const std::vector<PakTocEntry>& entries) {
+	size_t n = 0;
+	for (const PakTocEntry& e : entries)
+		n += kTocEntryFixed + e.path.size();
+	return n;
+}
+
+void WriteTocEntry(std::vector<uint8_t>& out, const PakTocEntry& e) {
+	AppendU64(out, e.pathHash);
+	AppendU32(out, static_cast<uint32_t>(e.kind));
+	AppendU32(out, e.flags);
+	AppendU64(out, e.offset);
+	AppendU64(out, e.size);
+	AppendU32(out, static_cast<uint32_t>(e.path.size()));
+	out.insert(out.end(), e.path.begin(), e.path.end());
+}
+
+// Rolling reflected CRC-32 (same table/step as PakCrc32, unfinalized):
+// the footer's first 16 bytes (tocOffset + tocCount) are COVERED by
+// the pak CRC but not on disk until the footer write — the caller
+// streams the file range, then feeds those bytes from memory.
+// Caller seeds crc with 0xFFFFFFFF, finalizes with ^0xFFFFFFFF.
+bool Crc32FeedFile(std::istream& f, uint64_t end, uint32_t& crc) {
+	static uint32_t table[256];
+	static bool init = false;
+	if (!init) {
+		for (uint32_t i = 0; i < 256; ++i) {
+			uint32_t c = i;
+			for (int k = 0; k < 8; ++k)
+				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+			table[i] = c;
+		}
+		init = true;
+	}
+	std::vector<uint8_t> buf(1 << 20);
+	uint64_t pos = 0;
+	f.clear();
+	f.seekg(0, std::ios::beg);
+	while (pos < end) {
+		const uint64_t want = std::min<uint64_t>(end - pos, buf.size());
+		f.read(reinterpret_cast<char*>(buf.data()),
+			static_cast<std::streamsize>(want));
+		if (f.gcount() != static_cast<std::streamsize>(want))
+			return false;
+		for (uint64_t i = 0; i < want; ++i)
+			crc = table[(crc ^ buf[size_t(i)]) & 0xFF] ^ (crc >> 8);
+		pos += want;
+	}
+	return true;
+}
+
+void Crc32FeedBytes(const void* data, size_t size, uint32_t& crc) {
+	static uint32_t table[256];
+	static bool init = false;
+	if (!init) {
+		for (uint32_t i = 0; i < 256; ++i) {
+			uint32_t c = i;
+			for (int k = 0; k < 8; ++k)
+				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+			table[i] = c;
+		}
+		init = true;
+	}
+	const uint8_t* p = static_cast<const uint8_t*>(data);
+	for (size_t i = 0; i < size; ++i)
+		crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+}
+
+} // namespace
+
+bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
+	const std::vector<std::pair<std::string,
+		std::span<const uint8_t>>>& blobs,
+	std::vector<PakAppendInfo>& out, std::string& err) {
+	out.clear();
+	if (blobs.empty()) {
+		err = "no blobs to append";
+		return false;
+	}
+	// Normalize + validate up front (fail before touching the file).
+	std::vector<PakTocEntry> newEntries;
+	newEntries.reserve(blobs.size());
+	for (const auto& [rawUri, payload] : blobs) {
+		PakTocEntry e;
+		e.kind = kind;
+		e.flags = 0; // uncompressed: direct (offset, size) reads
+		e.path = vfs::Normalize(rawUri);
+		if (e.path.empty() || payload.empty()) {
+			err = "invalid append blob uri/payload: " + rawUri;
+			return false;
+		}
+		e.pathHash = PakHashPath(e.path);
+		e.size = payload.size();
+		newEntries.push_back(std::move(e));
+	}
+
+	std::error_code fec;
+	std::filesystem::create_directories(
+		std::filesystem::path(pakPath).parent_path(), fec);
+	// in|out|binary: read header+TOC, then append. The in flag makes
+	// plain open fail on a MISSING file (POSIX "r+"); create it first
+	// (trunc is safe — there is nothing to lose) and reopen.
+	std::fstream f(pakPath,
+		std::ios::in | std::ios::out | std::ios::binary);
+	if (!f) {
+		{
+			std::ofstream create(pakPath,
+				std::ios::out | std::ios::binary | std::ios::trunc);
+			if (!create) {
+				err = "cannot create pak: " + pakPath;
+				return false;
+			}
+		}
+		f.open(pakPath,
+			std::ios::in | std::ios::out | std::ios::binary);
+		if (!f) {
+			err = "cannot open pak for append: " + pakPath;
+			return false;
+		}
+	}
+	f.seekg(0, std::ios::end);
+	const auto fileSize = uint64_t(f.tellg());
+
+	// Existing TOC (empty for a fresh file).
+	std::vector<PakTocEntry> entries;
+	uint64_t payloadBase = kHeaderSize; // fresh: payloads right after header
+	if (fileSize >= kHeaderSize + kFooterSize) {
+		f.seekg(0, std::ios::beg);
+		uint32_t magic = 0, version = 0;
+		uint64_t tocOffset = 0, tocCount = 0;
+		f.read(reinterpret_cast<char*>(&magic), 4);
+		f.read(reinterpret_cast<char*>(&version), 4);
+		f.seekg(4, std::ios::cur); // flags
+		f.read(reinterpret_cast<char*>(&tocOffset), 8);
+		f.read(reinterpret_cast<char*>(&tocCount), 8);
+		if (!f || magic != kPakMagic
+			|| version < kPakVersionMin || version > kPakVersion
+			|| tocOffset + kTocEntryFixed * tocCount > fileSize) {
+			err = "existing pak unreadable: " + pakPath;
+			return false;
+		}
+		f.seekg(std::streamoff(tocOffset), std::ios::beg);
+		for (uint64_t i = 0; i < tocCount && f; ++i) {
+			PakTocEntry e;
+			uint32_t kindRaw = 0, pathLen = 0;
+			f.read(reinterpret_cast<char*>(&e.pathHash), 8);
+			f.read(reinterpret_cast<char*>(&kindRaw), 4);
+			f.read(reinterpret_cast<char*>(&e.flags), 4);
+			f.read(reinterpret_cast<char*>(&e.offset), 8);
+			f.read(reinterpret_cast<char*>(&e.size), 8);
+			f.read(reinterpret_cast<char*>(&pathLen), 4);
+			if (!f || pathLen > 4096) {
+				err = "pak TOC unreadable: " + pakPath;
+				return false;
+			}
+			std::string path(size_t(pathLen), '\0');
+			f.read(path.data(), std::streamsize(pathLen));
+			e.kind = static_cast<PakAssetKind>(kindRaw);
+			e.path = std::move(path);
+			entries.push_back(std::move(e));
+		}
+		if (!f) {
+			err = "pak TOC truncated: " + pakPath;
+			return false;
+		}
+		// New payloads land AFTER every live old byte (old TOC+footer
+		// included): an interrupted append keeps the old pak valid.
+		payloadBase = AlignUp(size_t(tocOffset) + TocEntryBytes(entries)
+			+ kFooterSize, kAlign);
+	}
+
+	// Write payloads + collect their (offset, size).
+	uint64_t cursor = payloadBase;
+	for (size_t i = 0; i < newEntries.size(); ++i) {
+		const size_t aligned = AlignUp(size_t(cursor), kAlign);
+		if (aligned > cursor) {
+			std::vector<char> pad(aligned - size_t(cursor), 0);
+			f.write(pad.data(), std::streamsize(pad.size()));
+		}
+		cursor = aligned;
+		f.seekp(std::streamoff(cursor), std::ios::beg);
+		f.write(reinterpret_cast<const char*>(
+				blobs[i].second.data()),
+			std::streamsize(blobs[i].second.size()));
+		if (!f) {
+			err = "payload write failed: " + pakPath;
+			return false;
+		}
+		newEntries[i].offset = cursor;
+		newEntries[i].size = blobs[i].second.size();
+		cursor += blobs[i].second.size();
+		out.push_back(PakAppendInfo{ newEntries[i].offset,
+			newEntries[i].size });
+	}
+
+	// New TOC: old entries with duplicates replaced, then the new ones
+	// (first-match Find keeps resolving the latest registration).
+	for (const PakTocEntry& ne : newEntries) {
+		bool replaced = false;
+		for (PakTocEntry& e : entries) {
+			if (e.path == ne.path && e.kind == ne.kind) {
+				e = ne; // supersede: old payload turns dead space
+				replaced = true;
+				break;
+			}
+		}
+		if (!replaced)
+			entries.push_back(ne);
+	}
+	const size_t newTocOffset = AlignUp(size_t(cursor), kAlign);
+	{
+		std::vector<uint8_t> toc;
+		toc.reserve(TocEntryBytes(entries));
+		for (const PakTocEntry& e : entries)
+			WriteTocEntry(toc, e);
+		f.seekp(std::streamoff(newTocOffset), std::ios::beg);
+		f.write(reinterpret_cast<const char*>(toc.data()),
+			std::streamsize(toc.size()));
+		if (!f) {
+			err = "TOC write failed: " + pakPath;
+			return false;
+		}
+	}
+	// Patch the header LAST (see pak.h: interrupted appends keep the
+	// previous valid contents). Version stays v3 when any surviving old
+	// entry is LZ4-compressed (append itself stores uncompressed only).
+	f.seekp(0, std::ios::beg);
+	f.write(reinterpret_cast<const char*>(&kPakMagic), 4);
+	{
+		uint32_t version = 2;
+		for (const PakTocEntry& e : entries) {
+			if (e.flags & PakEntryFlag_Lz4) {
+				version = kPakVersion;
+				break;
+			}
+		}
+		f.write(reinterpret_cast<const char*>(&version), 4);
+		const uint32_t flags = 0;
+		f.write(reinterpret_cast<const char*>(&flags), 4);
+		f.write(reinterpret_cast<const char*>(&newTocOffset), 8);
+		const auto count = uint64_t(entries.size());
+		f.write(reinterpret_cast<const char*>(&count), 8);
+	}
+	f.flush();
+	if (!f) {
+		err = "header patch failed: " + pakPath;
+		return false;
+	}
+	// Footer: the pak CRC covers [0, footerCrcOff) = file bytes plus the
+	// footer's leading (tocOffset, tocCount) — stream the file, then
+	// feed those 16 bytes from memory before finalizing.
+	const uint64_t footerAt = uint64_t(newTocOffset)
+		+ TocEntryBytes(entries);
+	uint32_t crc = 0xFFFFFFFFu;
+	if (!Crc32FeedFile(f, footerAt, crc)) {
+		err = "crc stream failed: " + pakPath;
+		return false;
+	}
+	const auto count = uint64_t(entries.size());
+	{
+		uint8_t footerHead[16];
+		memcpy(footerHead + 0, &newTocOffset, 8);
+		memcpy(footerHead + 8, &count, 8);
+		Crc32FeedBytes(footerHead, sizeof(footerHead), crc);
+	}
+	crc ^= 0xFFFFFFFFu;
+	f.seekp(std::streamoff(footerAt), std::ios::beg);
+	f.write(reinterpret_cast<const char*>(&newTocOffset), 8);
+	f.write(reinterpret_cast<const char*>(&count), 8);
+	f.write(reinterpret_cast<const char*>(&crc), 4);
+	f.write(reinterpret_cast<const char*>(&kPakFooterMagic), 4);
+	const auto finalSize = footerAt + kFooterSize;
+	f.flush();
+	f.close();
+	std::filesystem::resize_file(pakPath, finalSize, fec);
+	return true;
 }
 
 // ---------------------------------------------------------------------------

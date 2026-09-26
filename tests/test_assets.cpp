@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -211,6 +213,133 @@ void TestPakRoundTrip() {
 	Check(parsed.uri == "textures/a.ktx2" && parsed.magFilter == 1 &&
 		parsed.minFilter == 2 && parsed.wrapS == 3 && parsed.wrapT == 4 &&
 		parsed.ktxBytes.size() == 2 && parsed.ktxBytes[0] == 7, "pak.texpayload.fields");
+}
+
+void TestPakAppend() {
+	namespace fs = std::filesystem;
+	const auto dir = fs::temp_directory_path() / "vulkantoy_pak_append";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const std::string pakPath = (dir / "grown.pak").string();
+
+	std::string err;
+	std::vector<smvk::PakAppendInfo> infos;
+	// Fresh file: batch of two, then read back through PakReader.
+	{
+		const std::vector<uint8_t> a = { 1, 2, 3, 4, 5 };
+		const std::vector<uint8_t> b(200, 0x5A);
+		std::vector<std::pair<std::string, std::span<const uint8_t>>>
+			blobs = { { "textures/a.bin", a }, { "textures/b.bin", b } };
+		Check(smvk::AppendPakBlobs(pakPath,
+				smvk::PakAssetKind::Texture, blobs, infos, err),
+			"pak.append.fresh");
+		Check(infos.size() == 2
+			&& infos[1].offset > infos[0].offset, "pak.append.info");
+	}
+	{
+		std::vector<uint8_t> img;
+		std::ifstream f(pakPath, std::ios::binary);
+		f.seekg(0, std::ios::end);
+		img.resize(size_t(f.tellg()));
+		f.seekg(0);
+		f.read(reinterpret_cast<char*>(img.data()),
+			std::streamsize(img.size()));
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), err);
+		Check(r.has_value(), "pak.append.reader.open");
+		if (r) {
+			Check(r->EntryCount() == 2, "pak.append.entries");
+			const auto* eA = r->Find(smvk::PakAssetKind::Texture,
+				"textures/a.bin");
+			Check(eA != nullptr, "pak.append.find.a");
+			if (eA) {
+				auto p = r->Payload(*eA);
+				Check(p.size() == 5 && p[0] == 1, "pak.append.payload.a");
+				// Direct (offset, size) read matches Find (the
+				// registry-read contract: uncompressed entries).
+				Check(eA->offset == infos[0].offset
+					&& eA->size == infos[0].size,
+					"pak.append.direct.addressing");
+			}
+			const auto* eB = r->Find(smvk::PakAssetKind::Texture,
+				"textures/b.bin");
+			Check(eB != nullptr && r->Payload(*eB).size() == 200,
+				"pak.append.payload.b");
+		}
+	}
+	// Grow the same file with a third blob + a superseding update: the
+	// TOC must stay unique-by-path and Find returns the LATEST payload.
+	{
+		const std::vector<uint8_t> c = { 9, 9 };
+		const std::vector<uint8_t> a2 = { 6, 7, 8 };
+		std::vector<std::pair<std::string, std::span<const uint8_t>>>
+			blobs = { { "textures/c.bin", c },
+				{ "textures/a.bin", a2 } };
+		Check(smvk::AppendPakBlobs(pakPath,
+				smvk::PakAssetKind::Texture, blobs, infos, err),
+			"pak.append.grow");
+	}
+	{
+		std::vector<uint8_t> img;
+		std::ifstream f(pakPath, std::ios::binary);
+		f.seekg(0, std::ios::end);
+		img.resize(size_t(f.tellg()));
+		f.seekg(0);
+		f.read(reinterpret_cast<char*>(img.data()),
+			std::streamsize(img.size()));
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), err);
+		Check(r.has_value(), "pak.append.grow.reader.open");
+		if (r) {
+			Check(r->EntryCount() == 3, "pak.append.grow.unique.toc");
+			const auto* eA = r->Find(smvk::PakAssetKind::Texture,
+				"textures/a.bin");
+			Check(eA != nullptr && eA->size == 3
+				&& r->Payload(*eA)[0] == 6,
+				"pak.append.grow.latest.wins");
+			Check(r->Find(smvk::PakAssetKind::Texture, "textures/c.bin")
+				!= nullptr, "pak.append.grow.find.c");
+		}
+	}
+	// Interop: a PakWriter-produced (LZ4) pak still grows + reads.
+	{
+		smvk::PakWriter w;
+		w.SetCompression(smvk::PakCompression::Lz4, 1);
+		Check(w.AddBlob(smvk::PakAssetKind::Texture,
+				"textures/w.ktx2",
+				std::vector<uint8_t>(4096, 0x33)), "pak.append.w.add");
+		const auto img = w.Finalize();
+		const std::string lzPath = (dir / "writer.pak").string();
+		{
+			std::ofstream f(lzPath, std::ios::binary);
+			f.write(reinterpret_cast<const char*>(img.data()),
+				std::streamsize(img.size()));
+		}
+		const std::vector<uint8_t> n = { 4, 4, 4 };
+		std::vector<std::pair<std::string, std::span<const uint8_t>>>
+			blobs = { { "textures/append.ktx2", n } };
+		Check(smvk::AppendPakBlobs(lzPath,
+				smvk::PakAssetKind::Texture, blobs, infos, err),
+			"pak.append.into.writer.pak");
+		std::vector<uint8_t> img2;
+		std::ifstream f(lzPath, std::ios::binary);
+		f.seekg(0, std::ios::end);
+		img2.resize(size_t(f.tellg()));
+		f.seekg(0);
+		f.read(reinterpret_cast<char*>(img2.data()),
+			std::streamsize(img2.size()));
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img2), err);
+		Check(r.has_value(), "pak.append.writer.reader.open");
+		if (r) {
+			Check(r->Find(smvk::PakAssetKind::Texture, "textures/w.ktx2")
+				&& r->Find(smvk::PakAssetKind::Texture,
+					"textures/append.ktx2") != nullptr,
+				"pak.append.writer.both.served");
+		}
+	}
+	fs::remove_all(dir, ec);
 }
 
 void TestLz4Codec() {
@@ -1837,6 +1966,7 @@ int main() {
 	TestOverlayMem();
 	TestAssetUris();
 	TestPakRoundTrip();
+	TestPakAppend();
 	TestLz4Codec();
 	TestPakCompressedRoundTrip();
 	TestPakBackendServesTextures();

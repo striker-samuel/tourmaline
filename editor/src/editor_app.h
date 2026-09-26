@@ -1355,6 +1355,7 @@ private:
 	// + artifacts/ (per-class paks). Purely a CACHE: .tour -> final pak
 	// cooks never depend on it — it only accelerates processing.
 	smvk::cache::CacheDb m_cacheDb;
+	std::unique_ptr<smvk::cache::ArtifactStore> m_store; // null = cache off
 	std::string m_scratchRoot; // normalized, exists
 	bool m_showScratchDialog = false;
 	char m_scratchBuf[512] = "";

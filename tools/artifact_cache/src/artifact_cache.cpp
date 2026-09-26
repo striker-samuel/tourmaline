@@ -8,8 +8,11 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 
 #include <SQLiteCpp/SQLiteCpp.h>
+
+#include <Engine/Asset/pak.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -332,6 +335,230 @@ uint64_t CacheDb::Count(std::string& err) {
 		err = e.what();
 		return 0;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ArtifactStore
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// klass -> the pak's asset kind (the TOC kind decides what PakBackend
+// serves; textures must be Texture to ride the existing VFS path).
+bool KlassToKind(const std::string& klass, smvk::PakAssetKind& out) {
+	if (klass == "texture") { out = smvk::PakAssetKind::Texture; return true; }
+	if (klass == "mesh") { out = smvk::PakAssetKind::Mesh; return true; }
+	if (klass == "material") { out = smvk::PakAssetKind::Material; return true; }
+	if (klass == "light") { out = smvk::PakAssetKind::Light; return true; }
+	if (klass == "camera") { out = smvk::PakAssetKind::Camera; return true; }
+	if (klass == "scene") { out = smvk::PakAssetKind::Scene; return true; }
+	return false;
+}
+
+} // namespace
+
+ArtifactStore::ArtifactStore(std::string scratchRoot, CacheDb& db)
+	: m_root(std::move(scratchRoot))
+	, m_db(db) {
+}
+
+ArtifactStore::~ArtifactStore() = default;
+
+std::string ArtifactStore::PakPath(const std::string& klass) const {
+	return (fs::path(m_root) / "artifacts" / (klass + ".pak"))
+		.generic_string();
+}
+
+bool ArtifactStore::Put(const std::string& klass, const std::string& uri,
+	std::span<const uint8_t> payload, const std::string& sourceHash,
+	const std::string& meta, std::string& err) {
+	smvk::PakAssetKind kind = smvk::PakAssetKind::Texture;
+	if (!KlassToKind(klass, kind)) {
+		err = "unknown artifact class: " + klass;
+		return false;
+	}
+	(void)kind; // kind matters at Flush (per-class pak), not at stage
+	if (uri.empty() || payload.empty() || sourceHash.empty()) {
+		err = "put needs uri, payload and sourceHash";
+		return false;
+	}
+	// Same-uri restage replaces the pending entry (latest wins, the
+	// registry precedent).
+	for (auto& s : m_staged) {
+		if (s.klass == klass && s.uri == uri) {
+			s.payload.assign(payload.begin(), payload.end());
+			s.sourceHash = sourceHash;
+			s.meta = meta;
+			return true;
+		}
+	}
+	Staged s;
+	s.klass = klass;
+	s.uri = uri;
+	s.payload.assign(payload.begin(), payload.end());
+	s.sourceHash = sourceHash;
+	s.meta = meta;
+	m_staged.push_back(std::move(s));
+	return true;
+}
+
+bool ArtifactStore::Get(const std::string& klass, const std::string& uri,
+	std::vector<uint8_t>& out, std::string& err) {
+	// Staged (not yet flushed) bytes win — write-behind coherence.
+	for (const auto& s : m_staged) {
+		if (s.klass == klass && s.uri == uri) {
+			out = s.payload;
+			return true;
+		}
+	}
+	return GetFromDisk(klass, uri, out, err);
+}
+
+bool ArtifactStore::GetFromDisk(const std::string& klass,
+	const std::string& uri, std::vector<uint8_t>& out,
+	std::string& err) const {
+	ArtifactRecord rec;
+	std::string gerr;
+	if (!m_db.Get(klass, uri, rec, gerr)) {
+		err = "no artifact '" + uri + "' (class " + klass + ")";
+		return false;
+	}
+	std::ifstream f(PakPath(klass), std::ios::binary);
+	if (!f) {
+		err = "class pak missing: " + klass;
+		return false;
+	}
+	f.seekg(std::streamoff(rec.offset), std::ios::beg);
+	out.resize(size_t(rec.size));
+	f.read(reinterpret_cast<char*>(out.data()),
+		std::streamsize(out.size()));
+	if (f.gcount() != std::streamsize(out.size())) {
+		err = "artifact read truncated: " + uri;
+		out.clear();
+		return false;
+	}
+	return true;
+}
+
+bool ArtifactStore::Has(const std::string& klass, const std::string& uri,
+	const std::string& sourceHash) const {
+	for (const auto& s : m_staged) {
+		if (s.klass == klass && s.uri == uri)
+			return s.sourceHash == sourceHash;
+	}
+	ArtifactRecord rec;
+	std::string err;
+	return m_db.Get(klass, uri, rec, err) && rec.hash == sourceHash;
+}
+
+bool ArtifactStore::Flush(std::string& err) {
+	if (m_staged.empty())
+		return true;
+	// Group by class (order preserved within a class).
+	std::vector<std::string> classes;
+	for (const auto& s : m_staged)
+		if (std::find(classes.begin(), classes.end(), s.klass)
+			== classes.end())
+			classes.push_back(s.klass);
+	for (const std::string& klass : classes) {
+		smvk::PakAssetKind kind{};
+		if (!KlassToKind(klass, kind)) {
+			err = "unknown artifact class: " + klass;
+			return false;
+		}
+		std::vector<std::pair<std::string, std::span<const uint8_t>>>
+			blobs;
+		std::vector<const Staged*> batch;
+		for (const auto& s : m_staged) {
+			if (s.klass != klass)
+				continue;
+			blobs.emplace_back(s.uri,
+				std::span<const uint8_t>(s.payload));
+			batch.push_back(&s);
+		}
+		std::vector<smvk::PakAppendInfo> infos;
+		if (!smvk::AppendPakBlobs(PakPath(klass), kind, blobs, infos,
+				err))
+			return false; // staged stays intact for a retry
+		// Commit the registry rows (after the pak grew: a crash in
+		// between leaves dead payload, never a dangling row).
+		for (size_t i = 0; i < batch.size(); ++i) {
+			ArtifactRecord rec;
+			rec.hash = batch[i]->sourceHash;
+			rec.klass = klass;
+			rec.uri = batch[i]->uri;
+			rec.pak = "artifacts/" + klass + ".pak";
+			rec.offset = infos[i].offset;
+			rec.size = infos[i].size;
+			rec.meta = batch[i]->meta;
+			if (!m_db.Put(rec, err))
+				return false;
+		}
+	}
+	// Every staged klass was in `classes`: nothing can be left.
+	m_staged.clear();
+	return true;
+}
+
+bool ArtifactStore::Remove(const std::string& klass, const std::string& uri,
+	std::string& err) {
+	// Staged removal too (an unflushed Put can be un-Put).
+	for (size_t i = 0; i < m_staged.size(); ++i)
+		if (m_staged[i].klass == klass && m_staged[i].uri == uri) {
+			m_staged.erase(m_staged.begin() + std::streamoff(i));
+			break;
+		}
+	return m_db.Remove(klass, uri, err);
+}
+
+bool ArtifactStore::ResetClass(const std::string& klass, std::string& err) {
+	smvk::PakAssetKind kind{};
+	if (!KlassToKind(klass, kind)) {
+		err = "unknown artifact class: " + klass;
+		return false;
+	}
+	m_staged.erase(std::remove_if(m_staged.begin(), m_staged.end(),
+		[&](const Staged& s) { return s.klass == klass; }),
+		m_staged.end());
+	std::error_code ec;
+	fs::remove(fs::path(PakPath(klass)), ec);
+	// Fresh error channels: a stale err from an earlier miss must not
+	// read as a failure here.
+	std::string aerr;
+	auto rows = m_db.All(aerr);
+	if (!aerr.empty()) {
+		err = aerr;
+		return false;
+	}
+	bool ok = true;
+	for (const ArtifactRecord& r : rows) {
+		if (r.klass != klass)
+			continue;
+		std::string rerr;
+		ok = m_db.Remove(r.klass, r.uri, rerr) && ok;
+	}
+	return ok;
+}
+
+bool ArtifactStore::ReadPakImage(const std::string& klass,
+	std::vector<uint8_t>& out, std::string& err) const {
+	const std::string path = PakPath(klass);
+	std::error_code ec;
+	if (!fs::exists(fs::path(path), ec)) {
+		err = "no class pak: " + klass;
+		return false;
+	}
+	std::ifstream f(path, std::ios::binary | std::ios::ate);
+	if (!f) {
+		err = "cannot open class pak: " + path;
+		return false;
+	}
+	const auto size = f.tellg();
+	f.seekg(0);
+	out.resize(size_t(size));
+	if (size > 0)
+		f.read(reinterpret_cast<char*>(out.data()), size);
+	return f.good() || size == 0;
 }
 
 } // namespace smvk::cache

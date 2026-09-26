@@ -93,6 +93,33 @@ struct PakTocEntry {
 uint64_t PakHashPath(const std::string& normalizedPath);
 uint32_t PakCrc32(const void* data, size_t size);
 
+// Per-blob placement of an appended payload (direct-read addressing:
+// with PakEntryFlag_None the bytes at [offset, offset+size) ARE the
+// payload, no TOC walk needed).
+struct PakAppendInfo {
+	uint64_t offset = 0;
+	uint64_t size = 0;
+};
+
+// Append-grow: adds blobs to a pak FILE on disk (created when missing
+// or empty), keeping the image valid for PakReader::Open at all times.
+// Entries are stored UNCOMPRESSED so registry-tracked (offset, size)
+// reads stay direct. Duplicate uris REPLACE their TOC entry (the TOC
+// stays unique-by-path; first-match Find keeps resolving) — the
+// superseded payload becomes dead space (cache GC compacts later).
+//
+// Crash ordering: payloads land after the old TOC+footer (nothing live
+// is overwritten), the header patch is the final write — an
+// interrupted append leaves the PREVIOUS pak contents valid (the
+// header still points at the intact old TOC; trailing bytes are
+// ignored). Torn header writes remain possible; the scratch store
+// treats a pak that fails PakReader::Open as disposable.
+// out receives one (offset, size) per blob, in order.
+bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
+	const std::vector<std::pair<std::string,
+		std::span<const uint8_t>>>& blobs,
+	std::vector<PakAppendInfo>& out, std::string& err);
+
 // TextureBlob payload encoding (shared by the serializer and PakBackend):
 //   u32 uriLen | uri bytes | i32 magFilter | i32 minFilter | i32 wrapS |
 //   i32 wrapT | u64 ktxSize | ktx bytes

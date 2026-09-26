@@ -1,4 +1,4 @@
-// test_cache: artifact-cache library tests (scratch root handling +
+﻿// test_cache: artifact-cache library tests (scratch root handling +
 // SQLite registry round-trips). No GPU, no editor. Run via CTest.
 
 #include <cstdio>
@@ -9,6 +9,9 @@
 #include <vector>
 
 #include <artifact_cache/artifact_cache.h>
+
+#include <Engine/Asset/pak.h>
+#include <Engine/Vfs/vfs.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -44,7 +47,7 @@ std::string TempDir() {
 
 } // namespace
 
-int main() {
+void TestScratchAndRegistry() {
 	using namespace smvk::cache;
 
 	// ---- scratch root ----------------------------------------------------
@@ -154,10 +157,175 @@ int main() {
 			&& got.offset == 8192, "persisted upsert value");
 	}
 	// WAL sidecars exist next to the db while at least one connection
-	// is open; after Close they may remain — harmless either way.
+	// is open; after Close they may remain â€” harmless either way.
 
 	std::error_code ec;
 	std::filesystem::remove_all(dir, ec);
-	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
+}
+
+void TestStore();
+
+int main() {
+	TestScratchAndRegistry();
+	TestStore();
+	std::cout << g_checks - g_failures << "/" << g_checks
+		<< " passed\n";
 	return g_failures == 0 ? 0 : 1;
+}
+
+void TestStore() {
+	using namespace smvk::cache;
+	const std::string dir = TempDir() + "/store";
+	const std::string root = EnsureScratchRoot(dir + "/scratch");
+	if (root.empty()) {
+		std::cout << "FAIL store root\n";
+		return;
+	}
+	CacheDb db;
+	std::string err;
+	if (!db.Open((std::filesystem::path(root) / "cache.db").string(),
+			err)) {
+		std::cout << "FAIL store db open: " << err << "\n";
+		return;
+	}
+	ArtifactStore store(root, db);
+
+	// Stage + read-before-flush (write-behind coherence). Texture-class
+	// payloads ride the real cooked-texture envelope (BuildTexturePayload:
+	// uri + sampler + ktx bytes) â€” exactly what the final paks embed, and
+	// what PakBackend::TryRead parses on the VFS path below.
+	const std::vector<uint8_t> ktx = { 1, 2, 3, 4, 5 };
+	const std::vector<uint8_t> png = ktx;
+	const auto envelope = smvk::BuildTexturePayload(
+		"models/x/tex.png", 1, 1, 1, 1,
+		std::span<const uint8_t>(ktx));
+	const std::string srcHash = HashBytes(png.data(), png.size());
+	Check(store.Put("texture", "models/x/tex.png", envelope, srcHash,
+			"{\"fmt\":\"ktx2\"}", err), "store.stage");
+	Check(store.StagedCount() == 1, "store.staged.count");
+	{
+		std::vector<uint8_t> got;
+		Check(store.Get("texture", "models/x/tex.png", got, err)
+			&& got == envelope, "store.staged.get");
+	}
+	Check(store.Has("texture", "models/x/tex.png", srcHash),
+		"store.has.staged");
+	Check(!store.Has("texture", "models/x/tex.png",
+		HashBytes("other", 5)), "store.has.hash.miss");
+
+	// Flush: pak grows + registry commits; reads switch to disk.
+	Check(store.Flush(err), "store.flush");
+	Check(store.StagedCount() == 0, "store.flush.empties");
+	{
+		std::vector<uint8_t> got;
+		Check(store.Get("texture", "models/x/tex.png", got, err)
+			&& got == envelope, "store.disk.get");
+		Check(!store.Get("texture", "nope", got, err),
+			"store.get.miss");
+	}
+
+	// The grown pak is a VALID pak: PakReader opens it (CRC included),
+	// PakBackend serves the entry by URI through a VFS overlay.
+	{
+		std::vector<uint8_t> img;
+		Check(store.ReadPakImage("texture", img, err),
+			"store.read.pak.image");
+		auto image = std::make_shared<const std::vector<uint8_t>>(
+			std::move(img));
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(*image), err);
+		Check(r.has_value(), "store.pak.reader.open");
+		if (r) {
+			const auto* e = r->Find(smvk::PakAssetKind::Texture,
+				"models/x/tex.png");
+			Check(e != nullptr && e->size == envelope.size(),
+				"store.pak.find");
+			// Registry addressing == TOC addressing (the store's
+			// direct-read contract).
+			ArtifactRecord rec;
+			Check(db.Get("texture", "models/x/tex.png", rec, err)
+				&& rec.offset == e->offset && rec.size == e->size,
+				"store.registry.addressing.matches.toc");
+		}
+		smvk::OverlayVfs vfs;
+		std::string berr;
+		auto backend = smvk::PakBackend::Open(image, "scratch", berr);
+		Check(backend != nullptr, "store.backend.open");
+		if (backend) {
+			vfs.Mount(backend, 50, "scratch");
+			auto served = vfs.TryRead("models/x/tex.png");
+			// PakBackend serves the TEXTURE PAYLOAD'S ktx bytes (the
+			// cooked-artifact contract, exactly like a final pak).
+			Check(served && served->size() == ktx.size()
+				&& std::equal(ktx.begin(), ktx.end(), served->begin()),
+				"store.vfs.serves");
+			Check(!vfs.TryRead("models/nope.png").has_value(),
+				"store.vfs.miss");
+		}
+	}
+
+	// Batch flush across classes + a second flush on the same pak
+	// (append-grow: the pak keeps opening valid).
+	{
+		const std::vector<uint8_t> m1 = { 6, 6, 6 };
+		const std::vector<uint8_t> t2(77, 0x77);
+		Check(store.Put("mesh", "models/x/m#mesh.0", m1,
+			HashBytes("meshsrc", 8), "{}", err), "store.stage.mesh");
+		Check(store.Put("texture", "models/x/tex2.png", t2,
+			HashBytes("png2", 4), "{}", err), "store.stage.tex2");
+		Check(store.Flush(err), "store.flush.two.classes");
+		std::vector<uint8_t> gotM, gotT;
+		Check(store.Get("mesh", "models/x/m#mesh.0", gotM, err)
+			&& gotM == m1, "store.mesh.get");
+		Check(store.Get("texture", "models/x/tex2.png", gotT, err)
+			&& gotT.size() == 77, "store.tex2.get");
+		// Old entry still reads after the second growth.
+		Check(store.Get("texture", "models/x/tex.png", gotT, err)
+			&& gotT == envelope, "store.old.entry.survives.growth");
+	}
+
+	// Upsert through the store: latest payload wins, old bytes become
+	// dead space (registry row + TOC entry both replaced).
+	{
+		const std::vector<uint8_t> v2 = { 9, 9, 9, 9 };
+		Check(store.Put("texture", "models/x/tex.png", v2,
+			HashBytes("texv2", 5), "{}", err), "store.stage.upsert");
+		Check(store.Flush(err), "store.flush.upsert");
+		std::vector<uint8_t> got;
+		Check(store.Get("texture", "models/x/tex.png", got, err)
+			&& got == v2, "store.upsert.latest.wins");
+		std::string err2;
+		Check(!store.Has("texture", "models/x/tex.png", srcHash),
+			"store.upsert.has.old.hash.miss");
+	}
+
+	// Persistence: a fresh store over the same root reads everything.
+	{
+		ArtifactStore store2(root, db);
+		std::vector<uint8_t> got;
+		Check(store2.Get("texture", "models/x/tex.png", got, err)
+			&& got.size() == 4, "store.persisted.get");
+		Check(store2.Get("mesh", "models/x/m#mesh.0", got, err)
+			&& got.size() == 3, "store.persisted.mesh");
+	}
+
+	// Remove + ResetClass (corruption repair path).
+	{
+		Check(store.Remove("mesh", "models/x/m#mesh.0", err),
+			"store.remove");
+		std::vector<uint8_t> got;
+		Check(!store.Get("mesh", "models/x/m#mesh.0", got, err),
+			"store.removed.gone");
+		Check(store.ResetClass("texture", err), "store.reset.class");
+		Check(!store.Get("texture", "models/x/tex.png", got, err),
+			"store.reset.cleared");
+		Check(!std::filesystem::exists(
+				std::filesystem::path(root) / "artifacts"
+				/ "texture.pak"), "store.reset.pak.gone");
+		std::string cerr;
+		Check(db.Count(cerr) == 0, "store.reset.registry.empty");
+	}
+
+	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
 }
