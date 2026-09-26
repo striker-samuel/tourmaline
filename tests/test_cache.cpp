@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/store_adapter.h>
 
 #include <Engine/Asset/pak.h>
 #include <Engine/Vfs/vfs.h>
@@ -165,9 +166,62 @@ void TestScratchAndRegistry() {
 
 void TestStore();
 
+// StoreArtifactCacheAdapter: gltf_import's GltfArtifactCache over the
+// real store — the adapter is what the editor/PakCooker inject, so its
+// round-trip IS the acceleration contract (keyed by the importer's
+// TextureConversionHash).
+void TestStoreAdapter() {
+	using namespace smvk::cache;
+	const std::string dir = TempDir() + "/adapter";
+	const std::string root = EnsureScratchRoot(dir + "/scratch");
+	if (root.empty()) {
+		std::cout << "FAIL adapter root\n";
+		return;
+	}
+	CacheDb db;
+	std::string err;
+	if (!db.Open((std::filesystem::path(root) / "cache.db").string(),
+			err)) {
+		std::cout << "FAIL adapter db open: " << err << "\n";
+		return;
+	}
+	ArtifactStore store(root, db);
+	StoreArtifactCacheAdapter adapter(store);
+
+	const std::string src = "png-bytes";
+	const std::string key = TextureConversionHash(src.data(), src.size(),
+		true);
+	std::vector<uint8_t> payload = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+		0x30, 0xBB, 1, 2, 3 };
+	Check(adapter.Put("texture", "models/x/tex.png", payload.data(),
+			payload.size(), key, "{\"srgb\":1}"),
+		"adapter.put.stages");
+	Check(store.StagedCount() == 1, "adapter.stage.count");
+	Check(store.Flush(err), "adapter.flush");
+	std::vector<uint8_t> got;
+	Check(adapter.Get("texture", "models/x/tex.png", got)
+		&& got == payload, "adapter.get.roundtrip");
+	Check(!adapter.Get("texture", "models/nope.png", got),
+		"adapter.get.miss");
+	// The key mixes the transfer: a colorspace change can never serve
+	// the stale transfer (the VTXfer-sidecar rule, store-flavored).
+	const std::string key2 = TextureConversionHash(src.data(), src.size(),
+		true);
+	const std::string keyLinear = TextureConversionHash(src.data(),
+		src.size(), false);
+	Check(key == key2 && key != keyLinear, "adapter.hash.transfer.mix");
+	ArtifactRecord rec;
+	Check(db.Get("texture", "models/x/tex.png", rec, err)
+		&& rec.hash == key, "adapter.registry.key");
+
+	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
+}
+
 int main() {
 	TestScratchAndRegistry();
 	TestStore();
+	TestStoreAdapter();
 	std::cout << g_checks - g_failures << "/" << g_checks
 		<< " passed\n";
 	return g_failures == 0 ? 0 : 1;

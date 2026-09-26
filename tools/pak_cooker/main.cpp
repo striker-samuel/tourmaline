@@ -99,7 +99,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include <volk.h>
+#include <volk.h> // VkFormat enums (the --cubemap KTX2 encode)
 
 #include "ktx.h"
 
@@ -119,6 +119,8 @@
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
+#include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/store_adapter.h>
 #include <Engine/Vfs/vfs.h>
 #include <meshoptimizer.h>
 
@@ -333,6 +335,12 @@ struct Args {
 	// Scene pinpoint: with --dump-pak, restrict the scene print to these
 	// node ids (repeatable) and include their local translation.
 	std::vector<uint32_t> dumpNodes;
+	// Editor scratch-disk root (optional acceleration, NEVER a
+	// precondition): when set, the cook consults + feeds the artifact
+	// registry there — texture transcodes copy hash-validated payloads
+	// from scratch on hit and stage fresh ones on miss. Absent/broken
+	// scratch = plain processing, unchanged output.
+	std::string scratchDir;
 };
 
 // World sun: the pak's first directional is the runtime sun (the App
@@ -515,6 +523,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.autoKtx = (v == "on" || v == "1" || v == "true");
 			out.explicitSet.insert("autoKtx");
+		}
+		else if (a == "--scratch-dir") {
+			std::string v;
+			if (!need(v)) return false;
+			out.scratchDir = v;
 		}
 		else if (a == "--compress") {
 			std::string v;
@@ -865,6 +878,8 @@ void Usage() {
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
 		<< "          [--auto-ktx on|off]\n"
+		<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
+		<< "                                  never required)\n"
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
 		<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
@@ -2980,6 +2995,44 @@ int main(int argc, char** argv) {
 	if (args.lightmap)
 		importMeshletCfg.enabled = false;
 
+	// Scratch cache (--scratch-dir, optional acceleration, NEVER a
+	// precondition): open the editor's artifact registry so texture
+	// transcodes serve hash-validated payloads from the scratch on hit
+	// and stage fresh ones on miss. A missing/locked/broken scratch
+	// degrades to plain processing — the pak output is byte-identical.
+	std::unique_ptr<smvk::cache::CacheDb> scratchDb;
+	std::unique_ptr<smvk::cache::ArtifactStore> scratchStore;
+	std::unique_ptr<StoreArtifactCacheAdapter> scratchAdapter;
+	if (!args.scratchDir.empty()) {
+		const std::string root =
+			smvk::cache::EnsureScratchRoot(args.scratchDir);
+		if (!root.empty()) {
+			scratchDb = std::make_unique<smvk::cache::CacheDb>();
+			std::string dbErr;
+			if (scratchDb->Open((std::filesystem::path(root) / "cache.db")
+					.generic_string(), dbErr)) {
+				scratchStore =
+					std::make_unique<smvk::cache::ArtifactStore>(
+						root, *scratchDb);
+				scratchAdapter =
+					std::make_unique<StoreArtifactCacheAdapter>(
+						*scratchStore);
+				std::cout << "Scratch cache: " << root << "\n";
+			}
+			else {
+				std::cerr << "Scratch cache db open failed (" << dbErr
+					<< ") — cooking without acceleration\n";
+				scratchDb.reset();
+			}
+		}
+		else {
+			std::cerr << "Scratch root unusable: " << args.scratchDir
+				<< " — cooking without acceleration\n";
+		}
+	}
+	GltfArtifactCache* artifactCache =
+		scratchAdapter ? scratchAdapter.get() : nullptr;
+
 	// Tour path: the doc IS the definition (root reference #0 = the
 	// source glTF, inlined under the scene root exactly like the
 	// editor binds it). No source resolution, no side imports — the
@@ -3092,7 +3145,8 @@ int main(int argc, char** argv) {
 				ownerBase, nullptr, nullptr,
 				nullptr /* HOST bind — editor parity */,
 				opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
-				args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes);
+				args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
+				artifactCache);
 				std::cout << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";
@@ -3175,7 +3229,7 @@ int main(int argc, char** argv) {
 		try {
 			GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster,
 				opt, importMeshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex,
-				args.autoKtx);
+				args.autoKtx, nullptr, artifactCache);
 		}
 		catch (const std::exception& e) {
 			std::cerr << "Import failed (scene '" << sc.name
@@ -3201,6 +3255,19 @@ int main(int argc, char** argv) {
 		sceneClusters.push_back(std::move(cluster));
 	}
 	} // close else block for VFS path
+	// Import phase finished: commit any staged scratch artifacts (one
+	// pak grow per touched class). Flush failure loses acceleration
+	// only — staged bytes were already used in the import.
+	if (scratchStore && scratchStore->StagedCount() > 0) {
+		const size_t staged = scratchStore->StagedCount();
+		std::string flushErr;
+		if (scratchStore->Flush(flushErr))
+			std::cout << "Scratch cache: " << staged
+				<< " texture artifact(s) flushed\n";
+		else
+			std::cerr << "Scratch flush failed: " << flushErr
+				<< " (staged stands; the pak output is unaffected)\n";
+	}
 	// Single-scene alias for the tour/collapse/bake stages below (written
 	// against one cluster; multi-scene loops reuse them per scene). Both
 	// cluster-> and *cluster forms keep working through the pointer.

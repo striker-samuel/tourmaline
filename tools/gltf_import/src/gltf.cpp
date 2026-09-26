@@ -230,6 +230,27 @@ namespace {
 			0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
 		return bytes.size() >= 12 && memcmp(bytes.data(), kMagic, 12) == 0;
 	}
+	// Texture-conversion cache key: FNV-1a 64 over the SOURCE bytes
+	// with the transfer mixed in, then the same length/avalanche
+	// finish as smvk::cache::HashBytes. The ONLY producer of these
+	// keys is this TU; stores treat them as opaque strings.
+	inline std::string TextureConversionHashImpl(const void* data,
+		size_t size, bool srgb) {
+		const auto* bytes = static_cast<const uint8_t*>(data);
+		uint64_t h = 14695981039346656037ull;
+		for (size_t i = 0; i < size; ++i) {
+			h ^= bytes[i];
+			h *= 1099511628211ull;
+		}
+		h ^= (srgb ? 0x9E3779B97F4A7C15ull : 0xC2B2AE3D27D4EB4Full);
+		h ^= uint64_t(size) * 0x9E3779B97F4A7C15ull;
+		h *= 0xFF51AFD7ED558CCDull;
+		h ^= h >> 32;
+		char hex[32];
+		std::snprintf(hex, sizeof(hex), "%016llx",
+			static_cast<unsigned long long>(h));
+		return hex;
+	}
 	// ---- KTX auto-convert (file nodes + `.ktx2` sidecar cache) ----
 	// Lowercase basename / stem for file-node matching (editor image defs
 	// carry absolute host paths; glTF images carry relative URIs — the
@@ -446,6 +467,27 @@ bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
 		err = "HDR source skipped (no float transcode yet): " + imageUri;
 		return false;
 	}
+	// Scratch-disk store (second-chance cache, hash-validated): consult
+	// BEFORE transcoding — the source-hash keys the SOURCE bytes +
+	// transfer, so a hit is byte-identical to a fresh conversion. The
+	// payload magic re-validates (a torn/corrupt entry reprocesses).
+	// Never required: a miss (or no hook) just transcodes below, and
+	// the shared tail stages the result so the next import/cook of the
+	// same source hits (the owner flushes).
+	std::string pendingStoreHash;
+	if (artifactCache_) {
+		const std::string sourceHash = TextureConversionHash(
+			srcBytes.data(), srcBytes.size(), srgb);
+		std::vector<uint8_t> cached;
+		if (artifactCache_->Get("texture", imageUri, cached)
+			&& IsKtx2Payload(cached)) {
+			std::cerr << "KTX cache hit (scratch): " << imageUri
+				<< " (" << cached.size() << " B)" << std::endl;
+			out = std::move(cached);
+			return true;
+		}
+		pendingStoreHash = sourceHash;
+	}
 	std::vector<uint8_t> ktx;
 	std::string terr;
 	if (!TranscodeImageToKtx2(srcBytes.data(), srcBytes.size(), srgb,
@@ -456,6 +498,16 @@ bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
 	std::cerr << "KTX converted (" << (srgb ? "srgb" : "linear") << " "
 		<< srcBytes.size() << " -> " << ktx.size() << " B): " << imageUri
 		<< std::endl;
+	if (!pendingStoreHash.empty()) {
+		if (artifactCache_->Put("texture", imageUri, ktx.data(), ktx.size(),
+				pendingStoreHash,
+				srgb ? "{\"srgb\":1}" : "{\"srgb\":0}"))
+			std::cerr << "KTX cache staged (scratch): " << imageUri
+				<< " (" << ktx.size() << " B)" << std::endl;
+		else
+			std::cerr << "KTX cache stage failed (transcode stands): "
+				<< imageUri << std::endl;
+	}
 	if (sidecar) { // best-effort cache; the bytes are used regardless
 		std::error_code ec;
 		std::filesystem::create_directories(sidecar->parent_path(), ec);
@@ -1372,6 +1424,11 @@ inline glm::mat4 ConvertNodeLocalTransform(const glm::mat4& m, int coordFix) {
 	return c * m * c;
 }
 
+std::string TextureConversionHash(const void* data, size_t size,
+	bool srgb) {
+	return TextureConversionHashImpl(data, size, srgb);
+}
+
 glm::vec3 GltfPunctualAimAxis(int coordFix) {
 	// glTF punctual lights aim along their node's -Z axis. coordFix 0
 	// conjugates every node transform (M' = C*M*C) AND bakes vertices
@@ -2156,7 +2213,8 @@ void GltfToClusterFromVfs(
 	const glm::mat4& preTransform,
 	int gltfSceneIndex,
 	bool autoKtx,
-	const std::vector<smvk::tour::FileNode>* fileNodes) {
+	const std::vector<smvk::tour::FileNode>* fileNodes,
+	GltfArtifactCache* artifactCache) {
 	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
 	tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
 	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
@@ -2167,6 +2225,7 @@ void GltfToClusterFromVfs(
 	importer.setModelUriBase(modelPath);
 	importer.setMeshOptConfig(meshOpt);
 	importer.setMeshletConfig(meshlets);
+	importer.setArtifactCache(artifactCache);
 	importer.setAutoKtx(autoKtx);
 	if (fileNodes)
 		importer.setFileNodes(*fileNodes);
@@ -2301,7 +2360,8 @@ size_t ApplySceneReferences(
 	std::vector<std::string>* outIssues,
 	std::vector<std::string>* outResolvedSources,
 	bool autoKtx,
-	const std::vector<smvk::tour::FileNode>* fileNodes) {
+	const std::vector<smvk::tour::FileNode>* fileNodes,
+	GltfArtifactCache* artifactCache) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -2556,9 +2616,10 @@ size_t ApplySceneReferences(
 				else
 					importer.setTextureSource(std::make_shared<HostTextureSource>(
 						std::filesystem::path(baseDir)));
-				importer.setMeshOptConfig(meshOpt);
-				importer.setMeshletConfig(meshlets);
-				importer.setAutoKtx(autoKtx);
+			importer.setMeshOptConfig(meshOpt);
+			importer.setMeshletConfig(meshlets);
+			importer.setAutoKtx(autoKtx);
+			importer.setArtifactCache(artifactCache);
 				// Nested tours carry their own file nodes; a level without
 				// any falls back to the top doc's set (or none).
 				if (!cur.doc.fileNodes.empty())

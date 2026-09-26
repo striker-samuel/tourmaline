@@ -12,8 +12,9 @@ target_link_libraries(PakCooker
     PRIVATE
         engine
         gltf_import
+        artifact_cache
         volk
-        KTX::ktx
+        OptickCore
 )
 
 set_target_properties(PakCooker PROPERTIES

@@ -254,6 +254,7 @@ target_link_libraries(CacheTests
     PRIVATE
         artifact_cache
         engine
+        gltf_import
 )
 
 set_target_properties(CacheTests PROPERTIES

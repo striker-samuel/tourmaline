@@ -10,6 +10,35 @@
 
 #include <tiny_gltf.h>
 
+// ---------------------------------------------------------------------------
+// Artifact-cache hook (optional): the scratch-disk store adapter the
+// editor and PakCooker inject. Consulted BEFORE a texture transcode,
+// fed AFTER — a hit serves exactly the payload a fresh transcode of
+// the same source would produce; a miss (or no hook at all) simply
+// transcodes. The cache NEVER gates correctness: .tour -> pak cooks
+// succeed regardless of cache state.
+// ---------------------------------------------------------------------------
+struct GltfArtifactCache {
+	virtual ~GltfArtifactCache() = default;
+	// klass: "texture" today. sourceHash: TextureConversionHash().
+	// False = miss (transcode proceeds).
+	virtual bool Get(const std::string& klass, const std::string& uri,
+		std::vector<uint8_t>& out) = 0;
+	// Stage the cooked payload (the owner Flushes after the import
+	// batch; a failed Put never blocks — the payload is used anyway).
+	virtual bool Put(const std::string& klass, const std::string& uri,
+		const void* payload, size_t payloadSize,
+		const std::string& sourceHash, const std::string& meta) = 0;
+};
+
+// Deterministic texture-conversion cache key: FNV-1a 64 over the
+// SOURCE bytes with the transfer (srgb/linear) mixed in. The ONLY
+// producer and consumer of these keys is gltf_import (the store
+// treats them as opaque strings), so identical inputs always map to
+// the same artifact across editor sessions and cooks.
+std::string TextureConversionHash(const void* data, size_t size,
+	bool srgb);
+
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
@@ -61,6 +90,12 @@ struct GltfToSceneImporter
 	};
 	void setTextureSource(std::shared_ptr<TextureSource> source);
 	void setModelUriBase(const std::string& vfsPath);
+	// Optional artifact-cache hook (see GltfArtifactCache above):
+	// consulted before texture transcodes. Not owned; outlives the
+	// importer call scope (owner flushes staged puts afterwards).
+	void setArtifactCache(GltfArtifactCache* cache) {
+		artifactCache_ = cache;
+	}
 	void setMeshOptConfig(const smvk::MeshOptConfig& config);
 	// Meshlet cook config (disabled by default). When enabled,
 	// getOrCreateMesh builds meshlets from the optimized upload and stamps
@@ -115,6 +150,9 @@ private:
 	// go through TextureStreamer::StreamTexture (tail-resident) instead of
 	// the full-res LoadKtxTexture* path. Owned by the caller (app/world).
 	smvk::TextureStreamer* textureStreamer_ = nullptr;
+	// Optional artifact cache (scratch-disk store adapter): texture
+	// transcode acceleration. Not owned.
+	GltfArtifactCache* artifactCache_ = nullptr;
 
 	smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
 	// KTX auto-convert: file-node match for an image URI (basename, then
@@ -210,7 +248,8 @@ void GltfToClusterFromVfs(
 	const glm::mat4& preTransform = glm::mat4(1.0f),
 	int gltfSceneIndex = -1,
 	bool autoKtx = true,
-	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr);
+	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
+	GltfArtifactCache* artifactCache = nullptr);
 
 // ---------------------------------------------------------------------------
 // Clarisse-style nested SCENE REFERENCES.
@@ -255,12 +294,14 @@ void GltfToClusterFromVfs(
 	// KTX conversion: autoKtx gates in-process conversion of non-KTX
 	// sources (default on); fileNodes carries cooked file-node records
 	// for conversion intent (null = usage inference only). Appended last
-	// so existing positional callers keep compiling.
+	// so existing positional callers keep compiling. artifactCache: the
+	// scratch-disk store hook (null = no acceleration).
 	bool autoKtx = true,
-	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr);
+	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
+	GltfArtifactCache* artifactCache = nullptr);
 
 inline void GltfToCluster(
-	smvk::ResourceManager&,
+	smvk::ResourceManager& ctx,
 	const tinygltf::Model& inModel,
 	std::filesystem::path inGltfModelPath,
 	smvk::Cluster& out,
@@ -268,7 +309,8 @@ inline void GltfToCluster(
 	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
 	int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
 	const glm::mat4& preTransform = glm::mat4(1.0f),
-	smvk::TextureStreamer* streamer = nullptr // tail-resident uploads when set (see texture_streamer.h)
+	smvk::TextureStreamer* streamer = nullptr, // tail-resident uploads when set (see texture_streamer.h)
+	GltfArtifactCache* artifactCache = nullptr
 ) {
 	GltfToSceneImporter importer{
 		out,
@@ -277,6 +319,7 @@ inline void GltfToCluster(
 	};
 	importer.setMeshOptConfig(meshOpt);
 	importer.setMeshletConfig(meshlets);
+	importer.setArtifactCache(artifactCache);
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
 	importer.setTextureStreamer(streamer);

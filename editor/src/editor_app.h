@@ -41,6 +41,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Flintbase/flintbase_client.h>
 #include <Engine/GI/lightmap.h>
@@ -1378,6 +1379,9 @@ private:
 	// cooks never depend on it — it only accelerates processing.
 	smvk::cache::CacheDb m_cacheDb;
 	std::unique_ptr<smvk::cache::ArtifactStore> m_store; // null = cache off
+	// gltf_import hook over the store (texture-transcode
+	// acceleration; injected into every import path).
+	std::unique_ptr<StoreArtifactCacheAdapter> m_texCacheAdapter;
 	std::string m_scratchRoot; // normalized, exists
 	bool m_showScratchDialog = false;
 	char m_scratchBuf[512] = "";

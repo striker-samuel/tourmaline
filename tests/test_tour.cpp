@@ -1832,12 +1832,137 @@ void TestCamera() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
+// Artifact-cache consultation through the importer's texture path: a
+// hook sees Get-before-transcode, receives the cooked payload via Put
+// on miss, serves it byte-identically on the next import (no second
+// Put), and a corrupt cached payload reprocesses (never trusted).
+void TestTextureCacheConsult() {
+	namespace fs = std::filesystem;
+	const auto dir = fs::temp_directory_path() / "vulkantoy_texcachetest";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	// Hand-written minimal 1x1 32-bit uncompressed TGA (stb-readable).
+	{
+		const unsigned char tga[22] = {
+			0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			1, 0, 1, 0, 32, 0, // 1x1, 32bpp, bottom-up
+			0x00, 0x00, 0xFF, 0xFF // BGRA: opaque blue
+		};
+		std::ofstream f(dir / "tex.tga", std::ios::binary);
+		f.write(reinterpret_cast<const char*>(tga), sizeof(tga));
+	}
+	// glTF: 1 triangle (36 zero bytes via data-URI buffer), material 0
+	// with a baseColorTexture -> texture 0 -> image tex.tga.
+	// 36 zero bytes -> 48 base64 chars (12 groups of "AAAA"); built
+	// programmatically so the count cannot drift.
+	std::string b64;
+	for (int i = 0; i < 12; ++i)
+		b64 += "AAAA";
+	const std::string gltfText =
+		"{\"asset\":{\"version\":\"2.0\"},"
+		"\"scenes\":[{\"nodes\":[0]}],"
+		"\"nodes\":[{\"mesh\":0}],"
+		"\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+		"\"material\":0}]}],"
+		"\"materials\":[{\"pbrMetallicRoughness\":"
+		"{\"baseColorTexture\":{\"index\":0}}}],"
+		"\"textures\":[{\"source\":0}],"
+		"\"images\":[{\"uri\":\"tex.tga\"}],"
+		"\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+		"\"count\":3,\"type\":\"VEC3\",\"max\":[0,0,0],\"min\":[0,0,0]}],"
+		"\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+		"\"buffers\":[{\"byteLength\":36,"
+		"\"uri\":\"data:application/octet-stream;base64,"
+		+ b64 + "\"}]}";
+	const auto gltfPath = dir / "tex.gltf";
+	{
+		std::ofstream f(gltfPath, std::ios::binary | std::ios::trunc);
+		f << gltfText;
+	}
+	// Fake cache: records every call; Get's payload is injectable.
+	struct FakeCache final : GltfArtifactCache {
+		int getCalls = 0;
+		int putCalls = 0;
+		std::string lastHash;
+		std::string lastMeta;
+		std::vector<uint8_t> served; // empty = miss
+		bool Get(const std::string&, const std::string& uri,
+			std::vector<uint8_t>& out) override {
+			(void)uri;
+			++getCalls;
+			if (served.empty())
+				return false;
+			out = served;
+			return true;
+		}
+		bool Put(const std::string&, const std::string&,
+			const void* payload, size_t payloadSize,
+			const std::string& sourceHash,
+			const std::string& meta) override {
+			++putCalls;
+			lastHash = sourceHash;
+			lastMeta = meta;
+			const auto* p = static_cast<const uint8_t*>(payload);
+			served.assign(p, p + payloadSize);
+			return true;
+		}
+	};
+	auto importWith = [&](FakeCache& cache) -> bool {
+		tinygltf::Model model;
+		if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+			return false;
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0);
+		GltfToSceneImporter importer(*cluster, model, gltfPath);
+		importer.setTextureSource(
+			std::make_shared<HostTextureSource>(dir));
+		importer.setArtifactCache(&cache);
+		importer.import(0);
+		return cluster->scene.meshForNode.size() == 1
+			&& cluster->textures.numObjects() >= 0;
+	};
+
+	FakeCache cache;
+	Check(importWith(cache), "texcache import ok");
+	Check(cache.getCalls == 1, "texcache consulted once");
+	Check(cache.putCalls == 1, "texcache staged once on miss");
+	Check(!cache.lastHash.empty() && cache.lastHash.size() == 16,
+		"texcache hash key");
+	// The staged payload is a real KTX2 (the transcode output).
+	Check(cache.served.size() >= 12 && cache.served[0] == 0xAB
+		&& cache.served[4] == ' ' && cache.served[5] == '2',
+		"texcache payload is ktx2");
+
+	// Second import with the served payload: HIT — no transcode, no
+	// Put. (The first import wrote a .ktx2 sidecar next to the source;
+	// remove it so the store consult is actually reached.)
+	fs::remove(dir / "tex.ktx2", ec);
+	FakeCache hit;
+	hit.served = cache.served;
+	Check(importWith(hit), "texcache hit import ok");
+	Check(hit.getCalls == 1 && hit.putCalls == 0,
+		"texcache hit serves without re-staging");
+
+	// Corrupt cached payload: never trusted — reprocess + re-stage.
+	fs::remove(dir / "tex.ktx2", ec);
+	FakeCache corrupt;
+	corrupt.served = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+	Check(importWith(corrupt), "texcache corrupt import ok");
+	Check(corrupt.putCalls == 1,
+		"texcache corrupt reprocesses + restages");
+
+	fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
 	TestCamera();
+	TestTextureCacheConsult();
 	TestTourFormat();
 	TestUnknownVerbSkipped();
 	TestReparent();

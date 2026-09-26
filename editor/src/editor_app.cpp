@@ -307,6 +307,7 @@ void EditorApp::SavePrefs() {
 bool EditorApp::OpenCacheDb() {
 	m_cacheDb.Close();
 	m_store.reset();
+	m_texCacheAdapter.reset();
 	// Prefs override first, machine default second (F:\ when present).
 	std::string root = m_scratchRoot;
 	if (root.empty())
@@ -331,6 +332,8 @@ bool EditorApp::OpenCacheDb() {
 		m_scratchRoot.c_str());
 	m_store = std::make_unique<smvk::cache::ArtifactStore>(
 		m_scratchRoot, m_cacheDb);
+	m_texCacheAdapter =
+		std::make_unique<StoreArtifactCacheAdapter>(*m_store);
 	std::string cerr;
 	const uint64_t count = m_cacheDb.Count(cerr);
 	Log("Scratch disk: " + root + " (cache.db ready, "
@@ -542,7 +545,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 				m_context.get(), m_textureStreamer.get(),
 				nullptr /* host files — cook-parity resolution */,
 				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-				&m_refPhCluster, &m_refIssues, &m_refResolved);
+				&m_refPhCluster, &m_refIssues, &m_refResolved,
+				/*autoKtx=*/true, /*fileNodes=*/nullptr,
+				/*artifactCache=*/m_texCacheAdapter.get());
 			Log("Definition: bound " + std::to_string(applied) +
 				" reference subtree(s) (" +
 				std::to_string(refDoc.references.size()) +
@@ -695,6 +700,20 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		EditorCam& fitCam = m_editorCams[m_viewports[0].camIdx];
 		fitCam.target = center;
 		fitCam.dist = std::max(radius * 2.2f, 1.0f);
+	}
+	// Import finished: commit any texture-conversion artifacts the
+	// import staged into the scratch (one pak grow per touched class —
+	// a flush per import batch, not per texture). Cache-off or an
+	// empty stage = a no-op.
+	if (m_store && m_store->StagedCount() > 0) {
+		const size_t stagedCount = m_store->StagedCount();
+		std::string flushErr;
+		if (m_store->Flush(flushErr))
+			Log("Scratch: " + std::to_string(stagedCount)
+				+ " texture artifact(s) flushed.");
+		else
+			Log("Scratch flush failed: " + flushErr
+				+ " (artifacts stay staged; nothing is lost).");
 	}
 	char buf[512];
 	std::snprintf(buf, sizeof(buf), "Loaded '%s' (nodes=%zu meshes=%zu materials=%zu)",

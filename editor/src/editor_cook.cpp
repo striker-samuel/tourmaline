@@ -140,8 +140,15 @@ void EditorApp::CookToPak() {
 	Log("Cook started -> " + cook.outPak);
 	auto feed = std::make_shared<CookFeed>();
 	m_cookFeed = feed;
+	// Cache acceleration (opt-in, never required): when the scratch is
+	// online, the cooker consults + feeds the same artifact registry —
+	// hit = hash-validated copy from scratch, miss = transcode + stage.
+	// Captured by value (the worker lambda has no this).
+	const std::string scratchDir =
+		(m_store && !m_scratchRoot.empty()) ? m_scratchRoot
+		: std::string();
 	m_cookFuture = std::async(std::launch::async,
-		[cook, giHasCvols, contentRoot, feed, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, giHasCvols, contentRoot, feed, scratchDir, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			// Live feed: each pipe line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -183,8 +190,11 @@ if (!tempTourPath.empty()) {
 } else {
 	cmd << " --in-vfs " << QuoteArg(inVfs);
 }
-cmd << " --out-pak " << QuoteArg(cook.outPak)
-	<< " 2>&1";
+cmd << " --out-pak " << QuoteArg(cook.outPak);
+// Cache acceleration flag (captured by value above; empty = off).
+if (!scratchDir.empty())
+	cmd << " --scratch-dir " << QuoteArg(scratchDir);
+cmd << " 2>&1";
 			push("cook: " + cmd.str());
 #ifdef _WIN32
 			FILE* pipe = _popen(cmd.str().c_str(), "r");
