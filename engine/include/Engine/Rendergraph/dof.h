@@ -30,7 +30,7 @@
 //              per-tap CoC + depth-aware foreground weight + luminance
 //              highlight boost for disc-shaped highlights.
 //
-// Usage (app/src/scene_renderer.cpp):
+// Usage (app/src/world_renderer.cpp):
 //   smvk::DepthOfField dof;
 //   dof.Ensure(ctx, rg, renderExtent, desc);   // output + CoC + programs
 //   if (enabled)

@@ -1755,7 +1755,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 
 	m_rendergraph->NewFrame();
 	// WYSIWYG hosted view: the viewports show the hosted
-	// SceneRenderer's target (compose pass) WHENEVER it is live —
+	// WorldRenderer's target (compose pass) WHENEVER it is live —
 	// source mode (open scene, full App pipeline, no cook needed) or
 	// pak mode (WYSIWYG of a cook). The edit world stays loaded
 	// underneath — outliner/inspector/commands keep working, and the
@@ -1779,9 +1779,17 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
 	}
 	if (wysiwygPreview) {
-		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
+		// MULTIVIEW compose: viewport 0 blits the hosted main-view target
+		// (as today); every additional viewport blits ITS hosted view's
+		// own image (SetViewCount/DriveView above) — including off-phase
+		// frames, where the last rendered content persists.
+		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+			const uint32_t source = (vpIdx == 0)
+				? m_wysiwygBindlessIndex
+				: m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
 			RecordWysiwygPass(m_swapViews[fb.imageIndex],
-				m_viewports[vpIdx].rect);
+				m_viewports[vpIdx].rect, source);
+		}
 		// Gizmo overlay on top of the hosted image: selection +
 		// manipulation stay visible while the hosted view drives the
 		// pixels (the edit world never unloads).
@@ -1819,12 +1827,12 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	// keeps the rewrite visible to this frame's commands. Without this
 	// the binding stays null and every textured draw trips GPU-AV
 	// (VUID-vkCmdDrawIndexed-None-08114) and faults. App does the same
-	// (see SceneRenderer). The editor drives demand from the CPU
+	// (see WorldRenderer). The editor drives demand from the CPU
 	// distance pass (UpdateTextureStreaming), so the GPU writes here
 	// are simply never consumed.
 	m_context->BindTextureFeedbackSlice(fb.frameIndex);
 	// Flush bindless descriptor writes (scene texture views, samplers)
-	// BEFORE Execute records — App does the same (see SceneRenderer).
+	// BEFORE Execute records — App does the same (see WorldRenderer).
 	// Without this the textures[] array stays uninitialized and the
 	// viewport samples garbage (gray) no matter the residency or slots.
 	m_context->UpdateDescriptors();
@@ -1839,7 +1847,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 }
 
 // ---- WYSIWYG hosted-preview compose (editor_app.h) ----------------------
-// Fullscreen blit of the hosted SceneRenderer's offscreen target into
+// Fullscreen blit of the hosted WorldRenderer's offscreen target into
 // one viewport rect. The hosted renderer already produced the App's
 // final LDR frame (sRGB surface-format target): sampling decodes to
 // linear and the editor's sRGB swap re-encodes — identity passthrough,
@@ -1889,15 +1897,15 @@ struct alignas(16) WysiwygGpuPush {
 static_assert(sizeof(WysiwygGpuPush) == 16, "WysiwygPush layout");
 
 void EditorApp::RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-	const ViewportRect& rect) {
+	const ViewportRect& rect, uint32_t sourceBindless) {
 	if (!EnsureWysiwygProgram())
 		return;
 	if (rect.w <= 0.0f || rect.h <= 0.0f)
 		return;
-	if (m_wysiwygBindlessIndex == UINT32_MAX)
-		return; // hosted target not registered (teardown raced)
+	if (sourceBindless == UINT32_MAX)
+		return; // source not registered (teardown raced / view not rendered yet)
 	WysiwygGpuPush wp{};
-	wp.textureIndex = m_wysiwygBindlessIndex;
+	wp.textureIndex = sourceBindless;
 	wp.samplerIndex = m_wysiwygSamplerIndex;
 	auto& pass = m_rendergraph->AddPass("WysiwygCompose")
 		.SetOffset(uint32_t(rect.x), uint32_t(rect.y))

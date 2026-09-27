@@ -48,7 +48,7 @@ void Check(bool cond, const char* name) {
 	}
 }
 
-// Replica of the UpdateFrameUniforms jitter block (app/src/scene_renderer.cpp):
+// Replica of the UpdateFrameUniforms jitter block (app/src/world_renderer.cpp):
 // quarter-pixel NDC translation injected into the x/y rows, quantized to
 // swap-extent (chain resolution) texels.
 glm::mat4 ApplyT2xJitterForTest(const glm::mat4& proj, float paritySign,

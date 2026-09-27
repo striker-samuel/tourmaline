@@ -29,7 +29,7 @@
 // !prevViewProjValid (the same gate the motion-vector pass uses) all set
 // Constants::reset for one frame.
 //
-// Usage (app/src/scene_renderer.cpp):
+// Usage (app/src/world_renderer.cpp):
 //   smvk::DlssStartup() before volkInitialize / instance creation (engine)
 //   ...
 //   m_viewportResources.dlss.Ensure(ctx, rg, swapExtent, desc);

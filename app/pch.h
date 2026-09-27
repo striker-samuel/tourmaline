@@ -1,14 +1,14 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// Precompiled Header for the App module (scene_renderer, App.exe, Editor).
+// Precompiled Header for the App module (world_renderer, App.exe, Editor).
 // Includes the foundational Engine headers that are always kept stable.
 // Keep this header minimal — adding new headers forces full PCH rebuild.
 // ---------------------------------------------------------------------------
 
 // C++ language & standard library (most stable, rarely changes).
 // NOTE: keep this list stable. Adding/removing headers forces a full PCH
-// rebuild, which is exactly the slow scene_renderer.obj compile we avoid.
+// rebuild, which is exactly the slow world_renderer.obj compile we avoid.
 #include <algorithm>
 #include <array>
 #include <bit>

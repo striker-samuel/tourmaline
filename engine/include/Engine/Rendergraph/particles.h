@@ -43,7 +43,7 @@
 //                  CPU-uploaded every frame (flight slice like fpLights).
 //   emitterState – float * maxEmitters GPU-owned carry array.
 //
-// Usage (app/src/scene_renderer.cpp):
+// Usage (app/src/world_renderer.cpp):
 //   smvk::Particles particles;
 //   particles.Ensure(ctx, rg, framesInFlight, desc);   // resize-safe
 //   particles.UpdateEmitters(ctx, frame, rows, count); // ring upload

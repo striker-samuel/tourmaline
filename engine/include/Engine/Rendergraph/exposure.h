@@ -7,7 +7,7 @@
 // source is sampled bindless (textures[] indexed by push), barriers come
 // from AddImageHint (read) + AddBufferHint (write).
 //
-// Pipeline (see app/src/scene_renderer.cpp):
+// Pipeline (see app/src/world_renderer.cpp):
 //   1. Per frame, the CPU downloads the flight slice's 64-bin buffer FIRST
 //      (this slot retired at Acquire, so the bins are the completed
 //      accumulation ~2 frames old — no stall), adapts the smoothed

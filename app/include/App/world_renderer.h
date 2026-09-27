@@ -1,20 +1,18 @@
 #pragma once
-// SceneRenderer: whole-frame renderer class extracted from the former
-// app/main.cpp TestApp. It owns every framegraph resource (pipelines,
-// targets, per-frame buffers) plus the scene (world cluster) and appends
-// all passes every frame from a configurable pass set, so adding a scene
-// sample (Sponza, Bistro, ...) is a SceneDesc row — never a main.cpp copy.
-//
-// Typical use (see app/src/main.cpp):
-//   app::SceneRenderer renderer;
-//   renderer.Configure(app::SceneRegistry::Find("bistro").value(),
-//                      app::ScenePassConfig::All());
-//   renderer.Run(); // smvk::AppImpl main loop
+// WorldRenderer: whole-frame renderer over a WORLD. The host (App's
+// main.cpp, the editor's live view) owns all content loading — scenes
+// arrive as a resolved smvk::World whose clusters/resources are already
+// uploaded to the context and render by handles. The renderer knows
+// nothing about paks, scene files or scene discovery; it owns every
+// framegraph resource (pipelines, targets, per-frame buffers) and
+// renders whatever world it was handed.
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -62,6 +60,7 @@
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Utils/thread_pool.h>
+#include <Engine/Vfs/vfs.h>
 
 #include <App/forwardplus_renderer.h>
 #include <App/frame_context.h>
@@ -69,50 +68,6 @@
 #include <App/renderer.h>
 
 namespace app {
-
-// ---------------------------------------------------------------------------
-// Per-scene sample descriptor (replaces the former file-static
-// gltf_meshes_paths / pak_path globals). A new sample = one row in
-// SceneRegistry::All(); the framegraph is shared.
-// ---------------------------------------------------------------------------
-struct SceneDesc {
-	const char* id = "sponza";
-	const char* label = "Sponza";
-	const char* gltfPath = "content/models/Sponza/sponza.gltf";
-	const char* pakPath = "content/paks/sponza.pak";
-	glm::vec3 camPos{ 0.0f, 1.0f, 0.0f };
-	glm::vec3 camTarget{ 0.0f, 1.0f, 1.0f };
-	float farClip = 50.0f;
-	// Coordinate system fix for glTF import:
-	// 0 = engine fix (180° Y: -X, +Y, -Z), 1 = skip engine fix, 2 = invert Y only,
-	// 3 = cancel root -90° X rotation + 100x scale (for Niagara bistro)
-	int coordFix = 0;
-	// Optional pre-transform applied to scene root after loading (post coordFix)
-	glm::mat4 preTransform{ 1.0f };
-	// Procedural builtin scene tag (nullptr = load gltf/pak). Currently
-	// supported: "layers-cube" (vertex-painted layered-material test cube).
-	const char* builtin = nullptr;
-	// True when camPos/camTarget/farClip are a curated viewpoint for this
-	// scene (all SceneRegistry rows). The external-override entry point
-	// (app/src/main.cpp, always SetSceneOverride(true)) adopts the
-	// registry row matching the pak/gltf stem so known scenes keep their
-	// close-up view + tight far clip (cascade resolution, LOD distances);
-	// only truly unknown scenes fall back to whole-bounds orbit framing
-	// (which parks the camera radius*2.2 away with a generic far clip —
-	// the "spawns far / lowest LOD / blurry EVSM" combo).
-	bool authoredView = false;
-};
-
-struct SceneRegistry {
-	static const SceneDesc& Sponza();
-	static const SceneDesc& Bistro();
-	static const SceneDesc& BistroNiagara();
-	static const SceneDesc& Scanlands();
-	static const SceneDesc& LayersCube();
-	static std::vector<SceneDesc> All();
-	// Empty optional when the id is unknown (caller prints usage).
-	static std::optional<SceneDesc> Find(const std::string& id);
-};
 
 // ---------------------------------------------------------------------------
 // Configurable pass set. RenderFrame consults these flags, so scene samples
@@ -396,7 +351,7 @@ struct DecalDemo {
 	uint32_t dropped = 0; // spawns that fell out of the cap (UI note)
 	// Crosshair-picking acceleration (smvk::gi::GiTraceScene BVH, built
 	// lazily on the first crosshair spawn — Sponza builds in a few
-	// seconds; see SceneRenderer::EnsureDecalPickBvh).
+	// seconds; see WorldRenderer::EnsureDecalPickBvh).
 	int pickBvhState = 0; // 0 = not built, 1 = ready, -1 = unavailable
 };
 
@@ -754,6 +709,47 @@ struct AppResources {
 	// ForwardPlus).
 };
 
+// ---------------------------------------------------------------------------
+// MULTIVIEW refresh scheduling (tic/toc). The main view (view 0) renders the
+// full pipeline every frame into the swapchain / hosted target. Each
+// SECONDARY view (see WorldRenderer::SetViewCount) renders from its own
+// camera into its own offscreen image and picks a refresh schedule:
+//   Full — render every frame,
+//   Tic  — render every OTHER frame (global even phase),
+//   Toc  — render every OTHER frame (global odd phase).
+// Assigning Tic/Toc across the secondary views SPREADS the multiview load
+// over two alternating frames (tic-frame renders the Tic views, toc-frame
+// the Toc views); an off-phase view's image persists — the host keeps
+// compositing the last rendered content every frame.
+// ---------------------------------------------------------------------------
+enum class ViewRefresh : uint8_t {
+	Full = 0, // every frame
+	Tic = 1,  // half rate, even frame phase
+	Toc = 2,  // half rate, odd frame phase
+};
+inline const char* ViewRefreshName(ViewRefresh r) {
+	switch (r) {
+	case ViewRefresh::Full: return "Full";
+	case ViewRefresh::Tic: return "Half (tic)";
+	case ViewRefresh::Toc: return "Half (toc)";
+	}
+	return "?";
+}
+
+// One secondary multiview descriptor: an externally-driven camera (the host
+// owns the lens; see WorldRenderer::DriveView) + the output image extent +
+// the refresh schedule. Extent 0 = the hosted target extent at set time.
+struct SceneViewDesc {
+	bool enabled = true;
+	ViewRefresh refresh = ViewRefresh::Tic;
+	glm::vec3 eye{ 0.0f, 1.0f, 0.0f };
+	glm::vec3 target{ 0.0f, 1.0f, 1.0f };
+	float fovYDeg = 60.0f; // degrees (Camera::setPerspective takes radians)
+	float zNear = 0.1f;
+	float zFar = 100.0f;
+	smvk::Extent2D extent{ 0, 0 };
+};
+
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
 	smvk::SpotShadowAtlas spotShadows; // perspective atlas for shadowed spots + Ensure
@@ -789,10 +785,28 @@ struct ViewportResources {
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
-class SceneRenderer : public smvk::AppImpl {
+class WorldRenderer : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 public:
-	void Configure(SceneDesc scene, ScenePassConfig passes);
+	// Pass-set config (the framegraph shape). Everything else about the
+	// world arrives through the host's loader below.
+	void Configure(ScenePassConfig passes);
+
+	// WORLD SOURCE — the host owns all content loading (the renderer
+	// knows nothing about paks, scene files or scene discovery). Called
+	// ONCE during Initialize, after the context exists and before the
+	// world is first used: load the scene (clusters + resources into
+	// the context — everything renders by handles), resolve, and
+	// return the world to render. The renderer's content overlay is
+	// handed in so the host can mount its content backends into it
+	// (pak-embedded textures, project roots, …) — the renderer itself
+	// only ever reads its own pipeline resources through it.
+	// Return nullptr = load failed (Initialize fails loudly).
+	// Unset + no borrowed world (SetHostedBorrowedWorld) = nothing to
+	// render, Initialize fails.
+	using WorldSource = std::function<std::unique_ptr<smvk::World>(
+		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
+	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
 
 	// HOSTED drive API (the editor embeds this renderer offscreen —
 	// App::RequestHostedBoot + the WYSIWYG compose pass). Public
@@ -840,21 +854,77 @@ public:
 	// removed (lines never draw over the objects in front).
 	void SetWireframe(bool v) { m_wireframe = v; }
 
-	const SceneDesc& GetScene() const { return m_scene; }
+	// ---------------------------------------------------------------------
+	// MULTIVIEW (hosted): N secondary views, each rendering the world from
+	// its own camera into its OWN offscreen image buffer (viewports /
+	// multiview setups). View 0 stays the MAIN view — the full pipeline
+	// into the hosted target (the editor composes it as today). Secondary
+	// views run a lean per-view pipeline: own CSM + spot shadows (fitted to
+	// the view camera), Forward+ prepass + tile cull, direct-draw Main
+	// (sky + opaque + masked + transparent) and tonemap into the view's
+	// image; no GPU triangle filter (direct draws), no motion vectors /
+	// AO / motion blur / DOF / SSR / volumetric / bloom / SMAA / DLSS /
+	// deferred shadows / UI on secondary views. The per-view images
+	// persist across skipped (off-phase) frames so the host composites
+	// every view every frame.
+	// ---------------------------------------------------------------------
+	static constexpr uint32_t kMaxSecondaryViews = 3; // + main view = 4
+	// (Re)set the secondary-view count (hosted only; windowed runs ignore
+	// it). Extent 0 per view adopts the hosted target extent at set time.
+	// Destroys/recreates ALL per-view state + GPU resources — call at
+	// frame boundaries only (idle), like the hosted launch itself.
+	void SetViewCount(uint32_t count);
+	[[nodiscard]] uint32_t GetViewCount() const { return (uint32_t)m_views.size(); }
+	// Per-view camera drive (mirrors DriveExternalCamera; degenerate
+	// top-down looks are nudged the same way). fovYDeg in DEGREES.
+	void DriveView(uint32_t view, const glm::vec3& eye, const glm::vec3& target,
+		float fovYDeg, float zNear, float zFar);
+	// Per-view output extent (recreates the view's image at the next
+	// rendered frame; 0 = keep).
+	void SetViewExtent(uint32_t view, smvk::Extent2D extent);
+	// Refresh schedule per view (Full / Tic / Toc — see ViewRefresh).
+	void SetViewRefresh(uint32_t view, ViewRefresh refresh);
+	[[nodiscard]] ViewRefresh GetViewRefresh(uint32_t view) const;
+	// Per-view enable (a disabled view renders nothing; its image persists).
+	void SetViewEnabled(uint32_t view, bool enabled);
+	// True when this view renders THIS frame (phase match; a Full view is
+	// always true, a disabled/unknown view false).
+	[[nodiscard]] bool ViewRenderedThisFrame(uint32_t view) const;
+	// Compose hooks: the view's tonemapped output image (bindless index,
+	// UINT32_MAX before the view first rendered) + its extent.
+	[[nodiscard]] uint32_t ViewOutBindless(uint32_t view) const;
+	[[nodiscard]] smvk::Extent2D ViewOutExtent(uint32_t view) const;
+	// The view's output IMAGE (diagnostic readbacks — the editor's
+	// hosted-target dump path; empty handle before the first render).
+	[[nodiscard]] smvk::ImageHandle ViewOutImage(uint32_t view) const;
+
+	// ---------------------------------------------------------------------
+	// HOSTED live-view IN-PLACE world rebind: swap the borrowed world and
+	// rebuild ONLY the world-derived state (cooked lights, GI sidecars,
+	// cubemaps, decal presets, gfx registration, temporal histories) —
+	// every framegraph resource (programs, atlases, targets, buffers, the
+	// per-view images) persists. Scene opens / reimports / pak switches /
+	// GI-bake sidecar refreshes all ride this path: the hosted renderer is
+	// never stopped + relaunched for a world change. Call SetSceneId /
+	// SetProjectRoot FIRST (the sidecar loaders resolve gi/<id>.* through
+	// the project-aware VFS). Frame-boundary only (the rebind waits for
+	// device idle internally, like the launch).
+	// ---------------------------------------------------------------------
+	void RebindWorld(smvk::World* world);
+
 	ScenePassConfig& Passes() { return m_passes; }
-	// CLI override (main.cpp --pak / --gltf): external scene instead of
-	// a registry sample. Registry camera pose is meaningless for it, so
-	// the camera frames the loaded bounds after resolve (unless
-	// VULKANTOY_CAM_POS/FWD pin it for benches).
-	void SetSceneOverride(bool v) { m_sceneOverride = v; }
+	// Scene id (host-provided): names the GI sidecars (gi/<id>.sggi/
+	// .sglm/.regmanifest/.cvmanifest, superseded by the loaded world's
+	// Gi bindings) and gates the sponza check-scene extras (preset
+	// splats). The pak host passes the pak stem; the editor passes the
+	// open scene's stem (the borrowed world IS the scene).
+	void SetSceneId(const std::string& id) { m_sceneId = id; }
 	// Project root (editor WYSIWYG): when the scene lives in a project,
 	// the project root mounts into the content VFS below the bundled
 	// content/ (project files win on collisions) so project-side
 	// cook/bake sidecars (gi/<stem>.*, cubemaps, …) resolve exactly
 	// where the cooker wrote them. Empty = no project mount.
 	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
-	// Which Scene blob of the pak to load (see ListPakScenes; 0 = default).
-	void SetSceneIndex(int v) { m_sceneIndex = v < 0 ? 0 : v; }
 	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
 	void SetPresentMode(smvk::PresentMode m) { m_presentMode = m; }
 	// Bench freeze: skip every camera-control update (keyboard/gamepad/
@@ -1234,7 +1304,8 @@ protected:
 		float dist2;
 	};
 	std::vector<TransparentDrawItem> CollectTransparentDraws(
-		const smvk::RenderView& cullView, bool sortBackToFront);
+		const smvk::RenderView& cullView, bool sortBackToFront,
+		std::optional<glm::vec3> sortCamPos = std::nullopt);
 	void ResetLodStats();
 	// ---- Shader LODs (per-level shading programs) -------------------
 	// Runtime LOD switch: pixel budget for the projected simplifier error
@@ -1281,16 +1352,26 @@ protected:
 
 	static constexpr float default_near_clip = 0.01f;
 	static constexpr float kCameraFovYDegrees = 45.0f;
-	// Finite far plane for the MAIN VIEW projection (reversed-Z). Scene
-	// metadata (m_scene.farClip) stays per-scene for shadows/LOD; only the
-	// projection is finite, so unprojecting far/sky depth yields finite
+	// Finite far plane for the MAIN VIEW projection (reversed-Z). The scene
+	// far clip (m_sceneFarClip, fitted to the framed bounds at load) stays
+	// per-scene for shadows/LOD; only the projection is finite, so
+	// unprojecting far/sky depth yields finite
 	// positions and the frustum far plane is functional.
 	static constexpr float kMainViewFarPlane = 100000.0f;
 
-	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};
-	bool m_sceneOverride = false;
-	int m_sceneIndex = 0;
+	// Host world loader (see SetWorldSource): called once during
+	// Initialize on windowed runs. The hosted live view instead borrows
+	// the host's world (SetHostedBorrowedWorld).
+	WorldSource m_worldSource;
+	// Scene id: names the GI sidecars (gi/<id>.sggi/.sglm/.regmanifest/
+	// .cvmanifest, superseded by the loaded world's Gi bindings) and
+	// gates the sponza check-scene extras (preset splats).
+	std::string m_sceneId;
+	// Scene far clip (shadow splits, LOD distances, DLSS depth scale),
+	// fitted to the framed bounds at load (generic framing parks the
+	// camera radius*2.2 away unless VULKANTOY_CAM_POS/FWD pin it).
+	float m_sceneFarClip = 2000.0f;
 	// Project root for the content VFS (see SetProjectRoot).
 	std::string m_projectRoot;
 	// Camera control frozen (see SetDisableControl; --disable_control).
@@ -1301,7 +1382,7 @@ protected:
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
 	// Cooked KHR_lights_punctual set for the loaded scene (built once in
-	// BuildCookedLightsFromWorld after Resolve; see scene_renderer.cpp).
+	// BuildCookedLightsFromWorld after Resolve; see world_renderer.cpp).
 	CookedSceneLights m_cookedLights{};
 	bool m_useCookedLights = true;
 	void BuildCookedLightsFromWorld();
@@ -1382,18 +1463,17 @@ protected:
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
 	// ---- EVSM (Exponential Variance Shadow Maps, prefiltered async) ----
-	// When enabled (and the device supports RG32F 2xMSAA moments), the
-	// cascade/spot depth passes are replaced by EVSM moment passes
-	// (RG32F 2xMSAA + resolve) followed by separable Gaussian blur passes
-	// marked AsyncCompute. The blur runs on the dedicated compute queue
-	// (G1/C/G2 split submit, SameFrame default — no shadow lag); the
+	// Opt-IN (default OFF; the ImGui checkbox or VULKANTOY_EVSM=1). When
+	// enabled (and the device supports RG32F 2xMSAA moments), the
+	// main view's cascade/spot depth passes are replaced by EVSM moment
+	// passes (RG32F 2xMSAA + resolve) followed by separable Gaussian blur
+	// passes marked AsyncCompute. The blur runs on the dedicated compute
+	// queue (G1/C/G2 split submit, SameFrame default — no shadow lag); the
 	// OneFrameLag pipeline stays available in the UI. shadow_map_index
 	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
 	// shaders. Falls back to PCF automatically when unsupported/invalid.
-	// NOTE: default ON — EVSM is the shadow path (dual-ESM visibility with
-	// symmetric warp-space bias compensation, dense prefilter, 9-tap soft
-	// penumbra). Falls back to PCF automatically when unsupported/invalid.
-	// Opt out with VULKANTOY_EVSM=0 or the ImGui checkbox.
+	// MAIN-view only: the multiview secondary views always keep their PCF
+	// depth atlases (the moment atlases are per-view memory giants).
 	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
@@ -1431,8 +1511,8 @@ protected:
 	float CascadeFar() const {
 		if (m_cascadeMaxDistance > 0.0f)
 			return std::clamp(m_cascadeMaxDistance,
-				default_near_clip + 1.0f, m_scene.farClip);
-		return m_scene.farClip;
+				default_near_clip + 1.0f, m_sceneFarClip);
+		return m_sceneFarClip;
 	}
 	// Live tile extent (atlas after Ensure; falls back to the selected
 	// resolution before the first Ensure).
@@ -1463,6 +1543,116 @@ protected:
 		uint32_t casterViewIndex, bool skipFiltered,
 		smvk::ShaderProgram* opaqueProgram = nullptr);
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
+	// ---------------------------------------------------------------------
+	// ---- MULTIVIEW per-view state (hosted; see SetViewCount) ------------
+	// One SecondaryView per hosted secondary view: external camera (own
+	// positioner + Camera so the math matches DriveExternalCamera/
+	// UpdateCameraAspect exactly), own ViewportResources subset, own output
+	// image, per-view light fits (CSM fit to the view camera + spot-tile
+	// selection) and per-view temporal bookkeeping. Buffers shared with the
+	// main view (frameUniforms / lights / cascade / fpLights / spotShadow)
+	// are slabs with a VIEW-MAJOR stride: (view * framesInFlight + frame).
+	// ---------------------------------------------------------------------
+	struct SecondaryView {
+		SceneViewDesc desc{}; // camera + extent + refresh + enabled
+		uint32_t ordinal = 0; // 1-based view number (debug names, logs)
+		CameraPositioner_FirstPerson positioner = CameraPositioner_FirstPerson(
+			glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 1.0f),
+			glm::vec3(0.0f, 1.0f, 0.0f));
+		Camera camera{ positioner }; // per-view lens (aspect from desc.extent)
+		ViewportResources vp{};      // per-view target set (subset Ensured)
+		// Debug-name storage (per-view ordinal suffixes for RenderDoc
+		// readability; idx only picks the buffer slot — Name writes once
+		// per slot per view, so a stable pointer lives until the next
+		// recreate).
+		char nameBufs[16][48] = {};
+		const char* Name(const char* base, uint32_t slot) {
+			if (slot >= 16 || base == nullptr)
+				return base;
+			char (&b)[48] = nameBufs[slot];
+			std::snprintf(b, sizeof(b), "%s%u", base, ordinal);
+			return b;
+		}
+		// Output image (post-tonemap, surface-format sibling): persists
+		// across off-phase frames — the host keeps compositing it.
+		smvk::Holder<smvk::ImageHandle> outImage;
+		smvk::Holder<smvk::ImageViewHandle> outView;
+		smvk::Holder<smvk::BindlessImageHandle> outBindless;
+		uint32_t outBindlessIndex = UINT32_MAX;
+		smvk::LogicalImageViewHandle outLogical;
+		smvk::Extent2D outExtent{ 0, 0 };
+		smvk::Format outFormat = smvk::Format::Undefined;
+		bool outValid = false;
+		// Per-view light fits (built on rendered frames, read by the passes):
+		smvk::GpuDirectionalLightDescription dirLight{};
+		bool dirLightValid = false;
+		uint32_t spotShadowCount = 0;
+		int32_t spotShadowMapIndex = -1;
+		std::vector<smvk::GpuCascadeDescription> spotShadowTiles;
+		// Per-view light scratch (the shared set copied + spot-patched).
+		std::vector<smvk::ForwardPlusLight> lightScratch;
+		// This frame's FrameUniforms snapshot (built at prep, read at pass
+		// emission + the RenderView allocation).
+		FrameUniforms frameData{};
+		glm::mat4 prevViewProj{ 1.0f };
+		bool prevViewProjValid = false;
+		// RenderView indices for the frame (into the shared slab).
+		uint32_t mainViewIdx = smvk::RenderViewSet::kInvalidIndex;
+		uint32_t cascadeViewBase = smvk::RenderViewSet::kInvalidIndex;
+		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
+		// True when the view rendered the previous frame (persistence gate:
+		// the first rendered frame after a skip/creation must clear).
+		bool renderedLastFrame = false;
+	};
+	std::vector<SecondaryView> m_views; // hosted secondary views (0..kMaxSecondaryViews)
+	// Global tic/toc frame phase (advances once per RenderFrame).
+	uint32_t m_viewPhase = 0;
+	// The frame's final Forward+ light set (post DS-sort, pre probe tail —
+	// captured by UpdateForwardPlusLights; secondary views copy + per-view
+	// spot-patch it into their own slabs).
+	std::vector<smvk::ForwardPlusLight> m_frameLights;
+	// Slab offset helpers (view-major: view 0 keeps today's layout).
+	uint64_t ViewSlabOffset(uint32_t view, uint64_t frame, uint64_t stride) const {
+		return (static_cast<uint64_t>(view) * m_swapchain->framesInFlight()
+				+ frame) * stride;
+	}
+	[[nodiscard]] bool SecondaryViewHosted(uint32_t i) const {
+		return i < m_views.size();
+	}
+	// Phase gate: Full every frame; Tic on even, Toc on odd frame phases.
+	[[nodiscard]] bool ViewRefreshDue(const SceneViewDesc& d) const {
+		switch (d.refresh) {
+		case ViewRefresh::Full: return true;
+		case ViewRefresh::Tic: return m_viewPhase == 0;
+		case ViewRefresh::Toc: return m_viewPhase != 0;
+		}
+		return false;
+	}
+	// Per-view frame work (all hosted-only; no-ops on windowed runs):
+	// Prep: target Ensure + lean FrameUniforms + per-view CSM fit/spot
+	// selection + slab uploads (runs inside RenderFrame, before the
+	// RenderView allocation block so the per-view views ride the same
+	// slab upload).
+	void PrepareSecondaryViews(uint32_t frameIdx);
+	// Passes: per-view shadows + Forward+ prepass/cull + direct Main +
+	// tonemap into the view image (runs after the main view's post/UI,
+	// before the shadow-futures join).
+	void RenderSecondaryViews(smvk::Framebuffer& fb);
+	// Shared internals of the two above (vi = the 0-based secondary index;
+	// the slab index is 1 + vi — view 0 is the main view).
+	void EnsureSecondaryTargets(SecondaryView& v, uint32_t vi);
+	FrameUniforms BuildSecondaryFrameUniforms(SecondaryView& v, uint32_t vi,
+		uint32_t frameIdx);
+	void UpdateSecondaryLights(SecondaryView& v, uint32_t vi, uint32_t frameIdx);
+	void UploadSecondaryForwardPlusLights(SecondaryView& v, uint32_t vi,
+		uint32_t frameIdx);
+	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const PushConstants& pc,
+		const smvk::RenderView& cullView, const glm::vec3& viewEye);
+	// The renderer's content overlay (loose content/ + the project root
+	// below it + flintbase + engine resources), mounted into the CALLER'S
+	// vfs (OverlayVfs is non-copyable) — shared by Initialize and
+	// RebindWorld (the sidecar loaders).
+	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
@@ -1686,10 +1876,6 @@ protected:
 	// (called once after all three GI loaders at scene init): keeps the
 	// isolation states meaningful instead of silently empty.
 	void DegradeAmbientForMissingSources();
-	// Procedural layered-material test scene ("layers-cube" builtin):
-	// subdivided cube with vertex-painted layer weights + four Sponza
-	// PBR materials. Builds directly into the cluster (no glTF/pak).
-	bool BuildLayersCubeScene(smvk::Cluster& cluster);
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
 	// only). Mode/light/overlay ride FrameUniforms (dsDebug*); the
@@ -2003,7 +2189,7 @@ protected:
 	// the last scene exposure). Rendering at a FIXED exposure instead of
 	// the held one keeps debug frames deterministic and the authored
 	// colors independent of the scene's adaptation state. Mirrors
-	// TONEMAP_EXPOSURE (scene_renderer.cpp) — keep in sync.
+	// TONEMAP_EXPOSURE (world_renderer.cpp) — keep in sync.
 	static constexpr float kDebugViewExposure = 0.001f;
 	// Exposure actually applied this frame: the adapted/manual value in
 	// the Lit view, the fixed debug reference otherwise. Shading

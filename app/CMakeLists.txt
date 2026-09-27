@@ -9,14 +9,15 @@ message(STATUS "ENGINE_SHADERS_DIR = ${ENGINE_SHADERS_DIR}")
 message(STATUS "APP_INCLUDE_DIR = ${APP_INCLUDE_DIR}")
 
 # ---------------------------------------------------------------------------
-# appcore: the SceneRenderer ("classic world rendered pattern") as a
-# static lib shared by App.exe and the Editor. The editor drives a
-# HOSTED instance (offscreen render target composed into its WYSIWYG
-# viewports — App::RequestHostedBoot); App runs it as its own window
-# (Run()). No behavior change for either consumer.
+# appcore: the WorldRenderer ("classic world renderer pattern" — renders a
+# host-provided world; no scene loading) as a static lib shared by App.exe
+# and the Editor. The editor drives a HOSTED instance (offscreen render
+# target composed into its WYSIWYG viewports — App::RequestHostedBoot);
+# App installs a world source (SetWorldSource: main.cpp loads the pak)
+# and runs it as its own window (Run()).
 # ---------------------------------------------------------------------------
 add_library(appcore STATIC
-    src/scene_renderer.cpp
+    src/world_renderer.cpp
     src/renderer.cpp
     src/forwardplus_renderer.cpp
     src/lut_io.cpp

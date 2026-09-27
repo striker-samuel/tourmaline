@@ -54,7 +54,7 @@ float MaxAbsDiff(const glm::mat4& a, const glm::mat4& b) {
 }
 
 // Vulkan-style reverse-Z (near -> 1, far -> 0), ZO depth, Y-flipped like
-// the app's cascade fit (scene_renderer.cpp flips proj[1][1]).
+// the app's cascade fit (world_renderer.cpp flips proj[1][1]).
 glm::mat4 MakeReverseZProj(float fovY, float aspect, float n, float f) {
 	const float s = 1.0f / std::tan(fovY * 0.5f);
 	const float A = n / (f - n);

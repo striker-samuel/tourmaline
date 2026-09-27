@@ -320,7 +320,7 @@ struct ForwardPlusDecalTileIndexBuffer
 
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
-// Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
+// Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
 // there): env at 512, cubemap block at 640, specular knobs at 656,
 // deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
 // decal fields at 752, lightmap fields at 784, regular-volume fields at
@@ -347,7 +347,7 @@ struct FrameUniforms
     float exposure;
     // SSAO consumption (lighting-pass ambient): the FULL-res composed AO
     // (upscaled by the SsaoCompose pass with depth authority, see
-    // ao.hlsli). Mirrors the C++ FrameUniforms in App/scene_renderer.h
+    // ao.hlsli). Mirrors the C++ FrameUniforms in App/world_renderer.h
     // (offsets asserted there: 492/496, env shifts to 512).
     uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
     float aoIntensity;   // ambient composite strength
@@ -364,7 +364,7 @@ struct FrameUniforms
 
     // Reflection cubemap for specular IBL (bindless TextureCube index).
     // NOTE: this 16-byte block must stay exactly 16 bytes (offsets
-    // asserted in App/scene_renderer.h): index + sampler + intensity +
+    // asserted in App/world_renderer.h): index + sampler + intensity +
     // debug. Everything after it (specular knobs at 656, DS at 672, ...)
     // shifts otherwise and evsmMode/shadow addresses read garbage.
     uint cubemapIndex;

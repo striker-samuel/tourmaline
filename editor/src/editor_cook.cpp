@@ -429,8 +429,15 @@ void EditorApp::PollBakeProcess() {
 		// The sidecars now match the baked definition: record it so a
 		// later cook can warn when they go stale.
 		m_giBakedHash = m_giBakePendingHash;
-		Log("Bake GI finished OK — refreshing the hosted view.");
-		RefreshWysiwygPreview();
+		// The live view picks the fresh sidecars up IN PLACE (RebindWorld
+		// re-runs the sidecar loaders over the same world — the renderer
+		// never relaunches).
+		Log("Bake GI finished OK — refreshing the live view in place.");
+		if (m_wysiwyg && m_world) {
+			m_wysiwyg->SetSceneId(SceneIdForHost());
+			m_wysiwyg->SetProjectRoot(m_projectRoot);
+			m_wysiwyg->RebindWorld(m_world.get());
+		}
 	}
 	else {
 		Log("Bake GI FAILED (see log above).");

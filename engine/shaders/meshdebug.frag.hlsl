@@ -24,7 +24,7 @@ PSOut mainPS(PSIn IN)
 {
      PSOut OUT;
      // Raw push color: the C++ side pre-scales it by 1/FrameExposure (see
-     // the dbgGain/flatGain pre-scales in scene_renderer.cpp) so the
+     // the dbgGain/flatGain pre-scales in world_renderer.cpp) so the
      // tonemapper's hdr * exposure reproduces the authored display color
      // (ACES still shapes it, hues stay distinct). A pow(1/2.2) used to
      // live here to survive an old tonemap with a gamma decode; today it

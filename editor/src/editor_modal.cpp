@@ -273,10 +273,6 @@ void EditorApp::UpdateModalInput() {
 		{ GLFW_KEY_S, kModalCtrl | kModalAlt, kScopeGlobal,
 			&EditorApp::ModalSaveIncremental, "tour: save incremental",
 			"Ctrl+Alt+S" },
-		{ GLFW_KEY_F12, 0, kScopeGlobal,
-			&EditorApp::ModalRefreshWysiwyg,
-			"wysiwyg: rebind live hosted view",
-			"F12" },
 	};
 
 	// Publish the registry for the file-scope accessors (first frame;
@@ -337,14 +333,6 @@ void EditorApp::ModalVpLayoutToggle() {
 		m_activeVp = 0;
 }
 void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
-
-void EditorApp::ModalRefreshWysiwyg() {
-	// F12 rebind: only sets the deferred flag — DrawFrame rebinds the
-	// hosted live view onto the current world at the frame boundary,
-	// idle. Never stops: the live view is the viewport driver, not a
-	// mode.
-	m_wysiwygRefreshPending = true;
-}
 
 void EditorApp::ModalDelete() {
 	// The placement graph window owns Del while its hierarchy is

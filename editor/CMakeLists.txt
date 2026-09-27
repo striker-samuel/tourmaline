@@ -13,7 +13,7 @@ target_include_directories(Editor
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         # Reuses App's ABI-checked FrameUniforms + PushConstants
-        # (common.hlsli layout, static_asserted in scene_renderer.h).
+        # (common.hlsli layout, static_asserted in world_renderer.h).
         ${CMAKE_SOURCE_DIR}/app/include
         # stb_image/stb_image_write (tourmaline logo generation + load).
         ${CMAKE_SOURCE_DIR}/app/vendor
@@ -63,7 +63,7 @@ add_custom_command(TARGET Editor POST_BUILD
 
 # Engine-shipped shaders (WYSIWYG compose blit lives in
 # engine/resources/shaders): same staging as App — engine_resources/
-# shaders next to the exe. The hosted SceneRenderer loads the scene
+# shaders next to the exe. The hosted WorldRenderer loads the scene
 # set from content/shaders; the editor's OWN passes (compose) load
 # from engine_resources/shaders.
 if(TARGET EngineRes_shaders)

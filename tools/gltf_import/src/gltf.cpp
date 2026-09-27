@@ -113,7 +113,7 @@ namespace {
 		if (coordFix == 1 || coordFix == 3) {
 			// 1: skip engine fix (model already in engine space).
 			// 3: same + RootNode/Level hierarchy is neutralized by the
-			//    scene preTransform (see bistro SceneDesc).
+			//    scene preTransform (see bistro preTransform (see the Niagara staging notes)).
 			return glm::vec3(p[0], p[1], p[2]);
 		}
 		if (coordFix == 2) {

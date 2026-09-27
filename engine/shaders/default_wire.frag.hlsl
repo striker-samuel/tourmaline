@@ -6,7 +6,7 @@
 // them (Vulkan allows FS inputs to be a subset of VS outputs), so no VS
 // twins are needed. No lighting, no textures, no texture-streaming feedback
 // on line pixels — the heavy lit FS was the wireframe slowdown; see the
-// wireTwinOf swap in scene_renderer.cpp.
+// wireTwinOf swap in world_renderer.cpp.
 //
 // Exposure-compensated like the other debug views (default_unlit et al): the
 // line color travels through HDR + tonemap (hdr * exposure -> ACES) with a

@@ -112,7 +112,6 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	m_projectName = ReadProjectName(root);
 	if (m_projectName.empty())
 		m_projectName = std::filesystem::path(root).filename().string();
-	m_wysiwygRefreshPending = false;
 	// Per-scene cook outputs live in the project now; drop any stale
 	// default so the next open/import re-derives into project paks/.
 	m_cook.outPak.clear();

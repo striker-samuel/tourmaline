@@ -55,7 +55,7 @@
 using app::PushConstants;
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
-#include <App/scene_renderer.h>
+#include <App/world_renderer.h>
 #include <Engine/Profile/profile.h>
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
@@ -63,9 +63,10 @@ using app::PushConstants;
 #include <glm/gtc/type_ptr.hpp>
 
 
-// Constants (clips/FOV live on SceneRenderer as members; far clip is
-// per-scene, see SceneDesc::farClip). Scene selection (gltf/pak paths) is
-// also per-scene; see SceneRegistry below.
+// Constants (clips/FOV live on WorldRenderer as members; the far clip is
+// per-scene — m_sceneFarClip, fitted to the framed world bounds at load).
+// The WORLD itself is host-provided (SetWorldSource / borrowed): the
+// renderer never loads scene content of its own.
 
 // Reads a content-relative VFS path ("shaders/...", "models/...") through
 // the app overlay (loose content/ dir + mounted paks). Throws on miss.
@@ -484,156 +485,16 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
 	return d;
 }
 
-// Scene samples (one row per sample; the framegraph is shared, so adding a
-// sample never copies pass code). Cook commands:
-//   Sponza: PakCooker --content-dir F:/content
-//             --in-vfs models/Sponza/sponza.gltf
-//             --out-pak F:/content/paks/sponza.pak --meshlets on
-//   Bistro: py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
-//             (stages models/Bistro + cooks content/paks/bistro.pak with
-//             --meshlets on --lods on; transitions use each LOD's cooked
-//             simplifier error projected to pixels, see LodMeshForNode).
-//   Scanlands: py tools/cook_scanlands.py [--glb F:/content/models/scanlands.glb]
-//             (extracts the embedded GLB to models/Scanlands + cooks
-//             content/paks/scanlands.pak with --meshlets on --lods on;
-//             no GI bake â€” sky-IBL ambient fallback, see LoadGiVolume).
+// ---------------------------------------------------------------------------
+// Pass-set config + the camera's generic default pose. The world itself
+// arrives through the host's loader (SetWorldSource) or borrowed
+// (SetHostedBorrowedWorld) � nothing about the scene is known here. The
+// load-time framing (Initialize) re-poses the camera on the world bounds
+// unless VULKANTOY_CAM_* pins it for benches.
+// ---------------------------------------------------------------------------
 namespace app {
 
-const SceneDesc& SceneRegistry::Sponza() {
-	static const SceneDesc sponza{
-		/*id=*/"sponza",
-		/*label=*/"Sponza",
-		/*gltfPath=*/"content/models/Sponza/sponza.gltf",
-		/*pakPath=*/"content/paks/sponza.pak",
-		// Default view rotated 90 degrees (yaw +90 from the old +Z look):
-		// looks down the long +X corridor arm so the decal check splats
-		// (SpawnDecalPresets) are in frame at spawn.
-		/*camPos=*/glm::vec3(0.0f, 1.0f, 0.0f),
-		/*camTarget=*/glm::vec3(1.0f, 1.0f, 0.0f),
-		/*farClip=*/50.0f,
-		/*coordFix=*/0,
-		/*preTransform=*/glm::mat4(1.0f),
-		/*builtin=*/nullptr,
-		/*authoredView=*/true,
-	};
-	return sponza;
-}
-
-const SceneDesc& SceneRegistry::Bistro() {
-	static const SceneDesc bistro{
-		/*id=*/"bistro",
-		/*label=*/"Bistro",
-		/*gltfPath=*/"content/models/Bistro/bistro.gltf",
-		/*pakPath=*/"content/paks/bistro.pak",
-		// Canon test view (user-specified): mid-street, looking down the
-		// road toward the far corner; yaw -80.4 / pitch -4.0 from pos
-		// (27.61, 2.26, -10.19), fwd (-0.986, 0.012, -0.167).
-		/*camPos=*/glm::vec3(27.61f, 2.26f, -10.19f),
-		/*camTarget=*/glm::vec3(27.61f, 2.26f, -10.19f)
-			+ glm::vec3(-0.986f, 0.012f, -0.167f),
-		/*farClip=*/200.0f,
-		/*coordFix=*/0,
-		/*preTransform=*/glm::mat4(1.0f),
-		/*builtin=*/nullptr,
-		/*authoredView=*/true,
-	};
-	return bistro;
-}
-
-const SceneDesc& SceneRegistry::Scanlands() {
-	// Scanlands GLB (staged + cooked by tools/cook_scanlands.py: embedded
-	// GLB images extracted to textures/*.ktx2, pak at content/paks with
-	// meshlets + LODs). No GI bake by design â€” the app falls back to the
-	// analytic sky IBL when content/gi/scanlands.sggi is absent.
-	// World layout (engine space, coordFix 0 flips glTF x/z): a ~18 km
-	// procedural scatter (186k tree instances of glTF mesh 0, planted
-	// from the origin outward in node order; base heights vary by tens
-	// of meters over meters) with a hero village (boats, city,
-	// buildings) at engine â‰ˆ (-520, 105, 150). Engine limits (kMaxDraws
-	// 4096/view, MAX_MATERIALS 4096) saturate on this scene and the
-	// filter pushes in node order, so the default view overlooks the
-	// sparser ground east of the origin (fly with WASD; the village
-	// lies ~700 m southwest). The far clip covers village-scale views.
-	static const SceneDesc scanlands{
-		/*id=*/"scanlands",
-		/*label=*/"Scanlands",
-		/*gltfPath=*/"content/models/Scanlands/scanlands.gltf",
-		/*pakPath=*/"content/paks/scanlands.pak",
-		/*camPos=*/glm::vec3(50.0f, 48.0f, -50.0f),
-		/*camTarget=*/glm::vec3(-20.0f, 15.0f, 20.0f),
-		/*farClip=*/600.0f,
-		/*coordFix=*/0,
-		/*preTransform=*/glm::mat4(1.0f),
-		/*builtin=*/nullptr,
-		/*authoredView=*/true,
-	};
-	return scanlands;
-}
-
-const SceneDesc& SceneRegistry::BistroNiagara() {
-	// Known-good Niagara bistro.gltf (staged + root-shim neutralized by
-	// tools/stage_niagara_gltf.py). A/B against "bistro" (Lumberyard v5.2
-	// via Blender): if this one renders clean through the same direct
-	// import path, the bug is in the v5.2 conversion; if it explodes too,
-	// the bug is in the engine import/draw path. No pak is cooked for it,
-	// so the loader always takes the direct glTF branch. Textures are
-	// DDS/PNG upstream and intentionally unresolved (geometry check only).
-	static const SceneDesc bistroNiagara{
-		/*id=*/"bistro-niagara",
-		/*label=*/"Bistro (Niagara glTF)",
-		/*gltfPath=*/"content/models/BistroNiagara/bistro.gltf",
-		/*pakPath=*/"content/paks/bistro-niagara.pak",
-		/*camPos=*/glm::vec3(7.0f, 4.0f, 9.0f),
-		/*camTarget=*/glm::vec3(0.0f, 2.0f, 0.0f),
-		/*farClip=*/200.0f,
-		/*coordFix=*/0,
-		/*preTransform=*/glm::mat4(1.0f),
-		/*builtin=*/nullptr,
-		/*authoredView=*/true,
-	};
-	return bistroNiagara;
-}
-
-const SceneDesc& SceneRegistry::LayersCube() {
-	// Procedural layered-material test: a subdivided cube with smooth
-	// vertex-color layer weights (R/G along X, B/A along Y) blending four
-	// Sponza-sourced PBR materials. No glTF/pak involved (builtin tag).
-	static const SceneDesc layersCube{
-		/*id=*/"layers-cube",
-		/*label=*/"Layers Cube (vertex paint)",
-		/*gltfPath=*/"",
-		/*pakPath=*/"",
-		/*camPos=*/glm::vec3(3.4f, 2.6f, 3.4f),
-		/*camTarget=*/glm::vec3(0.0f, 0.1f, 0.0f),
-		/*farClip=*/50.0f,
-		/*coordFix=*/1,
-		/*preTransform=*/glm::mat4(1.0f),
-		/*builtin=*/"layers-cube",
-		/*authoredView=*/true,
-	};
-	return layersCube;
-}
-} // namespace app (scene registry methods; class methods open their own blocks below)
-
-namespace app {
-
- 	std::vector<SceneDesc> SceneRegistry::All() {
- 	return { Sponza(), Bistro(), BistroNiagara(), Scanlands(), LayersCube() };
-}
-
-std::optional<SceneDesc> SceneRegistry::Find(const std::string& id) {
-	for (const SceneDesc& s : All()) {
-		if (id == s.id)
-			return s;
-	}
-return std::nullopt;
-	}
-} // namespace app
-
-namespace app {
-
-void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
-	m_scene = scene;
+void WorldRenderer::Configure(ScenePassConfig passes) {
 	m_passes = passes;
 	// Debug: force the AA mode for headless A/B benches (the UI combo
 	// keeps working after this; values: off | msaa2x | smaa1x | smaat2x).
@@ -647,7 +508,7 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 		else if (!_stricmp(aaEnv, "smaat2x"))
 			m_aaMode = AaMode::SmaaT2x;
 		else
-			std::cerr << "[SceneRenderer] bad VULKANTOY_AA (want "
+			std::cerr << "[WorldRenderer] bad VULKANTOY_AA (want "
 				"off|msaa2x|smaa1x|smaat2x): " << aaEnv << "\n";
 	}
 	// Opt-in A2C for masked cutout in MSAA mode (quality trade-off, see
@@ -663,17 +524,19 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 		else if (!_stricmp(filtEnv, "trilinear"))
 			m_textureFiltering = TextureFiltering::Trilinear;
 		else
-			std::cerr << "[SceneRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
+			std::cerr << "[WorldRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
 				"bilinear|trilinear): " << filtEnv << "\n";
 	}
-	// Point the FPS camera at the scene's default viewpoint (Camera keeps a
+	// Point the FPS camera at a generic default viewpoint (Camera keeps a
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
-	m_cameraPositioner.lookAt(scene.camPos, scene.camTarget,
-		glm::vec3(0.0f, 1.0f, 0.0f));
-	// Debug: rotate the default view around world up (degrees) ï¿½ A/B runs
-	// without mouse input (e.g. sponza spawns facing away from the demo
-	// light grid; VULKANTOY_CAM_YAW=90 turns to face it).
-	glm::vec3 dir = glm::normalize(scene.camTarget - scene.camPos);
+	// Initialize re-poses this on the loaded world's bounds (generic
+	// framing) unless the env vars below pin it for benches.
+	const glm::vec3 camPos(4.0f, 3.0f, 6.0f);
+	const glm::vec3 camTarget(0.0f, 1.0f, 0.0f);
+	m_cameraPositioner.lookAt(camPos, camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
+	// Debug: rotate the default view around world up (degrees) � A/B runs
+	// without mouse input.
+	glm::vec3 dir = glm::normalize(camTarget - camPos);
 	bool dirOverridden = false;
 	if (const char* fwdEnv = std::getenv("VULKANTOY_CAM_FWD")) {
 		// Absolute forward override ("x,y,z"): wins over the yaw env so a
@@ -684,7 +547,7 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 			dir = glm::normalize(fwd);
 			dirOverridden = true;
 		} else {
-			std::cerr << "[SceneRenderer] bad VULKANTOY_CAM_FWD (want x,y,z): "
+			std::cerr << "[WorldRenderer] bad VULKANTOY_CAM_FWD (want x,y,z): "
 				<< fwdEnv << "\n";
 		}
 	}
@@ -701,236 +564,29 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// yaw env (the view keeps looking along the yaw-rotated default
 	// direction) or with the absolute VULKANTOY_CAM_FWD.
 	if (const char* posEnv = std::getenv("VULKANTOY_CAM_POS")) {
-		glm::vec3 pos(scene.camPos);
+		glm::vec3 pos(camPos);
 		if (std::sscanf(posEnv, "%f,%f,%f", &pos.x, &pos.y, &pos.z) == 3) {
 			m_cameraPositioner.lookAt(pos, pos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 			return;
 		}
-		std::cerr << "[SceneRenderer] bad VULKANTOY_CAM_POS (want x,y,z): "
+		std::cerr << "[WorldRenderer] bad VULKANTOY_CAM_POS (want x,y,z): "
 			<< posEnv << "\n";
 	}
-	m_cameraPositioner.lookAt(scene.camPos, scene.camPos + dir,
-		glm::vec3(0.0f, 1.0f, 0.0f));
+	m_cameraPositioner.lookAt(camPos, camPos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 }
-
 // FrameUniforms / AppResources / ViewportResources live in
-// App/scene_renderer.h (needed by the class declaration); method
+// App/world_renderer.h (needed by the class declaration); method
 // definitions follow the (removed) in-class block below.
 
 } // namespace app (scene registry + helpers above; methods open their own block below)
 
 
-// Class declaration lives in App/scene_renderer.h; out-of-line method
+// Class declaration lives in App/world_renderer.h; out-of-line method
 // definitions follow.
 namespace app {
 using Super = smvk::AppImpl;
 
-namespace {
-
-// Layer sources for the layers-cube test: four visually distinct Sponza
-// baseColor KTX2s with spread PBR factors (the metallic layer 3 exercises
-// the specular blend path).
-struct LayerSource {
-	const char* ktx = nullptr;
-	float roughness = 1.0f;
-	float metallic = 0.0f;
-};
-constexpr LayerSource kCubeLayers[4] = {
-	{ "content/models/sponza_out/5792855332885324923.ktx2", 0.9f, 0.0f },
-	{ "content/models/sponza_out/7441062115984513793.ktx2", 0.6f, 0.0f },
-	{ "content/models/sponza_out/11490520546946913238.ktx2", 0.4f, 0.2f },
-	{ "content/models/sponza_out/15295713303328085182.ktx2", 0.3f, 0.6f },
-};
-
-// Subdivided cube (2x2x2, centered) with smooth vertex-color layer weights:
-// R = 1-u, G = u along X; B = 1-v, A = v along Y. Corners isolate single
-// layers, edges blend pairs, faces blend all four â€” the full blend space
-// on one mesh. Per-face grids (split vertices) keep normals crisp.
-smvk::StaticMeshUpload BuildLayerCubeUpload(int segments) {
-	smvk::StaticMeshUpload data;
-	data.aabbMin = glm::vec3(-1.0f);
-	data.aabbMax = glm::vec3(1.0f);
-	struct Face {
-		glm::vec3 n, u, v, origin;
-	};
-	// (outward N; u = screen-right, v = screen-up seen from outside;
-	// N == u x v; origin = bottom-left corner.)
-	const Face faces[6] = {
-		{ { 1, 0, 0 }, { 0, 0,-1 }, { 0, 1, 0 }, { 1,-1, 1 } }, // +X
-		{ {-1, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, {-1,-1,-1 } }, // -X
-		{ { 0, 1, 0 }, { 1, 0, 0 }, { 0, 0,-1 }, {-1, 1, 1 } }, // +Y
-		{ { 0,-1, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, {-1,-1,-1 } }, // -Y
-		{ { 0, 0, 1 }, { 1, 0, 0 }, { 0, 1, 0 }, {-1,-1, 1 } }, // +Z
-		{ { 0, 0,-1 }, {-1, 0, 0 }, { 0, 1, 0 }, { 1,-1,-1 } }, // -Z
-	};
-	const int n = std::max(1, segments);
-	for (const Face& f : faces) {
-		const uint32_t base = static_cast<uint32_t>(data.vertices.size());
-		for (int j = 0; j <= n; ++j) {
-			for (int i = 0; i <= n; ++i) {
-				const float a = static_cast<float>(i) / static_cast<float>(n);
-				const float b = static_cast<float>(j) / static_cast<float>(n);
-				smvk::StaticVertex v{};
-				v.pos = f.origin + f.u * (2.0f * a) + f.v * (2.0f * b);
-				const float u = v.pos.x * 0.5f + 0.5f;
-				const float w = v.pos.y * 0.5f + 0.5f;
-				v.color = glm::vec4(1.0f - u, u, 1.0f - w, w);
-				v.texCoord = glm::vec2(a, b);
-				v.normal = f.n;
-				v.tangent = glm::vec4(f.u, 1.0f);
-				data.vertices.push_back(v);
-			}
-		}
-		for (int j = 0; j < n; ++j) {
-			for (int i = 0; i < n; ++i) {
-				const uint32_t a = base + (uint32_t)j * (n + 1) + i;
-				const uint32_t b = a + 1;
-				const uint32_t c = a + (n + 1) + 1;
-				const uint32_t d = a + (n + 1);
-				data.indices.push_back(a);
-				data.indices.push_back(b);
-				data.indices.push_back(c);
-				data.indices.push_back(a);
-				data.indices.push_back(c);
-				data.indices.push_back(d);
-			}
-		}
-	}
-	return data;
-}
-
-// UV sphere (lat-long) centered on the origin. Triangles follow the same
-// (a,b,c),(a,c,d) pattern as the cube above with b one step in +theta
-// (longitude) and d one step in +phi (pole to pole): dTheta x dPhi points
-// outward, so the winding matches the engine's CCW front faces.
-smvk::StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
-	smvk::StaticMeshUpload data;
-	data.aabbMin = glm::vec3(-radius);
-	data.aabbMax = glm::vec3(radius);
-	const float pi = glm::pi<float>();
-	const int nSlices = std::max(8, slices);
-	const int nStacks = std::max(4, stacks);
-	for (int j = 0; j <= nStacks; ++j) {
-		const float phi = pi * static_cast<float>(j) / static_cast<float>(nStacks);
-		const float sinPhi = std::sin(phi);
-		const float cosPhi = std::cos(phi);
-		for (int i = 0; i <= nSlices; ++i) {
-			const float theta = 2.0f * pi * static_cast<float>(i) / static_cast<float>(nSlices);
-			const float sinT = std::sin(theta);
-			const float cosT = std::cos(theta);
-			const glm::vec3 n(sinPhi * cosT, cosPhi, sinPhi * sinT);
-			smvk::StaticVertex v{};
-			v.pos = n * radius;
-			v.color = glm::vec4(1.0f);
-			v.texCoord = glm::vec2(
-				static_cast<float>(i) / static_cast<float>(nSlices),
-				static_cast<float>(j) / static_cast<float>(nStacks));
-			v.normal = n;
-			glm::vec3 t(-sinT, 0.0f, cosT);
-			if (glm::dot(t, t) < 1e-12f)
-				t = glm::vec3(1.0f, 0.0f, 0.0f); // poles: theta tangent degenerates
-			v.tangent = glm::vec4(glm::normalize(t), 1.0f);
-			data.vertices.push_back(v);
-		}
-	}
-	const uint32_t row = static_cast<uint32_t>(nSlices) + 1u;
-	for (int j = 0; j < nStacks; ++j) {
-		for (int i = 0; i < nSlices; ++i) {
-			const uint32_t a = static_cast<uint32_t>(j) * row + static_cast<uint32_t>(i);
-			const uint32_t b = a + 1u;
-			const uint32_t c = a + row + 1u;
-			const uint32_t d = a + row;
-			data.indices.push_back(a);
-			data.indices.push_back(b);
-			data.indices.push_back(c);
-			data.indices.push_back(a);
-			data.indices.push_back(c);
-			data.indices.push_back(d);
-		}
-	}
-	return data;
-}
-
-} // namespace
-
-bool SceneRenderer::BuildLayersCubeScene(smvk::Cluster& cluster) {
-	// Textures (full-resident; a 4-texture test doesn't need streaming).
-	smvk::TextureHandle layerTex[4]{};
-	for (int i = 0; i < 4; ++i) {
-		smvk::Holder<smvk::TextureHandle> holder =
-			smvk::LoadKtxTextureFile(*m_context, kCubeLayers[i].ktx, {});
-		if (holder.empty()) {
-			std::cerr << "[LayersCube] texture load failed: "
-				<< kCubeLayers[i].ktx << std::endl;
-			return false;
-		}
-		layerTex[i] = holder;
-		cluster.textures.create(std::move(holder));
-	}
-	// Materials (layer 0 = base; layers 1..3 referenced by pool index).
-	smvk::ClusterMaterialHandle layerHandle[4]{};
-	// Flat-factor mode (VULKANTOY_LAYERS_FLAT=1): saturated albedo factors
-	// instead of textures, for validating the blend weights by eye
-	// (corners isolate single layers, edges blend pairs).
-	const bool flatValidate = std::getenv("VULKANTOY_LAYERS_FLAT") != nullptr;
-	const glm::vec4 flatColors[4] = {
-		glm::vec4(1.0f, 0.15f, 0.15f, 1.0f),
-		glm::vec4(0.15f, 1.0f, 0.15f, 1.0f),
-		glm::vec4(0.15f, 0.15f, 1.0f, 1.0f),
-		glm::vec4(1.0f, 1.0f, 0.15f, 1.0f),
-	};
-	for (int i = 0; i < 4; ++i) {
-		smvk::MaterialCreateInfo ci{};
-		ci.baseColorTexture = flatValidate ? smvk::TextureHandle{} : layerTex[i];
-		ci.diffuse = flatValidate ? smvk::TextureHandle{} : layerTex[i];
-		ci.baseColorFactor = flatValidate ? flatColors[i] : glm::vec4(1.0f);
-		ci.metallicFactor = kCubeLayers[i].metallic;
-		ci.roughnessFactor = kCubeLayers[i].roughness;
-		ci.emissiveFactor = glm::vec3(0.0f);
-		ci.alphaMode = smvk::AlphaMode::Opaque;
-		ci.shadingModel = smvk::ShadingModel::DefaultLit;
-		layerHandle[i] = cluster.CreateMaterial(ci);
-		if (layerHandle[i].empty()) {
-			std::cerr << "[LayersCube] material create failed for layer "
-				<< i << std::endl;
-			return false;
-		}
-	}
-	// Wire the base material's layer table (cluster-local ids; the World
-	// remap turns them into world material ids at ResolveAndFixup).
-	if (smvk::Material* base = cluster.materials.get(layerHandle[0])) {
-		base->values.layerMaterials = glm::ivec4(
-			static_cast<int32_t>(layerHandle[1].index()),
-			static_cast<int32_t>(layerHandle[2].index()),
-			static_cast<int32_t>(layerHandle[3].index()),
-			4);
-	}
-	else {
-		return false;
-	}
-	// Mesh + nodes.
-	smvk::StaticMeshUpload upload = BuildLayerCubeUpload(8);
-	smvk::ClusterStaticMeshHandle meshHandle = cluster.UploadStaticMesh(upload);
-	if (meshHandle.empty()) {
-		std::cerr << "[LayersCube] mesh upload failed\n";
-		return false;
-	}
-	const int root = addNode(cluster.scene, -1, 0);
-	cluster.scene.localTransform[root] = glm::mat4(1.0f);
-	cluster.scene.globalTransform[root] = glm::mat4(1.0f);
-	const int cubeNode = addNode(cluster.scene, root, 1);
-	cluster.scene.localTransform[cubeNode] = glm::mat4(1.0f);
-	cluster.scene.globalTransform[cubeNode] = glm::mat4(1.0f);
-	cluster.scene.meshForNode[cubeNode] = meshHandle.index();
-	cluster.scene.materialForNode[cubeNode] = layerHandle[0].index();
-	markAsChanged(cluster.scene, cubeNode);
-	std::cerr << "[LayersCube] cube built: "
-		<< upload.vertices.size() << " verts, "
-		<< upload.indices.size() / 3 << " tris, 4 layered materials\n";
-	return true;
-}
-
-void SceneRenderer::DriveExternalCamera(const glm::vec3& eye,
+void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 	const glm::vec3& target, float fovYDeg, float zNear, float zFar) {
 	// Degenerate-lookAt guard: a view direction parallel to the up
 	// vector (top-down framing) crosses NaNs into the view matrix —
@@ -955,7 +611,7 @@ void SceneRenderer::DriveExternalCamera(const glm::vec3& eye,
 	m_cameraPositioner.lookAt(eye, tgt, up);
 }
 
-bool SceneRenderer::Initialize() {
+bool WorldRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
@@ -1044,7 +700,7 @@ bool SceneRenderer::Initialize() {
 			else if (dv == "uv0" || dv == "uv1_base") m_debugView = DebugView::Uv0;
 			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = DebugView::Uv1;
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = DebugView::Pom;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// AA mode override for A/B runs without UI interaction
 		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
@@ -1054,7 +710,7 @@ bool SceneRenderer::Initialize() {
 			else if (aa == "msaa") m_aaMode = AaMode::Msaa2x;
 			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
 			else if (aa == "t2x") m_aaMode = AaMode::SmaaT2x;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
 		}
 		// Texture filtering override for A/B runs without UI interaction
 		// (bilinear | trilinear). The ImGui combo stays live after.
@@ -1062,7 +718,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view f = trimEnv(filtEnv);
 			if (f == "bilinear") m_textureFiltering = TextureFiltering::Bilinear;
 			else if (f == "trilinear") m_textureFiltering = TextureFiltering::Trilinear;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TEXTURE_FILTER value: " << f << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_TEXTURE_FILTER value: " << f << "\n";
 		}
 
 		// DLSS quality-mode override for A/B runs (off | ultraperf | perf |
@@ -1079,7 +735,7 @@ bool SceneRenderer::Initialize() {
 			else if (dlss == "quality") m_dlssMode = smvk::DlssMode::MaxQuality;
 			else if (dlss == "ultraquality") m_dlssMode = smvk::DlssMode::UltraQuality;
 			else if (dlss == "dlaa") m_dlssMode = smvk::DlssMode::DLAA;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
 		}
 		// SSR / volumetric fog opt-in toggles for headless A/B + capture
 		// runs (both default off; the ImGui checkboxes stay live after).
@@ -1087,13 +743,13 @@ bool SceneRenderer::Initialize() {
 			const std::string_view ssr = trimEnv(ssrEnv);
 			if (ssr == "1" || ssr == "on") m_ssrEnabled = true;
 			else if (ssr == "0" || ssr == "off") m_ssrEnabled = false;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_SSR value: " << ssr << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_SSR value: " << ssr << "\n";
 		}
 		if (const char* volEnv = std::getenv("VULKANTOY_VOLUMETRIC")) {
 			const std::string_view vol = trimEnv(volEnv);
 			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
 			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
 		}
 		// Glass-layer (SSR pane receivers) A/B knob: 0 keeps the pre-layer
 		// behavior — no GlassMask pass, trace reflects off the opaque
@@ -1102,7 +758,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view gl = trimEnv(glassEnv);
 			if (gl == "0" || gl == "off") m_ssrGlassEnabled = false;
 			else if (gl == "1" || gl == "on") m_ssrGlassEnabled = true;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_SSR_GLASS value: " << gl << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_SSR_GLASS value: " << gl << "\n";
 		}
 
 		// Internal render-resolution override for headless A/B runs (the
@@ -1112,7 +768,7 @@ bool SceneRenderer::Initialize() {
 			if (rs >= 0.25f && rs <= 2.0f)
 				m_renderScale = rs;
 			else
-				std::cerr << "[SceneRenderer] VULKANTOY_RENDER_SCALE out of range "
+				std::cerr << "[WorldRenderer] VULKANTOY_RENDER_SCALE out of range "
 					<< "(0.25..2.0): " << rsEnv << "\n";
 		}
 
@@ -1123,7 +779,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view tr = trimEnv(trEnv);
 			if (tr == "dither" || tr == "dithered") m_transparentMode = smvk::TransparentMode::Dithered;
 			else if (tr == "blend" || tr == "blended") m_transparentMode = smvk::TransparentMode::Blended;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TRANSPARENCY value: " << tr << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_TRANSPARENCY value: " << tr << "\n";
 		}
 
 		// Deferred shadows override for A/B runs without UI interaction
@@ -1132,7 +788,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view ds = trimEnv(dsEnv);
 			if (ds == "1" || ds == "on") m_dsEnabled = true;
 			else if (ds == "0" || ds == "off") m_dsEnabled = false;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DS value: " << ds << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DS value: " << ds << "\n";
 		}
 		// One-shot deferred-shadow buffer dump after frame <n> Execute
 		// (stalls like the HZB dump; see DumpDeferredShadows). Frame 0 is
@@ -1152,7 +808,7 @@ bool SceneRenderer::Initialize() {
 			if (viz >= 0 && viz <= static_cast<int>(DsDebugViz::LightVis))
 				m_dsDebugMode = static_cast<DsDebugViz>(viz);
 			else
-				std::cerr << "[SceneRenderer] unknown VULKANTOY_DS_VIZ value: "
+				std::cerr << "[WorldRenderer] unknown VULKANTOY_DS_VIZ value: "
 					<< viz << " (0..7)\n";
 		}
 #endif
@@ -1177,7 +833,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view lights = trimEnv(lightsEnv);
 			if (lights == "1" || lights == "on") m_fpDemo.enabled = true;
 			else if (lights == "0" || lights == "off") m_fpDemo.enabled = false;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_LIGHTS value: " << lights << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_LIGHTS value: " << lights << "\n";
 		}
 		// Forward+ decals (tiled projected splats) toggle (1 | 0):
 		// 0 also skips the Sponza preset splats at load; J + the ImGui
@@ -1186,7 +842,7 @@ bool SceneRenderer::Initialize() {
 			const std::string_view dec = trimEnv(decEnv);
 			if (dec == "1" || dec == "on") m_decalDemo.enabled = true;
 			else if (dec == "0" || dec == "off") m_decalDemo.enabled = false;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DECALS value: " << dec << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DECALS value: " << dec << "\n";
 		}
 		// Headless crosshair splat at a fixed frame (see m_decalAutoSplatAtFrame):
 		// fires the J path once so capture runs verify the pick BVH.
@@ -1202,9 +858,9 @@ bool SceneRenderer::Initialize() {
 			else
 				m_autoExposureEnabled = true;
 		}
-		// EVSM toggle for A/B (default ON; VULKANTOY_EVSM=0: PCF depth
-		// atlases, no moment/blur passes, single-submit frames (no async
-		// split); =1: force EVSM on).
+		// EVSM opt-in (default OFF; VULKANTOY_EVSM=1 forces on; =0 forces
+		// the PCF depth atlases off). Main-view feature — the secondary
+		// multiviews keep PCF depth atlases either way.
 		if (const char* evsmEnv = std::getenv("VULKANTOY_EVSM")) {
 			if (std::atoi(evsmEnv) == 0)
 				m_evsmEnabled = false;
@@ -1241,9 +897,9 @@ bool SceneRenderer::Initialize() {
 			else if (a == "probes") m_ambientMode = AmbientMode::Probes;
 			else if (a == "skyibl" || a == "ibl") m_ambientMode = AmbientMode::SkyIbl;
 			else if (a == "off" || a == "none") m_ambientMode = AmbientMode::Off;
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AMBIENT value: "
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AMBIENT value: "
 				<< a << " (all|lightmaps|probes|skyibl|off)\n";
-			std::cerr << "[SceneRenderer] ambient source: "
+			std::cerr << "[WorldRenderer] ambient source: "
 				<< AmbientModeName(m_ambientMode) << "\n";
 		}
 		// Legacy GI override (pre-ambient-modes runs): 1/on -> All,
@@ -1256,7 +912,7 @@ bool SceneRenderer::Initialize() {
 					|| m_ambientMode == AmbientMode::Probes)
 					m_ambientMode = AmbientMode::SkyIbl;
 			}
-			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
 		// GI debug view for headless runs (same modes the I key cycles;
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
@@ -1266,7 +922,7 @@ bool SceneRenderer::Initialize() {
 			if (mode >= 0 && mode <= 2)
 				m_giDebug = mode;
 			else
-				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..2\n";
+				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG wants 0..2\n";
 		}
 		// Probe-point overlay for headless runs (same as the panel
 		// checkbox; draws the probe lattice colored by octree level).
@@ -1290,13 +946,21 @@ bool SceneRenderer::Initialize() {
 			UpdateCameraAspect(ScaledExtent(
 				smvk::Extent2D{ vkExt.width, vkExt.height }, m_renderScale));
 		}
+		// MULTIVIEW slab sizing: the five per-view buffers below get a
+		// VIEW-MAJOR stride — (view * framesInFlight + frame) * element —
+		// so the main view (view 0) keeps today's layout while each hosted
+		// secondary view owns a parallel slice (its own FrameUniforms, sun
+		// light + CSM fit, Forward+ light set with its own spot-shadow
+		// patch, spot tiles). Materials + decals stay per-frame only
+		// (view-independent content).
+		const uint32_t viewSlabs = 1u + kMaxSecondaryViews;
 		m_resources.frameUniforms = m_context->CreateBuffer(
-			sizeof(FrameUniforms) * m_swapchain->framesInFlight(),
+			sizeof(FrameUniforms) * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Uniform,
 			"frame uniforms"
 		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight(),
+			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"lights buffer"
 		);
@@ -1306,12 +970,12 @@ bool SceneRenderer::Initialize() {
 			"materials buffer"
 		);
 		m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
-			sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight(),
+			sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"directional cascade buffer"
 		);
 		m_resources.fpLightsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS * m_swapchain->framesInFlight(),
+			sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"forwardplus lights buffer"
 		);
@@ -1327,7 +991,7 @@ bool SceneRenderer::Initialize() {
 		m_resources.decalsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.decalsBuffer, "forwardplus decals");
 		m_resources.spotShadowBuffer = m_context->CreateBuffer(
-			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight(),
+			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"spot shadow tiles buffer"
 		);
@@ -1335,14 +999,14 @@ bool SceneRenderer::Initialize() {
 			m_resources.spotShadowBuffer, "spot shadow tiles");
 		// RenderView slab: per-frame virtual cameras (main + shadow views).
 		if (!m_renderViews.Ensure(*m_context, m_swapchain->framesInFlight())) {
-			std::cerr << "[SceneRenderer] Failed to create render views buffer\n";
+			std::cerr << "[WorldRenderer] Failed to create render views buffer\n";
 			return false;
 		}
 		// Procedural blood-splat textures for the decal system (bindless;
 		// failure is non-fatal — DecalsActive() stays false and the
 		// decal legs simply never run).
 		if (!InitDecalTextures()) {
-			std::cerr << "[SceneRenderer] decal textures unavailable - decals off\n";
+			std::cerr << "[WorldRenderer] decal textures unavailable - decals off\n";
 		}
 		// GPU particle demo emitters (world-space defaults near the scene
 		// origin; the panel below retouches them live).
@@ -1356,18 +1020,7 @@ bool SceneRenderer::Initialize() {
 		// content/paks always win; CookieLibrary reads its .ktx2 files
 		// through this overlay.
 		smvk::OverlayVfs contentVfs;
-		contentVfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
-		// Project root (editor WYSIWYG, see SetProjectRoot): the whole
-		// project tree mounts BELOW the bundled content/ priority so
-		// project files win — <root>/content/* shadows the shipped
-		// samples, and <root>/gi/* + <root>/paks/* resolve the sidecars
-		// the cooker wrote next to the project paks.
-		if (!m_projectRoot.empty())
-			contentVfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
-				-10, "project");
-		contentVfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
-		contentVfs.Mount(
-			std::make_shared<smvk::LooseBackend>("engine_resources"), 100, "engine_resources");
+		MountContentVfs(contentVfs);
 
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
@@ -1399,7 +1052,7 @@ bool SceneRenderer::Initialize() {
 		m_resources.fragA2CShader = m_context->CreateShaderModule(a2cCode, "fragLitA2C");
 	}
 	catch (...) {
-		std::cerr << "[SceneRenderer] default_lit_a2c unavailable - masked MSAA keeps the discard test\n";
+		std::cerr << "[WorldRenderer] default_lit_a2c unavailable - masked MSAA keeps the discard test\n";
 	}
 	// Fixed-lobe lit FS twins (SG permutations for the Main filtered
 	// leg): per-count SG evaluation without the runtime basis dispatch.
@@ -1413,7 +1066,7 @@ bool SceneRenderer::Initialize() {
 				m_context->CreateShaderModule(sgCode, "fragLitSg");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] SG lobe-count lit variant "
+			std::cerr << "[WorldRenderer] SG lobe-count lit variant "
 				<< li << " unavailable - count falls back to generic lit\n";
 		}
 	}
@@ -1443,21 +1096,21 @@ bool SceneRenderer::Initialize() {
 			m_resources.fragUnlitShader = m_context->CreateShaderModule(unlitCode, "fragUnlit");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_unlit unavailable - F2 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_unlit unavailable - F2 falls back to Lit\n";
 		}
 		try {
 			auto cascadeCode = readContentFile(contentVfs, "shaders/default_cascade_debug.frag.hlsl.spv");
 			m_resources.fragCascadeShader = m_context->CreateShaderModule(cascadeCode, "fragCascade");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
 		}
 		try {
 			auto vcolorCode = readContentFile(contentVfs, "shaders/default_vertexcolor_debug.frag.hlsl.spv");
 			m_resources.fragVertexColorShader = m_context->CreateShaderModule(vcolorCode, "fragVertexColor");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_vertexcolor_debug unavailable - F6 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_vertexcolor_debug unavailable - F6 falls back to Lit\n";
 		}
 		if (!m_resources.fragUnlitShader.empty()) {
 			m_resources.unlitProgram = {
@@ -1515,21 +1168,21 @@ bool SceneRenderer::Initialize() {
 			m_resources.fragUv0DebugShader = m_context->CreateShaderModule(uv0Code, "fragUv0Debug");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_uv0_debug unavailable - F9 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_uv0_debug unavailable - F9 falls back to Lit\n";
 		}
 		try {
 			auto uv1Code = readContentFile(contentVfs, "shaders/default_uv1_debug.frag.hlsl.spv");
 			m_resources.fragUv1DebugShader = m_context->CreateShaderModule(uv1Code, "fragUv1Debug");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
 		}
 		try {
 			auto pomCode = readContentFile(contentVfs, "shaders/default_pom.frag.hlsl.spv");
 			m_resources.fragPomShader = m_context->CreateShaderModule(pomCode, "fragPom");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_pom unavailable - F11 falls back to Lit\n";
+			std::cerr << "[WorldRenderer] default_pom unavailable - F11 falls back to Lit\n";
 		}
 		if (!m_resources.fragUv0DebugShader.empty()) {
 			m_resources.uv0DebugProgram = {
@@ -1593,7 +1246,7 @@ bool SceneRenderer::Initialize() {
 			m_resources.vertexLitFragShader = m_context->CreateShaderModule(vlFragCode, "fragLitLod");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_vertexlit unavailable - shader LODs stay full-lit\n";
+			std::cerr << "[WorldRenderer] default_vertexlit unavailable - shader LODs stay full-lit\n";
 		}
 		if (!m_resources.vertexLitVertShader.empty()
 			&& !m_resources.vertexLitFragShader.empty()) {
@@ -1623,7 +1276,7 @@ bool SceneRenderer::Initialize() {
 			m_resources.fragWireShader = m_context->CreateShaderModule(wireCode, "fragWire");
 		}
 		catch (...) {
-			std::cerr << "[SceneRenderer] default_wire unavailable - wireframe keeps the shaded FS\n";
+			std::cerr << "[WorldRenderer] default_wire unavailable - wireframe keeps the shaded FS\n";
 		}
 		if (!m_resources.fragWireShader.empty()) {
 			m_resources.mainWireProgram = {
@@ -1671,7 +1324,7 @@ bool SceneRenderer::Initialize() {
 		m_resources.fragGlassMaskShader = m_context->CreateShaderModule(glassMaskCode, "fragGlassMask");
 	}
 	catch (...) {
-		std::cerr << "[SceneRenderer] glassmask unavailable - SSR keeps the opaque receiver\n";
+		std::cerr << "[WorldRenderer] glassmask unavailable - SSR keeps the opaque receiver\n";
 	}
 	if (!m_resources.fragGlassMaskShader.empty()) {
 		m_resources.glassMaskProgram = {
@@ -1702,7 +1355,7 @@ bool SceneRenderer::Initialize() {
 		m_resources.fragSsrMatShader = m_context->CreateShaderModule(ssrMatCode, "fragSsrMat");
 	}
 	catch (...) {
-		std::cerr << "[SceneRenderer] ssrmat unavailable - SSR keeps the uniform-F0 behavior\n";
+		std::cerr << "[WorldRenderer] ssrmat unavailable - SSR keeps the uniform-F0 behavior\n";
 	}
 	if (!m_resources.fragSsrMatShader.empty()) {
 		m_resources.ssrMatProgram = {
@@ -1754,7 +1407,7 @@ bool SceneRenderer::Initialize() {
 		m_resources.shadowMaskedFragRevShader = m_context->CreateShaderModule(shadowRevCode, "shadowMaskedFragRev");
 	}
 	catch (...) {
-		std::cerr << "[SceneRenderer] shadow_rev unavailable - prepass masked keeps the normal-Z FS\n";
+		std::cerr << "[WorldRenderer] shadow_rev unavailable - prepass masked keeps the normal-Z FS\n";
 	}
 
 		// Masked prepass program: shadow's inputs (pos/color/uv) are a
@@ -1815,23 +1468,16 @@ bool SceneRenderer::Initialize() {
 			m_textureFeedback->SetSlotCount(MAX_TEXTURES);
 		}
 
-		// Scene import: prefer the cooked pak (fast path, meshopt'd meshes,
-		// embedded textures), fall back to glTF via the VFS when no pak is
-		// present (dev iteration). Either way the Cluster is registered
-		// with the World and resolved into the runtime scene graph.
-		// The backend is opened/mounted before the world is mutated so a
-		// mount failure leaves the world untouched and the glTF fallback
-		// loads the scene exactly once.
-		// Scene paths come from the configured SceneDesc (see SceneRegistry):
-		// adding a sample never copies this block.
+		// WORLD acquisition: the host owns all content loading; this
+		// renderer never imports a scene of its own.
 		// LIVE VIEW (SetHostedBorrowedWorld): the host (editor) handed over
 		// its OWN resolved world — the live engine representation (imports
 		// preprocessed, references bound by GUID, edits applied). The whole
-		// scene-build + resolve block below is the host's job and SKIPPED;
+		// scene-build + resolve block is the host's job and SKIPPED;
 		// the framing/lights/GI/registration steps that follow operate on
 		// the borrowed world unchanged. The world stays the HOST's: it
 		// mutates it live (edits), the hosted renderer renders it per
-		// frame — no refresh needed short of rebinds (F12).
+		// frame — world swaps ride RebindWorld (in place, no relaunch).
 		if (IsHosted() && HostedWorldBorrowed()) {
 			std::cerr << "[Scene] live borrowed world: nodes="
 				<< m_world->scene.hierarchy.size() << " meshes="
@@ -1840,236 +1486,29 @@ bool SceneRenderer::Initialize() {
 				<< " (host's engine representation; no import)\n";
 		}
 		else {
-		const std::string scenePak = smvk::FlintbaseHostPath(m_scene.pakPath ? m_scene.pakPath : "");
-		// Unconditional phase log: Release is otherwise silent, so an init
-		// throw (e.g. bad_alloc) would name no phase. Keep these cerr lines.
-		std::cerr << "[Scene] loading '" << m_scene.id << "' (pak: " << scenePak << ")"
-			<< std::endl;
-		bool loadedFromPak = false;
-		// Procedural builtin scenes bypass pak loading entirely.
-		const bool isBuiltinLayersCube = m_scene.builtin
-			&& std::string(m_scene.builtin) == "layers-cube";
-		if (isBuiltinLayersCube) {
-			auto& cluster = m_world->LoadCluster(*m_context);
-			if (!BuildLayersCubeScene(cluster)) {
-				std::cerr << "[SceneRenderer] layers-cube build failed\n";
+			// WINDOWED RUNS: the host-installed world source owns all
+			// content loading (SetWorldSource � the App's main.cpp
+			// loads the pak, the editor borrows its live world above).
+			// The world arrives RESOLVED, its clusters/resources already
+			// uploaded to the context � everything from here on renders
+			// by handles; this class never parses a pak or imports a
+			// scene.
+			if (!m_worldSource) {
+				std::cerr << "[WorldRenderer] no world: install a world "
+					"source (SetWorldSource) or borrow one "
+					"(SetHostedBorrowedWorld)\n";
 				return false;
 			}
-			loadedFromPak = true;
-		}
-		{
-			// Pak path resolution: --pak accepts host paths AND
-			// vfs-style paths ("/content/..."). Windows reads a
-			// leading slash as DRIVE-relative ("F:/content/..." —
-			// almost never what was meant), so try as-is, then
-			// CWD-relative, then exe-relative, and open the first
-			// that exists. A missing pak is LOUD — the App loads OUR
-			// format only: glTF is preprocessed elsewhere (editor
-			// import -> cook), never imported here, so there is NO
-			// fallback to fall through to.
-			std::string pakOpenPath;
-			{
-				std::vector<std::string> candidates;
-				if (!scenePak.empty()) {
-					std::string rel = scenePak;
-					while (!rel.empty()
-						&& (rel.front() == '/' || rel.front() == '\\'))
-						rel.erase(rel.begin());
-					candidates.push_back(scenePak);
-					if (!rel.empty() && rel != scenePak) {
-						candidates.push_back(rel);
-						char exePath[1024] = {};
-#ifdef _WIN32
-						DWORD n = GetModuleFileNameA(nullptr, exePath,
-							DWORD(sizeof(exePath)));
-						(void)n;
-#endif
-						if (exePath[0])
-							candidates.push_back(
-								(std::filesystem::path(exePath)
-									.parent_path() / rel).string());
-					}
-				}
-				for (const std::string& c : candidates) {
-					std::error_code ec;
-					if (!c.empty() && std::filesystem::exists(
-							std::filesystem::path(c), ec)) {
-						pakOpenPath = c;
-						break;
-					}
-				}
-				if (pakOpenPath.empty() && !scenePak.empty())
-					std::cerr << "[SceneRenderer] pak not found: '"
-						<< scenePak << "' (tried as-is, CWD-relative and"
-						<< " exe-relative)" << std::endl;
+			m_world = m_worldSource(*m_context, contentVfs);
+			if (!m_world) {
+				std::cerr << "[WorldRenderer] world source failed - "
+					"nothing to render (see the errors above)\n";
+				return false;
 			}
-			std::ifstream pakFile(pakOpenPath, std::ios::binary | std::ios::ate);
-			if (pakFile) {
-				const auto pakEnd = pakFile.tellg();
-				if (pakEnd != std::ifstream::pos_type(-1)) {
-					pakFile.seekg(0);
-					auto pakImage = std::make_shared<std::vector<uint8_t>>(
-						static_cast<size_t>(pakEnd));
-					// Texture/material/mesh uploads below are synchronous, so
-					// the pak image only needs to outlive this block; the
-					// PakBackend mount serves VFS texture reads during init
-					// (below loose content/ so dev overrides win).
-					if (pakFile.read(reinterpret_cast<char*>(pakImage->data()),
-							static_cast<std::streamsize>(pakImage->size()))) {
-						std::string pakErr;
-						auto reader = smvk::PakReader::Open(
-							std::span<const uint8_t>(*pakImage), pakErr);
-						if (!reader) {
-							std::cerr << "[SceneRenderer] Pak parse failed (" << pakErr
-								<< "), falling back to glTF" << std::endl;
-						}
-						else if (auto pakBackend = smvk::PakBackend::Open(
-								pakImage, scenePak, pakErr)) {
-							try {
-								std::cerr << "[Scene] pak parsed ("
-									<< reader->EntryCount() << " entries)..." << std::endl;
-								// Scene discovery: list, default to index 0.
-								std::string lerr;
-								auto scenes = smvk::ListPakScenes(*reader, &lerr);
-								if (scenes.empty()) {
-									throw std::runtime_error(
-										std::string("no loadable scenes: ") + lerr);
-								}
-								for (size_t i = 0; i < scenes.size(); ++i)
-									std::cerr << "[Scene]   scene[" << i << "] '"
-										<< scenes[i].name << "' nodes="
-										<< scenes[i].nodes << "\n";
-								const int want = m_sceneOverride
-									? m_sceneIndex : 0;
-								if (want < 0 || size_t(want) >= scenes.size()) {
-									throw std::runtime_error(
-										"scene index " + std::to_string(want) +
-										" out of range (" +
-										std::to_string(scenes.size()) +
-										" scenes)");
-								}
-								std::cerr << "[Scene] loading scene[" << want
-									<< "] '" << scenes[size_t(want)].name
-									<< "'..." << std::endl;
-								m_world->LoadClusterFromPak(*m_context, *reader,
-									uint32_t(want));
-								// Serve pak-embedded textures through the VFS
-								// (below loose content/ so dev overrides win).
-								contentVfs.Mount(pakBackend, 10, scenePak);
-							loadedFromPak = true;
-							// NOTE: world mesh/material slots only exist
-							// after ResolveAndFixup_clusters below, so no
-							// counts are printed here (they would read 0).
-							std::cerr << "[Scene] pak cluster loaded"
-								<< std::endl;
-							}
-							catch (const std::exception& e) {
-								std::cerr << "[SceneRenderer] Pak load failed, falling back "
-									<< "to glTF: " << e.what() << std::endl;
-								// Drain staged uploads while their destination
-								// buffers are still alive, then reset the world
-								// so the glTF fallback starts clean, and wait
-								// for deferred destroys to complete. Without
-								// this, queued copies reference destroyed
-								// buffers and the fallback imports on top of
-								// unreclaimed GPU memory (GPU fault). Must
-								// WAIT, not just flush: the transfer/graphics
-								// batches reference the images being torn down
-								// (VUID-vkDestroyImage-01000 + AV in the next
-								// submitState barrier on the dead VkImage).
-								// DeserializeCluster already drains on failure;
-								// this covers anything queued since.
-								m_context->WaitForUploads();
-								WaitForDeviceIdle();
-								m_world = std::make_unique<smvk::World>();
-								m_context->ProcessDeferredTasks();
-								WaitForDeviceIdle();
-								// Release the (possibly huge) pak image before
-								// the fallback import to keep peak memory down.
-								pakImage->clear();
-								pakImage->shrink_to_fit();
-							}
-						}
-						else {
-							std::cerr << "[SceneRenderer] PakBackend mount failed: "
-								<< pakErr << std::endl;
-						}
-					}
-				}
-			}
-		}
-		if (!loadedFromPak) {
-			// The App loads OUR format only: no glTF fallback exists
-			// (glTF is preprocessed — editor import -> cook — and the
-			// product ships paks). A pak that didn't load is a hard
-			// stop, loudly.
-			std::cerr << "[SceneRenderer] nothing to load for scene '"
-				<< (m_scene.id ? m_scene.id : "?")
-				<< "': the pak did not open (see the errors above). "
-				<< "The App loads cooked paks only — preprocess glTF "
-				<< "through the editor (import -> cook)." << std::endl;
-			return false;
-		}
-
-		// Chrome probe ball (sponza only): procedural UV sphere, 0.5 m in
-		// diameter, at the atrium center resting on the floor (y=0). White
-		// metal (metallic 1, roughness 0; the lit shader clamps roughness
-		// to 0.04 so there are no GGX singularities). Injected into the
-		// loaded cluster before Resolve so it joins culling, shadows, AO
-		// and reflections like any imported node. Independent root (own
-		// identity-parent transform), so scene root transforms can't move
-		// it and the static-freeze loop below simply leaves it dynamic.
-		if (std::string_view(m_scene.id) == "sponza" && !m_world->clusters.empty()) {
-			smvk::Cluster& sponzaCluster = *m_world->clusters.back();
-			const float ballRadius = 0.25f;
-			const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
-			smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
-			smvk::ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
-			smvk::MaterialCreateInfo chromeCi{};
-			chromeCi.baseColorFactor = glm::vec4(1.0f);
-			chromeCi.metallicFactor = 1.0f;
-			chromeCi.roughnessFactor = .13f;
-			chromeCi.emissiveFactor = glm::vec3(0.0f);
-			chromeCi.alphaMode = smvk::AlphaMode::Opaque;
-			chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
-			smvk::ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
-			if (ballMesh.empty() || chromeMat.empty()) {
-				std::cerr << "[Scene] chrome ball inject failed (mesh/material)\n";
-			}
-			else {
-				const int ballNode = addNode(sponzaCluster.scene, -1, 0);
-				sponzaCluster.scene.localTransform[ballNode] =
-					glm::translate(glm::mat4(1.0f), ballCenter);
-				sponzaCluster.scene.globalTransform[ballNode] =
-					glm::translate(glm::mat4(1.0f), ballCenter);
-				sponzaCluster.scene.meshForNode[ballNode] = ballMesh.index();
-				sponzaCluster.scene.materialForNode[ballNode] = chromeMat.index();
-				setNodeName(sponzaCluster.scene, ballNode, "chrome_ball");
-				markAsChanged(sponzaCluster.scene, ballNode);
-				std::cerr << "[Scene] chrome ball: r=" << ballRadius
-					<< "m at (" << ballCenter.x << "," << ballCenter.y << "," << ballCenter.z << "), "
-					<< ballUpload.vertices.size() << " verts, "
-					<< ballUpload.indices.size() / 3 << " tris\n";
-			}
-		}
-
-		// Freeze everything static (no recook needed): the exporters stamp
-		// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
-		// World's static BVH would stay empty. These scenes never animate,
-		// so mark each cluster root static here; Resolve carries the spec
-		// into the world scene and RebuildStaticBvh picks it up. Future
-		// dynamic nodes must ClearSubtreeStatic() before Resolve to opt out.
-		for (auto& clusterPtr : m_world->clusters) {
-			if (clusterPtr && !clusterPtr->scene.hierarchy.empty())
-				MarkSubtreeStatic(clusterPtr->scene, 0);
-		}
-
-		m_world->ResolveAndFixup_clusters();
-		std::cerr << "[Scene] world resolved: nodes="
-			<< m_world->scene.hierarchy.size() << " meshes="
-			<< m_world->meshLocations.size() << " materials="
-			<< m_world->materialLocations.size() << std::endl;
-		} // !liveWorld (scene build + resolve)
+			std::cerr << "[Scene] world resolved: nodes="
+				<< m_world->scene.hierarchy.size() << " meshes="
+				<< m_world->meshLocations.size() << " materials="
+				<< m_world->materialLocations.size() << std::endl;		} // !liveWorld (scene build + resolve)
 
 		// Fit the procedural Forward+ light grid to the loaded scene's
 		// world bounds so the crowd fills Bistro/Sponza instead of
@@ -2080,15 +1519,13 @@ bool SceneRenderer::Initialize() {
 				m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
-				// Curated scenes (SceneDesc::authoredView, adopted from the
-				// registry by the entry point) keep their close-up
-				// viewpoint: it was already applied in Configure and keeps
-				// LOD distances in meters + cascade splits tight. Only
-				// truly unknown external scenes frame the whole bounds
-				// (orbit-style default). Explicit VULKANTOY_CAM_POS/
-				// FWD pins win (bench determinism).
-				if (m_sceneOverride && !m_scene.authoredView
-					&& !std::getenv("VULKANTOY_CAM_POS") &&
+				// Generic framing: no curated viewpoints exist anymore —
+				// park the camera radius*2.2 from the bounds center and
+				// fit the far clip to the framed view (the 2000 m default
+				// stretches the cascade splits over empty space; cascade 0
+				// covers ~100 m -> blurry EVSM/PCF at the mesh). Explicit
+				// VULKANTOY_CAM_POS/FWD pins win (bench determinism).
+				if (!std::getenv("VULKANTOY_CAM_POS") &&
 					!std::getenv("VULKANTOY_CAM_FWD")) {
 					const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 					const float radius =
@@ -2102,21 +1539,14 @@ bool SceneRenderer::Initialize() {
 						std::cos(pitch) * std::cos(yaw));
 					m_cameraPositioner.lookAt(eye, center,
 						glm::vec3(0.0f, 1.0f, 0.0f));
-					// Fit the shadow far clip to the framed view: the
-					// generic 2000 m default stretches the cascade splits
-					// over empty space (cascade 0 covers ~100 m -> blurry
-					// EVSM/PCF at the mesh). Keep it covering the orbit
-					// distance plus the scene diameter, clamped sane.
+					// Far clip covers the orbit distance plus the scene
+					// diameter, clamped sane.
 					{
 						const float fitted = dist + radius * 2.0f;
-						m_scene.farClip = std::clamp(fitted, 50.0f, 10000.0f);
+						m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
 					}
-					std::cerr << "[Scene] pak camera framed: dist=" << dist
-						<< " farClip=" << m_scene.farClip << "\n";
-				}
-				else if (m_sceneOverride && m_scene.authoredView) {
-					std::cerr << "[Scene] curated view kept (farClip="
-						<< m_scene.farClip << ")\n";
+					std::cerr << "[Scene] camera framed: dist=" << dist
+						<< " farClip=" << m_sceneFarClip << "\n";
 				}
 			}
 		}
@@ -2173,7 +1603,7 @@ bool SceneRenderer::Initialize() {
 			if (!m_resources.fragWireShader.empty())
 				m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
-				std::cerr << "[SceneRenderer] GfxFilter unavailable - direct draws\n";
+				std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
 			}
 		else {
@@ -2182,7 +1612,7 @@ bool SceneRenderer::Initialize() {
 			std::cerr << "[Scene] gfx clusters="
 				<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
 			if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
-				std::cerr << "[SceneRenderer] GfxFilter: no clusters - direct draws\n";
+				std::cerr << "[WorldRenderer] GfxFilter: no clusters - direct draws\n";
 				m_useGfxFilter = false;
 			}
 		}
@@ -2225,7 +1655,7 @@ bool SceneRenderer::Initialize() {
 		// the engine - see Engine/Rendergraph/smaa.h). Uploaded once here so
 		// the staged uploads join the cookie flush below.
 		if (!m_viewportResources.smaa.EnsureLuts(*m_context))
-			std::cerr << "[SceneRenderer] SMAA LUT upload failed - SMAA unavailable\n";
+			std::cerr << "[WorldRenderer] SMAA LUT upload failed - SMAA unavailable\n";
 		m_context->FlushUploads();
 		// Artistic LUTs: seed the neutral strip + list editable strips.
 		ScanLutFiles();
@@ -2246,25 +1676,25 @@ bool SceneRenderer::Initialize() {
 
 		// Directional cascade atlas + default shadow program (builder owns Ensure).
 		if (!m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph, MakeShadowDesc(m_cascadeResolution, m_cascadeLambda))) {
-			std::cerr << "[SceneRenderer] Failed to create cascaded shadow atlas\n";
+			std::cerr << "[WorldRenderer] Failed to create cascaded shadow atlas\n";
 			return false;
 		}
 		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
 		// Non-fatal: without it all spots simply run unshadowed.
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
-			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable â€“ spots run unshadowed\n";
+			std::cerr << "[WorldRenderer] Spot shadow atlas unavailable â€“ spots run unshadowed\n";
 		}
 	// EVSM moment atlases (RGBA32F 2xMSAA + async blur). Non-fatal: when
 	// the device lacks RGBA32F render/blur/filter support (or shaders
 	// fail), EvsmActive() stays false and every consumer keeps the PCF path.
 	if (!m_context->SupportsEvsm()) {
-		std::cerr << "[SceneRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) – PCF shadows\n";
+		std::cerr << "[WorldRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) – PCF shadows\n";
 	}
 	if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
-		std::cerr << "[SceneRenderer] EVSM directional atlas unavailable – PCF fallback\n";
+		std::cerr << "[WorldRenderer] EVSM directional atlas unavailable – PCF fallback\n";
 	}
 	if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
-		std::cerr << "[SceneRenderer] EVSM spot atlas unavailable – PCF fallback\n";
+		std::cerr << "[WorldRenderer] EVSM spot atlas unavailable – PCF fallback\n";
 	}
 	if (EvsmActive()) {
 		std::cerr << "[EVSM] moment atlases ready: RGBA32F 2xMSAA + async blur ("
@@ -2275,20 +1705,20 @@ bool SceneRenderer::Initialize() {
 			std::cerr << "[EVSM] inactive (unsupported or atlas failure) â€“ PCF shadows\n";
 		}
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
-			std::cerr << "[SceneRenderer] Failed to create tonemap program\n";
+			std::cerr << "[WorldRenderer] Failed to create tonemap program\n";
 			return false;
 		}
 		// Histogram meter for auto-exposure (extent-independent buffer +
 		// compute program). Non-fatal: without it the frame falls back to
 		// manual exposure.
 		if (!m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc())) {
-			std::cerr << "[SceneRenderer] Exposure meter unavailable â€“ manual exposure only\n";
+			std::cerr << "[WorldRenderer] Exposure meter unavailable â€“ manual exposure only\n";
 		}
 		// Skydome program (fullscreen-triangle sky.vert/sky.frag). Failure is
 		// non-fatal: the Main pass simply skips the sky draw and keeps the
 		// clear color.
 		if (!m_skydome.Ensure(*m_context)) {
-			std::cerr << "[SceneRenderer] Skydome program unavailable â€“ running without sky\n";
+			std::cerr << "[WorldRenderer] Skydome program unavailable â€“ running without sky\n";
 		}
 
 		{
@@ -2299,7 +1729,7 @@ bool SceneRenderer::Initialize() {
 			smvk::DepthDesc depthDesc{};
 			depthDesc.format = m_swapchain->GetDepthFormat();
 			if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
-				std::cerr << "[SceneRenderer] Failed to create render depth target\n";
+				std::cerr << "[WorldRenderer] Failed to create render depth target\n";
 				return false;
 			}
 			// Option A occluder depth (HZB source): same extent/format as
@@ -2310,52 +1740,52 @@ bool SceneRenderer::Initialize() {
 			hizDepthDesc.viewName = "hizDepthView";
 			hizDepthDesc.logicalName = "hizDepthLogical";
 			if (!m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, hizDepthDesc)) {
-				std::cerr << "[SceneRenderer] Failed to create HZB occluder depth target\n";
+				std::cerr << "[WorldRenderer] Failed to create HZB occluder depth target\n";
 				return false;
 			}
 			if (!m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
 				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view)) {
-				std::cerr << "[SceneRenderer] Failed to create Forward+ tile buffers\n";
+				std::cerr << "[WorldRenderer] Failed to create Forward+ tile buffers\n";
 				return false;
 			}
 			if (!m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent)) {
-				std::cerr << "[SceneRenderer] Failed to create HDR target\n";
+				std::cerr << "[WorldRenderer] Failed to create HDR target\n";
 				return false;
 			}
 			{
 				smvk::MsaaDesc msaaDesc{};
 				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, msaaDesc)) {
-					std::cerr << "[SceneRenderer] MSAA target unavailable â€“ falling back to 1x\n";
+					std::cerr << "[WorldRenderer] MSAA target unavailable â€“ falling back to 1x\n";
 				}
 			}
 		if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
-				std::cerr << "[SceneRenderer] Bloom chain unavailable (HDR "
+				std::cerr << "[WorldRenderer] Bloom chain unavailable (HDR "
 				<< renderExtent.width << "x" << renderExtent.height << ")\n";
 		}
 		{
 			smvk::DofDesc dofDesc = MakeDofDesc();
 			dofDesc.hqBokeh = m_dofHqBokeh;
 			if (!m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, dofDesc)) {
-				std::cerr << "[SceneRenderer] DOF targets unavailable (HDR "
+				std::cerr << "[WorldRenderer] DOF targets unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
 		}
 		if (!m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc())) {
-			std::cerr << "[SceneRenderer] SSR target unavailable (HDR "
+			std::cerr << "[WorldRenderer] SSR target unavailable (HDR "
 				<< renderExtent.width << "x" << renderExtent.height << ")\n";
 		}
 		if (!m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, MakeVolumetricDesc())) {
-			std::cerr << "[SceneRenderer] Volumetric target unavailable (HDR "
+			std::cerr << "[WorldRenderer] Volumetric target unavailable (HDR "
 				<< renderExtent.width << "x" << renderExtent.height << ")\n";
 		}
 		smvk::UiDesc uiDesc{};
 		uiDesc.format = LdrUnormSibling();
 		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
-			std::cerr << "[SceneRenderer] UI target unavailable â€“ UI disabled\n";
+			std::cerr << "[WorldRenderer] UI target unavailable â€“ UI disabled\n";
 		}
 			if (!m_viewportResources.uiComposite.Ensure(*m_context)) {
-				std::cerr << "[SceneRenderer] UI composite program unavailable\n";
+				std::cerr << "[WorldRenderer] UI composite program unavailable\n";
 			}
 		}
 
@@ -2371,7 +1801,7 @@ bool SceneRenderer::Initialize() {
 		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
 		imguiDesc.colorFormat = LdrUnormSibling(); // must match the UI target above
 		if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
-			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay â€“ continuing without UI\n";
+			std::cerr << "[WorldRenderer] Failed to init ImGuiOverlay â€“ continuing without UI\n";
 			m_imgui.reset();
 		} else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
@@ -2380,14 +1810,14 @@ bool SceneRenderer::Initialize() {
 			imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		}
 		} else {
-			std::cerr << "[SceneRenderer] hosted preview: UI overlay "
+			std::cerr << "[WorldRenderer] hosted preview: UI overlay "
 				"skipped (host owns ImGui)\n";
 		}
 
 		return true;
 };
 
-void SceneRenderer::Shutdown() {
+void WorldRenderer::Shutdown() {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		WaitForDeviceIdle();
 		// GeometryFX filter state: frees rendergraph logicals AND the
@@ -2437,7 +1867,7 @@ void SceneRenderer::Shutdown() {
 	// user toggles (FrameUniforms.gi*). A missing file is the normal
 	// "not baked yet" state - the renderer keeps the analytic sky IBL.
 	// ---------------------------------------------------------------------------
-	void SceneRenderer::LoadGiVolume(smvk::OverlayVfs& vfs) {
+	void WorldRenderer::LoadGiVolume(smvk::OverlayVfs& vfs) {
 		m_giLoaded = false;
 		m_giVolume = smvk::gi::SgGiVolume{};
 		m_giProbesBuffer = {};
@@ -2447,7 +1877,7 @@ void SceneRenderer::Shutdown() {
 		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
 
 		const std::string stem = m_giProbeName.empty()
-			? std::string(m_scene.id ? m_scene.id : "") : m_giProbeName;
+			? m_sceneId : m_giProbeName;
 		const std::string vfsPath = std::string("gi/") + stem + ".sggi";
 		// GI-less scenes (e.g. scanlands): the flag gates keep the ambient
 		// honest (probes simply never enable); DegradeAmbientForMissing
@@ -2569,7 +1999,7 @@ void SceneRenderer::Shutdown() {
 	// Loads content/textures/cubemaps/<scene>.ktx2 through the app VFS.
 	// A missing file is non-fatal (falls back to analytic sky).
 	// ---------------------------------------------------------------------------
-	void SceneRenderer::LoadCubemaps(smvk::OverlayVfs& vfs) {
+	void WorldRenderer::LoadCubemaps(smvk::OverlayVfs& vfs) {
 		m_cubemaps.entries.clear();
 		m_cubemapProbes.clear();
 
@@ -2582,7 +2012,7 @@ void SceneRenderer::Shutdown() {
 
 		// Try a scene-specific bake first, then the "sky" fallback.
 		const std::vector<std::string> cubemapBases = {
-			std::string(m_scene.id ? m_scene.id : ""),
+			m_sceneId,
 			"sky"
 		};
 
@@ -2717,7 +2147,7 @@ void SceneRenderer::Shutdown() {
 
 		if (!fileBakeFound) {
 			std::cerr << "[Cubemap] no baked cubemap for '"
-				<< (m_scene.id ? m_scene.id : "?")
+				<< (m_sceneId.empty() ? "?" : m_sceneId)
 				<< "' or 'sky' - specular IBL uses the analytic sky"
 				<< " (bake with tools/cubemap_baker/CubemapBaker or PakCooker --cubemap on)\n";
 			if (!m_context->SupportsEvsm()) {
@@ -2793,7 +2223,7 @@ void SceneRenderer::Shutdown() {
 	};
 	static_assert(sizeof(RegObbGpu) == 96);
 
-	void SceneRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
+	void WorldRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
 		// Cook-owned lightmaps: the pak carries the per-vertex chart uvs
 		// + chart ids (texCoord2/chartId), each mesh's chart transforms
 		// (scene table, unpacked in the VS) + lobe count (riding the
@@ -2808,7 +2238,7 @@ void SceneRenderer::Shutdown() {
 			slot = UINT32_MAX;
 
 		const std::string stem = m_giLightmapName.empty()
-			? std::string(m_scene.id ? m_scene.id : "") : m_giLightmapName;
+			? m_sceneId : m_giLightmapName;
 		const std::string vfsPath = std::string("gi/") + stem + ".sglm";
 		std::vector<uint8_t> bytes;
 		try {
@@ -2906,14 +2336,14 @@ void SceneRenderer::Shutdown() {
 	// trilinearly filters between neighboring probes. Missing manifest =
 	// "not baked yet" - non-fatal.
 	// ---------------------------------------------------------------------------
-	void SceneRenderer::LoadGiRegularVolumes(smvk::OverlayVfs& vfs) {
+	void WorldRenderer::LoadGiRegularVolumes(smvk::OverlayVfs& vfs) {
 		m_regLoaded = false;
 		m_regEnabled = false;
 		m_regVolumes.clear();
 		m_regObbsBuffer = {};
 		m_regObbsAddress = 0;
 
-		const std::string manifestPath = std::string("gi/") + m_scene.id + ".regmanifest";
+		const std::string manifestPath = std::string("gi/") + m_sceneId + ".regmanifest";
 		std::vector<uint8_t> manifestBytes;
 		try {
 			manifestBytes = vfs.ReadBinary(manifestPath);
@@ -3053,7 +2483,7 @@ void SceneRenderer::Shutdown() {
 	};
 	static_assert(sizeof(CvolVolumeGpu) == 560);
 
-	void SceneRenderer::LoadCvolumes(smvk::OverlayVfs& vfs) {
+	void WorldRenderer::LoadCvolumes(smvk::OverlayVfs& vfs) {
 		m_cvolLoaded = false;
 		m_cvolEnabled = false;
 		m_cvolVolumes.clear();
@@ -3061,7 +2491,7 @@ void SceneRenderer::Shutdown() {
 		m_cvolVolumesAddress = 0;
 
 		const std::string manifestPath =
-			std::string("gi/") + m_scene.id + ".cvmanifest";
+			std::string("gi/") + m_sceneId + ".cvmanifest";
 		std::vector<uint8_t> manifestBytes;
 		try {
 			manifestBytes = vfs.ReadBinary(manifestPath);
@@ -3204,7 +2634,7 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
-	void SceneRenderer::DegradeAmbientForMissingSources() {
+	void WorldRenderer::DegradeAmbientForMissingSources() {
 		// Single-source isolation modes whose source did not load fall
 		// back to another baked source (or the sky IBL) instead of being
 		// silently empty. All/SkyIbl/Off never need this.
@@ -3222,7 +2652,7 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
-	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
+	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
 
 		const int width_ = renderExtent.width;
 		const int height_ = renderExtent.height;
@@ -3313,7 +2743,7 @@ void SceneRenderer::Shutdown() {
 		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
 		data.nearPlane = default_near_clip;
-		data.farPlane = m_scene.farClip;
+		data.farPlane = m_sceneFarClip;
 		// Linear exposure multiplier for the tonemapper (ACES).
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
 		// mid-gray (albedo 0.18, NÂ·L=1) at HDR â‰ˆ 0.29 pre-ACES â†’ no clipping.
@@ -3544,7 +2974,7 @@ void SceneRenderer::Shutdown() {
 
 	}
 
-	smvk::GpuDirectionalLightDescription SceneRenderer::UpdateLights(uint32_t currentFrame)
+	smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(uint32_t currentFrame)
 	{
 		// Directional sun driven by the environment (single source of truth
 		// for the sky sun disc, IBL sun tint, and shadow-casting light).
@@ -3652,13 +3082,13 @@ void SceneRenderer::Shutdown() {
 		return dir;
 	}
 
-	void SceneRenderer::UpdateMaterials(uint32_t currentFrame) {
+	void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
 		// Preserve world material slots: shaders index by world materialId,
 		// so a missing slot must stay a hole (default values), not shift
 		// every later material down by one.
 		const uint32_t slotCount = (uint32_t)m_world->materialLocations.size();
 		if (slotCount > MAX_MATERIALS) {
-			std::cerr << "[SceneRenderer] Material slots (" << slotCount
+			std::cerr << "[WorldRenderer] Material slots (" << slotCount
 				<< ") exceed MAX_MATERIALS (" << MAX_MATERIALS
 				<< ") - clamping upload, trailing materials will use defaults\n";
 		}
@@ -3694,7 +3124,7 @@ void SceneRenderer::Shutdown() {
 	// proxy; approxWorldSize absorbs the error). Budget: every frame, paced
 	// retargets; re-uploads join the next FlushUploads below. streamFrame
 	// is the monotonic m_frameCounter, never the swapchain slot.
-	void SceneRenderer::UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent) {
+	void WorldRenderer::UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent) {
 		(void)frameData;
 		if (!m_textureStreamingEnabled || !m_textureStreamer)
 			return;
@@ -3758,7 +3188,7 @@ void SceneRenderer::Shutdown() {
 	// with no extra stall. Refreshes the debug copy, and damps
 	// m_exposureAdapted toward the percentile target. Holds the current
 	// exposure when the meter is missing or the histogram is empty.
-	void SceneRenderer::UpdateAutoExposure(uint32_t frameIndex) {
+	void WorldRenderer::UpdateAutoExposure(uint32_t frameIndex) {
 		if (!kHistogramReadbackEnabled)
 			return; // readback disabled (see above): hold the seed/manual exposure
 		if (!ExposureMeteringActive())
@@ -3783,7 +3213,7 @@ void SceneRenderer::Shutdown() {
 	// Metering gates shared by the histogram download and the batched
 	// feedback pairing (debug views hold the last scene exposure; see the
 	// note on UpdateAutoExposure).
-	bool SceneRenderer::ExposureMeteringActive() const {
+	bool WorldRenderer::ExposureMeteringActive() const {
 		if (!m_autoExposureEnabled || !m_passes.exposure)
 			return false;
 		// Debug views fill HDR with exposure-compensated flat colors (see
@@ -3812,7 +3242,7 @@ void SceneRenderer::Shutdown() {
 	// temporal history for free (m_ssrFrameRanTemporal stays false, so
 	// SsrTaaEndFrame invalidates — the first lit record after the view
 	// warms up instead of blending against pre-view history).
-	bool SceneRenderer::DebugVisualizationActive() const {
+	bool WorldRenderer::DebugVisualizationActive() const {
 		// F2..F11 replace the Main opaque/transparent legs with flat
 		// programs; the GI debug views (R/F8) and the DS visualizers (Y)
 		// early-out of the lit fragment shader the same way.
@@ -3829,7 +3259,7 @@ void SceneRenderer::Shutdown() {
 
 	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure,
 	// shared by the single and batched download paths).
-	void SceneRenderer::AdaptExposureFromBins(
+	void WorldRenderer::AdaptExposureFromBins(
 		const std::array<uint32_t, smvk::kExposureBinCount>& bins) {
 		auto& meter = m_viewportResources.exposure;
 		uint32_t total = 0;
@@ -3877,7 +3307,7 @@ void SceneRenderer::Shutdown() {
 	// 1-2 frames later; adaptation is time-damped and streaming is laggy
 	// anyway). The feedback clear still runs AFTER the copy is queued
 	// (download-before-clear, same order as the exposure zero-fill).
-	void SceneRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
+	void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
 		const bool feedbackActive = m_textureStreamingEnabled
 			&& m_textureStreamer && m_textureFeedback
 			&& m_textureFeedback->GetSlotCount() > 0;
@@ -3994,7 +3424,7 @@ void SceneRenderer::Shutdown() {
 	// (first wins + warn). Empty outcome = registry-less pak: callers
 	// fall back to the scene id.
 	// ---------------------------------------------------------------------
-	void SceneRenderer::ResolveGiSidecars() {
+	void WorldRenderer::ResolveGiSidecars() {
 		m_giProbeName.clear();
 		m_giLightmapName.clear();
 		if (!m_world)
@@ -4041,7 +3471,7 @@ void SceneRenderer::Shutdown() {
 	// Forward+ set. Emission direction is the node's -Z axis (glTF
 	// punctual convention).
 	// ---------------------------------------------------------------------
-	void SceneRenderer::BuildCookedLightsFromWorld() {
+	void WorldRenderer::BuildCookedLightsFromWorld() {
 		m_cookedLights.clear();
 		if (!m_world)
 			return;
@@ -4061,10 +3491,11 @@ void SceneRenderer::Shutdown() {
 		std::vector<smvk::ForwardPlusLight> spots, points;
 		bool sunTaken = false;
 		uint32_t staticBakeOnly = 0;
-		// glTF aim axis after the coordFix basis change (coordFix 0
-		// flips Z; a plain -Z read off the conjugated transform aims
-		// 180 degrees off — the Bistro sun seeded the env underground).
-		const glm::vec3 aimAxis = GltfPunctualAimAxis(m_scene.coordFix);
+		// glTF aim axis after the coordFix basis change (cooked content
+		// is baked at coordFix 0, which flips Z; a plain -Z read off the
+		// conjugated transform aims 180 degrees off — the Bistro sun
+		// seeded the env underground).
+		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
 		for (uint32_t node : nodes) {
 			auto lit = scene.lightForNode.find(node);
 			if (lit == scene.lightForNode.end())
@@ -4198,7 +3629,7 @@ void SceneRenderer::Shutdown() {
 	// (upper limit m_fpDemo.spotShadowMax) get atlas tiles; their shadowTile /
 	// shadowMapIndex are patched before upload. Results land in
 	// m_spotShadowCount / m_spotShadowMapIndex for the frame's passes.
-	uint32_t SceneRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
+	uint32_t WorldRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
 		using fp_clk = std::chrono::steady_clock;
 		const bool fpBench = frameBudget_ > 0 && benchWarmup_ >= 10;
 		const auto fpT0 = fp_clk::now();
@@ -4415,6 +3846,11 @@ void SceneRenderer::Shutdown() {
 
 	constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
 	const auto fpT1 = fp_clk::now();
+	// MULTIVIEW: capture the final (post-DS-sort, pre-probe-tail) light set
+	// for the secondary views — each hosted view copies it, runs its own
+	// spot-shadow selection over the copy (patching shadowTile/
+	// shadowMapIndex for ITS atlas) and uploads into its view-major slab.
+	m_frameLights = lights;
 	if (!lights.empty()) {
 		m_context->UploadDataToBuffer(
 			m_resources.fpLightsBuffer,
@@ -4525,7 +3961,7 @@ void SceneRenderer::Shutdown() {
 	// every frame so the demo sliders retouch every live decal.
 	// ---------------------------------------------------------------------
 
-	uint32_t SceneRenderer::UpdateDecals(uint32_t currentFrame) {
+	uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
 		m_decalFrameCount = 0;
 		if (!DecalsActive())
 			return 0;
@@ -4567,7 +4003,7 @@ void SceneRenderer::Shutdown() {
 		return m_decalFrameCount;
 	}
 
-	void SceneRenderer::SeedParticleEmitters() {
+	void WorldRenderer::SeedParticleEmitters() {
 		if (!m_particleDemo.emitters.empty())
 			return;
 		m_particleDemo.emitters.reserve(4);
@@ -4603,7 +4039,7 @@ void SceneRenderer::Shutdown() {
 		m_particleDemo.selected = 0;
 	}
 
-	uint32_t SceneRenderer::UpdateParticles(uint32_t currentFrame) {
+	uint32_t WorldRenderer::UpdateParticles(uint32_t currentFrame) {
 		smvk::Particles& ps = m_viewportResources.particles;
 		if (!ParticlesActive() || m_particleDemo.emitters.empty())
 			return 0;
@@ -4616,64 +4052,22 @@ void SceneRenderer::Shutdown() {
 			(uint32_t)m_particleDemo.emitters.size());
 	}
 
-	bool SceneRenderer::EnsurePickScene() {
-		// Re-import the scene glTF as a GPU-free cook-mode cluster with
-		// retained CPU uploads â€” the same importer call the GiBaker uses â€”
-		// then extract + BVH the triangle soup. (The runtime pak cluster
-		// has no retained CPU geometry, and the pick wants the exact
-		// loaded transform: same coordFix + preTransform as the scene
-		// load. Sponza costs a one-time import + SAH build of a few
-		// seconds; the console notes the hitch.)
+	bool WorldRenderer::EnsurePickScene() {
+		// Pick acceleration needs CPU-side triangle soup. Cooked worlds
+		// carry none (pak clusters upload straight to the GPU; the glTF
+		// re-import source went away with the scene registry), so the
+		// BVH stays off and every consumer fails OPEN: probe culling
+		// draws unculled, the crosshair splat logs + no-ops.
 		if (m_decalDemo.pickBvhState == 0) {
-			const char* gltfPathC = m_scene.gltfPath ? m_scene.gltfPath : "";
-			const std::string vfsPath = (gltfPathC && std::strncmp(gltfPathC, "content/", 8) == 0)
-				? std::string(gltfPathC + 8) : std::string(gltfPathC ? gltfPathC : "");
-			if (vfsPath.empty()) {
-				std::cerr << "[Pick] no scene glTF - pick BVH off\n";
-				m_decalDemo.pickBvhState = -1;
-			} else {
-				std::cerr << "[Pick] building CPU pick BVH (one-time glTF re-import)...\n";
-				const auto t0 = std::chrono::steady_clock::now();
-				try {
-				smvk::OverlayVfs vfs;
-				vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
-				vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
-					auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-					cluster->SetCookMode(true);
-					GltfToClusterFromVfs(nullptr, vfs, vfsPath, *cluster,
-						smvk::MeshOptConfig{}, smvk::MeshletConfig{},
-						m_scene.coordFix, m_scene.preTransform);
-					auto scene = std::make_unique<smvk::gi::GiTraceScene>();
-					smvk::gi::GiSceneBuildOptions opts{};
-					std::string err;
-					smvk::gi::BuildTraceSceneFromCluster(*cluster, opts, *scene, err);
-					if (!err.empty())
-						std::cerr << "[Pick] pick scene: " << err << "\n";
-					scene->Finalize();
-					const bool ready = err.empty() && !scene->Bvh().Empty();
-					m_decalDemo.pickBvhState = ready ? 1 : -1;
-					if (ready) {
-						const auto t1 = std::chrono::steady_clock::now();
-						const double ms =
-							std::chrono::duration<double, std::milli>(t1 - t0).count();
-						std::cerr << "[Pick] pick BVH ready: "
-							<< scene->Bvh().TriangleCount() << " tris ("
-							<< (int)ms << " ms)\n";
-					} else {
-						std::cerr << "[Pick] pick BVH unavailable for this scene\n";
-					}
-					m_decalPickScene = std::move(scene);
-				} catch (const std::exception& e) {
-					std::cerr << "[Pick] pick BVH import failed: " << e.what() << "\n";
-					m_decalDemo.pickBvhState = -1;
-				}
-			}
+			std::cerr << "[Pick] no CPU pick source (cooked worlds upload "
+				"straight to the GPU) - pick BVH off\n";
+			m_decalDemo.pickBvhState = -1;
 		}
 		return m_decalDemo.pickBvhState > 0 && m_decalPickScene
 			&& !m_decalPickScene->Bvh().Empty();
 	}
 
-	bool SceneRenderer::GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos) {
+	bool WorldRenderer::GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos) {
 		// View-coherent cache: camera still => free; camera moved =>
 		// invalidate (recomputed lazily per drawn probe below).
 		const glm::mat4 view = m_camera.getViewMatrix();
@@ -4702,7 +4096,7 @@ void SceneRenderer::Shutdown() {
 		return visible;
 	}
 
-	void SceneRenderer::SpawnDecalAtCrosshair() {
+	void WorldRenderer::SpawnDecalAtCrosshair() {
 		if (!DecalsActive()) {
 			std::cerr << "[Decals] disabled (UI checkbox or VULKANTOY_DECALS=1)\n";
 			return;
@@ -4766,8 +4160,8 @@ void SceneRenderer::Shutdown() {
 		m_decalDemo.splats.push_back(s);
 	}
 
-	void SceneRenderer::SpawnDecalPresets() {
-		if (std::string_view(m_scene.id) != "sponza")
+	void WorldRenderer::SpawnDecalPresets() {
+		if (m_sceneId != "sponza")
 			return;
 		if (!m_decalDemo.enabled || m_decalAlbedoBindless == UINT32_MAX)
 			return;
@@ -4788,9 +4182,8 @@ void SceneRenderer::Shutdown() {
 			m_decalDemo.splats.push_back(s);
 		};
 		// Floor pools down the +X corridor arm (default camera looks +X
-		// from (0,1,0) after the 90-degree rotation â€” see SceneRegistry::
-		// Sponza; horizon-level view, so the pools sit in the lower band
-		// of the frame). Floor plane is y = 0; the box hovers 0.5 m above
+		// from (0,1,0); horizon-level view, so the pools sit in the lower
+		// band of the frame). Floor plane is y = 0; the box hovers 0.5 m above
 		// it, half depth 0.75 m -> |local.z| ~0.67 at the floor, inside
 		// the depth fade, and the shallower box limits catches on
 		// mid-air clutter (banners, lamp chains) inside the volume.
@@ -4815,7 +4208,7 @@ void SceneRenderer::Shutdown() {
 			<< m_decalDemo.splats.size() << "\n";
 	}
 
-	bool SceneRenderer::InitDecalTextures() {
+	bool WorldRenderer::InitDecalTextures() {
 		if (m_decalAlbedoBindless != UINT32_MAX && m_decalNormalBindless != UINT32_MAX)
 			return true; // idempotent (recreate path)
 		if (!m_context)
@@ -4961,7 +4354,7 @@ void SceneRenderer::Shutdown() {
 	// (seed + prepass + remainder). Each phase is its own compute pass so
 	// the rendergraph emits the RAW/WAW buffer barriers between them.
 	// ---------------------------------------------------------------------
-	void SceneRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
+	void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
 		uint64_t frameUniformsAddress, uint64_t fpLightsAddress,
 		uint64_t spotShadowBufferAddress, uint32_t fpLightCount,
 		smvk::LogicalImageViewHandle depthView,
@@ -5067,7 +4460,7 @@ void SceneRenderer::Shutdown() {
 	// with lights, entry totals, slot classification, center-tile list
 	// entries decoded as light index + visibility slot / fully-lit flag).
 	// ---------------------------------------------------------------------
-	void SceneRenderer::DumpDeferredShadows(uint32_t frameIndex) {
+	void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
 		const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 		if (!ds.Valid())
 			return;
@@ -5246,7 +4639,7 @@ void SceneRenderer::Shutdown() {
 	// (kLodSelectHysteresis): a node keeps its level while the projected
 	// error stays inside the budget band, so switch distances don't flip
 	// siblings frame to frame while the camera moves.
-	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
+	uint32_t WorldRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
 		if (!m_lodEnabled || !m_world)
 			return 0;
 		if (m_world->LodChainLength(worldMesh) <= 1)
@@ -5254,7 +4647,7 @@ void SceneRenderer::Shutdown() {
 		return m_world->LodIndexForNode(node, worldMesh, m_lodFrameInputs);
 	}
 
-	smvk::StaticMesh* SceneRenderer::LodMeshForNode(NodeId node, uint32_t worldMesh,
+	smvk::StaticMesh* WorldRenderer::LodMeshForNode(NodeId node, uint32_t worldMesh,
 		uint32_t* outLod) {
 		if (outLod)
 			*outLod = 0;
@@ -5280,7 +4673,7 @@ void SceneRenderer::Shutdown() {
 	// cooked chain and the level is the farthest one. Shares the halfrate
 	// LOD cache with every geometry consumer, so shading and geometry
 	// always resolve off the SAME level within a frame.
-	smvk::LodShader SceneRenderer::LodShaderForNode(NodeId node,
+	smvk::LodShader WorldRenderer::LodShaderForNode(NodeId node,
 		uint32_t worldMesh) const {
 		if (!ShaderLodActive() || !m_world)
 			return smvk::LodShader::Lit;
@@ -5288,7 +4681,7 @@ void SceneRenderer::Shutdown() {
 		return m_world->LodShaderAt(worldMesh, lod);
 	}
 
-	void SceneRenderer::BuildShadowDrawCandidates() {
+	void WorldRenderer::BuildShadowDrawCandidates() {
 		SMVK_PROFILE_RENDER("ShadowDrawCandidates");
 		m_shadowCandidates.clear();
 		if (!m_world)
@@ -5327,7 +4720,7 @@ void SceneRenderer::Shutdown() {
 		SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
 	}
 
-	void SceneRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
+	void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered) {
 		// Phase 2 masked pipeline: cull follows the material raster so
@@ -5439,7 +4832,7 @@ void SceneRenderer::Shutdown() {
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
 	}
 
-	void SceneRenderer::RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
+	void WorldRenderer::RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered,
 		smvk::ShaderProgram* opaqueProgram) {
@@ -5554,7 +4947,7 @@ void SceneRenderer::Shutdown() {
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
 	}
 
-	void SceneRenderer::ResetLodStats() {
+	void WorldRenderer::ResetLodStats() {
 		m_lodDraws = 0;
 		m_lodSwitched = 0;
 		m_lodShaderDraws = 0;
@@ -5571,7 +4964,7 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
-	void SceneRenderer::RefreshGpuMemoryStats(bool force) {
+	void WorldRenderer::RefreshGpuMemoryStats(bool force) {
 		if (!m_context)
 			return;
 		const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -5584,7 +4977,7 @@ void SceneRenderer::Shutdown() {
 		m_gpuMemQueryUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
 	}
 
-	void SceneRenderer::LogGpuMemoryToConsole() {
+	void WorldRenderer::LogGpuMemoryToConsole() {
 		RefreshGpuMemoryStats(true);
 		if (m_gpuMemHeaps.empty()) {
 			std::fprintf(stderr, "[GPU memory] no heap data (headless?)\n");
@@ -5622,7 +5015,7 @@ void SceneRenderer::Shutdown() {
 		m_gpuMemLastLogSec = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	}
 
-	void SceneRenderer::RebuildSwapViews() {
+	void WorldRenderer::RebuildSwapViews() {
 		for (auto h : m_viewportResources.swapImages) {
 			m_rendergraph->FreeImageView(h);
 		}
@@ -5699,7 +5092,7 @@ void SceneRenderer::Shutdown() {
 	// is 1024x32 sRGB-encoded PNG (32 tiles along x, blue = tile, red =
 	// column, green = row); Photoshop edits the bytes directly.
 	// ---------------------------------------------------------------------
-	void SceneRenderer::ScanLutFiles() {
+	void WorldRenderer::ScanLutFiles() {
 		m_lutFiles.clear();
 		std::error_code ec;
 		std::filesystem::create_directories("content/luts", ec);
@@ -5713,16 +5106,16 @@ void SceneRenderer::Shutdown() {
 		std::sort(m_lutFiles.begin(), m_lutFiles.end());
 	}
 
-	bool SceneRenderer::LoadLut(const std::string& file) {
+	bool WorldRenderer::LoadLut(const std::string& file) {
 		std::vector<uint8_t> rgba;
 		int w = 0, h = 0;
 		const std::string path = "content/luts/" + file;
 		if (!LutLoadPng(path.c_str(), rgba, w, h)) {
-			std::cerr << "[SceneRenderer] LUT decode failed: " << path << "\n";
+			std::cerr << "[WorldRenderer] LUT decode failed: " << path << "\n";
 			return false;
 		}
 		if (w != 1024 || h != 32) {
-			std::cerr << "[SceneRenderer] LUT " << file << " is " << w << "x" << h
+			std::cerr << "[WorldRenderer] LUT " << file << " is " << w << "x" << h
 				<< ", expected 1024x32 (32^3 strip)\n";
 			return false;
 		}
@@ -5741,12 +5134,12 @@ void SceneRenderer::Shutdown() {
 		m_lutBindless = m_context->GetTextureBindlessIndex(m_lutTexture);
 		m_context->FlushUploads();
 		m_lutFile = file;
-		std::cout << "[SceneRenderer] LUT loaded: " << file
+		std::cout << "[WorldRenderer] LUT loaded: " << file
 			<< " (bindless " << m_lutBindless << ")\n";
 		return true;
 	}
 
-	void SceneRenderer::ExportNeutralLut() {
+	void WorldRenderer::ExportNeutralLut() {
 		// Identity strip, sRGB-encoded bytes (matches common.hlsli SrgbEncode):
 		// pixel(i,j,t) = srgbEncode(i/31, j/31, t/31). Editing these bytes in
 		// Photoshop and loading the result back gives the grading.
@@ -5774,16 +5167,16 @@ void SceneRenderer::Shutdown() {
 		std::error_code ec;
 		std::filesystem::create_directories("exports", ec);
 		if (LutWritePng("exports/lut_neutral.png", W, H, px.data()))
-			std::cout << "[SceneRenderer] neutral LUT strip exported: exports/lut_neutral.png\n";
+			std::cout << "[WorldRenderer] neutral LUT strip exported: exports/lut_neutral.png\n";
 		else
-			std::cerr << "[SceneRenderer] neutral LUT export failed (exports/lut_neutral.png)\n";
+			std::cerr << "[WorldRenderer] neutral LUT export failed (exports/lut_neutral.png)\n";
 		// Seed the editable copy into content/luts once; never overwrite (the
 		// user may have graded it already - F7 always refreshes exports/).
 		if (!std::filesystem::exists("content/luts/neutral.png", ec))
 			LutWritePng("content/luts/neutral.png", W, H, px.data());
 	}
 
-	void SceneRenderer::EnsureCaptureTarget(smvk::Extent2D extent) {
+	void WorldRenderer::EnsureCaptureTarget(smvk::Extent2D extent) {
 		if (!m_captureImage.empty() &&
 			m_captureExtent.width == extent.width && m_captureExtent.height == extent.height)
 			return;
@@ -5818,9 +5211,9 @@ void SceneRenderer::Shutdown() {
 		m_captureExtent = extent;
 	}
 
-	void SceneRenderer::ExportScreenshot(smvk::Extent2D extent) {
+	void WorldRenderer::ExportScreenshot(smvk::Extent2D extent) {
 		if (m_captureImage.empty()) {
-			std::cerr << "[SceneRenderer] capture target unavailable - screenshot skipped\n";
+			std::cerr << "[WorldRenderer] capture target unavailable - screenshot skipped\n";
 			return;
 		}
 		std::vector<uint8_t> px(static_cast<size_t>(extent.width) * extent.height * 4);
@@ -5829,7 +5222,7 @@ void SceneRenderer::Shutdown() {
 		// declared explicitly - Undefined would discard the contents).
 		if (!m_context->DownloadDataFromImage(m_captureImage,
 				smvk::ImageLayout::ColorAttachmentOptimal, px.data(), px.size())) {
-			std::cerr << "[SceneRenderer] screenshot readback failed\n";
+			std::cerr << "[WorldRenderer] screenshot readback failed\n";
 			return;
 		}
 		const std::time_t t = std::chrono::system_clock::to_time_t(
@@ -5842,12 +5235,12 @@ void SceneRenderer::Shutdown() {
 		std::filesystem::create_directories("exports", ec);
 		const std::string path = "exports/screenshot_" + std::string(stamp) + ".png";
 		if (LutWritePng(path.c_str(), extent.width, extent.height, px.data()))
-			std::cout << "[SceneRenderer] screenshot exported: " << path << "\n";
+			std::cout << "[WorldRenderer] screenshot exported: " << path << "\n";
 		else
-			std::cerr << "[SceneRenderer] screenshot write failed (" << path << ")\n";
+			std::cerr << "[WorldRenderer] screenshot write failed (" << path << ")\n";
 	}
 
-	void SceneRenderer::DrawFrame() {
+	void WorldRenderer::DrawFrame() {
 		// Frame-arena scratch (URI probing, normalized rewrites) is
 		// dead at frame end by definition â€” recycle the blocks.
 		smvk::ResetFrameArena();
@@ -5929,14 +5322,17 @@ void SceneRenderer::Shutdown() {
 // GlassMask redraw always draw the same geometry. Distance-sorted only
 // when the caller blends back-to-front; the mask pass passes false
 // (its Max blend is order-independent).
-std::vector<SceneRenderer::TransparentDrawItem>
-SceneRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
-	bool sortBackToFront)
+std::vector<WorldRenderer::TransparentDrawItem>
+WorldRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
+	bool sortBackToFront, std::optional<glm::vec3> sortCamPos)
 {
 	std::vector<TransparentDrawItem> draws;
 	if (m_hideTransparent)
 		return draws;
-	const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+	// Sort camera: the main positioner by default; multiview secondary
+	// views pass their own eye so back-to-front ordering is view-correct.
+	const glm::vec3 camPos = sortCamPos
+		? *sortCamPos : m_cameraPositioner.cameraPosition_;
 	m_world->forEachRenderItem(
 		smvk::IteratorFlagBit_Renderable
 		| smvk::IteratorFlagBit_Transparent
@@ -5987,7 +5383,1144 @@ SceneRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
 	return draws;
 }
 
-void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
+// ===========================================================================
+// MULTIVIEW (hosted): per-view image buffers + tic/toc refresh scheduling.
+// See world_renderer.h (ViewRefresh + SecondaryView) for the design notes.
+// ===========================================================================
+
+void WorldRenderer::SetViewCount(uint32_t count) {
+	// Hosted-only: the windowed run keeps the single main view exactly as
+	// today. Called at frame boundaries (the hosted launch contract); the
+	// device-idle wait below covers a stray mid-frame call anyway.
+	if (!IsHosted())
+		return;
+	count = std::min(count, kMaxSecondaryViews);
+	if (count == (uint32_t)m_views.size())
+		return;
+	// Per-view GPU teardown (logical handles + Holders) needs an idle
+	// device — same contract as the hosted launch/stop.
+	WaitForDeviceIdle();
+	for (SecondaryView& v : m_views) {
+		if (!v.outLogical.empty())
+			m_rendergraph->FreeImageView(v.outLogical);
+		v.outBindlessIndex = UINT32_MAX;
+		v.outBindless = {};
+		v.outView = {};
+		v.outImage = {};
+		v.outLogical = {};
+		v.outExtent = { 0, 0 };
+		v.outFormat = smvk::Format::Undefined;
+		v.outValid = false;
+		v.vp.forwardPlus.Destroy(*m_rendergraph);
+		v.vp.directionalShadows.Destroy(*m_rendergraph);
+		v.vp.spotShadows.Destroy(*m_rendergraph);
+		v.vp.hdr.Destroy(*m_rendergraph);
+		v.vp.renderDepth.Destroy(*m_rendergraph);
+		v.dirLightValid = false;
+		v.spotShadowCount = 0;
+		v.spotShadowMapIndex = -1;
+		v.spotShadowTiles.clear();
+		v.lightScratch.clear();
+		v.prevViewProjValid = false;
+		v.renderedLastFrame = false;
+	}
+	m_views.clear();
+	m_views.resize(count);
+	const auto ext = m_swapchain->GetExtent();
+	for (uint32_t i = 0; i < count; ++i) {
+		SecondaryView& v = m_views[i];
+		v.ordinal = i + 1u; // 1-based (view 0 = the main hosted view)
+		// Extent defaults to the hosted target extent (per-view override
+		// via SetViewExtent; zero clamps at the first render).
+		v.desc.extent = smvk::Extent2D{ ext.width, ext.height };
+		// Refresh spread: alternate Tic/Toc so a full secondary set splits
+		// across the two phases (the host can retune per view any time).
+		v.desc.refresh = (i & 1u) ? ViewRefresh::Toc : ViewRefresh::Tic;
+	}
+}
+
+void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
+	const glm::vec3& target, float fovYDeg, float zNear, float zFar) {
+	if (view >= m_views.size())
+		return;
+	SecondaryView& v = m_views[view];
+	// Degenerate-lookAt guard (mirrors DriveExternalCamera): a view
+	// direction parallel to the up vector (top-down framing) crosses NaNs
+	// into the view matrix — nudge the target sideways instead.
+	glm::vec3 tgt = target;
+	const glm::vec3 up(0.0f, 1.0f, 0.0f);
+	glm::vec3 dir = eye - tgt;
+	const float len = glm::length(dir);
+	if (len < 1e-6f)
+		return; // eye == target: nothing sensible to look at
+	dir /= len;
+	if (std::fabs(glm::dot(dir, up)) > 0.9995f)
+		tgt += glm::normalize(glm::vec3(dir.z, 0.0f, -dir.x)) * 0.01f * len;
+	v.desc.eye = eye;
+	v.desc.target = tgt;
+	v.desc.fovYDeg = fovYDeg;
+	v.desc.zNear = std::max(zNear, 0.001f);
+	v.desc.zFar = std::max(zFar, v.desc.zNear + 0.1f);
+	v.positioner.lookAt(eye, tgt, up);
+}
+
+void WorldRenderer::SetViewExtent(uint32_t view, smvk::Extent2D extent) {
+	if (view >= m_views.size())
+		return;
+	if (extent.width == 0 || extent.height == 0)
+		return; // 0 = keep
+	SecondaryView& v = m_views[view];
+	if (v.desc.extent.width == extent.width && v.desc.extent.height == extent.height)
+		return;
+	v.desc.extent = extent;
+	// Out-image drift handled by the next Ensure (recreate key).
+}
+
+void WorldRenderer::SetViewRefresh(uint32_t view, ViewRefresh refresh) {
+	if (view >= m_views.size())
+		return;
+	m_views[view].desc.refresh = refresh;
+}
+
+ViewRefresh WorldRenderer::GetViewRefresh(uint32_t view) const {
+	return view < m_views.size() ? m_views[view].desc.refresh : ViewRefresh::Full;
+}
+
+void WorldRenderer::SetViewEnabled(uint32_t view, bool enabled) {
+	if (view >= m_views.size())
+		return;
+	m_views[view].desc.enabled = enabled;
+}
+
+bool WorldRenderer::ViewRenderedThisFrame(uint32_t view) const {
+	return view < m_views.size() && m_views[view].desc.enabled
+		&& ViewRefreshDue(m_views[view].desc);
+}
+
+uint32_t WorldRenderer::ViewOutBindless(uint32_t view) const {
+	return view < m_views.size() ? m_views[view].outBindlessIndex : UINT32_MAX;
+}
+
+smvk::Extent2D WorldRenderer::ViewOutExtent(uint32_t view) const {
+	return view < m_views.size() ? m_views[view].outExtent : smvk::Extent2D{ 0, 0 };
+}
+
+smvk::ImageHandle WorldRenderer::ViewOutImage(uint32_t view) const {
+	// Holder -> handle (implicit conversion; empty before the view's
+	// first rendered frame).
+	if (view >= m_views.size())
+		return smvk::ImageHandle{};
+	return m_views[view].outImage;
+}
+
+void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
+	// The renderer's content overlay (see Initialize): loose content/
+	// at the bottom, the project root BELOW it (project files win on
+	// collisions), the flintbase cache + engine resources on top.
+	// Mounts into the CALLER'S vfs (OverlayVfs is non-copyable).
+	vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+	// Project root (editor WYSIWYG, see SetProjectRoot): the whole
+	// project tree mounts BELOW the bundled content/ priority so
+	// project files win — <root>/content/* shadows the shipped
+	// samples, and <root>/gi/* + <root>/paks/* resolve the sidecars
+	// the cooker wrote next to the project paks.
+	if (!m_projectRoot.empty())
+		vfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
+			-10, "project");
+	vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
+	vfs.Mount(
+		std::make_shared<smvk::LooseBackend>("engine_resources"), 100,
+		"engine_resources");
+}
+
+void WorldRenderer::RebindWorld(smvk::World* world) {
+	// IN-PLACE world rebind (hosted live view): swap the borrowed world
+	// and rebuild ONLY the world-derived state — the framegraph (every
+	// program, atlas, target, buffer, per-view image) persists untouched.
+	// Scene opens / reimports / pak switches / GI-bake sidecar refreshes
+	// all ride this path; the hosted renderer is NEVER stopped +
+	// relaunched for a world change (the old F12 relaunch rebind was
+	// retired — relaunching the whole renderer for a world swap was
+	// never actually necessary).
+	// Callers: SetSceneId/SetProjectRoot FIRST (the GI sidecar loaders
+	// resolve gi/<id>.* through the project-aware VFS), then this.
+	if (!IsHosted() || !HostedWorldBorrowed() || !world
+		|| world == m_world.get())
+		return;
+	WaitForDeviceIdle(); // frame-boundary contract (same as the launch)
+	RebindBorrowedWorld(world);
+	std::cerr << "[Scene] live view rebound in place: nodes="
+		<< m_world->scene.hierarchy.size() << " meshes="
+		<< m_world->meshLocations.size() << " materials="
+		<< m_world->materialLocations.size() << std::endl;
+	// ---- world-derived state rebuild (the Initialize tail, world-bound) --
+	smvk::OverlayVfs contentVfs;
+	MountContentVfs(contentVfs);
+	// Procedural light-grid fit to the new bounds + far-clip refit (the
+	// clip feeds the CSM splits + LOD distances; the hosted lens itself
+	// is the host's — the ext camera drive owns the projection).
+	{
+		const ::Aabb bounds = m_world->ComputeSceneBounds();
+		if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y
+			&& bounds.mx.z >= bounds.mn.z) {
+			m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
+			const float radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
+			m_sceneFarClip = std::clamp(radius * 4.2f, 50.0f, 10000.0f);
+		}
+	}
+	// Authored punctual lights + named GI sidecar stems + the sidecar
+	// loaders (each self-resets, so re-running over the old state is
+	// clean) + the single-source degrade pass.
+	BuildCookedLightsFromWorld();
+	ResolveGiSidecars();
+	LoadGiVolume(contentVfs);
+	LoadGiLightmaps(contentVfs);
+	LoadGiRegularVolumes(contentVfs);
+	LoadCvolumes(contentVfs);
+	LoadCubemaps(contentVfs);
+	DegradeAmbientForMissingSources();
+	// Decal state dies with the old world (pick soup + hero presets).
+	m_decalPickScene.reset();
+	m_decalDemo.pickBvhState = 0; // rebuild lazily on the next crosshair pick
+	ClearDecals();
+	SpawnDecalPresets();
+	// Gfx filter registration over the new meshes (full rebuild; direct
+	// draws stay the fallback when registration comes up empty).
+	if (m_passes.gfxFilter && m_useGfxFilter) {
+		m_gfxRenderer.RegisterWorldMeshes(*m_world);
+		m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+		std::cerr << "[Scene] gfx re-registered: clusters="
+			<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
+		if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
+			std::cerr << "[WorldRenderer] GfxFilter: no clusters - direct draws\n";
+			m_useGfxFilter = false;
+		}
+	}
+	// Temporal histories die with the old world.
+	m_prevGlobalTransforms.clear();
+	m_prevViewProjValid = false;
+	m_dirSamplePrevValid = false;
+	// The multiview per-view state is world-independent: targets +
+	// refresh schedules persist; the next rendered frame re-fits the
+	// per-view lights against the new world.
+}
+
+void WorldRenderer::EnsureSecondaryTargets(SecondaryView& v, uint32_t vi) {
+	// Extent guard: zero/extreme clamps to something renderable.
+	smvk::Extent2D ext = v.desc.extent;
+	ext.width = std::max(std::min(ext.width, 16384u), 64u);
+	ext.height = std::max(std::min(ext.height, 16384u), 64u);
+	v.desc.extent = ext;
+	// Scene depth (1x; no MSAA on secondary views).
+	smvk::DepthDesc depthDesc{};
+	depthDesc.format = m_swapchain->GetDepthFormat();
+	depthDesc.name = v.Name("viewDepth", 0);
+	depthDesc.viewName = v.Name("viewDepthView", 1);
+	depthDesc.logicalName = v.Name("viewDepthLogical", 2);
+	v.vp.renderDepth.Ensure(*m_context, *m_rendergraph, ext, depthDesc);
+	// HDR intermediate (pre-tonemap).
+	smvk::HdrDesc hdrDesc{};
+	hdrDesc.name = v.Name("viewHdr", 3);
+	hdrDesc.viewName = v.Name("viewHdrView", 4);
+	hdrDesc.logicalName = v.Name("viewHdrLogical", 5);
+	v.vp.hdr.Ensure(*m_context, *m_rendergraph, ext, hdrDesc);
+	// Forward+ (tile buffers; sized to the view extent — Ensure is
+	// idempotent, but MIXED per-view extents alternate the recreate key
+	// and churn recreations every frame; keep the set uniform-sized, or
+	// accept the churn while dragging a split).
+	m_fpRenderer.Configure(&v.vp.forwardPlus, MakeForwardPlusDesc(),
+		m_resources.prepassMaskedProgram);
+	m_fpRenderer.EnsureSized(*m_context, *m_rendergraph, ext, v.vp.renderDepth.view);
+	// Directional CSM + spot atlases (own fits per view). EVSM stays a
+	// MAIN-view opt-in (default off; the ImGui checkbox): the moment
+	// atlases are RGBA32F-2xMSAA-per-tile giants (hundreds of MB each;
+	// OOM when replicated per view) and the lean secondary path wants
+	// depth shadows anyway — the view's light entry +
+	// FrameUniforms.evsmMode=0 keep its PCF sampling consistent.
+	smvk::CascadedShadowMapDesc shadowDesc =
+		MakeShadowDesc(m_cascadeResolution, m_cascadeLambda);
+	shadowDesc.name = v.Name("viewShadowAtlas", 8);
+	v.vp.directionalShadows.Ensure(*m_context, *m_rendergraph, shadowDesc);
+	smvk::SpotShadowMapDesc spotDesc = MakeSpotShadowDesc();
+	spotDesc.name = v.Name("viewSpotAtlas", 9);
+	v.vp.spotShadows.Ensure(*m_context, *m_rendergraph, spotDesc);
+	v.vp.tonemap.Ensure(*m_context, MakeTonemapDesc());
+	// Output image: post-tonemap LDR in the hosted surface format (SRGB
+	// where the surface is; the UNORM sibling + tonemap manual-encode
+	// otherwise). PERSISTS across off-phase frames (recreate key = extent
+	// + format) so the host composites continuously.
+	const smvk::Format surface = m_swapchain->GetSurfaceFormat();
+	smvk::Format outFmt = surface;
+	if (surface != smvk::Format::BGRA8_SRGB && surface != smvk::Format::RGBA8_SRGB
+		&& surface != smvk::Format::BGRA8_UNorm && surface != smvk::Format::RGBA8_UNorm)
+		outFmt = LdrUnormSibling();
+	if (v.outValid && v.outExtent.width == ext.width
+		&& v.outExtent.height == ext.height && v.outFormat == outFmt)
+		return;
+	if (!v.outLogical.empty())
+		m_rendergraph->FreeImageView(v.outLogical);
+	v.outBindlessIndex = UINT32_MAX;
+	v.outBindless = {};
+	v.outView = {};
+	v.outImage = {};
+	v.outValid = false;
+	smvk::ImageCreateInfo ci{};
+	ci.extent = { ext.width, ext.height, 1 };
+	ci.format = outFmt;
+	ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled;
+	// TransferSrc rides the debug-dump arm (the editor's hosted-view
+	// readbacks need it on the source image, same as HdrTarget).
+	if (smvk::DebugImageDumpArmed())
+		ci.usage |= smvk::ImageUsage::TransferSrc;
+	ci.mipLevels = 1;
+	ci.arrayLayers = 1;
+	ci.name = v.Name("viewOut", 6);
+	v.outImage = m_context->CreateImage(ci, nullptr);
+	if (v.outImage.empty())
+		return;
+	smvk::ImageViewCreateInfo vci{};
+	vci.viewType = smvk::ImageViewType::View2D;
+	vci.format = smvk::Format::Undefined; // inherit
+	vci.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 };
+	vci.name = v.Name("viewOutView", 7);
+	v.outView = m_context->CreateImageView(v.outImage, vci);
+	if (v.outView.empty()) {
+		v.outImage = {};
+		return;
+	}
+	v.outBindless = m_context->CreateBindlessImage(v.outView,
+		smvk::ImageLayout::ShaderReadOnlyOptimal);
+	if (v.outBindless.empty()) {
+		v.outView = {};
+		v.outImage = {};
+		return;
+	}
+	v.outBindlessIndex = m_context->GetBindlessIndex(v.outBindless);
+	v.outLogical = m_rendergraph->AddExternalImageView(v.outView, outFmt,
+		v.Name("viewOutLogical", 12));
+	if (v.outLogical.empty()) {
+		v.outBindless = {};
+		v.outView = {};
+		v.outImage = {};
+		v.outBindlessIndex = UINT32_MAX;
+		return;
+	}
+	v.outExtent = ext;
+	v.outFormat = outFmt;
+	v.outValid = true;
+}
+
+FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
+	uint32_t vi, uint32_t frameIdx)
+{
+	// Lean per-view twin of UpdateFrameUniforms: the view's own camera
+	// (positioner + Camera, aspect from desc.extent), no jitter (secondary
+	// views run no T2x/DLSS/motion chain), no AO (no per-view AO passes),
+	// deferred shadows off (the lit shader's inline forward+ shadow path
+	// reads the view's own tile lists). Everything view-independent mirrors
+	// the main builder exactly (env/ambient/GI/lightmaps/volumes/decals).
+	v.camera.setPerspective(glm::radians(v.desc.fovYDeg),
+		float(v.desc.extent.width) / float(v.desc.extent.height),
+		v.desc.zNear, v.desc.zFar);
+	const auto view = v.camera.getViewMatrix();
+	auto proj = v.camera.getProjMatrix();
+	proj[1][1] *= -1; // Vulkan Y-flip (UpdateFrameUniforms parity)
+	const auto viewProj = proj * view;
+	FrameUniforms data{};
+	data.cameraPos = v.positioner.cameraPosition_;
+	data.view = view;
+	data.proj = proj;
+	data.viewProj = viewProj;
+	data.invView = glm::inverse(view);
+	data.invProj = glm::inverse(proj);
+	data.invViewProj = glm::inverse(viewProj);
+	// No motion-vector pass per view; keep the per-view history anyway so
+	// a future per-view motion chain plugs in without a layout change.
+	data.prevViewProj = v.prevViewProjValid ? v.prevViewProj : viewProj;
+	v.prevViewProj = viewProj;
+	v.prevViewProjValid = true;
+	const float width_ = (float)v.desc.extent.width;
+	const float height_ = (float)v.desc.extent.height;
+	data.time = time_since_start_s;
+	data.viewportSize = { width_, height_ };
+	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
+	data.nearPlane = v.desc.zNear;
+	data.farPlane = v.desc.zFar;
+	data.exposure = FrameExposure();
+	// No per-view AO passes: ambient composites without the AO layer.
+	data.aoTextureIndex = UINT32_MAX;
+	data.aoIntensity = 0.0f;
+	data.env = m_env.ToFrameData();
+	data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
+	// Reflection cubemap (global fallback) + probe tile freshness for the
+	// VIEW's forward+ tile lists (the per-view cull files them).
+	data.cubemapIndex = UINT32_MAX;
+	data.cubemapSampler = m_cubemapSampler;
+	data.cubemapIntensity = m_cubemapEnabled ? m_cubemapIntensity : 0.0f;
+	data.cubemapDebug = static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
+	data.cubemapLodBias = m_cubemapLodBias;
+	data.probeTileFresh = ProbeTileListsWanted() ? 1u : 0u;
+	data.probeEntries = ProbeEntryCount();
+	data.probePad_ = 0;
+	if (m_cubemapEnabled && !m_cubemaps.entries.empty()) {
+		for (const auto& [name, entry] : m_cubemaps.entries) {
+			if (entry.bindless >= 0) {
+				data.cubemapIndex = static_cast<uint32_t>(entry.bindless);
+				break;
+			}
+		}
+	}
+	// Deferred shadows off per view (inline forward+ shadow path; the DS
+	// buffers + phase-1 upload are main-view-only).
+	data.dsTileState = 0;
+	data.dsLightList = 0;
+	data.dsVisibility = 0;
+	data.dsTileCountX = 0;
+	data.dsEnabled = 0u;
+#if defined(DS_DEBUG_VIZ)
+	data.dsTileMasks = 0;
+	data.dsTileGroupMasks = 0;
+	data.dsDebugMode = 0;
+	data.dsDebugLight = 0;
+	data.dsDebugFlags = 0;
+	data.dsDebugCountCeil = 32;
+#endif
+	// Ambient sources (per-source isolation mirrors the main builder).
+	if (GiActive()) {
+		data.giProbes = m_giProbesAddress;
+		data.giGrid = m_giGridAddress;
+		data.giCells = m_giCellsAddress;
+		data.giIndices = m_giIndicesAddress;
+		data.giEnabled = 1u;
+	} else {
+		data.giProbes = 0;
+		data.giGrid = 0;
+		data.giCells = 0;
+		data.giIndices = 0;
+		data.giEnabled = 0u;
+	}
+	data.giIntensity = m_giIntensity;
+	data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
+	if (LmActive()) {
+		for (uint32_t t = 0; t < 12; ++t)
+			data.lmLayers[t] = m_lmLayerSlots[t];
+		data.lmLayerKind = m_lmLayerKind;
+		data.lmEnabled = 1u;
+	} else {
+		for (uint32_t t = 0; t < 12; ++t)
+			data.lmLayers[t] = UINT32_MAX;
+		data.lmLayerKind = 0u;
+		data.lmEnabled = 0u;
+	}
+	data.lmPad_[0] = 0;
+	data.lmPad_[1] = 0;
+	if (RegActive()) {
+		data.regObbs = m_regObbsAddress;
+		const uint32_t n = std::min<uint32_t>(uint32_t(m_regVolumes.size()), 8u);
+		for (uint32_t rv = 0; rv < n; ++rv)
+			for (uint32_t t = 0; t < 7; ++t)
+				data.regLayers[rv * 7u + t] = m_regVolumes[rv].layerSlots[t];
+		data.regCount = n;
+		data.regEnabled = RegWanted() ? 1u : 0u;
+	} else {
+		data.regObbs = 0;
+		for (uint32_t& slot : data.regLayers)
+			slot = UINT32_MAX;
+		data.regCount = 0u;
+		data.regEnabled = 0u;
+	}
+	if (m_cvolLoaded && m_cvolEnabled) {
+		data.cvolVolumes = m_cvolVolumesAddress;
+		const uint32_t n = std::min<uint32_t>(uint32_t(m_cvolVolumes.size()), 8u);
+		for (uint32_t cv = 0; cv < n; ++cv)
+			for (uint32_t t = 0; t < 7; ++t)
+				data.cvolLayers[cv * 7u + t] = m_cvolVolumes[cv].layerSlots[t];
+		data.cvolCount = n;
+		data.cvolEnabled = ProbesWanted() ? 1u : 0u;
+	} else {
+		data.cvolVolumes = 0;
+		for (uint32_t& slot : data.cvolLayers)
+			slot = UINT32_MAX;
+		data.cvolCount = 0u;
+		data.cvolEnabled = 0u;
+	}
+	data.cvolPad_[0] = 0;
+	data.cvolPad_[1] = 0;
+	data.cvolPad_[2] = 0;
+	data.cvolPad_[3] = 0;
+	// EVSM stays a main-view opt-in: the view's light entries address its
+	// PCF depth atlases (see UpdateSecondaryLights), so its uniforms
+	// publish the PCF interpretation.
+	data.evsmMode = 0u;
+	// Decals: the global placement ring + the VIEW's forward+ tile-list
+	// BDAs (the per-view tile cull refreshes them — contract preserved:
+	// decalCount > 0 only when the view's cull dispatch runs).
+	if (v.vp.forwardPlus.Valid()) {
+		data.decalTileCounts = v.vp.forwardPlus.DecalTileCountsAddress(*m_context);
+		data.decalTileIndices = v.vp.forwardPlus.DecalTileIndicesAddress(*m_context);
+		data.decalMaxPerTile = v.vp.forwardPlus.desc.maxDecalsPerTile;
+	}
+	if (DecalsActive() && m_decalFrameCount > 0
+		&& !m_resources.decalsBuffer.empty()) {
+		constexpr size_t DECAL_FRAME_STRIDE =
+			sizeof(smvk::ForwardPlusDecal) * FP_MAX_DECALS;
+		data.decals = m_context->GetBufferDeviceAddress(m_resources.decalsBuffer)
+			+ frameIdx * DECAL_FRAME_STRIDE;
+		data.decalCount = std::min(m_decalFrameCount, FP_MAX_DECALS);
+	} else {
+		data.decals = 0;
+		data.decalCount = 0;
+	}
+	// View-major slab upload (view 0 = the main view's slice).
+	static constexpr smvk::PipelineStage kFrameUploadStages =
+		smvk::PipelineStage(smvk::PipelineStageBit_Vertex
+			| smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute);
+	m_context->UploadDataToBuffer(
+		m_resources.frameUniforms,
+		&data,
+		sizeof(FrameUniforms),
+		kFrameUploadStages,
+		smvk::AccessFlags::ShaderRead,
+		0,
+		ViewSlabOffset(1u + vi, frameIdx, sizeof(FrameUniforms))
+	);
+	return data;
+}
+
+void WorldRenderer::UpdateSecondaryLights(SecondaryView& v, uint32_t vi,
+	uint32_t frameIdx)
+{
+	// Per-view twin of UpdateLights: CSM fitted to the VIEW camera, the
+	// sun's shadow index addressing the VIEW's atlas, uploads into the
+	// view-major lights + cascade slabs.
+	glm::vec3 toSun = m_env.SunDirectionToSun();
+	glm::vec3 lightDir = -toSun;
+	auto cameraView = v.camera.getViewMatrix();
+	auto cameraProj = v.camera.getProjMatrix();
+	// Y-flip parity with the main fit (UpdateLights).
+	cameraProj[1][1] *= -1.0f;
+	smvk::Light lights[MAX_LIGHTS]{};
+	smvk::Light& light = lights[0];
+	light.color = glm::vec4(m_env.sunColor, 1.0f);
+	light.direction[0] = lightDir.x;
+	light.direction[1] = lightDir.y;
+	light.direction[2] = lightDir.z;
+	light.intensity = m_env.sunIntensity;
+	// PCF depth atlas only per view (EVSM is a main-view opt-in; see
+	// EnsureSecondaryTargets) — FrameUniforms.evsmMode=0 keeps the view's
+	// sampling interpretation consistent.
+	light.shadow_map_index =
+		m_context->GetBindlessIndex(v.vp.directionalShadows.bindless);
+	auto invView = glm::inverse(cameraView);
+	auto invProj = glm::inverse(cameraProj);
+	// Split far plane: the view's far clip, capped like the main fit
+	// (CascadeFar: [near + 1, scene far]).
+	const float splitFar = std::clamp(v.desc.zFar,
+		v.desc.zNear + 1.0f, m_sceneFarClip);
+	auto splits = smvk::ComputeCascadeSplits(v.desc.zNear, splitFar,
+		m_cascadeLambda, NUM_CASCADES);
+	smvk::GpuDirectionalLightDescription dir =
+		v.vp.directionalShadows.BuildDirectionalLight(
+			lightDir,
+			light.color,
+			light.intensity,
+			light.shadow_map_index,
+			invView,
+			invProj,
+			splits,
+			CASCADE_Z_PADDING,
+			std::tan(glm::radians(m_env.sunDiscSizeDeg)),
+			m_evsmSoftness);
+	for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+		dir.cascades[i].bias *= m_cascadeDepthBiasScale;
+		dir.cascades[i].normalBias *= m_cascadeNormalBiasScale;
+	}
+	std::memcpy(light.lightVP, dir.lightVP, sizeof(light.lightVP));
+	constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
+	m_context->UploadDataToBuffer(
+		m_resources.lightsBuffer,
+		lights,
+		sizeof(lights),
+		smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment
+			| smvk::PipelineStageBit_Compute,
+		smvk::AccessFlags::ShaderRead,
+		0,
+		ViewSlabOffset(1u + vi, frameIdx, LIGHT_FRAME_STRIDE)
+	);
+	constexpr size_t DIR_STRIDE = sizeof(smvk::GpuDirectionalLightDescription);
+	// PCF only per view: the sampling descriptors are always the CURRENT
+	// fit (no EVSM OneFrameLag trailing copy per view).
+	m_context->UploadDataToBuffer(
+		m_resources.directionalCascadeBuffer,
+		&dir,
+		sizeof(dir),
+		smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment
+			| smvk::PipelineStageBit_Compute,
+		smvk::AccessFlags::ShaderRead,
+		0,
+		ViewSlabOffset(1u + vi, frameIdx, DIR_STRIDE)
+	);
+	v.dirLight = dir;
+	v.dirLightValid = true;
+}
+
+void WorldRenderer::UploadSecondaryForwardPlusLights(SecondaryView& v,
+	uint32_t vi, uint32_t frameIdx)
+{
+	// Per-view twin of UpdateForwardPlusLights' SELECTION + UPLOAD legs
+	// (the light SET is shared — m_frameLights, captured by the main view
+	// after its DS sort). Each view copies it, runs its own spot-shadow
+	// selection against ITS camera (patching shadowTile/shadowMapIndex
+	// for ITS atlas) and uploads into its view-major slabs.
+	v.spotShadowCount = 0;
+	v.spotShadowMapIndex = -1;
+	v.spotShadowTiles.clear();
+	v.lightScratch = m_frameLights;
+	if (m_passes.spotShadows && m_fpDemo.spotShadowsEnabled
+		&& v.vp.spotShadows.Valid() && !v.lightScratch.empty()) {
+		const uint32_t wantMax = (uint32_t)std::clamp(m_fpDemo.spotShadowMax,
+			0, (int)smvk::kMaxSpotShadows);
+		const uint32_t budget = std::min(wantMax, v.vp.spotShadows.slotCount);
+		if (budget > 0) {
+			const float proj11 = std::abs(v.frameData.proj[1][1]);
+			auto selected = smvk::SelectSpotShadowCasters(
+				v.lightScratch, v.frameData.viewProj, v.frameData.cameraPos,
+				m_fpDemo.spotShadowMaxDistance, budget, proj11);
+			const int32_t atlasIdx = v.vp.spotShadows.BindlessIndex(*m_context);
+			// PCF depth atlas only per view (EVSM is a main-view opt-in).
+			const int32_t sampleIdx = atlasIdx;
+			if (atlasIdx >= 0 && !selected.empty()) {
+				std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
+				for (size_t k = 0; k < selected.size(); ++k) {
+					smvk::ForwardPlusLight& sl =
+						v.lightScratch[selected[k].lightIndex];
+					tiles[k] = v.vp.spotShadows.BuildSpotTile(
+						glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
+						glm::normalize(glm::vec3(sl.direction[0], sl.direction[1],
+							sl.direction[2])),
+						sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
+						SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
+						m_evsmSpotLightSize, m_evsmSoftness);
+					sl.shadowTile = (int32_t)k;
+					sl.shadowMapIndex = sampleIdx;
+					sl.shadowBias = SPOT_SHADOW_BIAS;
+				}
+				constexpr size_t SPOT_FRAME_STRIDE =
+					sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+				m_context->UploadDataToBuffer(
+					m_resources.spotShadowBuffer,
+					tiles.data(),
+					sizeof(smvk::GpuCascadeDescription) * tiles.size(),
+					smvk::PipelineStage(smvk::PipelineStageBit_Vertex
+						| smvk::PipelineStageBit_Fragment),
+					smvk::AccessFlags::ShaderRead,
+					0,
+					ViewSlabOffset(1u + vi, frameIdx, SPOT_FRAME_STRIDE)
+				);
+				v.spotShadowCount = (uint32_t)selected.size();
+				v.spotShadowMapIndex = sampleIdx;
+				v.spotShadowTiles = std::move(tiles);
+			}
+		}
+	}
+	constexpr size_t FP_FRAME_STRIDE =
+		sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+	if (!v.lightScratch.empty()) {
+		m_context->UploadDataToBuffer(
+			m_resources.fpLightsBuffer,
+			v.lightScratch.data(),
+			sizeof(smvk::ForwardPlusLight) * v.lightScratch.size(),
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex
+				| smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute),
+			smvk::AccessFlags::ShaderRead,
+			0,
+			ViewSlabOffset(1u + vi, frameIdx, FP_FRAME_STRIDE)
+		);
+	}
+	// Reflection probes as FP light entries (type kForwardPlusProbe) — the
+	// same widest-first tail, uploaded into the VIEW's slab so the per-view
+	// tile cull files them into the view's tile lists.
+	{
+		const uint32_t probeEntries = ProbeEntryCount();
+		if (probeEntries > 0
+			&& v.lightScratch.size() + probeEntries <= FP_MAX_LIGHTS) {
+			std::vector<smvk::ForwardPlusLight> gpu;
+			gpu.reserve(probeEntries);
+			for (uint32_t i = 0; i < probeEntries; ++i) {
+				const CubemapProbeGpu& pr = m_cubemapProbes[i];
+				gpu.push_back(smvk::MakeProbeLightEntry(
+					glm::vec3(pr.posInfluence.x, pr.posInfluence.y,
+						pr.posInfluence.z),
+					pr.posInfluence.w, pr.fadeCubemap.x,
+					static_cast<uint32_t>(pr.fadeCubemap.y),
+					static_cast<uint32_t>(pr.fadeCubemap.z)));
+			}
+			m_context->UploadDataToBuffer(
+				m_resources.fpLightsBuffer,
+				gpu.data(),
+				sizeof(smvk::ForwardPlusLight) * gpu.size(),
+				smvk::PipelineStage(smvk::PipelineStageBit_Vertex
+					| smvk::PipelineStageBit_Fragment
+					| smvk::PipelineStageBit_Compute),
+				smvk::AccessFlags::ShaderRead,
+				0,
+				ViewSlabOffset(1u + vi, frameIdx, FP_FRAME_STRIDE)
+					+ v.lightScratch.size() * sizeof(smvk::ForwardPlusLight)
+			);
+		}
+	}
+}
+
+void WorldRenderer::PrepareSecondaryViews(uint32_t frameIdx) {
+	// Frame-top per-view prep for every view due THIS frame (phase gate):
+	// targets + lean FrameUniforms + per-view CSM fit/spot selection + the
+	// view-major slab uploads. Off-phase views are skipped entirely (their
+	// images persist); RenderFrame allocates their RenderViews only when
+	// dirLightValid (i.e. prepared this frame — the flag is CLEARED on
+	// every skip so a stale fit can never ride a later frame's slab).
+	if (!IsHosted())
+		return;
+	static const bool mvTrace = std::getenv("VULKANTOY_MULTIVIEW_TRACE") != nullptr;
+	if (mvTrace) {
+		std::fprintf(stderr, "[MV] frame=%llu phase=%u views=%zu\n",
+			(unsigned long long)m_frameCounter, m_viewPhase, m_views.size());
+	}
+	for (uint32_t vi = 0; vi < (uint32_t)m_views.size(); ++vi) {
+		SecondaryView& v = m_views[vi];
+		if (!v.desc.enabled || !ViewRefreshDue(v.desc)) {
+			v.renderedLastFrame = false;
+			v.dirLightValid = false; // prepared-this-frame flag
+			if (mvTrace) {
+				std::fprintf(stderr,
+					"[MV] view %u skipped (enabled=%d refresh=%u phase=%u)\n",
+					vi + 1u, (int)v.desc.enabled,
+					(unsigned)v.desc.refresh, m_viewPhase);
+			}
+			continue;
+		}
+		EnsureSecondaryTargets(v, vi);
+		if (!v.vp.renderDepth.Valid() || !v.vp.hdr.Valid() || !v.outValid) {
+			v.renderedLastFrame = false;
+			v.dirLightValid = false;
+			std::fprintf(stderr,
+				"[MV] view %u target creation failed (depth=%d hdr=%d out=%d) "
+				"— frame skipped\n",
+				vi + 1u, (int)v.vp.renderDepth.Valid(), (int)v.vp.hdr.Valid(),
+				(int)v.outValid);
+			continue; // target creation failed — skip the frame for this view
+		}
+		v.frameData = BuildSecondaryFrameUniforms(v, vi, frameIdx);
+		UpdateSecondaryLights(v, vi, frameIdx);
+		UploadSecondaryForwardPlusLights(v, vi, frameIdx);
+		v.renderedLastFrame = true;
+		if (mvTrace) {
+			std::fprintf(stderr,
+				"[MV] view %u prepared %ux%u eye=(%.1f,%.1f,%.1f) "
+				"spots=%u lights=%zu\n",
+				vi + 1u, v.desc.extent.width, v.desc.extent.height,
+				v.desc.eye.x, v.desc.eye.y, v.desc.eye.z,
+				v.spotShadowCount, v.lightScratch.size());
+		}
+	}
+}
+
+void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
+	// Per-view pass emission (after the main view's post/UI, before the
+	// shadow-futures join): shadows fitted to the view camera, Forward+
+	// prepass + tile cull, direct-draw Main, tonemap into the view image.
+	// Each pass targets the VIEW's targets; shared state (light set,
+	// RenderView slab, decal ring, materials) rides the per-view push
+	// constants' view-major addresses.
+	if (!IsHosted())
+		return;
+	const uint32_t activeViews = (uint32_t)m_views.size();
+	if (activeViews == 0)
+		return;
+	constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
+	constexpr size_t DIR_FRAME_STRIDE =
+		sizeof(smvk::GpuDirectionalLightDescription);
+	constexpr size_t FP_LIGHT_FRAME_STRIDE =
+		sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+	constexpr size_t SPOT_FRAME_STRIDE =
+		sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+	const uint64_t frameUniformsBase =
+		m_context->GetBufferDeviceAddress(m_resources.frameUniforms);
+	const uint64_t lightsBase =
+		m_context->GetBufferDeviceAddress(m_resources.lightsBuffer);
+	const uint64_t cascadeBase =
+		m_context->GetBufferDeviceAddress(m_resources.directionalCascadeBuffer);
+	const uint64_t fpLightsBase =
+		m_context->GetBufferDeviceAddress(m_resources.fpLightsBuffer);
+	const uint64_t spotBase =
+		m_context->GetBufferDeviceAddress(m_resources.spotShadowBuffer);
+	const uint64_t renderViewsAddress =
+		m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
+	const uint32_t linearSampler = m_context->GetOrCreateSampler(
+		smvk::SamplerCreateInfo{});
+	const float frameExposure = FrameExposure();
+	const char* cascadeNames[4] = { "ViewShadowCascade0", "ViewShadowCascade1",
+		"ViewShadowCascade2", "ViewShadowCascade3" };
+	const char* spotNames[8] = { "ViewSpotShadow0", "ViewSpotShadow1",
+		"ViewSpotShadow2", "ViewSpotShadow3", "ViewSpotShadow4",
+		"ViewSpotShadow5", "ViewSpotShadow6", "ViewSpotShadow7" };
+	const uint64_t materialsBase =
+		m_context->GetBufferDeviceAddress(m_resources.materialsBuffer);
+	// One COMPLETE per-view push (view-major slab addresses + the view's
+	// tile/spot selection) — the shadow + scene phases derive from it by
+	// copy exactly like the main view's cascadePC/spotPC.
+	auto makeViewPc = [&](uint32_t vi) {
+		const SecondaryView& v = m_views[vi];
+		const uint32_t lightCount = (uint32_t)v.lightScratch.size();
+		PushConstants viewPc{};
+		viewPc.frameUniforms = frameUniformsBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FrameUniforms));
+		viewPc.lightsBuffer = lightsBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, LIGHT_FRAME_STRIDE);
+		viewPc.materialsBuffer = materialsBase
+			+ fb.frameIndex * sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+		viewPc.cascadeBuffer = cascadeBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, DIR_FRAME_STRIDE);
+		viewPc.materialId = 0;
+		viewPc.comparisonSamplerId = 1;
+		viewPc.numCascades = NUM_CASCADES;
+		viewPc.fpLights = fpLightsBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, FP_LIGHT_FRAME_STRIDE);
+		viewPc.fpTileCounts = v.vp.forwardPlus.TileCountsAddress(*m_context);
+		viewPc.fpTileIndices = v.vp.forwardPlus.TileIndicesAddress(*m_context);
+		viewPc.fpTileCountX = v.vp.forwardPlus.tileCountX;
+		viewPc.fpLightCount = lightCount;
+		viewPc.fpTileSize = FP_TILE_SIZE;
+		viewPc.fpMaxPerTile = FP_MAX_PER_TILE;
+		viewPc.spotShadowBuffer = spotBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, SPOT_FRAME_STRIDE);
+		viewPc.spotShadowMapIndex = v.spotShadowMapIndex >= 0
+			? (uint32_t)v.spotShadowMapIndex : UINT32_MAX;
+		viewPc.spotShadowCount = v.spotShadowCount;
+		viewPc.spotIndex = UINT32_MAX;
+		viewPc.pad_pc = (m_transparentMode == smvk::TransparentMode::Blended)
+			? 1u : 0u;
+		viewPc.renderViews = renderViewsAddress;
+		viewPc.mainRenderView = v.mainViewIdx;
+		viewPc.renderViewIndex = v.mainViewIdx;
+		return viewPc;
+	};
+	// Phase 1 — per-view shadow passes (PCF depth tiles only; EVSM is a
+	// main-view opt-in, so no moment/blur passes exist on this path).
+	for (uint32_t vi = 0; vi < activeViews; ++vi) {
+		SecondaryView& v = m_views[vi];
+		if (!v.desc.enabled || !v.dirLightValid || !v.outValid)
+			continue;
+		const PushConstants viewPc = makeViewPc(vi);
+		if (m_passes.directionalShadows && v.vp.directionalShadows.Valid()) {
+			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
+				PushConstants cascadePC = viewPc;
+				cascadePC.cascadeIndex = ci;
+				const uint32_t casterViewIndex =
+					v.cascadeViewBase != smvk::RenderViewSet::kInvalidIndex
+					? v.cascadeViewBase + ci
+					: smvk::RenderViewSet::kInvalidIndex;
+				cascadePC.renderViewIndex = casterViewIndex;
+				auto& shadowPass = v.vp.directionalShadows.AddCascadePass(
+					*m_rendergraph, ci, cascadeNames[ci]);
+				shadowPass.SetRecordingFunc(
+					[this, cascadePC, casterViewIndex, vi](smvk::CommandBuffer& cmd) {
+					RecordShadowCastersDirect(cmd,
+						m_views[vi].vp.directionalShadows.program,
+						cascadePC, casterViewIndex, /*skipFiltered=*/false);
+				});
+			}
+		}
+		// Spot tiles (per-view selection; direct casters, no filter).
+		if (m_passes.spotShadows && v.spotShadowCount > 0
+			&& v.vp.spotShadows.Valid()) {
+			const uint32_t spotCount = std::min(v.spotShadowCount,
+				v.vp.spotShadows.slotCount);
+			for (uint32_t si = 0; si < spotCount; ++si) {
+				PushConstants spotPC = viewPc;
+				spotPC.spotIndex = si;
+				const uint32_t casterViewIndex =
+					v.spotViewBase != smvk::RenderViewSet::kInvalidIndex
+					? v.spotViewBase + si
+					: smvk::RenderViewSet::kInvalidIndex;
+				spotPC.renderViewIndex = casterViewIndex;
+				auto& spotPass = v.vp.spotShadows.AddSpotPass(
+					*m_rendergraph, si, spotNames[si]);
+				spotPass.SetRecordingFunc(
+					[this, spotPC, casterViewIndex, vi](smvk::CommandBuffer& cmd) {
+					RecordShadowCastersDirect(cmd,
+						m_views[vi].vp.spotShadows.program,
+						spotPC, casterViewIndex, /*skipFiltered=*/false);
+				});
+			}
+		}
+	}
+	// Phase 3 — per-view scene passes: Forward+ prepass + tile cull, Main,
+	// tonemap into the view image.
+	for (uint32_t vi = 0; vi < activeViews; ++vi) {
+		SecondaryView& v = m_views[vi];
+		if (!v.desc.enabled || !v.dirLightValid || !v.outValid
+			|| v.mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
+			continue;
+		const uint32_t lightCount = (uint32_t)v.lightScratch.size();
+		const PushConstants pc = makeViewPc(vi);
+		// Forward+ prepass + tile cull (the renderer is re-configured to
+		// the VIEW's builder + depth; EnsureSized is idempotent per view).
+		if (m_passes.forwardPlusPrepass || m_passes.forwardPlusCull) {
+			AppFrameContext vfc{};
+			vfc.ctx = m_context.get();
+			vfc.rg = m_rendergraph.get();
+			vfc.world = m_world.get();
+			vfc.views = &m_renderViews;
+			vfc.frameIndex = fb.frameIndex;
+			vfc.pc = pc;
+			vfc.mainViewIndex = v.mainViewIdx;
+			vfc.eye = v.positioner.cameraPosition_;
+			vfc.extent = v.desc.extent;
+			vfc.depthView = v.vp.renderDepth.logicalView;
+			vfc.depthViewHandle = v.vp.renderDepth.view;
+			vfc.fpLights = m_resources.fpLightsLogical;
+			vfc.fpLightCount = lightCount;
+			vfc.decals = m_resources.decalsLogical;
+			vfc.decalCount = m_decalFrameCount;
+			vfc.lodEnabled = m_lodEnabled;
+			vfc.lodInputs = m_lodFrameInputs; // main-view decisions (shared cache)
+			vfc.lodShaderEnabled = ShaderLodActive();
+			vfc.ditheredTransparency =
+				(m_transparentMode == smvk::TransparentMode::Dithered);
+			m_fpRenderer.Configure(&v.vp.forwardPlus, MakeForwardPlusDesc(),
+				m_resources.prepassMaskedProgram);
+			m_fpRenderer.EnsureSized(*m_context, *m_rendergraph,
+				v.desc.extent, v.vp.renderDepth.view);
+			if (m_passes.forwardPlusPrepass)
+				m_fpRenderer.AppendPrepass(vfc);
+			if (m_passes.forwardPlusCull)
+				m_fpRenderer.AppendTileCull(vfc, lightCount + ProbeEntryCount());
+		}
+		// Main (lean direct-draw path: sky + opaque + masked + transparent,
+		// frustum-culled against the view's RenderView; wireframe honored).
+		const smvk::RenderView cullView = m_renderViews.Get(v.mainViewIdx);
+		std::vector<smvk::LogicalImageViewHandle> mainInputs;
+		mainInputs.push_back(v.vp.directionalShadows.logicalView);
+		if (v.vp.spotShadows.Valid())
+			mainInputs.push_back(v.vp.spotShadows.logicalView);
+		auto& mainPass = m_rendergraph->AddPass("ViewMain")
+			.SetOffset(0, 0)
+			.SetInputImages(mainInputs)
+			.SetExtent(v.desc.extent);
+		mainPass.SetColor({ v.vp.hdr.logicalView },
+				smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentStoreOp::Store,
+				smvk::ClearColor(0, 0, 0, 1))
+			// Depth was filled by the view's Forward+ prepass (Clear when
+			// the prepass is off — LoadOp::DontCare would leave garbage).
+			.SetDepth(v.vp.renderDepth.logicalView,
+				m_passes.forwardPlusPrepass ? smvk::AttachmentLoadOp::Load
+					: smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentStoreOp::Store,
+				smvk::ClearDepthStencil(0, 0));
+		mainPass.SetRecordingFunc(
+			[this, pc, cullView, eye = v.frameData.cameraPos](smvk::CommandBuffer& cmd) {
+			RecordSecondaryMain(cmd, pc, cullView, eye);
+		});
+		// Tonemap -> the view's own output image (persists across
+		// off-phase frames; the host composites it every frame).
+		{
+			smvk::TonemapDesc td = v.vp.tonemap.desc;
+			td.exposure = frameExposure;
+			td.tonemapMode = m_tonemapMode;
+			const bool lutOn = !m_lutFile.empty()
+				&& m_lutBindless != UINT32_MAX && m_lutIntensity > 0.0f;
+			auto& tonemapPass = v.vp.tonemap.AddTonemapPass(
+				*m_rendergraph,
+				v.vp.hdr.logicalView,
+				v.vp.hdr.bindlessIndex,
+				smvk::LogicalImageViewHandle{},
+				UINT32_MAX,
+				0.0f,
+				linearSampler,
+				{ v.outLogical },
+				v.outExtent,
+				td,
+				"ViewTonemap",
+				smvk::LogicalImageViewHandle{},
+				UINT32_MAX,
+				0u,
+				0.0f,
+				{},
+				UINT32_MAX,
+				0.0f,
+				!SwapchainIsSrgb(),
+				lutOn ? m_lutBindless : UINT32_MAX,
+				m_lutIntensity,
+				0.0f,
+				0.0f);
+			(void)tonemapPass;
+		}
+	}
+}
+
+void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
+	const PushConstants& pc, const smvk::RenderView& cullView,
+	const glm::vec3& viewEye)
+{
+	// Lean Main twin (direct draws — no GPU filter, no MSAA, no debug-view
+	// swaps): skydome, opaque + MASK cutout (frustum-culled against the
+	// view), transparent (dithered/blended like the main view). LOD
+	// decisions reuse the main view's cache (World halfrate, per frameId).
+	const smvk::DepthSettings opaqueDepth{
+		.depthFunc = smvk::CompareOp::GreaterEqual,
+		.writeEnable = false, // prepass owns depth (read-only Main, 1x)
+		.depthTestEnable = true,
+	};
+	const smvk::DepthSettings transparentDepth{
+		.depthFunc = smvk::CompareOp::GreaterEqual,
+		.writeEnable = false,
+		.depthTestEnable = true,
+	};
+	const smvk::StencilSettings noStencil{};
+	const smvk::MSAASettings msaaSettings = smvk::MSAASettings::Count1();
+	auto wireframeRaster = [&](smvk::RasterSettings r) {
+		if (m_wireframe) {
+			r.polygonMode = smvk::PolygonMode::Line;
+			r.cullMode = smvk::CullMode::None;
+		}
+		return r;
+	};
+	auto bindForMaterial = [&](uint32_t materialId, smvk::ShaderProgram& prog,
+			const smvk::DepthSettings& depth) {
+		smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
+		smvk::RasterSettings raster{};
+		if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
+			blend = mat->pipeline.blend;
+			raster = mat->pipeline.raster;
+		}
+		smvk::ShaderProgram& bound =
+			(m_wireframe && m_resources.mainWireProgram.shaderCount == 2)
+			? m_resources.mainWireProgram : prog;
+		cmd.BindRenderPipeline(
+			bound,
+			smvk::VertexFormat::StaticVertexFormat,
+			depth,
+			noStencil,
+			blend,
+			msaaSettings,
+			wireframeRaster(raster)
+		);
+	};
+	auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
+		auto& model = m_world->scene.globalTransform[node];
+		smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
+		if (!meshDesc)
+			return;
+		PushConstants objPC = pc;
+		objPC.materialId = materialId;
+		std::copy_n(glm::value_ptr(model), 16, objPC.model);
+		cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+		for (auto& draw_set : meshDesc->geometry.surfaces) {
+			cmd.DrawIndexed(draw_set.indexCount, 1,
+				draw_set.firstIndex, draw_set.baseVertex);
+		}
+	};
+	auto itemVisible = [&](const smvk::World::RenderItem& item) {
+		const glm::mat4& model = m_world->scene.globalTransform[item.node];
+		const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
+		smvk::StaticMesh* desc = m_world->GetMesh(item.mesh);
+		if (!desc)
+			return true; // unknown bounds: draw (conservative)
+		glm::vec3 c{ 0.0f };
+		float r = 0.0f;
+		smvk::MeshBoundsToWorld(model, desc->geometry.aabbMin,
+			desc->geometry.aabbMax, c, r);
+		if (smvk::RenderViewIntersectsSphere(cullView, c, r))
+			return true;
+		// Conservative LOD union (matches CollectTransparentDraws): keep
+		// when the selected sibling pokes into the frustum.
+		smvk::StaticMesh* sel = m_world->GetLodMesh(item.mesh, lodIdx);
+		if (sel && sel != desc) {
+			smvk::MeshBoundsToWorld(model, sel->geometry.aabbMin,
+				sel->geometry.aabbMax, c, r);
+			return smvk::RenderViewIntersectsSphere(cullView, c, r);
+		}
+		return false;
+	};
+	// Skydome first (depth Always, no writes).
+	if (m_passes.skydome && m_env.skyEnabled && m_skydome.ShadersValid()) {
+		cmd.BindRenderPipeline(
+			m_skydome.program,
+			smvk::VertexFormat::Empty,
+			smvk::DepthSettings::Disabled(),
+			noStencil,
+			smvk::BlendSettings::Opaque(),
+			msaaSettings,
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		cmd.Draw(3, 1, 0, 0);
+	}
+	// Opaque + MASK cutout (alpha-tested in shader), per-material binds.
+	{
+		uint32_t boundMaterial = UINT32_MAX;
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt
+			,
+			[&](const smvk::World::RenderItem& item)
+		{
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+			if (!itemVisible(item))
+				return;
+			const uint32_t materialId = item.material;
+			if (materialId != boundMaterial) {
+				bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);
+				boundMaterial = materialId;
+			}
+			drawNode(item.node, item.mesh, materialId);
+		}
+		);
+	}
+	// Transparent (AlphaMode::Blend): dithered (opaque state, screen-door
+	// discard) or classic back-to-front blend — mirrors the main leg
+	// (per-view eye for the distance sort).
+	{
+		const bool ditheredTransp =
+			(m_transparentMode == smvk::TransparentMode::Dithered);
+		const std::vector<TransparentDrawItem> draws = CollectTransparentDraws(
+			cullView, !ditheredTransp, viewEye);
+		uint32_t boundMaterial = UINT32_MAX;
+		for (const TransparentDrawItem& d : draws) {
+			if (d.materialId != boundMaterial) {
+				if (ditheredTransp) {
+					// Opaque state: the shader discard does the work
+					// (blend off; depth follows opaque) — main-leg parity.
+					smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+					smvk::RasterSettings raster{};
+					if (smvk::Material* mat = m_world->GetMaterial(d.materialId))
+						raster = mat->pipeline.raster;
+					cmd.BindRenderPipeline(
+						(m_wireframe && m_resources.mainWireProgram.shaderCount == 2)
+							? m_resources.mainWireProgram
+							: m_resources.mainProgram,
+						smvk::VertexFormat::StaticVertexFormat,
+						opaqueDepth,
+						noStencil,
+						opaqueBlend,
+						msaaSettings,
+						wireframeRaster(raster)
+					);
+				} else {
+					bindForMaterial(d.materialId, m_resources.mainProgram,
+						transparentDepth);
+				}
+				boundMaterial = d.materialId;
+			}
+			drawNode(d.node, d.meshId, d.materialId);
+		}
+	}
+}
+
+void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	SMVK_PROFILE_FUNCTION();
 	SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
 
@@ -6037,7 +6570,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
 	UpdateCameraAspect(renderExtent);
 	{
-		SMVK_PROFILE_SCOPE("SceneRenderer_ResourceEnsure");
+		SMVK_PROFILE_SCOPE("WorldRenderer_ResourceEnsure");
 		smvk::DepthDesc frameDepthDesc{};
 		frameDepthDesc.format = m_swapchain->GetDepthFormat();
 		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, frameDepthDesc);
@@ -6232,6 +6765,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const auto rfT1 = bench_clk::now();
 
 		// ------------------------------------------------------------------
+		// MULTIVIEW (hosted): advance the global tic/toc phase + prep every
+		// secondary view due THIS frame (targets, lean FrameUniforms,
+		// per-view CSM fit + spot selection, view-major slab uploads).
+		// Off-phase views are skipped entirely (their images persist).
+		// Runs BEFORE the RenderView allocation below so the per-view
+		// cameras ride the same slab upload.
+		// ------------------------------------------------------------------
+		m_viewPhase = static_cast<uint32_t>(m_frameCounter & 1ull);
+		PrepareSecondaryViews(fb.frameIndex);
+
+		// ------------------------------------------------------------------
 		// GPU particles (see smvk::Particles + particles.h): extent-
 		// independent builder Ensure (pool/free-list/emitter ring + the
 		// three programs) + the per-frame emitter parameter upload. The
@@ -6266,6 +6810,37 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				tile, { static_cast<float>(SPOT_SHADOW_RES), static_cast<float>(SPOT_SHADOW_RES) });
 			if (spotViewBase == smvk::RenderViewSet::kInvalidIndex)
 				spotViewBase = view;
+		}
+		// MULTIVIEW: the due secondary views' cameras join the same slab
+		// (main-flagged views + their cascade/spot fits). Only views
+		// prepared this frame (dirLightValid) allocate — off-phase views
+		// render nothing and hold no slots (kMaxRenderViews budget: the
+		// main view + up to 3 secondary views x (1 main + 4 cascades +
+		// up to 8 spots) fits the 64-view slab).
+		for (SecondaryView& v : m_views) {
+			v.mainViewIdx = smvk::RenderViewSet::kInvalidIndex;
+			v.cascadeViewBase = smvk::RenderViewSet::kInvalidIndex;
+			v.spotViewBase = smvk::RenderViewSet::kInvalidIndex;
+			if (!v.dirLightValid)
+				continue; // not due (or prep failed) this frame
+			v.mainViewIdx = m_renderViews.AllocateView(
+				v.frameData.viewProj,
+				{ static_cast<float>(v.desc.extent.width),
+					static_cast<float>(v.desc.extent.height) },
+				smvk::RenderViewFlagBit_MainView, kMainViewCullGuardPx);
+			if (v.mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
+				continue; // slab full: skip the view this frame
+			v.cascadeViewBase = m_renderViews.AllocateDirectionalLightViews(
+				v.dirLight,
+				{ static_cast<float>(CascadeTileExtent().width),
+					static_cast<float>(CascadeTileExtent().height) });
+			for (const smvk::GpuCascadeDescription& tile : v.spotShadowTiles) {
+				const uint32_t view = m_renderViews.AllocateSpotShadowView(
+					tile, { static_cast<float>(SPOT_SHADOW_RES),
+						static_cast<float>(SPOT_SHADOW_RES) });
+				if (v.spotViewBase == smvk::RenderViewSet::kInvalidIndex)
+					v.spotViewBase = view;
+			}
 		}
 		m_renderViews.Upload(*m_context, fb.frameIndex);
 		const uint64_t renderViewsAddress =
@@ -7632,7 +8207,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// tonemapper reproduces them (ACES still shapes, hues stay
 		// distinct). The unlit/cascade shaders do this in-shader.
 		// FrameExposure: debug views run at the fixed reference exposure
-		// (see scene_renderer.h), so the gain is a constant 1/0.001 and
+		// (see world_renderer.h), so the gain is a constant 1/0.001 and
 		// the flat colors are deterministic across runs/scenes.
 		const float flatExposure = FrameExposure();
 		const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
@@ -8963,7 +9538,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			dlssIn.cameraRight[0] = camRight.x; dlssIn.cameraRight[1] = camRight.y; dlssIn.cameraRight[2] = camRight.z;
 			dlssIn.cameraFwd[0] = camFwd.x; dlssIn.cameraFwd[1] = camFwd.y; dlssIn.cameraFwd[2] = camFwd.z;
 			dlssIn.cameraNear = default_near_clip;
-			dlssIn.cameraFar = m_scene.farClip;
+			dlssIn.cameraFar = m_sceneFarClip;
 			dlssIn.cameraFOV = glm::radians(kCameraFovYDegrees);
 			dlssIn.cameraAspectRatio =
 				float(renderExtent.width) / float(renderExtent.height);
@@ -9424,7 +9999,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
 					if (!m_giLoaded && !m_lmLoaded && !m_regLoaded)
 						ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
-							m_scene.id ? m_scene.id : "?");
+							m_sceneId.empty() ? "?" : m_sceneId.c_str());
 				}
 				if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
@@ -9656,7 +10231,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");
 				ImGui::SliderFloat("Shadow distance (m, 0 = scene far)", &m_cascadeMaxDistance, 0.0f, 500.0f, "%.0f");
 				ImGui::Text("Effective far: %.1f m (scene far %.1f m)",
-					(double)CascadeFar(), (double)m_scene.farClip);
+					(double)CascadeFar(), (double)m_sceneFarClip);
 				ImGui::SliderFloat("Depth bias scale", &m_cascadeDepthBiasScale, 0.0f, 4.0f, "%.2f");
 				ImGui::SliderFloat("Normal bias scale", &m_cascadeNormalBiasScale, 0.0f, 4.0f, "%.2f");
 				ImGui::TextDisabled("Scales the texel-sized per-cascade auto bias "
@@ -10258,7 +10833,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("9 SG lobes @ sharpness 4, 96 B/probe, 6-axis visibility");
 					} else {
 						ImGui::TextDisabled("No baked volume: content/gi/%s.sggi",
-							m_scene.id ? m_scene.id : "?");
+							m_sceneId.empty() ? "?" : m_sceneId.c_str());
 					}
 				}
 				if (ImGui::CollapsingHeader("AA + motion + AO state", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -10853,6 +11428,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
 		}
 
+		// ------------------------------------------------------------------
+		// MULTIVIEW (hosted): the due secondary views' passes — per-view
+		// shadows (own CSM/spot fits), Forward+ prepass + tile cull, lean
+		// direct-draw Main and tonemap into each view's own image. All
+		// targets are per-view; shared state rides the per-view push
+		// constants. Runs after the main view's UI so the main path's
+		// ordering is untouched.
+		// ------------------------------------------------------------------
+		RenderSecondaryViews(fb);
+
 		// Cooperative shadow list builds must land before Execute: the
 		// cascade/spot pass recording lambdas read the built ranges at
 		// record time. The ring uploads then run on the main thread (the
@@ -11021,7 +11606,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
 namespace app {
 
-void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
+void WorldRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 	// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
 	// cascade-0 tile of the moments/temp/blurred images â€” channels are
 	// (M1+ = E[exp(+c d)], M2+ = E[exp(+2c d)], M1- = E[exp(-c d)],
@@ -11166,7 +11751,7 @@ float SsrDumpHalfToFloat(uint16_t h)
 	return out;
 }
 }
-void SceneRenderer::DumpSsrStages(uint32_t frameIndex) {
+void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 	const auto& ssr = m_viewportResources.ssr;
 	const auto& vol = m_viewportResources.volumetric;
 	const auto& hdrRes = m_viewportResources.hdr;
@@ -11359,7 +11944,7 @@ void SceneRenderer::DumpSsrStages(uint32_t frameIndex) {
 	}
 }
 
-void SceneRenderer::UpdateCamera(float dt)
+void WorldRenderer::UpdateCamera(float dt)
 {
 	auto& movement = m_cameraPositioner.movement_;
 
@@ -11434,7 +12019,7 @@ void SceneRenderer::UpdateCamera(float dt)
 	);
 }
 
-void SceneRenderer::SetUIMode(bool ui)
+void WorldRenderer::SetUIMode(bool ui)
 {
 	m_uiMode = ui;
 	// SDL3: relative mode captures the mouse for FPS; normal mode frees it
@@ -11450,7 +12035,7 @@ void SceneRenderer::SetUIMode(bool ui)
 	}
 }
 
-void SceneRenderer::SetTextureFiltering(TextureFiltering mode)
+void WorldRenderer::SetTextureFiltering(TextureFiltering mode)
 {
 	if (m_textureFiltering == mode)
 		return;
@@ -11458,7 +12043,7 @@ void SceneRenderer::SetTextureFiltering(TextureFiltering mode)
 	ApplyTextureFiltering();
 }
 
-void SceneRenderer::ApplyTextureFiltering()
+void WorldRenderer::ApplyTextureFiltering()
 {
 	if (!m_context)
 		return;

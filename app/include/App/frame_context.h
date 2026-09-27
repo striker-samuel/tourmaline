@@ -45,14 +45,14 @@ struct AppFrameContext : public smvk::FrameContext {
 	// World::LodShader::VertexLit with the cheap vertex-lit program
 	// (direct leg); the gfx filter excludes them from the indirect
 	// ranges accordingly (see GfxRenderer::FilterMainView). Mirrors
-	// SceneRenderer::ShaderLodActive() — both sides must agree per frame.
+	// WorldRenderer::ShaderLodActive() — both sides must agree per frame.
 	bool lodShaderEnabled = false;
 	// Dithered transparency (default) vs classic alpha blend for
-	// AlphaMode::Blend materials. Mirrors SceneRenderer::m_transparentMode.
+	// AlphaMode::Blend materials. Mirrors WorldRenderer::m_transparentMode.
 	// The depth prepass intentionally ignores it: transparent is always
 	// excluded from depth so SSAO/HZB/tile-cull see opaque only.
 	// (Main + MotionVectors branch on the mode directly today; kept here
-	// for frame renderers that need it without reaching into SceneRenderer.)
+	// for frame renderers that need it without reaching into WorldRenderer.)
 	bool ditheredTransparency = true;
 	// Northlight depth split (filter on + seed primed depth): when set,
 	// the prepass runs FALLBACK-ONLY — items whose selected LOD the gfx

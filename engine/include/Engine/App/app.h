@@ -78,6 +78,18 @@ namespace smvk
 		}
 		// True when the hosted renderer runs on a borrowed world.
 		bool HostedWorldBorrowed() const { return worldBorrowed_; }
+		// IN-PLACE borrowed-world rebind (hosted live view): swap the
+		// borrowed pointer WITHOUT releasing the old one — the host
+		// owns BOTH worlds and must keep the old one alive across the
+		// in-flight frames (a retire stash). No state resets here; the
+		// derived renderer's rebind owns the world-derived rebuild.
+		void RebindBorrowedWorld(World* world) {
+			if (!hostedBoot_ || !worldBorrowed_ || !world)
+				return;
+			m_world.release(); // borrowed: never delete (the host owns it)
+			m_world.reset(world); // borrowed in spirit; ~App releases it
+			hostedBorrowedWorld_ = world;
+		}
 
 	protected:
 #pragma region ===[ App / Core State ]===

@@ -1,4 +1,4 @@
-﻿// EditorApp: init / frame loop / scene loading / frame-data upload.
+// EditorApp: init / frame loop / scene loading / frame-data upload.
 // Rendering passes live in editor_render.cpp, UI in editor_ui.cpp.
 
 // Editor app implementation. NOMINMAX must precede EVERY include: the
@@ -114,6 +114,18 @@ EditorApp::EditorApp()
 bool EditorApp::Initialize() {
 	if (!Super::Initialize())
 		return false;
+	// Dev quad-layout switch (VULKANTOY_EDITOR_VP_QUAD=1): start in the
+	// four-viewport layout so headless smoke runs exercise the hosted
+	// MULTIVIEW path (every additional viewport drives its own hosted
+	// view; see the live-view drive in DrawFrame). The V toggle keeps
+	// working after.
+	if (const char* quad = std::getenv("VULKANTOY_EDITOR_VP_QUAD")) {
+		if (std::atoi(quad) != 0) {
+			m_vpLayout = 1;
+			std::cerr << "[Editor] quad viewport layout (dev env) — "
+				"hosted multiview engaged\n";
+		}
+	}
 	// Static mesh heap (VMA virtual blocks + GPU buffers) backing
 	// Cluster::UploadStaticMesh. Without this, the first glTF import
 	// crashes in vmaVirtualAllocate on a null m_staticVertexBlock.
@@ -407,7 +419,7 @@ bool EditorApp::OpenCacheDb() {
 	// mount here â€” never the release content tree (editor -> release
 	// is one-way; reading content/paks back would feed stale cooked
 	// content into authoring). The scene class is consumed by the
-	// HOSTED SceneRenderer (its own VFS, App --pak parity), not by
+	// HOSTED WorldRenderer (its own VFS, App --pak parity), not by
 	// this overlay; these are the resource classes.
 	for (const char* klass : { "texture", "mesh", "material", "light",
 			"camera" }) {
@@ -437,10 +449,8 @@ void EditorApp::CloseScene() {
 	SavePrefs();
 	// Mid-frame safe: the hosted live view dies with its scene — the
 	// world moves to the retire stash (alive for the borrowed pointer)
-	// and the actual stop runs at the next frame boundary. Any pending
-	// rebind dies with the scene.
+	// and the actual stop runs at the next frame boundary.
 	SuspendWysiwygForWorldSwap();
-	m_wysiwygRefreshPending = false;
 	m_world.reset();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
@@ -804,10 +814,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	if (m_texCacheAdapter)
 		m_texCacheAdapter->SetKeyScope({});
 	// The hosted view drives the viewport for this scene from its
-	// source (full App pipeline, no cook needed) — launched at the
-	// next frame boundary, idle (a mid-frame whole-renderer create
-	// is exactly what used to crash F12).
-	m_wysiwygRefreshPending = true;
+	// source (full App pipeline, no cook needed): the pending suspend
+	// above rebinds it IN PLACE at the next frame boundary — a fresh
+	// launch only when no live view exists yet.
 	return true;
 }
 
@@ -849,14 +858,14 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 bool EditorApp::LoadPakFromImage(
 	std::shared_ptr<std::vector<uint8_t>> image,
 	const std::string& displayPath, uint32_t sceneIndex) {
-	// Cooked .pak display core: same path as App's SceneRenderer
-	// (PakReader + LoadClusterFromPak + Resolve; the renderer renders a
-	// SCENE, index 0 by default â€” --pak parity). Pak textures upload
-	// fully at load, so the glTF texture streamer is dropped. Picking
-	// falls back to AABB (no glTF model kept); tour replay is skipped
-	// (tours are authored against the source glTF, not the cooked
-	// pak). The image + parsed reader stay members (never re-parsed
-	// per frame: Open decompresses).
+	// Cooked .pak display core: same path as App's main.cpp host
+	// (PakReader + LoadClusterFromPak + Resolve; a SCENE renders, index
+	// 0 by default — --pak parity). Pak textures upload fully at load,
+	// so the glTF texture streamer is dropped. Picking falls back to
+	// AABB (no glTF model kept); tour replay is skipped (tours are
+	// authored against the source glTF, not the cooked pak). The image
+	// + parsed reader stay members (never re-parsed per frame: Open
+	// decompresses).
 	m_pakImage = std::move(image);
 	m_pakReader.reset();
 	m_pakScenes.clear();
@@ -989,8 +998,8 @@ bool EditorApp::LoadPakFromImage(
 	Log(buf);
 	Log("Note: pak is read-only in the editor (edits/tour apply to the source glTF).");
 	// The hosted view drives the viewport for this pak too (App
-	// --pak parity inspection) — launched at the next frame boundary.
-	m_wysiwygRefreshPending = true;
+	// --pak parity inspection): the pending suspend above rebinds it
+	// in place at the next frame boundary.
 	return true;
 }
 
@@ -1018,7 +1027,7 @@ bool EditorApp::LaunchWysiwyg() {
 	uint32_t w = std::max(uint32_t(vp.w), 64u);
 	uint32_t h = std::max(uint32_t(vp.h), 64u);
 	m_wysiwygExtent = smvk::Extent2D{ w, h };
-	m_wysiwyg = std::make_unique<app::SceneRenderer>();
+	m_wysiwyg = std::make_unique<app::WorldRenderer>();
 	// Hosted boot BEFORE Initialize (App::Initialize takes the hosted
 	// branch: borrowed context + offscreen target, no window/SDL).
 	if (!m_wysiwyg->RequestHostedBoot(*this, m_wysiwygExtent,
@@ -1031,30 +1040,17 @@ bool EditorApp::LaunchWysiwyg() {
 	// takes the live-view branch (no scene import of its own — the
 	// world arrives resolved) and its frames render it in place.
 	m_wysiwyg->SetHostedBorrowedWorld(m_world.get());
-	// Scene id = the open scene's stem (GI sidecar names resolve
-	// gi/<stem>.* through the hosted content VFS: project root first,
-	// bundled content under). String lives in a member: SceneDesc
-	// holds const char* for the renderer's lifetime.
-	m_wysiwygSceneId = [&]() {
-		namespace fs = std::filesystem;
-		if (!m_pakPath.empty())
-			return fs::path(m_pakPath).stem().string();
-		if (!m_gltfHostPath.empty())
-			return fs::path(m_gltfHostPath).stem().string();
-		if (!m_gltfPath.empty())
-			return fs::path(m_gltfPath).stem().string();
-		return std::string("scene");
-	}();
+	// Scene id = the open scene's stem (SceneIdForHost; GI sidecar names
+	// resolve gi/<stem>.* through the hosted content VFS: project root
+	// first, bundled content under). The string lives in a member; the
+	// renderer keeps its own copy.
+	m_wysiwygSceneId = SceneIdForHost();
 	if (m_wysiwygSceneId.empty())
 		m_wysiwygSceneId = "scene";
-	app::SceneDesc desc{};
-	desc.id = m_wysiwygSceneId.c_str();
-	desc.label = "LiveView";
-	desc.pakPath = ""; // live view: the borrowed world IS the scene
-	desc.gltfPath = "";
-	m_wysiwyg->Configure(desc, app::ScenePassConfig::All());
-	m_wysiwyg->SetSceneOverride(true);
-	m_wysiwyg->SetSceneIndex(0);
+	// Live view: no world source — the borrowed world above IS the
+	// scene; the renderer renders it by handles.
+	m_wysiwyg->SetSceneId(m_wysiwygSceneId);
+	m_wysiwyg->Configure(app::ScenePassConfig::All());
 	// Project root: the hosted content VFS mounts it (below the
 	// bundled content/) so project-side bake sidecars (gi/<stem>.*,
 	// cubemaps) resolve where the baker wrote them.
@@ -1065,7 +1061,7 @@ bool EditorApp::LaunchWysiwyg() {
 	m_wysiwyg->SetAaMode(app::AaMode::Off); // live authoring: crisp, no AA
 	try {
 		if (!m_wysiwyg->HostedInitialize()) {
-			Log("Live view: SceneRenderer::Initialize failed.");
+			Log("Live view: WorldRenderer::Initialize failed.");
 			StopWysiwyg();
 			return false;
 		}
@@ -1101,9 +1097,9 @@ bool EditorApp::LaunchWysiwyg() {
 		StopWysiwyg();
 		return false;
 	}
-	Log("Live view: hosted SceneRenderer rendering the editor's world "
+	Log("Live view: hosted WorldRenderer rendering the editor's world "
 		"'" + m_wysiwygSceneId + "' (full App pipeline, live; edits "
-		"show per frame — F12 rebinds after reimports).");
+		"show per frame - world swaps rebind in place).");
 	return true;
 }
 
@@ -1132,29 +1128,30 @@ void EditorApp::StopWysiwyg() {
 void EditorApp::SuspendWysiwygForWorldSwap() {
 	// Mid-frame world-swap safety (scene opens/closes fire inside
 	// RenderFrame): the OLD world moves to the retire stash — it stays
-	// ALIVE for the hosted renderer's borrowed pointer — and the
-	// actual stop is deferred to the frame boundary (Destroying GPU
-	// resources mid-frame faults on the already-recorded compose
-	// pass). DrawFrame stops the hosted renderer there (its shutdown
-	// reads the still-alive stashed world) and retires it after.
-	if (!m_wysiwyg)
-		return;
+	// ALIVE for the hosted renderer's borrowed pointer — and the actual
+	// swap is deferred to the frame boundary (rebinding GPU-side state
+	// mid-frame faults on the already-recorded compose pass). Flags the
+	// pending swap REGARDLESS of the live view's state: DrawFrame's
+	// consumption rebinds an existing hosted renderer IN PLACE, LAUNCHES
+	// the first one when no live view exists yet, and STOPS it when the
+	// scene closed — then retires the stash after.
 	m_wysiwygSuspendPending = true;
 	m_worldRetire = std::move(m_world);
 }
 
-void EditorApp::RefreshWysiwygPreview() {
-	// F12 / View menu: REBIND the live hosted view onto the CURRENT
-	// world (fresh registration after reimports/scene switches).
-	// Never stops — the live view is the viewport driver, not a mode.
-	// Runs at the frame boundary (DrawFrame consumes the deferred key /
-	// menu request) or from the open/smoke paths — never
-	// mid-RenderFrame.
-	if (!m_world) {
-		Log("Live view: no scene to host — open a scene first.");
-		return;
-	}
-	LaunchWysiwyg();
+std::string EditorApp::SceneIdForHost() const {
+	// Hosted-view scene id (the open scene's stem; the pak stem wins for
+	// pak opens — the borrowed world IS the scene). Shared by the launch
+	// and the in-place rebind (the GI sidecar loaders resolve
+	// gi/<id>.* through the project-aware VFS).
+	namespace fs = std::filesystem;
+	if (!m_pakPath.empty())
+		return fs::path(m_pakPath).stem().string();
+	if (!m_gltfHostPath.empty())
+		return fs::path(m_gltfHostPath).stem().string();
+	if (!m_gltfPath.empty())
+		return fs::path(m_gltfPath).stem().string();
+	return std::string("scene");
 }
 
 bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
@@ -1871,34 +1868,49 @@ void EditorApp::FrameAll() {
 void EditorApp::DrawFrame() {
 	UpdateDeltaTime();
 	Update();
-	// Deferred live-view requests, consumed HERE between frames and
-	// idle — never inside the editor's open frame:
-	//  1. SUSPEND (a world was swapped mid-frame): stop the hosted
-	//     renderer (its shutdown reads the still-alive stashed old
-	//     world) and retire the old world after;
-	//  2. REBIND (F12 / View menu / a fresh scene open): relaunch the
-	//     hosted live view onto the CURRENT world — consumed before
-	//     the hosted drive below, so a fresh launch renders its first
-	//     frame before the compose pass ever samples the target.
+	// Deferred live-view world swaps, consumed HERE between frames and
+	// idle — never inside the editor's open frame: the OLD world stays
+	// alive in the retire stash for the in-flight frames, then
+	//  - a NEW world: IN-PLACE rebind (the hosted renderer keeps every
+	//    GPU resource; only the world-derived state rebuilds) — or the
+	//    first launch when no live view exists yet;
+	//  - no world (scene closed): the live view dies with its scene.
 	if (m_wysiwygSuspendPending) {
 		m_wysiwygSuspendPending = false;
-		StopWysiwyg();
-		m_worldRetire.reset();
-	}
-	if (m_wysiwygRefreshPending) {
-		m_wysiwygRefreshPending = false;
-		// Viewport rects first: the launch sizes its offscreen target
-		// off viewport 0 (RenderFrame recomputes them anyway — pure
-		// math, safe to run twice; the first frame would otherwise
-		// launch at a degenerate 64x64).
-		{
-			const auto vkExt = m_swapchain->GetExtent();
-			ComputeViewportRects(smvk::Extent2D{ vkExt.width,
-				vkExt.height });
+		if (m_world) {
+			if (m_wysiwyg) {
+				// In-place rebind onto the newly opened world (scene
+				// open / reimport / pak switch): scene id + project root
+				// first (the GI sidecar loaders resolve gi/<id>.* through
+				// the project-aware VFS), then the swap + rebuild. The old
+				// world retires right after (its in-flight frames are done
+				// — the rebind waited for device idle).
+				m_wysiwyg->SetSceneId(SceneIdForHost());
+				m_wysiwyg->SetProjectRoot(m_projectRoot);
+				m_wysiwyg->RebindWorld(m_world.get());
+				Log("Live view: rebound in place onto the new world "
+					"(framegraph kept).");
+			}
+			else {
+				// First open (no live view yet): launch — viewport rects
+				// first so the target sizes off viewport 0 instead of a
+				// degenerate 64x64 (RenderFrame recomputes them anyway —
+				// pure math, safe to run here).
+				{
+					const auto vkExt = m_swapchain->GetExtent();
+					ComputeViewportRects(smvk::Extent2D{ vkExt.width,
+						vkExt.height });
+				}
+				LaunchWysiwyg();
+			}
+			m_worldRetire.reset();
 		}
-		RefreshWysiwygPreview();
+		else {
+			StopWysiwyg(); // scene closed: the live view dies with it
+			m_worldRetire.reset();
+		}
 	}
-	// HOSTED WYSIWYG drive: run the SceneRenderer frame between our own
+	// HOSTED WYSIWYG drive: run the WorldRenderer frame between our own
 	// frames, wrapped in device-idle boundaries. Both renderers share
 	// ONE Vulkan context (volk globals forbid a second instance), so
 	// their per-frame engine-global slots must never be in flight
@@ -1924,6 +1936,35 @@ void EditorApp::DrawFrame() {
 						/ std::max(cam.dist, 0.01f)));
 			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
 				fov, cam.nearClip, cam.farClip);
+		}
+		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
+		// own hosted view (viewport i+1 -> renderer view i): the view
+		// count follows the viewport layout (SetViewCount no-ops while
+		// unchanged; a layout change recreates the per-view targets
+		// here at the idle boundary), extents track the viewport rects
+		// and each viewport's OWN camera renders its view with the
+		// same ortho-approximation as the active drive. The views carry
+		// per-view tic/toc refresh schedules (see the live-view panel);
+		// off-phase views keep their last image and compose anyway.
+		{
+			const int extraViewports = ViewportCount() - 1;
+			const uint32_t viewCount = (uint32_t)std::clamp(
+				extraViewports, 0, (int)app::WorldRenderer::kMaxSecondaryViews);
+			m_wysiwyg->SetViewCount(viewCount);
+			for (uint32_t i = 0; i < viewCount; ++i) {
+				const EditorViewport& vp = m_viewports[i + 1];
+				m_wysiwyg->SetViewExtent(i, smvk::Extent2D{
+					std::max(uint32_t(vp.rect.w), 64u),
+					std::max(uint32_t(vp.rect.h), 64u) });
+				const EditorCam& cam = m_editorCams[vp.camIdx];
+				float fov = cam.fovYDeg;
+				if (cam.type == EditorCam::Type::Orthographic)
+					fov = glm::degrees(2.0f
+						* std::atan(std::max(cam.orthoHalfH, 0.01f)
+							/ std::max(cam.dist, 0.01f)));
+				m_wysiwyg->DriveView(i, EditorCamEye(cam), cam.target,
+					fov, cam.nearClip, cam.farClip);
+			}
 		}
 		// DEBUG-VIEW DRIVE: the editor's view modes hook the hosted
 		// frame with APP PARITY (the F-keys match the standalone App's
@@ -1973,7 +2014,10 @@ void EditorApp::DrawFrame() {
 		// "is the hosted renderer actually drawing the mesh" becomes
 		// answerable headlessly. Two shots (frame N and N+11) so
 		// before/after comparisons (camera moves, view switches) come
-		// out of ONE run.
+		// out of ONE run. DEBUG BUILDS ONLY: debug readback probing
+		// never ships in release (the images never carry TransferSrc
+		// there — see DebugImageDumpArmed).
+#if !defined(NDEBUG)
 		static const int kDumpFrame = []() {
 			const char* e = std::getenv("VULKANTOY_WYSIWYG_DUMP");
 			return e ? std::atoi(e) : -1;
@@ -2023,7 +2067,55 @@ void EditorApp::DrawFrame() {
 			else {
 				Log("hosted-target dump: readback failed.");
 			}
+			// MULTIVIEW: dump each hosted view's own image at the same
+			// shots (wysiwyg_viewN.png + stats + the view's refresh state)
+			// — per-view content and the tic/toc phase split become
+			// answerable headlessly.
+			for (uint32_t i = 0; i < m_wysiwyg->GetViewCount(); ++i) {
+				const smvk::Extent2D ext = m_wysiwyg->ViewOutExtent(i);
+				const smvk::ImageHandle img = m_wysiwyg->ViewOutImage(i);
+				if (ext.width == 0 || ext.height == 0 || img.empty())
+					continue;
+				const size_t vbytes = size_t(ext.width) * ext.height * 4;
+				std::vector<uint8_t> vpx(vbytes);
+				if (!m_context->DownloadDataFromImage(
+						img, smvk::ImageLayout::ShaderReadOnlyOptimal,
+						vpx.data(), vpx.size())) {
+					Log("hosted-view dump: readback failed.");
+					continue;
+				}
+				uint64_t vsum[3] = { 0, 0, 0 };
+				size_t vNonBlack = 0;
+				for (size_t p = 0; p + 3 < vpx.size(); p += 4) {
+					std::swap(vpx[p], vpx[p + 2]); // B,R
+					vsum[0] += vpx[p]; vsum[1] += vpx[p + 1];
+					vsum[2] += vpx[p + 2];
+					if (vpx[p] > 8 || vpx[p + 1] > 8 || vpx[p + 2] > 8)
+						++vNonBlack;
+				}
+				const size_t vn = vpx.size() / 4;
+				char vbuf[256];
+				std::snprintf(vbuf, sizeof(vbuf),
+					"hosted-view %u dump #%d: %ux%u mean=(%u,%u,%u) "
+					"non-black %.1f%% refresh=%s%s -> wysiwyg_view%u.png",
+					i + 1u, dumpShots,
+					ext.width, ext.height,
+					unsigned(vsum[0] / vn), unsigned(vsum[1] / vn),
+					unsigned(vsum[2] / vn),
+					100.0 * double(vNonBlack) / double(vn),
+					app::ViewRefreshName(m_wysiwyg->GetViewRefresh(i)),
+					m_wysiwyg->ViewRenderedThisFrame(i)
+						? " (rendered this frame)" : " (held image)",
+					i + 1u);
+				Log(vbuf);
+				char png[64];
+				std::snprintf(png, sizeof(png), "wysiwyg_view%u%s.png",
+					i + 1u, dumpShots == 1 ? "" : "b");
+				stbi_write_png(png, int(ext.width), int(ext.height), 4,
+					vpx.data(), int(ext.width) * 4);
+			}
 		}
+#endif // !NDEBUG (hosted diagnostic dumps)
 	}
 	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
 		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);
@@ -2053,10 +2145,11 @@ void EditorApp::SetWysiwygSmoke() {
 
 void EditorApp::DriveWysiwygSmoke() {
 	// Dev crash-repro (--wysiwyg-smoke): cook the loaded scene minimally,
-	// let the auto-preview launch, render frames, F12-refresh in place,
-	// render, then exit. The project flow (--project-smoke) additionally
-	// covers on-demand Bake GI between preview and refresh. Every stage
-	// logs so a crash position is identifiable from stderr.
+	// let the auto-preview launch, render frames, cook as the product
+	// step under the live view, render, then exit. The project flow
+	// (--project-smoke) additionally covers on-demand Bake GI between
+	// preview and the in-place sidecar rebind. Every stage logs so a
+	// crash position is identifiable from stderr.
 	if (!m_wysiwygSmoke)
 		return;
 	switch (m_smokeStage) {
@@ -2101,81 +2194,87 @@ void EditorApp::DriveWysiwygSmoke() {
 		if (++m_smokeFrames > 20) {
 			if (m_cookRunning)
 				return;
-			if (m_projectSmoke) {
-				// Project flow additionally covers on-demand Bake GI:
-				// bake, wait it out, then F12-rebind into the new
-				// sidecars.
-				std::cerr << "[SMOKE] stage 1 -> 1b: Bake GI (on demand)\n";
-				BakeGI();
-				m_smokeStage = 4;
-				m_smokeFrames = 0;
-			}
-			else {
-				// Plain flow: cook as the PRODUCT step under the live
-				// view (the cook never touches the viewport — the view
-				// must stay live across it).
-				std::cerr << "[SMOKE] stage 1 -> 1c: cook (product step "
-					"under the live view)\n";
-				m_cook.lightmap = false;
-				m_cook.cubemap = false;
-				m_cook.lods = false;
-				m_cook.meshlets = false;
-				m_cook.giCvol = false;
-				m_cook.giWorld = false;
-				CookToPak();
-				m_smokeStage = 3;
-				m_smokeFrames = 0;
-			}
+		if (m_projectSmoke) {
+			// Project flow additionally covers on-demand Bake GI: bake,
+			// wait it out, then the in-place sidecar rebind below.
+			std::cerr << "[SMOKE] stage 1 -> 1b: Bake GI (on demand)\n";
+			BakeGI();
+			m_smokeStage = 4;
+			m_smokeFrames = 0;
 		}
+		else {
+			// Plain flow: cook as the PRODUCT step under the live
+			// view (the cook never touches the viewport — the view
+			// must stay live across it).
+			std::cerr << "[SMOKE] stage 1 -> 1c: cook (product step "
+				"under the live view)\n";
+			m_cook.lightmap = false;
+			m_cook.cubemap = false;
+			m_cook.lods = false;
+			m_cook.meshlets = false;
+			m_cook.giCvol = false;
+			m_cook.giWorld = false;
+			CookToPak();
+			m_smokeStage = 3;
+			m_smokeFrames = 0;
+		}
+	}
+	return;
+case 3: // cook done: the live view must have survived it (no rebind —
+		// the cook never changed the world; the in-place rebind makes a
+		// post-cook relaunch unnecessary by construction).
+	if (m_cookRunning)
 		return;
-	case 3: // cook done: the live view must have survived it; F12 rebind
-		if (m_cookRunning)
+	if (++m_smokeFrames > 3) {
+		if (!m_wysiwyg) {
+			std::cerr << "[SMOKE] FAILED: live view died across the "
+				"cook (see log)\n";
+			RequestClose();
 			return;
-		if (++m_smokeFrames > 3) {
-			if (!m_wysiwyg) {
-				std::cerr << "[SMOKE] FAILED: live view died across the "
-					"cook (see log)\n";
-				RequestClose();
-				return;
-			}
-			std::cerr << "[SMOKE] stage 1c -> 2: F12 rebind (deferred)\n";
-			// Exact F12 path: the modal handler only sets the deferred
-			// flag; DrawFrame rebinds at the frame boundary, idle.
-			m_wysiwygRefreshPending = true;
-			m_smokeStage = 2;
-			m_smokeFrames = 0;
 		}
-		return;
-	case 4: // on-demand bake running; then F12-rebind into it
-		if (!m_bakeRunning) {
-			if (m_giBakedHash.empty()) {
-				std::cerr << "[SMOKE] FAILED: Bake GI did not complete "
-					"(see log)\n";
-				RequestClose();
-				return;
-			}
-			std::cerr << "[SMOKE] stage 1b -> 2: F12 rebind (deferred)\n";
-			m_wysiwygRefreshPending = true;
-			m_smokeStage = 2;
-			m_smokeFrames = 0;
-		}
-		else if (++m_smokeFrames > 3600) {
-			std::cerr << "[SMOKE] FAILED: Bake GI timed out (see log)\n";
+		std::cerr << "[SMOKE] stage 1c -> 2: live view survived the cook "
+			"(no rebind needed)\n";
+		m_smokeStage = 2;
+		m_smokeFrames = 0;
+	}
+	return;
+case 4: // on-demand bake running; then the in-place sidecar rebind
+	if (!m_bakeRunning) {
+		if (m_giBakedHash.empty()) {
+			std::cerr << "[SMOKE] FAILED: Bake GI did not complete "
+				"(see log)\n";
 			RequestClose();
+			return;
 		}
-		return;
-	case 2: // render under the rebound live view, then exit
-		if (++m_smokeFrames > 20) {
-			if (!m_wysiwyg) {
-				std::cerr << "[SMOKE] FAILED: live view died across the "
-					"F12 rebind (see log)\n";
-				RequestClose();
-				return;
-			}
-			std::cerr << "[SMOKE] stage 2 done: exiting cleanly\n";
+		// Same path as the bake-done UI flow (editor_cook.cpp): the
+		// sidecars refresh IN PLACE — no renderer relaunch exists.
+		std::cerr << "[SMOKE] stage 1b -> 2: in-place sidecar rebind\n";
+		if (m_wysiwyg && m_world) {
+			m_wysiwyg->SetSceneId(SceneIdForHost());
+			m_wysiwyg->SetProjectRoot(m_projectRoot);
+			m_wysiwyg->RebindWorld(m_world.get());
+		}
+		m_smokeStage = 2;
+		m_smokeFrames = 0;
+	}
+	else if (++m_smokeFrames > 3600) {
+		std::cerr << "[SMOKE] FAILED: Bake GI timed out (see log)\n";
+		RequestClose();
+	}
+	return;
+case 2: // render after the product step (cook/bake + the sidecar
+		// rebind in the project flow), then exit
+	if (++m_smokeFrames > 20) {
+		if (!m_wysiwyg) {
+			std::cerr << "[SMOKE] FAILED: live view died across the "
+				"sidecar rebind (see log)\n";
 			RequestClose();
+			return;
 		}
-		return;
+		std::cerr << "[SMOKE] stage 2 done: exiting cleanly\n";
+		RequestClose();
+	}
+	return;
 	}
 }
 

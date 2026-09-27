@@ -54,7 +54,7 @@
 #include <Engine/Renderer/texture_streamer.h>
 
 // ABI-checked shared structs (offsets asserted against common.hlsli).
-#include <App/scene_renderer.h>
+#include <App/world_renderer.h>
 
 #include <tiny_gltf.h>
 
@@ -124,7 +124,7 @@ inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 // Viewport shading mode. The F-keys match the APP'S DebugView shortcuts
 // 1:1 (F1 lit, F2 unlit, F3 meshlets, F4 cascades, F5 lods, F6 vertex
 // colors, F9 UV0, F10 UV1/lightmap, F11 POM) + P wireframe — the live
-// view (the hosted SceneRenderer) is driven by exactly these, so the
+// view (the hosted WorldRenderer) is driven by exactly these, so the
 // editor and a standalone App render the same view on the same key.
 // ---------------------------------------------------------------------------
 enum class ViewMode : int {
@@ -610,7 +610,6 @@ private:
 	void ModalViewLitShadows();
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
-	void ModalRefreshWysiwyg();   // F12: refresh the hosted view
 	void ModalUndo();
 	void ModalRedo();
 	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
@@ -1379,22 +1378,22 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
-	// ---- LIVE VIEW (the hosted SceneRenderer is the viewport driver) ----
-// The viewports render through a HOSTED app::SceneRenderer (offscreen
+	// ---- LIVE VIEW (the hosted WorldRenderer is the viewport driver) ----
+// The viewports render through a HOSTED app::WorldRenderer (offscreen
 // target composed into the viewport rects) that renders THE EDITOR'S
 // OWN WORLD — the live engine representation (imports preprocessed,
 // GUID references bound, edits applied). The hosted renderer BORROWS
 // m_world (SetHostedBorrowedWorld): the editor keeps owning + mutating
 // it (edits show up live, per frame); the hosted renderer never imports
 // anything of its own. Cooks are the separate PRODUCT step and never
-// feed the view. F12 rebinds (re-register meshes etc. after reimports).
-// The edit world stays the authoring model underneath: outliner,
-// inspector and gizmos keep working on it.
-	// The hosted SceneRenderer instance (appcore). Null when off.
-	std::unique_ptr<app::SceneRenderer> m_wysiwyg;
-	// SceneDesc string storage (the struct holds const char* — the
-	// string must outlive the renderer instance): the scene id (GI
-	// sidecar stem) + label.
+// feed the view. World swaps (opens/reimports/paks/bakes) rebind IN
+// PLACE (RebindWorld): the renderer is never relaunched for a world
+// change. The edit world stays the authoring model underneath:
+// outliner, inspector and gizmos keep working on it.
+	// The hosted WorldRenderer instance (appcore). Null when off.
+	std::unique_ptr<app::WorldRenderer> m_wysiwyg;
+	// Scene id storage (the renderer keeps its own copy): the scene
+	// stem naming the GI sidecars (gi/<stem>.*).
 	std::string m_wysiwygSceneId;
 	// Compose pass (editor_render.cpp): fullscreen blit of the hosted
 	// target into a viewport rect. Bindless slot over the hosted view.
@@ -1412,42 +1411,36 @@ private:
 	// Hosted target extent (launch-time snapshot; the dump reads it).
 	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
-	// Draws the hosted target into one viewport rect (compose pass).
+	// Draws one hosted source image (view 0 = the hosted target, views
+	// 1+ = the multiview images; sourceBindless picks which) into one
+	// viewport rect (compose pass).
 	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect);
-	// F12 / View menu: rebind the live hosted view onto the CURRENT
-	// world (fresh registration after reimports). Never stops — the
-	// live view is the viewport driver, not a mode.
-	void RefreshWysiwygPreview();
+		const ViewportRect& rect, uint32_t sourceBindless);
+	// Hosted-view scene id (the open scene's stem; see LaunchWysiwyg) —
+	// shared by the launch and the in-place world rebind (DrawFrame /
+	// bake-done) so the GI sidecar loaders resolve the same names.
+	std::string SceneIdForHost() const;
 	// Dev crash-repro (--wysiwyg-smoke): live view from open, cook as
-	// the product step under it, F12 rebind, then close. Drives
-	// itself from DrawFrame.
+	// the product step under it, the project flow's in-place sidecar
+	// rebind after a bake, then close. Drives itself from DrawFrame.
 	bool m_wysiwygSmoke = false;
-	int m_smokeStage = 0; // 0=live 1=cook 2=rebound (+4=baking GI)
+	int m_smokeStage = 0; // 0=live 1=cook 2=post-product (+4=baking GI)
 	int m_smokeFrames = 0;
 	void DriveWysiwygSmoke();
-	// Deferred hosted-view requests: F12 / the View menu / scene opens
-	// fire mid-RenderFrame (inside the editor's OPEN frame), where
-	// (re)creating or stopping the hosted renderer is unsafe — recorded
-	// passes still reference the bindless slot, and a world swap would
-	// dangle the borrowed pointer. Handlers only set these; DrawFrame
-	// consumes them at the frame boundary, idle, before driving the
-	// hosted frame.
-	bool m_wysiwygRefreshPending = false; // F12 / View menu / scene open
 	// Mid-frame world-swap safety: the load/close paths move the OLD
 	// world into a retire stash (it stays ALIVE for the hosted
 	// renderer's borrowed pointer) and flag the suspend; DrawFrame
-	// stops the hosted renderer at the next frame boundary (its
-	// HostedShutdown reads the still-alive old world) and only THEN
-	// retires it. Direct in-place world destruction with a live hosted
+	// consumes it at the next frame boundary, idle — an IN-PLACE
+	// rebind onto the new world (or the launch on a first open, or
+	// the stop when the scene closed) — and only THEN retires the
+	// stash. Direct in-place world destruction with a live hosted
 	// renderer is a use-after-free.
 	bool m_wysiwygSuspendPending = false;
 	std::unique_ptr<smvk::World> m_worldRetire;
 	// Called by every path that replaces or drops m_world while the
 	// hosted live view runs (scene opens, close, project switch):
-	// suspends the hosted renderer (deferred stop) + stashes the old
-	// world. The paired refresh (scene opens set it) rebinds onto the
-	// new world at the frame boundary.
+	// stashes the old world + flags the deferred in-place rebind (or
+	// the stop, on close) at the frame boundary.
 	void SuspendWysiwygForWorldSwap();
 	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
 	// A project folder owns the whole body of work: content/ sources,

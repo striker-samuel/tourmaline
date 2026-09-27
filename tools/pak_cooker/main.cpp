@@ -2820,7 +2820,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// positions from KTX blobs alone, so list every capture with its
 	// cook/world-space origin + influence/fade radii. Served as a Texture
 	// blob (PakBackend serves Texture blobs by VFS path) and consumed by
-	// SceneRenderer::LoadCubemaps. Single captures need none (the runtime
+	// WorldRenderer::LoadCubemaps. Single captures need none (the runtime
 	// centers a global probe on the scene bounds itself).
 	if (positions.size() > 1) {
 		// Radii ride the parallel radii[] vector (filled per branch:

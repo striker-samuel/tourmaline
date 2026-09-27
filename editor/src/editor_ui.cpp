@@ -516,10 +516,6 @@ void EditorApp::DrawMenuBar() {
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
 		ImGui::Separator();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Rebind the hosted app::SceneRenderer onto "
-				"the current world (full pipeline: PBR, shadows, GI, "
-				"post). Edits show live; use this after reimports.");
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -888,7 +884,7 @@ bool EditorApp::PakSelected() const {
 void EditorApp::DrawOutliner() {
 	// DEPRECATED: the cooked-VFS inspection tab (pak browsing +
 	// "in pak" orange rows) is gone — the WYSIWYG hosted preview
-	// (App-parity SceneRenderer over the scratch scene pak) replaced
+	// (App-parity WorldRenderer over the scratch scene pak) replaced
 	// cooked-content inspection in the editor; tools/pak_browser.py
 	// remains the standalone pak inspector.
 	if (ImGui::BeginTabBar("##outlinerTabs")) {
@@ -3428,15 +3424,44 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		ImGui::TextColored(modeCol, "-- %s --  %s",
 			EditorModeName(m_mode), modeKeys.c_str());
 		// Live-view banner: the viewports render through the HOSTED
-		// app::SceneRenderer over THE EDITOR'S OWN WORLD (imports
+		// app::WorldRenderer over THE EDITOR'S OWN WORLD (imports
 		// preprocessed, GUID references bound, edits applied) — live,
 		// never fed by cooks.
 		if (m_wysiwyg) {
 			ImGui::PushStyleColor(ImGuiCol_Text,
 				ImVec4(0.55f, 0.95f, 1.0f, 1.0f));
-			ImGui::Text("-- LIVE VIEW (hosted SceneRenderer) -- "
-				"full pipeline, edits live (F12 rebinds)");
+			ImGui::Text("-- LIVE VIEW (hosted WorldRenderer) -- "
+				"full pipeline, edits live (rebinds in place per scene)");
 			ImGui::PopStyleColor();
+			// MULTIVIEW: per-viewport hosted views (viewport 0 = the main
+			// hosted view, full pipeline). Each additional view renders
+			// from its own viewport camera into its own image with a
+			// per-view refresh schedule — Full (every frame) or Tic/Toc
+			// (every OTHER frame, the two phases spread the views across
+			// alternating frames; an off-phase view keeps its last image).
+			for (uint32_t i = 0; i < m_wysiwyg->GetViewCount(); ++i) {
+				ImGui::PushID(int(i));
+				const bool rendered = m_wysiwyg->ViewRenderedThisFrame(i);
+				ImGui::Text("view %u (vp %u):", i + 1u, i + 1u);
+				ImGui::SameLine();
+				// Refresh combo (Full / Tic / Toc).
+				{
+					const char* items[3] = {
+						app::ViewRefreshName(app::ViewRefresh::Full),
+						app::ViewRefreshName(app::ViewRefresh::Tic),
+						app::ViewRefreshName(app::ViewRefresh::Toc),
+					};
+					int current = static_cast<int>(
+						m_wysiwyg->GetViewRefresh(i));
+					if (ImGui::Combo("refresh", &current, items, 3))
+						m_wysiwyg->SetViewRefresh(i,
+							static_cast<app::ViewRefresh>(current));
+				}
+				ImGui::SameLine();
+				ImGui::TextDisabled(rendered ? "renders this frame"
+					: "holds last image");
+				ImGui::PopID();
+			}
 		}
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
 			ViewModeName(ActiveViewMode()),
@@ -3973,7 +3998,7 @@ void EditorApp::DrawCookDialog() {
 	ImGui::Separator();
 	ImGui::TextDisabled("Cook = PRODUCT step: a .pak for the game/App "
 		"(Run in App loads it). The live view (the hosted renderer over "
-		"the editor's world) is unaffected by cooks; F12 rebinds it.");
+		"the editor's world) is unaffected by cooks.");
 	if (m_cookRunning) {
 		ImGui::Text("Cooking... (see Console)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate

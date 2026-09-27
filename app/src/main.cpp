@@ -1,18 +1,56 @@
-// App entry point: picks a scene sample and runs it through the shared
-// SceneRenderer framegraph (see App/scene_renderer.h). Adding a sample is a
-// SceneDesc row in SceneRegistry — never a copy of the framegraph.
+// App entry point — the HOST: takes a cooked pak (+ optional scene
+// index), opens it, discovers the scenes inside, loads index 0 or the
+// requested one into a World (clusters/resources uploaded to the GPU
+// context, resolved), and hands it to the app::WorldRenderer
+// (App/world_renderer.h), which renders whatever world it is given —
+// it knows nothing about paks or scene files.
 //
 // Usage:
-//   App [--scene sponza|bistro] [--minimal] [--filter-only] [--with csv]
-// --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom/DOF/SSR/volumetric).
+//   App [--pak <path.pak>] [--scene-index N]
+//   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
+//   [--bench <frames>] [--present <fifo|mailbox|immediate>]
+//   [--disable_control] [--no-dlss] [--use_optick] [--use_optick_gpu]
+// --pak runs a cooked pak (default content/paks/sponza.pak); scenes
+//   inside are discovered at startup, index 0 loads unless
+//   --scene-index picks another. The App loads OUR format only:
+//   preprocess glTF through the editor (import -> cook).
 // --disable_control freezes the camera (no keyboard/gamepad/mouselook):
-// deterministic A/B benching at the scene's configured pose.
+//   deterministic A/B benching at the scene's configured pose.
+// --bench also pins fixed manual exposure (no auto-exposure).
+// --no-dlss keeps the Streamline interposer out of the Vulkan chain
+//   (RenderDoc captures crash through the SL layer + NGX cubins).
+// --use_optick enables the Optick CPU capture session (bench.opt);
+// --use_optick_gpu also brings up Optick GPU timelines.
 
-#include <App/scene_renderer.h>
+#include <App/world_renderer.h>
 #include <Engine/Profile/profile.h>
 
+#include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
+#include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/pak.h>
+#include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/scene.h>
+#include <Engine/Vfs/vfs.h>
+
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h> // GetModuleFileNameA (exe-relative pak resolution)
+#endif
 
 namespace {
 
@@ -34,10 +72,252 @@ void PrintUsage(const char* prog) {
 		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
 }
 
+// Pak stem -> scene id (GI sidecars resolve gi/<id>.*, check-scene
+// extras key on it; see WorldRenderer::SetSceneId).
+std::string StemOf(const std::string& p) {
+	const size_t slash = p.find_last_of("/\\");
+	const std::string file = (slash == std::string::npos)
+		? p : p.substr(slash + 1);
+	const size_t dot = file.find_last_of('.');
+	return (dot == std::string::npos || dot == 0)
+		? file : file.substr(0, dot);
+}
+
+// Pak path resolution: --pak accepts host paths AND vfs-style paths
+// ("/content/..."). Windows reads a leading slash as DRIVE-relative
+// ("F:/content/..." — almost never what was meant), so try as-is,
+// then CWD-relative, then exe-relative, and open the first that
+// exists. Empty when nothing exists.
+std::string ResolvePakOpenPath(const std::string& scenePak) {
+	std::string pakOpenPath;
+	std::vector<std::string> candidates;
+	if (!scenePak.empty()) {
+		std::string rel = scenePak;
+		while (!rel.empty() && (rel.front() == '/' || rel.front() == '\\'))
+			rel.erase(rel.begin());
+		candidates.push_back(scenePak);
+		if (!rel.empty() && rel != scenePak) {
+			candidates.push_back(rel);
+			char exePath[1024] = {};
+#ifdef _WIN32
+			DWORD n = GetModuleFileNameA(nullptr, exePath, DWORD(sizeof(exePath)));
+			(void)n;
+#endif
+			if (exePath[0])
+				candidates.push_back(
+					(std::filesystem::path(exePath).parent_path() / rel).string());
+		}
+	}
+	for (const std::string& c : candidates) {
+		std::error_code ec;
+		if (!c.empty() && std::filesystem::exists(std::filesystem::path(c), ec)) {
+			pakOpenPath = c;
+			break;
+		}
+	}
+	if (pakOpenPath.empty() && !scenePak.empty())
+		std::cerr << "[App] pak not found: '" << scenePak
+			<< "' (tried as-is, CWD-relative and exe-relative)" << std::endl;
+	return pakOpenPath;
+}
+
+// UV sphere (lat-long) centered on the origin — the sponza check
+// scene's chrome probe ball. Triangles follow the (a,b,c),(a,c,d)
+// pattern with b one step in +theta (longitude) and d one step in
+// +phi (pole to pole): dTheta x dPhi points outward, so the winding
+// matches the engine's CCW front faces.
+smvk::StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
+	smvk::StaticMeshUpload data;
+	data.aabbMin = glm::vec3(-radius);
+	data.aabbMax = glm::vec3(radius);
+	const float pi = glm::pi<float>();
+	const int nSlices = std::max(8, slices);
+	const int nStacks = std::max(4, stacks);
+	for (int j = 0; j <= nStacks; ++j) {
+		const float phi = pi * static_cast<float>(j) / static_cast<float>(nStacks);
+		const float sinPhi = std::sin(phi);
+		const float cosPhi = std::cos(phi);
+		for (int i = 0; i <= nSlices; ++i) {
+			const float theta = 2.0f * pi * static_cast<float>(i) / static_cast<float>(nSlices);
+			const float sinT = std::sin(theta);
+			const float cosT = std::cos(theta);
+			const glm::vec3 n(sinPhi * cosT, cosPhi, sinPhi * sinT);
+			smvk::StaticVertex v{};
+			v.pos = n * radius;
+			v.color = glm::vec4(1.0f);
+			v.texCoord = glm::vec2(
+				static_cast<float>(i) / static_cast<float>(nSlices),
+				static_cast<float>(j) / static_cast<float>(nStacks));
+			v.normal = n;
+			glm::vec3 t(-sinT, 0.0f, cosT);
+			if (glm::dot(t, t) < 1e-12f)
+				t = glm::vec3(1.0f, 0.0f, 0.0f); // poles: theta tangent degenerates
+			v.tangent = glm::vec4(glm::normalize(t), 1.0f);
+			data.vertices.push_back(v);
+		}
+	}
+	const uint32_t row = static_cast<uint32_t>(nSlices) + 1u;
+	for (int j = 0; j < nStacks; ++j) {
+		for (int i = 0; i < nSlices; ++i) {
+			const uint32_t a = static_cast<uint32_t>(j) * row + static_cast<uint32_t>(i);
+			const uint32_t b = a + 1u;
+			const uint32_t c = a + row + 1u;
+			const uint32_t d = a + row;
+			data.indices.push_back(a);
+			data.indices.push_back(b);
+			data.indices.push_back(c);
+			data.indices.push_back(a);
+			data.indices.push_back(c);
+			data.indices.push_back(d);
+		}
+	}
+	return data;
+}
+
+// Chrome probe ball (sponza check scene only): procedural UV sphere,
+// 0.5 m in diameter, at the atrium center resting on the floor (y=0).
+// White metal (metallic 1, roughness 0; the lit shader clamps
+// roughness to 0.04 so there are no GGX singularities). Injected into
+// the loaded cluster BEFORE Resolve so it joins culling, shadows, AO
+// and reflections like any imported node. Independent root (own
+// identity-parent transform), so scene root transforms can't move it
+// and the static-freeze loop below simply leaves it dynamic.
+void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
+	(void)ctx;
+	if (world.clusters.empty())
+		return;
+	smvk::Cluster& sponzaCluster = *world.clusters.back();
+	const float ballRadius = 0.25f;
+	const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
+	smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
+	smvk::ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
+	smvk::MaterialCreateInfo chromeCi{};
+	chromeCi.baseColorFactor = glm::vec4(1.0f);
+	chromeCi.metallicFactor = 1.0f;
+	chromeCi.roughnessFactor = .13f;
+	chromeCi.emissiveFactor = glm::vec3(0.0f);
+	chromeCi.alphaMode = smvk::AlphaMode::Opaque;
+	chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
+	smvk::ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
+	if (ballMesh.empty() || chromeMat.empty()) {
+		std::cerr << "[Scene] chrome ball inject failed (mesh/material)\n";
+		return;
+	}
+	const int ballNode = addNode(sponzaCluster.scene, -1, 0);
+	sponzaCluster.scene.localTransform[ballNode] =
+		glm::translate(glm::mat4(1.0f), ballCenter);
+	sponzaCluster.scene.globalTransform[ballNode] =
+		glm::translate(glm::mat4(1.0f), ballCenter);
+	sponzaCluster.scene.meshForNode[ballNode] = ballMesh.index();
+	sponzaCluster.scene.materialForNode[ballNode] = chromeMat.index();
+	setNodeName(sponzaCluster.scene, ballNode, "chrome_ball");
+	markAsChanged(sponzaCluster.scene, ballNode);
+	std::cerr << "[Scene] chrome ball: r=" << ballRadius
+		<< "m at (" << ballCenter.x << "," << ballCenter.y << "," << ballCenter.z << "), "
+		<< ballUpload.vertices.size() << " verts, "
+		<< ballUpload.indices.size() / 3 << " tris\n";
+}
+
+// The HOST's pak loader (the renderer's world source): opens the pak,
+// discovers the scenes, loads the selected one into a World (uploads
+// issued to the context — everything renders by handles), injects the
+// check-scene extras, freezes the cooked roots static and resolves.
+// The pak's embedded textures mount into the renderer's content
+// overlay (below loose content/, so dev overrides win) for init-time
+// reads (cubemaps baked into the pak, ...). Returns nullptr on any
+// failure (the renderer fails loudly).
+std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
+	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs) {
+	const std::string scenePak = smvk::FlintbaseHostPath(pakPath);
+	std::cerr << "[App] loading pak '" << scenePak << "'\n";
+	const std::string pakOpenPath = ResolvePakOpenPath(scenePak);
+	if (pakOpenPath.empty())
+		return nullptr;
+	std::ifstream pakFile(pakOpenPath, std::ios::binary | std::ios::ate);
+	if (!pakFile) {
+		std::cerr << "[App] pak open failed: '" << pakOpenPath << "'\n";
+		return nullptr;
+	}
+	const auto pakEnd = pakFile.tellg();
+	if (pakEnd == std::ifstream::pos_type(-1)) {
+		std::cerr << "[App] pak unreadable: '" << pakOpenPath << "'\n";
+		return nullptr;
+	}
+	pakFile.seekg(0);
+	auto pakImage = std::make_shared<std::vector<uint8_t>>(
+		static_cast<size_t>(pakEnd));
+	if (!pakFile.read(reinterpret_cast<char*>(pakImage->data()),
+			static_cast<std::streamsize>(pakImage->size()))) {
+		std::cerr << "[App] pak read failed: '" << pakOpenPath << "'\n";
+		return nullptr;
+	}
+	std::string pakErr;
+	auto reader = smvk::PakReader::Open(
+		std::span<const uint8_t>(*pakImage), pakErr);
+	if (!reader) {
+		std::cerr << "[App] pak parse failed: " << pakErr << "\n";
+		return nullptr;
+	}
+	auto pakBackend = smvk::PakBackend::Open(pakImage, scenePak, pakErr);
+	if (!pakBackend) {
+		std::cerr << "[App] pak backend mount failed: " << pakErr << "\n";
+		return nullptr;
+	}
+	std::cerr << "[App] pak parsed (" << reader->EntryCount() << " entries)\n";
+	// Scene discovery: list, default to index 0.
+	std::string lerr;
+	auto scenes = smvk::ListPakScenes(*reader, &lerr);
+	if (scenes.empty()) {
+		std::cerr << "[App] no loadable scenes: " << lerr << "\n";
+		return nullptr;
+	}
+	for (size_t i = 0; i < scenes.size(); ++i)
+		std::cerr << "[App]   scene[" << i << "] '" << scenes[i].name
+			<< "' nodes=" << scenes[i].nodes << "\n";
+	if (sceneIndex < 0 || size_t(sceneIndex) >= scenes.size()) {
+		std::cerr << "[App] scene index " << sceneIndex << " out of range ("
+			<< scenes.size() << " scenes)\n";
+		return nullptr;
+	}
+	std::cerr << "[App] loading scene[" << sceneIndex << "] '"
+		<< scenes[size_t(sceneIndex)].name << "'...\n";
+	auto world = std::make_unique<smvk::World>();
+	try {
+		world->LoadClusterFromPak(ctx, *reader, uint32_t(sceneIndex));
+	}
+	catch (const std::exception& e) {
+		// DeserializeCluster drains its own staged uploads on failure;
+		// drain anything queued since, then fail the load.
+		std::cerr << "[App] pak load failed: " << e.what() << "\n";
+		ctx.WaitForUploads();
+		return nullptr;
+	}
+	std::cerr << "[App] pak cluster loaded\n";
+	// Check-scene extras (sponza chrome ball) inject BEFORE resolve so
+	// they join culling/shadows/AO/reflections like any imported node.
+	if (StemOf(pakPath) == "sponza")
+		InjectSponzaChromeBall(*world, ctx);
+	// Freeze everything static (no recook needed): the exporters stamp
+	// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
+	// World's static BVH would stay empty. These scenes never animate,
+	// so mark each cluster root static here; Resolve carries the spec
+	// into the world scene and RebuildStaticBvh picks it up. Future
+	// dynamic nodes must ClearSubtreeStatic() before Resolve to opt out.
+	for (auto& clusterPtr : world->clusters) {
+		if (clusterPtr && !clusterPtr->scene.hierarchy.empty())
+			MarkSubtreeStatic(clusterPtr->scene, 0);
+	}
+	world->ResolveAndFixup_clusters();
+	// Serve pak-embedded textures through the renderer's content
+	// overlay (below loose content/, so dev overrides win).
+	contentVfs.Mount(pakBackend, 10, scenePak);
+	return world;
+}
+
 } // namespace
 
 	int main(int argc, const char* argv[]) {
-	const char* pakPath = "content/paks/sponza.pak";
+	std::string pakPath = "content/paks/sponza.pak";
 	int sceneIndex = 0;
 	bool minimal = false;
 	bool filterOnly = false;
@@ -88,12 +368,7 @@ void PrintUsage(const char* prog) {
 		else if (std::strncmp(a, "--without=", 10) == 0) {
 			withoutCsv = a + 10;
 		}
-		else if (std::strcmp(a, "--no-pak") == 0) {
-			std::cerr << "--no-pak was removed with the scene registry; "
-				"pass --pak <path.pak>\n";
-			return EXIT_FAILURE;
-		}
-		else if ((std::strcmp(a, "--bench") == 0) && i + 1 < argc) {
+		else if (std::strcmp(a, "--bench") == 0 && i + 1 < argc) {
 			benchFrames = std::atoi(argv[++i]);
 		}
 		else if (std::strncmp(a, "--bench=", 8) == 0) {
@@ -129,104 +404,42 @@ void PrintUsage(const char* prog) {
 		}
 	}
 
-	// Entrypoint is a file, not a registry id: --pak runs a cooked pak
-	// (id = file stem, so content/gi/<stem>.sglm resolves). The App
-	// loads OUR format only — glTF is preprocessed (editor import ->
-	// cook), never imported here.
-	auto stemOf = [](const std::string& p) {
-		const size_t slash = p.find_last_of("/\\");
-		const std::string file = (slash == std::string::npos)
-			? p : p.substr(slash + 1);
-		const size_t dot = file.find_last_of('.');
-		return (dot == std::string::npos || dot == 0)
-			? file : file.substr(0, dot);
-	};
-	std::string extPathStr, extIdStr;
-	app::SceneDesc extDesc{};
-	extDesc.label = "External scene";
-	extDesc.camPos = glm::vec3(4.0f, 3.0f, 6.0f);
-	extDesc.camTarget = glm::vec3(0.0f, 1.0f, 0.0f);
-	extDesc.farClip = 2000.0f;
-	extDesc.coordFix = 0;
-	extDesc.authoredView = false;
-	if (!pakPath || pakPath[0] == '\0') {
-		std::cerr << "No scene: pass --pak <path.pak> "
-			"(glTF must be preprocessed: editor import -> cook)\n";
-		PrintUsage(argv[0]);
-		return EXIT_FAILURE;
-	}
-	extPathStr = pakPath;
-	extIdStr = stemOf(extPathStr);
-	if (extIdStr.empty())
-		extIdStr = "pak";
-	extDesc.id = extIdStr.c_str();
-	extDesc.gltfPath = "";
-	extDesc.pakPath = extPathStr.c_str();
-	std::cerr << "Scene: pak '" << extPathStr
-		<< "' (id '" << extIdStr << "')\n";
+	// Entrypoint: a pak file + a scene index (0 = default). The scene
+	// id (GI sidecar stem + check-scene gating) is the pak stem.
+	std::string sceneId = StemOf(pakPath);
+	if (sceneId.empty())
+		sceneId = "pak";
+	std::cerr << "Scene: pak '" << pakPath << "' (id '" << sceneId
+		<< "', index " << sceneIndex << ")\n";
 
-	// Known scenes keep their curated viewpoint + tight far clip instead
-	// of the generic whole-bounds orbit framing (see SceneRenderer):
-	// the curated close-up keeps LOD distances in meters and the cascade
-	// splits tight, while the generic path parks the camera radius*2.2
-	// away with farClip 2000 (lowest LOD everywhere, blurry EVSM).
-	// Paths stay as given on the command line; only the view + import
-	// basis are adopted. Env overrides (VULKANTOY_CAM_POS/FWD) still win
-	// in Configure, and unknown stems keep the generic defaults above.
-	if (const auto known = app::SceneRegistry::Find(extIdStr)) {
-		extDesc.camPos = known->camPos;
-		extDesc.camTarget = known->camTarget;
-		extDesc.farClip = known->farClip;
-		extDesc.coordFix = known->coordFix;
-		extDesc.preTransform = known->preTransform;
-		extDesc.authoredView = true;
-		if (known->builtin)
-			extDesc.builtin = known->builtin;
-		std::cerr << "Scene: curated view '" << known->id
-			<< "' (farClip " << known->farClip << ")\n";
-	}
-	else {
-		// Stem case differs (e.g. --pak Sponza.pak): retry lowercase.
-		std::string lower = extIdStr;
-		for (char& c : lower)
-			c = (char)::tolower((unsigned char)c);
-		if (lower != extIdStr) {
-			if (const auto known = app::SceneRegistry::Find(lower)) {
-				extDesc.camPos = known->camPos;
-				extDesc.camTarget = known->camTarget;
-				extDesc.farClip = known->farClip;
-				extDesc.coordFix = known->coordFix;
-				extDesc.preTransform = known->preTransform;
-				extDesc.authoredView = true;
-				if (known->builtin)
-					extDesc.builtin = known->builtin;
-				std::cerr << "Scene: curated view '" << known->id
-					<< "' (farClip " << known->farClip << ")\n";
-			}
-		}
-	}
-
-	app::SceneRenderer renderer;
+	app::WorldRenderer renderer;
+	renderer.SetSceneId(sceneId);
+	// The HOST owns scene loading: the renderer calls this once during
+	// Initialize, after its context exists (nothing can upload before
+	// that), and renders the returned world by handles.
+	renderer.SetWorldSource(
+		[pakPath, sceneIndex](smvk::ResourceManager& ctx,
+			smvk::OverlayVfs& contentVfs) -> std::unique_ptr<smvk::World> {
+			return LoadPakWorld(pakPath, sceneIndex, ctx, contentVfs);
+		});
 	app::ScenePassConfig passCfg = app::ScenePassConfig::All();
-	renderer.SetSceneOverride(true);
-	renderer.SetSceneIndex(sceneIndex);
 	if (filterOnly)
 		passCfg = app::ScenePassConfig::FilterOnly();
 	else if (minimal)
 		passCfg = app::ScenePassConfig::Minimal();
-		// Bisection: layer extra passes onto the base config
-		// (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull,particles).
-		auto applyCsv = [&](const char* csv, bool enable) {
-			if (!csv) return;
-			const std::string s = csv;
-			size_t pos = 0;
-			while (pos <= s.size()) {
-				size_t end = s.find(',', pos);
-				if (end == std::string::npos) end = s.size();
-				const std::string tok = s.substr(pos, end - pos);
-				bool* flag = nullptr;
-				if (tok == "deferred") flag = &passCfg.deferredShadows;
-				else if (tok == "shadows") { passCfg.directionalShadows = passCfg.spotShadows = enable; }
+	// Bisection: layer extra passes onto the base config
+	// (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull,particles).
+	auto applyCsv = [&](const char* csv, bool enable) {
+		if (!csv) return;
+		const std::string s = csv;
+		size_t pos = 0;
+		while (pos <= s.size()) {
+			size_t end = s.find(',', pos);
+			if (end == std::string::npos) end = s.size();
+			const std::string tok = s.substr(pos, end - pos);
+			bool* flag = nullptr;
+			if (tok == "deferred") flag = &passCfg.deferredShadows;
+			else if (tok == "shadows") { passCfg.directionalShadows = passCfg.spotShadows = enable; }
 			else if (tok == "ssao" || tok == "gtao" || tok == "ao") flag = &passCfg.ssao;
 			else if (tok == "smaa") flag = &passCfg.smaa;
 			else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
@@ -248,7 +461,7 @@ void PrintUsage(const char* prog) {
 	};
 	applyCsv(withCsv, true);
 	applyCsv(withoutCsv, false);
-	renderer.Configure(extDesc, passCfg);
+	renderer.Configure(passCfg);
 	// --no-dlss: suppress the Streamline load BEFORE the renderer runs
 	// (smvk::App::Initialize consults the flag before DlssStartup /
 	// pointing volk at the interposer — after that the decision is locked

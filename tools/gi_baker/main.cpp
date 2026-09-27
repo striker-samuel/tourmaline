@@ -12,7 +12,7 @@
 //           [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]
 //           [--sky-intensity 600] [--textures on|off] [--verify on|off]
 //
-// Scene resolution mirrors the runtime SceneRegistry: --scene sponza |
+// Scene resolution mirrors the App runtime (main.cpp pak loader): --scene sponza |
 // bistro | bistro-niagara maps to the same glTF the App imports (the bake
 // must see the exact runtime geometry), or pass --in-vfs <model.gltf> for
 // arbitrary scenes. Light setup defaults match the runtime environment
@@ -740,7 +740,7 @@ int AnalyzeVolume(const std::string& path) {
 	return 0;
 }
 
-// Scene-id -> glTF vfs path (mirrors app::SceneRegistry).
+// Scene-id -> glTF vfs path (mirrors the App pak loader (main.cpp)).
 std::optional<std::string> SceneGltf(const std::string& id) {
 	if (id == "sponza") return std::string("models/Sponza/sponza.gltf");
 	if (id == "bistro") return std::string("models/Bistro/bistro.gltf");

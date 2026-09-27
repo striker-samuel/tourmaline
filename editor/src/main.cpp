@@ -22,7 +22,7 @@ void PrintUsage(const char* prog) {
 		<< "  lightmap panel, sibling gi/<stem>.sglm auto-load).\n"
 		<< "  :N selects pak scene index N (default 0; scenes listed at load).\n"
 		<< "  --wysiwyg-smoke: headless-ish crash repro — cooks the scene\n"
-		<< "  minimal, exercises the auto-preview + F12 refresh, then\n"
+		<< "  minimal, exercises the auto-preview + the in-place rebind, then\n"
 		<< "  exits (dev tool).\n"
 		<< "  --project-smoke <dir>: with --gltf <asset>: create/open the\n"
 		<< "  project at <dir>, import the asset, cook it (product step),\n"

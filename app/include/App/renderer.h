@@ -382,7 +382,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// (the masked ranges run the real alpha test with the proven
 	// CPU-command machinery — the indirect alpha-tested draw through the
 	// filter's GPU commands misrasterizes depth, see the white-speck
-	// regression notes in scene_renderer's split block).
+	// regression notes in world_renderer's split block).
 	void AppendRemainderPass(smvk::FrameContext& fc);
 	[[nodiscard]] bool RemainderPending() const { return remainderPending_; }
 
