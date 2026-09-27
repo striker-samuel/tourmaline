@@ -1083,6 +1083,32 @@ void EditorApp::ReturnToEditSource() {
 	Log("Back to editing (the edit world stayed loaded).");
 }
 
+void EditorApp::ToggleWysiwygPreview() {
+	// Manual entry (View > WYSIWYG preview / F12): the cook auto-launches
+	// the preview; this launches WITHOUT cooking, from the last scene
+	// staged into the scratch (the freshest cook wins — the store's
+	// scene pak always carries the latest staged cook's TOC).
+	if (PreviewingCooked()) {
+		ReturnToEditSource();
+		return;
+	}
+	if (!m_store) {
+		Log("WYSIWYG: scratch cache off (File > Scratch disk...).");
+		return;
+	}
+	const std::string scratchPak =
+		(std::filesystem::path(m_store->Root()) / "artifacts" / "scene.pak")
+		.generic_string();
+	std::error_code ec;
+	if (!std::filesystem::exists(std::filesystem::path(scratchPak), ec)) {
+		Log("WYSIWYG: no scene staged in the scratch yet — cook once "
+			"first (Ctrl+Shift+C).");
+		return;
+	}
+	if (LaunchWysiwyg(scratchPak))
+		m_previewPakPath = scratchPak;
+}
+
 bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
 	m_hasSglm = false;
 	m_sglm = smvk::gi::SgLightmapAtlas{};

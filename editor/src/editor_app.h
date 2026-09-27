@@ -595,6 +595,7 @@ private:
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
 	void ModalBackToEditSource(); // Ctrl+Alt+E: leave the cooked preview
+	void ModalToggleWysiwyg();    // F12: manual hosted-preview toggle
 	void ModalUndo();
 	void ModalRedo();
 	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
@@ -1398,6 +1399,10 @@ private:
 	void PreviewCookedResult(const std::string& pakPath);
 	// Stops the hosted preview: back to editing (world already loaded).
 	void ReturnToEditSource();
+	// MANUAL toggle (View menu / F12): launches the hosted preview from
+	// the LAST staged scratch scene pak (no cook needed — the preview
+	// auto-launches after a cook otherwise); stops it when running.
+	void ToggleWysiwygPreview();
 	// ---- scratch disk (editor artifact cache) ----
 	// User-personalizable cache root (prefs [scratch] dir; default on
 	// F:\ to keep C: from burning). Holds cache.db (SQLite registry)

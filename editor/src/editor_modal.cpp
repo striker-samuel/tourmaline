@@ -272,6 +272,10 @@ void EditorApp::UpdateModalInput() {
 			&EditorApp::ModalBackToEditSource,
 			"wysiwyg: back to edit source (cooked preview)",
 			"Ctrl+Alt+E" },
+		{ GLFW_KEY_F12, 0, kScopeGlobal,
+			&EditorApp::ModalToggleWysiwyg,
+			"wysiwyg: hosted preview on/off (scratch scene)",
+			"F12" },
 	};
 
 	// Publish the registry for the file-scope accessors (first frame;
@@ -339,6 +343,13 @@ void EditorApp::ModalBackToEditSource() {
 	// E, but the exact-mods match keeps the rows disjoint).
 	if (!m_editSourceGltf.empty())
 		ReturnToEditSource();
+}
+
+void EditorApp::ModalToggleWysiwyg() {
+	// Manual hosted-preview toggle (F12): same entry as the View menu
+	// item — launches from the last staged scratch scene, stops when
+	// already running.
+	ToggleWysiwygPreview();
 }
 
 void EditorApp::ModalDelete() {

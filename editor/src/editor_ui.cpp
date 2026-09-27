@@ -492,6 +492,18 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
+		ImGui::Separator();
+		// MANUAL hosted-preview entry (the cook auto-launches after it
+		// finishes; this works off the last staged scratch scene).
+		if (ImGui::MenuItem("WYSIWYG hosted preview", "F12",
+				PreviewingCooked()))
+			ToggleWysiwygPreview();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Hosted app::SceneRenderer renders the "
+				"last staged scratch scene with FULL App parity "
+				"(PBR, GI, cubemaps, post). Auto-launches after a "
+				"cook; the edit world stays loaded (Ctrl+Alt+E back "
+				"to editing).");
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
