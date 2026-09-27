@@ -3029,6 +3029,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget) {
 		rootRef.root = true;
 		rootRef.parent = 0;
 		rootRef.source = posix;
+		rootRef.guid = ProjectAssetGuid(m_gltfHostPath);
 		rootRef.name = std::filesystem::path(posix).stem().string();
 		// Keep the root reference leading the definition (fresh source).
 		if (!m_references.empty() && m_references[0].root)

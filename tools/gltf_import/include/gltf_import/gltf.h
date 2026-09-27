@@ -29,6 +29,28 @@ struct GltfArtifactCache {
 	virtual bool Put(const std::string& klass, const std::string& uri,
 		const void* payload, size_t payloadSize,
 		const std::string& sourceHash, const std::string& meta) = 0;
+	// Registry-only hash probe (the "is this cached entry CURRENT?"
+	// gate). Default true = callers without registry access accept
+	// any Get hit (legacy behavior); real adapters override with the
+	// actual lookup. A Has-miss before Get prevents serving STALE
+	// bytes (a different source under the same uri).
+	virtual bool Has(const std::string& klass, const std::string& uri,
+		const std::string& sourceHash) {
+		(void)klass; (void)uri; (void)sourceHash;
+		return true;
+	}
+};
+
+// Asset-GUID resolver hook (optional): the editor injects its project
+// asset directory so tour `reference -guid <hex>` lines resolve
+// identity-first (the GUID tracks the source file across moves/
+// renames through its .meta sidecar; the recorded -source path stays
+// as the fallback). Null (cooker, baker, tests) keeps path-only
+// resolution — GUIDs stored in tours are simply unused there.
+struct GltfGuidResolver {
+	virtual ~GltfGuidResolver() = default;
+	// "" when unknown/invalid — the caller falls back to -source.
+	virtual std::string PathForGuid(const std::string& guid) = 0;
 };
 
 // Deterministic texture-conversion cache key: FNV-1a 64 over the
@@ -298,7 +320,10 @@ void GltfToClusterFromVfs(
 	// scratch-disk store hook (null = no acceleration).
 	bool autoKtx = true,
 	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
-	GltfArtifactCache* artifactCache = nullptr);
+	GltfArtifactCache* artifactCache = nullptr,
+	// GUID resolver (see GltfGuidResolver): identity-first reference
+	// resolution; null = path-only (cooker/baker/tests).
+	GltfGuidResolver* guidResolver = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager& ctx,

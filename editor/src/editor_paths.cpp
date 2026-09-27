@@ -393,6 +393,10 @@ void EditorApp::DrawPathsPanel() {
 				if (NativeOpenFile(picked) && !picked.empty() &&
 					size_t(pendingReplace) < m_references.size()) {
 					m_references[size_t(pendingReplace)].source = picked;
+					// A new source means new identity: never keep the old
+					// GUID (empty without a project = path-only, as before).
+					m_references[size_t(pendingReplace)].guid =
+						ProjectAssetGuid(picked);
 					SaveTour();
 					Log("Path editor: reference replaced: '" + picked +
 						"' — reloading to rebind.");

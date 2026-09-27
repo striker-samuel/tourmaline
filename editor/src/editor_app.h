@@ -41,6 +41,8 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/assetdb.h>
+#include <gltf_import/gltf.h> // GltfGuidResolver (the hook below)
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Flintbase/flintbase_client.h>
@@ -119,20 +121,26 @@ glm::mat4 EditorCamProj(const EditorCam& c, float aspect);
 inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 
 // ---------------------------------------------------------------------------
-// Viewport shading mode: default diffuse unlit, default lit, and lit with
-// simple (single-cascade PCF) shadows.
+// Viewport shading mode. The F-keys match the APP'S DebugView shortcuts
+// 1:1 (F1 lit, F2 unlit, F3 meshlets, F4 cascades, F5 lods, F6 vertex
+// colors, F9 UV0, F10 UV1/lightmap, F11 POM) + P wireframe — the live
+// view (the hosted SceneRenderer) is driven by exactly these, so the
+// editor and a standalone App render the same view on the same key.
 // ---------------------------------------------------------------------------
 enum class ViewMode : int {
-	Unlit = 0,      // default_unlit: baseColor + emissive, no lighting
-	Lit = 1,        // default_lit: sun + sky ambient, no shadow maps
-	LitShadows = 2, // default_lit + 1-cascade directional shadow atlas
-	Uv0 = 3,        // default_uv0_debug: base UVs
-	Uv1 = 4,        // default_uv1_debug: lightmap UVs
-	VertexColors = 5, // default_vertexcolor_debug: vertex colors
-	Baked = 6,      // default_baked_debug: baked atlas irradiance (F8)
-	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F4)
+	Unlit = 0,      // default_unlit: baseColor + emissive, no lighting (F2)
+	Lit = 1,        // default_lit: full PBR pipeline (F1)
+	LitShadows = 2, // legacy editor mode (menu-only; hosted maps it to Lit)
+	Uv0 = 3,        // default_uv0_debug: base UVs (F9)
+	Uv1 = 4,        // default_uv1_debug: lightmap UVs (F10)
+	VertexColors = 5, // default_vertexcolor_debug: vertex colors (F6)
+	Baked = 6,      // baked atlas irradiance (F8 — App's GI debug view)
+	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F3)
 	FlatUv0 = 8,    // uvflat0: unwrapped TEXCOORD0 + diffuse content
 	FlatUv1 = 9,    // uvflat1: unwrapped atlas uv2 + lightmap content
+	Cascades = 10,  // shadow cascade coverage (F4)
+	Lods = 11,      // LOD index by color (F5)
+	Pom = 12,       // parallax occlusion mapping (F11)
 };
 inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
@@ -146,6 +154,9 @@ inline const char* ViewModeName(ViewMode m) {
 	case ViewMode::Meshlets: return "Meshlets";
 	case ViewMode::FlatUv0: return "Flat UV (diffuse)";
 	case ViewMode::FlatUv1: return "Flat UV (lightmap)";
+	case ViewMode::Cascades: return "Cascade coverage";
+	case ViewMode::Lods: return "LODs";
+	case ViewMode::Pom: return "POM";
 	}
 	return "?";
 }
@@ -266,14 +277,15 @@ struct CookSettings {
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	uint32_t cubemapBounces = 3;
-	// GI bake stage: authored convex volumes (cvol nodes) bake with
-	// the cook via GiBaker — sidecars gi/<pak-stem>_* keyed to the
-	// pak stem. No-op when the definition carries no cvolumes.
+	// GI bake selectors (ON-DEMAND Bake GI only — cooks never bake;
+	// see BakeGI): authored convex volumes (cvol nodes) via GiBaker —
+	// sidecars gi/<pak-stem>_* keyed to the pak stem. No-op when the
+	// definition carries no cvolumes.
 	bool giCvol = true;
-	// World-field bake: the adaptive probe octree (.sggi) bakes with
-	// the cook too (GiBaker --out gi/<pak-stem>.sggi). This is the
-	// global fallback the runtime samples outside any convex volume;
-	// it is the slow stage (minutes on real scenes).
+	// World-field bake (on demand): the adaptive probe octree (.sggi).
+	// This is the global fallback the runtime samples outside any
+	// convex volume; it is the slow stage (minutes on real scenes), so
+	// it never rides the cook. Unbaked scenes render sky IBL instead.
 	bool giWorld = true;
 	// Meshlet cook: per-meshlet build over the cooked topology.
 	bool meshlets = false;
@@ -289,7 +301,7 @@ struct CookSettings {
 class EditorApp : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 public:
-	EditorApp() = default;
+	EditorApp();
 	~EditorApp() override = default;
 
 	bool OpenScene(const std::string& path); // dispatches .pak vs .gltf
@@ -298,6 +310,10 @@ public:
 	bool OpenAnySceneFile(const std::string& path);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
 	void SetOutPak(const std::string& p) { m_cook.outPak = p; }
+	void SetWysiwygSmoke(); // dev crash-repro (--wysiwyg-smoke)
+	// Headless project flow (--project-smoke <dir> + --gltf <asset>).
+	void SetProjectSmoke(const std::string& dir,
+		const std::string& asset);
 
 protected:
 	bool Initialize() override;
@@ -594,8 +610,7 @@ private:
 	void ModalViewLitShadows();
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
-	void ModalBackToEditSource(); // Ctrl+Alt+E: leave the cooked preview
-	void ModalToggleWysiwyg();    // F12: manual hosted-preview toggle
+	void ModalRefreshWysiwyg();   // F12: refresh the hosted view
 	void ModalUndo();
 	void ModalRedo();
 	void ModalSave(); // Ctrl+S: SaveTour (explicit save -> project file)
@@ -627,10 +642,12 @@ private:
 	void ModalSunElevationPos();
 	void ModalSunIntensityNeg();
 	void ModalSunIntensityPos();
-	void ModalRunInApp();
 	void ModalCook();
 	void ModalViewMeshlets();
+	void ModalViewCascades();
+	void ModalViewLods();
 	void ModalViewVertexColors();
+	void ModalViewPom();
 	void ModalTexModeCycle();
 	void ModalProfileStub();
 	EditorMode m_mode = EditorMode::Layout;
@@ -655,7 +672,6 @@ private:
 	// Material editor page (m_materialFocus travel) + camera section.
 	void DrawMaterialFocusPage();
 	void DrawCameraSection(); // active viewport's editor camera settings
-	void DrawPlayBar(); // Unity-style Run-in-App bar (top center)
 	void DrawCookPanel();
 	void DrawLightmapPanel(); // pak manifest + .sglm atlas inspection
 	void DumpPakManifest(); // pak-sourced counts + lmChunk histogram to console
@@ -1163,13 +1179,17 @@ private:
 	// ---- cook (editor_cook.cpp) ----
 	void CookToPak(); // save tour + PakCooker --tour on a worker
 	void PollCookProcess();
-	// ---- run in App (editor_cook.cpp): Unity-style Play launches the
-	// current scene in the runtime App (--pak for pak scenes, --gltf for
-	// sources). Empty when nothing runnable is loaded.
-	std::string RunArgs() const;
-	void RunInApp();
-	void PollRunProcess();
-	bool m_runRunning = false;
+	// TEMP tour snapshot shared by the cooker/baker subprocesses (see
+	// editor_cook.cpp): outTempTour + definition fingerprint.
+	bool SnapshotTourForProcess(const char* tag,
+		std::string& outTempTour, std::string& outDefHash);
+	// ---- bake GI on demand (editor_cook.cpp): GiBaker over the SAME
+	// definition tour the cook snapshots (never part of the cook —
+	// cooks stay fast and GI-free; unbaked scenes render sky IBL).
+	// Sidecars key to the cook's out-pak stem; completion refreshes
+	// the hosted view so the new bake shows immediately.
+	void BakeGI();
+	void PollBakeProcess();
 
 	// ---- lightmap flat-view PNG export (Bake panel) ----
 	// Renders the whole scene unwrapped by its atlas uv2 into an
@@ -1359,24 +1379,22 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
-	// ---- WYSIWYG cooked preview (full render-parity loop) ----
-// Cook -> the viewports render through a HOSTED app::SceneRenderer
-// (the classic world-rendered pattern, offscreen render target
-// composed into the viewport rects). The editor drives the hosted
-// frame between its own frames (device-idle boundaries — the two
-// renderers share ONE Vulkan context and its per-frame slots). The
-// edit world (source glTF + tour) STAYS LOADED underneath: outliner,
-// inspector and gizmos keep working; ReturnToEditSource stops the
-// hosted renderer and the editor scene passes come back.
-	std::string m_editSourceGltf; // host path of the source being edited
-	std::string m_previewPakPath; // non-empty = WYSIWYG preview active
-	bool m_previewAfterCook = true; // prefs [wysiwyg] preview
-	bool PreviewingCooked() const { return !m_previewPakPath.empty(); }
+	// ---- LIVE VIEW (the hosted SceneRenderer is the viewport driver) ----
+// The viewports render through a HOSTED app::SceneRenderer (offscreen
+// target composed into the viewport rects) that renders THE EDITOR'S
+// OWN WORLD — the live engine representation (imports preprocessed,
+// GUID references bound, edits applied). The hosted renderer BORROWS
+// m_world (SetHostedBorrowedWorld): the editor keeps owning + mutating
+// it (edits show up live, per frame); the hosted renderer never imports
+// anything of its own. Cooks are the separate PRODUCT step and never
+// feed the view. F12 rebinds (re-register meshes etc. after reimports).
+// The edit world stays the authoring model underneath: outliner,
+// inspector and gizmos keep working on it.
 	// The hosted SceneRenderer instance (appcore). Null when off.
 	std::unique_ptr<app::SceneRenderer> m_wysiwyg;
 	// SceneDesc string storage (the struct holds const char* — the
-	// strings must outlive the renderer instance).
-	std::string m_wysiwygPakPath;
+	// string must outlive the renderer instance): the scene id (GI
+	// sidecar stem) + label.
 	std::string m_wysiwygSceneId;
 	// Compose pass (editor_render.cpp): fullscreen blit of the hosted
 	// target into a viewport rect. Bindless slot over the hosted view.
@@ -1386,23 +1404,96 @@ private:
 	smvk::Holder<smvk::BindlessImageHandle> m_wysiwygBindless;
 	uint32_t m_wysiwygBindlessIndex = UINT32_MAX;
 	uint32_t m_wysiwygSamplerIndex = UINT32_MAX;
-	// Launch/stop the hosted renderer against the scratch scene pak.
-	// Launch keeps the edit world loaded; false + log on failure.
-	bool LaunchWysiwyg(const std::string& pakPath);
+	// Launch/stop the hosted LIVE view. Launch borrows m_world (the
+	// caller must have one) as the hosted renderer's world; false + log
+	// on failure. Frame-boundary callers only (DrawFrame consumption).
+	bool LaunchWysiwyg();
 	void StopWysiwyg();
+	// Hosted target extent (launch-time snapshot; the dump reads it).
+	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
 	// Draws the hosted target into one viewport rect (compose pass).
 	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
 		const ViewportRect& rect);
-	// Stages the cooked pak into the scratch (cache registry) and
-	// launches the hosted preview; keeps the edit world loaded.
-	void PreviewCookedResult(const std::string& pakPath);
-	// Stops the hosted preview: back to editing (world already loaded).
-	void ReturnToEditSource();
-	// MANUAL toggle (View menu / F12): launches the hosted preview from
-	// the LAST staged scratch scene pak (no cook needed — the preview
-	// auto-launches after a cook otherwise); stops it when running.
-	void ToggleWysiwygPreview();
+	// F12 / View menu: rebind the live hosted view onto the CURRENT
+	// world (fresh registration after reimports). Never stops — the
+	// live view is the viewport driver, not a mode.
+	void RefreshWysiwygPreview();
+	// Dev crash-repro (--wysiwyg-smoke): live view from open, cook as
+	// the product step under it, F12 rebind, then close. Drives
+	// itself from DrawFrame.
+	bool m_wysiwygSmoke = false;
+	int m_smokeStage = 0; // 0=live 1=cook 2=rebound (+4=baking GI)
+	int m_smokeFrames = 0;
+	void DriveWysiwygSmoke();
+	// Deferred hosted-view requests: F12 / the View menu / scene opens
+	// fire mid-RenderFrame (inside the editor's OPEN frame), where
+	// (re)creating or stopping the hosted renderer is unsafe — recorded
+	// passes still reference the bindless slot, and a world swap would
+	// dangle the borrowed pointer. Handlers only set these; DrawFrame
+	// consumes them at the frame boundary, idle, before driving the
+	// hosted frame.
+	bool m_wysiwygRefreshPending = false; // F12 / View menu / scene open
+	// Mid-frame world-swap safety: the load/close paths move the OLD
+	// world into a retire stash (it stays ALIVE for the hosted
+	// renderer's borrowed pointer) and flag the suspend; DrawFrame
+	// stops the hosted renderer at the next frame boundary (its
+	// HostedShutdown reads the still-alive old world) and only THEN
+	// retires it. Direct in-place world destruction with a live hosted
+	// renderer is a use-after-free.
+	bool m_wysiwygSuspendPending = false;
+	std::unique_ptr<smvk::World> m_worldRetire;
+	// Called by every path that replaces or drops m_world while the
+	// hosted live view runs (scene opens, close, project switch):
+	// suspends the hosted renderer (deferred stop) + stashes the old
+	// world. The paired refresh (scene opens set it) rebinds onto the
+	// new world at the frame boundary.
+	void SuspendWysiwygForWorldSwap();
+	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
+	// A project folder owns the whole body of work: content/ sources,
+	// paks/ cook outputs, gi/ bake sidecars, and its OWN scratch/
+	// cache (the Unity Library/ equivalent). Opening a project
+	// repoints the scratch, the cook defaults and the hosted view's
+	// VFS at it; importing copies an asset in, cooks it, and the
+	// hosted view shows it with the full render pipeline.
+	std::string m_projectRoot; // normalized, has project.tourproj
+	std::string m_projectName; // display name (marker or folder name)
+	bool m_projectSmoke = false; // --project-smoke dev flow (see main)
+	std::string m_projectSmokeDir;   // project root to create/open
+	std::string m_projectSmokeAsset; // source asset to import
+	// Opens (or validates) <dir> as the project: closes the live
+	// scene, repoints the scratch at <dir>/scratch, persists. False +
+	// log when <dir> has no project.tourproj marker.
+	bool OpenProject(const std::string& dir);
+	// Creates the project tree when the marker is missing, then opens
+	// it (an existing project dir just opens).
+	bool NewProjectOrOpen(const std::string& dir);
+	// Copies a .gltf/.glb into the project's content/models/, opens
+	// it (ENGINE representation ready: GPU world, streamed textures,
+	// transcode cache) and targets the cook at the project's paks/.
+	// Cooking the product .pak is a separate explicit step
+	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
+	// an open project, while cooking, or for foreign extensions.
+	bool ImportAsset(const std::string& srcPath);
+	// <root>/scratch (empty when no project is open).
+	std::string ProjectScratchDir() const;
+	// Records a project source file in the asset directory (reads the
+	// sibling .meta, issuing + writing one when missing/invalid).
+	// Silent for known assets; logs issuance. No-op without a project.
+	void AdoptProjectAsset(const std::string& assetPath,
+		const std::string& importer = "model");
+	// Asset GUID for a source file (adopts first, so this issues the
+	// sidecar on demand). "" without a project or for unknown files —
+	// callers store it alongside the path (tour reference -guid) and
+	// keep working path-only when empty.
+	std::string ProjectAssetGuid(const std::string& assetPath);
+	// <root>/paks/<stem>.pak (empty without a project/stem).
+	std::string ProjectCookOutPak(const std::string& sceneStem) const;
+	// Points the per-scene cook outputs (direct + dialog) at the
+	// project when the user hasn't customized them.
+	void PrimeProjectCookDefaults();
+	static bool IsProjectDir(const std::string& dir);
+	static std::string ReadProjectName(const std::string& dir);
 	// ---- scratch disk (editor artifact cache) ----
 	// User-personalizable cache root (prefs [scratch] dir; default on
 	// F:\ to keep C: from burning). Holds cache.db (SQLite registry)
@@ -1410,6 +1501,20 @@ private:
 	// cooks never depend on it — it only accelerates processing.
 	smvk::cache::CacheDb m_cacheDb;
 	std::unique_ptr<smvk::cache::ArtifactStore> m_store; // null = cache off
+	// Source-asset directory (GUID<->path over the project, Unity
+	// SourceAssetDB analog). Open while a project is open with its
+	// cache online; closed otherwise (global runs stay path-based).
+	smvk::cache::AssetDatabase m_assetDb;
+	// GltfGuidResolver over m_assetDb (gltf_import hook): tour
+	// references carrying -guid resolve identity-first — moves/
+	// renames heal through rescan + the .meta sidecars. Closed db
+	// answers "" (path-only fallback, exactly the pre-GUID behavior).
+	struct GuidResolverHook final : public GltfGuidResolver {
+		EditorApp& app;
+		explicit GuidResolverHook(EditorApp& a) : app(a) {}
+		std::string PathForGuid(const std::string& guid) override;
+	};
+	GuidResolverHook m_guidResolver; // init: EditorApp ctor (holds *this)
 	// gltf_import hook over the store (texture-transcode
 	// acceleration; injected into every import path).
 	std::unique_ptr<StoreArtifactCacheAdapter> m_texCacheAdapter;
@@ -1687,9 +1792,18 @@ private:
 	CookSettings m_cook{};
 	std::vector<std::string> m_consoleLines;
 	bool m_cookRunning = false;
+	bool m_bakeRunning = false; // on-demand GiBaker worker (see above)
 	struct CookResult { bool ok = false; std::string log; };
 	std::future<CookResult> m_cookFuture{};
-	std::future<CookResult> m_runFuture{}; // Run-in-App worker (see above)
+	std::future<CookResult> m_bakeFuture{}; // Bake-GI worker (see above)
+	// Definition fingerprint the last Bake GI ran for (empty = never
+	// baked this session): a cook that moves past it leaves sidecars
+	// stale — the cook dialog's freshness readout says so (rebake to
+	// refresh the live view's GI).
+	std::string m_giBakedHash;
+	// Fingerprint of the definition being baked (adopted as
+	// m_giBakedHash at BakeGI completion).
+	std::string m_giBakePendingHash;
 	// Live cook pipe: the async worker pushes one entry per output line
 	// (mutex-guarded); PollCookProcess drains it on the main thread so
 	// the Console shows progress while the cook runs instead of one
@@ -1700,6 +1814,7 @@ private:
 		std::vector<std::string> lines;
 	};
 	std::shared_ptr<CookFeed> m_cookFeed;
+	std::shared_ptr<CookFeed> m_bakeFeed; // Bake-GI live feed (see above)
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	// Outliner tabs (Scene graph vs VFS browser) + VFS selection.
@@ -1736,9 +1851,11 @@ private:
 	// ---- add-reference dialog state ----
 };
 
-// Native Windows open dialog (editor_native_dialog.cpp): single entry
-// point for .gltf/.pak/.tour, starts in C:/. False on cancel/failure.
+// Native Windows dialogs (editor_native_dialog.cpp): single entry
+// points for scenes (.gltf/.glb/.pak/.tour), outputs (.pak) and
+// project folders. False on cancel/failure.
 	bool NativeOpenFile(std::string& outPath, bool images = false);
 	bool NativeSaveFile(std::string& outPath);
+	bool NativePickFolder(std::string& outPath);
 
 } // namespace editor

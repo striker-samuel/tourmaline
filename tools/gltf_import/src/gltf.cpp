@@ -479,7 +479,13 @@ bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
 		const std::string sourceHash = TextureConversionHash(
 			srcBytes.data(), srcBytes.size(), srgb);
 		std::vector<uint8_t> cached;
-		if (artifactCache_->Get("texture", imageUri, cached)
+		// Has BEFORE Get (registry-validated hit): the hash gates the
+		// uri — a DIFFERENT source under the same uri (edited file, or
+		// another model's identically-named texture) never serves. The
+		// payload magic re-validates a torn entry. Adapters without a
+		// registry (default Has=true) keep the legacy accept-any-hit.
+		if (artifactCache_->Has("texture", imageUri, sourceHash)
+			&& artifactCache_->Get("texture", imageUri, cached)
 			&& IsKtx2Payload(cached)) {
 			std::cerr << "KTX cache hit (scratch): " << imageUri
 				<< " (" << cached.size() << " B)" << std::endl;
@@ -2361,7 +2367,8 @@ size_t ApplySceneReferences(
 	std::vector<std::string>* outResolvedSources,
 	bool autoKtx,
 	const std::vector<smvk::tour::FileNode>* fileNodes,
-	GltfArtifactCache* artifactCache) {
+	GltfArtifactCache* artifactCache,
+	GltfGuidResolver* guidResolver) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -2437,27 +2444,49 @@ size_t ApplySceneReferences(
 			bool haveRefTour = false;
 			std::string refTourDir;
 			std::string modelSource = r.source;
-			if (IsTourSource(r.source)) {
+			// GUID-FIRST resolution (asset identity survives moves/
+			// renames): the injected resolver maps the source file's
+			// .meta GUID to its CURRENT path. Unknown/invalid GUID or
+			// no resolver (cooker/baker/tests) keeps the recorded path.
+			if (!r.guid.empty() && guidResolver) {
+				const std::string byGuid =
+					guidResolver->PathForGuid(r.guid);
+				if (!byGuid.empty()) {
+					if (byGuid != modelSource)
+						std::cerr << "[References] guid "
+							<< r.guid << " -> '" << byGuid
+							<< "' (recorded '" << modelSource
+							<< "')\n";
+					modelSource = byGuid;
+				}
+				else {
+					std::cerr << "[References] guid " << r.guid
+						<< " unknown (asset db closed / sidecar "
+						"missing?) — using recorded path '"
+						<< modelSource << "'\n";
+				}
+			}
+			if (IsTourSource(modelSource)) {
 				std::string tourResolved;
 				if (vfs) {
 					std::string p = smvk::NormalizeAssetUri(
-						smvk::StringViewT(r.source)).Str();
+						smvk::StringViewT(modelSource)).Str();
 					if (!vfs->Exists(p) && !cur.baseDir.empty())
-						p = smvk::vfs::Join(cur.baseDir, r.source);
+						p = smvk::vfs::Join(cur.baseDir, modelSource);
 					if (vfs->Exists(p))
 						tourResolved = p;
 				}
 				else {
-					std::filesystem::path hp(r.source);
+					std::filesystem::path hp(modelSource);
 					std::error_code ec;
 					if (!std::filesystem::exists(hp, ec) && !cur.baseDir.empty())
-						hp = std::filesystem::path(cur.baseDir) / r.source;
+						hp = std::filesystem::path(cur.baseDir) / modelSource;
 					if (std::filesystem::exists(hp, ec))
 						tourResolved = hp.generic_string();
 				}
 				if (tourResolved.empty()) {
 					const std::string m = "[References] cannot resolve tour '" +
-						r.source + "' (skipped)";
+						modelSource + "' (skipped)";
 					std::cerr << m << "\n";
 					issue(m);
 					++warnings;

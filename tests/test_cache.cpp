@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/assetdb.h>
 #include <artifact_cache/store_adapter.h>
 
 #include <Engine/Asset/pak.h>
@@ -218,10 +219,117 @@ void TestStoreAdapter() {
 	std::filesystem::remove_all(dir, ec);
 }
 
+// AssetDatabase (Unity SourceAssetDB analog): .meta sidecars + the
+// GUID<->path directory, move/rename healing through rescan, GUID-
+// scoped store keys (identically-named textures across models stop
+// colliding).
+void TestAssetDatabase() {
+	using namespace smvk::cache;
+	namespace fs = std::filesystem;
+	const std::string dir = TempDir() + "/assetdb";
+	const std::string proj = dir + "/proj";
+	const std::string scratch = dir + "/scratch";
+	std::error_code ec;
+	fs::create_directories(proj + "/content/models", ec);
+	fs::create_directories(scratch, ec);
+	const fs::path asset = fs::path(proj)
+		/ "content/models/hero.gltf";
+	{
+		std::ofstream f(asset, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"}}";
+	}
+	const std::string guid = "aaaabbbbccccdddd0000111122223333";
+	std::string err;
+	// Meta sidecar round-trip.
+	Check(WriteAssetMeta(asset.generic_string(), guid, "model", err),
+		"assetdb.meta.write");
+	std::string gotGuid;
+	Check(ReadAssetMeta(asset.generic_string(), gotGuid, err)
+		&& gotGuid == guid, "assetdb.meta.read");
+	Check(ReadAssetMeta("no/such/file.gltf", gotGuid, err) == false
+		&& err == "no .meta", "assetdb.meta.miss");
+	Check(!IsValidAssetGuid("XYZ") && IsValidAssetGuid(guid),
+		"assetdb.guid.valid");
+	// Directory: adopt + lookups both ways.
+	AssetDatabase adb;
+	Check(adb.Open(scratch, proj, err), "assetdb.open");
+	Check(adb.AdoptFile(asset.generic_string(), guid, "model", err),
+		"assetdb.adopt");
+	Check(adb.GuidForPath(asset.generic_string(), gotGuid)
+		&& gotGuid == guid, "assetdb.guid.for.path");
+	std::string gotPath;
+	Check(adb.PathForGuid(guid, gotPath)
+		&& fs::path(gotPath) == fs::path(asset.generic_string()),
+		"assetdb.path.for.guid");
+	// Move + rename (Explorer-side): stale path misses, rescan
+	// re-points the row, PathForGuid heals.
+	const fs::path moved = fs::path(proj)
+		/ "content/models/villain.gltf";
+	fs::rename(asset, moved, ec);
+	fs::rename(fs::path(asset.generic_string() + ".meta"),
+		fs::path(moved.generic_string() + ".meta"), ec);
+	Check(!adb.PathForGuid(guid, gotPath), "assetdb.stale.path.miss");
+	RescanStats stats;
+	Check(adb.RescanProject(stats, err) && stats.moved == 1,
+		"assetdb.rescan.moved");
+	Check(adb.PathForGuid(guid, gotPath)
+		&& fs::path(gotPath) == fs::path(moved.generic_string()),
+		"assetdb.rescan.healed");
+	// GUID-scoped store keys: same-named textures under different
+	// models keep separate rows (Has gates on the hash).
+	{
+		CacheDb db;
+		Check(db.Open((fs::path(scratch) / "cache.db").string(), err),
+			"assetdb.store.open");
+		ArtifactStore store(scratch, db);
+		StoreArtifactCacheAdapter adapter(store);
+		const std::string srcA = "AAAA";
+		const std::string srcB = "BBBB";
+		const std::string hashA = TextureConversionHash(
+			srcA.data(), srcA.size(), true);
+		const std::string hashB = TextureConversionHash(
+			srcB.data(), srcB.size(), true);
+		std::vector<uint8_t> out;
+		// Unscoped (legacy): the shared uri thrashes (latest wins).
+		adapter.SetKeyScope("");
+		Check(adapter.Put("texture", "t/diffuse.png", srcA.data(),
+			srcA.size(), hashA, ""), "assetdb.put.a.legacy");
+		Check(adapter.Has("texture", "t/diffuse.png", hashB) == false,
+			"assetdb.has.gates.hash");
+		// Scoped: two models, same texture uri, distinct payloads.
+		adapter.SetKeyScope(guid);
+		Check(adapter.Put("texture", "t/diffuse.png", srcA.data(),
+			srcA.size(), hashA, ""), "assetdb.put.a.scoped");
+		adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
+		Check(adapter.Put("texture", "t/diffuse.png", srcB.data(),
+			srcB.size(), hashB, ""), "assetdb.put.b.scoped");
+		adapter.SetKeyScope(guid);
+		Check(adapter.Has("texture", "t/diffuse.png", hashA)
+			&& adapter.Get("texture", "t/diffuse.png", out)
+			&& out.size() == 4, "assetdb.get.a.scoped");
+		adapter.SetKeyScope("ffff0000ffff0000ffff0000ffff0000");
+		Check(adapter.Get("texture", "t/diffuse.png", out)
+			&& out.size() == 4, "assetdb.get.b.scoped");
+		// Both rows live side by side (no latest-wins overwrite).
+		// (Flush commits the staged puts to the registry + class pak.)
+		Check(store.Flush(err), "assetdb.store.flush");
+		std::string qerr;
+		ArtifactRecord recA, recB;
+		Check(db.Get("texture", guid + "/t/diffuse.png", recA, qerr)
+			&& recA.hash == hashA, "assetdb.registry.a");
+		Check(db.Get("texture",
+			"ffff0000ffff0000ffff0000ffff0000/t/diffuse.png",
+			recB, qerr) && recB.hash == hashB,
+			"assetdb.registry.b");
+	}
+	fs::remove_all(dir, ec);
+}
+
 int main() {
 	TestScratchAndRegistry();
 	TestStore();
 	TestStoreAdapter();
+	TestAssetDatabase();
 	std::cout << g_checks - g_failures << "/" << g_checks
 		<< " passed\n";
 	return g_failures == 0 ? 0 : 1;

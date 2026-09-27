@@ -76,6 +76,8 @@ public:
     // Hosted-target view (stable handle, registered like a swapchain
     // view) for external bindless composition. Empty when windowed.
     ImageViewHandle HostedViewHandle() const;
+    // The hosted target IMAGE (readback/dump paths).
+    ImageHandle HostedImageHandle() const;
     // Last vkQueuePresentKHR wall time (ms): FIFO VSync throttle, i.e.
     // wait rather than CPU work.
     double GetPresentWaitMs() const;

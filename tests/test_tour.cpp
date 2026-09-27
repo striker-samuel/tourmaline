@@ -1958,6 +1958,94 @@ void TestTextureCacheConsult() {
 
 } // namespace
 
+// Reference asset GUIDs: `reference ... -guid <32-hex>` round-trips, and
+// the GltfGuidResolver hook resolves identity-FIRST (a moved source file
+// keeps binding through its GUID even when the recorded -source path is
+// stale; a miss falls back to the recorded path exactly as before).
+void TestReferenceGuid() {
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refguid";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	// The referenced source lives at a NEW path; the tour still records
+	// the OLD one (a rename that happened outside the editor).
+	const fs::path gltf = dir / "moved.gltf";
+	{
+		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"Solo\"}]}";
+	}
+	const std::string kGuid = "0123456789abcdef0123456789abcdef";
+	// Round-trip: emit + parse keep the guid beside the source.
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "old_name.gltf"; // stale (the file was renamed)
+	r.guid = kGuid;
+	r.name = "solo";
+	doc.references.push_back(r);
+	const std::string tourPath = (dir / "def.tour").string();
+	std::string err;
+	Check(smvk::tour::SaveTour(tourPath, doc, err), "refguid save");
+	{
+		std::ifstream f(tourPath, std::ios::binary);
+		std::stringstream ss;
+		ss << f.rdbuf();
+		const std::string text = ss.str();
+		Check(text.find("-guid " + kGuid) != std::string::npos,
+			"refguid emitted");
+	}
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(tourPath, back, err, &warns),
+		"refguid load");
+	Check(back.references.size() == 1
+		&& back.references[0].guid == kGuid
+		&& back.references[0].source == "old_name.gltf",
+		"refguid roundtrip");
+	// Resolver: GUID -> the moved file's path.
+	struct FakeResolver final : public GltfGuidResolver {
+		std::string movedTo;
+		std::string PathForGuid(const std::string& guid) override {
+			if (guid == "0123456789abcdef0123456789abcdef")
+				return movedTo;
+			return {}; // unknown: caller falls back to -source
+		}
+	};
+	FakeResolver resolver;
+	resolver.movedTo = gltf.generic_string();
+	// Identity-first: stale -source + GUID resolves to the moved file.
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0);
+		std::vector<int> ph;
+		std::vector<std::string> issues;
+		const size_t applied = ApplySceneReferences(*cluster, back,
+			dir.generic_string(), nullptr, nullptr, nullptr,
+			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
+			&issues, nullptr, true, nullptr, nullptr, &resolver);
+		Check(applied == 1, "refguid identity-first bind");
+	}
+	// Resolver miss ("" = unknown GUID): falls back to the recorded
+	// path — which is stale here, so the reference skips with an issue
+	// (never a crash, never wrong geometry).
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0);
+		std::vector<int> ph;
+		std::vector<std::string> issues;
+		const size_t applied = ApplySceneReferences(*cluster, back,
+			dir.generic_string(), nullptr, nullptr, nullptr,
+			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph,
+			&issues, nullptr, true, nullptr, nullptr, nullptr);
+		Check(applied == 0 && !issues.empty(),
+			"refguid miss falls back + skips cleanly");
+	}
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -1977,6 +2065,7 @@ int main() {
 	TestCvolVerbs();
 	TestCubemapVerbs();
 	TestRootReference();
+	TestReferenceGuid();
 	TestCreateNode();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;

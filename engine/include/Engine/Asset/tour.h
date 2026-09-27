@@ -296,6 +296,9 @@ struct ReferenceCmd {
 	                          // .tour (the authored scene — its source gltf
 	                          // is imported, then its tour commands replay
 	                          // with id offsets; see ApplySceneReferences)
+	std::string guid;         // source file's asset GUID (.meta sidecar):
+	                          // stable across moves/renames, resolved first;
+	                          // `source` stays as the legacy fallback
 	std::string name;         // placeholder node name ("REF <name>")
 	glm::vec3 translate{ 0.0f }; // optional placement offset
 	bool hasTranslate = false;

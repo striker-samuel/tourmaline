@@ -540,6 +540,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " -root"; // the scene's own source: no placeholder/ns
 		f << " -n " << r.parent
 			<< " -source " << Quote(r.source);
+		if (!r.guid.empty())
+			f << " -guid " << r.guid;
 		if (!r.name.empty())
 			f << " -name " << Quote(r.name);
 		if (r.hasTranslate)
@@ -757,6 +759,10 @@ struct Flags {
 	bool hasRoot = false;
 	std::string uuid;      // -uuid <hex> (delete addressing / uuid lines)
 	bool hasUuid = false;
+	std::string guid;      // -guid <hex> (reference asset identity:
+	                       // the source file's .meta GUID, stable across
+	                       // moves/renames; -source stays as fallback)
+	bool hasGuid = false;
 	std::string type;      // -type <datatype> (setAttr value flavor)
 	bool hasType = false;
 };
@@ -929,6 +935,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				w.pop_back();
 			f.hasUuid = true;
 			f.uuid = w;
+			i += 2;
+		}
+		else if (k == "-guid" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasGuid = true;
+			f.guid = w;
 			i += 2;
 		}
 		else if (k == "-type" && i + 1 < toks.size()) {
@@ -1421,6 +1435,9 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			// under the scene root, no placeholder, no namespace.
 			ReferenceCmd r{};
 			r.source = fl.source;
+			// Stored verbatim (validated at resolve: malformed GUIDs
+			// fall back to the -source path silently).
+			r.guid = fl.hasGuid ? fl.guid : "";
 			r.parent = fl.hasN ? fl.n : 0;
 			r.root = fl.hasRoot;
 			if (fl.hasName)

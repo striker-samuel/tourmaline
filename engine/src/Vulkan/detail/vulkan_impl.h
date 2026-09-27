@@ -893,6 +893,9 @@ namespace smvk {
 			return imageViewHandles_.empty() ? ImageViewHandle{}
 				: imageViewHandles_[0];
 		}
+		// The hosted target IMAGE (readback/dump paths want the image,
+		// not the view).
+		ImageHandle HostedImageHandle() const { return hostedImage_; }
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 		VulkanSwapchain(VulkanSwapchain&&) = delete;

@@ -179,8 +179,6 @@ void EditorApp::UpdateModalInput() {
 			"selection: previous node", "Up" },
 		{ GLFW_KEY_DOWN, 0, kScopeLayout, &EditorApp::ModalCycleNodeNext,
 			"selection: next node", "Down" },
-		{ GLFW_KEY_F9, 0, kScopeLayout, &EditorApp::ModalViewUv0,
-			"view: UV0", "F9" },
 		// LIGHTING: sun/env + lightmap authoring (old kLighting table).
 		{ GLFW_KEY_W, 0, kScopeLighting, &EditorApp::ModalGizmoTranslate,
 			"gizmo: translate", "W" },
@@ -200,10 +198,8 @@ void EditorApp::UpdateModalInput() {
 			"view: GI volumes (off/wire/solid)", "J" },
 		{ GLFW_KEY_F8, 0, kScopeLighting, &EditorApp::ModalViewBaked,
 			"view: baked irradiance", "F8" },
-		{ GLFW_KEY_F10, 0, kScopeLighting, &EditorApp::ModalViewLmUv,
-			"view: lightmap UV", "F10" },
-		{ GLFW_KEY_F5, 0, kScopeLighting, &EditorApp::ModalUvInsetCycle,
-			"UV inset: cycle", "F5" },
+		{ GLFW_KEY_F5, kModalShift, kScopeLighting,
+			&EditorApp::ModalUvInsetCycle, "UV inset: cycle", "Shift+F5" },
 		{ GLFW_KEY_LEFT_BRACKET, 0, kScopeLighting,
 			&EditorApp::ModalSunAzimuthNeg, "sun azimuth -5", "[" },
 		{ GLFW_KEY_RIGHT_BRACKET, 0, kScopeLighting,
@@ -217,23 +213,18 @@ void EditorApp::UpdateModalInput() {
 		{ GLFW_KEY_PERIOD, 0, kScopeLighting,
 			&EditorApp::ModalSunIntensityPos, "sun intensity *1.25", "." },
 		// TEST: verify (old kTest table).
-		{ GLFW_KEY_P, 0, kScopeTest, &EditorApp::ModalRunInApp,
-			"run in App", "P" },
 		{ GLFW_KEY_C, 0, kScopeTest, &EditorApp::ModalCook,
 			"cook to .pak", "C" },
 		{ GLFW_KEY_T, 0, kScopeTest, &EditorApp::ModalTexModeCycle,
 			"textures: residency mode", "T" },
-		{ GLFW_KEY_F4, 0, kScopeTest, &EditorApp::ModalViewMeshlets,
-			"view: meshlets", "F4" },
-		{ GLFW_KEY_F6, 0, kScopeTest, &EditorApp::ModalViewVertexColors,
-			"view: vertex colors", "F6" },
-		{ GLFW_KEY_F9, 0, kScopeTest, &EditorApp::ModalViewUv0,
-			"view: UV0", "F9" },
 		// PROFILE: stub (old kProfile table).
 		{ GLFW_KEY_O, 0, kScopeProfile, &EditorApp::ModalProfileStub,
 			"profile: placeholder", "O" },
-		// GLOBAL: mode switches, shading trio, window toggles, document
-		// ops — reachable from ANY mode (old kGlobal table, kept last).
+		// GLOBAL: mode switches, App-parity debug views (F1/F2/F3/F4/F5/
+		// F6/F9/F10/F11 — the same keys the standalone App uses, wired
+		// straight through to the hosted live view), wireframe (P —
+		// App parity; Z stays as the LAYOUT alias), window toggles,
+		// document ops — reachable from ANY mode.
 		{ GLFW_KEY_1, 0, kScopeGlobal, &EditorApp::ModalModeLayout,
 			"mode: LAYOUT", "1" },
 		{ GLFW_KEY_2, 0, kScopeGlobal, &EditorApp::ModalModeLighting,
@@ -246,8 +237,22 @@ void EditorApp::UpdateModalInput() {
 			"view: lit", "F1" },
 		{ GLFW_KEY_F2, 0, kScopeGlobal, &EditorApp::ModalViewUnlit,
 			"view: unlit", "F2" },
-		{ GLFW_KEY_F3, 0, kScopeGlobal, &EditorApp::ModalViewLitShadows,
-			"view: lit+shadows", "F3" },
+		{ GLFW_KEY_F3, 0, kScopeGlobal, &EditorApp::ModalViewMeshlets,
+			"view: meshlets", "F3" },
+		{ GLFW_KEY_F4, 0, kScopeGlobal, &EditorApp::ModalViewCascades,
+			"view: shadow cascades", "F4" },
+		{ GLFW_KEY_F5, 0, kScopeGlobal, &EditorApp::ModalViewLods,
+			"view: LODs", "F5" },
+		{ GLFW_KEY_F6, 0, kScopeGlobal, &EditorApp::ModalViewVertexColors,
+			"view: vertex colors", "F6" },
+		{ GLFW_KEY_F9, 0, kScopeGlobal, &EditorApp::ModalViewUv0,
+			"view: UV0", "F9" },
+		{ GLFW_KEY_F10, 0, kScopeGlobal, &EditorApp::ModalViewLmUv,
+			"view: UV1 (lightmap)", "F10" },
+		{ GLFW_KEY_F11, 0, kScopeGlobal, &EditorApp::ModalViewPom,
+			"view: parallax (POM)", "F11" },
+		{ GLFW_KEY_P, 0, kScopeGlobal, &EditorApp::ModalWireframeToggle,
+			"view: wireframe (hidden-line)", "P" },
 		{ GLFW_KEY_V, 0, kScopeGlobal, &EditorApp::ModalVpLayoutToggle,
 			"viewport: single/quad", "V" },
 		{ GLFW_KEY_I, 0, kScopeGlobal, &EditorApp::ModalUiToggle,
@@ -268,13 +273,9 @@ void EditorApp::UpdateModalInput() {
 		{ GLFW_KEY_S, kModalCtrl | kModalAlt, kScopeGlobal,
 			&EditorApp::ModalSaveIncremental, "tour: save incremental",
 			"Ctrl+Alt+S" },
-		{ GLFW_KEY_E, kModalCtrl | kModalAlt, kScopeGlobal,
-			&EditorApp::ModalBackToEditSource,
-			"wysiwyg: back to edit source (cooked preview)",
-			"Ctrl+Alt+E" },
 		{ GLFW_KEY_F12, 0, kScopeGlobal,
-			&EditorApp::ModalToggleWysiwyg,
-			"wysiwyg: hosted preview on/off (scratch scene)",
+			&EditorApp::ModalRefreshWysiwyg,
+			"wysiwyg: rebind live hosted view",
 			"F12" },
 	};
 
@@ -337,19 +338,12 @@ void EditorApp::ModalVpLayoutToggle() {
 }
 void EditorApp::ModalUiToggle() { m_uiMode = !m_uiMode; }
 
-void EditorApp::ModalBackToEditSource() {
-	// Only meaningful while displaying a cooked preview (the banner
-	// states it); a no-op otherwise (same key doubles as gizmo-rotate
-	// E, but the exact-mods match keeps the rows disjoint).
-	if (!m_editSourceGltf.empty())
-		ReturnToEditSource();
-}
-
-void EditorApp::ModalToggleWysiwyg() {
-	// Manual hosted-preview toggle (F12): same entry as the View menu
-	// item — launches from the last staged scratch scene, stops when
-	// already running.
-	ToggleWysiwygPreview();
+void EditorApp::ModalRefreshWysiwyg() {
+	// F12 rebind: only sets the deferred flag — DrawFrame rebinds the
+	// hosted live view onto the current world at the frame boundary,
+	// idle. Never stops: the live view is the viewport driver, not a
+	// mode.
+	m_wysiwygRefreshPending = true;
 }
 
 void EditorApp::ModalDelete() {
@@ -539,7 +533,6 @@ void EditorApp::ModalSunIntensityPos() {
 
 // ---- test handlers ----
 
-void EditorApp::ModalRunInApp() { RunInApp(); } // guards + logs inside
 void EditorApp::ModalCook() { CookToPak(); }    // guards + logs inside
 
 void EditorApp::ModalViewMeshlets() {
@@ -552,6 +545,18 @@ void EditorApp::ModalViewMeshlets() {
 
 void EditorApp::ModalViewVertexColors() {
 	ActiveViewMode() = ViewMode::VertexColors;
+}
+
+void EditorApp::ModalViewCascades() {
+	ActiveViewMode() = ViewMode::Cascades;
+}
+
+void EditorApp::ModalViewLods() {
+	ActiveViewMode() = ViewMode::Lods;
+}
+
+void EditorApp::ModalViewPom() {
+	ActiveViewMode() = ViewMode::Pom;
 }
 
 void EditorApp::ModalTexModeCycle() {

@@ -815,17 +815,44 @@ public:
 		Shutdown();
 	}
 
+	// HOSTED live-view camera drive: the EDITOR owns the camera (its
+	// orbit state + lens); push it here every frame (before
+	// HostedDrawFrame). Zero GPU work — the positioner + the frame's
+	// proj constants follow; UpdateCamera stays disabled
+	// (SetDisableControl) so nothing integrates on top. fovYDeg in
+	// DEGREES, near/far in meters. A view direction parallel to the
+	// up vector (top-down framing) is nudged — lookAt would NaN.
+	void DriveExternalCamera(const glm::vec3& eye, const glm::vec3& target,
+		float fovYDeg, float zNear, float zFar);
+	// HOSTED live-view debug drive (the editor pushes its view modes
+	// onto the frame): the editor's debug-view selection (F1/F2/F4/
+	// F6/F9/F10...) maps onto the frame's DebugView here, and the
+	// baked-irradiance view onto giDebug (1 = flat irradiance; see
+	// the R/F8 cycle). Zero = off.
+	void SetDebugView(DebugView v) { m_debugView = v; }
+	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
+	// HOSTED live-view AA: the editor renders with AA OFF (crisp,
+	// pixel-accurate authoring view — MSAA resolves and SMAA temporal
+	// smearing have no place in a live authoring view).
+	void SetAaMode(AaMode m) { m_aaMode = m; }
+	// HOSTED live-view wireframe (editor P/Z — App parity): Line
+	// polygon mode over the Fill depth prepass, so hidden lines are
+	// removed (lines never draw over the objects in front).
+	void SetWireframe(bool v) { m_wireframe = v; }
+
 	const SceneDesc& GetScene() const { return m_scene; }
 	ScenePassConfig& Passes() { return m_passes; }
-	// Debug: skip the cooked pak and import the scene straight from the
-	// SceneDesc glTF path (loose content). A/B against the pak to tell
-	// pak/meshlet bugs apart from import/draw-path bugs.
-	void SetForceGltf(bool v) { m_forceGltf = v; }
 	// CLI override (main.cpp --pak / --gltf): external scene instead of
 	// a registry sample. Registry camera pose is meaningless for it, so
 	// the camera frames the loaded bounds after resolve (unless
 	// VULKANTOY_CAM_POS/FWD pin it for benches).
 	void SetSceneOverride(bool v) { m_sceneOverride = v; }
+	// Project root (editor WYSIWYG): when the scene lives in a project,
+	// the project root mounts into the content VFS below the bundled
+	// content/ (project files win on collisions) so project-side
+	// cook/bake sidecars (gi/<stem>.*, cubemaps, …) resolve exactly
+	// where the cooker wrote them. Empty = no project mount.
+	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
 	// Which Scene blob of the pak to load (see ListPakScenes; 0 = default).
 	void SetSceneIndex(int v) { m_sceneIndex = v < 0 ? 0 : v; }
 	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
@@ -864,14 +891,24 @@ protected:
 	void UpdateCameraAspect(smvk::Extent2D extent) {
 		if (extent.width == 0 || extent.height == 0)
 			return;
+		// External camera (editor live view): the editor's lens drives
+		// the frame; otherwise the App defaults.
+		const bool ext = IsHosted() && m_extCamera;
 		m_camera.setPerspective(
-			glm::radians(kCameraFovYDegrees),
+			glm::radians(ext ? m_extFovYDeg : kCameraFovYDegrees),
 			float(extent.width) / float(extent.height),
-			default_near_clip, kMainViewFarPlane
+			ext ? m_extNear : default_near_clip,
+			ext ? m_extFar : kMainViewFarPlane
 		);
 	}
 	bool m_uiMode = false;
 	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
+	// External camera overrides (see DriveExternalCamera): the editor's
+	// lens drives UpdateCameraAspect while set (hosted live view).
+	bool m_extCamera = false;
+	float m_extFovYDeg = 60.0f;
+	float m_extNear = 0.1f;
+	float m_extFar = 100.0f;
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
@@ -1252,9 +1289,10 @@ protected:
 
 	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};
-	bool m_forceGltf = false;
 	bool m_sceneOverride = false;
 	int m_sceneIndex = 0;
+	// Project root for the content VFS (see SetProjectRoot).
+	std::string m_projectRoot;
 	// Camera control frozen (see SetDisableControl; --disable_control).
 	bool m_disableControl = false;
 

@@ -6,6 +6,7 @@ project(ArtifactCache)
 # never sees the cache.
 add_library(artifact_cache STATIC
     src/artifact_cache.cpp
+    src/assetdb.cpp
 )
 
 target_include_directories(artifact_cache

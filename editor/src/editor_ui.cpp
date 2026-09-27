@@ -211,7 +211,6 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawViewportOverlay(targetExtent);
 	DrawViewportChrome(); // borders, camera chips, box-select rect
 	DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
-	DrawPlayBar();
 	DrawFlintbasePanel();
 	DrawReferencesPanel(); // Maya-style reference list (View menu)
 	DrawPathsPanel(); // consolidated file/path view (File menu)
@@ -221,7 +220,26 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 
 void EditorApp::DrawMenuBar() {
 	if (ImGui::BeginMenu("File")) {
-		// Single entry point: native dialog (.gltf/.pak/.tour, starts
+		// Project first (Unity/Unreal style): a project folder owns
+		// content/, paks/, gi/ and its own scratch/. Imports cook
+		// into it and the hosted view shows them with the full
+		// pipeline — no manual staging.
+		if (ImGui::MenuItem("New / Open Project...")) {
+			std::string picked;
+			if (NativePickFolder(picked) && !picked.empty())
+				NewProjectOrOpen(picked);
+		}
+		if (!m_projectRoot.empty()) {
+			if (ImGui::MenuItem("Import asset...", nullptr, false,
+					!m_cookRunning)) {
+				std::string picked;
+				if (NativeOpenFile(picked) && !picked.empty())
+					ImportAsset(picked);
+			}
+			ImGui::TextDisabled("project: %s", m_projectName.c_str());
+			ImGui::Separator();
+		}
+		// Single entry point: native dialog (.gltf/.glb/.pak/.tour,
 		// in C:/), dispatched by extension (tours replay into the stack).
 		if (ImGui::MenuItem("Open file...")) {
 			std::string picked;
@@ -252,14 +270,6 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
 			ShowCookDialog();
 		}
-		// WYSIWYG: visible only while displaying a cooked preview —
-		// reopens the edit-source glTF (+ tour replay).
-		if (!m_editSourceGltf.empty()
-			&& ImGui::MenuItem("Back to edit source", "Ctrl+Alt+E"))
-			ReturnToEditSource();
-		if (ImGui::MenuItem("Run in App", nullptr, false,
-			!m_runRunning && !RunArgs().empty()))
-			RunInApp();
 		ImGui::Separator();
 		if (ImGui::MenuItem("Scratch disk..."))
 			m_showScratchDialog = true;
@@ -366,24 +376,38 @@ void EditorApp::DrawMenuBar() {
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("View")) {
+		ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
+			"F9..F11, P) — same view, same key, live view.");
 		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
 			ActiveViewMode() == ViewMode::Unlit))
 			ActiveViewMode() = ViewMode::Unlit;
 		if (ImGui::MenuItem("Lit", "F1", ActiveViewMode() == ViewMode::Lit))
 			ActiveViewMode() = ViewMode::Lit;
-		if (ImGui::MenuItem("Lit + shadows", "F3",
+		if (ImGui::MenuItem("Lit + shadows (legacy)", nullptr,
 			ActiveViewMode() == ViewMode::LitShadows))
 			ActiveViewMode() = ViewMode::LitShadows;
-		if (ImGui::MenuItem("Baked irradiance", "F8 (LIGHTING)",
-			ActiveViewMode() == ViewMode::Baked, m_lmGpu))
-			ActiveViewMode() = ViewMode::Baked;
-		if (ImGui::MenuItem("Meshlets", "F4 (TEST)",
+		if (ImGui::MenuItem("Meshlets", "F3",
 			ActiveViewMode() == ViewMode::Meshlets)) {
 			ActiveViewMode() = ViewMode::Meshlets;
 			if (!m_meshletDebugHasData && !EnsureMeshletDebug())
 				Log("Meshlet view: no cooked meshlets in this scene "
 					"(cook with --meshlets); meshes show as flat fallbacks.");
 		}
+		if (ImGui::MenuItem("Shadow cascade coverage", "F4",
+			ActiveViewMode() == ViewMode::Cascades))
+			ActiveViewMode() = ViewMode::Cascades;
+		if (ImGui::MenuItem("LODs", "F5",
+			ActiveViewMode() == ViewMode::Lods))
+			ActiveViewMode() = ViewMode::Lods;
+		if (ImGui::MenuItem("Vertex colors", "F6",
+			ActiveViewMode() == ViewMode::VertexColors))
+			ActiveViewMode() = ViewMode::VertexColors;
+		if (ImGui::MenuItem("Parallax (POM)", "F11",
+			ActiveViewMode() == ViewMode::Pom))
+			ActiveViewMode() = ViewMode::Pom;
+		if (ImGui::MenuItem("Baked irradiance", "F8",
+			ActiveViewMode() == ViewMode::Baked, m_lmGpu))
+			ActiveViewMode() = ViewMode::Baked;
 		if (ActiveViewMode() == ViewMode::Meshlets) {
 			const char* meshletModes[] = { "Random per meshlet",
 				"Cone-cutoff heat" };
@@ -391,7 +415,9 @@ void EditorApp::DrawMenuBar() {
 				meshletModes, 2);
 		}
 		ImGui::Separator();
-		ImGui::MenuItem("Wireframe (all)", "Z (LAYOUT)", &m_wireframeAll);
+		ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
+		ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
+			"prepass — lines never draw over the objects in front.");
 		ImGui::Separator();
 		if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
 			m_vpLayout = 0;
@@ -424,13 +450,10 @@ void EditorApp::DrawMenuBar() {
 				"(translate: grid cell)");
 		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("UV0", "F9 (TEST)", ActiveViewMode() == ViewMode::Uv0))
+		if (ImGui::MenuItem("UV0", "F9", ActiveViewMode() == ViewMode::Uv0))
 			ActiveViewMode() = ViewMode::Uv0;
-		if (ImGui::MenuItem("UV1 (lightmap)", "F10 (LIGHTING)", ActiveViewMode() == ViewMode::Uv1))
+		if (ImGui::MenuItem("UV1 (lightmap)", "F10", ActiveViewMode() == ViewMode::Uv1))
 			ActiveViewMode() = ViewMode::Uv1;
-		if (ImGui::MenuItem("Vertex colors", "F6 (TEST)",
-			ActiveViewMode() == ViewMode::VertexColors))
-			ActiveViewMode() = ViewMode::VertexColors;
 		ImGui::Separator();
 		if (ImGui::MenuItem(
 				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
@@ -493,17 +516,10 @@ void EditorApp::DrawMenuBar() {
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
 		ImGui::Separator();
-		// MANUAL hosted-preview entry (the cook auto-launches after it
-		// finishes; this works off the last staged scratch scene).
-		if (ImGui::MenuItem("WYSIWYG hosted preview", "F12",
-				PreviewingCooked()))
-			ToggleWysiwygPreview();
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Hosted app::SceneRenderer renders the "
-				"last staged scratch scene with FULL App parity "
-				"(PBR, GI, cubemaps, post). Auto-launches after a "
-				"cook; the edit world stays loaded (Ctrl+Alt+E back "
-				"to editing).");
+			ImGui::SetTooltip("Rebind the hosted app::SceneRenderer onto "
+				"the current world (full pipeline: PBR, shadows, GI, "
+				"post). Edits show live; use this after reimports.");
 		{
 			// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 			const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -3235,44 +3251,6 @@ void EditorApp::DrawUvPanel() {
 	ImGui::TextDisabled("UV0 = authored uvs; UV1 = atlas-space texCoord2.");
 }
 
-// Unity-style Play bar: centered under the menu, launches the current
-// scene in the runtime App (registry scenes only). While App runs the
-// button is disabled — close App to finish (its log streams to Console).
-void EditorApp::DrawPlayBar() {
-	// Centered over the central viewport rect (m_vp is set by RenderFrame).
-	// m_menuH = menu bar + tool topbar (updated earlier this frame).
-	const float cx = m_vp.x + m_vp.w * 0.5f;
-	ImGui::SetNextWindowPos(ImVec2(cx, m_menuH + 6), ImGuiCond_Always,
-		ImVec2(0.5f, 0.0f));
-	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
-	if (ImGui::Begin("##playbar", nullptr,
-		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove)) {
-		if (m_runRunning) {
-			ImGui::TextDisabled("Running in App... (close it)");
-		}
-		else {
-			const std::string runArgs = RunArgs();
-			if (runArgs.empty()) {
-				ImGui::BeginDisabled();
-				if (ImGui::Button("Run in App"))
-					RunInApp();
-				ImGui::EndDisabled();
-				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-					ImGui::SetTooltip("Open a .pak or .gltf first.");
-			}
-			else {
-				if (ImGui::Button("Run in App"))
-					RunInApp();
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("App %s", runArgs.c_str());
-			}
-		}
-	}
-	ImGui::End();
-}
-
 void EditorApp::DrawConsolePanel() {
 	// Selectable log: readonly multiline text (mouse-drag selection +
 	// Ctrl+C) with Clear/Copy buttons and stick-to-bottom autoscroll.
@@ -3449,14 +3427,15 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 			: ImVec4(0.95f, 0.45f, 0.65f, 1.0f);
 		ImGui::TextColored(modeCol, "-- %s --  %s",
 			EditorModeName(m_mode), modeKeys.c_str());
-		// WYSIWYG banner: the viewports render through the HOSTED
-		// app::SceneRenderer (App parity) over the scratch copy of the
-		// cook; the edit world stays loaded underneath.
-		if (PreviewingCooked()) {
+		// Live-view banner: the viewports render through the HOSTED
+		// app::SceneRenderer over THE EDITOR'S OWN WORLD (imports
+		// preprocessed, GUID references bound, edits applied) — live,
+		// never fed by cooks.
+		if (m_wysiwyg) {
 			ImGui::PushStyleColor(ImGuiCol_Text,
 				ImVec4(0.55f, 0.95f, 1.0f, 1.0f));
-			ImGui::Text("-- WYSIWYG (hosted SceneRenderer) -- "
-				"App-parity view; Ctrl+Alt+E back to editing");
+			ImGui::Text("-- LIVE VIEW (hosted SceneRenderer) -- "
+				"full pipeline, edits live (F12 rebinds)");
 			ImGui::PopStyleColor();
 		}
 		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
@@ -3656,8 +3635,11 @@ void EditorApp::ShowCookDialog() {
 	}
 	if (m_cookOutPakBuf[0] == '\0') {
 		std::filesystem::path p(m_gltfPath);
+		std::string def = ProjectCookOutPak(p.stem().string());
+		if (def.empty())
+			def = ("content/paks/" + p.stem().string() + ".pak");
 		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf),
-			"content/paks/%s.pak", p.stem().string().c_str());
+			"%s", def.c_str());
 	}
 	if (m_cookContentDirBuf[0] == '\0') {
 		std::snprintf(m_cookContentDirBuf, sizeof(m_cookContentDirBuf),
@@ -3675,8 +3657,13 @@ void EditorApp::DrawScratchDialog() {
 		"Scratch disk: the editor's artifact CACHE (registry + cooked "
 		"resource paks). It never gates cooks — a missing or stale "
 		"entry just reprocesses.");
+	const std::string effectiveScratch =
+		(m_store ? m_store->Root() : m_scratchRoot);
 	ImGui::TextDisabled("current: %s",
-		m_scratchRoot.empty() ? "(disabled)" : m_scratchRoot.c_str());
+		effectiveScratch.empty() ? "(disabled)" : effectiveScratch.c_str());
+	if (!m_projectRoot.empty())
+		ImGui::TextDisabled("owned by project '%s' (change via project)",
+			m_projectName.c_str());
 	{
 		std::string err;
 		const uint64_t n = m_cacheDb.IsOpen() ? m_cacheDb.Count(err) : 0;
@@ -3707,18 +3694,25 @@ void EditorApp::DrawScratchDialog() {
 		ImGui::EndTable();
 	}
 	ImGui::Separator();
+	const bool scratchOwned = !m_projectRoot.empty();
+	if (scratchOwned)
+		ImGui::BeginDisabled();
 	if (ImGui::Button("Apply")) {
-		const std::string want = m_scratchBuf;
+		// The typed path is the new global root (project-less runs).
+		// While a project is open its scratch stays owned by it.
+		m_scratchRoot = m_scratchBuf;
 		if (OpenCacheDb()) {
 			SavePrefs();
 			Log("Scratch disk set: " + m_scratchRoot);
 			ImGui::CloseCurrentPopup();
 		}
 		else {
-			Log("Scratch disk '" + want + "' unusable "
+			Log("Scratch disk '" + m_scratchRoot + "' unusable "
 				"(must be a creatable directory).");
 		}
 	}
+	if (scratchOwned)
+		ImGui::EndDisabled();
 	ImGui::SameLine();
 	if (ImGui::Button("Close"))
 		ImGui::CloseCurrentPopup();
@@ -3941,13 +3935,13 @@ void EditorApp::DrawCookDialog() {
 	}
 
 	ImGui::Separator();
-	ImGui::Text("GI (probes)");
+	ImGui::Text("GI (probes) — baked ON DEMAND, never with the cook");
 	ImGui::TextDisabled("%u cvolume node(s) authored in this scene",
 		m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
 	if (ImGui::Checkbox("Convex volumes (bake authored)", &m_cook.giCvol))
 		AutosaveTour();
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Cvolume nodes bake with the cook (GiBaker):\n"
+		ImGui::SetTooltip("Cvolume nodes bake via Bake GI below (GiBaker):\n"
 			"gi/<pak-stem>_*.cvol + .cvmanifest sidecars.\n"
 			"Skipped when the definition has no cvolumes.");
 	if (ImGui::Checkbox("World field (adaptive octree)", &m_cook.giWorld))
@@ -3955,19 +3949,31 @@ void EditorApp::DrawCookDialog() {
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("gi/<pak-stem>.sggi: the global fallback the\n"
 			"runtime samples outside any convex volume.\n"
-			"This is the slow stage (minutes on real scenes).");
-
-	ImGui::Separator();
-	if (ImGui::Checkbox("Preview cooked result (WYSIWYG)",
-			&m_previewAfterCook)) {
-		SavePrefs();
+			"This is the slow stage (minutes on real scenes) — it\n"
+			"runs only via Bake GI below. Unbaked scenes render\n"
+			"sky IBL instead.");
+	if (!m_giBakedHash.empty()) {
+		const bool fresh = !m_cookDefHash.empty()
+			&& m_giBakedHash == m_cookDefHash;
+		ImGui::TextDisabled("GI baked (%s)", fresh ? "sidecars fresh"
+			: "may predate this cook — rebake to refresh");
+	}
+	if (m_bakeRunning) {
+		ImGui::Text("Baking GI... (see Console)");
+		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Baking GI..."); // indeterminate
+	}
+	else if (ImGui::Button("Bake GI now")) {
+		BakeGI(); // guards + logs inside (needs a cook target)
 	}
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("After the cook finishes, a HOSTED "
-			"app::SceneRenderer (App parity: PBR, GI, cubemaps, post) "
-			"renders the scratch copy of the cook into the viewports.\n"
-			"The edit world stays loaded; Ctrl+Alt+E returns to "
-			"editing.");
+		ImGui::SetTooltip("Run GiBaker over the current definition tour.\n"
+			"Sidecars land next to the cook's out pak; the live view\n"
+			"rebinds itself on completion. Cooks stay GI-free.");
+
+	ImGui::Separator();
+	ImGui::TextDisabled("Cook = PRODUCT step: a .pak for the game/App "
+		"(Run in App loads it). The live view (the hosted renderer over "
+		"the editor's world) is unaffected by cooks; F12 rebinds it.");
 	if (m_cookRunning) {
 		ImGui::Text("Cooking... (see Console)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate

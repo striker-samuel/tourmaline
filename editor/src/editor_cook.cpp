@@ -39,6 +39,44 @@ std::string QuoteArg(const std::string& s) {
 }
 } // namespace
 
+// Shared snapshot for the cooker/baker subprocesses: a TEMP coalesced
+// tour (the canonical .tour is never overwritten; becomeTarget = false
+// keeps the live target, dirty star and autosave untouched) plus the
+// definition fingerprint (tour bytes minus the volatile "//Last
+// modified:" line — deterministic per definition content).
+bool EditorApp::SnapshotTourForProcess(const char* tag,
+	std::string& outTempTour, std::string& outDefHash) {
+	outTempTour.clear();
+	outDefHash.clear();
+	namespace fs = std::filesystem;
+	fs::path tmp = fs::temp_directory_path() /
+		("tourmaline_" + std::string(tag) + "_"
+			+ fs::path(m_gltfPath).stem().string() + ".tour");
+	if (!SaveTourTo(tmp.generic_string(), false)) {
+		Log(std::string(tag) + ": temp tour save failed, aborting.");
+		return false;
+	}
+	outTempTour = tmp.generic_string();
+	Log(std::string(tag) + ": temp tour saved '" + outTempTour + "' ("
+		+ std::to_string(m_historyCursor) + " commands).");
+	std::ifstream tf(outTempTour, std::ios::binary);
+	if (tf) {
+		std::string text((std::istreambuf_iterator<char>(tf)),
+			std::istreambuf_iterator<char>());
+		std::string scan = text;
+		const size_t lineAt = scan.find("//Last modified:");
+		if (lineAt != std::string::npos) {
+			const size_t lineEnd = scan.find('\n', lineAt);
+			if (lineEnd != std::string::npos)
+				scan.erase(lineAt, lineEnd - lineAt + 1);
+			else
+				scan.erase(lineAt);
+		}
+		outDefHash = smvk::cache::HashBytes(scan.data(), scan.size());
+	}
+	return true;
+}
+
 void EditorApp::CookToPak() {
 	if (m_cookRunning || !m_hasGltfModel) {
 		if (!m_hasGltfModel)
@@ -47,47 +85,12 @@ void EditorApp::CookToPak() {
 				: "Cook: no glTF loaded.");
 		return;
 	}
-	// Build a TEMP coalesced tour for cooking (don't overwrite the canonical .tour).
-	// The cooker consumes this temp tour as a snapshot: becomeTarget = false
-	// so the live target, dirty star and autosave slot stay untouched — after
-	// the cook the editor still points at the real scene. (The editor is
-	// locked during the cook, so the snapshot can't go stale mid-flight.)
-	std::string tempTourPath;
-	{
-		namespace fs = std::filesystem;
-		fs::path tmp = fs::temp_directory_path() /
-			("tourmaline_cook_" + fs::path(m_gltfPath).stem().string() + ".tour");
-		std::error_code ec;
-		if (!SaveTourTo(tmp.generic_string(), false)) {
-			Log("Cook: temp tour save failed, aborting.");
-			return;
-		}
-		tempTourPath = tmp.generic_string();
-		Log("Cook: temp tour saved '" + tempTourPath + "' (" +
-			std::to_string(m_historyCursor) + " commands).");
-		// Definition fingerprint (the scene artifact's cache source
-		// key): the temp tour bytes with the volatile "//Last
-		// modified:" header line stripped — deterministic per
-		// definition CONTENT, so identical states hit the cache.
-		m_cookDefHash.clear();
-		std::ifstream tf(tempTourPath, std::ios::binary);
-		if (tf) {
-			std::string text((std::istreambuf_iterator<char>(tf)),
-				std::istreambuf_iterator<char>());
-			// Hash with the timestamp line removed.
-			std::string scan = text;
-			const size_t lineAt = scan.find("//Last modified:");
-			if (lineAt != std::string::npos) {
-				const size_t lineEnd = scan.find('\n', lineAt);
-				if (lineEnd != std::string::npos)
-					scan.erase(lineAt, lineEnd - lineAt + 1);
-				else
-					scan.erase(lineAt);
-			}
-			m_cookDefHash = smvk::cache::HashBytes(scan.data(),
-				scan.size());
-		}
-	}
+	// TEMP coalesced tour snapshot (shared with Bake GI below).
+	std::string tempTourPath, defHash;
+	if (!SnapshotTourForProcess("Cook", tempTourPath, defHash))
+		return;
+	// Definition fingerprint: the scene artifact's cache source key.
+	m_cookDefHash = defHash;
 	// contentDir = absolute path to the content root (parent of "content/").
 	// For F:\content\models\... -> F:\
 	// For //flintbase/ -> not used (flintbase handles its own resolution).
@@ -117,25 +120,24 @@ void EditorApp::CookToPak() {
 				inVfs = std::filesystem::path(m_gltfHostPath).filename().string();
 			}
 		}
+		// No trailing separators (but keep filesystem roots like
+		// "F:\" intact): a trailing backslash would escape the closing
+		// quote when this rides the cooker command line (..."F:\proj\"
+		// is a broken argument).
+		while (contentDir.size() > 3 && (contentDir.back() == '\\'
+			|| contentDir.back() == '/'))
+			contentDir.pop_back();
 	}
 	CookSettings cook = m_cook;
 	cook.contentDir = contentDir;
 	cook.inVfs = inVfs;
-	// Does the definition carry authored convex volumes? (Drives the
-	// GiBaker stage below — skipped silently when nothing to bake.)
-	const bool giHasCvols = m_world
-		&& !m_world->scene.cvolForNode.empty();
+	// NOTE: no GI stage here by design (on-demand Bake GI only) —
+	// cooks stay fast and GI-free; unbaked scenes render sky IBL.
 	// Auto-generate output path if empty: content/paks/<stem>.pak
 	if (cook.outPak.empty() && !m_gltfPath.empty()) {
 		std::filesystem::path p(m_gltfPath);
 		cook.outPak = ("content/paks/" + p.stem().string() + ".pak");
 	}
-	// contentRoot = the "content/" dir itself (gi/texture outputs land
-	// here — exactly what the editor/App loaders check next to the
-	// pak); the VFS base (contentDir) is its PARENT for the mount.
-	const std::string contentRoot = std::filesystem::absolute(
-		std::filesystem::path(cook.outPak).parent_path() / "..")
-		.lexically_normal().string();
 	m_cookRunning = true;
 	Log("Cook started -> " + cook.outPak);
 	auto feed = std::make_shared<CookFeed>();
@@ -143,12 +145,13 @@ void EditorApp::CookToPak() {
 	// Cache acceleration (opt-in, never required): when the scratch is
 	// online, the cooker consults + feeds the same artifact registry —
 	// hit = hash-validated copy from scratch, miss = transcode + stage.
-	// Captured by value (the worker lambda has no this).
+	// The EFFECTIVE store root (project-owned when a project is open),
+	// never the global pref. Captured by value (the worker lambda has
+	// no this).
 	const std::string scratchDir =
-		(m_store && !m_scratchRoot.empty()) ? m_scratchRoot
-		: std::string();
+		m_store ? m_store->Root() : std::string();
 	m_cookFuture = std::async(std::launch::async,
-		[cook, giHasCvols, contentRoot, feed, scratchDir, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, feed, scratchDir, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			// Live feed: each pipe line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -212,144 +215,12 @@ cmd << " 2>&1";
 			const int rc = pclose(pipe);
 #endif
 			r.ok = (rc == 0);
-			// GI BAKE STAGE: the definition's GI bakes as part of the
-			// cook — GiBaker consumes the SAME definition tour (root
-			// reference + nodes), keyed to the PAK STEM so the
-			// sidecars land exactly where the editor/App loaders look
-			// next to the pak: gi/<stem>_*.cvol + .cvmanifest, and
-			// gi/<stem>.sggi for the world field. Skipped silently
-			// when nothing is requested.
-			const bool wantCvols = cook.giCvol && giHasCvols;
-			const bool wantWorld = cook.giWorld;
-			if (r.ok && (wantCvols || wantWorld)) {
-				std::filesystem::path baker =
-					std::filesystem::path(exePath).parent_path() /
-					"GiBaker.exe";
-				if (!std::filesystem::exists(baker))
-					baker = "GiBaker.exe";
-				const std::string pakStem =
-					std::filesystem::path(cook.outPak).stem().string();
-				std::ostringstream gi;
-				gi << QuoteArg(baker.string())
-					<< " --content-dir " << QuoteArg(contentRoot)
-					<< " --scene " << QuoteArg(pakStem)
-					<< " --tour " << QuoteArg(tempTourPath);
-				if (wantWorld)
-					gi << " --out " << QuoteArg(
-						(std::filesystem::path(contentRoot) / "gi" /
-							(pakStem + ".sggi")).generic_string());
-				push("cook-gi: " + gi.str());
-#ifdef _WIN32
-				FILE* gpipe = _popen(gi.str().c_str(), "r");
-#else
-				FILE* gpipe = popen(gi.str().c_str(), "r");
-#endif
-				if (!gpipe) {
-					push("cook-gi: failed to spawn GiBaker");
-				}
-				else {
-					pushPipe(gpipe);
-#ifdef _WIN32
-					const int grc = _pclose(gpipe);
-#else
-					const int grc = pclose(gpipe);
-#endif
-					push("cook-gi: GiBaker exit=" + std::to_string(grc));
-					// The pak is the cook's product; a GI bake failure
-					// degrades lighting (not the pak) — reported, not
-					// fatal.
-					if (grc != 0)
-						push("cook-gi: GI bake FAILED (pak is OK; "
-							"see log above)");
-				}
-			}
 			r.log = "cook: PakCooker exit=" + std::to_string(rc) + "\n";
 			// Cleanup temp tour file.
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
 			return r;
 		});
-}
-
-std::string EditorApp::RunArgs() const {
-	// App entrypoints are files: the loaded pak verbatim, else the glTF
-	// source imported directly. Empty = nothing runnable loaded.
-	if (!m_pakPath.empty())
-		return "--pak " + QuoteArg(m_pakPath);
-	if (m_hasGltfModel && !m_gltfHostPath.empty())
-		return "--gltf " + QuoteArg(m_gltfHostPath);
-	return {};
-}
-
-void EditorApp::RunInApp() {
-	if (m_runRunning)
-		return;
-	const std::string runArgs = RunArgs();
-	if (runArgs.empty()) {
-		Log("Run: nothing runnable loaded (open a .pak or .gltf first).");
-		return;
-	}
-	// Persist the tour first so no edit is lost (App itself runs the
-	// cooked/source scene, not the tour — Cook first to play edits).
-	if (m_hasGltfModel)
-		SaveTour();
-	char exePath[1024] = {};
-#ifdef _WIN32
-	DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
-	(void)n;
-#endif
-	std::filesystem::path app = std::filesystem::path(exePath).parent_path() /
-		"App.exe";
-	if (!std::filesystem::exists(app))
-		app = "App.exe"; // PATH fallback
-	m_runRunning = true;
-	Log("Run started: App " + runArgs +
-		" (edits need Cook first; close App to finish).");
-	m_runFuture = std::async(std::launch::async,
-		[app = app.string(), runArgs]() -> CookResult {
-			CookResult r{};
-			std::ostringstream log;
-			std::ostringstream cmd;
-			cmd << QuoteArg(app) << " " << runArgs << " 2>&1";
-			log << "run: " << cmd.str() << "\n";
-#ifdef _WIN32
-			FILE* pipe = _popen(cmd.str().c_str(), "r");
-#else
-			FILE* pipe = popen(cmd.str().c_str(), "r");
-#endif
-			if (!pipe) {
-				r.log = log.str() + "run: failed to spawn App\n";
-				return r;
-			}
-			std::array<char, 512> buf{};
-			while (std::fgets(buf.data(), int(buf.size()), pipe))
-				log << buf.data();
-#ifdef _WIN32
-			const int rc = _pclose(pipe);
-#else
-			const int rc = pclose(pipe);
-#endif
-			log << "run: App exit=" << rc << "\n";
-			r.ok = (rc == 0);
-			r.log = log.str();
-			return r;
-		});
-}
-
-void EditorApp::PollRunProcess() {
-	if (!m_runRunning)
-		return;
-	if (!m_runFuture.valid())
-		return;
-	if (m_runFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-		return;
-	CookResult r = m_runFuture.get();
-	m_runRunning = false;
-	std::istringstream ss(r.log);
-	std::string line;
-	while (std::getline(ss, line))
-		Log(line);
-	Log(r.ok ? "Run finished." : "Run exited with errors (see log above).");
 }
 
 void EditorApp::PollCookProcess() {
@@ -386,17 +257,185 @@ void EditorApp::PollCookProcess() {
 			Log(line);
 	}
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
-	// WYSIWYG: display the cooked pak (main thread — Vulkan loads).
-	// The pak write + GI stage completed before the process exited, so
-	// the bytes on disk are final; the preview keeps the edit source
-	// one click away (File > Back to edit source).
-	if (r.ok && m_previewAfterCook && !m_cook.outPak.empty()) {
-		Log("WYSIWYG: opening the cooked result for preview...");
-		PreviewCookedResult(m_cook.outPak);
-	}
+	// The cook is the PRODUCT step (a pak for the game/App — Run in
+	// App loads it): it never touches the viewport. The LIVE view
+	// (the hosted renderer over the editor's own world) is unaffected.
 	// The cook dialog shows its own progress; close it on finish
 	// (DrawCookDialog consumes the flag inside the begin block).
 	m_cookJustFinished = true;
+}
+
+// ---- Bake GI on demand (never part of the cook) --------------------
+// GiBaker consumes the SAME definition-tour snapshot a cook would
+// (root reference + nodes), keyed to the cook's OUT-PAK STEM so the
+// sidecars land exactly where the editor/App loaders look:
+// gi/<stem>_*.cvol + .cvmanifest, and gi/<stem>.sggi for the world
+// field. Missing sidecars are NOT an error anywhere down the line —
+// every GI/volume/cubemap/lightmap loader falls back to the analytic
+// sky IBL (see DegradeAmbientForMissingSources in app).
+
+void EditorApp::BakeGI() {
+	if (m_bakeRunning)
+		return;
+	if (m_cookRunning) {
+		Log("Bake GI: a cook is running — wait for it to finish.");
+		return;
+	}
+	if (!m_world || !m_hasGltfModel) {
+		Log("Bake GI: open a source scene first (imports land ready to "
+			"cook; cooking is the separate product step).");
+		return;
+	}
+	// What to bake comes from the same flags the cook dialog shows.
+	const bool giHasCvols = !m_world->scene.cvolForNode.empty();
+	const bool wantCvols = m_cook.giCvol && giHasCvols;
+	const bool wantWorld = m_cook.giWorld;
+	if (!wantCvols && !wantWorld) {
+		Log("Bake GI: nothing requested — enable World field and/or "
+			"Convex volumes in the cook dialog first.");
+		return;
+	}
+	// Sidecars key to the cook target's stem; derive the project (or
+	// legacy) default when the out pak was never set.
+	if (m_cook.outPak.empty() && !m_gltfPath.empty()) {
+		const std::string stem =
+			std::filesystem::path(m_gltfPath).stem().string();
+		std::string def = ProjectCookOutPak(stem);
+		if (def.empty())
+			def = ("content/paks/" + stem + ".pak");
+		m_cook.outPak = def;
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
+			def.c_str());
+	}
+	if (m_cook.outPak.empty()) {
+		Log("Bake GI: no cook target — cook once first (Ctrl+Shift+C).");
+		return;
+	}
+	std::string tempTourPath, defHash;
+	if (!SnapshotTourForProcess("BakeGI", tempTourPath, defHash))
+		return;
+	const std::string pakStem =
+		std::filesystem::path(m_cook.outPak).stem().string();
+	// contentRoot = the "content/" dir itself (sidecars land in gi/
+	// next to the pak — exactly what the loaders check).
+	const std::string contentRoot = std::filesystem::absolute(
+		std::filesystem::path(m_cook.outPak).parent_path() / "..")
+		.lexically_normal().string();
+	m_giBakePendingHash = defHash; // adopted as m_giBakedHash on success
+	m_bakeRunning = true;
+	Log("Bake GI started ("
+		+ std::string(wantWorld ? "world field" : "")
+		+ std::string((wantWorld && wantCvols) ? " + " : "")
+		+ std::string(wantCvols ? "convex volumes" : "") + ") -> "
+		+ contentRoot + "/gi/" + pakStem + ".*");
+	auto feed = std::make_shared<CookFeed>();
+	m_bakeFeed = feed;
+	m_bakeFuture = std::async(std::launch::async,
+		[pakStem, contentRoot, wantWorld, feed, tempTourPath = std::move(tempTourPath)]() -> CookResult {
+			CookResult r{};
+			auto push = [feed](const std::string& line) {
+				std::lock_guard<std::mutex> lk(feed->mutex);
+				feed->lines.push_back(line);
+			};
+			auto pushPipe = [&push](FILE* pipe) {
+				std::array<char, 512> buf{};
+				while (std::fgets(buf.data(), int(buf.size()), pipe)) {
+					std::string line(buf.data());
+					while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+						line.pop_back();
+					push(line);
+				}
+			};
+			// GiBaker next to Editor.exe.
+			char exePath[1024] = {};
+#ifdef _WIN32
+			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
+			(void)n;
+#endif
+			std::filesystem::path baker =
+				std::filesystem::path(exePath).parent_path() /
+				"GiBaker.exe";
+			if (!std::filesystem::exists(baker))
+				baker = "GiBaker.exe"; // PATH fallback
+			std::ostringstream gi;
+			gi << QuoteArg(baker.string())
+				<< " --content-dir " << QuoteArg(contentRoot)
+				<< " --scene " << QuoteArg(pakStem)
+				<< " --tour " << QuoteArg(tempTourPath);
+			if (wantWorld)
+				gi << " --out " << QuoteArg(
+					(std::filesystem::path(contentRoot) / "gi" /
+						(pakStem + ".sggi")).generic_string());
+			gi << " 2>&1";
+			push("bake-gi: " + gi.str());
+#ifdef _WIN32
+			FILE* gpipe = _popen(gi.str().c_str(), "r");
+#else
+			FILE* gpipe = popen(gi.str().c_str(), "r");
+#endif
+			if (!gpipe) {
+				r.log = "bake-gi: failed to spawn GiBaker\n";
+				return r;
+			}
+			pushPipe(gpipe);
+#ifdef _WIN32
+			const int grc = _pclose(gpipe);
+#else
+			const int grc = pclose(gpipe);
+#endif
+			r.ok = (grc == 0);
+			r.log = "bake-gi: GiBaker exit=" + std::to_string(grc) + "\n";
+			if (!r.ok)
+				r.log += "bake-gi: GI bake FAILED (previous sidecars, "
+					"if any, are untouched; unbaked scenes render sky "
+					"IBL)\n";
+			std::error_code ec;
+			std::filesystem::remove(tempTourPath, ec);
+			return r;
+		});
+}
+
+void EditorApp::PollBakeProcess() {
+	if (!m_bakeRunning)
+		return;
+	// Drain the live pipe feed every frame (same pattern as the cook).
+	auto drainFeed = [this]() {
+		std::shared_ptr<CookFeed> feed = m_bakeFeed;
+		if (!feed)
+			return;
+		std::vector<std::string> ready;
+		{
+			std::lock_guard<std::mutex> lk(feed->mutex);
+			ready.swap(feed->lines);
+		}
+		for (auto& line : ready)
+			Log(line);
+	};
+	drainFeed();
+	if (!m_bakeFuture.valid())
+		return;
+	if (m_bakeFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+		return;
+	CookResult r = m_bakeFuture.get();
+	m_bakeRunning = false;
+	drainFeed();
+	std::istringstream ss(r.log);
+	std::string line;
+	while (std::getline(ss, line)) {
+		if (!line.empty())
+			Log(line);
+	}
+	if (r.ok) {
+		// The sidecars now match the baked definition: record it so a
+		// later cook can warn when they go stale.
+		m_giBakedHash = m_giBakePendingHash;
+		Log("Bake GI finished OK — refreshing the hosted view.");
+		RefreshWysiwygPreview();
+	}
+	else {
+		Log("Bake GI FAILED (see log above).");
+	}
+	m_giBakePendingHash.clear();
 }
 
 } // namespace editor

@@ -7612,11 +7612,14 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context,
 void smvk::VulkanSwapchain::CreateHostedImage() {
 	// The "surface": one color image, Holder-owned through the context
 	// (same in-place recreate pattern as the depth image). Usage adds
-	// Sampled so an external compositor reads it bindless.
+	// Sampled so an external compositor reads it bindless; TransferSrc
+	// rides the debug-dump arm (the live-view diagnostic readback).
 	ImageCreateInfo ci{};
 	ci.extent = { extent_.width, extent_.height };
 	ci.format = surfaceFormat;
 	ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+	if (DebugImageDumpArmed())
+		ci.usage = ci.usage | ImageUsage::TransferSrc;
 	ci.mipLevels = 1;
 	ci.arrayLayers = 1;
 	ci.name = "hosted target image";
@@ -8339,8 +8342,21 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	signalInfos[1].deviceIndex = 0;
 	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, tailCmd, 0 };
+	// HOSTED submits retire through the timeline only: the binary
+	// renderFinished semaphore has no present to wait on it, and
+	// signaling it here would BOTH leave the timeline value recorded
+	// below unsignaled (every later waiter — transfer batches via
+	// m_lastGraphics, the next hosted frame's acquire/submit — wedges
+	// forever on it) AND illegally re-signal the binary on the next
+	// hosted frame. So the hosted signal array is just the timeline.
+	VkSemaphoreSubmitInfo* signalArray = signalInfos;
+	uint32_t signalCount = 2;
+	if (hosted_) {
+		signalArray = &signalInfos[1];
+		signalCount = 1;
+	}
 	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo,
-		hosted_ ? 1u : 2u, signalInfos };
+		signalCount, signalArray };
 	if (hosted_) {
 		// HOSTED: submit + retire, no present. The binary
 		// renderFinished semaphore is NOT signaled (nothing waits it,
@@ -8349,6 +8365,21 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		// boundary retires this submit before the target is read.
 		std::mutex& mg = GetQueueMutex(graphicsQueue_);
 		std::lock_guard<std::mutex> lock(mg);
+		if (std::getenv("VULKANTOY_HOSTED_TRACE")) {
+			std::fprintf(stderr,
+				"[HOSTED] tail submit (waits=%u signal=%llu split=%d)\n",
+				waitCount, (unsigned long long)signalValue,
+				fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
+			for (uint32_t w = 0; w < waitCount; ++w)
+				std::fprintf(stderr,
+					"[HOSTED]   wait[%u] sem=0x%llx value=%llu (upload=%d)\n",
+					w, (unsigned long long)(uintptr_t)waitInfos[w].semaphore,
+					(unsigned long long)waitInfos[w].value,
+					uploadTp.valid()
+						&& waitInfos[w].semaphore == uploadTp.semaphore
+						&& waitInfos[w].value == uploadTp.value ? 1 : 0);
+			std::fflush(stderr);
+		}
 		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
 		frameTimelineValues_[currentFrame_] = signalValue;
 		imageTimelineValues_[currentImageIndex_] = signalValue;
@@ -8364,6 +8395,11 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		std::unique_lock<std::mutex> lockP(mp, std::defer_lock);
 		if (&mg == &mp) {
 			lockG.lock();
+			if (std::getenv("VULKANTOY_HOSTED_TRACE"))
+				std::fprintf(stderr,
+					"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
+					waitCount, (unsigned long long)signalValue,
+					fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
 			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
 			// Submit accepted: the value it signals is now reachable, so the
 			// slot's wait target can be published (AcquireFramebuffer waits
@@ -8411,6 +8447,11 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		else {
 			{
 				std::lock_guard<std::mutex> lock(mg);
+				if (std::getenv("VULKANTOY_HOSTED_TRACE"))
+					std::fprintf(stderr,
+						"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
+						waitCount, (unsigned long long)signalValue,
+						fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
 				// Same publish-on-success as the single-mutex path above.
 				frameTimelineValues_[currentFrame_] = signalValue;
@@ -8434,6 +8475,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
 				lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
 					std::chrono::steady_clock::now() - presentStart).count();
+				if (std::getenv("VULKANTOY_HOSTED_TRACE"))
+					std::fprintf(stderr, "[WIN] presented rc=%d\n", int(result));
 				if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 					framebufferResized) {
 					framebufferResized = false;
@@ -9250,6 +9293,12 @@ smvk::ImageViewHandle smvk::App::HostedTargetView() const {
 	return m_swapchain->HostedViewHandle();
 }
 
+smvk::ImageHandle smvk::App::HostedTargetImage() const {
+	if (!hostedBoot_ || !m_swapchain)
+		return {};
+	return m_swapchain->HostedImageHandle();
+}
+
 bool smvk::App::Initialize() {
 
 	if (hostedBoot_) {
@@ -9271,11 +9320,22 @@ bool smvk::App::Initialize() {
 		m_swapchain = std::make_unique<Swapchain>(*m_context,
 			hostedExtent_, hostedFormat_);
 		m_rendergraph = std::make_unique<RenderGraph>(*m_context);
-		m_world = std::make_unique<World>();
+		// LIVE-VIEW borrowed world: the host (editor) may hand over its
+		// OWN resolved world — the hosted renderer then renders the
+		// host's live engine representation (references bound, edits
+		// applied) instead of importing a scene of its own. ~App
+		// RELEASES it (worldBorrowed_) — the host owns and destroys it.
+		if (hostedBorrowedWorld_) {
+			m_world.reset(hostedBorrowedWorld_);
+			worldBorrowed_ = true;
+		}
+		else {
+			m_world = std::make_unique<World>();
+		}
 		hostedInitialized_ = true;
 		std::cerr << "[App] hosted boot: " << hostedExtent_.width << "x"
 			<< hostedExtent_.height << " offscreen target on the host's "
-			"context\n";
+			"context" << (worldBorrowed_ ? " (live borrowed world)\n" : "\n");
 		return true;
 	}
 
@@ -9404,6 +9464,10 @@ smvk::App::~App()
 	// destroys it), never touch the host's window/SDL/Streamline state.
 	if (contextBorrowed_) {
 		m_context.release();
+		// The LIVE-VIEW world is borrowed too: release (the host's
+		// EditorApp owns it and destroys it with its own state).
+		if (worldBorrowed_)
+			m_world.release();
 		return;
 	}
 	if (window) {
@@ -10216,11 +10280,17 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			g2cVal = ++vkSwap->asyncG2CValue_[flight];
 			VkSemaphoreSubmitInfo g1wait[3]{};
 			uint32_t g1WaitCount = 0;
-			g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-			g1wait[g1WaitCount].semaphore = vkSwap->imageAvailableSemaphores_[flight];
-			g1wait[g1WaitCount].value = 0;
-			g1wait[g1WaitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-			++g1WaitCount;
+			// HOSTED swapchain: no acquire happens (offscreen target), so
+			// the acquire semaphore is never signaled — waiting on it
+			// deadlocks the queue. The timeline wait below (previous
+			// frame) covers cross-frame ordering instead.
+			if (!vkSwap->hosted_) {
+				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+				g1wait[g1WaitCount].semaphore = vkSwap->imageAvailableSemaphores_[flight];
+				g1wait[g1WaitCount].value = 0;
+				g1wait[g1WaitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+				++g1WaitCount;
+			}
 			// Upload batches (frame uniforms, zero fills, seeds) -> G1.
 			const TimelinePoint g1Uploads =
 				vctx.GetStreamer() ? vctx.GetStreamer()->lastTransferPoint()

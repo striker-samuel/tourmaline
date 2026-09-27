@@ -124,13 +124,15 @@ void EditorApp::ApplyTourmalineBranding() {
 	stbi_image_free(data);
 }
 
-// Window title: current scene plus a Maya-style dirty star ("... *"
-// while the working tour is ahead of the last explicit save).
-// Change-detected: SDL only hears about it when the text changes.
+// Window title: [project — ] current scene plus a Maya-style dirty
+// star ("... *" while the working tour is ahead of the last explicit
+// save). Change-detected: SDL only hears about it when the text changes.
 void EditorApp::UpdateWindowTitle() {
 	if (!window)
 		return;
 	std::string title = "Tourmaline Editor";
+	if (!m_projectName.empty())
+		title += " [" + m_projectName + "]";
 	if (m_world) {
 		// The TOUR is the document (not the source asset): prefer its
 		// filename; fall back to the loaded source when no tour target

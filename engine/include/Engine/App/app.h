@@ -63,6 +63,21 @@ namespace smvk
 		// The hosted render target (offscreen "surface" view) for
 		// external composition. Empty when not hosted.
 		ImageViewHandle HostedTargetView() const;
+		// The hosted render target IMAGE (readback/dump paths).
+		// Empty when not hosted.
+		ImageHandle HostedTargetImage() const;
+		// LIVE VIEW: hand the host's OWN resolved world to the hosted
+		// renderer (call AFTER RequestHostedBoot, BEFORE Initialize).
+		// The hosted renderer then renders the host's live engine
+		// representation (references bound, edits applied) instead of
+		// importing a scene of its own — the hosted world is BORROWED:
+		// ~App releases it, the host owns and destroys it. The host
+		// must keep the world alive for the hosted renderer's lifetime.
+		void SetHostedBorrowedWorld(World* world) {
+			hostedBorrowedWorld_ = world;
+		}
+		// True when the hosted renderer runs on a borrowed world.
+		bool HostedWorldBorrowed() const { return worldBorrowed_; }
 
 	protected:
 #pragma region ===[ App / Core State ]===
@@ -95,6 +110,11 @@ namespace smvk
 		App* hostedHost_ = nullptr;
 		Extent2D hostedExtent_{};
 		Format hostedFormat_ = Format::Undefined;
+		// Live-view borrowed world (SetHostedBorrowedWorld): the host's
+		// own world, rendered by the hosted renderer; released (never
+		// destroyed) on teardown.
+		World* hostedBorrowedWorld_ = nullptr;
+		bool worldBorrowed_ = false;
 		// borrowed-context marker (no-op deleter) — Shutdown/teardown
 		// must not destroy or quit anything the host owns.
 		bool contextBorrowed_ = false;

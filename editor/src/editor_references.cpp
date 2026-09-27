@@ -288,6 +288,9 @@ bool EditorApp::AddSceneReference(const std::string& source,
 	if (WorldToCluster(m_selected) < 0)
 		r.parent = 0;
 	r.source = source;
+	// Asset identity travels with the path: moves/renames of the source
+	// keep binding through the GUID (path stays as the fallback).
+	r.guid = ProjectAssetGuid(hp.generic_string());
 	r.name = name.empty()
 		? std::filesystem::path(hp).stem().string() : name;
 	m_references.push_back(std::move(r));
@@ -657,6 +660,9 @@ void EditorApp::DrawReferencesPanel() {
 		if (NativeOpenFile(picked) && !picked.empty()
 			&& size_t(pendingReplace) < m_references.size()) {
 			m_references[size_t(pendingReplace)].source = picked;
+			// A new source means new identity: never keep the old GUID.
+			m_references[size_t(pendingReplace)].guid =
+				ProjectAssetGuid(picked);
 			SaveTour();
 			Log("Reference replaced: '" + picked + "' — reloading to rebind.");
 			if (!m_gltfPath.empty())

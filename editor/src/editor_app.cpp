@@ -31,6 +31,7 @@
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/Renderer/mesh.h>
 #include <gltf_import/gltf.h>
+#include <stb_image_write.h> // hosted-target diagnostic dump (PNG)
 #include <Engine/core.h>
 
 #include <imgui.h>
@@ -76,7 +77,13 @@ bool EditorApp::OpenScene(const std::string& path) {
 		return LoadPakIntoWorld(pakBase, pakIndex);
 	if (HasPakExtension(path))
 		return LoadPakIntoWorld(path);
-	return LoadGltfIntoWorld(path);
+	if (!LoadGltfIntoWorld(path))
+		return false;
+	// Project outputs follow the project (unless customized), and the
+	// source joins the asset directory (GUID sidecar issued on demand).
+	PrimeProjectCookDefaults();
+	AdoptProjectAsset(path);
+	return true;
 }
 
 // Open-dialog dispatch: .tour files replay into the stack (source auto-
@@ -98,6 +105,10 @@ bool EditorApp::OpenPak(const std::string& pakPath) {
 	const auto [pakBase, pakIndex] = SplitPakIndex(pakPath);
 	return LoadPakIntoWorld(HasPakExtension(pakBase) ? pakBase : pakPath,
 		HasPakExtension(pakBase) ? pakIndex : 0);
+}
+
+EditorApp::EditorApp()
+	: m_guidResolver(*this) {
 }
 
 bool EditorApp::Initialize() {
@@ -132,11 +143,25 @@ bool EditorApp::Initialize() {
 	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
 	SetRelativeMouseMode(false);
 
-	// Scratch disk (editor artifact cache): open the registry before
-	// any scene work; a missing/unwritable root degrades to
-	// cache-off (the editor still runs â€” the cache is never a
-	// precondition).
-	OpenCacheDb();
+	// Project: reopen the last project when kept (it owns the scratch:
+	// OpenProject reopens the cache there). Otherwise the legacy
+	// global scratch applies.
+	{
+		const std::string last = m_projectRoot;
+		m_projectRoot.clear();
+		m_projectName.clear();
+		if (!last.empty() && !OpenProject(last)) {
+			Log("Last project unavailable — running without a project.");
+			OpenCacheDb();
+		}
+		else if (last.empty()) {
+			// Scratch disk (editor artifact cache): open the registry
+			// before any scene work; a missing/unwritable root degrades
+			// to cache-off (the editor still runs — the cache is never
+			// a precondition).
+			OpenCacheDb();
+		}
+	}
 
 
 	m_imgui = std::make_unique<smvk::ImGuiOverlay>();
@@ -171,13 +196,33 @@ bool EditorApp::Initialize() {
 	// Tourmaline Editor branding: window title + generated logo icon.
 	ApplyTourmalineBranding();
 
-	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
-
+	// NOTE: no second LoadPrefs() here — prefs (incl. the kept project)
+	// loaded once above, before the project/scratch open. Re-reading
+	// would restore stale values over the live state.
 	if (!m_pendingGltf.empty()) {
 		const std::string p = m_pendingGltf;
 		m_pendingGltf.clear();
 		if (!OpenScene(p))
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
+	}
+
+	// Headless project flow (--project-smoke <dir> + --gltf <asset>):
+	// create/open the project, import the asset (engine representation
+	// ready), then COOK it explicitly (product step, full settings) and
+	// run the regular wysiwyg-smoke stages over the result (the cook is
+	// already running, so stage 0 just waits for it).
+	if (!m_projectSmokeDir.empty() && !m_projectSmokeAsset.empty()) {
+		const std::string d = m_projectSmokeDir;
+		const std::string a = m_projectSmokeAsset;
+		m_projectSmokeDir.clear();
+		m_projectSmokeAsset.clear();
+		if (!NewProjectOrOpen(d) || !ImportAsset(a)) {
+			std::cerr << "[ProjectSmoke] setup failed (see log)\n";
+		}
+		else {
+			CookToPak();
+			m_wysiwygSmoke = true;
+		}
 	}
 
 	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
@@ -199,7 +244,7 @@ void EditorApp::Shutdown() {
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
 	PollCookProcess();
-	PollRunProcess();
+	PollBakeProcess();
 	PollPublishProcess();
 	m_imgui.reset();
 	m_shadowAtlas.Destroy(*m_rendergraph);
@@ -285,8 +330,10 @@ void EditorApp::LoadPrefs() {
 				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
 			else if (section == "scratch" && key == "dir")
 				m_scratchRoot = val;
-			else if (section == "wysiwyg" && key == "preview")
-				m_previewAfterCook = (val == "1" || val == "true");
+			else if (section == "project" && key == "dir")
+				m_projectRoot = val;
+			// [wysiwyg] preview key retired: the hosted view is the
+			// viewport driver unconditionally (no toggle to persist).
 		}
 		catch (...) {
 			// corrupt value: keep the default
@@ -306,25 +353,35 @@ void EditorApp::SavePrefs() {
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_scratchRoot.empty())
 		out << "[scratch]\ndir=" << m_scratchRoot << "\n";
-	out << "[wysiwyg]\npreview=" << (m_previewAfterCook ? 1 : 0) << "\n";
+	if (!m_projectRoot.empty())
+		out << "[project]\ndir=" << m_projectRoot << "\n";
 }
 
 bool EditorApp::OpenCacheDb() {
 	m_cacheDb.Close();
 	m_store.reset();
 	m_texCacheAdapter.reset();
-	// Prefs override first, machine default second (F:\ when present).
-	std::string root = m_scratchRoot;
+	// The project OWNS its scratch when one is open (Unity Library/
+	// style: <root>/scratch). The prefs/global root is only the
+	// project-less fallback; machine default last (F:\ when present).
+	std::string root = ProjectScratchDir();
+	const bool owned = !root.empty();
+	if (root.empty())
+		root = m_scratchRoot;
 	if (root.empty())
 		root = smvk::cache::DefaultScratchRoot();
 	root = smvk::cache::EnsureScratchRoot(root);
 	if (root.empty()) {
-		m_scratchRoot.clear();
-		Log("Scratch disk unavailable â€” artifact cache disabled "
+		if (!owned)
+			m_scratchRoot.clear();
+		Log("Scratch disk unavailable — artifact cache disabled "
 			"(set one via File > Scratch disk...).");
 		return false;
 	}
-	m_scratchRoot = root;
+	// The global pref only tracks the project-less root; a project's
+	// scratch stays out of the prefs (it follows the project).
+	if (!owned)
+		m_scratchRoot = root;
 	std::error_code ec;
 	const std::filesystem::path dbPath =
 		std::filesystem::path(root) / "cache.db";
@@ -334,15 +391,17 @@ bool EditorApp::OpenCacheDb() {
 		return false;
 	}
 	std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
-		m_scratchRoot.c_str());
+		root.c_str());
 	m_store = std::make_unique<smvk::cache::ArtifactStore>(
-		m_scratchRoot, m_cacheDb);
+		root, m_cacheDb);
 	m_texCacheAdapter =
 		std::make_unique<StoreArtifactCacheAdapter>(*m_store);
 	std::string cerr;
 	const uint64_t count = m_cacheDb.Count(cerr);
 	Log("Scratch disk: " + root + " (cache.db ready, "
-		+ std::to_string(count) + " artifact(s) registered)");
+		+ std::to_string(count) + " artifact(s) registered)"
+		+ (owned ? " [owned by project '" + m_projectName + "']"
+			: ""));
 	// Editor VFS: register the scratch class paks (the cooked-resource
 	// overlay the display path resolves through). ONLY tour + scratch
 	// mount here â€” never the release content tree (editor -> release
@@ -376,10 +435,12 @@ void EditorApp::CloseScene() {
 	if (!m_world)
 		return;
 	SavePrefs();
-	if (m_wysiwyg)
-		StopWysiwyg(); // hosted preview dies with its scene
-	m_editSourceGltf.clear();
-	m_previewPakPath.clear();
+	// Mid-frame safe: the hosted live view dies with its scene — the
+	// world moves to the retire stash (alive for the borrowed pointer)
+	// and the actual stop runs at the next frame boundary. Any pending
+	// rebind dies with the scene.
+	SuspendWysiwygForWorldSwap();
+	m_wysiwygRefreshPending = false;
 	m_world.reset();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
@@ -452,6 +513,13 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	tinygltf::Model model;
 	bool haveModel = !path.empty(); // grows: tour opens parse the bound source
 	const bool directOpen = !path.empty(); // direct glTF open vs tour open
+	// Texture-cache key scope for this import (GUID-namespaced when the
+	// model lives in a project): identically-NAMED textures across models
+	// stop thrashing the one (klass, uri) row. Nested reference imports
+	// inherit this scope — consistent across sessions. Cleared at the end;
+	// early returns are harmless (the next import re-scopes first).
+	if (m_texCacheAdapter)
+		m_texCacheAdapter->SetKeyScope(ProjectAssetGuid(loadPath));
 	if (haveModel) {
 		// Scheme paths keep their //flintbase/ identity in m_gltfPath
 		// but load (and fingerprint) from the resolved storage file.
@@ -474,9 +542,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_textureStreamer.reset();
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
-	// Fresh edit context: any prior cooked preview relationship ends.
-	m_editSourceGltf.clear();
-	m_previewPakPath.clear();
+	// The world is about to be replaced: suspend the live view (the
+	// old world retires at the frame boundary after the hosted stop)
+	// — the pending refresh below rebinds onto the NEW world.
+	SuspendWysiwygForWorldSwap();
 	if (m_textureStreamingEnabled && m_texMode != TexMode::Full) {
 		smvk::TextureStreamerConfig streamCfg;
 		streamCfg.budgetBytes = 256ull * 1024 * 1024;
@@ -538,6 +607,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 			rootRef.root = true;
 			rootRef.parent = 0;
 			rootRef.source = loadPath;
+			rootRef.guid = ProjectAssetGuid(loadPath);
 			rootRef.name = std::filesystem::path(loadPath).stem().string();
 			if (haveDoc && !refDoc.references.empty()
 				&& refDoc.references[0].root)
@@ -553,9 +623,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 				m_context.get(), m_textureStreamer.get(),
 				nullptr /* host files â€” cook-parity resolution */,
 				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
-				&m_refPhCluster, &m_refIssues, &m_refResolved,
-				/*autoKtx=*/true, /*fileNodes=*/nullptr,
-				/*artifactCache=*/m_texCacheAdapter.get());
+			&m_refPhCluster, &m_refIssues, &m_refResolved,
+			/*autoKtx=*/true, /*fileNodes=*/nullptr,
+			/*artifactCache=*/m_texCacheAdapter.get(),
+			/*guidResolver=*/&m_guidResolver);
 			Log("Definition: bound " + std::to_string(applied) +
 				" reference subtree(s) (" +
 				std::to_string(refDoc.references.size()) +
@@ -728,7 +799,25 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		path.c_str(), m_world->scene.hierarchy.size(),
 		m_world->meshLocations.size(), m_world->materialLocations.size());
 	Log(buf);
+	// Import done: drop the texture-cache key scope (bare-uri keys for
+	// anything importing outside this path).
+	if (m_texCacheAdapter)
+		m_texCacheAdapter->SetKeyScope({});
+	// The hosted view drives the viewport for this scene from its
+	// source (full App pipeline, no cook needed) — launched at the
+	// next frame boundary, idle (a mid-frame whole-renderer create
+	// is exactly what used to crash F12).
+	m_wysiwygRefreshPending = true;
 	return true;
+}
+
+std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
+	// Closed db (no project / cache off) answers "": the reference falls
+	// back to its recorded -source path — exactly the pre-GUID behavior.
+	std::string path;
+	if (!app.m_assetDb.IsOpen() || !app.m_assetDb.PathForGuid(guid, path))
+		return {};
+	return path;
 }
 
 bool EditorApp::LoadPakIntoWorld(const std::string& path,
@@ -814,10 +903,10 @@ bool EditorApp::LoadPakFromImage(
 	m_textureStreamer.reset(); // pak path owns its textures; no streaming
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
-	// Plain pak opens carry no edit-source relationship (only the
-	// WYSIWYG preview flow restores it after the open).
-	m_editSourceGltf.clear();
-	m_previewPakPath.clear();
+	// World replacement incoming: suspend the live view (the old
+	// world retires safely at the frame boundary; the pending refresh
+	// rebinds onto this pak's world).
+	SuspendWysiwygForWorldSwap();
 	m_world = std::make_unique<smvk::World>();
 	try {
 		m_world->LoadClusterFromPak(*m_context, *m_pakReader, sceneIndex);
@@ -899,129 +988,90 @@ bool EditorApp::LoadPakFromImage(
 		m_hasSglm ? " + sglm atlas" : " (no sglm atlas)");
 	Log(buf);
 	Log("Note: pak is read-only in the editor (edits/tour apply to the source glTF).");
+	// The hosted view drives the viewport for this pak too (App
+	// --pak parity inspection) — launched at the next frame boundary.
+	m_wysiwygRefreshPending = true;
 	return true;
 }
 
-void EditorApp::PreviewCookedResult(const std::string& pakPath) {
-	// WYSIWYG: display the COOKED scene â€” the scratch copy of the cook,
-	// NEVER the release pak (editor -> release is one-way forwards;
-	// reading content/paks back would feed stale cooked content into
-	// authoring). The pak bytes stage into the artifact store (class
-	// "scene", keyed by the definition fingerprint), and a HOSTED
-	// app::SceneRenderer (the classic world-rendered pattern) loads
-	// the scratch pak through its own content VFS â€” full App parity:
-	// PBR + shadows + GI + cubemaps + post. The EDIT world stays
-	// loaded underneath; the compose pass replaces the editor scene
-	// passes while the preview runs.
-	const std::string source = m_gltfHostPath;
-	const bool fromEdit = !source.empty() && !HasPakExtension(source);
-	// 1. Stage the cooked pak into the scratch (cache bookkeeping).
-	std::string stem = std::filesystem::path(pakPath).stem().string();
-	std::string serr;
-	bool staged = false;
-	if (m_store && !m_cookDefHash.empty()) {
-		std::ifstream f(pakPath, std::ios::binary | std::ios::ate);
-		if (f) {
-			const auto end = f.tellg();
-			f.seekg(0);
-			auto image = std::make_shared<std::vector<uint8_t>>(
-				static_cast<size_t>(end), 0);
-			if (f.read(reinterpret_cast<char*>(image->data()),
-					static_cast<std::streamsize>(image->size()))) {
-				if (m_store->Put("scene", stem,
-						std::span<const uint8_t>(*image), m_cookDefHash,
-						"{\"pak\":\"" + pakPath + "\"}", serr)
-					&& m_store->Flush(serr)) {
-					staged = true;
-					Log("Scratch: cooked scene staged + flushed ("
-						+ std::to_string(image->size()) + " B, uri '"
-						+ stem + "').");
-				}
-			}
-		}
-	}
-	// 2. The hosted renderer loads the SCRATCH copy (tour + scratch
-	// only â€” no release readback). Without a scratch there is no
-	// legal preview source: refuse rather than read the release pak.
-	std::vector<uint8_t> scratchImage;
-	if (!m_store || !m_store->ReadPakImage("scene", scratchImage, serr)) {
-		Log("WYSIWYG preview needs the scratch cache (File > Scratch "
-			"disk...): " + serr);
-		return;
-	}
-	// The scratch scene pak IS a valid pak: hand the hosted renderer its
-	// on-disk path (it opens + parses + registers it as its own VFS
-	// backend, exactly like App --pak). Its per-class artifact paks ride
-	// the editor VFS (texture cache reads below the loose mount).
-	const std::string scratchPak =
-		(std::filesystem::path(m_store->Root()) / "artifacts" / "scene.pak")
-		.generic_string();
-	if (!LaunchWysiwyg(scratchPak)) {
-		Log("WYSIWYG: hosted renderer failed to start (see log).");
-		return;
-	}
-	// NOTE: no editor-VFS scratch-scene mount â€” the HOSTED renderer
-	// registers the pak as its own VFS backend internally (App --pak
-	// parity); the editor's VFS only serves resource-class artifacts.
-	if (fromEdit)
-		m_editSourceGltf = source;
-	m_previewPakPath = pakPath;
-	Log("WYSIWYG: hosted SceneRenderer rendering the cooked scene "
-		"(scratch copy" + std::string(staged ? "" : "; staging skipped")
-		+ ") â€” File > Back to edit source (Ctrl+Alt+E) to edit again.");
-}
-
-bool EditorApp::LaunchWysiwyg(const std::string& pakPath) {
-	if (pakPath.empty() || !std::filesystem::exists(pakPath)) {
-		Log("WYSIWYG: scene pak missing: " + pakPath);
+bool EditorApp::LaunchWysiwyg() {
+	// LIVE VIEW: the hosted renderer renders THE EDITOR'S OWN WORLD —
+	// the live engine representation (imports preprocessed, GUID
+	// references bound, edits applied). The world is BORROWED
+	// (SetHostedBorrowedWorld): the editor keeps owning + mutating it,
+	// edits show up per frame; the hosted renderer never imports
+	// anything. Cooks are the separate PRODUCT step — they never feed
+	// the viewport.
+	if (!m_world) {
+		Log("Live view: no world to host — open a scene first.");
 		return false;
 	}
-	StopWysiwyg(); // fresh instance per launch (scene + extent change)
+	// Frame-boundary contract: creating the hosted swapchain and
+	// (re)binding descriptors while editor frames are in flight
+	// faults. Callers run between frames; idle anyway so a direct
+	// call can never wedge the shared context.
+	WaitForDeviceIdle();
+	StopWysiwyg(); // fresh instance per launch (world + extent change)
 	// Viewport-sized target: the compose pass stretches on rect drift,
 	// but matching the common case keeps the preview 1:1.
 	const ViewportRect& vp = m_viewports[0].rect;
 	uint32_t w = std::max(uint32_t(vp.w), 64u);
 	uint32_t h = std::max(uint32_t(vp.h), 64u);
+	m_wysiwygExtent = smvk::Extent2D{ w, h };
 	m_wysiwyg = std::make_unique<app::SceneRenderer>();
 	// Hosted boot BEFORE Initialize (App::Initialize takes the hosted
 	// branch: borrowed context + offscreen target, no window/SDL).
-	if (!m_wysiwyg->RequestHostedBoot(*this, smvk::Extent2D{ w, h },
+	if (!m_wysiwyg->RequestHostedBoot(*this, m_wysiwygExtent,
 			smvk::Format::BGRA8_SRGB)) {
-		Log("WYSIWYG: hosted boot request rejected.");
+		Log("Live view: hosted boot request rejected.");
 		m_wysiwyg.reset();
 		return false;
 	}
-	// Scene: the scratch pak (id = the RELEASE pak stem so GI sidecar
-	// names resolve â€” they bake keyed to the out pak's stem). Strings
-	// live in members: SceneDesc holds const char* and the renderer
-	// keeps them for its lifetime.
-	m_wysiwygPakPath = pakPath;
-	m_wysiwygSceneId =
-		std::filesystem::path(m_cook.outPak).stem().string();
+	// BORROW the editor's world: the hosted renderer's Initialize
+	// takes the live-view branch (no scene import of its own — the
+	// world arrives resolved) and its frames render it in place.
+	m_wysiwyg->SetHostedBorrowedWorld(m_world.get());
+	// Scene id = the open scene's stem (GI sidecar names resolve
+	// gi/<stem>.* through the hosted content VFS: project root first,
+	// bundled content under). String lives in a member: SceneDesc
+	// holds const char* for the renderer's lifetime.
+	m_wysiwygSceneId = [&]() {
+		namespace fs = std::filesystem;
+		if (!m_pakPath.empty())
+			return fs::path(m_pakPath).stem().string();
+		if (!m_gltfHostPath.empty())
+			return fs::path(m_gltfHostPath).stem().string();
+		if (!m_gltfPath.empty())
+			return fs::path(m_gltfPath).stem().string();
+		return std::string("scene");
+	}();
 	if (m_wysiwygSceneId.empty())
 		m_wysiwygSceneId = "scene";
 	app::SceneDesc desc{};
 	desc.id = m_wysiwygSceneId.c_str();
-	desc.label = "WYSIWYG";
-	desc.pakPath = m_wysiwygPakPath.c_str();
-	// gltfPath stays empty: with scene override set the pak is the
-	// only source (SceneRenderer falls back to glTF only when the pak
-	// is missing â€” we refuse earlier, so the fallback never runs).
+	desc.label = "LiveView";
+	desc.pakPath = ""; // live view: the borrowed world IS the scene
 	desc.gltfPath = "";
 	m_wysiwyg->Configure(desc, app::ScenePassConfig::All());
 	m_wysiwyg->SetSceneOverride(true);
 	m_wysiwyg->SetSceneIndex(0);
+	// Project root: the hosted content VFS mounts it (below the
+	// bundled content/) so project-side bake sidecars (gi/<stem>.*,
+	// cubemaps) resolve where the baker wrote them.
+	if (!m_projectRoot.empty())
+		m_wysiwyg->SetProjectRoot(m_projectRoot);
 	m_wysiwyg->SetDisableControl(true); // editor owns the input
 	m_wysiwyg->SetDlssMode(smvk::DlssMode::Off); // offscreen: no present
+	m_wysiwyg->SetAaMode(app::AaMode::Off); // live authoring: crisp, no AA
 	try {
 		if (!m_wysiwyg->HostedInitialize()) {
-			Log("WYSIWYG: SceneRenderer::Initialize failed.");
+			Log("Live view: SceneRenderer::Initialize failed.");
 			StopWysiwyg();
 			return false;
 		}
 	}
 	catch (const std::exception& e) {
-		Log(std::string("WYSIWYG: Initialize threw: ") + e.what());
+		Log(std::string("Live view: Initialize threw: ") + e.what());
 		StopWysiwyg();
 		return false;
 	}
@@ -1031,7 +1081,7 @@ bool EditorApp::LaunchWysiwyg(const std::string& pakPath) {
 		m_wysiwyg->HostedTargetView(),
 		smvk::ImageLayout::ShaderReadOnlyOptimal);
 	if (m_wysiwygBindless.empty()) {
-		Log("WYSIWYG: hosted target bindless registration failed.");
+		Log("Live view: hosted target bindless registration failed.");
 		StopWysiwyg();
 		return false;
 	}
@@ -1046,67 +1096,65 @@ bool EditorApp::LaunchWysiwyg(const std::string& pakPath) {
 			.addressW = smvk::AddressMode::ClampToEdge,
 			.maxAnisotropy = 1.0f });
 	if (!EnsureWysiwygProgram()) {
-		Log("WYSIWYG: compose shaders unavailable (content/shaders/"
-			"wysiwyg.*.spv missing?).");
+		Log("Live view: compose shaders unavailable "
+			"(engine_resources/shaders/wysiwyg.*.spv missing?).");
 		StopWysiwyg();
 		return false;
 	}
+	Log("Live view: hosted SceneRenderer rendering the editor's world "
+		"'" + m_wysiwygSceneId + "' (full App pipeline, live; edits "
+		"show per frame — F12 rebinds after reimports).");
 	return true;
 }
 
 void EditorApp::StopWysiwyg() {
 	if (!m_wysiwyg)
 		return;
+	// Retire in-flight editor frames first: their compose passes still
+	// reference the bindless slot + hosted target being torn down here.
+	WaitForDeviceIdle();
 	// Release the hosted instance's GPU resources while the shared
 	// context is alive (its Shutdown releases Holders; ~App then
-	// RELEASES the borrowed context â€” the editor keeps ownership).
+	// RELEASES the borrowed context AND the borrowed world — the
+	// editor keeps ownership of both).
 	try {
 		m_wysiwyg->HostedShutdown();
 	}
 	catch (const std::exception& e) {
-		Log(std::string("WYSIWYG: shutdown threw: ") + e.what());
+		Log(std::string("Live view: shutdown threw: ") + e.what());
 	}
 	m_wysiwyg.reset();
 	m_wysiwygBindless = {};
 	m_wysiwygBindlessIndex = UINT32_MAX;
-	m_previewPakPath.clear();
-	Log("WYSIWYG: hosted renderer stopped.");
+	Log("Live view: hosted renderer stopped.");
 }
 
-void EditorApp::ReturnToEditSource() {
-	if (m_editSourceGltf.empty() && m_previewPakPath.empty())
+void EditorApp::SuspendWysiwygForWorldSwap() {
+	// Mid-frame world-swap safety (scene opens/closes fire inside
+	// RenderFrame): the OLD world moves to the retire stash — it stays
+	// ALIVE for the hosted renderer's borrowed pointer — and the
+	// actual stop is deferred to the frame boundary (Destroying GPU
+	// resources mid-frame faults on the already-recorded compose
+	// pass). DrawFrame stops the hosted renderer there (its shutdown
+	// reads the still-alive stashed world) and retires it after.
+	if (!m_wysiwyg)
 		return;
-	// The edit world never left: stop the hosted preview and the
-	// editor scene passes come back next frame.
-	StopWysiwyg();
-	m_editSourceGltf.clear();
-	Log("Back to editing (the edit world stayed loaded).");
+	m_wysiwygSuspendPending = true;
+	m_worldRetire = std::move(m_world);
 }
 
-void EditorApp::ToggleWysiwygPreview() {
-	// Manual entry (View > WYSIWYG preview / F12): the cook auto-launches
-	// the preview; this launches WITHOUT cooking, from the last scene
-	// staged into the scratch (the freshest cook wins — the store's
-	// scene pak always carries the latest staged cook's TOC).
-	if (PreviewingCooked()) {
-		ReturnToEditSource();
+void EditorApp::RefreshWysiwygPreview() {
+	// F12 / View menu: REBIND the live hosted view onto the CURRENT
+	// world (fresh registration after reimports/scene switches).
+	// Never stops — the live view is the viewport driver, not a mode.
+	// Runs at the frame boundary (DrawFrame consumes the deferred key /
+	// menu request) or from the open/smoke paths — never
+	// mid-RenderFrame.
+	if (!m_world) {
+		Log("Live view: no scene to host — open a scene first.");
 		return;
 	}
-	if (!m_store) {
-		Log("WYSIWYG: scratch cache off (File > Scratch disk...).");
-		return;
-	}
-	const std::string scratchPak =
-		(std::filesystem::path(m_store->Root()) / "artifacts" / "scene.pak")
-		.generic_string();
-	std::error_code ec;
-	if (!std::filesystem::exists(std::filesystem::path(scratchPak), ec)) {
-		Log("WYSIWYG: no scene staged in the scratch yet — cook once "
-			"first (Ctrl+Shift+C).");
-		return;
-	}
-	if (LaunchWysiwyg(scratchPak))
-		m_previewPakPath = scratchPak;
+	LaunchWysiwyg();
 }
 
 bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
@@ -1823,23 +1871,312 @@ void EditorApp::FrameAll() {
 void EditorApp::DrawFrame() {
 	UpdateDeltaTime();
 	Update();
+	// Deferred live-view requests, consumed HERE between frames and
+	// idle — never inside the editor's open frame:
+	//  1. SUSPEND (a world was swapped mid-frame): stop the hosted
+	//     renderer (its shutdown reads the still-alive stashed old
+	//     world) and retire the old world after;
+	//  2. REBIND (F12 / View menu / a fresh scene open): relaunch the
+	//     hosted live view onto the CURRENT world — consumed before
+	//     the hosted drive below, so a fresh launch renders its first
+	//     frame before the compose pass ever samples the target.
+	if (m_wysiwygSuspendPending) {
+		m_wysiwygSuspendPending = false;
+		StopWysiwyg();
+		m_worldRetire.reset();
+	}
+	if (m_wysiwygRefreshPending) {
+		m_wysiwygRefreshPending = false;
+		// Viewport rects first: the launch sizes its offscreen target
+		// off viewport 0 (RenderFrame recomputes them anyway — pure
+		// math, safe to run twice; the first frame would otherwise
+		// launch at a degenerate 64x64).
+		{
+			const auto vkExt = m_swapchain->GetExtent();
+			ComputeViewportRects(smvk::Extent2D{ vkExt.width,
+				vkExt.height });
+		}
+		RefreshWysiwygPreview();
+	}
 	// HOSTED WYSIWYG drive: run the SceneRenderer frame between our own
 	// frames, wrapped in device-idle boundaries. Both renderers share
 	// ONE Vulkan context (volk globals forbid a second instance), so
 	// their per-frame engine-global slots must never be in flight
 	// together: idle -> hosted submit -> idle -> the editor's own frame.
-	if (PreviewingCooked() && m_wysiwyg) {
+	if (m_wysiwyg) {
+		const bool trace = std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr;
+		if (trace) { std::fprintf(stderr, "[DRIVE] idle-pre\n"); std::fflush(stderr); }
 		WaitForDeviceIdle();
+		// CAMERA DRIVE: the editor's ACTIVE camera drives the hosted
+		// live view (the editor owns the input; the hosted renderer's
+		// own control is disabled). Ortho viewports approximate with a
+		// fov matching their half-height at the orbit distance (the
+		// pipeline is perspective reversed-Z; a true ortho pass would
+		// be a feature). Locked look-through (bound scene cameras)
+		// stays an editor-pass feature for now.
+		{
+			const EditorCam& cam =
+				m_editorCams[m_viewports[m_activeVp].camIdx];
+			float fov = cam.fovYDeg;
+			if (cam.type == EditorCam::Type::Orthographic)
+				fov = glm::degrees(2.0f
+					* std::atan(std::max(cam.orthoHalfH, 0.01f)
+						/ std::max(cam.dist, 0.01f)));
+			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
+				fov, cam.nearClip, cam.farClip);
+		}
+		// DEBUG-VIEW DRIVE: the editor's view modes hook the hosted
+		// frame with APP PARITY (the F-keys match the standalone App's
+		// DebugView shortcuts 1:1). Mapped 1:1 where the frame has the
+		// view; the editor-only flat/baked views map onto their closest
+		// frame views (flat unwraps -> the UV checkers, baked -> flat
+		// irradiance).
+		{
+			int giDebug = 0;
+			app::DebugView dv = app::DebugView::Lit;
+			switch (ActiveViewMode()) {
+			case ViewMode::Unlit: dv = app::DebugView::Unlit; break;
+			case ViewMode::Lit:
+			case ViewMode::LitShadows:
+				dv = app::DebugView::Lit; break;
+			case ViewMode::Uv0:
+			case ViewMode::FlatUv0: dv = app::DebugView::Uv0; break;
+			case ViewMode::Uv1:
+			case ViewMode::FlatUv1: dv = app::DebugView::Uv1; break;
+			case ViewMode::VertexColors:
+				dv = app::DebugView::VertexColors; break;
+			case ViewMode::Meshlets: dv = app::DebugView::Meshlets; break;
+			case ViewMode::Cascades: dv = app::DebugView::Cascades; break;
+			case ViewMode::Lods: dv = app::DebugView::Lods; break;
+			case ViewMode::Pom: dv = app::DebugView::Pom; break;
+			case ViewMode::Baked:
+				dv = app::DebugView::Lit;
+				giDebug = 1; // flat baked irradiance
+				break;
+			}
+			m_wysiwyg->SetDebugView(dv);
+			m_wysiwyg->SetGiDebug(giDebug);
+		}
+		// WIREFRAME DRIVE (P / Z — App parity): the frame's wireframe
+		// is Line polygon mode over the Fill depth prepass, so hidden
+		// lines are removed (lines never draw over the objects in
+		// front — the prepass depth occludes them).
+		m_wysiwyg->SetWireframe(m_wireframeAll);
+		if (trace) { std::fprintf(stderr, "[DRIVE] hosted frame\n"); std::fflush(stderr); }
 		m_wysiwyg->HostedDrawFrame();
+		if (trace) { std::fprintf(stderr, "[DRIVE] idle-post\n"); std::fflush(stderr); }
 		WaitForDeviceIdle();
+		if (trace) { std::fprintf(stderr, "[DRIVE] done\n"); std::fflush(stderr); }
+		// Diagnostic dump (VULKANTOY_WYSIWYG_DUMP=<frame>): read the
+		// hosted target back at the device-idle boundary (its layout
+		// is SHADER_READ here) and write a PNG + pixel stats —
+		// "is the hosted renderer actually drawing the mesh" becomes
+		// answerable headlessly. Two shots (frame N and N+11) so
+		// before/after comparisons (camera moves, view switches) come
+		// out of ONE run.
+		static const int kDumpFrame = []() {
+			const char* e = std::getenv("VULKANTOY_WYSIWYG_DUMP");
+			return e ? std::atoi(e) : -1;
+		}();
+		static int dumpShots = 0;
+		const int dumpAt = (dumpShots == 0) ? kDumpFrame
+			: (dumpShots == 1 ? kDumpFrame + 11 : -1);
+		if (kDumpFrame >= 0 && dumpAt >= 0
+			&& int(m_frameCounter) == dumpAt
+			&& m_wysiwygExtent.width > 0 && m_wysiwygExtent.height > 0) {
+			++dumpShots;
+			const size_t bytes = size_t(m_wysiwygExtent.width)
+				* m_wysiwygExtent.height * 4;
+			std::vector<uint8_t> px(bytes);
+			if (m_context->DownloadDataFromImage(
+					m_wysiwyg->HostedTargetImage(),
+					smvk::ImageLayout::ShaderReadOnlyOptimal,
+					px.data(), px.size())) {
+				// BGRA -> RGBA for stb + stats.
+				uint64_t sum[3] = { 0, 0, 0 };
+				size_t nonBlack = 0;
+				for (size_t i = 0; i + 3 < px.size(); i += 4) {
+					std::swap(px[i], px[i + 2]); // B,R
+					sum[0] += px[i]; sum[1] += px[i + 1];
+					sum[2] += px[i + 2];
+					if (px[i] > 8 || px[i + 1] > 8 || px[i + 2] > 8)
+						++nonBlack;
+				}
+				const size_t n = px.size() / 4;
+				char buf[256];
+				std::snprintf(buf, sizeof(buf),
+					"hosted-target dump #%d: %ux%u mean=(%u,%u,%u) "
+					"non-black %.1f%% -> wysiwyg_hosted.png",
+					dumpShots,
+					m_wysiwygExtent.width, m_wysiwygExtent.height,
+					unsigned(sum[0] / n), unsigned(sum[1] / n),
+					unsigned(sum[2] / n),
+					100.0 * double(nonBlack) / double(n));
+				Log(buf);
+				stbi_write_png(
+					dumpShots == 1 ? "wysiwyg_hosted.png"
+						: "wysiwyg_hosted2.png",
+					int(m_wysiwygExtent.width),
+					int(m_wysiwygExtent.height), 4, px.data(),
+					int(m_wysiwygExtent.width) * 4);
+			}
+			else {
+				Log("hosted-target dump: readback failed.");
+			}
+		}
+	}
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);
 	}
 	auto fb = m_swapchain->AcquireFramebuffer();
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-render begin img=%d\n", (int)fb.imageIndex); std::fflush(stderr);
+	}
 	if (fb.imageIndex >= 0)
 		RenderFrame(fb);
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-present begin\n"); std::fflush(stderr);
+	}
 	m_swapchain->EndAndPresentFramebuffer(fb);
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-present done\n"); std::fflush(stderr);
+	}
 	PollCookProcess();
-	PollRunProcess();
+	PollBakeProcess();
 	PollPublishProcess();
+	DriveWysiwygSmoke();
+}
+
+void EditorApp::SetWysiwygSmoke() {
+	m_wysiwygSmoke = true;
+}
+
+void EditorApp::DriveWysiwygSmoke() {
+	// Dev crash-repro (--wysiwyg-smoke): cook the loaded scene minimally,
+	// let the auto-preview launch, render frames, F12-refresh in place,
+	// render, then exit. The project flow (--project-smoke) additionally
+	// covers on-demand Bake GI between preview and refresh. Every stage
+	// logs so a crash position is identifiable from stderr.
+	if (!m_wysiwygSmoke)
+		return;
+	switch (m_smokeStage) {
+	case 0: // the live hosted view must be up from the open (no cook!)
+		if (!m_world) {
+			std::cerr << "[SMOKE] FAILED: no world (see log)\n";
+			RequestClose();
+			return;
+		}
+		if (m_wysiwyg) {
+			std::cerr << "[SMOKE] stage 0 -> 1: live view up "
+				"(hosted renderer on the editor's world)\n";
+			m_smokeStage = 1;
+			m_smokeFrames = 0;
+		}
+		return;
+	case 1: // render under the live view; then the PRODUCT step
+		// Camera-drive proof (frame 12): rotate the ACTIVE editor
+		// camera — the hosted live view must follow (dump-armed runs
+		// capture a post-rotation frame; see VULKANTOY_WYSIWYG_DUMP).
+		if (m_smokeFrames == 12 && !m_editorCams.empty()) {
+			EditorCam& cam =
+				m_editorCams[m_viewports[m_activeVp].camIdx];
+			cam.yaw += 0.9f;
+			cam.pitch = std::clamp(cam.pitch - 0.35f, -1.5f, 1.5f);
+			cam.dist = std::max(cam.dist * 0.15f, 0.05f); // close-up
+			std::cerr << "[SMOKE] editor camera rotated+zoomed — "
+				"the live view must follow\n";
+		}
+		// Debug-view-drive proof (frame 16): the editor's Unlit mode
+		// must hook the hosted frame (same camera as the rotated
+		// reference run — a differing dump isolates the view switch).
+		// Wireframe proof rides the same shot: P toggles the hidden-
+		// line wireframe (Line mode over the Fill prepass — lines
+		// never draw over the objects in front).
+		if (m_smokeFrames == 16) {
+			ActiveViewMode() = ViewMode::Unlit;
+			m_wireframeAll = !m_wireframeAll;
+			std::cerr << "[SMOKE] editor view mode -> Unlit + wireframe "
+				"on — the live view must follow\n";
+		}
+		if (++m_smokeFrames > 20) {
+			if (m_cookRunning)
+				return;
+			if (m_projectSmoke) {
+				// Project flow additionally covers on-demand Bake GI:
+				// bake, wait it out, then F12-rebind into the new
+				// sidecars.
+				std::cerr << "[SMOKE] stage 1 -> 1b: Bake GI (on demand)\n";
+				BakeGI();
+				m_smokeStage = 4;
+				m_smokeFrames = 0;
+			}
+			else {
+				// Plain flow: cook as the PRODUCT step under the live
+				// view (the cook never touches the viewport — the view
+				// must stay live across it).
+				std::cerr << "[SMOKE] stage 1 -> 1c: cook (product step "
+					"under the live view)\n";
+				m_cook.lightmap = false;
+				m_cook.cubemap = false;
+				m_cook.lods = false;
+				m_cook.meshlets = false;
+				m_cook.giCvol = false;
+				m_cook.giWorld = false;
+				CookToPak();
+				m_smokeStage = 3;
+				m_smokeFrames = 0;
+			}
+		}
+		return;
+	case 3: // cook done: the live view must have survived it; F12 rebind
+		if (m_cookRunning)
+			return;
+		if (++m_smokeFrames > 3) {
+			if (!m_wysiwyg) {
+				std::cerr << "[SMOKE] FAILED: live view died across the "
+					"cook (see log)\n";
+				RequestClose();
+				return;
+			}
+			std::cerr << "[SMOKE] stage 1c -> 2: F12 rebind (deferred)\n";
+			// Exact F12 path: the modal handler only sets the deferred
+			// flag; DrawFrame rebinds at the frame boundary, idle.
+			m_wysiwygRefreshPending = true;
+			m_smokeStage = 2;
+			m_smokeFrames = 0;
+		}
+		return;
+	case 4: // on-demand bake running; then F12-rebind into it
+		if (!m_bakeRunning) {
+			if (m_giBakedHash.empty()) {
+				std::cerr << "[SMOKE] FAILED: Bake GI did not complete "
+					"(see log)\n";
+				RequestClose();
+				return;
+			}
+			std::cerr << "[SMOKE] stage 1b -> 2: F12 rebind (deferred)\n";
+			m_wysiwygRefreshPending = true;
+			m_smokeStage = 2;
+			m_smokeFrames = 0;
+		}
+		else if (++m_smokeFrames > 3600) {
+			std::cerr << "[SMOKE] FAILED: Bake GI timed out (see log)\n";
+			RequestClose();
+		}
+		return;
+	case 2: // render under the rebound live view, then exit
+		if (++m_smokeFrames > 20) {
+			if (!m_wysiwyg) {
+				std::cerr << "[SMOKE] FAILED: live view died across the "
+					"F12 rebind (see log)\n";
+				RequestClose();
+				return;
+			}
+			std::cerr << "[SMOKE] stage 2 done: exiting cleanly\n";
+			RequestClose();
+		}
+		return;
+	}
 }
 
 void EditorApp::Log(const std::string& s) {

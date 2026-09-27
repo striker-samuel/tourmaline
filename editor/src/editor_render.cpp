@@ -1754,11 +1754,13 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	}
 
 	m_rendergraph->NewFrame();
-	// WYSIWYG hosted preview: the viewports show the hosted
-	// SceneRenderer's target (compose pass); the editor's scene/gizmo
-	// passes pause while the preview runs (the edit world stays
-	// loaded — outliner/inspector/commands keep working).
-	const bool wysiwygPreview = PreviewingCooked() && m_wysiwyg != nullptr;
+	// WYSIWYG hosted view: the viewports show the hosted
+	// SceneRenderer's target (compose pass) WHENEVER it is live —
+	// source mode (open scene, full App pipeline, no cook needed) or
+	// pak mode (WYSIWYG of a cook). The edit world stays loaded
+	// underneath — outliner/inspector/commands keep working, and the
+	// gizmo overlay still draws on top so manipulation stays visible.
+	const bool wysiwygPreview = m_wysiwyg != nullptr;
 	if (!wysiwygPreview && ActiveViewMode() == ViewMode::LitShadows)
 		RecordShadowPass(0);
 	// Window background: the viewport passes cover only their rects, so
@@ -1780,6 +1782,10 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
 			RecordWysiwygPass(m_swapViews[fb.imageIndex],
 				m_viewports[vpIdx].rect);
+		// Gizmo overlay on top of the hosted image: selection +
+		// manipulation stay visible while the hosted view drives the
+		// pixels (the edit world never unloads).
+		RecordGizmoPass(m_swapViews[fb.imageIndex]);
 	}
 	else {
 		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
@@ -1807,6 +1813,16 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 			smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 	}
+	// Texture-streaming feedback slice for this record. Unconditional:
+	// the lit/unlit/debug materials always declare g_texFeedback and
+	// report into it (see texture_streaming.hlsli), and update-after-bind
+	// keeps the rewrite visible to this frame's commands. Without this
+	// the binding stays null and every textured draw trips GPU-AV
+	// (VUID-vkCmdDrawIndexed-None-08114) and faults. App does the same
+	// (see SceneRenderer). The editor drives demand from the CPU
+	// distance pass (UpdateTextureStreaming), so the GPU writes here
+	// are simply never consumed.
+	m_context->BindTextureFeedbackSlice(fb.frameIndex);
 	// Flush bindless descriptor writes (scene texture views, samplers)
 	// BEFORE Execute records — App does the same (see SceneRenderer).
 	// Without this the textures[] array stays uninitialized and the

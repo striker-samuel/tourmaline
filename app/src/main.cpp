@@ -18,13 +18,14 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
-		<< " [--pak <path.pak>] [--scene-index N] [--gltf <path.gltf>]\n"
+		<< " [--pak <path.pak>] [--scene-index N]\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--use_optick] [--use_optick_gpu]\n"
-		<< "  --pak runs a cooked pak (default content/paks/bistro.pak);\n"
+		<< "  --pak runs a cooked pak (default content/paks/sponza.pak);\n"
 		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
-		<< "  --scene-index picks another. --gltf imports a glTF directly.\n"
+		<< "  --scene-index picks another. The App loads OUR format only:\n"
+		<< "  preprocess glTF through the editor (import -> cook).\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
@@ -37,7 +38,6 @@ void PrintUsage(const char* prog) {
 
 	int main(int argc, const char* argv[]) {
 	const char* pakPath = "content/paks/sponza.pak";
-	const char* gltfPath = nullptr;
 	int sceneIndex = 0;
 	bool minimal = false;
 	bool filterOnly = false;
@@ -57,11 +57,12 @@ void PrintUsage(const char* prog) {
 		else if (std::strncmp(a, "--pak=", 6) == 0) {
 			pakPath = a + 6;
 		}
-		else if ((std::strcmp(a, "--gltf") == 0) && i + 1 < argc) {
-			gltfPath = argv[++i];
-		}
-		else if (std::strncmp(a, "--gltf=", 7) == 0) {
-			gltfPath = a + 7;
+		else if (std::strcmp(a, "--gltf") == 0
+			|| std::strncmp(a, "--gltf=", 7) == 0) {
+			std::cerr << "--gltf was removed: the App loads OUR format "
+				"only (cooked paks). Preprocess glTF through the "
+				"editor (import -> cook), then --pak the result.\n";
+			return EXIT_FAILURE;
 		}
 		else if ((std::strcmp(a, "--scene-index") == 0) && i + 1 < argc) {
 			sceneIndex = std::atoi(argv[++i]);
@@ -89,7 +90,7 @@ void PrintUsage(const char* prog) {
 		}
 		else if (std::strcmp(a, "--no-pak") == 0) {
 			std::cerr << "--no-pak was removed with the scene registry; "
-				"run the glTF directly via --gltf <path>\n";
+				"pass --pak <path.pak>\n";
 			return EXIT_FAILURE;
 		}
 		else if ((std::strcmp(a, "--bench") == 0) && i + 1 < argc) {
@@ -128,10 +129,10 @@ void PrintUsage(const char* prog) {
 		}
 	}
 
-	// Entrypoint is a file, not a registry id: --gltf imports a glTF
-	// directly, otherwise --pak runs a cooked pak (id = file stem, so
-	// content/gi/<stem>.sglm resolves). Either way the camera frames the
-	// loaded bounds after resolve (see SetSceneOverride).
+	// Entrypoint is a file, not a registry id: --pak runs a cooked pak
+	// (id = file stem, so content/gi/<stem>.sglm resolves). The App
+	// loads OUR format only — glTF is preprocessed (editor import ->
+	// cook), never imported here.
 	auto stemOf = [](const std::string& p) {
 		const size_t slash = p.find_last_of("/\\");
 		const std::string file = (slash == std::string::npos)
@@ -148,33 +149,21 @@ void PrintUsage(const char* prog) {
 	extDesc.farClip = 2000.0f;
 	extDesc.coordFix = 0;
 	extDesc.authoredView = false;
-	if (gltfPath && gltfPath[0] != '\0') {
-		extPathStr = gltfPath;
-		extIdStr = stemOf(extPathStr);
-		if (extIdStr.empty())
-			extIdStr = "gltf";
-		extDesc.id = extIdStr.c_str();
-		extDesc.gltfPath = extPathStr.c_str();
-		extDesc.pakPath = "";
-		std::cerr << "Scene: glTF '" << extPathStr
-			<< "' (id '" << extIdStr << "')\n";
+	if (!pakPath || pakPath[0] == '\0') {
+		std::cerr << "No scene: pass --pak <path.pak> "
+			"(glTF must be preprocessed: editor import -> cook)\n";
+		PrintUsage(argv[0]);
+		return EXIT_FAILURE;
 	}
-	else {
-		if (!pakPath || pakPath[0] == '\0') {
-			std::cerr << "No scene: pass --pak <path.pak> or --gltf <path.gltf>\n";
-			PrintUsage(argv[0]);
-			return EXIT_FAILURE;
-		}
-		extPathStr = pakPath;
-		extIdStr = stemOf(extPathStr);
-		if (extIdStr.empty())
-			extIdStr = "pak";
-		extDesc.id = extIdStr.c_str();
-		extDesc.gltfPath = "";
-		extDesc.pakPath = extPathStr.c_str();
-		std::cerr << "Scene: pak '" << extPathStr
-			<< "' (id '" << extIdStr << "')\n";
-	}
+	extPathStr = pakPath;
+	extIdStr = stemOf(extPathStr);
+	if (extIdStr.empty())
+		extIdStr = "pak";
+	extDesc.id = extIdStr.c_str();
+	extDesc.gltfPath = "";
+	extDesc.pakPath = extPathStr.c_str();
+	std::cerr << "Scene: pak '" << extPathStr
+		<< "' (id '" << extIdStr << "')\n";
 
 	// Known scenes keep their curated viewpoint + tight far clip instead
 	// of the generic whole-bounds orbit framing (see SceneRenderer):
@@ -197,7 +186,7 @@ void PrintUsage(const char* prog) {
 			<< "' (farClip " << known->farClip << ")\n";
 	}
 	else {
-		// Stem case differs (e.g. --gltf Sponza.gltf): retry lowercase.
+		// Stem case differs (e.g. --pak Sponza.pak): retry lowercase.
 		std::string lower = extIdStr;
 		for (char& c : lower)
 			c = (char)::tolower((unsigned char)c);

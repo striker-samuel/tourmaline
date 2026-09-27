@@ -930,6 +930,31 @@ bool SceneRenderer::BuildLayersCubeScene(smvk::Cluster& cluster) {
 	return true;
 }
 
+void SceneRenderer::DriveExternalCamera(const glm::vec3& eye,
+	const glm::vec3& target, float fovYDeg, float zNear, float zFar) {
+	// Degenerate-lookAt guard: a view direction parallel to the up
+	// vector (top-down framing) crosses NaNs into the view matrix —
+	// nudge the target sideways instead.
+	glm::vec3 tgt = target;
+	const glm::vec3 up(0.0f, 1.0f, 0.0f);
+	glm::vec3 dir = eye - tgt;
+	const float len = glm::length(dir);
+	if (len < 1e-6f)
+		return; // eye == target: nothing sensible to look at
+	dir /= len;
+	if (std::fabs(glm::dot(dir, up)) > 0.9995f)
+		tgt += glm::normalize(glm::vec3(dir.z, 0.0f, -dir.x))
+			* 0.01f * len;
+	m_extCamera = true;
+	m_extFovYDeg = fovYDeg;
+	m_extNear = zNear;
+	m_extFar = zFar;
+	// The positioner drives the view matrix (+ every viewProj-derived
+	// consumer: culling, cascades, motion, markers). The proj constants
+	// ride UpdateCameraAspect's external branch (next RenderFrame).
+	m_cameraPositioner.lookAt(eye, tgt, up);
+}
+
 bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
@@ -1332,6 +1357,14 @@ bool SceneRenderer::Initialize() {
 		// through this overlay.
 		smvk::OverlayVfs contentVfs;
 		contentVfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+		// Project root (editor WYSIWYG, see SetProjectRoot): the whole
+		// project tree mounts BELOW the bundled content/ priority so
+		// project files win — <root>/content/* shadows the shipped
+		// samples, and <root>/gi/* + <root>/paks/* resolve the sidecars
+		// the cooker wrote next to the project paks.
+		if (!m_projectRoot.empty())
+			contentVfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
+				-10, "project");
 		contentVfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 		contentVfs.Mount(
 			std::make_shared<smvk::LooseBackend>("engine_resources"), 100, "engine_resources");
@@ -1791,14 +1824,29 @@ bool SceneRenderer::Initialize() {
 		// loads the scene exactly once.
 		// Scene paths come from the configured SceneDesc (see SceneRegistry):
 		// adding a sample never copies this block.
-		const std::string sceneGltf = smvk::FlintbaseHostPath(m_scene.gltfPath ? m_scene.gltfPath : "");
+		// LIVE VIEW (SetHostedBorrowedWorld): the host (editor) handed over
+		// its OWN resolved world — the live engine representation (imports
+		// preprocessed, references bound by GUID, edits applied). The whole
+		// scene-build + resolve block below is the host's job and SKIPPED;
+		// the framing/lights/GI/registration steps that follow operate on
+		// the borrowed world unchanged. The world stays the HOST's: it
+		// mutates it live (edits), the hosted renderer renders it per
+		// frame — no refresh needed short of rebinds (F12).
+		if (IsHosted() && HostedWorldBorrowed()) {
+			std::cerr << "[Scene] live borrowed world: nodes="
+				<< m_world->scene.hierarchy.size() << " meshes="
+				<< m_world->meshLocations.size() << " materials="
+				<< m_world->materialLocations.size()
+				<< " (host's engine representation; no import)\n";
+		}
+		else {
 		const std::string scenePak = smvk::FlintbaseHostPath(m_scene.pakPath ? m_scene.pakPath : "");
 		// Unconditional phase log: Release is otherwise silent, so an init
 		// throw (e.g. bad_alloc) would name no phase. Keep these cerr lines.
 		std::cerr << "[Scene] loading '" << m_scene.id << "' (pak: " << scenePak << ")"
-			<< (m_forceGltf ? " FORCED GLTF" : "") << std::endl;
+			<< std::endl;
 		bool loadedFromPak = false;
-		// Procedural builtin scenes bypass pak/glTF entirely.
+		// Procedural builtin scenes bypass pak loading entirely.
 		const bool isBuiltinLayersCube = m_scene.builtin
 			&& std::string(m_scene.builtin) == "layers-cube";
 		if (isBuiltinLayersCube) {
@@ -1807,18 +1855,18 @@ bool SceneRenderer::Initialize() {
 				std::cerr << "[SceneRenderer] layers-cube build failed\n";
 				return false;
 			}
-			loadedFromPak = true; // skip the glTF fallback below
+			loadedFromPak = true;
 		}
-		if (!m_forceGltf)
 		{
 			// Pak path resolution: --pak accepts host paths AND
 			// vfs-style paths ("/content/..."). Windows reads a
 			// leading slash as DRIVE-relative ("F:/content/..." —
 			// almost never what was meant), so try as-is, then
 			// CWD-relative, then exe-relative, and open the first
-			// that exists. A missing pak is LOUD — the old silent
-			// ifstream skip fell through to a glTF fallback with an
-			// empty path (cryptic tinygltf error).
+			// that exists. A missing pak is LOUD — the App loads OUR
+			// format only: glTF is preprocessed elsewhere (editor
+			// import -> cook), never imported here, so there is NO
+			// fallback to fall through to.
 			std::string pakOpenPath;
 			{
 				std::vector<std::string> candidates;
@@ -1951,22 +1999,16 @@ bool SceneRenderer::Initialize() {
 			}
 		}
 		if (!loadedFromPak) {
-			// No pak (missing/forced) and no glTF source: a clear stop
-			// beats feeding tinygltf an empty path.
-			if (sceneGltf.empty()) {
-				std::cerr << "[SceneRenderer] nothing to load for scene '"
-					<< (m_scene.id ? m_scene.id : "?")
-					<< "': no pak opened and the scene has no glTF"
-					<< " source (see the errors above)" << std::endl;
-				return false;
-			}
-			tinygltf::Model model;
-			if (!LoadModelFromAsciiFile(model, sceneGltf.c_str())) {
-				return false;
-			}
-
-			auto& cluster = m_world->LoadCluster(*m_context);
-			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform, sceneStreamer);
+			// The App loads OUR format only: no glTF fallback exists
+			// (glTF is preprocessed — editor import -> cook — and the
+			// product ships paks). A pak that didn't load is a hard
+			// stop, loudly.
+			std::cerr << "[SceneRenderer] nothing to load for scene '"
+				<< (m_scene.id ? m_scene.id : "?")
+				<< "': the pak did not open (see the errors above). "
+				<< "The App loads cooked paks only — preprocess glTF "
+				<< "through the editor (import -> cook)." << std::endl;
+			return false;
 		}
 
 		// Chrome probe ball (sponza only): procedural UV sphere, 0.5 m in
@@ -2027,6 +2069,7 @@ bool SceneRenderer::Initialize() {
 			<< m_world->scene.hierarchy.size() << " meshes="
 			<< m_world->meshLocations.size() << " materials="
 			<< m_world->materialLocations.size() << std::endl;
+		} // !liveWorld (scene build + resolve)
 
 		// Fit the procedural Forward+ light grid to the loaded scene's
 		// world bounds so the crowd fills Bistro/Sponza instead of
@@ -10843,7 +10886,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// sampling through garbage. Update-after-bind keeps these writes
 		// visible to everything recorded below.
 		m_context->UpdateDescriptors();
+		if (IsHosted() && std::getenv("VULKANTOY_HOSTED_TRACE")) {
+			std::fprintf(stderr, "[HOSTED] pre-execute frame=%llu\n",
+				(unsigned long long)m_frameCounter);
+			std::fflush(stderr);
+		}
 		m_rendergraph->Execute(fb);
+		if (IsHosted() && std::getenv("VULKANTOY_HOSTED_TRACE")) {
+			std::fprintf(stderr, "[HOSTED] post-execute\n");
+			std::fflush(stderr);
+		}
 		const auto rfT5 = bench_clk::now();
 		if (benchPhase) {
 			using msd = std::chrono::duration<double, std::milli>;

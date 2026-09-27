@@ -44,6 +44,9 @@ Swapchain::~Swapchain() = default;
 ImageViewHandle Swapchain::HostedViewHandle() const {
     return impl_->vulkan->HostedViewHandle();
 }
+ImageHandle Swapchain::HostedImageHandle() const {
+    return impl_->vulkan->HostedImageHandle();
+}
 void Swapchain::Create() { impl_->vulkan->Create(); }
 void Swapchain::Recreate() { impl_->vulkan->Recreate(); }
 Extent2D Swapchain::GetExtent() const {
