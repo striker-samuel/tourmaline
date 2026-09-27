@@ -47,6 +47,20 @@ target_link_libraries(appcore
 )
 
 # ---------------------------------------------------------------------------
+# Precompiled Header (PCH) for the App module.
+# Uses CMake's built-in target_precompile_headers so it works with both
+# MSBuild and Ninja (+ MSVC cl.exe, e.g. VS's x64-Debug Ninja config).
+# No manual #include "pch.h" needed in the .cpps: CMake injects /Yu + /FI.
+# Disable with -DVULKANTOY_PCH=OFF if the PCH ever masks a header bug.
+# ---------------------------------------------------------------------------
+option(VULKANTOY_PCH "Use precompiled headers for appcore/App" ON)
+if(VULKANTOY_PCH)
+    target_precompile_headers(appcore PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # App.exe: thin entry + appcore.
 # ---------------------------------------------------------------------------
 add_executable(App src/main.cpp)
@@ -176,6 +190,12 @@ target_link_libraries(App
         OptickCore
 )
 
+if(VULKANTOY_PCH)
+    target_precompile_headers(App PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
+    )
+endif()
+
 # OptickCore is SHARED: stage its DLL next to App.exe
 add_custom_command(TARGET App POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -244,4 +264,4 @@ if(COMPILED_SHADER_OUTPUTS)
                 "$<TARGET_FILE_DIR:App>/content/shaders"
         COMMENT "Syncing compiled shaders next to App.exe"
     )
-endif() 
+endif()

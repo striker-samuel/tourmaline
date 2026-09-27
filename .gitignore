@@ -388,3 +388,30 @@ FodyWeavers.xsd
 
 # Local agent/dev notes (documentation not for the repo).
 /notes/
+
+# --- CMake-generated Visual Studio files (never commit) ---
+# This repo is CMake-based (CMakeLists.txt is the source of truth).
+# In-source configures pollute the tree with these; always build out-of-source.
+# NOTE: already-tracked upstream project files (e.g. external/DirectXTex,
+# external/glfw) stay tracked - gitignore only stops NEW generated files.
+*.vcxproj
+*.vcxproj.filters
+*.slnx
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+CMakeCache.txt
+Testing/
+*.dir/
+
+# CMake package-config files generated at configure time (in-source builds
+# drop these next to the sources, e.g. external/meshoptimizer/).
+meshoptimizerConfig.cmake
+meshoptimizerConfigVersion.cmake
+
+# --- Compiled shader outputs (build syncs these next to App.exe) ---
+# HLSL sources live elsewhere; compiled *.spv under content/ and
+# engine_resources/ are build products. Never commit them.
+/content/
+/engine_resources/
