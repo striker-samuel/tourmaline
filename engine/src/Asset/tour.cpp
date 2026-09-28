@@ -2053,6 +2053,89 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 	mat.rebuildPipeline();
 }
 
+namespace {
+// Authored-environment blocks (tour -> cluster scene): parses the env
+// blocks the editor persists (env.default.* + env.n.* node groups +
+// env.current — same keys/grouping as the editor loader, see
+// editor_env.cpp SaveEnvToDoc/LoadEnvFromDoc) and resolves the ACTIVE
+// block (the doc's env.current node, else the default block). Node ids
+// are cluster-space (validated against the replayed scene by the caller;
+// dangling blocks warn + drop, never fatal).
+struct TourEnvBlocks {
+	SceneEnv def{};
+	std::vector<std::pair<uint32_t, SceneEnv>> nodeEnvs; // cluster-space, file order
+	uint32_t currentCluster = UINT32_MAX;
+	bool haveCurrent = false;
+	bool hasBlocks = false;
+};
+float TourEnvFloat(const std::string& s, float fallback) {
+	try {
+		return s.empty() ? fallback : std::stof(s);
+	}
+	catch (...) {
+		return fallback;
+	}
+}
+glm::vec3 TourEnvVec3(const std::string& s, const glm::vec3& fallback) {
+	std::istringstream in(s);
+	glm::vec3 v = fallback;
+	in >> v.x >> v.y >> v.z;
+	return v;
+}
+void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) {
+	if (f == "skyColor") e.skyColor = TourEnvVec3(v, e.skyColor);
+	else if (f == "sunColor") e.sunColor = TourEnvVec3(v, e.sunColor);
+	else if (f == "fogColor") e.fogColor = TourEnvVec3(v, e.fogColor);
+	else if (f == "skyIntensity") e.skyIntensity = TourEnvFloat(v, e.skyIntensity);
+	else if (f == "sunAzimuth") e.sunAzimuth = TourEnvFloat(v, e.sunAzimuth);
+	else if (f == "sunElevation") e.sunElevation = TourEnvFloat(v, e.sunElevation);
+	else if (f == "sunIntensity") e.sunIntensity = TourEnvFloat(v, e.sunIntensity);
+	else if (f == "exposure") e.exposure = TourEnvFloat(v, e.exposure);
+	else if (f == "fogDensity") e.fogDensity = TourEnvFloat(v, e.fogDensity);
+	else if (f == "volumetrics") e.volumetrics = TourEnvFloat(v, e.volumetrics);
+	else if (f == "skyboxUri") e.skyboxUri = v;
+}
+TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
+	TourEnvBlocks eb{};
+	bool inNode = false;
+	uint32_t nodeCluster = UINT32_MAX;
+	SceneEnv cur{};
+	for (const auto& [key, val] : doc.editorSettings) {
+		const size_t dot = key.find_last_of('.');
+		const std::string field =
+			(dot == std::string::npos) ? key : key.substr(dot + 1);
+		if (key.rfind("env.default.", 0) == 0) {
+			if (inNode) {
+				eb.nodeEnvs.emplace_back(nodeCluster, cur);
+				inNode = false;
+			}
+			eb.hasBlocks = true;
+			TourEnvApplyField(eb.def, field, val);
+		}
+		else if (key.rfind("env.n.", 0) == 0) {
+			if (field == "node") {
+				if (inNode)
+					eb.nodeEnvs.emplace_back(nodeCluster, cur);
+				inNode = true;
+				nodeCluster = uint32_t(TourEnvFloat(val, -1.0f));
+				cur = SceneEnv{};
+			}
+			else if (inNode) {
+				eb.hasBlocks = true;
+				TourEnvApplyField(cur, field, val);
+			}
+		}
+		else if (key == "env.current") {
+			eb.currentCluster = uint32_t(TourEnvFloat(val, -1.0f));
+			eb.haveCurrent = true;
+		}
+	}
+	if (inNode)
+		eb.nodeEnvs.emplace_back(nodeCluster, cur);
+	return eb;
+}
+} // namespace
+
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings, std::string* err, bool strict) {
 	auto warn = [&](const std::string& w) {
@@ -3141,6 +3224,42 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					break;
 				}
 			}
+		}
+	}
+	// Authored environment (tour env blocks -> cluster scene): resolve the
+	// ACTIVE block (the doc's env.current node, else the default block)
+	// into the cluster scene + carry the default + node table (world
+	// assembly keeps the first authored one; the pak v9 section persists
+	// it for the App). Runs after command replay so node add/delete
+	// settles first; node ids are cluster-space (dangling blocks warn +
+	// drop, never fatal — same discipline as the command replay above).
+	// NOTE: the only editorSettings keys the cook reads — everything else
+	// in that section stays cook-ignored by contract.
+	{
+		TourEnvBlocks eb = ParseTourEnvBlocks(doc);
+		if (eb.hasBlocks) {
+			std::unordered_map<uint32_t, SceneEnv> table;
+			for (const auto& [n, e] : eb.nodeEnvs) {
+				if (n < scene.hierarchy.size())
+					table[n] = e;
+				else
+					warn("tour: env node block #" + std::to_string(n) +
+						" out of range (dropped)");
+			}
+			SceneEnv active = eb.def;
+			if (eb.haveCurrent) {
+				auto it = table.find(eb.currentCluster);
+				if (it != table.end())
+					active = it->second;
+				else
+					warn("tour: env.current node #" +
+						std::to_string(eb.currentCluster) +
+						" missing (default renders)");
+			}
+			scene.environment = active;
+			scene.hasEnvironment = true;
+			scene.defaultEnvironment = eb.def;
+			scene.envForNode = std::move(table);
 		}
 	}
 	return true;

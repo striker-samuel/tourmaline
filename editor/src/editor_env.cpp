@@ -1,9 +1,10 @@
-// Editor environment (IBL) settings: viewport lighting lives in
-// EditorEnv blocks — the editor default, plus per-node ENVIRONMENT
-// NODES (skybox + EV/volumetrics authoring; position = node translate,
-// size = node scale; convex-volume rendering comes later). The current
-// source feeds the viewport frame. NEVER cooked: persisted as editorSet
-// lines in the .tour, which ApplyTourToCluster ignores entirely.
+// Editor environment (IBL) settings: viewport lighting lives in the
+// SCENE (smvk::SceneEnv blocks — the scene default, plus per-node
+// ENVIRONMENT NODES; skybox + EV/volumetrics authoring; position = node
+// translate, size = node scale; convex-volume rendering comes later).
+// The current source feeds every viewport straight from the scene.
+// Tour persistence uses the same env.* keys as before; the cook resolves
+// the active block into the cluster scene (pak v9 section).
 
 #include "editor_app.h"
 
@@ -42,23 +43,52 @@ float StrFloat(const std::string& s, float fallback) {
 void EditorApp::MarkEnvNode(uint32_t node) {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return;
-	if (!m_envByNode.contains(node)) {
-		m_envByNode[node] = CurrentEnv(); // start from the current source
+	auto& table = m_world->scene.envForNode;
+	if (!table.contains(node)) {
+		table[node] = CurrentEnv(); // start from the current source
 		Log("Node " + std::to_string(node) + " marked as Environment.");
 	}
+	ResolveSceneEnv();
 }
 
 void EditorApp::UnmarkEnvNode(uint32_t node) {
-	if (m_envByNode.erase(node) > 0 && m_envCurrent == node)
+	if (!m_world)
+		return;
+	if (m_world->scene.envForNode.erase(node) > 0 && m_envCurrent == node)
 		m_envCurrent = UINT32_MAX; // fall back to the editor default
+	ResolveSceneEnv();
+}
+
+void EditorApp::ResolveSceneEnv() {
+	// Resolve the current selection (default block or selected node
+	// block) into scene.environment — the rendered look. The renderer
+	// and the legacy frame both consume the scene; this is the only
+	// writer besides the tour/cook loaders.
+	if (!m_world)
+		return;
+	const SceneEnv* src = &m_world->scene.defaultEnvironment;
+	if (m_envCurrent != UINT32_MAX) {
+		auto it = m_world->scene.envForNode.find(m_envCurrent);
+		if (it != m_world->scene.envForNode.end())
+			src = &it->second;
+		else
+			m_envCurrent = UINT32_MAX;
+	}
+	m_world->scene.environment = *src;
+	m_world->scene.hasEnvironment = true;
 }
 
 void EditorApp::DrawEnvPanel() {
 	ImGui::Separator();
-	ImGui::Text("Environment (editor IBL)");
+	ImGui::Text("Environment (scene definition)");
 	ImGui::TextDisabled(
-		"Editor viewport lighting only — never cooked. Pick the Editor "
+		"Scene-attached look (sun/sky/fog authoring units) — every view "
+		"renders it straight from the scene. Pick the Editor "
 		"default or an Environment node as the current source.");
+	if (!m_world) {
+		ImGui::TextDisabled("No scene — open a scene to author the look.");
+		return;
+	}
 	// Source combo: editor default + every env node.
 	std::string curLabel = "Editor default";
 	if (m_envCurrent != UINT32_MAX)
@@ -66,7 +96,7 @@ void EditorApp::DrawEnvPanel() {
 	if (ImGui::BeginCombo("Source##env", curLabel.c_str())) {
 		if (ImGui::Selectable("Editor default", m_envCurrent == UINT32_MAX))
 			m_envCurrent = UINT32_MAX;
-		for (const auto& [node, env] : m_envByNode) {
+		for (const auto& [node, env] : m_world->scene.envForNode) {
 			const std::string label = "Node " + std::to_string(node);
 			if (ImGui::Selectable(label.c_str(), m_envCurrent == node))
 				m_envCurrent = node;
@@ -109,6 +139,10 @@ void EditorApp::DrawEnvPanel() {
 		if (ImGui::Button("Unmark node##env"))
 			UnmarkEnvNode(m_envCurrent);
 	}
+	// Every slider/button above writes the scene-backed source (default
+	// block or selected node block) — resolve into the rendered look.
+	// Cheap (one struct copy + flag); keeps the viewport live per tweak.
+	ResolveSceneEnv();
 }
 
 void EditorApp::DrawWorldPanel() {
@@ -229,11 +263,13 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 	// Keys carry CLUSTER-space node ids (stable across the deterministic
 	// import, like every other tour id). Each node group starts with
 	// "env.n.node" so the loader can split groups deterministically.
+	// Storage is the SCENE (default block + per-node blocks + the
+	// selection); the key layout is unchanged.
 	auto put = [&](const std::string& key, const std::string& val) {
 		doc.editorSettings.emplace_back(key, val);
 	};
 	auto saveEnv = [&](const std::string& prefix, uint32_t clusterNode,
-		const EditorEnv& e) {
+		const SceneEnv& e) {
 		if (clusterNode != UINT32_MAX)
 			put(prefix + ".node", std::to_string(clusterNode));
 		put(prefix + ".skyColor", Vec3Str(e.skyColor));
@@ -248,17 +284,24 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 		put(prefix + ".volumetrics", std::to_string(e.volumetrics));
 		put(prefix + ".skyboxUri", e.skyboxUri);
 	};
-	saveEnv("env.default", UINT32_MAX, m_envDefault);
+	// Sceneless save (shouldn't happen — tours save scenes): struct
+	// defaults stand in for the scene blocks.
+	const SceneEnv sceneDefault{};
+	const SceneEnv& def = m_world
+		? m_world->scene.defaultEnvironment : sceneDefault;
+	saveEnv("env.default", UINT32_MAX, def);
 	// Sort env nodes for deterministic files.
 	std::vector<uint32_t> nodes;
-	for (const auto& [n, e] : m_envByNode)
-		nodes.push_back(n);
+	if (m_world) {
+		for (const auto& [n, e] : m_world->scene.envForNode)
+			nodes.push_back(n);
+	}
 	std::sort(nodes.begin(), nodes.end());
 	for (uint32_t n : nodes) {
 		const int cn = WorldToCluster(n);
 		if (cn < 0)
 			continue; // unmapped node: keep the file loadable
-		saveEnv("env.n", uint32_t(cn), m_envByNode.at(n));
+		saveEnv("env.n", uint32_t(cn), m_world->scene.envForNode.at(n));
 	}
 	if (m_envCurrent != UINT32_MAX) {
 		const int cn = WorldToCluster(m_envCurrent);
@@ -268,9 +311,16 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 }
 
 void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
-	m_envByNode.clear();
+	// Tour env applies into the LIVE scene (cluster-space ids remap to
+	// world ids like every other tour id). Runs post-build (the replay
+	// needs ClusterToWorld + the hierarchy); without a world there is
+	// no scene to seed.
+	if (!m_world)
+		return;
+	auto& scene = m_world->scene;
+	scene.envForNode.clear();
 	m_envCurrent = UINT32_MAX;
-	EditorEnv def = m_envDefault;
+	EditorEnv def = scene.defaultEnvironment;
 	std::vector<std::pair<uint32_t, EditorEnv>> nodeEnvs;
 	bool inNode = false;
 	uint32_t nodeCluster = UINT32_MAX;
@@ -323,19 +373,21 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 	}
 	if (inNode)
 		nodeEnvs.emplace_back(nodeCluster, cur);
-	m_envDefault = def;
+	scene.defaultEnvironment = def;
 	for (const auto& [cn, env] : nodeEnvs) {
 		const uint32_t wn = ClusterToWorld(cn);
-		if (wn != UINT32_MAX && wn < m_world->scene.hierarchy.size())
-			m_envByNode[wn] = env;
+		if (wn != UINT32_MAX && wn < scene.hierarchy.size())
+			scene.envForNode[wn] = env;
 	}
 	if (haveCurrent) {
 		const uint32_t wn = ClusterToWorld(currentCluster);
-		if (wn != UINT32_MAX && m_envByNode.contains(wn))
+		if (wn != UINT32_MAX && scene.envForNode.contains(wn))
 			m_envCurrent = wn;
 	}
-	if (!m_envByNode.empty())
-		Log("tour: restored " + std::to_string(m_envByNode.size()) +
+	// Publish the loaded selection into the rendered look.
+	ResolveSceneEnv();
+	if (!scene.envForNode.empty())
+		Log("tour: restored " + std::to_string(scene.envForNode.size()) +
 			" environment node(s) + editor default IBL.");
 }
 

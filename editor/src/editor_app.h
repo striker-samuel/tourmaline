@@ -1311,35 +1311,29 @@ private:
 	void FrameSelection(); // frames the ACTIVE viewport's camera
 	void FrameAll();
 
-	// ---- environment (editor IBL, NEVER cooked) ----
-	// Editor viewport lighting lives in EditorEnv blocks. The default
-	// block is the editor fallback; any scene node can be flagged as an
-	// ENVIRONMENT NODE (skybox + EV/volumetrics authoring — position =
-	// node translate, size = node scale; convex-volume support later)
-	// and picked as the CURRENT source. Everything here is editor-only:
-	// saved as editorSet lines in the .tour, skipped by ApplyTourToCluster.
-	struct EditorEnv {
-		glm::vec3 skyColor{ 0.35f, 0.5f, 0.7f };
-		float skyIntensity = 0.6f;
-		glm::vec3 sunColor{ 1.0f, 0.96f, 0.92f };
-		float sunAzimuth = 30.0f;
-		float sunElevation = 55.0f;
-		float sunIntensity = 3.0f;
-		float exposure = 1.0f;
-		// Authored but not yet rendered by the editor viewport:
-		float fogDensity = 0.0f;
-		glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
-		float volumetrics = 0.0f; // 0 = off (future: editor volume pass)
-		std::string skyboxUri;     // stored (skybox sampling is TODO)
-	};
-	EditorEnv m_envDefault;
-	std::unordered_map<uint32_t, EditorEnv> m_envByNode; // per env node
-	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = editor default
-	EditorEnv& CurrentEnv();   // the source the viewport renders with
+	// ---- environment (scene definition, NEVER a render setting) ----
+	// The authored look lives in the SCENE (smvk::SceneEnv, see
+	// Engine/Scene/scene.h): the resolved ACTIVE block in
+	// scene.environment, the default block in scene.defaultEnvironment
+	// and the per-node alternatives in scene.envForNode — saved to the
+	// tour with the same env.* keys as before, cooked into paks through
+	// the cluster scenes, and consumed by every renderer straight from
+	// the scene. The editor keeps ONLY the selection (which block
+	// renders, like the active camera) and resolves it into
+	// scene.environment on every change; the renderers never receive
+	// the environment through any other channel.
+	using EditorEnv = SceneEnv;
+	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = default block renders
+	EditorEnv& CurrentEnv();   // the source that renders (scene-backed)
 	const EditorEnv& CurrentEnv() const;
-	bool IsEnvNode(uint32_t node) const { return m_envByNode.contains(node); }
+	bool IsEnvNode(uint32_t node) const { return m_world && m_world->scene.envForNode.contains(node); }
 	void MarkEnvNode(uint32_t node);     // flag node + copy current settings
 	void UnmarkEnvNode(uint32_t node);
+	// Resolve the current selection (default block or selected node
+	// block) into scene.environment (the rendered look). Called after
+	// every mutation (UI edits, mark/unmark, selection switches, tour
+	// load, cooked-light seeding) — scene-direct writes land here.
+	void ResolveSceneEnv();
 	void ApplyEnvToFrame(app::FrameUniforms& frame,
 		smvk::EnvironmentSettings& env) const;
 	void DrawEnvPanel();       // Inspector "Environment (IBL)" section
@@ -1642,8 +1636,9 @@ private:
 	float m_menuH = 19.0f;
 
 	// ---- sun/ambient (viewport lighting) ----
-	// ---- viewport lighting (see EditorEnv above: the live values live in
-	// CurrentEnv(); RebuildCookedLights seeds m_envDefault from the cooked
+	// ---- viewport lighting (see SceneEnv: the live values live in the
+	// scene — CurrentEnv() reads the default block or the selected node
+	// block; RebuildCookedLights seeds the scene default from the cooked
 	// directional sun when the scene has one, else the defaults stand in).
 	// ---- cooked scene lights (KHR punctual, glTF import or pak) ----
 	// First directional wins as the viewport sun (App parity). Aim is the
@@ -1655,7 +1650,7 @@ private:
 	std::string m_cookedSunName;
 	uint32_t m_cookedDirs = 0, m_cookedPoints = 0, m_cookedSpots = 0;
 	uint32_t m_cookedStaticSkipped = 0;
-	void RebuildCookedLights(); // + seeds m_envDefault's sun from the sun
+	void RebuildCookedLights(); // + seeds the scene default's sun from the sun
 	const ::SceneLight* FindNodeLight(uint32_t node,
 		glm::vec3* outAimWs = nullptr) const; // + world aim for dir/spot
 	// Definition for a camera node (null when the node has none).

@@ -44,6 +44,22 @@ void PutVec3(std::vector<uint8_t>& out, const glm::vec3& v) {
 	PutF32(out, v.y);
 	PutF32(out, v.z);
 }
+// Authored-environment record (see SceneEnv): 16 floats in fixed order +
+// the skybox URI string. Shared by the resolved look, the default block
+// and the per-node blocks.
+void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
+	PutVec3(out, e.skyColor);
+	PutF32(out, e.skyIntensity);
+	PutVec3(out, e.sunColor);
+	PutF32(out, e.sunAzimuth);
+	PutF32(out, e.sunElevation);
+	PutF32(out, e.sunIntensity);
+	PutF32(out, e.exposure);
+	PutF32(out, e.fogDensity);
+	PutVec3(out, e.fogColor);
+	PutF32(out, e.volumetrics);
+	PutStr(out, e.skyboxUri);
+}
 
 struct Cursor {
 	std::span<const uint8_t> img;
@@ -96,6 +112,24 @@ struct Cursor {
 	glm::vec3 vec3() {
 		const float x = f32(), y = f32(), z = f32();
 		return glm::vec3(x, y, z);
+	}
+	// Authored-environment record (mirrors PutSceneEnv): 16 floats in
+	// fixed order + the skybox URI. Sets ok=false on truncation (the
+	// caller keeps defaults).
+	SceneEnv sceneEnv() {
+		SceneEnv e{};
+		e.skyColor = vec3();
+		e.skyIntensity = f32();
+		e.sunColor = vec3();
+		e.sunAzimuth = f32();
+		e.sunElevation = f32();
+		e.sunIntensity = f32();
+		e.exposure = f32();
+		e.fogDensity = f32();
+		e.fogColor = vec3();
+		e.volumetrics = f32();
+		e.skyboxUri = str();
+		return e;
 	}
 };
 
@@ -620,6 +654,26 @@ bool SerializeClusters(
 				PutU32(blob, it->second);
 			}
 		}
+		// Authored environment (v9; v8 blobs end after the camera links).
+		// u32 authored flag + resolved-look record + default-block record
+		// + per-node blocks (u32 count + node-ordered (node, record)
+		// pairs). Always written so the layout is uniform; old readers
+		// fail the trailing-bytes check on v9 blobs (same contract as
+		// the v6/v7/v8 additions).
+		{
+			PutU32(blob, scene.hasEnvironment ? 1u : 0u);
+			PutSceneEnv(blob, scene.environment);
+			PutSceneEnv(blob, scene.defaultEnvironment);
+			std::vector<std::pair<uint32_t, SceneEnv>> envPairs(
+				scene.envForNode.begin(), scene.envForNode.end());
+			std::sort(envPairs.begin(), envPairs.end(),
+				[](const auto& a, const auto& b) { return a.first < b.first; });
+			PutU32(blob, static_cast<uint32_t>(envPairs.size()));
+			for (const auto& [node, env] : envPairs) {
+				PutU32(blob, node);
+				PutSceneEnv(blob, env);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -904,6 +958,32 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			}
 			if (!c.ok)
 				return fail("truncated scene cameras section");
+		}
+		// Authored environment (v9): u32 authored flag + resolved-look
+		// record + default-block record + per-node blocks (u32 count +
+		// (node, record) pairs). v8 blobs end after the cameras — the
+		// struct defaults stand and hasEnvironment stays false.
+		if (c.off < c.img.size()) {
+			const uint32_t envFlag = c.u32();
+			SceneEnv resolved = c.sceneEnv();
+			SceneEnv def = c.sceneEnv();
+			const uint32_t envPairCount = c.u32();
+			if (!c.ok || envPairCount > 1024 * 1024)
+				return fail("bad scene environment section");
+			std::unordered_map<NodeId, SceneEnv> table;
+			for (uint32_t i = 0; i < envPairCount; ++i) {
+				const uint32_t node = c.u32();
+				SceneEnv block = c.sceneEnv();
+				if (!c.ok || node >= nodeCount)
+					return fail("bad scene environment section");
+				table[node] = block;
+			}
+			if (!c.ok)
+				return fail("truncated scene environment section");
+			scene.environment = resolved;
+			scene.hasEnvironment = envFlag != 0;
+			scene.defaultEnvironment = def;
+			scene.envForNode = std::move(table);
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

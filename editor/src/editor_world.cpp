@@ -201,7 +201,7 @@ void EditorApp::RebuildCookedLights() {
 			const glm::vec3 toSun = -aimWs;
 			m_cookedSunName = l->name.empty()
 				? ("node " + std::to_string(node)) : l->name;
-			EditorEnv& env = m_envDefault; // seed the EDITOR IBL default
+			SceneEnv& env = m_world->scene.defaultEnvironment; // seed the scene default
 			env.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
 			if (env.sunAzimuth < 0.0f)
 				env.sunAzimuth += 360.0f;
@@ -240,6 +240,9 @@ void EditorApp::RebuildCookedLights() {
 	Log(buf);
 	if ((m_cookedPoints + m_cookedSpots) != 0)
 		Log("Note: points/spots are logged only — the viewport renders the sun (no forward+ path).");
+	// The cooked sun seeded the scene default above — resolve into the
+	// rendered look.
+	ResolveSceneEnv();
 }
 
 } // namespace editor

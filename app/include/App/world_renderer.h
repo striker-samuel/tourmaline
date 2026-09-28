@@ -829,6 +829,24 @@ public:
 		Shutdown();
 	}
 
+	// HOSTED one-call setup (the dumb-hosted-world API): boot off the
+	// host's context, borrow `world`, configure the full framegraph +
+	// the hosted invariants (input disabled, DLSS off, AA off) and
+	// initialize — the host specifies the world and is done. Throws
+	// std::runtime_error when the boot is rejected or Initialize fails
+	// (the host catches it at its launch boundary, like the old
+	// LaunchWysiwyg did). Pair with HostedShutdown() (or just destroy —
+	// the editor's StopWysiwyg keeps the explicit idle + log + bindless
+	// teardown). sceneId names the GI sidecars (gi/<id>.*); projectRoot
+	// mounts into the content VFS (empty = no project mount). Both must
+	// precede Initialize (sidecar loads run there) — hence ctor params,
+	// not setters.
+	WorldRenderer(smvk::App& host, smvk::World& world, smvk::Extent2D extent,
+		std::string sceneId, std::string projectRoot = {},
+		smvk::Format format = smvk::Format::BGRA8_SRGB);
+	// Default ctor (windowed runs + member init order).
+	WorldRenderer() = default;
+
 	// HOSTED live-view camera drive: the EDITOR owns the camera (its
 	// orbit state + lens); push it here every frame (before
 	// HostedDrawFrame). Zero GPU work — the positioner + the frame's
@@ -1096,7 +1114,7 @@ protected:
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_K)) {
-			m_env.skyEnabled = !m_env.skyEnabled;
+			m_skyEnabled = !m_skyEnabled;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_T)) {
 			m_transparentMode = (m_transparentMode == smvk::TransparentMode::Blended)
@@ -1200,8 +1218,8 @@ protected:
 	bool Initialize() override;
 	void Shutdown() override;
 
-	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent);
-	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame);
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env);
+	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env);
 	void UpdateMaterials(uint32_t currentFrame);
 
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
@@ -1633,7 +1651,7 @@ protected:
 	// selection + slab uploads (runs inside RenderFrame, before the
 	// RenderView allocation block so the per-view views ride the same
 	// slab upload).
-	void PrepareSecondaryViews(uint32_t frameIdx);
+	void PrepareSecondaryViews(uint32_t frameIdx, const smvk::EnvironmentSettings& env);
 	// Passes: per-view shadows + Forward+ prepass/cull + direct Main +
 	// tonemap into the view image (runs after the main view's post/UI,
 	// before the shadow-futures join).
@@ -1642,8 +1660,9 @@ protected:
 	// the slab index is 1 + vi — view 0 is the main view).
 	void EnsureSecondaryTargets(SecondaryView& v, uint32_t vi);
 	FrameUniforms BuildSecondaryFrameUniforms(SecondaryView& v, uint32_t vi,
-		uint32_t frameIdx);
-	void UpdateSecondaryLights(SecondaryView& v, uint32_t vi, uint32_t frameIdx);
+		uint32_t frameIdx, const smvk::EnvironmentSettings& env);
+	void UpdateSecondaryLights(SecondaryView& v, uint32_t vi, uint32_t frameIdx,
+		const smvk::EnvironmentSettings& env);
 	void UploadSecondaryForwardPlusLights(SecondaryView& v, uint32_t vi,
 		uint32_t frameIdx);
 	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const PushConstants& pc,
@@ -2243,7 +2262,11 @@ protected:
 		int type = 0;      // 0=point, 1=spot (kForwardPlusPoint/Spot)
 	};
 	std::vector<DebugLight> m_debugLights;
-	smvk::EnvironmentSettings m_env{};
+	// Skydome visibility (K): a debug visibility toggle like wireframe /
+	// hide-transparent — NOT environment state (the renderer owns no
+	// environment; it renders the world's scene env). The pass-set flag
+	// m_passes.skydome stays the pipeline-shape switch.
+	bool m_skyEnabled = true;
 	smvk::Skydome m_skydome{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos

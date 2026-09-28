@@ -2768,14 +2768,18 @@ void EditorApp::DrawInspector() {
 	// per-attr inherited/local/wide badges + wide-rule matches).
 	DrawInspectorOverrides(node);
 
-	// Environment node: mark/use this node as an IBL source (editor-only).
+	// Environment node: mark/use this node as an IBL source (scene
+	// definition — the block lives in the scene, the selection below
+	// resolves into the rendered look).
 	{
 		ImGui::Separator();
 		ImGui::Text("Environment node");
 		if (IsEnvNode(node)) {
 			ImGui::TextDisabled("marked as Environment");
-			if (ImGui::Button("Use as current IBL source"))
+			if (ImGui::Button("Use as current IBL source")) {
 				m_envCurrent = node;
+				ResolveSceneEnv();
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("Unmark##envnode"))
 				UnmarkEnvNode(node);
@@ -2783,10 +2787,11 @@ void EditorApp::DrawInspector() {
 		else if (ImGui::Button("Mark as Environment node")) {
 			MarkEnvNode(node);
 			m_envCurrent = node;
+			ResolveSceneEnv();
 		}
 		ImGui::TextDisabled(
 			"position = node translate, size = node scale "
-			"(convex volume later; never cooked)");
+			"(convex volume later; cooked with the resolved look)");
 	}
 
 	// Scene reference block (placeholder nodes).

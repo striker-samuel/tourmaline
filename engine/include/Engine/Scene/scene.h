@@ -106,6 +106,31 @@ struct SceneCubemap {
 	float radius = 1.5f;   // influence radius (m); fade = radius/2
 };
 
+// Authored environment block (editor LIGHTING authoring units — NOT lux:
+// sun 0..10, sky 0..2, exposure 0.1..4, fog 0..1 — the scale the panel
+// edits and the tour persists). Consumers map to their own units at use:
+// the editor's own frame uses raw values; the hosted WorldRenderer
+// lux-maps when publishing FrameUniforms. Scene-attached like the other
+// authored node data below (cvol/cubemap): the resolved ACTIVE look lives
+// in Scene::environment; the default block + per-node alternatives live
+// beside it; the "which block renders" selection stays editor view state
+// (like the active camera) and is resolved into Scene::environment.
+struct SceneEnv {
+	glm::vec3 skyColor{ 0.35f, 0.5f, 0.7f };
+	float skyIntensity = 0.6f;
+	glm::vec3 sunColor{ 1.0f, 0.96f, 0.92f };
+	float sunAzimuth = 30.0f;
+	float sunElevation = 55.0f;
+	float sunIntensity = 3.0f;
+	float exposure = 1.0f;
+	// Authored but not yet rendered: fog density/color, volumetrics,
+	// skybox URI (stored with the block for the future passes).
+	float fogDensity = 0.0f;
+	glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
+	float volumetrics = 0.0f; // 0 = off (future: editor volume pass)
+	std::string skyboxUri;     // stored (skybox sampling is TODO)
+};
+
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -137,6 +162,27 @@ struct Scene {
 	// editor cubemap node): pinned specular probe positions harvested
 	// by the cook's --cubemap stage. Position = node translate.
 	std::unordered_map<NodeId, SceneCubemap> cubemapForNode;
+	// Authored environment (see SceneEnv): the resolved ACTIVE look
+	// (authoring units) — what renders. The editor resolves its current
+	// source (default block or selected node block) into `environment`
+	// on every change; the cook resolves the tour's active block into
+	// the cluster scene; world/pak assembly keeps the first authored
+	// one (see hasEnvironment). Consumers read this and NOTHING else.
+	SceneEnv environment;
+	// True when `environment` was authored (tour block / editor publish /
+	// cook resolve) rather than default-constructed. Gates first-wins
+	// resolution across merged scenes: an unauthored default must never
+	// shadow another scene's authored look.
+	bool hasEnvironment = false;
+	// Authoring default block (the "Editor default" source). The tour
+	// persists it; the editor resolves it into `environment` when no
+	// node block is selected.
+	SceneEnv defaultEnvironment;
+	// Node -> authored environment block (tour env.n / editor env node).
+	// The definition is node-local like SceneCvol; the active block is
+	// resolved into `environment` by whoever owns the selection (the
+	// editor; the cook at bake time).
+	std::unordered_map<NodeId, SceneEnv> envForNode;
 	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
 	// editor for nodes a Delete line addresses (persisted as `uuid`
 	// lines ahead of the deletes) and recorded back by replay and

@@ -472,7 +472,6 @@ void EditorApp::CloseScene() {
 	m_refPlaceholders.shrink_to_fit();
 	m_references.clear();
 	m_refPhCluster.clear();
-	m_envByNode.clear();
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
 	m_materialTrail.clear();
@@ -710,7 +709,8 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
-	m_envByNode.clear(); // env nodes restored by LoadTour (editorSet)
+	// Scene-backed env nodes are restored by LoadTour (tour env blocks);
+	// only the selection resets here.
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX; // inspector navigation state
 	m_materialTrail.clear();
@@ -957,7 +957,7 @@ bool EditorApp::LoadPakFromImage(
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
 	m_nextOverrideId = 1;
-	m_envByNode.clear(); // pak loads replay no tour: default IBL stands
+	// Pak loads replay no tour: the scene keeps its cooked/default look.
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
 	m_materialTrail.clear();
@@ -1027,19 +1027,6 @@ bool EditorApp::LaunchWysiwyg() {
 	uint32_t w = std::max(uint32_t(vp.w), 64u);
 	uint32_t h = std::max(uint32_t(vp.h), 64u);
 	m_wysiwygExtent = smvk::Extent2D{ w, h };
-	m_wysiwyg = std::make_unique<app::WorldRenderer>();
-	// Hosted boot BEFORE Initialize (App::Initialize takes the hosted
-	// branch: borrowed context + offscreen target, no window/SDL).
-	if (!m_wysiwyg->RequestHostedBoot(*this, m_wysiwygExtent,
-			smvk::Format::BGRA8_SRGB)) {
-		Log("Live view: hosted boot request rejected.");
-		m_wysiwyg.reset();
-		return false;
-	}
-	// BORROW the editor's world: the hosted renderer's Initialize
-	// takes the live-view branch (no scene import of its own — the
-	// world arrives resolved) and its frames render it in place.
-	m_wysiwyg->SetHostedBorrowedWorld(m_world.get());
 	// Scene id = the open scene's stem (SceneIdForHost; GI sidecar names
 	// resolve gi/<stem>.* through the hosted content VFS: project root
 	// first, bundled content under). The string lives in a member; the
@@ -1047,27 +1034,17 @@ bool EditorApp::LaunchWysiwyg() {
 	m_wysiwygSceneId = SceneIdForHost();
 	if (m_wysiwygSceneId.empty())
 		m_wysiwygSceneId = "scene";
-	// Live view: no world source — the borrowed world above IS the
-	// scene; the renderer renders it by handles.
-	m_wysiwyg->SetSceneId(m_wysiwygSceneId);
-	m_wysiwyg->Configure(app::ScenePassConfig::All());
-	// Project root: the hosted content VFS mounts it (below the
-	// bundled content/) so project-side bake sidecars (gi/<stem>.*,
-	// cubemaps) resolve where the baker wrote them.
-	if (!m_projectRoot.empty())
-		m_wysiwyg->SetProjectRoot(m_projectRoot);
-	m_wysiwyg->SetDisableControl(true); // editor owns the input
-	m_wysiwyg->SetDlssMode(smvk::DlssMode::Off); // offscreen: no present
-	m_wysiwyg->SetAaMode(app::AaMode::Off); // live authoring: crisp, no AA
+	// One call: boot off this context, borrow the editor's world (it
+	// keeps owning + mutating it — edits show up per frame; the hosted
+	// renderer never imports anything), full framegraph + hosted
+	// invariants, initialized. Cooks are the separate PRODUCT step —
+	// they never feed the viewport.
 	try {
-		if (!m_wysiwyg->HostedInitialize()) {
-			Log("Live view: WorldRenderer::Initialize failed.");
-			StopWysiwyg();
-			return false;
-		}
+		m_wysiwyg = std::make_unique<app::WorldRenderer>(*this, *m_world,
+			m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot);
 	}
 	catch (const std::exception& e) {
-		Log(std::string("Live view: Initialize threw: ") + e.what());
+		Log(std::string("Live view: launch threw: ") + e.what());
 		StopWysiwyg();
 		return false;
 	}
@@ -2114,6 +2091,20 @@ void EditorApp::DrawFrame() {
 				stbi_write_png(png, int(ext.width), int(ext.height), 4,
 					vpx.data(), int(ext.width) * 4);
 			}
+			// Lit restore for the SECOND shot (smoke runs only): shot 1
+			// stays whatever mode was active (the Unlit+wire reference
+			// in the smoke flow — the control), shot 2 renders Lit with
+			// the scene state as of shot 1 + 11 frames (the swung scene
+			// sun in the smoke flow — the scene-env proof). Firing here
+			// (right after shot 1 is captured) keeps the two shots
+			// deterministically apart regardless of stage timing; manual
+			// dump runs never touch the view mode.
+			if (dumpShots == 1 && m_wysiwygSmoke) {
+				ActiveViewMode() = ViewMode::Lit;
+				m_wireframeAll = false;
+				std::cerr << "[SMOKE] editor view mode -> Lit, wireframe "
+					"off — the live view must follow\n";
+			}
 		}
 #endif // !NDEBUG (hosted diagnostic dumps)
 	}
@@ -2177,6 +2168,14 @@ void EditorApp::DriveWysiwygSmoke() {
 			cam.pitch = std::clamp(cam.pitch - 0.35f, -1.5f, 1.5f);
 			cam.dist = std::max(cam.dist * 0.15f, 0.05f); // close-up
 			std::cerr << "[SMOKE] editor camera rotated+zoomed — "
+				"the live view must follow\n";
+			// Scene-env proof: swing the authored sun IN THE SCENE
+			// (CurrentEnv is scene-backed; ResolveSceneEnv refreshes
+			// the rendered copy) — the hosted live view's sun
+			// (directional light + shadows + skydome disc) must follow.
+			CurrentEnv().sunAzimuth += 90.0f;
+			ResolveSceneEnv();
+			std::cerr << "[SMOKE] scene sun azimuth +90 — "
 				"the live view must follow\n";
 		}
 		// Debug-view-drive proof (frame 16): the editor's Unlit mode
@@ -2262,9 +2261,9 @@ case 4: // on-demand bake running; then the in-place sidecar rebind
 		RequestClose();
 	}
 	return;
-case 2: // render after the product step (cook/bake + the sidecar
+	case 2: // render after the product step (cook/bake + the sidecar
 		// rebind in the project flow), then exit
-	if (++m_smokeFrames > 20) {
+		if (++m_smokeFrames > 20) {
 		if (!m_wysiwyg) {
 			std::cerr << "[SMOKE] FAILED: live view died across the "
 				"sidecar rebind (see log)\n";

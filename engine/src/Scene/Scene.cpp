@@ -214,6 +214,57 @@ void loadMap(FILE* f, std::unordered_map<uint32_t, uint32_t>& map)
     map[ms[i * 2 + 0]] = ms[i * 2 + 1];
 }
 
+// Authored-environment record I/O (see SceneEnv): 16 floats in fixed
+// order + a length-prefixed NUL-terminated string (saveStringList
+// encoding). Returns false on any short read (caller keeps defaults;
+// the env section is always last, so a short read simply ends parsing).
+static void saveEnvFloats(FILE* f, const SceneEnv& e)
+{
+  const float floats[16] = {
+    e.skyColor.x, e.skyColor.y, e.skyColor.z, e.skyIntensity,
+    e.sunColor.x, e.sunColor.y, e.sunColor.z,
+    e.sunAzimuth, e.sunElevation, e.sunIntensity,
+    e.exposure, e.fogDensity,
+    e.fogColor.x, e.fogColor.y, e.fogColor.z,
+    e.volumetrics,
+  };
+  fwrite(floats, sizeof(float), 16, f);
+  const uint32_t len = (uint32_t)e.skyboxUri.length();
+  fwrite(&len, sizeof(len), 1, f);
+  if (len > 0)
+    fwrite(e.skyboxUri.c_str(), len + 1, 1, f);
+}
+
+static bool loadEnvFloats(FILE* f, SceneEnv& e)
+{
+  float floats[16] = {};
+  if (fread(floats, sizeof(float), 16, f) != 16)
+    return false;
+  e.skyColor = glm::vec3(floats[0], floats[1], floats[2]);
+  e.skyIntensity = floats[3];
+  e.sunColor = glm::vec3(floats[4], floats[5], floats[6]);
+  e.sunAzimuth = floats[7];
+  e.sunElevation = floats[8];
+  e.sunIntensity = floats[9];
+  e.exposure = floats[10];
+  e.fogDensity = floats[11];
+  e.fogColor = glm::vec3(floats[12], floats[13], floats[14]);
+  e.volumetrics = floats[15];
+  uint32_t len = 0;
+  if (fread(&len, sizeof(len), 1, f) != 1 || len > 1024 * 1024)
+    return false;
+  if (len > 0) {
+    std::vector<char> bytes(len + 1, 0);
+    if (fread(bytes.data(), len + 1, 1, f) != 1)
+      return false;
+    e.skyboxUri = std::string(bytes.data());
+  }
+  else {
+    e.skyboxUri.clear();
+  }
+  return true;
+}
+
 void loadScene(const char* fileName, Scene& scene)
 {
   FILE* f = fopen(fileName, "rb");
@@ -299,6 +350,36 @@ void loadScene(const char* fileName, Scene& scene)
       std::vector<uint8_t> flags(dCount, 0);
       if (fread(flags.data(), 1, dCount, f) == dCount && dCount == sz) {
         scene.ditherCloseup = std::move(flags);
+      }
+    }
+  }
+  // Authored environment section (v6): u32 authored flag + resolved-look
+  // record + default-block record + per-node blocks (u32 count + (node,
+  // record) pairs in node order). Absent on older files (EOF) — the
+  // struct defaults stand and hasEnvironment stays false.
+  {
+    uint32_t envFlag = 0;
+    if (fread(&envFlag, sizeof(envFlag), 1, f) == 1) {
+      SceneEnv resolved{}, def{};
+      uint32_t nodeCount = 0;
+      bool ok = loadEnvFloats(f, resolved) && loadEnvFloats(f, def);
+      if (ok && fread(&nodeCount, sizeof(nodeCount), 1, f) == 1 &&
+          nodeCount <= 1024 * 1024) {
+        std::unordered_map<NodeId, SceneEnv> table;
+        for (uint32_t i = 0; i < nodeCount && ok; ++i) {
+          uint32_t node = 0;
+          SceneEnv block{};
+          if (fread(&node, sizeof(node), 1, f) == 1 && loadEnvFloats(f, block))
+            table[node] = block;
+          else
+            ok = false;
+        }
+        if (ok) {
+          scene.environment = resolved;
+          scene.hasEnvironment = envFlag != 0;
+          scene.defaultEnvironment = def;
+          scene.envForNode = std::move(table);
+        }
       }
     }
   }
@@ -398,6 +479,26 @@ void saveScene(const char* fileName, const Scene& scene)
         std::vector<uint8_t> zeros(dCount, 0);
         fwrite(zeros.data(), 1, dCount, f);
       }
+    }
+  }
+  // Authored environment section (v6): u32 authored flag + resolved look
+  // + default block + per-node blocks (u32 count + node-ordered (node,
+  // record) pairs). Always written; old loaders stop after the dither
+  // section (trailing bytes ignored).
+  {
+    const uint32_t envFlag = scene.hasEnvironment ? 1u : 0u;
+    fwrite(&envFlag, sizeof(envFlag), 1, f);
+    saveEnvFloats(f, scene.environment);
+    saveEnvFloats(f, scene.defaultEnvironment);
+    std::vector<std::pair<uint32_t, SceneEnv>> pairs(
+      scene.envForNode.begin(), scene.envForNode.end());
+    std::sort(pairs.begin(), pairs.end(),
+      [](const auto& a, const auto& b) { return a.first < b.first; });
+    const uint32_t n = (uint32_t)pairs.size();
+    fwrite(&n, sizeof(n), 1, f);
+    for (const auto& [node, env] : pairs) {
+      fwrite(&node, sizeof(node), 1, f);
+      saveEnvFloats(f, env);
     }
   }
   fclose(f);
@@ -549,6 +650,9 @@ void mergeScenes(
     scene.materialNames = scenes[0]->materialNames;
 
   // FIXME: too much logic (for all the components in a scene, though mesh data and materials go separately - they're dedicated data lists)
+  // Authored environment: first authored scene wins (resolved look +
+  // default block travel together; per-node blocks offset-merge).
+  bool envTaken = false;
   for (const Scene* s : scenes) {
     mergeVectors(scene.localTransform, s->localTransform);
     mergeVectors(scene.globalTransform, s->globalTransform);
@@ -586,6 +690,16 @@ void mergeScenes(
     mergeMaps(scene.meshForNode, s->meshForNode, offs, mergeMeshes ? meshOffs : 0);
     mergeMaps(scene.materialForNode, s->materialForNode, offs, mergeMaterials ? materialOfs : 0);
     mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
+    // Per-node authored env blocks: node keys shift like the other maps;
+    // values are inline structs (no pool indirection, no value offset).
+    for (const auto& [node, env] : s->envForNode)
+      scene.envForNode[node + offs] = env;
+    if (!envTaken && s->hasEnvironment) {
+      scene.environment = s->environment;
+      scene.hasEnvironment = true;
+      scene.defaultEnvironment = s->defaultEnvironment;
+      envTaken = true;
+    }
 
     offs += nodeCount;
 
@@ -699,6 +813,19 @@ void shiftMapIndices(std::unordered_map<uint32_t, uint32_t>& items, const std::v
   items = newItems;
 }
 
+// Struct-value variant (per-node authored blocks like SceneEnv): keys
+// remap like the index maps above; values ride unchanged (no pool).
+void shiftEnvMapIndices(std::unordered_map<uint32_t, SceneEnv>& items, const std::vector<int>& newIndices)
+{
+  std::unordered_map<uint32_t, SceneEnv> newItems;
+  for (const auto& m : items) {
+    int newIndex = newIndices[m.first];
+    if (newIndex != -1)
+      newItems[newIndex] = m.second;
+  }
+  items = newItems;
+}
+
 // Approximately an O ( N * Log(N) * Log(M)) algorithm (N = scene.size, M = nodesToDelete.size) to delete a collection of nodes from scene
 // graph
 void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
@@ -770,6 +897,9 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   // Orphaned light definitions (no node left referencing them) are kept:
   // they are small and dropping them would require remapping the surviving
   // lightForNode values.
+  // Per-node authored env blocks follow their nodes (dropped with them);
+  // the scene-global resolved/default blocks are node-independent.
+  shiftEnvMapIndices(scene.envForNode, newIndices);
 
   // 5) scene node names list is not modified, but in principle it can be (remove all non-used items and adjust the nameForNode_ map)
   // 6) Material names list is not modified also, but if some materials fell out of use

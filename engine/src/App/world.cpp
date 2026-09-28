@@ -100,6 +100,10 @@ namespace smvk {
 		// World material dedup (see the materialForNode remap below).
 		std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
 		uint32_t clusterOrdinal = 0;
+		// Authored-environment first-wins (see the per-cluster block):
+		// the first cluster scene carrying an authored look wins the
+		// world scene's resolved/default blocks.
+		bool envTaken = false;
 
 		// World root node (parent = -1)
 		const int root = addNode(scene, -1, 0);
@@ -312,6 +316,20 @@ namespace smvk {
 				CameraLocation{ .cluster = &cluster, .handle = handle }
 			);
 			scene.cameraForNode[worldNode] = worldCamIdx;
+		}
+
+		// Authored environment: per-node blocks offset-merge like the
+		// other node maps (values are inline structs — direct copy);
+		// the resolved look + default block ride first-wins across
+		// clusters (registration order: the owning scene first), so an
+		// unauthored default never shadows another scene's authored look.
+		for (auto& [node, env] : cs.envForNode)
+			scene.envForNode[node + nodeOffset] = env;
+		if (!envTaken && cs.hasEnvironment) {
+			scene.environment = cs.environment;
+			scene.hasEnvironment = true;
+			scene.defaultEnvironment = cs.defaultEnvironment;
+			envTaken = true;
 		}
 
 		markAsChanged(scene, clusterRootNode);

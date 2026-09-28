@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <stdexcept> // hosted ctor failure (std::runtime_error)
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -2641,7 +2642,7 @@ void WorldRenderer::Shutdown() {
 		}
 	}
 
-	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
+	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
 
 		const int width_ = renderExtent.width;
 		const int height_ = renderExtent.height;
@@ -2758,8 +2759,9 @@ void WorldRenderer::Shutdown() {
 			           : m_viewportResources.ssao.OutputBindless())
 			: UINT32_MAX;
 		data.aoIntensity = aoOn ? m_ssaoIntensity : 0.0f;
-		// Configurable skydome IBL + fog (single source for sky/sun/fog).
-		data.env = m_env.ToFrameData();
+		// Configurable skydome IBL + fog (single source for sky/sun/fog,
+		// built from the world's scene env by the caller).
+		data.env = env.ToFrameData();
 		// Ambient sources (N cycles All -> Lightmaps -> Probes -> SkyIbl
 		// -> Off): per-source isolation — the sky IBL flag enables the
 		// analytic sky as the ambient FALLBACK (pixels no baked source
@@ -2963,12 +2965,14 @@ void WorldRenderer::Shutdown() {
 
 	}
 
-	smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(uint32_t currentFrame)
+	smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env)
 	{
-		// Directional sun driven by the environment (single source of truth
-		// for the sky sun disc, IBL sun tint, and shadow-casting light).
+		// Directional sun driven by the frame environment (single source
+		// of truth for the sky sun disc, IBL sun tint, and
+		// shadow-casting light — built from the world's scene env by
+		// the caller; the renderer owns no environment of its own).
 		// lightDir points FROM the sun toward the scene (i.e. -toSun).
-		glm::vec3 toSun = m_env.SunDirectionToSun();
+			glm::vec3 toSun = env.SunDirectionToSun();
 		glm::vec3 lightDir = -toSun;
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
@@ -2978,11 +2982,11 @@ void WorldRenderer::Shutdown() {
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
-		light.color = glm::vec4(m_env.sunColor, 1.0f);
+		light.color = glm::vec4(env.sunColor, 1.0f);
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = m_env.sunIntensity;
+		light.intensity = env.sunIntensity;
 		// EVSM: the index addresses the blurred moments (sampled with a
 		// 1-frame lag); FrameUniforms.evsmMode tells shaders which
 		// representation the index refers to. Otherwise the depth atlas.
@@ -3010,10 +3014,10 @@ void WorldRenderer::Shutdown() {
 				invProj,
 				splits,
 				CASCADE_Z_PADDING,
-				// Soft directional shadows: the environment's sun disc
-				// angular radius becomes the physical penumbra angle.
-				std::tan(glm::radians(m_env.sunDiscSizeDeg)),
-				m_evsmSoftness);
+			// Soft directional shadows: the environment's sun disc
+			// angular radius becomes the physical penumbra angle.
+			std::tan(glm::radians(env.sunDiscSizeDeg)),
+			m_evsmSoftness);
 		// UI bias scales over the engine's texel-scaled per-cascade bias.
 		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 			dir.cascades[i].bias *= m_cascadeDepthBiasScale;
@@ -3573,19 +3577,26 @@ void WorldRenderer::Shutdown() {
 				<< m_cookedLights.pointSpots.size() << " -> " << FP_MAX_LIGHTS << "\n";
 			m_cookedLights.pointSpots.resize(FP_MAX_LIGHTS);
 		}
-		// Seed the environment from the authored sun so the sky disc, IBL
-		// tint and shadow-casting light stay in sync. The user can still
-		// retouch the sliders afterwards (this runs once at load).
-		if (m_cookedLights.hasSun) {
+		// Seed the SCENE's sun from the authored light so the sky disc, IBL
+		// tint and shadow-casting light stay in sync (sun fields only, in
+		// scene units — like the editor's cooked-sun seed). Runs only when
+		// the scene carries no authored look (old content without env
+		// blocks); a tour/cooked env always wins. The user can still
+		// retouch the look afterwards (this runs once at load/rebind).
+		if (m_cookedLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
 			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
-			m_env.sunElevationDeg = glm::degrees(std::asin(
+			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+			sceneEnv.sunElevation = glm::degrees(std::asin(
 				std::clamp(t.y, -1.0f, 1.0f)));
-			m_env.sunAzimuthDeg = glm::degrees(std::atan2(t.x, t.z));
-			m_env.sunColor = m_cookedLights.sunColor;
-			m_env.sunIntensity = m_cookedLights.sunIntensity;
-			std::cerr << "[Scene] cooked sun: az=" << m_env.sunAzimuthDeg
-				<< " el=" << m_env.sunElevationDeg
-				<< " I=" << m_env.sunIntensity << "\n";
+			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
+			sceneEnv.sunColor = m_cookedLights.sunColor;
+			sceneEnv.sunIntensity = glm::clamp(
+				m_cookedLights.sunIntensity * 0.001f, 0.0f, 10.0f);
+			m_world->scene.environment = sceneEnv;
+			m_world->scene.hasEnvironment = true;
+			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
+				<< " el=" << sceneEnv.sunElevation
+				<< " I=" << sceneEnv.sunIntensity << "\n";
 		}
 		std::cerr << "[Scene] cooked lights: spots=" << spots.size()
 			<< " points=" << points.size()
@@ -5373,6 +5384,41 @@ WorldRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
 }
 
 // ===========================================================================
+// HOSTED one-call setup (see the header): boot off the host's context,
+// borrow the world, configure the full framegraph + hosted invariants and
+// initialize — the host specifies the world and is done.
+// ===========================================================================
+
+WorldRenderer::WorldRenderer(smvk::App& host, smvk::World& world,
+	smvk::Extent2D extent, std::string sceneId, std::string projectRoot,
+	smvk::Format format)
+{
+	// Hosted boot BEFORE Initialize (App::Initialize takes the hosted
+	// branch: borrowed context + offscreen target, no window/SDL).
+	if (!RequestHostedBoot(host, extent, format)) {
+		throw std::runtime_error(
+			"WorldRenderer: hosted boot request rejected");
+	}
+	// Borrow the host's world (the renderer never imports anything of
+	// its own on hosted runs; edits show up live, per frame).
+	SetHostedBorrowedWorld(&world);
+	// Scene id + project root precede Initialize (the GI sidecar loads
+	// resolve gi/<id>.* through the project-aware VFS there).
+	SetSceneId(sceneId);
+	SetProjectRoot(projectRoot);
+	Configure(ScenePassConfig::All());
+	// Hosted invariants: the host owns the input, there is no present
+	// chain to upscale, and the live authoring view stays crisp.
+	SetDisableControl(true);
+	SetDlssMode(smvk::DlssMode::Off);
+	SetAaMode(AaMode::Off);
+	if (!HostedInitialize()) {
+		throw std::runtime_error(
+			"WorldRenderer::Initialize failed (see the errors above)");
+	}
+}
+
+// ===========================================================================
 // MULTIVIEW (hosted): per-view image buffers + tic/toc refresh scheduling.
 // See world_renderer.h (ViewRefresh + SecondaryView) for the design notes.
 // ===========================================================================
@@ -5451,6 +5497,40 @@ void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
 	v.desc.zNear = std::max(zNear, 0.001f);
 	v.desc.zFar = std::max(zFar, v.desc.zNear + 0.1f);
 	v.positioner.lookAt(eye, tgt, up);
+}
+
+// Scene->frame environment mapping (see SceneEnv): the scene authors
+// sun 0..10 / sky 0..2 while the pipeline is lux-scale (sun 10000 / sky
+// 600 defaults), so both ride kSceneEnvToHostedLux (editor 3.0 ->
+// 3000 lux, 0.6 -> 600 — the sun:sky:ambient ratios stay the authored
+// 5:1:1 and the auto-exposure normalizes the rest). Everything the scene
+// does NOT define (sun disc, sky exponent, fog shape, exposure knobs)
+// stays at the engine defaults — the renderer owns no environment state
+// of its own; it renders the world's look. unlitKillSun mirrors the
+// editor frame's Unlit handling (the Unlit debug view replaces shading
+// wholesale anyway; this keeps the lit leftovers — transparents,
+// particles — honest).
+static smvk::EnvironmentSettings MapSceneEnv(const SceneEnv& w,
+	bool unlitKillSun)
+{
+	static constexpr float kSceneEnvToHostedLux = 1000.0f;
+	smvk::EnvironmentSettings env{}; // engine defaults (disc, exponent, fog shape)
+	env.skyEnabled = true;
+	env.iblEnabled = true;
+	env.skyZenithColor = w.skyColor;
+	env.skyHorizonColor = w.skyColor;
+	env.skyIntensity = w.skyIntensity * kSceneEnvToHostedLux;
+	env.groundColor = w.skyColor * 0.5f;
+	env.iblIntensity = w.skyIntensity * kSceneEnvToHostedLux;
+	env.sunAzimuthDeg = w.sunAzimuth;
+	env.sunElevationDeg = w.sunElevation;
+	env.sunColor = w.sunColor;
+	env.sunIntensity = unlitKillSun ? 0.0f
+		: w.sunIntensity * kSceneEnvToHostedLux;
+	env.fogColor = w.fogColor;
+	env.fogDensity = w.fogDensity;
+	env.fogMode = 0; // volumetrics authored, not yet rendered here
+	return env;
 }
 
 void WorldRenderer::SetViewExtent(uint32_t view, smvk::Extent2D extent) {
@@ -5700,7 +5780,7 @@ void WorldRenderer::EnsureSecondaryTargets(SecondaryView& v, uint32_t vi) {
 }
 
 FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
-	uint32_t vi, uint32_t frameIdx)
+	uint32_t vi, uint32_t frameIdx, const smvk::EnvironmentSettings& env)
 {
 	// Lean per-view twin of UpdateFrameUniforms: the view's own camera
 	// (positioner + Camera, aspect from desc.extent), no jitter (secondary
@@ -5739,7 +5819,8 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	// No per-view AO passes: ambient composites without the AO layer.
 	data.aoTextureIndex = UINT32_MAX;
 	data.aoIntensity = 0.0f;
-	data.env = m_env.ToFrameData();
+	// Same scene-built look as the main view.
+	data.env = env.ToFrameData();
 	data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 	// Reflection cubemap (global fallback) + probe tile freshness for the
 	// VIEW's forward+ tile lists (the per-view cull files them).
@@ -5877,12 +5958,13 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 }
 
 void WorldRenderer::UpdateSecondaryLights(SecondaryView& v, uint32_t vi,
-	uint32_t frameIdx)
+	uint32_t frameIdx, const smvk::EnvironmentSettings& env)
 {
 	// Per-view twin of UpdateLights: CSM fitted to the VIEW camera, the
 	// sun's shadow index addressing the VIEW's atlas, uploads into the
-	// view-major lights + cascade slabs.
-	glm::vec3 toSun = m_env.SunDirectionToSun();
+	// view-major lights + cascade slabs. Same scene-built sun as the
+	// main fit.
+	glm::vec3 toSun = env.SunDirectionToSun();
 	glm::vec3 lightDir = -toSun;
 	auto cameraView = v.camera.getViewMatrix();
 	auto cameraProj = v.camera.getProjMatrix();
@@ -5890,11 +5972,11 @@ void WorldRenderer::UpdateSecondaryLights(SecondaryView& v, uint32_t vi,
 	cameraProj[1][1] *= -1.0f;
 	smvk::Light lights[MAX_LIGHTS]{};
 	smvk::Light& light = lights[0];
-	light.color = glm::vec4(m_env.sunColor, 1.0f);
+	light.color = glm::vec4(env.sunColor, 1.0f);
 	light.direction[0] = lightDir.x;
 	light.direction[1] = lightDir.y;
 	light.direction[2] = lightDir.z;
-	light.intensity = m_env.sunIntensity;
+	light.intensity = env.sunIntensity;
 	// PCF depth atlas only per view (EVSM is a main-view opt-in; see
 	// EnsureSecondaryTargets) — FrameUniforms.evsmMode=0 keeps the view's
 	// sampling interpretation consistent.
@@ -5918,7 +6000,7 @@ void WorldRenderer::UpdateSecondaryLights(SecondaryView& v, uint32_t vi,
 			invProj,
 			splits,
 			CASCADE_Z_PADDING,
-			std::tan(glm::radians(m_env.sunDiscSizeDeg)),
+			std::tan(glm::radians(env.sunDiscSizeDeg)),
 			m_evsmSoftness);
 	for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 		dir.cascades[i].bias *= m_cascadeDepthBiasScale;
@@ -6060,7 +6142,7 @@ void WorldRenderer::UploadSecondaryForwardPlusLights(SecondaryView& v,
 	}
 }
 
-void WorldRenderer::PrepareSecondaryViews(uint32_t frameIdx) {
+void WorldRenderer::PrepareSecondaryViews(uint32_t frameIdx, const smvk::EnvironmentSettings& env) {
 	// Frame-top per-view prep for every view due THIS frame (phase gate):
 	// targets + lean FrameUniforms + per-view CSM fit/spot selection + the
 	// view-major slab uploads. Off-phase views are skipped entirely (their
@@ -6098,8 +6180,8 @@ void WorldRenderer::PrepareSecondaryViews(uint32_t frameIdx) {
 				(int)v.outValid);
 			continue; // target creation failed — skip the frame for this view
 		}
-		v.frameData = BuildSecondaryFrameUniforms(v, vi, frameIdx);
-		UpdateSecondaryLights(v, vi, frameIdx);
+		v.frameData = BuildSecondaryFrameUniforms(v, vi, frameIdx, env);
+		UpdateSecondaryLights(v, vi, frameIdx, env);
 		UploadSecondaryForwardPlusLights(v, vi, frameIdx);
 		v.renderedLastFrame = true;
 		if (mvTrace) {
@@ -6433,7 +6515,7 @@ void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
 		return false;
 	};
 	// Skydome first (depth Always, no writes).
-	if (m_passes.skydome && m_env.skyEnabled && m_skydome.ShadersValid()) {
+	if (m_passes.skydome && m_skyEnabled && m_skydome.ShadersValid()) {
 		cmd.BindRenderPipeline(
 			m_skydome.program,
 			smvk::VertexFormat::Empty,
@@ -6744,8 +6826,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// Decal ring upload BEFORE UpdateFrameUniforms: it reads the live
 		// count (m_decalFrameCount) into FrameUniforms.
 		(void)UpdateDecals(fb.frameIndex);
-		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
-		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
+		// The renderer owns no environment: the frame's look is built
+		// from the WORLD's scene env here, once per frame (the main
+		// view, the shadow fits and every secondary view take it as a
+		// parameter below — never member state). A worldless frame falls
+		// back to engine defaults (Initialize refuses those anyway).
+		const smvk::EnvironmentSettings frameEnv = m_world
+			? MapSceneEnv(m_world->scene.environment,
+				m_debugView == DebugView::Unlit)
+			: smvk::EnvironmentSettings{};
+		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent, frameEnv);
+		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex, frameEnv);
 		UpdateMaterials(fb.frameIndex);
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
@@ -6762,7 +6853,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// cameras ride the same slab upload.
 		// ------------------------------------------------------------------
 		m_viewPhase = static_cast<uint32_t>(m_frameCounter & 1ull);
-		PrepareSecondaryViews(fb.frameIndex);
+		PrepareSecondaryViews(fb.frameIndex, frameEnv);
 
 		// ------------------------------------------------------------------
 		// GPU particles (see smvk::Particles + particles.h): extent-
@@ -8103,7 +8194,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// keep the sky HDR. Works for both 1x (HDR Load) and 2x MSAA
 		// (transient color Clear + resolve) because the sky is part of the
 		// same pass that resolves.
-		if (m_passes.skydome && m_env.skyEnabled && m_skydome.ShadersValid()) {
+		if (m_passes.skydome && m_skyEnabled && m_skydome.ShadersValid()) {
 			cmd.BindRenderPipeline(
 				m_skydome.program,
 				smvk::VertexFormat::Empty,
@@ -9864,38 +9955,38 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						std::swap(m_exposureMin, m_exposureMax);
 				}
 				if (ImGui::CollapsingHeader("Environment ï¿½ Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
-					ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
+					ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
 					// Ambient-source selection moved to the GI section (the
 					// sky IBL is one AMBIENT source among the isolatable
 					// set — N cycles, see AmbientMode).
 					ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 						AmbientModeName(m_ambientMode));
-					ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
-					ImGui::ColorEdit3("Horizon", &m_env.skyHorizonColor.x);
-					ImGui::ColorEdit3("Ground", &m_env.groundColor.x);
-					ImGui::SliderFloat("Sky intensity (HDR)", &m_env.skyIntensity, 0.0f, 2000.0f);
-					ImGui::SliderFloat("Sky exponent", &m_env.skyExponent, 0.25f, 8.0f);
-					ImGui::SliderFloat("IBL intensity (HDR)", &m_env.iblIntensity, 0.0f, 200.0f);
-					ImGui::Separator();
-					ImGui::Text("Sun (drives light + sky disc)");
-					ImGui::SliderFloat("Azimuth", &m_env.sunAzimuthDeg, -180.0f, 180.0f);
-					ImGui::SliderFloat("Elevation", &m_env.sunElevationDeg, -10.0f, 90.0f);
-					ImGui::ColorEdit3("Sun color", &m_env.sunColor.x);
-					ImGui::SliderFloat("Sun intensity (lux)", &m_env.sunIntensity, 0.0f, 30000.0f);
-					ImGui::Checkbox("Sun disc", &m_env.sunDiscEnabled);
-					ImGui::SliderFloat("Disc radius (deg)", &m_env.sunDiscSizeDeg, 0.1f, 10.0f);
-					ImGui::Separator();
-					ImGui::Text("Fog (HDR pre-tonemap)");
-					const char* fogModes[] = { "Off", "Exp2", "Linear" };
-					int fogMode = m_env.fogMode;
-					if (ImGui::Combo("Mode", &fogMode, fogModes, 3)) m_env.fogMode = fogMode;
-					ImGui::ColorEdit3("Fog color", &m_env.fogColor.x);
-					ImGui::SliderFloat("Fog intensity (HDR)", &m_env.fogIntensity, 0.0f, 2000.0f);
-					ImGui::SliderFloat("Density", &m_env.fogDensity, 0.0f, 0.1f, "%.4f");
-					ImGui::SliderFloat("Start (m)", &m_env.fogStart, 0.0f, 100.0f);
-					ImGui::SliderFloat("End (m)", &m_env.fogEnd, 1.0f, 200.0f);
-					ImGui::SliderFloat("Height (m)", &m_env.fogHeight, -10.0f, 30.0f);
-					ImGui::SliderFloat("Height falloff", &m_env.fogHeightFalloff, 0.0f, 2.0f);
+					// Scene-backed look (same fields + units as the editor
+					// LIGHTING panel): sun 0..30, sky 0..2, fog 0..1. The
+					// renderer owns no environment — these write the
+					// world's scene directly (any drag marks it authored).
+					// No home here for the old HDR-unit knobs (sky
+					// exponent, IBL/ground intensities, sun disc, fog
+					// shape): the look authority is SceneEnv now.
+					if (!m_world) {
+						ImGui::TextDisabled("No world — nothing to author.");
+					}
+					else {
+						SceneEnv& se = m_world->scene.environment;
+						auto authored = [&]() { m_world->scene.hasEnvironment = true; };
+						if (ImGui::ColorEdit3("Sky color", &se.skyColor.x)) authored();
+						if (ImGui::SliderFloat("Sky intensity", &se.skyIntensity, 0.0f, 2.0f)) authored();
+						ImGui::Separator();
+						ImGui::Text("Sun (drives light + sky disc)");
+						if (ImGui::SliderFloat("Azimuth", &se.sunAzimuth, -180.0f, 180.0f)) authored();
+						if (ImGui::SliderFloat("Elevation", &se.sunElevation, -10.0f, 90.0f)) authored();
+						if (ImGui::ColorEdit3("Sun color", &se.sunColor.x)) authored();
+						if (ImGui::SliderFloat("Sun intensity", &se.sunIntensity, 0.0f, 30.0f)) authored();
+						ImGui::Separator();
+						ImGui::Text("Fog (authored; analytic fog stays off — see SceneEnv)");
+						if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
+						if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
+					}
 					if (!m_skydome.ShadersValid())
 						ImGui::TextDisabled("Sky program missing ï¿½ dome skipped");
 				}
@@ -10739,9 +10830,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							i, (double)m_cascadeSplitsDbg[i], (double)m_cascadeSplitsDbg[i + 1],
 							(double)m_cascadeBiasDbg[i], (double)m_cascadeNormalBiasDbg[i]);
 					}
-					const glm::vec3 toSunDbg = m_env.SunDirectionToSun();
+					const glm::vec3 toSunDbg = frameEnv.SunDirectionToSun();
 					ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
-						toSunDbg.x, toSunDbg.y, toSunDbg.z, m_env.sunIntensity);
+						toSunDbg.x, toSunDbg.y, toSunDbg.z, frameEnv.sunIntensity);
 					ImGui::Text("RenderViews: %u allocated (main=%u, CSM @%u, spots @%u)",
 						m_renderViews.Count(), m_renderViews.MainViewIndex(),
 						cascadeViewBase, spotViewBase);

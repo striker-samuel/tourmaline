@@ -399,21 +399,32 @@ void EditorApp::ApplyEnvToFrame(app::FrameUniforms& frame,
 }
 
 EditorApp::EditorEnv& EditorApp::CurrentEnv() {
-	if (m_envCurrent == UINT32_MAX)
-		return m_envDefault;
-	auto it = m_envByNode.find(m_envCurrent);
-	if (it == m_envByNode.end()) {
+	// Scene-backed (see SceneEnv): the resolved source that renders —
+	// the scene default, or the selected node block. UI writes land
+	// directly in the scene (no publish step; ResolveSceneEnv refreshes
+	// the rendered copy afterwards).
+	static SceneEnv fallback{};
+	if (!m_world)
+		return fallback;
+	if (m_envCurrent != UINT32_MAX) {
+		auto it = m_world->scene.envForNode.find(m_envCurrent);
+		if (it != m_world->scene.envForNode.end())
+			return it->second;
 		m_envCurrent = UINT32_MAX;
-		return m_envDefault;
 	}
-	return it->second;
+	return m_world->scene.defaultEnvironment;
 }
 
 const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
-	if (m_envCurrent == UINT32_MAX)
-		return m_envDefault;
-	auto it = m_envByNode.find(m_envCurrent);
-	return (it != m_envByNode.end()) ? it->second : m_envDefault;
+	static const SceneEnv fallback{};
+	if (!m_world)
+		return fallback;
+	if (m_envCurrent != UINT32_MAX) {
+		auto it = m_world->scene.envForNode.find(m_envCurrent);
+		if (it != m_world->scene.envForNode.end())
+			return it->second;
+	}
+	return m_world->scene.defaultEnvironment;
 }
 
 void EditorApp::UploadMaterials(uint32_t flight) {
