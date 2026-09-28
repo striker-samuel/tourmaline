@@ -215,6 +215,61 @@ void TestPakRoundTrip() {
 		parsed.ktxBytes.size() == 2 && parsed.ktxBytes[0] == 7, "pak.texpayload.fields");
 }
 
+// CRC-32 combine (the primitive behind the parallel whole-image verify
+// in PakReader::Open): linear over GF(2), so the CRC of a concatenation
+// rebuilds from part CRCs. Deterministic LCG buffers, no <random> dep.
+void TestPakCrcCombine() {
+	auto fill = [](std::vector<uint8_t>& v, uint32_t seed) {
+		uint32_t s = seed;
+		for (auto& b : v) {
+			s = s * 1664525u + 1013904223u;
+			b = static_cast<uint8_t>(s >> 24);
+		}
+	};
+	std::vector<uint8_t> a(4096), b(2048), c(513);
+	fill(a, 1);
+	fill(b, 2);
+	fill(c, 3);
+	const uint32_t crcA = smvk::PakCrc32(a.data(), a.size());
+	const uint32_t crcB = smvk::PakCrc32(b.data(), b.size());
+	const uint32_t crcC = smvk::PakCrc32(c.data(), c.size());
+	std::vector<uint8_t> ab(a);
+	ab.insert(ab.end(), b.begin(), b.end());
+	std::vector<uint8_t> abc(ab);
+	abc.insert(abc.end(), c.begin(), c.end());
+	const uint32_t whole = smvk::PakCrc32(abc.data(), abc.size());
+	// Two-way combine matches the CRC of the concatenation.
+	Check(smvk::PakCrc32Combine(crcA, crcB, b.size())
+		== smvk::PakCrc32(ab.data(), ab.size()), "pak.crc.combine.two");
+	// Right-to-left fold (exactly what PakCrc32Parallel does).
+	const uint32_t bc = smvk::PakCrc32Combine(crcB, crcC, c.size());
+	Check(smvk::PakCrc32Combine(crcA, bc, b.size() + c.size()) == whole,
+		"pak.crc.combine.three");
+	// Empty tail keeps crc1.
+	Check(smvk::PakCrc32Combine(0xDEADBEEFu, 0x12345678u, 0) == 0xDEADBEEFu,
+		"pak.crc.combine.empty");
+}
+
+// Chunk-parallel CRC: pool-folded chunks must equal the serial walk.
+// Small chunk sizes keep the test light while covering the multi-chunk
+// fold path (the 8 MB default only kicks in for real multi-GB paks).
+void TestPakCrcParallel() {
+	std::vector<uint8_t> data(256 * 1024);
+	uint32_t s = 7;
+	for (auto& b : data) {
+		s = s * 1664525u + 1013904223u;
+		b = static_cast<uint8_t>(s >> 24);
+	}
+	const uint32_t serial = smvk::PakCrc32(data.data(), data.size());
+	Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data),
+			100 * 1024) == serial, "pak.crc.parallel.fold");
+	// Chunk >= size stays serial inside.
+	Check(smvk::PakCrc32Parallel(std::span<const uint8_t>(data),
+			data.size() + 1) == serial, "pak.crc.parallel.singlechunk");
+	// Degenerate empty input.
+	Check(smvk::PakCrc32Parallel({}) == 0u, "pak.crc.parallel.empty");
+}
+
 void TestPakAppend() {
 	namespace fs = std::filesystem;
 	const auto dir = fs::temp_directory_path() / "vulkantoy_pak_append";
@@ -1966,6 +2021,8 @@ int main() {
 	TestOverlayMem();
 	TestAssetUris();
 	TestPakRoundTrip();
+	TestPakCrcCombine();
+	TestPakCrcParallel();
 	TestPakAppend();
 	TestLz4Codec();
 	TestPakCompressedRoundTrip();

@@ -605,6 +605,13 @@ bool WorldRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
+		// Static geo heaps FIRST (3 x 512 MB device buffers + VMA virtual
+		// blocks): everything downstream (pak world source upload below,
+		// shader/pipeline setup) can overlap their use, and the pak loader's
+		// heap writes must not wait behind shader loading. Idempotent, so
+		// the editor's own early call stays safe.
+		smvk::AllocateStaticVertexFmt(*m_context);
+
 		// DLSS capability is fixed per run (adapter + driver + Streamline
 		// runtime): the device exists now, so ask once. Failure leaves the
 		// mode combo cosmetic â€” the status readout explains why.
@@ -1420,8 +1427,6 @@ bool WorldRenderer::Initialize() {
 			},
 			.shaderCount = 2
 		};
-
-		smvk::AllocateStaticVertexFmt(*m_context);
 
 		// Texture streaming: tail-resident glTF uploads with a CPU
 		// screen-coverage demand pass (see UpdateTextureStreaming). The

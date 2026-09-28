@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 
 #include <Engine/Asset/compression.h>
+#include <Engine/Utils/thread_pool.h>
 
 namespace smvk {
 namespace {
@@ -19,6 +21,10 @@ inline constexpr size_t kHeaderSize = 32;
 inline constexpr size_t kFooterSize = 24;
 inline constexpr size_t kTocEntryFixed = 8 + 4 + 4 + 8 + 8 + 4; // hash,kind,flags,off,size,pathLen
 inline constexpr size_t kAlign = 16;
+
+// Images below this stay on the serial CRC/decompress paths (pool spin-up
+// would cost more than the work; tests and small appends land here).
+inline constexpr size_t kCrcParallelMinBytes = 32ull * 1024ull * 1024ull;
 
 size_t AlignUp(size_t v, size_t align) {
 	return (v + align - 1) & ~(align - 1);
@@ -34,7 +40,102 @@ void AppendU64(std::vector<uint8_t>& out, uint64_t v) {
 	out.insert(out.end(), p, p + 8);
 }
 
+// --- CRC-32 combine machinery (zlib crc32_combine style) ------------------
+//
+// CRC-32 is linear over GF(2): the CRC of A||B can be rebuilt from the two
+// part CRCs by running crc1's register through an operator that models
+// "process len2 zero bytes". That operator is a 32x32 GF(2) matrix; powers
+// of two come from squaring, and len2's bits pick which to apply.
+constexpr int kCrcGf2Dim = 32;
+
+struct CrcGf2Matrix {
+	uint32_t rows[kCrcGf2Dim];
+};
+
+uint32_t CrcGf2MatrixTimes(const CrcGf2Matrix& mat, uint32_t vec) {
+	uint32_t sum = 0;
+	int row = 0;
+	while (vec) {
+		if (vec & 1u)
+			sum ^= mat.rows[row];
+		vec >>= 1;
+		++row;
+	}
+	return sum;
+}
+
+void CrcGf2MatrixSquare(CrcGf2Matrix& square, const CrcGf2Matrix& mat) {
+	for (int n = 0; n < kCrcGf2Dim; ++n)
+		square.rows[n] = CrcGf2MatrixTimes(mat, mat.rows[n]);
+}
+
 } // namespace
+
+uint32_t PakCrc32Combine(uint32_t crc1, uint32_t crc2, uint64_t len2) {
+	if (len2 == 0)
+		return crc1;
+	CrcGf2Matrix even{};
+	CrcGf2Matrix odd{};
+	// Operator for one zero bit: row 0 = reflected polynomial, row n holds
+	// bit n-1 shifted toward the register's high end.
+	odd.rows[0] = 0xEDB88320u;
+	uint32_t row = 1;
+	for (int n = 1; n < kCrcGf2Dim; ++n) {
+		odd.rows[n] = row;
+		row <<= 1;
+	}
+	CrcGf2MatrixSquare(even, odd); // two zero bits
+	CrcGf2MatrixSquare(odd, even); // four zero bits
+	// Walk len2's bits; the first squaring reaches one zero BYTE, so the
+	// bit positions of the byte count len2 pick byte-power operators.
+	do {
+		CrcGf2MatrixSquare(even, odd);
+		if (len2 & 1)
+			crc1 = CrcGf2MatrixTimes(even, crc1);
+		len2 >>= 1;
+		if (len2 == 0)
+			break;
+		CrcGf2MatrixSquare(odd, even);
+		if (len2 & 1)
+			crc1 = CrcGf2MatrixTimes(odd, crc1);
+		len2 >>= 1;
+	} while (len2 != 0);
+	return crc1 ^ crc2;
+}
+
+uint32_t PakCrc32Parallel(std::span<const uint8_t> data, size_t chunkBytes) {
+	if (chunkBytes == 0)
+		chunkBytes = 1;
+	if (data.size() <= chunkBytes)
+		return PakCrc32(data.data(), data.size());
+	// Chunk-split, one CRC per worker, then fold right-to-left with the
+	// combine primitive (acc always covers [i+1, chunkCount)).
+	struct ChunkCrc {
+		uint32_t crc;
+		size_t len;
+	};
+	const size_t chunkCount = (data.size() + chunkBytes - 1) / chunkBytes;
+	ThreadPool pool(std::min<size_t>(chunkCount,
+		std::thread::hardware_concurrency()));
+	std::vector<std::future<ChunkCrc>> futs;
+	futs.reserve(chunkCount);
+	for (size_t i = 0; i < chunkCount; ++i) {
+		const uint8_t* base = data.data() + i * chunkBytes;
+		const size_t len = std::min(chunkBytes, data.size() - i * chunkBytes);
+		futs.push_back(pool.enqueue([base, len]() -> ChunkCrc {
+			return ChunkCrc{ PakCrc32(base, len), len };
+		}));
+	}
+	ChunkCrc acc = futs.back().get();
+	futs.pop_back();
+	while (!futs.empty()) {
+		const ChunkCrc head = futs.back().get();
+		futs.pop_back();
+		acc.crc = PakCrc32Combine(head.crc, acc.crc, acc.len);
+		acc.len += head.len;
+	}
+	return acc.crc;
+}
 
 uint64_t PakHashPath(const std::string& normalizedPath) {
 	// FNV-1a 64.
@@ -536,7 +637,13 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		outError = "pak header/footer TOC mismatch";
 		return std::nullopt;
 	}
-	if (PakCrc32(image.data(), fOff + 16) != fCrc) {
+	// Whole-image CRC dominates startup for multi-GB paks (the table walk
+	// is ~1 GB/s serial); big images verify chunk-parallel instead.
+	const size_t crcBytes = fOff + 16;
+	const uint32_t crc = (crcBytes >= kCrcParallelMinBytes)
+		? PakCrc32Parallel(std::span<const uint8_t>(image.data(), crcBytes))
+		: PakCrc32(image.data(), crcBytes);
+	if (crc != fCrc) {
 		outError = "pak CRC mismatch (corrupt or truncated)";
 		return std::nullopt;
 	}
@@ -586,19 +693,61 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	}
 	// Decompress LZ4 blobs into reader-owned buffers so Payload() stays a
 	// simple span (transparent to cluster deserialization + PakBackend).
+	// One pool job per compressed entry: entries are independent and each
+	// writes its own decompressed_[i], so the parallel pass stays lock-free;
+	// the serial fallback covers single-entry and tiny paks (pool spin-up
+	// would cost more than the work).
 	r.decompressed_.resize(r.entries_.size());
-	for (size_t i = 0; i < r.entries_.size(); ++i) {
-		const PakTocEntry& e = r.entries_[i];
-		if (!(e.flags & PakEntryFlag_Lz4))
-			continue;
-		std::span<const uint8_t> stored =
-			image.subspan(static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
-		std::vector<uint8_t> raw;
-		if (!DecompressPakBlob(stored, true, raw)) {
-			outError = "pak LZ4 decompress failed: " + e.path;
-			return std::nullopt;
+	{
+		std::vector<size_t> lz4Idx;
+		lz4Idx.reserve(r.entries_.size());
+		for (size_t i = 0; i < r.entries_.size(); ++i) {
+			if (r.entries_[i].flags & PakEntryFlag_Lz4)
+				lz4Idx.push_back(i);
 		}
-		r.decompressed_[i] = std::move(raw);
+		if (lz4Idx.size() <= 1) {
+			for (size_t i : lz4Idx) {
+				const PakTocEntry& e = r.entries_[i];
+				std::span<const uint8_t> stored = image.subspan(
+					static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
+				if (!DecompressPakBlob(stored, true, r.decompressed_[i])) {
+					outError = "pak LZ4 decompress failed: " + e.path;
+					return std::nullopt;
+				}
+			}
+		}
+		else {
+			ThreadPool pool(std::min<size_t>(lz4Idx.size(),
+				std::thread::hardware_concurrency()));
+			std::vector<std::future<bool>> futs;
+			futs.reserve(lz4Idx.size());
+			std::vector<char> ok(lz4Idx.size(), 0);
+			for (size_t j = 0; j < lz4Idx.size(); ++j) {
+				const PakTocEntry& e = r.entries_[lz4Idx[j]];
+				// Capture by VALUE (span + stable element pointers): the
+				// workers may run the task after this loop iteration has
+				// ended, so references to loop locals would dangle. The
+				// element pointers are stable — both vectors finished
+				// growing before the enqueue loop.
+				const std::span<const uint8_t> stored = image.subspan(
+					static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
+				std::vector<uint8_t>* out = &r.decompressed_[lz4Idx[j]];
+				char* okFlag = &ok[j];
+				futs.push_back(pool.enqueue([stored, out, okFlag]() -> bool {
+					*okFlag = DecompressPakBlob(stored, true, *out) ? 1 : 0;
+					return *okFlag != 0;
+				}));
+			}
+			for (auto& f : futs)
+				f.get();
+			for (size_t j = 0; j < lz4Idx.size(); ++j) {
+				if (!ok[j]) {
+					outError = "pak LZ4 decompress failed: "
+						+ r.entries_[lz4Idx[j]].path;
+					return std::nullopt;
+				}
+			}
+		}
 	}
 	return r;
 }

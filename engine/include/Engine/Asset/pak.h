@@ -92,6 +92,17 @@ struct PakTocEntry {
 
 uint64_t PakHashPath(const std::string& normalizedPath);
 uint32_t PakCrc32(const void* data, size_t size);
+// CRC-32 of A||B from the CRCs of the parts (zlib crc32_combine style:
+// GF(2) zeros-operator matrices over the reflected CRC-32 polynomial).
+// len2 is the byte length covered by crc2. Public for tests; the reader
+// uses it to fold worker-computed chunk CRCs.
+uint32_t PakCrc32Combine(uint32_t crc1, uint32_t crc2, uint64_t len2);
+// Same result as PakCrc32, but computed chunk-parallel on a short-lived
+// worker pool and folded with PakCrc32Combine. Used by PakReader::Open for
+// multi-GB images where the serial table walk would dominate startup.
+// chunkBytes overrides the split (default 8 MB; tests use small splits).
+uint32_t PakCrc32Parallel(std::span<const uint8_t> data,
+	size_t chunkBytes = 8ull * 1024ull * 1024ull);
 
 // Per-blob placement of an appended payload (direct-read addressing:
 // with PakEntryFlag_None the bytes at [offset, offset+size) ARE the

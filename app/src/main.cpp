@@ -34,9 +34,11 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <span>
@@ -218,55 +220,94 @@ void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
 		<< ballUpload.indices.size() / 3 << " tris\n";
 }
 
-// The HOST's pak loader (the renderer's world source): opens the pak,
-// discovers the scenes, loads the selected one into a World (uploads
-// issued to the context — everything renders by handles), injects the
+// Background pak preload result. KickPakPreload (below) runs in main()
+// BEFORE the renderer starts Vulkan, so the file read + whole-image CRC +
+// per-entry LZ4 decompression overlap instance/device/swapchain init and
+// shader loading. The backend owns the image + the parsed reader (already
+// decompressed); the world source consumes it on the render thread once
+// the context exists. `backend` is null on any failure (error filled).
+struct PakPreload {
+	std::string scenePak; // display name (also the VFS mount name)
+	std::string openPath; // resolved host path (empty = not found)
+	std::shared_ptr<const std::vector<uint8_t>> image;
+	std::shared_ptr<smvk::PakBackend> backend;
+	std::string error;
+};
+
+std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
+	return std::async(std::launch::async, [pakPath]() {
+		const auto t0 = std::chrono::steady_clock::now();
+		PakPreload p;
+		p.scenePak = smvk::FlintbaseHostPath(pakPath);
+		p.openPath = ResolvePakOpenPath(p.scenePak);
+		if (p.openPath.empty()) {
+			p.error = "pak not found: '" + p.scenePak
+				+ "' (tried as-is, CWD-relative and exe-relative)";
+			return p;
+		}
+		std::ifstream pakFile(p.openPath, std::ios::binary | std::ios::ate);
+		if (!pakFile) {
+			p.error = "pak open failed: '" + p.openPath + "'";
+			return p;
+		}
+		const auto pakEnd = pakFile.tellg();
+		if (pakEnd == std::ifstream::pos_type(-1)) {
+			p.error = "pak unreadable: '" + p.openPath + "'";
+			return p;
+		}
+		pakFile.seekg(0);
+		auto image = std::make_shared<std::vector<uint8_t>>(
+			static_cast<size_t>(pakEnd));
+		if (!pakFile.read(reinterpret_cast<char*>(image->data()),
+				static_cast<std::streamsize>(image->size()))) {
+			p.error = "pak read failed: '" + p.openPath + "'";
+			return p;
+		}
+		p.image = std::move(image);
+		const auto t1 = std::chrono::steady_clock::now();
+		// ONE open covers everything: PakBackend::Open parses + verifies
+		// the CRC + (for big images) parallel-decompresses every LZ4
+		// entry. Its Reader() serves scene discovery + the cluster load
+		// below; the old path opened the reader twice (double CRC +
+		// double decompress).
+		std::string pakErr;
+		p.backend = smvk::PakBackend::Open(p.image, p.scenePak, pakErr);
+		const auto t2 = std::chrono::steady_clock::now();
+		if (!p.backend) {
+			p.image.reset();
+			p.error = "pak parse failed: " + pakErr;
+			return p;
+		}
+		std::cerr << "[App] pak preloaded (read "
+			<< std::chrono::duration<double>(t1 - t0).count() << "s, open "
+			<< std::chrono::duration<double>(t2 - t1).count() << "s): "
+			<< p.backend->Reader().EntryCount() << " entries, "
+			<< p.image->size() / (1024 * 1024) << " MB\n";
+		return p;
+	});
+}
+
+// The HOST's pak loader (the renderer's world source): consumes the
+// preloaded backend (read + parse + decompress already overlapped with
+// renderer init), loads the selected scene into a World (uploads issued
+// to the context — everything renders by handles), injects the
 // check-scene extras, freezes the cooked roots static and resolves.
 // The pak's embedded textures mount into the renderer's content
 // overlay (below loose content/, so dev overrides win) for init-time
 // reads (cubemaps baked into the pak, ...). Returns nullptr on any
 // failure (the renderer fails loudly).
-std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
+std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs) {
-	const std::string scenePak = smvk::FlintbaseHostPath(pakPath);
-	std::cerr << "[App] loading pak '" << scenePak << "'\n";
-	const std::string pakOpenPath = ResolvePakOpenPath(scenePak);
-	if (pakOpenPath.empty())
-		return nullptr;
-	std::ifstream pakFile(pakOpenPath, std::ios::binary | std::ios::ate);
-	if (!pakFile) {
-		std::cerr << "[App] pak open failed: '" << pakOpenPath << "'\n";
+	if (!pre.backend) {
+		std::cerr << "[App] pak preload failed: " << pre.error << "\n";
 		return nullptr;
 	}
-	const auto pakEnd = pakFile.tellg();
-	if (pakEnd == std::ifstream::pos_type(-1)) {
-		std::cerr << "[App] pak unreadable: '" << pakOpenPath << "'\n";
-		return nullptr;
-	}
-	pakFile.seekg(0);
-	auto pakImage = std::make_shared<std::vector<uint8_t>>(
-		static_cast<size_t>(pakEnd));
-	if (!pakFile.read(reinterpret_cast<char*>(pakImage->data()),
-			static_cast<std::streamsize>(pakImage->size()))) {
-		std::cerr << "[App] pak read failed: '" << pakOpenPath << "'\n";
-		return nullptr;
-	}
-	std::string pakErr;
-	auto reader = smvk::PakReader::Open(
-		std::span<const uint8_t>(*pakImage), pakErr);
-	if (!reader) {
-		std::cerr << "[App] pak parse failed: " << pakErr << "\n";
-		return nullptr;
-	}
-	auto pakBackend = smvk::PakBackend::Open(pakImage, scenePak, pakErr);
-	if (!pakBackend) {
-		std::cerr << "[App] pak backend mount failed: " << pakErr << "\n";
-		return nullptr;
-	}
-	std::cerr << "[App] pak parsed (" << reader->EntryCount() << " entries)\n";
+	std::cerr << "[App] loading pak '" << pre.scenePak << "'\n";
+	const smvk::PakReader& reader = pre.backend->Reader();
+	std::cerr << "[App] pak parsed (" << reader.EntryCount() << " entries)\n";
 	// Scene discovery: list, default to index 0.
 	std::string lerr;
-	auto scenes = smvk::ListPakScenes(*reader, &lerr);
+	auto scenes = smvk::ListPakScenes(reader, &lerr);
 	if (scenes.empty()) {
 		std::cerr << "[App] no loadable scenes: " << lerr << "\n";
 		return nullptr;
@@ -283,7 +324,7 @@ std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
 		<< scenes[size_t(sceneIndex)].name << "'...\n";
 	auto world = std::make_unique<smvk::World>();
 	try {
-		world->LoadClusterFromPak(ctx, *reader, uint32_t(sceneIndex));
+		world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex));
 	}
 	catch (const std::exception& e) {
 		// DeserializeCluster drains its own staged uploads on failure;
@@ -295,7 +336,7 @@ std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
 	std::cerr << "[App] pak cluster loaded\n";
 	// Check-scene extras (sponza chrome ball) inject BEFORE resolve so
 	// they join culling/shadows/AO/reflections like any imported node.
-	if (StemOf(pakPath) == "sponza")
+	if (StemOf(pre.scenePak) == "sponza")
 		InjectSponzaChromeBall(*world, ctx);
 	// Freeze everything static (no recook needed): the exporters stamp
 	// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
@@ -310,7 +351,7 @@ std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
 	world->ResolveAndFixup_clusters();
 	// Serve pak-embedded textures through the renderer's content
 	// overlay (below loose content/, so dev overrides win).
-	contentVfs.Mount(pakBackend, 10, scenePak);
+	contentVfs.Mount(pre.backend, 10, pre.scenePak);
 	return world;
 }
 
@@ -412,15 +453,25 @@ std::unique_ptr<smvk::World> LoadPakWorld(const std::string& pakPath,
 	std::cerr << "Scene: pak '" << pakPath << "' (id '" << sceneId
 		<< "', index " << sceneIndex << ")\n";
 
+	// Pak preload: kick the file read + parse + decompress NOW, before
+	// the renderer starts, so it overlaps Vulkan init + shader loading
+	// (the old flow did all of it inside Initialize, after the GPU and
+	// every shader were already up). The future rides a shared_ptr so
+	// the copyable WorldSource can hold it until the renderer calls.
+	auto preloadFuture = std::make_shared<std::future<PakPreload>>(
+		KickPakPreload(pakPath));
+
 	app::WorldRenderer renderer;
 	renderer.SetSceneId(sceneId);
 	// The HOST owns scene loading: the renderer calls this once during
 	// Initialize, after its context exists (nothing can upload before
-	// that), and renders the returned world by handles.
+	// that), and renders the returned world by handles. By then the
+	// preload has typically been running for the whole of renderer init.
 	renderer.SetWorldSource(
-		[pakPath, sceneIndex](smvk::ResourceManager& ctx,
+		[preloadFuture, sceneIndex](smvk::ResourceManager& ctx,
 			smvk::OverlayVfs& contentVfs) -> std::unique_ptr<smvk::World> {
-			return LoadPakWorld(pakPath, sceneIndex, ctx, contentVfs);
+			return LoadPakWorld(preloadFuture->get(), sceneIndex,
+				ctx, contentVfs);
 		});
 	app::ScenePassConfig passCfg = app::ScenePassConfig::All();
 	if (filterOnly)
