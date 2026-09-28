@@ -5499,6 +5499,69 @@ void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
 	v.positioner.lookAt(eye, tgt, up);
 }
 
+void WorldRenderer::DriveGrid(bool show, float cellSizeMeters,
+	uint32_t extentCells) {
+	// Hosted ground-grid drive (see header): zero GPU work, just latches
+	// the settings — RenderFrame rebuilds the lines, every Main draws
+	// them depth-tested against its own depth.
+	m_gridEnabled = show;
+	m_gridCellSize = std::max(cellSizeMeters, 0.01f);
+	m_gridExtentCells =
+		(uint32_t)std::clamp<uint32_t>(extentCells, 2, 512);
+}
+
+// Ground grid (XZ plane at y = 0, editor parity): minor lines every
+// cell (multiples of 5 skipped), a stronger major line every 5 cells.
+// Two contiguous ranges (minor first) for the two authored colors.
+// Vertices are cheap enough to rebuild per frame.
+static void BuildGridVerts(std::vector<smvk::DebugLineVertex>& minor,
+	std::vector<smvk::DebugLineVertex>& major, float cell, int n) {
+	for (int i = -n; i <= n; ++i) {
+		const float v = float(i) * cell;
+		if (i % 5 == 0)
+			continue; // major lines below
+		minor.push_back({ glm::vec3(-float(n) * cell, 0.0f, v) });
+		minor.push_back({ glm::vec3(float(n) * cell, 0.0f, v) });
+		minor.push_back({ glm::vec3(v, 0.0f, -float(n) * cell) });
+		minor.push_back({ glm::vec3(v, 0.0f, float(n) * cell) });
+	}
+	for (int i = -n; i <= n; i += 5) {
+		const float v = float(i) * cell;
+		major.push_back({ glm::vec3(-float(n) * cell, 0.0f, v) });
+		major.push_back({ glm::vec3(float(n) * cell, 0.0f, v) });
+		major.push_back({ glm::vec3(v, 0.0f, -float(n) * cell) });
+		major.push_back({ glm::vec3(v, 0.0f, float(n) * cell) });
+	}
+}
+
+void WorldRenderer::BuildGridLines() {
+	m_gridMinorVerts = 0;
+	m_gridMajorVerts = 0;
+	if (!m_gridEnabled)
+		return;
+	std::vector<smvk::DebugLineVertex> minor, major;
+	BuildGridVerts(minor, major, m_gridCellSize, (int)m_gridExtentCells);
+	if (minor.empty() && major.empty())
+		return;
+	std::vector<smvk::DebugLineVertex> lines;
+	lines.reserve(minor.size() + major.size());
+	lines.insert(lines.end(), minor.begin(), minor.end());
+	lines.insert(lines.end(), major.begin(), major.end());
+	const size_t bytes = lines.size() * sizeof(smvk::DebugLineVertex);
+	if (m_gridLines.empty() || m_gridLinesCap < (uint32_t)lines.size()) {
+		m_gridLines = m_context->CreateBuffer(bytes,
+			smvk::BufferType_Vertex, "grid lines");
+		m_gridLinesCap = (uint32_t)lines.size();
+	}
+	if (m_gridLines.empty())
+		return;
+	m_context->UploadDataToBuffer(m_gridLines, lines.data(), bytes,
+		smvk::PipelineStageBit_Vertex,
+		smvk::AccessFlags::VertexAttributeRead);
+	m_gridMinorVerts = (uint32_t)minor.size();
+	m_gridMajorVerts = (uint32_t)major.size();
+}
+
 // Scene->frame environment mapping (see SceneEnv): the scene authors
 // sun 0..10 / sky 0..2 while the pipeline is lux-scale (sun 10000 / sky
 // 600 defaults), so both ride kSceneEnvToHostedLux (editor 3.0 ->
@@ -6427,6 +6490,24 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 				0.0f);
 			(void)tonemapPass;
 		}
+		// Output export transition: the host samples this image (bindless)
+		// AFTER this submit — leave it in SHADER_READ (the graph emits
+		// the tonemap write -> sampled-read barrier from the pass above;
+		// the next rendered frame's tonemap transitions back). Without
+		// this the image sits in COLOR_ATTACHMENT and every host sample
+		// trips VUID-vkCmdDraw-None-09600 (layout mismatch). Barrier-only
+		// compute pass (no dispatch): stays in the graphics stream so it
+		// orders right after the tonemap; the dst stage names the real
+		// (fragment) consumer for a strict write->read edge.
+		{
+			smvk::ImageSyncRequest outRead{};
+			outRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			outRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			outRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			auto& exportPass = m_rendergraph->AddComputePass("ViewOutExport");
+			exportPass.AddImageHint(v.outLogical, outRead);
+			exportPass.SetRecordingFunc([](smvk::CommandBuffer&) {});
+		}
 	}
 }
 
@@ -6550,6 +6631,35 @@ void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
 			drawNode(item.node, item.mesh, materialId);
 		}
 		);
+	}
+	// Ground grid (editor construction grid, XZ at y = 0): same driven
+	// lines as the main view, depth-tested read-only against this view's
+	// prepass depth, before transparents so glass blends over them.
+	if (m_gridEnabled && (m_gridMinorVerts + m_gridMajorVerts) > 0
+		&& !m_gridLines.empty() && m_gfxRenderer.DebugProgramsValid()) {
+		cmd.BindRenderPipeline(
+			m_gfxRenderer.LineProgram(),
+			smvk::VertexFormat::DebugLine,
+			transparentDepth,
+			noStencil,
+			smvk::BlendSettings::Opaque(),
+			msaaSettings,
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
+			smvk::PrimitiveTopology::LineList
+		);
+		cmd.BindVertexBuffer(m_gridLines, 0, 0);
+		const float gridExposure = FrameExposure();
+		const float gridGain = (gridExposure > 1e-9f) ? 1.0f / gridExposure : 1.0f;
+		LineDebugPush gp{};
+		std::copy_n(glm::value_ptr(cullView.m_viewProjectionMatrix), 16, gp.viewProj);
+		gp.color[0] = 0.32f * gridGain; gp.color[1] = 0.34f * gridGain;
+		gp.color[2] = 0.38f * gridGain; gp.color[3] = 1.0f;
+		cmd.PushConstants(0, sizeof(gp), &gp, smvk::ShaderStage::All);
+		cmd.Draw(m_gridMinorVerts, 1, 0, 0);
+		gp.color[0] = 0.45f * gridGain; gp.color[1] = 0.47f * gridGain;
+		gp.color[2] = 0.52f * gridGain; gp.color[3] = 1.0f;
+		cmd.PushConstants(0, sizeof(gp), &gp, smvk::ShaderStage::All);
+		cmd.Draw(m_gridMajorVerts, 1, m_gridMinorVerts, 0);
 	}
 	// Transparent (AlphaMode::Blend): dithered (opaque state, screen-door
 	// discard) or classic back-to-front blend — mirrors the main leg
@@ -6854,6 +6964,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// ------------------------------------------------------------------
 		m_viewPhase = static_cast<uint32_t>(m_frameCounter & 1ull);
 		PrepareSecondaryViews(fb.frameIndex, frameEnv);
+
+		// Ground grid (editor construction grid): rebuilt + uploaded
+		// here (before any pass records); every Main below draws it
+		// depth-tested against its own depth. Driven (hosted editor
+		// only) — the windowed App never enables it.
+		BuildGridLines();
 
 		// ------------------------------------------------------------------
 		// GPU particles (see smvk::Particles + particles.h): extent-
@@ -8568,6 +8684,40 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				drawNode(item.node, item.mesh, materialId);
 			}
 			);
+		}
+
+		// ---- Ground grid (editor construction grid, XZ at y = 0) ----
+		// Driven (hosted editor only — the App never enables it). Drawn
+		// depth-tested read-only against the prepass depth (same contract
+		// as the cone overlay below), before transparents so glass blends
+		// over the lines. Two authored colors (minor + major).
+		if (m_gridEnabled && (m_gridMinorVerts + m_gridMajorVerts) > 0
+			&& !m_gridLines.empty() && m_gfxRenderer.DebugProgramsValid()) {
+			cmd.BindRenderPipeline(
+				m_gfxRenderer.LineProgram(),
+				smvk::VertexFormat::DebugLine,
+				transparentDepth,
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings,
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
+				smvk::PrimitiveTopology::LineList
+			);
+			cmd.BindVertexBuffer(m_gridLines, 0, 0);
+			// Display-space authored grays: pre-scale like the flat debug
+			// colors above so the tonemap reproduces them.
+			const float gridExposure = FrameExposure();
+			const float gridGain = (gridExposure > 1e-9f) ? 1.0f / gridExposure : 1.0f;
+			LineDebugPush gp{};
+			std::copy_n(glm::value_ptr(frameViewProj), 16, gp.viewProj);
+			gp.color[0] = 0.32f * gridGain; gp.color[1] = 0.34f * gridGain;
+			gp.color[2] = 0.38f * gridGain; gp.color[3] = 1.0f;
+			cmd.PushConstants(0, sizeof(gp), &gp, smvk::ShaderStage::All);
+			cmd.Draw(m_gridMinorVerts, 1, 0, 0);
+			gp.color[0] = 0.45f * gridGain; gp.color[1] = 0.47f * gridGain;
+			gp.color[2] = 0.52f * gridGain; gp.color[3] = 1.0f;
+			cmd.PushConstants(0, sizeof(gp), &gp, smvk::ShaderStage::All);
+			cmd.Draw(m_gridMajorVerts, 1, m_gridMinorVerts, 0);
 		}
 
 		// ---- Transparent (AlphaMode::Blend): dithered (default) or alpha blend ----

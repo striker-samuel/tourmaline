@@ -907,7 +907,7 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 
 void EditorApp::BuildFlatUvWires(
 	std::vector<smvk::DebugLineVertex>& outLines, ViewMode mode,
-	uint32_t subtreeRoot, int vpIdx) const {
+	uint32_t subtreeRoot, float zoom, glm::vec2 pan) const {
 	// UV wires from the kept glTF model (pak scenes have no CPU copies:
 	// the flat panel still shows the texture fill, wires are skipped).
 	outLines.clear();
@@ -976,9 +976,9 @@ void EditorApp::BuildFlatUvWires(
 				|| !readUv(uvAcc, c, uv[2]))
 				return;
 			for (int k = 0; k < 3; ++k) {
-				glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], vpIdx)
+				glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], zoom, pan)
 					: (uv[k] * 2.0f - glm::vec2(1.0f));
-				glm::vec2 nb = applyNav ? UvToFlatNdc(uv[(k + 1) % 3], vpIdx)
+				glm::vec2 nb = applyNav ? UvToFlatNdc(uv[(k + 1) % 3], zoom, pan)
 					: (uv[(k + 1) % 3] * 2.0f - glm::vec2(1.0f));
 				outLines.push_back({ glm::vec3(na.x, na.y, 1.0f) });
 				outLines.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
@@ -1051,6 +1051,145 @@ void EditorApp::BuildFlatUvWires(
 	}
 }
 
+void EditorApp::RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
+	uint32_t flight) {
+	// UV editor window canvas: the selection's unwrapped shell + texture
+	// fill (DrawFlatUvNodes), shell wires + face/vertex highlight on top
+	// (own line buffer, identity viewProj, zoom/pan baked into verts).
+	// Called right after DrawUI and BEFORE the imgui pass: the canvas
+	// fill sits under the (alpha-0) window chrome; the color clear is
+	// the canvas background. Canvas rect is same-frame (DrawUI just
+	// laid the window out); clamped into the framebuffer because the
+	// window can hang half off-screen.
+	(void)flight;
+	if (!m_showUvEditor)
+		return;
+	const ImVec2 fb = ImGui::GetIO().DisplaySize;
+	const float cx0 = std::clamp(m_uvWinRectMin.x, 0.0f, fb.x);
+	const float cy0 = std::clamp(m_uvWinRectMin.y, 0.0f, fb.y);
+	const float cx1 = std::clamp(m_uvWinRectMax.x, 0.0f, fb.x);
+	const float cy1 = std::clamp(m_uvWinRectMax.y, 0.0f, fb.y);
+	const float w = cx1 - cx0, h = cy1 - cy0;
+	if (w < 2.0f || h < 2.0f)
+		return;
+	// Wire geometry: selection subtree wires (depth-tested over the
+	// fill) + the face/vertex highlight (on top, no depth).
+	std::vector<smvk::DebugLineVertex> wires, hl;
+	const bool hasSel = m_world && m_selected != UINT32_MAX &&
+		m_selected < m_world->scene.hierarchy.size();
+	if (hasSel)
+		BuildFlatUvWires(wires, m_uvWinMode, m_selected, m_uvWinZoom,
+			m_uvWinPan);
+	glm::vec2 fuv[3];
+	if (m_selMode == SelMode::Face && m_selFaceNode != UINT32_MAX
+		&& SelectedFaceUvs(fuv, m_uvWinMode)) {
+		for (int k = 0; k < 3; ++k) {
+			const glm::vec2 na = UvToFlatNdc(fuv[k]);
+			const glm::vec2 nb = UvToFlatNdc(fuv[(k + 1) % 3]);
+			hl.push_back({ glm::vec3(na.x, na.y, 1.0f) });
+			hl.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
+		}
+	}
+	else if (m_selMode == SelMode::Vertex && m_selVertNode != UINT32_MAX) {
+		glm::vec2 vuv;
+		if (SelectedVertUv(vuv, m_uvWinMode)) {
+			const glm::vec2 nc = UvToFlatNdc(vuv);
+			const float s = 0.03f;
+			hl.push_back({ glm::vec3(nc.x - s, nc.y, 1.0f) });
+			hl.push_back({ glm::vec3(nc.x + s, nc.y, 1.0f) });
+			hl.push_back({ glm::vec3(nc.x, nc.y - s, 1.0f) });
+			hl.push_back({ glm::vec3(nc.x, nc.y + s, 1.0f) });
+		}
+	}
+	const uint32_t wc = uint32_t(wires.size());
+	const uint32_t hc = uint32_t(hl.size());
+	std::vector<smvk::DebugLineVertex> all = std::move(wires);
+	all.insert(all.end(), hl.begin(), hl.end());
+	if (!all.empty()) {
+		const size_t bytes = all.size() * sizeof(all[0]);
+		if (m_uvWinLines.empty() || m_uvWinLinesCap < uint32_t(all.size())) {
+			m_uvWinLines = m_context->CreateBuffer(bytes,
+				smvk::BufferType_Vertex, "editor uv window lines");
+			m_uvWinLinesCap = uint32_t(all.size());
+		}
+		if (!m_uvWinLines.empty())
+			m_context->UploadDataToBuffer(m_uvWinLines, all.data(), bytes,
+				smvk::PipelineStageBit_Vertex,
+				smvk::AccessFlags::VertexAttributeRead);
+	}
+	// Flat fill push: identity model with the window zoom/pan (must
+	// match uvflat.vert.hlsli + UvToFlatNdc).
+	app::PushConstants pc{};
+	{
+		const float z = (m_uvWinZoom > 1e-6f) ? m_uvWinZoom : 1.0f;
+		pc.model[0] = z;
+		pc.model[5] = z;
+		pc.model[10] = 1.0f;
+		pc.model[15] = 1.0f;
+		pc.model[12] = m_uvWinPan.x;
+		pc.model[13] = m_uvWinPan.y;
+	}
+	auto& pass = m_rendergraph->AddPass("UvWindow")
+		.SetOffset(uint32_t(cx0), uint32_t(cy0))
+		.SetExtent(smvk::Extent2D{ uint32_t(w), uint32_t(h) })
+		.SetColor({ swapView },
+			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+			smvk::ClearColor(0.05f, 0.05f, 0.07f, 1.0f))
+		.SetDepth(m_depth.logicalView,
+			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
+	pass.SetRecordingFunc([this, pc, wc, hc](smvk::CommandBuffer& cmd) {
+		// Fill: the selection's subtree (empty canvas when nothing is
+		// selected — classic one-asset-at-a-time UV editor).
+		DrawFlatUvNodes(cmd, m_uvWinMode, pc);
+		if (m_uvWinLines.empty() || m_lineProgram.shaderCount != 2)
+			return;
+		const smvk::RasterSettings raster{
+			.cullMode = smvk::CullMode::None };
+		cmd.BindVertexBuffer(m_uvWinLines, 0, 0);
+		app::LineDebugPush lp{};
+		const glm::mat4 ident(1.0f); // verts are already NDC-space
+		std::memcpy(lp.viewProj, glm::value_ptr(ident), sizeof(lp.viewProj));
+		// Wires: depth-tested over the fill (z=1 vs the fill's 0.9999).
+		if (wc > 0) {
+			cmd.BindRenderPipeline(m_lineProgram,
+				smvk::VertexFormat::DebugLine,
+				// Reversed-Z: GreaterEqual = closer-or-equal passes.
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = false, .depthTestEnable = true },
+				smvk::StencilSettings{}, smvk::BlendSettings{},
+				smvk::MSAASettings{}, raster,
+				smvk::PrimitiveTopology::LineList);
+			const glm::vec4 c = (m_uvWinMode == ViewMode::FlatUv1)
+				? glm::vec4(0.35f, 0.7f, 1.0f, 1.0f)
+				: glm::vec4(0.15f, 0.95f, 0.55f, 1.0f);
+			lp.color[0] = c.x; lp.color[1] = c.y;
+			lp.color[2] = c.z; lp.color[3] = c.w;
+			cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+			cmd.Draw(wc, 1, 0, 0);
+		}
+		// Highlight: face loop (yellow) or vertex cross (cyan), on top.
+		if (hc > 0) {
+			cmd.BindRenderPipeline(m_lineProgram,
+				smvk::VertexFormat::DebugLine,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::Always,
+					.writeEnable = false, .depthTestEnable = false },
+				smvk::StencilSettings{}, smvk::BlendSettings{},
+				smvk::MSAASettings{}, raster,
+				smvk::PrimitiveTopology::LineList);
+			const glm::vec4 c = (m_selMode == SelMode::Face)
+				? glm::vec4(1.0f, 0.9f, 0.2f, 1.0f)
+				: glm::vec4(0.3f, 1.0f, 1.0f, 1.0f);
+			lp.color[0] = c.x; lp.color[1] = c.y;
+			lp.color[2] = c.z; lp.color[3] = c.w;
+			cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+			cmd.Draw(hc, 1, wc, 0);
+		}
+		});
+}
+
 smvk::ShaderProgram& EditorApp::InsetProgram() {
 	switch (m_secondView) {
 	case SecondView::Uv0:
@@ -1076,11 +1215,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	// Meshlet view has its own program + draw path (no material legs).
 	const bool meshletDbg =
 		(mode == ViewMode::Meshlets) && m_meshDebugProgram.shaderCount == 2;
-	// Flat UV panels: unwrapped shell + texture content, own draw path.
-	const bool flatUv =
-		(mode == ViewMode::FlatUv0 || mode == ViewMode::FlatUv1) &&
-		FlatUvProgram(mode).shaderCount == 2;
-	if (!meshletDbg && !flatUv && prog.shaderCount != 2)
+	if (!meshletDbg && prog.shaderCount != 2)
 		return;
 	// Baked view draws baked meshes only (see DrawWorldNodes).
 	const bool bakedOnly = (mode == ViewMode::Baked);
@@ -1115,19 +1250,6 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	pc.renderViews = 0;
 	pc.mainRenderView = UINT32_MAX;
 	pc.renderViewIndex = UINT32_MAX;
-	if (flatUv) {
-		// Flat-UV pane transform (must match uvflat.vert.hlsli +
-		// UvToFlatNdc): model[0][0] = zoom, model[3].xy = pan.
-		const int vi = std::clamp(vpIdx, 0, kMaxViewports - 1);
-		const float z = (m_uvZoom[vi] > 1e-6f) ? m_uvZoom[vi] : 1.0f;
-		std::memset(pc.model, 0, sizeof(pc.model));
-		pc.model[0] = z;
-		pc.model[5] = z;
-		pc.model[10] = 1.0f;
-		pc.model[15] = 1.0f;
-		pc.model[12] = m_uvPan[vi].x;
-		pc.model[13] = m_uvPan[vi].y;
-	}
 
 	// Viewport rect only (the EditorBg pass clears the rest of the
 	// window behind the panels). Color loads the bg clear; depth
@@ -1141,14 +1263,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		.SetDepth(m_depth.logicalView,
 			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-	pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, flatUv, uvDbg, mode](smvk::CommandBuffer& cmd) {
-		// Flat UV panel: the selection's unwrapped shell over its texture
-		// content; the UV wires come from the line pass. Nothing else
-		// draws in this panel.
-		if (flatUv) {
-			DrawFlatUvNodes(cmd, mode, pc);
-			return;
-		}
+	pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](smvk::CommandBuffer& cmd) {
 		// Meshlet debug leg (F4): flat per-meshlet colors, own program +
 		// expanded index buffer; skips the shaded legs entirely.
 		if (meshletDbg) {
@@ -1599,7 +1714,6 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	// the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
 	ComputeViewportRects(extent);
 
-	UpdateUvPaneInput(); // flat-UV panes: MMB pan + wheel zoom (own transform)
 	UpdateCamera(delta_time_s);
 	// vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
 	// (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
@@ -1637,25 +1751,13 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	const bool inInset = insetActive && m_activeVp == 0 &&
 		lmx >= float(insetXAbs) - vp.x;
 
-	// Flat-UV panes pick in UV space (click = face/vertex highlight);
-	// 3D viewports keep the mesh/face/vertex click + rubber-band box.
-	const bool activeFlat = IsFlatUvViewMode(
-		m_viewports[m_activeVp].viewMode);
-	if (activeFlat && m_world && inVp && !uiEats &&
-		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !altNav) {
-		// MMB is pane pan (see UpdateUvPaneInput); LMB clicks pick.
-		if (auto sub = PickFlatUv(m_activeVp, lmx, lmy)) {
-			ApplySubSelection(*sub);
-		}
-		else if (!shiftHeld) {
-			ClearSelection();
-		}
-	}
+	// Viewports keep the mesh/face/vertex click + rubber-band box.
+	// Flat-UV picking lives in the UV editor window (ImGui mouse).
 	// ---- terrain height painting --------------------------------------
 	// Paint mode replaces the LMB press path entirely: no box select, no
 	// gizmo grab, no picking. One stamp per click; drags stamp at
 	// radius-spaced intervals along the surface.
-	const bool painting = !activeFlat && m_world && m_paintTerrain
+	const bool painting = m_world && m_paintTerrain
 		&& !altNav && !inInset && inVp && !uiEats;
 	if (painting) {
 		// Fresh press always stamps (drag spacing applies within one
@@ -1691,7 +1793,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	// drag past a few pixels -> box; release selects all nodes whose
 	// projected AABB intersects. Shift adds to the current selection.
 	// Box select stays Mesh-mode (face/vertex use click picking).
-	else if (!activeFlat && m_world && !m_gizmoDragging && !altNav &&
+	else if (m_world && !m_gizmoDragging && !altNav &&
 		!inInset && inVp &&
 		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !uiEats) {
 		if (m_selMode == SelMode::Mesh) {
@@ -1716,7 +1818,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			m_vpBoxDragging = false;
 		}
 	}
-	if (m_vpBoxDragging && !activeFlat) {
+	if (m_vpBoxDragging) {
 		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
 			m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
 				0.0f, vp.w);
@@ -1759,8 +1861,8 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			m_vpBoxDragging = false;
 		}
 	}
-	else if (!activeFlat && (m_gizmoDragging || (inVp && !altNav &&
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats))) {
+	else if (m_gizmoDragging || (inVp && !altNav &&
+		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats)) {
 		GizmoHandleInput();
 	}
 
@@ -1801,9 +1903,10 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			RecordWysiwygPass(m_swapViews[fb.imageIndex],
 				m_viewports[vpIdx].rect, source);
 		}
-		// Gizmo overlay on top of the hosted image: selection +
-		// manipulation stay visible while the hosted view drives the
-		// pixels (the edit world never unloads).
+		// Gizmo overlay on top of the hosted image (the hosted views
+		// render the grid themselves now — see WorldRenderer grid drive):
+		// selection + manipulation stay visible while the hosted view
+		// drives the pixels (the edit world never unloads).
 		RecordGizmoPass(m_swapViews[fb.imageIndex]);
 	}
 	else {
@@ -1829,6 +1932,9 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	if (m_imgui && m_imgui->IsInitialized()) {
 		m_imgui->NewFrame(extent);
 		DrawUI(extent);
+		// UV editor window canvas: after DrawUI (same-frame rect), before
+		// the imgui pass (the alpha-0 chrome draws over the fill).
+		RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
 		m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 			smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 	}

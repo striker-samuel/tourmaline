@@ -1908,8 +1908,16 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		lod.simplifyError = 0.0f;
 		cluster.RegisterMeshUri(uri, slot);
 		cluster.RegisterMeshLod(uri, lod);
-		if (haveMeshlets)
+		if (haveMeshlets) {
 			cluster.RegisterMeshMeshlets(uri, cooked);
+			// Attach to the uploaded mesh object too (the pak
+			// deserializer does the same on load): the GPU filter
+			// registration and the meshlet debug view read
+			// mesh->meshlets, not the URI map. Cooker-safe (the pak
+			// serializer reads the map, so output is unchanged).
+			if (smvk::StaticMesh* m = cluster.staticMeshes.get(slot))
+				m->meshlets = cooked;
+		}
 		// Siblings share the base groupId; scene keeps referencing LOD0.
 		// Each sibling gets its own meshlets (same config as LOD0) so the
 		// GPU filter can register every LOD: without them siblings draw
@@ -1929,6 +1937,11 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 						&lodCooked, &lodStats, &lodErr)
 					&& !lodCooked.empty()) {
 					cluster.RegisterMeshMeshlets(lodUri, lodCooked);
+					// Same attach as LOD0 above: the filter registers
+					// every LOD from mesh->meshlets (without them
+					// siblings draw direct, unculled).
+					if (smvk::StaticMesh* lm = cluster.staticMeshes.get(lh))
+						lm->meshlets = lodCooked;
 				}
 #ifndef NDEBUG
 				else if (!lodErr.empty() && lodErr != "meshlets disabled") {

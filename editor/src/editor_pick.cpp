@@ -121,21 +121,27 @@ bool RayAabb(const glm::vec3& o, const glm::vec3& inv, const glm::vec3& mn,
 
 } // namespace
 
-glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv, int vpIdx) const {
+glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv, float zoom, glm::vec2 pan) const {
 	// Must match uvflat.vert.hlsli: uvT = (uv-0.5)*zoom + 0.5 + pan,
 	// then NDC = uvT*2-1. glTF image space (0,0) top-left maps to NDC
 	// (-1,-1) at screen top (Vulkan Y-flip handled by the viewport).
-	const int i = std::clamp(vpIdx, 0, kMaxViewports - 1);
-	const float z = (m_uvZoom[i] > 1e-6f) ? m_uvZoom[i] : 1.0f;
-	const glm::vec2 t = (uv - glm::vec2(0.5f)) * z + glm::vec2(0.5f) + m_uvPan[i];
+	const float z = (zoom > 1e-6f) ? zoom : 1.0f;
+	const glm::vec2 t = (uv - glm::vec2(0.5f)) * z + glm::vec2(0.5f) + pan;
 	return t * 2.0f - glm::vec2(1.0f);
 }
 
-glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc, int vpIdx) const {
-	const int i = std::clamp(vpIdx, 0, kMaxViewports - 1);
-	const float z = (m_uvZoom[i] > 1e-6f) ? m_uvZoom[i] : 1.0f;
+glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc, float zoom, glm::vec2 pan) const {
+	const float z = (zoom > 1e-6f) ? zoom : 1.0f;
 	const glm::vec2 t = (ndc + glm::vec2(1.0f)) * 0.5f;
-	return (t - glm::vec2(0.5f) - m_uvPan[i]) / z + glm::vec2(0.5f);
+	return (t - glm::vec2(0.5f) - pan) / z + glm::vec2(0.5f);
+}
+
+glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv) const {
+	return UvToFlatNdc(uv, m_uvWinZoom, m_uvWinPan);
+}
+
+glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc) const {
+	return FlatNdcToUv(ndc, m_uvWinZoom, m_uvWinPan);
 }
 
 glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
@@ -349,22 +355,22 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
 	return best;
 }
 
-std::optional<EditorApp::SubHit> EditorApp::PickFlatUv(int vpIdx,
-	float mouseX, float mouseY) const {
-	// Flat-UV pane pick (brute force, no accel): mouse -> NDC -> UV
+std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
+	float mouseY) const {
+	// Flat-UV window pick (brute force, no accel): mouse -> NDC -> UV
 	// (inverse zoom/pan) -> point-in-triangle over the selection subtree
-	// (or the whole scene when nothing is selected).
-	if (!m_hasGltfModel || !m_world)
+	// (or the whole scene when nothing is selected). Mouse is
+	// canvas-local (the caller subtracts the canvas origin).
+	if (!m_hasGltfModel || !m_world || !m_showUvEditor)
 		return std::nullopt;
-	const int vi = std::clamp(vpIdx, 0, kMaxViewports - 1);
-	const ViewportRect& vp = m_viewports[vi].rect;
-	if (vp.w <= 0.0f || vp.h <= 0.0f)
+	const float w = m_uvWinRectMax.x - m_uvWinRectMin.x;
+	const float h = m_uvWinRectMax.y - m_uvWinRectMin.y;
+	if (w <= 0.0f || h <= 0.0f)
 		return std::nullopt;
-	const ViewMode mode = m_viewports[vi].viewMode;
-	const bool lightmap = (mode == ViewMode::FlatUv1);
-	const glm::vec2 ndc(mouseX / vp.w * 2.0f - 1.0f,
-		mouseY / vp.h * 2.0f - 1.0f);
-	const glm::vec2 puv = FlatNdcToUv(ndc, vi);
+	const bool lightmap = (m_uvWinMode == ViewMode::FlatUv1);
+	const glm::vec2 ndc(mouseX / w * 2.0f - 1.0f,
+		mouseY / h * 2.0f - 1.0f);
+	const glm::vec2 puv = FlatNdcToUv(ndc, m_uvWinZoom, m_uvWinPan);
 	// Candidate set: selection subtree when something is selected.
 	std::unordered_set<uint32_t> subtree;
 	bool useSubtree = (m_selected != UINT32_MAX &&

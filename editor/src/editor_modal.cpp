@@ -413,11 +413,11 @@ void EditorApp::ModalSelRadial() { m_showSelRadial = true; }
 void EditorApp::ModalWireframeToggle() { m_wireframeAll = !m_wireframeAll; }
 
 void EditorApp::ModalFrameSel() {
-	if (IsFlatUvViewMode(ActiveViewMode())) {
-		// Flat pane: reset navigation (zoom 1, pan 0).
-		m_uvZoom[m_activeVp] = 1.0f;
-		m_uvPan[m_activeVp] = glm::vec2(0.0f);
-		Log("UV pane reset (zoom 1, pan 0).");
+	if (m_showUvEditor && m_uvWinHovered) {
+		// UV editor window: reset navigation (zoom 1, pan 0).
+		m_uvWinZoom = 1.0f;
+		m_uvWinPan = glm::vec2(0.0f);
+		Log("UV window reset (zoom 1, pan 0).");
 	}
 	else {
 		FrameSelection();

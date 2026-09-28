@@ -208,8 +208,9 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	} // m_uiMode
 
 	DrawPanelSplitters(); // resize handles between panels and viewport
-	DrawViewportOverlay(targetExtent);
+	DrawInsetTag();
 	DrawViewportChrome(); // borders, camera chips, box-select rect
+	DrawUvEditorWindow(); // floating UV editor (View menu; canvas via GPU)
 	DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 	DrawFlintbasePanel();
 	DrawReferencesPanel(); // Maya-style reference list (View menu)
@@ -493,17 +494,16 @@ void EditorApp::DrawMenuBar() {
 			FrameSelection();
 		if (ImGui::MenuItem("Frame all", "Shift+F"))
 			FrameAll();
-		if (IsFlatUvViewMode(ActiveViewMode()) &&
-			ImGui::MenuItem("Reset UV pane (zoom 1)"))
-			m_uvZoom[m_activeVp] = 1.0f,
-			m_uvPan[m_activeVp] = glm::vec2(0.0f);
+		if (m_showUvEditor && ImGui::MenuItem("Reset UV window (zoom 1)")) {
+			m_uvWinZoom = 1.0f;
+			m_uvWinPan = glm::vec2(0.0f);
+		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
 			m_showFlintbasePanel = !m_showFlintbasePanel;
 		if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 			m_placement.showGraph = !m_placement.showGraph;
 		ImGui::Separator();
-		ImGui::MenuItem("Viewport legend", nullptr, &m_showOverlay);
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Light gizmos", "L (LIGHTING)", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
@@ -529,6 +529,8 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 			m_uiMode = !m_uiMode;
+		if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
+			m_showUvEditor = !m_showUvEditor;
 		ImGui::EndMenu();
 	}
 
@@ -3214,19 +3216,30 @@ void EditorApp::DrawUvPanel() {
 		}
 	}
 	ImGui::Separator();
-	ImGui::Text("Flat pane navigation (area mode)");
+	ImGui::Text("UV editor window (View menu)");
 	{
-		const int vi = std::clamp(m_activeVp, 0, kMaxViewports - 1);
-		float z = m_uvZoom[vi];
-		if (ImGui::SliderFloat("Zoom", &z, 0.2f, 32.0f, "%.2f"))
-			m_uvZoom[vi] = std::clamp(z, 0.2f, 32.0f);
-		glm::vec2 p = m_uvPan[vi];
+		if (ImGui::Checkbox("Show UV editor", &m_showUvEditor)) {
+			if (m_showUvEditor && m_uvWinMode == ViewMode::FlatUv1 && !m_lmGpu)
+				m_uvWinMode = ViewMode::FlatUv0; // atlas not loaded
+		}
+		const char* chans[2] = { "TEXCOORD0 (diffuse)", "uv2 (lightmap)" };
+		int cm = (m_uvWinMode == ViewMode::FlatUv1) ? 1 : 0;
+		if (ImGui::Combo("Channel", &cm, chans, 2)) {
+			if (cm == 1 && !m_lmGpu)
+				Log("No lightmap atlas loaded - UV1 channel unavailable.");
+			else
+				m_uvWinMode = (cm == 1) ? ViewMode::FlatUv1 : ViewMode::FlatUv0;
+		}
+		float z = m_uvWinZoom;
+		if (ImGui::SliderFloat("Zoom##uvwin", &z, 0.2f, 32.0f, "%.2f"))
+			m_uvWinZoom = std::clamp(z, 0.2f, 32.0f);
+		glm::vec2 p = m_uvWinPan;
 		float pp[2] = { p.x, p.y };
-		if (ImGui::DragFloat2("Pan (UV)", pp, 0.01f, -4.0f, 4.0f))
-			m_uvPan[vi] = glm::vec2(pp[0], pp[1]);
-		if (ImGui::Button("Reset pane (F)")) {
-			m_uvZoom[vi] = 1.0f;
-			m_uvPan[vi] = glm::vec2(0.0f);
+		if (ImGui::DragFloat2("Pan (UV)##uvwin", pp, 0.01f, -4.0f, 4.0f))
+			m_uvWinPan = glm::vec2(pp[0], pp[1]);
+		if (ImGui::Button("Reset window (F)")) {
+			m_uvWinZoom = 1.0f;
+			m_uvWinPan = glm::vec2(0.0f);
 		}
 		ImGui::TextDisabled("MMB drag = pan, wheel = zoom, click = pick.");
 		ImGui::TextDisabled("Yellow = face, cyan = vertex highlight.");
@@ -3238,11 +3251,15 @@ void EditorApp::DrawUvPanel() {
 	ImGui::SameLine();
 	if (ImGui::Button("UV1 fullscreen (F10)"))
 		ActiveViewMode() = ViewMode::Uv1;
-	if (ImGui::Button("Flat UV diffuse"))
-		ActiveViewMode() = ViewMode::FlatUv0;
+	if (ImGui::Button("Flat UV diffuse")) {
+		m_showUvEditor = true;
+		m_uvWinMode = ViewMode::FlatUv0;
+	}
 	ImGui::SameLine();
-	if (ImGui::Button("Flat UV lightmap") && m_lmGpu)
-		ActiveViewMode() = ViewMode::FlatUv1;
+	if (ImGui::Button("Flat UV lightmap") && m_lmGpu) {
+		m_showUvEditor = true;
+		m_uvWinMode = ViewMode::FlatUv1;
+	}
 	if (ImGui::Button(
 			("UV inset: " + std::string(SecondViewName(m_secondView)) +
 				" (F5)").c_str()))
@@ -3391,115 +3408,10 @@ void EditorApp::DrawImagesTab() {
 		RemoveImageDefAt(size_t(pendingRemove));
 }
 
-void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
-	(void)extent;
-	// Legend (view mode, hints, undo counts) on the ACTIVE panel only;
-	// hideable via the View menu or the active panel's chip button.
-	if (!m_showOverlay)
-		return;
-	// Top-left of the CENTRAL viewport rect (m_vp is set by RenderFrame).
-	// m_menuH = menu bar + tool topbar. Quad layout: sit BELOW the
-	// per-viewport camera chips.
-	ImGui::SetNextWindowPos(ImVec2(m_vp.x + 12,
-		m_menuH + 8 + (m_vpLayout == 1 ? 34.0f : 0.0f)), ImGuiCond_Always);
-	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
-	if (ImGui::Begin("##overlay", nullptr,
-		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
-		ImGuiWindowFlags_NoInputs)) {
-		// vi-style mode line (like vi's "-- INSERT --"), colored per
-		// mode. Key hints are GENERATED from the central registry
-		// (modal_bindings.h) so they can never drift from the real
-		// bindings; the shared/global hints sit under the status lines.
-		std::string modeKeys, globalKeys;
-		for (size_t bi = 0; bi < ModalBindingCount(); ++bi) {
-			const ModalBindingDef& b = ModalBindingAt(bi);
-			if (!b.run || !ModalBindingApplies(b, m_mode))
-				continue;
-			std::string& dst = ((b.scopes & kScopeGlobal) != 0)
-				? globalKeys : modeKeys;
-			dst += std::string(b.keycap) + " " + b.label + "  ";
-		}
-		const ImVec4 modeCol =
-			(m_mode == EditorMode::Layout) ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f)
-			: (m_mode == EditorMode::Lighting) ? ImVec4(0.95f, 0.75f, 0.35f, 1.0f)
-			: (m_mode == EditorMode::Test) ? ImVec4(0.40f, 0.80f, 0.95f, 1.0f)
-			: ImVec4(0.95f, 0.45f, 0.65f, 1.0f);
-		ImGui::TextColored(modeCol, "-- %s --  %s",
-			EditorModeName(m_mode), modeKeys.c_str());
-		// Live-view banner: the viewports render through the HOSTED
-		// app::WorldRenderer over THE EDITOR'S OWN WORLD (imports
-		// preprocessed, GUID references bound, edits applied) — live,
-		// never fed by cooks.
-		if (m_wysiwyg) {
-			ImGui::PushStyleColor(ImGuiCol_Text,
-				ImVec4(0.55f, 0.95f, 1.0f, 1.0f));
-			ImGui::Text("-- LIVE VIEW (hosted WorldRenderer) -- "
-				"full pipeline, edits live (rebinds in place per scene)");
-			ImGui::PopStyleColor();
-			// MULTIVIEW: per-viewport hosted views (viewport 0 = the main
-			// hosted view, full pipeline). Each additional view renders
-			// from its own viewport camera into its own image with a
-			// per-view refresh schedule — Full (every frame) or Tic/Toc
-			// (every OTHER frame, the two phases spread the views across
-			// alternating frames; an off-phase view keeps its last image).
-			for (uint32_t i = 0; i < m_wysiwyg->GetViewCount(); ++i) {
-				ImGui::PushID(int(i));
-				const bool rendered = m_wysiwyg->ViewRenderedThisFrame(i);
-				ImGui::Text("view %u (vp %u):", i + 1u, i + 1u);
-				ImGui::SameLine();
-				// Refresh combo (Full / Tic / Toc).
-				{
-					const char* items[3] = {
-						app::ViewRefreshName(app::ViewRefresh::Full),
-						app::ViewRefreshName(app::ViewRefresh::Tic),
-						app::ViewRefreshName(app::ViewRefresh::Toc),
-					};
-					int current = static_cast<int>(
-						m_wysiwyg->GetViewRefresh(i));
-					if (ImGui::Combo("refresh", &current, items, 3))
-						m_wysiwyg->SetViewRefresh(i,
-							static_cast<app::ViewRefresh>(current));
-				}
-				ImGui::SameLine();
-				ImGui::TextDisabled(rendered ? "renders this frame"
-					: "holds last image");
-				ImGui::PopID();
-			}
-		}
-		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
-			ViewModeName(ActiveViewMode()),
-			m_wireframeAll ? " (wire)" : "",
-			m_gizmoMode == GizmoMode::Translate ? "Translate" :
-			m_gizmoMode == GizmoMode::Rotate ? "Rotate" : "Scale",
-			m_gizmoMode == GizmoMode::Translate ? " (world)" : " (local)",
-			m_gltfPath.empty() ? "no scene" : std::filesystem::path(
-				m_gltfPath).filename().string().c_str(),
-			SelModeName(m_selMode));
-		if (m_selected != UINT32_MAX && m_world)
-			ImGui::Text("sel: %u %s", m_selected,
-				getNodeName(m_world->scene, int(m_selected)).c_str());
-		if (m_selMode == SelMode::Face && m_selFaceNode != UINT32_MAX)
-			ImGui::Text("face: node %u tri %u", m_selFaceNode, m_selFaceTri);
-		else if (m_selMode == SelMode::Vertex && m_selVertNode != UINT32_MAX)
-			ImGui::Text("vertex: node %u vert %u", m_selVertNode, m_selVertIdx);
-		if (IsFlatUvViewMode(ActiveViewMode()))
-			ImGui::Text("uv pane: zoom %.2f pan (%.2f,%.2f)",
-				m_uvZoom[m_activeVp], m_uvPan[m_activeVp].x,
-				m_uvPan[m_activeVp].y);
-		if (ActiveViewMode() == ViewMode::Meshlets)
-			ImGui::TextDisabled("meshlet color: %s",
-				m_debugMeshletMode == 0 ? "random per meshlet"
-				: "cone-cutoff heat");
-		ImGui::TextDisabled("%s", globalKeys.c_str());
-		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
-		ImGui::TextDisabled("flat pane: MMB pan  wheel zoom  click=face/vert");
-		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu"
-			"  |  Ctrl+Alt+S save+",
-			UndoDepth(), RedoDepth());
-	}
-	ImGui::End();
+void EditorApp::DrawInsetTag() {
+	// (Viewport legend removed — overlay window, menu item and chip
+	// button deleted. The per-view refresh combos moved onto the
+	// viewport chips, next to the per-panel view-mode combo.)
 
 	// UV inset tag (top-left of the side strip, inside the viewport).
 	if (SecondViewActive() && m_vpLayout == 0) {

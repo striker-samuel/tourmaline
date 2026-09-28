@@ -74,41 +74,6 @@ void EditorApp::SelectNextNode() {
 	m_revealNode = cur;
 }
 
-void EditorApp::UpdateUvPaneInput() {
-	// Flat-UV pane navigation (pan/zoom in UV units, centered):
-	// MMB-drag pans, wheel zooms at the cursor, F resets (the frame
-	// bindings in editor_modal.cpp). 3D cameras are untouched.
-	SetupDefaultCameras();
-	const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
-	if (uiEats)
-		return;
-	const float wheel = float(m_input.getScrollDeltaY());
-	for (int i = 0; i < ViewportCount(); ++i) {
-		if (!IsFlatUvViewMode(m_viewports[i].viewMode))
-			continue;
-		const ViewportRect& vp = m_viewports[i].rect;
-		const float mx = float(m_input.getMouseX());
-		const float my = float(m_input.getMouseY());
-		const bool hover = mx >= vp.x && my >= vp.y && mx < vp.x + vp.w &&
-			my < vp.y + vp.h;
-		if (!hover)
-			continue;
-		if (wheel != 0.0f) {
-			float& z = m_uvZoom[i];
-			z = std::clamp(z * (wheel > 0 ? 1.15f : 1.0f / 1.15f),
-				0.2f, 32.0f);
-		}
-		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_MIDDLE)) {
-			glm::vec2& p = m_uvPan[i];
-			const float z = (m_uvZoom[i] > 1e-6f) ? m_uvZoom[i] : 1.0f;
-			p.x -= float(m_input.getMouseDeltaX()) / (vp.w > 0 ? vp.w : 1.0f) * z;
-			p.y -= float(m_input.getMouseDeltaY()) / (vp.h > 0 ? vp.h : 1.0f) * z;
-			p.x = std::clamp(p.x, -4.0f, 4.0f);
-			p.y = std::clamp(p.y, -4.0f, 4.0f);
-		}
-	}
-}
-
 void EditorApp::DrawSelectionRadial() {
 	// Q radial: Mesh / Face / Vertex highlight modes (selection only).
 	if (m_showSelRadial) {
@@ -399,10 +364,14 @@ void EditorApp::DrawViewportChrome() {
 				ImGui::TextDisabled("[locked]");
 			}
 			ImGui::SameLine();
-			// View type combo (this panel's shading/debug view).
+			// View type combo (this panel's shading/debug view). Flat UV
+			// panes are not viewports anymore (separate UV editor
+			// window) — 3D modes only here.
 			if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
-				for (int m = 0; m <= int(ViewMode::FlatUv1); ++m) {
+				for (int m = 0; m <= int(ViewMode::Pom); ++m) {
 					const ViewMode vm = ViewMode(m);
+					if (vm == ViewMode::FlatUv0 || vm == ViewMode::FlatUv1)
+						continue;
 					// Atlas views need the loaded lightmap GPU layers.
 					if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
 						continue;
@@ -433,30 +402,29 @@ void EditorApp::DrawViewportChrome() {
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Q opens the selection radial.");
-			// Flat-pane nav readout (area mode): zoom/pan + reset.
-			if (IsFlatUvViewMode(vp.viewMode)) {
-				ImGui::SameLine();
-				char uvLabel[64];
-				std::snprintf(uvLabel, sizeof(uvLabel), "uv %.2fx",
-					m_uvZoom[i]);
-				if (ImGui::SmallButton(uvLabel)) {
-					m_uvZoom[i] = 1.0f;
-					m_uvPan[i] = glm::vec2(0.0f);
-				}
+			ImGui::SameLine();
+			// Per-view hosted refresh (viewport 0 = the main hosted view,
+			// always full-rate; viewports 1+ map to hosted views 0+).
+			if (m_wysiwyg && i > 0
+				&& i - 1 < (int)m_wysiwyg->GetViewCount()) {
+				const char* ritems[3] = {
+					app::ViewRefreshName(app::ViewRefresh::Full),
+					app::ViewRefreshName(app::ViewRefresh::Tic),
+					app::ViewRefreshName(app::ViewRefresh::Toc),
+				};
+				int cur = static_cast<int>(
+					m_wysiwyg->GetViewRefresh(uint32_t(i - 1)));
+				ImGui::SetNextItemWidth(72.0f);
+				char rlabel[32];
+				std::snprintf(rlabel, sizeof(rlabel), "##refresh%d", i);
+				if (ImGui::Combo(rlabel, &cur, ritems, 3))
+					m_wysiwyg->SetViewRefresh(uint32_t(i - 1),
+						static_cast<app::ViewRefresh>(cur));
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip(
-						"Pane zoom (click resets). MMB drag = pan, wheel = zoom.");
-			}
-			ImGui::SameLine();
-			// Legend toggle: the overlay/legend only ever draws on the
-			// ACTIVE panel, so its switch lives in the active chip.
-			if (i == m_activeVp) {
-				if (ImGui::SmallButton(m_showOverlay ? "legend on"
-						: "legend off"))
-					m_showOverlay = !m_showOverlay;
-			}
-			else {
-				ImGui::TextDisabled("%s", i == m_activeVp ? "active" : "");
+						"Hosted-view refresh: every frame, or every other "
+						"frame on the tic/toc phase (off-phase frames keep "
+						"the last image).");
 			}
 		}
 		ImGui::End();
@@ -493,8 +461,6 @@ void EditorApp::DrawCvolPreviewOverlay() {
 	};
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
-		if (IsFlatUvViewMode(vp.viewMode))
-			continue;
 		const glm::mat4 vpm = vp.viewProj;
 		const auto project = [&](const glm::vec3& w, ImVec2& out) {
 			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
@@ -626,6 +592,96 @@ void EditorApp::DrawPanelSplitters() {
 		ImVec2(ds.x, 6.0f), true, &m_bottomDockH, 120.0f, 600.0f, true);
 	if (committed)
 		SavePrefs();
+}
+
+void EditorApp::DrawUvEditorWindow() {
+	// UV EDITOR WINDOW (floating, separate from the viewports): chrome
+	// here, canvas CONTENT from RecordUvWindowPass — which is added
+	// right after DrawUI and before the imgui pass, so the fill sits
+	// UNDER this window's chrome. Window/title backgrounds are pushed
+	// alpha-0 and the canvas is an InvisibleButton (draws nothing):
+	// the GPU clear in the canvas rect is the only background. Nav:
+	// MMB drag pans, wheel zooms (centered), F resets (modal, hovered).
+	// LMB click picks face/vertex in UV space (PickFlatUvWindow).
+	m_uvWinHovered = false;
+	if (!m_showUvEditor)
+		return;
+	ImGui::SetNextWindowSize(ImVec2(540.0f, 560.0f), ImGuiCond_FirstUseEver);
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+	ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0, 0, 0, 0));
+	ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0, 0, 0, 0));
+	ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, ImVec4(0, 0, 0, 0));
+	if (!ImGui::Begin("UV Editor", &m_showUvEditor)) {
+		ImGui::End();
+		ImGui::PopStyleColor(4);
+		return;
+	}
+	// Top row: channel combo + zoom readout (click = reset).
+	const char* chans[2] = { "TEXCOORD0 (diffuse)", "uv2 (lightmap)" };
+	int cm = (m_uvWinMode == ViewMode::FlatUv1) ? 1 : 0;
+	ImGui::SetNextItemWidth(170.0f);
+	if (ImGui::Combo("##uvwinchan", &cm, chans, 2)) {
+		if (cm == 1 && !m_lmGpu)
+			Log("No lightmap atlas loaded - UV1 channel unavailable.");
+		else
+			m_uvWinMode = (cm == 1) ? ViewMode::FlatUv1 : ViewMode::FlatUv0;
+	}
+	ImGui::SameLine();
+	char zl[48];
+	std::snprintf(zl, sizeof(zl), "zoom %.2fx", m_uvWinZoom);
+	if (ImGui::SmallButton(zl)) {
+		m_uvWinZoom = 1.0f;
+		m_uvWinPan = glm::vec2(0.0f);
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Click resets (F). MMB drag = pan, wheel = zoom.");
+	// Canvas: square centered in the remaining space (two hint rows are
+	// reserved below). InvisibleButton draws NOTHING and yields the
+	// hover/click state the nav + pick below consume.
+	const float hintH = ImGui::GetTextLineHeightWithSpacing() * 2.0f + 10.0f;
+	const ImVec2 avail = ImGui::GetContentRegionAvail();
+	const float side = std::max(std::min(avail.x, avail.y - hintH), 0.0f);
+	if (side >= 8.0f) {
+		ImGui::InvisibleButton("##uvcanvas", ImVec2(side, side));
+		if (ImGui::IsItemHovered()) {
+			m_uvWinHovered = true;
+			const ImGuiIO& io = ImGui::GetIO();
+			if (io.MouseWheel != 0.0f) {
+				m_uvWinZoom = std::clamp(
+					m_uvWinZoom * (io.MouseWheel > 0.0f ? 1.15f : 1.0f / 1.15f),
+					0.2f, 32.0f);
+			}
+			if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+				// Same units as the old flat pane: UV pan, mouse delta
+				// scaled by zoom over the canvas side.
+				const float z = (m_uvWinZoom > 1e-6f) ? m_uvWinZoom : 1.0f;
+				m_uvWinPan.x -= io.MouseDelta.x / side * z;
+				m_uvWinPan.y -= io.MouseDelta.y / side * z;
+				m_uvWinPan.x = std::clamp(m_uvWinPan.x, -4.0f, 4.0f);
+				m_uvWinPan.y = std::clamp(m_uvWinPan.y, -4.0f, 4.0f);
+			}
+			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && m_world) {
+				// Click = sub-object pick in UV space (canvas-local
+				// mouse); shift-click on empty space keeps the selection.
+				const ImVec2 c0 = ImGui::GetItemRectMin();
+				const ImVec2 m = ImGui::GetMousePos();
+				if (auto sub = PickFlatUvWindow(m.x - c0.x, m.y - c0.y))
+					ApplySubSelection(*sub);
+				else if (!ImGui::GetIO().KeyShift)
+					ClearSelection();
+			}
+		}
+		m_uvWinRectMin = ImGui::GetItemRectMin();
+		m_uvWinRectMax = ImGui::GetItemRectMax();
+	}
+	else {
+		m_uvWinRectMin = m_uvWinRectMax = ImVec2(0.0f, 0.0f);
+	}
+	ImGui::TextDisabled("wires: %s; yellow = face, cyan = vertex; no selection = empty",
+		ViewModeName(m_uvWinMode));
+	ImGui::TextDisabled("MMB drag = pan, wheel = zoom, F = reset, click = pick.");
+	ImGui::End();
+	ImGui::PopStyleColor(4);
 }
 
 } // namespace editor

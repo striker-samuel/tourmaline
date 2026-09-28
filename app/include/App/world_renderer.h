@@ -897,6 +897,15 @@ public:
 	// top-down looks are nudged the same way). fovYDeg in DEGREES.
 	void DriveView(uint32_t view, const glm::vec3& eye, const glm::vec3& target,
 		float fovYDeg, float zNear, float zFar);
+	// HOSTED ground-grid drive (editor construction grid): the editor
+	// owns the grid settings (show / cell size / half-extent cells) and
+	// pushes them here every frame, like the cameras. The renderer draws
+	// the XZ-plane grid itself, depth-tested against each view's own
+	// depth (which is exactly why it lives here — the host has no depth
+	// to test against). Zero GPU work — the next RenderFrame rebuilds
+	// the lines and every Main draws them. The windowed App never
+	// enables it (no UI, no key — off by default).
+	void DriveGrid(bool show, float cellSizeMeters, uint32_t extentCells);
 	// Per-view output extent (recreates the view's image at the next
 	// rendered frame; 0 = keep).
 	void SetViewExtent(uint32_t view, smvk::Extent2D extent);
@@ -1720,6 +1729,20 @@ protected:
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
+	// ---- Ground grid (editor construction grid, XZ at y = 0) ----
+	// Driven by the host (DriveGrid); drawn depth-tested in every Main
+	// (main + secondary views) against that view's own depth. Off unless
+	// driven — the windowed App never shows it.
+	bool m_gridEnabled = false;
+	float m_gridCellSize = 1.0f;   // meters (driven)
+	uint32_t m_gridExtentCells = 40; // half-extent in cells (driven)
+	smvk::Holder<smvk::BufferHandle> m_gridLines; // pos-only grid line VB
+	uint32_t m_gridLinesCap = 0; // verts allocated
+	uint32_t m_gridMinorVerts = 0; // minor range: [0, minor)
+	uint32_t m_gridMajorVerts = 0; // major range: [minor, minor + major)
+	// (Re)builds + uploads the grid lines for this frame (no-op unless
+	// driven). Runs in RenderFrame before any pass records.
+	void BuildGridLines();
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	// Opt-in EVSM atlas debug dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
 	// after Execute — per-stage stats (moments/temp/blurred) + a log-encoded

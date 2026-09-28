@@ -626,12 +626,32 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 					rootRef);
 		}
 		if (!refDoc.references.empty()) {
+			// Meshlets + LOD siblings at import (the live world renders
+			// through the same GPU filter + LOD selection as cooked paks
+			// — the hosted WYSIWYG view matches the App, and the F3/F5
+			// views work on live worlds). Configs mirror the cooker
+			// defaults (meshlets 64/124, LOD ratios 60/30/12%) and ride
+			// into every nested reference (ApplySceneReferences forwards
+			// them). Kill-switches for giant imports
+			// (VULKANTOY_EDITOR_MESHLETS=0 / VULKANTOY_EDITOR_LODS=0).
+			smvk::MeshOptConfig importMeshOpt{}; // weld/cache/overdraw/fetch on
+			importMeshOpt.generateLods = true;   // sibling blobs <base>/lodN
+			smvk::MeshletConfig importMeshlets{};
+			importMeshlets.enabled = true;
+			if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS")) {
+				if (std::atoi(e) == 0)
+					importMeshlets.enabled = false;
+			}
+			if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS")) {
+				if (std::atoi(e) == 0)
+					importMeshOpt.generateLods = false;
+			}
 			const size_t applied = ApplySceneReferences(cluster, refDoc,
 				std::filesystem::path(loadPath).parent_path()
 					.generic_string(),
 				m_context.get(), m_textureStreamer.get(),
-				nullptr /* host files â€” cook-parity resolution */,
-				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+				nullptr /* host files — cook-parity resolution */,
+				importMeshOpt, importMeshlets, 0,
 			&m_refPhCluster, &m_refIssues, &m_refResolved,
 			/*autoKtx=*/true, /*fileNodes=*/nullptr,
 			/*artifactCache=*/m_texCacheAdapter.get(),
@@ -662,6 +682,42 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_context->FlushUploads();
 	Log("Resolving world...");
 	m_world->ResolveAndFixup_clusters();
+	// LOD world-error finalize over the MERGED world: per-reference
+	// imports finalize with partial globals (later references add more
+	// instances), so re-run here where globals are final. Idempotent
+	// (un-bakes the previous scale first) and a no-op without LOD
+	// siblings — without it multi-reference LOD switch distances are
+	// wrong (single-reference worlds are already exact from import).
+	smvk::FinalizeLodWorldErrors(cluster);
+	// Import geometry summary: meshlets + LOD chains feed the GPU filter
+	// (F3 meshlets view, HZB culling) and the LOD selection (F5 view) on
+	// live worlds, matching cooked paks.
+	{
+		uint32_t meshedMeshes = 0, meshletTotal = 0;
+		cluster.staticMeshes.forEachHandle(
+			[&](smvk::ClusterStaticMeshHandle h) {
+				if (const smvk::StaticMesh* m = cluster.staticMeshes.get(h)) {
+					if (m->meshlets && !m->meshlets->empty()) {
+						++meshedMeshes;
+						meshletTotal +=
+							static_cast<uint32_t>(m->meshlets->meshlets.size());
+					}
+				}
+			});
+		uint32_t lodChains = 0, lodSiblings = 0;
+		for (const smvk::LodInfo& li : m_world->meshLodInfos) {
+			if (li.candidateCount > 1) {
+				++lodChains;
+				lodSiblings += li.candidateCount - 1;
+			}
+		}
+		char mbuf[256];
+		std::snprintf(mbuf, sizeof(mbuf),
+			"Import geometry: %u meshes with meshlets (%u meshlets), "
+			"%u LOD chains (%u siblings)",
+			meshedMeshes, meshletTotal, lodChains, lodSiblings);
+		Log(mbuf);
+	}
 	RebuildTexHandleMap();
 	if (m_textureStreamer) {
 		const smvk::TextureStreamingStats stats = m_textureStreamer->GetStats();
@@ -1684,9 +1740,10 @@ void EditorApp::UpdateCamera(float dt) {
 	// angled perspective-like views â€” only the Projection combo changes
 	// the type. Ortho zoom scales the half-height.
 	SetupDefaultCameras();
-	// Flat-UV panes own the wheel + MMB (pane zoom/pan in UpdateUvPaneInput):
-	// the 3D orbit camera never moves while a flat pane is active.
-	if (IsFlatUvViewMode(ActiveViewMode()))
+	// The UV editor window owns its wheel + MMB (window zoom/pan in
+	// DrawUvEditorWindow via ImGui): the 3D orbit camera never moves
+	// while the UV canvas is hovered.
+	if (m_showUvEditor && m_uvWinHovered)
 		return;
 	// Locked look-through: orbit navigation is parked while the active
 	// viewport follows a live camera node (move the node via gizmo or
@@ -1914,6 +1971,11 @@ void EditorApp::DrawFrame() {
 			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
 				fov, cam.nearClip, cam.farClip);
 		}
+		// GRID DRIVE: the hosted renderer draws the construction grid
+		// itself (depth-tested against each view's own depth — the host
+		// has no depth to test against, which is why the overlay grid
+		// drew over everything). Same settings as the editor's grid.
+		m_wysiwyg->DriveGrid(m_showGrid, m_gridSize, m_gridExtent);
 		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
 		// own hosted view (viewport i+1 -> renderer view i): the view
 		// count follows the viewport layout (SetViewCount no-ops while
@@ -1930,6 +1992,7 @@ void EditorApp::DrawFrame() {
 			m_wysiwyg->SetViewCount(viewCount);
 			for (uint32_t i = 0; i < viewCount; ++i) {
 				const EditorViewport& vp = m_viewports[i + 1];
+				m_wysiwyg->SetViewEnabled(i, true);
 				m_wysiwyg->SetViewExtent(i, smvk::Extent2D{
 					std::max(uint32_t(vp.rect.w), 64u),
 					std::max(uint32_t(vp.rect.h), 64u) });
@@ -1991,10 +2054,7 @@ void EditorApp::DrawFrame() {
 		// "is the hosted renderer actually drawing the mesh" becomes
 		// answerable headlessly. Two shots (frame N and N+11) so
 		// before/after comparisons (camera moves, view switches) come
-		// out of ONE run. DEBUG BUILDS ONLY: debug readback probing
-		// never ships in release (the images never carry TransferSrc
-		// there — see DebugImageDumpArmed).
-#if !defined(NDEBUG)
+		// out of ONE run. Ships in all builds (env-gated dev tool).
 		static const int kDumpFrame = []() {
 			const char* e = std::getenv("VULKANTOY_WYSIWYG_DUMP");
 			return e ? std::atoi(e) : -1;
@@ -2106,7 +2166,6 @@ void EditorApp::DrawFrame() {
 					"off — the live view must follow\n";
 			}
 		}
-#endif // !NDEBUG (hosted diagnostic dumps)
 	}
 	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
 		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);

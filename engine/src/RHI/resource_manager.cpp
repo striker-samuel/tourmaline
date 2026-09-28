@@ -14,12 +14,9 @@ namespace smvk {
 
 // See header. Static-cached: the env is read once, matching the one-shot
 // dump arm checks in the app (getenv present + atoi >= 0 = armed).
-// RELEASE BUILDS: never armed — debug readback probing (TransferSrc usage
-// on render targets, image dumps) must not ship in release. The callers'
-// armed-branches fold away (always false), so release images never carry
-// the extra usage bit.
+// Ships in all builds (debug views/dumps are dev tools, not stripped):
+// the env gate is the only switch.
 bool DebugImageDumpArmed() {
-#if !defined(NDEBUG)
     static const bool armed = [] {
         const char* ssr = std::getenv("VULKANTOY_SSR_DUMP");
         const char* evsm = std::getenv("VULKANTOY_EVSM_DUMP");
@@ -30,9 +27,6 @@ bool DebugImageDumpArmed() {
             || (wysiwyg && std::atoi(wysiwyg) >= 0);
     }();
     return armed;
-#else
-    return false;
-#endif
 }
 
 struct ResourceManager::Impl {

@@ -772,8 +772,6 @@ void EditorApp::DrawPlacementOverlay() {
 	};
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
-		if (IsFlatUvViewMode(vp.viewMode))
-			continue;
 		if (vp.rect.w < 40 || vp.rect.h < 40)
 			continue;
 		const glm::mat4 vpm = vp.viewProj;

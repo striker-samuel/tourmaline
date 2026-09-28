@@ -136,8 +136,8 @@ enum class ViewMode : int {
 	VertexColors = 5, // default_vertexcolor_debug: vertex colors (F6)
 	Baked = 6,      // baked atlas irradiance (F8 — App's GI debug view)
 	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F3)
-	FlatUv0 = 8,    // uvflat0: unwrapped TEXCOORD0 + diffuse content
-	FlatUv1 = 9,    // uvflat1: unwrapped atlas uv2 + lightmap content
+	FlatUv0 = 8,    // UV EDITOR WINDOW channel: uvflat0, TEXCOORD0 + diffuse
+	FlatUv1 = 9,    // UV EDITOR WINDOW channel: uvflat1, atlas uv2 + lightmap
 	Cascades = 10,  // shadow cascade coverage (F4)
 	Lods = 11,      // LOD index by color (F5)
 	Pom = 12,       // parallax occlusion mapping (F11)
@@ -209,6 +209,8 @@ inline const char* SelModeName(SelMode m) {
 	}
 	return "?";
 }
+// UV editor window channel test (FlatUv0/1 are NOT viewport modes — the
+// separate UV editor window owns both; see m_uvWinMode).
 inline bool IsFlatUvViewMode(ViewMode m) {
 	return m == ViewMode::FlatUv0 || m == ViewMode::FlatUv1;
 }
@@ -370,13 +372,12 @@ private:
 	// through the uvflat projection (unwrapped + texture content).
 	void DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 		const app::PushConstants& pc);
-	// Flat UV wires (glTF model accessors) as line batches in NDC space
-	// (built in RecordGizmoPass when any visible viewport is flat).
-	// subtreeRoot: world node whose subtree to wire (UINT32_MAX = the
-	// whole scene — the PNG export path).
+	// Flat UV wires (glTF model accessors) as line batches in NDC space.
+	// Zoom/pan version (the UV window owns its nav); whole-scene exports
+	// pass identity nav (1.0/zero, ignored — applyNav is false there).
 	void BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
 		ViewMode mode, uint32_t subtreeRoot = UINT32_MAX,
-		int vpIdx = 0) const;
+		float zoom = 1.0f, glm::vec2 pan = glm::vec2(0.0f)) const;
 	smvk::ShaderProgram& InsetProgram(); // program for m_secondView (Lit fallback)
 	bool EnsureBuffers(uint32_t flightCount);
 	bool EnsureDepth(smvk::Extent2D extent);
@@ -502,10 +503,16 @@ private:
 	bool m_showSelRadial = false; // Q radial popup request (mouse pos cached)
 	ImVec2 m_selRadialPos{ 0.0f, 0.0f };
 	bool m_inspectorCycle = true; // Up/Down arrows cycle the node selection
-	// Per-viewport flat-UV navigation (FlatUv0/FlatUv1 panels only):
-	// centered zoom + pan in UV units (uvT = (uv-0.5)*zoom + 0.5 + pan).
-	float m_uvZoom[kMaxViewports] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	glm::vec2 m_uvPan[kMaxViewports] = {};
+	// UV editor window (separate from viewports): centered zoom + pan in
+	// UV units (uvT = (uv-0.5)*zoom + 0.5 + pan), channel mode, content
+	// rect (stored per DrawUI for input + the record pass).
+	bool m_showUvEditor = false; // View menu toggle
+	ViewMode m_uvWinMode = ViewMode::FlatUv0; // FlatUv0 = TEXCOORD0, FlatUv1 = uv2
+	float m_uvWinZoom = 1.0f;
+	glm::vec2 m_uvWinPan{ 0.0f, 0.0f };
+	ImVec2 m_uvWinRectMin{ 0.0f, 0.0f }; // canvas rect (screen px, last DrawUI)
+	ImVec2 m_uvWinRectMax{ 0.0f, 0.0f };
+	bool m_uvWinHovered = false; // canvas hover (last DrawUI; F-reset gate)
 	bool IsSelected(uint32_t node) const;
 	void SetSelection(uint32_t node);        // single
 	void AddToSelection(uint32_t node);
@@ -562,22 +569,33 @@ private:
 	};
 	std::optional<SubHit> PickSubObject(int vpIdx, float mouseX,
 		float mouseY, smvk::Extent2D extent) const;
-	// Flat-UV pane pick: mouse (viewport-local) -> UV point (inverse zoom/
-	// pan) -> brute-force point-in-triangle over the selection subtree
-	// (or whole scene when nothing selected). No accel structures.
-	std::optional<SubHit> PickFlatUv(int vpIdx, float mouseX,
-		float mouseY) const;
+	// Flat-UV window pick: mouse (canvas-local) -> UV point (inverse
+	// zoom/pan) -> brute-force point-in-triangle over the selection
+	// subtree (or whole scene when nothing selected). No accel structures.
+	std::optional<SubHit> PickFlatUvWindow(float mouseX, float mouseY) const;
 	void ApplySubSelection(const SubHit& h); // node + face/vert per m_selMode
 	// Flat-UV NDC helpers (must match uvflat.vert.hlsli transform).
-	glm::vec2 UvToFlatNdc(glm::vec2 uv, int vpIdx) const;
-	glm::vec2 FlatNdcToUv(glm::vec2 ndc, int vpIdx) const;
+	// Zoom/pan form (the UV window owns its nav state); the indexed
+	// shorthands below read the UV window state (single pane).
+	glm::vec2 UvToFlatNdc(glm::vec2 uv, float zoom, glm::vec2 pan) const;
+	glm::vec2 FlatNdcToUv(glm::vec2 ndc, float zoom, glm::vec2 pan) const;
+	glm::vec2 UvToFlatNdc(glm::vec2 uv) const; // UV window nav
+	glm::vec2 FlatNdcToUv(glm::vec2 ndc) const; // UV window nav
 	// Resolve the selected face/vertex UVs for highlight batches.
 	bool SelectedFaceUvs(glm::vec2 outUv[3], ViewMode mode) const;
 	bool SelectedVertUv(glm::vec2& outUv, ViewMode mode) const;
 	// World-space positions for the 3D face/vertex highlight.
 	bool SelectedFaceWorld(glm::vec3 outW[3]) const;
 	bool SelectedVertWorld(glm::vec3& outW) const;
-	void UpdateUvPaneInput(); // MMB pan + wheel zoom on flat viewports
+	// UV editor window (separate from viewports): draw + input + record.
+	// DrawUvEditorWindow (called in DrawUI) lays the chrome + canvas item
+	// out and stores m_uvWinRect*/hover; RecordUvWindowPass runs RIGHT
+	// AFTER DrawUI and BEFORE the imgui pass, so the canvas fill sits under
+	// the chrome (same-frame rect; the window bg is alpha-0 and the canvas
+	// is an InvisibleButton — the GPU clear is the only background).
+	void DrawUvEditorWindow();
+	void RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
+		uint32_t flight);
 	void DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex popup
 	// Rubber-band state (window pixels, viewport-local rect in m_vpBox*).
 	bool m_vpBoxDragging = false;
@@ -693,7 +711,7 @@ private:
 	void DrawDiffusePreview(uint32_t matWorld, const glm::vec4& tint);
 	void ClearTexPreview() { m_texPreview = TexPreview{}; }
 	void DrawConsolePanel();
-	void DrawViewportOverlay(smvk::Extent2D extent);
+	void DrawInsetTag(); // UV inset label (the legend window is gone)
 	void Log(const std::string& s);
 
 	// ---- commands + tour (editor_commands.cpp) ----
@@ -1604,8 +1622,6 @@ private:
 	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
-	bool m_showOverlay = true;  // legend on the ACTIVE panel (toggle:
-	                            // View menu or the panel chip button)
 	// ---- panel sizes (drag the splitters to resize; constants above
 	// are the defaults) ----
 	float m_outlinerW = kEditorLeftW;
@@ -1742,6 +1758,10 @@ private:
 	// Gizmo/AABB line upload buffer.
 	smvk::Holder<smvk::BufferHandle> m_gizmoLines{};
 	uint32_t m_gizmoLinesCap = 0;
+	// UV editor window line upload (wires + highlight; own buffer so the
+	// gizmo batches and the window upload never fight for one buffer).
+	smvk::Holder<smvk::BufferHandle> m_uvWinLines{};
+	uint32_t m_uvWinLinesCap = 0;
 
 	// ---- imgui ----
 	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
