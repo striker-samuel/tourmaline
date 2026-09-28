@@ -482,6 +482,17 @@ namespace smvk {
 		void destroy();
 		void uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		// Table-driven bulk staged copy (the load-time counterpart of
+		// uploadBuffer): `content` is one packed blob, `copies` indexes into
+		// it. Drives the dedicated bulk_ context (512 MB ring, render-thread
+		// only — load-time bulk uploads are single-threaded by construction)
+		// through the same allocFromRing/ensureCmd/submitState machinery:
+		// one memcpy pass, one command buffer, one vmaFlush, ONE barrier set
+		// and one submit per 512 MB blob. Entries larger than the ring fall
+		// back to the per-entry temp staging (mirrors uploadBuffer).
+		void uploadBufferBulk(BufferHandle dst, const void* content,
+			std::span<const BufferBulkCopy> copies,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
@@ -553,6 +564,17 @@ namespace smvk {
 		};
 		ThreadUploadState states_[kNumPoolShards];
 		VkDeviceSize ringCapacityPerThread_ = 32ull * 1024 * 1024;
+		// Dedicated bulk context (512 MB ring, lazily created on the first
+		// uploadBufferBulk call so non-bulk users never pay the host
+		// memory): the shard rings stay 32 MB for steady-state frame
+		// uploads. Render-thread only — bulk uploads are load-time and
+		// single-threaded by construction (pak cluster deserialize).
+		ThreadUploadState bulk_;
+		static constexpr VkDeviceSize kBulkRingCapacity = 512ull * 1024 * 1024;
+		bool ensureRing(ThreadUploadState& st, VkDeviceSize capacity, const char* debugName);
+		bool ensureBulkRing() {
+			return ensureRing(bulk_, kBulkRingCapacity, "UploadStreamer Ring (bulk)");
+		}
 		bool ensureShardRing(ThreadUploadState& st);
 		VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
 		void ensureCmd(ThreadUploadState& st);
@@ -649,6 +671,15 @@ namespace smvk {
 		void UnmapBuffer(BufferHandle handle);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		// Table-driven bulk staged copy (RHI: ResourceManager::BulkCopyBuffer;
+		// the load-time batched counterpart of UploadDataToBuffer). Content
+		// bytes are staged during the call, so `content` only has to outlive
+		// the call. Returns false only on an invalid dst/content (the table
+		// itself cannot be validated against the caller's blob — caller
+		// contract, like UploadDataToBuffer).
+		bool BulkCopyBuffer(BufferHandle dst, const void* content,
+			std::span<const BufferBulkCopy> copies,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
 		// GPU buffer -> CPU memory: one copy into a persistent grow-on-demand
 		// staging buffer, a wait for that copy, then a memcpy. Render-thread

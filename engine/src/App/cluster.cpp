@@ -267,6 +267,195 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 }
 
 
+std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
+	std::span<const StaticMeshUpload> uploads)
+{
+	std::vector<ClusterStaticMeshHandle> handles;
+	if (uploads.empty())
+		return handles;
+
+	// GPU-free cook mode: CPU geometry only — per-mesh single path (the
+	// batch win is GPU-side staging, which cook mode never touches).
+	if (cookMode_) {
+		handles.reserve(uploads.size());
+		for (const StaticMeshUpload& data : uploads)
+			handles.push_back(UploadStaticMesh(data));
+		return handles;
+	}
+
+	// =========================================================================
+	// 1. Allocate heap ranges (per mesh; all-or-nothing — a degenerate mesh
+	//    or a full heap fails the batch with NOTHING staged to the GPU)
+	// =========================================================================
+
+	struct MeshRange {
+		VkDeviceSize vertexBase = 0; // VERTEX UNITS, not bytes
+		VkDeviceSize indexByteOffset = 0;
+		StaticMeshAllocation alloc{};
+	};
+	std::vector<MeshRange> ranges(uploads.size());
+	for (size_t i = 0; i < uploads.size(); ++i) {
+		const StaticMeshUpload& data = uploads[i];
+		const uint32_t vertexCount =
+			static_cast<uint32_t>(data.vertices.size());
+		const uint32_t indexCount =
+			static_cast<uint32_t>(data.indices.size());
+		if (vertexCount == 0)
+			return {}; // degenerate entry fails the whole batch
+		MeshRange& r = ranges[i];
+		{
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = vertexCount;
+			allocInfo.alignment = 1;
+			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
+					&allocInfo, &r.alloc.vertexAllocation,
+					&r.vertexBase) != VK_SUCCESS)
+				return {};
+		}
+		if (indexCount > 0) {
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = sizeof(uint32_t)
+				* static_cast<VkDeviceSize>(indexCount);
+			allocInfo.alignment = alignof(uint32_t);
+			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
+					&allocInfo, &r.alloc.indexAllocation,
+					&r.indexByteOffset) != VK_SUCCESS)
+				return {};
+		}
+	}
+
+	// =========================================================================
+	// 2. Pool entries + bookkeeping (BEFORE any GPU staging: a failure here
+	//    leaves nothing queued in the upload streamer)
+	// =========================================================================
+
+	handles.resize(uploads.size());
+	for (size_t i = 0; i < uploads.size(); ++i) {
+		const StaticMeshUpload& data = uploads[i];
+		const MeshRange& r = ranges[i];
+		const uint32_t vertexCount =
+			static_cast<uint32_t>(data.vertices.size());
+		const uint32_t indexCount =
+			static_cast<uint32_t>(data.indices.size());
+		StaticMesh mesh{};
+		mesh.geometry.topology = PrimitiveTopology::TriangleList;
+		mesh.geometry.vertexCount = vertexCount;
+		mesh.geometry.indexCount = indexCount;
+		mesh.geometry.aabbMin = data.aabbMin;
+		mesh.geometry.aabbMax = data.aabbMax;
+		Surface surface{};
+		surface.firstIndex = static_cast<uint32_t>(
+			r.indexByteOffset / sizeof(uint32_t));
+		surface.indexCount = indexCount;
+		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
+		mesh.geometry.surfaces.push_back(surface);
+		handles[i] = staticMeshes.create(std::move(mesh));
+		if (handles[i].empty()) {
+			// Roll the created entries back (frees their heap ranges via
+			// meshAllocations_), then the failed entry's own fresh ranges.
+			for (size_t j = 0; j < i; ++j)
+				DestroyMesh(handles[j]);
+			if (r.alloc.indexAllocation) {
+				vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
+					r.alloc.indexAllocation);
+			}
+			vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
+				r.alloc.vertexAllocation);
+			return {};
+		}
+		auto [it, inserted] = meshAllocations_.emplace(
+			handles[i].index(),
+			new StaticMeshAllocation(std::move(r.alloc)));
+		assert(inserted);
+		if (retainUploads_)
+			retainedUploads_[handles[i].index()] = data;
+	}
+
+	// =========================================================================
+	// 3. Convert AoS -> SoA-ish into ONE packed blob per heap stream
+	// =========================================================================
+
+	size_t totalVerts = 0;
+	size_t totalIdx = 0;
+	for (const StaticMeshUpload& data : uploads) {
+		totalVerts += data.vertices.size();
+		totalIdx += data.indices.size();
+	}
+	std::vector<VertexPos> positions(totalVerts);
+	std::vector<VertexShading> shading(totalVerts);
+	std::vector<uint32_t> indices(totalIdx);
+	std::vector<BufferBulkCopy> posCopies;
+	std::vector<BufferBulkCopy> shadeCopies;
+	std::vector<BufferBulkCopy> idxCopies;
+	posCopies.reserve(uploads.size());
+	shadeCopies.reserve(uploads.size());
+	idxCopies.reserve(uploads.size());
+	size_t srcVert = 0;
+	size_t srcIdx = 0;
+	for (size_t i = 0; i < uploads.size(); ++i) {
+		const StaticMeshUpload& data = uploads[i];
+		const MeshRange& r = ranges[i];
+		const uint32_t vertexCount =
+			static_cast<uint32_t>(data.vertices.size());
+		const uint32_t indexCount =
+			static_cast<uint32_t>(data.indices.size());
+		VertexPos* posOut = positions.data() + srcVert;
+		VertexShading* shadeOut = shading.data() + srcVert;
+		for (uint32_t v = 0; v < vertexCount; ++v) {
+			const StaticVertex& src = data.vertices[v];
+			posOut[v].pos = src.pos;
+			shadeOut[v].color = vertexpack::PackColorUnorm8(src.color);
+			shadeOut[v].uv = vertexpack::PackUvHalf(src.texCoord);
+			shadeOut[v].chartUv = vertexpack::PackChartUv(src.texCoord2);
+			shadeOut[v].chart = src.chartId;
+			shadeOut[v].normal = vertexpack::PackNormalOct(src.normal);
+			shadeOut[v].tangent = vertexpack::PackTangentOct(
+				glm::vec3(src.tangent), src.tangent.w);
+		}
+		if (indexCount > 0) {
+			memcpy(indices.data() + srcIdx, data.indices.data(),
+				size_t(indexCount) * sizeof(uint32_t));
+			idxCopies.push_back(BufferBulkCopy{
+				srcIdx * sizeof(uint32_t),
+				size_t(r.indexByteOffset),
+				size_t(indexCount) * sizeof(uint32_t) });
+		}
+		posCopies.push_back(BufferBulkCopy{
+			srcVert * sizeof(VertexPos),
+			size_t(r.vertexBase) * sizeof(VertexPos),
+			size_t(vertexCount) * sizeof(VertexPos) });
+		shadeCopies.push_back(BufferBulkCopy{
+			srcVert * sizeof(VertexShading),
+			size_t(r.vertexBase) * sizeof(VertexShading),
+			size_t(vertexCount) * sizeof(VertexShading) });
+		srcVert += vertexCount;
+		srcIdx += indexCount;
+	}
+
+	// =========================================================================
+	// 4. Three table-driven bulk uploads (one per heap; the RHI stages 512MB
+	//    blobs — one memcpy pass + one submit + one barrier set per blob)
+	// =========================================================================
+
+	auto* vctx = static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque());
+	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+		positions.data(), posCopies,
+		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+		shading.data(), shadeCopies,
+		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+	if (!idxCopies.empty()) {
+		vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+			indices.data(), idxCopies,
+			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+			VK_ACCESS_2_INDEX_READ_BIT);
+	}
+	return handles;
+}
+
+
 // -----------------------------------------------------------------------------
 // Mesh destruction
 // -----------------------------------------------------------------------------

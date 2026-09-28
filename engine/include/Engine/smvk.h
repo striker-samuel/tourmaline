@@ -1421,6 +1421,19 @@ struct ImageCreateInfo
 		size_t srcOffset = 0;
 	};
 
+	// One CPU->GPU staged copy for the bulk table-driven upload (see
+	// ResourceManager::BulkCopyBuffer): the caller supplies ONE content
+	// blob plus a table of {srcOffset, dstOffset, size} entries; the RHI
+	// stages them in 512 MB blobs — one memcpy pass, one command buffer,
+	// one submit and one barrier set per blob — instead of one ring alloc
+	// + barrier per copy. Bytes are staged during the call, so `content`
+	// only has to stay valid until it returns.
+	struct BufferBulkCopy {
+		size_t srcOffset = 0;
+		size_t dstOffset = 0;
+		size_t size = 0;
+	};
+
 	// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
 	class ResourceManager;
 

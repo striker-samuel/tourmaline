@@ -75,6 +75,17 @@ namespace smvk {
 		Pool<SceneCamera, SceneCamera> cameras;
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
+		// Batched UploadStaticMesh: identical semantics per entry (heap
+		// range allocation, pool entry, uri/lod registration happen at the
+		// CALLER), but the AoS->SoA conversion packs ONE blob per heap and
+		// the GPU upload is three BulkCopyBuffer calls (table-driven; the
+		// RHI stages 512 MB blobs — one memcpy pass + one submit + one
+		// barrier set per blob instead of three streamer calls per mesh).
+		// Handles return in input order. All-or-nothing: {} when ANY entry
+		// fails (degenerate mesh, heap full) — nothing is staged to the GPU
+		// in that case. Cook mode / retainUploads mirror the single path.
+		std::vector<ClusterStaticMeshHandle> UploadStaticMeshes(
+			std::span<const StaticMeshUpload> uploads);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
 		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 		// Pure value assembly (no texture resolution): shared core of

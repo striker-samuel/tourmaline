@@ -2655,10 +2655,10 @@ bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
 	if (ringCapacityPerThread_ < 32ull * 1024 * 1024) ringCapacityPerThread_ = 32ull * 1024 * 1024;
 	return ensureShardRing(states_[0]);
 }
-bool smvk::UploadStreamer::ensureShardRing(ThreadUploadState& ust) {
+bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capacity, const char* debugName) {
 	if (ust.ring.buffer != VK_NULL_HANDLE) return true;
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = ringCapacityPerThread_;
+	ci.size = capacity;
 	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	VmaAllocationCreateInfo aci{};
@@ -2669,20 +2669,26 @@ bool smvk::UploadStreamer::ensureShardRing(ThreadUploadState& ust) {
 	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &ust.ring.buffer, &ust.ring.allocation, &info);
 	if (r != VK_SUCCESS) return false;
 	ust.ring.mapped = info.pMappedData;
-	ust.ring.capacity = ringCapacityPerThread_;
+	ust.ring.capacity = capacity;
 	ust.ring.offset = 0;
 #if defined(_DEBUG)
 	{
 		VkDebugUtilsObjectNameInfoEXT ni{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
 		ni.objectType = VK_OBJECT_TYPE_BUFFER;
 		ni.objectHandle = reinterpret_cast<uint64_t>(ust.ring.buffer);
-		ni.pObjectName = "UploadStreamer Ring (thread shard)";
+		ni.pObjectName = debugName;
 		vkSetDebugUtilsObjectNameEXT(device_, &ni);
 	}
 #endif
 	return true;
 }
+bool smvk::UploadStreamer::ensureShardRing(ThreadUploadState& ust) {
+	return ensureRing(ust, ringCapacityPerThread_, "UploadStreamer Ring (thread shard)");
+}
 void smvk::UploadStreamer::destroy() {
+	if (bulk_.curCmd != VK_NULL_HANDLE && bulk_.hasPending) {
+		submitState(bulk_, false);
+	}
 	for (auto& ust : states_) {
 		if (ust.curCmd != VK_NULL_HANDLE && ust.hasPending) {
 			// submit any pending work before destroy
@@ -2691,6 +2697,17 @@ void smvk::UploadStreamer::destroy() {
 	}
 	if (m_transfer) m_transfer->waitAll();
 	if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll();
+	if (bulk_.ring.buffer != VK_NULL_HANDLE) {
+		vmaDestroyBuffer(m_rm->m_allocator, bulk_.ring.buffer, bulk_.ring.allocation);
+		bulk_.ring.buffer = VK_NULL_HANDLE;
+		bulk_.ring.allocation = VK_NULL_HANDLE;
+		bulk_.ring.mapped = nullptr;
+		bulk_.ring.capacity = 0;
+		bulk_.ring.offset = 0;
+	}
+	bulk_.curCmd = VK_NULL_HANDLE;
+	bulk_.curHandle = {};
+	bulk_.hasPending = false;
 	for (auto& ust : states_) {
 		if (ust.ring.buffer != VK_NULL_HANDLE) {
 			vmaDestroyBuffer(m_rm->m_allocator, ust.ring.buffer, ust.ring.allocation);
@@ -2852,6 +2869,7 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
 	ust.stagedBytesSinceFlush = 0;
 }
 bool smvk::UploadStreamer::hasAnyPending() const noexcept {
+	if (bulk_.hasPending) return true;
 	for (auto& ust : states_) if (ust.hasPending) return true;
 	return false;
 }
@@ -2959,6 +2977,143 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		submitState(ust, false);
 	}
 	// if we are batching many small uploads, don't submit yet – caller will flush
+}
+void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst, const void* content,
+	std::span<const BufferBulkCopy> copies, VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess) {
+	Buffer* dstBuf = m_rm->buffers_.get(dst);
+	if (!dstBuf || !content || copies.empty()) return;
+	// Host-mappable targets never take the bulk ring: per-entry fast path
+	// (the heaps this serves are device-local, but stay correct for any dst).
+	if (dstBuf->isMappable()) {
+		for (const BufferBulkCopy& c : copies)
+			if (c.size != 0)
+				uploadBuffer(dst, static_cast<const char*>(content) + c.srcOffset,
+					c.size, c.dstOffset, dstStages, dstAccess);
+		return;
+	}
+	if (!ensureBulkRing()) return;
+	ThreadUploadState& ust = bulk_;
+	VkDeviceSize chunkBytes = 0; // staged bytes in the current blob
+	VkDeviceSize chunkDstMin = std::numeric_limits<VkDeviceSize>::max();
+	VkDeviceSize chunkDstMax = 0; // exclusive end of the chunk's dst span
+	VkDeviceSize chunkRingMin = std::numeric_limits<VkDeviceSize>::max();
+	VkDeviceSize chunkRingMax = 0; // exclusive end of the chunk's ring span
+	auto closeChunk = [&]() {
+		if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) return;
+		// A chunk can also hold only temp-staging fallback entries (those
+		// carry self-contained barriers); the chunk barrier + flush apply
+		// only when ring entries are present.
+		const bool haveChunk = chunkDstMin != std::numeric_limits<VkDeviceSize>::max()
+			&& chunkDstMax > chunkDstMin;
+		// ONE barrier set per blob: a single release barrier covering the
+		// chunk's whole dst span (gaps included — legal, and one barrier
+		// instead of one per entry) recorded in the transfer batch, plus
+		// the matching acquire queued for the graphics follow-up submit.
+		if (haveChunk) {
+			const VkDeviceSize dstSpan = chunkDstMax - chunkDstMin;
+			const uint32_t srcFamily = m_transfer->queueFamilyIndex();
+			const uint32_t dstFamily = m_graphics->queueFamilyIndex();
+			if (srcFamily != dstFamily) {
+				const uint32_t relSrc = dstBuf->isConcurrent ? VK_QUEUE_FAMILY_IGNORED : srcFamily;
+				const uint32_t acqDst = dstBuf->isConcurrent ? VK_QUEUE_FAMILY_IGNORED : dstFamily;
+				VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr,
+					VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0,
+					relSrc, acqDst, dstBuf->vkBuffer, chunkDstMin, dstSpan };
+				VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 1, &rel, 0, nullptr };
+				vkCmdPipelineBarrier2(ust.curCmd, &dep);
+				VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr,
+					0, 0, dstStages, dstAccess, relSrc, acqDst,
+					dstBuf->vkBuffer, chunkDstMin, dstSpan };
+				ust.pendingBufferAcquires.push_back(acq);
+			}
+			else {
+				BufferBarrier(ust.curCmd, dstBuf->vkBuffer, chunkDstMin, dstSpan,
+					VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+					dstStages, dstAccess);
+			}
+			// One non-coherent flush covering the chunk's ring span instead
+			// of one per entry.
+			if (chunkRingMin != std::numeric_limits<VkDeviceSize>::max())
+				vmaFlushAllocation(m_rm->m_allocator, ust.ring.allocation,
+					chunkRingMin, chunkRingMax - chunkRingMin);
+		}
+		submitState(ust, false);
+		chunkBytes = 0;
+		chunkDstMin = std::numeric_limits<VkDeviceSize>::max();
+		chunkDstMax = 0;
+		chunkRingMin = std::numeric_limits<VkDeviceSize>::max();
+		chunkRingMax = 0;
+	};
+	for (const BufferBulkCopy& c : copies) {
+		if (c.size == 0) continue;
+		// Blob boundary: when the chunk is full (512 MB) or the next entry
+		// would not fit the remaining ring space, close it FIRST — the
+		// barrier must be recorded before whatever submits this batch, and
+		// closing here keeps chunk boundary == submit boundary (allocFromRing's
+		// wrap then finds hasPending == false and only rewinds).
+		const VkDeviceSize aligned = (ust.ring.offset + 15) & ~VkDeviceSize(15);
+		if (ust.hasPending
+			&& (chunkBytes >= kBulkRingCapacity
+				|| aligned + c.size > ust.ring.capacity))
+			closeChunk();
+		const VkDeviceSize ringOff = allocFromRing(ust, c.size, 16);
+		if (ringOff == VK_WHOLE_SIZE) {
+			// Entry bigger than the whole ring: per-entry temp staging
+			// (self-contained barrier + deferred destroy; mirrors
+			// uploadBuffer's fallback). Rare — a single mesh payload over
+			// 512 MB.
+			VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			ci.size = c.size;
+			ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+			ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			VmaAllocationCreateInfo aci{};
+			aci.usage = VMA_MEMORY_USAGE_AUTO;
+			aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+			aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+			VkBuffer tmpBuf; VmaAllocation tmpAlloc; VmaAllocationInfo tmpInfo{};
+			VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &tmpInfo));
+			memcpy(tmpInfo.pMappedData, static_cast<const char*>(content) + c.srcOffset, c.size);
+			vmaFlushAllocation(m_rm->m_allocator, tmpAlloc, 0, VK_WHOLE_SIZE);
+			ensureCmd(ust);
+			VkBufferCopy region{ 0, c.dstOffset, c.size };
+			vkCmdCopyBuffer(ust.curCmd, tmpBuf, dstBuf->vkBuffer, 1, &region);
+			const uint32_t srcFamily = m_transfer->queueFamilyIndex();
+			const uint32_t dstFamily = m_graphics->queueFamilyIndex();
+			if (srcFamily != dstFamily) {
+				const uint32_t relSrc = dstBuf->isConcurrent ? VK_QUEUE_FAMILY_IGNORED : srcFamily;
+				const uint32_t acqDst = dstBuf->isConcurrent ? VK_QUEUE_FAMILY_IGNORED : dstFamily;
+				VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, relSrc, acqDst, dstBuf->vkBuffer, c.dstOffset, c.size };
+				VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&rel,0,nullptr };
+				vkCmdPipelineBarrier2(ust.curCmd, &dep);
+				VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, relSrc, acqDst, dstBuf->vkBuffer, c.dstOffset, c.size };
+				ust.pendingBufferAcquires.push_back(acq);
+			}
+			else {
+				BufferBarrier(ust.curCmd, dstBuf->vkBuffer, c.dstOffset, c.size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
+			}
+			ust.hasPending = true;
+			ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+			continue;
+		}
+		memcpy(static_cast<char*>(ust.ring.mapped) + ringOff,
+			static_cast<const char*>(content) + c.srcOffset, c.size);
+		ensureCmd(ust);
+		VkBufferCopy region{ ringOff, c.dstOffset, c.size };
+		vkCmdCopyBuffer(ust.curCmd, ust.ring.buffer, dstBuf->vkBuffer, 1, &region);
+		ust.hasPending = true;
+		chunkBytes += c.size;
+		chunkDstMin = std::min(chunkDstMin, VkDeviceSize(c.dstOffset));
+		chunkDstMax = std::max(chunkDstMax, VkDeviceSize(c.dstOffset) + VkDeviceSize(c.size));
+		chunkRingMin = std::min(chunkRingMin, ringOff);
+		chunkRingMax = std::max(chunkRingMax, ringOff + VkDeviceSize(c.size));
+	}
+	closeChunk();
+	VulkanResourceManager::BufferGlobalSyncState st{};
+	st.masks.stageMask = FromVkPipelineStage(dstStages);
+	if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+	st.masks.accessMask = FromVkAccess(dstAccess);
+	m_rm->SetBufferSyncState(dst, st);
 }
 bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels, uint32_t arrayLayers, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions, VkImageLayout finalLayout) {
 	if (!m_hostCopySupported) return false;
@@ -3323,6 +3478,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 }
 void smvk::UploadStreamer::flush() {
 	SMVK_PROFILE_STREAM("UploadFlush");
+	if (bulk_.hasPending) submitState(bulk_, true);
 	for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
 void smvk::UploadStreamer::flushLocal() {
 	SMVK_PROFILE_STREAM("UploadFlushLocal");
@@ -3331,6 +3487,10 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	// Drains all shards (quiescent: call after workers joined). Returns the
 	// last timeline point for callers that need to chain.
 	TimelinePoint last{};
+	if (bulk_.hasPending && bulk_.curCmd != VK_NULL_HANDLE) {
+		submitState(bulk_, true);
+		last = lastTransferPoint();
+	}
 	for (auto& ust : states_) {
 		if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) continue;
 		auto tp = submitTransfer(ust.curHandle);
@@ -3358,6 +3518,26 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 void smvk::UploadStreamer::waitAll() {
 	SMVK_PROFILE_STREAM("UploadWaitAll");
 	flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
+
+bool smvk::VulkanResourceManager::BulkCopyBuffer(BufferHandle dst, const void* content,
+	std::span<const BufferBulkCopy> copies, VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess) {
+	if (copies.empty()) return true;
+	Buffer* b = buffers_.get(dst);
+	if (!b || !content) return false;
+	if (m_streamer) {
+		m_streamer->uploadBufferBulk(dst, content, copies, dstStages, dstAccess);
+		return true;
+	}
+	// No streamer (headless configs): per-entry single-copy path. Same
+	// semantics, no batching.
+	for (const BufferBulkCopy& c : copies) {
+		if (c.size == 0) continue;
+		UploadDataToBuffer(dst, static_cast<const char*>(content) + c.srcOffset,
+			c.size, dstStages, dstAccess, 0, c.dstOffset);
+	}
+	return true;
+}
 
 void smvk::VulkanResourceManager::FlushUploads() { if (m_streamer) m_streamer->flush(); }
 void smvk::VulkanResourceManager::WaitForUploads() { if (m_streamer) m_streamer->waitAll(); }

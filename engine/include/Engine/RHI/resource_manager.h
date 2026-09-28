@@ -80,6 +80,18 @@ public:
     void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize,
                             PipelineStage dstStages, AccessFlags dstAccess,
                             size_t src_offset = 0, size_t dest_offset = 0);
+    // Bulk table-driven staged copy (the load-time batched counterpart of
+    // UploadDataToBuffer): ONE content blob + a table of {srcOffset,
+    // dstOffset, size} entries (BufferBulkCopy, smvk.h). The backend stages
+    // 512 MB blobs — one memcpy pass, one command buffer, one submit and one
+    // barrier set per blob — instead of one ring allocation + barrier per
+    // entry. Bytes are staged during the call, so `content` only has to stay
+    // valid until it returns. The table itself is caller-trusted (bounds
+    // cannot be checked against an opaque blob). Returns false only for an
+    // invalid dst/content.
+    bool BulkCopyBuffer(BufferHandle dst, const void* content,
+                        std::span<const BufferBulkCopy> copies,
+                        PipelineStage dstStages, AccessFlags dstAccess);
     // Debug readback: GPU buffer -> CPU memory (staging copy + fence wait;
     // stalls, debug-only). Call only when the device is idle-ish (e.g.
     // after WaitForDeviceIdle) or accept one-frame staleness.

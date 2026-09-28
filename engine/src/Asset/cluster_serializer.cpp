@@ -1202,9 +1202,27 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	}
 
 	// --- Meshes (vertex/index payloads re-uploaded via the standard path) --
-	// Uploads are streamer-batched; the caller issues ctx.FlushUploads().
+	// Two phases: parse ALL blobs first (a malformed blob now fails before
+	// ANY upload is staged — the old loop could fail mid-way with half the
+	// meshes already queued in the streamer), then ONE batched upload:
+	// UploadStaticMeshes packs a single SoA blob per heap and issues three
+	// BulkCopyBuffer calls (table-driven; 512MB blobs internally — one
+	// memcpy pass + one submit + one barrier set per blob instead of three
+	// streamer calls per mesh). The caller issues ctx.FlushUploads().
 	const auto meshEntries = reader.BlobsOfKind(PakAssetKind::Mesh);
+	struct MeshMeta {
+		std::string uri;
+		float sphere = 0.0f;
+		uint32_t lmChunk = 0;
+		std::vector<glm::vec4> lmXforms;
+		LodInfo lod;
+		CookedMeshlets meshlets;
+	};
+	std::vector<StaticMeshUpload> meshUploads;
+	std::vector<MeshMeta> meshMetas;
 	std::vector<ClusterStaticMeshHandle> meshByPakId;
+	meshUploads.reserve(meshEntries.size());
+	meshMetas.reserve(meshEntries.size());
 	meshByPakId.reserve(meshEntries.size());
 	for (const PakTocEntry* e : meshEntries) {
 		Cursor c{ reader.Payload(*e), 0 };
@@ -1322,26 +1340,37 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				}
 			}
 		}
-
-		const ClusterStaticMeshHandle h = cluster->UploadStaticMesh(upload);
-		if (!h.valid())
-			return fail("UploadStaticMesh failed for: " + uri);
-		// UploadStaticMesh fills AABB only; restore the cooked sphere and
-		// the lightmap chunk (rides the draw ring to the lit fragment).
-		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
-			m->geometry.sphereRadius = sphere;
-			m->lmChunk = lmChunk;
-			m->lmChartXforms = std::move(lmXforms);
-			if (!cooked.empty())
-				m->meshlets = std::move(cooked);
+		meshUploads.push_back(std::move(upload));
+		meshMetas.push_back(MeshMeta{ std::move(uri), sphere, lmChunk,
+			std::move(lmXforms), lod, std::move(cooked) });
+	}
+	{
+		std::vector<ClusterStaticMeshHandle> handles = cluster->UploadStaticMeshes(
+			std::span<const StaticMeshUpload>(meshUploads));
+		if (handles.empty() && !meshUploads.empty())
+			return fail("UploadStaticMeshes failed (degenerate mesh or "
+				"full heap): " + meshMetas.front().uri);
+		for (size_t i = 0; i < handles.size(); ++i) {
+			const ClusterStaticMeshHandle h = handles[i];
+			MeshMeta& meta = meshMetas[i];
+			// UploadStaticMeshes fills AABB only; restore the cooked sphere
+			// and the lightmap chunk (rides the draw ring to the lit
+			// fragment).
+			if (StaticMesh* m = cluster->staticMeshes.get(h)) {
+				m->geometry.sphereRadius = meta.sphere;
+				m->lmChunk = meta.lmChunk;
+				m->lmChartXforms = std::move(meta.lmXforms);
+				if (!meta.meshlets.empty())
+					m->meshlets = std::move(meta.meshlets);
+			}
+			cluster->RegisterMeshUri(meta.uri, h);
+			cluster->RegisterMeshLod(meta.uri, meta.lod);
+			if (StaticMesh* m = cluster->staticMeshes.get(h)) {
+				if (m->meshlets && !m->meshlets->empty())
+					cluster->RegisterMeshMeshlets(meta.uri, *m->meshlets);
+			}
+			meshByPakId.push_back(h);
 		}
-		cluster->RegisterMeshUri(uri, h);
-		cluster->RegisterMeshLod(uri, lod);
-		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
-			if (m->meshlets && !m->meshlets->empty())
-				cluster->RegisterMeshMeshlets(uri, *m->meshlets);
-		}
-		meshByPakId.push_back(h);
 	}
 
 	// --- Lights (definitions; the Scene blob links nodes to pak ids) -------
