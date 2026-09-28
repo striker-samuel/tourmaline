@@ -19,13 +19,8 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h> // GetModuleFileNameA (pak exe-relative resolution)
-#endif
-
 #include <Engine/core.h>
+#include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <gltf_import/gltf.h>
@@ -66,21 +61,15 @@ using app::PushConstants;
 // Constants (clips/FOV live on WorldRenderer as members; the far clip is
 // per-scene — m_sceneFarClip, fitted to the framed world bounds at load).
 // The WORLD itself is host-provided (SetWorldSource / borrowed): the
-// renderer never loads scene content of its own.
-
-// Reads a content-relative VFS path ("shaders/...", "models/...") through
-// the app overlay (loose content/ dir + mounted paks). Throws on miss.
+// renderer never loads scene content of its own. PIPELINE SHADERS are not
+// content: they load from the exe-relative content/shaders/ via readFile
+// (engine-builder parity), never through the content VFS.
 // Bench phase accumulators (RenderFrame sub-timings, --bench only).
 static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 	s_benchUi = 0.0, s_benchExecute = 0.0, s_benchUpdA = 0.0, s_benchUpdB = 0.0,
 	s_benchStream = 0.0, s_benchFp = 0.0, s_benchFpGen = 0.0, s_benchFpUp = 0.0,
 	s_benchFpDs = 0.0, s_benchPreMain = 0.0, s_benchPostMain = 0.0,
 	s_benchPreA = 0.0, s_benchPreB = 0.0, s_benchPreC = 0.0;
-
-static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::string& vfsPath) {
-	std::vector<uint8_t> bytes = vfs.ReadBinary(vfsPath);
-	return std::vector<char>(bytes.begin(), bytes.end());
-}
 
 // -----------------------------------------------------------------------------
 // Directional cascade shadow-map config (resources + math live in
@@ -1024,8 +1013,8 @@ bool WorldRenderer::Initialize() {
 
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
-		auto vertCode = readContentFile(contentVfs, "shaders/default.vert.hlsl.spv");
-		auto fragCode = readContentFile(contentVfs, "shaders/default_lit.frag.hlsl.spv");
+		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
+		auto fragCode = readFile("content/shaders/default_lit.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "fragLit");
 
@@ -1048,7 +1037,7 @@ bool WorldRenderer::Initialize() {
 	// of discard for 2x MSAA Main. Non-fatal: missing module keeps every
 	// material on the discard variant.
 	try {
-		auto a2cCode = readContentFile(contentVfs, "shaders/default_lit_a2c.frag.hlsl.spv");
+		auto a2cCode = readFile("content/shaders/default_lit_a2c.frag.hlsl.spv");
 		m_resources.fragA2CShader = m_context->CreateShaderModule(a2cCode, "fragLitA2C");
 	}
 	catch (...) {
@@ -1059,9 +1048,9 @@ bool WorldRenderer::Initialize() {
 	// Non-fatal: a missing variant keeps that count on the generic lit.
 	for (uint32_t li = 0; li < app::GfxRenderer::LitSgVariantCount(); ++li) {
 		try {
-			const std::string path = std::string("shaders/default_lit.frag.hlsl.sg")
+			const std::string path = std::string("content/shaders/default_lit.frag.hlsl.sg")
 				+ std::to_string(app::GfxRenderer::LitSgVariantLobes(li)) + ".spv";
-			auto sgCode = readContentFile(contentVfs, path);
+			auto sgCode = readFile(path);
 			m_resources.fragLitSgModules[li] =
 				m_context->CreateShaderModule(sgCode, "fragLitSg");
 		}
@@ -1092,21 +1081,21 @@ bool WorldRenderer::Initialize() {
 		// colors): same VS as main. Failure is non-fatal (program stays at
 		// shaderCount 0 and the view falls back to Lit at record time).
 		try {
-			auto unlitCode = readContentFile(contentVfs, "shaders/default_unlit.frag.hlsl.spv");
+			auto unlitCode = readFile("content/shaders/default_unlit.frag.hlsl.spv");
 			m_resources.fragUnlitShader = m_context->CreateShaderModule(unlitCode, "fragUnlit");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_unlit unavailable - F2 falls back to Lit\n";
 		}
 		try {
-			auto cascadeCode = readContentFile(contentVfs, "shaders/default_cascade_debug.frag.hlsl.spv");
+			auto cascadeCode = readFile("content/shaders/default_cascade_debug.frag.hlsl.spv");
 			m_resources.fragCascadeShader = m_context->CreateShaderModule(cascadeCode, "fragCascade");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
 		}
 		try {
-			auto vcolorCode = readContentFile(contentVfs, "shaders/default_vertexcolor_debug.frag.hlsl.spv");
+			auto vcolorCode = readFile("content/shaders/default_vertexcolor_debug.frag.hlsl.spv");
 			m_resources.fragVertexColorShader = m_context->CreateShaderModule(vcolorCode, "fragVertexColor");
 		}
 		catch (...) {
@@ -1164,21 +1153,21 @@ bool WorldRenderer::Initialize() {
 			};
 		}
 		try {
-			auto uv0Code = readContentFile(contentVfs, "shaders/default_uv0_debug.frag.hlsl.spv");
+			auto uv0Code = readFile("content/shaders/default_uv0_debug.frag.hlsl.spv");
 			m_resources.fragUv0DebugShader = m_context->CreateShaderModule(uv0Code, "fragUv0Debug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_uv0_debug unavailable - F9 falls back to Lit\n";
 		}
 		try {
-			auto uv1Code = readContentFile(contentVfs, "shaders/default_uv1_debug.frag.hlsl.spv");
+			auto uv1Code = readFile("content/shaders/default_uv1_debug.frag.hlsl.spv");
 			m_resources.fragUv1DebugShader = m_context->CreateShaderModule(uv1Code, "fragUv1Debug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
 		}
 		try {
-			auto pomCode = readContentFile(contentVfs, "shaders/default_pom.frag.hlsl.spv");
+			auto pomCode = readFile("content/shaders/default_pom.frag.hlsl.spv");
 			m_resources.fragPomShader = m_context->CreateShaderModule(pomCode, "fragPom");
 		}
 		catch (...) {
@@ -1240,8 +1229,8 @@ bool WorldRenderer::Initialize() {
 		// vertex-lit VS + pass-through FS. Failure is non-fatal â€” the
 		// subsystem falls back to full-lit everywhere (ShaderLodActive).
 		try {
-			auto vlVertCode = readContentFile(contentVfs, "shaders/default_vertexlit.vert.hlsl.spv");
-			auto vlFragCode = readContentFile(contentVfs, "shaders/default_vertexlit.frag.hlsl.spv");
+			auto vlVertCode = readFile("content/shaders/default_vertexlit.vert.hlsl.spv");
+			auto vlFragCode = readFile("content/shaders/default_vertexlit.frag.hlsl.spv");
 			m_resources.vertexLitVertShader = m_context->CreateShaderModule(vlVertCode, "vertLitLod");
 			m_resources.vertexLitFragShader = m_context->CreateShaderModule(vlFragCode, "fragLitLod");
 		}
@@ -1272,7 +1261,7 @@ bool WorldRenderer::Initialize() {
 		// with any of them). Failure is non-fatal â€” wireframe keeps the
 		// shaded FS (raster override only).
 		try {
-			auto wireCode = readContentFile(contentVfs, "shaders/default_wire.frag.hlsl.spv");
+			auto wireCode = readFile("content/shaders/default_wire.frag.hlsl.spv");
 			m_resources.fragWireShader = m_context->CreateShaderModule(wireCode, "fragWire");
 		}
 		catch (...) {
@@ -1320,7 +1309,7 @@ bool WorldRenderer::Initialize() {
 	// twin. Non-fatal: missing module leaves the program empty, the
 	// GlassMask pass is skipped, and SSR keeps the opaque-depth receiver.
 	try {
-		auto glassMaskCode = readContentFile(contentVfs, "shaders/glassmask.frag.hlsl.spv");
+		auto glassMaskCode = readFile("content/shaders/glassmask.frag.hlsl.spv");
 		m_resources.fragGlassMaskShader = m_context->CreateShaderModule(glassMaskCode, "fragGlassMask");
 	}
 	catch (...) {
@@ -1351,7 +1340,7 @@ bool WorldRenderer::Initialize() {
 	// glassmask loader: a missing module leaves the leg skipped and SSR
 	// without the material gate (uniform-F0 legacy behavior).
 	try {
-		auto ssrMatCode = readContentFile(contentVfs, "shaders/ssrmat.frag.hlsl.spv");
+		auto ssrMatCode = readFile("content/shaders/ssrmat.frag.hlsl.spv");
 		m_resources.fragSsrMatShader = m_context->CreateShaderModule(ssrMatCode, "fragSsrMat");
 	}
 	catch (...) {
@@ -1376,8 +1365,8 @@ bool WorldRenderer::Initialize() {
 	}
 
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
-	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
-	auto shadowFragCode = readContentFile(contentVfs, "shaders/shadow.frag.hlsl.spv");
+	auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
+	auto shadowFragCode = readFile("content/shaders/shadow.frag.hlsl.spv");
 	m_resources.shadowMaskedVertShader = m_context->CreateShaderModule(shadowVertCode, "shadowMaskedVert");
 	m_resources.shadowMaskedFragShader = m_context->CreateShaderModule(shadowFragCode, "shadowMaskedFrag");
 		m_resources.shadowMaskedProgram = {
@@ -1403,7 +1392,7 @@ bool WorldRenderer::Initialize() {
 	// correctness requirement â€” the passthrough write satisfies both
 	// bounds).
 	try {
-		auto shadowRevCode = readContentFile(contentVfs, "shaders/shadow_rev.frag.hlsl.spv");
+		auto shadowRevCode = readFile("content/shaders/shadow_rev.frag.hlsl.spv");
 		m_resources.shadowMaskedFragRevShader = m_context->CreateShaderModule(shadowRevCode, "shadowMaskedFragRev");
 	}
 	catch (...) {
