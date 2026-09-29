@@ -65,11 +65,12 @@ void AddCircle(LineBatch& b, const glm::vec3& center, const glm::vec3& u,
 
 // Wire box from the 8 corners (OBB: the cvolume authoring box carries
 // the node's rotation — same 12 edges, rotated corners). Corner layout
-// is bit-encoded (i&1 = x/+axis0, i&2 = y/+axis1, i&4 = z/+axis2);
-// the edge table wires the 12 box edges (4 per axis).
+// is BIT-ENCODED (i&1 = +axis0, i&2 = +axis1, i&4 = +axis2), so the
+// edge table is the hypercube set: every pair differs in EXACTLY ONE
+// bit (a spatial box edge — never a face diagonal).
 void AddBoxCorners(LineBatch& b, const glm::vec3 c[8]) {
-	static const int e[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},
-		{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
+	static const int e[12][2] = { {0,1},{2,3},{4,5},{6,7},
+		{0,2},{1,3},{4,6},{5,7},{0,4},{1,5},{2,6},{3,7} };
 	for (auto& k : e) {
 		b.verts.push_back({ c[k[0]] });
 		b.verts.push_back({ c[k[1]] });
