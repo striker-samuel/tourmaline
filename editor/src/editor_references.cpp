@@ -334,13 +334,14 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 	for (char& c : ext)
 		c = char(std::tolower((unsigned char)c));
 	const bool isTour = (ext == ".tour");
-	if (!isTour && ext != ".gltf" && ext != ".glb") {
+	const bool isMesh = (ext == ".mesh");
+	if (!isTour && ext != ".gltf" && ext != ".glb" && !isMesh) {
 		if (HasPakExtension(abs))
-			Log("References: sources must be .gltf or .tour (paks are "
-				"cooked, not referenceable).");
+			Log("References: sources must be .gltf, .tour or .mesh "
+				"(paks are cooked, not referenceable).");
 		else
-			Log("References: sources must be .gltf or .tour: '" + abs
-				+ "'.");
+			Log("References: sources must be .gltf, .tour or .mesh: '"
+				+ abs + "'.");
 		return false;
 	}
 	// In-project assets adopt in place; out-of-project .gltf sources
@@ -348,7 +349,6 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 	// out-of-project .tour is refused — bring the scene into
 	// <project>/content/scenes/ first (its own sources bind by UUID
 	// once adopted there).
-	const std::string kind = isTour ? "scene" : "model";
 	if (!InProjectDir(abs)) {
 		if (isTour) {
 			Log("References: '" + abs + "' is outside the project — "
@@ -356,12 +356,24 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 				+ "/content/scenes/' first.");
 			return false;
 		}
+		if (isMesh) {
+			Log("References: '" + abs + "' is outside the project — "
+				"import the source glTF first (it derives the .mesh "
+				"asset).");
+			return false;
+		}
 		abs = ImportAssetFile(abs);
 		if (abs.empty())
 			return false; // ImportAssetFile logged
 		Log("References: auto-imported '" + abs + "'.");
 	}
-	AdoptProjectAsset(abs, kind);
+	// A .MESH asset: adopt the derived asset as-is (its GUID comes from
+	// the sibling manifest; the reference binds by GUID, the file is
+	// the loader). A .gltf source derives its assets at import (the
+	// reference binds the DERIVED .mesh through the manifest GUID —
+	// resolved at bind time by GUID-first).
+	const std::string kind = isMesh ? "mesh" : "scene";
+	AdoptProjectAsset(abs, isMesh ? "mesh" : (isTour ? "scene" : "model"));
 	std::string guid;
 	if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
 		Log("References: cannot adopt '" + abs

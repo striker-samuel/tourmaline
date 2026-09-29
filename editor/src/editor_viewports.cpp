@@ -22,6 +22,10 @@ bool EditorApp::IsSelected(uint32_t node) const {
 void EditorApp::SetSelection(uint32_t node) {
 	m_worldSelected = false;
 	ClearNonDagSelection();
+	// Node selection supersedes the ASSET-BROWSER selection (the
+	// read-only asset inspector page shows only while an asset tile is
+	// the current selection).
+	m_assetsSel.clear();
 	m_selection.clear();
 	if (node != UINT32_MAX) {
 		m_selection.push_back(node);
@@ -229,6 +233,7 @@ void EditorApp::SelectRange(uint32_t node) {
 void EditorApp::ClearSelection() {
 	m_worldSelected = false;
 	ClearNonDagSelection();
+	m_assetsSel.clear(); // node/world selection supersedes the asset page
 	m_selection.clear();
 	m_selected = UINT32_MAX;
 	ClearSubSelection();
@@ -322,6 +327,65 @@ void EditorApp::DrawViewportChrome() {
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
 			active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
 			0.0f, 0, active ? 2.0f : 1.0f);
+	}
+	// ASSET DROP TARGETS: while an asset drag is in flight (the browser's
+	// mesh/material tiles), a transparent window covers each visible
+	// viewport — drop a MESH asset to add a scene reference, a MATERIAL
+	// asset to assign it to the selection. The overlay exists ONLY
+	// during the drag (no clicks consumed otherwise; the highlight tint
+	// shows the drop zone).
+	if (const ImGuiPayload* payload = ImGui::GetDragDropPayload()) {
+		const bool isMesh = payload->IsDataType("VT_ASSET_MESH");
+		const bool isMat = payload->IsDataType("VT_ASSET_MAT");
+		if (isMesh || isMat) {
+			for (int i = 0; i < count; ++i) {
+				const EditorViewport& vp = m_viewports[i];
+				ImGui::SetNextWindowPos(
+					ImVec2(vp.rect.x, vp.rect.y), ImGuiCond_Always);
+				ImGui::SetNextWindowSize(
+					ImVec2(vp.rect.w, vp.rect.h), ImGuiCond_Always);
+				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+					ImVec2(0, 0));
+				ImGui::PushStyleColor(ImGuiCol_WindowBg,
+					(i == m_activeVp) ? ImVec4(0.25f, 0.45f, 0.7f, 0.25f)
+					: ImVec4(0.2f, 0.2f, 0.25f, 0.2f));
+				char wname[48];
+				std::snprintf(wname, sizeof(wname), "##assetdrop%d", i);
+				if (ImGui::Begin(wname, nullptr,
+						ImGuiWindowFlags_NoDecoration |
+						ImGuiWindowFlags_NoMove |
+						ImGuiWindowFlags_NoSavedSettings |
+						ImGuiWindowFlags_NoBringToFrontOnFocus)) {
+					ImGui::InvisibleButton("##drop",
+						ImVec2(vp.rect.w, vp.rect.h));
+					if (ImGui::BeginDragDropTarget()) {
+						if (const ImGuiPayload* accepted =
+								ImGui::AcceptDragDropPayload(
+									isMesh ? "VT_ASSET_MESH"
+									: "VT_ASSET_MAT")) {
+							const char* p =
+								static_cast<const char*>(
+									accepted->Data);
+							const std::string asset(p,
+								p + accepted->DataSize - 1);
+							if (isMesh) {
+								Log("Assets: dropping mesh asset '"
+									+ asset + "' - adding a scene "
+									"reference.");
+								AddSceneReference(asset, {});
+							}
+							else {
+								AssignMaterialAsset(asset);
+							}
+						}
+						ImGui::EndDragDropTarget();
+					}
+				}
+				ImGui::End();
+				ImGui::PopStyleColor();
+				ImGui::PopStyleVar();
+			}
+		}
 	}
 	// Rubber-band box (window pixels).
 	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {

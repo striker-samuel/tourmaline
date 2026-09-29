@@ -1564,6 +1564,16 @@ private:
 	// and the selected entry (absolute, "" = none).
 	std::string m_assetsDir;
 	std::string m_assetsSel;
+	// Collection filter (0 = all/files, 1 = meshes, 2 = materials,
+	// 3 = animations): non-zero lists every derived asset of that kind
+	// across the project's content tree (the glTF manifests), not the
+	// directory listing.
+	int m_assetsFilter = 0;
+	// Expanded glTF (absolute path): the browser shows its derived
+	// assets (the manifest children) instead of the directory listing.
+	// Empty = normal directory view. Unity-style: the glTF presents as
+	// a FOLDER of its preprocessed assets.
+	std::string m_assetsExpandGltf;
 	// ---- SVG icon set (editor/icons/*.svg, rasterized once) ----
 	// nanosvg -> premultiplied RGBA8 textures, each registered as an
 	// ImGui user texture (ImGui_ImplVulkan_AddTexture) so the asset
@@ -1587,6 +1597,25 @@ private:
 		float size, IconType k) const;
 	// Windows explorer /select reveal (no-op + log on failure).
 	void RevealInExplorer(const std::string& absPath);
+	// MATERIAL ASSET drop (browser -> viewport): loads the .material
+	// file, creates a cluster material (values + textures from its
+	// refs, loaded from the files beside it) and assigns it to the
+	// SELECTED subtree (undoable AssignMaterial). Nothing selected =
+	// log + no-op.
+	void AssignMaterialAsset(const std::string& assetPath);
+	// GUID of a derived asset file (its glTF manifest entry; "" when
+	// unknown). Scans the sibling .gltf.meta manifests.
+	std::string DerivedAssetGuid(const std::string& assetPath);
+	// Read-only inspector page for a browser-selected material/mesh
+	// ASSET (view parameters only; edits happen on scenes). Draws into
+	// the Inspector when m_assetsSel is a .material/.mesh file; empty
+	// selection draws nothing.
+	void DrawAssetReadonlyPage();
+	// Asset inspection cache (loaded on selection change, never per
+	// frame): the inspected file + its loaded content.
+	std::string m_assetInspectPath;
+	std::optional<smvk::assets::MaterialAsset> m_assetInspectMat;
+	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
 	// The copy+adopt half of ImportAsset (no scene switch, no cook
 	// priming): copies a .gltf/.glb + companions into the project's
 	// content/models/<stem>/, adopts its GUID (.meta sidecar + asset

@@ -4512,6 +4512,129 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 	return int(h.index());
 }
 
+std::string EditorApp::DerivedAssetGuid(const std::string& assetPath) {
+	// A derived asset's GUID lives in the sibling glTF manifest (the
+	// derivation wrote it). Scan the directory's .gltf.meta files for
+	// the entry whose file matches.
+	if (assetPath.empty() || !m_world)
+		return {};
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = fs::path(assetPath).parent_path();
+	const std::string want =
+		fs::path(assetPath).filename().generic_string();
+	for (fs::directory_iterator it(dir, ec), end; !ec && it != end;
+			it.increment(ec)) {
+		if (ec || !it->is_regular_file(ec))
+			continue;
+		const std::string n = it->path().filename().string();
+		if (n.size() <= 10
+			|| n.compare(n.size() - 10, 10, ".gltf.meta") != 0)
+			continue;
+		smvk::assets::AssetManifest man;
+		std::string merr;
+		if (!smvk::assets::LoadAssetManifest(it->path().string(), man,
+				merr))
+			continue;
+		for (const auto& e : man.entries)
+			if (e.file == want)
+				return e.guid;
+	}
+	return {};
+}
+
+void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
+	// MATERIAL ASSET drop (browser -> viewport): load the .material
+	// file, create the cluster material (values + textures from its
+	// refs — the image files beside the source glTF), assign it to the
+	// SELECTED subtree (one undoable AssignMaterial).
+	if (!m_world || m_world->clusters.empty()
+		|| !m_world->clusters[0] || !m_context)
+		return;
+	if (m_selected == UINT32_MAX
+		|| m_selected >= m_world->scene.hierarchy.size()) {
+		Log("Assets: material drop needs a selection (select a node "
+			"first).");
+		return;
+	}
+	smvk::assets::MaterialAsset m;
+	std::string err;
+	if (!smvk::assets::LoadMaterialAsset(assetPath, m, err)) {
+		Log("Assets: material load failed: " + err);
+		return;
+	}
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	smvk::MaterialCreateInfo info{};
+	info.baseColorFactor = m.info.baseColorFactor;
+	info.emissiveFactor = m.info.emissiveFactor;
+	info.emissiveStrength = m.info.emissiveStrength;
+	info.metallicFactor = m.info.metallicFactor;
+	info.roughnessFactor = m.info.roughnessFactor;
+	info.normalScale = m.info.normalScale;
+	info.occlusionStrength = m.info.occlusionStrength;
+	info.shadingModel = m.info.shadingModel;
+	info.alphaMode = m.info.alphaMode;
+	info.alphaCutoff = m.info.alphaCutoff;
+	info.doubleSided = m.info.doubleSided;
+	info.castsShadows = m.info.castsShadows;
+	// Texture refs: image files beside the .material (relative to its
+	// directory). Loaded through the texture pool (KTX2 direct, other
+	// sources transcode on the way — AddTextureFromFile); the handle
+	// re-reads from the pool by URI (Mint would lose the generation).
+	{
+		const std::string base =
+			std::filesystem::path(assetPath).parent_path()
+			.generic_string();
+		auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
+				smvk::TextureHandle& slot) {
+			if (t.path.empty())
+				return;
+			const std::string p =
+				(std::filesystem::path(base) / t.path).generic_string();
+			if (AddTextureFromFile(p) < 0)
+				return;
+			if (auto hit = cl->FindTextureByUri(p))
+				slot = *hit;
+		};
+		loadTex(m.baseColor, info.baseColorTexture);
+		loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
+		loadTex(m.normalTex, info.normalTexture);
+		loadTex(m.occlusion, info.occlusionTexture);
+		loadTex(m.emissiveTex, info.emissiveTexture);
+		info.diffuse = info.baseColorTexture; // legacy alias
+	}
+	const smvk::ClusterMaterialHandle h = cl->CreateMaterial(info);
+	if (h.empty()) {
+		Log("Assets: material creation failed for '" + assetPath + "'.");
+		return;
+	}
+	cl->RegisterMaterialUri("asset://" + m.guid, h);
+	const uint32_t worldIdx =
+		uint32_t(m_world->materialLocations.size());
+	m_world->materialLocations.push_back({ cl, h });
+	// Undoable assign on the selection.
+	EditCmd c{};
+	c.verb = EditVerb::AssignMaterial;
+	c.node = m_selected;
+	c.material = worldIdx;
+	uint32_t before = UINT32_MAX;
+	if (m_world->scene.materialForNode.contains(m_selected))
+		before = m_world->scene.materialForNode[m_selected];
+	if (before == UINT32_MAX) {
+		// No material on the node: seed a default first so the assign
+		// round-trips (undo restores the default).
+		const uint32_t def = EnsureDefaultMaterial();
+		if (def != UINT32_MAX) {
+			m_world->scene.materialForNode[m_selected] = def;
+			before = def;
+		}
+	}
+	c.beforeMaterial = before;
+	Do(c);
+	Log("Assets: assigned material '" + m.name + "' (" + m.guid
+		+ ") to node " + std::to_string(m_selected) + ".");
+}
+
 void EditorApp::ExecUnterrainPaint(EditCmd& c) {
 	auto it = m_terrainGroups.find(c.node);
 	if (it == m_terrainGroups.end() || c.terrainBefore.empty())

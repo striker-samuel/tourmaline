@@ -2228,6 +2228,19 @@ void EditorApp::DrawInspector() {
 		DrawMaterialFocusPage();
 		return;
 	}
+	// Browser-selected ASSET page (read-only): a .material/.mesh click
+	// in the asset browser inspects here (view parameters only; edits
+	// happen on scenes — Unity-style).
+	if (!m_assetsSel.empty()) {
+		std::string e =
+			std::filesystem::path(m_assetsSel).extension().string();
+		for (char& c : e)
+			c = char(std::tolower((unsigned char)c));
+		if (e == ".material" || e == ".mesh") {
+			DrawAssetReadonlyPage();
+			return;
+		}
+	}
 	// World pseudo-node page (global render settings, not a scene node).
 	if (m_worldSelected) {
 		DrawWorldPanel();
@@ -4077,6 +4090,116 @@ void EditorApp::RevealInExplorer(const std::string& absPath) {
 #endif
 }
 
+void EditorApp::DrawAssetReadonlyPage() {
+	// READ-ONLY asset inspector (a .material/.mesh click in the asset
+	// browser): view parameters only — edits happen on SCENES (the
+	// tour-level overrides/assignments), never on the derived assets
+	// (they regenerate on reimport). The loaded asset caches per
+	// selection (never per frame: .mesh blobs can be megabytes).
+	const bool wantMat = m_assetsSel.size() > 9
+		&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".material") == 0;
+	const bool wantMesh = !wantMat && m_assetsSel.size() > 5
+		&& m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0;
+	if (!wantMat && !wantMesh)
+		return;
+	// Cache refresh on selection change (or a failed load retries never:
+	// a re-derive + re-click reloads).
+	if (m_assetInspectPath != m_assetsSel) {
+		m_assetInspectPath = m_assetsSel;
+		m_assetInspectMat.reset();
+		m_assetInspectMesh.reset();
+		std::string err;
+		if (wantMat) {
+			m_assetInspectMat.emplace();
+			if (!smvk::assets::LoadMaterialAsset(m_assetsSel,
+					*m_assetInspectMat, err)) {
+				Log("Assets: material inspect failed: " + err);
+				m_assetInspectMat.reset();
+			}
+		}
+		else {
+			m_assetInspectMesh.emplace();
+			if (!smvk::assets::LoadMeshAsset(m_assetsSel,
+					*m_assetInspectMesh, err)) {
+				Log("Assets: mesh inspect failed: " + err);
+				m_assetInspectMesh.reset();
+			}
+		}
+	}
+	ImGui::TextDisabled("Asset (read-only) - edits happen on scenes");
+	ImGui::Separator();
+	if (m_assetInspectMat) {
+		const smvk::assets::MaterialAsset& m = *m_assetInspectMat;
+		ImGui::Text("Material: '%s'", m.name.c_str());
+		ImGui::TextDisabled("guid %s", m.guid.c_str());
+		const glm::vec4& bc = m.info.baseColorFactor;
+		ImGui::ColorEdit4("Base color##ro", const_cast<float*>(&bc.x),
+			ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoPicker
+			| ImGuiColorEditFlags_NoAlpha);
+		ImGui::TextDisabled("metallic: %.2f  roughness: %.2f",
+			m.info.metallicFactor, m.info.roughnessFactor);
+		const glm::vec3& em = m.info.emissiveFactor;
+		ImGui::ColorEdit3("Emissive##ro", const_cast<float*>(&em.x),
+			ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoPicker);
+		const char* alpha = (m.info.alphaMode == smvk::AlphaMode::Mask)
+			? "mask" : (m.info.alphaMode == smvk::AlphaMode::Blend)
+			? "blend" : "opaque";
+		ImGui::TextDisabled("alpha: %s (%.2f cutoff)  %s",
+			alpha, m.info.alphaCutoff,
+			m.info.doubleSided ? "double-sided" : "single-sided");
+		ImGui::Separator();
+		ImGui::Text("Textures");
+		auto tex = [&](const char* slot,
+				const smvk::assets::MaterialAsset::TexRef& t) {
+			ImGui::TextDisabled("%-18s %s", slot,
+				t.path.empty() ? "-" : t.path.c_str());
+		};
+		tex("baseColor", m.baseColor);
+		tex("metallicRoughness", m.metallicRoughness);
+		tex("normal", m.normalTex);
+		tex("occlusion", m.occlusion);
+		tex("emissive", m.emissiveTex);
+		ImGui::Separator();
+		ImGui::TextDisabled("Assign: drag onto a viewport (selection) or "
+			"use a scene's material override.");
+	}
+	else if (m_assetInspectMesh) {
+		const smvk::assets::MeshAsset& k = *m_assetInspectMesh;
+		ImGui::Text("Mesh: '%s'",
+			std::filesystem::path(m_assetsSel).stem().string().c_str());
+		uint64_t tris = 0, verts = 0;
+		for (const auto& g : k.geometry) {
+			verts += g.positions.size();
+			tris += g.indices.size() / 3;
+		}
+		ImGui::TextDisabled("%u nodes, %u instances, %zu blobs, "
+			"%llu verts, %llu tris",
+			uint32_t(k.nodes.size()), uint32_t(k.instances.size()),
+			k.geometry.size(),
+			(unsigned long long)verts, (unsigned long long)tris);
+		uint32_t lights = uint32_t(k.lights.size());
+		uint32_t cams = uint32_t(k.cameras.size());
+		ImGui::TextDisabled("%u light(s), %u camera(s)", lights, cams);
+		ImGui::Separator();
+		ImGui::Text("Hierarchy (first 32)");
+		ImGui::BeginChild("##meshnodes", ImVec2(0, 0), true);
+		const size_t n = std::min(k.nodes.size(), size_t(32));
+		for (size_t i = 0; i < n; ++i) {
+			ImGui::TextDisabled("%2zu p%-4d %s", i, k.nodes[i].parent,
+				k.names[i].empty() ? "(node)" : k.names[i].c_str());
+		}
+		if (k.nodes.size() > n)
+			ImGui::TextDisabled("... (%zu more)", k.nodes.size() - n);
+		ImGui::EndChild();
+		ImGui::Separator();
+		ImGui::TextDisabled("Drop onto a viewport to add a scene "
+			"reference; the tour binds it by GUID.");
+	}
+	else {
+		ImGui::TextDisabled("(asset load failed - see the console)");
+	}
+}
+
 void EditorApp::DrawProjectDialog() {
 	// FORCED startup project selection: a blocking modal (no close â€”
 	// the editor is project-bound; smoke flows never see it). Recents
@@ -4224,6 +4347,29 @@ void EditorApp::DrawAssetsPanel() {
 	ImGui::SameLine();
 	ImGui::TextDisabled("%s", m_assetsDir.c_str());
 
+	// ---- header row 1b: the collection filter (per-type views) --------
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(140.0f);
+	{
+		const char* filters[4] = { "All (files)", "Meshes",
+			"Materials", "Animations" };
+		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 4);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Collection views: every derived asset of "
+				"the kind across the project's content tree (the glTF "
+				"manifests).");
+	}
+	// Expanded glTF: a "close the folder" chip next to the filter.
+	if (!m_assetsExpandGltf.empty()) {
+		ImGui::SameLine();
+		const std::string stem =
+			fs::path(m_assetsExpandGltf).stem().string();
+		if (ImGui::SmallButton((stem + " X##expand").c_str())) {
+			m_assetsExpandGltf.clear();
+			m_assetsSel.clear();
+		}
+	}
+
 	// ---- header row 2: Import + Rescan + selection actions ----------
 	if (ImGui::Button("Import asset...")) {
 		std::string picked;
@@ -4312,8 +4458,103 @@ void EditorApp::DrawAssetsPanel() {
 		std::string abs;
 		bool dir = false;
 		IconType icon{};
+		bool gltf = false;  // .gltf with a manifest: presents as folder
+		bool back = false;  // the expanded view's ".." tile
+		// Drag-drop payload kinds ("" = not draggable).
+		bool dragMesh = false;
+		bool dragMaterial = false;
 	};
 	std::vector<Entry> dirs, files;
+	const auto iconForAsset = [&](smvk::assets::AssetKind k) {
+		switch (k) {
+		case smvk::assets::AssetKind::Mesh: return IconType::Model;
+		case smvk::assets::AssetKind::Material:
+			return IconType::Texture;
+		case smvk::assets::AssetKind::Anim: return IconType::Animation;
+		}
+		return IconType::File;
+	};
+	// A glTF's derived assets (its manifest children), for BOTH the
+	// expanded view and the collection filters.
+	const std::string expandGltf = m_assetsExpandGltf;
+	auto manifestChildren = [&](const std::string& gltfAbs,
+		int kindFilter, std::vector<Entry>& out) {
+		smvk::assets::AssetManifest man;
+		std::string merr;
+		if (!smvk::assets::LoadAssetManifest(gltfAbs, man, merr))
+			return;
+		const std::string base =
+			fs::path(gltfAbs).parent_path().generic_string();
+		for (const auto& e : man.entries) {
+			if (kindFilter >= 0
+				&& int(e.kind) != kindFilter)
+				continue;
+			Entry t{};
+			t.name = e.name.empty() ? e.file : e.name;
+			t.abs = (fs::path(base) / e.file).generic_string();
+			t.icon = iconForAsset(e.kind);
+			t.dragMesh = (e.kind == smvk::assets::AssetKind::Mesh);
+			t.dragMaterial =
+				(e.kind == smvk::assets::AssetKind::Material);
+			out.push_back(std::move(t));
+		}
+	};
+	// Recursive .gltf.meta scan under the current directory (the
+	// collection views list every derived asset of the kind).
+	std::vector<std::string> gltfMetas;
+	if (m_assetsFilter != 0 || !expandGltf.empty()) {
+		std::vector<fs::path> stack{ fs::path(m_assetsDir) };
+		while (!stack.empty()) {
+			const fs::path d = stack.back();
+			stack.pop_back();
+			std::error_code sec;
+			for (fs::directory_iterator it(d, sec), end;
+					!sec && it != end; it.increment(sec)) {
+				if (sec)
+					break;
+				std::error_code fec;
+				if (it->is_directory(fec) && !fec) {
+					stack.push_back(it->path());
+					continue;
+				}
+				if (!it->is_regular_file(fec) || fec)
+					continue;
+				const std::string n =
+					it->path().filename().string();
+				if (n.size() > 10
+					&& n.compare(n.size() - 10, 10, ".gltf.meta") == 0)
+					gltfMetas.push_back(it->path().string());
+			}
+		}
+	}
+	if (m_assetsFilter != 0) {
+		// Collection view: every derived asset of the kind under the
+		// current directory tree.
+		for (const std::string& meta : gltfMetas) {
+			const std::string gltf = meta.substr(
+				0, meta.size() - 5); // strip ".meta"
+			manifestChildren(gltf, m_assetsFilter - 1, files);
+		}
+	}
+	else if (!expandGltf.empty()) {
+		// Expanded glTF: its derived assets + a back tile (Unity-style
+		// folder view; the glTF itself stays listed as the source).
+		Entry back{};
+		back.name = "..";
+		back.abs = expandGltf;
+		back.dir = true; // plain-directory styling
+		back.back = true; // double-click = leave the folder
+		back.icon = IconType::Folder;
+		dirs.push_back(back);
+		manifestChildren(expandGltf, -1, files);
+		Entry src{};
+		src.name = fs::path(expandGltf).filename().string();
+		src.abs = expandGltf;
+		src.icon = IconType::Model;
+		src.gltf = true; // the source itself (open as scene = legacy)
+		files.push_back(src);
+	}
+	else {
 	for (fs::directory_iterator it(m_assetsDir, ec), end;
 			!ec && it != end; it.increment(ec)) {
 		if (ec)
@@ -4326,16 +4567,36 @@ void EditorApp::DrawAssetsPanel() {
 		std::string name = p.filename().string();
 		if (name.empty() || name[0] == '.')
 			continue;
+		bool isGltf = false;
+		bool dragMesh = false;
+		bool dragMaterial = false;
+		IconType icon = IconTypeFor(name, isDir);
 		if (!isDir) {
 			std::string e = p.extension().string();
 			for (char& c : e)
 				c = char(std::tolower((unsigned char)c));
 			if (e == ".meta")
 				continue; // the asset's own identity sidecar
+			if (e == ".gltf" || e == ".glb") {
+				// With a manifest the glTF presents as a FOLDER of its
+				// derived assets; without one it opens as a scene
+				// (the legacy path).
+				std::string merr;
+				smvk::assets::AssetManifest man;
+				isGltf = smvk::assets::LoadAssetManifest(
+					p.generic_string(), man, merr);
+				if (isGltf)
+					icon = IconType::Folder;
+			}
+			else if (e == ".mesh")
+				dragMesh = true;
+			else if (e == ".material")
+				dragMaterial = true;
 		}
 		(isDir ? dirs : files).push_back({ name,
-			p.generic_string(), isDir,
-			IconTypeFor(name, isDir) });
+			p.generic_string(), isDir, icon, isGltf,
+			dragMesh, dragMaterial });
+	}
 	}
 	const auto byName = [](const Entry& a, const Entry& b) {
 		std::string la = a.name, lb = b.name;
@@ -4450,7 +4711,19 @@ void EditorApp::DrawAssetsPanel() {
 			m_assetsSel = e.abs;
 		if (dbl) {
 			m_assetsSel = e.abs;
-			if (e.dir) {
+			if (e.back) {
+				// Leave the expanded glTF folder.
+				m_assetsExpandGltf.clear();
+				m_assetsSel.clear();
+			}
+			else if (e.gltf) {
+				// A glTF with a manifest: open the FOLDER (the derived
+				// assets) — never the scene (the .tour references the
+				// .mesh asset; the glTF is the container/source).
+				m_assetsExpandGltf = e.abs;
+				m_assetsSel.clear();
+			}
+			else if (e.dir) {
 				m_assetsDir = e.abs;
 				m_assetsSel.clear();
 			}
@@ -4460,6 +4733,21 @@ void EditorApp::DrawAssetsPanel() {
 				else
 					Log("Assets: a cook is running - wait for it "
 						"to finish.");
+			}
+		}
+		// Drag-and-drop sources (mesh -> viewport adds a scene
+		// reference; material -> the selection assigns it).
+		if (e.dragMesh || e.dragMaterial) {
+			if (ImGui::BeginDragDropSource()) {
+				ImGui::SetDragDropPayload(
+					e.dragMesh ? "VT_ASSET_MESH" : "VT_ASSET_MAT",
+					e.abs.c_str(),
+					sizeof(char) * (e.abs.size() + 1));
+				ImGui::TextUnformatted(e.name.c_str());
+				ImGui::TextDisabled("%s",
+					e.dragMesh ? "drop on a viewport: add a reference"
+					: "drop on a viewport: assign to selection");
+				ImGui::EndDragDropSource();
 			}
 		}
 		if (hovered) {
