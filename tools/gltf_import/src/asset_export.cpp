@@ -286,16 +286,10 @@ bool ParseManifestLine(const std::string& key, const std::string& val,
 
 } // namespace
 
-bool LoadAssetManifest(const std::filesystem::path& gltfPath,
+bool LoadAssetManifestText(const std::string& text,
 	AssetManifest& out, std::string& err) {
 	out = AssetManifest{};
-	const std::filesystem::path metaPath =
-		gltfPath.string() + ".meta";
-	std::ifstream in(metaPath);
-	if (!in) {
-		err = "no manifest '" + metaPath.generic_string() + "'";
-		return false;
-	}
+	std::istringstream in(text);
 	std::string line;
 	while (std::getline(in, line)) {
 		if (!line.empty() && line.back() == '\r')
@@ -307,11 +301,28 @@ bool LoadAssetManifest(const std::filesystem::path& gltfPath,
 			continue;
 		ParseManifestLine(line.substr(0, eq), line.substr(eq + 1), out);
 	}
-	out.stem = std::filesystem::path(gltfPath).stem().string();
 	if (out.guid.empty()) {
 		err = "manifest carries no guid";
 		return false;
 	}
+	return true;
+}
+
+bool LoadAssetManifest(const std::filesystem::path& gltfPath,
+	AssetManifest& out, std::string& err) {
+	out = AssetManifest{};
+	const std::filesystem::path metaPath =
+		gltfPath.string() + ".meta";
+	std::ifstream in(metaPath);
+	if (!in) {
+		err = "no manifest '" + metaPath.generic_string() + "'";
+		return false;
+	}
+	const std::string text((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (!LoadAssetManifestText(text, out, err))
+		return false;
+	out.stem = std::filesystem::path(gltfPath).stem().string();
 	return true;
 }
 
@@ -423,6 +434,15 @@ bool LoadMaterialAsset(const std::filesystem::path& path,
 		err = "cannot open '" + path.generic_string() + "'";
 		return false;
 	}
+	std::string text((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return LoadMaterialAssetText(text, out, err);
+}
+
+bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
+	std::string& err) {
+	out = MaterialAsset{};
+	std::istringstream in(text);
 	std::string line;
 	glm::vec4 bc(1.0f);
 	glm::vec3 em(0.0f);
@@ -487,8 +507,7 @@ bool LoadMaterialAsset(const std::filesystem::path& path,
 	out.info.baseColorFactor = bc;
 	out.info.emissiveFactor = em;
 	if (out.guid.empty()) {
-		err = "material asset carries no guid: '" + path.generic_string()
-			+ "'";
+		err = "material asset carries no guid";
 		return false;
 	}
 	return true;
@@ -580,6 +599,67 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 		PutBytes(b, g.indices.data(),
 			g.indices.size() * sizeof(uint32_t));
 	}
+	// --- Trailing REGISTRY (v1.1; v1.0 files end above and load with
+	// no meshlets/LODs — the reader tolerates the absence) --------------
+	// Per-blob: URI fragment + cooked meshlets + the LOD chain (sibling
+	// blobs, not node-attached).
+	auto putGeometryStreams = [&b](const MeshAsset::Geometry& g) {
+		PutU32(b, uint32_t(g.positions.size()));
+		PutU32(b, uint32_t(g.indices.size()));
+		PutU32(b, uint32_t(g.surfaces.size()));
+		for (const smvk::Surface& s : g.surfaces) {
+			PutU32(b, s.firstIndex);
+			PutU32(b, s.indexCount);
+			PutI32(b, s.baseVertex);
+		}
+		PutVec3(b, g.aabbMin);
+		PutVec3(b, g.aabbMax);
+		PutBytes(b, g.positions.data(),
+			g.positions.size() * sizeof(smvk::VertexPos));
+		PutBytes(b, g.shading.data(),
+			g.shading.size() * sizeof(smvk::VertexShading));
+		PutBytes(b, g.indices.data(),
+			g.indices.size() * sizeof(uint32_t));
+	};
+	auto putMeshlets = [&b](const smvk::CookedMeshlets& ml) {
+		PutU32(b, uint32_t(ml.meshlets.size()));
+		for (const smvk::Meshlet& m : ml.meshlets) {
+			PutU32(b, m.vertexOffset);
+			PutU32(b, m.vertexCount);
+			PutU32(b, m.triangleOffset);
+			PutU32(b, m.triangleCount);
+			PutVec3(b, m.boundCenter);
+			PutF32(b, m.boundRadius);
+			PutVec3(b, m.coneApex);
+			PutVec3(b, m.coneAxis);
+			PutF32(b, m.coneCutoff);
+		}
+		PutU32(b, uint32_t(ml.vertices.size()));
+		for (uint32_t v : ml.vertices)
+			PutU32(b, v);
+		PutU32(b, uint32_t(ml.triangles.size()));
+		PutBytes(b, ml.triangles.data(), ml.triangles.size());
+	};
+	PutU32(b, uint32_t(m.geometry.size()));
+	for (size_t gi = 0; gi < m.geometry.size(); ++gi) {
+		const MeshAsset::Geometry& g = m.geometry[gi];
+		PutStr(b, g.uriFragment);
+		putMeshlets(g.meshlets);
+		const std::vector<MeshAsset::LodSibling>& chain =
+			(gi < m.lodChains.size()) ? m.lodChains[gi]
+			: std::vector<MeshAsset::LodSibling>();
+		PutU32(b, uint32_t(chain.size()));
+		for (const MeshAsset::LodSibling& s : chain) {
+			putGeometryStreams(s.geo);
+			PutStr(b, s.geo.uriFragment);
+			putMeshlets(s.geo.meshlets);
+			PutU32(b, s.lodIndex);
+			PutF32(b, s.simplifyError);
+			PutF32(b, s.screenThreshold);
+			PutU32(b, s.triCount);
+			PutF32(b, s.acmr);
+		}
+	}
 	if (!WriteFileBytes(path, b, err))
 		return;
 }
@@ -592,11 +672,17 @@ bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out,
 	std::vector<uint8_t> bytes;
 	if (!ReadFileBytes(path, bytes, err))
 		return false;
-	BlobReader r{ bytes.data(), bytes.size(), 0, true };
+	return LoadMeshAssetBytes(bytes.data(), bytes.size(), out, err);
+}
+
+bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
+	std::string& err) {
+	out = MeshAsset{};
+	BlobReader r{ data, size, 0, true };
 	const uint32_t magic = r.U32();
 	const uint32_t version = r.U32();
 	if (!r.ok || magic != kMeshMagic) {
-		err = "not a .mesh asset: '" + path.generic_string() + "'";
+		err = "not a .mesh asset";
 		return false;
 	}
 	if (version != kMeshVersion) {
@@ -682,8 +768,90 @@ bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out,
 			size_t(icount) * sizeof(uint32_t));
 	}
 	if (!r.ok) {
-		err = "corrupt .mesh asset: '" + path.generic_string() + "'";
+		err = "corrupt .mesh asset";
 		return false;
+	}
+	// --- Trailing REGISTRY (v1.1; v1.0 files end above): per-blob URI
+	// fragment + meshlets + the LOD chain. Absent = zero meshlets, no
+	// LODs (loads fine).
+	if (r.off < r.n && !out.geometry.empty()) {
+		auto getMeshlets = [&r](smvk::CookedMeshlets& ml) {
+			ml.meshlets.resize(r.U32());
+			for (smvk::Meshlet& m : ml.meshlets) {
+				m.vertexOffset = r.U32();
+				m.vertexCount = r.U32();
+				m.triangleOffset = r.U32();
+				m.triangleCount = r.U32();
+				m.boundCenter = r.Vec3();
+				m.boundRadius = r.F32();
+				m.coneApex = r.Vec3();
+				m.coneAxis = r.Vec3();
+				m.coneCutoff = r.F32();
+			}
+			ml.vertices.resize(r.U32());
+			for (uint32_t& v : ml.vertices)
+				v = r.U32();
+			ml.triangles.resize(r.U32());
+			if (const void* p = r.Skip(ml.triangles.size()))
+				std::memcpy(ml.triangles.data(), p,
+					ml.triangles.size());
+		};
+		auto getStreams = [&r](MeshAsset::Geometry& g) {
+			const uint32_t vcount = r.U32();
+			const uint32_t icount = r.U32();
+			g.surfaces.resize(r.U32());
+			for (smvk::Surface& s : g.surfaces) {
+				s.firstIndex = r.U32();
+				s.indexCount = r.U32();
+				s.baseVertex = int32_t(r.U32());
+			}
+			g.aabbMin = r.Vec3();
+			g.aabbMax = r.Vec3();
+			g.positions.resize(vcount);
+			g.shading.resize(vcount);
+			g.indices.resize(icount);
+			const void* pos =
+				r.Skip(size_t(vcount) * sizeof(smvk::VertexPos));
+			const void* sha = r.Skip(
+				size_t(vcount) * sizeof(smvk::VertexShading));
+			const void* idx =
+				r.Skip(size_t(icount) * sizeof(uint32_t));
+			if (!r.ok)
+				return;
+			std::memcpy(g.positions.data(), pos,
+				size_t(vcount) * sizeof(smvk::VertexPos));
+			std::memcpy(g.shading.data(), sha,
+				size_t(vcount) * sizeof(smvk::VertexShading));
+			std::memcpy(g.indices.data(), idx,
+				size_t(icount) * sizeof(uint32_t));
+		};
+		const uint32_t regCount = r.U32();
+		if (!r.ok || regCount > out.geometry.size()) {
+			err = "corrupt .mesh registry section";
+			return false;
+		}
+		out.lodChains.resize(out.geometry.size());
+		for (uint32_t gi = 0; gi < regCount; ++gi) {
+			out.geometry[gi].uriFragment = r.Str();
+			getMeshlets(out.geometry[gi].meshlets);
+			std::vector<MeshAsset::LodSibling>& chain =
+				out.lodChains[gi];
+			chain.resize(r.U32());
+			for (MeshAsset::LodSibling& s : chain) {
+				getStreams(s.geo);
+				s.geo.uriFragment = r.Str();
+				getMeshlets(s.geo.meshlets);
+				s.lodIndex = r.U32();
+				s.simplifyError = r.F32();
+				s.screenThreshold = r.F32();
+				s.triCount = r.U32();
+				s.acmr = r.F32();
+			}
+		}
+		if (!r.ok) {
+			err = "corrupt .mesh registry section";
+			return false;
+		}
 	}
 	return true;
 }
@@ -889,6 +1057,18 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 				MeshAsset::Geometry g{};
 				const smvk::ClusterStaticMeshHandle h =
 					smvk::ClusterStaticMeshHandle::Mint(poolIdx);
+				// Registry: the derivation's cluster registration (the
+				// URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
+				// .mesh path at load so cooks address it identically)
+				// + cooked meshlets + the LOD chain (sibling blobs).
+				const smvk::StringViewT uri =
+					cluster->GetMeshUri(h);
+				const std::string u = uri.Str();
+				const size_t hash = u.rfind('#');
+				g.uriFragment = (hash != std::string::npos)
+					? u.substr(hash + 1) : std::string();
+				if (auto ml = cluster->GetMeshMeshlets(uri))
+					g.meshlets = std::move(*ml);
 				if (const smvk::StaticMeshUpload* up =
 						cluster->GetRetainedUpload(h)) {
 					g.positions.resize(up->vertices.size());
@@ -900,6 +1080,53 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 					g.surfaces = up->surfaces;
 					g.aabbMin = up->aabbMin;
 					g.aabbMax = up->aabbMax;
+				}
+				// LOD chain: the registered siblings ("<fragment>/lodK")
+				// with their own streams + meshlets + LodInfo.
+				if (auto base = cluster->GetMeshLod(uri)) {
+					std::vector<MeshAsset::LodSibling> chain;
+					const uint32_t siblings = base->candidateCount > 0
+						? base->candidateCount - 1 : 0u;
+					for (uint32_t k = 0; k < siblings; ++k) {
+						const smvk::StringViewT sibUri =
+							smvk::LodSiblingUri(uri, k + 1);
+						auto sibH = cluster->FindMeshByUri(sibUri);
+						if (!sibH)
+							continue;
+						MeshAsset::LodSibling s{};
+						const std::string su = sibUri.Str();
+						const size_t sh = su.rfind('#');
+						s.geo.uriFragment = (sh != std::string::npos)
+							? su.substr(sh + 1) : std::string();
+						if (auto ml = cluster->GetMeshMeshlets(sibUri))
+							s.geo.meshlets = std::move(*ml);
+						if (const smvk::StaticMeshUpload* up =
+								cluster->GetRetainedUpload(*sibH)) {
+							s.geo.positions.resize(up->vertices.size());
+							s.geo.shading.resize(up->vertices.size());
+							for (size_t v = 0;
+								v < up->vertices.size(); ++v)
+								smvk::PackStaticVertex(up->vertices[v],
+									s.geo.positions[v],
+									s.geo.shading[v]);
+							s.geo.indices = up->indices;
+							s.geo.surfaces = up->surfaces;
+							s.geo.aabbMin = up->aabbMin;
+							s.geo.aabbMax = up->aabbMax;
+						}
+						if (auto li = cluster->GetMeshLod(sibUri)) {
+							s.lodIndex = li->lodIndex;
+							s.simplifyError = li->simplifyError;
+							s.screenThreshold = li->screenThreshold;
+							s.triCount = li->triCount;
+							s.acmr = li->acmr;
+						}
+						chain.push_back(std::move(s));
+					}
+					if (!chain.empty()) {
+						mesh.lodChains.resize(blob + 1);
+						mesh.lodChains[blob] = std::move(chain);
+					}
 				}
 				mesh.geometry.push_back(std::move(g));
 				++stats.geometryBlobs;

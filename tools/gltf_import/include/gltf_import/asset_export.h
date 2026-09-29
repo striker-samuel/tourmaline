@@ -40,6 +40,7 @@
 
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Asset/meshlet.h>
 
 namespace tinygltf { class Model; }
 
@@ -133,8 +134,28 @@ struct MeshAsset {
 		std::vector<smvk::Surface> surfaces;
 		glm::vec3 aabbMin{ 0.0f };
 		glm::vec3 aabbMax{ 0.0f };
+		// Registry (the derivation's cluster registration): the mesh's
+		// URI FRAGMENT ("mesh.N/prim.M") — the loader registers
+		// "<mesh-path>#<fragment>" so cooks address it deterministically.
+		std::string uriFragment;
+		// Cooked meshlets (the derivation's meshlet pass; F3 + cooked
+		// parity). Empty when none.
+		smvk::CookedMeshlets meshlets;
 	};
 	std::vector<Geometry> geometry;
+	// LOD chains, PARALLEL to geometry (per base blob): the derived
+	// sibling blobs ("<fragment>/lodK"). Loaded as cluster meshes (not
+	// node-attached) + RegisterMeshLod entries — F5 + distance LODs
+	// survive the preprocessed path.
+	struct LodSibling {
+		Geometry geo{};         // the sibling blob (own uri fragment)
+		uint32_t lodIndex = 1; // 1-based (0 = the base)
+		float simplifyError = 0.0f;
+		float screenThreshold = -1.0f;
+		uint32_t triCount = 0;
+		float acmr = 0.0f;
+	};
+	std::vector<std::vector<LodSibling>> lodChains;
 };
 
 // Derivation CONFIG (mirrors the editor import gates; defaults = the
@@ -176,9 +197,19 @@ bool LoadMeshAsset(
 	const std::filesystem::path& path, MeshAsset& out, std::string& err);
 bool LoadMaterialAsset(
 	const std::filesystem::path& path, MaterialAsset& out, std::string& err);
+// Byte/text forms (VFS reads cook through the overlay; the host forms
+// wrap these).
+bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
+	std::string& err);
+bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
+	std::string& err);
 // Reads <gltfPath>.meta (the manifest of an already-imported glTF).
 bool LoadAssetManifest(
 	const std::filesystem::path& gltfPath, AssetManifest& out,
+	std::string& err);
+// Text form (VFS reads cook through the overlay; the host form wraps
+// this). Tolerant: unknown keys skip, a missing guid fails.
+bool LoadAssetManifestText(const std::string& text, AssetManifest& out,
 	std::string& err);
 // Writes the manifest (DeriveGltfAssets' tail; exposed for tests).
 bool SaveAssetManifest(

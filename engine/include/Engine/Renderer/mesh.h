@@ -234,6 +234,21 @@ namespace smvk {
 			glm::vec3(src.tangent), src.tangent.w);
 	}
 
+	// Inverse pack (the .mesh-asset cook path rebuilds AoS uploads from
+	// the packed SoA streams; lossy exactly like the GPU fetch, so the
+	// round trip is byte-stable).
+	inline void UnpackStaticVertex(const VertexPos& pos,
+		const VertexShading& shade, StaticVertex& out) noexcept {
+		out.pos = pos.pos;
+		const glm::vec4 c = glm::unpackUnorm4x8(shade.color);
+		out.color = c;
+		out.texCoord = glm::unpackHalf2x16(shade.uv);
+		out.texCoord2 = glm::unpackUnorm2x16(shade.chartUv);
+		out.chartId = shade.chart;
+		out.normal = vertexpack::UnpackNormalOct(shade.normal);
+		out.tangent = vertexpack::UnpackTangentOct(shade.tangent);
+	}
+
 	// CPU-side import vertex (skinned): position/color/uv/normal/tangent
 	// plus the glTF JOINTS_0/WEIGHTS_0 pair. The importer keeps the top 4
 	// influences, renormalizes the weights, and packs at upload (joints ->

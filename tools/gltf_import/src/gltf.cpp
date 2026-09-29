@@ -1,6 +1,7 @@
 #define TINYGLTF_IMPLEMENTATION
 
 #include <gltf_import/gltf.h>
+#include <gltf_import/asset_export.h>
 #include <ktx.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <sstream>
 #include <thread>
@@ -2337,6 +2339,297 @@ std::vector<int> GltfRootNodesOf(const tinygltf::Model& model) {
 	return roots;
 }
 
+// DERIVED-ASSET (.mesh) DIRECT BUILD: builds the referenced subtree from
+// the PREPROCESSED blobs (asset_export.h — the derivation's deterministic
+// import output) — no glTF re-parse, no re-import, no tinygltf. Node ids
+// are IDENTICAL to the sibling-glTF import (the derivation copied them),
+// so nested .tour replays, overrides and cooks address the same nodes.
+// Materials bind through their .material assets (GUID -> manifest file ->
+// values + textures, loaded/transcoded through the texture source); the
+// meshlets + LOD chains ride the trailing registry section. Cook mode
+// works (AoS uploads, cook texture ids); the runtime streams/uploads.
+// Returns the node count built (0 = failure; the caller falls back to
+// the sibling-glTF import).
+size_t BuildFromMeshAsset(
+	smvk::Cluster& cluster,
+	smvk::TextureStreamer* streamer,
+	const smvk::assets::MeshAsset& asset,
+	const smvk::assets::AssetManifest& manifest,
+	const std::string& meshBaseUri,
+	int ph,
+	const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+	bool autoKtx,
+	GltfArtifactCache* artifactCache,
+	const std::function<std::optional<std::vector<uint8_t>>(
+		const std::string&)>& readSibling)
+{
+	// 1) Geometry uploads (base blobs + LOD sibling blobs, AoS via the
+	// inverse pack — UploadStaticMesh handles cook + GPU + streaming).
+	auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
+		smvk::StaticMeshUpload up{};
+		up.vertices.resize(g.positions.size());
+		for (size_t v = 0; v < g.positions.size(); ++v)
+			smvk::UnpackStaticVertex(g.positions[v], g.shading[v],
+				up.vertices[v]);
+		up.indices = g.indices;
+		up.aabbMin = g.aabbMin;
+		up.aabbMax = g.aabbMax;
+		return up;
+	};
+	std::vector<smvk::StaticMeshUpload> uploads;
+	uploads.reserve(asset.geometry.size());
+	for (const auto& g : asset.geometry)
+		uploads.push_back(makeUpload(g));
+	for (const auto& chain : asset.lodChains)
+		for (const auto& s : chain)
+			uploads.push_back(makeUpload(s.geo));
+	if (uploads.empty())
+		return 0;
+	std::vector<smvk::ClusterStaticMeshHandle> handles =
+		cluster.UploadStaticMeshes(uploads);
+	if (handles.size() != uploads.size())
+		return 0;
+
+	// 2) Texture loader (loadTextureForImage's mirror, URI-driven from
+	// the .material refs; the identity dedupes shared images).
+	auto loadTexture = [&](const std::string& uri,
+			bool srgb) -> smvk::TextureHandle {
+		if (!textureSource || uri.empty())
+			return {};
+		const std::string identity =
+			textureSource->ResolveIdentity(uri);
+		if (identity.empty())
+			return {};
+		if (auto hit = cluster.FindTextureByUri(identity))
+			return *hit;
+		auto bytes = textureSource->ReadBytes(uri);
+		if (!bytes || bytes->empty())
+			return {};
+		std::vector<uint8_t> ktx;
+		if (IsKtx2Payload(*bytes)) {
+			ktx = std::move(*bytes);
+		}
+		else {
+			if (!autoKtx)
+				return {};
+			const std::string hash = TextureConversionHash(
+				bytes->data(), bytes->size(), srgb);
+			const bool hitCache = artifactCache
+				&& artifactCache->Has("texture", identity, hash)
+				&& artifactCache->Get("texture", identity, ktx)
+				&& IsKtx2Payload(ktx);
+			if (!hitCache) {
+				std::string terr;
+				if (!TranscodeImageToKtx2(bytes->data(),
+						bytes->size(), srgb, uri, ktx, terr))
+					return {};
+				if (artifactCache)
+					artifactCache->Put("texture", identity,
+						ktx.data(), ktx.size(), hash,
+						srgb ? "{\"srgb\":1}" : "{\"srgb\":0}");
+			}
+		}
+		smvk::TextureHandle h;
+		if (cluster.IsCookMode()) {
+			h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+		}
+		else if (!cluster.ctx_) {
+			return {};
+		}
+		else if (streamer && !identity.empty()) {
+			cluster.SetTextureSource(identity, std::move(ktx));
+			const std::vector<uint8_t>* stored =
+				cluster.GetTextureSource(identity);
+			if (!stored || stored->empty())
+				return {};
+			auto holder = streamer->StreamTexture(
+				stored->data(), stored->size(), identity);
+			if (!holder.valid())
+				return {};
+			h = holder;
+			cluster.textures.create(std::move(holder));
+		}
+		else {
+			auto holder = smvk::LoadKtxTextureMemory(
+				*cluster.ctx_, ktx.data(), ktx.size(), identity);
+			if (!holder.valid())
+				return {};
+			h = holder;
+			cluster.textures.create(std::move(holder));
+		}
+		cluster.RegisterTextureUri(identity, h);
+		if (!cluster.IsCookMode())
+			cluster.SetTextureSource(identity, std::move(ktx));
+		return h;
+	};
+
+	// 3) Materials in FIRST-USE order over the node-sorted instances
+	// (matches the import's creation order; tour material indices stay
+	// stable). GUID -> the manifest entry -> the .material sibling.
+	std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf;
+	auto materialFor =
+			[&](const std::string& guid) -> smvk::ClusterMaterialHandle {
+		if (guid.empty())
+			return {};
+		auto it = matOf.find(guid);
+		if (it != matOf.end())
+			return it->second;
+		const smvk::assets::AssetEntry* ent = nullptr;
+		for (const auto& e : manifest.entries)
+			if (e.kind == smvk::assets::AssetKind::Material
+				&& e.guid == guid) {
+				ent = &e;
+				break;
+			}
+		if (!ent)
+			return {};
+		auto bytes = readSibling(ent->file);
+		if (!bytes || bytes->empty())
+			return {};
+		smvk::assets::MaterialAsset m;
+		std::string merr;
+		if (!smvk::assets::LoadMaterialAssetText(
+				std::string(bytes->begin(), bytes->end()), m, merr))
+			return {};
+		smvk::MaterialCreateInfo info{};
+		info.baseColorFactor = m.info.baseColorFactor;
+		info.emissiveFactor = m.info.emissiveFactor;
+		info.emissiveStrength = m.info.emissiveStrength;
+		info.metallicFactor = m.info.metallicFactor;
+		info.roughnessFactor = m.info.roughnessFactor;
+		info.normalScale = m.info.normalScale;
+		info.occlusionStrength = m.info.occlusionStrength;
+		info.shadingModel = m.info.shadingModel;
+		info.alphaMode = m.info.alphaMode;
+		info.alphaCutoff = m.info.alphaCutoff;
+		info.doubleSided = m.info.doubleSided;
+		info.castsShadows = m.info.castsShadows;
+		auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
+				smvk::TextureHandle& slot) {
+			if (t.path.empty())
+				return;
+			smvk::TextureHandle h = loadTexture(t.path, t.srgb);
+			if (!h.empty())
+				slot = h;
+		};
+		loadTex(m.baseColor, info.baseColorTexture);
+		loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
+		loadTex(m.normalTex, info.normalTexture);
+		loadTex(m.occlusion, info.occlusionTexture);
+		loadTex(m.emissiveTex, info.emissiveTexture);
+		info.diffuse = info.baseColorTexture; // legacy alias
+		smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
+		if (!h.empty()) {
+			cluster.RegisterMaterialUri("asset://" + guid, h);
+			matOf.emplace(guid, h);
+		}
+		return h;
+	};
+
+	// 4) Registry: URIs (the derivation's fragments, re-based on the
+	// .mesh path so cooks address identically) + meshlets + LOD chains.
+	std::vector<smvk::ClusterStaticMeshHandle> baseHandles;
+	{
+		size_t up = 0;
+		for (size_t gi = 0; gi < asset.geometry.size(); ++gi) {
+			const smvk::ClusterStaticMeshHandle h = handles[up++];
+			const smvk::assets::MeshAsset::Geometry& g =
+				asset.geometry[gi];
+			const std::string uri = smvk::MakeSubUri(meshBaseUri,
+				g.uriFragment.empty()
+				? "mesh." + std::to_string(gi) : g.uriFragment).Str();
+			cluster.RegisterMeshUri(uri, h);
+			cluster.RegisterMeshMeshlets(uri, g.meshlets);
+			if (auto* m = cluster.staticMeshes.get(h))
+				m->meshlets = g.meshlets;
+			smvk::LodInfo lod{};
+			lod.lodIndex = 0;
+			lod.candidateCount = uint32_t(1
+				+ ((gi < asset.lodChains.size())
+					? asset.lodChains[gi].size() : 0));
+			cluster.RegisterMeshLod(uri, lod);
+			baseHandles.push_back(h);
+		}
+		for (size_t gi = 0; gi < asset.lodChains.size(); ++gi) {
+			for (const auto& s : asset.lodChains[gi]) {
+				const smvk::ClusterStaticMeshHandle h = handles[up++];
+				const std::string baseUri = smvk::MakeSubUri(
+					meshBaseUri, asset.geometry[gi].uriFragment).Str();
+				const std::string sibUri =
+					smvk::LodSiblingUri(baseUri,
+						s.lodIndex > 0 ? s.lodIndex : 1).Str();
+				cluster.RegisterMeshUri(sibUri, h);
+				cluster.RegisterMeshMeshlets(sibUri, s.geo.meshlets);
+				if (auto* m = cluster.staticMeshes.get(h))
+					m->meshlets = s.geo.meshlets;
+				smvk::LodInfo lod{};
+				lod.lodIndex = s.lodIndex;
+				lod.simplifyError = s.simplifyError;
+				lod.screenThreshold = s.screenThreshold;
+				lod.triCount = s.triCount;
+				lod.acmr = s.acmr;
+				cluster.RegisterMeshLod(sibUri, lod);
+			}
+		}
+	}
+
+	// 5) Scene graph: node 0 of the asset is the derivation's cluster
+	// root (the placeholder takes its place); nodes 1.. build under the
+	// mapped parents (parent 0 -> the placeholder), ids ph+i aligning
+	// with the sibling-glTF import (the .tour replay contract).
+	Scene& scene = cluster.scene;
+	if (asset.nodes.empty())
+		return 0;
+	std::vector<int> mapped(asset.nodes.size(), -1);
+	mapped[0] = ph;
+	for (size_t i = 1; i < asset.nodes.size(); ++i) {
+		const int ap = asset.nodes[i].parent;
+		const int parent = (ap <= 0) ? ph : mapped[size_t(ap)];
+		const int n = addNode(scene, parent, asset.nodes[i].level);
+		mapped[i] = n;
+		if (i < asset.locals.size())
+			scene.localTransform[size_t(n)] = asset.locals[i];
+		if (i < asset.names.size() && !asset.names[i].empty())
+			setNodeName(scene, n, asset.names[i]);
+	}
+	for (size_t i = 1; i < asset.nodes.size(); ++i) {
+		if (i < asset.staticRoot.size() && asset.staticRoot[i])
+			MarkSubtreeStatic(scene, mapped[i]);
+		if (i < asset.noLightmap.size() && asset.noLightmap[i])
+			MarkNoLightmap(scene, mapped[i]);
+	}
+	// 6) Bindings: instances (geometry + material), lights, cameras.
+	for (const auto& inst : asset.instances) {
+		if (inst.node == 0 || inst.node >= asset.nodes.size()
+			|| inst.geometry >= baseHandles.size())
+			continue;
+		const uint32_t n = uint32_t(mapped[inst.node]);
+		scene.meshForNode[n] = baseHandles[inst.geometry].index();
+		smvk::ClusterMaterialHandle mh =
+			materialFor(inst.materialGuid);
+		if (!mh.empty())
+			scene.materialForNode[n] = mh.index();
+		markAsChanged(scene, int(n));
+	}
+	for (const auto& l : asset.lights) {
+		if (l.node == 0 || l.node >= asset.nodes.size())
+			continue;
+		smvk::ClusterLightHandle h = cluster.CreateLight(l.def);
+		if (!h.empty())
+			scene.lightForNode[uint32_t(mapped[l.node])] =
+				h.index();
+	}
+	for (const auto& c : asset.cameras) {
+		if (c.node == 0 || c.node >= asset.nodes.size())
+			continue;
+		smvk::ClusterCameraHandle h = cluster.CreateCamera(c.def);
+		if (!h.empty())
+			scene.cameraForNode[uint32_t(mapped[c.node])] =
+				h.index();
+	}
+	return asset.nodes.size() - 1;
+}
+
 } // namespace
 
 size_t ApplySceneReferences(
@@ -2431,18 +2724,6 @@ size_t ApplySceneReferences(
 			bool haveRefTour = false;
 			std::string refTourDir;
 			std::string modelSource = r.source;
-			// DERIVED-ASSET BRIDGE: a .mesh reference (the tour binds the
-			// ASSET by GUID) imports its SIBLING source glTF — the
-			// derivation wrote them next to each other with the same
-			// stem, and the .mesh's node ids ARE the glTF import's ids
-			// (the same deterministic import), so the bind is identical.
-			{
-				const size_t dot = modelSource.rfind(".mesh");
-				if (dot != std::string::npos
-					&& modelSource.size() - dot == 5)
-					modelSource =
-						modelSource.substr(0, dot) + ".gltf";
-			}
 			// GUID-FIRST resolution (asset identity survives moves/
 			// renames): the injected resolver maps the source file's
 			// .meta GUID to its CURRENT path. Unknown/invalid GUID or
@@ -2525,6 +2806,83 @@ size_t ApplySceneReferences(
 			std::string baseDir;   // source dir for ITS references
 			tinygltf::Model model;
 			bool ok = false;
+			// DERIVED-ASSET (.mesh) resolution: a .mesh reference (the
+			// tour binds the ASSET by GUID) resolves + LOADS the
+			// preprocessed blobs here; the BUILD happens below where
+			// the placeholder exists (pure preprocessed loading; node
+			// ids are the derivation's = the import's, so
+			// replays/overrides/cooks address the same nodes). Any
+			// failure falls back to the SIBLING glTF import (the
+			// derivation wrote them together).
+			smvk::assets::MeshAsset meshAsset;
+			smvk::assets::AssetManifest meshManifest;
+			bool meshLoaded = false;
+			{
+				const size_t dot = modelSource.rfind(".mesh");
+				const bool isMesh = dot != std::string::npos
+					&& modelSource.size() - dot == 5;
+				if (isMesh) {
+					// Resolve + read the .mesh (vfs or host).
+					std::string meshResolved;
+					std::optional<std::vector<uint8_t>> meshBytes;
+					if (vfs) {
+						std::string p = smvk::NormalizeAssetUri(
+							smvk::StringViewT(modelSource)).Str();
+						if (!vfs->Exists(p)
+							&& !cur.baseDir.empty())
+							p = smvk::vfs::Join(cur.baseDir,
+								modelSource);
+						if (vfs->Exists(p)) {
+							meshResolved = p;
+							meshBytes = vfs->TryRead(p);
+						}
+					}
+					else {
+						std::filesystem::path hp(modelSource);
+						std::error_code ec;
+						if (!std::filesystem::exists(hp, ec)
+							&& !cur.baseDir.empty())
+							hp = std::filesystem::path(cur.baseDir)
+								/ modelSource;
+						if (std::filesystem::exists(hp, ec)) {
+							meshResolved = hp.generic_string();
+							std::ifstream in(hp,
+								std::ios::binary);
+							if (in)
+								meshBytes = std::vector<uint8_t>(
+									(std::istreambuf_iterator<char>(
+										in)),
+									std::istreambuf_iterator<char>());
+						}
+					}
+					if (meshBytes && !meshBytes->empty()) {
+						std::string meshErr;
+						if (smvk::assets::LoadMeshAssetBytes(
+								meshBytes->data(), meshBytes->size(),
+								meshAsset, meshErr)) {
+							meshLoaded = true;
+							resolved = meshResolved;
+							baseDir = smvk::vfs::BaseDir(
+								meshResolved);
+							ok = true;
+						}
+						else {
+							std::cerr << "[References] .mesh load '"
+								<< meshResolved << "' failed: "
+								<< meshErr
+								<< " (glTF import fallback)\n";
+						}
+					}
+				}
+				if (!meshLoaded) {
+					// BRIDGE FALLBACK: import the SIBLING source glTF
+					// (the derivation wrote them next to each other
+					// with the same stem; identical node ids).
+					if (isMesh)
+						modelSource =
+							modelSource.substr(0, dot) + ".gltf";
+				}
+			}
 			// Candidate dirs: the tour's own dir first (tour sources),
 			// then the level's base dir. (Unchanged single-base behavior
 			// for plain .gltf references.)
@@ -2533,7 +2891,7 @@ size_t ApplySceneReferences(
 				tryBases.push_back(refTourDir);
 			if (!cur.baseDir.empty())
 				tryBases.push_back(cur.baseDir);
-			if (vfs) {
+			if (vfs && !ok) {
 				std::vector<std::string> candidates;
 				candidates.push_back(smvk::NormalizeAssetUri(
 					smvk::StringViewT(modelSource)).Str());
@@ -2556,7 +2914,7 @@ size_t ApplySceneReferences(
 						break;
 				}
 			}
-			else {
+			else if (!ok) {
 				std::vector<std::filesystem::path> candidates;
 				candidates.emplace_back(modelSource);
 				for (const std::string& b : tryBases)
@@ -2634,8 +2992,95 @@ size_t ApplySceneReferences(
 			// Pool bases for .tour replay (captured before the subtree
 			// lands; the subtree's own tour ids translate by these).
 			const uint32_t matBaseBefore = cluster.materials.numObjects();
-			// Import the referenced scene beneath the placeholder.
-			{
+			// Import the referenced scene beneath the placeholder:
+			// the DERIVED .mesh asset builds from the preprocessed
+			// blobs (no glTF re-parse; node ids match the import);
+			// the glTF importer is the legacy/fallback path.
+			bool builtFromMesh = false;
+			if (meshLoaded) {
+				// The manifest (the .material file table) sits beside
+				// the sibling glTF: <stem>.gltf.meta.
+				{
+					std::string stem =
+						smvk::vfs::FileName(resolved);
+					const size_t mdot = stem.rfind(".mesh");
+					if (mdot != std::string::npos)
+						stem = stem.substr(0, mdot);
+					const std::string meshDir =
+						smvk::vfs::BaseDir(resolved);
+					const std::string metaRel =
+						stem + ".gltf.meta";
+					std::optional<std::vector<uint8_t>> metaBytes;
+					if (vfs) {
+						const std::string mp =
+							smvk::vfs::Join(meshDir, metaRel);
+						if (vfs->Exists(mp))
+							metaBytes = vfs->TryRead(mp);
+					}
+					else {
+						std::ifstream in(
+							std::filesystem::path(resolved)
+							.parent_path() / metaRel,
+							std::ios::binary);
+						if (in)
+							metaBytes = std::vector<uint8_t>(
+								(std::istreambuf_iterator<char>(
+									in)),
+								std::istreambuf_iterator<char>());
+					}
+					if (metaBytes && !metaBytes->empty()) {
+						std::string merr;
+						smvk::assets::LoadAssetManifestText(
+							std::string(metaBytes->begin(),
+								metaBytes->end()),
+							meshManifest, merr);
+					}
+				}
+				// readSibling: .material files beside the .mesh (host
+				// or vfs); the texture source mirrors the importer's.
+				auto readSibling =
+					[&](const std::string& file)
+					-> std::optional<std::vector<uint8_t>> {
+					if (vfs) {
+						const std::string p =
+							smvk::vfs::Join(
+								smvk::vfs::BaseDir(resolved), file);
+						if (vfs->Exists(p))
+							return vfs->TryRead(p);
+						return std::nullopt;
+					}
+					std::ifstream in(
+						std::filesystem::path(resolved)
+						.parent_path() / file, std::ios::binary);
+					if (!in)
+						return std::nullopt;
+					return std::vector<uint8_t>(
+						(std::istreambuf_iterator<char>(in)),
+						std::istreambuf_iterator<char>());
+				};
+				std::shared_ptr<GltfToSceneImporter::TextureSource>
+					texSrc;
+				if (vfs)
+					texSrc = std::make_shared<VfsTextureSource>(
+						vfs, baseDir);
+				else
+					texSrc = std::make_shared<HostTextureSource>(
+						std::filesystem::path(baseDir));
+				const size_t built = BuildFromMeshAsset(cluster,
+					streamer, meshAsset, meshManifest, resolved,
+					ph, texSrc, autoKtx, artifactCache, readSibling);
+				if (built > 0) {
+					builtFromMesh = true;
+					std::cerr << "[References] built '" << resolved
+						<< "' from the .mesh asset (" << built
+						<< " nodes, preprocessed)\n";
+				}
+				else {
+					std::cerr << "[References] .mesh build failed '"
+						<< resolved << "' (glTF import fallback)\n";
+				}
+			}
+			if (!builtFromMesh) {
 				GltfToSceneImporter importer{ cluster, model,
 					std::filesystem::path(resolved) };
 				if (vfs)
