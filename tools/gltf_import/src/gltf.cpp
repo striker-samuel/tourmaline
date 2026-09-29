@@ -2431,6 +2431,18 @@ size_t ApplySceneReferences(
 			bool haveRefTour = false;
 			std::string refTourDir;
 			std::string modelSource = r.source;
+			// DERIVED-ASSET BRIDGE: a .mesh reference (the tour binds the
+			// ASSET by GUID) imports its SIBLING source glTF — the
+			// derivation wrote them next to each other with the same
+			// stem, and the .mesh's node ids ARE the glTF import's ids
+			// (the same deterministic import), so the bind is identical.
+			{
+				const size_t dot = modelSource.rfind(".mesh");
+				if (dot != std::string::npos
+					&& modelSource.size() - dot == 5)
+					modelSource =
+						modelSource.substr(0, dot) + ".gltf";
+			}
 			// GUID-FIRST resolution (asset identity survives moves/
 			// renames): the injected resolver maps the source file's
 			// .meta GUID to its CURRENT path. Unknown/invalid GUID or

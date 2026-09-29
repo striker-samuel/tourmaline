@@ -367,18 +367,26 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 			return false; // ImportAssetFile logged
 		Log("References: auto-imported '" + abs + "'.");
 	}
-	// A .MESH asset: adopt the derived asset as-is (its GUID comes from
-	// the sibling manifest; the reference binds by GUID, the file is
-	// the loader). A .gltf source derives its assets at import (the
-	// reference binds the DERIVED .mesh through the manifest GUID —
-	// resolved at bind time by GUID-first).
-	const std::string kind = isMesh ? "mesh" : "scene";
-	AdoptProjectAsset(abs, isMesh ? "mesh" : (isTour ? "scene" : "model"));
+	// A .MESH asset: the derived asset binds BY ITS MANIFEST GUID (the
+	// glTF manifest is the identity source — the .mesh never gets its
+	// own .meta sidecar). A .gltf/.tour source adopts as before.
 	std::string guid;
-	if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
-		Log("References: cannot adopt '" + abs
-			+ "' (asset GUID unavailable).");
-		return false;
+	if (isMesh) {
+		guid = DerivedAssetGuid(abs);
+		if (guid.empty()) {
+			Log("References: no manifest GUID for '" + abs
+				+ "' (reimport the source glTF).");
+			return false;
+		}
+	}
+	else {
+		AdoptProjectAsset(abs,
+			isTour ? "scene" : "model");
+		if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
+			Log("References: cannot adopt '" + abs
+				+ "' (asset GUID unavailable).");
+			return false;
+		}
 	}
 	const std::string rel = ProjectRelativePath(abs);
 	if (rel.empty()) { // defensive: adopted in-project above

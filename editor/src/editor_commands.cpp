@@ -3102,11 +3102,35 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		const std::string rel = ProjectRelativePath(m_gltfHostPath);
 		if (!rel.empty())
 			posix = rel;
+		// ROOT = THE DERIVED .MESH ASSET (the preprocessed scene graph —
+		// see asset_export.h): the tour references the ASSET, not the
+		// glTF; the bind imports the sibling source glTF (the .mesh
+		// derivation wrote them next to each other; node ids are
+		// identical — the same deterministic import). GUID = the mesh
+		// entry's manifest GUID (stable across reimports). Falls back
+		// to the glTF when no .mesh was derived yet.
+		std::string rootGuid = ProjectAssetGuid(m_gltfHostPath);
+		{
+			std::error_code mec;
+			const std::string meshSibling =
+				(std::filesystem::path(m_gltfHostPath).parent_path()
+					/ (std::filesystem::path(m_gltfHostPath).stem()
+						.string() + ".mesh")).generic_string();
+			if (std::filesystem::is_regular_file(meshSibling, mec)) {
+				posix = (std::filesystem::path(posix).parent_path()
+					/ (std::filesystem::path(m_gltfHostPath).stem()
+						.string() + ".mesh")).generic_string();
+				const std::string meshGuid =
+					DerivedAssetGuid(meshSibling);
+				if (!meshGuid.empty())
+					rootGuid = meshGuid;
+			}
+		}
 		smvk::tour::ReferenceCmd rootRef{};
 		rootRef.root = true;
 		rootRef.parent = 0;
 		rootRef.source = posix;
-		rootRef.guid = ProjectAssetGuid(m_gltfHostPath);
+		rootRef.guid = rootGuid;
 		rootRef.name = std::filesystem::path(posix).stem().string();
 		// Keep the root reference leading the definition (fresh source).
 		if (!m_references.empty() && m_references[0].root)
