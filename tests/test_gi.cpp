@@ -896,6 +896,63 @@ void TestCvVolume() {
 			"cvol far-outside weight 0");
 		CheckNear(def.Weight(glm::vec3(1.0f, 0.0f, 0.0f)), 0.5f, 1e-5f,
 			"cvol face weight 0.5 (symmetric fades)");
+		// ---- Rotated box (OBB): CvBoxPlanesRotated --------------------
+		// Identity axes degenerate to CvBoxPlanes exactly (same plane
+		// order: -x, +x, -y, +y, -z, +z — the doorway-retune indices
+		// keep meaning the same faces).
+		{
+			const std::vector<CvPlane> id = CvBoxPlanesRotated(
+				glm::vec3(0.0f), glm::mat3(1.0f), glm::vec3(1.0f),
+				0.1f, 0.1f);
+			const std::vector<CvPlane> aa = CvBoxPlanes(
+				glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
+			Check(id.size() == 6 && aa.size() == 6,
+				"cvol rotated box six planes");
+			bool same = true;
+			for (size_t i = 0; i < 6; ++i)
+				same &= glm::all(glm::equal(id[i].normal, aa[i].normal))
+					&& id[i].d == aa[i].d;
+			Check(same, "cvol identity axes == axis-aligned planes");
+		}
+		// 90-degree yaw around Y: the u0 axis maps to -Z, u2 to +X.
+		// A point 1.2 m out along WORLD +X (past the rotated u2 half
+		// extent) falls outside; 0.9 m stays inside — and a point past
+		// the OLD axis-aligned extent in Z (now the long axis) stays
+		// INSIDE (the rotation reshapes the hull, not just the AABB).
+		{
+			CvVolumeDef rot;
+			// yaw 90deg: columns = u0 = (0,0,-1), u1 = (0,1,0), u2 = (1,0,0)
+			rot.planes = CvBoxPlanesRotated(glm::vec3(0.0f),
+				glm::mat3(0.0f, 0.0f, -1.0f,
+					0.0f, 1.0f, 0.0f,
+					1.0f, 0.0f, 0.0f),
+				glm::vec3(1.0f, 2.0f, 0.5f), 0.0f, 0.0f);
+			Check(rot.Contains(glm::vec3(0.0f)),
+				"cvol rotated contains center");
+			Check(!rot.Contains(glm::vec3(1.2f, 0.0f, 0.0f)),
+				"cvol rotated rejects past u2 half extent");
+			Check(rot.Contains(glm::vec3(0.4f, 0.0f, 0.0f)),
+				"cvol rotated accepts inside u2 half extent");
+			// u0 half = 1.0 along -Z: 0.9 in, 1.2 out.
+			Check(rot.Contains(glm::vec3(0.0f, 0.0f, -0.9f)),
+				"cvol rotated accepts inside u0 half extent");
+			Check(!rot.Contains(glm::vec3(0.0f, 0.0f, -1.2f)),
+				"cvol rotated rejects past u0 half extent");
+			// u1 half = 2.0 along Y: 1.9 in, 2.2 out (the tallest axis).
+			Check(rot.Contains(glm::vec3(0.0f, 1.9f, 0.0f)),
+				"cvol rotated tall axis inside");
+			Check(!rot.Contains(glm::vec3(0.0f, 2.2f, 0.0f)),
+				"cvol rotated tall axis outside");
+			// Off-center rotation: the same hull translated by c.
+			CvVolumeDef moved;
+			moved.planes = CvBoxPlanesRotated(
+				glm::vec3(5.0f, 0.0f, 0.0f), glm::mat3(1.0f),
+				glm::vec3(1.0f), 0.0f, 0.0f);
+			Check(moved.Contains(glm::vec3(5.0f, 0.0f, 0.0f)),
+				"cvol off-center contains center");
+			Check(!moved.Contains(glm::vec3(0.0f)),
+				"cvol off-center rejects the origin");
+		}
 		// Inside the fade band: 0.05 m inside the +x face.
 		// smoothstep(-0.1, 0.1, 0.05): t = 0.75 -> 0.84375.
 		CheckNear(def.Weight(glm::vec3(0.95f, 0.0f, 0.0f)), 0.84375f, 1e-5f,

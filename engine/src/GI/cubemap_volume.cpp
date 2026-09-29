@@ -140,6 +140,36 @@ std::vector<CvPlane> CvBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
 	return planes;
 }
 
+std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
+	const glm::mat3& axes, const glm::vec3& half,
+	float insideFade, float outsideFade) {
+	std::vector<CvPlane> planes;
+	planes.reserve(6);
+	// Axis i: unit direction u (normalized column), half-extent h.
+	// The two faces: u.P <= u.c + h and u.P >= u.c - h (inside:
+	// n.P + d <= 0). Identity axes reproduce CvBoxPlanes exactly
+	// (-x face: d = u.c - h = c.x - h = mn.x, etc).
+	glm::vec3 u[3] = { axes[0], axes[1], axes[2] };
+	for (glm::vec3& a : u) {
+		const float len = glm::length(a);
+		a = (len > 1e-6f) ? a / len : glm::vec3(0.0f);
+	}
+	for (int i = 0; i < 3; ++i) {
+		const float h = half[i];
+		const float uc = glm::dot(u[i], center);
+		CvPlane p{};
+		p.insideFade = insideFade;
+		p.outsideFade = outsideFade;
+		p.normal = -u[i];
+		p.d = uc - h;      // inside: u.P >= u.c - h
+		planes.push_back(p);
+		p.normal = u[i];
+		p.d = -(uc + h);   // inside: u.P <= u.c + h
+		planes.push_back(p);
+	}
+	return planes;
+}
+
 // ---------------------------------------------------------------------------
 // Volume
 // ---------------------------------------------------------------------------

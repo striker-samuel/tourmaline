@@ -2016,10 +2016,10 @@ void EditorApp::DrawCvolSection(uint32_t node) {
 		getNodeName(scene, int(node)).c_str());
 	glm::vec3 mn, mx;
 	if (CvolBox(node, mn, mx))
-		ImGui::TextDisabled("box (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f) m",
+		ImGui::TextDisabled("aabb (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f) m",
 			mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
-	ImGui::TextDisabled("shape = node translate/scale (gizmo or "
-		"transform); rotation ignored (axis-aligned)");
+	ImGui::TextDisabled("shape = node translate/scale/rotation (gizmo "
+		"or transform; a rotated box — the bake rotates the planes)");
 	auto beginCvolDrag = [&](const char* attr) {
 		if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCvolAttr ||
 			m_pending.cmd.node != node || m_pending.cmd.cvolAttr != attr))

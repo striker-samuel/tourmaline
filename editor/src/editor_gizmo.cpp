@@ -63,18 +63,25 @@ void AddCircle(LineBatch& b, const glm::vec3& center, const glm::vec3& u,
 	}
 }
 
-void AddBox(LineBatch& b, const glm::vec3& mn, const glm::vec3& mx) {
-	const glm::vec3 c[8] = {
-		{ mn.x, mn.y, mn.z }, { mx.x, mn.y, mn.z },
-		{ mx.x, mx.y, mn.z }, { mn.x, mx.y, mn.z },
-		{ mn.x, mn.y, mx.z }, { mx.x, mn.y, mx.z },
-		{ mx.x, mx.y, mx.z }, { mn.x, mx.y, mx.z } };
+// Wire box from the 8 corners (OBB: the cvolume authoring box carries
+// the node's rotation — same 12 edges, rotated corners). Corner layout
+// is bit-encoded (i&1 = x/+axis0, i&2 = y/+axis1, i&4 = z/+axis2);
+// the edge table wires the 12 box edges (4 per axis).
+void AddBoxCorners(LineBatch& b, const glm::vec3 c[8]) {
 	static const int e[12][2] = { {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},
 		{6,7},{7,4},{0,4},{1,5},{2,6},{3,7} };
 	for (auto& k : e) {
 		b.verts.push_back({ c[k[0]] });
 		b.verts.push_back({ c[k[1]] });
 	}
+}
+
+void AddBox(LineBatch& b, const glm::vec3& mn, const glm::vec3& mx) {
+	glm::vec3 c[8];
+	for (int i = 0; i < 8; ++i)
+		c[i] = glm::vec3((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y,
+			(i & 4) ? mx.z : mn.z);
+	AddBoxCorners(b, c);
 }
 
 // Wire diamond (octahedron edges): symbolic marker core for lights.
@@ -251,9 +258,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 	}
 	// Convex-volume boxes: one X-ray wire box per cvolume node (shape =
-	// node translate/scale), priority-hued like the GI preview overlay
-	// so authored and baked volumes read the same; the selection draws
-	// bright. Always visible — cvolume nodes carry no mesh to click.
+	// node translate/scale/ROTATION — an OBB), priority-hued like the GI
+	// preview overlay so authored and baked volumes read the same; the
+	// selection draws bright. Always visible — cvolume nodes carry no
+	// mesh to click.
 	if (m_showCvolGizmos && !m_world->scene.cvolForNode.empty()) {
 		const auto priorityRgb = [](uint32_t priority) {
 			// HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
@@ -275,8 +283,8 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			return glm::vec3(r + m, g + m, b + m);
 		};
 		for (const auto& [node, def] : m_world->scene.cvolForNode) {
-			glm::vec3 mn, mx;
-			if (!CvolBox(node, mn, mx))
+			glm::vec3 corners[8];
+			if (!CvolBoxCorners(node, corners))
 				continue;
 			LineBatch b;
 			b.depthTest = false; // X-ray: author shapes against walls
@@ -284,10 +292,18 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				b.color = glm::vec4(1.0f, 0.9f, 0.3f, 1.0f);
 			else
 				b.color = glm::vec4(priorityRgb(def.priority), 1.0f);
-			AddBox(b, mn, mx);
+			AddBoxCorners(b, corners);
 			// Center anchor diamond (the box itself has no mesh to
 			// click; the marker reads at a glance like light nodes).
-			const glm::vec3 c = (mn + mx) * 0.5f;
+			glm::vec3 c(0.0f);
+			for (const glm::vec3& k : corners)
+				c += k;
+			c *= 0.125f;
+			glm::vec3 mn(c), mx(c);
+			for (const glm::vec3& k : corners) {
+				mn = glm::min(mn, k);
+				mx = glm::max(mx, k);
+			}
 			const float s = std::max(
 				glm::length(mx - mn) * 0.02f, 0.05f);
 			AddDiamond(b, c, s);

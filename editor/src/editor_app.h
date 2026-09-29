@@ -1058,10 +1058,17 @@ private:
 		glm::vec4& v4, double& num, std::string& text) const;
 	bool WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, const std::string& text);
-	// World-space authoring box of a cvolume node (center = global
-	// translate, full extents = global scale, axis-aligned — rotation
-	// ignored by design). False when the node has no cvol.
+	// World-space authoring box of a cvolume node: center = global
+	// translate, half extents = 0.5 * global basis lengths, axes = the
+	// NORMALIZED basis (the node's world rotation — OBB; the bake
+	// rotates the six box planes with it). False when the node has
+	// no cvol. CvolBox (mn/mx) = the OBB's AABB.
+	bool CvolOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
+		glm::vec3& half) const;
 	bool CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const;
+	// The OBB's 8 world-space corners (drawing: the gizmo wires show
+	// the rotation). False when the node has no cvol.
+	bool CvolBoxCorners(uint32_t node, glm::vec3 outCorners[8]) const;
 	// Inspector "Convex volume" section for cvolume nodes (priority /
 	// spacing / fades via undoable SetCvolAttr; shape via the transform).
 	void DrawCvolSection(uint32_t node);

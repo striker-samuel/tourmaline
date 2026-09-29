@@ -1002,8 +1002,11 @@ int main(int argc, char** argv) {
 	// Authored convex volumes (editor Create > Convex volume, tour
 	// cvolume nodes): the definition's bake inputs. The node's WORLD
 	// transform carries the box (translate = center, basis lengths =
-	// full extents, axis-aligned — rotation ignored by design); the
-	// node-local def carries the bake params (priority/spacing/fades).
+	// full extents, the NORMALIZED basis = the box axes — ROTATION
+	// supported: an OBB's six planes, CvBoxPlanesRotated); the node-local
+	// def carries the bake params (priority/spacing/fades). The dense
+	// probe lattice stays axis-aligned over the OBB's AABB (Bounds);
+	// the plane weights carve the rotated hull.
 	std::vector<CvSpecVolume> tourCvols;
 	for (const auto& [node, def] : cluster->scene.cvolForNode) {
 		if (node >= cluster->scene.globalTransform.size())
@@ -1011,14 +1014,20 @@ int main(int argc, char** argv) {
 		CvSpecVolume v{};
 		const glm::mat4& g = cluster->scene.globalTransform[node];
 		const glm::vec3 c(g[3]);
-		const glm::vec3 half(0.5f * glm::vec3(glm::length(g[0]),
-			glm::length(g[1]), glm::length(g[2])));
+		glm::vec3 half;
+		glm::mat3 axes;
+		for (int i = 0; i < 3; ++i) {
+			const float len = glm::length(g[i]);
+			half[i] = 0.5f * len;
+			axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len
+				: glm::vec3(0.0f);
+		}
 		v.def.name = getNodeName(cluster->scene, int(node));
 		if (v.def.name.empty())
 			v.def.name = "cvol" + std::to_string(node);
 		v.def.priority = def.priority;
 		v.spacing = def.spacing;
-		v.def.planes = smvk::gi::CvBoxPlanes(c - half, c + half,
+		v.def.planes = smvk::gi::CvBoxPlanesRotated(c, axes, half,
 			def.insideFade, def.outsideFade);
 		tourCvols.push_back(std::move(v));
 	}

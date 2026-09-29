@@ -135,6 +135,16 @@ struct CvVolumeDef {
 std::vector<CvPlane> CvBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
 	float insideFade = 0.1f, float outsideFade = 0.1f);
 
+// ROTATED box (OBB) helper: center + orthonormal axes as mat3 COLUMNS
+// (normalized defensively) + half extents -> six planes. The authored
+// cvolume nodes' rotation support: the dense probe lattice stays
+// axis-aligned over the OBB's AABB (Bounds); the plane weights carve
+// the rotated hull. Identity axes degenerate to CvBoxPlanes exactly.
+// Face order: -u0, +u0, -u1, +u1, -u2, +u2.
+std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
+	const glm::mat3& axes, const glm::vec3& half,
+	float insideFade = 0.1f, float outsideFade = 0.1f);
+
 // ---------------------------------------------------------------------------
 // Volume (cooked)
 // ---------------------------------------------------------------------------

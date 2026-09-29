@@ -1795,7 +1795,8 @@ bool EditorApp::WriteNodeCvolAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
-bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
+bool EditorApp::CvolOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
+	glm::vec3& half) const {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
@@ -1803,16 +1804,52 @@ bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
 		return false;
 	if (node >= scene.globalTransform.size())
 		return false;
-	// Authoring box: center = global translate, full extents = global
-	// scale (basis lengths — exact for unrotated nodes, a conservative
-	// AABB otherwise). Rotation is ignored by design (gi_baker
-	// box-spec shape).
+	// Authoring box: center = global translate, half extents = half the
+	// global basis lengths, axes = the NORMALIZED basis columns (the
+	// node's world rotation — an OBB; the bake rotates the six box
+	// planes with it, CvBoxPlanesRotated).
 	const glm::mat4& g = scene.globalTransform[node];
-	const glm::vec3 c(g[3]);
-	const glm::vec3 half(0.5f * glm::vec3(glm::length(g[0]),
-		glm::length(g[1]), glm::length(g[2])));
-	mn = c - half;
-	mx = c + half;
+	center = glm::vec3(g[3]);
+	for (int i = 0; i < 3; ++i) {
+		const float len = glm::length(g[i]);
+		half[i] = 0.5f * len;
+		axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len
+			: glm::vec3(0.0f);
+	}
+	return true;
+}
+
+bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
+	// AABB of the (possibly rotated) authoring OBB.
+	glm::vec3 c;
+	glm::mat3 axes;
+	glm::vec3 half;
+	if (!CvolOBB(node, c, axes, half))
+		return false;
+	mn = c;
+	mx = c;
+	const glm::vec3 ax[3] = { axes[0] * half[0], axes[1] * half[1],
+		axes[2] * half[2] };
+	for (const glm::vec3& a : ax) {
+		mn -= glm::abs(a);
+		mx += glm::abs(a);
+	}
+	return true;
+}
+
+bool EditorApp::CvolBoxCorners(uint32_t node,
+	glm::vec3 outCorners[8]) const {
+	glm::vec3 c;
+	glm::mat3 axes;
+	glm::vec3 half;
+	if (!CvolOBB(node, c, axes, half))
+		return false;
+	const glm::vec3 ax[3] = { axes[0] * half[0], axes[1] * half[1],
+		axes[2] * half[2] };
+	for (int i = 0; i < 8; ++i)
+		outCorners[i] = c + ((i & 1) ? ax[0] : -ax[0])
+			+ ((i & 2) ? ax[1] : -ax[1])
+			+ ((i & 4) ? ax[2] : -ax[2]);
 	return true;
 }
 

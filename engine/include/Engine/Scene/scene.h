@@ -86,8 +86,9 @@ struct SceneCamera {
 // Authored convex GI volume (editor cvolume node / tour createCvolume):
 // a box-shaped dense-probe region (gi_baker box-spec shape). The SHAPE
 // rides the node's transform (translate = box center, scale = full
-// extents, axis-aligned — rotation ignored); this carries the bake
-// params. Node-local like SceneLight (no pool); resolved against
+// extents, ROTATION = the box axes — an OBB: the bake rotates the six
+// box planes, CvBoxPlanesRotated); this carries the bake params.
+// Node-local like SceneLight (no pool); resolved against
 // globalTransform[node] at use so parenting applies like meshes.
 struct SceneCvol {
 	uint32_t priority = 0;   // higher = composited later = wins
