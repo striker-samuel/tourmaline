@@ -1516,11 +1516,39 @@ private:
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
 	bool ImportAsset(const std::string& srcPath);
-	// Asset browser (bottom dock "Assets" tab): every asset
-	// registered in the project's asset directory (assets.db — the
-	// .meta GUID registry) with open/reveal actions. No-op rows-wise
+	// Asset browser (bottom dock "Assets" tab): a GRID directory
+	// explorer of the project folder (Unity Project window style):
+	// breadcrumb + Up navigation, folders first, SVG icons, registered
+	// asset badges (green dot = assets.db GUID), double-click opens
+	// scenes / enters folders, Import + Rescan in the header. No-op
 	// without a project.
 	void DrawAssetsPanel();
+	// Browser navigation state: the browsed directory (absolute;
+	// empty/invalid/out-of-project -> <root>/content at the next draw)
+	// and the selected entry (absolute, "" = none).
+	std::string m_assetsDir;
+	std::string m_assetsSel;
+	// ---- SVG icon set (editor/icons/*.svg, rasterized once) ----
+	// nanosvg -> premultiplied RGBA8 textures, each registered as an
+	// ImGui user texture (ImGui_ImplVulkan_AddTexture) so the asset
+	// browser grid can ImDrawList::AddImage them. A failed/missing
+	// icon falls back to the drawn vector shapes (DrawAssetIcon).
+	enum class IconType : int {
+		Folder, Pak, Model, Scene, Texture, File,
+		Light, Camera, Env, GI, Character, Skeleton,
+		Animation, Timeline, Settings, Count
+	};
+	struct IconTex {
+		smvk::Holder<smvk::TextureHandle> tex; // keeps the image alive
+		ImTextureID imgui = 0; // user texture id; 0 = shape fallback
+	};
+	IconTex m_icons[size_t(IconType::Count)];
+	bool m_iconsReady = false;
+	bool EnsureSvgIcons(); // rasterize + register (once; ImGui must be up)
+	IconType IconTypeFor(const std::string& name, bool dir) const;
+	// Fallback icon art (drawn shapes) when an SVG icon is unavailable.
+	void DrawAssetIconFallback(ImDrawList* dl, const ImVec2& org,
+		float size, IconType k) const;
 	// Windows explorer /select reveal (no-op + log on failure).
 	void RevealInExplorer(const std::string& absPath);
 	// The copy+adopt half of ImportAsset (no scene switch, no cook

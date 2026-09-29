@@ -218,6 +218,8 @@ bool ResourceManager::IsCubemapTexture(TextureHandle handle) const { return impl
 uint32_t ResourceManager::GetTextureArrayLayers(TextureHandle handle) const { return impl_->vulkan.GetTextureArrayLayers(handle); }
 uint32_t ResourceManager::GetTextureCubemapSize(TextureHandle handle) const { return impl_->vulkan.GetTextureCubemapSize(handle); }
 uint32_t ResourceManager::GetTextureMipLevels(TextureHandle handle) const { return impl_->vulkan.GetTextureMipLevels(handle); }
+const void* ResourceManager::GetTextureVkImageView(TextureHandle handle) const { return impl_->vulkan.GetTextureVkImageView(handle); }
+const void* ResourceManager::GetVkSamplerOpaque(uint32_t samplerIndex) const { return impl_->vulkan.GetVkSamplerOpaque(samplerIndex); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }
 bool ResourceManager::RecreateSampler(uint32_t index, const SamplerCreateInfo& ci) { return impl_->vulkan.RecreateSampler(index, ci); }

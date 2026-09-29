@@ -204,6 +204,9 @@ bool EditorApp::Initialize() {
 		style.Colors[ImGuiCol_TitleBg].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBgActive].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBgCollapsed].w = 1.0f;
+		// SVG icon set (asset browser grid): the Vulkan backend must
+		// be up for the ImGui user-texture registration.
+		EnsureSvgIcons();
 	}
 
 	// Default editor cameras (Perspective / Top ortho / Side ortho).

@@ -341,50 +341,118 @@ std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 			+ "': " + ec.message());
 		return {};
 	}
-	// glTF companions (buffers, images, transcoded .ktx2 sidecars)
-	// live next to the source by convention: copy the whole sibling
-	// set so relative URIs keep resolving. Stale .tour files do NOT
-	// come along (they pin the OLD source path; fresh tours are
-	// authored in-project). Same-dir import adopts in place.
+	// DEPENDENCY CLOSURE (structure-preserving): parse the source
+	// once here and copy every external buffer + image URI at its
+	// URI-relative path under the destination — the model's relative
+	// links keep resolving IN the project (subfolder textures
+	// included; the old flat sibling copy missed them and the links
+	// broke, with no way for the path editor to relink a source that
+	// never came along). `.ktx2` sidecars ride their images (same
+	// dir, same stem — the auto-ktx convention), the source's own
+	// .meta keeps its GUID. Unreferenced files stay behind (no
+	// folder dump); stale .tour files never come (they pin the OLD
+	// source path). Same-dir import adopts in place.
 	const fs::path srcDir = src.parent_path();
 	uint64_t copiedBytes = 0;
 	size_t copiedFiles = 0;
+	auto copyIn = [&](const fs::path& from, const fs::path& to)
+		-> bool {
+		std::error_code cec;
+		if (fs::equivalent(from, to, cec) && !cec)
+			return true; // same file (safety net)
+		fs::create_directories(to.parent_path(), cec);
+		if (cec) {
+			Log("Import: cannot create '"
+				+ to.parent_path().generic_string() + "': "
+				+ cec.message());
+			return false;
+		}
+		fs::copy_file(from, to, fs::copy_options::overwrite_existing,
+			cec);
+		if (cec) {
+			Log("Import: copy failed '" + from.generic_string()
+				+ "': " + cec.message());
+			return false;
+		}
+		++copiedFiles;
+		std::error_code sec;
+		copiedBytes += fs::file_size(from, sec);
+		return true;
+	};
 	if (fs::equivalent(srcDir, destDir, ec) && !ec) {
 		Log("Import: source already inside the project — adopting '"
 			+ srcPath + "' in place.");
 	}
 	else {
-		for (const auto& entry : fs::directory_iterator(srcDir, ec)) {
-			if (ec)
-				break;
-			if (!entry.is_regular_file(ec) || ec)
-				continue;
-			const fs::path& p = entry.path();
-			std::string ext = p.extension().string();
-			for (char& c : ext)
-				c = char(std::tolower((unsigned char)c));
-			if (ext == ".tour")
-				continue; // stale source pin; re-authored in-project
-			fs::copy_file(p, destDir / p.filename(),
-				fs::copy_options::overwrite_existing, ec);
-			if (ec) {
-				Log("Import: copy failed '" + p.generic_string()
-					+ "': " + ec.message());
-				return {};
-			}
-			++copiedFiles;
-			copiedBytes += entry.file_size(ec);
-		}
-		if (ec) {
-			Log("Import: cannot list '" + srcDir.generic_string()
-				+ "': " + ec.message());
+		// The model file first (dependencies may point back at it).
+		if (!copyIn(src, destDir / src.filename()))
 			return {};
+		// External dependencies: buffers + images with URIs.
+		std::vector<std::string> uris;
+		{
+			tinygltf::Model deps;
+			if (!LoadModelFromAsciiFile(deps, srcPath.c_str())) {
+				Log("Import: source parse failed — copied the model "
+					"file only (dependencies may dangle; the Path "
+					"editor can relink).");
+			}
+			else {
+				for (const auto& b : deps.buffers)
+					if (!b.uri.empty() && b.uri.rfind("data:", 0) != 0)
+						uris.push_back(b.uri);
+				for (const auto& im : deps.images)
+					if (!im.uri.empty() && im.uri.rfind("data:", 0) != 0)
+						uris.push_back(im.uri);
+			}
 		}
-		char buf[128];
+		size_t missing = 0, flattened = 0;
+		for (const std::string& uri : uris) {
+			const fs::path rel(uri);
+			const fs::path from = (srcDir / rel).lexically_normal();
+			std::error_code fec;
+			if (!fs::is_regular_file(from, fec)) {
+				++missing;
+				Log("Import: dependency missing at the source: '"
+					+ uri + "' (" + from.generic_string() + ").");
+				continue;
+			}
+			fs::path to = (destDir / rel).lexically_normal();
+			// Escaping URIs ("../x") would land outside the project:
+			// flatten into the asset dir — the link stays broken;
+			// the Path editor relinks those.
+			if (!InProjectDir(to.generic_string())) {
+				to = destDir / from.filename();
+				++flattened;
+			}
+			if (!copyIn(from, to))
+				return {};
+			// `.ktx2` sidecar (same dir, same stem): best-effort ride.
+			fs::path side = from;
+			side.replace_extension(".ktx2");
+			if (fs::is_regular_file(side, fec)) {
+				fs::path sideTo = to;
+				sideTo.replace_extension(".ktx2");
+				(void)copyIn(side, sideTo);
+			}
+		}
+		// The source's own .meta sidecar (GUID identity) rides along.
+		std::error_code mec;
+		const fs::path srcMeta = srcDir
+			/ (src.filename().string() + ".meta");
+		if (fs::is_regular_file(srcMeta, mec))
+			(void)copyIn(srcMeta,
+				destDir / (src.filename().string() + ".meta"));
+		char buf[160];
 		std::snprintf(buf, sizeof(buf), "%zu file(s), %.1f MiB",
 			copiedFiles, double(copiedBytes) / (1024.0 * 1024.0));
-		Log("Import: '" + src.filename().string() + "' + companions "
-			"-> '" + destDir.generic_string() + "' (" + buf + ").");
+		Log("Import: '" + src.filename().string() + "' + dependency "
+			"closure -> '" + destDir.generic_string() + "' (" + buf
+			+ (missing ? std::string(", ") + std::to_string(missing)
+				+ " missing" : "")
+			+ (flattened ? std::string(", ")
+				+ std::to_string(flattened)
+				+ " flattened (../)" : "")
+			+ ").");
 	}
 	const fs::path dest = destDir / src.filename();
 	// The copied-along .meta (if any) keeps the asset's GUID; a fresh

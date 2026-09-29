@@ -4391,8 +4391,42 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 		return -1;
 	}
 	smvk::Cluster* cl = m_world->clusters[0].get();
-	auto holder = smvk::LoadKtxTextureMemory(*m_context, bytes.data(),
-		bytes.size(), path);
+	// KTX2 payload passes through; other image sources (PNG/JPG/...)
+	// transcode to KTX2 (the importer's own conversion) so the Path
+	// editor + material slots can relink against the ORIGINAL source
+	// files too — a bare PNG used to fail the KTX load with no way to
+	// fix a broken texture link. HDR needs a float transcode (skip).
+	std::vector<uint8_t> payload = bytes; // what the GPU gets
+	const bool isKtx2 = bytes.size() >= 8
+		&& bytes[0] == 0xAB && bytes[1] == 'K' && bytes[2] == 'T'
+		&& bytes[3] == 'X' && bytes[4] == ' ' && bytes[5] == '2'
+		&& bytes[6] == '0' && bytes[7] == 0xBB;
+	if (!isKtx2) {
+		std::string ext =
+			std::filesystem::path(path).extension().string();
+		for (char& c : ext)
+			c = char(std::tolower((unsigned char)c));
+		if (ext == ".hdr" || ext == ".exr") {
+			Log("Material editor: HDR sources need a float transcode "
+				"(unsupported here): " + path);
+			return -1;
+		}
+		std::string terr;
+		std::vector<uint8_t> ktx;
+		// sRGB transfer (color textures): normal maps want linear —
+		// prefer a pre-converted .ktx2 for those.
+		if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), true,
+				path, ktx, terr)) {
+			Log("Material editor: texture transcode failed '" + path
+				+ "': " + terr);
+			return -1;
+		}
+		payload = std::move(ktx);
+		Log("Material editor: transcoded '" + path + "' to KTX2 "
+			"(sRGB).");
+	}
+	auto holder = smvk::LoadKtxTextureMemory(*m_context, payload.data(),
+		payload.size(), path);
 	if (!holder.valid()) {
 		Log("Material editor: KTX2 load failed: " + path);
 		return -1;
@@ -4400,6 +4434,8 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 	const smvk::TextureHandle h = holder;
 	cl->textures.create(std::move(holder));
 	cl->RegisterTextureUri(path, h);
+	// The ORIGINAL source bytes ride the pool entry (cooks re-embed +
+	// re-convert from source, exactly like imported images).
 	cl->SetTextureSource(path, std::move(bytes));
 	// Refresh pool->RHI-handle + bindless maps so the renderer can bind
 	// the new texture this frame.

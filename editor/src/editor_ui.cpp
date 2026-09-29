@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <unordered_map>
 
 #include <glm/gtc/type_ptr.hpp>
 
@@ -216,7 +217,7 @@ void EditorApp::DrawMenuBar() {
 		// Project first (Unity/Unreal style): a project folder owns
 		// content/, paks/, gi/ and its own artifacts/ cache. Imports
 		// land in it and the hosted view shows them with the full
-		// pipeline — no manual staging.
+		// pipeline â€” no manual staging.
 		if (ImGui::MenuItem("New / Open Project...")) {
 			std::string picked;
 			if (NativePickFolder(picked) && !picked.empty())
@@ -297,7 +298,7 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::MenuItem("Image...", nullptr, false, canCreate)) {
 			// Maya file node: an image definition (path + sampling
-			// settings) held OUTSIDE the DAG — editor-only state until
+			// settings) held OUTSIDE the DAG â€” editor-only state until
 			// a material uses it.
 			std::string picked;
 			if (NativeOpenFile(picked, true) && !picked.empty())
@@ -320,7 +321,7 @@ void EditorApp::DrawMenuBar() {
 		// Del-key twin (modal registry 'Del'): deletes the editor-created
 		// content in the selection (created lights, terrain groups);
 		// imports/references are refused with a log (ids must stay
-		// stable — hide those instead).
+		// stable â€” hide those instead).
 		if (ImGui::MenuItem("Delete selection", "Del", false,
 				m_world && (m_selected != UINT32_MAX
 					|| !m_selection.empty())))
@@ -330,7 +331,7 @@ void EditorApp::DrawMenuBar() {
 		// per-attr edits drop (their LAST occurrence already carries the
 		// live state), the redo tail clears, the .tour lightens. Creates
 		// and terrain paint stamps stay (structure / ordered bake). NOT
-		// undoable — same contract as Maya's delete-history.
+		// undoable â€” same contract as Maya's delete-history.
 		if (ImGui::MenuItem(
 				("Coalesce history (" + std::to_string(UndoDepth())
 					+ " cmds)").c_str(),
@@ -342,7 +343,7 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Keeps only the last edit per node/attr "
-				"channel — the surviving state — so the tour replays "
+				"channel â€” the surviving state â€” so the tour replays "
 				"identically from fewer commands.");
 		ImGui::EndMenu();
 	}
@@ -367,7 +368,7 @@ void EditorApp::DrawMenuBar() {
 	}
 	if (ImGui::BeginMenu("View")) {
 		ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
-			"F9..F11, P) — same view, same key, live view.");
+			"F9..F11, P) â€” same view, same key, live view.");
 		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
 			ActiveViewMode() == ViewMode::Unlit))
 			ActiveViewMode() = ViewMode::Unlit;
@@ -404,7 +405,7 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
 		ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
-			"prepass — lines never draw over the objects in front.");
+			"prepass â€” lines never draw over the objects in front.");
 		ImGui::Separator();
 		if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
 			m_vpLayout = 0;
@@ -869,7 +870,7 @@ bool EditorApp::PakSelected() const {
 
 void EditorApp::DrawOutliner() {
 	// DEPRECATED: the cooked-VFS inspection tab (pak browsing +
-	// "in pak" orange rows) is gone — the WYSIWYG hosted preview
+	// "in pak" orange rows) is gone â€” the WYSIWYG hosted preview
 	// (App-parity WorldRenderer over the scratch scene pak) replaced
 	// cooked-content inspection in the editor; tools/pak_browser.py
 	// remains the standalone pak inspector.
@@ -948,7 +949,7 @@ void EditorApp::DrawNonDagSection() {
 	const bool filtering = m_filterBuf[0] != '\0';
 	// Editor orbit cameras (virtual rows): click binds the ACTIVE
 	// viewport (same as its chip combo). These are session view state,
-	// never scene nodes — they don't select, don't cook, and stay out
+	// never scene nodes â€” they don't select, don't cook, and stay out
 	// of the shift-range order.
 	auto drawEditorCamRow = [&](size_t ci) {
 		const EditorCam& ec = m_editorCams[ci];
@@ -1080,7 +1081,7 @@ void EditorApp::DrawSceneOutliner() {
 	m_outlinerOrder.clear(); // rebuilt below (tree XOR filter rows)
 	ImGui::BeginChild("##tree");
 	// World pseudo-node: global render settings. Pinned above the tree,
-	// never part of it — no children, no drag&drop, no rename/delete.
+	// never part of it â€” no children, no drag&drop, no rename/delete.
 	// (Filtered out by the node filter like everything else.)
 	if (!filtering || std::string("World").find(m_filterBuf) != std::string::npos) {
 		ImGui::PushID("worldnode");
@@ -1479,10 +1480,10 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		ImGui::SetScrollHereY(0.5f);
 	if (open) {
 		// Disabled references keep their placeholder row (the anchor
-		// for re-enabling) but the TREE is not shown — the nodes stay
+		// for re-enabling) but the TREE is not shown â€” the nodes stay
 		// in the scene (stable ids), just out of sight.
 		if (m_disabledRefRoots.contains(node)) {
-			ImGui::TextDisabled("    (reference disabled — %zu node(s) "
+			ImGui::TextDisabled("    (reference disabled â€” %zu node(s) "
 				"hidden)",
 				RefSubtreeSizeForOutliner(node));
 		}
@@ -1611,7 +1612,7 @@ const EditorApp::TexPreview& EditorApp::ResolveDiffusePreview(uint32_t matWorld)
 	}
 	// 8-bit 1-4 channel data (transcoded RGBA32 lands here too: 4
 	// comps, 4-byte texels). NOTE: GetElementSize is bytes per TEXEL,
-	// not per component — RGBA8 reports 4.
+	// not per component â€” RGBA8 reports 4.
 	const ktx_uint32_t comps = ktxTexture2_GetNumComponents(raw);
 	const ktx_size_t elemSize =
 		ktxTexture_GetElementSize(reinterpret_cast<ktxTexture*>(raw));
@@ -2092,7 +2093,7 @@ void EditorApp::DrawCubemapSection(uint32_t node) {
 	ImGui::Separator();
 	ImGui::Text("Cubemap capture: '%s'",
 		getNodeName(scene, int(node)).c_str());
-	ImGui::TextDisabled("pinned probe — wins weight ties at load");
+	ImGui::TextDisabled("pinned probe â€” wins weight ties at load");
 	auto beginCubeDrag = [&](const char* attr) {
 		if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCubemapAttr ||
 			m_pending.cmd.node != node || m_pending.cmd.cubemapAttr != attr))
@@ -2571,7 +2572,7 @@ void EditorApp::DrawInspector() {
 			ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
 				-aimWs.y, -aimWs.z,
 				m_hasCookedSun && m_cookedSunName == li->name
-				? " — seeds the editor IBL default" : "");
+				? " â€” seeds the editor IBL default" : "");
 		else {
 			const glm::vec3 p = node < scene.globalTransform.size()
 				? glm::vec3(scene.globalTransform[node][3]) : glm::vec3(0.0f);
@@ -2755,7 +2756,7 @@ void EditorApp::DrawInspector() {
 	DrawInspectorOverrides(node);
 
 	// Environment node: mark/use this node as an IBL source (scene
-	// definition — the block lives in the scene, the selection below
+	// definition â€” the block lives in the scene, the selection below
 	// resolves into the rendered look).
 	{
 		ImGui::Separator();
@@ -2784,7 +2785,7 @@ void EditorApp::DrawInspector() {
 	DrawReferenceSection(node);
 	// NOTE: the active-viewport orbit camera used to live here; it moved
 	// to the World panel ("Viewport camera"). Node pages show authored
-	// state only — camera nodes get the lens section above instead.
+	// state only â€” camera nodes get the lens section above instead.
 }
 
 void EditorApp::DrawCameraSection() {
@@ -2871,7 +2872,7 @@ void EditorApp::DrawLightmapPanel() {
 			"(whole scene, atlas uv2 layout).");
 		ImGui::Checkbox("Export UV coordinates", &m_lmExportUv);
 		ImGui::SetItemTooltip("Render the atlas uv itself (checker + "
-			"gradient + stretch glow) instead of the baked content — "
+			"gradient + stretch glow) instead of the baked content â€” "
 			"the QA view of the parameterization.");
 		if (!m_lmGpu)
 			ImGui::BeginDisabled();
@@ -2910,7 +2911,7 @@ void EditorApp::DrawLightmapPanel() {
 }
 
 void EditorApp::DumpPakManifest() {
-	// Cached reader (parsed once at load; Open decompresses — never redo).
+	// Cached reader (parsed once at load; Open decompresses â€” never redo).
 	if (!m_pakReader) {
 		Log("Dump: no pak loaded.");
 		return;
@@ -2991,7 +2992,7 @@ void EditorApp::DumpPakManifest() {
 	// lmChunk histogram straight from the mesh blobs (pak-sourced, same
 	// cursor as PakCooker --dump-manifest). The editor never draws LODs,
 	// so LOD0 only: "<base>/lodN" sibling blobs are runtime alternates
-	// with their own per-LOD atlas rects — counting them would skew the
+	// with their own per-LOD atlas rects â€” counting them would skew the
 	// histogram away from what every editor lightmap view samples.
 	uint32_t lmNone = 0, lm5 = 0, lm6 = 0, lm9 = 0, lm12 = 0, lmOther = 0;
 	uint32_t lmLodSkipped = 0;
@@ -3020,7 +3021,7 @@ void EditorApp::DumpPakManifest() {
 		const std::string uri(reinterpret_cast<const char*>(img.data() + off), n);
 		off += n; // uri
 		// LOD sibling blob ("<base>/lodN"): not drawn by the editor,
-		// not part of its lightmap sampling — skip (counted below).
+		// not part of its lightmap sampling â€” skip (counted below).
 		if (smvk::BaseMeshUriForLod(smvk::StringViewT(uri)) != smvk::StringViewT(uri)) {
 			++lmLodSkipped;
 			continue;
@@ -3259,7 +3260,7 @@ void EditorApp::DrawConsolePanel() {
 // sampling settings each. A material that uses one mints the cluster
 // texture resource at use time; until then these are authoring state.
 // Persisted as img.* editorSettings (legacy) AND cooked fileNode records
-// (path + colorspace + sampler intent — the cooker reads them for KTX
+// (path + colorspace + sampler intent â€” the cooker reads them for KTX
 // conversion); fileNodes win on load.
 void EditorApp::DrawImagesTab() {
 	if (ImGui::Button("Add image...")) {
@@ -3268,7 +3269,7 @@ void EditorApp::DrawImagesTab() {
 			AddImageDef(picked);
 	}
 	ImGui::SameLine();
-	ImGui::TextDisabled("%zu image(s) — outside the DAG, editor-only",
+	ImGui::TextDisabled("%zu image(s) â€” outside the DAG, editor-only",
 		m_images.size());
 	if (m_images.empty()) {
 		ImGui::TextDisabled("Create > Image... adds one; a material that");
@@ -3346,7 +3347,7 @@ void EditorApp::DrawImagesTab() {
 }
 
 void EditorApp::DrawInsetTag() {
-	// (Viewport legend removed — overlay window, menu item and chip
+	// (Viewport legend removed â€” overlay window, menu item and chip
 	// button deleted. The per-view refresh combos moved onto the
 	// viewport chips, next to the per-panel view-mode combo.)
 
@@ -3539,7 +3540,7 @@ void EditorApp::DrawCookDialog() {
 			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
 		return;
 	// Cook finished while the dialog was up (progress state): close
-	// itself — the completion lands in the Console either way.
+	// itself â€” the completion lands in the Console either way.
 	if (m_cookJustFinished) {
 		m_cookJustFinished = false;
 		m_showCookDialog = false;
@@ -3551,7 +3552,7 @@ void EditorApp::DrawCookDialog() {
 	ImGui::Text("Export the current scene + tour edits to a cooked .pak.");
 	ImGui::Separator();
 
-	// Labels ride their OWN lines and fields take the full width —
+	// Labels ride their OWN lines and fields take the full width â€”
 	// shared label/widget lines collide in narrow modals.
 	ImGui::Text("Output .pak path (relative to content/ or absolute):");
 	{
@@ -3744,7 +3745,7 @@ void EditorApp::DrawCookDialog() {
 	}
 
 	ImGui::Separator();
-	ImGui::Text("GI (probes) — baked ON DEMAND, never with the cook");
+	ImGui::Text("GI (probes) â€” baked ON DEMAND, never with the cook");
 	ImGui::TextDisabled("%u cvolume node(s) authored in this scene",
 		m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
 	if (ImGui::Checkbox("Convex volumes (bake authored)", &m_cook.giCvol))
@@ -3758,14 +3759,14 @@ void EditorApp::DrawCookDialog() {
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("gi/<pak-stem>.sggi: the global fallback the\n"
 			"runtime samples outside any convex volume.\n"
-			"This is the slow stage (minutes on real scenes) — it\n"
+			"This is the slow stage (minutes on real scenes) â€” it\n"
 			"runs only via Bake GI below. Unbaked scenes render\n"
 			"sky IBL instead.");
 	if (!m_giBakedHash.empty()) {
 		const bool fresh = !m_cookDefHash.empty()
 			&& m_giBakedHash == m_cookDefHash;
 		ImGui::TextDisabled("GI baked (%s)", fresh ? "sidecars fresh"
-			: "may predate this cook — rebake to refresh");
+			: "may predate this cook â€” rebake to refresh");
 	}
 	if (m_bakeRunning) {
 		ImGui::Text("Baking GI... (see Console)");
@@ -3813,7 +3814,7 @@ void EditorApp::DrawCookDialog() {
 // Texture-centric material authoring: pick a material, assign its PBR
 // texture slots from the cluster texture registry, manage layers, and add
 // textures as FILE PATH refs (KTX2 loads into the pool with the path as
-// the URI — cook re-embeds the stashed bytes). Deeper per-material pages
+// the URI â€” cook re-embeds the stashed bytes). Deeper per-material pages
 // (emissive/alpha/flags/travel) live in the material focus page.
 void EditorApp::DrawMaterialEditor() {
 	if (!m_world || m_world->materialLocations.empty()) {
@@ -4003,7 +4004,7 @@ void EditorApp::DrawMaterialEditor() {
 		ImGui::BulletText("%u  %s", uint32_t(th.index()), uri.Str().c_str());
 	}
 	ImGui::SetNextItemWidth(-90.0f);
-	ImGui::InputTextWithHint("##matTexPath", "KTX2 file path...",
+	ImGui::InputTextWithHint("##matTexPath", "Texture file path...",
 		m_matTexPathBuf, sizeof(m_matTexPathBuf));
 	ImGui::SameLine();
 	if (ImGui::Button("Add...##tex")) {
@@ -4015,9 +4016,10 @@ void EditorApp::DrawMaterialEditor() {
 		}
 	}
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Loads the KTX2 into the texture pool with the "
-			"file path as its URI (a filepath ref). Source bytes are "
-			"stashed so cooks re-embed them.");
+		ImGui::SetTooltip("Loads the texture into the texture pool with "
+			"the file path as its URI (a filepath ref). KTX2 loads "
+			"directly; PNG/JPG/... transcode to KTX2 (sRGB) on the way. "
+			"Source bytes are stashed so cooks re-embed them.");
 	ImGui::TextDisabled("Slots store pool indices; -1 clears a slot.");
 }
 
@@ -4052,7 +4054,7 @@ void EditorApp::RevealInExplorer(const std::string& absPath) {
 }
 
 void EditorApp::DrawProjectDialog() {
-	// FORCED startup project selection: a blocking modal (no close —
+	// FORCED startup project selection: a blocking modal (no close â€”
 	// the editor is project-bound; smoke flows never see it). Recents
 	// first (one click; the current project sits on top), New/Browse
 	// for anything else. Opened from DrawMenuBar's popup tail.
@@ -4085,7 +4087,7 @@ void EditorApp::DrawProjectDialog() {
 		if (ImGui::Selectable(("##rec" + std::to_string(i)).c_str(),
 				current, ImGuiSelectableFlags_SpanAllColumns,
 				ImVec2(0, 0))) {
-			// Row click (single) opens too — the dialog is one step.
+			// Row click (single) opens too â€” the dialog is one step.
 			if (isProject) {
 				opened = OpenProject(dir);
 				if (!opened)
@@ -4133,114 +4135,427 @@ void EditorApp::DrawProjectDialog() {
 }
 
 void EditorApp::DrawAssetsPanel() {
-	// Asset browser: every asset registered in the project's asset
-	// directory (assets.db - the .meta GUID registry). One row per
-	// asset: name, stored path (project-relative), kind, GUID,
-	// presence + size, open + reveal actions. Re-scans on demand;
-	// the listing re-queries while visible (editor-scale table,
-	// sub-ms).
-	if (!m_assetDb.IsOpen()) {
-		ImGui::TextDisabled("Assets: open a project first (no asset "
-			"directory without one).");
+	// Asset browser: a GRID directory explorer of the project folder
+	// (Unity Project window style). Breadcrumb + Up; folders first;
+	// SVG icon tiles (m_icons via ImDrawList::AddImage, drawn shapes
+	// as the fallback); a green badge marks assets with a registered
+	// GUID (assets.db); click selects, double-click enters folders /
+	// opens scenes; Import + Rescan ride the header.
+	if (m_projectRoot.empty()) {
+		ImGui::TextDisabled("Assets: open a project first (File > New / "
+			"Open Project...).");
 		return;
 	}
-	std::string err;
-	if (ImGui::Button("Rescan")) {
-		smvk::cache::RescanStats stats;
-		if (m_assetDb.RescanProject(stats, err))
-			Log("Asset rescan: " + std::to_string(stats.adopted)
-				+ " adopted, " + std::to_string(stats.moved)
-				+ " re-pointed, " + std::to_string(stats.missing)
-				+ " missing.");
-		else
-			Log("Asset rescan failed: " + err);
+	namespace fs = std::filesystem;
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+
+	// Navigation state heal: home = <root>/content.
+	std::error_code ec;
+	if (m_assetsDir.empty()
+		|| !fs::is_directory(fs::path(m_assetsDir), ec)
+		|| !InProjectDir(m_assetsDir)) {
+		m_assetsDir =
+			(fs::path(m_projectRoot) / "content").generic_string();
+		m_assetsSel.clear();
+	}
+
+	// ---- header row 1: Up + breadcrumb + current dir ----------------
+	ImGui::BeginDisabled(ProjectRelativePath(m_assetsDir).empty());
+	if (ImGui::SmallButton("^ Up")) {
+		const std::string rel = ProjectRelativePath(m_assetsDir);
+		const size_t slash = rel.find_last_of('/');
+		m_assetsDir = (slash == std::string::npos)
+			? m_projectRoot
+			: (fs::path(m_projectRoot)
+				/ rel.substr(0, slash)).generic_string();
+		m_assetsSel.clear();
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	{
+		// Breadcrumb: [project] > content > models > ... (the last
+		// component = the current dir; clicking it is a no-op).
+		if (ImGui::SmallButton(m_projectName.c_str())) {
+			m_assetsDir = m_projectRoot;
+			m_assetsSel.clear();
+		}
+		fs::path acc = fs::path(m_projectRoot);
+		std::string rel = ProjectRelativePath(m_assetsDir);
+		while (!rel.empty()) {
+			ImGui::SameLine();
+			ImGui::TextDisabled(">");
+			ImGui::SameLine();
+			const size_t slash = rel.find('/');
+			const std::string comp = (slash == std::string::npos)
+				? rel : rel.substr(0, slash);
+			acc = acc / comp;
+			if (ImGui::SmallButton(comp.c_str())) {
+				m_assetsDir = acc.generic_string();
+				m_assetsSel.clear();
+			}
+			rel = (slash == std::string::npos)
+				? std::string() : rel.substr(slash + 1);
+		}
 	}
 	ImGui::SameLine();
-	std::vector<smvk::cache::AssetRecord> rows;
-	if (!m_assetDb.All(rows, err)) {
-		ImGui::TextDisabled("Assets: listing failed: %s", err.c_str());
-		return;
-	}
-	size_t missing = 0;
-	for (const auto& r : rows) {
-		std::error_code ec;
-		if (!std::filesystem::is_regular_file(
-				m_assetDb.ResolvePath(r.path), ec))
-			++missing;
-	}
-	ImGui::TextDisabled("%zu asset(s), %zu missing (moved/deleted "
-		"- Rescan heals moves)", rows.size(), missing);
-	if (!ImGui::BeginTable("##assets",
-			6,
-			ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders
-				| ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
-		ImGui::TextDisabled("(table unavailable)");
-		return;
-	}
-	ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
-		220.0f);
-	ImGui::TableSetupColumn("Path");
-	ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed,
-		70.0f);
-	ImGui::TableSetupColumn("GUID", ImGuiTableColumnFlags_WidthFixed,
-		240.0f);
-	ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
-		92.0f);
-	ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed,
-		176.0f);
-	ImGui::TableHeadersRow();
-	for (size_t i = 0; i < rows.size(); ++i) {
-		const smvk::cache::AssetRecord& r = rows[i];
-		ImGui::PushID(int(i));
-		const std::string abs = m_assetDb.ResolvePath(r.path);
-		std::error_code ec;
-		const bool present =
-			std::filesystem::is_regular_file(abs, ec);
-		const std::string name =
-			std::filesystem::path(abs).filename().string();
-		ImGui::TableNextRow();
-		ImGui::TableSetColumnIndex(0);
-		ImGui::TextUnformatted(name.c_str());
-		ImGui::TableSetColumnIndex(1);
-		ImGui::TextDisabled("%s", r.path.c_str());
-		ImGui::TableSetColumnIndex(2);
-		ImGui::TextUnformatted(r.kind.c_str());
-		ImGui::TableSetColumnIndex(3);
-		if (ImGui::SmallButton("copy##guid")) {
-			ImGui::SetClipboardText(r.guid.c_str());
+	ImGui::TextDisabled("%s", m_assetsDir.c_str());
+
+	// ---- header row 2: Import + Rescan + selection actions ----------
+	if (ImGui::Button("Import asset...")) {
+		std::string picked;
+		if (NativeOpenFile(picked) && !picked.empty()
+			&& ImportAsset(picked)) {
+			// Navigate to where the import landed.
+			m_assetsDir = (fs::path(m_projectRoot) / "content"
+				/ "models").generic_string();
+			m_assetsSel.clear();
 		}
+	}
+	if (m_assetDb.IsOpen()) {
 		ImGui::SameLine();
-		ImGui::TextDisabled("%s", r.guid.c_str());
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Asset UUID (click copy to clipboard).");
-		ImGui::TableSetColumnIndex(4);
-		if (present) {
-			char sz[32];
-			std::snprintf(sz, sizeof(sz), "%.1f KiB",
-				double(r.size) / 1024.0);
-			ImGui::TextDisabled("%s", sz);
+		if (ImGui::Button("Rescan")) {
+			smvk::cache::RescanStats stats;
+			std::string rerr;
+			if (m_assetDb.RescanProject(stats, rerr))
+				Log("Asset rescan: "
+					+ std::to_string(stats.adopted) + " adopted, "
+					+ std::to_string(stats.moved) + " re-pointed, "
+					+ std::to_string(stats.missing) + " missing.");
+			else
+				Log("Asset rescan failed: " + rerr);
 		}
-		else
-			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-				"missing");
-		ImGui::TableSetColumnIndex(5);
-		ImGui::BeginDisabled(!present);
-		if (ImGui::SmallButton("Open")) {
+	}
+	// Selection actions (Open = scene files only).
+	static const auto isOpenable = [](const std::string& p) {
+		std::string e = fs::path(p).extension().string();
+		for (char& c : e)
+			c = char(std::tolower((unsigned char)c));
+		return e == ".gltf" || e == ".glb" || e == ".tour"
+			|| e == ".pak";
+	};
+	{
+		const bool selFile = !m_assetsSel.empty()
+			&& fs::is_regular_file(fs::path(m_assetsSel), ec);
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!(selFile && isOpenable(m_assetsSel)));
+		if (ImGui::SmallButton("Open##sel")) {
 			if (!m_cookRunning)
-				OpenAnySceneFile(abs);
+				OpenAnySceneFile(m_assetsSel);
 			else
 				Log("Assets: a cook is running - wait for it to "
 					"finish.");
 		}
 		ImGui::EndDisabled();
 		ImGui::SameLine();
-		ImGui::BeginDisabled(abs.empty());
-		if (ImGui::SmallButton("Reveal"))
-			RevealInExplorer(abs);
+		ImGui::BeginDisabled(m_assetsSel.empty());
+		if (ImGui::SmallButton("Reveal##sel"))
+			RevealInExplorer(m_assetsSel);
 		ImGui::EndDisabled();
-		ImGui::PopID();
+		// Selected name (+ its GUID when registered).
+		if (!m_assetsSel.empty()) {
+			std::string selGuid;
+			if (m_assetDb.IsOpen())
+				m_assetDb.GuidForPath(m_assetsSel, selGuid);
+			ImGui::SameLine();
+			if (!selGuid.empty()) {
+				if (ImGui::SmallButton("copy uuid##sel"))
+					ImGui::SetClipboardText(selGuid.c_str());
+				ImGui::SameLine();
+				ImGui::TextDisabled("%s", selGuid.c_str());
+			}
+			else {
+				ImGui::TextDisabled("%s",
+					fs::path(m_assetsSel).filename().string().c_str());
+			}
+		}
 	}
-	ImGui::EndTable();
+
+	// ---- grid --------------------------------------------------------
+	ImGui::BeginChild("##assetgrid", ImVec2(0, 0));
+	// Registered GUID map (assets.db) for badges + tooltips.
+	std::unordered_map<std::string, std::string> guidByAbs;
+	if (m_assetDb.IsOpen()) {
+		std::vector<smvk::cache::AssetRecord> rows;
+		std::string derr;
+		if (m_assetDb.All(rows, derr))
+			for (const auto& r : rows)
+				guidByAbs[m_assetDb.ResolvePath(r.path)] = r.guid;
+	}
+	// Entries: directories first, then files, both by name (skip
+	// .meta sidecars + dotfiles).
+	struct Entry {
+		std::string name;
+		std::string abs;
+		bool dir = false;
+		IconType icon{};
+	};
+	std::vector<Entry> dirs, files;
+	for (fs::directory_iterator it(m_assetsDir, ec), end;
+			!ec && it != end; it.increment(ec)) {
+		if (ec)
+			break;
+		std::error_code fec;
+		const bool isDir = it->is_directory(fec) && !fec;
+		if (!isDir && (!it->is_regular_file(fec) || fec))
+			continue;
+		const fs::path& p = it->path();
+		std::string name = p.filename().string();
+		if (name.empty() || name[0] == '.')
+			continue;
+		if (!isDir) {
+			std::string e = p.extension().string();
+			for (char& c : e)
+				c = char(std::tolower((unsigned char)c));
+			if (e == ".meta")
+				continue; // the asset's own identity sidecar
+		}
+		(isDir ? dirs : files).push_back({ name,
+			p.generic_string(), isDir,
+			IconTypeFor(name, isDir) });
+	}
+	const auto byName = [](const Entry& a, const Entry& b) {
+		std::string la = a.name, lb = b.name;
+		for (char& c : la)
+			c = char(std::tolower((unsigned char)c));
+		for (char& c : lb)
+			c = char(std::tolower((unsigned char)c));
+		return la < lb;
+	};
+	std::sort(dirs.begin(), dirs.end(), byName);
+	std::sort(files.begin(), files.end(), byName);
+
+	const float tileW = 96.0f, tileH = 104.0f, iconS = 56.0f;
+	int cols = std::max(1,
+		int(ImGui::GetContentRegionAvail().x / tileW));
+	int col = 0;
+	auto tile = [&](const Entry& e) {
+		ImGui::PushID(e.name.c_str());
+		const bool sel = (m_assetsSel == e.abs);
+		const ImVec2 tileSz(tileW - 8.0f, tileH);
+		(void)ImGui::InvisibleButton("##tile", tileSz);
+		const bool hovered = ImGui::IsItemHovered();
+		const bool clicked = ImGui::IsItemClicked();
+		const bool dbl = hovered
+			&& ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+		const ImVec2 bmin = ImGui::GetItemRectMin();
+		const ImVec2 bmax = ImGui::GetItemRectMax();
+		// hover/selection chrome under the icon art.
+		if (sel) {
+			dl->AddRectFilled(bmin, bmax,
+				IM_COL32(70, 130, 190, 60), 6.0f);
+			dl->AddRect(bmin, bmax, IM_COL32(120, 200, 255, 220),
+				6.0f, 0, 1.5f);
+		}
+		else if (hovered) {
+			dl->AddRectFilled(bmin, bmax,
+				IM_COL32(255, 255, 255, 16), 6.0f);
+		}
+		// icon centered (SVG texture, drawn shapes as fallback).
+		const ImVec2 ico(bmin.x + (tileSz.x - iconS) * 0.5f,
+			bmin.y + 6.0f);
+		const IconTex& icon = m_icons[size_t(e.icon)];
+		if (icon.imgui != 0) {
+			dl->AddImage(icon.imgui, ico,
+				ImVec2(ico.x + iconS, ico.y + iconS));
+		}
+		else {
+			DrawAssetIconFallback(dl, ico, iconS, e.icon);
+		}
+		// Registered-asset badge (green dot, bottom-right of icon).
+		if (!e.dir && guidByAbs.contains(e.abs)) {
+			dl->AddCircleFilled(
+				ImVec2(ico.x + iconS - 3.0f, ico.y + iconS - 3.0f),
+				3.5f, IM_COL32(90, 220, 120, 255), 10);
+		}
+		// Label: up to two centered lines, clipped with "...".
+		{
+			ImFont* font = ImGui::GetFont();
+			const float fsize = ImGui::GetFontSize();
+			const float maxW = (tileSz.x)-10.0f;
+			auto textW = [&](const char* s) {
+				return font->CalcTextSizeA(fsize, 10000.0f, 0.0f, s).x;
+			};
+			std::string l1 = e.name, l2;
+			if (textW(l1.c_str()) > maxW) {
+				// Longest fitting prefix, preferring a separator.
+				std::string growing;
+				size_t best = 0;
+				for (size_t i = 0; i < e.name.size(); ++i) {
+					growing.push_back(e.name[i]);
+					if (textW(growing.c_str()) > maxW)
+						break;
+					best = i + 1;
+				}
+				size_t cut = best;
+				for (size_t i = best; i > 1; --i)
+					if (e.name[i - 1] == '_' || e.name[i - 1] == '-'
+						|| e.name[i - 1] == ' ' || e.name[i - 1] == '.') {
+						cut = i;
+						break;
+					}
+				l1 = e.name.substr(0, cut);
+				l2 = e.name.substr(cut);
+				if (textW(l2.c_str()) > maxW) {
+					while (!l2.empty()
+						&& textW((l2 + "...").c_str()) > maxW)
+						l2.pop_back();
+					l2 += "...";
+				}
+			}
+			const ImU32 tcol =
+				ImGui::GetColorU32(ImGuiCol_Text);
+			dl->PushClipRect(bmin, bmax, true);
+			const float yBase = bmax.y - 2.0f * fsize - 3.0f;
+			const float cx = bmin.x + tileSz.x * 0.5f;
+			if (l2.empty()) {
+				dl->AddText(font, fsize,
+					ImVec2(cx - textW(l1.c_str()) * 0.5f,
+						yBase + fsize * 0.5f), tcol, l1.c_str());
+			}
+			else {
+				dl->AddText(font, fsize,
+					ImVec2(cx - textW(l1.c_str()) * 0.5f, yBase),
+					tcol, l1.c_str());
+				dl->AddText(font, fsize,
+					ImVec2(cx - textW(l2.c_str()) * 0.5f,
+						yBase + fsize + 1.0f), tcol, l2.c_str());
+			}
+			dl->PopClipRect();
+		}
+		if (clicked)
+			m_assetsSel = e.abs;
+		if (dbl) {
+			m_assetsSel = e.abs;
+			if (e.dir) {
+				m_assetsDir = e.abs;
+				m_assetsSel.clear();
+			}
+			else if (isOpenable(e.abs)) {
+				if (!m_cookRunning)
+					OpenAnySceneFile(e.abs);
+				else
+					Log("Assets: a cook is running - wait for it "
+						"to finish.");
+			}
+		}
+		if (hovered) {
+			const auto git = guidByAbs.find(e.abs);
+			ImGui::SetTooltip("%s\n%s\n%s",
+				e.name.c_str(), e.abs.c_str(),
+				(git != guidByAbs.end() && !git->second.empty())
+					? git->second.c_str() : "(no asset uuid)");
+		}
+		ImGui::PopID();
+	};
+	for (const Entry& e : dirs) {
+		if (col != 0)
+			ImGui::SameLine(0.0f, 4.0f);
+		tile(e);
+		if (++col == cols)
+			col = 0;
+	}
+	for (const Entry& e : files) {
+		if (col != 0)
+			ImGui::SameLine(0.0f, 4.0f);
+		tile(e);
+		if (++col == cols)
+			col = 0;
+	}
+	if (dirs.empty() && files.empty())
+		ImGui::TextDisabled("(empty folder)");
+	ImGui::EndChild();
+}
+
+// Fallback icon art (drawn vector shapes): used when an SVG icon failed
+// to rasterize/register (imgui == 0). Color-tinted per browser kind.
+void EditorApp::DrawAssetIconFallback(ImDrawList* dl, const ImVec2& org,
+	float s, IconType k) const {
+	const float x = org.x, y = org.y;
+	switch (k) {
+	case IconType::Folder: {
+		const ImU32 body = IM_COL32(233, 178, 64, 255);
+		const ImU32 edge = IM_COL32(150, 108, 20, 255);
+		dl->AddRectFilled(ImVec2(x + s * .08f, y + s * .22f),
+			ImVec2(x + s * .46f, y + s * .36f), body, 2.0f);
+		dl->AddRectFilled(ImVec2(x + s * .08f, y + s * .30f),
+			ImVec2(x + s * .92f, y + s * .80f), body, 4.0f);
+		dl->AddRect(ImVec2(x + s * .08f, y + s * .30f),
+			ImVec2(x + s * .92f, y + s * .80f), edge, 4.0f, 0, 1.5f);
+		break;
+	}
+	case IconType::Model: {
+		const ImU32 fill = IM_COL32(72, 164, 172, 255);
+		const ImU32 edge = IM_COL32(22, 94, 102, 255);
+		const ImVec2 hex[6] = {
+			{ x + s * .50f, y + s * .14f }, { x + s * .86f, y + s * .34f },
+			{ x + s * .86f, y + s * .68f }, { x + s * .50f, y + s * .88f },
+			{ x + s * .14f, y + s * .68f }, { x + s * .14f, y + s * .34f } };
+		dl->AddConvexPolyFilled(hex, 6, fill);
+		dl->AddPolyline(hex, 6, edge, ImDrawFlags_Closed, 1.5f);
+		const ImVec2 c{ x + s * .50f, y + s * .51f };
+		dl->AddLine(c, hex[0], edge, 1.5f);
+		dl->AddLine(c, hex[2], edge, 1.5f);
+		dl->AddLine(c, hex[4], edge, 1.5f);
+		break;
+	}
+	case IconType::Scene:
+	case IconType::File: {
+		const ImU32 fill = IM_COL32(238, 240, 243, 255);
+		const ImU32 edge = IM_COL32(120, 128, 138, 255);
+		dl->AddRectFilled(ImVec2(x + s * .26f, y + s * .12f),
+			ImVec2(x + s * .74f, y + s * .88f), fill, 3.0f);
+		dl->AddRect(ImVec2(x + s * .26f, y + s * .12f),
+			ImVec2(x + s * .74f, y + s * .88f), edge, 3.0f, 0, 1.5f);
+		for (int i = 0; i < 3; ++i)
+			dl->AddRectFilled(
+				ImVec2(x + s * .34f, y + s * (.30f + i * .14f)),
+				ImVec2(x + s * .66f, y + s * (.36f + i * .14f)),
+				IM_COL32(150, 156, 164, 255), 1.0f);
+		break;
+	}
+	case IconType::Texture: {
+		const ImU32 fill = IM_COL32(70, 96, 150, 255);
+		const ImU32 edge = IM_COL32(36, 48, 82, 255);
+		dl->AddRectFilled(ImVec2(x + s * .14f, y + s * .20f),
+			ImVec2(x + s * .86f, y + s * .82f), fill, 3.0f);
+		dl->AddRect(ImVec2(x + s * .14f, y + s * .20f),
+			ImVec2(x + s * .86f, y + s * .82f), edge, 3.0f, 0, 1.5f);
+		dl->AddCircleFilled(ImVec2(x + s * .32f, y + s * .36f),
+			s * .07f, IM_COL32(255, 214, 90, 255), 12);
+		dl->AddTriangleFilled(
+			ImVec2(x + s * .20f, y + s * .74f),
+			ImVec2(x + s * .44f, y + s * .44f),
+			ImVec2(x + s * .62f, y + s * .74f),
+			IM_COL32(120, 150, 96, 255));
+		dl->AddTriangleFilled(
+			ImVec2(x + s * .46f, y + s * .74f),
+			ImVec2(x + s * .66f, y + s * .50f),
+			ImVec2(x + s * .84f, y + s * .74f),
+			IM_COL32(96, 128, 84, 255));
+		break;
+	}
+	case IconType::Pak: {
+		const ImU32 fill = IM_COL32(150, 108, 74, 255);
+		const ImU32 edge = IM_COL32(92, 62, 38, 255);
+		dl->AddRectFilled(ImVec2(x + s * .18f, y + s * .26f),
+			ImVec2(x + s * .82f, y + s * .84f), fill, 3.0f);
+		dl->AddRect(ImVec2(x + s * .18f, y + s * .26f),
+			ImVec2(x + s * .82f, y + s * .84f), edge, 3.0f, 0, 1.5f);
+		dl->AddLine(ImVec2(x + s * .18f, y + s * .55f),
+			ImVec2(x + s * .82f, y + s * .55f), edge, 1.5f);
+		dl->AddLine(ImVec2(x + s * .50f, y + s * .26f),
+			ImVec2(x + s * .50f, y + s * .84f), edge, 1.5f);
+		break;
+	}
+	default: {
+		// The remaining node-type icons (light/camera/env/...):
+		// a generic tinted page (they are not browser kinds).
+		dl->AddRectFilled(ImVec2(x + s * .28f, y + s * .14f),
+			ImVec2(x + s * .72f, y + s * .86f),
+			IM_COL32(120, 120, 128, 200), 3.0f);
+		break;
+	}
+	}
 }
 
 } // namespace editor

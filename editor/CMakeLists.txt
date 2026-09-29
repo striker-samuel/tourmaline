@@ -17,6 +17,12 @@ target_include_directories(Editor
         ${CMAKE_SOURCE_DIR}/app/include
         # stb_image/stb_image_write (tourmaline logo generation + load).
         ${CMAKE_SOURCE_DIR}/app/vendor
+        # nanosvg (editor/icons/*.svg rasterization for the asset browser).
+        ${CMAKE_SOURCE_DIR}/external/nanosvg/src
+        # ImGui Vulkan backend header (ImGui_ImplVulkan_AddTexture for the
+        # rasterized SVG icons as ImGui user textures).
+        ${CMAKE_SOURCE_DIR}/external/imgui
+        ${CMAKE_SOURCE_DIR}/external/imgui/backends
 )
 
 target_link_libraries(Editor
@@ -27,6 +33,9 @@ target_link_libraries(Editor
         appcore
         KTX::ktx
         OptickCore
+        # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>
+        # (the backend TU itself is compiled into the engine).
+        Vulkan::Vulkan
 )
 
 set_target_properties(Editor PROPERTIES
@@ -41,6 +50,15 @@ add_custom_command(TARGET Editor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:OptickCore>"
         "$<TARGET_FILE_DIR:Editor>"
+)
+
+# SVG icon set (the asset browser grid): staged exe-relative as
+# editor/icons/ next to Editor.exe (read at startup, rasterized once).
+add_custom_command(TARGET Editor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/icons"
+            "$<TARGET_FILE_DIR:Editor>/editor/icons"
+    COMMENT "Syncing SVG icons next to Editor.exe"
 )
 
 vulkantoy_stage_sdl3(Editor)

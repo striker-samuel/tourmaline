@@ -6849,6 +6849,22 @@ uint32_t smvk::VulkanResourceManager::GetTextureMipLevels(TextureHandle handle) 
 	const Image* image = images_.get(texture->image);
 	return image ? image->mipLevels : 0;
 }
+// Raw Vulkan interop (see vulkan_impl.h): the texture's sampled
+// VkImageView + a cached sampler's VkSampler, as opaque pointers.
+VkImageView smvk::VulkanResourceManager::GetTextureVkImageView(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	if (!texture)
+		return VK_NULL_HANDLE;
+	const ImageView* view = imageViews_.get(texture->view);
+	return view ? view->vkView : VK_NULL_HANDLE;
+}
+const void* smvk::VulkanResourceManager::GetVkSamplerOpaque(uint32_t samplerIndex) const
+{
+	if (samplerIndex >= GetSamplerCount())
+		return nullptr;
+	return GetVkSampler(samplerIndex);
+}
 uint32_t smvk::VulkanResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) {
 	assert(samplerCache_ && "samplerCache not initialized");
 	return samplerCache_->GetOrCreate(ci);

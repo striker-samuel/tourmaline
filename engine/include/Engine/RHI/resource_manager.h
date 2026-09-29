@@ -141,6 +141,13 @@ public:
     uint32_t GetTextureArrayLayers(TextureHandle handle) const;
     uint32_t GetTextureCubemapSize(TextureHandle handle) const;
     uint32_t GetTextureMipLevels(TextureHandle handle) const;
+    // Raw Vulkan interop (opaque native handles for external UI/render
+    // layers, e.g. ImGui user textures via ImGui_ImplVulkan_AddTexture):
+    // the texture's SAMPLED VkImageView + a cached sampler's VkSampler.
+    // nullptr on an invalid handle/index (view/sampler indices are the
+    // GetOrCreateSampler cache slots).
+    const void* GetTextureVkImageView(TextureHandle handle) const;
+    const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
     void FlushUploads();

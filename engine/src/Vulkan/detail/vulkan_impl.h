@@ -738,6 +738,12 @@ namespace smvk {
 		uint32_t GetTextureArrayLayers(TextureHandle handle) const;
 		uint32_t GetTextureCubemapSize(TextureHandle handle) const;
 		uint32_t GetTextureMipLevels(TextureHandle handle) const;
+		// Raw Vulkan interop (opaque, for external UI/render layers, e.g.
+		// ImGui user-texture registration): the texture's SAMPLED
+		// VkImageView + a cached sampler's VkSampler. nullptr on an
+		// invalid handle/index.
+		VkImageView GetTextureVkImageView(TextureHandle handle) const;
+		const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
 		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
 		std::unique_ptr<VulkanCore> core_;
