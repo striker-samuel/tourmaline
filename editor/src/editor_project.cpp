@@ -197,11 +197,12 @@ bool EditorApp::OpenProject(const std::string& dir) {
 		std::string dberr;
 		if (m_assetDb.Open(m_store->Root(), m_projectRoot, dberr)) {
 			smvk::cache::RescanStats stats;
-			if (m_assetDb.RescanProject(stats, dberr))
-				Log("Asset directory: "
-					+ std::to_string(stats.adopted) + " adopted, "
-					+ std::to_string(stats.moved) + " re-pointed, "
-					+ std::to_string(stats.missing) + " missing.");
+		if (m_assetDb.RescanProject(stats, dberr))
+			Log("Asset directory: "
+				+ std::to_string(stats.adopted) + " adopted, "
+				+ std::to_string(stats.moved) + " re-pointed, "
+				+ std::to_string(stats.derived) + " derived, "
+				+ std::to_string(stats.missing) + " missing.");
 			else
 				Log("Asset directory rescan failed: " + dberr);
 		}

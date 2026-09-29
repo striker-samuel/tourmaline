@@ -52,6 +52,10 @@ struct RescanStats {
 	size_t adopted = 0; // new rows for sidecar-carrying files found
 	size_t moved = 0;   // known GUIDs re-pointed at a new path
 	size_t missing = 0; // known GUIDs whose file is gone (rows KEPT)
+	// Manifest-registered derived assets (.mesh/.material/.anim of a
+	// gltf.meta manifest; no per-file sidecars — identity is
+	// manifest-driven, registered here into the same table.
+	size_t derived = 0;
 };
 
 class AssetDatabase {

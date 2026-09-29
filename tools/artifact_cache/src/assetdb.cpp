@@ -66,6 +66,53 @@ int64_t FileMtime(const fs::path& p) {
 		ft.time_since_epoch()).count();
 }
 
+// Manifest-registered derived assets (glTF derivation; see
+// gltf_import/asset_export.h): the <stem>.gltf.meta sidecar carries the
+// glTF's own guid PLUS its derived-asset table — "mesh=", "material.N=",
+// "anim.N=" lines with "file guid name" values. Parsed here (inline —
+// artifact_cache never depends on gltf_import) so the rescan registers
+// the derived files into the same table (kind mesh/material/anim).
+struct ManifestEntry {
+	std::string kind; // "mesh" | "material" | "anim"
+	std::string file; // beside the gltf
+	std::string guid;
+};
+void ParseManifestSidecar(const fs::path& metaPath,
+	std::vector<ManifestEntry>& out) {
+	out.clear();
+	std::ifstream in(metaPath, std::ios::binary);
+	if (!in)
+		return;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		const std::string key = line.substr(0, eq);
+		const std::string val = line.substr(eq + 1);
+		const char* kind = nullptr;
+		if (key == "mesh")
+			kind = "mesh";
+		else if (key.rfind("material.", 0) == 0)
+			kind = "material";
+		else if (key.rfind("anim.", 0) == 0)
+			kind = "anim";
+		if (!kind)
+			continue; // guid/source/stem/unknown: not a derived entry
+		// "file guid name..." — the name tail (spaces) is display-only.
+		std::istringstream is(val);
+		ManifestEntry e;
+		e.kind = kind;
+		if (!(is >> e.file >> e.guid) || !IsValidAssetGuid(e.guid))
+			continue;
+		out.push_back(std::move(e));
+	}
+}
+
 } // namespace
 
 bool IsValidAssetGuid(const std::string& guid) {
@@ -370,6 +417,45 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 			if (AdoptFile(p.generic_string(), guid, "model", aerr))
 				++stats.moved;
 			kt->second = rel;
+		}
+		// DERIVED ASSETS (the gltf.meta manifest): the sidecar's
+		// mesh/material/anim entries register into the same table (no
+		// per-file sidecars — identity is manifest-driven). Kinds
+		// "mesh"/"material"/"anim"; moves with the gltf heal here the
+		// same way (GUID-stable re-registration).
+		{
+			std::vector<ManifestEntry> entries;
+			ParseManifestSidecar(p, entries);
+			for (const ManifestEntry& e : entries) {
+				const fs::path derived =
+					p.parent_path() / e.file;
+				std::error_code dec;
+				if (!fs::is_regular_file(derived, dec))
+					continue;
+				const std::string derivedRel =
+					ToStoredPath(m_projectRoot,
+						Normalized(derived.generic_string()));
+				const auto dt = known.find(e.guid);
+				bool registered = false;
+				if (dt == known.end()) {
+					std::string aerr;
+					registered = AdoptFile(derived.generic_string(),
+						e.guid, e.kind, aerr);
+					if (registered) {
+						known[e.guid] = derivedRel;
+						++stats.derived;
+					}
+				}
+				else if (dt->second != derivedRel) {
+					std::string aerr;
+					registered = AdoptFile(derived.generic_string(),
+						e.guid, e.kind, aerr);
+					if (registered) {
+						dt->second = derivedRel;
+						++stats.derived;
+					}
+				}
+			}
 		}
 	}
 	if (ec) {

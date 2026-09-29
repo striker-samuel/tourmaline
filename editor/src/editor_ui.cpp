@@ -4386,11 +4386,12 @@ void EditorApp::DrawAssetsPanel() {
 		if (ImGui::Button("Rescan")) {
 			smvk::cache::RescanStats stats;
 			std::string rerr;
-			if (m_assetDb.RescanProject(stats, rerr))
-				Log("Asset rescan: "
-					+ std::to_string(stats.adopted) + " adopted, "
-					+ std::to_string(stats.moved) + " re-pointed, "
-					+ std::to_string(stats.missing) + " missing.");
+		if (m_assetDb.RescanProject(stats, rerr))
+			Log("Asset rescan: "
+				+ std::to_string(stats.adopted) + " adopted, "
+				+ std::to_string(stats.moved) + " re-pointed, "
+				+ std::to_string(stats.derived) + " derived, "
+				+ std::to_string(stats.missing) + " missing.");
 			else
 				Log("Asset rescan failed: " + rerr);
 		}
