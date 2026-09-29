@@ -151,29 +151,9 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 				DrawUvPanel();
 				ImGui::EndTabItem();
 			}
-			if (ImGui::BeginTabItem("Cook")) {
-				m_rightTab = 2;
-				DrawCookPanel();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem("Bake")) {
-				m_rightTab = 3;
-				DrawLightmapPanel();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem("Textures")) {
-				m_rightTab = 4;
-				DrawTexturePanel();
-				ImGui::EndTabItem();
-			}
 		if (ImGui::BeginTabItem("Material")) {
 			m_rightTab = 5;
 			DrawMaterialEditor();
-			ImGui::EndTabItem();
-		}
-		if (ImGui::BeginTabItem("Images")) {
-			m_rightTab = 6;
-			DrawImagesTab();
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -2829,53 +2809,6 @@ void EditorApp::DrawCameraSection() {
 	ImGui::DragFloat("Far clip", &cam.farClip, 5.0f, 10.0f, 100000.0f, "%.0f");
 	if (cam.farClip <= cam.nearClip * 1.1f)
 		cam.farClip = cam.nearClip * 1.1f + 10.0f;
-}
-
-void EditorApp::DrawCookPanel() {
-	ImGui::Text("Cook to .pak (PakCooker --tour)");
-	char pakBuf[512];
-	std::snprintf(pakBuf, sizeof(pakBuf), "%s", m_cook.outPak.c_str());
-	bool cookTouched = false;
-	if (ImGui::InputText("Out pak", pakBuf, sizeof(pakBuf),
-		ImGuiInputTextFlags_EnterReturnsTrue)) {
-		m_cook.outPak = pakBuf;
-		cookTouched = true;
-	}
-	if (ImGui::Checkbox("MeshOpt", &m_cook.meshopt))
-		cookTouched = true;
-	ImGui::SameLine();
-	if (ImGui::Checkbox("LODs", &m_cook.lods))
-		cookTouched = true;
-	ImGui::SameLine();
-	if (ImGui::Checkbox("Meshlets", &m_cook.meshlets))
-		cookTouched = true;
-	// Lightmaps bake through the voxel-remesh scene proxy (one proxy
-	// bake, UV-transferred to the real meshes).
-	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
-		cookTouched = true;
-	if (m_cook.lightmap) {
-		int pres = m_cook.lmProxyRes;
-		if (ImGui::SliderInt("Proxy res", &pres, 0, 256)) {
-			m_cook.lmProxyRes = pres;
-			cookTouched = true;
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip(
-				"Voxel-remesh proxy grid (0 = legacy per-mesh path).");
-	}
-	if (cookTouched)
-		AutosaveTour(); // persist the cook block (not undoable)
-	ImGui::TextDisabled("tour: %s (%zu commands)",
-		TourTarget().empty() ? "-" : std::filesystem::path(TourTarget())
-		.filename().string().c_str(),
-		m_historyCursor);
-	if (m_cookRunning) {
-		ImGui::TextDisabled("Cooking... (see Console)");
-	}
-	else if (ImGui::Button("Cook")) {
-		m_cook.outPak = pakBuf;
-		CookToPak();
-	}
 }
 
 void EditorApp::DrawLightmapPanel() {
