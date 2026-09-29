@@ -40,6 +40,12 @@ public:
 
 	void setOrtho2D(float width, float height);
 	void setPerspective(float fovY, float aspect, float zNear, float zFar);
+	// TRUE 3D orthographic lens (reversed-Z, GL-convention Y-up like
+	// setPerspective — the frame-uniform layer applies the Vulkan
+	// Y-flip): halfH = the vertical half-extent in world METERS, the
+	// horizontal extent = halfH * aspect. Swapped glm near/far args map
+	// [zNear, zFar] -> depth [1, 0], matching MakeReversedZProjRH.
+	void setOrtho3D(float halfH, float aspect, float zNear, float zFar);
 
 private:
 	const CameraPositionerInterface* positioner_;

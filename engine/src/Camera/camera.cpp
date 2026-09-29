@@ -1,5 +1,6 @@
 #include <Engine/Camera/camera.h>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
@@ -29,6 +30,14 @@ glm::vec3 Camera::getPosition() const { return positioner_->getPosition(); }
 glm::mat4 Camera::getProjMatrix() const { return proj_; }
 void Camera::setOrtho2D(float width, float height) { proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f); }
 void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = MakeReversedZProjRH(fovY, aspect, zNear, zFar); }
+void Camera::setOrtho3D(float halfH, float aspect, float zNear, float zFar) {
+	assert(halfH > 0.0f && zFar > zNear && zNear > 0.0f);
+	// Reversed-Z via swapped glm near/far args ([zNear, zFar] -> [1, 0],
+	// matching MakeReversedZProjRH). GL-convention Y-up like
+	// setPerspective: the frame-uniform layer applies the Vulkan Y-flip.
+	proj_ = glm::orthoRH_ZO(-halfH * aspect, halfH * aspect, -halfH,
+		halfH, zFar, zNear);
+}
 CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
 	: cameraPosition_(pos)
 	, cameraOrientation_(glm::lookAt(pos, target, up))

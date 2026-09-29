@@ -2014,20 +2014,16 @@ void EditorApp::DrawFrame() {
 		// hovering any other panel desynced panel 0 from its own camera
 		// while that camera rendered nowhere). Each additional viewport
 		// keeps driving its OWN hosted view below (viewport i+1 -> view i)
-		// with its own camera. Ortho viewports approximate with a fov
-		// matching their half-height at the orbit distance (the pipeline
-		// is perspective reversed-Z; a true ortho pass would be a
-		// feature). Locked look-through (bound scene cameras) stays an
-		// editor-pass feature for now.
+		// with its own camera. Top/Side ortho cameras drive a TRUE
+		// orthographic lens (orthoHalfH; the old fov-approximation
+		// dolly-distorted the live view). Locked look-through (bound scene
+		// cameras) stays an editor-pass feature for now.
 		{
 			const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
-			float fov = cam.fovYDeg;
-			if (cam.type == EditorCam::Type::Orthographic)
-				fov = glm::degrees(2.0f
-					* std::atan(std::max(cam.orthoHalfH, 0.01f)
-						/ std::max(cam.dist, 0.01f)));
 			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
-				fov, cam.nearClip, cam.farClip);
+				cam.fovYDeg, cam.nearClip, cam.farClip,
+				(cam.type == EditorCam::Type::Orthographic)
+					? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
 		}
 		// GRID DRIVE: the hosted renderer draws the construction grid
 		// itself (depth-tested against each view's own depth — the host
@@ -2039,10 +2035,11 @@ void EditorApp::DrawFrame() {
 		// count follows the viewport layout (SetViewCount no-ops while
 		// unchanged; a layout change recreates the per-view targets
 		// here at the idle boundary), extents track the viewport rects
-		// and each viewport's OWN camera renders its view with the
-		// same ortho-approximation as the active drive. The views carry
-		// per-view tic/toc refresh schedules (see the live-view panel);
-		// off-phase views keep their last image and compose anyway.
+		// and each viewport's OWN camera renders its view — ortho
+		// cameras with a TRUE orthographic lens (same as the main
+		// drive). The views carry per-view tic/toc refresh schedules
+		// (see the live-view panel); off-phase views keep their last
+		// image and compose anyway.
 		{
 			const int extraViewports = ViewportCount() - 1;
 			const uint32_t viewCount = (uint32_t)std::clamp(
@@ -2055,13 +2052,10 @@ void EditorApp::DrawFrame() {
 					std::max(uint32_t(vp.rect.w), 64u),
 					std::max(uint32_t(vp.rect.h), 64u) });
 				const EditorCam& cam = m_editorCams[vp.camIdx];
-				float fov = cam.fovYDeg;
-				if (cam.type == EditorCam::Type::Orthographic)
-					fov = glm::degrees(2.0f
-						* std::atan(std::max(cam.orthoHalfH, 0.01f)
-							/ std::max(cam.dist, 0.01f)));
 				m_wysiwyg->DriveView(i, EditorCamEye(cam), cam.target,
-					fov, cam.nearClip, cam.farClip);
+					cam.fovYDeg, cam.nearClip, cam.farClip,
+					(cam.type == EditorCam::Type::Orthographic)
+						? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
 			}
 		}
 		// DEBUG-VIEW DRIVE: the editor's view modes hook the hosted

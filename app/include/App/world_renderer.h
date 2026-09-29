@@ -743,8 +743,12 @@ struct SceneViewDesc {
 	bool enabled = true;
 	ViewRefresh refresh = ViewRefresh::Tic;
 	glm::vec3 eye{ 0.0f, 1.0f, 0.0f };
-	glm::vec3 target{ 0.0f, 1.0f, 1.0f };
+	glm::vec3 target{ 0.0f, 1.0f, 0.0f };
 	float fovYDeg = 60.0f; // degrees (Camera::setPerspective takes radians)
+	// > 0 = TRUE orthographic lens (the editor's Top/Side cameras):
+	// vertical half-extent in world METERS (Camera::setOrtho3D);
+	// fovYDeg is ignored while this is set.
+	float orthoHalfH = 0.0f;
 	float zNear = 0.1f;
 	float zFar = 100.0f;
 	smvk::Extent2D extent{ 0, 0 };
@@ -864,8 +868,13 @@ public:
 	// (SetDisableControl) so nothing integrates on top. fovYDeg in
 	// DEGREES, near/far in meters. A view direction parallel to the
 	// up vector (top-down framing) is nudged — lookAt would NaN.
+	// orthoHalfH > 0 = TRUE orthographic lens (the editor's Top/Side
+	// cameras): vertical half-extent in world METERS; fovYDeg ignored
+	// (the old fov-approximation dolly-distorted the live view —
+	// parallel lines must stay parallel).
 	void DriveExternalCamera(const glm::vec3& eye, const glm::vec3& target,
-		float fovYDeg, float zNear, float zFar);
+		float fovYDeg, float zNear, float zFar,
+		float orthoHalfH = 0.0f);
 	// HOSTED live-view debug drive (the editor pushes its view modes
 	// onto the frame): the editor's debug-view selection (F1/F2/F4/
 	// F6/F9/F10...) maps onto the frame's DebugView here, and the
@@ -906,7 +915,7 @@ public:
 	// Per-view camera drive (mirrors DriveExternalCamera; degenerate
 	// top-down looks are nudged the same way). fovYDeg in DEGREES.
 	void DriveView(uint32_t view, const glm::vec3& eye, const glm::vec3& target,
-		float fovYDeg, float zNear, float zFar);
+		float fovYDeg, float zNear, float zFar, float orthoHalfH = 0.0f);
 	// HOSTED ground-grid drive (editor construction grid): the editor
 	// owns the grid settings (show / cell size / half-extent cells) and
 	// pushes them here every frame, like the cameras. The renderer draws
@@ -1001,19 +1010,26 @@ protected:
 		// External camera (editor live view): the editor's lens drives
 		// the frame; otherwise the App defaults.
 		const bool ext = IsHosted() && m_extCamera;
-		m_camera.setPerspective(
-			glm::radians(ext ? m_extFovYDeg : kCameraFovYDegrees),
-			float(extent.width) / float(extent.height),
-			ext ? m_extNear : default_near_clip,
-			ext ? m_extFar : kMainViewFarPlane
-		);
+		if (ext && m_extOrthoHalfH > 0.0f)
+			m_camera.setOrtho3D(m_extOrthoHalfH,
+				float(extent.width) / float(extent.height),
+				m_extNear, m_extFar);
+		else
+			m_camera.setPerspective(
+				glm::radians(ext ? m_extFovYDeg : kCameraFovYDegrees),
+				float(extent.width) / float(extent.height),
+				ext ? m_extNear : default_near_clip,
+				ext ? m_extFar : kMainViewFarPlane
+			);
 	}
 	bool m_uiMode = false;
 	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
 	// External camera overrides (see DriveExternalCamera): the editor's
 	// lens drives UpdateCameraAspect while set (hosted live view).
+	// m_extOrthoHalfH > 0 = TRUE orthographic lens (setOrtho3D).
 	bool m_extCamera = false;
 	float m_extFovYDeg = 60.0f;
+	float m_extOrthoHalfH = 0.0f;
 	float m_extNear = 0.1f;
 	float m_extFar = 100.0f;
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).

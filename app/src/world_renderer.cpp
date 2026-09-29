@@ -577,7 +577,8 @@ namespace app {
 using Super = smvk::AppImpl;
 
 void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
-	const glm::vec3& target, float fovYDeg, float zNear, float zFar) {
+	const glm::vec3& target, float fovYDeg, float zNear, float zFar,
+	float orthoHalfH) {
 	// Degenerate-lookAt guard: a view direction parallel to the up
 	// vector (top-down framing) crosses NaNs into the view matrix —
 	// nudge the target sideways instead.
@@ -593,6 +594,7 @@ void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 			* 0.01f * len;
 	m_extCamera = true;
 	m_extFovYDeg = fovYDeg;
+	m_extOrthoHalfH = std::max(orthoHalfH, 0.0f);
 	m_extNear = zNear;
 	m_extFar = zFar;
 	// The positioner drives the view matrix (+ every viewProj-derived
@@ -5413,10 +5415,15 @@ WorldRenderer::WorldRenderer(smvk::App& host, smvk::World& world,
 	SetProjectRoot(projectRoot);
 	Configure(ScenePassConfig::All());
 	// Hosted invariants: the host owns the input, there is no present
-	// chain to upscale, and the live authoring view stays crisp.
+	// chain to upscale, and the live authoring view stays CRISP: AA off
+	// (no MSAA resolves / temporal smearing) and motion blur off (an
+	// authoring view must show the scene as authored, not smeared by
+	// camera velocity). Both are App-run toggles the hosted view never
+	// grants (SetDisableControl parks the App's own controls).
 	SetDisableControl(true);
 	SetDlssMode(smvk::DlssMode::Off);
 	SetAaMode(AaMode::Off);
+	m_motionBlurEnabled = false;
 	if (!HostedInitialize()) {
 		throw std::runtime_error(
 			"WorldRenderer::Initialize failed (see the errors above)");
@@ -5480,7 +5487,8 @@ void WorldRenderer::SetViewCount(uint32_t count) {
 }
 
 void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
-	const glm::vec3& target, float fovYDeg, float zNear, float zFar) {
+	const glm::vec3& target, float fovYDeg, float zNear, float zFar,
+	float orthoHalfH) {
 	if (view >= m_views.size())
 		return;
 	SecondaryView& v = m_views[view];
@@ -5499,6 +5507,7 @@ void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
 	v.desc.eye = eye;
 	v.desc.target = tgt;
 	v.desc.fovYDeg = fovYDeg;
+	v.desc.orthoHalfH = std::max(orthoHalfH, 0.0f);
 	v.desc.zNear = std::max(zNear, 0.001f);
 	v.desc.zFar = std::max(zFar, v.desc.zNear + 0.1f);
 	v.positioner.lookAt(eye, tgt, up);
@@ -5856,9 +5865,16 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	// deferred shadows off (the lit shader's inline forward+ shadow path
 	// reads the view's own tile lists). Everything view-independent mirrors
 	// the main builder exactly (env/ambient/GI/lightmaps/volumes/decals).
-	v.camera.setPerspective(glm::radians(v.desc.fovYDeg),
-		float(v.desc.extent.width) / float(v.desc.extent.height),
-		v.desc.zNear, v.desc.zFar);
+	// Ortho lens (desc.orthoHalfH > 0): TRUE orthographic, matching the
+	// editor's Top/Side cameras (parallel lines stay parallel).
+	if (v.desc.orthoHalfH > 0.0f)
+		v.camera.setOrtho3D(v.desc.orthoHalfH,
+			float(v.desc.extent.width) / float(v.desc.extent.height),
+			v.desc.zNear, v.desc.zFar);
+	else
+		v.camera.setPerspective(glm::radians(v.desc.fovYDeg),
+			float(v.desc.extent.width) / float(v.desc.extent.height),
+			v.desc.zNear, v.desc.zFar);
 	const auto view = v.camera.getViewMatrix();
 	auto proj = v.camera.getProjMatrix();
 	proj[1][1] *= -1; // Vulkan Y-flip (UpdateFrameUniforms parity)

@@ -128,18 +128,18 @@ inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 // editor and a standalone App render the same view on the same key.
 // ---------------------------------------------------------------------------
 enum class ViewMode : int {
-	Unlit = 0,      // default_unlit: baseColor + emissive, no lighting (F2)
-	Lit = 1,        // default_lit: full PBR pipeline (F1)
-	Uv0 = 3,        // default_uv0_debug: base UVs (F9)
-	Uv1 = 4,        // default_uv1_debug: lightmap UVs (F10)
-	VertexColors = 5, // default_vertexcolor_debug: vertex colors (F6)
-	Baked = 6,      // baked atlas irradiance (F8 — App's GI debug view)
-	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F3)
-	FlatUv0 = 8,    // UV EDITOR WINDOW channel: uvflat0, TEXCOORD0 + diffuse
-	FlatUv1 = 9,    // UV EDITOR WINDOW channel: uvflat1, atlas uv2 + lightmap
-	Cascades = 10,  // shadow cascade coverage (F4)
-	Lods = 11,      // LOD index by color (F5)
-	Pom = 12,       // parallax occlusion mapping (F11)
+	Unlit = 0,       // default_unlit: baseColor + emissive, no lighting (F2)
+	Lit = 1,         // default_lit: full PBR pipeline (F1)
+	Uv0 = 2,         // default_uv0_debug: base UVs (F9)
+	Uv1 = 3,         // default_uv1_debug: lightmap UVs (F10)
+	VertexColors = 4, // default_vertexcolor_debug: vertex colors (F6)
+	Baked = 5,       // baked atlas irradiance (F8 — App's GI debug view)
+	Meshlets = 6,    // meshdebug: flat per-meshlet colors (F3)
+	FlatUv0 = 7,     // UV EDITOR WINDOW channel: uvflat0, TEXCOORD0 + diffuse
+	FlatUv1 = 8,     // UV EDITOR WINDOW channel: uvflat1, atlas uv2 + lightmap
+	Cascades = 9,    // shadow cascade coverage (F4)
+	Lods = 10,       // LOD index by color (F5)
+	Pom = 11,        // parallax occlusion mapping (F11)
 };
 inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
