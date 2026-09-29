@@ -2069,7 +2069,7 @@ void EditorApp::DrawFrame() {
 			app::DebugView dv = app::DebugView::Lit;
 			switch (ActiveViewMode()) {
 			case ViewMode::Unlit: dv = app::DebugView::Unlit; break;
-			case ViewMode::Lit:
+			case ViewMode::Lit: dv = app::DebugView::Lit; break;
 			case ViewMode::Uv0:
 			case ViewMode::FlatUv0: dv = app::DebugView::Uv0; break;
 			case ViewMode::Uv1:
