@@ -297,7 +297,8 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 // reads (cubemaps baked into the pak, ...). Returns nullptr on any
 // failure (the renderer fails loudly).
 std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
-	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs) {
+	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs,
+	smvk::TextureStreamer* sceneStreamer) {
 	if (!pre.backend) {
 		std::cerr << "[App] pak preload failed: " << pre.error << "\n";
 		return nullptr;
@@ -324,7 +325,8 @@ std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 		<< scenes[size_t(sceneIndex)].name << "'...\n";
 	auto world = std::make_unique<smvk::World>();
 	try {
-		world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex));
+		world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex),
+			sceneStreamer, pre.image);
 	}
 	catch (const std::exception& e) {
 		// DeserializeCluster drains its own staged uploads on failure;
@@ -467,11 +469,15 @@ std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 	// Initialize, after its context exists (nothing can upload before
 	// that), and renders the returned world by handles. By then the
 	// preload has typically been running for the whole of renderer init.
+	// The renderer's texture streamer rides along so v4 digest textures
+	// register for demand upgrades (null when streaming is off → full
+	// resident, the pre-v4 behavior). The preloaded image pins the
+	// borrowed tail payloads.
 	renderer.SetWorldSource(
-		[preloadFuture, sceneIndex](smvk::ResourceManager& ctx,
+		[preloadFuture, sceneIndex, &renderer](smvk::ResourceManager& ctx,
 			smvk::OverlayVfs& contentVfs) -> std::unique_ptr<smvk::World> {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
-				ctx, contentVfs);
+				ctx, contentVfs, renderer.GetTextureStreamer());
 		});
 	app::ScenePassConfig passCfg = app::ScenePassConfig::All();
 	if (filterOnly)

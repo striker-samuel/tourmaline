@@ -12,6 +12,7 @@ namespace smvk {
 
 struct Cluster;
 struct GiBinding;
+class TextureStreamer;
 class ResourceManager;
 
 struct ClusterSerializeStats {
@@ -20,6 +21,9 @@ struct ClusterSerializeStats {
 	uint32_t textures = 0;
 	uint32_t textureBytes = 0;
 	uint32_t nodes = 0;
+	// v4 tail-upload digests stamped (sidecar or ktx-direct flavor): these
+	// textures load objects + tail without a KTX parse.
+	uint32_t digestedTextures = 0;
 	// Named GI sidecars registered on the cooked clusters (see
 	// Cluster::giBindings), written as one PakAssetKind::Gi blob.
 	uint32_t giBindings = 0;
@@ -96,10 +100,20 @@ std::vector<PakSceneInfo> ListPakScenes(
 // re-registered so AssetRef resolution works on the loaded cluster.
 // sceneIndex selects which Scene blob to load (0 = default; see
 // ListPakScenes). Returns nullptr on error (err filled).
-std::unique_ptr<Cluster> DeserializeCluster(
+// v4 fast-load textures: when `streamer` is non-null AND a texture blob
+// carries a digest, its objects + coarse-mip tail upload through
+// CreateStreamingTextureFromMeta (no KTX parse) and the handle registers
+// with the streamer for demand upgrades — `imagePin` (the loaded pak
+// image) pins the borrowed payloads on the cluster. Digest-less blobs and
+// the streamer==nullptr case keep today's full-resident ktx path. When
+// streamer != nullptr the per-texture SetTextureSource copies are skipped
+	// (payloads are borrowed, not owned).
+	std::unique_ptr<Cluster> DeserializeCluster(
 	ResourceManager& ctx,
 	const PakReader& reader,
 	std::string* err = nullptr,
-	uint32_t sceneIndex = 0);
+	uint32_t sceneIndex = 0,
+	TextureStreamer* streamer = nullptr,
+	std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
 
 } // namespace smvk

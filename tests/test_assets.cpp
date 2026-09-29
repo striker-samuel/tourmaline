@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
+
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
 #include <Engine/App/static_merge.h>
@@ -268,6 +272,58 @@ void TestPakCrcParallel() {
 			data.size() + 1) == serial, "pak.crc.parallel.singlechunk");
 	// Degenerate empty input.
 	Check(smvk::PakCrc32Parallel({}) == 0u, "pak.crc.parallel.empty");
+}
+
+// Tail-upload digest: kind + tailFirstMip round-trip, embedded in a v4
+// payload and read back through both payload parsers (V4 finds the
+// digest; the legacy parser tolerates the digest-less shape only).
+void TestPakTextureDigest() {
+	smvk::TextureStreamMeta meta{};
+	meta.tailFirstMip = 2;
+	std::vector<uint8_t> digestBytes;
+	Check(smvk::BuildTextureDigest(meta, digestBytes), "pak.digest.build.ok");
+	Check(digestBytes.size() == 8, "pak.digest.build.bytes");
+	smvk::TextureStreamMeta back{};
+	Check(smvk::ParseTextureDigest(std::span<const uint8_t>(digestBytes), back),
+		"pak.digest.parse.ok");
+	Check(back.tailFirstMip == 2, "pak.digest.fields");
+	// Garbage is rejected (wrong kind, short/long buffer).
+	std::vector<uint8_t> bad = digestBytes;
+	bad[0] ^= 0xFF;
+	smvk::TextureStreamMeta junk{};
+	Check(!smvk::ParseTextureDigest(std::span<const uint8_t>(bad), junk),
+		"pak.digest.reject.kind");
+	Check(!smvk::ParseTextureDigest(
+			std::span<const uint8_t>(digestBytes.data(), 7), junk),
+		"pak.digest.reject.short");
+	Check(!smvk::ParseTextureDigest(
+			std::span<const uint8_t>(digestBytes.data(), 9), junk),
+		"pak.digest.reject.long");
+	// Payload embedding: V4 parser finds the digest, legacy parser
+	// rejects the digested shape but accepts the digest-less shape.
+	const std::vector<uint8_t> ktx = { 9, 8, 7, 6 };
+	auto blob = smvk::BuildTexturePayloadV4("textures/d.ktx2", 1, 2, 3, 4,
+		std::span<const uint8_t>(ktx),
+		std::span<const uint8_t>(digestBytes));
+	smvk::PakTexturePayload p4;
+	Check(smvk::ParseTexturePayloadV4(std::span<const uint8_t>(blob), p4),
+		"pak.digest.payload.v4.parse");
+	smvk::TextureStreamMeta m4{};
+	Check(smvk::ParseTextureDigest(p4.digest, m4) && m4.tailFirstMip == 2,
+		"pak.digest.payload.v4.fields");
+	Check(p4.ktxBytes.size() == 4
+		&& p4.ktxBytes[0] == 9 && p4.uri == "textures/d.ktx2",
+		"pak.digest.payload.v4.bytes");
+	smvk::PakTexturePayload legacy;
+	Check(!smvk::ParseTexturePayload(std::span<const uint8_t>(blob), legacy),
+		"pak.digest.payload.legacy.rejects.digest");
+	auto blobLegacy = smvk::BuildTexturePayload("textures/e.ktx2", 1, 2, 3, 4,
+		std::span<const uint8_t>(ktx));
+	smvk::PakTexturePayload p3;
+	Check(smvk::ParseTexturePayload(std::span<const uint8_t>(blobLegacy), p3),
+		"pak.digest.payload.legacy.parse");
+	Check(p3.digest.empty() && p3.ktxBytes.size() == 4,
+		"pak.digest.payload.legacy.fields");
 }
 
 void TestPakAppend() {
@@ -1667,17 +1723,53 @@ void TestClusterSerializeCook() {
 			"cook.pak.tex.bytes");
 	}
 
-	// Mesh blob contains the retained vertex/index payload.
+	// Mesh blob carries the v4 fast-load payload: packed-SoA streams (the
+	// exact GPU heap layout) addressed by recorded blob-relative offsets.
 	const auto meshes = reader->BlobsOfKind(PakAssetKind::Mesh);
-	Check(!meshes.empty() &&
-		reader->Payload(*meshes[0]).size() ==
-			4 * sizeof(StaticVertex) + 6 * sizeof(uint32_t) + (0u /*header*/) +
-			// header: uri len+bytes, counts, surfaces(0), aabb, sphere,
-			// topo, lod (7 fields), lmChunk, chartXformCount (0 here)
-			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
-			// trailing meshlet section (v2, empty here): count + verts + tris
-			4 + 4 + 4,
-		"cook.pak.mesh.payload");
+	Check(!meshes.empty(), "cook.pak.mesh.find");
+	if (!meshes.empty()) {
+		const std::span<const uint8_t> pay = reader->Payload(*meshes[0]);
+		// Header: uri len+bytes, counts(3), surfaces(0 entries), aabb(24),
+		// sphere, topology, lod(7 fields), lmChunk, lmXformCount(0 here).
+		const size_t header = 4 + meshUri.size() + 12 + 24 + 4 + 4 + 28 + 8;
+		Check(pay.size() > header + 28, "cook.pak.mesh.v4.section");
+		uint32_t marker = 0;
+		memcpy(&marker, pay.data() + header, 4);
+		Check(marker == 1u, "cook.pak.mesh.v4.marker");
+		uint64_t posOff = 0, shadeOff = 0, idxOff = 0;
+		memcpy(&posOff, pay.data() + header + 4, 8);
+		memcpy(&shadeOff, pay.data() + header + 12, 8);
+		memcpy(&idxOff, pay.data() + header + 20, 8);
+		const size_t posBytes = 4 * sizeof(VertexPos);
+		const size_t shadeBytes = 4 * sizeof(VertexShading);
+		const size_t idxBytes = 6 * sizeof(uint32_t);
+		// Stream starts: marker section end aligned up to 16, then the
+		// three streams back-to-back, then the meshlet trailer (count 0).
+		Check(posOff == ((header + 28 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
+		Check(shadeOff == posOff + posBytes && idxOff == shadeOff + shadeBytes,
+			"cook.pak.mesh.v4.streamoffs");
+		Check(posOff + posBytes + shadeBytes + idxBytes + 12 == pay.size(),
+			"cook.pak.mesh.v4.exactend");
+		// Stream content: the shared pack helper's output for the quad's
+		// vertices + the raw index buffer.
+		bool streamsOk = true;
+		for (uint32_t v = 0; v < 4; ++v) {
+			VertexPos pos{};
+			VertexShading shade{};
+			PackStaticVertex(quad.vertices[v], pos, shade);
+			streamsOk = streamsOk
+				&& memcmp(pay.data() + posOff + v * sizeof(VertexPos),
+					&pos, sizeof(VertexPos)) == 0
+				&& memcmp(pay.data() + shadeOff + v * sizeof(VertexShading),
+					&shade, sizeof(VertexShading)) == 0;
+		}
+		for (uint32_t i = 0; i < 6; ++i) {
+			uint32_t idx = 0;
+			memcpy(&idx, pay.data() + idxOff + i * 4, 4);
+			streamsOk = streamsOk && idx == quad.indices[i];
+		}
+		Check(streamsOk, "cook.pak.mesh.v4.streams");
+	}
 }
 
 void TestStaticSubtrees() {
@@ -2017,28 +2109,51 @@ void TestMultiSceneSerialize() {
 } // namespace
 
 int main() {
-	TestVfsNormalize();
-	TestOverlayMem();
-	TestAssetUris();
-	TestPakRoundTrip();
-	TestPakCrcCombine();
-	TestPakCrcParallel();
-	TestPakAppend();
-	TestLz4Codec();
-	TestPakCompressedRoundTrip();
-	TestPakBackendServesTextures();
-	TestMeshOpt();
-	TestLodChain();
-	TestLodSelection();
-	TestLodLightmapAudit();
-	TestCookLodSiblingsLightmap();
-	TestLightmapChartTable();
-	TestVertexPack();
-	TestClusterSerializeCook();
-	TestMultiSceneSerialize();
-	TestStaticSubtrees();
-	TestMeshlets();
-	TestStaticCollapse();
+	// Unbuffered stdout: a crash mid-run must not lose the tail (PASS lines
+	// name the last completed check; stderr markers below name the test).
+	setvbuf(stdout, nullptr, _IONBF, 0);
+	// Asserts go to stderr, not a modal dialog: a failing assert must kill
+	// the run immediately in CI/redirected runs instead of hanging on a
+	// window nobody can see (the CRT default pops Retry/Abort/Ignore).
+#ifdef _MSC_VER
+	{
+		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+		_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+		_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+		_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+	}
+#endif
+	// Per-test stderr markers: stdout is block-buffered when redirected, so
+	// a crash mid-run loses the tail — stderr is unbuffered and names the
+	// crashing test immediately.
+	auto run = [](const char* name, void (*fn)()) {
+		std::cerr << "[test] " << name << std::endl;
+		fn();
+	};
+	run("TestVfsNormalize", TestVfsNormalize);
+	run("TestOverlayMem", TestOverlayMem);
+	run("TestAssetUris", TestAssetUris);
+	run("TestPakRoundTrip", TestPakRoundTrip);
+	run("TestPakCrcCombine", TestPakCrcCombine);
+	run("TestPakCrcParallel", TestPakCrcParallel);
+	run("TestPakTextureDigest", TestPakTextureDigest);
+	run("TestPakAppend", TestPakAppend);
+	run("TestLz4Codec", TestLz4Codec);
+	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
+	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
+	run("TestMeshOpt", TestMeshOpt);
+	run("TestLodChain", TestLodChain);
+	run("TestLodSelection", TestLodSelection);
+	run("TestLodLightmapAudit", TestLodLightmapAudit);
+	run("TestCookLodSiblingsLightmap", TestCookLodSiblingsLightmap);
+	run("TestLightmapChartTable", TestLightmapChartTable);
+	run("TestVertexPack", TestVertexPack);
+	run("TestClusterSerializeCook", TestClusterSerializeCook);
+	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
+	run("TestStaticSubtrees", TestStaticSubtrees);
+	run("TestMeshlets", TestMeshlets);
+	run("TestStaticCollapse", TestStaticCollapse);
 	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;
 }
+

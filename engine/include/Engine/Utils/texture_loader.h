@@ -76,6 +76,33 @@ struct KtxMemoryJob {
 	std::string debugName;
 };
 
+// One tail-split streaming upload for a cooked pak texture (digest
+// path). key is the caller's dedup id; tailFirstMip is the cooked split
+// (full-chain mip backing image level 0). The ktx parse +
+// transcode-if-needed run on the worker (same as the legacy path); only
+// the tail [tailFirstMip, end) uploads, and the handle registers with the
+// streamer for demand upgrades. Same threading contract as
+// LoadKtxTexturesParallelMemory.
+struct KtxTailJob {
+	int key = -1;
+	uint32_t tailFirstMip = 0;
+	const void* data = nullptr;
+	size_t dataSize = 0;
+	std::string debugName;
+};
+
+// Parallel tail-split creation over a batch of payloads: per job, one
+// streaming tail image + streamer registration. Payload memory must
+// outlive the call (workers join before return; the payload stays pinned
+// after return by the caller for the streamer's upgrades).
+std::unordered_map<int, Holder<TextureHandle>> LoadStreamingTailTexturesParallel(
+	ResourceManager& ctx,
+	const std::vector<KtxTailJob>& jobs,
+	class TextureStreamer* streamer,
+	const ImageCreateInfo& imageCI = {},
+	ParallelTextureStats* outStats = nullptr,
+	size_t maxThreads = 0);
+
 // Parallel version of LoadKtxTextureMemory over a batch of payloads.
 // The payload memory must outlive the call (_UPLOAD joins all workers_
 // before returning). Same threading contract as LoadKtxTexturesParallel.

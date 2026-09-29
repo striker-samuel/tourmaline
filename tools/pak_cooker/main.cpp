@@ -993,6 +993,11 @@ struct DumpCursor {
 		return v;
 	}
 	int32_t i32() { return static_cast<int32_t>(u32()); }
+	uint64_t u64() {
+		uint64_t v = 0;
+		if (off + 8 > img.size()) ok = false; else { memcpy(&v, img.data() + off, 8); off += 8; }
+		return v;
+	}
 	float f32() {
 		float v = 0.0f;
 		if (off + 4 > img.size()) ok = false; else { memcpy(&v, img.data() + off, 4); off += 4; }
@@ -1060,37 +1065,60 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
 			continue;
 		}
-		// ---- atlas-uv sweep audit (lightmap seam detector) ----
-		// StaticVertex (AoS): pos 12 | color 16 | texCoord 8 |
-		// texCoord2 (CHART-LOCAL uv) at byte 36 | normal 12 | tangent 16
-		// | chartId at byte 72. Atlas uvs resolve on the fly as
-		// chartUv * xform.scale + xform.offset (same math as the VS
-		// unpack). A triangle spanning distant atlas regions flags a
-		// stamping bug; within one chart rect a triangle spans at most
-		// 256/atlasW + 256/atlasH (charts are capped at 256x256 texels;
-		// tall/short atlases make that aspect-dependent, e.g. 2047x871
-		// -> 0.42), so 0.45 flags only genuine cross-rect sweeps.
-		float maxUv2Span = 0.0f;
-		uint32_t bigUv2Tris = 0;
-		const size_t vertBase = c.off;
-		const size_t idxBase = vertBase + (size_t)vc * sizeof(smvk::StaticVertex);
+		// ---- stream layout (packed-SoA; see cluster_serializer.cpp) ----
+		// Mesh blobs: [u32 layout marker (=1) | u64 posOff | u64 shadeOff
+		// | u64 idxOff | VertexPos[] | VertexShading[] | u32[]]. The
+		// shading stream carries chartUv PACKED (RG16_UNORM at shade+8)
+		// and chart (u32 at shade+20); positions are float3 at pos,
+		// stride 12.
+		size_t posBase = 0, shadeBase = 0, idxBase = 0;
+		{
+			const uint32_t layout = c.u32();
+			const uint64_t posOff = c.u64();
+			const uint64_t shadeOff = c.u64();
+			const uint64_t idxOff = c.u64();
+			if (!c.ok || layout != 1u
+				|| (size_t)posOff + (size_t)vc * sizeof(smvk::VertexPos) > c.img.size()
+				|| (size_t)shadeOff + (size_t)vc * sizeof(smvk::VertexShading) > c.img.size()
+				|| (size_t)idxOff + (size_t)ic * 4 > c.img.size()) {
+				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				continue;
+			}
+			posBase = (size_t)posOff;
+			shadeBase = (size_t)shadeOff;
+			idxBase = (size_t)idxOff;
+		}
+		// chart-local uv + chart id probe (SoA shading stream).
+		auto chartAt = [&](size_t v) -> std::tuple<float, float, uint32_t> {
+			const uint8_t* p = c.img.data() + shadeBase
+				+ v * sizeof(smvk::VertexShading);
+			uint32_t cuv = 0, cid = 0;
+			memcpy(&cuv, p + 8, 4);
+			memcpy(&cid, p + 20, 4);
+			return { float(cuv & 0xFFFFu) / 65535.0f,
+				float(cuv >> 16) / 65535.0f, cid };
+		};
 		// Vertex-attribute probe shared by the classic-index walk and
 		// the meshlet walk below: EVERY attribute must come from the
 		// SAME final vertex (the meshlet audit's whole point).
 		auto atlasAt = [&](size_t v) -> std::pair<float, float> {
-			const uint8_t* p = c.img.data() + vertBase
-				+ v * sizeof(smvk::StaticVertex);
-			float cu, cv;
-			uint32_t cid;
-			memcpy(&cu, p + 36, 4);
-			memcpy(&cv, p + 40, 4);
-			memcpy(&cid, p + 72, 4);
+			const auto [cu, cv, cid] = chartAt(v);
 			if (cid != 0xFFFFFFFFu && (size_t)cid < lmXf.size() / 4) {
 				const float* xf = lmXf.data() + (size_t)cid * 4;
 				return { cu * xf[0] + xf[2], cv * xf[1] + xf[3] };
 			}
 			return { cu, cv };
 		};
+		// ---- atlas-uv sweep audit (lightmap seam detector) ----
+		// Atlas uvs resolve on the fly as chartUv * xform.scale +
+		// xform.offset (same math as the VS unpack). A triangle spanning
+		// distant atlas regions flags a stamping bug; within one chart
+		// rect a triangle spans at most 256/atlasW + 256/atlasH (charts
+		// are capped at 256x256 texels; tall/short atlases make that
+		// aspect-dependent, e.g. 2047x871 -> 0.42), so 0.45 flags only
+		// genuine cross-rect sweeps.
+		float maxUv2Span = 0.0f;
+		uint32_t bigUv2Tris = 0;
 		// Canonical (sorted) triangle key for set comparison.
 		auto triKey = [](uint32_t a, uint32_t b, uint32_t d) {
 			uint32_t mn = std::min({ a, b, d });
@@ -1114,16 +1142,12 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		uint32_t chartIdMax = 0;
 		bool haveChartId = false;
 		uint32_t oobSlice = 0;
-		if (vertBase + (size_t)vc * sizeof(smvk::StaticVertex)
-			<= c.img.size()) {
-			for (uint32_t v = 0; v < vc; ++v) {
-				uint32_t cid;
-				memcpy(&cid, c.img.data() + vertBase
-					+ v * sizeof(smvk::StaticVertex) + 72, 4);
-				if (cid != 0xFFFFFFFFu) {
-					haveChartId = true;
-					chartIdMax = std::max(chartIdMax, cid);
-				}
+		for (uint32_t v = 0; v < vc; ++v) {
+			const auto [cu0, cv0, cid] = chartAt(v);
+			(void)cu0; (void)cv0;
+			if (cid != 0xFFFFFFFFu) {
+				haveChartId = true;
+				chartIdMax = std::max(chartIdMax, cid);
 			}
 		}
 		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
@@ -1133,9 +1157,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				for (int k = 0; k < 3; ++k) {
 					if (ix[k] >= vc)
 						continue;
-					uint32_t cid;
-					memcpy(&cid, c.img.data() + vertBase
-						+ ix[k] * sizeof(smvk::StaticVertex) + 72, 4);
+					const auto [cu1, cv1, cid] = chartAt(ix[k]);
+					(void)cu1; (void)cv1;
 					if (cid != 0xFFFFFFFFu
 						&& (size_t)cid >= lmXf.size() / 4)
 						++oobSlice;
@@ -1164,19 +1187,9 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
 			auto posAt = [&](size_t v) {
 				float p[3];
-				memcpy(p, c.img.data() + vertBase
-					+ v * sizeof(smvk::StaticVertex), 12);
+				memcpy(p, c.img.data() + posBase
+					+ v * sizeof(smvk::VertexPos), 12);
 				return glm::vec3(p[0], p[1], p[2]);
-			};
-			auto chartLocalAt = [&](size_t v) {
-				const uint8_t* p = c.img.data() + vertBase
-					+ v * sizeof(smvk::StaticVertex);
-				float cu, cv;
-				uint32_t cid;
-				memcpy(&cu, p + 36, 4);
-				memcpy(&cv, p + 40, 4);
-				memcpy(&cid, p + 72, 4);
-				return std::tuple<float, float, uint32_t>(cu, cv, cid);
 			};
 			for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {
 				uint32_t ix[3] = {};
@@ -1189,7 +1202,7 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				uint32_t chart = 0xFFFFFFFFu;
 				bool clamped = false;
 				for (int k = 0; k < 3; ++k) {
-					const auto [cu, cv, cid] = chartLocalAt(ix[k]);
+					const auto [cu, cv, cid] = chartAt(ix[k]);
 					if (cid != 0xFFFFFFFFu && chart == 0xFFFFFFFFu)
 						chart = cid;
 					if (cu <= 1e-4f || cu >= 1.0f - 1e-4f
@@ -1262,8 +1275,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				classicTris.insert(triKey(ix[0], ix[1], ix[2]));
 			}
 		}
-		// Vertex/index payloads (sizeof(StaticVertex) per vert, 4 B per index).
-		c.off += (size_t)vc * sizeof(smvk::StaticVertex) + (size_t)ic * 4;
+		// Payload skip to the meshlet trailer (recorded stream offsets).
+		c.off = idxBase + (size_t)ic * 4;
 		uint32_t meshlets = 0;
 		if (c.off < c.img.size()) {
 			if (c.off + 4 <= c.img.size())
@@ -3219,9 +3232,11 @@ int main(int argc, char** argv) {
 	// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
 	// never live on the (1MB) thread stack. Cook mode = GPU-free: CPU
 	// geometry + retained uploads only, textures are validated .ktx2
-	// payloads with minted slot ids.
-	std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
-	std::vector<std::string> sceneNames;
+	// payloads with minted slot ids. (No redeclare: the outer sceneClusters/
+	// sceneNames at the tour-path head serve BOTH paths — a shadow copy
+	// here would be freed at the else-block close while the code below
+	// reads the empty outer ones. That shadow crashed every no-tour cook
+	// at the Single-scene alias: front() on an empty vector.)
 	for (const SceneCook& sc : toCook) {
 		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 		cluster->SetCookMode(true);
@@ -5162,6 +5177,7 @@ int main(int argc, char** argv) {
 		<< "  scenes=" << sceneNames.size()
 		<< " meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
+		<< " digested=" << stats.digestedTextures
 		<< " nodes=" << stats.nodes << " lights=" << stats.lights
 		<< " cameras=" << stats.cameras
 		<< " gi=" << stats.giBindings
@@ -5203,15 +5219,27 @@ int main(int argc, char** argv) {
 	if (args.verify && verifyReader) {
 		const auto& reader = *verifyReader;
 		size_t badPayloads = 0;
+		size_t digested = 0;
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
-			if (!smvk::ParseTexturePayload(reader.Payload(*e), p))
+			// v4 digested shape first (validates digest + tail section),
+			// legacy/digest-less fallback second — mirrors the runtime
+			// split in DeserializeCluster.
+			if (smvk::ParseTexturePayloadV4(reader.Payload(*e), p)) {
+				++digested;
+				// Digest sanity: kind + tail split must parse.
+				smvk::TextureStreamMeta meta{};
+				if (!smvk::ParseTextureDigest(p.digest, meta))
+					++badPayloads;
+			}
+			else if (!smvk::ParseTexturePayload(reader.Payload(*e), p))
 				++badPayloads;
 		}
 		std::cout << "  verify: entries=" << reader.EntryCount()
 			<< " meshes=" << reader.BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader.BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader.BlobsOfKind(smvk::PakAssetKind::Texture).size()
+			<< " digested=" << digested
 			<< " cameras=" << reader.BlobsOfKind(smvk::PakAssetKind::Camera).size()
 			<< " scene=" << reader.BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< (badPayloads ? " BAD PAYLOADS!" : " OK") << "\n";

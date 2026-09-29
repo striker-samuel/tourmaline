@@ -15,6 +15,7 @@
 namespace smvk {
 
 	class PakReader;
+	class TextureStreamer;
 
 	enum struct CullType {
 		CPU
@@ -191,8 +192,14 @@ namespace smvk {
 		// Deserializes a cooked pak (PakReader over caller-owned bytes) into
 		// a new registered Cluster. Throws std::runtime_error on failure.
 		// The caller issues ctx.FlushUploads() after ResolveAndFixup.
+		// streamer (optional): v4 textures carrying a digest stream through
+		// CreateStreamingTextureFromMeta (tail-only upload, no KTX parse)
+		// and register for demand upgrades — imagePin (the loaded pak
+		// image) must then be given to pin the borrowed payloads.
 		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader,
-			uint32_t sceneIndex = 0);
+			uint32_t sceneIndex = 0,
+			struct TextureStreamer* streamer = nullptr,
+			std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
 		void UnloadCluster(smvk::Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);

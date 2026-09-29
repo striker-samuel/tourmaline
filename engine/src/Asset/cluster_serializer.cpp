@@ -14,7 +14,11 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Utils/texture_loader.h>
+#include <Engine/Utils/thread_pool.h>
+
+#include "ktx.h"
 
 namespace smvk {
 namespace {
@@ -43,6 +47,79 @@ void PutVec3(std::vector<uint8_t>& out, const glm::vec3& v) {
 	PutF32(out, v.x);
 	PutF32(out, v.y);
 	PutF32(out, v.z);
+}
+size_t AlignUp16(size_t v) {
+	return (v + 15) & ~size_t(15);
+}
+
+// One texture's v4 cook job (thread-safe: ktx objects + digest + blob
+// build are all local). Returns the payload blob + whether it carries a
+// digest (digested payloads store uncompressed for tail direct
+// addressing). On digest failure the payload stays legacy (the load path
+// fails it per-texture, same as today); `error` is only set for hard
+// cook failures (missing/invalid payload metadata).
+struct TexCookJob {
+	std::string uri;
+	std::string filePart;
+	TextureSamplerDesc samp;
+	const std::vector<uint8_t>* src = nullptr;
+};
+struct TexCookResult {
+	std::string uri;
+	std::string filePart;
+	std::vector<uint8_t> blob;
+	bool digested = false;
+	size_t srcBytes = 0;
+	std::string error;
+};
+
+TexCookResult CookTexturePayload(const TexCookJob& job) {
+	TexCookResult r;
+	r.uri = job.uri;
+	r.filePart = job.filePart;
+	const std::vector<uint8_t>& src = *job.src;
+	r.srcBytes = src.size();
+	// v4 tail digest: parse the ktx (cheap at cook) and stamp the resident
+	// tail split so the loader uploads only the coarse-mip tail through
+	// the normal ktx path (parse + transcode-if-needed + streaming
+	// subrange) and registers for demand upgrades. NO transcode, NO byte
+	// changes here — the embedded payload is untouched, so the pak pays
+	// zero extra bytes for digests. Tail numbers mirror the runtime
+	// streamer floor (minResidentMips=2, dimCap=1024 — see the app's
+	// streamCfg).
+	TextureStreamMeta meta{};
+	std::vector<uint8_t> digestBytes;
+	bool haveDigest = false;
+	ktxTexture2* ktxTex = nullptr;
+	if (ktxTexture2_CreateFromMemory(
+			static_cast<const ktx_uint8_t*>(src.data()),
+			static_cast<ktx_size_t>(src.size()),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+			&ktxTex) != KTX_SUCCESS || !ktxTex
+		|| ktxTex->numDimensions < 1 || ktxTex->numDimensions > 3) {
+		if (ktxTex)
+			ktxTexture2_Destroy(ktxTex);
+	}
+	else {
+		meta.tailFirstMip = TextureStreamer::InitialResidentBase(
+			std::max(1u, ktxTex->numLevels),
+			std::max(std::max(1u, ktxTex->baseWidth),
+				ktxTex->numDimensions == 1 ? 1u
+					: std::max(1u, ktxTex->baseHeight)),
+			/*minResidentMips=*/2, /*dimCap=*/1024);
+		ktxTexture2_Destroy(ktxTex);
+		haveDigest = BuildTextureDigest(meta, digestBytes);
+	}
+	r.blob = haveDigest
+		? BuildTexturePayloadV4(job.uri, job.samp.magFilter, job.samp.minFilter,
+			job.samp.wrapS, job.samp.wrapT,
+			std::span<const uint8_t>(src),
+			std::span<const uint8_t>(digestBytes))
+		: BuildTexturePayload(job.uri, job.samp.magFilter, job.samp.minFilter,
+			job.samp.wrapS, job.samp.wrapT,
+			std::span<const uint8_t>(src));
+	r.digested = haveDigest;
+	return r;
 }
 // Authored-environment record (see SceneEnv): 16 floats in fixed order +
 // the skybox URI string. Shared by the resolved look, the default block
@@ -293,16 +370,42 @@ bool SerializeClusters(
 			PutF32(blob, xf.z);
 			PutF32(blob, xf.w);
 		}
-		// Vertex/index payloads (AoS StaticVertex, u32 indices).
-		static_assert(sizeof(StaticVertex) == 76, "StaticVertex layout changed");
-		blob.insert(blob.end(),
-			reinterpret_cast<const uint8_t*>(upload->vertices.data()),
-			reinterpret_cast<const uint8_t*>(upload->vertices.data()) +
-				upload->vertices.size() * sizeof(StaticVertex));
-		blob.insert(blob.end(),
-			reinterpret_cast<const uint8_t*>(upload->indices.data()),
-			reinterpret_cast<const uint8_t*>(upload->indices.data()) +
-				upload->indices.size() * sizeof(uint32_t));
+		// Payload: PACKED SoA STREAMS (v4) — the exact GPU heap layout
+		// (VertexPos[] + VertexShading[] + u32[]), one layout marker +
+		// blob-relative offsets. Stored UNCOMPRESSED (AddBlob flag below)
+		// so the payload bytes are direct pak-image subspans and the
+		// loader stages them with pure offset math (no AoS parse, no
+		// per-vertex conversion, BulkCopyBuffer content = the pak image).
+		static_assert(sizeof(VertexPos) == 12, "VertexPos layout changed");
+		static_assert(sizeof(VertexShading) == 24, "VertexShading layout changed");
+		static_assert(sizeof(uint32_t) == 4, "index stream layout changed");
+		std::vector<VertexPos> positions(upload->vertices.size());
+		std::vector<VertexShading> shading(upload->vertices.size());
+		for (size_t v = 0; v < upload->vertices.size(); ++v)
+			PackStaticVertex(upload->vertices[v], positions[v], shading[v]);
+		PutU32(blob, 1u); // layout: 1 = packed SoA (v4; v1-v3 blobs have no marker)
+		// Align the stream start PAST the three u64 offsets still to be
+		// written below (+24) — blob.size() here is header + marker only.
+		const uint64_t posOff = AlignUp16(blob.size() + 24);
+		PutU64(blob, posOff);
+		const uint64_t shadeOff = posOff + positions.size() * sizeof(VertexPos);
+		PutU64(blob, shadeOff);
+		const uint64_t idxOff = shadeOff + shading.size() * sizeof(VertexShading);
+		PutU64(blob, idxOff);
+		{
+			const size_t padA = size_t(posOff) - blob.size();
+			blob.insert(blob.end(), padA, 0);
+			blob.insert(blob.end(),
+				reinterpret_cast<const uint8_t*>(positions.data()),
+				reinterpret_cast<const uint8_t*>(positions.data()) + positions.size() * sizeof(VertexPos));
+			blob.insert(blob.end(),
+				reinterpret_cast<const uint8_t*>(shading.data()),
+				reinterpret_cast<const uint8_t*>(shading.data()) + shading.size() * sizeof(VertexShading));
+			blob.insert(blob.end(),
+				reinterpret_cast<const uint8_t*>(upload->indices.data()),
+				reinterpret_cast<const uint8_t*>(upload->indices.data()) +
+					upload->indices.size() * sizeof(uint32_t));
+		}
 		// Trailing meshlet section (v2; v1 blobs end here). Always written
 		// (possibly count 0) so the layout is uniform for new paks.
 		{
@@ -332,7 +435,10 @@ bool SerializeClusters(
 			}
 		}
 
-		if (!writer.AddBlob(PakAssetKind::Mesh, uri, std::move(blob)))
+		// v4 fast-load layout: packed-SoA mesh streams stored uncompressed
+		// (direct pak-image subspans; see the payload section above).
+		// Raises the pak version so older readers reject at Open.
+		if (!writer.AddBlob(PakAssetKind::Mesh, uri, std::move(blob), true))
 			return fail("invalid mesh uri: " + uri);
 	}
 
@@ -398,6 +504,12 @@ bool SerializeClusters(
 	}
 
 	// --- Textures (embedded .ktx2) ------------------------------------------
+	// Two phases: collect the (uri, sampler, source) list serially (dedup
+	// + validation order stays stable), then cook every payload — ktx
+	// parse, optional Basis tail pre-transcode, digest, blob build — on a
+	// worker pool (transcode is the dominant cook cost), then append blobs
+	// in uri order so paks stay deterministic.
+	std::vector<TexCookJob> texCooks;
 	for (const auto& [uri, rhi] : cluster.ListTextureUris()) {
 		(void)rhi;
 		if (!texturesDone.insert(uri.Str()).second)
@@ -409,17 +521,36 @@ bool SerializeClusters(
 		TextureSamplerDesc samp;
 		if (auto hit = cluster.GetTextureSampler(uri))
 			samp = *hit;
-		std::vector<uint8_t> blob = BuildTexturePayload(
-			uri.Str(), samp.magFilter, samp.minFilter, samp.wrapS, samp.wrapT,
-			std::span<const uint8_t>(*src));
-		textureBytes += src->size();
 		// TextureBlob TOC path = the file part (VFS path) so PakBackend can
 		// serve the .ktx2 bytes through the VFS overlay.
 		const std::string filePart = AssetFilePart(uri);
 		if (filePart.empty())
 			return fail("texture uri has no VFS file part: " + uri.Str());
-		if (!writer.AddBlob(PakAssetKind::Texture, filePart, std::move(blob)))
-			return fail("invalid texture path: " + filePart);
+		texCooks.push_back(TexCookJob{ uri.Str(), filePart, samp, src });
+	}
+	{
+		ThreadPool texPool;
+		std::vector<std::future<TexCookResult>> texFuts;
+		texFuts.reserve(texCooks.size());
+		for (const TexCookJob& job : texCooks) {
+			texFuts.push_back(texPool.enqueue([&job] {
+				return CookTexturePayload(job);
+			}));
+		}
+		for (size_t i = 0; i < texFuts.size(); ++i) {
+			TexCookResult res = texFuts[i].get();
+			if (!res.error.empty())
+				return fail(res.error);
+			textureBytes += res.srcBytes;
+			if (res.digested && stats)
+				stats->digestedTextures++;
+			// Digested payloads stay uncompressed (tail-range direct
+			// addressing into the pak image); legacy payloads follow the
+			// writer's compression setting as before.
+			if (!writer.AddBlob(PakAssetKind::Texture, res.filePart,
+					std::move(res.blob), res.digested))
+				return fail("invalid texture path: " + res.filePart);
+		}
 	}
 
 	// --- Lights (one blob per cooked light, URI-keyed like meshes) --------
@@ -1069,7 +1200,9 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	ResourceManager& ctx,
 	const PakReader& reader,
 	std::string* err,
-	uint32_t sceneIndex) {
+	uint32_t sceneIndex,
+	TextureStreamer* streamer,
+	std::shared_ptr<const std::vector<uint8_t>> imagePin) {
 	// Failure after textures/meshes were queued in the upload streamer
 	// leaves transfer command buffers + graphics acquire barriers
 	// referencing the partial cluster's VkImages/VkBuffers. The cluster
@@ -1093,41 +1226,101 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	auto cluster = std::make_unique<Cluster>(&ctx);
 
 	// --- Textures first (materials resolve URIs against them) ---------------
+	// Two lists: digest entries (Texture blobs carrying a tail digest —
+	// objects + coarse-mip tail upload, streamer-registered when a
+	// streamer is present) and legacy entries (digest-less blobs, e.g.
+	// bakery-appended cubemaps — today's ktx-parse full-resident path).
+	// Payload spans borrow the reader image, which outlives this call by
+	// contract; the streamer's demand upgrades borrow PAST this call —
+	// those payloads stay pinned on the cluster below.
 	const auto texEntries = reader.BlobsOfKind(PakAssetKind::Texture);
 	struct TexLoad {
 		std::string uri; // full asset uri (== file part for textures)
 		PakTexturePayload payload;
+		TextureStreamMeta meta; // valid when hasMeta
+		bool hasMeta = false;
 	};
-	std::vector<TexLoad> texLoads;
-	texLoads.reserve(texEntries.size());
+	std::vector<TexLoad> digestLoads;
+	std::vector<TexLoad> legacyLoads;
+	digestLoads.reserve(texEntries.size());
+	legacyLoads.reserve(texEntries.size());
 	for (const PakTocEntry* e : texEntries) {
 		PakTexturePayload p;
-		if (!ParseTexturePayload(reader.Payload(*e), p))
+		bool v4 = ParseTexturePayloadV4(reader.Payload(*e), p);
+		if (!v4 && !ParseTexturePayload(reader.Payload(*e), p))
 			return fail("malformed texture payload: " + e->path);
-		texLoads.push_back(TexLoad{ p.uri.empty() ? e->path : p.uri, p });
+		TexLoad t{ p.uri.empty() ? e->path : p.uri, p, {}, false };
+		if (v4 && !p.digest.empty()) {
+			if (!ParseTextureDigest(p.digest, t.meta))
+				return fail("malformed texture digest: " + e->path);
+			t.hasMeta = true;
+		}
+		((streamer && t.hasMeta) ? digestLoads : legacyLoads)
+			.push_back(std::move(t));
 	}
-	// Parallel decode+upload; payload spans borrow the reader image, which
-	// outlives this call by contract.
-	std::vector<KtxMemoryJob> jobs;
-	jobs.reserve(texLoads.size());
-	for (size_t i = 0; i < texLoads.size(); ++i) {
-		const auto& t = texLoads[i];
-		jobs.push_back(KtxMemoryJob{
-			static_cast<int>(i),
-			t.payload.ktxBytes.data(),
-			t.payload.ktxBytes.size(),
-			t.uri,
-		});
+	// Borrowed payloads need the cluster pin (demand upgrades run
+	// post-load against the reader image).
+	if (!digestLoads.empty()) {
+		if (!imagePin)
+			return fail("digest textures need the pak image pin");
+		cluster->PinPakImage(std::move(imagePin));
 	}
+	std::cerr << "DeserializeCluster: textures: " << digestLoads.size()
+		<< " digest (tail-only) + " << legacyLoads.size() << " legacy (full)"
+		<< (streamer ? " [streamer]" : " [no streamer]") << std::endl;
+	// Digest list: parallel tail-split creation — the worker parses +
+	// transcodes (as the legacy path) but uploads ONLY the tail
+	// [tailFirstMip, end) and registers with the streamer for demand
+	// upgrades. Payload bytes stay borrowed (pinned above).
+	ParallelTextureStats digestStats;
+	std::unordered_map<int, Holder<TextureHandle>> digestHolders;
+	if (!digestLoads.empty()) {
+		std::vector<KtxTailJob> jobs;
+		jobs.reserve(digestLoads.size());
+		for (size_t i = 0; i < digestLoads.size(); ++i) {
+			const auto& t = digestLoads[i];
+			jobs.push_back(KtxTailJob{
+				static_cast<int>(i),
+				t.meta.tailFirstMip,
+				t.payload.ktxBytes.data(),
+				t.payload.ktxBytes.size(),
+				t.uri,
+			});
+		}
+		digestHolders = LoadStreamingTailTexturesParallel(
+			ctx, jobs, streamer, {}, &digestStats);
+		if (digestStats.failed > 0)
+			std::cerr << "DeserializeCluster: " << digestStats.failed
+				<< " digest texture(s) failed to load" << std::endl;
+	}
+	// Legacy list: parallel ktx decode + full upload (today's path).
 	ParallelTextureStats texStats;
-	auto holders = LoadKtxTexturesParallelMemory(ctx, jobs, {}, &texStats);
-	if (texStats.failed > 0)
-		std::cerr << "DeserializeCluster: " << texStats.failed << " texture(s) failed to load" << std::endl;
-	for (size_t i = 0; i < texLoads.size(); ++i) {
-		const auto it = holders.find(static_cast<int>(i));
-		if (it == holders.end())
+	std::unordered_map<int, Holder<TextureHandle>> holders;
+	if (!legacyLoads.empty()) {
+		std::vector<KtxMemoryJob> jobs;
+		jobs.reserve(legacyLoads.size());
+		for (size_t i = 0; i < legacyLoads.size(); ++i) {
+			const auto& t = legacyLoads[i];
+			jobs.push_back(KtxMemoryJob{
+				static_cast<int>(i),
+				t.payload.ktxBytes.data(),
+				t.payload.ktxBytes.size(),
+				t.uri,
+			});
+		}
+		holders = LoadKtxTexturesParallelMemory(ctx, jobs, {}, &texStats);
+		if (texStats.failed > 0)
+			std::cerr << "DeserializeCluster: " << texStats.failed << " texture(s) failed to load" << std::endl;
+	}
+	// Digest + legacy holds land in the cluster pools identically (uri +
+	// sampler registration). SetTextureSource copies survive only when no
+	// streamer is present: the streamer path borrows the pinned pak image
+	// instead of duplicating every payload.
+	for (size_t i = 0; i < digestLoads.size(); ++i) {
+		const auto it = digestHolders.find(static_cast<int>(i));
+		if (it == digestHolders.end())
 			continue; // failed; materials referencing it fall back to empty
-		const auto& t = texLoads[i];
+		const auto& t = digestLoads[i];
 		TextureHandle rhi = it->second;
 		cluster->textures.create(std::move(it->second));
 		cluster->RegisterTextureUri(t.uri, rhi);
@@ -1135,8 +1328,23 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			t.payload.magFilter, t.payload.minFilter,
 			t.payload.wrapS, t.payload.wrapT,
 		});
-		cluster->SetTextureSource(t.uri,
-			std::vector<uint8_t>(t.payload.ktxBytes.begin(), t.payload.ktxBytes.end()));
+	}
+	for (size_t i = 0; i < legacyLoads.size(); ++i) {
+		const auto it = holders.find(static_cast<int>(i));
+		if (it == holders.end())
+			continue; // failed; materials referencing it fall back to empty
+		const auto& t = legacyLoads[i];
+		TextureHandle rhi = it->second;
+		cluster->textures.create(std::move(it->second));
+		cluster->RegisterTextureUri(t.uri, rhi);
+		cluster->RegisterTextureSampler(t.uri, TextureSamplerDesc{
+			t.payload.magFilter, t.payload.minFilter,
+			t.payload.wrapS, t.payload.wrapT,
+		});
+		if (!streamer) {
+			cluster->SetTextureSource(t.uri,
+				std::vector<uint8_t>(t.payload.ktxBytes.begin(), t.payload.ktxBytes.end()));
+		}
 	}
 
 	// --- Materials ------------------------------------------------------------
@@ -1218,10 +1426,10 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		LodInfo lod;
 		CookedMeshlets meshlets;
 	};
-	std::vector<StaticMeshUpload> meshUploads;
+	std::vector<Cluster::StaticMeshDirectSource> directs;
 	std::vector<MeshMeta> meshMetas;
 	std::vector<ClusterStaticMeshHandle> meshByPakId;
-	meshUploads.reserve(meshEntries.size());
+	directs.reserve(meshEntries.size());
 	meshMetas.reserve(meshEntries.size());
 	meshByPakId.reserve(meshEntries.size());
 	for (const PakTocEntry* e : meshEntries) {
@@ -1274,23 +1482,44 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
-		// Vertex payload: the CURRENT StaticVertex layout, strict. Paks are
-		// cooked artifacts of this engine build — a layout change means a
-		// recook, never a runtime probe (silent tolerance of older vertex
-		// layouts fed garbage into the downstream systems; a hard fail
-		// names the problem and the fix).
-		const size_t vertBytes = static_cast<size_t>(vertexCount) * sizeof(StaticVertex);
-		const size_t idxBytes = static_cast<size_t>(indexCount) * sizeof(uint32_t);
-		if (c.off + vertBytes + idxBytes > c.img.size())
-			return fail("mesh payload size mismatch (pak cooked with an "
-				"older vertex layout - recook the pak): " + e->path);
-		upload.vertices.resize(vertexCount);
-		memcpy(upload.vertices.data(), c.img.data() + c.off, vertBytes);
-		c.off += vertBytes;
-		upload.indices.resize(indexCount);
-		memcpy(upload.indices.data(), c.img.data() + c.off,
-			static_cast<size_t>(indexCount) * sizeof(uint32_t));
-		c.off += static_cast<size_t>(indexCount) * sizeof(uint32_t);
+		// Packed-SoA payload: the exact GPU heap streams (VertexPos[] +
+		// VertexShading[] + u32[]) addressed by blob-relative offsets. NO
+		// vertices are materialized here — the upload phase passes the
+		// offsets straight to UploadStaticMeshesDirect (pure offset math
+		// into the pak image). Strict: a blob without the layout marker is
+		// a stale pak — hard fail (magic-gated, recook from zero).
+		const uint32_t layout = c.u32();
+		if (!c.ok || layout != 1u)
+			return fail("unsupported mesh blob layout (stale pak - "
+				"recook from zero): " + e->path);
+		const uint64_t posOff = c.u64();
+		const uint64_t shadeOff = c.u64();
+		const uint64_t idxOff = c.u64();
+		// Direct addressing: the streams must be pak-image subspans —
+		// the cooker stores mesh blobs uncompressed.
+		if (e->flags & PakEntryFlag_Lz4)
+			return fail("mesh blob compressed (recook from zero): "
+				+ e->path);
+		const size_t posBytes =
+			static_cast<size_t>(vertexCount) * sizeof(VertexPos);
+		const size_t shadeBytes =
+			static_cast<size_t>(vertexCount) * sizeof(VertexShading);
+		const size_t idxBytes =
+			static_cast<size_t>(indexCount) * sizeof(uint32_t);
+		if (posOff + posBytes > e->size || shadeOff + shadeBytes > e->size
+			|| idxOff + idxBytes > e->size)
+			return fail("mesh stream ranges overrun blob: " + e->path);
+		// The meshlet trailer follows the index stream.
+		c.off = static_cast<size_t>(idxOff) + idxBytes;
+		directs.push_back(Cluster::StaticMeshDirectSource{
+			e->offset + posOff,
+			e->offset + shadeOff,
+			e->offset + idxOff,
+			vertexCount,
+			indexCount,
+			upload.aabbMin,
+			upload.aabbMax,
+		});
 		// Trailing meshlet section. The cooker ALWAYS writes it (possibly
 		// count 0), so a missing or malformed trailer is a stale/corrupt
 		// pak: hard fail. Meshlets are a COOKED artifact — the runtime
@@ -1340,16 +1569,16 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				}
 			}
 		}
-		meshUploads.push_back(std::move(upload));
 		meshMetas.push_back(MeshMeta{ std::move(uri), sphere, lmChunk,
 			std::move(lmXforms), lod, std::move(cooked) });
 	}
 	{
-		std::vector<ClusterStaticMeshHandle> handles = cluster->UploadStaticMeshes(
-			std::span<const StaticMeshUpload>(meshUploads));
-		if (handles.empty() && !meshUploads.empty())
-			return fail("UploadStaticMeshes failed (degenerate mesh or "
-				"full heap): " + meshMetas.front().uri);
+		std::vector<ClusterStaticMeshHandle> handles =
+			cluster->UploadStaticMeshesDirect(reader.ImageData(),
+				std::span<const Cluster::StaticMeshDirectSource>(directs));
+		if (handles.empty() && !directs.empty())
+			return fail("UploadStaticMeshesDirect failed (degenerate mesh "
+				"or full heap): " + meshMetas.front().uri);
 		for (size_t i = 0; i < handles.size(); ++i) {
 			const ClusterStaticMeshHandle h = handles[i];
 			MeshMeta& meta = meshMetas[i];

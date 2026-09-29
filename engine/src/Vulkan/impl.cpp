@@ -5668,6 +5668,7 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 	return smvk::ImageType::Image2D;
 }
 
+
 } // namespace
 
 [[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName, ImageCreateInfo imageCreateInfo)

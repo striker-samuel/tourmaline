@@ -401,17 +401,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 			static_cast<uint32_t>(data.indices.size());
 		VertexPos* posOut = positions.data() + srcVert;
 		VertexShading* shadeOut = shading.data() + srcVert;
-		for (uint32_t v = 0; v < vertexCount; ++v) {
-			const StaticVertex& src = data.vertices[v];
-			posOut[v].pos = src.pos;
-			shadeOut[v].color = vertexpack::PackColorUnorm8(src.color);
-			shadeOut[v].uv = vertexpack::PackUvHalf(src.texCoord);
-			shadeOut[v].chartUv = vertexpack::PackChartUv(src.texCoord2);
-			shadeOut[v].chart = src.chartId;
-			shadeOut[v].normal = vertexpack::PackNormalOct(src.normal);
-			shadeOut[v].tangent = vertexpack::PackTangentOct(
-				glm::vec3(src.tangent), src.tangent.w);
-		}
+		for (uint32_t v = 0; v < vertexCount; ++v)
+			PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v]);
 		if (indexCount > 0) {
 			memcpy(indices.data() + srcIdx, data.indices.data(),
 				size_t(indexCount) * sizeof(uint32_t));
@@ -449,6 +440,134 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	if (!idxCopies.empty()) {
 		vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 			indices.data(), idxCopies,
+			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+			VK_ACCESS_2_INDEX_READ_BIT);
+	}
+	return handles;
+}
+
+std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDirect(
+	const void* content, std::span<const StaticMeshDirectSource> sources)
+{
+	std::vector<ClusterStaticMeshHandle> handles;
+	if (!content || sources.empty())
+		return handles;
+	assert(!cookMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
+
+	// =========================================================================
+	// 1. Allocate heap ranges (all-or-nothing — nothing staged on failure)
+	// =========================================================================
+	struct MeshRange {
+		VkDeviceSize vertexBase = 0; // VERTEX UNITS
+		VkDeviceSize indexByteOffset = 0;
+		StaticMeshAllocation alloc{};
+	};
+	std::vector<MeshRange> ranges(sources.size());
+	for (size_t i = 0; i < sources.size(); ++i) {
+		const StaticMeshDirectSource& src = sources[i];
+		if (src.vertexCount == 0)
+			return {}; // degenerate entry fails the whole batch
+		MeshRange& r = ranges[i];
+		{
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = src.vertexCount;
+			allocInfo.alignment = 1;
+			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
+					&allocInfo, &r.alloc.vertexAllocation,
+					&r.vertexBase) != VK_SUCCESS)
+				return {};
+		}
+		if (src.indexCount > 0) {
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = sizeof(uint32_t)
+				* static_cast<VkDeviceSize>(src.indexCount);
+			allocInfo.alignment = alignof(uint32_t);
+			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
+					&allocInfo, &r.alloc.indexAllocation,
+					&r.indexByteOffset) != VK_SUCCESS)
+				return {};
+		}
+	}
+
+	// =========================================================================
+	// 2. Pool entries + bookkeeping (BEFORE any GPU staging)
+	// =========================================================================
+	handles.resize(sources.size());
+	for (size_t i = 0; i < sources.size(); ++i) {
+		const StaticMeshDirectSource& src = sources[i];
+		const MeshRange& r = ranges[i];
+		StaticMesh mesh{};
+		mesh.geometry.topology = PrimitiveTopology::TriangleList;
+		mesh.geometry.vertexCount = src.vertexCount;
+		mesh.geometry.indexCount = src.indexCount;
+		mesh.geometry.aabbMin = src.aabbMin;
+		mesh.geometry.aabbMax = src.aabbMax;
+		Surface surface{};
+		surface.firstIndex = static_cast<uint32_t>(
+			r.indexByteOffset / sizeof(uint32_t));
+		surface.indexCount = src.indexCount;
+		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
+		mesh.geometry.surfaces.push_back(surface);
+		handles[i] = staticMeshes.create(std::move(mesh));
+		if (handles[i].empty()) {
+			for (size_t j = 0; j < i; ++j)
+				DestroyMesh(handles[j]);
+			if (r.alloc.indexAllocation) {
+				vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
+					r.alloc.indexAllocation);
+			}
+			vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
+				r.alloc.vertexAllocation);
+			return {};
+		}
+		auto [it, inserted] = meshAllocations_.emplace(
+			handles[i].index(),
+			new StaticMeshAllocation(std::move(r.alloc)));
+		assert(inserted);
+	}
+
+	// =========================================================================
+	// 3. THREE table-driven bulk uploads straight from `content` — the
+	//    sources are packed-SoA subranges of one blob (the loaded pak
+	//    image), so this is pure offset math: no AoS parse, no conversion,
+	//    no intermediate vectors.
+	// =========================================================================
+	std::vector<BufferBulkCopy> posCopies;
+	std::vector<BufferBulkCopy> shadeCopies;
+	std::vector<BufferBulkCopy> idxCopies;
+	posCopies.reserve(sources.size());
+	shadeCopies.reserve(sources.size());
+	idxCopies.reserve(sources.size());
+	for (size_t i = 0; i < sources.size(); ++i) {
+		const StaticMeshDirectSource& src = sources[i];
+		const MeshRange& r = ranges[i];
+		posCopies.push_back(BufferBulkCopy{
+			size_t(src.posSrc),
+			size_t(r.vertexBase) * sizeof(VertexPos),
+			size_t(src.vertexCount) * sizeof(VertexPos) });
+		shadeCopies.push_back(BufferBulkCopy{
+			size_t(src.shadeSrc),
+			size_t(r.vertexBase) * sizeof(VertexShading),
+			size_t(src.vertexCount) * sizeof(VertexShading) });
+		if (src.indexCount > 0) {
+			idxCopies.push_back(BufferBulkCopy{
+				size_t(src.idxSrc),
+				size_t(r.indexByteOffset),
+				size_t(src.indexCount) * sizeof(uint32_t) });
+		}
+	}
+	auto* vctx = static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque());
+	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+		content, posCopies,
+		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+		content, shadeCopies,
+		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+	if (!idxCopies.empty()) {
+		vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+			content, idxCopies,
 			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
 			VK_ACCESS_2_INDEX_READ_BIT);
 	}

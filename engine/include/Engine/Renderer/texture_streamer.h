@@ -84,6 +84,15 @@ public:
 	TextureStreamer(const TextureStreamer&) = delete;
 	TextureStreamer& operator=(const TextureStreamer&) = delete;
 
+	// Pure tail-split (shared by StreamTexture and the pak cooker digest):
+	// keep the coarsest minResidentMips mips resident at minimum, then walk
+	// the base up while the resident-base extent still exceeds dimCap. The
+	// cooker stamps tailFirstMip with these same numbers, so pass the
+	// runtime config's values (defaults are the contract).
+	static uint32_t InitialResidentBase(uint32_t fullMips, uint32_t baseLongSide,
+		uint32_t minResidentMips, uint32_t dimCap);
+	static uint32_t MaxResidentBase(uint32_t fullMips, uint32_t minResidentMips);
+
 	// Decode + transcode + upload ONLY the initial tail of a KTX2 payload
 	// and register it for streaming. The payload bytes must outlive the
 	// registration (the glTF path keeps them in Cluster::textureSources;
@@ -91,6 +100,19 @@ public:
 	// Returns an empty holder on failure (error already logged).
 	Holder<TextureHandle> StreamTexture(const void* payload, size_t payloadSize,
 		const std::string& debugName, const ImageCreateInfo& imageCI = {});
+
+	// Register an ALREADY-UPLOADED tail-resident texture for streaming
+	// upgrades (the pak v4 fast-load path: objects + tail upload happen
+	// through CreateStreamingTextureFromMeta, so no ktx object is parsed
+	// here). payloadData/payloadSize are the FULL embedded ktx bytes the
+	// demand upgrades transcode from — same lifetime contract as
+	// StreamTexture (pak path borrows the loaded pak image, pinned by the
+	// cluster). residentBase is the full-chain mip backing image level 0.
+	// Returns false when the handle is already registered.
+	bool RegisterExisting(TextureHandle handle,
+		const void* payloadData, size_t payloadSize,
+		const std::string& debugName, uint32_t fullMips, uint32_t baseWidth,
+		uint32_t baseHeight, uint32_t arrayLayers, uint32_t residentBase);
 
 	// Drop a texture from the budget (call before destroying its holder).
 	void Unregister(TextureHandle handle);

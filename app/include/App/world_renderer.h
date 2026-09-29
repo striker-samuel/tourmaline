@@ -808,6 +808,16 @@ public:
 		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
 	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
 
+	// Texture streamer for the world's v4 texture tails (see
+	// Engine/Renderer/texture_streamer.h): null until Initialize creates
+	// it (before the world source runs) and when streaming is disabled.
+	// The host's world source reads it to register pak digest textures
+	// for demand upgrades; pak blobs without digests stay full-resident
+	// (the pre-v4 behavior).
+	smvk::TextureStreamer* GetTextureStreamer() const {
+		return m_textureStreamer.get();
+	}
+
 	// HOSTED drive API (the editor embeds this renderer offscreen —
 	// App::RequestHostedBoot + the WYSIWYG compose pass). Public
 	// wrappers over the protected virtuals with the hosted invariant
@@ -2303,9 +2313,10 @@ protected:
 	// into this unbounded NDC-space position that feeds the positioner.
 	glm::vec2 m_virtualMouse{ 0.0f };
 	// ---- Texture streaming (mip-tail residency, see
-	// Engine/Renderer/texture_streamer.h). Owns residency for every
-	// glTF-loaded texture; pak-loaded textures stay full-resident until
-	// the pak backend learns to hand over payloads (follow-up).
+	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
+	// textures and for pak v4 digest textures (objects + tail registered
+	// by the host's world source; digest-less pak blobs stay
+	// full-resident, the pre-v4 behavior).
 	bool m_textureStreamingEnabled = true;
 	std::unique_ptr<smvk::TextureStreamer> m_textureStreamer;
 	// GPU feedback consumer (Skull & Bones style readback, see

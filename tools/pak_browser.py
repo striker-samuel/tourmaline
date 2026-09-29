@@ -4,11 +4,11 @@
 Reads the pak manifest/header (no engine build needed) to inspect pack
 contents and their VFS relationship:
 
-- Header (32 B): magic "SMPK", version, flags, tocOffset, tocCount.
+- Header (32 B): magic "SMP4", reserved, flags, tocOffset, tocCount.
 - Blobs (16-byte aligned payloads).
 - TOC: per-entry pathHash (FNV-1a64), kind, flags, offset, size, path.
 - Footer (24 B): tocOffset, tocCount, crc32 (covers everything before it),
-  magic "KPMS".
+  magic "KPM4".
 
 VFS relationship (mirrors Engine/Asset/pak.h + Engine/Vfs/vfs.h):
 - Only Texture blobs are visible through PakBackend (Exists/TryRead/ListDir
@@ -35,10 +35,8 @@ from pathlib import Path
 # Pure-python pak model (mirrors engine/src/Asset/pak.cpp)
 # ---------------------------------------------------------------------------
 
-KPAK_MAGIC = 0x4B504D53  # "SMPK" LE
-KPAK_FOOTER_MAGIC = 0x534D504B  # "KPMS" LE
-KPAK_VERSION = 3
-KPAK_VERSION_MIN = 1
+KPAK_MAGIC = 0x34504D53  # "SMP4" LE (the magic IS the version: bump the
+KPAK_FOOTER_MAGIC = 0x344D504B  # "KPM4" LE trailing char on breaking changes)
 KHEADER_SIZE = 32
 KFOOTER_SIZE = 24
 KTOC_FIXED = 36  # hash u64, kind u32, flags u32, off u64, size u64, pathLen u32
@@ -200,10 +198,7 @@ def parse_pak(source: str, data: bytes) -> PakFile:
     pak.toc_offset, pak.toc_count = toc_off, toc_count
     pak.header_reserved = reserved
     if magic != KPAK_MAGIC:
-        pak.error = f"bad magic 0x{magic:08X} (want 0x{KPAK_MAGIC:08X} 'SMPK')"
-        return pak
-    if not (KPAK_VERSION_MIN <= ver <= KPAK_VERSION):
-        pak.error = f"unsupported version {ver} (min {KPAK_VERSION_MIN}, max {KPAK_VERSION})"
+        pak.error = f"bad magic 0x{magic:08X} (want 0x{KPAK_MAGIC:08X} 'SMP4' — recook from zero)"
         return pak
     foff = len(data) - KFOOTER_SIZE
     f_toc_off, f_toc_count, f_crc, f_magic = struct.unpack_from("<QQII", data, foff)
@@ -213,7 +208,7 @@ def parse_pak(source: str, data: bytes) -> PakFile:
     pak.crc_ok = pak.footer_crc_computed == f_crc
     pak.header_footer_match = (f_toc_off == toc_off) and (f_toc_count == toc_count)
     if f_magic != KPAK_FOOTER_MAGIC:
-        pak.error = f"bad footer magic 0x{f_magic:08X} (want 'KPMS')"
+        pak.error = f"bad footer magic 0x{f_magic:08X} (want 'KPM4')"
         return pak
     if not pak.header_footer_match:
         pak.error = (
@@ -478,7 +473,7 @@ def cli_dump(path: str) -> int:
     pak = parse_pak(path, data)
     print(f"pak: {path} ({len(data)} B)")
     print(
-        f"header: version={pak.version} flags={pak.flags} "
+        f"header: magic=SMP4 flags={pak.flags} "
         f"tocOffset={pak.toc_offset} tocCount={pak.toc_count}"
     )
     print(
@@ -797,10 +792,9 @@ if HAVE_QT:
                 ("file", f"{pak.source} ({pak.size} B)"),
                 (
                     "magic",
-                    f"{'SMPK OK' if not pak.error or True else ''} "
-                    f"(v{pak.version}, flags={pak.flags})".strip(),
+                    f"SMP4 {'OK' if not pak.error else 'INVALID'} "
+                    f"(flags={pak.flags})".strip(),
                 ),
-                ("version", f"{pak.version} (min {KPAK_VERSION_MIN}, max {KPAK_VERSION})"),
                 ("toc", f"offset={pak.toc_offset} count={pak.toc_count}"),
                 (
                     "footer",

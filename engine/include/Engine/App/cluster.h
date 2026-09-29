@@ -86,6 +86,28 @@ namespace smvk {
 		// in that case. Cook mode / retainUploads mirror the single path.
 		std::vector<ClusterStaticMeshHandle> UploadStaticMeshes(
 			std::span<const StaticMeshUpload> uploads);
+		// Direct-addressed batched upload (v4 fast-load path): the sources
+		// are packed-SoA stream subranges of ONE blob (`content` — the
+		// loaded pak image) addressed by byte offsets, so the upload is
+		// pure offset math: per entry heap range allocation + pool entry,
+		// then THREE BulkCopyBuffer calls take the {srcOffset, dstOffset,
+		// size} tables straight from `content`. No AoS parse, no
+		// per-vertex CPU conversion, no intermediate packed vectors. The
+		// caller attaches cooked meta (sphere, lod, lightmap chunk,
+		// meshlets, uri) per handle afterwards. All-or-nothing like
+		// UploadStaticMeshes; cook mode is a programming error (the
+		// deserializer only calls this with a GPU context).
+		struct StaticMeshDirectSource {
+			uint64_t posSrc = 0;   // content-relative stream offsets
+			uint64_t shadeSrc = 0;
+			uint64_t idxSrc = 0;
+			uint32_t vertexCount = 0;
+			uint32_t indexCount = 0;
+			glm::vec3 aabbMin{};
+			glm::vec3 aabbMax{};
+		};
+		std::vector<ClusterStaticMeshHandle> UploadStaticMeshesDirect(
+			const void* content, std::span<const StaticMeshDirectSource> sources);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
 		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 		// Pure value assembly (no texture resolution): shared core of
@@ -227,6 +249,13 @@ namespace smvk {
 		void SetTextureSource(StringViewT uri, std::vector<uint8_t> bytes);
 		const std::vector<uint8_t>* GetTextureSource(StringViewT uri) const;
 		void ReleaseTextureSources();
+		// Pins the loaded pak image for BORROWED texture payloads (the v4
+		// fast-load path: the texture streamer registers ktx spans owned
+		// by the pak image instead of per-texture owned copies). The pin
+		// keeps the payloads alive as long as the cluster — the streamer
+		// contract for RegisterExisting (payload must outlive the
+		// registration) is satisfied while the cluster lives.
+		void PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image);
 
 	private:
 		// Owned URI key storage for all maps below; freed wholesale with
@@ -247,6 +276,8 @@ namespace smvk {
 		std::unordered_map<std::string, float> lodFinalizedScale_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
+		// Pak-image pin for borrowed texture payloads (see PinPakImage).
+		std::shared_ptr<const std::vector<uint8_t>> pakImagePin_;
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
 		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;

@@ -166,6 +166,9 @@ uint32_t PakCrc32(const void* data, size_t size) {
 	return crc ^ 0xFFFFFFFFu;
 }
 
+// Forward: v4 payload parse needs the digest validator defined below.
+bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+
 bool ParseTexturePayload(std::span<const uint8_t> payload, PakTexturePayload& out) {
 	size_t off = 0;
 	uint32_t uriLen = 0;
@@ -180,15 +183,72 @@ bool ParseTexturePayload(std::span<const uint8_t> payload, PakTexturePayload& ou
 	int32_t samp[4];
 	memcpy(samp, payload.data() + off, 16);
 	off += 16;
+	// Shape A (v2/v3): u64 ktxSize | ktx bytes, end-exact.
 	uint64_t ktxSize = 0;
 	memcpy(&ktxSize, payload.data() + off, 8);
-	off += 8;
-	if (off + ktxSize != payload.size())
+	if (off + 8 + ktxSize == payload.size() && ktxSize > 0) {
+		out.magFilter = samp[0];
+		out.minFilter = samp[1];
+		out.wrapS = samp[2];
+		out.wrapT = samp[3];
+		out.digest = {};
+		out.ktxBytes = payload.subspan(off + 8, static_cast<size_t>(ktxSize));
+		return true;
+	}
+	// Shape B (v4 digest-less): u32 0 | u64 ktxSize | ktx bytes, end-exact.
+	uint32_t dlen = 0;
+	memcpy(&dlen, payload.data() + off, 4);
+	if (dlen == 0 && off + 12 <= payload.size()) {
+		memcpy(&ktxSize, payload.data() + off + 4, 8);
+		if (off + 12 + ktxSize == payload.size() && ktxSize > 0) {
+			out.magFilter = samp[0];
+			out.minFilter = samp[1];
+			out.wrapS = samp[2];
+			out.wrapT = samp[3];
+			out.digest = {};
+			out.ktxBytes = payload.subspan(off + 12, static_cast<size_t>(ktxSize));
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ParseTexturePayloadV4(std::span<const uint8_t> payload, PakTexturePayload& out) {
+	size_t off = 0;
+	uint32_t uriLen = 0;
+	if (payload.size() < 4)
 		return false;
+	memcpy(&uriLen, payload.data(), 4);
+	off = 4;
+	if (uriLen > 64 * 1024 || off + uriLen + 16 + 4 > payload.size())
+		return false;
+	uint32_t dlen = 0;
+	memcpy(&dlen, payload.data() + off + uriLen + 16, 4);
+	if (dlen == 0 || dlen > 1024 * 1024)
+		return false;
+	if (off + uriLen + 16 + 4 + dlen + 8 > payload.size())
+		return false;
+	TextureStreamMeta probe;
+	if (!ParseTextureDigest(
+			payload.subspan(off + uriLen + 16 + 4, static_cast<size_t>(dlen)), probe))
+		return false;
+	uint64_t ktxSize = 0;
+	memcpy(&ktxSize, payload.data() + off + uriLen + 16 + 4 + dlen, 8);
+	if (ktxSize == 0
+		|| off + uriLen + 16 + 4 + dlen + 8 + ktxSize != payload.size())
+		return false;
+	out.uri.assign(reinterpret_cast<const char*>(payload.data() + off), uriLen);
+	off += uriLen;
+	int32_t samp[4];
+	memcpy(samp, payload.data() + off, 16);
+	off += 16;
 	out.magFilter = samp[0];
 	out.minFilter = samp[1];
 	out.wrapS = samp[2];
 	out.wrapT = samp[3];
+	off += 4;
+	out.digest = payload.subspan(off, static_cast<size_t>(dlen));
+	off += dlen + 8;
 	out.ktxBytes = payload.subspan(off, static_cast<size_t>(ktxSize));
 	return true;
 }
@@ -207,11 +267,64 @@ std::vector<uint8_t> BuildTexturePayload(
 	return out;
 }
 
+std::vector<uint8_t> BuildTexturePayloadV4(
+	const std::string& uri, int32_t magFilter, int32_t minFilter,
+	int32_t wrapS, int32_t wrapT, std::span<const uint8_t> ktxBytes,
+	std::span<const uint8_t> digest) {
+	std::vector<uint8_t> out;
+	AppendU32(out, static_cast<uint32_t>(uri.size()));
+	out.insert(out.end(), uri.begin(), uri.end());
+	const int32_t samp[4] = { magFilter, minFilter, wrapS, wrapT };
+	const uint8_t* sp = reinterpret_cast<const uint8_t*>(samp);
+	out.insert(out.end(), sp, sp + 16);
+	AppendU32(out, static_cast<uint32_t>(digest.size()));
+	out.insert(out.end(), digest.begin(), digest.end());
+	AppendU64(out, static_cast<uint64_t>(ktxBytes.size()));
+	out.insert(out.end(), ktxBytes.begin(), ktxBytes.end());
+	return out;
+}
+
+// --- tail-upload digest (TextureStreamMeta serialization) ----------------
+// Minimal by design: kind(=1) + tailFirstMip only. The loader derives
+// everything else (format, extents, regions) from the live ktx object it
+// already parsed for the transcode, so the digest can never disagree
+// with the bytes it describes.
+namespace {
+constexpr uint32_t kTextureDigestKind = 1;
+constexpr size_t kTextureDigestFixed = 4 + 4; // kind, tailFirstMip
+
+void AppendDigestU32(std::vector<uint8_t>& out, uint32_t v) {
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+	out.insert(out.end(), p, p + 4);
+}
+} // namespace
+
+bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out) {
+	out.clear();
+	AppendDigestU32(out, kTextureDigestKind);
+	AppendDigestU32(out, meta.tailFirstMip);
+	return true;
+}
+
+bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out) {
+	if (digest.size() != kTextureDigestFixed)
+		return false;
+	uint32_t kind = 0, firstMip = 0;
+	memcpy(&kind, digest.data(), 4);
+	memcpy(&firstMip, digest.data() + 4, 4);
+	if (kind != kTextureDigestKind)
+		return false;
+	out = TextureStreamMeta{};
+	out.tailFirstMip = firstMip;
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // PakWriter
 // ---------------------------------------------------------------------------
 
-bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<uint8_t> payload) {
+bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<uint8_t> payload,
+	bool storeUncompressed) {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || payload.empty())
 		return false;
@@ -220,7 +333,7 @@ bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<
 	p.meta.kind = kind;
 	p.meta.flags = PakEntryFlag_None;
 	p.meta.path = n;
-	if (compression_ == PakCompression::Lz4) {
+	if (compression_ == PakCompression::Lz4 && !storeUncompressed) {
 		auto [stored, compressed] = CompressPakBlob(
 			std::span<const uint8_t>(payload), PakCompression::Lz4, lz4Acceleration_);
 		if (compressed) {
@@ -279,23 +392,16 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 
 	// Footer: tocOffset, tocCount, crc32 over [0, footerCrcOff), footer magic.
 	// NOTE: the header placeholder is patched *before* the CRC so the
-	// checksum covers the final header bytes.
-	// Version is v3 when any blob is LZ4-compressed, else v2 (so old
-	// v1/v2-only readers keep accepting uncompressed paks).
+	// checksum covers the final header bytes. No version field anywhere:
+	// the magic IS the version (a breaking format change bumps it and old
+	// paks fail closed at Open).
 	const uint64_t tocCount = entries_.size();
-	bool anyCompressed = false;
-	for (const auto& e : entries_) {
-		if (e.meta.flags & PakEntryFlag_Lz4) {
-			anyCompressed = true;
-			break;
-		}
-	}
 	{
 		uint8_t* h = out.data();
 		memcpy(h + 0, &kPakMagic, 4);
-		const uint32_t version = anyCompressed ? kPakVersion : 2u;
+		const uint32_t reserved = 0;
+		memcpy(h + 4, &reserved, 4);
 		const uint32_t flags = 0;
-		memcpy(h + 4, &version, 4);
 		memcpy(h + 8, &flags, 4);
 		memcpy(h + 12, &tocOffset, 8);
 		memcpy(h + 20, &tocCount, 8);
@@ -447,15 +553,14 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 	uint64_t payloadBase = kHeaderSize; // fresh: payloads right after header
 	if (fileSize >= kHeaderSize + kFooterSize) {
 		f.seekg(0, std::ios::beg);
-		uint32_t magic = 0, version = 0;
+		uint32_t magic = 0, reserved = 0;
 		uint64_t tocOffset = 0, tocCount = 0;
 		f.read(reinterpret_cast<char*>(&magic), 4);
-		f.read(reinterpret_cast<char*>(&version), 4);
+		f.read(reinterpret_cast<char*>(&reserved), 4);
 		f.seekg(4, std::ios::cur); // flags
 		f.read(reinterpret_cast<char*>(&tocOffset), 8);
 		f.read(reinterpret_cast<char*>(&tocCount), 8);
 		if (!f || magic != kPakMagic
-			|| version < kPakVersionMin || version > kPakVersion
 			|| tocOffset + kTocEntryFixed * tocCount > fileSize) {
 			err = "existing pak unreadable: " + pakPath;
 			return false;
@@ -543,19 +648,13 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		}
 	}
 	// Patch the header LAST (see pak.h: interrupted appends keep the
-	// previous valid contents). Version stays v3 when any surviving old
-	// entry is LZ4-compressed (append itself stores uncompressed only).
+	// previous valid contents). No version field: the magic IS the
+	// version, and appended blobs never change the format.
 	f.seekp(0, std::ios::beg);
 	f.write(reinterpret_cast<const char*>(&kPakMagic), 4);
 	{
-		uint32_t version = 2;
-		for (const PakTocEntry& e : entries) {
-			if (e.flags & PakEntryFlag_Lz4) {
-				version = kPakVersion;
-				break;
-			}
-		}
-		f.write(reinterpret_cast<const char*>(&version), 4);
+		const uint32_t reserved = 0;
+		f.write(reinterpret_cast<const char*>(&reserved), 4);
 		const uint32_t flags = 0;
 		f.write(reinterpret_cast<const char*>(&flags), 4);
 		f.write(reinterpret_cast<const char*>(&newTocOffset), 8);
@@ -606,18 +705,13 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		outError = "pak too small";
 		return std::nullopt;
 	}
-	uint32_t magic = 0, version = 0;
+	uint32_t magic = 0;
 	uint64_t tocOffset = 0, tocCount = 0;
 	memcpy(&magic, image.data() + 0, 4);
-	memcpy(&version, image.data() + 4, 4);
 	memcpy(&tocOffset, image.data() + 12, 8);
 	memcpy(&tocCount, image.data() + 20, 8);
 	if (magic != kPakMagic) {
-		outError = "bad pak magic";
-		return std::nullopt;
-	}
-	if (version < kPakVersionMin || version > kPakVersion) {
-		outError = "unsupported pak version " + std::to_string(version);
+		outError = "bad pak magic (stale pak - recook from zero)";
 		return std::nullopt;
 	}
 
@@ -683,10 +777,6 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		}
 		if (e.flags & ~PakEntryFlag_Lz4) {
 			outError = "pak unknown entry flags: " + e.path;
-			return std::nullopt;
-		}
-		if ((e.flags & PakEntryFlag_Lz4) && version < 3) {
-			outError = "pak compressed entry in v" + std::to_string(version) + " pak: " + e.path;
 			return std::nullopt;
 		}
 		r.entries_.push_back(std::move(e));

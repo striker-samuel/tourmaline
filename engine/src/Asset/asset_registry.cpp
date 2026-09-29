@@ -297,6 +297,10 @@ void Cluster::ReleaseTextureSources() {
 	textureSources_.Clear();
 }
 
+void Cluster::PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image) {
+	pakImagePin_ = std::move(image);
+}
+
 void Cluster::SetRetainUploads(bool retain) {
 	retainUploads_ = retain;
 	if (!retain)

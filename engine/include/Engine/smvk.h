@@ -1434,6 +1434,17 @@ struct ImageCreateInfo
 		size_t size = 0;
 	};
 
+	// Digest-form tail marker for a pak texture (cooked into the texture
+	// blob's payload header by the serializer): the loader uploads only
+	// the coarse-mip tail [tailFirstMip, end) through the normal ktx path
+	// (parse + transcode-if-needed + CreateStreamingTexture subrange) and
+	// registers the handle for demand upgrades — digest-less blobs take
+	// the full-resident path. The embedded ktx bytes are untouched by the
+	// digest (same payload the legacy path would upload whole).
+	struct TextureStreamMeta {
+		uint32_t tailFirstMip = 0;
+	};
+
 	// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
 	class ResourceManager;
 

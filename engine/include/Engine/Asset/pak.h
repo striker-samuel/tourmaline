@@ -10,6 +10,7 @@
 
 #include <Engine/Asset/compression.h>
 #include <Engine/Vfs/vfs.h>
+#include <Engine/smvk.h> // TextureStreamMeta (v4 tail-upload digest form)
 
 namespace smvk {
 
@@ -18,15 +19,20 @@ namespace smvk {
 //
 // Layout (all integers little-endian, all blobs 16-byte aligned):
 //
-//   Header  (32 B): magic "SMPK", u32 version, u32 flags, u64 tocOffset,
-//                   u64 tocCount
+//   Header  (32 B): magic "SMP4", u32 reserved, u32 flags, u64 tocOffset,
+//                   u64 tocCount, u32 reserved
 //   Blobs   : [payload bytes ...] (opaque to this layer; see
 //             Engine/Asset/cluster_serializer.h for Scene/Mesh/Material/
 //             Texture/Light blob encodings)
 //   TOC     : tocCount × { u64 pathHash, u32 kind, u32 flags,
 //                          u64 offset, u64 size, u32 pathLen, path bytes }
-//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM S"?
-//                   (footer magic "KPMS", crc covers header+blobs+TOC)
+//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM4"
+//                   (crc covers header+blobs+TOC)
+//
+// NO FORMAT VERSIONS: the magic IS the version. A breaking format change
+// bumps the trailing magic char (SMP4 -> SMP5, KPM4 -> KPM5) and the
+// reader fails closed on mismatch — content is recooked from zero, never
+// migrated. (The reserved header slots stay zero.)
 //
 // TOC pathHash = FNV-1a64 over the normalized VFS path (textures: the
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
@@ -40,18 +46,21 @@ namespace smvk {
 // file reads.
 // ---------------------------------------------------------------------------
 
-// v2 adds trailing meshlet sections on Mesh blobs and a trailing
-// static-subtree section on the Scene blob (see cluster_serializer.cpp).
-// v3 adds per-blob LZ4 compression (see compression.h): a TOC entry with
-// PakEntryFlag_Lz4 stores `u64 uncompressedSizeLE + LZ4 block bytes` and
-// the reader decompresses transparently. The writer emits v2 when no blob
-// compressed (so old readers keep working) and v3 otherwise.
-// The reader accepts v1 (missing trailing sections == no meshlets / no
-// static nodes), v2, and v3. The writer always emits v2 or v3.
-inline constexpr uint32_t kPakVersion = 3;
-inline constexpr uint32_t kPakVersionMin = 1;
-inline constexpr uint32_t kPakMagic = 0x4B504D53; // "SMPK" LE
-inline constexpr uint32_t kPakFooterMagic = 0x534D504B; // "KPMS" LE
+// Mesh blobs carry trailing meshlet sections and the Scene blob a
+// trailing static-subtree section (see cluster_serializer.cpp); a TOC
+// entry with PakEntryFlag_Lz4 stores `u64 uncompressedSizeLE + LZ4 block
+// bytes` (see compression.h) and the reader decompresses transparently.
+// Mesh blobs carry PACKED SoA streams (VertexPos[] + VertexShading[] +
+// u32[] — the exact GPU heap layout, plus blob-relative subrange offsets)
+// stored UNCOMPRESSED, so the payload bytes are direct pak-image subspans
+// and the loader stages them with pure offset math (BulkCopyBuffer
+// content = the pak image). Texture blobs append a digest header (tail
+// mip split) so the loader uploads only the coarse-mip tail; digest-less
+// blobs (e.g. bakery-appended textures) keep the full-resident path.
+// A breaking change to any of this bumps the magic below (never a
+// version field); content recooks from zero.
+inline constexpr uint32_t kPakMagic = 0x34504D53; // "SMP4" LE
+inline constexpr uint32_t kPakFooterMagic = 0x344D504B; // "KPM4" LE
 
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
@@ -131,53 +140,102 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		std::span<const uint8_t>>>& blobs,
 	std::vector<PakAppendInfo>& out, std::string& err);
 
-// TextureBlob payload encoding (shared by the serializer and PakBackend):
-//   u32 uriLen | uri bytes | i32 magFilter | i32 minFilter | i32 wrapS |
-//   i32 wrapT | u64 ktxSize | ktx bytes
-// Returns false when the payload is malformed.
-struct PakTexturePayload {
-	std::string uri;
-	int32_t magFilter = -1;
-	int32_t minFilter = -1;
-	int32_t wrapS = -1;
-	int32_t wrapT = -1;
-	std::span<const uint8_t> ktxBytes;
-};
-bool ParseTexturePayload(std::span<const uint8_t> payload, PakTexturePayload& out);
-std::vector<uint8_t> BuildTexturePayload(
-	const std::string& uri, int32_t magFilter, int32_t minFilter,
-	int32_t wrapS, int32_t wrapT, std::span<const uint8_t> ktxBytes);
-
-// Incremental pak builder (cooker side).
-class PakWriter {
-public:
-	PakWriter() = default;
-	// Payloads are copied. Path is normalized; empty/invalid paths fail.
-	bool AddBlob(PakAssetKind kind, const std::string& path, std::vector<uint8_t> payload);
-	// LZ4 compression for subsequently added blobs (default: None).
-	// Blobs below kCompressMinBytes or that do not shrink stay stored
-	// verbatim (flags == None), so tiny blobs never grow.
-	void SetCompression(PakCompression mode, int lz4Acceleration = 1) {
-		compression_ = mode;
-		lz4Acceleration_ = lz4Acceleration < 1 ? 1 : lz4Acceleration;
-	}
-	PakCompression Compression() const { return compression_; }
-	size_t EntryCount() const { return entries_.size(); }
-	size_t CompressedEntryCount() const;
-	const std::vector<PakTocEntry>& Entries() const { return metas_; }
-	// Serializes header+blobs+TOC+footer. Throws on failure.
-	std::vector<uint8_t> Finalize() const;
-
-private:
-	struct Pending {
-		PakTocEntry meta;
-		std::vector<uint8_t> payload;
+	// TextureBlob payload encoding (shared by the serializer and PakBackend):
+	// v3 shape:  u32 uriLen | uri bytes | i32 magFilter | i32 minFilter |
+	//            i32 wrapS | i32 wrapT | u64 ktxSize | ktx bytes
+	// v4 shape:  ... | i32 wrapT | u32 digestLen | digest bytes |
+	//            u64 ktxSize | ktx bytes
+	// digestLen == 0 (or no digest field at all) marks a legacy/digest-less
+	// payload — the texture loads through the ktx-parse full-resident path.
+	// digestLen > 0 carries the v4 tail-upload digest (see PakTextureDigest):
+	// the loader creates the tail-resident image objects straight from it
+	// (no KTX parse) and uploads only the coarse-mip tail; the embedded
+	// ktx is always GPU-ready (transcoded at cook) and carries the tops
+	// for the streamer's demand upgrades.
+	// ParseTexturePayload accepts the v3 shape AND the digest-less v4 shape
+	// (digest empty); ParseTexturePayloadV4 additionally requires + parses
+	// the digest. Both shapes validate end-exact; false on any malformation.
+	struct PakTexturePayload {
+		std::string uri;
+		int32_t magFilter = -1;
+		int32_t minFilter = -1;
+		int32_t wrapS = -1;
+		int32_t wrapT = -1;
+		std::span<const uint8_t> digest; // empty when digest-less
+		std::span<const uint8_t> ktxBytes;
 	};
-	std::vector<Pending> entries_;
-	std::vector<PakTocEntry> metas_; // mirrors entries_[].meta (stable order)
-	PakCompression compression_ = PakCompression::None;
-	int lz4Acceleration_ = 1;
-};
+	bool ParseTexturePayload(std::span<const uint8_t> payload, PakTexturePayload& out);
+	bool ParseTexturePayloadV4(std::span<const uint8_t> payload, PakTexturePayload& out);
+	std::vector<uint8_t> BuildTexturePayload(
+		const std::string& uri, int32_t magFilter, int32_t minFilter,
+		int32_t wrapS, int32_t wrapT, std::span<const uint8_t> ktxBytes);
+	// v4 form (always writes digestLen, empty or not; the serializer always
+	// passes a digest for transcodeable sources).
+	std::vector<uint8_t> BuildTexturePayloadV4(
+		const std::string& uri, int32_t magFilter, int32_t minFilter,
+		int32_t wrapS, int32_t wrapT, std::span<const uint8_t> ktxBytes,
+		std::span<const uint8_t> digest);
+
+	// v4 tail-upload digest record (TextureStreamMeta serialization; fixed
+	// u32/u64 fields, 16 B per region row):
+	//   u32 kind(=1) | u32 tailFirstMip | u32 residentMips |
+	//   u32 baseWidth | u32 baseHeight | u32 baseDepth | u32 numLevels |
+	//   u32 ktxLayers | u32 numFaces | u32 ktxVkFormat | u32 transferSrgb |
+	//   u32 dims | u32 cubemap | u32 regionCount |
+	//   rows: u64 bufferOffset | u32 mip | u32 arrayLayer
+	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+
+	// v4 tail-upload digest record (TextureStreamMeta serialization):
+	//   u32 kind(=1) | u32 tailFirstMip
+	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+
+	// v4 tail-upload digest record (TextureStreamMeta serialization; fixed
+	// u32/u64 fields, 16 B per region row):
+	//   u32 kind(=1) | u32 tailFirstMip | u32 residentMips |
+	//   u32 baseWidth | u32 baseHeight | u32 baseDepth | u32 numLevels |
+	//   u32 ktxLayers | u32 numFaces | u32 ktxVkFormat | u32 transferSrgb |
+	//   u32 dims | u32 cubemap | u32 regionCount |
+	//   rows: u64 bufferOffset | u32 mip | u32 arrayLayer
+	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+
+	// Incremental pak builder (cooker side).
+	class PakWriter {
+	public:
+		PakWriter() = default;
+		// Payloads are copied. Path is normalized; empty/invalid paths fail.
+		// storeUncompressed forces flags == None regardless of SetCompression:
+		// v4 direct-addressed blobs (packed-SoA mesh streams) must stay
+		// byte-identical subspans of the pak image — compressing them would
+		// break the offset-table load path.
+		bool AddBlob(PakAssetKind kind, const std::string& path, std::vector<uint8_t> payload,
+			bool storeUncompressed = false);
+		// LZ4 compression for subsequently added blobs (default: None).
+		// Blobs below kCompressMinBytes or that do not shrink stay stored
+		// verbatim (flags == None), so tiny blobs never grow.
+		void SetCompression(PakCompression mode, int lz4Acceleration = 1) {
+			compression_ = mode;
+			lz4Acceleration_ = lz4Acceleration < 1 ? 1 : lz4Acceleration;
+		}
+		PakCompression Compression() const { return compression_; }
+		size_t EntryCount() const { return entries_.size(); }
+		size_t CompressedEntryCount() const;
+		const std::vector<PakTocEntry>& Entries() const { return metas_; }
+		// Serializes header+blobs+TOC+footer. Throws on failure.
+		std::vector<uint8_t> Finalize() const;
+
+	private:
+		struct Pending {
+			PakTocEntry meta;
+			std::vector<uint8_t> payload;
+		};
+		std::vector<Pending> entries_;
+		std::vector<PakTocEntry> metas_; // mirrors entries_[].meta (stable order)
+		PakCompression compression_ = PakCompression::None;
+		int lz4Acceleration_ = 1;
+	};
 
 // Parsed pak view over borrowed bytes (the caller keeps the image alive;
 // PakBackend keeps a shared image for this reason). LZ4 blobs are
@@ -193,6 +251,10 @@ public:
 	std::vector<const PakTocEntry*> BlobsOfKind(PakAssetKind kind) const;
 	const PakTocEntry* Find(PakAssetKind kind, const std::string& normalizedPath) const;
 	std::span<const uint8_t> Payload(const PakTocEntry& entry) const;
+	// Base of the loaded image. UNCOMPRESSED entry payloads are subspans of
+	// this base at entry.offset — the v4 fast-load path stages geometry
+	// straight from here with pure offset math (BulkCopyBuffer content).
+	const uint8_t* ImageData() const { return image_.data(); }
 
 private:
 	std::span<const uint8_t> image_;

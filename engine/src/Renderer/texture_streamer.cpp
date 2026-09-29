@@ -46,26 +46,38 @@ uint64_t TextureStreamer::EstimateResidentBytes(uint32_t baseWidth, uint32_t bas
 	return bytes * std::max(1u, arrayLayers);
 }
 
-uint32_t TextureStreamer::maxBaseFor(uint32_t fullMips) const
-{
-	if (fullMips <= config_.minResidentMips)
-		return 0;
-	return fullMips - config_.minResidentMips;
-}
-
-uint32_t TextureStreamer::initialBaseFor(uint32_t fullMips, uint32_t baseLongSide) const
+uint32_t TextureStreamer::InitialResidentBase(uint32_t fullMips, uint32_t baseLongSide,
+	uint32_t minResidentMips, uint32_t dimCap)
 {
 	uint32_t base = 0;
-	const uint32_t maxBase = maxBaseFor(fullMips);
+	const uint32_t maxBase = MaxResidentBase(fullMips, minResidentMips);
 	while (base < maxBase)
 	{
 		const uint32_t dim =
 			std::max(1u, baseLongSide >> base);
-		if (dim <= config_.initialResidentDimCap)
+		if (dim <= dimCap)
 			break;
 		++base;
 	}
 	return base;
+}
+
+uint32_t TextureStreamer::MaxResidentBase(uint32_t fullMips, uint32_t minResidentMips)
+{
+	if (fullMips <= minResidentMips)
+		return 0;
+	return fullMips - minResidentMips;
+}
+
+uint32_t TextureStreamer::maxBaseFor(uint32_t fullMips) const
+{
+	return MaxResidentBase(fullMips, config_.minResidentMips);
+}
+
+uint32_t TextureStreamer::initialBaseFor(uint32_t fullMips, uint32_t baseLongSide) const
+{
+	return InitialResidentBase(fullMips, baseLongSide,
+		config_.minResidentMips, config_.initialResidentDimCap);
 }
 
 Holder<TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t payloadSize,
@@ -136,6 +148,35 @@ void TextureStreamer::Unregister(TextureHandle handle)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	entries_.erase(EntryKey(handle));
+}
+
+bool TextureStreamer::RegisterExisting(TextureHandle handle,
+	const void* payloadData, size_t payloadSize,
+	const std::string& debugName, uint32_t fullMips, uint32_t baseWidth,
+	uint32_t baseHeight, uint32_t arrayLayers, uint32_t residentBase)
+{
+	if (handle.empty() || payloadData == nullptr || payloadSize == 0
+		|| fullMips == 0 || baseWidth == 0 || baseHeight == 0
+		|| arrayLayers == 0 || residentBase >= fullMips)
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (entries_.find(EntryKey(handle)) != entries_.end())
+		return false;
+	Entry e{};
+	e.handle = handle;
+	e.payloadData = payloadData;
+	e.payloadSize = payloadSize;
+	e.name = debugName;
+	e.fullMips = fullMips;
+	e.baseWidth = baseWidth;
+	e.baseHeight = baseHeight;
+	e.arrayLayers = arrayLayers;
+	e.residentBase = residentBase;
+	e.desiredBase = residentBase;
+	e.lastRequestFrame = 0;
+	e.lastChangeFrame = 0;
+	entries_.emplace(EntryKey(handle), std::move(e));
+	return true;
 }
 
 void TextureStreamer::RequestMip(TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex)

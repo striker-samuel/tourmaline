@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 #include <Engine/smvk.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Renderer/vertex_pack.h>
 
 namespace smvk {
 
@@ -196,7 +197,7 @@ namespace smvk {
 	// per-draw flag, never on the value). chartId is the owning lightmap
 	// chart index (0xFFFFFFFF = uncharted), stamped by the cook alongside
 	// texCoord2 (seam corners are duplicated per chart).
-	struct StaticVertex {
+		struct StaticVertex {
 		glm::vec3 pos;
 		glm::vec4 color;
 		glm::vec2 texCoord;
@@ -215,6 +216,23 @@ namespace smvk {
 				chartId == other.chartId;
 		}
 	};
+
+	// One AoS import vertex -> one VertexPos + one VertexShading (the
+	// exact GPU heap-stream layout). Shared by Cluster::UploadStaticMesh(es)
+	// (runtime upload) and the pak cooker's packed-SoA mesh blobs (v4;
+	// cooked geometry round-trips the heap layout verbatim) — the two must
+	// never diverge.
+	inline void PackStaticVertex(const StaticVertex& src,
+		VertexPos& pos, VertexShading& shade) noexcept {
+		pos.pos = src.pos;
+		shade.color = vertexpack::PackColorUnorm8(src.color);
+		shade.uv = vertexpack::PackUvHalf(src.texCoord);
+		shade.chartUv = vertexpack::PackChartUv(src.texCoord2);
+		shade.chart = src.chartId;
+		shade.normal = vertexpack::PackNormalOct(src.normal);
+		shade.tangent = vertexpack::PackTangentOct(
+			glm::vec3(src.tangent), src.tangent.w);
+	}
 
 	// CPU-side import vertex (skinned): position/color/uv/normal/tangent
 	// plus the glTF JOINTS_0/WEIGHTS_0 pair. The importer keeps the top 4

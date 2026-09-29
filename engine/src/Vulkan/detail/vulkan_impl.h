@@ -79,17 +79,17 @@ namespace smvk {
 		uint64_t splitWaitValue2 = 0;
 	};
 
-	struct VulkanPipeline {
-		VkPipeline pipeline{};
-		VkPipelineLayout layout{};
-	};
+ 	struct VulkanPipeline {
+ 		VkPipeline pipeline{};
+ 		VkPipelineLayout layout{};
+ 	};
 
-	struct PipelineBundle {
-		VkPipeline pipeline = VK_NULL_HANDLE;
-		VkPipelineLayout layout = VK_NULL_HANDLE;
-	};
+ 	struct PipelineBundle {
+ 		VkPipeline pipeline = VK_NULL_HANDLE;
+ 		VkPipelineLayout layout = VK_NULL_HANDLE;
+ 	};
 
-	struct StaticMeshAllocation {
+ 	struct StaticMeshAllocation {
 	//	std::vector<VmaVirtualAllocation> allocs;
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
 		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;

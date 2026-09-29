@@ -2116,7 +2116,13 @@ std::optional<std::vector<uint8_t>> VfsTextureSource::ReadBytes(const std::strin
 }
 
 std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const {
-	const smvk::StringViewT n = smvk::NormalizeAssetUri(smvk::vfs::Join(vfsBaseDir_, imageUri));
+	// Named local: NormalizeAssetUri returns a BORROWED view (into its
+	// input's storage), so feeding it a temporary Join() result leaves the
+	// view dangling at the end of the full expression — the UAF that
+	// crashed every cook at preloadTextures (ASan: freed at :2119, read at
+	// :2120). Mirror HostTextureSource::ResolveIdentity's named `joined`.
+	const std::string joined = smvk::vfs::Join(vfsBaseDir_, imageUri);
+	const smvk::StringViewT n = smvk::NormalizeAssetUri(joined);
 	return n.empty() ? imageUri : n.Str();
 }
 
