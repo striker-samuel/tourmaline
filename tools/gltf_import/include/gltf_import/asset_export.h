@@ -1,0 +1,188 @@
+#pragma once
+// glTF -> project ASSET derivation (Unity-style preprocessed assets).
+//
+// Importing a glTF into the project writes PREPROCESSED assets next to the
+// source (the glTF itself stays as the container/source of truth):
+//
+//   <stem>.mesh                  â€” the whole scene graph (hierarchy, raw
+//                                  TRS as authored, node names, static/
+//                                  noLightmap flags, light/camera defs)
+//                                  + the geometry blobs (the packed SoA
+//                                  GPU heap streams â€” the same layout the
+//                                  pak cooker stores) + per-instance
+//                                  MATERIAL ASSET GUID bindings.
+//   <stem>.mat<idx>_<name>.material â€” one per glTF material: the PBR
+//                                  values + texture refs (image files
+//                                  beside the glTF, as-authored URIs).
+//   <stem>.anim<idx>_<name>.anim â€” one per glTF animation (the .tourAnim
+//                                  format; tracks target the .mesh's
+//                                  node ids â€” same deterministic import).
+//   <stem>.gltf.meta             â€” the MANIFEST: the glTF's GUID + every
+//                                  derived asset (kind, file, GUID,
+//                                  source index). GUIDs are STABLE:
+//                                  re-importing keeps them (matched by
+//                                  kind+source index), so scenes
+//                                  referencing the assets never break;
+//                                  new sources get fresh GUIDs, removed
+//                                  ones drop (scenes report them).
+//
+// The editor's scene (.tour) references these ASSETS by GUID (the root
+// reference points at the .mesh; the .mesh binds its .material GUIDs);
+// the glTF never opens as a scene directly anymore â€” the asset browser
+// shows it as a FOLDER of the derived assets.
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include <glm/glm.hpp>
+
+#include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/scene.h>
+
+namespace tinygltf { class Model; }
+
+namespace smvk::assets {
+
+enum class AssetKind : uint8_t { Mesh = 0, Material = 1, Anim = 2 };
+
+inline const char* AssetKindName(AssetKind k) {
+	switch (k) {
+	case AssetKind::Mesh: return "mesh";
+	case AssetKind::Material: return "material";
+	case AssetKind::Anim: return "anim";
+	}
+	return "?";
+}
+
+// One manifest entry (a derived asset of the glTF).
+struct AssetEntry {
+	AssetKind kind = AssetKind::Mesh;
+	std::string file;       // file NAME next to the glTF (no dirs)
+	std::string guid;       // 32-hex asset GUID (stable across reimports)
+	std::string name;       // display name (the material/anim name)
+	int sourceIndex = -1;   // glTF material/animation index (stability key)
+};
+
+// The glTF's manifest (the <stem>.gltf.meta).
+struct AssetManifest {
+	std::string guid;       // the glTF asset's GUID (the .meta identity)
+	std::string source;     // the glTF file NAME (display + reimport)
+	std::string stem;       // the asset file stem ("<stem>.mesh" etc.)
+	std::vector<AssetEntry> entries;
+};
+
+// ---- .material (the material asset) --------------------------------------
+// The PBR values (no pool handles â€” a scene binds them) + texture refs
+// (image files beside the glTF, as-authored glTF URIs; srgb flags by the
+// glTF texture slot convention: baseColor/emissive are sRGB, the rest
+// linear). Empty path = unbound slot.
+struct MaterialAsset {
+	std::string guid;
+	std::string name;
+	smvk::MaterialCreateInfo info{};
+	struct TexRef {
+		std::string path;
+		bool srgb = false;
+	};
+	TexRef baseColor;
+	TexRef metallicRoughness;
+	TexRef normalTex;
+	TexRef occlusion;
+	TexRef emissiveTex;
+};
+
+// ---- .mesh (the scene-graph + geometry asset) ----------------------------
+// Everything the world build needs: the hierarchy (RAW locals as the glTF
+// authored them â€” the coordFix basis rides the scene root at load, same
+// contract as the live import), the packed SoA geometry blobs (the GPU
+// heap layout: VertexPos[] + VertexShading[] + u32[]), and the per-node
+// bindings: geometry instances (each with its MATERIAL ASSET GUID) +
+// light/camera definitions.
+struct MeshAsset {
+	struct Node {
+		int32_t parent = -1;
+		int32_t level = 0;
+	};
+	std::vector<Node> nodes;
+	std::vector<std::string> names;        // per node ("" = unnamed)
+	std::vector<glm::mat4> locals;         // raw TRS as authored
+	std::vector<uint8_t> staticRoot;       // per node (0/1)
+	std::vector<uint8_t> noLightmap;       // per node (0/1)
+	struct Instance {
+		uint32_t node = 0;
+		uint32_t geometry = 0;
+		std::string materialGuid;          // "" = unbound
+	};
+	std::vector<Instance> instances;
+	struct LightDef {
+		uint32_t node = 0;
+		SceneLight def{};
+	};
+	std::vector<LightDef> lights;
+	struct CameraDef {
+		uint32_t node = 0;
+		SceneCamera def{};
+	};
+	std::vector<CameraDef> cameras;
+	struct Geometry {
+		std::vector<smvk::VertexPos> positions;
+		std::vector<smvk::VertexShading> shading;
+		std::vector<uint32_t> indices;
+		std::vector<smvk::Surface> surfaces;
+		glm::vec3 aabbMin{ 0.0f };
+		glm::vec3 aabbMax{ 0.0f };
+	};
+	std::vector<Geometry> geometry;
+};
+
+// Derivation CONFIG (mirrors the editor import gates; defaults = the
+// editor's on-by-default cook acceleration).
+struct DeriveConfig {
+	bool meshlets = true;   // VULKANTOY_EDITOR_MESHLETS parity
+	bool lods = true;       // VULKANTOY_EDITOR_LODS parity
+};
+
+struct DeriveStats {
+	uint32_t materials = 0;
+	uint32_t anims = 0;
+	uint32_t geometryBlobs = 0;
+	uint32_t instances = 0;
+	uint32_t lights = 0;
+	uint32_t cameras = 0;
+	uint32_t keptGuids = 0; // manifest entries that kept their GUID
+	uint32_t newGuids = 0;
+	uint32_t dropped = 0;   // manifest entries with no source match
+};
+
+// Runs the (deterministic, GPU-free cook-mode) import of the glTF + writes
+// every derived asset + the manifest next to it (its directory). Existing
+// manifest GUIDs are KEPT (matched by kind+sourceIndex); entries with no
+// source are dropped (counted). Returns false + err on a failed import or
+// a failed write (a partial derivation leaves older files â€” the next
+// successful derive overwrites them).
+bool DeriveGltfAssets(
+	const tinygltf::Model& model,
+	const std::filesystem::path& gltfPath,
+	const std::string& gltfGuid,
+	const DeriveConfig& config,
+	AssetManifest& outManifest,
+	DeriveStats* outStats = nullptr,
+	std::string* err = nullptr);
+
+// Readers (round-trip; the world build + the read-only inspector use them).
+bool LoadMeshAsset(
+	const std::filesystem::path& path, MeshAsset& out, std::string& err);
+bool LoadMaterialAsset(
+	const std::filesystem::path& path, MaterialAsset& out, std::string& err);
+// Reads <gltfPath>.meta (the manifest of an already-imported glTF).
+bool LoadAssetManifest(
+	const std::filesystem::path& gltfPath, AssetManifest& out,
+	std::string& err);
+// Writes the manifest (DeriveGltfAssets' tail; exposed for tests).
+bool SaveAssetManifest(
+	const std::filesystem::path& gltfPath, const AssetManifest& manifest,
+	std::string& err);
+
+} // namespace smvk::assets

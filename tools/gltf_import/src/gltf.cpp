@@ -1930,8 +1930,14 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 	int parentSceneNode, int level, bool topOfImport) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
+	// glTF node index -> cluster id map (the asset derivation retargets
+	// animations/material bindings onto the deterministic cluster ids).
+	if (gltfNodeMap_.size() < model.nodes.size())
+		gltfNodeMap_.resize(model.nodes.size(), -1);
+
 	// Always create a "group" node that owns name + transform and preserves hierarchy.
 	const int groupNode = addNode(cluster.scene, parentSceneNode, level);
+	gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
 	{
 		const int nameIndex = (int)cluster.scene.nodeNames.size();

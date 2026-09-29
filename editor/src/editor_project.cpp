@@ -472,6 +472,43 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 	const std::string dest = ImportAssetFile(srcPath);
 	if (dest.empty())
 		return false;
+	// ASSET DERIVATION (Unity-style preprocessed assets): the glTF ->
+	// <stem>.mesh + <stem>.mat<N>_*.material + <stem>.anim<N>_*.anim +
+	// the <stem>.gltf.meta manifest (stable GUIDs). Scenes reference the
+	// ASSETS; the glTF stays the container/source of truth (reimport
+	// regenerates the blobs without breaking scenes).
+	{
+		tinygltf::Model model;
+		if (LoadModelFromAsciiFile(model, dest.c_str())) {
+			smvk::assets::DeriveConfig cfg{};
+			if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS"))
+				cfg.meshlets = std::atoi(e) != 0;
+			if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
+				cfg.lods = std::atoi(e) != 0;
+			const std::string guid = ProjectAssetGuid(dest);
+			smvk::assets::AssetManifest manifest;
+			smvk::assets::DeriveStats stats;
+			std::string derr;
+			if (smvk::assets::DeriveGltfAssets(model, dest, guid, cfg,
+					manifest, &stats, &derr)) {
+				Log("Import: derived assets ("
+					+ std::to_string(stats.geometryBlobs) + " geometry, "
+					+ std::to_string(stats.materials) + " materials, "
+					+ std::to_string(stats.anims) + " anims, "
+					+ std::to_string(stats.instances) + " instances"
+					+ (stats.newGuids ? ", " + std::to_string(stats.newGuids)
+						+ " new GUID(s)" : "") + ").");
+			}
+			else {
+				Log("Import: asset derivation failed: " + derr
+					+ " (the scene still opens from the glTF).");
+			}
+		}
+		else {
+			Log("Import: source parse failed — no derived assets "
+				"(the scene still opens from the glTF).");
+		}
+	}
 	if (!OpenScene(dest)) {
 		Log("Import: could not open the copied asset.");
 		return false;

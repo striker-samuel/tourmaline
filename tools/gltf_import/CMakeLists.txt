@@ -6,6 +6,7 @@ project(GltfImport)
 add_library(gltf_import STATIC
     src/gltf.cpp
     src/tex_transcode.cpp
+    src/asset_export.cpp
 )
 
 target_include_directories(gltf_import

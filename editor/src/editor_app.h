@@ -43,6 +43,7 @@
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
 #include <gltf_import/gltf.h> // GltfGuidResolver (the hook below)
+#include <gltf_import/asset_export.h> // the preprocessed asset derivation
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Flintbase/flintbase_client.h>

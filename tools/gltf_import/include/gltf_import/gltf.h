@@ -143,6 +143,11 @@ struct GltfToSceneImporter
 	void setPreTransform(const glm::mat4& m) { preTransform_ = m; }
 	// Multiplies the scene root's local transform by preTransform_ (left).
 	void applyPreTransform(Scene& scene, int rootNode);
+	// glTF node index -> cluster scene node id (filled by the import
+	// traversal; -1 = not imported). The ASSET DERIVATION uses it to
+	// retarget glTF animation targets + material bindings onto the
+	// deterministic cluster ids (the same order the .mesh asset stores).
+	const std::vector<int>& gltfNodeMap() const { return gltfNodeMap_; }
 private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
@@ -172,6 +177,7 @@ private:
 	bool autoKtx_ = true;
 	std::vector<smvk::tour::FileNode> fileNodes_;
 	int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
+	std::vector<int> gltfNodeMap_; // glTF node idx -> cluster node id (-1 = none)
 	glm::mat4 preTransform_{ 1.0f };
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
