@@ -251,6 +251,134 @@ void EditorApp::RebuildDisabledRefHides() {
 	}
 }
 
+namespace {
+// Recorded-path existence probe: as-is, then beside the master scene.
+static bool RefSourceExists(const std::string& gltfHostPath,
+	const std::string& source) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	if (fs::exists(fs::path(source), ec))
+		return true;
+	if (!gltfHostPath.empty() && fs::exists(
+			fs::path(gltfHostPath).parent_path() / source, ec))
+		return true;
+	return false;
+}
+} // namespace
+
+bool EditorApp::RefSourceResolves(const std::string& source,
+	const std::string& guid) {
+	// GUID-first (moves heal through the asset db), recorded path
+	// second (as-is, then beside the master scene) — mirrors
+	// ApplySceneReferences.
+	if (!guid.empty() && m_assetDb.IsOpen()) {
+		std::string byGuid;
+		if (m_assetDb.PathForGuid(guid, byGuid) && !byGuid.empty()) {
+			std::error_code ec;
+			if (std::filesystem::exists(
+					std::filesystem::path(byGuid), ec))
+				return true;
+		}
+	}
+	return RefSourceExists(m_gltfHostPath, source);
+}
+
+bool EditorApp::ResolveReferenceAsset(const std::string& input,
+	std::string& outAbs, std::string& outRel, std::string& outGuid) {
+	outAbs.clear();
+	outRel.clear();
+	outGuid.clear();
+	if (m_projectRoot.empty()) {
+		Log("References: open a project first — references bind by "
+			"asset UUID (File > New / Open Project...).");
+		return false;
+	}
+	if (!m_assetDb.IsOpen()) {
+		Log("References: asset directory unavailable — cannot resolve "
+			"asset identity.");
+		return false;
+	}
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	std::string abs;
+	if (smvk::cache::IsValidAssetGuid(input)) {
+		// UUID input: resolve through the asset directory (one rescan
+		// when unknown — Explorer-side moves heal).
+		if (!m_assetDb.PathForGuid(input, abs) || abs.empty()) {
+			std::string dberr;
+			smvk::cache::RescanStats stats;
+			if (m_assetDb.RescanProject(stats, dberr))
+				m_assetDb.PathForGuid(input, abs);
+		}
+		if (abs.empty() || !fs::is_regular_file(abs, ec)) {
+			Log("References: unknown asset UUID '" + input + "'.");
+			return false;
+		}
+	}
+	else {
+		// Path input: as-is, then beside the master scene (like the
+		// loader will, so the dialog feedback is honest).
+		fs::path hp(input);
+		if (!fs::exists(hp, ec)) {
+			hp = fs::path(m_gltfHostPath).parent_path() / input;
+			if (!fs::exists(hp, ec)) {
+				Log("References: cannot resolve '" + input + "'.");
+				return false;
+			}
+		}
+		abs = hp.generic_string();
+	}
+	// Kind gate: paks are cooked blobs, not referenceable scenes (no
+	// import, no tour to replay).
+	std::string ext = fs::path(abs).extension().string();
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	const bool isTour = (ext == ".tour");
+	if (!isTour && ext != ".gltf" && ext != ".glb") {
+		if (HasPakExtension(abs))
+			Log("References: sources must be .gltf or .tour (paks are "
+				"cooked, not referenceable).");
+		else
+			Log("References: sources must be .gltf or .tour: '" + abs
+				+ "'.");
+		return false;
+	}
+	// In-project assets adopt in place; out-of-project .gltf sources
+	// auto-import (copy + adopt) per the project workflow; an
+	// out-of-project .tour is refused — bring the scene into
+	// <project>/content/scenes/ first (its own sources bind by UUID
+	// once adopted there).
+	const std::string kind = isTour ? "scene" : "model";
+	if (!InProjectDir(abs)) {
+		if (isTour) {
+			Log("References: '" + abs + "' is outside the project — "
+				"copy the scene into '" + m_projectRoot
+				+ "/content/scenes/' first.");
+			return false;
+		}
+		abs = ImportAssetFile(abs);
+		if (abs.empty())
+			return false; // ImportAssetFile logged
+		Log("References: auto-imported '" + abs + "'.");
+	}
+	AdoptProjectAsset(abs, kind);
+	std::string guid;
+	if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
+		Log("References: cannot adopt '" + abs
+			+ "' (asset GUID unavailable).");
+		return false;
+	}
+	const std::string rel = ProjectRelativePath(abs);
+	if (rel.empty()) { // defensive: adopted in-project above
+		Log("References: '" + abs + "' is outside the project.");
+		return false;
+	}
+	outAbs = abs;
+	outRel = rel;
+	outGuid = guid;
+	return true;
+}
+
 bool EditorApp::AddSceneReference(const std::string& source,
 	const std::string& name) {
 	if (m_gltfPath.empty() || source.empty()) {
@@ -262,24 +390,16 @@ bool EditorApp::AddSceneReference(const std::string& source,
 			"to author references).");
 		return false;
 	}
-	if (HasPakExtension(source)) {
-		// Sources must be .gltf or .tour: paks are cooked blobs, not
-		// referenceable scenes (no import, no tour to replay).
-		Log("References: sources must be .gltf or .tour (paks are "
-			"cooked, not referenceable).");
+	if (m_cookRunning) {
+		Log("References: a cook is running — wait for it to finish.");
 		return false;
 	}
-	// Resolve like the loader will (as-is, then beside the master scene)
-	// so the dialog feedback is honest.
-	std::error_code ec;
-	std::filesystem::path hp(source);
-	if (!std::filesystem::exists(hp, ec)) {
-		hp = std::filesystem::path(m_gltfHostPath).parent_path() / source;
-		if (!std::filesystem::exists(hp, ec)) {
-			Log("References: cannot resolve '" + source + "'.");
-			return false;
-		}
-	}
+	// Project-bound assets only (UUID or path input; out-of-project
+	// .gltf auto-imports): the tour records the project-relative
+	// source + the asset UUID — never an absolute path.
+	std::string abs, rel, guid;
+	if (!ResolveReferenceAsset(source, abs, rel, guid))
+		return false; // logged
 	smvk::tour::ReferenceCmd r{};
 	// Parent: the primary selection (cluster space), else cluster root.
 	r.parent = (m_selected != UINT32_MAX && m_selected < UINT32_MAX)
@@ -287,16 +407,15 @@ bool EditorApp::AddSceneReference(const std::string& source,
 		: 0;
 	if (WorldToCluster(m_selected) < 0)
 		r.parent = 0;
-	r.source = source;
-	// Asset identity travels with the path: moves/renames of the source
-	// keep binding through the GUID (path stays as the fallback).
-	r.guid = ProjectAssetGuid(hp.generic_string());
+	r.source = rel;
+	r.guid = guid;
 	r.name = name.empty()
-		? std::filesystem::path(hp).stem().string() : name;
+		? std::filesystem::path(abs).stem().string() : name;
 	m_references.push_back(std::move(r));
 	SaveTour(); // persist the reference list
-	Log("Reference added: '" + r.source + "' under cluster node " +
-		std::to_string(r.parent) + " — reloading to bind.");
+	Log("Reference added: '" + rel + "' (uuid " + guid
+		+ ") under cluster node " + std::to_string(r.parent)
+		+ " — reloading to bind.");
 	// References bind at import: rebind through a temp snapshot of the
 	// WORKING doc (the on-disk target may be a save-as tour far from
 	// the source; the snapshot always carries the live list + edits).
@@ -440,18 +559,6 @@ uint32_t EditorApp::RefPlaceholderNode(size_t idx) const {
 	return UINT32_MAX;
 }
 
-static bool RefSourceExists(const std::string& gltfHostPath,
-	const std::string& source) {
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	if (fs::exists(fs::path(source), ec))
-		return true;
-	if (!gltfHostPath.empty() && fs::exists(
-			fs::path(gltfHostPath).parent_path() / source, ec))
-		return true;
-	return false;
-}
-
 bool EditorApp::ReloadReferencesViaTemp() {
 	if (m_gltfPath.empty() || !m_world)
 		return false;
@@ -483,7 +590,7 @@ bool EditorApp::ReloadReferencesViaTemp() {
 		("tourmaline_" + stem + "_reload.tour");
 	if (ec)
 		return false;
-	if (!SaveTourTo(tmp.generic_string())) {
+	if (!SaveTourTo(tmp.generic_string(), true, true)) {
 		Log("Reference reload: snapshot failed — reload cancelled.");
 		m_tourPath = savedTourPath;
 		m_tourDirty = savedDirty;
@@ -566,7 +673,10 @@ void EditorApp::DrawReferencesPanel() {
 			const bool isRoot = r.root; // the scene's own source
 			const uint32_t ph = RefPlaceholderNode(i);
 			const bool bound = ph != UINT32_MAX;
-			const bool fileOk = RefSourceExists(m_gltfHostPath, r.source);
+			// GUID-first existence (moves heal through the asset db),
+			// recorded path second.
+			const bool fileOk =
+				RefSourceResolves(r.source, r.guid);
 			const bool isTour = RefExt(r.source) == "tour";
 			// Canonical RESOLVED source (bind-time): what the raw
 			// tour string actually bound to — path-solver/symlink
@@ -606,9 +716,13 @@ void EditorApp::DrawReferencesPanel() {
 			ImGui::Text("%s", r.name.c_str());
 			ImGui::SameLine();
 			ImGui::TextDisabled("[%s]", isTour ? "tour" : "gltf");
-			ImGui::TableSetColumnIndex(3);
-			ImGui::TextDisabled("%s", r.source.c_str());
-			if (resolved.empty())
+		ImGui::TableSetColumnIndex(3);
+		ImGui::TextDisabled("%s", r.source.c_str());
+		// Asset UUID identity (the .meta GUID; moves/renames heal
+		// through the project asset directory + rescan).
+		ImGui::TextDisabled("uuid %s",
+			r.guid.empty() ? "(none)" : r.guid.c_str());
+		if (resolved.empty())
 				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
 					"(unresolved)");
 			else if (resolved != r.source)
@@ -659,14 +773,26 @@ void EditorApp::DrawReferencesPanel() {
 		std::string picked;
 		if (NativeOpenFile(picked) && !picked.empty()
 			&& size_t(pendingReplace) < m_references.size()) {
-			m_references[size_t(pendingReplace)].source = picked;
-			// A new source means new identity: never keep the old GUID.
-			m_references[size_t(pendingReplace)].guid =
-				ProjectAssetGuid(picked);
-			SaveTour();
-			Log("Reference replaced: '" + picked + "' — reloading to rebind.");
-			if (!m_gltfPath.empty())
-				ReloadReferencesViaTemp();
+			if (m_cookRunning) {
+				Log("References: a cook is running — wait for it to "
+					"finish.");
+			}
+			else {
+				// Same project-bound resolution as Add (auto-imports
+				// out-of-project .gltf).
+				std::string abs, rel, guid;
+				if (ResolveReferenceAsset(picked, abs, rel, guid)) {
+					m_references[size_t(pendingReplace)].source = rel;
+					// A new source means new identity: never keep the
+					// old GUID.
+					m_references[size_t(pendingReplace)].guid = guid;
+					SaveTour();
+					Log("Reference replaced: '" + rel + "' (uuid "
+						+ guid + ") — reloading to rebind.");
+					if (!m_gltfPath.empty())
+						ReloadReferencesViaTemp();
+				}
+			}
 		}
 	}
 	// Failed reference commands (from the last bind): a partially-
@@ -697,6 +823,8 @@ void EditorApp::DrawReferenceSection(uint32_t node) {
 	if (idx < m_references.size()) {
 		const smvk::tour::ReferenceCmd& r = m_references[idx];
 		ImGui::TextDisabled("source: %s", r.source.c_str());
+		ImGui::TextDisabled("uuid: %s",
+			r.guid.empty() ? "(none)" : r.guid.c_str());
 		ImGui::TextDisabled("[%s] %s",
 			RefExt(r.source) == "tour" ? "tour" : "gltf",
 			r.enabled ? "shown" : "hidden (kept in the scene)");

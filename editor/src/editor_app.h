@@ -917,7 +917,10 @@ private:
 	std::string TourPath() const; // default <stem>.tour next to the source
 	std::string TourTarget() const; // live save target (save-as aware)
 	bool SaveTour(); // -> current target
-	bool SaveTourTo(const std::string& path, bool becomeTarget = true);
+	bool SaveTourTo(const std::string& path, bool becomeTarget = true,
+		bool allowExternal = false); // allowExternal: internal temp
+		// snapshots (cook/reload) may land outside the project; user
+		// saves into a foreign dir are refused (scenes live in-project)
 	// becomeTarget = false: snapshot write only (cook temp tour) — the
 	// live target, dirty star and autosave slot stay untouched, so the
 	// editor keeps pointing at the real scene after the cook.
@@ -1244,6 +1247,19 @@ private:
 	std::vector<uint32_t> m_refPlaceholders; // world ids, parallel
 	std::vector<int> m_refPhCluster; // cluster ids until the base maps
 	bool AddSceneReference(const std::string& source, const std::string& name);
+	// Reference input (asset UUID or file path) -> in-project asset:
+	// absolute path + project-relative -source + asset -guid. GUIDs
+	// resolve through the asset directory; out-of-project .gltf
+	// sources auto-import (copy + adopt) per the project workflow;
+	// out-of-project .tour sources are refused (bring the scene in
+	// first). False + log on any failure. References never record
+	// absolute paths — tours stay project-portable.
+	bool ResolveReferenceAsset(const std::string& input,
+		std::string& outAbs, std::string& outRel, std::string& outGuid);
+	// Bind-time existence probe for the panel (GUID-first, recorded
+	// path second — mirrors ApplySceneReferences).
+	bool RefSourceResolves(const std::string& source,
+		const std::string& guid);
 	bool RemoveSceneReference(uint32_t refWorldNode);
 	bool RemoveSceneReferenceAt(size_t idx); // panel path (index-exact)
 	// Bulk path (Delete key on several placeholders): erases all
@@ -1462,19 +1478,23 @@ private:
 	void SuspendWysiwygForWorldSwap();
 	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
 	// A project folder owns the whole body of work: content/ sources,
-	// paks/ cook outputs, gi/ bake sidecars, and its OWN scratch/
-	// cache (the Unity Library/ equivalent). Opening a project
-	// repoints the scratch, the cook defaults and the hosted view's
-	// VFS at it; importing copies an asset in, cooks it, and the
-	// hosted view shows it with the full render pipeline.
+	// paks/ cook outputs, gi/ bake sidecars, and its OWN artifacts/
+	// cache (the Unity Library/ equivalent: cache.db + assets.db GUID
+	// directory + per-class paks — no scratch disk, without a project
+	// the cache is off). Opening a project repoints the artifact
+	// cache, the cook defaults and the hosted view's VFS at it;
+	// importing copies an asset in with a UUID (.meta sidecar) and the
+	// hosted view shows it with the full render pipeline. Scenes and
+	// references live project-bound: references record the asset
+	// UUID + project-relative path, saves stay inside the project.
 	std::string m_projectRoot; // normalized, has project.tourproj
 	std::string m_projectName; // display name (marker or folder name)
 	bool m_projectSmoke = false; // --project-smoke dev flow (see main)
 	std::string m_projectSmokeDir;   // project root to create/open
 	std::string m_projectSmokeAsset; // source asset to import
 	// Opens (or validates) <dir> as the project: closes the live
-	// scene, repoints the scratch at <dir>/scratch, persists. False +
-	// log when <dir> has no project.tourproj marker.
+	// scene, repoints the artifact cache at <dir>/artifacts, persists.
+	// False + log when <dir> has no project.tourproj marker.
 	bool OpenProject(const std::string& dir);
 	// Creates the project tree when the marker is missing, then opens
 	// it (an existing project dir just opens).
@@ -1486,8 +1506,24 @@ private:
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
 	bool ImportAsset(const std::string& srcPath);
-	// <root>/scratch (empty when no project is open).
-	std::string ProjectScratchDir() const;
+	// The copy+adopt half of ImportAsset (no scene switch, no cook
+	// priming): copies a .gltf/.glb + companions into the project's
+	// content/models/<stem>/, adopts its GUID (.meta sidecar + asset
+	// db) and returns the in-project asset path ({} + log on failure).
+	// The add-reference flow uses it to auto-import out-of-project
+	// sources — scenes only ever reference in-project assets.
+	std::string ImportAssetFile(const std::string& srcPath);
+	// <root>/artifacts (empty when no project is open). The project
+	// owns its artifact cache: cache.db (processed-import registry)
+	// + assets.db (GUID directory) + artifacts/ (per-class paks).
+	std::string ProjectArtifactDir() const;
+	// True when the absolute path lives inside the open project (false
+	// without a project). References and scene saves require it.
+	bool InProjectDir(const std::string& absPath) const;
+	// Project-relative posix path ("content/models/...") for an
+	// absolute path ({} when outside the project). Tour reference
+	// -source slots carry this form — never absolute paths.
+	std::string ProjectRelativePath(const std::string& absPath) const;
 	// Records a project source file in the asset directory (reads the
 	// sibling .meta, issuing + writing one when missing/invalid).
 	// Silent for known assets; logs issuance. No-op without a project.
@@ -1505,11 +1541,12 @@ private:
 	void PrimeProjectCookDefaults();
 	static bool IsProjectDir(const std::string& dir);
 	static std::string ReadProjectName(const std::string& dir);
-	// ---- scratch disk (editor artifact cache) ----
-	// User-personalizable cache root (prefs [scratch] dir; default on
-	// F:\ to keep C: from burning). Holds cache.db (SQLite registry)
-	// + artifacts/ (per-class paks). Purely a CACHE: .tour -> final pak
-	// cooks never depend on it — it only accelerates processing.
+	// ---- project artifact cache (no scratch disk) ----
+	// The project OWNS its artifact cache (<root>/artifacts/: cache.db
+	// SQLite registry + artifacts/ per-class paks + assets.db GUID
+	// directory). There is no global/user scratch: without a project
+	// the cache is off (cooks/imports still work — the cache only
+	// accelerates processing, never gates it).
 	smvk::cache::CacheDb m_cacheDb;
 	std::unique_ptr<smvk::cache::ArtifactStore> m_store; // null = cache off
 	// Source-asset directory (GUID<->path over the project, Unity
@@ -1529,13 +1566,10 @@ private:
 	// gltf_import hook over the store (texture-transcode
 	// acceleration; injected into every import path).
 	std::unique_ptr<StoreArtifactCacheAdapter> m_texCacheAdapter;
-	std::string m_scratchRoot; // normalized, exists
-	bool m_showScratchDialog = false;
-	char m_scratchBuf[512] = "";
-	// Opens (creating when missing) the scratch root + cache.db. Logs
-	// the location; the editor runs fine without a db (cache disabled).
+	// Opens (creating when missing) the PROJECT's artifact dir +
+	// cache.db. False when no project is open (cache stays off); the
+	// editor runs fine without a db.
 	bool OpenCacheDb();
-	void DrawScratchDialog(); // File > Scratch disk... modal
 	// ---- cooked pak state (kept alive: PakReader borrows these bytes) ----
 	std::string m_pakPath; // empty when the scene came from glTF
 	// Pak bytes + the editor-VFS registration of the SAME image.

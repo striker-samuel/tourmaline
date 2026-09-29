@@ -155,23 +155,21 @@ bool EditorApp::Initialize() {
 	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
 	SetRelativeMouseMode(false);
 
-	// Project: reopen the last project when kept (it owns the scratch:
-	// OpenProject reopens the cache there). Otherwise the legacy
-	// global scratch applies.
+	// Project: reopen the last project when kept (it owns the artifact
+	// cache: OpenProject opens cache.db + the asset directory there).
+	// Without a project the cache is OFF (no scratch disk — cooks and
+	// imports still work, the cache only accelerates processing).
 	{
 		const std::string last = m_projectRoot;
 		m_projectRoot.clear();
 		m_projectName.clear();
 		if (!last.empty() && !OpenProject(last)) {
-			Log("Last project unavailable — running without a project.");
-			OpenCacheDb();
+			Log("Last project unavailable — running without a project "
+				"(artifact cache off; open a project for imports).");
 		}
 		else if (last.empty()) {
-			// Scratch disk (editor artifact cache): open the registry
-			// before any scene work; a missing/unwritable root degrades
-			// to cache-off (the editor still runs — the cache is never
-			// a precondition).
-			OpenCacheDb();
+			Log("No project open — artifact cache off (File > New / "
+				"Open Project... to work project-bound).");
 		}
 	}
 
@@ -338,8 +336,8 @@ void EditorApp::LoadPrefs() {
 				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
 			else if (section == "bottomDock" && key == "height")
 				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
-			else if (section == "scratch" && key == "dir")
-				m_scratchRoot = val;
+			// [scratch] dir retired: no scratch disk anymore (the cache
+			// is project-owned) — a stale entry is ignored.
 			else if (section == "project" && key == "dir")
 				m_projectRoot = val;
 			// [wysiwyg] preview key retired: the hosted view is the
@@ -361,8 +359,6 @@ void EditorApp::SavePrefs() {
 	out << "[outliner]\nwidth=" << m_outlinerW << "\n";
 	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
-	if (!m_scratchRoot.empty())
-		out << "[scratch]\ndir=" << m_scratchRoot << "\n";
 	if (!m_projectRoot.empty())
 		out << "[project]\ndir=" << m_projectRoot << "\n";
 }
@@ -371,47 +367,39 @@ bool EditorApp::OpenCacheDb() {
 	m_cacheDb.Close();
 	m_store.reset();
 	m_texCacheAdapter.reset();
-	// The project OWNS its scratch when one is open (Unity Library/
-	// style: <root>/scratch). The prefs/global root is only the
-	// project-less fallback; machine default last (F:\ when present).
-	std::string root = ProjectScratchDir();
-	const bool owned = !root.empty();
-	if (root.empty())
-		root = m_scratchRoot;
-	if (root.empty())
-		root = smvk::cache::DefaultScratchRoot();
-	root = smvk::cache::EnsureScratchRoot(root);
-	if (root.empty()) {
-		if (!owned)
-			m_scratchRoot.clear();
-		Log("Scratch disk unavailable — artifact cache disabled "
-			"(set one via File > Scratch disk...).");
+	// Project-only: the artifact cache lives in the project's
+	// artifacts/ dir (cache.db + assets.db + per-class paks). Without
+	// a project the cache stays off — imports/cooks still work (the
+	// cache only accelerates processing, never gates it).
+	if (m_projectRoot.empty()) {
+		Log("Artifact cache off — no project open (File > New / Open "
+			"Project...).");
 		return false;
 	}
-	// The global pref only tracks the project-less root; a project's
-	// scratch stays out of the prefs (it follows the project).
-	if (!owned)
-		m_scratchRoot = root;
-	std::error_code ec;
+	std::string root = ProjectArtifactDir();
+	root = smvk::cache::EnsureScratchRoot(root);
+	if (root.empty()) {
+		Log("Artifact cache unavailable (cannot create '"
+			+ ProjectArtifactDir() + "') — cache disabled for this "
+			"session.");
+		return false;
+	}
 	const std::filesystem::path dbPath =
 		std::filesystem::path(root) / "cache.db";
 	std::string err;
 	if (!m_cacheDb.Open(dbPath.generic_string(), err)) {
-		Log("Scratch cache db open failed: " + err);
+		Log("Artifact cache db open failed: " + err);
 		return false;
 	}
-	std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
-		root.c_str());
 	m_store = std::make_unique<smvk::cache::ArtifactStore>(
 		root, m_cacheDb);
 	m_texCacheAdapter =
 		std::make_unique<StoreArtifactCacheAdapter>(*m_store);
 	std::string cerr;
 	const uint64_t count = m_cacheDb.Count(cerr);
-	Log("Scratch disk: " + root + " (cache.db ready, "
+	Log("Artifact cache: " + root + " (cache.db ready, "
 		+ std::to_string(count) + " artifact(s) registered)"
-		+ (owned ? " [owned by project '" + m_projectName + "']"
-			: ""));
+		+ " [project '" + m_projectName + "']");
 	// Editor VFS: register the scratch class paks (the cooked-resource
 	// overlay the display path resolves through). ONLY tour + scratch
 	// mount here â€” never the release content tree (editor -> release
@@ -845,17 +833,17 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		fitCam.dist = std::max(radius * 2.2f, 1.0f);
 	}
 	// Import finished: commit any texture-conversion artifacts the
-	// import staged into the scratch (one pak grow per touched class â€”
-	// a flush per import batch, not per texture). Cache-off or an
-	// empty stage = a no-op.
+	// import staged into the project's artifact cache (one pak grow
+	// per touched class — a flush per import batch, not per texture).
+	// Cache-off or an empty stage = a no-op.
 	if (m_store && m_store->StagedCount() > 0) {
 		const size_t stagedCount = m_store->StagedCount();
 		std::string flushErr;
 		if (m_store->Flush(flushErr))
-			Log("Scratch: " + std::to_string(stagedCount)
+			Log("Artifact cache: " + std::to_string(stagedCount)
 				+ " texture artifact(s) flushed.");
 		else
-			Log("Scratch flush failed: " + flushErr
+			Log("Artifact cache flush failed: " + flushErr
 				+ " (artifacts stay staged; nothing is lost).");
 	}
 	char buf[512];

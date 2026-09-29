@@ -5,12 +5,14 @@
 //   <root>/paks/               cooked outputs (<stem>.pak)
 //   <root>/gi/                 baker sidecars (written by the cooker next
 //                             to the out pak; resolved by the loaders)
-//   <root>/scratch/            OWNED artifact-cache scratch (the Unity
-//                             Library/ equivalent: cache.db + artifacts/)
-// Opening a project repoints the scratch, the cook defaults and the
-// hosted view's VFS at it. Importing an asset copies it into the
-// project, cooks it, and the hosted view shows the result with the
-// full render pipeline — no manual staging, no global cache.
+//   <root>/artifacts/          OWNED artifact cache (the Unity Library/
+//                             equivalent: cache.db + assets.db +
+//                             artifacts/). No scratch disk: without a
+//                             project the cache is off.
+// Opening a project repoints the artifact cache, the cook defaults and
+// the hosted view's VFS at it. Importing an asset copies it into the
+// project, adopts its GUID and cooks show the result with the full
+// render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
 
@@ -55,10 +57,46 @@ void EditorApp::SetProjectSmoke(const std::string& dir,
 	m_projectSmokeAsset = asset;
 }
 
-std::string EditorApp::ProjectScratchDir() const {	if (m_projectRoot.empty())
+std::string EditorApp::ProjectArtifactDir() const {	if (m_projectRoot.empty())
 		return {};
-	return (std::filesystem::path(m_projectRoot) / "scratch")
+	return (std::filesystem::path(m_projectRoot) / "artifacts")
 		.generic_string();
+}
+
+bool EditorApp::InProjectDir(const std::string& absPath) const {
+	if (m_projectRoot.empty() || absPath.empty())
+		return false;
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const std::string norm = fs::absolute(fs::path(absPath), ec)
+		.lexically_normal().generic_string();
+	if (ec)
+		return false;
+	std::string root = fs::path(m_projectRoot).lexically_normal()
+		.generic_string();
+	if (!root.empty() && root.back() != '/')
+		root += '/';
+	return norm.size() > root.size()
+		&& norm.compare(0, root.size(), root) == 0;
+}
+
+std::string EditorApp::ProjectRelativePath(
+	const std::string& absPath) const {
+	if (!InProjectDir(absPath))
+		return {};
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	fs::path rel = fs::relative(fs::path(absPath),
+		fs::path(m_projectRoot), ec);
+	if (ec || rel.empty())
+		return {};
+	std::string posix = rel.generic_string();
+	// Belt-and-suspenders (InProjectDir already guarantees
+	// containment): never emit an escaping relative path.
+	if (posix == ".." || posix.compare(0, 3, "../") == 0
+		|| posix.find("/../") != std::string::npos)
+		return {};
+	return posix;
 }
 
 std::string EditorApp::ProjectCookOutPak(
@@ -117,11 +155,29 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	m_cook.outPak.clear();
 	m_cookOutPakBuf[0] = '\0';
 	m_cookContentDirBuf[0] = '\0';
-	// The project OWNS its scratch: reopen the cache there (a missing
-	// or unwritable scratch degrades to cache-off, like the global).
+	// The project OWNS its artifact cache: reopen cache.db + the
+	// asset directory there (a missing or unwritable dir degrades to
+	// cache-off — the cache only accelerates processing).
+	{
+		// One-time migration: the owned dir used to be <root>/scratch.
+		// Move it aside when <root>/artifacts does not exist yet so
+		// existing projects keep their registry + payloads.
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const fs::path oldDir = fs::path(root) / "scratch";
+		const fs::path newDir = fs::path(root) / "artifacts";
+		if (fs::is_directory(oldDir, ec) && !fs::exists(newDir, ec)) {
+			fs::rename(oldDir, newDir, ec);
+			if (!ec)
+				Log("Project: migrated 'scratch/' -> 'artifacts/'.");
+			else
+				Log("Project: cannot migrate 'scratch/' -> "
+					"'artifacts/': " + ec.message());
+		}
+	}
 	if (!OpenCacheDb())
-		Log("Project '" + m_projectName + "' open, but its scratch is "
-			"unusable — cache disabled for this session.");
+		Log("Project '" + m_projectName + "' open, but its artifact "
+			"cache is unusable — cache disabled for this session.");
 	// Source-asset directory over the project (Explorer-side
 	// moves/renames heal through the sidecars on rescan).
 	m_assetDb.Close();
@@ -144,7 +200,7 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	SavePrefs();
 	UpdateWindowTitle();
 	Log("Project open: '" + m_projectName + "' (" + m_projectRoot
-		+ ") — scratch, cooks and the hosted view live here now.");
+		+ ") — artifact cache, cooks and the hosted view live here now.");
 	return true;
 }
 
@@ -154,7 +210,7 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 	std::error_code ec;
 	if (IsProjectDir(root))
 		return OpenProject(root); // already a project: just open it
-	// Scaffold the Unity-style tree (scratch/ itself is created by
+	// Scaffold the Unity-style tree (artifacts/ itself is created by
 	// EnsureScratchRoot when the cache opens).
 	fs::create_directories(fs::path(root) / "content" / "models", ec);
 	fs::create_directories(fs::path(root) / "content" / "scenes", ec);
@@ -246,26 +302,22 @@ std::string EditorApp::ProjectAssetGuid(const std::string& assetPath) {
 	return guid;
 }
 
-bool EditorApp::ImportAsset(const std::string& srcPath) {
+std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 	if (m_projectRoot.empty()) {
 		Log("Import: open or create a project first (File > New / Open "
 			"Project...) — imports live inside the project.");
-		return false;
-	}
-	if (m_cookRunning) {
-		Log("Import: a cook is already running — wait for it to finish.");
-		return false;
+		return {};
 	}
 	if (!HasModelExtension(srcPath)) {
 		Log("Import: only .gltf/.glb sources in this version: "
 			+ srcPath);
-		return false;
+		return {};
 	}
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	if (!fs::is_regular_file(srcPath, ec)) {
 		Log("Import: source not found: " + srcPath);
-		return false;
+		return {};
 	}
 	const fs::path src(srcPath);
 	const std::string stem = src.stem().string();
@@ -275,7 +327,7 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 	if (ec) {
 		Log("Import: cannot create '" + destDir.generic_string()
 			+ "': " + ec.message());
-		return false;
+		return {};
 	}
 	// glTF companions (buffers, images, transcoded .ktx2 sidecars)
 	// live next to the source by convention: copy the whole sibling
@@ -306,7 +358,7 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 			if (ec) {
 				Log("Import: copy failed '" + p.generic_string()
 					+ "': " + ec.message());
-				return false;
+				return {};
 			}
 			++copiedFiles;
 			copiedBytes += entry.file_size(ec);
@@ -314,7 +366,7 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 		if (ec) {
 			Log("Import: cannot list '" + srcDir.generic_string()
 				+ "': " + ec.message());
-			return false;
+			return {};
 		}
 		char buf[128];
 		std::snprintf(buf, sizeof(buf), "%zu file(s), %.1f MiB",
@@ -323,12 +375,29 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 			"-> '" + destDir.generic_string() + "' (" + buf + ").");
 	}
 	const fs::path dest = destDir / src.filename();
-	// The copied-along .meta (if any) keeps the asset's GUID.
+	// The copied-along .meta (if any) keeps the asset's GUID; a fresh
+	// one is issued otherwise — the file is addressable by UUID from
+	// here on (tours reference it via -guid).
 	AdoptProjectAsset(dest.generic_string());
-	if (!OpenScene(dest.generic_string())) {
+	return dest.generic_string();
+}
+
+bool EditorApp::ImportAsset(const std::string& srcPath) {
+	if (m_cookRunning) {
+		Log("Import: a cook is already running — wait for it to finish.");
+		return false;
+	}
+	// Copy + adopt (no scene switch inside): the asset lands in the
+	// project with its UUID, then opens below.
+	const std::string dest = ImportAssetFile(srcPath);
+	if (dest.empty())
+		return false;
+	if (!OpenScene(dest)) {
 		Log("Import: could not open the copied asset.");
 		return false;
 	}
+	const std::string stem =
+		std::filesystem::path(dest).stem().string();
 	// Cook outputs follow the project (PrimeProjectCookDefaults also
 	// runs on open, but the import states it explicitly).
 	m_cook.outPak = ProjectCookOutPak(stem);

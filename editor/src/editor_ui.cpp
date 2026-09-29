@@ -202,8 +202,8 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 void EditorApp::DrawMenuBar() {
 	if (ImGui::BeginMenu("File")) {
 		// Project first (Unity/Unreal style): a project folder owns
-		// content/, paks/, gi/ and its own scratch/. Imports cook
-		// into it and the hosted view shows them with the full
+		// content/, paks/, gi/ and its own artifacts/ cache. Imports
+		// land in it and the hosted view shows them with the full
 		// pipeline — no manual staging.
 		if (ImGui::MenuItem("New / Open Project...")) {
 			std::string picked;
@@ -251,9 +251,6 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
 			ShowCookDialog();
 		}
-		ImGui::Separator();
-		if (ImGui::MenuItem("Scratch disk..."))
-			m_showScratchDialog = true;
 		ImGui::Separator();
 		if (ImGui::MenuItem("Close"))
 			CloseScene();
@@ -530,15 +527,6 @@ void EditorApp::DrawMenuBar() {
 	if (m_showCookDialog)
 		ImGui::OpenPopup("Cook to .pak");
 	DrawCookDialog();
-	if (m_showScratchDialog) {
-		ImGui::OpenPopup("Scratch disk");
-		m_showScratchDialog = false;
-		std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
-			m_scratchRoot.empty()
-				? smvk::cache::DefaultScratchRoot().c_str()
-				: m_scratchRoot.c_str());
-	}
-	DrawScratchDialog();
 }
 
 // ---- tool topbar --------------------------------------------------------
@@ -3519,76 +3507,6 @@ void EditorApp::ShowCookDialog() {
 	}
 	m_showCookDialog = true;
 	ImGui::OpenPopup("Cook to .pak");
-}
-
-void EditorApp::DrawScratchDialog() {
-	if (!ImGui::BeginPopupModal("Scratch disk", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
-		return;
-	ImGui::TextWrapped(
-		"Scratch disk: the editor's artifact CACHE (registry + cooked "
-		"resource paks). It never gates cooks — a missing or stale "
-		"entry just reprocesses.");
-	const std::string effectiveScratch =
-		(m_store ? m_store->Root() : m_scratchRoot);
-	ImGui::TextDisabled("current: %s",
-		effectiveScratch.empty() ? "(disabled)" : effectiveScratch.c_str());
-	if (!m_projectRoot.empty())
-		ImGui::TextDisabled("owned by project '%s' (change via project)",
-			m_projectName.c_str());
-	{
-		std::string err;
-		const uint64_t n = m_cacheDb.IsOpen() ? m_cacheDb.Count(err) : 0;
-		ImGui::TextDisabled("cache db: %s, %llu artifact(s)",
-			m_cacheDb.IsOpen() ? "open" : "closed",
-			(unsigned long long)n);
-	}
-	ImGui::Separator();
-	ImGui::Text("Scratch location (absolute path):");
-	ImGui::SetNextItemWidth(-120.0f);
-	ImGui::InputText("##scratchdir", m_scratchBuf, sizeof(m_scratchBuf));
-	ImGui::SameLine();
-	if (ImGui::Button("Default"))
-		std::snprintf(m_scratchBuf, sizeof(m_scratchBuf), "%s",
-			smvk::cache::DefaultScratchRoot().c_str());
-	if (ImGui::BeginTable("##scratchinfo", 2, 0)) {
-		ImGui::TableNextRow();
-		ImGui::TableNextColumn();
-		ImGui::TextDisabled("default:");
-		ImGui::TableNextColumn();
-		ImGui::TextDisabled("%s",
-			smvk::cache::DefaultScratchRoot().c_str());
-		ImGui::TableNextRow();
-		ImGui::TableNextColumn();
-		ImGui::TextDisabled("hint:");
-		ImGui::TableNextColumn();
-		ImGui::TextDisabled("the root folder is created hidden");
-		ImGui::EndTable();
-	}
-	ImGui::Separator();
-	const bool scratchOwned = !m_projectRoot.empty();
-	if (scratchOwned)
-		ImGui::BeginDisabled();
-	if (ImGui::Button("Apply")) {
-		// The typed path is the new global root (project-less runs).
-		// While a project is open its scratch stays owned by it.
-		m_scratchRoot = m_scratchBuf;
-		if (OpenCacheDb()) {
-			SavePrefs();
-			Log("Scratch disk set: " + m_scratchRoot);
-			ImGui::CloseCurrentPopup();
-		}
-		else {
-			Log("Scratch disk '" + m_scratchRoot + "' unusable "
-				"(must be a creatable directory).");
-		}
-	}
-	if (scratchOwned)
-		ImGui::EndDisabled();
-	ImGui::SameLine();
-	if (ImGui::Button("Close"))
-		ImGui::CloseCurrentPopup();
-	ImGui::EndPopup();
 }
 
 void EditorApp::DrawCookDialog() {

@@ -1,16 +1,15 @@
 #pragma once
-// Editor artifact cache (scratch-disk registry).
+// Editor artifact cache (project-owned artifact registry).
 //
-// The scratch disk holds every processed editor artifact: a SQLite
+// Each project owns its artifact dir (<root>/artifacts/): a SQLite
 // registry (cache.db) plus per-class pak files (textures.pak,
 // meshes.pak, ...) written next to it. It is a CACHE, never a source
 // of truth: .tour -> final pak cooks must always succeed from the
 // authored inputs alone — cache hits only accelerate processing.
-//
-// Location is user-personalizable (editor prefs [scratch] dir=...; a
-// different drive keeps C: from filling up). The default root lives on
-// F:\ when present and is created with the hidden attribute so the
-// scratch dir stays invisible in normal browsing.
+// There is no global/user scratch disk: without a project the cache
+// is off. DefaultScratchRoot/EnsureScratchRoot remain for explicit-dir
+// users (the cooker --scratch-dir path); the editor only ever passes
+// its project-owned dir.
 
 #include <cstdint>
 #include <span>

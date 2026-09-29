@@ -2917,7 +2917,8 @@ bool EditorApp::AutosaveTour() {
 	// window-title star. Explicit saves clear it (SaveTourTo below).
 	m_tourDirty = true;
 	// Same doc as a real save, but the target stays untouched.
-	return SaveTourTo(path, false);
+	// The APPDATA autosave slot is external by design (allowExternal).
+	return SaveTourTo(path, false, true);
 }
 
 std::string EditorApp::LatestTourPath(const std::string& tourPath) const {
@@ -3000,9 +3001,20 @@ bool EditorApp::SaveTourIncremental() {
 	return true;
 }
 
-bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget) {
+bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
+	bool allowExternal) {
 	if (tp.empty() || !m_world)
 		return false;
+	// Project workflow: scenes live inside the project folder. User
+	// saves outside it are refused (Save As into content/scenes/
+	// instead); internal temp snapshots (cook/reload) and the APPDATA
+	// autosave slot pass allowExternal.
+	if (!allowExternal && !m_projectRoot.empty() && !InProjectDir(tp)) {
+		Log("Tour save refused: '" + tp + "' is outside the project — "
+			"scenes live inside '" + m_projectRoot + "' (Save As into "
+			"content/scenes/).");
+		return false;
+	}
 	{
 		// Save-as may point at a directory that does not exist yet.
 		std::error_code ec;
@@ -3025,6 +3037,12 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget) {
 		for (char& c : posix)
 			if (c == '\\')
 				c = '/';
+		// Project workflow: the root source is the project-relative
+		// asset path (never absolute). Project-less sessions keep the
+		// absolute posix form (no root to relativize against).
+		const std::string rel = ProjectRelativePath(m_gltfHostPath);
+		if (!rel.empty())
+			posix = rel;
 		smvk::tour::ReferenceCmd rootRef{};
 		rootRef.root = true;
 		rootRef.parent = 0;
@@ -3158,6 +3176,27 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget) {
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
 	SavePathRemapsToDoc(doc); // path editor relinks — editor-only, never cooked
+	// Save-time healing (project workflow): reference -source slots
+	// carry project-relative posix paths, never absolute ones. A
+	// recorded absolute/out-of-project source whose GUID resolves to
+	// an in-project asset is rewritten (old tours heal on save); the
+	// live list updates too so the panel shows the stored form, and
+	// the rewrite is stable (no log spam on later saves).
+	// Unresolvable sources persist verbatim (the bind reports them).
+	for (auto& r : m_references) {
+		if (r.guid.empty() || m_projectRoot.empty()
+			|| !m_assetDb.IsOpen())
+			continue;
+		std::string byGuid;
+		if (!m_assetDb.PathForGuid(r.guid, byGuid) || byGuid.empty())
+			continue;
+		const std::string rel = ProjectRelativePath(byGuid);
+		if (!rel.empty() && rel != r.source) {
+			Log("Tour save: reference '" + r.source + "' -> '" + rel
+				+ "' (uuid " + r.guid + ").");
+			r.source = rel;
+		}
+	}
 	doc.references = m_references; // scene references (loader binds them)
 	doc.hasCook = true;
 	// Cook SETTINGS persist; the DESTINATION does not: outPak is

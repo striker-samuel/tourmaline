@@ -52,7 +52,7 @@ bool EditorApp::SnapshotTourForProcess(const char* tag,
 	fs::path tmp = fs::temp_directory_path() /
 		("tourmaline_" + std::string(tag) + "_"
 			+ fs::path(m_gltfPath).stem().string() + ".tour");
-	if (!SaveTourTo(tmp.generic_string(), false)) {
+	if (!SaveTourTo(tmp.generic_string(), false, true)) {
 		Log(std::string(tag) + ": temp tour save failed, aborting.");
 		return false;
 	}
@@ -142,12 +142,11 @@ void EditorApp::CookToPak() {
 	Log("Cook started -> " + cook.outPak);
 	auto feed = std::make_shared<CookFeed>();
 	m_cookFeed = feed;
-	// Cache acceleration (opt-in, never required): when the scratch is
-	// online, the cooker consults + feeds the same artifact registry —
-	// hit = hash-validated copy from scratch, miss = transcode + stage.
-	// The EFFECTIVE store root (project-owned when a project is open),
-	// never the global pref. Captured by value (the worker lambda has
-	// no this).
+	// Cache acceleration (opt-in, never required): when the project
+	// artifact cache is online, the cooker consults + feeds the same
+	// registry — hit = hash-validated copy, miss = transcode + stage.
+	// The EFFECTIVE store root (project-owned; empty = cache off).
+	// Captured by value (the worker lambda has no this).
 	const std::string scratchDir =
 		m_store ? m_store->Root() : std::string();
 	m_cookFuture = std::async(std::launch::async,
