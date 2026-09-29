@@ -1893,6 +1893,72 @@ void EditorApp::FrameSelection() {
 	}
 }
 
+bool EditorApp::SelectionPivotCenter(glm::vec3& outCenter) {
+	// The MULTI-SELECT pivot: the combined world AABB center over
+	// EVERY selected node's subtree meshes (Maya-style — the local
+	// pivot the gizmo transforms about). Single selection = the
+	// primary's subtree bounds (SelectionBounds semantics); nothing
+	// selected = false.
+	if (!m_world || m_selected == UINT32_MAX
+		|| m_selected >= m_world->scene.hierarchy.size())
+		return false;
+	if (m_selection.size() <= 1) {
+		glm::vec3 c;
+		float r = 0.0f;
+		if (SelectionBounds(c, r)) {
+			outCenter = c;
+			return true;
+		}
+		return false;
+	}
+	glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+	bool has = false;
+	std::unordered_set<uint32_t> seen;
+	for (uint32_t root : m_selection) {
+		if (root >= m_world->scene.hierarchy.size()
+			|| !seen.insert(root).second)
+			continue;
+		std::vector<uint32_t> stack{ root };
+		while (!stack.empty()) {
+			const uint32_t n = stack.back();
+			stack.pop_back();
+			if (n >= m_world->scene.hierarchy.size()
+				|| !seen.insert(n).second)
+				continue;
+			for (int c = m_world->scene.hierarchy[n].firstChild;
+				c != -1;
+				c = m_world->scene.hierarchy[c].nextSibling)
+				stack.push_back(uint32_t(c));
+			auto mit = m_world->scene.meshForNode.find(n);
+			if (mit == m_world->scene.meshForNode.end())
+				continue;
+			smvk::StaticMesh* mesh = m_world->GetMesh(mit->second);
+			if (!mesh)
+				continue;
+			const glm::mat4& model =
+				m_world->scene.globalTransform[n];
+			for (int k = 0; k < 8; ++k) {
+				const glm::vec3 corner(
+					(k & 1) ? mesh->geometry.aabbMax.x
+					: mesh->geometry.aabbMin.x,
+					(k & 2) ? mesh->geometry.aabbMax.y
+					: mesh->geometry.aabbMin.y,
+					(k & 4) ? mesh->geometry.aabbMax.z
+					: mesh->geometry.aabbMin.z);
+				const glm::vec3 w =
+					glm::vec3(model * glm::vec4(corner, 1.0f));
+				mn = glm::min(mn, w);
+				mx = glm::max(mx, w);
+				has = true;
+			}
+		}
+	}
+	if (!has)
+		return false;
+	outCenter = (mn + mx) * 0.5f;
+	return true;
+}
+
 void EditorApp::FrameAll() {
 	if (!m_world)
 		return;

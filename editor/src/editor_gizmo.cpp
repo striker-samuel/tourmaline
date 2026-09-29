@@ -164,18 +164,81 @@ glm::vec3 GizmoOrigin(const Scene& scene, uint32_t node) {
 } // namespace
 
 glm::vec3 EditorApp::GizmoPivotPoint() {
-	// Per m_gizmoPivot: the node origin (as before) or the selection's
-	// subtree AABB center (SelectionBounds; falls back to the origin
-	// when the selection has no mesh bounds).
+	// Per m_gizmoPivot: the node origin (as before), the selection's
+	// subtree AABB center, or — MULTI-SELECT — the combined AABB center
+	// of EVERY selected subtree (the local-pivot feature: transforms
+	// act about the whole selection's bb center; falls back through
+	// the primary's bounds to the origin without mesh bounds).
 	if (m_gizmoPivot == GizmoPivot::BoundsCenter && m_world
 		&& m_selected != UINT32_MAX
 		&& m_selected < m_world->scene.hierarchy.size()) {
 		glm::vec3 c;
-		float r = 0.0f;
-		if (SelectionBounds(c, r))
+		if (SelectionPivotCenter(c))
 			return c;
+		if (m_selection.size() > 1) {
+			glm::vec3 pc;
+			float pr = 0.0f;
+			if (SelectionBounds(pc, pr))
+				return pc;
+		}
 	}
 	return GizmoOrigin(m_world->scene, m_selected);
+}
+
+void EditorApp::ApplyMultiDragTranslate() {
+	// Multi-select translate: the SAME world delta rides every other
+	// selected node (the primary's local delta -> world through its
+	// parent, -> each node's parent frame; same inverse-parent
+	// approximation the single-node path uses).
+	if (m_dragMulti.empty() || !m_world)
+		return;
+	const int p = m_world->scene.hierarchy[m_selected].parent;
+	const glm::mat4 pw = (p >= 0)
+		? m_world->scene.globalTransform[size_t(p)] : glm::mat4(1.0f);
+	const glm::vec3 dW =
+		glm::vec3(pw * glm::vec4(m_dragCurT - m_dragBaseT, 0.0f));
+	for (const auto& ms : m_dragMulti) {
+		glm::vec3 t = ms.t;
+		const glm::mat3 p3(ms.parentWorld);
+		if (std::fabs(glm::determinant(p3)) > 1e-12f)
+			t = ms.t + glm::vec3(
+				glm::inverse(ms.parentWorld) * glm::vec4(dW, 0.0f));
+		WriteLocalTRS(ms.node, t, ms.r, ms.s);
+	}
+}
+
+void EditorApp::ApplyMultiDragRotate() {
+	// Multi-select rotate: the SAME world rotation delta rides every
+	// other selected node (the primary's qNew * inv(qBase)); per node
+	// -> its parent frame + its own pivot compensation (the whole
+	// selection rotates about the SHARED pivot).
+	if (m_dragMulti.empty() || !m_world)
+		return;
+	const glm::quat qBase = glm::quat_cast(glm::mat3(m_dragBaseMat));
+	const glm::quat qNew = glm::quat(glm::radians(m_dragCurR));
+	const glm::quat dqW = qNew * glm::inverse(qBase);
+	for (const auto& ms : m_dragMulti) {
+		const glm::quat qPW = glm::quat_cast(glm::mat3(ms.parentWorld));
+		const glm::quat qB = glm::quat_cast(glm::mat3(ms.baseMat));
+		const glm::quat qL = glm::inverse(qPW) * dqW * qPW * qB;
+		const glm::vec3 r = glm::degrees(glm::eulerAngles(qL));
+		const glm::vec3 t =
+			ms.pivotP + qL * (ms.t - ms.pivotP);
+		WriteLocalTRS(ms.node, t, r, ms.s);
+	}
+}
+
+void EditorApp::ApplyMultiDragScaleUniform(float ratio) {
+	// Multi-select uniform scale: the same factor rides every other
+	// selected node, with its own pivot compensation (the whole
+	// selection scales about the SHARED pivot).
+	if (m_dragMulti.empty() || !m_world)
+		return;
+	for (const auto& ms : m_dragMulti) {
+		const glm::vec3 s = ms.s * ratio;
+		const glm::vec3 t = ms.pivotP + ratio * (ms.t - ms.pivotP);
+		WriteLocalTRS(ms.node, t, ms.r, s);
+	}
 }
 
 void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
@@ -891,6 +954,46 @@ bool EditorApp::GizmoHandleInput() {
 				}
 			}
 		}
+		// MULTI-SELECT snapshot (Maya-style): every OTHER selected node
+		// rides the same world transform (translate delta / rotation
+		// delta / uniform scale ratio), converted into each node's
+		// parent frame + its own pivot compensation. Per-axis scale
+		// (shaft/plane handles) stays single-select (logged once).
+		m_dragMulti.clear();
+		m_dragMultiLogged = false;
+		if (m_selection.size() > 1) {
+			const bool perAxis =
+				(m_gizmoMode == GizmoMode::Scale && best != 7);
+			if (perAxis)
+				Log("Gizmo: multi-select per-axis scale unsupported "
+					"(only the primary node scales; uniform cube + "
+					"translate/rotate are multi).");
+			if (!perAxis) {
+				for (uint32_t n : m_selection) {
+					if (n == m_selected
+						|| n >= m_world->scene.hierarchy.size())
+						continue;
+					GizmoMultiSnap ms{};
+					ms.node = n;
+					ms.baseMat =
+						m_world->scene.localTransform[size_t(n)];
+					ReadLocalTRS(n, ms.t, ms.r, ms.s);
+					const int p =
+						m_world->scene.hierarchy[size_t(n)].parent;
+					ms.parentWorld = (p >= 0)
+						? m_world->scene.globalTransform[size_t(p)]
+						: glm::mat4(1.0f);
+					const glm::mat3 pr(ms.parentWorld);
+					if (std::fabs(glm::determinant(pr)) > 1e-12f)
+						ms.pivotP = glm::vec3(
+							glm::inverse(ms.parentWorld)
+							* glm::vec4(O, 1.0f));
+					else
+						ms.pivotP = ms.t;
+					m_dragMulti.push_back(std::move(ms));
+				}
+			}
+		}
 		if (best == 6) {
 			// Arcball: sphere-tracked below, no grab plane needed.
 			m_dragBaseAngle = 0.0f;
@@ -947,6 +1050,33 @@ bool EditorApp::GizmoHandleInput() {
 		}
 		m_gizmoAxis = -1;
 		PushDone(c);
+		// MULTI-SELECT: one undoable command per additional node (the
+		// live values were already written per frame; PushDone records
+		// them without re-executing).
+		for (const auto& ms : m_dragMulti) {
+			glm::vec3 t, r, s;
+			ReadLocalTRS(ms.node, t, r, s);
+			EditCmd mc{};
+			mc.node = ms.node;
+			mc.beforeMat = ms.baseMat;
+			if (m_gizmoMode == GizmoMode::Translate) {
+				mc.verb = EditVerb::Translate;
+				mc.afterVec = t;
+			}
+			else if (m_gizmoMode == GizmoMode::Rotate) {
+				mc.verb = EditVerb::Rotate;
+				mc.afterVec = r;
+			}
+			else {
+				mc.verb = EditVerb::Scale;
+				mc.afterVec = s;
+			}
+			PushDone(mc);
+		}
+		if (!m_dragMulti.empty())
+			Log("Gizmo edit: " + std::to_string(m_dragMulti.size() + 1)
+				+ " node(s) (multi).");
+		m_dragMulti.clear();
 		Log("Gizmo edit (" + std::string(
 			m_gizmoMode == GizmoMode::Translate ? "move"
 			: m_gizmoMode == GizmoMode::Rotate ? "rotate" : "scale") +
@@ -999,13 +1129,14 @@ bool EditorApp::GizmoHandleInput() {
 						+ axB * glm::dot(dvec, axB);
 					m_dragCurT = m_dragBaseT + toLocal(dW);
 				}
-				// Shift = grid snap: translate steps to the grid cell.
-				if (shiftHeld && m_gridSize > 0.0f) {
-					const float inv = 1.0f / m_gridSize;
-					for (int k = 0; k < 3; ++k)
-						m_dragCurT[k] = std::round(m_dragCurT[k] * inv) / inv;
-				}
-				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
+			// Shift = grid snap: translate steps to the grid cell.
+			if (shiftHeld && m_gridSize > 0.0f) {
+				const float inv = 1.0f / m_gridSize;
+				for (int k = 0; k < 3; ++k)
+					m_dragCurT[k] = std::round(m_dragCurT[k] * inv) / inv;
+			}
+			WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
+			ApplyMultiDragTranslate();
 			}
 		}
 	}
@@ -1031,11 +1162,21 @@ bool EditorApp::GizmoHandleInput() {
 			glm::quat dq = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 			if (axIdx == 6) {
 				// Arcball: camera-space sphere delta -> world-axis dq.
+				// The proj carries the VULKAN Y-FLIP: +clip-y IS
+				// screen-DOWN, so invVP[1] is the world direction of
+				// screen-down (invVP[0] is screen-right, unflipped).
+				// The sphere frame is Y-UP/Z-toward-viewer: build the
+				// TRUE screen frame — up = -down, toward-viewer =
+				// cross(right, up) — or every drag rotates MIRRORED
+				// (the pre-fix code mapped cr.y/cr.z through the
+				// down/into-screen axes: free rotate ran in reverse).
 				const glm::mat4 invVP = glm::inverse(viewProj);
 				const glm::vec3 camRightW =
 					glm::normalize(glm::vec3(invVP[0]));
 				const glm::vec3 camUpW =
-					glm::normalize(glm::vec3(invVP[1]));
+					-glm::normalize(glm::vec3(invVP[1]));
+				const glm::vec3 camFrontW =
+					glm::normalize(glm::cross(camRightW, camUpW));
 				const glm::vec2 centerPx = ToScreen(O, viewProj, extent);
 				const float radiusPx = glm::max(glm::length(
 					ToScreen(O + camRightW * s, viewProj, extent)
@@ -1059,8 +1200,7 @@ bool EditorApp::GizmoHandleInput() {
 						glm::dot(v0, v1), -1.0f, 1.0f));
 					const glm::vec3 axisW = glm::normalize(
 						camRightW * cr.x + camUpW * cr.y
-						+ glm::normalize(glm::cross(camRightW, camUpW))
-						* cr.z);
+						+ camFrontW * cr.z);
 					m_dragArcQ = glm::angleAxis(ang, axisW) * m_dragArcQ;
 				}
 				dq = m_dragArcQ;
@@ -1097,6 +1237,7 @@ bool EditorApp::GizmoHandleInput() {
 			m_dragCurS = m_dragBaseS;
 			applyPivotRotate();
 			WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
+			ApplyMultiDragRotate();
 			return true;
 		}
 		const float dx = mx - m_dragLastX;
@@ -1111,6 +1252,7 @@ bool EditorApp::GizmoHandleInput() {
 		m_dragCurT = m_dragBaseT;
 		applyPivotRotate();
 		WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
+		ApplyMultiDragRotate();
 	}
 	else { // Scale
 		glm::vec3 origin;
@@ -1191,6 +1333,15 @@ bool EditorApp::GizmoHandleInput() {
 						+ r * (m_dragBaseT - m_dragPivotL);
 				}
 				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
+				// Multi-select: only the uniform cube rides the
+				// selection (per-axis is single-select; logged once at
+				// the drag start).
+				if (axIdx == 7 && !m_dragMulti.empty()) {
+					const float ratio =
+						(std::fabs(m_dragBaseS[0]) > 1e-9f)
+						? m_dragCurS[0] / m_dragBaseS[0] : 1.0f;
+					ApplyMultiDragScaleUniform(ratio);
+				}
 			}
 		}
 	}

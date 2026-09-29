@@ -667,6 +667,11 @@ private:
 	void ModalGizmoCycle();
 	void ModalSelRadial();
 	void ModalWireframeToggle();
+	// Maya P/Shift+P: parent every selected node under the LAST
+	// selected (the newest); Shift+P detaches the selection to the
+	// cluster root.
+	void ModalParentSelection();
+	void ModalUnparentSelection();
 	void ModalFrameSel();
 	void ModalFrameAll();
 	void ModalCycleNodePrev();
@@ -1373,6 +1378,11 @@ private:
 	// Maya-style framing: F moves the orbit pivot to the selection
 	// center and fits the distance; Shift+F fits the whole scene.
 	bool SelectionBounds(glm::vec3& outCenter, float& outRadius);
+	// MULTI-SELECT pivot: the combined world AABB center over every
+	// selected node's subtree meshes (the local-pivot feature: gizmo
+	// transforms act about it). Single selection = the primary's
+	// subtree bounds. False = nothing to pivot on.
+	bool SelectionPivotCenter(glm::vec3& outCenter);
 	void FrameSelection(); // frames the ACTIVE viewport's camera
 	void FrameAll();
 
@@ -1901,6 +1911,25 @@ private:
 	// false = no compensation, the node-origin behavior).
 	glm::vec3 m_dragPivotL{ 0.0f };
 	bool m_dragHasPivot = false;
+	// MULTI-SELECT drag snapshots (every selected node except the
+	// primary — Maya-style multi-transform): the same WORLD transform
+	// applies to each (translate delta, rotation delta or uniform
+	// scale ratio), converted per node into its parent frame with its
+	// own pivot compensation. Per-axis scale stays single-select.
+	struct GizmoMultiSnap {
+		uint32_t node = 0;
+		glm::mat4 baseMat{ 1.0f };
+		glm::vec3 t{ 0.0f };
+		glm::vec3 r{ 0.0f };
+		glm::vec3 s{ 1.0f };
+		glm::mat4 parentWorld{ 1.0f }; // the node's parent world matrix
+		glm::vec3 pivotP{ 0.0f };      // the drag pivot in the parent frame
+	};
+	std::vector<GizmoMultiSnap> m_dragMulti;
+	bool m_dragMultiLogged = false; // the per-axis unsupported note fires once
+	void ApplyMultiDragTranslate();
+	void ApplyMultiDragRotate();
+	void ApplyMultiDragScaleUniform(float ratio);
 	glm::mat4 m_dragBaseMat{ 1.0f }; // baseline local matrix (undo)
 	glm::vec3 m_dragBaseT{ 0.0f };
 	glm::vec3 m_dragBaseR{ 0.0f };

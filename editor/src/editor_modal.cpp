@@ -251,8 +251,12 @@ void EditorApp::UpdateModalInput() {
 			"view: UV1 (lightmap)", "F10" },
 		{ GLFW_KEY_F11, 0, kScopeGlobal, &EditorApp::ModalViewPom,
 			"view: parallax (POM)", "F11" },
-		{ GLFW_KEY_P, 0, kScopeGlobal, &EditorApp::ModalWireframeToggle,
-			"view: wireframe (hidden-line)", "P" },
+		{ GLFW_KEY_P, 0, kScopeGlobal,
+			&EditorApp::ModalParentSelection,
+			"parent: all selected to the last selected (Maya)", "P" },
+		{ GLFW_KEY_P, kModalShift, kScopeGlobal,
+			&EditorApp::ModalUnparentSelection,
+			"unparent: detach the selection to the root", "Shift+P" },
 		{ GLFW_KEY_V, 0, kScopeGlobal, &EditorApp::ModalVpLayoutToggle,
 			"viewport: single/quad", "V" },
 		{ GLFW_KEY_I, 0, kScopeGlobal, &EditorApp::ModalUiToggle,
@@ -408,6 +412,61 @@ void EditorApp::ModalGizmoCycle() {
 void EditorApp::ModalSelRadial() { m_showSelRadial = true; }
 
 void EditorApp::ModalWireframeToggle() { m_wireframeAll = !m_wireframeAll; }
+
+void EditorApp::ModalParentSelection() {
+	// Maya P: parent EVERY selected node under the LAST selected (the
+	// newest = the target; it never parents itself). One undoable
+	// Parent command per node (the cmd holds one node).
+	if (!m_world || m_selection.size() < 2) {
+		if (m_selection.size() < 2)
+			Log("Parent: select at least two nodes (the last selected "
+				"is the parent).");
+		return;
+	}
+	const uint32_t target = m_selected; // newest = last selected
+	uint32_t moved = 0;
+	for (uint32_t n : m_selection) {
+		if (n == target || n >= m_world->scene.hierarchy.size())
+			continue;
+		if (uint32_t(m_world->scene.hierarchy[n].parent) == target)
+			continue; // already under the target
+		EditCmd c{};
+		c.verb = EditVerb::Parent;
+		c.node = n;
+		c.node2 = target;
+		c.beforeParent =
+			uint32_t(m_world->scene.hierarchy[n].parent);
+		c.afterText = getNodeName(m_world->scene, int(target));
+		Do(c);
+		++moved;
+	}
+	Log("Parent: " + std::to_string(moved) + " node(s) under '"
+		+ getNodeName(m_world->scene, int(target)) + "'.");
+}
+
+void EditorApp::ModalUnparentSelection() {
+	// Maya Shift+P: detach every selected node to the ROOT (the cluster
+	// root node 0 — the top of the scene DAG).
+	if (!m_world || m_selection.empty())
+		return;
+	uint32_t moved = 0;
+	for (uint32_t n : m_selection) {
+		if (n == 0 || n >= m_world->scene.hierarchy.size())
+			continue;
+		if (m_world->scene.hierarchy[n].parent <= 0)
+			continue; // already at the root
+		EditCmd c{};
+		c.verb = EditVerb::Parent;
+		c.node = n;
+		c.node2 = 0; // the cluster root
+		c.beforeParent =
+			uint32_t(m_world->scene.hierarchy[n].parent);
+		Do(c);
+		++moved;
+	}
+	Log("Unparent: " + std::to_string(moved)
+		+ " node(s) detached to the root.");
+}
 
 void EditorApp::ModalFrameSel() {
 	if (m_showUvEditor && m_uvWinHovered) {
