@@ -24,6 +24,13 @@
 #include <cmath>
 #include <cstdint>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace editor {
 // Panel widths/heights live in editor_app.h (kEditorLeftW/RightW/BottomH):
 // the central viewport rect is computed from them in RenderFrame.
@@ -179,6 +186,11 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 			if (ImGui::BeginTabItem("Console")) {
 				m_bottomTab = 1;
 				DrawConsolePanel();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Assets")) {
+				m_bottomTab = 2;
+				DrawAssetsPanel();
 				ImGui::EndTabItem();
 			}
 			ImGui::EndTabBar();
@@ -527,6 +539,13 @@ void EditorApp::DrawMenuBar() {
 	if (m_showCookDialog)
 		ImGui::OpenPopup("Cook to .pak");
 	DrawCookDialog();
+	// Forced startup project selection (pending flag from Initialize,
+	// cleared on the first frame; the dialog is a blocking modal).
+	if (m_projectDialogPending) {
+		ImGui::OpenPopup("Select project");
+		m_projectDialogPending = false;
+	}
+	DrawProjectDialog();
 }
 
 // ---- tool topbar --------------------------------------------------------
@@ -4000,6 +4019,228 @@ void EditorApp::DrawMaterialEditor() {
 			"file path as its URI (a filepath ref). Source bytes are "
 			"stashed so cooks re-embed them.");
 	ImGui::TextDisabled("Slots store pool indices; -1 clears a slot.");
+}
+
+void EditorApp::RevealInExplorer(const std::string& absPath) {
+	// explorer /select needs backslashes on Windows.
+#ifdef _WIN32
+	std::string win = absPath;
+	for (char& c : win)
+		if (c == '/')
+			c = '\\';
+	// "explorer /select," fails for non-existing paths: open the
+	// parent folder instead, plain-open the file's dir as the last
+	// resort. A non-zero "success" HINSTANCE just means it launched.
+	std::error_code ec;
+	if (std::filesystem::is_regular_file(absPath, ec)) {
+		// /select,<path> pre-selects the file in an Explorer window.
+		if (reinterpret_cast<INT_PTR>(::ShellExecuteA(nullptr, "open",
+				"explorer", ("/select," + win).c_str(), nullptr,
+				SW_SHOWNORMAL)) <= 32)
+			Log("Reveal failed: '" + absPath + "'.");
+	}
+	else {
+		const std::string dir =
+			std::filesystem::path(absPath).parent_path().string();
+		if (reinterpret_cast<INT_PTR>(::ShellExecuteA(nullptr, "open",
+				dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+			Log("Reveal failed: '" + dir + "'.");
+	}
+#else
+	Log("Reveal in Explorer is Windows-only.");
+#endif
+}
+
+void EditorApp::DrawProjectDialog() {
+	// FORCED startup project selection: a blocking modal (no close —
+	// the editor is project-bound; smoke flows never see it). Recents
+	// first (one click; the current project sits on top), New/Browse
+	// for anything else. Opened from DrawMenuBar's popup tail.
+	const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing,
+		ImVec2(0.5f, 0.5f));
+	ImGui::SetNextWindowSize(ImVec2(640, 0), ImGuiCond_Appearing);
+	if (!ImGui::BeginPopupModal("Select project", nullptr,
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
+				| ImGuiWindowFlags_NoSavedSettings))
+		return;
+	ImGui::Text("Select a project");
+	ImGui::TextDisabled(
+		"The editor is project-bound: scenes, imports, asset GUIDs "
+		"and the artifact cache all live in the project folder. "
+		"Pick a recent project below, or create/open one.");
+	ImGui::Separator();
+	ImGui::Text("Recent projects");
+	bool opened = false;
+	if (m_recentProjects.empty()) {
+		ImGui::TextDisabled("(none yet - create or browse for one)");
+	}
+	for (size_t i = 0; i < m_recentProjects.size(); ++i) {
+		const std::string& dir = m_recentProjects[i];
+		ImGui::PushID(int(i));
+		const std::string name =
+			std::filesystem::path(dir).filename().string();
+		const bool isProject = IsProjectDir(dir);
+		const bool current = (dir == m_projectRoot);
+		if (ImGui::Selectable(("##rec" + std::to_string(i)).c_str(),
+				current, ImGuiSelectableFlags_SpanAllColumns,
+				ImVec2(0, 0))) {
+			// Row click (single) opens too — the dialog is one step.
+			if (isProject) {
+				opened = OpenProject(dir);
+				if (!opened)
+					Log("Project dialog: cannot open '" + dir
+						+ "' (see log).");
+			}
+			else {
+				Log("Project dialog: '" + dir + "' is not a project "
+					"(no project.tourproj) - removed from recents.");
+				m_recentProjects.erase(m_recentProjects.begin()
+					+ std::ptrdiff_t(i));
+				SavePrefs();
+				ImGui::PopID();
+				break; // iterator invalidated
+			}
+		}
+		ImGui::SameLine();
+		ImGui::TextUnformatted(name.c_str());
+		ImGui::SameLine();
+		ImGui::TextDisabled("%s", dir.c_str());
+		ImGui::SameLine();
+		if (current)
+			ImGui::TextDisabled("(open)");
+		else if (!isProject)
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+				"(marker missing)");
+		ImGui::PopID();
+	}
+	ImGui::Separator();
+	if (ImGui::Button("New / Open Project...")) {
+		std::string picked;
+		if (NativePickFolder(picked) && !picked.empty()) {
+			opened = NewProjectOrOpen(picked);
+			if (!opened)
+				Log("Project dialog: cannot open '" + picked
+					+ "' (see log).");
+		}
+	}
+	if (opened) {
+		ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+		return;
+	}
+	ImGui::EndPopup();
+}
+
+void EditorApp::DrawAssetsPanel() {
+	// Asset browser: every asset registered in the project's asset
+	// directory (assets.db - the .meta GUID registry). One row per
+	// asset: name, stored path (project-relative), kind, GUID,
+	// presence + size, open + reveal actions. Re-scans on demand;
+	// the listing re-queries while visible (editor-scale table,
+	// sub-ms).
+	if (!m_assetDb.IsOpen()) {
+		ImGui::TextDisabled("Assets: open a project first (no asset "
+			"directory without one).");
+		return;
+	}
+	std::string err;
+	if (ImGui::Button("Rescan")) {
+		smvk::cache::RescanStats stats;
+		if (m_assetDb.RescanProject(stats, err))
+			Log("Asset rescan: " + std::to_string(stats.adopted)
+				+ " adopted, " + std::to_string(stats.moved)
+				+ " re-pointed, " + std::to_string(stats.missing)
+				+ " missing.");
+		else
+			Log("Asset rescan failed: " + err);
+	}
+	ImGui::SameLine();
+	std::vector<smvk::cache::AssetRecord> rows;
+	if (!m_assetDb.All(rows, err)) {
+		ImGui::TextDisabled("Assets: listing failed: %s", err.c_str());
+		return;
+	}
+	size_t missing = 0;
+	for (const auto& r : rows) {
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(
+				m_assetDb.ResolvePath(r.path), ec))
+			++missing;
+	}
+	ImGui::TextDisabled("%zu asset(s), %zu missing (moved/deleted "
+		"- Rescan heals moves)", rows.size(), missing);
+	if (!ImGui::BeginTable("##assets",
+			6,
+			ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders
+				| ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
+		ImGui::TextDisabled("(table unavailable)");
+		return;
+	}
+	ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+		220.0f);
+	ImGui::TableSetupColumn("Path");
+	ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed,
+		70.0f);
+	ImGui::TableSetupColumn("GUID", ImGuiTableColumnFlags_WidthFixed,
+		240.0f);
+	ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
+		92.0f);
+	ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed,
+		176.0f);
+	ImGui::TableHeadersRow();
+	for (size_t i = 0; i < rows.size(); ++i) {
+		const smvk::cache::AssetRecord& r = rows[i];
+		ImGui::PushID(int(i));
+		const std::string abs = m_assetDb.ResolvePath(r.path);
+		std::error_code ec;
+		const bool present =
+			std::filesystem::is_regular_file(abs, ec);
+		const std::string name =
+			std::filesystem::path(abs).filename().string();
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(0);
+		ImGui::TextUnformatted(name.c_str());
+		ImGui::TableSetColumnIndex(1);
+		ImGui::TextDisabled("%s", r.path.c_str());
+		ImGui::TableSetColumnIndex(2);
+		ImGui::TextUnformatted(r.kind.c_str());
+		ImGui::TableSetColumnIndex(3);
+		if (ImGui::SmallButton("copy##guid")) {
+			ImGui::SetClipboardText(r.guid.c_str());
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("%s", r.guid.c_str());
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Asset UUID (click copy to clipboard).");
+		ImGui::TableSetColumnIndex(4);
+		if (present) {
+			char sz[32];
+			std::snprintf(sz, sizeof(sz), "%.1f KiB",
+				double(r.size) / 1024.0);
+			ImGui::TextDisabled("%s", sz);
+		}
+		else
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+				"missing");
+		ImGui::TableSetColumnIndex(5);
+		ImGui::BeginDisabled(!present);
+		if (ImGui::SmallButton("Open")) {
+			if (!m_cookRunning)
+				OpenAnySceneFile(abs);
+			else
+				Log("Assets: a cook is running - wait for it to "
+					"finish.");
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(abs.empty());
+		if (ImGui::SmallButton("Reveal"))
+			RevealInExplorer(abs);
+		ImGui::EndDisabled();
+		ImGui::PopID();
+	}
+	ImGui::EndTable();
 }
 
 } // namespace editor

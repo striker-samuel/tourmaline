@@ -131,6 +131,17 @@ std::string EditorApp::ReadProjectName(const std::string& dir) {
 	return {};
 }
 
+void EditorApp::PushRecentProject(const std::string& dir) {
+	// Most-recent-first, deduped, capped (the startup dialog lists it).
+	auto it = std::find(m_recentProjects.begin(), m_recentProjects.end(),
+		dir);
+	if (it != m_recentProjects.end())
+		m_recentProjects.erase(it);
+	m_recentProjects.insert(m_recentProjects.begin(), dir);
+	if (m_recentProjects.size() > 8)
+		m_recentProjects.resize(8);
+}
+
 bool EditorApp::OpenProject(const std::string& dir) {
 	const std::string root = Normalized(dir);
 	if (!IsProjectDir(root)) {
@@ -138,6 +149,7 @@ bool EditorApp::OpenProject(const std::string& dir) {
 			+ root);
 		return false;
 	}
+	PushRecentProject(root);
 	if (root == m_projectRoot) {
 		Log("Project already open: " + m_projectName);
 		return true;

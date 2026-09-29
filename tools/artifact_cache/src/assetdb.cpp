@@ -347,9 +347,11 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 		if (p.filename() == "project.tourproj")
 			continue;
 		// Skip the owned caches/outputs: identity lives in content/.
+		// (scratch/ tolerated: pre-rename projects.)
 		const std::string rel = ToStoredPath(m_projectRoot,
 			Normalized(p.generic_string()));
 		if (rel.compare(0, 8, "scratch/") == 0
+			|| rel.compare(0, 9, "artifacts/") == 0
 			|| rel.compare(0, 5, "paks/") == 0
 			|| rel.compare(0, 3, "gi/") == 0)
 			continue;
@@ -391,6 +393,41 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 		return false;
 	}
 	return true;
+}
+
+bool AssetDatabase::All(std::vector<AssetRecord>& out,
+	std::string& err) {
+	out.clear();
+	if (!m_impl || !m_impl->db) {
+		err = "asset db not open";
+		return false;
+	}
+	try {
+		SQLite::Statement q(*m_impl->db,
+			"SELECT guid, path, kind, size, mtime FROM assets "
+			"ORDER BY path");
+		while (q.executeStep()) {
+			AssetRecord r;
+			r.guid = q.getColumn(0).getString();
+			r.path = q.getColumn(1).getString();
+			r.kind = q.getColumn(2).getString();
+			r.size = q.getColumn(3).getInt64();
+			r.mtime = q.getColumn(4).getInt64();
+			out.push_back(std::move(r));
+		}
+		return true;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
+}
+
+std::string AssetDatabase::ResolvePath(
+	const std::string& storedPath) const {
+	if (storedPath.empty())
+		return {};
+	return FromStoredPath(m_projectRoot, storedPath);
 }
 
 } // namespace smvk::cache

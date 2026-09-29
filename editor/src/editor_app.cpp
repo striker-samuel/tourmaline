@@ -172,6 +172,12 @@ bool EditorApp::Initialize() {
 				"Open Project... to work project-bound).");
 		}
 	}
+	// FORCED project selection on startup (interactive runs only):
+	// the editor is project-bound — the blocking dialog (recents +
+	// New/Browse) demands one. Smoke flows drive their own projects
+	// and never see it.
+	if (!m_wysiwygSmoke && m_projectSmokeDir.empty())
+		m_projectDialogPending = true;
 
 
 	m_imgui = std::make_unique<smvk::ImGuiOverlay>();
@@ -340,6 +346,16 @@ void EditorApp::LoadPrefs() {
 			// is project-owned) — a stale entry is ignored.
 			else if (section == "project" && key == "dir")
 				m_projectRoot = val;
+			// Recents (most recent first; recentN index-ordered).
+			else if (section == "projects"
+				&& key.rfind("recent", 0) == 0 && key.size() > 6) {
+				const int idx = std::atoi(key.c_str() + 6);
+				if (idx >= 0 && idx < 12 && !val.empty()) {
+					if (size_t(idx) >= m_recentProjects.size())
+						m_recentProjects.resize(size_t(idx) + 1);
+					m_recentProjects[size_t(idx)] = val;
+				}
+			}
 			// [wysiwyg] preview key retired: the hosted view is the
 			// viewport driver unconditionally (no toggle to persist).
 		}
@@ -361,6 +377,11 @@ void EditorApp::SavePrefs() {
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_projectRoot.empty())
 		out << "[project]\ndir=" << m_projectRoot << "\n";
+	if (!m_recentProjects.empty()) {
+		out << "[projects]\n";
+		for (size_t i = 0; i < m_recentProjects.size(); ++i)
+			out << "recent" << i << "=" << m_recentProjects[i] << "\n";
+	}
 }
 
 bool EditorApp::OpenCacheDb() {

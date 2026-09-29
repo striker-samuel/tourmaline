@@ -1496,6 +1496,16 @@ private:
 	// scene, repoints the artifact cache at <dir>/artifacts, persists.
 	// False + log when <dir> has no project.tourproj marker.
 	bool OpenProject(const std::string& dir);
+	// Recent projects (prefs [projects] recentN, most recent first,
+	// capped): the startup project dialog lists them.
+	std::vector<std::string> m_recentProjects;
+	void PushRecentProject(const std::string& dir); // dedupe + cap + save
+	// FORCED startup project selection (interactive runs only — the
+	// smoke flows drive their own projects): a blocking modal with
+	// the recents + New/Browse. The editor is project-bound; no
+	// project, no work.
+	bool m_projectDialogPending = false;
+	void DrawProjectDialog();
 	// Creates the project tree when the marker is missing, then opens
 	// it (an existing project dir just opens).
 	bool NewProjectOrOpen(const std::string& dir);
@@ -1506,6 +1516,13 @@ private:
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
 	bool ImportAsset(const std::string& srcPath);
+	// Asset browser (bottom dock "Assets" tab): every asset
+	// registered in the project's asset directory (assets.db — the
+	// .meta GUID registry) with open/reveal actions. No-op rows-wise
+	// without a project.
+	void DrawAssetsPanel();
+	// Windows explorer /select reveal (no-op + log on failure).
+	void RevealInExplorer(const std::string& absPath);
 	// The copy+adopt half of ImportAsset (no scene switch, no cook
 	// priming): copies a .gltf/.glb + companions into the project's
 	// content/models/<stem>/, adopts its GUID (.meta sidecar + asset

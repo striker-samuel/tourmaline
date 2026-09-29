@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace smvk::cache {
 
@@ -82,6 +83,13 @@ public:
 	// is gone (kept — a retarget, not a delete). The healing pass for
 	// Explorer-side moves/renames.
 	bool RescanProject(RescanStats& stats, std::string& err);
+	// Full listing (asset browser): every registered row, ordered by
+	// stored path. `path` stays the STORED form (project-relative or
+	// absolute) — resolve for display/opening via ResolvePath.
+	bool All(std::vector<AssetRecord>& out, std::string& err);
+	// Absolute path for a STORED row path ({} when the db is closed).
+	// No existence requirement (the browser marks missing rows).
+	std::string ResolvePath(const std::string& storedPath) const;
 
 private:
 	struct Impl;
