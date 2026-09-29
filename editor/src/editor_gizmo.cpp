@@ -163,6 +163,21 @@ glm::vec3 GizmoOrigin(const Scene& scene, uint32_t node) {
 
 } // namespace
 
+glm::vec3 EditorApp::GizmoPivotPoint() {
+	// Per m_gizmoPivot: the node origin (as before) or the selection's
+	// subtree AABB center (SelectionBounds; falls back to the origin
+	// when the selection has no mesh bounds).
+	if (m_gizmoPivot == GizmoPivot::BoundsCenter && m_world
+		&& m_selected != UINT32_MAX
+		&& m_selected < m_world->scene.hierarchy.size()) {
+		glm::vec3 c;
+		float r = 0.0f;
+		if (SelectionBounds(c, r))
+			return c;
+	}
+	return GizmoOrigin(m_world->scene, m_selected);
+}
+
 void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	if (swapView.empty() || !m_world)
 		return;
@@ -458,7 +473,11 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 	}
 
-	const glm::vec3 O = GizmoOrigin(m_world->scene, m_selected);
+	// Gizmo origin = the PIVOT (Q quick menu): the node origin (as
+	// before) or the selection's bounds center. Steady while dragging
+	// (the snapshot pivot, so rings/handles don't wobble).
+	glm::vec3 O = (m_gizmoDragging && m_gizmoAxis >= 0)
+		? m_dragNodeOrigin : GizmoPivotPoint();
 	const float dist = glm::distance(EditorCamEye(ActiveCam()), O);
 	// Configurable gizmo size (m_gizmoScale, default half the original
 	// 0.14 factor); tiny floors keep the handles clickable.
@@ -471,11 +490,17 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		if (!std::isfinite(axesL[i].x))
 			axesL[i] = axesW[i];
 	}
+	// Handle orientation (Q quick menu, World default): Local aligns to
+	// the node's world-rotated axes; World to the scene axes. SCALE is
+	// always local (per-axis world scaling of a rotated node has no
+	// TRS form).
+	const bool useLocal = (m_gizmoMode == GizmoMode::Scale)
+		|| (m_gizmoSpace == GizmoSpace::Local);
+	const glm::vec3* axesG = useLocal ? axesL : axesW;
 	const glm::vec4 axisColors[3] = {
 		{1, 0.25f, 0.25f, 1}, {0.3f, 1, 0.3f, 1}, {0.35f, 0.5f, 1, 1} };
-	const bool useLocal = (m_gizmoMode != GizmoMode::Translate);
 	for (int i = 0; i < 3; ++i) {
-		const glm::vec3 ax = (useLocal ? axesL[i] : axesW[i]);
+		const glm::vec3 ax = axesG[i];
 		LineBatch b;
 		b.color = (m_gizmoDragging && m_gizmoAxis == i)
 			? glm::vec4(1, 1, 0, 1) : axisColors[i];
@@ -503,18 +528,16 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 		batches.push_back(std::move(b));
 		}
-		if (m_gizmoMode != GizmoMode::Rotate) {
-			// Plane handles (two-axis drags): wire quads spanned by each
-			// axis pair at 0.35*s, tinted by the FIXED (normal) axis —
-			// the axis that does not move. Translate planes live in the
-			// world frame, scale planes in the node's local frame.
-			const float qd = s * 0.35f;
-			for (int n = 0; n < 3; ++n) {
-				const int a = (n + 1) % 3, b = (n + 2) % 3;
-				const glm::vec3 axA =
-					(m_gizmoMode == GizmoMode::Translate ? axesW[a] : axesL[a]);
-				const glm::vec3 axB =
-					(m_gizmoMode == GizmoMode::Translate ? axesW[b] : axesL[b]);
+	if (m_gizmoMode != GizmoMode::Rotate) {
+		// Plane handles (two-axis drags): wire quads spanned by each
+		// axis pair at 0.35*s, tinted by the FIXED (normal) axis —
+		// the axis that does not move. Frame: axesG (the space
+		// option; scale is local per the rule above).
+		const float qd = s * 0.35f;
+		for (int n = 0; n < 3; ++n) {
+			const int a = (n + 1) % 3, b = (n + 2) % 3;
+			const glm::vec3 axA = axesG[a];
+			const glm::vec3 axB = axesG[b];
 				LineBatch pb;
 				pb.color = (m_gizmoDragging && m_gizmoAxis == 3 + n)
 					? glm::vec4(1, 1, 0, 1) : axisColors[n];
@@ -683,12 +706,26 @@ bool EditorApp::GizmoHandleInput() {
 	const float my = float(m_input.getMouseY()) - vp.y;
 	const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-	const glm::vec3 O = GizmoOrigin(m_world->scene, m_selected);
+	// Gizmo origin = the PIVOT (Q quick menu): the node origin (as
+	// before) or the selection's bounds center. LIVE while idle (the
+	// drawn gizmo); the drag-start snapshot below anchors the drag.
+	glm::vec3 O = (m_gizmoDragging && m_gizmoAxis >= 0)
+		? m_dragNodeOrigin : GizmoPivotPoint();
 	const float dist = glm::distance(EditorCamEye(ActiveCam()), O);
 	const float s = std::max(dist * m_gizmoScale, 1e-4f);
-	const bool useLocal = (m_gizmoMode != GizmoMode::Translate);
+	// Handle orientation (Q quick menu, World default; scale always
+	// local — same rule as the draw path).
+	const bool useLocal = (m_gizmoMode == GizmoMode::Scale)
+		|| (m_gizmoSpace == GizmoSpace::Local);
 	const glm::mat4& global = m_world->scene.globalTransform[m_selected];
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+	glm::vec3 axesL[3];
+	for (int i = 0; i < 3; ++i) {
+		axesL[i] = glm::normalize(glm::vec3(global * glm::vec4(axesW[i], 0.0f)));
+		if (!std::isfinite(axesL[i].x))
+			axesL[i] = axesW[i];
+	}
+	const glm::vec3* axesG = useLocal ? axesL : axesW;
 
 	if (!m_gizmoDragging) {
 		// Hit test. Rotate: the axis whose PROJECTED ring passes
@@ -701,13 +738,7 @@ bool EditorApp::GizmoHandleInput() {
 		if (m_gizmoMode == GizmoMode::Rotate) {
 			float bestD = 15.0f;
 			for (int i = 0; i < 3; ++i) {
-				glm::vec3 ax = axesW[i];
-				if (useLocal) {
-					ax = glm::vec3(global * glm::vec4(axesW[i], 0.0f));
-					if (glm::length(ax) < 1e-6f)
-						continue;
-					ax = glm::normalize(ax);
-				}
+				glm::vec3 ax = axesG[i];
 				const glm::vec3 u = glm::normalize(
 					std::fabs(ax.y) < 0.9f ? glm::cross(ax, glm::vec3(0, 1, 0))
 					: glm::cross(ax, glm::vec3(1, 0, 0)));
@@ -751,16 +782,8 @@ bool EditorApp::GizmoHandleInput() {
 			int bestPlane = -1;
 			for (int n = 0; n < 3; ++n) {
 				const int a = (n + 1) % 3, b = (n + 2) % 3;
-				glm::vec3 axA = axesW[a], axB = axesW[b];
-				if (useLocal) {
-					axA = glm::vec3(global * glm::vec4(axesW[a], 0.0f));
-					axB = glm::vec3(global * glm::vec4(axesW[b], 0.0f));
-					if (glm::length(axA) < 1e-6f
-						|| glm::length(axB) < 1e-6f)
-						continue;
-					axA = glm::normalize(axA);
-					axB = glm::normalize(axB);
-				}
+				const glm::vec3 axA = axesG[a];
+				const glm::vec3 axB = axesG[b];
 				const glm::vec2 q0 = oPx;
 				const glm::vec2 q1 = ToScreen(O + axA * qd, viewProj, extent);
 				const glm::vec2 q2 = ToScreen(O + axA * qd + axB * qd,
@@ -781,13 +804,7 @@ bool EditorApp::GizmoHandleInput() {
 			else {
 				float bestD = 10.0f;
 				for (int i = 0; i < 3; ++i) {
-					glm::vec3 ax = axesW[i];
-					if (useLocal) {
-						ax = glm::vec3(global * glm::vec4(axesW[i], 0.0f));
-						if (glm::length(ax) < 1e-6f)
-							continue;
-						ax = glm::normalize(ax);
-					}
+					glm::vec3 ax = axesG[i];
 					glm::vec3 end = O + ax * s;
 					const glm::vec2 tipPx = ToScreen(end, viewProj, extent);
 					float d = DistPointSeg({ mx, my },
@@ -820,6 +837,35 @@ bool EditorApp::GizmoHandleInput() {
 		m_dragLastY = my;
 		m_dragStartDist = s;
 		m_dragArcQ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		// Pivot in the NODE's local frame (rotate/scale compensate the
+		// translate so they act ABOUT it): the world pivot mapped
+		// through the drag-start parent world matrix. Zero + false when
+		// the pivot IS the node origin (no compensation).
+		m_dragPivotL = glm::vec3(0.0f);
+		m_dragHasPivot = false;
+		if (m_gizmoPivot == GizmoPivot::BoundsCenter) {
+			const int parent = m_world->scene.hierarchy[m_selected].parent;
+			const glm::mat4& pw = (parent >= 0)
+				? m_world->scene.globalTransform[size_t(parent)]
+				: glm::mat4(1.0f);
+			const glm::mat3 rot(pw);
+			const float det = glm::determinant(rot);
+			if (std::fabs(det) > 1e-12f) {
+				// World->parent-local: inverse of the parent's
+				// rotation*scale (a point, not a direction — use the
+				// full inverse, then express in the node's translate
+				// frame: t lives in parent units, so map the pivot
+				// through inv(parent world) directly).
+				const glm::vec3 pLocal =
+					glm::vec3(glm::inverse(pw) * glm::vec4(O, 1.0f));
+				// The node's translate frame == the parent frame: the
+				// compensation offsets (t - p) live there.
+				if (glm::length(pLocal - m_dragBaseT) > 1e-6f) {
+					m_dragPivotL = pLocal;
+					m_dragHasPivot = true;
+				}
+			}
+		}
 		if (best == 6) {
 			// Arcball: sphere-tracked below, no grab plane needed.
 			m_dragBaseAngle = 0.0f;
@@ -838,25 +884,10 @@ bool EditorApp::GizmoHandleInput() {
 		}
 		else if (best >= 3) {
 			const int n = best - 3;
-			glm::vec3 nrm = axesW[n];
-			if (useLocal) {
-				nrm = glm::vec3(global * glm::vec4(axesW[n], 0.0f));
-				if (glm::length(nrm) < 1e-6f)
-					nrm = axesW[n];
-				else
-					nrm = glm::normalize(nrm);
-			}
-			m_dragPlaneN = nrm;
+			m_dragPlaneN = axesG[n];
 		}
 		else {
-			glm::vec3 ax = axesW[best];
-			if (useLocal) {
-				ax = glm::vec3(global * glm::vec4(axesW[best], 0.0f));
-				if (glm::length(ax) < 1e-6f)
-					ax = axesW[best];
-				else
-					ax = glm::normalize(ax);
-			}
+			const glm::vec3 ax = axesG[best];
 			const glm::vec3 camDir = glm::normalize(O - EditorCamEye(ActiveCam()));
 			m_dragPlaneN = glm::normalize(glm::cross(ax, glm::cross(camDir, ax)));
 		}
@@ -900,8 +931,7 @@ bool EditorApp::GizmoHandleInput() {
 	const int axIdx = m_gizmoAxis;
 	if (axIdx < 0 || axIdx > 6)
 		return true;
-	glm::vec3 ax = useLocal
-		? glm::vec3(global * glm::vec4(axesW[std::min(axIdx, 2)], 0.0f)) : axesW[std::min(axIdx, 2)];
+	glm::vec3 ax = axesG[std::min(axIdx, 2)];
 	if (glm::length(ax) < 1e-9f)
 		return true;
 	ax = glm::normalize(ax);
@@ -934,10 +964,11 @@ bool EditorApp::GizmoHandleInput() {
 					m_dragCurT = m_dragBaseT + toLocal(ax * d);
 				}
 				else {
-					// Plane handle: move on both tangent axes at once.
+					// Plane handle: move on both tangent axes at once
+					// (the space-selected frame).
 					const int n = axIdx - 3;
 					const int a = (n + 1) % 3, b = (n + 2) % 3;
-					const glm::vec3 axA = axesW[a], axB = axesW[b];
+					const glm::vec3 axA = axesG[a], axB = axesG[b];
 					const glm::vec3 dvec = cur - m_dragGrabPoint;
 					const glm::vec3 dW = axA * glm::dot(dvec, axA)
 						+ axB * glm::dot(dvec, axB);
@@ -954,62 +985,93 @@ bool EditorApp::GizmoHandleInput() {
 		}
 	}
 	else if (m_gizmoMode == GizmoMode::Rotate) {
-		if (axIdx == 6) {
-			// Arcball: map the mouse delta onto the unit sphere in
-			// camera space (around the projected gizmo center) and
-			// accumulate the rotation. The camera-space delta becomes
-			// a local-space delta through the parent world orientation.
-			const glm::mat4 invVP = glm::inverse(viewProj);
-			const glm::vec3 camRightW =
-				glm::normalize(glm::vec3(invVP[0]));
-			const glm::vec3 camUpW =
-				glm::normalize(glm::vec3(invVP[1]));
-			const glm::vec2 centerPx = ToScreen(O, viewProj, extent);
-			const float radiusPx = glm::max(glm::length(
-				ToScreen(O + camRightW * s, viewProj, extent) - centerPx),
-				4.0f);
-			auto toSphere = [&](float x, float y) {
-				glm::vec2 p((x - centerPx.x) / radiusPx,
-					-(y - centerPx.y) / radiusPx);
-				const float l2 = glm::dot(p, p);
-				if (l2 <= 1.0f)
-					return glm::vec3(p.x, p.y, std::sqrt(1.0f - l2));
-				const float l = std::sqrt(l2);
-				return glm::vec3(p.x / l, p.y / l, 0.0f); // rim clamp
-			};
-			const glm::vec3 v0 = toSphere(m_dragLastX, m_dragLastY);
-			const glm::vec3 v1 = toSphere(mx, my);
-			m_dragLastX = mx;
-			m_dragLastY = my;
-			const glm::vec3 cr = glm::cross(v0, v1);
-			if (glm::length(cr) > 1e-9f) {
-				const float ang = std::acos(std::clamp(
-					glm::dot(v0, v1), -1.0f, 1.0f));
-				const glm::vec3 axisW = glm::normalize(
-					camRightW * cr.x + camUpW * cr.y
-					+ glm::normalize(glm::cross(camRightW, camUpW)) * cr.z);
-				// Camera-space delta -> parent-local delta: the node's
-				// world orientation is qParentWorld * qLocal.
-				const int parent =
-					m_world->scene.hierarchy[m_selected].parent;
-				const glm::mat4& pwM = (parent >= 0)
-					? m_world->scene.globalTransform[parent]
-					: glm::mat4(1.0f);
-				const glm::quat qParentW = glm::quat_cast(glm::mat3(pwM));
-				const glm::quat dq = glm::angleAxis(ang, axisW);
-				m_dragArcQ = dq * m_dragArcQ;
-				const glm::quat qLocal =
-					glm::inverse(qParentW) * m_dragArcQ * qParentW
-					* glm::quat_cast(glm::mat3(m_dragBaseMat));
-				// Back to the editor's euler storage (same order
-				// fidelity as ReadLocalTRS: eulerAngles XYZ read,
-				// Rz*Ry*Rx write — see LocalMatrixFromTRS).
-				m_dragCurR = glm::degrees(glm::eulerAngles(qLocal));
-				m_dragCurT = m_dragBaseT;
-				m_dragCurS = m_dragBaseS;
-				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR,
-					m_dragCurS);
+		// Rotation about the PIVOT: when the pivot differs from the node
+		// origin, the translate compensates (t' = p + qTotal*(t - p)) so
+		// the node rotates AROUND the pivot point (Q quick menu).
+		auto applyPivotRotate = [&]() {
+			if (!m_dragHasPivot)
+				return;
+			// qTotal from the accumulated eulers (the Rz*Ry*Rx write
+			// convention of LocalMatrixFromTRS).
+			const glm::quat qT = glm::quat(glm::radians(m_dragCurR));
+			m_dragCurT = m_dragPivotL
+				+ qT * (m_dragBaseT - m_dragPivotL);
+		};
+		if (axIdx == 6 || !useLocal) {
+			// World-frame rotation (arcball or a WORLD-axis ring): the
+			// delta is a world-axis quaternion; the node's local =
+			// inv(qParentW) * dq * qParentW * qBase. Arcball maps the
+			// mouse onto the unit sphere in camera space + accumulates;
+			// a world ring accumulates the angle about the fixed axis.
+			glm::quat dq = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			if (axIdx == 6) {
+				// Arcball: camera-space sphere delta -> world-axis dq.
+				const glm::mat4 invVP = glm::inverse(viewProj);
+				const glm::vec3 camRightW =
+					glm::normalize(glm::vec3(invVP[0]));
+				const glm::vec3 camUpW =
+					glm::normalize(glm::vec3(invVP[1]));
+				const glm::vec2 centerPx = ToScreen(O, viewProj, extent);
+				const float radiusPx = glm::max(glm::length(
+					ToScreen(O + camRightW * s, viewProj, extent)
+					- centerPx), 4.0f);
+				auto toSphere = [&](float x, float y) {
+					glm::vec2 p((x - centerPx.x) / radiusPx,
+						-(y - centerPx.y) / radiusPx);
+					const float l2 = glm::dot(p, p);
+					if (l2 <= 1.0f)
+						return glm::vec3(p.x, p.y, std::sqrt(1.0f - l2));
+					const float l = std::sqrt(l2);
+					return glm::vec3(p.x / l, p.y / l, 0.0f); // rim clamp
+				};
+				const glm::vec3 v0 = toSphere(m_dragLastX, m_dragLastY);
+				const glm::vec3 v1 = toSphere(mx, my);
+				m_dragLastX = mx;
+				m_dragLastY = my;
+				const glm::vec3 cr = glm::cross(v0, v1);
+				if (glm::length(cr) > 1e-9f) {
+					const float ang = std::acos(std::clamp(
+						glm::dot(v0, v1), -1.0f, 1.0f));
+					const glm::vec3 axisW = glm::normalize(
+						camRightW * cr.x + camUpW * cr.y
+						+ glm::normalize(glm::cross(camRightW, camUpW))
+						* cr.z);
+					m_dragArcQ = glm::angleAxis(ang, axisW) * m_dragArcQ;
+				}
+				dq = m_dragArcQ;
 			}
+			else {
+				// World-axis ring: the accumulated angle about the
+				// (fixed) world axis.
+				const float dx = mx - m_dragLastX;
+				m_dragLastX = mx;
+				m_dragBaseAngle += dx * 0.008f; // radians per pixel
+				float angle = m_dragBaseAngle;
+				if (shiftHeld && m_snapRotateDeg > 0.0f)
+					angle = std::round(glm::degrees(angle)
+						/ m_snapRotateDeg) * m_snapRotateDeg;
+				angle = glm::radians(angle);
+				dq = glm::angleAxis(angle, axesW[axIdx]);
+			}
+			// Camera/world delta -> parent-local delta: the node's
+			// world orientation is qParentWorld * qLocal.
+			const int parent =
+				m_world->scene.hierarchy[m_selected].parent;
+			const glm::mat4& pwM = (parent >= 0)
+				? m_world->scene.globalTransform[parent]
+				: glm::mat4(1.0f);
+			const glm::quat qParentW = glm::quat_cast(glm::mat3(pwM));
+			const glm::quat qLocal =
+				glm::inverse(qParentW) * dq * qParentW
+				* glm::quat_cast(glm::mat3(m_dragBaseMat));
+			// Back to the editor's euler storage (same order
+			// fidelity as ReadLocalTRS: eulerAngles XYZ read,
+			// Rz*Ry*Rx write — see LocalMatrixFromTRS).
+			m_dragCurR = glm::degrees(glm::eulerAngles(qLocal));
+			m_dragCurT = m_dragBaseT;
+			m_dragCurS = m_dragBaseS;
+			applyPivotRotate();
+			WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 			return true;
 		}
 		const float dx = mx - m_dragLastX;
@@ -1021,6 +1083,8 @@ bool EditorApp::GizmoHandleInput() {
 			angleDeg = std::round(angleDeg / m_snapRotateDeg) * m_snapRotateDeg;
 		m_dragCurR = m_dragBaseR;
 		m_dragCurR[axIdx] += angleDeg;
+		m_dragCurT = m_dragBaseT;
+		applyPivotRotate();
 		WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 	}
 	else { // Scale
@@ -1071,11 +1135,7 @@ bool EditorApp::GizmoHandleInput() {
 					const int comps[2] = { (n + 1) % 3, (n + 2) % 3 };
 					for (int k = 0; k < 2; ++k) {
 						const int ci = comps[k];
-						glm::vec3 axK = glm::vec3(global
-							* glm::vec4(axesW[ci], 0.0f));
-						if (glm::length(axK) < 1e-6f)
-							continue;
-						axK = glm::normalize(axK);
+						const glm::vec3 axK = axesL[ci];
 						const float d0 = glm::dot(
 							m_dragGrabPoint - m_dragNodeOrigin, axK);
 						const float d1 = glm::dot(
@@ -1092,6 +1152,18 @@ bool EditorApp::GizmoHandleInput() {
 						ratio = std::clamp(ratio, 0.05f, 50.0f);
 						m_dragCurS[ci] = m_dragBaseS[ci] * ratio;
 					}
+				}
+				// Pivot compensation (Q quick menu): scaling acts
+				// ABOUT the pivot — t' = p + r*(t - p), r = per-axis
+				// total ratios (exact for uniform + any rotation, and
+				// for per-axis on unrotated nodes).
+				if (m_dragHasPivot) {
+					glm::vec3 r(1.0f);
+					for (int k = 0; k < 3; ++k)
+						r[k] = (std::fabs(m_dragBaseS[k]) > 1e-9f)
+							? m_dragCurS[k] / m_dragBaseS[k] : 1.0f;
+					m_dragCurT = m_dragPivotL
+						+ r * (m_dragBaseT - m_dragPivotL);
 				}
 				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 			}

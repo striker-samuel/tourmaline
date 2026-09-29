@@ -188,6 +188,34 @@ enum class GizmoMode : int {
 	Scale = 2,
 };
 
+// Transform gizmo ORIENTATION (Q quick menu): which axes the handles
+// align to. World (DEFAULT) = the scene axes; Local = the selected
+// node's world-rotated local axes. Scale is ALWAYS local (per-axis
+// world scaling of a rotated node has no TRS form).
+enum class GizmoSpace : int { World = 0, Local = 1 };
+inline const char* GizmoSpaceName(GizmoSpace s) {
+	switch (s) {
+	case GizmoSpace::World: return "World";
+	case GizmoSpace::Local: return "Local";
+	}
+	return "?";
+}
+
+// Transform gizmo PIVOT (Q quick menu): where the gizmo sits + the
+// rotate/scale math origin. Node (DEFAULT, as before) = the node
+// origin; BoundsCenter = the selection's subtree AABB center (rotate/
+// scale compensate the translate so they act ABOUT the pivot; exact
+// for uniform scale + any rotate, per-axis scale exact for unrotated
+// nodes). Translate is pivot-independent (delta math).
+enum class GizmoPivot : int { Node = 0, BoundsCenter = 1 };
+inline const char* GizmoPivotName(GizmoPivot p) {
+	switch (p) {
+	case GizmoPivot::Node: return "Node origin";
+	case GizmoPivot::BoundsCenter: return "Bounds center";
+	}
+	return "?";
+}
+
 // ---------------------------------------------------------------------------
 // Viewport selection mode: Mesh (object/node, legacy), Face (single
 // triangle highlight), Vertex (single vertex highlight). Highlight-only:
@@ -1673,6 +1701,15 @@ private:
 	// and View menu act on the ACTIVE one — UV views are panel types).
 	SecondView m_secondView = SecondView::Off;
 	GizmoMode m_gizmoMode = GizmoMode::Translate;
+	// Q quick menu options: handle orientation (World default) +
+	// pivot (Node origin default; BoundsCenter = the selection's
+	// subtree AABB center).
+	GizmoSpace m_gizmoSpace = GizmoSpace::World;
+	GizmoPivot m_gizmoPivot = GizmoPivot::Node;
+	// The gizmo's world pivot point per m_gizmoPivot (BoundsCenter
+	// falls back to the node origin when the selection has no mesh
+	// bounds). Valid while a selection exists.
+	glm::vec3 GizmoPivotPoint();
 	uint32_t m_selected = UINT32_MAX; // world node id (primary selection)
 	// Deleted nodes (Maya delete, EditVerb::Delete): links dropped from
 	// the live scene, ids kept (no renumbering). Drives the outliner
@@ -1828,6 +1865,12 @@ private:
 	                      // rotate arcball (free rotation inside the sphere)
 	glm::vec3 m_dragGrabPoint{ 0.0f };
 	glm::vec3 m_dragNodeOrigin{ 0.0f };
+	// Pivot (Q quick menu, GizmoPivot::BoundsCenter): the drag-start
+	// pivot in the NODE's local frame + whether it differs from the node
+	// origin (rotate/scale compensate the translate about it; zero +
+	// false = no compensation, the node-origin behavior).
+	glm::vec3 m_dragPivotL{ 0.0f };
+	bool m_dragHasPivot = false;
 	glm::mat4 m_dragBaseMat{ 1.0f }; // baseline local matrix (undo)
 	glm::vec3 m_dragBaseT{ 0.0f };
 	glm::vec3 m_dragBaseR{ 0.0f };

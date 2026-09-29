@@ -105,6 +105,57 @@ void EditorApp::DrawSelectionRadial() {
 			ImGui::SetTooltip("%s highlight; gizmo stays on the node.", hints[i]);
 	}
 	ImGui::Separator();
+	ImGui::TextDisabled("Gizmo space");
+	{
+		// Handle orientation (World default): World = scene axes, Local =
+		// the node's rotated axes (scale is always local — no TRS form).
+		const GizmoSpace spaces[2] = { GizmoSpace::World,
+			GizmoSpace::Local };
+		for (int i = 0; i < 2; ++i) {
+			char label[64];
+			std::snprintf(label, sizeof(label), "%s%s",
+				GizmoSpaceName(spaces[i]),
+				m_gizmoSpace == spaces[i] ? "  *" : "");
+			if (ImGui::Selectable(label,
+					m_gizmoSpace == spaces[i])) {
+				m_gizmoSpace = spaces[i];
+				Log(std::string("Gizmo space: ") + GizmoSpaceName(spaces[i])
+					+ (spaces[i] == GizmoSpace::Local
+						? " (node axes; scale stays local)" : ""));
+				ImGui::CloseCurrentPopup();
+			}
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Translate/rotate align to the selected "
+				"axes. Scale is always local (per-axis world scaling of "
+				"a rotated node has no TRS form).");
+	}
+	ImGui::Separator();
+	ImGui::TextDisabled("Gizmo pivot");
+	{
+		// Where the gizmo sits + the rotate/scale math origin (Node
+		// default = as before; BoundsCenter = the selection's subtree
+		// AABB center, rotate/scale act about it).
+		const GizmoPivot pivots[2] = { GizmoPivot::Node,
+			GizmoPivot::BoundsCenter };
+		for (int i = 0; i < 2; ++i) {
+			char label[64];
+			std::snprintf(label, sizeof(label), "%s%s",
+				GizmoPivotName(pivots[i]),
+				m_gizmoPivot == pivots[i] ? "  *" : "");
+			if (ImGui::Selectable(label, m_gizmoPivot == pivots[i])) {
+				m_gizmoPivot = pivots[i];
+				Log(std::string("Gizmo pivot: ") + GizmoPivotName(pivots[i]));
+				ImGui::CloseCurrentPopup();
+			}
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Bounds center: the gizmo sits at the "
+				"selection's subtree AABB center; rotate/scale act "
+				"ABOUT it (translate compensates). Falls back to the "
+				"node origin without mesh bounds.");
+	}
+	ImGui::Separator();
 	ImGui::TextDisabled("Q reopens  |  1/2/3 picks while open");
 	// Number shortcuts while the popup is open.
 	for (int i = 0; i < 3; ++i) {
