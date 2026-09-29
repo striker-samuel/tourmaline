@@ -364,9 +364,6 @@ void EditorApp::DrawMenuBar() {
 			ActiveViewMode() = ViewMode::Unlit;
 		if (ImGui::MenuItem("Lit", "F1", ActiveViewMode() == ViewMode::Lit))
 			ActiveViewMode() = ViewMode::Lit;
-		if (ImGui::MenuItem("Lit + shadows (legacy)", nullptr,
-			ActiveViewMode() == ViewMode::LitShadows))
-			ActiveViewMode() = ViewMode::LitShadows;
 		if (ImGui::MenuItem("Meshlets", "F3",
 			ActiveViewMode() == ViewMode::Meshlets)) {
 			ActiveViewMode() = ViewMode::Meshlets;

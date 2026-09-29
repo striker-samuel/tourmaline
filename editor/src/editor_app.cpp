@@ -259,7 +259,6 @@ void EditorApp::Shutdown() {
 	PollBakeProcess();
 	PollPublishProcess();
 	m_imgui.reset();
-	m_shadowAtlas.Destroy(*m_rendergraph);
 	m_depth = smvk::DepthTarget{};
 	m_frameUniforms = {};
 	m_insetFrameUniforms = {};
@@ -297,7 +296,6 @@ void EditorApp::Shutdown() {
 	m_litProgram = {};
 	m_bakedProgram = {};
 	m_wireProgram = {};
-	m_shadowProgram = {};
 	m_lineProgram = {};
 	Super::Shutdown();
 }
@@ -1077,8 +1075,9 @@ bool EditorApp::LaunchWysiwyg() {
 	// call can never wedge the shared context.
 	WaitForDeviceIdle();
 	StopWysiwyg(); // fresh instance per launch (world + extent change)
-	// Viewport-sized target: the compose pass stretches on rect drift,
-	// but matching the common case keeps the preview 1:1.
+	// Viewport-sized target: matches the common case 1:1; rect drift is
+	// handled by the DrawFrame extent watcher (stable drift relaunches
+	// at the new extent — see m_wysiwygResizeWant).
 	const ViewportRect& vp = m_viewports[0].rect;
 	uint32_t w = std::max(uint32_t(vp.w), 64u);
 	uint32_t h = std::max(uint32_t(vp.h), 64u);
@@ -1944,6 +1943,50 @@ void EditorApp::DrawFrame() {
 			m_worldRetire.reset();
 		}
 	}
+	// HOSTED EXTENT DRIFT (aspect fix): the hosted target extent is a
+	// launch-time snapshot — the compose blit stretches on rect drift
+	// (layout switch, window resize, splitter drag). "Fresh instance
+	// per launch (world + extent change)" is the designed answer, wired
+	// here: relaunch on a STABLE drift only (3 identical wanted extents)
+	// so transient resize flicker never churns and a live splitter drag
+	// stretches as today until it settles (then one relaunch, 1:1 again).
+	// Rects are last frame's here (RenderFrame recomputes them after);
+	// the debounce rides that 1-frame lag fine.
+	if (m_wysiwyg && m_world) {
+		const ViewportRect& vp0 = m_viewports[0].rect;
+		const smvk::Extent2D want{
+			std::max(uint32_t(vp0.w), 64u),
+			std::max(uint32_t(vp0.h), 64u) };
+		if (want.width == m_wysiwygExtent.width
+			&& want.height == m_wysiwygExtent.height) {
+			m_wysiwygResizeWant = { 0, 0 };
+			m_wysiwygResizeStable = 0;
+		}
+		else {
+			if (want.width == m_wysiwygResizeWant.width
+				&& want.height == m_wysiwygResizeWant.height)
+				++m_wysiwygResizeStable;
+			else {
+				m_wysiwygResizeWant = want;
+				m_wysiwygResizeStable = 1;
+			}
+			if (m_wysiwygResizeStable >= 3) {
+				const smvk::Extent2D old = m_wysiwygExtent;
+				// Relaunch (StopWysiwyg + fresh instance at the new
+				// extent — the world is borrowed again, edits keep
+				// flowing; refresh schedules reset to defaults).
+				if (LaunchWysiwyg())
+					Log("Live view: extent drift "
+						+ std::to_string(old.width) + "x"
+						+ std::to_string(old.height) + " -> "
+						+ std::to_string(want.width) + "x"
+						+ std::to_string(want.height)
+						+ " (relaunched; compose 1:1 again).");
+				m_wysiwygResizeWant = { 0, 0 };
+				m_wysiwygResizeStable = 0;
+			}
+		}
+	}
 	// HOSTED WYSIWYG drive: run the WorldRenderer frame between our own
 	// frames, wrapped in device-idle boundaries. Both renderers share
 	// ONE Vulkan context (volk globals forbid a second instance), so
@@ -1953,16 +1996,19 @@ void EditorApp::DrawFrame() {
 		const bool trace = std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr;
 		if (trace) { std::fprintf(stderr, "[DRIVE] idle-pre\n"); std::fflush(stderr); }
 		WaitForDeviceIdle();
-		// CAMERA DRIVE: the editor's ACTIVE camera drives the hosted
-		// live view (the editor owns the input; the hosted renderer's
-		// own control is disabled). Ortho viewports approximate with a
-		// fov matching their half-height at the orbit distance (the
-		// pipeline is perspective reversed-Z; a true ortho pass would
-		// be a feature). Locked look-through (bound scene cameras)
-		// stays an editor-pass feature for now.
+		// CAMERA DRIVE: viewport 0's camera drives the hosted MAIN view —
+		// the compose blits it into panel 0, so the panel's camera chip and
+		// its content must agree (the ACTIVE camera drove it before:
+		// hovering any other panel desynced panel 0 from its own camera
+		// while that camera rendered nowhere). Each additional viewport
+		// keeps driving its OWN hosted view below (viewport i+1 -> view i)
+		// with its own camera. Ortho viewports approximate with a fov
+		// matching their half-height at the orbit distance (the pipeline
+		// is perspective reversed-Z; a true ortho pass would be a
+		// feature). Locked look-through (bound scene cameras) stays an
+		// editor-pass feature for now.
 		{
-			const EditorCam& cam =
-				m_editorCams[m_viewports[m_activeVp].camIdx];
+			const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
 			float fov = cam.fovYDeg;
 			if (cam.type == EditorCam::Type::Orthographic)
 				fov = glm::degrees(2.0f
@@ -2018,8 +2064,6 @@ void EditorApp::DrawFrame() {
 			switch (ActiveViewMode()) {
 			case ViewMode::Unlit: dv = app::DebugView::Unlit; break;
 			case ViewMode::Lit:
-			case ViewMode::LitShadows:
-				dv = app::DebugView::Lit; break;
 			case ViewMode::Uv0:
 			case ViewMode::FlatUv0: dv = app::DebugView::Uv0; break;
 			case ViewMode::Uv1:

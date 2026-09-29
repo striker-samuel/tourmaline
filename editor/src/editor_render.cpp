@@ -1,11 +1,13 @@
-// EditorApp viewport renderer: Unlit / Lit / Lit+Shadows forward passes.
+// EditorApp viewport renderer: Unlit / Lit forward passes.
 //
 // Reuses App's compiled shaders (default.vert + default_unlit/default_lit/
 // default_wire + shadow.vert/masked) and App's ABI-checked FrameUniforms +
-// PushConstants. Depth is reversed-Z (clear 0, GreaterEqual) like App; the
-// shadow atlas is normal-Z (clear 1, LessEqual). Output goes straight to the
+// PushConstants. Depth is reversed-Z (clear 0, GreaterEqual) like App. Output
+// goes straight to the
 // swapchain (LDR preview): sun/sky intensities default to LDR-friendly
-// values, exposure stays 1.0.
+// values, exposure stays 1.0. (The legacy Lit+Shadows editor mode + its
+// single-cascade shadow atlas are gone — the hosted live view carries
+// shadows with the full App pipeline.)
 
 #include "editor_app.h"
 
@@ -28,8 +30,6 @@ namespace editor {
 namespace {
 constexpr uint32_t kMaxMaterials = 4096;
 constexpr uint32_t kMaxLights = 64;
-constexpr uint32_t kShadowRes = 2048;
-constexpr float kLambda = 0.8f;
 
 std::vector<char> LoadSpv(const char* path) {
 	return readFile(path);
@@ -38,8 +38,7 @@ std::vector<char> LoadSpv(const char* path) {
 
 bool EditorApp::EnsureShaders() {
 	if (m_litProgram.shaderCount == 2 && m_unlitProgram.shaderCount == 2 &&
-		m_wireProgram.shaderCount == 2 && m_lineProgram.shaderCount == 2 &&
-		m_shadowProgram.shaderCount >= 1)
+		m_wireProgram.shaderCount == 2 && m_lineProgram.shaderCount == 2)
 		return true;
 	try {
 		if (m_vsModule.empty()) {
@@ -228,28 +227,12 @@ bool EditorApp::EnsureDepth(smvk::Extent2D extent) {
 	return m_depth.Ensure(*m_context, *m_rendergraph, extent, desc);
 }
 
-bool EditorApp::EnsureShadowAtlas() {
-	smvk::CascadedShadowMapDesc desc{};
-	desc.cascadeCount = 1; // simple shadows: single cascade
-	desc.cascadeResolution = kShadowRes;
-	desc.format = smvk::Format::D32_Float;
-	desc.lambda = kLambda;
-	desc.name = "editorShadowAtlas";
-	if (!m_shadowAtlas.Ensure(*m_context, *m_rendergraph, desc))
-		return false;
-	m_shadowProgram = m_shadowAtlas.program;
-	return m_shadowAtlas.ShadersValid();
-}
-
 void EditorApp::UpdateFrameData(uint32_t flight) {
 	SetupDefaultCameras();
-	const bool wantShadows = (ActiveViewMode() == ViewMode::LitShadows);
-	if (wantShadows)
-		EnsureShadowAtlas();
 
 	// One frame slice per (flight, viewport): each viewport renders
 	// with ITS camera (aspect from its rect). The ACTIVE viewport also
-	// drives the light buffer + shadow cascade.
+	// drives the light buffer.
 	const uint64_t baseAddr =
 		m_context->GetBufferDeviceAddress(m_frameUniforms);
 	const size_t sliceStride = sizeof(app::FrameUniforms);
@@ -322,17 +305,9 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 			smvk::AccessFlags::ShaderRead, 0,
 			(size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride);
 	}
-	// Legacy single-frame mirrors (shadow pass, insets): the ACTIVE vp.
+	// Legacy frame mirrors (gizmo/pick math): the ACTIVE vp.
 	m_lastFrame = m_viewports[m_activeVp].frame;
 	m_lastViewProj = m_viewports[m_activeVp].viewProj;
-	m_lastFrameAddrs = FrameAddrs{
-		.frame = m_viewports[m_activeVp].frameAddr,
-		.lights = m_context->GetBufferDeviceAddress(m_lightsBuf) +
-			flight * sizeof(smvk::Light) * kMaxLights,
-		.materials = m_context->GetBufferDeviceAddress(m_materialsBuf) +
-			flight * sizeof(smvk::MaterialValues) * kMaxMaterials,
-		.cascades = m_context->GetBufferDeviceAddress(m_cascadeBuf) +
-			flight * sizeof(smvk::GpuDirectionalLightDescription) };
 
 	// Sun light (lights[0], same convention as App) from the CURRENT env.
 	const EditorEnv& envSet = CurrentEnv();
@@ -350,26 +325,11 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f : envSet.sunIntensity;
 		l.shadow_map_index = -1;
 	}
-	int32_t shadowBindless = -1;
-	if (wantShadows && m_shadowAtlas.Valid())
-		shadowBindless = int32_t(m_context->GetBindlessIndex(m_shadowAtlas.bindless));
-	lights[0].shadow_map_index = shadowBindless;
 
-	// Cascade descriptor (single cascade over the ACTIVE view range).
+	// Cascade descriptor: no cascades in the editor's own pass (the
+	// hosted live view carries shadows with the full App pipeline).
+	// Zeroed, uploaded anyway so the shaders never read a null BDA.
 	smvk::GpuDirectionalLightDescription dir{};
-	if (wantShadows && m_shadowAtlas.Valid()) {
-		const EditorCam& cam = ActiveCam();
-		const auto splits = smvk::ComputeCascadeSplits(
-			cam.nearClip, std::min(cam.farClip, 500.0f), kLambda, 1);
-		dir = m_shadowAtlas.BuildDirectionalLight(
-			glm::vec3(lights[0].direction[0], lights[0].direction[1],
-				lights[0].direction[2]),
-			lights[0].color, lights[0].intensity,
-			shadowBindless, m_lastFrame.invView, m_lastFrame.invProj,
-			splits, 10.0f);
-		// Keep the legacy single-VP slot in sync (shadow.vert fallback).
-		std::memcpy(lights[0].lightVP, dir.lightVP, sizeof(lights[0].lightVP));
-	}
 	m_context->UploadDataToBuffer(m_lightsBuf, lights, sizeof(lights),
 		smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
 		smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(lights));
@@ -583,6 +543,14 @@ void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
 	const float mx = float(m_input.getMouseX());
 	const float my = float(m_input.getMouseY());
 	const int count = ViewportCount();
+	// Layout shrank (quad -> single via the View menu; the modal toggle
+	// resets the active index, the menu path does not): a stale active
+	// index pointed at an INVISIBLE viewport — orbit input, the F-key
+	// modes and the World panel's camera section edited a camera no
+	// panel shows (chip/content desync), and m_vp picked its stale
+	// rect. Clamp to the visible range.
+	if (m_activeVp >= count)
+		m_activeVp = 0;
 	for (int i = 0; i < kMaxViewports; ++i)
 		m_viewports[i].hovered = false;
 	for (int i = 0; i < count; ++i) {
@@ -745,42 +713,6 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 
 bool EditorApp::HasDrawItems() const {
 	return m_world && !m_world->drawItems.empty();
-}
-
-void EditorApp::RecordShadowPass(uint32_t cascadeIndex) {
-	if (!m_shadowAtlas.Valid() || m_shadowProgram.shaderCount == 0)
-		return;
-	// shadow.vert resolves its VP from pc.cascadeBuffer/cascadeIndex (or
-	// the lights[0].lightVP fallback), so the pass push carries the real
-	// buffer addresses — never null BDAs.
-	smvk::RenderPass& pass = m_shadowAtlas.AddCascadePass(
-		*m_rendergraph, cascadeIndex, "EditorShadow");
-	pass.SetRecordingFunc([this, cascadeIndex](smvk::CommandBuffer& cmd) {
-		// BindRenderPipeline re-binds the static monoblock internally for
-		// StaticVertexFormat (which does not exist on an empty world), so
-		// empty passes bind Empty (no draws either way).
-		const bool hasDraws = HasDrawItems();
-		if (!hasDraws)
-			return;
-		cmd.BindStaticVertexFmt();
-		cmd.BindRenderPipeline(m_shadowProgram,
-			smvk::VertexFormat::StaticVertexFormat,
-			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::LessEqual,
-				.writeEnable = true, .depthTestEnable = true },
-			smvk::StencilSettings{}, smvk::BlendSettings{},
-			smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::Back });
-		app::PushConstants pc{};
-		pc.frameUniforms = m_lastFrameAddrs.frame;
-		pc.lightsBuffer = m_lastFrameAddrs.lights;
-		pc.materialsBuffer = m_lastFrameAddrs.materials;
-		pc.cascadeBuffer = m_lastFrameAddrs.cascades;
-		pc.numCascades = 1;
-		pc.cascadeIndex = cascadeIndex;
-		pc.renderViewIndex = UINT32_MAX;
-		pc.spotIndex = UINT32_MAX;
-		cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-		DrawWorldNodes(cmd, pc, false /*opaque*/, false, true);
-		});
 }
 
 smvk::ShaderProgram& EditorApp::MainProgram(ViewMode m) {
@@ -1204,13 +1136,8 @@ smvk::ShaderProgram& EditorApp::InsetProgram() {
 void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	uint32_t flight, bool selectedWireOverlay) {
 	const ViewportRect& vp = m_viewports[vpIdx].rect;
-	// View mode is PER VIEWPORT: UV views are panel types too. The
-	// single shadow cascade is shared: only the ACTIVE viewport's
-	// LitShadows mode drives it.
+	// View mode is PER VIEWPORT (UV views are panel types too).
 	const ViewMode mode = m_viewports[vpIdx].viewMode;
-	const bool shadows =
-		(m_viewports[m_activeVp].viewMode == ViewMode::LitShadows) &&
-		m_shadowAtlas.Valid();
 	smvk::ShaderProgram& prog = MainProgram(mode);
 	// Meshlet view has its own program + draw path (no material legs).
 	const bool meshletDbg =
@@ -1240,7 +1167,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	pc.cascadeBuffer = cascadeAddr;
 	pc.materialId = 0;
 	pc.comparisonSamplerId = 1;
-	pc.numCascades = shadows ? 1 : 0;
+	pc.numCascades = 0;
 	pc.cascadeIndex = 0;
 	pc.fpLightCount = 0;
 	pc.spotShadowMapIndex = UINT32_MAX;
@@ -1874,8 +1801,6 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	// underneath — outliner/inspector/commands keep working, and the
 	// gizmo overlay still draws on top so manipulation stays visible.
 	const bool wysiwygPreview = m_wysiwyg != nullptr;
-	if (!wysiwygPreview && ActiveViewMode() == ViewMode::LitShadows)
-		RecordShadowPass(0);
 	// Window background: the viewport passes cover only their rects, so
 	// clear the whole window first (the dark chrome color shows through
 	// the gaps between the ImGui panels).

@@ -321,9 +321,6 @@ void EditorApp::ModalModeProfile() { SetMode(EditorMode::Profile); }
 
 void EditorApp::ModalViewLit() { ActiveViewMode() = ViewMode::Lit; }
 void EditorApp::ModalViewUnlit() { ActiveViewMode() = ViewMode::Unlit; }
-void EditorApp::ModalViewLitShadows() {
-	ActiveViewMode() = ViewMode::LitShadows;
-}
 
 void EditorApp::ModalVpLayoutToggle() {
 	m_vpLayout = (m_vpLayout == 0) ? 1 : 0;

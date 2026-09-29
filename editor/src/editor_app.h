@@ -2,8 +2,8 @@
 // GltfEditor: inspect + cook glTF scenes with a .tour overlay.
 //
 // Loads a glTF straight into a GPU World (same importer as App/PakCooker),
-// shows it in a minimal forward viewport with three shading modes
-// (Unlit / Lit / Lit+Shadows), and lets the user:
+// shows it in a minimal forward viewport with two shading modes
+// (Unlit / Lit — the hosted live view carries shadows when live), and lets the user:
 //   - pick nodes in the 3D view (CPU raycast) or the outliner,
 //   - move/rotate/scale them with a selection gizmo (highlight drawn as a
 //     wireframe overlay + AABB lines),
@@ -130,7 +130,6 @@ inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 enum class ViewMode : int {
 	Unlit = 0,      // default_unlit: baseColor + emissive, no lighting (F2)
 	Lit = 1,        // default_lit: full PBR pipeline (F1)
-	LitShadows = 2, // legacy editor mode (menu-only; hosted maps it to Lit)
 	Uv0 = 3,        // default_uv0_debug: base UVs (F9)
 	Uv1 = 4,        // default_uv1_debug: lightmap UVs (F10)
 	VertexColors = 5, // default_vertexcolor_debug: vertex colors (F6)
@@ -146,7 +145,6 @@ inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
 	case ViewMode::Unlit: return "Unlit (diffuse)";
 	case ViewMode::Lit: return "Lit (no shadows)";
-	case ViewMode::LitShadows: return "Lit + shadows";
 	case ViewMode::Uv0: return "UV0";
 	case ViewMode::Uv1: return "UV1 (lightmap)";
 	case ViewMode::VertexColors: return "Vertex colors";
@@ -381,8 +379,6 @@ private:
 	smvk::ShaderProgram& InsetProgram(); // program for m_secondView (Lit fallback)
 	bool EnsureBuffers(uint32_t flightCount);
 	bool EnsureDepth(smvk::Extent2D extent);
-	bool EnsureShadowAtlas();
-	void RecordShadowPass(uint32_t cascadeIndex); // active viewport's frame
 	// Per-viewport scene pass: offset/extent from m_viewports[vpIdx].rect,
 	// frame slice + push constants from that viewport's camera.
 	void RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
@@ -459,7 +455,7 @@ private:
 	// gizmo, shadows, framing, F-key view switches).
 	struct EditorViewport {
 		int camIdx = 0;        // index into m_editorCams
-		ViewMode viewMode = ViewMode::LitShadows; // this panel's view
+		ViewMode viewMode = ViewMode::Lit; // this panel's view
 		ViewportRect rect;     // computed every frame
 		bool hovered = false;  // mouse inside this viewport
 		app::FrameUniforms frame{}; // CPU copy (picking/gizmo math)
@@ -625,7 +621,6 @@ private:
 	void ModalModeProfile();
 	void ModalViewLit();
 	void ModalViewUnlit();
-	void ModalViewLitShadows();
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
 	void ModalUndo();
@@ -1420,8 +1415,19 @@ private:
 	// on failure. Frame-boundary callers only (DrawFrame consumption).
 	bool LaunchWysiwyg();
 	void StopWysiwyg();
-	// Hosted target extent (launch-time snapshot; the dump reads it).
+	// Hosted target extent (current launch snapshot; the dump reads it).
 	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
+	// EXTENT DRIFT watch (aspect fix): the hosted target is fixed per
+	// launch ("fresh instance per launch (world + extent change)") and
+	// the compose blit STRETCHES when viewport 0's rect drifts (layout
+	// switch, window resize, splitter drag). The watcher (DrawFrame,
+	// before the hosted drive) counts STABLE wanted extents and
+	// relaunches the live view at the new extent once settled — never
+	// per-frame during a live drag (stretched as today until it
+	// settles). A relaunch resets the per-view tic/toc refresh combos
+	// to defaults (re-set on the viewport chips).
+	smvk::Extent2D m_wysiwygResizeWant{ 0, 0 };
+	uint32_t m_wysiwygResizeStable = 0; // consecutive frames at ResizeWant
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
 	// Draws one hosted source image (view 0 = the hosted target, views
 	// 1+ = the multiview images; sourceBindless picks which) into one
@@ -1719,18 +1725,12 @@ private:
 	smvk::ShaderProgram m_flatUv1Program{}; // Flat UV: uvflat1.vert + uvflat1.frag
 	smvk::ShaderProgram m_flatUvCoordProgram{}; // export only: uvflat1.vert + uvflat1uv.frag
 	smvk::ShaderProgram m_wireProgram{}; // selected highlight overlay
-	smvk::ShaderProgram m_shadowProgram{}; // depth-only (atlas-owned default)
 	smvk::ShaderProgram m_lineProgram{}; // gizmo/AABB lines
-	smvk::CascadedShadowAtlas m_shadowAtlas{};
 	smvk::DepthTarget m_depth{};
 	std::vector<smvk::LogicalImageViewHandle> m_swapViews;
 	uint32_t m_flightCount = 0;
 	app::FrameUniforms m_lastFrame{}; // CPU copy for gizmo/pick math
 	glm::mat4 m_lastViewProj{ 1.0f };
-	// GPU addresses of the current flight's uniform slices (set by
-	// UpdateFrameData, consumed by the shadow + main record funcs).
-	struct FrameAddrs { uint64_t frame = 0, lights = 0, materials = 0, cascades = 0; };
-	FrameAddrs m_lastFrameAddrs{};
 
 	// per-frame upload caches
 	uint64_t m_frameCounter = 0;
