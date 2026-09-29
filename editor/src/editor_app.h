@@ -143,8 +143,8 @@ enum class ViewMode : int {
 };
 inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
-	case ViewMode::Unlit: return "Unlit (diffuse)";
-	case ViewMode::Lit: return "Lit (no shadows)";
+	case ViewMode::Unlit: return "Unlit";
+	case ViewMode::Lit: return "Lit";
 	case ViewMode::Uv0: return "UV0";
 	case ViewMode::Uv1: return "UV1 (lightmap)";
 	case ViewMode::VertexColors: return "Vertex colors";

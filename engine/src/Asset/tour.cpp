@@ -157,6 +157,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << "setVisibility -n " << c.node << " -type \"bool\" -v "
 			<< FlagVal(c.flag);
 		break;
+	case Verb::SetStatic:
+		f << "setStatic -n " << c.node << " -type \"bool\" -v "
+			<< FlagVal(c.flag);
+		break;
 	case Verb::Delete:
 		f << "delete";
 		if (!c.uuid.empty())
@@ -1365,6 +1369,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
+		else if (effVerb == "setStatic" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetStatic;
+			c.node = fl.n;
+			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
 		else if (effVerb == "setVisibility" && fl.hasN && fl.hasV) {
 			bool b = false;
 			if (!ParseFlagWord(fl.v, b)) {
@@ -2299,18 +2308,35 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.noLightmap[target] = c.flag ? 1 : 0;
 			break;
 		}
-		case Verb::SetDitherCloseup: {
-			uint32_t target = 0;
-			if (!resolveNode(c.node, c, target)) {
-				if (!failCmd(c))
-					return false;
-				break;
-			}
-			if (scene.ditherCloseup.size() != scene.hierarchy.size())
-				scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
-			scene.ditherCloseup[target] = c.flag ? 1 : 0;
+	case Verb::SetDitherCloseup: {
+		uint32_t target = 0;
+		if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
 			break;
 		}
+		if (scene.ditherCloseup.size() != scene.hierarchy.size())
+			scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+		scene.ditherCloseup[target] = c.flag ? 1 : 0;
+		break;
+	}
+	case Verb::SetStatic: {
+		// Static-subtree ROOT mark (Scene::staticRoot): the subtree's
+		// transforms freeze after the initial build (skip per-frame
+		// updates + BVH rebuilds, mega-mesh collapse eligibility).
+		// MarkSubtreeStatic/Clear rebuild the staticNode cache.
+		uint32_t target = 0;
+		if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		if (c.flag)
+			MarkSubtreeStatic(scene, int(target));
+		else
+			ClearSubtreeStatic(scene, int(target));
+		break;
+	}
 		case Verb::SetVisibility: {
 			uint32_t target = 0;
 			if (!resolveNode(c.node, c, target)) {

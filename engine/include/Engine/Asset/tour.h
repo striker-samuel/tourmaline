@@ -146,6 +146,9 @@ enum class Verb : uint8_t {
 	SetNoLightmap,  // flag
 	SetDitherCloseup, // flag (subtree dither on camera closeup)
 	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
+	SetStatic,      // flag: static-subtree ROOT mark (Scene::staticRoot —
+	                // frozen transforms after the initial build, mega-mesh
+	                // collapse eligibility; see Scene/static_merge.h)
 	Parent,         // node2 = new parent (cluster node id)
 	CreateLight,    // node = PARENT cluster id; text = light name;
 	                // vec = local position; vec4 = (typeFloat [1=point,

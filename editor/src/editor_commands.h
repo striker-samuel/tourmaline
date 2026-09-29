@@ -27,6 +27,8 @@ enum class EditVerb : uint8_t {
 	SetNoLightmap,
 	SetDitherCloseup, // subtree dither on camera closeup
 	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
+	SetStatic,      // static-subtree ROOT mark (frozen transforms,
+	                // mega-mesh collapse eligibility; whole tree)
 	Parent, // world parent id
  	CreateLight, // append a light node (world); params below. c.node =
 	             // CREATED world id once forward-executed (UINT32_MAX

@@ -369,10 +369,11 @@ void EditorApp::DrawMenuBar() {
 	if (ImGui::BeginMenu("View")) {
 		ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
 			"F9..F11, P) â€” same view, same key, live view.");
-		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
-			ActiveViewMode() == ViewMode::Unlit))
+		if (ImGui::MenuItem("Unlit", "F2",
+				ActiveViewMode() == ViewMode::Unlit))
 			ActiveViewMode() = ViewMode::Unlit;
-		if (ImGui::MenuItem("Lit", "F1", ActiveViewMode() == ViewMode::Lit))
+		if (ImGui::MenuItem("Lit (shadows + full pipeline)", "F1",
+				ActiveViewMode() == ViewMode::Lit))
 			ActiveViewMode() = ViewMode::Lit;
 		if (ImGui::MenuItem("Meshlets", "F3",
 			ActiveViewMode() == ViewMode::Meshlets)) {
@@ -1432,7 +1433,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[300];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s",
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s",
 		name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		scene.cvolForNode.contains(node) ? " [cvol]" : "",
@@ -1440,6 +1441,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		scene.cameraForNode.contains(node) ? " [camera]" : "",
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
+		IsStaticSubtreeRoot(scene, int(node)) ? " [static]" : "",
 		IsEnvNode(node) ? " [env]" : "",
 		IsRefPlaceholder(node) ? " [ref]" : "",
 		!IsVisibleNode(scene, int(node))
@@ -2687,6 +2689,28 @@ void EditorApp::DrawInspector() {
 	DrawCubemapSection(node);
 	// Authored camera on this node (lens inspector).
 	DrawCamSection(node);
+
+	// Static subtree (transform freeze): the root mark affects the WHOLE
+	// tree (Scene::staticRoot) — frozen transforms after the initial
+	// build (skip per-frame updates + BVH rebuilds) + mega-mesh collapse
+	// eligibility at cook.
+	{
+		ImGui::Separator();
+		const bool inherited = IsStaticNode(scene, int(node));
+		bool self = node < scene.staticRoot.size()
+			&& scene.staticRoot[node] != 0;
+		if (ImGui::Checkbox("Static (whole subtree)", &self)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetStatic;
+			c.node = node;
+			c.afterFlag = self;
+			c.beforeFlag = !self;
+			Do(c);
+		}
+		ImGui::TextDisabled("effective: %s (transforms freeze after the "
+			"build; cook may collapse the subtree into one block)",
+			inherited ? "static" : "dynamic");
+	}
 
 	// Lightmap participation.
 	{

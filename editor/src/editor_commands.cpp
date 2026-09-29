@@ -278,6 +278,17 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ClearHidden(scene, int(c.node));
 		break;
 	}
+	case EditVerb::SetStatic: {
+		// Whole-tree static mark (Scene::staticRoot): frozen transforms
+		// after the initial build + mega-mesh collapse eligibility.
+		// Mark/Clear rebuild the derived staticNode cache.
+		const bool v = forward ? c.afterFlag : c.beforeFlag;
+		if (v)
+			MarkSubtreeStatic(scene, int(c.node));
+		else
+			ClearSubtreeStatic(scene, int(c.node));
+		break;
+	}
 	case EditVerb::Parent: {
 		ReparentNode(c.node, forward ? c.node2 : c.beforeParent);
 		break;
@@ -2038,9 +2049,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::Scale:
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
-		case EditVerb::SetNoLightmap:
-		case EditVerb::SetDitherCloseup:
-		case EditVerb::AssignMaterial:
+	case EditVerb::SetNoLightmap:
+	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetStatic:
+	case EditVerb::AssignMaterial:
 			lastByNode[{ int(c.verb), c.node }] = i;
 			break;
 		case EditVerb::SetMatAttr:
@@ -2074,9 +2086,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::Scale:
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
-		case EditVerb::SetNoLightmap:
-		case EditVerb::SetDitherCloseup:
-		case EditVerb::AssignMaterial:
+	case EditVerb::SetNoLightmap:
+	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetStatic:
+	case EditVerb::AssignMaterial:
 			superseded = lastByNode[{ int(c.verb), c.node }] != i;
 			break;
 		case EditVerb::SetMatAttr:
@@ -2144,9 +2157,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::Scale:
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
-		case EditVerb::SetNoLightmap:
-		case EditVerb::SetDitherCloseup:
-		case EditVerb::AssignMaterial:
+	case EditVerb::SetNoLightmap:
+	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetStatic:
+	case EditVerb::AssignMaterial:
 			lastByNode[{ int(c.verb), c.node }] = i;
 			break;
 		case EditVerb::SetMatAttr:
@@ -2181,9 +2195,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::Scale:
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
-		case EditVerb::SetNoLightmap:
-		case EditVerb::SetDitherCloseup:
-		case EditVerb::AssignMaterial:
+	case EditVerb::SetNoLightmap:
+	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetStatic:
+	case EditVerb::AssignMaterial:
 			superseded = lastByNode[{ int(c.verb), c.node }] != i;
 			break;
 		case EditVerb::SetMatAttr:
@@ -2238,6 +2253,7 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetMatAttr: return "material edit";
 	case editor::EditVerb::SetNoLightmap: return "lightmap flag";
 	case editor::EditVerb::SetDitherCloseup: return "dither flag";
+	case editor::EditVerb::SetStatic: return "static mark";
 	case editor::EditVerb::SetVisibility: return "visibility";
 	case editor::EditVerb::Parent: return "reparent";
 	case editor::EditVerb::CreateLight: return "create light";
@@ -2458,6 +2474,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetDitherCloseup;
+		out.flag = c.afterFlag;
+		return true;
+	case EditVerb::SetStatic:
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::SetStatic;
 		out.flag = c.afterFlag;
 		return true;
 	case EditVerb::SetVisibility:
@@ -3367,6 +3389,14 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterFlag = tc.flag;
 		out.beforeFlag = node < app.m_world->scene.hidden.size() &&
 			app.m_world->scene.hidden[node] != 0;
+		return true;
+	case smvk::tour::Verb::SetStatic:
+		if (!needNode())
+			return false;
+		out.verb = EditVerb::SetStatic;
+		out.afterFlag = tc.flag;
+		out.beforeFlag = node < app.m_world->scene.staticRoot.size() &&
+			app.m_world->scene.staticRoot[node] != 0;
 		return true;
 	case smvk::tour::Verb::Parent: {
 		if (!needNode())
