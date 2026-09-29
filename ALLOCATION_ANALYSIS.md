@@ -1,0 +1,363 @@
+# Allocation Analysis & Linear Allocator Migration Plan
+
+## Executive Summary
+
+This document tracks all allocations in the vulkantoy codebase, classifies them by lifetime, and proposes a phased migration to linear allocators with reserved virtual memory and static allocation at startup.
+
+---
+
+## 1. Current Allocation Landscape
+
+### 1.1 GPU Memory (VMA - Vulkan Memory Allocator)
+**Location**: `engine/src/Vulkan/impl.cpp`, `engine/src/Renderer/mesh.cpp`
+
+| Allocation Type | Count | Size | Lifetime | Current Strategy |
+|-----------------|-------|------|----------|------------------|
+| Vertex/Index Static Heaps | 2 | 512 MB each | Process | VmaVirtualBlock (linear) |
+| Staging Rings (per-thread) | 16 | 32 MB each | Frame/Process | VmaCreateBuffer (HOST_VISIBLE) |
+| Bulk Upload Ring | 1 | 512 MB | Load-time | VmaCreateBuffer (HOST_VISIBLE) |
+| Readback Staging | 1-2 | Grows on demand | Frame | VmaCreateBuffer (HOST_VISIBLE) |
+| Async Readback Staging | 1 | Grows on demand | Frame | VmaCreateBuffer (HOST_VISIBLE) |
+| Images/Textures | ~1000s | Variable | Resource | VmaCreateImage (DEVICE_LOCAL) |
+| Buffers (UBO/SSBO/Vertex) | ~1000s | Variable | Resource | VmaCreateBuffer |
+| Descriptor Pools | ~10s | Small | Frame/Process | vkCreateDescriptorPool |
+| Command Buffers | 16/pool | Small | Frame | vkAllocateCommandBuffers |
+
+### 1.2 CPU Memory (Host Allocations)
+
+| Category | Examples | Current Allocator | Lifetime |
+|----------|----------|-------------------|----------|
+| **Arena Allocators** | AppArena (1 MB blocks), FrameArena (1 MB blocks) | Custom bump allocator | Process / Frame |
+| **Sharded Pools** | Images, Textures, Buffers, ImageViews, Samplers, Bindless, DescriptorPools, ShaderModules | Lock-free sharded pool (16 shards × 512) | Process |
+| **STL Containers** | std::vector, std::string, std::unordered_map, std::unique_ptr | std::allocator (malloc/free) | Variable |
+| **Raw new/delete** | Submitter×3, CommandBufferPool×N, VulkanCore, PipelineCache, Swapchain, RenderGraph, World, TextureStreamer, TextureFeedback, ImGuiOverlay | malloc/free | Process |
+| **VMA Virtual Blocks** | Static vertex/index heaps | VMA internal | Process |
+
+---
+
+## 2. Lifetime Classification
+
+### 2.1 Process Lifetime (Static/Startup)
+- **VulkanCore**, **VulkanResourceManager**, **Submitter** (graphics/transfer/compute)
+- **Static Vertex/Index Heaps** (512 MB each via VmaVirtualBlock)
+- **SamplerCache**, **PipelineCache**
+- **AppArena** (URI/string storage)
+- **Global descriptors**, **bindless layout**
+- **ShardedPool metadata** (fixed 8192 entries × 16 shards)
+
+### 2.2 Frame Lifetime (Per-Frame Reset)
+- **FrameArena** (scratch strings, URI normalization)
+- **Per-frame command buffers** (recycled via CommandBufferPool)
+- **Per-frame descriptor sets** (MAX_FRAMES_IN_FLIGHT = 3)
+- **Engine globals buffer** (time, deltaTime, frameIndex)
+- **Texture feedback buffers** (one per flight)
+- **Staging ring offsets** (reset per frame via wrap)
+
+### 2.3 Resource Lifetime (Tied to Asset/Scene)
+- **Images/Textures** (loaded from pak, freed on unload)
+- **Buffers** (vertex, index, uniform, storage)
+- **Shader modules** (loaded once, kept for reflection)
+- **Bindless images** (registered once per texture)
+- **Descriptor pools** (created per material/pass)
+
+### 2.4 Transient/Scratch (Sub-Frame)
+- **UploadStreamer staging** (per-thread rings, bulk ring)
+- **Readback staging** (grow-on-demand)
+- **RenderGraph pass temporaries** (barriers, usage vectors)
+- **ThreadPool task payloads**
+- **String formatting** (FrameArena)
+
+---
+
+## 3. Migration Strategy
+
+### Phase 0: Infrastructure (Week 1)
+
+#### 3.1 Linear Allocator Core (`engine/src/Memory/linear_allocator.h/cpp`)
+```cpp
+// Reserve virtual address space at startup, commit on demand
+class LinearAllocator {
+    void* base_;           // Reserved base address (VirtualAlloc/VirtualAlloc2)
+    size_t reserved_;      // Total reserved (e.g., 4 GB)
+    size_t committed_;     // Currently committed
+    size_t offset_;        // Current bump pointer
+    size_t alignment_;     // Default alignment (64 KB for large pages)
+
+    // Allocate with alignment, commit pages as needed
+    void* allocate(size_t size, size_t align = 64_KB);
+    // Reset to mark (for frame/scope allocators)
+    void reset(size_t mark);
+    // Full reset (process lifetime allocators never call this)
+    void reset_all() { offset_ = 0; }
+};
+
+// Global instances (constructed before main):
+LinearAllocator g_processAllocator(4_GB);    // Process lifetime
+LinearAllocator g_frameAllocator(256_MB);    // Frame lifetime  
+LinearAllocator g_transientAllocator(1_GB);  // Transient/scratch
+```
+
+#### 3.2 Virtual Memory Reservation (Windows)
+```cpp
+// Reserve 4 GB at startup (no physical commit)
+void* reserve = VirtualAlloc2(nullptr, 4_GB, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, 
+                              PAGE_READWRITE, nullptr, 0);
+// Commit on first touch via custom page fault handler or explicit commit
+```
+
+#### 3.3 Replace std::allocator
+```cpp
+template<typename T>
+struct LinearAllocatorSTL {
+    using value_type = T;
+    LinearAllocator* allocator_;
+    
+    T* allocate(size_t n) { 
+        return (T*)allocator_->allocate(n * sizeof(T), alignof(T)); 
+    }
+    void deallocate(T* p, size_t n) { /* no-op for linear */ }
+};
+```
+
+---
+
+### Phase 1: Process-Lifetime Allocations (Week 2)
+
+| Target | Current | Migration |
+|--------|---------|-----------|
+| `VulkanCore` | `new` | `g_processAllocator.Create<VulkanCore>()` |
+| `Submitter` (×3) | `new` | `g_processAllocator.Create<Submitter>()` |
+| `CommandBufferPool` | `new` | `g_processAllocator.Create<CommandBufferPool>()` |
+| `PipelineCache` | `make_unique` | `g_processAllocator.Create<PipelineCache>()` |
+| `SamplerCache` | `make_unique` | `g_processAllocator.Create<SamplerCache>()` |
+| `Swapchain` | `make_unique` | `g_processAllocator.Create<Swapchain>()` |
+| `RenderGraph` | `make_unique` | `g_processAllocator.Create<RenderGraph>()` |
+| `World` | `make_unique` | `g_processAllocator.Create<World>()` |
+| `TextureStreamer` | `make_unique` | `g_processAllocator.Create<TextureStreamer>()` |
+| `TextureFeedback` | `make_unique` | `g_processAllocator.Create<TextureFeedback>()` |
+| `ImGuiOverlay` | `make_unique` | `g_processAllocator.Create<ImGuiOverlay>()` |
+| `AppArena` blocks | `unique_ptr<uint8_t[]>` | `g_processAllocator.allocate(blockSize)` |
+
+**ShardedPool**: Already uses fixed arrays (no heap allocation for entries). Keep as-is.
+
+---
+
+### Phase 2: Frame-Lifetime Allocations (Week 3)
+
+| Target | Current | Migration |
+|--------|---------|-----------|
+| `FrameArena` blocks | `unique_ptr<uint8_t[]>` | `g_frameAllocator.allocate(blockSize)` |
+| Per-frame vectors (barriers, usages) | `std::vector` | `std::vector<T, LinearAllocatorSTL<T>>` with `g_frameAllocator` |
+| RenderGraph pass temporaries | `std::vector` | Frame allocator |
+| Descriptor set arrays | `std::array` / fixed | Already fixed-size |
+
+**Reset Point**: Call `g_frameAllocator.reset(frameMark)` at frame start in `WorldRenderer::BeginFrame()`.
+
+---
+
+### Phase 3: Resource-Lifetime Allocations (Week 4)
+
+**Strategy**: Pool-based with linear backing
+
+```cpp
+// Resource pool with linear allocator backing
+template<typename T, size_t MaxCount>
+class ResourcePool {
+    LinearAllocator* allocator_;
+    T* objects_;           // Contiguous array: allocator_->allocate(MaxCount * sizeof(T))
+    uint32_t freeList_[MaxCount];
+    uint32_t freeCount_;
+    uint32_t generation_[MaxCount];
+    
+public:
+    Handle<T> allocate() { /* pop freeList, placement new */ }
+    void deallocate(Handle<T> h) { /* push freeList, destructor */ }
+    T* get(Handle<T> h) { return &objects_[h.index]; }
+};
+```
+
+**Migration Targets**:
+- Images/Textures → `ResourcePool<Image, MAX_IMAGES>` backed by `g_processAllocator`
+- Buffers → `ResourcePool<Buffer, MAX_BUFFERS>` backed by `g_processAllocator`
+- ShaderModules → `ResourcePool<ShaderModule, MAX_SHADERS>` backed by `g_processAllocator`
+
+**Note**: VMA allocations (GPU memory) remain unchanged - they're already pool-like via VmaVirtualBlock.
+
+---
+
+### Phase 4: Transient/Scratch Allocations (Week 5)
+
+| Target | Migration |
+|--------|-----------|
+| `UploadStreamer` staging rings | Pre-reserve 32 MB × 16 threads = 512 MB in `g_transientAllocator` |
+| Bulk upload ring (512 MB) | Pre-reserve in `g_transientAllocator` |
+| Readback staging | Pre-reserve max expected (e.g., 64 MB) in `g_transientAllocator` |
+| RenderGraph temp vectors | `std::vector<T, LinearAllocatorSTL<T>>` with `g_transientAllocator` |
+| ThreadPool task queues | Ring buffer in `g_transientAllocator` |
+| String formatting | Already uses FrameArena → redirect to `g_frameAllocator` |
+
+**Reset Point**: `g_transientAllocator.reset(transientMark)` at frame boundary after GPU sync.
+
+---
+
+### Phase 5: STL Container Replacement (Week 6)
+
+Replace `std::vector`/`std::string`/`std::unordered_map` with linear-backed variants:
+
+```cpp
+// engine/include/Engine/Memory/linear_vector.h
+template<typename T>
+using LinearVector = std::vector<T, LinearAllocatorSTL<T>>;
+
+template<typename T>
+using ProcessVector = LinearVector<T>;  // g_processAllocator
+
+template<typename T>
+using FrameVector = LinearVector<T>;    // g_frameAllocator
+
+template<typename T>
+using TransientVector = LinearVector<T>; // g_transientAllocator
+```
+
+**Migration Priority**:
+1. RenderGraph pass vectors (barriers, usages, imageWrites)
+2. UploadStreamer pending ranges/cleanups
+3. Shader reflection temporaries
+4. Asset loading vectors (pak, gltf, ktx)
+5. Editor UI strings/vectors
+
+---
+
+## 4. Virtual Memory Layout (Startup Reservation)
+
+```
+Process Virtual Address Space (4 GB reserved at startup):
+┌─────────────────────────────────────────────────────────────┐
+│ 0x0000'0000'0000 - 0x0000'00FF'FFFF  │ AppArena (256 MB)    │ ← URI strings, cluster data
+│ 0x0000'0100'0000 - 0x0000'01FF'FFFF  │ ShardedPools (256 MB)│ ← Fixed metadata
+│ 0x0000'0200'0000 - 0x0000'0FFF'FFFF  │ Process Objects (2 GB)│ ← VulkanCore, Submitter, etc.
+│ 0x0000'1000'0000 - 0x0000'10FF'FFFF  │ FrameArena (256 MB)   │ ← Per-frame scratch
+│ 0x0000'1100'0000 - 0x0000'1FFF'FFFF  │ Resource Pools (1 GB) │ ← Image/Buffer/Shader pools
+│ 0x0000'2000'0000 - 0x0000'2FFF'FFFF  │ Transient/Scratch (1 GB)│ ← Staging, readback, temps
+│ 0x0000'3000'0000 - 0x0000'3FFF'FFFF  │ Growth/Spare (1 GB)   │ ← Future expansion
+└─────────────────────────────────────────────────────────────┘
+
+GPU Virtual Address Space (VMA managed - unchanged):
+- Static Vertex Heap: 512 MB (VmaVirtualBlock, linear)
+- Static Index Heap: 512 MB (VmaVirtualBlock, linear)  
+- General allocations: VMA default pools
+```
+
+---
+
+## 5. Implementation Checklist
+
+### Core Infrastructure
+- [ ] `LinearAllocator` class with VirtualAlloc2 reservation
+- [ ] `LinearAllocatorSTL` adapter for STL containers
+- [ ] Global instances: `g_processAllocator`, `g_frameAllocator`, `g_transientAllocator`
+- [ ] Startup reservation in `main.cpp` before any subsystem init
+- [ ] OOM handling (commit failure → abort with diagnostic)
+
+### Phase 1: Process Lifetime
+- [ ] Replace `new Submitter` with `g_processAllocator.Create<Submitter>()`
+- [ ] Replace `new CommandBufferPool` with `g_processAllocator.Create<CommandBufferPool>()`
+- [ ] Replace `make_unique<VulkanCore>` with placement new
+- [ ] Replace `make_unique<PipelineCache>` etc.
+- [ ] Convert `AppArena::Block::data` from `unique_ptr` to linear allocation
+
+### Phase 2: Frame Lifetime
+- [ ] Convert `FrameArena::Block::data` to linear allocation
+- [ ] Replace RenderGraph frame vectors with `FrameVector`
+- [ ] Add frame mark/reset in `WorldRenderer::BeginFrame()`
+
+### Phase 3: Resource Pools
+- [ ] Implement `ResourcePool<T, MaxCount>` template
+- [ ] Migrate `ShardedPool` storage to linear-backed (metadata already fixed)
+- [ ] Replace VMA buffer/image allocations with pool handles (keep VMA for GPU mem)
+
+### Phase 4: Transient
+- [ ] Pre-reserve staging rings in `g_transientAllocator`
+- [ ] Replace `UploadStreamer::ThreadUploadState::ring` allocation
+- [ ] Replace readback staging growth with pre-reserved
+
+### Phase 5: STL Containers
+- [ ] Create `linear_vector.h`, `linear_string.h`, `linear_unordered_map.h`
+- [ ] Migrate high-churn containers first (RenderGraph, UploadStreamer)
+- [ ] Migrate asset loading containers
+- [ ] Migrate editor containers
+
+### Validation
+- [ ] Add allocation tracking/stats (committed vs reserved)
+- [ ] Verify no malloc/free after startup (hook CRT allocator)
+- [ ] Benchmark frame time (target: <0.1 ms alloc overhead)
+- [ ] Test memory pressure scenarios (page commit latency)
+
+---
+
+## 6. Risk Mitigation
+
+| Risk | Mitigation |
+|------|------------|
+| VirtualAlloc2 not available (Win < 10 1809) | Fallback to `VirtualAlloc` with `MEM_RESERVE` |
+| Page commit latency on first touch | Pre-commit critical paths at startup |
+| Fragmentation within linear allocator | Use separate allocators per lifetime; no free = no frag |
+| OOM on 32-bit / low memory | Reserve smaller (1 GB process, 64 MB frame, 256 MB transient) |
+| Third-party libs (SDL, VMA, KTX) still malloc | Acceptable - they're small/fixed; focus on engine code |
+| Debugging (ASan, Valgrind) | Disable linear allocator in debug builds or add redzones |
+
+---
+
+## 7. Expected Outcomes
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| **Startup allocations** | ~500 malloc calls | 1 VirtualAlloc2 + ~50 placement new |
+| **Frame allocations** | ~2000 malloc/free | 0 (frame allocator reset only) |
+| **Allocation latency (p50)** | ~500 ns (malloc) | ~5 ns (bump pointer) |
+| **Allocation latency (p99)** | ~5 µs (contention) | ~10 ns (no contention) |
+| **Memory fragmentation** | Moderate (malloc) | Zero (linear) |
+| **Working set** | Dynamic | Predictable (reserved) |
+
+---
+
+## 8. Code Changes Summary
+
+### New Files
+- `engine/include/Engine/Memory/linear_allocator.h`
+- `engine/src/Memory/linear_allocator.cpp`
+- `engine/include/Engine/Memory/linear_vector.h`
+- `engine/include/Engine/Memory/linear_string.h`
+- `engine/include/Engine/Memory/resource_pool.h`
+
+### Modified Files
+- `app/src/main.cpp` - Startup reservation
+- `engine/src/Vulkan/impl.cpp` - Process lifetime objects
+- `engine/src/Vulkan/detail/vulkan_impl.h` - Allocator access
+- `engine/src/Memory/arena.cpp` - Redirect to linear allocators
+- `engine/src/RHI/resource_manager.cpp` - Resource pools
+- `engine/src/Renderer/mesh.cpp` - Static heaps (already linear via VMA)
+- `engine/src/Rendergraph/rendergraph.cpp` - Frame vectors
+- `engine/src/Renderer/texture_streamer.cpp` - Transient vectors
+- `engine/src/Asset/pak.cpp` - Loading vectors
+- `editor/src/*.cpp` - Editor containers
+
+---
+
+## 9. Rollout Plan
+
+| Week | Phase | Deliverable |
+|------|-------|-------------|
+| 1 | 0 | LinearAllocator core + startup reservation |
+| 2 | 1 | Process-lifetime objects migrated |
+| 3 | 2 | Frame-lifetime allocations migrated |
+| 4 | 3 | Resource pools implemented |
+| 5 | 4 | Transient/staging pre-reserved |
+| 6 | 5 | STL containers replaced |
+| 7 | - | Testing, profiling, bug fixes |
+| 8 | - | Documentation, cleanup |
+
+---
+
+*Generated: 2026-09-30*
+*Codebase: vulkantoy (engine + app + editor)*
