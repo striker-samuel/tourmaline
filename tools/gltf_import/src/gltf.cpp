@@ -107,20 +107,6 @@ namespace {
 		if (s == "BLEND") return GltfAlphaMode::Blend;
 		return GltfAlphaMode::Opaque; // default or "OPAQUE"
 	}
-	static glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i, int coordFix) {
-		// Expect FLOAT VEC3
-		const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
-		if (coordFix == 1 || coordFix == 3) {
-			// 1: skip engine fix (model already in engine space).
-			// 3: same + RootNode/Level hierarchy is neutralized by the
-			//    scene preTransform (see bistro preTransform (see the Niagara staging notes)).
-			return glm::vec3(p[0], p[1], p[2]);
-		}
-		if (coordFix == 2) {
-			return glm::vec3(p[0], -p[1], p[2]);
-		}
-		return glm::vec3(p[0] * -1, p[1], p[2] * -1);
-	}
 	glm::vec4 readVec4F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 		// Expect FLOAT VEC4
 		const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
@@ -1407,49 +1393,31 @@ void GltfToSceneImporter::preloadTextures()
 	// GltfToCluster issues the final FlushUploads after scene import.
 }
 
-// Basis conversion C for node local transforms. Vertices are baked as
-// v' = C * v, so every local matrix must be conjugated to stay consistent:
-// M' = C * M * C^-1 (C is its own inverse). For TRS this is t' = C*t,
-// R' = C*R*C, S unchanged (diagonal commutes). coordFix modes mirror
-// readVec3ForientationFix / SurfaceDataFromGltfPrimitive:
+// Basis conversion for the IMPORTED CHAIN TOP (see importUnder): the
+// coordFix basis applies ONCE at the top of every imported chain
+// (C * M_top) instead of baking vertices + conjugating every node's
+// local. Node locals stay RAW (exactly as the glTF author wrote them:
+// identity nodes stay identity, rotations/translations read as
+// written) and vertices/normals/tangents/AABBs stay raw — the world
+// basis of every node is C * gltfWorld, so the render lands exactly
+// where the per-node conjugation put it, but the authoring frame is
+// honest. Modes:
 //   0 = engine fix (180 deg Y: -X,+Y,-Z, det +1, winding preserved)
 //   1/3 = skip (already in engine space)
-//   2 = Y mirror (det -1; conjugates translations the same way, but note
-//       mirrored winding is NOT reflipped here — same limitation as the
-//       vertex path, which also leaves indices untouched).
-inline glm::mat4 ConvertNodeLocalTransform(const glm::mat4& m, int coordFix) {
-	if (coordFix == 1 || coordFix == 3)
-		return m;
+//   2 = Y mirror (det -1; mirrored winding is NOT reflipped — same
+//       limitation as before)
+inline glm::mat4 CoordFixBasis(int coordFix) {
 	glm::mat4 c(1.0f);
-	if (coordFix == 2) {
+	if (coordFix == 2)
 		c[1][1] = -1.0f;
-	} else {
+	else if (coordFix == 0) {
 		c[0][0] = -1.0f;
 		c[2][2] = -1.0f;
 	}
-	return c * m * c;
+	return c;
 }
 
-std::string TextureConversionHash(const void* data, size_t size,
-	bool srgb) {
-	return TextureConversionHashImpl(data, size, srgb);
-}
-
-glm::vec3 GltfPunctualAimAxis(int coordFix) {
-	// glTF punctual lights aim along their node's -Z axis. coordFix 0
-	// conjugates every node transform (M' = C*M*C) AND bakes vertices
-	// (v' = C*v), so the node-local frame flips with the basis change:
-	// the aim axis in engine-local space is C*(0,0,-1) = (0,0,+1).
-	// Reading the aim as globalTransform*(0,0,-1) off the conjugated
-	// transform resolves the axis 180 degrees off — the Bistro "Sun"
-	// directional landed at elevation -68 (underground) and spots
-	// aimed backwards. The other fix modes leave Z untouched.
-	if (coordFix == 0)
-		return glm::vec3(0.0f, 0.0f, 1.0f);
-	return glm::vec3(0.0f, 0.0f, -1.0f);
-}
-
-glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n, int coordFix)
+glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 {
 	glm::mat4 m(1.0f);
 	if (!n.matrix.empty() && n.matrix.size() >= 16) {
@@ -1481,7 +1449,23 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n, int coordFix)
 			* glm::mat4_cast(r)
 			* glm::scale(glm::mat4(1.0f), s);
 	}
-	return ConvertNodeLocalTransform(m, coordFix);
+	// RAW as authored: the coordFix basis rides the chain top
+	// (importUnder), never the node locals.
+	return m;
+}
+
+std::string TextureConversionHash(const void* data, size_t size,
+	bool srgb) {
+	return TextureConversionHashImpl(data, size, srgb);
+}
+
+glm::vec3 GltfPunctualAimAxis(int) {
+	// glTF punctual lights aim along their node's -Z axis. Raw locals
+	// (the basis rides the chain top): the world aim reads straight off
+	// the node's global transform — globalTransform * (0,0,-1) — in
+	// every coordFix mode. (The old per-node conjugation needed the
+	// coordFix-0 special case +Z read; the chain-top basis kills it.)
+	return glm::vec3(0.0f, 0.0f, -1.0f);
 }
 
 smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
@@ -1630,37 +1614,17 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 
 		if (accessor.minValues.size() >= 3 && accessor.maxValues.size() >= 3) {
 
-			// glTF stores AABB in the accessor
+			// glTF stores AABB in the accessor; RAW as authored (the
+			// coordFix basis rides the chain top, never the geometry).
 			const std::vector<double>& min = accessor.minValues;
 			const std::vector<double>& max = accessor.maxValues;
 
-			glm::vec3 aabbMin(min[0], min[1], min[2]);
-			glm::vec3 aabbMax(max[0], max[1], max[2]);
-
-			// Apply same conversion as positions
-			glm::vec3 c0, c1;
-			if (coordFix == 1 || coordFix == 3) {
-				c0 = aabbMin;
-				c1 = aabbMax;
-			} else if (coordFix == 2) {
-				c0 = glm::vec3(aabbMin.x, -aabbMin.y, aabbMin.z);
-				c1 = glm::vec3(aabbMax.x, -aabbMax.y, aabbMax.z);
-			} else {
-				c0 = glm::vec3(-aabbMin.x, aabbMin.y, -aabbMin.z);
-				c1 = glm::vec3(-aabbMax.x, aabbMax.y, -aabbMax.z);
-			}
-
-			glm::vec3 mn = glm::min(c0, c1);
-			glm::vec3 mx = glm::max(c0, c1);
-
-			data.aabbMin = mn;
-			data.aabbMax = mx;
-
-
+			data.aabbMin = glm::vec3(min[0], min[1], min[2]);
+			data.aabbMax = glm::vec3(max[0], max[1], max[2]);
 		}
 		else {
 
-			// I wont handle this. just assert and fail. 
+			// I wont handle this. just assert and fail.
 			assert(false && "failed to get bb ");
 
 		}
@@ -1681,7 +1645,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
 		smvk::StaticVertex v{};
-		v.pos = readVec3ForientationFix(model, posAcc, i, coordFix);
+			v.pos = readVec3F(model, posAcc, i);
 		v.color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
 		v.texCoord2 = { 0.0f, 0.0f }; // lightmap UV (TEXCOORD_1), if present
@@ -1726,22 +1690,9 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 		auto& tangentAcc = model.accessors[primitive.attributes.at("TANGENT")];
 		for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
 			glm::vec4 tangent = readVec4F(model, tangentAcc, i);
-
-			// Space conversion to my engine. Same as pos.
-			// (-x, +y, -z) is a 180-degree Y rotation (det +1), so the
-			// tangent-space handedness w is preserved as-is. Modes that
-			// skip the engine fix (1/3) leave tangents untouched; the
-			// Y-mirror (2, det -1) flips handedness, hence w.
-			if (coordFix == 1 || coordFix == 3) {
-				// Model already in engine space: no conversion.
-			} else if (coordFix == 2) {
-				tangent.y *= -1.0f;
-				tangent.w *= -1.0f;
-			} else {
-				tangent.x *= -1.0f;
-				tangent.z *= -1.0f;
-			}
-
+			// RAW as authored (the basis rides the chain top): tangent
+			// space — including the handedness w — stays exactly as
+			// the glTF author wrote it.
 			data.vertices[i].tangent = tangent;
 		}
 	}
@@ -1750,7 +1701,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	if (hasAuthoredNormals) {
 		auto& nAcc = model.accessors[primitive.attributes.at("NORMAL")];
 		for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
-			glm::vec3 n = readVec3ForientationFix(model, nAcc, i, coordFix);
+			glm::vec3 n = readVec3F(model, nAcc, i);
 			data.vertices[i].normal = glm::normalize(n);
 		}
 	}
@@ -1975,7 +1926,8 @@ void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
 		return;
 	scene.localTransform[(size_t)rootNode] = preTransform_ * scene.localTransform[(size_t)rootNode];
 }
-void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
+void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
+	int parentSceneNode, int level, bool topOfImport) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
 	// Always create a "group" node that owns name + transform and preserves hierarchy.
@@ -1987,7 +1939,15 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 		cluster.scene.nameForNode[groupNode] = nameIndex;
 	}
 
-	cluster.scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode, coordFix_);
+	// RAW local (as authored). The TOP node of each imported chain
+	// (importUnder) additionally carries the coordFix basis on the
+	// left (C * M_top): the whole chain lands exactly where the old
+	// per-node conjugation put it, while every descendant's transform
+	// stays the honest glTF TRS (identity nodes stay identity —
+	// the local gizmo + the inspector read true).
+	cluster.scene.localTransform[groupNode] =
+		(topOfImport ? CoordFixBasis(coordFix_) : glm::mat4(1.0f))
+		* GetNodeLocalTransform(gltfNode);
 	cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
 	// Static-subtree opt-in: authoring extras or STATIC_ name prefix.
@@ -2069,9 +2029,11 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 		}
 	}
 
-	// Recurse children under the group node to preserve hierarchy.
+	// Recurse children under the group node to preserve hierarchy
+	// (never top-of-import: only the chain's first node carries the
+	// coordFix basis).
 	for (int child : gltfNode.children) {
-		importNodeRecursive(child, groupNode, level + 1);
+		importNodeRecursive(child, groupNode, level + 1, false);
 	}
 }
 

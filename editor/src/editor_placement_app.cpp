@@ -16,7 +16,9 @@ using namespace placement;
 // lossless source the picker uses), transformed to world space.
 namespace {
 glm::vec3 FixGltfPos(const float* f) {
-	return glm::vec3(-f[0], f[1], -f[2]); // coordFix 0 mirror (picking parity)
+	// Raw glTF data (no mirror): the coordFix basis rides the imported
+	// chain's top node, so global transforms map raw data directly.
+	return glm::vec3(f[0], f[1], f[2]);
 }
 bool ReadVec3Attr(const tinygltf::Model& model, int accessorIdx, size_t i,
 	glm::vec3& out) {

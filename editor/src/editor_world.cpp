@@ -102,10 +102,10 @@ void EditorApp::RefreshMaterialNodes(uint32_t mat) {
 }
 
 // Definition + world aim for a light node (null when the node has none).
-// Aim resolves through the node's global transform with the coordFix-0
-// engine-local axis (see GltfPunctualAimAxis): all editor content is
-// coordFix-0 baked (PakCooker cooks at 0, the editor imports at 0), so a
-// plain -Z read would aim 180 degrees off (see gltf.cpp).
+// Aim resolves through the node's global transform with the glTF -Z
+// axis (see GltfPunctualAimAxis): raw locals (the coordFix basis rides
+// the imported chain's top node), so the plain -Z read is exact in
+// every mode.
 const ::SceneLight* EditorApp::FindNodeLight(uint32_t node,
 	glm::vec3* outAimWs) const {
 	if (outAimWs)

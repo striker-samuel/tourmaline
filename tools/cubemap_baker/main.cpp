@@ -653,8 +653,9 @@ int main(int argc, char** argv) {
 		}
 
 		smvk::gi::GiSceneBuildOptions buildOpts{};
-		// Same import basis change as GiBaker/PakCooker: coordFix 0
-		// punctual aims read with the conjugated -Z axis.
+		// Same import convention as GiBaker/PakCooker: raw locals (the
+		// coordFix basis rides the chain top), so punctual aims read
+		// with the plain glTF -Z axis.
 		buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
 		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
 		buildOpts.env.sunElevationDeg = args.sunElevation;

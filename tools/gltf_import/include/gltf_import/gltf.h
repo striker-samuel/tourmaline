@@ -78,13 +78,20 @@ struct GltfToSceneImporter
 		std::filesystem::path inGltfModelPath
 	);
 	void setTextureStreamer(smvk::TextureStreamer* streamer) { textureStreamer_ = streamer; }	void import(int gltfNodeIndex) {
-		importNodeRecursive(gltfNodeIndex, 0, 1);
+		importNodeRecursive(gltfNodeIndex, 0, 1, true);
 	}
 	// Attach this glTF node's subtree UNDER an existing cluster scene
 	// node (nested scene references: the placeholder group node created
 	// by ApplySceneReferences). Same recursion as import().
+	// TOP-OF-CHAIN BASIS: every import entry (import/importUnder — each
+	// independent glTF chain) applies the coordFix basis ONCE at its
+	// first node (C * M_top): node locals stay RAW (identity nodes stay
+	// identity — the authoring frame is honest), vertices/AABBs/
+	// normals/tangents stay raw, and every node's world basis is
+	// C * gltfWorld (the render lands exactly where the old per-node
+	// conjugation put it).
 	void importUnder(int gltfNodeIndex, int parentSceneNode, int level) {
-		importNodeRecursive(gltfNodeIndex, parentSceneNode, level);
+		importNodeRecursive(gltfNodeIndex, parentSceneNode, level, true);
 	}
 	// Multicore texture read + upload: decodes/transcodes all KTX2 files
 	// referenced by the scene's materials on worker threads and uploads
@@ -151,7 +158,9 @@ private:
 	void importNodeRecursive(
 		int gltfNodeIndex,
 		int parentSceneNode,
-		int level
+		int level,
+		bool topOfImport = false // the chain's first node carries the
+		                         // coordFix basis (see importUnder)
 	);
 	smvk::Cluster& cluster;
 	const tinygltf::Model& model;
@@ -199,10 +208,8 @@ bool LoadModelFromAsciiFile(
 );
 
 // glTF punctual aim axis (KHR_lights_punctual: the light node's -Z
-// direction) in the ENGINE node-local space the import bakes. coordFix
-// modes conjugate node transforms AND vertices, so the local -Z axis
-// flips with the basis change; resolve world aims as
-// globalTransform * GltfPunctualAimAxis(coordFix) (see gltf.cpp).
+// direction). Raw locals (the coordFix basis rides the chain top):
+// resolve world aims as globalTransform * (0,0,-1) in every mode.
 glm::vec3 GltfPunctualAimAxis(int coordFix);
 
 // Host-file texture source (default importer behavior): reads

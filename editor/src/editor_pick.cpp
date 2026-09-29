@@ -23,9 +23,11 @@
 namespace editor {
 namespace {
 
-// coordFix 0 (engine default): (-x, y, -z). Mirror of readVec3ForientationFix.
+// Raw glTF accessor read (no mirror): the coordFix basis rides the
+// imported chain's TOP node (raw locals + raw vertices), so the node's
+// global transform maps raw glTF-space data directly.
 glm::vec3 FixPos(const double* p) {
-	return glm::vec3(float(-p[0]), float(p[1]), float(-p[2]));
+	return glm::vec3(float(p[0]), float(p[1]), float(p[2]));
 }
 
 bool ReadPosition(const tinygltf::Model& model, int accessorIdx, size_t i,

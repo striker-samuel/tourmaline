@@ -426,7 +426,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
-	// Build batches: selection AABB (yellow) + gizmo axes.
+	// Build batches: selection box + gizmo axes.
 	if (m_selected == UINT32_MAX ||
 		m_selected >= m_world->scene.hierarchy.size()) {
 		// No selection: markers (if any) still draw below.
@@ -435,7 +435,13 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	{
 		LineBatch box;
 		box.color = glm::vec4(1.0f, 0.9f, 0.2f, 1.0f);
-		// Union AABB over the selected subtree's mesh nodes (via drawItems).
+		// Selection box aligned to the SELECTED NODE's frame (an OBB,
+		// Maya-style: the box follows the object, not the world axes).
+		// The subtree's mesh corners are min/max-ed IN the node's own
+		// frame, then the 8 corners transform back through it (raw
+		// locals — no import artifact).
+		const glm::mat4 frame = m_world->scene.globalTransform[m_selected];
+		const glm::mat4 invFrame = glm::inverse(frame);
 		bool has = false;
 		glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
 		std::vector<uint32_t> stack{ m_selected };
@@ -462,13 +468,26 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 					(k & 2) ? m->geometry.aabbMax.y : m->geometry.aabbMin.y,
 					(k & 4) ? m->geometry.aabbMax.z : m->geometry.aabbMin.z);
 				const glm::vec3 w = glm::vec3(model * glm::vec4(corner, 1.0f));
-				mn = glm::min(mn, w);
-				mx = glm::max(mx, w);
+				// Frame-local: min/max in the node's own coordinates.
+				const glm::vec3 q =
+					glm::vec3(invFrame * glm::vec4(w, 1.0f));
+				mn = glm::min(mn, q);
+				mx = glm::max(mx, q);
 				has = true;
 			}
 		}
 		if (has) {
-			AddBox(box, mn, mx);
+			// The frame's box corners back to world (bit-encoded:
+			// k&1 = x, k&2 = y, k&4 = z — AddBoxCorners' layout).
+			glm::vec3 c[8];
+			for (int k = 0; k < 8; ++k) {
+				const glm::vec3 q(
+					(k & 1) ? mx.x : mn.x,
+					(k & 2) ? mx.y : mn.y,
+					(k & 4) ? mx.z : mn.z);
+				c[k] = glm::vec3(frame * glm::vec4(q, 1.0f));
+			}
+			AddBoxCorners(box, c);
 			batches.push_back(std::move(box));
 		}
 	}
@@ -484,6 +503,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	const float s = std::max(dist * m_gizmoScale, 1e-4f);
 	const glm::mat4& global = m_world->scene.globalTransform[m_selected];
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+	// The LOCAL frame = the node's own world basis. Imported chains keep
+	// RAW locals (the coordFix basis rides the chain's TOP node only),
+	// so an axis-aligned mesh shows axis-aligned handles — no import
+	// artifact to un-apply.
 	glm::vec3 axesL[3];
 	for (int i = 0; i < 3; ++i) {
 		axesL[i] = glm::normalize(glm::vec3(global * glm::vec4(axesW[i], 0.0f)));
@@ -719,6 +742,8 @@ bool EditorApp::GizmoHandleInput() {
 		|| (m_gizmoSpace == GizmoSpace::Local);
 	const glm::mat4& global = m_world->scene.globalTransform[m_selected];
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+	// The LOCAL frame = the node's own world basis (raw locals — no
+	// import artifact to un-apply; draw-path parity).
 	glm::vec3 axesL[3];
 	for (int i = 0; i < 3; ++i) {
 		axesL[i] = glm::normalize(glm::vec3(global * glm::vec4(axesW[i], 0.0f)));

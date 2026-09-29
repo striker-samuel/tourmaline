@@ -2080,11 +2080,11 @@ void TestStaticBakeLights() {
 		&& ts.sunIntensity == 20000.0f;
 	Check(sunOk, "static.collect.sun.firstwins");
 
-	// coordFix-0 aim axis (GltfPunctualAimAxis): the import conjugates
-	// node transforms AND vertices, so the glTF -Z aim reads (0,0,+1)
-	// in engine-local space. A 90-degree Y rotation aims the default
-	// (0,0,-1) axis at -X and the conjugated (0,0,1) axis at +X; the
-	// seeded sun flips with it. Runtime + bake share the convention.
+	// Aim axis convention (GltfPunctualAimAxis): raw locals (the coordFix
+	// basis rides the imported chain's TOP node), so the glTF -Z aim
+	// reads (0,0,-1) in engine-local space. A 90-degree Y rotation aims
+	// the default (0,0,-1) axis at -X; an explicit (0,0,1) axis at +X.
+	// Runtime + bake share the convention.
 	{
 		auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
 		cluster2->SetCookMode(true);

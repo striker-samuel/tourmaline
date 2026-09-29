@@ -1787,9 +1787,9 @@ private:
 	// directional sun when the scene has one, else the defaults stand in).
 	// ---- cooked scene lights (KHR punctual, glTF import or pak) ----
 	// First directional wins as the viewport sun (App parity). Aim is the
-	// node's G*(0,0,1): editor content is always coordFix-0 baked
-	// (PakCooker cooks at 0, the editor imports at 0), so the engine-local
-	// aim is +Z (see GltfPunctualAimAxis). Points/spots are counted and
+	// node's G*(0,0,-1): the glTF -Z convention — raw locals (the
+	// coordFix basis rides the imported chain's top node; see
+	// GltfPunctualAimAxis). Points/spots are counted and
 	// logged; the editor has no forward+ path, so only the sun renders.
 	bool m_hasCookedSun = false;
 	std::string m_cookedSunName;

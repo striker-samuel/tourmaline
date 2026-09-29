@@ -418,10 +418,10 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 			continue; // runtime-only light: never baked
 		const SceneLight& L = *lp;
 		const glm::mat4& G = scene.globalTransform[node];
-		// Aim: the glTF -Z axis conjugated into engine-local space
-		// (aimAxis; a plain -Z read aims 180 degrees off under
-		// coordFix 0), mapped to world by the node's global transform —
-		// the same convention as the runtime cooked-light path
+		// Aim: the glTF -Z axis (aimAxis) mapped to world by the node's
+		// global transform — raw locals (the coordFix basis rides the
+		// imported chain's top node), so the plain -Z read is exact.
+		// Same convention as the runtime cooked-light path
 		// (BuildCookedLightsFromWorld).
 		glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 		const glm::vec3 pos = glm::vec3(G[3]);
