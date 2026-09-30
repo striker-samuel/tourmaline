@@ -22,6 +22,10 @@
 #include <Engine/Memory/linear_allocator.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Utils/thread_pool.h>
+
+#include <atomic>
+#include <future>
 
 namespace {
 
@@ -259,6 +263,31 @@ void TestTransientVector() {
 	ranges.clear(); // monotonic: clear keeps capacity, backing never frees
 	Check(transient.Used() == used, "memory.transient.clear-keeps-storage");
 }
+
+void TestThreadPool() {
+	// Ring queue over transient memory: futures resolve, ring wraps (300
+	// tasks through 2 workers), void tasks run, dtor joins cleanly.
+	smvk::ThreadPool pool(2);
+	Check(pool.size() == 2, "memory.pool.worker-count");
+	std::vector<std::future<int>> futs;
+	for (int i = 0; i < 300; ++i)
+		futs.push_back(pool.enqueue([i] { return i * i; }));
+	bool ok = true;
+	for (int i = 0; i < 300; ++i) {
+		if (futs[size_t(i)].get() != i * i) {
+			ok = false;
+			break;
+		}
+	}
+	Check(ok, "memory.pool.futures-resolve");
+	std::atomic<int> ran{0};
+	std::vector<std::future<void>> voids;
+	for (int i = 0; i < 50; ++i)
+		voids.push_back(pool.enqueue([&ran] { ran.fetch_add(1); }));
+	for (auto& f : voids)
+		f.wait();
+	Check(ran.load() == 50, "memory.pool.void-tasks-run");
+} // dtor joins here; ASAN-less check is clean exit + no hang
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -285,6 +314,7 @@ int main() {
 	TestStlAdapter();
 	TestLinearPtr();
 	TestTransientVector();
+	TestThreadPool();
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();

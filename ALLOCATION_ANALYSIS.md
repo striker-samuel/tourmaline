@@ -283,7 +283,7 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [x] Replace `UploadStreamer::ThreadUploadState::ring` allocation (pending barriers/ranges → `TransientVector`; `StagingRing` VkBuffer stays VMA by design)
 - [x] Replace readback staging growth with pre-reserved (growth bounds centralized; cap/alloc failure crashes instead of silent `false`)
 - [ ] Transient allocator frame-boundary reset (deferred: streamer vectors hold in-flight ranges across frames — reset only when temporaries are the sole users)
-- [ ] ThreadPool task queues → ring buffer in transient (deferred: own epoch, intrusive `thread_pool.h` rework)
+- [x] ThreadPool task queues → ring buffer in transient (Epoch 7: bounded ring, pre-allocated slots; enqueue backpressures instead of growing)
 - [x] String formatting via FrameArena (already the case; Epoch 2 backed it)
 
 ### Phase 5: STL Containers
@@ -503,5 +503,33 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   struct; reset row left open until temporaries are the sole users).
 - OOM policy applied to GPU staging (per standing instruction — crash +
   report, no survival): `ensureRing` VMA failure aborts with ring name +
-  size + VkResult (was: silent `false` → skipped bulk uploads); 
-...[truncated 911 chars]
+  size + VkResult (was: silent `false` → skipped bulk uploads);
+  `EnsureReadbackStaging` cap-exceeded/alloc-failure aborts (was: silent
+  `false` → uninitialized pixels downstream). Callers keep their checks
+  for other causes (bad handles stay graceful validation).
+- `MemoryTests` 63/63 PASS (+3 config sanity, +2 transient growth).
+- **Validation**: `App` + `Editor` link; `AssetTests` 334/334 PASS.
+- **Remaining:** transient allocator frame-boundary reset (deferred —
+  streamer vectors span frames); ThreadPool queues (own epoch);
+  `pendingCleanups`/`m_deferredTasks` packaged_task vectors (Phase 5);
+  general CreateBuffer/CreateImage failure paths (Phase 3/5).
+
+### Epoch 7 — ThreadPool bounded task ring in transient memory (2026-09-30)
+- `Engine/Utils/thread_pool.h` reworked (same public API, still
+  header-only): `std::queue<std::function<...>>` (unbounded deque, chunk
+  mallocs per push) → bounded ring of `kThreadPoolQueueSlots` (4096,
+  centralized in `alloc_config.h`, ~160 KB) pre-allocated from the
+  transient allocator at pool construction. Slots placement-constructed,
+  explicitly destroyed at teardown; storage never freed.
+- Steady state performs zero container mallocs. The per-task
+  `packaged_task` shared state still mallocs (`std::future` internals —
+  removing that needs custom futures, explicitly out of scope).
+- Backpressure contract: enqueue BLOCKS when full instead of growing
+  (never OOMs); documented ban on enqueue-from-worker-tasks (workers drain
+  the ring — full ring + all workers blocked in enqueue would deadlock).
+  All 14 existing enqueue sites are outer loops, verified safe. Stop/drain
+  semantics identical (`stop_ && empty` exits; pending tasks still run).
+- `MemoryTests` +3 (`TestThreadPool`: worker count, 300 futures through 2
+  workers incl. ring wrap, 50 void tasks, clean join) — 66/66 PASS.
+- **Validation**: `App` + `Editor` link; `StreamingTests` 24/24,
+  `AssetTests` 334/334 PASS.

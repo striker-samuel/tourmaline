@@ -58,6 +58,13 @@ inline constexpr size_t kUploadFlushThreshold = 256 * kMiB;
 inline constexpr size_t kReadbackStagingMin = 256 * kKiB;
 inline constexpr size_t kReadbackStagingMax = 256 * kMiB;
 
+// -- ThreadPool task ring ----------------------------------------------------
+// Bounded task queue: ring slots pre-allocated in transient memory at pool
+// construction. Enqueue blocks when full (backpressure — the queue never
+// grows and never OOMs). Sized for worst-case fan-out (pak decompress +
+// GI bakes enqueue in the low thousands); costs ~160 KB of transient VA.
+inline constexpr size_t kThreadPoolQueueSlots = 4096;
+
 // -- Page-commit granularity ------------------------------------------------
 // Physical pages commit in multiples of this quantum as the bump pointer
 // advances. Larger = fewer syscalls, coarser working set. Must be a
