@@ -577,3 +577,17 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   (re-verified Epoch 9 build).
 - **Remaining:** transient reset (blocked on in-flight streamer ranges —
   needs upload-path lifetime rework, proposed as its own workstream).
+
+### Runtime validation — fresh cooks + bench (2026-09-30)
+Cooked with the post-migration `PakCooker` (meshlets + LODs + meshopt +
+verify, no lightmap bake) and benched 300 frames, camera frozen
+(`--disable_control`), uncapped present, on this machine:
+- **Sponza** (`sponza.pak`, 79 MB): avg **3.08 ms** (~325 fps) —
+  cpu 0.60 ms, gpu 1.79 ms.
+- **Bistro** (`bistro.pak`, 835 MB): avg **7.43 ms** (~135 fps) —
+  cpu 4.51 ms (passes 3.38 ms, preB list-builds 3.17 ms), gpu 2.32 ms.
+- Bistro is CPU-bound in list builds, not allocation: the measured frame
+  scratch rhythm (1.2 µs, Epoch 9) is three orders below frame time.
+- Shutdown footprint (both runs): process ~1.9 MB / frame 0.0 MB /
+  transient ~1.1 MB used; 16 MB committed per allocator.
+- NGX/DLSS errors in the logs are benign (no NVIDIA adapter here).
