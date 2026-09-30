@@ -71,12 +71,12 @@ void Arena::Reset() {
 }
 
 Arena& AppArena() {
-	static Arena arena;
+	static Arena arena(mem::config::kAppArenaBlock);
 	return arena;
 }
 
 Arena& FrameArena() {
-	static Arena arena;
+	static Arena arena(mem::config::kFrameArenaBlock);
 	return arena;
 }
 

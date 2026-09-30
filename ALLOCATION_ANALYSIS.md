@@ -253,11 +253,12 @@ GPU Virtual Address Space (VMA managed - unchanged):
 ## 5. Implementation Checklist
 
 ### Core Infrastructure
-- [ ] `LinearAllocator` class with VirtualAlloc2 reservation
-- [ ] `LinearAllocatorSTL` adapter for STL containers
+- [x] `LinearAllocator` class with VirtualAlloc2 reservation
+- [x] `LinearAllocatorSTL` adapter for STL containers
 - [ ] Global instances: `g_processAllocator`, `g_frameAllocator`, `g_transientAllocator`
 - [ ] Startup reservation in `main.cpp` before any subsystem init
-- [ ] OOM handling (commit failure → abort with diagnostic)
+- [x] OOM handling (commit failure → abort with diagnostic)
+- [x] Centralized default sizes (`Engine/Memory/alloc_config.h` — single place to resize)
 
 ### Phase 1: Process Lifetime
 - [ ] Replace `new Submitter` with `g_processAllocator.Create<Submitter>()`
@@ -361,3 +362,34 @@ GPU Virtual Address Space (VMA managed - unchanged):
 
 *Generated: 2026-09-30*
 *Codebase: vulkantoy (engine + app + editor)*
+
+---
+
+## 10. Epoch Log
+
+### Epoch 1 — Linear allocator core + centralized sizes (2026-09-30)
+**Committed pieces of Phase 0:**
+- `engine/include/Engine/Memory/alloc_config.h` (NEW) — single place for
+  all default chunk sizes: `kAppArenaBlock` / `kFrameArenaBlock` (1 MiB),
+  `kProcessReserve` (4 GiB) / `kFrameReserve` (256 MiB) /
+  `kTransientReserve` (1 GiB), `kCommitQuantum` (16 MiB), `kDefaultAlign`.
+  Retuning memory = editing this file only.
+- `engine/include/Engine/Memory/linear_allocator.h` + `engine/src/Memory/linear_allocator.cpp`
+  (NEW) — `mem::LinearAllocator`: VirtualAlloc MEM_RESERVE + on-demand
+  MEM_COMMIT (Windows; malloc fallback elsewhere), lock-free atomic bump
+  fast path, mark/reset/ResetAll. Plain `VirtualAlloc` used instead of
+  `VirtualAlloc2` placeholders (works on all Win10+, same reservation
+  semantics; see §6 risk row).
+- `engine/include/Engine/Memory/linear_vector.h` (NEW) — `LinearAllocatorSTL<T>`
+  adapter (deallocate = no-op) + `ProcessVector` / `FrameVector` /
+  `TransientVector` aliases.
+- OOM policy as specified: `ReportOomAndCrash()` logs to stderr and aborts.
+  No fallback, no compaction, no survival strategy.
+- `Arena` defaults now come from `mem::config` (`AppArena` → `kAppArenaBlock`,
+  `FrameArena` → `kFrameArenaBlock`; both still 1 MiB, zero behavior change).
+- `tests/test_memory.cpp` (NEW, `MemoryTests`) — 23 checks, all passing:
+  config sanity, bump/alignment, Create, mark/reset, STL growth.
+- **Validation**: `MemoryTests.exe` 23/23 PASS (out/build/x64-Release).
+
+**Explicitly deferred to Epoch 2:** global instances, `InitMemory()` startup
+reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.

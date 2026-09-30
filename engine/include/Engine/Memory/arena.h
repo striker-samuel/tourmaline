@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <Engine/Memory/string_view.h>
+#include <Engine/Memory/alloc_config.h>
 
 namespace smvk {
 
@@ -51,7 +52,10 @@ public:
 	[[nodiscard]] size_t UsedBytes() const { return totalUsed_; }
 	[[nodiscard]] size_t BlockCount() const { return blocks_.size(); }
 
-	static constexpr size_t kDefaultBlockSize = size_t(1) << 20; // 1 MiB
+	// Default chunk sizes live in mem::config (alloc_config.h) — the single
+	// place to resize. kDefaultBlockSize preserves the historic 1 MiB for
+	// existing callers; AppArena/FrameArena pass their dedicated defaults.
+	static constexpr size_t kDefaultBlockSize = mem::config::kAppArenaBlock;
 
 private:
 	struct Block {

@@ -294,6 +294,19 @@ set_target_properties(PlacementTests PROPERTIES
 
 add_test(NAME placement_tests COMMAND PlacementTests)
 
+add_executable(MemoryTests test_memory.cpp)
+
+target_link_libraries(MemoryTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(MemoryTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME memory_tests COMMAND MemoryTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -313,3 +326,4 @@ vulkantoy_stage_sdl3(TourTests)
 vulkantoy_stage_sdl3(FlintbaseTests)
 vulkantoy_stage_sdl3(PlacementTests)
 vulkantoy_stage_sdl3(PlacementEditorTests)
+vulkantoy_stage_sdl3(MemoryTests)

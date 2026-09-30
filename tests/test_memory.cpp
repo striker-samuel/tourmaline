@@ -1,0 +1,130 @@
+// memory_tests: CPU-side tests for the Phase 0 linear-allocator
+// infrastructure (Engine/Memory/linear_allocator.h, linear_vector.h,
+// alloc_config.h). No GPU required.
+//
+// What it pins down:
+//   1. config: the centralized sizes are sane (non-zero, quantum divides
+//      reserves, arena blocks are multiples of the page size).
+//   2. bump: Allocate returns increasing, aligned pointers; Create
+//      placement-constructs; Used() tracks the high-water mark.
+//   3. mark/reset: Reset(mark) rewinds and hands out the same address
+//      again; ResetAll rewinds to zero.
+//   4. STL adapter: ProcessVector grows from the allocator (contents
+//      intact across growth); deallocate is a no-op that never throws.
+// OOM-crashes are NOT tested here (they abort the process by design).
+
+#include <cstdint>
+#include <iostream>
+#include <numeric>
+
+#include <Engine/Memory/alloc_config.h>
+#include <Engine/Memory/linear_allocator.h>
+#include <Engine/Memory/linear_vector.h>
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+void Check(bool cond, const char* name) {
+	++g_checks;
+	if (cond) {
+		std::cout << "PASS " << name << "\n";
+	}
+	else {
+		++g_failures;
+		std::cout << "FAIL " << name << "\n";
+	}
+}
+
+bool IsAligned(const void* p, size_t align) {
+	return (reinterpret_cast<uintptr_t>(p) & (align - 1)) == 0;
+}
+
+void TestConfig() {
+	using namespace smvk::mem::config;
+	Check(kAppArenaBlock > 0 && kFrameArenaBlock > 0, "memory.config.arena-blocks-nonzero");
+	Check(kProcessReserve > 0 && kFrameReserve > 0 && kTransientReserve > 0,
+		"memory.config.reserves-nonzero");
+	Check(kCommitQuantum >= 4096 && (kCommitQuantum % 4096) == 0,
+		"memory.config.quantum-is-pages");
+	Check(kAppArenaBlock % 4096 == 0 && kFrameArenaBlock % 4096 == 0,
+		"memory.config.arena-blocks-are-pages");
+	Check(kProcessReserve % kCommitQuantum == 0
+		&& kFrameReserve % kCommitQuantum == 0
+		&& kTransientReserve % kCommitQuantum == 0,
+		"memory.config.reserves-divisible-by-quantum");
+	Check(kDefaultAlign >= alignof(void*), "memory.config.align-sane");
+}
+
+void TestBump() {
+	// Small reservation keeps the test fast; quantum smaller than the
+	// reservation exercises multi-commit growth.
+	smvk::mem::LinearAllocator alloc("test-bump", 64 * 1024, 16 * 1024);
+	Check(!alloc.IsInitialized(), "memory.bump.lazy-before-first-alloc");
+	void* a = alloc.Allocate(64, 16);
+	Check(alloc.IsInitialized(), "memory.bump.init-on-first-alloc");
+	Check(a != nullptr && IsAligned(a, 16), "memory.bump.first-aligned");
+	void* b = alloc.Allocate(32, 8);
+	Check(b != nullptr && IsAligned(b, 8), "memory.bump.second-aligned");
+	Check(b >= static_cast<uint8_t*>(a) + 64, "memory.bump.monotonic");
+	Check(alloc.Used() >= 96, "memory.bump.used-tracks");
+	Check(alloc.Committed() >= alloc.Used(), "memory.bump.committed-covers-used");
+	Check(alloc.Committed() <= alloc.Reserved(), "memory.bump.committed-within-reserve");
+}
+
+struct Probe {
+	int x = 0;
+	int y = 0;
+	Probe(int a, int b) : x(a), y(b) {}
+};
+
+void TestCreate() {
+	smvk::mem::LinearAllocator alloc("test-create", 64 * 1024, 16 * 1024);
+	Probe* p = alloc.Create<Probe>(3, 4);
+	Check(p != nullptr && p->x == 3 && p->y == 4, "memory.create.placement-constructs");
+	Check(IsAligned(p, alignof(Probe)), "memory.create.aligned");
+}
+
+void TestMarkReset() {
+	smvk::mem::LinearAllocator alloc("test-reset", 64 * 1024, 16 * 1024);
+	void* a = alloc.Allocate(128, 16);
+	const size_t mark = alloc.Mark();
+	void* b = alloc.Allocate(256, 16);
+	Check(b != a, "memory.reset.distinct-before-reset");
+	alloc.Reset(mark);
+	void* c = alloc.Allocate(256, 16);
+	Check(c == b, "memory.reset.rewinds-to-mark");
+	alloc.ResetAll();
+	Check(alloc.Used() == 0, "memory.reset.all-zeroes-used");
+	void* d = alloc.Allocate(128, 16);
+	Check(d == a, "memory.reset.all-rewinds-to-base");
+}
+
+void TestStlAdapter() {
+	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
+	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
+	for (int i = 0; i < 1000; ++i)
+		v.push_back(i);
+	const bool contentsOk = v.size() == 1000
+		&& v.front() == 0 && v.back() == 999
+		&& std::accumulate(v.begin(), v.end(), 0) == 999 * 1000 / 2;
+	Check(contentsOk, "memory.stl.grows-with-contents-intact");
+	// Allocator equality follows the backing instance.
+	smvk::mem::LinearAllocator other("test-stl-other", 64 * 1024, 16 * 1024);
+	smvk::mem::LinearAllocatorSTL<int> sameA(&alloc), sameB(&alloc), diff(&other);
+	Check(sameA == sameB && !(sameA != sameB), "memory.stl.same-allocator-equal");
+	Check(sameA != diff && !(sameA == diff), "memory.stl.different-allocator-unequal");
+}
+
+} // namespace
+
+int main() {
+	TestConfig();
+	TestBump();
+	TestCreate();
+	TestMarkReset();
+	TestStlAdapter();
+	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+	return g_failures == 0 ? 0 : 1;
+}
