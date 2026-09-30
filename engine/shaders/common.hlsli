@@ -17,6 +17,13 @@ Texture2D textures[];
 SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
+// Uint-typed alias of the SAME bindless texture array (set 0 binding 0):
+// stencil-aspect views (S8_UINT — the SSR receiver-material layer, see
+// stencil_bits.h) ride the same slots. .Load only (stencil is
+// unfilterable); the type is a compile-time fiction over the shared
+// descriptor array, same trick as the sampler/comparisonSamplers alias.
+[[vk::binding(0, 0)]]
+Texture2D<uint4> uintTextures[];
 
 // Reflection cubemaps for specular IBL (kBinding_Cubemaps = 6).
 // Uses the same bindless index space as textures[].

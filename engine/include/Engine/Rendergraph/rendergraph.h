@@ -75,6 +75,14 @@ namespace smvk
 		void BindComputePipeline(
 			ShaderProgram& shaderProgram);
 
+		// Sets the stencil reference for both faces (dynamic state —
+		// pipelines are built with VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+		// so the reference never enters the pipeline cache key and no
+		// per-reference pipeline variants are ever created). Recorded
+		// into the command stream like PushConstants: valid until the
+		// next call. Passes that never call it keep the initial 0.
+		void SetStencilReference(uint32_t frontAndBackReference);
+
 		void Dispatch(
 			uint32_t groupCountX,
 			uint32_t groupCountY,

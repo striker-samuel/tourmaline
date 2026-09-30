@@ -54,6 +54,17 @@ struct AppFrameContext : public smvk::FrameContext {
 	// (Main + MotionVectors branch on the mode directly today; kept here
 	// for frame renderers that need it without reaching into WorldRenderer.)
 	bool ditheredTransparency = true;
+	// SSR receiver-material stencil (see Engine/Rendergraph/stencil_bits.h):
+	// when set, MAIN's opaque material binds REPLACE the per-material
+	// classification bits into the depth target's stencil aspect (dynamic
+	// reference; alpha-tested discards revert the write, occluded fragments
+	// KEEP) — the opaque half of the old GlassMask redraw, folded into the
+	// draws that already happen. Writing in Main covers every path that
+	// shades the frame (including the Northlight depth split), so no extra
+	// redraw exists. False under MSAA (Main writes the transient MSAA depth)
+	// and for stencil-less depth formats / SSR-off frames (legacy
+	// uniform-F0 trace instead).
+	bool ssrStencilWanted = false;
 	// Northlight depth split (filter on + seed primed depth): when set,
 	// the prepass runs FALLBACK-ONLY — items whose selected LOD the gfx
 	// filter owns are skipped, because the filter's temporal depth set

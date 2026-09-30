@@ -169,6 +169,9 @@ namespace smvk {
 		D24_UNorm_S8_UInt,
 		D32_Float,
 		D32_Float_S8_UInt,
+		// Stencil-only view format of a combined depth/stencil image
+		// (the aspect-isolated sampling view for stencil readers).
+		S8_UInt,
 
 		// compressed
 		BC1_RGBA_UNorm,
@@ -1543,11 +1546,31 @@ struct ImageCreateInfo
 			// Policy decision: default DS views to depth.
 			return ImageAspect::Depth;
 
+		case Format::S8_UInt:
+			return ImageAspect::Stencil;
+
 		case Format::Undefined:
 			return ImageAspect::None;
 
 		default:
 			return ImageAspect::Color;
+		}
+	}
+
+	// True when the format carries a stencil aspect (combined or
+	// stencil-only). Targets created with such a format can expose a
+	// stencil sampling view; SSR's receiver-material layer keys on it.
+	[[nodiscard]] constexpr bool FormatHasStencilAspect(Format format)
+	{
+		switch (format)
+		{
+		case Format::S8_UInt:
+		case Format::D24_UNorm_S8_UInt:
+		case Format::D32_Float_S8_UInt:
+			return true;
+
+		default:
+			return false;
 		}
 	}
 	inline  StencilSettings StencilSettings::DefaultDisabled()

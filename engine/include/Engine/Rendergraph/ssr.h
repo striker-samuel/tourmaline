@@ -11,9 +11,10 @@
 // Pipeline (trace + blur at half res, i.e. full extent / 2):
 //   trace:     full-res depth 2x2 block -> nearest valid tap is the
 //              receiver (reverse-Z: max depth = nearest; never fabricate
-//              a center across a silhouette) UNLESS the glass layer
+//              a center across a silhouette) UNLESS the pane layer
 //              marks the block as a pane (Blend/dithered transparents
-//              never write the opaque depth — see `glass` below) ->
+//              never write the opaque depth — see the pane bit +
+//              paneDepth target below) ->
 //              pane depth is the receiver -> depth-derived normal
 //              from full-res neighbors one half-step over (same-depth
 //              fallback is sign-safe by construction) -> screen-stride
@@ -38,14 +39,14 @@
 //              base HDR is never filtered. History lives in two ping-pong
 //              targets; rejection (off-screen reproject, disocclusion,
 //              invalid history) falls back to the current blurred tap.
-//              NOTE: the temporal pass knows nothing about the glass
+//              NOTE: the temporal pass knows nothing about the pane
 //              layer — its depth authority is the through-content, which
 //              is continuous under a pane, so pane layers accumulate
 //              like any other surface.
 //   composite: FULL-res base HDR + depth-guided 2x2 upsample of the
 //              blurred (rgb, a) with full-res depth authority. Background
 //              pixels keep the base color unconditionally — except pane
-//              pixels (glass layer R > 0.5): the pane, not the sky
+//              pixels (the stencil pane bit): the pane, not the sky
 //              behind it, is the reflector, so its traced reflection
 //              must survive the sky early-out.
 // Placement: after Main + MotionBlur + DOF, before Exposure/Bloom/Tonemap.
@@ -53,35 +54,47 @@
 // reflections composited additively. Downstream passes sample the SSR
 // output when the pass ran, else the input directly (no copy disabled).
 //
-// Glass layer (option B — pane reflections) grown into the SSR
-// receiver-material mask: `glass` is a full-res RGBA16F target the APP
-// fills with two redraws into one pass ("GlassMask"):
-//   - transparent list (glassmask.frag.hlsl): R = pane presence,
-//     G = the pane fragment's reverse-Z depth. The trace consumes it as
-//     the receiver where it masks (pane position/normal/Fresnel — real
-//     pane geometry, not the seen-through background), and the
-//     composite uses it to keep pane pixels off the sky early-out.
-//   - opaque list (ssrmat.frag.hlsl): B = effective metallic,
-//     A = gloss (1 - roughness), evaluated exactly like the lit FS
-//     (layered blend + metallicRoughness texture). The trace reads B/A
-//     on opaque receivers: metal F0 rises to ~1 and rough dielectrics
-//     fade their reflections out (gloss^2), so stone/plaster stop
-//     reading as chrome while glass, polished floors and metals keep
-//     their read. Pass an empty view (or an invalid bindless index) to
-//     AddSsr*Passes to disable: the trace falls back to the
-//     opaque-depth receiver with the uniform-F0 legacy behavior (an
-//     un-gated mirror everywhere — the pre-material-mask look).
+// Receiver-material layer (stencil aspect + paneDepth target — the old
+// full-res RGBA16F "glass" mask target grown out of existence): the
+// depth target's unused 8-bit stencil now carries the classification
+// bits (see Rendergraph/stencil_bits.h — writers fold into the draws
+// that already happen, so BOTH redraw legs of the old GlassMask pass
+// and its full-res RGBA16F target are gone):
+//   - MAIN forward pass, per opaque material bind: stencil REPLACE with
+//     the material's classification (dynamic reference — see
+//     CommandBuffer::SetStencilReference; alpha-tested discards revert
+//     the write, so cutout holes stay unwritten; occluded fragments
+//     KEEP). Writing in Main makes the layer complete on every path
+//     that shades the frame — including the Northlight temporal depth
+//     split — so no extra redraw exists. MSAA frames skip it (Main
+//     writes the transient MSAA depth).
+//   - PaneMask pass (transparents-only redraw, the surviving pane leg):
+//     stencil REPLACE STENCIL_SSR + the pane fragment's reverse-Z depth
+//     into the full-res R16_UNorm paneDepth target (Max blend keeps the
+//     nearest pane where panes stack, order-independent). Pane identity
+//     rides paneDepth (pane <=> paneDepth > 0) — no pane bit exists.
+//   - trace: pane receiver = valid paneDepth tap (the receiver plane),
+//     receiver classification = STENCIL_SSR / STENCIL_SSR_METAL bits
+//     (mirror-class receivers — roughness <= 0.15, see
+//     stencil_bits.h — keep the mirror lobe, mirror-class metals raise
+//     F0 to ~1, semi-gloss/matte stay silent like their old (1-r)^2
+//     fade); unbound stencil (stencil-less depth format /
+//     SSR off / MSAA) leaves the uniform-F0 legacy behavior.
+//   - composite: paneDepth > 0 keeps pane pixels off the sky early-out.
+// The paneDepth quantization to R16_UNorm matches the old float16
+// G-channel precision; the metal/gloss quantization to stencil bits is
+// the accepted tradeoff of moving into the stencil aspect.
 //
 // No GBuffer exists (forward+ path writes color + depth only), so the
 // trace reconstructs everything it needs from the 1x prepass depth
-// plus the receiver-material mask above:
+// plus the receiver-material layer above:
 //   - view positions via FrameUniforms.invProj (exact, flip/finite-far
 //     agnostic — same discipline as ssao.h / dof.h),
 //   - normals from depth-derived view-position derivatives,
-//   - Fresnel from F0 = lerp(uniform dielectric F0, 1, mask metallic)
-//     (glass default 0.04), scaled by the mask's gloss on the emission
-//     (roughness fade). Every dielectric surface reflects with the same
-//     base F0; the per-receiver metallic/gloss mask is the material
+//   - Fresnel from F0 = lerp(uniform dielectric F0, 1, kMetal bit)
+//     (glass default 0.04), gated by STENCIL_SSR (+ STENCIL_SSR_METAL
+//     for the F0 rise) on the emission. Every dielectric surface reflects with the
+//     same base F0; the per-receiver stencil bits are the material
 //     gate. Bistro windows (large vertical glass planes at grazing
 //     street-view angles, double-sided) are the calibration case: aim
 //     the default Bistro camera down the road at the shopfront glass
@@ -139,8 +152,8 @@ struct SsrTracePush {
 	float f0 = 0.04f;
 	uint32_t refineSteps = 4;
 	uint32_t frameIndex = 0; // dither epoch (0 = static legacy; temporal path passes the record counter)
-	uint32_t maskTextureIndex = UINT32_MAX; // glass layer bindless; UINT32_MAX = no pane receivers
-	uint32_t pad0 = 0; // sizeof alignment (uint64 member); mirrors the HLSL pad
+	uint32_t stencilTextureIndex = UINT32_MAX; // receiver-material stencil (S8_UInt bindless); UINT32_MAX = no material gate
+	uint32_t paneDepthTextureIndex = UINT32_MAX; // pane receiver depth (R16_UNorm bindless); UINT32_MAX = no pane receivers
 };
 static_assert(sizeof(SsrTracePush) == 64);
 
@@ -171,7 +184,7 @@ struct SsrComposePush {
 	float invDepthH = 0.0f; // 1 / full-res depth height
 	float sharpness = 10.0f; // upsample edge weight
 	float pad0 = 0.0f;
-	uint32_t maskTextureIndex = UINT32_MAX; // glass layer bindless; UINT32_MAX = sky early-out unconditional
+	uint32_t paneDepthTextureIndex = UINT32_MAX; // pane receiver depth (R16_UNorm bindless); UINT32_MAX = sky early-out unconditional
 	uint32_t pad2 = 0;
 };
 static_assert(sizeof(SsrComposePush) == 48);
@@ -265,15 +278,15 @@ struct ScreenSpaceReflections {
 
 	Target raw; // half-res trace output (rgb = refl x fresnel x intensity, a = confidence)
 	Target blurred; // half-res bilateral blur of raw
-	// Receiver-material mask (option B — pane reflections + opaque
-	// material gate): full-res RGBA16F, R/G = pane presence + pane depth
-	// (glassmask.frag.hlsl), B/A = effective metallic + gloss
-	// (ssrmat.frag.hlsl). Filled by the APP's GlassMask pass
-	// (transparent-list + opaque-list redraw); consumed by the trace
-	// (pane receivers + per-receiver material gating) + composite (sky
-	// early-out gate). Same extent as the composite, so Ensure's extent
-	// check covers it.
-	Target glass;
+	// Pane receiver depth (the surviving pane half of the old GlassMask
+	// mask target): full-res R16_UNorm, written by the APP's PaneMask
+	// pass (the transparents-only redraw) with the pane fragment's
+	// reverse-Z depth, Max-blended so the nearest pane wins where panes
+	// stack. The stencil aspect carries the pane PRESENCE bit (see
+	// Rendergraph/stencil_bits.h); this target carries the pane PLANE
+	// for the trace's receiver unprojection + glass-aware normals.
+	// Same extent as the composite, so Ensure's extent check covers it.
+	Target paneDepth;
 	// Half-res temporal history ping-pong (TAA of the reflection layer).
 	// history[parity] is written by the temporal pass each temporal
 	// record; the composite samples the just-written slot. historyValid
@@ -304,7 +317,7 @@ struct ScreenSpaceReflections {
 	SsrDesc desc{};
 
 	[[nodiscard]] bool TargetsValid() const {
-		return raw.Valid() && blurred.Valid() && glass.Valid() &&
+		return raw.Valid() && blurred.Valid() && paneDepth.Valid() &&
 			history[0].Valid() && history[1].Valid() &&
 			!image.empty() && !logicalView.empty();
 	}
@@ -512,7 +525,7 @@ struct ScreenSpaceReflections {
 			return false;
 		DestroyTargets(rg);
 		const Extent2D half = HalfExtentFor(full);
-		Target newRaw, newBlur, newHist0, newHist1, newGlass;
+		Target newRaw, newBlur, newHist0, newHist1, newPaneDepth;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrRaw", newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrBlur", newBlur)) {
@@ -530,7 +543,9 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			return false;
 		}
-		if (!CreateTarget(ctx, rg, full, d.format, "ssrGlass", newGlass)) {
+		// Pane receiver depth: R16_UNorm (guaranteed blendable for the
+		// Max-blend write; matches the old float16 G-channel precision).
+		if (!CreateTarget(ctx, rg, full, Format::R16_UNorm, "ssrPaneDepth", newPaneDepth)) {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newHist0);
@@ -542,12 +557,12 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
-			DestroyTarget(rg, newGlass);
+			DestroyTarget(rg, newPaneDepth);
 			return false;
 		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
-		glass = std::move(newGlass);
+		paneDepth = std::move(newPaneDepth);
 		history[0] = std::move(newHist0);
 		history[1] = std::move(newHist1);
 		halfExtent = half;
@@ -559,7 +574,7 @@ struct ScreenSpaceReflections {
 	void DestroyTargets(RenderGraph& rg) {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
-		DestroyTarget(rg, glass);
+		DestroyTarget(rg, paneDepth);
 		DestroyTarget(rg, history[0]);
 		DestroyTarget(rg, history[1]);
 		DestroyTarget(rg);
@@ -589,15 +604,16 @@ struct ScreenSpaceReflections {
 		DestroyShaders();
 	}
 
-	// Emits trace (HDR + full-res depth [+ glass layer] -> half-res
-	// reflection) + blur (half-res reflection + full-res depth -> half-res)
-	// + composite (half-res reflection + full-res depth + full-res HDR
-	// [+ glass layer] -> full-res HDR).
-	// glassView/glassBindlessIndex: the receiver-material mask output
-	// (pane presence/depth + opaque metallic/gloss). Empty view or
-	// invalid index disables both pane receivers and the material gate —
-	// the trace keeps the opaque-depth receiver with the uniform-F0
-	// legacy behavior.
+	// Emits trace (HDR + full-res depth [+ stencil + paneDepth] ->
+	// half-res reflection) + blur (half-res reflection + full-res depth
+	// -> half-res) + composite (half-res reflection + full-res depth +
+	// full-res HDR [+ paneDepth] -> full-res HDR).
+	// stencilView/stencilBindlessIndex: the depth target's S8_UInt
+	// receiver-material stencil (see Rendergraph/stencil_bits.h).
+	// paneDepthView/paneDepthBindlessIndex: the pane receiver depth
+	// written by the APP's PaneMask pass. Empty views or invalid
+	// indices disable the respective features — the trace keeps the
+	// opaque-depth receiver with the uniform-F0 legacy behavior.
 	// Captures only copyable handles/indices, so the passes are safe once
 	// this call returns.
 	void AddSsrPasses(RenderGraph& rg,
@@ -605,8 +621,10 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		LogicalImageViewHandle glassView = LogicalImageViewHandle{},
-		uint32_t glassBindlessIndex = UINT32_MAX,
+		LogicalImageViewHandle stencilView = LogicalImageViewHandle{},
+		uint32_t stencilBindlessIndex = UINT32_MAX,
+		LogicalImageViewHandle paneDepthView = LogicalImageViewHandle{},
+		uint32_t paneDepthBindlessIndex = UINT32_MAX,
 		uint64_t frameUniformsAddr = 0,
 		uint32_t linearSamplerIndex = 0,
 		const SsrDesc& overrideDesc = SsrDesc{},
@@ -621,13 +639,14 @@ struct ScreenSpaceReflections {
 		assert(extent.width != 0 && extent.height != 0);
 		assert(halfExtent.width != 0 && halfExtent.height != 0);
 
-		const bool glassOn = !glassView.empty() && glassBindlessIndex != UINT32_MAX;
+		const bool stencilOn = !stencilView.empty() && stencilBindlessIndex != UINT32_MAX;
+		const bool paneOn = !paneDepthView.empty() && paneDepthBindlessIndex != UINT32_MAX;
 		const float fullW = static_cast<float>(std::max(1u, extent.width));
 		const float fullH = static_cast<float>(std::max(1u, extent.height));
 		const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 		const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-		// ---- Trace: HDR + full-res depth [+ glass] -> half-res reflection ----
+		// ---- Trace: HDR + full-res depth [+ stencil + paneDepth] -> half-res reflection ----
 		{
 			SsrTracePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -643,11 +662,14 @@ struct ScreenSpaceReflections {
 			push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
 		push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
 		push.frameIndex = frameIndex;
-		push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
+		push.stencilTextureIndex = stencilOn ? stencilBindlessIndex : UINT32_MAX;
+		push.paneDepthTextureIndex = paneOn ? paneDepthBindlessIndex : UINT32_MAX;
 
 			std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
-			if (glassOn)
-				traceInputs.push_back(glassView);
+			if (stencilOn)
+				traceInputs.push_back(stencilView);
+			if (paneOn)
+				traceInputs.push_back(paneDepthView);
 			RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
@@ -708,7 +730,7 @@ struct ScreenSpaceReflections {
 		}
 
 		// ---- Composite: blurred half-res + full-res depth + HDR ----
-		// [+ glass] -> HDR. The depth-guided upsample runs HERE, in a
+		// [+ paneDepth] -> HDR. The depth-guided upsample runs HERE, in a
 		// pass that never attaches depth, so every depth read is a
 		// properly barriered sampled input.
 		{
@@ -721,13 +743,13 @@ struct ScreenSpaceReflections {
 			push.invDepthW = 1.0f / fullW;
 			push.invDepthH = 1.0f / fullH;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-			push.pad0 = 0.0f;
-			push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
+		push.pad0 = 0.0f;
+		push.paneDepthTextureIndex = paneOn ? paneDepthBindlessIndex : UINT32_MAX;
 			push.pad2 = 0;
 
 			std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, depthView, hdrView };
-			if (glassOn)
-				composeInputs.push_back(glassView);
+			if (paneOn)
+				composeInputs.push_back(paneDepthView);
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -752,13 +774,13 @@ struct ScreenSpaceReflections {
 	}
 
 	// Temporal (TAA) variant: trace + blur (identical pushes to the
-	// spatial path above, glass layer included), then the temporal pass
-	// (blurred + history[parity^1] + motion + depth -> history[parity]),
-	// then the composite sampling the just-written history slot instead
-	// of the blurred target. The base HDR path is untouched — only the
-	// reflection layer is temporally filtered. historyValid == false
-	// warms up: the temporal pass copies curr into the slot so the next
-	// record has something to blend against.
+	// spatial path above, stencil + paneDepth included), then the
+	// temporal pass (blurred + history[parity^1] + motion + depth ->
+	// history[parity]), then the composite sampling the just-written
+	// history slot instead of the blurred target. The base HDR path is
+	// untouched — only the reflection layer is temporally filtered.
+	// historyValid == false warms up: the temporal pass copies curr into
+	// the slot so the next record has something to blend against.
 	// Captures only copyable handles/indices, so the passes are safe once
 	// this call returns.
 	void AddSsrTemporalPasses(RenderGraph& rg,
@@ -766,8 +788,10 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		LogicalImageViewHandle glassView,
-		uint32_t glassBindlessIndex,
+		LogicalImageViewHandle stencilView,
+		uint32_t stencilBindlessIndex,
+		LogicalImageViewHandle paneDepthView,
+		uint32_t paneDepthBindlessIndex,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindlessIndex,
 		uint64_t frameUniformsAddr,
@@ -792,13 +816,14 @@ struct ScreenSpaceReflections {
 		assert(halfExtent.width != 0 && halfExtent.height != 0);
 		assert(parity < 2);
 
-		const bool glassOn = !glassView.empty() && glassBindlessIndex != UINT32_MAX;
+		const bool stencilOn = !stencilView.empty() && stencilBindlessIndex != UINT32_MAX;
+		const bool paneOn = !paneDepthView.empty() && paneDepthBindlessIndex != UINT32_MAX;
 		const float fullW = static_cast<float>(std::max(1u, extent.width));
 		const float fullH = static_cast<float>(std::max(1u, extent.height));
 		const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 		const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-		// ---- Trace: HDR + full-res depth [+ glass] -> half-res reflection ----
+		// ---- Trace: HDR + full-res depth [+ stencil + paneDepth] -> half-res reflection ----
 		{
 			SsrTracePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -814,11 +839,14 @@ struct ScreenSpaceReflections {
 			push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
 		push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
 		push.frameIndex = frameIndex;
-		push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
+		push.stencilTextureIndex = stencilOn ? stencilBindlessIndex : UINT32_MAX;
+		push.paneDepthTextureIndex = paneOn ? paneDepthBindlessIndex : UINT32_MAX;
 
 			std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
-			if (glassOn)
-				traceInputs.push_back(glassView);
+			if (stencilOn)
+				traceInputs.push_back(stencilView);
+			if (paneOn)
+				traceInputs.push_back(paneDepthView);
 			RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
@@ -924,7 +952,7 @@ struct ScreenSpaceReflections {
 		}
 
 		// ---- Composite: temporal half-res + full-res depth + HDR ----
-		// [+ glass] -> HDR. Same depth-guided upsample as the spatial
+		// [+ paneDepth] -> HDR. Same depth-guided upsample as the spatial
 		// path, but the reflection source is the just-written history
 		// slot.
 		{
@@ -937,13 +965,13 @@ struct ScreenSpaceReflections {
 			push.invDepthW = 1.0f / fullW;
 			push.invDepthH = 1.0f / fullH;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-			push.pad0 = 0.0f;
-			push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
+		push.pad0 = 0.0f;
+		push.paneDepthTextureIndex = paneOn ? paneDepthBindlessIndex : UINT32_MAX;
 			push.pad2 = 0;
 
 			std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, depthView, hdrView };
-			if (glassOn)
-				composeInputs.push_back(glassView);
+			if (paneOn)
+				composeInputs.push_back(paneDepthView);
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -973,8 +1001,10 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		LogicalImageViewHandle glassView,
-		uint32_t glassBindlessIndex,
+		LogicalImageViewHandle stencilView,
+		uint32_t stencilBindlessIndex,
+		LogicalImageViewHandle paneDepthView,
+		uint32_t paneDepthBindlessIndex,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindlessIndex,
 		uint64_t frameUniformsAddr,
@@ -990,7 +1020,8 @@ struct ScreenSpaceReflections {
 		const char* composeName = "SSRComposite",
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			glassView, glassBindlessIndex, motionView, motionBindlessIndex,
+			stencilView, stencilBindlessIndex, paneDepthView, paneDepthBindlessIndex,
+			motionView, motionBindlessIndex,
 			frameUniformsAddr, linearSamplerIndex, desc,
 			jitterDeltaX, jitterDeltaY, taaBlend, historyValid, parity,
 			traceName, blurName, temporalName, composeName, frameIndex);
@@ -1002,15 +1033,18 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		LogicalImageViewHandle glassView = LogicalImageViewHandle{},
-		uint32_t glassBindlessIndex = UINT32_MAX,
+		LogicalImageViewHandle stencilView = LogicalImageViewHandle{},
+		uint32_t stencilBindlessIndex = UINT32_MAX,
+		LogicalImageViewHandle paneDepthView = LogicalImageViewHandle{},
+		uint32_t paneDepthBindlessIndex = UINT32_MAX,
 		uint64_t frameUniformsAddr = 0,
 		uint32_t linearSamplerIndex = 0,
 		const char* traceName = "SSR",
 		const char* blurName = "SSRBlur",
 		const char* composeName = "SSRComposite") const {
 		AddSsrPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			glassView, glassBindlessIndex, frameUniformsAddr, linearSamplerIndex, desc,
+			stencilView, stencilBindlessIndex, paneDepthView, paneDepthBindlessIndex,
+			frameUniformsAddr, linearSamplerIndex, desc,
 			traceName, blurName, composeName);
 	}
 };

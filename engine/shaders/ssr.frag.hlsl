@@ -3,7 +3,7 @@
 #include "dof.hlsli"
 #include "environment.hlsli"
 
-// SSR trace (half res): full-res depth + receiver-material mask ->
+// SSR trace (half res): full-res depth + receiver-material layer ->
 // half-res reflection layer.
 // Output: rgb = reflected HDR x Fresnel x glossFade x intensity, clamped
 //         to kSsrMaxReflected (firefly guard — sun-disc strikes and
@@ -15,13 +15,21 @@
 // miss without double-counting the sky. The bilateral blur + composite
 // passes consume (rgb, a); the FULL-res base HDR is only re-added in
 // the composite, so it stays sharp.
-// Receiver: a glass pane where the mask marks one (panes never write
-// the opaque depth — without the mask every pane pixel traced off the
+// Receiver: a glass pane where the layer marks one (panes never write
+// the opaque depth — without the layer every pane pixel traced off the
 // seen-through background instead of the pane), else the nearest valid
-// opaque depth tap. Receiver MATERIAL comes from the mask's opaque
-// redraw (B = metallic, A = gloss): metal F0 rises to ~1 and rough
-// dielectrics fade their reflections out (stone stops reading as
-// chrome); an unbound mask keeps the uniform-F0 legacy behavior.
+// opaque depth tap. Receiver MATERIAL comes from the stencil aspect of
+// the depth target (kMetal / kGlossy bits — see stencil_bits.h): metal
+// F0 rises to ~1 and rough dielectrics fade their reflections out
+// (stone stops reading as chrome); an unbound stencil keeps the
+// uniform-F0 legacy behavior.
+
+// Receiver-material stencil bits — must match
+// Engine/Rendergraph/stencil_bits.h (single byte, cheap to audit).
+// Pane identity rides the paneDepth target (pane <=> paneDepth > 0),
+// so the trace only decodes the classification bits here.
+static const uint kStencilSsr = 1u;       // mirror-class receiver (roughness <= 0.15)
+static const uint kStencilSsrMetal = 64u; // metallic refinement (F0 -> ~1)
 
 struct PSIn
 {
@@ -35,8 +43,8 @@ struct PSOut
 };
 
 // Must match Engine/Rendergraph/ssr.h SsrTracePush (64 bytes — the
-// C++ struct's uint64 BDA aligns it to 8, so this block carries the same
-// explicit trailing pad; every member offset is identical).
+// C++ struct's uint64 BDA aligns it to 8, so this block carries no
+// trailing pad; every member offset is identical).
 struct SsrTracePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -54,8 +62,8 @@ struct SsrTracePush
                      // else the record counter (temporal path animates the
                      // ray-origin dither so the TAA pass converges speckle
                      // to its mean instead of parking a static pattern)
-    uint maskTextureIndex; // receiver-material mask bindless (pane R/G + opaque B/A), 0xffffffff = none
-    uint pad0; // sizeof alignment (mirrors the C++ pad)
+    uint stencilTextureIndex; // receiver-material stencil (S8_UINT, uintTextures[]), 0xffffffff = none
+    uint paneDepthTextureIndex; // pane receiver depth (R16_UNorm), 0xffffffff = none
 };
 
 [[vk::push_constant]]
@@ -92,19 +100,32 @@ float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
                   (float(fullPx.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
 }
 
-// Receiver-material mask tap (full-res): R/G = pane presence + the
-// pane fragment's reverse-Z depth (glassmask.frag.hlsl redraw of the
-// transparent list), B/A = effective metallic + gloss of the OPAQUE
-// receiver (ssrmat.frag.hlsl redraw of the opaque list — the layer is
-// the pane mask grown into a general SSR receiver-material mask).
-// Returns 0 when the layer is not bound this frame — a uniform branch,
+// Receiver-material stencil tap (full-res, S8_UINT through the
+// uintTextures[] alias): the classification bits written by MAIN's
+// opaque binds (STENCIL_SSR / STENCIL_SSR_METAL — see
+// stencil_bits.h) + the PaneMask pass (STENCIL_SSR on panes). Returns
+// 0 when the stencil view is not bound this frame — a uniform branch,
 // so the sentinel never indexes the bindless array out of range.
-float4 SsrMaskTap(int2 fullPx)
+uint SsrStencilTap(int2 fullPx)
 {
-    if (sp.maskTextureIndex == 0xffffffffu)
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
-    Texture2D glassTex = textures[NonUniformResourceIndex(sp.maskTextureIndex)];
-    return glassTex.Load(int3(fullPx, 0));
+    if (sp.stencilTextureIndex == 0xffffffffu)
+        return 0u;
+    Texture2D<uint4> stencilTex =
+        uintTextures[NonUniformResourceIndex(sp.stencilTextureIndex)];
+    return stencilTex.Load(int3(fullPx, 0)).r;
+}
+
+// Pane receiver depth tap (full-res R16_UNorm, written by the app's
+// PaneMask redraw of the transparent list — panes never write the
+// opaque depth, so this is the only place their plane exists). Returns
+// 0 (the pass's clear value) when the paneDepth view is not bound —
+// pane candidates all reject, pane receivers never engage.
+float SsrPaneDepthTap(int2 fullPx)
+{
+    if (sp.paneDepthTextureIndex == 0xffffffffu)
+        return 0.0f;
+    Texture2D paneTex = textures[NonUniformResourceIndex(sp.paneDepthTextureIndex)];
+    return paneTex.Load(int3(fullPx, 0)).r;
 }
 
 // Facing of a candidate hit: depth-derived normal around the hit UV,
@@ -163,33 +184,33 @@ PSOut mainPS(PSIn IN)
     // center across a silhouette — a foreground/background mix would
     // smear reflections across silhouettes). Panes never write the
     // opaque depth (the transparent pass is depth-write-free), so
-    // without the glass layer every pane pixel traced off whatever sits
+    // without the pane layer every pane pixel traced off whatever sits
     // BEHIND the pane — the Bistro shopfront "reflected" its interior
-    // shelves instead of the street. ANY glass tap in the 2x2 block
-    // makes the block a pane receiver (the pane plane sits in front of
-    // every tap's through-content), picking the NEAREST pane tap
-    // (reverse-Z max G) so the receiver stays on the pane surface.
-    // All-background blocks (sky/clear/OOB at odd extents) still carry
-    // no reflector -> miss — unless a pane covers them, in which case
-    // the pane depth IS the receiver and glass over sky finally
-    // traces.
+    // shelves instead of the street. ANY valid paneDepth tap in the 2x2
+    // block makes the block a pane receiver (the pane plane sits in
+    // front of every tap's through-content), picking the NEAREST pane
+    // depth (reverse-Z max paneDepth) so the receiver stays on the pane
+    // surface. All-background blocks (sky/clear/OOB at odd extents)
+    // still carry no reflector -> miss — unless a pane covers them, in
+    // which case the pane depth IS the receiver and glass over sky
+    // finally traces.
     float dCenter = 0.0f;
     int2 fullPxC = fullBase;
     bool paneReceiver = false;
     {
-        const float4 gl00 = SsrMaskTap(fullBase);
-        const float4 gl10 = SsrMaskTap(fullBase + int2(1, 0));
-        const float4 gl01 = SsrMaskTap(fullBase + int2(0, 1));
-        const float4 gl11 = SsrMaskTap(fullBase + int2(1, 1));
+        const float pd00 = SsrPaneDepthTap(fullBase);
+        const float pd10 = SsrPaneDepthTap(fullBase + int2(1, 0));
+        const float pd01 = SsrPaneDepthTap(fullBase + int2(0, 1));
+        const float pd11 = SsrPaneDepthTap(fullBase + int2(1, 1));
         float gBest = 0.0f;
-        if (gl00.r > 0.5f && !DofIsBackgroundOrGarbage(gl00.g) && gl00.g > gBest)
-            { gBest = gl00.g; dCenter = gl00.g; fullPxC = fullBase; paneReceiver = true; }
-        if (gl10.r > 0.5f && !DofIsBackgroundOrGarbage(gl10.g) && gl10.g > gBest)
-            { gBest = gl10.g; dCenter = gl10.g; fullPxC = fullBase + int2(1, 0); paneReceiver = true; }
-        if (gl01.r > 0.5f && !DofIsBackgroundOrGarbage(gl01.g) && gl01.g > gBest)
-            { gBest = gl01.g; dCenter = gl01.g; fullPxC = fullBase + int2(0, 1); paneReceiver = true; }
-        if (gl11.r > 0.5f && !DofIsBackgroundOrGarbage(gl11.g) && gl11.g > gBest)
-            { gBest = gl11.g; dCenter = gl11.g; fullPxC = fullBase + int2(1, 1); paneReceiver = true; }
+        if (!DofIsBackgroundOrGarbage(pd00) && pd00 > gBest)
+            { gBest = pd00; dCenter = pd00; fullPxC = fullBase; paneReceiver = true; }
+        if (!DofIsBackgroundOrGarbage(pd10) && pd10 > gBest)
+            { gBest = pd10; dCenter = pd10; fullPxC = fullBase + int2(1, 0); paneReceiver = true; }
+        if (!DofIsBackgroundOrGarbage(pd01) && pd01 > gBest)
+            { gBest = pd01; dCenter = pd01; fullPxC = fullBase + int2(0, 1); paneReceiver = true; }
+        if (!DofIsBackgroundOrGarbage(pd11) && pd11 > gBest)
+            { gBest = pd11; dCenter = pd11; fullPxC = fullBase + int2(1, 1); paneReceiver = true; }
     }
     if (!paneReceiver) {
         float dBest = 0.0f;
@@ -225,14 +246,14 @@ PSOut mainPS(PSIn IN)
     int2 fullPxY = fullBase + int2(0, 2);
     float dX = depthTex.Load(int3(fullPxX, 0)).r;
     float dY = depthTex.Load(int3(fullPxY, 0)).r;
-    const float4 glX = SsrMaskTap(fullPxX);
-    const float4 glY = SsrMaskTap(fullPxY);
+    const float pdX = SsrPaneDepthTap(fullPxX);
+    const float pdY = SsrPaneDepthTap(fullPxY);
     float dXe = paneReceiver
-        ? ((glX.r > 0.5f && !DofIsBackgroundOrGarbage(glX.g)) ? glX.g : dCenter)
-        : ((glX.r > 0.5f || DofIsBackgroundOrGarbage(dX)) ? dCenter : dX);
+        ? (!DofIsBackgroundOrGarbage(pdX) ? pdX : dCenter)
+        : (!DofIsBackgroundOrGarbage(pdX) || DofIsBackgroundOrGarbage(dX) ? dCenter : dX);
     float dYe = paneReceiver
-        ? ((glY.r > 0.5f && !DofIsBackgroundOrGarbage(glY.g)) ? glY.g : dCenter)
-        : ((glY.r > 0.5f || DofIsBackgroundOrGarbage(dY)) ? dCenter : dY);
+        ? (!DofIsBackgroundOrGarbage(pdY) ? pdY : dCenter)
+        : (!DofIsBackgroundOrGarbage(pdY) || DofIsBackgroundOrGarbage(dY) ? dCenter : dY);
     float3 posX = DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dXe, frame.invProj);
     float3 posY = DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dYe, frame.invProj);
     float3 N = normalize(cross(posX - viewPos, posY - viewPos) + 1e-9f);
@@ -242,22 +263,25 @@ PSOut mainPS(PSIn IN)
     // Safe for double-sided glass: reflect() is invariant under N -> -N,
     // so the viewer-facing flip above never mirrors the reflection.
 
-    // Receiver material (mask B/A, written by the opaque ssrmat
-    // redraw): B = effective metallic (factor x metallicRoughness.b),
-    // A = gloss (1 - roughness, factor x metallicRoughness.g). Panes
-    // keep the glassmask values (B=0, A=1): the pane's reflection
-    // strength stays a pure dielectric-F0 Fresnel read — its own
-    // semantics, immune to the seen-through background's material
-    // bleeding through the Max blend. Unbound mask (missing programs /
-    // layer skipped) leaves matMetal 0 / matGloss 1: the uniform-F0
-    // legacy behavior, an un-gated mirror everywhere.
+    // Receiver classification (stencil bits, written by Main's opaque
+    // binds — see Rendergraph/stencil_bits.h): STENCIL_SSR = mirror-class
+    // receiver (roughness <= 0.15 — glass, polished metal; the per-draw
+    // quantization of the old per-pixel B/A mask channels), STENCIL_SSR_METAL
+    // adds the metal F0 rise. Semi-gloss/matte surfaces are unclassified —
+    // silent, like their old (1-r)^2 fade. Panes keep their own semantics
+    // (the PaneMask REPLACE clobbered the classification at pane pixels):
+    // non-metal full-gloss — the pane's reflection strength stays a pure
+    // dielectric-F0 Fresnel read, immune to the seen-through
+    // background's material. Unbound stencil (stencil-less depth format /
+    // MSAA) leaves matMetal 0 / matGloss 1: the uniform-F0 legacy
+    // behavior, an un-gated mirror everywhere.
     float matMetal = 0.0f;
     float matGloss = 1.0f;
     if (!paneReceiver)
     {
-        const float4 mm = SsrMaskTap(fullPxC);
-        matMetal = saturate(mm.b);
-        matGloss = saturate(mm.a);
+        const uint st = SsrStencilTap(fullPxC);
+        matGloss = (st & kStencilSsr) ? 1.0f : 0.0f;
+        matMetal = (st & kStencilSsrMetal) ? 1.0f : 0.0f;
     }
 
     // Fresnel (Schlick): F0 rises to ~1 for metals (their colored F0
@@ -489,12 +513,12 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
     float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
-    // Roughness fade (mask A = gloss): sharp screen-space reflections
-    // only read on glossy receivers — gloss^2 keeps polished metals /
-    // glass near 1 and pulls rough dielectrics (stone, plaster) to ~0,
-    // where a mirror-sharp additive lobe would read as chrome. The
-    // fixed 5x5 blur cannot spread the lobe per material, so fading it
-    // out is the honest gate. Unbound mask keeps gloss 1 (legacy).
+    // Roughness fade (STENCIL_SSR bit): sharp screen-space reflections
+    // only read on reflective receivers — the bit keeps polished metals /
+    // glass at 1 and drops rough dielectrics (stone, plaster) to 0, where
+    // a mirror-sharp additive lobe would read as chrome. The fixed 5x5
+    // blur cannot spread the lobe per material, so fading it out is the
+    // honest gate. Unbound stencil keeps gloss 1 (legacy).
     float glossFade = matGloss * matGloss;
     // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
     // normal + dithered origin striking the sun disc would otherwise

@@ -674,19 +674,17 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragWireShader;
 	smvk::ShaderProgram mainWireProgram;       // default.vert + wire FS
 	smvk::ShaderProgram vertexLitWireProgram;  // default_vertexlit.vert + wire FS
-	// SSR receiver-material mask writers (see ssr.h): default.vert +
-	// glassmask.frag redraw of the transparent list into ssr.glass
-	// (R = pane presence, G = pane reverse-Z depth) and default.vert +
-	// ssrmat.frag redraw of the opaque list (B = effective metallic,
-	// A = gloss). Missing modules leave shaderCount 0 and the GlassMask
-	// pass skips that leg; when both are missing the pass is not emitted
-	// and SSR keeps the opaque-depth receiver with the uniform-F0
-	// legacy behavior (pre-mask look: reflections fire on every
-	// surface, rough stone included).
-	smvk::Holder<smvk::ShaderModuleHandle> fragGlassMaskShader;
-	smvk::ShaderProgram glassMaskProgram;
-	smvk::Holder<smvk::ShaderModuleHandle> fragSsrMatShader;
-	smvk::ShaderProgram ssrMatProgram;
+	// SSR pane-depth writer (see the PaneMask pass + ssr.h): default.vert +
+	// panedepth.frag redraw of the transparent list into ssr.paneDepth
+	// (R = the pane fragment's reverse-Z depth) while the stencil aspect
+	// takes the STENCIL_SSR bit (see Rendergraph/stencil_bits.h; Main's
+	// opaque binds write the classification — the old GlassMask redraw's
+	// opaque leg is gone). Missing module leaves shaderCount 0 and the
+	// PaneMask pass is skipped; SSR then keeps the opaque-depth receiver
+	// with the uniform-F0 legacy behavior (pre-mask look: reflections fire
+	// on every surface).
+	smvk::Holder<smvk::ShaderModuleHandle> fragPaneDepthShader;
+	smvk::ShaderProgram paneDepthProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program. shadow.frag declares
@@ -1343,12 +1341,12 @@ protected:
 	uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh) const;
 
 	// ---- Transparent list (AlphaMode::Blend + dithered) ---------------
-	// Shared by Main's transparent leg and the SSR GlassMask redraw so
+	// Shared by Main's transparent leg and the SSR PaneMask redraw so
 	// both draw the same geometry against the same cull view: items are
 	// Renderable|Transparent|StaticVertexFmt, frustum-tested against the
 	// frozen transparent cull view (conservative LOD union, matching
 	// FilterMainView). sortBackToFront orders by distance-to-camera for
-	// the classic AlphaBlend leg; the mask pass passes false (its Max
+	// the classic AlphaBlend leg; the pane pass passes false (its Max
 	// blend is order-independent).
 	struct TransparentDrawItem {
 		NodeId node;
@@ -1788,6 +1786,14 @@ protected:
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewVs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewPs;
 	smvk::ShaderProgram m_ssrDepthViewProgram{};
+	// Ground-truth stencil-view twin (VULKANTOY_SSR_DUMP +
+	// VULKANTOY_SSR_STENCILVIEW): loads the receiver-material stencil
+	// through the trace's exact uintTextures[] path and writes it (raw
+	// byte in R, decoded STENCIL_SSR / STENCIL_SSR_METAL flags in G/B)
+	// to the (post-composite dead) blurred target for the dump.
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewVs;
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewPs;
+	smvk::ShaderProgram m_ssrStencilViewProgram{};
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
@@ -2031,16 +2037,17 @@ protected:
 	float m_dofHighlightThreshold = 1.0f; // HQ pre-exposure luminance knee
 	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
 	// Opt-in plus pass: no GBuffer, so normals/Fresnel reconstruct from the
-	// 1x prepass depth PLUS the glass layer (GlassMask redraw of the
-	// transparent list: pane presence + pane depth — see ssr.glass).
+	// 1x prepass depth PLUS the receiver-material layer (stencil bits +
+	// paneDepth, written by the prepass and the PaneMask redraw of the
+	// transparent list — see Rendergraph/stencil_bits.h + ssr.h).
 	// Bistro shopfront glass at street grazing angles is the calibration
 	// case (default Bistro view looks down the road at it).
 	bool m_ssrEnabled = false;
-	// Glass layer (pane receivers) on/off — VULKANTOY_SSR_GLASS A/B knob.
-	// Off = the GlassMask pass skips its pane leg, SSR reflects off the
-	// opaque depth only (the pre-layer pane behavior); the opaque
-	// material leg still runs, so the per-receiver metallic/gloss gate
-	// stays active.
+	// Pane layer (pane receivers) on/off — VULKANTOY_SSR_GLASS A/B knob.
+	// Off = the PaneMask pass is skipped, SSR reflects off the opaque
+	// depth only (the pre-layer pane behavior); the opaque receiver-
+	// material stencil bits are still written by the prepass, so the
+	// per-receiver metal/gloss gate stays active.
 	bool m_ssrGlassEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
@@ -2272,7 +2279,8 @@ protected:
 	// baked debug views (R/F8) or a DS visualizer (Y, DS_DEBUG_VIZ).
 	// Scene post-fx that composites ON TOP of those pixels — SSR
 	// reflections (additive), volumetric fog (Beer-Lambert throughput +
-	// scatter) and the SSR-only GlassMask layer — stays off while true,
+	// scatter) and the SSR-only receiver-material layer (prepass
+	// stencil + PaneMask) — stays off while true,
 	// same discipline as the metering freeze in ExposureMeteringActive:
 	// compositing over a flat readout pollutes it (reflections of the
 	// palette itself, fog-faded heat colors) the way metering it would

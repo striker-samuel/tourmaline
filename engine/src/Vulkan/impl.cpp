@@ -1159,6 +1159,8 @@ constexpr VkFormat              smvk::toVkFormat(smvk::Format format)
 	case smvk::Format::D24_UNorm_S8_UInt:   return VK_FORMAT_D24_UNORM_S8_UINT;
 	case smvk::Format::D32_Float:           return VK_FORMAT_D32_SFLOAT;
 	case smvk::Format::D32_Float_S8_UInt:   return VK_FORMAT_D32_SFLOAT_S8_UINT;
+	// Stencil-only view of a combined depth/stencil image.
+	case smvk::Format::S8_UInt:             return VK_FORMAT_S8_UINT;
 
 		// compressed
 	case smvk::Format::BC1_RGBA_UNorm:      return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
@@ -1343,6 +1345,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	case VK_FORMAT_D24_UNORM_S8_UINT:        return smvk::Format::D24_UNorm_S8_UInt;
 	case VK_FORMAT_D32_SFLOAT:               return smvk::Format::D32_Float;
 	case VK_FORMAT_D32_SFLOAT_S8_UINT:       return smvk::Format::D32_Float_S8_UInt;
+	case VK_FORMAT_S8_UINT:                  return smvk::Format::S8_UInt;
 
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:      return smvk::Format::BC1_RGBA_UNorm;
 	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:       return smvk::Format::BC1_RGBA_SRGB;
@@ -9154,9 +9157,16 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	// DYNAMIC STATE
 	// ========================================================
 
+	// Stencil reference is dynamic everywhere so the reference value
+	// NEVER enters the pipeline cache key (per-material references
+	// would otherwise mint a pipeline per distinct ref — see the SSR
+	// receiver-material stencil writers). The static pipeline state
+	// below carries 0; recorders override via CommandBuffer::
+	// SetStencilReference, which records into the command stream.
 	constexpr VkDynamicState dynamicStates[] = {
 		VK_DYNAMIC_STATE_VIEWPORT,
 		VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_STENCIL_REFERENCE,
 	};
 
 	VkPipelineDynamicStateCreateInfo dynamicState{
@@ -11351,6 +11361,19 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 		offset,
 		size,
 		data
+	);
+}
+
+void smvk::CommandBuffer::SetStencilReference(uint32_t frontAndBackReference)
+{
+	// Dynamic state (see BuildGraphicsPipeline): pipelines never bake the
+	// reference, so this records straight into the command stream like
+	// PushConstants. Initial state is 0, so passes that never call this
+	// keep the reference 0 they were built around.
+	vkCmdSetStencilReference(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		VK_STENCIL_FACE_FRONT_AND_BACK,
+		frontAndBackReference
 	);
 }
 
