@@ -40,6 +40,24 @@ inline constexpr size_t kProcessReserve = 4 * kGiB;
 inline constexpr size_t kFrameReserve = 256 * kMiB;
 inline constexpr size_t kTransientReserve = 1 * kGiB;
 
+// -- Upload staging (UploadStreamer rings, VMA host-visible buffers) ---------
+// Total streamer budget split across shards at init (init divides by 8 and
+// clamps to the per-thread floor); shard rings lazily create on first
+// upload so unused shards cost nothing. GPU-side VMA memory — the sizes
+// live here so CPU and GPU budgets resize in one place.
+inline constexpr size_t kStreamerTotalBudget = 256 * kMiB;
+inline constexpr size_t kStagingRingPerThread = 32 * kMiB;
+inline constexpr size_t kBulkRingCapacity = 512 * kMiB;
+// Batch submit threshold: a shard submits its transfer batch once staged
+// bytes since flush exceed this.
+inline constexpr size_t kUploadFlushThreshold = 256 * kMiB;
+
+// -- Readback staging (DownloadDataFromBuffer, VMA host-cached buffer) ------
+// Grow-on-demand doubling from the floor; requests above the cap and VMA
+// allocation failures crash (no graceful degradation — see OOM policy).
+inline constexpr size_t kReadbackStagingMin = 256 * kKiB;
+inline constexpr size_t kReadbackStagingMax = 256 * kMiB;
+
 // -- Page-commit granularity ------------------------------------------------
 // Physical pages commit in multiples of this quantum as the bump pointer
 // advances. Larger = fewer syscalls, coarser working set. Must be a

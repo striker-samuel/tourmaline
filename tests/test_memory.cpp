@@ -56,6 +56,16 @@ void TestConfig() {
 		&& kFrameReserve % kCommitQuantum == 0
 		&& kTransientReserve % kCommitQuantum == 0,
 		"memory.config.reserves-divisible-by-quantum");
+	// Epoch 6: staging/readback sizes centralized, sane, and ordered.
+	Check(kStagingRingPerThread > 0 && kBulkRingCapacity >= kStagingRingPerThread
+		&& kStreamerTotalBudget >= kStagingRingPerThread,
+		"memory.config.staging-sizes-ordered");
+	Check(kUploadFlushThreshold > 0
+		&& kUploadFlushThreshold <= kBulkRingCapacity,
+		"memory.config.flush-threshold-sane");
+	Check(kReadbackStagingMin > 0
+		&& kReadbackStagingMin <= kReadbackStagingMax,
+		"memory.config.readback-range-sane");
 	Check(kDefaultAlign >= alignof(void*), "memory.config.align-sane");
 }
 
@@ -232,6 +242,23 @@ void TestFrameReset() {
 	void* b = smvk::FrameArena().Allocate(64, 16);
 	Check(b != nullptr, "memory.framereset.global-reuse-after-boundary");
 }
+void TestTransientVector() {
+	// Models ThreadUploadState scratch: plain-data vectors on the transient
+	// allocator grow with contents intact and never touch malloc.
+	smvk::mem::LinearAllocator transient("test-transient", 1 * 1024 * 1024, 64 * 1024);
+	smvk::mem::TransientVector<uint32_t> ranges{
+		smvk::mem::LinearAllocatorSTL<uint32_t>{&transient}};
+	for (uint32_t i = 0; i < 512; ++i)
+		ranges.push_back(i * 16);
+	bool ok = ranges.size() == 512 && ranges.front() == 0 && ranges.back() == 511 * 16;
+	uint64_t sum = 0;
+	for (uint32_t v : ranges)
+		sum += v;
+	Check(ok && sum == 16u * (511u * 512u / 2u), "memory.transient.grows-intact");
+	const size_t used = transient.Used();
+	ranges.clear(); // monotonic: clear keeps capacity, backing never frees
+	Check(transient.Used() == used, "memory.transient.clear-keeps-storage");
+}
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -257,6 +284,7 @@ int main() {
 	TestMarkReset();
 	TestStlAdapter();
 	TestLinearPtr();
+	TestTransientVector();
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();

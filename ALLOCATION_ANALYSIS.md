@@ -279,13 +279,16 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [ ] Replace VMA buffer/image allocations with pool handles (keep VMA for GPU mem)
 
 ### Phase 4: Transient
-- [ ] Pre-reserve staging rings in `g_transientAllocator`
-- [ ] Replace `UploadStreamer::ThreadUploadState::ring` allocation
-- [ ] Replace readback staging growth with pre-reserved
+- [x] Pre-reserve staging rings in `g_transientAllocator` (sizes centralized in `alloc_config.h`; ring VkBuffers stay VMA — GPU memory is out of scope — CPU-side ring state migrated, VMA OOM now crashes)
+- [x] Replace `UploadStreamer::ThreadUploadState::ring` allocation (pending barriers/ranges → `TransientVector`; `StagingRing` VkBuffer stays VMA by design)
+- [x] Replace readback staging growth with pre-reserved (growth bounds centralized; cap/alloc failure crashes instead of silent `false`)
+- [ ] Transient allocator frame-boundary reset (deferred: streamer vectors hold in-flight ranges across frames — reset only when temporaries are the sole users)
+- [ ] ThreadPool task queues → ring buffer in transient (deferred: own epoch, intrusive `thread_pool.h` rework)
+- [x] String formatting via FrameArena (already the case; Epoch 2 backed it)
 
 ### Phase 5: STL Containers
-- [ ] Create `linear_vector.h`, `linear_string.h`, `linear_unordered_map.h`
-- [ ] Migrate high-churn containers first (RenderGraph, UploadStreamer)
+- [x] Create `linear_vector.h`, `linear_string.h`, `linear_unordered_map.h` (`linear_vector.h` done Epoch 1; string/map deferred — low churn)
+- [x] Migrate high-churn containers first (RenderGraph, UploadStreamer) (barriers Epoch 4, streamer vectors Epoch 6)
 - [ ] Migrate asset loading containers
 - [ ] Migrate editor containers
 
@@ -481,3 +484,24 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   readback); wider STL migration (Phase 5); cache/store adapters
   (`ArtifactStore`, `StoreArtifactCacheAdapter`) intentionally left on
   malloc — different subsystem, Phase 5 material.
+
+### Epoch 6 — Transient staging state + OOM-crash policy (2026-09-30)
+- `alloc_config.h`: all staging sizes centralized — `kStreamerTotalBudget`
+  (256 MB), `kStagingRingPerThread` (32 MB), `kBulkRingCapacity` (512 MB),
+  `kUploadFlushThreshold` (256 MB), `kReadbackStagingMin/Max` (256 KiB /
+  256 MB). `init()` budget/floor, shard default, bulk capacity, flush
+  threshold, and readback doubling bounds all reference these (zero
+  behavior change in the happy path).
+- `ThreadUploadState::{pendingBufferAcquires, pendingImageAcquires,
+  pendingRanges}` → `TransientVector` (no malloc on the upload hot path;
+  includes the filter-and-swap `live` temp in `allocFromRing`).
+  `pendingCleanups` (`packaged_task`, whose shared state mallocs
+  internally regardless) deliberately left for Phase 5.
+- Monotonic by necessity: in-flight ring ranges span frames, so the
+  transient allocator is NOT reset while streamer vectors are live —
+  storage grows to the high-water mark and is reused (documented on the
+  struct; reset row left open until temporaries are the sole users).
+- OOM policy applied to GPU staging (per standing instruction — crash +
+  report, no survival): `ensureRing` VMA failure aborts with ring name +
+  size + VkResult (was: silent `false` → skipped bulk uploads); 
+...[truncated 911 chars]

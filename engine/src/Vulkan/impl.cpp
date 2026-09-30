@@ -2308,7 +2308,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	//m_hostImageCopySupported = false;
 #endif
 	m_streamer = smvk::mem::MakeProcess<UploadStreamer>(this, m_transferSubmitter, m_submitter);
-	m_streamer->init(256ull * 1024 * 1024);
+	m_streamer->init(smvk::mem::config::kStreamerTotalBudget);
 
 	//this->m_hostImageCopySupported = false;
 
@@ -2664,7 +2664,8 @@ bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
 	// Total budget split across shards; each thread lazily creates its own
 	// ring on first upload so unused shards cost nothing.
 	ringCapacityPerThread_ = ringCapacity / 8;
-	if (ringCapacityPerThread_ < 32ull * 1024 * 1024) ringCapacityPerThread_ = 32ull * 1024 * 1024;
+	if (ringCapacityPerThread_ < smvk::mem::config::kStagingRingPerThread)
+		ringCapacityPerThread_ = smvk::mem::config::kStagingRingPerThread;
 	return ensureShardRing(states_[0]);
 }
 bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capacity, const char* debugName) {
@@ -2679,7 +2680,16 @@ bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capac
 	aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	VmaAllocationInfo info{};
 	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &ust.ring.buffer, &ust.ring.allocation, &info);
-	if (r != VK_SUCCESS) return false;
+	// OOM policy: VMA staging failure crashes with a diagnostic — no silent
+	// fallback (a "successful" upload path with no ring would corrupt data).
+	if (r != VK_SUCCESS) {
+		std::fprintf(stderr,
+			"[OOM] VMA staging ring '%s' (%llu MB) creation failed (VkResult %d). "
+			"No recovery — aborting.\n",
+			debugName, (unsigned long long)(capacity / (1024 * 1024)), (int)r);
+		std::fflush(stderr);
+		std::abort();
+	}
 	ust.ring.mapped = info.pMappedData;
 	ust.ring.capacity = capacity;
 	ust.ring.offset = 0;
@@ -2757,7 +2767,8 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 	// graphics latency at every wrap, because the just-submitted batch
 	// GPU-waits on the previous frame's retirement.
 	if (!ust.pendingRanges.empty()) {
-		std::vector<InFlightRingRange> live;
+		smvk::mem::TransientVector<InFlightRingRange> live{
+			smvk::mem::LinearAllocatorSTL<InFlightRingRange>{&smvk::mem::TransientAllocator()}};
 		live.reserve(ust.pendingRanges.size());
 		for (const InFlightRingRange& r : ust.pendingRanges) {
 			const bool overlaps = (r.start < aligned + size) && (r.end > aligned);
@@ -3936,21 +3947,35 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 }
 
 bool smvk::VulkanResourceManager::EnsureReadbackStaging(VkDeviceSize size) {
-	static constexpr VkDeviceSize kMinBytes = 256ull * 1024;       // 256 KiB floor
-	static constexpr VkDeviceSize kMaxBytes = 256ull * 1024 * 1024; // sanity cap
+	// Sizes centralized in mem::config (single place to resize). Growth
+	// failures crash per the OOM policy — a download that silently returns
+	// false would hand uninitialized pixels to the caller.
+	if (size > smvk::mem::config::kReadbackStagingMax) {
+		std::fprintf(stderr,
+			"[OOM] readback staging request %llu bytes exceeds cap %llu bytes. "
+			"No recovery — aborting.\n",
+			(unsigned long long)size,
+			(unsigned long long)smvk::mem::config::kReadbackStagingMax);
+		std::fflush(stderr);
+		std::abort();
+	}
 	if (!m_readbackStaging.empty() && m_readbackStagingSize >= size)
 		return true;
-	if (size > kMaxBytes)
-		return false;
-	VkDeviceSize want = kMinBytes;
+	VkDeviceSize want = smvk::mem::config::kReadbackStagingMin;
 	while (want < size)
 		want *= 2;
 	// HOST_ACCESS_RANDOM: the CPU READS this buffer (copy results), so
 	// cached memory beats the default sequential-write (write-combined).
 	Holder<BufferHandle> grown = CreateBuffer(want, smvk::BufferType_Staging,
 		"readback staging", VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
-	if (grown.empty())
-		return false;
+	if (grown.empty()) {
+		std::fprintf(stderr,
+			"[OOM] readback staging VMA allocation of %llu bytes failed. "
+			"No recovery — aborting.\n",
+			(unsigned long long)want);
+		std::fflush(stderr);
+		std::abort();
+	}
 	if (!m_readbackStaging.empty())
 		destroy(this, m_readbackStaging); // old staging retires via DeferDestroy
 	m_readbackStaging = grown.release();

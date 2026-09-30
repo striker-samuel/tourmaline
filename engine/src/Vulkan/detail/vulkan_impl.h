@@ -3,6 +3,7 @@
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Renderer/spirv_reflection.h>
 
 #include "volk.h"
@@ -479,7 +480,7 @@ namespace smvk {
 		UploadStreamer(const UploadStreamer&) = delete;
 		UploadStreamer& operator=(const UploadStreamer&) = delete;
 
-		bool init(VkDeviceSize ringCapacity = 256ull * 1024 * 1024);
+		bool init(VkDeviceSize ringCapacity = mem::config::kStreamerTotalBudget);
 		void destroy();
 		void uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
@@ -552,8 +553,17 @@ namespace smvk {
 			CommandSubmitHandle curHandle{};
 			VkCommandBuffer curCmd = VK_NULL_HANDLE;
 			bool hasPending = false;
-			std::vector<VkBufferMemoryBarrier2> pendingBufferAcquires;
-			std::vector<VkImageMemoryBarrier2> pendingImageAcquires;
+			// Transient-backed scratch (never mallocs on the upload hot
+			// path). Monotonic: pending ranges can stay in flight across
+			// frames, so the transient allocator is NOT reset while these
+			// are live — storage grows to the high-water mark and is
+			// reused, exactly like the old malloc high-water behavior but
+			// without free churn. See alloc_config.h (single place to
+			// resize) and memory.h (reset discipline).
+			mem::TransientVector<VkBufferMemoryBarrier2> pendingBufferAcquires{
+				mem::LinearAllocatorSTL<VkBufferMemoryBarrier2>{&mem::TransientAllocator()}};
+			mem::TransientVector<VkImageMemoryBarrier2> pendingImageAcquires{
+				mem::LinearAllocatorSTL<VkImageMemoryBarrier2>{&mem::TransientAllocator()}};
 			std::vector<std::packaged_task<void()>> pendingCleanups;
 			VkDeviceSize stagedBytesSinceFlush = 0;
 			// Ring range covered by the batch currently recording into
@@ -561,17 +571,18 @@ namespace smvk {
 			// pendingRanges at submit; the precise wrap/alloc sync in
 			// allocFromRing consumes it.
 			VkDeviceSize batchRingStart = VK_WHOLE_SIZE;
-			std::vector<InFlightRingRange> pendingRanges;
+			mem::TransientVector<InFlightRingRange> pendingRanges{
+				mem::LinearAllocatorSTL<InFlightRingRange>{&mem::TransientAllocator()}};
 		};
 		ThreadUploadState states_[kNumPoolShards];
-		VkDeviceSize ringCapacityPerThread_ = 32ull * 1024 * 1024;
+		VkDeviceSize ringCapacityPerThread_ = mem::config::kStagingRingPerThread;
 		// Dedicated bulk context (512 MB ring, lazily created on the first
 		// uploadBufferBulk call so non-bulk users never pay the host
 		// memory): the shard rings stay 32 MB for steady-state frame
 		// uploads. Render-thread only — bulk uploads are load-time and
 		// single-threaded by construction (pak cluster deserialize).
 		ThreadUploadState bulk_;
-		static constexpr VkDeviceSize kBulkRingCapacity = 512ull * 1024 * 1024;
+		static constexpr VkDeviceSize kBulkRingCapacity = mem::config::kBulkRingCapacity;
 		bool ensureRing(ThreadUploadState& st, VkDeviceSize capacity, const char* debugName);
 		bool ensureBulkRing() {
 			return ensureRing(bulk_, kBulkRingCapacity, "UploadStreamer Ring (bulk)");
@@ -599,7 +610,7 @@ namespace smvk {
 		VkSemaphore m_lastTransferSemaphore = VK_NULL_HANDLE;
 		std::atomic<uint64_t> m_lastTransferValue{ 0 };
 
-		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
+		static constexpr VkDeviceSize kFlushThreshold = mem::config::kUploadFlushThreshold;
 	};
 
 	struct DeferredTask {
