@@ -178,6 +178,19 @@ set_target_properties(StreamingTests PROPERTIES
 
 add_test(NAME streaming_tests COMMAND StreamingTests)
 
+add_executable(ProfilerTests test_profile.cpp)
+
+target_link_libraries(ProfilerTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ProfilerTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME profile_tests COMMAND ProfilerTests)
+
 add_executable(DeferredShadowTests test_deferredshadow.cpp)
 
 target_link_libraries(DeferredShadowTests

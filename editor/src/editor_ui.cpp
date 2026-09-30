@@ -17,6 +17,7 @@
 
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Profile/profile.h>
 
 #include <imgui.h>
 
@@ -210,6 +211,12 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawPathsPanel(); // consolidated file/path view (File menu)
 	if (m_placement.showGraph)
 		DrawPlacementGraph();
+	// Frame-time histogram (View menu / F12): a SEPARATE bottom strip —
+	// full-width horizontal bucket graph pinned to the bottom of the
+	// screen, drawn last so it sits on top of the panels/docks. Zero cost
+	// while disabled: one flag check.
+	if (smvk::profiler::FrameHistogramEnabled())
+		smvk::profiler::DrawFrameHistogramUi();
 }
 
 void EditorApp::DrawMenuBar() {
@@ -406,7 +413,19 @@ void EditorApp::DrawMenuBar() {
 		ImGui::Separator();
 		ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
 		ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
-			"prepass â€” lines never draw over the objects in front.");
+			"prepass — lines never draw over the objects in front.");
+		ImGui::Separator();
+		// Frame-time histogram (F12 — the kModalBindings GLOBAL row; this
+		// menu item calls the SAME handler, so key + menu stay one
+		// binding): the shared profiler state + a separate full-width
+		// bottom strip drawn at the end of DrawUI. Zero cost while
+		// disabled.
+		if (ImGui::MenuItem("Frame-time histogram", "F12",
+				smvk::profiler::FrameHistogramEnabled()))
+			ModalFrameHistogramToggle();
+		ImGui::SetItemTooltip("Live frame-time distribution (last 1024"
+			" frames): a full-width horizontal bucket graph pinned to the"
+			" bottom of the viewport, with avg/p50/p95/p99/max.");
 		ImGui::Separator();
 		if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
 			m_vpLayout = 0;

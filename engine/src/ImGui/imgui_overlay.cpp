@@ -5,6 +5,7 @@
 
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/platform.h>
+#include <Engine/Profile/profile.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
 #include <imgui.h>
@@ -13,6 +14,7 @@
 
 #include <SDL3/SDL_video.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace smvk {
@@ -337,3 +339,87 @@ void ImGuiOverlay::ApplyDpiScale(float scale) {
 }
 
 } // namespace smvk
+
+// Frame-time histogram bottom strip (Engine/Profile/profile.h): lives
+// here — the engine's ImGui TU — so profile.cpp stays ImGui-free for the
+// tool links that never pull an overlay. A SEPARATE UI from both hosts'
+// panels: a full-width horizontal bucket graph pinned to the bottom of
+// the screen (drawn on top; the App and the editor both just call this
+// once per UI pass). Call only while the histogram is enabled — the call
+// sites gate on FrameHistogramEnabled(), so the feature costs nothing
+// while off.
+namespace smvk::profiler {
+
+void DrawFrameHistogramUi() {
+    const FrameHistogramData d = GetFrameHistogramData();
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    constexpr float kStripH = 76.0f; // graph + one readout line
+    ImGui::SetNextWindowPos(ImVec2(0.0f, disp.y - kStripH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(disp.x, kStripH), ImGuiCond_Always);
+    if (!ImGui::Begin("##frameTimeHistogram", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar)) {
+        ImGui::End();
+        return;
+    }
+    if (d.count == 0) {
+        ImGui::TextDisabled("frame histogram (F12): recording - no frames yet");
+        ImGui::End();
+        return;
+    }
+    // Horizontal bucket graph: one bar per 0.5 ms bucket left-to-right
+    // (last = >= 16 ms overflow), height = share of the peak bucket,
+    // color ramps green -> amber -> red with the bucket's ms. Hovering a
+    // bar shows the range + frame count/share.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float graphH = 44.0f;
+    uint32_t peak = 1;
+    for (size_t b = 0; b < FrameHistogramData::kBucketCount; ++b)
+        if (d.buckets[b] > peak)
+            peak = d.buckets[b];
+    const float barW = (availW - float(FrameHistogramData::kBucketCount - 1) * 2.0f)
+        / float(FrameHistogramData::kBucketCount);
+    for (size_t b = 0; b < FrameHistogramData::kBucketCount; ++b) {
+        const float h = graphH * float(d.buckets[b]) / float(peak);
+        const float x = p0.x + float(b) * (barW + 2.0f);
+        // Ramp: 0 ms -> green (140,220,120), 8+ ms -> red (230,90,80).
+        const float t = std::min(1.0f, float(b) / 16.0f);
+        const ImU32 col = ImGui::GetColorU32(ImVec4(
+            0.55f + 0.35f * t, 0.86f - 0.51f * t, 0.47f - 0.19f * t, 0.90f));
+        if (h > 0.0f)
+            dl->AddRectFilled(ImVec2(x, p0.y + graphH - h),
+                ImVec2(x + barW, p0.y + graphH), col, 1.0f);
+        else
+            dl->AddRect(ImVec2(x, p0.y + graphH - 1.5f),
+                ImVec2(x + barW, p0.y + graphH),
+                ImGui::GetColorU32(ImVec4(0.5f, 0.5f, 0.5f, 0.4f)));
+    }
+    // Invisible hover surface over the graph for the bucket tooltip.
+    ImGui::Dummy(ImVec2(availW, graphH));
+    if (ImGui::IsItemHovered()) {
+        const ImVec2 mouse = ImGui::GetMousePos();
+        float fx = (mouse.x - p0.x) / availW;
+        fx = fx < 0.0f ? 0.0f : (fx > 0.999f ? 0.999f : fx);
+        const size_t b = size_t(fx * float(FrameHistogramData::kBucketCount));
+        const bool overflow = b + 1 == FrameHistogramData::kBucketCount;
+        const double lo = double(b) * 0.5;
+        const uint32_t n = d.buckets[b];
+        if (overflow)
+            ImGui::SetTooltip(">= %.1f ms: %u frame%s (%.1f%%)",
+                lo, n, n == 1 ? "" : "s", 100.0 * n / double(d.count));
+        else
+            ImGui::SetTooltip("[%.1f .. %.1f) ms: %u frame%s (%.1f%%)",
+                lo, lo + 0.5, n, n == 1 ? "" : "s",
+                100.0 * n / double(d.count));
+    }
+    ImGui::Text("frame time - avg %.2f | p50 %.1f | p95 %.1f | p99 %.1f | max %.1f ms   (%zu frames)",
+        d.avgMs, d.p50Ms, d.p95Ms, d.p99Ms, d.maxMs, d.count);
+    ImGui::TextDisabled("0.5 ms buckets left-to-right (last >= 16 ms), last 1024 frames - F12 toggles");
+    ImGui::End();
+}
+
+} // namespace smvk::profiler

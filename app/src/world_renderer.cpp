@@ -5255,6 +5255,11 @@ void WorldRenderer::Shutdown() {
 		// under FIFO) is excluded from CPU and reported as wait instead.
 		const auto busyStart = std::chrono::steady_clock::now();
 		UpdateDeltaTime();
+		// Frame-time histogram hook (zero cost while disabled — the F12
+		// toggle; see profiler::RecordFrameTime). Hosted mode skips: the
+		// editor (the host) records its own frame instead.
+		if (!IsHosted())
+			smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
 		RenderFrame(fb);
 		m_swapchain->EndAndPresentFramebuffer(fb);
 		// CPU/GPU time split: CPU = busy time on this thread (record +
@@ -11497,6 +11502,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			ImGui::EndTabBar();
 		}
 		ImGui::End();
+
+		// Frame-time histogram (F12): SEPARATE UI from the debug panel —
+		// a full-width bottom strip (see profiler::DrawFrameHistogramUi).
+		// Zero cost while disabled: one flag check.
+		if (smvk::profiler::FrameHistogramEnabled())
+			smvk::profiler::DrawFrameHistogramUi();
 
 			// Forward+ light debug overlay: project the CPU light copy
 			// (m_debugLights, filled in UpdateForwardPlusLights) through the

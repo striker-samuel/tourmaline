@@ -28,6 +28,7 @@
 #include <string>
 
 #include <Engine/App/input.h>
+#include <Engine/Profile/profile.h>
 
 namespace editor {
 namespace {
@@ -251,6 +252,12 @@ void EditorApp::UpdateModalInput() {
 			"view: UV1 (lightmap)", "F10" },
 		{ GLFW_KEY_F11, 0, kScopeGlobal, &EditorApp::ModalViewPom,
 			"view: parallax (POM)", "F11" },
+		// F12 (App parity): the live frame-time histogram toggle — the
+		// same state the standalone App's F12 flips, the View menu item
+		// calls the same handler (ModalFrameHistogramToggle), and the
+		// strip draws at the end of DrawUI (profiler::DrawFrameHistogramUi).
+		{ GLFW_KEY_F12, 0, kScopeGlobal, &EditorApp::ModalFrameHistogramToggle,
+			"view: frame-time histogram", "F12" },
 		{ GLFW_KEY_P, 0, kScopeGlobal,
 			&EditorApp::ModalParentSelection,
 			"parent: all selected to the last selected (Maya)", "P" },
@@ -325,6 +332,16 @@ void EditorApp::ModalModeProfile() { SetMode(EditorMode::Profile); }
 
 void EditorApp::ModalViewLit() { ActiveViewMode() = ViewMode::Lit; }
 void EditorApp::ModalViewUnlit() { ActiveViewMode() = ViewMode::Unlit; }
+
+void EditorApp::ModalFrameHistogramToggle() {
+	// F12 / View menu — one handler, one binding (see kModalBindings).
+	// Toggles the shared profiler state (the standalone App's F12 flips
+	// the same flag); the bottom strip draws at the end of DrawUI.
+	const bool on = !smvk::profiler::FrameHistogramEnabled();
+	smvk::profiler::SetFrameHistogramEnabled(on);
+	Log(on ? "Frame-time histogram: on (bottom strip; F12 or View menu)."
+		: "Frame-time histogram: off.");
+}
 
 void EditorApp::ModalVpLayoutToggle() {
 	m_vpLayout = (m_vpLayout == 0) ? 1 : 0;

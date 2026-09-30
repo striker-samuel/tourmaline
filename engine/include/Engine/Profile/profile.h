@@ -95,6 +95,38 @@ bool Enabled();
 void SetGpuEnabled(bool enabled);
 bool GpuEnabled();
 
+// ---------------------------------------------------------------------------
+// Frame-time histogram (live distribution over the last frames)
+// ---------------------------------------------------------------------------
+// Opt-in live frame-time distribution for the App (the F12 shortcut) and
+// the editor (View menu / the same hosted F12). DISABLED =
+// RecordFrameTime() is a single compare-and-return — zero cost; ENABLED
+// costs a few ns/frame on fixed storage (no allocation, no locks; the main
+// thread is the only writer/reader). While an Optick capture runs, frame
+// ms ride along as a tag on the DrawFrame event. (Re)enabling starts a
+// fresh history.
+void SetFrameHistogramEnabled(bool enabled);
+bool FrameHistogramEnabled();
+// Records one frame — hooked at the two once-per-frame UpdateDeltaTime
+// call sites (windowed WorldRenderer::DrawFrame, gated off when hosted;
+// EditorApp::DrawFrame). No-op while disabled.
+void RecordFrameTime(double milliseconds);
+struct FrameHistogramData {
+    // Bucket i covers [i*0.5, (i+1)*0.5) ms; the last is the >= 16 ms tail.
+    static constexpr size_t kBucketCount = 33;
+    size_t count = 0;   // recorded frames (capped at the ring size, 1024)
+    double avgMs = 0.0;
+    double maxMs = 0.0; // since the (re)enable
+    double p50Ms = 0.0;
+    double p95Ms = 0.0;
+    double p99Ms = 0.0;
+    uint32_t buckets[kBucketCount] = {};
+};
+FrameHistogramData GetFrameHistogramData(); // by value (UI-side, ~1/frame)
+// ImGui: bucket bars + avg/p50/p95/p99/max line. Shared by the App's debug
+// panel + the editor's overlay; call only while enabled.
+void DrawFrameHistogramUi();
+
 #if USE_OPTICK
 // RAII CPU+GPU scope for run-time pass names (e.g. rendergraph passes).
 // Static OPTICK_GPU_EVENT can't be used in a loop (description is cached per

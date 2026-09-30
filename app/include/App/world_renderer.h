@@ -23,6 +23,7 @@
 
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
+#include <Engine/Profile/profile.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/bake.h>
 #include <Engine/GI/cubemap_volume.h>
@@ -1234,6 +1235,16 @@ protected:
 		// it stacks with F1..F6.
 		if (m_input.isKeyPressed(GLFW_KEY_P)) {
 			m_wireframe = !m_wireframe;
+		}
+		// F12: live frame-time histogram — a separate bottom strip UI
+		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles
+		// the same state). Zero cost while disabled: RecordFrameTime is a
+		// single compare-and-return (see profiler::RecordFrameTime).
+		if (m_input.isKeyPressed(GLFW_KEY_F12)) {
+			const bool on = !smvk::profiler::FrameHistogramEnabled();
+			smvk::profiler::SetFrameHistogramEnabled(on);
+			std::fprintf(stderr, "[profiler] frame-time histogram %s\n",
+				on ? "on" : "off");
 		}
 #if defined(DS_DEBUG_VIZ)
 		// Deferred-shadow visualizer cycle (Y): Off -> counts -> diff ->

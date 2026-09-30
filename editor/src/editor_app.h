@@ -650,6 +650,11 @@ private:
 	void ModalModeProfile();
 	void ModalViewLit();
 	void ModalViewUnlit();
+	// F12 (App parity): toggle the live frame-time histogram — the
+	// shared profiler state + bottom strip (the View menu item calls the
+	// same handler, so key + menu stay one binding; see
+	// profiler::SetFrameHistogramEnabled).
+	void ModalFrameHistogramToggle();
 	void ModalVpLayoutToggle();
 	void ModalUiToggle();
 	void ModalUndo();

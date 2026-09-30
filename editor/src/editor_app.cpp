@@ -29,6 +29,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/GI/cubemap_volume.h>
+#include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
 #include <gltf_import/gltf.h>
 #include <stb_image_write.h> // hosted-target diagnostic dump (PNG)
@@ -1978,6 +1979,10 @@ void EditorApp::FrameAll() {
 
 void EditorApp::DrawFrame() {
 	UpdateDeltaTime();
+	// Frame-time histogram hook (View menu / F12; zero cost while
+	// disabled — the hosted renderer's own hook is gated off when
+	// hosted so this is the single record per editor frame).
+	smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
 	Update();
 	// Deferred live-view world swaps, consumed HERE between frames and
 	// idle — never inside the editor's open frame: the OLD world stays
