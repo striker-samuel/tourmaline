@@ -31,6 +31,14 @@ namespace smvk::mem {
 [[noreturn]] void ReportOomAndCrash(std::string_view allocatorName,
 	size_t requested, size_t used, size_t reserved);
 
+// Snapshot for tracking/stats (see memory.h DumpStats). All three are
+// monotonic within a reset epoch: used <= committed <= reserved.
+struct LinearStats {
+	size_t reserved = 0;
+	size_t committed = 0;
+	size_t used = 0;
+};
+
 class LinearAllocator {
 public:
 	// name is stored as a view — pass a string literal (static storage).
@@ -78,6 +86,20 @@ public:
 	}
 	[[nodiscard]] size_t Used() const noexcept {
 		return offset_.load(std::memory_order_relaxed);
+	}
+	[[nodiscard]] LinearStats GetStats() const noexcept {
+		return LinearStats{reserved_, Committed(), Used()};
+	}
+	// Base of the reserved range (null until EnsureInitialized/Allocate).
+	[[nodiscard]] const uint8_t* Base() const noexcept { return base_; }
+	// True when p points inside the reserved range. Used to verify that
+	// migrated objects (arenas, pools, process singletons) really live in
+	// linear memory. Null and uninitialized → false.
+	[[nodiscard]] bool Contains(const void* p) const noexcept {
+		if (!base_ || !p)
+			return false;
+		const auto* addr = static_cast<const uint8_t*>(p);
+		return addr >= base_ && addr < base_ + reserved_;
 	}
 
 private:

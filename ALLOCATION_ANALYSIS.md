@@ -274,9 +274,10 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [x] Add frame mark/reset in `WorldRenderer::BeginFrame()` (implemented as full frame rewind in `ResetFrameArena()`, called at `DrawFrame` start — the actual frame boundary)
 
 ### Phase 3: Resource Pools
-- [ ] Implement `ResourcePool<T, MaxCount>` template
-- [ ] Migrate `ShardedPool` storage to linear-backed (metadata already fixed)
-- [ ] Replace VMA buffer/image allocations with pool handles (keep VMA for GPU mem)
+- [x] Implement `ResourcePool<T, MaxCount>` template (evaluated Epoch 8: declined — `ShardedPool` already IS the resource pool with free-list + generations; a parallel template adds API surface with no users)
+- [x] Migrate `ShardedPool` storage to linear-backed (metadata already fixed) (covered by Epoch 5: the owning `VulkanResourceManager` is `MakeProcess`-placed, so all pool arrays live in process linear memory; `Contains()` proves residency)
+- [x] Replace VMA buffer/image allocations with pool handles (keep VMA for GPU mem) (already the architecture: every resource goes through `ShardedPool` handles; VMA holds only GPU bytes)
+- [x] Pool sharding constants centralized (`kNumPoolShards`/`kShardCapacity`/`kShardedMaxSize` in `alloc_config.h`, Epoch 8)
 
 ### Phase 4: Transient
 - [x] Pre-reserve staging rings in `g_transientAllocator` (sizes centralized in `alloc_config.h`; ring VkBuffers stay VMA — GPU memory is out of scope — CPU-side ring state migrated, VMA OOM now crashes)
@@ -293,7 +294,7 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [ ] Migrate editor containers
 
 ### Validation
-- [ ] Add allocation tracking/stats (committed vs reserved)
+- [x] Add allocation tracking/stats (committed vs reserved) (`GetStats()` + `DumpStats()` + `ShutdownMemory()` report, Epoch 8)
 - [ ] Verify no malloc/free after startup (hook CRT allocator)
 - [ ] Benchmark frame time (target: <0.1 ms alloc overhead)
 - [ ] Test memory pressure scenarios (page commit latency)
@@ -533,3 +534,29 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   workers incl. ring wrap, 50 void tasks, clean join) — 66/66 PASS.
 - **Validation**: `App` + `Editor` link; `StreamingTests` 24/24,
   `AssetTests` 334/334 PASS.
+
+### Epoch 8 — Pool constants + allocator introspection (2026-09-30)
+- `kNumPoolShards`/`kShardCapacity`/`kShardedMaxSize` moved to
+  `alloc_config.h`; `pool.h` aliases them (all call sites, static_asserts,
+  and array bounds unchanged — still compile-time constants).
+- `LinearAllocator::Contains()` (residency proof for migrated objects),
+  `GetStats()` (used/committed/reserved snapshot), `mem::DumpStats()`
+  (one stderr line per lifetime), `ShutdownMemory()` now prints the
+  footprint report; both `main()`s call it on the success path.
+- `MemoryTests` +7 (`TestAllocatorStats`: null/stack/outside/range
+  containment, stats ordering, pool-config aliasing, dump-to-tmpfile
+  naming all three lifetimes) — 73/73 PASS.
+- Phase 3 closed without new code (see box notes): no parallel
+  `ResourcePool` template (declined as redundant), `ShardedPool` backing
+  already linear via Epoch 5 placement, handles already the sole
+  CPU-side path with VMA holding only GPU bytes.
+- **Validation**: `App` + `Editor` link; `AssetTests` 334/334 PASS.
+- **Evaluated and declined:** `linear_string.h` / `linear_unordered_map.h`
+  (no hot-path users — strings/vectors covered; adapters without users are
+  dead code), custom futures for task shared-state (per user: not
+  necessary), migrating load-time asset/editor vectors to linear (they
+  allocate-then-free per load; process/transient linear backing would
+  retain them to high-water permanently — malloc is the right tool there).
+- **Remaining:** CRT malloc hook verification, frame-time alloc benchmark,
+  page-commit latency under pressure, transient reset (blocked on
+  in-flight streamer ranges).

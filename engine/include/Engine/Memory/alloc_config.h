@@ -58,6 +58,15 @@ inline constexpr size_t kUploadFlushThreshold = 256 * kMiB;
 inline constexpr size_t kReadbackStagingMin = 256 * kKiB;
 inline constexpr size_t kReadbackStagingMax = 256 * kMiB;
 
+// -- Sharded resource pools (Engine/Memory/pool.h) --------------------------
+// Lock-free sharded pools (images, textures, buffers, ...): one shard per
+// thread, fixed entries per shard. Storage lives wherever the owning
+// manager lives (process linear memory since Epoch 5) — these constants
+// size the reservation need, so they live here.
+inline constexpr uint32_t kNumPoolShards = 16;
+inline constexpr uint32_t kShardCapacity = 512;
+inline constexpr uint32_t kShardedMaxSize = kNumPoolShards * kShardCapacity; // 8192
+
 // -- ThreadPool task ring ----------------------------------------------------
 // Bounded task queue: ring slots pre-allocated in transient memory at pool
 // construction. Enqueue blocks when full (backpressure — the queue never

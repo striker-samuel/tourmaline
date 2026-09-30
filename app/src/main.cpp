@@ -573,5 +573,6 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 		std::cin.get();
 		return EXIT_FAILURE;
 	}
+	smvk::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
 	return EXIT_SUCCESS;
 }

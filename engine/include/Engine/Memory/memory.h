@@ -24,6 +24,7 @@
 
 #include <Engine/Memory/linear_allocator.h>
 
+#include <cstdio>
 #include <memory>
 #include <utility>
 
@@ -34,7 +35,11 @@ LinearAllocator& FrameAllocator();
 LinearAllocator& TransientAllocator();
 
 void InitMemory();
-void ShutdownMemory(); // releases reservations; only call at teardown
+void ShutdownMemory(); // DumpStats report + teardown hook; call at exit
+
+// One stderr line per allocator: used / committed / reserved. Call at
+// shutdown (ShutdownMemory does) or on demand when diagnosing footprint.
+void DumpStats(std::FILE* out = stderr);
 
 // Ownership for process-lifetime objects (Phase 1 migration).
 //

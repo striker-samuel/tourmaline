@@ -108,5 +108,6 @@ void PrintUsage(const char* prog) {
 		std::cin.get();
 		return EXIT_FAILURE;
 	}
+	smvk::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
 	return EXIT_SUCCESS;
 }

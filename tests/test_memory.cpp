@@ -22,10 +22,13 @@
 #include <Engine/Memory/linear_allocator.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/pool.h>
 #include <Engine/Utils/thread_pool.h>
 
 #include <atomic>
+#include <cstdio>
 #include <future>
+#include <string>
 
 namespace {
 
@@ -264,6 +267,43 @@ void TestTransientVector() {
 	Check(transient.Used() == used, "memory.transient.clear-keeps-storage");
 }
 
+void TestAllocatorStats() {
+	// Introspection: Contains pinpoints linear residency, GetStats stays
+	// ordered, DumpStats renders all three lifetimes.
+	smvk::mem::LinearAllocator alloc("test-stats", 1 * 1024 * 1024, 64 * 1024);
+	Check(!alloc.Contains(nullptr), "memory.stats.null-outside");
+	int stackVar = 0;
+	Check(!alloc.Contains(&stackVar), "memory.stats.stack-outside");
+	void* p = alloc.Allocate(128, 16);
+	Check(alloc.Contains(p)
+		&& alloc.Contains(static_cast<uint8_t*>(p) + 127)
+		&& !alloc.Contains(static_cast<const uint8_t*>(alloc.Base()) + alloc.Reserved()),
+		"memory.stats.contains-range");
+	const smvk::mem::LinearStats s = alloc.GetStats();
+	Check(s.used <= s.committed && s.committed <= s.reserved
+		&& s.reserved == 1 * 1024 * 1024 && s.used >= 128,
+		"memory.stats.ordered");
+	// Pool sharding aliases match the centralized config.
+	Check(smvk::kNumPoolShards == smvk::mem::config::kNumPoolShards
+		&& smvk::kShardCapacity == smvk::mem::config::kShardCapacity
+		&& smvk::kShardedMaxSize == 8192u,
+		"memory.stats.pool-config-centralized");
+	// DumpStats renders without crashing and names every lifetime.
+	std::FILE* tmp = std::tmpfile();
+	Check(tmp != nullptr, "memory.stats.tmpfile");
+	if (tmp) {
+		smvk::mem::DumpStats(tmp);
+		std::rewind(tmp);
+		char buf[1024] = {};
+		const size_t n = std::fread(buf, 1, sizeof(buf) - 1, tmp);
+		std::fclose(tmp);
+		const std::string out(buf, n);
+		Check(out.find("process") != std::string::npos
+			&& out.find("frame") != std::string::npos
+			&& out.find("transient") != std::string::npos,
+			"memory.stats.dump-names-lifetimes");
+	}
+}
 void TestThreadPool() {
 	// Ring queue over transient memory: futures resolve, ring wraps (300
 	// tasks through 2 workers), void tasks run, dtor joins cleanly.
@@ -314,6 +354,7 @@ int main() {
 	TestStlAdapter();
 	TestLinearPtr();
 	TestTransientVector();
+	TestAllocatorStats();
 	TestThreadPool();
 	TestFrameReset();
 	TestGlobals();

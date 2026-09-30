@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include <Engine/smvk.h>
+#include <Engine/Memory/alloc_config.h>
 
 namespace smvk {
 
@@ -103,9 +104,13 @@ namespace smvk {
 	// entry from two threads is still UB (same as before, but now also
 	// without a mutex to hide it).
 	// =====================================================================
-	inline constexpr uint32_t kNumPoolShards = 16;
-	inline constexpr uint32_t kShardCapacity = 512;
-	inline constexpr uint32_t kShardedMaxSize = kNumPoolShards * kShardCapacity; // 8192, matches old Pool::kMaxSize
+	// Pool sharding constants live in mem::config (alloc_config.h) — the
+	// single place to resize. Aliased here so existing pool.h call sites
+	// (CurrentPoolShard, RegisterPoolShard, ShardedPool, ThreadPool caps)
+	// keep working unchanged.
+	inline constexpr uint32_t kNumPoolShards = mem::config::kNumPoolShards;
+	inline constexpr uint32_t kShardCapacity = mem::config::kShardCapacity;
+	inline constexpr uint32_t kShardedMaxSize = mem::config::kShardedMaxSize; // 8192, matches old Pool::kMaxSize
 
 	// Bindless pools alias their sharded handle index as the descriptor-array
 	// slot, so the global bindless budget must cover this entire index space.

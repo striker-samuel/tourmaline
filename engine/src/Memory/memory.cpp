@@ -4,6 +4,8 @@
 
 #include <Engine/Memory/alloc_config.h>
 
+#include <cstdio>
+
 namespace smvk::mem {
 
 LinearAllocator& ProcessAllocator() {
@@ -30,9 +32,34 @@ void InitMemory() {
 }
 
 void ShutdownMemory() {
+	// Footprint report: the whole migration's memory cost in three lines.
 	// Function-local statics destroy themselves at exit in reverse order;
-	// nothing to do. Kept as a named teardown hook for symmetry and for
-	// future leak-check accounting.
+	// nothing else to do. Kept as a named teardown hook for symmetry.
+	DumpStats(stderr);
+}
+
+namespace {
+
+void DumpOne(std::FILE* out, const LinearAllocator& alloc) {
+	const LinearStats s = alloc.GetStats();
+	std::string_view name = alloc.Name();
+	std::fprintf(out,
+		"[Memory] %.*s: used %.1f MB / committed %.1f MB / reserved %.1f MB\n",
+		static_cast<int>(name.size()), name.data(),
+		static_cast<double>(s.used) / (1024.0 * 1024.0),
+		static_cast<double>(s.committed) / (1024.0 * 1024.0),
+		static_cast<double>(s.reserved) / (1024.0 * 1024.0));
+}
+
+} // namespace
+
+void DumpStats(std::FILE* out) {
+	if (!out)
+		return;
+	DumpOne(out, ProcessAllocator());
+	DumpOne(out, FrameAllocator());
+	DumpOne(out, TransientAllocator());
+	std::fflush(out);
 }
 
 } // namespace smvk::mem
