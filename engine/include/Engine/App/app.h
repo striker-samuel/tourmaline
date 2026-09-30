@@ -6,6 +6,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Audio/audio.h>
+#include <Engine/Memory/memory.h>
 
 #include "input.h"
 #include <algorithm>
@@ -99,10 +100,12 @@ namespace smvk
 
 #pragma region ===[ Graphics State ]===
 		// Graphics members live in App so they are destroyed BEFORE window.
-		std::unique_ptr<ResourceManager> m_context;
-		std::unique_ptr<Swapchain> m_swapchain;
-		std::unique_ptr<RenderGraph> m_rendergraph;
-		std::unique_ptr<World> m_world;
+		// Linear process-owned (dtor-only deleter; never freed). Borrowed
+		// hosted pointers (m_context/m_world) are release()d, never destroyed.
+		mem::LinearPtr<ResourceManager> m_context;
+		mem::LinearPtr<Swapchain> m_swapchain;
+		mem::LinearPtr<RenderGraph> m_rendergraph;
+		mem::LinearPtr<World> m_world;
 		void WaitForDeviceIdle();
 #pragma endregion
 

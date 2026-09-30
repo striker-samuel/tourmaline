@@ -298,7 +298,7 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 // overlay (below loose content/, so dev overrides win) for init-time
 // reads (cubemaps baked into the pak, ...). Returns nullptr on any
 // failure (the renderer fails loudly).
-std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
+smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs,
 	smvk::TextureStreamer* sceneStreamer) {
 	if (!pre.backend) {
@@ -325,7 +325,7 @@ std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 	}
 	std::cerr << "[App] loading scene[" << sceneIndex << "] '"
 		<< scenes[size_t(sceneIndex)].name << "'...\n";
-	auto world = std::make_unique<smvk::World>();
+	auto world = smvk::mem::MakeProcess<smvk::World>();
 	try {
 		world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex),
 			sceneStreamer, pre.image);
@@ -481,7 +481,7 @@ std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 	// borrowed tail payloads.
 	renderer.SetWorldSource(
 		[preloadFuture, sceneIndex, &renderer](smvk::ResourceManager& ctx,
-			smvk::OverlayVfs& contentVfs) -> std::unique_ptr<smvk::World> {
+			smvk::OverlayVfs& contentVfs) -> smvk::mem::LinearPtr<smvk::World> {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
 				ctx, contentVfs, renderer.GetTextureStreamer());
 		});

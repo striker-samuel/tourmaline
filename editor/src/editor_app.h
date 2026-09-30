@@ -1460,7 +1460,8 @@ private:
 // change. The edit world stays the authoring model underneath:
 // outliner, inspector and gizmos keep working on it.
 	// The hosted WorldRenderer instance (appcore). Null when off.
-	std::unique_ptr<app::WorldRenderer> m_wysiwyg;
+	// Linear process-owned (dtor-only deleter; never freed).
+	smvk::mem::LinearPtr<app::WorldRenderer> m_wysiwyg;
 	// Scene id storage (the renderer keeps its own copy): the scene
 	// stem naming the GI sidecars (gi/<stem>.*).
 	std::string m_wysiwygSceneId;
@@ -1516,7 +1517,7 @@ private:
 	// stash. Direct in-place world destruction with a live hosted
 	// renderer is a use-after-free.
 	bool m_wysiwygSuspendPending = false;
-	std::unique_ptr<smvk::World> m_worldRetire;
+	smvk::mem::LinearPtr<smvk::World> m_worldRetire;
 	// Called by every path that replaces or drops m_world while the
 	// hosted live view runs (scene opens, close, project switch):
 	// stashes the old world + flags the deferred in-place rebind (or
@@ -1952,7 +1953,7 @@ private:
 	uint32_t m_uvWinLinesCap = 0;
 
 	// ---- imgui ----
-	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
+	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 
 	// ---- texture streaming (cheap initial mips, distance demand upgrades) ----
 	// Streaming: tail-resident uploads upgraded by camera-distance demand
@@ -1968,7 +1969,7 @@ private:
 		Full = 2,
 	};
 	TexMode m_texMode = TexMode::Streaming;
-	std::unique_ptr<smvk::TextureStreamer> m_textureStreamer;
+	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	bool m_textureStreamingEnabled = true;
 	// RHI pool index (what MaterialValues::textures stores) -> live RHI
 	// handle for demand requests. Rebuilt on every scene load; empty for

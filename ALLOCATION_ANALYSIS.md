@@ -266,7 +266,7 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [x] Replace `make_unique<VulkanCore>` with placement new
 - [x] Replace `make_unique<PipelineCache>` etc.
 - [x] Convert `AppArena::Block::data` from `unique_ptr` to linear allocation
-- [ ] App-level borrowed objects (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`, `TextureStreamer`, `TextureFeedback`, `ImGuiOverlay`, `World` in `main`) — Epoch 4
+- [x] App-level borrowed objects (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`, `TextureStreamer`, `TextureFeedback`, `ImGuiOverlay`, `World` in `main`) — Epoch 5
 
 ### Phase 2: Frame Lifetime
 - [x] Convert `FrameArena::Block::data` to linear allocation
@@ -457,3 +457,27 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`, `TextureStreamer`,
   `TextureFeedback`, `ImGuiOverlay`, `World` in `main`); transient
   pre-reservation (Phase 4); wider STL migration (Phase 5).
+
+### Epoch 5 — App-level process objects to LinearPtr (2026-09-30)
+- `smvk::App` graphics members (`m_context`/`m_swapchain`/`m_rendergraph`/
+  `m_world` in `Engine/App/app.h`) → `LinearPtr`; all creations
+  (`Initialize` + hosted boot) use `MakeProcess`. Borrowed-host semantics
+  preserved verbatim: `reset(borrowed)` + `release()` + flags work
+  identically under the dtor-only deleter (`RebindBorrowedWorld`, `~App`).
+- `World` ownership chain unified: `WorldSource` returns
+  `LinearPtr<World>`, `LoadPakWorld` builds via `MakeProcess`; editor
+  `m_world` reassignment (`OpenScene`/pak paths) + `m_worldRetire` stash
+  (`std::move` + `reset()`) unchanged in behavior.
+- `WorldRenderer`: `m_textureStreamer`, `m_textureFeedback`, `m_imgui`,
+  `m_shadowWorkers` → `LinearPtr` + `MakeProcess`.
+- `EditorApp`: `m_imgui`, `m_textureStreamer`, hosted `m_wysiwyg`
+  (`WorldRenderer`), `m_worldRetire` → `LinearPtr` + `MakeProcess`.
+- `samples/02_blur`: own `m_imgui` → `LinearPtr` + `MakeProcess`.
+- Verified zero remaining `unique_ptr`/`new`/`make_unique` for these types
+  repo-wide (only a stale `main.cpp.orig` backup references the old form).
+- **Validation**: `App` + `Editor` + `01_triangle` + `02_blur` build/link;
+  `MemoryTests` 58/58, `AssetTests` 334/334 PASS.
+- **Remaining:** transient pre-reservation (Phase 4: staging rings,
+  readback); wider STL migration (Phase 5); cache/store adapters
+  (`ArtifactStore`, `StoreArtifactCacheAdapter`) intentionally left on
+  malloc — different subsystem, Phase 5 material.

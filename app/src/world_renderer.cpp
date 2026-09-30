@@ -1452,7 +1452,7 @@ bool WorldRenderer::Initialize() {
 			streamCfg.evictCooldownFrames = 60;
 			streamCfg.mipBias = 0.0f;
 			m_textureStreamer =
-				std::make_unique<smvk::TextureStreamer>(*m_context, streamCfg);
+				smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
 		}
 		smvk::TextureStreamer* sceneStreamer =
 			(m_textureStreamingEnabled && m_textureStreamer) ? m_textureStreamer.get() : nullptr;
@@ -1461,7 +1461,7 @@ bool WorldRenderer::Initialize() {
 		// binding is always valid for the shaders).
 		if (sceneStreamer && !m_textureFeedback) {
 			m_textureFeedback =
-				std::make_unique<smvk::TextureFeedback>(*m_context);
+				smvk::mem::MakeProcess<smvk::TextureFeedback>(*m_context);
 			m_textureFeedback->SetSlotCount(MAX_TEXTURES);
 		}
 
@@ -1792,7 +1792,7 @@ bool WorldRenderer::Initialize() {
 		// owns the process's single ImGui context; a second context
 		// here would corrupt the host's UI.
 		if (!IsHosted()) {
-		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
+		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc imguiDesc{};
 		imguiDesc.fontPath = UI_FONT_PATH;
 		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
@@ -7250,7 +7250,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			unsigned hw = std::thread::hardware_concurrency();
 			if (hw <= 1) hw = 2;
 			m_shadowWorkers =
-				std::make_unique<smvk::ThreadPool>(std::min(hw - 1, 8u));
+				smvk::mem::MakeProcess<smvk::ThreadPool>(std::min(hw - 1, 8u));
 		}
 		auto enqueueBuild = [this](uint32_t slot) {
 			m_shadowFutures.push_back(m_shadowWorkers->enqueue([this, slot] {

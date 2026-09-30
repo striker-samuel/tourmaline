@@ -180,7 +180,7 @@ bool EditorApp::Initialize() {
 		m_projectDialogPending = true;
 
 
-	m_imgui = std::make_unique<smvk::ImGuiOverlay>();
+	m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
 	smvk::ImGuiOverlayDesc imguiDesc{};
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
@@ -577,9 +577,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		streamCfg.evictCooldownFrames = (m_texMode == TexMode::Coarse) ? 0 : 60;
 		streamCfg.mipBias = 0.0f;
 		m_textureStreamer =
-			std::make_unique<smvk::TextureStreamer>(*m_context, streamCfg);
+			smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
 	}
-	m_world = std::make_unique<smvk::World>();
+	m_world = smvk::mem::MakeProcess<smvk::World>();
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// THE DEFINITION BUILD: the world assembles from the tour doc.
 	// Reference #0 is the source glTF itself (a ROOT reference â€” no
@@ -982,7 +982,7 @@ bool EditorApp::LoadPakFromImage(
 	// world retires safely at the frame boundary; the pending refresh
 	// rebinds onto this pak's world).
 	SuspendWysiwygForWorldSwap();
-	m_world = std::make_unique<smvk::World>();
+	m_world = smvk::mem::MakeProcess<smvk::World>();
 	try {
 		m_world->LoadClusterFromPak(*m_context, *m_pakReader, sceneIndex);
 	}
@@ -1107,7 +1107,7 @@ bool EditorApp::LaunchWysiwyg() {
 	// invariants, initialized. Cooks are the separate PRODUCT step —
 	// they never feed the viewport.
 	try {
-		m_wysiwyg = std::make_unique<app::WorldRenderer>(*this, *m_world,
+		m_wysiwyg = smvk::mem::MakeProcess<app::WorldRenderer>(*this, *m_world,
 			m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot);
 	}
 	catch (const std::exception& e) {

@@ -808,7 +808,7 @@ public:
 	// Return nullptr = load failed (Initialize fails loudly).
 	// Unset + no borrowed world (SetHostedBorrowedWorld) = nothing to
 	// render, Initialize fails.
-	using WorldSource = std::function<std::unique_ptr<smvk::World>(
+	using WorldSource = std::function<smvk::mem::LinearPtr<smvk::World>(
 		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
 	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
 
@@ -1430,7 +1430,7 @@ protected:
 	// Camera control frozen (see SetDisableControl; --disable_control).
 	bool m_disableControl = false;
 
-	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
+	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
@@ -1726,7 +1726,7 @@ protected:
 	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered);
-	std::unique_ptr<smvk::ThreadPool> m_shadowWorkers;
+	smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;
 	std::vector<std::future<void>> m_shadowFutures;
 	std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
 	// ---- Option A: occluder-only HZB depth ----
@@ -2334,11 +2334,11 @@ protected:
 	// by the host's world source; digest-less pak blobs stay
 	// full-resident, the pre-v4 behavior).
 	bool m_textureStreamingEnabled = true;
-	std::unique_ptr<smvk::TextureStreamer> m_textureStreamer;
+	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// GPU feedback consumer (Skull & Bones style readback, see
 	// Engine/Renderer/texture_feedback.h). Lives alongside the streamer;
 	// null together with it when streaming is disabled.
-	std::unique_ptr<smvk::TextureFeedback> m_textureFeedback;
+	smvk::mem::LinearPtr<smvk::TextureFeedback> m_textureFeedback;
 	// ---- Async readback ticket (exposure histogram + texture feedback +
 	// deferred-shadow counters) ----
 	// Submit + non-blocking poll each tick: the render thread NEVER waits

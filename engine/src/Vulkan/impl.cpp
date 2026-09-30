@@ -9526,9 +9526,9 @@ bool smvk::App::Initialize() {
 		// deleter never runs on the host's object.
 		m_context.reset(hostedHost_->m_context.get());
 		contextBorrowed_ = true;
-		m_swapchain = std::make_unique<Swapchain>(*m_context,
+		m_swapchain = smvk::mem::MakeProcess<Swapchain>(*m_context,
 			hostedExtent_, hostedFormat_);
-		m_rendergraph = std::make_unique<RenderGraph>(*m_context);
+		m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
 		// LIVE-VIEW borrowed world: the host (editor) may hand over its
 		// OWN resolved world — the hosted renderer then renders the
 		// host's live engine representation (references bound, edits
@@ -9539,7 +9539,7 @@ bool smvk::App::Initialize() {
 			worldBorrowed_ = true;
 		}
 		else {
-			m_world = std::make_unique<World>();
+			m_world = smvk::mem::MakeProcess<World>();
 		}
 		hostedInitialized_ = true;
 		std::cerr << "[App] hosted boot: " << hostedExtent_.width << "x"
@@ -9607,14 +9607,14 @@ bool smvk::App::Initialize() {
 		std::cerr << "[Audio] disabled: " << m_audio.LastError() << "\n";
 	}
 
-	m_context = std::make_unique<ResourceManager>(window);
-	m_swapchain = std::make_unique<Swapchain>(
+	m_context = smvk::mem::MakeProcess<ResourceManager>(window);
+	m_swapchain = smvk::mem::MakeProcess<Swapchain>(
 		*m_context,
 		window
 	);
 
-	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
-	m_world = std::make_unique<World>();
+	m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
+	m_world = smvk::mem::MakeProcess<World>();
 
 	// Init imgui?s
 	return true;

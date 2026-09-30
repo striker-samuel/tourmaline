@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include <Engine/core.h>
+#include <Engine/Memory/memory.h>
 #include <Engine/Renderer/dxc_integration.h>
 #include <imgui.h>
 #include <SDL3/SDL_video.h>
@@ -243,7 +244,7 @@ private:
 
 		EnsureBlurTargets();
 
-		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
+		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
 		if (!m_imgui->Init(*m_context, *m_swapchain, window)) {
 			std::cerr << "[02_blur] ImGui init failed – continuing without UI\n";
 			m_imgui.reset();
@@ -575,7 +576,7 @@ private:
 	}
 
 private:
-	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
+	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	std::vector<smvk::LogicalImageViewHandle> m_swapViews;
 	smvk::Holder<smvk::ShaderModuleHandle> m_vert;
 	smvk::Holder<smvk::ShaderModuleHandle> m_frag;
