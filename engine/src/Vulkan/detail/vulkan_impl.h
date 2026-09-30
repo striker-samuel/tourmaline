@@ -2,6 +2,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Memory/memory.h>
 #include <Engine/Renderer/spirv_reflection.h>
 
 #include "volk.h"
@@ -289,7 +290,7 @@ namespace smvk {
 		bool Init();
 	};
 
-	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window);
+ 	mem::LinearPtr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window);
 	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
 	struct CommandBufferPool;
@@ -746,7 +747,9 @@ namespace smvk {
 		const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
 		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
-		std::unique_ptr<VulkanCore> core_;
+		// Process-lifetime objects owned by the linear process allocator
+		// (never freed individually — LinearPtr runs the dtor only).
+		mem::LinearPtr<VulkanCore> core_;
 		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
 		Submitter* m_transferSubmitter = nullptr;
@@ -754,7 +757,7 @@ namespace smvk {
 		// graphics submitter when the device has no dedicated compute
 		// queue (emulated async: same-queue compute, still pipelined H->V).
 		Submitter* m_computeSubmitter = nullptr;
-		std::unique_ptr<UploadStreamer> m_streamer;
+		mem::LinearPtr<UploadStreamer> m_streamer;
 		bool m_hostImageCopySupported = false;
 		VkPhysicalDeviceHostImageCopyPropertiesEXT m_hostCopyProps{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT };
 		std::vector<VkImageLayout> m_hostCopySrcLayouts;
@@ -791,7 +794,7 @@ namespace smvk {
 		// DEFAULTS (legacy handles – kept for ABI; new code should use samplerCache)
 		VkSampler m_defaultSampler{};
 		VkSampler m_defaultShadowSampler{};
-		std::unique_ptr<VulkanSamplerCache> samplerCache_;
+		mem::LinearPtr<VulkanSamplerCache> samplerCache_;
 
 		mutable std::atomic<bool> m_needToUpdateTextures{ true };
 		mutable std::atomic<bool> m_needToUpdateSamplers{ true };

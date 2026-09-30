@@ -261,11 +261,12 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [x] Centralized default sizes (`Engine/Memory/alloc_config.h` — single place to resize)
 
 ### Phase 1: Process Lifetime
-- [ ] Replace `new Submitter` with `g_processAllocator.Create<Submitter>()`
-- [ ] Replace `new CommandBufferPool` with `g_processAllocator.Create<CommandBufferPool>()`
-- [ ] Replace `make_unique<VulkanCore>` with placement new
-- [ ] Replace `make_unique<PipelineCache>` etc.
+- [x] Replace `new Submitter` with `g_processAllocator.Create<Submitter>()`
+- [x] Replace `new CommandBufferPool` with `g_processAllocator.Create<CommandBufferPool>()`
+- [x] Replace `make_unique<VulkanCore>` with placement new
+- [x] Replace `make_unique<PipelineCache>` etc.
 - [x] Convert `AppArena::Block::data` from `unique_ptr` to linear allocation
+- [ ] App-level borrowed objects (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`, `TextureStreamer`, `TextureFeedback`, `ImGuiOverlay`, `World` in `main`) — Epoch 4
 
 ### Phase 2: Frame Lifetime
 - [x] Convert `FrameArena::Block::data` to linear allocation
@@ -410,3 +411,27 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
   unbacked arenas, global wiring) — 44/44 PASS.
 - **Validation**: `App.exe` + `Editor.exe` link; `AssetTests` 334/334 PASS
   (exercises the now-backed `AppArena::FormatString` path).
+
+### Epoch 3 — Phase 1 engine objects to the process allocator (2026-09-30)
+- `memory.h`: `LinearDeleter<T>` / `LinearPtr<T>` (unique_ptr with dtor-only
+  deleter — storage never freed) + `MakeLinear` / `MakeProcess` factories.
+- Migrated, all in `engine/src/Vulkan/impl.cpp` (+ member decls):
+  - `Submitter` ×3 (`new` → `ProcessAllocator().Create`; `delete` →
+    explicit `~Submitter()`, aliasing logic unchanged).
+  - `CommandBufferPool` thread-local pools (`new` → `Create`; teardown
+    `delete` → explicit `~CommandBufferPool()` after `destroy()`).
+  - `VulkanCore` (`CreateVulkanCoreWithWindow` returns
+    `LinearPtr<VulkanCore>`; single caller, member type updated).
+  - `UploadStreamer` (`m_streamer`) and `VulkanSamplerCache`
+    (`samplerCache_`) → `LinearPtr` + `MakeProcess`; all `->`/`get()`/
+    `reset()` call sites compile unchanged with identical semantics.
+  - `RenderGraph::pipelineCacheOpaque_` → linear-owned.
+- Teardown semantics preserved: explicit Vulkan destroys (`destroy()`,
+  `Clear()`, `waitAll()`) still run before the dtor, exactly as before —
+  only the malloc free disappears.
+- `MemoryTests` 52/52 PASS (+8 `LinearPtr`: construct/move/dtor/reset/
+  release/`MakeProcess`).
+- **Validation**: `App.exe` + `Editor.exe` link; `AssetTests` 334/334 PASS.
+- **Deferred to Epoch 4:** App-level objects with borrowed-pointer
+  subtleties (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`,
+  `TextureStreamer`, `TextureFeedback`, `ImGuiOverlay`, `World`).

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Engine/smvk.h>
+#include <Engine/Memory/memory.h>
 #include <Engine/Renderer/mesh.h>
 
 #include <cassert>
@@ -895,7 +896,8 @@ namespace smvk
 
 		ResourceManager& ctx_;
 		struct PipelineCacheOpaque;
-		std::unique_ptr<PipelineCacheOpaque> pipelineCacheOpaque_;
+		// Linear process-owned (dtor-only deleter; never freed).
+		mem::LinearPtr<PipelineCacheOpaque> pipelineCacheOpaque_;
 	};
 
 

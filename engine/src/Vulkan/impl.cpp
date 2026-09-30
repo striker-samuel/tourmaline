@@ -37,6 +37,7 @@
 
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/Vulkan/vulkanApp.h>
+#include <Engine/Memory/memory.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/RHI/swapchain.h>
@@ -121,7 +122,7 @@ namespace smvk {
 		PoolKey key{ dev, qfi, owner };
 		auto it = t_commandPools.find(key);
 		if (it != t_commandPools.end()) return it->second;
-		auto* p = new CommandBufferPool();
+		auto* p = mem::ProcessAllocator().Create<CommandBufferPool>();
 		p->init(dev, qfi);
 		t_commandPools[key] = p;
 		{
@@ -2149,7 +2150,7 @@ inline smvk::VulkanCore::~VulkanCore() {
 			for (auto* pool : pools) {
 				if (pool) {
 					pool->destroy();
-					delete pool;
+					pool->~CommandBufferPool(); // linear-owned: dtor only, never freed
 				}
 			}
 		}
@@ -2182,10 +2183,10 @@ inline smvk::VulkanCore::~VulkanCore() {
 	// now is it safe to unmap it. No-op when Streamline is absent.
 	DlssRelease();
 }
-std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window) {
+smvk::mem::LinearPtr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window) {
 	assert(window != nullptr && "window was nullptr!");
 
-	auto unique = std::make_unique<VulkanCore>(config);
+	auto unique = smvk::mem::MakeProcess<VulkanCore>(config);
 	auto core = unique.get();
 
 	core->CreateInstance();
@@ -2238,9 +2239,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
-	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
+	m_submitter = smvk::mem::ProcessAllocator().Create<Submitter>(*core_, core_->indices.graphicsFamily.value());
 	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
-		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
+		m_transferSubmitter = smvk::mem::ProcessAllocator().Create<Submitter>(*core_, core_->indices.transferFamily.value());
 	}
 	else {
 		// Single-queue devices: uploads ride the graphics queue. All
@@ -2251,7 +2252,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	{
 		const uint32_t computeFam = core_->indices.computeFamily.value_or(core_->indices.graphicsFamily.value());
 		if (computeFam != core_->indices.graphicsFamily.value()) {
-			m_computeSubmitter = new Submitter(*core_, computeFam);
+			m_computeSubmitter = smvk::mem::ProcessAllocator().Create<Submitter>(*core_, computeFam);
 		}
 		else {
 			// No dedicated compute queue: blur still records as compute
@@ -2295,14 +2296,14 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 #if true
 	//m_hostImageCopySupported = false;
 #endif
-	m_streamer = std::make_unique<UploadStreamer>(this, m_transferSubmitter, m_submitter);
+	m_streamer = smvk::mem::MakeProcess<UploadStreamer>(this, m_transferSubmitter, m_submitter);
 	m_streamer->init(256ull * 1024 * 1024);
 
 	//this->m_hostImageCopySupported = false;
 
 	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
-	samplerCache_ = std::make_unique<VulkanSamplerCache>(this);
+	samplerCache_ = smvk::mem::MakeProcess<VulkanSamplerCache>(this);
 	// Populate default slots: 0 = regular, 1 = shadow comparison,
 	// 2 = linear clamp-to-edge (lightmap atlases + 3D probe volumes:
 	// both interpolate amplitudes that must never wrap across borders).
@@ -2532,11 +2533,11 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	// released. Device is idle, and Flush never queries semaphores, so this is
 	// safe even though the swapchain timeline is already gone (member order).
 	FlushDeferredTasks();
-	if (m_transferSubmitter && m_transferSubmitter != m_submitter) { delete m_transferSubmitter; }
+	if (m_transferSubmitter && m_transferSubmitter != m_submitter) { m_transferSubmitter->~Submitter(); } // linear-owned: dtor only
 	m_transferSubmitter = nullptr;
-	if (m_computeSubmitter && m_computeSubmitter != m_submitter) { delete m_computeSubmitter; }
+	if (m_computeSubmitter && m_computeSubmitter != m_submitter) { m_computeSubmitter->~Submitter(); } // linear-owned: dtor only
 	m_computeSubmitter = nullptr;
-	delete m_submitter;
+	m_submitter->~Submitter(); // linear-owned: dtor only, never freed
 	m_submitter = nullptr;
 
 #ifndef N_DEBUG
@@ -9679,7 +9680,7 @@ struct smvk::RenderGraph::PipelineCacheOpaque {
 	VulkanPipelineCache cache;
 	explicit PipelineCacheOpaque(VulkanResourceManager* rm) : cache(rm) {}
 };
-smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(std::make_unique<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))) {}
+smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))) {}
 smvk::RenderGraph::~RenderGraph() { ReleaseResolvedResources(); }
 
 void smvk::RenderGraph::ResolveImageViews()

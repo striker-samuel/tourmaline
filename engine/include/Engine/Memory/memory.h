@@ -24,6 +24,9 @@
 
 #include <Engine/Memory/linear_allocator.h>
 
+#include <memory>
+#include <utility>
+
 namespace smvk::mem {
 
 LinearAllocator& ProcessAllocator();
@@ -32,5 +35,35 @@ LinearAllocator& TransientAllocator();
 
 void InitMemory();
 void ShutdownMemory(); // releases reservations; only call at teardown
+
+// Ownership for process-lifetime objects (Phase 1 migration).
+//
+// LinearPtr<T> is a unique_ptr whose deleter runs the destructor WITHOUT
+// freeing: the storage lives in a LinearAllocator and is reclaimed
+// wholesale (process teardown) or by mark/reset, never per-object.
+// Drop-in for std::unique_ptr at owned-process-object sites: get(),
+// reset(), release(), operator-> all behave identically; only the
+// allocation (MakeProcess/MakeLinear + Create) and the free (none)
+// differ. OOM still crashes via ReportOomAndCrash.
+template<typename T>
+struct LinearDeleter {
+	void operator()(T* p) const noexcept {
+		if (p)
+			p->~T();
+	}
+};
+
+template<typename T>
+using LinearPtr = std::unique_ptr<T, LinearDeleter<T>>;
+
+template<typename T, typename... Args>
+[[nodiscard]] LinearPtr<T> MakeLinear(LinearAllocator& allocator, Args&&... args) {
+	return LinearPtr<T>(allocator.Create<T>(std::forward<Args>(args)...));
+}
+
+template<typename T, typename... Args>
+[[nodiscard]] LinearPtr<T> MakeProcess(Args&&... args) {
+	return MakeLinear<T>(ProcessAllocator(), std::forward<Args>(args)...);
+}
 
 } // namespace smvk::mem

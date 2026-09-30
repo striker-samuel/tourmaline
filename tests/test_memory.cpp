@@ -163,6 +163,39 @@ void TestArenaBacking() {
 	Check(smvk::FrameArena().Backing() == &smvk::mem::FrameAllocator(),
 		"memory.arena.frame-backed-by-frame");
 }
+struct Counted {
+	static inline int alive = 0;
+	int value = 0;
+	Counted(int v = 0) : value(v) { ++alive; }
+	~Counted() { --alive; }
+};
+
+void TestLinearPtr() {
+	Counted::alive = 0;
+	smvk::mem::LinearAllocator alloc("test-ptr", 64 * 1024, 16 * 1024);
+	{
+		auto p = smvk::mem::MakeLinear<Counted>(alloc, 42);
+		Check(p && p->value == 42 && Counted::alive == 1,
+			"memory.ptr.make-constructs");
+		auto q = std::move(p);
+		Check(!p && q && Counted::alive == 1, "memory.ptr.move-transfers");
+	}
+	Check(Counted::alive == 0, "memory.ptr.dtor-on-scope-exit");
+	// reset() destroys the old object and takes the new one; the storage
+	// itself is never freed (linear) — Used() only grows.
+	const size_t usedBefore = alloc.Used();
+	auto r = smvk::mem::MakeLinear<Counted>(alloc);
+	r.reset(alloc.Create<Counted>(7));
+	Check(Counted::alive == 1 && r->value == 7, "memory.ptr.reset-destroys-old");
+	Check(alloc.Used() >= usedBefore, "memory.ptr.storage-never-freed");
+	Counted* raw = r.release();
+	Check(!r && raw != nullptr && Counted::alive == 1, "memory.ptr.release-skips-dtor");
+	raw->~Counted(); // manual teardown matches linear ownership
+	Check(Counted::alive == 0, "memory.ptr.manual-dtor");
+	// MakeProcess allocates from the real process allocator.
+	auto g = smvk::mem::MakeProcess<Counted>(1);
+	Check(g && g->value == 1, "memory.ptr.make-process");
+}
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -187,6 +220,7 @@ int main() {
 	TestCreate();
 	TestMarkReset();
 	TestStlAdapter();
+	TestLinearPtr();
 	TestGlobals();
 	TestArenaBacking();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
