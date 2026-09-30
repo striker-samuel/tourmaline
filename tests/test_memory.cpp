@@ -26,6 +26,7 @@
 #include <Engine/Utils/thread_pool.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <future>
 #include <string>
@@ -328,6 +329,120 @@ void TestThreadPool() {
 		f.wait();
 	Check(ran.load() == 50, "memory.pool.void-tasks-run");
 } // dtor joins here; ASAN-less check is clean exit + no hang
+
+// Microbenchmarks (validation: frame-time alloc overhead + page-commit
+// latency). Local allocators only — no global state touched. Bounds are
+// deliberately generous (5-50x above typical) so they catch pathological
+// regressions (lock contention, per-alloc syscalls, page storms) without
+// flaking on loaded machines. Raw numbers print as METRIC lines.
+void TestBenchmarks() {
+	using Clock = std::chrono::steady_clock;
+	// 1. Bump mean: 1M small allocs, single thread.
+	{
+		smvk::mem::LinearAllocator alloc("bench-bump", 128 * 1024 * 1024, 16 * 1024);
+		const int N = 1000000;
+		const auto t0 = Clock::now();
+		volatile size_t sink = 0;
+		for (int i = 0; i < N; ++i)
+			sink += reinterpret_cast<uintptr_t>(alloc.Allocate(64, 16));
+		const auto t1 = Clock::now();
+		(void)sink;
+		const double meanNs = std::chrono::duration<double, std::nano>(t1 - t0).count() / N;
+		std::cout << "METRIC memory.bench.bump-mean-ns " << meanNs << "\n";
+		Check(meanNs < 100.0, "memory.bench.bump-mean-under-100ns");
+	}
+	// 2. Bump batch-p99: 100 batches of 10k; worst batch-mean approximates
+	// tail latency (catches commit-path stalls leaking into the fast path).
+	{
+		smvk::mem::LinearAllocator alloc("bench-p99", 256 * 1024 * 1024, 16 * 1024);
+		double worst = 0.0;
+		volatile size_t sink = 0;
+		for (int b = 0; b < 100; ++b) {
+			const auto t0 = Clock::now();
+			for (int i = 0; i < 10000; ++i)
+				sink += reinterpret_cast<uintptr_t>(alloc.Allocate(96, 16));
+			const auto t1 = Clock::now();
+			const double m = std::chrono::duration<double, std::nano>(t1 - t0).count() / 10000;
+			if (m > worst)
+				worst = m;
+		}
+		(void)sink;
+		std::cout << "METRIC memory.bench.bump-batch-p99-ns " << worst << "\n";
+		Check(worst < 1000.0, "memory.bench.bump-batch-p99-under-1us");
+	}
+	// 3. Commit cold vs warm: first touch commits a quantum (ms-scale,
+	// informational); reuse inside committed pages runs at bump speed.
+	{
+		smvk::mem::LinearAllocator alloc("bench-commit", 256 * 1024 * 1024,
+			smvk::mem::config::kCommitQuantum);
+		const auto t0 = Clock::now();
+		void* cold = alloc.Allocate(1024 * 1024, 16);
+		const auto t1 = Clock::now();
+		const double coldMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+		const auto t2 = Clock::now();
+		volatile size_t sink = 0;
+		for (int i = 0; i < 10000; ++i)
+			sink += reinterpret_cast<uintptr_t>(alloc.Allocate(64, 16));
+		const auto t3 = Clock::now();
+		(void)sink;
+		(void)cold;
+		const double warmNs = std::chrono::duration<double, std::nano>(t3 - t2).count() / 10000;
+		std::cout << "METRIC memory.bench.commit-cold-ms " << coldMs << "\n";
+		std::cout << "METRIC memory.bench.commit-warm-ns " << warmNs << "\n";
+		Check(coldMs < 2000.0, "memory.bench.commit-cold-under-2s");
+		Check(warmNs < 100.0, "memory.bench.commit-warm-at-bump-speed");
+	}
+	// 4. Frame cycle: mark, 500 mixed allocs (barrier-sized structs +
+	// strings), reset — x1000 frames. Models the DrawFrame scratch rhythm.
+	{
+		smvk::mem::LinearAllocator frame("bench-frame", 256 * 1024 * 1024, 4 * 1024 * 1024);
+		struct Barrier96 {
+			uint64_t words[12];
+		};
+		const auto t0 = Clock::now();
+		volatile size_t sink = 0;
+		for (int f = 0; f < 1000; ++f) {
+			const size_t mark = frame.Mark();
+			for (int i = 0; i < 400; ++i)
+				sink += reinterpret_cast<uintptr_t>(frame.Allocate(sizeof(Barrier96), alignof(Barrier96)));
+			for (int i = 0; i < 100; ++i)
+				sink += reinterpret_cast<uintptr_t>(frame.Allocate(48 + (size_t(i) % 64), 16));
+			frame.Reset(mark);
+		}
+		const auto t1 = Clock::now();
+		const double perFrameUs = std::chrono::duration<double, std::micro>(t1 - t0).count() / 1000;
+		std::cout << "METRIC memory.bench.frame-cycle-us " << perFrameUs << "\n";
+		Check(perFrameUs < 50.0, "memory.bench.frame-cycle-under-50us");
+	}
+	// 5. Vector growth vs malloc baseline (informational only — the malloc
+	// baseline varies by machine; linear must simply be in the same league).
+	{
+		smvk::mem::LinearAllocator alloc("bench-vec", 64 * 1024 * 1024, 64 * 1024);
+		auto t0 = Clock::now();
+		{
+			smvk::mem::TransientVector<int> v{
+				smvk::mem::LinearAllocatorSTL<int>{&alloc}};
+			for (int i = 0; i < 100000; ++i)
+				v.push_back(i);
+			volatile int sink = v.back();
+			(void)sink;
+		}
+		auto t1 = Clock::now();
+		{
+			std::vector<int> v;
+			for (int i = 0; i < 100000; ++i)
+				v.push_back(i);
+			volatile int sink = v.back();
+			(void)sink;
+		}
+		auto t2 = Clock::now();
+		const double linMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+		const double malMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
+		std::cout << "METRIC memory.bench.vec-linear-ms " << linMs << "\n";
+		std::cout << "METRIC memory.bench.vec-malloc-ms " << malMs << "\n";
+		Check(linMs < 1000.0, "memory.bench.vec-linear-sane");
+	}
+}
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -359,6 +474,7 @@ int main() {
 	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();
+	TestBenchmarks();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }
