@@ -6930,6 +6930,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const auto rfT0 = bench_clk::now();
 		bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
 		bench_clk::time_point rfPA, rfPB; // preMain split: fw+/filter | cull/late
+		// Hitch logger (VULKANTOY_HITCH_LOG=<ms>): one line per frame that
+		// exceeds the budget — traversal hitches vs shader-compile warm-up
+		// (a hitch that also mints pipelines is compilation; a hitch with a
+		// stable pipeline count is genuine traversal/alloc cost). Logged at
+		// the frame end below.
+		static const double sHitchBudgetMs = [] {
+			const char* e = std::getenv("VULKANTOY_HITCH_LOG");
+			return e ? std::atof(e) : 0.0;
+		}();
+		static size_t sHitchLastPipelines = 0;
 		// Decal ring upload BEFORE UpdateFrameUniforms: it reads the live
 		// count (m_decalFrameCount) into FrameUniforms.
 		(void)UpdateDecals(fb.frameIndex);
@@ -12036,6 +12046,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		m_dlssLastMode = m_dlssMode;
 		m_dlssLastRenderExtent = renderExtent;
 		m_dlssLastSwapExtent = swapExtent;
+		// Hitch logger (see the rfT0 site): frames over the
+		// VULKANTOY_HITCH_LOG budget, with the pipeline-cache delta —
+		// mints>0 = shader-compile warm-up, mints=0 = traversal cost.
+		if (sHitchBudgetMs > 0.0) {
+			const double frameMs = std::chrono::duration<double, std::milli>(
+				bench_clk::now() - rfT0).count();
+			if (frameMs > sHitchBudgetMs) {
+				const size_t pipelines = m_rendergraph->PipelineCacheCount();
+				std::fprintf(stderr,
+					"[Hitch] f%llu %.1fms pipelines %llu (+%llu, total %llu)\n",
+					(unsigned long long)m_frameCounter, frameMs,
+					(unsigned long long)pipelines,
+					(unsigned long long)(pipelines - sHitchLastPipelines),
+					(unsigned long long)pipelines);
+				std::fflush(stderr);
+			}
+			sHitchLastPipelines = m_rendergraph->PipelineCacheCount();
+		}
 	}
 }
 

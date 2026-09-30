@@ -906,6 +906,15 @@ namespace smvk
 		struct PipelineCacheOpaque;
 		// Linear process-owned (dtor-only deleter; never freed).
 		mem::LinearPtr<PipelineCacheOpaque> pipelineCacheOpaque_;
+
+		// --------------------------------------------------------
+		// Pipeline cache introspection
+		// --------------------------------------------------------
+
+		// Graphics-pipeline population count (debug: the hitch logger's
+		// warm-up signal — a hitch frame that also mints a batch of
+		// pipelines is shader compilation, not traversal cost).
+		[[nodiscard]] size_t PipelineCacheCount() const;
 	};
 
 

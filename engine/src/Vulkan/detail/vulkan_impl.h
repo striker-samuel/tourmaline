@@ -1284,6 +1284,12 @@ namespace smvk {
 			ShaderProgram& program);
 		void Clear();
 
+		// Population count (graphics pipelines only) — the hitch logger's
+		// warm-up signal: a frame that mints a batch of pipelines while
+		// exceeding the frame-time budget is a shader-compile hitch, not a
+		// traversal one.
+		[[nodiscard]] size_t Size() const { return pipelines_.size(); }
+
 
 	private:
 		PipelineBundle BuildGraphicsPipeline(

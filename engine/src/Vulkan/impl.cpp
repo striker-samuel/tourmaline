@@ -3,9 +3,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <span>
 #include <optional>
 #include <unordered_set>
@@ -1755,9 +1758,262 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 		throw std::runtime_error("failed to create shader module!");
 	}
 }
+// ============================================================
+// Robust disk pipeline cache (the "Robust pipeline cache
+// serialization" scheme): one device-level VkPipelineCache,
+// seeded from a validated file and saved via temp-file + rename.
+//
+// The engine's in-process VulkanPipelineCache dedupes pipeline
+// OBJECTS; the driver's VkPipelineCache dedupes the COMPILES —
+// both are needed (the object cache alone meant every process
+// paid the full shader-microcode compiles, which hitch the
+// first traversal of a scene hard: each unseen material/LOD
+// bind mints a pipeline at ~ms each, hundreds of them on
+// Bistro). With the disk seed, only genuinely new pipelines
+// compile.
+//
+// Robustness (all of it application-side — drivers accept
+// arbitrary blobs badly):
+//   - Prefix header: magic, dataSize, dataHash (FNV-1a 64 over
+//     the blob), vendorID, deviceID, driverVersion, driverABI
+//     (sizeof(void*) — 32/64-bit driver builds share UUIDs),
+//     pipelineCacheUUID. Anything stale/corrupt -> empty cache.
+//   - vkCreatePipelineCache failing on valid-looking initial
+//     data (drivers add checks the spec doesn't) -> retried
+//     with NO initial data, never a crash and never a run
+//     without the in-process cache.
+//   - Saves: temp file + rename (no torn files), skipped when
+//     the blob is unchanged (size + hash), triggered by every
+//     >=64 compiles (abrupt-exit safety) and forced at device
+//     teardown.
+// VULKANTOY_PIPELINE_CACHE: unset = "pipeline_cache.bin" in the
+// working dir; a path = custom location; "off" = no disk seed
+// or save (the in-process cache still runs — it dedupes
+// compiles across pipeline objects even without a file).
+// ============================================================
+namespace {
+
+struct PipelineCachePrefixHeader {
+	uint32_t magic;        // kPipelineCacheFileMagic
+	uint32_t dataSize;     // == the vkGetPipelineCacheData size
+	uint64_t dataHash;     // FNV-1a 64 over the data blob
+	uint32_t vendorID;     // VkPhysicalDeviceProperties::vendorID
+	uint32_t deviceID;     // VkPhysicalDeviceProperties::deviceID
+	uint32_t driverVersion; // VkPhysicalDeviceProperties::driverVersion
+	uint32_t driverABI;    // sizeof(void*)
+	uint8_t uuid[VK_UUID_SIZE]; // pipelineCacheUUID
+};
+static_assert(sizeof(PipelineCachePrefixHeader) == 48);
+constexpr uint32_t kPipelineCacheFileMagic = 0x43504D53; // "SMPC" LE
+constexpr uint32_t kPipelineCacheHeaderVersion = 1;
+constexpr size_t kPipelineCacheSaveBatch = 16;
+
+VkPipelineCache g_diskPipelineCache = VK_NULL_HANDLE;
+std::mutex g_diskPipelineCacheMutex;
+bool g_diskPipelineCacheDiskEnabled = true;
+size_t g_diskPipelineCacheLastSavedSize = 0;
+uint64_t g_diskPipelineCacheLastSavedHash = 0;
+size_t g_diskPipelineCacheCompilesSinceSave = 0;
+
+const char* PipelineCacheFilePath()
+{
+	static const char* sPath = [] -> const char* {
+		static std::string storage;
+		const char* env = std::getenv("VULKANTOY_PIPELINE_CACHE");
+		if (!env || !*env)
+			return "pipeline_cache.bin";
+		if (std::strcmp(env, "off") == 0 || std::strcmp(env, "0") == 0)
+			return nullptr;
+		storage = env;
+		return storage.c_str();
+	}();
+	return sPath;
+}
+
+uint64_t PipelineCacheFnv1a64(const uint8_t* data, size_t size)
+{
+	uint64_t hash = 1469598103934665603ull;
+	for (size_t i = 0; i < size; ++i) {
+		hash ^= data[i];
+		hash *= 1099511628211ull;
+	}
+	return hash;
+}
+
+// Device-init hook: create the VkPipelineCache, seeded from the
+// validated disk file when possible.
+void CreateDiskPipelineCache()
+{
+	const char* path = PipelineCacheFilePath();
+	g_diskPipelineCacheDiskEnabled = (path != nullptr);
+
+	VkPhysicalDeviceProperties props{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+
+	VkPipelineCacheCreateInfo ci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+	std::vector<uint8_t> blob;
+	if (g_diskPipelineCacheDiskEnabled && path) {
+		// Load + validate (header, size, hash, device identity). Any
+		// mismatch (driver update, GPU swap, ABI flip, torn write)
+		// falls through to an empty cache — the driver never sees a
+		// blob it did not itself produce for this exact configuration.
+		std::FILE* f = std::fopen(path, "rb");
+		if (f) {
+			PipelineCachePrefixHeader header{};
+			bool ok = std::fread(&header, sizeof(header), 1, f) == 1
+				&& header.magic == kPipelineCacheFileMagic
+				&& header.dataSize > 0
+				&& header.dataSize <= (256u << 20);
+			if (ok) {
+				blob.resize(header.dataSize);
+				ok = std::fread(blob.data(), header.dataSize, 1, f) == 1;
+				if (ok)
+					ok = PipelineCacheFnv1a64(blob.data(), blob.size()) == header.dataHash;
+				if (ok)
+					ok = header.vendorID == props.vendorID
+						&& header.deviceID == props.deviceID
+						&& header.driverVersion == props.driverVersion
+						&& header.driverABI == sizeof(void*)
+						&& std::memcmp(header.uuid, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+			}
+			std::fclose(f);
+			if (ok) {
+				ci.initialDataSize = blob.size();
+				ci.pInitialData = blob.data();
+				// Seed the skip state so the first growth-triggered save of a
+				// fully-cached run writes nothing (nothing new compiled).
+				g_diskPipelineCacheLastSavedSize = blob.size();
+				g_diskPipelineCacheLastSavedHash =
+					PipelineCacheFnv1a64(blob.data(), blob.size());
+				fprintf(stderr,
+					"[PipelineCache] loaded %zu bytes from %s\n",
+					blob.size(), path);
+			} else {
+				blob.clear();
+				fprintf(stderr,
+					"[PipelineCache] %s stale or corrupt, starting empty\n", path);
+			}
+		}
+	}
+	if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS
+		&& ci.pInitialData != nullptr) {
+		// The driver rejected data our validation liked (it implements
+		// checks the spec does not describe): retry with no initial
+		// data — never run without the cache, never crash.
+		ci.initialDataSize = 0;
+		ci.pInitialData = nullptr;
+		if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS) {
+			fprintf(stderr, "[PipelineCache] creation failed, running without\n");
+			g_diskPipelineCache = VK_NULL_HANDLE;
+			return;
+		}
+		fprintf(stderr, "[PipelineCache] driver rejected initial data, started empty\n");
+	}
+}
+
+// Fetch the current blob; skip the write when unchanged (size +
+// hash); temp file + rename so a crash mid-write can never tear
+// the stored file.
+void SaveDiskPipelineCache(bool force)
+{
+	if (g_diskPipelineCache == VK_NULL_HANDLE)
+		return;
+	const char* path = PipelineCacheFilePath();
+	if (!path)
+		return;
+
+	size_t size = 0;
+	if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, nullptr) != VK_SUCCESS || size == 0)
+		return;
+	std::vector<uint8_t> data(size);
+	if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, data.data()) != VK_SUCCESS || size == 0)
+		return;
+
+	const uint64_t hash = PipelineCacheFnv1a64(data.data(), data.size());
+	if (!force && size == g_diskPipelineCacheLastSavedSize && hash == g_diskPipelineCacheLastSavedHash)
+		return; // nothing new compiled since the last save
+
+	VkPhysicalDeviceProperties props{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+	PipelineCachePrefixHeader header{};
+	header.magic = kPipelineCacheFileMagic;
+	header.dataSize = static_cast<uint32_t>(size);
+	header.dataHash = hash;
+	header.vendorID = props.vendorID;
+	header.deviceID = props.deviceID;
+	header.driverVersion = props.driverVersion;
+	header.driverABI = static_cast<uint32_t>(sizeof(void*));
+	std::memcpy(header.uuid, props.pipelineCacheUUID, VK_UUID_SIZE);
+
+	std::filesystem::path fsPath(path);
+	std::filesystem::path tmpPath = fsPath;
+	tmpPath += ".tmp";
+	bool ok = false;
+	if (std::FILE* f = std::fopen(tmpPath.string().c_str(), "wb")) {
+		ok = std::fwrite(&header, sizeof(header), 1, f) == 1
+			&& std::fwrite(data.data(), data.size(), 1, f) == 1;
+		ok = (std::fflush(f) == 0) && ok;
+		std::fclose(f);
+	} else {
+		fprintf(stderr, "[PipelineCache] cannot open %s for writing\n",
+			tmpPath.string().c_str());
+		return;
+	}
+	if (!ok) {
+		fprintf(stderr, "[PipelineCache] write to %s failed\n",
+			tmpPath.string().c_str());
+		std::error_code ec;
+		std::filesystem::remove(tmpPath, ec);
+		return;
+	}
+	std::error_code ec;
+	std::filesystem::rename(tmpPath, fsPath, ec);
+	if (ec) {
+		fprintf(stderr, "[PipelineCache] rename to %s failed (%s)\n",
+			path, ec.message().c_str());
+		std::filesystem::remove(tmpPath, ec);
+		return;
+	}
+	g_diskPipelineCacheLastSavedSize = size;
+	g_diskPipelineCacheLastSavedHash = hash;
+	fprintf(stderr, "[PipelineCache] saved %zu bytes to %s\n", size, path);
+}
+
+// Teardown hook: final forced save, then destroy the cache object
+// (before vkDestroyDevice).
+void DestroyDiskPipelineCache()
+{
+	if (g_diskPipelineCache == VK_NULL_HANDLE)
+		return;
+	{
+		std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
+		SaveDiskPipelineCache(/*force=*/true);
+	}
+	vkDestroyPipelineCache(device_, g_diskPipelineCache, nullptr);
+	g_diskPipelineCache = VK_NULL_HANDLE;
+}
+
+// Compile counter (called on every cache-miss pipeline build):
+// batches of >= kPipelineCacheSaveBatch compiles trigger a save, so
+// an abrupt exit loses at most the last batch, and a traversal
+// hitch frame that mints a batch of pipelines persists them for
+// the next run immediately.
+void NotePipelineCompiled()
+{
+	if (g_diskPipelineCache == VK_NULL_HANDLE)
+		return;
+	std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
+	if (++g_diskPipelineCacheCompilesSinceSave >= kPipelineCacheSaveBatch) {
+		g_diskPipelineCacheCompilesSinceSave = 0;
+		SaveDiskPipelineCache(/*force=*/false);
+	}
+}
+
+} // namespace
+
 void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
 	assert(!pipeline);
-	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+	if (vkCreateGraphicsPipelines(device_, g_diskPipelineCache, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create graphics pipeline!");
@@ -1767,7 +2023,7 @@ void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPi
 void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
 {
 	assert(!pipeline);
-	if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+	if (vkCreateComputePipelines(device_, g_diskPipelineCache, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create graphics pipeline!");
@@ -2129,6 +2385,10 @@ bool smvk::VulkanCore::Init() {
 				"wireframe (PolygonMode::Line) pipelines clamp to Fill\n");
 		}
 		volkLoadDevice(device_);
+		// Disk pipeline cache (see the CreateDiskPipelineCache block):
+		// created right after the device so every pipeline below compiles
+		// through it.
+		CreateDiskPipelineCache();
 
 		}
 
@@ -2180,6 +2440,9 @@ inline smvk::VulkanCore::~VulkanCore() {
 		debugMessenger_ = VK_NULL_HANDLE;
 	}
 	if (device_ != VK_NULL_HANDLE) {
+		// Disk pipeline cache: final forced save before the device dies
+		// (the blob is only complete now; also destroys the cache object).
+		DestroyDiskPipelineCache();
 		vkDestroyDevice(device_, nullptr);
 		device_ = VK_NULL_HANDLE;
 	}
@@ -9311,6 +9574,10 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 			std::move(key),
 			bundle);
 
+	// Disk pipeline cache: a fresh compile happened — count it toward
+	// the next batched save (see NotePipelineCompiled).
+	NotePipelineCompiled();
+
 	return it->second;
 }
 void smvk::VulkanPipelineCache::Clear() {
@@ -9349,6 +9616,8 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetComputePipeline(
 		return it->second;
 	PipelineBundle bundle = BuildComputePipeline(program);
 	computePipelines_.emplace(std::move(key), bundle);
+	// Disk pipeline cache: a fresh compile happened (see NotePipelineCompiled).
+	NotePipelineCompiled();
 	return bundle;
 }
 
@@ -9728,6 +9997,11 @@ struct smvk::RenderGraph::PipelineCacheOpaque {
 };
 smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))) {}
 smvk::RenderGraph::~RenderGraph() { ReleaseResolvedResources(); }
+
+size_t smvk::RenderGraph::PipelineCacheCount() const
+{
+	return pipelineCacheOpaque_->cache.Size();
+}
 
 void smvk::RenderGraph::ResolveImageViews()
 {
