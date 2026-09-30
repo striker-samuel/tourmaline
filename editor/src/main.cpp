@@ -10,6 +10,8 @@
 
 #include "editor_app.h"
 
+#include <Engine/Memory/memory.h>
+
 #include <cstring>
 #include <iostream>
 
@@ -31,7 +33,10 @@ void PrintUsage(const char* prog) {
 
 } // namespace
 
-	int main(int argc, const char* argv[]) {
+ 	int main(int argc, const char* argv[]) {
+	// Reserve linear-allocator virtual address space FIRST (see
+	// Engine/Memory/memory.h) — before any subsystem init.
+	smvk::mem::InitMemory();
 	const char* scenePath = nullptr;
 	const char* outPak = nullptr;
 	const char* projectSmoke = nullptr;

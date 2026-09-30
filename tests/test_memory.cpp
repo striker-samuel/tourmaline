@@ -18,8 +18,10 @@
 #include <numeric>
 
 #include <Engine/Memory/alloc_config.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_allocator.h>
 #include <Engine/Memory/linear_vector.h>
+#include <Engine/Memory/memory.h>
 
 namespace {
 
@@ -101,6 +103,66 @@ void TestMarkReset() {
 	Check(d == a, "memory.reset.all-rewinds-to-base");
 }
 
+void TestGlobals() {
+	using namespace smvk::mem;
+	InitMemory(); // idempotent; reserves VA for all three lifetimes
+	Check(ProcessAllocator().IsInitialized(), "memory.globals.process-initialized");
+	Check(FrameAllocator().IsInitialized(), "memory.globals.frame-initialized");
+	Check(TransientAllocator().IsInitialized(), "memory.globals.transient-initialized");
+	Check(ProcessAllocator().Reserved() == config::kProcessReserve,
+		"memory.globals.process-reserve-from-config");
+	Check(FrameAllocator().Reserved() == config::kFrameReserve,
+		"memory.globals.frame-reserve-from-config");
+	Check(TransientAllocator().Reserved() == config::kTransientReserve,
+		"memory.globals.transient-reserve-from-config");
+	InitMemory(); // second call must be a no-op, never crash
+	Check(ProcessAllocator().IsInitialized(), "memory.globals.init-idempotent");
+}
+
+void TestArenaBacking() {
+	// Backed arena: block storage comes from the linear allocator and
+	// Reset() rewinds it instead of freeing.
+	smvk::mem::LinearAllocator backing("test-arena", 1 * 1024 * 1024, 64 * 1024);
+	{
+		smvk::Arena arena(4096, &backing);
+		Check(arena.Backing() == &backing, "memory.arena.backing-attached");
+		void* a = arena.Allocate(64, 16);
+		Check(a != nullptr, "memory.arena.backed-alloc");
+		Check(arena.BlockCount() == 1, "memory.arena.one-block");
+		const size_t usedAfterAlloc = backing.Used();
+		Check(usedAfterAlloc >= 4096, "memory.arena.blocks-live-in-backing");
+		(void)arena.AllocateString(smvk::StringViewT("hello", 5));
+		arena.Reset();
+		Check(arena.UsedBytes() == 0 && arena.BlockCount() == 0,
+			"memory.arena.reset-clears-stats");
+		Check(backing.Used() < usedAfterAlloc,
+			"memory.arena.reset-rewinds-backing");
+		void* b = arena.Allocate(64, 16);
+		Check(b == a, "memory.arena.reset-reuses-warm-range");
+		// Oversized requests get dedicated backing blocks, not malloc.
+		void* big = arena.Allocate(8192, 16);
+		Check(big != nullptr && arena.BlockCount() == 2,
+			"memory.arena.dedicated-block-backed");
+	}
+	// Unbacked arena keeps the legacy malloc behavior (incl. dedicated
+	// blocks) and frees everything on Reset.
+	{
+		smvk::Arena plain(4096);
+		Check(plain.Backing() == nullptr, "memory.arena.unbacked-null");
+		void* a = plain.Allocate(64, 16);
+		void* big = plain.Allocate(8192, 16);
+		Check(a != nullptr && big != nullptr, "memory.arena.unbacked-allocs");
+		Check(plain.BlockCount() == 2, "memory.arena.unbacked-two-blocks");
+		plain.Reset();
+		Check(plain.UsedBytes() == 0 && plain.BlockCount() == 0,
+			"memory.arena.unbacked-reset-frees");
+	}
+	// Global arenas are wired to their lifetime allocators.
+	Check(smvk::AppArena().Backing() == &smvk::mem::ProcessAllocator(),
+		"memory.arena.app-backed-by-process");
+	Check(smvk::FrameArena().Backing() == &smvk::mem::FrameAllocator(),
+		"memory.arena.frame-backed-by-frame");
+}
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -125,6 +187,8 @@ int main() {
 	TestCreate();
 	TestMarkReset();
 	TestStlAdapter();
+	TestGlobals();
+	TestArenaBacking();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

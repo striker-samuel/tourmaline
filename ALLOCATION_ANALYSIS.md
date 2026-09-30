@@ -255,8 +255,8 @@ GPU Virtual Address Space (VMA managed - unchanged):
 ### Core Infrastructure
 - [x] `LinearAllocator` class with VirtualAlloc2 reservation
 - [x] `LinearAllocatorSTL` adapter for STL containers
-- [ ] Global instances: `g_processAllocator`, `g_frameAllocator`, `g_transientAllocator`
-- [ ] Startup reservation in `main.cpp` before any subsystem init
+- [x] Global instances: `g_processAllocator`, `g_frameAllocator`, `g_transientAllocator`
+- [x] Startup reservation in `main.cpp` before any subsystem init
 - [x] OOM handling (commit failure → abort with diagnostic)
 - [x] Centralized default sizes (`Engine/Memory/alloc_config.h` — single place to resize)
 
@@ -265,10 +265,10 @@ GPU Virtual Address Space (VMA managed - unchanged):
 - [ ] Replace `new CommandBufferPool` with `g_processAllocator.Create<CommandBufferPool>()`
 - [ ] Replace `make_unique<VulkanCore>` with placement new
 - [ ] Replace `make_unique<PipelineCache>` etc.
-- [ ] Convert `AppArena::Block::data` from `unique_ptr` to linear allocation
+- [x] Convert `AppArena::Block::data` from `unique_ptr` to linear allocation
 
 ### Phase 2: Frame Lifetime
-- [ ] Convert `FrameArena::Block::data` to linear allocation
+- [x] Convert `FrameArena::Block::data` to linear allocation
 - [ ] Replace RenderGraph frame vectors with `FrameVector`
 - [ ] Add frame mark/reset in `WorldRenderer::BeginFrame()`
 
@@ -393,3 +393,20 @@ GPU Virtual Address Space (VMA managed - unchanged):
 
 **Explicitly deferred to Epoch 2:** global instances, `InitMemory()` startup
 reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
+
+### Epoch 2 — Globals + startup reservation + Arena backing (2026-09-30)
+- `engine/include/Engine/Memory/memory.h` + `engine/src/Memory/memory.cpp`
+  (NEW) — `ProcessAllocator()` / `FrameAllocator()` / `TransientAllocator()`
+  (function-local statics sized from `mem::config`), `InitMemory()` (reserve
+  all VA up front, fail fast), `ShutdownMemory()` teardown hook.
+- `app/src/main.cpp`, `editor/src/main.cpp` — `smvk::mem::InitMemory()` as
+  the first call in `main()`, before workers/Vulkan/assets.
+- `Arena` gained an optional `mem::LinearAllocator*` backing store:
+  block storage comes from the backing bump allocator; `Reset()` rewinds
+  to the first-use mark instead of freeing (warm committed pages reused).
+  Unbacked arenas (per-cluster) keep exact legacy malloc behavior.
+  `AppArena` → process allocator, `FrameArena` → frame allocator.
+- `MemoryTests` extended to 44 checks (globals, idempotent init, backed vs
+  unbacked arenas, global wiring) — 44/44 PASS.
+- **Validation**: `App.exe` + `Editor.exe` link; `AssetTests` 334/334 PASS
+  (exercises the now-backed `AppArena::FormatString` path).

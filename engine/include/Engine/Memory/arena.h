@@ -21,13 +21,16 @@
 
 #include <Engine/Memory/string_view.h>
 #include <Engine/Memory/alloc_config.h>
+#include <Engine/Memory/linear_allocator.h>
 
 namespace smvk {
 
 class Arena {
 public:
-	explicit Arena(size_t blockSize = kDefaultBlockSize)
-		: blockSize_(blockSize < 64 ? 64 : blockSize) {}
+	explicit Arena(size_t blockSize = kDefaultBlockSize,
+		mem::LinearAllocator* backing = nullptr)
+		: backing_(backing)
+		, blockSize_(blockSize < 64 ? 64 : blockSize) {}
 	Arena(const Arena&) = delete;
 	Arena& operator=(const Arena&) = delete;
 	Arena(Arena&&) = default;
@@ -48,9 +51,20 @@ public:
 
 	// Frees every block. The frame arena calls this once per frame; a
 	// cluster's private arena effectively calls it from the destructor.
+	// With a backing allocator, blocks are NOT freed — the backing bump
+	// pointer rewinds to the mark captured at first backing use, so the
+	// next frame reuses warm committed pages.
 	void Reset();
 	[[nodiscard]] size_t UsedBytes() const { return totalUsed_; }
 	[[nodiscard]] size_t BlockCount() const { return blocks_.size(); }
+
+	// Attaches a backing linear allocator for block storage (Phase 1/2
+	// migration). Ideally called before the first Allocate; blocks already
+	// taken from malloc stay malloc-owned and are freed on Reset, while new
+	// blocks come from the backing store. Never changes after use — the
+	// rewind mark is captured at first backing use.
+	void SetBacking(mem::LinearAllocator* backing) { backing_ = backing; }
+	[[nodiscard]] mem::LinearAllocator* Backing() const { return backing_; }
 
 	// Default chunk sizes live in mem::config (alloc_config.h) — the single
 	// place to resize. kDefaultBlockSize preserves the historic 1 MiB for
@@ -59,11 +73,21 @@ public:
 
 private:
 	struct Block {
-		std::unique_ptr<uint8_t[]> data;
+		uint8_t* data = nullptr; // backing-owned when owned==null, else malloc
+		std::unique_ptr<uint8_t[]> owned; // non-null iff malloc-backed
 		size_t size = 0;
 		size_t used = 0;
 	};
+	// Carves `bytes` of block storage from the backing allocator (capturing
+	// the rewind mark on first use), or returns null when unbacked so the
+	// caller falls back to malloc-owned storage.
+	[[nodiscard]] uint8_t* AllocateBlockStorage(size_t bytes);
+	// Appends a fresh block of `bytes` storage (backing-backed or malloc).
+	void PushBlock(size_t bytes);
 	std::vector<Block> blocks_;
+	mem::LinearAllocator* backing_ = nullptr;
+	size_t backingMark_ = 0;
+	bool backingMarkValid_ = false;
 	size_t blockSize_ = kDefaultBlockSize;
 	size_t totalUsed_ = 0;
 

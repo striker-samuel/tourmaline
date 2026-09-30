@@ -25,6 +25,8 @@
 #include <App/world_renderer.h>
 #include <Engine/Profile/profile.h>
 
+#include <Engine/Memory/memory.h>
+
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -359,7 +361,11 @@ std::unique_ptr<smvk::World> LoadPakWorld(PakPreload pre,
 
 } // namespace
 
-	int main(int argc, const char* argv[]) {
+ 	int main(int argc, const char* argv[]) {
+	// Reserve linear-allocator virtual address space FIRST, before worker
+	// threads, Vulkan, or asset loading (see Engine/Memory/memory.h). An
+	// unsatisfiable reservation fails fast here with the OOM diagnostic.
+	smvk::mem::InitMemory();
 	std::string pakPath = "content/paks/sponza.pak";
 	int sceneIndex = 0;
 	bool minimal = false;
