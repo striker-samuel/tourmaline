@@ -270,8 +270,8 @@ GPU Virtual Address Space (VMA managed - unchanged):
 
 ### Phase 2: Frame Lifetime
 - [x] Convert `FrameArena::Block::data` to linear allocation
-- [ ] Replace RenderGraph frame vectors with `FrameVector`
-- [ ] Add frame mark/reset in `WorldRenderer::BeginFrame()`
+- [x] Replace RenderGraph frame vectors with `FrameVector` (first set: `EmitBarriers` + per-pass barrier/sync scratch)
+- [x] Add frame mark/reset in `WorldRenderer::BeginFrame()` (implemented as full frame rewind in `ResetFrameArena()`, called at `DrawFrame` start — the actual frame boundary)
 
 ### Phase 3: Resource Pools
 - [ ] Implement `ResourcePool<T, MaxCount>` template
@@ -435,3 +435,25 @@ reservation in `app`/`editor` `main.cpp`, `Arena` block backing migration.
 - **Deferred to Epoch 4:** App-level objects with borrowed-pointer
   subtleties (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`,
   `TextureStreamer`, `TextureFeedback`, `ImGuiOverlay`, `World`).
+
+### Epoch 4 — Phase 2 frame vectors + full frame rewind (2026-09-30)
+- `Arena::ResetForFrameReuse()` (NEW): drops blocks without touching the
+  backing store + invalidates the rewind mark so the next frame recaptures
+  it. `ResetFrameArena()` now performs the FULL frame rewind — arena drop
+  + `FrameAllocator().ResetAll()` — at the `DrawFrame` start boundary, when
+  no frame-lifetime allocation is live. This also reclaims dead
+  `FrameVector` temporaries; `Arena::Reset()` (mark-scoped rewind) is kept
+  for non-frame arenas.
+- `RenderGraph` barrier scratch → frame allocator (`MakeFrameScratchVec`
+  helper in `impl.cpp`): `EmitBarriers` img/buf barriers + per-pass
+  img/buf barriers and queue-family index arrays. All are function-local,
+  die in-scope, and are consumed synchronously via `.data()` by
+  `vkCmdPipelineBarrier2` — safe under the frame-boundary rewind.
+- `MemoryTests` 58/58 PASS (+6 `TestFrameReset`: shared-allocator
+  arena+vector discipline, boundary rewind, mark recapture, global
+  `ResetFrameArena` + reuse).
+- **Validation**: `App.exe` + `Editor.exe` link; `AssetTests` 334/334 PASS.
+- **Remaining:** App-level process objects with borrowed-pointer semantics
+  (`m_context`/`m_swapchain`/`m_rendergraph`/`m_world`, `TextureStreamer`,
+  `TextureFeedback`, `ImGuiOverlay`, `World` in `main`); transient
+  pre-reservation (Phase 4); wider STL migration (Phase 5).

@@ -66,6 +66,18 @@ public:
 	void SetBacking(mem::LinearAllocator* backing) { backing_ = backing; }
 	[[nodiscard]] mem::LinearAllocator* Backing() const { return backing_; }
 
+	// Frame-boundary reset for frame-backed arenas: drops all blocks WITHOUT
+	// rewinding the backing store (the caller rewinds it wholesale via
+	// FrameAllocator().ResetAll()) and invalidates the rewind mark so the
+	// next frame recaptures it. Only valid when no live allocation sits
+	// above the arena's range — i.e. at frame start, paired with the full
+	// allocator rewind (see ResetFrameArena).
+	void ResetForFrameReuse() {
+		blocks_.clear();
+		totalUsed_ = 0;
+		backingMarkValid_ = false;
+	}
+
 	// Default chunk sizes live in mem::config (alloc_config.h) — the single
 	// place to resize. kDefaultBlockSize preserves the historic 1 MiB for
 	// existing callers; AppArena/FrameArena pass their dedicated defaults.

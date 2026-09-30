@@ -196,6 +196,42 @@ void TestLinearPtr() {
 	auto g = smvk::mem::MakeProcess<Counted>(1);
 	Check(g && g->value == 1, "memory.ptr.make-process");
 }
+void TestFrameReset() {
+	// Models the DrawFrame discipline: a backed arena and frame vectors
+	// share one allocator; at the frame boundary the arena drops its blocks
+	// and the allocator rewinds wholesale; the next frame recaptures marks.
+	smvk::mem::LinearAllocator frame("test-frame-reset", 1 * 1024 * 1024, 64 * 1024);
+	smvk::Arena arena(4096, &frame);
+	{
+		smvk::mem::FrameVector<int> tmp{
+			smvk::mem::LinearAllocatorSTL<int>{&frame}};
+		for (int i = 0; i < 64; ++i)
+			tmp.push_back(i);
+		(void)arena.Allocate(128, 16);
+		Check(frame.Used() > 0 && arena.BlockCount() == 1,
+			"memory.framereset.frame-dirtied");
+	} // tmp dead before the boundary — required by the discipline
+	arena.ResetForFrameReuse();
+	frame.ResetAll();
+	Check(frame.Used() == 0 && arena.BlockCount() == 0 && arena.UsedBytes() == 0,
+		"memory.framereset.boundary-rewinds-all");
+	void* a = arena.Allocate(128, 16);
+	Check(a != nullptr && arena.BlockCount() == 1,
+		"memory.framereset.next-frame-reallocates");
+	// Mark recaptured: a second boundary rewinds the NEW range (a stale
+	// mark from the previous frame would leave Used() > 0 here).
+	arena.ResetForFrameReuse();
+	frame.ResetAll();
+	Check(frame.Used() == 0, "memory.framereset.mark-recaptured");
+	// The real global boundary: FrameArena + frame allocator rewind.
+	(void)smvk::FrameArena().Allocate(64, 16);
+	smvk::ResetFrameArena();
+	Check(smvk::FrameArena().UsedBytes() == 0
+		&& smvk::mem::FrameAllocator().Used() == 0,
+		"memory.framereset.global-boundary");
+	void* b = smvk::FrameArena().Allocate(64, 16);
+	Check(b != nullptr, "memory.framereset.global-reuse-after-boundary");
+}
 void TestStlAdapter() {
 	smvk::mem::LinearAllocator alloc("test-stl", 1 * 1024 * 1024, 64 * 1024);
 	smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -221,6 +257,7 @@ int main() {
 	TestMarkReset();
 	TestStlAdapter();
 	TestLinearPtr();
+	TestFrameReset();
 	TestGlobals();
 	TestArenaBacking();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";

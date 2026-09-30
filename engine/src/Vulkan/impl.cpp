@@ -38,6 +38,7 @@
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/Vulkan/vulkanApp.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/dlss.h>
 #include <Engine/RHI/swapchain.h>
@@ -134,6 +135,16 @@ namespace smvk {
 }
 
 namespace {
+
+	// Frame-scoped scratch vectors: allocate from the frame linear allocator
+	// (rewound wholesale at the next DrawFrame via ResetFrameArena). The
+	// vectors die at scope end — never live across the frame boundary —
+	// so the rewind is always safe (see mem::memory.h reset discipline).
+	template<typename T>
+	smvk::mem::FrameVector<T> MakeFrameScratchVec() {
+		return smvk::mem::FrameVector<T>{
+			smvk::mem::LinearAllocatorSTL<T>{&smvk::mem::FrameAllocator()}};
+	}
 
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
@@ -10146,8 +10157,8 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	std::unordered_map<uint64_t, VulkanResourceManager::ImageGlobalSyncState> localImage = globalImageStates;
 	std::unordered_map<uint64_t, VulkanResourceManager::BufferGlobalSyncState> localBuffer = globalBufferStates;
 
-	std::vector<VkImageMemoryBarrier2> imgBarriers;
-	std::vector<VkBufferMemoryBarrier2> bufBarriers;
+	auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
+	auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
 	imgBarriers.reserve(32);
 	bufBarriers.reserve(16);
 	auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
@@ -10552,15 +10563,15 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					passes_[sIdx].IsCompute() ? " compute" : "",
 					pos != sIdx ? " MOVED" : "");
 			}
-			const auto& pu = usages[sIdx];
-			std::vector<VkImageMemoryBarrier2> imgBarriers;
-			std::vector<VkBufferMemoryBarrier2> bufBarriers;
-			std::vector<uint32_t> imgBarrierSrcQ;
-			std::vector<uint32_t> bufBarrierSrcQ;
-			imgBarriers.reserve(4);
-			bufBarriers.reserve(4);
-			imgBarrierSrcQ.reserve(4);
-			bufBarrierSrcQ.reserve(4);
+		const auto& pu = usages[sIdx];
+		auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
+		auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
+		auto imgBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+		auto bufBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+		imgBarriers.reserve(4);
+		bufBarriers.reserve(4);
+		imgBarrierSrcQ.reserve(4);
+		bufBarrierSrcQ.reserve(4);
 			auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 			for (auto& pr : pu.images) {
 				ImageHandle h = pr.first;

@@ -113,7 +113,14 @@ Arena& FrameArena() {
 }
 
 void ResetFrameArena() {
-	FrameArena().Reset();
+	// Full frame rewind at the DrawFrame boundary: drop the arena's blocks
+	// (without touching the backing store — the wholesale reset covers
+	// them) and rewind the ENTIRE frame allocator, discarding dead
+	// FrameVector temporaries (RenderGraph barriers) along with scratch.
+	// Safe only because this runs at frame start, when no frame-lifetime
+	// allocation is live (see mem::memory.h reset discipline).
+	FrameArena().ResetForFrameReuse();
+	mem::FrameAllocator().ResetAll();
 }
 
 } // namespace smvk
