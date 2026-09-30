@@ -3106,6 +3106,7 @@ void WorldRenderer::Shutdown() {
 			return;
 		const uint32_t streamFrame = static_cast<uint32_t>(m_frameCounter);
 		if ((m_frameCounter & 3u) == 0u) {
+			SMVK_PROFILE_STREAM("TexStreamingMinDistPass");
 			std::unordered_map<uint32_t, float> minDist;
 			minDist.reserve(256);
 			const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
@@ -3133,14 +3134,20 @@ void WorldRenderer::Shutdown() {
 					note(mat->values.textures.w, dist);
 					note(mat->values.textures2.x, dist);
 				});
+			SMVK_PROFILE_TAG("slots", minDist.size());
 			const float fovY = glm::radians(kCameraFovYDegrees);
 			m_textureStreamer->RequestMipsByDistance(minDist,
 				static_cast<float>(renderExtent.height), fovY, streamFrame);
 		}
-		m_textureStreamer->Update(streamFrame);
+		{
+			SMVK_PROFILE_STREAM("TexStreamingUpdate");
+			m_textureStreamer->Update(streamFrame);
+		}
 		const smvk::TextureStreamingStats stats = m_textureStreamer->GetStats();
-		if (stats.upgradesLastUpdate > 0 || stats.downgradesLastUpdate > 0)
+		if (stats.upgradesLastUpdate > 0 || stats.downgradesLastUpdate > 0) {
+			SMVK_PROFILE_STREAM("TexStreamingFlushUploads");
 			m_context->FlushUploads();
+		}
 	}
 
 	// Histogram readback switch. ON: the engine download now uses a
@@ -12049,6 +12056,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// Hitch logger (see the rfT0 site): frames over the
 		// VULKANTOY_HITCH_LOG budget, with the pipeline-cache delta —
 		// mints>0 = shader-compile warm-up, mints=0 = traversal cost.
+		// Hitch frames also dump the per-phase split (the rfT* locals
+		// are all assigned by this point on the straight-line path) plus
+		// texture-streaming stats and linear-allocator commit state, so
+		// a hitch line names its phase without opening the Optick
+		// capture.
 		if (sHitchBudgetMs > 0.0) {
 			const double frameMs = std::chrono::duration<double, std::milli>(
 				bench_clk::now() - rfT0).count();
@@ -12060,6 +12072,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					(unsigned long long)pipelines,
 					(unsigned long long)(pipelines - sHitchLastPipelines),
 					(unsigned long long)pipelines);
+				{
+					using msd = std::chrono::duration<double, std::milli>;
+					const double updMs = msd(rfT1 - rfT0).count();
+					const double streamMs = msd(rfT0c - rfT0b).count();
+					const double preAMs = msd(rfPA - rfT1).count();
+					const double preBMs = msd(rfPB - rfPA).count();
+					const double preCMs = msd(rfTM - rfPB).count();
+					const double postMs = msd(rfT2 - rfTM).count();
+					const double readMs = msd(rfT3 - rfT2).count();
+					const double uiMs = msd(rfT4 - rfT3).count();
+					const double execMs = msd(rfT5 - rfT4).count();
+					const double tailMs = msd(bench_clk::now() - rfT5).count();
+					const glm::vec3 cp = m_cameraPositioner.cameraPosition_;
+					std::fprintf(stderr,
+						"[Hitch]   phases: upd %.1f (stream %.1f) passes preA %.1f preB %.1f preC %.1f post %.1f | read %.1f ui %.1f exec %.1f tail %.1f | cam %.1f %.1f %.1f\n",
+						updMs, streamMs, preAMs, preBMs, preCMs, postMs,
+						readMs, uiMs, execMs, tailMs, cp.x, cp.y, cp.z);
+					if (m_textureStreamer) {
+						const smvk::TextureStreamingStats ts = m_textureStreamer->GetStats();
+						std::fprintf(stderr,
+							"[Hitch]   stream: %u textures, upgrades %u downgrades %u, resident %.1f/%.1f MB\n",
+							ts.textureCount, ts.upgradesLastUpdate,
+							ts.downgradesLastUpdate,
+							ts.residentBytes / (1024.0 * 1024.0),
+							ts.fullBytes / (1024.0 * 1024.0));
+					}
+					std::fprintf(stderr,
+						"[Hitch]   linear: frame %zu/%zu KB transient %zu/%zu KB (used/committed)\n",
+						smvk::mem::FrameAllocator().Used() / 1024,
+						smvk::mem::FrameAllocator().Committed() / 1024,
+						smvk::mem::TransientAllocator().Used() / 1024,
+						smvk::mem::TransientAllocator().Committed() / 1024);
+				}
 				std::fflush(stderr);
 			}
 			sHitchLastPipelines = m_rendergraph->PipelineCacheCount();

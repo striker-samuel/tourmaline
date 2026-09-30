@@ -1,8 +1,12 @@
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Profile/profile.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <iostream>
 
 #include "ktx.h"
@@ -233,7 +237,16 @@ std::vector<TextureHandle> TextureStreamer::BuildBindlessSlotMap() const
 void TextureStreamer::RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
 	float viewportHeightPx, float fovYRad, uint32_t frameIndex, float approxWorldSize)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	// Lock-wait split like Update: the render thread blocks here while
+	// retargets (Update) or loads (StreamTexture) hold the mutex.
+	std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
+	{
+		SMVK_PROFILE_STREAM("TexStreamer_LockWait");
+		lock.lock();
+	}
+	SMVK_PROFILE_STREAM("TexStreamer_RequestByDistance");
+	SMVK_PROFILE_TAG("entries", entries_.size());
+	SMVK_PROFILE_TAG("slots", minDistBySlot.size());
 	for (auto& [key, e] : entries_)
 	{
 		(void)key;
@@ -293,6 +306,17 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 	if (newBase == e.residentBase)
 		return true;
 
+	SMVK_PROFILE_STREAM("TexStreamer_Retarget");
+	SMVK_PROFILE_TAG("payloadKB", e.payloadSize / 1024);
+	SMVK_PROFILE_TAG("oldBase", e.residentBase);
+	SMVK_PROFILE_TAG("newBase", newBase);
+	// Hitch-path tracing (VULKANTOY_TEXSTREAM_TRACE): retargets are the
+	// steady-state hitch source (hitch frames correlate 1:1 with upgrade
+	// counts) — one line per retarget splits KTX decode vs GPU upload so
+	// the culprit names itself without opening the Optick capture.
+	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const auto traceT0 = std::chrono::steady_clock::now();
+
 	ktxTexture2* ktxTex = nullptr;
 	const KTX_error_code loadRes = ktxTexture2_CreateFromMemory(
 		static_cast<const ktx_uint8_t*>(e.payloadData),
@@ -306,9 +330,11 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 		return false;
 	}
 	KtxGuard guard(ktxTex);
+	const auto traceT1 = std::chrono::steady_clock::now();
 
 	try
 	{
+		SMVK_PROFILE_STREAM("TexStreamer_RetargetUpload");
 		ctx_.RetargetStreamingTexture(
 			e.handle, *ktxTex, newBase, e.fullMips - newBase, e.name.c_str());
 	}
@@ -319,6 +345,17 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 			<< ") : " << ex.what() << std::endl;
 		return false;
 	}
+	const auto traceT2 = std::chrono::steady_clock::now();
+	if (texTrace) {
+		using msd = std::chrono::duration<double, std::milli>;
+		std::fprintf(stderr,
+			"[TexStream] retarget '%s' %ux%u mips %u base %u->%u: decode %.1fms upload %.1fms (payload %.1f MB)\n",
+			e.name.c_str(), e.baseWidth, e.baseHeight, e.fullMips,
+			e.residentBase, newBase,
+			msd(traceT1 - traceT0).count(), msd(traceT2 - traceT1).count(),
+			static_cast<double>(e.payloadSize) / (1024.0 * 1024.0));
+		std::fflush(stderr);
+	}
 
 	e.residentBase = newBase;
 	e.lastChangeFrame = frameIndex;
@@ -327,7 +364,17 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 
 void TextureStreamer::Update(uint32_t frameIndex)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	// Lock-wait split out as its own scope: contention here shows up as
+	// TexStreamer_LockWait overlapping whoever holds the mutex (retarget
+	// KTX decodes + uploads from the render thread, or StreamTexture
+	// loads from workers).
+	std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
+	{
+		SMVK_PROFILE_STREAM("TexStreamer_LockWait");
+		lock.lock();
+	}
+	SMVK_PROFILE_STREAM("TexStreamer_Update");
+	SMVK_PROFILE_TAG("entries", entries_.size());
 	// 1. Decay demand for textures nobody asked for recently. Without this
 	//    the first close-up would pin full res forever.
 	for (auto& [key, e] : entries_)
@@ -364,15 +411,19 @@ void TextureStreamer::Update(uint32_t frameIndex)
 		});
 
 	uint32_t upgradesDone = 0;
-	for (Candidate& c : upgrades)
 	{
-		if (upgradesDone >= config_.maxUpgradesPerFrame)
-			break;
-		// Demand may have moved while iterating; re-check.
-		if (c.e->desiredBase >= c.e->residentBase)
-			continue;
-		if (retarget(*c.e, c.e->desiredBase, frameIndex))
-			++upgradesDone;
+		SMVK_PROFILE_STREAM("TexStreamer_Upgrades");
+		SMVK_PROFILE_TAG("candidates", upgrades.size());
+		for (Candidate& c : upgrades)
+		{
+			if (upgradesDone >= config_.maxUpgradesPerFrame)
+				break;
+			// Demand may have moved while iterating; re-check.
+			if (c.e->desiredBase >= c.e->residentBase)
+				continue;
+			if (retarget(*c.e, c.e->desiredBase, frameIndex))
+				++upgradesDone;
+		}
 	}
 
 	// 3. Downgrades: over budget, or idle-decayed demand coarser than
@@ -394,6 +445,7 @@ void TextureStreamer::Update(uint32_t frameIndex)
 	uint64_t total = residentTotal();
 	if (total > config_.budgetBytes)
 	{
+		SMVK_PROFILE_STREAM("TexStreamer_Downgrades");
 		std::vector<Entry*> cands;
 		for (auto& [key, e] : entries_)
 		{
@@ -438,6 +490,7 @@ void TextureStreamer::Update(uint32_t frameIndex)
 
 TextureStreamingStats TextureStreamer::GetStats() const
 {
+	SMVK_PROFILE_STREAM("TexStreamer_GetStats");
 	std::lock_guard<std::mutex> lock(mutex_);
 	TextureStreamingStats s{};
 	s.textureCount = static_cast<uint32_t>(entries_.size());

@@ -194,6 +194,8 @@ namespace {
 		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
 		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
 		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+		case VK_FORMAT_BC4_UNORM_BLOCK:
+		case VK_FORMAT_BC4_SNORM_BLOCK:
 			return { 4, 4, 8 };
 
 		case VK_FORMAT_BC2_UNORM_BLOCK:
@@ -1350,6 +1352,12 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	case VK_FORMAT_D32_SFLOAT_S8_UINT:       return smvk::Format::D32_Float_S8_UInt;
 	case VK_FORMAT_S8_UINT:                  return smvk::Format::S8_UInt;
 
+	// BC1_RGB (what libktx's KTX_TTF_BC1_RGB transcode emits) is the same
+	// block layout as BC1_RGBA — the engine's enum only has the RGBA flavor,
+	// so both map onto it (identical sampling for opaque content; the RGBA
+	// alias just documents the 1-bit punchthrough alpha).
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:       return smvk::Format::BC1_RGBA_UNorm;
+	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:        return smvk::Format::BC1_RGBA_SRGB;
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:      return smvk::Format::BC1_RGBA_UNorm;
 	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:       return smvk::Format::BC1_RGBA_SRGB;
 	case VK_FORMAT_BC2_UNORM_BLOCK:          return smvk::Format::BC2_UNorm;
@@ -3033,18 +3041,39 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 	// graphics latency at every wrap, because the just-submitted batch
 	// GPU-waits on the previous frame's retirement.
 	if (!ust.pendingRanges.empty()) {
-		smvk::mem::TransientVector<InFlightRingRange> live{
-			smvk::mem::LinearAllocatorSTL<InFlightRingRange>{&smvk::mem::TransientAllocator()}};
+		SMVK_PROFILE_STREAM("UploadRing_InFlightSync");
+		SMVK_PROFILE_TAG("ranges", ust.pendingRanges.size());
+		SMVK_PROFILE_TAG("stagingKB", (size + 1023) / 1024);
+		const bool ringTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+		const auto ringT0 = std::chrono::steady_clock::now();
+		double waitMs = 0.0;
+		std::vector<InFlightRingRange> live;
 		live.reserve(ust.pendingRanges.size());
 		for (const InFlightRingRange& r : ust.pendingRanges) {
 			const bool overlaps = (r.start < aligned + size) && (r.end > aligned);
 			const bool ready = m_transfer->isReady(r.handle);
-			if (overlaps && !ready)
+			if (overlaps && !ready) {
+				const auto waitT0 = std::chrono::steady_clock::now();
 				m_transfer->wait(r.handle);
+				waitMs += std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - waitT0).count();
+			}
 			if (!ready)
 				live.push_back(r);
 		}
-		ust.pendingRanges.swap(live);
+		if (ringTrace && (std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - ringT0).count() > 0.5)) {
+			std::fprintf(stderr,
+				"[TexStream]   ringSync %zu ranges, staged %.1f KB: sync %.2f ms (GPU wait %.2f ms)\n",
+				ust.pendingRanges.size(), size / 1024.0,
+				std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - ringT0).count(),
+				waitMs);
+			std::fflush(stderr);
+		}
+		ust.pendingRanges.clear();
+		for (const auto& r : live)
+			ust.pendingRanges.push_back(r);
 	}
 	if (ust.batchRingStart == VK_WHOLE_SIZE)
 		ust.batchRingStart = aligned;
@@ -3685,8 +3714,14 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		}
 	}
 	// Fallback to staging ring
+	// Hitch-path tracing (VULKANTOY_TEXSTREAM_TRACE): splits the upload
+	// cost — ring alloc (possible GPU wait on an overlapping in-flight
+	// batch) vs mapped write+flush vs command record/submit.
+	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const auto texT0 = std::chrono::steady_clock::now();
 	ThreadUploadState& ust = states_[CurrentPoolShard()];
 	VkDeviceSize ringOff = allocFromRing(ust, dataSize, 16);
+	const auto texT1 = std::chrono::steady_clock::now();
 	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
 	void* dstPtr = nullptr;
 	VkBuffer srcBuf = ust.ring.buffer;
@@ -3708,6 +3743,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	}
 	memcpy(dstPtr, data, dataSize);
 	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : ust.ring.allocation, srcOff, dataSize);
+	const auto texT2 = std::chrono::steady_clock::now();
 	ensureCmd(ust);
 	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
 	uint32_t srcF = m_transfer->queueFamilyIndex();
@@ -3764,6 +3800,17 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
+	if (texTrace) {
+		using msd = std::chrono::duration<double, std::milli>;
+		const auto texT3 = std::chrono::steady_clock::now();
+		std::fprintf(stderr,
+			"[TexStream]   uploadKtx %ux%u mips %u (%.1f MB staged): ring %.1f write+flush %.1f record+submit %.1f ms\n",
+			img->extent.width, img->extent.height, img->mipLevels,
+			static_cast<double>(dataSize) / (1024.0 * 1024.0),
+			msd(texT1 - texT0).count(), msd(texT2 - texT1).count(),
+			msd(texT3 - texT2).count());
+		std::fflush(stderr);
+	}
 }
 void smvk::UploadStreamer::flush() {
 	SMVK_PROFILE_STREAM("UploadFlush");
@@ -4974,6 +5021,9 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	case VK_FORMAT_B8G8R8A8_UNORM:
 		return VK_FORMAT_B8G8R8A8_SRGB;
 
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+		return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
 		return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
 
@@ -4990,6 +5040,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		// Already sRGB.
 	case VK_FORMAT_R8G8B8A8_SRGB:
 	case VK_FORMAT_B8G8R8A8_SRGB:
+	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
 	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
 	case VK_FORMAT_BC2_SRGB_BLOCK:
 	case VK_FORMAT_BC3_SRGB_BLOCK:
@@ -6094,6 +6145,25 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 
 void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName)
 {
+	// Retarget is a RENDER-THREAD hot path (streaming demand upgrades +
+	// budget downgrades, per frame). A Basis-family payload here would pay
+	// a full synchronous transcode (tens to ~150 ms for 2-4K textures) —
+	// the exact hitch this pipeline is built to never have. The v4 cook
+	// contract guarantees GPU-ready BCn payloads (see CookTexturePayload:
+	// per-semantic BCn pre-transcode at cook); a payload that still needs
+	// transcoding means a stale/foreign pak — refuse loudly and abort (no
+	// recovery path, by design). Recook the pak.
+	if (ktxTexture2_NeedsTranscoding(&texture))
+	{
+		std::fprintf(stderr,
+			"[TexStream] retarget refused: '%s' carries a Basis-family payload "
+			"(a synchronous transcode on the render thread would follow). "
+			"Streaming paks must embed GPU-ready BCn textures — recook the pak "
+			"and retry. Aborting.\n",
+			debugName ? debugName : "<unnamed>");
+		std::fflush(stderr);
+		std::abort();
+	}
 	Texture* rec = textures_.get(handle);
 	if (!rec)
 	{
@@ -6130,9 +6200,12 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 	VkImage newImage = VK_NULL_HANDLE;
 	VmaAllocation newAlloc = VK_NULL_HANDLE;
 
+	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const auto texT0 = std::chrono::steady_clock::now();
 	VK_CHECK(vmaCreateImage(
 		m_allocator, &imageCI, &allocCI,
 		&newImage, &newAlloc, nullptr));
+	const auto texT1 = std::chrono::steady_clock::now();
 
 	// Retire the old backing lazily: in-flight frames may still sample
 	// it, so destruction waits for the latest graphics submit to retire.
@@ -6238,11 +6311,22 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 				vkDestroyImageView(dev, oldView, nullptr);
 		}));
 	}
+	const auto texT2 = std::chrono::steady_clock::now();
 
 	m_streamer->uploadImageKtx(
 		rec->image, plan.data, plan.dataSize, plan.regions,
 		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
 		VK_ACCESS_2_SHADER_READ_BIT);
+	const auto texT3 = std::chrono::steady_clock::now();
+	if (texTrace) {
+		using msd = std::chrono::duration<double, std::milli>;
+		std::fprintf(stderr,
+			"[TexStream]   retargetPlan %ux%u mips %u: createImage %.1f view %.1f upload %.1f ms\n",
+			plan.width, plan.height, plan.residentMips,
+			msd(texT1 - texT0).count(), msd(texT2 - texT1).count(),
+			msd(texT3 - texT2).count());
+		std::fflush(stderr);
+	}
 
 	// Bindless slot content changed (new VkImageView): refresh the
 	// descriptor arrays on the next UpdateDescriptors() before use.

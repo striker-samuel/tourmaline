@@ -12,9 +12,40 @@
 #include <limits>
 #include <numeric>
 #include <utility>
+#include <chrono>
 
 namespace smvk {
 namespace gfx {
+
+// TMP-PROBE: list-mechanism breakdown for the traversal investigation.
+// Accumulates per-scope ms, prints averages every 240 BeginViews.
+// Remove once the optimization lands.
+namespace {
+struct GfxProbeAccum {
+	double batches = 0.0, seedRem = 0.0, snap = 0.0, uploads = 0.0;
+	int frames = 0;
+};
+GfxProbeAccum g_probe;
+using GfxProbeClock = std::chrono::steady_clock;
+struct GfxProbeScope {
+	GfxProbeClock::time_point t0 = GfxProbeClock::now();
+	double& acc;
+	explicit GfxProbeScope(double& a) : acc(a) {}
+	~GfxProbeScope() {
+		acc += std::chrono::duration<double, std::milli>(GfxProbeClock::now() - t0).count();
+	}
+};
+void GfxProbeReport() {
+	if (++g_probe.frames % 240 != 0)
+		return;
+	const double n = 240.0;
+	std::fprintf(stderr,
+		"[GfxProbe] avg/frame: batches %.3f seedrem %.3f snap %.3f uploads %.3f ms\n",
+		g_probe.batches / n, g_probe.seedRem / n, g_probe.snap / n, g_probe.uploads / n);
+	std::fflush(stderr);
+	g_probe.batches = g_probe.seedRem = g_probe.snap = g_probe.uploads = 0.0;
+}
+} // namespace
 
 static constexpr size_t kBatchBufferBytes = kMaxBatches * sizeof(Batch);
 static constexpr size_t kDrawBufferBytes = kMaxDraws * sizeof(Draw);
@@ -887,6 +918,7 @@ static void BuildVisKeys(const std::vector<Batch>& batches,
 
 void SnapshotVisible(State& s, uint32_t view) {
 	assert(view < s.views.size());
+	GfxProbeScope probeScope(g_probe.snap); // TMP-PROBE
 	TemporalView& t = Temporal(s, view);
 	const View& v = s.views[view];
 
@@ -925,6 +957,7 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	TemporalView& t = s.temporals[view];
 	if (t.visClusterBuffers[frameIndex].empty() || t.visDrawBuffers[frameIndex].empty())
 		return; // headless / unallocated: CPU snapshot still stands
+	GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
 
 	SMVK_PROFILE_SCOPE("GfxUploadVisible");
 	SMVK_PROFILE_TAG("prevBatchCount", t.prevBatchCount);
@@ -1035,6 +1068,7 @@ static void ResolveBatchMaterials(const std::vector<MaterialRange>& ranges,
 // lives in TemporalView: the steady-state rebuild allocates nothing.
 static void BuildBothCommands(State& s, uint32_t view, bool wantSeed, bool wantRemainder) {
 	assert(view < s.views.size());
+	GfxProbeScope probeScope(g_probe.seedRem); // TMP-PROBE
 	TemporalView& t = Temporal(s, view);
 	const View& v = s.views[view];
 
@@ -1139,6 +1173,7 @@ void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t vi
 		return;
 	if (t.seedCommands.empty())
 		return;
+	GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
 
 	SMVK_PROFILE_SCOPE("GfxUploadSeed");
 	SMVK_PROFILE_TAG("commands", t.seedCommands.size());
@@ -1158,6 +1193,7 @@ void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32
 		return;
 	if (t.remainderCommands.empty())
 		return;
+	GfxProbeScope probeScope(g_probe.uploads); // TMP-PROBE
 
 	SMVK_PROFILE_SCOPE("GfxUploadRemainder");
 	SMVK_PROFILE_TAG("commands", t.remainderCommands.size());
@@ -1233,6 +1269,7 @@ void AddSeedConsumeHints(RenderPass& pass,
 uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const RenderView& renderView, const glm::vec3& eye,
 	CullFlags cullFlags, uint32_t width, uint32_t height) {
+	GfxProbeReport(); // TMP-PROBE: reports previous 240 frames
 	const uint32_t slot = s.viewCount;
 	if (!EnsureViewSlots(s, ctx, rg, slot + 1))
 		return UINT32_MAX;
@@ -1614,6 +1651,7 @@ void BuildBatches(State& s, uint32_t view) {
 	View& v = s.views[view];
 	assert(v.renderView != nullptr);
 
+	GfxProbeScope probeScope(g_probe.batches); // TMP-PROBE
 	SMVK_PROFILE_RENDER("GfxBuildBatches");
 	SMVK_PROFILE_TAG("draws", v.draws.size());
 

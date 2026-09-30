@@ -8,7 +8,7 @@
 // Usage:
 //   App [--pak <path.pak>] [--scene-index N]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
-//   [--bench <frames>] [--present <fifo|mailbox|immediate>]
+//   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
 //   [--disable_control] [--no-dlss] [--use_optick] [--use_optick_gpu]
 // --pak runs a cooked pak (default content/paks/sponza.pak); scenes
 //   inside are discovered at startup, index 0 loads unless
@@ -16,6 +16,9 @@
 //   preprocess glTF through the editor (import -> cook).
 // --disable_control freezes the camera (no keyboard/gamepad/mouselook):
 //   deterministic A/B benching at the scene's configured pose.
+// --bench_move flies the camera forward at a constant velocity (default
+//   4 m/s, starts past warmup) so LOD promotion + texture streaming
+//   churn through the measured frames — pairs with --disable_control.
 // --bench also pins fixed manual exposure (no auto-exposure).
 // --no-dlss keeps the Streamline interposer out of the Vulkan chain
 //   (RenderDoc captures crash through the SL layer + NGX cubins).
@@ -62,13 +65,14 @@ void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
 		<< " [--pak <path.pak>] [--scene-index N]\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
-		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
+		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--use_optick] [--use_optick_gpu]\n"
 		<< "  --pak runs a cooked pak (default content/paks/sponza.pak);\n"
 		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
 		<< "  --scene-index picks another. The App loads OUR format only:\n"
 		<< "  preprocess glTF through the editor (import -> cook).\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
+		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
@@ -373,6 +377,7 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	const char* withCsv = nullptr;
 	const char* withoutCsv = nullptr;
 	int benchFrames = 0;
+	float benchMoveSpeed = 0.0f;
 	const char* presentMode = nullptr;
 	bool disableControl = false;
 	bool useOptick = false;
@@ -422,6 +427,19 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 		}
 		else if (std::strncmp(a, "--bench=", 8) == 0) {
 			benchFrames = std::atoi(a + 8);
+		}
+		else if (std::strcmp(a, "--bench_move") == 0
+			|| std::strcmp(a, "--bench-move") == 0) {
+			// Bare flag: default flight speed (4 m/s walks the bistro street
+			// at a good LOD/streaming churn rate). Optional value follows.
+			benchMoveSpeed = 4.0f;
+			if (i + 1 < argc && argv[i + 1][0] != '-')
+				benchMoveSpeed = static_cast<float>(std::atof(argv[++i]));
+		}
+		else if (std::strncmp(a, "--bench_move=", 14) == 0
+			|| std::strncmp(a, "--bench-move=", 13) == 0) {
+			const char* v = a + (std::strncmp(a, "--bench_move=", 14) == 0 ? 14 : 13);
+			benchMoveSpeed = static_cast<float>(std::atof(v));
 		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
 			presentMode = argv[++i];
@@ -557,6 +575,20 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 		// adaptation and pin the fixed manual exposure (X re-enables live).
 		renderer.SetAutoExposureEnabled(false);
 		std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
+	}
+	if (benchMoveSpeed > 0.0f) {
+		// Constant-velocity flight needs --bench to be meaningful (the
+		// movement gates on the measured window); pair them up here so a
+		// bare --bench_move still does the right thing.
+		if (benchFrames <= 0) {
+			benchFrames = 300;
+			renderer.SetFrameBudget(benchFrames);
+			renderer.SetAutoExposureEnabled(false);
+			std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
+		}
+		renderer.SetBenchMoveSpeed(benchMoveSpeed);
+		std::cout << "bench: constant-velocity flight " << benchMoveSpeed
+			<< " m/s forward from the spawn pose (past warmup)\n";
 	}
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the

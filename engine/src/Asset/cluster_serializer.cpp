@@ -1,6 +1,8 @@
 #include <Engine/Asset/cluster_serializer.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <span>
@@ -73,23 +75,98 @@ struct TexCookResult {
 	std::string error;
 };
 
+// Alpha-use probe for 4-component Basis sources (a second parse: a
+// ktxTexture2 can transcode only once). Decodes the top level to RGBA32
+// and walks a subsampled grid: all-opaque alpha -> BC1 is safe (the
+// transcoder's BC1_RGB is opaque-only); any used alpha -> BC3 keeps it
+// (BC1-quality RGB + BC4-quality A: the color+AO-in-alpha packing).
+// Best-effort: parse/transcode failure reads conservative (alpha used).
+bool SourceAlphaAllOpaque(const std::vector<uint8_t>& src) {
+	ktxTexture2* tex = nullptr;
+	if (ktxTexture2_CreateFromMemory(
+			static_cast<const ktx_uint8_t*>(src.data()),
+			static_cast<ktx_size_t>(src.size()), 0, &tex) != KTX_SUCCESS
+		|| !tex)
+		return true; // unparseable here: caller re-parses for real work
+	if (!ktxTexture2_NeedsTranscoding(tex)) {
+		ktxTexture2_Destroy(tex);
+		return true; // not Basis: the cook transcode path is skipped anyway
+	}
+	const KTX_error_code tc = ktxTexture2_TranscodeBasis(tex, KTX_TTF_RGBA32, 0);
+	if (tc != KTX_SUCCESS) {
+		ktxTexture2_Destroy(tex);
+		return false;
+	}
+	ktx_size_t off = 0;
+	if (ktxTexture2_GetImageOffset(tex, 0, 0, 0, &off) != KTX_SUCCESS) {
+		ktxTexture2_Destroy(tex);
+		return false;
+	}
+	const uint8_t* data = ktxTexture_GetData(ktxTexture(tex));
+	const uint32_t w = std::max(1u, tex->baseWidth);
+	const uint32_t h = std::max(1u, tex->baseHeight);
+	// Subsampled grid over the TOP level (dominates the alpha character);
+	// <250 (not just !=255) tolerates UASTC round-trip noise on opaque fills.
+	constexpr uint32_t kStride = 16;
+	bool allOpaque = data != nullptr;
+	if (allOpaque)
+		for (uint32_t y = 0; y < h && allOpaque; y += kStride)
+			for (uint32_t x = 0; x < w; x += kStride)
+				if (data[off + (size_t(y) * w + x) * 4 + 3] < 250) {
+					allOpaque = false;
+					break;
+				}
+	ktxTexture2_Destroy(tex);
+	return allOpaque;
+}
+
+// Cook-time BCn selection for Basis-family (UASTC/ETC1S) sources — the
+// per-semantic target table (not blanket BC7):
+//   1 component  -> BC4_R   (single-channel data/AO)
+//   2 components  -> BC5_RG  (normal XY pairs)
+//   3 components  -> BC1_RGB (opaque RGB)
+//   4 components  -> alpha probe: all-opaque -> BC1_RGB, used alpha ->
+//                    BC3_RGBA
+// sRGB never lands on BC4/BC5 (no sRGB variants of those formats) — a
+// 1/2-component sRGB source falls back to BC3_RGBA. The default is BC7
+// (unreachable in practice via the component ladder, kept as the safe
+// catch-all for 4-component alpha probes that cannot decide).
+ktx_transcode_fmt_e CookBcnTarget(const std::vector<uint8_t>& src,
+	uint32_t comps, bool srgb) {
+	if (comps <= 1)
+		return srgb ? KTX_TTF_BC3_RGBA : KTX_TTF_BC4_R;
+	if (comps == 2)
+		return srgb ? KTX_TTF_BC3_RGBA : KTX_TTF_BC5_RG;
+	if (comps == 3)
+		return KTX_TTF_BC1_RGB;
+	return SourceAlphaAllOpaque(src) ? KTX_TTF_BC1_RGB : KTX_TTF_BC3_RGBA;
+}
+
 TexCookResult CookTexturePayload(const TexCookJob& job) {
 	TexCookResult r;
 	r.uri = job.uri;
 	r.filePart = job.filePart;
 	const std::vector<uint8_t>& src = *job.src;
 	r.srcBytes = src.size();
-	// v4 tail digest: parse the ktx (cheap at cook) and stamp the resident
-	// tail split so the loader uploads only the coarse-mip tail through
-	// the normal ktx path (parse + transcode-if-needed + streaming
-	// subrange) and registers for demand upgrades. NO transcode, NO byte
-	// changes here — the embedded payload is untouched, so the pak pays
-	// zero extra bytes for digests. Tail numbers mirror the runtime
-	// streamer floor (minResidentMips=2, dimCap=1024 — see the app's
-	// streamCfg).
+	// v4 tail digest + cook-time BCn: parse the ktx (cheap at cook), stamp
+	// the resident tail split, and — for Basis-family sources (foreign
+	// toktx sidecars trusted at import) — transcode ONCE here to the
+	// per-semantic BCn target and embed the transcoded bytes. The pak then
+	// always ships GPU-ready payloads (the documented v4 contract, see
+	// pak.h's ParseTexturePayload note: "the embedded ktx is always
+	// GPU-ready (transcoded at cook)") — the runtime's retarget path
+	// (LOD/texture promotion) never pays a synchronous transcode on the
+	// render thread, and first load skips it too. NO transcode failure is
+	// fatal: the raw payload stays embedded and the runtime's
+	// transcode-if-needed path handles it, as before.
 	TextureStreamMeta meta{};
 	std::vector<uint8_t> digestBytes;
 	bool haveDigest = false;
+	// Cooked BCn bytes (when the source is Basis-family): must outlive the
+	// r.blob build below, so it lives here — embedBytes points into it.
+	std::vector<uint8_t> cooked;
+	const uint8_t* embedBytes = src.data();
+	size_t embedSize = src.size();
 	ktxTexture2* ktxTex = nullptr;
 	if (ktxTexture2_CreateFromMemory(
 			static_cast<const ktx_uint8_t*>(src.data()),
@@ -101,6 +178,42 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
 			ktxTexture2_Destroy(ktxTex);
 	}
 	else {
+		// Cook-time BCn (Basis-family sources only; native BCn/uncompressed
+		// payloads pass through untouched).
+		if (ktxTexture2_NeedsTranscoding(ktxTex)) {
+			const uint32_t comps = ktxTexture2_GetNumComponents(ktxTex);
+			const bool srgb =
+				ktxTexture2_GetTransferFunction_e(ktxTex) == KHR_DF_TRANSFER_SRGB;
+			const ktx_transcode_fmt_e target = CookBcnTarget(src, comps, srgb);
+			if (ktxTexture2_TranscodeBasis(ktxTex, target, 0) != KTX_SUCCESS) {
+				std::fprintf(stderr,
+					"[cook] texture '%s': BCn transcode failed, embedding raw (runtime will transcode)\n",
+					job.uri.c_str());
+			}
+			else {
+				ktx_uint8_t* out = nullptr;
+				ktx_size_t outSize = 0;
+				if (ktxTexture2_WriteToMemory(ktxTex, &out, &outSize)
+						== KTX_SUCCESS && out && outSize > 0) {
+					cooked.assign(out, out + outSize);
+					free(out); // KTX-Software documents free() for this buffer
+					std::fprintf(stderr,
+						"[cook] texture '%s': %u comps%s -> BCn (vkFormat %u, %.2f -> %.2f MB)\n",
+						job.uri.c_str(), comps, srgb ? " sRGB" : "",
+						ktxTex->vkFormat, src.size() / (1024.0 * 1024.0),
+						cooked.size() / (1024.0 * 1024.0));
+					embedBytes = cooked.data();
+					embedSize = cooked.size();
+					r.srcBytes = cooked.size();
+				}
+				else {
+					free(out); // defensive: partial allocation
+					std::fprintf(stderr,
+						"[cook] texture '%s': BCn write-back failed, embedding raw\n",
+						job.uri.c_str());
+				}
+			}
+		}
 		meta.tailFirstMip = TextureStreamer::InitialResidentBase(
 			std::max(1u, ktxTex->numLevels),
 			std::max(std::max(1u, ktxTex->baseWidth),
@@ -113,11 +226,11 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
 	r.blob = haveDigest
 		? BuildTexturePayloadV4(job.uri, job.samp.magFilter, job.samp.minFilter,
 			job.samp.wrapS, job.samp.wrapT,
-			std::span<const uint8_t>(src),
+			std::span<const uint8_t>(embedBytes, embedSize),
 			std::span<const uint8_t>(digestBytes))
 		: BuildTexturePayload(job.uri, job.samp.magFilter, job.samp.minFilter,
 			job.samp.wrapS, job.samp.wrapT,
-			std::span<const uint8_t>(src));
+			std::span<const uint8_t>(embedBytes, embedSize));
 	r.digested = haveDigest;
 	return r;
 }
@@ -506,9 +619,9 @@ bool SerializeClusters(
 	// --- Textures (embedded .ktx2) ------------------------------------------
 	// Two phases: collect the (uri, sampler, source) list serially (dedup
 	// + validation order stays stable), then cook every payload — ktx
-	// parse, optional Basis tail pre-transcode, digest, blob build — on a
-	// worker pool (transcode is the dominant cook cost), then append blobs
-	// in uri order so paks stay deterministic.
+	// parse, Basis -> per-semantic BCn pre-transcode (see CookTexturePayload),
+	// tail digest, blob build — on a worker pool (transcode is the dominant
+	// cook cost), then append blobs in uri order so paks stay deterministic.
 	std::vector<TexCookJob> texCooks;
 	for (const auto& [uri, rhi] : cluster.ListTextureUris()) {
 		(void)rhi;

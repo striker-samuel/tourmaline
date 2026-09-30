@@ -976,6 +976,12 @@ public:
 	// the whole run and A/B comparisons are deterministic. The I-key UI
 	// mode and the feature shortcuts (L/G/H/...) keep working.
 	void SetDisableControl(bool v) { m_disableControl = v; }
+	// Bench flight (--bench_move <m/s>): integrate the camera straight
+	// along the spawn forward vector at a constant velocity past warmup
+	// (stationary through warmup so every run starts at the same pose).
+	// Deterministic — no input ramp/damping — and drives LOD promotion
+	// + texture streaming churn through the measured frames. 0 = off.
+	void SetBenchMoveSpeed(float v) { m_benchMoveSpeed = v; }
 	// Bench determinism: fixed manual exposure (no eye adaptation), so
 	// captures from different runs are directly comparable. main.cpp
 	// forces this off for --bench; X toggles it back live.
@@ -1073,6 +1079,16 @@ protected:
 		}
 		if (!m_uiMode && !m_disableControl) {
 			UpdateCamera(delta_time_s);
+		}
+		// Bench flight (--bench_move): constant-velocity forward
+		// integration, straight along the spawn forward vector. Runs
+		// past warmup only (warmup stays at the spawn pose so every
+		// measured run starts identically) and stacks on --disable_control
+		// (frozen inputs, deterministic flight).
+		if (m_benchMoveSpeed > 0.0f && frameBudget_ > 0
+			&& benchWarmup_ >= 10 && !m_uiMode) {
+			m_cameraPositioner.cameraPosition_ +=
+				m_cameraPositioner.getForward() * (m_benchMoveSpeed * delta_time_s);
 		}
 	}
 
@@ -1427,6 +1443,9 @@ protected:
 	std::string m_projectRoot;
 	// Camera control frozen (see SetDisableControl; --disable_control).
 	bool m_disableControl = false;
+	// Constant-velocity bench flight speed in m/s (see SetBenchMoveSpeed;
+	// --bench_move). 0 = stationary bench (pre-existing behavior).
+	float m_benchMoveSpeed = 0.0f;
 
 	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
