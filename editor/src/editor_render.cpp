@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Camera/camera.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/bvh.h>
@@ -429,8 +430,12 @@ glm::vec3 EditorCamEye(const EditorCam& c) {
 }
 
 glm::mat4 EditorCamView(const EditorCam& c) {
-	const glm::vec3 eye = EditorCamEye(c);
-	return glm::lookAt(eye, c.target, glm::vec3(0.0f, 1.0f, 0.0f));
+	// SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
+	// the hosted renderer's drive paths use). The old direct lookAt picked
+	// its own near-degenerate basis for the straight-down Top camera,
+	// which rotated the editor's wire boxes 90 degrees against the hosted
+	// scene in the top view (the two agreed everywhere else).
+	return SafeLookAt(EditorCamEye(c), c.target);
 }
 
 glm::mat4 EditorCamProj(const EditorCam& c, float aspect) {
@@ -473,8 +478,11 @@ bool EditorApp::BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
 	glm::vec3 up = glm::vec3(G * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
 	if (!(glm::length(up) > 1e-6f)
 		|| std::abs(glm::dot(up, fwd)) > 0.999f)
-		up = (std::abs(fwd.y) > 0.999f) ? glm::vec3(1.0f, 0.0f, 0.0f)
-			: glm::vec3(0.0f, 1.0f, 0.0f);
+		// Degenerate (or parallel to the view direction): the SHARED
+		// resolution (same convention as every other camera framing —
+		// see ResolveLookAtUp) instead of this path's old ad-hoc
+		// +X pick, which disagreed with the hosted drive paths.
+		up = ResolveLookAtUp(eye, eye + fwd);
 	else
 		up = glm::normalize(up);
 	view = glm::lookAt(eye, eye + fwd, up);

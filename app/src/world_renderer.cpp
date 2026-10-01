@@ -580,19 +580,15 @@ using Super = smvk::AppImpl;
 void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 	const glm::vec3& target, float fovYDeg, float zNear, float zFar,
 	float orthoHalfH) {
-	// Degenerate-lookAt guard: a view direction parallel to the up
-	// vector (top-down framing) crosses NaNs into the view matrix —
-	// nudge the target sideways instead.
-	glm::vec3 tgt = target;
-	const glm::vec3 up(0.0f, 1.0f, 0.0f);
-	glm::vec3 dir = eye - tgt;
-	const float len = glm::length(dir);
-	if (len < 1e-6f)
-		return; // eye == target: nothing sensible to look at
-	dir /= len;
-	if (std::fabs(glm::dot(dir, up)) > 0.9995f)
-		tgt += glm::normalize(glm::vec3(dir.z, 0.0f, -dir.x))
-			* 0.01f * len;
+	// Degenerate-lookAt guard (ResolveLookAtUp — the SINGLE shared
+	// resolution, same one the editor's overlay camera uses): a view
+	// direction parallel to the up vector (top-down framing) crosses NaNs
+	// into the view matrix — resolve the up axis instead of nudging the
+	// target (a nudge pans the ortho view AND disagrees with the
+	// direct-lookAt consumers, which rotated the editor's wire boxes
+	// against the scene in the straight-down top view).
+	if (glm::length(target - eye) < 1e-6f)
+		return; // eye == target: nothing sensible to look at (keep last)
 	m_extCamera = true;
 	m_extFovYDeg = fovYDeg;
 	m_extOrthoHalfH = std::max(orthoHalfH, 0.0f);
@@ -601,7 +597,8 @@ void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 	// The positioner drives the view matrix (+ every viewProj-derived
 	// consumer: culling, cascades, motion, markers). The proj constants
 	// ride UpdateCameraAspect's external branch (next RenderFrame).
-	m_cameraPositioner.lookAt(eye, tgt, up);
+	m_cameraPositioner.lookAt(eye, target,
+		ResolveLookAtUp(eye, target));
 }
 
 bool WorldRenderer::Initialize() {
@@ -5561,26 +5558,21 @@ void WorldRenderer::DriveView(uint32_t view, const glm::vec3& eye,
 	float orthoHalfH) {
 	if (view >= m_views.size())
 		return;
+	if (glm::length(target - eye) < 1e-6f)
+		return; // eye == target: nothing sensible to look at (keep last)
 	SecondaryView& v = m_views[view];
-	// Degenerate-lookAt guard (mirrors DriveExternalCamera): a view
-	// direction parallel to the up vector (top-down framing) crosses NaNs
-	// into the view matrix — nudge the target sideways instead.
-	glm::vec3 tgt = target;
-	const glm::vec3 up(0.0f, 1.0f, 0.0f);
-	glm::vec3 dir = eye - tgt;
-	const float len = glm::length(dir);
-	if (len < 1e-6f)
-		return; // eye == target: nothing sensible to look at
-	dir /= len;
-	if (std::fabs(glm::dot(dir, up)) > 0.9995f)
-		tgt += glm::normalize(glm::vec3(dir.z, 0.0f, -dir.x)) * 0.01f * len;
+	// Degenerate-lookAt guard (mirrors DriveExternalCamera): the shared
+	// ResolveLookAtUp picks the up axis for top-down framing — no target
+	// nudge (see DriveExternalCamera for why a nudge is wrong: it pans
+	// the ortho view and disagrees with the direct-lookAt consumers).
 	v.desc.eye = eye;
-	v.desc.target = tgt;
+	v.desc.target = target;
 	v.desc.fovYDeg = fovYDeg;
 	v.desc.orthoHalfH = std::max(orthoHalfH, 0.0f);
 	v.desc.zNear = std::max(zNear, 0.001f);
 	v.desc.zFar = std::max(zFar, v.desc.zNear + 0.1f);
-	v.positioner.lookAt(eye, tgt, up);
+	v.positioner.lookAt(eye, target,
+		ResolveLookAtUp(eye, target));
 }
 
 void WorldRenderer::DriveGrid(bool show, float cellSizeMeters,

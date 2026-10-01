@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "Engine/core.h"
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 // InfiniteReversedZ projection. For better precission up close and no cutoff
@@ -16,6 +17,45 @@ glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNe
 // infinities (no NaN class downstream), and the frustum near/far planes
 // are functional instead of degenerate. Requires zFar > zNear.
 glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar);
+
+// Degenerate-lookAt resolution (the SINGLE shared convention — every
+// camera framing that can look straight down/up must go through these so
+// all consumers of one (eye, target) pair agree on the screen basis:
+// the editor's overlay camera, the hosted renderer's drive paths and the
+// locked look-through each used to pick their own fallback (a sideways
+// target nudge here, an arbitrary up-axis there), which rotated the
+// editor's wire boxes 90 degrees against the scene in the straight-down
+// top view).
+//
+// ResolveLookAtUp: the preferred up while it is usable, else a
+// deterministic horizontal fallback — straight DOWN looks with -Z as
+// screen-up ("north up"), straight UP with +Z. No target nudging: a
+// nudge pans the view and disagrees with direct-lookAt users.
+[[nodiscard]] inline glm::vec3 ResolveLookAtUp(const glm::vec3& eye,
+	const glm::vec3& target,
+	const glm::vec3& preferredUp = glm::vec3(0.0f, 1.0f, 0.0f)) {
+	glm::vec3 f = target - eye;
+	const float len = glm::length(f);
+	if (len < 1e-6f)
+		return preferredUp; // eye == target: nothing to resolve against
+	f /= len;
+	if (glm::abs(glm::dot(f, preferredUp)) <= 0.9995f)
+		return preferredUp;
+	// (Nearly) parallel to the preferred up: pick the fallback by the
+	// dominant view direction sign so the basis never flips discontinuously.
+	return (f.y < 0.0f) ? glm::vec3(0.0f, 0.0f, -1.0f)
+		: glm::vec3(0.0f, 0.0f, 1.0f);
+}
+
+// lookAt with the shared degenerate resolution (see ResolveLookAtUp):
+// straight-down/up framings get the deterministic horizontal basis
+// instead of NaNs (glm::lookAt with a parallel up crosses zero normals).
+[[nodiscard]] inline glm::mat4 SafeLookAt(const glm::vec3& eye,
+	const glm::vec3& target,
+	const glm::vec3& preferredUp = glm::vec3(0.0f, 1.0f, 0.0f)) {
+	return glm::lookAt(eye, target,
+		ResolveLookAtUp(eye, target, preferredUp));
+}
 
 class CameraPositionerInterface
 {
