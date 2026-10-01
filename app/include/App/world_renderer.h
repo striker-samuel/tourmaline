@@ -223,6 +223,7 @@ enum class DebugView : int {
 	Uv0 = 6,      // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
 	Uv1 = 7,      // F10: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
 	Pom = 8,      // F11: parallax occlusion mapping (default_pom)
+	SsrContribution = 9, // F12: SSR contribution isolated (ssr_contribution_debug)
 };
 
 #if defined(DS_DEBUG_VIZ)
@@ -661,6 +662,9 @@ struct AppResources {
 	// and the view falls back to Lit.
 	smvk::Holder<smvk::ShaderModuleHandle> fragPomShader; // default_pom (F11)
 	smvk::ShaderProgram pomProgram;
+	// SSR contribution debug view (F12): isolated SSR layer (ssr_contribution_debug.frag.hlsl)
+	smvk::Holder<smvk::ShaderModuleHandle> fragSsrContributionDebugShader; // ssr_contribution_debug (F12)
+	smvk::ShaderProgram ssrContributionDebugProgram;
 	// Shader-LOD farthest-level program (World::LodShader::VertexLit):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.

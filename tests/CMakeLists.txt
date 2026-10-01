@@ -272,6 +272,30 @@ set_target_properties(TourTests PROPERTIES
 
 add_test(NAME tour_tests COMMAND TourTests)
 
+# Asset-browser ops (editor-only TU, ImGui-free: delete planning rules).
+project(AssetOpsTests)
+
+add_executable(AssetOpsTests test_asset_ops.cpp
+    ../editor/src/editor_asset_ops.cpp
+)
+
+target_include_directories(AssetOpsTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/editor/src
+)
+
+target_link_libraries(AssetOpsTests
+    PRIVATE
+        engine
+        gltf_import
+)
+
+set_target_properties(AssetOpsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME asset_ops_tests COMMAND AssetOpsTests)
+
 project(CacheTests)
 
 add_executable(CacheTests test_cache.cpp)
@@ -349,6 +373,7 @@ vulkantoy_stage_sdl3(CubemapTests)
 vulkantoy_stage_sdl3(ParticlesTests)
 vulkantoy_stage_sdl3(MotionBlurTests)
 vulkantoy_stage_sdl3(TourTests)
+vulkantoy_stage_sdl3(AssetOpsTests)
 vulkantoy_stage_sdl3(FlintbaseTests)
 vulkantoy_stage_sdl3(PlacementTests)
 vulkantoy_stage_sdl3(PlacementEditorTests)

@@ -11596,7 +11596,24 @@ void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset)
 		VK_INDEX_TYPE_UINT32
 	);
 }
-void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer, uint64_t offset, uint32_t drawCount, uint32_t stride)
+void smvk::CommandBuffer::DispatchIndirect(BufferHandle buffer, uint64_t offset)
+{
+	VulkanResourceManager& vulkanCtx =
+		*static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
+	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+	VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+	// Indirect dispatches consume one VkDispatchIndirectCommand (x/y/z
+	// group counts); the graph's IndirectCommandRead barrier (declared
+	// by the consumer pass) orders the producing compute writes.
+	vkCmdDispatchIndirect(
+		cmd,
+		desc->vkBuffer,
+		static_cast<VkDeviceSize>(offset)
+	);
+}
+void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer, uint64_t offset,
+	uint32_t drawCount, uint32_t stride)
 {
 	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	const Buffer* desc = vulkanCtx.buffers_.get(buffer);

@@ -115,12 +115,16 @@ void ParseManifestSidecar(const fs::path& metaPath,
 
 // The sidecar's kind= line ("" when the sidecar predates the field):
 // bake outputs declare "gi"/"cubemap" here (see
-// Engine/Asset/bake_asset.h); source-asset sidecars carry none and keep
-// the legacy "model" kind at adoption.
+// Engine/Asset/bake_asset.h); cook assets declare "gicook"/"lmcook"
+// through their importer (see Engine/Asset/cook_asset.h); source-asset
+// sidecars carry importer=model and keep the legacy "model" kind at
+// adoption. The importer fallback keeps cook assets collection-addressable
+// through rescans (WriteAssetMeta only writes importer=, never kind=).
 std::string BakeSidecarKind(const std::string& assetPath) {
 	std::ifstream in(MetaPathFor(assetPath), std::ios::binary);
 	if (!in)
 		return {};
+	std::string kind, importer;
 	std::string line;
 	while (std::getline(in, line)) {
 		if (!line.empty() && line.back() == '\r')
@@ -131,8 +135,18 @@ std::string BakeSidecarKind(const std::string& assetPath) {
 		if (eq == std::string::npos)
 			continue;
 		if (line.substr(0, eq) == "kind")
-			return line.substr(eq + 1);
+			kind = line.substr(eq + 1);
+		else if (line.substr(0, eq) == "importer")
+			importer = line.substr(eq + 1);
 	}
+	if (!kind.empty())
+		return kind;
+	// Cook-asset importers double as kinds; everything else predates the
+	// field ("model", "bake", ...) — "bake" is the bake-asset writer's
+	// importer tag on files that always carry an explicit kind=, so it
+	// never reaches here with meaning; pass it through harmlessly.
+	if (importer == "gicook" || importer == "lmcook")
+		return importer;
 	return {};
 }
 

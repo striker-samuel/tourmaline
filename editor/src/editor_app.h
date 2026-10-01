@@ -39,6 +39,8 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
+#include "editor_asset_ops.h" // browser delete planning (pending plan member)
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
@@ -1595,9 +1597,11 @@ private:
 	std::string m_assetsDir;
 	std::string m_assetsSel;
 	// Collection filter (0 = all/files, 1 = meshes, 2 = materials,
-	// 3 = animations): non-zero lists every derived asset of that kind
-	// across the project's content tree (the glTF manifests), not the
-	// directory listing.
+	// 3 = animations, 4 = GI bakes, 5 = cubemaps, 6 = GI cooks,
+	// 7 = lightmap cooks): non-zero lists every asset of that kind
+	// across the project's content tree (the glTF manifests for
+	// meshes/materials/animations; the assetdb bake/cook sidecar rows
+	// for the rest), not the directory listing.
 	int m_assetsFilter = 0;
 	// Expanded glTF (absolute path): the browser shows its derived
 	// assets (the manifest children) instead of the directory listing.
@@ -1646,6 +1650,8 @@ private:
 	std::string m_assetInspectPath;
 	std::optional<smvk::assets::MaterialAsset> m_assetInspectMat;
 	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
+	std::optional<smvk::cook::GiCookAsset> m_assetInspectGiCook;
+	std::optional<smvk::cook::LightmapCookAsset> m_assetInspectLmCook;
 	// The copy+adopt half of ImportAsset (no scene switch, no cook
 	// priming): copies a .gltf/.glb + companions into the project's
 	// content/models/<stem>/, adopts its GUID (.meta sidecar + asset
@@ -1653,7 +1659,15 @@ private:
 	// The add-reference flow uses it to auto-import out-of-project
 	// sources — scenes only ever reference in-project assets.
 	std::string ImportAssetFile(const std::string& srcPath);
-	// <root>/artifacts (empty when no project is open). The project
+	// Cook-asset creation (the Asset browser's New buttons + the Create
+	// menu): writes a fresh UNBAKED manifest (<dir>/NewGiCook<N>.gicook
+	// or NewLightmapCook<N>.lmcook — settings from the cook defaults,
+	// scene seeded from the open scene when one exists, empty blob),
+	// adopts its GUID (.meta sidecar + assetdb row kind gicook/lmcook),
+	// selects it in the browser. Needs a project only (no open scene) —
+	// like ImportAsset, unlike the scene-node Create entries. Returns
+	// the new path ({} + log on failure).
+	std::string CreateCookAsset(bool gi, const std::string& dir);	// <root>/artifacts (empty when no project is open). The project
 	// owns its artifact cache: cache.db (processed-import registry)
 	// + assets.db (GUID directory) + artifacts/ (per-class paks).
 	std::string ProjectArtifactDir() const;
@@ -1674,6 +1688,14 @@ private:
 	// callers store it alongside the path (tour reference -guid) and
 	// keep working path-only when empty.
 	std::string ProjectAssetGuid(const std::string& assetPath);
+	// Asset-browser delete: validates the selection (project
+	// containment, not the open scene, planable) and opens the confirm
+	// modal (the plan rides m_assetsDeletePending). The modal itself
+	// draws + executes in DrawAssetDeleteModal (end of DrawAssetsPanel).
+	void RequestAssetDelete(const std::string& absPath);
+	void DrawAssetDeleteModal();
+	// Pending confirmed-delete plan ("" target = no modal).
+	AssetDeletePlan m_assetsDeletePending;
 	// <root>/paks/<stem>.pak (empty without a project/stem).
 	std::string ProjectCookOutPak(const std::string& sceneStem) const;
 	// Points the per-scene cook outputs (direct + dialog) at the

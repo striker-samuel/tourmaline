@@ -120,27 +120,102 @@ struct SsrDesc {
 	const char* logicalName = "ssrLogical";
 };
 
-// Must match ssr.frag.hlsl SsrTracePush (80 bytes — the uint64 frame
-// BDA + the trailing uint64 HZB BDA keep every 8-byte member aligned;
-// pad0 lands the block on a multiple of 8).
-struct SsrTracePush {
+// Must match ssr_classify.cs.hlsl SsrClassifyPush (64 bytes) — the
+// SSSR tile-classify pass: full half-res dispatch, wave-compacts the
+// wanted rays into the ray list. All uint64 BDAs lead (C++ pads
+// mid-struct uint64s to 8 while the HLSL/D3D layout packs rows, so
+// scalars never precede a BDA — same discipline as every other push
+// in this file).
+struct SsrClassifyPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice
+	uint64_t rayListAddr = 0;   // BDA of the packed ray list (halfW*halfH uints)
+	uint64_t rayCounterAddr = 0; // BDA of the count ([0] live, [1] frozen)
+	uint64_t radianceAddr = 0;  // BDA of the per-pixel radiance (halfW*halfH float4)
+	uint32_t gbufferTextureIndex = UINT32_MAX; // thin G-buffer (RGBA8: oct normal + roughness + metal)
+	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (validity + receiver selection)
+	float glossThreshold = 0.94f; // rays wanted for roughness < this (mirrors always shoot)
+	uint32_t halfW = 0; // half-res reflection extent (the ray coords domain)
+	uint32_t halfH = 0;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+	uint32_t pad2 = 0;
+};
+static_assert(sizeof(SsrClassifyPush) == 64);
+
+// Must match ssr_prepare_indirect.cs.hlsl SsrIndirectPush (16 bytes).
+struct SsrIndirectPush {
+	uint64_t rayCounterAddr = 0;  // reads [0], freezes [1], resets [0]
+	uint64_t indirectArgsAddr = 0; // the VkDispatchIndirectCommand (3 uints)
+};
+static_assert(sizeof(SsrIndirectPush) == 16);
+
+// Must match ssr_intersect.cs.hlsl SsrIntersectPush (120 bytes) — the
+// SSSR intersect (GGX VNDF + the classic Hi-Z traversal), indirect
+// compute dispatch driven by the classify's ray count. uint64s first
+// (see SsrClassifyPush).
+struct SsrIntersectPush {
+	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice
+	uint64_t rayListAddr = 0;
+	uint64_t rayCounterAddr = 0; // [1] = the frozen count (early-out bound)
+	uint64_t radianceAddr = 0;
+	uint64_t ssrHzbAddr = 0; // BDA of the MAX-reduce trace Hi-Z; 0 = no skip
+	uint32_t hdrTextureIndex = UINT32_MAX;
+	uint32_t depthTextureIndex = UINT32_MAX;
+	uint32_t samplerIndex = 0;
+	uint32_t gbufferTextureIndex = UINT32_MAX;
+	uint32_t halfW = 0;
+	uint32_t halfH = 0;
+	float glossThreshold = 0.94f;
+	float invDepthW = 0.0f; // 1 / full-res depth width
+	float invDepthH = 0.0f;
+	float maxDistance = 50.0f;
+	float thickness = 0.3f;
+	float intensity = 1.0f;
+	float f0 = 0.04f;
+	uint32_t frameIndex = 0; // IGN dither epoch
+	uint32_t mostDetailedMip = 1; // rough rays start here (mirrors start at 0)
+	uint32_t maxIntersections = 24; // traversal loop cap
+	uint32_t minOccupancy = 4; // wave early-out (non-mirror only)
+	uint32_t ssrHzbMipCount = 0;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+};
+static_assert(sizeof(SsrIntersectPush) == 120);
+
+// Must match ssr_copy.frag.hlsl SsrCopyPush (24 bytes) — the
+// radiance-buffer -> raw blit.
+struct SsrCopyPush {
+	uint64_t radianceAddr = 0;
+	uint32_t halfW = 0;
+	uint32_t halfH = 0;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+};
+static_assert(sizeof(SsrCopyPush) == 24);
+
+// Must match ssr.frag.hlsl SsrTracePush (80 bytes) — the legacy
+// fullscreen trace pass (the new compute chain uses
+// SsrClassifyPush/SsrIndirectPush/SsrIntersectPush). Two uint64
+// BDAs (frame uniforms + trace Hi-Z) keep every 8-byte member
+// aligned; pad0/pad1 land the block on a multiple of 8.
+struct SsrTracePush {
+	uint64_t frameUniforms = 0;
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t depthTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
 	uint32_t steps = 32;
-	float invDepthW = 0.0f; // 1 / full-res depth width
-	float invDepthH = 0.0f; // 1 / full-res depth height
+	float invDepthW = 0.0f;
+	float invDepthH = 0.0f;
 	float maxDistance = 50.0f;
 	float thickness = 0.3f;
 	float intensity = 1.0f;
 	float f0 = 0.04f;
 	uint32_t refineSteps = 4;
-	uint32_t frameIndex = 0; // dither epoch (0 = static legacy; temporal path passes the record counter)
-	uint32_t gbufferTextureIndex = UINT32_MAX; // thin G-buffer (RGBA8 bindless); UINT32_MAX = legacy mirror
-	uint32_t pad0 = 0;        // offset 60..64 (pad before the 8-aligned HZB BDA)
-	uint64_t ssrHzbAddr = 0;  // BDA of the MAX-reduce trace Hi-Z (HzbBuffer layout); 0 = linear march
-	uint32_t ssrHzbMipCount = 0; // mips in the pyramid; 0 = linear march
+	uint32_t frameIndex = 0;
+	uint32_t gbufferTextureIndex = UINT32_MAX;
+	uint32_t pad0 = 0;
+	uint64_t ssrHzb = 0;
+	uint32_t ssrHzbMipCount = 0;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsrTracePush) == 80);
@@ -246,12 +321,16 @@ struct SsrTemporalPush {
 };
 static_assert(sizeof(SsrTemporalPush) == 64);
 
-// Default SPVs (fullscreen-triangle VS shared with tonemap + SSR PS trio).
+// Default SPVs (fullscreen-triangle VS shared with tonemap + SSR PS
+// trio; the trace FS is GONE — replaced by the compute chain below).
 inline constexpr const char* kSsrVsPath = "content/shaders/tonemap.vert.hlsl.spv";
-inline constexpr const char* kSsrTracePsPath = "content/shaders/ssr.frag.hlsl.spv";
 inline constexpr const char* kSsrBlurPsPath = "content/shaders/ssr_blur.frag.hlsl.spv";
 inline constexpr const char* kSsrTemporalPsPath = "content/shaders/ssr_temporal.frag.hlsl.spv";
 inline constexpr const char* kSsrComposePsPath = "content/shaders/ssr_compose.frag.hlsl.spv";
+inline constexpr const char* kSsrClassifyCsPath = "content/shaders/ssr_classify.cs.hlsl.spv";
+inline constexpr const char* kSsrIndirectCsPath = "content/shaders/ssr_prepare_indirect.cs.hlsl.spv";
+inline constexpr const char* kSsrIntersectCsPath = "content/shaders/ssr_intersect.cs.hlsl.spv";
+inline constexpr const char* kSsrCopyPsPath = "content/shaders/ssr_copy.frag.hlsl.spv";
 
 struct ScreenSpaceReflections {
 	// Half-res target helper (raw + blurred reflection share the layout).
@@ -262,6 +341,14 @@ struct ScreenSpaceReflections {
 		uint32_t bindlessIndex = UINT32_MAX;
 		LogicalImageViewHandle logical{};
 		[[nodiscard]] bool Valid() const { return !image.empty() && !logical.empty(); }
+	};
+
+	// Compute-chain buffer helper (the classify->args->intersect
+	// handoff: storage, BDA-addressed, barriered via logical hints).
+	struct CBuf {
+		Holder<BufferHandle> buffer;
+		LogicalBufferHandle logical{};
+		[[nodiscard]] bool Valid() const { return !buffer.empty() && !logical.empty(); }
 	};
 
 	Target raw; // half-res trace output (rgb = refl x fresnel x intensity, a = confidence)
@@ -283,6 +370,14 @@ struct ScreenSpaceReflections {
 	// (SsrTaaState, owned by the app) gates the blend — a warmup record
 	// fills the slot with the current blurred tap instead.
 	Target history[2];
+	// Compute-chain handoff buffers (the SSSR classify->args->intersect
+	// chain): rayList (packed uint per ray, halfW*halfH capacity),
+	// rayCounter ([0] live count / [1] frozen count), indirectArgs (the
+	// VkDispatchIndirectCommand), radiance (float4 per half-res pixel).
+	CBuf rayList;
+	CBuf rayCounter;
+	CBuf indirectArgs;
+	CBuf radiance;
 	// Full-res composite output (base HDR + upsampled reflection). These
 	// keep the historic field names so downstream code (DLSS color input,
 	// status UI) is untouched.
@@ -296,25 +391,37 @@ struct ScreenSpaceReflections {
 	Format format = Format::RGBA16_Float;
 
 	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> traceFragModule;
 	Holder<ShaderModuleHandle> blurFragModule;
 	Holder<ShaderModuleHandle> temporalFragModule;
 	Holder<ShaderModuleHandle> composeFragModule;
-	ShaderProgram traceProgram{};
+	Holder<ShaderModuleHandle> classifyModule;
+	Holder<ShaderModuleHandle> indirectModule;
+	Holder<ShaderModuleHandle> intersectModule;
+	Holder<ShaderModuleHandle> copyFragModule;
 	ShaderProgram blurProgram{};
 	ShaderProgram temporalProgram{};
 	ShaderProgram composeProgram{};
+	ShaderProgram classifyProgram{}; // compute, 8x8 groups
+	ShaderProgram indirectProgram{}; // compute, 1x1x1
+	ShaderProgram intersectProgram{}; // compute, indirect 8x8 groups
+	ShaderProgram copyProgram{}; // fullscreen FS (tonemap VS + the copy PS)
 	SsrDesc desc{};
 
 	[[nodiscard]] bool TargetsValid() const {
 		return raw.Valid() && blurred.Valid() && gbuffer.Valid() &&
 			history[0].Valid() && history[1].Valid() &&
+			rayList.Valid() && rayCounter.Valid() && indirectArgs.Valid() &&
+			radiance.Valid() &&
 			!image.empty() && !logicalView.empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
-		return traceProgram.shaderCount != 0 && blurProgram.shaderCount != 0 &&
+		return classifyProgram.shaderCount != 0 && indirectProgram.shaderCount != 0 &&
+			intersectProgram.shaderCount != 0 && copyProgram.shaderCount != 0 &&
+			blurProgram.shaderCount != 0 &&
 			temporalProgram.shaderCount != 0 && composeProgram.shaderCount != 0 &&
-			!vsModule.empty() && !traceFragModule.empty() && !blurFragModule.empty() &&
+			!vsModule.empty() && !classifyModule.empty() && !indirectModule.empty() &&
+			!intersectModule.empty() && !copyFragModule.empty() &&
+			!blurFragModule.empty() &&
 			!temporalFragModule.empty() && !composeFragModule.empty();
 	}
 	[[nodiscard]] bool Valid() const { return TargetsValid() && ShadersValid(); }
@@ -331,56 +438,82 @@ struct ScreenSpaceReflections {
 
 	bool EnsureShaders(ResourceManager& ctx,
 		const char* vsPath = kSsrVsPath,
-		const char* tracePath = kSsrTracePsPath,
 		const char* blurPath = kSsrBlurPsPath,
 		const char* temporalPath = kSsrTemporalPsPath,
-		const char* composePath = kSsrComposePsPath) {
+		const char* composePath = kSsrComposePsPath,
+		const char* classifyPath = kSsrClassifyCsPath,
+		const char* indirectPath = kSsrIndirectCsPath,
+		const char* intersectPath = kSsrIntersectCsPath,
+		const char* copyPath = kSsrCopyPsPath) {
 		if (ShadersValid())
 			return true;
 		try {
 			const std::string vs = vsPath ? vsPath : kSsrVsPath;
-			const std::string trace = tracePath ? tracePath : kSsrTracePsPath;
 			const std::string blur = blurPath ? blurPath : kSsrBlurPsPath;
 			const std::string temporal = temporalPath ? temporalPath : kSsrTemporalPsPath;
 			const std::string compose = composePath ? composePath : kSsrComposePsPath;
+			const std::string classify = classifyPath ? classifyPath : kSsrClassifyCsPath;
+			const std::string indirect = indirectPath ? indirectPath : kSsrIndirectCsPath;
+			const std::string intersect = intersectPath ? intersectPath : kSsrIntersectCsPath;
+			const std::string copy = copyPath ? copyPath : kSsrCopyPsPath;
 			if (vsModule.empty())
 				vsModule = ctx.CreateShaderModule(readFile(vs), "ssrVert");
-			if (traceFragModule.empty())
-				traceFragModule = ctx.CreateShaderModule(readFile(trace), "ssrTraceFrag");
 			if (blurFragModule.empty())
 				blurFragModule = ctx.CreateShaderModule(readFile(blur), "ssrBlurFrag");
 			if (temporalFragModule.empty())
 				temporalFragModule = ctx.CreateShaderModule(readFile(temporal), "ssrTemporalFrag");
 			if (composeFragModule.empty())
 				composeFragModule = ctx.CreateShaderModule(readFile(compose), "ssrComposeFrag");
+			if (classifyModule.empty())
+				classifyModule = ctx.CreateShaderModule(readFile(classify), "ssrClassifyCS");
+			if (indirectModule.empty())
+				indirectModule = ctx.CreateShaderModule(readFile(indirect), "ssrIndirectCS");
+			if (intersectModule.empty())
+				intersectModule = ctx.CreateShaderModule(readFile(intersect), "ssrIntersectCS");
+			if (copyFragModule.empty())
+				copyFragModule = ctx.CreateShaderModule(readFile(copy), "ssrCopyFrag");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || traceFragModule.empty() || blurFragModule.empty() ||
-			temporalFragModule.empty() || composeFragModule.empty())
+		if (vsModule.empty() || blurFragModule.empty() ||
+			temporalFragModule.empty() || composeFragModule.empty() ||
+			classifyModule.empty() || indirectModule.empty() ||
+			intersectModule.empty() || copyFragModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader tracePS{ .module = traceFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader blurPS{ .module = blurFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader temporalPS{ .module = temporalFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader composePS{ .module = composeFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		traceProgram = { .shaders = { vs, tracePS }, .shaderCount = 2 };
+		Shader classifyCS{ .module = classifyModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		Shader indirectCS{ .module = indirectModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		Shader intersectCS{ .module = intersectModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		Shader copyPS{ .module = copyFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		blurProgram = { .shaders = { vs, blurPS }, .shaderCount = 2 };
 		temporalProgram = { .shaders = { vs, temporalPS }, .shaderCount = 2 };
 		composeProgram = { .shaders = { vs, composePS }, .shaderCount = 2 };
+		classifyProgram = { .shaders = { classifyCS }, .shaderCount = 1 };
+		indirectProgram = { .shaders = { indirectCS }, .shaderCount = 1 };
+		intersectProgram = { .shaders = { intersectCS }, .shaderCount = 1 };
+		copyProgram = { .shaders = { vs, copyPS }, .shaderCount = 2 };
 		return true;
 	}
 
 	void DestroyShaders() {
-		traceProgram = ShaderProgram{};
 		blurProgram = ShaderProgram{};
 		temporalProgram = ShaderProgram{};
 		composeProgram = ShaderProgram{};
+		classifyProgram = ShaderProgram{};
+		indirectProgram = ShaderProgram{};
+		intersectProgram = ShaderProgram{};
+		copyProgram = ShaderProgram{};
 		vsModule = {};
-		traceFragModule = {};
 		blurFragModule = {};
 		temporalFragModule = {};
 		composeFragModule = {};
+		classifyModule = {};
+		indirectModule = {};
+		intersectModule = {};
+		copyFragModule = {};
 	}
 
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
@@ -439,6 +572,37 @@ struct ScreenSpaceReflections {
 		if (!t.logical.empty())
 			rg.FreeImageView(t.logical);
 		t = Target{};
+	}
+
+	static bool CreateBuffer(ResourceManager& ctx, RenderGraph& rg,
+		size_t bytes, const char* name, CBuf& out) {
+		if (bytes == 0)
+			return false;
+		Holder<BufferHandle> newBuffer =
+			ctx.CreateBuffer(bytes, BufferType_Storage, name);
+		if (newBuffer.empty())
+			return false;
+		LogicalBufferHandle newLogical = rg.AddExternalBuffer(newBuffer, name);
+		if (newLogical.empty())
+			return false;
+		CBuf b;
+		b.buffer = std::move(newBuffer);
+		b.logical = newLogical;
+		out = std::move(b);
+		return true;
+	}
+
+	static void DestroyBuffer(RenderGraph& rg, CBuf& b) {
+		if (!b.logical.empty())
+			rg.FreeBuffer(b.logical);
+		b = CBuf{};
+	}
+
+	void DestroyBuffers(RenderGraph& rg) {
+		DestroyBuffer(rg, rayList);
+		DestroyBuffer(rg, rayCounter);
+		DestroyBuffer(rg, indirectArgs);
+		DestroyBuffer(rg, radiance);
 	}
 
 	bool CreateTarget(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent, const SsrDesc& d) {
@@ -507,13 +671,17 @@ struct ScreenSpaceReflections {
 
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D full, const SsrDesc& d,
 		const char* vsPath = kSsrVsPath,
-		const char* tracePath = kSsrTracePsPath,
 		const char* blurPath = kSsrBlurPsPath,
 		const char* temporalPath = kSsrTemporalPsPath,
-		const char* composePath = kSsrComposePsPath) {
+		const char* composePath = kSsrComposePsPath,
+		const char* classifyPath = kSsrClassifyCsPath,
+		const char* indirectPath = kSsrIndirectCsPath,
+		const char* intersectPath = kSsrIntersectCsPath,
+		const char* copyPath = kSsrCopyPsPath) {
 		if (full.width == 0 || full.height == 0)
 			return false;
 		DestroyTargets(rg);
+		DestroyBuffers(rg);
 		const Extent2D half = HalfExtentFor(full);
 		Target newRaw, newBlur, newGbuffer, newHist0, newHist1;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrRaw", newRaw))
@@ -551,15 +719,74 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist1);
 			return false;
 		}
+		// Compute-chain handoff buffers (the classify->args->intersect
+		// chain): rayList (packed uint per ray, worst case = every
+		// half-res pixel shoots), rayCounter ([0] live / [1] frozen),
+		// indirectArgs (the VkDispatchIndirectCommand), radiance
+		// (float4 per half-res pixel).
+		const size_t rayCount = (size_t)std::max(1u, half.width)
+			* (size_t)std::max(1u, half.height);
+		CBuf newRayList, newRayCounter, newIndirectArgs, newRadiance;
+		if (!CreateBuffer(ctx, rg, rayCount * sizeof(uint32_t),
+				"ssrRayList", newRayList)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			return false;
+		}
+		if (!CreateBuffer(ctx, rg, 2u * sizeof(uint32_t),
+				"ssrRayCounter", newRayCounter)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyBuffer(rg, newRayList);
+			return false;
+		}
+		if (!CreateBuffer(ctx, rg, 3u * sizeof(uint32_t),
+				"ssrIndirectArgs", newIndirectArgs)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyBuffer(rg, newRayList);
+			DestroyBuffer(rg, newRayCounter);
+			return false;
+		}
+		if (!CreateBuffer(ctx, rg, rayCount * 4u * sizeof(float),
+				"ssrRadiance", newRadiance)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyBuffer(rg, newRayList);
+			DestroyBuffer(rg, newRayCounter);
+			DestroyBuffer(rg, newIndirectArgs);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		gbuffer = std::move(newGbuffer);
 		history[0] = std::move(newHist0);
 		history[1] = std::move(newHist1);
+		rayList = std::move(newRayList);
+		rayCounter = std::move(newRayCounter);
+		indirectArgs = std::move(newIndirectArgs);
+		radiance = std::move(newRadiance);
 		halfExtent = half;
 		format = d.format;
 		desc = d;
-		return EnsureShaders(ctx, vsPath, tracePath, blurPath, temporalPath, composePath);
+		return EnsureShaders(ctx, vsPath, blurPath, temporalPath, composePath,
+			classifyPath, indirectPath, intersectPath, copyPath);
 	}
 
 	void DestroyTargets(RenderGraph& rg) {
@@ -577,21 +804,27 @@ struct ScreenSpaceReflections {
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent,
 		const SsrDesc& d,
 		const char* vsPath = kSsrVsPath,
-		const char* tracePath = kSsrTracePsPath,
 		const char* blurPath = kSsrBlurPsPath,
 		const char* temporalPath = kSsrTemporalPsPath,
-		const char* composePath = kSsrComposePsPath) {
+		const char* composePath = kSsrComposePsPath,
+		const char* classifyPath = kSsrClassifyCsPath,
+		const char* indirectPath = kSsrIndirectCsPath,
+		const char* intersectPath = kSsrIntersectCsPath,
+		const char* copyPath = kSsrCopyPsPath) {
 		if (TargetsValid() &&
 				extent.width == targetExtent.width && extent.height == targetExtent.height &&
 				format == d.format) {
 			desc = d;
-			return EnsureShaders(ctx, vsPath, tracePath, blurPath, temporalPath, composePath);
+			return EnsureShaders(ctx, vsPath, blurPath, temporalPath, composePath,
+				classifyPath, indirectPath, intersectPath, copyPath);
 		}
-		return Create(ctx, rg, targetExtent, d, vsPath, tracePath, blurPath, temporalPath, composePath);
+		return Create(ctx, rg, targetExtent, d, vsPath, blurPath, temporalPath, composePath,
+			classifyPath, indirectPath, intersectPath, copyPath);
 	}
 
 	void Destroy(RenderGraph& rg) {
 		DestroyTargets(rg);
+		DestroyBuffers(rg);
 		DestroyShaders();
 	}
 
@@ -619,6 +852,10 @@ void AddSsrPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView = LogicalImageViewHandle{},
 	uint32_t gbufferBindlessIndex = UINT32_MAX,
+	uint64_t rayListAddr = 0,
+	uint64_t rayCounterAddr = 0,
+	uint64_t radianceAddr = 0,
+	uint64_t indirectArgsAddr = 0,
 	uint64_t hzbAddr = 0,
 	uint32_t hzbMips = 0,
 	LogicalBufferHandle hzbLogical = LogicalBufferHandle{},
@@ -643,59 +880,172 @@ void AddSsrPasses(RenderGraph& rg,
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 	const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-	// ---- Trace: HDR + full-res depth [+ gbuffer] -> half-res reflection ----
+	// ---- Classify: full half-res dispatch, wave-compacts the wanted
+	// rays (see ssr_classify.cs.hlsl). Reads the G-buffer + depth;
+	// writes the ray list + the counter + the radiance silence for
+	// non-ray pixels. Every half-res pixel is owned by exactly one of
+	// {classify, intersect} per frame — no clear, no stale.
 	{
-		SsrTracePush push{};
+		SsrClassifyPush push{};
 		push.frameUniforms = frameUniformsAddr;
+		push.rayListAddr = rayListAddr;
+		push.rayCounterAddr = rayCounterAddr;
+		push.radianceAddr = radianceAddr;
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.depthTextureIndex = depthBindlessIndex;
+		push.glossThreshold = 0.94f; // sub-quantization matte cutoff (matches the old early-out)
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		RenderPass& pass = rg.AddComputePass("SSRClassify");
+		{
+			BufferSyncRequest rw{};
+			rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayList.logical, rw);
+			pass.AddBufferHint(rayCounter.logical, rw);
+			pass.AddBufferHint(radiance.logical, rw);
+		}
+		{
+			ImageSyncRequest depthReq{};
+			depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+			depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+			pass.AddImageHint(depthView, depthReq);
+		}
+		if (gbufferOn) {
+			ImageSyncRequest gbReq{};
+			gbReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			gbReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+			gbReq.layout = ImageLayout::ShaderReadOnlyOptimal;
+			pass.AddImageHint(gbufferView, gbReq);
+		}
+		ShaderProgram progCopy = classifyProgram; // copyable (handles only)
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrClassifyPush), &push, ShaderStage::Compute);
+			cmd.Dispatch((this->halfExtent.width + 7) / 8, (this->halfExtent.height + 7) / 8, 1);
+		});
+	}
+
+	// ---- Indirect args: 1 thread builds the intersect's
+	// VkDispatchIndirectCommand from the ray count (see
+	// ssr_prepare_indirect.cs.hlsl), then resets the counter.
+	{
+		SsrIndirectPush push{};
+		push.rayCounterAddr = rayCounterAddr;
+		push.indirectArgsAddr = indirectArgsAddr;
+		RenderPass& pass = rg.AddComputePass("SSRIndirectArgs");
+		{
+			BufferSyncRequest rw{};
+			rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayCounter.logical, rw);
+			pass.AddBufferHint(indirectArgs.logical, rw);
+		}
+ShaderProgram progCopy = indirectProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrIndirectPush), &push, ShaderStage::Compute);
+			cmd.Dispatch(1, 1, 1);
+		});
+	}
+
+	// ---- Intersect: indirect compute dispatch (see
+	// ssr_intersect.cs.hlsl) — GGX VNDF + the classic Hi-Z traversal,
+	// only for the compacted rays. The empty ray count dispatches a
+	// zero-group indirect (a no-op record).
+	{
+		SsrIntersectPush push{};
+		push.frameUniforms = frameUniformsAddr;
+		push.rayListAddr = rayListAddr;
+		push.rayCounterAddr = rayCounterAddr;
+		push.radianceAddr = radianceAddr;
+		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
-		push.steps = std::clamp(overrideDesc.steps, 1u, 128u);
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		push.glossThreshold = 0.94f;
 		push.invDepthW = 1.0f / fullW;
 		push.invDepthH = 1.0f / fullH;
 		push.maxDistance = (std::max)(0.1f, overrideDesc.maxDistance);
 		push.thickness = (std::max)(0.01f, overrideDesc.thickness);
 		push.intensity = (std::max)(0.0f, overrideDesc.intensity);
 		push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
-	push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
-	push.frameIndex = frameIndex;
-	push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
-	push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
-	push.ssrHzbMipCount = hzbOn ? hzbMips : 0u;
-
-	std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
-	if (gbufferOn)
-		traceInputs.push_back(gbufferView);
-	RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
-	if (hzbOn) {
-		// The trace Hi-Z read dependency: barriers the app's per-mip
-		// SsrHzb compute writes (RW, compute stage) before these
-		// fragment reads — the BDA alone carries no ordering.
-		BufferSyncRequest hzbRead{};
-		hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
-		pass.AddBufferHint(hzbLogical, hzbRead);
-	}
-			pass.SetOffset(0, 0)
-				.SetExtent(halfExtent)
-				.SetInputImages(traceInputs)
-				.SetColor({ raw.logical },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
-			ShaderProgram progCopy = traceProgram; // ShaderProgram is copyable (handles only)
-			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(
-					progCopy,
-					VertexFormat::Empty,
-					DepthSettings::Disabled(),
-					StencilSettings::DefaultDisabled(),
-					BlendSettings::Opaque(),
-					MSAASettings::Count1(),
-					RasterSettings{ .cullMode = CullMode::None });
-				cmd.PushConstants(0, sizeof(SsrTracePush), &push, ShaderStage::All);
-				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-			});
+		push.frameIndex = frameIndex;
+		push.mostDetailedMip = 1;
+		push.maxIntersections = std::clamp(overrideDesc.steps, 4u, 64u);
+		push.minOccupancy = 4;
+		push.ssrHzbMipCount = hzbOn ? hzbMips : 0u;
+		RenderPass& pass = rg.AddComputePass(traceName ? traceName : "SSRIntersect");
+		{
+			BufferSyncRequest r{};
+			r.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			r.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayList.logical, r);
+			pass.AddBufferHint(rayCounter.logical, r);
+			BufferSyncRequest w{};
+			w.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+			w.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(radiance.logical, w);
+			BufferSyncRequest indirect{};
+			indirect.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+			indirect.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+			pass.AddBufferHint(indirectArgs.logical, indirect);
+			if (hzbOn) {
+				BufferSyncRequest hzbRead{};
+				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+				hzbRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+				pass.AddBufferHint(hzbLogical, hzbRead);
+			}
 		}
+		std::vector<LogicalImageViewHandle> intersectInputs = { hdrView, depthView };
+		if (gbufferOn)
+			intersectInputs.push_back(gbufferView);
+		pass.SetInputImages(intersectInputs);
+ShaderProgram progCopy = intersectProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrIntersectPush), &push, ShaderStage::Compute);
+			cmd.DispatchIndirect(this->indirectArgs.buffer, 0);
+		});
+	}
+
+	// ---- Copy: the radiance buffer -> the raw reflection image (the
+	// bilateral blur reads it bilinearly, so it stays an image).
+	{
+		SsrCopyPush push{};
+		push.radianceAddr = radianceAddr;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		RenderPass& pass = rg.AddPass("SSRCopy");
+		pass.SetOffset(0, 0)
+			.SetExtent(halfExtent);
+		{
+			BufferSyncRequest radRead{};
+			radRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			radRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(radiance.logical, radRead);
+		}
+		pass.SetColor({ raw.logical },
+				AttachmentLoadOp::DontCare,
+				AttachmentStoreOp::Store);
+ShaderProgram progCopy = copyProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindRenderPipeline(
+				progCopy,
+				VertexFormat::Empty,
+				DepthSettings::Disabled(),
+				StencilSettings::DefaultDisabled(),
+				BlendSettings::Opaque(),
+				MSAASettings::Count1(),
+				RasterSettings{ .cullMode = CullMode::None });
+			cmd.PushConstants(0, sizeof(SsrCopyPush), &push, ShaderStage::All);
+			cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+		});
+	}
 
 		// ---- Blur: raw reflection (+ full-res depth edges) -> blurred ----
 		{
@@ -819,66 +1169,15 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	assert(parity < 2);
 
 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
-	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
+const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
 	const float fullH = static_cast<float>(std::max(1u, extent.height));
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 	const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-	// ---- Trace: HDR + full-res depth [+ gbuffer] -> half-res reflection ----
+	// The raw target is populated by the compute chain (classify -> indirect -> intersect -> copy).
+	// ---- Blur: raw reflection (+ full-res depth edges) -> blurred ----
 	{
-		SsrTracePush push{};
-		push.frameUniforms = frameUniformsAddr;
-		push.hdrTextureIndex = hdrBindlessIndex;
-		push.depthTextureIndex = depthBindlessIndex;
-		push.samplerIndex = linearSamplerIndex;
-		push.steps = std::clamp(overrideDesc.steps, 1u, 128u);
-		push.invDepthW = 1.0f / fullW;
-		push.invDepthH = 1.0f / fullH;
-		push.maxDistance = (std::max)(0.1f, overrideDesc.maxDistance);
-		push.thickness = (std::max)(0.01f, overrideDesc.thickness);
-		push.intensity = (std::max)(0.0f, overrideDesc.intensity);
-		push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
-	push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
-	push.frameIndex = frameIndex;
-	push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
-	push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
-	push.ssrHzbMipCount = hzbOn ? hzbMips : 0u;
-
-	std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
-	if (gbufferOn)
-		traceInputs.push_back(gbufferView);
-	RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
-	if (hzbOn) {
-		// The trace Hi-Z read dependency (see AddSsrPasses).
-		BufferSyncRequest hzbRead{};
-		hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
-		pass.AddBufferHint(hzbLogical, hzbRead);
-	}
-			pass.SetOffset(0, 0)
-				.SetExtent(halfExtent)
-				.SetInputImages(traceInputs)
-				.SetColor({ raw.logical },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
-			ShaderProgram progCopy = traceProgram; // ShaderProgram is copyable (handles only)
-			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(
-					progCopy,
-					VertexFormat::Empty,
-					DepthSettings::Disabled(),
-					StencilSettings::DefaultDisabled(),
-					BlendSettings::Opaque(),
-					MSAASettings::Count1(),
-					RasterSettings{ .cullMode = CullMode::None });
-				cmd.PushConstants(0, sizeof(SsrTracePush), &push, ShaderStage::All);
-				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-			});
-		}
-
-		// ---- Blur: raw reflection (+ full-res depth edges) -> blurred ----
-		{
 			SsrBlurPush push{};
 			push.frameUniforms = frameUniformsAddr;
 			push.reflTextureIndex = raw.bindlessIndex;
@@ -1030,29 +1329,6 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 			frameUniformsAddr, linearSamplerIndex, desc,
 			jitterDeltaX, jitterDeltaY, taaBlend, historyValid, parity,
 			traceName, blurName, temporalName, composeName, frameIndex);
-	}
-
-	// Uses the stored desc from Ensure().
-	void AddSsrPasses(RenderGraph& rg,
-		LogicalImageViewHandle hdrView,
-		uint32_t hdrBindlessIndex,
-		LogicalImageViewHandle depthView,
-		uint32_t depthBindlessIndex,
-		LogicalImageViewHandle gbufferView = LogicalImageViewHandle{},
-		uint32_t gbufferBindlessIndex = UINT32_MAX,
-		uint64_t hzbAddr = 0,
-		uint32_t hzbMips = 0,
-		LogicalBufferHandle hzbLogical = LogicalBufferHandle{},
-		uint64_t frameUniformsAddr = 0,
-		uint32_t linearSamplerIndex = 0,
-		const char* traceName = "SSR",
-		const char* blurName = "SSRBlur",
-		const char* composeName = "SSRComposite") const {
-		AddSsrPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			gbufferView, gbufferBindlessIndex,
-			hzbAddr, hzbMips, hzbLogical,
-			frameUniformsAddr, linearSamplerIndex, desc,
-			traceName, blurName, composeName);
 	}
 };
 

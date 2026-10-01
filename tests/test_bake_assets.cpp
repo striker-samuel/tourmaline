@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <Engine/Asset/bake_asset.h>
+#include <Engine/Asset/cook_asset.h>
 #include <Engine/Renderer/cubemap.h>
 
 #include <filesystem>
@@ -219,11 +220,119 @@ void TestCubemanifestGuid() {
 
 } // namespace
 
+void TestGiCookRoundTrip() {
+	using smvk::cook::GiCookAsset;
+	const std::string guid = "0123456789abcdef0123456789abcdef";
+	const std::string blob = "fedcba9876543210fedcba9876543210";
+	GiCookAsset a = smvk::cook::DefaultGiCookAsset("MyGI", "sponza");
+	a.guid = guid;
+	a.cvol = false;
+	a.world = true;
+	a.blobGuid = blob;
+	a.blobPath = "gi/" + blob + ".sggi";
+	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
+	std::string text;
+	Check(smvk::cook::SaveGiCookAssetText(text, a),
+		"cook.gi.save");
+	GiCookAsset back;
+	std::string err;
+	Check(smvk::cook::LoadGiCookAssetText(text, back, err)
+		&& back.guid == guid && back.name == "MyGI"
+		&& back.scene == "sponza" && !back.cvol && back.world
+		&& back.blobGuid == blob
+		&& back.blobPath == "gi/" + blob + ".sggi"
+		&& back.bakedHash == a.bakedHash, "cook.gi.roundtrip");
+	// Fresh bake reads fresh; a settings change reads stale; the blob
+	// fields themselves never affect the hash.
+	Check(!smvk::cook::GiCookBlobStale(back), "cook.gi.fresh");
+	GiCookAsset changed = back;
+	changed.world = false;
+	Check(smvk::cook::GiCookBlobStale(changed), "cook.gi.stale");
+	GiCookAsset moved = back;
+	moved.blobPath = "gi/renamed.sggi";
+	Check(!smvk::cook::GiCookBlobStale(moved), "cook.gi.blob-untracked");
+	// Creation shape: unbaked by default, never stale.
+	GiCookAsset fresh = smvk::cook::DefaultGiCookAsset("New", "");
+	fresh.guid = guid;
+	Check(fresh.blobGuid.empty() && fresh.bakedHash.empty()
+		&& !smvk::cook::GiCookBlobStale(fresh), "cook.gi.unbaked");
+}
+
+void TestLightmapCookRoundTrip() {
+	using smvk::cook::LightmapCookAsset;
+	const std::string guid = "0123456789abcdef0123456789abcdef";
+	const std::string blob = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	// Defaults mirror TourCook (a fresh asset bakes what the dialog
+	// would bake).
+	LightmapCookAsset d = smvk::cook::DefaultLightmapCookAsset("x", "");
+	Check(d.lmMetersPerTexel == 0.25f && d.lmLobes == 12
+		&& d.lmAtlasWidth == 1024 && d.lmRays == 256
+		&& d.lmProxyRes == 256 && d.sunAzimuth == 30.0f
+		&& d.sunElevation == 55.0f && d.sunIntensity == 10000.0f
+		&& d.skyIntensity == 600.0f, "cook.lm.defaults");
+	LightmapCookAsset a =
+		smvk::cook::DefaultLightmapCookAsset("MyLM", "bistro");
+	a.guid = guid;
+	a.lmMetersPerTexel = 0.125f;
+	a.lmExcludeKw = "foliage,glass";
+	a.sunColor = glm::vec3(1.0f, 0.5f, 0.25f);
+	a.blobGuid = blob;
+	a.blobPath = "gi/" + blob + ".sglm";
+	a.bakedHash = smvk::cook::LightmapCookSettingsHash(a);
+	std::string text;
+	Check(smvk::cook::SaveLightmapCookAssetText(text, a),
+		"cook.lm.save");
+	LightmapCookAsset back;
+	std::string err;
+	Check(smvk::cook::LoadLightmapCookAssetText(text, back, err)
+		&& back.guid == guid && back.name == "MyLM"
+		&& back.scene == "bistro"
+		&& back.lmMetersPerTexel == 0.125f
+		&& back.lmExcludeKw == "foliage,glass"
+		&& back.sunColor.x == 1.0f && back.sunColor.z == 0.25f
+		&& back.blobGuid == blob
+		&& back.bakedHash == a.bakedHash, "cook.lm.roundtrip");
+	Check(!smvk::cook::LightmapCookBlobStale(back), "cook.lm.fresh");
+	LightmapCookAsset changed = back;
+	changed.lmRays = 512;
+	Check(smvk::cook::LightmapCookBlobStale(changed), "cook.lm.stale");
+}
+
+void TestCookAssetRejects() {
+	std::string err;
+	smvk::cook::GiCookAsset g;
+	Check(!smvk::cook::LoadGiCookAssetText("name=NoGuid\n", g, err),
+		"cook.gi.no-guid-fails");
+	Check(!smvk::cook::LoadGiCookAssetText("guid=not-a-guid\n", g,
+			err), "cook.gi.bad-guid-fails");
+	Check(!smvk::cook::LoadGiCookAssetText(
+			"guid=0123456789abcdef0123456789abcdef\n"
+			"blobGuid=typo\n", g, err), "cook.gi.bad-blob-fails");
+	smvk::cook::LightmapCookAsset l;
+	Check(!smvk::cook::LoadLightmapCookAssetText("name=NoGuid\n", l,
+			err), "cook.lm.no-guid-fails");
+	// Unknown keys skip (forward tolerance); whitespace trims.
+	Check(smvk::cook::LoadLightmapCookAssetText(
+			"guid=0123456789abcdef0123456789abcdef\n"
+			"futureFlag=42\n"
+			" scene = bistro \n", l, err)
+		&& l.scene == "bistro", "cook.lm.tolerant");
+	Check(!smvk::cook::IsCookAssetGuid("XYZ")
+		&& smvk::cook::IsCookAssetGuid(
+			"0123456789abcdef0123456789abcdef")
+		&& !smvk::cook::IsCookAssetGuid(
+			"0123456789ABCDEF0123456789ABCDEF"),
+		"cook.guid.valid");
+}
+
 int main() {
 	TestSidecarRoundTrip();
 	TestEnsureGuid();
 	TestSplitManifestRow();
 	TestCubemanifestGuid();
+	TestGiCookRoundTrip();
+	TestLightmapCookRoundTrip();
+	TestCookAssetRejects();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

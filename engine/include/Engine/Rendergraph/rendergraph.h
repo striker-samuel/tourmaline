@@ -88,6 +88,17 @@ namespace smvk
 			uint32_t groupCountY,
 			uint32_t groupCountZ);
 
+		// Indirect compute dispatch consuming a VkDispatchIndirectCommand
+		// (3 uints: groupCountX/Y/Z) produced by an earlier compute pass
+		// (the SSR classify's indirect-args builder). The indirect buffer
+		// must have been created with BufferType_Indirect; the consuming
+		// pass declares it with AccessFlags::IndirectCommandRead +
+		// PipelineStageBit_DrawIndirect so the graph barriers the
+		// producing writes before this read.
+		void DispatchIndirect(
+			BufferHandle buffer,
+			uint64_t offset);
+
 		void BindStaticVertexFmt();
 
 		// Binds an arbitrary RHI buffer as vertex binding N (pos-only debug

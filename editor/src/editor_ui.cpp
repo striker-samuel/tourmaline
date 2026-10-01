@@ -305,12 +305,25 @@ void EditorApp::DrawMenuBar() {
 		}
 		if (ImGui::MenuItem("Image...", nullptr, false, canCreate)) {
 			// Maya file node: an image definition (path + sampling
-			// settings) held OUTSIDE the DAG â€” editor-only state until
+			// settings) held OUTSIDE the DAG — editor-only state until
 			// a material uses it.
 			std::string picked;
 			if (NativeOpenFile(picked, true) && !picked.empty())
 				AddImageDef(picked);
 		}
+		// Cook assets (settings + blob manifests): project-bound FILES,
+		// not scene nodes — like Image they bypass DraftCreate*/EditVerb
+		// (no tour verb, no undo entry), but unlike the nodes above they
+		// need only a PROJECT (no open scene; the scene seed stays empty
+		// and binds at bake time).
+		ImGui::Separator();
+		const bool canCookAsset = !m_projectRoot.empty();
+		if (ImGui::MenuItem("GI Cook Asset...", nullptr, false,
+				canCookAsset))
+			CreateCookAsset(true, m_assetsDir);
+		if (ImGui::MenuItem("Lightmap Cook Asset...", nullptr, false,
+				canCookAsset))
+			CreateCookAsset(false, m_assetsDir);
 		if (!canCreate)
 			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
@@ -4118,23 +4131,31 @@ void EditorApp::RevealInExplorer(const std::string& absPath) {
 }
 
 void EditorApp::DrawAssetReadonlyPage() {
-	// READ-ONLY asset inspector (a .material/.mesh click in the asset
-	// browser): view parameters only — edits happen on SCENES (the
-	// tour-level overrides/assignments), never on the derived assets
-	// (they regenerate on reimport). The loaded asset caches per
-	// selection (never per frame: .mesh blobs can be megabytes).
+	// READ-ONLY asset inspector (a .material/.mesh/.gicook/.lmcook click
+	// in the asset browser): view parameters only — edits happen on
+	// SCENES (the tour-level overrides/assignments), never on the
+	// derived/cook assets (derived assets regenerate on reimport; cook
+	// assets rebake through the bake execution). The loaded asset caches
+	// per selection (never per frame: .mesh blobs can be megabytes).
 	const bool wantMat = m_assetsSel.size() > 9
 		&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".material") == 0;
 	const bool wantMesh = !wantMat && m_assetsSel.size() > 5
 		&& m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0;
-	if (!wantMat && !wantMesh)
+	const bool wantGi = !wantMat && !wantMesh && m_assetsSel.size() > 7
+		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".gicook") == 0;
+	const bool wantLm = !wantMat && !wantMesh && !wantGi
+		&& m_assetsSel.size() > 7
+		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".lmcook") == 0;
+	if (!wantMat && !wantMesh && !wantGi && !wantLm)
 		return;
 	// Cache refresh on selection change (or a failed load retries never:
-	// a re-derive + re-click reloads).
+	// a re-derive/re-bake + re-click reloads).
 	if (m_assetInspectPath != m_assetsSel) {
 		m_assetInspectPath = m_assetsSel;
 		m_assetInspectMat.reset();
 		m_assetInspectMesh.reset();
+		m_assetInspectGiCook.reset();
+		m_assetInspectLmCook.reset();
 		std::string err;
 		if (wantMat) {
 			m_assetInspectMat.emplace();
@@ -4144,12 +4165,28 @@ void EditorApp::DrawAssetReadonlyPage() {
 				m_assetInspectMat.reset();
 			}
 		}
-		else {
+		else if (wantMesh) {
 			m_assetInspectMesh.emplace();
 			if (!smvk::assets::LoadMeshAsset(m_assetsSel,
 					*m_assetInspectMesh, err)) {
 				Log("Assets: mesh inspect failed: " + err);
 				m_assetInspectMesh.reset();
+			}
+		}
+		else if (wantGi) {
+			m_assetInspectGiCook.emplace();
+			if (!smvk::cook::LoadGiCookAsset(m_assetsSel,
+					*m_assetInspectGiCook, err)) {
+				Log("Assets: GI cook inspect failed: " + err);
+				m_assetInspectGiCook.reset();
+			}
+		}
+		else {
+			m_assetInspectLmCook.emplace();
+			if (!smvk::cook::LoadLightmapCookAsset(m_assetsSel,
+					*m_assetInspectLmCook, err)) {
+				Log("Assets: lightmap cook inspect failed: " + err);
+				m_assetInspectLmCook.reset();
 			}
 		}
 	}
@@ -4221,6 +4258,58 @@ void EditorApp::DrawAssetReadonlyPage() {
 		ImGui::Separator();
 		ImGui::TextDisabled("Drop onto a viewport to add a scene "
 			"reference; the tour binds it by GUID.");
+	}
+	else if (m_assetInspectGiCook) {
+		// GI cook asset (settings + blob result): the Bake GI execution
+		// that fills the blob is the follow-up — this page only reports
+		// WHAT would bake and WHERE the result points.
+		const smvk::cook::GiCookAsset& c = *m_assetInspectGiCook;
+		ImGui::Text("GI cook: '%s'", c.name.c_str());
+		ImGui::TextDisabled("guid %s", c.guid.c_str());
+		ImGui::TextDisabled("scene: %s",
+			c.scene.empty() ? "(unbound)" : c.scene.c_str());
+		ImGui::TextDisabled("convex volumes: %s   world field: %s",
+			c.cvol ? "on" : "off", c.world ? "on" : "off");
+		ImGui::Separator();
+		if (c.blobGuid.empty()) {
+			ImGui::TextDisabled("blob: unbaked (no result yet)");
+		}
+		else {
+			const bool stale = smvk::cook::GiCookBlobStale(c);
+			ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
+				c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
+				stale ? "  STALE (settings changed)" : "  fresh");
+		}
+	}
+	else if (m_assetInspectLmCook) {
+		// Lightmap cook asset (settings + blob result): same contract —
+		// the atlas bake that fills the blob is the follow-up.
+		const smvk::cook::LightmapCookAsset& c = *m_assetInspectLmCook;
+		ImGui::Text("Lightmap cook: '%s'", c.name.c_str());
+		ImGui::TextDisabled("guid %s", c.guid.c_str());
+		ImGui::TextDisabled("scene: %s",
+			c.scene.empty() ? "(unbound)" : c.scene.c_str());
+		ImGui::TextDisabled("density: %.3f m/texel  lobes: %u",
+			c.lmMetersPerTexel, c.lmLobes);
+		ImGui::TextDisabled("atlas width: %u  rays: %u  proxy: %d",
+			c.lmAtlasWidth, c.lmRays, c.lmProxyRes);
+		if (c.lmExcludeSmall > 0.0f || !c.lmExcludeKw.empty()) {
+			ImGui::TextDisabled("exclude: small < %.3f  kw: '%s'",
+				c.lmExcludeSmall, c.lmExcludeKw.c_str());
+		}
+		ImGui::TextDisabled("sun: az %.1f el %.1f int %.0f  sky %.0f",
+			c.sunAzimuth, c.sunElevation, c.sunIntensity,
+			c.skyIntensity);
+		ImGui::Separator();
+		if (c.blobGuid.empty()) {
+			ImGui::TextDisabled("blob: unbaked (no result yet)");
+		}
+		else {
+			const bool stale = smvk::cook::LightmapCookBlobStale(c);
+			ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
+				c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
+				stale ? "  STALE (settings changed)" : "  fresh");
+		}
 	}
 	else {
 		ImGui::TextDisabled("(asset load failed - see the console)");
@@ -4378,14 +4467,16 @@ void EditorApp::DrawAssetsPanel() {
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(140.0f);
 	{
-		const char* filters[6] = { "All (files)", "Meshes",
-			"Materials", "Animations", "GI bakes", "Cubemaps" };
-		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 6);
+		const char* filters[8] = { "All (files)", "Meshes",
+			"Materials", "Animations", "GI bakes", "Cubemaps",
+			"GI cooks", "Lightmap cooks" };
+		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 8);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Collection views: every derived asset of "
 				"the kind across the project's content tree (the glTF "
 				"manifests for meshes/materials/animations; the bake "
-			 ".meta sidecars for GI bakes and cubemap captures).");
+				".meta sidecars for GI bakes and cubemap captures; the "
+				"cook-asset sidecars for GI/lightmap cooks).");
 	}
 	// Expanded glTF: a "close the folder" chip next to the filter.
 	if (!m_assetsExpandGltf.empty()) {
@@ -4398,7 +4489,7 @@ void EditorApp::DrawAssetsPanel() {
 		}
 	}
 
-	// ---- header row 2: Import + Rescan + selection actions ----------
+	// ---- header row 2: Import + New + Rescan + selection actions --
 	if (ImGui::Button("Import asset...")) {
 		std::string picked;
 		if (NativeOpenFile(picked) && !picked.empty()
@@ -4408,6 +4499,21 @@ void EditorApp::DrawAssetsPanel() {
 				/ "models").generic_string();
 			m_assetsSel.clear();
 		}
+	}
+	// Cook-asset creation (same helper as the Create menu — placement
+	// dir is the browsed directory).
+	ImGui::SameLine();
+	if (ImGui::Button("New...")) {
+		ImGui::OpenPopup("##newcookasset");
+	}
+	if (ImGui::BeginPopup("##newcookasset")) {
+		if (ImGui::MenuItem("GI Cook Asset")) {
+			CreateCookAsset(true, m_assetsDir);
+		}
+		if (ImGui::MenuItem("Lightmap Cook Asset")) {
+			CreateCookAsset(false, m_assetsDir);
+		}
+		ImGui::EndPopup();
 	}
 	if (m_assetDb.IsOpen()) {
 		ImGui::SameLine();
@@ -4450,6 +4556,13 @@ void EditorApp::DrawAssetsPanel() {
 		if (ImGui::SmallButton("Reveal##sel"))
 			RevealInExplorer(m_assetsSel);
 		ImGui::EndDisabled();
+		// Delete (selection action): plans + confirms through the modal
+		// (refusals — open scene, derived assets, cache — log + no-op).
+		ImGui::SameLine();
+		ImGui::BeginDisabled(m_assetsSel.empty());
+		if (ImGui::SmallButton("Delete##sel"))
+			RequestAssetDelete(m_assetsSel);
+		ImGui::EndDisabled();
 		// Selected name (+ its GUID when registered).
 		if (!m_assetsSel.empty()) {
 			std::string selGuid;
@@ -4471,6 +4584,17 @@ void EditorApp::DrawAssetsPanel() {
 
 	// ---- grid --------------------------------------------------------
 	ImGui::BeginChild("##assetgrid", ImVec2(0, 0));
+	// Background context menu (right-click the grid background): the
+	// same cook-asset creation as the header New... button and the
+	// Create menu (placement dir = the browsed directory).
+	if (ImGui::BeginPopupContextWindow("##assetgrid_ctx",
+			ImGuiPopupFlags_MouseButtonRight)) {
+		if (ImGui::MenuItem("New GI Cook Asset"))
+			CreateCookAsset(true, m_assetsDir);
+		if (ImGui::MenuItem("New Lightmap Cook Asset"))
+			CreateCookAsset(false, m_assetsDir);
+		ImGui::EndPopup();
+	}
 	// Registered GUID map (assets.db) for badges + tooltips. The rows
 	// also feed the bake-asset collections below (kept in scope: the
 	// collection branch reads them).
@@ -4569,13 +4693,17 @@ void EditorApp::DrawAssetsPanel() {
 			}
 		}
 		else {
-			// Bake-asset collections (GI bakes / cubemap captures): the
-			// assetdb rows adopted from the bake .meta sidecars (see
-			// Engine/Asset/bake_asset.h) — moves/renames heal through
-			// the rescan, so these stay correct where stem-named loose
-			// listings would rot. Rows whose file is gone are skipped
-			// (the db keeps them as retargets).
-			const char* want = (m_assetsFilter == 4) ? "gi" : "cubemap";
+			// Bake/cook-asset collections (GI bakes / cubemap captures /
+			// GI cooks / lightmap cooks): the assetdb rows adopted from
+			// the .meta sidecars (see Engine/Asset/bake_asset.h for the
+			// bake rows, Engine/Asset/cook_asset.h for the cook rows) —
+			// moves/renames heal through the rescan, so these stay
+			// correct where stem-named loose listings would rot. Rows
+			// whose file is gone are skipped (the db keeps them as
+			// retargets).
+			const char* want = (m_assetsFilter == 4) ? "gi"
+				: (m_assetsFilter == 5) ? "cubemap"
+				: (m_assetsFilter == 6) ? "gicook" : "lmcook";
 			for (const auto& r : assetRows) {
 				if (r.kind != want)
 					continue;
@@ -4587,8 +4715,8 @@ void EditorApp::DrawAssetsPanel() {
 				Entry t{};
 				t.name = fs::path(abs).filename().generic_string();
 				t.abs = abs;
-				t.icon = (m_assetsFilter == 4)
-					? IconType::GI : IconType::Env;
+				t.icon = (m_assetsFilter == 5)
+					? IconType::Env : IconType::GI;
 				files.push_back(std::move(t));
 			}
 		}
@@ -4814,6 +4942,15 @@ void EditorApp::DrawAssetsPanel() {
 				(git != guidByAbs.end() && !git->second.empty())
 					? git->second.c_str() : "(no asset uuid)");
 		}
+		// Per-tile menu (right-click): delete through the same confirm
+		// modal as the header button (selection is pinned first).
+		if (ImGui::BeginPopupContextItem("##assettile_ctx")) {
+			if (ImGui::MenuItem("Delete")) {
+				m_assetsSel = e.abs;
+				RequestAssetDelete(e.abs);
+			}
+			ImGui::EndPopup();
+		}
 		ImGui::PopID();
 	};
 	for (const Entry& e : dirs) {
@@ -4833,6 +4970,128 @@ void EditorApp::DrawAssetsPanel() {
 	if (dirs.empty() && files.empty())
 		ImGui::TextDisabled("(empty folder)");
 	ImGui::EndChild();
+	// The delete confirm modal (opened by RequestAssetDelete from the
+	// header button or a tile menu).
+	DrawAssetDeleteModal();
+}
+
+// Browser delete request + confirm modal (see editor_asset_ops.h for the
+// planning rules — this layer only guards the OPEN scene, confirms, and
+// heals the browser state afterwards).
+void EditorApp::RequestAssetDelete(const std::string& absPath) {
+	m_assetsDeletePending = AssetDeletePlan{};
+	if (m_projectRoot.empty()) {
+		Log("Delete: open a project first.");
+		return;
+	}
+	if (absPath.empty())
+		return;
+	// Refuse the live scene's files (deleting the open scene from under
+	// the editor desyncs the tour autosave + the hosted view).
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const std::string abs =
+			fs::absolute(fs::path(absPath), ec)
+				.lexically_normal().generic_string();
+		for (const std::string& live :
+			{ m_gltfPath, m_gltfHostPath, m_pakPath }) {
+			if (live.empty())
+				continue;
+			std::error_code lec;
+			const std::string norm =
+				fs::absolute(fs::path(live), lec)
+					.lexically_normal().generic_string();
+			if (!lec && abs == norm) {
+				Log("Delete: '" + absPath
+					+ "' is open — close the scene first.");
+				return;
+			}
+		}
+	}
+	AssetDeletePlan plan;
+	std::string err;
+	if (!PlanAssetDelete(absPath, m_projectRoot, plan, err)) {
+		Log("Delete: " + err + ".");
+		return;
+	}
+	m_assetsDeletePending = std::move(plan);
+	ImGui::OpenPopup("Delete asset?");
+}
+
+void EditorApp::DrawAssetDeleteModal() {
+	if (m_assetsDeletePending.target.empty())
+		return;
+	if (!ImGui::BeginPopupModal("Delete asset?", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+	const AssetDeletePlan& plan = m_assetsDeletePending;
+	const std::string rel = ProjectRelativePath(plan.target);
+	ImGui::Text("Delete '%s'?",
+		(rel.empty() ? plan.target.c_str() : rel.c_str()));
+	if (plan.isDir) {
+		ImGui::TextDisabled("a folder with %zu entr%s (recursive)",
+			plan.entryCount, plan.entryCount == 1 ? "y" : "ies");
+	}
+	if (!plan.also.empty()) {
+		ImGui::TextDisabled("+ %zu more file(s) (sidecar/derived)",
+			plan.also.size());
+	}
+	for (const std::string& note : plan.notes)
+		ImGui::TextDisabled("%s", note.c_str());
+	ImGui::TextDisabled("The GUID row stays missing so references "
+		"report cleanly.");
+	ImGui::Separator();
+	if (ImGui::Button("Delete", ImVec2(120, 0))) {
+		std::string err;
+		if (ExecuteAssetDelete(plan, err)) {
+			size_t n = plan.also.size() + 1;
+			Log("Deleted '" + plan.target + "' (" + std::to_string(n)
+				+ " file(s)).");
+			// Heal the browser state (the deleted paths are gone).
+			namespace fs = std::filesystem;
+			auto norm = [](const std::string& p) {
+				std::error_code ec;
+				return fs::absolute(fs::path(p), ec)
+					.lexically_normal().generic_string();
+			};
+			auto under = [&](const std::string& p) {
+				const std::string n = norm(p);
+				return n == plan.target
+					|| (n.size() > plan.target.size()
+						&& n.compare(0, plan.target.size(),
+							plan.target) == 0
+						&& n[plan.target.size()] == '/');
+			};
+			if (!m_assetsSel.empty() && under(m_assetsSel)) {
+				m_assetsSel.clear();
+			}
+			if (!m_assetsDir.empty() && under(m_assetsDir)) {
+				m_assetsDir.clear(); // healed to content/ next draw
+			}
+			if (!m_assetsExpandGltf.empty()
+				&& under(m_assetsExpandGltf)) {
+				m_assetsExpandGltf.clear();
+				m_assetsSel.clear();
+			}
+			m_assetInspectPath.clear();
+			m_assetInspectMat.reset();
+			m_assetInspectMesh.reset();
+			m_assetInspectGiCook.reset();
+			m_assetInspectLmCook.reset();
+		}
+		else {
+			Log("Delete failed: " + err);
+		}
+		m_assetsDeletePending = AssetDeletePlan{};
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+		m_assetsDeletePending = AssetDeletePlan{};
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndPopup();
 }
 
 // Fallback icon art (drawn vector shapes): used when an SVG icon failed

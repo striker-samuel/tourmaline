@@ -698,7 +698,8 @@ bool WorldRenderer::Initialize() {
 			else if (dv == "uv0" || dv == "uv1_base") m_debugView = DebugView::Uv0;
 			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = DebugView::Uv1;
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = DebugView::Pom;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
+		else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = DebugView::SsrContribution;
+		else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// AA mode override for A/B runs without UI interaction
 		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
@@ -1196,7 +1197,7 @@ bool WorldRenderer::Initialize() {
 						.stage = smvk::ShaderStage::Fragment
 					}
 				},
-				.shaderCount = 2
+.shaderCount = 2
 			};
 		}
 		if (!m_resources.fragUv1DebugShader.empty()) {
@@ -1209,6 +1210,30 @@ bool WorldRenderer::Initialize() {
 					},
 					smvk::Shader{
 						.module = m_resources.fragUv1DebugShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+
+		// SSR contribution debug view (F12): shows the SSR contribution isolated
+		// (SSR layer only, without the base HDR). The SSR thin G-buffer (oct normal +
+		// roughness + metal) is written by the Forward+ depth prepass; the trace
+		// uses real normals (no wireframe artifact) and continuous roughness.
+		// Mirror the UV debug pattern: vert from default.vert, frag from
+		// ssr_contribution_debug.frag.hlsl.
+		if (!m_resources.fragSsrContributionDebugShader.empty()) {
+			m_resources.ssrContributionDebugProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragSsrContributionDebugShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -8796,6 +8821,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				: vertexColorDbg ? m_resources.vertexColorProgram
 				: pomDbg ? m_resources.pomProgram
 				: effView == DebugView::Uv1 ? m_resources.uv1DebugProgram
+				: effView == DebugView::SsrContribution ? m_resources.ssrContributionDebugProgram
 				: m_resources.uv0DebugProgram;
 			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachRenderItem(
@@ -9578,7 +9604,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					"SSRComposite",
 					ssrDitherEpoch);
 				m_ssrFrameRanTemporal = true;
-			} else {
+} else {
+			const uint64_t rayListAddr = m_viewportResources.ssr.rayList.buffer.empty() ? 0 :
+				m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayList.buffer);
+			const uint64_t rayCounterAddr = m_viewportResources.ssr.rayCounter.buffer.empty() ? 0 :
+				m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayCounter.buffer);
+			const uint64_t radianceAddr = m_viewportResources.ssr.radiance.buffer.empty() ? 0 :
+				m_context->GetBufferDeviceAddress(m_viewportResources.ssr.radiance.buffer);
+			const uint64_t indirectArgsAddr = m_viewportResources.ssr.indirectArgs.buffer.empty() ? 0 :
+				m_context->GetBufferDeviceAddress(m_viewportResources.ssr.indirectArgs.buffer);
+
 			m_viewportResources.ssr.AddSsrPasses(
 				*m_rendergraph,
 				sceneHdrView,
@@ -9589,16 +9624,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					: smvk::LogicalImageViewHandle{},
 				gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
 					: UINT32_MAX,
+				rayListAddr,
+				rayCounterAddr,
+				radianceAddr,
+				indirectArgsAddr,
 				ssrHzbAddr,
 				ssrHzbMips,
 				ssrHzbLogical,
 				frameUniformsAddress,
-					linearSampler,
-					ssrDesc,
-					"SSR",
-					"SSRBlur",
-					"SSRComposite");
-				m_ssrFrameRanTemporal = false;
+				linearSampler,
+				ssrDesc,
+				"SSR",
+				"SSRBlur",
+				"SSRComposite");
+			m_ssrFrameRanTemporal = false;
 			}
 			sceneHdrView = m_viewportResources.ssr.OutputView();
 			sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
