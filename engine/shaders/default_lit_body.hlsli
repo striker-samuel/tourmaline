@@ -239,6 +239,11 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
     if (decalCount == 0u)
         return;
 
+    // Hoist buffer pointers out of the loop — keeps descriptors in registers,
+    // avoids repeated address calculations, reduces register pressure.
+    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIdxBuf = frame.decalTileIndices;
+    vk::BufferPointer<ForwardPlusDecalBuffer> decalBuf = frame.decals;
+
     // Tile lookup (same 16px tiling as the forward+ light lists).
     uint fpTileSizeD = max(pc.fpTileSize, 1u);
     uint tx = (uint)(pix.x / (float)fpTileSizeD);
@@ -251,15 +256,15 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
 
     const uint perTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
     const uint stride = max(frame.decalMaxPerTile, 1u);
-    const uint listCount = min(frame.decalTileCounts.Get().counts[tileIdx], perTile);
+    const uint listCount = min(decalTileIdxBuf.Get().counts[tileIdx], perTile);
 
     [loop]
     for (uint s = 0u; s < listCount; ++s)
     {
-        uint di = frame.decalTileIndices.Get().indices[tileIdx * stride + s];
+        uint di = decalTileIdxBuf.Get().indices[tileIdx * stride + s];
         if (di >= decalCount)
             continue;
-        ForwardPlusDecal D = frame.decals.Get().decals[di];
+        ForwardPlusDecal D = decalBuf.Get().decals[di];
 
         // World position -> decal unit cube.
         float3 lp;
@@ -739,6 +744,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // ---------------------------------------------------------------
     // PBR lighting – directional light + ambient
     // ---------------------------------------------------------------
+    // Load hot frame data (frequently used scalars) — short live range,
+    // low register pressure. Cold data (env, GI, decals, etc.) stays in
+    // FrameUniforms and is loaded on-demand via pc.frameUniforms.Get().
+    FramePSHot hot = pc.frameHot.Get();
     FrameUniforms frame = pc.frameUniforms.Get();
 
     // ---------------------------------------------------------------
@@ -754,7 +763,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     ApplyForwardPlusDecals(frame, clipPos.xy, IN.worldPos, geomN,
         baseColor, N, metallic, roughness, emissive);
 
-    float3 V = normalize(frame.cameraPos - IN.worldPos);
+    float3 V = normalize(hot.cameraPos - IN.worldPos);
     float NdotV = max(dot(N, V), 0.0f);
 
     // F0 for dielectrics 0.04, lerped to baseColor for metals
@@ -780,11 +789,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     {
         if (pc.numCascades > 0)
         {
-            // EVSM (frame.evsmMode): shadow_map_index addresses the blurred
+            // EVSM (hot.evsmMode): shadow_map_index addresses the blurred
             // moments instead of the depth atlas; linear sampler 0. Soft
             // variant: solar penumbra from the moment blocker (per-cascade
             // pad2.x scale, pad2.y softness UI).
-            uint evsm = pc.frameUniforms.Get().evsmMode;
+            uint evsm = hot.evsmMode;
             if (evsm != 0u)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
                     (uint)light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
@@ -829,24 +838,26 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 direct = (diffuse * NdotLWrap + specular * NdotL) * lightColor * shadow;
 
     // ---------------------------------------------------------------
-    // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled),
-    // two shadow paths (H toggles at runtime):
-    //  - Deferred shadows (frame.dsEnabled): iterate the phase-4 FINAL
-    //    light list of the pixel's 8x8 Shadow Tile; per-light shadow
-    //    factor is the precomputed VisibilityBuffer value (fully-lit
-    //    flag or one byte from the tile's 64B slot) — no atlas sampling
-    //    in the lighting pass.
-    //  - Legacy: iterate the forward+ tile index lists and sample the
-    //    spot-shadow atlas tile inline.
-    // Directional light + CSM above is shared by both paths.
+    // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).
+    // Uses Deferred Shadows (hot.dsEnabled): iterate the phase-4 FINAL
+    // light list of the pixel's 8x8 Shadow Tile; per-light shadow
+    // factor is the precomputed VisibilityBuffer value (fully-lit
+    // flag or one byte from the tile's 64B slot) — no atlas sampling
+    // in the lighting pass. Legacy inline spot-shadow path removed.
+    // Directional light + CSM above is separate.
     // ---------------------------------------------------------------
     const uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
-    if (frame.dsEnabled != 0u && frame.dsTileCountX > 0u)
+    
+    // Hoist buffer pointers — keeps descriptors in registers, reduces
+    // address calculation overhead inside the hot loops.
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLightsBuf = pc.fpLights;
+
+    if (hot.dsEnabled != 0u && hot.dsTileCountX > 0u)
     {
         const uint2 pix = (uint2)clipPos.xy;
-        if (pix.x < (uint)frame.viewportSize.x && pix.y < (uint)frame.viewportSize.y)
+        if (pix.x < (uint)hot.viewportSize.x && pix.y < (uint)hot.viewportSize.y)
         {
-            const uint tileIdx = (pix.y >> 3) * frame.dsTileCountX + (pix.x >> 3);
+            const uint tileIdx = (pix.y >> 3) * hot.dsTileCountX + (pix.x >> 3);
             const uint2 st = uint2(
                 frame.dsTileState.Get().states[tileIdx * 4u],
                 min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
@@ -865,41 +876,14 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                     vis = DsLoadVisibility(frame.dsVisibility, slotInfo, localIdx);
                 if (li >= nlights)
                     continue;
-                EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
+                EvaluateForwardPlusLight(fpLightsBuf.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
                     false, vis, clipPos.xy, direct);
             }
         }
     }
-    else if (pc.fpLightCount > 0)
-    {
-        uint fpTileSize = max(pc.fpTileSize, 1u);
-        uint tx = (uint)(clipPos.x / (float)fpTileSize);
-        uint ty = (uint)(clipPos.y / (float)fpTileSize);
-        if (tx < pc.fpTileCountX)
-        {
-            uint tileIdx = ty * pc.fpTileCountX + tx;
-            uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
-            uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
-            // Hard cap: a tile can pass more lights than the light slots
-            // hold (big depth discontinuities). counts[] packs the true
-            // counts (low 16 = lights, high 16 = probes in their dedicated
-            // tail slots) but shading walks only the first perTile light
-            // entries — overflow lights pop instead of the old
-            // walk-every-light fallback (accepted trade-off; spots are
-            // written to the light buffer first so they keep their slots).
-            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx] & 0xFFFFu, perTile);
-            for (uint s = 0; s < tcount; ++s)
-            {
-                uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
-                if (li >= nlights)
-                    continue;
-                EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
-                    IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
-                    true, 1.0f, clipPos.xy, direct);
-            }
-        }
-    }
+    // Legacy inline spot-shadow path (pc.fpTileIndices.Get().indices[] + 
+    // GetSpotShadowFactorFromPC) removed — use Deferred Shadows instead.
 
     // Ambient / sky-IBL floor (hemispherical sky) plus baked GI.
     // The baked sources (below) carry the COMPLETE ambient — sky +
@@ -919,11 +903,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // only shades pixels that passed the prepass depth test, so background
     // (sky) can structurally never receive AO.
     float ao = 1.0f;
-    if (frame.aoTextureIndex != 0xffffffffu && frame.aoIntensity > 0.0f)
+    if (hot.aoTextureIndex != 0xffffffffu && hot.aoIntensity > 0.0f)
     {
-        Texture2D aoTex = textures[NonUniformResourceIndex(frame.aoTextureIndex)];
+        Texture2D aoTex = textures[NonUniformResourceIndex(hot.aoTextureIndex)];
         ao = aoTex.Load(int3(int2(clipPos.xy), 0)).r;
-        ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
+        ao = lerp(1.0f, saturate(ao), saturate(hot.aoIntensity));
     }
     float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
     float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
@@ -1233,7 +1217,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     // Distance + height fog (configurable, HDR pre-tonemap).
     // viewDepth from camera distance; fog color is HDR (fogColor * intensity).
-    float viewDist = length(frame.cameraPos - IN.worldPos);
+    float viewDist = length(hot.cameraPos - IN.worldPos);
     float fogF = ComputeFogFactor(viewDist, IN.worldPos.y, frame.env);
     if (fogF > 0.0f)
     {

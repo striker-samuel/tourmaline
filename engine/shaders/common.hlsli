@@ -325,6 +325,34 @@ struct ForwardPlusDecalTileIndexBuffer
     uint indices[MAX_FP_TILES * MAX_FP_DECALS_PER_TILE];
 };
 
+// -------------------------------------------------------------------------
+// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
+// Separate from FrameUniforms to keep register pressure low: the PS loads
+// only this struct (via pc.frameHot.Get()) instead of the full 1360+ byte
+// FrameUniforms. Offsets mirror the C++ FramePSHot in world_renderer.h.
+// -------------------------------------------------------------------------
+struct FramePSHot
+{
+    float3 cameraPos;        // 0
+    float  time;             // 12 -> 16
+    float2 viewportSize;     // 16
+    float2 invViewportSize;  // 24 -> 32
+    float  nearPlane;        // 32
+    float  farPlane;        // 36
+    float  exposure;         // 40
+    uint   aoTextureIndex;   // 44
+    float  aoIntensity;      // 48
+    uint   evsmMode;         // 52
+    uint   dsEnabled;        // 56
+    uint   dsTileCountX;     // 60
+    float  fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
+    float  giIntensity;      // 68
+    uint   giDebug;          // 72
+    uint   lmEnabled;        // 76
+    uint   cvolEnabled;      // 80
+    uint   pad_[3];          // 84 -> 96 (16-byte aligned total)
+};
+
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
@@ -491,6 +519,8 @@ struct PushConstants
     float4x4 model;
     vk::BufferPointer<FrameUniforms>
     frameUniforms;
+    vk::BufferPointer<FramePSHot>
+    frameHot;
     vk::BufferPointer<LightBuffer>
     bLights;
     vk::BufferPointer<MaterialsBuffer>

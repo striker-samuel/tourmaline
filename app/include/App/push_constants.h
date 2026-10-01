@@ -12,6 +12,7 @@ namespace app {
 struct alignas(16) PushConstants {
 	float model[16];
 	uint64_t frameUniforms;
+	uint64_t frameHot;
 	uint64_t lightsBuffer;
 	uint64_t materialsBuffer;
 	uint64_t cascadeBuffer;
@@ -54,11 +55,12 @@ static_assert(sizeof(PushConstants) <= 256, "PushConstants must fit in 256 bytes
 // uvflat1 UvFlatVsPush) mirror bytes 0..192 field-for-field in HLSL with
 // a chart tail at 192 (see smvk::gfx::kUvFlatVsPushOffset) — the offsets
 // below pin the C++ side of that mirror.
-static_assert(offsetof(PushConstants, prevModel) == 192, "prevModel must start at byte 192");
+static_assert(offsetof(PushConstants, prevModel) == 200, "prevModel must start at byte 200");
 static_assert(offsetof(PushConstants, model) == 0, "model must start at byte 0");
 static_assert(offsetof(PushConstants, frameUniforms) == 64, "frameUniforms mirror drift");
-static_assert(offsetof(PushConstants, renderViews) == 176, "renderViews mirror drift");
-static_assert(offsetof(PushConstants, mainRenderView) == 184, "mainRenderView mirror drift");
-static_assert(offsetof(PushConstants, renderViewIndex) == 188, "renderViewIndex mirror drift");
+static_assert(offsetof(PushConstants, frameHot) == 72, "frameHot mirror drift");
+static_assert(offsetof(PushConstants, renderViews) == 184, "renderViews mirror drift");
+static_assert(offsetof(PushConstants, mainRenderView) == 192, "mainRenderView mirror drift");
+static_assert(offsetof(PushConstants, renderViewIndex) == 196, "renderViewIndex mirror drift");
 
 } // namespace app

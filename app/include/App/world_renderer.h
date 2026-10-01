@@ -414,6 +414,52 @@ struct FrameUniforms
 	float aoPad_[3] = {};
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
+}
+
+// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
+// Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
+// Uploaded as a separate buffer slice per frame to keep PS register pressure low.
+struct FramePSHot
+{
+	glm::vec3 cameraPos;        // 0
+	float     time;             // 12 -> 16
+	glm::vec2 viewportSize;     // 16
+	glm::vec2 invViewportSize;  // 24 -> 32
+	float     nearPlane;        // 32
+	float     farPlane;         // 36
+	float     exposure;         // 40
+	uint32_t  aoTextureIndex;   // 44
+	float     aoIntensity;      // 48
+	uint32_t  evsmMode;         // 52
+	uint32_t  dsEnabled;        // 56
+	uint32_t  dsTileCountX;     // 60
+	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
+	float     giIntensity;      // 68
+	uint32_t  giDebug;          // 72
+	uint32_t  lmEnabled;        // 76
+	uint32_t  cvolEnabled;      // 80
+	uint32_t  pad_[3];          // 84 -> 96 (16-byte aligned total)
+};
+static_assert(sizeof(FramePSHot) == 96);
+static_assert(offsetof(FramePSHot, cameraPos) == 0);
+static_assert(offsetof(FramePSHot, time) == 12);
+static_assert(offsetof(FramePSHot, viewportSize) == 16);
+static_assert(offsetof(FramePSHot, invViewportSize) == 24);
+static_assert(offsetof(FramePSHot, nearPlane) == 32);
+static_assert(offsetof(FramePSHot, farPlane) == 36);
+static_assert(offsetof(FramePSHot, exposure) == 40);
+static_assert(offsetof(FramePSHot, aoTextureIndex) == 44);
+static_assert(offsetof(FramePSHot, aoIntensity) == 48);
+static_assert(offsetof(FramePSHot, evsmMode) == 52);
+static_assert(offsetof(FramePSHot, dsEnabled) == 56);
+static_assert(offsetof(FramePSHot, dsTileCountX) == 60);
+static_assert(offsetof(FramePSHot, fogEndAndFlags_w) == 64);
+static_assert(offsetof(FramePSHot, giIntensity) == 68);
+static_assert(offsetof(FramePSHot, giDebug) == 72);
+static_assert(offsetof(FramePSHot, lmEnabled) == 76);
+static_assert(offsetof(FramePSHot, cvolEnabled) == 80);
+
+struct FrameUniforms
 	// Reflection cubemap for specular IBL (bindless TextureCube index).
 	// NOTE: this 16-byte block must stay exactly 16 bytes (offsets
 	// asserted below): index + sampler + intensity + debug. Growing it
@@ -616,6 +662,7 @@ static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1388);    // 1388
 // Resources
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
+	smvk::Holder<smvk::BufferHandle> frameHot;
 	smvk::Holder<smvk::BufferHandle> lightsBuffer;
 	smvk::Holder<smvk::BufferHandle> materialsBuffer;
 	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame

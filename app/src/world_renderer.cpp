@@ -958,6 +958,11 @@ bool WorldRenderer::Initialize() {
 			smvk::BufferType_Uniform,
 			"frame uniforms"
 		);
+		m_resources.frameHot = m_context->CreateBuffer(
+			sizeof(FramePSHot) * m_swapchain->framesInFlight() * viewSlabs,
+			smvk::BufferType_Uniform,
+			"frame hot uniforms"
+		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
 			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
@@ -3052,6 +3057,40 @@ void WorldRenderer::Shutdown() {
 			0,
 			currentFrame * sizeof(FrameUniforms)
 		);
+
+		// Upload FramePSHot — tiny hot struct for pixel shader register pressure reduction.
+		FramePSHot hot{};
+		hot.cameraPos = data.cameraPos;
+		hot.time = data.time;
+		hot.viewportSize = data.viewportSize;
+		hot.invViewportSize = data.invViewportSize;
+		hot.nearPlane = data.nearPlane;
+		hot.farPlane = data.farPlane;
+		hot.exposure = data.exposure;
+		hot.aoTextureIndex = data.aoTextureIndex;
+		hot.aoIntensity = data.aoIntensity;
+		hot.evsmMode = data.evsmMode;
+		hot.dsEnabled = data.dsEnabled;
+		hot.dsTileCountX = data.dsTileCountX;
+		hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
+		hot.giIntensity = data.giIntensity;
+		hot.giDebug = data.giDebug;
+		hot.lmEnabled = data.lmEnabled;
+		hot.cvolEnabled = data.cvolEnabled;
+		hot.pad_[0] = 0;
+		hot.pad_[1] = 0;
+		hot.pad_[2] = 0;
+
+		m_context->UploadDataToBuffer(
+			m_resources.frameHot,
+			&hot,
+			sizeof(FramePSHot),
+			kFrameUploadStages,
+			smvk::AccessFlags::ShaderRead,
+			0,
+			currentFrame * sizeof(FramePSHot)
+		);
+
 		return data;
 
 	}
@@ -6157,6 +6196,40 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 		0,
 		ViewSlabOffset(1u + vi, frameIdx, sizeof(FrameUniforms))
 	);
+
+	// Upload FramePSHot for secondary view.
+	FramePSHot hot{};
+	hot.cameraPos = data.cameraPos;
+	hot.time = data.time;
+	hot.viewportSize = data.viewportSize;
+	hot.invViewportSize = data.invViewportSize;
+	hot.nearPlane = data.nearPlane;
+	hot.farPlane = data.farPlane;
+	hot.exposure = data.exposure;
+	hot.aoTextureIndex = data.aoTextureIndex;
+	hot.aoIntensity = data.aoIntensity;
+	hot.evsmMode = data.evsmMode;
+	hot.dsEnabled = data.dsEnabled;
+	hot.dsTileCountX = data.dsTileCountX;
+	hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
+	hot.giIntensity = data.giIntensity;
+	hot.giDebug = data.giDebug;
+	hot.lmEnabled = data.lmEnabled;
+	hot.cvolEnabled = data.cvolEnabled;
+	hot.pad_[0] = 0;
+	hot.pad_[1] = 0;
+	hot.pad_[2] = 0;
+
+	m_context->UploadDataToBuffer(
+		m_resources.frameHot,
+		&hot,
+		sizeof(FramePSHot),
+		kFrameUploadStages,
+		smvk::AccessFlags::ShaderRead,
+		0,
+		ViewSlabOffset(1u + vi, frameIdx, sizeof(FramePSHot))
+	);
+
 	return data;
 }
 
@@ -6419,6 +6492,8 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
 	const uint64_t frameUniformsBase =
 		m_context->GetBufferDeviceAddress(m_resources.frameUniforms);
+	const uint64_t frameHotBase =
+		m_context->GetBufferDeviceAddress(m_resources.frameHot);
 	const uint64_t lightsBase =
 		m_context->GetBufferDeviceAddress(m_resources.lightsBuffer);
 	const uint64_t cascadeBase =
@@ -6448,6 +6523,8 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		PushConstants viewPc{};
 		viewPc.frameUniforms = frameUniformsBase
 			+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FrameUniforms));
+		viewPc.frameHot = frameHotBase
+			+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FramePSHot));
 		viewPc.lightsBuffer = lightsBase
 			+ ViewSlabOffset(1u + vi, fb.frameIndex, LIGHT_FRAME_STRIDE);
 		viewPc.materialsBuffer = materialsBase
@@ -7250,6 +7327,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
 			+ fb.frameIndex * sizeof(FrameUniforms);
 
+		uint64_t frameHotAddress =
+			m_context->GetBufferDeviceAddress(m_resources.frameHot)
+			+ fb.frameIndex * sizeof(FramePSHot);
+
 		constexpr size_t LIGHT_FRAME_STRIDE =
 			sizeof(smvk::Light) * MAX_LIGHTS;
 
@@ -7286,9 +7367,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const uint32_t fpTileCountX = fp.tileCountX;
 		const uint32_t fpTileCountY = fp.tileCountY;
 
-		// Scene push (see App/push_constants.h; must match HLSL common.hlsli).
+// Scene push (see App/push_constants.h; must match HLSL common.hlsli).
 		PushConstants pc{
 			.frameUniforms = frameUniformsAddress,
+			.frameHot = frameHotAddress,
 			.lightsBuffer = lightsBufferAddress,
 			.materialsBuffer = materialsAddress,
 			.cascadeBuffer = cascadeBufferAddress,
@@ -7306,14 +7388,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			.spotShadowBuffer = spotShadowBufferAddress,
 			.spotShadowMapIndex = m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX,
 			.spotShadowCount = m_spotShadowCount,
-		.spotIndex = UINT32_MAX, // not a spot shadow pass
-		// Transparency technique for Blend materials: 0 = dithered
-		// screen-door (default, opaque state), 1 = classic alpha blend.
-		.pad_pc = (m_transparentMode == smvk::TransparentMode::Blended) ? 1u : 0u,
+			.spotIndex = UINT32_MAX, // not a spot shadow pass
+			// Transparency technique for Blend materials: 0 = dithered
+			// screen-door (default, opaque state), 1 = classic alpha blend.
+			.pad_pc = (m_transparentMode == smvk::TransparentMode::Blended) ? 1u : 0u,
 			.renderViews = renderViewsAddress,
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
-};
+		};
 	// (size checked in App/push_constants.h)
 
 	// ---- Cascaded shadow map passes â€“ one per cascade tile (builder owns offsets/extents/load ops) ----

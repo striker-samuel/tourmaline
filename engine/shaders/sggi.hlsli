@@ -127,19 +127,19 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     if (levelCount == 0)
         return false;
 
-    float3 ampsVis[SG_GI_LOBES];
-    [unroll]
-    for (uint i = 0; i < SG_GI_LOBES; ++i)
-        ampsVis[i] = float3(0, 0, 0);
-    float weightVis = 0.0;
-    // Per-LEVEL weight accumulation (dominant level = argmax over these
-    // sums): robust vs "strongest single probe", which is noisy — the
-    // question answered is "which octree level carries most of this
-    // pixel's interpolation weight".
+    // Debug-only arrays — only allocated when dbgMode != 0 to reduce
+    // register pressure in production (dbgMode == 0).
     float dbgLevelW[SG_GI_MAX_LEVELS];
-    [unroll]
-    for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l)
-        dbgLevelW[l] = 0.0;
+    [branch]
+    if (dbgMode != 0u)
+    {
+        [unroll]
+        for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l)
+            dbgLevelW[l] = 0.0;
+    }
+
+    float weightVis = 0.0;
+    float3 ampsVis[SG_GI_LOBES]; // Lazy-initialized on first valid probe
     // Fallback bookkeeping removed (coverage-test mode): with the
     // visibility-weighted blend finding nothing, returning false exposes
     // the hole (magenta/black) instead of leaking a wall-ignoring probe.
@@ -186,10 +186,19 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
             [branch]
             if (wv <= 0.0)
                 continue;
+            // Initialize ampsVis on first valid probe (lazy init reduces reg pressure).
+            if (weightVis == 0.0)
+            {
+                [unroll]
+                for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+                    ampsVis[lobe] = float3(0, 0, 0);
+            }
             // Dominant contributor (mode 4): per-LEVEL weight sums; the
             // argmax after the walk picks the level carrying most of this
             // pixel's interpolation weight (robust vs single-probe max).
-            dbgLevelW[lvl] += wv;
+            [branch]
+            if (dbgMode != 0u)
+                dbgLevelW[lvl] += wv;
             weightVis += wv;
             ++debugContributors;
             [unroll]

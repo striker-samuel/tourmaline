@@ -42,7 +42,7 @@ KFOOTER_SIZE = 24
 KTOC_FIXED = 36  # hash u64, kind u32, flags u32, off u64, size u64, pathLen u32
 KALIGN = 16
 
-KINDS = {1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture", 5: "Light", 6: "Gi"}
+KINDS = {1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture", 5: "Light", 6: "Gi", 7: "Camera"}
 KIND_BY_NAME = {v: k for k, v in KINDS.items()}
 FLAG_LZ4 = 1 << 0
 
@@ -86,7 +86,7 @@ def vfs_normalize(path: str) -> str:
         if not ok:
             return ""
         return "//flintbase/" if not norm else "//flintbase/" + norm
-    if len(p) >= 2 and p[1] == ":":
+    pc.frameUniforms.Get()if len(p) >= 2 and p[1] == ":":
         return ""
     if p.startswith("/"):
         return ""

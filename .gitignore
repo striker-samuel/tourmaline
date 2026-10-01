@@ -415,3 +415,6 @@ meshoptimizerConfigVersion.cmake
 # engine_resources/ are build products. Never commit them.
 /content/
 /engine_resources/
+/external/FidelityFX-SDK-v1.1.4/docs
+/external/FidelityFX-SDK-v1.1.4
+/build-asan
