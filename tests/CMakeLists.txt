@@ -191,6 +191,19 @@ set_target_properties(ProfilerTests PROPERTIES
 
 add_test(NAME profile_tests COMMAND ProfilerTests)
 
+add_executable(BakeAssetTests test_bake_assets.cpp)
+
+target_link_libraries(BakeAssetTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(BakeAssetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME bake_asset_tests COMMAND BakeAssetTests)
+
 add_executable(DeferredShadowTests test_deferredshadow.cpp)
 
 target_link_libraries(DeferredShadowTests

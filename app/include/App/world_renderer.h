@@ -1934,9 +1934,13 @@ protected:
 	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
 	// GI sidecar stems resolved from the loaded clusters' registry
 	// (first binding per kind wins + warn; empty = fall back to the
-	// scene id, which is what registry-less paks use). Resolved once
-	// per scene load, before the GI loaders run.
-	std::string m_giProbeName, m_giLightmapName;
+	// scene id, which is what registry-less paks use). Since the
+	// bake-asset migration the registry names are the bake GUIDs
+	// (gi/<guid>.sggi + friends); legacy paks still record human stems
+	// and resolve the same way. Resolved once per scene load, before
+	// the GI loaders run.
+	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giCvolName,
+		m_giCubemapName;
 	void ResolveGiSidecars();
 	void CycleAmbientMode() {
 		m_ambientMode = static_cast<AmbientMode>(

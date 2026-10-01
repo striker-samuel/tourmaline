@@ -882,6 +882,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// anything importing outside this path).
 	if (m_texCacheAdapter)
 		m_texCacheAdapter->SetKeyScope({});
+	// Bake-asset GI bindings for the hosted live view (fresh world —
+	// the clusters carry no Gi registry yet; the hosted rebind below
+	// reads them).
+	RefreshLiveViewGiBindings();
 	// The hosted view drives the viewport for this scene from its
 	// source (full App pipeline, no cook needed): the pending suspend
 	// above rebinds it IN PLACE at the next frame boundary — a fresh

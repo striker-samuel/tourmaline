@@ -325,11 +325,85 @@ void TestAssetDatabase() {
 	fs::remove_all(dir, ec);
 }
 
+// Bake-asset adoption: GI/cubemap outputs carry .meta sidecars (see
+// Engine/Asset/bake_asset.h); the rescan adopts them with the sidecar
+// kind (not "model"), including under gi/ (whose blanket skip was
+// lifted for sidecar-carrying files). Files WITHOUT sidecars (debug
+// PNGs) stay out.
+void TestBakeAssetDatabase() {
+	using namespace smvk::cache;
+	namespace fs = std::filesystem;
+	const std::string dir = TempDir() + "/bakeassets";
+	const std::string proj = dir + "/proj";
+	const std::string scratch = dir + "/scratch";
+	std::error_code ec;
+	fs::create_directories(proj + "/content/gi", ec);
+	fs::create_directories(proj + "/content/textures/cubemaps", ec);
+	fs::create_directories(scratch, ec);
+	const std::string sglmGuid = "0123456789abcdef0123456789abcdef";
+	const std::string ktxGuid = "fedcba9876543210fedcba9876543210";
+	const std::string sglm = proj + "/content/gi/" + sglmGuid + ".sglm";
+	{
+		std::ofstream f(sglm, std::ios::binary | std::ios::trunc);
+		f << "sglm-payload";
+		std::ofstream m(sglm + ".meta", std::ios::binary | std::ios::trunc);
+		m << "guid=" << sglmGuid << "\nkind=gi\nlogical=lightmap:test\n";
+	}
+	const std::string ktx = proj + "/content/textures/cubemaps/" + ktxGuid
+		+ ".ktx2";
+	{
+		std::ofstream f(ktx, std::ios::binary | std::ios::trunc);
+		f << "ktx-payload";
+		std::ofstream m(ktx + ".meta", std::ios::binary | std::ios::trunc);
+		m << "guid=" << ktxGuid << "\nkind=cubemap\n";
+	}
+	// Debug output without a sidecar: never adopted.
+	{
+		std::ofstream f(proj + "/content/gi/test_atlas.png",
+			std::ios::binary | std::ios::trunc);
+		f << "png";
+	}
+	AssetDatabase adb;
+	std::string err;
+	Check(adb.Open(scratch, proj, err), "bakeassets.open");
+	RescanStats stats;
+	Check(adb.RescanProject(stats, err) && stats.adopted == 2,
+		"bakeassets.rescan.adopted");
+	std::string gotPath;
+	Check(adb.PathForGuid(sglmGuid, gotPath)
+		&& fs::path(gotPath) == fs::path(sglm), "bakeassets.gi.resolve");
+	Check(adb.PathForGuid(ktxGuid, gotPath)
+		&& fs::path(gotPath) == fs::path(ktx), "bakeassets.cubemap.resolve");
+	// Kinds land on the rows (the browser collections filter on them).
+	std::vector<AssetRecord> rows;
+	Check(adb.All(rows, err) && rows.size() == 2, "bakeassets.all.count");
+	if (rows.size() == 2) {
+		bool gi = false, cube = false;
+		for (const auto& r : rows) {
+			if (r.guid == sglmGuid)
+				gi = (r.kind == "gi");
+			if (r.guid == ktxGuid)
+				cube = (r.kind == "cubemap");
+		}
+		Check(gi && cube, "bakeassets.all.kinds");
+	}
+	// Move heals through the sidecar (the GUID travels with the file).
+	const std::string moved = proj + "/content/gi/moved.sglm";
+	fs::rename(sglm, moved, ec);
+	fs::rename(sglm + ".meta", moved + ".meta", ec);
+	Check(adb.RescanProject(stats, err) && stats.moved == 1,
+		"bakeassets.rescan.moved");
+	Check(adb.PathForGuid(sglmGuid, gotPath)
+		&& fs::path(gotPath) == fs::path(moved), "bakeassets.moved.healed");
+	fs::remove_all(dir, ec);
+}
+
 int main() {
 	TestScratchAndRegistry();
 	TestStore();
 	TestStoreAdapter();
 	TestAssetDatabase();
+	TestBakeAssetDatabase();
 	std::cout << g_checks - g_failures << "/" << g_checks
 		<< " passed\n";
 	return g_failures == 0 ? 0 : 1;

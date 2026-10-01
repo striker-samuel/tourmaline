@@ -2879,10 +2879,18 @@ void EditorApp::DrawLightmapPanel() {
 		for (const auto& clusterPtr : m_world->clusters) {
 			if (!clusterPtr || clusterPtr->giBindings.empty())
 				continue;
-			for (const smvk::GiBinding& b : clusterPtr->giBindings)
+			for (const smvk::GiBinding& b : clusterPtr->giBindings) {
+				const char* kindName = "?";
+				switch (b.kind) {
+				case smvk::GiBinding::Kind::Probe: kindName = "probe"; break;
+				case smvk::GiBinding::Kind::Lightmap: kindName = "lightmap"; break;
+				case smvk::GiBinding::Kind::RegManifest: kindName = "regmanifest"; break;
+				case smvk::GiBinding::Kind::CvolManifest: kindName = "cvolmanifest"; break;
+				case smvk::GiBinding::Kind::Cubemap: kindName = "cubemap"; break;
+				}
 				ImGui::TextDisabled("registry: %s '%s'",
-					b.kind == smvk::GiBinding::Kind::Lightmap
-					? "lightmap" : "probe", b.name.c_str());
+					kindName, b.name.c_str());
+			}
 			break; // first cluster carrying bindings (matches runtime)
 		}
 	}
@@ -4370,13 +4378,14 @@ void EditorApp::DrawAssetsPanel() {
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(140.0f);
 	{
-		const char* filters[4] = { "All (files)", "Meshes",
-			"Materials", "Animations" };
-		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 4);
+		const char* filters[6] = { "All (files)", "Meshes",
+			"Materials", "Animations", "GI bakes", "Cubemaps" };
+		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 6);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Collection views: every derived asset of "
 				"the kind across the project's content tree (the glTF "
-				"manifests).");
+				"manifests for meshes/materials/animations; the bake "
+			 ".meta sidecars for GI bakes and cubemap captures).");
 	}
 	// Expanded glTF: a "close the folder" chip next to the filter.
 	if (!m_assetsExpandGltf.empty()) {
@@ -4462,13 +4471,15 @@ void EditorApp::DrawAssetsPanel() {
 
 	// ---- grid --------------------------------------------------------
 	ImGui::BeginChild("##assetgrid", ImVec2(0, 0));
-	// Registered GUID map (assets.db) for badges + tooltips.
+	// Registered GUID map (assets.db) for badges + tooltips. The rows
+	// also feed the bake-asset collections below (kept in scope: the
+	// collection branch reads them).
 	std::unordered_map<std::string, std::string> guidByAbs;
+	std::vector<smvk::cache::AssetRecord> assetRows;
 	if (m_assetDb.IsOpen()) {
-		std::vector<smvk::cache::AssetRecord> rows;
 		std::string derr;
-		if (m_assetDb.All(rows, derr))
-			for (const auto& r : rows)
+		if (m_assetDb.All(assetRows, derr))
+			for (const auto& r : assetRows)
 				guidByAbs[m_assetDb.ResolvePath(r.path)] = r.guid;
 	}
 	// Entries: directories first, then files, both by name (skip
@@ -4548,12 +4559,38 @@ void EditorApp::DrawAssetsPanel() {
 		}
 	}
 	if (m_assetsFilter != 0) {
-		// Collection view: every derived asset of the kind under the
-		// current directory tree.
-		for (const std::string& meta : gltfMetas) {
-			const std::string gltf = meta.substr(
-				0, meta.size() - 5); // strip ".meta"
-			manifestChildren(gltf, m_assetsFilter - 1, files);
+		if (m_assetsFilter <= 3) {
+			// Collection view: every derived asset of the kind under the
+			// current directory tree.
+			for (const std::string& meta : gltfMetas) {
+				const std::string gltf = meta.substr(
+					0, meta.size() - 5); // strip ".meta"
+				manifestChildren(gltf, m_assetsFilter - 1, files);
+			}
+		}
+		else {
+			// Bake-asset collections (GI bakes / cubemap captures): the
+			// assetdb rows adopted from the bake .meta sidecars (see
+			// Engine/Asset/bake_asset.h) — moves/renames heal through
+			// the rescan, so these stay correct where stem-named loose
+			// listings would rot. Rows whose file is gone are skipped
+			// (the db keeps them as retargets).
+			const char* want = (m_assetsFilter == 4) ? "gi" : "cubemap";
+			for (const auto& r : assetRows) {
+				if (r.kind != want)
+					continue;
+				const std::string abs = m_assetDb.ResolvePath(r.path);
+				std::error_code fec;
+				if (abs.empty()
+					|| !fs::is_regular_file(abs, fec) || fec)
+					continue;
+				Entry t{};
+				t.name = fs::path(abs).filename().generic_string();
+				t.abs = abs;
+				t.icon = (m_assetsFilter == 4)
+					? IconType::GI : IconType::Env;
+				files.push_back(std::move(t));
+			}
 		}
 	}
 	else if (!expandGltf.empty()) {

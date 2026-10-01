@@ -113,6 +113,29 @@ void ParseManifestSidecar(const fs::path& metaPath,
 	}
 }
 
+// The sidecar's kind= line ("" when the sidecar predates the field):
+// bake outputs declare "gi"/"cubemap" here (see
+// Engine/Asset/bake_asset.h); source-asset sidecars carry none and keep
+// the legacy "model" kind at adoption.
+std::string BakeSidecarKind(const std::string& assetPath) {
+	std::ifstream in(MetaPathFor(assetPath), std::ios::binary);
+	if (!in)
+		return {};
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		if (line.substr(0, eq) == "kind")
+			return line.substr(eq + 1);
+	}
+	return {};
+}
+
 } // namespace
 
 bool IsValidAssetGuid(const std::string& guid) {
@@ -393,28 +416,36 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 			continue; // sidecars register through their asset
 		if (p.filename() == "project.tourproj")
 			continue;
-		// Skip the owned caches/outputs: identity lives in content/.
+		// Skip the owned caches (identity is project content, not
+		// scratch/pak outputs). gi/ is NOT skipped: bake outputs carry
+		// .meta sidecars there (see Engine/Asset/bake_asset.h) and adopt
+		// like any other sidecar-carrying file — files WITHOUT sidecars
+		// never reach adoption (see below), so debug PNGs/charts stay out.
 		// (scratch/ tolerated: pre-rename projects.)
 		const std::string rel = ToStoredPath(m_projectRoot,
 			Normalized(p.generic_string()));
 		if (rel.compare(0, 8, "scratch/") == 0
 			|| rel.compare(0, 9, "artifacts/") == 0
-			|| rel.compare(0, 5, "paks/") == 0
-			|| rel.compare(0, 3, "gi/") == 0)
+			|| rel.compare(0, 5, "paks/") == 0)
 			continue;
 		std::string guid, merr;
 		if (!ReadAssetMeta(p.generic_string(), guid, merr))
 			continue; // no (valid) sidecar: adopted on import/open
+		// Sidecar-declared kind wins (bake outputs: "gi"/"cubemap");
+		// source sidecars predate the field and keep "model".
+		std::string kind = BakeSidecarKind(p.generic_string());
+		if (kind.empty())
+			kind = "model";
 		const auto kt = known.find(guid);
 		if (kt == known.end()) {
 			std::string aerr;
-			if (AdoptFile(p.generic_string(), guid, "model", aerr))
+			if (AdoptFile(p.generic_string(), guid, kind, aerr))
 				++stats.adopted;
 			known[guid] = rel;
 		}
 		else if (kt->second != rel) {
 			std::string aerr;
-			if (AdoptFile(p.generic_string(), guid, "model", aerr))
+			if (AdoptFile(p.generic_string(), guid, kind, aerr))
 				++stats.moved;
 			kt->second = rel;
 		}

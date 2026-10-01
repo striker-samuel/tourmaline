@@ -22,6 +22,7 @@
 
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
+#include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <gltf_import/gltf.h>
@@ -2055,11 +2056,14 @@ void WorldRenderer::Shutdown() {
 		// (cubemapSampler), never samplers[0] (Repeat would bleed seams).
 		m_cubemapSampler = m_context->GetOrCreateSampler(smvk::CubemapSampler());
 
-		// Try a scene-specific bake first, then the "sky" fallback.
-		const std::vector<std::string> cubemapBases = {
-			m_sceneId,
-			"sky"
-		};
+		// Try a pak-registered bake first (the cubemanifest GUID from the
+		// pak's Gi registry — stable across pak/scene renames), then the
+		// scene stem, then the "sky" fallback.
+		std::vector<std::string> cubemapBases;
+		if (!m_giCubemapName.empty())
+			cubemapBases.push_back(m_giCubemapName);
+		cubemapBases.push_back(m_sceneId);
+		cubemapBases.push_back("sky");
 
 		bool fileBakeFound = false;
 		// Pinned manifest rows ('pin', cook --cubemap-extra-pos) that loaded:
@@ -2388,7 +2392,9 @@ void WorldRenderer::Shutdown() {
 		m_regObbsBuffer = {};
 		m_regObbsAddress = 0;
 
-		const std::string manifestPath = std::string("gi/") + m_sceneId + ".regmanifest";
+		const std::string manifestPath = !m_giRegName.empty()
+			? std::string("gi/") + m_giRegName + ".regmanifest"
+			: std::string("gi/") + m_sceneId + ".regmanifest";
 		std::vector<uint8_t> manifestBytes;
 		try {
 			manifestBytes = vfs.ReadBinary(manifestPath);
@@ -2397,22 +2403,25 @@ void WorldRenderer::Shutdown() {
 				<< "' (bake: GiBaker --regular-out)\n";
 			return;
 		}
-		// Line-separated .sgrv vfs paths.
+		// Line-separated .sgrv vfs paths. Bake-asset rows carry the
+		// payload guid first ("<guid> <path>  # <note>"); legacy and
+		// hand-edited rows are bare paths — SplitManifestRow keeps both.
 		std::vector<std::string> lines;
 		{
 			std::string cur;
 			for (char c : manifestBytes) {
 				if (c == '\n' || c == '\r') {
-					if (!cur.empty()) {
-						lines.push_back(cur);
-						cur.clear();
-					}
+					const std::string path = smvk::bake::SplitManifestRow(cur);
+					if (!path.empty())
+						lines.push_back(path);
+					cur.clear();
 				} else {
 					cur.push_back(c);
 				}
 			}
-			if (!cur.empty())
-				lines.push_back(cur);
+			const std::string path = smvk::bake::SplitManifestRow(cur);
+			if (!path.empty())
+				lines.push_back(path);
 		}
 		constexpr uint32_t kMaxVolumes = 8; // SG_REG_MAX_VOLUMES
 		for (const std::string& line : lines) {
@@ -2535,8 +2544,9 @@ void WorldRenderer::Shutdown() {
 		m_cvolVolumesBuffer = {};
 		m_cvolVolumesAddress = 0;
 
-		const std::string manifestPath =
-			std::string("gi/") + m_sceneId + ".cvmanifest";
+		const std::string manifestPath = !m_giCvolName.empty()
+			? std::string("gi/") + m_giCvolName + ".cvmanifest"
+			: std::string("gi/") + m_sceneId + ".cvmanifest";
 		std::vector<uint8_t> manifestBytes;
 		try {
 			manifestBytes = vfs.ReadBinary(manifestPath);
@@ -2545,24 +2555,25 @@ void WorldRenderer::Shutdown() {
 				<< "' (bake: GiBaker --cv-spec <file>)\n";
 			return;
 		}
-		// Line-separated .cvol vfs paths ('#' comments and blanks skipped —
-		// GiBaker writes a header comment into the manifest).
+		// Line-separated .cvol vfs paths (bake-asset rows carry the
+		// payload guid first — see smvk::bake::SplitManifestRow; '#' comments
+		// and blanks skipped — GiBaker writes a header comment).
 		std::vector<std::string> lines;
 		{
 			std::string cur;
 			for (char c : manifestBytes) {
 				if (c == '\n' || c == '\r') {
-					while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\t'))
-						cur.pop_back();
-					if (!cur.empty() && cur[0] != '#')
-						lines.push_back(cur);
+					const std::string path = smvk::bake::SplitManifestRow(cur);
+					if (!path.empty())
+						lines.push_back(path);
 					cur.clear();
 				} else {
 					cur.push_back(c);
 				}
 			}
-			if (!cur.empty() && cur[0] != '#')
-				lines.push_back(cur);
+			const std::string path = smvk::bake::SplitManifestRow(cur);
+			if (!path.empty())
+				lines.push_back(path);
 		}
 		constexpr uint32_t kMaxVolumes = 8; // SG_CV_MAX_VOLUMES
 		for (const std::string& line : lines) {
@@ -3477,39 +3488,58 @@ void WorldRenderer::Shutdown() {
 	// Named GI sidecars (Cluster::giBindings across the loaded clusters).
 	// Model supports N bindings; exactly one per kind is honored for now
 	// (first wins + warn). Empty outcome = registry-less pak: callers
-	// fall back to the scene id.
+	// fall back to the scene id. Since the bake-asset migration the
+	// names are bake GUIDs (see Engine/Asset/bake_asset.h); legacy paks
+	// record human stems — both resolve through the same VFS paths.
 	// ---------------------------------------------------------------------
 	void WorldRenderer::ResolveGiSidecars() {
 		m_giProbeName.clear();
 		m_giLightmapName.clear();
+		m_giRegName.clear();
+		m_giCvolName.clear();
+		m_giCubemapName.clear();
 		if (!m_world)
 			return;
+		auto takeFirst = [](std::string& slot, const std::string& name,
+				const char* label) {
+			if (slot.empty())
+				slot = name;
+			else if (slot != name)
+				std::cerr << "[GI] extra " << label << " binding '"
+					<< name << "' ignored (one per kind for now)\n";
+		};
 		for (const auto& clusterPtr : m_world->clusters) {
 			if (!clusterPtr)
 				continue;
 			for (const smvk::GiBinding& b : clusterPtr->giBindings) {
 				if (b.name.empty())
 					continue;
-				if (b.kind == smvk::GiBinding::Kind::Probe) {
-					if (m_giProbeName.empty())
-						m_giProbeName = b.name;
-					else if (m_giProbeName != b.name)
-						std::cerr << "[GI] extra probe binding '" << b.name
-							<< "' ignored (one per kind for now)\n";
-				}
-				else {
-					if (m_giLightmapName.empty())
-						m_giLightmapName = b.name;
-					else if (m_giLightmapName != b.name)
-						std::cerr << "[GI] extra lightmap binding '" << b.name
-							<< "' ignored (one per kind for now)\n";
+				switch (b.kind) {
+				case smvk::GiBinding::Kind::Probe:
+					takeFirst(m_giProbeName, b.name, "probe");
+					break;
+				case smvk::GiBinding::Kind::Lightmap:
+					takeFirst(m_giLightmapName, b.name, "lightmap");
+					break;
+				case smvk::GiBinding::Kind::RegManifest:
+					takeFirst(m_giRegName, b.name, "regmanifest");
+					break;
+				case smvk::GiBinding::Kind::CvolManifest:
+					takeFirst(m_giCvolName, b.name, "cvolmanifest");
+					break;
+				case smvk::GiBinding::Kind::Cubemap:
+					takeFirst(m_giCubemapName, b.name, "cubemap");
+					break;
 				}
 			}
 		}
-		if (!m_giProbeName.empty() || !m_giLightmapName.empty())
+		if (!m_giProbeName.empty() || !m_giLightmapName.empty()
+			|| !m_giRegName.empty() || !m_giCvolName.empty()
+			|| !m_giCubemapName.empty())
 			std::cerr << "[GI] sidecars from pak registry: probe='"
 				<< m_giProbeName << "' lightmap='" << m_giLightmapName
-				<< "'\n";
+				<< "' reg='" << m_giRegName << "' cvol='" << m_giCvolName
+				<< "' cubemap='" << m_giCubemapName << "'\n";
 	}
 
 	// ---------------------------------------------------------------------

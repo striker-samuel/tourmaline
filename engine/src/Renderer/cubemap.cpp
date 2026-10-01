@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -54,13 +55,15 @@ std::string CubemapManifestVfsPath(const std::string& name) {
 
 std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries) {
 	std::string out;
-	char buf[256];
+	char buf[320];
 	for (const auto& e : entries) {
-		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g%s\n",
+		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g%s%s%s\n",
 			e.vfsPath.c_str(),
 			(double)e.position.x, (double)e.position.y, (double)e.position.z,
 			(double)e.influenceRadius, (double)e.fadeRadius,
-			e.pinned ? " pin" : "");
+			e.pinned ? " pin" : "",
+			!e.guid.empty() ? " guid " : "",
+			!e.guid.empty() ? e.guid.c_str() : "");
 		out += buf;
 	}
 	return out;
@@ -69,6 +72,9 @@ std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& en
 bool CubemapManifestParse(std::string_view text,
 	std::vector<CubemapManifestEntry>& out, std::string& err) {
 	out.clear();
+	auto isSpace = [](char c) {
+		return c == ' ' || c == '\t';
+	};
 	size_t pos = 0;
 	size_t lineNo = 0;
 	while (pos < text.size()) {
@@ -87,33 +93,79 @@ bool CubemapManifestParse(std::string_view text,
 		if (first >= line.size() || line[first] == '#')
 			continue;
 		line.remove_prefix(first);
+		// Tokenize (the legacy grammar is positional: path + 5 floats +
+		// optional flags).
+		std::vector<std::string_view> toks;
+		for (size_t i = 0; i < line.size();) {
+			while (i < line.size() && isSpace(line[i]))
+				++i;
+			if (i >= line.size())
+				break;
+			size_t j = i;
+			while (j < line.size() && !isSpace(line[j]))
+				++j;
+			toks.push_back(line.substr(i, j - i));
+			i = j;
+		}
+		if (toks.size() < 6) {
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>]'";
+			out.clear();
+			return false;
+		}
 		CubemapManifestEntry e{};
-		char path[224] = {};
-		char tag[16] = {};
-		float x = 0, y = 0, z = 0, inf = 0, fade = 0;
-		const std::string tmp(line);
-		const int fields = std::sscanf(tmp.c_str(), "%223s %f %f %f %f %f %15s",
-			path, &x, &y, &z, &inf, &fade, tag);
-		if (fields != 6 && fields != 7) {
-			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin]'";
+		e.vfsPath = std::string(toks[0]);
+		auto parseFloat = [](std::string_view t, float& v) {
+			if (t.empty() || t.size() > 32)
+				return false;
+			char buf[40] = {};
+			std::memcpy(buf, t.data(),
+				t.size() < sizeof(buf) - 1 ? t.size() : sizeof(buf) - 1);
+			char* endp = nullptr;
+			v = std::strtof(buf, &endp);
+			return endp != buf && *endp == '\0';
+		};
+		if (!parseFloat(toks[1], e.position.x)
+			|| !parseFloat(toks[2], e.position.y)
+			|| !parseFloat(toks[3], e.position.z)
+			|| !parseFloat(toks[4], e.influenceRadius)
+			|| !parseFloat(toks[5], e.fadeRadius)) {
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>]'";
 			out.clear();
 			return false;
 		}
-		if (fields == 7 && std::strcmp(tag, "pin") != 0) {
-			err = "line " + std::to_string(lineNo) + ": unknown trailing token '" + tag + "' (want 'pin')";
+		size_t i = 6;
+		if (i < toks.size() && toks[i] == "pin") {
+			e.pinned = true;
+			++i;
+		}
+		if (i < toks.size() && toks[i] == "guid") {
+			if (i + 1 >= toks.size() || toks[i + 1].size() != 32) {
+				err = "line " + std::to_string(lineNo) + ": 'guid' wants a 32-hex value";
+				out.clear();
+				return false;
+			}
+			e.guid = std::string(toks[i + 1]);
+			bool hex = true;
+			for (char c : e.guid)
+				hex = hex && ((c >= '0' && c <= '9')
+					|| (c >= 'a' && c <= 'f'));
+			if (!hex) {
+				err = "line " + std::to_string(lineNo) + ": 'guid' wants a 32-hex value";
+				out.clear();
+				return false;
+			}
+			i += 2;
+		}
+		if (i < toks.size()) {
+			err = "line " + std::to_string(lineNo) + ": unknown trailing token '" + std::string(toks[i]) + "' (want 'pin' or 'guid <hex>')";
 			out.clear();
 			return false;
 		}
-		if (inf <= 0.0f || fade < 0.0f) {
+		if (e.influenceRadius <= 0.0f || e.fadeRadius < 0.0f) {
 			err = "line " + std::to_string(lineNo) + ": influence must be > 0, fade >= 0";
 			out.clear();
 			return false;
 		}
-		e.vfsPath = path;
-		e.position = glm::vec3(x, y, z);
-		e.influenceRadius = inf;
-		e.fadeRadius = fade;
-		e.pinned = (fields == 7);
 		out.push_back(std::move(e));
 	}
 	if (out.empty()) {

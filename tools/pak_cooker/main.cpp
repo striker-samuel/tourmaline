@@ -120,6 +120,7 @@
 #include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
 #include <gltf_import/asset_export.h> // materialAsset replay (tour cooks)
+#include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Vfs/vfs.h>
@@ -2387,7 +2388,9 @@ bool WriteCubemapKtx2ToMemory(const smvk::CubemapMipChains& chains,
 // analytic sky on primary misses, textured albedo) and returns
 // (vfsPath, ktxBytes) pairs for pak embedding. False on error (logged).
 bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
-	std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
+	std::vector<std::pair<std::string, std::vector<uint8_t>>>& out,
+	std::string& outManifestGuid) {
+	outManifestGuid.clear();
 	using namespace smvk::gi;
 	const auto t0 = std::chrono::steady_clock::now();
 
@@ -2626,6 +2629,50 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	if (base.empty())
 		base = "sky";
 
+	// Bake-asset identity for the capture SET: the manifest guid (sidecar
+	// scan by logical, else mint). Rebakes reuse per-capture guids by
+	// matching computed positions against the previous manifest's rows
+	// (see below); the manifest itself reuses ITS guid the same way, so
+	// renames never orphan the set. Payload + manifest VFS paths are
+	// guid-derived; the pak registers the manifest guid (GiBinding
+	// Cubemap) and embeds the blobs under the same paths.
+	const std::filesystem::path cubeAssetDir =
+		std::filesystem::path(args.contentDir) / "textures" / "cubemaps";
+	std::string cubeManifestGuid;
+	{
+		std::string merr;
+		cubeManifestGuid = smvk::bake::EnsureBakeAssetGuid(
+			cubeAssetDir.generic_string(), smvk::bake::kBakeAssetKindCubemap,
+			std::string("cubemanifest:") + base, merr);
+		if (cubeManifestGuid.empty()) {
+			std::cerr << "[CUBE] bake-asset guid failed: " << merr << std::endl;
+			return false;
+		}
+	}
+	// Previous rows (guid reuse by capture position): the guid manifest
+	// when it already exists, else the legacy stem manifest (bare rows —
+	// payload guids unrecoverable there, so those rows mint fresh).
+	std::vector<smvk::CubemapManifestEntry> prevRows;
+	{
+		std::error_code ec;
+		std::filesystem::path prevPath = cubeAssetDir
+			/ (cubeManifestGuid + ".cubemanifest");
+		if (!std::filesystem::is_regular_file(prevPath, ec))
+			prevPath = cubeAssetDir / (base + ".cubemanifest");
+		if (std::filesystem::is_regular_file(prevPath, ec)) {
+			std::ifstream in(prevPath, std::ios::binary);
+			std::string text((std::istreambuf_iterator<char>(in)),
+				std::istreambuf_iterator<char>());
+			std::string perr;
+			if (!smvk::CubemapManifestParse(text, prevRows, perr)) {
+				std::cerr << "  [CUBE] previous manifest '"
+					<< prevPath.generic_string() << "' rejected (" << perr
+					<< ") - all captures mint fresh guids\n" << std::flush;
+				prevRows.clear();
+			}
+		}
+	}
+
 	// Artist-pinned extra probes (--cubemap-extra-pos): appended AFTER
 	// placement, flagged 'pin' in the manifest so the runtime sorts them
 	// first — a pinned probe wins weight ties (e.g. the capture exactly at
@@ -2680,6 +2727,30 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// pixel (tile lists; see environment.hlsli). Captures past 32 still
 	// cost bake time + ~2 MB pak each; the manifest truncation keeps the
 	// pinned rows, the rest clamp.
+	// Per-capture bake GUIDs (stable across rebakes): match each computed
+	// capture against the previous manifest's rows by cook-space position
+	// (1 mm epsilon — placement is deterministic for fixed args+scene)
+	// and pin flag, reusing the row guid (read from the row payload's
+	// sidecar when it exists); unmatched captures mint fresh. The KTX
+	// VFS path IS the guid path (textures/cubemaps/<guid>.ktx2).
+	std::vector<std::string> captureGuids(positions.size());
+	for (size_t cap = 0; cap < positions.size(); ++cap) {
+		std::string found;
+		for (const auto& old : prevRows) {
+			if (old.guid.empty()
+				|| !smvk::bake::IsBakeAssetGuid(old.guid))
+				continue;
+			if (old.pinned != (pinned[cap] != 0))
+				continue;
+			if (glm::length(old.position - positions[cap]) > 1e-3f)
+				continue;
+			found = old.guid;
+			break;
+		}
+		if (found.empty())
+			found = smvk::tour::GenerateUuid();
+		captureGuids[cap] = found;
+	}
 	if (positions.empty()) {
 		std::cerr << "  [CUBE] WARNING: no capture positions survived"
 			" (all grid points embedded?) - no cubemaps baked\n" << std::flush;
@@ -2712,7 +2783,6 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		const glm::vec3 origin = positions[cap];
 		const std::string captureName = positions.size() == 1
 			? base : base + "_" + std::to_string(cap);
-
 		// Store TRUE radiance (no /skyIntensity): the runtime's baked path
 		// scales only by the cubemap panel intensity, so a mirror
 		// reflecting a sun-lit wall matches looking at that wall directly.
@@ -2791,11 +2861,53 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 				<< werr << std::endl;
 			return false;
 		}
-		const std::string vfsPath = smvk::CubemapVfsPath(captureName);
+		// VFS path: guid-derived for multi-capture sets (the bake-asset
+		// path — stable across renames); the single-capture legacy path
+		// keeps its stem name (the runtime's direct <base>.ktx2 probe
+		// centers on the scene bounds — a 1-row manifest would move it
+		// to the capture point, so singles stay out of the manifest).
+		const bool multiCapture = positions.size() > 1;
+		const std::string vfsPath = multiCapture
+			? smvk::CubemapVfsPath(captureGuids[cap])
+			: smvk::CubemapVfsPath(captureName);
 		std::cerr << "  [CUBE] baked " << vfsPath << "  " << S << "x" << S
 			<< "x6 ggx-levels=" << levels << " rays=" << args.cubemapRays
 			<< " origin=(" << origin.x << "," << origin.y << "," << origin.z
 			<< ")  " << ktx.size() << " B\n" << std::flush;
+		// Loose payload + sidecar (the adoption anchor for the assetdb
+		// rescan + the rebake guid lookup; the pak blob below carries the
+		// same bytes under the same path). Best-effort: the pak blob is
+		// the runtime channel — a loose-write failure warns and continues.
+		{
+			const std::filesystem::path loosePath =
+				std::filesystem::path(args.contentDir) / vfsPath;
+			std::error_code ec;
+			std::filesystem::create_directories(loosePath.parent_path(), ec);
+			std::string payloadGuid = multiCapture
+				? captureGuids[cap]
+				: smvk::bake::PayloadBakeGuid(
+					loosePath.generic_string());
+			if (payloadGuid.empty())
+				payloadGuid = smvk::tour::GenerateUuid();
+			bool wrotePayload = false;
+			{
+				std::ofstream lf(loosePath,
+					std::ios::binary | std::ios::trunc);
+				if (lf) {
+					lf.write(reinterpret_cast<const char*>(ktx.data()),
+						std::streamsize(ktx.size()));
+					wrotePayload = !!lf;
+				}
+			}
+			std::string serr;
+			if (!wrotePayload || !smvk::bake::WriteBakeAssetSidecar(
+					loosePath.generic_string(), payloadGuid,
+					smvk::bake::kBakeAssetKindCubemap, "", serr)) {
+				std::cerr << "  [CUBE] loose payload/sidecar write failed for "
+					<< vfsPath << (serr.empty() ? "" : std::string(": ") + serr)
+					<< " - continuing with the pak blob only\n" << std::flush;
+			}
+		}
 		out.emplace_back(vfsPath, std::move(ktx));
 
 		// Debug PNGs from the same preconvolved chains the KTX encodes
@@ -2835,7 +2947,11 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// cook/world-space origin + influence/fade radii. Served as a Texture
 	// blob (PakBackend serves Texture blobs by VFS path) and consumed by
 	// WorldRenderer::LoadCubemaps. Single captures need none (the runtime
-	// centers a global probe on the scene bounds itself).
+	// centers a global probe on the scene bounds itself — a 1-row
+	// manifest would move it to the capture point).
+	// Rows carry their capture GUIDs (see CubemapManifestEntry::guid):
+	// rebakes match by position to reuse them. The manifest itself is a
+	// bake asset too (guid path + sidecar, registered in the pak).
 	if (positions.size() > 1) {
 		// Radii ride the parallel radii[] vector (filled per branch:
 		// explicit 10/5, grid tight to the spacing, octree per-cell,
@@ -2845,20 +2961,48 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		std::vector<smvk::CubemapManifestEntry> rows;
 		rows.reserve(positions.size());
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
-			const std::string captureName = base + "_" + std::to_string(cap);
 			smvk::CubemapManifestEntry e{};
-			e.vfsPath = smvk::CubemapVfsPath(captureName);
+			e.vfsPath = smvk::CubemapVfsPath(captureGuids[cap]);
 			e.position = positions[cap];
 			e.influenceRadius = radii.size() == positions.size() ? radii[cap].x : 10.0f;
 			e.fadeRadius = radii.size() == positions.size() ? radii[cap].y : 5.0f;
 			e.pinned = cap < pinned.size() && pinned[cap] != 0;
+			e.guid = captureGuids[cap];
 			rows.push_back(std::move(e));
 		}
 		const std::string text = smvk::CubemapManifestSerialize(rows);
-		const std::string manifestPath = smvk::CubemapManifestVfsPath(base);
-		out.emplace_back(manifestPath,
+		const std::string manifestVfs = smvk::CubemapManifestVfsPath(cubeManifestGuid);
+		outManifestGuid = cubeManifestGuid;
+		out.emplace_back(manifestVfs,
 			std::vector<uint8_t>(text.begin(), text.end()));
-		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
+		// Loose manifest + sidecar (the adoption anchor + the rebake
+		// row-matching source). Best-effort like the payloads.
+		{
+			const std::filesystem::path looseManifest =
+				std::filesystem::path(args.contentDir) / manifestVfs;
+			std::error_code ec;
+			std::filesystem::create_directories(
+				looseManifest.parent_path(), ec);
+			bool wroteManifest = false;
+			{
+				std::ofstream mf(looseManifest,
+					std::ios::binary | std::ios::trunc);
+				if (mf) {
+					mf << text;
+					wroteManifest = !!mf;
+				}
+			}
+			std::string serr;
+			if (!wroteManifest || !smvk::bake::WriteBakeAssetSidecar(
+					looseManifest.generic_string(), cubeManifestGuid,
+					smvk::bake::kBakeAssetKindCubemap,
+					std::string("cubemanifest:") + base, serr)) {
+				std::cerr << "  [CUBE] loose manifest/sidecar write failed for "
+					<< manifestVfs << (serr.empty() ? "" : std::string(": ") + serr)
+					<< " - continuing with the pak blob only\n" << std::flush;
+			}
+		}
+		std::cerr << "  [CUBE] manifest " << manifestVfs << "  probes="
 			<< rows.size() << " pinned="
 			<< size_t(std::count(pinned.begin(), pinned.end(), 1))
 			<< "\n" << std::flush;
@@ -3403,6 +3547,9 @@ int main(int argc, char** argv) {
 	// Meshes stamped via Frostbite UV transfer (--lods on: the sibling
 	// chain cooks first and transfers the LOD0 layout).
 	uint32_t lmLodTransferred = 0;
+	// Bake-asset GUID of this cook's .sglm (set when the atlas writes;
+	// the Gi registration below records it instead of the pak stem).
+	std::string lightmapAtlasGuid;
 	if (args.lightmap) {
 		using namespace smvk::gi;
 		const auto lmT0 = std::chrono::steady_clock::now();
@@ -4612,13 +4759,27 @@ int main(int argc, char** argv) {
 		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
-		// Write the atlas next to the pak: <contentDir>/gi/<scene>.sglm.
+		// Write the atlas next to the pak as a BAKE ASSET: gi/<guid>.sglm
+		// + a .meta sidecar (kind=gi, logical=lightmap:<scene>). First
+		// bake mints the guid; rebakes reuse it (sidecar scan), so the
+		// pak's Gi binding (below) stays stable across renames — the
+		// human stem no longer names anything the runtime loads.
 		if (!work.empty()) {
 			std::filesystem::path pakPath(args.outPak);
 			const std::string sceneId = pakPath.stem().generic_string();
-			std::filesystem::path sglmPath =
-				std::filesystem::path(args.contentDir) / "gi"
-				/ (sceneId + ".sglm");
+			const std::filesystem::path giDir =
+				std::filesystem::path(args.contentDir) / "gi";
+			std::string guidErr;
+			const std::string atlasGuid = smvk::bake::EnsureBakeAssetGuid(
+				giDir.generic_string(), smvk::bake::kBakeAssetKindGi,
+				std::string("lightmap:") + sceneId, guidErr);
+			if (atlasGuid.empty()) {
+				std::cerr << "[LM] bake-asset guid failed: " << guidErr
+					<< std::endl;
+				return 1;
+			}
+			lightmapAtlasGuid = atlasGuid;
+			std::filesystem::path sglmPath = giDir / (atlasGuid + ".sglm");
 			std::error_code ec;
 			std::filesystem::create_directories(sglmPath.parent_path(), ec);
 			std::string werr;
@@ -4654,6 +4815,21 @@ int main(int argc, char** argv) {
 			}
 			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
 				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
+			// Identity sidecar (kind=gi, logical=lightmap:<scene>): the
+			// adoption anchor for the assetdb rescan + the rebake lookup.
+			// A sidecar-write failure loses the identity (the next bake
+			// would mint a fresh guid and orphan this file) — fail loudly.
+			{
+				std::string serr;
+				if (!smvk::bake::WriteBakeAssetSidecar(
+						sglmPath.generic_string(), atlasGuid,
+						smvk::bake::kBakeAssetKindGi,
+						std::string("lightmap:") + sceneId, serr)) {
+					std::cerr << "[LM] atlas sidecar write failed: " << serr
+						<< std::endl;
+					return 1;
+				}
+			}
 		// Raw-atlas debug PNG next to the atlas (<scene>_atlas.png):
 		// the baked payload itself (lobe 0, editor flat-view display
 		// mapping), NOT the uv2-unwrapped geometry draw the editor
@@ -4981,8 +5157,10 @@ int main(int argc, char** argv) {
 		}
 			// Name the atlas inside the (single) cooked cluster so the
 			// runtime resolves gi/<name>.sglm from the pak, not the id.
+			// The name is the bake GUID (stable across renames), or the
+			// pak stem when no atlas baked this cook.
 			cluster->RegisterGiBinding(smvk::GiBinding::Kind::Lightmap,
-				sceneId);
+				!lightmapAtlasGuid.empty() ? lightmapAtlasGuid : sceneId);
 		}
 		// Lobe selection diagnostics: per mesh, the candidate counts'
 		// relative irradiance errors and the kept count. "Nothing passed"
@@ -5045,8 +5223,10 @@ int main(int argc, char** argv) {
 	// --lightmap (works on unstamped uploads either way).
 	// ---------------------------------------------------------------------------
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> cubemapKtx;
+	std::string cubemapManifestGuid;
 	if (args.cubemap) {
-		if (!BakePreconvolvedCubemaps(*cluster, args, cubemapKtx))
+		if (!BakePreconvolvedCubemaps(*cluster, args, cubemapKtx,
+				cubemapManifestGuid))
 			return 1;
 	}
 
@@ -5160,11 +5340,61 @@ int main(int argc, char** argv) {
 	}
 
 	// Probe sidecar names, registered on every cooked cluster (the
-	// serializer unions them into one pak-level Gi registry).
+	// serializer unions them into one pak-level Gi registry). Bake-asset
+	// probes resolve to their bake GUIDs (sidecar scan by logical):
+	// unguided names pass through (legacy stem-named sidecars still
+	// resolve at runtime).
 	for (const std::string& probe : args.giProbes) {
+		std::string name = probe;
+		const std::string guided = smvk::bake::FindBakeAssetGuid(
+			(std::filesystem::path(args.contentDir) / "gi")
+				.generic_string(),
+			smvk::bake::kBakeAssetKindGi,
+			std::string("probe:") + probe);
+		if (!guided.empty()) {
+			name = guided;
+			std::cout << "Probe GI '" << probe << "' -> bake guid '"
+				<< guided << "'\n";
+		}
 		for (auto& sc : sceneClusters)
-			sc->RegisterGiBinding(smvk::GiBinding::Kind::Probe, probe);
-		std::cout << "Registered probe GI '" << probe << "'\n";
+			sc->RegisterGiBinding(smvk::GiBinding::Kind::Probe, name);
+		std::cout << "Registered probe GI '" << name << "'\n";
+	}
+	// Bake-asset cubemap manifest (the stage above minted it when the set
+	// baked > 1 capture): same registry mechanism — the runtime loads the
+	// guid manifest first, then the legacy stem bases.
+	if (!cubemapManifestGuid.empty()) {
+		for (auto& sc : sceneClusters)
+			sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
+				cubemapManifestGuid);
+		std::cout << "Registered cubemap manifest GI '"
+			<< cubemapManifestGuid << "'\n";
+	}
+	// Loose volume manifests (GiBaker standalone bakes these; the cook
+	// only discovers + registers): sidecar scan by logical in the
+	// content's gi/ dir. Missing = unbaked (the runtime falls back to
+	// the scene-id stem, then to "not baked yet").
+	{
+		const std::string giDir =
+			(std::filesystem::path(args.contentDir) / "gi")
+				.generic_string();
+		std::filesystem::path pakPath(args.outPak);
+		const std::string sceneId = pakPath.stem().generic_string();
+		const std::pair<smvk::GiBinding::Kind, const char*> manifestKinds[2] = {
+			{ smvk::GiBinding::Kind::RegManifest, "regmanifest" },
+			{ smvk::GiBinding::Kind::CvolManifest, "cvolmanifest" },
+		};
+		for (const auto& [kind, logicalBase] : manifestKinds) {
+			const std::string guid = smvk::bake::FindBakeAssetGuid(giDir,
+				smvk::bake::kBakeAssetKindGi,
+				std::string(logicalBase) + ":" + sceneId);
+			if (guid.empty())
+				continue;
+			for (auto& sc : sceneClusters)
+				sc->RegisterGiBinding(kind, guid);
+			std::cout << "Registered " << logicalBase << " GI '" << guid
+				<< "' (scene '" << sceneId << "')\n";
+		}
 	}
 
 	smvk::PakWriter writer;

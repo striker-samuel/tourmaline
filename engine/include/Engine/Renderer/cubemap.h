@@ -115,19 +115,26 @@ std::string CubemapVfsPath(const std::string& name);
 // meters the trace BVH uses (cook applies the scene global transforms, so
 // this matches World::ComputeSceneBounds space at runtime). Single-probe
 // bakes need no manifest (the runtime centers a global probe itself).
+// Bake-asset rows (see CubemapManifestEntry::guid) append
+// "guid <32hex>"; the runtime ignores it.
 std::string CubemapManifestVfsPath(const std::string& name);
 
 // One manifest row: which KTX to load + where its probe lives. A row may
 // carry an optional 7th "pin" token (written by --cubemap-extra-pos):
 // pinned rows sort before all others at load, so an artist-placed probe
 // wins weight ties against overlapping baked probes (ties keep the first
-// row). Old 6-token rows parse with pinned=false.
+// row). Old 6-token rows parse with pinned=false. Bake-asset rows carry
+// a trailing "guid <32hex>" (the capture's asset GUID — see
+// Engine/Asset/bake_asset.h); the runtime ignores it (it loads by path),
+// but rebakes match rows by position to reuse it. Rows without one parse
+// with an empty guid.
 struct CubemapManifestEntry {
 	std::string vfsPath;
 	glm::vec3 position{ 0.0f };
 	float influenceRadius = 10.0f;
 	float fadeRadius = 5.0f;
 	bool pinned = false;
+	std::string guid; // bake-asset GUID of the capture ("" = legacy row)
 };
 
 // Serializes entries to the manifest text format (one row per line).

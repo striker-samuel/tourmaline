@@ -36,11 +36,21 @@ namespace smvk {
 	using ClusterCameraHandle = Handle<SceneCamera>;
 
 	// Cooked GI binding (named sidecar payload): the GI payloads themselves
-	// (probe volumes, lightmap atlases) live outside the pak; this names
-	// the sidecar stem (gi/<name>.sggi / .sglm) a cluster's scenes were
-	// cooked against. See Cluster::giBindings.
+	// (probe volumes, lightmap atlases, manifests, cubemap captures) live
+	// outside the pak; this names the sidecar (gi/<name>.sggi / .sglm /
+	// .regmanifest / .cvmanifest, textures/cubemaps/<name>.cubemanifest)
+	// a cluster's scenes were cooked against. Since the bake-asset
+	// migration the name is the payload/manifest GUID (see
+	// Engine/Asset/bake_asset.h) — legacy paks still record human stems,
+	// which resolve the same way. See Cluster::giBindings.
 	struct GiBinding {
-		enum class Kind : uint32_t { Probe = 0, Lightmap = 1 };
+		enum class Kind : uint32_t {
+			Probe = 0,      // gi/<name>.sggi world-field octree
+			Lightmap = 1,   // gi/<name>.sglm lightmap atlas
+			RegManifest = 2,   // gi/<name>.regmanifest (regular volumes)
+			CvolManifest = 3,  // gi/<name>.cvmanifest (convex volumes)
+			Cubemap = 4,    // textures/cubemaps/<name>.cubemanifest
+		};
 		Kind kind = Kind::Probe;
 		std::string name;
 	};

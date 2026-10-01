@@ -20,6 +20,7 @@
 #include <windows.h>
 #endif
 
+#include <Engine/Asset/bake_asset.h> // bake GUID resolution (live view)
 #include <Engine/Asset/tour.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -394,8 +395,70 @@ void EditorApp::BakeGI() {
 		});
 }
 
+// Bake-asset GI bindings for the hosted live view (see
+// Engine/Asset/bake_asset.h): resolves the current scene's bake GUIDs
+// (sidecar scan by logical — project content first, bundled content
+// second, mirroring the hosted VFS priority) and registers them on the
+// editor world's clusters, so the hosted view's binding-first loaders
+// follow rebakes/renames. Session state, re-derived on every world
+// build + after every Bake GI (never persisted — the sidecars are the
+// record). glTF sessions only: pak opens carry their own Gi registry
+// blob (untouched here).
+void EditorApp::RefreshLiveViewGiBindings() {
+	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+		return;
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	cl->giBindings.clear();
+	const std::string scene = SceneIdForHost();
+	struct DirSet { std::string gi; std::string cubes; };
+	std::vector<DirSet> dirs;
+	if (!m_projectRoot.empty()) {
+		namespace fs = std::filesystem;
+		dirs.push_back({
+			(fs::path(m_projectRoot) / "gi").generic_string(),
+			(fs::path(m_projectRoot) / "textures" / "cubemaps")
+				.generic_string() });
+	}
+	dirs.push_back({ "content/gi", "content/textures/cubemaps" });
+	auto findGi = [&](const std::string& logical) {
+		for (const auto& d : dirs) {
+			const std::string g = smvk::bake::FindBakeAssetGuid(
+				d.gi, smvk::bake::kBakeAssetKindGi, logical);
+			if (!g.empty())
+				return g;
+		}
+		return std::string();
+	};
+	auto findCube = [&](const std::string& logical) {
+		for (const auto& d : dirs) {
+			const std::string g = smvk::bake::FindBakeAssetGuid(
+				d.cubes, smvk::bake::kBakeAssetKindCubemap, logical);
+			if (!g.empty())
+				return g;
+		}
+		return std::string();
+	};
+	auto reg = [&](smvk::GiBinding::Kind kind, const std::string& guid,
+			const char* label) {
+		if (guid.empty())
+			return;
+		cl->RegisterGiBinding(kind, guid);
+		std::cerr << "[GI] live view " << label << " -> bake guid '"
+			<< guid << "'\n";
+	};
+	reg(smvk::GiBinding::Kind::Probe, findGi("probe:" + scene), "probe");
+	reg(smvk::GiBinding::Kind::Lightmap,
+		findGi("lightmap:" + scene), "lightmap");
+	reg(smvk::GiBinding::Kind::RegManifest,
+		findGi("regmanifest:" + scene), "regmanifest");
+	reg(smvk::GiBinding::Kind::CvolManifest,
+		findGi("cvolmanifest:" + scene), "cvolmanifest");
+	reg(smvk::GiBinding::Kind::Cubemap,
+		findCube("cubemanifest:" + scene), "cubemanifest");
+}
+
 void EditorApp::PollBakeProcess() {
-	if (!m_bakeRunning)
+	if (m_bakeRunning)
 		return;
 	// Drain the live pipe feed every frame (same pattern as the cook).
 	auto drainFeed = [this]() {
@@ -428,6 +491,10 @@ void EditorApp::PollBakeProcess() {
 		// The sidecars now match the baked definition: record it so a
 		// later cook can warn when they go stale.
 		m_giBakedHash = m_giBakePendingHash;
+		// Re-resolve the fresh bake GUIDs onto the editor world's
+		// clusters BEFORE the in-place rebind below (its sidecar
+		// loaders read the registry).
+		RefreshLiveViewGiBindings();
 		// The live view picks the fresh sidecars up IN PLACE (RebindWorld
 		// re-runs the sidecar loaders over the same world — the renderer
 		// never relaunches).

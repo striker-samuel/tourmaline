@@ -1491,6 +1491,12 @@ private:
 	// on failure. Frame-boundary callers only (DrawFrame consumption).
 	bool LaunchWysiwyg();
 	void StopWysiwyg();
+	// Bake-asset GI bindings for the hosted live view (resolves the
+	// current scene's bake GUIDs and registers them on the editor
+	// world's clusters — see RefreshLiveViewGiBindings in editor_cook).
+	// Runs at the end of every glTF scene load (fresh world) and after
+	// every successful Bake GI, before the hosted view (re)binds.
+	void RefreshLiveViewGiBindings();
 	// Hosted target extent (current launch snapshot; the dump reads it).
 	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
 	// EXTENT DRIFT watch (aspect fix): the hosted target is fixed per

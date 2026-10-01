@@ -50,6 +50,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bake.h>
 #include <Engine/GI/cubemap_volume.h>
@@ -230,6 +231,10 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "GiBaker --content-dir content --scene sponza\n"
 		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.gltf]\n"
+		<< "         (bake outputs are BAKE ASSETS: the --out/--regular-out\n"
+		<< "         stems are logical names; payloads live at guid-derived\n"
+		<< "         paths with .meta sidecars (see Engine/Asset/bake_asset.h)\n"
+		<< "         — renames never orphan bakes, rebakes reuse GUIDs)\n"
 		<< "         [--rays 1024] [--bounces 3] [--error-rays 32]\n"
 		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
 		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
@@ -265,8 +270,8 @@ void Usage() {
 		<< "             priority 10\n"
 		<< "             spacing 0.5\n"
 		<< "             capture-spacing 1.5\n"
-		<< "         Writes gi/<scene>_<name>.cvol + updates the runtime\n"
-		<< "         manifest gi/<scene>.cvmanifest (one vfs path per line).\n"
+		<< "         Writes gi/<guid>.cvol + updates the runtime\n"
+		<< "         manifest (a guid .cvmanifest; rows are '<guid> <vfsPath>').\n"
 		<< "         Volumes blend over the .sggi world field by priority.\n"
 		<< "GiBaker --scene bistro --lm-probe N --uniform-albedo off\n"
 		<< "         [--sun-... --sky-intensity ...]: lightmap-chain diagnostic\n"
@@ -883,6 +888,92 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 	return true;
 }
 
+// Content-relative VFS path for a host path under the content root
+// ("F:/x/content/gi/<g>.sgrv" -> "gi/<g>.sgrv"); pass-through otherwise
+// (the runtime can only resolve content-relative rows — callers warn).
+std::string VfsRelPath(const std::string& contentDir,
+	const std::string& hostPath) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const std::string absHost = fs::absolute(fs::path(hostPath), ec)
+		.generic_string();
+	const std::string absRoot = fs::absolute(fs::path(contentDir), ec)
+		.generic_string();
+	if (!absHost.empty() && !absRoot.empty()
+		&& absHost.size() > absRoot.size()
+		&& absHost.compare(0, absRoot.size(), absRoot) == 0
+		&& (absHost[absRoot.size()] == '/' || absHost[absRoot.size()] == '\\')) {
+		std::string rel = absHost.substr(absRoot.size() + 1);
+		for (char& c : rel)
+			if (c == '\\')
+				c = '/';
+		return rel;
+	}
+	return hostPath;
+}
+
+// Merge one bake row into a volume manifest (shared by the reg/cvol
+// writers): reads the guid manifest when it exists, else the legacy
+// stem manifest in the same dir; keeps every existing line except a row
+// carrying the same "# <note>" (the rebaked volume replaces its own
+// row — same logical volume, possibly a new guid path); appends the new
+// row; hand/legacy rows (no recognizable note) pass through verbatim so
+// hand edits survive rebakes. Returns the merged lines (no header — the
+// caller writes its own).
+std::vector<std::string> MergeManifestRows(
+	const std::string& manifestGuidPath,
+	const std::string& legacyManifestPath,
+	const std::string& newRow,
+	const std::string& newNote) {
+	auto readLines = [](const std::string& path,
+			std::vector<std::string>& lines) {
+		std::ifstream in(path, std::ios::binary);
+		if (!in)
+			return;
+		std::string cur;
+		while (std::getline(in, cur)) {
+			while (!cur.empty()
+				&& (cur.back() == '\r' || cur.back() == ' '
+					|| cur.back() == '\t'))
+				cur.pop_back();
+			if (!cur.empty())
+				lines.push_back(cur);
+		}
+	};
+	auto rowNote = [](const std::string& line) {
+		const size_t hash = line.find('#');
+		if (hash == std::string::npos)
+			return std::string();
+		std::string note = line.substr(hash + 1);
+		size_t b = 0;
+		while (b < note.size() && (note[b] == ' ' || note[b] == '\t'))
+			++b;
+		size_t e = note.size();
+		while (e > b && (note[e - 1] == ' ' || note[e - 1] == '\t'))
+			--e;
+		return note.substr(b, e - b);
+	};
+	std::vector<std::string> lines;
+	readLines(manifestGuidPath, lines);
+	if (lines.empty())
+		readLines(legacyManifestPath, lines);
+	std::vector<std::string> merged;
+	merged.reserve(lines.size() + 1);
+	bool replaced = false;
+	for (const std::string& l : lines) {
+		if (!newNote.empty() && !replaced && rowNote(l) == newNote) {
+			merged.push_back(newRow);
+			replaced = true;
+			continue;
+		}
+		if (std::find(merged.begin(), merged.end(), l) == merged.end())
+			merged.push_back(l);
+	}
+	if (!replaced)
+		merged.push_back(newRow);
+	return merged;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -941,6 +1032,33 @@ int main(int argc, char** argv) {
 			sceneId = "scene";
 		args.out = (std::filesystem::path(args.contentDir) / "gi"
 			/ (sceneId + ".sggi")).generic_string();
+	}
+	// Bake-asset identity for the world-field octree (see
+	// Engine/Asset/bake_asset.h): the --out stem is the LOGICAL name;
+	// the payload lives at its guid path (fresh guid at first bake,
+	// stable across rebakes via the sidecar). Everything downstream
+	// (write, verify, log) sees the guid path.
+	std::string sggiLogical;
+	std::string sggiGuid;
+	{
+		const std::filesystem::path outp(args.out);
+		sggiLogical = std::string("probe:")
+			+ outp.stem().generic_string();
+		std::string guidErr;
+		sggiGuid = smvk::bake::EnsureBakeAssetGuid(
+			outp.parent_path().generic_string(),
+			smvk::bake::kBakeAssetKindGi, sggiLogical, guidErr);
+		if (sggiGuid.empty()) {
+			std::cerr << "sggi bake-asset guid failed: " << guidErr
+				<< std::endl;
+			return 1;
+		}
+		const std::string guidedOut =
+			(outp.parent_path() / (sggiGuid + ".sggi")).generic_string();
+		if (guidedOut != args.out)
+			std::cout << "sggi bake asset: '" << args.out << "' -> '"
+				<< guidedOut << "'\n";
+		args.out = guidedOut;
 	}
 
 	std::cout << "GiBaker: scene '" << sceneId << "' from "
@@ -1225,6 +1343,35 @@ int main(int argc, char** argv) {
 	// activate the runtime dynamic-object grids (artist OBBs + density
 	// via --reg-min/--reg-max/--reg-spacing; see --scan-interior).
 	if (!args.regularOut.empty()) {
+		// Bake-asset identity for the regular volume (see
+		// Engine/Asset/bake_asset.h): the --regular-out stem is the
+		// LOGICAL name; the payload lives at its guid path (fresh guid
+		// at first bake, stable across rebakes via the sidecar).
+		// Everything downstream (write, verify, log, manifest row) sees
+		// the guid path.
+		std::string regVolGuid;
+		std::string regVolNote;
+		{
+			const std::filesystem::path outp(args.regularOut);
+			regVolNote = outp.stem().generic_string();
+			std::string guidErr;
+			regVolGuid = smvk::bake::EnsureBakeAssetGuid(
+				outp.parent_path().generic_string(),
+				smvk::bake::kBakeAssetKindGi,
+				std::string("gvolume:") + regVolNote, guidErr);
+			if (regVolGuid.empty()) {
+				std::cerr << "regular-volume bake-asset guid failed: "
+					<< guidErr << std::endl;
+				return 1;
+			}
+			const std::string guidedOut =
+				(outp.parent_path() / (regVolGuid + ".sgrv"))
+					.generic_string();
+			if (guidedOut != args.regularOut)
+				std::cout << "regular volume bake asset: '" << args.regularOut
+					<< "' -> '" << guidedOut << "'\n";
+			args.regularOut = guidedOut;
+		}
 		auto parseVec3 = [](const std::string& s, glm::vec3& v) {
 			return std::sscanf(s.c_str(), "%f,%f,%f", &v.x, &v.y, &v.z) == 3;
 		};
@@ -1301,6 +1448,17 @@ int main(int argc, char** argv) {
 		}
 		std::cout << "Wrote " << args.regularOut << " ("
 			<< std::filesystem::file_size(args.regularOut) << " B on disk)\n";
+		// Identity sidecar (kind=gi; the logical rides the Ensure call
+		// above). A sidecar failure loses the identity — fail loudly.
+		{
+			std::string serr;
+			if (!smvk::bake::WriteBakeAssetSidecar(args.regularOut,
+					regVolGuid, smvk::bake::kBakeAssetKindGi, "", serr)) {
+				std::cerr << "Regular sidecar write failed: " << serr
+					<< std::endl;
+				return 1;
+			}
+		}
 		if (args.verify) {
 			smvk::gi::SgRegularVolume reloaded;
 			std::string verr;
@@ -1311,6 +1469,64 @@ int main(int argc, char** argv) {
 			std::cout << "  verify: " << reloaded.VoxelCount() << " voxels reloaded OK\n";
 			if (reloaded.VoxelCount() != rvol.VoxelCount())
 				return 1;
+		}
+		// Runtime manifest (guid-named, logical regmanifest:<scene>): the
+		// row carries this bake's guid + VFS path; existing rows (guid or
+		// legacy/hand) merge by content so hand edits survive rebakes.
+		{
+			const std::filesystem::path giDir =
+				std::filesystem::path(args.contentDir) / "gi";
+			std::string guidErr;
+			const std::string manifestGuid = smvk::bake::EnsureBakeAssetGuid(
+				giDir.generic_string(), smvk::bake::kBakeAssetKindGi,
+				std::string("regmanifest:") + sceneId, guidErr);
+			if (manifestGuid.empty()) {
+				std::cerr << "Regular manifest guid failed: " << guidErr
+					<< std::endl;
+				return 1;
+			}
+			const std::filesystem::path manifestPath =
+				giDir / (manifestGuid + ".regmanifest");
+			const std::filesystem::path legacyManifestPath =
+				giDir / (sceneId + ".regmanifest");
+			const std::string rowVfs = VfsRelPath(args.contentDir,
+				args.regularOut);
+			if (rowVfs.compare(0, 3, "gi/") != 0)
+				std::cout << "Regular manifest row '" << rowVfs
+					<< "' is outside the content tree - the runtime can "
+					"only resolve content-relative rows\n";
+			const std::string row = regVolGuid + " " + rowVfs
+				+ "  # " + regVolNote;
+			std::vector<std::string> merged = MergeManifestRows(
+				manifestPath.generic_string(),
+				legacyManifestPath.generic_string(), row, regVolNote);
+			std::error_code ec;
+			std::filesystem::create_directories(
+				manifestPath.parent_path(), ec);
+			{
+				std::ofstream out(manifestPath,
+					std::ios::binary | std::ios::trunc);
+				if (!out) {
+					std::cerr << "Regular manifest write failed: "
+						<< manifestPath.generic_string() << std::endl;
+					return 1;
+				}
+				out << "# regular GI volumes (GiBaker --regular-out; "
+					"<guid> <vfsPath> rows, hand lines kept)\n";
+				for (const std::string& l : merged)
+					out << l << "\n";
+			}
+			std::string serr;
+			if (!smvk::bake::WriteBakeAssetSidecar(
+					manifestPath.generic_string(), manifestGuid,
+					smvk::bake::kBakeAssetKindGi,
+					std::string("regmanifest:") + sceneId, serr)) {
+				std::cerr << "Regular manifest sidecar write failed: "
+					<< serr << std::endl;
+				return 1;
+			}
+			std::cout << "Manifest " << manifestPath.generic_string()
+				<< ": " << merged.size() << " volume(s)\n";
 		}
 		// Fall through only when another stage was requested explicitly
 		// (--out adaptive A/B or a convex bake pending below: --cv-spec
@@ -1349,6 +1565,8 @@ int main(int argc, char** argv) {
 			return 2;
 		}
 		std::vector<std::string> manifestLines;
+		const std::filesystem::path cvolGiDir =
+			std::filesystem::path(args.contentDir) / "gi";
 		for (CvSpecVolume& spec : specVols) {
 			smvk::gi::CvBakeConfig cfg{};
 			cfg.captureDirs = std::max(args.cvDirs, 64u);
@@ -1369,9 +1587,22 @@ int main(int argc, char** argv) {
 					<< "'\n";
 				return 1;
 			}
-			const std::string outPath = (std::filesystem::path(args.contentDir)
-				/ "gi" / (sceneId + "_" + spec.def.name + ".cvol"))
-				.generic_string();
+			// Bake-asset identity (see the regmanifest flow): the spec
+			// name is the LOGICAL key; the payload lives at its guid
+			// path. Rebakes reuse the guid (stable runtime paths).
+			std::string guidErr;
+			const std::string volGuid = smvk::bake::EnsureBakeAssetGuid(
+				cvolGiDir.generic_string(),
+				smvk::bake::kBakeAssetKindGi,
+				std::string("cvol:") + sceneId + ":" + spec.def.name,
+				guidErr);
+			if (volGuid.empty()) {
+				std::cerr << "Convex bake-asset guid failed for '"
+					<< spec.def.name << "': " << guidErr << std::endl;
+				return 1;
+			}
+			const std::string outPath = (cvolGiDir
+				/ (volGuid + ".cvol")).generic_string();
 			{
 				std::filesystem::path out(outPath);
 				std::error_code ec;
@@ -1384,6 +1615,15 @@ int main(int argc, char** argv) {
 			}
 			std::cout << "Wrote " << outPath << " ("
 				<< std::filesystem::file_size(outPath) << " B on disk)\n";
+			{
+				std::string serr;
+				if (!smvk::bake::WriteBakeAssetSidecar(outPath, volGuid,
+						smvk::bake::kBakeAssetKindGi, "", serr)) {
+					std::cerr << "Convex sidecar write failed: " << serr
+						<< std::endl;
+					return 1;
+				}
+			}
 			if (args.verify) {
 				smvk::gi::CvVolume reloaded;
 				std::string verr;
@@ -1398,35 +1638,108 @@ int main(int argc, char** argv) {
 				if (reloaded.VoxelCount() != vol.VoxelCount())
 					return 1;
 			}
-			manifestLines.push_back("gi/" + sceneId + "_" + spec.def.name
-				+ ".cvol");
+			manifestLines.push_back(volGuid + " "
+				+ VfsRelPath(args.contentDir, outPath)
+				+ "  # " + spec.def.name);
 		}
-		// Runtime manifest (one vfs path per line): merge with the
-		// existing file so hand-edited entries survive re-bakes.
+		// Runtime manifest (guid-named, logical cvolmanifest:<scene>):
+		// this bake's rows first (rebaked volumes replace their own rows
+		// by spec-name note), then every surviving line (guid, legacy or
+		// hand) — hand-edited entries survive rebakes.
 		{
-			const std::string manifestPath = (std::filesystem::path(args.contentDir)
-				/ "gi" / (sceneId + ".cvmanifest")).generic_string();
+			std::string guidErr;
+			const std::string manifestGuid =
+				smvk::bake::EnsureBakeAssetGuid(
+					cvolGiDir.generic_string(),
+					smvk::bake::kBakeAssetKindGi,
+					std::string("cvolmanifest:") + sceneId, guidErr);
+			if (manifestGuid.empty()) {
+				std::cerr << "Convex manifest guid failed: " << guidErr
+					<< std::endl;
+				return 1;
+			}
+			const std::filesystem::path manifestPath =
+				cvolGiDir / (manifestGuid + ".cvmanifest");
+			const std::filesystem::path legacyManifestPath =
+				cvolGiDir / (sceneId + ".cvmanifest");
 			std::vector<std::string> lines;
-			{
-				std::ifstream in(manifestPath);
+			// Merge helper: keep this bake's rows, then every surviving
+			// line of the previous manifests (guid manifest first, then
+			// the legacy stem one), minus exact duplicates.
+			auto readLines = [](const std::string& path,
+					std::vector<std::string>& out) {
+				std::ifstream in(path, std::ios::binary);
+				if (!in)
+					return;
 				std::string cur;
 				while (std::getline(in, cur)) {
-					while (!cur.empty() && (cur.back() == '\r' || cur.back() == ' '))
+					while (!cur.empty() && (cur.back() == '\r'
+						|| cur.back() == ' '))
 						cur.pop_back();
-					if (!cur.empty() && cur[0] != '#'
-						&& std::find(lines.begin(), lines.end(), cur) == lines.end())
-						lines.push_back(cur);
+					if (!cur.empty() && cur[0] != '#')
+						out.push_back(cur);
 				}
+			};
+			std::vector<std::string> oldRows;
+			readLines(manifestPath.generic_string(), oldRows);
+			if (oldRows.empty())
+				readLines(legacyManifestPath.generic_string(), oldRows);
+			for (const std::string& add : manifestLines) {
+				// Replace the row carrying the same spec note (the
+				// rebaked volume's new guid path), else append.
+				auto rowNote = [](const std::string& line) {
+					const size_t hash = line.find('#');
+					if (hash == std::string::npos)
+						return std::string();
+					std::string note = line.substr(hash + 1);
+					size_t b = 0;
+					while (b < note.size() && (note[b] == ' '
+						|| note[b] == '\t'))
+						++b;
+					size_t e = note.size();
+					while (e > b && (note[e - 1] == ' '
+						|| note[e - 1] == '\t'))
+						--e;
+					return note.substr(b, e - b);
+				};
+				const std::string note = rowNote(add);
+				bool replaced = false;
+				for (std::string& old : oldRows) {
+					if (!note.empty() && rowNote(old) == note) {
+						old = add;
+						replaced = true;
+						break;
+					}
+				}
+				if (!replaced
+					&& std::find(oldRows.begin(), oldRows.end(), add)
+						== oldRows.end())
+					oldRows.push_back(add);
 			}
-			for (const std::string& add : manifestLines)
-				if (std::find(lines.begin(), lines.end(), add) == lines.end())
-					lines.push_back(add);
-			std::ofstream out(manifestPath, std::ios::trunc);
-			out << "# convex GI volumes (GiBaker --cv-spec; one vfs path per line)\n";
-			for (const std::string& l : lines)
-				out << l << "\n";
-			std::cout << "Manifest " << manifestPath << ": " << lines.size()
-				<< " volume(s)\n";
+			{
+				std::ofstream out(manifestPath,
+					std::ios::binary | std::ios::trunc);
+				if (!out) {
+					std::cerr << "Convex manifest write failed: "
+						<< manifestPath.generic_string() << std::endl;
+					return 1;
+				}
+				out << "# convex GI volumes (GiBaker --cv-spec; "
+					"<guid> <vfsPath> rows, hand lines kept)\n";
+				for (const std::string& l : oldRows)
+					out << l << "\n";
+			}
+			std::string serr;
+			if (!smvk::bake::WriteBakeAssetSidecar(
+					manifestPath.generic_string(), manifestGuid,
+					smvk::bake::kBakeAssetKindGi,
+					std::string("cvolmanifest:") + sceneId, serr)) {
+				std::cerr << "Convex manifest sidecar write failed: "
+					<< serr << std::endl;
+				return 1;
+			}
+			std::cout << "Manifest " << manifestPath.generic_string()
+				<< ": " << oldRows.size() << " volume(s)\n";
 		}
 		// A cvol-only run (no --out) is done; --out falls through to the
 		// adaptive world-field bake (the .sggi and .cvol files pair up).
@@ -1659,6 +1972,18 @@ int main(int argc, char** argv) {
 
 	std::cout << "Wrote " << args.out << " ("
 		<< std::filesystem::file_size(args.out) << " B on disk)\n";
+	// Identity sidecar (kind=gi, logical=probe:<stem>): the adoption
+	// anchor for the assetdb rescan + the rebake guid lookup. A sidecar
+	// failure loses the identity (the next bake would mint a fresh guid
+	// and orphan this file) — fail loudly.
+	{
+		std::string serr;
+		if (!smvk::bake::WriteBakeAssetSidecar(args.out, sggiGuid,
+				smvk::bake::kBakeAssetKindGi, sggiLogical, serr)) {
+			std::cerr << "sggi sidecar write failed: " << serr << std::endl;
+			return 1;
+		}
+	}
 	std::cout << "  probes=" << stats.probeCount
 		<< " waves=" << stats.refineWaves
 		<< " paths=" << stats.pathsTraced

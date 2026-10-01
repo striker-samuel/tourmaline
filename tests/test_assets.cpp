@@ -2070,6 +2070,15 @@ void TestMultiSceneSerialize() {
 	// the v6 section walk is covered by the listing below.
 	a->RegisterGiBinding(GiBinding::Kind::Lightmap, "town");
 	b->RegisterGiBinding(GiBinding::Kind::Probe, "town_probe");
+	// Bake-asset GUID names ride the same blob (see
+	// Engine/Asset/bake_asset.h): the manifest kinds resolve the guided
+	// runtime manifests, the payload names stay opaque strings here.
+	a->RegisterGiBinding(GiBinding::Kind::RegManifest,
+		"0123456789abcdef0123456789abcdef");
+	b->RegisterGiBinding(GiBinding::Kind::CvolManifest,
+		"fedcba9876543210fedcba9876543210");
+	a->RegisterGiBinding(GiBinding::Kind::Cubemap,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 	MarkDitherCloseup(a->scene, 1);
 	PakWriter writerGi;
 	Check(SerializeClusters(clusters, { "Alpha", "Beta" }, writerGi,
@@ -2085,12 +2094,26 @@ void TestMultiSceneSerialize() {
 			std::string gerr;
 			Check(ParseGiRegistryBlob(readerGi->Payload(*giBlobs[0]),
 				bindings, gerr), "multiscene.gi.parse");
-			Check(bindings.size() == 2, "multiscene.gi.count");
-			if (bindings.size() == 2) {
+			Check(bindings.size() == 5, "multiscene.gi.count");
+			if (bindings.size() == 5) {
+				// Union order: cluster a's bindings (registration order)
+				// first, then cluster b's.
 				Check(bindings[0].kind == GiBinding::Kind::Lightmap &&
 					bindings[0].name == "town", "multiscene.gi.lm");
-				Check(bindings[1].kind == GiBinding::Kind::Probe &&
-					bindings[1].name == "town_probe", "multiscene.gi.probe");
+				Check(bindings[1].kind == GiBinding::Kind::RegManifest &&
+					bindings[1].name
+						== "0123456789abcdef0123456789abcdef",
+					"multiscene.gi.regmanifest");
+				Check(bindings[2].kind == GiBinding::Kind::Cubemap &&
+					bindings[2].name
+						== "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"multiscene.gi.cubemap");
+				Check(bindings[3].kind == GiBinding::Kind::Probe &&
+					bindings[3].name == "town_probe", "multiscene.gi.probe");
+				Check(bindings[4].kind == GiBinding::Kind::CvolManifest &&
+					bindings[4].name
+						== "fedcba9876543210fedcba9876543210",
+					"multiscene.gi.cvolmanifest");
 			}
 		}
 	}
