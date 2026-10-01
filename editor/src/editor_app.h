@@ -1292,6 +1292,14 @@ private:
 	std::vector<smvk::tour::ReferenceCmd> m_references; // master tour list
 	std::vector<uint32_t> m_refPlaceholders; // world ids, parallel
 	std::vector<int> m_refPhCluster; // cluster ids until the base maps
+	// Material-asset POOL imports in creation order (see
+	// smvk::tour::MaterialAssetCmd): asset-browser materials + the
+	// editor-default seed, each minted into cluster 0's pool beyond the
+	// reference-bound materials. The record order IS the pool order, so
+	// the tour's assignMaterial/-m indices recorded later resolve on
+	// reload/cook exactly like the authoring session. Reset with the
+	// session (a fresh world bind rebuilds from the tour's records).
+	std::vector<smvk::tour::MaterialAssetCmd> m_materialAssets;
 	bool AddSceneReference(const std::string& source, const std::string& name);
 	// Reference input (asset UUID or file path) -> in-project asset:
 	// absolute path + project-relative -source + asset -guid. GUIDs

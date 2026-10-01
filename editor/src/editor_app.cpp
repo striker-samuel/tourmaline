@@ -482,6 +482,7 @@ void EditorApp::CloseScene() {
 	m_refPlaceholders.clear();
 	m_refPlaceholders.shrink_to_fit();
 	m_references.clear();
+	m_materialAssets.clear(); // session pool-import records (fresh scene)
 	m_refPhCluster.clear();
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
@@ -594,6 +595,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		(m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming") : "full") +
 		")...");
 	m_references.clear();
+	m_materialAssets.clear(); // rebuilt from the tour's records below
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
 	m_refIssues.clear();

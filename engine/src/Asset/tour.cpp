@@ -597,6 +597,24 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -wrap " << wrap
 			<< " -filter " << filter << ";\n";
 	}
+	// Material-asset imports (ordered; see MaterialAssetCmd): replayed
+	// BEFORE the command list so later assignMaterial pool indices match
+	// the authoring session. The default seed carries no path.
+	for (const MaterialAssetCmd& ma : doc.materialAssets) {
+		if (ma.editorDefault) {
+			f << "materialAsset -default";
+			if (!ma.name.empty())
+				f << " -name " << Quote(ma.name);
+			f << ";\n";
+			continue;
+		}
+		if (ma.path.empty())
+			continue; // half-written record: skip (mirrors fileNode)
+		f << "materialAsset -path " << Quote(ma.path);
+		if (!ma.name.empty())
+			f << " -name " << Quote(ma.name);
+		f << ";\n";
+	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
 	// create), TerrainPaint (-ref k of the k-th terrain-family create)
@@ -1141,13 +1159,51 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					fn.filter = (v == "nearest" || v == "1") ? 1 : 0;
 				}
 			}
-			if (!fn.path.empty())
-				doc.fileNodes.push_back(std::move(fn));
-			else
-				warn("tour:" + std::to_string(lineNo) +
-					": fileNode without -path (skipped)");
-			continue;
+		if (!fn.path.empty())
+			doc.fileNodes.push_back(std::move(fn));
+		else
+			warn("tour:" + std::to_string(lineNo) +
+				": fileNode without -path (skipped)");
+		continue;
+	}
+	if (verb == "materialAsset") {
+		// materialAsset -path "<p>" -name "<n>" [-default];
+		// Ordered editor-side pool imports (see MaterialAssetCmd): replayed
+		// BEFORE the command list so assignMaterial pool indices match.
+		MaterialAssetCmd ma;
+		for (size_t i = 1; i < toks.size(); ++i) {
+			auto get = [&](const char* key, std::string& out) {
+				if (toks[i] == key && i + 1 < toks.size()) {
+					out = toks[i + 1];
+					if (!out.empty() && out.back() == ';')
+						out.pop_back();
+					++i;
+					return true;
+				}
+				return false;
+			};
+			std::string v;
+			if (get("-path", v))
+				ma.path = v;
+			else if (get("-name", v))
+				ma.name = v;
+			else {
+				// Valueless flag: the trailing ';' may be attached when the
+				// line ends without a space ("... -default;").
+				std::string t = toks[i];
+				if (!t.empty() && t.back() == ';')
+					t.pop_back();
+				if (t == "-default")
+					ma.editorDefault = true;
+			}
 		}
+		if (ma.editorDefault || !ma.path.empty())
+			doc.materialAssets.push_back(std::move(ma));
+		else
+			warn("tour:" + std::to_string(lineNo) +
+				": materialAsset without -path/-default (skipped)");
+		continue;
+	}
 		if (verb == "cook") {
 			doc.hasCook = true;			TourCook& k = doc.cook;
 			for (size_t i = 1; i < toks.size(); ++i) {

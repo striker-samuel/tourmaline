@@ -136,6 +136,21 @@ struct FileNode {
 	int filter = 0;     // 0 = linear, 1 = nearest
 };
 
+// Material-asset import (ordered editor-side POOL imports, replayed
+// BEFORE the command list on both sides so cluster pool indices recorded
+// by later assignMaterial/-m lines resolve exactly like the authoring
+// session): asset-browser materials (a .material + its texture files
+// beside it) minted into the cluster pool, plus the editor's default-
+// material seed. The record order IS the pool order — nothing else
+// appends to the pool after the reference bind.
+struct MaterialAssetCmd {
+	bool editorDefault = false; // the deterministic "editor://default" seed
+	                             // material (no source file)
+	std::string path;  // .material source (project-relative or absolute,
+	                   // POSIX separators — the reference-source convention)
+	std::string name; // display name
+};
+
 enum class Verb : uint8_t {
 	Rename,
 	SetTranslate,
@@ -401,6 +416,10 @@ struct Doc {
 	// cooked records — the cooker consumes them for KTX conversion
 	// (unlike editorSettings, which never cook).
 	std::vector<FileNode> fileNodes;
+	// Material-asset imports (ordered; see MaterialAssetCmd): replayed by
+	// the editor AND the cook BEFORE the command list, so pool indices
+	// recorded by assignMaterial/-m lines match the authoring session.
+	std::vector<MaterialAssetCmd> materialAssets;
 	// fileInfo constants (Maya fileInfo block): fixed format metadata
 	// (application/product/version), then anything carried. Written
 	// right after the references.

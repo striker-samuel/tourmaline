@@ -119,6 +119,7 @@
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
+#include <gltf_import/asset_export.h> // materialAsset replay (tour cooks)
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Vfs/vfs.h>
@@ -3160,17 +3161,61 @@ int main(int argc, char** argv) {
 				opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 				args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
 				artifactCache);
-				std::cout << "Definition: bound " << applied
-					<< " reference subtree(s) ("
-					<< tour.references.size() << " top-level)\n";
+			std::cout << "Definition: bound " << applied
+				<< " reference subtree(s) ("
+				<< tour.references.size() << " top-level)\n";
+		}
+		// Material-asset POOL imports (ordered; see the tour's
+		// materialAsset records): the editor session minted these into
+		// the cluster pool beyond the reference-bound materials, and the
+		// tour's assignMaterial/-m indices were recorded against that
+		// pool — replay the records in order (the record order IS the
+		// pool order) so the indices resolve exactly as authored. The
+		// shared import is the same path the editor ran
+		// (ImportMaterialAssetToCluster, cook mode: no GPU). A failed
+		// import shifts every later index — FAIL the cook loudly
+		// instead of cooking a wrong-material pak.
+		for (const auto& ma : tour.materialAssets) {
+			if (ma.editorDefault) {
+				smvk::assets::EnsureClusterDefaultMaterial(*cluster);
+				continue;
 			}
-			std::vector<std::string> rwarn;
-			std::string rerr;
-			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-					&rerr)) {
-				std::cerr << "Tour replay failed: " << rerr << std::endl;
+			// Resolve: project-relative records against --content-dir
+			// FIRST (the record's in-project convention — as-is/CWD would
+			// hit the BUNDLED content tree over the project for same-named
+			// sources), then as-is for absolute/out-of-project records.
+			namespace fs = std::filesystem;
+			fs::path hp;
+			std::error_code ec;
+			if (!args.contentDir.empty())
+				hp = fs::path(args.contentDir) / ma.path;
+			if (hp.empty() || !fs::exists(hp, ec))
+				hp = fs::path(ma.path);
+			if (!fs::exists(hp, ec)) {
+				std::cerr << "Tour materialAsset not found: '"
+					<< ma.path << "' (under --content-dir '"
+					<< args.contentDir << "', then as-is)\n";
 				return 1;
 			}
+			std::string imErr;
+			if (smvk::assets::ImportMaterialAssetToCluster(
+					*cluster, hp, nullptr, imErr).empty()) {
+				std::cerr << "Tour materialAsset import failed: '"
+					<< ma.path << "': " << imErr << "\n";
+				return 1;
+			}
+		}
+		if (!tour.materialAssets.empty())
+			std::cout << "Definition: imported "
+				<< tour.materialAssets.size()
+				<< " material asset(s)\n";
+		std::vector<std::string> rwarn;
+		std::string rerr;
+		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
+				&rerr)) {
+			std::cerr << "Tour replay failed: " << rerr << std::endl;
+			return 1;
+		}
 			for (auto& w : rwarn)
 				std::cerr << "Tour replay warning: " << w << std::endl;
 			std::cout << "Tour replayed: " << tour.commands.size()

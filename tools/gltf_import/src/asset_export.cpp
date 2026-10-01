@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <sstream>
 
@@ -27,6 +28,8 @@
 #include <Engine/Asset/touranim.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/RHI/resource_manager.h>
+#include <Engine/Utils/texture_loader.h>
 
 namespace tinygltf { class Model; }
 namespace smvk::assets {
@@ -1285,6 +1288,149 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	if (outStats)
 		*outStats = stats;
 	return true;
+}
+
+// ---- shared material-asset import (editor + cook) ------------------------
+// Mirrors the editor's AssignMaterialAsset + AddTextureFromFile flow, with
+// the cook mode (cluster.IsCookMode(), ctx == nullptr) replacing the GPU
+// load with a cook texture-id mint (the glTF importer's cook path). See
+// asset_export.h — the SINGLE import both sides run, so pool indices match
+// across the editor session and the cook replay.
+smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
+	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
+	smvk::ResourceManager* ctx, std::string& err) {
+	err.clear();
+	MaterialAsset m;
+	if (!LoadMaterialAsset(assetPath, m, err))
+		return {};
+	smvk::MaterialCreateInfo info{};
+	info.baseColorFactor = m.info.baseColorFactor;
+	info.emissiveFactor = m.info.emissiveFactor;
+	info.emissiveStrength = m.info.emissiveStrength;
+	info.metallicFactor = m.info.metallicFactor;
+	info.roughnessFactor = m.info.roughnessFactor;
+	info.normalScale = m.info.normalScale;
+	info.occlusionStrength = m.info.occlusionStrength;
+	info.shadingModel = m.info.shadingModel;
+	info.alphaMode = m.info.alphaMode;
+	info.alphaCutoff = m.info.alphaCutoff;
+	info.doubleSided = m.info.doubleSided;
+	info.castsShadows = m.info.castsShadows;
+	// Texture refs: image files beside the .material (the URI IS the POSIX
+	// file path). Failures leave the slot unbound (editor parity: a broken
+	// texture link must not kill the material).
+	const std::filesystem::path base = assetPath.parent_path();
+	auto loadTex = [&](const MaterialAsset::TexRef& t,
+			smvk::TextureHandle& slot) {
+		if (t.path.empty())
+			return;
+		const std::string uri =
+			(base / t.path).generic_string();
+		// Reuse an existing registration (a repeat import, or the texture
+		// arrived via the glTF): the pool entry + source already stand.
+		if (auto hit = cluster.FindTextureByUri(uri)) {
+			slot = *hit;
+			return;
+		}
+		std::ifstream in(uri, std::ios::binary);
+		if (!in) {
+			std::cerr << "[materialAsset] cannot open texture: "
+				<< uri << "\n";
+			return;
+		}
+		std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+			std::istreambuf_iterator<char>());
+		if (bytes.empty()) {
+			std::cerr << "[materialAsset] texture file is empty: "
+				<< uri << "\n";
+			return;
+		}
+		// KTX2 passthrough; other sources transcode (the TexRef srgb flag —
+		// baseColor/emissive are sRGB, data maps linear). HDR needs a float
+		// transcode (unsupported here, same as the editor path).
+		const bool isKtx2 = bytes.size() >= 8
+			&& bytes[0] == 0xAB && bytes[1] == 'K' && bytes[2] == 'T'
+			&& bytes[3] == 'X' && bytes[4] == ' ' && bytes[5] == '2'
+			&& bytes[6] == '0' && bytes[7] == 0xBB;
+		std::vector<uint8_t> payload = bytes;
+		if (!isKtx2) {
+			std::string ext =
+				std::filesystem::path(uri).extension().string();
+			for (char& c : ext)
+				c = char(std::tolower((unsigned char)c));
+			if (ext == ".hdr" || ext == ".exr") {
+				std::cerr << "[materialAsset] HDR source needs a float "
+					"transcode (unsupported): " << uri << "\n";
+				return;
+			}
+			std::vector<uint8_t> ktx;
+			std::string terr;
+			if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), t.srgb,
+					uri, ktx, terr)) {
+				std::cerr << "[materialAsset] texture transcode failed '"
+					<< uri << "': " << terr << "\n";
+				return;
+			}
+			payload = std::move(ktx);
+		}
+		smvk::TextureHandle h;
+		if (cluster.IsCookMode()) {
+			// Cook: mint the pool id (the glTF importer's cook path); no
+			// GPU exists here — the serializer reads the SOURCE bytes.
+			h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+		}
+		else {
+			if (!ctx) {
+				std::cerr << "[materialAsset] editor import wants a GPU "
+					"context: " << uri << "\n";
+				return;
+			}
+			auto holder = smvk::LoadKtxTextureMemory(*ctx,
+				payload.data(), payload.size(), uri);
+			if (!holder.valid()) {
+				std::cerr << "[materialAsset] KTX2 load failed: "
+					<< uri << "\n";
+				return;
+			}
+			h = holder;
+			cluster.textures.create(std::move(holder));
+		}
+		cluster.RegisterTextureUri(uri, h);
+		// The ORIGINAL source bytes ride the pool entry (cooks re-embed +
+		// re-convert from source, exactly like imported images).
+		cluster.SetTextureSource(uri, std::move(bytes));
+		slot = h;
+	};
+	loadTex(m.baseColor, info.baseColorTexture);
+	loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
+	loadTex(m.normalTex, info.normalTexture);
+	loadTex(m.occlusion, info.occlusionTexture);
+	loadTex(m.emissiveTex, info.emissiveTexture);
+	info.diffuse = info.baseColorTexture; // legacy alias
+	const smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
+	if (h.empty()) {
+		err = "material creation failed for '"
+			+ assetPath.generic_string() + "'";
+		return {};
+	}
+	cluster.RegisterMaterialUri("asset://" + m.guid, h);
+	return h;
+}
+
+smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(
+	smvk::Cluster& cluster) {
+	// Reuse an existing pool entry when the URI is already registered (a
+	// cooked-from-tour scene may have minted one).
+	if (auto hit = cluster.FindMaterialByUri("editor://default"))
+		return *hit;
+	smvk::Material def{};
+	def.values.params.y = 0.0f;  // metallic
+	def.values.params.z = 0.9f; // roughness: soft default
+	def.rebuildPipeline();
+	const smvk::ClusterMaterialHandle h =
+		cluster.materials.create(std::move(def));
+	cluster.RegisterMaterialUri("editor://default", h);
+	return h;
 }
 
 } // namespace smvk::assets

@@ -38,11 +38,16 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/App/cluster.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/meshlet.h>
 
 namespace tinygltf { class Model; }
+
+namespace smvk {
+class ResourceManager; // GPU-load context (ImportMaterialAssetToCluster)
+} // namespace smvk
 
 namespace smvk::assets {
 
@@ -215,5 +220,28 @@ bool LoadAssetManifestText(const std::string& text, AssetManifest& out,
 bool SaveAssetManifest(
 	const std::filesystem::path& gltfPath, const AssetManifest& manifest,
 	std::string& err);
+
+// ---- shared material-asset import (editor + cook) -------------------------
+// The SINGLE import path for asset-browser materials (a .material + its
+// texture files beside it — see EditorApp::AssignMaterialAsset, which this
+// mirrors): parses the asset, loads its texture sources (KTX2 passthrough,
+// other sources transcoded to KTX2 honoring the TexRef srgb flag), creates
+// the cluster material + registers "asset://<guid>" and the texture URIs
+// (URI = the POSIX file path). The ORIGINAL texture source bytes ride the
+// cluster pool entries (cooks re-embed from source).
+//
+// ctx != nullptr (editor): the textures also GPU-load through it so the
+// live view shows them this frame (the caller refreshes its pool->RHI map
+// afterwards — editor-side state). ctx == nullptr (cook): pool + URI +
+// source registration only; no GPU work.
+// Returns the cluster material handle (empty + err on failure).
+smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
+	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
+	smvk::ResourceManager* ctx, std::string& err);
+// The editor's deterministic default-material seed ("editor://default"):
+// reuses the registered handle when one exists, else creates it (metallic
+// 0, roughness 0.9). The editor wraps this with its world materialLocations
+// bookkeeping; cooks call it directly when a tour carries the seed record.
+smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster);
 
 } // namespace smvk::assets

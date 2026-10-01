@@ -2046,6 +2046,70 @@ void TestReferenceGuid() {
 	}
 }
 
+// Material-asset pool imports: round-trip as ordered materialAsset lines
+// (assets + the editor-default seed), so reload/cook rebuild the identical
+// cluster pool and the tour's assignMaterial/-m indices resolve exactly
+// as authored (the failure this pins: an editor session minted material 26
+// from an asset-browser .material; the cook had no record, cooked a
+// 26-entry pool, and SerializeCluster failed with "scene references
+// unknown material pool index 26").
+void TestMaterialAssets() {
+	smvk::tour::Doc doc;
+	smvk::tour::MaterialAssetCmd def{};
+	def.editorDefault = true;
+	def.name = "default";
+	doc.materialAssets.push_back(def);
+	smvk::tour::MaterialAssetCmd asset{};
+	asset.path = "content/models/Sponza/mat0_brick.material";
+	asset.name = "Brick \"Rough\"";
+	doc.materialAssets.push_back(asset);
+	asset = smvk::tour::MaterialAssetCmd{};
+	asset.path = "F:/projects/game/content/models/Sponza/mat1_leaf.material";
+	asset.name = "leaf";
+	doc.materialAssets.push_back(asset);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "materialasset save");
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"materialasset load");
+	Check(back.materialAssets.size() == 3, "materialasset count + order");
+	if (back.materialAssets.size() == 3) {
+		Check(back.materialAssets[0].editorDefault
+			&& back.materialAssets[0].path.empty()
+			&& back.materialAssets[0].name == "default",
+			"materialasset default seed");
+		Check(!back.materialAssets[1].editorDefault
+			&& back.materialAssets[1].path
+				== "content/models/Sponza/mat0_brick.material"
+			&& back.materialAssets[1].name == "Brick \"Rough\"",
+			"materialasset project-relative record");
+		Check(!back.materialAssets[2].editorDefault
+			&& back.materialAssets[2].path
+				== "F:/projects/game/content/models/Sponza/mat1_leaf.material",
+			"materialasset absolute record");
+	}
+	// Hand-written forms: bare -default; (no space), missing -path/-default
+	// warns + skips, a lone -path record parses (name optional).
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "materialAsset -default;\n"
+			"materialAsset -name \"no path\";\n"
+			"materialAsset -path \"content/x.material\";\n";
+	}
+	back = smvk::tour::Doc{};
+	warns.clear();
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"materialasset hand-written load");
+	Check(back.materialAssets.size() == 2
+		&& back.materialAssets[0].editorDefault
+		&& !back.materialAssets[1].editorDefault
+		&& back.materialAssets[1].path == "content/x.material"
+		&& back.materialAssets[1].name.empty(),
+		"materialasset bare -default + path-only record");
+	Check(!warns.empty(), "materialasset missing path warns");
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -2067,6 +2131,7 @@ int main() {
 	TestRootReference();
 	TestReferenceGuid();
 	TestCreateNode();
+	TestMaterialAssets();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

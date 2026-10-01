@@ -3281,6 +3281,11 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		}
 	}
 	doc.references = m_references; // scene references (loader binds them)
+	// Material-asset POOL imports (ordered; see MaterialAssetCmd): the
+	// records mirror the session's pool creations so reload/cook rebuild
+	// the identical pool — the tour's assignMaterial/-m indices recorded
+	// against this pool resolve on both sides.
+	doc.materialAssets = m_materialAssets;
 	doc.hasCook = true;
 	// Cook SETTINGS persist; the DESTINATION does not: outPak is
 	// machine/session state (entered per cook in the Cook panel),
@@ -3952,11 +3957,63 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// exact and the whole tour stays undoable). Wide rules load AFTER the
 	// direct commands so locals win over matching regex (more specific
 	// wins); rules skip locally-overridden nodes when they apply.
+	// Material-asset POOL imports replay FIRST: the records mirror the
+	// session's pool creations in order, so the pool indices the later
+	// assignMaterial/-m commands carry resolve exactly as authored.
+	// Failed records stay in the mirror (the next save re-emits them
+	// verbatim — the orphan-command contract: a reload must never erase
+	// records; restoring the file heals the next replay).
+	m_materialAssets = doc.materialAssets; // session mirror (save re-emits)
+	// Replay mode FIRST: the materialAsset loop below calls
+	// EnsureDefaultMaterial + the shared import, and their record pushes
+	// must stay gated (the records arrive from the doc here — a second
+	// push would duplicate every entry in the next save).
+	m_replayingTour = true;
+	for (const auto& ma : doc.materialAssets) {
+		if (ma.editorDefault) {
+			// The deterministic seed (records no new entry here:
+			// m_replayingTour gates EnsureDefaultMaterial's push,
+			// and the mirror above already carries the record).
+			(void)EnsureDefaultMaterial();
+			continue;
+		}
+		// Resolve: project-relative records against the PROJECT ROOT
+		// first (the record's in-project convention — as-is/CWD would hit
+		// the bundled content tree over the project for same-named
+		// sources), then as-is for absolute/out-of-project records.
+		std::filesystem::path hp;
+		std::error_code ec;
+		if (!m_projectRoot.empty())
+			hp = std::filesystem::path(m_projectRoot) / ma.path;
+		if (hp.empty() || !std::filesystem::exists(hp, ec))
+			hp = std::filesystem::path(ma.path);
+		smvk::Cluster* cl =
+			m_world->clusters.empty() ? nullptr
+			: m_world->clusters[0].get();
+		if (!cl)
+			break;
+		std::string imErr;
+		const smvk::ClusterMaterialHandle h =
+			smvk::assets::ImportMaterialAssetToCluster(
+				*cl, hp, m_context.get(), imErr);
+		if (h.empty()) {
+			Log("tour: materialAsset import failed: '" + ma.path
+				+ "': " + (imErr.empty()
+					? "not found (under the project root, then as-is)"
+					: imErr)
+				+ " — later material indices may shift.");
+			continue;
+		}
+		RebuildTexHandleMap();
+		const uint32_t worldIdx =
+			uint32_t(m_world->materialLocations.size());
+		m_world->materialLocations.push_back({ cl, h });
+	}
 	m_tourCreatedNodes.clear();
 	m_tourCreatedCvolNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
-	m_replayingTour = true;
+	// (m_replayingTour armed above, before the materialAsset replay.)
 	ClearHistory();
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -4588,54 +4645,41 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 		return;
 	}
 	smvk::Cluster* cl = m_world->clusters[0].get();
-	smvk::MaterialCreateInfo info{};
-	info.baseColorFactor = m.info.baseColorFactor;
-	info.emissiveFactor = m.info.emissiveFactor;
-	info.emissiveStrength = m.info.emissiveStrength;
-	info.metallicFactor = m.info.metallicFactor;
-	info.roughnessFactor = m.info.roughnessFactor;
-	info.normalScale = m.info.normalScale;
-	info.occlusionStrength = m.info.occlusionStrength;
-	info.shadingModel = m.info.shadingModel;
-	info.alphaMode = m.info.alphaMode;
-	info.alphaCutoff = m.info.alphaCutoff;
-	info.doubleSided = m.info.doubleSided;
-	info.castsShadows = m.info.castsShadows;
-	// Texture refs: image files beside the .material (relative to its
-	// directory). Loaded through the texture pool (KTX2 direct, other
-	// sources transcode on the way — AddTextureFromFile); the handle
-	// re-reads from the pool by URI (Mint would lose the generation).
+	// SHARED import (the cook replays the same path from the tour's
+	// materialAsset records — pool determinism across the session and
+	// the cook replay; see ImportMaterialAssetToCluster).
+	smvk::ClusterMaterialHandle imported{};
 	{
-		const std::string base =
-			std::filesystem::path(assetPath).parent_path()
-			.generic_string();
-		auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
-				smvk::TextureHandle& slot) {
-			if (t.path.empty())
-				return;
-			const std::string p =
-				(std::filesystem::path(base) / t.path).generic_string();
-			if (AddTextureFromFile(p) < 0)
-				return;
-			if (auto hit = cl->FindTextureByUri(p))
-				slot = *hit;
-		};
-		loadTex(m.baseColor, info.baseColorTexture);
-		loadTex(m.metallicRoughness, info.metallicRoughnessTexture);
-		loadTex(m.normalTex, info.normalTexture);
-		loadTex(m.occlusion, info.occlusionTexture);
-		loadTex(m.emissiveTex, info.emissiveTexture);
-		info.diffuse = info.baseColorTexture; // legacy alias
+		std::string imErr;
+		imported = smvk::assets::ImportMaterialAssetToCluster(
+			*cl, assetPath, m_context.get(), imErr);
+		if (imported.empty()) {
+			Log("Assets: material creation failed for '" + assetPath
+				+ "': " + imErr);
+			return;
+		}
+		// Pool->RHI-handle refresh (editor-side maps; the shared import
+		// touched the cluster pools).
+		RebuildTexHandleMap();
+		// Record the pool import (the tour's materialAsset list — in
+		// creation order so replay reproduces the pool order). NOT during
+		// tour replay: the records arrive from the doc there.
+		if (!m_replayingTour) {
+			smvk::tour::MaterialAssetCmd rec{};
+			const std::string rel = ProjectRelativePath(assetPath);
+			std::string posix = rel.empty() ? assetPath : rel;
+			for (char& c : posix)
+				if (c == '\\')
+					c = '/';
+			rec.path = posix; // project-relative when in-project (the
+			                  // reference-source convention), else absolute
+			rec.name = m.name;
+			m_materialAssets.push_back(std::move(rec));
+		}
 	}
-	const smvk::ClusterMaterialHandle h = cl->CreateMaterial(info);
-	if (h.empty()) {
-		Log("Assets: material creation failed for '" + assetPath + "'.");
-		return;
-	}
-	cl->RegisterMaterialUri("asset://" + m.guid, h);
 	const uint32_t worldIdx =
 		uint32_t(m_world->materialLocations.size());
-	m_world->materialLocations.push_back({ cl, h });
+	m_world->materialLocations.push_back({ cl, imported });
 	// Undoable assign on the selection.
 	EditCmd c{};
 	c.verb = EditVerb::AssignMaterial;
@@ -4681,19 +4725,26 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
 		return m_defaultMatWorld;
 	smvk::Cluster* cl = m_world->clusters[0].get();
 	// Reuse an existing pool entry when the URI is already registered
-	// (e.g. a pak scene cooked from a tour that minted one).
+	// (e.g. a pak scene cooked from a tour that minted one) — NO pool
+	// growth, so no tour record (records mirror pool CREATIONS only).
 	if (auto hit = cl->FindMaterialByUri("editor://default")) {
 		const uint32_t worldIdx = uint32_t(m_world->materialLocations.size());
 		m_world->materialLocations.push_back({ cl, *hit });
 		m_defaultMatWorld = worldIdx;
 		return worldIdx;
 	}
-	smvk::Material def{};
-	def.values.params.y = 0.0f;  // metallic
-	def.values.params.z = 0.9f; // roughness: soft default
-	def.rebuildPipeline();
-	const smvk::ClusterMaterialHandle h = cl->materials.create(std::move(def));
-	cl->RegisterMaterialUri("editor://default", h);
+	// SHARED seed creation (the deterministic material; cooks replay it
+	// from the tour's materialAsset records — EnsureClusterDefaultMaterial).
+	const smvk::ClusterMaterialHandle h =
+		smvk::assets::EnsureClusterDefaultMaterial(*cl);
+	if (h.empty())
+		return UINT32_MAX;
+	// Pool creation: record it (ordered — the record order IS the pool
+	// order; a later materialAsset import lands after this one). NOT
+	// during tour replay: the record arrives from the doc there.
+	if (!m_replayingTour)
+		m_materialAssets.push_back(smvk::tour::MaterialAssetCmd{
+			/*editorDefault=*/true, /*path=*/{}, /*name=*/"default" });
 	const uint32_t worldIdx = uint32_t(m_world->materialLocations.size());
 	m_world->materialLocations.push_back({ cl, h });
 	m_defaultMatWorld = worldIdx;
