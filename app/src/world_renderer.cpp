@@ -1401,7 +1401,78 @@ bool WorldRenderer::Initialize() {
 			.shaderCount = 2
 		};
 
-		// Texture streaming: tail-resident glTF uploads with a CPU
+	// SSSR-style thin G-buffer programs (see gbuffer.frag.hlsl): the
+	// Forward+ depth prepass's G-buffer writers — default.vert (the
+	// already-loaded vertShader; its world normal output at location 3
+	// is the G-buffer's normal source) + the trivial solid/cutout FS
+	// pair. The prepass binds these instead of the VS-only depthProgram
+	// + prepassMaskedProgram when the G-buffer layer is wanted; Main is
+	// untouched (no MRT, no stencil classification).
+	try {
+		auto gbufferCode = readFile("content/shaders/gbuffer.frag.hlsl.spv");
+		auto gbufferMaskedCode = readFile("content/shaders/gbuffer_masked.frag.hlsl.spv");
+		m_resources.gbufferFragShader =
+			m_context->CreateShaderModule(gbufferCode, "gbufferFrag");
+		m_resources.gbufferMaskedFragShader =
+			m_context->CreateShaderModule(gbufferMaskedCode, "gbufferMaskedFrag");
+		if (!m_resources.gbufferFragShader.empty()
+			&& !m_resources.gbufferMaskedFragShader.empty()) {
+			m_resources.gbufferProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.gbufferFragShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+			m_resources.gbufferMaskedProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.gbufferMaskedFragShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+	}
+	catch (...) {
+		std::cerr << "[WorldRenderer] gbuffer shaders unavailable - prepass keeps the VS-only legacy\n";
+	}
+
+	// SSSR trace Hi-Z build module (hzb_max.cs.hlsl — the MAX-reduce
+	// nearest-surface twin of the culling MIN pyramid; see the header
+	// comment on m_ssrHzb*). Failure is non-fatal: the trace keeps the
+	// plain adaptive-stride march (the HZB skip stays off, BDA 0).
+	try {
+		auto hzbMaxCode = readFile("content/shaders/hzb_max.cs.hlsl.spv");
+		m_ssrHzbModule = m_context->CreateShaderModule(hzbMaxCode, "ssrHzbMaxCS");
+		if (!m_ssrHzbModule.empty()) {
+			smvk::Shader cs{
+				.module = m_ssrHzbModule,
+				.entryPoint = "mainCS",
+				.stage = smvk::ShaderStage::Compute };
+			m_ssrHzbProgram = { .shaders = { cs }, .shaderCount = 1 };
+		}
+	}
+	catch (...) {
+		std::cerr << "[WorldRenderer] hzb_max unavailable - SSR trace keeps the linear march\n";
+	}
+
+	// Texture streaming: tail-resident glTF uploads with a CPU
 		// screen-coverage demand pass (see UpdateTextureStreaming). The
 		// streamer views cluster-owned KTX payloads, so clusters must
 		// outlive it (they do: world owns both). Conservative defaults:
@@ -1594,6 +1665,10 @@ bool WorldRenderer::Initialize() {
 		// viewport builder for storage so main-pass sampling is unchanged).
 		m_fpRenderer.Configure(&m_viewportResources.forwardPlus,
 			MakeForwardPlusDesc(), m_resources.prepassMaskedProgram);
+		// SSSR thin G-buffer writers (the prepass's G-buffer FS pair —
+		// empty programs keep the legacy VS-only prepass).
+		m_fpRenderer.ConfigureGbuffer(m_resources.gbufferProgram,
+			m_resources.gbufferMaskedProgram);
 
 		// Light cookies: baked .ktx2 files from the engine resources mount
 		// (overridable by app content / paks through the overlay; falls
@@ -4787,7 +4862,13 @@ void WorldRenderer::Shutdown() {
 				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
 		};
-		// Phase 1: solid casters, depth-only program.
+		// Phase 1: solid casters, depth-only program. FRONT-face culling
+		// (render the back faces only): the classic shadow-map anti-acne —
+		// the back face of a solid occluder sits behind its lit face by
+		// the surface thickness, so receiver self-shadow acne falls off
+		// the depth test without slope-scaled bias. Masked (cutout) phase
+		// 2 below keeps material-following cull (single-sided foliage
+		// has no back face to render).
 		cmd.BindRenderPipeline(
 			opaqueProgram,
 			smvk::VertexFormat::StaticVertexFormat,
@@ -4804,7 +4885,7 @@ void WorldRenderer::Shutdown() {
 			smvk::BlendSettings{},
 			smvk::MSAASettings{},
 			smvk::RasterSettings{
-				.cullMode = smvk::CullMode::Back
+				.cullMode = smvk::CullMode::Front
 			}
 		);
 		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
@@ -4902,7 +4983,8 @@ void WorldRenderer::Shutdown() {
 				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
 		};
-		// Phase 1: solid casters (cull back), cheap opaque program.
+		// Phase 1: solid casters (front-culled like the PCF direct path —
+		// back faces only, the anti-acne classic), cheap opaque program.
 		cmd.BindRenderPipeline(
 			opaqueProgram ? *opaqueProgram : momentsProgram,
 			smvk::VertexFormat::StaticVertexFormat,
@@ -4919,7 +5001,7 @@ void WorldRenderer::Shutdown() {
 			smvk::BlendSettings{},
 			msaa2x,
 			smvk::RasterSettings{
-				.cullMode = smvk::CullMode::Back
+				.cullMode = smvk::CullMode::Front
 			}
 		);
 		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
@@ -5764,6 +5846,8 @@ void WorldRenderer::EnsureSecondaryTargets(SecondaryView& v, uint32_t vi) {
 	// accept the churn while dragging a split).
 	m_fpRenderer.Configure(&v.vp.forwardPlus, MakeForwardPlusDesc(),
 		m_resources.prepassMaskedProgram);
+	m_fpRenderer.ConfigureGbuffer(m_resources.gbufferProgram,
+		m_resources.gbufferMaskedProgram);
 	m_fpRenderer.EnsureSized(*m_context, *m_rendergraph, ext, v.vp.renderDepth.view);
 	// Directional CSM + spot atlases (own fits per view). EVSM stays a
 	// MAIN-view opt-in (default off; the ImGui checkbox): the moment
@@ -6432,6 +6516,8 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 				(m_transparentMode == smvk::TransparentMode::Dithered);
 			m_fpRenderer.Configure(&v.vp.forwardPlus, MakeForwardPlusDesc(),
 				m_resources.prepassMaskedProgram);
+			m_fpRenderer.ConfigureGbuffer(m_resources.gbufferProgram,
+				m_resources.gbufferMaskedProgram);
 			m_fpRenderer.EnsureSized(*m_context, *m_rendergraph,
 				v.desc.extent, v.vp.renderDepth.view);
 			if (m_passes.forwardPlusPrepass)
@@ -7506,29 +7592,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// unwritten there and the layer must fall back).
 		const bool useMsaa = m_passes.msaa && m_viewportResources.msaaEnabled
 			&& m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid();
-		// SSR receiver-material stencil (see Rendergraph/stencil_bits.h):
-		// MAIN's opaque binds REPLACE the per-material classification bits
-		// below (alpha-tested first — the FS discard reverts the write, so
-		// cutout holes stay unwritten — then opaque; occluded fragments
-		// KEEP). Writing in Main makes the layer complete on every path
-		// that shades the frame — including the Northlight depth split,
-		// whose seed/remainder passes own depth but never shade — so no
-		// extra redraw exists. False under MSAA (transient depth), for
-		// stencil-less depth formats / debug views / SSR off (legacy
-		// uniform-F0 trace instead).
-		fc.ssrStencilWanted = m_passes.ssr && m_ssrEnabled
+		// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): the Forward+
+		// depth prepass writes it (RGBA8 oct normal + roughness + metal —
+		// the prepass already rasterizes every opaque surface; Main is
+		// untouched, no stencil classification). False under MSAA (the
+		// prepass has no stable 1x G-buffer companion) and for SSR-off
+		// frames (the only consumer is the SSR trace).
+		fc.ssrGbufferWanted = m_passes.ssr && m_ssrEnabled
 			&& m_ssrIntensity > 0.0f
 			&& !DebugVisualizationActive()
 			&& !useMsaa
-			&& m_viewportResources.renderDepth.HasStencilAspect();
-		// One-shot material classification census (VULKANTOY_MATERIAL_CENSUS):
-		// dumps every material's factors (incl. layers) + the resulting
-		// receiver-material stencil classification to stderr — the
-		// per-material ground truth for the stencil layer's gates.
+			&& m_viewportResources.ssr.gbuffer.Valid();
+		fc.gbufferView = fc.ssrGbufferWanted
+			? m_viewportResources.ssr.gbuffer.logical
+			: smvk::LogicalImageViewHandle{};
+		// One-shot material census (VULKANTOY_MATERIAL_CENSUS): dumps
+		// every material's factors (incl. layers) + the resulting
+		// G-buffer roughness/metal to stderr — the per-material ground
+		// truth for the G-buffer's continuous values.
 		static bool sMaterialCensusDone = false;
 		if (!sMaterialCensusDone && m_world) {
 			sMaterialCensusDone = true;
 			if (std::getenv("VULKANTOY_MATERIAL_CENSUS")) {
+				// Layer combine: MIN roughness wins (strongest reflector),
+				// metal ORs — the same combine the G-buffer represents.
 				auto classify = [&](const smvk::Material* mat) -> const char* {
 					if (!mat)
 						return "<null>";
@@ -7545,16 +7632,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								continue;
 							const smvk::Material* layer =
 								m_world->GetMaterial(static_cast<uint32_t>(layerIds[i]));
-							if (layer)
-								ref |= smvk::stencil::ReceiverRef(layer->values);
+							if (!layer)
+								continue;
+							const uint32_t lref =
+								smvk::stencil::ReceiverRef(layer->values);
+							// min roughness (most reflective) wins; metal ORs.
+							const uint32_t rMin = (std::min)(ref, lref)
+								& smvk::stencil::kRoughnessMaxValue;
+							ref = rMin | ((ref | lref) & smvk::stencil::kMetalBit);
 						}
 					}
-					return ref == 0 ? "-" : ref == smvk::stencil::STENCIL_SSR ? "SSR"
-						: ref == smvk::stencil::STENCIL_SSR_METAL ? "METAL"
-						: ref == (smvk::stencil::STENCIL_SSR | smvk::stencil::STENCIL_SSR_METAL)
-							? "SSR+METAL" : "?";
+					// Display names keep the old mirror-class buckets
+					// (kCensusMirrorRoughness); the byte itself is continuous.
+					const float r = smvk::stencil::RefRoughness(
+						static_cast<uint8_t>(ref));
+					const bool metal = smvk::stencil::RefMetal(
+						static_cast<uint8_t>(ref));
+					return r > smvk::stencil::kCensusMirrorRoughness ? "-"
+						: metal ? "SSR+METAL" : "SSR";
 				};
-				uint32_t counts[5] = { 0, 0, 0, 0, 0 };
+				uint32_t counts[4] = { 0, 0, 0, 0 };
 				std::fprintf(stderr, "[MaterialCensus] id | metal rough shade mrTex | layers | class\n");
 				for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
 					const smvk::Material* mat = m_world->GetMaterial(i);
@@ -7563,24 +7660,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						std::fprintf(stderr, "[MaterialCensus] %4u | <null> | - | -\n", i);
 						continue;
 					}
-					++counts[cls[0] == '-' ? 0
-						: strcmp(cls, "SSR") == 0 ? 1
-						: strcmp(cls, "METAL") == 0 ? 2
-						: strcmp(cls, "SSR+METAL") == 0 ? 3 : 4];
-					std::fprintf(stderr,
-						"[MaterialCensus] %4u | %4.2f %4.2f %1d %c | L%d(x%d,y%d,z%d) | %s\n",
-						i, mat->values.params.y, mat->values.params.z,
-						(int)mat->values.params.w,
-						mat->values.textures.y >= 0 ? 'T' : '-',
-						mat->values.layerMaterials.w,
-						mat->values.layerMaterials.x,
-						mat->values.layerMaterials.y,
-						mat->values.layerMaterials.z,
-						cls);
-				}
+				++counts[cls[0] == '-' ? 0
+					: strcmp(cls, "SSR") == 0 ? 1
+					: strcmp(cls, "SSR+METAL") == 0 ? 2 : 3];
 				std::fprintf(stderr,
-					"[MaterialCensus] totals: none=%u SSR=%u METAL=%u SSR+METAL=%u other=%u\n",
-					counts[0], counts[1], counts[2], counts[3], counts[4]);
+					"[MaterialCensus] %4u | %4.2f %4.2f %1d %c | L%d(x%d,y%d,z%d) | %s\n",
+					i, mat->values.params.y, mat->values.params.z,
+					(int)mat->values.params.w,
+					mat->values.textures.y >= 0 ? 'T' : '-',
+					mat->values.layerMaterials.w,
+					mat->values.layerMaterials.x,
+					mat->values.layerMaterials.y,
+					mat->values.layerMaterials.z,
+					cls);
+			}
+			std::fprintf(stderr,
+				"[MaterialCensus] totals: none=%u SSR=%u SSR+METAL=%u other=%u\n",
+				counts[0], counts[1], counts[2], counts[3]);
 			}
 		}
 		// Option A split: the occluder prepass fills hizDepth (Clear,
@@ -7626,8 +7722,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// not rendered anywhere, so their absence from depth is correct).
 		// Held while the culling view is frozen (frozen footprints must
 		// test against the frozen pyramid, not live depth).
+		// The SSSR thin G-BUFFER needs the FULL prepass walk every frame:
+		// the seed pass draws the filterable majority depth-only (its VS
+		// never writes the G-buffer), so on split frames the slim
+		// fallback-only prepass leaves the majority's G-buffer values
+		// STALE FOREVER (frozen normals + roughness under a moving camera
+		// = smeared reflections; the first split frames load creation
+		// garbage that is never overwritten). Disabling the split when
+		// the G-buffer is wanted runs the proven full-prepass path: the
+		// seed still primes depth (Loads), the full walk early-Z-rejects
+		// the occluded against it, and every VISIBLE surface's surviving
+		// fragment writes fresh G-buffer values each frame. The
+		// seed-writes-the-G-buffer variant (a normal-outputting seed VS +
+		// the trivial FS pair on the indirect draws) is the follow-up
+		// that re-enables the slim split with SSR on.
 		const bool depthSplit = gfxFilterOn && fc.seedDepthPrimed
-			&& !m_splitDisabled;
+			&& !m_splitDisabled
+			&& !fc.ssrGbufferWanted;
 		fc.gfxLodFilterable = depthSplit
 			? std::function<bool(NodeId, uint32_t, uint32_t)>(
 				[this](NodeId node, uint32_t worldMesh, uint32_t lodIdx) {
@@ -8234,7 +8345,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			);
 		} else {
 			mainPass.SetColor(
-				hdrColors, // HDR intermediate â€“ tonemapper will resolve to swap
+				hdrColors, // HDR intermediate – tonemapper will resolve to swap
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1)
@@ -8256,7 +8367,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			);
 		}
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, ssrStencilOn = fc.ssrStencilWanted](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView](smvk::CommandBuffer& cmd)
 	{
 		// 1x: depth was filled by the Forward+ prepass, main is read-only.
 		// 2x: transient depth is cleared above, main writes it
@@ -8277,74 +8388,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const smvk::MSAASettings msaaSettings =
 			useMsaa ? smvk::MSAASettings::Count2() : smvk::MSAASettings::Count1();
 
-		// SSR receiver-material stencil writes (see
-		// Rendergraph/stencil_bits.h): MAIN's opaque binds REPLACE the
-		// per-material classification into the depth target's stencil
-		// aspect. Compare Always + passOp REPLACE with the dynamic
-		// reference turns every depth-passing fragment into a stencil
-		// write of the material's classification; the hardcoded
-		// depthFailOp KEEP keeps occluded fragments from clobbering the
-		// visible surface's bits. The reference NEVER enters the pipeline
-		// cache key (dynamic state), so the per-material references mint
-		// zero pipeline variants. Alpha-tested (Masked) materials classify
-		// too — the FS discard reverts the write, so cutout holes stay
-		// unwritten for free (the old whole-draw zeroing, per-pixel).
-		// Writing in Main makes the layer complete on every path that
-		// shades the frame (filtered ranges + direct legs — including the
-		// Northlight depth split, whose seed/remainder passes own depth
-		// but never shade), so no extra redraw exists. Transparent
-		// (Blend) materials never write it (the receiver behind a
-		// non-pane transparent is the seen-through opaque surface); panes
-		// are the exception, marked by the PaneMask pass below.
-		smvk::StencilSettings classStencil{};
-		if (ssrStencilOn) {
-			classStencil.frontTestEnable = true;
-			classStencil.backTestEnable = true;
-			classStencil.frontCompareOp = smvk::CompareOp::Always;
-			classStencil.backCompareOp = smvk::CompareOp::Always;
-			classStencil.frontPassOp = smvk::STENCIL_OP_REPLACE;
-			classStencil.backPassOp = smvk::STENCIL_OP_REPLACE;
-			classStencil.frontWriteEnable = true;
-			classStencil.backWriteEnable = true;
-		}
-		// Per-material classification reference (layers ORed —
-		// "strongest reflector wins", the per-draw quantization of the old
-		// per-pixel Max blend; the sibling-material fetches need the world
-		// this lambda already holds). ensureStencilRef dedupes the
-		// recorded vkCmdSetStencilReference calls.
-		uint32_t lastStencilRef = 0xffffffffu;
-		auto stencilClassFor = [&](uint32_t materialId) -> uint32_t {
-			const smvk::Material* mat = m_world->GetMaterial(materialId);
-			if (!mat)
-				return 0u;
-			uint32_t ref = smvk::stencil::ReceiverRef(mat->values);
-			const int layerMode = mat->values.layerMaterials.w;
-			if (layerMode > 1) {
-				const int32_t layerIds[3] = {
-					mat->values.layerMaterials.x,
-					mat->values.layerMaterials.y,
-					mat->values.layerMaterials.z,
-				};
-				for (int i = 0; i < layerMode - 1 && i < 3; ++i) {
-					if (layerIds[i] < 0)
-						continue;
-					const smvk::Material* layer =
-						m_world->GetMaterial(static_cast<uint32_t>(layerIds[i]));
-					if (layer)
-						ref |= smvk::stencil::ReceiverRef(layer->values);
-				}
-			}
-			return ref;
-		};
-		auto ensureStencilRef = [&](uint32_t materialId) {
-			if (!ssrStencilOn)
-				return;
-			const uint32_t ref = stencilClassFor(materialId);
-			if (ref != lastStencilRef) {
-				cmd.SetStencilReference(ref);
-				lastStencilRef = ref;
-			}
-		};
+		// NOTE: no stencil classification here — the SSSR-style thin
+		// G-buffer (receiver normals + roughness + metal) is written by
+		// the Forward+ depth PREPASS (see gbuffer.frag.hlsl), so Main
+		// binds no stencil write state at all (the old per-material
+		// REPLACE classification is gone with it).
 
 		// Wireframe (P): force Line polygon mode + no culling on every
 		// scene-triangle bind below (filtered ranges, direct draws, flat
@@ -8437,12 +8485,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// Per-material raster (doubleSided -> Cull None) + blend
 			// (Opaque vs AlphaBlend). Depth writes follow the caller: opaque
 			// writes in 2x MSAA mode, transparent never writes.
-			// writeStencilClass (opaque callers by default): carry the SSR
-			// receiver-material stencil write state + the material's
-			// classification reference (see classStencil above); the
-			// transparent leg passes false — non-pane transparents never
-			// classify (the receiver behind them is the seen-through
-			// opaque surface).
+			// writeStencilClass: kept for call-shape stability — the SSR
+			// receiver-material stencil classification is GONE (the thin
+			// G-buffer owns receiver normals + roughness + metal now, see
+			// gbuffer.frag.hlsl); every bind carries noStencil.
 			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
 			smvk::RasterSettings raster{};
 			bool maskedCutout = false;
@@ -8454,7 +8500,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			// Masked cutout in 2x MSAA + A2C opt-in (VULKANTOY_A2C):
 			// alpha-to-coverage program (coverage remap in the FS, zero
-			// discard) + A2C multisample state â€” foliage silhouettes
+			// discard) + A2C multisample state — foliage silhouettes
 			// resolve AA'd. Opt-in because A2C moves the per-sample depth
 			// test after the FS: overlapping layers lose early-reject
 			// (+6ms bistro foliage bench), so the default stays the
@@ -8465,16 +8511,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				&& useMsaa && m_msaaAlphaToCoverage && maskedCutout
 				&& progA2c.shaderCount == 2;
 			smvk::ShaderProgram& bound = useA2c ? progA2c : prog;
-			const bool writeClass = writeStencilClass && ssrStencilOn;
-			if (writeClass)
-				ensureStencilRef(materialId);
+			(void)writeStencilClass;
 			// wireTwinOf swaps the lit/filtered/vertex-lit FS for the flat
 			// line FS while P is on (binds the twin, tracks the original).
 			cmd.BindRenderPipeline(
 				wireTwinOf(bound),
 				smvk::VertexFormat::StaticVertexFormat,
 				depth,
-				writeClass ? classStencil : noStencil,
+				noStencil,
 				blend,
 				useA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings,
 				wireframeRaster(raster)
@@ -9335,163 +9379,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
-		// SSR pane layer (the surviving pane leg of the old GlassMask
-		// redraw — the opaque classification moved into Main's stencil
-		// writes, see Rendergraph/stencil_bits.h): ONE redraw of the
-		// transparent list —
-		//   color (ssr.paneDepth, R16_UNorm): R = the pane fragment's
-		//               reverse-Z depth (panedepth.frag). The opaque-only
-		//               prepass depth never carries Blend/dithered panes,
-		//               so without this layer the SSR trace can only trace
-		//               off the seen-through background at pane pixels.
-		//   stencil aspect: STENCIL_SSR (REPLACE; occluded panes fail the
-		//               depth test and never write). Pane presence
-		//               clobbers the opaque classification at pane pixels
-		//               BY DESIGN: pane presence IS the receiver identity
-		//               there (non-metal full-gloss — the old mask's pane
-		//               semantics), and pane identity itself rides
-		//               paneDepth (pane <=> paneDepth > 0).
-		// Depth tests read-only against the stored depth (GreaterEqual,
-		// never writes it); Max blend keeps the NEAREST pane depth where
-		// panes stack (reverse-Z max) so the redraw needs no sorting.
-		// Emitted only when SSR will run — the layer has no other
-		// consumer — and the emitted flag feeds the SSR passes, so a
-		// skipped layer can never leave the trace reading stale
-		// coverage. Skipped when the stencil layer is not wanted
-		// (fc.ssrStencilWanted) and under MSAA (transparents test
-		// against the transient MSAA depth, DontCare-stored — pane
-		// receivers fall back to the legacy path).
+		// (The old PaneMask transparents-redraw layer is GONE: panes read as
+		// their seen-through opaque surface — the trace's receiver is the
+		// opaque depth + the thin G-buffer's seen-through values. See
+		// ssr.h + gbuffer.frag.hlsl.)
 		// ---------------------------------------------------------------------
-		bool paneLayerEmitted = false;
-		{
-			SMVK_PROFILE_CATEGORY("PaneMask", Optick::Category::Rendering);
-			const bool paneWanted = m_ssrGlassEnabled
-				&& m_resources.paneDepthProgram.shaderCount == 2
-				&& !useMsaa;
-			const bool maskWanted = fc.ssrStencilWanted
-				&& paneWanted
-				&& m_viewportResources.ssr.Valid()
-				&& m_viewportResources.renderDepth.StencilValid()
-				&& !m_viewportResources.renderDepth.logicalView.empty();
-			if (maskWanted) {
-				smvk::RenderPass& panePass = m_rendergraph->AddPass("PaneMask")
-					.SetOffset(0, 0)
-					.SetExtent(renderExtent)
-					.SetColor({ m_viewportResources.ssr.paneDepth.logical },
-						smvk::AttachmentLoadOp::Clear,
-						smvk::AttachmentStoreOp::Store,
-						smvk::ClearColor(0.0f, 0.0f, 0.0f, 0.0f))
-					// Load/Store against the stored opaque depth: the
-					// pass tests read-only and the stored depth feeds every
-					// later march (DontCare would discard it out from under
-					// SSR/DOF/volumetric — the Nsight store-op bug).
-					.SetDepth(m_viewportResources.renderDepth.logicalView,
-						smvk::AttachmentLoadOp::Load,
-						smvk::AttachmentStoreOp::Store,
-						smvk::ClearDepthStencil(0, 0));
-				panePass.SetRecordingFunc(
-					[this, pc, transparentCullView](smvk::CommandBuffer& cmd)
-				{
-					// Max blend on paneDepth R: the NEAREST pane wins
-					// where panes stack (reverse-Z max) — order-independent.
-					smvk::BlendSettings paneBlend{};
-					paneBlend.blendState.blendEnable = true;
-					{
-						smvk::BlendAttachmentState& att =
-							paneBlend.blendState.attachment[0];
-						att.srcColorBlendFactor =
-							smvk::BlendAttachmentState::SrcColorBlendFactor::One;
-						att.dstColorBlendFactor =
-							smvk::BlendAttachmentState::DstColorBlendFactor::One;
-						att.colorBlendOp =
-							smvk::BlendAttachmentState::ColorBlendOp::Max;
-						att.alphaBlendOp =
-							smvk::BlendAttachmentState::AlphaBlendOp::Max;
-					}
-					const smvk::DepthSettings paneDepthSettings{
-						.depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = false,
-						.depthTestEnable = true,
-					};
-					// Pane bit (STENCIL_SSR — panes are reflective SSR
-					// receivers): REPLACE on the stencil aspect alongside
-					// the paneDepth write; depth-failed (occluded) panes
-					// KEEP the opaque classification (depthFailOp KEEP).
-					// Pane identity itself rides paneDepth (pane <=>
-					// paneDepth > 0), so the flat STENCIL_SSR is enough.
-					smvk::StencilSettings paneStencil{};
-					paneStencil.frontTestEnable = true;
-					paneStencil.backTestEnable = true;
-					paneStencil.frontCompareOp = smvk::CompareOp::Always;
-					paneStencil.backCompareOp = smvk::CompareOp::Always;
-					paneStencil.frontPassOp = smvk::STENCIL_OP_REPLACE;
-					paneStencil.backPassOp = smvk::STENCIL_OP_REPLACE;
-					paneStencil.frontWriteEnable = true;
-					paneStencil.backWriteEnable = true;
-					cmd.SetStencilReference(smvk::stencil::STENCIL_SSR);
-					// ---- Pane leg: transparent list -> (depth, STENCIL_SSR) ----
-					{
-						const std::vector<TransparentDrawItem> draws =
-							CollectTransparentDraws(transparentCullView, false);
-						uint32_t boundMaterial = UINT32_MAX;
-						bool firstBind = true;
-						for (const TransparentDrawItem& d : draws) {
-							smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
-							if (!meshDesc)
-								continue;
-							if (firstBind || d.materialId != boundMaterial) {
-								smvk::RasterSettings raster{};
-								if (smvk::Material* mat = m_world->GetMaterial(d.materialId))
-									raster = mat->pipeline.raster; // doubleSided panes -> Cull None
-								cmd.BindRenderPipeline(
-									m_resources.paneDepthProgram,
-									smvk::VertexFormat::StaticVertexFormat,
-									paneDepthSettings,
-									paneStencil,
-									paneBlend,
-									smvk::MSAASettings::Count1(),
-									raster);
-								cmd.BindStaticVertexFmt();
-								if (firstBind) {
-									// Full push once: the VS reads frameUniforms +
-									// renderViews; per-draw deltas below overwrite
-									// model + materialId, same discipline as Main.
-									cmd.PushConstants(0, sizeof(PushConstants), &pc,
-										smvk::ShaderStage::All);
-									firstBind = false;
-								}
-								boundMaterial = d.materialId;
-							}
-							PushConstants objPC{};
-							objPC.materialId = d.materialId;
-							const glm::mat4& model = m_world->scene.globalTransform[d.node];
-							std::copy_n(glm::value_ptr(model), 16, objPC.model);
-							cmd.PushConstants(
-								offsetof(PushConstants, materialId),
-								sizeof(objPC.materialId),
-								&objPC.materialId,
-								smvk::ShaderStage::All
-							);
-							cmd.PushConstants(
-								0,
-								offsetof(PushConstants, frameUniforms),
-								&objPC,
-								smvk::ShaderStage::All
-							);
-							for (auto& draw_set : meshDesc->geometry.surfaces) {
-								cmd.DrawIndexed(
-									draw_set.indexCount,
-									1,
-									draw_set.firstIndex,
-									draw_set.baseVertex
-								);
-							}
-						}
-					}
-				});
-				paneLayerEmitted = true;
-			}
-		}
 
 		// ---------------------------------------------------------------------
 		// Screen-space reflections – half-res trace + bilateral blur +
@@ -9526,21 +9418,108 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			&& m_ssrIntensity > 0.0f
 			&& !DebugVisualizationActive();
 		if (ssrOn) {
-			// Receiver-material layer availability: the classification
-			// bits are written by MAIN's opaque binds (fc.ssrStencilWanted,
-			// see Rendergraph/stencil_bits.h), the pane half additionally
-			// by the PaneMask pass above. Both feed the trace/compose; when
-			// either is absent the affected gate falls back to the legacy
-			// uniform-F0 behavior.
-			const bool stencilLayerOn = fc.ssrStencilWanted
-				&& m_viewportResources.renderDepth.StencilValid();
+			// Receiver-material layer availability: the thin G-buffer
+			// (oct normal + roughness + metal) is written by the Forward+
+			// depth prepass when fc.ssrGbufferWanted (see
+			// gbuffer.frag.hlsl); when absent the trace falls back to the
+			// legacy uniform-F0 mirror behavior.
+			const bool gbufferLayerOn = fc.ssrGbufferWanted
+				&& m_viewportResources.ssr.gbuffer.Valid();
+			// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth
+			// — hzb_max.cs.hlsl): built HERE, after every depth pass (the
+			// trace runs after Main — the depth is final; the CULLING HZB
+			// builds over the seed's partial set / Option A occluders
+			// earlier and is MIN-reduced — unusable for marching). One
+			// compute pass per mip level (rendergraph barriers between;
+			// no intra-pass barrier API); mip 0 copies the depth texture,
+			// mips 1+ MAX-reduce. Failure of any leg leaves the linear
+			// adaptive march (the trace's HZB skip gates on BDA/mips 0).
+			uint64_t ssrHzbAddr = 0;
+			uint32_t ssrHzbMips = 0;
+			smvk::LogicalBufferHandle ssrHzbLogical{};
+			if (m_ssrHzbProgram.shaderCount == 1
+				&& EnsureSsrHzb(*m_context, *m_rendergraph,
+					m_viewportResources.ssr.extent.width,
+					m_viewportResources.ssr.extent.height)) {
+				ssrHzbAddr = m_context->GetBufferDeviceAddress(m_ssrHzbBuffer);
+				if (ssrHzbAddr != 0)
+					ssrHzbMips = m_ssrHzbMipCount;
+				if (ssrHzbMips != 0) {
+					ssrHzbLogical = m_ssrHzbLogical;
+					const uint32_t depthBindless =
+						m_viewportResources.renderDepth.bindlessIndex;
+					for (uint32_t m = 0; m < m_ssrHzbMipCount; ++m) {
+						const bool fromDepth = (m == 0);
+						smvk::RenderPass& hzbPass =
+							m_rendergraph->AddComputePass("SsrHzb");
+						{
+							smvk::BufferSyncRequest hzbRW{};
+							hzbRW.barrierMasks.accessMask =
+								smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+							hzbRW.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+							hzbPass.AddBufferHint(m_ssrHzbLogical, hzbRW);
+						}
+						if (fromDepth) {
+							// Depth sampled in compute (DepthStencilReadOnlyOptimal:
+							// matches the bindless descriptor layout — see gfx's
+							// AddHizPass note).
+							smvk::ImageSyncRequest depthReq{};
+							depthReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+							depthReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+							depthReq.layout = smvk::ImageLayout::DepthStencilReadOnlyOptimal;
+							hzbPass.AddImageHint(
+								m_viewportResources.renderDepth.logicalView, depthReq);
+						}
+						const uint32_t mip = m;
+						hzbPass.SetRecordingFunc(
+							[this, mip, depthBindless, fromDepth, ssrHzbAddr]
+							(smvk::CommandBuffer& cmd) {
+							uint32_t dw = 0, dh = 0, sw = 0, sh = 0;
+							smvk::gfx::HzbMipDims(m_ssrHzbWidth, m_ssrHzbHeight,
+								mip, dw, dh);
+							smvk::gfx::HzbMipDims(m_ssrHzbWidth, m_ssrHzbHeight,
+								fromDepth ? 0u : mip - 1u, sw, sh);
+							smvk::gfx::HzbPush push{};
+							push.hzb = ssrHzbAddr;
+							push.dstMip = mip;
+							push.dstWidth = dw;
+							push.dstHeight = dh;
+							push.dstOffset = m_ssrHzbMipOffsets[mip];
+							push.depthTextureIndex = depthBindless;
+							if (fromDepth) {
+								push.srcMip = smvk::gfx::kHizSrcDepth;
+								push.srcWidth = m_ssrHzbWidth;
+								push.srcHeight = m_ssrHzbHeight;
+								push.srcOffset = 0;
+							}
+							else {
+								push.srcMip = mip - 1;
+								push.srcWidth = sw;
+								push.srcHeight = sh;
+								push.srcOffset = m_ssrHzbMipOffsets[mip - 1];
+							}
+							cmd.BindComputePipeline(m_ssrHzbProgram);
+							cmd.PushConstants(0, sizeof(push), &push,
+								smvk::ShaderStage::Compute);
+							cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+						});
+					}
+				}
+			}
 			// Temporal path needs the motion-vector target (reprojection
 			// source); without it the record takes the spatial-only path
 			// and the TAA history invalidates at the end of the frame.
-			const bool taaUsable = SsrTaaRequested()
-				&& m_passes.motionVectors && m_viewportResources.motionVectors.Valid()
-				&& !m_viewportResources.motionVectors.target.logicalView.empty()
-				&& m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
+			// TEMPORARY: the temporal (TAA) accumulation path is COMMENTED
+			// OUT (spatial-only while the smear diagnosis is open): the
+			// record always takes AddSsrPasses below. The history state
+			// machine (m_ssrTaa) keeps warming up/invalidating through the
+			// spatial records, so re-enabling = flip this back to true
+			// (the temporal program, history targets and BlendSettings
+			// are untouched).
+			const bool taaUsable = false; // SsrTaaRequested()
+				// && m_passes.motionVectors && m_viewportResources.motionVectors.Valid()
+				// && !m_viewportResources.motionVectors.target.logicalView.empty()
+				// && m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
 			if (taaUsable) {
 				const smvk::SsrTaaFrameParams taaParams =
 					smvk::SsrTaaBeginFrame(m_ssrTaa, true);
@@ -9548,21 +9527,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				// consecutive traces so the temporal pass converges speckle
 				// to its mean (static dither would just park the pattern).
 				const uint32_t ssrDitherEpoch = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
-				m_viewportResources.ssr.AddSsrTemporalPasses(
-					*m_rendergraph,
-					sceneHdrView,
-					sceneHdrBindless,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.renderDepth.bindlessIndex,
-					stencilLayerOn ? m_viewportResources.renderDepth.stencilLogicalView
-						: smvk::LogicalImageViewHandle{},
-					stencilLayerOn ? m_viewportResources.renderDepth.stencilBindlessIndex
-						: UINT32_MAX,
-					paneLayerEmitted ? m_viewportResources.ssr.paneDepth.logical
-						: smvk::LogicalImageViewHandle{},
-					paneLayerEmitted ? m_viewportResources.ssr.paneDepth.bindlessIndex
-						: UINT32_MAX,
-					m_viewportResources.motionVectors.target.logicalView,
+			m_viewportResources.ssr.AddSsrTemporalPasses(
+				*m_rendergraph,
+				sceneHdrView,
+				sceneHdrBindless,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
+					: smvk::LogicalImageViewHandle{},
+				gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
+					: UINT32_MAX,
+				ssrHzbAddr,
+				ssrHzbMips,
+				ssrHzbLogical,
+				m_viewportResources.motionVectors.target.logicalView,
 					m_viewportResources.motionVectors.target.bindlessIndex,
 					frameUniformsAddress,
 					linearSampler,
@@ -9579,21 +9557,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ssrDitherEpoch);
 				m_ssrFrameRanTemporal = true;
 			} else {
-				m_viewportResources.ssr.AddSsrPasses(
-					*m_rendergraph,
-					sceneHdrView,
-					sceneHdrBindless,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.renderDepth.bindlessIndex,
-					stencilLayerOn ? m_viewportResources.renderDepth.stencilLogicalView
-						: smvk::LogicalImageViewHandle{},
-					stencilLayerOn ? m_viewportResources.renderDepth.stencilBindlessIndex
-						: UINT32_MAX,
-					paneLayerEmitted ? m_viewportResources.ssr.paneDepth.logical
-						: smvk::LogicalImageViewHandle{},
-					paneLayerEmitted ? m_viewportResources.ssr.paneDepth.bindlessIndex
-						: UINT32_MAX,
-					frameUniformsAddress,
+			m_viewportResources.ssr.AddSsrPasses(
+				*m_rendergraph,
+				sceneHdrView,
+				sceneHdrBindless,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
+					: smvk::LogicalImageViewHandle{},
+				gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
+					: UINT32_MAX,
+				ssrHzbAddr,
+				ssrHzbMips,
+				ssrHzbLogical,
+				frameUniformsAddress,
 					linearSampler,
 					ssrDesc,
 					"SSR",
@@ -9681,7 +9658,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			static const int sSsrStencilViewSrc =
 				std::getenv("VULKANTOY_SSR_STENCILVIEW") != nullptr
 				? std::atoi(std::getenv("VULKANTOY_SSR_STENCILVIEW")) : 1;
-			if (m_ssrDumpAtFrame >= 0 && sSsrStencilView && stencilLayerOn) {
+			if (m_ssrDumpAtFrame >= 0 && sSsrStencilView && gbufferLayerOn) {
 				if (m_ssrStencilViewProgram.shaderCount == 0) {
 					try {
 						auto vs = m_context->CreateShaderModule(
@@ -12267,9 +12244,65 @@ float SsrDumpHalfToFloat(uint16_t h)
 	}
 	float out;
 	std::memcpy(&out, &bits, sizeof(out));
-	return out;
+ return out;
+ }
 }
+
+// SSSR trace Hi-Z sizing (mirrors gfx's EnsureHiz discipline): recreate
+// only on extent drift; the zero-fill reads as far/sky at every MAX block
+// (an unbuilt block's nearest is behind everything — the trace skip can
+// only skip a provably-empty block, never cross unknown content).
+bool WorldRenderer::EnsureSsrHzb(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+	uint32_t w, uint32_t h) {
+	if (w == 0 || h == 0)
+		return false;
+	const uint32_t wantMips = smvk::gfx::HzbMipCount(w, h);
+	if (m_ssrHzbWidth == w && m_ssrHzbHeight == h
+		&& m_ssrHzbMipCount == wantMips
+		&& !m_ssrHzbBuffer.empty() && !m_ssrHzbLogical.empty())
+		return true;
+	if (!m_ssrHzbLogical.empty())
+		rg.FreeBuffer(m_ssrHzbLogical);
+	m_ssrHzbLogical = {};
+	m_ssrHzbBuffer = {};
+	m_ssrHzbWidth = w;
+	m_ssrHzbHeight = h;
+	m_ssrHzbMipCount = wantMips;
+	for (uint32_t m = 0; m < wantMips; ++m)
+		m_ssrHzbMipOffsets[m] = smvk::gfx::HzbMipOffsetFloats(w, h, m);
+	for (uint32_t m = wantMips; m < smvk::gfx::kHizMaxMips; ++m)
+		m_ssrHzbMipOffsets[m] = 0;
+	const uint32_t totalFloats = smvk::gfx::HzbTotalFloats(w, h);
+	// Shader-side array cap (hzb.hlsli HZB_MAX_FLOATS): 4K-class targets
+	// fit; beyond it the shader reads/writes OOB (diagnosed loudly).
+	if (totalFloats > 12582912u)
+		std::cerr << "[WorldRenderer] ssr hzb " << w << "x" << h
+			<< " needs " << totalFloats << " floats (shader cap 12582912): "
+			<< "the trace skip stays off for this extent\n";
+	m_ssrHzbBuffer = ctx.CreateBuffer(
+		(size_t)totalFloats * sizeof(float),
+		smvk::BufferType_Storage, "ssr hzb max");
+	if (m_ssrHzbBuffer.empty()) {
+		m_ssrHzbWidth = m_ssrHzbHeight = m_ssrHzbMipCount = 0;
+		return false;
+	}
+	{
+		std::vector<uint8_t> zeros((size_t)totalFloats * sizeof(float), 0);
+		if (!zeros.empty()) {
+			ctx.UploadDataToBuffer(m_ssrHzbBuffer, zeros.data(), zeros.size(),
+				smvk::PipelineStage(smvk::PipelineStageBit_Compute),
+				smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite);
+		}
+	}
+	m_ssrHzbLogical = rg.AddExternalBuffer(m_ssrHzbBuffer, "ssr hzb max");
+	if (m_ssrHzbLogical.empty()) {
+		m_ssrHzbBuffer = {};
+		m_ssrHzbWidth = m_ssrHzbHeight = m_ssrHzbMipCount = 0;
+		return false;
+	}
+	return true;
 }
+
 void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 	const auto& ssr = m_viewportResources.ssr;
 	const auto& vol = m_viewportResources.volumetric;
@@ -12279,8 +12312,8 @@ void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 		const char* name;
 		const smvk::Holder<smvk::ImageHandle>* image;
 		uint32_t w, h;
-		bool depth; // D32F grayscale vs RGBA16F tone-map
-		bool unorm16; // R16_UNorm single-channel (paneDepth)
+		bool depth;   // D32F grayscale vs RGBA16F tone-map
+		bool unorm8;  // RGBA8 thin G-buffer (oct normal + roughness + metal)
 	};
 	const uint32_t fw = ssr.extent.width ? ssr.extent.width : 1;
 	const uint32_t fh = ssr.extent.height ? ssr.extent.height : 1;
@@ -12290,7 +12323,7 @@ void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 		{ "hdr_main",   &hdrRes.image,        fw, fh, false, false },
 		{ "ssr_raw",    &ssr.raw.image,       hw, hh, false, false },
 		{ "ssr_blur",   &ssr.blurred.image,   hw, hh, false, false },
-		{ "ssr_panedepth", &ssr.paneDepth.image, fw, fh, false, true },
+		{ "ssr_gbuffer", &ssr.gbuffer.image,  fw, fh, false, true },
 		{ "ssr_hist0",  &ssr.history[0].image, hw, hh, false, false },
 		{ "ssr_hist1",  &ssr.history[1].image, hw, hh, false, false },
 		{ "ssr_comp",   &ssr.image,           fw, fh, false, false },
@@ -12304,7 +12337,7 @@ void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 		}
 		const size_t bpp = st.depth
 			? (depthRes.format == smvk::Format::D32_Float_S8_UInt ? 8 : 4)
-			: (st.unorm16 ? 2 : 8); // D32F+S8 vs R16_UNorm vs RGBA16F
+			: (st.unorm8 ? 4 : 8); // D32F+S8 vs RGBA8 vs RGBA16F
 		const size_t bytes = size_t(st.w) * st.h * bpp;
 		std::vector<uint8_t> px(bytes);
 		const smvk::ImageLayout layout = st.depth
@@ -12315,13 +12348,15 @@ void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 			continue;
 		}
 		// Decode into float32 per channel.
-		const size_t chans = st.depth ? 1 : (st.unorm16 ? 1 : 4);
+		const size_t chans = st.depth ? 1 : 4;
 		std::vector<float> f(size_t(st.w) * st.h * chans);
-		if (!st.depth && st.unorm16) {
-			// paneDepth (R16_UNorm): the pane receiver depth 0..1.
-			const uint16_t* u16 = reinterpret_cast<const uint16_t*>(px.data());
+		if (!st.depth && st.unorm8) {
+			// Thin G-buffer (RGBA8): R,G = oct normal, B = roughness,
+			// A = metal. Decoded raw (4 channels) — the PNG shows the
+			// oct normal map + roughness/metal planes directly.
+			const uint8_t* u8 = reinterpret_cast<const uint8_t*>(px.data());
 			for (size_t i = 0; i < f.size(); ++i)
-				f[i] = u16[i] / 65535.0f;
+				f[i] = u8[i] / 255.0f;
 		}
 		else if (!st.depth) {
 			const uint16_t* h16 = reinterpret_cast<const uint16_t*>(px.data());

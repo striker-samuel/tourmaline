@@ -33,6 +33,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Renderer/texture_feedback.h>
@@ -703,6 +704,16 @@ struct AppResources {
 	// depth so background behind foliage holes survives the main pass.
 	// Reuses the main VS and the reversed-Z masked-shadow FS module.
 	smvk::ShaderProgram prepassMaskedProgram;
+	// SSSR-style thin G-buffer programs (see gbuffer.frag.hlsl): default.vert
+	// + the trivial solid/cutout G-buffer FS pair — the Forward+ depth
+	// prepass's G-buffer writers (bound instead of the VS-only
+	// depthProgram + prepassMaskedProgram when the G-buffer layer is
+	// wanted). Empty when the shaders failed to load (the prepass keeps
+	// the legacy VS-only path).
+	smvk::Holder<smvk::ShaderModuleHandle> gbufferFragShader;
+	smvk::Holder<smvk::ShaderModuleHandle> gbufferMaskedFragShader;
+	smvk::ShaderProgram gbufferProgram;
+	smvk::ShaderProgram gbufferMaskedProgram;
 	// NOTE: shadow/bloom/tonemap/forwardplus programs + modules are owned by
 	// their engine builders (CascadedShadowAtlas / BloomChain / Tonemapper /
 	// ForwardPlus).
@@ -1824,6 +1835,29 @@ protected:
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewVs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewPs;
 	smvk::ShaderProgram m_ssrStencilViewProgram{};
+	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth —
+	// see hzb_max.cs.hlsl + ssr.frag.hlsl): the tracing twin of the gfx
+	// filter's culling HZB. The culling pyramid is MIN-reduced
+	// (farthest-surface, the occlusion-cull conservatism) and built over
+	// the seed's partial set / Option A crudest-LOD occluders BEFORE the
+	// depth passes complete — unusable for ray marching. This one is
+	// MAX-reduced (NEAREST surface per block — the ray-trace direction)
+	// over the final renderDepth, emitted AFTER all depth passes (the
+	// SSR trace runs after Main — the depth is final). The trace's
+	// empty-space skip proves "every surface in the covered block is
+	// behind the ray's next position" from the block's nearest value —
+	// only provably-empty blocks are skipped (a missed reflection at
+	// worst, never a see-through).
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbModule;
+	smvk::ShaderProgram m_ssrHzbProgram{};
+	smvk::Holder<smvk::BufferHandle> m_ssrHzbBuffer;
+	smvk::LogicalBufferHandle m_ssrHzbLogical{};
+	uint32_t m_ssrHzbWidth = 0;
+	uint32_t m_ssrHzbHeight = 0;
+	uint32_t m_ssrHzbMipCount = 0;
+	uint32_t m_ssrHzbMipOffsets[smvk::gfx::kHizMaxMips] = {};
+	bool EnsureSsrHzb(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+		uint32_t w, uint32_t h);
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)

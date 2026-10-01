@@ -10,7 +10,6 @@
 
 struct PSIn
 {
-    float4 pos : SV_Position; // half-res pixel coords
     float2 uv : TEXCOORD0;
 };
 
@@ -52,7 +51,7 @@ float SsrEdgeWeight(float tapDist, float centerDist, float sharpness)
     return exp(-depthDiff * max(sharpness, 0.0f));
 }
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     FrameUniforms frame = bp.frameUniforms.Get();
@@ -63,7 +62,7 @@ PSOut mainPS(PSIn IN)
     // Center 2x2 block from full-res depth. Nearest valid tap (reverse-Z:
     // max depth) is the authority; an all-background block carries no
     // reflector and blurs to nothing.
-    int2 halfPx = int2(IN.pos.xy);
+    int2 halfPx = int2(pos.xy);
     int2 fullBase = halfPx * 2;
     float d00 = depthTex.Load(int3(fullBase, 0)).r;
     float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;

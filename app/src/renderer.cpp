@@ -398,7 +398,8 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManag
 	// path's reversed-Z GreaterEqual. No index bind: commands address the
 	// static index monoblock absolutely (the offset-0 binding from
 	// BindStaticVertexFmt is correct for every draw below).
-	// Phase 1: opaque casters (VS-only, back-culled like the direct path).
+	// Phase 1: opaque casters (VS-only, FRONT-culled like the direct path —
+	// back faces only, the shadow anti-acne classic).
 	if (opaqueCount > 0) {
 		cmd.BindRenderPipeline(
 			shadowSeedOpaqueProgram,
@@ -415,7 +416,7 @@ void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManag
 			smvk::StencilSettings{},
 			smvk::BlendSettings{},
 			smvk::MSAASettings{},
-			smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::Front }
 		);
 		cmd.PushConstants(0, sizeof(PushConstants), &shadowPC, smvk::ShaderStage::All);
 		PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);

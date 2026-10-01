@@ -24,6 +24,13 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	smvk::ForwardPlus* fp = nullptr; // owned by ViewportResources
 	smvk::ForwardPlusDesc desc{};
 	smvk::ShaderProgram prepassMaskedProgram{}; // main-owned, init-stable
+	// SSSR-style thin G-buffer writers (see gbuffer.frag.hlsl): bound by
+	// the prepass phases instead of the VS-only depthProgram +
+	// prepassMaskedProgram when fc.ssrGbufferWanted (the G-buffer FS is
+	// trivial — no textures, no lighting; the prepass already rasterizes
+	// every opaque surface). Empty programs = legacy VS-only path.
+	smvk::ShaderProgram gbufferProgram{};
+	smvk::ShaderProgram gbufferMaskedProgram{};
 	// Option A occluder prepass tuning (see AppendOccluderPrepass): items
 	// whose world bound-radius < occluderMinRadius OR whose projected
 	// bound diameter < occluderMinPixels are skipped (poor occluders).
@@ -35,6 +42,11 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 		fp = builder;
 		desc = d;
 		prepassMaskedProgram = maskedProg;
+	}
+	void ConfigureGbuffer(const smvk::ShaderProgram& gbufferProg,
+		const smvk::ShaderProgram& gbufferMaskedProg) {
+		gbufferProgram = gbufferProg;
+		gbufferMaskedProgram = gbufferMaskedProg;
 	}
 
 	const char* Name() const override { return "ForwardPlus"; }

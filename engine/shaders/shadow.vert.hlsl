@@ -14,7 +14,11 @@ struct VSOut
     // Consumed only by shadow.frag (alpha-tested cutout depth). The
     // depth-only program has no FS; extra varyings are legal there
     // (same pattern as default.vert with the Forward+ depth program).
-    [[vk::location(0)]] float3 color : COLOR0;
+    // COLOR0 stays a full float4: the shadow_body FS declares a vec4 at
+    // Location 0, and a vec3 here would leave component 3 undeclared
+    // (VUID-RuntimeSpirv-OpEntryPoint-08743). The FS never reads it, but
+    // the declared interface must agree.
+    [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
 };
 
@@ -24,7 +28,7 @@ VSOut mainVS(VSIn IN)
 
     float4 world = mul(pc.model, float4(IN.position, 1.0f));
 
-    OUT.color = IN.color.rgb;
+    OUT.color = IN.color;
     OUT.uv = IN.uv;
 
     // RenderView path: every shadow pass owns an allocated view (one per

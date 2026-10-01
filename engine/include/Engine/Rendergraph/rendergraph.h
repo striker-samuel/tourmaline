@@ -311,7 +311,7 @@ namespace smvk
 			AttachmentStoreOp::DontCare,
 			ClearColor clearValue = {})
 		{
-			assert(resolveViews.empty() || resolveViews.size() == views.size());
+assert(resolveViews.empty() || resolveViews.size() == views.size());
 
 			colorAttachments_.resize(views.size());
 
@@ -331,6 +331,21 @@ namespace smvk
 			return *this;
 		}
 
+		// Per-attachment color setup: each RenderAttachment carries its own
+		// loadOp/storeOp/clearColor/resolveView, allowing mixed clear values
+		// (e.g. HDR clear 0 + roughness clear 1).
+		RenderPass& SetColorAttachments(
+			const std::vector<RenderAttachment>& attachments)
+		{
+			colorAttachments_ = attachments;
+
+			for (const auto& att : colorAttachments_)
+			{
+				assert(!att.view.empty());
+			}
+
+			return *this;
+		}
 
 		RenderPass& SetDepth(
 			LogicalImageViewHandle view,

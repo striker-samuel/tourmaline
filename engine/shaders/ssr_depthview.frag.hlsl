@@ -10,7 +10,6 @@
 
 struct PSIn
 {
-    float4 pos : SV_Position;
     float2 uv : TEXCOORD0;
 };
 
@@ -32,12 +31,12 @@ struct SsrDepthViewPush
 [[vk::push_constant]]
 ConstantBuffer<SsrDepthViewPush> dp;
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     // The trace's receiver tap: half-res pixel -> full-res 2x2 block's
     // origin — the exact coordinates ssr.frag.hlsl loads first.
-    int2 halfPx = int2(IN.pos.xy);
+    int2 halfPx = int2(pos.xy);
     int2 fullBase = halfPx * 2;
     float d = textures[NonUniformResourceIndex(dp.depthTextureIndex)]
         .Load(int3(fullBase, 0)).r;

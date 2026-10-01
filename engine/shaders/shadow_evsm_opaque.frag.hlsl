@@ -16,7 +16,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float3 color : COLOR0;
     float2 uv : TEXCOORD0;
 };
@@ -26,11 +25,11 @@ struct PSOut
     float4 moments : SV_Target0;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     // SV_Position.z is window-space depth in [0,1] (Vulkan ZO) — the
     // light-space depth d the EVSM warp expects.
     PSOut OUT;
-    OUT.moments = EvsmWarp(saturate(IN.clipPos.z), EVSM_EXPONENT);
+    OUT.moments = EvsmWarp(saturate(clipPos.z), EVSM_EXPONENT);
     return OUT;
 }

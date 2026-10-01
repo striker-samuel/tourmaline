@@ -54,17 +54,20 @@ struct AppFrameContext : public smvk::FrameContext {
 	// (Main + MotionVectors branch on the mode directly today; kept here
 	// for frame renderers that need it without reaching into WorldRenderer.)
 	bool ditheredTransparency = true;
-	// SSR receiver-material stencil (see Engine/Rendergraph/stencil_bits.h):
-	// when set, MAIN's opaque material binds REPLACE the per-material
-	// classification bits into the depth target's stencil aspect (dynamic
-	// reference; alpha-tested discards revert the write, occluded fragments
-	// KEEP) — the opaque half of the old GlassMask redraw, folded into the
-	// draws that already happen. Writing in Main covers every path that
-	// shades the frame (including the Northlight depth split), so no extra
-	// redraw exists. False under MSAA (Main writes the transient MSAA depth)
-	// and for stencil-less depth formats / SSR-off frames (legacy
-	// uniform-F0 trace instead).
-	bool ssrStencilWanted = false;
+	// SSSR-style thin G-buffer (oct normal + roughness + metal, RGBA8 —
+	// see gbuffer.frag.hlsl): written by the Forward+ depth prepass when
+	// set (the prepass already rasterizes every opaque surface, so the
+	// G-buffer costs a trivial FS + 4 bytes/px on a pass that exists;
+	// Main stays untouched). gbufferView: the attachment (empty = the
+	// legacy VS-only prepass, no color). The PREPASS binds the
+	// gbuffer/gbuffer_masked programs instead of the VS-only
+	// depth/shadow pair for the phases. False under MSAA (the prepass
+	// depth has no stable 1x companion) and for SSR-off frames (the
+	// only consumer is the SSR trace; toggling recompiles the prepass
+	// pipelines once — same toggle cost class as the old stencil
+	// write state).
+	bool ssrGbufferWanted = false;
+	smvk::LogicalImageViewHandle gbufferView{};
 	// Northlight depth split (filter on + seed primed depth): when set,
 	// the prepass runs FALLBACK-ONLY — items whose selected LOD the gfx
 	// filter owns are skipped, because the filter's temporal depth set

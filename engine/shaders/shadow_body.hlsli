@@ -24,7 +24,6 @@
 
 struct ShadowPSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
 };
@@ -41,7 +40,7 @@ struct ShadowPSOut
 };
 #endif
 
-ShadowPSOut mainPS(ShadowPSIn IN)
+ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
 {
     ShadowPSOut OUT;
     // Window-depth guard: SV_Position.z can leave [0,1] (or go NaN) when
@@ -54,7 +53,7 @@ ShadowPSOut mainPS(ShadowPSIn IN)
     // NaN-safe: the fallback sits on the FAR side of the convention so
     // the conservative bound stays satisfied (never nearer in reverse-Z,
     // never farther in normal-Z).
-    float d = IN.clipPos.z;
+    float d = clipPos.z;
 #if defined(SHADOW_NORMAL_Z)
     OUT.outDepth = (d >= 0.0f && d <= 1.0f) ? d : 1.0f;
 #else
@@ -72,7 +71,7 @@ ShadowPSOut mainPS(ShadowPSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         float4 s = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
         baseAlpha *= s.a;
     }
 
@@ -82,7 +81,7 @@ ShadowPSOut mainPS(ShadowPSIn IN)
     float alphaModeF = mat.params2.w;
     if (alphaModeF == 2.0f && pc.pad_pc == 0)
     {
-        if (!DitherKeep(baseAlpha, IN.clipPos.xy))
+        if (!DitherKeep(baseAlpha, clipPos.xy))
             discard;
     }
     else if (baseAlpha < alphaCutoff)

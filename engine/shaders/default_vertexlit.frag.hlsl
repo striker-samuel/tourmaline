@@ -10,7 +10,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;    // rgb = interpolated lit radiance, a = alpha
     float3 worldPos : TEXCOORD0;
 };
@@ -20,7 +19,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -37,7 +36,7 @@ PSOut mainPS(PSIn IN)
 
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
     float3 color = IN.color.rgb;

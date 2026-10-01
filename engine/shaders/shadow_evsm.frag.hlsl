@@ -22,7 +22,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float3 color : COLOR0;
     float2 uv : TEXCOORD0;
 };
@@ -38,14 +37,14 @@ struct PSOut
     float outDepth : SV_DepthGreaterEqual;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     // Same window-depth guard as shadow_body: the z-squash clamp can push
     // SV_Position.z outside [0,1] (or NaN) on w-crossing triangles; the
     // conservative write bypasses hardware clamping, so clamp with the
     // normal-Z far plane (1.0) as the bound-safe fallback.
-    float dDepth = IN.clipPos.z;
+    float dDepth = clipPos.z;
     OUT.outDepth = (dDepth >= 0.0f && dDepth <= 1.0f) ? dDepth : 1.0f;
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
@@ -58,14 +57,14 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         float4 s = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
         baseAlpha *= s.a;
     }
 
     float alphaModeF = mat.params2.w;
     if (alphaModeF == 2.0f && pc.pad_pc == 0)
     {
-        if (!DitherKeep(baseAlpha, IN.clipPos.xy))
+        if (!DitherKeep(baseAlpha, clipPos.xy))
             discard;
     }
     else if (baseAlpha < alphaCutoff)
@@ -73,7 +72,7 @@ PSOut mainPS(PSIn IN)
 
     // SV_Position.z is window-space depth in [0,1] (Vulkan ZO) — exactly the
     // light-space depth d the EVSM warp expects. No further transform.
-    float d = saturate(IN.clipPos.z);
+    float d = saturate(clipPos.z);
 
     // Four moments (M1/M2 of both exponential warps, see evsm.hlsli).
     OUT.moments = EvsmWarp(d, EVSM_EXPONENT);

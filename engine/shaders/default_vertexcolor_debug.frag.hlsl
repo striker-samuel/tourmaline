@@ -17,7 +17,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -31,7 +30,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -89,7 +88,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)ml.tex.x;
                 Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
                 a *= baseTex.Sample(samplers[0], IN.uv).a;
-                TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
             }
             baseAlpha += a * w;
         }
@@ -102,7 +101,7 @@ PSOut mainPS(PSIn IN)
             uint slot = (uint)mat.tex.x;
             Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
             baseAlpha *= baseTex.Sample(samplers[0], IN.uv).a;
-            TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+            TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
         }
     }
     if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
@@ -110,7 +109,7 @@ PSOut mainPS(PSIn IN)
 
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
     float3 color;

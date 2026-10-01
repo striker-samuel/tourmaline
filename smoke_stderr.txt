@@ -1,2 +1,0 @@
-[Shader] frag: rewrote 1 OpDemoteToHelperInvocation -> OpKill
-[Shader] shadowMaskedFrag: rewrote 1 OpDemoteToHelperInvocation -> OpKill

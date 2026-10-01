@@ -11,7 +11,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -26,7 +25,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -49,7 +48,7 @@ PSOut mainPS(PSIn IN)
     float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
     // Lobe-0 atlas amplitude (layer 0 rgb; .a is lobe-1 R, ignored).

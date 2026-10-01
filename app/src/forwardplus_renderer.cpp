@@ -87,6 +87,22 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 	// Null on full-prepass frames (fallbackOnly stays false then).
 	const std::function<bool(NodeId, uint32_t, uint32_t)> lodFilterable =
 		fc.gfxLodFilterable;
+	// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): on when wanted AND
+	// the programs loaded. On temporal-split frames (fallbackOnly) the
+	// G-buffer Loads last frame's values — the seed pass draws the
+	// filterable majority without a G-buffer FS, and static normals never
+	// change (dynamic surfaces read one frame stale, invisible under the
+	// temporal SSR blend); on full-prepass frames it Clears (fresh
+	// coverage: the prepass draws every visible opaque surface).
+	const bool gbufferOn = fc.ssrGbufferWanted
+		&& gbufferProgram.shaderCount == 2
+		&& gbufferMaskedProgram.shaderCount == 2
+		&& !fc.gbufferView.empty();
+	const smvk::LogicalImageViewHandle gbufferView = gbufferOn
+		? fc.gbufferView : smvk::LogicalImageViewHandle{};
+	const smvk::AttachmentLoadOp gbufferLoad = fallbackOnly
+		? smvk::AttachmentLoadOp::Load
+		: smvk::AttachmentLoadOp::Clear;
 
 	// ---- CPU frustum culling for the prepass ----
 	// Static nodes: single frustumCullBVH walk over the World's cached
@@ -114,16 +130,21 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 	using NodeId = ::NodeId;
 
 	// ---- Depth prepass: fills depth for tile min/max cull ----
-	// No color. Solid geometry uses the VS-only fast path; MASK cutout
-	// uses the alpha-tested program so holes keep background depth.
+	// Optional color: the SSSR thin G-buffer (oct normal + roughness +
+	// metal, RGBA8 — gbuffer.frag.hlsl). Solid geometry uses the VS-only
+	// fast path (or the G-buffer FS pair when on); MASK cutout uses the
+	// alpha-tested program so holes keep background depth (the G-buffer
+	// masked variant discards holes out of the G-buffer the same way).
 	// Transparent (Blend) is intentionally skipped — see above.
 	{
 		auto& prepass = fp->AddDepthPrepass(rg, depthView,
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
-				: smvk::AttachmentLoadOp::Clear);
+				: smvk::AttachmentLoadOp::Clear,
+			gbufferView, gbufferLoad);
 		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
-			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable](smvk::CommandBuffer& cmd)
+			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable,
+			gbufferOn](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			// Phase 2 masked pipeline: cull follows the material raster
@@ -132,13 +153,15 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 			// boundMaskedCull starts at a never-bound sentinel; rebinds
 			// only on cull changes and the CommandBuffer dedupes identical
 			// pipeline states, so the common all-double-sided scene pays
-			// one bind.
+			// one bind. G-buffer on: the masked pair switches to
+			// gbufferMaskedProgram (same alpha test + the G-buffer
+			// output).
 			smvk::CullMode boundMaskedCull = smvk::CullMode::FrontAndBack;
 			auto ensureMaskedPipeline = [&](smvk::CullMode cull) {
 				if (cull == boundMaskedCull)
 					return;
 				cmd.BindRenderPipeline(
-					prepassMaskedProgram,
+					gbufferOn ? gbufferMaskedProgram : prepassMaskedProgram,
 					smvk::VertexFormat::StaticVertexFormat,
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -239,54 +262,73 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 				else {
 					meshDesc = world->GetMesh(item.mesh);
 				}
-				if (!meshDesc) return;
-				PushConstants objectPC{};
-				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-				if (maskedPhase) {
-					smvk::CullMode cull = smvk::CullMode::None;
-					if (const smvk::Material* mat = world->GetMaterial(item.material))
-						cull = mat->pipeline.raster.cullMode;
-					ensureMaskedPipeline(cull);
-					objectPC.materialId = item.material;
-					cmd.PushConstants(offsetof(PushConstants, materialId),
-						sizeof(objectPC.materialId), &objectPC.materialId,
-						smvk::ShaderStage::All);
-				}
-				cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-				};
+			if (!meshDesc) return;
+			PushConstants objectPC{};
+			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+			if (maskedPhase) {
+				smvk::CullMode cull = smvk::CullMode::None;
+				if (const smvk::Material* mat = world->GetMaterial(item.material))
+					cull = mat->pipeline.raster.cullMode;
+				ensureMaskedPipeline(cull);
+			}
+			// materialId: the masked FS always read it (alpha test); the
+			// G-buffer solid FS reads it too (roughness/metal lookup).
+			if (maskedPhase || gbufferOn) {
+				objectPC.materialId = item.material;
+				cmd.PushConstants(offsetof(PushConstants, materialId),
+					sizeof(objectPC.materialId), &objectPC.materialId,
+					smvk::ShaderStage::All);
+			}
+			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
-			// Phase 1: solid geometry, VS-only fast path.
-			cmd.BindRenderPipeline(
-				fp->depthProgram,
-				smvk::VertexFormat::StaticVertexFormat,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				smvk::MSAASettings{},
-				smvk::RasterSettings{
-					.cullMode = smvk::CullMode::Back
-				}
-			);
+		};
+		// Phase 1: solid geometry. VS-only fast path (legacy) or the
+		// G-buffer FS pair (SSSR: the trivial gbuffer.frag reads the
+		// interpolated world normal + material factors and writes the
+		// RGBA8 thin G-buffer — no textures, no lighting).
+		cmd.BindRenderPipeline(
+			gbufferOn ? gbufferProgram : fp->depthProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::GreaterEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::Back
+			}
+		);
 		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-		world->forEachRenderItem(
-			smvk::IteratorFlagBit_Renderable
-			| smvk::IteratorFlagBit_Opaque
-			| smvk::IteratorFlagBit_StaticVertexFmt
-			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
-			// Phase 2: MASK cutout, alpha-tested so holes keep
-			// background depth. The pipeline binds lazily per material
-			// cull (ensureMaskedPipeline above).
+		// Phase order: MOST EXPENSIVE FIRST. Phase 1 = MASK cutout
+		// (alpha-tested FS: baseColor fetch + discard — the expensive
+		// per-fragment work): it runs against empty depth, but masked
+		// is the FRONT layer (foliage occludes, is rarely occluded) so
+		// priming would buy it little anyway. Phase 2 = solid (the
+		// trivial G-buffer FS / VS-only): its fragments BEHIND the
+		// masked depth now fail GreaterEqual and die to early-Z before
+		// the FS + ROP work — the phase that benefits from priming runs
+		// last. Final depth/G-buffer content is order-independent
+		// (front-most surviving fragment wins under GreaterEqual+write
+		// either way).
 		world->forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable
 			| smvk::IteratorFlagBit_Opaque
 			| smvk::IteratorFlagBit_StaticVertexFmt
 			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, true); });
+			// Phase 2: solid geometry. The pipeline binds above (the
+			// G-buffer FS pair or the VS-only legacy path); early-Z
+			// reaps the masked priming (building walls behind foliage
+			// skip the FS).
+		world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt
+			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
 			// No Phase 3: transparent excluded by design (see header note).
 		});
 	}

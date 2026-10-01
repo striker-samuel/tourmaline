@@ -15,7 +15,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
 };
 
 struct PSOut
@@ -23,7 +22,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position)
 {
     PSOut OUT;
 

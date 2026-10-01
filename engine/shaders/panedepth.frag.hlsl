@@ -23,19 +23,22 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
 };
 
 struct PSOut
 {
     float4 outDepth : SV_Target0;
+    float roughOut : SV_Target1; // full-res R8_UNorm: panes write 0 (full gloss)
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position)
 {
     PSOut OUT;
     // R16_UNorm target, Max-blended: (z, 0, 0, 1). Clear 0 = no pane;
     // the trace's DofIsBackgroundOrGarbage check rejects pane taps at 0.
-    OUT.outDepth = float4(IN.clipPos.z, 0.0f, 0.0f, 1.0f);
+    OUT.outDepth = float4(clipPos.z, 0.0f, 0.0f, 1.0f);
+    // Pane roughness: full gloss (0 = perfect mirror). Pane leg overwrites
+    // Main's seen-through roughness at pane pixels.
+    OUT.roughOut = 0.0f;
     return OUT;
 }

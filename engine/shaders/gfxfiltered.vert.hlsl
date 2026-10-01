@@ -53,7 +53,14 @@ struct VSOut
 {
     float4 pos : SV_Position;
 
-    [[vk::location(0)]] float3 color : COLOR0;
+    // COLOR0 must be a full float4 at Location 0: the lit FS reads a
+    // vec4 (layer-weight normalization divides by the RGBA sum), and a
+    // vec3 here leaves Location 0 component 3 undeclared — the
+    // VUID-RuntimeSpirv-OpEntryPoint-08743 interface mismatch. Pass the
+    // vertex color through (same StaticVertexFormat stream default.vert
+    // forwards): the filter is transparent draw compaction, so tint +
+    // layer weights must survive it exactly like the direct path.
+    [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
@@ -76,7 +83,7 @@ VSOut mainVS(VSIn IN)
         pcFV.renderViews.Get().views[pcFV.renderViewIndex].m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, world);
 
-    OUT.color = float3(1.0f, 1.0f, 1.0f);
+    OUT.color = IN.color;
     OUT.uv = IN.uv;
     // Chart unpack: chart-local UV -> atlas UV via the per-draw chart
     // offset + the scene-wide transform buffer (no measurable VS cost).

@@ -12,7 +12,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -26,7 +25,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -85,7 +84,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
     }
     if (layered)
     {
@@ -104,7 +103,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D t = textures[NonUniformResourceIndex(slot)];
                 s = t.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, t, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy);
             }
             baseSample += s * w;
         }
@@ -121,7 +120,7 @@ PSOut mainPS(PSIn IN)
     float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
     float3 emissive = emissiveFactor * emissiveStrength;
@@ -130,7 +129,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
         emissive *= eSample;
     }
     if (layered)
@@ -150,7 +149,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D eTex = textures[NonUniformResourceIndex(slot)];
                 s = eTex.Sample(samplers[0], IN.uv).rgb;
-                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
             }
             eAcc += s * w;
         }

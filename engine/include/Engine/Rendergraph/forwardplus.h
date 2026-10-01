@@ -493,13 +493,21 @@ struct ForwardPlus {
 	}
 
 	// ---- Pass shells (caller sets the recording func) ----
-	// Depth prepass: no color, depth (Clear|Load)->Store over the full
-	// extent. Load when the GfxRenderer seeded depth first (T3 temporal
-	// seed); Clear otherwise (unchanged legacy behavior).
+	// Depth prepass: depth (Clear|Load)->Store over the full extent, plus
+	// the optional SSSR-style thin G-buffer color attachment (oct normal
+	// + roughness + metal, RGBA8 — see gbuffer.frag.hlsl). Load when the
+	// GfxRenderer seeded depth first (T3 temporal seed); Clear otherwise.
+	// gbufferLoad: on temporal-split frames (fallbackOnly prepass) Load
+	// keeps last frame's values for the seed-drawn majority (static
+	// normals never change); Clear on full-prepass frames (fresh
+	// coverage). Empty gbufferLogical = no color attachment (legacy
+	// VS-only prepass — the G-buffer off).
 	RenderPass& AddDepthPrepass(RenderGraph& rg,
 		LogicalImageViewHandle depthLogical, Extent2D swapExtent,
 		const char* name = "ForwardPlusDepth",
-		AttachmentLoadOp depthLoad = AttachmentLoadOp::Clear) const {
+		AttachmentLoadOp depthLoad = AttachmentLoadOp::Clear,
+		LogicalImageViewHandle gbufferLogical = LogicalImageViewHandle{},
+		AttachmentLoadOp gbufferLoad = AttachmentLoadOp::Clear) const {
 		assert(Valid());
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(0, 0)
@@ -508,6 +516,14 @@ struct ForwardPlus {
 				depthLoad,
 				AttachmentStoreOp::Store,
 				ClearDepthStencil(0.0f, 0));
+		if (!gbufferLogical.empty()) {
+			// Clear (0.5, 0.5, 1, 0): oct +Z normal, matte, non-metal —
+			// "no data" reads as a safe non-reflector.
+			pass.SetColor({ gbufferLogical },
+				gbufferLoad,
+				AttachmentStoreOp::Store,
+				ClearColor(0.5f, 0.5f, 1.0f, 0.0f));
+		}
 		return pass;
 	}
 

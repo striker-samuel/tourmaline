@@ -23,7 +23,6 @@
 
 struct PSIn
 {
-    float4 pos : SV_Position;
     float2 uv : TEXCOORD0;
 };
 
@@ -45,10 +44,10 @@ struct SsrStencilViewPush
 [[vk::push_constant]]
 ConstantBuffer<SsrStencilViewPush> sp;
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
-    const int2 px = int2(IN.pos.xy);
+    const int2 px = int2(pos.xy);
     float v = 0.0f;
     if (sp.srcSelect == 2u && sp.depthTextureIndex != 0xffffffffu) {
         v = float(uintTextures[NonUniformResourceIndex(sp.depthTextureIndex)]

@@ -2,8 +2,10 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "environment.hlsli"
+#include "vertex_pack.hlsli"
+#include "hzb.hlsli" // HzbBuffer (the trace Hi-Z BDA block)
 
-// SSR trace (half res): full-res depth + receiver-material layer ->
+// SSR trace (half res): full-res depth + the SSSR-style thin G-buffer ->
 // half-res reflection layer.
 // Output: rgb = reflected HDR x Fresnel x glossFade x intensity, clamped
 //         to kSsrMaxReflected (firefly guard — sun-disc strikes and
@@ -15,25 +17,17 @@
 // miss without double-counting the sky. The bilateral blur + composite
 // passes consume (rgb, a); the FULL-res base HDR is only re-added in
 // the composite, so it stays sharp.
-// Receiver: a glass pane where the layer marks one (panes never write
-// the opaque depth — without the layer every pane pixel traced off the
-// seen-through background instead of the pane), else the nearest valid
-// opaque depth tap. Receiver MATERIAL comes from the stencil aspect of
-// the depth target (kMetal / kGlossy bits — see stencil_bits.h): metal
-// F0 rises to ~1 and rough dielectrics fade their reflections out
-// (stone stops reading as chrome); an unbound stencil keeps the
-// uniform-F0 legacy behavior.
-
-// Receiver-material stencil bits — must match
-// Engine/Rendergraph/stencil_bits.h (single byte, cheap to audit).
-// Pane identity rides the paneDepth target (pane <=> paneDepth > 0),
-// so the trace only decodes the classification bits here.
-static const uint kStencilSsr = 1u;       // mirror-class receiver (roughness <= 0.15)
-static const uint kStencilSsrMetal = 64u; // metallic refinement (F0 -> ~1)
+// Receiver: the nearest valid opaque depth tap (position — reverse-Z max),
+// with NORMAL + MATERIAL from the thin G-buffer (RGBA8: oct world normal +
+// roughness + metal — see gbuffer.frag.hlsl, written by the Forward+
+// depth prepass). The REAL interpolated normal replaces the old
+// depth-derived receiver normal (piecewise-planar per triangle = the
+// wireframe-on-mirrors artifact source — gone by construction: the
+// G-buffer normal is the smooth vertex-interpolated surface normal).
+// Unbound G-buffer = legacy mirror (perfect-mirror uniform-F0).
 
 struct PSIn
 {
-    float4 pos : SV_Position; // half-res pixel coords (depth .Load is full-res)
     float2 uv : TEXCOORD0;
 };
 
@@ -42,9 +36,9 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrTracePush (64 bytes — the
-// C++ struct's uint64 BDA aligns it to 8, so this block carries no
-// trailing pad; every member offset is identical).
+// Must match Engine/Rendergraph/ssr.h SsrTracePush (80 bytes — the two
+// uint64 BDAs (frame uniforms + the trace Hi-Z) keep every 8-byte member
+// aligned; pad0/pad1 land the block on a multiple of 8).
 struct SsrTracePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -62,8 +56,11 @@ struct SsrTracePush
                      // else the record counter (temporal path animates the
                      // ray-origin dither so the TAA pass converges speckle
                      // to its mean instead of parking a static pattern)
-    uint stencilTextureIndex; // receiver-material stencil (S8_UINT, uintTextures[]), 0xffffffff = none
-    uint paneDepthTextureIndex; // pane receiver depth (R16_UNorm), 0xffffffff = none
+    uint gbufferTextureIndex; // thin G-buffer (RGBA8), 0xffffffff = legacy mirror
+    uint pad0;
+    vk::BufferPointer<HzbBuffer> ssrHzb; // MAX-reduce trace Hi-Z (nearest-surface), null = linear march
+    uint ssrHzbMipCount;                 // mips in the pyramid, 0 = linear march
+    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -100,32 +97,55 @@ float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
                   (float(fullPx.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
 }
 
-// Receiver-material stencil tap (full-res, S8_UINT through the
-// uintTextures[] alias): the classification bits written by MAIN's
-// opaque binds (STENCIL_SSR / STENCIL_SSR_METAL — see
-// stencil_bits.h) + the PaneMask pass (STENCIL_SSR on panes). Returns
-// 0 when the stencil view is not bound this frame — a uniform branch,
-// so the sentinel never indexes the bindless array out of range.
-uint SsrStencilTap(int2 fullPx)
+// Thin G-buffer tap (full-res RGBA8 — see gbuffer.frag.hlsl): decodes
+// the REAL interpolated world normal (octahedral RG — the smooth
+// vertex-interpolated surface normal; the depth-derived receiver
+// normal and its per-triangle wireframe artifact are gone by
+// construction), continuous roughness (B — drives the (1-r)^2 gloss
+// fade + the r^2 cone jitter) and the metal flag (A — F0 rise to ~1).
+// Returns the clear sentinel (matte +Z) when unbound — the legacy
+// mirror decodes identically through the roughness/metal fields.
+struct SsrGbuffer
 {
-    if (sp.stencilTextureIndex == 0xffffffffu)
-        return 0u;
-    Texture2D<uint4> stencilTex =
-        uintTextures[NonUniformResourceIndex(sp.stencilTextureIndex)];
-    return stencilTex.Load(int3(fullPx, 0)).r;
-}
+    float3 normal;   // world space, unit
+    float roughness; // continuous, 0..1
+    float metal;     // 0 or 1
+};
 
-// Pane receiver depth tap (full-res R16_UNorm, written by the app's
-// PaneMask redraw of the transparent list — panes never write the
-// opaque depth, so this is the only place their plane exists). Returns
-// 0 (the pass's clear value) when the paneDepth view is not bound —
-// pane candidates all reject, pane receivers never engage.
-float SsrPaneDepthTap(int2 fullPx)
+SsrGbuffer SsrGbufferTap(int2 fullPx)
 {
-    if (sp.paneDepthTextureIndex == 0xffffffffu)
-        return 0.0f;
-    Texture2D paneTex = textures[NonUniformResourceIndex(sp.paneDepthTextureIndex)];
-    return paneTex.Load(int3(fullPx, 0)).r;
+    SsrGbuffer g;
+    g.normal = float3(0.0f, 0.0f, 1.0f);
+    g.roughness = 1.0f; // matte sentinel
+    g.metal = 0.0f;
+    if (sp.gbufferTextureIndex == 0xffffffffu)
+    {
+        // Legacy (unbound — MSAA / layer off): no receiver data, no
+        // reflections. The old depth-derived normal + uniform-F0 mirror
+        // fallback is gone with the G-buffer architecture; a +Z mirror
+        // would fire garbage reflections, so the honest fallback is the
+        // matte sentinel (the early-out below kills the march).
+        return g;
+    }
+    Texture2D gbTex = textures[NonUniformResourceIndex(sp.gbufferTextureIndex)];
+    float4 gb = gbTex.Load(int3(fullPx, 0));
+    // Oct decode (the inverse of gbuffer.frag.hlsl OctEncodeNormal;
+    // same fold/sign as vertex_pack.hlsli OctDecodeNormal).
+    float x = gb.x * 2.0f - 1.0f;
+    float y = gb.y * 2.0f - 1.0f;
+    float z = 1.0f - abs(x) - abs(y);
+    if (z < 0.0f)
+    {
+        float tx = (1.0f - abs(y)) * OctSignH(x);
+        float ty = (1.0f - abs(x)) * OctSignH(y);
+        x = tx;
+        y = ty;
+    }
+    float l2 = x * x + y * y + z * z;
+    g.normal = (l2 > 1e-24f) ? float3(x, y, z) / sqrt(l2) : g.normal;
+    g.roughness = gb.z;
+    g.metal = (gb.w >= 0.5f) ? 1.0f : 0.0f;
+    return g;
 }
 
 // Facing of a candidate hit: depth-derived normal around the hit UV,
@@ -160,7 +180,7 @@ bool SsrHitFacing(Texture2D depthTex, float2 uv, float2 fullExtent,
     return true;
 }
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     FrameUniforms frame = sp.frameUniforms.Get();
@@ -172,47 +192,18 @@ PSOut mainPS(PSIn IN)
 
     // Half-res pixel -> full-res 2x2 block (same discipline as ssao.frag).
     // Depth .Load needs no sampler (D32 has no linear filtering).
-    int2 halfPx = int2(IN.pos.xy);
+    int2 halfPx = int2(pos.xy);
     int2 fullBase = halfPx * 2;
     float d00 = depthTex.Load(int3(fullBase, 0)).r;
     float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;
     float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
     float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
 
-    // Receiver = a glass pane first, else the nearest valid opaque tap
-    // (reverse-Z: max depth = nearest; never average or fabricate a
-    // center across a silhouette — a foreground/background mix would
-    // smear reflections across silhouettes). Panes never write the
-    // opaque depth (the transparent pass is depth-write-free), so
-    // without the pane layer every pane pixel traced off whatever sits
-    // BEHIND the pane — the Bistro shopfront "reflected" its interior
-    // shelves instead of the street. ANY valid paneDepth tap in the 2x2
-    // block makes the block a pane receiver (the pane plane sits in
-    // front of every tap's through-content), picking the NEAREST pane
-    // depth (reverse-Z max paneDepth) so the receiver stays on the pane
-    // surface. All-background blocks (sky/clear/OOB at odd extents)
-    // still carry no reflector -> miss — unless a pane covers them, in
-    // which case the pane depth IS the receiver and glass over sky
-    // finally traces.
+    // Receiver = nearest valid opaque tap (reverse-Z: max depth = nearest;
+    // never average or fabricate a center across a silhouette).
     float dCenter = 0.0f;
     int2 fullPxC = fullBase;
-    bool paneReceiver = false;
     {
-        const float pd00 = SsrPaneDepthTap(fullBase);
-        const float pd10 = SsrPaneDepthTap(fullBase + int2(1, 0));
-        const float pd01 = SsrPaneDepthTap(fullBase + int2(0, 1));
-        const float pd11 = SsrPaneDepthTap(fullBase + int2(1, 1));
-        float gBest = 0.0f;
-        if (!DofIsBackgroundOrGarbage(pd00) && pd00 > gBest)
-            { gBest = pd00; dCenter = pd00; fullPxC = fullBase; paneReceiver = true; }
-        if (!DofIsBackgroundOrGarbage(pd10) && pd10 > gBest)
-            { gBest = pd10; dCenter = pd10; fullPxC = fullBase + int2(1, 0); paneReceiver = true; }
-        if (!DofIsBackgroundOrGarbage(pd01) && pd01 > gBest)
-            { gBest = pd01; dCenter = pd01; fullPxC = fullBase + int2(0, 1); paneReceiver = true; }
-        if (!DofIsBackgroundOrGarbage(pd11) && pd11 > gBest)
-            { gBest = pd11; dCenter = pd11; fullPxC = fullBase + int2(1, 1); paneReceiver = true; }
-    }
-    if (!paneReceiver) {
         float dBest = 0.0f;
         if (!DofIsBackgroundOrGarbage(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
         if (!DofIsBackgroundOrGarbage(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
@@ -228,73 +219,71 @@ PSOut mainPS(PSIn IN)
     float2 ndcC = SsrFullNdc(fullPxC, invDepth);
     float3 viewPos = DofUnprojectView(ndcC, dCenter, frame.invProj);
 
-    // Depth-derived normal from full-res neighbors one half-step over
-    // (same taps as ssao.frag.hlsl), glass-aware:
-    //   - Pane receiver: a glass neighbor contributes ITS pane depth
-    //     (the pane surface continues). A non-glass neighbor crossed the
-    //     pane silhouette — its opaque depth is another surface — so it
-    //     falls back to the receiver pane depth at the neighbor NDC
-    //     (fronto-parallel pane assumption).
-    //   - Opaque receiver: a glass neighbor's OPAQUE depth is the
-    //     seen-through background, not a surface at this silhouette, so
-    //     it also falls back to the receiver depth; a background
-    //     neighbor keeps the existing same-depth fallback.
-    // Unprojecting through invProj makes every fallback sign-safe by
-    // construction — no hand-rolled view-space offsets that can mirror
-    // an axis when the Y-flip changes.
-    int2 fullPxX = fullBase + int2(2, 0);
-    int2 fullPxY = fullBase + int2(0, 2);
-    float dX = depthTex.Load(int3(fullPxX, 0)).r;
-    float dY = depthTex.Load(int3(fullPxY, 0)).r;
-    const float pdX = SsrPaneDepthTap(fullPxX);
-    const float pdY = SsrPaneDepthTap(fullPxY);
-    float dXe = paneReceiver
-        ? (!DofIsBackgroundOrGarbage(pdX) ? pdX : dCenter)
-        : (!DofIsBackgroundOrGarbage(pdX) || DofIsBackgroundOrGarbage(dX) ? dCenter : dX);
-    float dYe = paneReceiver
-        ? (!DofIsBackgroundOrGarbage(pdY) ? pdY : dCenter)
-        : (!DofIsBackgroundOrGarbage(pdY) || DofIsBackgroundOrGarbage(dY) ? dCenter : dY);
-    float3 posX = DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dXe, frame.invProj);
-    float3 posY = DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dYe, frame.invProj);
-    float3 N = normalize(cross(posX - viewPos, posY - viewPos) + 1e-9f);
+    // Receiver NORMAL + MATERIAL from the thin G-buffer (SSSR input
+    // set — see gbuffer.frag.hlsl): the REAL interpolated world normal
+    // replaces the depth-derived receiver normal entirely. The depth
+    // derivation was piecewise-planar per triangle — on finely
+    // tessellated mirror-class receivers (the Bistro Vespa's polished
+    // paint) the mirrored image broke along the receiver's OWN
+    // triangulation: the sky/lamp reflections caught per-facet and read
+    // as the object's wireframe. The G-buffer normal is the smooth
+    // vertex-interpolated surface normal — the wireframe source is
+    // gone by construction (no ±3 central-difference spans needed).
+    SsrGbuffer gbuf = SsrGbufferTap(fullPxC);
+    // Matte early-out: roughness >= ~0.94 means glossFade (1-r)^2 < 1/255
+    // — the output would be sub-quantization black. Skips the march for
+    // matte surfaces AND the "no data" clear sentinel (temporal-split
+    // frames where the seed pass drew without a G-buffer leg): wasted
+    // march work eliminated, exactly like the old binary gate's silence.
+    if (gbuf.roughness >= 0.94f)
+    {
+        OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return OUT;
+    }
+    float3 N = gbuf.normal;
     float3 V = -viewPos / max(length(viewPos), 1e-6f);
     if (dot(N, V) < 0.0f)
         N = -N;
     // Safe for double-sided glass: reflect() is invariant under N -> -N,
     // so the viewer-facing flip above never mirrors the reflection.
 
-    // Receiver classification (stencil bits, written by Main's opaque
-    // binds — see Rendergraph/stencil_bits.h): STENCIL_SSR = mirror-class
-    // receiver (roughness <= 0.15 — glass, polished metal; the per-draw
-    // quantization of the old per-pixel B/A mask channels), STENCIL_SSR_METAL
-    // adds the metal F0 rise. Semi-gloss/matte surfaces are unclassified —
-    // silent, like their old (1-r)^2 fade. Panes keep their own semantics
-    // (the PaneMask REPLACE clobbered the classification at pane pixels):
-    // non-metal full-gloss — the pane's reflection strength stays a pure
-    // dielectric-F0 Fresnel read, immune to the seen-through
-    // background's material. Unbound stencil (stencil-less depth format /
-    // MSAA) leaves matMetal 0 / matGloss 1: the uniform-F0 legacy
-    // behavior, an un-gated mirror everywhere.
-    float matMetal = 0.0f;
-    float matGloss = 1.0f;
-    if (!paneReceiver)
-    {
-        const uint st = SsrStencilTap(fullPxC);
-        matGloss = (st & kStencilSsr) ? 1.0f : 0.0f;
-        matMetal = (st & kStencilSsrMetal) ? 1.0f : 0.0f;
-    }
+    // Receiver material: continuous roughness + metal from the G-buffer.
+    // Unbound G-buffer (MSAA / legacy) decodes roughness 0, metal 0 —
+    // the uniform-F0 perfect-mirror legacy behavior. Pane note: Blend
+    // materials never write the G-buffer (the prepass is opaque-only),
+    // so a pane receiver reads the seen-through surface's values — the
+    // PaneMask redraw is gone by design, pane reflections ride the
+    // diffuse-GI read.
+    const float roughness = gbuf.roughness;
+    const float matMetal = gbuf.metal;
+    const float gloss = 1.0f - roughness;
+    const float glossFade = gloss * gloss; // (1-r)^2: continuous fade, mirrors at 1
 
     // Fresnel (Schlick): F0 rises to ~1 for metals (their colored F0
     // approximated flat — the mask carries scalars only); dielectrics
-    // keep the uniform sp.f0. On a pane receiver N IS the pane normal
-    // (glass layer derivatives), so this is the pane's real grazing
-    // response: near-clear glass keeps its 4% face-on sheen and swings
-    // to a near-mirror at street-grazing.
+    // keep the uniform sp.f0.
     float f0 = lerp(sp.f0, 1.0f, matMetal);
     float ndv = saturate(dot(N, V));
     float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
 
     float3 R = reflect(-V, N);
+    // Roughness cone jitter: perturb the reflection direction within a
+    // cone scaled by roughness^2 (GGX alpha), decorrelated per pixel
+    // via IGN. Mirrors (r=0) stay exact; rough surfaces smear the lobe.
+    float cone = roughness * roughness;
+    if (cone > 0.0f)
+    {
+        // Two IGN samples for a uniform disc in the tangent plane of R.
+        float2 j = float2(
+            SsrIGN(float2(halfPx.x + 11.7f, halfPx.y + 5.3f), sp.frameIndex),
+            SsrIGN(float2(halfPx.x + 7.9f, halfPx.y + 19.1f), sp.frameIndex)
+        ) * 2.0f - 1.0f; // [-1,1]^2
+        // Orthonormal basis around R.
+        float3 t = normalize(cross(abs(R.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f), R));
+        float3 b = cross(R, t);
+        float3 Rj = R + (t * j.x + b * j.y) * cone * 1.5f;
+        R = normalize(Rj);
+    }
     // No dot(R, V) early-out: R is mirrored across the viewer-facing N,
     // so dot(R, N) = dot(V, N) > 0 by construction (always above the
     // surface). dot(R, V) < 0 is the COMMON valid case (floor, bistro
@@ -316,6 +305,28 @@ PSOut mainPS(PSIn IN)
     float hitFade = 0.0f;
     float2 fullExtent = float2(1.0f / max(invDepth.x, 1e-9f),
                                1.0f / max(invDepth.y, 1e-9f));
+    // SSSR trace Hi-Z layout (MAX-reduce — see hzb_max.cs.hlsl): the
+    // per-mip dims + float offsets mirror gfx_filter.h's HzbMipCount /
+    // HzbMipDims / HzbMipOffsetFloats exactly (mip k dims = repeated
+    // max((d+1)>>1, 1); offset m = prefix sum of mip sizes; count stops
+    // at 1x1, capped 16) so the shader-side indexing agrees with the
+    // app-side build byte-for-byte. Precomputed once per half-res pixel;
+    // the empty-space skip below indexes it. hzbMips 0 (no pyramid / no
+    // BDA) keeps the plain adaptive linear march.
+    const uint hzbMips = min(sp.ssrHzbMipCount, 16u);
+    uint hzbOff[16]; uint hzbW[16]; uint hzbH[16];
+    {
+        uint w = uint(fullExtent.x + 0.5f);
+        uint h = uint(fullExtent.y + 0.5f);
+        uint off = 0;
+        [unroll]
+        for (uint k = 0; k < 16; ++k) {
+            hzbW[k] = w; hzbH[k] = h; hzbOff[k] = off;
+            off += w * h;
+            w = max((w + 1u) >> 1u, 1u);
+            h = max((h + 1u) >> 1u, 1u);
+        }
+    }
     // Exact bracket start: project + sample the jittered origin instead of
     // assuming it is in front. The jitter can throw the origin behind
     // nearby geometry; an assumed-front bracket would then bisect two
@@ -378,6 +389,70 @@ PSOut mainPS(PSIn IN)
             float movedPx = length((marchUv - prevUv) * fullExtent);
             float adaptF = clamp(6.0f / max(movedPx, 1e-3f), 0.5f, 2.0f);
             strideNext = clamp(stepLen * adaptF, minStep, maxStep);
+        }
+        // SSSR Hi-Z empty-space skip: extend the stride through a
+        // PROVABLY EMPTY block. The candidate (4x the adaptive stride,
+        // capped at maxStep) sweeps a uv rect from the current position
+        // to the candidate destination; the mip is the FINEST whose
+        // texel covers the rect per axis (texel px size >= the swept
+        // rect -> the rect spans at most the current texel + one
+        // neighbor per axis), so the 2x2 texel neighborhood around the
+        // current texel bounds the whole swept rect. If the
+        // neighborhood's NEAREST surface (MAX reversed-Z over the four
+        // texels) is at or BEHIND the candidate destination's depth,
+        // nothing inside the swept rect lies in the step's depth range
+        // — the extended stride cannot step over any surface. Only
+        // provably-empty blocks are skipped: a wrong pyramid can miss a
+        // reflection, never show one through a wall. Compounds: the
+        // extended stride feeds the controller, which re-extends x4
+        // again while the space stays empty (up to maxStep).
+        if (hzbMips > 0)
+        {
+            const float candStride = min(strideNext * 4.0f, maxStep);
+            if (candStride > strideNext * 1.5f)
+            {
+                float3 candPos = marchPos + R * candStride;
+                if (-candPos.z > 0.0f)
+                {
+                    float4 cc = mul(frame.proj, float4(candPos, 1.0f));
+                    float cw = max(cc.w, 1e-9f);
+                    float2 candUv = (cc.xy / cw) * 0.5f + 0.5f;
+                    float candDepth = saturate(cc.z / cw); // reversed-Z
+                    if (candUv.x >= 0.0f && candUv.x <= 1.0f
+                        && candUv.y >= 0.0f && candUv.y <= 1.0f)
+                    {
+                        float2 dPx = abs(candUv - marchUv) * fullExtent;
+                        // Finest mip whose texel (in base px) covers the
+                        // swept rect per axis.
+                        uint mip = hzbMips - 1u;
+                        [loop]
+                        for (uint k = 0; k < hzbMips; ++k) {
+                            mip = k;
+                            float tw = fullExtent.x / float(hzbW[k]);
+                            float th = fullExtent.y / float(hzbH[k]);
+                            if (dPx.x <= tw && dPx.y <= th)
+                                break;
+                        }
+                        // 2x2 texel neighborhood at mip around the
+                        // current uv's texel (clamped at the mip edge).
+                        float2 tDim = float2(hzbW[mip], hzbH[mip]);
+                        int2 tp = int2(clamp(marchUv * tDim,
+                            float2(0.0f, 0.0f), tDim - 1.0f));
+                        int2 tx = int2(min(tp.x + 1, int(hzbW[mip]) - 1), tp.y);
+                        int2 ty = int2(tp.x, min(tp.y + 1, int(hzbH[mip]) - 1));
+                        int2 txy = int2(tx.x, ty.y);
+                        const uint bo = hzbOff[mip];
+                        const uint bw = hzbW[mip];
+                        float n0 = sp.ssrHzb.Get().texels[bo + tp.y * bw + tp.x];
+                        float n1 = sp.ssrHzb.Get().texels[bo + tx.y * bw + tx.x];
+                        float n2 = sp.ssrHzb.Get().texels[bo + ty.y * bw + ty.x];
+                        float n3 = sp.ssrHzb.Get().texels[bo + txy.y * bw + txy.x];
+                        float nearest = max(max(n0, n1), max(n2, n3));
+                        if (nearest <= candDepth)
+                            strideNext = candStride;
+                    }
+                }
+            }
         }
         prevUv = marchUv;
 
@@ -513,13 +588,10 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
     float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
-    // Roughness fade (STENCIL_SSR bit): sharp screen-space reflections
-    // only read on reflective receivers — the bit keeps polished metals /
-    // glass at 1 and drops rough dielectrics (stone, plaster) to 0, where
-    // a mirror-sharp additive lobe would read as chrome. The fixed 5x5
-    // blur cannot spread the lobe per material, so fading it out is the
-    // honest gate. Unbound stencil keeps gloss 1 (legacy).
-    float glossFade = matGloss * matGloss;
+    // Gloss fade: continuous (1-r)^2 from the receiver roughness buffer.
+    // Mirrors (r=0) = 1; rough surfaces fade toward 0. The fixed 5x5
+    // blur cannot spread the lobe per material, so the continuous fade
+    // is the honest gate. Unbound roughness buffer = legacy mirror (1).
     // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
     // normal + dithered origin striking the sun disc would otherwise
     // inject up to 4x sun lux next to ~100s neighbors — the spike bloom

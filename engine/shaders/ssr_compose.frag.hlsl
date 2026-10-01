@@ -9,7 +9,6 @@
 
 struct PSIn
 {
-    float4 pos : SV_Position; // full-res pixel coords
     float2 uv : TEXCOORD0;
 };
 
@@ -42,7 +41,7 @@ float SsrUpEdgeWeight(float tapDist, float centerDist, float sharpness)
     return exp(-depthDiff * max(sharpness, 0.0f));
 }
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     FrameUniforms frame = cp.frameUniforms.Get();
@@ -53,7 +52,7 @@ PSOut mainPS(PSIn IN)
 
     float3 base = SanitizeHdr(hdrTex.Sample(smp, IN.uv).rgb);
 
-    int2 fullPx = int2(IN.pos.xy);
+    int2 fullPx = int2(pos.xy);
     float d = depthTex.Load(int3(fullPx, 0)).r;
     // Pane layer (the PaneMask pass's paneDepth target): a pane pixel over
     // sky/empty background is still a REFLECTOR — the trace traced off the
@@ -138,6 +137,12 @@ PSOut mainPS(PSIn IN)
     float3 outColor = base;
     if (wSum > 1e-4f)
         outColor += (accRgb / wSum) * (accA / wSum);
+    // NDC vignette: fade reflections near screen edges using the target
+    // pixel's NDC coordinates. max(|ndc|) ramps from 0 (center) to 1
+    // (border); linear ramp over the outer 15% of the NDC range.
+    float edge = max(abs(ndcC.x), abs(ndcC.y));
+    float vignette = saturate((1.0f - edge) / 0.15f);
+    outColor = lerp(base, outColor, vignette);
     OUT.outColor = float4(SanitizeHdr(outColor), 1.0f);
     return OUT;
 }

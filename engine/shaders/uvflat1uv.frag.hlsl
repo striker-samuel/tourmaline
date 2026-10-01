@@ -11,7 +11,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -26,7 +25,7 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
     const float2 dbgUv = IN.lightmapUv;
@@ -56,8 +55,8 @@ PSOut mainPS(PSIn IN)
     // Atlas-space uv2 must stay in [0,1]: stripe out-of-range pixels.
     if (dbgUv.x < 0.0f || dbgUv.x > 1.0f || dbgUv.y < 0.0f || dbgUv.y > 1.0f)
     {
-        const float oob = fmod(floor(IN.clipPos.x * 0.25f)
-            + floor(IN.clipPos.y * 0.25f), 2.0f) < 1.0f ? 1.0f : 0.0f;
+        const float oob = fmod(floor(clipPos.x * 0.25f)
+            + floor(clipPos.y * 0.25f), 2.0f) < 1.0f ? 1.0f : 0.0f;
         color = oob ? float3(1.0f, 0.05f, 1.0f) : float3(0.02f, 0.02f, 0.02f);
     }
 

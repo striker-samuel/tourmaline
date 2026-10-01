@@ -40,7 +40,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -151,7 +150,7 @@ float PomSelfShadow(int occIdx, float2 uvHit, float sHit, float3 lts)
     return shadow;
 }
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -269,7 +268,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], uvP);
-        TS_ReportUsage(slot, baseTex, samplers[0], uvP, IN.clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], uvP, clipPos.xy);
     }
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = mat.diffuse.rgb * vcolTint * baseSample.rgb;
@@ -284,7 +283,7 @@ PSOut mainPS(PSIn IN)
     float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
     // ---------------------------------------------------------------
@@ -297,7 +296,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
         float4 mrSample = mrTex.Sample(samplers[0], uvP);
-        TS_ReportUsage(slot, mrTex, samplers[0], uvP, IN.clipPos.xy);
+        TS_ReportUsage(slot, mrTex, samplers[0], uvP, clipPos.xy);
         roughness *= mrSample.g;
         metallic  *= mrSample.b;
     }
@@ -313,7 +312,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)normalIdx;
         Texture2D nTex = textures[NonUniformResourceIndex(slot)];
         float2 mapXY = nTex.Sample(samplers[0], uvP).xy * 2.0f - 1.0f;
-        TS_ReportUsage(slot, nTex, samplers[0], uvP, IN.clipPos.xy);
+        TS_ReportUsage(slot, nTex, samplers[0], uvP, clipPos.xy);
         mapXY *= normalScale;
         float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
         float3 mapN = normalize(float3(mapXY, mapZ));
@@ -333,7 +332,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
         float occSample = occTex.Sample(samplers[0], uvP).r;
-        TS_ReportUsage(slot, occTex, samplers[0], uvP, IN.clipPos.xy);
+        TS_ReportUsage(slot, occTex, samplers[0], uvP, clipPos.xy);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
 
@@ -344,7 +343,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], uvP).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], uvP, IN.clipPos.xy);
+        TS_ReportUsage(slot, eTex, samplers[0], uvP, clipPos.xy);
         emissive *= eSample;
     }
 
@@ -367,7 +366,7 @@ PSOut mainPS(PSIn IN)
         uint evsm = pc.frameUniforms.Get().evsmMode;
         if (evsm != 0u)
             shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
-                (uint)light.shadow_map_index, EVSM_EXPONENT, IN.clipPos.xy);
+                (uint)light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
         else
             shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, geomN, light);
     }
@@ -398,7 +397,7 @@ PSOut mainPS(PSIn IN)
     if (frame.aoTextureIndex != 0xffffffffu && frame.aoIntensity > 0.0f)
     {
         Texture2D aoTex = textures[NonUniformResourceIndex(frame.aoTextureIndex)];
-        ao = aoTex.Load(int3(int2(IN.clipPos.xy), 0)).r;
+        ao = aoTex.Load(int3(int2(clipPos.xy), 0)).r;
         ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
     }
     float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
@@ -412,8 +411,8 @@ PSOut mainPS(PSIn IN)
     uint specTileIdx = 0xffffffffu;
     {
         uint specTs = max(pc.fpTileSize, 1u);
-        uint stx = (uint)(IN.clipPos.x / (float)specTs);
-        uint sty = (uint)(IN.clipPos.y / (float)specTs);
+        uint stx = (uint)(clipPos.x / (float)specTs);
+        uint sty = (uint)(clipPos.y / (float)specTs);
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }

@@ -9,7 +9,6 @@
 
 struct PSIn
 {
-    float4 clipPos : SV_Position;
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -325,7 +324,7 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
     }
 }
 
-PSOut mainPS(PSIn IN)
+PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
@@ -422,7 +421,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
     }
     if (layered)
     {
@@ -441,7 +440,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D t = textures[NonUniformResourceIndex(slot)];
                 s = t.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, t, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy);
             }
             baseSample += s * w;
         }
@@ -473,7 +472,7 @@ PSOut mainPS(PSIn IN)
     float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 #endif
 
@@ -489,7 +488,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
         float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy);
         // Spec says: roughness = G * factor, metallic = B * factor
         roughness *= mrSample.g;
         metallic  *= mrSample.b;
@@ -512,7 +511,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
                 float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy);
                 gb = mrSample.gb;
             }
             roughMult += gb.x * w;
@@ -565,7 +564,7 @@ PSOut mainPS(PSIn IN)
         float2 mapXY = textures[NonUniformResourceIndex((uint)normalIdx)]
             .Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
         TS_ReportUsage((uint)normalIdx,
-            textures[NonUniformResourceIndex((uint)normalIdx)], samplers[0], IN.uv, IN.clipPos.xy);
+            textures[NonUniformResourceIndex((uint)normalIdx)], samplers[0], IN.uv, clipPos.xy);
 
         // glTF normalTexture.scale applies to XY.
         mapXY *= normalScale;
@@ -615,7 +614,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D nTex = textures[NonUniformResourceIndex(slot)];
                 float2 mapXY = nTex.Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
-                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, clipPos.xy);
                 mapXY *= normalScale;
                 float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
                 mapN = float3(mapXY, mapZ);
@@ -640,7 +639,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
         float occSample = occTex.Sample(samplers[0], IN.uv).r;
-        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
     if (layered)
@@ -660,7 +659,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D occTex = textures[NonUniformResourceIndex(slot)];
                 s = occTex.Sample(samplers[0], IN.uv).r;
-                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy);
             }
             occAcc += s * w;
         }
@@ -676,7 +675,7 @@ PSOut mainPS(PSIn IN)
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
         emissive *= eSample;
     }
     if (layered)
@@ -696,7 +695,7 @@ PSOut mainPS(PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D eTex = textures[NonUniformResourceIndex(slot)];
                 s = eTex.Sample(samplers[0], IN.uv).rgb;
-                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
+                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
             }
             eAcc += s * w;
         }
@@ -752,7 +751,7 @@ PSOut mainPS(PSIn IN)
     // box faces. geomN keys the facing test so normal-map perturbation
     // cannot punch holes at texel granularity.
     // ---------------------------------------------------------------
-    ApplyForwardPlusDecals(frame, IN.clipPos.xy, IN.worldPos, geomN,
+    ApplyForwardPlusDecals(frame, clipPos.xy, IN.worldPos, geomN,
         baseColor, N, metallic, roughness, emissive);
 
     float3 V = normalize(frame.cameraPos - IN.worldPos);
@@ -788,7 +787,7 @@ PSOut mainPS(PSIn IN)
             uint evsm = pc.frameUniforms.Get().evsmMode;
             if (evsm != 0u)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
-                    (uint)light.shadow_map_index, EVSM_EXPONENT, IN.clipPos.xy);
+                    (uint)light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
             else
                 // PCF depth atlas: manual SampleLevel(samplers[]) compare, so
                 // a regular sampler (0) — never the comparison sampler (1).
@@ -844,7 +843,7 @@ PSOut mainPS(PSIn IN)
     const uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
     if (frame.dsEnabled != 0u && frame.dsTileCountX > 0u)
     {
-        const uint2 pix = (uint2)IN.clipPos.xy;
+        const uint2 pix = (uint2)clipPos.xy;
         if (pix.x < (uint)frame.viewportSize.x && pix.y < (uint)frame.viewportSize.y)
         {
             const uint tileIdx = (pix.y >> 3) * frame.dsTileCountX + (pix.x >> 3);
@@ -868,15 +867,15 @@ PSOut mainPS(PSIn IN)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
-                    false, vis, IN.clipPos.xy, direct);
+                    false, vis, clipPos.xy, direct);
             }
         }
     }
     else if (pc.fpLightCount > 0)
     {
         uint fpTileSize = max(pc.fpTileSize, 1u);
-        uint tx = (uint)(IN.clipPos.x / (float)fpTileSize);
-        uint ty = (uint)(IN.clipPos.y / (float)fpTileSize);
+        uint tx = (uint)(clipPos.x / (float)fpTileSize);
+        uint ty = (uint)(clipPos.y / (float)fpTileSize);
         if (tx < pc.fpTileCountX)
         {
             uint tileIdx = ty * pc.fpTileCountX + tx;
@@ -897,7 +896,7 @@ PSOut mainPS(PSIn IN)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
-                    true, 1.0f, IN.clipPos.xy, direct);
+                    true, 1.0f, clipPos.xy, direct);
             }
         }
     }
@@ -923,7 +922,7 @@ PSOut mainPS(PSIn IN)
     if (frame.aoTextureIndex != 0xffffffffu && frame.aoIntensity > 0.0f)
     {
         Texture2D aoTex = textures[NonUniformResourceIndex(frame.aoTextureIndex)];
-        ao = aoTex.Load(int3(int2(IN.clipPos.xy), 0)).r;
+        ao = aoTex.Load(int3(int2(clipPos.xy), 0)).r;
         ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
     }
     float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
@@ -946,8 +945,8 @@ PSOut mainPS(PSIn IN)
     uint specTileIdx = 0xffffffffu;
     {
         uint specTs = max(pc.fpTileSize, 1u);
-        uint stx = (uint)(IN.clipPos.x / (float)specTs);
-        uint sty = (uint)(IN.clipPos.y / (float)specTs);
+        uint stx = (uint)(clipPos.x / (float)specTs);
+        uint sty = (uint)(clipPos.y / (float)specTs);
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
@@ -1250,7 +1249,7 @@ PSOut mainPS(PSIn IN)
     // flat palette survives the physical-units HDR + ACES chain.
     if (frame.dsEnabled != 0u && frame.dsDebugMode != (uint)DS_VIZ_OFF)
     {
-        const uint2 vizPix = (uint2)IN.clipPos.xy;
+        const uint2 vizPix = (uint2)clipPos.xy;
         if (vizPix.x < (uint)frame.viewportSize.x
             && vizPix.y < (uint)frame.viewportSize.y)
         {
