@@ -32,6 +32,8 @@ int SelectCascade(float viewDepth, CascadeMeta cascades[NUM_CASCADES])
     }
     return NUM_CASCADES - 1;
 }
+
+
 int SelectCascadeGpu(
     float viewDepth,
     GpuCascadeDescription cascades[4],
@@ -172,39 +174,6 @@ float PCFShadow(
     return sum / samples;
 }
 
-//float PCFShadowAtlas(
-//    uint samplerId,
-//    float2 uv,
-//    float currentDepth,
-//    uint shadowIdx,
-//    float2 texelSize,
-//    float2 uvClampMin,
-//    float2 uvClampMax)
-//{
-//    float sum = 0.0f;
-
-//    [unroll]
-//    for (int y = -1; y <= 1; ++y)
-//    {
-//        [unroll]
-//        for (int x = -1; x <= 1; ++x)
-//        {
-//            float2 sampleUV = clamp(
-//                uv + float2(x, y) * texelSize,
-//                uvClampMin,
-//                uvClampMax);
-
-//            float d = textures[shadowIdx]
-//                .SampleLevel(samplers[samplerId], sampleUV, 0).r;
-
-//            sum += currentDepth <= d;
-//        }
-//    }
-    
-
-//    return sum * (1.0f / 9.0f);
-//}
-
 float PCFShadowAtlas(
     uint samplerId,
     float2 uv,
@@ -214,14 +183,49 @@ float PCFShadowAtlas(
     float2 uvClampMin,
     float2 uvClampMax)
 {
-    float2 sampleUV = clamp(uv, uvClampMin, uvClampMax);
+    float sum = 0.0f;
 
-    float d = textures[shadowIdx]
-        .SampleLevel(samplers[samplerId], sampleUV, 0)
-        .r;
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 sampleUV = clamp(
+                uv + float2(x, y) * texelSize,
+                uvClampMin,
+                uvClampMax);
 
-    return currentDepth <= d ? 1.0f : 0.0f;
+            float d = textures[shadowIdx]
+                .SampleLevel(samplers[samplerId], sampleUV, 0).r;
+
+            sum += currentDepth <= d;
+        }
+    }
+    
+
+    return sum * (1.0f / 9.0f);
 }
+
+
+// debug 1 tap
+//float PCFShadowAtlas(
+//    uint samplerId,
+//    float2 uv,
+//    float currentDepth,
+//    uint shadowIdx,
+//    float2 texelSize,
+//    float2 uvClampMin,
+//    float2 uvClampMax)
+//{
+//    float2 sampleUV = clamp(uv, uvClampMin, uvClampMax);
+
+//    float d = textures[shadowIdx]
+//        .SampleLevel(samplers[samplerId], sampleUV, 0)
+//        .r;
+
+//    return currentDepth <= d ? 1.0f : 0.0f;
+//}
 
 // Sec. 4.2 oriented depth bias (slope-scaled, per-cascade NDC).
 // Shadowmaps render with no HW bias. baseBiasNDC is the per-cascade NDC
@@ -498,7 +502,7 @@ float GetShadowFactorCascadedFromPC(
     Light light
 )
 {
-    return 1.0f;
+    //return 1.0f;
     FrameUniforms frame = pc.frameUniforms.Get();
     GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
     return GetShadowFactorCascaded(samplerId, worldPos, faceNormal, light, frame, dir);
