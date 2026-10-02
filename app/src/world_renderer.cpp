@@ -10656,15 +10656,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_giLoaded ? "yes" : "no",
 							m_regLoaded ? "yes" : "no");
 #else
-						static const char* const kModeNames[4] = {
+						// 5-entry table keyed by the RAW AmbientMode value
+						// (All=0..Off=4). A previous cleanup shrank this to
+						// 4 entries while still indexing by the raw enum —
+						// Off (4) read kModeNames[4] out of bounds and the
+						// garbage char* crashed ImGui's %s formatting
+						// (ucrtbase AV at a fixed offset; only with the UI
+						// pass on, only in Off). Keep the table full-size;
+						// the deprecated Lightmaps row stays as a label (the
+						// combo skips it below; N still cycles through it
+						// and DegradeAmbientForMissingSources bounces it).
+						static const char* const kModeNames[5] = {
 							"All (baked GI; sky fallback)",
+							"Lightmaps only (deprecated)",
 							"Probes only (grids + volume)",
 							"Sky IBL only",
 							"Off (no GI at all)",
 						};
 						int modeIdx = static_cast<int>(m_ambientMode);
-						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 4))
-							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 3));
+						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 5))
+							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 4));
 						ImGui::TextDisabled("N cycles: %s\n"
 							"sky IBL is the FALLBACK for uncovered pixels (never added on baked)\n"
 							"sources loaded: probe volume %s, grids %s\n"
