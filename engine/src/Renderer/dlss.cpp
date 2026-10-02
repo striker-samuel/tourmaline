@@ -23,6 +23,7 @@
 #include "sl.h"
 #include "sl_consts.h"
 #include "sl_dlss.h"
+#include "sl_pcl.h"
 
 namespace {
 
@@ -48,6 +49,18 @@ PFun_slAllocateResources* g_slAllocateResources = nullptr;
 PFun_slFreeResources* g_slFreeResources = nullptr;
 PFun_slGetFeatureFunction* g_slGetFeatureFunction = nullptr;
 PFN_vkGetInstanceProcAddr g_vkGetInstanceProcAddr = nullptr;
+// PCL marker path (resolved via slGetFeatureFunction on kFeaturePCL;
+// kept as raw pointers — the PFun_ typedefs live in sl_pcl.h and this
+// TU is the only place that includes Streamline headers).
+PFun_slPCLSetMarker* g_slPCLSetMarker = nullptr;
+bool g_pclChecked = false;
+bool g_pclReady = false;
+// Current rendered frame's SL token (DlssBeginFrame) + its monotonic id.
+// Shared with DlssEvaluate so markers and constants/evaluate ride one
+// token per frame; single-flight (last writer wins) — the render thread
+// is the only writer.
+sl::FrameToken* g_frameToken = nullptr;
+uint32_t g_frameTokenId = UINT32_MAX;
 
 // Single main viewport shared by every DLSS call.
 const sl::ViewportHandle kDlssViewport{ 1u };
@@ -152,6 +165,14 @@ struct TaggedResource {
 
 namespace smvk {
 
+// PclMarker must stay 1:1 with sl::PCLMarker (DlssPclMarker casts across).
+static_assert(static_cast<uint32_t>(PclMarker::SimulationStart) == static_cast<uint32_t>(sl::PCLMarker::eSimulationStart));
+static_assert(static_cast<uint32_t>(PclMarker::SimulationEnd) == static_cast<uint32_t>(sl::PCLMarker::eSimulationEnd));
+static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitStart) == static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitStart));
+static_assert(static_cast<uint32_t>(PclMarker::RenderSubmitEnd) == static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitEnd));
+static_assert(static_cast<uint32_t>(PclMarker::PresentStart) == static_cast<uint32_t>(sl::PCLMarker::ePresentStart));
+static_assert(static_cast<uint32_t>(PclMarker::PresentEnd) == static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
+
 // ---------------------------------------------------------------------
 // Backend bootstrap / teardown
 // ---------------------------------------------------------------------
@@ -218,9 +239,14 @@ bool DlssStartup() {
 	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
 		| sl::PreferenceFlags::eAllowOTA
 		| sl::PreferenceFlags::eLoadDownloadedPlugins;
-	const sl::Feature features[] = { sl::kFeatureDLSS };
+	// PCL alongside DLSS: sl.common's VkNvLowLatency2 init only succeeds
+	// when a loaded plugin pulls VK_NV_low_latency2 into the device (the
+	// interposer appends plugin-required extensions at vkCreateDevice).
+	// DLSS alone never requested it -> "Failed to init VkNvLowLatency2: 2".
+	// PCL lives in sl.common.dll (no extra binary to stage).
+	const sl::Feature features[] = { sl::kFeatureDLSS, sl::kFeaturePCL };
 	pref.featuresToLoad = features;
-	pref.numFeaturesToLoad = 1;
+	pref.numFeaturesToLoad = uint32_t(std::size(features));
 	pref.engine = sl::EngineType::eCustom;
 	pref.engineVersion = "1.0.0";
 	// NGX validates this as a GUID string (an arbitrary project name is
@@ -239,8 +265,11 @@ bool DlssStartup() {
 		g_vkGetInstanceProcAddr = nullptr;
 		return false;
 	}
-	std::fprintf(stderr, "[DLSS] Streamline initialized (DLSS feature requested)\n");
+	std::fprintf(stderr, "[DLSS] Streamline initialized (DLSS+PCL features requested)\n");
 	g_ready = true;
+	// NOTE: slGetFeatureFunction only works AFTER the VkDevice exists
+	// (sl.h: "can only be used AFTER device is set"), so the PCL marker
+	// entry point resolves lazily in DlssPclAvailable, not here.
 	return true;
 }
 
@@ -268,6 +297,11 @@ void DlssShutdown() {
 	g_vkGetInstanceProcAddr = nullptr;
 	g_supported = false;
 	g_supportedChecked = false;
+	g_slPCLSetMarker = nullptr;
+	g_pclChecked = false;
+	g_pclReady = false;
+	g_frameToken = nullptr;
+	g_frameTokenId = UINT32_MAX;
 }
 
 void DlssRelease() {
@@ -317,6 +351,70 @@ bool DlssFeatureSupported() {
 	}
 	std::fprintf(stderr, "[DLSS] supported on this adapter\n");
 	return g_supported = true;
+}
+
+// ---------------------------------------------------------------------
+// PC-latency markers (PCL feature).
+// ---------------------------------------------------------------------
+
+bool DlssPclAvailable() {
+	if (!g_ready || g_pclChecked)
+		return g_pclReady;
+	// Resolve on first use: slGetFeatureFunction requires a live VkDevice,
+	// which does not exist yet during DlssStartup (sl.h documents this).
+	// One attempt per run; a miss (older SL, non-NVIDIA) parks PCL off.
+	g_pclChecked = true;
+
+	bool loaded = false;
+	sl::Result res = g_slIsFeatureLoaded(sl::kFeaturePCL, loaded);
+	if (res != sl::Result::eOk || !loaded) {
+		std::fprintf(stderr, "[DLSS] PCL feature not loaded (result=%u loaded=%d) - markers off\n",
+			static_cast<uint32_t>(res), loaded ? 1 : 0);
+		return g_pclReady = false;
+	}
+	if (g_slGetFeatureFunction(sl::kFeaturePCL, "slPCLSetMarker",
+			reinterpret_cast<void*&>(g_slPCLSetMarker)) != sl::Result::eOk
+		|| !g_slPCLSetMarker) {
+		g_slPCLSetMarker = nullptr;
+		std::fprintf(stderr, "[DLSS] slPCLSetMarker unavailable - PCL markers off\n");
+		return g_pclReady = false;
+	}
+	std::fprintf(stderr, "[DLSS] PCL markers ready\n");
+	return g_pclReady = true;
+}
+
+bool DlssBeginFrame(uint32_t frameIndex) {
+	// Previous frame's token (if any) is superseded: SL retires frames by
+	// index, and a leaked token from a thrown frame is harmless — the next
+	// Begin overwrites it. EndFrame normally clears it after present.
+	g_frameToken = nullptr;
+	g_frameTokenId = frameIndex;
+	if (!DlssPclAvailable())
+		return false;
+	sl::Result res = g_slGetNewFrameToken(g_frameToken, &frameIndex);
+	if (res != sl::Result::eOk || !g_frameToken) {
+		std::fprintf(stderr, "[DLSS] PCL slGetNewFrameToken failed (result=%u)\n",
+			static_cast<uint32_t>(res));
+		g_frameToken = nullptr;
+		return false;
+	}
+	DlssPclMarker(static_cast<PclMarker>(sl::PCLMarker::eSimulationStart));
+	return true;
+}
+
+void DlssPclMarker(PclMarker marker) {
+	if (!g_pclReady || !g_slPCLSetMarker || !g_frameToken)
+		return;
+	sl::Result res = g_slPCLSetMarker(
+		static_cast<sl::PCLMarker>(static_cast<uint32_t>(marker)), *g_frameToken);
+	if (res != sl::Result::eOk)
+		std::fprintf(stderr, "[DLSS] slPCLSetMarker(%u) failed (result=%u)\n",
+			static_cast<uint32_t>(marker), static_cast<uint32_t>(res));
+}
+
+void DlssEndFrame() {
+	g_frameToken = nullptr;
+	g_frameTokenId = UINT32_MAX;
 }
 
 bool DlssQueryOptimalSettings(DlssMode mode,
@@ -528,12 +626,22 @@ bool DlssEvaluate(ResourceManager& ctx, void* vkCommandBuffer,
 	consts.motionVectorsDilated = sl::Boolean::eFalse;
 	consts.motionVectorsJittered = sl::Boolean::eTrue;
 
+	// One token per rendered frame: reuse the DlssBeginFrame token when
+	// the ids match (markers + constants + evaluate share it). Fall back
+	// to a private token when the frame never opened one (tests, or a
+	// host that skips BeginFrame) — same behavior as before.
 	sl::FrameToken* token = nullptr;
-	sl::Result res = g_slGetNewFrameToken(token, &frameIndex);
-	if (res != sl::Result::eOk || !token) {
-		std::fprintf(stderr, "[DLSS] slGetNewFrameToken failed (result=%u)\n",
-			static_cast<uint32_t>(res));
-		return false;
+	sl::Result res = sl::Result::eOk;
+	if (g_frameToken && g_frameTokenId == frameIndex) {
+		token = g_frameToken;
+	}
+	else {
+		res = g_slGetNewFrameToken(token, &frameIndex);
+		if (res != sl::Result::eOk || !token) {
+			std::fprintf(stderr, "[DLSS] slGetNewFrameToken failed (result=%u)\n",
+				static_cast<uint32_t>(res));
+			return false;
+		}
 	}
 	if (SL_FAILED(res, g_slSetConstants(consts, *token, kDlssViewport))) {
 		std::fprintf(stderr, "[DLSS] slSetConstants failed (result=%u)\n",

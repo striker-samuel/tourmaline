@@ -45,6 +45,7 @@
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Renderer/cookies.h>
+#include <Engine/Renderer/spirv_reflection.h> // PackPushFloat3x4 (prevModel blob)
 #include <App/renderer.h>
 #include <App/forwardplus_renderer.h>
 #include "lut_io.h"
@@ -6925,6 +6926,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
 
 	m_frameCounter += 1;
+	// Open the Streamline frame (one SL token per rendered frame, shared
+	// with the DLSS evaluate below + the engine's PCL submit/present
+	// markers in EndAndPresentFramebuffer). Silent no-op unless the PCL
+	// plugin loaded — same monotonic-id convention as dlssFrameId.
+	(void)smvk::DlssBeginFrame(static_cast<uint32_t>(m_frameCounter & 0xffffffffu));
 	m_rendergraph->NewFrame();
 	// Texture filtering (bilinear <-> trilinear) is renderer state: enforce
 	// the selected mipmap mode on the bindless sampler slots every frame
@@ -8188,7 +8194,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
 					const glm::mat4 prevModel =
 						prevValid ? m_prevGlobalTransforms[item.node] : model;
-					std::copy_n(glm::value_ptr(prevModel), 16, objectPC.prevModel);
+				// Pack as float3x4 columns (smvk::PackPushFloat3x4): a
+				// flat 12-float copy is wrong (drops translation, leaks
+				// the projection row — see the helper's comment).
+				smvk::PackPushFloat3x4(glm::value_ptr(prevModel), objectPC.prevModel);
 					objectPC.materialId = item.material; // FS alpha test
 					cmd.PushConstants(offsetof(PushConstants, materialId),
 						sizeof(objectPC.materialId), &objectPC.materialId,

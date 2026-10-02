@@ -550,11 +550,17 @@ struct DeferredShadows {
                 buffers[b][f] = std::move(buf);
                 logicals[b][f] = logical;
             }
-            // Zero the counters so a stale slot can never inflate the
-            // flexible allocation before the first zero-fill.
-            static constexpr uint32_t kZero[kDsCounterCount] = {};
-            ctx.UploadDataToBuffer(counters[f], kZero, sizeof(kZero),
-                PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+            // No zero-fill here: every slice is zeroed at record time
+            // before its frame's passes run (UpdateForwardPlusLights runs
+            // after Ensure in RenderFrame; the upload batch flushes ahead
+            // of G1 inside Execute and ahead of the main submit, both with
+            // explicit timeline waits), so no GPU read can observe a
+            // stale slot. Zeroing here as well records a second copy to
+            // the same slice in the same transfer batch when Create runs
+            // lazily inside a frame; the streamer emits only a release
+            // barrier between batched copies, which sync validation
+            // flags as WRITE_AFTER_WRITE (observed on the 40-byte
+            // counters buffer at startup).
         }
 
         extent = swapExtent;

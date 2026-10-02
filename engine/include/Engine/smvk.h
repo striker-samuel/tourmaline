@@ -174,6 +174,8 @@ namespace smvk {
 		S8_UInt,
 
 		// compressed
+		BC1_RGB_UNorm,
+		BC1_RGB_SRGB,
 		BC1_RGBA_UNorm,
 		BC1_RGBA_SRGB,
 		BC2_UNorm,

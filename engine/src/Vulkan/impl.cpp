@@ -1168,6 +1168,8 @@ constexpr VkFormat              smvk::toVkFormat(smvk::Format format)
 	case smvk::Format::S8_UInt:             return VK_FORMAT_S8_UINT;
 
 		// compressed
+	case smvk::Format::BC1_RGB_UNorm:       return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+	case smvk::Format::BC1_RGB_SRGB:        return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
 	case smvk::Format::BC1_RGBA_UNorm:      return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
 	case smvk::Format::BC1_RGBA_SRGB:       return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
 	case smvk::Format::BC2_UNorm:           return VK_FORMAT_BC2_UNORM_BLOCK;
@@ -1352,12 +1354,11 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	case VK_FORMAT_D32_SFLOAT_S8_UINT:       return smvk::Format::D32_Float_S8_UInt;
 	case VK_FORMAT_S8_UINT:                  return smvk::Format::S8_UInt;
 
-	// BC1_RGB (what libktx's KTX_TTF_BC1_RGB transcode emits) is the same
-	// block layout as BC1_RGBA — the engine's enum only has the RGBA flavor,
-	// so both map onto it (identical sampling for opaque content; the RGBA
-	// alias just documents the 1-bit punchthrough alpha).
-	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:       return smvk::Format::BC1_RGBA_UNorm;
-	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:        return smvk::Format::BC1_RGBA_SRGB;
+	// BC1_RGB is what libktx's KTX_TTF_BC1_RGB transcode emits (opaque-only);
+	// BC1_RGBA is the 1-bit punchthrough-alpha variant. Distinct VkFormats
+	// require distinct image/view formats, so keep them distinct here too.
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:        return smvk::Format::BC1_RGB_UNorm;
+	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:         return smvk::Format::BC1_RGB_SRGB;
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:      return smvk::Format::BC1_RGBA_UNorm;
 	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:       return smvk::Format::BC1_RGBA_SRGB;
 	case VK_FORMAT_BC2_UNORM_BLOCK:          return smvk::Format::BC2_UNorm;
@@ -2365,8 +2366,35 @@ bool smvk::VulkanCore::Init() {
 			}
 		}
 
-			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
-			if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+		// VK_NV_low_latency2 (NVIDIA Reflex / Streamline PCL latency path):
+		// strictly optional — enables sl.common's VkNvLowLatency2 init
+		// ("Failed to init VkNvLowLatency2: 2" when absent) and the PCL
+		// marker timings. Probed, never required: non-NVIDIA devices
+		// simply skip it (isDeviceSuitable above only gates the required
+		// config_.deviceExtensions list). No feature struct exists for
+		// this extension — the name alone switches it on.
+		bool enableLowLatency2 = false;
+		{
+			uint32_t extCount = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+				&& extCount != 0) {
+				std::vector<VkExtensionProperties> exts(extCount);
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+					for (const auto& e : exts) {
+						if (std::strcmp(e.extensionName, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0) {
+							enableLowLatency2 = true;
+							break;
+						}
+					}
+				}
+			}
+			std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 %s\n",
+				enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
+		}
+
+		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
+		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -8941,6 +8969,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	}
 	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo,
 		signalCount, signalArray };
+	// PCL latency markers (no-ops unless DlssBeginFrame opened a token and
+	// the PCL plugin is loaded): CPU sim work ends here, the render
+	// submit starts. Covers all hosts (app + editor); hosted frames skip
+	// only the present pair below (no vkQueuePresentKHR there).
+	DlssPclMarker(PclMarker::SimulationEnd);
+	DlssPclMarker(PclMarker::RenderSubmitStart);
 	if (hosted_) {
 		// HOSTED: submit + retire, no present. The binary
 		// renderFinished semaphore is NOT signaled (nothing waits it,
@@ -8965,10 +8999,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			std::fflush(stderr);
 		}
 		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+		DlssPclMarker(PclMarker::RenderSubmitEnd);
 		frameTimelineValues_[currentFrame_] = signalValue;
 		imageTimelineValues_[currentImageIndex_] = signalValue;
 		ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 		AdvanceFrame();
+		DlssEndFrame();
 		return;
 	}
 	{
@@ -8985,6 +9021,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 					waitCount, (unsigned long long)signalValue,
 					fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
 			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			DlssPclMarker(PclMarker::RenderSubmitEnd);
+			DlssPclMarker(PclMarker::PresentStart);
 			// Submit accepted: the value it signals is now reachable, so the
 			// slot's wait target can be published (AcquireFramebuffer waits
 			// on frameTimelineValues_ with an infinite timeout).
@@ -9025,7 +9063,9 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			else if (result != VK_SUCCESS) {
 				throw std::runtime_error("failed to present swap chain image!");
 			}
+			DlssPclMarker(PclMarker::PresentEnd);
 			AdvanceFrame();
+			DlssEndFrame();
 			return;
 		}
 		else {
@@ -9037,6 +9077,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 						waitCount, (unsigned long long)signalValue,
 						fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+				DlssPclMarker(PclMarker::RenderSubmitEnd);
+				DlssPclMarker(PclMarker::PresentStart);
 				// Same publish-on-success as the single-mutex path above.
 				frameTimelineValues_[currentFrame_] = signalValue;
 				imageTimelineValues_[currentImageIndex_] = signalValue;
@@ -9069,8 +9111,10 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				else if (result != VK_SUCCESS) {
 					throw std::runtime_error("failed to present swap chain image!");
 				}
+				DlssPclMarker(PclMarker::PresentEnd);
 			}
 			AdvanceFrame();
+			DlssEndFrame();
 			return;
 		}
 	}

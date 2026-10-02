@@ -22,6 +22,7 @@
 
 #include <Engine/smvk.h>
 
+#include <cassert>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -123,5 +124,27 @@ ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
                                       std::span<const PushConstantRange> layoutRanges,
                                       uint32_t offset,
                                       uint32_t size);
+
+// Packs a 4x4 column-major matrix (glm layout, 16 floats) into an HLSL
+// float3x4 push blob (12 floats). The blob holds the matrix COLUMNS:
+// columns xyz plus translation, i.e. source floats
+// {0,1,2, 4,5,6, 8,9,10, 12,13,14}.
+//
+// Why columns, not the first 12 floats: the DXC SPIR-V for float3x4 lands
+// as RowMajor stride 12 consumed via v4 x M (verified in
+// motionvector.vert.hlsl.spv: member offset 208, OpVectorTimesMatrix
+// v4 x mat3v4float), so result[j] = sum_i v[i] * blob[3i+j], which equals
+// M*v exactly when blob[3i+j] = M[j][i] — the columns. A flat 12-float
+// copy instead smuggles the projection row (floats 3,7,11) in and drops
+// translation (12,13,14), leaving every translated object with a
+// translation-free prevWorld (garbage motion vectors). CPU-only.
+inline void PackPushFloat3x4(const float* srcColMajor16, float* dst12) {
+	assert(srcColMajor16 && dst12);
+	for (int c = 0; c < 4; ++c) {
+		dst12[3 * c + 0] = srcColMajor16[4 * c + 0];
+		dst12[3 * c + 1] = srcColMajor16[4 * c + 1];
+		dst12[3 * c + 2] = srcColMajor16[4 * c + 2];
+	}
+}
 
 } // namespace smvk

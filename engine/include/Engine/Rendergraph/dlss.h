@@ -69,10 +69,15 @@ struct DlssOptimalSettings {
 // the app never links or includes Streamline directly).
 // ---------------------------------------------------------------------
 
-// Loads sl.interposer.dll + slInit(kFeatureDLSS, eVulkan). Call once,
-// BEFORE volkInitialize / VkInstance creation. Idempotent. Returns false
-// (and leaves the app on the plain vulkan-1.dll path) when the DLL is
-// missing, unsigned-load fails or slInit errors (no NVIDIA GPU etc.).
+// Loads sl.interposer.dll + slInit({kFeatureDLSS, kFeaturePCL}, eVulkan).
+// Call once, BEFORE volkInitialize / VkInstance creation. Idempotent.
+// Returns false (and leaves the app on the plain vulkan-1.dll path) when
+// the DLL is missing, unsigned-load fails or slInit errors (no NVIDIA
+// GPU etc.). PCL rides along so sl.common's VkNvLowLatency2 path can
+// initialize (it fails with code 2 when no plugin requests the
+// VK_NV_low_latency2 device extension — the interposer injects
+// plugin-required extensions at vkCreateDevice, but only for loaded
+// features; DLSS alone never pulled it in).
 [[nodiscard]] bool DlssStartup();
 
 // Process-wide kill switch for the Streamline load itself (App::Initialize
@@ -108,6 +113,42 @@ void DlssRelease();
 // True when the loaded DLSS feature reports support on the current
 // physical device (requires the device to exist). Sticky per run.
 [[nodiscard]] bool DlssFeatureSupported();
+
+// ---------------------------------------------------------------------
+// PC-latency markers (Streamline PCL; no sl_* types leak into this header).
+// ---------------------------------------------------------------------
+
+// Mirrors sl::PCLMarker (sl_pcl.h) 1:1 — the backend casts across.
+enum class PclMarker : uint32_t {
+	SimulationStart = 0,
+	SimulationEnd = 1,
+	RenderSubmitStart = 2,
+	RenderSubmitEnd = 3,
+	PresentStart = 4,
+	PresentEnd = 5,
+};
+
+// True when the PCL plugin is loaded and slPCLSetMarker resolved
+// (requires DlssStartup; sticky per run). All marker entry points below
+// are silent no-ops until this is true, so engine submit/present hooks
+// can call them unconditionally.
+[[nodiscard]] bool DlssPclAvailable();
+
+// Opens the SL frame: acquires one frame token for `frameId` (same
+// monotonic render-frame counter convention as AddDlssPasses — NOT the
+// wrapping swapchain slot) and stamps SimulationStart. Call once per
+// rendered frame, after acquire, before recording. The token is shared
+// with the DLSS evaluate of the same frame (one token per frame per the
+// SL programming guide); DlssEndFrame closes it after present.
+[[nodiscard]] bool DlssBeginFrame(uint32_t frameId);
+
+// Stamps one PCL marker on the current frame's token. No-op without a
+// token (DlssBeginFrame not called or failed).
+void DlssPclMarker(PclMarker marker);
+
+// Drops the current frame token (after present). Safe to call without
+// a token.
+void DlssEndFrame();
 
 // CPU-side query: optimal render resolution for (mode, output size).
 [[nodiscard]] bool DlssQueryOptimalSettings(DlssMode mode,

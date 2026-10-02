@@ -3,6 +3,7 @@
 // ReflectSpirv error paths, and – when DXC is available – end-to-end
 // readback of push ranges + spec constants from compiled HLSL.
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -328,6 +329,78 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
 	Check(smvk::ValidatePushConstants(merged, 256), "spirv.dxc.fits256");
 }
 
+// float3x4 push packing (motionvector prevModel): the DXC SPIR-V declares
+// the member RowMajor stride 12 and lowers mul() to v4 x M, so result[j] =
+// sum_i v[i] * blob[3i+j]. That equals M*v exactly when the blob holds the
+// matrix COLUMNS (glm columns xyz + translation). These checks pin the
+// mapping with hand-built matrices (no glm needed) by emulating the SPV
+// op on the packed blob; a flat 12-float copy fails them (it drops
+// translation and leaks the projection row).
+void TestPushFloat3x4() {
+	auto emulateSpvMul = [](const float* blob12, const float v[4], float out[3]) {
+		for (int j = 0; j < 3; ++j)
+			out[j] = v[0] * blob12[0 + j] + v[1] * blob12[3 + j]
+				+ v[2] * blob12[6 + j] + v[3] * blob12[9 + j];
+	};
+	auto matMul = [](const float* colMajor16, const float v[4], float out[3]) {
+		for (int r = 0; r < 3; ++r)
+			out[r] = colMajor16[0 * 4 + r] * v[0] + colMajor16[1 * 4 + r] * v[1]
+				+ colMajor16[2 * 4 + r] * v[2] + colMajor16[3 * 4 + r] * v[3];
+	};
+	auto close = [](const float a[3], const float b[3]) {
+		for (int i = 0; i < 3; ++i)
+			if (std::abs(a[i] - b[i]) > 1e-5f)
+				return false;
+		return true;
+	};
+
+	// Translation-only (identity rotation, t = (10,20,30)).
+	const float kT[16] = {
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, 0,
+		10, 20, 30, 1,
+	};
+	float packed[12] = {};
+	smvk::PackPushFloat3x4(kT, packed);
+	Check(packed[0] == 1.0f && packed[4] == 1.0f && packed[8] == 1.0f,
+		"push.f3x4.translation.rotpart");
+	Check(packed[9] == 10.0f && packed[10] == 20.0f && packed[11] == 30.0f,
+		"push.f3x4.translation.kept");
+	// The old flat copy drops translation: dst[9..11] would be (0,0,1).
+	Check(!(kT[9] == 10.0f && kT[10] == 20.0f && kT[11] == 30.0f),
+		"push.f3x4.flatcopy.loses.translation");
+
+	// Y-90 rotation + translation, several points incl. off-axis.
+	const float kR[16] = {
+		0, 0, -1, 0,
+		0, 1, 0, 0,
+		1, 0, 0, 0,
+		10, 20, 30, 1,
+	};
+	float packedR[12] = {};
+	smvk::PackPushFloat3x4(kR, packedR);
+	const float kPts[][4] = {
+		{ 1, 2, 3, 1 }, { 0, 0, 0, 1 }, { -5, 7, -9, 1 }, { 0.5f, -0.25f, 2.0f, 1 },
+	};
+	bool allMatch = true;
+	for (const auto& p : kPts) {
+		float want[3], got[3];
+		matMul(kR, p, want);
+		emulateSpvMul(packedR, p, got);
+		allMatch = allMatch && close(want, got);
+	}
+	Check(allMatch, "push.f3x4.spvop.matches.matmul");
+	// Spot value: Ry(90) maps (1,2,3) -> (3,2,-1), plus t -> (13,22,29).
+	{
+		const float p[4] = { 1, 2, 3, 1 };
+		float got[3];
+		emulateSpvMul(packedR, p, got);
+		const float want[3] = { 13, 22, 29 };
+		Check(close(want, got), "push.f3x4.spot");
+	}
+}
+
 // End-to-end for the demote policy: a `discard` pixel shader compiled for
 // vulkan1.3 must come out of SanitizeDemoteToKill with no demote capability
 // and a still-reflectable module. Skipped when DXC is unavailable.
@@ -403,6 +476,7 @@ int main() {
 	TestSpecializationPayload();
 	TestShaderEqualityWithSpec();
 	TestDxcRoundTrip();
+	TestPushFloat3x4();
 	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

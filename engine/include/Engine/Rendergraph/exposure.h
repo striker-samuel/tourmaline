@@ -157,7 +157,6 @@ struct ExposureMeter {
 		if (d.bins == 0 || d.bins > kExposureBinCount)
 			return false;
 		Destroy(rg);
-		static constexpr uint32_t kZero[kExposureBinCount] = {};
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			Holder<BufferHandle> buf = ctx.CreateBuffer(
 				kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
@@ -172,8 +171,11 @@ struct ExposureMeter {
 			}
 			histogramBuffers[f] = std::move(buf);
 			histogramLogicals[f] = logical;
-			ctx.UploadDataToBuffer(histogramBuffers[f], kZero, sizeof(kZero),
-				PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			// No zero-fill here: every slice is zeroed at record time
+			// before its frame's histogram pass runs (same ordering
+			// argument as the ds-counters Create zero in
+			// deferredshadow.h); a Create-time copy would join the same
+			// transfer batch and trip sync validation the same way.
 		}
 		desc = d;
 		// Zero so the first adaptation (before any GPU write lands) sees
