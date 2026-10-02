@@ -232,6 +232,11 @@ compile_shaders(
     "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
     "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
     "default_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
+    # GI permutations (SPEC_GI_VARIANT specialization constant)
+    "default_lit.frag.hlsl|.gi0|GI_NONE=1"
+    "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
+    "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
+    "default_lit.frag.hlsl|.gi3|GI_FULL=1"
 )
 
 # compile_shaders() already emits the ALL target "App_shaders" over these

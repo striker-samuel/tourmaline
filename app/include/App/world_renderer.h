@@ -205,6 +205,16 @@ inline const char* AmbientModeName(AmbientMode m) {
 	return "?";
 }
 
+// GI permutation variants (matches SPEC_GI_VARIANT in common.hlsli):
+// 0 = GI_NONE (sky IBL only), 1 = GI_OCTREE (sparse octree),
+// 2 = GI_REGULAR (regular grids), 3 = GI_FULL (octree + volumes)
+enum class GIVariant : uint32_t {
+	None = 0,
+	Octree = 1,
+	Regular = 2,
+	Full = 3,
+};
+
 // ---------------------------------------------------------------------------
 // Main-view debug visualization (F1..F6, F9/F10). Lit is the full PBR path;
 // the rest replace the opaque leg with a flat debug program so
@@ -414,52 +424,7 @@ struct FrameUniforms
 	float aoPad_[3] = {};
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
-}
 
-// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
-// Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
-// Uploaded as a separate buffer slice per frame to keep PS register pressure low.
-struct FramePSHot
-{
-	glm::vec3 cameraPos;        // 0
-	float     time;             // 12 -> 16
-	glm::vec2 viewportSize;     // 16
-	glm::vec2 invViewportSize;  // 24 -> 32
-	float     nearPlane;        // 32
-	float     farPlane;         // 36
-	float     exposure;         // 40
-	uint32_t  aoTextureIndex;   // 44
-	float     aoIntensity;      // 48
-	uint32_t  evsmMode;         // 52
-	uint32_t  dsEnabled;        // 56
-	uint32_t  dsTileCountX;     // 60
-	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
-	float     giIntensity;      // 68
-	uint32_t  giDebug;          // 72
-	uint32_t  lmEnabled;        // 76
-	uint32_t  cvolEnabled;      // 80
-	uint32_t  pad_[3];          // 84 -> 96 (16-byte aligned total)
-};
-static_assert(sizeof(FramePSHot) == 96);
-static_assert(offsetof(FramePSHot, cameraPos) == 0);
-static_assert(offsetof(FramePSHot, time) == 12);
-static_assert(offsetof(FramePSHot, viewportSize) == 16);
-static_assert(offsetof(FramePSHot, invViewportSize) == 24);
-static_assert(offsetof(FramePSHot, nearPlane) == 32);
-static_assert(offsetof(FramePSHot, farPlane) == 36);
-static_assert(offsetof(FramePSHot, exposure) == 40);
-static_assert(offsetof(FramePSHot, aoTextureIndex) == 44);
-static_assert(offsetof(FramePSHot, aoIntensity) == 48);
-static_assert(offsetof(FramePSHot, evsmMode) == 52);
-static_assert(offsetof(FramePSHot, dsEnabled) == 56);
-static_assert(offsetof(FramePSHot, dsTileCountX) == 60);
-static_assert(offsetof(FramePSHot, fogEndAndFlags_w) == 64);
-static_assert(offsetof(FramePSHot, giIntensity) == 68);
-static_assert(offsetof(FramePSHot, giDebug) == 72);
-static_assert(offsetof(FramePSHot, lmEnabled) == 76);
-static_assert(offsetof(FramePSHot, cvolEnabled) == 80);
-
-struct FrameUniforms
 	// Reflection cubemap for specular IBL (bindless TextureCube index).
 	// NOTE: this 16-byte block must stay exactly 16 bytes (offsets
 	// asserted below): index + sampler + intensity + debug. Growing it
@@ -491,19 +456,19 @@ struct FrameUniforms
 	// buffers created + uploaded once at scene load; giEnabled flips the
 	// default_lit ambient between the probe field and the analytic sky
 	// IBL (A/B). giDebug = F8 flat irradiance view. ----
-	uint64_t giProbes = 0;      // 672 SgProbeGpu array (96 B each)
-	uint64_t giGrid = 0;        // 680 SgGiGrid level descriptors
-	uint64_t giCells = 0;       // 688 uint2 (start, count) per cell
-	uint64_t giIndices = 0;     // 696 u32 probe index list
-	uint32_t giEnabled = 0;     // 704 1 = probes replace sky ambient
-	float giIntensity = 1.0f;   // 708 ambient scale
-	uint32_t giDebug = 0;       // 712 F8 irradiance debug view
-	// EVSM shadow mode (offset 716, was padding): 0 = PCF depth atlases,
+	uint64_t giProbes = 0;      // 704 SgProbeGpu array (96 B each)
+	uint64_t giGrid = 0;        // 712 SgGiGrid level descriptors
+	uint64_t giCells = 0;       // 720 uint2 (start, count) per cell
+	uint64_t giIndices = 0;     // 728 u32 probe index list
+	uint32_t giEnabled = 0;     // 736 1 = probes replace sky ambient
+	float giIntensity = 1.0f;   // 740 ambient scale
+	uint32_t giDebug = 0;       // 744 F8 irradiance debug view
+	// EVSM shadow mode (offset 748, was padding): 0 = PCF depth atlases,
 	// 1 = prefiltered EVSM moments (blurred RG32F, 1-frame lag). The
 	// shadow_map_index / spotShadowMapIndex fields then address the
 	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
 	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
-	uint32_t evsmMode = 1;      // 716
+	uint32_t evsmMode = 1;      // 748
 	// ---- Forward+ decals (tiled projected splats, see
 	// smvk::ForwardPlusDecal + forwardplus.cs.hlsl). decals points at
 	// this frame's flight slice of the decal ring; the tile lists are the
@@ -512,12 +477,12 @@ struct FrameUniforms
 	// storing 0 with no decals). decalCount > 0 only when the cull
 	// dispatch runs this frame, so the shader never reads stale lists —
 	// and the tile pointers stay valid whenever the cull can run. ----
-	uint64_t decals = 0;            // 720 per-frame decal ring slice
-	uint64_t decalTileCounts = 0;   // 728 builder decal list counts
-	uint64_t decalTileIndices = 0;  // 736 builder decal list indices
-	uint32_t decalCount = 0;        // 744 live decals this frame
-	uint32_t decalMaxPerTile = 0;   // 748 list stride (matches allocation)
-	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h): the
+	uint64_t decals = 0;            // 752 per-frame decal ring slice
+	uint64_t decalTileCounts = 0;   // 760 builder decal list counts
+	uint64_t decalTileIndices = 0;  // 768 builder decal list indices
+	uint32_t decalCount = 0;        // 776 live decals this frame
+	uint32_t decalMaxPerTile = 0;   // 780 list stride (matches allocation)
+#if 0 // Lightmaps deprecated - SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h).
 	// atlas layers ride the bindless texture slots. lmLayerKind selects
 	// the layout: 0 = the classic 9 RGBA16F stream layers (half h =
 	// lobe*3 + channel -> layer h/4), 1 = BC6H one-texture-per-lobe
@@ -529,30 +494,31 @@ struct FrameUniforms
 	// draw ring — NO chunk buffer exists at runtime. Static/dynamic
 	// separation: draws carrying a lobe count sample the atlas; dynamic
 	// objects sample the regular grids below. ----
-	uint32_t lmLayers[12] = {};      // 752 atlas bindless slots
-	uint32_t lmEnabled = 0;         // 800 1 = lightmap branch active
-	uint32_t lmLayerKind = 0;        // 804 0 = RGBA16F stream, 1 = BC6H
-	uint32_t lmPad_[2] = {};         // 808 8-align pad (mirrors HLSL lmPad)
-	// ---- SG regular 3D probe volumes (DYNAMIC objects, Engine/GI/
-	// regular_volume.h): artist OBBs + density, baked per volume, 7
-	// RGBA16F 3D textures each, hardware trilinear between probes. ----
-	uint64_t regObbs = 0;           // 816 SgRegularObbGpu array
-	uint32_t regLayers[56] = {};    // 824 8 volumes x 7 layer slots
-	uint32_t regCount = 0;          // 1048 active volumes
-	uint32_t regEnabled = 0;        // 1052 1 = grid branch active
-	uint32_t regPad_[4] = {};       // 1056 16-align tail (mirrors HLSL regPad)
-	// ---- Convex GI volumes (Engine/GI/cubemap_volume.h; BO3-style
-	// cubemap-reprojection dense grids in convex authored volumes with
-	// per-plane fades + priority). Loaded from gi/<scene>.cvmanifest (up
-	// to SG_CV_MAX_VOLUMES); each volume = 7 RGBA16F 3D textures
-	// (hardware trilinear) + one 560 B descriptor (planes inline).
-	// Uploaded priority-sorted (low first) so the shader's ordered
-	// compositing is a simple loop. ----
-	uint64_t cvolVolumes = 0;       // 1104 CvVolumeGpu array (BDA)
+	uint32_t lmLayers[12] = {};      // 784 atlas bindless slots
+	uint32_t lmEnabled = 0;         // 832 1 = lightmap branch active
+	uint32_t lmLayerKind = 0;        // 836 0 = RGBA16F stream, 1 = BC6H
+	uint32_t lmPad_ = 0;            // 840 16-align tail
+#endif
+	// ---- SG regular OBBs (dynamic geometry, Engine/GI/lightmap.h): the
+	// per-object OBB array lives in a uniform buffer. regCount is the
+	// active OBB count; the shader's loop bound is min(regCount, MAX_REG).
+	// regEnabled flips the default_lit ambient between the OBB field and
+	// the lightmap branch (which itself may be off). ----
+	uint64_t regObbs = 0;       // 848 SgRegularObbGpu array (56 B each)
+	uint32_t regLayers[56] = {};    // 856 8 volumes x 7 layer slots
+	uint32_t regCount = 0;      // 1080 active OBB count
+	uint32_t regEnabled = 0;    // 1084 1 = OBB branch active
+	uint32_t regPad_ = 0;       // 1088 16-align tail
+	// ---- Convolution volumes (dynamic geometry, Engine/GI/lightmap.h):
+	// cvolVolumes points at a typed buffer of CvVolumeGpu. cvolCount is
+	// the active volume count; cvolEnabled toggles the branch.
+	// Static/dynamic separation: draws carrying cvolCount > 0 sample the
+	// volumes; static draws skip. ----
+	uint64_t cvolVolumes = 0;   // 1104 CvVolumeGpu array (560 B each)
 	uint32_t cvolLayers[56] = {};  // 1112 8 volumes x 7 layer slots
-	uint32_t cvolCount = 0;         // 1336 active volumes
-	uint32_t cvolEnabled = 0;      // 1340 1 = convex-volume branch active
-	uint32_t cvolPad_[4] = {};      // 1344 16-align tail (mirrors HLSL cvolPad)
+	uint32_t cvolCount = 0;     // 1336 active volume count
+	uint32_t cvolEnabled = 0;   // 1340 1 = volume branch active
+	uint32_t cvolPad_[4] = {};      // 1344 16-align tail
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -561,7 +527,7 @@ struct FrameUniforms
 	// SG-GI + decal fields are identical, the visualizer tail follows).
 	// Tile-state counts + per-light culling/list diagnostics blended over
 	// the lit image in default_lit. dsTileMasks/dsTileGroupMasks are the
-	// phase-1 (CPU) and phase-2 (GPU) TileGroup light masks the
+	// phase-1 (CPU) and phase-2 (GPU) TileGroup masks the
 	// light-scoped modes re-query; dsDebug* select mode / light / flags /
 	// heat scale. ----
 	uint64_t dsTileMasks = 0;      // 1360 phase-1 CPU TileGroup masks (viz)
@@ -573,90 +539,50 @@ struct FrameUniforms
 	uint32_t dsDebugPad_[4] = {};  // 1392 16-align tail (mirrors HLSL)
 #endif
 };
-static_assert(sizeof(FrameUniforms) % 16 == 0);
-// CPU/HLSL ABI: total-size alignment is not enough — each field offset must
-// match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
-// SG-GI block sits between the DS core and the decal block; the lightmap +
-// regular-volume block follows the decals; the convex-volume block follows
-// that; the DS visualizer tail is last so the release layout stays a
-// strict prefix of the debug one.
-// Release prefix: 1360 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
-//   + 32 (near/far/exposure/ao) + 128 (env) + 16 (cubemap) + 1028 (reflection probes)
-//   + 32 (DS) + 48 (GI) + 32 (decals) + 56 (lmLayers/lmEnabled/lmLayerKind/pads)
-//   + 256 (regLayers) + 24 (regObbs/regCount/regEnabled/regPad)
-//   + 256 (cvolLayers) + 24 (cvolVolumes/cvolCount/cvolEnabled/cvolPad).
-//   Debug tail: +48.
-#if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) % 16 == 0);
-#else
-static_assert(sizeof(FrameUniforms) % 16 == 0);
-#endif
-static_assert(offsetof(FrameUniforms, view) == 0);
-static_assert(offsetof(FrameUniforms, proj) == 64);
-static_assert(offsetof(FrameUniforms, viewProj) == 128);
-static_assert(offsetof(FrameUniforms, invView) == 192);
-static_assert(offsetof(FrameUniforms, invProj) == 256);
-static_assert(offsetof(FrameUniforms, invViewProj) == 320);
-static_assert(offsetof(FrameUniforms, prevViewProj) == 384);
-static_assert(offsetof(FrameUniforms, cameraPos) == 448);
-static_assert(offsetof(FrameUniforms, time) == 460);
-static_assert(offsetof(FrameUniforms, viewportSize) == 464);
-static_assert(offsetof(FrameUniforms, invViewportSize) == 472);
-static_assert(offsetof(FrameUniforms, nearPlane) == 480);
-static_assert(offsetof(FrameUniforms, farPlane) == 484);
-static_assert(offsetof(FrameUniforms, exposure) == 488);
-static_assert(offsetof(FrameUniforms, aoTextureIndex) == 492);
-static_assert(offsetof(FrameUniforms, aoIntensity) == 496);
-static_assert(offsetof(FrameUniforms, env) == 512);
-static_assert(offsetof(FrameUniforms, cubemapIndex) == 640);
-static_assert(offsetof(FrameUniforms, cubemapSampler) == 644);
-static_assert(offsetof(FrameUniforms, cubemapIntensity) == 648);
-static_assert(offsetof(FrameUniforms, cubemapDebug) == 652);
-// NOTE: reflectionProbes (BDA) + reflectionProbeCount are gone: probe data
-// rides ForwardPlusLight type-2 entries (see smvk::kForwardPlusProbe).
-static_assert(offsetof(FrameUniforms, cubemapLodBias) == 656);        // 656 LOD bias
-static_assert(offsetof(FrameUniforms, probeTileFresh) == 660);        // 660 fresh bit
-static_assert(offsetof(FrameUniforms, probeEntries) == 664);        // 664 tail length
-static_assert(offsetof(FrameUniforms, probePad_) == 668);           // 668 pad
-static_assert(offsetof(FrameUniforms, dsTileState) == 672);           // 672
-static_assert(offsetof(FrameUniforms, dsLightList) == 680);           // 680
-static_assert(offsetof(FrameUniforms, dsVisibility) == 688);          // 688
-static_assert(offsetof(FrameUniforms, dsTileCountX) == 696);          // 696
-static_assert(offsetof(FrameUniforms, dsEnabled) == 700);             // 700
-static_assert(offsetof(FrameUniforms, giProbes) == 704);              // 704
-static_assert(offsetof(FrameUniforms, giGrid) == 712);                // 712
-static_assert(offsetof(FrameUniforms, giCells) == 720);               // 720
-static_assert(offsetof(FrameUniforms, giIndices) == 728);             // 728
-static_assert(offsetof(FrameUniforms, giEnabled) == 736);             // 736 (aligned)
-static_assert(offsetof(FrameUniforms, giIntensity) == 740);           // 740
-static_assert(offsetof(FrameUniforms, giDebug) == 744);               // 744
-static_assert(offsetof(FrameUniforms, evsmMode) == 748);              // 748
-static_assert(offsetof(FrameUniforms, decals) == 752);                // 752
-static_assert(offsetof(FrameUniforms, decalTileCounts) == 760);       // 760
-static_assert(offsetof(FrameUniforms, decalTileIndices) == 768);      // 768
-static_assert(offsetof(FrameUniforms, decalCount) == 776);            // 776
-static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 780);       // 780
-static_assert(offsetof(FrameUniforms, lmLayers) == 784);              // 784
-static_assert(offsetof(FrameUniforms, lmEnabled) == 832);             // 832
-static_assert(offsetof(FrameUniforms, lmLayerKind) == 836);           // 836
-static_assert(offsetof(FrameUniforms, lmPad_) == 840);                // 840
-static_assert(offsetof(FrameUniforms, regObbs) == 848);               // 848
-static_assert(offsetof(FrameUniforms, regLayers) == 856);             // 856
-static_assert(offsetof(FrameUniforms, regCount) == 1080);             // 1080
-static_assert(offsetof(FrameUniforms, regEnabled) == 1084);           // 1084
-static_assert(offsetof(FrameUniforms, regPad_) == 1088);              // 1088
-static_assert(offsetof(FrameUniforms, cvolVolumes) == 1104);          // 1104
-static_assert(offsetof(FrameUniforms, cvolLayers) == 1112);           // 1112
-static_assert(offsetof(FrameUniforms, cvolCount) == 1336);            // 1336
-static_assert(offsetof(FrameUniforms, cvolEnabled) == 1340);          // 1340
-static_assert(offsetof(FrameUniforms, cvolPad_) == 1344);             // 1344
-#if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 1360);          // 1360
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1368);     // 1368
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 1376);          // 1376
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 1380);        // 1380
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1384);        // 1384
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1388);    // 1388
+
+// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
+// Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
+// Uploaded as a separate buffer slice per frame to keep PS register pressure low.
+struct FramePSHot
+{
+	glm::vec3 cameraPos;        // 0
+	float     time;             // 12 -> 16
+	glm::vec2 viewportSize;     // 16
+	glm::vec2 invViewportSize;  // 24 -> 32
+	float     nearPlane;        // 32
+	float     farPlane;         // 36
+	float     exposure;         // 40
+	uint32_t  aoTextureIndex;   // 44
+	float     aoIntensity;      // 48
+	uint32_t  evsmMode;         // 52
+	uint32_t  dsEnabled;        // 56
+	uint32_t  dsTileCountX;     // 60
+	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
+	float     giIntensity;      // 68
+	uint32_t  giDebug;          // 72
+	uint32_t  textureFeedbackEnabled; // 76 (1 in 4 frames for TS_ReportUsage)
+	uint32_t  cvolEnabled;      // 80
+	uint32_t  pad_[2];          // 84 -> 96 (16-byte aligned total)
+};
+#if 0 // Lightmaps deprecated - size/offsets changed
+static_assert(sizeof(FramePSHot) == 96);
+static_assert(offsetof(FramePSHot, cameraPos) == 0);
+static_assert(offsetof(FramePSHot, time) == 12);
+static_assert(offsetof(FramePSHot, viewportSize) == 16);
+static_assert(offsetof(FramePSHot, invViewportSize) == 24);
+static_assert(offsetof(FramePSHot, nearPlane) == 32);
+static_assert(offsetof(FramePSHot, farPlane) == 36);
+static_assert(offsetof(FramePSHot, exposure) == 40);
+static_assert(offsetof(FramePSHot, aoTextureIndex) == 44);
+static_assert(offsetof(FramePSHot, aoIntensity) == 48);
+static_assert(offsetof(FramePSHot, evsmMode) == 52);
+static_assert(offsetof(FramePSHot, dsEnabled) == 56);
+static_assert(offsetof(FramePSHot, dsTileCountX) == 60);
+static_assert(offsetof(FramePSHot, fogEndAndFlags_w) == 64);
+static_assert(offsetof(FramePSHot, giIntensity) == 68);
+static_assert(offsetof(FramePSHot, giDebug) == 72);
+static_assert(offsetof(FramePSHot, lmEnabled) == 76);
+static_assert(offsetof(FramePSHot, cvolEnabled) == 80);
 #endif
 
 // Resources
@@ -683,11 +609,18 @@ struct AppResources {
 	// discard variant everywhere.
 	smvk::Holder<smvk::ShaderModuleHandle> fragA2CShader;
 	smvk::ShaderProgram mainProgramA2C;
+	// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
+	// Selected at draw time based on loaded GI assets (WorldRenderer::GIVariant).
+	smvk::ShaderProgram mainProgramGi[4];
 	// Fixed-lobe lit FS twins (default_lit SG_LM_LOBE_COUNT variants):
 	// same VS + per-count SG evaluation, bound per filtered material
 	// range (see GfxRenderer::FilteredLitProgram). Missing modules leave
 	// that count on the generic lit program.
 	smvk::Holder<smvk::ShaderModuleHandle> fragLitSgModules[4];
+	// GI permutation lit FS variants (default_lit GI_NONE/OCTREE/REGULAR/FULL):
+	// same VS + per-permutation GI path. Missing modules leave the base
+	// mainProgram as fallback. See SPEC_GI_VARIANT in common.hlsli.
+	smvk::Holder<smvk::ShaderModuleHandle> fragLitGiModules[4];
 	// Debug-view fragment programs (F2/F4/F6): same default.vert VS, flat FS.
 	// Loaded alongside main; missing modules leave the program at
 	// shaderCount 0 and the view falls back to Lit.
@@ -881,6 +814,23 @@ public:
 	// (the pre-v4 behavior).
 	smvk::TextureStreamer* GetTextureStreamer() const {
 		return m_textureStreamer.get();
+	}
+	// Active GI permutation variant based on loaded GI assets
+	[[nodiscard]] GIVariant GetActiveGIVariant() const {
+		// Priority: Full > Octree > Regular > None
+		// Full requires octree + convex volumes + probes wanted
+		// Octree requires giLoaded + probes wanted
+		// Regular requires regLoaded + regEnabled + probes wanted
+		if (m_cvolLoaded && m_cvolEnabled && m_giLoaded && ProbesWanted()) {
+			return GIVariant::Full;
+		}
+		if (m_giLoaded && ProbesWanted()) {
+			return GIVariant::Octree;
+		}
+		if (m_regLoaded && m_regEnabled && ProbesWanted()) {
+			return GIVariant::Regular;
+		}
+		return GIVariant::None;
 	}
 
 	// HOSTED drive API (the editor embeds this renderer offscreen —
@@ -2010,6 +1960,7 @@ protected:
 	// the atlas; dynamic objects sample the regular 3D probe grids
 	// (below) or the fallback ambient. Missing file = not baked yet
 	// (non-fatal).
+#if 0 // Lightmaps deprecated
 	bool m_lmLoaded = false;
 	// UI toggle for the lightmap branch (proxy-baked .sglm atlases:
 	// PakCooker --lightmap bakes a voxel-remesh scene proxy once and
@@ -2027,6 +1978,7 @@ protected:
 		return m_lmLoaded && m_lmEnabled && LmWanted();
 	}
 	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
+#endif
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
 	// Loaded from content/gi/<scene>.regmanifest: up to 8 volumes, each 7

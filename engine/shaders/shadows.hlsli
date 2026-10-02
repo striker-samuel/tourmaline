@@ -171,63 +171,56 @@ float PCFShadow(
 
     return sum / samples;
 }
+
+//float PCFShadowAtlas(
+//    uint samplerId,
+//    float2 uv,
+//    float currentDepth,
+//    uint shadowIdx,
+//    float2 texelSize,
+//    float2 uvClampMin,
+//    float2 uvClampMax)
+//{
+//    float sum = 0.0f;
+
+//    [unroll]
+//    for (int y = -1; y <= 1; ++y)
+//    {
+//        [unroll]
+//        for (int x = -1; x <= 1; ++x)
+//        {
+//            float2 sampleUV = clamp(
+//                uv + float2(x, y) * texelSize,
+//                uvClampMin,
+//                uvClampMax);
+
+//            float d = textures[shadowIdx]
+//                .SampleLevel(samplers[samplerId], sampleUV, 0).r;
+
+//            sum += currentDepth <= d;
+//        }
+//    }
+    
+
+//    return sum * (1.0f / 9.0f);
+//}
+
 float PCFShadowAtlas(
-    uint samplerId, // regular sampler (0): SampleLevel + manual compare.
-        // Never the comparison sampler (1) — that is compareEnable=true
-        // and sampling depth with it outside SampleCmp* is undefined
-        // (reads lit on most drivers, i.e. "no shadows" in PCF mode).
+    uint samplerId,
     float2 uv,
     float currentDepth,
     uint shadowIdx,
+    float2 texelSize,
     float2 uvClampMin,
-    float2 uvClampMax
-)
+    float2 uvClampMax)
 {
-    uint w, h;
-    textures[shadowIdx].GetDimensions(w, h);
+    float2 sampleUV = clamp(uv, uvClampMin, uvClampMax);
 
-    float2 texelSize = 1.0f / float2(w, h);
+    float d = textures[shadowIdx]
+        .SampleLevel(samplers[samplerId], sampleUV, 0)
+        .r;
 
-    const int radius = 1;
-
-    float sum = 0.0f;
-    int samples = 0;
-
-    [unroll]
-    for (int y = -radius; y <= radius; ++y)
-    {
-        [unroll]
-        for (int x = -radius; x <= radius; ++x)
-        {
-            float2 offset = float2(x, y) * texelSize;
-
-            // IMPORTANT: clamp every PCF tap,
-            // not just the center coordinate.
-            float2 sampleUV = clamp(
-                uv + offset,
-                uvClampMin,
-                uvClampMax
-            );
-
-            float d = textures[shadowIdx]
-                // SampleLevel (not Sample): the atlas is single-mip so the
-                // LOD is always 0, and implicit-LOD sampling is illegal in
-                // compute (the deferred-shadow phase 4 samples this from
-                // a CS — DXC would emit derivative-group capabilities no
-                // driver feature enables here).
-                .SampleLevel(
-                    samplers[samplerId],
-                    sampleUV,
-                    0
-                )
-                .r;
-
-            sum += currentDepth <= d ? 1.0f : 0.0f;
-            samples++;
-        }
-    }
-
-    return sum / samples;
+    return currentDepth <= d ? 1.0f : 0.0f;
 }
 
 // Sec. 4.2 oriented depth bias (slope-scaled, per-cascade NDC).
@@ -336,13 +329,13 @@ float SampleCascadeTile(
 
     valid = true;
     return PCFShadowAtlas(
-        samplerId,
-        uvAtlas,
-        receiverDepth,
-        idx,
-        c.uvClampMin,
-        c.uvClampMax
-    );
+    samplerId,
+    uvAtlas,
+    receiverDepth,
+    idx,
+    c.invShadowSize,
+    c.uvClampMin,
+    c.uvClampMax);
 }
 
 float GetShadowFactorCascaded(
@@ -505,6 +498,7 @@ float GetShadowFactorCascadedFromPC(
     Light light
 )
 {
+    return 1.0f;
     FrameUniforms frame = pc.frameUniforms.Get();
     GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
     return GetShadowFactorCascaded(samplerId, worldPos, faceNormal, light, frame, dir);
@@ -545,6 +539,7 @@ float GetSpotShadowFactorTile(
         uvAtlas,
         receiverDepth,
         atlasIdx,
+        t.invShadowSize,
         t.uvClampMin,
         t.uvClampMax
     );

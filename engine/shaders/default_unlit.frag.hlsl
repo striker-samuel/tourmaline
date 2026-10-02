@@ -84,7 +84,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
     }
     if (layered)
     {
@@ -103,7 +103,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D t = textures[NonUniformResourceIndex(slot)];
                 s = t.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             baseSample += s * w;
         }
@@ -129,7 +129,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         emissive *= eSample;
     }
     if (layered)
@@ -149,7 +149,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 uint slot = (uint)idx;
                 Texture2D eTex = textures[NonUniformResourceIndex(slot)];
                 s = eTex.Sample(samplers[0], IN.uv).rgb;
-                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             eAcc += s * w;
         }

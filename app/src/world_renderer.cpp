@@ -1075,6 +1075,24 @@ bool WorldRenderer::Initialize() {
 				<< li << " unavailable - count falls back to generic lit\n";
 		}
 	}
+
+	// GI permutation lit FS variants: each permutation compiles a different
+	// GI path (none/octree/regular/full). The app selects the matching
+	// program at draw time based on loaded GI assets.
+	// Non-fatal: missing variants fall back to the base mainProgram.
+	for (uint32_t gi = 0; gi < 4; ++gi) {
+		try {
+			const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
+				+ std::to_string(gi) + ".spv";
+			auto giCode = readFile(path);
+			m_resources.fragLitGiModules[gi] =
+				m_context->CreateShaderModule(giCode, "fragLitGi");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] GI permutation lit variant "
+				<< gi << " unavailable - falls back to generic lit\n";
+		}
+	}
 	if (!m_resources.fragA2CShader.empty()) {
 		m_resources.mainProgramA2C = {
 			.shaders = {
@@ -1151,7 +1169,7 @@ bool WorldRenderer::Initialize() {
 				.shaderCount = 2
 			};
 		}
-		if (!m_resources.fragVertexColorShader.empty()) {
+if (!m_resources.fragVertexColorShader.empty()) {
 			m_resources.vertexColorProgram = {
 				.shaders = {
 					smvk::Shader{
@@ -1168,8 +1186,32 @@ bool WorldRenderer::Initialize() {
 				.shaderCount = 2
 			};
 		}
-		try {
-			auto uv0Code = readFile("content/shaders/default_uv0_debug.frag.hlsl.spv");
+
+	// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
+	// Created if the corresponding fragment module loaded successfully.
+	// The app selects the matching program at draw time based on loaded GI assets.
+	for (uint32_t gi = 0; gi < 4; ++gi) {
+		if (!m_resources.fragLitGiModules[gi].empty()) {
+			m_resources.mainProgramGi[gi] = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragLitGiModules[gi],
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+	}
+
+	try {
+		auto uv0Code = readFile("content/shaders/default_uv0_debug.frag.hlsl.spv");
 			m_resources.fragUv0DebugShader = m_context->CreateShaderModule(uv0Code, "fragUv0Debug");
 		}
 		catch (...) {
@@ -1707,10 +1749,12 @@ bool WorldRenderer::Initialize() {
 		// analytic sky IBL ambient with path-traced probes when present.
 		// Missing file is the normal state (no bake yet) - non-fatal.
 		LoadGiVolume(contentVfs);
+#if 0 // Lightmaps deprecated
 		// SG 2D lightmaps (cooked with PakCooker --lightmap): uploads the
 		// atlas + chunk descriptors only (UVs/chunk ids live in the pak).
 		// Missing file is the normal state (no cook yet) - non-fatal.
 		LoadGiLightmaps(contentVfs);
+#endif
 		// SG regular 3D probe volumes (DYNAMIC objects): artist OBB
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
@@ -2303,6 +2347,7 @@ void WorldRenderer::Shutdown() {
 	};
 	static_assert(sizeof(RegObbGpu) == 96);
 
+#if 0 // Lightmaps deprecated
 	void WorldRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
 		// Cook-owned lightmaps: the pak carries the per-vertex chart uvs
 		// + chart ids (texCoord2/chartId), each mesh's chart transforms
@@ -2408,6 +2453,7 @@ void WorldRenderer::Shutdown() {
 			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB ("
 			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
 	}
+#endif
 	// ---------------------------------------------------------------------------
 	// SG regular 3D probe volumes (DYNAMIC objects; tools/gi_baker
 	// --regular-out). Loads content/gi/<scene>.regmanifest: one .sgrv vfs
@@ -2721,23 +2767,25 @@ void WorldRenderer::Shutdown() {
 		}
 	}
 
-	void WorldRenderer::DegradeAmbientForMissingSources() {
-		// Single-source isolation modes whose source did not load fall
-		// back to another baked source (or the sky IBL) instead of being
-		// silently empty. All/SkyIbl/Off never need this.
-		if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
-			m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
-				? AmbientMode::Probes : AmbientMode::SkyIbl;
-			std::cerr << "[Scene] no lightmaps - ambient degraded to "
-				<< AmbientModeName(m_ambientMode) << "\n";
-		} else if (m_ambientMode == AmbientMode::Probes
-			&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
-			m_ambientMode = m_lmLoaded
-				? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
-			std::cerr << "[Scene] no probes - ambient degraded to "
-				<< AmbientModeName(m_ambientMode) << "\n";
-		}
+void WorldRenderer::DegradeAmbientForMissingSources() {
+#if 0 // Lightmaps deprecated
+	// Single-source isolation modes whose source did not load fall
+	// back to another baked source (or the sky IBL) instead of being
+	// silently empty. All/SkyIbl/Off never need this.
+	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
+		m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
+			? AmbientMode::Probes : AmbientMode::SkyIbl;
+		std::cerr << "[Scene] no lightmaps - ambient degraded to "
+			<< AmbientModeName(m_ambientMode) << "\n";
+	} else if (m_ambientMode == AmbientMode::Probes
+		&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
+		m_ambientMode = m_lmLoaded
+			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
+		std::cerr << "[Scene] no probes - ambient degraded to "
+			<< AmbientModeName(m_ambientMode) << "\n";
 	}
+#endif
+}
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
 
@@ -2955,6 +3003,7 @@ void WorldRenderer::Shutdown() {
 			data.giIndices = 0;
 			data.giEnabled = 0u;
 		}
+#if 0 // Lightmaps deprecated
 		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
 		// count ride the pak's vertex data / draw ring). Static/dynamic
 		// separation: lm/reg ride the same giIntensity scale as the probe
@@ -2972,6 +3021,7 @@ void WorldRenderer::Shutdown() {
 		}
 		data.lmPad_[0] = 0;
 		data.lmPad_[1] = 0;
+#endif
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
 		// RegActive() gates the upload (loaded + UI toggle); the ambient
 		// mode additionally gates the enable flag (All/Probes only).
@@ -3076,11 +3126,10 @@ void WorldRenderer::Shutdown() {
 		hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
 		hot.giIntensity = data.giIntensity;
 		hot.giDebug = data.giDebug;
-		hot.lmEnabled = data.lmEnabled;
+		hot.textureFeedbackEnabled = (currentFrame & 3u) == 0u;
 		hot.cvolEnabled = data.cvolEnabled;
 		hot.pad_[0] = 0;
 		hot.pad_[1] = 0;
-		hot.pad_[2] = 0;
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameHot,
@@ -3559,7 +3608,9 @@ void WorldRenderer::Shutdown() {
 	// ---------------------------------------------------------------------
 	void WorldRenderer::ResolveGiSidecars() {
 		m_giProbeName.clear();
+#if 0 // Lightmaps deprecated
 		m_giLightmapName.clear();
+#endif
 		m_giRegName.clear();
 		m_giCvolName.clear();
 		m_giCubemapName.clear();
@@ -3583,9 +3634,11 @@ void WorldRenderer::Shutdown() {
 				case smvk::GiBinding::Kind::Probe:
 					takeFirst(m_giProbeName, b.name, "probe");
 					break;
+#if 0 // Lightmaps deprecated
 				case smvk::GiBinding::Kind::Lightmap:
 					takeFirst(m_giLightmapName, b.name, "lightmap");
 					break;
+#endif
 				case smvk::GiBinding::Kind::RegManifest:
 					takeFirst(m_giRegName, b.name, "regmanifest");
 					break;
@@ -5877,7 +5930,9 @@ void WorldRenderer::RebindWorld(smvk::World* world) {
 	BuildCookedLightsFromWorld();
 	ResolveGiSidecars();
 	LoadGiVolume(contentVfs);
+#if 0 // Lightmaps deprecated
 	LoadGiLightmaps(contentVfs);
+#endif
 	LoadGiRegularVolumes(contentVfs);
 	LoadCvolumes(contentVfs);
 	LoadCubemaps(contentVfs);
@@ -6114,6 +6169,7 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	}
 	data.giIntensity = m_giIntensity;
 	data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
+#if 0 // Lightmaps deprecated
 	if (LmActive()) {
 		for (uint32_t t = 0; t < 12; ++t)
 			data.lmLayers[t] = m_lmLayerSlots[t];
@@ -6127,6 +6183,7 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	}
 	data.lmPad_[0] = 0;
 	data.lmPad_[1] = 0;
+#endif
 	if (RegActive()) {
 		data.regObbs = m_regObbsAddress;
 		const uint32_t n = std::min<uint32_t>(uint32_t(m_regVolumes.size()), 8u);
@@ -6215,11 +6272,10 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
 	hot.giIntensity = data.giIntensity;
 	hot.giDebug = data.giDebug;
-	hot.lmEnabled = data.lmEnabled;
+	hot.textureFeedbackEnabled = (frameIdx & 3u) == 0u;
 	hot.cvolEnabled = data.cvolEnabled;
 	hot.pad_[0] = 0;
 	hot.pad_[1] = 0;
-	hot.pad_[2] = 0;
 
 	m_context->UploadDataToBuffer(
 		m_resources.frameHot,
@@ -6845,7 +6901,13 @@ void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
 				return;
 			const uint32_t materialId = item.material;
 			if (materialId != boundMaterial) {
-				bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);
+				// Select GI permutation program based on loaded assets
+				const app::GIVariant giVar = GetActiveGIVariant();
+				smvk::ShaderProgram& prog = m_resources.mainProgramGi[static_cast<uint32_t>(giVar)];
+				if (prog.shaderCount == 0) {
+					prog = m_resources.mainProgram; // fallback
+				}
+				bindForMaterial(materialId, prog, opaqueDepth);
 				boundMaterial = materialId;
 			}
 			drawNode(item.node, item.mesh, materialId);
@@ -6911,7 +6973,10 @@ void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
 						wireframeRaster(raster)
 					);
 				} else {
-					bindForMaterial(d.materialId, m_resources.mainProgram,
+					bindForMaterial(d.materialId,
+						GetActiveGIVariant() != GIVariant::None && m_resources.mainProgramGi[static_cast<uint32_t>(GetActiveGIVariant())].shaderCount
+						? m_resources.mainProgramGi[static_cast<uint32_t>(GetActiveGIVariant())]
+						: m_resources.mainProgram,
 						transparentDepth);
 				}
 				boundMaterial = d.materialId;
@@ -10563,6 +10628,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					// bisection. R / F8 cycle the GI debug views (Debug
 					// tab): flat irradiance + source palette.
 					{
+#if 0 // Lightmaps deprecated
 						static const char* const kModeNames[5] = {
 							"All (baked GI; sky fallback)",
 							"Lightmaps only",
@@ -10581,9 +10647,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_lmLoaded ? "yes" : "no",
 							m_giLoaded ? "yes" : "no",
 							m_regLoaded ? "yes" : "no");
+#else
+						static const char* const kModeNames[4] = {
+							"All (baked GI; sky fallback)",
+							"Probes only (grids + volume)",
+							"Sky IBL only",
+							"Off (no GI at all)",
+						};
+						int modeIdx = static_cast<int>(m_ambientMode);
+						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 4))
+							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 3));
+						ImGui::TextDisabled("N cycles: %s\n"
+							"sky IBL is the FALLBACK for uncovered pixels (never added on baked)\n"
+							"sources loaded: probe volume %s, grids %s\n"
+							"R / F8: GI debug views (1 flat irradiance, 2 palette)",
+							kModeNames[static_cast<int>(m_ambientMode)],
+							m_giLoaded ? "yes" : "no",
+							m_regLoaded ? "yes" : "no");
+#endif
 					}
 					ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
+#if 0 // Lightmaps deprecated
 					if (!m_giLoaded && !m_lmLoaded && !m_regLoaded)
+#else
+					if (!m_giLoaded && !m_regLoaded)
+#endif
 						ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
 							m_sceneId.empty() ? "?" : m_sceneId.c_str());
 				}
@@ -11091,7 +11179,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							"convex grid AABBs (priority hue); no depth test,\n"
 							"drawn over the current view");
 					}
-			if (m_giLoaded || m_lmLoaded || m_regLoaded || m_cvolLoaded) {
+			if (m_giLoaded || m_regLoaded || m_cvolLoaded) {
 				const char* dbgNames[3] = { "Off", "Baked irradiance",
 					"GI source" };
 				int dbgIdx = m_giDebug;
@@ -11112,12 +11200,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("stacked probe volumes blend over the "
 					"octree by priority (gi/<scene>.cvmanifest)");
 			}
+#if 0 // Lightmaps deprecated
 			// Lightmaps: proxy-baked .sglm atlas content (PakCooker
 			// --lightmap: one voxel-remesh proxy bake, UV-transferred
 			// to the real meshes). Off until opted in per view.
 			if (m_lmLoaded) {
 				ImGui::Checkbox("Lightmaps", &m_lmEnabled);
 			}
+#endif
 		}
 				}
 #if defined(DS_DEBUG_VIZ)

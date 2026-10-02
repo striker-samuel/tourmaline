@@ -25,12 +25,24 @@
 
 // Report the hardware LOD for `uv` on bindless texture `slot` sampled with
 // `samp`. `pixPos` is SV_Position.xy (pixel coords) for decimation.
-void TS_ReportUsage(uint slot, Texture2D tex, SamplerState samp, float2 uv, float2 pixPos)
+// `feedbackFrame` is true on 1 in 4 frames (cpu sets via textureFeedbackEnabled).
+void TS_ReportUsage(
+    uint slot,
+    Texture2D tex,
+    SamplerState samp,
+    float2 uv,
+    float2 pixPos,
+    bool feedbackFrame)
 {
-    uint tick = uint(pixPos.x) + uint(pixPos.y) * 2u + g_frameIndex();
-    if ((tick & 3u) != 0u)
+    if (!feedbackFrame)
         return;
+
+    // Executed with normal quad participation.
     float lod = tex.CalculateLevelOfDetail(samp, uv);
-    uint want = (uint)ceil(max(lod, 0.0f));
-    InterlockedMin(g_texFeedback[slot], want);
+    uint want = (uint) ceil(max(lod, 0.0f));
+
+    // One publisher per 2x2 quad.
+    uint2 p = (uint2) pixPos;
+    if (((p.x | p.y) & 1u) == 0u)
+        InterlockedMin(g_texFeedback[slot], want);
 }

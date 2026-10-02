@@ -51,7 +51,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
         discard;
 
-    // Lobe-0 atlas amplitude (layer 0 rgb; .a is lobe-1 R, ignored).
+    // Lobe-0 atlas amplitude (layer 0 rgb; .a is lobe-1 R, ignored) - Lightmaps deprecated.
+#if 0
     FrameUniforms frame = pc.frameUniforms.Get();
     float3 irr = textures[NonUniformResourceIndex(frame.lmLayers[0])]
         .Sample(samplers[0], IN.lightmapUv).rgb;
@@ -61,5 +62,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     c = pow(max(c, 0.0f), 1.0f / 2.2f);
 
     OUT.outColor = float4(SanitizeHdr(c), 1.0f);
+#else
+    OUT.outColor = float4(0.0f, 0.0f, 0.0f, 1.0f);
+#endif
     return OUT;
 }

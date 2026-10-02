@@ -28,7 +28,8 @@ VSOut mainVS(VSIn IN)
     float4 world = mul(pc.model, float4(IN.position, 1.0));
     OUT.pos = mul(frame.viewProj, world);
 
-    float4 prevWorld = mul(pc.prevModel, float4(IN.position, 1.0));
+    float3 prevWorld3 = mul(pc.prevModel, float4(IN.position, 1.0)).xyz;
+    float4 prevWorld = float4(prevWorld3, 1.0);
     OUT.prevClip = mul(frame.prevViewProj, prevWorld);
 
     // uv passes through for the FS alpha test (MASK cutout).

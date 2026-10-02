@@ -38,6 +38,14 @@ struct PSOut
 static const float PI = 3.14159265359f;
 
 // -------------------------------------------------------------------------
+// Nsight diagnostic switch: compile the entire baked-GI family out to test
+// register pressure / local-memory spills. Set to 0 to restore production GI.
+// -------------------------------------------------------------------------
+#ifndef TEST_DISABLE_BAKED_GI
+#define TEST_DISABLE_BAKED_GI 1
+#endif
+
+// -------------------------------------------------------------------------
 // PBR helpers – Cook-Torrance microfacet
 // -------------------------------------------------------------------------
 
@@ -169,7 +177,7 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     // cone; modulates the light color (diffuse + specular).
     if (pl.type == 1 && pl.cookieIndex >= 0)
     {
-        uint cookieIdx = NonUniformResourceIndex((uint)pl.cookieIndex);
+        uint cookieIdx = NonUniformResourceIndex((uint) pl.cookieIndex);
         plColor *= textures[cookieIdx].Sample(samplers[0], spotUV).rgb;
     }
 
@@ -178,9 +186,9 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     // Uses the engine-globals clock (globals.hlsli g_time()).
     if (pl.functionType > 0)
     {
-        plColor *= EvaluateLightFunction(
+plColor *= EvaluateLightFunction(
             pl.functionType, pl.functionSpeed, pl.functionScale,
-            g_time(), spotUV, pl.type == 1);
+            g_time(pc.frameHot.Get().time), spotUV, pl.type == 1);
     }
 
     // Shadow factor: inline spot-atlas sample (legacy path) or the
@@ -195,7 +203,7 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
         if (evsm != 0u && pl.shadowMapIndex >= 0)
             shadowFactor = GetSpotShadowFactorEvsmFromPC(0, worldPos, geomN,
                 pl.direction, pl.outerAngle, pl.shadowTile,
-                (uint)pl.shadowMapIndex, EVSM_EXPONENT, pix);
+                (uint) pl.shadowMapIndex, EVSM_EXPONENT, pix);
         else
             // PCF depth atlas: manual SampleLevel(samplers[]) compare, so a
             // regular sampler (0) — never the comparison sampler (1).
@@ -241,22 +249,22 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
 
     // Hoist buffer pointers out of the loop — keeps descriptors in registers,
     // avoids repeated address calculations, reduces register pressure.
-    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIdxBuf = frame.decalTileIndices;
-    vk::BufferPointer<ForwardPlusDecalBuffer> decalBuf = frame.decals;
+    vk::BufferPointer < ForwardPlusDecalTileIndexBuffer > decalTileIdxBuf = frame.decalTileIndices;
+    vk::BufferPointer < ForwardPlusDecalBuffer > decalBuf = frame.decals;
 
     // Tile lookup (same 16px tiling as the forward+ light lists).
     uint fpTileSizeD = max(pc.fpTileSize, 1u);
-    uint tx = (uint)(pix.x / (float)fpTileSizeD);
-    uint ty = (uint)(pix.y / (float)fpTileSizeD);
+    uint tx = (uint) (pix.x / (float) fpTileSizeD);
+    uint ty = (uint) (pix.y / (float) fpTileSizeD);
     if (tx >= pc.fpTileCountX)
         return;
     uint tileIdx = ty * pc.fpTileCountX + tx;
-    if (tileIdx >= (uint)MAX_FP_TILES)
+    if (tileIdx >= (uint) MAX_FP_TILES)
         return;
 
-    const uint perTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
+    const uint perTile = min(frame.decalMaxPerTile, (uint) MAX_FP_DECALS_PER_TILE);
     const uint stride = max(frame.decalMaxPerTile, 1u);
-    const uint listCount = min(decalTileIdxBuf.Get().counts[tileIdx], perTile);
+    const uint listCount = min(frame.decalTileCounts.Get().counts[tileIdx], perTile);
 
     [loop]
     for (uint s = 0u; s < listCount; ++s)
@@ -290,7 +298,7 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
         float4 albedoS = float4(1.0f, 1.0f, 1.0f, 1.0f);
         if (D.material.x >= 0)
         {
-            albedoS = textures[NonUniformResourceIndex((uint)D.material.x)]
+            albedoS = textures[NonUniformResourceIndex((uint) D.material.x)]
                 .Sample(samplers[0], uv);
         }
         const float a = saturate(albedoS.a) * saturate(D.color.a) * faceFade * depthFade;
@@ -311,7 +319,7 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
         {
             // Tangent-space map through the decal's world basis (Z
             // reconstructed on the unit sphere like engine normal maps).
-            float2 mapXY = textures[NonUniformResourceIndex((uint)D.material.y)]
+            float2 mapXY = textures[NonUniformResourceIndex((uint) D.material.y)]
                 .Sample(samplers[0], uv).xy * 2.0f - 1.0f;
             mapXY *= D.params.x;
             float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
@@ -376,26 +384,26 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // (Layered: factors blend below; indices are per-layer.)
     // ---------------------------------------------------------------
     int baseColorIdx = mat.tex.x;
-    int mrIdx        = mat.tex.y;
-    int normalIdx    = mat.tex.z;
-    int occIdx       = mat.tex.w;
-    int emissiveIdx  = mat.tex2.x;
+    int mrIdx = mat.tex.y;
+    int normalIdx = mat.tex.z;
+    int occIdx = mat.tex.w;
+    int emissiveIdx = mat.tex2.x;
 
-    float alphaCutoff      = mat.params.x;
-    float metallicFactor   = layered
+    float alphaCutoff = mat.params.x;
+    float metallicFactor = layered
         ? ml0.params.y * layerW.x + ml1.params.y * layerW.y
         + ml2.params.y * layerW.z + ml3.params.y * layerW.w
         : mat.params.y;
-    float roughnessFactor  = layered
+    float roughnessFactor = layered
         ? ml0.params.z * layerW.x + ml1.params.z * layerW.y
         + ml2.params.z * layerW.z + ml3.params.z * layerW.w
         : mat.params.z;
-    float shadingModelF    = mat.params.w;
-    float occlusionStrength= layered
+    float shadingModelF = mat.params.w;
+    float occlusionStrength = layered
         ? ml0.params2.x * layerW.x + ml1.params2.x * layerW.y
         + ml2.params2.x * layerW.z + ml3.params2.x * layerW.w
         : mat.params2.x;
-    float normalScale      = layered
+    float normalScale = layered
         ? ml0.params2.y * layerW.x + ml1.params2.y * layerW.y
         + ml2.params2.y * layerW.z + ml3.params2.y * layerW.w
         : mat.params2.y;
@@ -408,11 +416,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         ? ml0.diffuse.rgb * layerW.x + ml1.diffuse.rgb * layerW.y
         + ml2.diffuse.rgb * layerW.z + ml3.diffuse.rgb * layerW.w
         : mat.diffuse.rgb;
-    float  baseAlphaFactor = layered
+    float baseAlphaFactor = layered
         ? ml0.diffuse.a * layerW.x + ml1.diffuse.a * layerW.y
         + ml2.diffuse.a * layerW.z + ml3.diffuse.a * layerW.w
         : mat.diffuse.a;
-    float3 emissiveFactor  = layered
+    float3 emissiveFactor = layered
         ? ml0.emissiveFactor.rgb * layerW.x + ml1.emissiveFactor.rgb * layerW.y
         + ml2.emissiveFactor.rgb * layerW.z + ml3.emissiveFactor.rgb * layerW.w
         : mat.emissiveFactor.rgb;
@@ -420,13 +428,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // ---------------------------------------------------------------
     // Sample baseColor / alpha (blended across layers when layered)
     // ---------------------------------------------------------------
-    float4 baseSample = float4(1,1,1,1);
+    float4 baseSample = float4(1, 1, 1, 1);
     if (!layered && baseColorIdx >= 0)
     {
-        uint slot = (uint)baseColorIdx;
+        uint slot = (uint) baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
     }
     if (layered)
     {
@@ -442,10 +450,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             float4 s = float4(1, 1, 1, 1);
             if (idx >= 0)
             {
-                uint slot = (uint)idx;
+                uint slot = (uint) idx;
                 Texture2D t = textures[NonUniformResourceIndex(slot)];
                 s = t.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             baseSample += s * w;
         }
@@ -454,7 +462,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // (layered: vertex color already consumed as weights, tint stays white).
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
-    float  baseAlpha = baseAlphaFactor * baseSample.a;
+    float baseAlpha = baseAlphaFactor * baseSample.a;
 
 #if defined(ALPHA_TO_COVERAGE)
     // A2C variant: NO discard anywhere in the module (OpKill disables the
@@ -490,13 +498,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float roughness = roughnessFactor;
     if (!layered && mrIdx >= 0)
     {
-        uint slot = (uint)mrIdx;
+        uint slot = (uint) mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
         float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         // Spec says: roughness = G * factor, metallic = B * factor
         roughness *= mrSample.g;
-        metallic  *= mrSample.b;
+        metallic *= mrSample.b;
     }
     if (layered)
     {
@@ -513,10 +521,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             float2 gb = float2(1.0f, 1.0f);
             if (idx >= 0)
             {
-                uint slot = (uint)idx;
+                uint slot = (uint) idx;
                 Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
                 float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
                 gb = mrSample.gb;
             }
             roughMult += gb.x * w;
@@ -551,8 +559,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         float3 T = IN.tangent.xyz;
         float3 Tg = T - N * dot(N, T);
         float tgLen = length(Tg);
-        if (tgLen > 1e-6f) { T = Tg / tgLen; }
-        else {
+        if (tgLen > 1e-6f)
+        {
+            T = Tg / tgLen;
+        }
+        else
+        {
             // Fallback: any axis non-parallel to N gives a valid frame.
             // N is unit here, so cross() is safely non-zero.
             float3 axis = abs(N.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
@@ -566,10 +578,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         tw = (tw == 0.0f || isnan(tw)) ? 1.0f : sign(tw);
         float3 B = cross(N, T) * tw;
 
-        float2 mapXY = textures[NonUniformResourceIndex((uint)normalIdx)]
+        float2 mapXY = textures[NonUniformResourceIndex((uint) normalIdx)]
             .Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
-        TS_ReportUsage((uint)normalIdx,
-            textures[NonUniformResourceIndex((uint)normalIdx)], samplers[0], IN.uv, clipPos.xy);
+TS_ReportUsage((uint) normalIdx,
+            textures[NonUniformResourceIndex((uint) normalIdx)], samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
 
         // glTF normalTexture.scale applies to XY.
         mapXY *= normalScale;
@@ -595,8 +607,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         float3 T = IN.tangent.xyz;
         float3 Tg = T - N * dot(N, T);
         float tgLen = length(Tg);
-        if (tgLen > 1e-6f) { T = Tg / tgLen; }
-        else {
+        if (tgLen > 1e-6f)
+        {
+            T = Tg / tgLen;
+        }
+        else
+        {
             float3 axis = abs(N.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
             T = normalize(cross(axis, N));
         }
@@ -616,10 +632,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             float3 mapN = float3(0.0f, 0.0f, 1.0f);
             if (idx >= 0)
             {
-                uint slot = (uint)idx;
+                uint slot = (uint) idx;
                 Texture2D nTex = textures[NonUniformResourceIndex(slot)];
                 float2 mapXY = nTex.Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
-                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
                 mapXY *= normalScale;
                 float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
                 mapN = float3(mapXY, mapZ);
@@ -641,10 +657,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float occlusion = 1.0f;
     if (!layered && occIdx >= 0)
     {
-        uint slot = (uint)occIdx;
+        uint slot = (uint) occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
         float occSample = occTex.Sample(samplers[0], IN.uv).r;
-        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
     if (layered)
@@ -661,10 +677,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             float s = 1.0f;
             if (idx >= 0)
             {
-                uint slot = (uint)idx;
+                uint slot = (uint) idx;
                 Texture2D occTex = textures[NonUniformResourceIndex(slot)];
                 s = occTex.Sample(samplers[0], IN.uv).r;
-                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             occAcc += s * w;
         }
@@ -677,10 +693,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 emissive = emissiveFactor * emissiveStrength;
     if (!layered && emissiveIdx >= 0)
     {
-        uint slot = (uint)emissiveIdx;
+        uint slot = (uint) emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         emissive *= eSample;
     }
     if (layered)
@@ -697,10 +713,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             float3 s = float3(1.0f, 1.0f, 1.0f);
             if (idx >= 0)
             {
-                uint slot = (uint)idx;
+                uint slot = (uint) idx;
                 Texture2D eTex = textures[NonUniformResourceIndex(slot)];
                 s = eTex.Sample(samplers[0], IN.uv).rgb;
-                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy);
+                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             eAcc += s * w;
         }
@@ -729,14 +745,14 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         // Clamp to finite half range: the RGBA16F target rounds anything
         // above 65504 to +inf (specular x lux-scale intensity overflows),
         // and inf texels NaN the bloom/tonemap chain.
-    #if defined(ALPHA_TO_COVERAGE)
+#if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);
     // above-cutoff scales into partial coverage for AA'd silhouettes.
     OUT.outColor = float4(SanitizeHdr(color),
         saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)));
 #else
-    OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
+        OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
 #endif
         return OUT;
     }
@@ -796,7 +812,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             uint evsm = hot.evsmMode;
             if (evsm != 0u)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
-                    (uint)light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
+                    (uint) light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
             else
                 // PCF depth atlas: manual SampleLevel(samplers[]) compare, so
                 // a regular sampler (0) — never the comparison sampler (1).
@@ -846,27 +862,27 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // in the lighting pass. Legacy inline spot-shadow path removed.
     // Directional light + CSM above is separate.
     // ---------------------------------------------------------------
-    const uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
+    const uint nlights = min(pc.fpLightCount, (uint) MAX_FP_LIGHTS);
     
     // Hoist buffer pointers — keeps descriptors in registers, reduces
     // address calculation overhead inside the hot loops.
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLightsBuf = pc.fpLights;
+    vk::BufferPointer < ForwardPlusLightBuffer > fpLightsBuf = pc.fpLights;
 
     if (hot.dsEnabled != 0u && hot.dsTileCountX > 0u)
     {
-        const uint2 pix = (uint2)clipPos.xy;
-        if (pix.x < (uint)hot.viewportSize.x && pix.y < (uint)hot.viewportSize.y)
+        const uint2 pix = (uint2) clipPos.xy;
+        if (pix.x < (uint) hot.viewportSize.x && pix.y < (uint) hot.viewportSize.y)
         {
             const uint tileIdx = (pix.y >> 3) * hot.dsTileCountX + (pix.x >> 3);
             const uint2 st = uint2(
                 frame.dsTileState.Get().states[tileIdx * 4u],
                 min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
-                    (uint)DS_MAX_LIGHTS_PER_TILE));
+                    (uint) DS_MAX_LIGHTS_PER_TILE));
             // Pixel index inside the Shadow Tile (phase-4 byte mapping).
             const uint localIdx = (pix.x & 7u) + (pix.y & 7u) * 8u;
             for (uint i = 0u; i < st.y; ++i)
             {
-                if (st.x + i >= (uint)DS_MAX_LIST_UINTS)
+                if (st.x + i >= (uint) DS_MAX_LIST_UINTS)
                     break; // saturated/invalid slot: nothing valid follows
                 const uint entry = frame.dsLightList.Get().entries[st.x + i];
                 const uint li = entry & 0x3FFu;
@@ -929,180 +945,142 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     uint specTileIdx = 0xffffffffu;
     {
         uint specTs = max(pc.fpTileSize, 1u);
-        uint stx = (uint)(clipPos.x / (float)specTs);
-        uint sty = (uint)(clipPos.y / (float)specTs);
+        uint stx = (uint) (clipPos.x / (float) specTs);
+        uint sty = (uint) (clipPos.y / (float) specTs);
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
     float3 envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
         pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion * ao;
-    float envVis = 1.0f;
+float envVis = 1.0f;
     float3 ambientSpec = envSpec;
 
-    // ---------------------------------------------------------------
-    // Baked ambient. Since the probes-only GI pivot the production
-    // path is STACKED PROBE FIELDS (lightmaps are deprecated: the
-    // cook no longer produces them; the branch below stays for
-    // already-cooked content):
-    //   1. (legacy) STATIC draws with cooked chart uvs sample the 2D
-    //      SG lightmap atlas.
-    //   2. (legacy) dynamic draws inside an artist OBB sample the
-    //      regular 3D probe grids (.sgrv content).
-    //   3. THE path: the sparse octree world field is sampled
-    //      INDEPENDENTLY, then authored convex probe volumes
-    //      (BO3-style cubemap-reprojection grids, .cvol) composite
-    //      over it by ordered priority:
-    //          E = octree-or-sky base
-    //          for v in volumes (low -> high priority):
-    //              E = lerp(E, E_volume, v.Weight(P))
-    //      A shading point samples each density level on its own;
-    //      levels never share interpolation neighbors (that creates
-    //      resolution-dependent gradients where supports change
-    //      abruptly), and the per-plane fades blend through
-    //      doorways/openings — never through walls.
-    // All sources carry the same baked field (sky + sun + static
-    // spots, real materials). The analytic sky IBL is the FALLBACK
-    // for pixels no baked source covers (below) — never an additive
-    // base on covered pixels; it is also the BLEND BASE where a
-    // partially-covering volume fades over uncovered space.
-    // ---------------------------------------------------------------
-    uint giSource = 0u;            // 0 = none, 1 = lightmap, 2 = grid, 3 = probes
-    float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)
-    const uint giDbgMode = frame.giDebug & 0xffu;
+    // Common GI variables (declared once, assigned per permutation)
+    uint giSource = 0u;
+    float3 bakedE = float3(0.0f, 0.0f, 0.0f);
+    uint giDbgMode = 0u;
 
-    // IN.lmChunk = cooked lobe count (5/6/9/12; 0xFFFFFFFF = none).
-    // Transmissive (AlphaMode::Blend) materials sample no baked DIFFUSE:
-    // glass has no diffuse lobe, and shading one as if opaque (albedo/PI
-    // * E, then alpha-blended) makes every probe-lit pane glow. The
-    // sources are still resolved (giSource/bakedE drive the debug views)
-    // and their SPECULAR below still applies; only the diffuse add is
-    // skipped so Blend pixels keep transmitted background + reflections.
-    if (frame.lmEnabled != 0u && IN.lmChunk >= 5u && IN.lmChunk <= 12u)
+    // ---------------------------------------------------------------
+    // GI permutations (set via SPEC_GI_VARIANT specialization constant):
+    //   GI_NONE   (0): No baked GI, sky IBL fallback only
+    //   GI_OCTREE (1): Sparse octree world field (SgGiSample)
+    //   GI_REGULAR (2): Regular 3D probe grids (SgRegularSampleFrame)
+    //   GI_FULL   (3): Octree + Convex volumes (volumes override at weight >= 1)
+    // ---------------------------------------------------------------
+#if defined(GI_NONE)
+    // No baked GI - pure sky IBL fallback
+    if (!isBlendMat)
     {
-        float3 lmAmps[SG_LM_MAX_LOBES];
-        if (SgLmSampleAtlas(frame, IN.lmChunk, IN.lightmapUv, lmAmps))
+        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+    }
+    // giSource, bakedE, giDbgMode already initialized to 0
+    // envVis, ambientSpec already set to defaults above
+
+#elif defined(GI_OCTREE)
+    // Sparse octree world field only
+    giDbgMode = frame.giDebug & 0xffu;
+    const float giScale = max(frame.giIntensity, 0.0f);
+
+    if (frame.giEnabled != 0u)
+    {
+        float3 octAmps[SG_GI_LOBES];
+        float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
+        bool octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
+        if (octreeCovered)
         {
-            const uint lmLobes = IN.lmChunk;
-            const float lmScale = max(frame.giIntensity, 0.0f);
-            // Lightmap evaluation uses the GEOMETRIC normal (geomN),
-            // never the normal-mapped N: the amplitudes were fit
-            // per-texel for the surface's own orientation, and the SG
-            // reconstruction is only constrained around that
-            // hemisphere — per-pixel normal-map tilts read it in
-            // poorly-constrained directions and present flat surfaces
-            // as curved/domed. Normal maps stay in force for the
-            // direct sun/spot terms and the env specular below.
-            const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, geomN) * lmScale;
-            giSource = 1u;
-            bakedE = lmE;
-            // Spec occlusion from the baked field (same normal the
-            // lightmap was fit for): gold trim under roofs must not
-            // mirror the sunlit courtyard it cannot see.
-            envVis = SpecularOcclusionFromGI(lmE, lmScale, geomN, frame.env);
+            const float3 E = SgGiDiffuseIrradiance(octAmps, N) * giScale;
+            giSource = 3u;
+            bakedE = E;
+            envVis = SpecularOcclusionFromGI(E, giScale, N, frame.env);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
-                ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
-            const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
-            if (lmRoughW > 0.0f)
+                ambient += kD * baseColor * (E / PI) * occlusion * ao;
+            // Octree SG specular (high crossover 0.45)
+            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
+            if (roughW > 0.0f)
             {
-                // Reflection-SG specular (SgGiSpecular's model): anchored
-                // to the GEOMETRIC normal like the diffuse above (the SG
-                // reconstruction is only constrained around the surface
-                // orientation the amplitudes were fit for), Fresnel
-                // applied once here instead of per-lobe. The roughness
-                // early-out keeps smooth surfaces on the env cubemap.
-                const float3 Rlm = reflect(-V, geomN);
-                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, Rlm,
-                    shadingRoughness) * lmScale * Fenv * occlusion * ao;
-                ambientSpec = lerp(ambientSpec, lmSpec, lmRoughW);
+                const float3 giSpecular =
+                    SgGiSpecular(octAmps, R, shadingRoughness) * giScale
+                    * Fenv * occlusion * ao;
+                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
             }
         }
     }
-    if (giSource == 0u && frame.regEnabled != 0u)
+
+#elif defined(GI_REGULAR)
+    // Regular 3D probe grids (artist OBBs)
+    giDbgMode = frame.giDebug & 0xffu;
+    const float giScale = max(frame.giIntensity, 0.0f);
+
+    if (frame.regEnabled != 0u)
     {
         float3 regAmps[SG_GI_LOBES];
         if (SgRegularSampleFrame(frame, IN.worldPos, regAmps))
         {
-            const float regScale = max(frame.giIntensity, 0.0f);
-            const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * regScale;
+            const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * giScale;
             giSource = 2u;
             bakedE = regE;
-            envVis = SpecularOcclusionFromGI(regE, regScale, N, frame.env);
+            envVis = SpecularOcclusionFromGI(regE, giScale, N, frame.env);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (regE / PI) * occlusion * ao;
-            // Grid/volume SG specular crossover is deliberately HIGH
-            // (0.45, vs the lightmap's 0.15): these lobes are ambient-
-            // resolution fits (~30 degree blobs) with the sun smeared
-            // across a whole lobe, so their specular estimate grossly
-            // over-blurs the sun for anything smoother than genuinely
-            // rough — a chrome ball's rim lit like a searchlight. The
-            // GGX-prefiltered cubemap owns smooth + mid; the SG owns
-            // rough glow only.
+            // Grid/volume SG specular crossover (0.45)
             const float regRoughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (regRoughW > 0.0f)
             {
                 const float3 regSpec = SgGiSpecular(regAmps, R, shadingRoughness)
-                    * regScale * Fenv * occlusion * ao;
+                    * giScale * Fenv * occlusion * ao;
                 ambientSpec = lerp(ambientSpec, regSpec, regRoughW);
             }
         }
     }
-    if (giSource == 0u && (frame.giEnabled != 0u || frame.cvolEnabled != 0u))
+
+#elif defined(GI_FULL)
+    // Full stacked GI: Octree base + Convex volumes (override at weight >= 1)
+    giDbgMode = frame.giDebug & 0xffu;
+    const float giScale = max(frame.giIntensity, 0.0f);
+    // envVis, ambientSpec already set to defaults above
+    float3 E;
+    float3 specAmps[SG_GI_LOBES];
+    bool covered = false;
+    uint volHits = 0u;
+
+    // FULL-COVER FAST PATH: volume with weight == 1 owns the pixel
+    const uint fullVol = SgCvFullVolumeIndex(frame, IN.worldPos);
+    if (fullVol != 0xFFFFFFFFu)
     {
-        const float giScale = max(frame.giIntensity, 0.0f);
-        float3 E;
-        float3 specAmps[SG_GI_LOBES];
-        bool covered = false;
-        uint volHits = 0u;
-        // FULL-COVER FAST PATH: when the highest-priority volume owns
-        // the pixel (weight == 1 on every plane), the ordered lerp
-        // discards every earlier sample — the 100k-probe-class octree
-        // gather included. The weight pass is plane math only (no
-        // texture taps), so deep-inside pixels pay ONE volume sample
-        // (7 trilinear taps) instead of the octree walk + blends.
-        const uint fullVol = SgCvFullVolumeIndex(frame, IN.worldPos);
-        if (fullVol != 0xFFFFFFFFu)
-        {
-            float3 volAmps[SG_GI_LOBES];
-            SgCvSampleVolume(frame, fullVol, IN.worldPos, volAmps);
-            E = SgGiDiffuseIrradiance(volAmps, N);
-            [unroll]
-            for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
-                specAmps[sB] = volAmps[sB];
-            covered = true;
-            volHits = 1u;
-        }
-        else
-        {
-        // World field: sparse octree, sampled on its own.
+        float3 volAmps[SG_GI_LOBES];
+        SgCvSampleVolume(frame, fullVol, IN.worldPos, volAmps);
+        E = SgGiDiffuseIrradiance(volAmps, N);
+        [unroll]
+        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
+            specAmps[sB] = volAmps[sB];
+        covered = true;
+        volHits = 1u;
+    }
+    else
+    {
+        // Octree base
         float3 octAmps[SG_GI_LOBES];
         float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
         bool octreeCovered = false;
         if (frame.giEnabled != 0u)
             octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
-        // Irradiance-space blend chain. The base is the analytic sky —
-        // the universal fallback — so a volume fading in over
-        // uncovered outdoor space transitions through the sky instead of
-        // through garbage; a fully-inside pixel (w -> 1) takes the
-        // volume's field alone.
+
+        // Irradiance-space blend chain: base = analytic sky
         E = irradiance;
         covered = octreeCovered;
         if (octreeCovered)
             E = SgGiDiffuseIrradiance(octAmps, N);
-        // Amp-space twin of the chain for the rough-glossy SG specular
-        // (both evaluations are linear in the amplitudes, so amp-space
-        // and irradiance-space lerps agree). The sky has no SG
-        // representation: while only volumes cover, the current volume's
-        // amplitudes are the best available specular field; once the
-        // octree covers, the chain lerps normally.
+
+        // Amp-space twin for specular
         [unroll]
         for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
             specAmps[sA] = octreeCovered ? octAmps[sA] : float3(0.0, 0.0, 0.0);
+
+        // Convex volumes composited over (ordered low->high priority)
         if (frame.cvolEnabled != 0u)
         {
-            // App uploads priority-sorted (low first): later volumes
-            // override earlier ones — the FOX override-volume rule.
             const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
             [loop]
             for (uint v = 0; v < volCount; ++v)
@@ -1132,34 +1110,27 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 }
             }
         }
-        }
-        if (covered)
+    }
+
+    if (covered)
+    {
+        const float3 giE = E * giScale;
+        giSource = (volHits > 0u) ? 4u : 3u;
+        bakedE = giE;
+        envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
+        ambientSpec = envSpec * envVis;
+        if (!isBlendMat)
+            ambient += kD * baseColor * (giE / PI) * occlusion * ao;
+        const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
+        if (roughW > 0.0f)
         {
-            const float3 giE = E * giScale;
-            giSource = (volHits > 0u) ? 4u : 3u;
-            bakedE = giE;
-            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
-            ambientSpec = envSpec * envVis;
-            // Same convention as the direct sun term: albedo/PI * E.
-            // Skipped for Blend (see above): probe diffuse on glass reads
-            // as emissive glow once alpha-blended over the background.
-            if (!isBlendMat)
-                ambient += kD * baseColor * (giE / PI) * occlusion * ao;
-            // Same high crossover as the regular grids (0.45): the
-            // volume/octree lobes are ambient-resolution fits — the sun
-            // rides them as a broad smear, so anything smoother than
-            // genuinely rough keeps the prefiltered cubemap. The
-            // per-texel lightmap fit keeps its own lower crossover.
-            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
-            if (roughW > 0.0f)
-            {
-                const float3 giSpecular =
-                    SgGiSpecular(specAmps, R, shadingRoughness) * giScale
-                    * Fenv * occlusion * ao;
-                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
-            }
+            const float3 giSpecular =
+                SgGiSpecular(specAmps, R, shadingRoughness) * giScale
+                * Fenv * occlusion * ao;
+            ambientSpec = lerp(ambientSpec, giSpecular, roughW);
         }
     }
+#endif // GI permutations
 
     // ---------------------------------------------------------------
     // Sky IBL fallback: pixels no baked source covered take the
@@ -1186,6 +1157,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // disagreement heat, ...) are gone — bake-side analysis belongs to
     // GiBaker --analyze.
     // ---------------------------------------------------------------
+#if !defined(GI_NONE)
     if (giDbgMode != 0u)
     {
         if (giSource == 0u)
@@ -1207,6 +1179,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
         return OUT;
     }
+#endif
 
     float3 color = direct + ambient + ambientSpec;
     color = color * occlusion; // re-apply for direct as well per spec (optional)

@@ -6,6 +6,15 @@
 #define MAX_LIGHTS 64
 #define MAX_MATERIALS 4096
 
+// Specialization constant IDs (driver will constant-fold these)
+// Must match CPU-side pipeline creation (App::CreatePipelines)
+#define SPEC_GI_DEBUG_MODE   0  // giDebug mode: 0=off, 1=flat irradiance, 2=source palette
+#define SPEC_EVSM_MODE       1  // 0=PCF depth, 1=EVSM moments
+#define SPEC_SSR_ENABLED     2  // 0=disable SSR, 1=enable SSR
+#define SPEC_GI_INTENSITY    3  // intensity scale (float, driver promotes to constant)
+
+#define SPEC_GI_VARIANT     10  // GI variant: 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
+
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
 
@@ -348,9 +357,9 @@ struct FramePSHot
     float  fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
     float  giIntensity;      // 68
     uint   giDebug;          // 72
-    uint   lmEnabled;        // 76
+    uint   textureFeedbackEnabled; // 76 (1 in 4 frames for TS_ReportUsage)
     uint   cvolEnabled;      // 80
-    uint   pad_[3];          // 84 -> 96 (16-byte aligned total)
+    uint   pad_[2];          // 84 -> 96 (16-byte aligned total)
 };
 
 // Moved below the Forward+ light structs so it can carry typed pointers
@@ -358,7 +367,7 @@ struct FramePSHot
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
 // there): env at 512, cubemap block at 640, specular knobs at 656,
 // deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
-// decal fields at 752, lightmap fields at 784, regular-volume fields at
+// decal fields at 752, lightmap fields deprecated, regular-volume fields at
 // 848; visualizer fields (DS_DEBUG_VIZ only) follow at 1104.
 struct FrameUniforms
 {
@@ -454,9 +463,9 @@ struct FrameUniforms
     vk::BufferPointer<ForwardPlusDecalBuffer> decals;        // 752
     vk::BufferPointer<ForwardPlusDecalTileCountBuffer> decalTileCounts; // 760
     vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 768
-    uint decalCount;                                         // 776 0 = decals off
+uint decalCount;                                         // 776 0 = decals off
     uint decalMaxPerTile;                                    // 780 list stride
-    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h).
+#if 0 // Lightmaps deprecated - SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h).
     // The atlas layers ride the bindless Texture2D array; the atlas-space
     // UVs are COOKED into the mesh's texCoord2 and the lobe count rides
     // the draw ring — no chunk buffer exists. Static/dynamic separation:
@@ -467,9 +476,10 @@ struct FrameUniforms
     // layer h/4), 1 = BC6H one-texture-per-lobe (12 slots, texture l =
     // lobe l, .rgb = the amplitude). ----
     uint lmLayers[12];                                       // 784 atlas bindless slots
-uint lmEnabled;                                          // 832 1 = lightmap branch active
+    uint lmEnabled;                                          // 832 1 = lightmap branch active
     uint lmLayerKind;                                        // 836 0 = RGBA16F stream, 1 = BC6H per-lobe
     uint2 lmPad;                                              // 840 (align regObbs to 8)
+#endif
     // ---- SG regular 3D probe volumes (DYNAMIC objects; Ready-at-Dawn
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
@@ -557,6 +567,9 @@ struct PushConstants
     // above): 0 = dithered screen-door (default, opaque state), 1 = classic
     // alpha blend. Must match App/push_constants.h pad_pc.
     uint pad_pc;
+    // Texture streaming feedback frame (1 in 4 frames).
+    // Replaces g_frameIndex() & 3u check in shader.
+    uint textureFeedbackEnabled;
     // RenderView system (see renderview.hlsli): per-frame virtual cameras
     // (main game camera + one view per shadow cascade / spot tile / custom
     // pass). mainRenderView indexes the game camera view; renderViewIndex
@@ -566,9 +579,19 @@ struct PushConstants
     renderViews;
     uint mainRenderView;
     uint renderViewIndex;
-    // Motion vector pass: last frame's model matrix per draw (192..255).
-    float4x4 prevModel;
+    // Motion vector pass: last frame's model matrix per draw as float3x4 (208..256).
+	// Last row (0,0,0,1) is implied. 12 floats = 48 bytes. The CPU pack
+	// (world_renderer.cpp) stores matrix COLUMNS (glm columns xyz +
+	// translation), matching the SPV RowMajor/stride-12 v4 x M lowering.
+	float3x4 prevModel;
 };
+
+// Specialization constants (driver constant-folds these per permutation)
+[[vk::spec_constant(SPEC_GI_DEBUG_MODE)]]   uint giDebugMode;
+[[vk::spec_constant(SPEC_EVSM_MODE)]]       uint evsmMode;
+[[vk::spec_constant(SPEC_SSR_ENABLED)]]     uint ssrEnabled;
+[[vk::spec_constant(SPEC_GI_INTENSITY)]]    float giIntensity;
+[[vk::spec_constant(SPEC_GI_VARIANT)]]      uint giVariant;
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push

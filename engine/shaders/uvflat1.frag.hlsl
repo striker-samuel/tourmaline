@@ -1,7 +1,7 @@
 // Flat UV (lightmap) fragment: sample lobe 0 of the baked lightmap
 // atlas at the unwrapped atlas uv — the "chart layout over baked
 // content" view. Same Reinhard + gamma display mapping as the F8 baked
-// debug (the editor renders LDR direct).
+// debug (the editor renders LDR direct). LIGHTMAPS DEPRECATED.
 #include "common.hlsli"
 
 struct PSIn
@@ -24,6 +24,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
+#if 0 // Lightmaps deprecated
     FrameUniforms frame = pc.frameUniforms.Get();
     float3 irr = textures[NonUniformResourceIndex(frame.lmLayers[0])]
         .Sample(samplers[0], IN.lightmapUv).rgb;
@@ -33,5 +34,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     c = pow(max(c, 0.0f), 1.0f / 2.2f);
 
     OUT.outColor = float4(SanitizeHdr(c), 1.0);
+#else
+    OUT.outColor = float4(0.0f, 0.0f, 0.0f, 1.0f);
+#endif
     return OUT;
 }
