@@ -129,7 +129,7 @@ float3 LinearToSRGB(float3 c)
 void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float3 geomN, float3 N, float3 V, float3 F0, float roughness,
     float3 diffuse, float NdotV, bool useInlineShadow, float vis,
-    float2 pix, inout float3 direct)
+    float2 pix, float time, inout float3 direct)
 {
     // Cheapest reject first: squared distance vs squared range.
     // No sqrt / division until the light survives this test.
@@ -183,12 +183,12 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
 
     // Light function: procedural per-light intensity curve
     // (flicker / pulse / cone bands).
-    // Uses the engine-globals clock (globals.hlsli g_time()).
+    // Uses the frame clock (passed in — FramePSHot::time via mainPS's hot).
     if (pl.functionType > 0)
     {
 plColor *= EvaluateLightFunction(
             pl.functionType, pl.functionSpeed, pl.functionScale,
-            g_time(pc.frameHot.Get().time), spotUV, pl.type == 1);
+            g_time(time), spotUV, pl.type == 1);
     }
 
     // Shadow factor: inline spot-atlas sample (legacy path) or the
@@ -340,6 +340,13 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
 PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
+
+    // Frame data up front: the hot slab is reached through FrameUniforms
+    // (frame.frameHot — a pc member shifted every sub-192 pc field and
+    // broke the direct-VS mirrors; see App/push_constants.h). The spot
+    // cookie eval below needs hot.time, the tail needs both.
+    FrameUniforms frame = pc.frameUniforms.Get();
+    FramePSHot hot = frame.frameHot.Get();
 
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
@@ -760,11 +767,8 @@ TS_ReportUsage((uint) normalIdx,
     // ---------------------------------------------------------------
     // PBR lighting – directional light + ambient
     // ---------------------------------------------------------------
-    // Load hot frame data (frequently used scalars) — short live range,
-    // low register pressure. Cold data (env, GI, decals, etc.) stays in
-    // FrameUniforms and is loaded on-demand via pc.frameUniforms.Get().
-    FramePSHot hot = pc.frameHot.Get();
-    FrameUniforms frame = pc.frameUniforms.Get();
+    // Frame data was loaded up front (frame/hot hoisted at the top of
+    // mainPS — the spot cookie eval needs hot.time before this point).
 
     // ---------------------------------------------------------------
     // Forward+ tiled decals (projected splats; per-tile lists written
@@ -894,7 +898,7 @@ TS_ReportUsage((uint) normalIdx,
                     continue;
                 EvaluateForwardPlusLight(fpLightsBuf.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
-                    false, vis, clipPos.xy, direct);
+                    false, vis, clipPos.xy, hot.time, direct);
             }
         }
     }

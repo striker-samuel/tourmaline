@@ -3,8 +3,8 @@
 // Engine globals - shader-side interface for per-frame global variables.
 //
 // REMOVED: g_engineGlobals StructuredBuffer (was binding 3, set 0).
-// REPLACED: Frame constants moved to FramePSHot / PushConstants.
-//   - time, deltaTime, fps: now in FramePSHot (via pc.frameHot.Get())
+// REPLACED: Frame constants moved to FramePSHot / FrameUniforms.
+//   - time, deltaTime, fps: now in FramePSHot (via FrameUniforms::frameHot.Get())
 //   - frameIndex: removed; texture streaming uses textureFeedbackEnabled flag
 //   - g_frameIndex() removed; use pc.textureFeedbackEnabled instead
 // ---------------------------------------------------------------------------

@@ -228,7 +228,10 @@ namespace smvk {
 		struct CoreConfiguration {
 			VulkanVersion version_ = VK_1_3;
 			const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation", };
-			const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+			const std::vector<const char*> deviceExtensions = {
+				VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+				VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
+			};
 			const std::vector<const char*> instanceExtensions = {};
 		} config_;
 

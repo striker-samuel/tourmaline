@@ -504,21 +504,35 @@ struct FrameUniforms
 	// active OBB count; the shader's loop bound is min(regCount, MAX_REG).
 	// regEnabled flips the default_lit ambient between the OBB field and
 	// the lightmap branch (which itself may be off). ----
-	uint64_t regObbs = 0;       // 848 SgRegularObbGpu array (56 B each)
-	uint32_t regLayers[56] = {};    // 856 8 volumes x 7 layer slots
-	uint32_t regCount = 0;      // 1080 active OBB count
-	uint32_t regEnabled = 0;    // 1084 1 = OBB branch active
-	uint32_t regPad_ = 0;       // 1088 16-align tail
+	// Offsets below are POST-lightmap-deprecation (#if 0 block above is
+	// compiled out): everything shifted 64 bytes down from the stale
+	// pre-deprecation comments.
+	uint64_t regObbs = 0;       // 784 SgRegularObbGpu array (56 B each)
+	uint32_t regLayers[56] = {};    // 792 8 volumes x 7 layer slots
+	uint32_t regCount = 0;      // 1016 active OBB count
+	uint32_t regEnabled = 0;    // 1020 1 = OBB branch active
+	// 12 bytes: pads cvolVolumes to 1040, matching HLSL regPad (uint4,
+	// 16 bytes at 1024). A single 4-byte pad here drifted cvol* 8 bytes
+	// against the HLSL layout (latent cvol/reg corruption; fixed 10/2).
+	uint32_t regPad_[3] = {};   // 1024 (16-align to cvolVolumes@1040)
 	// ---- Convolution volumes (dynamic geometry, Engine/GI/lightmap.h):
 	// cvolVolumes points at a typed buffer of CvVolumeGpu. cvolCount is
 	// the active volume count; cvolEnabled toggles the branch.
 	// Static/dynamic separation: draws carrying cvolCount > 0 sample the
 	// volumes; static draws skip. ----
-	uint64_t cvolVolumes = 0;   // 1104 CvVolumeGpu array (560 B each)
-	uint32_t cvolLayers[56] = {};  // 1112 8 volumes x 7 layer slots
-	uint32_t cvolCount = 0;     // 1336 active volume count
-	uint32_t cvolEnabled = 0;   // 1340 1 = volume branch active
-	uint32_t cvolPad_[4] = {};      // 1344 16-align tail
+	uint64_t cvolVolumes = 0;   // 1040 CvVolumeGpu array (560 B each)
+	uint32_t cvolLayers[56] = {};  // 1048 8 volumes x 7 layer slots
+	uint32_t cvolCount = 0;     // 1272 active volume count
+	uint32_t cvolEnabled = 0;   // 1276 1 = volume branch active
+	uint32_t cvolPad_[4] = {};      // 1280 16-align tail
+	// ---- FramePSHot slab BDA (the FS-only hot struct, see FramePSHot
+	// below): the pixel shader reaches the hot slab through FrameUniforms
+	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member —
+	// a pc member shifted every sub-192 pc field and broke the HLSL
+	// mirror structs (the 10/1 device-loss crash; see
+	// App/push_constants.h layout invariant). Filled per view slab in
+	// UpdateFrameUniforms / BuildSecondaryFrameUniforms. ----
+	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in

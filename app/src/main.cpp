@@ -365,7 +365,7 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 
 } // namespace
 
- 	int main(int argc, const char* argv[]) {
+  	int main(int argc, const char* argv[]) {
 	// Reserve linear-allocator virtual address space FIRST, before worker
 	// threads, Vulkan, or asset loading (see Engine/Memory/memory.h). An
 	// unsatisfiable reservation fails fast here with the OOM diagnostic.

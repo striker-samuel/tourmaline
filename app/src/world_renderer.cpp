@@ -3099,6 +3099,13 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		// fragment (lighting/materials/env) and compute (Forward+ cull).
 		static constexpr smvk::PipelineStage kFrameUploadStages =
 			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute);
+
+		// This view's FramePSHot slab BDA (the FS reaches the hot struct
+		// through FrameUniforms — pc.frameHot is gone, see
+		// push_constants.h): slab 0, same math as the hot upload below.
+		data.frameHot = m_context->GetBufferDeviceAddress(m_resources.frameHot)
+			+ currentFrame * sizeof(FramePSHot);
+
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
 			&data,
@@ -5459,7 +5466,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 
 	void WorldRenderer::DrawFrame() {
 		// Frame-arena scratch (URI probing, normalized rewrites) is
-		// dead at frame end by definition â€” recycle the blocks.
+		// dead at frame end by definition — recycle the blocks.
 		smvk::ResetFrameArena();
 		// Presentation-mode change from the overlay combo: recreate with
 		// the new mode (same path as a resize).
@@ -6241,6 +6248,10 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 		data.decals = 0;
 		data.decalCount = 0;
 	}
+	// This view's FramePSHot slab BDA (the FS reaches the hot struct through
+	// FrameUniforms; same slab math as the hot upload below).
+	data.frameHot = m_context->GetBufferDeviceAddress(m_resources.frameHot)
+		+ ViewSlabOffset(1u + vi, frameIdx, sizeof(FramePSHot));
 	// View-major slab upload (view 0 = the main view's slice).
 	static constexpr smvk::PipelineStage kFrameUploadStages =
 		smvk::PipelineStage(smvk::PipelineStageBit_Vertex
@@ -6549,8 +6560,6 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
 	const uint64_t frameUniformsBase =
 		m_context->GetBufferDeviceAddress(m_resources.frameUniforms);
-	const uint64_t frameHotBase =
-		m_context->GetBufferDeviceAddress(m_resources.frameHot);
 	const uint64_t lightsBase =
 		m_context->GetBufferDeviceAddress(m_resources.lightsBuffer);
 	const uint64_t cascadeBase =
@@ -6580,8 +6589,6 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		PushConstants viewPc{};
 		viewPc.frameUniforms = frameUniformsBase
 			+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FrameUniforms));
-		viewPc.frameHot = frameHotBase
-			+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FramePSHot));
 		viewPc.lightsBuffer = lightsBase
 			+ ViewSlabOffset(1u + vi, fb.frameIndex, LIGHT_FRAME_STRIDE);
 		viewPc.materialsBuffer = materialsBase
@@ -6610,6 +6617,8 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		viewPc.renderViews = renderViewsAddress;
 		viewPc.mainRenderView = v.mainViewIdx;
 		viewPc.renderViewIndex = v.mainViewIdx;
+		// Feedback frame parity (1 in 4), same as the main pc fill.
+		viewPc.textureFeedbackEnabled = (fb.frameIndex & 3u) == 0u ? 1u : 0u;
 		return viewPc;
 	};
 	// Phase 1 — per-view shadow passes (PCF depth tiles only; EVSM is a
@@ -7398,10 +7407,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
 			+ fb.frameIndex * sizeof(FrameUniforms);
 
-		uint64_t frameHotAddress =
-			m_context->GetBufferDeviceAddress(m_resources.frameHot)
-			+ fb.frameIndex * sizeof(FramePSHot);
-
 		constexpr size_t LIGHT_FRAME_STRIDE =
 			sizeof(smvk::Light) * MAX_LIGHTS;
 
@@ -7441,7 +7446,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 // Scene push (see App/push_constants.h; must match HLSL common.hlsli).
 		PushConstants pc{
 			.frameUniforms = frameUniformsAddress,
-			.frameHot = frameHotAddress,
 			.lightsBuffer = lightsBufferAddress,
 			.materialsBuffer = materialsAddress,
 			.cascadeBuffer = cascadeBufferAddress,
@@ -7466,6 +7470,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			.renderViews = renderViewsAddress,
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
+			// Texture-streaming feedback frame (1 in 4; byte 244 — past every
+			// tail overlay, so tail pushes never clobber it). Same frame
+			// parity as the hot slab upload (UpdateFrameUniforms).
+			.textureFeedbackEnabled = (fb.frameIndex & 3u) == 0u ? 1u : 0u,
 		};
 	// (size checked in App/push_constants.h)
 

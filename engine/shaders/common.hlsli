@@ -337,8 +337,10 @@ struct ForwardPlusDecalTileIndexBuffer
 // -------------------------------------------------------------------------
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Separate from FrameUniforms to keep register pressure low: the PS loads
-// only this struct (via pc.frameHot.Get()) instead of the full 1360+ byte
-// FrameUniforms. Offsets mirror the C++ FramePSHot in world_renderer.h.
+// only this struct (via FrameUniforms::frameHot.Get() — the FS reaches the
+// hot slab through FrameUniforms, NOT a pc member) instead of the full
+// 1360+ byte FrameUniforms. Offsets mirror the C++ FramePSHot in
+// world_renderer.h.
 // -------------------------------------------------------------------------
 struct FramePSHot
 {
@@ -503,6 +505,13 @@ uint decalCount;                                         // 776 0 = decals off
     uint cvolCount;                                            // 1336 active volumes
     uint cvolEnabled;                                          // 1340 1 = convex-volume branch active
     uint4 cvolPad;                                             // 1344 (16-align tail)
+    // ---- FramePSHot slab (FS-only hot struct, see FramePSHot below): the
+    // pixel shader reaches the hot slab through FrameUniforms (FramePSHot
+    // hot = frame.frameHot.Get()) instead of a pc member — a pc member
+    // shifted every sub-192 pc field and broke the HLSL mirror structs
+    // (the 10/1 device-loss crash; see App/push_constants.h). Filled per
+    // view slab by the app (UpdateFrameUniforms/BuildSecondaryFrameUniforms).
+    vk::BufferPointer<FramePSHot> frameHot;                   // 1360 this view's hot slab
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
     // only (DS_DEBUG_VIZ): tail fields so the release layout (1360 B) is a
     // strict prefix of the debug layout. The light-scoped modes
@@ -524,13 +533,19 @@ uint decalCount;                                         // 776 0 = decals off
 // which is guarded and free-standing).
 #include "deferredshadow.hlsli"
 
+// LAYOUT INVARIANT: real shared fields stay within bytes 0..192 — the
+// HLSL mirror structs (DefaultVsPush, UvFlatVsPush, the seed/shadow/
+// placement/filtered tails) hard-code the sub-192 offsets and bytes
+// 192..256 are the per-draw overlay scratch (filtered VS tail 192..224,
+// direct chart tail 192..208, per-draw prevModel push 192..240). The
+// FS-only hot slab is reached via FrameUniforms::frameHot, NOT a pc
+// member (a pc member here shifted every later field and broke every
+// mirror — async device loss; see App/push_constants.h).
 struct PushConstants
 {
     float4x4 model;
     vk::BufferPointer<FrameUniforms>
     frameUniforms;
-    vk::BufferPointer<FramePSHot>
-    frameHot;
     vk::BufferPointer<LightBuffer>
     bLights;
     vk::BufferPointer<MaterialsBuffer>
@@ -567,9 +582,6 @@ struct PushConstants
     // above): 0 = dithered screen-door (default, opaque state), 1 = classic
     // alpha blend. Must match App/push_constants.h pad_pc.
     uint pad_pc;
-    // Texture streaming feedback frame (1 in 4 frames).
-    // Replaces g_frameIndex() & 3u check in shader.
-    uint textureFeedbackEnabled;
     // RenderView system (see renderview.hlsli): per-frame virtual cameras
     // (main game camera + one view per shadow cascade / spot tile / custom
     // pass). mainRenderView indexes the game camera view; renderViewIndex
@@ -579,11 +591,15 @@ struct PushConstants
     renderViews;
     uint mainRenderView;
     uint renderViewIndex;
-    // Motion vector pass: last frame's model matrix per draw as float3x4 (208..256).
+    // Motion vector pass: last frame's model matrix per draw as float3x4 (192..240).
 	// Last row (0,0,0,1) is implied. 12 floats = 48 bytes. The CPU pack
 	// (world_renderer.cpp) stores matrix COLUMNS (glm columns xyz +
 	// translation), matching the SPV RowMajor/stride-12 v4 x M lowering.
 	float3x4 prevModel;
+    // Texture streaming feedback frame (1 in 4 frames; byte 240 — past
+    // every overlay user of the scratch zone, so no tail push clobbers it).
+    uint textureFeedbackEnabled;
+    uint4 padEnd;
 };
 
 // Specialization constants (driver constant-folds these per permutation)

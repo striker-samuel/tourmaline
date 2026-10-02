@@ -85,6 +85,9 @@ static bool g_shaderDemoteToHelperInvocation = false;
 // (PolygonMode::Line/Point in graphics pipelines). BuildGraphicsPipeline
 // clamps non-solid modes back to Fill when this is false.
 static bool g_fillModeNonSolid = false;
+// True when VK_EXT_device_fault was enabled at device creation (probed,
+// never required). Gates DumpDeviceFaultInfo below.
+static bool g_deviceFaultSupported = false;
 struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
@@ -1826,7 +1829,7 @@ size_t g_diskPipelineCacheCompilesSinceSave = 0;
 
 const char* PipelineCacheFilePath()
 {
-	static const char* sPath = [] -> const char* {
+	static const char* sPath = []() -> const char* {
 		static std::string storage;
 		const char* env = std::getenv("VULKANTOY_PIPELINE_CACHE");
 		if (!env || !*env)
@@ -2279,23 +2282,24 @@ bool smvk::VulkanCore::Init() {
 				.storageBuffer16BitAccess = VK_TRUE,
 				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
 			};
-			VkPhysicalDeviceVulkan12Features deviceFeatures12
-			{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-				.pNext = &deviceFeatures11,
-				.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
-				.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
-				.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE,
-				// engine globals binding (kBinding_EngineGlobals): the single
-				// storage-buffer descriptor is rewritten every frame while
-				// previous frames are still executing (update-after-bind).
-				.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE,
-				.descriptorBindingPartiallyBound = VK_TRUE,
-				.descriptorBindingVariableDescriptorCount = VK_TRUE,
-				.runtimeDescriptorArray = VK_TRUE,
-				.timelineSemaphore = VK_TRUE,
-				.bufferDeviceAddress = VK_TRUE
-			};
+VkPhysicalDeviceVulkan12Features deviceFeatures12{};
+			deviceFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+			deviceFeatures12.pNext = &deviceFeatures11;
+			deviceFeatures12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+			deviceFeatures12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+			deviceFeatures12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+			// engine globals binding (kBinding_EngineGlobals): the single
+			// storage-buffer descriptor is rewritten every frame while
+			// previous frames are still executing (update-after-bind).
+			deviceFeatures12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+			deviceFeatures12.descriptorBindingPartiallyBound = VK_TRUE;
+			deviceFeatures12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+			deviceFeatures12.runtimeDescriptorArray = VK_TRUE;
+			deviceFeatures12.scalarBlockLayout = VK_TRUE;
+			deviceFeatures12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+			deviceFeatures12.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+			deviceFeatures12.timelineSemaphore = VK_TRUE;
+			deviceFeatures12.bufferDeviceAddress = VK_TRUE;
 			VkPhysicalDeviceVulkan13Features deviceFeatures13
 			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -2304,15 +2308,27 @@ bool smvk::VulkanCore::Init() {
 				.dynamicRendering = VK_TRUE,
 				.maintenance4 = VK_TRUE,
 			};
+			VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeDerivativesFeatures{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR,
+				.pNext = nullptr,
+				.computeDerivativeGroupQuads = VK_TRUE
+			};
+			VkPhysicalDevicePrivateDataFeatures privateDataFeatures{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES,
+				.pNext = nullptr,
+				.privateData = VK_TRUE
+			};
 
 		VkPhysicalDeviceFeatures2 feats2{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-			.pNext = &deviceFeatures13,
+			.pNext = &privateDataFeatures,
 			.features = {
 				.samplerAnisotropy = VK_TRUE,
 				.textureCompressionBC = VK_TRUE,
 			},
 		};
+		privateDataFeatures.pNext = &computeDerivativesFeatures;
+		computeDerivativesFeatures.pNext = &deviceFeatures13;
 
 		// Indirect multi-draw (per-view filter emits one command per
 		// surviving cluster, drawn with a single call per material range).
@@ -2392,9 +2408,51 @@ bool smvk::VulkanCore::Init() {
 				enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
 		}
 
+		// VK_EXT_device_fault (post-mortem GPU fault reports): strictly
+		// optional. When present + the deviceFault feature is supported,
+		// the extension is enabled and the feature chained so a device
+		// loss can be diagnosed (faulting address/stage) instead of
+		// surfacing as a bare vkWaitSemaphores/device-lost failure.
+		bool enableDeviceFault = false;
+		VkPhysicalDeviceFaultFeaturesEXT faultFeatures{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr, VK_FALSE };
+		{
+			bool extPresent = false;
+			uint32_t extCount = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+				&& extCount != 0) {
+				std::vector<VkExtensionProperties> exts(extCount);
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+					for (const auto& e : exts) {
+						if (std::strcmp(e.extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0) {
+							extPresent = true;
+							break;
+						}
+					}
+				}
+			}
+			if (extPresent) {
+				VkPhysicalDeviceFaultFeaturesEXT supportedFault{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr };
+				VkPhysicalDeviceFeatures2 supported2{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedFault };
+				vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+				if (supportedFault.deviceFault == VK_TRUE) {
+					enableDeviceFault = true;
+					faultFeatures.deviceFault = VK_TRUE;
+					faultFeatures.pNext = feats2.pNext;
+					feats2.pNext = &faultFeatures;
+				}
+			}
+			g_deviceFaultSupported = enableDeviceFault;
+			std::fprintf(stderr, "[Vulkan] VK_EXT_device_fault %s\n",
+				enableDeviceFault ? "supported - enabling (loss diagnostics)" : "not supported - loss will be opaque");
+		}
+
 		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
 		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -7664,6 +7722,11 @@ inline void ImageBarrier(
 }
 
 // Submitter – now uses thread-local CommandBufferPool
+namespace {
+// Device-loss post-mortem (VK_EXT_device_fault) — defined below, called
+// from the acquire-loss path and the loud aborts in Submitter::purge.
+void DumpDeviceFaultInfo();
+}
 inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 	: core_(core), m_queueFamilyIndex(queueFamilyIndex)
 {
@@ -7956,6 +8019,7 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 		completed >=
 		slot.retireValue_;
 }
+namespace { void DumpDeviceFaultInfo(); }
 void smvk::Submitter::purge()
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -8010,23 +8074,33 @@ void smvk::Submitter::purge()
 
 	if (completedValue == UINT64_MAX) {
 
-#ifdef DEBUG_COMMAND_SUBMISSION
+		// Never abort silently: this exact abort (previously message-less,
+		// surfacing as a bare 0xC0000409 ucrtbase fastfail) hid the frame-1
+		// bench death for weeks. A UINT64_MAX counter means the driver's
+		// semaphore-query path is poisoned (historically triggered by the
+		// host timeline-wait in AcquireFramebuffer — now fence-based; see
+		// the comment there). Dump the device-fault post-mortem while the
+		// device still exists, then die loudly.
 		fprintf(stderr,
-			"FATAL: timeline semaphore became UINT64_MAX\n");
-#endif
+			"[Vulkan FATAL] timeline semaphore counter reads UINT64_MAX "
+			"(qfi=%u next=%llu) — driver query path poisoned; aborting\n",
+			m_queueFamilyIndex,
+			(unsigned long long)m_timelineValue);
+		fflush(stderr);
+		DumpDeviceFaultInfo();
 		abort();
 	}
 
 	if (completedValue >= m_timelineValue) {
 
-#ifdef DEBUG_COMMAND_SUBMISSION
-
+		// Same rule: never silent-abort in Release.
 		fprintf(stderr,
-			"FATAL: timeline ahead of Submitter: "
-			"completed=%llu next=%llu\n",
+			"[Vulkan FATAL] timeline ahead of Submitter: "
+			"completed=%llu next=%llu (qfi=%u) — aborting\n",
 			(unsigned long long)completedValue,
-			(unsigned long long)m_timelineValue);
-#endif
+			(unsigned long long)m_timelineValue,
+			m_queueFamilyIndex);
+		fflush(stderr);
 
 		abort();
 	}
@@ -8705,32 +8779,131 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 		vk_swapchain_ = VK_NULL_HANDLE;
 	}
 }
+namespace {
+const char* DeviceFaultAddressTypeName(VkDeviceFaultAddressTypeEXT type) {
+	switch (type) {
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "NONE";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "READ_INVALID";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "WRITE_INVALID";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "EXECUTE_INVALID";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "IP_UNKNOWN";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "IP_INVALID";
+	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "IP_FAULT";
+	default: return "???";
+	}
+}
+// Dumps VK_EXT_device_fault info for a lost device. Must run before the
+// device is destroyed (fault state dies with it); safe to call when the
+// extension is absent (no-op). Called from the acquire-loss path below.
+void DumpDeviceFaultInfo() {
+	std::fprintf(stderr, "[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
+		g_deviceFaultSupported ? 1 : 0, (void*)device_,
+#ifdef VK_EXT_device_fault
+		(void*)vkGetDeviceFaultInfoEXT);
+#else
+		(void*)nullptr);
+#endif
+	std::fflush(stderr);
+	if (!g_deviceFaultSupported || device_ == VK_NULL_HANDLE)
+		return;
+#ifdef VK_EXT_device_fault
+	if (!vkGetDeviceFaultInfoEXT)
+		return;
+	// Single-shot query sized by maxDeviceFaultCount (physical-device
+	// property, safe on a lost device): avoids the counts-only call with
+	// pFaultInfo=null, which AVs on this driver.
+	VkPhysicalDeviceFaultPropertiesKHR faultProps{
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_PROPERTIES_KHR, nullptr };
+	{
+		VkPhysicalDeviceProperties2 props2{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &faultProps };
+		vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+	}
+	const uint32_t maxInfos = faultProps.maxDeviceFaultCount != 0
+		? faultProps.maxDeviceFaultCount : 8u;
+	std::fprintf(stderr, "[DeviceFault] maxDeviceFaultCount=%u\n", maxInfos);
+	std::fflush(stderr);
+	VkDeviceFaultCountsEXT counts{
+		VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT, nullptr };
+	std::vector<VkDeviceFaultAddressInfoEXT> addrInfos(maxInfos);
+	std::vector<VkDeviceFaultVendorInfoEXT> vendorInfos(maxInfos);
+	VkDeviceFaultInfoEXT info{
+		VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, nullptr };
+	info.pAddressInfos = addrInfos.data();
+	info.pVendorInfos = vendorInfos.data();
+	info.pVendorBinaryData = nullptr; // opaque driver blob, not fetched
+	VkResult r = vkGetDeviceFaultInfoEXT(device_, &counts, &info);
+	// VK_INCOMPLETE (positive) is expected: pVendorBinaryData is null, so
+	// the vendor binary portion is "too small" — the description + address
+	// + vendor infos are still filled. Only negative results are failures.
+	if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+		std::fprintf(stderr, "[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
+		std::fflush(stderr);
+		return;
+	}
+	const uint32_t nAddr = counts.addressInfoCount < maxInfos
+		? counts.addressInfoCount : maxInfos;
+	const uint32_t nVendor = counts.vendorInfoCount < maxInfos
+		? counts.vendorInfoCount : maxInfos;
+	std::fprintf(stderr, "[DeviceFault] desc='%s' %u address infos, %u vendor infos:",
+		info.description, nAddr, nVendor);
+	for (uint32_t i = 0; i < nAddr; ++i) {
+		std::fprintf(stderr, "[DeviceFault]   addr[%u] type=%s reported=0x%llx precision=0x%llx\n",
+			i, DeviceFaultAddressTypeName(addrInfos[i].addressType),
+			(unsigned long long)addrInfos[i].reportedAddress,
+			(unsigned long long)addrInfos[i].addressPrecision);
+	}
+	for (uint32_t i = 0; i < nVendor; ++i) {
+		std::fprintf(stderr, "[DeviceFault]   vendor[%u] desc='%s' faultCode=0x%llx faultData=0x%llx\n",
+			i, vendorInfos[i].description,
+			(unsigned long long)vendorInfos[i].vendorFaultCode,
+			(unsigned long long)vendorInfos[i].vendorFaultData);
+	}
+	std::fflush(stderr);
+#else
+	(void)0;
+#endif
+}
+} // namespace
 smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
 	SMVK_PROFILE_SCOPE_COLOR("AcquireFramebuffer", Optick::Color::SteelBlue);
-	uint64_t waitVal = frameTimelineValues_[currentFrame_];
-	if (waitVal != 0) {
-		VkSemaphoreWaitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, nullptr, 0, 1, &timelineSemaphore_, &waitVal };
-		VkResult waitResult = vkWaitSemaphores(device_, &waitInfo, UINT64_MAX);
-
+	// Frame-boundary host sync: FENCE wait, not a timeline-semaphore host
+	// wait. History: this used vkWaitSemaphores on timelineSemaphore_ with
+	// frameTimelineValues_[currentFrame_] (the previous frame's retirement
+	// value). On this driver that FIRST host wait after a present poisons
+	// the device: every subsequent vkGetSemaphoreCounterValue returns
+	// SUCCESS with UINT64_MAX (then VK_ERROR_INITIALIZATION_FAILED, and
+	// vkGetDeviceFaultInfoEXT returns garbage error codes) — the silent
+	// abort in Submitter::purge() that killed every headless bench at
+	// frame 1 for weeks (0xC0000409 in ucrtbase, misdiagnosed as a crash:
+	// it was our own abort on the poisoned counter read). Fresh-semaphore
+	// selftests showed the plain wait is fine; the poison needs the
+	// swapchain's signaled-across-a-present timeline specifically. The
+	// classic fence pattern sidesteps the host timeline-wait entirely:
+	// the tail submit signals inFlightFences_[currentFrame_] (see the
+	// three vkQueueSubmit2 call sites in EndAndPresentFramebuffer), this
+	// wait retires exactly that submit — which already waited the async
+	// split (C2G) and the upload chain, so G1/C/G2 + uploads all retire
+	// with it. The swapchain timeline stays for DEVICE-side waits only
+	// (upload-batch chaining, deferred-destroy retirement via submits);
+	// the host never waits it again. The fences are created signaled
+	// (CreateSyncObjects), so the first frame passes instantly.
+	{
+		VkResult waitResult = vkWaitForFences(
+			device_, 1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
 		if (waitResult != VK_SUCCESS)
 		{
-			// Distinguish a failed wait (device lost) from the invariant
-			// violation the table guards against: a recorded value that no
-			// accepted submit will ever signal (requested > current forever).
-			// The failed wait did not move the counter; query the driver now.
-			uint64_t counterNow = 0;
-			vkGetSemaphoreCounterValue(device_, timelineSemaphore_, &counterNow);
-			printf(
-				"vkWaitSemaphores failed: VkResult=%d "
-				"frame=%u requested=%llu current=%llu\n",
-				(int)waitResult,
-				currentFrame_,
-				(unsigned long long)waitVal,
-				(unsigned long long)counterNow);
+			std::fprintf(stderr,
+				"vkWaitForFences failed: VkResult=%d frame=%u\n",
+				(int)waitResult, currentFrame_);
+			std::fflush(stderr);
+			// Device loss post-mortem while the device still exists.
+			DumpDeviceFaultInfo();
 
-			throw std::runtime_error("vkWaitSemaphores failed");
+			throw std::runtime_error("vkWaitForFences failed");
 		}
+		VK_CHECK(vkResetFences(device_, 1, &inFlightFences_[currentFrame_]));
 	}
 
 	// Frame retired => its start/end timestamps are ready. Pull the GPU
@@ -8747,6 +8920,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	}
 
 	uint32_t imageIndex;
+	VkResult acquireResult = VK_SUCCESS;
 	if (hosted_) {
 		// Hosted: one image, no acquire — the timeline wait above is
 		// the real frame gate (the compositor's device-idle
@@ -8754,7 +8928,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 		imageIndex = 0;
 	}
 	else {
-		VkResult result = vkAcquireNextImageKHR(
+		acquireResult = vkAcquireNextImageKHR(
 			device_,
 			vk_swapchain_,
 			UINT64_MAX,
@@ -8763,26 +8937,26 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 			&imageIndex
 		);
 
-		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+		if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
 			Recreate();
 			return AcquireFramebuffer();
 		}
-		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		else if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
 			throw std::runtime_error("failed to acquire swap chain image!");
 		}
 	}
 
 	SetCurrentImageIndex(imageIndex);
 
-	// Engine globals: the timeline wait above guarantees this frame's slice
+	// Engine globals: the fence wait above guarantees this frame's slice
 	// retired, so it can be rewritten before any pass records. The
 	// update-after-bind descriptor rewrite is visible to commands recorded
 	// from now on; previously recorded frames keep their own slice.
 	ctx_.FlushEngineGlobals(currentFrame_);
 
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
-	// Async-split pools retire with the slot (the frame timeline wait above
-	// covers G1+G2, and G2 waited on the compute timeline — so C is done).
+	// Async-split pools retire with the slot (the fence wait above covers
+	// the tail submit, which waited the compute timeline — so C is done).
 	if (asyncSplitReady_[currentFrame_]) {
 		if (splitPools[currentFrame_] != VK_NULL_HANDLE)
 			vkResetCommandPool(device_, splitPools[currentFrame_], 0);
@@ -8998,7 +9172,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 						&& waitInfos[w].value == uploadTp.value ? 1 : 0);
 			std::fflush(stderr);
 		}
-		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 		DlssPclMarker(PclMarker::RenderSubmitEnd);
 		frameTimelineValues_[currentFrame_] = signalValue;
 		imageTimelineValues_[currentImageIndex_] = signalValue;
@@ -9020,7 +9194,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 					"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
 					waitCount, (unsigned long long)signalValue,
 					fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
-			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 			DlssPclMarker(PclMarker::RenderSubmitEnd);
 			DlssPclMarker(PclMarker::PresentStart);
 			// Submit accepted: the value it signals is now reachable, so the
@@ -9052,22 +9226,22 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// FIFO VSync throttles inside vkQueuePresentKHR (vertical-blank
 			// wait). Time it so the caller can report it as wait, not CPU.
 			const auto presentStart = std::chrono::steady_clock::now();
-			VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-			lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
-				std::chrono::steady_clock::now() - presentStart).count();
-			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-				framebufferResized) {
-				framebufferResized = false;
-				Recreate();
-			}
-			else if (result != VK_SUCCESS) {
-				throw std::runtime_error("failed to present swap chain image!");
-			}
-			DlssPclMarker(PclMarker::PresentEnd);
-			AdvanceFrame();
-			DlssEndFrame();
-			return;
+		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+		lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - presentStart).count();
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+			framebufferResized) {
+			framebufferResized = false;
+			Recreate();
 		}
+		else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+		DlssPclMarker(PclMarker::PresentEnd);
+		AdvanceFrame();
+		DlssEndFrame();
+		return;
+	}
 		else {
 			{
 				std::lock_guard<std::mutex> lock(mg);
@@ -9076,7 +9250,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 						"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
 						waitCount, (unsigned long long)signalValue,
 						fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
-				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 				DlssPclMarker(PclMarker::RenderSubmitEnd);
 				DlssPclMarker(PclMarker::PresentStart);
 				// Same publish-on-success as the single-mutex path above.
