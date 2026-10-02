@@ -55,7 +55,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseAlpha *= baseTex.Sample(samplers[0], IN.uv).a;
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
     }
     if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
         discard;

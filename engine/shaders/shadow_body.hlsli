@@ -71,7 +71,6 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         float4 s = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         baseAlpha *= s.a;
     }
 

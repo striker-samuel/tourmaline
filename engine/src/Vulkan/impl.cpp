@@ -2719,28 +2719,6 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	).release();
 	m_globalsStartTime = std::chrono::steady_clock::now();
 
-	// Texture-streaming feedback ring: one uint per bindless slot,
-	// pre-filled with the no-report sentinel (0xFF) so the first consume
-	// before any GPU write observes "no demand", not garbage.
-	{
-		static std::vector<uint32_t> s_feedbackInit;
-		if (s_feedbackInit.empty())
-			s_feedbackInit.assign(MAX_TEXTURES, 0xFFFFFFFFu);
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
-			m_feedbackBuffers[f] = CreateBuffer(
-				static_cast<VkDeviceSize>(MAX_TEXTURES) * sizeof(uint32_t),
-				BufferType_Storage,
-				"texture feedback"
-			).release();
-			UploadDataToBuffer(m_feedbackBuffers[f],
-				s_feedbackInit.data(),
-				s_feedbackInit.size() * sizeof(uint32_t),
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_WRITE_BIT,
-				0, 0);
-		}
-	}
-
 	// ============================================================================
 	// Hardcoded Bindless Setup
 	// ============================================================================
@@ -2758,12 +2736,6 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// in flight. The descriptor is rewritten every frame (update-after-bind)
 		// to point at the current frame's slice; see FlushEngineGlobals.
 		getDSLBinding(kBinding_EngineGlobals, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
-		// Texture-streaming feedback: one uint per bindless texture slot,
-		// written by fragment shaders (InterlockedMin, sharpest demand wins)
-		// and read back on the CPU every N frames. Ringed per flight like
-		// the exposure histogram; the descriptor is rewritten every frame
-		// to the current flight slice (see FlushTextureFeedback).
-		getDSLBinding(kBinding_TextureFeedback, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 		// 3D volume textures (SG probe grids): same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors 3D views here.
 		getDSLBinding(kBinding_VolumeTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_VOLUME_TEXTURES, stageFlags),
@@ -2875,8 +2847,6 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 	destroy(this, m_engineGlobalsBuffer);
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
-		destroy(this, m_feedbackBuffers[f]);
 	destroy(this, m_readbackStaging);
 	destroy(this, m_asyncStaging);
 
@@ -7239,33 +7209,6 @@ void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
 	write.descriptorCount = 1;
 	write.pBufferInfo = &info;
 	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-}
-
-void smvk::VulkanResourceManager::FlushTextureFeedback(uint32_t frameIndex)
-{
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
-	const Buffer* buffer = buffers_.get(m_feedbackBuffers[frameIndex]);
-	assert(buffer && buffer->vkBuffer != VK_NULL_HANDLE);
-
-	VkDescriptorBufferInfo info{};
-	info.buffer = buffer->vkBuffer;
-	info.offset = 0;
-	info.range = VK_WHOLE_SIZE;
-
-	VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	write.dstSet = defaultDescriptorSets_[0]; // single global bindless set instance
-	write.dstBinding = smvk::Bindings::kBinding_TextureFeedback;
-	write.dstArrayElement = 0;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write.descriptorCount = 1;
-	write.pBufferInfo = &info;
-	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-}
-
-smvk::BufferHandle smvk::VulkanResourceManager::GetTextureFeedbackBuffer(uint32_t frameIndex)
-{
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
-	return m_feedbackBuffers[frameIndex];
 }
 
 [[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const

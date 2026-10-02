@@ -735,13 +735,6 @@ namespace smvk {
 		// in-flight slot retires (AcquireFramebuffer). No app plumbing.
 		void FlushEngineGlobals(uint32_t frameIndex);
 
-		// Rewrites the set-0 kBinding_TextureFeedback descriptor to the
-		// given flight slice. Call once per record before passes execute
-		// (mirrors FlushEngineGlobals timing; update-after-bind makes it
-		// visible to this frame's commands).
-		void FlushTextureFeedback(uint32_t frameIndex);
-		BufferHandle GetTextureFeedbackBuffer(uint32_t frameIndex);
-
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
 		// True when the texture's backing image is cube-compatible with a
@@ -851,15 +844,7 @@ namespace smvk {
 		// rhythm (steady clock), frameIndex counts acquires, fps is an EMA.
 		// Flushed every frame into kBinding_EngineGlobals.
 		BufferHandle m_engineGlobalsBuffer{};
-		// Texture-streaming feedback ring (Skull & Bones style GPU
-		// readback): one uint demand per bindless texture slot, written by
-		// fragment shaders via InterlockedMin. Ringed per flight like the
-		// exposure histogram so the record-time clear can never clobber a
-		// still-accumulating slice; the set-0 binding is rewritten every
-		// frame to the current slice (see FlushTextureFeedback).
-		// Fixed MAX_TEXTURES slots (32 KiB/slice); always valid, always
-		// bound, so shaders need no enable toggle.
-		BufferHandle m_feedbackBuffers[MAX_FRAMES_IN_FLIGHT]{};		std::chrono::steady_clock::time_point m_globalsStartTime{};
+		std::chrono::steady_clock::time_point m_globalsStartTime{};
 		std::chrono::steady_clock::time_point m_globalsLastAcquireTime{};
 		uint32_t m_globalsFrameCounter = 0;
 		float m_globalsSmoothedFps = 0.0f;

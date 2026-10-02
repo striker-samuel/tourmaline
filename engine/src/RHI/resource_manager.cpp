@@ -196,12 +196,6 @@ bool ResourceManager::PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::spa
 bool ResourceManager::HasAsyncDownloadInFlight() const {
     return impl_->vulkan.HasAsyncDownloadInFlight();
 }
-BufferHandle ResourceManager::GetTextureFeedbackBuffer(uint32_t flightSlot) {
-    return impl_->vulkan.GetTextureFeedbackBuffer(flightSlot);
-}
-void ResourceManager::BindTextureFeedbackSlice(uint32_t flightSlot) {
-    impl_->vulkan.FlushTextureFeedback(flightSlot);
-}
 bool ResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size) {
     return impl_->vulkan.DownloadDataFromImage(src, currentLayout, out, size);
 }

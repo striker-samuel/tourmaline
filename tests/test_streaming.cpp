@@ -1,11 +1,11 @@
 // streaming_tests: CPU-side tests for texture streaming (no GPU required).
 //
-// Covers the device-free policy math shared by the streamer and its future
-// GPU-feedback consumer:
+// Covers the device-free policy math shared by the streamer and its
+// demand consumers:
 //   * TextureStreamer::EstimateResidentBytes (BC7 tail accounting)
 //   * TextureStreamer::WantedMipForScreenCoverage / WantedMipForDistance
-//     (v1 CPU feedback heuristic)
-//   * TextureFeedback::kNoReport ABI sentinel
+//     (CPU feedback heuristic)
+//   * TextureStreamer::ResolveFullMip (resident-lod -> full-chain mip)
 //
 // Retarget/budget paths need a Vulkan device and are exercised through the
 // app (ImGui stats), not here.
@@ -18,7 +18,6 @@
 #include <iostream>
 
 #include <Engine/Renderer/texture_streamer.h>
-#include <Engine/Renderer/texture_feedback.h>
 
 namespace {
 
@@ -119,11 +118,6 @@ void TestWantedMipDistance() {
 	Check(big < small, "wanted: larger world size asks sharper");
 }
 
-void TestFeedbackAbi() {
-	Check(smvk::TextureFeedback::kNoReport == 0xFFFFFFFFu,
-		"feedback: no-report sentinel is 0xFFFFFFFF");
-}
-
 void TestResolveFullMip() {
 	using smvk::TextureStreamer;
 	// Resident level r == full-chain mip residentBase + r.
@@ -146,7 +140,6 @@ int main() {
 	TestResidentBytes();
 	TestWantedMipCoverage();
 	TestWantedMipDistance();
-	TestFeedbackAbi();
 	TestResolveFullMip();
 	std::cout << g_checks - g_failures << "/" << g_checks
 		<< " streaming checks passed\n";

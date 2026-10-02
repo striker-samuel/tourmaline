@@ -441,7 +441,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint) baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
     }
     if (layered)
     {
@@ -460,7 +459,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 uint slot = (uint) idx;
                 Texture2D t = textures[NonUniformResourceIndex(slot)];
                 s = t.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, t, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             baseSample += s * w;
         }
@@ -508,7 +506,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint) mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
         float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         // Spec says: roughness = G * factor, metallic = B * factor
         roughness *= mrSample.g;
         metallic *= mrSample.b;
@@ -531,7 +528,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 uint slot = (uint) idx;
                 Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
                 float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
-                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
                 gb = mrSample.gb;
             }
             roughMult += gb.x * w;
@@ -587,8 +583,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
         float2 mapXY = textures[NonUniformResourceIndex((uint) normalIdx)]
             .Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
-TS_ReportUsage((uint) normalIdx,
-            textures[NonUniformResourceIndex((uint) normalIdx)], samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
 
         // glTF normalTexture.scale applies to XY.
         mapXY *= normalScale;
@@ -642,7 +636,6 @@ TS_ReportUsage((uint) normalIdx,
                 uint slot = (uint) idx;
                 Texture2D nTex = textures[NonUniformResourceIndex(slot)];
                 float2 mapXY = nTex.Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
-                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
                 mapXY *= normalScale;
                 float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
                 mapN = float3(mapXY, mapZ);
@@ -667,7 +660,6 @@ TS_ReportUsage((uint) normalIdx,
         uint slot = (uint) occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
         float occSample = occTex.Sample(samplers[0], IN.uv).r;
-        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
     if (layered)
@@ -687,7 +679,6 @@ TS_ReportUsage((uint) normalIdx,
                 uint slot = (uint) idx;
                 Texture2D occTex = textures[NonUniformResourceIndex(slot)];
                 s = occTex.Sample(samplers[0], IN.uv).r;
-                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             occAcc += s * w;
         }
@@ -703,7 +694,6 @@ TS_ReportUsage((uint) normalIdx,
         uint slot = (uint) emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         emissive *= eSample;
     }
     if (layered)
@@ -723,7 +713,6 @@ TS_ReportUsage((uint) normalIdx,
                 uint slot = (uint) idx;
                 Texture2D eTex = textures[NonUniformResourceIndex(slot)];
                 s = eTex.Sample(samplers[0], IN.uv).rgb;
-                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, clipPos.xy, pc.textureFeedbackEnabled != 0u);
             }
             eAcc += s * w;
         }

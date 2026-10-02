@@ -36,7 +36,6 @@ PSOut mainPS(PSIn IN)
             uint slot = (uint)baseColorIdx;
             Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
             float4 s = baseTex.Sample(samplers[0], IN.uv);
-            TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.pos.xy, pc.textureFeedbackEnabled != 0u);
             baseAlpha *= s.a;
         }
         if (baseAlpha < alphaCutoff)
@@ -53,7 +52,6 @@ PSOut mainPS(PSIn IN)
             uint slot = (uint)baseColorIdx;
             Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
             float4 s = baseTex.Sample(samplers[0], IN.uv);
-            TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.pos.xy, pc.textureFeedbackEnabled != 0u);
             baseAlpha *= s.a;
         }
         if (!DitherKeep(baseAlpha, IN.pos.xy))

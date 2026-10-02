@@ -47,7 +47,6 @@
 
 // Vulkan / core infrastructure (always available)
 #include <Engine/Renderer/renderview.h>
-#include <Engine/Renderer/texture_feedback.h>
 
 // Memory / asset forward declarations
 #include <Engine/Vfs/vfs.h>

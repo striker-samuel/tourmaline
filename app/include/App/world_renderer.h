@@ -36,7 +36,6 @@
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
-#include <Engine/Renderer/texture_feedback.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/deferredshadow.h>
@@ -574,9 +573,8 @@ struct FramePSHot
 	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
 	float     giIntensity;      // 68
 	uint32_t  giDebug;          // 72
-	uint32_t  textureFeedbackEnabled; // 76 (1 in 4 frames for TS_ReportUsage)
-	uint32_t  cvolEnabled;      // 80
-	uint32_t  pad_[2];          // 84 -> 96 (16-byte aligned total)
+	uint32_t  cvolEnabled;      // 76
+	uint32_t  pad_[3];          // 80 -> 96 (16-byte aligned total)
 };
 #if 0 // Lightmaps deprecated - size/offsets changed
 static_assert(sizeof(FramePSHot) == 96);
@@ -2428,12 +2426,8 @@ protected:
 	// full-resident, the pre-v4 behavior).
 	bool m_textureStreamingEnabled = true;
 	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
-	// GPU feedback consumer (Skull & Bones style readback, see
-	// Engine/Renderer/texture_feedback.h). Lives alongside the streamer;
-	// null together with it when streaming is disabled.
-	smvk::mem::LinearPtr<smvk::TextureFeedback> m_textureFeedback;
-	// ---- Async readback ticket (exposure histogram + texture feedback +
-	// deferred-shadow counters) ----
+	// ---- Async readback ticket (exposure histogram + deferred-shadow
+	// counters) ----
 	// Submit + non-blocking poll each tick: the render thread NEVER waits
 	// on the graphics-queue backlog (the old sync download locked for the
 	// whole in-flight frame). One ticket in flight; while pending, new
@@ -2442,10 +2436,8 @@ protected:
 	uint64_t m_asyncReadbackTicket = 0;
 	uint32_t m_pendingReadbackSlot = 0;
 	bool m_pendingReadbackHasExposure = false;
-	bool m_pendingReadbackHasFeedback = false;
 	bool m_pendingReadbackHasDs = false;
 	std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
-	std::vector<uint32_t> m_pendingFeedback;
 	std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.

@@ -34,24 +34,15 @@ SamplerComparisonState comparisonSamplers[];
 [[vk::binding(0, 0)]]
 Texture2D<uint4> uintTextures[];
 
-// Reflection cubemaps for specular IBL (kBinding_Cubemaps = 6).
+// Reflection cubemaps for specular IBL (kBinding_Cubemaps).
 // Uses the same bindless index space as textures[].
-[[vk::binding(6, 0)]]
+[[vk::binding(5, 0)]]
 TextureCube cubemaps[];
 
 // 3D volume textures (SG probe grids, kBinding_VolumeTextures): slots
 // mirror the bindless texture indices; only 3D views are written here.
-[[vk::binding(5, 0)]]
-Texture3D volumeTextures[];
-
-// Texture-streaming GPU feedback (Skull & Bones style, see
-// texture_streaming.hlsli): one uint per bindless texture slot, published
-// by materials with InterlockedMin. Always bound (RHI-owned per-flight
-// ring, rewritten to the current slice every frame); consumed on the CPU
-// every 4th frame.
 [[vk::binding(4, 0)]]
-RWStructuredBuffer<uint> g_texFeedback;
-#include "texture_streaming.hlsli"
+Texture3D volumeTextures[];
 
 // Exact sRGB transfer functions shared by the LDR-out passes: the swapchain
 // is an _SRGB format (hardware encodes on store), while the SMAA/UI LDR
@@ -359,9 +350,8 @@ struct FramePSHot
     float  fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
     float  giIntensity;      // 68
     uint   giDebug;          // 72
-    uint   textureFeedbackEnabled; // 76 (1 in 4 frames for TS_ReportUsage)
-    uint   cvolEnabled;      // 80
-    uint   pad_[2];          // 84 -> 96 (16-byte aligned total)
+    uint   cvolEnabled;      // 76
+    uint   pad_[3];          // 80 -> 96 (16-byte aligned total)
 };
 
 // Moved below the Forward+ light structs so it can carry typed pointers
@@ -596,9 +586,6 @@ struct PushConstants
 	// (world_renderer.cpp) stores matrix COLUMNS (glm columns xyz +
 	// translation), matching the SPV RowMajor/stride-12 v4 x M lowering.
 	float3x4 prevModel;
-    // Texture streaming feedback frame (1 in 4 frames; byte 240 — past
-    // every overlay user of the scratch zone, so no tail push clobbers it).
-    uint textureFeedbackEnabled;
     uint4 padEnd;
 };
 

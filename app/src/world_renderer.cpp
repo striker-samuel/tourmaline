@@ -1569,14 +1569,6 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		}
 		smvk::TextureStreamer* sceneStreamer =
 			(m_textureStreamingEnabled && m_textureStreamer) ? m_textureStreamer.get() : nullptr;
-		// GPU feedback consumer for the streamer above (null together with
-		// it; the RHI owns the device ring buffers either way so the
-		// binding is always valid for the shaders).
-		if (sceneStreamer && !m_textureFeedback) {
-			m_textureFeedback =
-				smvk::mem::MakeProcess<smvk::TextureFeedback>(*m_context);
-			m_textureFeedback->SetSlotCount(MAX_TEXTURES);
-		}
 
 		// WORLD acquisition: the host owns all content loading; this
 		// renderer never imports a scene of its own.
@@ -3133,7 +3125,6 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
 		hot.giIntensity = data.giIntensity;
 		hot.giDebug = data.giDebug;
-		hot.textureFeedbackEnabled = (currentFrame & 3u) == 0u;
 		hot.cvolEnabled = data.cvolEnabled;
 		hot.pad_[0] = 0;
 		hot.pad_[1] = 0;
@@ -3488,22 +3479,17 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	// every 8th frame before it moved here). Every 4th frame a fresh
 	// copy of the retired slice is submitted with a ticket; each frame
 	// the previous ticket is POLLED non-blocking and, once the GPU
-	// signals it, exposure adapts + feedback forwards + the DS overlay
-	// stats refresh from the staging memcpy. One ticket in flight: a
-	// tick while the previous is pending skips its submit (results land
-	// 1-2 frames later; adaptation is time-damped and streaming is laggy
-	// anyway). The feedback clear still runs AFTER the copy is queued
-	// (download-before-clear, same order as the exposure zero-fill).
+	// signals it, exposure adapts + the DS overlay stats refresh from
+	// the staging memcpy. One ticket in flight: a tick while the
+	// previous is pending skips its submit (results land 1-2 frames
+	// later; adaptation is time-damped anyway).
 	void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
-		const bool feedbackActive = m_textureStreamingEnabled
-			&& m_textureStreamer && m_textureFeedback
-			&& m_textureFeedback->GetSlotCount() > 0;
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
 	// Layout helper: the SAME span shape must accompany the submit and
 	// its poll (destinations are stable members; handles/sizes are fixed).
-	std::array<smvk::BufferDownload, 3> dls{};
+	std::array<smvk::BufferDownload, 2> dls{};
 	const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
 		uint32_t n = 0;
 		if (m_pendingReadbackHasExposure) {
@@ -3512,17 +3498,11 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 				m_pendingExposureBins.size() * sizeof(uint32_t), 0 };
 			++n;
 		}
-		if (m_pendingReadbackHasFeedback) {
-			dls[n] = { m_context->GetTextureFeedbackBuffer(m_pendingReadbackSlot),
-				m_pendingFeedback.data(),
-				m_pendingFeedback.size() * sizeof(uint32_t), 0 };
-			++n;
-		}
 		if (m_pendingReadbackHasDs) {
 			dls[n] = { m_viewportResources.deferredShadows.CounterBuffer(
 					m_pendingReadbackSlot),
 				m_pendingDsCounters.data(), m_pendingDsCounters.size()
-					* sizeof(uint32_t), 0 };
+				* sizeof(uint32_t), 0 };
 			++n;
 		}
 		return { dls.data(), n };
@@ -3536,17 +3516,6 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			if (m_pendingReadbackHasExposure && ExposureMeteringActive()) {
 				m_exposureFrame = m_pendingReadbackSlot;
 				AdaptExposureFromBins(m_pendingExposureBins);
-			}
-			if (m_pendingReadbackHasFeedback && feedbackActive) {
-				const uint32_t reported = m_textureFeedback->ForwardDownloaded(
-					*m_textureStreamer, m_pendingFeedback.data(),
-					m_pendingFeedback.size(), streamFrame);
-				if ((m_frameCounter & 63u) == 2u) {
-					std::fprintf(stderr,
-						"[streamfb] tick=%llu slice=%u reported=%u (async)\n",
-						(unsigned long long)m_frameCounter,
-						m_pendingReadbackSlot, reported);
-				}
 			}
 			// Deferred-shadow counters (retired slice, ~a few frames old):
 			// overlay slots + throttled telemetry. Saturation of the
@@ -3585,24 +3554,17 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	if (tick && m_asyncReadbackTicket == 0) {
 		m_pendingReadbackSlot = frameSlot;
 		m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
-		m_pendingReadbackHasFeedback = feedbackActive;
 		// DS counters (40 B) ride the same batch (no extra submit): the
 		// slice's zero-fill was only STAGED in UpdateForwardPlusLights
 		// (ring flush happens at EndAndPresent), so the transfer-queue
 		// FIFO keeps this copy ahead of it and it reads the retired
 		// accumulation like the exposure histogram does.
 		m_pendingReadbackHasDs = DsActive();
-		if (m_pendingReadbackHasFeedback)
-			m_pendingFeedback.assign(m_textureFeedback->GetSlotCount(),
-				smvk::TextureFeedback::kNoReport);
 		auto dlsSpan = buildPendingDownloads();
 		if (!dlsSpan.empty())
 			m_asyncReadbackTicket =
 				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
 	}
-
-		if (feedbackActive)
-			m_textureFeedback->ClearForFrame(frameSlot);
 	}
 
 	// ---------------------------------------------------------------------
@@ -5061,12 +5023,12 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		smvk::ShaderProgram* opaqueProgram) {
 		// EVSM direct path: same caster walk as RecordShadowCastersDirect.
 		// Phases split by cost — phase 1 (opaque) binds the CHEAP moments
-		// program when provided (no material read / texture fetch /
-		// feedback atomic; per-fragment work is two exp() + two squares + the
+		// program when provided (no material read / texture fetch;
+		// per-fragment work is two exp() + two squares + the
 		// RGBA32F store, ~the PCF depth-only cost), phase 2 (MASK cutout)
 		// binds the full alpha-tested program. Binding the full FS for
-		// opaque measured ~30x the PCF pass (base-color sample +
-		// TS_ReportUsage atomic at 2xMSAA rates over a 2048^2 tile).
+		// opaque measured ~30x the PCF pass (base-color sample
+		// at 2xMSAA rates over a 2048^2 tile).
 		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
 		// Phase 2 masked pipeline: cull follows the material raster
 		// (matching the main view); rebinds only on cull changes.
@@ -6283,7 +6245,6 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
 	hot.giIntensity = data.giIntensity;
 	hot.giDebug = data.giDebug;
-	hot.textureFeedbackEnabled = (frameIdx & 3u) == 0u;
 	hot.cvolEnabled = data.cvolEnabled;
 	hot.pad_[0] = 0;
 	hot.pad_[1] = 0;
@@ -6617,8 +6578,6 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 		viewPc.renderViews = renderViewsAddress;
 		viewPc.mainRenderView = v.mainViewIdx;
 		viewPc.renderViewIndex = v.mainViewIdx;
-		// Feedback frame parity (1 in 4), same as the main pc fill.
-		viewPc.textureFeedbackEnabled = (fb.frameIndex & 3u) == 0u ? 1u : 0u;
 		return viewPc;
 	};
 	// Phase 1 — per-view shadow passes (PCF depth tiles only; EVSM is a
@@ -7201,11 +7160,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.bloom.desc.threshold = BLOOM_THRESHOLD * bloomScale;
 			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
-		// Texture-streaming feedback slice for this record. Unconditional:
-		// materials always declare the binding, and update-after-bind keeps
-		// the rewrite visible to this frame's commands. Without a streamer
-		// the writes are simply never consumed.
-		m_context->BindTextureFeedbackSlice(fb.frameIndex);
 		// SMAA T2x global toggle (see SmaaT2xState in smaa.h): one phase
 		// for the recorded-frame sequence, advanced once per T2x record.
 		// Any AA-mode change invalidates the history (a T2x -> 1x/Off ->
@@ -7470,10 +7424,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			.renderViews = renderViewsAddress,
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
-			// Texture-streaming feedback frame (1 in 4; byte 244 — past every
-			// tail overlay, so tail pushes never clobber it). Same frame
-			// parity as the hot slab upload (UpdateFrameUniforms).
-			.textureFeedbackEnabled = (fb.frameIndex & 3u) == 0u ? 1u : 0u,
 		};
 	// (size checked in App/push_constants.h)
 
@@ -11424,11 +11374,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							tstats.textureCount, tstats.fullResidentCount,
 							resMiB, fullMiB, savedPct,
 							tstats.upgradesLastUpdate, tstats.downgradesLastUpdate);
-						if (m_textureFeedback) {
-							ImGui::Text("GPU feedback: %u slots  %u reported last consume",
-								m_textureFeedback->GetSlotCount(),
-								m_textureFeedback->GetLastReported());
-						}
 					}
 					else {
 						ImGui::TextDisabled("Streaming: off (full-resident)");

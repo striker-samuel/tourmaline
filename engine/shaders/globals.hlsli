@@ -5,8 +5,7 @@
 // REMOVED: g_engineGlobals StructuredBuffer (was binding 3, set 0).
 // REPLACED: Frame constants moved to FramePSHot / FrameUniforms.
 //   - time, deltaTime, fps: now in FramePSHot (via FrameUniforms::frameHot.Get())
-//   - frameIndex: removed; texture streaming uses textureFeedbackEnabled flag
-//   - g_frameIndex() removed; use pc.textureFeedbackEnabled instead
+//   - frameIndex: removed; no per-frame frame gating in shaders
 // ---------------------------------------------------------------------------
 
 // ---- derived helpers (take time explicitly since pc not available in all stages) --

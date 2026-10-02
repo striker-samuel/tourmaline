@@ -15,9 +15,9 @@
 // so baked MaterialValues indices never go stale.
 //
 // Feedback (what SHOULD be resident) is the minimum of two sources:
-//   * GPU readback (Skull & Bones, GPU Zen 3): materials report the sampled
-//     LOD per texture into a device buffer (see texture_streaming.hlsli +
-//     texture_feedback.h); consumed every 4th frame via RequestMipFromLod.
+//   * GPU readback: the gfx filter reports the wanted mip per visible
+//     meshlet's material texture slots (see Renderer/gfx_filter; wired
+//     through RequestMipFromLod).
 //   * CPU heuristic: screen-coverage / distance demand (WantedMipFor*,
 //     driven by the scene pass) covers pre-warming and edge cases.
 // Both feed the same min-demand; Update() enforces the budget either way.
@@ -140,8 +140,8 @@ public:
 		float viewportHeightPx, float fovYRad, uint32_t frameIndex,
 		float approxWorldSize = 2.0f);
 
-	// Bindless slot -> streamed TextureHandle snapshot for the GPU
-	// feedback consume (TextureFeedback::ForwardDownloaded). Slots without
+	// Bindless slot -> streamed TextureHandle snapshot for demand
+	// consumers (slot-keyed GPU feedback). Slots without
 	// a streamed texture hold an empty handle. Sized to the highest live
 	// slot + 1 (may be shorter than the consume range; the consumer takes
 	// the minimum).

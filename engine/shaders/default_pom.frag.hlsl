@@ -268,7 +268,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], uvP);
-        TS_ReportUsage(slot, baseTex, samplers[0], uvP, clipPos.xy, pc.textureFeedbackEnabled != 0u);
     }
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = mat.diffuse.rgb * vcolTint * baseSample.rgb;
@@ -296,7 +295,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
         float4 mrSample = mrTex.Sample(samplers[0], uvP);
-        TS_ReportUsage(slot, mrTex, samplers[0], uvP, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         roughness *= mrSample.g;
         metallic  *= mrSample.b;
     }
@@ -312,7 +310,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)normalIdx;
         Texture2D nTex = textures[NonUniformResourceIndex(slot)];
         float2 mapXY = nTex.Sample(samplers[0], uvP).xy * 2.0f - 1.0f;
-        TS_ReportUsage(slot, nTex, samplers[0], uvP, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         mapXY *= normalScale;
         float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
         float3 mapN = normalize(float3(mapXY, mapZ));
@@ -332,7 +329,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
         float occSample = occTex.Sample(samplers[0], uvP).r;
-        TS_ReportUsage(slot, occTex, samplers[0], uvP, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
 
@@ -343,7 +339,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], uvP).rgb;
-        TS_ReportUsage(slot, eTex, samplers[0], uvP, clipPos.xy, pc.textureFeedbackEnabled != 0u);
         emissive *= eSample;
     }
 

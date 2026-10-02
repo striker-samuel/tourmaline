@@ -58,13 +58,7 @@ struct alignas(16) PushConstants {
 	// source floats {0,1,2, 4,5,6, 8,9,10, 12,13,14}, see the pack loop
 	// in world_renderer.cpp drawMotionNode).
 	float prevModel[12];
-	// Texture streaming feedback frame (1 in 4 frames). Replaces
-	// g_frameIndex() & 3u check in shader. Lives at byte 240 — INSIDE
-	// the 192..256 scratch region but past every overlay user (filtered
-	// VS tail 192..224, direct chart tail 192..208, per-draw prevModel
-	// push 192..240), so no tail push ever clobbers it.
-	uint32_t textureFeedbackEnabled;
-	uint32_t padEnd_[3];
+	uint32_t padEnd_[4];
 };
 static_assert(sizeof(PushConstants) == 256, "PushConstants must be exactly 256 bytes (engine limit; mirrors common.hlsli)");
 
@@ -86,6 +80,5 @@ static_assert(offsetof(PushConstants, lightsBuffer) == 72, "lightsBuffer mirror 
 static_assert(offsetof(PushConstants, renderViews) == 176, "renderViews mirror drift");
 static_assert(offsetof(PushConstants, mainRenderView) == 184, "mainRenderView mirror drift");
 static_assert(offsetof(PushConstants, renderViewIndex) == 188, "renderViewIndex mirror drift");
-static_assert(offsetof(PushConstants, textureFeedbackEnabled) == 240, "textureFeedbackEnabled must sit past every overlay (240)");
 
 } // namespace app

@@ -1871,16 +1871,6 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 			smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 	}
-	// Texture-streaming feedback slice for this record. Unconditional:
-	// the lit/unlit/debug materials always declare g_texFeedback and
-	// report into it (see texture_streaming.hlsli), and update-after-bind
-	// keeps the rewrite visible to this frame's commands. Without this
-	// the binding stays null and every textured draw trips GPU-AV
-	// (VUID-vkCmdDrawIndexed-None-08114) and faults. App does the same
-	// (see WorldRenderer). The editor drives demand from the CPU
-	// distance pass (UpdateTextureStreaming), so the GPU writes here
-	// are simply never consumed.
-	m_context->BindTextureFeedbackSlice(fb.frameIndex);
 	// Flush bindless descriptor writes (scene texture views, samplers)
 	// BEFORE Execute records — App does the same (see WorldRenderer).
 	// Without this the textures[] array stays uninitialized and the

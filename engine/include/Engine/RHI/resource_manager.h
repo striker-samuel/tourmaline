@@ -114,12 +114,6 @@ public:
     uint64_t SubmitAsyncDownloadDataFromBuffers(std::span<const BufferDownload> downloads);
     bool PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::span<const BufferDownload> downloads);
     bool HasAsyncDownloadInFlight() const;
-    // Texture-streaming feedback ring (Skull & Bones style GPU readback):
-    // per-flight-slice device buffer, one uint per bindless slot.
-    BufferHandle GetTextureFeedbackBuffer(uint32_t flightSlot);
-    // Rewrites the set-0 feedback binding to the given flight slice. Call
-    // once per record before passes execute.
-    void BindTextureFeedbackSlice(uint32_t flightSlot);
     // Debug readback: GPU color image (layer 0, mip 0, tightly packed) ->
     // CPU memory. currentLayout must be the image's ACTUAL layout (the
     // rendergraph does not write sync states back; a guessed Undefined

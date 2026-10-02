@@ -3,11 +3,11 @@
 
 // EVSM moment pass — OPAQUE-caster leg (paired with shadow_evsm.frag.hlsl,
 // the alpha-tested MASK leg). Opaque geometry needs no alpha test, so this
-// shader skips the material read, the base-color fetch and the
-// TS_ReportUsage atomic entirely: per-fragment cost is two exp() + two
+// shader skips the material read and the base-color fetch entirely:
+// per-fragment cost is two exp() + two
 // squares + the RGBA32F store (~the PCF depth-only pass cost). Binding the
 // full material path for opaque casters measured ~30x PCF (texture sample
-// + global atomic at 2xMSAA rates over a 2048^2 tile).
+// at 2xMSAA rates over a 2048^2 tile).
 //
 // Vertex shader: shadow.vert.hlsl mainVS (same lightVP convention as the
 // depth-only path). Runs with a 2xMSAA RGBA32F color target + 2xMSAA D32
