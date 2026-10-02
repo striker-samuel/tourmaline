@@ -434,6 +434,113 @@ void TestLobeGrouping() {
 }
 
 // ---------------------------------------------------------------------------
+// T-demand: draw-level texture-demand plumbing (pure CPU BuildBatches
+// pieces): per-mesh union bounds, the material mirror in the draw ring
+// (HLSL GfxDraw.misc2.y), and the designated-publisher bit — exactly one
+// batch per draw (its first) carries BatchFlagBit_DemandPublisher, so the
+// GPU publishes one demand per draw instead of one per surviving cluster.
+// ---------------------------------------------------------------------------
+
+void TestDemandPlumbing() {
+	using namespace smvk::gfx;
+	State s{};
+	// Sphere cooks to many clusters; the tri is a single cluster.
+	const uint32_t sphere = RegisterMeshFromUpload(s, MakeSphere(12, 18, 1.0f), 0);
+	const uint32_t tri = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(3, 0, 0), glm::vec3(4, 0, 0), glm::vec3(3, 1, 0)), 0);
+	Check(sphere != UINT32_MAX && tri != UINT32_MAX, "gfx.demand.mesh-ids");
+	Check(s.meshBounds.size() == s.meshes.size(), "gfx.demand.bounds-per-mesh");
+
+	// Union bounds: every cluster sphere sits inside its mesh's bound.
+	bool covered = true;
+	for (size_t ci = 0; ci < s.clusters.size(); ++ci) {
+		const Cluster& c = s.clusters[ci];
+		const glm::vec4& mb = s.meshBounds[c.mesh];
+		const float d = glm::length(c.boundCenter - glm::vec3(mb));
+		covered = covered && (d + c.boundRadius <= mb.w + 1e-4f);
+	}
+	Check(covered, "gfx.demand.union-covers-clusters");
+	// The sphere mesh's union bound is strictly larger than any single
+	// cluster bound (sanity: the union actually unions).
+	const Mesh& sm = s.meshes[sphere];
+	float maxClusterR = 0.0f;
+	for (uint32_t ci = 0; ci < sm.clusterCount; ++ci)
+		maxClusterR = std::max(maxClusterR,
+			s.clusters[sm.clusterStart + ci].boundRadius);
+	Check(s.meshBounds[sphere].w > maxClusterR, "gfx.demand.union-larger");
+
+	// Camera in front of the sphere: all clusters survive the
+	// degenerate-flag-only CPU pre-cull, so every draw keeps its batches.
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(0.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	v.cullFlags = CullFlagBit_Degenerate;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	PushDraw(s, 0, sphere, glm::mat4(1.0f), 9);
+	PushDraw(s, 0, tri, glm::mat4(1.0f), 5);
+	PushDraw(s, 0, sphere,
+		glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, 0.0f, 0.0f)), 5);
+	BuildBatches(s, 0);
+
+	const View& out = s.views[0];
+	// Material mirror: stable material sort maps the pushes to
+	// (tri,5), (sphere+0.2x,5), (sphere,9).
+	const bool sortOk = out.drawConstants.size() == 3
+		&& out.drawConstants[0].material == 5 && out.drawConstants[0].mesh == tri
+		&& out.drawConstants[1].material == 5 && out.drawConstants[1].mesh == sphere
+		&& out.drawConstants[2].material == 9 && out.drawConstants[2].mesh == sphere;
+	Check(sortOk, "gfx.demand.material-mirror");
+
+	// Designated-publisher bit: exactly one per draw, on its FIRST batch
+	// (batches of a draw are contiguous after the material sort; the
+	// first emitted batch carries the bit, later ones never do).
+	uint32_t designated = 0;
+	bool firstOnly = true;
+	uint32_t prevDraw = UINT32_MAX;
+	bool seenForDraw = false;
+	for (size_t bi = 0; bi < out.batchCount; ++bi) {
+		const Batch& b = out.batches[bi];
+		const bool bit = (b.flags & BatchFlagBit_DemandPublisher) != 0;
+		if (b.draw != prevDraw) {
+			prevDraw = b.draw;
+			seenForDraw = false;
+		}
+		if (bit) {
+			++designated;
+			firstOnly = firstOnly && !seenForDraw;
+			seenForDraw = true;
+		}
+	}
+	Check(firstOnly, "gfx.demand.first-only");
+	// 3 surviving draws => exactly 3 designated publishers.
+	Check(designated == 3, "gfx.demand.one-per-draw");
+	// The single-cluster tri draw has exactly one batch and it is the
+	// designated one (the degenerate-only cull keeps it).
+	size_t triBatches = 0, triDesignated = 0;
+	for (size_t bi = 0; bi < out.batchCount; ++bi) {
+		if (out.batches[bi].draw < out.drawConstants.size()
+			&& out.drawConstants[out.batches[bi].draw].mesh == tri) {
+			++triBatches;
+			triDesignated +=
+				(out.batches[bi].flags & BatchFlagBit_DemandPublisher) ? 1 : 0;
+		}
+	}
+	Check(triBatches == 1 && triDesignated == 1, "gfx.demand.tri-single");
+}
+
+// ---------------------------------------------------------------------------
 // T4: pre-cull wiring (sphere + cone) on a real mesh.
 //
 // ExpectedCull re-implements the decision independently (world-space sphere
@@ -1736,9 +1843,13 @@ void TestJitterCullStability() {
 	Check(guardOverCull == 0, "gfx.jitter.guard-conservative");
 
 	// Far-outside geometry still culls with the guard on (both phases).
-	const glm::vec3 far(1.5f * d / fx, 0.0f, -d);
-	Check(!keepsSphere(vpA, far, r, kGuardPx), "gfx.jitter.guard-still-culls-a");
-	Check(!keepsSphere(vpB, far, r, kGuardPx), "gfx.jitter.guard-still-culls-b");
+	// (Named farOut, not far: windows.h's legacy empty `far` macro would
+	// expand the identifier away and turn the calls below into syntax
+	// errors — latent since this test landed; surfaced by the first test
+	// rebuild since.)
+	const glm::vec3 farOut(1.5f * d / fx, 0.0f, -d);
+	Check(!keepsSphere(vpA, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-a");
+	Check(!keepsSphere(vpB, farOut, r, kGuardPx), "gfx.jitter.guard-still-culls-b");
 	// Deep-inside geometry still keeps without the guard (sanity).
 	const glm::vec3 inside(0.0f, 0.0f, -d);
 	Check(keepsSphere(vpA, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-a");
@@ -1752,6 +1863,7 @@ int main() {
 	TestRegistration();
 	TestBatching();
 	TestLobeGrouping();
+	TestDemandPlumbing();
 	TestPreCull();
 	TestTwoSided();
 	TestTemporalSnapshot();

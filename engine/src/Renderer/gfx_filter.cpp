@@ -267,8 +267,21 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.shadowViewCount = 0;
 	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
+	if (!s.meshBoundsLogical.empty()) rg.FreeBuffer(s.meshBoundsLogical);
 	s.indexHeapLogical = {};
 	s.clusterLogical = {};
+	s.meshBoundsLogical = {};
+	s.meshBoundsBuffer = {};
+	// Demand source (no rendergraph logicals by design — the retired
+	// feedback-ring pattern: transfer fills + the async readback chain
+	// carry the sync, the rendergraph never tracks these buffers).
+	s.textureMetaBuffer = {};
+	s.textureMetaEpoch = 0;
+	s.textureMetaCount = 0;
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+		s.demandBuffers[f] = {};
+	s.demandMaterialsBda = 0;
+	s.demandMipBias = 0.0f;
 	s.views.clear();
 	s.viewCount = 0;
 	FreeIndexRegion(s.clusterIndexAllocBits);
@@ -700,6 +713,27 @@ static uint32_t FinishMesh(State& s, uint32_t clusterStart) {
 	Mesh entry{};
 	entry.clusterStart = clusterStart;
 	entry.clusterCount = (uint32_t)s.clusters.size() - clusterStart;
+	// Union bound over the mesh's clusters (object space) for the
+	// draw-level demand publisher (PublishDrawDemand projects it by the
+	// draw's model, exactly like ClusterOccluded does with cluster
+	// bounds). AABB of the cluster spheres; the half-diagonal radius
+	// covers the box conservatively — a too-large bound only over-requests
+	// texture detail (the safe direction), never misses a visible one.
+	glm::vec3 mn(std::numeric_limits<float>::infinity());
+	glm::vec3 mx(-std::numeric_limits<float>::infinity());
+	for (uint32_t ci = clusterStart; ci < (uint32_t)s.clusters.size(); ++ci) {
+		const Cluster& c = s.clusters[ci];
+		mn = glm::min(mn, c.boundCenter - glm::vec3(c.boundRadius));
+		mx = glm::max(mx, c.boundCenter + glm::vec3(c.boundRadius));
+	}
+	glm::vec4 bound(0.0f, 0.0f, 0.0f, 0.0f);
+	if (!(mn.x <= mx.x))
+		// NaN cluster bounds (cooker bug): force the untestable-sharpest
+		// path (radius so large the eye is inside the sphere).
+		bound = glm::vec4(0.0f, 0.0f, 0.0f, 1e30f);
+	else
+		bound = glm::vec4((mn + mx) * 0.5f, glm::length((mx - mn) * 0.5f));
+	s.meshBounds.push_back(bound);
 	s.meshes.push_back(entry);
 	return (uint32_t)s.meshes.size() - 1;
 }
@@ -816,6 +850,9 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	s.clusterLogical = {};
 	s.clusterBuffer = {};
+	if (!s.meshBoundsLogical.empty()) rg.FreeBuffer(s.meshBoundsLogical);
+	s.meshBoundsLogical = {};
+	s.meshBoundsBuffer = {};
 	FreeIndexRegion(s.clusterIndexAllocBits);
 	s.clusterIndexBase = 0;
 	// One rendergraph logical for the static index monoblock (mesh +
@@ -855,6 +892,20 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 		table.data(), table.size() * sizeof(ClusterConstants),
 		PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 	s.clusterLogical = rg.AddExternalBuffer(s.clusterBuffer, "gfx clusters");
+	// Per-mesh union bounds (static like the cluster table; the designated
+	// demand-publisher groups read them every dispatch).
+	if (!s.meshBounds.empty()) {
+		s.meshBoundsBuffer = ctx.CreateBuffer(
+			s.meshBounds.size() * sizeof(glm::vec4),
+			BufferType_Storage, "gfx mesh bounds");
+		if (!s.meshBoundsBuffer.empty()) {
+			ctx.UploadDataToBuffer(s.meshBoundsBuffer,
+				s.meshBounds.data(), s.meshBounds.size() * sizeof(glm::vec4),
+				PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+			s.meshBoundsLogical = rg.AddExternalBuffer(
+				s.meshBoundsBuffer, "gfx mesh bounds");
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1682,6 +1733,7 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.drawSet = d.drawSet;
 		dc.lmChunk = d.lmChunk;
 		dc.lmChartOffset = d.lmChartOffset;
+		dc.material = d.material;
 		v.drawConstants.push_back(dc);
 	}
 
@@ -1718,6 +1770,12 @@ void BuildBatches(State& s, uint32_t view) {
 		}
 		const glm::mat4 invModel = glm::inverse(d.model);
 		const bool twoSided = (d.flags & DrawFlagBit_TwoSided) != 0;
+		// First surviving batch of THIS draw publishes its texture demand
+		// (BatchFlagBit_DemandPublisher): every group of the draw shares
+		// the material, so one designated group per draw keeps the
+		// publication count at (in-frustum draws x <=5 atomics) instead
+		// of (surviving clusters x 5).
+		bool firstBatchForDraw = true;
 		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
 			if (batchSlot >= kMaxBatches) {
 				static bool warnedInnerCap = false;
@@ -1735,11 +1793,13 @@ void BuildBatches(State& s, uint32_t view) {
 				++v.stats.clustersCulled;
 				continue;
 			}
-			Batch b{};
-			b.cluster = mesh.clusterStart + ci;
-			b.draw = sorted;
-			b.outputOffset = batchSlot * kMaxClusterTris * 3;
-			v.batches.push_back(b);
+		Batch b{};
+		b.cluster = mesh.clusterStart + ci;
+		b.draw = sorted;
+		b.outputOffset = batchSlot * kMaxClusterTris * 3;
+		b.flags = firstBatchForDraw ? BatchFlagBit_DemandPublisher : 0u;
+		firstBatchForDraw = false;
+		v.batches.push_back(b);
 			v.stats.trianglesProcessed += c.triCount;
 			++batchSlot;
 		}
@@ -1780,6 +1840,8 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
 	pass.AddBufferHint(s.indexHeapLogical, computeRead);
 	pass.AddBufferHint(s.clusterLogical, computeRead);
+	if (!s.meshBoundsLogical.empty())
+		pass.AddBufferHint(s.meshBoundsLogical, computeRead);
 	pass.AddBufferHint(v.batchLogicals[f], computeRead);
 	pass.AddBufferHint(v.drawLogicals[f], computeRead);
 	BufferSyncRequest computeRW{};
@@ -1895,6 +1957,24 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 		}
 	}
 
+	// Draw-level texture-demand inputs (designated-publisher groups;
+	// PublishDrawDemand gates on textureMetaCount). Belt and braces: any
+	// null BDA zero-gates the whole set — a null dereference is an MMU
+	// fault and takes the whole device down (same rule as the HZB guard
+	// above). The demand ring slice is THIS dispatch's flight slice (same
+	// f as batches/draws above); the materials BDA is the app's per-frame
+	// slice resolved in SetDemandInputs.
+	push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+	push.materials = s.demandMaterialsBda;
+	push.textureMeta = ctx.GetBufferDeviceAddress(s.textureMetaBuffer);
+	push.textureDemand = ctx.GetBufferDeviceAddress(s.demandBuffers[f]);
+	push.textureMetaCount = s.textureMetaCount;
+	push.mipBias = s.demandMipBias;
+	if (push.meshBounds == 0 || push.materials == 0 || push.textureMeta == 0
+		|| push.textureDemand == 0) {
+		push.textureMetaCount = 0;
+	}
+
 	// DEBUG: Log filter dispatch HZB parameters
 	static uint64_t s_filterDispatchCount = 0;
 	if ((s_filterDispatchCount++ % 60) == 0) {
@@ -1906,6 +1986,79 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch(v.batchCount, 1, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Draw-level texture demand (designated-publisher source)
+// ---------------------------------------------------------------------------
+
+void SetDemandInputs(State& s, ResourceManager& ctx,
+	uint64_t materialsBda, float mipBias) {
+	s.demandMaterialsBda = materialsBda;
+	s.demandMipBias = mipBias;
+	if (!s.demandBuffers[0].empty())
+		return; // ring already created (per-State lifetime, like the pools)
+	// Pre-fill the whole ring with the no-report sentinel so the first
+	// consume before any GPU write observes "no demand", not garbage
+	// (mirror of the retired fragment-feedback ring's creation).
+	static std::vector<uint32_t> s_init;
+	if (s_init.empty())
+		s_init.assign(MAX_TEXTURES, kDemandNoReport);
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		s.demandBuffers[f] = ctx.CreateBuffer(
+			static_cast<VkDeviceSize>(MAX_TEXTURES) * sizeof(uint32_t),
+			BufferType_Storage, "gfx texture demand");
+		if (s.demandBuffers[f].empty())
+			return; // partial ring is safe: empty handles gate the dispatch
+		ctx.UploadDataToBuffer(s.demandBuffers[f],
+			s_init.data(), s_init.size() * sizeof(uint32_t),
+			PipelineStage(PipelineStageBit_Compute),
+			AccessFlags::ShaderRead | AccessFlags::ShaderWrite, 0, 0);
+	}
+}
+
+bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
+	const TextureMeta* meta, size_t count) {
+	// count == 0 (no streamed textures at all): the publisher is gated
+	// off, but the epoch is absorbed so this stops re-attempting.
+	if (meta == nullptr || count == 0 || count > MAX_TEXTURES) {
+		s.textureMetaCount = 0;
+		s.textureMetaEpoch = epoch;
+		return true;
+	}
+	if (s.textureMetaEpoch == epoch && !s.textureMetaBuffer.empty())
+		return true; // unchanged (register/unregister only — slots are
+	// stable across retargets, so retargets never re-upload)
+	s.textureMetaBuffer = ctx.CreateBuffer(
+		static_cast<VkDeviceSize>(count) * sizeof(TextureMeta),
+		BufferType_Storage, "gfx texture meta");
+	if (s.textureMetaBuffer.empty())
+		return false; // retry next frame (epoch stays stale)
+	ctx.UploadDataToBuffer(s.textureMetaBuffer,
+		meta, count * sizeof(TextureMeta),
+		PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+	s.textureMetaEpoch = epoch;
+	s.textureMetaCount = static_cast<uint32_t>(count);
+	return true;
+}
+
+void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex) {
+	if (frameIndex >= MAX_FRAMES_IN_FLIGHT || s.demandBuffers[frameIndex].empty())
+		return;
+	// No-report fill of the whole slice (buffers always hold MAX_TEXTURES
+	// slots; clearing the full slice keeps the upload size constant — the
+	// retired fragment-feedback ring's pattern). The transfer chain orders
+	// this fill after the in-flight readback copy (download-before-clear),
+	// and the frame's filter writes wait the chain (the same ordering every
+	// other per-frame upload relies on), so a stale min can never pin a
+	// texture sharp forever after the camera moves away.
+	static std::vector<uint32_t> s_clear;
+	if (s_clear.empty())
+		s_clear.assign(MAX_TEXTURES, kDemandNoReport);
+	ctx.UploadDataToBuffer(s.demandBuffers[frameIndex],
+		s_clear.data(), s_clear.size() * sizeof(uint32_t),
+		PipelineStage(PipelineStageBit_Compute),
+		AccessFlags::ShaderRead | AccessFlags::ShaderWrite, 0, 0);
 }
 
 // DEBUG: Download and inspect HZB buffer contents (current flight's

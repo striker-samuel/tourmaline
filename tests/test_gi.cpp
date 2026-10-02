@@ -171,11 +171,14 @@ void TestSgSelfEnergy() {
 	const int N = 8192;
 	for (int s = 0; s < N; ++s)
 		acc.AddSample(UniformDir(rng), glm::vec3(1.0f), 4.0f * kPi / float(N));
-	bool near = true;
+	// (nearDiag, not near: windows.h's legacy empty `near` macro would
+	// swallow the identifier and turn this into a syntax error — latent
+	// until the first test rebuild since.)
+	bool nearDiag = true;
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		if (std::abs(acc.gram[i][i] - self) / self > 0.10f)
-			near = false;
-	Check(near, "sg gram diagonal matches self energy (<10%)");
+			nearDiag = false;
+	Check(nearDiag, "sg gram diagonal matches self energy (<10%)");
 }
 
 void TestSgFitHighContrast() {

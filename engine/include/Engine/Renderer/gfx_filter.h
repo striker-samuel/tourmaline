@@ -138,18 +138,49 @@ struct alignas(16) Draw {
 	// atlas UV as chartUv * xform[lmChartOffset + chartId].xy/zw.
 	// 0 when the mesh carries no lightmap.
 	uint32_t lmChartOffset = 0;
-	uint32_t pad[2] = {};
+	// Material id (HLSL GfxDraw.misc2.y). The designated publisher group
+	// resolves the draw's 5 texture slots through the materials buffer
+	// with it (PublishDrawDemand); no other stage reads it.
+	uint32_t material = 0xFFFFFFFFu;
+	uint32_t pad = 0; // HLSL misc2.z (misc2.w is the alignas tail)
 };
 static_assert(sizeof(Draw) == 96);
 
-// GPU batch entry (1x uvec4): cluster + draw + reserved output slot.
+// GPU batch entry (1x uvec4): (cluster, draw, outputOffset, flags).
 struct Batch {
 	uint32_t cluster = 0;
 	uint32_t draw = 0;
 	uint32_t outputOffset = 0; // in uints; batchSlot * kMaxClusterTris * 3
-	uint32_t pad = 0;
+	uint32_t flags = 0; // BatchFlags (HLSL batch.w: GFX_BATCH_*)
 };
 static_assert(sizeof(Batch) == 16);
+
+// Batch flags (stored in Batch::flags / HLSL batch.w).
+// DemandPublisher: this batch's workgroup is the designated publisher
+// for its draw's texture demand — the first batch emitted for the draw
+// in this view's material-sorted expansion (BuildBatches sets it). Every
+// group of a draw shares the draw's material, so one group publishes per
+// draw instead of one publication per surviving cluster.
+inline constexpr uint32_t BatchFlagBit_DemandPublisher = 0x1;
+typedef uint32_t BatchFlags;
+
+// Per-bindless-slot texture meta for the draw-level demand publisher
+// (HLSL GfxTextureMeta mirror, 8 bytes). longSide feeds the coverage
+// formula (WantedMipForScreenCoverage mirror); fullMips == 0 marks slots
+// without a streamed texture (the publisher skips them — RequestMip has
+// no entry to move). Built by TextureStreamer::BuildSlotMeta, uploaded
+// through UploadTextureMeta when the streamer's meta epoch bumps
+// (register/unregister only — slots are stable across retargets).
+struct TextureMeta {
+	uint32_t longSide = 0; // max(baseWidth, baseHeight) texels
+	uint32_t fullMips = 0; // 0 = slot holds no streamed texture
+};
+static_assert(sizeof(TextureMeta) == 8);
+
+// Demand sentinel: one uint per bindless slot in the demand ring;
+// 0xFFFFFFFF = "no draw reported this texture this frame" (the consumer
+// skips it; the min-publication starts from this fill every frame).
+inline constexpr uint32_t kDemandNoReport = 0xFFFFFFFFu;
 
 // Compute push. Must match HLSL GfxFilterPush in gfxfilter.hlsli (192 bytes).
 struct FilterPush {
@@ -181,8 +212,19 @@ struct FilterPush {
 	// absolutely and the index binding never switches buffers.
 	uint32_t indexBase = 0;
 	uint32_t pad3 = 0;
+	// Draw-level texture-demand inputs (PushAndDispatch zero-gates
+	// textureMetaCount when ANY of these BDAs is null — a null BDA
+	// dereference is an MMU fault and takes the whole device down; same
+	// belt-and-braces rule as the HZB inputs, and the shader's single
+	// PublishDrawDemand gate).
+	uint64_t meshBounds = 0;      // BDA of the per-mesh union-bound table
+	uint64_t materials = 0;      // BDA of THIS frame's MaterialValues slice
+	uint64_t textureMeta = 0;     // BDA of the per-bindless-slot meta table
+	uint64_t textureDemand = 0;  // BDA of this flight's demand ring slice
+	uint32_t textureMetaCount = 0; // live slot count (atomic range bound)
+	float mipBias = 0.0f;         // mirrors TextureStreamerConfig::mipBias
 };
-static_assert(sizeof(FilterPush) == 200);
+static_assert(sizeof(FilterPush) == 240);
 
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl, 32 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
@@ -625,6 +667,30 @@ struct State {
 	LogicalBufferHandle indexHeapLogical{};
 	Holder<BufferHandle> clusterBuffer;
 	LogicalBufferHandle clusterLogical{};
+	// Draw-level texture-demand source (gfxfilter.cs.hlsl
+	// PublishDrawDemand; see the FilterPush tail + the demand API below).
+	// meshBounds: per-mesh union bound over the mesh's clusters (xyz
+	// center, w radius, OBJECT space), static after UploadStaticData.
+	std::vector<glm::vec4> meshBounds;
+	Holder<BufferHandle> meshBoundsBuffer;
+	LogicalBufferHandle meshBoundsLogical{};
+	// textureMeta/epoch/count: per-slot meta table, re-uploaded only when
+	// the streamer's epoch bumps (register/unregister only; slots are
+	// stable across retargets so retargets never re-upload).
+	Holder<BufferHandle> textureMetaBuffer;
+	uint64_t textureMetaEpoch = 0;  // streamer epoch last uploaded (0 = none)
+	uint32_t textureMetaCount = 0; // live slot count in the uploaded table
+	// Demand ring: one uint per bindless slot per flight. SetDemandInputs
+	// creates it pre-filled with kDemandNoReport (the first consume before
+	// any GPU write observes "no demand", not garbage); ClearDemand
+	// re-fills every frame AFTER the consumer's download submit
+	// (download-before-clear; the transfer chain orders the fill after any
+	// in-flight copy, and the frame's filter writes wait the chain, so a
+	// stale min can never pin a texture sharp — the cadence the retired
+	// fragment-feedback ring proved).
+	Holder<BufferHandle> demandBuffers[MAX_FRAMES_IN_FLIGHT];
+	uint64_t demandMaterialsBda = 0; // this frame's slice (SetDemandInputs)
+	float demandMipBias = 0.0f;
 	Holder<ShaderModuleHandle> filterModule;
 	ShaderProgram filterProgram{};
 	Holder<ShaderModuleHandle> hizModule;
@@ -836,6 +902,38 @@ void AddConsumeHints(RenderPass& pass,
 	LogicalBufferHandle filteredLogical, LogicalBufferHandle indirectLogical);
 // Recording helper: pushes FilterPush and dispatches batchCount. No-op when empty.
 void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view);
+
+// ---- Draw-level texture demand (designated-publisher source) ----
+// Per-frame demand inputs (app-resolved): THIS frame's materials BDA
+// slice + the streamer's mip bias. Idempotent; call once per frame before
+// AppendPasses records the filter (PushAndDispatch reads them). Creates
+// the demand ring pre-filled with kDemandNoReport on first use.
+void SetDemandInputs(State& s, ResourceManager& ctx,
+	uint64_t materialsBda, float mipBias);
+// Uploads the per-slot meta table when the streamer's epoch changes.
+// Returns false on buffer/upload failure (retry next frame — the cached
+// epoch stays stale so the call re-attempts).
+bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
+	const TextureMeta* meta, size_t count);
+// Demand ring slice for the readback consumer (empty handle when the ring
+// was never created). Slots hold wanted FULL-CHAIN mips;
+// kDemandNoReport = no draw reported the texture this frame.
+[[nodiscard]] inline BufferHandle DemandBuffer(
+		const State& s, uint32_t frameIndex) {
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	return s.demandBuffers[frameIndex];
+}
+// Live slot count in the uploaded meta table (bounds the consumer's
+// download + forward range; 0 = demand source inactive — the shader's
+// publisher is gated off too).
+[[nodiscard]] inline uint32_t TextureMetaCount(const State& s) {
+	return s.textureMetaCount;
+}
+// Per-record demand clear: kDemandNoReport-fills the current flight
+// slice. Call AFTER the consumer's download submit (download-before-
+// clear, same queue-ordering the retired fragment-feedback ring used).
+// No-op when the ring was never created.
+void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
 
 // ---- Accessors (frame slices resolved from the view's frameIndex) ----
 [[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {

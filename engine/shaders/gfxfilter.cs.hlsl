@@ -63,81 +63,70 @@ float2 ConservativeRatioInterval(
     return float2(lo, hi);
 }
 
-// T4 per-cluster occlusion + contribution.
-//
-// IMPORTANT:
-// This version does not use the Euclidean "nearest point to eye" to derive
-// either the projected footprint or dNear. Instead it transforms the world
-// bounding sphere into conservative CLIP-coordinate intervals.
-//
-// That avoids two dangerous cases for Hi-Z:
-//   1) off-axis spheres getting a screen rect that is too small;
-//   2) Euclidean nearest-to-eye not being the nearest point in projected Z.
-//
-// A too-large bound merely misses some culling. A too-small bound can make
-// visible geometry disappear, so every failure path below returns "visible".
-bool ClusterOccluded(uint clusterIdx, uint drawIdx)
+// Projection result shared by the per-cluster occlusion test and the
+// draw-level texture-demand publisher (one projection core, two callers).
+struct BoundProjection
 {
-    uint flags = pcF.cullFlags;
-    bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
-    bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
+    bool testable;  // false: eye inside the sphere / near-plane cross / NaN
+                    // -> cull side KEEPS, demand side publishes the sharpest
+    bool onTarget;  // false: rect fully off-screen -> cull side keeps
+                    // (frustum stages handle it), demand side skips
+    float4 rect;   // (sx0, sy0, sx1, sy1) px, clamped + jitter-guard widened
+    float dNear;   // conservative nearest reversed-Z depth (0..1)
+};
 
-    // MASK draws can be excluded from the occlusion test: the MIN-reduced
-    // pyramid stores the NEAREST sub-texel per coarse texel, so one leaf
-    // texel of a cutout card poisons the whole texel "near" — dense masked
-    // foliage then culls clusters still visible through its own cutout
-    // holes. Contribution (if enabled) still applies either way.
-    if (wantOcc && (flags & GFX_CULL_HZBSKIPMASKED) != 0
-        && (pcF.draws.Get().draws[drawIdx].misc.z & GFX_DRAWSET_MASKED) != 0)
-        wantOcc = false;
-
-    if (!wantOcc && !wantCon)
-        return false;
-
-    if (pcF.hizMips == 0)
-        return false;
+// Conservative projection of an object-space bound sphere (xyz center, w
+// radius) by `model` into the framebuffer rect + nearest depth. All
+// failure paths return testable=false — every caller's failure direction
+// is the conservative one (keep geometry / over-request texture detail).
+//
+// Deviations-from-exactness notes (carried over from the old inline
+// ClusterOccluded math):
+//   - Max basis length turns the object-space sphere into a conservative
+//     world-space sphere even under non-uniform scale.
+//   - Treating numerator/denominator intervals independently widens the
+//     projected rect (deliberately conservative; must not be narrower).
+//   - dNear may be slightly nearer than the true sphere (safe: reduces
+//     culling; on the demand side it can only over-request).
+BoundProjection ProjectBound(float4 bound, float4x4 model)
+{
+    BoundProjection p;
+    p.testable = false;
+    p.onTarget = false;
+    p.rect = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    p.dNear = 0.0f;
 
     float width = (float) pcF.hizWidth;
     float height = (float) pcF.hizHeight;
     if (!(width > 0.0f) || !(height > 0.0f))
-        return false;
-
-    float4 bounds = pcF.clusters.Get().cluster[clusterIdx].b; // xyz center, w radius
-    float4x4 model = pcF.draws.Get().draws[drawIdx].model;
+        return p; // no extent: untestable
 
     // World-space bounding sphere.
-    //
-    // Max basis length turns the object-space sphere into a conservative
-    // world-space sphere even under non-uniform scale.
-    float3 wc = mul(model, float4(bounds.xyz, 1.0f)).xyz;
+    float3 wc = mul(model, float4(bound.xyz, 1.0f)).xyz;
     // Explicit columns (._RC is row/column by position, independent of the
     // matrix majorness): basis vectors for the world-sphere scale.
     float bs = max(
         length(float3(model._11, model._21, model._31)),
         max(length(float3(model._12, model._22, model._32)),
             length(float3(model._13, model._23, model._33))));
-    float wr = bounds.w * bs;
+    float wr = bound.w * bs;
 
     if (!(wr >= 0.0f))
-        return false; // catches NaN
+        return p; // catches NaN
 
-    // Eye inside the sphere -> never occlusion-cull it.
+    // Eye inside the sphere -> never occlusion-cull / always sharpest.
     float3 toEye = pcF.eye - wc;
     float dist = length(toEye);
     if (!(dist > wr))
-        return false;
+        return p;
 
     float4 clipC = mul(pcF.viewProj, float4(wc, 1.0f));
 
-    // For p = wc + delta, |delta| <= wr:
-    //
-    // clip_i(p) = clip_i(wc) + dot(viewProj row_i.xyz, delta)
-    //
-    // therefore each clip component varies by at most
-    // wr * length(row_i.xyz). Rows are spelled out with ._RC accessors
-    // (row/column by position, independent of matrix majorness): with the
-    // push uploaded untransposed, pcF.viewProj[i] would be column i, not
-    // row i, so single-subscript indexing must not be used here.
+    // For p = wc + delta, |delta| <= wr: each clip component varies by at
+    // most wr * length(row_i.xyz). Rows are spelled out with ._RC
+    // accessors (row/column by position, independent of matrix majorness):
+    // with the push uploaded untransposed, pcF.viewProj[i] would be column
+    // i, not row i, so single-subscript indexing must not be used here.
     float xRadius = wr * length(float3(pcF.viewProj._11, pcF.viewProj._12, pcF.viewProj._13));
     float yRadius = wr * length(float3(pcF.viewProj._21, pcF.viewProj._22, pcF.viewProj._23));
     float zRadius = wr * length(float3(pcF.viewProj._31, pcF.viewProj._32, pcF.viewProj._33));
@@ -147,9 +136,8 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     float wMax = clipC.w + wRadius;
 
     // Sphere touches/crosses the camera plane, or invalid math.
-    // Do not occlusion-cull it.
     if (!(wMin > 1e-6f) || !(wMax >= wMin))
-        return false;
+        return p;
 
     // Conservative projected NDC intervals for the complete world sphere.
     float2 ndcX = ConservativeRatioInterval(
@@ -158,17 +146,15 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
         clipC.y, yRadius, wMin, wMax);
 
     // Reversed-Z nearest depth = maximum projected z/w over the sphere.
-    // The interval construction is conservative, so dNear may be slightly
-    // nearer than the real sphere. That is safe: it only reduces culling.
     float2 ndcZ = ConservativeRatioInterval(
         clipC.z, zRadius, wMin, wMax);
     float dNear = ndcZ.y;
 
     // NaN / invalid depth / near-plane intersection -> keep.
     if (!(dNear >= 0.0f))
-        return false;
+        return p;
     if (dNear > 1.0f)
-        return false;
+        return p;
 
     // Framebuffer coordinates. The projection already contains the Y flip,
     // so no additional texture-space flip is applied.
@@ -178,11 +164,15 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     float y1 = (ndcY.y * 0.5f + 0.5f) * height;
 
     if (!(x1 >= x0) || !(y1 >= y0))
-        return false;
+        return p;
 
-    // Completely off-target: leave this to the frustum stages.
-    if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
-        return false;
+    // Completely off-target: leave this to the frustum stages (cull side
+    // keeps; the demand side skips publication).
+    if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height) {
+        p.testable = true;
+        p.onTarget = false;
+        return p;
+    }
 
     // Clamp only after the off-target test, then widen by the jitter guard
     // (conservative: more overlapped texels must ALL occlude, so this only
@@ -193,19 +183,21 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     float sy0 = clamp(clamp(y0, 0.0f, height) - GFX_CULL_GUARD_PX, 0.0f, height);
     float sy1 = clamp(clamp(y1, 0.0f, height) + GFX_CULL_GUARD_PX, 0.0f, height);
 
-    float rectW = max(sx1 - sx0, 0.0f);
-    float rectH = max(sy1 - sy0, 0.0f);
+    p.testable = true;
+    p.onTarget = true;
+    p.rect = float4(sx0, sy0, sx1, sy1);
+    p.dNear = dNear;
+    return p;
+}
 
-    // Contribution test uses a conservative upper bound on projected area.
-    // If even this upper bound is below the threshold, culling is safe.
-    if (wantCon && pcF.minContribution > 0.0f
-        && rectW * rectH < pcF.minContribution)
-    {
-        return true;
-    }
-
-    if (!wantOcc)
-        return false;
+// HZB verdict for a projected bound: true = provably fully occluded (the
+// nearest conservative depth sits behind EVERY covered MIN-reduced texel).
+// Empty footprints/ranges keep (callers decide their own keep direction).
+// Mirrors the old inline ClusterOccluded loop exactly.
+bool BoundHzbOccluded(BoundProjection p)
+{
+    const float rectW = max(p.rect.z - p.rect.x, 0.0f);
+    const float rectH = max(p.rect.w - p.rect.y, 0.0f);
 
     // Empty / subnormal projected footprint: keep.
     if (!(rectW > 0.0f) || !(rectH > 0.0f))
@@ -246,13 +238,13 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     // represented-extent early-out. A floor-halved chain would need one.
 
     uint tx0 = (uint) clamp(
-        floor(sx0 / texel), 0.0f, (float) (lw - 1u));
+        floor(p.rect.x / texel), 0.0f, (float) (lw - 1u));
     uint tx1 = (uint) clamp(
-        floor(sx1 / texel), 0.0f, (float) (lw - 1u));
+        floor(p.rect.z / texel), 0.0f, (float) (lw - 1u));
     uint ty0 = (uint) clamp(
-        floor(sy0 / texel), 0.0f, (float) (lh - 1u));
+        floor(p.rect.y / texel), 0.0f, (float) (lh - 1u));
     uint ty1 = (uint) clamp(
-        floor(sy1 / texel), 0.0f, (float) (lh - 1u));
+        floor(p.rect.w / texel), 0.0f, (float) (lh - 1u));
 
     // Empty range must NEVER mean "occluded".
     if (tx0 > tx1 || ty0 > ty1)
@@ -260,8 +252,8 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
 
     // Tiny conservative reversed-Z bias. Moving dNear slightly toward the
     // camera makes borderline comparisons fail toward VISIBLE.
-    float depthBias = max(1e-7f, abs(dNear) * 1e-5f);
-    float testDepth = dNear + depthBias;
+    float depthBias = max(1e-7f, abs(p.dNear) * 1e-5f);
+    float testDepth = p.dNear + depthBias;
 
     // MIN HZB under reversed-Z:
     //
@@ -287,6 +279,156 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     }
 
     return true;
+}
+
+// T4 per-cluster occlusion + contribution: thin composition of
+// ProjectBound + BoundHzbOccluded (semantics identical to the old inline
+// math — the derivations live on those two now). Every failure path
+// keeps the cluster ("visible"): a too-large bound merely misses culling;
+// a too-small bound could make visible geometry disappear.
+bool ClusterOccluded(uint clusterIdx, uint drawIdx)
+{
+    uint flags = pcF.cullFlags;
+    bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
+    bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
+
+    // MASK draws can be excluded from the occlusion test: the MIN-reduced
+    // pyramid stores the NEAREST sub-texel per coarse texel, so one leaf
+    // texel of a cutout card poisons the whole texel "near" — dense masked
+    // foliage then culls clusters still visible through its own cutout
+    // holes. Contribution (if enabled) still applies either way.
+    if (wantOcc && (flags & GFX_CULL_HZBSKIPMASKED) != 0
+        && (pcF.draws.Get().draws[drawIdx].misc.z & GFX_DRAWSET_MASKED) != 0)
+        wantOcc = false;
+
+    if (!wantOcc && !wantCon)
+        return false;
+
+    if (pcF.hizMips == 0)
+        return false;
+
+    float width = (float) pcF.hizWidth;
+    float height = (float) pcF.hizHeight;
+    if (!(width > 0.0f) || !(height > 0.0f))
+        return false;
+
+    BoundProjection p = ProjectBound(
+        pcF.clusters.Get().cluster[clusterIdx].b, // xyz center, w radius
+        pcF.draws.Get().draws[drawIdx].model);
+
+    if (!p.testable)
+        return false; // eye inside / near-plane cross / NaN: keep
+    if (!p.onTarget)
+        return false; // off-target: leave this to the frustum stages
+
+    const float rectW = max(p.rect.z - p.rect.x, 0.0f);
+    const float rectH = max(p.rect.w - p.rect.y, 0.0f);
+
+    // Contribution test uses a conservative upper bound on projected area.
+    // If even this upper bound is below the threshold, culling is safe.
+    if (wantCon && pcF.minContribution > 0.0f
+        && rectW * rectH < pcF.minContribution)
+    {
+        return true;
+    }
+
+    if (!wantOcc)
+        return false;
+
+    return BoundHzbOccluded(p);
+}
+
+// Draw-level texture-demand publication (the designated publisher group
+// of each draw — batch flags bit 0; every group of a draw shares the
+// draw's material, so ONE group publishes per draw instead of one
+// publication per surviving cluster).
+//
+// The demand-side rules mirror the cull side exactly:
+//   - Provably hidden (draw bound HZB-occluded), fully off-target or
+//     below the contribution floor -> nothing of the draw survives the
+//     view -> no demand. Containment: the mesh sphere contains every
+//     cluster sphere, so its conservative rect covers every cluster rect
+//     and its dNear >= every cluster dNear — a draw bound that fails the
+//     test means every cluster bound fails it too, so skipping
+//     publication is never a missed demand, only an avoided over-request.
+//   - Untestable bound (eye inside / near-plane cross / NaN, or no HZB
+//     extent) -> publish the SHARPEST mip: the failure direction for
+//     demand is over-request, the opposite of the cull side's keep.
+//
+// wanted = the exact mirror of TextureStreamer::WantedMipForScreenCoverage:
+//   clamp(ceil(log2(max(1, baseLongSide) / max(1, coverage))) + mipBias,
+//         0, fullMips - 1)
+// (4096-texel texture on a 1024px object -> mip 2; on a 256px -> 4.)
+// LOD bias comes free: the bound is the SELECTED LOD sibling's own union
+// bound, so distant LOD selections naturally demand coarser mips.
+void PublishDrawDemand(uint drawIdx)
+{
+    // Single gate: PushAndDispatch zero-clears textureMetaCount when any
+    // demand-side BDA is null (a null BDA dereference is an MMU fault and
+    // takes the whole device down; same belt-and-braces rule as the HZB
+    // inputs — see the null-BDA guard in gfx_filter.cpp).
+    if (pcF.textureMetaCount == 0u)
+        return;
+
+    GfxDraw d = pcF.draws.Get().draws[drawIdx];
+    const uint material = d.misc2.y;
+    if (material == 0xFFFFFFFFu)
+        return; // no material: no texture slots to publish
+
+    // Coverage source: the conservative draw-bound rect when testable +
+    // on-target; the untestable default below yields mip 0 (sharpest) —
+    // the over-request direction.
+    float coveragePx = 1e9f; // "sharper than any texture"
+    if (pcF.hizWidth != 0u && pcF.hizHeight != 0u)
+    {
+        const BoundProjection p = ProjectBound(
+            pcF.meshBounds.Get().centerRadius[d.misc.x], d.model);
+        if (p.testable)
+        {
+            if (!p.onTarget)
+                return; // fully off-screen: the frustum stages cull it all
+            const uint flags = pcF.cullFlags;
+            const bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
+            if (wantCon && pcF.minContribution > 0.0f
+                && (p.rect.z - p.rect.x) * (p.rect.w - p.rect.y)
+                    < pcF.minContribution)
+                return; // below the contribution floor: culled anyway
+            bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0
+                && pcF.hizMips != 0u;
+            if (wantOcc && (flags & GFX_CULL_HZBSKIPMASKED) != 0
+                && (d.misc.z & GFX_DRAWSET_MASKED) != 0)
+                wantOcc = false;
+            if (wantOcc && BoundHzbOccluded(p))
+                return; // provably hidden: nothing of this draw survives
+            coveragePx = max(
+                p.rect.z - p.rect.x,
+                p.rect.w - p.rect.y);
+        }
+    }
+
+    // Per-slot wanted FULL-CHAIN mip (residency stays out of this shader:
+    // meta carries fullMips, the CPU consumes full-chain mips through
+    // TextureStreamer::RequestMip).
+    const int4 tex = pcF.materials.Get().mats[material].tex;
+    const int emissive = pcF.materials.Get().mats[material].tex2.x;
+    int slots[5] = { tex.x, tex.y, tex.z, tex.w, emissive };
+    const float coverage = max(1.0f, coveragePx);
+    [unroll]
+    for (int i = 0; i < 5; ++i)
+    {
+        if (slots[i] < 0)
+            continue; // slot unused by the material
+        const uint slot = (uint) slots[i];
+        if (slot >= pcF.textureMetaCount)
+            continue; // outside the uploaded meta range
+        const GfxTextureMeta meta = pcF.textureMeta.Get().meta[slot];
+        if (meta.fullMips == 0u)
+            continue; // no streamed texture at this slot
+        const float ratio = max(1.0f, (float) meta.longSide) / coverage;
+        const float mip = ceil(log2(ratio)) + pcF.mipBias;
+        const uint want = (uint) clamp(mip, 0.0f, (float)(meta.fullMips - 1u));
+        InterlockedMin(pcF.textureDemand.Get().demand[slot], want);
+    }
 }
 
 bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoSided)
@@ -412,7 +554,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Batch header: (clusterIndex, drawIndex, outputOffset, unused).
+    // Batch header: (clusterIndex, drawIndex, outputOffset, flags).
     uint4 header = (uint4) 0;
     if (gid < pcF.batchCount)
         header = pcF.batches.Get().batch[gid];
@@ -431,6 +573,13 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         if (ClusterOccluded(header.x, header.y))
             gClusterCull = 1;
     }
+
+    // Draw-level texture demand: the designated publisher group of each
+    // draw reports once (thread 0; independent of the compaction below —
+    // no groupshared use, no barrier interaction, runs parallel to the
+    // cluster-occlusion work above).
+    if (gid < pcF.batchCount && tid == 0 && (header.w & GFX_BATCH_DEMAND) != 0)
+        PublishDrawDemand(header.y);
     GroupMemoryBarrierWithGroupSync();
 
     bool cull = true;

@@ -147,6 +147,22 @@ public:
 	// the minimum).
 	std::vector<TextureHandle> BuildBindlessSlotMap() const;
 
+	// Per-slot meta for the gfx filter's draw-level demand publisher
+	// (gfxfilter.cs.hlsl PublishDrawDemand): baseLongSide + fullMips per
+	// bindless slot, same sizing rule as BuildBindlessSlotMap. Slots
+	// without a streamed texture report fullMips == 0 (the shader skips
+	// them). Slots are stable across retargets, so this only changes on
+	// register/unregister — gate uploads on SlotMetaEpoch.
+	struct TextureSlotMeta {
+		uint32_t longSide = 0; // max(baseWidth, baseHeight) texels
+		uint32_t fullMips = 0; // 0 = slot holds no streamed texture
+	};
+	std::vector<TextureSlotMeta> BuildSlotMeta() const;
+	// Bumped on every register/unregister (NOT on retargets — the
+	// slot->texture mapping is retarget-stable, only the slot set
+	// changes). Consumers re-upload their meta table when this moves.
+	uint64_t SlotMetaEpoch() const;
+
 	// CPU heuristic: which full-chain mip satisfies `screenCoveragePx`
 	// pixels of coverage for a texture with baseLongSide texels.
 	// m = ceil(log2(base / coverage)) + bias, clamped to [0, fullMips).
@@ -214,6 +230,7 @@ private:
 	// worker, same contract as LoadKtxTexturesParallelMemory). Update() and
 	// the frame loop never contend: loads join before frames start.
 	mutable std::mutex mutex_;
+	uint64_t slotMetaEpoch_ = 1; // bumps on register/unregister (see SlotMetaEpoch)
 	uint32_t statsUpgrades_ = 0;
 	uint32_t statsDowngrades_ = 0;
 };

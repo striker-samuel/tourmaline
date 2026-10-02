@@ -3345,6 +3345,45 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		}
 	}
 
+	// Gfx-filter demand wiring (draw-level designated-publisher source; the
+	// replacement for the retired per-fragment feedback): the filter's
+	// PublishDrawDemand resolves each in-frustum draw's material through
+	// the materials buffer, so THIS frame's BDA slice + the streamer's mip
+	// bias go in once per frame, before AppendPasses records the filter.
+	// The per-slot meta table re-uploads only when the streamer's epoch
+	// moves (register/unregister — slots are stable across retargets).
+	void WorldRenderer::UpdateGfxTextureDemand(uint32_t frameIndex) {
+		if (!m_textureStreamingEnabled || !m_textureStreamer)
+			return;
+		smvk::gfx::State& gfx = m_gfxRenderer.State();
+		if (!smvk::gfx::Valid(gfx))
+			return;
+		// THIS frame's MaterialValues slice (same resolution the main view
+		// uses for pc.materialsBuffer: base + frameIndex * slab).
+		const uint64_t materialsBda =
+			m_context->GetBufferDeviceAddress(m_resources.materialsBuffer)
+			+ frameIndex * sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+		smvk::gfx::SetDemandInputs(gfx, *m_context, materialsBda,
+			m_textureStreamer->GetConfig().mipBias);
+		const uint64_t epoch = m_textureStreamer->SlotMetaEpoch();
+		if (epoch == m_gfxMetaEpochUploaded)
+			return;
+		// Typed copy (streamer -> gfx layouts are deliberately decoupled;
+		// the loop is the trust boundary).
+		const std::vector<smvk::TextureStreamer::TextureSlotMeta> slots =
+			m_textureStreamer->BuildSlotMeta();
+		std::vector<smvk::gfx::TextureMeta> meta(slots.size());
+		for (size_t i = 0; i < slots.size(); ++i) {
+			meta[i].longSide = slots[i].longSide;
+			meta[i].fullMips = slots[i].fullMips;
+		}
+		if (smvk::gfx::UploadTextureMeta(gfx, *m_context, epoch,
+				meta.data(), meta.size()))
+			m_gfxMetaEpochUploaded = epoch;
+		// Upload failure: the gfx-cached epoch stays stale, so this
+		// re-attempts next frame.
+	}
+
 	// Histogram readback switch. ON: the engine download now uses a
 	// persistent grow-on-demand staging buffer (no per-call staging
 	// create/deferred destroy) and ProcessDeferrredTasks runs ready tasks
@@ -3487,15 +3526,30 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
+		// Gfx draw-level demand source (designated publisher): active once
+		// the filter runs AND the meta table is live (streaming enabled +
+		// at least one streamed slot). Gated off => no download leg, no
+		// per-frame clear (the shader's publisher is gated off too).
+		smvk::gfx::State& gfx = m_gfxRenderer.State();
+		const bool gfxDemandActive = m_textureStreamingEnabled
+			&& m_textureStreamer
+			&& smvk::gfx::Valid(gfx)
+			&& smvk::gfx::TextureMetaCount(gfx) > 0;
 	// Layout helper: the SAME span shape must accompany the submit and
 	// its poll (destinations are stable members; handles/sizes are fixed).
-	std::array<smvk::BufferDownload, 2> dls{};
+	std::array<smvk::BufferDownload, 3> dls{};
 	const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
 		uint32_t n = 0;
 		if (m_pendingReadbackHasExposure) {
 			dls[n] = { meter.HistogramBuffer(m_pendingReadbackSlot),
 				m_pendingExposureBins.data(),
 				m_pendingExposureBins.size() * sizeof(uint32_t), 0 };
+			++n;
+		}
+		if (m_pendingReadbackHasGfxDemand) {
+			dls[n] = { smvk::gfx::DemandBuffer(gfx, m_pendingReadbackSlot),
+				m_pendingGfxDemand.data(),
+				m_pendingGfxDemand.size() * sizeof(uint32_t), 0 };
 			++n;
 		}
 		if (m_pendingReadbackHasDs) {
@@ -3516,6 +3570,37 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			if (m_pendingReadbackHasExposure && ExposureMeteringActive()) {
 				m_exposureFrame = m_pendingReadbackSlot;
 				AdaptExposureFromBins(m_pendingExposureBins);
+			}
+			// Gfx draw-level texture demand (retired slice, ~a few frames
+			// old): full-chain mips, min-wins inside RequestMip — the CPU
+			// distance source merges the same way. kDemandNoReport slots
+			// (off-target / occluded / unstreamed) are skipped; absent
+			// requests let the streamer decay them toward the floor.
+			if (m_pendingReadbackHasGfxDemand && gfxDemandActive) {
+				const auto slotMap = m_textureStreamer->BuildBindlessSlotMap();
+				const size_t n = std::min(slotMap.size(), m_pendingGfxDemand.size());
+				uint32_t reported = 0;
+				for (size_t slot = 0; slot < n; ++slot) {
+					const uint32_t want = m_pendingGfxDemand[slot];
+					if (want == smvk::gfx::kDemandNoReport)
+						continue;
+					m_textureStreamer->RequestMip(slotMap[slot], want, streamFrame);
+					++reported;
+				}
+				m_gfxDemandReported = reported;
+				// Tick-counter throttle (not the frame-parity gates: polls
+				// land 1-2 frames after the submit tick, so a frame-parity
+				// gate on the poll frame misaligns with every submit
+				// cadence — the first 5 + every 64th always land in a
+				// 74-frame bench).
+				static uint64_t s_gfxDemandTick = 0;
+				const uint64_t dTick = s_gfxDemandTick++;
+				if (dTick < 5 || dTick % 64 == 0) {
+					std::fprintf(stderr,
+						"[gfxDemand] tick=%llu slice=%u reported=%u (async)\n",
+						(unsigned long long)m_frameCounter,
+						m_pendingReadbackSlot, reported);
+				}
 			}
 			// Deferred-shadow counters (retired slice, ~a few frames old):
 			// overlay slots + throttled telemetry. Saturation of the
@@ -3554,6 +3639,14 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	if (tick && m_asyncReadbackTicket == 0) {
 		m_pendingReadbackSlot = frameSlot;
 		m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
+		// Gfx demand slice rides the same batch (no extra submit): sized
+		// to the LIVE slot count at submit time (the retired slice holds
+		// at least that many reporting draws' publications; the poll's
+		// span shape uses this same member sizing).
+		m_pendingReadbackHasGfxDemand = gfxDemandActive;
+		if (m_pendingReadbackHasGfxDemand)
+			m_pendingGfxDemand.assign(
+				smvk::gfx::TextureMetaCount(gfx), smvk::gfx::kDemandNoReport);
 		// DS counters (40 B) ride the same batch (no extra submit): the
 		// slice's zero-fill was only STAGED in UpdateForwardPlusLights
 		// (ring flush happens at EndAndPresent), so the transfer-queue
@@ -3565,6 +3658,13 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			m_asyncReadbackTicket =
 				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
 	}
+
+	// Demand clear (download-before-clear: the transfer chain orders this
+	// fill after the in-flight readback copy above, and this frame's filter
+	// writes wait the chain — the cadence the retired fragment-feedback
+	// ring proved; a stale min would pin textures sharp forever).
+	if (gfxDemandActive)
+		smvk::gfx::ClearDemand(gfx, *m_context, frameSlot);
 	}
 
 	// ---------------------------------------------------------------------
@@ -7213,6 +7313,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		UpdateMaterials(fb.frameIndex);
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
+		UpdateGfxTextureDemand(fb.frameIndex);
 		const auto rfT0c = bench_clk::now();
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
 		const auto rfT1 = bench_clk::now();

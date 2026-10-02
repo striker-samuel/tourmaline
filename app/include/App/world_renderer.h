@@ -2437,11 +2437,25 @@ protected:
 	uint32_t m_pendingReadbackSlot = 0;
 	bool m_pendingReadbackHasExposure = false;
 	bool m_pendingReadbackHasDs = false;
+	bool m_pendingReadbackHasGfxDemand = false;
 	std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
 	std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
+	// Gfx draw-level demand download destination (sized to the live slot
+	// count at submit time; kDemandNoReport entries are skipped at poll).
+	std::vector<uint32_t> m_pendingGfxDemand;
+	// Streamer slot-meta epoch last uploaded into the gfx filter (0 = none
+	// yet; register/unregister bumps it — retargets never do).
+	uint64_t m_gfxMetaEpochUploaded = 0;
+	// Last consume's reported-slot count (telemetry).
+	uint32_t m_gfxDemandReported = 0;
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.
 	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);
+	// Gfx-filter demand wiring (once per frame, before AppendPasses records
+	// the filter): this frame's materials BDA slice + mip bias into the
+	// gfx state, and the per-slot meta table when the streamer's epoch
+	// moved (register/unregister only).
+	void UpdateGfxTextureDemand(uint32_t frameIndex);
 	// True when this frame may meter exposure (auto + pass + lit view).
 	// Shared by the histogram download and the batched feedback pairing.
 	bool ExposureMeteringActive() const;

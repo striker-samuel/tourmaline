@@ -138,6 +138,7 @@ Holder<TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t
 		e.lastRequestFrame = 0;
 		e.lastChangeFrame = 0;
 		entries_.emplace(EntryKey(holder), std::move(e));
+		++slotMetaEpoch_; // new slot content: gfx meta table re-upload
 		return holder;
 	}
 	catch (const std::exception& ex)
@@ -152,6 +153,7 @@ void TextureStreamer::Unregister(TextureHandle handle)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	entries_.erase(EntryKey(handle));
+	++slotMetaEpoch_; // slot content gone: gfx meta table re-upload
 }
 
 bool TextureStreamer::RegisterExisting(TextureHandle handle,
@@ -180,6 +182,7 @@ bool TextureStreamer::RegisterExisting(TextureHandle handle,
 	e.lastRequestFrame = 0;
 	e.lastChangeFrame = 0;
 	entries_.emplace(EntryKey(handle), std::move(e));
+	++slotMetaEpoch_; // new slot content: gfx meta table re-upload
 	return true;
 }
 
@@ -232,6 +235,28 @@ std::vector<TextureHandle> TextureStreamer::BuildBindlessSlotMap() const
 		map[slot] = e.handle;
 	}
 	return map;
+}
+
+std::vector<TextureStreamer::TextureSlotMeta> TextureStreamer::BuildSlotMeta() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	std::vector<TextureSlotMeta> meta;
+	for (const auto& [key, e] : entries_)
+	{
+		(void)key;
+		const uint32_t slot = ctx_.GetTextureBindlessIndex(e.handle);
+		if (slot >= meta.size())
+			meta.resize(static_cast<size_t>(slot) + 1);
+		meta[slot].longSide = std::max(e.baseWidth, e.baseHeight);
+		meta[slot].fullMips = e.fullMips;
+	}
+	return meta;
+}
+
+uint64_t TextureStreamer::SlotMetaEpoch() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return slotMetaEpoch_;
 }
 
 void TextureStreamer::RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
