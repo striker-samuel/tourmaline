@@ -285,8 +285,15 @@ float2x2 EvsmRotate2x2(float a)
 // blocker->receiver NDC delta scaled by the baked per-cascade factor (NDC
 // delta is world distance / depthRange; UV = world * tan(sunAngle)/orthoW),
 // clamped to sane texel bounds, then an 8-tap rotated disk of moments.
+// BDA discipline (profiler follow-up): takes the cascade buffer POINTER +
+// cascadeIndex, not a by-value GpuCascadeDescription (mirrors
+// SampleCascadeTile in shadows.hlsli) — every field read is a narrow
+// computed-offset physical-storage load and no 128-byte aggregate is
+// materialized, so the dynamically-indexed walk never stages scratch
+// copies ("Local Memory" stalls).
 float SampleEvsmTileSoft(
-    GpuCascadeDescription c,
+    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    uint cascadeIndex,
     float3 worldPos,
     float3 faceNormal,
     float3 lightDirection,
@@ -297,8 +304,10 @@ float SampleEvsmTileSoft(
     out bool valid)
 {
     valid = false;
-    float3 biasedWorld = worldPos + faceNormal * c.normalBias;
-    float4 clip = mul(c.lightVP, float4(biasedWorld, 1.0f));
+    float3 biasedWorld =
+        worldPos + faceNormal * cb.Get().dir.cascades[cascadeIndex].normalBias;
+    float4 clip =
+        mul(cb.Get().dir.cascades[cascadeIndex].lightVP, float4(biasedWorld, 1.0f));
     float3 ndc = clip.xyz / max(clip.w, 1e-6f);
     float2 uv = ndc.xy * 0.5f + 0.5f;
     if (ndc.z <= 0.0f || ndc.z >= 1.0f ||
@@ -307,13 +316,19 @@ float SampleEvsmTileSoft(
     {
         return 1.0f;
     }
-    float2 uvAtlas = uv * c.uvScale + c.uvBias;
+    float2 uvAtlas =
+        uv * cb.Get().dir.cascades[cascadeIndex].uvScale +
+        cb.Get().dir.cascades[cascadeIndex].uvBias;
     // Oriented bias purely as the receiver-threshold push (see
     // SampleEvsmTile); receiverDepth is the true depth so the blocker
     // comparison below is exact.
-    float biasAmt = -EvsmOrientedBias(faceNormal, lightDirection, c.bias);
+    float biasAmt = -EvsmOrientedBias(
+        faceNormal, lightDirection, cb.Get().dir.cascades[cascadeIndex].bias);
     float receiverDepth = ndc.z;
-    const float2 clampedUV = clamp(uvAtlas, c.uvClampMin, c.uvClampMax);
+    const float2 clampedUV = clamp(
+        uvAtlas,
+        cb.Get().dir.cascades[cascadeIndex].uvClampMin,
+        cb.Get().dir.cascades[cascadeIndex].uvClampMax);
     Texture2D evsmTex = textures[NonUniformResourceIndex(idx)];
     float4 moments = evsmTex.SampleLevel(samplers[samplerId], clampedUV, 0).rgba;
     valid = true;
@@ -339,9 +354,9 @@ float SampleEvsmTileSoft(
     // the rotated-disk pattern as moire.
     if (delta <= 1e-5f)
         return centerVis;
-    const float softness = c.pad2.y;
-    float rUV = delta * c.pad2.x * softness;
-    const float texelU = max(c.invShadowSize.x, 1e-6f);
+    const float softness = cb.Get().dir.cascades[cascadeIndex].pad2.y;
+    float rUV = delta * cb.Get().dir.cascades[cascadeIndex].pad2.x * softness;
+    const float texelU = max(cb.Get().dir.cascades[cascadeIndex].invShadowSize.x, 1e-6f);
     // Below ~0.5 texel the disk degenerates onto the prefilter footprint:
     // a single (already blurred) tap is the correct, noise-free answer.
     // Forcing a minimum radius was a moire source on flat surfaces.
@@ -354,8 +369,12 @@ float SampleEvsmTileSoft(
     float sum = 0.0f;
     [unroll]
     for (int t = 0; t < 8; ++t) {
-        const float2 off = mul(rot, kEvsmDisk8[t]) * rUV * c.uvScale;
-        const float2 tapUV = clamp(uvAtlas + off, c.uvClampMin, c.uvClampMax);
+        const float2 off = mul(rot, kEvsmDisk8[t]) * rUV
+            * cb.Get().dir.cascades[cascadeIndex].uvScale;
+        const float2 tapUV = clamp(
+            uvAtlas + off,
+            cb.Get().dir.cascades[cascadeIndex].uvClampMin,
+            cb.Get().dir.cascades[cascadeIndex].uvClampMax);
         const float4 m = evsmTex.SampleLevel(samplers[samplerId], tapUV, 0).rgba;
         sum += EvsmVisibility(m, receiverDepth, exponent, biasAmt);
     }

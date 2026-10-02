@@ -34,101 +34,42 @@ int SelectCascade(float viewDepth, CascadeMeta cascades[NUM_CASCADES])
 }
 
 
+// BDA discipline (profiler follow-up): the old signature took the whole
+// cascade array BY VALUE (GpuCascadeDescription cascades[4] = 512 B) — a
+// dynamically indexed by-value array must be materialized into
+// addressable/scratch storage (the "Local Memory Load/Store" stalls the
+// lit pass profiled), on top of the physical-storage reads that fill it.
+// Selecting through the BDA pointer instead reads ONE splitEnd scalar
+// per candidate cascade (narrow computed-offset physical-storage loads,
+// CSE'd by the compiler) and never builds an aggregate; the caller then
+// loads only the actually-selected 128-byte cascade. Same traversal
+// semantics: first cascade whose splitEnd covers viewDepth, last one as
+// the fallback.
 int SelectCascadeGpu(
     float viewDepth,
-    GpuCascadeDescription cascades[4],
-    int numCascades)
+    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    uint numCascades)
 {
+    int selected = int(numCascades) - 1;
+
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        if (i >= numCascades)
+        if ((uint) i >= numCascades)
             break;
 
-        if (viewDepth <= cascades[i].splitEnd)
-            return i;
+        float split =
+            cb.Get().dir.cascades[i].splitEnd;
+
+        if (viewDepth <= split)
+        {
+            selected = i;
+            break;
+        }
     }
 
-    return numCascades - 1;
+    return selected;
 }
-
-//// GpuCascade overload – selects on GpuDirectionalLightDescription
-//int SelectCascadeGpu(float viewDepth, GpuCascadeDescription cascades[4], int numCascades)
-//{
-//    int firstCascade =
-//    SelectCascadeGpu(
-//        viewDepth,
-//        dir.cascades,
-//        dir.numCascades
-//    );
-
-//    uint idx =
-//    NonUniformResourceIndex(
-//        (uint) dir.shadow_map_index
-//    );
-
-//[loop]
-//    for (
-//    int cascadeIdx = firstCascade;
-//    cascadeIdx < dir.numCascades;
-//    ++cascadeIdx
-//)
-//    {
-//        GpuCascadeDescription c =
-//        dir.cascades[cascadeIdx];
-
-//        float4 clip =
-//        mul(
-//            c.lightVP,
-//            float4(worldPos, 1.0f)
-//        );
-
-//        float3 ndc = clip.xyz / clip.w;
-
-//        float2 uv =
-//        ndc.xy * 0.5f + 0.5f;
-
-//        bool inside =
-//        ndc.z > 0.0f &&
-//        ndc.z < 1.0f &&
-//        uv.x >= 0.0f &&
-//        uv.x <= 1.0f &&
-//        uv.y >= 0.0f &&
-//        uv.y <= 1.0f;
-
-//        if (!inside)
-//            continue;
-
-//        float2 uvAtlas =
-//        uv * c.uvScale + c.uvBias;
-
-        
-        
-//        float receiverDepth = ndc.z; // bias from sampler
-//        //float receiverDepth =
-//        //ndc.z - c.bias;
-
-//        return PCFShadowAtlas(
-//        comparisonSamplerId,
-//        uvAtlas,
-//        receiverDepth,
-//        idx,
-//        c.uvClampMin,
-//        c.uvClampMax
-//    );
-//    }
-
-//    //return 1.0f;
-//    //[unroll]
-//    //for (int i = 0; i < 4; ++i)
-//    //{
-//    //    if (i >= numCascades)
-//    //        break;
-//    //    if (viewDepth < cascades[i].splitEnd)
-//    //        return i;
-//    //}
-//    //return numCascades - 1;
-//}
 
 float PCFShadow(
     uint samplerId,
@@ -207,26 +148,6 @@ float PCFShadowAtlas(
     return sum * (1.0f / 9.0f);
 }
 
-
-// debug 1 tap
-//float PCFShadowAtlas(
-//    uint samplerId,
-//    float2 uv,
-//    float currentDepth,
-//    uint shadowIdx,
-//    float2 texelSize,
-//    float2 uvClampMin,
-//    float2 uvClampMax)
-//{
-//    float2 sampleUV = clamp(uv, uvClampMin, uvClampMax);
-
-//    float d = textures[shadowIdx]
-//        .SampleLevel(samplers[samplerId], sampleUV, 0)
-//        .r;
-
-//    return currentDepth <= d ? 1.0f : 0.0f;
-//}
-
 // Sec. 4.2 oriented depth bias (slope-scaled, per-cascade NDC).
 // Shadowmaps render with no HW bias. baseBiasNDC is the per-cascade NDC
 // bias baked on the CPU as worldBias / lightDepthRange (see
@@ -249,36 +170,20 @@ float GetOrientedBias(float3 faceNormal,
     return -baseBiasNDC * (0.3f + 0.7f * slope) * facing;
 }
 
-
-// PARKED (legacy single-map path, kept in code): single lightVP PCF without
-// oriented bias. Not called while cascades are active.
-/*
-float GetShadowFactor(
-    uint comparisonSamplerId,
-	float3 worldPos,
-	Light light
-)
-{
-    if (light.shadow_map_index < 0)
-        return 1.0f;
-    uint idx = NonUniformResourceIndex((uint) light.shadow_map_index);
-    float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
-    float3 ndc = clip.xyz / clip.w;
-    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
-        return 1.0f;
-    float2 uv = ndc.xy * 0.5f + 0.5f;
-    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
-        return 1.0f;
-    return PCFShadow(1, uv, ndc.z, idx);
-}
-*/
-
-
 // Samples one cascade tile; valid=false when the (normal-biased) receiver
 // falls outside the cascade light frustum so the caller can fall through
 // to the next cascade instead of popping to unshadowed.
+// BDA discipline (profiler follow-up): takes the cascade buffer POINTER +
+// cascade index, not a by-value GpuCascadeDescription — a 128-byte
+// by-value parameter per call (dynamically indexed from the caller's
+// loop) made the compiler stage aggregate copies in scratch memory
+// ("Local Memory" stalls). Each field read below is a narrow
+// computed-offset physical-storage load (the address math is CSE'd), so
+// only the fields actually used cross the BDA boundary and no aggregate
+// is ever built.
 float SampleCascadeTile(
-    GpuCascadeDescription c,
+    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    uint cascadeIndex,
     float3 worldPos,
     float3 faceNormal,
     float3 lightDirection,
@@ -294,11 +199,12 @@ float SampleCascadeTile(
     // depth-only bias it doesn't detach contact shadows along the light
     // axis, and unlike +/-k it has no terminator discontinuity.
     float3 biasedWorld =
-        worldPos + faceNormal * c.normalBias;
+        worldPos +
+        faceNormal * cb.Get().dir.cascades[cascadeIndex].normalBias;
 
     float4 clip =
         mul(
-            c.lightVP,
+            cb.Get().dir.cascades[cascadeIndex].lightVP,
             float4(biasedWorld, 1.0f)
         );
 
@@ -321,14 +227,19 @@ float SampleCascadeTile(
     }
 
     float2 uvAtlas =
-        uv * c.uvScale +
-        c.uvBias;
+        uv * cb.Get().dir.cascades[cascadeIndex].uvScale +
+        cb.Get().dir.cascades[cascadeIndex].uvBias;
 
     // Sec. 4.2: slope-scaled NDC bias; c.bias is the per-cascade
     // worldBias/depthRange baked on the CPU so far cascades don't
     // over-bias (peter-panning) while near ones under-bias (acne).
     float receiverDepth =
-        ndc.z + GetOrientedBias(faceNormal, lightDirection, c.bias, false);
+        ndc.z +
+        GetOrientedBias(
+            faceNormal,
+            lightDirection,
+            cb.Get().dir.cascades[cascadeIndex].bias,
+            false);
         // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, lightDirection, c.bias, true);
 
     valid = true;
@@ -337,23 +248,40 @@ float SampleCascadeTile(
     uvAtlas,
     receiverDepth,
     idx,
-    c.invShadowSize,
-    c.uvClampMin,
-    c.uvClampMax);
+    cb.Get().dir.cascades[cascadeIndex].invShadowSize,
+    cb.Get().dir.cascades[cascadeIndex].uvClampMin,
+    cb.Get().dir.cascades[cascadeIndex].uvClampMax);
 }
 
+// BDA discipline (profiler follow-up): this used to take FrameUniforms
+// (1.3 KB+) and GpuDirectionalLightDescription (624 B with the 512 B
+// embedded cascade array) BY VALUE — one huge copy per shaded fragment,
+// and the dynamic dir.cascades[k] indexing forced the copies into
+// scratch/private storage (the "Local Memory Load/Store" stalls paired
+// with the global BDA read stalls in the profile). New contract:
+//   - lightDirection/shadowMapIndex come from the Light the caller
+//     already holds (the cascade buffer's copies of those were seeded
+//     from the same values on upload, see BuildDirectionalLight),
+//   - numCascades from pc (kept in lockstep by the app: NUM_CASCADES),
+//   - view: the ONE FrameUniforms member this path reads (world->view
+//     depth for cascade selection),
+//   - cb: the cascade buffer POINTER — callees (SelectCascadeGpu /
+//     SampleCascadeTile) read only the fields they need as narrow
+//     physical-storage loads and no aggregate is ever materialized.
 float GetShadowFactorCascaded(
     uint samplerId,
     float3 worldPos,
     float3 faceNormal,
-    Light light,
-    FrameUniforms frame,
-    GpuDirectionalLightDescription dir
+    float3 lightDirection,
+    int shadowMapIndex,
+    uint numCascades,
+    float4x4 view,
+    vk::BufferPointer<DirectionalCascadeBuffer> cb
 )
 {
     if (
-        light.shadow_map_index < 0 ||
-        dir.numCascades <= 0
+        shadowMapIndex < 0 ||
+        numCascades == 0u
     )
     {
         // Legacy single-map fallback is parked (see GetShadowFactor above).
@@ -362,7 +290,7 @@ float GetShadowFactorCascaded(
 
     float3 viewPos =
         mul(
-            frame.view,
+            view,
             float4(worldPos, 1.0f)
         ).xyz;
 
@@ -372,13 +300,13 @@ float GetShadowFactorCascaded(
     int firstCascade =
         SelectCascadeGpu(
             viewDepth,
-            dir.cascades,
-            dir.numCascades
+            cb,
+            numCascades
         );
 
     uint idx =
         NonUniformResourceIndex(
-            (uint) dir.shadow_map_index
+            (uint) shadowMapIndex
         );
 
     // First valid cascade at/after the view-depth selection. Falling
@@ -387,14 +315,15 @@ float GetShadowFactorCascaded(
     // when a receiver sits outside the selected cascade's light bounds.
     int usedK = -1;
     float shadow = 1.0f;
-    for (int k = firstCascade; k < dir.numCascades; ++k)
+    for (int k = firstCascade; k < int(numCascades); ++k)
     {
         bool valid = false;
         float s = SampleCascadeTile(
-            dir.cascades[k],
+            cb,
+            (uint) k,
             worldPos,
             faceNormal,
-            light.direction,
+            lightDirection,
             samplerId,
             idx,
             valid);
@@ -411,21 +340,27 @@ float GetShadowFactorCascaded(
     // Border blend into the next cascade over the last 10% of this
     // cascade's view-depth band. The next tile has fatter texels and a
     // larger baked bias (tile detail washes out there), so a hard switch
-    // reads as a shadow-density step; lerping hides the seam.
-    if (usedK + 1 < dir.numCascades)
+    // reads as a shadow-density step; lerping hides the seam. splitEnd
+    // reads stay scalar (BDA discipline: no cascade aggregate copies).
+    if (usedK + 1 < int(numCascades))
     {
-        GpuCascadeDescription c = dir.cascades[usedK];
-        float splitStart = (usedK == 0) ? 0.0f : dir.cascades[usedK - 1].splitEnd;
-        float bandW = (c.splitEnd - splitStart) * 0.1f;
-        if (bandW > 1e-4f && viewDepth > c.splitEnd - bandW)
+        float splitEndK =
+            cb.Get().dir.cascades[usedK].splitEnd;
+        float splitStart =
+            (usedK == 0)
+                ? 0.0f
+                : cb.Get().dir.cascades[usedK - 1].splitEnd;
+        float bandW = (splitEndK - splitStart) * 0.1f;
+        if (bandW > 1e-4f && viewDepth > splitEndK - bandW)
         {
-            float t = smoothstep(c.splitEnd - bandW, c.splitEnd, viewDepth);
+            float t = smoothstep(splitEndK - bandW, splitEndK, viewDepth);
             bool nextValid = false;
             float nextShadow = SampleCascadeTile(
-                dir.cascades[usedK + 1],
+                cb,
+                (uint) (usedK + 1),
                 worldPos,
                 faceNormal,
-                light.direction,
+                lightDirection,
                 samplerId,
                 idx,
                 nextValid);
@@ -502,11 +437,33 @@ float GetShadowFactorCascadedFromPC(
     Light light
 )
 {
-    //return 1.0f;
-    FrameUniforms frame = pc.frameUniforms.Get();
-    GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
-    return GetShadowFactorCascaded(samplerId, worldPos, faceNormal, light, frame, dir);
+    // BDA discipline (see GetShadowFactorCascaded): pull ONLY the view
+    // matrix out of FrameUniforms (one 64-byte physical-storage read vs
+    // the old full 1.3 KB materialization) and pass the cascade buffer
+    // POINTER + pc scalars — never the 624-byte dir aggregate.
+    return GetShadowFactorCascaded(
+        samplerId,
+        worldPos,
+        faceNormal,
+        light.direction,
+        light.shadow_map_index,
+        pc.numCascades,
+        pc.frameUniforms.Get().view,
+        pc.cascadeBuffer
+    );
 }
+//float GetShadowFactorCascadedFromPC(
+//    uint samplerId,
+//    float3 worldPos,
+//    float3 faceNormal,
+//    Light light
+//)
+//{
+//    //return 1.0f;
+//    FrameUniforms frame = pc.frameUniforms.Get();
+//    GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
+//    return GetShadowFactorCascaded(samplerId, worldPos, faceNormal, light, frame, dir);
+//}
 #endif // ENGINE_HAS_PC
 
 // ---- Spot shadows (Forward+ spots, perspective atlas tiles) ----
@@ -727,34 +684,41 @@ float GetShadowFactorODB(
 // specialization constant (smvk::kEvsmExponent default 42).
 #include "evsm.hlsli"
 
+// BDA discipline (see GetShadowFactorCascaded): same flattened contract —
+// scalars the caller already owns (lightDirection/shadowMapIndex from
+// Light, numCascades from pc), the one view matrix used, and the cascade
+// buffer POINTER instead of FrameUniforms/GpuDirectionalLightDescription
+// by value. SampleEvsmTileSoft likewise takes (cb, cascadeIndex).
 float GetShadowFactorEvsmCascaded(
     uint samplerId,
     float3 worldPos,
     float3 faceNormal,
-    Light light,
-    FrameUniforms frame,
-    GpuDirectionalLightDescription dir,
+    float3 lightDirection,
+    int shadowMapIndex,
+    uint numCascades,
+    float4x4 view,
+    vk::BufferPointer<DirectionalCascadeBuffer> cb,
     uint evsmAtlasIdx,
     float exponent,
     float2 pix)
 {
-    if (light.shadow_map_index < 0 || dir.numCascades <= 0)
+    if (shadowMapIndex < 0 || numCascades == 0u)
         return 1.0f;
 
-    float3 viewPos = mul(frame.view, float4(worldPos, 1.0f)).xyz;
+    float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
     float viewDepth = max(-viewPos.z, 0.0f);
-    int firstCascade = SelectCascadeGpu(viewDepth, dir.cascades, dir.numCascades);
+    int firstCascade = SelectCascadeGpu(viewDepth, cb, numCascades);
 
     // First valid cascade at/after the view-depth selection (same fallthrough
     // as the PCF path: avoids a hard pop to unshadowed when the selected
     // tile misses the receiver).
     int usedK = -1;
     float shadow = 1.0f;
-    for (int k = firstCascade; k < dir.numCascades; ++k)
+    for (int k = firstCascade; k < int(numCascades); ++k)
     {
         bool valid = false;
         float s = SampleEvsmTileSoft(
-            dir.cascades[k], worldPos, faceNormal, light.direction,
+            cb, (uint) k, worldPos, faceNormal, lightDirection,
             samplerId, evsmAtlasIdx, exponent, pix, valid);
         if (valid)
         {
@@ -768,18 +732,22 @@ float GetShadowFactorEvsmCascaded(
 
     // Border blend into the next cascade over the last 10% of this cascade's
     // view-depth band (mirrors GetShadowFactorCascaded): hides the
-    // shadow-density step where texel size and baked bias change.
-    if (usedK + 1 < dir.numCascades)
+    // shadow-density step where texel size and baked bias change. splitEnd
+    // reads stay scalar (BDA discipline: no cascade aggregate copies).
+    if (usedK + 1 < int(numCascades))
     {
-        GpuCascadeDescription c = dir.cascades[usedK];
-        float splitStart = (usedK == 0) ? 0.0f : dir.cascades[usedK - 1].splitEnd;
-        float bandW = (c.splitEnd - splitStart) * 0.1f;
-        if (bandW > 1e-4f && viewDepth > c.splitEnd - bandW)
+        float splitEndK = cb.Get().dir.cascades[usedK].splitEnd;
+        float splitStart =
+            (usedK == 0)
+                ? 0.0f
+                : cb.Get().dir.cascades[usedK - 1].splitEnd;
+        float bandW = (splitEndK - splitStart) * 0.1f;
+        if (bandW > 1e-4f && viewDepth > splitEndK - bandW)
         {
-            float t = smoothstep(c.splitEnd - bandW, c.splitEnd, viewDepth);
+            float t = smoothstep(splitEndK - bandW, splitEndK, viewDepth);
             bool nextValid = false;
             float nextShadow = SampleEvsmTileSoft(
-                dir.cascades[usedK + 1], worldPos, faceNormal, light.direction,
+                cb, (uint) (usedK + 1), worldPos, faceNormal, lightDirection,
                 samplerId, evsmAtlasIdx, exponent, pix, nextValid);
             if (nextValid)
                 shadow = lerp(shadow, nextShadow, t);
@@ -820,10 +788,14 @@ float GetShadowFactorEvsmCascadedFromPC(
     float exponent,
     float2 pix)
 {
-    FrameUniforms frame = pc.frameUniforms.Get();
-    GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
+    // BDA discipline (see GetShadowFactorCascadedFromPC): only the view
+    // matrix out of FrameUniforms + the cascade buffer POINTER + pc
+    // scalars — no 1.3 KB/624 B aggregate materializations.
     return GetShadowFactorEvsmCascaded(
-        samplerId, worldPos, faceNormal, light, frame, dir, evsmAtlasIdx, exponent, pix);
+        samplerId, worldPos, faceNormal,
+        light.direction, light.shadow_map_index,
+        pc.numCascades, pc.frameUniforms.Get().view, pc.cascadeBuffer,
+        evsmAtlasIdx, exponent, pix);
 }
 
 float GetSpotShadowFactorEvsmFromPC(

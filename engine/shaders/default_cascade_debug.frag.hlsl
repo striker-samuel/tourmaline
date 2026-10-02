@@ -67,10 +67,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     FrameUniforms frame = pc.frameUniforms.Get();
     Light light = pc.bLights.Get().lights[0];
-    GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
 
     float3 color;
-    if (light.shadow_map_index < 0 || dir.numCascades <= 0 || pc.numCascades == 0)
+    if (light.shadow_map_index < 0 || pc.numCascades == 0)
     {
         color = float3(0.5f, 0.5f, 0.5f); // no cascades: neutral gray
     }
@@ -78,7 +77,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     {
         float3 viewPos = mul(frame.view, float4(IN.worldPos, 1.0f)).xyz;
         float viewDepth = max(-viewPos.z, 0.0f);
-        int cascade = SelectCascadeGpu(viewDepth, dir.cascades, dir.numCascades);
+        // BDA discipline (see SelectCascadeGpu in shadows.hlsli): select
+        // through the cascade buffer POINTER + pc.numCascades — scalar
+        // splitEnd loads, no by-value 624 B dir aggregate.
+        int cascade = SelectCascadeGpu(viewDepth, pc.cascadeBuffer, pc.numCascades);
 
         float3 faceN = normalize(IN.normal);
         if (!IN.isFrontFace)
