@@ -9,7 +9,7 @@
 #include <cstring>
 #include <iostream>
 
-namespace smvk {
+namespace engine {
 namespace {
 
 void PrintUsage(const char* prog) {
@@ -130,4 +130,4 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 	return true;
 }
 
-} // namespace smvk
+} // namespace engine

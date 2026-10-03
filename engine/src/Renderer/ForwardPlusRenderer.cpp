@@ -16,7 +16,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-namespace smvk {
+namespace engine {
 
 bool ForwardPlusRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 	(void)ctx;
@@ -523,4 +523,4 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 	}
 }
 
-} // namespace smvk
+} // namespace engine

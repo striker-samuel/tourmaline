@@ -13,7 +13,7 @@
 
 #include <string>
 
-namespace smvk {
+namespace engine {
 
 // Host configuration (one field per CLI flag; ParsePakAppArgs fills it).
 struct PakAppConfig {
@@ -48,4 +48,4 @@ int RunPakApp(PakAppConfig cfg);
 // Parse + run (the thin-main entry point).
 int RunPakApp(int argc, const char* argv[]);
 
-} // namespace smvk
+} // namespace engine

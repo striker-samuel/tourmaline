@@ -765,7 +765,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 						smvk::MSAASettings{}, raster,
 						smvk::PrimitiveTopology::LineList);
 			}
-			smvk::LineDebugPush lp{};
+			engine::LineDebugPush lp{};
 			std::memcpy(lp.viewProj, glm::value_ptr(vpViewProj),
 				sizeof(lp.viewProj));
 			lp.color[0] = r.color.x;

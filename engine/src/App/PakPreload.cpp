@@ -16,7 +16,7 @@
 #include <Windows.h> // GetModuleFileNameA (exe-relative pak resolution)
 #endif
 
-namespace smvk {
+namespace engine {
 
 std::string ResolvePakOpenPath(const std::string& scenePak) {
 	std::string pakOpenPath;
@@ -55,7 +55,7 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 	return std::async(std::launch::async, [pakPath]() {
 		const auto t0 = std::chrono::steady_clock::now();
 		PakPreload p;
-		p.scenePak = FlintbaseHostPath(pakPath);
+		p.scenePak = smvk::FlintbaseHostPath(pakPath);
 		p.openPath = ResolvePakOpenPath(p.scenePak);
 		if (p.openPath.empty()) {
 			p.error = "pak not found: '" + p.scenePak
@@ -88,7 +88,7 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 		// the old path opened the reader twice (double CRC + double
 		// decompress).
 		std::string pakErr;
-		p.backend = PakBackend::Open(p.image, p.scenePak, pakErr);
+		p.backend = smvk::PakBackend::Open(p.image, p.scenePak, pakErr);
 		const auto t2 = std::chrono::steady_clock::now();
 		if (!p.backend) {
 			p.image.reset();
@@ -104,4 +104,4 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 	});
 }
 
-} // namespace smvk
+} // namespace engine

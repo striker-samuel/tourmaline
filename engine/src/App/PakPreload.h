@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace smvk {
+namespace engine {
 
 // Background pak preload result. The backend owns the image + the parsed
 // reader (already decompressed); the world source consumes it on the render
@@ -21,7 +21,7 @@ struct PakPreload {
 	std::string scenePak; // display name (also the VFS mount name)
 	std::string openPath; // resolved host path (empty = not found)
 	std::shared_ptr<const std::vector<uint8_t>> image;
-	std::shared_ptr<PakBackend> backend;
+	std::shared_ptr<smvk::PakBackend> backend;
 	std::string error;
 };
 
@@ -31,4 +31,4 @@ std::string ResolvePakOpenPath(const std::string& scenePak);
 
 std::future<PakPreload> KickPakPreload(const std::string& pakPath);
 
-} // namespace smvk
+} // namespace engine

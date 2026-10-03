@@ -74,7 +74,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Push-constant structs: C++ (`engine/include/Engine/Rendergraph/*.h`) and
   HLSL mirrors must stay layout-identical — check the `static_assert(sizeof(...))`
   and the HLSL comment when editing either side
-- Frame renderer plumbing: `smvk::AppFrameContext` (engine/include/Engine/Rendergraph/FrameContext.h)
+- Frame renderer plumbing: `engine::AppFrameContext` (engine/include/Engine/Rendergraph/FrameContext.h)
   carries per-frame handles; renderers snapshot what they need at Append time
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Dont use F12 for any binding since it can trigger debugbreak

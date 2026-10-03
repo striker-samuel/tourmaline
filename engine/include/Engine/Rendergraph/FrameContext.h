@@ -12,7 +12,7 @@
 
 #include <functional>
 
-namespace smvk {
+namespace engine {
 
 struct AppFrameContext : public smvk::FrameContext {
 	// Full scene push (value-copied into recording lambdas).
@@ -80,4 +80,4 @@ struct AppFrameContext : public smvk::FrameContext {
 	std::function<bool(NodeId, uint32_t, uint32_t)> gfxLodFilterable{};
 };
 
-} // namespace smvk
+} // namespace engine

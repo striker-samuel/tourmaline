@@ -50,7 +50,7 @@
 #include <Engine/Utils/LutIo.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Rendergraph/PushConstants.h>
-using smvk::PushConstants;
+using engine::PushConstants;
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/WorldRenderer.h>
@@ -440,7 +440,7 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
 // load-time framing (Initialize) re-poses the camera on the world bounds
 // unless VULKANTOY_CAM_* pins it for benches.
 // ---------------------------------------------------------------------------
-namespace smvk {
+namespace engine {
 
 void WorldRenderer::Configure(ScenePassConfig passes) {
 	m_passes = passes;
@@ -526,12 +526,12 @@ void WorldRenderer::Configure(ScenePassConfig passes) {
 // App/world_renderer.h (needed by the class declaration); method
 // definitions follow the (removed) in-class block below.
 
-} // namespace smvk (scene registry + helpers above; methods open their own block below)
+} // namespace engine (scene registry + helpers above; methods open their own block below)
 
 
 // Class declaration lives in App/world_renderer.h; out-of-line method
 // definitions follow.
-namespace smvk {
+namespace engine {
 using Super = smvk::AppImpl;
 
 void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
@@ -1019,10 +1019,10 @@ bool WorldRenderer::Initialize() {
 	// Fixed-lobe lit FS twins (SG permutations for the Main filtered
 	// leg): per-count SG evaluation without the runtime basis dispatch.
 	// Non-fatal: a missing variant keeps that count on the generic lit.
-	for (uint32_t li = 0; li < smvk::GfxRenderer::LitSgVariantCount(); ++li) {
+	for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
 		try {
 			const std::string path = std::string("content/shaders/default_lit.frag.hlsl.sg")
-				+ std::to_string(smvk::GfxRenderer::LitSgVariantLobes(li)) + ".spv";
+				+ std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) + ".spv";
 			auto sgCode = readFile(path);
 			m_resources.fragLitSgModules[li] =
 				m_context->CreateShaderModule(sgCode, "fragLitSg");
@@ -1605,7 +1605,7 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		// toggle stays as the runtime A/B switch.
 		if (m_passes.gfxFilter && m_useGfxFilter) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
-			for (uint32_t li = 0; li < smvk::GfxRenderer::LitSgVariantCount(); ++li)
+			for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
 				m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
 			// Main-view seed masked phase is reversed-Z: prefer the
 			// conservative shadow_rev module (falls back to the normal-Z
@@ -1620,7 +1620,7 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		// based depth recorders (seed/remainder/shadow/filtered depth).
 		// Resolved lazily at record time so it always sees the live World.
 		m_gfxRenderer.ConfigureMaterialDepth(
-			[this](uint32_t materialId) -> smvk::MaterialDepthState {
+			[this](uint32_t materialId) -> engine::MaterialDepthState {
 				if (!m_world)
 					return {};
 				const smvk::Material* mat = m_world->GetMaterial(materialId);
@@ -6885,7 +6885,7 @@ void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
 			const uint32_t materialId = item.material;
 			if (materialId != boundMaterial) {
 				// Select GI permutation program based on loaded assets
-				const smvk::GIVariant giVar = GetActiveGIVariant();
+				const engine::GIVariant giVar = GetActiveGIVariant();
 				smvk::ShaderProgram& prog = m_resources.mainProgramGi[static_cast<uint32_t>(giVar)];
 				if (prog.shaderCount == 0) {
 					prog = m_resources.mainProgram; // fallback
@@ -12314,7 +12314,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	}
 }
 
-namespace smvk {
+namespace engine {
 
 void WorldRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 	// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
@@ -12791,6 +12791,6 @@ void WorldRenderer::ApplyTextureFiltering()
 	}
 }
 
-} // namespace smvk
+} // namespace engine
 
 // NOTE: entry point moved to main.cpp (scene selection + Configure).

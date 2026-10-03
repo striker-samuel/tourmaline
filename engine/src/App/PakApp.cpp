@@ -30,7 +30,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-namespace smvk {
+namespace engine {
 namespace {
 
 // Pak stem -> scene id (GI sidecars resolve gi/<id>.*, check-scene
@@ -49,8 +49,8 @@ std::string StemOf(const std::string& p) {
 // pattern with b one step in +theta (longitude) and d one step in
 // +phi (pole to pole): dTheta x dPhi points outward, so the winding
 // matches the engine's CCW front faces.
-StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
-	StaticMeshUpload data;
+smvk::StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
+	smvk::StaticMeshUpload data;
 	data.aabbMin = glm::vec3(-radius);
 	data.aabbMax = glm::vec3(radius);
 	const float pi = glm::pi<float>();
@@ -65,7 +65,7 @@ StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
 			const float sinT = std::sin(theta);
 			const float cosT = std::cos(theta);
 			const glm::vec3 n(sinPhi * cosT, cosPhi, sinPhi * sinT);
-			StaticVertex v{};
+			smvk::StaticVertex v{};
 			v.pos = n * radius;
 			v.color = glm::vec4(1.0f);
 			v.texCoord = glm::vec2(
@@ -105,23 +105,23 @@ StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
 // and reflections like any imported node. Independent root (own
 // identity-parent transform), so scene root transforms can't move it
 // and the static-freeze loop below simply leaves it dynamic.
-void InjectSponzaChromeBall(World& world, ResourceManager& ctx) {
+void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
 	(void)ctx;
 	if (world.clusters.empty())
 		return;
-	Cluster& sponzaCluster = *world.clusters.back();
+	smvk::Cluster& sponzaCluster = *world.clusters.back();
 	const float ballRadius = 0.25f;
 	const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
-	StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
-	ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
-	MaterialCreateInfo chromeCi{};
+	smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
+	smvk::ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
+	smvk::MaterialCreateInfo chromeCi{};
 	chromeCi.baseColorFactor = glm::vec4(1.0f);
 	chromeCi.metallicFactor = 1.0f;
 	chromeCi.roughnessFactor = .13f;
 	chromeCi.emissiveFactor = glm::vec3(0.0f);
-	chromeCi.alphaMode = AlphaMode::Opaque;
-	chromeCi.shadingModel = ShadingModel::DefaultLit;
-	ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
+	chromeCi.alphaMode = smvk::AlphaMode::Opaque;
+	chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
+	smvk::ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
 	if (ballMesh.empty() || chromeMat.empty()) {
 		std::cerr << "[Scene] chrome ball inject failed (mesh/material)\n";
 		return;
@@ -143,26 +143,26 @@ void InjectSponzaChromeBall(World& world, ResourceManager& ctx) {
 
 // The HOST's pak loader (the renderer's world source): consumes the
 // preloaded backend (read + parse + decompress already overlapped with
-// renderer init), loads the selected scene into a World (uploads issued
+// renderer init), loads the selected scene into a smvk::World (uploads issued
 // to the context — everything renders by handles), injects the
 // check-scene extras, freezes the cooked roots static and resolves.
 // The pak's embedded textures mount into the renderer's content
 // overlay (below loose content/, so dev overrides win) for init-time
 // reads (cubemaps baked into the pak, ...). Returns nullptr on any
 // failure (the renderer fails loudly).
-mem::LinearPtr<World> LoadPakWorld(PakPreload pre,
-	int sceneIndex, ResourceManager& ctx, OverlayVfs& contentVfs,
-	TextureStreamer* sceneStreamer) {
+smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
+	int sceneIndex, smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs,
+	smvk::TextureStreamer* sceneStreamer) {
 	if (!pre.backend) {
 		std::cerr << "[App] pak preload failed: " << pre.error << "\n";
 		return nullptr;
 	}
 	std::cerr << "[App] loading pak '" << pre.scenePak << "'\n";
-	const PakReader& reader = pre.backend->Reader();
+	const smvk::PakReader& reader = pre.backend->Reader();
 	std::cerr << "[App] pak parsed (" << reader.EntryCount() << " entries)\n";
 	// Scene discovery: list, default to index 0.
 	std::string lerr;
-	auto scenes = ListPakScenes(reader, &lerr);
+	auto scenes = smvk::ListPakScenes(reader, &lerr);
 	if (scenes.empty()) {
 		std::cerr << "[App] no loadable scenes: " << lerr << "\n";
 		return nullptr;
@@ -177,7 +177,7 @@ mem::LinearPtr<World> LoadPakWorld(PakPreload pre,
 	}
 	std::cerr << "[App] loading scene[" << sceneIndex << "] '"
 		<< scenes[size_t(sceneIndex)].name << "'...\n";
-	auto world = mem::MakeProcess<World>();
+	auto world = smvk::mem::MakeProcess<smvk::World>();
 	try {
 		world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex),
 			sceneStreamer, pre.image);
@@ -196,7 +196,7 @@ mem::LinearPtr<World> LoadPakWorld(PakPreload pre,
 		InjectSponzaChromeBall(*world, ctx);
 	// Freeze everything static (no recook needed): the exporters stamp
 	// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
-	// World's static BVH would stay empty. These scenes never animate,
+	// smvk::World's static BVH would stay empty. These scenes never animate,
 	// so mark each cluster root static here; Resolve carries the spec
 	// into the world scene and RebuildStaticBvh picks it up. Future
 	// dynamic nodes must ClearSubtreeStatic() before Resolve to opt out.
@@ -250,7 +250,7 @@ int RunPakApp(PakAppConfig cfg) {
 	// Reserve linear-allocator virtual address space FIRST, before worker
 	// threads, Vulkan, or asset loading (see Engine/Memory/memory.h). An
 	// unsatisfiable reservation fails fast here with the OOM diagnostic.
-	mem::InitMemory();
+	smvk::mem::InitMemory();
 
 	// Entrypoint: a pak file + a scene index (0 = default). The scene
 	// id (GI sidecar stem + check-scene gating) is the pak stem.
@@ -280,8 +280,8 @@ int RunPakApp(PakAppConfig cfg) {
 	// borrowed tail payloads.
 	const int sceneIndex = cfg.sceneIndex;
 	renderer.SetWorldSource(
-		[preloadFuture, sceneIndex, &renderer](ResourceManager& ctx,
-			OverlayVfs& contentVfs) -> mem::LinearPtr<World> {
+		[preloadFuture, sceneIndex, &renderer](smvk::ResourceManager& ctx,
+			smvk::OverlayVfs& contentVfs) -> smvk::mem::LinearPtr<smvk::World> {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
 				ctx, contentVfs, renderer.GetTextureStreamer());
 		});
@@ -299,8 +299,8 @@ int RunPakApp(PakAppConfig cfg) {
 	// in) and force the mode off so no feature evaluation happens either.
 	// This is the RenderDoc-safe configuration.
 	if (cfg.noDlss) {
-		DlssSetStartupEnabled(false);
-		renderer.SetDlssMode(DlssMode::Off);
+		smvk::DlssSetStartupEnabled(false);
+		renderer.SetDlssMode(smvk::DlssMode::Off);
 		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
 	}
 	if (cfg.disableControl) {
@@ -309,11 +309,11 @@ int RunPakApp(PakAppConfig cfg) {
 	}
 	if (!cfg.presentMode.empty()) {
 		if (cfg.presentMode == "fifo")
-			renderer.SetPresentMode(PresentMode::Fifo);
+			renderer.SetPresentMode(smvk::PresentMode::Fifo);
 		else if (cfg.presentMode == "mailbox")
-			renderer.SetPresentMode(PresentMode::Mailbox);
+			renderer.SetPresentMode(smvk::PresentMode::Mailbox);
 		else if (cfg.presentMode == "immediate")
-			renderer.SetPresentMode(PresentMode::Immediate);
+			renderer.SetPresentMode(smvk::PresentMode::Immediate);
 		else {
 			std::cerr << "Unknown present mode: '" << cfg.presentMode << "' (fifo|mailbox|immediate)\n";
 			return EXIT_FAILURE;
@@ -344,9 +344,9 @@ int RunPakApp(PakAppConfig cfg) {
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the
 	// warmup frames. --use_optick_gpu implies --use_optick.
-	profiler::SetEnabled(cfg.useOptick);
+	smvk::profiler::SetEnabled(cfg.useOptick);
 	if (cfg.useOptickGpu)
-		profiler::SetGpuEnabled(true);
+		smvk::profiler::SetGpuEnabled(true);
 	try {
 		renderer.Run();
 	}
@@ -356,7 +356,7 @@ int RunPakApp(PakAppConfig cfg) {
 		std::cin.get();
 		return EXIT_FAILURE;
 	}
-	mem::ShutdownMemory(); // footprint report (used/committed/reserved)
+	smvk::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
 	return EXIT_SUCCESS;
 }
 
@@ -368,4 +368,4 @@ int RunPakApp(int argc, const char* argv[]) {
 	return RunPakApp(cfg);
 }
 
-} // namespace smvk
+} // namespace engine

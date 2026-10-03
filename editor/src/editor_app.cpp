@@ -1114,7 +1114,7 @@ bool EditorApp::LaunchWysiwyg() {
 	// invariants, initialized. Cooks are the separate PRODUCT step —
 	// they never feed the viewport.
 	try {
-		m_wysiwyg = smvk::mem::MakeProcess<smvk::WorldRenderer>(*this, *m_world,
+		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this, *m_world,
 			m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot);
 	}
 	catch (const std::exception& e) {
@@ -2120,7 +2120,7 @@ void EditorApp::DrawFrame() {
 		{
 			const int extraViewports = ViewportCount() - 1;
 			const uint32_t viewCount = (uint32_t)std::clamp(
-				extraViewports, 0, (int)smvk::WorldRenderer::kMaxSecondaryViews);
+				extraViewports, 0, (int)engine::WorldRenderer::kMaxSecondaryViews);
 			m_wysiwyg->SetViewCount(viewCount);
 			for (uint32_t i = 0; i < viewCount; ++i) {
 				const EditorViewport& vp = m_viewports[i + 1];
@@ -2143,22 +2143,22 @@ void EditorApp::DrawFrame() {
 		// irradiance).
 		{
 			int giDebug = 0;
-			smvk::DebugView dv = smvk::DebugView::Lit;
+			engine::DebugView dv = engine::DebugView::Lit;
 			switch (ActiveViewMode()) {
-			case ViewMode::Unlit: dv = smvk::DebugView::Unlit; break;
-			case ViewMode::Lit: dv = smvk::DebugView::Lit; break;
+			case ViewMode::Unlit: dv = engine::DebugView::Unlit; break;
+			case ViewMode::Lit: dv = engine::DebugView::Lit; break;
 			case ViewMode::Uv0:
-			case ViewMode::FlatUv0: dv = smvk::DebugView::Uv0; break;
+			case ViewMode::FlatUv0: dv = engine::DebugView::Uv0; break;
 			case ViewMode::Uv1:
-			case ViewMode::FlatUv1: dv = smvk::DebugView::Uv1; break;
+			case ViewMode::FlatUv1: dv = engine::DebugView::Uv1; break;
 			case ViewMode::VertexColors:
-				dv = smvk::DebugView::VertexColors; break;
-			case ViewMode::Meshlets: dv = smvk::DebugView::Meshlets; break;
-			case ViewMode::Cascades: dv = smvk::DebugView::Cascades; break;
-			case ViewMode::Lods: dv = smvk::DebugView::Lods; break;
-			case ViewMode::Pom: dv = smvk::DebugView::Pom; break;
+				dv = engine::DebugView::VertexColors; break;
+			case ViewMode::Meshlets: dv = engine::DebugView::Meshlets; break;
+			case ViewMode::Cascades: dv = engine::DebugView::Cascades; break;
+			case ViewMode::Lods: dv = engine::DebugView::Lods; break;
+			case ViewMode::Pom: dv = engine::DebugView::Pom; break;
 			case ViewMode::Baked:
-				dv = smvk::DebugView::Lit;
+				dv = engine::DebugView::Lit;
 				giDebug = 1; // flat baked irradiance
 				break;
 			}
@@ -2267,7 +2267,7 @@ void EditorApp::DrawFrame() {
 					unsigned(vsum[0] / vn), unsigned(vsum[1] / vn),
 					unsigned(vsum[2] / vn),
 					100.0 * double(vNonBlack) / double(vn),
-					smvk::ViewRefreshName(m_wysiwyg->GetViewRefresh(i)),
+					engine::ViewRefreshName(m_wysiwyg->GetViewRefresh(i)),
 					m_wysiwyg->ViewRenderedThisFrame(i)
 						? " (rendered this frame)" : " (held image)",
 					i + 1u);

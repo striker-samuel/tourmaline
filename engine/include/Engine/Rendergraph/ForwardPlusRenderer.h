@@ -17,7 +17,7 @@
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/Rendergraph/forwardplus.h>
 
-namespace smvk {
+namespace engine {
 struct AppFrameContext;
 
 struct ForwardPlusRenderer : public smvk::IFrameRenderer {
@@ -92,4 +92,4 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	}
 };
 
-} // namespace smvk
+} // namespace engine

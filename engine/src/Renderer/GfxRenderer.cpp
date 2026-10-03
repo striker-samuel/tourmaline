@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <unordered_map>
 
-namespace smvk {
+namespace engine {
 
 static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
 static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
@@ -1155,7 +1155,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 		bool mirrorOk = false, behind = false, verdict = false;
 		if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
 			const Draw& dc = v.drawConstants[b.draw];
-			const gfx::Cluster& c = gfx.clusters[b.cluster];
+			const smvk::gfx::Cluster& c = gfx.clusters[b.cluster];
 			// Mirror the GPU's MASK exclusion (GFX_CULL_HZBSKIPMASKED):
 			// with the flag on, masked batches never test the pyramid, so
 			// the audit must not report them as occlusion kills/misses.
@@ -1327,4 +1327,4 @@ void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
 	smvk::gfx::DumpHzb(gfx, ctx, slot);
 }
 
-} // namespace smvk
+} // namespace engine

@@ -11,6 +11,8 @@
 
 #include <Engine/Utils/LutIo.h>
 
+namespace engine {
+
 bool LutLoadPng(const char* path, std::vector<uint8_t>& rgba, int& w, int& h)
 {
 	int comp = 0;
@@ -26,3 +28,5 @@ bool LutWritePng(const char* path, int w, int h, const uint8_t* rgba)
 {
 	return stbi_write_png(path, w, h, 4, rgba, w * 4) != 0;
 }
+
+} // namespace engine

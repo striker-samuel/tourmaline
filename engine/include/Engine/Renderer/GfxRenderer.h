@@ -16,7 +16,7 @@
 
 #include <functional>
 
-namespace smvk {
+namespace engine {
 
 // Debug-view pushes (share the global [0,256) push range; must mirror the
 // debug shaders byte for byte).
@@ -478,4 +478,4 @@ private:
 	size_t lmXformsCap_ = 0;
 };
 
-} // namespace smvk
+} // namespace engine
