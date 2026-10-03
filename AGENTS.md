@@ -36,6 +36,9 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Buil
   recompiles changed `.hlsl` and syncs the `.spv`
 - HLSL entry points: `mainVS`/`mainPS`/`mainCS` by file extension
   (`.vert.hlsl`/`.frag.hlsl`/`.cs.hlsl`)
+- Debug builds compile shaders `-Od`; files listed in `HLSL_FORCE_O3_FILES`
+  (`cmake/CompileShaders.cmake`, currently `gfxfilter.cs.hlsl` — its `-Od`
+  SPIR-V AVs nvgpucomp64.dll) are pinned to `-O3` even in Debug
 
 ## Running
 

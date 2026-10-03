@@ -66,6 +66,19 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   set(oneValueArgs)
   set(multiValueArgs INCLUDE_DIRS VARIANTS)
   cmake_parse_arguments(CS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  # Per-file -O3 pins for Debug builds (file names, no directory):
+  #   set(HLSL_FORCE_O3_FILES "foo.cs.hlsl;bar.frag.hlsl")
+  # before including this file to extend it. Defaults below cover shaders
+  # whose UNOPTIMIZED (-Od) SPIR-V crashes a real driver compiler:
+  #   - gfxfilter.cs.hlsl: the -Od blob (~155KB, heavy vk::BufferPointer
+  #     traffic) AVs nvgpucomp64.dll inside vkCreateComputePipelines
+  #     (Debug-only; the -O3 blob ~44KB compiles clean and Release runs
+  #     fine). Pinned to the exact proven Release flags (-O3
+  #     -Qstrip_debug), so this one shader is not RenderDoc-debuggable in
+  #     Debug trees until the driver bug is fixed / worked around in-shader.
+  if (NOT DEFINED HLSL_FORCE_O3_FILES)
+    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl")
+  endif()
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
   message(STATUS "NORM_SOURCE_DIR ${NORM_SOURCE_DIR}")
@@ -147,7 +160,14 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 # Line ... column length ... found in the DebugSource text"
                 # (fatal error, no .spv emitted). -fspv-debug=vulkan keeps
                 # line info without embedded source and validates clean.
-                list(APPEND _COMMON -Od -Zi -Qembed_debug -fspv-debug=vulkan)
+                if (FILE_NAME IN_LIST HLSL_FORCE_O3_FILES)
+                    # Driver-bug pin (see HLSL_FORCE_O3_FILES above): -Od
+                    # output crashes the compiler, so take the proven
+                    # Release codegen instead.
+                    list(APPEND _COMMON -O3 -Qstrip_debug)
+                else()
+                    list(APPEND _COMMON -Od -Zi -Qembed_debug -fspv-debug=vulkan)
+                endif()
             elseif (SHADER_DEBUG_ON)
                 # Release + shader debug (x64-Release-ShaderDebug preset,
                 # VULKANTOY_SHADER_DEBUG=ON): release -O3 shader codegen
