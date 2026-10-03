@@ -31,6 +31,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h> // ShellExecuteA (reveal-in-explorer)
 #endif
 
 namespace editor {

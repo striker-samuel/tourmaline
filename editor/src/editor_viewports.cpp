@@ -523,9 +523,9 @@ void EditorApp::DrawViewportChrome() {
 			if (m_wysiwyg && i > 0
 				&& i - 1 < (int)m_wysiwyg->GetViewCount()) {
 				const char* ritems[3] = {
-					app::ViewRefreshName(app::ViewRefresh::Full),
-					app::ViewRefreshName(app::ViewRefresh::Tic),
-					app::ViewRefreshName(app::ViewRefresh::Toc),
+					smvk::ViewRefreshName(smvk::ViewRefresh::Full),
+					smvk::ViewRefreshName(smvk::ViewRefresh::Tic),
+					smvk::ViewRefreshName(smvk::ViewRefresh::Toc),
 				};
 				int cur = static_cast<int>(
 					m_wysiwyg->GetViewRefresh(uint32_t(i - 1)));
@@ -534,7 +534,7 @@ void EditorApp::DrawViewportChrome() {
 				std::snprintf(rlabel, sizeof(rlabel), "##refresh%d", i);
 				if (ImGui::Combo(rlabel, &cur, ritems, 3))
 					m_wysiwyg->SetViewRefresh(uint32_t(i - 1),
-						static_cast<app::ViewRefresh>(cur));
+						static_cast<smvk::ViewRefresh>(cur));
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip(
 						"Hosted-view refresh: every frame, or every other "

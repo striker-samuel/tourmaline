@@ -12,11 +12,11 @@ target_compile_definitions(Editor PRIVATE ENGINE_VULKAN)
 target_include_directories(Editor
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        # Reuses App's ABI-checked FrameUniforms + PushConstants
-        # (common.hlsli layout, static_asserted in world_renderer.h).
-        ${CMAKE_SOURCE_DIR}/app/include
-        # stb_image/stb_image_write (tourmaline logo generation + load).
-        ${CMAKE_SOURCE_DIR}/app/vendor
+        # Reuses the engine's ABI-checked FrameUniforms + PushConstants
+        # (common.hlsli layout, static_asserted in WorldRenderer.h).
+        # (Was app/include + app/vendor before the renderer moved to engine;
+        # stb headers now live in external/stb.)
+        ${CMAKE_SOURCE_DIR}/external/stb
         # nanosvg (editor/icons/*.svg rasterization for the asset browser).
         ${CMAKE_SOURCE_DIR}/external/nanosvg/src
         # ImGui Vulkan backend header (ImGui_ImplVulkan_AddTexture for the
@@ -30,7 +30,6 @@ target_link_libraries(Editor
         engine
         gltf_import
         artifact_cache
-        appcore
         KTX::ktx
         OptickCore
         # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>
@@ -65,11 +64,11 @@ vulkantoy_stage_sdl3(Editor)
 
 # The editor renders with the same compiled shaders as App
 # (default.vert / default_unlit / default_lit / shadow.vert / ...).
-# They are built by App's App_shaders target (compile_shaders()'s own ALL
-# target) into ${CMAKE_BINARY_DIR}/content/shaders; sync them next to
+# They are built by the engine's EngineScene_shaders target (compile_shaders()'s
+# own ALL target) into ${CMAKE_BINARY_DIR}/content/shaders; sync them next to
 # Editor.exe.
-if(TARGET App_shaders)
-    add_dependencies(Editor App_shaders)
+if(TARGET EngineScene_shaders)
+    add_dependencies(Editor EngineScene_shaders)
 endif()
 add_custom_command(TARGET Editor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Editor>/content/shaders"

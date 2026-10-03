@@ -198,10 +198,10 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
 		return true;
 	m_flightCount = flightCount;
 	m_frameUniforms = m_context->CreateBuffer(
-		sizeof(app::FrameUniforms) * flightCount * kMaxViewports,
+		sizeof(smvk::FrameUniforms) * flightCount * kMaxViewports,
 		smvk::BufferType_Uniform, "editor frames");
 	m_insetFrameUniforms = m_context->CreateBuffer(
-		sizeof(app::FrameUniforms) * flightCount, smvk::BufferType_Uniform,
+		sizeof(smvk::FrameUniforms) * flightCount, smvk::BufferType_Uniform,
 		"editor inset frame");
 	m_materialsBuf = m_context->CreateBuffer(
 		sizeof(smvk::MaterialValues) * kMaxMaterials * flightCount,
@@ -236,7 +236,7 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 	// drives the light buffer.
 	const uint64_t baseAddr =
 		m_context->GetBufferDeviceAddress(m_frameUniforms);
-	const size_t sliceStride = sizeof(app::FrameUniforms);
+	const size_t sliceStride = sizeof(smvk::FrameUniforms);
 	for (int vp = 0; vp < ViewportCount(); ++vp) {
 		const ViewportRect& rect = m_viewports[vp].rect;
 		const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
@@ -255,7 +255,7 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		}
 		const glm::mat4 viewProj = proj * view;
 
-		app::FrameUniforms frame{};
+		smvk::FrameUniforms frame{};
 		frame.view = view;
 		frame.proj = proj;
 		frame.viewProj = viewProj;
@@ -276,17 +276,10 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		frame.aoIntensity = 0.0f;
 		frame.evsmMode = 0;
 		frame.decalCount = 0;
-		frame.lmEnabled = 0;
-		// Baked-irradiance atlas (F8 view): bindless layer slots ride the
-		// frame; the direct-draw VS never resolves per-draw chunks, so the
-		// lit path ignores this while the baked debug FS samples layer 0
-		// (texture 0 = lobe 0 in both GPU layouts).
-		if (m_lmGpu) {
-			for (uint32_t t = 0; t < 12; ++t)
-				frame.lmLayers[t] = m_lmLayerSlots[t];
-			frame.lmLayerKind = m_lmLayerKind;
-			frame.lmEnabled = 1;
-		}
+		// NOTE (lightmaps deprecated): FrameUniforms no longer carries the
+		// baked-irradiance atlas slots (see the #if 0 block in
+		// Engine/Renderer/WorldRenderer.h) — the editor's m_lmGpu upload
+		// path is retained, but nothing consumes it per-frame anymore.
 		frame.regEnabled = 0;
 		frame.regCount = 0;
 		frame.dsEnabled = 0;
@@ -342,7 +335,7 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 	UploadMaterials(flight);
 }
 
-void EditorApp::ApplyEnvToFrame(app::FrameUniforms& frame,
+void EditorApp::ApplyEnvToFrame(smvk::FrameUniforms& frame,
 	smvk::EnvironmentSettings& env) const {
 	const EditorEnv& e = CurrentEnv();
 	env.skyEnabled = true;
@@ -608,7 +601,7 @@ void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent
 	// Same camera as viewport 0, strip aspect: re-project m_lastFrame
 	// (viewport 0's frame) so the inset is undistorted.
 	SetupDefaultCameras();
-	app::FrameUniforms frame = m_viewports[0].frame;
+	smvk::FrameUniforms frame = m_viewports[0].frame;
 	// frame.view already follows the look-through binding (see
 	// UpdateFrameData); only the projection is re-derived for the strip
 	// aspect — from the bound lens when bound, else the orbit camera.
@@ -654,11 +647,11 @@ void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent
 		smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(frame));
 	m_lastInsetFrameAddr =
 		m_context->GetBufferDeviceAddress(m_insetFrameUniforms) +
-		flight * sizeof(app::FrameUniforms);
+		flight * sizeof(smvk::FrameUniforms);
 }
 
 void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
-	const app::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
+	const smvk::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
 	bool shadowPass, bool bakedOnly, bool chartTail) {
 	(void)basePc;
 	if (!m_world)
@@ -697,12 +690,12 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 		if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
 			return;
 		const glm::mat4& model = m_world->scene.globalTransform[item.node];
-		app::PushConstants objPc{};
+		smvk::PushConstants objPc{};
 		std::memcpy(objPc.model, glm::value_ptr(model), sizeof(objPc.model));
 		objPc.materialId = item.material;
-		cmd.PushConstants(offsetof(app::PushConstants, materialId),
+		cmd.PushConstants(offsetof(smvk::PushConstants, materialId),
 			sizeof(objPc.materialId), &objPc.materialId, smvk::ShaderStage::All);
-		cmd.PushConstants(offsetof(app::PushConstants, model),
+		cmd.PushConstants(offsetof(smvk::PushConstants, model),
 			sizeof(objPc.model), objPc.model, smvk::ShaderStage::All);
 		if (chartTail) {
 			// Per-mesh chart tail: the direct VS unpacks chart uvs to
@@ -776,7 +769,7 @@ uint64_t EditorApp::EnsureChartXforms() {
 }
 
 void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
-	const app::PushConstants& pc) {
+	const smvk::PushConstants& pc) {
 	// Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
 	// the chosen UV channel with the texture content behind them. No
 	// selection = empty panel (classic UV editor: one asset at a time).
@@ -828,7 +821,7 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 		if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
 			return;
 		uint32_t matId = item.material;
-		cmd.PushConstants(offsetof(app::PushConstants, materialId),
+		cmd.PushConstants(offsetof(smvk::PushConstants, materialId),
 			sizeof(matId), &matId, smvk::ShaderStage::All);
 		if (mode == ViewMode::FlatUv1) {
 			// Per-mesh chart tail: the flat VS unpacks chart uvs to
@@ -1059,7 +1052,7 @@ void EditorApp::RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
 	}
 	// Flat fill push: identity model with the window zoom/pan (must
 	// match uvflat.vert.hlsli + UvToFlatNdc).
-	app::PushConstants pc{};
+	smvk::PushConstants pc{};
 	{
 		const float z = (m_uvWinZoom > 1e-6f) ? m_uvWinZoom : 1.0f;
 		pc.model[0] = z;
@@ -1087,7 +1080,7 @@ void EditorApp::RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
 		const smvk::RasterSettings raster{
 			.cullMode = smvk::CullMode::None };
 		cmd.BindVertexBuffer(m_uvWinLines, 0, 0);
-		app::LineDebugPush lp{};
+		smvk::LineDebugPush lp{};
 		const glm::mat4 ident(1.0f); // verts are already NDC-space
 		std::memcpy(lp.viewProj, glm::value_ptr(ident), sizeof(lp.viewProj));
 		// Wires: depth-tested over the fill (z=1 vs the fill's 0.9999).
@@ -1168,7 +1161,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 		flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-	app::PushConstants pc{};
+	smvk::PushConstants pc{};
 	pc.frameUniforms = frameAddr;
 	pc.lightsBuffer = lightsAddr;
 	pc.materialsBuffer = matsAddr;
@@ -1264,7 +1257,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				smvk::RasterSettings{ .polygonMode = wireAll
 					? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
 					.cullMode = smvk::CullMode::None });
-			app::PushConstants tpc = pc;
+			smvk::PushConstants tpc = pc;
 			tpc.pad_pc = 1; // classic alpha blend
 			cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
 			if (m_world) {
@@ -1284,9 +1277,9 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						return;
 					const glm::mat4& model = m_world->scene.globalTransform[item.node];
 					uint32_t matId = item.material;
-					cmd.PushConstants(offsetof(app::PushConstants, materialId),
+					cmd.PushConstants(offsetof(smvk::PushConstants, materialId),
 						sizeof(matId), &matId, smvk::ShaderStage::All);
-					cmd.PushConstants(offsetof(app::PushConstants, model),
+					cmd.PushConstants(offsetof(smvk::PushConstants, model),
 						sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
 					for (const auto& s : mesh->geometry.surfaces)
 						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
@@ -1337,7 +1330,7 @@ void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
 		m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 		flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-	app::PushConstants pc{};
+	smvk::PushConstants pc{};
 	pc.frameUniforms = m_lastInsetFrameAddr;
 	pc.lightsBuffer = lightsAddr;
 	pc.materialsBuffer = matsAddr;
@@ -1392,7 +1385,7 @@ void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
 				smvk::StencilSettings{},
 				smvk::BlendSettings::AlphaBlend(),
 				smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-			app::PushConstants tpc = pc;
+			smvk::PushConstants tpc = pc;
 			tpc.pad_pc = 1;
 			cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
 			if (m_world) {
@@ -1410,9 +1403,9 @@ void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
 						return;
 					const glm::mat4& model = m_world->scene.globalTransform[item.node];
 					uint32_t matId = item.material;
-					cmd.PushConstants(offsetof(app::PushConstants, materialId),
+					cmd.PushConstants(offsetof(smvk::PushConstants, materialId),
 						sizeof(matId), &matId, smvk::ShaderStage::All);
-					cmd.PushConstants(offsetof(app::PushConstants, model),
+					cmd.PushConstants(offsetof(smvk::PushConstants, model),
 						sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
 					for (const auto& s : mesh->geometry.surfaces)
 						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
@@ -1571,7 +1564,7 @@ void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
 		smvk::RasterSettings{ .polygonMode = m_wireframeAll
 			? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
 			.cullMode = smvk::CullMode::None });
-	app::MeshDebugPush dp{};
+	smvk::MeshDebugPush dp{};
 	std::memcpy(dp.viewProj, glm::value_ptr(m_lastViewProj),
 		sizeof(dp.viewProj));
 	const smvk::IteratorFlags req = smvk::IteratorFlags(

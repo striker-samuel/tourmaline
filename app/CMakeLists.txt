@@ -1,68 +1,14 @@
 ﻿project(App)
 
 set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
-set(ENGINE_SHADERS_DIR "${CMAKE_SOURCE_DIR}/engine/shaders")
-set(APP_INCLUDE_DIR "${APP_DIR}/include")
 
 message(STATUS "APP_DIR = ${APP_DIR}")
-message(STATUS "ENGINE_SHADERS_DIR = ${ENGINE_SHADERS_DIR}")
-message(STATUS "APP_INCLUDE_DIR = ${APP_INCLUDE_DIR}")
 
 # ---------------------------------------------------------------------------
-# appcore: the WorldRenderer ("classic world renderer pattern" — renders a
-# host-provided world; no scene loading) as a static lib shared by App.exe
-# and the Editor. The editor drives a HOSTED instance (offscreen render
-# target composed into its WYSIWYG viewports — App::RequestHostedBoot);
-# App installs a world source (SetWorldSource: main.cpp loads the pak)
-# and runs it as its own window (Run()).
-# ---------------------------------------------------------------------------
-add_library(appcore STATIC
-    src/world_renderer.cpp
-    src/renderer.cpp
-    src/forwardplus_renderer.cpp
-    src/lut_io.cpp
-)
-
-target_include_directories(appcore
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        # stb (lut_io PNG readback).
-        ${CMAKE_SOURCE_DIR}/app/vendor
-)
-
-target_compile_definitions(appcore PRIVATE ENGINE_VULKAN)
-
-if(DS_VIZ_ON)
-    target_compile_definitions(appcore PRIVATE DS_DEBUG_VIZ=1)
-endif()
-
-target_link_libraries(appcore
-    PUBLIC
-        engine
-    PRIVATE
-        gltf_import
-        KTX::ktx
-        OptickCore
-)
-
-# ---------------------------------------------------------------------------
-# Precompiled Header (PCH) for the App module.
-# Uses CMake's built-in target_precompile_headers so it works with both
-# MSBuild and Ninja (+ MSVC cl.exe, e.g. VS's x64-Debug Ninja config).
-# No manual #include "pch.h" needed in the .cpps: CMake injects /Yu + /FI.
-# Disable with -DVULKANTOY_PCH=OFF if the PCH ever masks a header bug.
-# ---------------------------------------------------------------------------
-option(VULKANTOY_PCH "Use precompiled headers for appcore/App" ON)
-if(VULKANTOY_PCH)
-    target_precompile_headers(appcore PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
-    )
-endif()
-
-# ---------------------------------------------------------------------------
-# App.exe: thin entry + appcore.
+# App.exe: thin entry over the engine host API (Engine/App/Host.h).
+# The world renderer + frame renderers + host logic all live in `engine`;
+# this target is main.cpp + content/shader staging only. (appcore, the old
+# WorldRenderer static lib, is deleted.)
 # ---------------------------------------------------------------------------
 add_executable(App src/main.cpp)
 
@@ -165,37 +111,24 @@ if(TARGET EngineRes_shaders)
     )
 endif()
 
-target_include_directories(App
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-
-)
-
-target_compile_definitions(App PRIVATE ENGINE_VULKAN)
-
 # Deferred-shadow debug visualizers (paper 5.3/5.4): resolved by the root
 # CMakeLists (auto = Debug trees; VULKANTOY_DS_VIZ=ON forces them into
 # optimized builds — see the x64-Release-DSViz CMakeSettings preset). The
 # same define is passed to DXC (CompileShaders.cmake); clean release trees
 # compile the visualizer UI, uniform fields and shader paths out entirely.
+# main.cpp includes the engine WorldRenderer header, so it must see the
+# same layout as the engine TUs.
 if(DS_VIZ_ON)
     target_compile_definitions(App PRIVATE DS_DEBUG_VIZ=1)
 endif()
 
 target_link_libraries(App
     PRIVATE
-        appcore
         engine
         gltf_import
         KTX::ktx
         OptickCore
 )
-
-if(VULKANTOY_PCH)
-    target_precompile_headers(App PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
-    )
-endif()
 
 # OptickCore is SHARED: stage its DLL next to App.exe
 add_custom_command(TARGET App POST_BUILD
@@ -212,41 +145,13 @@ vulkantoy_stage_sdl3(App)
 vulkantoy_stage_streamline(App)
 
 
-# Shader compile outputs will be collected in this list
-set(COMPILED_SHADER_OUTPUTS)
-
-compile_shaders(
-  "${ENGINE_SHADERS_DIR}"
-  "${CMAKE_BINARY_DIR}/content/shaders"
-  App
-  INCLUDE_DIRS
-    "${ENGINE_SHADERS_DIR}"
-    "${APP_INCLUDE_DIR}"
-    "${APP_DIR}"
-  # Fixed-count lit permutations: the Main filtered leg binds the lit FS
-  # matching each material range's cooked lobe count (see GfxRenderer::
-  # FilteredLitProgram), so the shader's SG evaluation folds to literals.
-  # Output: default_lit.frag.hlsl.sg{5,6,9,12}.spv next to the base module.
-  VARIANTS
-    "default_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
-    "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
-    "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
-    "default_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
-    # GI permutations (SPEC_GI_VARIANT specialization constant)
-    "default_lit.frag.hlsl|.gi0|GI_NONE=1"
-    "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
-    "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
-    "default_lit.frag.hlsl|.gi3|GI_FULL=1"
-)
-
-# compile_shaders() already emits the ALL target "App_shaders" over these
-# outputs. Do NOT add a second ALL target over the same .spv files — two
-# independent custom targets writing identical outputs race in MSBuild
-# (MSB8066 "exited with code 1" on one of them, ~every shader change).
-if(COMPILED_SHADER_OUTPUTS)
-    add_dependencies(App App_shaders)
+# Scene shaders (engine/shaders -> content/shaders) are compiled by the
+# engine's EngineScene_shaders ALL target (see engine/CMakeLists.txt);
+# depend on it here so a shader edit rebuilds through the App target.
+if(TARGET EngineScene_shaders)
+    add_dependencies(App EngineScene_shaders)
 else()
-    message(WARNING "No shaders found to compile!")
+    message(WARNING "EngineScene_shaders target missing - scene shaders will not build!")
 endif()
 
 # The app loads "content/shaders/*.spv" relative to its working directory,
@@ -254,7 +159,7 @@ endif()
 # next to the exe like the other content dirs above. Without this, newly
 # added shaders silently fail to load at runtime (readFile throws inside
 # EnsureShaders -> builder stays invalid -> feature dead with no crash).
-if(COMPILED_SHADER_OUTPUTS)
+if(TARGET EngineScene_shaders)
     # Shader sync as an App POST_BUILD (per-config, like the content-dir
     # copies above): a separate ALL target would only run for whichever
     # config built it, so a fresh tree of a NEW configuration (e.g. the

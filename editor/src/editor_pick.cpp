@@ -156,10 +156,12 @@ glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
 	// what's under the cursor.
 	const float nx = (extent.width > 0) ? (mouseX / float(extent.width)) * 2.0f - 1.0f : 0.0f;
 	const float ny = (extent.height > 0) ? (mouseY / float(extent.height)) * 2.0f - 1.0f : 0.0f;
-	const glm::vec4 near = glm::inverse(viewProj) * glm::vec4(nx, ny, 1.0f, 1.0f);
-	const glm::vec4 far = glm::inverse(viewProj) * glm::vec4(nx, ny, 0.0f, 1.0f);
-	const glm::vec3 n = glm::vec3(near) / near.w;
-	const glm::vec3 f = glm::vec3(far) / far.w;
+	// NOTE: locals are nearPt/farPt, not near/far — the latter collide
+	// with macros pulled in through the Windows SDK headers.
+	const glm::vec4 nearPt = glm::inverse(viewProj) * glm::vec4(nx, ny, 1.0f, 1.0f);
+	const glm::vec4 farPt = glm::inverse(viewProj) * glm::vec4(nx, ny, 0.0f, 1.0f);
+	const glm::vec3 n = glm::vec3(nearPt) / nearPt.w;
+	const glm::vec3 f = glm::vec3(farPt) / farPt.w;
 	outOrigin = n;
 	return glm::normalize(f - n);
 }

@@ -114,7 +114,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 		m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 		flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-	app::PushConstants pc{};
+	smvk::PushConstants pc{};
 	pc.frameUniforms = frameAddr;
 	pc.lightsBuffer = lightsAddr;
 	pc.materialsBuffer = matsAddr;
@@ -199,7 +199,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 				if (!mesh || mesh->lmChunk == 0xFFFFFFFFu)
 					return; // baked meshes only
 				uint32_t matId = item.material;
-				cmd.PushConstants(offsetof(app::PushConstants, materialId),
+				cmd.PushConstants(offsetof(smvk::PushConstants, materialId),
 					sizeof(matId), &matId, smvk::ShaderStage::All);
 				// Per-mesh chart tail (same unpack as the flat panel).
 				smvk::gfx::UvFlatVsPushTail tail{};
@@ -226,7 +226,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 			smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
 			smvk::PrimitiveTopology::LineList);
 		cmd.BindVertexBuffer(m_lmExportLines, 0, 0);
-		app::LineDebugPush lp{};
+		smvk::LineDebugPush lp{};
 		const glm::mat4 identity(1.0f);
 		std::memcpy(lp.viewProj, glm::value_ptr(identity),
 			sizeof(lp.viewProj));

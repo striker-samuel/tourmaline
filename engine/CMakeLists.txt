@@ -26,6 +26,13 @@ target_include_directories(engine
         ${CMAKE_CURRENT_SOURCE_DIR}/src/RHI/detail
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
         ${CMAKE_SOURCE_DIR}/external/streamline/include
+        # stb_image/stb_image_write (LutIo PNG readback).
+        ${CMAKE_SOURCE_DIR}/external/stb
+        # gltf_import helper used by the world renderer
+        # (GltfPunctualAimAxis): headers only — the lib itself stays with
+        # the executables (gltf_import PUBLIC-links engine, so linking it
+        # here would be a dependency cycle).
+        ${CMAKE_SOURCE_DIR}/tools/gltf_import/include
 )
 
 
@@ -42,6 +49,29 @@ target_compile_definitions(engine
 
 if(ENGINE_BACKEND STREQUAL "Vulkan")
     target_compile_definitions(engine PRIVATE ENGINE_VULKAN)
+endif()
+
+# ---------------------------------------------------------------------------
+# Precompiled Header for the engine (moved with the world renderer from
+# appcore). CMake's built-in target_precompile_headers works with both
+# MSBuild and Ninja (+ MSVC cl.exe). No manual #include "pch.h" needed:
+# CMake injects /Yu + /FI. Disable with -DVULKANTOY_PCH=OFF if the PCH
+# ever masks a header bug.
+# ---------------------------------------------------------------------------
+option(VULKANTOY_PCH "Use precompiled headers for engine" ON)
+if(VULKANTOY_PCH)
+    target_precompile_headers(engine PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
+    )
+endif()
+
+# Deferred-shadow debug visualizers (paper 5.3/5.4): the world renderer
+# moved here from appcore, taking its DS_DEBUG_VIZ-gated FrameUniforms
+# tail with it. Same auto logic as before (root CMakeLists resolves
+# DS_VIZ_ON: Debug trees unless forced); must match the DXC define or
+# the CPU/GPU layout diverges.
+if(DS_VIZ_ON)
+    target_compile_definitions(engine PRIVATE DS_DEBUG_VIZ=1)
 endif()
 
 target_link_libraries(engine
@@ -118,4 +148,37 @@ compile_shaders(
     EngineRes
     INCLUDE_DIRS
         "${CMAKE_SOURCE_DIR}/engine/shaders"
+)
+
+# ---------------------------------------------------------------------------
+# Scene shaders (engine/shaders -> content/shaders/*.spv): the world
+# renderer's pipeline set, loaded relative to the working directory
+# alongside user content. Owned here since the renderer moved into the
+# engine (was App's App_shaders target). Emits the ALL target
+# "EngineScene_shaders" over the outputs; App + Editor sync them next to
+# their exes POST_BUILD (see app/editor CMakeLists). Do NOT add a second
+# ALL target over the same .spv files — two independent custom targets
+# writing identical outputs race in MSBuild (MSB8066 "exited with code 1"
+# on one of them, ~every shader change).
+# ---------------------------------------------------------------------------
+compile_shaders(
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+    "${CMAKE_BINARY_DIR}/content/shaders"
+    EngineScene
+    INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+    # Fixed-count lit permutations: the Main filtered leg binds the lit FS
+    # matching each material range's cooked lobe count (see GfxRenderer::
+    # FilteredLitProgram), so the shader's SG evaluation folds to literals.
+    # Output: default_lit.frag.hlsl.sg{5,6,9,12}.spv next to the base module.
+    VARIANTS
+        "default_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
+        "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+        "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
+        "default_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
+        # GI permutations (SPEC_GI_VARIANT specialization constant)
+        "default_lit.frag.hlsl|.gi0|GI_NONE=1"
+        "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
+        "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
+        "default_lit.frag.hlsl|.gi3|GI_FULL=1"
 )

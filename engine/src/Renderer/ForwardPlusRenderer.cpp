@@ -1,5 +1,5 @@
-#include <App/forwardplus_renderer.h>
-#include <App/frame_context.h>
+#include <Engine/Rendergraph/ForwardPlusRenderer.h>
+#include <Engine/Rendergraph/FrameContext.h>
 
 #include <Engine/App/world.h>
 #include <Engine/Renderer/mesh.h>
@@ -16,7 +16,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-namespace app {
+namespace smvk {
 
 bool ForwardPlusRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 	(void)ctx;
@@ -523,4 +523,4 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 	}
 }
 
-} // namespace app
+} // namespace smvk

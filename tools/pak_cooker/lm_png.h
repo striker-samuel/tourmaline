@@ -10,7 +10,7 @@
 //                                           draw/export path;
 //   cook PNG corrupt                     -> bake / denoise / pack.
 //
-// Cook-time only, part of PakCooker (stb_image_write from app/vendor;
+// Cook-time only, part of PakCooker (stb_image_write from external/stb;
 // the engine and App never see it).
 
 #include <string>

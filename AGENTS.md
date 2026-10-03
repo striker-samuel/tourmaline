@@ -32,7 +32,7 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Buil
 
 - Source: `engine/shaders/` (HLSL, compiled by DXC via `cmake/CompileShaders.cmake`)
 - Output: `out/build/<config>/content/shaders/*.spv`, synced next to `App.exe`
-- Editing a shader: just rebuild the `App` target — the `App_shaders` dependency
+- Editing a shader: just rebuild the `App` target — the `EngineScene_shaders` dependency
   recompiles changed `.hlsl` and syncs the `.spv`
 - HLSL entry points: `mainVS`/`mainPS`/`mainCS` by file extension
   (`.vert.hlsl`/`.frag.hlsl`/`.cs.hlsl`)
@@ -74,7 +74,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Push-constant structs: C++ (`engine/include/Engine/Rendergraph/*.h`) and
   HLSL mirrors must stay layout-identical — check the `static_assert(sizeof(...))`
   and the HLSL comment when editing either side
-- Frame renderer plumbing: `AppFrameContext` (app/include/App/frame_context.h)
+- Frame renderer plumbing: `smvk::AppFrameContext` (engine/include/Engine/Rendergraph/FrameContext.h)
   carries per-frame handles; renderers snapshot what they need at Append time
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Dont use F12 for any binding since it can trigger debugbreak

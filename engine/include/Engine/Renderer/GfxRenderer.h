@@ -12,11 +12,11 @@
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/App/world.h>
 #include <Engine/Renderer/renderview.h>
-#include <App/push_constants.h>
+#include <Engine/Rendergraph/PushConstants.h>
 
 #include <functional>
 
-namespace app {
+namespace smvk {
 
 // Debug-view pushes (share the global [0,256) push range; must mirror the
 // debug shaders byte for byte).
@@ -478,4 +478,4 @@ private:
 	size_t lmXformsCap_ = 0;
 };
 
-} // namespace app
+} // namespace smvk

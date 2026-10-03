@@ -6,13 +6,13 @@
 #include <Engine/App/world.h>
 #include <Engine/Rendergraph/renderer.h>
 
-#include <App/push_constants.h>
+#include <Engine/Rendergraph/PushConstants.h>
 
 #include <glm/glm.hpp>
 
 #include <functional>
 
-namespace app {
+namespace smvk {
 
 struct AppFrameContext : public smvk::FrameContext {
 	// Full scene push (value-copied into recording lambdas).
@@ -80,4 +80,4 @@ struct AppFrameContext : public smvk::FrameContext {
 	std::function<bool(NodeId, uint32_t, uint32_t)> gfxLodFilterable{};
 };
 
-} // namespace app
+} // namespace smvk

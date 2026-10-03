@@ -20,7 +20,7 @@
 //                      "is there a cubemap near X?" without the app.
 //
 // Cook-time only, part of PakCooker and CubemapBaker (stb_image_write
-// from app/vendor; the STB implementation lives in cube_png.cpp — the one
+// from external/stb; the STB implementation lives in cube_png.cpp — the one
 // TU every cook binary compiles. The engine and App never see it). All
 // writers are skip-on-IO-failure (false + err), never fatal.
 

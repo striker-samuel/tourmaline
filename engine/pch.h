@@ -1,7 +1,7 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// Precompiled Header for the App module (world_renderer, App.exe, Editor).
+// Precompiled Header for the engine (world renderer included).
 // Includes the foundational Engine headers that are always kept stable.
 // Keep this header minimal — adding new headers forces full PCH rebuild.
 // ---------------------------------------------------------------------------

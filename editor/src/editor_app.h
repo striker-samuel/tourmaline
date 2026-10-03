@@ -57,7 +57,7 @@
 #include <Engine/Renderer/texture_streamer.h>
 
 // ABI-checked shared structs (offsets asserted against common.hlsli).
-#include <App/world_renderer.h>
+#include <Engine/Renderer/WorldRenderer.h>
 
 #include <tiny_gltf.h>
 
@@ -400,7 +400,7 @@ private:
 	// Flat UV draw path: the PRIMARY SELECTION's subtree meshes drawn
 	// through the uvflat projection (unwrapped + texture content).
 	void DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
-		const app::PushConstants& pc);
+		const smvk::PushConstants& pc);
 	// Flat UV wires (glTF model accessors) as line batches in NDC space.
 	// Zoom/pan version (the UV window owns its nav); whole-scene exports
 	// pass identity nav (1.0/zero, ignored — applyNav is false there).
@@ -433,7 +433,7 @@ private:
 	// inset pass + label. outX is window-absolute.
 	bool SecondViewActive() const;
 	static smvk::Extent2D InsetStrip(const ViewportRect& vp, uint32_t& outX);
-	void DrawWorldNodes(smvk::CommandBuffer& cmd, const app::PushConstants& basePc,
+	void DrawWorldNodes(smvk::CommandBuffer& cmd, const smvk::PushConstants& basePc,
 		bool maskedPhase, bool selectedOnly, bool shadowPass,
 		bool bakedOnly = false, // bakedOnly: skip unbaked meshes (F8 view)
 		bool chartTail = false); // chartTail: push the per-mesh chart tail
@@ -489,7 +489,7 @@ private:
 		ViewMode viewMode = ViewMode::Lit; // this panel's view
 		ViewportRect rect;     // computed every frame
 		bool hovered = false;  // mouse inside this viewport
-		app::FrameUniforms frame{}; // CPU copy (picking/gizmo math)
+		smvk::FrameUniforms frame{}; // CPU copy (picking/gizmo math)
 		glm::mat4 viewProj{ 1.0f };
 		uint64_t frameAddr = 0; // this flight's frame-uniform slice
 		// Locked look-through: scene camera node id this panel follows
@@ -1424,7 +1424,7 @@ private:
 	// every mutation (UI edits, mark/unmark, selection switches, tour
 	// load, cooked-light seeding) — scene-direct writes land here.
 	void ResolveSceneEnv();
-	void ApplyEnvToFrame(app::FrameUniforms& frame,
+	void ApplyEnvToFrame(smvk::FrameUniforms& frame,
 		smvk::EnvironmentSettings& env) const;
 	void DrawEnvPanel();       // Inspector "Environment (IBL)" section
 	// editorSet persistence (tour editorSettings; cluster-space node ids).
@@ -1463,7 +1463,7 @@ private:
 	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
 	// ---- LIVE VIEW (the hosted WorldRenderer is the viewport driver) ----
-// The viewports render through a HOSTED app::WorldRenderer (offscreen
+// The viewports render through a HOSTED smvk::WorldRenderer (offscreen
 // target composed into the viewport rects) that renders THE EDITOR'S
 // OWN WORLD — the live engine representation (imports preprocessed,
 // GUID references bound, edits applied). The hosted renderer BORROWS
@@ -1474,9 +1474,9 @@ private:
 // PLACE (RebindWorld): the renderer is never relaunched for a world
 // change. The edit world stays the authoring model underneath:
 // outliner, inspector and gizmos keep working on it.
-	// The hosted WorldRenderer instance (appcore). Null when off.
+	// The hosted WorldRenderer instance (engine). Null when off.
 	// Linear process-owned (dtor-only deleter; never freed).
-	smvk::mem::LinearPtr<app::WorldRenderer> m_wysiwyg;
+	smvk::mem::LinearPtr<smvk::WorldRenderer> m_wysiwyg;
 	// Scene id storage (the renderer keeps its own copy): the scene
 	// stem naming the GI sidecars (gi/<stem>.*).
 	std::string m_wysiwygSceneId;
@@ -1934,7 +1934,7 @@ private:
 	smvk::DepthTarget m_depth{};
 	std::vector<smvk::LogicalImageViewHandle> m_swapViews;
 	uint32_t m_flightCount = 0;
-	app::FrameUniforms m_lastFrame{}; // CPU copy for gizmo/pick math
+	smvk::FrameUniforms m_lastFrame{}; // CPU copy for gizmo/pick math
 	glm::mat4 m_lastViewProj{ 1.0f };
 
 	// per-frame upload caches

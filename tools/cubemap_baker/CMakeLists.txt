@@ -5,7 +5,7 @@ project(CubemapBaker)
 # so CubemapBaker needs its own TU with the implementation).
 add_executable(CubemapBaker main.cpp ../pak_cooker/cube_png.cpp)
 
-target_include_directories(CubemapBaker PRIVATE ../pak_cooker ${CMAKE_SOURCE_DIR}/app/vendor)
+target_include_directories(CubemapBaker PRIVATE ../pak_cooker ${CMAKE_SOURCE_DIR}/external/stb)
 
 target_compile_definitions(CubemapBaker PRIVATE ENGINE_VULKAN)
 

@@ -9,7 +9,8 @@
 // STB implementation owner for both cook binaries that compile this file
 // (PakCooker, CubemapBaker). lm_png.cpp and all other users in those
 // binaries use the header declarations only — exactly one definition per
-// binary. (App/Editor carry their own in lut_io.cpp / editor_branding.cpp.)
+// binary. (The engine carries its own in Utils/LutIo.cpp, the editor in
+// editor_branding.cpp.)
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 

@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace app {
+namespace smvk {
 
 // Must fit the engine push budget (checked below).
 // LAYOUT INVARIANT (broke 10/1, fixed 10/2): real shared fields MUST stay
@@ -81,4 +81,4 @@ static_assert(offsetof(PushConstants, renderViews) == 176, "renderViews mirror d
 static_assert(offsetof(PushConstants, mainRenderView) == 184, "mainRenderView mirror drift");
 static_assert(offsetof(PushConstants, renderViewIndex) == 188, "renderViewIndex mirror drift");
 
-} // namespace app
+} // namespace smvk

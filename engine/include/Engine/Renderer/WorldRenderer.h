@@ -61,12 +61,12 @@
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
 
-#include <App/forwardplus_renderer.h>
-#include <App/frame_context.h>
-#include <App/push_constants.h>
-#include <App/renderer.h>
+#include <Engine/Rendergraph/ForwardPlusRenderer.h>
+#include <Engine/Rendergraph/FrameContext.h>
+#include <Engine/Rendergraph/PushConstants.h>
+#include <Engine/Renderer/GfxRenderer.h>
 
-namespace app {
+namespace smvk {
 
 // ---------------------------------------------------------------------------
 // Configurable pass set. RenderFrame consults these flags, so scene samples
@@ -548,7 +548,7 @@ struct FrameUniforms
 	// heat scale. ----
 	uint64_t dsTileMasks = 0;      // 1360 phase-1 CPU TileGroup masks (viz)
 	uint64_t dsTileGroupMasks = 0; // 1368 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 1376 app::DsDebugViz (0 = off)
+	uint32_t dsDebugMode = 0;      // 1376 smvk::DsDebugViz (0 = off)
 	uint32_t dsDebugLight = 0;     // 1380 selected light (sorted index)
 	uint32_t dsDebugFlags = 0;     // 1384 bit0 = blend over lit
 	uint32_t dsDebugCountCeil = 32; // 1388 count-heat ceiling (lights)
@@ -1750,7 +1750,7 @@ protected:
 	// RebindWorld (the sidecar loaders).
 	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
-	app::GfxRenderer m_gfxRenderer{};
+	smvk::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
 	// ---- Cooperative shadow draw lists (cascade + spot tiles) ----
 	// Candidates are prebuilt once per frame on the render thread (LOD
@@ -1874,7 +1874,7 @@ protected:
 	glm::mat4 m_frozenViewProj{ 1.0f };
 	glm::vec3 m_frozenEye{ 0.0f };
 	smvk::Extent2D m_frozenExtent{ 0, 0 };
-	app::ForwardPlusRenderer m_fpRenderer{};
+	smvk::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
 	bool m_dsEnabled = true;
 	// ---- SG-GI baked probe volume (tools/gi_baker output, see
@@ -2455,4 +2455,4 @@ protected:
 	void UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame);
 };
 
-} // namespace app
+} // namespace smvk
