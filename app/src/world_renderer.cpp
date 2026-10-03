@@ -706,16 +706,6 @@ bool WorldRenderer::Initialize() {
 			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
 		}
-		// Pane-layer (SSR pane receivers) A/B knob: 0 keeps the pre-layer
-		// behavior — no PaneMask pass, trace reflects off the opaque
-		// depth only (the seen-through background at pane pixels).
-		if (const char* glassEnv = std::getenv("VULKANTOY_SSR_GLASS")) {
-			const std::string_view gl = trimEnv(glassEnv);
-			if (gl == "0" || gl == "off") m_ssrGlassEnabled = false;
-			else if (gl == "1" || gl == "on") m_ssrGlassEnabled = true;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_SSR_GLASS value: " << gl << "\n";
-		}
-
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
 		if (const char* rsEnv = std::getenv("VULKANTOY_RENDER_SCALE")) {
@@ -1351,37 +1341,6 @@ if (!m_resources.fragVertexColorShader.empty()) {
 				.shaderCount = 2
 			};
 		}
-
-	// Pane-depth writer (SSR pane reflections — the surviving pane leg of
-	// the old GlassMask redraw, see the PaneMask pass): same default.vert
-	// VS + a FS that outputs the pane fragment's reverse-Z depth — a FS
-	// consuming only SV_Position links with it, same trick as the wire
-	// twin. Non-fatal: missing module leaves the program empty, the
-	// PaneMask pass is skipped, and SSR keeps the opaque-depth receiver.
-	try {
-		auto paneDepthCode = readFile("content/shaders/panedepth.frag.hlsl.spv");
-		m_resources.fragPaneDepthShader = m_context->CreateShaderModule(paneDepthCode, "fragPaneDepth");
-	}
-	catch (...) {
-		std::cerr << "[WorldRenderer] panedepth unavailable - SSR keeps the opaque receiver\n";
-	}
-	if (!m_resources.fragPaneDepthShader.empty()) {
-		m_resources.paneDepthProgram = {
-			.shaders = {
-				smvk::Shader{
-					.module = m_resources.vertShader,
-					.entryPoint = "mainVS",
-					.stage = smvk::ShaderStage::Vertex
-				},
-				smvk::Shader{
-					.module = m_resources.fragPaneDepthShader,
-					.entryPoint = "mainPS",
-					.stage = smvk::ShaderStage::Fragment
-				}
-			},
-			.shaderCount = 2
-		};
-	}
 
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
@@ -10747,12 +10706,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
 						ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
-						ImGui::Checkbox("Temporal filter (TAA, reflection layer only)", &m_ssrTaaEnabled);
-						if (m_ssrTaaEnabled) {
-							ImGui::SliderFloat("TAA history blend", &m_ssrTaaBlend, 0.0f, 0.98f);
-							ImGui::TextDisabled("Motion-vector reprojection + color-AABB anti-ghost. Needs motion vectors; falls back to spatial only.");
-						}
-						ImGui::TextDisabled("Half-res trace + bilateral blur + depth-aware upscale. Bistro shopfront glass at grazing angles is the test case.");
+					ImGui::Checkbox("Temporal filter (TAA, reflection layer only)", &m_ssrTaaEnabled);
+					if (m_ssrTaaEnabled) {
+						ImGui::SliderFloat("TAA history blend", &m_ssrTaaBlend, 0.0f, 0.98f);
+						ImGui::TextDisabled("Motion-vector reprojection + color-AABB anti-ghost. Needs motion vectors; falls back to spatial only.");
+					}
+					ImGui::TextDisabled("PARKED: the temporal accumulation path is hard-disabled in the\n"
+						"frame record (spatial-only while the smear diagnosis is open) —\n"
+						"this toggle and blend ride the parked state machine only.");
+					ImGui::TextDisabled("Half-res trace + bilateral blur + full-res composite. All depth\n"
+						"reads (trace skip, blur/composite block reps) go through the shared\n"
+						"final-depth MAX-HZB the SSGI block builds; the pyramid is required —\n"
+						"frames without it skip SSR. Bistro shopfront glass at grazing\n"
+						"angles is the test case.");
 					}
 				}
 				if (ImGui::CollapsingHeader("Volumetric fog (GI probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -11132,6 +11098,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("F11 POM: ray-marched parallax uv through the occlusion-map heightfield\n"
 					"(AO 1 = surface, 0 = cavity) + sun self-shadowing. Sun/sky shading at the displaced\n"
 					"uv; baked GI / decals / forward+ off so the only delta vs F1 is the technique itself.\n"
+					"AO-neutral (the SSGI chain owns AO application; debug views export no aoTerm).\n"
 					"Materials without an occlusion map degenerate to plain sampling.");
 					ImGui::TextDisabled("GI bisection: N isolates the ambient source (All -> Lightmaps -> Probes ->\n"
 						"SkyIbl -> Off); R / F8 cycle the GI debug views (flat irradiance, source palette).\n"
@@ -11574,11 +11541,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (m_aoMode != AoMode::None) {
 					if (!ssgi.Valid())
 						ImGui::TextDisabled("SSGI targets/shaders missing — no AO");
-					else
+					else if (!ssgi.hzb.Valid())
+						ImGui::TextDisabled("SSGI AO: targets up but the shared HZB is missing — chain skips");
+					else {
 						ImGui::Text("SSGI AO: half %ux%u (full %ux%u) hzb %ux%u (%u mips)",
 							ssgi.halfExtent.width, ssgi.halfExtent.height,
 							ssgi.fullExtent.width, ssgi.fullExtent.height,
 							ssgi.hzb.width, ssgi.hzb.height, ssgi.hzb.mipCount);
+						ImGui::TextDisabled("  compose: joint bilateral depth+normal (repDist in the AO triple);\n"
+							"  normal source: %s",
+							m_viewportResources.msaaEnabled
+								? "none (MSAA frame — the prepass writes no G-buffer; depth-only weights)"
+								: (m_viewportResources.ssr.gbuffer.Valid()
+									? "shared thin G-buffer (oct normal)"
+									: "none (G-buffer target missing — depth-only weights)"));
+					}
 				}
 					if (!m_viewportResources.dof.Valid())
 						ImGui::TextDisabled("DOF targets/shaders missing - sharp HDR");
@@ -11587,13 +11564,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_dofEnabled ? "ON" : "off",
 							m_dofFocusDistance, m_dofFocusRange,
 							m_dofHqBokeh ? "HQ bokeh" : "low");
-					if (!m_viewportResources.ssr.Valid())
-						ImGui::TextDisabled("SSR target/shaders missing - no reflections");
-					else
-						ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s",
-							m_ssrEnabled ? "ON" : "off",
-							(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
-							m_ssrTaaEnabled ? "on" : "off");
+				if (!m_viewportResources.ssr.Valid())
+					ImGui::TextDisabled("SSR target/shaders missing - no reflections");
+				else if (!m_viewportResources.ssgi.hzb.Valid())
+					ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s hzb:MISSING (chain skips)",
+						m_ssrEnabled ? "ON" : "off",
+						(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
+						m_ssrTaaEnabled ? "on" : "off");
+				else
+					ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s hzb:shared %ux%u %u mips",
+						m_ssrEnabled ? "ON" : "off",
+						(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
+						m_ssrTaaEnabled ? "on" : "off",
+						m_viewportResources.ssgi.hzb.width,
+						m_viewportResources.ssgi.hzb.height,
+						m_viewportResources.ssgi.hzb.mipCount);
 					if (!m_viewportResources.volumetric.Valid())
 						ImGui::TextDisabled("Volumetric target/shaders missing - no fog");
 					else

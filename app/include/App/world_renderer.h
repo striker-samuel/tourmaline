@@ -409,11 +409,16 @@ struct FrameUniforms
 	float nearPlane;
 	float farPlane;
 	float exposure;
-	// SSAO consumption (lighting-pass ambient): full-res composed AO
-	// (upscaled by the SsaoCompose pass with depth authority, see ao.hlsli).
+	// AO (DORMANT since the SSGI rework): the lighting pass no longer
+	// samples AO — Main exports the AO-sensitive lighting through the
+	// aoTerm MRT target and the SSGI compose pass applies it (see ssgi.h
+	// + ssao_compose.frag.hlsl). The FIELDS stay: FrameUniforms offsets
+	// are asserted vs the HLSL mirror — removing them would shift every
+	// later field. Always UINT32_MAX / 0 ("no AO here") for any future
+	// reader.
 	// Must match HLSL FrameUniforms in common.hlsli — offsets asserted below.
-	uint32_t aoTextureIndex = UINT32_MAX; // full-res composed AO bindless
-	float aoIntensity = 0.0f;            // ambient composite strength
+	uint32_t aoTextureIndex = UINT32_MAX; // dormant (was: full-res composed AO bindless)
+	float aoIntensity = 0.0f;            // dormant (was: ambient composite strength)
 	// Explicit pad so env lands at offset 512 (16-byte aligned), matching
 	// HLSL FrameUniforms::aoPad. Without this the HLSL compiler packs env
 	// at offset 500, which is both a spirv-val Block-layout violation for
@@ -670,17 +675,6 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragWireShader;
 	smvk::ShaderProgram mainWireProgram;       // default.vert + wire FS
 	smvk::ShaderProgram vertexLitWireProgram;  // default_vertexlit.vert + wire FS
-	// SSR pane-depth writer (see the PaneMask pass + ssr.h): default.vert +
-	// panedepth.frag redraw of the transparent list into ssr.paneDepth
-	// (R = the pane fragment's reverse-Z depth) while the stencil aspect
-	// takes the STENCIL_SSR bit (see Rendergraph/stencil_bits.h; Main's
-	// opaque binds write the classification — the old GlassMask redraw's
-	// opaque leg is gone). Missing module leaves shaderCount 0 and the
-	// PaneMask pass is skipped; SSR then keeps the opaque-depth receiver
-	// with the uniform-F0 legacy behavior (pre-mask look: reflections fire
-	// on every surface).
-	smvk::Holder<smvk::ShaderModuleHandle> fragPaneDepthShader;
-	smvk::ShaderProgram paneDepthProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program. shadow.frag declares
@@ -2110,19 +2104,20 @@ protected:
 	float m_dofHighlightBoost = 1.5f; // HQ bright-tap weight multiplier
 	float m_dofHighlightThreshold = 1.0f; // HQ pre-exposure luminance knee
 	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
-	// Opt-in plus pass: no GBuffer, so normals/Fresnel reconstruct from the
-	// 1x prepass depth PLUS the receiver-material layer (stencil bits +
-	// paneDepth, written by the prepass and the PaneMask redraw of the
-	// transparent list — see Rendergraph/stencil_bits.h + ssr.h).
+	// Receiver materials come from the THIN G-BUFFER (full-res RGBA8 oct
+	// normal + roughness + metal, written by the Forward+ prepass when
+	// SSR OR AO wants it — see fc.ssrGbufferWanted). Every depth read in
+	// the blur/composite goes through the SHARED final-depth MAX-HZB
+	// (smvk::Ssgi::hzb, built by the SSGI block after Main + particles:
+	// mip0 = the exact 1:1 depth copy, mip1 = nearest-of-2x2 block reps);
+	// the pyramid is a hard requirement now — frames without a built
+	// pyramid skip SSR entirely (the old linear-march fallback died with
+	// the depth-load blur). The pane/glass A/B layer is gone (the pane
+	// pass was removed long before the SSGI rework; its knob + dead
+	// program went with it).
 	// Bistro shopfront glass at street grazing angles is the calibration
 	// case (default Bistro view looks down the road at it).
 	bool m_ssrEnabled = false;
-	// Pane layer (pane receivers) on/off — VULKANTOY_SSR_GLASS A/B knob.
-	// Off = the PaneMask pass is skipped, SSR reflects off the opaque
-	// depth only (the pre-layer pane behavior); the opaque receiver-
-	// material stencil bits are still written by the prepass, so the
-	// per-receiver metal/gloss gate stays active.
-	bool m_ssrGlassEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
 	float m_ssrMaxDistance = 50.0f; // ray length (m)

@@ -51,8 +51,13 @@ $env:VULKANTOY_LIGHTS_STATIC='1'; $env:VULKANTOY_CAPTURE='48'
 & .\App.exe --pak content/paks/bistro.pak --disable_control --bench 64
 ```
 
-- `VULKANTOY_CAPTURE=<frame>` exports `exports/screenshot_*.png`
+- `VULKANTOY_CAPTURE=<frame>` exports `exports/screenshot_*.png` — the frame
+  number must land INSIDE the bench budget (capture < bench; e.g. capture 12
+  with bench 32), otherwise the auto-exit happens before the export
 - `VULKANTOY_SSR_DUMP=<frame>` dumps SSR stage stats + PNGs to `exports/`
+- `VULKANTOY_AO=off|ssao|sao` pins the AO mode headless (default sao; the O
+  key / UI combo stay live); combined with `VULKANTOY_SSR`,
+  `VULKANTOY_EVSM`, `VULKANTOY_TRANSPARENCY` this spans the full A/B matrix
 - `--bench <n>` runs 10 warmup + n measured frames, then exits
 
 ## Tests

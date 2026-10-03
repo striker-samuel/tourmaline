@@ -381,12 +381,13 @@ struct FrameUniforms
     float nearPlane;
     float farPlane;
     float exposure;
-    // SSAO consumption (lighting-pass ambient): the FULL-res composed AO
-    // (upscaled by the SsaoCompose pass with depth authority, see
-    // ao.hlsli). Mirrors the C++ FrameUniforms in App/world_renderer.h
-    // (offsets asserted there: 492/496, env shifts to 512).
-    uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
-    float aoIntensity;   // ambient composite strength
+    // SSAO (DORMANT since the SSGI rework): the lighting pass no longer
+    // samples AO — Main exports the AO-sensitive lighting through the
+    // aoTerm MRT target and the SSGI compose applies it (ssgi.h +
+    // ssao_compose.frag.hlsl). The fields stay in the layout (offsets
+    // asserted vs the C++ mirror); always 0xffffffff / 0.
+    uint aoTextureIndex; // dormant (was: full-res composed AO bindless)
+    float aoIntensity;   // dormant (was: ambient composite strength)
     // Explicit pad: env must start at offset 512 (16-byte aligned).
     // Without this HLSL packs env at 500, which violates Block layout
     // rules for PhysicalStorageBuffer (spirv-val: member not aligned
