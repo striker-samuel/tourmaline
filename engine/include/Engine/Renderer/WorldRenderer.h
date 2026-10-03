@@ -1946,36 +1946,10 @@ protected:
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 	// (LoadCubemaps declared with the cubemap members above.)
-	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
-	// output). Loaded once at scene init from the registry lightmap
-	// (gi/<name>.sglm, else content/gi/<scene>.sglm):
-	// uploads ONLY the 9 RGBA16F atlas textures (bindless). The chart
-	// uvs + chart ids + per-chart atlas transforms + per-mesh lobe counts
-	// are COOKED into the pak (texCoord2/chartId, lmChartXforms,
-	// StaticMesh::lmChunk riding the draw ring) — no chunk buffer exists
-	// at runtime. Static/dynamic separation: lobe-flagged draws sample
-	// the atlas; dynamic objects sample the regular 3D probe grids
-	// (below) or the fallback ambient. Missing file = not baked yet
-	// (non-fatal).
-#if 0 // Lightmaps deprecated
-	bool m_lmLoaded = false;
-	// UI toggle for the lightmap branch (proxy-baked .sglm atlases:
-	// PakCooker --lightmap bakes a voxel-remesh scene proxy once and
-	// UV-transfers the layout to the real meshes). Default OFF: the
-	// lit shader ignores loaded lightmaps until opted in here.
-	bool m_lmEnabled = false;
-	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
-	// Atlas texture mirrors: 12 slots — the uncompressed path fills 9
-	// (kLightmapLayerCount RGBA16F stream layers, kind 0), the BC6H
-	// path fills scene-lobe-count one-per-lobe textures (kind 1).
-	smvk::Holder<smvk::TextureHandle> m_lmLayers[12];
-	uint32_t m_lmLayerSlots[12] = {}; // bindless slots (FrameUniforms.lmLayers)
-	uint32_t m_lmLayerKind = 0;       // FrameUniforms.lmLayerKind mirror
-	bool LmActive() const {
-		return m_lmLoaded && m_lmEnabled && LmWanted();
-	}
-	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
-#endif
+	// ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
+	// atlas textures plus a runtime branch). The pak-side chart payloads
+	// (texCoord2/chartId, lmChartXforms) stay cooked — the GPU filter's VS
+	// still indexes the chart-transform table (see EnsureChartXforms).
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
 	// Loaded from content/gi/<scene>.regmanifest: up to 8 volumes, each 7
@@ -2116,8 +2090,10 @@ protected:
 	// pass was removed long before the SSGI rework; its knob + dead
 	// program went with it).
 	// Bistro shopfront glass at street grazing angles is the calibration
-	// case (default Bistro view looks down the road at it).
-	bool m_ssrEnabled = false;
+	// case (default Bistro view looks down the road at it). Presented in
+	// the UI as SSGI reflections (it rides the SSGI block's shared HZB);
+	// the builder/code tokens stay SSR. Default ON.
+	bool m_ssrEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
 	float m_ssrMaxDistance = 50.0f; // ray length (m)
@@ -2358,6 +2334,8 @@ protected:
 	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
+	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
+	float m_bloomThreshold = 1000.0f; // pre-exposure HDR threshold (== BLOOM_THRESHOLD; knee tracks at 0.25x)
 	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.

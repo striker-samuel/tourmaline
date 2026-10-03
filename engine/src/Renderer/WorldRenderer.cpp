@@ -692,8 +692,9 @@ bool WorldRenderer::Initialize() {
 			else if (dlss == "dlaa") m_dlssMode = smvk::DlssMode::DLAA;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
 		}
-		// SSR / volumetric fog opt-in toggles for headless A/B + capture
-		// runs (both default off; the ImGui checkboxes stay live after).
+		// SSR / volumetric fog toggles for headless A/B + capture
+		// runs (the ImGui checkboxes stay live after). SSR (SSGI
+		// reflections) defaults ON; volumetric defaults off.
 		if (const char* ssrEnv = std::getenv("VULKANTOY_SSR")) {
 			const std::string_view ssr = trimEnv(ssrEnv);
 			if (ssr == "1" || ssr == "on") m_ssrEnabled = true;
@@ -705,6 +706,23 @@ bool WorldRenderer::Initialize() {
 			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
 			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
+		}
+		// Bloom tuning overrides for headless A/B runs (threshold is
+		// pre-exposure HDR, same units as the ImGui sliders; intensity is
+		// the tonemap add scale). The ImGui sliders stay live after.
+		if (const char* btEnv = std::getenv("VULKANTOY_BLOOM_THRESHOLD")) {
+			const float bt = std::strtof(btEnv, nullptr);
+			if (bt >= 0.0f && bt <= 16000.0f)
+				m_bloomThreshold = bt;
+			else std::cerr << "[WorldRenderer] VULKANTOY_BLOOM_THRESHOLD out of range "
+				<< "(0..16000): " << btEnv << "\n";
+		}
+		if (const char* biEnv = std::getenv("VULKANTOY_BLOOM_INTENSITY")) {
+			const float bi = std::strtof(biEnv, nullptr);
+			if (bi >= 0.0f && bi <= 4.0f)
+				m_bloomIntensity = bi;
+			else std::cerr << "[WorldRenderer] VULKANTOY_BLOOM_INTENSITY out of range "
+				<< "(0..4): " << biEnv << "\n";
 		}
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
@@ -1667,12 +1685,6 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		// analytic sky IBL ambient with path-traced probes when present.
 		// Missing file is the normal state (no bake yet) - non-fatal.
 		LoadGiVolume(contentVfs);
-#if 0 // Lightmaps deprecated
-		// SG 2D lightmaps (cooked with PakCooker --lightmap): uploads the
-		// atlas + chunk descriptors only (UVs/chunk ids live in the pak).
-		// Missing file is the normal state (no cook yet) - non-fatal.
-		LoadGiLightmaps(contentVfs);
-#endif
 		// SG regular 3D probe volumes (DYNAMIC objects): artist OBB
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
@@ -2265,113 +2277,6 @@ void WorldRenderer::Shutdown() {
 	};
 	static_assert(sizeof(RegObbGpu) == 96);
 
-#if 0 // Lightmaps deprecated
-	void WorldRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
-		// Cook-owned lightmaps: the pak carries the per-vertex chart uvs
-		// + chart ids (texCoord2/chartId), each mesh's chart transforms
-		// (scene table, unpacked in the VS) + lobe count (riding the
-		// draw ring); this loader only uploads the atlas textures. NO
-		// geometry work, NO buffers beyond the textures happen here.
-		m_lmLoaded = false;
-		m_lmLayerKind = 0;
-		m_lmAtlas = smvk::gi::SgLightmapAtlas{};
-		for (auto& layer : m_lmLayers)
-			layer = {};
-		for (uint32_t& slot : m_lmLayerSlots)
-			slot = UINT32_MAX;
-
-		const std::string stem = m_giLightmapName.empty()
-			? m_sceneId : m_giLightmapName;
-		const std::string vfsPath = std::string("gi/") + stem + ".sglm";
-		std::vector<uint8_t> bytes;
-		try {
-			bytes = vfs.ReadBinary(vfsPath);
-		} catch (...) {
-			std::cerr << "[LM] no lightmap '" << vfsPath
-				<< "' (cook with PakCooker --lightmap on)\n";
-			return;
-		}
-		std::string err;
-		if (!m_lmAtlas.ReadFromMemory(bytes, err)) {
-			std::cerr << "[LM] atlas rejected: " << err << "\n";
-			return;
-		}
-		if (m_lmAtlas.chunks.empty()) {
-			std::cerr << "[LM] atlas has no chunks - ignored\n";
-			return;
-		}
-		if (m_lmAtlas.width == 0 || m_lmAtlas.height == 0
-			|| m_lmAtlas.width > 8192 || m_lmAtlas.height > 8192) {
-			std::cerr << "[LM] atlas dims rejected: " << m_lmAtlas.width
-				<< "x" << m_lmAtlas.height << "\n";
-			return;
-		}
-
-		// ---- Atlas textures ----
-		// Uncompressed (sglm v1/v2): 9 RGBA16F stream layers, kind 0.
-		// BC6H (v3): the cooked blocks upload verbatim as one BC6H_UFloat
-		// texture per lobe (kind 1; slots past the scene's lobe count
-		// stay invalid). Hardware filtering is identical in both.
-		const bool bc6h = m_lmAtlas.compression
-			!= smvk::gi::SgLightmapCompression::Uncompressed;
-		uint32_t lmLayerKind = 0;
-		if (bc6h) {
-			const size_t blockBytes = size_t(m_lmAtlas.width / 4)
-				* (m_lmAtlas.height / 4) * 16;
-			for (uint32_t l = 0; l < m_lmAtlas.bc6hLobes; ++l) {
-				smvk::ImageCreateInfo ci{};
-				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
-				ci.format = smvk::Format::BC6H_UFloat;
-				ci.usage = smvk::ImageUsage::Sampled
-					| smvk::ImageUsage::TransferDst;
-				ci.mipLevels = 1;
-				ci.arrayLayers = 1;
-				ci.name = "sglm atlas bc6h lobe";
-				auto tex = m_context->CreateTexture(ci,
-					m_lmAtlas.bc6hBlocks.data() + size_t(l) * blockBytes);
-				if (tex.empty()) {
-					std::cerr << "[LM] bc6h lobe texture " << l
-						<< " creation failed\n";
-					for (uint32_t& slot : m_lmLayerSlots)
-						slot = UINT32_MAX;
-					return;
-				}
-				m_lmLayers[l] = std::move(tex);
-				m_lmLayerSlots[l] =
-					m_context->GetTextureBindlessIndex(m_lmLayers[l]);
-			}
-			lmLayerKind = 1;
-		} else {
-			std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
-			m_lmAtlas.PackGpuLayers(layers);
-			for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
-				smvk::ImageCreateInfo ci{};
-				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
-				ci.format = smvk::Format::RGBA16_Float;
-				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-				ci.mipLevels = 1;
-				ci.arrayLayers = 1;
-				ci.name = "sglm atlas layer";
-				auto tex = m_context->CreateTexture(ci, layers[t].data());
-				if (tex.empty()) {
-					std::cerr << "[LM] atlas layer " << t << " creation failed\n";
-					for (uint32_t& slot : m_lmLayerSlots)
-						slot = UINT32_MAX;
-					return;
-				}
-				m_lmLayers[t] = std::move(tex);
-				m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
-			}
-		}
-		m_lmLayerKind = lmLayerKind;
-		m_lmLoaded = true;
-		std::cerr << "[LM] loaded '" << vfsPath << "': chunks="
-			<< m_lmAtlas.chunks.size() << " atlas=" << m_lmAtlas.width << "x"
-			<< m_lmAtlas.height
-			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB ("
-			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
-	}
-#endif
 	// ---------------------------------------------------------------------------
 	// SG regular 3D probe volumes (DYNAMIC objects; tools/gi_baker
 	// --regular-out). Loads content/gi/<scene>.regmanifest: one .sgrv vfs
@@ -2686,23 +2591,6 @@ void WorldRenderer::Shutdown() {
 	}
 
 void WorldRenderer::DegradeAmbientForMissingSources() {
-#if 0 // Lightmaps deprecated
-	// Single-source isolation modes whose source did not load fall
-	// back to another baked source (or the sky IBL) instead of being
-	// silently empty. All/SkyIbl/Off never need this.
-	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
-		m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
-			? AmbientMode::Probes : AmbientMode::SkyIbl;
-		std::cerr << "[Scene] no lightmaps - ambient degraded to "
-			<< AmbientModeName(m_ambientMode) << "\n";
-	} else if (m_ambientMode == AmbientMode::Probes
-		&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
-		m_ambientMode = m_lmLoaded
-			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
-		std::cerr << "[Scene] no probes - ambient degraded to "
-			<< AmbientModeName(m_ambientMode) << "\n";
-	}
-#endif
 }
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
@@ -2912,25 +2800,6 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			data.giIndices = 0;
 			data.giEnabled = 0u;
 		}
-#if 0 // Lightmaps deprecated
-		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
-		// count ride the pak's vertex data / draw ring). Static/dynamic
-		// separation: lm/reg ride the same giIntensity scale as the probe
-		// volume so the N ambient-mode UI stays meaningful.
-		if (LmActive()) {
-			for (uint32_t t = 0; t < 12; ++t)
-				data.lmLayers[t] = m_lmLayerSlots[t];
-			data.lmLayerKind = m_lmLayerKind;
-			data.lmEnabled = 1u;
-		} else {
-			for (uint32_t t = 0; t < 12; ++t)
-				data.lmLayers[t] = UINT32_MAX;
-			data.lmLayerKind = 0u;
-			data.lmEnabled = 0u;
-		}
-		data.lmPad_[0] = 0;
-		data.lmPad_[1] = 0;
-#endif
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
 		// RegActive() gates the upload (loaded + UI toggle); the ambient
 		// mode additionally gates the enable flag (All/Probes only).
@@ -3594,9 +3463,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	// ---------------------------------------------------------------------
 	void WorldRenderer::ResolveGiSidecars() {
 		m_giProbeName.clear();
-#if 0 // Lightmaps deprecated
 		m_giLightmapName.clear();
-#endif
 		m_giRegName.clear();
 		m_giCvolName.clear();
 		m_giCubemapName.clear();
@@ -3620,11 +3487,9 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 				case smvk::GiBinding::Kind::Probe:
 					takeFirst(m_giProbeName, b.name, "probe");
 					break;
-#if 0 // Lightmaps deprecated
 				case smvk::GiBinding::Kind::Lightmap:
 					takeFirst(m_giLightmapName, b.name, "lightmap");
 					break;
-#endif
 				case smvk::GiBinding::Kind::RegManifest:
 					takeFirst(m_giRegName, b.name, "regmanifest");
 					break;
@@ -5914,9 +5779,6 @@ void WorldRenderer::RebindWorld(smvk::World* world) {
 	BuildCookedLightsFromWorld();
 	ResolveGiSidecars();
 	LoadGiVolume(contentVfs);
-#if 0 // Lightmaps deprecated
-	LoadGiLightmaps(contentVfs);
-#endif
 	LoadGiRegularVolumes(contentVfs);
 	LoadCvolumes(contentVfs);
 	LoadCubemaps(contentVfs);
@@ -6153,21 +6015,6 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	}
 	data.giIntensity = m_giIntensity;
 	data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
-#if 0 // Lightmaps deprecated
-	if (LmActive()) {
-		for (uint32_t t = 0; t < 12; ++t)
-			data.lmLayers[t] = m_lmLayerSlots[t];
-		data.lmLayerKind = m_lmLayerKind;
-		data.lmEnabled = 1u;
-	} else {
-		for (uint32_t t = 0; t < 12; ++t)
-			data.lmLayers[t] = UINT32_MAX;
-		data.lmLayerKind = 0u;
-		data.lmEnabled = 0u;
-	}
-	data.lmPad_[0] = 0;
-	data.lmPad_[1] = 0;
-#endif
 	if (RegActive()) {
 		data.regObbs = m_regObbsAddress;
 		const uint32_t n = std::min<uint32_t>(uint32_t(m_regVolumes.size()), 8u);
@@ -7168,10 +7015,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// reference (manual) exposure; scale them so bloom strength stays
 		// constant as auto-exposure shifts. Applied after Ensure (which
 		// resets desc to MakeBloomDesc) and before the bloom passes below.
+		// Intensity rides along so the tonemap add matches the sliders.
 		if (m_viewportResources.bloom.Valid() && TONEMAP_EXPOSURE > 0.0f) {
 			const float bloomScale = frameExposure / TONEMAP_EXPOSURE;
-			m_viewportResources.bloom.desc.threshold = BLOOM_THRESHOLD * bloomScale;
-			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
+			m_viewportResources.bloom.desc.threshold = m_bloomThreshold * bloomScale;
+			m_viewportResources.bloom.desc.knee = m_bloomThreshold * 0.25f * bloomScale;
+			m_viewportResources.bloom.desc.intensity = m_bloomIntensity;
 		}
 		// SMAA T2x global toggle (see SmaaT2xState in smaa.h): one phase
 		// for the recorded-frame sequence, advanced once per T2x record.
@@ -10590,66 +10439,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					// bisection. R / F8 cycle the GI debug views (Debug
 					// tab): flat irradiance + source palette.
 					{
-#if 0 // Lightmaps deprecated
-						static const char* const kModeNames[5] = {
-							"All (baked GI; sky fallback)",
-							"Lightmaps only",
-							"Probes only (grids + volume)",
-							"Sky IBL only",
-							"Off (no GI at all)",
-						};
-						int modeIdx = static_cast<int>(m_ambientMode);
-						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 5))
-							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 4));
-						ImGui::TextDisabled("N cycles: %s\n"
-							"sky IBL is the FALLBACK for uncovered pixels (never added on baked)\n"
-							"sources loaded: lightmaps %s, probe volume %s, grids %s\n"
-							"R / F8: GI debug views (1 flat irradiance, 2 palette)",
-							kModeNames[static_cast<int>(m_ambientMode)],
-							m_lmLoaded ? "yes" : "no",
-							m_giLoaded ? "yes" : "no",
-							m_regLoaded ? "yes" : "no");
-#else
-						// 5-entry table keyed by the RAW AmbientMode value
-						// (All=0..Off=4). A previous cleanup shrank this to
-						// 4 entries while still indexing by the raw enum —
-						// Off (4) read kModeNames[4] out of bounds and the
-						// garbage char* crashed ImGui's %s formatting
-						// (ucrtbase AV at a fixed offset; only with the UI
-						// pass on, only in Off). Keep the table full-size;
-						// the deprecated Lightmaps row stays as a label (the
-						// combo skips it below; N still cycles through it
-						// and DegradeAmbientForMissingSources bounces it).
-						static const char* const kModeNames[5] = {
-							"All (baked GI; sky fallback)",
-							"Lightmaps only (deprecated)",
-							"Probes only (grids + volume)",
-							"Sky IBL only",
-							"Off (no GI at all)",
-						};
-						int modeIdx = static_cast<int>(m_ambientMode);
-						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 5))
-							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 4));
-						ImGui::TextDisabled("N cycles: %s\n"
-							"sky IBL is the FALLBACK for uncovered pixels (never added on baked)\n"
-							"sources loaded: probe volume %s, grids %s\n"
-							"R / F8: GI debug views (1 flat irradiance, 2 palette)",
-							kModeNames[static_cast<int>(m_ambientMode)],
-							m_giLoaded ? "yes" : "no",
-							m_regLoaded ? "yes" : "no");
-#endif
 					}
 					ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-#if 0 // Lightmaps deprecated
-					if (!m_giLoaded && !m_lmLoaded && !m_regLoaded)
-#else
 					if (!m_giLoaded && !m_regLoaded)
-#endif
 						ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
 							m_sceneId.empty() ? "?" : m_sceneId.c_str());
 				}
-				if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
-					ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
+			if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
+				if (m_bloomEnabled) {
+					ImGui::SliderFloat("Bloom intensity", &m_bloomIntensity, 0.0f, 2.0f, "%.2f");
+					ImGui::SliderFloat("Bloom threshold (HDR)", &m_bloomThreshold, 0.0f, 4000.0f, "%.0f");
+					ImGui::TextDisabled("Threshold is pre-exposure HDR (sun-lit diffuse spans\n"
+						"~0-1600); knee tracks at 0.25x. Nothing crosses it in dim\n"
+						"content — lower it until highlights glow.");
+				}
 				{
 					static const char* const kAoNames[3] =
 						{ "No AO", "SSAO", "SAO" };
@@ -10683,7 +10487,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						"revealed background with the foreground that vacated it.");
 				}
 				}
-				if (ImGui::CollapsingHeader("Depth of field + SSR", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Depth of field", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Depth of field (HDR CoC blur)", &m_dofEnabled);
 					if (m_dofEnabled) {
 						ImGui::Checkbox("HQ bokeh (CoC + 48-tap hex gather)", &m_dofHqBokeh);
@@ -10697,29 +10501,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							? "HQ: CoC prepass + hex bokeh (foreground-weighted)."
 							: "Low: single-pass 12-tap Poisson (bleeds at silhouettes).");
 					}
-					ImGui::Checkbox("Screen-space reflections (HDR composite)", &m_ssrEnabled);
+				}
+				if (ImGui::CollapsingHeader("SSGI reflections", ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::Checkbox("Reflections (SSGI composite)", &m_ssrEnabled);
 					if (m_ssrEnabled) {
 						ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
 						ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
-						ImGui::SliderFloat("SSR max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
+						ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
 						ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
 						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
 						ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
-					ImGui::Checkbox("Temporal filter (TAA, reflection layer only)", &m_ssrTaaEnabled);
-					if (m_ssrTaaEnabled) {
-						ImGui::SliderFloat("TAA history blend", &m_ssrTaaBlend, 0.0f, 0.98f);
-						ImGui::TextDisabled("Motion-vector reprojection + color-AABB anti-ghost. Needs motion vectors; falls back to spatial only.");
 					}
-					ImGui::TextDisabled("PARKED: the temporal accumulation path is hard-disabled in the\n"
-						"frame record (spatial-only while the smear diagnosis is open) —\n"
-						"this toggle and blend ride the parked state machine only.");
+					// Temporal (TAA) accumulation is parked: taaUsable is
+					// hard-false in the record while the smear diagnosis is
+					// open, so no widgets — the state machine + programs stay
+					// for the re-enable (flip taaUsable back).
 					ImGui::TextDisabled("Half-res trace + bilateral blur + full-res composite. All depth\n"
 						"reads (trace skip, blur/composite block reps) go through the shared\n"
 						"final-depth MAX-HZB the SSGI block builds; the pyramid is required —\n"
-						"frames without it skip SSR. Bistro shopfront glass at grazing\n"
+						"frames without it skip reflections. Bistro shopfront glass at grazing\n"
 						"angles is the test case.");
-					}
 				}
 				if (ImGui::CollapsingHeader("Volumetric fog (GI probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Volumetric fog (HDR raymarch)", &m_volumetricEnabled);
@@ -10955,13 +10757,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("RGBA32F 2xMSAA moments (dual Cantelli), 9-tap Gaussian H+V (async);"
 					" soft = moment-blocker PCSS (solar angle / light size)");
 				}
-				if (ImGui::CollapsingHeader("Deferred shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
-					// Deferred shadows (Square-Enix-style tiled/zBin pipeline).
-					// A/B against the inline forward+ shadow path; the counters
-					// are the retired-slice peaks (~2 frames old, see Stats).
+				if (ImGui::CollapsingHeader("Deferred lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+					// Deferred direct lighting (Square-Enix-style tiled/zBin pipeline):
+					// this switches the WHOLE direct-light path, not just shadow
+					// filtering — on = shade from the deferred per-tile light lists,
+					// off = legacy inline forward+ path (tile cull + per-pixel loop).
+					// A/B the two against each other; the counters below are the
+					// retired-slice peaks (~2 frames old, see Stats).
 					ImGui::Checkbox("Enable (H)", &m_dsEnabled);
 					ImGui::SameLine();
 					ImGui::TextDisabled(m_passes.deferredShadows ? "" : "(pass disabled)");
+					ImGui::TextDisabled(DsActive()
+						? "shading from the deferred lists (forward tile light leg idle)"
+						: "shading inline forward+ (deferred phases skipped)");
 				}
 				if (ImGui::CollapsingHeader("GfxFilter � culling", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
@@ -11178,14 +10986,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("stacked probe volumes blend over the "
 					"octree by priority (gi/<scene>.cvmanifest)");
 			}
-#if 0 // Lightmaps deprecated
-			// Lightmaps: proxy-baked .sglm atlas content (PakCooker
-			// --lightmap: one voxel-remesh proxy bake, UV-transferred
-			// to the real meshes). Off until opted in per view.
-			if (m_lmLoaded) {
-				ImGui::Checkbox("Lightmaps", &m_lmEnabled);
-			}
-#endif
 		}
 				}
 #if defined(DS_DEBUG_VIZ)
@@ -11565,17 +11365,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_dofFocusDistance, m_dofFocusRange,
 							m_dofHqBokeh ? "HQ bokeh" : "low");
 				if (!m_viewportResources.ssr.Valid())
-					ImGui::TextDisabled("SSR target/shaders missing - no reflections");
+					ImGui::TextDisabled("Reflection target/shaders missing - no reflections");
 				else if (!m_viewportResources.ssgi.hzb.Valid())
-					ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s hzb:MISSING (chain skips)",
+					ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:MISSING (chain skips)",
 						m_ssrEnabled ? "ON" : "off",
-						(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
-						m_ssrTaaEnabled ? "on" : "off");
+						(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
 				else
-					ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s hzb:shared %ux%u %u mips",
+					ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:shared %ux%u %u mips",
 						m_ssrEnabled ? "ON" : "off",
 						(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
-						m_ssrTaaEnabled ? "on" : "off",
 						m_viewportResources.ssgi.hzb.width,
 						m_viewportResources.ssgi.hzb.height,
 						m_viewportResources.ssgi.hzb.mipCount);
