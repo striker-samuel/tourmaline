@@ -44,31 +44,31 @@
 // header dependency for two constants.
 namespace {
 
-constexpr uint32_t kVkR8G8B8A8Unorm = 37;
-constexpr uint32_t kVkR8G8B8A8Srgb = 43;
+	constexpr uint32_t kVkR8G8B8A8Unorm = 37;
+	constexpr uint32_t kVkR8G8B8A8Srgb = 43;
 
-struct KtxGuard {
-	ktxTexture2* tex = nullptr;
-	explicit KtxGuard(ktxTexture2* t) : tex(t) {}
-	~KtxGuard() {
-		if (tex)
-			ktxTexture2_Destroy(tex);
-	}
-	KtxGuard(const KtxGuard&) = delete;
-	KtxGuard& operator=(const KtxGuard&) = delete;
-};
+	struct KtxGuard {
+		ktxTexture2* tex = nullptr;
+		explicit KtxGuard(ktxTexture2* t) : tex(t) {}
+		~KtxGuard() {
+			if (tex)
+				ktxTexture2_Destroy(tex);
+		}
+		KtxGuard(const KtxGuard&) = delete;
+		KtxGuard& operator=(const KtxGuard&) = delete;
+	};
 
-uint32_t MipLevels(uint32_t w, uint32_t h) {
-	uint32_t levels = 1;
-	while (w > 1 || h > 1) {
-		if (w > 1)
-			w /= 2;
-		if (h > 1)
-			h /= 2;
-		++levels;
+	uint32_t MipLevels(uint32_t w, uint32_t h) {
+		uint32_t levels = 1;
+		while (w > 1 || h > 1) {
+			if (w > 1)
+				w /= 2;
+			if (h > 1)
+				h /= 2;
+			++levels;
+		}
+		return levels;
 	}
-	return levels;
-}
 
 } // namespace
 
@@ -139,7 +139,7 @@ bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
 	ci.generateMipmaps = KTX_FALSE;
 	ktxTexture2* tex = nullptr;
 	if (ktxTexture2_Create(&ci, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &tex)
-			!= KTX_SUCCESS
+		!= KTX_SUCCESS
 		|| !tex) {
 		err = "ktxTexture2_Create failed: " + logName;
 		return false;
@@ -148,7 +148,7 @@ bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
 	for (uint32_t l = 0; l < levels; ++l) {
 		const std::vector<uint8_t>& m = mips[l];
 		if (ktxTexture_SetImageFromMemory(ktxTexture(tex), l, 0, 0,
-				m.data(), m.size())
+			m.data(), m.size())
 			!= KTX_SUCCESS) {
 			err = "ktx SetImageFromMemory failed at level "
 				+ std::to_string(l) + ": " + logName;
@@ -170,12 +170,31 @@ bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
 	ktx_uint8_t* dstBytes = nullptr;
 	ktx_size_t dstSize = 0;
 	if (ktxTexture_WriteToMemory(ktxTexture(tex), &dstBytes, &dstSize)
-			!= KTX_SUCCESS
+		!= KTX_SUCCESS
 		|| !dstBytes || dstSize == 0) {
 		err = "ktx WriteToMemory failed: " + logName;
 		return false;
 	}
 	outKtx2.assign(dstBytes, dstBytes + dstSize);
-	free(dstBytes); // KTX-Software documents free() for this buffer.
+
+	// KTX-Software documents that the buffer returned by
+	// ktxTexture_WriteToMemory() must be released with free().
+	//
+	// On Windows, however, the prebuilt KTX DLL is Release-built and allocates
+	// this buffer using the Release CRT. A Debug executable normally uses the
+	// Debug CRT (/MDd), so freeing the DLL-owned allocation here can cross CRT
+	// heaps and crash.
+	//
+	// Release builds use the matching CRT and may free normally. In Debug we
+	// intentionally leak this temporary buffer rather than free it through an
+	// incompatible CRT. This is acceptable for the current test/editor workflow
+	// where this path is short-lived; if Debug transcodes become long-running or
+	// frequent, replace this workaround with matching KTX Debug binaries or a
+	// DLL-side deallocator.
+#ifdef _DEBUG
+	(void)dstBytes; // Intentionally leaked: avoid Release-DLL / Debug-CRT free.
+#else
+	free(dstBytes);
+#endif
 	return true;
 }
