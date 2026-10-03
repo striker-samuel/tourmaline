@@ -18,13 +18,9 @@ PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
 
-    // Narrow BDA reads only: cameraPos for the ray, then the sky/sun
-    // float4s inside EvaluateSkyColorFromFrame. Never materializes the
-    // 1360+ byte FrameUniforms or the 128-byte EnvironmentFrameData —
-    // the old `FrameUniforms frame = pc.frameUniforms.Get()` aggregate
-    // was the line-19 hotspot.
-    float3 cameraPos = pc.frameUniforms.Get().cameraPos;
-
+    // Narrow BDA reads only — never materializes the 1360+ byte
+    // FrameUniforms or the 128-byte EnvironmentFrameData (the old
+    // `FrameUniforms frame = pc.frameUniforms.Get()` was the hotspot).
     // Ray from the VS-interpolated homogeneous far-plane position.
     // dir = worldH.xyz/worldH.w - cameraPos, normalized; the /w is
     // folded into the normalize (normalize(x/w - c) == normalize(x - c*w)
@@ -32,7 +28,7 @@ PSOut mainPS(PSIn IN)
     // 4x4 mul + divide + length/branch per pixel. uv/ndc reconstruction
     // is gone — the VS ran it 3x per frame instead of ~millions.
     float w = max(IN.worldH.w, 1e-6f);
-    float3 dir = normalize(IN.worldH.xyz - cameraPos * w);
+    float3 dir = normalize(IN.worldH.xyz - pc.frameUniforms.Get().cameraPos * w);
 
     float3 sky = EvaluateSkyColorFromFrame(dir, pc.frameUniforms);
 
