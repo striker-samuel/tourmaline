@@ -1,12 +1,21 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "hzb.hlsli"
 
 // SSR blur: depth-aware bilateral 5x5 blur of the half-res reflection
 // layer (rgb = reflected x fresnel x intensity, a = confidence).
-// Depth stays .Load'ed at full res so edges don't bleed; the center
-// block's view distance is the authority (exact unprojection through
-// invProj: flip / finite-far agnostic, same discipline as dof.hlsli).
+//
+// SSGI shared-HZB rework: every depth read comes from the final-depth
+// MAX-HZB (hzb_max.cs.hlsl, mip1 = nearest-of-2x2 under reversed-Z) via
+// buffer-device-address scalars — ZERO depth-texture loads (the old pass
+// did 29: a 4-load quad max for the center block + one corner-texel Load
+// per tap). The mip1 value IS the center block's quad max (exact), and
+// the tap reps move from single CORNER samples to the same
+// nearest-of-block convention the SSR compose's block reps use. The view
+// distance is the infinite reversed-Z near/d form (exact for this
+// projection — the old invProj unprojection evaluated it at the winning
+// tap's sub-texel NDC; the difference is sub-texel placement only).
 
 struct PSIn
 {
@@ -18,7 +27,7 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F blurred reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrBlurPush (48 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrBlurPush (56 bytes).
 // All-scalar layout on purpose: float2 members would land at offsets 28
 // and 36, which are not 8-byte aligned — spirv-val rejects the module
 // ("improperly straddling vector") and the driver is free to load the
@@ -27,22 +36,23 @@ struct PSOut
 struct SsrBlurPush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
+    vk::BufferPointer<HzbBuffer> hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
     uint reflTextureIndex;  // half-res raw reflection
-    uint depthTextureIndex; // full-res depth (edge stops)
     uint samplerIndex;      // linear clamp (reflection taps only)
-    uint pad0;
     float sharpness; // depth edge weight (higher = tighter)
     float texelX;    // 1 / half-res width
     float texelY;    // 1 / half-res height
-    float invDepthW; // 1 / full-res depth width
-    float invDepthH; // 1 / full-res depth height
-    uint pad1;
+    uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
+    uint hzbMip1Stride; // mip1 row stride (floats)
+    uint halfW;    // half-res extent (BDA tap clamp domain)
+    uint halfH;
+    uint pad0;
 };
 
 [[vk::push_constant]]
 ConstantBuffer<SsrBlurPush> bp;
 
-// Relative-distance edge weight: 1 on the same surface, ~0 across a
+// Relative-depth edge weight: 1 on the same surface, ~0 across a
 // discontinuity. Background taps carry the sky sentinel distance, so a
 // geometry|sky step collapses the weight to ~0 at worst.
 float SsrEdgeWeight(float tapDist, float centerDist, float sharpness)
@@ -56,33 +66,26 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     PSOut OUT;
     FrameUniforms frame = bp.frameUniforms.Get();
     Texture2D reflTex = textures[NonUniformResourceIndex(bp.reflTextureIndex)];
-    Texture2D depthTex = textures[NonUniformResourceIndex(bp.depthTextureIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(bp.samplerIndex)];
+    float nearPlane = max(frame.nearPlane, 1e-4f);
 
-    // Center 2x2 block from full-res depth. Nearest valid tap (reverse-Z:
-    // max depth) is the authority; an all-background block carries no
-    // reflector and blurs to nothing.
     int2 halfPx = int2(pos.xy);
-    int2 fullBase = halfPx * 2;
-    float d00 = depthTex.Load(int3(fullBase, 0)).r;
-    float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;
-    float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
-    float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
-    float dCenter = 0.0f;
-    int2 fullPxC = fullBase;
-    if (!DofIsBackgroundOrGarbage(d00) && d00 > dCenter) { dCenter = d00; fullPxC = fullBase; }
-    if (!DofIsBackgroundOrGarbage(d10) && d10 > dCenter) { dCenter = d10; fullPxC = fullBase + int2(1, 0); }
-    if (!DofIsBackgroundOrGarbage(d01) && d01 > dCenter) { dCenter = d01; fullPxC = fullBase + int2(0, 1); }
-    if (!DofIsBackgroundOrGarbage(d11) && d11 > dCenter) { dCenter = d11; fullPxC = fullBase + int2(1, 1); }
+
+    // Center 2x2 block: HZB mip1 IS the block's quad MAX — the nearest
+    // valid tap (reverse-Z: max depth; sky writes 0 so the max ignores
+    // it; an all-background block reads 0) — the exact value the old
+    // 4-load quad max derived, as ONE BDA scalar.
+    float dCenter = bp.hzb.Get().texels[
+        bp.hzbMip1Offset + (uint) halfPx.y * bp.hzbMip1Stride + (uint) halfPx.x];
     if (DofIsBackgroundOrGarbage(dCenter))
     {
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
     }
-    float2 invDepthSize = float2(bp.invDepthW, bp.invDepthH);
-    float2 ndcC = float2((float(fullPxC.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
-                         (float(fullPxC.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
-    float centerDist = DofViewDist(dCenter, ndcC, frame.invProj);
+    // Infinite reversed-Z: view distance = near / d (exact for this
+    // projection; the old code unprojected the winning tap's texel
+    // center — a sub-texel NDC placement difference only).
+    float centerDist = nearPlane / max(dCenter, 1e-6f);
 
     // 5x5 gaussian-ish blur, depth-rejected across discontinuities.
     // rgb and confidence share the same bilateral weights so the layer
@@ -97,19 +100,21 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                                           float(y) * bp.texelY);
             float4 tap = reflTex.Sample(smp, tapUv);
 
-            int2 tapFull = fullBase + int2(x * 2, y * 2);
-            float tapD = depthTex.Load(int3(tapFull, 0)).r;
-            float tapDist;
-            if (DofIsBackgroundOrGarbage(tapD))
-            {
-                tapDist = 1e5; // sky sentinel (matches dof.hlsli scale)
-            }
-            else
-            {
-                float2 tapNdc = float2((float(tapFull.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
-                                       (float(tapFull.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
-                tapDist = DofViewDist(tapD, tapNdc, frame.invProj);
-            }
+            // Tap rep depth: mip1 at the tap's half-res coords. The
+            // reflection TAPS were always edge-clamped (the linear-clamp
+            // sampler), but the old depth Loads returned 0 (background)
+            // out of bounds — a mismatched pair. Clamping the rep the
+            // same way pairs them consistently (a border-ring behavior
+            // change: edge taps now survive with the edge rep).
+            int2 thp = clamp(
+                halfPx + int2(x, y),
+                int2(0, 0),
+                int2((int) bp.halfW - 1, (int) bp.halfH - 1));
+            float tapD = bp.hzb.Get().texels[
+                bp.hzbMip1Offset + (uint) thp.y * bp.hzbMip1Stride + (uint) thp.x];
+            float tapDist = DofIsBackgroundOrGarbage(tapD)
+                ? 1e5 // sky sentinel (matches dof.hlsli scale)
+                : nearPlane / max(tapD, 1e-6f);
 
             float wx = (x == 0) ? 6.0f : ((abs(x) == 1) ? 4.0f : 1.0f);
             float wy = (y == 0) ? 6.0f : ((abs(y) == 1) ? 4.0f : 1.0f);

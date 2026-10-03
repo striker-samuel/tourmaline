@@ -10,7 +10,7 @@ struct PSIn
 
 struct PSOut
 {
-    float4 outColor : SV_Target0; // R8: only .r survives
+    float4 outColor : SV_Target0; // R16G16B16A16_UNorm: (ao, encRepDist, octN.xy)
 };
 
 // Must match Engine/Rendergraph/sao.h SaoPush (48 bytes).
@@ -64,10 +64,12 @@ PSOut mainPS(PSIn IN)
     // passes: a block is a valid AO receiver only when ALL four taps are
     // geometry. Any background tap (sky, clear, or an out-of-bounds Load
     // returning 0 at odd-extent borders) marks the whole block unoccluded.
+    // Guarded blocks (any-sky / silhouette-edge / too-far) write the
+    // reserved sentinel triple (ao.hlsli kAoSkyBlock) — see ssao.frag.
     if (AoIsBackground(d00) || AoIsBackground(d10) ||
         AoIsBackground(d01) || AoIsBackground(d11))
     {
-        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        OUT.outColor = kAoSkyBlock;
         return OUT;
     }
     float dCenter = (d00 + d10 + d01 + d11) * 0.25f;
@@ -75,7 +77,7 @@ PSOut mainPS(PSIn IN)
     float centerDist = AoViewDist(dCenter, nearPlane);
     if (centerDist > sp.maxDistance)
     {
-        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        OUT.outColor = kAoSkyBlock;
         return OUT;
     }
 
@@ -92,7 +94,7 @@ PSOut mainPS(PSIn IN)
     float dPy = depthTex.Load(int3(fullBase + int2(0, 2), 0)).r;
     if (AoIsBackground(dPx) || AoIsBackground(dPy))
     {
-        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        OUT.outColor = kAoSkyBlock;
         return OUT;
     }
     float2 ndcPx = ndcXY + float2(2.0f * sp.invDepthW * 2.0f, 0.0f);
@@ -170,6 +172,14 @@ PSOut mainPS(PSIn IN)
     // Distance fade: full strength nearby, none past maxDistance.
     float fade = 1.0f - smoothstep(sp.maxDistance * 0.5f, sp.maxDistance, centerDist);
     ao = lerp(1.0f, ao, fade);
-    OUT.outColor = float4(ao, ao, ao, 1.0f);
+    // SSGI chain export (see ao.hlsli): the block's self-consistent
+    // representative triple — ao + the encoded block-average view
+    // distance + the octahedral block normal this very pass derived
+    // for its obscurance test (N above). The blur/compose stages read
+    // and re-emit the same representation.
+    OUT.outColor = float4(
+        ao,
+        AoEncodeRepDist(centerDist, sp.maxDistance),
+        AoOctEncode(N));
     return OUT;
 }

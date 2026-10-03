@@ -383,20 +383,16 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     // ---------------------------------------------------------------
     // Ambient: the analytic sky IBL + legacy material ambient (the lit
-    // path's UNCOVERED fallback) + SSAO composite. Baked GI, decals and
-    // forward+ lights stay off — this view isolates POM against F1.
+    // path's UNCOVERED fallback). Baked GI, decals and forward+ lights
+    // stay off — this view isolates POM against F1. AO-neutral: the
+    // SSGI chain owns AO application now (Main exports an aoTerm the
+    // SSGI compose subtracts; this isolated debug view writes no
+    // target1, and the SSGI chain is gated off under debug views).
     // ---------------------------------------------------------------
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
-    float ao = 1.0f;
-    if (frame.aoTextureIndex != 0xffffffffu && frame.aoIntensity > 0.0f)
-    {
-        Texture2D aoTex = textures[NonUniformResourceIndex(frame.aoTextureIndex)];
-        ao = aoTex.Load(int3(int2(clipPos.xy), 0)).r;
-        ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
-    }
-    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
-    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
+    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion;
+    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion;
     float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
 
     float3 R = reflect(-V, N);
@@ -413,7 +409,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     }
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
         pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights)
-        * occlusion * ao;
+        * occlusion;
 
     float3 color = direct + ambient + ambientSpec;
     color += emissive;

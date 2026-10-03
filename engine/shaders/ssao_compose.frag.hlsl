@@ -1,12 +1,37 @@
 #define SSAO_PASS
 #include "common.hlsli"
 #include "ao.hlsli"
+#include "hzb.hlsli"
 
-// SSAO compose: depth-guided bilateral upsample of the half-res blurred AO
-// to FULL resolution (see ao.hlsli AoUpsample). Runs in its own pass so the
-// full-res depth is only ever a barriered sampled input here; consumers
-// (opaque ambient in default_lit.frag) then plain .Load the composed R8 —
-// passes that ATTACH depth must never also sample it (layout clash = UB).
+// SSGI AO compose: joint-bilateral (depth + normal) upsample of the
+// half-res blurred AO to FULL res, then the HDR AO reconstruction.
+//
+// AO application moved OFF the lighting shader: Main no longer samples
+// AO — instead it exports everything AO is allowed to attenuate as a
+// second MRT output (default_lit_body.hlsli outAoTerm, target1):
+//     outColor   = direct * occ + aoTerm  (+ emissive, fog, ...)
+//     outAoTerm  = (ambient + ambientSpec) * occ   [PRE-ao]
+// and this pass reconstructs exactly:
+//     hdr' = hdr - aoTerm * (1 - aoEff)
+// The subtraction is EXACT reconstruction (the exported term == the
+// visible HDR contribution AO may attenuate, after all blending up to
+// here) because every factor between Main's store and this read is
+// linear — occ, emissive, the fog lerp, alpha blending (target1 carries
+// the SAME blend state: the RHI replicates attachment[0]'s factors to
+// every attachment), and the 2x MSAA resolve (averaging commutes with
+// the linear subtraction). Transparency composites its aoTerm through
+// the identical equation its HDR contribution uses, so the invariant
+// holds through the transparent leg of Main.
+//
+// Loads per full-res pixel (7, + the HDR read the pass exists to modify —
+// the old chain spent 9 with a corner-texel depth guess per tap):
+//   1 center depth   (HZB mip0 — the exact 1:1 depth copy, BDA scalar)
+//   1 center normal  (shared full-res G-buffer oct normal; optional)
+//   1 aoTerm         (Main's MRT export)
+//   4 half-res taps  (ao + repDist + repNormal — one .Load each)
+// The old 4x depthTex.Load(hp * 2) block-representative guesses are gone:
+// the chain's own self-consistent .g distance replaces them, and the
+// joint normal weight keeps AO on the surface it was computed for.
 
 struct PSIn
 {
@@ -16,42 +41,106 @@ struct PSIn
 
 struct PSOut
 {
-    float4 outColor : SV_Target0; // R8: only .r survives
+    float4 outColor : SV_Target0; // RGBA16F: HDR - aoTerm*(1-aoEff)
 };
 
-// Must match Engine/Rendergraph/ssao.h SsaoComposePush (32 bytes).
-struct SsaoComposePush
+// Must match Engine/Rendergraph/ssgi.h SsgiAoComposePush (64 bytes).
+// uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
+struct SsgiAoComposePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane
-    uint aoTextureIndex; // half-res blurred AO
-    uint depthTextureIndex; // full-res depth (authority)
-    float sharpness; // upsample edge weight
-    float invDepthW; // 1 / full-res depth width
-    float invDepthH; // 1 / full-res depth height
+    vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane (center dist)
+    vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip0 center depth, mip1 reps
+    uint aoTextureIndex; // half-res blurred (ao, encDist, octN)
+    uint normalTextureIndex; // shared full-res oct normal (0xffffffff = depth-only)
+    uint aoTermTextureIndex; // Main MRT export (pre-AO ambient term)
+    uint hdrTextureIndex; // full-res HDR (the image this pass rewrites)
+    uint fullW; // full-res width (HZB mip0 row stride)
+    uint fullH;
+    uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
+    uint hzbMip1Stride; // mip1 row stride (floats)
+    float sharpness; // depth edge weight
+    float intensity; // aoEff = lerp(1, ao, intensity) (the old hot.aoIntensity)
+    float maxDistance; // rep-dist decode (matches raw/blur)
     uint pad0;
 };
 
 [[vk::push_constant]]
-ConstantBuffer<SsaoComposePush> cp;
+ConstantBuffer<SsgiAoComposePush> cp;
 
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
     FrameUniforms frame = cp.frameUniforms.Get();
-    Texture2D aoTex = textures[NonUniformResourceIndex(cp.aoTextureIndex)];
-    Texture2D depthTex = textures[NonUniformResourceIndex(cp.depthTextureIndex)];
     float nearPlane = max(frame.nearPlane, 1e-4f);
+    Texture2D aoTex = textures[NonUniformResourceIndex(cp.aoTextureIndex)];
+    Texture2D aoTermTex = textures[NonUniformResourceIndex(cp.aoTermTextureIndex)];
+    Texture2D hdrTex = textures[NonUniformResourceIndex(cp.hdrTextureIndex)];
 
-    // Half-res AO extent derived from the full-res depth extent
-    // (max(1, floor(n / 2)), same as Ssao::HalfExtentFor).
-    float2 halfExtent = max(
-        floor(float2(1.0f / cp.invDepthW, 1.0f / cp.invDepthH) * 0.5f),
-        float2(1.0f, 1.0f));
+    int2 fullPx = int2(IN.pos.xy);
+    // Center depth from HZB mip0 (the exact 1:1 depth copy the build pass
+    // made) — no depth image attachment/sampling anywhere in this pass.
+    float d = cp.hzb.Get().texels[
+        (uint) fullPx.y * cp.fullW + (uint) fullPx.x];
 
-    // Background full-res depth -> AO 1.0 (the invariant); geometry gets
-    // the depth-weighted 2x2 half-res taps (see ao.hlsli).
-    float ao = AoUpsample(aoTex, depthTex, int2(IN.pos.xy),
-        halfExtent, nearPlane, cp.sharpness);
-    OUT.outColor = float4(ao, ao, ao, 1.0f);
+    // Sky center: Main's lit FS never ran there, so nothing AO-attenuable
+    // was exported (target1 holds the black clear) — straight passthrough.
+    if (AoIsBackground(d))
+    {
+        OUT.outColor = float4(hdrTex.Load(int3(fullPx, 0)).rgb, 1.0f);
+        return OUT;
+    }
+    float centerDist = AoViewDist(d, nearPlane);
+
+    // Center normal from the shared full-res G-buffer (written by the
+    // Forward+ prepass when SSR OR AO wants it — see ssgi.h); absent
+    // (MSAA frames / legacy) the joint bilateral falls back to
+    // depth-only weights.
+    float3 centerN = float3(0.0f, 0.0f, 1.0f);
+    bool haveN = cp.normalTextureIndex != 0xffffffffu;
+    if (haveN)
+    {
+        Texture2D normTex = textures[NonUniformResourceIndex(cp.normalTextureIndex)];
+        centerN = AoOctDecode(normTex.Load(int3(fullPx, 0)).xy);
+    }
+
+    // 2x2 nearest half-res texels around this full-res pixel (same
+    // addressing as the old AoUpsample), jointly weighted by the tap's
+    // carried (repDist, repNormal) against the pixel's own (depth, normal).
+    int2 halfExtent = max(int2((int) cp.fullW, (int) cp.fullH) / 2, int2(1, 1));
+    int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
+    int2 halfMax = halfExtent - 1;
+
+    float aoAcc = 0.0f;
+    float wSum = 0.0f;
+    [unroll]
+    for (int ty = 0; ty < 2; ++ty)
+    {
+        [unroll]
+        for (int tx = 0; tx < 2; ++tx)
+        {
+            int2 hp = clamp(halfMin + int2(tx, ty), int2(0, 0), halfMax);
+            float4 tap = aoTex.Load(int3(hp, 0));
+            float tapDist = AoDecodeRepDist(tap.g, cp.maxDistance);
+            float w = AoEdgeWeight(tapDist, centerDist, cp.sharpness);
+            if (haveN)
+                w *= AoNormalWeight(AoOctDecode(tap.zw), centerN);
+            aoAcc += tap.r * w;
+            wSum += w;
+        }
+    }
+    float ao = (wSum > 1e-4f) ? aoAcc / wSum : 1.0f;
+    // The intensity lerp moved here from the lighting shader (was
+    // hot.aoIntensity) — identical formula, identical values.
+    float aoEff = lerp(1.0f, saturate(ao), saturate(cp.intensity));
+
+    float3 hdr = hdrTex.Load(int3(fullPx, 0)).rgb;
+    float3 term = aoTermTex.Load(int3(fullPx, 0)).rgb;
+    // Exact reconstruction: hdr == direct*occ + term + emissive/fog/...
+    // => hdr - term*(1-aoEff) == direct*occ + term*aoEff + those (all
+    // linear in between). Sanitize: a silhouette-weight mismatch (the
+    // joint-bilateral aoEff vs the ao the export assumed — they agree to
+    // fp noise on static scenes) could push a dark tap minutely negative.
+    float3 outC = hdr - term * (1.0f - aoEff);
+    OUT.outColor = float4(SanitizeHdr(outC), 1.0f);
     return OUT;
 }

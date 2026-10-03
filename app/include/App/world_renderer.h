@@ -53,9 +53,7 @@
 #include <Engine/Rendergraph/particles.h>
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
-#include <Engine/Rendergraph/ssao.h>
-#include <Engine/Rendergraph/gtao.h>
-#include <Engine/Rendergraph/sao.h>
+#include <Engine/Rendergraph/ssgi.h>
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -785,9 +783,7 @@ struct ViewportResources {
 	smvk::ScreenSpaceReflections ssr; // SSR HDR composite output + program + pass
 	smvk::VolumetricFog volumetric; // GI-probe raymarched fog HDR output + program + pass
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
-	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
-	smvk::Gtao gtao; // half-res GTAO horizon-search targets + programs + passes
-	smvk::Sao sao; // half-res SAO spiral-tap targets + programs + passes
+	smvk::Ssgi ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
@@ -1140,7 +1136,7 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_O)) {
 			m_aoMode = static_cast<AoMode>(
-				(static_cast<int>(m_aoMode) + 1) % 4); // None -> Ssao -> Gtao -> Sao
+				(static_cast<int>(m_aoMode) + 1) % 3); // None -> Ssao -> Sao
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_B)) {
 			m_bloomEnabled = !m_bloomEnabled;
@@ -1849,28 +1845,23 @@ protected:
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewPs;
 	smvk::ShaderProgram m_ssrStencilViewProgram{};
 	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth —
-	// see hzb_max.cs.hlsl + ssr.frag.hlsl): the tracing twin of the gfx
-	// filter's culling HZB. The culling pyramid is MIN-reduced
-	// (farthest-surface, the occlusion-cull conservatism) and built over
-	// the seed's partial set / Option A crudest-LOD occluders BEFORE the
-	// depth passes complete — unusable for ray marching. This one is
-	// MAX-reduced (NEAREST surface per block — the ray-trace direction)
-	// over the final renderDepth, emitted AFTER all depth passes (the
-	// SSR trace runs after Main — the depth is final). The trace's
-	// empty-space skip proves "every surface in the covered block is
-	// behind the ray's next position" from the block's nearest value —
-	// only provably-empty blocks are skipped (a missed reflection at
-	// worst, never a see-through).
+	// see hzb_max.cs.hlsl): the tracing twin of the gfx filter's culling
+	// HZB. The culling pyramid is MIN-reduced (farthest-surface, the
+	// occlusion-cull conservatism) and built over the seed's partial set
+	// / Option A crudest-LOD occluders BEFORE the depth passes complete —
+	// unusable for ray marching. This one is MAX-reduced (NEAREST surface
+	// per block — the ray-trace direction) over the final renderDepth,
+	// emitted AFTER all depth passes. The BUFFER + mip layout moved into
+	// smvk::Ssgi::hzb (Engine/Rendergraph/ssgi.h) — it became a SHARED
+	// screen-space primitive (the SSR trace's mip walk, the SSR
+	// blur/compose block reps and the SSGI AO chain all read it); this
+	// renderer keeps only the module/program that runs the build passes.
+	// The trace's empty-space skip proves "every surface in the covered
+	// block is behind the ray's next position" from the block's nearest
+	// value — only provably-empty blocks are skipped (a missed reflection
+	// at worst, never a see-through).
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbModule;
 	smvk::ShaderProgram m_ssrHzbProgram{};
-	smvk::Holder<smvk::BufferHandle> m_ssrHzbBuffer;
-	smvk::LogicalBufferHandle m_ssrHzbLogical{};
-	uint32_t m_ssrHzbWidth = 0;
-	uint32_t m_ssrHzbHeight = 0;
-	uint32_t m_ssrHzbMipCount = 0;
-	uint32_t m_ssrHzbMipOffsets[smvk::gfx::kHizMaxMips] = {};
-	bool EnsureSsrHzb(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
-		uint32_t w, uint32_t h);
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
@@ -2376,22 +2367,22 @@ protected:
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
 	uint32_t m_tonemapMode = smvk::kTonemapGT7;
-	// ---- AO (half-res depth-only, runs before Main, composites in opaque
-	// ambient; see ssao.h / gtao.h / sao.h). O cycles No AO -> SSAO -> GTAO -> SAO. ----
-	enum class AoMode : int { None = 0, Ssao = 1, Gtao = 2, Sao = 3 };
+	// ---- AO (the SSGI post chain — Engine/Rendergraph/ssgi.h; GTAO is
+	// deprecated and removed). Runs AFTER Main (Main exports the
+	// AO-sensitive lighting through an aoTerm MRT target, the compose
+	// subtracts aoTerm*(1-aoEff) from the HDR — no temporal lag, Main
+	// never samples AO). O cycles No AO -> SSAO -> SAO. ----
+	enum class AoMode : int { None = 0, Ssao = 1, Sao = 2 };
 	AoMode m_aoMode = AoMode::Sao;
-	float m_ssaoRadius = 0.5f; // view-space sample radius (m, shared SSAO/GTAO/SAO)
+	float m_ssaoRadius = 0.5f; // view-space sample radius (m, shared SSAO/SAO)
 	float m_ssaoBias = 0.025f; // self-occlusion / horizon bias
-	float m_ssaoIntensity = 1.0f; // ambient composite strength (default_lit.frag)
-	float m_ssaoMaxDistance = 25.0f; // fade-out distance (m)
+	float m_ssaoIntensity = 1.0f; // compose-side aoEff lerp (was default_lit's hot.aoIntensity)
+	float m_ssaoMaxDistance = 25.0f; // fade-out distance (m) + the .g encode range
 	int m_ssaoSamples = 16; // SSAO hemisphere taps 1..32
 	float m_ssaoBlurSharpness = 8.0f; // blur depth edge weight
-	int m_gtaoSlices = 3; // GTAO slice directions 1..8
-	int m_gtaoSteps = 4; // GTAO taps per slice side 1..8
-	float m_gtaoThickness = 1.0f; // GTAO thin-occluder falloff (m); 0 = off
 	int m_saoSamples = 11; // SAO spiral taps 1..32
 	int m_saoSpiralTurns = 7; // SAO extra spiral twist 1..16
-	// Compat: SSAO on/off maps onto AoMode (None vs Ssao); GTAO/SAO count as on.
+	// Compat: SSAO on/off maps onto AoMode (None vs Ssao); SAO counts as on.
 	[[nodiscard]] bool SsaoEnabled() const { return m_aoMode != AoMode::None; }
 	// ---- Forward+ light debug overlay (drawn in the ImGui UI pass) ----
 	// CPU copy of the last light set (positions/colors/types), projected

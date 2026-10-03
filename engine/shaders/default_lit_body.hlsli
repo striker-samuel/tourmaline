@@ -30,6 +30,11 @@ struct PSIn
 struct PSOut
 {
     float4 outColor : SV_Target;
+    // SSGI AO export (target1): the summed AO-sensitive lighting, PRE-AO —
+    // the SSGI compose pass reconstructs hdr - aoTerm*(1-aoEff) exactly
+    // (ssao_compose.frag.hlsl). Every early return below writes 0:
+    // unwritten MRT attachment content is undefined.
+    float4 outAoTerm : SV_Target1;
 };
 
 // Must be defined after common.hlsli symbols
@@ -904,22 +909,16 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // sky baked into the source AND added again here).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
-    // SSAO: the SsaoCompose pass already upscaled the half-res AO to full
-    // res with full-res depth authority (ao.hlsli), so this shader only
-    // .Loads the composed R8 — never the depth image: Main ATTACHES depth,
-    // and sampling an attached image is a layout clash (UB, garbage reads).
-    // AO is a lighting term: it scales ambient/indirect only. This shader
-    // only shades pixels that passed the prepass depth test, so background
-    // (sky) can structurally never receive AO.
-    float ao = 1.0f;
-    if (hot.aoTextureIndex != 0xffffffffu && hot.aoIntensity > 0.0f)
-    {
-        Texture2D aoTex = textures[NonUniformResourceIndex(hot.aoTextureIndex)];
-        ao = aoTex.Load(int3(int2(clipPos.xy), 0)).r;
-        ao = lerp(1.0f, saturate(ao), saturate(hot.aoIntensity));
-    }
-    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
-    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
+    // SSGI AO (profiler-driven rework): this shader NO LONGER samples or
+    // applies AO. Every AO-sensitive term below (legacyAmbient,
+    // ambientDiffuse, envSpec, the baked-GI ambient/specular branches) is
+    // accumulated un-occluded into `ambient`/`ambientSpec` and exported
+    // PRE-AO through outAoTerm (target1); the SSGI compose pass subtracts
+    // aoTerm*(1-aoEff) from the HDR — an exact reconstruction, so AO
+    // placement no longer constrains the lighting pass to run after the
+    // AO chain (see ssao_compose.frag.hlsl + Engine/Rendergraph/ssgi.h).
+    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion;
+    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion;
     // Sky IBL diffuse is the ambient FALLBACK, not an additive base: it
     // applies only where no baked source covered the pixel (composed
     // after the source branches below). Baked-covered pixels take the
@@ -944,7 +943,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
     float3 envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion * ao;
+        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion;
 float envVis = 1.0f;
     float3 ambientSpec = envSpec;
 
@@ -987,14 +986,14 @@ float envVis = 1.0f;
             envVis = SpecularOcclusionFromGI(E, giScale, N, frame.env);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
-                ambient += kD * baseColor * (E / PI) * occlusion * ao;
+                ambient += kD * baseColor * (E / PI) * occlusion;
             // Octree SG specular (high crossover 0.45)
             const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (roughW > 0.0f)
             {
                 const float3 giSpecular =
                     SgGiSpecular(octAmps, R, shadingRoughness) * giScale
-                    * Fenv * occlusion * ao;
+                    * Fenv * occlusion;
                 ambientSpec = lerp(ambientSpec, giSpecular, roughW);
             }
         }
@@ -1016,13 +1015,13 @@ float envVis = 1.0f;
             envVis = SpecularOcclusionFromGI(regE, giScale, N, frame.env);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
-                ambient += kD * baseColor * (regE / PI) * occlusion * ao;
+                ambient += kD * baseColor * (regE / PI) * occlusion;
             // Grid/volume SG specular crossover (0.45)
             const float regRoughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (regRoughW > 0.0f)
             {
                 const float3 regSpec = SgGiSpecular(regAmps, R, shadingRoughness)
-                    * giScale * Fenv * occlusion * ao;
+                    * giScale * Fenv * occlusion;
                 ambientSpec = lerp(ambientSpec, regSpec, regRoughW);
             }
         }
@@ -1113,13 +1112,13 @@ float envVis = 1.0f;
         envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
         ambientSpec = envSpec * envVis;
         if (!isBlendMat)
-            ambient += kD * baseColor * (giE / PI) * occlusion * ao;
+            ambient += kD * baseColor * (giE / PI) * occlusion;
         const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
         if (roughW > 0.0f)
         {
             const float3 giSpecular =
                 SgGiSpecular(specAmps, R, shadingRoughness) * giScale
-                * Fenv * occlusion * ao;
+                * Fenv * occlusion;
             ambientSpec = lerp(ambientSpec, giSpecular, roughW);
         }
     }
@@ -1153,6 +1152,8 @@ float envVis = 1.0f;
 #if !defined(GI_NONE)
     if (giDbgMode != 0u)
     {
+        // Debug flat colors carry no AO-sensitive lighting: export 0.
+        OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
         if (giSource == 0u)
         {
             OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
@@ -1174,9 +1175,16 @@ float envVis = 1.0f;
     }
 #endif
 
-    float3 color = direct + ambient + ambientSpec;
-    color = color * occlusion; // re-apply for direct as well per spec (optional)
-    // Actually spec: occludedColor = lerp(color, color * occTex, strength) applied to final? We split above.
+    // SSGI AO export (target1): everything AO is allowed to attenuate,
+    // summed PRE-AO, carrying the SAME occlusion depth it sits at in the
+    // final color below (occ once from the ambient chain + once from the
+    // legacy re-apply — the distributive split of the old
+    // (direct + ambient + ambientSpec) * occlusion). The compose pass
+    // reconstructs exactly — every factor between here and the HDR store
+    // is linear (occ, emissive, the fog lerp, alpha blending, the 2x
+    // resolve), so the export survives all of them untouched.
+    float3 aoTerm = (ambient + ambientSpec) * occlusion;
+    float3 color = direct * occlusion + aoTerm;
 
     // Emissive additive
     color += emissive;
@@ -1220,10 +1228,17 @@ float envVis = 1.0f;
     // SanitizeHdr: Cook-Torrance x lux-scale lightColor can exceed the half-
     // float max of the RGBA16F target (65504); unclamped it stores as +inf
     // and NaNs the tonemap (inf/inf) / bloom chain.
+    // SSGI AO export: written on every non-debug path (target1's content
+    // must be defined for every lit pixel — unwritten MRT attachments are
+    // undefined). Alpha carries nothing (target1 has no alpha consumer;
+    // the transparent blend on target1 mirrors the RGB factors).
+    OUT.outAoTerm = float4(aoTerm, 0.0f);
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);
     // above-cutoff scales into partial coverage for AA'd silhouettes.
+    // Coverage masks BOTH attachments' samples identically, so the
+    // resolved aoTerm stays the exact companion of the resolved color.
     OUT.outColor = float4(SanitizeHdr(color),
         saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)));
 #else

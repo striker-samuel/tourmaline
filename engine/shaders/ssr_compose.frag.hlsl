@@ -1,11 +1,20 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "hzb.hlsli"
 
 // SSR composite: depth-guided bilateral upsample of the half-res blurred
 // reflection layer onto the FULL-res base HDR (additive).
 // Runs in its own pass so the full-res depth is only ever a barriered
 // sampled input here; downstream passes then sample plain HDR.
+//
+// SSGI shared-HZB rework: every depth read comes from the final-depth
+// MAX-HZB via BDA scalars — the center depth from mip0 (the exact 1:1
+// depth copy) and each tap block's representative from mip1
+// (nearest-of-2x2, the EXACT value the old per-tap 4-load quad max
+// derived). ZERO depth-texture loads (the old pass did 17: 1 center +
+// 4 loads x 4 taps); the depth image leaves this pass's input set
+// entirely (the HZB build's read barrier covers the buffer).
 
 struct PSIn
 {
@@ -17,19 +26,24 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F HDR + reflections
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrComposePush (48 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrComposePush (64 bytes).
+// uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
 struct SsrComposePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
+    vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip0 center, mip1 reps
     uint blurTextureIndex;  // half-res blurred reflection (rgb, confidence)
-    uint depthTextureIndex; // full-res depth (authority)
     uint hdrTextureIndex;   // full-res base HDR
     uint samplerIndex;      // linear clamp (HDR + reflection taps)
-    float2 invDepthSize; // 1 / full-res depth extent
+    float invDepthW; // 1 / full-res depth extent (NDC math + vignette)
+    float invDepthH;
     float sharpness; // upsample edge weight
-    float pad0;
-    uint paneDepthTextureIndex; // pane receiver depth (R16_UNorm), 0xffffffff = none
-    uint pad2;
+    uint fullW;    // full-res width (HZB mip0 row stride)
+    uint fullH;
+    uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
+    uint hzbMip1Stride; // mip1 row stride (floats)
+    uint pad0;
+    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -46,51 +60,35 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     PSOut OUT;
     FrameUniforms frame = cp.frameUniforms.Get();
     Texture2D blurTex = textures[NonUniformResourceIndex(cp.blurTextureIndex)];
-    Texture2D depthTex = textures[NonUniformResourceIndex(cp.depthTextureIndex)];
     Texture2D hdrTex = textures[NonUniformResourceIndex(cp.hdrTextureIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(cp.samplerIndex)];
+    float nearPlane = max(frame.nearPlane, 1e-4f);
 
     float3 base = SanitizeHdr(hdrTex.Sample(smp, IN.uv).rgb);
 
     int2 fullPx = int2(pos.xy);
-    float d = depthTex.Load(int3(fullPx, 0)).r;
-    // Pane layer (the PaneMask pass's paneDepth target): a pane pixel over
-    // sky/empty background is still a REFLECTOR — the trace traced off the
-    // pane, not the background — so the sky early-out must not drop its
-    // reflection. Pane identity IS paneDepth > 0 (panes never write the
-    // opaque depth, so this is the only place their plane exists). Depth
-    // authority below is the through-content: sky taps all carry the 1e5
-    // view-distance sentinel, so they agree with a sky-through center and
-    // the depth-guided upsample still splits at real silhouettes.
-    // Sentinel guard mirrors the AO optional-texture discipline
-    // (default_lit_body.hlsli): the bindless index only happens inside
-    // the if — a raw && would let SPIR-V's non-short-circuit logical
-    // and touch textures[0xffffffff].
-    bool panePx = false;
-    if (cp.paneDepthTextureIndex != 0xffffffffu)
-    {
-        Texture2D paneTex = textures[NonUniformResourceIndex(cp.paneDepthTextureIndex)];
-        panePx = paneTex.Load(int3(fullPx, 0)).r > 0.0f;
-    }
-    if (DofIsBackgroundOrGarbage(d) && !panePx)
+    // Center depth from HZB mip0 (the exact 1:1 depth copy the build
+    // pass made) — one BDA scalar, no depth image read anywhere here.
+    float d = cp.hzb.Get().texels[(uint) fullPx.y * cp.fullW + (uint) fullPx.x];
+    if (DofIsBackgroundOrGarbage(d))
     {
         // Sky: nothing to reflect off — keep the base color.
         OUT.outColor = float4(base, 1.0f);
         return OUT;
     }
-    float2 ndcC = float2((float(fullPx.x) + 0.5f) * cp.invDepthSize.x * 2.0f - 1.0f,
-                         (float(fullPx.y) + 0.5f) * cp.invDepthSize.y * 2.0f - 1.0f);
+    float2 ndcC = float2((float(fullPx.x) + 0.5f) * cp.invDepthW * 2.0f - 1.0f,
+                         (float(fullPx.y) + 0.5f) * cp.invDepthH * 2.0f - 1.0f);
     float centerDist = DofViewDist(d, ndcC, frame.invProj);
 
     // Half-res reflection extent derived from the full-res depth extent
     // (max(1, floor(n / 2)), same as Ssao::HalfExtentFor).
     float2 halfExtent = max(
-        floor(float2(1.0f / cp.invDepthSize.x, 1.0f / cp.invDepthSize.y) * 0.5f),
+        floor(float2(1.0f / cp.invDepthW, 1.0f / cp.invDepthH) * 0.5f),
         float2(1.0f, 1.0f));
 
     // 2x2 nearest half-res texels around this full-res pixel, weighted by
     // depth agreement with the pixel's own depth — the same discipline as
-    // ao.hlsli AoUpsample, so reflection never bleeds across silhouettes.
+    // the SSGI AO compose, so reflection never bleeds across silhouettes.
     int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
     int2 halfMax = int2(halfExtent) - 1;
     float3 accRgb = float3(0.0f, 0.0f, 0.0f);
@@ -101,31 +99,19 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         for (int tx = 0; tx < 2; ++tx)
         {
             int2 hp = clamp(halfMin + int2(tx, ty), int2(0, 0), halfMax);
-            int2 tapFull = hp * 2;
-            // Representative depth of the tapped block: nearest valid tap
-            // of its full-res 2x2 (reverse-Z max). Fully-background blocks
-            // carry the sky sentinel -> weight ~0 at silhouettes.
-            float b00 = depthTex.Load(int3(tapFull, 0)).r;
-            float b10 = depthTex.Load(int3(tapFull + int2(1, 0), 0)).r;
-            float b01 = depthTex.Load(int3(tapFull + int2(0, 1), 0)).r;
-            float b11 = depthTex.Load(int3(tapFull + int2(1, 1), 0)).r;
-            float bd = 0.0f;
-            int2 bPx = tapFull;
-            if (!DofIsBackgroundOrGarbage(b00) && b00 > bd) { bd = b00; bPx = tapFull; }
-            if (!DofIsBackgroundOrGarbage(b10) && b10 > bd) { bd = b10; bPx = tapFull + int2(1, 0); }
-            if (!DofIsBackgroundOrGarbage(b01) && b01 > bd) { bd = b01; bPx = tapFull + int2(0, 1); }
-            if (!DofIsBackgroundOrGarbage(b11) && b11 > bd) { bd = b11; bPx = tapFull + int2(1, 1); }
-            float bDist;
-            if (DofIsBackgroundOrGarbage(bd))
-            {
-                bDist = 1e5;
-            }
-            else
-            {
-                float2 bNdc = float2((float(bPx.x) + 0.5f) * cp.invDepthSize.x * 2.0f - 1.0f,
-                                     (float(bPx.y) + 0.5f) * cp.invDepthSize.y * 2.0f - 1.0f);
-                bDist = DofViewDist(bd, bNdc, frame.invProj);
-            }
+            // Representative depth of the tapped block: HZB mip1 = MAX
+            // (nearest valid tap) of the block's 2x2 — the EXACT value
+            // the old 4-load quad max derived, as one BDA scalar (sky
+            // writes 0, so a sky-poisoned block collapses to its nearest
+            // geometry; an all-background block reads 0 -> the sentinel).
+            float bd = cp.hzb.Get().texels[
+                cp.hzbMip1Offset + (uint) hp.y * cp.hzbMip1Stride + (uint) hp.x];
+            // Infinite reversed-Z: view distance = near / d (exact for
+            // this projection; the old code unprojected the winning
+            // tap's texel center — a sub-texel NDC placement difference).
+            float bDist = DofIsBackgroundOrGarbage(bd)
+                ? 1e5
+                : nearPlane / max(bd, 1e-6f);
             float2 halfUv = (float2(hp) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
             float4 tap = blurTex.Sample(smp, halfUv);
             float w = SsrUpEdgeWeight(bDist, centerDist, cp.sharpness);

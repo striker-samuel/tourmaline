@@ -62,10 +62,9 @@ struct AppFrameContext : public smvk::FrameContext {
 	// legacy VS-only prepass, no color). The PREPASS binds the
 	// gbuffer/gbuffer_masked programs instead of the VS-only
 	// depth/shadow pair for the phases. False under MSAA (the prepass
-	// depth has no stable 1x companion) and for SSR-off frames (the
-	// only consumer is the SSR trace; toggling recompiles the prepass
-	// pipelines once — same toggle cost class as the old stencil
-	// write state).
+	// depth has no stable 1x companion) and when BOTH consumers are
+	// off: the SSR trace (receiver normals) and the SSGI AO compose's
+	// joint bilateral (center normal) — either being on wants it.
 	bool ssrGbufferWanted = false;
 	smvk::LogicalImageViewHandle gbufferView{};
 	// Northlight depth split (filter on + seed primed depth): when set,

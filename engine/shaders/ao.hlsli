@@ -1,13 +1,27 @@
 #pragma once
-// Shared SSAO helpers (raw pass, blur pass, and the lighting-pass consumer).
+// Shared SSGI-chain AO helpers (raw pass, blur pass, compose pass — see
+// Engine/Rendergraph/ssgi.h).
 //
-// Conventions (must match Engine/Rendergraph/ssao.h + forwardplus.cs.hlsl):
+// Conventions (must match Engine/Rendergraph/ssgi.h + forwardplus.cs.hlsl):
 //   - infinite reversed-Z projection: depth 1 = near, 0 = far/sky (clear 0)
 //   - view distance (-z) = near / max(d, eps)
 //   - background classification: d <= kAoBackgroundEps (never a second epsilon)
 //
 // The invariant this header enforces everywhere: a background pixel can
 // never receive AO. Depth is the authority; color is irrelevant.
+//
+// The half-res AO texture (R16G16B16A16_UNorm) carries a SELF-CONSISTENT
+// per-block representative triple — every stage reads and re-emits the
+// same representation, so no stage ever re-derives a block's depth or
+// normal from a corner full-res texel again:
+//   r  = ao (1 = unoccluded)
+//   g  = encoded representative view distance (AoEncodeRepDist: codes
+//        0 .. 65534/65535 = valid normalized distance, 1.0 = the
+//        RESERVED sky/sentinel code — legitimate far distances clamp
+//        BELOW it so they can never alias "no data")
+//   bc = octahedral representative normal, xy*0.5+0.5 (the raw pass's
+//        own depth-derived block normal — the same 2x2 depth block the
+//        g distance was averaged from, so the triple stays coherent)
 
 static const float kAoBackgroundEps = 1e-6;
 static const float kAoSkyDist = 1e6; // sentinel view distance for sky taps
@@ -32,46 +46,71 @@ float AoEdgeWeight(float tapDist, float centerDist, float sharpness)
     return exp(-depthDiff * max(sharpness, 0.0f));
 }
 
-// Depth-guided bilateral upsample of half-res AO to one full-res pixel.
-//   aoTex      : half-res blurred AO (R8)
-//   depthTex   : full-res prepass depth (D32; .Load only, no sampler)
-//   fullPx     : full-res pixel coords (depth extent == pass extent)
-//   halfExtent : half-res AO extent (max(1, floor(full * 0.5)))
-//   nearPlane  : frame near plane (pre-clamped by the caller)
-//   sharpness  : edge weight (SSAO blur sharpness knob)
-// Background full-res depth returns 1.0 unconditionally; geometry pixels
-// take the 2x2 nearest half-res AO taps weighted by AoEdgeWeight against
-// the pixel's own depth, so sky-side AO (raw = 1.0 there) can never bleed
-// across a silhouette. If every candidate tap disagrees in depth (all-sky
-// neighborhood), the pixel stays unoccluded.
-float AoUpsample(Texture2D aoTex, Texture2D depthTex,
-    int2 fullPx, float2 halfExtent, float nearPlane, float sharpness)
+// ---- representative-distance encoding (the .g channel contract) ----
+// Normalized against the AO working range (maxDistance): the raw pass's
+// fade already forces ao -> 1 beyond it, so clamping there is loss-free
+// for every edge weight that follows. The TOP code 1.0 is RESERVED:
+//   - encode: min(normalized, 65534/65535) — a legitimate (far) distance
+//     can never produce the reserved code;
+//   - guard/sky blocks write exactly 1.0;
+//   - decode: 1.0 -> the kAoSkyDist sentinel, everything else -> meters.
+// (A plain unorm16 channel without the reserved code would alias "far
+// geometry" with "no data" — the ambiguity that would otherwise force a
+// float channel.)
+float AoEncodeRepDist(float viewDist, float maxDistance)
 {
-    float d = depthTex.Load(int3(fullPx, 0)).r;
-    if (AoIsBackground(d))
-        return 1.0f;
-    float centerDist = AoViewDist(d, nearPlane);
-
-    // 2x2 nearest half-res texels around this full-res pixel.
-    int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
-    int2 halfMax = int2(halfExtent) - 1;
-    float acc = 0.0f;
-    float wSum = 0.0f;
-    for (int ty = 0; ty < 2; ++ty)
-    {
-        for (int tx = 0; tx < 2; ++tx)
-        {
-            int2 hp = clamp(halfMin + int2(tx, ty), int2(0, 0), halfMax);
-            float ao = aoTex.Load(int3(hp, 0)).r;
-            // Representative depth of the tapped block: its corner full-res
-            // texel. Sky/mixed blocks carry the sentinel distance -> the
-            // edge weight kills them at silhouettes.
-            float bd = depthTex.Load(int3(hp * 2, 0)).r;
-            float bDist = AoIsBackground(bd) ? kAoSkyDist : AoViewDist(bd, nearPlane);
-            float w = AoEdgeWeight(bDist, centerDist, sharpness);
-            acc += ao * w;
-            wSum += w;
-        }
-    }
-    return (wSum > 1e-4f) ? acc / wSum : 1.0f;
+    float nd = viewDist / max(maxDistance, 1e-4f);
+    return min(nd, 65534.0f / 65535.0f);
 }
+
+float AoDecodeRepDist(float g, float maxDistance)
+{
+    if (g >= 1.0f)
+        return kAoSkyDist; // reserved sentinel code
+    return g * max(maxDistance, 1e-4f);
+}
+
+// ---- octahedral helpers (same fold/sign as gbuffer.frag.hlsl's
+// OctEncodeNormal and vertex_pack.hlsli's OctDecodeNormal — keep the
+// three in sync). Never average ENCODED pairs across the fold: decode
+// first, weight, normalize, re-encode (see the blur pass).
+float2 AoOctEncode(float3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    float2 e = (n.z >= 0.0f) ? n.xy
+        : float2((1.0f - abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f),
+                 (1.0f - abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f));
+    return e * 0.5f + 0.5f;
+}
+
+float3 AoOctDecode(float2 oct01)
+{
+    float x = oct01.x * 2.0f - 1.0f;
+    float y = oct01.y * 2.0f - 1.0f;
+    // z keeps its (negative) pre-fold value (see OctDecodeNormal).
+    float z = 1.0f - abs(x) - abs(y);
+    if (z < 0.0f)
+    {
+        float tx = (1.0f - abs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+        float ty = (1.0f - abs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+        x = tx;
+        y = ty;
+    }
+    float l2 = x * x + y * y + z * z;
+    if (!(l2 > 1e-24f))
+        return float3(0.0f, 0.0f, 1.0f);
+    return float3(x, y, z) / sqrt(l2);
+}
+
+// Joint-bilateral normal term (the compose): 1 on coplanar surfaces, ~0
+// across normal discontinuities (a floor|wall corner where the depth reps
+// agree within the edge-weight slack). pow4 keeps the tap's AO on the
+// surface it was computed for even when the depth reps straddle.
+float AoNormalWeight(float3 tapN, float3 centerN)
+{
+    return pow(saturate(dot(tapN, centerN)), 4.0f);
+}
+
+// Guarded/sky block output: unoccluded, reserved sentinel distance, and a
+// neutral +Z octahedral pair ((0.5, 0.5) encodes exactly +Z).
+const float4 kAoSkyBlock = float4(1.0f, 1.0f, 0.5f, 0.5f);

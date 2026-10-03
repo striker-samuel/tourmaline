@@ -220,37 +220,50 @@ struct SsrTracePush {
 };
 static_assert(sizeof(SsrTracePush) == 80);
 
-// Must match ssr_blur.frag.hlsl SsrBlurPush (48 bytes).
+// Must match ssr_blur.frag.hlsl SsrBlurPush (56 bytes).
+// SSGI shared-HZB rework: every depth read (center block quad max + one
+// rep per tap) comes from the final-depth MAX-HZB mip1 via BDA scalars —
+// no depthTextureIndex, no depth image input. hzb* fields are REQUIRED
+// (the shader dereferences hzb unconditionally); the app gates the chain
+// on the HZB build instead.
 struct SsrBlurPush {
-	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (exact view distances)
+	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
+	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip1 reads)
 	uint32_t reflTextureIndex = UINT32_MAX; // half-res raw reflection
-	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (edge stops)
-	uint32_t samplerIndex = 0; // linear clamp (reflection taps only; depth uses Load)
-	uint32_t pad0 = 0;
+	uint32_t samplerIndex = 0; // linear clamp (reflection taps only)
 	float sharpness = 10.0f;
 	float texelX = 0.0f; // 1 / half-res width
 	float texelY = 0.0f; // 1 / half-res height
-	float invDepthW = 0.0f; // 1 / full-res depth width
-	float invDepthH = 0.0f; // 1 / full-res depth height
+	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
+	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
+	uint32_t halfW = 0; // half-res extent (BDA tap clamp domain)
+	uint32_t halfH = 0;
+	uint32_t pad0 = 0;
+};
+static_assert(sizeof(SsrBlurPush) == 56);
+
+// Must match ssr_compose.frag.hlsl SsrComposePush (64 bytes).
+// SSGI shared-HZB rework: center depth from HZB mip0 (the exact 1:1
+// depth copy), each tap block's representative from mip1
+// (nearest-of-2x2 = the exact value the old per-tap 4-load quad max
+// derived). No depthTextureIndex, no depth image input; hzb* REQUIRED.
+struct SsrComposePush {
+	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
+	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip0/mip1 reads)
+	uint32_t blurTextureIndex = UINT32_MAX; // half-res blurred reflection
+	uint32_t hdrTextureIndex = UINT32_MAX; // full-res base HDR
+	uint32_t samplerIndex = 0; // linear clamp (HDR + reflection taps)
+	float invDepthW = 0.0f; // 1 / full-res depth extent (NDC + vignette)
+	float invDepthH = 0.0f;
+	float sharpness = 10.0f; // upsample edge weight
+	uint32_t fullW = 0; // full-res width (HZB mip0 row stride)
+	uint32_t fullH = 0;
+	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
+	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
+	uint32_t pad0 = 0;
 	uint32_t pad1 = 0;
 };
-static_assert(sizeof(SsrBlurPush) == 48);
-
-// Must match ssr_compose.frag.hlsl SsrComposePush (48 bytes).
-struct SsrComposePush {
-	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (exact view distances)
-	uint32_t blurTextureIndex = UINT32_MAX; // half-res blurred reflection
-	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (authority)
-	uint32_t hdrTextureIndex = UINT32_MAX; // full-res base HDR
-	uint32_t samplerIndex = 0; // linear clamp (base HDR tap)
-	float invDepthW = 0.0f; // 1 / full-res depth width
-	float invDepthH = 0.0f; // 1 / full-res depth height
-	float sharpness = 10.0f; // upsample edge weight
-	float pad0 = 0.0f;
-	uint32_t paneDepthTextureIndex = UINT32_MAX; // pane receiver depth (R16_UNorm bindless); UINT32_MAX = sky early-out unconditional
-	uint32_t pad2 = 0;
-};
-static_assert(sizeof(SsrComposePush) == 48);
+static_assert(sizeof(SsrComposePush) == 64);
 
 // Temporal (TAA) state for the SSR reflection layer: one per renderer,
 // advanced once per recorded frame (record cadence, never per-image —
@@ -859,6 +872,8 @@ void AddSsrPasses(RenderGraph& rg,
 	uint64_t hzbAddr = 0,
 	uint32_t hzbMips = 0,
 	LogicalBufferHandle hzbLogical = LogicalBufferHandle{},
+	uint32_t hzbMip1Offset = 0,
+	uint32_t hzbMip1Stride = 0,
 	uint64_t frameUniformsAddr = 0,
 	uint32_t linearSamplerIndex = 0,
 	const SsrDesc& overrideDesc = SsrDesc{},
@@ -874,7 +889,11 @@ void AddSsrPasses(RenderGraph& rg,
 	assert(halfExtent.width != 0 && halfExtent.height != 0);
 
 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
-	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
+	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
+		&& hzbMip1Stride != 0;
+	assert(hzbOn); // blur/compose dereference the HZB unconditionally (see
+	               // SsrBlurPush/SsrComposePush); the app gates the chain on
+	               // the HZB build instead of a depth-load fallback.
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
 	const float fullH = static_cast<float>(std::max(1u, extent.height));
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
@@ -1047,29 +1066,38 @@ ShaderProgram progCopy = copyProgram;
 		});
 	}
 
-		// ---- Blur: raw reflection (+ full-res depth edges) -> blurred ----
-		{
-			SsrBlurPush push{};
-			push.frameUniforms = frameUniformsAddr;
-			push.reflTextureIndex = raw.bindlessIndex;
-			push.depthTextureIndex = depthBindlessIndex;
-			push.samplerIndex = linearSamplerIndex;
-			push.pad0 = 0;
-			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-			push.texelX = 1.0f / halfW;
-			push.texelY = 1.0f / halfH;
-			push.invDepthW = 1.0f / fullW;
-			push.invDepthH = 1.0f / fullH;
-			push.pad1 = 0;
+	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1) ----
+	{
+		SsrBlurPush push{};
+		push.frameUniforms = frameUniformsAddr;
+		push.hzb = hzbAddr;
+		push.reflTextureIndex = raw.bindlessIndex;
+		push.samplerIndex = linearSamplerIndex;
+		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
+		push.texelX = 1.0f / halfW;
+		push.texelY = 1.0f / halfH;
+		push.hzbMip1Offset = hzbMip1Offset;
+		push.hzbMip1Stride = hzbMip1Stride;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		push.pad0 = 0;
 
-			RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
-			pass.SetOffset(0, 0)
-				.SetExtent(halfExtent)
-				.SetInputImages({ raw.logical, depthView })
-				.SetColor({ blurred.logical },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
-			ShaderProgram progCopy = blurProgram; // copyable (handles only)
+		RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
+		pass.SetOffset(0, 0)
+			.SetExtent(halfExtent)
+			.SetInputImages({ raw.logical })
+			.SetColor({ blurred.logical },
+				AttachmentLoadOp::DontCare,
+				AttachmentStoreOp::Store);
+		{
+			// HZB buffer read (the mip1 reps): the SsrHzb compute writes
+			// must be barriered before these fragment reads.
+			BufferSyncRequest hzbRead{};
+			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(hzbLogical, hzbRead);
+		}
+		ShaderProgram progCopy = blurProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
@@ -1084,23 +1112,27 @@ ShaderProgram progCopy = copyProgram;
 			});
 		}
 
-	// ---- Composite: blurred half-res + full-res depth + HDR ----
-	// -> HDR. The depth-guided upsample runs HERE, in a pass that never
-	// attaches depth, so every depth read is a properly barriered
-	// sampled input.
+	// ---- Composite: blurred half-res + HZB depth authority + HDR ----
+	// -> HDR. The depth reads (center from mip0, tap reps from mip1) come
+	// from the HZB buffer — the depth image left this pass's input set.
 	{
 		SsrComposePush push{};
 		push.frameUniforms = frameUniformsAddr;
+		push.hzb = hzbAddr;
 		push.blurTextureIndex = blurred.bindlessIndex;
-		push.depthTextureIndex = depthBindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
 		push.invDepthW = 1.0f / fullW;
 		push.invDepthH = 1.0f / fullH;
 		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-	push.pad0 = 0.0f;
+		push.fullW = extent.width;
+		push.fullH = extent.height;
+		push.hzbMip1Offset = hzbMip1Offset;
+		push.hzbMip1Stride = hzbMip1Stride;
+		push.pad0 = 0;
+		push.pad1 = 0;
 
-		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, depthView, hdrView };
+		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -1108,7 +1140,15 @@ ShaderProgram progCopy = copyProgram;
 				.SetColor({ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
-			ShaderProgram progCopy = composeProgram; // copyable (handles only)
+		{
+			// HZB buffer read (mip0 center + mip1 reps): barrier the
+			// SsrHzb compute writes before these fragment reads.
+			BufferSyncRequest hzbRead{};
+			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(hzbLogical, hzbRead);
+		}
+		ShaderProgram progCopy = composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
@@ -1144,6 +1184,8 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	uint64_t hzbAddr,
 	uint32_t hzbMips,
 	LogicalBufferHandle hzbLogical,
+	uint32_t hzbMip1Offset,
+	uint32_t hzbMip1Stride,
 	LogicalImageViewHandle motionView,
 	uint32_t motionBindlessIndex,
 	uint64_t frameUniformsAddr,
@@ -1169,35 +1211,46 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	assert(parity < 2);
 
 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
-const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
+const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
+		&& hzbMip1Stride != 0;
+	assert(hzbOn); // blur/composite dereference the HZB (see the spatial path)
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
 	const float fullH = static_cast<float>(std::max(1u, extent.height));
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 	const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
 	// The raw target is populated by the compute chain (classify -> indirect -> intersect -> copy).
-	// ---- Blur: raw reflection (+ full-res depth edges) -> blurred ----
+	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1) ----
 	{
 			SsrBlurPush push{};
 			push.frameUniforms = frameUniformsAddr;
+			push.hzb = hzbAddr;
 			push.reflTextureIndex = raw.bindlessIndex;
-			push.depthTextureIndex = depthBindlessIndex;
 			push.samplerIndex = linearSamplerIndex;
-			push.pad0 = 0;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
 			push.texelX = 1.0f / halfW;
 			push.texelY = 1.0f / halfH;
-			push.invDepthW = 1.0f / fullW;
-			push.invDepthH = 1.0f / fullH;
-			push.pad1 = 0;
+			push.hzbMip1Offset = hzbMip1Offset;
+			push.hzbMip1Stride = hzbMip1Stride;
+			push.halfW = halfExtent.width;
+			push.halfH = halfExtent.height;
+			push.pad0 = 0;
 
 			RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ raw.logical, depthView })
+				.SetInputImages({ raw.logical })
 				.SetColor({ blurred.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
+			{
+				// HZB buffer read (the mip1 reps): barrier the SsrHzb
+				// compute writes before these fragment reads.
+				BufferSyncRequest hzbRead{};
+				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+				hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+				pass.AddBufferHint(hzbLogical, hzbRead);
+			}
 			ShaderProgram progCopy = blurProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
@@ -1258,22 +1311,28 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
 			});
 		}
 
-	// ---- Composite: temporal half-res + full-res depth + HDR ----
-	// -> HDR. Same depth-guided upsample as the spatial path, but the
+	// ---- Composite: temporal half-res + HZB depth authority + HDR ----
+	// -> HDR. Same depth-guided upsample as the spatial path (center from
+	// HZB mip0, tap reps from mip1 — no depth image input), but the
 	// reflection source is the just-written history slot.
 	{
 		SsrComposePush push{};
 		push.frameUniforms = frameUniformsAddr;
+		push.hzb = hzbAddr;
 		push.blurTextureIndex = histCurr.bindlessIndex;
-		push.depthTextureIndex = depthBindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
 		push.invDepthW = 1.0f / fullW;
 		push.invDepthH = 1.0f / fullH;
 		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-	push.pad0 = 0.0f;
+		push.fullW = extent.width;
+		push.fullH = extent.height;
+		push.hzbMip1Offset = hzbMip1Offset;
+		push.hzbMip1Stride = hzbMip1Stride;
+		push.pad0 = 0;
+		push.pad1 = 0;
 
-		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, depthView, hdrView };
+		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -1281,7 +1340,14 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
 				.SetColor({ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
-			ShaderProgram progCopy = composeProgram; // copyable (handles only)
+		{
+			// HZB buffer read (mip0 center + mip1 reps).
+			BufferSyncRequest hzbRead{};
+			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(hzbLogical, hzbRead);
+		}
+		ShaderProgram progCopy = composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
@@ -1308,6 +1374,8 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
 		uint64_t hzbAddr,
 		uint32_t hzbMips,
 		LogicalBufferHandle hzbLogical,
+		uint32_t hzbMip1Offset,
+		uint32_t hzbMip1Stride,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindlessIndex,
 		uint64_t frameUniformsAddr,
@@ -1324,7 +1392,7 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty();
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
 			gbufferView, gbufferBindlessIndex,
-			hzbAddr, hzbMips, hzbLogical,
+			hzbAddr, hzbMips, hzbLogical, hzbMip1Offset, hzbMip1Stride,
 			motionView, motionBindlessIndex,
 			frameUniformsAddr, linearSamplerIndex, desc,
 			jitterDeltaX, jitterDeltaY, taaBlend, historyValid, parity,
