@@ -42,6 +42,57 @@ float3 EvaluateSkyColor(float3 dir, EnvironmentFrameData env)
     return sky;
 }
 
+// Narrow-BDA variants for the fullscreen sky pass (see sky.frag.hlsl).
+// The by-value overloads above copy the full 128-byte EnvironmentFrameData
+// (and callers typically materialize the 1360+ byte FrameUniforms to get
+// it); the sky pixel shader only needs the sky/sun fields, so these pull
+// each float4 out of the frame pointer with scalar BDA reads instead —
+// the same discipline as the shadow path's
+// pc.frameUniforms.Get().view + cascade-buffer-pointer contract
+// (shadows.hlsli GetShadowFactorCascadedFromPC). dir must be normalized;
+// sunDirection.xyz is documented normalized (common.hlsli), so only it
+// keeps a defensive normalize — the per-pixel normalize(dir) is dropped.
+float3 EvaluateSkyGradientFromFrame(float3 dir, vk::BufferPointer<FrameUniforms> framePtr)
+{
+    float4 skyZenith = framePtr.Get().env.skyZenith;
+    float4 skyHorizon = framePtr.Get().env.skyHorizon;
+    float4 ground = framePtr.Get().env.ground;
+    float exponent = max(skyHorizon.w, 0.01f);
+    float skyIntensity = max(skyZenith.w, 0.0f);
+    float3 zenith = skyZenith.rgb * skyIntensity;
+    float3 horizon = skyHorizon.rgb * skyIntensity;
+    float3 groundCol = ground.rgb * skyIntensity;
+    float t = saturate(dir.y);
+    float3 sky = lerp(horizon, zenith, pow(t, exponent));
+    if (dir.y < 0.0f)
+        sky = lerp(horizon, groundCol, saturate(-dir.y * 3.0f));
+    return sky;
+}
+
+float3 EvaluateSkyColorFromFrame(float3 dir, vk::BufferPointer<FrameUniforms> framePtr)
+{
+    float skyMode = framePtr.Get().env.fogEndAndFlags.y;
+    if (skyMode < 0.5f)
+        return float3(0.0f, 0.0f, 0.0f);
+    float3 sky = EvaluateSkyGradientFromFrame(dir, framePtr);
+    float4 sunDirection = framePtr.Get().env.sunDirection;
+    float discCos = sunDirection.w;
+    if (discCos > -0.5f)
+    {
+        float cosA = dot(dir, normalize(sunDirection.xyz));
+        if (cosA > discCos)
+        {
+            // Solid disc at sun HDR intensity so bloom picks it up.
+            float4 sunColor = framePtr.Get().env.sunColor;
+            float3 sunHdr = sunColor.rgb * max(sunColor.w, 0.0f);
+            // Small smooth rim to avoid a hard 1-texel stair.
+            float rim = smoothstep(discCos, min(discCos + 0.0008f, 1.0f), cosA);
+            sky = lerp(sky, sunHdr, rim);
+        }
+    }
+    return sky;
+}
+
 // Diffuse irradiance for N (hemispheric blend of sky + ground).
 // Scaled by iblIntensity (env.ground.w); returns HDR.
 float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)

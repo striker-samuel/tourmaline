@@ -6,6 +6,7 @@ struct PSIn
 {
     float4 pos : SV_Position;
     float2 uv : TEXCOORD0;
+    float4 worldH : TEXCOORD1;
 };
 
 struct PSOut
@@ -16,27 +17,32 @@ struct PSOut
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
-    FrameUniforms frame = pc.frameUniforms.Get();
-    EnvironmentFrameData env = frame.env;
 
-    // Reconstruct the world-space view ray from the fullscreen UV.
-    // clip z = 1 (far plane), unproject, perspective-divide, subtract camera.
-    float2 ndc = IN.uv * 2.0f - 1.0f;
-    float4 clip = float4(ndc, 1.0f, 1.0f);
-    float4 worldH = mul(frame.invViewProj, clip);
-    float3 worldPos = worldH.xyz / max(worldH.w, 1e-6f);
-    float3 dir = worldPos - frame.cameraPos;
-    float len = length(dir);
-    dir = len > 1e-6f ? dir / len : float3(0.0f, 1.0f, 0.0f);
+    // Narrow BDA reads only: cameraPos for the ray, then the sky/sun
+    // float4s inside EvaluateSkyColorFromFrame. Never materializes the
+    // 1360+ byte FrameUniforms or the 128-byte EnvironmentFrameData —
+    // the old `FrameUniforms frame = pc.frameUniforms.Get()` aggregate
+    // was the line-19 hotspot.
+    float3 cameraPos = pc.frameUniforms.Get().cameraPos;
 
-    float3 sky = EvaluateSkyColor(dir, env);
+    // Ray from the VS-interpolated homogeneous far-plane position.
+    // dir = worldH.xyz/worldH.w - cameraPos, normalized; the /w is
+    // folded into the normalize (normalize(x/w - c) == normalize(x - c*w)
+    // for w > 0), so this is one MAD + normalize instead of the old
+    // 4x4 mul + divide + length/branch per pixel. uv/ndc reconstruction
+    // is gone — the VS ran it 3x per frame instead of ~millions.
+    float w = max(IN.worldH.w, 1e-6f);
+    float3 dir = normalize(IN.worldH.xyz - cameraPos * w);
+
+    float3 sky = EvaluateSkyColorFromFrame(dir, pc.frameUniforms);
 
     // Blend the horizon band toward fog so distant geometry fading to fog
     // meets the dome seamlessly. Uses horizon-band weight, not depth.
-    float fogMode = env.fogEndAndFlags.z;
+    float fogMode = pc.frameUniforms.Get().env.fogEndAndFlags.z;
     if (fogMode > 0.5f)
     {
-        float3 fogHdr = env.fogColor.rgb * max(env.fogColor.w, 0.0f);
+        float4 fogColor = pc.frameUniforms.Get().env.fogColor;
+        float3 fogHdr = fogColor.rgb * max(fogColor.w, 0.0f);
         float band = 1.0f - saturate(abs(dir.y) * 4.0f);
         sky = lerp(sky, fogHdr, band * 0.5f);
     }
