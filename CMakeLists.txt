@@ -205,6 +205,21 @@ else()
 endif()
 message(STATUS "Shader debug info (-Zi): ${SHADER_DEBUG_ON}"
   " (VULKANTOY_SHADER_DEBUG='${VULKANTOY_SHADER_DEBUG}', build type '${CMAKE_BUILD_TYPE}')")
+# True when the SPIR-V this tree ships actually CARRIES that debug info:
+# Debug trees do via their own CompileShaders branch (-Od -Zi
+# -fspv-debug=vulkan), Release only via SHADER_DEBUG_ON above. Gates the
+# driver-side Nsight Aftermath half of crash symbolication: with debug
+# info present, the engine asks the NVIDIA driver to generate the
+# GPU-machine-code -> SPIR-V line tables at device creation
+# (VK_NV_device_diagnostics_config + shader debug info bit, see
+# engine/src/Vulkan/impl.cpp device init + VULKANTOY_AFTERMATH=0 kill
+# switch). Lean Release trees stay off — driver tables over stripped
+# SPIR-V map nothing and only cost pipeline-compile time/memory.
+if(SHADER_DEBUG_ON OR CMAKE_BUILD_TYPE MATCHES "Debug")
+  set(SHADER_DEBUG_INFO_ON ON)
+else()
+  set(SHADER_DEBUG_INFO_ON OFF)
+endif()
 
 # --- Optick profiler ----------------------------------------------------------
 option(ENABLE_OPTICK "Enable Optick CPU/GPU profiling" ON)

@@ -9,6 +9,21 @@ add_executable(Editor ${EDITOR_SOURCES})
 
 target_compile_definitions(Editor PRIVATE ENGINE_VULKAN)
 
+# MUST match the engine's DS_DEBUG_VIZ gate (engine/CMakeLists.txt) — the
+# DS_VIZ-gated FrameUniforms/WorldRenderer members shift the engine classes'
+# LAYOUT, and the editor's TUs ALLOCATE those classes (MakeProcess<
+# WorldRenderer>). Without the define the editor's sizeof(WorldRenderer)
+# was 48 B SMALLER than the engine's member offsets: the hosted
+# WorldRenderer's member writes landed PAST its arena allocation, into the
+# next arena object (the hosted RenderGraph — topoHeap_._Myproxy stomped
+# to 1, then the sort's wild-proxy crash took the device down; caught by a
+# Dr0 hardware write watchpoint: UpdateGfxTextureDemand ->
+# m_gfxMetaEpochUploaded = epoch at graph+32). Same DS_VIZ_ON gate as
+# engine/App (root CMakeLists: Debug trees unless forced).
+if(DS_VIZ_ON)
+    target_compile_definitions(Editor PRIVATE DS_DEBUG_VIZ=1)
+endif()
+
 target_include_directories(Editor
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -35,6 +50,8 @@ target_link_libraries(Editor
         # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>
         # (the backend TU itself is compiled into the engine).
         Vulkan::Vulkan
+        # main.cpp crash stack writer (SymFromAddr/SymGetLineFromAddr64).
+        Dbghelp
 )
 
 set_target_properties(Editor PROPERTIES

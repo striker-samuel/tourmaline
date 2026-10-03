@@ -1891,6 +1891,14 @@ private:
 	smvk::Holder<smvk::BufferHandle> m_frameUniforms; // ring: frames * kMaxViewports * sizeof(Frame)
 	smvk::Holder<smvk::BufferHandle> m_insetFrameUniforms; // second viewport (strip aspect)
 	uint64_t m_lastInsetFrameAddr = 0; // current flight's inset slice
+	// FramePSHot hot slab (the FS reads it UN-GATED at the top of mainPS via
+	// FrameUniforms::frameHot — default_lit_body.hlsli:354): the lit FS
+	// dereferences the BDA before anything else, so every frame uniform the
+	// editor uploads MUST carry a valid slab address — a zero-init frame
+	// left it null and the first world-drawing frame took the device down
+	// with an MMU read at 0x0 (Aftermath-confirmed). Mirrors the App
+	// renderer's m_resources.frameHot (see UpdateFrameUniforms).
+	smvk::Holder<smvk::BufferHandle> m_frameHotBuf; // ring: frames * kMaxViewports * sizeof(FramePSHot)
 	smvk::Holder<smvk::BufferHandle> m_materialsBuf;  // ring: frames * MAX_MATERIALS
 	smvk::Holder<smvk::BufferHandle> m_lightsBuf;     // ring: frames * MAX_LIGHTS
 	smvk::Holder<smvk::BufferHandle> m_cascadeBuf;    // ring: frames * GpuDirDesc

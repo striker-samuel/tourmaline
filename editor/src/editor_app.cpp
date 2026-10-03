@@ -90,6 +90,16 @@ bool EditorApp::OpenScene(const std::string& path) {
 // Open-dialog dispatch: .tour files replay into the stack (source auto-
 // loads when it differs); everything else is a scene open.
 bool EditorApp::OpenAnySceneFile(const std::string& path) {
+	// Queue before-boot opens (CLI path) like OpenScene: a tour open must
+	// not run either — OpenTourFile drives the FULL definition build
+	// (LoadGltfIntoWorld -> ApplySceneReferences -> mesh uploads), which
+	// needs the booted context (a pre-boot run built a ctx-null cluster,
+	// took the GPU-less import branch and crashed vmaVirtualAllocate on
+	// the never-allocated static heap).
+	if (!m_context) {
+		m_pendingGltf = path;
+		return true;
+	}
 	if (path.size() >= 5) {
 		const std::string ext = path.substr(path.size() - 5);
 		if (ext == ".tour" || ext == ".TOUR")
@@ -222,7 +232,9 @@ bool EditorApp::Initialize() {
 	if (!m_pendingGltf.empty()) {
 		const std::string p = m_pendingGltf;
 		m_pendingGltf.clear();
-		if (!OpenScene(p))
+		// Dispatch through the open-dialog path: a queued .tour must
+		// replay (OpenScene alone fails the tour as a glTF import).
+		if (!OpenAnySceneFile(p))
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
 	}
 
@@ -1078,12 +1090,7 @@ bool EditorApp::LoadPakFromImage(
 
 bool EditorApp::LaunchWysiwyg() {
 	// LIVE VIEW: the hosted renderer renders THE EDITOR'S OWN WORLD —
-	// the live engine representation (imports preprocessed, GUID
-	// references bound, edits applied). The world is BORROWED
-	// (SetHostedBorrowedWorld): the editor keeps owning + mutating it,
-	// edits show up per frame; the hosted renderer never imports
-	// anything. Cooks are the separate PRODUCT step — they never feed
-	// the viewport.
+	// (see the full comment above the call site in the deferred block).
 	if (!m_world) {
 		Log("Live view: no world to host — open a scene first.");
 		return false;
@@ -1984,12 +1991,73 @@ void EditorApp::FrameAll() {
 }
 
 void EditorApp::DrawFrame() {
+	// Frame-arena reset at the EDITOR's own frame boundary: ResetFrameArena
+	// lived only in WorldRenderer::DrawFrame, so editor frames without a
+	// running hosted renderer (empty editor, mid-open, scene closed) never
+	// rewound the frame arena — every editor frame's compose/pass scratch
+	// (barrier vectors etc., ~KBs each) accumulated unboundedly until the
+	// 256 MB reservation OOM-aborted minutes into a session. Resetting here
+	// is safe by the same discipline as the renderer's own reset: frame
+	// start, nothing frame-allocated is live (last frame presented; the
+	// hosted drive below resets again at its own start, covering anything
+	// the editor's own frame allocated in between).
+	smvk::ResetFrameArena();
 	UpdateDeltaTime();
 	// Frame-time histogram hook (View menu / F12; zero cost while
 	// disabled — the hosted renderer's own hook is gated off when
 	// hosted so this is the single record per editor frame).
 	smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
 	Update();
+	// Dev crash-repro vehicle (VULKANTOY_EDITOR_OPEN_AT=
+	// "<frame>:<file>[;<frame>:<file>...]"): opens scene files MID-LOOP at
+	// the given frame indices — the exact open-DIALOG timing (the open
+	// completes during a frame, the deferred block below launches or
+	// rebinds the live view on the same DrawFrame walk). Multiple entries
+	// drive sequences (e.g. a plain open first, then a tour open over a
+	// RUNNING live view — the user-crash shape). The --gltf CLI path opens
+	// at Initialize time instead (before any present), so driver bugs
+	// that need "presents happened before the open" never fire there.
+	{
+		struct OpenAt {
+			int frame = -1;
+			std::string path;
+			bool done = false;
+		};
+		static std::vector<OpenAt> sOpens = []() {
+			std::vector<OpenAt> out;
+			const char* e = std::getenv("VULKANTOY_EDITOR_OPEN_AT");
+			if (!e || !*e)
+				return out;
+			std::string spec(e);
+			size_t pos = 0;
+			while (pos < spec.size()) {
+				const size_t semi = spec.find(';', pos);
+				const std::string one = spec.substr(pos,
+					semi == std::string::npos ? std::string::npos : semi - pos);
+				pos = (semi == std::string::npos) ? spec.size() : semi + 1;
+				const size_t colon = one.find(':');
+				if (colon == std::string::npos || colon == 0)
+					continue;
+				OpenAt o;
+				o.frame = std::atoi(one.substr(0, colon).c_str());
+				o.path = one.substr(colon + 1);
+				if (o.frame >= 0 && !o.path.empty())
+					out.push_back(std::move(o));
+			}
+			return out;
+		}();
+		for (OpenAt& o : sOpens) {
+			if (o.done || o.frame < 0 || int(m_frameCounter) != o.frame)
+				continue;
+			o.done = true;
+			std::cerr << "[OPEN_AT] frame " << o.frame << ": opening '"
+				<< o.path << "' (mid-loop, open-dialog timing)\n";
+			std::fflush(stderr);
+			OpenAnySceneFile(o.path);
+			std::cerr << "[OPEN_AT] open returned\n";
+			std::fflush(stderr);
+		}
+	}
 	// Deferred live-view world swaps, consumed HERE between frames and
 	// idle — never inside the editor's open frame: the OLD world stays
 	// alive in the retire stash for the in-flight frames, then
@@ -2081,6 +2149,46 @@ void EditorApp::DrawFrame() {
 	// ONE Vulkan context (volk globals forbid a second instance), so
 	// their per-frame engine-global slots must never be in flight
 	// together: idle -> hosted submit -> idle -> the editor's own frame.
+	// Dev crash-repro vehicle #2 (VULKANTOY_EDITOR_OPEN_AT2="<frame>:
+	// <file>"): same as OPEN_AT but fires AFTER the deferred block, so
+	// the pending live-view launch consumes one frame LATER — the exact
+	// dialog shape from the user's crash log (one editor frame renders
+	// with the new world between the open and the launch; the device
+	// dies in that window).
+	{
+		struct OpenAt2 {
+			int frame = -1;
+			std::string path;
+			bool done = false;
+		};
+		static std::vector<OpenAt2> sOpens = []() {
+			std::vector<OpenAt2> out;
+			const char* e = std::getenv("VULKANTOY_EDITOR_OPEN_AT2");
+			if (!e || !*e)
+				return out;
+			const std::string spec(e);
+			const size_t colon = spec.find(':');
+			if (colon == std::string::npos || colon == 0)
+				return out;
+			OpenAt2 o;
+			o.frame = std::atoi(spec.substr(0, colon).c_str());
+			o.path = spec.substr(colon + 1);
+			if (o.frame >= 0 && !o.path.empty())
+				out.push_back(std::move(o));
+			return out;
+		}();
+		for (OpenAt2& o : sOpens) {
+			if (o.done || o.frame < 0 || int(m_frameCounter) != o.frame)
+				continue;
+			o.done = true;
+			std::cerr << "[OPEN_AT2] frame " << o.frame << ": opening '"
+				<< o.path << "' (post-deferred — launch lags one frame)\n";
+			std::fflush(stderr);
+			OpenAnySceneFile(o.path);
+			std::cerr << "[OPEN_AT2] open returned\n";
+			std::fflush(stderr);
+		}
+	}
 	if (m_wysiwyg) {
 		const bool trace = std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr;
 		if (trace) { std::fprintf(stderr, "[DRIVE] idle-pre\n"); std::fflush(stderr); }
@@ -2169,9 +2277,9 @@ void EditorApp::DrawFrame() {
 		// is Line polygon mode over the Fill depth prepass, so hidden
 		// lines are removed (lines never draw over the objects in
 		// front — the prepass depth occludes them).
-		m_wysiwyg->SetWireframe(m_wireframeAll);
-		if (trace) { std::fprintf(stderr, "[DRIVE] hosted frame\n"); std::fflush(stderr); }
-		m_wysiwyg->HostedDrawFrame();
+	m_wysiwyg->SetWireframe(m_wireframeAll);
+	if (trace) { std::fprintf(stderr, "[DRIVE] hosted frame\n"); std::fflush(stderr); }
+	m_wysiwyg->HostedDrawFrame();
 		if (trace) { std::fprintf(stderr, "[DRIVE] idle-post\n"); std::fflush(stderr); }
 		WaitForDeviceIdle();
 		if (trace) { std::fprintf(stderr, "[DRIVE] done\n"); std::fflush(stderr); }

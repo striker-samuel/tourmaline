@@ -74,6 +74,18 @@ if(DS_VIZ_ON)
     target_compile_definitions(engine PRIVATE DS_DEBUG_VIZ=1)
 endif()
 
+# Nsight Aftermath shader debug tables (crash symbolication): when this
+# tree's SPIR-V carries DXC -Zi debug info (root CMakeLists resolves
+# SHADER_DEBUG_INFO_ON: Debug trees / VULKANTOY_SHADER_DEBUG=ON preset),
+# the engine's device init additionally probes + enables
+# VK_NV_device_diagnostics_config with the shader-debug-info bit chained
+# into VkDeviceCreateInfo — the NVIDIA-driver half that maps GPU machine
+# code back to SPIR-V so Aftermath crash dumps resolve to HLSL source
+# lines. Runtime kill switch: VULKANTOY_AFTERMATH=0.
+if(SHADER_DEBUG_INFO_ON)
+    target_compile_definitions(engine PRIVATE VULKANTOY_SHADER_DEBUG_INFO=1)
+endif()
+
 target_link_libraries(engine
     PUBLIC
         glfw

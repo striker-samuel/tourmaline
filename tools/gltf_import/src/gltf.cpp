@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <functional>

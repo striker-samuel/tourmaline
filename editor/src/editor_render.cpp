@@ -200,6 +200,9 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
 	m_frameUniforms = m_context->CreateBuffer(
 		sizeof(engine::FrameUniforms) * flightCount * kMaxViewports,
 		smvk::BufferType_Uniform, "editor frames");
+	m_frameHotBuf = m_context->CreateBuffer(
+		sizeof(engine::FramePSHot) * flightCount * kMaxViewports,
+		smvk::BufferType_Uniform, "editor frame hot");
 	m_insetFrameUniforms = m_context->CreateBuffer(
 		sizeof(engine::FrameUniforms) * flightCount, smvk::BufferType_Uniform,
 		"editor inset frame");
@@ -212,7 +215,8 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
 	m_cascadeBuf = m_context->CreateBuffer(
 		sizeof(smvk::GpuDirectionalLightDescription) * flightCount,
 		smvk::BufferType_Storage, "editor cascades");
-	return !m_frameUniforms.empty() && !m_insetFrameUniforms.empty() &&
+	return !m_frameUniforms.empty() && !m_frameHotBuf.empty() &&
+		!m_insetFrameUniforms.empty() &&
 		!m_materialsBuf.empty() && !m_lightsBuf.empty() && !m_cascadeBuf.empty();
 }
 
@@ -289,6 +293,44 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		smvk::EnvironmentSettings env{};
 		ApplyEnvToFrame(frame, env);
 		frame.env = env.ToFrameData();
+
+		// FramePSHot hot slab (THE device-death fix): the lit FS reads
+		// FrameUniforms::frameHot UN-GATED at the very top of mainPS
+		// (default_lit_body.hlsli:354 "FramePSHot hot = frame.frameHot
+		// .Get()"), so a zero-init frame made every world-drawing frame
+		// dereference a null BDA — an MMU read at address 0x0 (Aftermath
+		// confirmed) that took the whole device down (surfacing as the
+		// UINT64_MAX timeline abort at the live-view launch). Mirror the
+		// App renderer's UpdateFrameUniforms: upload this view's hot
+		// struct + carry its slab address in the frame uniform BEFORE the
+		// frame upload (the frame carries the BDA). The inset (viewport
+		// strip) copies viewport 0's frame, so it inherits this slab.
+		{
+			engine::FramePSHot hot{};
+			hot.cameraPos = frame.cameraPos;
+			hot.time = frame.time;
+			hot.viewportSize = frame.viewportSize;
+			hot.invViewportSize = frame.invViewportSize;
+			hot.nearPlane = frame.nearPlane;
+			hot.farPlane = frame.farPlane;
+			hot.exposure = frame.exposure;
+			hot.aoTextureIndex = frame.aoTextureIndex;
+			hot.aoIntensity = frame.aoIntensity;
+			hot.evsmMode = frame.evsmMode;
+			hot.dsEnabled = frame.dsEnabled;
+			hot.dsTileCountX = frame.dsTileCountX;
+			hot.fogEndAndFlags_w = frame.env.fogEndAndFlags.w;
+			hot.giIntensity = frame.giIntensity;
+			hot.giDebug = frame.giDebug;
+			hot.cvolEnabled = frame.cvolEnabled;
+			const size_t hotSlice = (size_t(flight) * kMaxViewports
+				+ size_t(vp)) * sizeof(engine::FramePSHot);
+			m_context->UploadDataToBuffer(m_frameHotBuf, &hot, sizeof(hot),
+				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+				smvk::AccessFlags::ShaderRead, 0, hotSlice);
+			frame.frameHot =
+				m_context->GetBufferDeviceAddress(m_frameHotBuf) + hotSlice;
+		}
 
 		m_viewports[vp].frame = frame;
 		m_viewports[vp].viewProj = viewProj;
@@ -390,8 +432,18 @@ void EditorApp::UploadMaterials(uint32_t flight) {
 		if (poolIdx < 0)
 			return -1;
 		auto hit = m_bindlessBySlot.find(static_cast<uint32_t>(poolIdx));
-		return hit != m_bindlessBySlot.end()
-			? static_cast<int>(hit->second) : poolIdx;
+		if (hit == m_bindlessBySlot.end()) {
+			// Hosted-crash diagnostic: a map miss uploads the RAW POOL
+			// INDEX as the bindless slot — a bogus descriptor sample on
+			// the first world-drawing frame (the observed device-death).
+			// Log the miss so the offender material/slot is named.
+			std::fprintf(stderr,
+				"[MATSLOT] remap MISS: poolIdx=%d not in m_bindlessBySlot (map=%zu) — raw pool index becomes the bindless slot!\n",
+				poolIdx, m_bindlessBySlot.size());
+			std::fflush(stderr);
+			return poolIdx;
+		}
+		return static_cast<int>(hit->second);
 	};
 	const uint32_t slotCount =
 		std::min<uint32_t>(uint32_t(m_world->materialLocations.size()), kMaxMaterials);
@@ -1273,17 +1325,17 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 					if (!mesh)
 						return;
-					if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
-						return;
-					const glm::mat4& model = m_world->scene.globalTransform[item.node];
-					uint32_t matId = item.material;
-					cmd.PushConstants(offsetof(engine::PushConstants, materialId),
-						sizeof(matId), &matId, smvk::ShaderStage::All);
-					cmd.PushConstants(offsetof(engine::PushConstants, model),
-						sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
-					for (const auto& s : mesh->geometry.surfaces)
-						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-					});
+				if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
+					return;
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
+				uint32_t matId = item.material;
+				cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+					sizeof(matId), &matId, smvk::ShaderStage::All);
+				cmd.PushConstants(offsetof(engine::PushConstants, model),
+					sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
+				for (const auto& s : mesh->geometry.surfaces)
+					cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+				});
 			}
 		}
 		// Selection highlight: wireframe overlay over the selected node.

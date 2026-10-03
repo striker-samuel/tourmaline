@@ -9872,16 +9872,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								renderExtent.width, renderExtent.height);
 						}
 					}
-					smvk::ShaderProgram histProg = meter.histogramProgram;
-					smvk::RenderPass& histPass = meter.AddHistogramPass(
-						*m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");
-					histPass.SetRecordingFunc(
-						[histProg, expPush, dx, dy](smvk::CommandBuffer& cmd) mutable {
-							cmd.BindComputePipeline(histProg);
-							cmd.PushConstants(0, sizeof(smvk::ExposureHistogramPush),
-								&expPush, smvk::ShaderStage::All);
-							cmd.Dispatch(dx, dy, 1);
-						});
+				smvk::ShaderProgram histProg = meter.histogramProgram;
+				smvk::RenderPass& histPass = meter.AddHistogramPass(
+					*m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");
+				histPass.SetRecordingFunc(
+					[histProg, expPush, dx, dy](smvk::CommandBuffer& cmd) mutable {
+						cmd.BindComputePipeline(histProg);
+						cmd.PushConstants(0, sizeof(smvk::ExposureHistogramPush),
+							&expPush, smvk::ShaderStage::All);
+						cmd.Dispatch(dx, dy, 1);
+					});
 				}
 			}
 		}
@@ -9889,18 +9889,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// ---------------------------------------------------------------------
 		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
 		// ---------------------------------------------------------------------
-		{
-			SMVK_PROFILE_CATEGORY("Bloom", Optick::Category::Rendering);
-			if (m_passes.bloom && m_bloomEnabled && m_viewportResources.bloom.Valid()) {
-				// Default down/up programs owned by BloomChain (Ensure internalized).
-				// Samples the (possibly motion-blurred) scene HDR.
-				m_viewportResources.bloom.AddBloomPasses(
-					*m_rendergraph,
-					sceneHdrView,
-					sceneHdrBindless,
-					linearSampler);
-			}
+	{
+		SMVK_PROFILE_CATEGORY("Bloom", Optick::Category::Rendering);
+		if (m_passes.bloom && m_bloomEnabled && m_viewportResources.bloom.Valid()) {
+			// Default down/up programs owned by BloomChain (Ensure internalized).
+			// Samples the (possibly motion-blurred) scene HDR.
+			m_viewportResources.bloom.AddBloomPasses(
+				*m_rendergraph,
+				sceneHdrView,
+				sceneHdrBindless,
+				linearSampler);
 		}
+	}
 
 		// ---------------------------------------------------------------------
 		// DLSS – Streamline super resolution (see Engine/Rendergraph/dlss.h).

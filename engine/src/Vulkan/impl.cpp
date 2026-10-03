@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,17 +50,31 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
+
+// Debug-object-name setter (null-guarded): vkSetDebugUtilsObjectNameEXT
+// is a volk-resolved function pointer that stays NULL when the
+// VK_EXT_debug_utils instance extension is not enabled — which happens on
+// VULKANTOY_NO_VALIDATION=1 runs (the extension rides the validation
+// layer's instance chain). Calling it unguarded crashed with a call
+// through null (pc=0). A missing debug name is cosmetic — skip instead.
+static inline void SetDebugObjectName(
+	VkDevice device, const VkDebugUtilsObjectNameInfoEXT* info)
+{
+	if (vkSetDebugUtilsObjectNameEXT)
+		vkSetDebugUtilsObjectNameEXT(device, info);
+}
+
 using smvk::VulkanResourceManager;
 using smvk::VulkanSwapchain;
 using smvk::VulkanFrameBuffer;
 
 #if 0 // TMP-DIAG: force validation on in Release (disabled, remove later)
-const bool enableValidationLayers = true;
+bool enableValidationLayers = true;
 #else
 #ifdef NDEBUG
-const bool enableValidationLayers = false;
+bool enableValidationLayers = false;
 #else
-const bool enableValidationLayers = true;
+bool enableValidationLayers = true;
 #endif
 #endif
 //
@@ -1557,6 +1574,39 @@ static bool HostCopyKilledByEnv()
 	return killed;
 }
 
+// Nsight Aftermath shader debug tables (VK_NV_device_diagnostics_config):
+// the second half of shader-crash symbolication. DXC's -Zi /
+// -fspv-debug=vulkan only embeds the HLSL -> SPIR-V line info in the module
+// this tree loads; Aftermath crash dumps additionally need the
+// NVIDIA-driver-generated mapping from GPU machine code back to that SPIR-V
+// (the .nvdbg line tables). The device-init code below requests exactly
+// that when this build's SPIR-V itself carries debug info
+// (VULKANTOY_SHADER_DEBUG_INFO: Debug trees + the x64-Release-ShaderDebug
+// preset) and the driver exposes the extension.
+//   VULKANTOY_AFTERMATH=0  kill switch — skip the driver-side tables (they
+//                          cost pipeline-compile time + memory), e.g. when
+//                          bisecting a hang that never reaches Aftermath
+//   unset                 default: on iff the SPIR-V carries debug info
+// No GFSDK_Aftermath_EnableGpuCrashDumps call exists in this codebase (it
+// would take .nvdbg writing away from the Aftermath Monitor), so the
+// Monitor's "Generate Shader Debug Information" + dump-dir settings stay
+// authoritative for writing the .nvdbg files.
+static bool AftermathShaderDebugTablesEnabled()
+{
+	static const bool enabled = [] {
+#if defined(VULKANTOY_SHADER_DEBUG_INFO)
+		const bool def = true;
+#else
+		const bool def = false;
+#endif
+		const char* e = std::getenv("VULKANTOY_AFTERMATH");
+		if (e && *e && std::string_view{ e } == "0")
+			return false;
+		return def;
+	}();
+	return enabled;
+}
+
 // ---------------------------------------------------------------------------
 // VULKANTOY_SERIALIZE — submission-level serialization bisect knob
 // ---------------------------------------------------------------------------
@@ -2090,8 +2140,20 @@ void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSa
 int smvk::VulkanCore::CreateInstance() {
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
-		throw std::runtime_error(
-			"validation layers requested, but not available!");
+		// Diagnostic escape hatch (VULKANTOY_NO_VALIDATION=1): the ASan
+		// watchpoint build runs with the validation layer disabled (the
+		// uninstrumented layer DLL's intercepted-memcpy interop with the
+		// instrumented debug-messenger callback is a false-positive source
+		// that drowns the real report) — proceed without the layer instead
+		// of refusing to boot.
+		const char* noVal = std::getenv("VULKANTOY_NO_VALIDATION");
+		if (noVal && std::atoi(noVal) != 0) {
+			std::fprintf(stderr, "[Vulkan] validation layer unavailable — continuing WITHOUT it (VULKANTOY_NO_VALIDATION)\n");
+			enableValidationLayers = false;
+		} else {
+			throw std::runtime_error(
+				"validation layers requested, but not available!");
+		}
 	}
 
 	VkApplicationInfo appInfo{};
@@ -2449,10 +2511,54 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				enableDeviceFault ? "supported - enabling (loss diagnostics)" : "not supported - loss will be opaque");
 		}
 
+		// VK_NV_device_diagnostics_config (NVIDIA Nsight Aftermath shader
+		// debug tables): the driver-side half of crash symbolication. DXC's
+		// -Zi only puts the HLSL -> SPIR-V line info into the modules this
+		// tree ships; Aftermath crash dumps ALSO need the
+		// driver-generated mapping from GPU machine code back to that
+		// SPIR-V (the .nvdbg line tables). Chaining this struct with the
+		// shader-debug-info bit makes the NVIDIA driver generate those
+		// tables at pipeline compile time — the Vulkan equivalent of D3D's
+		// GFSDK_Aftermath_FeatureFlags_GenerateShaderDebugInfo. Only
+		// meaningful when the loaded SPIR-V itself carries debug info
+		// (AftermathShaderDebugTablesEnabled above: Debug trees + the
+		// x64-Release-ShaderDebug preset), and only present on NVIDIA —
+		// probed, never required (same pattern as low_latency2 /
+		// device_fault above). The Aftermath Monitor writes the matching
+		// .nvdbg files on crash; nothing here calls
+		// GFSDK_Aftermath_EnableGpuCrashDumps, so the Monitor's settings
+		// stay authoritative for dump writing.
+		bool enableDiagnosticsConfig = false;
+		VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfigInfo{
+			VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, nullptr,
+			VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV };
+		if (AftermathShaderDebugTablesEnabled()) {
+			uint32_t extCount = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+				&& extCount != 0) {
+				std::vector<VkExtensionProperties> exts(extCount);
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+					for (const auto& e : exts) {
+						if (std::strcmp(e.extensionName, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) == 0) {
+							enableDiagnosticsConfig = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		std::fprintf(stderr, "[Vulkan] VK_NV_device_diagnostics_config %s\n",
+			enableDiagnosticsConfig
+				? "supported - enabling (Aftermath shader debug tables: GPU code -> SPIR-V -> HLSL lines)"
+				: AftermathShaderDebugTablesEnabled()
+					? "not supported - Aftermath crash dumps stay without shader line maps (non-NVIDIA driver?)"
+					: "off (VULKANTOY_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
+
 		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
 		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -2463,6 +2569,14 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 			createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
 			createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 			createInfo.enabledLayerCount = 0;
+			// Aftermath head-splice: chain the diagnostics config in front
+			// of the feats2 -> faultFeatures feature chain below it — this
+			// struct is not a feature, it rides pNext directly under
+			// VkDeviceCreateInfo, and the driver walks the full chain.
+			if (enableDiagnosticsConfig) {
+				diagnosticsConfigInfo.pNext = createInfo.pNext; // = &feats2 (+faultFeatures)
+				createInfo.pNext = &diagnosticsConfigInfo;
+			}
 
 		if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create logical device!");
@@ -3029,7 +3143,7 @@ bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capac
 		ni.objectType = VK_OBJECT_TYPE_BUFFER;
 		ni.objectHandle = reinterpret_cast<uint64_t>(ust.ring.buffer);
 		ni.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &ni);
+		SetDebugObjectName(device_, &ni);
 	}
 #endif
 	return true;
@@ -4824,7 +4938,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			reinterpret_cast<uint64_t>(image.vkImage);
 		nameInfo.pObjectName = ci.name;
 
-		vkSetDebugUtilsObjectNameEXT(
+		SetDebugObjectName(
 			device_,
 			&nameInfo
 		);
@@ -5673,7 +5787,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		nameInfo.pObjectName =
 			debugName;
 
-		vkSetDebugUtilsObjectNameEXT(
+		SetDebugObjectName(
 			device_,
 			&nameInfo
 		);
@@ -6133,7 +6247,7 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(vkImage);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+		SetDebugObjectName(device_, &nameInfo);
 	}
 #else
 	(void)debugName;
@@ -6300,7 +6414,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(newImage);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+		SetDebugObjectName(device_, &nameInfo);
 	}
 #else
 	(void)debugName;
@@ -6356,7 +6470,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 			viewNameInfo.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
 			viewNameInfo.objectHandle = reinterpret_cast<uint64_t>(newView);
 			viewNameInfo.pObjectName = debugName;
-			vkSetDebugUtilsObjectNameEXT(device_, &viewNameInfo);
+			SetDebugObjectName(device_, &viewNameInfo);
 		}
 #endif
 
@@ -6462,7 +6576,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 			reinterpret_cast<uint64_t>(view.vkView);
 		nameInfo.pObjectName = ci.name;
 
-		vkSetDebugUtilsObjectNameEXT(
+		SetDebugObjectName(
 			device_,
 			&nameInfo
 		);
@@ -6673,7 +6787,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(desc.vkBuffer);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+		SetDebugObjectName(device_, &nameInfo);
 	}
 #else
 	(void)debugName;
@@ -6697,7 +6811,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		nameInfo.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(shader);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+		SetDebugObjectName(device_, &nameInfo);
 	}
 #else
 	(void)debugName;
@@ -6743,7 +6857,7 @@ smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderMod
 		nameInfo.objectType = VK_OBJECT_TYPE_DESCRIPTOR_POOL;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(dpool);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+		SetDebugObjectName(device_, &nameInfo);
 	}
 #else
 	(void)debugName;
@@ -7722,6 +7836,22 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	assert(value != 0);
 	assert(m_timelineSemaphore != VK_NULL_HANDLE);
 
+	// Host timeline-wait trace (VULKANTOY_TRACE_WAITS=1): the documented
+	// driver poison recipe is a HOST wait on a presented-signaled timeline
+	// (see AcquireFramebuffer) — every wait goes through here, so this
+	// names the offender when a later counter query reads UINT64_MAX.
+	static const bool sTrace = []() {
+		const char* e = std::getenv("VULKANTOY_TRACE_WAITS");
+		return e && std::atoi(e) != 0;
+	}();
+	if (sTrace) {
+		std::fprintf(stderr, "[WAIT] host waitTimeline qfi=%u value=%llu (next=%llu)\n",
+			m_queueFamilyIndex,
+			(unsigned long long)value,
+			(unsigned long long)m_timelineValue);
+		std::fflush(stderr);
+	}
+
 	VkSemaphore semaphore =
 		m_timelineSemaphore;
 
@@ -7963,6 +8093,40 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 		slot.retireValue_;
 }
 namespace { void DumpDeviceFaultInfo(); }
+// Fatal-path mirror: GUI/editor runs often have no visible console, so the
+// deliberate aborts below write to stderr AND append to
+// vulkantoy_fatal.log in the working directory. FatalPrintf behaves exactly
+// like fprintf(stderr, ...) until FatalMirrorOpen() runs (fatal paths
+// only — never hot). The mirror is fclose()d before abort() because abort
+// does not flush stdio buffers (an unflushed file would stay empty).
+namespace {
+static FILE* g_fatalMirror = nullptr;
+void FatalMirrorOpen() {
+	if (!g_fatalMirror)
+		g_fatalMirror = std::fopen("vulkantoy_fatal.log", "a");
+}
+void FatalMirrorClose() {
+	if (g_fatalMirror) {
+		std::fclose(g_fatalMirror);
+		g_fatalMirror = nullptr;
+	}
+}
+void FatalPrintf(const char* fmt, ...) {
+	va_list a1, a2;
+	va_start(a1, fmt);
+	va_copy(a2, a1);
+	std::vfprintf(stderr, fmt, a1);
+	if (g_fatalMirror)
+		std::vfprintf(g_fatalMirror, fmt, a2);
+	va_end(a1);
+	va_end(a2);
+}
+void FatalFlush() {
+	std::fflush(stderr);
+	if (g_fatalMirror)
+		std::fflush(g_fatalMirror);
+}
+}
 void smvk::Submitter::purge()
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -8024,26 +8188,43 @@ void smvk::Submitter::purge()
 		// host timeline-wait in AcquireFramebuffer — now fence-based; see
 		// the comment there). Dump the device-fault post-mortem while the
 		// device still exists, then die loudly.
-		fprintf(stderr,
+		// Probe whether the device is already lost: some drivers answer
+		// the counter query with SUCCESS + garbage (all-ones) instead of
+		// VK_ERROR_DEVICE_LOST. Distinguishing "lost device" from "poisoned
+		// query on a live device" decides the whole investigation, so ask
+		// the device directly (nothing is pending on this path at startup;
+		// on a live device this returns immediately).
+		VkResult idleResult = vkDeviceWaitIdle(device_);
+		FatalMirrorOpen();
+		FatalPrintf(
 			"[Vulkan FATAL] timeline semaphore counter reads UINT64_MAX "
-			"(qfi=%u next=%llu) — driver query path poisoned; aborting\n",
+			"(qfi=%u next=%llu sem=%p queryResult=%s deviceIdle=%s) — %s; aborting\n",
 			m_queueFamilyIndex,
-			(unsigned long long)m_timelineValue);
-		fflush(stderr);
+			(unsigned long long)m_timelineValue,
+			(void*)m_timelineSemaphore,
+			vkResultToString(r),
+			vkResultToString(idleResult),
+			idleResult == VK_ERROR_DEVICE_LOST
+				? "device already lost before first use"
+				: "driver query path poisoned on a live device");
+		FatalFlush();
 		DumpDeviceFaultInfo();
+		FatalMirrorClose();
 		abort();
 	}
 
 	if (completedValue >= m_timelineValue) {
 
 		// Same rule: never silent-abort in Release.
-		fprintf(stderr,
+		FatalMirrorOpen();
+		FatalPrintf(
 			"[Vulkan FATAL] timeline ahead of Submitter: "
 			"completed=%llu next=%llu (qfi=%u) — aborting\n",
 			(unsigned long long)completedValue,
 			(unsigned long long)m_timelineValue,
 			m_queueFamilyIndex);
-		fflush(stderr);
+		FatalFlush();
+		FatalMirrorClose();
 
 		abort();
 	}
@@ -8738,15 +8919,17 @@ const char* DeviceFaultAddressTypeName(VkDeviceFaultAddressTypeEXT type) {
 // Dumps VK_EXT_device_fault info for a lost device. Must run before the
 // device is destroyed (fault state dies with it); safe to call when the
 // extension is absent (no-op). Called from the acquire-loss path below.
+// FatalPrintf routes every line to stderr AND the vulkantoy_fatal.log
+// mirror (GUI runs have no visible console — stderr alone is blind).
 void DumpDeviceFaultInfo() {
-	std::fprintf(stderr, "[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
+	FatalPrintf("[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
 		g_deviceFaultSupported ? 1 : 0, (void*)device_,
 #ifdef VK_EXT_device_fault
 		(void*)vkGetDeviceFaultInfoEXT);
 #else
 		(void*)nullptr);
 #endif
-	std::fflush(stderr);
+	FatalFlush();
 	if (!g_deviceFaultSupported || device_ == VK_NULL_HANDLE)
 		return;
 #ifdef VK_EXT_device_fault
@@ -8764,8 +8947,8 @@ void DumpDeviceFaultInfo() {
 	}
 	const uint32_t maxInfos = faultProps.maxDeviceFaultCount != 0
 		? faultProps.maxDeviceFaultCount : 8u;
-	std::fprintf(stderr, "[DeviceFault] maxDeviceFaultCount=%u\n", maxInfos);
-	std::fflush(stderr);
+	FatalPrintf("[DeviceFault] maxDeviceFaultCount=%u\n", maxInfos);
+	FatalFlush();
 	VkDeviceFaultCountsEXT counts{
 		VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT, nullptr };
 	std::vector<VkDeviceFaultAddressInfoEXT> addrInfos(maxInfos);
@@ -8780,29 +8963,29 @@ void DumpDeviceFaultInfo() {
 	// the vendor binary portion is "too small" — the description + address
 	// + vendor infos are still filled. Only negative results are failures.
 	if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
-		std::fprintf(stderr, "[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
-		std::fflush(stderr);
+		FatalPrintf("[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
+		FatalFlush();
 		return;
 	}
 	const uint32_t nAddr = counts.addressInfoCount < maxInfos
 		? counts.addressInfoCount : maxInfos;
 	const uint32_t nVendor = counts.vendorInfoCount < maxInfos
 		? counts.vendorInfoCount : maxInfos;
-	std::fprintf(stderr, "[DeviceFault] desc='%s' %u address infos, %u vendor infos:",
+	FatalPrintf("[DeviceFault] desc='%s' %u address infos, %u vendor infos:",
 		info.description, nAddr, nVendor);
 	for (uint32_t i = 0; i < nAddr; ++i) {
-		std::fprintf(stderr, "[DeviceFault]   addr[%u] type=%s reported=0x%llx precision=0x%llx\n",
+		FatalPrintf("[DeviceFault]   addr[%u] type=%s reported=0x%llx precision=0x%llx\n",
 			i, DeviceFaultAddressTypeName(addrInfos[i].addressType),
 			(unsigned long long)addrInfos[i].reportedAddress,
 			(unsigned long long)addrInfos[i].addressPrecision);
 	}
 	for (uint32_t i = 0; i < nVendor; ++i) {
-		std::fprintf(stderr, "[DeviceFault]   vendor[%u] desc='%s' faultCode=0x%llx faultData=0x%llx\n",
+		FatalPrintf("[DeviceFault]   vendor[%u] desc='%s' faultCode=0x%llx faultData=0x%llx\n",
 			i, vendorInfos[i].description,
 			(unsigned long long)vendorInfos[i].vendorFaultCode,
 			(unsigned long long)vendorInfos[i].vendorFaultData);
 	}
-	std::fflush(stderr);
+	FatalFlush();
 #else
 	(void)0;
 #endif
@@ -8837,12 +9020,14 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 			device_, 1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
 		if (waitResult != VK_SUCCESS)
 		{
-			std::fprintf(stderr,
+			FatalMirrorOpen();
+			FatalPrintf(
 				"vkWaitForFences failed: VkResult=%d frame=%u\n",
 				(int)waitResult, currentFrame_);
-			std::fflush(stderr);
+			FatalFlush();
 			// Device loss post-mortem while the device still exists.
 			DumpDeviceFaultInfo();
+			FatalMirrorClose();
 
 			throw std::runtime_error("vkWaitForFences failed");
 		}

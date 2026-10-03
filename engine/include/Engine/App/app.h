@@ -22,8 +22,8 @@ namespace smvk
 	class World;
 	class RenderGraph;
 
-	class App {
-	public:
+class App {
+public:
 		Input m_input{};
 		audio::AudioEngine m_audio{};
 		App() = default;
