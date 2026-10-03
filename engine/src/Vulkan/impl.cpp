@@ -9908,6 +9908,22 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
 	};
 
 	PipelineBundle bundle{};
+	// Crash diagnostic: vkCreateComputePipelines enters the driver shader
+	// compiler (AVs inside nvgpucomp64.dll have been observed there), so
+	// log the module identity BEFORE the call (flushed) — the last such
+	// line in stderr names the crashing shader.
+	{
+		const auto& code = shaderModule->code;
+		const uint64_t hash = code.empty() ? 0 : PipelineCacheFnv1a64(
+			reinterpret_cast<const uint8_t*>(code.data()), code.size());
+		std::fprintf(stderr,
+			"[PipelineCache] vkCreateComputePipelines entry='%s' module=[idx=%u gen=%u] spirvBytes=%zu spirvHash=0x%016llx specEntries=%zu\n",
+			shader.entryPoint ? shader.entryPoint : "",
+			shader.module.index(), shader.module.gen(),
+			code.size(), static_cast<unsigned long long>(hash),
+			specEntries.size());
+		std::fflush(stderr);
+	}
 	CreateComputePipeline(pipelineInfo, bundle.pipeline);
 	bundle.layout = layout;
 	return bundle;

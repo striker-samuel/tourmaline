@@ -464,16 +464,16 @@ void WorldRenderer::Configure(ScenePassConfig passes) {
 	if (const char* a2cEnv = std::getenv("VULKANTOY_A2C")) {
 		m_msaaAlphaToCoverage = std::atoi(a2cEnv) != 0;
 	}
-	// Texture filtering default for headless A/B (bilinear | trilinear).
-	// The ImGui combo stays live after; applied every RenderFrame.
+	// Texture filtering default for headless A/B
+	// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
+	// applied every RenderFrame.
 	if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
-		if (!_stricmp(filtEnv, "bilinear"))
-			m_textureFiltering = TextureFiltering::Bilinear;
-		else if (!_stricmp(filtEnv, "trilinear"))
-			m_textureFiltering = TextureFiltering::Trilinear;
+		TextureFiltering parsed{};
+		if (TextureFilteringFromString(filtEnv, parsed))
+			m_textureFiltering = parsed;
 		else
 			std::cerr << "[WorldRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
-				"bilinear|trilinear): " << filtEnv << "\n";
+				"trilinear|2x|4x|8x|16x): " << filtEnv << "\n";
 	}
 	// Point the FPS camera at a generic default viewpoint (Camera keeps a
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
@@ -668,11 +668,12 @@ bool WorldRenderer::Initialize() {
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
 		}
 		// Texture filtering override for A/B runs without UI interaction
-		// (bilinear | trilinear). The ImGui combo stays live after.
+		// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after.
 		if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
 			const std::string_view f = trimEnv(filtEnv);
-			if (f == "bilinear") m_textureFiltering = TextureFiltering::Bilinear;
-			else if (f == "trilinear") m_textureFiltering = TextureFiltering::Trilinear;
+			TextureFiltering parsed{};
+			if (TextureFilteringFromString(f, parsed))
+				m_textureFiltering = parsed;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_TEXTURE_FILTER value: " << f << "\n";
 		}
 
@@ -6827,8 +6828,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// plugin loaded — same monotonic-id convention as dlssFrameId.
 	(void)smvk::DlssBeginFrame(static_cast<uint32_t>(m_frameCounter & 0xffffffffu));
 	m_rendergraph->NewFrame();
-	// Texture filtering (bilinear <-> trilinear) is renderer state: enforce
-	// the selected mipmap mode on the bindless sampler slots every frame
+	// Texture filtering (trilinear <-> aniso 16x) is renderer state: enforce
+	// the selected sampler state on the bindless sampler slots every frame
 	// (no-op when already set; recreates slots 0 + 2 on change).
 	ApplyTextureFiltering();
 	const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
@@ -10295,21 +10296,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("Screen-door: depth-writing, order-independent (SMAA T2x integrates it).");
 					else
 						ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
-					// Texture filtering (renderer state): bilinear = linear
-					// within a mip, nearest between mips; trilinear adds
-					// linear between mips (default). Applies to the bindless
-					// texture samplers (slots 0 + 2) via in-place recreate.
+					// Texture filtering (renderer state): trilinear is the
+					// lowest option; aniso Nx adds anisotropic filtering
+					// (maxAnisotropy N, clamped to the device limit).
+					// Applies to the bindless texture samplers (slots 0 + 2)
+					// via in-place recreate.
 					{
-						const char* filtNames[] = { "Bilinear", "Trilinear" };
-						int filtIdx = (m_textureFiltering == TextureFiltering::Bilinear) ? 0 : 1;
-						if (ImGui::Combo("Texture filtering", &filtIdx, filtNames, 2))
-							SetTextureFiltering(filtIdx == 0
-								? TextureFiltering::Bilinear
-								: TextureFiltering::Trilinear);
+						const char* filtNames[] = { "Trilinear", "Anisotropic 2x",
+							"Anisotropic 4x", "Anisotropic 8x", "Anisotropic 16x" };
+						int filtIdx = static_cast<int>(m_textureFiltering);
+						if (ImGui::Combo("Texture filtering", &filtIdx, filtNames, 5))
+							SetTextureFiltering(static_cast<TextureFiltering>(
+								std::clamp(filtIdx, 0, 4)));
 						if (filtIdx == 0)
-							ImGui::TextDisabled("Bilinear: sharper mip transitions, slight shimmer at grazing angles.");
+							ImGui::TextDisabled("Trilinear: smooth mip blends (lowest option).");
 						else
-							ImGui::TextDisabled("Trilinear: smooth mip blends (default).");
+							ImGui::TextDisabled("Anisotropic: sharper textures at grazing angles.");
 					}
 				}
 				if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -12565,18 +12567,18 @@ void WorldRenderer::ApplyTextureFiltering()
 {
 	if (!m_context)
 		return;
-	// Bilinear = linear within a mip, nearest between mips.
-	// Trilinear = linear within + linear between (default).
-	const smvk::MipmapMode mipMode = (m_textureFiltering == TextureFiltering::Bilinear)
-		? smvk::MipmapMode::Nearest
-		: smvk::MipmapMode::Linear;
+	// Trilinear baseline (linear within + linear between mips); aniso Nx
+	// adds maxAnisotropy N (CreateSampler clamps to the device limit, and
+	// enables VK anisotropy only when > 1).
+	const float maxAniso = TextureFilteringAnisotropy(m_textureFiltering);
 	// Slot 0: default Repeat sampler (material albedo/normal/metalness/...,
 	// shaders hardcode samplers[0]). Slot 2: clamp sampler (lightmap
 	// atlases, 3D probe volumes via samplers[2], cubemaps via dedup).
 	// Both are recreated in place so the bindless indices stay stable.
 	if (m_context->GetSamplerCount() > 0) {
 		smvk::SamplerCreateInfo repeatCi{};
-		repeatCi.mipmapMode = mipMode;
+		repeatCi.mipmapMode = smvk::MipmapMode::Linear;
+		repeatCi.maxAnisotropy = maxAniso;
 		m_context->RecreateSampler(0, repeatCi);
 	}
 	if (m_context->GetSamplerCount() > 2) {
@@ -12584,7 +12586,8 @@ void WorldRenderer::ApplyTextureFiltering()
 		clampCi.addressU = smvk::AddressMode::ClampToEdge;
 		clampCi.addressV = smvk::AddressMode::ClampToEdge;
 		clampCi.addressW = smvk::AddressMode::ClampToEdge;
-		clampCi.mipmapMode = mipMode;
+		clampCi.mipmapMode = smvk::MipmapMode::Linear;
+		clampCi.maxAnisotropy = maxAniso;
 		m_context->RecreateSampler(2, clampCi);
 	}
 }

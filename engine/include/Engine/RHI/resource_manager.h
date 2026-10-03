@@ -157,7 +157,7 @@ public:
     uint32_t GetSamplerCount() const;
     // In-place sampler replacement at a stable bindless slot (see
     // VulkanResourceManager::RecreateSampler). The renderer uses this for
-    // the bilinear/trilinear filtering toggle (slots 0 + 2).
+    // the trilinear/aniso filtering toggle (slots 0 + 2).
     bool RecreateSampler(uint32_t index, const SamplerCreateInfo& ci);
     // True when the physical device supports 2x MSAA for both color and
     // depth framebuffer attachments (used for the Main pass resolve path).

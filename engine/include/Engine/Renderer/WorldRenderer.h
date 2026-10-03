@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -156,17 +157,92 @@ enum class AaMode : int {
 
 // ---------------------------------------------------------------------------
 // Texture filtering mode (renderer-configurable, UI toggle).
-// Bilinear  = linear min/mag, nearest-between-mips (VK_SAMPLER_MIPMAP_MODE_NEAREST).
-// Trilinear = linear min/mag, linear-between-mips (default).
+// Trilinear = linear min/mag, linear-between-mips (lowest option, default).
+// AnisoNx  = trilinear + anisotropic filtering with maxAnisotropy N
+// (VK_SAMPLER_ANISOTROPY, clamped to the device maxSamplerAnisotropy).
 // Applies to the bindless texture samplers (slot 0 Repeat + slot 2 Clamp,
 // which also covers cubemaps via dedup) through in-place sampler recreate.
 // ---------------------------------------------------------------------------
 enum class TextureFiltering : int {
-	Bilinear = 0,
-	Trilinear = 1,
+	Trilinear = 0,
+	Anisotropic2x = 1,
+	Anisotropic4x = 2,
+	Anisotropic8x = 3,
+	Anisotropic16x = 4,
 };
 inline const char* TextureFilteringName(TextureFiltering m) {
-	return m == TextureFiltering::Bilinear ? "Bilinear" : "Trilinear";
+	switch (m) {
+	case TextureFiltering::Trilinear: return "Trilinear";
+	case TextureFiltering::Anisotropic2x: return "Anisotropic 2x";
+	case TextureFiltering::Anisotropic4x: return "Anisotropic 4x";
+	case TextureFiltering::Anisotropic8x: return "Anisotropic 8x";
+	case TextureFiltering::Anisotropic16x: return "Anisotropic 16x";
+	}
+	return "?";
+}
+inline float TextureFilteringAnisotropy(TextureFiltering m) {
+	switch (m) {
+	case TextureFiltering::Trilinear: return 1.0f;
+	case TextureFiltering::Anisotropic2x: return 2.0f;
+	case TextureFiltering::Anisotropic4x: return 4.0f;
+	case TextureFiltering::Anisotropic8x: return 8.0f;
+	case TextureFiltering::Anisotropic16x: return 16.0f;
+	}
+	return 1.0f;
+}
+// Parses VULKANTOY_TEXTURE_FILTER / UI strings: trilinear | 2x | 4x | 8x |
+// 16x (also accepts "anisoNx"/"anisotropicNx"/bare "N"). Legacy "bilinear"
+// maps to Trilinear. Returns true on success.
+inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out) {
+	// Lower-case + strip "anisotropic"/"aniso" prefix so "Anisotropic 8x",
+	// "aniso8x", "8x", "8" all converge below.
+	char buf[32]{};
+	size_t n = 0;
+	for (char c : s) {
+		if (n + 1 >= sizeof(buf))
+			break;
+		buf[n++] = static_cast<char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+	}
+	buf[n] = '\0';
+	std::string_view v{ buf, n };
+	// Trim ASCII whitespace.
+	while (!v.empty() && (v.front() == ' ' || v.front() == '\t'))
+		v.remove_prefix(1);
+	while (!v.empty() && (v.back() == ' ' || v.back() == '\t'))
+		v.remove_suffix(1);
+	if (v == "trilinear" || v == "tri") {
+		out = TextureFiltering::Trilinear;
+		return true;
+	}
+	if (v == "bilinear" || v == "bi") {
+		out = TextureFiltering::Trilinear; // lowest option is trilinear now
+		return true;
+	}
+	if (v.starts_with("anisotropic"))
+		v.remove_prefix(11);
+	else if (v.starts_with("aniso"))
+		v.remove_prefix(5);
+	while (!v.empty() && v.front() == ' ')
+		v.remove_prefix(1);
+	if (!v.empty() && v.back() == 'x')
+		v.remove_suffix(1);
+	if (v == "2") {
+		out = TextureFiltering::Anisotropic2x;
+		return true;
+	}
+	if (v == "4") {
+		out = TextureFiltering::Anisotropic4x;
+		return true;
+	}
+	if (v == "8") {
+		out = TextureFiltering::Anisotropic8x;
+		return true;
+	}
+	if (v == "16") {
+		out = TextureFiltering::Anisotropic16x;
+		return true;
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2163,7 +2239,7 @@ protected:
 	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
 	// camera jitter (UpdateFrameUniforms) and the temporal resolve.
 	AaMode m_aaMode = AaMode::SmaaT2x;
-	// Texture filtering (bilinear <-> trilinear, UI toggle + shortcut).
+	// Texture filtering (trilinear <-> aniso 16x, UI toggle + shortcut).
 	// Default trilinear (linear-between-mips); applied in-place to the
 	// bindless texture samplers (see ApplyTextureFiltering).
 	TextureFiltering m_textureFiltering = TextureFiltering::Trilinear;

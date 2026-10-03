@@ -814,7 +814,7 @@ namespace smvk {
 		// and creates a new one from `ci`, keeping the descriptor-array
 		// slot stable (shaders hardcode slots 0/1/2). Marks samplers dirty
 		// so UpdateDescriptors rewrites the bindless sampler array.
-		// Used by the texture-filtering toggle (bilinear <-> trilinear).
+		// Used by the texture-filtering toggle (trilinear <-> aniso 16x).
 		// Returns false when index is out of range.
 		bool RecreateSampler(uint32_t index, const SamplerCreateInfo& ci);
 		Submitter* GetTransferSubmitter() const noexcept { return m_transferSubmitter; }
