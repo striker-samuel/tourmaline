@@ -218,13 +218,66 @@ void EditorApp::DrawEnvPanel() {
 	ImGui::DragFloat("Sky intensity (lux)##envsky", &e.skyIntensity, 5.0f,
 		0.0f, 10000.0f, "%.0f");
 	ImGui::SliderFloat("Exposure", &e.exposure, 0.1f, 4.0f);
-	ImGui::SliderFloat("Fog density", &e.fogDensity, 0.0f, 1.0f);
-	ImGui::ColorEdit3("Fog color", glm::value_ptr(e.fogColor));
-	ImGui::SliderFloat("Volumetrics", &e.volumetrics, 0.0f, 1.0f);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip(
-			"Authored for the future volumetric pass (editor viewport "
-			"does not render it yet).");
+	// Fog quality tiers (see SceneEnv): the combo picks what the App
+	// renders — the volumetric raymarch (with the analytic fallback when
+	// the pass cannot run), the cheap analytic exp2 fog, or no fog at
+	// all. Tiered rows below (the editor viewport previews none of them;
+	// the hosted live view does).
+	{
+		const char* tiers[3] = { "Off", "Analytic (exp2, fallback)",
+			"Volumetric (raymarched GI-lit)" };
+		ImGui::Combo("Fog##envfog", &e.fogQuality, tiers, 3);
+		if (e.fogQuality == 1) {
+			// The analytic tier: the exp2 distance fog (cheap).
+			ImGui::SliderFloat("Fog density##envfog", &e.fogDensity,
+				0.0f, 1.0f, "%.3f");
+			ImGui::ColorEdit3("Fog color##envfog",
+				glm::value_ptr(e.fogColor));
+		}
+		if (e.fogQuality == 2) {
+			// The volumetric tier: the SAME settings the App's panel
+			// exposes (its pass seeds from these at scene load).
+			// "Volumetrics" is the master: 0 = off (the analytic
+			// fallback renders), else the scattering intensity.
+			ImGui::DragFloat("Volumetric intensity##envvol",
+				&e.volumetrics, 0.01f, 0.0f, 4.0f, "%.2f");
+			if (e.volumetrics > 0.0f) {
+				ImGui::Indent();
+				int steps = int(e.volumetricSteps);
+				if (ImGui::SliderInt("March steps##envvol", &steps, 4, 128))
+					e.volumetricSteps = uint32_t(steps);
+				ImGui::SliderFloat("Fog max distance (m)##envvol",
+					&e.volumetricMaxDistance, 5.0f, 200.0f, "%.0f");
+				ImGui::SliderFloat("Density (1/m)##envvol",
+					&e.volumetricDensity, 0.0f, 0.1f, "%.4f");
+				ImGui::SliderFloat("Anisotropy g##envvol",
+					&e.volumetricAnisotropy, -0.9f, 0.9f);
+				ImGui::SliderFloat("Sun strength##envvol",
+					&e.volumetricSun, 0.0f, 4.0f);
+				ImGui::SliderFloat("GI strength##envvol",
+					&e.volumetricGi, 0.0f, 4.0f);
+				ImGui::Checkbox("Sample GI probes##envvol",
+					&e.volumetricUseGi);
+				ImGui::Checkbox("Sun scatter##envvol",
+					&e.volumetricUseSun);
+				ImGui::SliderFloat("Dither##envvol",
+					&e.volumetricJitter, 0.0f, 1.0f);
+				ImGui::SliderFloat("Height falloff (1/m)##envvol",
+					&e.volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
+				ImGui::SliderFloat("Height base (m)##envvol",
+					&e.volumetricHeightBase, -50.0f, 100.0f, "%.1f");
+				ImGui::Unindent();
+			}
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"Fog quality tiers (authored, saved forward tour -> pak -> "
+				"App): volumetric renders the raymarched GI-lit fog (the "
+				"App falls back to the analytic tier when the pass cannot "
+				"run); analytic is the cheap exp2 distance fog; off "
+				"renders no fog at all. The editor viewport previews "
+				"none of them — the hosted live view renders them.");
+	}
 	{
 		char skybox[512];
 		std::snprintf(skybox, sizeof(skybox), "%s", e.skyboxUri.c_str());
@@ -292,9 +345,26 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 		put(prefix + ".sunElevation", std::to_string(e.sunElevation));
 		put(prefix + ".sunIntensity", std::to_string(e.sunIntensity));
 		put(prefix + ".exposure", std::to_string(e.exposure));
+		// Fog quality tiers (see SceneEnv): 0 = off, 1 = analytic (the
+		// cheap fallback), 2 = volumetric (the raymarched pass).
+		put(prefix + ".fogQuality", std::to_string(e.fogQuality));
 		put(prefix + ".fogDensity", std::to_string(e.fogDensity));
 		put(prefix + ".fogColor", Vec3Str(e.fogColor));
+		// Volumetric fog (the App's pass seeds from these — the same
+		// settings its panel exposes; "volumetrics" is the master:
+		// 0 = off, else the scattering intensity).
 		put(prefix + ".volumetrics", std::to_string(e.volumetrics));
+		put(prefix + ".volSteps", std::to_string(e.volumetricSteps));
+		put(prefix + ".volMaxDistance", std::to_string(e.volumetricMaxDistance));
+		put(prefix + ".volDensity", std::to_string(e.volumetricDensity));
+		put(prefix + ".volAnisotropy", std::to_string(e.volumetricAnisotropy));
+		put(prefix + ".volSun", std::to_string(e.volumetricSun));
+		put(prefix + ".volGi", std::to_string(e.volumetricGi));
+		put(prefix + ".volUseGi", e.volumetricUseGi ? "1" : "0");
+		put(prefix + ".volUseSun", e.volumetricUseSun ? "1" : "0");
+		put(prefix + ".volJitter", std::to_string(e.volumetricJitter));
+		put(prefix + ".volHeightFalloff", std::to_string(e.volumetricHeightFalloff));
+		put(prefix + ".volHeightBase", std::to_string(e.volumetricHeightBase));
 		put(prefix + ".skyboxUri", e.skyboxUri);
 	};
 	// Sceneless save (shouldn't happen — tours save scenes): struct
@@ -360,8 +430,23 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		else if (f == "sunElevation") e.sunElevation = StrFloat(v, e.sunElevation);
 		else if (f == "sunIntensity") e.sunIntensity = StrFloat(v, e.sunIntensity);
 		else if (f == "exposure") e.exposure = StrFloat(v, e.exposure);
+		// Fog quality tiers (see SceneEnv) + the volumetric knobs (the
+		// App's pass seeds from them — "volumetrics" is the master:
+		// 0 = off, else the scattering intensity).
+		else if (f == "fogQuality") e.fogQuality = int(StrFloat(v, float(e.fogQuality)));
 		else if (f == "fogDensity") e.fogDensity = StrFloat(v, e.fogDensity);
 		else if (f == "volumetrics") e.volumetrics = StrFloat(v, e.volumetrics);
+		else if (f == "volSteps") e.volumetricSteps = uint32_t(StrFloat(v, float(e.volumetricSteps)));
+		else if (f == "volMaxDistance") e.volumetricMaxDistance = StrFloat(v, e.volumetricMaxDistance);
+		else if (f == "volDensity") e.volumetricDensity = StrFloat(v, e.volumetricDensity);
+		else if (f == "volAnisotropy") e.volumetricAnisotropy = StrFloat(v, e.volumetricAnisotropy);
+		else if (f == "volSun") e.volumetricSun = StrFloat(v, e.volumetricSun);
+		else if (f == "volGi") e.volumetricGi = StrFloat(v, e.volumetricGi);
+		else if (f == "volUseGi") e.volumetricUseGi = StrFloat(v, e.volumetricUseGi ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "volUseSun") e.volumetricUseSun = StrFloat(v, e.volumetricUseSun ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "volJitter") e.volumetricJitter = StrFloat(v, e.volumetricJitter);
+		else if (f == "volHeightFalloff") e.volumetricHeightFalloff = StrFloat(v, e.volumetricHeightFalloff);
+		else if (f == "volHeightBase") e.volumetricHeightBase = StrFloat(v, e.volumetricHeightBase);
 		else if (f == "skyboxUri") e.skyboxUri = v;
 	};
 

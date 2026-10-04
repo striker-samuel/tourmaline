@@ -249,6 +249,22 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 	PutVec3(out, e.fogColor);
 	PutF32(out, e.volumetrics);
 	PutStr(out, e.skyboxUri);
+	// Fog quality tiers + the volumetric fog settings (SceneEnv — the
+	// App's pass seeds from the resolved env). Appended AFTER the v10
+	// record: older paks fail the reader loudly (the sanctioned break —
+	// old format, no conversions).
+	PutU32(out, uint32_t(e.fogQuality));
+	PutU32(out, e.volumetricSteps);
+	PutF32(out, e.volumetricMaxDistance);
+	PutF32(out, e.volumetricDensity);
+	PutF32(out, e.volumetricAnisotropy);
+	PutF32(out, e.volumetricSun);
+	PutF32(out, e.volumetricGi);
+	PutU32(out, e.volumetricUseGi ? 1u : 0u);
+	PutU32(out, e.volumetricUseSun ? 1u : 0u);
+	PutF32(out, e.volumetricJitter);
+	PutF32(out, e.volumetricHeightFalloff);
+	PutF32(out, e.volumetricHeightBase);
 }
 
 struct Cursor {
@@ -319,6 +335,22 @@ struct Cursor {
 		e.fogColor = vec3();
 		e.volumetrics = f32();
 		e.skyboxUri = str();
+		// Fog quality tiers + the volumetric fog settings (mirrors
+		// PutSceneEnv's appended tail; older blobs truncate here — the
+		// scene-env section fails loudly per the sanctioned
+		// no-conversions break).
+		e.fogQuality = int(u32());
+		e.volumetricSteps = u32();
+		e.volumetricMaxDistance = f32();
+		e.volumetricDensity = f32();
+		e.volumetricAnisotropy = f32();
+		e.volumetricSun = f32();
+		e.volumetricGi = f32();
+		e.volumetricUseGi = u32() != 0;
+		e.volumetricUseSun = u32() != 0;
+		e.volumetricJitter = f32();
+		e.volumetricHeightFalloff = f32();
+		e.volumetricHeightBase = f32();
 		return e;
 	}
 };

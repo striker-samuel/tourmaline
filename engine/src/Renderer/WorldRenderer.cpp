@@ -3797,6 +3797,40 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		m_cookedLights.clear();
 		if (!m_world)
 			return;
+		// Volumetric fog state (the App panel's settings) seeds from the
+		// authored env ONCE per scene load/rebind (see SceneEnv — the
+		// fog-quality volumetric tier; the panel stays live afterwards).
+		// volumetrics is the master: 0 = off (the analytic tier or no
+		// fog), else the scattering intensity; the vol* knobs load with
+		// it. The runtime degrade (volumetric -> analytic when the pass
+		// cannot run) lives at the frame-env build.
+		if (m_world->scene.hasEnvironment) {
+			const SceneEnv& se = m_world->scene.environment;
+			const bool volTier = se.fogQuality == 2 && se.volumetrics > 0.0f;
+			m_volumetricEnabled = volTier;
+			if (volTier) {
+				m_volumetricIntensity = se.volumetrics;
+				m_volumetricSteps = int(se.volumetricSteps);
+				m_volumetricMaxDistance = se.volumetricMaxDistance;
+				m_volumetricDensity = se.volumetricDensity;
+				m_volumetricAnisotropy = se.volumetricAnisotropy;
+				m_volumetricSun = se.volumetricSun;
+				m_volumetricGi = se.volumetricGi;
+				m_volumetricUseGi = se.volumetricUseGi;
+				m_volumetricUseSun = se.volumetricUseSun;
+				m_volumetricJitter = se.volumetricJitter;
+				m_volumetricHeightFalloff = se.volumetricHeightFalloff;
+				m_volumetricHeightBase = se.volumetricHeightBase;
+				m_volumetricQuality = smvk::VolumetricQuality::Custom;
+			}
+			std::cerr << "[Scene] fog: quality="
+				<< (se.fogQuality == 0 ? "off"
+					: se.fogQuality == 1 ? "analytic (exp2)"
+					: "volumetric (raymarched)")
+				<< (volTier ? " on" : (se.fogQuality == 2
+					? " (volumetrics=0: analytic fallback)" : ""))
+				<< "\n";
+		}
 		const ::Scene& scene = m_world->scene;
 		const auto& lightLocs = m_world->lightLocations;
 		if (lightLocs.empty() || scene.lightForNode.empty()) {
@@ -5854,7 +5888,13 @@ static smvk::EnvironmentSettings MapSceneEnv(const SceneEnv& w,
 	env.sunIntensity = unlitKillSun ? 0.0f : w.sunIntensity;
 	env.fogColor = w.fogColor;
 	env.fogDensity = w.fogDensity;
-	env.fogMode = 0; // volumetrics authored, not yet rendered here
+	// Fog quality tiers (see SceneEnv): the volumetric tier's fog renders
+	// in the RAYMARCHED pass (the analytic fog stays off — both would
+	// read twice); the analytic tier uses the exp2 distance fog (the
+	// cheap fallback); off renders nothing. The runtime degrade (the
+	// volumetric tier falling back to analytic when the pass cannot run)
+	// lives at the frame-env build, where the pass state is known.
+	env.fogMode = (w.fogQuality == 1) ? 1 : 0; // 1 = exp2 (kFogExp2)
 	return env;
 }
 
@@ -7250,10 +7290,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// view, the shadow fits and every secondary view take it as a
 		// parameter below — never member state). A worldless frame falls
 		// back to engine defaults (Initialize refuses those anyway).
-		const smvk::EnvironmentSettings frameEnv = m_world
+		smvk::EnvironmentSettings frameEnv = m_world
 			? MapSceneEnv(m_world->scene.environment,
 				m_debugView == DebugView::Unlit)
 			: smvk::EnvironmentSettings{};
+		// Fog degrade (see SceneEnv::fogQuality): the VOLUMETRIC tier
+		// falls back to the ANALYTIC exp2 fog when the raymarched pass
+		// cannot run this frame (pass off / disabled / target missing /
+		// zero density or intensity / a debug visualization would read
+		// twice) — fog never silently disappears. Mirrors the volOn gate
+		// at the volumetric pass build below.
+		if (m_world && m_world->scene.environment.fogQuality == 2) {
+			const bool volRuns = m_passes.volumetric && m_volumetricEnabled
+				&& m_viewportResources.volumetric.Valid()
+				&& m_volumetricDensity > 0.0f
+				&& m_volumetricIntensity > 0.0f
+				&& !DebugVisualizationActive();
+			if (!volRuns)
+				frameEnv.fogMode = 1; // exp2 analytic fallback
+		}
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent, frameEnv);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex, frameEnv);
 		UpdateMaterials(fb.frameIndex);
@@ -10647,22 +10702,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					if (!m_world) {
 						ImGui::TextDisabled("No world — nothing to author.");
 					}
-					else {
-						SceneEnv& se = m_world->scene.environment;
-						auto authored = [&]() { m_world->scene.hasEnvironment = true; };
-						if (ImGui::ColorEdit3("Sky color", &se.skyColor.x)) authored();
-						if (ImGui::SliderFloat("Sky intensity", &se.skyIntensity, 0.0f, 2.0f)) authored();
-						ImGui::Separator();
-						ImGui::Text("Sun (drives light + sky disc)");
-						if (ImGui::SliderFloat("Azimuth", &se.sunAzimuth, -180.0f, 180.0f)) authored();
-						if (ImGui::SliderFloat("Elevation", &se.sunElevation, -10.0f, 90.0f)) authored();
-						if (ImGui::ColorEdit3("Sun color", &se.sunColor.x)) authored();
-						if (ImGui::SliderFloat("Sun intensity", &se.sunIntensity, 0.0f, 30.0f)) authored();
-						ImGui::Separator();
-						ImGui::Text("Fog (authored; analytic fog stays off — see SceneEnv)");
+				else {
+					SceneEnv& se = m_world->scene.environment;
+					auto authored = [&]() { m_world->scene.hasEnvironment = true; };
+					ImGui::ColorEdit3("Sky color", &se.skyColor.x);
+					// Lux-native env (see SceneEnv): the same units the
+					// editor's World page authors + every bake uses.
+					ImGui::DragFloat("Sky intensity (lux)", &se.skyIntensity,
+						5.0f, 0.0f, 10000.0f, "%.0f");
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Lux-native scene env (no conversions).");
+					ImGui::Separator();
+					ImGui::Text("Sun (drives light + sky disc)");
+					if (ImGui::SliderFloat("Azimuth", &se.sunAzimuth, 0.0f, 360.0f)) authored();
+					if (ImGui::SliderFloat("Elevation", &se.sunElevation, 0.0f, 90.0f)) authored();
+					if (ImGui::ColorEdit3("Sun color", &se.sunColor.x)) authored();
+					ImGui::DragFloat("Sun intensity (lux)", &se.sunIntensity,
+						10.0f, 0.0f, 2e5f, "%.0f");
+					ImGui::Separator();
+					ImGui::Text("Fog (quality tiers — see SceneEnv)");
+					{
+						const char* tiers[3] = { "Off",
+							"Analytic (exp2, fallback)",
+							"Volumetric (raymarched GI-lit)" };
+						if (ImGui::Combo("Fog##apppanel", &se.fogQuality, tiers, 3)) {
+							authored();
+							// Keep the pass state in sync with the tier
+							// (the volumetric panel below edits it live).
+							m_volumetricEnabled = se.fogQuality == 2
+								&& se.volumetrics > 0.0f;
+						}
+					}
+					if (se.fogQuality == 1) {
 						if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
 						if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
 					}
+				}
 					if (!m_skydome.ShadersValid())
 						ImGui::TextDisabled("Sky program missing � dome skipped");
 				}
@@ -12792,6 +12867,17 @@ void WorldRenderer::DumpSsrStages(uint32_t frameIndex) {
 void WorldRenderer::UpdateCamera(float dt)
 {
 	auto& movement = m_cameraPositioner.movement_;
+
+	// Debug keys (the overlay legends claim them; the hosted EDITOR
+	// drives its own keys — its renderer instance never sees key
+	// events, so this stays App-only): R / F8 cycle the GI debug views
+	// (off -> flat irradiance -> source palette), N cycles the ambient
+	// sources (All -> Lightmaps -> Probes -> SkyIbl -> Off — the same
+	// modes VULKANTOY_AMBIENT pins headlessly).
+	if (m_input.isKeyPressed(GLFW_KEY_R) || m_input.isKeyPressed(GLFW_KEY_F8))
+		m_giDebug = (m_giDebug + 1) % 3;
+	if (m_input.isKeyPressed(GLFW_KEY_N))
+		CycleAmbientMode();
 
 	movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
 	movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);

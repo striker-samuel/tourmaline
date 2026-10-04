@@ -128,11 +128,35 @@ struct SceneEnv {
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f; // lux (the runtime sun default)
 	float exposure = 1.0f;
-	// Authored but not yet rendered: fog density/color, volumetrics,
-	// skybox URI (stored with the block for the future passes).
+	// Fog quality tiers (authored; the App renders the selected one):
+	//   0 = off (no fog at all)
+	//   1 = analytic (exp2 distance fog — the cheap fallback tier)
+	//   2 = volumetric (the raymarched GI-lit pass — the default; falls
+	//       back to the analytic tier at runtime when the pass cannot
+	//       run — pass off/density 0/target missing — so fog never
+	//       silently disappears)
+	int fogQuality = 2;
+	// Analytic tier settings (fogMode 1 = exp2 in the frame env).
 	float fogDensity = 0.0f;
 	glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
-	float volumetrics = 0.0f; // 0 = off (future: editor volume pass)
+	// Volumetric fog (the App's raymarched pass — Engine/Rendergraph/
+	// volumetric.h): the SAME settings the App's panel exposes, authored
+	// here and saved forward tour -> pak -> App (the App seeds its pass
+	// state from the resolved env once per scene load; the panel stays
+	// live afterwards). volumetrics is the master: 0 = off, else the
+	// scattering intensity (the App's intensity slider, 0..4).
+	float volumetrics = 0.0f;            // scattering intensity (0 = off)
+	uint32_t volumetricSteps = 16;       // march steps 4..128
+	float volumetricMaxDistance = 80.0f; // ray clamp (m)
+	float volumetricDensity = 0.015f;    // extinction (1/m)
+	float volumetricAnisotropy = 0.4f;   // HG g, -0.9..0.9 (forward+)
+	float volumetricSun = 1.0f;          // sun single-scatter strength
+	float volumetricGi = 1.0f;           // probe ambient strength
+	bool volumetricUseGi = true;         // sample SG-GI probes (else sky IBL)
+	bool volumetricUseSun = true;        // analytic sun scatter
+	float volumetricJitter = 1.0f;       // IGN dither 0..1 (banding guard)
+	float volumetricHeightFalloff = 0.0f; // height falloff (1/m, 0 = off)
+	float volumetricHeightBase = 0.0f;    // reference height (m)
 	std::string skyboxUri;     // stored (skybox sampling is TODO)
 };
 

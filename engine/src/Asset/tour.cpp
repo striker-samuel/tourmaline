@@ -2140,8 +2140,26 @@ void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) 
 	else if (f == "sunElevation") e.sunElevation = TourEnvFloat(v, e.sunElevation);
 	else if (f == "sunIntensity") e.sunIntensity = TourEnvFloat(v, e.sunIntensity);
 	else if (f == "exposure") e.exposure = TourEnvFloat(v, e.exposure);
+	// Fog quality tiers (see SceneEnv): 0 = off, 1 = analytic (the
+	// cheap fallback), 2 = volumetric (the raymarched pass, with the
+	// analytic fallback at runtime).
+	else if (f == "fogQuality") e.fogQuality = int(TourEnvFloat(v, float(e.fogQuality)));
 	else if (f == "fogDensity") e.fogDensity = TourEnvFloat(v, e.fogDensity);
+	// Volumetric fog (the App's raymarched pass seeds from the env —
+	// the same settings its panel exposes; "volumetrics" is the master:
+	// 0 = off, else the scattering intensity).
 	else if (f == "volumetrics") e.volumetrics = TourEnvFloat(v, e.volumetrics);
+	else if (f == "volSteps") e.volumetricSteps = uint32_t(TourEnvFloat(v, float(e.volumetricSteps)));
+	else if (f == "volMaxDistance") e.volumetricMaxDistance = TourEnvFloat(v, e.volumetricMaxDistance);
+	else if (f == "volDensity") e.volumetricDensity = TourEnvFloat(v, e.volumetricDensity);
+	else if (f == "volAnisotropy") e.volumetricAnisotropy = TourEnvFloat(v, e.volumetricAnisotropy);
+	else if (f == "volSun") e.volumetricSun = TourEnvFloat(v, e.volumetricSun);
+	else if (f == "volGi") e.volumetricGi = TourEnvFloat(v, e.volumetricGi);
+	else if (f == "volUseGi") e.volumetricUseGi = TourEnvFloat(v, e.volumetricUseGi ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "volUseSun") e.volumetricUseSun = TourEnvFloat(v, e.volumetricUseSun ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "volJitter") e.volumetricJitter = TourEnvFloat(v, e.volumetricJitter);
+	else if (f == "volHeightFalloff") e.volumetricHeightFalloff = TourEnvFloat(v, e.volumetricHeightFalloff);
+	else if (f == "volHeightBase") e.volumetricHeightBase = TourEnvFloat(v, e.volumetricHeightBase);
 	else if (f == "skyboxUri") e.skyboxUri = v;
 }
 TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
