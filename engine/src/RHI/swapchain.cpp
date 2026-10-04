@@ -114,6 +114,17 @@ std::vector<PresentMode> Swapchain::GetAvailablePresentModes() const {
 }
 double Swapchain::GetGpuFrameMs() const { return impl_->vulkan->GetLastGpuMs(); }
 bool Swapchain::HasGpuTiming() const { return impl_->vulkan->HasGpuTiming(); }
+bool Swapchain::GetGpuStageTimings(double* outMs, bool* outValid, uint32_t count) const {
+    if (!impl_->vulkan->StageTimersSupported())
+        return false;
+    const double* ms = impl_->vulkan->GetLastStageGpuMs();
+    const bool* valid = impl_->vulkan->GetStageTimingValid();
+    for (uint32_t s = 0; s < count && s < smvk::kGpuStageCount; ++s) {
+        outMs[s] = ms[s];
+        outValid[s] = valid[s];
+    }
+    return true;
+}
 double Swapchain::GetPresentWaitMs() const { return impl_->vulkan->GetLastPresentWaitMs(); }
 Swapchain::Impl* Swapchain::GetImpl() { return impl_.get(); }
 const Swapchain::Impl* Swapchain::GetImpl() const { return impl_.get(); }

@@ -980,6 +980,18 @@ namespace smvk {
 		// overlay should show CPU time only.
 		double GetLastGpuMs() const { return lastGpuMs_; }
 		bool HasGpuTiming() const { return gpuTimingValid_; }
+		// GPU stage timings (ms) of the last retired frame — the shadow-path
+		// instrumentation (see GpuStageTimer in smvk.h). Per stage: false
+		// until it has run + retired at least once (a stage that never ran
+		// leaves its query pair unwritten — per-pair NOT_READY, not zero).
+		const double* GetLastStageGpuMs() const { return lastStageGpuMs_; }
+		const bool* GetStageTimingValid() const { return stageTimingValid_; }
+		bool StageTimersSupported() const { return stageTimersSupported_; }
+		// Stage-timer query pool of a flight (the frame-timer pool: stage
+		// pairs ride queries 2+2s / 3+2s). NULL_HANDLE when unsupported.
+		VkQueryPool TimestampPool(uint32_t flight) const {
+			return (flight < MAX_FRAMES_IN_FLIGHT) ? timestampPools_[flight] : VkQueryPool(VK_NULL_HANDLE);
+		}
 		// Last vkQueuePresentKHR wall time (ms). Under FIFO VSync the
 		// present blocks for the vertical blank — idle wait, not CPU work.
 		double GetLastPresentWaitMs() const { return lastPresentWaitMs_; }
@@ -1088,6 +1100,16 @@ namespace smvk {
 		float timestampPeriod_ = 0.0f; // ns per timestamp tick
 		double lastGpuMs_ = 0.0;
 		bool gpuTimingValid_ = false;
+		// Stage-timer extensions of the frame-timer pools (GpuStageTimer):
+		// pairs at queries 2+2s / 3+2s per flight; per-stage validity (a
+		// stage that never ran leaves its pair unwritten = NOT_READY).
+		double lastStageGpuMs_[kGpuStageCount] = {};
+		bool stageTimingValid_[kGpuStageCount] = {};
+		// Device flag: timestamps on ALL queues (compute included — the
+		// async blur stream writes from the compute queue). Gates every
+		// stage-timer write (the raster stages too: one device without
+		// cross-queue timestamps would still poison the pool pulls).
+		bool stageTimersSupported_ = false;
 		double lastPresentWaitMs_ = 0.0;
 		void CreateTimestampPools();
 		void DestroyTimestampPools();

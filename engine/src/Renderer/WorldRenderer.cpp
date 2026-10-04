@@ -847,6 +847,14 @@ bool WorldRenderer::Initialize() {
 		if (const char* softEnv = std::getenv("VULKANTOY_EVSM_SOFT")) {
 			m_evsmSoftness = std::max(0.0f, (float)std::atof(softEnv));
 		}
+		// SDSM (sample-distribution cascade fitting) override for A/B
+		// captures (VULKANTOY_SDSM=0 forces the fixed split range).
+		if (const char* sdsmEnv = std::getenv("VULKANTOY_SDSM")) {
+			if (std::atoi(sdsmEnv) == 0)
+				m_sdsmEnabled = false;
+			else
+				m_sdsmEnabled = true;
+		}
 	// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): see header.
 	if (const char* dumpEnv = std::getenv("VULKANTOY_EVSM_DUMP")) {
 		m_evsmDumpAtFrame = std::atoi(dumpEnv);
@@ -1379,11 +1387,37 @@ if (!m_resources.fragVertexColorShader.empty()) {
 			};
 		}
 
-	// Masked shadow-depth program (leaf-shaped shadows for cutout).
+ // Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
 	auto shadowFragCode = readFile("content/shaders/shadow.frag.hlsl.spv");
 	m_resources.shadowMaskedVertShader = m_context->CreateShaderModule(shadowVertCode, "shadowMaskedVert");
 	m_resources.shadowMaskedFragShader = m_context->CreateShaderModule(shadowFragCode, "shadowMaskedFrag");
+		// SDSM stats (sdsm_stats.cs.hlsl): decimated depth min/max per frame;
+	// per-flight ping-pong buffers so the async readback copy of one
+	// flight's stats never races the other's rewrite (the exposure
+	// histogram's ring guarantee — see UpdateReadbacks).
+	try {
+		auto sdsmStatsCode = readFile("content/shaders/sdsm_stats.cs.hlsl.spv");
+		m_resources.sdsmStatsModule = m_context->CreateShaderModule(sdsmStatsCode, "sdsmStatsCS");
+		m_resources.sdsmStatsProgram = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.sdsmStatsModule,
+					.entryPoint = "mainCS",
+					.stage = smvk::ShaderStage::Compute
+				}
+			},
+			.shaderCount = 1
+		};
+		for (uint32_t f = 0; f < 2; ++f)
+			m_sdsmStatsBuffers[f] = m_context->CreateBuffer(
+				kSdsmStatsBytes, smvk::BufferType_Storage, "sdsm stats");
+		m_pendingSdsmStats.assign(kSdsmStatsBytes, 0);
+	} catch (...) {
+		std::cerr << "[WorldRenderer] sdsm_stats unavailable - SDSM falls back to the fixed split range\n";
+		m_resources.sdsmStatsProgram = smvk::ShaderProgram{};
+		m_resources.sdsmStatsModule = {};
+	}
 		m_resources.shadowMaskedProgram = {
 			.shaders = {
 				smvk::Shader{
@@ -1767,7 +1801,8 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		std::cerr << "[WorldRenderer] EVSM spot atlas unavailable – PCF fallback\n";
 	}
 	if (EvsmActive()) {
-		std::cerr << "[EVSM] moment atlases ready: RGBA32F 2xMSAA + async blur ("
+		std::cerr << "[EVSM] moment atlases ready: depth-only 2xMSAA D32 casters + per-sample"
+				<< " resolve into single-sample RGBA32F + async blur ("
 				<< (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame ? "SameFrame" : "OneFrameLag")
 				<< (m_context->HasDedicatedComputeQueue() ? ", true-async queue" : ", emulated (no dedicated queue)")
 				<< ")\n";
@@ -3012,10 +3047,113 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 					m_viewportResources.directionalShadows.bindless
 				);
 
-		// ---- Cascade builder (engine) ----
-		auto invView = glm::inverse(cameraView);
-		auto invProj = glm::inverse(cameraProj);
-		auto splits = smvk::ComputeCascadeSplits(default_near_clip, CascadeFar(), m_cascadeLambda, NUM_CASCADES);
+	// ---- Cascade builder (engine) ----
+	auto invView = glm::inverse(cameraView);
+	auto invProj = glm::inverse(cameraProj);
+	// ---- Split range: SDSM + temporal stabilization ----
+	// GPU-driven, distribution-based fit (see the SDSM block in the header
+	// for the full design): sdsm_stats.cs.hlsl measures the CURRENT frame's
+	// depth (min/max + a 64-bin log histogram), the own async ticket lands
+	// it ONE frame later, and this fit consumes the 1%/99% percentile range
+	// (one tiny distant object cannot dictate the whole range). The APPLIED
+	// range then follows the measured range with asymmetric hysteresis —
+	// instant expand (never clip a receiver), slow contract (~2%/frame —
+	// the projections don't swim) — quantized to 0.25 m steps (tiny
+	// distribution changes don't move the light projections at all).
+	// CUTS discard the history: a camera teleport (per-frame position jump)
+	// also COOLS DOWN on the fixed heuristic range for 2 frames — the
+	// 1-frame-old stats describe the OLD view, so they are wrong for the
+	// new one; the fresh post-cut stats snap in after the cooldown. Stale
+	// stats (disarmed/failed readback > 3 frames) and a measured range
+	// escaping the applied one by > 30% snap immediately.
+	float splitNear = default_near_clip;
+	float splitFar = CascadeFar();
+	const bool sdsmUsable = m_sdsmEnabled && m_sdsmStatsValid
+		&& m_sdsmPctMax > m_sdsmPctMin;
+	if (sdsmUsable) {
+		// Camera teleport cut: a large single-frame position jump. A fast
+		// flythrough is ~0.2 m/frame; a cut/teleport is meters instantly.
+		const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+		const bool camTeleport = m_sdsmLastCamPosValid
+			&& glm::length(camPos - m_sdsmLastCamPos) > 1.0f;
+		m_sdsmLastCamPos = camPos;
+		m_sdsmLastCamPosValid = true;
+		// Stats staleness: the armed pass + own ticket keep the measure
+		// age at ~1 frame; older means the readback starved (or the stats
+		// path was off) — the history is stale, not the scene changing.
+		const uint64_t statsAge = m_frameCounter - m_sdsmMeasureFrame;
+		if (camTeleport) {
+			m_sdsmCutCooldown = 2; // heuristic fallback frames (old-view stats are wrong)
+			m_sdsmAppliedValid = false;
+		} else if (statsAge > 3) {
+			m_sdsmAppliedValid = false; // snap to the fresh measurement below
+		}
+		if (m_sdsmCutCooldown > 0) {
+			--m_sdsmCutCooldown;
+			// Heuristic fallback while the old-view stats are stale: the
+			// wide range is always safe (never clips), just coarser.
+		} else {
+			// The target range: percentile bounds + 2%/5% padding against
+			// the 1-frame fit racing a moving camera.
+			const float wantNear = std::clamp(m_sdsmPctMin * 0.98f,
+				default_near_clip, CascadeFar() * 0.5f);
+			const float wantFar = std::clamp(m_sdsmPctMax * 1.05f,
+				wantNear * 2.0f, CascadeFar());
+			if (!m_sdsmAppliedValid) {
+				// Snap (first fit after a cut/staleness — quantized below).
+				m_sdsmAppliedMin = wantNear;
+				m_sdsmAppliedMax = wantFar;
+				m_sdsmAppliedValid = true;
+			} else {
+				const float span = std::max(m_sdsmAppliedMax - m_sdsmAppliedMin, 0.25f);
+				// Heavy escape: the measured range outran the applied one by
+				// > 30% of the span (a look-around found a much deeper view,
+				// the hysteresis is too slow) — snap both ends.
+				const bool heavyEscape =
+					m_sdsmPctMin < m_sdsmAppliedMin - span * 0.3f
+					|| m_sdsmPctMax > m_sdsmAppliedMax + span * 0.3f;
+				if (heavyEscape) {
+					m_sdsmAppliedMin = wantNear;
+					m_sdsmAppliedMax = wantFar;
+				} else {
+					// Asymmetric hysteresis: expand INSTANTLY toward the
+					// measured (padded) bounds (never clip a receiver),
+					// contract slowly (~2% of the span per frame — the
+					// projections don't swim with fit noise).
+					if (wantNear < m_sdsmAppliedMin)
+						m_sdsmAppliedMin = wantNear; // instant expand (nearer)
+					else
+						m_sdsmAppliedMin = std::min(wantNear,
+							m_sdsmAppliedMin + span * 0.02f); // slow contract
+					if (wantFar > m_sdsmAppliedMax)
+						m_sdsmAppliedMax = wantFar; // instant expand (farther)
+					else
+						m_sdsmAppliedMax = std::max(wantFar,
+							m_sdsmAppliedMax - span * 0.02f); // slow contract
+				}
+			}
+			// Quantize the applied range to 0.25 m steps (floor the near /
+			// ceil the far — quantization only ever widens): the fit noise
+			// below half a step never moves the projections.
+			constexpr float kSdsmQuantum = 0.25f;
+			m_sdsmAppliedMin = std::floor(m_sdsmAppliedMin / kSdsmQuantum) * kSdsmQuantum;
+			m_sdsmAppliedMax = std::ceil(m_sdsmAppliedMax / kSdsmQuantum) * kSdsmQuantum;
+			splitNear = std::clamp(m_sdsmAppliedMin, default_near_clip, CascadeFar() * 0.5f);
+			splitFar = std::clamp(m_sdsmAppliedMax, splitNear * 2.0f, CascadeFar());
+			if (!m_sdsmLogged) {
+				m_sdsmLogged = true;
+				std::fprintf(stderr,
+					"[SDSM] fitted split range %.3f..%.3f m (measured %.3f..%.3f, pct %.3f..%.3f, heuristic %.3f..%.3f)\n",
+					splitNear, splitFar, m_sdsmMin, m_sdsmMax,
+					m_sdsmPctMin, m_sdsmPctMax,
+					(double)default_near_clip, (double)CascadeFar());
+				fflush(stderr);
+			}
+		}
+	} else {
+		m_sdsmAppliedValid = false; // stats cold / SDSM off: fixed heuristic
+	}
+	auto splits = smvk::ComputeCascadeSplits(splitNear, splitFar, m_cascadeLambda, NUM_CASCADES);
 
 		smvk::GpuDirectionalLightDescription dir =
 			m_viewportResources.directionalShadows.BuildDirectionalLight(
@@ -3395,7 +3533,6 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		}
 		return { dls.data(), n };
 	};
-
 	// 1) Poll the in-flight download (non-blocking timeline check).
 	if (m_asyncReadbackTicket != 0) {
 		if (m_context->PollAsyncDownloadDataFromBuffers(
@@ -3499,6 +3636,88 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	// ring proved; a stale min would pin textures sharp forever).
 	if (gfxDemandActive)
 		smvk::gfx::ClearDemand(gfx, *m_context, frameSlot);
+
+	// 3) SDSM stats: OWN async ticket, submitted EVERY frame — not the
+	// shared every-4th batch above: the split fit must track the camera
+	// with ONE frame of latency (current-frame measurement, next-frame
+	// fit). Poll first (non-blocking), then submit this frame's armed
+	// stats. 1-in-flight + the 2-slot per-flight ring keep the pending
+	// copy of slot N's buffer ahead of slot N+2's rewrite (the exposure
+	// ring's guarantee).
+	if (m_sdsmReadbackTicket != 0) {
+		const smvk::BufferDownload sdsmDl{
+			m_sdsmStatsBuffers[m_sdsmReadbackSlot % 2],
+			m_pendingSdsmStats.data(), kSdsmStatsBytes, 0 };
+		if (m_context->PollAsyncDownloadDataFromBuffers(
+				m_sdsmReadbackTicket,
+				std::span<const smvk::BufferDownload>(&sdsmDl, 1))) {
+			m_sdsmReadbackTicket = 0;
+			// Merge the 256 partial histograms + the true min/max, then
+			// the 1%/99% percentile range (the histogram point: one tiny
+			// distant object must not dictate the whole split range).
+			float mn = 1e30f, mx = 0.0f;
+			uint32_t bins[kSdsmBins] = {};
+			uint64_t total = 0;
+			const auto* groups = reinterpret_cast<const SdsmGroupStats*>(
+				m_pendingSdsmStats.data());
+			for (uint32_t g = 0; g < kSdsmGroups; ++g) {
+				mn = std::min(mn, groups[g].minV);
+				mx = std::max(mx, groups[g].maxV);
+				for (uint32_t b = 0; b < kSdsmBins; ++b) {
+					bins[b] += groups[g].bins[b];
+					total += groups[g].bins[b];
+				}
+			}
+			if (total > 0 && mx > mn) {
+				// Percentile walk from both ends over the merged histogram.
+				// Bin edges mirror the shader: log2(viewZ) over
+				// [log2(zNear), log2(zFar)] -> 64 bins; the depth at the
+				// bin that crosses the tail threshold is the bound.
+				const float zNear = (IsHosted() && m_extCamera)
+					? m_extNear : default_near_clip;
+				const float zFar = std::max(CascadeFar(), zNear * 2.0f);
+				const float logLo = std::log2(zNear);
+				const float logHi = std::log2(zFar);
+				const uint64_t tail = std::max<uint64_t>(1, total / 100);
+				auto depthAtBin = [&](uint32_t b) {
+					return std::pow(2.0f,
+						logLo + (float(b) + 0.5f) / float(kSdsmBins) * (logHi - logLo));
+				};
+				uint64_t acc = 0;
+				float pctMin = mn;
+				for (uint32_t b = 0; b < kSdsmBins; ++b) {
+					acc += bins[b];
+					if (acc >= tail) { pctMin = depthAtBin(b); break; }
+				}
+				acc = 0;
+				float pctMax = mx;
+				for (uint32_t b = kSdsmBins; b-- > 0;) {
+					acc += bins[b];
+					if (acc >= tail) { pctMax = depthAtBin(b); break; }
+				}
+				if (pctMax > pctMin) {
+					m_sdsmMin = mn;
+					m_sdsmMax = mx;
+					m_sdsmPctMin = pctMin;
+					m_sdsmPctMax = pctMax;
+					m_sdsmStatsValid = true;
+					// The stats measured the frame that ran the stats
+					// pass — one frame back at this cadence.
+					m_sdsmMeasureFrame = m_frameCounter - 1;
+				}
+			}
+		}
+	}
+	if (m_sdsmStatsArmed && m_sdsmReadbackTicket == 0
+		&& !m_sdsmStatsBuffers[frameSlot % 2].empty()) {
+		const smvk::BufferDownload sdsmDl{
+			m_sdsmStatsBuffers[frameSlot % 2],
+			m_pendingSdsmStats.data(), kSdsmStatsBytes, 0 };
+		m_sdsmReadbackSlot = frameSlot;
+		m_sdsmReadbackTicket =
+			m_context->SubmitAsyncDownloadDataFromBuffers(
+				std::span<const smvk::BufferDownload>(&sdsmDl, 1));
+	}
 	}
 
 	// ---------------------------------------------------------------------
@@ -4831,7 +5050,8 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 
 	void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered) {
+		uint32_t casterViewIndex, bool skipFiltered,
+		const smvk::MSAASettings& msaa) {
 		// Phase 2 masked pipeline: cull follows the material raster so
 		// the shadow depth contains exactly the faces the main view draws
 		// (single-sided cutout has no backface shadow depth). Rebinds
@@ -4854,13 +5074,12 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 				},
 				smvk::StencilSettings{},
 				smvk::BlendSettings{},
-				smvk::MSAASettings{},
+				msaa,
 				smvk::RasterSettings{ .cullMode = cull }
 			);
 			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
 			boundShadowMaskedCull = cull;
-		};
-		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+		};		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
 			// Indirect path: registered casters are covered by the per-view
@@ -4927,7 +5146,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			},
 			smvk::StencilSettings{},
 			smvk::BlendSettings{},
-			smvk::MSAASettings{},
+			msaa,
 			smvk::RasterSettings{
 				.cullMode = smvk::CullMode::Front
 			}
@@ -4941,122 +5160,6 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		// Phase 2: MASK cutout casters, alpha-tested program so foliage
 		// casts leaf-shaped shadows instead of full quads. The pipeline
 		// binds lazily per material cull (ensureShadowMaskedPipeline).
-		m_world->forEachRenderItem(
-			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-			| smvk::IteratorFlagBit_Opaque
-			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
-	}
-
-	void WorldRenderer::RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
-		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered,
-		smvk::ShaderProgram* opaqueProgram) {
-		// EVSM direct path: same caster walk as RecordShadowCastersDirect.
-		// Phases split by cost — phase 1 (opaque) binds the CHEAP moments
-		// program when provided (no material read / texture fetch;
-		// per-fragment work is two exp() + two squares + the
-		// RGBA32F store, ~the PCF depth-only cost), phase 2 (MASK cutout)
-		// binds the full alpha-tested program. Binding the full FS for
-		// opaque measured ~30x the PCF pass (base-color sample
-		// at 2xMSAA rates over a 2048^2 tile).
-		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
-		// Phase 2 masked pipeline: cull follows the material raster
-		// (matching the main view); rebinds only on cull changes.
-		smvk::CullMode boundMomentsMaskedCull = smvk::CullMode::FrontAndBack;
-		auto ensureMomentsMaskedPipeline = [&](smvk::CullMode cull) {
-			if (cull == boundMomentsMaskedCull)
-				return;
-			cmd.BindRenderPipeline(
-				momentsProgram,
-				smvk::VertexFormat::StaticVertexFormat,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::LessEqual,
-					.writeEnable = true,
-					.depthTestEnable = true,
-					.depthBiasEnable = false,
-					.depthBiasConstantFactor = 0.0f,
-					.depthBiasClamp = 0.0f,
-					.depthBiasSlopeFactor = 0.0f
-				},
-				smvk::StencilSettings{},
-				smvk::BlendSettings{},
-				msaa2x,
-				smvk::RasterSettings{ .cullMode = cull }
-			);
-			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
-			boundMomentsMaskedCull = cull;
-		};
-		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-			if (item.material == smvk::World::kInvalidIndex)
-				return;
-			if (skipFiltered
-				&& m_gfxRenderer.GfxMeshForLod(item.mesh,
-					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
-				return;
-			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
-				return;
-			if (maskedPhase) {
-				smvk::CullMode cull = smvk::CullMode::None;
-				if (const smvk::Material* mat = m_world->GetMaterial(item.material))
-					cull = mat->pipeline.raster.cullMode;
-				ensureMomentsMaskedPipeline(cull);
-			}
-			auto& model = m_world->scene.globalTransform[item.node];
-			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-			if (!meshDesc) return;
-			if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-				glm::vec3 sphereCenter;
-				float sphereRadius = 0.0f;
-				smvk::MeshBoundsToWorld(
-					model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-					sphereCenter, sphereRadius);
-				if (!smvk::RenderViewIntersectsSphere(
-					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
-					return;
-			}
-			PushConstants objectPC{};
-			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-			if (maskedPhase) {
-				objectPC.materialId = item.material;
-				cmd.PushConstants(offsetof(PushConstants, materialId),
-					sizeof(objectPC.materialId), &objectPC.materialId,
-					smvk::ShaderStage::All);
-			}
-			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-			for (auto& draw_set : meshDesc->geometry.surfaces) {
-				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-			};
-		};
-		// Phase 1: solid casters (front-culled like the PCF direct path —
-		// back faces only, the anti-acne classic), cheap opaque program.
-		cmd.BindRenderPipeline(
-			opaqueProgram ? *opaqueProgram : momentsProgram,
-			smvk::VertexFormat::StaticVertexFormat,
-			smvk::DepthSettings{
-				.depthFunc = smvk::CompareOp::LessEqual,
-				.writeEnable = true,
-				.depthTestEnable = true,
-				.depthBiasEnable = false,
-				.depthBiasConstantFactor = 0.0f,
-				.depthBiasClamp = 0.0f,
-				.depthBiasSlopeFactor = 0.0f
-			},
-			smvk::StencilSettings{},
-			smvk::BlendSettings{},
-			msaa2x,
-			smvk::RasterSettings{
-				.cullMode = smvk::CullMode::Front
-			}
-		);
-		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
-		m_world->forEachRenderItem(
-			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-			| smvk::IteratorFlagBit_Opaque
-			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-		// Phase 2: MASK cutout casters (full alpha-tested moments program
-		// - the FS discards under the cutoff like shadow.frag so foliage
-		// casts leaf-shaped moments). The pipeline binds lazily per
-		// material cull (ensureMomentsMaskedPipeline above).
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 			| smvk::IteratorFlagBit_Opaque
@@ -5404,20 +5507,59 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		m_gpuTimingValid = m_swapchain->HasGpuTiming();
 		if (m_gpuTimingValid)
 			m_gpuMsSmooth += (m_swapchain->GetGpuFrameMs() - m_gpuMsSmooth) * kEmaAlpha;
+		// GPU stage timings (shadow-path instrumentation, both PCF + EVSM —
+		// see GpuStageTimer): last retired frame's per-stage ms (1-frame
+		// lag), EMA copies for the UI, and --bench accumulation for the
+		// [perf] split (a stage that never ran stays invalid, not zero).
+		m_stageGpuTimingsSupported = m_swapchain->GetGpuStageTimings(
+			m_stageGpuMs, m_stageGpuValid, smvk::kGpuStageCount);
+		if (m_stageGpuTimingsSupported) {
+			for (uint32_t s = 0; s < smvk::kGpuStageCount; ++s) {
+				if (m_stageGpuValid[s])
+					m_stageGpuMsSmooth[s] += (m_stageGpuMs[s] - m_stageGpuMsSmooth[s]) * kEmaAlpha;
+			}
+		}
+		if (frameBudget_ > 0 && m_stageGpuTimingsSupported) {
+			for (uint32_t s = 0; s < smvk::kGpuStageCount; ++s) {
+				if (m_stageGpuValid[s]) {
+					s_benchStageMs[s] += m_stageGpuMs[s];
+				}
+			}
+			++s_benchStageFrames;
+		}
 		// Benchmark split report (once, alongside App's [perf] avg line;
 		// benchFrames_ counts up in MainLoop right after this DrawFrame).
 		if (frameBudget_ > 0 && benchFrames_ + 1 >= frameBudget_) {
 			std::printf("[perf] cpu %.3f ms wait %.3f ms gpu %s present %s\n", m_cpuMsSmooth, m_waitMsSmooth,
 				m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str() : "(warming up)",
 				smvk::ToString(m_swapchain->GetActivePresentMode()));
-			const double n = (double)(benchFrames_ + 1); // this DrawFrame already accumulated
-			std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain %.3f) readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
-				s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n,
-				s_benchFpGen / n, s_benchFpUp / n, s_benchFpDs / n, s_benchPasses / n,
-				s_benchPreA / n, s_benchPreB / n, s_benchPreC / n,
-				s_benchPostMain / n, s_benchReadbacks / n,
-				s_benchUi / n, s_benchExecute / n);
-			std::fflush(stdout);
+		const double n = (double)(benchFrames_ + 1); // this DrawFrame already accumulated
+		std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain %.3f) readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
+			s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n,
+			s_benchFpGen / n, s_benchFpUp / n, s_benchFpDs / n, s_benchPasses / n,
+			s_benchPreA / n, s_benchPreB / n, s_benchPreC / n,
+			s_benchPostMain / n, s_benchReadbacks / n,
+			s_benchUi / n, s_benchExecute / n);
+		// GPU shadow-stage split (timestamp queries of the retired frames;
+		// avg over the frames each stage ran — the two representations are
+		// mutually exclusive per run, so exactly one side reports):
+		//   pcf: cascade+spot raster | evsm: casters + resolve + blur stream
+		if (m_stageGpuTimingsSupported && s_benchStageFrames > 0) {
+			const double sn = (double)s_benchStageFrames;
+			std::printf("[perf] shadow GPU pcf raster %s | evsm casters %s resolve %s blur %s (avg ms over %llu frames)\n",
+				m_stageGpuValid[smvk::kGpuStagePcfRaster]
+				? (std::to_string(s_benchStageMs[smvk::kGpuStagePcfRaster] / sn) + " ms").c_str() : "(off)",
+				m_stageGpuValid[smvk::kGpuStageEvsmCasters]
+				? (std::to_string(s_benchStageMs[smvk::kGpuStageEvsmCasters] / sn) + " ms").c_str() : "(off)",
+				m_stageGpuValid[smvk::kGpuStageEvsmResolve]
+				? (std::to_string(s_benchStageMs[smvk::kGpuStageEvsmResolve] / sn) + " ms").c_str() : "(off)",
+				m_stageGpuValid[smvk::kGpuStageEvsmBlur]
+				? (std::to_string(s_benchStageMs[smvk::kGpuStageEvsmBlur] / sn) + " ms").c_str() : "(off)",
+				(unsigned long long)s_benchStageFrames);
+		} else if (frameBudget_ > 0) {
+			std::printf("[perf] shadow GPU stage timings unavailable (no cross-queue timestamps)\n");
+		}
+		std::fflush(stdout);
 		}
 		// Periodic console snapshot of GPU memory (opt-in, every ~10 s).
 		// Same numbers as the ImGui bar; "log to console" button forces
@@ -7440,26 +7582,45 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				: smvk::RenderViewSet::kInvalidIndex;
 			cascadePC.renderViewIndex = casterViewIndex;
 			if (evsmDirOn) {
-				// EVSM moment pass (RGBA32F 2xMSAA + resolve, direct path).
+				// EVSM moment pass: DEPTH-ONLY 2xMSAA D32 (the PCF shadow
+				// programs; the per-sample resolve reconstructs moments
+				// right after all moment passes — see the resolve block
+				// before the blur block).
 				const char* evsmNames[4] = { "EvsmCascade0", "EvsmCascade1", "EvsmCascade2", "EvsmCascade3" };
 				auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
 					*m_rendergraph, m_viewportResources.evsmDir, ci, fb.frameIndex, evsmNames[ci]);
-				momentPass.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
+				// GPU stage timer (kGpuStageEvsmCasters): begin at the
+				// first moment pass, end at the last (the last spot moment
+				// below when spots run, else this cascade).
+				const bool evsmTsBegin = (ci == 0);
+				const bool evsmTsEnd = (ci == NUM_CASCADES - 1) && !evsmSpotOn;
+				momentPass.SetRecordingFunc([this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd](smvk::CommandBuffer& cmd)
 				{
-					RecordEvsmMomentsDirect(cmd,
-						m_viewportResources.evsmDir.momentsProgram,
+					if (evsmTsBegin)
+						cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
+					RecordShadowCastersDirect(cmd,
+						m_viewportResources.directionalShadows.program,
 						cascadePC, casterViewIndex, /*skipFiltered=*/false,
-						&m_viewportResources.evsmDir.momentsOpaqueProgram);
+						smvk::MSAASettings::Count2());
+					if (evsmTsEnd)
+						cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
 				});
 				(void)momentPass;
 				continue;
 			}
 			auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci]);
+			// GPU stage timer (kGpuStagePcfRaster): begin at the first
+			// cascade, end at the LAST raster shadow pass (the last spot
+			// tile below when spots run, else this cascade).
+			const bool pcfTsBegin = (ci == 0);
+			const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn;
 			if (shadowIndirect && cascadeShadowSlot[ci] != UINT32_MAX) {
 				const uint32_t slot = cascadeShadowSlot[ci];
 				m_gfxRenderer.AddShadowConsumeHints(shadowPass, slot);
-				shadowPass.SetRecordingFunc([this, slot, casterViewIndex, cascadePC, renderViewsAddress](smvk::CommandBuffer& cmd)
+				shadowPass.SetRecordingFunc([this, slot, casterViewIndex, cascadePC, renderViewsAddress, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
 				{
+					if (pcfTsBegin)
+						cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
 					// GPU context + pass scope come from RenderGraph::Execute
 					// (pass name "ShadowCascade<ci>" carries the cascade index).
 					m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
@@ -7469,14 +7630,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					RecordShadowCastersDirect(cmd,
 						m_viewportResources.directionalShadows.program,
 						cascadePC, casterViewIndex, /*skipFiltered=*/true);
+					if (pcfTsEnd)
+						cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
 				});
 			}
 			else {
-				shadowPass.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
+				shadowPass.SetRecordingFunc([this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
 				{
+					if (pcfTsBegin)
+						cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
 					RecordShadowCastersDirect(cmd,
 						m_viewportResources.directionalShadows.program,
 						cascadePC, casterViewIndex, /*skipFiltered=*/false);
+					if (pcfTsEnd)
+						cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
 				});
 			}
 			(void)shadowPass;
@@ -7512,25 +7679,44 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					: smvk::RenderViewSet::kInvalidIndex;
 				spotPC.renderViewIndex = casterViewIndex;
 				if (evsmSpotOn) {
-					// EVSM moment pass (RGBA32F 2xMSAA + resolve, direct path).
+					// EVSM moment pass: DEPTH-ONLY 2xMSAA D32 (PCF shadow
+					// programs; the per-sample resolve follows below). GPU
+					// stage timer: the LAST moment pass (the spot tiles
+					// follow the cascades) closes kGpuStageEvsmCasters; the
+					// FIRST opens it when the directional block didn't
+					// (spot-only frames).
+					const bool evsmTsBegin = (si == 0) && !evsmDirOn;
+					const bool evsmTsEnd = (si == spotCount - 1);
 					auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
 						*m_rendergraph, m_viewportResources.evsmSpot, si, fb.frameIndex, spotNames[si]);
-					momentPass.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
+					momentPass.SetRecordingFunc([this, spotPC, casterViewIndex, evsmTsBegin, evsmTsEnd](smvk::CommandBuffer& cmd)
 					{
-						RecordEvsmMomentsDirect(cmd,
-							m_viewportResources.evsmSpot.momentsProgram,
+						if (evsmTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
 							spotPC, casterViewIndex, /*skipFiltered=*/false,
-							&m_viewportResources.evsmSpot.momentsOpaqueProgram);
+							smvk::MSAASettings::Count2());
+						if (evsmTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
 					});
 					(void)momentPass;
 					continue;
 				}
 				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si]);
+				// GPU stage timer: the FIRST spot opens kGpuStagePcfRaster
+				// when the directional block didn't (spot-only frames); the
+				// LAST spot tile closes it (the spot tiles follow the
+				// cascades in the raster stage).
+				const bool pcfTsBegin = (si == 0) && !m_passes.directionalShadows;
+				const bool pcfTsEnd = (si == spotCount - 1);
 				if (shadowIndirect && spotShadowSlot[si] != UINT32_MAX) {
 					const uint32_t slot = spotShadowSlot[si];
 					m_gfxRenderer.AddShadowConsumeHints(spotPass, slot);
-					spotPass.SetRecordingFunc([this, slot, casterViewIndex, spotPC, renderViewsAddress](smvk::CommandBuffer& cmd)
+					spotPass.SetRecordingFunc([this, slot, casterViewIndex, spotPC, renderViewsAddress, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
 					{
+						if (pcfTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
 						// GPU context + pass scope come from RenderGraph::Execute
 						// (pass name "SpotShadow<si>" carries the spot index).
 						m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
@@ -7540,28 +7726,90 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						RecordShadowCastersDirect(cmd,
 							m_viewportResources.spotShadows.program,
 							spotPC, casterViewIndex, /*skipFiltered=*/true);
+						if (pcfTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
 					});
 				}
 				else {
-					spotPass.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
+					spotPass.SetRecordingFunc([this, spotPC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
 					{
+						if (pcfTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
 						RecordShadowCastersDirect(cmd,
 							m_viewportResources.spotShadows.program,
 							spotPC, casterViewIndex, /*skipFiltered=*/false);
+						if (pcfTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
 					});
 				}
 				(void)spotPass;
 			}
 		}
 
-		// ---- EVSM prefilter (all tiles, after all moment passes) ----
-		// Separable H+V blur per tile, AsyncCompute-marked. Recording ALL
-		// blurs after ALL moments keeps the async window free of graphics
-		// passes, which is what lets RenderGraph::Execute split the frame
-		// into G1/C/G2 on the true-async compute queue (an interleaved
-		// graphics write inside the window forces the emulated single-
-		// submit fallback). SameFrame consumes this frame's blur;
-		// OneFrameLag trails by one slot (see EvsmAtlas::SampleSlot).
+	// ---- SDSM depth statistics (after all depth writers) ----
+	// sdsm_stats.cs.hlsl: decimated min/max view depth + a 64-bin
+	// log-depth histogram over the render depth into the per-flight
+	// stats buffer (BDA). UpdateReadbacks submits the buffer on an OWN
+	// every-frame async ticket (one-frame latency); UpdateLights fits
+	// the cascade split range from the latest completed stats. The
+	// rendergraph sorts it after every depth writer via the read hint,
+	// wherever Main / the Forward+ prepass wrote depth this frame.
+	m_sdsmStatsArmed = false; // set true below iff the pass ran this frame
+	if (m_sdsmEnabled && m_passes.directionalShadows
+		&& m_resources.sdsmStatsProgram.shaderCount == 1
+		&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+		&& !m_sdsmStatsBuffers[fb.frameIndex % 2].empty()) {
+		smvk::ImageSyncRequest sdsmDepthRead{};
+		sdsmDepthRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		sdsmDepthRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+		sdsmDepthRead.layout = smvk::ImageLayout::DepthStencilReadOnlyOptimal;
+		smvk::RenderPass& sdsmPass = m_rendergraph->AddComputePass("SdsmStats");
+		sdsmPass.AddImageHint(m_viewportResources.renderDepth.logicalView, sdsmDepthRead);
+		SdsmStatsPush sdsmPush{};
+		const uint32_t sdsmSlot = fb.frameIndex % 2;
+		sdsmPush.stats = m_context->GetBufferDeviceAddress(m_sdsmStatsBuffers[sdsmSlot]);
+		sdsmPush.depthIndex = m_viewportResources.renderDepth.bindlessIndex;
+		// Main-view near clip (reversed-Z inversion denominator) — same
+		// source as UpdateCameraAspect.
+		sdsmPush.zNear = (IsHosted() && m_extCamera) ? m_extNear : default_near_clip;
+		// Histogram ceiling = the cascade far cap (the CPU clamps the fit
+		// to the same ceiling).
+		sdsmPush.zFar = std::max(CascadeFar(), sdsmPush.zNear * 2.0f);
+		sdsmPush.width = renderExtent.width;
+		sdsmPush.height = renderExtent.height;
+		sdsmPush.stride = (renderExtent.width * renderExtent.height + 65535u) / 65536u;
+		sdsmPush.pad0 = 0;
+		smvk::ShaderProgram* sdsmProg = &m_resources.sdsmStatsProgram;
+		sdsmPass.SetRecordingFunc([sdsmProg, sdsmPush](smvk::CommandBuffer& cmd) {
+			cmd.BindComputePipeline(*sdsmProg);
+			cmd.PushConstants(0, sizeof(sdsmPush), &sdsmPush, smvk::ShaderStage::Compute);
+			cmd.Dispatch(kSdsmGroups, 1, 1);
+		});
+		m_sdsmStatsArmed = true;
+	}
+
+	// ---- EVSM per-sample resolve (after ALL moment passes) ----
+	// ONE dispatch per atlas: evsm_resolve.cs.hlsl loads both depth
+	// samples of every texel, warps each, averages into the
+	// single-sample moments[flight]. A graphics-queue compute pass
+	// (sorted after every moment pass by the msaaDepth RAW hints, before
+	// every blur by the moments RAW hints) — the async blur window below
+	// stays graphics-free exactly as before.
+	if (evsmDirOn)
+		smvk::EvsmAsyncPrefilter::AddResolvePass(
+			*m_rendergraph, m_viewportResources.evsmDir, *m_context, fb.frameIndex);
+	if (evsmSpotOn)
+		smvk::EvsmAsyncPrefilter::AddResolvePass(
+			*m_rendergraph, m_viewportResources.evsmSpot, *m_context, fb.frameIndex);
+
+	// ---- EVSM prefilter (all tiles, after the resolve) ----
+	// Separable H+V blur per tile, AsyncCompute-marked. Recording ALL
+	// blurs after ALL moments + the resolve keeps the async window free
+	// of graphics passes, which is what lets RenderGraph::Execute split
+	// the frame into G1/C/G2 on the true-async compute queue (an
+	// interleaved graphics write inside the window forces the emulated
+	// single-submit fallback). SameFrame consumes this frame's blur;
+	// OneFrameLag trails by one slot (see EvsmAtlas::SampleSlot).
 	if (evsmDirOn) {
 		for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
 			smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
@@ -10726,6 +10974,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 				ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
 				ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");
+				ImGui::Checkbox("SDSM (fit splits to measured depth)", &m_sdsmEnabled);
+				ImGui::TextDisabled("GPU depth stats (min/max + 64-bin log histogram, decimated)\n"
+					"every frame; own async readback -> 1-frame latency; 1%%/99%% percentile\n"
+					"range + hysteresis (instant expand, slow contract) + 0.25 m quantization.\n"
+					"Camera teleports discard history (heuristic cooldown 2 frames).");
+				if (m_sdsmEnabled && m_sdsmStatsValid) {
+					ImGui::TextDisabled("measured %.2f..%.2f m (pct %.2f..%.2f) -> applied %.2f..%.2f m%s",
+						m_sdsmMin, m_sdsmMax, m_sdsmPctMin, m_sdsmPctMax,
+						m_sdsmAppliedValid ? m_sdsmAppliedMin : 0.0f,
+						m_sdsmAppliedValid ? m_sdsmAppliedMax : 0.0f,
+						m_sdsmCutCooldown > 0 ? " (cut cooldown: heuristic)" : "");
+				}
 				ImGui::SliderFloat("Shadow distance (m, 0 = scene far)", &m_cascadeMaxDistance, 0.0f, 500.0f, "%.0f");
 				ImGui::Text("Effective far: %.1f m (scene far %.1f m)",
 					(double)CascadeFar(), (double)m_sceneFarClip);
@@ -11096,6 +11356,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// frames (same lag as the exposure meter).
 			// ---------------------------------------------------------
 			if (ImGui::BeginTabItem("Stats")) {
+				if (ImGui::CollapsingHeader("Shadow GPU stages (timestamp queries, ~1 frame lag)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					// Both shadow representations instrumented (see
+					// GpuStageTimer): exactly one side is live per run
+					// (PCF vs EVSM are mutually exclusive); "(off)" marks
+					// the inactive representation + stages that never ran.
+					if (m_stageGpuTimingsSupported) {
+						ImGui::Text("PCF raster:    %s", m_stageGpuValid[smvk::kGpuStagePcfRaster]
+							? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStagePcfRaster]) + " ms (smooth)").c_str() : "(off)");
+						ImGui::Text("EVSM casters:  %s", m_stageGpuValid[smvk::kGpuStageEvsmCasters]
+							? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmCasters]) + " ms (smooth)").c_str() : "(off)");
+						ImGui::Text("EVSM resolve:  %s", m_stageGpuValid[smvk::kGpuStageEvsmResolve]
+							? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmResolve]) + " ms (smooth)").c_str() : "(off)");
+						ImGui::Text("EVSM blur:     %s", m_stageGpuValid[smvk::kGpuStageEvsmBlur]
+							? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmBlur]) + " ms (smooth)").c_str() : "(off)");
+					} else {
+						ImGui::TextDisabled("(unavailable: device lacks cross-queue timestamps)");
+					}
+				}
 				if (ImGui::CollapsingHeader("Camera + swapchain", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
 					{
@@ -12171,8 +12449,11 @@ void WorldRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 		&atlas.moments[0], &atlas.blurTemp[0], &atlas.blurred[0]
 	};
 	const char* stageNames[3] = { "moments", "temp", "blurred" };
+	// moments: written by the resolve (General) then read by the blur H
+	// (ShaderReadOnly) — its post-frame layout; temp: blur H write (General);
+	// blurred: blur V write (General) -> light sampling (ShaderReadOnly).
 	const smvk::ImageLayout stageLayouts[3] = {
-		smvk::ImageLayout::ColorAttachmentOptimal,
+		smvk::ImageLayout::ShaderReadOnlyOptimal,
 		smvk::ImageLayout::General,
 		smvk::ImageLayout::ShaderReadOnlyOptimal,
 	};

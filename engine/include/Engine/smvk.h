@@ -1189,6 +1189,23 @@ namespace smvk {
 	};
 	static_assert(sizeof(EngineGlobals) == 16, "EngineGlobals must stay 16 bytes (HLSL mirror relies on it)");
 
+	// GPU stage timers — shadow-path instrumentation for BOTH shadow
+	// representations (PCF + EVSM), so A/B runs measure the real GPU cost
+	// of each stage. Written by the shadow pass recording funcs
+	// (CommandBuffer::WriteStageTimestamp) and by RenderGraph::Execute
+	// around the async compute stream; the per-flight frame-timer query
+	// pools carry the query pairs (2+2s / 3+2s), and the swapchain reports
+	// the per-stage ms of the last retired frame (Swapchain::
+	// GetGpuStageTimings). A stage that never ran stays invalid (queries
+	// reset, never written — per-pair NOT_READY), not zero.
+	enum GpuStageTimer : uint32_t {
+		kGpuStagePcfRaster = 0, // PCF shadow raster (cascade + spot tiles)
+		kGpuStageEvsmCasters,  // EVSM moment (depth-only caster) passes
+		kGpuStageEvsmResolve,  // EVSM per-sample MSAA depth -> moments resolve
+		kGpuStageEvsmBlur,     // EVSM async blur stream (the whole C chain)
+		kGpuStageCount
+	};
+
 	enum Bindings {
 		kBinding_Textures = 0, // position 0
 		kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
@@ -1206,7 +1223,13 @@ namespace smvk {
 		// — a TextureCube view is reachable through either binding at its
 		// slot index. HLSL: TextureCube cubemaps[] (common.hlsli).
 		kBinding_Cubemaps = 5,
-		kBinding_NumBindings = 6 // this should be # of all other
+		// Multisampled 2D textures (EVSM per-sample depth resolve, see
+		// evsm_resolve.cs.hlsl): sampled-image array whose descriptors
+		// mirror the SAME bindless slots as kBinding_Textures — only MSAA
+		// views get mirrored, and Texture2D[]-typed code never indexes
+		// those slots. HLSL: Texture2DMS<float4> texturesMS[] (common.hlsli).
+		kBinding_MsaaTextures = 6,
+		kBinding_NumBindings = 7 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {

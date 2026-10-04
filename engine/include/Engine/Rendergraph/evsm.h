@@ -1,28 +1,33 @@
 #pragma once
 // EVSM (Exponential Variance Shadow Maps) atlas with async-compute prefilter.
 //
-// Design (matches the request: 32-bit depth, 2x MSAA, async prefilter, pipelined):
-//  - Moments are rendered as RGBA32F color (4x 32-bit float: first AND second
-//    moments of both exponential warps — E[exp(+c*d)], E[exp(+2c*d)],
-//    E[exp(-c*d)], E[exp(-2c*d)]; the seconds are squares at bake time, see
-//    evsm.hlsli) with 2x MSAA + resolve. Depth testing still uses a 2x MSAA
-//    D32 depth buffer; the pixel shader writes the warped moments. This gives
-//    real MSAA on the depth signal (unlike a post-resolve depth read) and
-//    keeps the single-sample resolved moments filterable. Four moments are
-//    what the dual Cantelli visibility needs: a single first moment per warp
-//    cannot separate "mass in front of the receiver" from "mass at/behind
-//    it", which is exactly the leak/acne failure of the old 2-channel form.
+// Design (32-bit depth, 2x MSAA, async prefilter, pipelined):
+//  - Casters render DEPTH ONLY at 2x MSAA into a D32 target — the SAME
+//    depth-only programs the PCF shadow passes use (shadow.vert + the
+//    depth-only opaque leg / alpha-tested shadow.frag leg), no MSAA color
+//    attachment at all. The 2x MSAA DEPTH carries the whole MSAA payload:
+//    at silhouette edges each sample holds its own coverage/depth, exactly
+//    the distribution information EVSM wants.
+//  - evsm_resolve.cs.hlsl then reconstructs the moments PER SAMPLE: load
+//    both depth samples, warp EACH (exp is nonlinear — warp-then-average,
+//    never average-then-warp), average into a single-sample RGBA32F
+//    moments atlas (E[exp(+c*d)], E[exp(+2c*d)], E[exp(-c*d)], E[exp(-2c*d)]
+//    — the seconds are squares at bake time, see evsm.hlsli). Replacing the
+//    old 2x MSAA RGBA32F color + hardware resolve with 2x4B depth reads +
+//    16B write per texel. Four moments are what the dual Cantelli
+//    visibility needs: a single first moment per warp cannot separate
+//    "mass in front of the receiver" from "mass at/behind it", which is
+//    exactly the leak/acne failure of the old 2-channel form.
 //  - Prefilter is a separable Gaussian (H then V) in compute, marked
 //    RenderPass::QueueHint::AsyncCompute. EvsmAsyncPrefilter routes those
-//    dispatches onto the dedicated compute queue (RHI compute submitter) with
-//    queue-family ownership transfers; on single-queue devices it degrades to
-//    same-queue compute (emulated async, still pipelined H->V).
-//  - Pipelining: default is ONE-FRAME LAG. Graphics renders moments for frame
-//    N and resolves them; async compute blurs frame N-1's moments while
-//    graphics works; lighting samples the blurred result of frame N-1.
-//    Set PipelineMode::SameFrame to blur + sample within one frame (the
-//    transition is a single enum flip: blur reads momentsCurrent instead of
-//    momentsHistory, no layout change).
+//    dispatches onto the dedicated compute queue; on single-queue devices
+//    it degrades to same-queue compute (emulated async, still pipelined
+//    H->V).
+//  - Pipelining: default is ONE-FRAME LAG. Graphics renders depth +
+//    resolves moments for frame N; async compute blurs frame N-1's
+//    moments while graphics works; lighting samples the blurred result of
+//    frame N-1. Set PipelineMode::SameFrame to blur + sample within one
+//    frame (the transition is a single enum flip, no layout change).
 //
 // One EvsmAtlas backs either the directional CSM tiles or the spot tiles —
 // the tile UV convention (uvScale/uvBias/uvClamp) is identical to
@@ -79,9 +84,10 @@ struct EvsmDesc {
 	const char* name = "evsmAtlas";
 };
 
-inline constexpr const char* kEvsmMomentsVsPath = "content/shaders/shadow.vert.hlsl.spv";
-inline constexpr const char* kEvsmMomentsFsPath = "content/shaders/shadow_evsm.frag.hlsl.spv";
-inline constexpr const char* kEvsmMomentsOpaqueFsPath = "content/shaders/shadow_evsm_opaque.frag.hlsl.spv";
+// The moment pass reuses the PCF depth-only shadow programs (shadow.vert +
+// shadow.frag — see RecordShadowCastersDirect); this atlas only owns the
+// resolve + blur compute shaders.
+inline constexpr const char* kEvsmResolveCsPath = "content/shaders/evsm_resolve.cs.hlsl.spv";
 inline constexpr const char* kEvsmBlurHPath = "content/shaders/evsm_blur_h.cs.hlsl.spv";
 inline constexpr const char* kEvsmBlurVPath = "content/shaders/evsm_blur_v.cs.hlsl.spv";
 
@@ -103,15 +109,25 @@ struct EvsmBlurPush {
 };
 static_assert(sizeof(EvsmBlurPush) == 48, "EVSM blur push must mirror the HLSL EvsmBlurPush (48 bytes)");
 
+// Push constants for evsm_resolve.cs.hlsl. Must mirror the HLSL
+// EvsmResolvePush (16 bytes, DX layout).
+struct EvsmResolvePush {
+	uint32_t srcIndex;    // bindless texturesMS[] index of the 2x MSAA depth view
+	uint32_t dstIndex;    // bindless storage index of moments[flight]
+	uint32_t atlasWidth;  // atlas extent in texels (one dispatch covers it)
+	uint32_t atlasHeight;
+};
+static_assert(sizeof(EvsmResolvePush) == 16, "EVSM resolve push must mirror the HLSL EvsmResolvePush (16 bytes)");
+
 // Per-frame resolved + blurred views. Ringed by flight slot; with OneFrameLag
 // the sampler reads slot (write+FLIGHTS-1)%FLIGHTS.
 struct EvsmAtlas {
-	// MSAA moment + depth targets (transient per frame, resolved each tile).
-	Holder<ImageHandle> msaaMoments;
-	Holder<ImageViewHandle> msaaMomentsView;
+	// 2x MSAA D32 depth target (transient per frame): the ONLY caster
+	// attachment — the moment pass is depth-only; the per-sample resolve
+	// reads it right after (texturesMS[] bindless + DepthReadOnly layout).
 	Holder<ImageHandle> msaaDepth;
 	Holder<ImageViewHandle> msaaDepthView;
-	LogicalImageViewHandle msaaMomentsLogical{};
+	Holder<BindlessImageHandle> msaaDepthBindless;
 	LogicalImageViewHandle msaaDepthLogical{};
 	// Single-sample moments (resolve dest, blur source). One per flight.
 	Holder<ImageHandle> moments[MAX_FRAMES_IN_FLIGHT]{};
@@ -128,13 +144,10 @@ struct EvsmAtlas {
 	Holder<BindlessImageHandle> blurredBindless[MAX_FRAMES_IN_FLIGHT]{};
 	LogicalImageViewHandle blurredLogical[MAX_FRAMES_IN_FLIGHT]{};
 
-	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> fsModule;
-	Holder<ShaderModuleHandle> fsOpaqueModule;
+	Holder<ShaderModuleHandle> resolveModule;
 	Holder<ShaderModuleHandle> blurHModule;
 	Holder<ShaderModuleHandle> blurVModule;
-	ShaderProgram momentsProgram{};      // VS+FS full: alpha-tested (MASK casters)
-	ShaderProgram momentsOpaqueProgram{}; // VS+FS cheap: opaque casters (no material path)
+	ShaderProgram resolveProgram{};  // CS: per-sample MSAA depth -> moments
 	ShaderProgram blurHProgram{};   // CS: horizontal leg (moments -> temp)
 	ShaderProgram blurVProgram{};   // CS: vertical leg (temp -> blurred)
 
@@ -148,13 +161,13 @@ struct EvsmAtlas {
 	uint32_t writeSlot = 0; // flight slot moments were last resolved into
 
 	[[nodiscard]] bool Valid() const {
-		return !msaaMoments.empty() && tileCount != 0 && !moments[0].empty()
-			&& !msaaMomentsLogical.empty() && !blurTempBindless[0].empty();
+		return !msaaDepth.empty() && tileCount != 0 && !moments[0].empty()
+			&& !msaaDepthLogical.empty() && !msaaDepthBindless.empty()
+			&& !blurTempBindless[0].empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
-		return momentsProgram.shaderCount == 2
-			&& blurHProgram.shaderCount == 1 && blurVProgram.shaderCount == 1
-			&& momentsOpaqueProgram.shaderCount == 2;
+		return resolveProgram.shaderCount == 1
+			&& blurHProgram.shaderCount == 1 && blurVProgram.shaderCount == 1;
 	}
 
 	// Frame-lag helpers: write slot = current flight; sample slot trails by
@@ -196,22 +209,23 @@ struct EvsmAtlas {
 			return -1;
 		return static_cast<int32_t>(ctx.GetBindlessIndex(blurTempBindless[flight % MAX_FRAMES_IN_FLIGHT]));
 	}
+	// Bindless texturesMS[] index of the transient 2x MSAA depth view (the
+	// per-sample resolve's source). -1 until the atlas is created.
+	int32_t MsaaDepthBindlessIndex(ResourceManager& ctx) const {
+		if (msaaDepthBindless.empty())
+			return -1;
+		return static_cast<int32_t>(ctx.GetBindlessIndex(msaaDepthBindless));
+	}
 
 	bool EnsureShaders(ResourceManager& ctx,
-		const char* vsPath = kEvsmMomentsVsPath,
-		const char* fsPath = kEvsmMomentsFsPath,
+		const char* resolvePath = kEvsmResolveCsPath,
 		const char* csHPath = kEvsmBlurHPath,
-		const char* csVPath = kEvsmBlurVPath,
-		const char* fsOpaquePath = kEvsmMomentsOpaqueFsPath) {
+		const char* csVPath = kEvsmBlurVPath) {
 		if (ShadersValid())
 			return true;
 		try {
-			if (vsModule.empty())
-				vsModule = ctx.CreateShaderModule(readFile(vsPath ? vsPath : kEvsmMomentsVsPath), "evsmMomentsVS");
-			if (fsModule.empty())
-				fsModule = ctx.CreateShaderModule(readFile(fsPath ? fsPath : kEvsmMomentsFsPath), "evsmMomentsFS");
-			if (fsOpaqueModule.empty())
-				fsOpaqueModule = ctx.CreateShaderModule(readFile(fsOpaquePath ? fsOpaquePath : kEvsmMomentsOpaqueFsPath), "evsmMomentsOpaqueFS");
+			if (resolveModule.empty())
+				resolveModule = ctx.CreateShaderModule(readFile(resolvePath ? resolvePath : kEvsmResolveCsPath), "evsmResolveCS");
 			if (blurHModule.empty())
 				blurHModule = ctx.CreateShaderModule(readFile(csHPath ? csHPath : kEvsmBlurHPath), "evsmBlurHCS");
 			if (blurVModule.empty())
@@ -219,27 +233,20 @@ struct EvsmAtlas {
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || fsModule.empty() || fsOpaqueModule.empty()
-			|| blurHModule.empty() || blurVModule.empty())
+		if (resolveModule.empty() || blurHModule.empty() || blurVModule.empty())
 			return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader fs{ .module = fsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		Shader fsOpaque{ .module = fsOpaqueModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader csResolve{ .module = resolveModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		Shader csH{ .module = blurHModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		Shader csV{ .module = blurVModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
-		momentsProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
-		momentsOpaqueProgram = { .shaders = { vs, fsOpaque }, .shaderCount = 2 };
+		resolveProgram = { .shaders = { csResolve }, .shaderCount = 1 };
 		blurHProgram = { .shaders = { csH }, .shaderCount = 1 };
 		blurVProgram = { .shaders = { csV }, .shaderCount = 1 };
 		return true;
 	}
 
 	void Destroy(RenderGraph& rg) {
-		if (!msaaMomentsLogical.empty())
-			rg.FreeImageView(msaaMomentsLogical);
 		if (!msaaDepthLogical.empty())
 			rg.FreeImageView(msaaDepthLogical);
-		msaaMomentsLogical = {};
 		msaaDepthLogical = {};
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			if (!blurredLogical[f].empty())
@@ -261,10 +268,9 @@ struct EvsmAtlas {
 			momentsView[f] = {};
 			moments[f] = {};
 		}
+		msaaDepthBindless = {};
 		msaaDepthView = {};
 		msaaDepth = {};
-		msaaMomentsView = {};
-		msaaMoments = {};
 		atlasExtent = { 0, 0 };
 		tileExtent = { 0, 0 };
 		tileCount = 0;
@@ -274,34 +280,24 @@ struct EvsmAtlas {
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const EvsmDesc& desc) {
 		if (desc.tileCount == 0 || desc.tileResolution == 0)
 			return false;
+		if (desc.msaaSamples != 2) {
+			// evsm_resolve.cs.hlsl loads exactly two samples per texel.
+			return false;
+		}
 		const uint32_t cols = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(desc.tileCount))));
 		const uint32_t rows = (desc.tileCount + cols - 1) / cols;
 		const Extent2D atlas{ desc.tileResolution * cols, desc.tileResolution * rows };
-		const SampleCount samples = (desc.msaaSamples == 2) ? SampleCount::Count2 : SampleCount::Count1;
+		const SampleCount samples = SampleCount::Count2;
 
-		ImageCreateInfo msaaCI{};
-		msaaCI.format = desc.momentsFormat;
-		msaaCI.extent = { atlas.width, atlas.height, 1u };
-		msaaCI.samples = samples;
-		msaaCI.usage = ImageUsage::ColorAttachment;
-		if (DebugImageDumpArmed()) // atlas dump readback (VULKANTOY_EVSM_DUMP)
-			msaaCI.usage |= ImageUsage::TransferSrc;
-		msaaCI.name = desc.name;
-		Holder<ImageHandle> newMsaa = ctx.CreateImage(msaaCI, nullptr);
-		if (newMsaa.empty())
-			return false;
-		ImageViewCreateInfo msaaViewCI{};
-		msaaViewCI.viewType = ImageViewType::View2D;
-		msaaViewCI.subresourceRange = { .aspect = ImageAspect::Color };
-		Holder<ImageViewHandle> newMsaaView = ctx.CreateImageView(newMsaa, msaaViewCI);
-		if (newMsaaView.empty())
-			return false;
-
+		// The ONLY caster attachment: 2x MSAA D32 depth. Depth-only raster
+		// (the PCF shadow programs), and the per-sample resolve reads it
+		// right after through the bindless MSAA array — hence Sampled
+		// usage too.
 		ImageCreateInfo depthCI{};
 		depthCI.format = desc.depthFormat;
 		depthCI.extent = { atlas.width, atlas.height, 1u };
 		depthCI.samples = samples;
-		depthCI.usage = ImageUsage::DepthStencilAttachment;
+		depthCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
 		depthCI.name = "evsm msaa depth";
 		Holder<ImageHandle> newDepth = ctx.CreateImage(depthCI, nullptr);
 		if (newDepth.empty())
@@ -314,18 +310,19 @@ struct EvsmAtlas {
 			return false;
 
 		// Per-flight single-sample moments + blur ping-pong. Storage-capable
-		// so the async compute prefilter can write them (General), sampled
-		// so lighting + the next blur tap can read them, TransferSrc so the
-		// opt-in atlas dump (VULKANTOY_EVSM_DUMP, EvsmDumpAtlas) can copy
-		// them back — armed dumps only. CONCURRENT graphics+compute: the
-		// moment resolve (graphics) and the blur (compute queue) ping-pong
-		// these images every frame, so no ownership transfers — events +
-		// layout barriers order the queues.
+		// so the resolve (moments) + the async compute prefilter (temp,
+		// blurred) can write them (General), sampled so lighting + the next
+		// blur tap can read them, TransferSrc so the opt-in atlas dump
+		// (VULKANTOY_EVSM_DUMP, EvsmDumpAtlas) can copy them back — armed
+		// dumps only. CONCURRENT graphics+compute: the resolve (graphics)
+		// and the blur (compute queue) ping-pong these images every frame, so
+		// no ownership transfers — events + layout barriers order the
+		// queues.
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			ImageCreateInfo singleCI{};
 			singleCI.format = desc.momentsFormat;
 			singleCI.extent = { atlas.width, atlas.height, 1u };
-			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst | ImageUsage::ColorAttachment;
+			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst;
 			if (DebugImageDumpArmed())
 				singleCI.usage |= ImageUsage::TransferSrc;
 			singleCI.concurrentCompute = true;
@@ -335,8 +332,6 @@ struct EvsmAtlas {
 			blurred[f] = ctx.CreateImage(singleCI, nullptr);
 			if (moments[f].empty() || blurTemp[f].empty() || blurred[f].empty()) {
 				Destroy(rg);
-				msaaMomentsView = {};
-				msaaMoments = {};
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
@@ -349,8 +344,6 @@ struct EvsmAtlas {
 			blurredView[f] = ctx.CreateImageView(blurred[f], vci);
 			if (momentsView[f].empty() || blurTempView[f].empty() || blurredView[f].empty()) {
 				Destroy(rg);
-				msaaMomentsView = {};
-				msaaMoments = {};
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
@@ -360,8 +353,6 @@ struct EvsmAtlas {
 			blurredBindless[f] = ctx.CreateBindlessImage(blurredView[f], ImageLayout::ShaderReadOnlyOptimal);
 			if (momentsBindless[f].empty() || blurTempBindless[f].empty() || blurredBindless[f].empty()) {
 				Destroy(rg);
-				msaaMomentsView = {};
-				msaaMoments = {};
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
@@ -371,21 +362,17 @@ struct EvsmAtlas {
 			blurredLogical[f] = rg.AddExternalImageView(blurredView[f], desc.momentsFormat, "evsmBlurred");
 			if (momentsLogical[f].empty() || blurTempLogical[f].empty() || blurredLogical[f].empty()) {
 				Destroy(rg);
-				msaaMomentsView = {};
-				msaaMoments = {};
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
 			}
 		}
 
-		msaaMoments = std::move(newMsaa);
-		msaaMomentsView = std::move(newMsaaView);
 		msaaDepth = std::move(newDepth);
 		msaaDepthView = std::move(newDepthView);
-		msaaMomentsLogical = rg.AddExternalImageView(msaaMomentsView, desc.momentsFormat, "evsmMsaaMoments");
+		msaaDepthBindless = ctx.CreateBindlessImage(msaaDepthView, ImageLayout::DepthReadOnlyOptimal);
 		msaaDepthLogical = rg.AddExternalImageView(msaaDepthView, desc.depthFormat, "evsmMsaaDepth");
-		if (msaaMomentsLogical.empty() || msaaDepthLogical.empty()) {
+		if (msaaDepthBindless.empty() || msaaDepthLogical.empty()) {
 			Destroy(rg);
 			return false;
 		}
@@ -424,43 +411,81 @@ struct EvsmAtlas {
 // the blur reads the just-resolved current slot and lighting samples the
 // previous slot; SameFrame collapses both.
 struct EvsmAsyncPrefilter {
-	// Moment pass for one tile: MSAA RG32F moments + MSAA D32 depth, color
-	// resolved into moments[flight]. The caller sets the recording func
-	// (bind momentsProgram with 2x MSAA + draw casters). Every tile clears
-	// its own MSAA area; the resolve stores into the single-sample image.
+	// Moment (caster) pass for one tile: DEPTH ONLY at 2x MSAA — the PCF
+	// depth-only shadow programs (the caller's recording func binds them
+	// with 2x MSAA + draws casters; see RecordShadowCastersDirect). Every
+	// tile clears its own depth area to the far plane; the STORE matters:
+	// the per-sample resolve (AddResolvePass) reads this depth right
+	// after all moment passes. The far-plane DEPTH clear IS the moment
+	// clear through the resolve's warp: uncovered/cleared samples read
+	// z = 1.0 and resolve to warp(1) = the far-plane moment set (the old
+	// EvsmClearColor color-clear convention, for free).
 	static RenderPass& AddMomentPass(RenderGraph& rg, const EvsmAtlas& atlas,
 		uint32_t tileIndex, uint32_t flight, const char* name = nullptr) {
 		assert(atlas.Valid());
 		assert(tileIndex < atlas.tileCount);
 		int32_t offX = 0, offY = 0;
 		atlas.TileOrigin(tileIndex, offX, offY);
-		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
-		// Uncleared texels must read as "far occluder" (moments of d=1),
-		// not lit — matches EvsmClearColor() in evsm.hlsli. All four
-		// moments of the far-plane warp: (e^{+c}, e^{+2c}, e^{-c}, e^{-2c}).
-		const float c = atlas.exponent;
-		const float wp = std::exp(c);
-		const float wn = std::exp(-c);
-		ClearColor momentsClear{};
-		momentsClear.r = wp;
-		momentsClear.g = wp * wp;
-		momentsClear.b = wn;
-		momentsClear.a = wn * wn;
+		(void)flight;
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(offX, offY)
 			.SetExtent(atlas.tileExtent)
-			.SetColorWithResolve(
-				{ atlas.msaaMomentsLogical },
-				{ atlas.momentsLogical[slot] },
-				AttachmentLoadOp::Clear,
-				AttachmentStoreOp::DontCare,
-				momentsClear)
 			.SetDepth(
 				atlas.msaaDepthLogical,
 				AttachmentLoadOp::Clear,
-				AttachmentStoreOp::DontCare,
+				AttachmentStoreOp::Store,
 				ClearDepthStencil(1.0f, 0));
 		return pass;
+	}
+
+	// Per-sample resolve (ONE per atlas per frame, after ALL moment
+	// passes, before the blurs): evsm_resolve.cs.hlsl loads BOTH depth
+	// samples of every atlas texel, warps each (warp-then-average — exp
+	// is nonlinear), averages into the single-sample moments[flight].
+	// Graphics-queue compute pass (not AsyncCompute-marked): it sorts
+	// after every moment pass (reads the whole depth) and before every
+	// blur (writes every moments texel), keeping the async blur window
+	// free of graphics passes exactly as before.
+	static void AddResolvePass(RenderGraph& rg, const EvsmAtlas& atlas,
+		ResourceManager& ctx, uint32_t flight, const char* name = nullptr) {
+		assert(atlas.Valid());
+		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
+		const int32_t srcIdx = atlas.MsaaDepthBindlessIndex(ctx);
+		const int32_t dstIdx = atlas.MomentsBindlessIndex(ctx, slot);
+		assert(srcIdx >= 0 && dstIdx >= 0);
+
+		ImageSyncRequest depthRead{};
+		depthRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		depthRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+		depthRead.layout = ImageLayout::DepthReadOnlyOptimal;
+		ImageSyncRequest momentsWrite{};
+		momentsWrite.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+		momentsWrite.barrierMasks.stageMask = PipelineStageBit_Compute;
+		momentsWrite.layout = ImageLayout::General;
+
+		EvsmResolvePush push{};
+		push.srcIndex = static_cast<uint32_t>(srcIdx);
+		push.dstIndex = static_cast<uint32_t>(dstIdx);
+		push.atlasWidth = atlas.atlasExtent.width;
+		push.atlasHeight = atlas.atlasExtent.height;
+
+		RenderPass& pass = rg.AddComputePass(name ? name : "EvsmResolve");
+		pass.AddImageHint(atlas.msaaDepthLogical, depthRead);
+		pass.AddImageHint(atlas.momentsLogical[slot], momentsWrite);
+		ShaderProgram* resolveProg = const_cast<ShaderProgram*>(&atlas.resolveProgram);
+		const uint32_t aw = atlas.atlasExtent.width, ah = atlas.atlasExtent.height;
+		pass.SetRecordingFunc([resolveProg, push, aw, ah](CommandBuffer& cmd) {
+			// GPU stage timer (kGpuStageEvsmResolve): begin before the
+			// dispatch, end after. One resolve per atlas per frame: with
+			// BOTH atlases active the SECOND resolve's pair overwrites
+			// the first's (identical-cost dispatches; the report shows
+			// one resolve's cost, not their sum).
+			cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/true);
+			cmd.BindComputePipeline(*resolveProg);
+			cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+			cmd.Dispatch((aw + 7) / 8, (ah + 7) / 8, 1);
+			cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/false);
+		});
 	}
 
 	// Builds the blur push for one tile/leg. Edge clamping lives in TEXEL

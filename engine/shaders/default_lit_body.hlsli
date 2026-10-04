@@ -25,8 +25,8 @@ struct PSIn
 // post-shader path for every material — in 2x MSAA that costs early-write
 // on ALL opaque geometry (~+6ms), and in 1x Main depth is read-only so the
 // declared bound buys nothing (drivers already early-test demote-discard).
-// Conservative depth stays on the discard+write passes (shadow_body,
-// shadow_evsm) where seeded depth can pre-reject masked fragments.
+// Conservative depth stays on the discard+write passes (shadow_body) where
+// seeded depth can pre-reject masked fragments.
 struct PSOut
 {
     float4 outColor : SV_Target;

@@ -73,6 +73,13 @@ public:
     // split overlay. False until a full frame has retired.
     double GetGpuFrameMs() const;
     bool HasGpuTiming() const;
+    // GPU stage timings (ms) of the last retired frame — the shadow-path
+    // instrumentation for BOTH shadow representations (see GpuStageTimer
+    // in smvk.h: PCF raster / EVSM casters / EVSM resolve / EVSM blur).
+    // Fills up to count entries of outMs/outValid (index = stage); a
+    // stage reports false until it has run + retired at least once.
+    // False when the device lacks cross-queue timestamps.
+    bool GetGpuStageTimings(double* outMs, bool* outValid, uint32_t count) const;
     // Hosted-target view (stable handle, registered like a swapchain
     // view) for external bindless composition. Empty when windowed.
     ImageViewHandle HostedViewHandle() const;

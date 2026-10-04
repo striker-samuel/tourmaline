@@ -20,7 +20,8 @@ namespace smvk
 
 	struct CommandBuffer final
 	{
-		CommandBuffer(void* cmdOpaque, RenderGraph& graph, RenderPass& pass);
+		CommandBuffer(void* cmdOpaque, RenderGraph& graph, RenderPass& pass,
+			void* stageTimerOpaque = nullptr);
 		void BindRenderPipeline(
 			ShaderProgram& shaderProgram,
 			VertexFormat vertexFormat = VertexFormat::Empty,
@@ -75,6 +76,16 @@ namespace smvk
 		void BindComputePipeline(
 			ShaderProgram& shaderProgram);
 
+		// GPU stage timer write (see GpuStageTimer in smvk.h): records a
+		// timestamp query into this pass's command buffer at the flight's
+		// frame-timer pool. begin=true fires after prior commands (the
+		// stage's start), begin=false after the stage's work (its end) —
+		// recording funcs call this around a STAGE (a group of passes,
+		// e.g. begin at the first cascade's lambda start, end at the last
+		// spot tile's lambda end). No-op when the device/frame lacks
+		// timestamp support (the impl context is null).
+		void WriteStageTimestamp(uint32_t stageTimer, bool begin);
+
 		// Sets the stencil reference for both faces (dynamic state —
 		// pipelines are built with VK_DYNAMIC_STATE_STENCIL_REFERENCE,
 		// so the reference never enters the pipeline cache key and no
@@ -113,6 +124,10 @@ namespace smvk
 		void* cmdOpaque_ = nullptr;
 		void* currentPipeline_ = nullptr;
 		void* currentLayout_ = nullptr;
+		// GPU stage-timer context (impl-side StageTimerCtx: pool +
+		// support flag), or null when the frame lacks timestamps —
+		// WriteStageTimestamp no-ops then.
+		void* stageTimerOpaque_ = nullptr;
 #ifndef NDEBUG
 		// Debug-only: last index buffer bound on this command buffer.
 		// DrawIndexed* wrappers assert it is set, catching leaked/stale

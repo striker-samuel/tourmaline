@@ -786,6 +786,11 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedVertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedFragShader;
 	smvk::ShaderProgram shadowMaskedProgram;
+	// SDSM depth statistics (sdsm_stats.cs.hlsl mainCS): decimated
+	// min/max view depth over the main render depth -> the async-read
+	// stats buffers -> the cascade split fit (see the SDSM block).
+	smvk::Holder<smvk::ShaderModuleHandle> sdsmStatsModule;
+	smvk::ShaderProgram sdsmStatsProgram;
 	// Reversed-Z conservative twin of shadow.frag (shadow_rev.frag):
 	// the Forward+ prepass / temporal seed / remainder masked phases run
 	// clear-0 GreaterEqual (reversed-Z), so their bound must promise
@@ -1168,6 +1173,16 @@ protected:
 	double m_cpuMsSmooth = 0.0;
 	double m_gpuMsSmooth = 0.0;
 	bool m_gpuTimingValid = false;
+	// GPU stage timings (shadow-path instrumentation, both PCF + EVSM —
+	// see GpuStageTimer): last retired frame's per-stage ms + validity,
+	// EMA-smoothed copies for the UI overlay, and --bench accumulators
+	// (avg per measured frame, printed with the [perf] split).
+	double m_stageGpuMs[smvk::kGpuStageCount] = {};
+	bool m_stageGpuValid[smvk::kGpuStageCount] = {};
+	double m_stageGpuMsSmooth[smvk::kGpuStageCount] = {};
+	bool m_stageGpuTimingsSupported = false;
+	double s_benchStageMs[smvk::kGpuStageCount] = {};
+	uint64_t s_benchStageFrames = 0;
 	// Acquire wait (in-flight fence + vkAcquireNextImageKHR) plus the
 	// vkQueuePresentKHR throttle (vsync-paced under FIFO): idle time,
 	// reported separately so CPU stays busy-only.
@@ -1726,6 +1741,76 @@ protected:
 	float m_cascadeSplitsDbg[5] = {};
 	float m_cascadeBiasDbg[4] = {};
 	float m_cascadeNormalBiasDbg[4] = {};
+	// ---- SDSM (Sample Distribution Shadow Maps) ----
+	// GPU-driven, distribution-based cascade fitting:
+	//  - sdsm_stats.cs.hlsl reduces the CURRENT frame's render depth every
+	//    frame (decimated min/max + a 64-bin log2 view-depth histogram per
+	//    group; a dedicated one-pass reduce because the occlusion HZB is
+	//    min-only + sky-poisoned and the MAX pyramid is SSR-conditional).
+	//  - The stats ride an OWN async readback ticket submitted every
+	//    frame (not the shared every-4th batch) -> ONE-FRAME latency:
+	//    current-frame measurement, next-frame fit.
+	//  - UpdateLights merges the 256 partial histograms on the CPU and
+	//    fits the split range from the 1%/99% PERCENTILE range (the
+	//    histogram point: one tiny distant object must not dictate the
+	//    whole range), padded and clamped to [nearClip, CascadeFar()].
+	//  - Temporal stabilization: the applied range follows the measured
+	//    range with asymmetric hysteresis (instant expand — never clip a
+	//    receiver; slow contract ~2%/frame — projections don't swim) and
+	//    is quantized to 0.25 m steps (tiny distribution changes don't
+	//    move the light projections at all).
+	//  - CUT/discards: a camera teleport (per-frame position jump), stale
+	//    stats, or a measured range escaping the applied one by >30%
+	//    discards the hysteresis history. A teleport additionally cools
+	//    down on the fixed heuristic range for 2 frames — the 1-frame-old
+	//    stats describe the OLD view, so they are wrong for the new one;
+	//    the fresh post-cut stats snap in after the cooldown.
+	static constexpr uint32_t kSdsmGroups = 256; // must match SDSM_GROUPS (sdsm_stats.cs.hlsl)
+	static constexpr uint32_t kSdsmBins = 64;    // must match SDSM_BINS (sdsm_stats.cs.hlsl)
+	static constexpr uint32_t kSdsmGroupBytes =
+		2 * sizeof(float) + kSdsmBins * sizeof(uint32_t); // 264: must match HLSL SdsmGroupStats
+	static constexpr uint32_t kSdsmStatsBytes = kSdsmGroups * kSdsmGroupBytes;
+	struct SdsmStatsPush { // must mirror the HLSL SdsmStatsPush (40 bytes)
+		uint64_t stats = 0;   // BDA of the per-flight SdsmStatsOut buffer
+		uint32_t depthIndex = UINT32_MAX;
+		float zNear = 0.01f;
+		float zFar = 100.0f;
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t stride = 1;
+		uint32_t pad0 = 0;
+	};
+	static_assert(sizeof(SdsmStatsPush) == 40, "SDSM stats push must mirror the HLSL SdsmStatsPush (40 bytes)");
+	// Must mirror the HLSL SdsmGroupStats (264 bytes).
+	struct SdsmGroupStats {
+		float minV = 0.0f;
+		float maxV = 0.0f;
+		uint32_t bins[kSdsmBins] = {};
+	};
+	static_assert(sizeof(SdsmGroupStats) == kSdsmGroupBytes,
+		"SDSM group stats must mirror the HLSL SdsmGroupStats (264 bytes)");
+	// Raw measured range (from the last completed stats readback).
+	bool m_sdsmEnabled = true;   // VULKANTOY_SDSM=0/1 override at init; UI toggle
+	bool m_sdsmStatsValid = false; // a completed readback exists
+	float m_sdsmMin = 0.0f;      // measured true min/max view depth
+	float m_sdsmMax = 0.0f;
+	float m_sdsmPctMin = 0.0f;   // measured 1%/99% percentile range
+	float m_sdsmPctMax = 0.0f;
+	uint64_t m_sdsmMeasureFrame = 0; // frame whose depth the consumed stats measured
+	bool m_sdsmLogged = false;   // one-shot fit log
+	// Hysteresis state (the APPLIED range; see the block comment above).
+	bool m_sdsmAppliedValid = false;
+	float m_sdsmAppliedMin = 0.0f;
+	float m_sdsmAppliedMax = 0.0f;
+	uint32_t m_sdsmCutCooldown = 0; // teleport cooldown: heuristic range frames
+	glm::vec3 m_sdsmLastCamPos{ 0.0f };
+	bool m_sdsmLastCamPosValid = false;
+	// Per-flight stats buffers + the readback plumbing (own ticket).
+	smvk::Holder<smvk::BufferHandle> m_sdsmStatsBuffers[2]{};
+	std::vector<uint8_t> m_pendingSdsmStats; // kSdsmStatsBytes; readback destination
+	uint64_t m_sdsmReadbackTicket = 0;       // own 1-in-flight async ticket
+	uint32_t m_sdsmReadbackSlot = 0;         // flight slot the ticket copies
+	bool m_sdsmStatsArmed = false; // the stats pass ran this frame
 	bool EvsmActive() const {
 		return m_evsmEnabled
 			&& m_viewportResources.evsmDir.Valid()
@@ -1733,14 +1818,10 @@ protected:
 			&& m_viewportResources.evsmSpot.Valid()
 			&& m_viewportResources.evsmSpot.ShadersValid();
 	}
-	// Direct-path EVSM moment recording. Phases split like PCF: opaque
-	// casters bind the cheap no-material moments program (opaqueProgram,
-	// null = fall back to the full one), MASK cutout bind the full
-	// alpha-tested moments program.
-	void RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
-		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered,
-		smvk::ShaderProgram* opaqueProgram = nullptr);
+	// Direct-path EVSM moment recording: depth-only 2x MSAA through the
+	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
+	// the per-sample resolve (evsm_resolve.cs.hlsl) reconstructs the
+	// moments from the MSAA depth right after the caster passes.
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
 	// ---------------------------------------------------------------------
 	// ---- MULTIVIEW per-view state (hosted; see SetViewCount) ------------
@@ -1871,7 +1952,8 @@ protected:
 	// the per-view command list).
 	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered);
+		uint32_t casterViewIndex, bool skipFiltered,
+		const smvk::MSAASettings& msaa = smvk::MSAASettings{});
 	smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;
 	std::vector<std::future<void>> m_shadowFutures;
 	std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;

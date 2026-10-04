@@ -2856,6 +2856,10 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// Reflection cubemaps for specular IBL: same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors cube views here.
 		getDSLBinding(kBinding_Cubemaps, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
+		// Multisampled 2D textures (EVSM per-sample depth resolve): same
+		// slot space as kBinding_Textures; UpdateDescriptors mirrors MSAA
+		// views here (Texture2DMS-typed shaders only reach those slots).
+		getDSLBinding(kBinding_MsaaTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -7036,6 +7040,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		bool storageCapable = false;
 		bool isVolume = false; // 3D view: mirror write into binding 5
 		bool isCubemap = false; // Cube view: mirror write into binding 6
+		bool isMultisample = false; // MSAA image: mirror write into binding 7
 	};
 
 	std::vector<PendingImageWrite> imageWrites;
@@ -7073,6 +7078,16 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		pending.isCubemap =
 			view->viewType == ImageViewType::ViewCube
 			|| view->viewType == ImageViewType::ViewCubeArray;
+
+		// Multisampled images (EVSM 2x MSAA depth) get a second descriptor
+		// write at the same slot in kBinding_MsaaTextures so
+		// Texture2DMS-typed shaders (the per-sample resolve) can reach
+		// them (Texture2D[] code cannot fetch MSAA views by type).
+		if (!view->image.empty()) {
+			if (const Image* img = images_.get(view->image))
+				pending.isMultisample =
+					img->samples != SampleCount::Count1;
+		}
 
 		// STORAGE descriptors require STORAGE usage on the image
 		// (VUID-00339): only Storage-capable images get the binding-2
@@ -7209,6 +7224,24 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			};
 			write.dstSet = defaultDescriptorSets_[frame];
 			write.dstBinding = smvk::Bindings::kBinding_Cubemaps;
+			write.dstArrayElement = pending.slot;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			write.descriptorCount = 1;
+			write.pImageInfo = &pending.info;
+			writes.push_back(write);
+		}
+
+		// Multisampled 2D textures (EVSM per-sample depth resolve): same
+		// slot, kBinding_MsaaTextures — Texture2DMS-typed consumers
+		// (evsm_resolve.cs.hlsl) read these.
+		for (const auto& pending : imageWrites) {
+			if (!pending.isMultisample)
+				continue;
+			VkWriteDescriptorSet write{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+			};
+			write.dstSet = defaultDescriptorSets_[frame];
+			write.dstBinding = smvk::Bindings::kBinding_MsaaTextures;
 			write.dstArrayElement = pending.slot;
 			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 			write.descriptorCount = 1;
@@ -8685,9 +8718,13 @@ void smvk::VulkanSwapchain::CreateTimestampPools() {
 	VkPhysicalDeviceProperties props{};
 	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
 	timestampPeriod_ = props.limits.timestampPeriod;
+	// Stage timers need timestamps on ALL queues (the async blur stream
+	// writes from the compute queue) and the wider pools.
+	stageTimersSupported_ = (props.limits.timestampComputeAndGraphics == VK_TRUE)
+		&& (timestampPeriod_ > 0.0f);
 	VkQueryPoolCreateInfo info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 	info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-	info.queryCount = 2;
+	info.queryCount = 2 + 2 * kGpuStageCount;
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 		if (vkCreateQueryPool(device_, &info, nullptr, &timestampPools_[i]) != VK_SUCCESS)
 			timestampPools_[i] = VK_NULL_HANDLE;
@@ -8695,6 +8732,10 @@ void smvk::VulkanSwapchain::CreateTimestampPools() {
 	}
 	gpuTimingValid_ = false;
 	lastGpuMs_ = 0.0;
+	for (uint32_t s = 0; s < kGpuStageCount; ++s) {
+		stageTimingValid_[s] = false;
+		lastStageGpuMs_[s] = 0.0;
+	}
 }
 void smvk::VulkanSwapchain::DestroyTimestampPools() {
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -9067,6 +9108,23 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 			lastGpuMs_ = double(ticks[1] - ticks[0]) * double(timestampPeriod_) / 1e6;
 			gpuTimingValid_ = true;
 		}
+		// Stage pairs (shadow-path instrumentation, see GpuStageTimer):
+		// per-pair pulls — a stage that never ran this frame leaves its
+		// pair unwritten (reset but never written = NOT_READY), and the
+		// previous frame's value survives. The async-stream pair was
+		// written on the COMPUTE queue; the present submit's C2G wait
+		// guarantees those completed with the frame.
+		for (uint32_t s = 0; s < kGpuStageCount; ++s) {
+			if (!stageTimersSupported_)
+				break;
+			uint64_t st[2] = { 0, 0 };
+			VkResult sr = vkGetQueryPoolResults(device_, timestampPools_[currentFrame_],
+				2 + 2 * s, 2, sizeof(st), st, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+			if (sr == VK_SUCCESS && st[1] > st[0]) {
+				lastStageGpuMs_[s] = double(st[1] - st[0]) * double(timestampPeriod_) / 1e6;
+				stageTimingValid_[s] = true;
+			}
+		}
 	}
 
 	uint32_t imageIndex;
@@ -9139,7 +9197,8 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	// GPU frame timer: whole command buffer (all rendergraph passes).
 	if (timestampPools_[currentFrame_] != VK_NULL_HANDLE) {
-		vkCmdResetQueryPool(commandBuffers[currentFrame_], timestampPools_[currentFrame_], 0, 2);
+		vkCmdResetQueryPool(commandBuffers[currentFrame_], timestampPools_[currentFrame_], 0,
+			2 + 2 * kGpuStageCount);
 		vkCmdWriteTimestamp(commandBuffers[currentFrame_], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			timestampPools_[currentFrame_], 0);
 	}
@@ -11062,6 +11121,16 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 // ---------------------------------------------------------------------------
 // RenderGraph barrier debug tracing — see the helpers next to ToVkStage.
 // ---------------------------------------------------------------------------
+// GPU stage-timer context (see GpuStageTimer in smvk.h): built per frame
+// from the swapchain's frame-timer pools (the stage pairs ride queries
+// 2+2s / 3+2s of the SAME pools), handed to every per-pass CommandBuffer
+// (raster stages write through CommandBuffer::WriteStageTimestamp) and
+// used natively for the async-stream stage around the C chain. Null =
+// timestamps unsupported (the stage timers stay inert all frame).
+struct StageTimerCtx {
+	VkQueryPool pool = VK_NULL_HANDLE;
+	bool supported = false;
+};
 void smvk::RenderGraph::Execute(Framebuffer& fb)
 {
 	ResolveImages();
@@ -11076,6 +11145,17 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 	auto imageStates = vctx.SnapshotImageSyncStates();
 	auto bufferStates = vctx.SnapshotBufferSyncStates();
+
+	StageTimerCtx stageTimerCtx{};
+	if (fb.swapchain) {
+		auto* stSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
+		if (stSwap && stSwap->StageTimersSupported()) {
+			stageTimerCtx.pool = stSwap->TimestampPool(fb.frameIndex);
+			stageTimerCtx.supported = stageTimerCtx.pool != VK_NULL_HANDLE;
+		}
+	}
+	void* const stageTimerCtxPtr =
+		stageTimerCtx.supported ? &stageTimerCtx : nullptr;
 
 	// One GPU context per command buffer: every pass scope below (and any
 	// GPU event emitted inside a recording lambda) writes its timestamp
@@ -11243,6 +11323,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				VkCommandBufferBeginInfo beginCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 				beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 				VK_CHECK(vkBeginCommandBuffer(dstCmd, &beginCI));
+				// GPU stage timer, async-stream stage (GpuStageTimer): begin
+				// at the FIRST C-stream CB's start — the whole chained blur
+				// stream is one stage (the timeline chain serializes the
+				// passes, so first-CB-start..last-CB-end IS its GPU cost).
+				if (asyncChainIdx == 0 && stageTimerCtxPtr != nullptr)
+					vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+						stageTimerCtx.pool, 2 + 2 * kGpuStageEvsmBlur);
 			}
 			else
 				dstCmd = splitCB;
@@ -11663,7 +11750,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// Barriers above already transitioned hinted images/buffers.
 			// Async-marked passes land in the compute-queue CB (true
 			// async, split mode); the rest stay on the graphics CBs.
-			CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
+			CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr };
 			if (pass.recordingFunction_) pass.recordingFunction_(cb);
 			if (passIsAsync) {
 				// ---- Per-pass timeline-chained C submit ----
@@ -11689,8 +11776,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// unchanged. Submission order (G1, then each C pass in
 				// sorted order, same thread) keeps every wait
 				// signal-before-wait legal.
-				VK_CHECK(vkEndCommandBuffer(dstCmd));
 				const bool lastAsync = (asyncChainIdx + 1 == asyncPassCount);
+				// GPU stage timer, async-stream stage: end at the LAST
+				// C-stream CB's end (see the begin at the first CB above).
+				if (lastAsync && stageTimerCtxPtr != nullptr)
+					vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+						stageTimerCtx.pool, 3 + 2 * kGpuStageEvsmBlur);
+				VK_CHECK(vkEndCommandBuffer(dstCmd));
 				VkSemaphoreSubmitInfo pWait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
 				pWait.semaphore = vkSwap->asyncG2C_[flight];
 				pWait.value = g2cVal + asyncChainIdx;
@@ -11750,7 +11842,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			rect.layerCount = 1;
 			vkCmdClearAttachments(dstCmd, 1, &clear, 1, &rect);
 		}
-		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
+		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
 		vkCmdEndRendering(dstCmd);
 	}
@@ -11790,11 +11882,29 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	vctx.CommitBufferSyncStates(bufferStates);
 }
 // CommandBuffer – opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
-smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass)
+smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass,
+	void* stageTimerOpaque)
 	: cmdOpaque_(cmdOpaque)
 	, graph_(&graph)
 	, renderPass_(&pass)
+	, stageTimerOpaque_(stageTimerOpaque)
 {}
+void smvk::CommandBuffer::WriteStageTimestamp(uint32_t stageTimer, bool begin)
+{
+	if (stageTimerOpaque_ == nullptr || stageTimer >= kGpuStageCount)
+		return;
+	auto* ctx = static_cast<StageTimerCtx*>(stageTimerOpaque_);
+	if (!ctx || !ctx->supported || ctx->pool == VK_NULL_HANDLE)
+		return;
+	// BOTTOM for both: begin fires after prior commands (the stage's
+	// start), end after the stage's work — the delta is the stage's GPU
+	// cost on a serialized frame.
+	vkCmdWriteTimestamp(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		ctx->pool,
+		2 + 2 * stageTimer + (begin ? 0 : 1));
+}
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
 	VertexFormat vertexFormat,

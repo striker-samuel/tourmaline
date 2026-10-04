@@ -5,11 +5,12 @@
 // both exponential warps (Lauritzen & McCool 2008):
 //   R = E[exp(+c*d)]  G = E[exp(+2c*d)]   positive warp, M1/M2
 //   B = E[exp(-c*d)]  A = E[exp(-2c*d)]   negative warp, M1/M2
-// with d = light-space depth in [0,1]. The MSAA moment pass writes the
-// warped depth per sample; because E[warp^2] = E[exp(+-2c*d)], the second
-// moments are just squares of the first at bake time. The async prefilter
-// (evsm_blur_h/v.cs.hlsl, separable Gaussian H+V) produces the filtered
-// expectations.
+// with d = light-space depth in [0,1]. The caster pass renders DEPTH ONLY
+// at 2x MSAA (the PCF shadow programs); the per-sample resolve
+// (evsm_resolve.cs.hlsl) warps EACH depth sample and averages — because
+// E[warp^2] = E[exp(+-2c*d)], the second moments are just squares of the
+// first at bake time. The async prefilter (evsm_blur_h/v.cs.hlsl,
+// separable Gaussian H+V) produces the filtered expectations.
 //
 // Visibility = min of two one-sided Cantelli (Chebyshev) bounds, each an
 // UPPER bound on the lit probability P(d_occ >= d_recv):
@@ -160,14 +161,13 @@ float EvsmVisibility(float4 moments, float receiverDepth, float exponent, float 
     return saturate(v);
 }
 
-// Clear color for the MSAA moment target, matching far-plane depth d=1:
-// (exp(c), exp(2c), exp(-c), exp(-2c)). Resolved uncleared texels read as
-// "far occluder" for the blocker estimate (EvsmBlockerDepth) but are gated
-// back to lit in EvsmVisibility (see the far-plane gate there).
-float4 EvsmClearColor(float exponent)
-{
-    return EvsmWarp(1.0f, exponent);
-}
+// Clear convention, expressed through the DEPTH clear now (the caster pass
+// is depth-only): uncovered/cleared samples read z = 1.0 (the far plane)
+// and the per-sample resolve (evsm_resolve.cs.hlsl) warps them to
+// EvsmWarp(1) = (exp(c), exp(2c), exp(-c), exp(-2c)) — the old
+// EvsmClearColor color-clear convention, for free. Resolved uncleared
+// texels read as "far occluder" for the blocker estimate (EvsmBlockerDepth)
+// but are gated back to lit in EvsmVisibility (see the far-plane gate).
 
 float EvsmOrientedBias(
     float3 faceNormal,
