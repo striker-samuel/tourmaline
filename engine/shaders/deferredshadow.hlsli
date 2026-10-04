@@ -197,6 +197,9 @@ float DsLoadVisibility(vk::BufferPointer<DsVisibilityBuffer> vis, uint slot, uin
     return float(b) * (1.0f / 255.0f);
 }
 
+// ---- Debug visualizer parameters: DsVizParams lives in common.hlsli
+// (before FrameUniforms, unconditional) — see there for the layout note.
+// Only its fill (app) and read (DsVisualize, below) are DS_DEBUG_VIZ-gated.
 // ---- Debug visualizers (paper 5.3 Light Culling / 5.4 Light Count).
 // Debug-build only (DS_DEBUG_VIZ, set by CompileShaders.cmake): the
 // per-pixel diagnostic paths compile out of release shaders entirely.
@@ -267,7 +270,7 @@ bool DsMaskHasLight(vk::BufferPointer<DsTileLightMaskBuffer> masks,
 // the ImGui index space and the buffer order match only after the sort).
 // worldPos: the shaded fragment's world position (ground truth bounds
 // tests re-run per pixel, exactly like phase 3).
-float3 DsVisualize(FrameUniforms frame,
+float3 DsVisualize(FrameUniforms frame, DsVizParams viz,
     vk::BufferPointer<ForwardPlusLightBuffer> fpLights, uint lightCount,
     float3 worldPos, uint2 pix, uint mode, uint lightIdx)
 {
@@ -285,13 +288,13 @@ float3 DsVisualize(FrameUniforms frame,
         const uint early = frame.dsTileState.Get().states[tileIdx * 4u + 3u];
         float3 heat;
         if (mode == DS_VIZ_COUNT_APPROX) {
-            heat = DsCountHeat(approx, frame.dsDebugCountCeil);
+            heat = DsCountHeat(approx, viz.countCeil);
         } else if (mode == DS_VIZ_COUNT_ACCURATE) {
-            heat = DsCountHeat(early, frame.dsDebugCountCeil);
+            heat = DsCountHeat(early, viz.countCeil);
         } else if (mode == DS_VIZ_COUNT_FINAL) {
             heat = DsCountHeat(
                 min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
-                    (uint)DS_MAX_LIGHTS_PER_TILE), frame.dsDebugCountCeil);
+                    (uint)DS_MAX_LIGHTS_PER_TILE), viz.countCeil);
         } else {
             // Difference: approx - accurate. Any NEGATIVE value is a hard
             // error (the accurate list is a subset of the approximated one
@@ -299,7 +302,7 @@ float3 DsVisualize(FrameUniforms frame,
             const int diff = int(approx) - int(early);
             heat = (diff < 0)
                 ? float3(1.0f, 0.10f, 0.05f)
-                : DsCountHeat(uint(diff), frame.dsDebugCountCeil);
+                : DsCountHeat(uint(diff), viz.countCeil);
         }
         // Faint 64px TileGroup grid so tile/group granularity reads.
         if ((pix.x & 63u) == 0u || (pix.y & 63u) == 0u)
@@ -321,8 +324,8 @@ float3 DsVisualize(FrameUniforms frame,
     // light entered the tile's early list).
     const uint groupCountX = (frame.dsTileCountX + 7u) / 8u; // ceil(ceil(w/8)/8)
     const uint groupIdx = (tileY >> 3) * groupCountX + (tileX >> 3);
-    const bool inCpuMask = DsMaskHasLight(frame.dsTileMasks, groupIdx, lightIdx);
-    const bool inGroupMask = DsMaskHasLight(frame.dsTileGroupMasks, groupIdx, lightIdx);
+    const bool inCpuMask = DsMaskHasLight(viz.tileMasks, groupIdx, lightIdx);
+    const bool inGroupMask = DsMaskHasLight(viz.tileGroupMasks, groupIdx, lightIdx);
     const uint slotInfo = DsFinalListFind(frame.dsTileState, frame.dsLightList,
         tileIdx, lightIdx);
     const bool inFinal = slotInfo != 0xFFFFFFFFu;

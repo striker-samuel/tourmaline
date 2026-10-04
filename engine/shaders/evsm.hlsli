@@ -260,6 +260,12 @@ float EvsmBlockerDepth(float4 moments, float exponent)
     return clamp(-log(max(moments.z, 1e-20f)) / exponent, 0.0f, 1.0f);
 }
 
+float EvsmBlockerDepthBiased(float4 moments, float exponent, float dThr)
+{
+    float blocker = clamp(-log(max(moments.z, 1e-20f)) / exponent, 0.0f, 1.0f);
+    return min(blocker, dThr);
+}
+
 // 8-tap unit disk (poisson-ish: 16-step circle angles, jittered radii so
 // no tap ring aliases) — every tap evaluates the PREfiltered moments, so
 // 8 taps ride on top of the blur's own filtering (vs 32-64 raw PCF taps).
@@ -346,8 +352,9 @@ float SampleEvsmTileSoft(
         return centerVis;
 
     // Solar penumbra width from the moment blocker (tile-UV units).
-    const float blocker = EvsmBlockerDepth(moments, exponent);
-    const float delta = receiverDepth - blocker;
+    const float dThr = saturate(receiverDepth - biasAmt);
+    const float blocker = EvsmBlockerDepthBiased(moments, exponent, dThr);
+    const float delta = dThr - blocker;
     // Blocker at/behind the receiver: fully lit. Return the center tap
     // (which is already ~1) instead of running the disk: forcing a minimum
     // disk radius here samples neighbours on FLAT lit surfaces and injects
@@ -434,7 +441,8 @@ float SampleEvsmSpotTileSoft(
     const float nearP = max(t.pad_, 1e-3f);
     const float farP = max(t.splitEnd, nearP + 0.01f);
     const float zRecv = farP * nearP / max(farP - ndc.z * (farP - nearP), 1e-4f);
-    const float blocker = EvsmBlockerDepth(moments, exponent);
+    const float dThr = saturate(receiverDepth - biasAmt);
+    const float blocker = EvsmBlockerDepthBiased(moments, exponent, dThr);
     const float ndcBlocker = clamp(blocker, 0.0f, 0.9999f);
     const float zBlocker = farP * nearP / max(farP - ndcBlocker * (farP - nearP), 1e-4f);
     if (zBlocker >= zRecv)

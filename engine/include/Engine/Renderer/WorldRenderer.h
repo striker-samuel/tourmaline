@@ -465,6 +465,29 @@ struct ParticleDemo {
 	}
 };
 
+// Deferred-shadow visualizer parameters (paper 5.3/5.4).
+// Standalone 32-byte payload, uploaded into a tiny per-flight ring and
+// reached through FrameUniforms::dsVizParams — deliberately NOT inlined
+// in FrameUniforms: viz-gated #ifdefs inside GPU-pushed structs once made
+// the CPU/GPU layout config-dependent (per-flight stride bugs). This
+// struct is UNCONDITIONAL on both sides (C++/HLSL mirror in
+// engine/shaders/deferredshadow.hlsli); only its FILL (UpdateFrameUniforms)
+// and READ (default_lit viz overlay) are DS_DEBUG_VIZ-gated.
+struct DsVizParams {
+	uint64_t tileMasks = 0;      // phase-1 CPU TileGroup masks (viz)
+	uint64_t tileGroupMasks = 0; // phase-2 GPU TileGroup masks (viz)
+	uint32_t mode = 0;           // engine::DsDebugViz (0 = off)
+	uint32_t light = 0;          // selected light (sorted index)
+	uint32_t flags = 0;          // bit0 = blend over lit
+	uint32_t countCeil = 32;     // count-heat ceiling (lights)
+};
+static_assert(sizeof(DsVizParams) == 32, "DsVizParams must stay 32 bytes (HLSL mirror)");
+
+// FrameUniforms::flags bits (unconditional on both sides; HLSL mirror:
+// DS_FLAG_VIZ in common.hlsli). Lets the shader skip payload dereferences
+// for off-by-default features without changing the struct layout.
+static constexpr uint64_t kFrameFlagDsViz = 1ull << 0; // DS viz overlay active this view
+
 struct FrameUniforms
 {
 	glm::mat4 view;
@@ -611,26 +634,26 @@ struct FrameUniforms
 	// App/push_constants.h layout invariant). Filled per view slab in
 	// UpdateFrameUniforms / BuildSecondaryFrameUniforms. ----
 	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
-#if defined(DS_DEBUG_VIZ)
-	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
-	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
-	// Debug trees; release compiles fields + UI + shader paths out, so
-	// the release layout is the strict prefix of this one — the core +
-	// SG-GI + decal fields are identical, the visualizer tail follows).
-	// Tile-state counts + per-light culling/list diagnostics blended over
-	// the lit image in default_lit. dsTileMasks/dsTileGroupMasks are the
-	// phase-1 (CPU) and phase-2 (GPU) TileGroup masks the
-	// light-scoped modes re-query; dsDebug* select mode / light / flags /
-	// heat scale. ----
-	uint64_t dsTileMasks = 0;      // 1360 phase-1 CPU TileGroup masks (viz)
-	uint64_t dsTileGroupMasks = 0; // 1368 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 1376 engine::DsDebugViz (0 = off)
-	uint32_t dsDebugLight = 0;     // 1380 selected light (sorted index)
-	uint32_t dsDebugFlags = 0;     // 1384 bit0 = blend over lit
-	uint32_t dsDebugCountCeil = 32; // 1388 count-heat ceiling (lights)
-	uint32_t dsDebugPad_[4] = {};  // 1392 16-align tail (mirrors HLSL)
-#endif
+	// ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
+	// view's DsVizParams slice — the standalone 32 B payload (per-flight
+	// ring + one zero slice shared by secondary views, see
+	// UpdateFrameUniforms). Deliberately a BDA, not inlined fields:
+	// viz-gated #ifdefs inside this struct once made the CPU/GPU layout
+	// config-dependent. This field is UNCONDITIONAL (same offset/size in
+	// every build); only its fill and read are DS_DEBUG_VIZ-gated. ----
+	uint64_t dsVizParams = 0;   // 1304 this view's DsVizParams slice
+	// ---- Per-frame feature flags (bitmask; upper bits reserved). Lets
+	// shaders skip off-by-default payloads (like dsVizParams above)
+	// without a BDA chase. Unconditional like every other field. ----
+	uint64_t flags = 0;         // 1312 kFrameFlag* bits
 };
+// FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
+// every field by absolute offset — any drift desyncs the GPU reads.
+// dsVizParams must directly follow frameHot (no config-dependent tail).
+static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, flags) == 1312, "flags offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1328, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -691,6 +714,11 @@ struct AppResources {
 	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
+	// DS visualizer params ring (DsVizParams per flight + one zero slice
+	// shared by secondary views, which never viz; reached through
+	// FrameUniforms::dsVizParams). No rendergraph alias: written by upload,
+	// read by the lit FS only.
+	smvk::Holder<smvk::BufferHandle> dsVizParamsBuffer;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
@@ -2070,8 +2098,11 @@ protected:
 	void DegradeAmbientForMissingSources();
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
-	// only). Mode/light/overlay ride FrameUniforms (dsDebug*); the
-	// light index refers to the SORTED light buffer (phase 1 sorts by
+	// only). Mode/light/overlay ride the per-flight DsVizParams ring
+	// (FrameUniforms::dsVizParams); the light index refers to the SORTED
+	// light buffer (phase 1 sorts by near distance AFTER the spot-shadow
+	// selection, so it differs from the ImGui overlay's m_debugLights
+	// order). ----
 	// near distance AFTER the spot-shadow selection, so it differs from
 	// the ImGui overlay's m_debugLights order). ----
 	DsDebugViz m_dsDebugMode = DsDebugViz::Off;

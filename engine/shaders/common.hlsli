@@ -356,11 +356,37 @@ struct FramePSHot
 
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
+// ---- Debug visualizer parameters (paper 5.3 Light Culling / 5.4 Light Count).
+// Standalone 32-byte payload (per-flight ring + zero slice on the CPU),
+// reached through FrameUniforms::dsVizParams — deliberately NOT inlined in
+// FrameUniforms: viz-gated #ifdefs inside GPU-pushed structs once made the
+// CPU/GPU layout config-dependent. This struct is UNCONDITIONAL (C++ mirror:
+// engine::DsVizParams, 32 bytes); only its fill (app) and read
+// (DsVisualize in deferredshadow.hlsli) are DS_DEBUG_VIZ-gated.
+struct DsVizParams
+{
+    vk::BufferPointer<DsTileLightMaskBuffer> tileMasks;  // phase-1 CPU masks (viz)
+    vk::BufferPointer<DsTileLightMaskBuffer> tileGroupMasks; // phase-2 GPU masks (viz)
+    uint mode;       // DS_VIZ_* (0 = off)
+    uint light;      // selected light (sorted index)
+    uint flags;      // bit0 = blend over lit
+    uint countCeil;  // count-heat ceiling (lights)
+};
+
+// FrameUniforms::flags bits (unconditional; C++ mirror: kFrameFlag* in
+// WorldRenderer.h). Lets shaders skip off-by-default payloads without a
+// BDA chase. Scalar-constructor spelling (no integer-suffix reliance).
+#define DS_FLAG_VIZ (uint64_t(1))
+
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
 // there): env at 512, cubemap block at 640, specular knobs at 656,
 // deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
-// decal fields at 752, lightmap fields deprecated, regular-volume fields at
-// 848; visualizer fields (DS_DEBUG_VIZ only) follow at 1104.
+// decal fields at 752, regular-volume fields at 784, convex-volume
+// fields at 1040, frameHot at 1296, dsVizParams at 1304, flags at 1312
+// (total 1328).
+// The DS visualizer inputs live in the standalone DsVizParams payload
+// (NOT inlined here): viz-gated #ifdefs inside this struct once made the
+// CPU/GPU layout config-dependent.
 struct FrameUniforms
 {
     float4x4 view;
@@ -477,11 +503,11 @@ uint decalCount;                                         // 776 0 = decals off
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
     // hardware trilinear filtering between neighboring probes. ----
-    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 848 OBB array
-    uint regLayers[56];                                       // 856 8 volumes x 7 layer slots
-    uint regCount;                                             // 1080 active volumes
-    uint regEnabled;                                           // 1084 1 = grid branch active
-    uint4 regPad;                                              // 1088 (16-align tail)
+    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 784 OBB array
+    uint regLayers[56];                                       // 792 8 volumes x 7 layer slots
+    uint regCount;                                             // 1016 active volumes
+    uint regEnabled;                                           // 1020 1 = grid branch active
+    uint4 regPad;                                              // 1024 (16-align tail)
     // ---- Convex GI volumes (Engine/GI/cubemap_volume.h; BO3-style
     // cubemap-reprojection bake, TPP/HZD-style stacked volumes). Up to
     // SG_CV_MAX_VOLUMES volumes from gi/<scene>.cvmanifest, each a
@@ -491,32 +517,30 @@ uint decalCount;                                         // 776 0 = decals off
     // composites ordered: E = lerp(E, E_volume, weight) per volume on
     // top of the octree/sky base — density levels never share
     // interpolation neighbors. ----
-    vk::BufferPointer<CvVolumesBuffer> cvolVolumes;           // 1104 volume array (560 B each)
-    uint cvolLayers[56];                                       // 1112 8 volumes x 7 layer slots
-    uint cvolCount;                                            // 1336 active volumes
-    uint cvolEnabled;                                          // 1340 1 = convex-volume branch active
-    uint4 cvolPad;                                             // 1344 (16-align tail)
+    vk::BufferPointer<CvVolumesBuffer> cvolVolumes;           // 1040 volume array (560 B each)
+    uint cvolLayers[56];                                       // 1048 8 volumes x 7 layer slots
+    uint cvolCount;                                            // 1272 active volumes
+    uint cvolEnabled;                                          // 1276 1 = convex-volume branch active
+    uint4 cvolPad;                                             // 1280 (16-align tail)
     // ---- FramePSHot slab (FS-only hot struct, see FramePSHot below): the
     // pixel shader reaches the hot slab through FrameUniforms (FramePSHot
     // hot = frame.frameHot.Get()) instead of a pc member — a pc member
     // shifted every sub-192 pc field and broke the HLSL mirror structs
     // (the 10/1 device-loss crash; see App/push_constants.h). Filled per
     // view slab by the app (UpdateFrameUniforms/BuildSecondaryFrameUniforms).
-    vk::BufferPointer<FramePSHot> frameHot;                   // 1360 this view's hot slab
-    // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (1360 B) is a
-    // strict prefix of the debug layout. The light-scoped modes
-    // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
-    // dsDebug* pick mode / light / flags / heat scale.
-#if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1360 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1368 phase-2 masks
-    uint dsDebugMode;      // 1376 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 1380 selected light (sorted index)
-    uint dsDebugFlags;     // 1384 bit0 = blend over lit
-    uint dsDebugCountCeil; // 1388 count-heat ceiling (lights)
-    uint4 dsDebugPad;      // 1392 (16-align tail)
-#endif
+    vk::BufferPointer<FramePSHot> frameHot;                   // 1296 this view's hot slab
+    // ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
+    // view's DsVizParams slice (standalone 32 B payload, per-flight ring +
+    // zero slice — see deferredshadow.hlsli). Deliberately a BDA, not
+    // inlined fields: viz-gated #ifdefs inside this struct once made the
+    // CPU/GPU layout config-dependent. This field is UNCONDITIONAL (same
+    // offset/size in every build); only its fill (app) and read
+    // (DsVisualize) are DS_DEBUG_VIZ-gated. ----
+    vk::BufferPointer<DsVizParams> dsVizParams;               // 1304 (zero slice = viz off)
+    // ---- Per-frame feature flags (bitmask; upper bits reserved). Lets
+    // shaders skip off-by-default payloads (like dsVizParams above)
+    // without a BDA chase. Unconditional like every other field. ----
+    uint64_t flags;                                              // 1312 kFrameFlag* bits (C++ mirror)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

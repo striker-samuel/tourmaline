@@ -978,6 +978,24 @@ bool WorldRenderer::Initialize() {
 		);
 		m_resources.spotShadowLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.spotShadowBuffer, "spot shadow tiles");
+		// DS visualizer params ring (one DsVizParams per flight + one zero
+		// slice shared by secondary views, which never viz). Sized by the
+		// compile-time max (never stale across swapchain recreates, same as
+		// the deferredshadow.h rings). Zero-filled once here; per-frame
+		// uploads only ever touch slice[flight], never the zero slice.
+		m_resources.dsVizParamsBuffer = m_context->CreateBuffer(
+			sizeof(DsVizParams) * (size_t(::MAX_FRAMES_IN_FLIGHT) + 1u),
+			smvk::BufferType_Storage,
+			"ds viz params"
+		);
+		if (!m_resources.dsVizParamsBuffer.empty()) {
+			const std::vector<uint8_t> vizZeros(
+				sizeof(DsVizParams) * (size_t(::MAX_FRAMES_IN_FLIGHT) + 1u), 0);
+			m_context->UploadDataToBuffer(m_resources.dsVizParamsBuffer,
+				vizZeros.data(), vizZeros.size(),
+				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+				smvk::AccessFlags::ShaderRead, 0, 0);
+		}
 		// RenderView slab: per-frame virtual cameras (main + shadow views).
 		if (!m_renderViews.Ensure(*m_context, m_swapchain->framesInFlight())) {
 			std::cerr << "[WorldRenderer] Failed to create render views buffer\n";
@@ -2749,18 +2767,36 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			data.dsTileCountX = ds.tileCountX;
 			data.dsEnabled = 1u;
 #if defined(DS_DEBUG_VIZ)
-			// Visualizer inputs (paper 5.3/5.4): the phase-1/phase-2
-			// TileGroup masks for the light-scoped modes + the panel's
-			// mode/light/overlay selection. Gated off with the pipeline
-			// so the shader never sees a mode without fresh buffers.
-			data.dsTileMasks = ds.TileMasksAddress(*m_context, currentFrame);
-			data.dsTileGroupMasks = ds.TileGroupMasksAddress(*m_context, currentFrame);
-			data.dsDebugMode = static_cast<uint32_t>(m_dsDebugMode);
-			data.dsDebugLight = static_cast<uint32_t>(
+		// Visualizer inputs (paper 5.3/5.4): the phase-1/phase-2
+		// TileGroup masks for the light-scoped modes + the panel's
+		// mode/light/overlay selection. Gated off with the pipeline
+		// so the shader never sees a mode without fresh buffers. These
+		// ride the standalone DsVizParams ring (NOT FrameUniforms).
+		{
+			DsVizParams viz{};
+			viz.tileMasks = ds.TileMasksAddress(*m_context, currentFrame);
+			viz.tileGroupMasks = ds.TileGroupMasksAddress(*m_context, currentFrame);
+			viz.mode = static_cast<uint32_t>(m_dsDebugMode);
+			viz.light = static_cast<uint32_t>(
 				std::clamp(m_dsDebugLight, 0, std::max(0, (int)m_dsLightCount - 1)));
-			data.dsDebugFlags = m_dsDebugOverlay ? 1u : 0u;
-			data.dsDebugCountCeil = static_cast<uint32_t>(
+			viz.flags = m_dsDebugOverlay ? 1u : 0u;
+			viz.countCeil = static_cast<uint32_t>(
 				std::clamp(m_dsDebugCountCeil, 1, (int)smvk::kDsMaxLightsPerTile));
+			m_context->UploadDataToBuffer(
+				m_resources.dsVizParamsBuffer,
+				&viz,
+				sizeof(DsVizParams),
+				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+				smvk::AccessFlags::ShaderRead,
+				0,
+				size_t(currentFrame) * sizeof(DsVizParams)
+			);
+			// Fast-path bit for the viz overlay (lets the lit FS skip the
+			// viz BDA chase when the mode is off). Set from the same
+			// condition the shader would otherwise derive after loading.
+			if (m_dsDebugMode != DsDebugViz::Off)
+				data.flags |= kFrameFlagDsViz;
+		}
 #endif
 		} else {
 			data.dsTileState = 0;
@@ -2769,12 +2805,20 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			data.dsTileCountX = 0;
 			data.dsEnabled = 0u;
 #if defined(DS_DEBUG_VIZ)
-			data.dsTileMasks = 0;
-			data.dsTileGroupMasks = 0;
-			data.dsDebugMode = 0;
-			data.dsDebugLight = 0;
-			data.dsDebugFlags = 0;
-			data.dsDebugCountCeil = 32;
+			// Viz payload zeroed (mode 0 = off) so a stale slice can
+			// never enable the overlay without fresh buffers.
+			{
+				const DsVizParams viz{};
+				m_context->UploadDataToBuffer(
+					m_resources.dsVizParamsBuffer,
+					&viz,
+					sizeof(DsVizParams),
+					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+					smvk::AccessFlags::ShaderRead,
+					0,
+					size_t(currentFrame) * sizeof(DsVizParams)
+				);
+			}
 #endif
 		}
 
@@ -2884,6 +2928,10 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		// push_constants.h): slab 0, same math as the hot upload below.
 		data.frameHot = m_context->GetBufferDeviceAddress(m_resources.frameHot)
 			+ currentFrame * sizeof(FramePSHot);
+		// This view's DsVizParams slice (standalone viz payload ring; the
+		// fill/upload below targets the same slice).
+		data.dsVizParams = m_context->GetBufferDeviceAddress(m_resources.dsVizParamsBuffer)
+			+ size_t(currentFrame) * sizeof(DsVizParams);
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -2990,8 +3038,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		}
 		// Mirrors for the shadow UI sections (ranges + applied biases).
 		for (uint32_t i = 0; i <= NUM_CASCADES; ++i)
-			m_cascadeSplitsDbg[i] = splits[i];
-		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+			m_cascadeSplitsDbg[i] = splits[i];		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 			m_cascadeBiasDbg[i] = dir.cascades[i].bias;
 			m_cascadeNormalBiasDbg[i] = dir.cascades[i].normalBias;
 		}
@@ -5986,20 +6033,15 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 		}
 	}
 	// Deferred shadows off per view (inline forward+ shadow path; the DS
-	// buffers + phase-1 upload are main-view-only).
+	// buffers + phase-1 upload are main-view-only). Secondary views never
+	// viz: their dsVizParams points at the ring's zero slice (mode 0).
 	data.dsTileState = 0;
 	data.dsLightList = 0;
 	data.dsVisibility = 0;
 	data.dsTileCountX = 0;
 	data.dsEnabled = 0u;
-#if defined(DS_DEBUG_VIZ)
-	data.dsTileMasks = 0;
-	data.dsTileGroupMasks = 0;
-	data.dsDebugMode = 0;
-	data.dsDebugLight = 0;
-	data.dsDebugFlags = 0;
-	data.dsDebugCountCeil = 32;
-#endif
+	data.dsVizParams = m_context->GetBufferDeviceAddress(m_resources.dsVizParamsBuffer)
+		+ size_t(::MAX_FRAMES_IN_FLIGHT) * sizeof(DsVizParams);
 	// Ambient sources (per-source isolation mirrors the main builder).
 	if (GiActive()) {
 		data.giProbes = m_giProbesAddress;

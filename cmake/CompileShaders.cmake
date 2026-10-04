@@ -149,7 +149,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
             set(_COMMON
                 -spirv
                 -fspv-target-env=vulkan1.3   # bump to vulkan1.4 when you move SDK/driver
-                -fvk-use-dx-layout
+                -fvk-use-dx-layout           # packing contract: C++ mirrors assume DX layout (PushConstants tail, placement/sma pushes)
             )
             if (CMAKE_BUILD_TYPE MATCHES "Debug")
                 # NOTE: do NOT use -fspv-debug=vulkan-with-source here. DXC

@@ -1204,20 +1204,27 @@ float envVis = 1.0f;
     // counts + per-light culling/list diagnostics, over the lit image
     // (debug builds only; compiled out of release entirely). Like the
     // other debug views the output is pre-scaled by 1/exposure so the
-    // flat palette survives the physical-units HDR + ACES chain.
-    if (frame.dsEnabled != 0u && frame.dsDebugMode != (uint)DS_VIZ_OFF)
+    // flat palette survives the physical-units HDR + ACES chain. The viz
+    // params ride the standalone DsVizParams payload (FrameUniforms::
+    // dsVizParams BDA) — one extra indirection, debug builds only. The
+    // flags bit lets the shader skip the BDA chase when viz is off.
+    if (frame.dsEnabled != 0u && (frame.flags & DS_FLAG_VIZ) != uint64_t(0))
     {
-        const uint2 vizPix = (uint2)clipPos.xy;
-        if (vizPix.x < (uint)frame.viewportSize.x
-            && vizPix.y < (uint)frame.viewportSize.y)
+        const DsVizParams viz = frame.dsVizParams.Get();
+        if (viz.mode != (uint)DS_VIZ_OFF)
         {
-            float3 viz = DsVisualize(frame, pc.fpLights, nlights, IN.worldPos,
-                vizPix, frame.dsDebugMode, frame.dsDebugLight);
-            viz /= max(frame.exposure, 1e-6f);
-            if ((frame.dsDebugFlags & 1u) != 0u)
-                color = lerp(color, viz, 0.65f); // over the game
-            else
-                color = viz;                    // flat replacement
+            const uint2 vizPix = (uint2)clipPos.xy;
+            if (vizPix.x < (uint)frame.viewportSize.x
+                && vizPix.y < (uint)frame.viewportSize.y)
+            {
+                float3 vizColor = DsVisualize(frame, viz, pc.fpLights, nlights, IN.worldPos,
+                    vizPix, viz.mode, viz.light);
+                vizColor /= max(frame.exposure, 1e-6f);
+                if ((viz.flags & 1u) != 0u)
+                    color = lerp(color, vizColor, 0.65f); // over the game
+                else
+                    color = vizColor;                    // flat replacement
+            }
         }
     }
 #endif
