@@ -12,6 +12,7 @@
 #include "editor_app.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <iostream>
 
@@ -1690,163 +1691,185 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	if (!EnsureDepth(extent))
 		return;
 
-	// Viewport rects (single central or 2x2 quad) between the panels;
-	// the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
-	ComputeViewportRects(extent);
+// Viewport rects (single central or 2x2 quad) between the panels;
+  // the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
+  ComputeViewportRects(extent);
 
-	UpdateCamera(delta_time_s);
-	// vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
-	// (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
-	// keys, with a global fallback table (mode switches, shading F1-F3,
-	// undo/redo/save, window toggles). Skipped while ImGui wants the
-	// keyboard (typing) or the Q radial popup is open.
-	UpdateModalInput();
+  UpdateCamera(delta_time_s);
+  // vi-style modal keys (editor_modal.cpp): the ACTIVE mode's keymap
+  // (LAYOUT/LIGHTING/TEST/PROFILE; 1-4 switch from any mode) interprets
+  // keys, with a global fallback table (mode switches, shading F1-F3,
+  // undo/redo/save, window toggles). Skipped while ImGui wants the
+  // keyboard (typing) or the Q radial popup is open.
+  UpdateModalInput();
 
-	const uint32_t flight = uint32_t(fb.imageIndex) % m_flightCount;
-	UpdateTextureStreaming(extent);
-	UpdateFrameData(flight);
-	// Second-viewport frame slice (strip aspect) for the inset pass.
-	smvk::Extent2D insetStrip{ 0, 0 };
-	if (SecondViewActive() && m_vpLayout == 0) {
-		uint32_t insetX = 0;
-		insetStrip = InsetStrip(m_viewports[0].rect, insetX);
-		if (insetStrip.width != 0)
-			UpdateInsetFrameData(flight, insetStrip);
-	}
+  // Per-flight slot: fb.frameIndex is the fence-gated in-flight index
+  // (AcquireFramebuffer waited its fence before returning it), so the
+  // ring slices sized by framesInFlight() are safe to overwrite.
+  // fb.imageIndex is presentation order (0/2/1/0...) and MUST NOT be
+  // used here: two swapchain images can map to the same
+  // imageIndex % flightCount while the GPU still consumes that slice
+  // (frameHot BDA, uniforms, lights, cascades...). fb.imageIndex only
+  // identifies the swap target: m_swapViews[fb.imageIndex].
+  const uint32_t flight = fb.frameIndex;
+  assert(flight < m_flightCount);
+  UpdateTextureStreaming(extent);
 
-	// Active-viewport mouse (viewport-local). Alt+LMB is the Maya orbit
-	// gesture; clicks inside the UV inset strip use a different projection.
-	const ViewportRect& vp = m_viewports[m_activeVp].rect;
-	const float lmx = float(m_input.getMouseX()) - vp.x;
-	const float lmy = float(m_input.getMouseY()) - vp.y;
-	const bool inVp = lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
-	const bool altNav = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
-		m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
-	const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
-	const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-	uint32_t insetXAbs = 0;
-	const bool insetActive = SecondViewActive() && m_vpLayout == 0 &&
-		InsetStrip(m_viewports[0].rect, insetXAbs).width != 0;
-	const bool inInset = insetActive && m_activeVp == 0 &&
-		lmx >= float(insetXAbs) - vp.x;
+  // ----------------------------------------------------
+  // Process ALL editor interaction here.
+  // GizmoHandleInput(), selection, painting, etc.
+  // ----------------------------------------------------
 
-	// Viewports keep the mesh/face/vertex click + rubber-band box.
-	// Flat-UV picking lives in the UV editor window (ImGui mouse).
-	// ---- terrain height painting --------------------------------------
-	// Paint mode replaces the LMB press path entirely: no box select, no
-	// gizmo grab, no picking. One stamp per click; drags stamp at
-	// radius-spaced intervals along the surface.
-	const bool painting = m_world && m_paintTerrain
-		&& !altNav && !inInset && inVp && !uiEats;
-	if (painting) {
-		// Fresh press always stamps (drag spacing applies within one
-		// stroke only).
-		if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT))
-			m_paintLast = glm::vec2(-1e9f, -1e9f);
-		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
-			const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-			glm::vec3 rayOrigin;
-			const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
-				m_viewports[m_activeVp].viewProj, rayOrigin);
-			const uint32_t group = TerrainGroupOf(m_selected);
-			auto it = m_terrainGroups.find(group);
-			float tHit = 0.0f;
-			if (group != UINT32_MAX && it != m_terrainGroups.end()
-				&& smvk::placement::TerrainRaycast(it->second.data.heights,
-					rayOrigin, rayDir, 5000.0f, tHit)) {
-				const glm::vec3 hit = rayOrigin + rayDir * tHit;
-				const glm::vec2 hitXZ(hit.x, hit.z);
-				const float spacing = std::max(m_paintRadius * 0.5f, 0.25f);
-				if (m_paintLast.x < -1e8f
-					|| glm::length(hitXZ - m_paintLast) >= spacing) {
-					PaintTerrainAt(rayOrigin, rayDir);
-					m_paintLast = hitXZ;
-				}
-			}
-		}
-		else {
-			m_paintLast = glm::vec2(-1e9f, -1e9f);
-		}
-	}
-	// Rubber-band multiselect: press on empty space (no gizmo grab),
-	// drag past a few pixels -> box; release selects all nodes whose
-	// projected AABB intersects. Shift adds to the current selection.
-	// Box select stays Mesh-mode (face/vertex use click picking).
-	else if (m_world && !m_gizmoDragging && !altNav &&
-		!inInset && inVp &&
-		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !uiEats) {
-		if (m_selMode == SelMode::Mesh) {
-			if (!GizmoHandleInput()) {
-				m_vpBoxDragging = true;
-				m_vpBoxAdditive = shiftHeld;
-				m_vpBoxVp = m_activeVp;
-				m_vpBoxX0 = m_vpBoxX1 = lmx;
-				m_vpBoxY0 = m_vpBoxY1 = lmy;
-			}
-		}
-		else {
-			// Face/Vertex click-pick (no box, no gizmo grab).
-			const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-			if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
-				ApplySubSelection(*sub);
-			}
-			else if (!shiftHeld) {
-				ClearSelection();
-			}
-			// Swallow the press so the box path below never starts.
-			m_vpBoxDragging = false;
-		}
-	}
-	if (m_vpBoxDragging) {
-		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
-			m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
-				0.0f, vp.w);
-			m_vpBoxY1 = std::clamp(float(m_input.getMouseY()) - vp.y,
-				0.0f, vp.h);
-			// Moved past the dead-zone: it is a box, not a click.
-			if (std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
-				std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f) {
-				// Keep the drag alive; the click-pick path is skipped.
-			}
-		}
-		else {
-			// Release: box (if dragged) or plain click-pick (below).
-			const bool isBox = std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
-				std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f;
-			if (isBox) {
-				FinishBoxSelect();
-			}
-			else if (m_world && m_vpBoxVp == m_activeVp) {
-				const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-				if (m_selMode == SelMode::Mesh) {
-					if (auto hit = PickNode(m_activeVp, lmx, lmy, vpExt)) {
-						if (shiftHeld)
-							AddToSelection(hit->node);
-						else
-							SetSelection(hit->node);
-						m_revealNode = hit->node;
-					}
-					else if (!shiftHeld)
-						ClearSelection();
-				}
-				else {
-					if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
-						ApplySubSelection(*sub);
-					}
-					else if (!shiftHeld)
-						ClearSelection();
-				}
-			}
-			m_vpBoxDragging = false;
-		}
-	}
-	else if (m_gizmoDragging || (inVp && !altNav &&
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats)) {
-		GizmoHandleInput();
-	}
+  // Active-viewport mouse (viewport-local). Alt+LMB is the Maya orbit
+  // gesture; clicks inside the UV inset strip use a different projection.
+  const ViewportRect& vp = m_viewports[m_activeVp].rect;
+  const float lmx = float(m_input.getMouseX()) - vp.x;
+  const float lmy = float(m_input.getMouseY()) - vp.y;
+  const bool inVp = lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
+  const bool altNav = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
+      m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
+  const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
+  const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
+      m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+  uint32_t insetXAbs = 0;
+  const bool insetActive = SecondViewActive() && m_vpLayout == 0 &&
+      InsetStrip(m_viewports[0].rect, insetXAbs).width != 0;
+  const bool inInset = insetActive && m_activeVp == 0 &&
+      lmx >= float(insetXAbs) - vp.x;
 
-	m_rendergraph->NewFrame();
+  // Viewports keep the mesh/face/vertex click + rubber-band box.
+  // Flat-UV picking lives in the UV editor window (ImGui mouse).
+  // ---- terrain height painting --------------------------------------
+  // Paint mode replaces the LMB press path entirely: no box select, no
+  // gizmo grab, no picking. One stamp per click; drags stamp at
+  // radius-spaced intervals along the surface.
+  const bool painting = m_world && m_paintTerrain
+      && !altNav && !inInset && inVp && !uiEats;
+  if (painting) {
+    // Fresh press always stamps (drag spacing applies within one
+    // stroke only).
+    if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT))
+      m_paintLast = glm::vec2(-1e9f, -1e9f);
+    if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+      const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
+      glm::vec3 rayOrigin;
+      const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
+          m_viewports[m_activeVp].viewProj, rayOrigin);
+      const uint32_t group = TerrainGroupOf(m_selected);
+      auto it = m_terrainGroups.find(group);
+      float tHit = 0.0f;
+      if (group != UINT32_MAX && it != m_terrainGroups.end()
+          && smvk::placement::TerrainRaycast(it->second.data.heights,
+              rayOrigin, rayDir, 5000.0f, tHit)) {
+        const glm::vec3 hit = rayOrigin + rayDir * tHit;
+        const glm::vec2 hitXZ(hit.x, hit.z);
+        const float spacing = std::max(m_paintRadius * 0.5f, 0.25f);
+        if (m_paintLast.x < -1e8f
+            || glm::length(hitXZ - m_paintLast) >= spacing) {
+          PaintTerrainAt(rayOrigin, rayDir);
+          m_paintLast = hitXZ;
+        }
+      }
+    }
+    else {
+      m_paintLast = glm::vec2(-1e9f, -1e9f);
+    }
+  }
+  // Rubber-band multiselect: press on empty space (no gizmo grab),
+  // drag past a few pixels -> box; release selects all nodes whose
+  // projected AABB intersects. Shift adds to the current selection.
+  // Box select stays Mesh-mode (face/vertex use click picking).
+  else if (m_world && !m_gizmoDragging && !altNav &&
+      !inInset && inVp &&
+      m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !uiEats) {
+    if (m_selMode == SelMode::Mesh) {
+      if (!GizmoHandleInput()) {
+        m_vpBoxDragging = true;
+        m_vpBoxAdditive = shiftHeld;
+        m_vpBoxVp = m_activeVp;
+        m_vpBoxX0 = m_vpBoxX1 = lmx;
+        m_vpBoxY0 = m_vpBoxY1 = lmy;
+      }
+    }
+    else {
+      // Face/Vertex click-pick (no box, no gizmo grab).
+      const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
+      if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+        ApplySubSelection(*sub);
+      }
+      else if (!shiftHeld) {
+        ClearSelection();
+      }
+      // Swallow the press so the box path below never starts.
+      m_vpBoxDragging = false;
+    }
+  }
+  if (m_vpBoxDragging) {
+    if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+      m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
+          0.0f, vp.w);
+      m_vpBoxY1 = std::clamp(float(m_input.getMouseY()) - vp.y,
+          0.0f, vp.h);
+      // Moved past the dead-zone: it is a box, not a click.
+      if (std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
+          std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f) {
+        // Keep the drag alive; the click-pick path is skipped.
+      }
+    }
+    else {
+      // Release: box (if dragged) or plain click-pick (below).
+      const bool isBox = std::fabs(m_vpBoxX1 - m_vpBoxX0) > 5.0f ||
+          std::fabs(m_vpBoxY1 - m_vpBoxY0) > 5.0f;
+      if (isBox) {
+        FinishBoxSelect();
+      }
+      else if (m_world && m_vpBoxVp == m_activeVp) {
+        const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
+        if (m_selMode == SelMode::Mesh) {
+          if (auto hit = PickNode(m_activeVp, lmx, lmy, vpExt)) {
+            if (shiftHeld)
+              AddToSelection(hit->node);
+            else
+              SetSelection(hit->node);
+            m_revealNode = hit->node;
+          }
+          else if (!shiftHeld)
+            ClearSelection();
+        }
+        else {
+          if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+            ApplySubSelection(*sub);
+          }
+          else if (!shiftHeld)
+            ClearSelection();
+        }
+      }
+      m_vpBoxDragging = false;
+    }
+  }
+  else if (m_gizmoDragging || (inVp && !altNav &&
+      m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats)) {
+    GizmoHandleInput();
+  }
+
+  // Any operation above that changes local transforms must also
+  // have propagated scene.globalTransform by this point.
+
+  // NOW snapshot camera/render state.
+  UpdateFrameData(flight);
+  // Second-viewport frame slice (strip aspect) for the inset pass.
+  smvk::Extent2D insetStrip{ 0, 0 };
+  if (SecondViewActive() && m_vpLayout == 0) {
+    uint32_t insetX = 0;
+    insetStrip = InsetStrip(m_viewports[0].rect, insetX);
+    if (insetStrip.width != 0)
+      UpdateInsetFrameData(flight, insetStrip);
+  }
+
+  // NOW drive/render hosted views from this exact snapshot.
+  // DriveHostedViewsFromEditorState(); (handled by RecordWysiwygPass)
+
+  m_rendergraph->NewFrame();
 	// WYSIWYG hosted view: the viewports show the hosted
 	// WorldRenderer's target (compose pass) WHENEVER it is live —
 	// source mode (open scene, full App pipeline, no cook needed) or
