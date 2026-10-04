@@ -127,11 +127,12 @@ void TestRoundTrip() {
 	doc.cook.meshletMaxVerts = 100;
 	doc.cook.meshletMaxTris = 200;
 	doc.cook.meshletConeWeight = 0.5f;
-	// World-sun record rides the cook block too.
-	doc.cook.sunAzimuth = 120.0f;
-	doc.cook.sunElevation = 42.0f;
-	doc.cook.sunIntensity = 4242.0f;
-	doc.cook.sunColor = glm::vec3(1.0f, 0.5f, 0.25f);
+	// The sun/sky ride the ENV BLOCKS (env.default.* editorSet keys —
+	// SceneEnv, lux-native); TourCook carries no sun/sky fields anymore.
+	doc.editorSettings.emplace_back("env.default.sunAzimuth", "120");
+	doc.editorSettings.emplace_back("env.default.sunElevation", "42");
+	doc.editorSettings.emplace_back("env.default.sunIntensity", "4242");
+	doc.editorSettings.emplace_back("env.default.sunColor", "1 0.5 0.25");
 
 	std::string err;
 	Check(smvk::tour::SaveTour(TempTour(), doc, err), "tour save");
@@ -155,13 +156,30 @@ void TestRoundTrip() {
 		&& back.cook.meshletMaxTris == 200
 		&& std::abs(back.cook.meshletConeWeight - 0.5f) < 1e-6f,
 		"tour cook meshlet settings");
-	Check(std::abs(back.cook.sunAzimuth - 120.0f) < 1e-6f
-		&& std::abs(back.cook.sunElevation - 42.0f) < 1e-6f
-		&& std::abs(back.cook.sunIntensity - 4242.0f) < 1e-3f
-		&& std::abs(back.cook.sunColor.x - 1.0f) < 1e-6f
-		&& std::abs(back.cook.sunColor.y - 0.5f) < 1e-6f
-		&& std::abs(back.cook.sunColor.z - 0.25f) < 1e-6f,
-		"tour cook world sun");
+	// The env-block sun round-trips through the editorSet section (the
+	// opaque key/value pairs the editor + the cooker's env resolution
+	// parse; the cook block itself no longer carries a sun). NOTE: the
+	// last quoted token of a line keeps the statement ';' glued to it
+	// (the tokenizer strips quotes, not the terminator) — every real
+	// consumer is lenient (stof/istringstream), so trim it here only.
+	bool envSunOk = false;
+	{
+		std::string az, el, inten, col;
+		auto trimSemi = [](std::string s) {
+			while (!s.empty() && (s.back() == ';'))
+				s.pop_back();
+			return s;
+		};
+		for (const auto& [k, v] : back.editorSettings) {
+			if (k == "env.default.sunAzimuth") az = trimSemi(v);
+			else if (k == "env.default.sunElevation") el = trimSemi(v);
+			else if (k == "env.default.sunIntensity") inten = trimSemi(v);
+			else if (k == "env.default.sunColor") col = trimSemi(v);
+		}
+		envSunOk = az == "120" && el == "42" && inten == "4242"
+			&& col == "1 0.5 0.25";
+	}
+	Check(envSunOk, "tour env sun block (the sun of record)");
 	if (!back.commands.empty()) {
 		Check(back.commands[0].verb == smvk::tour::Verb::Rename &&
 			back.commands[0].text == "Shop \"Wall\"", "tour rename quoting");

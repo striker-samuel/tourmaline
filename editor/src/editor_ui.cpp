@@ -396,6 +396,32 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Lit (shadows + full pipeline)", "F1",
 				ActiveViewMode() == ViewMode::Lit))
 			ActiveViewMode() = ViewMode::Lit;
+		ImGui::Separator();
+		// Lighting view (the GI tri-view, the bake workflow's three
+		// looks): Unlit (albedo), Fully Lit (With GI) — the live view
+		// renders the baked GI sources (world field + convex volumes +
+		// cubemaps) — and Realtime Lit — the analytic look without the
+		// bake (direct sun + sky IBL). The latter two both ride the Lit
+		// frame; the difference is the ambient source (SetAmbientMode
+		// All vs SkyIbl, driven every frame with the debug views).
+		{
+			const bool sel[3] = {
+				ActiveViewMode() == ViewMode::Unlit,
+				ActiveViewMode() == ViewMode::Lit && m_litView == 0,
+				ActiveViewMode() == ViewMode::Lit && m_litView == 1
+			};
+			if (ImGui::MenuItem("Unlit (albedo)", nullptr, sel[0]))
+				ActiveViewMode() = ViewMode::Unlit;
+			if (ImGui::MenuItem("Fully Lit (With GI)", nullptr, sel[1])) {
+				ActiveViewMode() = ViewMode::Lit;
+				m_litView = 0;
+			}
+			if (ImGui::MenuItem("Realtime Lit", nullptr, sel[2])) {
+				ActiveViewMode() = ViewMode::Lit;
+				m_litView = 1;
+			}
+		}
+		ImGui::Separator();
 		if (ImGui::MenuItem("Meshlets", "F3",
 			ActiveViewMode() == ViewMode::Meshlets)) {
 			ActiveViewMode() = ViewMode::Meshlets;
@@ -4489,6 +4515,16 @@ void EditorApp::DrawAssetsPanel() {
 			m_assetsSel.clear();
 		}
 	}
+	// Expanded .tour: the same close chip for its bake-asset folder view.
+	if (!m_assetsExpandTour.empty()) {
+		ImGui::SameLine();
+		const std::string stem =
+			fs::path(m_assetsExpandTour).stem().string();
+		if (ImGui::SmallButton((stem + " X##expandtour").c_str())) {
+			m_assetsExpandTour.clear();
+			m_assetsSel.clear();
+		}
+	}
 
 	// ---- header row 2: Import + New + Rescan + selection actions --
 	if (ImGui::Button("Import asset...")) {
@@ -4600,13 +4636,45 @@ void EditorApp::DrawAssetsPanel() {
 	// also feed the bake-asset collections below (kept in scope: the
 	// collection branch reads them).
 	std::unordered_map<std::string, std::string> guidByAbs;
+	// The reverse map (guid -> abs path): the .tour folder view resolves
+	// its bake refs (the tour's editorSet bake.*.guid keys) through the
+	// assetdb — moves/renames heal through the rescan.
+	std::unordered_map<std::string, std::string> absByGuid;
 	std::vector<smvk::cache::AssetRecord> assetRows;
 	if (m_assetDb.IsOpen()) {
 		std::string derr;
-		if (m_assetDb.All(assetRows, derr))
-			for (const auto& r : assetRows)
-				guidByAbs[m_assetDb.ResolvePath(r.path)] = r.guid;
+		if (m_assetDb.All(assetRows, derr)) {
+			for (const auto& r : assetRows) {
+				const std::string abs = m_assetDb.ResolvePath(r.path);
+				guidByAbs[abs] = r.guid;
+				absByGuid[r.guid] = abs;
+			}
+		}
 	}
+	// The tour's bake-asset references (RecordBakeAssetsFromCook writes
+	// them; SaveEnvToDoc persists them into the tour): the editorSet
+	// guids the .tour folder view resolves through the assetdb. Tolerant
+	// — an unreadable/unref'd tour presents as a plain openable file.
+	auto tourBakeRefs = [](const std::string& tourAbs,
+			std::vector<std::string>& out) {
+		smvk::tour::Doc td;
+		std::string terr;
+		if (!smvk::tour::LoadTour(tourAbs, td, terr))
+			return;
+		for (const auto& [k, v] : td.editorSettings) {
+			if (k != "bake.gicook.guid" && k != "bake.cubemap.guid")
+				continue;
+			std::string g = v;
+			// The tokenizer glues the statement ';' onto the last
+			// quoted -v token (see the tour tests); trim it.
+			while (!g.empty()
+				&& (g.back() == ';' || g.back() == ' '
+					|| g.back() == '\r'))
+				g.pop_back();
+			if (!g.empty())
+				out.push_back(g);
+		}
+	};
 	// Entries: directories first, then files, both by name (skip
 	// .meta sidecars + dotfiles).
 	struct Entry {
@@ -4615,6 +4683,7 @@ void EditorApp::DrawAssetsPanel() {
 		bool dir = false;
 		IconType icon{};
 		bool gltf = false;  // .gltf with a manifest: presents as folder
+		bool tour = false;  // .tour with bake refs: presents as folder
 		bool back = false;  // the expanded view's ".." tile
 		// Drag-drop payload kinds ("" = not draggable).
 		bool dragMesh = false;
@@ -4633,6 +4702,7 @@ void EditorApp::DrawAssetsPanel() {
 	// A glTF's derived assets (its manifest children), for BOTH the
 	// expanded view and the collection filters.
 	const std::string expandGltf = m_assetsExpandGltf;
+	const std::string expandTour = m_assetsExpandTour;
 	auto manifestChildren = [&](const std::string& gltfAbs,
 		int kindFilter, std::vector<Entry>& out) {
 		smvk::assets::AssetManifest man;
@@ -4740,6 +4810,46 @@ void EditorApp::DrawAssetsPanel() {
 		src.gltf = true; // the source itself (open as scene = legacy)
 		files.push_back(src);
 	}
+	else if (!expandTour.empty()) {
+		// Expanded .tour: the SAME folder presentation, over the tour's
+		// BAKE ASSETS — the refs (RecordBakeAssetsFromCook) resolve
+		// through the assetdb (moves/renames heal through the rescan).
+		// The tour itself stays listed as the source tile: double-click
+		// OPENS it (isOpenable — the tour remains openable from the
+		// browser, nested inside its own folder view).
+		Entry back{};
+		back.name = "..";
+		back.abs = expandTour;
+		back.dir = true;
+		back.back = true;
+		back.icon = IconType::Folder;
+		dirs.push_back(back);
+		std::vector<std::string> bakeRefs;
+		tourBakeRefs(expandTour, bakeRefs);
+		for (const std::string& guid : bakeRefs) {
+			const auto git = absByGuid.find(guid);
+			if (git == absByGuid.end())
+				continue; // not adopted (yet): the ref stays unlisted
+			std::error_code fec;
+			if (!fs::is_regular_file(git->second, fec) || fec)
+				continue;
+			Entry t{};
+			t.name = fs::path(git->second).filename().generic_string();
+			t.abs = git->second;
+			t.icon = (t.name.size() > 13
+				&& t.name.compare(t.name.size() - 13, 13,
+					".cubemanifest") == 0)
+				? IconType::Env : IconType::GI;
+			files.push_back(std::move(t));
+		}
+		// The source itself: a plain openable .tour tile (double-click
+		// opens the scene — see the tile handler's isOpenable branch).
+		Entry src{};
+		src.name = fs::path(expandTour).filename().string();
+		src.abs = expandTour;
+		src.icon = IconTypeFor(src.name, false);
+		files.push_back(src);
+	}
 	else {
 	for (fs::directory_iterator it(m_assetsDir, ec), end;
 			!ec && it != end; it.increment(ec)) {
@@ -4754,6 +4864,7 @@ void EditorApp::DrawAssetsPanel() {
 		if (name.empty() || name[0] == '.')
 			continue;
 		bool isGltf = false;
+		bool isTour = false;
 		bool dragMesh = false;
 		bool dragMaterial = false;
 		IconType icon = IconTypeFor(name, isDir);
@@ -4774,13 +4885,25 @@ void EditorApp::DrawAssetsPanel() {
 				if (isGltf)
 					icon = IconType::Folder;
 			}
+			else if (e == ".tour") {
+				// With bake-asset refs (a cook ran —
+				// RecordBakeAssetsFromCook) the tour presents as a
+				// FOLDER of its bakes, mirroring the glTF-with-manifest
+				// presentation; without refs it stays a plain openable
+				// file (the legacy behavior).
+				std::vector<std::string> refs;
+				tourBakeRefs(p.generic_string(), refs);
+				isTour = !refs.empty();
+				if (isTour)
+					icon = IconType::Folder;
+			}
 			else if (e == ".mesh")
 				dragMesh = true;
 			else if (e == ".material")
 				dragMaterial = true;
 		}
 		(isDir ? dirs : files).push_back({ name,
-			p.generic_string(), isDir, icon, isGltf,
+			p.generic_string(), isDir, icon, isGltf, isTour,
 			dragMesh, dragMaterial });
 	}
 	}
@@ -4898,8 +5021,9 @@ void EditorApp::DrawAssetsPanel() {
 		if (dbl) {
 			m_assetsSel = e.abs;
 			if (e.back) {
-				// Leave the expanded glTF folder.
+				// Leave the expanded glTF/tour folder.
 				m_assetsExpandGltf.clear();
+				m_assetsExpandTour.clear();
 				m_assetsSel.clear();
 			}
 			else if (e.gltf) {
@@ -4907,6 +5031,14 @@ void EditorApp::DrawAssetsPanel() {
 				// assets) — never the scene (the .tour references the
 				// .mesh asset; the glTF is the container/source).
 				m_assetsExpandGltf = e.abs;
+				m_assetsSel.clear();
+			}
+			else if (e.tour) {
+				// A .tour with bake refs: open the FOLDER (its bake
+				// assets). The tour itself stays openable INSIDE (the
+				// source tile's isOpenable branch below) and via the
+				// header Open button.
+				m_assetsExpandTour = e.abs;
 				m_assetsSel.clear();
 			}
 			else if (e.dir) {

@@ -86,15 +86,12 @@ struct TourCook {
 	int lmProxyRes = 256;
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw;
-	float sunAzimuth = 30.0f;
-	float sunElevation = 55.0f;
-	float sunIntensity = 10000.0f;
-	float skyIntensity = 600.0f;
-	// World-sun color (linear RGB): with the angles/intensity above it IS
-	// the cooked world sun — the lightmap bake env AND the pak runtime
-	// sun (the cooker synthesizes a directional from it when the cluster
-	// has none, so editor world-sun settings travel to the App).
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
+	// NOTE: no sun/sky fields here anymore — the ENVIRONMENT BLOCKS
+	// (env.default.* / env.n.* editorSet keys, SceneEnv) own the sun and
+	// sky (lux-native: sun 10000 / sky 600 defaults). The cook bakes,
+	// synthesizes the pak directional and seeds everything from the
+	// resolved env block; legacy cook lines carrying -sun*/-sky* keys
+	// ignore them (the env block in the same tour wins).
 	// Preconvolved specular cubemaps (PakCooker --cubemap stage: GGX
 	// mip chains embedded as textures/cubemaps/<name>.ktx2; empty name
 	// defaults to the out-pak stem).

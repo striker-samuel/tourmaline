@@ -22,6 +22,7 @@
 
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
+#include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
 #include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
@@ -3464,7 +3465,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			const uint64_t tick = s_expDlTick++;
 			if (tick < 5 || tick % 600 == 0
 				|| (total == 0 && s_expZeroTick++ < 30)) {
-				std::fprintf(stderr,
+				SMVK_TRACE_LOG(
 					"[exposure] download tick=%llu slice=%u total=%u target=%.6f adapted=%.6f\n",
 					(unsigned long long)tick, m_exposureFrame, total,
 					m_exposureTarget, m_exposureAdapted);
@@ -3906,11 +3907,12 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			m_cookedLights.pointSpots.resize(FP_MAX_LIGHTS);
 		}
 		// Seed the SCENE's sun from the authored light so the sky disc, IBL
-		// tint and shadow-casting light stay in sync (sun fields only, in
-		// scene units — like the editor's cooked-sun seed). Runs only when
-		// the scene carries no authored look (old content without env
-		// blocks); a tour/cooked env always wins. The user can still
-		// retouch the look afterwards (this runs once at load/rebind).
+		// tint and shadow-casting light stay in sync (sun fields only — the
+		// env block is lux-native, so the light's lux copy straight in,
+		// like the editor's cooked-sun seed). Runs only when the scene
+		// carries no authored look (old content without env blocks); a
+		// tour/cooked env always wins. The user can still retouch the look
+		// afterwards (this runs once at load/rebind).
 		if (m_cookedLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
 			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
 			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
@@ -3918,8 +3920,7 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 				std::clamp(t.y, -1.0f, 1.0f)));
 			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
 			sceneEnv.sunColor = m_cookedLights.sunColor;
-			sceneEnv.sunIntensity = glm::clamp(
-				m_cookedLights.sunIntensity * 0.001f, 0.0f, 10.0f);
+			sceneEnv.sunIntensity = m_cookedLights.sunIntensity;
 			m_world->scene.environment = sceneEnv;
 			m_world->scene.hasEnvironment = true;
 			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
@@ -5826,33 +5827,31 @@ void WorldRenderer::BuildGridLines() {
 }
 
 // Scene->frame environment mapping (see SceneEnv): the scene authors
-// sun 0..10 / sky 0..2 while the pipeline is lux-scale (sun 10000 / sky
-// 600 defaults), so both ride kSceneEnvToHostedLux (editor 3.0 ->
-// 3000 lux, 0.6 -> 600 — the sun:sky:ambient ratios stay the authored
-// 5:1:1 and the auto-exposure normalizes the rest). Everything the scene
-// does NOT define (sun disc, sky exponent, fog shape, exposure knobs)
-// stays at the engine defaults — the renderer owns no environment state
-// of its own; it renders the world's look. unlitKillSun mirrors the
-// editor frame's Unlit handling (the Unlit debug view replaces shading
-// wholesale anyway; this keeps the lit leftovers — transparents,
-// particles — honest).
+// LUX-NATIVE intensities (sun 10000 / sky 600 defaults — the same units
+// this EnvironmentSettings and every bake use), so both ride through
+// UNCONVERTED — the env block is the single source of truth for the
+// sun/sky the editor authored, cooked and baked with. Everything the
+// scene does NOT define (sun disc, sky exponent, fog shape, exposure
+// knobs) stays at the engine defaults — the renderer owns no
+// environment state of its own; it renders the world's look.
+// unlitKillSun mirrors the editor frame's Unlit handling (the Unlit
+// debug view replaces shading wholesale anyway; this keeps the lit
+// leftovers — transparents, particles — honest).
 static smvk::EnvironmentSettings MapSceneEnv(const SceneEnv& w,
 	bool unlitKillSun)
 {
-	static constexpr float kSceneEnvToHostedLux = 1000.0f;
 	smvk::EnvironmentSettings env{}; // engine defaults (disc, exponent, fog shape)
 	env.skyEnabled = true;
 	env.iblEnabled = true;
 	env.skyZenithColor = w.skyColor;
 	env.skyHorizonColor = w.skyColor;
-	env.skyIntensity = w.skyIntensity * kSceneEnvToHostedLux;
+	env.skyIntensity = w.skyIntensity;
 	env.groundColor = w.skyColor * 0.5f;
-	env.iblIntensity = w.skyIntensity * kSceneEnvToHostedLux;
+	env.iblIntensity = w.skyIntensity;
 	env.sunAzimuthDeg = w.sunAzimuth;
 	env.sunElevationDeg = w.sunElevation;
 	env.sunColor = w.sunColor;
-	env.sunIntensity = unlitKillSun ? 0.0f
-		: w.sunIntensity * kSceneEnvToHostedLux;
+	env.sunIntensity = unlitKillSun ? 0.0f : w.sunIntensity;
 	env.fogColor = w.fogColor;
 	env.fogDensity = w.fogDensity;
 	env.fogMode = 0; // volumetrics authored, not yet rendered here
@@ -10109,7 +10108,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				static uint64_t s_expRecTick = 0;
 				const uint64_t tick = s_expRecTick++;
 				if (!meterGate && (tick < 5 || tick % 600 == 0)) {
-					std::fprintf(stderr,
+					SMVK_TRACE_LOG(
 						"[exposure] record SKIP tick=%llu pass=%d auto=%d valid=%d shaders=%d hdr=%d,%u %ux%u\n",
 						(unsigned long long)tick,
 						m_passes.exposure ? 1 : 0, m_autoExposureEnabled ? 1 : 0,
@@ -10153,18 +10152,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				const uint32_t dy =
 					smvk::ExposureMeter::DispatchYFor(renderExtent, meter.desc.sampleStep);
 				if (expPush.histogramAddress != 0 && dx != 0 && dy != 0) {
-					{
-						static uint64_t s_expGoTick = 0;
-						const uint64_t tick = s_expGoTick++;
-						if (tick < 5 || tick % 600 == 0) {
-							std::fprintf(stderr,
-								"[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u dy=%u hdrIdx=%u %ux%u\n",
-								(unsigned long long)tick, fb.frameIndex,
-								(unsigned long long)expPush.histogramAddress,
-								dx, dy, expPush.hdrTextureIndex,
-								renderExtent.width, renderExtent.height);
-						}
+				{
+					static uint64_t s_expGoTick = 0;
+					const uint64_t tick = s_expGoTick++;
+					if (tick < 5 || tick % 600 == 0) {
+						SMVK_TRACE_LOG(
+							"[exposure] record GO tick=%llu slice=%u bda=0x%llx dx=%u dy=%u hdrIdx=%u %ux%u\n",
+							(unsigned long long)tick, fb.frameIndex,
+							(unsigned long long)expPush.histogramAddress,
+							dx, dy, expPush.hdrTextureIndex,
+							renderExtent.width, renderExtent.height);
 					}
+				}
 				smvk::ShaderProgram histProg = meter.histogramProgram;
 				smvk::RenderPass& histPass = meter.AddHistogramPass(
 					*m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");

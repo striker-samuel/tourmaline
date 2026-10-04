@@ -208,17 +208,16 @@ void EditorApp::RebuildCookedLights() {
 			env.sunElevation = glm::degrees(
 				std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
 			env.sunColor = l->color;
-			env.sunIntensity = glm::clamp(l->intensity, 0.0f, 10.0f);
+			env.sunIntensity = l->intensity; // lux-native env: straight in
 			m_hasCookedSun = true;
 			sunTaken = true;
 			char buf[384];
 			std::snprintf(buf, sizeof(buf),
 				"Cooked sun '%s' (node %u): toSun=(%.3f,%.3f,%.3f) az=%.1f el=%.1f "
-				"color=(%.2f,%.2f,%.2f) I=%.1f lux -> editor IBL I=%.2f (LDR)",
+				"color=(%.2f,%.2f,%.2f) I=%.1f lux (env block, lux-native)",
 				m_cookedSunName.c_str(), node,
 				toSun.x, toSun.y, toSun.z, env.sunAzimuth, env.sunElevation,
-				l->color.x, l->color.y, l->color.z, l->intensity,
-				env.sunIntensity);
+				l->color.x, l->color.y, l->color.z, env.sunIntensity);
 			Log(buf);
 		}
 		else if (l->type == ::SceneLight::Type::Point) {

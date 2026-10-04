@@ -174,6 +174,10 @@ public:
 	size_t GpuBytes() const; // 56 B/voxel resident
 
 	bool WriteFile(const std::string& path, std::string& err) const;
+	// Same bytes as WriteFile (header + LZ4 half payload), into memory —
+	// the pak-embed path (PakCooker's --cvolume stage bakes volumes
+	// straight into pak Texture blobs).
+	bool WriteToMemory(std::vector<uint8_t>& out, std::string& err) const;
 	bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
 	static bool ReadFile(const std::string& path, CvVolume& out, std::string& err);
 };

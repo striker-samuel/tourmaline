@@ -39,7 +39,7 @@ void GfxProbeReport() {
 	if (++g_probe.frames % 240 != 0)
 		return;
 	const double n = 240.0;
-	std::fprintf(stderr,
+	SMVK_TRACE_LOG(
 		"[GfxProbe] avg/frame: batches %.3f seedrem %.3f snap %.3f uploads %.3f ms\n",
 		g_probe.batches / n, g_probe.seedRem / n, g_probe.snap / n, g_probe.uploads / n);
 	std::fflush(stderr);
@@ -1935,7 +1935,7 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	{
 		static uint64_t s_dispatches = 0;
 		if ((s_dispatches++ % 300) == 0)
-			std::fprintf(stderr, "[GfxFilter] dispatch ok: view=%u batches=%u "
+			SMVK_TRACE_LOG("[GfxFilter] dispatch ok: view=%u batches=%u "
 				"flags=0x%x slice=%u\n", view, v.batchCount, push.cullFlags, f);
 	}
 	// T4 occlusion/contribution inputs (0/empty disables the tests in the

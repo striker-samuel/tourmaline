@@ -81,3 +81,4 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   carries per-frame handles; renderers snapshot what they need at Append time
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Dont use F12 for any binding since it can trigger debugbreak
+- Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep

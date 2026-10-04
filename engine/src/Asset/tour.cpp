@@ -720,13 +720,6 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -lmProxyRes " << k.lmProxyRes
 			<< " -lmExcludeSmall " << k.lmExcludeSmall
 			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
-			<< " -sunAzimuth " << k.sunAzimuth
-			<< " -sunElevation " << k.sunElevation
-			<< " -sunIntensity " << k.sunIntensity
-			<< " -skyIntensity " << k.skyIntensity
-			<< " -sunColor " << Quote(std::to_string(k.sunColor.x) + " "
-				+ std::to_string(k.sunColor.y) + " "
-				+ std::to_string(k.sunColor.z))
 			<< " -cubemap " << (k.cubemap ? "on" : "off")
 			<< " -cubemapName " << Quote(k.cubemapName)
 			<< " -cubemapSize " << k.cubemapSize
@@ -1253,23 +1246,14 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					k.lmExcludeSmall = std::stof(v);
 				else if (get("-lmExcludeKw", v))
 					k.lmExcludeKw = v;
-				else if (get("-sunAzimuth", v))
-					k.sunAzimuth = std::stof(v);
-				else if (get("-sunElevation", v))
-					k.sunElevation = std::stof(v);
-				else if (get("-sunIntensity", v))
-					k.sunIntensity = std::stof(v);
-				else if (get("-skyIntensity", v))
-					k.skyIntensity = std::stof(v);
-				else if (get("-sunColor", v)) {
-					// "r g b" (also accepts "r,g,b", the CLI spelling).
-					for (char& c : v)
-						if (c == ',')
-							c = ' ';
-					std::istringstream in(v);
-					glm::vec3 c = k.sunColor;
-					if (in >> c.x >> c.y >> c.z)
-						k.sunColor = c;
+				else if (get("-sunAzimuth", v) || get("-sunElevation", v)
+					|| get("-sunIntensity", v) || get("-skyIntensity", v)
+					|| get("-sunColor", v)) {
+				// Legacy (moved to the env blocks): ignored — the sun and
+				// sky live in the tour's env.default.* / env.n.* blocks
+				// (SceneEnv, lux-native) and resolve in ApplyTourToCluster;
+				// old tours always carry env blocks alongside, so these
+				// keys are dead weight.
 				}
 				else if (get("-cubemap", v))
 					k.cubemap = (v == "on" || v == "1");

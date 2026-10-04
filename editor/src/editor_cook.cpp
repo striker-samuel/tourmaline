@@ -86,6 +86,11 @@ void EditorApp::CookToPak() {
 				: "Cook: no glTF loaded.");
 		return;
 	}
+	if (m_bakeRunning) {
+		Log("Cook: a Bake GI is running — wait for it to finish (the GI "
+			"sidecars it writes are the ones this cook embeds).");
+		return;
+	}
 	// TEMP coalesced tour snapshot (shared with Bake GI below).
 	std::string tempTourPath, defHash;
 	if (!SnapshotTourForProcess("Cook", tempTourPath, defHash))
@@ -132,15 +137,38 @@ void EditorApp::CookToPak() {
 	CookSettings cook = m_cook;
 	cook.contentDir = contentDir;
 	cook.inVfs = inVfs;
-	// NOTE: no GI stage here by design (on-demand Bake GI only) —
-	// cooks stay fast and GI-free; unbaked scenes render sky IBL.
-	// Auto-generate output path if empty: content/paks/<stem>.pak
-	if (cook.outPak.empty() && !m_gltfPath.empty()) {
-		std::filesystem::path p(m_gltfPath);
-		cook.outPak = ("content/paks/" + p.stem().string() + ".pak");
+	// Auto-generate the output path if empty (session state — also the
+	// destination the completion handler + Bake GI derive the sidecar
+	// gi/ dir from, so it must be resolved on the MEMBER, not the local
+	// copy): the project paks dir when a project is open, else
+	// content/paks/<stem>.pak relative to the editor.
+	if (m_cook.outPak.empty() && !m_gltfPath.empty()) {
+		const std::string stem =
+			std::filesystem::path(m_gltfPath).stem().string();
+		std::string def = ProjectCookOutPak(stem);
+		if (def.empty())
+			def = ("content/paks/" + stem + ".pak");
+		m_cook.outPak = def;
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
+			def.c_str());
 	}
+	cook.outPak = m_cook.outPak;
+	// FULL GI bake FROM 0 rides the cook (the pak carries its own GI):
+	// GiBaker first — the world-field octree (m_cook.giWorld) + the
+	// tour's authored convex volumes, fresh, nothing reused — then
+	// PakCooker discovers the fresh sidecars, EMBEDS them into the pak
+	// and registers the guid bindings. The completion handler records
+	// the bake assets + the tour's bake references (see
+	// RecordBakeAssetsFromCook). This is minutes-long on real scenes
+	// (the world field) — the on-demand Bake GI remains the quick path.
+	const std::string pakStem =
+		std::filesystem::path(cook.outPak).stem().string();
+	const bool wantWorld = m_cook.giWorld;
 	m_cookRunning = true;
-	Log("Cook started -> " + cook.outPak);
+	Log(std::string("Cook started -> ") + cook.outPak
+		+ std::string(wantWorld ? " (GI from 0: world field + convex "
+			"volumes, then the pak)" : " (GI from 0: convex volumes, "
+			"then the pak)"));
 	auto feed = std::make_shared<CookFeed>();
 	m_cookFeed = feed;
 	// Cache acceleration (opt-in, never required): when the project
@@ -151,7 +179,7 @@ void EditorApp::CookToPak() {
 	const std::string scratchDir =
 		m_store ? m_store->Root() : std::string();
 	m_cookFuture = std::async(std::launch::async,
-		[cook, feed, scratchDir, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, feed, scratchDir, pakStem, wantWorld, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			// Live feed: each pipe line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -171,13 +199,70 @@ void EditorApp::CookToPak() {
 					push(line);
 				}
 			};
-			// PakCooker next to Editor.exe.
+			// GiBaker next to Editor.exe.
 			char exePath[1024] = {};
 #ifdef _WIN32
 			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
 			(void)n;
 #endif
-			std::filesystem::path cooker = std::filesystem::path(exePath).parent_path() /
+			// ---- stage 1: GiBaker FROM 0 (the full GI bake — the world
+			// field when requested + the tour's authored convex volumes;
+			// the definition tour is the only input, nothing reused). The
+			// fresh sidecars land under <contentDir>/gi/ exactly where
+			// stage 2 (PakCooker) discovers + embeds them into the pak.
+			// A failed GI bake FAILS the cook (the pak would silently
+			// miss its GI otherwise — the exact bug this flow exists to
+			// prevent).
+			{
+				std::filesystem::path baker =
+					std::filesystem::path(exePath).parent_path() /
+					"GiBaker.exe";
+				if (!std::filesystem::exists(baker))
+					baker = "GiBaker.exe"; // PATH fallback
+				std::ostringstream gi;
+				gi << QuoteArg(baker.string())
+					<< " --content-dir " << QuoteArg(contentDir)
+					<< " --scene " << QuoteArg(pakStem)
+					<< " --tour " << QuoteArg(tempTourPath);
+				if (wantWorld)
+					gi << " --out " << QuoteArg(
+						(std::filesystem::path(contentDir) / "gi" /
+							(pakStem + ".sggi")).generic_string());
+				gi << " 2>&1";
+				push("cook-gi: " + gi.str());
+#ifdef _WIN32
+				FILE* gpipe = _popen(gi.str().c_str(), "r");
+#else
+				FILE* gpipe = popen(gi.str().c_str(), "r");
+#endif
+				if (!gpipe) {
+					r.log = "cook-gi: failed to spawn GiBaker\n";
+					std::error_code ec;
+					std::filesystem::remove(tempTourPath, ec);
+					return r;
+				}
+				pushPipe(gpipe);
+#ifdef _WIN32
+				const int grc = _pclose(gpipe);
+#else
+				const int grc = pclose(gpipe);
+#endif
+				if (grc != 0) {
+					r.ok = false;
+					r.log = "cook-gi: GiBaker exit=" + std::to_string(grc)
+						+ " — pak cook SKIPPED (the GI bake failed; "
+						"previous sidecars, if any, are untouched)\n";
+					std::error_code ec;
+					std::filesystem::remove(tempTourPath, ec);
+					return r;
+				}
+				push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
+					"under " + contentDir + "/gi/)");
+			}
+			// ---- stage 2: PakCooker (the pak: meshopt/LODs/lightmaps/
+			// cubemaps + the GI sidecar discovery/embed from stage 1).
+			std::filesystem::path cooker =
+				std::filesystem::path(exePath).parent_path() /
 				"PakCooker.exe";
 			if (!std::filesystem::exists(cooker))
 				cooker = "PakCooker.exe"; // PATH fallback
@@ -257,6 +342,20 @@ void EditorApp::PollCookProcess() {
 			Log(line);
 	}
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
+	if (r.ok) {
+		RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
+		// The cook's GiBaker-from-0 stage wrote fresh GI sidecars: re-resolve
+		// the bake GUIDs + rebind the live view IN PLACE so the editor
+		// renders the fresh GI immediately (the same flow as Bake GI's
+		// completion — the loaders re-run over the same world).
+		RefreshLiveViewGiBindings();
+		if (m_wysiwyg && m_world) {
+			m_wysiwyg->SetSceneId(SceneIdForHost());
+			m_wysiwyg->SetProjectRoot(m_projectRoot);
+			m_wysiwyg->RebindWorld(m_world.get());
+			Log("Cook: live view rebound to the fresh GI sidecars.");
+		}
+	}
 	// The cook is the PRODUCT step (a pak for the game/App — Run in
 	// App loads it): it never touches the viewport. The LIVE view
 	// (the hosted renderer over the editor's own world) is unaffected.

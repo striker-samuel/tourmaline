@@ -904,10 +904,12 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			item.material, drawFlags, drawSet, lmChunk, chartOffset);
 	});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
-	// NOTE: unconditional (not SMVK_DEBUG_LOG): this is the only per-run
-	// visibility into filter load (draws/batches vs kMaxDraws/kMaxBatches).
+	// NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
+	// per-run visibility into filter load (draws/batches vs
+	// kMaxDraws/kMaxBatches) — muted at runtime by the interactive
+	// EDITOR (SMVK_TRACE_LOG; the App/bench flows keep it).
 	if ((frameCounter_++ % 300) == 0) {
-		std::fprintf(stderr,
+		SMVK_TRACE_LOG(
 			"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
 			stats.draws, stats.commands, stats.trianglesProcessed,
 			stats.clustersCulled, stats.clustersProcessed);

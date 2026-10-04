@@ -79,12 +79,28 @@ void EditorApp::ResolveSceneEnv() {
 }
 
 void EditorApp::DrawEnvPanel() {
+	// ONE Environment section, ONE sun (the earlier layout drew two sun
+	// sub-blocks with duplicate labels — doubled display + ImGui ID
+	// collisions; the ##-tagged rows below can never collide again).
+	// The ENV BLOCK owns the sun and sky (LUX-NATIVE: sun 10000 / sky
+	// 600 defaults — the units the runtime and every bake use, no
+	// conversions): one authored value drives the editor viewport, the
+	// GI/lightmap/cubemap bakes, the synthesized pak directional and the
+	// App. A scene DIRECTIONAL light node (content) still wins when one
+	// exists — the sub-block below edits it (SetLightAttr commands).
 	ImGui::Separator();
 	ImGui::Text("Environment (scene definition)");
 	ImGui::TextDisabled(
-		"Scene-attached look (sun/sky/fog authoring units) — every view "
-		"renders it straight from the scene. Pick the Editor "
-		"default or an Environment node as the current source.");
+		"Scene-attached look — every view renders it straight from the "
+		"scene. The sun/sky rows are LUX-NATIVE and drive everything: "
+		"the viewport, every bake, the pak directional and the App.");
+	// Cook now: the full cook flow from the section that owns its inputs
+	// (GiBaker from 0, then PakCooker — the pak, the bake assets and
+	// this tour's bake references update; see CookToPak).
+	if (ImGui::Button("Cook to .pak now##env"))
+		CookToPak();
+	ImGui::SameLine();
+	ImGui::TextDisabled("(full cook: GI from 0 + pak)");
 	if (!m_world) {
 		ImGui::TextDisabled("No scene — open a scene to author the look.");
 		return;
@@ -103,13 +119,104 @@ void EditorApp::DrawEnvPanel() {
 		}
 		ImGui::EndCombo();
 	}
+	// ---- sun: scene light (content — only when a directional node exists) ----
+	ImGui::Separator();
+	ImGui::Text("Sun (scene light)");
+	const uint32_t sun = FindSunNode();
+	if (sun == UINT32_MAX) {
+		// No scene directional: the ENVIRONMENT sun below IS the sun —
+		// the cooker synthesizes the pak's WorldSun directional from it,
+		// every bake reads it (EnvForBake) and the App renders it. One
+		// authored sun, no duplicates.
+		ImGui::TextDisabled("No scene directional light: the environment "
+			"sun below drives the pak, every bake and the App (the "
+			"cooker synthesizes its WorldSun from it). Import a KHR "
+			"punctual directional for a per-node scene light instead.");
+	}
+	else if (glm::vec3 aimWs(0.0f);
+		const ::SceneLight* li = FindNodeLight(sun, &aimWs)) {
+		ImGui::Text("'%s' (#%u)", li->name.c_str(), sun);
+		ImGui::SameLine();
+		if (ImGui::Button("Select node##sun"))
+			SetSelection(sun);
+		ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
+			-aimWs.y, -aimWs.z,
+			m_hasCookedSun && m_cookedSunName == li->name
+			? " — seeds the editor IBL default" : "");
+		if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
+			ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+		// Same coalesced-drag SetLightAttr pattern as the node inspector
+		// (lux units for directionals), so cooks replay the edits.
+		auto beginSunDrag = [&](const char* attr) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetLightAttr ||
+				m_pending.cmd.node != sun || m_pending.cmd.lightAttr != attr))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetLightAttr;
+				m_pending.cmd.node = sun;
+				m_pending.cmd.lightAttr = attr;
+				ReadNodeLightAttr(sun, attr, m_pending.cmd.beforeVec4,
+					m_pending.cmd.beforeNum, m_pending.cmd.beforeFlag,
+					m_pending.cmd.beforeText);
+			}
+		};
+		auto endSunDrag = [&](const char* attr) {
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.verb == EditVerb::SetLightAttr &&
+				m_pending.cmd.node == sun &&
+				m_pending.cmd.lightAttr == attr)
+				FinishDrag();
+		};
+		glm::vec3 scol = li->color;
+		if (ImGui::ColorEdit3("Sun color##sun", &scol.x)) {
+			beginSunDrag("color");
+			WriteNodeLightAttr(sun, "color", glm::vec4(scol, 1.0f), 0, false, {});
+			m_pending.cmd.vec4 = glm::vec4(scol, 1.0f);
+		}
+		endSunDrag("color");
+		float sint = li->intensity;
+		if (ImGui::DragFloat("Sun intensity (lux)##sun", &sint, 10.0f,
+				0.0f, 2e5f, "%.0f")) {
+			beginSunDrag("intensity");
+			WriteNodeLightAttr(sun, "intensity", glm::vec4(0), sint, false, {});
+			m_pending.cmd.number = sint;
+		}
+		endSunDrag("intensity");
+		bool sstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+		if (ImGui::Checkbox("Static sun (bake-only)##sun", &sstatic)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetLightAttr;
+			c.node = sun;
+			c.lightAttr = "static";
+			c.afterFlag = sstatic;
+			ReadNodeLightAttr(sun, "static", c.beforeVec4, c.beforeNum,
+				c.beforeFlag, c.beforeText);
+			Do(c);
+		}
+	}
+	// ---- sun (environment — THE sun, lux-native) ----
+	ImGui::Separator();
+	ImGui::Text("Sun (environment)");
 	EditorEnv& e = CurrentEnv();
-	ImGui::SliderFloat("Sun azimuth", &e.sunAzimuth, 0.0f, 360.0f);
-	ImGui::SliderFloat("Sun elevation", &e.sunElevation, 0.0f, 90.0f);
-	ImGui::SliderFloat("Sun intensity", &e.sunIntensity, 0.0f, 10.0f);
-	ImGui::ColorEdit3("Sun color", glm::value_ptr(e.sunColor));
+	ImGui::SliderFloat("Sun azimuth##envsun", &e.sunAzimuth, 0.0f, 360.0f);
+	ImGui::SliderFloat("Sun elevation##envsun", &e.sunElevation, 0.0f, 90.0f);
+	ImGui::DragFloat("Sun intensity (lux)##envsun", &e.sunIntensity, 10.0f,
+		0.0f, 2e5f, "%.0f");
+	ImGui::ColorEdit3("Sun color##envsun", glm::value_ptr(e.sunColor));
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"THE sun, in lux (no conversions): drives the editor viewport "
+			"light + sky disc, every bake (GI/lightmap/cubemap) and the "
+			"App — the cooker synthesizes the pak's WorldSun directional "
+			"from it. The LIGHTING-mode sun nudges edit these.");
+	// ---- sky & atmosphere ----
+	ImGui::Separator();
+	ImGui::Text("Sky & atmosphere");
 	ImGui::ColorEdit3("Sky color", glm::value_ptr(e.skyColor));
-	ImGui::SliderFloat("Sky intensity", &e.skyIntensity, 0.0f, 2.0f);
+	ImGui::DragFloat("Sky intensity (lux)##envsky", &e.skyIntensity, 5.0f,
+		0.0f, 10000.0f, "%.0f");
 	ImGui::SliderFloat("Exposure", &e.exposure, 0.1f, 4.0f);
 	ImGui::SliderFloat("Fog density", &e.fogDensity, 0.0f, 1.0f);
 	ImGui::ColorEdit3("Fog color", glm::value_ptr(e.fogColor));
@@ -149,108 +256,14 @@ void EditorApp::DrawWorldPanel() {
 	ImGui::Text("World");
 	ImGui::TextDisabled(
 		"Not a scene node: global render settings. No transform, no "
-		"reparent, no delete. Sun edits below are undoable light "
-		"commands; the environment rides editorSet tour lines.");
-	// ---- scene sun (directional light, if the scene has one) ----
-	ImGui::Separator();
-	ImGui::Text("Sun (directional)");
-	const uint32_t sun = FindSunNode();
-	if (sun == UINT32_MAX || !m_world) {
-		// Cooked world sun (no scene directional): these ARE the pak sun
-		// — the cooker synthesizes a directional from them so the world
-		// sun travels to the App. Same values drive the lightmap bake.
-		ImGui::TextDisabled("No directional light: cooked world sun.");
-		float az = m_cook.sunAzimuth;
-		if (ImGui::DragFloat("Sun azimuth", &az, 1.0f, 0.0f, 360.0f,
-				"%.1f")) {
-			m_cook.sunAzimuth = az;
-			AutosaveTour();
-		}
-		float el = m_cook.sunElevation;
-		if (ImGui::DragFloat("Sun elevation", &el, 1.0f, 0.0f, 90.0f,
-				"%.1f")) {
-			m_cook.sunElevation = el;
-			AutosaveTour();
-		}
-		float si = m_cook.sunIntensity;
-		if (ImGui::DragFloat("Sun intensity (lux)", &si, 10.0f, 0.0f,
-				2e5f, "%.0f")) {
-			m_cook.sunIntensity = si;
-			AutosaveTour();
-		}
-		glm::vec3 sc = m_cook.sunColor;
-		if (ImGui::ColorEdit3("Sun color", &sc.x)) {
-			m_cook.sunColor = sc;
-			AutosaveTour();
-		}
-		ImGui::TextDisabled("Import a KHR punctual directional to drive "
-			"scene sunlight per-node instead; the IBL sun below always "
-			"lights the viewport.");
-	}
-	else if (glm::vec3 aimWs(0.0f);
-		const ::SceneLight* li = FindNodeLight(sun, &aimWs)) {
-		ImGui::Text("'%s' (#%u)", li->name.c_str(), sun);
-		ImGui::SameLine();
-		if (ImGui::Button("Select node"))
-			SetSelection(sun);
-		ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
-			-aimWs.y, -aimWs.z,
-			m_hasCookedSun && m_cookedSunName == li->name
-			? " — seeds the editor IBL default" : "");
-		if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
-			ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
-		// Same coalesced-drag SetLightAttr pattern as the node inspector
-		// (lux units for directionals), so cooks replay the edits.
-		auto beginSunDrag = [&](const char* attr) {
-			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetLightAttr ||
-				m_pending.cmd.node != sun || m_pending.cmd.lightAttr != attr))
-				FinalizePending();
-			if (!m_pending.active) {
-				m_pending.active = true;
-				m_pending.cmd = EditCmd{};
-				m_pending.cmd.verb = EditVerb::SetLightAttr;
-				m_pending.cmd.node = sun;
-				m_pending.cmd.lightAttr = attr;
-				ReadNodeLightAttr(sun, attr, m_pending.cmd.beforeVec4,
-					m_pending.cmd.beforeNum, m_pending.cmd.beforeFlag,
-					m_pending.cmd.beforeText);
-			}
-		};
-		auto endSunDrag = [&](const char* attr) {
-			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.verb == EditVerb::SetLightAttr &&
-				m_pending.cmd.node == sun &&
-				m_pending.cmd.lightAttr == attr)
-				FinishDrag();
-		};
-		glm::vec3 scol = li->color;
-		if (ImGui::ColorEdit3("Sun color", &scol.x)) {
-			beginSunDrag("color");
-			WriteNodeLightAttr(sun, "color", glm::vec4(scol, 1.0f), 0, false, {});
-			m_pending.cmd.vec4 = glm::vec4(scol, 1.0f);
-		}
-		endSunDrag("color");
-		float sint = li->intensity;
-		if (ImGui::DragFloat("Sun intensity (lux)", &sint, 10.0f, 0.0f,
-				2e5f, "%.0f")) {
-			beginSunDrag("intensity");
-			WriteNodeLightAttr(sun, "intensity", glm::vec4(0), sint, false, {});
-			m_pending.cmd.number = sint;
-		}
-		endSunDrag("intensity");
-		bool sstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
-		if (ImGui::Checkbox("Static sun (bake-only)", &sstatic)) {
-			EditCmd c{};
-			c.verb = EditVerb::SetLightAttr;
-			c.node = sun;
-			c.lightAttr = "static";
-			c.afterFlag = sstatic;
-			ReadNodeLightAttr(sun, "static", c.beforeVec4, c.beforeNum,
-				c.beforeFlag, c.beforeText);
-			Do(c);
-		}
-	}
-	// ---- image-based lighting + atmosphere (editor viewport) ----
+		"reparent, no delete. The sun + environment live in ONE "
+		"section below — scene-light sun edits are undoable light "
+		"commands; the look/sky ride editorSet tour lines.");
+	// ---- sun + environment + atmosphere: ONE section ----
+	// This used to be a separate "Sun (directional)" block above the
+	// environment rows — the two sun halves doubled the display and
+	// collided their ImGui IDs ("Sun color" etc.); DrawEnvPanel now
+	// carries both sun blocks with ##-tagged rows.
 	DrawEnvPanel();
 	// ---- active-viewport orbit camera (moved off the node pages) ----
 	// Free-orbit navigation state lives here on the World page; authored
@@ -308,6 +321,15 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 		if (cn >= 0)
 			put("env.current", std::to_string(cn));
 	}
+	// Bake references (the .tour carries its bake — see
+	// RecordBakeAssetsFromCook): the GiCook manifest asset + the cubemap
+	// capture-set manifest a cook minted/updated for this scene. Written
+	// on EVERY incremental save so the .tour and the assetdb always
+	// agree on which bake belongs to which definition.
+	if (!m_bakeGiCookGuid.empty())
+		put("bake.gicook.guid", m_bakeGiCookGuid);
+	if (!m_bakeCubemapGuid.empty())
+		put("bake.cubemap.guid", m_bakeCubemapGuid);
 }
 
 void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
@@ -347,7 +369,13 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		const size_t dot = key.find_last_of('.');
 		const std::string field =
 			(dot == std::string::npos) ? key : key.substr(dot + 1);
-		if (key.rfind("env.default.", 0) == 0) {
+		// Bake references (see SaveEnvToDoc): restored into the members
+		// so the next save carries them forward.
+		if (key == "bake.gicook.guid")
+			m_bakeGiCookGuid = val;
+		else if (key == "bake.cubemap.guid")
+			m_bakeCubemapGuid = val;
+		else if (key.rfind("env.default.", 0) == 0) {
 			if (inNode) { // close the pending node group
 				nodeEnvs.emplace_back(nodeCluster, cur);
 				inNode = false;

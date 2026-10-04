@@ -11,6 +11,7 @@
 #include "editor_app.h"
 
 #include <Engine/Memory/memory.h>
+#include <Engine/debug_log.h> // SetTraceEnabled (mute engine dashboards)
 
 #include <cstring>
 #include <cstdio>
@@ -242,10 +243,17 @@ void PrintUsage(const char* prog) {
 
 } // namespace
 
-  	int main(int argc, const char* argv[]) {
+   	int main(int argc, const char* argv[]) {
 	// Reserve linear-allocator virtual address space FIRST (see
 	// Engine/Memory/memory.h) — before any subsystem init.
 	smvk::mem::InitMemory();
+	// Mute the periodic engine dashboards ([GfxProbe]/[GfxFilter]
+	// view + dispatch, [exposure] record/download — SMVK_TRACE_LOG):
+	// the editor's terminal is interactive and these every-N-frame
+	// status lines are noise there. The App / bench flows keep them
+	// (they are the only per-run visibility into the live pipeline);
+	// fault/warning lines stay unconditional here too.
+	smvk::SetTraceEnabled(false);
 #ifdef _WIN32
 	// Crash stack writer (see the comment block above): FIRST, before any
 	// subsystem init, so any boot-time fault is captured too.

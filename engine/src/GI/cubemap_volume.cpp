@@ -248,7 +248,7 @@ size_t CvVolume::GpuBytes() const {
 	return size_t(VoxelCount()) * 7 * 8;
 }
 
-bool CvVolume::WriteFile(const std::string& path, std::string& err) const {
+bool CvVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const {
 	CvolFileHeader hdr{};
 	hdr.planeCount = uint32_t(def.planes.size());
 	hdr.priority = def.priority;
@@ -295,18 +295,24 @@ bool CvVolume::WriteFile(const std::string& path, std::string& err) const {
 		return false;
 	}
 
-	std::vector<uint8_t> file(sizeof(CvolFileHeader) + compressed.size());
-	std::memcpy(file.data(), &hdr, sizeof(hdr));
-	std::memcpy(file.data() + sizeof(hdr), compressed.data(), compressed.size());
+	out.resize(sizeof(CvolFileHeader) + compressed.size());
+	std::memcpy(out.data(), &hdr, sizeof(hdr));
+	std::memcpy(out.data() + sizeof(hdr), compressed.data(), compressed.size());
+	return true;
+}
 
+bool CvVolume::WriteFile(const std::string& path, std::string& err) const {
+	std::vector<uint8_t> bytes;
+	if (!WriteToMemory(bytes, err))
+		return false;
 	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) {
 		err = "CvVolume: cannot open output " + path;
 		return false;
 	}
-	const size_t written = std::fwrite(file.data(), 1, file.size(), f);
+	const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), f);
 	std::fclose(f);
-	if (written != file.size()) {
+	if (written != bytes.size()) {
 		err = "CvVolume: short write to " + path;
 		return false;
 	}

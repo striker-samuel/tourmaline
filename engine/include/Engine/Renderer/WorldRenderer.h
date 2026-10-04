@@ -1004,6 +1004,12 @@ public:
 	// the R/F8 cycle). Zero = off.
 	void SetDebugView(DebugView v) { m_debugView = v; }
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
+	// HOSTED lighting-view drive (the editor's GI tri-view): Fully Lit
+	// (With GI) pins AmbientMode::All (the baked GI sources render when
+	// their bake-asset bindings resolve), Realtime Lit pins SkyIbl (the
+	// analytic ambient, no bake). Same state the N key cycles in the App;
+	// a host driving this every frame simply pins it.
+	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	// HOSTED live-view AA: the editor renders with AA OFF (crisp,
 	// pixel-accurate authoring view — MSAA resolves and SMAA temporal
 	// smearing have no place in a live authoring view).

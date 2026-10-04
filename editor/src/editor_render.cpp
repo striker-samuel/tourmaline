@@ -32,6 +32,10 @@ namespace editor {
 namespace {
 constexpr uint32_t kMaxMaterials = 4096;
 constexpr uint32_t kMaxLights = 64;
+// Lux-native env block (SceneEnv) -> this LDR preview's scale: the old
+// scene-unit look (sun 7.851 scene units == 7851 lux). Every HDR consumer
+// (the hosted WorldRenderer, the bakes, the pak/App) takes lux raw.
+constexpr float kEditorPreviewLuxScale = 0.001f;
 
 std::vector<char> LoadSpv(const char* path) {
 	return readFile(path);
@@ -347,6 +351,10 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 	m_lastViewProj = m_viewports[m_activeVp].viewProj;
 
 	// Sun light (lights[0], same convention as App) from the CURRENT env.
+	// The env block is LUX-NATIVE (see SceneEnv); the editor's own viewport
+	// is an LDR preview, so the intensities scale down (x 0.001 — the old
+	// scene-unit look: 7851 lux -> 7.85) while every HDR consumer (the
+	// hosted WorldRenderer, the bakes, the pak) takes the lux raw.
 	const EditorEnv& envSet = CurrentEnv();
 	smvk::EnvironmentSettings env{};
 	env.sunAzimuthDeg = envSet.sunAzimuth;
@@ -359,7 +367,8 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		l.direction[0] = -toSun.x;
 		l.direction[1] = -toSun.y;
 		l.direction[2] = -toSun.z;
-		l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f : envSet.sunIntensity;
+		l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
+			: envSet.sunIntensity * kEditorPreviewLuxScale;
 		l.shadow_map_index = -1;
 	}
 
@@ -381,17 +390,21 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 void EditorApp::ApplyEnvToFrame(engine::FrameUniforms& frame,
 	smvk::EnvironmentSettings& env) const {
 	const EditorEnv& e = CurrentEnv();
+	// LDR preview of the lux-native env block (see SceneEnv): the
+	// intensities scale down (kEditorPreviewLuxScale) — the old
+	// scene-unit look — while the HDR consumers take the lux raw.
 	env.skyEnabled = true;
 	env.iblEnabled = true;
 	env.skyZenithColor = e.skyColor;
 	env.skyHorizonColor = e.skyColor;
-	env.skyIntensity = e.skyIntensity;
+	env.skyIntensity = e.skyIntensity * kEditorPreviewLuxScale;
 	env.groundColor = e.skyColor * 0.5f;
-	env.iblIntensity = e.skyIntensity;
+	env.iblIntensity = e.skyIntensity * kEditorPreviewLuxScale;
 	env.sunAzimuthDeg = e.sunAzimuth;
 	env.sunElevationDeg = e.sunElevation;
 	env.sunColor = e.sunColor;
-	env.sunIntensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f : e.sunIntensity;
+	env.sunIntensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
+		: e.sunIntensity * kEditorPreviewLuxScale;
 	env.fogMode = 0; // volumetrics authored, not yet rendered here
 }
 

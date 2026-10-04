@@ -1174,16 +1174,33 @@ int main(int argc, char** argv) {
 			<< cluster->ListTextureUris().size() << " uris)\n";
 	}
 
-	// Environment defaults mirror the runtime EnvironmentSettings so the
-	// bake matches what the app shows when the GI volume is loaded. The
-	// analytic sky is baked on open-sky rays (TraceIncoming), so
-	// --sky-intensity is meaningful again; emissive stays runtime-only.
+	// Environment: the TOUR'S ENV BLOCK when one replayed (the editor
+	// always writes env.default.* — SceneEnv, lux-native) so the bake sees
+	// exactly the sun/sky the pak and every other bake use (ONE authored
+	// sun); the CLI --sun-*/--sky-intensity defaults stay the no-tour
+	// fallback. The analytic sky is baked on open-sky rays (TraceIncoming),
+	// so the sky intensity is meaningful; emissive stays runtime-only.
 	if (!args.emissive)
 		std::cout << "  note: --emissive off (emissive is runtime-only)\n";
-	buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
-	buildOpts.env.sunElevationDeg = args.sunElevation;
-	buildOpts.env.sunIntensity = args.sunIntensity;
-	buildOpts.env.skyIntensity = args.skyIntensity;
+	if (cluster->scene.hasEnvironment) {
+		const SceneEnv& se = cluster->scene.environment;
+		buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
+		buildOpts.env.sunElevationDeg = se.sunElevation;
+		buildOpts.env.sunIntensity = se.sunIntensity;
+		buildOpts.env.skyIntensity = se.skyIntensity;
+		std::cout << "  env block (tour): az=" << se.sunAzimuth
+			<< " el=" << se.sunElevation << " I=" << se.sunIntensity
+			<< " lux sky=" << se.skyIntensity << "\n";
+	}
+	else {
+		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
+		buildOpts.env.sunElevationDeg = args.sunElevation;
+		buildOpts.env.sunIntensity = args.sunIntensity;
+		buildOpts.env.skyIntensity = args.skyIntensity;
+		std::cout << "  env defaults (no tour block): az=" << args.sunAzimuth
+			<< " el=" << args.sunElevation << " I=" << args.sunIntensity
+			<< " lux sky=" << args.skyIntensity << "\n";
+	}
 	buildOpts.includeEmissive = args.emissive;
 	// Real materials by default (the production look: bounces carry each
 	// surface's color). --uniform-albedo overrides with a known flat

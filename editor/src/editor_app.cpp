@@ -2273,6 +2273,15 @@ void EditorApp::DrawFrame() {
 			m_wysiwyg->SetDebugView(dv);
 			m_wysiwyg->SetGiDebug(giDebug);
 		}
+		// LIGHTING-VIEW DRIVE (the GI tri-view, View menu radios): Fully
+		// Lit (With GI) pins AmbientMode::All — the baked GI sources
+		// (world field + convex volumes + cubemaps) render when their
+		// bake-asset bindings resolve; Realtime Lit pins SkyIbl — the
+		// analytic ambient without the bake. Unlit's FS replaces shading
+		// wholesale, so the pin is irrelevant there (same All default).
+		m_wysiwyg->SetAmbientMode(
+			m_litView == 0 ? engine::AmbientMode::All
+			: engine::AmbientMode::SkyIbl);
 		// WIREFRAME DRIVE (P / Z — App parity): the frame's wireframe
 		// is Line polygon mode over the Fill depth prepass, so hidden
 		// lines are removed (lines never draw over the objects in

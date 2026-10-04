@@ -293,15 +293,11 @@ struct CookSettings {
 	int lmProxyRes = 256; // voxel-remesh scene proxy (0 = legacy per-mesh)
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw; // extra --lm-exclude keywords (comma separated)
-	float sunAzimuth = 30.0f;
-	float sunElevation = 55.0f;
-	float sunIntensity = 10000.0f;
-	float skyIntensity = 600.0f;
-	// World-sun color (linear RGB): with the angles/intensity above it IS
-	// the cooked world sun — edited in the World panel when the scene has
-	// no directional, synthesized into the pak by the cooker, read by the
-	// App as its runtime sun.
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
+	// NOTE: no sun/sky fields here anymore — the ENVIRONMENT BLOCK
+	// (SceneEnv, the World page's Environment section) owns the sun and
+	// sky (lux-native). Every bake stage and the synthesized pak
+	// directional read the resolved env block (see the cooker's
+	// EnvForBake); the World page edits them once, in one place.
 	// Cubemap captures
 	bool cubemap = false;
 	std::string cubemapName;
@@ -513,6 +509,16 @@ private:
 	ViewMode ActiveViewMode() const { return m_viewports[m_activeVp].viewMode; }
 	void SetupDefaultCameras();
 	bool GridVisible() const { return m_showGrid; }
+	// ---- lighting view (the GI tri-view: View menu radios) ----
+	// The bake workflow's three looks: Unlit (albedo), Fully Lit (With
+	// GI) — the live view renders the baked GI sources (world field +
+	// convex volumes + cubemaps; AmbientMode::All) — and Realtime Lit —
+	// the analytic look without the bake (direct sun + sky IBL;
+	// AmbientMode::SkyIbl). 0 = Fully, 1 = Realtime; Unlit is the F2 view
+	// mode (the unlit FS replaces shading wholesale). Driven onto the
+	// hosted renderer every frame (SetAmbientMode) next to the
+	// debug-view drive.
+	int m_litView = 0;
 
 	// ---- selection (multi) ----
 	// m_selection holds every selected node (m_selected = primary: the
@@ -1426,10 +1432,24 @@ private:
 	void ResolveSceneEnv();
 	void ApplyEnvToFrame(engine::FrameUniforms& frame,
 		smvk::EnvironmentSettings& env) const;
-	void DrawEnvPanel();       // Inspector "Environment (IBL)" section
+	// Inspector "Environment" section (World page): ONE sun — the env
+	// block's (lux-native) sun rows + the scene directional light node
+	// editor when one exists — plus sky/fog/exposure and the Cook now
+	// button (the full cook flow from the section that owns its inputs).
+	void DrawEnvPanel();
 	// editorSet persistence (tour editorSettings; cluster-space node ids).
 	void SaveEnvToDoc(smvk::tour::Doc& doc) const;
 	void LoadEnvFromDoc(const smvk::tour::Doc& doc);
+
+	// ---- bake references (the .tour carries its bake) ----
+	// GUIDs of the bake assets a cook minted/updated for this scene
+	// (RecordBakeAssetsFromCook): the GiCook manifest asset + the cubemap
+	// capture-set manifest. Saved as bake.gicook.guid / bake.cubemap.guid
+	// editorSet keys (SaveEnvToDoc/LoadEnvFromDoc) so every incremental
+	// tour save carries them; the assetdb + the .tour always agree on
+	// which bake belongs to which definition.
+	std::string m_bakeGiCookGuid;
+	std::string m_bakeCubemapGuid;
 
 	// ---- procedural placement (PlacementGraph authoring, NEVER cooked) --
 	// Clarisse-style scatter graphs: domain -> fields -> accept ->
@@ -1608,6 +1628,14 @@ private:
 	// Empty = normal directory view. Unity-style: the glTF presents as
 	// a FOLDER of its preprocessed assets.
 	std::string m_assetsExpandGltf;
+	// Expanded .tour (absolute path): the SAME folder presentation for
+	// tours — the browser shows the tour's BAKE ASSETS (the cook's
+	// RecordBakeAssetsFromCook refs: the GiCook manifest + the cubemap
+	// capture set, resolved through the assetdb) + a back tile + the
+	// tour itself as the source tile (double-click OPENS the scene —
+	// the tour stays openable from the browser, nested inside its own
+	// folder view). Empty = normal directory view.
+	std::string m_assetsExpandTour;
 	// ---- SVG icon set (editor/icons/*.svg, rasterized once) ----
 	// nanosvg -> premultiplied RGBA8 textures, each registered as an
 	// ImGui user texture (ImGui_ImplVulkan_AddTexture) so the asset
@@ -1667,7 +1695,17 @@ private:
 	// selects it in the browser. Needs a project only (no open scene) —
 	// like ImportAsset, unlike the scene-node Create entries. Returns
 	// the new path ({} + log on failure).
-	std::string CreateCookAsset(bool gi, const std::string& dir);	// <root>/artifacts (empty when no project is open). The project
+	std::string CreateCookAsset(bool gi, const std::string& dir);
+	// Cook-completion bookkeeping (PollCookProcess on a successful cook):
+	// the cook's bake outputs become/refresh BAKE ASSETS tied to this
+	// scene — the GiCook manifest (settings + the fresh .sggi result
+	// pointer) adopted into the project assetdb, the cubemap capture-set
+	// manifest adopted when cubemaps baked — and the bake GUID references
+	// land in the tour (m_bakeGiCookGuid / m_bakeCubemapGuid, editorSet
+	// keys — every incremental tour save carries them). No-op without a
+	// scene; logs what it recorded.
+	void RecordBakeAssetsFromCook();
+	// Artifact cache root (empty when no project is open). The project
 	// owns its artifact cache: cache.db (processed-import registry)
 	// + assets.db (GUID directory) + artifacts/ (per-class paks).
 	std::string ProjectArtifactDir() const;

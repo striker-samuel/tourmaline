@@ -578,17 +578,18 @@ void EditorApp::ModalSunElevationPos() {
 
 void EditorApp::ModalSunIntensityNeg() {
 	EditorEnv& e = CurrentEnv();
-	e.sunIntensity = std::clamp(e.sunIntensity / 1.25f, 0.0f, 10.0f);
+	// Lux-native env (SceneEnv): the nudges walk the lux scale directly.
+	e.sunIntensity = glm::clamp(e.sunIntensity / 1.25f, 0.0f, 2e5f);
 	char buf[96];
-	std::snprintf(buf, sizeof(buf), "Sun intensity: %.2f", e.sunIntensity);
+	std::snprintf(buf, sizeof(buf), "Sun intensity: %.0f lux", e.sunIntensity);
 	Log(buf);
 }
 
 void EditorApp::ModalSunIntensityPos() {
 	EditorEnv& e = CurrentEnv();
-	e.sunIntensity = std::clamp(e.sunIntensity * 1.25f, 0.0f, 10.0f);
+	e.sunIntensity = glm::clamp(e.sunIntensity * 1.25f, 0.0f, 2e5f);
 	char buf[96];
-	std::snprintf(buf, sizeof(buf), "Sun intensity: %.2f", e.sunIntensity);
+	std::snprintf(buf, sizeof(buf), "Sun intensity: %.0f lux", e.sunIntensity);
 	Log(buf);
 }
 

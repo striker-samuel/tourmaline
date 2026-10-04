@@ -107,22 +107,26 @@ struct SceneCubemap {
 	float radius = 1.5f;   // influence radius (m); fade = radius/2
 };
 
-// Authored environment block (editor LIGHTING authoring units — NOT lux:
-// sun 0..10, sky 0..2, exposure 0.1..4, fog 0..1 — the scale the panel
-// edits and the tour persists). Consumers map to their own units at use:
-// the editor's own frame uses raw values; the hosted WorldRenderer
-// lux-maps when publishing FrameUniforms. Scene-attached like the other
-// authored node data below (cvol/cubemap): the resolved ACTIVE look lives
-// in Scene::environment; the default block + per-node alternatives live
-// beside it; the "which block renders" selection stays editor view state
-// (like the active camera) and is resolved into Scene::environment.
+// Authored environment block (editor LIGHTING authoring): LUX-NATIVE
+// intensities — sun 10000 lux / sky 600 default, the same units the
+// runtime EnvironmentSettings and every bake (GI/lightmap/cubemap) use,
+// so ONE authored value drives the viewport preview, the pak sun, the
+// bakes and the App with no conversions (each consumer maps to its own
+// needs at use: the editor's LDR preview scales down, the HDR paths
+// take lux raw). No legacy migration: tours authored before the lux
+// switch carry scene-unit values that read dark — re-author them.
+// Exposure 0.1..4, fog 0..1. Scene-attached like the other authored
+// node data below (cvol/cubemap): the resolved ACTIVE look lives in
+// Scene::environment; the default block + per-node alternatives live
+// beside it; the "which block renders" selection stays editor view
+// state (like the active camera) and is resolved into Scene::environment.
 struct SceneEnv {
 	glm::vec3 skyColor{ 0.35f, 0.5f, 0.7f };
-	float skyIntensity = 0.6f;
+	float skyIntensity = 600.0f;   // lux-scale (the runtime sky default)
 	glm::vec3 sunColor{ 1.0f, 0.96f, 0.92f };
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
-	float sunIntensity = 3.0f;
+	float sunIntensity = 10000.0f; // lux (the runtime sun default)
 	float exposure = 1.0f;
 	// Authored but not yet rendered: fog density/color, volumetrics,
 	// skybox URI (stored with the block for the future passes).
@@ -156,8 +160,9 @@ struct Scene {
 	// Node -> authored convex GI volume params (tour createCvolume /
 	// editor cvolume node). The definition is node-local (a few floats
 	// — no pool indirection); the box shape rides the node's transform.
-	// Recorded by tour replay + cook; a future gi_baker --tour pass
-	// harvests these as bake inputs. Never cooked into the pak today.
+	// Recorded by tour replay; harvested as bake inputs by GiBaker
+	// (loose sidecars, on demand) AND PakCooker's --cvolume stage
+	// (baked + embedded into the pak for the runtime App).
 	std::unordered_map<NodeId, SceneCvol> cvolForNode;
 	// Node -> authored cubemap capture params (tour createCubemap /
 	// editor cubemap node): pinned specular probe positions harvested

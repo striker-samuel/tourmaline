@@ -112,6 +112,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Renderer/cubemap.h>
@@ -331,6 +332,13 @@ struct Args {
 	// NOTE: captures store TRUE radiance (physical units); the runtime's
 	// baked path scales by the cubemap panel intensity only, matching the
 	// direct sun view. No bake-time intensity knob by design.
+	// Authored convex GI volumes (tour cvolume nodes) baked INTO the pak
+	// (the --cvolume stage: in-process BakeCvVolume, embedded as Texture
+	// blobs under gi/ — the runtime App resolves the manifest + volumes
+	// straight out of the pak, no loose sidecars). Default on: authoring
+	// the nodes IS the intent to bake them; --cvolume off skips (GiBaker
+	// loose sidecars stay the on-demand/hand-tuning path).
+	bool cvolume = true;
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -345,15 +353,45 @@ struct Args {
 	std::string scratchDir;
 };
 
+// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
+// env block when the tour carried one (the editor always writes env.default.*),
+// else the CLI sun defaults (bare cooks). Every stage — the synthesized
+// WorldSun, the lightmap / cubemap / cvolume bakes — reads this, so ONE
+// authored sun/sky drives the editor viewport, the bakes and the pak.
+struct BakeEnv {
+	float sunAzimuth = 30.0f, sunElevation = 55.0f;
+	float sunIntensity = 10000.0f, skyIntensity = 600.0f;
+	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
+};
+BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
+	BakeEnv e{};
+	if (c.scene.hasEnvironment) {
+		const SceneEnv& se = c.scene.environment;
+		e.sunAzimuth = se.sunAzimuth;
+		e.sunElevation = se.sunElevation;
+		e.sunIntensity = se.sunIntensity;
+		e.skyIntensity = se.skyIntensity;
+		e.sunColor = se.sunColor;
+	}
+	else {
+		e.sunAzimuth = args.sunAzimuth;
+		e.sunElevation = args.sunElevation;
+		e.sunIntensity = args.sunIntensity;
+		e.skyIntensity = args.skyIntensity;
+		e.sunColor = args.sunColor;
+	}
+	return e;
+}
+
 // World sun: the pak's first directional is the runtime sun (the App
 // seeds its env from it, first-wins). Clusters that already carry one
 // (imported KHR punctual or tour-created/edited) are untouched; sunless
-// scenes get a "WorldSun" node synthesized from the cooked sun record so
-// the editor's world-sun settings travel pak -> App. Defaults mirror the
-// runtime env, so existing sunless content renders exactly as before —
-// now authored. Non-static by design: the bake harvests static lights
-// only, so the runtime sun never double-counts into lightmaps.
-void EnsureWorldSun(smvk::Cluster& cluster, const Args& args) {
+// scenes get a "WorldSun" node synthesized from the ENV BLOCK (see
+// EnvForBake — one authored sun everywhere) so the editor's environment
+// settings travel pak -> App. Non-static by design: the bake harvests
+// static lights only, so the runtime sun never double-counts into
+// lightmaps.
+void EnsureWorldSun(smvk::Cluster& cluster, const BakeEnv& be) {
 	bool hasDir = false;
 	cluster.lights.forEachHandle([&](smvk::ClusterLightHandle h) {
 		if (const SceneLight* l = cluster.lights.get(h))
@@ -364,14 +402,20 @@ void EnsureWorldSun(smvk::Cluster& cluster, const Args& args) {
 		return;
 	// toSun from compass azimuth (0 = +Z) + elevation — the same formula
 	// as EnvironmentSettings::SunDirectionToSun (unit by construction).
-	const float az = args.sunAzimuth * 0.01745329252f;
-	const float el = args.sunElevation * 0.01745329252f;
+	const float az = be.sunAzimuth * 0.01745329252f;
+	const float el = be.sunElevation * 0.01745329252f;
 	const float ce = std::cos(el);
 	const glm::vec3 toSun{ std::sin(az) * ce, std::sin(el),
 		std::cos(az) * ce };
-	// Node frame: the engine aim reads G*aimAxis with aimAxis = +Z at
-	// coordFix 0, so local +Z maps to -toSun (orthonormal basis, det +1).
-	const glm::vec3 z = -toSun;
+	// Node frame: the aim reads G*(0,0,-1) in EVERY coordFix mode
+	// (GltfPunctualAimAxis; raw locals, the basis rides the chain top),
+	// so local -Z maps to the emission direction -toSun — local +Z =
+	// toSun (orthonormal basis, det +1). Under the conjugated Sponza
+	// root the plain +Z read flips (az/el inverted on the seed — the
+	// verify cook caught it); parent under the SCENE root (addNode -1)
+	// instead, whose global frame is the raw identity, so the -Z read
+	// is exact and the App decode matches this construction 1:1.
+	const glm::vec3 z = toSun;
 	glm::vec3 up(0.0f, 1.0f, 0.0f);
 	const float facing = glm::dot(z, up);
 	if (facing > 0.999f || facing < -0.999f)
@@ -382,25 +426,226 @@ void EnsureWorldSun(smvk::Cluster& cluster, const Args& args) {
 	m[0] = glm::vec4(x, 0.0f);
 	m[1] = glm::vec4(y, 0.0f);
 	m[2] = glm::vec4(z, 0.0f);
-	const int node = addNode(cluster.scene, 0, 1);
+	const int node = addNode(cluster.scene, -1, 1);
 	cluster.scene.localTransform[size_t(node)] = m;
 	if (size_t(node) < cluster.scene.globalTransform.size())
-		cluster.scene.globalTransform[size_t(node)] = m; // root-child: global == local
+		cluster.scene.globalTransform[size_t(node)] = m; // scene-root child: global == local
 	setNodeName(cluster.scene, node, "WorldSun");
 	SceneLight sun{};
 	sun.type = SceneLight::Type::Directional;
-	sun.color = args.sunColor;
-	sun.intensity = args.sunIntensity;
+	sun.color = be.sunColor;
+	sun.intensity = be.sunIntensity;
 	sun.name = "WorldSun";
 	const auto h = cluster.CreateLight(std::move(sun));
 	if (!h.valid())
 		return;
 	cluster.RegisterLightUri("sun/world", h);
 	cluster.scene.lightForNode[uint32_t(node)] = h.index();
-	std::cout << "World sun synthesized: az=" << args.sunAzimuth
-		<< " el=" << args.sunElevation << " I=" << args.sunIntensity
-		<< " rgb=(" << args.sunColor.x << "," << args.sunColor.y
-		<< "," << args.sunColor.z << ")\n";
+	std::cout << "World sun synthesized (env block): az=" << be.sunAzimuth
+		<< " el=" << be.sunElevation << " I=" << be.sunIntensity
+		<< " rgb=(" << be.sunColor.x << "," << be.sunColor.y
+		<< "," << be.sunColor.z << ")\n";
+}
+
+// One token-safe file name token for the embedded cvol paths (the
+// manifest rows take the first token as the path — spaces would split).
+std::string SanitizeVfsToken(const std::string& s) {
+	std::string out;
+	for (char c : s) {
+		if (std::isalnum(static_cast<unsigned char>(c))
+			|| c == '_' || c == '-' || c == '.')
+			out.push_back(c);
+		else
+			out.push_back('_');
+	}
+	return out.empty() ? std::string("cvol") : out;
+}
+
+// Reads a loose sidecar file by its content-root-relative vfs path
+// ("gi/<guid>.cvmanifest" -> <contentDir>/gi/<guid>.cvmanifest). Empty
+// on any failure (logged by the caller — a missing sidecar is "not
+// baked", never fatal).
+std::vector<uint8_t> ReadSidecarFile(const std::string& contentDir,
+	const std::string& vfsPath) {
+	std::error_code ec;
+	const std::filesystem::path host =
+		std::filesystem::path(contentDir) / vfsPath;
+	if (!std::filesystem::is_regular_file(host, ec))
+		return {};
+	std::ifstream in(host, std::ios::binary);
+	if (!in)
+		return {};
+	return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+}
+
+// Sidecar logical stems (see the GI-sidecar discovery in main): the pak
+// stem first (the runtime's fallback identity), then the source scene
+// stem (the tour reference / --in-vfs). Bake-asset logicals key on the
+// SCENE the bake ran over (GiBaker --scene, the .sggi stem) — without
+// the second stem a differently-named out pak would silently miss its
+// own bakes.
+std::vector<std::string> SidecarStems(const Args& args) {
+	std::vector<std::string> stems;
+	const std::string pakStem =
+		std::filesystem::path(args.outPak).stem().generic_string();
+	if (!pakStem.empty())
+		stems.push_back(pakStem);
+	const std::string srcStem =
+		std::filesystem::path(args.inVfs).stem().generic_string();
+	if (!srcStem.empty()
+		&& std::find(stems.begin(), stems.end(), srcStem) == stems.end())
+		stems.push_back(srcStem);
+	if (stems.empty())
+		stems.push_back("pak");
+	return stems;
+}
+
+// First bake guid for a "<logicalBase>:<stem>" sidecar over the stems
+// ("" = unbaked under every stem).
+std::string FindSidecarGuid(const std::string& giDir, const char* logicalBase,
+	const std::vector<std::string>& stems) {
+	for (const std::string& stem : stems) {
+		const std::string guid = smvk::bake::FindBakeAssetGuid(giDir,
+			smvk::bake::kBakeAssetKindGi,
+			std::string(logicalBase) + ":" + stem);
+		if (!guid.empty())
+			return guid;
+	}
+	return {};
+}
+
+// Authored convex GI volumes baked INTO the pak (the --cvolume stage):
+// the same engine core as GiBaker (BuildTraceSceneFromCluster +
+// BakeCvVolume over the tour's cvolume nodes — identical bake inputs:
+// no collapse, no LODs, the definition cluster exactly as GiBaker sees
+// it). Output = (vfsPath, bytes) pairs for pak embedding: one .cvol
+// per volume at gi/<pak-stem>_<name>.cvol + the runtime manifest text
+// at gi/<pak-stem>.cvmanifest (bare-path rows: the runtime's
+// SplitManifestRow + vfs.ReadBinary resolve them straight out of the
+// pak through PakBackend's serve-Texture-by-path — the proven
+// cubemap-manifest embed pattern). Returns false on a bake failure —
+// the cook fails loudly (a silently missing GI volume is exactly the
+// "cooked cvolumes never reached the App" bug).
+bool BakeAuthoredCvolumes(
+	std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
+	const Args& args, const std::string& sceneId,
+	std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
+	using namespace smvk::gi;
+	std::vector<std::string> manifestRows;
+	for (auto& sc : sceneClusters) {
+		if (!sc || sc->scene.cvolForNode.empty())
+			continue;
+		// Trace scene per cluster: bake inputs mirror the lightmap/
+		// cubemap stages (texture-averaged albedo, cooked-punctual aim
+		// axis, the env-block sun/sky record (EnvForBake — ONE authored
+		// sun/sky everywhere), static light harvest) so the volume
+		// matches what the rest of the cook bakes.
+		const BakeEnv be = EnvForBake(*sc, args);
+		GiSceneBuildOptions buildOpts{};
+		uint32_t averaged = 0;
+		for (const auto& [uri, handle] : sc->ListTextureUris()) {
+			const std::vector<uint8_t>* src = sc->GetTextureSource(uri);
+			if (!src || src->empty())
+				continue;
+			std::optional<glm::vec3> avg =
+				GiAverageKtxTexel(std::span<const uint8_t>(*src));
+			if (!avg)
+				continue;
+			buildOpts.texelAvg[handle.index()] = *avg;
+			++averaged;
+		}
+		buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
+		buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
+		buildOpts.env.sunElevationDeg = be.sunElevation;
+		buildOpts.env.sunIntensity = be.sunIntensity;
+		buildOpts.env.skyIntensity = be.skyIntensity;
+		GiTraceScene traceScene;
+		std::string terr;
+		BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
+		if (!terr.empty()) {
+			std::cerr << "[CV] trace scene failed: " << terr << std::endl;
+			return false;
+		}
+		std::cout << "  [CV] trace scene: "
+			<< traceScene.Bvh().TriangleCount() << " tris ("
+			<< averaged << " averaged textures)\n" << std::flush;
+		// Deterministic node order (hash-map iteration is not).
+		std::vector<uint32_t> nodes;
+		nodes.reserve(sc->scene.cvolForNode.size());
+		for (const auto& [node, def] : sc->scene.cvolForNode)
+			nodes.push_back(node);
+		std::sort(nodes.begin(), nodes.end());
+		for (uint32_t node : nodes) {
+			if (node >= sc->scene.globalTransform.size())
+				continue;
+			const SceneCvol& cv = sc->scene.cvolForNode[node];
+			// World box decode (GiBaker parity): translate = center,
+			// basis lengths = full extents, normalized basis = the box
+			// axes (an OBB — six planes, CvBoxPlanesRotated).
+			const glm::mat4& g = sc->scene.globalTransform[node];
+			const glm::vec3 c(g[3]);
+			glm::vec3 half;
+			glm::mat3 axes;
+			for (int i = 0; i < 3; ++i) {
+				const float len = glm::length(g[i]);
+				half[i] = 0.5f * len;
+				axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len
+					: glm::vec3(0.0f);
+			}
+			std::string name = getNodeName(sc->scene, int(node));
+			if (name.empty())
+				name = "cvol" + std::to_string(node);
+			name = SanitizeVfsToken(name);
+			CvVolumeDef def{};
+			def.name = name;
+			def.priority = cv.priority;
+			def.planes = CvBoxPlanesRotated(c, axes, half,
+				cv.insideFade, cv.outsideFade);
+			std::cout << "  [CV] volume '" << def.name << "': priority="
+				<< def.priority << " spacing=" << cv.spacing
+				<< " planes=" << def.planes.size() << "\n" << std::flush;
+			// Engine defaults (1536 capture dirs, 3 bounces, auto
+			// capture lattice, HW threads): GiBaker stays the tuning
+			// tool for anything finer.
+			CvBakeConfig cfg{};
+			CvVolume vol;
+			CvBakeStats stats;
+			if (!BakeCvVolume(traceScene, def, cv.spacing, cfg, vol,
+					stats, [](const char* line) { std::cout << line; })) {
+				std::cerr << "[CV] bake failed for '" << def.name
+					<< "'\n";
+				return false;
+			}
+			std::vector<uint8_t> bytes;
+			std::string werr;
+			if (!vol.WriteToMemory(bytes, werr)) {
+				std::cerr << "[CV] serialize failed for '" << def.name
+					<< "': " << werr << "\n";
+				return false;
+			}
+			const std::string vfsPath =
+				"gi/" + sceneId + "_" + def.name + ".cvol";
+			out.emplace_back(vfsPath, std::move(bytes));
+			manifestRows.push_back(vfsPath + "  # " + def.name);
+			std::cout << "  [CV] baked '" << def.name << "': dims="
+				<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
+				<< " captures=" << stats.captures
+				<< " probes=" << stats.probes
+				<< " (" << stats.seconds << "s)\n";
+		}
+	}
+	if (manifestRows.empty())
+		return true; // no authored cvolumes: nothing to embed
+	// Runtime manifest: bare-path rows (SplitManifestRow takes the first
+	// token; the '# name' notes are ignored by the parser, read by us).
+	std::string manifest =
+		"# convex GI volumes (cooked into this pak; pak vfs paths)\n";
+	for (const std::string& row : manifestRows)
+		manifest += row + "\n";
+	out.emplace_back("gi/" + sceneId + ".cvmanifest",
+		std::vector<uint8_t>(manifest.begin(), manifest.end()));
+	return true;
 }
 
 std::vector<float> ParseLodRatios(const std::string& s) {
@@ -737,6 +982,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.giProbes.push_back(v);
 		}
+		else if (a == "--cvolume") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cvolume = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--cubemap") {
 			std::string v;
 			if (!need(v)) return false;
@@ -908,6 +1158,14 @@ void Usage() {
 		<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
 		<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
 		<< "          resolves GI by these names (one per kind for now).\n"
+		<< "          [--cvolume on|off (default on)]: bakes the tour's\n"
+		<< "          authored convex GI volumes (cvolume nodes) in-process\n"
+		<< "          (same engine core as GiBaker) and embeds them into\n"
+		<< "          the pak as Texture blobs under gi/ (volumes at\n"
+		<< "          gi/<pak-stem>_<name>.cvol, the runtime manifest at\n"
+		<< "          gi/<pak-stem>.cvmanifest) — the pak is self-contained\n"
+		<< "          GI for the App; loose GiBaker sidecars still override\n"
+		<< "          through the overlay when present.\n"
 		<< "          [--cubemap on|off --cubemap-name <name>\n"
 		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
@@ -2414,12 +2672,15 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			<< cluster.ListTextureUris().size() << "\n" << std::flush;
 	}
 	// Same import basis change as CubemapBaker/GiBaker: cook imports at
-	// coordFix 0 read punctual aims with the conjugated -Z axis.
+	// coordFix 0 read punctual aims with the conjugated -Z axis. The
+	// sun/sky record comes from the scene's env block (EnvForBake — ONE
+	// authored sun/sky everywhere, matching every other bake stage).
+	const BakeEnv be = EnvForBake(cluster, args);
 	buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
-	buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
-	buildOpts.env.sunElevationDeg = args.sunElevation;
-	buildOpts.env.sunIntensity = args.sunIntensity;
-	buildOpts.env.skyIntensity = args.skyIntensity;
+	buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
+	buildOpts.env.sunElevationDeg = be.sunElevation;
+	buildOpts.env.sunIntensity = be.sunIntensity;
+	buildOpts.env.skyIntensity = be.skyIntensity;
 	// uniformAlbedo stays off: captures show real materials.
 
 	GiTraceScene traceScene;
@@ -2791,7 +3052,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		// skyIntensity at DISPLAY time so the strips keep the old look.
 		const float cubemapScale = 1.0f;
 		const float pngDisplayExposure =
-			1.0f / std::max(args.skyIntensity, 1e-4f);
+			1.0f / std::max(be.skyIntensity, 1e-4f);
 
 	// Trace 6 HDR base faces. Per texel: --cubemap-spp transport paths,
 	// averaged — the NEE sun/spot term is analytic (clean at 1 spp), but
@@ -3212,6 +3473,12 @@ int main(int argc, char** argv) {
 		haveTour = true;
 		for (auto& w : twarn)
 			std::cerr << "Tour warning: " << w << std::endl;
+		// The tour's root reference doubles as the --in-vfs identity when
+		// none was given (the "Cooked <inVfs> -> ..." log + SidecarStems:
+		// bake-asset logicals key on the SCENE stem, so scene-keyed
+		// sidecar bakes survive differently-named out paks).
+		if (args.inVfs.empty() && !tour.references.empty())
+			args.inVfs = tour.references[0].source;
 		// Apply tour cook defaults (CLI wins)
 		if (tour.hasCook) {
 			const auto& k = tour.cook;
@@ -3230,11 +3497,11 @@ int main(int argc, char** argv) {
 			use("lmRays", args.lmRays, k.lmRays);
 			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
 			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
-			use("sunAzimuth", args.sunAzimuth, k.sunAzimuth);
-			use("sunElevation", args.sunElevation, k.sunElevation);
-			use("sunIntensity", args.sunIntensity, k.sunIntensity);
-			use("skyIntensity", args.skyIntensity, k.skyIntensity);
-			use("sunColor", args.sunColor, k.sunColor);
+			// NOTE: no sun/sky keys here — TourCook dropped them; the env
+			// blocks (env.default.* / env.n.*, applied by ApplyTourToCluster
+			// into the cluster scene) are the sun/sky of record for every
+			// stage (see EnvForBake). Legacy tour cook lines carrying the
+			// old keys ignore them (the tour-side parse skips them).
 			use("cubemap", args.cubemap, k.cubemap);
 			use("cubemapName", args.cubemapName, k.cubemapName);
 			use("cubemapSize", args.cubemapSize, k.cubemapSize);
@@ -3479,9 +3746,105 @@ int main(int argc, char** argv) {
 
 	// World sun per scene (App parity: first directional wins as the
 	// runtime sun). Authored directionals always survive; sunless scenes
-	// synthesize one from the cooked sun record.
+	// synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
 	for (auto& sc : sceneClusters)
-		EnsureWorldSun(*sc, args);
+		EnsureWorldSun(*sc, EnvForBake(*sc, args));
+
+	// Sun of record -> the scene's look env (sun fields only): an
+	// AUTHORED directional (imported KHR punctual or tour-created) is
+	// scene CONTENT — it wins over the env block's sun fields so exactly
+	// ONE sun reaches the App (the env keeps its sky/fog/exposure). The
+	// env block is lux-native, so the light's lux copies straight in (no
+	// conversion). A synthesized WorldSun already carries the env's own
+	// values — the seed is a no-op there (float-exact round trip).
+	for (auto& sc : sceneClusters) {
+		if (!sc->scene.hasEnvironment)
+			continue; // runtime seeds from the light at load
+		const ::Scene& scene = sc->scene;
+		glm::vec3 toSun(0.0f);
+		glm::vec3 sunColor(0.0f);
+		float sunLux = 0.0f;
+		bool hasSun = false;
+		// Deterministic node order (hash-map iteration is not); the
+		// aim axis after the coordFix basis change (the same plain
+		// read as BuildCookedLightsFromWorld / CollectStaticBakeLights).
+		std::vector<uint32_t> nodes;
+		nodes.reserve(scene.lightForNode.size());
+		for (const auto& [node, lightIdx] : scene.lightForNode)
+			nodes.push_back(node);
+		std::sort(nodes.begin(), nodes.end());
+		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
+		for (uint32_t node : nodes) {
+			if (node >= scene.globalTransform.size())
+				continue;
+			const auto lit = scene.lightForNode.find(node);
+			if (lit == scene.lightForNode.end())
+				continue;
+			const smvk::ClusterLightHandle handle =
+				sc->lights.getHandle(lit->second);
+			if (!handle.valid())
+				continue;
+			const SceneLight* L = sc->lights.get(handle);
+			if (!L || L->type != SceneLight::Type::Directional)
+				continue;
+			glm::vec3 emis = glm::vec3(
+				scene.globalTransform[node] * glm::vec4(aimAxis, 0.0f));
+			if (glm::length(emis) < 1e-6f)
+				continue;
+			toSun = -glm::normalize(emis);
+			sunColor = L->color;
+			sunLux = L->intensity;
+			hasSun = true;
+			break; // single-sun renderer: first directional wins
+		}
+		if (!hasSun)
+			continue;
+		SceneEnv& e = sc->scene.environment;
+		e.sunElevation = glm::degrees(
+			std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
+		e.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
+		if (e.sunAzimuth < 0.0f)
+			e.sunAzimuth += 360.0f;
+		e.sunColor = sunColor;
+		e.sunIntensity = sunLux; // lux-native env: straight in
+		std::cout << "Env sun resolved from the sun light: az="
+			<< e.sunAzimuth << " el=" << e.sunElevation
+			<< " I=" << e.sunIntensity << " (lux)\n";
+	}
+
+	// GI blobs embedded into the pak (see the cvolume stage + the loose-
+	// sidecar discovery below): one list — in-process-baked cvolumes (the
+	// no-sidecar fallback), the discovered GiBaker sidecars (probe octree,
+	// regular/convex manifests + rows) and the lightmap .sglm. Every
+	// entry is (vfsPath, bytes) — Texture blobs at gi/... paths embedded
+	// after Serialize below (PakBackend serves by path).
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
+	// Authored convex GI volumes: bake IN-PROCESS only as the fallback —
+	// when the GiBaker cvolmanifest sidecar already exists (the editor
+	// cook flow runs GiBaker from 0 FIRST), its fresh bake wins (same
+	// definition, hand-tunable) and the discovery stage below embeds it.
+	// Baked before collapse/LODs: identical bake inputs to GiBaker's
+	// definition bake (the tour cluster as replayed), and cvolForNode
+	// node ids are still valid (collapse consumes static subtrees later).
+	if (args.cvolume) {
+		const std::string giDir =
+			(std::filesystem::path(args.contentDir) / "gi")
+				.generic_string();
+		const std::string pakStem =
+			std::filesystem::path(args.outPak).stem().generic_string();
+		const std::string cvolSceneId = pakStem.empty()
+			? std::string("pak") : pakStem;
+		const std::string sidecarGuid = FindSidecarGuid(giDir,
+			"cvolmanifest", SidecarStems(args));
+		if (!sidecarGuid.empty()) {
+			std::cout << "cvolume sidecars found (guid '" << sidecarGuid
+				<< "') — in-process bake skipped, the sidecar bake "
+				"embeds below\n";
+		}
+		else if (!BakeAuthoredCvolumes(sceneClusters, args, cvolSceneId,
+				giBlobs))
+			return 1;
+	}
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh
 	// blocks (world-baked verts, identity nodes). Runs before Serialize so
@@ -3581,10 +3944,13 @@ int main(int argc, char** argv) {
 			std::cerr << "  [LM] textures averaged: " << averaged
 				<< " / " << cluster->ListTextureUris().size() << "\n" << std::flush;
 		}
-		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
-		buildOpts.env.sunElevationDeg = args.sunElevation;
-		buildOpts.env.sunIntensity = args.sunIntensity;
-		buildOpts.env.skyIntensity = args.skyIntensity;
+		// Sun/sky record from the scene's env block (EnvForBake — ONE
+		// authored sun/sky everywhere, matching every other bake stage).
+		const BakeEnv be = EnvForBake(*cluster, args);
+		buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
+		buildOpts.env.sunElevationDeg = be.sunElevation;
+		buildOpts.env.sunIntensity = be.sunIntensity;
+		buildOpts.env.skyIntensity = be.skyIntensity;
 
 		// Static spot list ("px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela").
 		std::vector<GiTraceSpot> spots;
@@ -4830,6 +5196,22 @@ int main(int argc, char** argv) {
 					return 1;
 				}
 			}
+			// Embed the .sglm manifest into the pak (the atlas textures
+			// already ride as Texture blobs; the binding below names this
+			// guid) so the lightmap payload is pak-self-contained like
+			// every other GI sidecar (see the giBlobs embed after
+			// Serialize). Loose files still override by the same path.
+			{
+				const std::string vfsPath =
+					"gi/" + atlasGuid + ".sglm";
+				std::vector<uint8_t> bytes =
+					ReadSidecarFile(args.contentDir, vfsPath);
+				if (bytes.empty())
+					std::cerr << "[LM] sglm embed skipped ('" << vfsPath
+						<< "' unreadable)\n" << std::flush;
+				else
+					giBlobs.emplace_back(vfsPath, std::move(bytes));
+			}
 		// Raw-atlas debug PNG next to the atlas (<scene>_atlas.png):
 		// the baked payload itself (lobe 0, editor flat-view display
 		// mapping), NOT the uv2-unwrapped geometry draw the editor
@@ -5370,30 +5752,127 @@ int main(int argc, char** argv) {
 		std::cout << "Registered cubemap manifest GI '"
 			<< cubemapManifestGuid << "'\n";
 	}
-	// Loose volume manifests (GiBaker standalone bakes these; the cook
-	// only discovers + registers): sidecar scan by logical in the
-	// content's gi/ dir. Missing = unbaked (the runtime falls back to
-	// the scene-id stem, then to "not baked yet").
+	// Loose GI sidecars (GiBaker bakes these — the editor cook flow runs
+	// GiBaker from 0 BEFORE PakCooker): discover by logical in the
+	// content's gi/ dir, REGISTER the guid bindings AND EMBED the
+	// payloads into the pak (Texture blobs at their gi/ paths — PakBackend
+	// serves by path, so the runtime's binding-first loaders resolve
+	// straight out of the pak; loose files still override through the
+	// overlay by the same paths). Missing = unbaked (the runtime falls
+	// back to the scene-id stem, then to "not baked yet").
 	{
 		const std::string giDir =
 			(std::filesystem::path(args.contentDir) / "gi")
 				.generic_string();
 		std::filesystem::path pakPath(args.outPak);
-		const std::string sceneId = pakPath.stem().generic_string();
-		const std::pair<smvk::GiBinding::Kind, const char*> manifestKinds[2] = {
-			{ smvk::GiBinding::Kind::RegManifest, "regmanifest" },
-			{ smvk::GiBinding::Kind::CvolManifest, "cvolmanifest" },
+		const std::string pakStem = pakPath.stem().generic_string();
+		// Logical stems: the pak stem first (the runtime fallback),
+		// then the source scene stem — bake logicals key on the SCENE
+		// (GiBaker --scene), so scene-keyed bakes survive
+		// differently-named out paks (see SidecarStems).
+		const std::vector<std::string> stems = SidecarStems(args);
+		// Probe octree (the world field, GiBaker --out): a single
+		// payload, no manifest rows — embed the .sggi at its guid path.
+		{
+			const std::string guid = FindSidecarGuid(giDir, "probe", stems);
+			if (!guid.empty()) {
+				const std::string vfsPath = "gi/" + guid + ".sggi";
+				std::vector<uint8_t> bytes =
+					ReadSidecarFile(args.contentDir, vfsPath);
+				if (bytes.empty()) {
+					std::cerr << "probe sidecar '" << vfsPath
+						<< "' unreadable — not embedded\n";
+				}
+				else {
+					giBlobs.emplace_back(vfsPath, std::move(bytes));
+					for (auto& sc : sceneClusters)
+						sc->RegisterGiBinding(
+							smvk::GiBinding::Kind::Probe, guid);
+					std::cout << "Registered + embedded probe GI '"
+						<< guid << "' (scene '" << pakStem << "')\n";
+				}
+			}
+		}
+		// Volume manifests (regular + convex): embed the manifest + every
+		// row's payload file, register the guid binding. NOTE: the
+		// LOGICAL base ("cvolmanifest") and the FILE extension
+		// (".cvmanifest") differ for convex volumes — the runtime's
+		// loader reads gi/<guid>.cvmanifest.
+		struct ManifestKind {
+			smvk::GiBinding::Kind kind;
+			const char* logicalBase; // the bake-asset logical
+			const char* ext;         // the manifest file extension
 		};
-		for (const auto& [kind, logicalBase] : manifestKinds) {
-			const std::string guid = smvk::bake::FindBakeAssetGuid(giDir,
-				smvk::bake::kBakeAssetKindGi,
-				std::string(logicalBase) + ":" + sceneId);
-			if (guid.empty())
+		const ManifestKind manifestKinds[2] = {
+			{ smvk::GiBinding::Kind::RegManifest, "regmanifest",
+				"regmanifest" },
+			{ smvk::GiBinding::Kind::CvolManifest, "cvolmanifest",
+				"cvmanifest" },
+		};
+		for (const auto& [kind, logicalBase, ext] : manifestKinds) {
+			const std::string guid = FindSidecarGuid(giDir, logicalBase,
+				stems);
+			if (guid.empty()) {
+				// No loose sidecar: cvolumes cooked INTO this pak (the
+				// --cvolume stage above) bind by the pak stem — the
+				// runtime resolves gi/<pakStem>.cvmanifest straight
+				// out of the pak (PakBackend serves the gi/... Texture
+				// blobs by path). Loose GiBaker bakes still win by GUID
+				// (embedded below when present), and the legacy
+				// stem-named loose files override by the same path
+				// through the overlay (dev override).
+				if (kind == smvk::GiBinding::Kind::CvolManifest
+					&& !giBlobs.empty()) {
+					for (auto& sc : sceneClusters)
+						sc->RegisterGiBinding(kind, pakStem);
+					std::cout << "Registered embedded cvolmanifest GI '"
+						<< pakStem << "' (cooked into this pak)\n";
+				}
 				continue;
+			}
+			const std::string manifestVfs =
+				"gi/" + guid + "." + ext;
+			std::vector<uint8_t> manifest =
+				ReadSidecarFile(args.contentDir, manifestVfs);
+			if (manifest.empty()) {
+				std::cerr << "sidecar manifest '" << manifestVfs
+					<< "' unreadable — binding kept, not embedded\n";
+			}
+			else {
+				giBlobs.emplace_back(manifestVfs, std::move(manifest));
+				// Row payloads (SplitManifestRow takes the path column).
+				std::vector<std::string> rows;
+				std::string cur;
+				for (char c : giBlobs.back().second) {
+					if (c == '\n' || c == '\r') {
+						const std::string p =
+							smvk::bake::SplitManifestRow(cur);
+						if (!p.empty())
+							rows.push_back(p);
+						cur.clear();
+					}
+					else
+						cur.push_back(c);
+				}
+				const std::string p =
+					smvk::bake::SplitManifestRow(cur);
+				if (!p.empty())
+					rows.push_back(p);
+				for (const std::string& row : rows) {
+					std::vector<uint8_t> bytes =
+						ReadSidecarFile(args.contentDir, row);
+					if (bytes.empty()) {
+						std::cerr << "sidecar volume '" << row
+							<< "' unreadable — not embedded\n";
+						continue;
+					}
+					giBlobs.emplace_back(row, std::move(bytes));
+				}
+			}
 			for (auto& sc : sceneClusters)
 				sc->RegisterGiBinding(kind, guid);
 			std::cout << "Registered " << logicalBase << " GI '" << guid
-				<< "' (scene '" << sceneId << "')\n";
+				<< "' (scene '" << pakStem << "')\n";
 		}
 	}
 
@@ -5429,6 +5908,24 @@ int main(int argc, char** argv) {
 		std::cout << (isManifest ? "Embedded cubemap manifest " : "Embedded cubemap ")
 			<< vfsPath << " (" << ktx.size() << " B"
 			<< (isManifest ? " text" : " ktx2") << ")\n";
+	}
+	// GI payloads embedded into the pak (the in-process cvolume bake
+	// above + the loose GiBaker sidecars + the lightmap .sglm): Texture
+	// blobs at their gi/... paths — PakBackend serves by path, so the
+	// runtime's binding-first loaders read everything straight out of
+	// this pak (no loose sidecars needed; loose files still override
+	// through the overlay by the same paths). Same path-embed pattern
+	// as the .cubemanifest text above.
+	for (auto& [vfsPath, bytes] : giBlobs) {
+		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
+			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(bytes));
+		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+				std::move(payload))) {
+			std::cerr << "GI AddBlob failed: " << vfsPath << std::endl;
+			return 1;
+		}
+		std::cout << "Embedded GI " << vfsPath
+			<< " (" << bytes.size() << " B)\n";
 	}
 	std::vector<uint8_t> pak = writer.Finalize();
 
