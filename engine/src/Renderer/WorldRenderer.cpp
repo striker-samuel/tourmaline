@@ -7777,6 +7777,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		sdsmPush.zFar = std::max(CascadeFar(), sdsmPush.zNear * 2.0f);
 		sdsmPush.width = renderExtent.width;
 		sdsmPush.height = renderExtent.height;
+		// ceil(totalPixels / 65536 global lanes): ~1 sample per lane =
+		// ~65k decimated samples (~a 256^2 mip) — see the shader's lane
+		// addressing (gid joins the walk; groups PARTITION the samples).
 		sdsmPush.stride = (renderExtent.width * renderExtent.height + 65535u) / 65536u;
 		sdsmPush.pad0 = 0;
 		smvk::ShaderProgram* sdsmProg = &m_resources.sdsmStatsProgram;
