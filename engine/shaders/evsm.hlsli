@@ -8,7 +8,7 @@
 // with d = light-space depth in [0,1]. The MSAA moment pass writes the
 // warped depth per sample; because E[warp^2] = E[exp(+-2c*d)], the second
 // moments are just squares of the first at bake time. The async prefilter
-// (evsm_blur.cs.hlsl, separable Gaussian H+V) produces the filtered
+// (evsm_blur_h/v.cs.hlsl, separable Gaussian H+V) produces the filtered
 // expectations.
 //
 // Visibility = min of two one-sided Cantelli (Chebyshev) bounds, each an

@@ -7562,18 +7562,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// graphics write inside the window forces the emulated single-
 		// submit fallback). SameFrame consumes this frame's blur;
 		// OneFrameLag trails by one slot (see EvsmAtlas::SampleSlot).
-		if (evsmDirOn) {
-			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
-				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
-					*m_rendergraph, m_viewportResources.evsmDir, *m_context,
-					fb.frameIndex, ci, /*samplerIndex=*/0);
-		}
-		if (evsmSpotOn) {
-			for (uint32_t si = 0; si < spotSlotCount; ++si)
-				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
-					*m_rendergraph, m_viewportResources.evsmSpot, *m_context,
-					fb.frameIndex, si, /*samplerIndex=*/0);
-		}
+	if (evsmDirOn) {
+		for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+			smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
+				*m_rendergraph, m_viewportResources.evsmDir, *m_context,
+				fb.frameIndex, ci);
+	}
+	if (evsmSpotOn) {
+		for (uint32_t si = 0; si < spotSlotCount; ++si)
+			smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
+				*m_rendergraph, m_viewportResources.evsmSpot, *m_context,
+				fb.frameIndex, si);
+	}
 
 		// ---- Forward+ passes (depth prepass + tile cull) ----
 		// Owned by ForwardPlusRenderer (see App/forwardplus_renderer.h).

@@ -36,6 +36,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/smvk.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -49,9 +50,12 @@ namespace smvk {
 // c=42, comfortable headroom under FLT_MAX 3.4e38).
 inline constexpr float kEvsmExponent = 42.0f;
 // Separable Gaussian taps for the prefilter (9-tap dense, sigma ~ radius/2).
-// Blur runs in tile-local UV with clamp-to-tile so cascades/tiles never
-// bleed into siblings.
+// Blur runs in tile-local TEXEL space with clamp-to-tile so cascades/tiles
+// never bleed into siblings.
 inline constexpr uint32_t kEvsmBlurRadius = 2u;
+// Blur workgroup edge — matches EVSM_BLUR_BLOCK / [numthreads(16,16,1)] in
+// evsm_blur.hlsli; the dispatch tiling below rounds tile extents up to it.
+inline constexpr uint32_t kEvsmBlurBlock = 16u;
 
 enum class EvsmPipelineMode : uint8_t {
 	// Sample previous frame's blurred moments while blurring the current
@@ -78,28 +82,26 @@ struct EvsmDesc {
 inline constexpr const char* kEvsmMomentsVsPath = "content/shaders/shadow.vert.hlsl.spv";
 inline constexpr const char* kEvsmMomentsFsPath = "content/shaders/shadow_evsm.frag.hlsl.spv";
 inline constexpr const char* kEvsmMomentsOpaqueFsPath = "content/shaders/shadow_evsm_opaque.frag.hlsl.spv";
-inline constexpr const char* kEvsmBlurCsPath = "content/shaders/evsm_blur.cs.hlsl.spv";;
+inline constexpr const char* kEvsmBlurHPath = "content/shaders/evsm_blur_h.cs.hlsl.spv";
+inline constexpr const char* kEvsmBlurVPath = "content/shaders/evsm_blur_v.cs.hlsl.spv";
 
-// Push constants for evsm_blur.cs.hlsl. Must mirror the HLSL EvsmBlurPush.
+// Push constants for the EVSM blur legs (evsm_blur_h/v.cs.hlsl share
+// evsm_blur.hlsli). Must mirror the HLSL EvsmBlurPush (48 bytes, DX layout).
 struct EvsmBlurPush {
-	uint32_t srcIndex;      // bindless index of blur source (moments or temp)
-	uint32_t dstIndex;      // bindless storage-image index of blur dest
-	uint32_t samplerIndex;  // linear clamp sampler for the source
-	uint32_t direction;     // 0 = horizontal, 1 = vertical
-	float texelU;           // 1/atlasWidth
-	float texelV;           // 1/atlasHeight
-	float uvMinU;           // tile clamp min (atlas UV)
-	float uvMinV;
-	float uvMaxU;           // tile clamp max
-	float uvMaxV;
-	uint32_t tileOffsetX;   // tile origin in texels (for thread mapping)
+	uint32_t srcIndex;      // bindless textures[] index this leg Load()s from
+	uint32_t dstIndex;      // bindless storage-image index this leg writes to
+	uint32_t tileOffsetX;   // tile origin in atlas texels (edge clamp min)
 	uint32_t tileOffsetY;
-	uint32_t tileWidth;
+	uint32_t tileWidth;     // tile extent in texels (early-out + edge clamp max)
 	uint32_t tileHeight;
-	uint32_t blurRadius;
+	float w0;               // CPU-baked normalized symmetric Gaussian weights:
+	float w1;               // sigma = clamp(blurRadius/2, 1, 3),
+	float w2;               // w_k = exp(-k^2 / (2 sigma^2)) / wSum over taps
+	float w3;               // -4..+4 — the shader never evaluates exp()
+	float w4;
 	uint32_t pad0;
 };
-static_assert(sizeof(EvsmBlurPush) <= 128, "EVSM blur push must fit the 128B+ push budget");
+static_assert(sizeof(EvsmBlurPush) == 48, "EVSM blur push must mirror the HLSL EvsmBlurPush (48 bytes)");
 
 // Per-frame resolved + blurred views. Ringed by flight slot; with OneFrameLag
 // the sampler reads slot (write+FLIGHTS-1)%FLIGHTS.
@@ -129,10 +131,12 @@ struct EvsmAtlas {
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> fsModule;
 	Holder<ShaderModuleHandle> fsOpaqueModule;
-	Holder<ShaderModuleHandle> blurModule;
+	Holder<ShaderModuleHandle> blurHModule;
+	Holder<ShaderModuleHandle> blurVModule;
 	ShaderProgram momentsProgram{};      // VS+FS full: alpha-tested (MASK casters)
 	ShaderProgram momentsOpaqueProgram{}; // VS+FS cheap: opaque casters (no material path)
-	ShaderProgram blurProgram{};    // CS
+	ShaderProgram blurHProgram{};   // CS: horizontal leg (moments -> temp)
+	ShaderProgram blurVProgram{};   // CS: vertical leg (temp -> blurred)
 
 	Extent2D atlasExtent{ 0, 0 };
 	Extent2D tileExtent{ 0, 0 };
@@ -148,7 +152,8 @@ struct EvsmAtlas {
 			&& !msaaMomentsLogical.empty() && !blurTempBindless[0].empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
-		return momentsProgram.shaderCount == 2 && blurProgram.shaderCount == 1
+		return momentsProgram.shaderCount == 2
+			&& blurHProgram.shaderCount == 1 && blurVProgram.shaderCount == 1
 			&& momentsOpaqueProgram.shaderCount == 2;
 	}
 
@@ -195,7 +200,8 @@ struct EvsmAtlas {
 	bool EnsureShaders(ResourceManager& ctx,
 		const char* vsPath = kEvsmMomentsVsPath,
 		const char* fsPath = kEvsmMomentsFsPath,
-		const char* csPath = kEvsmBlurCsPath,
+		const char* csHPath = kEvsmBlurHPath,
+		const char* csVPath = kEvsmBlurVPath,
 		const char* fsOpaquePath = kEvsmMomentsOpaqueFsPath) {
 		if (ShadersValid())
 			return true;
@@ -206,20 +212,25 @@ struct EvsmAtlas {
 				fsModule = ctx.CreateShaderModule(readFile(fsPath ? fsPath : kEvsmMomentsFsPath), "evsmMomentsFS");
 			if (fsOpaqueModule.empty())
 				fsOpaqueModule = ctx.CreateShaderModule(readFile(fsOpaquePath ? fsOpaquePath : kEvsmMomentsOpaqueFsPath), "evsmMomentsOpaqueFS");
-			if (blurModule.empty())
-				blurModule = ctx.CreateShaderModule(readFile(csPath ? csPath : kEvsmBlurCsPath), "evsmBlurCS");
+			if (blurHModule.empty())
+				blurHModule = ctx.CreateShaderModule(readFile(csHPath ? csHPath : kEvsmBlurHPath), "evsmBlurHCS");
+			if (blurVModule.empty())
+				blurVModule = ctx.CreateShaderModule(readFile(csVPath ? csVPath : kEvsmBlurVPath), "evsmBlurVCS");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || fsModule.empty() || fsOpaqueModule.empty() || blurModule.empty())
+		if (vsModule.empty() || fsModule.empty() || fsOpaqueModule.empty()
+			|| blurHModule.empty() || blurVModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		Shader fs{ .module = fsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader fsOpaque{ .module = fsOpaqueModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		Shader cs{ .module = blurModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		Shader csH{ .module = blurHModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		Shader csV{ .module = blurVModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		momentsProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 		momentsOpaqueProgram = { .shaders = { vs, fsOpaque }, .shaderCount = 2 };
-		blurProgram = { .shaders = { cs }, .shaderCount = 1 };
+		blurHProgram = { .shaders = { csH }, .shaderCount = 1 };
+		blurVProgram = { .shaders = { csV }, .shaderCount = 1 };
 		return true;
 	}
 
@@ -404,14 +415,14 @@ struct EvsmAtlas {
 
 // Async prefilter routing (pipelined, AsyncCompute-marked).
 // The rendergraph records moment passes on graphics; the blur H/V passes are
-// marked AsyncCompute. TODAY they execute in-graph on the graphics queue
-// (emulated async — same-queue compute, still pipelined H->V with a 1-frame
-// lag so no graphics idle); the RHI dedicated compute queue + submitter
-// already landed, and cutting Execute() over to route AsyncCompute passes
-// there with timeline sync is the explicit follow-up (the hints + push
-// constants are already in the right shape, so it stays a local executor
-// change). With OneFrameLag the blur reads the just-resolved current slot
-// and lighting samples the previous slot; SameFrame collapses both.
+// marked AsyncCompute and Execute() routes them onto the dedicated compute
+// queue as the C leg of the G1/C/G2 split (timeline-chained). The C stream is
+// ONE SUBMIT PER ASYNC PASS on the asyncG2C timeline: pass k waits pass k-1's
+// chain value (G1's signal for pass 0) and signals its own, so H's temp
+// stores fully land before V's fetches — the hard dependency chained compute
+// tasks need without a rendergraph-wide dependency solve. With OneFrameLag
+// the blur reads the just-resolved current slot and lighting samples the
+// previous slot; SameFrame collapses both.
 struct EvsmAsyncPrefilter {
 	// Moment pass for one tile: MSAA RG32F moments + MSAA D32 depth, color
 	// resolved into moments[flight]. The caller sets the recording func
@@ -452,46 +463,54 @@ struct EvsmAsyncPrefilter {
 		return pass;
 	}
 
-	// Builds the blur push for one tile/direction. uvClamp uses the same
-	// half-texel-inset convention as the cascade descriptors; the caller
-	// passes the tile's uvScale/uvBias-derived clamp (or nullptr for the
-	// full-tile inset computed here from the atlas extent).
-	static EvsmBlurPush MakeBlurPush(const EvsmAtlas& atlas, ResourceManager& ctx,
-		uint32_t flight, uint32_t tileIndex, uint32_t direction,
-		uint32_t srcBindless, uint32_t dstBindless, uint32_t samplerIndex) {
+	// Builds the blur push for one tile/leg. Edge clamping lives in TEXEL
+	// space — [tileOffset, tileOffset + tileExtent - 1] — bit-identical to
+	// the old half-texel-inset UV clamp (the center of the first/last
+	// texel), so sibling tiles still never bleed. Weights: the Gaussian is
+	// dispatch-uniform, so bake the five normalized symmetric weights here
+	// (sigma mapping unchanged from the old shader-side derivation —
+	// radius/2 clamped to [1, 3]; only WHERE it evaluates moved, CPU exp
+	// vs 9 per-tap GPU exp per leg).
+	static EvsmBlurPush MakeBlurPush(const EvsmAtlas& atlas,
+		uint32_t tileIndex, uint32_t srcBindless, uint32_t dstBindless) {
 		assert(tileIndex < atlas.tileCount);
 		int32_t offX = 0, offY = 0;
 		atlas.TileOrigin(tileIndex, offX, offY);
-		const float invW = 1.0f / static_cast<float>(atlas.atlasExtent.width);
-		const float invH = 1.0f / static_cast<float>(atlas.atlasExtent.height);
 		EvsmBlurPush p{};
 		p.srcIndex = srcBindless;
 		p.dstIndex = dstBindless;
-		p.samplerIndex = samplerIndex;
-		p.direction = direction;
-		p.texelU = invW;
-		p.texelV = invH;
-		p.uvMinU = (static_cast<float>(offX) + 0.5f) * invW;
-		p.uvMinV = (static_cast<float>(offY) + 0.5f) * invH;
-		p.uvMaxU = (static_cast<float>(offX + atlas.tileExtent.width) - 0.5f) * invW;
-		p.uvMaxV = (static_cast<float>(offY + atlas.tileExtent.height) - 0.5f) * invH;
 		p.tileOffsetX = static_cast<uint32_t>(offX);
 		p.tileOffsetY = static_cast<uint32_t>(offY);
 		p.tileWidth = atlas.tileExtent.width;
 		p.tileHeight = atlas.tileExtent.height;
-		p.blurRadius = atlas.blurRadius;
+		const float sigma = std::clamp(atlas.blurRadius * 0.5f, 1.0f, 3.0f);
+		const float inv2s2 = 0.5f / (sigma * sigma);
+		float w[5] = {};
+		float wSum = 0.0f;
+		for (uint32_t k = 0; k < 5; ++k) {
+			w[k] = std::exp(-static_cast<float>(k * k) * inv2s2);
+			wSum += (k == 0) ? w[0] : 2.0f * w[k];
+		}
+		for (float& wk : w)
+			wk /= wSum;
+		p.w0 = w[0];
+		p.w1 = w[1];
+		p.w2 = w[2];
+		p.w3 = w[3];
+		p.w4 = w[4];
 		p.pad0 = 0;
-		(void)ctx; (void)flight;
 		return p;
 	}
 
 	// Full-tile blur pair for one tile: H (moments -> temp) then V
-	// (temp -> blurred), both AsyncCompute-marked. Recording funcs are set
-	// here (bind blurProgram + push + dispatch); the caller only supplies
-	// bindless indices. Barriers come from the image hints.
+	// (temp -> blurred), both AsyncCompute-marked, one entry point per leg
+	// (atlas.blurHProgram / blurVProgram — the legs share evsm_blur.hlsli).
+	// Recording funcs are set here (bind program + push + dispatch); the
+	// caller only supplies the rendergraph + context. Barriers come from
+	// the image hints.
 	static void AddTileBlurPasses(RenderGraph& rg, const EvsmAtlas& atlas,
 		ResourceManager& ctx, uint32_t flight, uint32_t tileIndex,
-		uint32_t samplerIndex, const char* nameH = nullptr, const char* nameV = nullptr) {
+		const char* nameH = nullptr, const char* nameV = nullptr) {
 		assert(atlas.Valid());
 		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
 		const int32_t srcIdx = atlas.MomentsBindlessIndex(ctx, slot);
@@ -508,32 +527,35 @@ struct EvsmAsyncPrefilter {
 		dstW.barrierMasks.stageMask = PipelineStageBit_Compute;
 		dstW.layout = ImageLayout::General;
 
-		const EvsmBlurPush pushH = MakeBlurPush(atlas, ctx, slot, tileIndex, 0,
-			static_cast<uint32_t>(srcIdx), static_cast<uint32_t>(tmpIdx), samplerIndex);
+		const EvsmBlurPush pushH = MakeBlurPush(atlas, tileIndex,
+			static_cast<uint32_t>(srcIdx), static_cast<uint32_t>(tmpIdx));
 		RenderPass& hPass = rg.AddComputePass(nameH ? nameH : "EvsmBlurH");
 		hPass.MarkAsAsyncCompute();
 		hPass.AddImageHint(atlas.momentsLogical[slot], srcR);
 		hPass.AddImageHint(atlas.blurTempLogical[slot], dstW);
 		// Capture the program pointer + push by value: Execute() runs the
 		// lambda after this function returns (per-frame record).
-		ShaderProgram* blurProg = const_cast<ShaderProgram*>(&atlas.blurProgram);
+		ShaderProgram* blurHProg = const_cast<ShaderProgram*>(&atlas.blurHProgram);
 		const uint32_t tw = atlas.tileExtent.width, th = atlas.tileExtent.height;
-		hPass.SetRecordingFunc([blurProg, pushH, tw, th](CommandBuffer& cmd) {
-			cmd.BindComputePipeline(*blurProg);
+		hPass.SetRecordingFunc([blurHProg, pushH, tw, th](CommandBuffer& cmd) {
+			cmd.BindComputePipeline(*blurHProg);
 			cmd.PushConstants(0, sizeof(pushH), &pushH, ShaderStage::Compute);
-			cmd.Dispatch((tw + 7) / 8, (th + 7) / 8, 1);
+			cmd.Dispatch((tw + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
+				(th + kEvsmBlurBlock - 1) / kEvsmBlurBlock, 1);
 		});
 
-		const EvsmBlurPush pushV = MakeBlurPush(atlas, ctx, slot, tileIndex, 1,
-			static_cast<uint32_t>(tmpIdx), static_cast<uint32_t>(dstIdx), samplerIndex);
+		const EvsmBlurPush pushV = MakeBlurPush(atlas, tileIndex,
+			static_cast<uint32_t>(tmpIdx), static_cast<uint32_t>(dstIdx));
 		RenderPass& vPass = rg.AddComputePass(nameV ? nameV : "EvsmBlurV");
 		vPass.MarkAsAsyncCompute();
 		vPass.AddImageHint(atlas.blurTempLogical[slot], srcR);
 		vPass.AddImageHint(atlas.blurredLogical[slot], dstW);
-		vPass.SetRecordingFunc([blurProg, pushV, tw, th](CommandBuffer& cmd) {
-			cmd.BindComputePipeline(*blurProg);
+		ShaderProgram* blurVProg = const_cast<ShaderProgram*>(&atlas.blurVProgram);
+		vPass.SetRecordingFunc([blurVProg, pushV, tw, th](CommandBuffer& cmd) {
+			cmd.BindComputePipeline(*blurVProg);
 			cmd.PushConstants(0, sizeof(pushV), &pushV, ShaderStage::Compute);
-			cmd.Dispatch((tw + 7) / 8, (th + 7) / 8, 1);
+			cmd.Dispatch((tw + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
+				(th + kEvsmBlurBlock - 1) / kEvsmBlurBlock, 1);
 		});
 	}
 };

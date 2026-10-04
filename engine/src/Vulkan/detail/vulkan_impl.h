@@ -1012,20 +1012,35 @@ namespace smvk {
 		// True-async-compute split (EVSM SameFrame): G1 (graphics, through
 		// the moment passes) -> C (compute-queue blur) -> G2 (graphics,
 		// lighting onward). Chained with per-flight timeline semaphores
-		// (g2c, c2g); submission order G1->C->G2 makes every wait
-		// signal-before-wait legal. Created lazily on first split use
-		// (needs the compute family), reset in Acquire (slot retired),
-		// destroyed in dtor. Monotonic values per flight.
+		// (g2c, c2g); the C stream itself is ONE SUBMIT PER ASYNC PASS on
+		// the same g2c timeline (each pass waits the prior pass's chain
+		// value — see asyncPassBuffers below). Submission order
+		// G1->C->G2 makes every wait signal-before-wait legal. Created
+		// lazily on first split use (needs the compute family), reset in
+		// Acquire (slot retired), destroyed in dtor. Monotonic values per
+		// flight.
 		VkCommandPool splitPools[MAX_FRAMES_IN_FLIGHT]{};      // graphics family (G2)
 		VkCommandBuffer splitBuffers[MAX_FRAMES_IN_FLIGHT]{};  // G2
 		VkCommandPool asyncComputePools[MAX_FRAMES_IN_FLIGHT]{}; // compute family (C)
 		VkCommandBuffer asyncComputeBuffers[MAX_FRAMES_IN_FLIGHT]{};
-		VkSemaphore asyncG2C_[MAX_FRAMES_IN_FLIGHT]{}; // G1 -> C
+		// Per-pass C command buffers: the async passes chain as one
+		// CB + submit EACH, linked on the asyncG2C_ timeline (G1 signals
+		// g2cVal, pass k waits g2cVal+k / signals g2cVal+k+1, the last pass
+		// carries the C2G signal). The sync2 chain (signal ALL_COMMANDS ->
+		// wait COMPUTE_SHADER) is the hard execution+availability+
+		// visibility dependency chained compute passes need (H's temp
+		// stores complete before V's fetches) without a rendergraph-wide
+		// dependency solve; the intra-C hint barriers keep carrying only
+		// the layout transitions. Grown on demand from the async compute
+		// pool; handles survive the per-flight pool resets in Acquire.
+		std::vector<VkCommandBuffer> asyncPassBuffers[MAX_FRAMES_IN_FLIGHT]{};
+		VkSemaphore asyncG2C_[MAX_FRAMES_IN_FLIGHT]{}; // G1 -> C (+ intra-C chain values)
 		VkSemaphore asyncC2G_[MAX_FRAMES_IN_FLIGHT]{}; // C -> G2
 		uint64_t asyncG2CValue_[MAX_FRAMES_IN_FLIGHT] = {};
 		uint64_t asyncC2GValue_[MAX_FRAMES_IN_FLIGHT] = {};
 		bool asyncSplitReady_[MAX_FRAMES_IN_FLIGHT] = {};
 		bool EnsureAsyncSplit(uint32_t flight); // false = no dedicated compute
+		bool EnsureAsyncPassBuffers(uint32_t flight, uint32_t count); // grow per-pass C CBs
 		// Shared frame-command setup (windowed + hosted ctors): pool
 		// per flight on the given graphics family.
 		void InitFrameCommands(uint32_t graphicsFamily);

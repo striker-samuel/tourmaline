@@ -7525,6 +7525,27 @@ bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
 	}
 	return true;
 }
+// Grows the per-flight async-pass CB pool to at least `count` (one CB per
+// async pass per frame — timeline-chained per-pass submits in Execute).
+// Handles persist across frames; the per-flight pool reset in Acquire
+// returns them to recordable state alongside the split CBs.
+bool smvk::VulkanSwapchain::EnsureAsyncPassBuffers(uint32_t flight, uint32_t count) {
+	if (flight >= MAX_FRAMES_IN_FLIGHT || !asyncSplitReady_[flight])
+		return false;
+	if (asyncPassBuffers[flight].size() >= count)
+		return true;
+	const size_t oldSize = asyncPassBuffers[flight].size();
+	asyncPassBuffers[flight].resize(count, VK_NULL_HANDLE);
+	VkCommandBufferAllocateInfo allocCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	allocCI.commandPool = asyncComputePools[flight];
+	allocCI.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocCI.commandBufferCount = count - static_cast<uint32_t>(oldSize);
+	if (vkAllocateCommandBuffers(device_, &allocCI, asyncPassBuffers[flight].data() + oldSize) != VK_SUCCESS) {
+		asyncPassBuffers[flight].resize(oldSize);
+		return false;
+	}
+	return true;
+}
 void smvk::VulkanResourceManager::CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states) {
 	for (auto& kv : states) {
 		uint32_t idx = static_cast<uint32_t>(kv.first & 0xffffffffull);
@@ -8492,6 +8513,7 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 		if (asyncC2G_[i] != VK_NULL_HANDLE) { vkDestroySemaphore(device_, asyncC2G_[i], nullptr); asyncC2G_[i] = VK_NULL_HANDLE; }
 		splitBuffers[i] = VK_NULL_HANDLE;
 		asyncComputeBuffers[i] = VK_NULL_HANDLE;
+		asyncPassBuffers[i].clear(); // handles freed with the pool above
 		asyncSplitReady_[i] = false;
 	};
 
@@ -11077,9 +11099,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	const uint32_t flight = fb.frameIndex % MAX_FRAMES_IN_FLIGHT;
 	size_t firstAsyncPos = SIZE_MAX, lastAsyncPos = 0;
 	bool anyAsync = false;
+	uint32_t asyncPassCount = 0;
 	for (size_t pos = 0; pos < sorted.size(); ++pos) {
 		if (passes_[sorted[pos]].IsAsyncCompute()) {
 			anyAsync = true;
+			++asyncPassCount;
 			firstAsyncPos = std::min(firstAsyncPos, pos);
 			lastAsyncPos = std::max(lastAsyncPos, pos);
 		}
@@ -11149,6 +11173,15 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		if (!useAsyncCompute)
 			vkSwap = nullptr;
 	}
+	// Per-pass C command buffers (timeline-chained submits — see the
+	// compute-pass arm below): grow the per-flight pool to this frame's
+	// async pass count. Growth failure degrades this frame to the emulated
+	// single-queue path (correct, just not overlapped).
+	if (useAsyncCompute
+		&& !vkSwap->EnsureAsyncPassBuffers(flight, asyncPassCount)) {
+		vkSwap = nullptr;
+		useAsyncCompute = false;
+	}
 	// ---- Barrier debug tracing (VULKANTOY_BARRIER_TRACE, see helpers) ----
 	const bool traceRg = RgTraceEnabled(fb.frameIndex);
 	if (traceRg) {
@@ -11168,17 +11201,20 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		}
 		std::fprintf(stderr, "\n");
 	}
-	VkCommandBuffer computeCB = VK_NULL_HANDLE;
 	VkCommandBuffer splitCB = VK_NULL_HANDLE; // G2
 	uint64_t g2cVal = 0, c2gVal = 0;
+	uint32_t asyncChainIdx = 0; // async pass index -> per-pass CB + timeline link
 	if (useAsyncCompute) {
 		assert(vkSwap);
-		computeCB = vkSwap->asyncComputeBuffers[flight];
 		splitCB = vkSwap->splitBuffers[flight];
-		assert(computeCB != VK_NULL_HANDLE && splitCB != VK_NULL_HANDLE);
+		assert(splitCB != VK_NULL_HANDLE);
+		// The C stream is one CB + submit PER ASYNC PASS, begun in the walk
+		// below and timeline-chained (see the compute-pass arm) — no single
+		// whole-C CB anymore. The LAST async pass carries the C2G handoff,
+		// so hoist its value here.
+		c2gVal = ++vkSwap->asyncC2GValue_[flight];
 		VkCommandBufferBeginInfo beginCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 		beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-		VK_CHECK(vkBeginCommandBuffer(computeCB, &beginCI));
 		VK_CHECK(vkBeginCommandBuffer(splitCB, &beginCI));
 		// NOTE: the Optick GPU context is rebound per pass inside the walk
 		// (SMVK_PROFILE_GPU_CONTEXT(dstCmd)) so pass scopes timestamp the
@@ -11198,8 +11234,16 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		if (useAsyncCompute) {
 			if (pos < firstAsyncPos)
 				dstCmd = cmd;
-			else if (passIsAsync)
-				dstCmd = computeCB;
+			else if (passIsAsync) {
+				// This pass's own C-stream CB (begun here, ended + submitted
+				// timeline-chained in the compute-pass arm below).
+				assert(vkSwap && asyncChainIdx < vkSwap->asyncPassBuffers[flight].size());
+				dstCmd = vkSwap->asyncPassBuffers[flight][asyncChainIdx];
+				assert(dstCmd != VK_NULL_HANDLE);
+				VkCommandBufferBeginInfo beginCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+				beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+				VK_CHECK(vkBeginCommandBuffer(dstCmd, &beginCI));
+			}
 			else
 				dstCmd = splitCB;
 		}
@@ -11312,7 +11356,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		{
 			if (traceRg) {
 				const char* streamName = !useAsyncCompute ? "MAIN"
-					: (dstCmd == cmd ? "G1" : (dstCmd == computeCB ? "C" : "G2"));
+					: (passIsAsync ? "C" : (dstCmd == splitCB ? "G2" : "G1"));
 				std::fprintf(stderr, "[RG] pass pos=%zu idx=%zu '%s' stream=%s%s%s\n",
 					pos, sIdx, RgTracePassName(passes_[sIdx].name_), streamName,
 					passes_[sIdx].IsCompute() ? " compute" : "",
@@ -11621,6 +11665,70 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// async, split mode); the rest stay on the graphics CBs.
 			CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
 			if (pass.recordingFunction_) pass.recordingFunction_(cb);
+			if (passIsAsync) {
+				// ---- Per-pass timeline-chained C submit ----
+				// Simple hard dependency for chained compute tasks (the
+				// EVSM blur's H -> temp -> V chain): EVERY async pass
+				// ends + submits its own CB, linked on the asyncG2C_
+				// timeline — pass k waits g2cVal+k (G1's signal for k=0,
+				// pass k-1's chain value after) and signals g2cVal+k+1
+				// for pass k+1. The sync2 chain (signal ALL_COMMANDS ->
+				// wait COMPUTE_SHADER) is a full execution+availability+
+				// visibility dependency, so pass k's storage writes are
+				// complete and visible before pass k+1's fetches — the
+				// dispatch-adjacent RAW hazard the intra-CB hint
+				// barriers could leave uncovered (a V leg racing its H
+				// leg's temp stores read stale moments). NOT a
+				// rendergraph-wide dependency solve: the per-pass hints
+				// keep carrying the layout transitions inside each CB;
+				// this chain just makes adjacent async passes strictly
+				// sequential, which is all these task chains need. The
+				// LAST pass signals the C2G handoff instead of a chain
+				// value — identical C2G semantics to the old
+				// single-whole-C-C submit, so G2/retirement ordering is
+				// unchanged. Submission order (G1, then each C pass in
+				// sorted order, same thread) keeps every wait
+				// signal-before-wait legal.
+				VK_CHECK(vkEndCommandBuffer(dstCmd));
+				const bool lastAsync = (asyncChainIdx + 1 == asyncPassCount);
+				VkSemaphoreSubmitInfo pWait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+				pWait.semaphore = vkSwap->asyncG2C_[flight];
+				pWait.value = g2cVal + asyncChainIdx;
+				pWait.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+				VkSemaphoreSubmitInfo pSig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+				if (lastAsync) {
+					pSig.semaphore = vkSwap->asyncC2G_[flight];
+					pSig.value = c2gVal;
+				} else {
+					pSig.semaphore = vkSwap->asyncG2C_[flight];
+					pSig.value = g2cVal + asyncChainIdx + 1;
+				}
+				pSig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				VkCommandBufferSubmitInfo pcb{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+				pcb.commandBuffer = dstCmd;
+				VkSubmitInfo2 psi{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+				psi.waitSemaphoreInfoCount = 1;
+				psi.pWaitSemaphoreInfos = &pWait;
+				psi.commandBufferInfoCount = 1;
+				psi.pCommandBufferInfos = &pcb;
+				psi.signalSemaphoreInfoCount = 1;
+				psi.pSignalSemaphoreInfos = &pSig;
+				{
+					std::mutex& mc = GetQueueMutex(computeQueue_);
+					std::unique_lock<std::mutex> lockC(mc);
+					VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &psi, VK_NULL_HANDLE));
+				}
+				if (traceRg)
+					std::fprintf(stderr,
+						"[RG] C pass %u/%u '%s' submitted (waits G2C=%llu, signals %s=%llu)\n",
+						asyncChainIdx + 1, asyncPassCount,
+						RgTracePassName(passes_[sIdx].name_),
+						(unsigned long long)pWait.value,
+						lastAsync ? "C2G" : "G2C",
+						(unsigned long long)pSig.value);
+				RgSerializeGate(RgSerializeMode().split, computeQueue_);
+				++asyncChainIdx;
+			}
 			continue;
 		}
 		VkViewport vp{}; vp.x = static_cast<float>(pass.offsetX_); vp.y = static_cast<float>(pass.offsetY_); vp.width = static_cast<float>(pass.extent_.width); vp.height = static_cast<float>(pass.extent_.height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
@@ -11647,43 +11755,25 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		vkCmdEndRendering(dstCmd);
 	}
 
-	// Submit the compute stream (C): waits for G1's moments, signals the
-	// blur-done timeline G2 waits on in EndAndPresent. G2 (splitCB) stays
-	// open — EndAndPresent ends + submits it (waiting both C2G and G1's
-	// G2C). Retirement is structural: G2's submit signals the slot's
-	// frame-retirement timeline only after C (waited) and G1 (waited)
-	// complete, so the Acquire-side timeline wait retires G1, C and G2
-	// together and no host waits are needed here.
+	// C-stream bookkeeping: the per-pass submits already happened in the
+	// walk above (each async pass's CB ends + submits timeline-chained
+	// there; the LAST pass carries the C2G signal G2 waits — identical
+	// C2G semantics to the old single whole-C submit). Roll the G2C value
+	// counter forward to the highest chain value this frame so next
+	// frame's G1 signal stays strictly monotonic, then hand G2 its split
+	// CB + wait values. G2 (splitCB) stays open — EndAndPresent ends +
+	// submits it (waiting both C2G and G1's G2C). Retirement is
+	// structural: G2's submit signals the slot's frame-retirement timeline
+	// only after C (waited — transitively the whole chain) and G1
+	// (waited) complete, so the Acquire-side timeline wait retires G1, C
+	// and G2 together and no host waits are needed here.
 	if (useAsyncCompute) {
-		assert(vkSwap && computeCB != VK_NULL_HANDLE && splitCB != VK_NULL_HANDLE);
-		VK_CHECK(vkEndCommandBuffer(computeCB));
-		c2gVal = ++vkSwap->asyncC2GValue_[flight];
-		VkSemaphoreSubmitInfo cWait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-		cWait.semaphore = vkSwap->asyncG2C_[flight];
-		cWait.value = g2cVal;
-		cWait.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-		VkSemaphoreSubmitInfo cSig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-		cSig.semaphore = vkSwap->asyncC2G_[flight];
-		cSig.value = c2gVal;
-		cSig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		VkCommandBufferSubmitInfo ccb{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-		ccb.commandBuffer = computeCB;
-		VkSubmitInfo2 csi{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
-		csi.waitSemaphoreInfoCount = 1;
-		csi.pWaitSemaphoreInfos = &cWait;
-		csi.commandBufferInfoCount = 1;
-		csi.pCommandBufferInfos = &ccb;
-		csi.signalSemaphoreInfoCount = 1;
-		csi.pSignalSemaphoreInfos = &cSig;
-		{
-			std::mutex& mc = GetQueueMutex(computeQueue_);
-			std::unique_lock<std::mutex> lockC(mc);
-			VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &csi, VK_NULL_HANDLE));
-		}
+		assert(vkSwap && splitCB != VK_NULL_HANDLE);
+		if (asyncPassCount > 1)
+			vkSwap->asyncG2CValue_[flight] = g2cVal + asyncPassCount - 1;
 		if (traceRg)
-			std::fprintf(stderr, "[RG] C submitted (waits G2C=%llu, signals C2G=%llu on compute queue)\n",
-				(unsigned long long)g2cVal, (unsigned long long)c2gVal);
-		RgSerializeGate(RgSerializeMode().split, computeQueue_);
+			std::fprintf(stderr, "[RG] C stream done: %u chained pass submits (C2G=%llu)\n",
+				asyncPassCount, (unsigned long long)c2gVal);
 		fb.splitCommandBufferOpaque = reinterpret_cast<void*>(splitCB);
 		fb.splitWaitSemaphoreOpaque = reinterpret_cast<void*>(vkSwap->asyncC2G_[flight]);
 		fb.splitWaitValue = c2gVal;
