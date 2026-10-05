@@ -2366,30 +2366,36 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 				.pNext = &deviceFeatures12,
+				// privateData rides the 13 struct — the old individually
+				// chained VkPhysicalDevicePrivateDataFeatures beside it
+				// was a pNext duplication violation
+				// (VUID-VkDeviceCreateInfo-pNext-06532). Member order:
+				// privateData precedes synchronization2 in the struct.
+				.privateData = VK_TRUE,
 				.synchronization2 = VK_TRUE,
 				.dynamicRendering = VK_TRUE,
 				.maintenance4 = VK_TRUE,
 			};
-			VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeDerivativesFeatures{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR,
-				.pNext = nullptr,
-				.computeDerivativeGroupQuads = VK_TRUE
-			};
-			VkPhysicalDevicePrivateDataFeatures privateDataFeatures{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES,
-				.pNext = nullptr,
-				.privateData = VK_TRUE
-			};
+			// NOTE: plain assignments, no mixed designated/positional
+			// initializer (MSVC C7556 rejects the mix).
+			VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeDerivativesFeatures{};
+			computeDerivativesFeatures.sType =
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
+			computeDerivativesFeatures.computeDerivativeGroupQuads = VK_TRUE;
 
-		VkPhysicalDeviceFeatures2 feats2{
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-			.pNext = &privateDataFeatures,
-			.features = {
-				.samplerAnisotropy = VK_TRUE,
-				.textureCompressionBC = VK_TRUE,
-			},
-		};
-		privateDataFeatures.pNext = &computeDerivativesFeatures;
+	VkPhysicalDeviceFeatures2 feats2{
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		// Only structs NOT promoted into the 1.2/1.3 feature structs
+		// chain here (computeDerivatives is a KHR extension struct);
+		// every promoted feature rides its version struct or the
+		// validation flags the duplication (see the privateData note
+		// above).
+		.pNext = &computeDerivativesFeatures,
+		.features = {
+			.samplerAnisotropy = VK_TRUE,
+			.textureCompressionBC = VK_TRUE,
+		},
+	};
 		computeDerivativesFeatures.pNext = &deviceFeatures13;
 
 		// Indirect multi-draw (per-view filter emits one command per
@@ -2411,6 +2417,17 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				throw std::runtime_error(
 					"device lacks fragmentStoresAndAtomics (required for "
 					"texture-streaming GPU feedback)");
+			}
+			// 64-bit integer arithmetic (the BDA push-constant shaders —
+			// vk::BufferPointer lowers to uint64 math, so the modules
+			// declare the Int64 capability; validation fails the module
+			// create without the feature even where desktop drivers
+			// tolerate it — a validation-Debug run surfaced the spam).
+			feats2.features.shaderInt64 = VK_TRUE;
+			if (supported.shaderInt64 != VK_TRUE) {
+				throw std::runtime_error(
+					"device lacks shaderInt64 (required for the buffer-"
+					"device-address push-constant shaders)");
 			}
 			// Non-solid fill modes (PolygonMode::Line, the wireframe debug
 			// view). Core-optional since 1.0, universal on desktop; when
@@ -9637,6 +9654,42 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	auto attributeDescriptions =
 		getVkVertexAttributeDescriptions(
 			key.vertexFormat);
+
+	// Consume-only attribute filter (validation-clean pipelines): the
+	// format describes EVERY attribute the geometry carries; the vertex
+	// shader consumes a subset (DXC dead-code-strips unused inputs, so
+	// the VS's reflected stage inputs are exactly the consumed
+	// locations). Binding the full set with an unconsumed VS is
+	// legal-but-noisy ("Vertex attribute at location N not consumed by
+	// vertex shader" validation spam) and can waste fetch bandwidth.
+	// Filter to the VS's reflected locations; a failed/missing
+	// reflection keeps the full set (fail-open, the old behavior). A VS
+	// with no real inputs (fullscreen triangles) filters everything —
+	// correct: nothing is consumed; the binding descriptions stay (a
+	// stride-only binding is legal).
+	if (!attributeDescriptions.empty()) {
+		const Shader* vs = nullptr;
+		for (uint8_t i = 0; i < key.program.shaderCount; ++i) {
+			if (key.program.shaders[i].stage == ShaderStage::Vertex) {
+				vs = &key.program.shaders[i];
+				break;
+			}
+		}
+		if (vs) {
+			const SpirvReflection refl =
+				ctx_->ReflectShaderModule(vs->module);
+			if (refl.valid) {
+				std::erase_if(attributeDescriptions,
+					[&refl](const VkVertexInputAttributeDescription& a) {
+						for (const SpirvStageInput& in
+								: refl.stageInputs)
+							if (in.location == a.location)
+								return false;
+						return true;
+					});
+			}
+		}
+	}
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{
 		.sType =

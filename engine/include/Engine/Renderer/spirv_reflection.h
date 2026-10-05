@@ -60,6 +60,19 @@ struct SpirvSpecConstant
 };
 
 // ---------------------------------------------------------------------------
+// Reflected vertex-stage input (one non-builtin input variable: the vertex
+// attribute locations the module actually consumes — DXC dead-code-strips
+// unused inputs, so declared == consumed).
+// ---------------------------------------------------------------------------
+struct SpirvStageInput
+{
+	uint32_t location = 0;
+	std::string name;
+
+	bool operator==(const SpirvStageInput&) const = default;
+};
+
+// ---------------------------------------------------------------------------
 // Full per-module reflection result.
 // ---------------------------------------------------------------------------
 struct SpirvReflection
@@ -71,6 +84,12 @@ struct SpirvReflection
 	std::vector<PushConstantRange> pushConstants;
 	std::vector<SpirvSpecConstant> specConstants;
 	std::vector<std::string> entryPoints;
+	// Non-builtin stage inputs (built-ins like gl_VertexIndex excluded;
+	// meaningful for the VERTEX stage — the attribute locations the
+	// module consumes; the pipeline builder filters the vertex format's
+	// attribute list to these so no pipeline binds unconsumed
+	// attributes, validation-clean).
+	std::vector<SpirvStageInput> stageInputs;
 
 	bool operator==(const SpirvReflection&) const = default;
 };

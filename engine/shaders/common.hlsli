@@ -620,12 +620,19 @@ struct PushConstants
     uint4 padEnd;
 };
 
-// Specialization constants (driver constant-folds these per permutation)
-[[vk::spec_constant(SPEC_GI_DEBUG_MODE)]]   uint giDebugMode;
-[[vk::spec_constant(SPEC_EVSM_MODE)]]       uint evsmMode;
-[[vk::spec_constant(SPEC_SSR_ENABLED)]]     uint ssrEnabled;
-[[vk::spec_constant(SPEC_GI_INTENSITY)]]    float giIntensity;
-[[vk::spec_constant(SPEC_GI_VARIANT)]]      uint giVariant;
+// Specialization constants (driver constant-folds these per permutation).
+// REAL DXC spec-constant form: [[vk::constant_id(N)]] on a const with a
+// default — the previous [[vk::spec_constant(...)]] was not a DXC
+// attribute, so DXC silently ignored it and packed these into the
+// auto-generated $Globals cbuffer (auto-bound at set 0 binding 2 — the
+// validation "descriptor type mismatch / never updated" spam: the engine
+// binds no Globals slot anymore). constant_id generates NO descriptor:
+// unspecialized pipelines fold the defaults.
+[[vk::constant_id(SPEC_GI_DEBUG_MODE)]] const uint giDebugMode = 0; // 0=off, 1=flat irradiance, 2=source palette
+[[vk::constant_id(SPEC_EVSM_MODE)]]   const uint evsmMode = 0;     // 0=PCF depth, 1=EVSM moments
+[[vk::constant_id(SPEC_SSR_ENABLED)]] const uint ssrEnabled = 0;   // 0=disable SSR, 1=enable SSR
+[[vk::constant_id(SPEC_GI_INTENSITY)]] const float giIntensity = 1.0f; // intensity scale
+[[vk::constant_id(SPEC_GI_VARIANT)]]  const uint giVariant = 0;     // 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push

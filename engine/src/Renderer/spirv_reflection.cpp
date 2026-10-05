@@ -164,6 +164,40 @@ SpirvReflection ReflectSpirv(std::span<const uint32_t> words)
 			return a.specId < b.specId;
 		});
 
+	// Stage inputs (non-builtin input variables — the attribute LOCATIONS
+	// the module consumes; built-ins like gl_VertexIndex excluded). The
+	// pipeline builder filters the vertex format's attribute list to
+	// these (Vulkan validation flags bound-but-unconsumed attributes).
+	uint32_t inputCount = 0;
+	if (spvReflectEnumerateInputVariables(&module, &inputCount, nullptr) ==
+		SPV_REFLECT_RESULT_SUCCESS && inputCount > 0) {
+		std::vector<SpvReflectInterfaceVariable*> vars(inputCount);
+		if (spvReflectEnumerateInputVariables(&module, &inputCount,
+				vars.data()) == SPV_REFLECT_RESULT_SUCCESS) {
+			for (uint32_t i = 0; i < inputCount; ++i) {
+				const auto* v = vars[i];
+				// Built-ins (gl_VertexIndex & friends) excluded; this
+				// vendored SPIRV-Reflect has no LOCATION_UNDEFINED — a
+				// location-less variable reflects as 0, which only
+				// ADDS a keep on the pipeline filter's side (safe
+				// direction; never removes a consumed attribute).
+				if (!v
+					|| (v->decoration_flags
+						& SPV_REFLECT_DECORATION_BUILT_IN) != 0)
+					continue;
+				SpirvStageInput in{};
+				in.location = v->location;
+				if (v->name)
+					in.name = v->name;
+				out.stageInputs.push_back(std::move(in));
+			}
+		}
+	}
+	std::sort(out.stageInputs.begin(), out.stageInputs.end(),
+		[](const SpirvStageInput& a, const SpirvStageInput& b) {
+			return a.location < b.location;
+		});
+
 	spvReflectDestroyShaderModule(&module);
 	out.valid = true;
 	return out;

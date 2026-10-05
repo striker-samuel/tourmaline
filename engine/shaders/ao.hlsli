@@ -112,5 +112,7 @@ float AoNormalWeight(float3 tapN, float3 centerN)
 }
 
 // Guarded/sky block output: unoccluded, reserved sentinel distance, and a
-// neutral +Z octahedral pair ((0.5, 0.5) encodes exactly +Z).
-const float4 kAoSkyBlock = float4(1.0f, 1.0f, 0.5f, 0.5f);
+// neutral +Z octahedral pair ((0.5, 0.5) encodes exactly +Z). static const:
+// compile-time folded — a plain const global would ride the auto-generated
+// $Globals cbuffer (see common.hlsli's spec-constant note).
+static const float4 kAoSkyBlock = float4(1.0f, 1.0f, 0.5f, 0.5f);
