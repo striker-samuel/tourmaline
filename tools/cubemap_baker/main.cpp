@@ -657,6 +657,29 @@ int main(int argc, char** argv) {
 		// coordFix basis rides the chain top), so punctual aims read
 		// with the plain glTF -Z axis.
 		buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
+		// Texture averages (SAME block as GiBaker — REQUIRED here, not
+		// optional: without it textured materials keep glTF-default
+		// metallicFactor 1, which zeroes every albedo (the trace scene
+		// goes black: no sun NEE, no bounce — captures see sky-miss
+		// only). Captures see textured albedo by design (see above), so
+		// this always runs (GiBaker gates the identical block on
+		// --textures).
+		{
+			uint32_t averaged = 0;
+			for (const auto& [uri, handle] : cluster->ListTextureUris()) {
+				const std::vector<uint8_t>* src = cluster->GetTextureSource(uri);
+				if (!src || src->empty())
+					continue;
+				std::optional<glm::vec3> avg =
+					smvk::gi::GiAverageKtxTexel(std::span<const uint8_t>(*src));
+				if (!avg)
+					continue;
+				buildOpts.texelAvg[handle.index()] = *avg;
+				++averaged;
+			}
+			std::cout << "  textures: averaged " << averaged << " ("
+				<< cluster->ListTextureUris().size() << " uris)\n";
+		}
 		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
 		buildOpts.env.sunElevationDeg = args.sunElevation;
 		buildOpts.env.sunIntensity = args.sunIntensity;

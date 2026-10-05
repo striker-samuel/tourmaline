@@ -1040,6 +1040,33 @@ public:
 	// polygon mode over the Fill depth prepass, so hidden lines are
 	// removed (lines never draw over the objects in front).
 	void SetWireframe(bool v) { m_wireframe = v; }
+	// HOSTED live scattering drive (the editor's Environment sliders):
+	// the frame env (sky/exposure/analytic fog) rebuilds from the scene
+	// every frame, but the volumetric pass members snapshot at load —
+	// this re-seeds them from the CURRENT scene env so slider drags
+	// retouch the hosted live view without a re-cook/reload (same
+	// discipline as SetGiDebug/SetAmbientMode for the GI knobs). A hand
+	// push is Custom quality by definition. The App never calls this
+	// (its own panel writes these members directly).
+	void PushVolumetricEnv(const SceneEnv& env) {
+		const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
+		m_volumetricEnabled = volTier;
+		if (volTier) {
+			m_volumetricIntensity = env.volumetrics;
+			m_volumetricSteps = int(env.volumetricSteps);
+			m_volumetricMaxDistance = env.volumetricMaxDistance;
+			m_volumetricDensity = env.volumetricDensity;
+			m_volumetricAnisotropy = env.volumetricAnisotropy;
+			m_volumetricSun = env.volumetricSun;
+			m_volumetricGi = env.volumetricGi;
+			m_volumetricUseGi = env.volumetricUseGi;
+			m_volumetricUseSun = env.volumetricUseSun;
+			m_volumetricJitter = env.volumetricJitter;
+			m_volumetricHeightFalloff = env.volumetricHeightFalloff;
+			m_volumetricHeightBase = env.volumetricHeightBase;
+			m_volumetricQuality = smvk::VolumetricQuality::Custom;
+		}
+	}
 
 	// ---------------------------------------------------------------------
 	// MULTIVIEW (hosted): N secondary views, each rendering the world from

@@ -303,6 +303,12 @@ void EditorApp::DrawEnvPanel() {
 	// block or selected node block) — resolve into the rendered look.
 	// Cheap (one struct copy + flag); keeps the viewport live per tweak.
 	ResolveSceneEnv();
+	// Live scattering: the hosted view seeds its volumetric pass members
+	// at load — push the CURRENT env every panel tick so the fog rows
+	// above retouch it without a re-cook (the tour still saves forward
+	// for the pak; the frame env already rebuilds per frame).
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->PushVolumetricEnv(m_world->scene.environment);
 }
 
 void EditorApp::DrawWorldPanel() {

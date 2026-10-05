@@ -8,7 +8,9 @@
 // Debug colors travel through HDR + tonemap (hdr * exposure -> ACES) with a
 // physical-units exposure (~0.001) that would crush albedo to black, so the
 // output is pre-scaled by 1/exposure (same trick as the meshlet debug view).
-// Fog still applies in HDR so depth cues survive.
+// NO fog: debug views stay unfogged by discipline (flat readouts must not
+// be Beer-Lamberted — see DebugVisualizationActive, which also keeps the
+// volumetric/SSR composites off these pixels).
 
 struct PSIn
 {
@@ -156,18 +158,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     FrameUniforms frame = pc.frameUniforms.Get();
 
-    // Exposure compensation first (albedo -> HDR), then fog in HDR with the
-    // same fog color as the lit view so depth cues match across F1/F2.
+    // Exposure compensation (albedo -> HDR). No fog — see the header:
+    // debug views never fog (flat readouts).
     float exp = max(frame.exposure, 1e-6f);
     color /= exp;
-
-    float viewDist = length(frame.cameraPos - IN.worldPos);
-    float fogF = ComputeFogFactor(viewDist, IN.worldPos.y, frame.env);
-    if (fogF > 0.0f)
-    {
-        float3 fogHdr = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
-        color = lerp(color, fogHdr, fogF);
-    }
 
     OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
     return OUT;

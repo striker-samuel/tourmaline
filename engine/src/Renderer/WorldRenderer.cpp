@@ -3932,28 +3932,13 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		// cannot run) lives at the frame-env build.
 		if (m_world->scene.hasEnvironment) {
 			const SceneEnv& se = m_world->scene.environment;
-			const bool volTier = se.fogQuality == 2 && se.volumetrics > 0.0f;
-			m_volumetricEnabled = volTier;
-			if (volTier) {
-				m_volumetricIntensity = se.volumetrics;
-				m_volumetricSteps = int(se.volumetricSteps);
-				m_volumetricMaxDistance = se.volumetricMaxDistance;
-				m_volumetricDensity = se.volumetricDensity;
-				m_volumetricAnisotropy = se.volumetricAnisotropy;
-				m_volumetricSun = se.volumetricSun;
-				m_volumetricGi = se.volumetricGi;
-				m_volumetricUseGi = se.volumetricUseGi;
-				m_volumetricUseSun = se.volumetricUseSun;
-				m_volumetricJitter = se.volumetricJitter;
-				m_volumetricHeightFalloff = se.volumetricHeightFalloff;
-				m_volumetricHeightBase = se.volumetricHeightBase;
-				m_volumetricQuality = smvk::VolumetricQuality::Custom;
-			}
+			PushVolumetricEnv(se);
+			const bool volOn = se.fogQuality == 2 && se.volumetrics > 0.0f;
 			std::cerr << "[Scene] fog: quality="
 				<< (se.fogQuality == 0 ? "off"
 					: se.fogQuality == 1 ? "analytic (exp2)"
 					: "volumetric (raymarched)")
-				<< (volTier ? " on" : (se.fogQuality == 2
+				<< (volOn ? " on" : (se.fogQuality == 2
 					? " (volumetrics=0: analytic fallback)" : ""))
 				<< "\n";
 		}
