@@ -1,10 +1,11 @@
 // CPU ray picking: mouse -> world ray -> closest mesh node.
 //
 // Mouse/extent are VIEWPORT-LOCAL (the central rect between the panels;
-// the projection is built for that aspect). Exact triangle tests use the
-// kept tinygltf model (import is lossless for positions: importer only
-// applies the coord-fix rigid transform, mirrored here). Scenes loaded
-// from pak (no glTF kept) fall back to AABB picking.
+// the projection is built for that aspect). Exact triangle tests read the
+// CLUSTER's retained uploads (Cluster::GetRetainedUpload — the same CPU
+// geometry the cook/bake paths consume) through the world's asset
+// registry (meshLocations); nodes whose cluster did not retain geometry
+// fall back to AABB picking.
 
 #include "editor_app.h"
 
@@ -18,70 +19,8 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 
-#include <tiny_gltf.h>
-
 namespace editor {
 namespace {
-
-// Raw glTF accessor read (no mirror): the coordFix basis rides the
-// imported chain's TOP node (raw locals + raw vertices), so the node's
-// global transform maps raw glTF-space data directly.
-glm::vec3 FixPos(const double* p) {
-	return glm::vec3(float(p[0]), float(p[1]), float(p[2]));
-}
-
-bool ReadPosition(const tinygltf::Model& model, int accessorIdx, size_t i,
-	glm::vec3& out) {
-	if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
-		return false;
-	const tinygltf::Accessor& acc = model.accessors[accessorIdx];
-	if (i >= (size_t)acc.count)
-		return false;
-	const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
-	const tinygltf::Buffer& buf = model.buffers[bv.buffer];
-	const size_t stride = acc.ByteStride(bv);
-	const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-	if (off + 12 > buf.data.size())
-		return false;
-	const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-	if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
-		return false;
-	const double d[3] = { f[0], f[1], f[2] };
-	out = FixPos(d);
-	return true;
-}
-
-bool ReadIndex(const tinygltf::Model& model, int accessorIdx, size_t i,
-	uint32_t& out) {
-	if (accessorIdx < 0)
-		return false;
-	const tinygltf::Accessor& acc = model.accessors[accessorIdx];
-	if (i >= (size_t)acc.count)
-		return false;
-	const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
-	const tinygltf::Buffer& buf = model.buffers[bv.buffer];
-	const size_t stride = acc.ByteStride(bv);
-	const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-		if (off + 4 > buf.data.size())
-			return false;
-		out = *reinterpret_cast<const uint32_t*>(buf.data.data() + off);
-		return true;
-	}
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-		if (off + 2 > buf.data.size())
-			return false;
-		out = *reinterpret_cast<const uint16_t*>(buf.data.data() + off);
-		return true;
-	}
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-		if (off + 1 > buf.data.size())
-			return false;
-		out = buf.data[off];
-		return true;
-	}
-	return false;
-}
 
 // Moller-Trumbore. Returns t or -1.
 float RayTri(const glm::vec3& o, const glm::vec3& d, const glm::vec3& a,
@@ -122,6 +61,32 @@ bool RayAabb(const glm::vec3& o, const glm::vec3& inv, const glm::vec3& mn,
 }
 
 } // namespace
+
+// ---- retained-geometry lookup (the editor's single CPU source) ---------
+// The editor retains uploads on its world cluster (source imports), so
+// the world's asset registry resolves node -> mesh -> CPU geometry with
+// no importer-side state left alive.
+
+const smvk::StaticMeshUpload* EditorApp::MeshUploadOf(
+	uint32_t worldMeshIdx) const {
+	if (!m_world || worldMeshIdx >= m_world->meshLocations.size())
+		return nullptr;
+	const smvk::World::MeshLocation& loc =
+		m_world->meshLocations[worldMeshIdx];
+	if (!loc.cluster || !loc.handle.valid())
+		return nullptr;
+	return loc.cluster->GetRetainedUpload(loc.handle);
+}
+
+const smvk::StaticMeshUpload* EditorApp::NodeMeshUpload(
+	uint32_t node) const {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return nullptr;
+	const auto it = m_world->scene.meshForNode.find(node);
+	if (it == m_world->scene.meshForNode.end())
+		return nullptr;
+	return MeshUploadOf(it->second);
+}
 
 glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv, float zoom, glm::vec2 pan) const {
 	// Must match uvflat.vert.hlsli: uvT = (uv-0.5)*zoom + 0.5 + pan,
@@ -203,58 +168,47 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 			return; // cannot beat the current best
 
 		float tHit = FLT_MAX;
-		auto it = m_primRef.find(item.node);
-		if (m_hasGltfModel && it != m_primRef.end() && it->second.mesh >= 0) {
-			// Exact triangle walk over the glTF primitive.
-			const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-			if (it->second.prim < (int)gm.primitives.size()) {
-				const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-				auto pa = prim.attributes.find("POSITION");
-				if (pa != prim.attributes.end()) {
-					const size_t vcount =
-						m_gltfModel.accessors[pa->second].count;
-					glm::vec3 a, b, cc;
-					auto vAt = [&](uint32_t idx, glm::vec3& out) {
-						glm::vec3 local;
-						if (!ReadPosition(m_gltfModel, pa->second, idx, local))
-							return false;
-						out = glm::vec3(model * glm::vec4(local, 1.0f));
-						return true;
-					};
-					if (prim.indices >= 0) {
-						const size_t tcount =
-							m_gltfModel.accessors[prim.indices].count / 3;
-						for (size_t t = 0; t < tcount; ++t) {
-							uint32_t ix[3] = {};
-							bool ok = true;
-							for (int k = 0; k < 3; ++k)
-								ok &= ReadIndex(m_gltfModel, prim.indices,
-									t * 3 + k, ix[k]);
-							if (!ok || ix[0] >= vcount || ix[1] >= vcount ||
-								ix[2] >= vcount)
-								continue;
-							if (!vAt(ix[0], a) || !vAt(ix[1], b) || !vAt(ix[2], cc))
-								continue;
-							const float th = RayTri(origin, dir, a, b, cc);
-							if (th > 0.0f && th < tHit)
-								tHit = th;
-						}
-					}
-					else {
-						for (size_t t = 0; t + 2 < vcount; t += 3) {
-							if (!vAt(uint32_t(t), a) || !vAt(uint32_t(t + 1), b) ||
-								!vAt(uint32_t(t + 2), cc))
-								continue;
-							const float th = RayTri(origin, dir, a, b, cc);
-							if (th > 0.0f && th < tHit)
-								tHit = th;
-						}
-					}
+		const smvk::StaticMeshUpload* up = MeshUploadOf(item.mesh);
+		if (up && !up->vertices.empty()) {
+			// Exact triangle walk over the retained CPU geometry (the
+			// same data the GPU draws — node-local positions mapped by
+			// the node's global transform).
+			const size_t vcount = up->vertices.size();
+			glm::vec3 a, b, cc;
+			auto vAt = [&](uint32_t idx, glm::vec3& out) {
+				if (idx >= vcount)
+					return false;
+				out = glm::vec3(model * glm::vec4(up->vertices[idx].pos, 1.0f));
+				return true;
+			};
+			if (!up->indices.empty()) {
+				const size_t tcount = up->indices.size() / 3;
+				for (size_t t = 0; t < tcount; ++t) {
+					const uint32_t ix[3] = {
+						up->indices[t * 3 + 0],
+						up->indices[t * 3 + 1],
+						up->indices[t * 3 + 2] };
+					if (!vAt(ix[0], a) || !vAt(ix[1], b) || !vAt(ix[2], cc))
+						continue;
+					const float th = RayTri(origin, dir, a, b, cc);
+					if (th > 0.0f && th < tHit)
+						tHit = th;
+				}
+			}
+			else {
+				// Non-indexed: vertices ARE the triangle list.
+				for (size_t t = 0; t + 2 < vcount; t += 3) {
+					if (!vAt(uint32_t(t), a) || !vAt(uint32_t(t + 1), b) ||
+						!vAt(uint32_t(t + 2), cc))
+						continue;
+					const float th = RayTri(origin, dir, a, b, cc);
+					if (th > 0.0f && th < tHit)
+						tHit = th;
 				}
 			}
 		}
 		else {
-			// AABB fallback (pak-loaded scenes).
+			// AABB fallback (unretained geometry).
 			glm::vec3 mn = glm::vec3(model * glm::vec4(mesh->geometry.aabbMin, 1.0f));
 			glm::vec3 mx = glm::vec3(model * glm::vec4(mesh->geometry.aabbMax, 1.0f));
 			const glm::vec3 lo = glm::min(mn, mx), hi = glm::max(mn, mx);
@@ -307,50 +261,38 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
 			return;
 		if (found && tca - r >= bestT)
 			return;
-		auto it = m_primRef.find(item.node);
-		if (!m_hasGltfModel || it == m_primRef.end() || it->second.mesh < 0)
-			return; // AABB-only nodes carry no sub-object info
-		const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-		if (it->second.prim >= int(gm.primitives.size()))
-			return;
-		const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-		auto pa = prim.attributes.find("POSITION");
-		if (pa == prim.attributes.end())
-			return;
-		const size_t vcount = m_gltfModel.accessors[pa->second].count;
+		const smvk::StaticMeshUpload* up = MeshUploadOf(item.mesh);
+		if (!up || up->vertices.empty() || up->indices.empty())
+			return; // no exact geometry: no sub-object info
+		const size_t vcount = up->vertices.size();
 		auto vAt = [&](uint32_t idx, glm::vec3& out) {
-			glm::vec3 local;
-			if (!ReadPosition(m_gltfModel, pa->second, idx, local))
+			if (idx >= vcount)
 				return false;
-			out = glm::vec3(model * glm::vec4(local, 1.0f));
+			out = glm::vec3(model * glm::vec4(up->vertices[idx].pos, 1.0f));
 			return true;
 		};
-		if (prim.indices >= 0) {
-			const size_t tcount = m_gltfModel.accessors[prim.indices].count / 3;
-			for (size_t t = 0; t < tcount; ++t) {
-				uint32_t ix[3] = {};
-				bool ok = true;
-				for (int k = 0; k < 3; ++k)
-					ok &= ReadIndex(m_gltfModel, prim.indices, t * 3 + k, ix[k]);
-				if (!ok || ix[0] >= vcount || ix[1] >= vcount || ix[2] >= vcount)
-					continue;
-				glm::vec3 a, b, cc;
-				if (!vAt(ix[0], a) || !vAt(ix[1], b) || !vAt(ix[2], cc))
-					continue;
-				const float th = RayTri(origin, dir, a, b, cc);
-				if (th > 0.0f && th < bestT) {
-					bestT = th;
-					best.node = item.node;
-					best.tri = uint32_t(t);
-					const glm::vec3 hit = origin + dir * th;
-					float d0 = glm::distance(hit, a);
-					float d1 = glm::distance(hit, b);
-					float d2 = glm::distance(hit, cc);
-					best.vert = (d0 <= d1 && d0 <= d2) ? ix[0]
-						: (d1 <= d2) ? ix[1] : ix[2];
-					best.pos = hit;
-					found = true;
-				}
+		const size_t tcount = up->indices.size() / 3;
+		for (size_t t = 0; t < tcount; ++t) {
+			const uint32_t ix[3] = {
+				up->indices[t * 3 + 0],
+				up->indices[t * 3 + 1],
+				up->indices[t * 3 + 2] };
+			glm::vec3 a, b, cc;
+			if (!vAt(ix[0], a) || !vAt(ix[1], b) || !vAt(ix[2], cc))
+				continue;
+			const float th = RayTri(origin, dir, a, b, cc);
+			if (th > 0.0f && th < bestT) {
+				bestT = th;
+				best.node = item.node;
+				best.tri = uint32_t(t);
+				const glm::vec3 hit = origin + dir * th;
+				float d0 = glm::distance(hit, a);
+				float d1 = glm::distance(hit, b);
+				float d2 = glm::distance(hit, cc);
+				best.vert = (d0 <= d1 && d0 <= d2) ? ix[0]
+					: (d1 <= d2) ? ix[1] : ix[2];
+				best.pos = hit;
+				found = true;
 			}
 		}
 	});
@@ -365,7 +307,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 	// (inverse zoom/pan) -> point-in-triangle over the selection subtree
 	// (or the whole scene when nothing is selected). Mouse is
 	// canvas-local (the caller subtracts the canvas origin).
-	if (!m_hasGltfModel || !m_world || !m_showUvEditor)
+	if (!m_world || !m_showUvEditor)
 		return std::nullopt;
 	const float w = m_uvWinRectMax.x - m_uvWinRectMin.x;
 	const float h = m_uvWinRectMax.y - m_uvWinRectMin.y;
@@ -391,24 +333,6 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 				stack.push_back(uint32_t(c));
 		}
 	}
-	const tinygltf::Model& model = m_gltfModel;
-	auto readUv = [&](int accessorIdx, size_t i, glm::vec2& out) -> bool {
-		if (accessorIdx < 0 || accessorIdx >= int(model.accessors.size()))
-			return false;
-		const tinygltf::Accessor& acc = model.accessors[size_t(accessorIdx)];
-		if (i >= size_t(acc.count) ||
-			acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
-			return false;
-		const tinygltf::BufferView& bv = model.bufferViews[size_t(acc.bufferView)];
-		const tinygltf::Buffer& buf = model.buffers[size_t(bv.buffer)];
-		const size_t stride = acc.ByteStride(bv);
-		const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-		if (off + 8 > buf.data.size())
-			return false;
-		const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-		out = glm::vec2(f[0], f[1]);
-		return true;
-	};
 	auto inside = [](glm::vec2 p, glm::vec2 a, glm::vec2 b, glm::vec2 c) {
 		const float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
 		if (std::fabs(d) < 1e-12f)
@@ -417,45 +341,38 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 		const float v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / d;
 		return u >= -1e-4f && v >= -1e-4f && (u + v) <= 1.0f + 1e-4f;
 	};
-	for (const auto& [node, ref] : m_primRef) {
+	for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
 		if (useSubtree && !subtree.contains(node))
 			continue;
-		if (ref.mesh < 0 || ref.prim < 0)
+		const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
+		if (!up || up->vertices.empty() || up->indices.empty())
 			continue;
-		const tinygltf::Mesh& gm = model.meshes[size_t(ref.mesh)];
-		if (ref.prim >= int(gm.primitives.size()))
-			continue;
-		const tinygltf::Primitive& prim = gm.primitives[size_t(ref.prim)];
-		const std::string attr = lightmap ? "TEXCOORD_1" : "TEXCOORD_0";
-		auto it = prim.attributes.find(attr);
-		if (it == prim.attributes.end())
-			continue;
-		const int uvAcc = it->second;
-		if (prim.indices >= 0) {
-			const size_t tcount = size_t(model.accessors[size_t(prim.indices)].count) / 3;
-			for (size_t t = 0; t < tcount; ++t) {
-				uint32_t ix[3] = {};
-				bool ok = true;
-				for (int k = 0; k < 3; ++k)
-					ok &= ReadIndex(model, prim.indices, t * 3 + k, ix[k]);
-				if (!ok)
-					continue;
-				glm::vec2 uv[3];
-				if (!readUv(uvAcc, ix[0], uv[0]) || !readUv(uvAcc, ix[1], uv[1]) ||
-					!readUv(uvAcc, ix[2], uv[2]))
-					continue;
-				if (inside(puv, uv[0], uv[1], uv[2])) {
-					SubHit h{};
-					h.node = node;
-					h.tri = uint32_t(t);
-					// Nearest vert in UV space.
-					float d0 = glm::distance(puv, uv[0]);
-					float d1 = glm::distance(puv, uv[1]);
-					float d2 = glm::distance(puv, uv[2]);
-					h.vert = (d0 <= d1 && d0 <= d2) ? ix[0] : (d1 <= d2) ? ix[1] : ix[2];
-					h.pos = glm::vec3(puv, 0.0f);
-					return h;
-				}
+		const size_t tcount = up->indices.size() / 3;
+		for (size_t t = 0; t < tcount; ++t) {
+			const uint32_t ix[3] = {
+				up->indices[t * 3 + 0],
+				up->indices[t * 3 + 1],
+				up->indices[t * 3 + 2] };
+			glm::vec2 uv[3];
+			for (int k = 0; k < 3; ++k) {
+				if (ix[k] >= up->vertices.size())
+					break;
+				// UV channel: TEXCOORD_0 (diffuse) vs TEXCOORD_1 (the
+				// lightmap chart-local uv).
+				uv[k] = lightmap ? up->vertices[ix[k]].texCoord2
+					: up->vertices[ix[k]].texCoord;
+			}
+			if (inside(puv, uv[0], uv[1], uv[2])) {
+				SubHit h{};
+				h.node = node;
+				h.tri = uint32_t(t);
+				// Nearest vert in UV space.
+				float d0 = glm::distance(puv, uv[0]);
+				float d1 = glm::distance(puv, uv[1]);
+				float d2 = glm::distance(puv, uv[2]);
+				h.vert = (d0 <= d1 && d0 <= d2) ? ix[0] : (d1 <= d2) ? ix[1] : ix[2];
+				h.pos = glm::vec3(puv, 0.0f);
+				return h;
 			}
 		}
 	}
@@ -491,154 +408,69 @@ void EditorApp::ApplySubSelection(const SubHit& h) {
 }
 
 bool EditorApp::SelectedFaceUvs(glm::vec2 outUv[3], ViewMode mode) const {
-	if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX || !m_hasGltfModel)
+	if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX)
 		return false;
-	auto it = m_primRef.find(m_selFaceNode);
-	if (it == m_primRef.end() || it->second.mesh < 0)
+	const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selFaceNode);
+	if (!up || m_selFaceTri >= up->indices.size() / 3)
 		return false;
-	const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-	if (it->second.prim >= int(gm.primitives.size()))
-		return false;
-	const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-	const std::string attr =
-		(mode == ViewMode::FlatUv1) ? "TEXCOORD_1" : "TEXCOORD_0";
-	auto pa = prim.attributes.find(attr);
-	if (pa == prim.attributes.end())
-		return false;
-	const int uvAcc = pa->second;
-	const tinygltf::Model& model = m_gltfModel;
-	auto readUv = [&](size_t i, glm::vec2& out) -> bool {
-		if (uvAcc < 0 || uvAcc >= int(model.accessors.size()))
+	const bool lightmap = (mode == ViewMode::FlatUv1);
+	const uint32_t ix[3] = {
+		up->indices[size_t(m_selFaceTri) * 3 + 0],
+		up->indices[size_t(m_selFaceTri) * 3 + 1],
+		up->indices[size_t(m_selFaceTri) * 3 + 2] };
+	for (int k = 0; k < 3; ++k) {
+		if (ix[k] >= up->vertices.size())
 			return false;
-		const tinygltf::Accessor& acc = model.accessors[size_t(uvAcc)];
-		if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
-			return false;
-		const tinygltf::BufferView& bv = model.bufferViews[size_t(acc.bufferView)];
-		const tinygltf::Buffer& buf = model.buffers[size_t(bv.buffer)];
-		const size_t stride = acc.ByteStride(bv);
-		const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-		if (off + 8 > buf.data.size())
-			return false;
-		const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-		out = glm::vec2(f[0], f[1]);
-		return true;
-	};
-	uint32_t ix[3] = {};
-	if (prim.indices >= 0) {
-		for (int k = 0; k < 3; ++k)
-			if (!ReadIndex(model, prim.indices, size_t(m_selFaceTri) * 3 + k, ix[k]))
-				return false;
+		outUv[k] = lightmap ? up->vertices[ix[k]].texCoord2
+			: up->vertices[ix[k]].texCoord;
 	}
-	else {
-		ix[0] = m_selFaceTri * 3;
-		ix[1] = ix[0] + 1;
-		ix[2] = ix[0] + 2;
-	}
-	return readUv(ix[0], outUv[0]) && readUv(ix[1], outUv[1]) &&
-		readUv(ix[2], outUv[2]);
+	return true;
 }
 
 bool EditorApp::SelectedFaceWorld(glm::vec3 outW[3]) const {
 	// World positions of the selected triangle (brute-force read, no
 	// acceleration structures; selection only, never edited).
 	if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX ||
-		!m_hasGltfModel || !m_world)
+		!m_world || m_selFaceNode >= m_world->scene.hierarchy.size())
 		return false;
-	if (m_selFaceNode >= m_world->scene.hierarchy.size())
+	const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selFaceNode);
+	if (!up || m_selFaceTri >= up->indices.size() / 3)
 		return false;
-	auto it = m_primRef.find(m_selFaceNode);
-	if (it == m_primRef.end() || it->second.mesh < 0)
-		return false;
-	const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-	if (it->second.prim >= int(gm.primitives.size()))
-		return false;
-	const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-	auto pa = prim.attributes.find("POSITION");
-	if (pa == prim.attributes.end())
-		return false;
-	const size_t vcount = m_gltfModel.accessors[pa->second].count;
-	uint32_t ix[3] = {};
-	if (prim.indices >= 0) {
-		for (int k = 0; k < 3; ++k)
-			if (!ReadIndex(m_gltfModel, prim.indices,
-					size_t(m_selFaceTri) * 3 + k, ix[k]))
-				return false;
-	}
-	else {
-		ix[0] = m_selFaceTri * 3;
-		ix[1] = ix[0] + 1;
-		ix[2] = ix[0] + 2;
-	}
-	if (ix[0] >= vcount || ix[1] >= vcount || ix[2] >= vcount)
-		return false;
+	const uint32_t ix[3] = {
+		up->indices[size_t(m_selFaceTri) * 3 + 0],
+		up->indices[size_t(m_selFaceTri) * 3 + 1],
+		up->indices[size_t(m_selFaceTri) * 3 + 2] };
 	const glm::mat4& model = m_world->scene.globalTransform[m_selFaceNode];
 	for (int k = 0; k < 3; ++k) {
-		glm::vec3 local;
-		if (!ReadPosition(m_gltfModel, pa->second, ix[k], local))
+		if (ix[k] >= up->vertices.size())
 			return false;
-		outW[k] = glm::vec3(model * glm::vec4(local, 1.0f));
+		outW[k] = glm::vec3(model * glm::vec4(up->vertices[ix[k]].pos, 1.0f));
 	}
 	return true;
 }
 
 bool EditorApp::SelectedVertWorld(glm::vec3& outW) const {
 	if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX ||
-		!m_hasGltfModel || !m_world)
+		!m_world || m_selVertNode >= m_world->scene.hierarchy.size())
 		return false;
-	if (m_selVertNode >= m_world->scene.hierarchy.size())
-		return false;
-	auto it = m_primRef.find(m_selVertNode);
-	if (it == m_primRef.end() || it->second.mesh < 0)
-		return false;
-	const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-	if (it->second.prim >= int(gm.primitives.size()))
-		return false;
-	const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-	auto pa = prim.attributes.find("POSITION");
-	if (pa == prim.attributes.end())
-		return false;
-	if (size_t(m_selVertIdx) >= size_t(m_gltfModel.accessors[pa->second].count))
-		return false;
-	glm::vec3 local;
-	if (!ReadPosition(m_gltfModel, pa->second, m_selVertIdx, local))
+	const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selVertNode);
+	if (!up || m_selVertIdx >= up->vertices.size())
 		return false;
 	outW = glm::vec3(
-		m_world->scene.globalTransform[m_selVertNode] * glm::vec4(local, 1.0f));
+		m_world->scene.globalTransform[m_selVertNode]
+			* glm::vec4(up->vertices[m_selVertIdx].pos, 1.0f));
 	return true;
 }
 
 bool EditorApp::SelectedVertUv(glm::vec2& outUv, ViewMode mode) const {
-	if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX || !m_hasGltfModel)
+	if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX)
 		return false;
-	auto it = m_primRef.find(m_selVertNode);
-	if (it == m_primRef.end() || it->second.mesh < 0)
+	const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selVertNode);
+	if (!up || m_selVertIdx >= up->vertices.size())
 		return false;
-	const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-	if (it->second.prim >= int(gm.primitives.size()))
-		return false;
-	const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-	const std::string attr =
-		(mode == ViewMode::FlatUv1) ? "TEXCOORD_1" : "TEXCOORD_0";
-	auto pa = prim.attributes.find(attr);
-	if (pa == prim.attributes.end())
-		return false;
-	const int uvAcc = pa->second;
-	const tinygltf::Model& model = m_gltfModel;
-	if (uvAcc < 0 || uvAcc >= int(model.accessors.size()))
-		return false;
-	const tinygltf::Accessor& acc = model.accessors[size_t(uvAcc)];
-	if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
-		return false;
-	if (size_t(m_selVertIdx) >= size_t(acc.count))
-		return false;
-	const tinygltf::BufferView& bv = model.bufferViews[size_t(acc.bufferView)];
-	const tinygltf::Buffer& buf = model.buffers[size_t(bv.buffer)];
-	const size_t stride = acc.ByteStride(bv);
-	const size_t off = bv.byteOffset + acc.byteOffset + size_t(m_selVertIdx) * stride;
-	if (off + 8 > buf.data.size())
-		return false;
-	const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-	outUv = glm::vec2(f[0], f[1]);
+	outUv = (mode == ViewMode::FlatUv1)
+		? up->vertices[m_selVertIdx].texCoord2
+		: up->vertices[m_selVertIdx].texCoord;
 	return true;
 }
 

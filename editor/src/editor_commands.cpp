@@ -3258,7 +3258,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
-	SavePathRemapsToDoc(doc); // path editor relinks — editor-only, never cooked
+	// (Texture relinks no longer ride the tour: they are INPUT PLUGS on
+	// the source assets' .meta sidecars — the importer applies them.)
 	// Save-time healing (project workflow): reference -source slots
 	// carry project-relative posix paths, never absolute ones. A
 	// recorded absolute/out-of-project source whose GUID resolves to
@@ -4060,7 +4061,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
 	LoadImagesFromDoc(doc); // image definitions (img.* editorSet lines)
-	LoadPathRemapsFromDoc(doc); // path editor relinks (path.remap.* lines)
+	// (No path-remap editorSettings anymore: texture relinks are input
+	// plugs on the source assets' .meta sidecars, applied at import.)
 	// References were already bound at import (LoadGltfIntoWorld runs
 	// ApplySceneReferences on this same file); mirror the list so the
 	// editor state matches the parsed doc exactly.
@@ -4239,9 +4241,13 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 	if (!doc.source.empty()) {
 		const std::string src = ResolveTourSource(path, doc.source);
 		if (!src.empty() && src != m_gltfPath) {
-			const bool ok = HasPakExtension(src)
-				? LoadPakIntoWorld(src) : LoadGltfIntoWorld(src);
-			if (!ok) {
+			// Source scenes only (paks are refused — they run in the App).
+			if (HasPakExtension(src)) {
+				Log("tour open: source '" + src
+					+ "' is a cooked pak — open the source scene instead.");
+				return false;
+			}
+			if (!LoadGltfIntoWorld(src)) {
 				Log("tour open: failed to load source '" + src + "'");
 				return false;
 			}

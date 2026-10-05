@@ -1,4 +1,4 @@
-﻿#include <Engine/core.h>
+#include <Engine/core.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Renderer/vertex_pack.h>
 #include "../Vulkan/detail/vulkan_impl.h"

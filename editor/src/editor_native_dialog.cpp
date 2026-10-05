@@ -26,9 +26,8 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
 			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
 		static const COMDLG_FILTERSPEC kFilters[] = {
-			{ L"Scene files", L"*.gltf;*.glb;*.pak;*.tour" },
+			{ L"Scene files", L"*.gltf;*.glb;*.tour" },
 			{ L"glTF scenes", L"*.gltf;*.glb" },
-			{ L"Cooked paks", L"*.pak" },
 			{ L"Tour files", L"*.tour" },
 			{ L"All files", L"*.*" },
 		};

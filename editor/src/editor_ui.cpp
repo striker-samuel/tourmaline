@@ -241,15 +241,16 @@ void EditorApp::DrawMenuBar() {
 			ImGui::TextDisabled("project: %s", m_projectName.c_str());
 			ImGui::Separator();
 		}
-		// Single entry point: native dialog (.gltf/.glb/.pak/.tour,
-		// in C:/), dispatched by extension (tours replay into the stack).
+		// Single entry point: native dialog (.gltf/.glb/.tour, in C:/),
+		// dispatched by extension (tours replay into the stack; paks are
+		// refused — they run in the App).
 		if (ImGui::MenuItem("Open file...")) {
 			std::string picked;
 			if (NativeOpenFile(picked) && !picked.empty())
 				OpenAnySceneFile(picked);
 		}
 		if (ImGui::MenuItem("Add scene reference...", nullptr, false,
-				!m_gltfPath.empty() && !HasPakExtension(m_gltfPath))) {
+				!m_gltfPath.empty())) {
 			// File browser pick (.gltf/.tour; the name defaults to the
 			// path stem, the reference binds into its own namespace).
 			std::string picked;
@@ -912,36 +913,11 @@ std::string EditorApp::ResolveVfsRoot() const {
 	return ".";
 }
 
-bool EditorApp::PakSelected() const {
-	// Pak options appear only for pak-related outliner selections: the
-	// loaded-pak root / its TOC entries, or a .pak file on disk.
-	if (m_outlinerTab != 1 || m_vfsSel.empty())
-		return false;
-	if (m_vfsSel == "pak:" || m_vfsSel.rfind("pak:", 0) == 0)
-		return !m_pakPath.empty();
-	if (m_vfsSel.rfind("disk:", 0) == 0) {
-		const std::string p = m_vfsSel.substr(5);
-		return p.size() >= 4 &&
-			(p.compare(p.size() - 4, 4, ".pak") == 0 ||
-				p.compare(p.size() - 4, 4, ".PAK") == 0);
-	}
-	return false;
-}
-
 void EditorApp::DrawOutliner() {
-	// DEPRECATED: the cooked-VFS inspection tab (pak browsing +
-	// "in pak" orange rows) is gone â€” the WYSIWYG hosted preview
-	// (App-parity WorldRenderer over the scratch scene pak) replaced
-	// cooked-content inspection in the editor; tools/pak_browser.py
-	// remains the standalone pak inspector.
-	if (ImGui::BeginTabBar("##outlinerTabs")) {
-		if (ImGui::BeginTabItem("Scene")) {
-			m_outlinerTab = 0;
-			DrawSceneOutliner();
-			ImGui::EndTabItem();
-		}
-		ImGui::EndTabBar();
-	}
+	// The scene graph. The old cooked-VFS/pak browsing tab is GONE:
+	// paks run in the App (the editor is WYSIWYG authoring over source
+	// assets); tools/pak_browser.py remains the standalone inspector.
+	DrawSceneOutliner();
 }
 
 void EditorApp::ClearNonDagSelection() {
@@ -1114,7 +1090,7 @@ void EditorApp::DrawNonDagSection() {
 
 void EditorApp::DrawSceneOutliner() {
 	if (!m_world || m_world->scene.hierarchy.empty()) {
-		ImGui::TextDisabled("No scene. File > Open scene... (.gltf/.pak)");
+		ImGui::TextDisabled("No scene. File > Open scene... (.gltf/.tour)");
 		return;
 	}
 	ImGui::SetNextItemWidth(-90.0f);
@@ -1216,374 +1192,6 @@ void EditorApp::DrawSceneOutliner() {
 	}
 	ImGui::EndChild();
 	m_revealNode = UINT32_MAX;
-}
-
-namespace {
-ImVec4 VfsFileColor(const std::string& ext) {
-	if (ext == ".gltf" || ext == ".GLTF")
-		return ImVec4(0.45f, 0.9f, 1.0f, 1.0f);
-	if (ext == ".pak" || ext == ".PAK")
-		return ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
-	if (ext == ".sglm" || ext == ".sggi" || ext == ".sgrv")
-		return ImVec4(0.8f, 0.55f, 1.0f, 1.0f);
-	if (ext == ".tour")
-		return ImVec4(0.6f, 1.0f, 0.6f, 1.0f);
-	return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
-}
-constexpr ImVec4 kVfsDirColor{ 1.0f, 0.85f, 0.4f, 1.0f };
-constexpr ImVec4 kVfsInPakColor{ 1.0f, 0.65f, 0.25f, 1.0f };
-} // namespace
-
-void EditorApp::DrawVfsDir(const std::string& dir, int depth) {
-	namespace fs = std::filesystem;
-	if (depth > 6)
-		return;
-	std::error_code ec;
-	std::vector<fs::directory_entry> dirs, files;
-	for (fs::directory_iterator it(dir, ec), end;
-		!ec && it != end; it.increment(ec)) {
-		const fs::directory_entry& e = *it;
-		if (e.is_directory(ec))
-			dirs.push_back(e);
-		else if (e.is_regular_file(ec))
-			files.push_back(e);
-	}
-	auto byName = [](const fs::directory_entry& a,
-		const fs::directory_entry& b) {
-		return a.path().filename().string() <
-			b.path().filename().string();
-	};
-	std::sort(dirs.begin(), dirs.end(), byName);
-	std::sort(files.begin(), files.end(), byName);
-	for (auto& d : dirs) {
-		const std::string full = d.path().string();
-		const std::string name = d.path().filename().string();
-		ImGui::PushID(full.c_str());
-		ImGui::PushStyleColor(ImGuiCol_Text, kVfsDirColor);
-		const bool open = ImGui::TreeNodeEx(name.c_str(),
-			ImGuiTreeNodeFlags_OpenOnArrow |
-			ImGuiTreeNodeFlags_OpenOnDoubleClick);
-		ImGui::PopStyleColor();
-		if (open) {
-			DrawVfsDir(full, depth + 1);
-			ImGui::TreePop();
-		}
-		ImGui::PopID();
-	}
-	size_t shown = 0;
-	for (auto& f : files) {
-		if (++shown > 500) {
-			ImGui::TextDisabled("... (%zu more)", files.size() - 500);
-			break;
-		}
-		const std::string full = f.path().string();
-		const std::string name = f.path().filename().string();
-		const std::string ext = f.path().extension().string();
-		const bool openable = ext == ".gltf" || ext == ".GLTF" ||
-			ext == ".pak" || ext == ".PAK";
-		const bool sel = (m_vfsSel == "disk:" + full);
-		ImGui::PushID(full.c_str());
-		ImGui::PushStyleColor(ImGuiCol_Text, VfsFileColor(ext));
-		if (ImGui::Selectable(name.c_str(), sel,
-			ImGuiSelectableFlags_AllowDoubleClick))
-			m_vfsSel = "disk:" + full;
-		ImGui::PopStyleColor();
-		if (sel)
-			ImGui::SetItemDefaultFocus();
-		if (openable && ImGui::IsItemHovered() &&
-			ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-			OpenScene(full);
-		ImGui::PopID();
-	}
-}
-
-void EditorApp::DrawVfsOutliner() {
-	namespace fs = std::filesystem;
-	if (m_vfsRoot.empty())
-		m_vfsRoot = ResolveVfsRoot();
-	ImGui::TextDisabled("legend:");
-	ImGui::SameLine();
-	ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, 1.0f), "loose");
-	ImGui::SameLine();
-	ImGui::TextDisabled("/");
-	ImGui::SameLine();
-	ImGui::TextColored(kVfsInPakColor, "in pak");
-	ImGui::TextDisabled("root: %s", m_vfsRoot.c_str());
-	ImGui::BeginChild("##vfsTree", ImVec2(0, -110), true);
-	// Loaded pak: virtual subtree from the cached reader (orange = inside;
-	// never re-parsed per frame).
-	if (!m_pakPath.empty() && m_pakReader) {
-		const smvk::PakReader& reader = *m_pakReader;
-		const std::string pakName =
-			fs::path(m_pakPath).filename().string();
-		ImGui::PushID("##loadedpak");
-		ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
-		const bool open = ImGui::TreeNodeEx(
-			(" [pak] " + pakName).c_str(),
-			ImGuiTreeNodeFlags_OpenOnArrow |
-			ImGuiTreeNodeFlags_OpenOnDoubleClick);
-		ImGui::PopStyleColor();
-		if (ImGui::IsItemClicked(ImGuiMouseButton_Left) &&
-			!ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-			m_vfsSel = "pak:";
-		if (open) {
-			// Scenes first: named, double-click loads that index.
-			ImGui::PushID("##scenes");
-			const bool sopen = ImGui::TreeNodeEx("Scenes",
-				ImGuiTreeNodeFlags_OpenOnArrow);
-			ImGui::SameLine();
-			ImGui::TextDisabled("(%zu)", m_pakScenes.size());
-			if (sopen) {
-				for (size_t i = 0; i < m_pakScenes.size(); ++i) {
-					const auto& si = m_pakScenes[i];
-					char label[320];
-					std::snprintf(label, sizeof(label), "[%zu] %s (%u nodes)%s",
-						i, si.name.empty() ? "<unnamed>" : si.name.c_str(),
-						si.nodes,
-						i == m_pakSceneIndex ? "  [loaded]" : "");
-					const bool sel = (m_vfsSel == "pak:" + si.tocPath);
-					ImGui::PushID(si.tocPath.c_str());
-					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
-					if (ImGui::Selectable(label, sel,
-						ImGuiSelectableFlags_AllowDoubleClick))
-						m_vfsSel = "pak:" + si.tocPath;
-					ImGui::PopStyleColor();
-					if (ImGui::IsItemHovered() &&
-						ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
-						uint32_t(i) != m_pakSceneIndex)
-						LoadPakIntoWorld(m_pakPath, uint32_t(i));
-					ImGui::PopID();
-				}
-				ImGui::TreePop();
-			}
-			ImGui::PopID();
-		struct KindGroup {
-			const char* label;
-			smvk::PakAssetKind kind;
-		};
-		static const KindGroup kGroups[] = {
-			{ "Meshes", smvk::PakAssetKind::Mesh },
-			{ "Materials", smvk::PakAssetKind::Material },
-			{ "Textures", smvk::PakAssetKind::Texture },
-			{ "Lights", smvk::PakAssetKind::Light },
-		};
-		// GI group FIRST (the pak-level Gi registry + the embedded bake
-		// payload blobs): the registry is SCENE DATA since the
-		// sidecar-cook removal — stable bake stems + kinds, exactly what
-		// the runtime resolves. Each row selects the binding's VFS path;
-		// "(blob missing)" marks a binding whose payload is not in this
-		// pak (loose-file override or unbaked). Payload rows are the
-		// Texture-kind blobs under gi/ + the .cubemanifest texts (kept
-		// out of the Textures group below).
-		{
-			ImGui::PushID("##pakgi");
-			const size_t giPayloads =
-				std::count_if(reader.BlobsOfKind(
-						smvk::PakAssetKind::Texture).begin(),
-					reader.BlobsOfKind(smvk::PakAssetKind::Texture).end(),
-					[](const smvk::PakTocEntry* e) {
-						return e->path.rfind("gi/", 0) == 0
-							|| (e->path.size() > 13
-								&& e->path.compare(e->path.size() - 13,
-									13, ".cubemanifest") == 0);
-					});
-			const bool gopen = ImGui::TreeNodeEx("GI",
-				ImGuiTreeNodeFlags_OpenOnArrow);
-			ImGui::SameLine();
-			ImGui::TextDisabled("(%zu bindings, %zu payloads)",
-				m_pakGiBindings.size(), giPayloads);
-			if (gopen) {
-				auto bindingVfs = [](const smvk::GiBinding& b) {
-					switch (b.kind) {
-					case smvk::GiBinding::Kind::Probe:
-						return "gi/" + b.name + ".sggi";
-					case smvk::GiBinding::Kind::Lightmap:
-						return "gi/" + b.name + ".sglm";
-					case smvk::GiBinding::Kind::RegManifest:
-						return "gi/" + b.name + ".regmanifest";
-					case smvk::GiBinding::Kind::CvolManifest:
-						return "gi/" + b.name + ".cvmanifest";
-					case smvk::GiBinding::Kind::Cubemap:
-						return "textures/cubemaps/" + b.name
-							+ ".cubemanifest";
-					}
-					return std::string();
-				};
-				for (const smvk::GiBinding& b : m_pakGiBindings) {
-					const char* kindLabel =
-						b.kind == smvk::GiBinding::Kind::Probe ? "probe"
-						: b.kind == smvk::GiBinding::Kind::Lightmap
-							? "lightmap"
-						: b.kind == smvk::GiBinding::Kind::RegManifest
-							? "reg manifest"
-						: b.kind == smvk::GiBinding::Kind::CvolManifest
-							? "cvol manifest"
-						: "cubemap manifest";
-					const std::string vfs = bindingVfs(b);
-					bool inPak = false;
-					for (const smvk::PakTocEntry* e :
-							reader.BlobsOfKind(
-								smvk::PakAssetKind::Texture))
-						if (e->path == vfs) {
-							inPak = true;
-							break;
-						}
-					const std::string label = std::string("[") + kindLabel
-						+ "] " + b.name + (inPak ? "" : "  (blob missing)");
-					const bool sel = (m_vfsSel == "pak:" + vfs);
-					ImGui::PushID(label.c_str());
-					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
-					if (ImGui::Selectable(label.c_str(), sel,
-							ImGuiSelectableFlags_AllowDoubleClick))
-						m_vfsSel = "pak:" + vfs;
-					ImGui::PopStyleColor();
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("%s%s", vfs.c_str(),
-							inPak ? "" : "\nnot embedded in this pak");
-					ImGui::PopID();
-				}
-				// Embedded GI payload blobs (the actual bytes the
-				// bindings resolve): every Texture-kind entry under gi/
-				// plus the cubemap manifest texts.
-				size_t shown = 0;
-				for (const smvk::PakTocEntry* e :
-						reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
-					const bool isGi = e->path.rfind("gi/", 0) == 0
-						|| (e->path.size() > 13
-							&& e->path.compare(e->path.size() - 13, 13,
-								".cubemanifest") == 0);
-					if (!isGi)
-						continue;
-					if (++shown > 200) {
-						ImGui::TextDisabled("... more");
-						break;
-					}
-					const bool sel = (m_vfsSel == "pak:" + e->path);
-					ImGui::PushID(e->path.c_str());
-					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
-					if (ImGui::Selectable(e->path.c_str(), sel))
-						m_vfsSel = "pak:" + e->path;
-					ImGui::PopStyleColor();
-					ImGui::PopID();
-				}
-				ImGui::TreePop();
-			}
-			ImGui::PopID();
-		}
-		for (const auto& g : kGroups) {
-			const auto blobs = reader.BlobsOfKind(g.kind);
-			ImGui::PushID(g.label);
-			const bool gopen = ImGui::TreeNodeEx(g.label,
-				ImGuiTreeNodeFlags_OpenOnArrow);
-			ImGui::SameLine();
-			// GI bake payloads are listed in the GI group above —
-			// exclude them from the Texture count/list.
-			size_t count = blobs.size();
-			if (g.kind == smvk::PakAssetKind::Texture)
-				for (const smvk::PakTocEntry* e : blobs)
-					if (e->path.rfind("gi/", 0) == 0
-						|| (e->path.size() > 13
-							&& e->path.compare(e->path.size() - 13, 13,
-								".cubemanifest") == 0))
-						--count;
-			ImGui::TextDisabled("(%zu)", count);
-			if (gopen) {
-				size_t shown = 0;
-				for (const smvk::PakTocEntry* e : blobs) {
-				if (g.kind == smvk::PakAssetKind::Texture
-						&& (e->path.rfind("gi/", 0) == 0
-							|| (e->path.size() > 13
-								&& e->path.compare(e->path.size() - 13,
-									13, ".cubemanifest") == 0)))
-					continue; // GI group owns these
-				if (++shown > 200) {
-						ImGui::TextDisabled("... (%zu more)",
-							blobs.size() - 200);
-						break;
-					}
-						const bool sel =
-							(m_vfsSel == "pak:" + e->path);
-						ImGui::PushID(e->path.c_str());
-						ImGui::PushStyleColor(ImGuiCol_Text,
-							kVfsInPakColor);
-						if (ImGui::Selectable(
-								fs::path(e->path).filename().string().c_str(),
-								sel))
-							m_vfsSel = "pak:" + e->path;
-						ImGui::PopStyleColor();
-						if (ImGui::IsItemHovered())
-							ImGui::SetTooltip("%s", e->path.c_str());
-						ImGui::PopID();
-					}
-					ImGui::TreePop();
-				}
-				ImGui::PopID();
-			}
-			ImGui::TreePop();
-		}
-		ImGui::PopID();
-		ImGui::Separator();
-	}
-	DrawVfsDir(m_vfsRoot, 0);
-	ImGui::EndChild();
-	DrawPakBox();
-}
-
-void EditorApp::DrawPakBox() {
-	namespace fs = std::filesystem;
-	if (!PakSelected())
-		return; // pak options appear only on pak selection
-	ImGui::Separator();
-	ImGui::Text("Pak");
-	if (m_vfsSel == "pak:") {
-		ImGui::TextWrapped("%s", m_pakPath.c_str());
-		if (ImGui::Button("Dump manifest"))
-			DumpPakManifest();
-		ImGui::SameLine();
-		if (ImGui::Button("Reload sibling atlas"))
-			TryLoadSiblingSglm(m_pakPath);
-	}
-	else if (m_vfsSel.rfind("pak:", 0) == 0) {
-		ImGui::TextWrapped("in %s",
-			fs::path(m_pakPath).filename().string().c_str());
-		const std::string toc = m_vfsSel.substr(4);
-		int sceneIdx = -1;
-		for (size_t i = 0; i < m_pakScenes.size(); ++i)
-			if (m_pakScenes[i].tocPath == toc)
-				sceneIdx = int(i);
-		if (sceneIdx >= 0) {
-			ImGui::Text("scene[%d] '%s' (%u nodes)", sceneIdx,
-				m_pakScenes[size_t(sceneIdx)].name.c_str(),
-				m_pakScenes[size_t(sceneIdx)].nodes);
-			if (uint32_t(sceneIdx) != m_pakSceneIndex &&
-				ImGui::Button("Load scene"))
-				LoadPakIntoWorld(m_pakPath, uint32_t(sceneIdx));
-			else if (uint32_t(sceneIdx) == m_pakSceneIndex)
-				ImGui::TextDisabled("currently loaded.");
-		}
-		else {
-			ImGui::TextWrapped("%s", toc.c_str());
-			ImGui::TextDisabled("entries inside a pak are read-only;");
-			ImGui::TextDisabled("Dump manifest lists the full table.");
-		}
-		if (ImGui::Button("Dump manifest"))
-			DumpPakManifest();
-	}
-	else if (m_vfsSel.rfind("disk:", 0) == 0) {
-		const std::string full = m_vfsSel.substr(5);
-		ImGui::TextWrapped("%s", full.c_str());
-		std::error_code ec;
-		const uint64_t bytes = fs::is_regular_file(full, ec)
-			? uint64_t(fs::file_size(full, ec)) : 0;
-		if (bytes != 0)
-			ImGui::TextDisabled("%.1f MiB on disk",
-				double(bytes) / (1024.0 * 1024.0));
-		if (!m_pakPath.empty() &&
-			fs::equivalent(full, m_pakPath, ec))
-			ImGui::TextDisabled("already loaded.");
-		else if (ImGui::Button("Load in editor"))
-			OpenScene(full);
-	}
 }
 
 void EditorApp::DrawOutlinerNode(uint32_t node,
@@ -3032,7 +2640,7 @@ void EditorApp::DrawCameraSection() {
 }
 
 void EditorApp::DrawLightmapPanel() {
-	ImGui::Text("Lightmap bake (.pak + .sglm)");
+	ImGui::Text("Lightmap bake (.sglm)");
 	// Registry slots from the loaded world (first per kind wins, like App).
 	if (m_world && !m_world->clusters.empty()) {
 		for (const auto& clusterPtr : m_world->clusters) {
@@ -3052,13 +2660,6 @@ void EditorApp::DrawLightmapPanel() {
 			}
 			break; // first cluster carrying bindings (matches runtime)
 		}
-	}
-	if (!m_pakPath.empty()) {
-		ImGui::TextWrapped("pak: %s", m_pakPath.c_str());
-	}
-	else {
-		ImGui::TextDisabled("No pak loaded (source is glTF: cook first).");
-		ImGui::TextDisabled("Open a cooked .pak to inspect its bake.");
 	}
 	ImGui::TextWrapped("atlas: %s", m_sglmStatus.c_str());
 	if (m_hasSglm) {
@@ -3128,167 +2729,12 @@ void EditorApp::DrawLightmapPanel() {
 	ImGui::SameLine();
 	if (ImGui::Button("Load sglm") && m_sglmBuf[0] != '\0')
 		LoadSglm(m_sglmBuf);
-	if (!m_pakPath.empty())
-		ImGui::TextDisabled(
-			"Pak actions live on the pak selection (Outliner > VFS).");
-}
-
-void EditorApp::DumpPakManifest() {
-	// Cached reader (parsed once at load; Open decompresses â€” never redo).
-	if (!m_pakReader) {
-		Log("Dump: no pak loaded.");
-		return;
-	}
-	const smvk::PakReader& reader = *m_pakReader;
-	for (size_t i = 0; i < m_pakScenes.size(); ++i)
-		Log("  scene[" + std::to_string(i) + "] '" + m_pakScenes[i].name +
-			"' nodes=" + std::to_string(m_pakScenes[i].nodes));
-	if (m_world) {
-		for (const auto& clusterPtr : m_world->clusters) {
-			if (!clusterPtr || clusterPtr->giBindings.empty())
-				continue;
-			for (const smvk::GiBinding& b : clusterPtr->giBindings)
-				Log(std::string("  gi ") +
-					(b.kind == smvk::GiBinding::Kind::Lightmap
-						? "lightmap '" : "probe '") + b.name + "'");
-			break; // first cluster carrying bindings (matches runtime)
-		}
-	}
-	const auto meshes = reader.BlobsOfKind(smvk::PakAssetKind::Mesh);
-	const auto mats = reader.BlobsOfKind(smvk::PakAssetKind::Material);
-	const auto texs = reader.BlobsOfKind(smvk::PakAssetKind::Texture);
-	const auto lights = reader.BlobsOfKind(smvk::PakAssetKind::Light);
-	char buf[256];
-	std::snprintf(buf, sizeof(buf),
-		"Pak manifest '%s': entries=%zu meshes=%zu materials=%zu textures=%zu lights=%zu",
-		m_pakPath.c_str(), reader.EntryCount(),
-		meshes.size(), mats.size(), texs.size(), lights.size());
-	Log(buf);
-	// Light blobs, pak-sourced (same layout as the serializer writes:
-	// str uri | u32 type | vec3 color | f32 I/range/inner/outer | str name
-	// | u32 flags?). Verifies the sun decode the viewport uses.
-	for (const smvk::PakTocEntry* e : lights) {
-		const std::span<const uint8_t> img = reader.Payload(*e);
-		size_t off = 0;
-		auto u32 = [&]() -> uint32_t {
-			uint32_t v = 0;
-			if (off + 4 <= img.size()) {
-				std::memcpy(&v, img.data() + off, 4);
-				off += 4;
-			}
-			return v;
-		};
-		auto f32 = [&]() -> float {
-			float v = 0.0f;
-			if (off + 4 <= img.size()) {
-				std::memcpy(&v, img.data() + off, 4);
-				off += 4;
-			}
-			return v;
-		};
-		auto str = [&]() -> std::string {
-			const uint32_t n = u32();
-			if (off + n > img.size())
-				return {};
-			std::string s(reinterpret_cast<const char*>(img.data() + off), n);
-			off += n;
-			return s;
-		};
-		const std::string uri = str();
-		const uint32_t type = u32();
-		const float r = f32(), g = f32(), b = f32();
-		const float inten = f32(), range = f32(), inner = f32(), outer = f32();
-		const std::string name = str();
-		const bool hasFlags = (off + 4 <= img.size());
-		const uint32_t flags = hasFlags ? u32() : 0;
-		char lbuf[384];
-		std::snprintf(lbuf, sizeof(lbuf),
-			"  light '%s' %s rgb=(%.2f,%.2f,%.2f) I=%.1f range=%.1f%s%s",
-			name.empty() ? uri.c_str() : name.c_str(),
-			type == 0 ? "dir" : type == 2 ? "spot" : "point",
-			r, g, b, inten, range,
-			type == 2 ? (" inner=" + std::to_string(glm::degrees(inner)) +
-				"deg outer=" + std::to_string(glm::degrees(outer)) + "deg").c_str() : "",
-			(flags & 1u) ? " STATIC" : "");
-		Log(lbuf);
-	}
-	// lmChunk histogram straight from the mesh blobs (pak-sourced, same
-	// cursor as PakCooker --dump-manifest). The editor never draws LODs,
-	// so LOD0 only: "<base>/lodN" sibling blobs are runtime alternates
-	// with their own per-LOD atlas rects â€” counting them would skew the
-	// histogram away from what every editor lightmap view samples.
-	uint32_t lmNone = 0, lm5 = 0, lm6 = 0, lm9 = 0, lm12 = 0, lmOther = 0;
-	uint32_t lmLodSkipped = 0;
-	for (const smvk::PakTocEntry* e : meshes) {
-		const std::span<const uint8_t> img = reader.Payload(*e);
-		size_t off = 0;
-		auto u32 = [&]() -> uint32_t {
-			uint32_t v = 0;
-			if (off + 4 <= img.size()) {
-				std::memcpy(&v, img.data() + off, 4);
-				off += 4;
-			}
-			return v;
-		};
-		auto f32 = [&]() -> float {
-			float v = 0.0f;
-			if (off + 4 <= img.size()) {
-				std::memcpy(&v, img.data() + off, 4);
-				off += 4;
-			}
-			return v;
-		};
-		const uint32_t n = u32();
-		if (off + n > img.size())
-			continue;
-		const std::string uri(reinterpret_cast<const char*>(img.data() + off), n);
-		off += n; // uri
-		// LOD sibling blob ("<base>/lodN"): not drawn by the editor,
-		// not part of its lightmap sampling â€” skip (counted below).
-		if (smvk::BaseMeshUriForLod(smvk::StringViewT(uri)) != smvk::StringViewT(uri)) {
-			++lmLodSkipped;
-			continue;
-		}
-		const uint32_t vc = u32(), ic = u32(), sc = u32();
-		(void)vc;
-		(void)ic;
-		off += size_t(sc) * 12; // surfaces
-		for (int k = 0; k < 6; ++k)
-			(void)f32(); // aabb
-		(void)f32(); // sphere
-		(void)u32(); // topology
-		(void)u32(); // groupId
-		(void)u32(); // lodIndex
-		(void)u32(); // candidates
-		(void)f32(); // simplifyError
-		(void)f32(); // screenThreshold
-		(void)u32(); // tris
-		(void)f32(); // acmr
-		if (off + 4 > img.size())
-			continue;
-		const uint32_t lm = u32();
-		if (lm == 0xFFFFFFFFu) ++lmNone;
-		else if (lm == 5) ++lm5;
-		else if (lm == 6) ++lm6;
-		else if (lm == 9) ++lm9;
-		else if (lm == 12) ++lm12;
-		else ++lmOther;
-	}
-	std::snprintf(buf, sizeof(buf),
-		"  lmChunk: none=%u 5=%u 6=%u 9=%u 12=%u other=%u (LOD0 only, %u siblings skipped)",
-		lmNone, lm5, lm6, lm9, lm12, lmOther, lmLodSkipped);
-	Log(buf);
-	Log("For per-mesh lmChunk + texture URIs use: PakCooker --dump-pak <pak>");
 }
 
 void EditorApp::DrawTexturePanel() {
 	ImGui::Text("Textures");
 	if (!m_world || m_world->scene.hierarchy.empty()) {
 		ImGui::TextDisabled("No scene loaded.");
-		return;
-	}
-	if (!m_pakPath.empty()) {
-		ImGui::TextDisabled("pak scene: full-resident (no streaming).");
 		return;
 	}
 	int mode = int(m_texMode);
@@ -4686,13 +4132,12 @@ void EditorApp::DrawAssetsPanel() {
 				Log("Asset rescan failed: " + rerr);
 		}
 	}
-	// Selection actions (Open = scene files only).
+	// Selection actions (Open = scene files only; paks run in the App).
 	static const auto isOpenable = [](const std::string& p) {
 		std::string e = fs::path(p).extension().string();
 		for (char& c : e)
 			c = char(std::tolower((unsigned char)c));
-		return e == ".gltf" || e == ".glb" || e == ".tour"
-			|| e == ".pak";
+		return e == ".gltf" || e == ".glb" || e == ".tour";
 	};
 	{
 		const bool selFile = !m_assetsSel.empty()
@@ -5247,7 +4692,7 @@ void EditorApp::RequestAssetDelete(const std::string& absPath) {
 			fs::absolute(fs::path(absPath), ec)
 				.lexically_normal().generic_string();
 		for (const std::string& live :
-			{ m_gltfPath, m_gltfHostPath, m_pakPath }) {
+			{ m_gltfPath, m_gltfHostPath }) {
 			if (live.empty())
 				continue;
 			std::error_code lec;

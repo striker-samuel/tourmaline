@@ -405,11 +405,6 @@ bool EditorApp::AddSceneReference(const std::string& source,
 		Log("References: no loaded source scene / empty reference path.");
 		return false;
 	}
-	if (HasPakExtension(m_gltfPath)) {
-		Log("References: pak scenes are read-only (open the source glTF "
-			"to author references).");
-		return false;
-	}
 	if (m_cookRunning) {
 		Log("References: a cook is running — wait for it to finish.");
 		return false;

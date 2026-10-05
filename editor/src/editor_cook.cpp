@@ -78,11 +78,13 @@ bool EditorApp::SnapshotTourForProcess(const char* tag,
 }
 
 void EditorApp::CookToPak() {
-	if (m_cookRunning || !m_hasGltfModel) {
-		if (!m_hasGltfModel)
-			Log(!m_pakPath.empty()
-				? "Cook: pak scenes are read-only (open the source glTF to cook)."
-				: "Cook: no glTF loaded.");
+	// Definition scenes only — with pak opens gone (paks run in the App),
+	// every open editor scene is definition-backed; the gate left is
+	// content (empty sourceless worlds have nothing to cook — the cooker
+	// replays the tour's asset-UUID references itself).
+	if (m_cookRunning || SceneEmpty()) {
+		if (SceneEmpty())
+			Log("Cook: no scene content loaded.");
 		return;
 	}
 	if (m_bakeRunning) {
@@ -164,10 +166,14 @@ void EditorApp::CookToPak() {
 		std::filesystem::path(cook.outPak).stem().string();
 	const bool wantWorld = m_cook.giWorld;
 	m_cookRunning = true;
+	// Label honesty: the cook UPDATES the scene's bake in place — GiBaker
+	// re-runs it at the stable stem paths (overwrites; RecordBakeAssets-
+	// FromCook overwrites the bake guid reference in the current scene's
+	// tour and deletes the superseded old bake), then the pak follows.
 	Log(std::string("Cook started -> ") + cook.outPak
-		+ std::string(wantWorld ? " (GI from 0: world field + convex "
-			"volumes, then the pak)" : " (GI from 0: convex volumes, "
-			"then the pak)"));
+		+ std::string(wantWorld ? " (GI bake updated in place: world field "
+			"+ convex volumes, then the pak)"
+			: " (GI bake updated in place: convex volumes, then the pak)"));
 	auto feed = std::make_shared<CookFeed>();
 	m_cookFeed = feed;
 	// Cache acceleration (opt-in, never required): when the project
@@ -204,14 +210,16 @@ void EditorApp::CookToPak() {
 			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
 			(void)n;
 #endif
-			// ---- stage 1: GiBaker FROM 0 (the full GI bake — the world
-			// field when requested + the tour's authored convex volumes;
-			// the definition tour is the only input, nothing reused). The
-			// fresh sidecars land under <contentDir>/gi/ exactly where
-			// stage 2 (PakCooker) discovers + embeds them into the pak.
-			// A failed GI bake FAILS the cook (the pak would silently
-			// miss its GI otherwise — the exact bug this flow exists to
-			// prevent).
+			// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
+			// the world field when requested + the tour's authored convex
+			// volumes; the definition tour is the only input, nothing
+			// reused; the STABLE stem paths overwrite, and the completion
+			// handler deletes the superseded old bake when the stem
+			// changed). The fresh sidecars land under <contentDir>/gi/
+			// exactly where stage 2 (PakCooker) discovers + embeds them
+			// into the pak. A failed GI bake FAILS the cook (the pak would
+			// silently miss its GI otherwise — the exact bug this flow
+			// exists to prevent).
 			{
 				std::filesystem::path baker =
 					std::filesystem::path(exePath).parent_path() /
@@ -379,7 +387,7 @@ void EditorApp::BakeGI() {
 		Log("Bake GI: a cook is running — wait for it to finish.");
 		return;
 	}
-	if (!m_world || !m_hasGltfModel) {
+	if (SceneEmpty()) {
 		Log("Bake GI: open a source scene first (imports land ready to "
 			"cook; cooking is the separate product step).");
 		return;

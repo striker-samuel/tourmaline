@@ -34,9 +34,38 @@ std::string MetaPathFor(const std::string& assetPath);
 // the caller issues a fresh GUID in both cases.
 bool ReadAssetMeta(const std::string& assetPath, std::string& outGuid,
 	std::string& err);
-// Writes (or replaces) the sidecar. The guid must be valid.
+// Writes (or replaces) the sidecar. The guid must be valid. Preserves
+// any INPUT PLUG rows already present (see ReadAssetPlugs) — adoption/
+// re-adoption rewrites must never drop authored plugs.
 bool WriteAssetMeta(const std::string& assetPath, const std::string& guid,
 	const std::string& importer, std::string& err);
+
+// ---------------------------------------------------------------------------
+// INPUT PLUGS: per-asset import inputs serialized in the .meta sidecar
+// ("plug.<kind>.<n>.old=..." / "plug.<kind>.<n>.new=..." rows). A plug is
+// INPUT CONFIGURATION for whoever imports the asset — the importer applies
+// it (e.g. gltf_import's texture relink: an image whose authored uri
+// matches `oldUri` reads `newPath` instead), so plugs apply identically at
+// editor import, cook and bake. Never the tour format: plugs belong to the
+// ASSET (the tour already references assets by GUID) and travel with the
+// file via this sidecar.
+//
+// Kinds: "texture" (image-uri relink). The rows are index-paired
+// (hand-edited unpaired rows skip on read).
+// ---------------------------------------------------------------------------
+struct AssetPlug {
+	std::string kind;    // "texture"
+	std::string oldUri;  // plug key (the authored image uri)
+	std::string newPath; // plug value (the replacement source)
+};
+// Every plug row of the sidecar (parse order; empty when none/missing).
+std::vector<AssetPlug> ReadAssetPlugs(const std::string& assetPath);
+// Rewrites ONLY the plug rows of one kind on the sidecar (guid/importer
+// and other kinds' rows preserved). Empty `plugs` clears the kind. The
+// sidecar's guid must be valid (missing sidecar = write error — adopt the
+// asset first).
+bool WriteAssetPlugs(const std::string& assetPath, const std::string& kind,
+	const std::vector<AssetPlug>& plugs, std::string& err);
 
 // One directory row: WHICH asset (guid) lives WHERE (project-relative
 // posix path when inside the project, absolute generic otherwise).

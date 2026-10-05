@@ -47,7 +47,7 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 	// Scene seed: the open scene's stem when one is open ("" = unbound —
 	// the asset still creates; the scene binds at bake time).
 	std::string scene;
-	if (m_hasGltfModel || !m_pakPath.empty())
+	if (!SceneEmpty())
 		scene = SceneIdForHost();
 	const std::string guid = smvk::tour::GenerateUuid();
 	std::string werr;
@@ -119,8 +119,9 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	//     m_bakeCubemapGuid — the editorSet keys ride every autosave, so
 	//     the .tour and the assetdb always agree on which bake belongs
 	//     to which definition).
-	if (!m_hasGltfModel)
-		return;
+	// Runs only after a successful CookToPak (itself gated on a
+	// non-empty definition scene); the scene + outPak checks below carry
+	// every other caller path.
 	const std::string scene = SceneIdForHost();
 	if (scene.empty() || m_cook.outPak.empty())
 		return;
@@ -206,6 +207,13 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	a.scene = scene;
 	a.cvol = m_cook.giCvol;
 	a.world = m_cook.giWorld;
+	// The SUPERSEDED result identity (a different bake stem — the out
+	// pak was renamed): captured before the overwrite below; its files
+	// die with this update (nothing references the old stem after the
+	// tour's bake guid reference swaps to the new one).
+	const std::string oldStem =
+		(!fresh && hasSggi && !a.blobGuid.empty() && a.blobGuid != scene)
+		? a.blobGuid : std::string();
 	if (hasSggi) {
 		a.blobGuid = scene;
 		a.blobPath = sggiVfs;
@@ -218,6 +226,32 @@ void EditorApp::RecordBakeAssetsFromCook() {
 				+ werr);
 			return;
 		}
+	}
+	// Delete the old bake: update-and-overwrite means the superseded
+	// stem's files (gi/<oldStem>.* + <oldStem>_*.cvol sidecars) go away
+	// with the reference swap — leaving them would orphan them in gi/
+	// and stale rows in the asset collections.
+	if (!oldStem.empty()) {
+		int deleted = 0;
+		const fs::path giDir = fs::path(contentRoot) / "gi";
+		std::error_code lec;
+		if (fs::is_directory(giDir, lec)) {
+			for (fs::directory_iterator it(giDir, lec), end;
+					!lec && it != end; it.increment(lec)) {
+				const std::string n = it->path().filename().string();
+				if (n.rfind(oldStem + ".", 0) != 0
+					&& n.rfind(oldStem + "_", 0) != 0)
+					continue; // not the old bake's footprint
+				if (!it->is_regular_file(lec))
+					continue;
+				if (fs::remove(it->path(), lec))
+					++deleted;
+			}
+		}
+		if (deleted > 0)
+			Log("cook assets: deleted the superseded bake '" + oldStem
+				+ "' (" + std::to_string(deleted) + " file(s) under "
+				+ giDir.generic_string() + ")");
 	}
 	// Identity + assetdb: the .meta carries the manifest's guid so
 	// AdoptProjectAsset keeps it stable across rebakes (fresh mints

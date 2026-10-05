@@ -109,11 +109,11 @@ std::vector<PakSceneInfo> ListPakScenes(
 // streamer != nullptr the per-texture SetTextureSource copies are skipped
 	// (payloads are borrowed, not owned).
 	std::unique_ptr<Cluster> DeserializeCluster(
-	ResourceManager& ctx,
-	const PakReader& reader,
-	std::string* err = nullptr,
-	uint32_t sceneIndex = 0,
-	TextureStreamer* streamer = nullptr,
-	std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
+		ResourceManager& ctx,
+		const PakReader& reader,
+		std::string* err = nullptr,
+		uint32_t sceneIndex = 0,
+		TextureStreamer* streamer = nullptr,
+		std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
 
 } // namespace smvk

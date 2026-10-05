@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <unordered_map>
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -197,8 +198,77 @@ bool ReadAssetMeta(const std::string& assetPath, std::string& outGuid,
 	return true;
 }
 
+// Full-sidecar write with explicit plug rows (the anonymous namespace
+// below defines it; forward-declared here for the preserve-rewrite).
+namespace {
+bool WriteAssetMetaWithPlugs(const std::string& assetPath,
+	const std::string& guid, const std::string& importer,
+	const std::vector<AssetPlug>& plugs, std::string& err);
+} // namespace
+
 bool WriteAssetMeta(const std::string& assetPath, const std::string& guid,
 	const std::string& importer, std::string& err) {
+	// Preserve authored INPUT PLUG rows (see ReadAssetPlugs): this rewrite
+	// is the adoption/re-adoption path (the canonical guid/importer header),
+	// and dropping the plugs would silently discard authored import config.
+	// Defined after the plug helpers below (file-order declaration).
+	return WriteAssetMetaWithPlugs(assetPath, guid, importer,
+		ReadAssetPlugs(assetPath), err);
+}
+
+// ---------------------------------------------------------------------------
+// Input plugs (see the header's block): index-paired
+// "plug.<kind>.<n>.old/new" rows. Pairing is by index within a kind; the
+// rows are written in (kind, index) order.
+// ---------------------------------------------------------------------------
+namespace {
+// Parses one plug key "plug.<kind>.<n>.<half>"; false when not a plug key.
+bool ParsePlugKey(const std::string& key, std::string& kind, size_t& idx,
+	std::string& half) {
+	if (key.rfind("plug.", 0) != 0)
+		return false;
+	const size_t k1 = key.find('.', 5); // after "plug."
+	if (k1 == std::string::npos)
+		return false;
+	kind = key.substr(5, k1 - 5);
+	const size_t k2 = key.rfind('.');
+	if (k2 <= k1)
+		return false;
+	const std::string idxStr = key.substr(k1 + 1, k2 - k1 - 1);
+	half = key.substr(k2 + 1);
+	if (kind.empty() || idxStr.empty()
+		|| idxStr.find_first_not_of("0123456789") != std::string::npos
+		|| (half != "old" && half != "new"))
+		return false;
+	idx = std::stoull(idxStr);
+	return true;
+}
+
+// Plug rows in (kind, index) order (grouping by kind keeps N stable per
+// kind, so hand-edited interleavings rewrite canonically).
+void WritePlugRows(std::ostream& out,
+	const std::vector<AssetPlug>& plugs) {
+	std::map<std::string, std::vector<const AssetPlug*>> byKind;
+	for (const AssetPlug& p : plugs) {
+		if (p.kind.empty() || p.oldUri.empty() || p.newPath.empty())
+			continue; // incomplete row: dropped (never silently half-written)
+		byKind[p.kind].push_back(&p);
+	}
+	for (const auto& [kind, rows] : byKind) {
+		for (size_t i = 0; i < rows.size(); ++i) {
+			out << "plug." << kind << "." << i << ".old="
+				<< rows[i]->oldUri << "\n";
+			out << "plug." << kind << "." << i << ".new="
+				<< rows[i]->newPath << "\n";
+		}
+	}
+}
+
+// Full sidecar write with EXPLICIT plug rows (the shared tail of
+// WriteAssetMeta's preserve-rewrite and WriteAssetPlugs' replace-rewrite).
+bool WriteAssetMetaWithPlugs(const std::string& assetPath,
+	const std::string& guid, const std::string& importer,
+	const std::vector<AssetPlug>& plugs, std::string& err) {
 	if (!IsValidAssetGuid(guid)) {
 		err = "refusing to write invalid guid";
 		return false;
@@ -215,7 +285,94 @@ bool WriteAssetMeta(const std::string& assetPath, const std::string& guid,
 	out << "importer=" << (importer.empty() ? "model" : importer)
 		<< "\n";
 	out << "version=1\n";
+	WritePlugRows(out, plugs);
 	return !!out;
+}
+} // namespace
+
+std::vector<AssetPlug> ReadAssetPlugs(const std::string& assetPath) {
+	std::vector<AssetPlug> out;
+	std::ifstream in(MetaPathFor(assetPath), std::ios::binary);
+	if (!in)
+		return out;
+	// (kind, index) -> {old, new} halves; paired at the end.
+	std::map<std::pair<std::string, size_t>,
+		std::pair<std::string, std::string>> halves;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		std::string kind, half;
+		size_t idx = 0;
+		if (!ParsePlugKey(line.substr(0, eq), kind, idx, half))
+			continue;
+		auto& pair = halves[{ kind, idx }];
+		if (half == "old")
+			pair.first = line.substr(eq + 1);
+		else
+			pair.second = line.substr(eq + 1);
+	}
+	for (const auto& [key, pair] : halves) {
+		if (pair.first.empty() || pair.second.empty())
+			continue; // unpaired (hand edit): skip
+		AssetPlug p;
+		p.kind = key.first;
+		p.oldUri = pair.first;
+		p.newPath = pair.second;
+		out.push_back(std::move(p));
+	}
+	return out;
+}
+
+bool WriteAssetPlugs(const std::string& assetPath, const std::string& kind,
+	const std::vector<AssetPlug>& plugs, std::string& err) {
+	if (kind.empty()) {
+		err = "refusing to write plug rows without a kind";
+		return false;
+	}
+	for (const AssetPlug& p : plugs)
+		if (!p.oldUri.empty() && p.newPath.empty()) {
+			err = "refusing to write a half plug row (old without new)";
+			return false;
+		}
+	// Identity gate: the sidecar must carry a valid guid (adopt the asset
+	// first) — plug rows without identity would orphan on the next rewrite.
+	std::string guid;
+	if (!ReadAssetMeta(assetPath, guid, err))
+		return false;
+	std::string importer;
+	{
+		std::ifstream in(MetaPathFor(assetPath), std::ios::binary);
+		std::string line;
+		while (in && std::getline(in, line)) {
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			const size_t eq = line.find('=');
+			if (eq == std::string::npos)
+				continue;
+			if (line.substr(0, eq) == "importer")
+				importer = line.substr(eq + 1);
+		}
+	}
+	// Keep every OTHER kind's rows verbatim; REPLACE this kind's set with
+	// the given rows (empty = clear the kind).
+	std::vector<AssetPlug> combined;
+	for (const AssetPlug& p : ReadAssetPlugs(assetPath))
+		if (p.kind != kind)
+			combined.push_back(p);
+	for (const AssetPlug& p : plugs)
+		if (!p.oldUri.empty() && !p.newPath.empty()) {
+			AssetPlug stamped = p;
+			stamped.kind = kind; // caller passes kind-scoped rows
+			combined.push_back(std::move(stamped));
+		}
+	return WriteAssetMetaWithPlugs(assetPath, guid,
+		importer.empty() ? "model" : importer, combined, err);
 }
 
 // ---------------------------------------------------------------------------

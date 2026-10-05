@@ -907,10 +907,10 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 void EditorApp::BuildFlatUvWires(
 	std::vector<smvk::DebugLineVertex>& outLines, ViewMode mode,
 	uint32_t subtreeRoot, float zoom, glm::vec2 pan) const {
-	// UV wires from the kept glTF model (pak scenes have no CPU copies:
-	// the flat panel still shows the texture fill, wires are skipped).
+	// UV wires from the world's RETAINED uploads (the editor keeps no
+	// parsed glTF; the cluster registry resolves node -> CPU geometry).
 	outLines.clear();
-	if (!m_hasGltfModel || !m_world)
+	if (!m_world)
 		return;
 	const bool wholeScene = (subtreeRoot == UINT32_MAX);
 	if (!wholeScene && subtreeRoot >= m_world->scene.hierarchy.size())
@@ -929,51 +929,33 @@ void EditorApp::BuildFlatUvWires(
 				stack.push_back(uint32_t(c));
 		}
 	}
-	const tinygltf::Model& model = m_gltfModel;
-	// UV accessor read (float vec2 only; skip exotic encodings).
-	auto readUv = [&](int accessorIdx, size_t i, glm::vec2& out) -> bool {
-		if (accessorIdx < 0 || accessorIdx >= int(model.accessors.size()))
-			return false;
-		const tinygltf::Accessor& acc = model.accessors[size_t(accessorIdx)];
-		if (i >= size_t(acc.count) || acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
-			return false;
-		const tinygltf::BufferView& bv = model.bufferViews[size_t(acc.bufferView)];
-		const tinygltf::Buffer& buf = model.buffers[size_t(bv.buffer)];
-		const size_t stride = acc.ByteStride(bv);
-		const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-		if (off + 8 > buf.data.size())
-			return false;
-		const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-		out = glm::vec2(f[0], f[1]);
-		return true;
-	};
 	const bool lightmap = (mode == ViewMode::FlatUv1);
 	// Interactive panels keep wires readable; exports wire everything.
 	const size_t wireTriCap = wholeScene ? 400000 : 60000;
 	size_t tris = 0;
-	for (const auto& [node, ref] : m_primRef) {
+	// Whole-scene export uses identity (pane nav never affects PNGs).
+	const bool applyNav = !wholeScene;
+	for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
 		if (!wholeScene && !subtree.contains(node))
 			continue;
-		if (ref.mesh < 0 || ref.prim < 0)
-			continue;
-		const tinygltf::Mesh& gm = model.meshes[size_t(ref.mesh)];
-		if (ref.prim >= int(gm.primitives.size()))
-			continue;
-		const tinygltf::Primitive& prim =
-			gm.primitives[size_t(ref.prim)];
-		const std::string attr = lightmap ? "TEXCOORD_1" : "TEXCOORD_0";
-		auto pa = prim.attributes.find(attr);
-		if (pa == prim.attributes.end())
-			continue; // prim without this UV channel: no wires
-		const int uvAcc = pa->second;
-		const size_t vcount = size_t(model.accessors[size_t(uvAcc)].count);
-		glm::vec2 uv[3];
-		// Whole-scene export uses identity (pane nav never affects PNGs).
-		const bool applyNav = !wholeScene;
-		auto emit = [&](size_t a, size_t b, size_t c) {
-			if (!readUv(uvAcc, a, uv[0]) || !readUv(uvAcc, b, uv[1])
-				|| !readUv(uvAcc, c, uv[2]))
-				return;
+		const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
+		if (!up || up->vertices.empty() || up->indices.empty())
+			continue; // no exact geometry: no wires
+		const size_t vcount = up->vertices.size();
+		auto uvOf = [&](size_t i, glm::vec2& out) -> bool {
+			if (i >= vcount)
+				return false;
+			out = lightmap ? up->vertices[i].texCoord2
+				: up->vertices[i].texCoord;
+			return true;
+		};
+		const size_t tcount = up->indices.size() / 3;
+		for (size_t t = 0; t < tcount; ++t) {
+			glm::vec2 uv[3];
+			if (!uvOf(up->indices[t * 3 + 0], uv[0])
+				|| !uvOf(up->indices[t * 3 + 1], uv[1])
+				|| !uvOf(up->indices[t * 3 + 2], uv[2]))
+				continue; // corrupt face: skip, keep the rest
 			for (int k = 0; k < 3; ++k) {
 				glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], zoom, pan)
 					: (uv[k] * 2.0f - glm::vec2(1.0f));
@@ -982,70 +964,8 @@ void EditorApp::BuildFlatUvWires(
 				outLines.push_back({ glm::vec3(na.x, na.y, 1.0f) });
 				outLines.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
 			}
-		};
-		if (prim.indices >= 0
-			&& prim.indices < int(model.accessors.size())) {
-			// Indexed: faces address vertices through the index buffer
-			// (u8/u16/u32); reading t*3+k raw names unrelated vertices.
-			const tinygltf::Accessor& iacc =
-				model.accessors[size_t(prim.indices)];
-			if (iacc.bufferView < 0
-				|| iacc.bufferView >= int(model.bufferViews.size()))
-				continue;
-			const tinygltf::BufferView& ibv =
-				model.bufferViews[size_t(iacc.bufferView)];
-			if (ibv.buffer < 0 || ibv.buffer >= int(model.buffers.size()))
-				continue;
-			const tinygltf::Buffer& ibuf = model.buffers[size_t(ibv.buffer)];
-			const size_t istride = iacc.ByteStride(ibv);
-			auto readIdx = [&](size_t i, uint32_t& out) -> bool {
-				const size_t off = ibv.byteOffset + iacc.byteOffset
-					+ i * istride;
-				switch (iacc.componentType) {
-				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-					if (off + 1 > ibuf.data.size())
-						return false;
-					out = ibuf.data[off];
-					return true;
-				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
-					if (off + 2 > ibuf.data.size())
-						return false;
-					uint16_t v;
-					std::memcpy(&v, ibuf.data.data() + off, 2);
-					out = v;
-					return true;
-				}
-				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
-					if (off + 4 > ibuf.data.size())
-						return false;
-					uint32_t v;
-					std::memcpy(&v, ibuf.data.data() + off, 4);
-					out = v;
-					return true;
-				}
-				default:
-					return false; // exotic index encoding: no wires
-				}
-			};
-			const size_t tcount = size_t(iacc.count) / 3;
-			for (size_t t = 0; t < tcount; ++t) {
-				uint32_t i0, i1, i2;
-				if (!readIdx(t * 3, i0) || !readIdx(t * 3 + 1, i1)
-					|| !readIdx(t * 3 + 2, i2))
-					break; // truncated index stream: stop this prim
-				if (i0 >= vcount || i1 >= vcount || i2 >= vcount)
-					continue; // corrupt face: skip, keep the rest
-				emit(i0, i1, i2);
-				if (++tris > wireTriCap)
-					return;
-			}
-		}
-		else {
-			for (size_t v = 0; v + 2 < vcount; v += 3) {
-				emit(v, v + 1, v + 2);
-				if (++tris > wireTriCap)
-					return;
-			}
+			if (++tris > wireTriCap)
+				return;
 		}
 	}
 }

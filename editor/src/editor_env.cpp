@@ -95,12 +95,12 @@ void EditorApp::DrawEnvPanel() {
 		"scene. The sun/sky rows are LUX-NATIVE and drive everything: "
 		"the viewport, every bake, the pak directional and the App.");
 	// Cook now: the full cook flow from the section that owns its inputs
-	// (GiBaker from 0, then PakCooker — the pak, the bake assets and
-	// this tour's bake references update; see CookToPak).
+	// (the GI bake re-run in place, then PakCooker — the pak, the bake
+	// assets and this tour's bake references update; see CookToPak).
 	if (ImGui::Button("Cook to .pak now##env"))
 		CookToPak();
 	ImGui::SameLine();
-	ImGui::TextDisabled("(full cook: GI from 0 + pak)");
+	ImGui::TextDisabled("(full cook: bake update in place + pak)");
 	if (!m_world) {
 		ImGui::TextDisabled("No scene — open a scene to author the look.");
 		return;

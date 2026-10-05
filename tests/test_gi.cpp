@@ -1115,8 +1115,11 @@ void TestCvVolume() {
 		Check(!vol.Sample(glm::vec3(5.0f, 0.0f, 0.0f), amps),
 			"cvol outside uncovered");
 
-		// 2x1x1 strip: the midpoint is the voxel average (hardware
-		// trilinear mirror).
+		// 2x1x1 strip: NEAREST-TAP sampling (the trilinear prefilter is
+		// disabled — the authored per-voxel data reads back un-blurred,
+		// the better result). The midpoint (grid coord 1.0 in x, exactly
+		// on the voxel boundary) floors to voxel #1, so the sample is the
+		// raw voxel #1 value — never an average.
 		CvVolume strip;
 		strip.gridMin = glm::vec3(-1.0f, 0.0f, 0.0f);
 		strip.spacing = 1.0f;
@@ -1135,9 +1138,9 @@ void TestCvVolume() {
 			"cvol strip covered");
 		bool mid = true;
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			if (std::abs(amps[i].x - 1.0f) > 1e-4f)
+			if (std::abs(amps[i].x - 2.0f) > 1e-4f)
 				mid = false;
-		Check(mid, "cvol trilinear midpoint averages");
+		Check(mid, "cvol nearest-tap midpoint floors to voxel 1");
 
 		// File round trip (priority + planes + coeffs preserved).
 		const auto tmp = std::filesystem::temp_directory_path()

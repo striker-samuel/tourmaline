@@ -142,8 +142,6 @@ void EditorApp::UpdateWindowTitle() {
 			scene = std::filesystem::path(TourTarget()).filename().string();
 		else if (!m_gltfPath.empty())
 			scene = std::filesystem::path(m_gltfPath).filename().string();
-		else if (!m_pakPath.empty())
-			scene = std::filesystem::path(m_pakPath).filename().string();
 		if (!scene.empty()) {
 			title += " — " + scene;
 			if (m_tourDirty)

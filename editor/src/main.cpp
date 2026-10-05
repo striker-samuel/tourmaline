@@ -229,10 +229,9 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "Editor")
-		<< " [--gltf <path.gltf> | --pak <path.pak>[:N]] [--out-pak <path.pak>]\n"
-		<< "  --pak opens a cooked pak read-only (bake inspection: UV1 view,\n"
-		<< "  lightmap panel, sibling gi/<stem>.sglm auto-load).\n"
-		<< "  :N selects pak scene index N (default 0; scenes listed at load).\n"
+		<< " [--gltf <path.gltf>] [--out-pak <path.pak>]\n"
+		<< "  Source scenes only: cooked paks run in the App (the editor\n"
+		<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
 		<< "  --wysiwyg-smoke: headless-ish crash repro — cooks the scene\n"
 		<< "  minimal, exercises the auto-preview + the in-place rebind, then\n"
 		<< "  exits (dev tool).\n"
@@ -270,12 +269,6 @@ void PrintUsage(const char* prog) {
 		}
 		else if (std::strncmp(a, "--gltf=", 7) == 0) {
 			scenePath = a + 7;
-		}
-		else if (std::strcmp(a, "--pak") == 0 && i + 1 < argc) {
-			scenePath = argv[++i];
-		}
-		else if (std::strncmp(a, "--pak=", 6) == 0) {
-			scenePath = a + 6;
 		}
 		else if (std::strcmp(a, "--out-pak") == 0 && i + 1 < argc) {
 			outPak = argv[++i];

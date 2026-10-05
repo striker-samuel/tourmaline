@@ -258,8 +258,6 @@ void EditorApp::ExportLightmapPng() {
 	std::string stem = "lightmap";
 	if (!m_sglmPath.empty())
 		stem = std::filesystem::path(m_sglmPath).stem().string();
-	else if (!m_pakPath.empty())
-		stem = std::filesystem::path(m_pakPath).stem().string();
 	const std::string path = "exports/" + stem
 		+ (m_lmExportUv ? "_uv" : "")
 		+ (m_lmExportWires ? "_wire" : "") + ".png";

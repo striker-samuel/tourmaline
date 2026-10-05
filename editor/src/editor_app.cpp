@@ -46,38 +46,33 @@ bool EditorApp::HasPakExtension(const std::string& path) {
 	return ext == ".pak" || ext == ".PAK" || ext == ".Pak";
 }
 
-namespace {
-// Splits "file.pak:N" into path + scene index (drive-letter colons never
-// qualify: the suffix must be all digits and the base must end in .pak).
-std::pair<std::string, uint32_t> SplitPakIndex(const std::string& path) {
-	const size_t colon = path.find_last_of(':');
-	if (colon == std::string::npos || colon + 1 >= path.size())
-		return { path, 0 };
-	for (size_t i = colon + 1; i < path.size(); ++i)
-		if (path[i] < '0' || path[i] > '9')
-			return { path, 0 };
-	const std::string base = path.substr(0, colon);
-	if (base.size() < 4)
-		return { path, 0 };
-	const std::string ext = base.substr(base.size() - 4);
-	if (ext != ".pak" && ext != ".PAK")
-		return { path, 0 };
-	return { base, static_cast<uint32_t>(std::stoul(path.substr(colon + 1))) };
+bool EditorApp::SceneEmpty() const {
+	// The "a scene worth acting on" gate (replaces the old m_hasGltfModel
+	// gates — a .tour definition just references ASSET UUIDs, so "has a
+	// source glTF" was the wrong question): true when no world is loaded
+	// or the merged scene carries no content (no meshes, no lights, no
+	// cameras — a sourceless tour with no bound references). With pak
+	// opens gone (paks run in the App), every non-empty editor scene is
+	// definition-backed by construction.
+	return !m_world
+		|| (m_world->scene.meshForNode.empty()
+			&& m_world->scene.lightForNode.empty()
+			&& m_world->scene.cameraForNode.empty());
 }
-} // namespace
 
 bool EditorApp::OpenScene(const std::string& path) {
 	// Queued when called before Initialize (CLI path); otherwise loads now.
-	// Dispatches cooked .pak vs source .gltf by extension.
+	// SOURCE scenes only: the editor is the WYSIWYG authoring tool — cooked
+	// paks run in the App (Run in App), never read back here.
 	if (!m_context) {
 		m_pendingGltf = path;
 		return true;
 	}
-	const auto [pakBase, pakIndex] = SplitPakIndex(path);
-	if (HasPakExtension(pakBase))
-		return LoadPakIntoWorld(pakBase, pakIndex);
-	if (HasPakExtension(path))
-		return LoadPakIntoWorld(path);
+	if (HasPakExtension(path)) {
+		Log("Pak scenes run in the App (Run in App) — the editor authors "
+			"source scenes (WYSIWYG): '" + path + "'");
+		return false;
+	}
 	if (!LoadGltfIntoWorld(path))
 		return false;
 	// Project outputs follow the project (unless customized), and the
@@ -106,16 +101,6 @@ bool EditorApp::OpenAnySceneFile(const std::string& path) {
 			return OpenTourFile(path);
 	}
 	return OpenScene(path);
-}
-
-bool EditorApp::OpenPak(const std::string& pakPath) {
-	if (!m_context) {
-		m_pendingGltf = pakPath;
-		return true;
-	}
-	const auto [pakBase, pakIndex] = SplitPakIndex(pakPath);
-	return LoadPakIntoWorld(HasPakExtension(pakBase) ? pakBase : pakPath,
-		HasPakExtension(pakBase) ? pakIndex : 0);
 }
 
 EditorApp::EditorApp()
@@ -477,12 +462,7 @@ void EditorApp::CloseScene() {
 	m_world.reset();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
-	m_pakPath.clear();
-	m_pakImage.reset();
-	m_pakReader.reset();
-	m_pakScenes.clear();
-	m_pakGiBindings.clear();
-	m_pakSceneIndex = 0;
+	m_importImages.clear();
 	m_hasSglm = false;
 	m_sglmPath.clear();
 	m_sglmStatus = "no atlas loaded";
@@ -526,7 +506,6 @@ void EditorApp::CloseScene() {
 	m_deletedNodes.clear();
 	m_images.clear();
 	m_nextImageId = 1;
-	m_pathRemaps.clear();
 	m_refIssues.clear();
 	m_refResolved.clear();
 	m_defaultMatWorld = UINT32_MAX;
@@ -544,8 +523,6 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// opened tour file (otherwise <stem>.tour next to the source,
 	// which does not exist here).
 	std::string loadPath = path;
-	tinygltf::Model model;
-	bool haveModel = !path.empty(); // grows: tour opens parse the bound source
 	const bool directOpen = !path.empty(); // direct glTF open vs tour open
 	// Texture-cache key scope for this import (GUID-namespaced when the
 	// model lives in a project): identically-NAMED textures across models
@@ -554,18 +531,16 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// early returns are harmless (the next import re-scopes first).
 	if (m_texCacheAdapter)
 		m_texCacheAdapter->SetKeyScope(ProjectAssetGuid(loadPath));
-	if (haveModel) {
-		// Scheme paths keep their //flintbase/ identity in m_gltfPath
-		// but load (and fingerprint) from the resolved storage file.
-		if (smvk::vfs::HasFlintbasePrefix(path)) {
-			loadPath = smvk::FlintbaseHostPath(path);
-			if (loadPath.empty()) {
-				Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
-				return false;
-			}
-		}
-		if (!LoadModelFromAsciiFile(model, loadPath.c_str())) {
-			Log("Failed to load glTF: " + loadPath);
+	// Scheme paths keep their //flintbase/ identity in m_gltfPath but
+	// load (and fingerprint) from the resolved storage file. The PARSE
+	// itself happens inside ApplySceneReferences (the import system —
+	// per source, nested included); the editor never holds the parsed
+	// model, its CPU geometry rides the clusters' retained uploads and
+	// its image rows the importer records (m_importImages).
+	if (!path.empty() && smvk::vfs::HasFlintbasePrefix(path)) {
+		loadPath = smvk::FlintbaseHostPath(path);
+		if (loadPath.empty()) {
+			Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
 			return false;
 		}
 	}
@@ -596,6 +571,11 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	}
 	m_world = smvk::mem::MakeProcess<smvk::World>();
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
+	// CPU geometry mirror (the editor's picking/UV/placement source):
+	// every mesh this import lands keeps a retained StaticMeshUpload
+	// (Cluster::GetRetainedUpload) — THE replacement for the old kept
+	// tinygltf::Model (picking walks the world's asset registry).
+	cluster.SetRetainUploads(true);
 	// THE DEFINITION BUILD: the world assembles from the tour doc.
 	// Reference #0 is the source glTF itself (a ROOT reference â€” no
 	// placeholder, no namespace, cluster ids match a direct import
@@ -672,6 +652,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 				if (std::atoi(e) == 0)
 					importMeshOpt.generateLods = false;
 			}
+			// Importer data out (see GltfImportImage): one row per
+			// referenced image (loaded AND failed, users included) —
+			// the path editor's texture rows replace the parsed model.
+			m_importImages.clear();
 			const size_t applied = ApplySceneReferences(cluster, refDoc,
 				std::filesystem::path(loadPath).parent_path()
 					.generic_string(),
@@ -681,7 +665,8 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 			&m_refPhCluster, &m_refIssues, &m_refResolved,
 			/*autoKtx=*/true, /*fileNodes=*/nullptr,
 			/*artifactCache=*/m_texCacheAdapter.get(),
-			/*guidResolver=*/&m_guidResolver);
+			/*guidResolver=*/&m_guidResolver,
+			/*outImages=*/&m_importImages);
 			Log("Definition: bound " + std::to_string(applied) +
 				" reference subtree(s) (" +
 				std::to_string(refDoc.references.size()) +
@@ -698,13 +683,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 			}
 		}
 	}
-	// Tour-opened scenes: parse the bound source for CPU picking
-	// (direct opens parsed up front; the definition resolved the
-	// host path above).
-	if (!haveModel && !loadPath.empty()) {
-		if (LoadModelFromAsciiFile(model, loadPath.c_str()))
-			haveModel = true;
-	}
+	// (Tour-opened scenes need no extra parse: the definition's imports
+	// landed retained uploads + m_importImages rows; the source binds
+	// inside ApplySceneReferences.)
 	m_context->FlushUploads();
 	Log("Resolving world...");
 	m_world->ResolveAndFixup_clusters();
@@ -763,16 +744,6 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_gltfPath = path.empty() ? rootSource : path;
 	m_gltfHostPath = loadPath;
 	m_tourPath = TourPath(); // fresh scene: default target (save-as changes it)
-	m_vfsRoot.clear(); // re-resolved lazily by the VFS tab
-	m_vfsSel.clear();
-	m_gltfModel = std::move(model);
-	m_hasGltfModel = haveModel; // sourceless: no model, AABB picking
-	m_pakPath.clear();
-	m_pakImage.reset();
-	m_pakReader.reset();
-	m_pakScenes.clear();
-	m_pakGiBindings.clear();
-	m_pakSceneIndex = 0;
 	m_hasSglm = false;
 	m_sglm = smvk::gi::SgLightmapAtlas{};
 	m_sglmPath.clear();
@@ -785,7 +756,6 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_deletedNodes.clear(); // fresh world: deletes die with it
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
-	m_pathRemaps.clear(); // fresh world: relinks reload from the tour
 	// (m_refIssues/m_refResolved are NOT cleared here: the reference
 	// bind above just filled them for THIS world â€” clearing would wipe
 	// the panel's reporting. They reset at load start/close instead.)
@@ -817,8 +787,8 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 				? UINT32_MAX : ClusterToWorld(uint32_t(cn)));
 		m_refPhCluster.clear();
 	}
-	Log("Indexing nodes for picking...");
-	RebuildNodeIndex();
+	// Node indexing died with the kept glTF (picking resolves through the
+	// world's asset registry + retained uploads); the tour replays next.
 	Log("Loading tour...");
 	if (!tourOverride.empty() && directOpen) {
 		// Temp-doc reload (reference Reload): the snapshot â€” not the
@@ -859,7 +829,13 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// command must never outvote the checkbox). Runs here because the
 	// placeholder WORLD ids (m_refPlaceholders) only resolve above.
 	RebuildDisabledRefHides();
-	ApplyPathRemaps(); // path editor relinks: fill still-missing slots
+	// Texture relinks ride the SOURCE assets' .meta input plugs now (the
+	// importer applies them during the definition build above) — no
+	// post-import material-slot patching.
+	// Bake-output probes for the live view extras (scene-id keyed, never
+	// pak siblings — paks run in the App, not the editor).
+	TryLoadSceneSglm();
+	TryLoadCvolumes();
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
@@ -914,200 +890,6 @@ std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
 	if (!app.m_assetDb.IsOpen() || !app.m_assetDb.PathForGuid(guid, path))
 		return {};
 	return path;
-}
-
-bool EditorApp::LoadPakIntoWorld(const std::string& path,
-	uint32_t sceneIndex) {
-	// Host-file pak open (manual inspection). The bytes are read ONCE
-	// into a shared image; the display core below never touches the
-	// file again.
-	std::ifstream f(path, std::ios::binary | std::ios::ate);
-	if (!f) {
-		Log("Failed to open pak: " + path);
-		return false;
-	}
-	const auto end = f.tellg();
-	if (end == std::ifstream::pos_type(-1) || end == std::streampos(0)) {
-		Log("Pak is empty or unreadable: " + path);
-		return false;
-	}
-	f.seekg(0);
-	auto image = std::make_shared<std::vector<uint8_t>>(
-		static_cast<size_t>(end), 0);
-	if (!f.read(reinterpret_cast<char*>(image->data()),
-			static_cast<std::streamsize>(image->size()))) {
-		Log("Pak read failed: " + path);
-		return false;
-	}
-	return LoadPakFromImage(std::move(image), path, sceneIndex);
-}
-
-bool EditorApp::LoadPakFromImage(
-	std::shared_ptr<std::vector<uint8_t>> image,
-	const std::string& displayPath, uint32_t sceneIndex) {
-	// Cooked .pak display core: same path as App's main.cpp host
-	// (PakReader + LoadClusterFromPak + Resolve; a SCENE renders, index
-	// 0 by default — --pak parity). Pak textures upload fully at load,
-	// so the glTF texture streamer is dropped. Picking falls back to
-	// AABB (no glTF model kept); tour replay is skipped (tours are
-	// authored against the source glTF, not the cooked pak). The image
-	// + parsed reader stay members (never re-parsed per frame: Open
-	// decompresses).
-	m_pakImage = std::move(image);
-	m_pakReader.reset();
-	m_pakScenes.clear();
-	m_pakGiBindings.clear();
-	{
-		std::string pakErr;
-		m_pakReader = smvk::PakReader::Open(
-			std::span<const uint8_t>(*m_pakImage), pakErr);
-		if (!m_pakReader) {
-			Log("Pak parse failed (" + pakErr + ")");
-			m_pakImage.reset();
-			return false;
-		}
-	}
-	const size_t entryCount = m_pakReader->EntryCount();
-	{
-		std::string lerr;
-		m_pakScenes = smvk::ListPakScenes(*m_pakReader, &lerr);
-		if (m_pakScenes.empty()) {
-			Log("Pak has no loadable scenes" +
-				std::string(lerr.empty() ? "" : (": " + lerr)));
-			m_pakImage.reset();
-			m_pakReader.reset();
-			return false;
-		}
-		if (sceneIndex >= m_pakScenes.size()) {
-			Log("Pak scene index " + std::to_string(sceneIndex) +
-				" out of range (" + std::to_string(m_pakScenes.size()) +
-				" scenes)");
-			m_pakImage.reset();
-			m_pakReader.reset();
-			m_pakScenes.clear();
-			m_pakGiBindings.clear();
-			return false;
-		}
-		for (size_t i = 0; i < m_pakScenes.size(); ++i)
-			Log("Pak scene[" + std::to_string(i) + "] '" +
-				m_pakScenes[i].name + "' nodes=" +
-				std::to_string(m_pakScenes[i].nodes));
-	}
-	// Pak-level Gi registry (one blob, the serializer's union of every
-	// scene's bindings — see ClusterSerializeStats::giBindings): the
-	// browser's GI group reads it; missing = registry-less pak.
-	m_pakGiBindings.clear();
-	{
-		for (const smvk::PakTocEntry* e :
-				m_pakReader->BlobsOfKind(smvk::PakAssetKind::Gi)) {
-			std::string gerr;
-			std::vector<smvk::GiBinding> parsed;
-			if (!smvk::ParseGiRegistryBlob(
-					m_pakReader->Payload(*e), parsed, gerr)) {
-				Log("Pak Gi registry rejected: " + gerr);
-				continue;
-			}
-			for (const smvk::GiBinding& b : parsed)
-				m_pakGiBindings.push_back(b);
-		}
-	}
-	m_pakSceneIndex = sceneIndex;
-	Log("Pak parsed: " + std::to_string(entryCount) + " entries, loading "
-		"scene[" + std::to_string(sceneIndex) + "] '" +
-		m_pakScenes[sceneIndex].name + "'...");
-	WaitForDeviceIdle();
-	m_textureStreamer.reset(); // pak path owns its textures; no streaming
-	m_texHandleBySlot.clear();
-	m_bindlessBySlot.clear();
-	// World replacement incoming: suspend the live view (the old
-	// world retires safely at the frame boundary; the pending refresh
-	// rebinds onto this pak's world).
-	SuspendWysiwygForWorldSwap();
-	m_world = smvk::mem::MakeProcess<smvk::World>();
-	try {
-		m_world->LoadClusterFromPak(*m_context, *m_pakReader, sceneIndex);
-	}
-	catch (const std::exception& e) {
-		Log(std::string("Pak load failed: ") + e.what());
-		m_world.reset();
-		return false;
-	}
-	m_context->FlushUploads();
-	Log("Resolving world...");
-	m_world->ResolveAndFixup_clusters();
-	// Slot maps for the viewport upload remap (pak textures are
-	// full-resident; no streamer, but the pool->bindless check still
-	// applies and is logged here).
-	RebuildTexHandleMap();
-
-	m_pakPath = displayPath;
-	// Keep the scene identity pointed at the pak so TourPath()/cook panel
-	// stay coherent, but mark it as cooked: no glTF picking, no tour.
-	m_gltfPath = displayPath;
-	m_gltfHostPath = displayPath;
-	m_tourPath = TourPath();
-	m_vfsRoot.clear();
-	m_vfsSel.clear();
-	m_hasGltfModel = false;
-	m_gltfModel = tinygltf::Model{};
-	m_primRef.clear();
-	ClearTexPreview();
-	m_selected = UINT32_MAX;
-	ClearHistory();
-	m_terrainGroups.clear(); // fresh world: stale group grids die with it
-	m_deletedNodes.clear(); // fresh world: deletes die with it
-	m_images.clear(); // fresh world: image defs die with it
-	m_nextImageId = 1;
-	m_pathRemaps.clear(); // pak scenes carry no glTF image list
-	m_refIssues.clear();
-	m_refResolved.clear(); // fresh world: resolved sources die with it
-	m_defaultMatWorld = UINT32_MAX;
-	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
-	m_nextOverrideId = 1;
-	// Pak loads replay no tour: the scene keeps its cooked/default look.
-	m_envCurrent = UINT32_MAX;
-	m_materialFocus = UINT32_MAX;
-	m_materialTrail.clear();
-	m_imageFocus = UINT32_MAX;
-	ClearSelection();
-	ResetMeshletDebug();
-	m_clusterBase = UINT32_MAX;
-	if (m_world->clusters.size() == 1 &&
-		m_world->scene.hierarchy.size() ==
-		1 + m_world->clusters[0]->scene.hierarchy.size())
-		m_clusterBase = 1;
-	RebuildNodeIndex(); // no-op without a glTF model (clears stale refs)
-	ClearSglmLayers(); // dropped before the sibling-atlas probe below
-
-	// Baked lightmap atlas next to the pak: content/gi/<stem>.sglm.
-	TryLoadSiblingSglm(displayPath);
-	// Convex GI volume sidecars (probes-only pivot preview data).
-	TryLoadCvolumes(displayPath);
-	RebuildCookedLights(); // census + seeds the viewport sun from the pak
-	EnsureDefaultMaterial(); // editor fallback material (editor://default)
-
-	const ::Aabb bounds = m_world->ComputeSceneBounds();
-	if (bounds.mx.x >= bounds.mn.x) {
-		const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
-		const float radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
-		SetupDefaultCameras();
-		EditorCam& fitCam = m_editorCams[m_viewports[0].camIdx];
-		fitCam.target = center;
-		fitCam.dist = std::max(radius * 2.2f, 1.0f);
-	}
-	char buf[512];
-	std::snprintf(buf, sizeof(buf),
-		"Loaded pak '%s' scene[%u] (entries=%zu nodes=%zu meshes=%zu materials=%zu)%s",
-		displayPath.c_str(), sceneIndex, entryCount,
-		m_world->scene.hierarchy.size(),
-		m_world->meshLocations.size(), m_world->materialLocations.size(),
-		m_hasSglm ? " + sglm atlas" : " (no sglm atlas)");
-	Log(buf);
-	Log("Note: pak is read-only in the editor (edits/tour apply to the source glTF).");
-	// The hosted view drives the viewport for this pak too (App
-	// --pak parity inspection): the pending suspend above rebinds it
-	// in place at the next frame boundary.
-	return true;
 }
 
 bool EditorApp::LaunchWysiwyg() {
@@ -1220,13 +1002,11 @@ void EditorApp::SuspendWysiwygForWorldSwap() {
 }
 
 std::string EditorApp::SceneIdForHost() const {
-	// Hosted-view scene id (the open scene's stem; the pak stem wins for
-	// pak opens — the borrowed world IS the scene). Shared by the launch
-	// and the in-place rebind (the GI sidecar loaders resolve
-	// gi/<id>.* through the project-aware VFS).
+	// Hosted-view scene id (the open scene's stem; the resolved source
+	// wins — paks never open here). Shared by the launch and the in-place
+	// rebind (the GI sidecar loaders resolve gi/<id>.* through the
+	// project-aware VFS).
 	namespace fs = std::filesystem;
-	if (!m_pakPath.empty())
-		return fs::path(m_pakPath).stem().string();
 	if (!m_gltfHostPath.empty())
 		return fs::path(m_gltfHostPath).stem().string();
 	if (!m_gltfPath.empty())
@@ -1234,12 +1014,14 @@ std::string EditorApp::SceneIdForHost() const {
 	return std::string("scene");
 }
 
-bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
+bool EditorApp::TryLoadSceneSglm() {
 	m_hasSglm = false;
 	m_sglm = smvk::gi::SgLightmapAtlas{};
 	m_sglmPath.clear();
-	// Candidate stems: the pak registry's lightmap binding first, then
-	// the pak file stem (registry-less paks / sidecar convention).
+	// Candidate stems: the clusters' lightmap Gi bindings first (the
+	// live-view rebind resolved the bake stems), then the scene id (the
+	// stable sidecar convention). Candidate ROOTS mirror the binding
+	// resolution: the project content first, the bundled content second.
 	std::vector<std::string> stems;
 	if (m_world) {
 		for (const auto& clusterPtr : m_world->clusters) {
@@ -1253,30 +1035,30 @@ bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
 			}
 		}
 	}
-	namespace fs = std::filesystem;
-	const fs::path pak(pakPath);
-	const std::string stem = pak.stem().string();
+	const std::string stem = SceneIdForHost();
 	if (!stem.empty() &&
 		std::find(stems.begin(), stems.end(), stem) == stems.end())
 		stems.push_back(stem);
+	std::vector<std::string> roots;
+	if (!m_projectRoot.empty())
+		roots.push_back(m_projectRoot);
+	roots.push_back("content");
 	std::vector<std::string> candidates;
-	for (const std::string& s : stems) {
-		candidates.push_back(
-			(pak.parent_path() / ".." / "gi" / (s + ".sglm")).lexically_normal().string());
-		candidates.push_back(
-			(fs::path("content") / "gi" / (s + ".sglm")).string());
-		candidates.push_back(
-			(pak.parent_path() / (s + ".sglm")).string());
+	for (const std::string& r : roots) {
+		for (const std::string& s : stems)
+			candidates.push_back(
+				(std::filesystem::path(r) / "gi" / (s + ".sglm"))
+					.lexically_normal().string());
 	}
 	for (const std::string& c : candidates) {
 		std::error_code ec;
-		if (!fs::is_regular_file(c, ec))
+		if (!std::filesystem::is_regular_file(c, ec))
 			continue;
 		if (LoadSglm(c))
 			return true;
 	}
-	m_sglmStatus = "no sibling atlas found for '" + pak.stem().string() +
-		"' (tried " + std::to_string(candidates.size()) + " paths)";
+	m_sglmStatus = "no baked atlas found for '" + stem
+		+ "' (tried " + std::to_string(candidates.size()) + " paths)";
 	return false;
 }
 
@@ -1322,25 +1104,26 @@ void EditorApp::ClearSglmLayers() {
 
 // ---------------------------------------------------------------------------
 // Convex GI volume preview data (probes-only pivot). Loads the
-// gi/<stem>.cvmanifest + .cvol sidecars next to the opened pak and
-// builds each volume's hull: the bake AABB (gridMin..gridMin + dims*
-// spacing) clipped by the volume's plane set (3D Sutherland-Hodgman).
-// The hull feeds the LIGHTING-mode view option (wireframe / translucent
-// fill, color-coded by priority) â€” draw lives in DrawCvolPreviewOverlay
-// (editor_viewports.cpp).
+// gi/<scene>.cvmanifest + .cvol BAKE sidecars (project content first,
+// bundled content second — the same roots the live view's bindings
+// resolve) and builds each volume's hull: the bake AABB (gridMin..
+// gridMin + dims*spacing) clipped by the volume's plane set (3D
+// Sutherland-Hodgman). The hull feeds the LIGHTING-mode view option
+// (wireframe / translucent fill, color-coded by priority) — draw lives
+// in DrawCvolPreviewOverlay (editor_viewports.cpp).
 // ---------------------------------------------------------------------------
-bool EditorApp::TryLoadCvolumes(const std::string& pakPath) {
+bool EditorApp::TryLoadCvolumes() {
 	m_cvolPreviews.clear();
 	namespace fs = std::filesystem;
-	const fs::path pak(pakPath);
-	const std::string stem = pak.stem().string();
+	const std::string stem = SceneIdForHost();
 	if (stem.empty())
 		return false;
-	// Manifest candidates (same sibling convention as the sglm probe).
+	// Manifest candidates (same roots as the sglm probe).
 	std::vector<fs::path> manifests;
-	manifests.push_back(
-		(pak.parent_path() / ".." / "gi" / (stem + ".cvmanifest"))
-			.lexically_normal());
+	if (!m_projectRoot.empty())
+		manifests.push_back(
+			(fs::path(m_projectRoot) / "gi" / (stem + ".cvmanifest"))
+				.lexically_normal());
 	manifests.push_back((fs::path("content") / "gi" / (stem + ".cvmanifest")));
 	fs::path manifestPath;
 	std::error_code ec;
@@ -1617,9 +1400,11 @@ void EditorApp::RebuildTexHandleMap() {
 }
 
 bool EditorApp::ApplyTexMode() {
-	// Pak scenes are full-resident with no streamer: nothing to switch.
-	if (!m_hasGltfModel || m_gltfPath.empty() || HasPakExtension(m_gltfPath)) {
-		Log("Texture mode: only glTF scenes can switch (pak is full-resident).");
+	// A re-openable scene identity is required (the switch reimports; the
+	// streamer must exist at import). Sourceless scenes have nothing to
+	// reimport through.
+	if (!m_world || m_gltfPath.empty()) {
+		Log("Texture mode: only imported scenes can switch.");
 		return false;
 	}
 	// The streamer must exist at import, so every switch reimports (the
@@ -1658,122 +1443,6 @@ void EditorApp::DumpStreamerStats() {
 		std::snprintf(buf, sizeof(buf), "  ... +%zu more",
 			entries.size() - 12);
 		Log(buf);
-	}
-}
-
-void EditorApp::RebuildNodeIndex() {
-	m_primRef.clear();
-	m_clusterRootWorld = UINT32_MAX;
-	if (!m_hasGltfModel || !m_world)
-		return;
-	// The importer creates, per glTF node with a mesh, one prim child node
-	// per primitive in order (see importNodeRecursive): group nodes carry the
-	// glTF node name, prim children are unnamed identity nodes. Re-walk the
-	// glTF node tree in the same preorder to recover (mesh, prim) refs.
-	struct Frame { int gltf; uint32_t world; };
-	// Map group node name+child-index back: simpler robust approach â€” walk
-	// the WORLD tree: a node with a mesh whose parent has the same mesh
-	// count pattern... Instead do a parallel recursion mirroring the
-	// importer: world cluster root (node 0) children == glTF roots.
-	// The importer attaches glTF roots under the cluster root via
-	// importNodeRecursive(gltf, parent=clusterRoot?) â€” actually under the
-	// world-resolved tree the cluster root child order matches glTF root
-	// order. Prim children of each group node match primitive order.
-	// Walk: for each world node that has a mesh, its parent group maps to a
-	// glTF node; we resolve by matching names in preorder.
-	std::vector<int> gltfPreorder;
-	std::function<void(int)> walk = [&](int n) {
-		gltfPreorder.push_back(n);
-		for (int c : m_gltfModel.nodes[n].children)
-			walk(c);
-	};
-	// glTF roots: default scene or unreferenced nodes (mirror GltfToCluster).
-	std::vector<int> roots;
-	if (m_gltfModel.defaultScene >= 0 &&
-		m_gltfModel.defaultScene < (int)m_gltfModel.scenes.size())
-		roots = m_gltfModel.scenes[m_gltfModel.defaultScene].nodes;
-	else if (!m_gltfModel.scenes.empty())
-		roots = m_gltfModel.scenes.front().nodes;
-	else {
-		std::vector<bool> ref(m_gltfModel.nodes.size(), false);
-		for (const auto& n : m_gltfModel.nodes)
-			for (int c : n.children)
-				if (c >= 0 && c < (int)m_gltfModel.nodes.size())
-					ref[c] = true;
-		for (int i = 0; i < (int)m_gltfModel.nodes.size(); ++i)
-			if (!ref[i])
-				roots.push_back(i);
-	}
-	for (int r : roots)
-		walk(r);
-
-	// World group nodes in preorder (skip world root 0 + cluster root).
-	// Reference-subtree nodes are SKIPPED: they come from other sources
-	// (no master-gltf counterpart), so the preorder pairing stays exact.
-	std::vector<uint32_t> refSubtree;
-	for (uint32_t ph : m_refPlaceholders) {
-		std::vector<uint32_t> stack{ ph };
-		while (!stack.empty()) {
-			const uint32_t n = stack.back();
-			stack.pop_back();
-			if (n >= m_world->scene.hierarchy.size())
-				continue;
-			if (std::find(refSubtree.begin(), refSubtree.end(), n) !=
-				refSubtree.end())
-				continue;
-			refSubtree.push_back(n);
-			for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-				c = m_world->scene.hierarchy[c].nextSibling)
-				stack.push_back(uint32_t(c));
-		}
-	}
-	auto inRefSubtree = [&](uint32_t n) {
-		return std::find(refSubtree.begin(), refSubtree.end(), n) !=
-			refSubtree.end();
-	};
-	std::vector<uint32_t> worldGroups;
-	std::function<void(uint32_t)> wwalk = [&](uint32_t n) {
-		if (inRefSubtree(n))
-			return; // referenced scene: keep the pairing master-only
-		worldGroups.push_back(n);
-		for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-			c = m_world->scene.hierarchy[c].nextSibling)
-			wwalk((uint32_t)c);
-	};
-	// Find the cluster-root child of world root (first child).
-	if (!m_world->scene.hierarchy.empty()) {
-		for (int c = m_world->scene.hierarchy[0].firstChild; c != -1;
-			c = m_world->scene.hierarchy[c].nextSibling) {
-			if (m_clusterRootWorld == UINT32_MAX)
-				m_clusterRootWorld = uint32_t(c);
-			wwalk((uint32_t)c);
-		}
-	}
-	// Pair group nodes with glTF nodes by name in preorder (names may repeat;
-	// order is what the importer guarantees).
-	size_t gi = 0;
-	for (uint32_t wn : worldGroups) {
-		if (gi >= gltfPreorder.size())
-			break;
-		// Prim nodes carry meshes (skipped here â€” paired below via their
-		// group). The artificial cluster root is unnamed â€” skip it too so
-		// group nodes stay 1:1 with glTF nodes in preorder.
-		if (m_world->scene.meshForNode.contains(wn))
-			continue;
-		if (!m_world->scene.nameForNode.contains(wn))
-			continue;
-		int gn = gltfPreorder[gi++];
-		const tinygltf::Node& gnode = m_gltfModel.nodes[gn];
-		if (gnode.mesh < 0)
-			continue;
-		// Prim children of this group, in sibling order, map to primitives.
-		int primIdx = 0;
-		for (int c = m_world->scene.hierarchy[wn].firstChild; c != -1;
-			c = m_world->scene.hierarchy[c].nextSibling) {
-			if (!m_world->scene.meshForNode.contains((uint32_t)c))
-				continue;
-			m_primRef[(uint32_t)c] = PrimRef{ gnode.mesh, primIdx++ };
-		}
 	}
 }
 

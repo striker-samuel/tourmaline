@@ -53,6 +53,46 @@ struct GltfGuidResolver {
 	virtual std::string PathForGuid(const std::string& guid) = 0;
 };
 
+// ---------------------------------------------------------------------------
+// IMPORT INPUT PLUGS (serialized in the SOURCE asset's .meta sidecar —
+// never the tour format; the tour already references source assets by
+// GUID, and a plug is per-asset input data, so it travels with the asset).
+//
+// Texture relink plug ("plug.texture.N.old/new" rows in <source>.meta):
+// when an image's authored uri matches `oldUri` (EXACT match; the relink
+// author picks the exact row), the importer reads `newPath` INSTEAD —
+// applied identically by the editor (live import), PakCooker (cook) and
+// GiBaker (bake), so a relink is viewport-, cook- and bake-safe. The
+// registered asset identity stays the ORIGINAL image's (the import stays
+// addressable at its authored uri; the plug is a pure input).
+// ---------------------------------------------------------------------------
+struct GltfTextureRemap {
+	std::string oldUri; // authored glTF image uri (the plug key)
+	std::string newPath; // replacement source (host path; VFS-relative ok)
+};
+
+// One imported image, per source ("importer data" — what the import saw,
+// reported to the caller so post-import tools (the editor's path panel +
+// live relink) never need the parsed glTF):
+struct GltfImportImage {
+	std::string source;   // resolved source file this image belongs to
+	std::string uri;       // authored glTF image uri
+	std::string identity;  // registered asset identity ("" = failed)
+	bool loaded = false;  // bytes resolved + registered
+	struct User {
+		std::string materialUri; // "<source>#mat.N" (resolves per cluster)
+		const char* slot = "";   // "baseColorTex", ...
+	};
+	std::vector<User> users; // (material, slot) pairs that sample it
+};
+
+// Texture-relink plugs of one source asset (its <source>.meta sidecar).
+// Missing sidecar / no plug rows = empty (the common case). The .meta
+// format is owned by artifact_cache (assetdb.h); this is the tolerant
+// read side shared by every importer entry point.
+std::vector<GltfTextureRemap> ReadTextureRemapPlugs(
+	const std::string& resolvedSourcePath);
+
 // Deterministic texture-conversion cache key: FNV-1a 64 over the
 // SOURCE bytes with the transfer (srgb/linear) mixed in. The ONLY
 // producer and consumer of these keys is gltf_import (the store
@@ -141,6 +181,19 @@ struct GltfToSceneImporter
 	void setAutoKtx(bool enabled) { autoKtx_ = enabled; }
 	void setCoordFix(int mode) { coordFix_ = mode; }
 	void setPreTransform(const glm::mat4& m) { preTransform_ = m; }
+	// Texture-relink input plugs (see GltfTextureRemap): consulted BEFORE
+	// the texture source read in both load paths (sequential + preload).
+	// The import registers the ORIGINAL image identity; the plug only
+	// redirects the bytes.
+	void setTextureRemaps(const std::vector<GltfTextureRemap>* remaps) {
+		textureRemaps_ = remaps;
+	}
+	// Importer data out-collector (see GltfImportImage): one row per
+	// referenced image (loaded or failed), with the (material, slot) users.
+	// The collector OWNS the rows; the importer appends. Null = no record.
+	void setImportImages(std::vector<GltfImportImage>* out) {
+		importImages_ = out;
+	}
 	// Multiplies the scene root's local transform by preTransform_ (left).
 	void applyPreTransform(Scene& scene, int rootNode);
 	// glTF node index -> cluster scene node id (filled by the import
@@ -160,6 +213,13 @@ private:
 
 	smvk::ClusterLightHandle
 		getOrCreateLight(int gltfLightIndex, bool staticLight);
+	// Importer data rows (see setImportImages): find-or-create the row for
+	// imageIndex (nullptr when no collector), note the import result, and
+	// append the (material, slot) users as getOrCreateMaterial walks slots.
+	GltfImportImage* importImageRow(int imageIndex);
+	void noteImage(int imageIndex, const std::string& identity, bool loaded);
+	void noteImageUser(int imageIndex, const std::string& materialUri,
+		const char* slot);
 	void importNodeRecursive(
 		int gltfNodeIndex,
 		int parentSceneNode,
@@ -190,6 +250,13 @@ private:
 	// Optional artifact cache (scratch-disk store adapter): texture
 	// transcode acceleration. Not owned.
 	GltfArtifactCache* artifactCache_ = nullptr;
+
+	// Texture-relink input plugs (not owned; see setTextureRemaps).
+	const std::vector<GltfTextureRemap>* textureRemaps_ = nullptr;
+	// Importer data out-collector (not owned; see setImportImages) +
+	// the imageIndex -> row index so noteImage/noteImageUser find rows.
+	std::vector<GltfImportImage>* importImages_ = nullptr;
+	std::unordered_map<int, size_t> importImageRows_;
 
 	smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
 	// KTX auto-convert: file-node match for an image URI (basename, then
@@ -336,7 +403,12 @@ void GltfToClusterFromVfs(
 	GltfArtifactCache* artifactCache = nullptr,
 	// GUID resolver (see GltfGuidResolver): identity-first reference
 	// resolution; null = path-only (cooker/baker/tests).
-	GltfGuidResolver* guidResolver = nullptr);
+	GltfGuidResolver* guidResolver = nullptr,
+	// Importer data out (see GltfImportImage): one row per referenced image
+	// across EVERY import in the chain (root + nested references), with the
+	// (material, slot) users. Null = no record. Appended last so existing
+	// callers keep compiling.
+	std::vector<GltfImportImage>* outImages = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager& ctx,

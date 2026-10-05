@@ -331,8 +331,9 @@ public:
 	EditorApp();
 	~EditorApp() override = default;
 
-	bool OpenScene(const std::string& path); // dispatches .pak vs .gltf
-	bool OpenPak(const std::string& pakPath); // accepts "file.pak:N" too
+	// Source-scene open (paks are refused — they run in the App; the
+	// editor is the WYSIWYG authoring tool over sources/assets).
+	bool OpenScene(const std::string& path);
 	// Open-dialog dispatch: .tour replays (OpenTourFile), else OpenScene.
 	bool OpenAnySceneFile(const std::string& path);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
@@ -361,22 +362,30 @@ private:
 	// ---- scene ----
 	bool LoadGltfIntoWorld(const std::string& path,
 		const std::string& tourOverride = {});
-	bool LoadPakIntoWorld(const std::string& path,
-		uint32_t sceneIndex = 0); // cooked pak, GPU world
-	// Core cooked-scene display: the renderer renders a SCENE (the
-	// pak image just backs its blobs); sceneIndex picks it, 0 by
-	// default — App --pak parity. Shared by manual pak opens (host
-	// file) and the WYSIWYG preview (the scratch copy of the cook).
-	bool LoadPakFromImage(std::shared_ptr<std::vector<uint8_t>> image,
-		const std::string& displayPath, uint32_t sceneIndex);
-	bool TryLoadSiblingSglm(const std::string& pakPath); // gi/<stem>.sglm
-	// Convex GI volume sidecars (probes-only pivot): gi/<stem>.cvmanifest
-	// + .cvol next to the opened pak. Builds the preview hulls (AABB
+	// Baked-atlas probe for the open SOURCE scene (SceneIdForHost stem,
+	// project content first / bundled content second): the F8 baked view
+	// on a definition with a lightmap bake.
+	bool TryLoadSceneSglm();
+	// Convex GI volume sidecars (probes-only pivot): the SCENE's baked
+	// gi/<stem>.cvmanifest + .cvol. Builds the preview hulls (AABB
 	// clipped by the volume's planes) for the LIGHTING-mode view option.
-	bool TryLoadCvolumes(const std::string& pakPath);
+	bool TryLoadCvolumes();
 	static bool HasPakExtension(const std::string& path);
+	// "A scene worth acting on" (replaces the old m_hasGltfModel gates —
+	// a .tour definition just references ASSET UUIDS, so "has a source
+	// glTF" was the wrong question): true when no world is loaded or the
+	// merged scene carries no content (no meshes/lights/cameras). With
+	// pak opens gone (paks run in the App), every non-empty editor scene
+	// is definition-backed by construction.
+	bool SceneEmpty() const;
 	void UpdateTextureStreaming(smvk::Extent2D renderExtent);
-	void RebuildNodeIndex(); // world-node -> cluster/prim mapping for picking
+	// ---- CPU geometry access (uniform, registry-backed) ----------------
+	// The editor retains uploads on its world cluster (source imports),
+	// so the world's asset registry resolves mesh/node -> CPU geometry
+	// with no importer state kept alive. Null when the mesh/node is
+	// missing or its cluster did not retain.
+	const smvk::StaticMeshUpload* MeshUploadOf(uint32_t worldMeshIdx) const;
+	const smvk::StaticMeshUpload* NodeMeshUpload(uint32_t node) const;
 	static glm::mat4 LocalMatrixFromTRS(const glm::vec3& t,
 		const glm::vec3& eulerDeg, const glm::vec3& s);
 	// Structural world-scene edits (index-preserving; no Resolve needed).
@@ -732,8 +741,7 @@ private:
 	void DrawMaterialFocusPage();
 	void DrawCameraSection(); // active viewport's editor camera settings
 	void DrawCookPanel();
-	void DrawLightmapPanel(); // pak manifest + .sglm atlas inspection
-	void DumpPakManifest(); // pak-sourced counts + lmChunk histogram to console
+	void DrawLightmapPanel(); // .sglm atlas inspection (bake output)
 	// Diffuse (baseColor) texture thumbnail: CPU KTX2 decode of the
 	// material's textures.x slot, drawn as an ImDrawList mosaic over a
 	// checkerboard (no Vulkan/ImGui-texture interop needed). Tinted by
@@ -1356,31 +1364,35 @@ private:
 
 	// ---- Path editor (editor_paths.cpp) --------------------------------
 	// Consolidated view over EVERY file/path the scene depends on: the
-	// source glTF + tour, scene references, glTF image/buffer URIs,
-	// editor image definitions, cook outputs and the lightmap atlas.
-	// Missing files are highlighted; textures can be relinked live
-	// (undoable material-slot reassignment, File > Path editor) or
-	// copied into the place the glTF expects (permanent fix, cook-safe).
-	// Live relinks persist as path.remap.* editorSettings (editor-only,
-	// never cooked) and re-apply after every import.
-	struct PathRemap {
-		std::string oldUri; // glTF image uri as authored (e.g. "tex/a.ktx2")
-		std::string newPath; // replacement file picked by the user
-	};
-	std::vector<PathRemap> m_pathRemaps;
+	// scene source + tour, scene references, imported image URIs (the
+	// importer's data records — never a kept parsed glTF), editor image
+	// definitions, cook outputs and the lightmap atlas. Missing files are
+	// highlighted; textures relink LIVE (undoable material-slot
+	// reassignment off the import records) AND persistently — the relink
+	// is an INPUT PLUG on the source asset (plug.texture.* rows in its
+	// .meta sidecar; the importer applies it at every import, so the
+	// relink is viewport-, cook- and bake-safe by construction).
 	bool m_showPathsPanel = false;
 	void DrawPathsPanel();
-	void SavePathRemapsToDoc(smvk::tour::Doc& doc) const;
-	void LoadPathRemapsFromDoc(const smvk::tour::Doc& doc);
-	// Silent post-load fixup: re-mints remapped textures and fills
-	// still-missing material slots (no history entries — import repair).
-	void ApplyPathRemaps();
-	// Interactive relink of one glTF image: loads newPath, reassigns
-	// every material slot that wants imageIndex via undoable commands,
-	// records the remap and autosaves. Returns pool index or -1.
-	int RelinkTextureLive(int imageIndex, const std::string& newPath);
-	// glTF material N -> world material index (-1 when unmapped).
-	int GltfMatToWorld(int gltfMat) const;
+	// Texture plugs of one source asset (its .meta rows, cached while the
+	// panel drives them; re-read after writes).
+	std::vector<smvk::cache::AssetPlug> TexturePlugsOf(
+		const std::string& source);
+	// Upsert one texture-relink plug (oldUri -> newPath) on the source
+	// asset's .meta (adopts the asset first when it carries no identity).
+	void WriteTexturePlug(const std::string& source,
+		const std::string& oldUri, const std::string& newPath);
+	// Drop one texture plug (persistent "forget").
+	void ForgetTexturePlug(const std::string& source,
+		const std::string& oldUri);
+	// Interactive relink of one imported image record: loads newPath,
+	// reassigns every recorded (material, slot) user via undoable
+	// commands, and writes the input plug (persistent). Pool or -1.
+	int RelinkTextureLive(const GltfImportImage& rec,
+		const std::string& newPath);
+	// Material by its registered cluster uri ("<source>#mat.N"; exact
+	// match — import records carry full uris). -1 when unmapped.
+	int MatWorldForUri(const std::string& uri) const;
 	char m_pathSearchDir[512] = "";
 	char m_pathPrefixFrom[256] = "";
 	char m_pathPrefixTo[256] = "";
@@ -1480,7 +1492,7 @@ private:
 	// for loading and fingerprinting (equal to m_gltfPath for local files).
 	std::string m_gltfPath;
 	std::string m_gltfHostPath;
-	std::string m_pendingGltf; // --gltf/--pak path queued before Initialize
+	std::string m_pendingGltf; // --gltf path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
 	// ---- LIVE VIEW (the hosted WorldRenderer is the viewport driver) ----
 // The viewports render through a HOSTED engine::WorldRenderer (offscreen
@@ -1770,35 +1782,17 @@ private:
 	// cache.db. False when no project is open (cache stays off); the
 	// editor runs fine without a db.
 	bool OpenCacheDb();
-	// ---- cooked pak state (kept alive: PakReader borrows these bytes) ----
-	std::string m_pakPath; // empty when the scene came from glTF
-	// Pak bytes + the editor-VFS registration of the SAME image.
-	std::shared_ptr<std::vector<uint8_t>> m_pakImage;
-	// Editor VFS: the overlay the display path resolves through.
-	// ONLY tour + scratch ever mount here — NEVER the release content
-	// tree: editor -> release is one-way (forwards). The release pak
+	// Editor VFS: the overlay the scratch class paks mount into.
+	// ONLY scratch ever mounts here — NEVER the release content tree:
+	// editor -> release is one-way (forwards). The release pak
 	// (content/paks) is a pure output; reading it back would feed
-	// stale cooked content into authoring. The WYSIWYG preview
-	// therefore displays the SCRATCH copy of the cook (the artifact
-	// store's scene pak), registered as "scratch-scene" @10; the
-	// artifact store's per-class paks mount as "scratch-<class>" @20.
+	// stale cooked content into authoring. The artifact store's
+	// per-class paks mount as "scratch-<class>" @20.
 	smvk::OverlayVfs m_editorVfs;
 	// Cook definition fingerprint (the scene artifact's cache "source"
 	// key): the temp tour bytes with the volatile "//Last modified:"
 	// header line stripped — deterministic per definition content.
 	std::string m_cookDefHash;
-	// Parsed once per pak load (never per frame: Open decompresses).
-	std::optional<smvk::PakReader> m_pakReader;
-	std::vector<smvk::PakSceneInfo> m_pakScenes;
-	// The pak-level Gi registry (the serializer unions every scene's
-	// Cluster::giBindings into one PakAssetKind::Gi blob — parse via
-	// ParseGiRegistryBlob). Stable bake STEMS since the sidecar-cook
-	// removal: the browser's GI group labels the kinds + resolves each
-	// binding to its VFS path (gi/<stem>.<ext>, the cubemap manifest at
-	// textures/cubemaps/<base>.cubemanifest) and checks the blob in the
-	// pak TOC.
-	std::vector<smvk::GiBinding> m_pakGiBindings;
-	uint32_t m_pakSceneIndex = 0;
 	// ---- lightmap atlas inspection (.sglm, cook output) ----
 	smvk::gi::SgLightmapAtlas m_sglm;
 	std::string m_sglmPath;
@@ -1817,12 +1811,12 @@ private:
 	void ClearSglmLayers();
 	// ---- diffuse preview cache (single entry; cleared on scene load) ----
 	TexPreview m_texPreview;
-	tinygltf::Model m_gltfModel; // kept for picking
-	bool m_hasGltfModel = false;
-	// world prim-node -> (gltf mesh, primitive) for exact ray picking
-	struct PrimRef { int mesh = -1; int prim = -1; };
-	std::unordered_map<uint32_t, PrimRef> m_primRef; // node -> ref
-	uint32_t m_clusterRootWorld = UINT32_MAX; // world id of the cluster root
+	// ---- importer data (see gltf_import's GltfImportImage): one row per
+	// referenced image across the definition's imports (loaded AND failed),
+	// collected by ApplySceneReferences. THE replacement for the old kept
+	// tinygltf::Model: the path editor's texture rows + the live relink
+	// read this, never a parsed glTF. Cleared with the world.
+	std::vector<GltfImportImage> m_importImages;
 
 	// ---- editor state ----
 	// View modes are PER VIEWPORT (m_viewports[].viewMode; the F-keys
@@ -2109,21 +2103,13 @@ private:
 	std::shared_ptr<CookFeed> m_bakeFeed; // Bake-GI live feed (see above)
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
-	// Outliner tabs (Scene graph vs VFS browser) + VFS selection.
-	// m_vfsSel: "" none; "disk:<full>" disk entry; "pak:" loaded-pak root;
-	// "pak:<tocPath>" entry inside the loaded pak.
-	int m_outlinerTab = 0;
-	std::string m_vfsSel;
-	std::string m_vfsRoot; // content dir, resolved on scene load
 	int m_rightTab = 0; // Inspector | UV | Cook | Bake | Textures
 	int m_bottomTab = 0; // bottom dock: Overrides | Console
 	void DrawSceneOutliner();
-	void DrawVfsOutliner();
-	void DrawVfsDir(const std::string& dir, int depth);
 	void DrawUvPanel();
-	void DrawPakBox(); // contextual pak actions (VFS selection only)
+	// Content root for definition-source resolution ("models/..." style
+	// references): the current scene's content dir, else ./content.
 	std::string ResolveVfsRoot() const;
-	bool PakSelected() const; // outliner selection is pak-related
 
 	// ---- flintbase panel state ----
 	bool m_showFlintbasePanel = false;
@@ -2144,7 +2130,7 @@ private:
 };
 
 // Native Windows dialogs (editor_native_dialog.cpp): single entry
-// points for scenes (.gltf/.glb/.pak/.tour), outputs (.pak) and
+// points for scenes (.gltf/.glb/.tour), outputs (.pak) and
 // project folders. False on cancel/failure.
 	bool NativeOpenFile(std::string& outPath, bool images = false);
 	bool NativeSaveFile(std::string& outPath);

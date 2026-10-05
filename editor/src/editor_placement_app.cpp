@@ -8,118 +8,65 @@
 #include <cstdio>
 #include <sstream>
 
-#include <tiny_gltf.h>
-
 namespace editor {
 using namespace placement;
-// Mesh extraction reads the kept glTF primitive for a world node (same
-// lossless source the picker uses), transformed to world space.
-namespace {
-glm::vec3 FixGltfPos(const float* f) {
-	// Raw glTF data (no mirror): the coordFix basis rides the imported
-	// chain's top node, so global transforms map raw data directly.
-	return glm::vec3(f[0], f[1], f[2]);
-}
-bool ReadVec3Attr(const tinygltf::Model& model, int accessorIdx, size_t i,
-	glm::vec3& out) {
-	if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
-		return false;
-	const tinygltf::Accessor& acc = model.accessors[accessorIdx];
-	if (acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return false;
-	if (i >= (size_t)acc.count) return false;
-	const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
-	const tinygltf::Buffer& buf = model.buffers[bv.buffer];
-	const size_t stride = acc.ByteStride(bv);
-	const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-	if (off + 12 > buf.data.size()) return false;
-	const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
-	out = FixGltfPos(f);
-	return true;
-}
-bool ReadIdxAttr(const tinygltf::Model& model, int accessorIdx, size_t i,
-	uint32_t& out) {
-	if (accessorIdx < 0) return false;
-	const tinygltf::Accessor& acc = model.accessors[accessorIdx];
-	if (i >= (size_t)acc.count) return false;
-	const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
-	const tinygltf::Buffer& buf = model.buffers[bv.buffer];
-	const size_t stride = acc.ByteStride(bv);
-	const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-		if (off + 4 > buf.data.size()) return false;
-		out = *reinterpret_cast<const uint32_t*>(buf.data.data() + off);
-		return true;
-	}
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-		if (off + 2 > buf.data.size()) return false;
-		out = *reinterpret_cast<const uint16_t*>(buf.data.data() + off);
-		return true;
-	}
-	if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-		if (off + 1 > buf.data.size()) return false;
-		out = buf.data[off];
-		return true;
-	}
-	return false;
-}
-} // namespace
 
 bool EditorApp::ExtractPlacementMesh(uint32_t worldNode,
 	smvk::placement::PlacementMeshData& out) const {
 	using namespace smvk::placement;
+	// Mesh extraction reads the node's RETAINED upload (the same CPU
+	// geometry the picker uses — uniform across glTF imports and pak
+	// loads), transformed to world space by the node's global.
 	out = PlacementMeshData{};
-	if (!m_world || !m_hasGltfModel) return false;
-	auto it = m_primRef.find(worldNode);
-	if (it == m_primRef.end() || it->second.mesh < 0
-		|| it->second.mesh >= (int)m_gltfModel.meshes.size())
+	const smvk::StaticMeshUpload* up = NodeMeshUpload(worldNode);
+	if (!up || !m_world)
 		return false;
-	const tinygltf::Mesh& gm = m_gltfModel.meshes[it->second.mesh];
-	if (it->second.prim < 0 || it->second.prim >= (int)gm.primitives.size())
+	const size_t vcount = up->vertices.size();
+	if (vcount == 0 || vcount > 600000)
 		return false;
-	const tinygltf::Primitive& prim = gm.primitives[it->second.prim];
-	auto pa = prim.attributes.find("POSITION");
-	if (pa == prim.attributes.end()) return false;
-	const size_t vcount = m_gltfModel.accessors[pa->second].count;
-	if (vcount == 0 || vcount > 600000) return false;
-	const glm::mat4& model =
+	const glm::mat4 model =
 		m_world->scene.globalTransform.size() > worldNode
 		? m_world->scene.globalTransform[worldNode]
 		: glm::mat4(1.0f);
 	out.positions.reserve(vcount);
+	for (size_t v = 0; v < vcount; ++v)
+		out.positions.push_back(glm::vec3(model *
+			glm::vec4(up->vertices[v].pos, 1.0f)));
+	// Normals: authored or synthesized at import (ComputeSmoothNormals)
+	// — every retained upload carries them. The coordFix basis is a
+	// proper rotation, so the upper-3x3 maps normals directly.
+	out.normals.reserve(vcount);
+	const glm::mat3 nrm(model);
+	bool haveNormals = true;
 	for (size_t v = 0; v < vcount; ++v) {
-		glm::vec3 local;
-		if (!ReadVec3Attr(m_gltfModel, pa->second, v, local)) return false;
-		out.positions.push_back(glm::vec3(model * glm::vec4(local, 1.0f)));
-	}
-	auto na = prim.attributes.find("NORMAL");
-	if (na != prim.attributes.end()
-		&& m_gltfModel.accessors[na->second].count == (int)vcount) {
-		out.normals.reserve(vcount);
-		glm::mat3 nrm(model); // coord fix is a proper rotation: same map
-		for (size_t v = 0; v < vcount; ++v) {
-			glm::vec3 n;
-			if (!ReadVec3Attr(m_gltfModel, na->second, v, n)) break;
-			out.normals.push_back(glm::normalize(nrm * n));
+		const glm::vec3 n = up->vertices[v].normal;
+		if (n == glm::vec3(0.0f)) {
+			haveNormals = false;
+			break;
 		}
-		if (out.normals.size() != vcount) out.normals.clear();
+		out.normals.push_back(glm::normalize(nrm * n));
 	}
-	if (prim.indices >= 0) {
-		const size_t tcount = m_gltfModel.accessors[prim.indices].count / 3;
-		if (tcount == 0 || tcount > 200000) return false;
+	if (!haveNormals || out.normals.size() != vcount)
+		out.normals.clear();
+	if (!up->indices.empty()) {
+		const size_t tcount = up->indices.size() / 3;
+		if (tcount == 0 || tcount > 200000)
+			return false;
 		out.indices.reserve(tcount * 3);
 		for (size_t t = 0; t < tcount; ++t)
 			for (int k = 0; k < 3; ++k) {
-				uint32_t ix = 0;
-				if (!ReadIdxAttr(m_gltfModel, prim.indices, t * 3 + k, ix)
-					|| ix >= vcount)
+				const uint32_t ix = up->indices[t * 3 + k];
+				if (ix >= vcount)
 					return false;
 				out.indices.push_back(ix);
 			}
 	}
 	else {
-		if (vcount % 3 != 0) return false;
+		if (vcount % 3 != 0)
+			return false;
 		out.indices.reserve(vcount);
-		for (uint32_t v = 0; v < (uint32_t)vcount; ++v) out.indices.push_back(v);
+		for (uint32_t v = 0; v < (uint32_t)vcount; ++v)
+			out.indices.push_back(v);
 	}
 	BuildMeshAliasTable(out);
 	return out.triangleCount() > 0;

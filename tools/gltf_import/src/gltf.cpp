@@ -23,6 +23,7 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <map>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -728,9 +729,28 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 	}
 	if (!textureSource)
 		return {};
-	auto bytes = textureSource->ReadBytes(img.uri);
+	// Input plugs (texture relink; see GltfTextureRemap): an EXACT oldUri
+	// match redirects the byte read BEFORE the source is consulted — the
+	// registered identity stays the ORIGINAL image's below (the import
+	// stays addressable at its authored uri; the plug is a pure input).
+	// Read order: the configured source first (relative/VFS-friendly),
+	// then the raw host path (the plug is authored as a host path).
+	std::optional<std::vector<uint8_t>> bytes;
+	if (textureRemaps_) {
+		for (const GltfTextureRemap& r : *textureRemaps_) {
+			if (r.oldUri != img.uri || r.newPath.empty())
+				continue;
+			bytes = textureSource->ReadBytes(r.newPath);
+			if (!bytes || bytes->empty())
+				bytes = ReadHostBytes(std::filesystem::path(r.newPath));
+			break;
+		}
+	}
+	if (!bytes)
+		bytes = textureSource->ReadBytes(img.uri);
 	if (!bytes || bytes->empty()) {
 		std::cerr << "Texture source missing image: " << img.uri << std::endl;
+		noteImage(imageIndex, "", false);
 		return {};
 	}
 	const std::string identity = textureSource->ResolveIdentity(img.uri);
@@ -748,6 +768,7 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 				kerr)) {
 			std::cerr << (cluster.IsCookMode() ? "Cook: " : "Texture: ")
 				<< kerr << std::endl;
+			noteImage(imageIndex, "", false);
 			return {};
 		}
 		bytes = std::move(ktx);
@@ -779,8 +800,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 		else
 		{
 			auto holder = smvk::LoadKtxTextureMemory(*cluster.ctx_, bytes->data(), bytes->size(), identity);
-			if (!holder.valid())
+			if (!holder.valid()) {
+				noteImage(imageIndex, identity, false);
 				return {};
+			}
 			h = holder;
 			cluster.textures.create(std::move(holder));
 		}
@@ -811,8 +834,44 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 		if (bytes.has_value() && !bytes->empty())
 			cluster.SetTextureSource(identity, std::move(*bytes));
 	}
+	noteImage(imageIndex, identity, true);
 	return h;
 }
+
+// ---- importer data rows (see setImportImages) --------------------------
+GltfImportImage* GltfToSceneImporter::importImageRow(int imageIndex) {
+	if (!importImages_ || imageIndex < 0
+		|| imageIndex >= (int)model.images.size())
+		return nullptr;
+	auto it = importImageRows_.find(imageIndex);
+	if (it != importImageRows_.end())
+		return &(*importImages_)[it->second];
+	GltfImportImage row{};
+	row.source = gltfModelPath.generic_string();
+	row.uri = model.images[size_t(imageIndex)].uri;
+	importImages_->push_back(std::move(row));
+	importImageRows_[imageIndex] = importImages_->size() - 1;
+	return &importImages_->back();
+}
+
+void GltfToSceneImporter::noteImage(int imageIndex,
+	const std::string& identity, bool loaded) {
+	if (GltfImportImage* row = importImageRow(imageIndex)) {
+		row->identity = identity;
+		row->loaded = loaded;
+	}
+}
+
+void GltfToSceneImporter::noteImageUser(int imageIndex,
+	const std::string& materialUri, const char* slot) {
+	if (GltfImportImage* row = importImageRow(imageIndex)) {
+		GltfImportImage::User u{};
+		u.materialUri = materialUri;
+		u.slot = slot;
+		row->users.push_back(u);
+	}
+}
+
 bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	tinygltf::TinyGLTF loader;
 	std::string err;
@@ -1204,7 +1263,22 @@ void GltfToSceneImporter::preloadTextures()
 		// loadTextureForImage); skip them here, the sequential path asserts.
 		if (img.uri.empty() || starts_with(img.uri, "data:"))
 			continue;
-		auto bytes = textureSource->ReadBytes(img.uri);
+		// Input plugs (texture relink): EXACT oldUri match redirects the
+		// read (mirrors loadTextureForImage; the identity stays the
+		// original's below).
+		std::optional<std::vector<uint8_t>> bytes;
+		if (textureRemaps_) {
+			for (const GltfTextureRemap& r : *textureRemaps_) {
+				if (r.oldUri != img.uri || r.newPath.empty())
+					continue;
+				bytes = textureSource->ReadBytes(r.newPath);
+				if (!bytes || bytes->empty())
+					bytes = ReadHostBytes(std::filesystem::path(r.newPath));
+				break;
+			}
+		}
+		if (!bytes)
+			bytes = textureSource->ReadBytes(img.uri);
 		if (!bytes || bytes->empty()) {
 			std::cerr << "Texture source missing image: " << img.uri << std::endl;
 			continue;
@@ -1512,16 +1586,41 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 			gltfMaterialIndex
 		);
 
-	auto load = [&](const std::optional<GltfTextureRef>& ref) -> smvk::TextureHandle {
+	// Importer data users (see setImportImages): every (material, slot)
+	// pair that references an image gets noted — loaded AND failed rows
+	// alike (the failed ones are exactly what the relink flow targets).
+	// The material uri matches the registration below ("<base>#mat.N").
+	const std::string matUri = modelUriBase.empty()
+		? std::string()
+		: smvk::MakeSubUri(modelUriBase,
+			"mat." + std::to_string(gltfMaterialIndex)).Str();
+	auto load = [&](const std::optional<GltfTextureRef>& ref,
+			const char* slotName) -> smvk::TextureHandle {
 		if (!ref) return {};
-		return loadTextureForImage(ref->imageIndex, ref->textureIndex);
+		noteImageUser(ref->imageIndex, matUri, slotName);
+		const smvk::TextureHandle h =
+			loadTextureForImage(ref->imageIndex, ref->textureIndex);
+		if (h.valid()) {
+			// The PRELOAD path registered this texture without passing
+			// here's recording (textureCache short-circuits above); the
+			// sequential path already noted the identical row inside
+			// loadTextureForImage — this note is idempotent for it and
+			// fills the preloaded case.
+			noteImage(ref->imageIndex,
+				textureSource
+					? textureSource->ResolveIdentity(
+						model.images[size_t(ref->imageIndex)].uri)
+					: std::string(),
+				true);
+		}
+		return h;
 	};
 
-	smvk::TextureHandle baseColorHandle = load(mat.baseColorTex);
-	smvk::TextureHandle metallicRoughHandle = load(mat.metallicRoughnessTex);
-	smvk::TextureHandle normalHandle = load(mat.normalTex);
-	smvk::TextureHandle occlusionHandle = load(mat.occlusionTex);
-	smvk::TextureHandle emissiveHandle = load(mat.emissiveTex);
+	smvk::TextureHandle baseColorHandle = load(mat.baseColorTex, "baseColorTex");
+	smvk::TextureHandle metallicRoughHandle = load(mat.metallicRoughnessTex, "metallicRoughTex");
+	smvk::TextureHandle normalHandle = load(mat.normalTex, "normalTex");
+	smvk::TextureHandle occlusionHandle = load(mat.occlusionTex, "occlusionTex");
+	smvk::TextureHandle emissiveHandle = load(mat.emissiveTex, "emissiveTex");
 
 	smvk::MaterialCreateInfo ci{};
 	ci.baseColorTexture = baseColorHandle;
@@ -2097,6 +2196,67 @@ std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const
 	return n.empty() ? imageUri : n.Str();
 }
 
+std::vector<GltfTextureRemap> ReadTextureRemapPlugs(
+	const std::string& resolvedSourcePath) {
+	// INPUT PLUGS (see gltf.h's block): texture-relink rows serialized in
+	// the SOURCE asset's .meta sidecar — "plug.texture.<n>.old=<uri>" +
+	// "plug.texture.<n>.new=<path>" pairs. The sidecar FORMAT is owned by
+	// artifact_cache (assetdb.h — its write side rewrites the whole file and
+	// preserves these rows); this is the tolerant read every import entry
+	// point shares. Missing sidecar / no plug rows = empty (the common case).
+	std::vector<GltfTextureRemap> out;
+	if (resolvedSourcePath.empty())
+		return out;
+	std::ifstream in(resolvedSourcePath + ".meta", std::ios::binary);
+	if (!in)
+		return out;
+	// Index-keyed halves, paired below (an unpaired row skips — the writer
+	// always writes pairs, so this only rejects hand edits).
+	std::map<size_t, std::pair<std::string, std::string>> halves;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		const std::string key = line.substr(0, eq);
+		const std::string val = line.substr(eq + 1);
+		// key = plug.texture.<n>.old | plug.texture.<n>.new
+		if (key.rfind("plug.texture.", 0) != 0)
+			continue;
+		const size_t lastDot = key.rfind('.');
+		if (lastDot == std::string::npos)
+			continue;
+		const std::string idxStr = key.substr(
+			sizeof("plug.texture.") - 1, lastDot - (sizeof("plug.texture.") - 1));
+		const std::string half = key.substr(lastDot + 1);
+		if (idxStr.empty() || idxStr.find_first_not_of("0123456789")
+				!= std::string::npos)
+			continue;
+		size_t idx = 0;
+		try {
+			idx = std::stoull(idxStr);
+		}
+		catch (...) {
+			continue;
+		}
+		auto& pair = halves[idx];
+		if (half == "old")
+			pair.first = val;
+		else if (half == "new")
+			pair.second = val;
+	}
+	for (auto& [idx, pair] : halves) {
+		(void)idx;
+		if (!pair.first.empty() && !pair.second.empty())
+			out.push_back(GltfTextureRemap{ pair.first, pair.second });
+	}
+	return out;
+}
+
 namespace {
 // Shared VFS glTF JSON parse (buffers via the overlay callbacks): the full
 // import and the lightweight scene listing both start here.
@@ -2649,7 +2809,8 @@ size_t ApplySceneReferences(
 	bool autoKtx,
 	const std::vector<smvk::tour::FileNode>* fileNodes,
 	GltfArtifactCache* artifactCache,
-	GltfGuidResolver* guidResolver) {
+	GltfGuidResolver* guidResolver,
+	std::vector<GltfImportImage>* outImages) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -3081,16 +3242,30 @@ size_t ApplySceneReferences(
 						<< resolved << "' (glTF import fallback)\n";
 				}
 			}
-			if (!builtFromMesh) {
-				GltfToSceneImporter importer{ cluster, model,
-					std::filesystem::path(resolved) };
-				if (vfs)
-					importer.setTextureSource(std::make_shared<VfsTextureSource>(
-						vfs, baseDir));
-				else
-					importer.setTextureSource(std::make_shared<HostTextureSource>(
-						std::filesystem::path(baseDir)));
-			importer.setMeshOptConfig(meshOpt);
+		if (!builtFromMesh) {
+			GltfToSceneImporter importer{ cluster, model,
+				std::filesystem::path(resolved) };
+			if (vfs)
+				importer.setTextureSource(std::make_shared<VfsTextureSource>(
+					vfs, baseDir));
+			else
+				importer.setTextureSource(std::make_shared<HostTextureSource>(
+					std::filesystem::path(baseDir)));
+			// INPUT PLUGS (see ReadTextureRemapPlugs): this source's own
+			// .meta texture-relink rows — applied identically by the
+			// editor (live import), PakCooker (cook) and GiBaker (bake).
+			// Host-resolved sources read their sidecar; VFS sources keep
+			// the sidecar on the host next to the underlying file (the
+			// cooker's content dir mirrors it 1:1).
+			const std::vector<GltfTextureRemap> remaps =
+				ReadTextureRemapPlugs(resolved);
+			if (!remaps.empty())
+				importer.setTextureRemaps(&remaps);
+			// Importer data out (see setImportImages): the importer appends
+			// its per-image rows (loaded + failed, with users).
+			if (outImages)
+				importer.setImportImages(outImages);
+		importer.setMeshOptConfig(meshOpt);
 			importer.setMeshletConfig(meshlets);
 			importer.setAutoKtx(autoKtx);
 			importer.setArtifactCache(artifactCache);

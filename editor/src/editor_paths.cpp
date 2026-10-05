@@ -3,17 +3,20 @@
 // notably broken/missing texture links when bringing a glTF whose image
 // URIs no longer resolve.
 //
-// Sections: scene source + tour, scene references, glTF image URIs
-// (the texture core), external .bin buffers, editor image definitions,
-// and outputs (cook pak, lightmap atlas, env skybox).
+// Sections: scene source + tour, scene references, imported image URIs
+// (the texture core — the IMPORTER'S data records, never a kept parsed
+// glTF), editor image definitions, and outputs (cook pak, lightmap
+// atlas, env skybox).
 //
-// Two fix flavors for textures:
-//   - Live relink (undoable, autosaved): loads the replacement KTX2 and
-//     reassigns every material slot that wants the image. Persists as a
-//     path.remap.* editorSetting (editor-only, never cooked) and
-//     re-applies after every import, so the viewport stays fixed.
-//   - Copy to expected path (permanent, cook-safe): places the file
-//     where the glTF URI points, fixing reloads, reimports and cooks.
+// Texture fixes, one persistent mechanism: the relink is an INPUT PLUG
+// on the source asset (plug.texture.* rows in its .meta sidecar — see
+// artifact_cache's AssetPlug). The importer applies plugs at EVERY
+// import (editor live import, PakCooker cook, GiBaker bake), so one
+// relink fixes the viewport immediately (live material-slot updates via
+// undoable commands) AND every future import/cook/bake — the old
+// editor-only path.remap.* tour settings never cooked and are gone.
+// "To expected" stays as the file-copy alternative (place the file
+// where the glTF URI points).
 
 #include "editor_app.h"
 
@@ -24,6 +27,8 @@
 #include <map>
 
 #include <imgui.h>
+
+#include <artifact_cache/assetdb.h>
 
 namespace editor {
 
@@ -47,143 +52,88 @@ bool IsEmbeddedUri(const std::string& uri) {
 
 } // namespace
 
-// glTF material index -> live world material index (-1 when unmapped).
-// The importer stamps "<base>#mat.N" URIs in creation order, so the
-// suffix identifies the glTF material exactly.
-int EditorApp::GltfMatToWorld(int gltfMat) const {
-	if (!m_world)
+// Material by its registered cluster uri (import records carry the
+// FULL material uri — "<source>#mat.N" — so the resolution is exact,
+// unlike the old gltf-material-index suffix matching).
+int EditorApp::MatWorldForUri(const std::string& uri) const {
+	if (!m_world || uri.empty())
 		return -1;
-	const std::string want = "#mat." + std::to_string(gltfMat);
 	for (uint32_t i = 0; i < uint32_t(m_world->materialLocations.size()); ++i) {
 		const auto& loc = m_world->materialLocations[i];
 		if (!loc.cluster || !loc.handle.valid())
 			continue;
-		const std::string uri =
-			std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
-		if (uri.size() >= want.size() &&
-			uri.compare(uri.size() - want.size(), want.size(), want) == 0)
+		if (std::string(loc.cluster->GetMaterialUri(loc.handle).Str()) == uri)
 			return int(i);
 	}
 	return -1;
 }
 
-void EditorApp::SavePathRemapsToDoc(smvk::tour::Doc& doc) const {
-	for (size_t i = 0; i < m_pathRemaps.size(); ++i) {
-		const std::string base = "path.remap." + std::to_string(i);
-		doc.editorSettings.emplace_back(base + ".old", m_pathRemaps[i].oldUri);
-		doc.editorSettings.emplace_back(base + ".new", m_pathRemaps[i].newPath);
-	}
+// Texture plugs of one source asset (its .meta rows; kind "texture"
+// only). Straight read each call — the rows are tiny and the panel is
+// the only consumer, so no cache layer to invalidate.
+std::vector<smvk::cache::AssetPlug> EditorApp::TexturePlugsOf(
+	const std::string& source) {
+	std::vector<smvk::cache::AssetPlug> out;
+	for (const smvk::cache::AssetPlug& p : smvk::cache::ReadAssetPlugs(source))
+		if (p.kind == "texture")
+			out.push_back(p);
+	return out;
 }
 
-void EditorApp::LoadPathRemapsFromDoc(const smvk::tour::Doc& doc) {
-	std::map<size_t, PathRemap> defs;
-	for (const auto& [key, val] : doc.editorSettings) {
-		if (key.rfind("path.remap.", 0) != 0)
-			continue;
-		const size_t idEnd = key.find('.', 11);
-		if (idEnd == std::string::npos)
-			continue;
-		size_t idx = 0;
-		try {
-			idx = std::stoull(key.substr(11, idEnd - 11));
+void EditorApp::WriteTexturePlug(const std::string& source,
+	const std::string& oldUri, const std::string& newPath) {
+	// Identity first: plugs ride the source's .meta, so it must carry a
+	// guid (adopt the source asset when missing — sidecars travel with
+	// the file; the assetdb row is a regenerable cache). Sources outside
+	// a project keep working: the sidecar is written regardless.
+	std::string guid;
+	std::string err;
+	if (!smvk::cache::ReadAssetMeta(source, guid, err))
+		AdoptProjectAsset(source); // issues + writes the .meta (see editor_project.cpp)
+	// Upsert the (oldUri) row among this source's texture plugs.
+	std::vector<smvk::cache::AssetPlug> plugs = TexturePlugsOf(source);
+	bool known = false;
+	for (smvk::cache::AssetPlug& p : plugs)
+		if (p.oldUri == oldUri) {
+			p.newPath = newPath;
+			known = true;
 		}
-		catch (...) {
-			continue;
-		}
-		const std::string attr = key.substr(idEnd + 1);
-		if (attr == "old")
-			defs[idx].oldUri = val;
-		else if (attr == "new")
-			defs[idx].newPath = val;
-	}
-	m_pathRemaps.clear();
-	for (auto& [idx, r] : defs) {
-		(void)idx;
-		if (!r.oldUri.empty() && !r.newPath.empty())
-			m_pathRemaps.push_back(r);
-	}
+	if (!known)
+		plugs.push_back(smvk::cache::AssetPlug{ "texture", oldUri, newPath });
+	if (!smvk::cache::WriteAssetPlugs(source, "texture", plugs, err))
+		Log("Path editor: plug write failed ('" + source + ".meta'): "
+			+ err);
 }
 
-// Silent post-load fixup (no history entries — import repair): re-mints
-// each remapped file and fills material slots that are still missing.
-void EditorApp::ApplyPathRemaps() {
-	if (!m_world || m_pathRemaps.empty() || !m_hasGltfModel)
-		return;
-	smvk::Cluster* cl = m_world->clusters.empty()
-		? nullptr
-		: m_world->clusters[0].get();
-	if (!cl)
-		return;
-	static const char* kAttrs[5] = { "baseColorTex", "metallicRoughTex",
-		"normalTex", "occlusionTex", "emissiveTex" };
-	for (const PathRemap& r : m_pathRemaps) {
-		if (!PathExists(r.newPath)) {
-			Log("Path editor: remap target gone: '" + r.newPath + "'.");
-			continue;
-		}
-		// Reuse an already-registered texture for the file, else load it.
-		int pool = -1;
-		for (const auto& [uri, th] : cl->ListTextureUris()) {
-			const std::string u = uri.Str();
-			if (u == r.newPath || BaseName(u) == BaseName(r.newPath)) {
-				pool = int(th.index());
-				break;
-			}
-		}
-		if (pool < 0)
-			pool = AddTextureFromFile(r.newPath);
-		if (pool < 0)
-			continue;
-		int filled = 0;
-		for (size_t mi = 0; mi < m_gltfModel.materials.size(); ++mi) {
-			const auto& gm = m_gltfModel.materials[mi];
-			int texIdx[5] = { gm.pbrMetallicRoughness.baseColorTexture.index,
-				gm.pbrMetallicRoughness.metallicRoughnessTexture.index,
-				gm.normalTexture.index, gm.occlusionTexture.index,
-				gm.emissiveTexture.index };
-			for (int s = 0; s < 5; ++s) {
-				if (texIdx[s] < 0 ||
-					texIdx[s] >= int(m_gltfModel.textures.size()))
-					continue;
-				const int img = m_gltfModel.textures[size_t(texIdx[s])].source;
-				if (img < 0 || img >= int(m_gltfModel.images.size()))
-					continue;
-				if (m_gltfModel.images[size_t(img)].uri != r.oldUri)
-					continue;
-				const int mw = GltfMatToWorld(int(mi));
-				if (mw < 0)
-					continue;
-				glm::vec4 v4;
-				double num = 0.0;
-				ReadSharedMatAttr(uint32_t(mw), kAttrs[s], v4, num);
-				if (int(num) == pool)
-					continue;
-				if (int(num) >= 0)
-					continue; // user-bound slot: never steal it
-				WriteSharedMatAttr(uint32_t(mw), kAttrs[s], v4,
-					double(pool));
-				++filled;
-			}
-		}
-		if (filled > 0)
-			Log("Path editor: remap applied '" + r.oldUri + "' -> '" +
-				r.newPath + "' (" + std::to_string(filled) + " slot(s)).");
-	}
+void EditorApp::ForgetTexturePlug(const std::string& source,
+	const std::string& oldUri) {
+	std::vector<smvk::cache::AssetPlug> plugs;
+	for (const smvk::cache::AssetPlug& p : TexturePlugsOf(source))
+		if (p.oldUri != oldUri)
+			plugs.push_back(p);
+	std::string err;
+	if (!smvk::cache::WriteAssetPlugs(source, "texture", plugs, err))
+		Log("Path editor: plug forget failed ('" + source + ".meta'): "
+			+ err);
+	else
+		Log("Path editor: plug forgotten ('" + oldUri + "' on '"
+			+ source + "') — future imports read the authored uri.");
 }
 
-// Interactive relink of one glTF image: loads newPath (or reuses the
-// registered texture for it), reassigns every material slot that wants
-// imageIndex via undoable commands, records the remap and autosaves.
-int EditorApp::RelinkTextureLive(int imageIndex, const std::string& newPath) {
-	if (!m_world || !m_hasGltfModel || imageIndex < 0 ||
-		imageIndex >= int(m_gltfModel.images.size()) || newPath.empty())
+// Interactive relink of one imported image record: loads newPath (or
+// reuses the registered texture for it), reassigns every RECORDED
+// (material, slot) user via undoable commands, and writes the input
+// plug on the source asset's .meta (persistent — every future import,
+// cook and bake reads the replacement).
+int EditorApp::RelinkTextureLive(const GltfImportImage& rec,
+	const std::string& newPath) {
+	if (!m_world || rec.uri.empty() || newPath.empty())
 		return -1;
 	smvk::Cluster* cl = m_world->clusters.empty()
 		? nullptr
 		: m_world->clusters[0].get();
 	if (!cl)
 		return -1;
-	const std::string oldUri = m_gltfModel.images[size_t(imageIndex)].uri;
 	int pool = -1;
 	for (const auto& [uri, th] : cl->ListTextureUris()) {
 		const std::string u = uri.Str();
@@ -196,56 +146,34 @@ int EditorApp::RelinkTextureLive(int imageIndex, const std::string& newPath) {
 		pool = AddTextureFromFile(newPath);
 	if (pool < 0)
 		return -1;
-	static const char* kAttrs[5] = { "baseColorTex", "metallicRoughTex",
-		"normalTex", "occlusionTex", "emissiveTex" };
 	int touched = 0;
-	for (size_t mi = 0; mi < m_gltfModel.materials.size(); ++mi) {
-		const auto& gm = m_gltfModel.materials[mi];
-		int texIdx[5] = { gm.pbrMetallicRoughness.baseColorTexture.index,
-			gm.pbrMetallicRoughness.metallicRoughnessTexture.index,
-			gm.normalTexture.index, gm.occlusionTexture.index,
-			gm.emissiveTexture.index };
-		for (int s = 0; s < 5; ++s) {
-			if (texIdx[s] < 0 ||
-				texIdx[s] >= int(m_gltfModel.textures.size()))
-				continue;
-			const int img = m_gltfModel.textures[size_t(texIdx[s])].source;
-			if (img != imageIndex)
-				continue;
-			const int mw = GltfMatToWorld(int(mi));
-			if (mw < 0)
-				continue;
-			glm::vec4 v4;
-			double num = 0.0;
-			ReadSharedMatAttr(uint32_t(mw), kAttrs[s], v4, num);
-			if (int(num) == pool)
-				continue;
-			EditCmd c{};
-			c.verb = EditVerb::SetMatAttr;
-			c.matWorld = uint32_t(mw);
-			c.attr = kAttrs[s];
-			c.beforeVec4 = v4;
-			c.beforeNum = num;
-			c.vec4 = v4;
-			c.number = double(pool);
-			Do(c);
-			++touched;
-		}
+	for (const GltfImportImage::User& u : rec.users) {
+		const int mw = MatWorldForUri(u.materialUri);
+		if (mw < 0)
+			continue;
+		glm::vec4 v4;
+		double num = 0.0;
+		ReadSharedMatAttr(uint32_t(mw), u.slot, v4, num);
+		if (int(num) == pool)
+			continue;
+		EditCmd c{};
+		c.verb = EditVerb::SetMatAttr;
+		c.matWorld = uint32_t(mw);
+		c.attr = u.slot;
+		c.beforeVec4 = v4;
+		c.beforeNum = num;
+		c.vec4 = v4;
+		c.number = double(pool);
+		Do(c);
+		++touched;
 	}
-	// Record the remap (one entry per old URI — newest wins).
-	bool known = false;
-	for (PathRemap& r : m_pathRemaps)
-		if (r.oldUri == oldUri) {
-			r.newPath = newPath;
-			known = true;
-		}
-	if (!known)
-		m_pathRemaps.push_back({ oldUri, newPath });
-	AutosaveTour();
+	// The persistent half: the input plug on the source asset.
+	WriteTexturePlug(rec.source, rec.uri, newPath);
 	ClearTexPreview();
-	Log("Path editor: relinked '" + oldUri + "' -> '" + newPath +
-		"' (" + std::to_string(touched) + " slot(s), pool " +
-		std::to_string(pool) + ").");
+	Log("Path editor: relinked '" + rec.uri + "' -> '" + newPath
+		+ "' (" + std::to_string(touched) + " slot(s), pool "
+		+ std::to_string(pool) + "; plug saved to '"
+		+ rec.source + ".meta').");
 	return pool;
 }
 
@@ -258,7 +186,7 @@ void EditorApp::DrawPathsPanel() {
 		return;
 	}
 	if (!m_world) {
-		ImGui::TextDisabled("No scene. File > Open file... (.gltf/.pak/.tour)");
+		ImGui::TextDisabled("No scene. File > Open file... (.gltf/.tour)");
 		ImGui::End();
 		return;
 	}
@@ -413,24 +341,22 @@ void EditorApp::DrawPathsPanel() {
 		}
 	}
 
-	// ---- textures (the glTF core) ------------------------------------
-	if (ImGui::CollapsingHeader("Textures (glTF images)",
+	// ---- textures (the imported-image core) --------------------------
+	if (ImGui::CollapsingHeader("Textures (imported images)",
 			ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (!m_hasGltfModel) {
+		if (m_importImages.empty()) {
 			ImGui::TextDisabled(
-				"Pak scene: no glTF image list (textures live in the pak).");
-		}
-		else if (m_gltfModel.images.empty()) {
-			ImGui::TextDisabled("No images in the glTF.");
+				"No imported image records (open a source scene / bind references).");
 		}
 		else {
 			smvk::Cluster* cl = m_world->clusters.empty()
 				? nullptr
 				: m_world->clusters[0].get();
+			// One row per import record: the authored uri, the resolved
+			// source it came from, its plug (relink) state, the users.
 			struct TexRow {
-				int img = -1;
-				std::string uri;
-				std::string expected;
+				const GltfImportImage* rec = nullptr;
+				std::string plugTarget; // plug newPath ("" = no plug)
 				bool fileOk = false;
 				bool loaded = false;
 				int pool = -1;
@@ -439,62 +365,54 @@ void EditorApp::DrawPathsPanel() {
 			};
 			std::vector<TexRow> rows;
 			int missingFiles = 0;
-			for (size_t ii = 0; ii < m_gltfModel.images.size(); ++ii) {
-				TexRow r;
-				r.img = int(ii);
-				r.uri = m_gltfModel.images[ii].uri;
-				if (IsEmbeddedUri(r.uri))
+			std::map<std::string, std::vector<smvk::cache::AssetPlug>>
+				plugCache; // per-source plug rows (read once per frame)
+			for (const GltfImportImage& rec : m_importImages) {
+				if (IsEmbeddedUri(rec.uri))
 					continue; // buffer-embedded: no file to fix
-				r.expected = expectedFor(r.uri);
-				r.fileOk = PathExists(r.expected);
+				TexRow r;
+				r.rec = &rec;
+				// Plug state: the source's .meta texture plugs.
+				auto pit = plugCache.find(rec.source);
+				if (pit == plugCache.end())
+					pit = plugCache.emplace(rec.source,
+						TexturePlugsOf(rec.source)).first;
+				for (const smvk::cache::AssetPlug& p : pit->second)
+					if (p.oldUri == rec.uri) {
+						r.plugTarget = p.newPath;
+						break;
+					}
+				// File health: the plug target when plugged, else the
+				// authored uri's expected path.
+				r.fileOk = PathExists(r.plugTarget.empty()
+					? expectedFor(rec.uri) : r.plugTarget);
 				if (!r.fileOk)
 					++missingFiles;
 				if (cl) {
 					for (const auto& [u, th] : cl->ListTextureUris()) {
 						const std::string s = u.Str();
-						if (s == r.expected || s == r.uri ||
-							BaseName(s) == BaseName(r.uri)) {
+						if (s == rec.identity || BaseName(s) == BaseName(rec.uri)) {
 							r.loaded = true;
 							r.pool = int(th.index());
 							break;
 						}
 					}
 				}
-				// Which (material, slot) pairs want this image?
-				static const char* kSlot[5] = { "baseColorTex",
-					"metallicRoughTex", "normalTex", "occlusionTex",
-					"emissiveTex" };
-				for (size_t mi = 0; mi < m_gltfModel.materials.size();
-					++mi) {
-					const auto& gm = m_gltfModel.materials[mi];
-					int ti[5] = {
-						gm.pbrMetallicRoughness.baseColorTexture.index,
-						gm.pbrMetallicRoughness.metallicRoughnessTexture
-							.index,
-						gm.normalTexture.index, gm.occlusionTexture.index,
-						gm.emissiveTexture.index };
-					for (int s = 0; s < 5; ++s) {
-						if (ti[s] < 0 ||
-							ti[s] >= int(m_gltfModel.textures.size()))
-							continue;
-						if (m_gltfModel.textures[size_t(ti[s])].source !=
-							int(ii))
-							continue;
-						if (!r.users.empty())
-							r.users += ", ";
-						r.users += "mat." + std::to_string(mi) + ":" +
-							kSlot[s];
-						++r.useCount;
-					}
+				for (const GltfImportImage::User& u : rec.users) {
+					if (!r.users.empty())
+						r.users += ", ";
+					r.users += u.materialUri + ":" + u.slot;
+					++r.useCount;
 				}
-				if (missingOnly && r.fileOk && r.loaded)
+				if (missingOnly && r.fileOk && (r.loaded || !r.plugTarget.empty()))
 					continue;
 				rows.push_back(std::move(r));
 			}
 			ImGui::TextDisabled(
-				"%zu image(s), %d missing file(s) — relink fixes the "
-				"viewport (editor-only); copy-to-expected also fixes cooks.",
-				m_gltfModel.images.size(), missingFiles);
+				"%zu image(s), %d missing file(s) — relink saves an input "
+				"plug on the source asset's .meta (applied at every "
+				"import/cook/bake); 'To expected' copies the file instead.",
+				rows.size(), missingFiles);
 
 			// Bulk tools: search a folder for the missing basenames.
 			ImGui::SetNextItemWidth(340.0f);
@@ -529,10 +447,10 @@ void EditorApp::DrawPathsPanel() {
 				for (const TexRow& r : rows) {
 					if (r.fileOk)
 						continue;
-					auto f = byBase.find(BaseName(r.uri));
+					auto f = byBase.find(BaseName(r.rec->uri));
 					if (f == byBase.end())
 						continue;
-					RelinkTextureLive(r.img, f->second);
+					RelinkTextureLive(*r.rec, f->second);
 					++found;
 				}
 				Log("Path editor: auto-find in '" +
@@ -542,30 +460,39 @@ void EditorApp::DrawPathsPanel() {
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip(
 					"Scans the folder for missing image basenames and "
-					"live-relinks what it finds (undoable, editor-only).");
+					"relinks what it finds (live slots + a persistent "
+					"input plug on the source asset).");
 
 			int pendingRelink = -1;
 			int pendingCopy = -1;
+			int pendingForget = -1;
 			if (ImGui::BeginTable("##paths_tex", 5,
 					ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
 						ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
 					ImVec2(0, 220))) {
 				ImGui::TableSetupColumn("Image URI");
 				ImGui::TableSetupColumn("Status",
-					ImGuiTableColumnFlags_WidthFixed, 150.0f);
+					ImGuiTableColumnFlags_WidthFixed, 170.0f);
 				ImGui::TableSetupColumn("Used by");
 				ImGui::TableSetupColumn("Loaded",
 					ImGuiTableColumnFlags_WidthFixed, 80.0f);
 				ImGui::TableSetupColumn("Actions",
-					ImGuiTableColumnFlags_WidthFixed, 210.0f);
+					ImGuiTableColumnFlags_WidthFixed, 300.0f);
 				ImGui::TableHeadersRow();
+				int rowId = 0;
 				for (const TexRow& r : rows) {
 					ImGui::TableNextRow();
 					ImGui::TableSetColumnIndex(0);
-					ImGui::PushID(r.img);
-					ImGui::Text("%s", r.uri.c_str());
+					ImGui::PushID(rowId++);
+					ImGui::Text("%s", r.rec->uri.c_str());
 					ImGui::TableSetColumnIndex(1);
-					if (!r.fileOk)
+					if (!r.plugTarget.empty()) {
+						ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f),
+							"plugged");
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("%s", r.plugTarget.c_str());
+					}
+					else if (!r.fileOk)
 						ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
 							"missing file");
 					else if (!r.loaded)
@@ -574,8 +501,6 @@ void EditorApp::DrawPathsPanel() {
 					else
 						ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f),
 							"ok");
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("%s", r.expected.c_str());
 					ImGui::TableSetColumnIndex(2);
 					ImGui::TextDisabled("%s",
 						r.users.empty() ? "(unused)" : r.users.c_str());
@@ -586,110 +511,66 @@ void EditorApp::DrawPathsPanel() {
 							: "-");
 					ImGui::TableSetColumnIndex(4);
 					if (ImGui::SmallButton("Relink..."))
-						pendingRelink = r.img;
+						pendingRelink = rowId - 1;
 					ImGui::SameLine();
 					if (ImGui::SmallButton("To expected"))
-						pendingCopy = r.img;
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip(
-							"Copies the relinked file to the expected "
-							"path (permanent, cook-safe).");
+						pendingCopy = rowId - 1;
+					ImGui::SameLine();
+					if (!r.plugTarget.empty()) {
+						if (ImGui::SmallButton("Forget plug"))
+							pendingForget = rowId - 1;
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip(
+								"Drops the input plug — future imports "
+								"read the authored uri again.");
+					}
 					ImGui::PopID();
 				}
 				ImGui::EndTable();
 			}
 			if (pendingRelink >= 0) {
 				std::string picked;
-				if (NativeOpenFile(picked, true) && !picked.empty())
-					RelinkTextureLive(pendingRelink, picked);
+				if (NativeOpenFile(picked, true) && !picked.empty()
+					&& size_t(pendingRelink) < rows.size())
+					RelinkTextureLive(*rows[size_t(pendingRelink)].rec, picked);
+			}
+			if (pendingForget >= 0 && size_t(pendingForget) < rows.size()) {
+				const TexRow& r = rows[size_t(pendingForget)];
+				ForgetTexturePlug(r.rec->source, r.rec->uri);
 			}
 			if (pendingCopy >= 0) {
-				const TexRow* hit = nullptr;
-				for (const TexRow& r : rows)
-					if (r.img == pendingCopy) {
-						hit = &r;
-						break;
-					}
-				if (hit && !hit->expected.empty()) {
-					std::string src;
-					for (const PathRemap& pr : m_pathRemaps)
-						if (pr.oldUri == hit->uri) {
-							src = pr.newPath;
-							break;
+				if (size_t(pendingCopy) >= rows.size()) {
+					// (unreachable — kept for symmetry with the pickers)
+				}
+				else {
+					const TexRow& r = rows[size_t(pendingCopy)];
+					// Copy the plug target (or a picked file) to the
+					// uri's expected path — the permanent, source-visible
+					// fix (no editor state involved).
+					const std::string expected = expectedFor(r.rec->uri);
+					if (expected.empty())
+						Log("Path editor: embedded uri — nothing to copy.");
+					else {
+						std::string src = r.plugTarget;
+						if (src.empty() || !PathExists(src)) {
+							if (!NativeOpenFile(src, true))
+								src.clear();
 						}
-					if (src.empty() || !PathExists(src)) {
-						if (!NativeOpenFile(src, true))
-							src.clear();
-					}
-					if (!src.empty() && PathExists(src)) {
-						std::error_code ec;
-						fs::create_directories(
-							fs::path(hit->expected).parent_path(), ec);
-						fs::copy_file(src, hit->expected,
-							fs::copy_options::overwrite_existing, ec);
-						if (!ec)
-							Log("Path editor: copied '" + src + "' -> '" +
-								hit->expected + "' (cook-safe).");
-						else
-							Log("Path editor: copy failed: " + ec.message());
+						if (!src.empty() && PathExists(src)) {
+							std::error_code ec;
+							fs::create_directories(
+								fs::path(expected).parent_path(), ec);
+							fs::copy_file(src, expected,
+								fs::copy_options::overwrite_existing, ec);
+							if (!ec)
+								Log("Path editor: copied '" + src + "' -> '"
+									+ expected + "' (cook-safe).");
+							else
+								Log("Path editor: copy failed: " + ec.message());
+						}
 					}
 				}
 			}
-			// Active remaps (editor-only; cooks need the copy above).
-			if (!m_pathRemaps.empty()) {
-				ImGui::Separator();
-				ImGui::TextDisabled(
-					"%zu live relink(s) — editor-only, re-applied on load "
-					"(cooks need 'To expected'):",
-					m_pathRemaps.size());
-				int dropRemap = -1;
-				for (size_t i = 0; i < m_pathRemaps.size(); ++i) {
-					ImGui::PushID(int(i));
-					ImGui::BulletText("%s -> %s",
-						m_pathRemaps[i].oldUri.c_str(),
-						m_pathRemaps[i].newPath.c_str());
-					ImGui::SameLine();
-					if (ImGui::SmallButton("Forget"))
-						dropRemap = int(i);
-					ImGui::PopID();
-				}
-				if (dropRemap >= 0) {
-					m_pathRemaps.erase(
-						m_pathRemaps.begin() + ptrdiff_t(dropRemap));
-					AutosaveTour();
-				}
-			}
-		}
-	}
-
-	// ---- buffers -----------------------------------------------------
-	if (ImGui::CollapsingHeader("Buffers (.bin)")) {
-		if (!m_hasGltfModel) {
-			ImGui::TextDisabled("Pak scene: no glTF buffer list.");
-		}
-		else {
-			bool any = false;
-			for (size_t i = 0; i < m_gltfModel.buffers.size(); ++i) {
-				const std::string uri = m_gltfModel.buffers[i].uri;
-				if (IsEmbeddedUri(uri))
-					continue;
-				any = true;
-				const std::string exp = expectedFor(uri);
-				const bool ok = PathExists(exp);
-				if (missingOnly && ok)
-					continue;
-				if (!ok)
-					ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
-						"missing: %s", uri.c_str());
-				else
-					ImGui::TextDisabled("ok: %s", uri.c_str());
-			}
-			if (!any)
-				ImGui::TextDisabled("All buffers embedded (no files).");
-			else
-				ImGui::TextDisabled(
-					"Buffers load at import — a missing .bin needs the "
-					"file restored next to the glTF, then reopen.");
 		}
 	}
 

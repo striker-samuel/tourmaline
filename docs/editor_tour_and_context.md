@@ -407,8 +407,10 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 └─ EditorApp
    ├─ RHI residency: m_context (device/queues/VMA), AllocateStaticVertexFmt heap,
    │  TextureStreamer (+TexMode Streaming/Coarse/Full), bindless remap
-   ├─ Scene definition: m_gltfPath/HostPath, m_world (GPU World), m_gltfModel (CPU pick),
-   │  m_clusterBase/RootWorld (world<->cluster translation), m_deletedNodes, m_disabledRefRoots
+   ├─ Scene definition: m_gltfPath/HostPath, m_world (GPU World; CPU picks
+   │  read the clusters' retained uploads through the world's asset registry),
+   │  m_importImages (importer data records), m_clusterBase (world<->cluster
+   │  translation), m_deletedNodes, m_disabledRefRoots
    ├─ Document: m_history/m_historyCursor (cap 300), m_orphanTourCmds, m_tourPath/Dirty,
    │  autosave (%APPDATA%/tourmalineEditor/autosave/<stem>.tour) + recovery dialog
    ├─ View: m_editorCams (Persp/Top/Side), m_viewports[4] (cam+ViewMode+rect+frame slice),
