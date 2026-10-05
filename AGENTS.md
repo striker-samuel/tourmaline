@@ -61,6 +61,11 @@ $env:VULKANTOY_LIGHTS_STATIC='1'; $env:VULKANTOY_CAPTURE='48'
 - `VULKANTOY_AO=off|ssao|sao` pins the AO mode headless (default sao; the O
   key / UI combo stay live); combined with `VULKANTOY_SSR`,
   `VULKANTOY_EVSM`, `VULKANTOY_TRANSPARENCY` this spans the full A/B matrix
+- `VULKANTOY_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
+  (scene fog settings lose); `VULKANTOY_VOLUMETRIC_STEPS=<4..128>` pins the
+  march steps for heavy fog benches; `VULKANTOY_VOLUMETRIC_CVOL=0` is the
+  fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
+  refresh) — pairs with `VULKANTOY_VOLUMETRIC` for pure-octree fog cost A/B
 - `--bench <n>` runs 10 warmup + n measured frames, then exits
 
 ## Tests

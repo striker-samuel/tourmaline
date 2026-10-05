@@ -1175,6 +1175,31 @@ void TestCvVolume() {
 				packOk = false;
 		Check(packOk, "cvol gpu pack shape");
 		Check(strip.GpuBytes() == size_t(2) * 56, "cvol gpu bytes");
+
+		// Isotropic-mean payload (the volumetric fog's one-fetch path —
+		// PackGpuMeanLayer): rgb = 0.124959 * Σ lobes per voxel (the
+		// VolGiMean constant, volumetric.frag.hlsl), a = 1, half-rounded —
+		// trilerp(Σ) == Σ(trilerp) makes it the same mean the fog's
+		// 7-fetch + unpack + lobe-sum path computes.
+		std::vector<uint16_t> meanLayer;
+		strip.PackGpuMeanLayer(meanLayer);
+		Check(meanLayer.size() == size_t(2) * 4, "cvol mean pack shape");
+		bool meanOk = true;
+		for (uint64_t v = 0; v < strip.VoxelCount(); ++v) {
+			glm::vec3 sum(0.0f);
+			for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe)
+				sum += strip.coeffs[size_t(v) * kSgLobeCount + lobe];
+			const glm::vec3 want = glm::clamp(sum * 0.124959f,
+				glm::vec3(0.0f), glm::vec3(65504.0f));
+			for (int c = 0; c < 3; ++c) {
+				const float got = UnpackHalf(meanLayer[size_t(v) * 4 + c]);
+				if (std::abs(got - want[c]) > 0.05f)
+					meanOk = false;
+			}
+			if (UnpackHalf(meanLayer[size_t(v) * 4 + 3]) != 1.0f)
+				meanOk = false;
+		}
+		Check(meanOk, "cvol mean pack matches VolGiMean sum");
 	}
 	// ---- Bake: empty scene (all-sky) ----
 	{

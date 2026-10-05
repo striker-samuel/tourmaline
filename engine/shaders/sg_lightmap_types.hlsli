@@ -35,25 +35,47 @@ struct SgRegularObbGpu
 struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
 
 // Convex GI volume (cubemap_volume.h) GPU types. Sampling helpers live in
-// sg_cvol.hlsli. The plane set is INLINE (up to SG_CV_MAX_PLANES fixed
-// slots per volume; 560 B each) so a volume is one BDA fetch — no plane
-// indirection on the per-pixel blend path.
+// sg_cvol.hlsli. Header + plane POOL split (the old layout inlined the
+// whole 16-plane array in a 560 B aggregate; copying it by value through
+// the blend helpers dominated the shader's data-movement instruction
+// mix). Volumes are 80 B headers (fade-expanded AABB broad-phase + the
+// CPU-precomputed world->uvw lattice transform + the plane span); planes
+// live in a shared packed pool fetched one 32 B slot at a time (only the
+// planes a volume actually has). All members are float4/uint4 — std430
+// keeps vec3 16-byte-stride, explicit vec4s mirror the C++ packer with
+// zero padding surprises (the SgRegularObbGpu rule above).
 #define SG_CV_MAX_VOLUMES 8
 #define SG_CV_LAYERS 7     // RGBA16F 3D textures per volume (sgrv layout)
 #define SG_CV_MAX_PLANES 16
 
+// One convex half-space. equation = (n.xyz, d), inside: dot(n, P) + d
+// <= 0. fadeScaleBias packs the CPU-normalized fade ramp:
+// t = saturate(inside * fadeScaleBias.x + fadeScaleBias.y) is the
+// plane's normalized fade position (0 = beyond the outside fade, 1 =
+// past the inside fade) — the packed form of smoothstep(-outsideFade,
+// insideFade, inside) with the division hoisted to the CPU
+// (fadeScale = 1/(insideFade + outsideFade), fadeBias =
+// outsideFade * fadeScale).
 struct CvPlaneGpu
 {
-    float4 normal_d;   // xyz plane normal, w = d (inside: dot(n,P) + d <= 0)
-    float4 fades;      // x = insideFade, y = outsideFade, zw pad
+    float4 equation;      // xyz plane normal, w = d
+    float4 fadeScaleBias; // x fadeScale, y fadeBias, zw pad
 };
 
 struct CvVolumeGpu
 {
-    float4 gridMin_spacing; // xyz lattice origin (AABB of the convex region), w probe spacing (m)
-    uint4 dims_priority;    // xyz lattice resolution, w priority (app uploads priority-sorted, low first)
-    uint4 planeCount_pad;   // x = plane count
-    CvPlaneGpu planes[SG_CV_MAX_PLANES];
+    float4 aabbMin;        // xyz fade-expanded hull AABB min (broad-phase reject)
+    float4 aabbMax;        // xyz fade-expanded max, w pad
+    float4 uvwScale;       // xyz world->lattice-uvw scale = 1/(spacing*max(dims,1)), w pad
+    float4 uvwBias;        // xyz = -gridMin * uvwScale, w pad (uvw = saturate(pos*scale + bias))
+    uint4 planeCountBase;  // x plane count, y first plane in the shared pool below, zw pad
 };
 
-struct CvVolumesBuffer { CvVolumeGpu volumes[SG_CV_MAX_VOLUMES]; };
+// One BDA covers headers + the packed plane pool (the volume count rides
+// FrameUniforms::cvolCount; priority is the UPLOAD order — the app sorts
+// low first, the compositor walks high first).
+struct CvVolumesBuffer
+{
+    CvVolumeGpu volumes[SG_CV_MAX_VOLUMES];                    // 8 x 80 B
+    CvPlaneGpu planes[SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES];   // up to 128 x 32 B
+};

@@ -232,6 +232,7 @@ static smvk::VolumetricDesc MakeVolumetricDesc() {
 	d.giScale = 1.0f;
 	d.useGi = 1;
 	d.useSun = 1;
+	d.useCvolGi = 1;
 	d.jitterStrength = 1.0f;
 	d.heightFalloff = 0.0f;
 	d.heightBase = 0.0f;
@@ -708,6 +709,26 @@ bool WorldRenderer::Initialize() {
 			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
 			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
+		}
+		// Volumetric march-step override for headless A/B runs (4..128;
+		// heavy fog configs without UI interaction — the quality preset
+		// combos stay live after).
+		if (const char* vsEnv = std::getenv("VULKANTOY_VOLUMETRIC_STEPS")) {
+			const int vs = std::atoi(vsEnv);
+			if (vs >= 4 && vs <= 128)
+				m_volumetricSteps = vs;
+			else
+				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_STEPS out of range (4..128): " << vsEnv << "\n";
+		}
+		// Fog-GI quality bypass for headless A/B runs: 0 = the fog
+		// composites octree/sky only (no convex-volume walk per
+		// refresh). Pairs with VULKANTOY_VOLUMETRIC for pure-octree fog
+		// cost measurements.
+		if (const char* vcEnv = std::getenv("VULKANTOY_VOLUMETRIC_CVOL")) {
+			const std::string_view vc = trimEnv(vcEnv);
+			if (vc == "1" || vc == "on") m_volumetricUseCvolGi = true;
+			else if (vc == "0" || vc == "off") m_volumetricUseCvolGi = false;
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC_CVOL value: " << vc << "\n";
 		}
 		// Bloom tuning overrides for headless A/B runs (threshold is
 		// pre-exposure HDR, same units as the ImGui sliders; intensity is
@@ -2586,24 +2607,35 @@ void WorldRenderer::Shutdown() {
 	// Convex GI volumes (Engine/GI/cubemap_volume.h; GiBaker --cv-spec).
 	// Loads content/gi/<scene>.cvmanifest: one .cvol vfs path per line, up
 	// to SG_CV_MAX_VOLUMES (8). Each volume uploads 7 RGBA16F 3D textures
-	// (dense probe grid, hardware trilinear) + one 560 B descriptor with
-	// the convex plane set INLINE (per-plane fades) + priority. Volumes are
-	// uploaded priority-sorted (LOW first) so the shader's ordered
-	// compositing is a plain loop — later volumes override earlier ones
-	// (FOX override-volume rule). Missing manifest = "not baked yet" -
-	// non-fatal.
+	// (dense probe grid, hardware trilinear) + one 80 B descriptor with
+	// the fade-expanded hull AABB (broad-phase reject), the CPU-packed
+	// world->uvw lattice transform and the plane span into a shared plane
+	// pool (per-plane fade scale/bias precomputed — no per-pixel division).
+	// Volumes are uploaded priority-sorted (LOW first) so the shader's
+	// compositing walk (HIGH first, transmittance form) is a plain loop —
+	// higher priority overrides lower (FOX override-volume rule).
+	// Missing manifest = "not baked yet" - non-fatal.
 	// ---------------------------------------------------------------------------
+	// GPU pack (must mirror CvVolumeGpu/CvPlaneGpu in
+	// sg_lightmap_types.hlsli — all float4/uint4 rows, std430-clean).
 	struct CvolPlaneGpu {
-		float normal_d[4]; // xyz plane normal, w = d (inside n.P + d <= 0)
-		float fades[4];    // x insideFade, y outsideFade, zw pad
+		float equation[4];      // xyz plane normal, w = d (inside n.P + d <= 0)
+		float fadeScaleBias[4]; // x fadeScale = 1/max(in+out fade), y fadeBias = out*fadeScale
 	};
 	struct CvolVolumeGpu {
-		float gridMin_spacing[4]; // xyz lattice origin, w spacing
-		uint32_t dims_priority[4]; // xyz dims, w priority
-		uint32_t planeCount_pad[4]; // x plane count
-		CvolPlaneGpu planes[16]; // SG_CV_MAX_PLANES (sg_lightmap_types.hlsli)
+		float aabbMin[4];       // xyz fade-expanded hull AABB min, w pad
+		float aabbMax[4];       // xyz fade-expanded max, w pad
+		float uvwScale[4];      // xyz 1/(spacing*max(dims,1)), w pad
+		float uvwBias[4];       // xyz -gridMin*uvwScale, w pad
+		uint32_t planeCountBase[4]; // x plane count, y first pool plane, zw pad
 	};
-	static_assert(sizeof(CvolVolumeGpu) == 560);
+	struct CvolVolumesGpu {
+		CvolVolumeGpu volumes[8];          // SG_CV_MAX_VOLUMES
+		CvolPlaneGpu planes[8 * 16];      // SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES
+	};
+	static_assert(sizeof(CvolPlaneGpu) == 32);
+	static_assert(sizeof(CvolVolumeGpu) == 80);
+	static_assert(sizeof(CvolVolumesGpu) == 8 * 80 + 128 * 32);
 
 	void WorldRenderer::LoadCvolumes(smvk::OverlayVfs& vfs) {
 		m_cvolLoaded = false;
@@ -2686,6 +2718,30 @@ void WorldRenderer::Shutdown() {
 				cv.layers[t] = std::move(tex);
 				cv.layerSlots[t] = m_context->GetTextureBindlessIndex(cv.layers[t]);
 			}
+			// Isotropic-mean texture (the volumetric fog's one-fetch path,
+			// PackGpuMeanLayer): same failure discipline as the 7 layers —
+			// a volume publishes only with all 8 textures up.
+			{
+				std::vector<uint16_t> meanLayer;
+				cv.volume.PackGpuMeanLayer(meanLayer);
+				smvk::ImageCreateInfo mci{};
+				mci.type = smvk::ImageType::Image3D;
+				mci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+					cv.volume.dims[2] };
+				mci.format = smvk::Format::RGBA16_Float;
+				mci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+				mci.mipLevels = 1;
+				mci.arrayLayers = 1;
+				mci.name = "cvol mean";
+				auto meanTex = m_context->CreateTexture(mci, meanLayer.data());
+				if (meanTex.empty()) {
+					std::cerr << "[CV] mean texture creation failed\n";
+					ok = false;
+				} else {
+					cv.meanTex = std::move(meanTex);
+					cv.meanSlot = m_context->GetTextureBindlessIndex(cv.meanTex);
+				}
+			}
 			if (!ok)
 				continue;
 			// Coefficients are now resident on the GPU; drop the CPU copy.
@@ -2705,42 +2761,76 @@ void WorldRenderer::Shutdown() {
 				return a.volume.def.priority < b.volume.def.priority;
 			});
 
-		// Descriptor buffer (float4/uint4-padded layout, see CvolVolumeGpu).
-		std::vector<CvolVolumeGpu> descs(m_cvolVolumes.size());
+		// Descriptor pack (headers + shared plane pool, see CvolVolumesGpu).
+		// Priority ride: upload order == compositing priority (LOW first,
+		// the shader walks HIGH first) — the old explicit priority field
+		// was dead weight, the order carries it.
+		CvolVolumesGpu descs{};
+		uint32_t planeBase = 0;
 		for (size_t v = 0; v < m_cvolVolumes.size(); ++v) {
 			const smvk::gi::CvVolume& vol = m_cvolVolumes[v].volume;
-			CvolVolumeGpu& g = descs[v];
-			g.gridMin_spacing[0] = vol.gridMin.x;
-			g.gridMin_spacing[1] = vol.gridMin.y;
-			g.gridMin_spacing[2] = vol.gridMin.z;
-			g.gridMin_spacing[3] = vol.spacing;
-			g.dims_priority[0] = vol.dims[0];
-			g.dims_priority[1] = vol.dims[1];
-			g.dims_priority[2] = vol.dims[2];
-			g.dims_priority[3] = vol.def.priority;
+			CvolVolumeGpu& g = descs.volumes[v];
+			// Fade-expanded hull AABB (broad-phase reject): Bounds() is
+			// already a generous superset of the convex hull, grown by the
+			// widest outsideFade per axis — a superset of the weight>0
+			// region, so an AABB reject is always exact. An unbounded
+			// plane set (bad authoring) keeps the volume loadable like
+			// before: a huge box means the per-pixel plane tests decide.
+			glm::vec3 mn = glm::vec3(-1e30f), mx = glm::vec3(1e30f);
+			float fadeOut = 0.0f;
+			for (const smvk::gi::CvPlane& pl : vol.def.planes)
+				fadeOut = std::max(fadeOut, pl.outsideFade);
+			{
+				glm::vec3 bmn, bmx;
+				if (vol.def.Bounds(bmn, bmx)) {
+					mn = bmn - glm::vec3(fadeOut);
+					mx = bmx + glm::vec3(fadeOut);
+				}
+			}
+			g.aabbMin[0] = mn.x; g.aabbMin[1] = mn.y; g.aabbMin[2] = mn.z;
+			g.aabbMax[0] = mx.x; g.aabbMax[1] = mx.y; g.aabbMax[2] = mx.z;
+			// CPU-packed world->uvw lattice transform (the old shader
+			// rebuilt this from gridMin/spacing/dims per tap):
+			// uvw = saturate(pos * uvwScale + uvwBias), with the degenerate
+			// guards (dims >= 1, spacing*dims >= 1e-6) baked in.
+			const glm::vec3 d = glm::max(
+				glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2]), glm::vec3(1.0f));
+			const glm::vec3 s = glm::max(
+				glm::vec3(vol.spacing) * d, glm::vec3(1e-6f));
+			const glm::vec3 scale = 1.0f / s;
+			g.uvwScale[0] = scale.x; g.uvwScale[1] = scale.y; g.uvwScale[2] = scale.z;
+			g.uvwBias[0] = -vol.gridMin.x * scale.x;
+			g.uvwBias[1] = -vol.gridMin.y * scale.y;
+			g.uvwBias[2] = -vol.gridMin.z * scale.z;
+			// Plane span into the shared pool; fades pre-normalized:
+			// t = saturate(inside * fadeScale + fadeBias) — the packed
+			// form of the old smoothstep(-outsideFade, insideFade,
+			// inside) with the division hoisted here. Degenerate spans
+			// (< 1e-5 m, authored-CPU step branch) pack as a 1e-5 m ramp
+			// — identical below any content-relevant epsilon.
 			const uint32_t planeCount = std::min<uint32_t>(
 				uint32_t(vol.def.planes.size()), 16u);
-			g.planeCount_pad[0] = planeCount;
+			g.planeCountBase[0] = planeCount;
+			g.planeCountBase[1] = planeBase;
 			for (uint32_t p = 0; p < planeCount; ++p) {
 				const smvk::gi::CvPlane& pl = vol.def.planes[p];
-				g.planes[p].normal_d[0] = pl.normal.x;
-				g.planes[p].normal_d[1] = pl.normal.y;
-				g.planes[p].normal_d[2] = pl.normal.z;
-				g.planes[p].normal_d[3] = pl.d;
-				g.planes[p].fades[0] = pl.insideFade;
-				g.planes[p].fades[1] = pl.outsideFade;
-				g.planes[p].fades[2] = 0.0f;
-				g.planes[p].fades[3] = 0.0f;
+				CvolPlaneGpu& pg = descs.planes[planeBase + p];
+				pg.equation[0] = pl.normal.x;
+				pg.equation[1] = pl.normal.y;
+				pg.equation[2] = pl.normal.z;
+				pg.equation[3] = pl.d;
+				const float span = std::max(pl.insideFade + pl.outsideFade, 1e-5f);
+				pg.fadeScaleBias[0] = 1.0f / span;
+				pg.fadeScaleBias[1] = pl.outsideFade * pg.fadeScaleBias[0];
 			}
+			planeBase += planeCount;
 		}
 		constexpr smvk::PipelineStage kCvStages =
 			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
 		m_cvolVolumesBuffer = m_context->CreateBuffer(
-			descs.size() * sizeof(CvolVolumeGpu), smvk::BufferType_Storage,
-			"cvol volumes");
-		m_context->UploadDataToBuffer(m_cvolVolumesBuffer, descs.data(),
-			descs.size() * sizeof(CvolVolumeGpu), kCvStages,
-			smvk::AccessFlags::ShaderRead);
+			sizeof(CvolVolumesGpu), smvk::BufferType_Storage, "cvol volumes");
+		m_context->UploadDataToBuffer(m_cvolVolumesBuffer, &descs,
+			sizeof(CvolVolumesGpu), kCvStages, smvk::AccessFlags::ShaderRead);
 		m_cvolVolumesAddress = m_context->GetBufferDeviceAddress(m_cvolVolumesBuffer);
 
 		m_cvolLoaded = true;
@@ -3035,22 +3125,35 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			data.cvolVolumes = m_cvolVolumesAddress;
 			const uint32_t n = std::min<uint32_t>(
 				uint32_t(m_cvolVolumes.size()), 8u);
-			for (uint32_t v = 0; v < n; ++v)
+			for (uint32_t v = 0; v < n; ++v) {
 				for (uint32_t t = 0; t < 7; ++t)
 					data.cvolLayers[v * 7u + t] = m_cvolVolumes[v].layerSlots[t];
+				// Volumetric one-fetch mean slots (fog-only payload).
+				data.cvolMeanLayers[v] = m_cvolVolumes[v].meanSlot;
+			}
 			data.cvolCount = n;
 			data.cvolEnabled = ProbesWanted() ? 1u : 0u;
 		} else {
 			data.cvolVolumes = 0;
 			for (uint32_t& slot : data.cvolLayers)
 				slot = UINT32_MAX;
+			for (uint32_t& slot : data.cvolMeanLayers)
+				slot = UINT32_MAX;
 			data.cvolCount = 0u;
 			data.cvolEnabled = 0u;
 		}
-		data.cvolPad_[0] = 0;
-		data.cvolPad_[1] = 0;
-		data.cvolPad_[2] = 0;
-		data.cvolPad_[3] = 0;
+		// Convex-volume tile masks: published under the decal tile-list
+		// freshness contract above, with the DsActive() term the dispatch
+		// gate carries (TileCullWillRun) — the address only goes out when
+		// THIS frame's dispatch refreshes the masks. Zeros (= no publish)
+		// make the shader walk every volume instead; the per-volume AABB
+		// reject in SgCvWeight keeps that path correct.
+		if (m_viewportResources.forwardPlus.Valid() && TileCullWillRun()) {
+			data.cvolTileMasks =
+				m_viewportResources.forwardPlus.VolumeTileMasksAddress(*m_context);
+			data.cvolTileCountX = m_viewportResources.forwardPlus.tileCountX;
+			data.cvolTileSize = m_viewportResources.forwardPlus.desc.tileSize;
+		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
 		// ---- Forward+ decals (tiled projected splats) ----
@@ -6378,22 +6481,32 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	if (m_cvolLoaded && m_cvolEnabled) {
 		data.cvolVolumes = m_cvolVolumesAddress;
 		const uint32_t n = std::min<uint32_t>(uint32_t(m_cvolVolumes.size()), 8u);
-		for (uint32_t cv = 0; cv < n; ++cv)
+		for (uint32_t cv = 0; cv < n; ++cv) {
 			for (uint32_t t = 0; t < 7; ++t)
 				data.cvolLayers[cv * 7u + t] = m_cvolVolumes[cv].layerSlots[t];
+			// Volumetric one-fetch mean slots (fog-only payload).
+			data.cvolMeanLayers[cv] = m_cvolVolumes[cv].meanSlot;
+		}
 		data.cvolCount = n;
 		data.cvolEnabled = ProbesWanted() ? 1u : 0u;
 	} else {
 		data.cvolVolumes = 0;
 		for (uint32_t& slot : data.cvolLayers)
 			slot = UINT32_MAX;
+		for (uint32_t& slot : data.cvolMeanLayers)
+			slot = UINT32_MAX;
 		data.cvolCount = 0u;
 		data.cvolEnabled = 0u;
 	}
-	data.cvolPad_[0] = 0;
-	data.cvolPad_[1] = 0;
-	data.cvolPad_[2] = 0;
-	data.cvolPad_[3] = 0;
+	// Convex-volume tile masks: the VIEW's forward+ tile cull refreshes
+	// them (no deferred-shadow path on secondary views — the plain
+	// forwardPlusCull gate is the freshness contract; zeros = the
+	// shader walks every volume, per-volume AABB reject keeps it right).
+	if (v.vp.forwardPlus.Valid() && m_passes.forwardPlusCull) {
+		data.cvolTileMasks = v.vp.forwardPlus.VolumeTileMasksAddress(*m_context);
+		data.cvolTileCountX = v.vp.forwardPlus.tileCountX;
+		data.cvolTileSize = v.vp.forwardPlus.desc.tileSize;
+	}
 	// EVSM stays a main-view opt-in: the view's light entries address its
 	// PCF depth atlases (see UpdateSecondaryLights), so its uniforms
 	// publish the PCF interpretation.
@@ -6907,6 +7020,14 @@ void WorldRenderer::RenderSecondaryViews(smvk::Framebuffer& fb) {
 			[this, pc, cullView, eye = v.frameData.cameraPos](smvk::CommandBuffer& cmd) {
 			RecordSecondaryMain(cmd, pc, cullView, eye);
 		});
+		// Convex-volume tile masks: ViewMain shades through the same lit
+		// FS family, so the view's cull -> view-main edge needs ordering
+		// (freshness contract: v.frameData.cvolTileMasks publishes only
+		// when the view's cull dispatch runs).
+		if (v.frameData.cvolTileMasks != 0) {
+			smvk::ForwardPlus::AddVolumeMaskReadHints(mainPass,
+				v.vp.forwardPlus.volumeTileMasksLogical);
+		}
 		// Tonemap -> the view's own output image (persists across
 		// off-phase frames; the host composites it every frame).
 		{
@@ -8302,6 +8423,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// deferred shadows — with lightCount 0 (the DS lists own the lights,
 	// the light leg of the cull is dead work; the decal leg still fills
 	// the per-tile decal lists, so splats work in BOTH shading paths).
+	// Convex GI volumes ride the same rule through their per-tile
+	// bitmask leg (TileCullWillRun is the single gate for the dispatch
+	// AND the FrameUniforms mask publish — see UpdateFrameUniforms).
 	const bool dsOn = DsActive();
 	const bool decalListsNeeded = DecalsActive() && m_decalFrameCount > 0;
 	// Reflection probes ride the light buffer tail as type-2 entries: the
@@ -8315,7 +8439,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// lights either way.
 	const bool probeListsWanted = ProbeTileListsWanted();
 	rfPB = bench_clk::now();
-	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted))
+	if (TileCullWillRun())
 		m_fpRenderer.AppendTileCull(fc, fpLightCount + ProbeEntryCount());
 	if (dsOn)
 		AppendDeferredShadowPhases(fb.frameIndex,
@@ -9642,6 +9766,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.forwardPlus.tileCountsLogical,
 			m_viewportResources.forwardPlus.tileIndicesLogical);
 	}
+	// Convex-volume tile masks are read by Main in BOTH shading paths
+	// (cvol compositing is independent of the light-list source); the
+	// volume leg of the tile cull wrote them this frame
+	// (frameData.cvolTileMasks publishes only when the dispatch ran —
+	// TileCullWillRun gates them together).
+	if (frameData.cvolTileMasks != 0) {
+		smvk::ForwardPlus::AddVolumeMaskReadHints(mainPass,
+			m_viewportResources.forwardPlus.volumeTileMasksLogical);
+	}
 		{
 			smvk::BufferSyncRequest fpLightRead{};
 			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -10237,6 +10370,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			volDesc.giScale = m_volumetricGi;
 			volDesc.useGi = m_volumetricUseGi ? 1u : 0u;
 			volDesc.useSun = m_volumetricUseSun ? 1u : 0u;
+			volDesc.useCvolGi = m_volumetricUseCvolGi ? 1u : 0u;
 			volDesc.jitterStrength = m_volumetricJitter;
 			volDesc.heightFalloff = m_volumetricHeightFalloff;
 			volDesc.heightBase = m_volumetricHeightBase;
@@ -10249,23 +10383,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				// Debug views: fog would Beer-Lambert the flat readout
 				// and add scatter on top (DebugVisualizationActive).
 				&& !DebugVisualizationActive();
-			if (volOn) {
-				m_viewportResources.volumetric.AddVolumetricPass(
-					*m_rendergraph,
-					sceneHdrView,
-					sceneHdrBindless,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.renderDepth.bindlessIndex,
-					frameUniformsAddress,
-					linearSampler,
-					renderExtent,
-					frameData.time,
-					volDesc,
-					"Volumetric");
-				sceneHdrView = m_viewportResources.volumetric.OutputView();
-				sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
-				volumetricEmitted = true;
+		if (volOn) {
+			auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
+				*m_rendergraph,
+				sceneHdrView,
+				sceneHdrBindless,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				frameUniformsAddress,
+				linearSampler,
+				renderExtent,
+				frameData.time,
+				volDesc,
+				"Volumetric");
+			// Convex-volume tile masks: the fog march reads the per-tile
+			// volume bitmask (fragment) after the tile cull wrote it
+			// (compute) — order the edge (same freshness contract as the
+			// Main hint: the publish gate and the dispatch gate agree).
+			if (frameData.cvolTileMasks != 0) {
+				smvk::ForwardPlus::AddVolumeMaskReadHints(volPass,
+					m_viewportResources.forwardPlus.volumeTileMasksLogical);
 			}
+			sceneHdrView = m_viewportResources.volumetric.OutputView();
+			sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
+			volumetricEmitted = true;
+		}
 		}
 
 		// ---------------------------------------------------------------------
@@ -10982,6 +11124,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
 							ImGui::Checkbox("GI probes ambient", &m_volumetricUseGi);
 							ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
+							ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseCvolGi);
 							ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
 							ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
 							if (m_volumetricHeightFalloff > 0.0f)

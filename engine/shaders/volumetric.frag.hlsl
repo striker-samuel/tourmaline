@@ -35,11 +35,11 @@ struct VolumetricPush
     float giScale;
     uint useGi;
     uint useSun;
+    uint useCvolGi;         // 1 = convex volumes stack into the fog GI
     float jitterStrength;
     float heightFalloff;
     float heightBase;
     float time;
-    uint pad0;
     uint pad1;
 };
 
@@ -64,6 +64,11 @@ float VolPhaseHg(float cosT, float g)
 // Isotropic mean radiance of the SG probe field: integral over the sphere
 // divided by 4pi. Integral of one unit SG lobe = 2pi/l*(1-e^-2l); with the
 // fixed sharpness 4 the mean weight is (1-e^-8)/8 ~= 0.125 per lobe.
+// The mean is LINEAR in the amps — the fog consumes it through the
+// dedicated one-fetch/one-accumulator paths (SgCvCompositeMean +
+// SgGiSampleMean; the CPU packs per-volume mean textures with the same
+// constant, CvVolume::PackGpuMeanLayer): the constant MUST stay in sync
+// in all three places.
 float3 VolGiMean(float3 amps[SG_GI_LOBES])
 {
     float3 sum = float3(0.0, 0.0, 0.0);
@@ -77,9 +82,13 @@ PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
     FrameUniforms frame = vp.frameUniforms.Get();
-    Texture2D hdrTex = textures[NonUniformResourceIndex(vp.hdrTextureIndex)];
-    Texture2D depthTex = textures[NonUniformResourceIndex(vp.depthTextureIndex)];
-    SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
+    // Push-constant indices are wave-UNIFORM (same for every pixel of the
+    // draw): plain bindless indexing keeps the descriptor fetches scalar.
+    // NonUniformResourceIndex here would force divergent descriptor paths
+    // for indices that can never diverge.
+    Texture2D hdrTex = textures[vp.hdrTextureIndex];
+    Texture2D depthTex = textures[vp.depthTextureIndex];
+    SamplerState smp = samplers[vp.samplerIndex];
 
     float3 base = SanitizeHdr(hdrTex.Sample(smp, IN.uv).rgb);
 
@@ -143,7 +152,49 @@ PSOut mainPS(PSIn IN)
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
     float giStrength = max(frame.giIntensity, 0.0f) * max(vp.giScale, 0.0f);
 
-    float3 throughput = float3(1.0, 1.0, 1.0);
+    // ---- Loop-invariant GI bases (the old body re-evaluated the sky
+    // ambient every segment; these are pixel-constants) ----
+    // Sky's up-facing mean — the fog ambient fallback (no octree
+    // coverage, no volumes).
+    const float3 skyMean =
+        EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env) * 0.31831;
+    // Fog GI sources: giOn = the octree world field, cvolGiOn = convex
+    // volumes stacking over it. cvolGiOn is the fog-GI quality bypass
+    // (useCvolGi = 0): octree/sky only — no tile-mask load, no volume
+    // walk at all.
+    const bool cvolGiOn = (vp.useCvolGi != 0u) && (frame.cvolEnabled != 0u);
+    const bool fogGiOn = (giOn > 0.5) || cvolGiOn;
+    // Per-tile volume bitmask is pixel-constant: one lookup per PIXEL
+    // (0 under the bypass — the mean composite then walks nothing).
+    uint volMask = 0u;
+    if (cvolGiOn)
+        volMask = SgCvTileMask(frame, IN.pos.xy);
+    // Scattering intensity hoisted (push constant, but keeps the hot
+    // segment clean of the max()).
+    const float intensity_ = intensity;
+
+    // GI refresh cadence: the GI field is spatially low-frequency next
+    // to the extinction integration, so the march samples it every
+    // kVolGiRefreshDist world units along the ray and HOLDS the value
+    // between refreshes — 16-64 fog steps no longer mean 16-64
+    // independent octree walks + volume composites per pixel.
+    // Distance-based, not step-based: the quadratic step distribution
+    // makes near steps millimeters and far steps meters, so a step
+    // cadence would thrash the near end (no savings) and starve the
+    // far end. 0.75 m sits in the 0.5-1.0 m band ~ typical probe
+    // spacing at bake densities.
+    static const float kVolGiRefreshDist = 0.75;
+    float giT = -1e30; // distance of the last refresh (expired -> seg 0)
+
+    // Ambient base: the GI-off value is pixel-constant (one sky eval for
+    // the whole march); the GI-on value refreshes on the cadence below.
+    float3 ambient = skyMean * giStrength;
+    if (!fogGiOn)
+        ambient *= iblOn;
+
+    // Extinction is achromatic — scalar throughput (the old float3 kept
+    // three identical components alive through the whole march).
+    float throughput = 1.0;
     float3 scatter = float3(0.0, 0.0, 0.0);
 
     [loop]
@@ -170,73 +221,33 @@ PSOut mainPS(PSIn IN)
         if (vp.heightFalloff > 0.0)
             sigma *= exp(-max(wpos.y - vp.heightBase, 0.0) * vp.heightFalloff);
 
-        // Ambient in-scatter: the same stacked-probe blend as the lit
-        // path — octree world field base, convex volumes compositing
-        // over it by ordered priority (the mean is linear in the amps,
-        // so lerping the per-source means is exact), sky-IBL fallback
-        // where nothing covers (same discipline as default_lit —
-        // never additive). Gating mirrors the lit body: the octree needs
-        // giEnabled (frame.giEnabled), the volumes need cvolEnabled —
-        // cvol-only scenes (no world field) still light the fog from
-        // their volumes.
-        float3 ambient = float3(0.0, 0.0, 0.0);
-        if (giOn > 0.5 || frame.cvolEnabled != 0u)
+        // ---- Ambient refresh (cadence above): the stacked-probe blend
+        // as the lit path, in MEAN form only — the fog consumes the
+        // isotropic mean, which is linear in the lobe amps, so the
+        // dedicated mean paths (SgCvCompositeMean / SgGiSampleMean)
+        // never materialize the SG lobe arrays that made this loop
+        // prime register-spill territory at 64-128 segments per pixel.
+        // Convex volumes composite FIRST (high->low transmittance, see
+        // sg_cvol.hlsli: one MEAN texture fetch per volume), the
+        // octree/sky base multiplied by the leftover transmission; a
+        // weight-1 volume zeroes the transmission and the octree walk
+        // is skipped entirely.
+        if (fogGiOn && t - giT >= kVolGiRefreshDist)
         {
-            float3 ambientE;
-            bool covered;
-            // Full-cover fast path (see default_lit_body): a volume that
-            // owns the segment supersedes the octree gather entirely —
-            // the march multiplies this by up to vp.steps, so the skip
-            // pays off most here.
-            const uint fullVol = SgCvFullVolumeIndex(frame, wpos);
-            if (fullVol != 0xFFFFFFFFu)
-            {
-                float3 volAmps[SG_GI_LOBES];
-                SgCvSampleVolume(frame, fullVol, wpos, volAmps);
-                ambientE = VolGiMean(volAmps);
-                covered = true;
-            }
-            else
-            {
-            float3 amps[SG_GI_LOBES];
-            float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-            // Octree base (gated on the octree flag only — the cvol loop
-            // below runs on cvolEnabled alone, so cvol-only scenes keep
-            // their fog GI without a world field).
-            const bool octreeCovered = (giOn > 0.5)
-                && SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL);
-            ambientE = octreeCovered ? VolGiMean(amps)
-                : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
-                    * 0.31831;
-            covered = octreeCovered;
-            if (frame.cvolEnabled != 0u)
-            {
-                const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
-                [loop]
-                for (uint v = 0; v < volCount; ++v)
-                {
-                    const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[v];
-                    const float w = SgCvWeight(vol, wpos);
-                    [branch]
-                    if (w > 0.0)
-                    {
-                        float3 volAmps[SG_GI_LOBES];
-                        SgCvSampleVolume(frame, v, wpos, volAmps);
-                        ambientE = lerp(ambientE, VolGiMean(volAmps), w);
-                        covered = true;
-                    }
-                }
-            }
-            }
-            ambient = covered
-                ? ambientE * giStrength
-                : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
-                    * (0.31831 * giStrength);
-        }
-        else
-        {
-            ambient = EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
-                * (0.31831 * giStrength) * iblOn;
+            giT = t;
+            float3 volMean = float3(0.0, 0.0, 0.0);
+            float volTrans = 1.0;
+            SgCvCompositeMean(frame, volMask, wpos, volMean, volTrans);
+            float3 octMean = float3(0.0, 0.0, 0.0);
+            const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
+                && SgGiSampleMean(frame, wpos, octMean);
+            // Base by the leftover transmission (octree mean, or the
+            // sky's up-facing mean where the world field has no
+            // coverage; with no volume and no octree this is exactly
+            // the old pure-sky ambient — never additive).
+            ambient = (volMean
+                + (octreeCovered ? octMean * volTrans : skyMean * volTrans))
+                * giStrength;
         }
 
         float3 source = ambient;
@@ -247,15 +258,23 @@ PSOut mainPS(PSIn IN)
         // -> downstream sanitize -> black; Inf -> white block).
         source = SanitizeHdr(source);
 
-        float sigmaS = sigma * intensity;
-        float3 seg = throughput * (sigmaS * source * segW);
-        scatter += SanitizeHdr(seg);
-        float trans = exp(-sigma * segW);
+        // ---- Exact segment integration: sigma and source are held
+        // constant over the segment by construction (sampled once), so
+        // the in-scatter integral is analytic —
+        //   ∫ throughput * sigmaS * source * exp(-sigma*(s-s0)) ds
+        //     = throughput * intensity * source * (1 - exp(-tau))
+        // instead of the Euler throughput * sigmaS * source * segW the
+        // old body paid. Equal for small tau, but the exact form stays
+        // well-behaved on coarse/dense segments (tau vs 1-e^-tau),
+        // which is what makes longer steps survivable.
+        const float trans = exp(-sigma * segW);
+        const float scatterWeight = throughput * intensity_ * (1.0 - trans);
+        scatter += SanitizeHdr(source * scatterWeight);
         throughput *= trans;
 
-        if (throughput.r + throughput.g + throughput.b < 1e-3)
+        if (throughput < 3.333333e-4f)
         {
-            throughput = float3(0.0, 0.0, 0.0);
+            throughput = 0.0;
             break;
         }
     }

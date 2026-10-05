@@ -503,6 +503,7 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 		cullPC.lights = fc.pc.fpLights;
 		cullPC.tileCounts = fp->TileCountsAddress(ctx);
 		cullPC.tileIndices = fp->TileIndicesAddress(ctx);
+		cullPC.volumeMasks = fp->VolumeTileMasksAddress(ctx);
 		cullPC.depthTextureIndex = fp->depthBindlessIndex;
 		cullPC.tileCountX = fp->tileCountX;
 		cullPC.tileCountY = fp->tileCountY;

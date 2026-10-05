@@ -1034,83 +1034,64 @@ float envVis = 1.0f;
     }
 
 #elif defined(GI_FULL)
-    // Full stacked GI: Octree base + Convex volumes (override at weight >= 1)
+    // Full stacked GI: convex volumes composited over the octree/sky
+    // base by ordered priority. The volume walk runs FIRST (the
+    // high->low transmittance form, sg_cvol.hlsli): a volume with
+    // weight 1 fully owns the pixel, the transmission drops to 0 and
+    // the octree/sky gather below never runs — the deep-inside pixel
+    // pays its 7 texture taps and nothing else.
     giDbgMode = frame.giDebug & 0xffu;
     const float giScale = max(frame.giIntensity, 0.0f);
-    // envVis, ambientSpec already set to defaults above
     float3 E;
     float3 specAmps[SG_GI_LOBES];
     bool covered = false;
     uint volHits = 0u;
 
-    // FULL-COVER FAST PATH: volume with weight == 1 owns the pixel
-    const uint fullVol = SgCvFullVolumeIndex(frame, IN.worldPos);
-    if (fullVol != 0xFFFFFFFFu)
+    // Convex volumes: blended amps + the leftover base weight.
+    float3 volAmps[SG_GI_LOBES];
+    float volTrans = 1.0;
+    bool volHit = false;
+    SgCvComposite(frame, SgCvTileMask(frame, clipPos.xy), IN.worldPos,
+        volAmps, volTrans, volHit);
+    volHits = volHit ? 1u : 0u;
+
+    // Octree world field — only the transmission leftover needs it
+    // (mode-4 debug note: a fully-owned pixel skips the walk, same as
+    // the old full-owner fast path, so its level palette reads 0).
+    float3 octAmps[SG_GI_LOBES];
+    float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
+    bool octreeCovered = false;
+    if (frame.giEnabled != 0u && volTrans > 0.0) {
+        octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
+        dbgBestLvl = dbgL;
+    }
+
+    // Base + volumes — every consumer (E, spec amps, the fog-leg mean)
+    // is LINEAR in the lobe amps, so the one accumulated amp set
+    // evaluates them all:
+    //   E    = irr(volAmps) + (octreeCovered ? irr(octAmps) : skyE) * volTrans
+    //   spec = volAmps      + (octreeCovered ? octAmps      : 0   ) * volTrans
+    // The uncovered spec base is ZERO amps (the sky's specular lives in
+    // ambientSpec below), and the first volume now blends in by its
+    // weight like every other source — the old chain REPLACED the empty
+    // spec base with full volume amps on the first hit, so E and spec
+    // disagreed across fade edges outside octree coverage.
+    E = SgGiDiffuseIrradiance(volAmps, N);
+    [unroll]
+    for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
+        specAmps[sA] = volAmps[sA];
+    if (octreeCovered)
     {
-        float3 volAmps[SG_GI_LOBES];
-        SgCvSampleVolume(frame, fullVol, IN.worldPos, volAmps);
-        E = SgGiDiffuseIrradiance(volAmps, N);
+        E += SgGiDiffuseIrradiance(octAmps, N) * volTrans;
         [unroll]
         for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
-            specAmps[sB] = volAmps[sB];
-        covered = true;
-        volHits = 1u;
+            specAmps[sB] += octAmps[sB] * volTrans;
     }
     else
     {
-        // Octree base
-        float3 octAmps[SG_GI_LOBES];
-        float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-        bool octreeCovered = false;
-        if (frame.giEnabled != 0u) {
-            octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
-            dbgBestLvl = dbgL;
-        }
-
-        // Irradiance-space blend chain: base = analytic sky
-        E = irradiance;
-        covered = octreeCovered;
-        if (octreeCovered)
-            E = SgGiDiffuseIrradiance(octAmps, N);
-
-        // Amp-space twin for specular
-        [unroll]
-        for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
-            specAmps[sA] = octreeCovered ? octAmps[sA] : float3(0.0, 0.0, 0.0);
-
-        // Convex volumes composited over (ordered low->high priority)
-        if (frame.cvolEnabled != 0u)
-        {
-            const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
-            [loop]
-            for (uint v = 0; v < volCount; ++v)
-            {
-                const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[v];
-                const float w = SgCvWeight(vol, IN.worldPos);
-                [branch]
-                if (w > 0.0)
-                {
-                    float3 volAmps[SG_GI_LOBES];
-                    SgCvSampleVolume(frame, v, IN.worldPos, volAmps);
-                    E = lerp(E, SgGiDiffuseIrradiance(volAmps, N), w);
-                    if (covered)
-                    {
-                        [unroll]
-                        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
-                            specAmps[sB] = lerp(specAmps[sB], volAmps[sB], w);
-                    }
-                    else
-                    {
-                        [unroll]
-                        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
-                            specAmps[sB] = volAmps[sB];
-                    }
-                    covered = true;
-                    ++volHits;
-                }
-            }
-        }
+        E += irradiance * volTrans; // analytic sky diffuse base
     }
+    covered = octreeCovered || volHit;
 
     if (covered)
     {

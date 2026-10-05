@@ -74,8 +74,11 @@ bool SgRegularSampleFrame(FrameUniforms frame, float3 pos,
         [unroll]
         for (uint t = 0; t < SG_REGULAR_LAYERS; ++t)
         {
-            layers[t] = volumeTextures[
-                NonUniformResourceIndex(frame.regLayers[v * 7u + t])]
+            // v/t are wave-uniform loop counters over uniform memory
+            // (FrameUniforms) — plain bindless indices keep the descriptor
+            // fetches scalar; NonUniformResourceIndex would force divergent
+            // descriptor paths for indices that cannot diverge.
+            layers[t] = volumeTextures[frame.regLayers[v * 7u + t]]
                 .Sample(samplers[2], uvw);
         }
         SgRegularUnpack(layers, amps);

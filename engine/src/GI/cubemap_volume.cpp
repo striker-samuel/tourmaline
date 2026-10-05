@@ -279,6 +279,30 @@ void CvVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	}
 }
 
+void CvVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
+	// One RGBA16F texel per voxel: rgb = 0.124959 * ╬ú lobes (the
+	// isotropic mean the fog consumes ΓÇö VolGiMean's constant in
+	// volumetric.frag.hlsl, the fixed sharpness-4 SG mean weight
+	// (1-e^-8)/8; MUST stay in sync with it), a = 1. Clamped to the
+	// half max like every HDR writer (a 9-lobe sum can round to +inf
+	// in half otherwise, and SanitizeHdr downstream would black the
+	// texel). See PackGpuLayers for the coefficient layout.
+	constexpr float kMeanWeight = 0.124959f; // (1-e^-8)/8
+	constexpr float kHalfMax = 65504.0f;
+	const uint64_t n = VoxelCount();
+	out.assign(size_t(n) * 4, uint16_t(0));
+	for (uint64_t v = 0; v < n; ++v) {
+		glm::vec3 sum(0.0f);
+		for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe)
+			sum += coeffs[size_t(v) * kSgLobeCount + lobe];
+		const glm::vec3 mean = glm::clamp(sum * kMeanWeight,
+			glm::vec3(0.0f), glm::vec3(kHalfMax));
+		for (int c = 0; c < 3; ++c)
+			out[size_t(v) * 4 + c] = PackHalf(mean[c]);
+		out[size_t(v) * 4 + 3] = PackHalf(1.0f);
+	}
+}
+
 size_t CvVolume::GpuBytes() const {
 	return size_t(VoxelCount()) * 7 * 8;
 }

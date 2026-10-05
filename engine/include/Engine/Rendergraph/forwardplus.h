@@ -262,8 +262,9 @@ struct ForwardPlusCullPush {
 	uint32_t lightCount = 0;
 	uint32_t tileSize = 16;
 	uint32_t maxLightsPerTile = 128;
-	uint32_t pad0 = 0;
-	uint32_t pad1 = 0;
+	// Per-tile convex-volume bitmask output (replaces the old pad0/pad1
+	// tail — every other field offset is unchanged).
+	uint64_t volumeMasks = 0;
 };
 static_assert(sizeof(ForwardPlusCullPush) == 64);
 
@@ -289,6 +290,10 @@ struct ForwardPlus {
 	Holder<BufferHandle> decalTileIndicesBuffer;
 	LogicalBufferHandle decalTileCountsLogical{};
 	LogicalBufferHandle decalTileIndicesLogical{};
+	// Convex GI-volume tile masks (same tiling; the cull's volume leg
+	// packs a <=8-bit survivor bitmask per tile — see sg_cvol.hlsli).
+	Holder<BufferHandle> volumeTileMasksBuffer;
+	LogicalBufferHandle volumeTileMasksLogical{};
 
 	// Depth bindless (sampled D32 as float in compute). Rebuilt when the
 	// depth view handle changes (swapchain recreate).
@@ -380,6 +385,13 @@ struct ForwardPlus {
 			"forwardplus decalTileIndices");
 		if (decalCounts.empty() || decalIndices.empty())
 			return false;
+		// Convex-volume tile masks (one bitmask uint per tile; the volume
+		// leg of the cull fills them unconditionally every dispatch).
+		Holder<BufferHandle> volumeMasks = ctx.CreateBuffer(
+			sizeof(uint32_t) * tiles, BufferType_Storage,
+			"forwardplus volumeTileMasks");
+		if (volumeMasks.empty())
+			return false;
 
 		LogicalBufferHandle countsLogical = rg.AddExternalBuffer(counts, "forwardplus tileCounts");
 		if (countsLogical.empty())
@@ -400,6 +412,14 @@ struct ForwardPlus {
 				rg.FreeBuffer(decalIndicesLogical);
 			return false;
 		}
+		LogicalBufferHandle volumeMasksLogical = rg.AddExternalBuffer(volumeMasks, "forwardplus volumeTileMasks");
+		if (volumeMasksLogical.empty()) {
+			rg.FreeBuffer(countsLogical);
+			rg.FreeBuffer(indicesLogical);
+			rg.FreeBuffer(decalCountsLogical);
+			rg.FreeBuffer(decalIndicesLogical);
+			return false;
+		}
 
 		desc = d;
 		extent = swapExtent;
@@ -414,6 +434,8 @@ struct ForwardPlus {
 		decalTileIndicesBuffer = std::move(decalIndices);
 		decalTileCountsLogical = decalCountsLogical;
 		decalTileIndicesLogical = decalIndicesLogical;
+		volumeTileMasksBuffer = std::move(volumeMasks);
+		volumeTileMasksLogical = volumeMasksLogical;
 
 		if (!depthView.empty()) {
 			depthViewHandle = depthView;
@@ -436,10 +458,13 @@ struct ForwardPlus {
 			rg.FreeBuffer(decalTileCountsLogical);
 		if (!decalTileIndicesLogical.empty())
 			rg.FreeBuffer(decalTileIndicesLogical);
+		if (!volumeTileMasksLogical.empty())
+			rg.FreeBuffer(volumeTileMasksLogical);
 		tileCountsLogical = {};
 		tileIndicesLogical = {};
 		decalTileCountsLogical = {};
 		decalTileIndicesLogical = {};
+		volumeTileMasksLogical = {};
 		depthBindlessIndex = UINT32_MAX;
 		depthBindless = {};
 		depthViewHandle = {};
@@ -447,6 +472,7 @@ struct ForwardPlus {
 		tileIndicesBuffer = {};
 		decalTileCountsBuffer = {};
 		decalTileIndicesBuffer = {};
+		volumeTileMasksBuffer = {};
 		extent = { 0, 0 };
 		tileCountX = tileCountY = tileCount = 0;
 	}
@@ -490,6 +516,9 @@ struct ForwardPlus {
 	}
 	uint64_t DecalTileIndicesAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(decalTileIndicesBuffer);
+	}
+	uint64_t VolumeTileMasksAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(volumeTileMasksBuffer);
 	}
 
 	// ---- Pass shells (caller sets the recording func) ----
@@ -565,6 +594,7 @@ struct ForwardPlus {
 		pass.AddBufferHint(tileIndicesLogical, tileWrite);
 		pass.AddBufferHint(decalTileCountsLogical, tileWrite);
 		pass.AddBufferHint(decalTileIndicesLogical, tileWrite);
+		pass.AddBufferHint(volumeTileMasksLogical, tileWrite);
 		return pass;
 	}
 
@@ -585,6 +615,18 @@ struct ForwardPlus {
 	static void AddDecalTileReadHints(RenderPass& mainPass,
 		LogicalBufferHandle countsLogical, LogicalBufferHandle indicesLogical) {
 		AddTileReadHints(mainPass, countsLogical, indicesLogical);
+	}
+
+	// Convex-volume tile-mask sibling (single buffer): the lit Main pass
+	// AND the volumetric fog pass sample the per-tile volume bitmask the
+	// tile cull wrote this frame — this hint orders the compute ->
+	// fragment edge for whichever pass reads it.
+	static void AddVolumeMaskReadHints(RenderPass& mainPass,
+		LogicalBufferHandle masksLogical) {
+		BufferSyncRequest maskRead{};
+		maskRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		maskRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+		mainPass.AddBufferHint(masksLogical, maskRead);
 	}
 };
 

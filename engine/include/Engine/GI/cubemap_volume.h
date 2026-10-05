@@ -93,7 +93,9 @@ inline float CvSmoothStep(float e0, float e1, float x) {
 	return t * t * (3.0f - 2.0f * t);
 }
 
-// Per-plane fade weight (CPU mirror of SgCvPlaneWeight in sg_cvol.hlsli).
+// Per-plane fade weight (authored-fades reference; the GPU packs this
+// into fadeScale/fadeBias form at upload time — see sg_cvol.hlsli for
+// the algebraic equivalence and the degenerate-span note).
 inline float CvPlaneWeight(const CvPlane& p, const glm::vec3& pos) {
 	const float inside = -(glm::dot(p.normal, pos) + p.d);
 	return CvSmoothStep(-p.outsideFade, p.insideFade, inside);
@@ -171,6 +173,13 @@ public:
 	// 7 RGBA16F 3D-texture payloads, byte-identical layout to
 	// SgRegularVolume::PackGpuLayers (matches SgRegularUnpack).
 	void PackGpuLayers(std::vector<uint16_t> out[7]) const;
+	// Isotropic-mean payload (the volumetric fog's one-fetch-per-volume
+	// path ΓÇö SgCvCompositeMean / sg_cvol.hlsli): one RGBA16F texel per
+	// voxel, rgb = 0.124959 * ╬ú lobes. VolGiMean is linear in the amps,
+	// so trilerp(╬ú) == ╬ú(trilerp) ΓÇö the SAME mean the fog's 7-fetch +
+	// unpack + lobe-sum path computes, at 1/7 the fetches and none of
+	// the lobe-array register pressure.
+	void PackGpuMeanLayer(std::vector<uint16_t>& out) const;
 	size_t GpuBytes() const; // 56 B/voxel resident
 
 	bool WriteFile(const std::string& path, std::string& err) const;

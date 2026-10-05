@@ -70,6 +70,10 @@ struct VolumetricDesc {
 	float giScale = 1.0f;                 // probe ambient strength
 	uint32_t useGi = 1;                   // 1 = sample SG-GI probes
 	uint32_t useSun = 1;                  // 1 = analytic sun scatter
+	uint32_t useCvolGi = 1;                // 1 = convex volumes stack into the
+	                                       // fog GI (0 = octree/sky only ΓÇö the
+	                                       // fog-GI quality bypass; skips the
+	                                       // per-refresh volume walk entirely)
 	float jitterStrength = 1.0f;          // 0 = off, 1 = full IGN dither
 	float heightFalloff = 0.0f;           // extra height density falloff (1/m, 0=off)
 	float heightBase = 0.0f;              // reference height (m)
@@ -118,11 +122,11 @@ struct VolumetricPush {
 	float giScale = 1.0f;
 	uint32_t useGi = 1;
 	uint32_t useSun = 1;
+	uint32_t useCvolGi = 1; // 1 = convex volumes stack into the fog GI
 	float jitterStrength = 1.0f;
 	float heightFalloff = 0.0f;
 	float heightBase = 0.0f;
 	float time = 0.0f;
-	uint32_t pad0 = 0;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(VolumetricPush) == 96);
@@ -323,11 +327,11 @@ struct VolumetricFog {
 		push.giScale = (std::max)(0.0f, overrideDesc.giScale);
 		push.useGi = overrideDesc.useGi ? 1u : 0u;
 		push.useSun = overrideDesc.useSun ? 1u : 0u;
+		push.useCvolGi = overrideDesc.useCvolGi ? 1u : 0u;
 		push.jitterStrength = std::clamp(overrideDesc.jitterStrength, 0.0f, 1.0f);
 		push.heightFalloff = (std::max)(0.0f, overrideDesc.heightFalloff);
 		push.heightBase = overrideDesc.heightBase;
 		push.time = frameTime;
-		push.pad0 = 0;
 		push.pad1 = 0;
 
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");

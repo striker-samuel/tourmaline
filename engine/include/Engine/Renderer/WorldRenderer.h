@@ -618,15 +618,23 @@ struct FrameUniforms
 	// against the HLSL layout (latent cvol/reg corruption; fixed 10/2).
 	uint32_t regPad_[3] = {};   // 1024 (16-align to cvolVolumes@1040)
 	// ---- Convolution volumes (dynamic geometry, Engine/GI/lightmap.h):
-	// cvolVolumes points at a typed buffer of CvVolumeGpu. cvolCount is
-	// the active volume count; cvolEnabled toggles the branch.
+	// cvolVolumes points at one CvVolumesBuffer BDA (8 volume headers +
+	// the shared packed plane pool, sg_lightmap_types.hlsli). cvolCount
+	// is the active volume count; cvolEnabled toggles the branch.
 	// Static/dynamic separation: draws carrying cvolCount > 0 sample the
 	// volumes; static draws skip. ----
-	uint64_t cvolVolumes = 0;   // 1040 CvVolumeGpu array (560 B each)
+	uint64_t cvolVolumes = 0;   // 1040 CvVolumesBuffer (headers + plane pool)
 	uint32_t cvolLayers[56] = {};  // 1048 8 volumes x 7 layer slots
 	uint32_t cvolCount = 0;     // 1272 active volume count
 	uint32_t cvolEnabled = 0;   // 1276 1 = volume branch active
-	uint32_t cvolPad_[4] = {};      // 1280 16-align tail
+	// Convex-volume tile masks (the cull's per-tile bitmask, see
+	// forwardplus.cs.hlsl): address + tile grid publish together under
+	// the decal tile-list freshness contract; zeros together mean "no
+	// tile cull refreshed the masks this view/frame" — the shader then
+	// walks every volume (per-volume AABB reject keeps it correct).
+	uint64_t cvolTileMasks = 0;  // 1280 per-tile volume bitmask buffer
+	uint32_t cvolTileCountX = 0; // 1288 mask tile grid width (0 = no mask)
+	uint32_t cvolTileSize = 0;   // 1292 mask tile size (16; fp tiling)
 	// ---- FramePSHot slab BDA (the FS-only hot struct, see FramePSHot
 	// below): the pixel shader reaches the hot slab through FrameUniforms
 	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member —
@@ -656,6 +664,12 @@ struct FrameUniforms
 	// arrays align to 4 (not 16) on both sides — this member sits at
 	// 1320, matching the HLSL mirror exactly (see the asserts below).
 	uint32_t giLevelLayers[80] = {}; // 1320 8 levels x (9 amp + 1 weight)
+	// ---- Convex-volume isotropic-mean textures (the volumetric fog's
+	// one-fetch-per-volume payload — PackGpuMeanLayer +
+	// SgCvCompositeMean): 8 bindless slots, UINT32_MAX = none. Deliberate
+	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
+	// stays put when this grows. ----
+	uint32_t cvolMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -663,6 +677,14 @@ struct FrameUniforms
 static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, flags) == 1312, "flags offset: HLSL mirror");
+// cvol block pinned end-to-end like the GI block above: the volumes'
+// BDA/count/enable/mask fields are HLSL-mirrored by absolute offset.
+static_assert(offsetof(FrameUniforms, cvolVolumes) == 1040, "cvolVolumes offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolCount) == 1272, "cvolCount offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolEnabled) == 1276, "cvolEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolTileMasks) == 1280, "cvolTileMasks offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolTileCountX) == 1288, "cvolTileCountX offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolTileSize) == 1292, "cvolTileSize offset: HLSL mirror");
 // GI block (the lit shader's frame.gi* reads + the F8 debug views live
 // or die by these — the debug view once silently read the wrong word
 // here, so every member of the block is pinned, not just the tail).
@@ -675,7 +697,8 @@ static_assert(offsetof(FrameUniforms, giIntensity) == 740, "giIntensity offset: 
 static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1648, "FrameUniforms size: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cvolMeanLayers) == 1640, "cvolMeanLayers offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1680, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2234,12 +2257,34 @@ protected:
 		smvk::gi::CvVolume volume;       // CPU mirror (def; coeffs freed)
 		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
 		uint32_t layerSlots[7] = {};    // bindless slots
+		// Isotropic-mean twin (the volumetric fog's one-fetch path ΓÇö
+		// PackGpuMeanLayer): created under the same failure discipline
+		// as the 7 layers (a volume publishes only with all 8 up).
+		smvk::Holder<smvk::TextureHandle> meanTex;
+		uint32_t meanSlot = UINT32_MAX; // bindless slot
 	};
 	std::vector<CvolVolume> m_cvolVolumes;
 	smvk::Holder<smvk::BufferHandle> m_cvolVolumesBuffer;
 	uint64_t m_cvolVolumesAddress = 0;
 	bool CvolActive() const {
 		return m_cvolLoaded && m_cvolEnabled && ProbesWanted();
+	}
+	// Forward+ tile-cull DISPATCH gate — the frame's single source of
+	// truth, consumed by the dispatch site AND the FrameUniforms
+	// cvol-tile-mask publish (the mask address may only go out when the
+	// dispatch actually refreshes the masks this frame; a skipped
+	// dispatch would leave stale bits masquerading as fresh). Classic
+	// forward+ always runs it; under deferred shadows it runs only when
+	// a tile-list consumer still needs the lists: decals, probes, or
+	// convex-volume masks (the DS pipeline owns the lights then; the
+	// volume leg re-runs as live work, like the decal leg).
+	bool TileCullWillRun() const {
+		if (!m_passes.forwardPlusCull)
+			return false;
+		if (!DsActive())
+			return true;
+		return (DecalsActive() && m_decalFrameCount > 0)
+			|| ProbeTileListsWanted() || (m_cvolLoaded && m_cvolEnabled);
 	}
 	void LoadCvolumes(smvk::OverlayVfs& vfs);
 	// Degrades single-source ambient modes whose source did not load
@@ -2390,6 +2435,11 @@ protected:
 	float m_volumetricGi = 1.0f; // probe ambient strength
 	bool m_volumetricUseGi = true; // sample SG-GI probes (else sky-IBL fallback)
 	bool m_volumetricUseSun = true; // analytic sun single-scatter
+	// Fog-GI quality switch: convex volumes stack into the fog ambient
+	// (default, matches the lit path). Off = octree/sky only — the fog
+	// bypasses the per-refresh volume walk entirely (A/B knob for heavy
+	// fog configs; UI checkbox + VULKANTOY_VOLUMETRIC_CVOL=0 headless).
+	bool m_volumetricUseCvolGi = true;
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
 	float m_volumetricHeightBase = 0.0f; // reference height (m)

@@ -191,8 +191,12 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         // (beyond-bounds queries read the edge texel, same as the clamp).
         const float3 cellF = (pos - lg.volumeMin.xyz) / lg.cellSize.x;
         const float3 uvw = cellF / float3(lg.dims.xyz);
-        const float w_l = volumeTextures[NonUniformResourceIndex(
-            frame.giLevelLayers[uint(lvl) * 10u + 9u])].Sample(
+        // lvl/lobe are wave-uniform loop counters over uniform memory
+        // (FrameUniforms) — plain bindless indices keep the descriptor
+        // fetches scalar; NonUniformResourceIndex would force divergent
+        // descriptor paths for indices that cannot diverge.
+        const float w_l = volumeTextures[
+            frame.giLevelLayers[uint(lvl) * 10u + 9u]].Sample(
             samplers[2], uvw).r;
         // Dominant contributor (mode 4): per-LEVEL weight sums; the
         // argmax after the walk picks the level carrying most of this
@@ -205,8 +209,8 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         [unroll]
         for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
         {
-            const float3 a_l = volumeTextures[NonUniformResourceIndex(
-                frame.giLevelLayers[uint(lvl) * 10u + lobe])].Sample(
+            const float3 a_l = volumeTextures[
+                frame.giLevelLayers[uint(lvl) * 10u + lobe]].Sample(
                 samplers[2], uvw).rgb;
             ampsVis[lobe] += a_l;
         }
@@ -253,6 +257,70 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     [unroll]
     for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
         amps[lobe] = float3(0, 0, 0);
+    return false;
+}
+
+// Volumetric mean twin of SgGiSample: the fog consumes only the
+// ISOTROPIC MEAN of the probe field, which is linear in the lobe amps
+// (VolGiMean = 0.124959 * Σ amps, volumetric.frag.hlsl), so this walk
+// sums the fetched amplitudes directly into one RGB accumulator and
+// never materializes the float3[SG_GI_LOBES] arrays — at up to
+// vp.steps lookups per pixel inside a march that already carries ray
+// and extinction state, the full surface representation was prime
+// register-pressure/spill territory. Same dense-level walk, same
+// coverage rule (normalized partition of unity, no fallback);
+// the mode-3/4 debug bookkeeping is surface-debug-view-only and stays
+// out of the fog path. Returns false when the position is uncovered.
+bool SgGiSampleMean(FrameUniforms frame, float3 pos, out float3 mean)
+{
+    mean = float3(0.0, 0.0, 0.0);
+    const SgGiGrid grid = frame.giGrid.Get();
+    const uint levelCount = min(grid.misc.x, (uint)SG_GI_MAX_LEVELS);
+    [branch]
+    if (levelCount == 0)
+        return false;
+
+    float weightVis = 0.0;
+    float3 meanVis = float3(0.0, 0.0, 0.0);
+    [loop]
+    for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
+    {
+        // Absent level (sparse octree / a failed cook bake): the slot
+        // stays UINT32_MAX — the level contributes nothing.
+        if (frame.giLevelLayers[uint(lvl) * 10u] == 0xFFFFFFFFu)
+            continue;
+        const SgGiLevel lg = grid.levels[lvl];
+        // Same cell-center mapping as the surface walk (see the comment
+        // above — adding a half-texel here would double-apply it).
+        const float3 cellF = (pos - lg.volumeMin.xyz) / lg.cellSize.x;
+        const float3 uvw = cellF / float3(lg.dims.xyz);
+        // lvl/lobe are wave-uniform loop counters over uniform memory —
+        // plain bindless indices keep the descriptor fetches scalar.
+        const float w_l = volumeTextures[
+            frame.giLevelLayers[uint(lvl) * 10u + 9u]].Sample(
+            samplers[2], uvw).r;
+        weightVis += w_l;
+        [unroll]
+        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+        {
+            meanVis += volumeTextures[
+                frame.giLevelLayers[uint(lvl) * 10u + lobe]].Sample(
+                samplers[2], uvw).rgb;
+        }
+        // Production early-out (same as the surface walk's): fine
+        // coverage dense enough — coarser octaves cannot meaningfully
+        // change this sample.
+        if (weightVis >= 0.5)
+            break;
+    }
+    [branch]
+    if (weightVis >= 1e-4)
+    {
+        mean = meanVis * (0.124959 / weightVis);
+        return true;
+    }
+    // No fallback: uncovered stays uncovered (the caller keeps the sky
+    // base).
     return false;
 }
 
