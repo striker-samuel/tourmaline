@@ -194,7 +194,7 @@ struct CvBakeConfig {
 	float captureSpacing = 0.0f;     // capture lattice (m); 0 = 3x spacing
 	float maxReprojectRadius = 0.0f; // texel trust radius (m);
 	                                 // 0 = 4x capture spacing
-	uint32_t smoothingPasses = 1; // Laplacian passes over the fitted
+	uint32_t smoothingPasses = 0; // Laplacian passes over the fitted
 	                              // grid (BO3 "volume smoothing")
 	float smoothingLambda = 0.4f; // per-pass step (0..1)
 	float probeMinClearance = 0.05f;  // probe validity (m, to geometry)

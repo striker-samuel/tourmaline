@@ -182,48 +182,83 @@ void CvVolume::Resize() {
 	coeffs.assign(size_t(VoxelCount()) * kSgLobeCount, glm::vec3(0.0f));
 }
 
-bool CvVolume::Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const {
+bool CvVolume::Sample(
+	const glm::vec3& p,
+	glm::vec3 outAmps[kSgLobeCount]) const
+{
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		outAmps[i] = glm::vec3(0.0f);
+
 	if (coeffs.empty() || spacing <= 0.0f)
 		return false;
+
 	const glm::vec3 rel = (p - gridMin) / spacing;
-	if (rel.x < 0.0f || rel.y < 0.0f || rel.z < 0.0f
-		|| rel.x > float(dims[0]) || rel.y > float(dims[1])
-		|| rel.z > float(dims[2]))
+
+	if (rel.x < 0.0f || rel.y < 0.0f || rel.z < 0.0f ||
+		rel.x > float(dims[0]) ||
+		rel.y > float(dims[1]) ||
+		rel.z > float(dims[2]))
 		return false;
-	// Voxel-center convention: node (i,j,k) sits at gridMin +
-	// (ijk + 0.5) * spacing, so the continuous grid coordinate is
-	// rel - 0.5 (hardware Linear/Clamp mirror; == SgRegularVolume::Sample).
-	const float gx = rel.x - 0.5f, gy = rel.y - 0.5f, gz = rel.z - 0.5f;
-	const int x0 = int(std::floor(gx)), y0 = int(std::floor(gy)),
-		z0 = int(std::floor(gz));
-	const float fx = std::clamp(gx - float(x0), 0.0f, 1.0f);
-	const float fy = std::clamp(gy - float(y0), 0.0f, 1.0f);
-	const float fz = std::clamp(gz - float(z0), 0.0f, 1.0f);
-	const auto idx = [&](int x, int y, int z) {
-		x = std::clamp(x, 0, int(dims[0]) - 1);
-		y = std::clamp(y, 0, int(dims[1]) - 1);
-		z = std::clamp(z, 0, int(dims[2]) - 1);
-		return size_t((uint64_t(z) * dims[1] + uint64_t(y)) * dims[0] + uint64_t(x));
-	};
-	const size_t c000 = idx(x0, y0, z0) * kSgLobeCount;
-	const size_t c100 = idx(x0 + 1, y0, z0) * kSgLobeCount;
-	const size_t c010 = idx(x0, y0 + 1, z0) * kSgLobeCount;
-	const size_t c110 = idx(x0 + 1, y0 + 1, z0) * kSgLobeCount;
-	const size_t c001 = idx(x0, y0, z0 + 1) * kSgLobeCount;
-	const size_t c101 = idx(x0 + 1, y0, z0 + 1) * kSgLobeCount;
-	const size_t c011 = idx(x0, y0 + 1, z0 + 1) * kSgLobeCount;
-	const size_t c111 = idx(x0 + 1, y0 + 1, z0 + 1) * kSgLobeCount;
-	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-		const glm::vec3 v00 = glm::mix(coeffs[c000 + i], coeffs[c100 + i], fx);
-		const glm::vec3 v10 = glm::mix(coeffs[c010 + i], coeffs[c110 + i], fx);
-		const glm::vec3 v01 = glm::mix(coeffs[c001 + i], coeffs[c101 + i], fx);
-		const glm::vec3 v11 = glm::mix(coeffs[c011 + i], coeffs[c111 + i], fx);
-		outAmps[i] = glm::mix(glm::mix(v00, v10, fy), glm::mix(v01, v11, fy), fz);
-	}
+
+	const int x = std::clamp(
+		int(std::floor(rel.x)), 0, int(dims[0]) - 1);
+	const int y = std::clamp(
+		int(std::floor(rel.y)), 0, int(dims[1]) - 1);
+	const int z = std::clamp(
+		int(std::floor(rel.z)), 0, int(dims[2]) - 1);
+
+	const size_t base =
+		size_t((uint64_t(z) * dims[1] + y) * dims[0] + x)
+		* kSgLobeCount;
+
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		outAmps[i] = coeffs[base + i];
+
 	return true;
 }
+
+//bool CvVolume::Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const {
+//	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+//		outAmps[i] = glm::vec3(0.0f);
+//	if (coeffs.empty() || spacing <= 0.0f)
+//		return false;
+//	const glm::vec3 rel = (p - gridMin) / spacing;
+//	if (rel.x < 0.0f || rel.y < 0.0f || rel.z < 0.0f
+//		|| rel.x > float(dims[0]) || rel.y > float(dims[1])
+//		|| rel.z > float(dims[2]))
+//		return false;
+//	// Voxel-center convention: node (i,j,k) sits at gridMin +
+//	// (ijk + 0.5) * spacing, so the continuous grid coordinate is
+//	// rel - 0.5 (hardware Linear/Clamp mirror; == SgRegularVolume::Sample).
+//	const float gx = rel.x - 0.5f, gy = rel.y - 0.5f, gz = rel.z - 0.5f;
+//	const int x0 = int(std::floor(gx)), y0 = int(std::floor(gy)),
+//		z0 = int(std::floor(gz));
+//	const float fx = std::clamp(gx - float(x0), 0.0f, 1.0f);
+//	const float fy = std::clamp(gy - float(y0), 0.0f, 1.0f);
+//	const float fz = std::clamp(gz - float(z0), 0.0f, 1.0f);
+//	const auto idx = [&](int x, int y, int z) {
+//		x = std::clamp(x, 0, int(dims[0]) - 1);
+//		y = std::clamp(y, 0, int(dims[1]) - 1);
+//		z = std::clamp(z, 0, int(dims[2]) - 1);
+//		return size_t((uint64_t(z) * dims[1] + uint64_t(y)) * dims[0] + uint64_t(x));
+//	};
+//	const size_t c000 = idx(x0, y0, z0) * kSgLobeCount;
+//	const size_t c100 = idx(x0 + 1, y0, z0) * kSgLobeCount;
+//	const size_t c010 = idx(x0, y0 + 1, z0) * kSgLobeCount;
+//	const size_t c110 = idx(x0 + 1, y0 + 1, z0) * kSgLobeCount;
+//	const size_t c001 = idx(x0, y0, z0 + 1) * kSgLobeCount;
+//	const size_t c101 = idx(x0 + 1, y0, z0 + 1) * kSgLobeCount;
+//	const size_t c011 = idx(x0, y0 + 1, z0 + 1) * kSgLobeCount;
+//	const size_t c111 = idx(x0 + 1, y0 + 1, z0 + 1) * kSgLobeCount;
+//	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+//		const glm::vec3 v00 = glm::mix(coeffs[c000 + i], coeffs[c100 + i], fx);
+//		const glm::vec3 v10 = glm::mix(coeffs[c010 + i], coeffs[c110 + i], fx);
+//		const glm::vec3 v01 = glm::mix(coeffs[c001 + i], coeffs[c101 + i], fx);
+//		const glm::vec3 v11 = glm::mix(coeffs[c011 + i], coeffs[c111 + i], fx);
+//		outAmps[i] = glm::mix(glm::mix(v00, v10, fy), glm::mix(v01, v11, fy), fz);
+//	}
+//	return true;
+//}
 
 void CvVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	const uint64_t n = VoxelCount();

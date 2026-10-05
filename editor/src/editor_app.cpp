@@ -481,6 +481,7 @@ void EditorApp::CloseScene() {
 	m_pakImage.reset();
 	m_pakReader.reset();
 	m_pakScenes.clear();
+	m_pakGiBindings.clear();
 	m_pakSceneIndex = 0;
 	m_hasSglm = false;
 	m_sglmPath.clear();
@@ -770,6 +771,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_pakImage.reset();
 	m_pakReader.reset();
 	m_pakScenes.clear();
+	m_pakGiBindings.clear();
 	m_pakSceneIndex = 0;
 	m_hasSglm = false;
 	m_sglm = smvk::gi::SgLightmapAtlas{};
@@ -954,6 +956,7 @@ bool EditorApp::LoadPakFromImage(
 	m_pakImage = std::move(image);
 	m_pakReader.reset();
 	m_pakScenes.clear();
+	m_pakGiBindings.clear();
 	{
 		std::string pakErr;
 		m_pakReader = smvk::PakReader::Open(
@@ -982,12 +985,31 @@ bool EditorApp::LoadPakFromImage(
 			m_pakImage.reset();
 			m_pakReader.reset();
 			m_pakScenes.clear();
+			m_pakGiBindings.clear();
 			return false;
 		}
 		for (size_t i = 0; i < m_pakScenes.size(); ++i)
 			Log("Pak scene[" + std::to_string(i) + "] '" +
 				m_pakScenes[i].name + "' nodes=" +
 				std::to_string(m_pakScenes[i].nodes));
+	}
+	// Pak-level Gi registry (one blob, the serializer's union of every
+	// scene's bindings — see ClusterSerializeStats::giBindings): the
+	// browser's GI group reads it; missing = registry-less pak.
+	m_pakGiBindings.clear();
+	{
+		for (const smvk::PakTocEntry* e :
+				m_pakReader->BlobsOfKind(smvk::PakAssetKind::Gi)) {
+			std::string gerr;
+			std::vector<smvk::GiBinding> parsed;
+			if (!smvk::ParseGiRegistryBlob(
+					m_pakReader->Payload(*e), parsed, gerr)) {
+				Log("Pak Gi registry rejected: " + gerr);
+				continue;
+			}
+			for (const smvk::GiBinding& b : parsed)
+				m_pakGiBindings.push_back(b);
+		}
 	}
 	m_pakSceneIndex = sceneIndex;
 	Log("Pak parsed: " + std::to_string(entryCount) + " entries, loading "

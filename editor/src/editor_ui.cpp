@@ -1357,31 +1357,150 @@ void EditorApp::DrawVfsOutliner() {
 				ImGui::TreePop();
 			}
 			ImGui::PopID();
-			struct KindGroup {
-				const char* label;
-				smvk::PakAssetKind kind;
-			};
-			static const KindGroup kGroups[] = {
-				{ "Meshes", smvk::PakAssetKind::Mesh },
-				{ "Materials", smvk::PakAssetKind::Material },
-				{ "Textures", smvk::PakAssetKind::Texture },
-				{ "Lights", smvk::PakAssetKind::Light },
-			};
-			for (const auto& g : kGroups) {
-				const auto blobs = reader.BlobsOfKind(g.kind);
-				ImGui::PushID(g.label);
-				const bool gopen = ImGui::TreeNodeEx(g.label,
-					ImGuiTreeNodeFlags_OpenOnArrow);
-				ImGui::SameLine();
-				ImGui::TextDisabled("(%zu)", blobs.size());
-				if (gopen) {
-					size_t shown = 0;
-					for (const smvk::PakTocEntry* e : blobs) {
-						if (++shown > 200) {
-							ImGui::TextDisabled("... (%zu more)",
-								blobs.size() - 200);
+		struct KindGroup {
+			const char* label;
+			smvk::PakAssetKind kind;
+		};
+		static const KindGroup kGroups[] = {
+			{ "Meshes", smvk::PakAssetKind::Mesh },
+			{ "Materials", smvk::PakAssetKind::Material },
+			{ "Textures", smvk::PakAssetKind::Texture },
+			{ "Lights", smvk::PakAssetKind::Light },
+		};
+		// GI group FIRST (the pak-level Gi registry + the embedded bake
+		// payload blobs): the registry is SCENE DATA since the
+		// sidecar-cook removal — stable bake stems + kinds, exactly what
+		// the runtime resolves. Each row selects the binding's VFS path;
+		// "(blob missing)" marks a binding whose payload is not in this
+		// pak (loose-file override or unbaked). Payload rows are the
+		// Texture-kind blobs under gi/ + the .cubemanifest texts (kept
+		// out of the Textures group below).
+		{
+			ImGui::PushID("##pakgi");
+			const size_t giPayloads =
+				std::count_if(reader.BlobsOfKind(
+						smvk::PakAssetKind::Texture).begin(),
+					reader.BlobsOfKind(smvk::PakAssetKind::Texture).end(),
+					[](const smvk::PakTocEntry* e) {
+						return e->path.rfind("gi/", 0) == 0
+							|| (e->path.size() > 13
+								&& e->path.compare(e->path.size() - 13,
+									13, ".cubemanifest") == 0);
+					});
+			const bool gopen = ImGui::TreeNodeEx("GI",
+				ImGuiTreeNodeFlags_OpenOnArrow);
+			ImGui::SameLine();
+			ImGui::TextDisabled("(%zu bindings, %zu payloads)",
+				m_pakGiBindings.size(), giPayloads);
+			if (gopen) {
+				auto bindingVfs = [](const smvk::GiBinding& b) {
+					switch (b.kind) {
+					case smvk::GiBinding::Kind::Probe:
+						return "gi/" + b.name + ".sggi";
+					case smvk::GiBinding::Kind::Lightmap:
+						return "gi/" + b.name + ".sglm";
+					case smvk::GiBinding::Kind::RegManifest:
+						return "gi/" + b.name + ".regmanifest";
+					case smvk::GiBinding::Kind::CvolManifest:
+						return "gi/" + b.name + ".cvmanifest";
+					case smvk::GiBinding::Kind::Cubemap:
+						return "textures/cubemaps/" + b.name
+							+ ".cubemanifest";
+					}
+					return std::string();
+				};
+				for (const smvk::GiBinding& b : m_pakGiBindings) {
+					const char* kindLabel =
+						b.kind == smvk::GiBinding::Kind::Probe ? "probe"
+						: b.kind == smvk::GiBinding::Kind::Lightmap
+							? "lightmap"
+						: b.kind == smvk::GiBinding::Kind::RegManifest
+							? "reg manifest"
+						: b.kind == smvk::GiBinding::Kind::CvolManifest
+							? "cvol manifest"
+						: "cubemap manifest";
+					const std::string vfs = bindingVfs(b);
+					bool inPak = false;
+					for (const smvk::PakTocEntry* e :
+							reader.BlobsOfKind(
+								smvk::PakAssetKind::Texture))
+						if (e->path == vfs) {
+							inPak = true;
 							break;
 						}
+					const std::string label = std::string("[") + kindLabel
+						+ "] " + b.name + (inPak ? "" : "  (blob missing)");
+					const bool sel = (m_vfsSel == "pak:" + vfs);
+					ImGui::PushID(label.c_str());
+					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
+					if (ImGui::Selectable(label.c_str(), sel,
+							ImGuiSelectableFlags_AllowDoubleClick))
+						m_vfsSel = "pak:" + vfs;
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("%s%s", vfs.c_str(),
+							inPak ? "" : "\nnot embedded in this pak");
+					ImGui::PopID();
+				}
+				// Embedded GI payload blobs (the actual bytes the
+				// bindings resolve): every Texture-kind entry under gi/
+				// plus the cubemap manifest texts.
+				size_t shown = 0;
+				for (const smvk::PakTocEntry* e :
+						reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
+					const bool isGi = e->path.rfind("gi/", 0) == 0
+						|| (e->path.size() > 13
+							&& e->path.compare(e->path.size() - 13, 13,
+								".cubemanifest") == 0);
+					if (!isGi)
+						continue;
+					if (++shown > 200) {
+						ImGui::TextDisabled("... more");
+						break;
+					}
+					const bool sel = (m_vfsSel == "pak:" + e->path);
+					ImGui::PushID(e->path.c_str());
+					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
+					if (ImGui::Selectable(e->path.c_str(), sel))
+						m_vfsSel = "pak:" + e->path;
+					ImGui::PopStyleColor();
+					ImGui::PopID();
+				}
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+		}
+		for (const auto& g : kGroups) {
+			const auto blobs = reader.BlobsOfKind(g.kind);
+			ImGui::PushID(g.label);
+			const bool gopen = ImGui::TreeNodeEx(g.label,
+				ImGuiTreeNodeFlags_OpenOnArrow);
+			ImGui::SameLine();
+			// GI bake payloads are listed in the GI group above —
+			// exclude them from the Texture count/list.
+			size_t count = blobs.size();
+			if (g.kind == smvk::PakAssetKind::Texture)
+				for (const smvk::PakTocEntry* e : blobs)
+					if (e->path.rfind("gi/", 0) == 0
+						|| (e->path.size() > 13
+							&& e->path.compare(e->path.size() - 13, 13,
+								".cubemanifest") == 0))
+						--count;
+			ImGui::TextDisabled("(%zu)", count);
+			if (gopen) {
+				size_t shown = 0;
+				for (const smvk::PakTocEntry* e : blobs) {
+				if (g.kind == smvk::PakAssetKind::Texture
+						&& (e->path.rfind("gi/", 0) == 0
+							|| (e->path.size() > 13
+								&& e->path.compare(e->path.size() - 13,
+									13, ".cubemanifest") == 0)))
+					continue; // GI group owns these
+				if (++shown > 200) {
+						ImGui::TextDisabled("... (%zu more)",
+							blobs.size() - 200);
+						break;
+					}
 						const bool sel =
 							(m_vfsSel == "pak:" + e->path);
 						ImGui::PushID(e->path.c_str());

@@ -1790,6 +1790,14 @@ private:
 	// Parsed once per pak load (never per frame: Open decompresses).
 	std::optional<smvk::PakReader> m_pakReader;
 	std::vector<smvk::PakSceneInfo> m_pakScenes;
+	// The pak-level Gi registry (the serializer unions every scene's
+	// Cluster::giBindings into one PakAssetKind::Gi blob — parse via
+	// ParseGiRegistryBlob). Stable bake STEMS since the sidecar-cook
+	// removal: the browser's GI group labels the kinds + resolves each
+	// binding to its VFS path (gi/<stem>.<ext>, the cubemap manifest at
+	// textures/cubemaps/<base>.cubemanifest) and checks the blob in the
+	// pak TOC.
+	std::vector<smvk::GiBinding> m_pakGiBindings;
 	uint32_t m_pakSceneIndex = 0;
 	// ---- lightmap atlas inspection (.sglm, cook output) ----
 	smvk::gi::SgLightmapAtlas m_sglm;
