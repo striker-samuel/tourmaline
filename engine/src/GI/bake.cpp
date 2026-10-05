@@ -114,7 +114,7 @@ void GiTraceScene::Finalize() {
 		}
 	}
 
-	bvh_.Build(positions, indices);
+	bvh_.Build(positions, indices, traceBackend_);
 	const uint32_t triCountFinal = uint32_t(indices.size() / 3);
 
 	emissiveTris_.clear();
@@ -611,6 +611,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 
 	// Environment from the runtime settings (same defaults as the app UI).
 	const EnvironmentSettings& env = opts.env;
+
 	out.sunDirection = env.SunDirectionToSun();
 	out.sunColor = env.sunColor;
 	out.sunIntensity = env.sunIntensity;
@@ -627,6 +628,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	if (opts.staticLights)
 		CollectStaticBakeLights(cluster, out, opts.punctualAimAxis);
 
+	out.SetTraceBackend(opts.traceBackendEmbree ? TraceBackend::Embree : TraceBackend::Builtin);
 	out.Finalize();
 }
 

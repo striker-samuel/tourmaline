@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <queue>
+
+#include <embree4/rtcore.h>
 
 namespace smvk::gi {
 
@@ -122,14 +125,47 @@ inline float PointAabbDistanceSq(const glm::vec3& p, const float bmin[4], const 
 
 } // namespace
 
-void TriangleBvh::Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices) {
+// ---------------------------------------------------------------------------
+// Embree backend (vendored external/embree — the production backend for the
+// bake transport): packet/SIMD traversal over the same triangle soup
+// (zero-copy shared buffers). Two-sided (no cull flag — matches the builtin
+// Moeller-Trumbore convention), tnear = 1e-5 to match the builtin near
+// cutoff, primID == build triangle index (single regular triangle
+// geometry, order preserved). Thread-safe for concurrent queries (the
+// bakers trace from thread pools); build once, then trace.
+// ClosestDistance stays builtin (cold path: placement/relocation only —
+// Embree has no point-distance query).
+// ---------------------------------------------------------------------------
+
+struct TriangleBvh::EmbreeContext {
+	RTCDevice device = nullptr;
+	RTCScene scene = nullptr;
+	~EmbreeContext() {
+		if (scene != nullptr)
+			rtcReleaseScene(scene);
+		if (device != nullptr)
+			rtcReleaseDevice(device);
+	}
+};
+
+TriangleBvh::TriangleBvh() = default;
+TriangleBvh::~TriangleBvh() = default;
+TriangleBvh::TriangleBvh(TriangleBvh&&) noexcept = default;
+TriangleBvh& TriangleBvh::operator=(TriangleBvh&&) noexcept = default;
+
+void TriangleBvh::Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices,
+	TraceBackend backend) {
 	positions_ = std::vector<glm::vec3>(positions.begin(), positions.end());
 	indices_ = std::vector<uint32_t>(indices.begin(), indices.end());
 	triCount_ = uint32_t(indices_.size() / 3);
+	backend_ = TraceBackend::Builtin;
+	embree_.reset();
 	if (triCount_ == 0) {
 		nodes_.clear();
 		return;
 	}
+	// The builtin structures ALWAYS build (they back TriangleVertices,
+	// TriangleNormal, ClosestDistance and bounds regardless of backend).
 	triIndices_.resize(triCount_);
 	for (uint32_t k = 0; k < triCount_; ++k)
 		triIndices_[k] = k;
@@ -139,6 +175,34 @@ void TriangleBvh::Build(std::span<const glm::vec3> positions, std::span<const ui
 	boundsMax_ = glm::vec3(-kInf);
 	BuildNode(0, 0, triCount_, 0);
 	nodes_.resize(usedNodes_);
+	if (backend != TraceBackend::Embree)
+		return;
+	// Embree is the production backend (vendored, always compiled in) —
+	// the only fallback left is a runtime device/scene failure (driver
+	// trouble), which keeps the builtin traversal live.
+	auto ctx = std::make_unique<EmbreeContext>();
+	ctx->device = rtcNewDevice(nullptr);
+	if (ctx->device == nullptr || rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE) {
+		std::fprintf(stderr, "TriangleBvh: rtcNewDevice failed — builtin fallback\n");
+		return;
+	}
+	RTCGeometry geom = rtcNewGeometry(ctx->device, RTC_GEOMETRY_TYPE_TRIANGLE);
+	rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
+		positions_.data(), 0, sizeof(glm::vec3), positions_.size());
+	rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
+		indices_.data(), 0, 3 * sizeof(uint32_t), triCount_);
+	rtcCommitGeometry(geom);
+	ctx->scene = rtcNewScene(ctx->device);
+	rtcSetSceneBuildQuality(ctx->scene, RTC_BUILD_QUALITY_HIGH);
+	rtcAttachGeometry(ctx->scene, geom);
+	rtcReleaseGeometry(geom);
+	rtcCommitScene(ctx->scene);
+	if (rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE) {
+		std::fprintf(stderr, "TriangleBvh: Embree scene build failed — builtin fallback\n");
+		return;
+	}
+	embree_ = std::move(ctx);
+	backend_ = TraceBackend::Embree;
 }
 
 void TriangleBvh::UpdateNodeBounds(Node& node, uint32_t first, uint32_t count) {
@@ -295,6 +359,35 @@ void TriangleBvh::BuildNode(uint32_t nodeIndex, uint32_t first, uint32_t count, 
 bool TriangleBvh::Raycast(const glm::vec3& origin, const glm::vec3& dir, float maxDist, Hit& out) const {
 	if (triCount_ == 0)
 		return false;
+	if (backend_ == TraceBackend::Embree && embree_ != nullptr && embree_->scene != nullptr) {
+		// Defensive finite check (matches the builtin's graceful miss on
+		// degenerate input; Embree behavior on NaN rays is undefined).
+		if (!std::isfinite(origin.x + origin.y + origin.z + dir.x + dir.y + dir.z))
+			return false;
+		RTCRayHit rh{};
+		rh.ray.org_x = origin.x;
+		rh.ray.org_y = origin.y;
+		rh.ray.org_z = origin.z;
+		rh.ray.dir_x = dir.x;
+		rh.ray.dir_y = dir.y;
+		rh.ray.dir_z = dir.z;
+		rh.ray.tnear = 1e-5f; // builtin near cutoff
+		rh.ray.tfar = maxDist;
+		rh.ray.mask = 0xFFFFFFFFu;
+		rh.ray.flags = 0u; // no culling: two-sided like the builtin
+		rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+		rh.hit.primID = RTC_INVALID_GEOMETRY_ID;
+		rtcIntersect1(embree_->scene, &rh);
+		if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID
+			|| rh.hit.primID == RTC_INVALID_GEOMETRY_ID)
+			return false;
+		if (!(rh.ray.tfar < maxDist))
+			return false;
+		out.t = rh.ray.tfar;
+		out.tri = rh.hit.primID;
+		out.baryUV = glm::vec2(rh.hit.u, rh.hit.v);
+		return true;
+	}
 	glm::vec3 invDir(0.0f);
 	invDir.x = std::abs(dir.x) > 1e-8f ? 1.0f / dir.x : kInf * (dir.x >= 0.0f ? 1.0f : -1.0f);
 	invDir.y = std::abs(dir.y) > 1e-8f ? 1.0f / dir.y : kInf * (dir.y >= 0.0f ? 1.0f : -1.0f);
@@ -350,6 +443,24 @@ bool TriangleBvh::Raycast(const glm::vec3& origin, const glm::vec3& dir, float m
 bool TriangleBvh::AnyHit(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const {
 	if (triCount_ == 0)
 		return false;
+	if (backend_ == TraceBackend::Embree && embree_ != nullptr && embree_->scene != nullptr) {
+		if (!std::isfinite(origin.x + origin.y + origin.z + dir.x + dir.y + dir.z))
+			return false;
+		RTCRay r{};
+		r.org_x = origin.x;
+		r.org_y = origin.y;
+		r.org_z = origin.z;
+		r.dir_x = dir.x;
+		r.dir_y = dir.y;
+		r.dir_z = dir.z;
+		r.tnear = 1e-5f; // builtin near cutoff
+		r.tfar = maxDist;
+		r.mask = 0xFFFFFFFFu;
+		r.flags = 0u; // no culling: two-sided like the builtin
+		rtcOccluded1(embree_->scene, &r);
+		// Occlusion sets tfar to -inf; untouched (>= 0) means no hit.
+		return r.tfar < 0.0f;
+	}
 	glm::vec3 invDir(0.0f);
 	invDir.x = std::abs(dir.x) > 1e-8f ? 1.0f / dir.x : kInf * (dir.x >= 0.0f ? 1.0f : -1.0f);
 	invDir.y = std::abs(dir.y) > 1e-8f ? 1.0f / dir.y : kInf * (dir.y >= 0.0f ? 1.0f : -1.0f);

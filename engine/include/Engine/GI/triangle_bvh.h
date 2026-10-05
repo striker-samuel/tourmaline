@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -22,8 +23,30 @@
 
 namespace smvk::gi {
 
+// Ray-tracing backend for the bake transport (primary/shadow rays): the
+// vendored Embree (external/embree, packet/SIMD traversal over the same
+// triangle soup — the fast production backend) or the builtin binned-SAH
+// BVH (the deterministic reference; also owns ClosestDistance, which
+// stays builtin either way — cold placement/relocation path).
+enum class TraceBackend {
+	Builtin,
+	Embree,
+};
+
 class TriangleBvh {
 public:
+	// All five specials declared here, defined out-of-line (triangle_bvh.cpp):
+	// the unique_ptr<EmbreeContext> member is incomplete in this header,
+	// and an inline-defaulted special (MSVC instantiates a defaulted ctor
+	// with its exception-cleanup path in every using TU) drags
+	// ~unique_ptr — and its incomplete-type delete — into foreign TUs.
+	TriangleBvh();
+	~TriangleBvh();
+	TriangleBvh(const TriangleBvh&) = delete;
+	TriangleBvh& operator=(const TriangleBvh&) = delete;
+	TriangleBvh(TriangleBvh&&) noexcept;
+	TriangleBvh& operator=(TriangleBvh&&) noexcept;
+
 	struct Hit {
 		float t = 0.0f;
 		uint32_t tri = 0;      // triangle index (into the build triangle list)
@@ -32,7 +55,10 @@ public:
 
 	// Triangles are consumed as a prebuilt vertex + index soup; `triCount`
 	// is indices.size() / 3. Triangle k uses indices[3k..3k+2].
-	void Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices);
+	void Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices,
+		TraceBackend backend = TraceBackend::Builtin);
+
+	TraceBackend Backend() const { return backend_; }
 
 	bool Empty() const { return triCount_ == 0; }
 	uint32_t TriangleCount() const { return triCount_; }
@@ -99,6 +125,14 @@ private:
 	uint32_t triCount_ = 0;
 	glm::vec3 boundsMin_{ 0.0f };
 	glm::vec3 boundsMax_{ 0.0f };
+	// Embree traversal state (backend == Embree only): shares positions_/
+	// indices_ zero-copy (rtcSetSharedGeometryBuffer — the vectors are
+	// stable after Build, so the device pointers stay valid for the
+	// BVH's lifetime). Forward-declared so this header never includes
+	// embree.h (engine targets build without it).
+	struct EmbreeContext;
+	std::unique_ptr<EmbreeContext> embree_;
+	TraceBackend backend_ = TraceBackend::Builtin;
 };
 
 } // namespace smvk::gi

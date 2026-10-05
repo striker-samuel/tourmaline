@@ -189,7 +189,16 @@ public:
 	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
 
+	// Ray-tracing backend for the bake transport (see TriangleBvh): the
+	// builtin BVH by default (deterministic reference); Embree (the
+	// vendored production backend) when requested. Set BEFORE Finalize
+	// (which builds the BVH); BuildTraceSceneFromCluster wires it from
+	// GiSceneBuildOptions::traceBackendEmbree.
+	void SetTraceBackend(TraceBackend backend) { traceBackend_ = backend; }
+	TraceBackend GetTraceBackend() const { return traceBackend_; }
+
 private:
+	TraceBackend traceBackend_ = TraceBackend::Builtin;
 	TriangleBvh bvh_;
 	struct EmissiveTri {
 		uint32_t tri = 0;
@@ -258,6 +267,13 @@ struct GiSceneBuildOptions {
 	// engine-space scenes (no coordFix); cook imports at coordFix 0 pass
 	// (0,0,+1) or the Bistro sun bakes underground / spots aim backwards.
 	glm::vec3 punctualAimAxis{ 0.0f, 0.0f, -1.0f };
+	// Ray-tracing backend for the bake transport (see TriangleBvh): the
+	// builtin binned-SAH BVH by default (deterministic reference output);
+	// Embree (vendored external/embree — packet/SIMD traversal, the
+	// production bake backend) when true — much faster on big scenes,
+	// results agree within Monte-Carlo noise. A runtime device/scene
+	// failure falls back to builtin with a warning.
+	bool traceBackendEmbree = false;
 };
 
 // Harvest result: how many authored lights joined the bake light set.

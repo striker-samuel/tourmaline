@@ -97,6 +97,11 @@ struct Args {
 	bool textures = true;
 	bool emissive = true;
 	bool verify = true;
+	// Ray-tracing backend for the bake transport: "embree" (vendored
+	// external/embree, packet/SIMD traversal — the fast default) or
+	// "builtin" (the deterministic binned-SAH BVH reference; same
+	// transport math, agrees within Monte-Carlo noise).
+	std::string backend = "embree";
 	uint32_t lmProbe = 0; // >0: lightmap-chain diagnostic on N meshes
 	std::string analyze; // .sggi host path: inspect instead of baking
 	// White-world albedo: default "0.7" (single known albedo everywhere).
@@ -187,6 +192,15 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v, i)) return false;
 			out.verify = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--backend") {
+			std::string v;
+			if (!need(v, i)) return false;
+			if (v != "builtin" && v != "embree") {
+				std::cerr << "--backend must be builtin|embree" << std::endl;
+				return false;
+			}
+			out.backend = v;
+		}
 		else if (a == "--analyze") { if (!need(out.analyze, i)) return false; }
 		else if (a == "--uniform-albedo") { if (!need(out.uniformAlbedo, i)) return false; }
 		else if (a == "--regular-out") { if (!need(out.regularOut, i)) return false; }
@@ -242,6 +256,7 @@ void Usage() {
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
 		<< "         [--verify on|off] [--uniform-albedo off|0.7|r,g,b]\n"
+		<< "         [--backend builtin|embree]\n"
 		<< "         [--spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "         (bakes use REAL materials by default; sun + static spots\n"
 		<< "         via NEE; transmissive meshes pass rays through, tinted.\n"
@@ -1217,6 +1232,9 @@ int main(int argc, char** argv) {
 
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
+	buildOpts.traceBackendEmbree = (args.backend == "embree");
+	std::cout << "  trace backend: "
+		<< (buildOpts.traceBackendEmbree ? "embree" : "builtin") << "\n";
 	smvk::gi::BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, err);
 	if (!err.empty()) {
 		std::cerr << "Scene build failed: " << err << std::endl;

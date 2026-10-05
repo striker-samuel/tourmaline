@@ -117,6 +117,11 @@ struct Args {
 	std::string pak; // empty = no pak
 	bool verify = true;
 	uint32_t threads = 0; // 0 = hardware concurrency
+	// Ray-tracing backend for the capture transport: "embree" (vendored
+	// external/embree, packet/SIMD traversal — the fast default) or
+	// "builtin" (the deterministic binned-SAH BVH reference; same
+	// transport math, agrees within Monte-Carlo noise).
+	std::string backend = "embree";
 };
 
 bool ParseVec3(const std::string& s, glm::vec3& out) {
@@ -264,6 +269,15 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.verify = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--backend") {
+			std::string v;
+			if (!need(v)) return false;
+			if (v != "builtin" && v != "embree") {
+				std::cerr << "--backend must be builtin|embree" << std::endl;
+				return false;
+			}
+			out.backend = v;
+		}
 		else if (a == "--threads") {
 			std::string v;
 			if (!need(v)) return false;
@@ -297,7 +311,7 @@ void Usage() {
 		<< "         [--sun-azimuth 30] [--sun-elevation 55]\n"
 		<< "         [--sun-intensity 10000] [--sky-intensity 600]\n"
 		<< "         [--test-pattern] [--pak <host path>] [--verify on|off]\n"
-		<< "         [--threads 0]\n"
+		<< "         [--threads 0] [--backend builtin|embree]\n"
 		<< "         [--octree] [--octree-max 8.0] [--octree-min 2.0]\n"
 		<< "         [--octree-depth 4]\n"
 		<< "         [--spp 8]\n"
@@ -684,6 +698,9 @@ int main(int argc, char** argv) {
 		buildOpts.env.sunElevationDeg = args.sunElevation;
 		buildOpts.env.sunIntensity = args.sunIntensity;
 		buildOpts.env.skyIntensity = args.skyIntensity;
+		buildOpts.traceBackendEmbree = (args.backend == "embree");
+		std::cout << "  trace backend: "
+			<< (buildOpts.traceBackendEmbree ? "embree" : "builtin") << "\n";
 		// Captures see textured albedo (they are what the skybox shows);
 		// uniformAlbedo stays off unlike the white-world GI bake.
 

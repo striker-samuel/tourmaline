@@ -4,9 +4,11 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <thread>
 
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bc6h.h>
+#include <Engine/Utils/thread_pool.h>
 #include <Engine/platform.h>
 
 namespace smvk::gi {
@@ -352,6 +354,11 @@ bool SgGiVolume::BakeDenseLayers() {
 	denseLevels.assign(std::min<uint32_t>(levelCount, kSgGiMaxLevels),
 		DenseLevel{});
 	bool any = false;
+	// Encode pool (see the parallel encode note below): the BC6H block
+	// codec is the dense bake's dominant cost, so it gets the whole
+	// machine. Determinism is unaffected (per-task purity).
+	const uint32_t hwThreads = std::thread::hardware_concurrency();
+	ThreadPool pool(hwThreads ? hwThreads : 1);
 	for (uint32_t lvl = 0; lvl < denseLevels.size(); ++lvl) {
 		std::vector<glm::vec3> amps;
 		std::vector<float> weight;
@@ -375,28 +382,44 @@ bool SgGiVolume::BakeDenseLayers() {
 		// ceil(w/4) x ceil(h/4) x d.
 		const uint32_t ew = (w + 3) & ~3u;
 		const uint32_t eh = (h + 3) & ~3u;
-		// ONE staging slice reused across every (lobe, z): no per-slice
-		// allocations. Bc6hEncodeImage APPENDS, so each lobe's payload
-		// accumulates its z slices in order.
-		std::vector<uint16_t> slice(size_t(ew) * eh * 3);
+		// Parallel encode: the DirectXTex BC6H reference encoder is ~1ms
+		// per 4x4 block (multi-mode search) — 200k+ blocks for a typical
+		// level ran ~4 MINUTES single-threaded (the dense bake dwarfed
+		// the traced bake ~30x). Each (lobe, z-slice) is an independent
+		// pure function of the resampled amps (its own staging slice,
+		// its own output), so a thread pool preserves determinism
+		// exactly: byte-identical payloads regardless of scheduling.
+		// Slices assemble in z order after the join.
 		for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe) {
 			std::vector<uint8_t>& blocks = out.lobeBlocks[lobe];
 			blocks.reserve(size_t(ew / 4) * (eh / 4) * 16 * d);
+			std::vector<std::future<std::vector<uint8_t>>> sliceFutures;
+			sliceFutures.reserve(d);
 			for (uint32_t z = 0; z < d; ++z) {
-				for (uint32_t y = 0; y < eh; ++y) {
-					const uint32_t sy = std::min(y, h - 1);
-					for (uint32_t x = 0; x < ew; ++x) {
-						const uint32_t sx = std::min(x, w - 1);
-						const size_t src = (size_t(z) * h + sy) * w + sx;
-						const glm::vec3& a =
-							amps[src * kSgLobeCount + lobe];
-						const size_t dst = (size_t(y) * ew + x) * 3;
-						slice[dst + 0] = PackHalfClamped(a.r);
-						slice[dst + 1] = PackHalfClamped(a.g);
-						slice[dst + 2] = PackHalfClamped(a.b);
+				sliceFutures.push_back(pool.enqueue([&, z, lobe] {
+					std::vector<uint16_t> slice(size_t(ew) * eh * 3);
+					for (uint32_t y = 0; y < eh; ++y) {
+						const uint32_t sy = std::min(y, h - 1);
+						for (uint32_t x = 0; x < ew; ++x) {
+							const uint32_t sx = std::min(x, w - 1);
+							const size_t src = (size_t(z) * h + sy) * w + sx;
+							const glm::vec3& a =
+								amps[src * kSgLobeCount + lobe];
+							const size_t dst = (size_t(y) * ew + x) * 3;
+							slice[dst + 0] = PackHalfClamped(a.r);
+							slice[dst + 1] = PackHalfClamped(a.g);
+							slice[dst + 2] = PackHalfClamped(a.b);
+						}
 					}
-				}
-				Bc6hEncodeImage(slice.data(), ew, eh, blocks);
+					std::vector<uint8_t> sliceBlocks;
+					Bc6hEncodeImage(slice.data(), ew, eh, sliceBlocks);
+					return sliceBlocks;
+				}));
+			}
+			for (auto& f : sliceFutures) {
+				std::vector<uint8_t> sliceBlocks = f.get();
+				blocks.insert(blocks.end(), sliceBlocks.begin(),
+					sliceBlocks.end());
 			}
 		}
 		// Weight volume (R16F halves, real dims, raw partition sums).

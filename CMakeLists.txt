@@ -37,6 +37,25 @@ endif()
 # LZ4 (vendored block codec for cooked pak blobs)
 add_subdirectory(external/lz4)
 
+# Embree ray-tracing backend for the bake transport (vendored
+# external/embree source, 4.4.1 — trimmed: no docs/tutorials/tests/superbuild).
+# REQUIRED (not optional): the engine links it unconditionally and gates the
+# Embree traversal path on SMVK_GI_EMBREE. Static lib, no tutorials,
+# internal tasking (no TBB), triangle geometry (the bake only traces
+# triangles — the rest of Embree's geometry types stay off to keep the
+# build lean).
+set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
+set(EMBREE_TASKING_SYSTEM "INTERNAL" CACHE STRING "" FORCE)
+set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_INSTANCE OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_INSTANCE_ARRAY OFF CACHE BOOL "" FORCE)
+set(EMBREE_RAY_MASK OFF CACHE BOOL "" FORCE)
+set(EMBREE_FILTER_FUNCTION OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/embree)
+
 # GLFW (legacy windowing; retained for samples compat — engine uses SDL3)
 add_subdirectory(external/glfw)
 
@@ -267,6 +286,11 @@ set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
+# Embree backend wiring (see the options block above): the engine links
+# the static lib (the traversal path is unconditional in the source —
+# the builtin stays as the deterministic reference backend + the
+# ClosestDistance path).
+target_link_libraries(engine PRIVATE embree)
 add_subdirectory(tools/gltf_import)
 add_subdirectory(tools/artifact_cache)
 add_subdirectory(app)

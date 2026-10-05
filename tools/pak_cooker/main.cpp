@@ -280,6 +280,12 @@ struct Args {
 	float skyIntensity = 600.0f;
 	// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
 	std::vector<std::string> spots;
+	// Ray-tracing backend for the in-pak bake transport (cvolumes,
+	// cubemap captures, lightmaps): "embree" (vendored external/embree,
+	// packet/SIMD traversal — the fast default) or "builtin" (the
+	// deterministic binned-SAH BVH reference; agrees within
+	// Monte-Carlo noise).
+	std::string backend = "embree";
 	// Probe-volume sidecars this pak's scenes sample (repeatable):
 	// registers gi/<name>.sggi names into the clusters (bake the matching
 	// volumes with GiBaker --out). Runtime resolves by name.
@@ -560,6 +566,7 @@ bool BakeAuthoredCvolumes(
 		buildOpts.env.sunElevationDeg = be.sunElevation;
 		buildOpts.env.sunIntensity = be.sunIntensity;
 		buildOpts.env.skyIntensity = be.skyIntensity;
+		buildOpts.traceBackendEmbree = (args.backend == "embree");
 		GiTraceScene traceScene;
 		std::string terr;
 		BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
@@ -938,6 +945,15 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.sunAzimuth = std::stof(v);
 			out.explicitSet.insert("sunAzimuth");
 		}
+		else if (a == "--backend") {
+			std::string v;
+			if (!need(v)) return false;
+			if (v != "builtin" && v != "embree") {
+				std::cerr << "--backend must be builtin|embree" << std::endl;
+				return false;
+			}
+			out.backend = v;
+		}
 		else if (a == "--sun-elevation") {
 			std::string v;
 			if (!need(v)) return false;
@@ -1142,6 +1158,7 @@ void Usage() {
 		<< "           --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000 --sky-intensity 600\n"
+		<< "           --backend builtin|embree (bake ray-tracing backend)\n"
 		<< "           --sun-color 1,0.95,0.9\n"
 		<< "           --lm-lod-lock attr|hard\n"
 		<< "           --lm-denoise on|off (DEPRECATED)"
@@ -3951,6 +3968,7 @@ int main(int argc, char** argv) {
 		buildOpts.env.sunElevationDeg = be.sunElevation;
 		buildOpts.env.sunIntensity = be.sunIntensity;
 		buildOpts.env.skyIntensity = be.skyIntensity;
+		buildOpts.traceBackendEmbree = (args.backend == "embree");
 
 		// Static spot list ("px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela").
 		std::vector<GiTraceSpot> spots;
