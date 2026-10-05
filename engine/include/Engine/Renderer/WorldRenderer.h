@@ -27,6 +27,7 @@
 #include <Engine/Profile/profile.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bc6h.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
@@ -646,6 +647,15 @@ struct FrameUniforms
 	// shaders skip off-by-default payloads (like dsVizParams above)
 	// without a BDA chase. Unconditional like every other field. ----
 	uint64_t flags = 0;         // 1312 kFrameFlag* bits
+	// ---- Dense octree resample (the BC6H Texture3D runtime path — see
+	// m_giLevelTextures): per level 9 SG-lobe RGB layers (BC6H 3D) + 1
+	// weight layer (R16F 3D) in the shared volumeTextures bindless
+	// array; UINT32_MAX = absent level (beyond the baked levelCount).
+	// The diffuse sampler trilinear-filters these instead of walking
+	// probe lists per pixel (the probes never move). NOTE: uint32
+	// arrays align to 4 (not 16) on both sides — this member sits at
+	// 1320, matching the HLSL mirror exactly (see the asserts below).
+	uint32_t giLevelLayers[80] = {}; // 1320 8 levels x (9 amp + 1 weight)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -653,7 +663,19 @@ struct FrameUniforms
 static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, flags) == 1312, "flags offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1328, "FrameUniforms size: HLSL mirror");
+// GI block (the lit shader's frame.gi* reads + the F8 debug views live
+// or die by these — the debug view once silently read the wrong word
+// here, so every member of the block is pinned, not just the tail).
+static_assert(offsetof(FrameUniforms, giProbes) == 704, "giProbes offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giGrid) == 712, "giGrid offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giCells) == 720, "giCells offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giIndices) == 728, "giIndices offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giEnabled) == 736, "giEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giIntensity) == 740, "giIntensity offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1648, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2076,7 +2098,10 @@ protected:
 	// AmbientMode); R / F8 cycle the baked-GI debug views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
 	int m_giDebug = 0;             // R / F8 cycle: 0 off, 1 baked irradiance,
-	                                // 2 GI source palette
+	                                // 2 GI source palette, 3 isolated level,
+	                                // 4 dominant level (the sggi walk's
+	                                // level-isolation + argmax debugs)
+	int m_giDebugLevel = 0;        // isolated level for mode 3 (0..7)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
 	                              // like the forward+ light points)
@@ -2091,16 +2116,26 @@ protected:
 	glm::mat4 m_giProbeCullView = glm::mat4(0.0f); // view matrix the cache was built for
 	std::vector<char> m_giProbeCullCache; // per-probe: 0 occluded, 1 visible, 2 unknown
 	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);
-	bool m_giLoaded = false;      // volume + GPU buffers live
-	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (stats; grids stay built)
-	smvk::Holder<smvk::BufferHandle> m_giProbesBuffer;
+	bool m_giLoaded = false;      // volume + dense layers live
+	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (probe overlay + stats)
+	// Grid header only (the shader reads each level's volumeMin/cellSize/
+	// dims from frame.giGrid). The probe/cell/index storage buffers are
+	// GONE — the dense BC6H layers replaced the probe-list walk, so the
+	// FrameUniforms giProbes/giCells/giIndices BDA slots are legacy-zero
+	// (kept for the mirror layout; nothing reads them).
 	smvk::Holder<smvk::BufferHandle> m_giGridBuffer;
-	smvk::Holder<smvk::BufferHandle> m_giCellsBuffer;
-	smvk::Holder<smvk::BufferHandle> m_giIndicesBuffer;
-	uint64_t m_giProbesAddress = 0;
 	uint64_t m_giGridAddress = 0;
-	uint64_t m_giCellsAddress = 0;
-	uint64_t m_giIndicesAddress = 0;
+	// Dense trilinear resample (the BC6H Texture3D runtime path — the
+	// probes never move, so the per-voxel visibility-weighted blend is
+	// baked once at load and filtered per pixel instead of walking probe
+	// lists): per level 9 SG-lobe RGB layers (BC6H 3D) + 1 weight layer
+	// (R16F 3D), in the shared volumeTextures bindless array. Slots ride
+	// frame.giLevelLayers (level * kGiDenseLayersPerLevel + layer;
+	// UINT32_MAX = absent level); the textures stay alive here.
+	static constexpr uint32_t kGiDenseLayersPerLevel = 10;
+	static constexpr uint32_t kGiDenseMaxLevels = 8;
+	std::vector<smvk::Holder<smvk::TextureHandle>> m_giLevelTextures;
+	uint32_t m_giLevelLayers[kGiDenseMaxLevels * kGiDenseLayersPerLevel] = {};
 	// Ambient-source gating (see AmbientMode): the per-source "wanted"
 	// helpers drive the FrameUniforms enable flags; the *Active() gates
 	// additionally require the content to be loaded. Sky IBL rides the

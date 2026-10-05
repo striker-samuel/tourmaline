@@ -162,6 +162,12 @@ public:
     // True when the physical device supports 2x MSAA for both color and
     // depth framebuffer attachments (used for the Main pass resolve path).
     bool SupportsMSAA2x();
+    // True when BC6H-U is usable as a sampled, linearly filtered ImageType
+    // 3D with transfer-dst uploads — the dense GI layers configuration.
+    // Block-compressed 3D support is NOT implied by 2D (format/filter
+    // capabilities are queried per image type), so the dense-GI path gates
+    // on this instead of assuming.
+    bool SupportsBc6h3DSampling();
     // True when RG32F supports the full EVSM moment chain: 2x MSAA color
     // attachment + resolve, sampled + storage (async blur). When false the
     // app keeps the PCF depth path (EVSM silently unavailable).

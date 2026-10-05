@@ -74,6 +74,16 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// leg, the direct leg and the debug views intentionally stay generic.
 	smvk::ShaderModuleHandle litFragSgModules_[4]{};
 	smvk::ShaderProgram filteredLitSg_[4]{};
+	// GI permutation twins of filteredProgram (same filtered VS + the
+	// .giN lit FS — the SAME modules the direct draws bind as
+	// mainProgramGi[variant]). Without a built twin the filtered batches
+	// fall back to the generic FilteredProgram(), whose base FS compiles
+	// the GI branches out — a GI-loaded scene that skips configuring
+	// these loses BOTH the GI ambient and the F8 debug views on every
+	// filtered draw (the sponza "debug view never fires" bug: the whole
+	// scene is gfx-clustered, so the base FS shaded everything).
+	smvk::ShaderModuleHandle litFragGiModules_[4]{};
+	smvk::ShaderProgram filteredProgramGi_[4]{};
 	// Wireframe (P) twin of filteredProgram (same VS + default_wire.frag):
 	// Main binds it instead of the lit A2C/filtered programs while the
 	// wireframe raster override is on, so line pixels skip the heavy lit
@@ -179,6 +189,16 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 			litFragSgModules_[variantIndex] = frag;
 	}
 	static constexpr uint32_t LitSgVariantCount() { return 4; }
+	// GI permutation lit FS module (variantIndex 0..3 = NONE/OCTREE/
+	// REGULAR/FULL, the .giN.spv suffixes — see WorldRenderer's
+	// fragLitGiModules load loop). Called once per loaded variant module
+	// at init; missing variants stay empty and the batch bind falls back
+	// to the generic lit FS (which loses GI — see FilteredProgramGi).
+	void ConfigureLitFragGi(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			litFragGiModules_[variantIndex] = frag;
+	}
+	static constexpr uint32_t LitGiVariantCount() { return 4; }
 	// Cooked lobe counts in variant order (matches the .sgN.spv suffixes
 	// and the scene's module load loop).
 	static constexpr uint32_t LitSgVariantLobes(uint32_t variantIndex) {
@@ -284,6 +304,17 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return worldMesh < meshMap_.size() && meshMap_[worldMesh] != UINT32_MAX;
 	}
 		[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
+	// Lit program for the ACTIVE GI variant: the matching .giN twin when
+	// built, else the generic FilteredProgram(). The GI permutation is a
+	// per-frame uniform decision (the loaded GI state — one FS for the
+	// whole frame), so the batch bind consults it FIRST: the lobe-count
+	// sgN twins predate the GI permutations (no -DGI_* in their compiles)
+	// and would compile the GI ambient + the F8 debug views out.
+	[[nodiscard]] smvk::ShaderProgram& FilteredProgramGi(uint32_t giVariant) {
+		if (giVariant <= 3u && filteredProgramGi_[giVariant].shaderCount == 2)
+			return filteredProgramGi_[giVariant];
+		return filteredProgram;
+	}
 	// Lit program for a material range's cooked lobe count: the matching
 	// fixed-count twin when built, else the generic FilteredProgram()
 	// (unknown/mixed counts incl. 0xFFFFFFFFu = unlightmapped draws).
@@ -302,6 +333,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 			return true;
 		for (uint32_t li = 0; li < 4; ++li)
 			if (&prog == &filteredLitSg_[li])
+				return true;
+		for (uint32_t gi = 0; gi < 4; ++gi)
+			if (&prog == &filteredProgramGi_[gi])
 				return true;
 		return false;
 	}

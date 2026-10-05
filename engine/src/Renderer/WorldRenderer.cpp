@@ -899,15 +899,25 @@ bool WorldRenderer::Initialize() {
 			}
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
-		// GI debug view for headless runs (same modes the I key cycles;
+		// GI debug view for headless runs (same modes the R key cycles;
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
-		// 2 source palette.
+		// 2 source palette, 3 isolated level (the level byte selects
+		// it — VULKANTOY_GI_DEBUG_LEVEL), 4 dominant level.
 		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 2)
+			if (mode >= 0 && mode <= 4)
 				m_giDebug = mode;
 			else
-				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG wants 0..2\n";
+				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG wants 0..4\n";
+		}
+		// Isolated-level selector for GI debug mode 3 (headless twin of
+		// the panel slider).
+		if (const char* giLvlEnv = std::getenv("VULKANTOY_GI_DEBUG_LEVEL")) {
+			const int lvl = std::atoi(giLvlEnv);
+			if (lvl >= 0 && lvl <= 7)
+				m_giDebugLevel = lvl;
+			else
+				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG_LEVEL wants 0..7\n";
 		}
 		// Probe-point overlay for headless runs (same as the panel
 		// checkbox; draws the probe lattice colored by octree level).
@@ -1679,6 +1689,12 @@ if (!m_resources.fragVertexColorShader.empty()) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
 			for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
 				m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
+			// The GI permutation twins: without these every filtered
+			// batch binds a base FS with the GI branches compiled out —
+			// no GI ambient, no F8 debug views, on the whole clustered
+			// scene (the direct draws select mainProgramGi separately).
+			for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+				m_gfxRenderer.ConfigureLitFragGi(gi, m_resources.fragLitGiModules[gi]);
 			// Main-view seed masked phase is reversed-Z: prefer the
 			// conservative shadow_rev module (falls back to the normal-Z
 			// shadow.frag module — perf hint, not correctness).
@@ -1976,11 +1992,11 @@ void WorldRenderer::Shutdown() {
 	void WorldRenderer::LoadGiVolume(smvk::OverlayVfs& vfs) {
 		m_giLoaded = false;
 		m_giVolume = smvk::gi::SgGiVolume{};
-		m_giProbesBuffer = {};
 		m_giGridBuffer = {};
-		m_giCellsBuffer = {};
-		m_giIndicesBuffer = {};
-		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
+		m_giGridAddress = 0;
+		m_giLevelTextures.clear();
+		std::fill(std::begin(m_giLevelLayers), std::end(m_giLevelLayers),
+			UINT32_MAX);
 
 		const std::string stem = m_giProbeName.empty()
 			? m_sceneId : m_giProbeName;
@@ -2008,49 +2024,146 @@ void WorldRenderer::Shutdown() {
 			return;
 		}
 
-		std::vector<smvk::gi::SgProbeGpu> probeData;
-		smvk::gi::SgGiGridGpu gridData{};
-		std::vector<uint32_t> cellData;
-		std::vector<uint32_t> indexData;
-		m_giVolume.PackGpu(probeData, gridData, cellData, indexData);
-		if (probeData.empty()) {
-			std::cerr << "[GI] volume has no probes - ignored\n";
+		// v2 requirement: the dense runtime layers — the shader
+		// trilinear-filters them (the probe-list walk is gone), so a file
+		// without them has nothing to serve (v1 files die on the version
+		// gate above; a bake that skipped BakeDenseLayers lands here).
+		bool anyDense = false;
+		for (const auto& dl : m_giVolume.denseLevels)
+			anyDense = anyDense || dl.present;
+		if (!anyDense) {
+			std::cerr << "[GI] volume has no dense layers - re-bake with"
+				" GiBaker (the runtime trilinear path needs them)\n";
+			fallbackSky();
+			return;
+		}
+		// Device gate (the SupportsEvsm lesson: capability, not
+		// convention — BC6H 2D support proves nothing about sampled+linear
+		// BC6H 3D): degrade to sky IBL instead of guessing.
+		if (!m_context->SupportsBc6h3DSampling()) {
+			std::cerr << "[GI] device lacks sampled+linear BC6H 3D -"
+				" dense layers unusable (sky IBL ambient)\n";
 			fallbackSky();
 			return;
 		}
 
+		// Grid header only: the shader reads each level's volumeMin/
+		// cellSize/dims through frame.giGrid. PackGpu also packs the
+		// probe/cell/index payloads — transient CPU vectors, discarded
+		// right here (the GPU probe arrays are gone with the walk).
+		smvk::gi::SgGiGridGpu gridData{};
+		{
+			std::vector<smvk::gi::SgProbeGpu> probeData;
+			std::vector<uint32_t> cellData;
+			std::vector<uint32_t> indexData;
+			m_giVolume.PackGpu(probeData, gridData, cellData, indexData);
+			if (probeData.empty()) {
+				std::cerr << "[GI] volume has no probes - ignored\n";
+				fallbackSky();
+				return;
+			}
+		}
 		constexpr smvk::PipelineStage kGiStages =
 			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment);
-		m_giProbesBuffer = m_context->CreateBuffer(
-			probeData.size() * sizeof(smvk::gi::SgProbeGpu),
-			smvk::BufferType_Storage, "sggi probes");
 		m_giGridBuffer = m_context->CreateBuffer(
 			sizeof(smvk::gi::SgGiGridGpu), smvk::BufferType_Storage, "sggi grid");
-		m_giCellsBuffer = m_context->CreateBuffer(
-			std::max<size_t>(cellData.size(), 1) * sizeof(uint32_t),
-			smvk::BufferType_Storage, "sggi cells");
-		m_giIndicesBuffer = m_context->CreateBuffer(
-			std::max<size_t>(indexData.size(), 1) * sizeof(uint32_t),
-			smvk::BufferType_Storage, "sggi indices");
-
-		m_context->UploadDataToBuffer(m_giProbesBuffer, probeData.data(),
-			probeData.size() * sizeof(smvk::gi::SgProbeGpu), kGiStages,
-			smvk::AccessFlags::ShaderRead);
 		m_context->UploadDataToBuffer(m_giGridBuffer, &gridData,
 			sizeof(gridData), kGiStages, smvk::AccessFlags::ShaderRead);
-		if (!cellData.empty())
-			m_context->UploadDataToBuffer(m_giCellsBuffer, cellData.data(),
-				cellData.size() * sizeof(uint32_t), kGiStages,
-				smvk::AccessFlags::ShaderRead);
-		if (!indexData.empty())
-			m_context->UploadDataToBuffer(m_giIndicesBuffer, indexData.data(),
-				indexData.size() * sizeof(uint32_t), kGiStages,
-				smvk::AccessFlags::ShaderRead);
-
-		m_giProbesAddress = m_context->GetBufferDeviceAddress(m_giProbesBuffer);
 		m_giGridAddress = m_context->GetBufferDeviceAddress(m_giGridBuffer);
-		m_giCellsAddress = m_context->GetBufferDeviceAddress(m_giCellsBuffer);
-		m_giIndicesAddress = m_context->GetBufferDeviceAddress(m_giIndicesBuffer);
+
+		// Dense layers: cooked payloads straight to images — no resample,
+		// no BC6H encode at load (GiBaker baked the visibility-weighted
+		// blend and compressed it; the runtime only creates images). Per
+		// level: 9 SG-lobe BC6H payloads + 1 R16F weight volume, all at
+		// the REAL dims (no padding on ANY axis — BC6H blocks are 4x4x1
+		// and partial edge blocks are legal, so the VkImage is exactly
+		// dims; the natural uvw transform follows in the sampler).
+		// Slots ride frame.giLevelLayers (level * 10 + layer;
+		// UINT32_MAX = absent level, skipped by the sampler).
+		{
+			const auto& levels = m_giVolume.denseLevels;
+			const uint32_t levelCount = uint32_t(std::min<size_t>(
+				levels.size(), kGiDenseMaxLevels));
+			uint32_t denseLevels = 0;
+			size_t denseBytes = 0;
+			for (uint32_t lvl = 0; lvl < levelCount; ++lvl) {
+				const smvk::gi::SgGiVolume::DenseLevel& dl = levels[lvl];
+				if (!dl.present)
+					continue;
+				// Rollback point: a failed level's already-created
+				// textures are exactly the vector tail — erasing frees
+				// them (Holder is RAII), so a half-created level leaks
+				// nothing for the GI lifetime.
+				const size_t texStart = m_giLevelTextures.size();
+				bool levelOk = true;
+				for (uint32_t lobe = 0;
+					lobe < smvk::gi::kSgLobeCount && levelOk; ++lobe) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { dl.dims[0], dl.dims[1], dl.dims[2] };
+					ci.format = smvk::Format::BC6H_UFloat;
+					ci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi dense lobe";
+					auto tex = m_context->CreateTexture(ci,
+						dl.lobeBlocks[lobe].data());
+					if (tex.empty()) {
+						std::cerr << "[GI] dense level " << lvl
+							<< " lobe " << lobe << " texture failed\n";
+						levelOk = false;
+						break;
+					}
+					m_giLevelLayers[lvl * kGiDenseLayersPerLevel + lobe] =
+						m_context->GetTextureBindlessIndex(tex);
+					m_giLevelTextures.push_back(std::move(tex));
+				}
+				if (levelOk) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { dl.dims[0], dl.dims[1], dl.dims[2] };
+					ci.format = smvk::Format::R16_Float;
+					ci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi dense weight";
+					auto tex = m_context->CreateTexture(ci, dl.weight.data());
+					if (tex.empty()) {
+						std::cerr << "[GI] dense level " << lvl
+							<< " weight texture failed\n";
+						levelOk = false;
+					} else {
+						m_giLevelLayers[lvl * kGiDenseLayersPerLevel
+							+ smvk::gi::kSgLobeCount] =
+							m_context->GetTextureBindlessIndex(tex);
+						m_giLevelTextures.push_back(std::move(tex));
+					}
+				}
+				if (!levelOk) {
+					// Free the level's partial set + revert its slots
+					// (UINT32_MAX = absent; the sampler skips it).
+					m_giLevelTextures.resize(texStart);
+					for (uint32_t t = 0; t < kGiDenseLayersPerLevel; ++t)
+						m_giLevelLayers[lvl * kGiDenseLayersPerLevel + t] =
+							UINT32_MAX;
+					continue;
+				}
+				// Bytes counted only for fully-created levels (failed
+				// levels own nothing after the rollback above).
+				++denseLevels;
+				denseBytes += dl.Bytes();
+			}
+			std::cerr << "[GI] dense layers: " << denseLevels << "/"
+				<< levelCount << " levels ("
+				<< (denseBytes / 1024) << " KiB BC6H+R16F)\n";
+			if (denseLevels == 0) {
+				std::cerr << "[GI] no usable dense levels - sky IBL ambient\n";
+				fallbackSky();
+				return;
+			}
+		}
 		m_giLoaded = true;
 
 		// CPU-side sanity: the volume must cover the scene interior.
@@ -2861,25 +2974,38 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		// GI debug view + shared intensity ride EVERY frame regardless of
 		// which source is active: the lit shader's F8/I debug block colors
 		// lightmap / grid / probe pixels alike (mode 1 flat irradiance,
-		// 2 source palette), so the views must survive source isolation
-		// (e.g. Lightmaps mode with no probe volume loaded).
+		// 2 source palette, 3 isolated level, 4 dominant level — the
+		// sggi walk's level-isolation + argmax debugs), so the views must
+		// survive source isolation (e.g. Lightmaps mode with no probe
+		// volume loaded). The level byte carries the mode-3 isolated
+		// level (see SgGiSample's dbgLvl).
 		data.giIntensity = m_giIntensity;
-		data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
-		// SG-GI probe volume (static BDAs + the per-mode flag). GiActive()
-		// is the single gate so the shader flag and the buffers can never
-		// disagree.
+		data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
+			| (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
+		// SG-GI probe volume (grid BDA + the per-mode flag). GiActive() is
+		// the single gate so the shader flag and the buffers can never
+		// disagree. The giProbes/giCells/giIndices slots are legacy-zero
+		// (the dense BC6H layers replaced the probe-list walk; the fields
+		// stay for the FrameUniforms mirror layout).
 		if (GiActive()) {
-			data.giProbes = m_giProbesAddress;
+			data.giProbes = 0;
 			data.giGrid = m_giGridAddress;
-			data.giCells = m_giCellsAddress;
-			data.giIndices = m_giIndicesAddress;
+			data.giCells = 0;
+			data.giIndices = 0;
 			data.giEnabled = 1u;
+			// Dense layers (the BC6H Texture3D runtime path): the sampler
+			// trilinear-filters these (cooked payloads, baked by GiBaker).
+			for (uint32_t s = 0;
+				s < kGiDenseMaxLevels * kGiDenseLayersPerLevel; ++s)
+				data.giLevelLayers[s] = m_giLevelLayers[s];
 		} else {
 			data.giProbes = 0;
 			data.giGrid = 0;
 			data.giCells = 0;
 			data.giIndices = 0;
 			data.giEnabled = 0u;
+			for (uint32_t& slot : data.giLevelLayers)
+				slot = UINT32_MAX;
 		}
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
 		// RegActive() gates the upload (loaded + UI toggle); the ambient
@@ -6223,22 +6349,32 @@ FrameUniforms WorldRenderer::BuildSecondaryFrameUniforms(SecondaryView& v,
 	data.dsEnabled = 0u;
 	data.dsVizParams = m_context->GetBufferDeviceAddress(m_resources.dsVizParamsBuffer)
 		+ size_t(::MAX_FRAMES_IN_FLIGHT) * sizeof(DsVizParams);
-	// Ambient sources (per-source isolation mirrors the main builder).
+	// Ambient sources (per-source isolation mirrors the main builder; the
+	// giProbes/giCells/giIndices slots are legacy-zero there too).
 	if (GiActive()) {
-		data.giProbes = m_giProbesAddress;
+		data.giProbes = 0;
 		data.giGrid = m_giGridAddress;
-		data.giCells = m_giCellsAddress;
-		data.giIndices = m_giIndicesAddress;
+		data.giCells = 0;
+		data.giIndices = 0;
 		data.giEnabled = 1u;
+		// Dense layers (mirrors the main builder above).
+		for (uint32_t s = 0;
+			s < kGiDenseMaxLevels * kGiDenseLayersPerLevel; ++s)
+			data.giLevelLayers[s] = m_giLevelLayers[s];
 	} else {
 		data.giProbes = 0;
 		data.giGrid = 0;
 		data.giCells = 0;
 		data.giIndices = 0;
 		data.giEnabled = 0u;
+		for (uint32_t& slot : data.giLevelLayers)
+			slot = UINT32_MAX;
 	}
 	data.giIntensity = m_giIntensity;
-	data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
+	// Modes 0..4 + the mode-3 isolated-level byte (mirrors the main
+	// frame builder above).
+	data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
+		| (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
 	if (RegActive()) {
 		data.regObbs = m_regObbsAddress;
 		const uint32_t n = std::min<uint32_t>(uint32_t(m_regVolumes.size()), 8u);
@@ -9126,16 +9262,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 		if (gfxActive && !bypassFilter) {
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
-			// TEMP-DIAG: per-frame census of which lit program each
-			// material range binds (generic vs fixed-lobe twin).
+			// The GI permutation is a per-frame uniform decision (the
+			// loaded GI state — one FS for the whole frame): the .giN
+			// twin carries the GI ambient + the F8 debug views. It takes
+			// priority over the lobe-count refinement — the sgN twins
+			// predate the GI permutations (no -DGI_* in their compiles)
+			// and would compile the GI branches out of the frame. The
+			// (deprecated lightmap) lobe-count twin only refines ranges
+			// when NO GI variant is active.
+			const engine::GIVariant giVar = GetActiveGIVariant();
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
-				// Fixed-lobe lit twin for the range's cooked count: the SG
-				// evaluation folds to literals. Falls back to the generic
-				// lit program for mixed/unlightmapped ranges (incl. the
-				// A2C leg, which intentionally stays generic).
-				smvk::ShaderProgram& litProg =
-					m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount);
+				smvk::ShaderProgram& litProg = giVar != engine::GIVariant::None
+					? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar))
+					: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount);
 				bindForMaterial(materialId, litProg,
 					m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
 				PushConstants matPC{};
@@ -11347,11 +11487,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							"drawn over the current view");
 					}
 			if (m_giLoaded || m_regLoaded || m_cvolLoaded) {
-				const char* dbgNames[3] = { "Off", "Baked irradiance",
-					"GI source" };
+				// GI debug views (R / F8 cycle): 0 off, 1 baked
+				// irradiance, 2 source palette, 3 isolated octree level
+				// (the level slider picks it), 4 dominant octree level
+				// (which octave carries the pixel). The sggi walk already
+				// implemented modes 3/4 — this combo just reaches them.
+				const char* dbgNames[5] = { "Off", "Baked irradiance",
+					"GI source", "Isolated level", "Dominant level" };
 				int dbgIdx = m_giDebug;
-				if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
-					m_giDebug = std::clamp(dbgIdx, 0, 2);
+				if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 5))
+					m_giDebug = std::clamp(dbgIdx, 0, 4);
 				if (m_giDebug == 1) {
 					ImGui::TextDisabled("flat irradiance of the active source "
 						"(lightmap/grid/probes); magenta = none\n"
@@ -11361,6 +11506,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("source palette: red = lightmap (deprecated), "
 						"green = regular grid (legacy), blue = octree world field, "
 						"cyan = convex volume blended, magenta = none");
+				} else if (m_giDebug == 3) {
+					int lvl = m_giDebugLevel;
+					if (ImGui::SliderInt("Isolated level", &lvl, 0, 7))
+						m_giDebugLevel = std::clamp(lvl, 0, 7);
+					ImGui::TextDisabled("the octree walk gathers ONLY this "
+						"level — per-octave contribution in isolation");
+				} else if (m_giDebug == 4) {
+					ImGui::TextDisabled("the octree level carrying most of "
+						"this pixel's weight (its argmax over per-level "
+						"weight sums)");
 				}
 			if (m_cvolLoaded) {
 				ImGui::Checkbox("Convex GI volumes", &m_cvolEnabled);
@@ -12871,11 +13026,12 @@ void WorldRenderer::UpdateCamera(float dt)
 	// Debug keys (the overlay legends claim them; the hosted EDITOR
 	// drives its own keys — its renderer instance never sees key
 	// events, so this stays App-only): R / F8 cycle the GI debug views
-	// (off -> flat irradiance -> source palette), N cycles the ambient
-	// sources (All -> Lightmaps -> Probes -> SkyIbl -> Off — the same
-	// modes VULKANTOY_AMBIENT pins headlessly).
+	// (off -> flat irradiance -> source palette -> isolated level ->
+	// dominant level), N cycles the ambient sources (All -> Lightmaps ->
+	// Probes -> SkyIbl -> Off — the same modes VULKANTOY_AMBIENT pins
+	// headlessly).
 	if (m_input.isKeyPressed(GLFW_KEY_R) || m_input.isKeyPressed(GLFW_KEY_F8))
-		m_giDebug = (m_giDebug + 1) % 3;
+		m_giDebug = (m_giDebug + 1) % 5;
 	if (m_input.isKeyPressed(GLFW_KEY_N))
 		CycleAmbientMode();
 

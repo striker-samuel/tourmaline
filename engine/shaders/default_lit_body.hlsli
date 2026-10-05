@@ -951,6 +951,11 @@ float envVis = 1.0f;
     uint giSource = 0u;
     float3 bakedE = float3(0.0f, 0.0f, 0.0f);
     uint giDbgMode = 0u;
+    // The octree walk's dominant level (its argmax over per-level weight
+    // sums) for the mode-4 debug view; 0xFFFFFFFFu = no walk ran this
+    // pixel (full-volume fast path / regular grids) — the mode-4 branch
+    // falls back to the source palette then.
+    uint dbgBestLvl = 0xFFFFFFFFu;
 
     // ---------------------------------------------------------------
     // GI permutations (set via SPEC_GI_VARIANT specialization constant):
@@ -978,6 +983,7 @@ float envVis = 1.0f;
         float3 octAmps[SG_GI_LOBES];
         float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
         bool octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
+        dbgBestLvl = dbgL;
         if (octreeCovered)
         {
             const float3 E = SgGiDiffuseIrradiance(octAmps, N) * giScale;
@@ -1056,8 +1062,10 @@ float envVis = 1.0f;
         float3 octAmps[SG_GI_LOBES];
         float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
         bool octreeCovered = false;
-        if (frame.giEnabled != 0u)
+        if (frame.giEnabled != 0u) {
             octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
+            dbgBestLvl = dbgL;
+        }
 
         // Irradiance-space blend chain: base = analytic sky
         E = irradiance;
@@ -1144,6 +1152,13 @@ float envVis = 1.0f;
     //   2 = source palette (the static/dynamic separation): red =
     //       lightmap (deprecated), green = regular grid (legacy), blue =
     //       octree world field, cyan = convex volume blended in.
+    //   3 = isolated-level flat (the octree walk gathers ONLY the level
+    //       in the frame's giDebug level byte — per-level captures: what
+    //       each octave contributes alone; the full-volume fast path
+    //       short-circuits the walk, so its flat stays the volume field).
+    //   4 = dominant octree level (the walk's argmax over per-level
+    //       weight sums — which octave carries this pixel; falls back to
+    //       the source palette where no walk ran).
     //   Magenta = no baked source at this pixel (sky fallback only).
     // The old probe-bisect modes (level isolation, coverage palettes,
     // disagreement heat, ...) are gone — bake-side analysis belongs to
@@ -1159,10 +1174,22 @@ float envVis = 1.0f;
             OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
             return OUT;
         }
-        if (giDbgMode == 1u)
+        if (giDbgMode == 1u || giDbgMode == 3u)
         {
             OUT.outColor = float4(SanitizeHdr(bakedE
                 * max(frame.exposure, 1e-6f)), 1.0f);
+            return OUT;
+        }
+        if (giDbgMode == 4u && dbgBestLvl != 0xFFFFFFFFu)
+        {
+            const float3 lvlPal[8] = {
+                float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f),
+                float3(0.0f, 0.25f, 1.0f), float3(1.0f, 1.0f, 0.0f),
+                float3(1.0f, 0.0f, 1.0f), float3(0.0f, 1.0f, 1.0f),
+                float3(1.0f, 1.0f, 1.0f), float3(1.0f, 0.5f, 0.0f)
+            };
+            OUT.outColor = float4(SanitizeHdr(lvlPal[dbgBestLvl & 7u]
+                * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
             return OUT;
         }
         float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)

@@ -726,7 +726,9 @@ void TestProbeVolumeRoundtrip() {
 	Check(!vol.Sample(glm::vec3(0.95f, 0.5f, 0.0f), amps2),
 		"volume visibility rejects behind-wall probe");
 
-	// File round-trip through the production reader.
+	// File round-trip through the production reader. v2 writes REQUIRE
+	// baked dense layers (WriteFile refuses without them).
+	Check(vol.BakeDenseLayers(), "sggi dense bake (roundtrip precondition)");
 	const auto tmp = std::filesystem::temp_directory_path()
 		/ "vulkantoy_gi_test.sggi";
 	std::string err;
@@ -759,6 +761,80 @@ void TestProbeVolumeRoundtrip() {
 	bool covered2 = reloaded.Sample(glm::vec3(2.45f, 0.5f, 0.0f), rAmps);
 	Check(covered1 && covered2, "sggi reloaded sampling covers both levels");
 	std::filesystem::remove(tmp);
+
+	// Dense runtime layers (the BC6H Texture3D path): the cook step bakes
+	// the visibility-weighted blend per voxel; the payloads must round-
+	// trip BYTE-EXACT through the file (the runtime uploads them as-is),
+	// and the baked blend must agree with Sample at the cell centers the
+	// bake evaluated (same math, same inputs).
+	{
+		SgGiVolume dense;
+		dense.probes = vol.probes;
+		dense.boundsMin = vol.boundsMin;
+		dense.boundsMax = vol.boundsMax;
+		dense.levelCount = vol.levelCount;
+		for (uint32_t l = 0; l < kSgGiMaxLevels; ++l)
+			dense.cellSize[l] = vol.cellSize[l];
+		dense.BuildGrids();
+		Check(dense.BakeDenseLayers(), "sggi dense bake");
+		Check(dense.denseLevels.size() == dense.levelCount,
+			"sggi dense level count");
+		// Round-trip: write the DENSE volume (a baked one ships payloads),
+		// reload, compare every payload byte.
+		Check(dense.WriteFile(tmp.string(), err), "sggi dense write");
+		SgGiVolume denseBack;
+		Check(SgGiVolume::ReadFile(tmp.string(), denseBack, err),
+			"sggi dense read");
+		bool denseSame = denseBack.denseLevels.size()
+			== dense.denseLevels.size();
+		if (denseSame) {
+			for (size_t l = 0; l < dense.denseLevels.size(); ++l) {
+				const auto& a = dense.denseLevels[l];
+				const auto& b = denseBack.denseLevels[l];
+				denseSame = denseSame && a.present == b.present;
+				if (!a.present || !denseSame)
+					continue;
+				denseSame = a.dims[0] == b.dims[0] && a.dims[1] == b.dims[1]
+					&& a.dims[2] == b.dims[2] && a.weight == b.weight;
+				for (uint32_t lb = 0; lb < kSgLobeCount && denseSame; ++lb)
+					denseSame = a.lobeBlocks[lb] == b.lobeBlocks[lb];
+			}
+		}
+		Check(denseSame, "sggi dense roundtrip byte-exact");
+		std::filesystem::remove(tmp);
+		// Bake-vs-Sample agreement at the cell centers: level 0's finest
+		// cell center must sample (nearly) the same blend Sample returns
+		// there (BC6H is lossy — generous tolerance).
+		if (dense.denseLevels.size() >= 1 && dense.denseLevels[0].present) {
+			glm::vec3 refAmps[kSgLobeCount];
+			glm::vec3 mn(0.0f);
+			uint32_t dims[3] = { 1, 1, 1 };
+			float cs = 0.0f;
+			std::vector<glm::vec3> ampsD;
+			std::vector<float> weightD;
+			Check(dense.ResampleLevelDense(0, ampsD, weightD, mn, dims, cs),
+				"sggi dense resample level 0");
+			glm::vec3 ampsS[kSgLobeCount];
+			// Voxel (0,0,0)'s center — the exact position the bake
+			// evaluated for that voxel.
+			const glm::vec3 center = mn + glm::vec3(0.5f * cs, 0.5f * cs,
+				0.5f * cs);
+			if (dense.Sample(center, ampsS)) {
+				// The dense voxel at (0,0,0): raw sums -> normalize (the
+				// runtime divides by the lerped weight sum).
+				const float w = weightD[0];
+				if (w > 1e-4f) {
+					float denseDiff = 0.0f;
+					for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+						const glm::vec3 got = ampsD[i] / w;
+						denseDiff = std::max(denseDiff,
+							glm::length(got - ampsS[i]));
+					}
+					Check(denseDiff < 0.05f, "sggi dense matches sample");
+				}
+			}
+		}
+	}
 
 	// GPU packing: probe payload decodes back to the source values.
 	std::vector<SgProbeGpu> gpu;

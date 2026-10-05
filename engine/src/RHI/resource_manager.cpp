@@ -266,6 +266,30 @@ bool ResourceManager::SupportsEvsm() {
         return false;
     return true;
 }
+bool ResourceManager::SupportsBc6h3DSampling() {
+    if (!impl_ || !impl_->vulkan.core_)
+        return false;
+    VkPhysicalDevice phys = smvk::GetVkPhysicalDevice();
+    if (phys == VK_NULL_HANDLE)
+        return false;
+    // The dense GI layers are block-compressed ImageType 3D uploads that
+    // the lit shaders trilinear-filter. Query the EXACT configuration
+    // (format + image type + tiling + usage), then the linear-filter
+    // feature bit — BC6H 2D support proves nothing about 3D on a given
+    // driver (the SupportsEvsm lesson: capability, not convention).
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT
+        | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageFormatProperties props{};
+    if (vkGetPhysicalDeviceImageFormatProperties(phys,
+        VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_IMAGE_TYPE_3D,
+        VK_IMAGE_TILING_OPTIMAL, usage, 0, &props) != VK_SUCCESS)
+        return false;
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(phys,
+        VK_FORMAT_BC6H_UFLOAT_BLOCK, &fp);
+    return (fp.optimalTilingFeatures
+        & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+}
 bool ResourceManager::HasDedicatedComputeQueue() {
     return smvk::HasDedicatedComputeQueue();
 }

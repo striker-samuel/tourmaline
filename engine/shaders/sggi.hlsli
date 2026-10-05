@@ -2,11 +2,15 @@
 // SG-GI probe volume sampling + evaluation. Included after common.hlsli
 // (FrameUniforms carries the volume pointers; types in sggi_types.hlsli).
 //
-// Sampling: for each octree level, find the containing cell, gather the
-// cell's probe list and blend amplitudes with a Wendland partition-of-
-// unity weight x baked 6-axis visibility. Finer probes dominate near
-// geometry; coarse probes fill open space. Must match the CPU reference
-// SgGiVolume::Sample (unit tested).
+// Sampling (the DENSE path): at load the app resamples every octree level
+// into BC6H 3D textures (per level 9 SG-lobe RGB layers + 1 weight layer —
+// the per-voxel visibility-weighted partition-of-unity blend, the SAME
+// math the CPU reference SgGiVolume::Sample applies per cell, baked once
+// because the probes never move). The walk below just trilinear-filters
+// those layers per level, finest first, accumulating raw sums + early-out
+// at dense coverage — no per-probe weight/visibility/lobe loops, no tile
+// lists. Finer probes dominate near geometry; coarse fill open space. The
+// reference walk survives as ResampleLevelDense (unit tested).
 
 // Lobe basis value for a direction.
 float SgGiBasisValue(uint lobe, float3 dir)
@@ -127,11 +131,11 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     if (levelCount == 0)
         return false;
 
-    // Debug-only arrays — only allocated when dbgMode != 0 to reduce
-    // register pressure in production (dbgMode == 0).
+    // Debug-only arrays — only allocated when mode 4 is active to reduce
+    // register pressure in production (dbgMode == 0) and modes 1-3.
     float dbgLevelW[SG_GI_MAX_LEVELS];
     [branch]
-    if (dbgMode != 0u)
+    if (dbgMode == 4u)
     {
         [unroll]
         for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l)
@@ -139,7 +143,10 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     }
 
     float weightVis = 0.0;
-    float3 ampsVis[SG_GI_LOBES]; // Lazy-initialized on first valid probe
+    float3 ampsVis[SG_GI_LOBES];
+    [unroll]
+    for (uint i = 0; i < SG_GI_LOBES; ++i)
+        ampsVis[i] = float3(0, 0, 0);
     // Fallback bookkeeping removed (coverage-test mode): with the
     // visibility-weighted blend finding nothing, returning false exposes
     // the hole (magenta/black) instead of leaking a wall-ignoring probe.
@@ -151,6 +158,13 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     // 99% single-level dominance, so pixels that stop early were never
     // meaningfully mixed anyway). Debug modes walk everything (mode 3
     // isolates one level, mode 4 needs every level's weight for argmax).
+    // DENSE TRILINEAR LEVELS (the BC6H Texture3D path — cooked payloads,
+    // baked by GiBaker because the probes never move): per level, ONE
+    // trilinear fetch of the baked amps + weight instead of the per-cell
+    // probe-list gather the cook step precomputed. Same transport (the
+    // bake evaluated the visibility-weighted partition-of-unity blend
+    // per voxel), a fraction of the per-pixel cost — no per-probe
+    // weight/visibility/lobe-MAD loops, no tile lists to maintain.
     [loop]
     for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
     {
@@ -159,51 +173,42 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         [branch]
         if (dbgMode == 3u && uint(lvl) != dbgLvl)
             continue;
+        // Absent level (sparse octree / a failed cook bake): the slot
+        // stays UINT32_MAX — the level contributes nothing.
+        if (frame.giLevelLayers[uint(lvl) * 10u] == 0xFFFFFFFFu)
+            continue;
         const SgGiLevel lg = grid.levels[lvl];
-        const float3 rel = pos - lg.volumeMin.xyz;
-        const float3 cellF = floor(rel / lg.cellSize.x);
-        const int3 c = clamp(int3(cellF), int3(0, 0, 0), int3(lg.dims.xyz) - 1);
-        const uint cellIdx = uint(c.x)
-            + lg.dims.x * (uint(c.y) + lg.dims.y * uint(c.z));
-        const uint2 range = frame.giCells.Get().cells[lg.offsets.x + cellIdx];
-        // Defensive clamp: a corrupt/oversized cell list would read
-        // probe indices out of bounds (driver-fault class). The bake-side
-        // cap is 64 probes/cell (kSgGiMaxProbesPerCell).
-        const uint listCount = min(range.y, 64u);
-        [loop]
-        for (uint i = 0; i < listCount; ++i)
+        // Cell coordinate -> trilinear uvw over the REAL texture dims
+        // (the images are exactly dims on every axis — BC6H blocks are
+        // 4x4x1 and partial edge blocks are legal, so nothing is padded
+        // anywhere: natural normalized coordinates, no special transform).
+        // Alignment: the bake stored the blend evaluated at the cell
+        // CENTER (cellF = i + 0.5) into texel i, so a continuous query at
+        // cellF interpolates between those stored centers DIRECTLY:
+        // uv = cellF/dims. (Adding a half-texel here would double-apply
+        // the offset — voxel centers would land on texel EDGES.)
+        // Clamp-to-edge sampling matches the walk's clamped cell lookup
+        // (beyond-bounds queries read the edge texel, same as the clamp).
+        const float3 cellF = (pos - lg.volumeMin.xyz) / lg.cellSize.x;
+        const float3 uvw = cellF / float3(lg.dims.xyz);
+        const float w_l = volumeTextures[NonUniformResourceIndex(
+            frame.giLevelLayers[uint(lvl) * 10u + 9u])].Sample(
+            samplers[2], uvw).r;
+        // Dominant contributor (mode 4): per-LEVEL weight sums; the
+        // argmax after the walk picks the level carrying most of this
+        // pixel's interpolation weight (robust vs single-probe max).
+        [branch]
+        if (dbgMode == 4u)
+            dbgLevelW[lvl] += w_l;
+        weightVis += w_l;
+        ++debugContributors;
+        [unroll]
+        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
         {
-            const uint probeIdx = frame.giIndices.Get().index[lg.offsets.y + range.x + i];
-            const SgProbeGpu p = frame.giProbes.Get().probes[probeIdx];
-            [branch]
-            if ((p.vis.w & 1u) == 0u)
-                continue; // invalid
-            const float w = SgGiProbeWeight(pos, p);
-            [branch]
-            if (w <= 0.0)
-                continue;
-            const float wv = w * SgGiVisibilityFactor(pos, p);
-            [branch]
-            if (wv <= 0.0)
-                continue;
-            // Initialize ampsVis on first valid probe (lazy init reduces reg pressure).
-            if (weightVis == 0.0)
-            {
-                [unroll]
-                for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-                    ampsVis[lobe] = float3(0, 0, 0);
-            }
-            // Dominant contributor (mode 4): per-LEVEL weight sums; the
-            // argmax after the walk picks the level carrying most of this
-            // pixel's interpolation weight (robust vs single-probe max).
-            [branch]
-            if (dbgMode != 0u)
-                dbgLevelW[lvl] += wv;
-            weightVis += wv;
-            ++debugContributors;
-            [unroll]
-            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-                ampsVis[lobe] += wv * SgGiProbeAmp(p.amp, lobe);
+            const float3 a_l = volumeTextures[NonUniformResourceIndex(
+                frame.giLevelLayers[uint(lvl) * 10u + lobe])].Sample(
+                samplers[2], uvw).rgb;
+            ampsVis[lobe] += a_l;
         }
         // Early-out (production only): fine coverage is dense enough —
         // coarser octaves cannot meaningfully change this pixel. 0.5 with
@@ -214,7 +219,11 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         if (dbgMode == 0u && weightVis >= 0.5)
             break;
     }
-    // Argmax over per-level weight sums (mode 4 bookkeeping).
+    // Argmax over per-level weight sums (mode 4 bookkeeping only — the
+    // display consumes debugBestLevel solely in the dominant-level view;
+    // never runs in production or on uninitialized dbgLevelW).
+    [branch]
+    if (dbgMode == 4u)
     {
         float bestW = -1.0;
         uint bestL = 0;

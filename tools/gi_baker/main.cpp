@@ -1976,6 +1976,34 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	// Dense runtime layers (the BC6H Texture3D path): bake the
+	// visibility-weighted partition-of-unity blend + BC6H-compress it
+	// HERE, at cook time — the .sggi ships finished payloads and the
+	// runtime only creates images (no encoder, no half-float
+	// intermediates, no repeated allocations at load; the exact baked
+	// result is deterministic).
+	if (!volume.BakeDenseLayers()) {
+		std::cerr << "Dense layer bake failed (no usable levels)" << std::endl;
+		return 1;
+	}
+	{
+		uint32_t denseLvls = 0;
+		size_t denseBytes = 0;
+		for (const auto& dl : volume.denseLevels)
+			if (dl.present) {
+				++denseLvls;
+				denseBytes += dl.Bytes();
+			}
+		std::cout << "Dense layers: " << denseLvls << " levels ("
+			<< (denseBytes / 1024) << " KiB BC6H+R16F)\n";
+		for (uint32_t lvl = 0; lvl < volume.denseLevels.size(); ++lvl)
+			if (volume.denseLevels[lvl].present)
+				std::cout << "  dense level " << lvl << ": "
+					<< volume.denseLevels[lvl].dims[0] << "x"
+					<< volume.denseLevels[lvl].dims[1] << "x"
+					<< volume.denseLevels[lvl].dims[2] << " voxels\n";
+	}
+
 	{
 		std::filesystem::path out(args.out);
 		std::error_code ec;
@@ -2034,7 +2062,39 @@ int main(int argc, char** argv) {
 		std::cout << "  verify: " << reloaded.probes.size()
 			<< " probes reloaded, " << mismatches << " mismatches"
 			<< (mismatches ? " BAD!" : " OK") << "\n";
-		if (mismatches)
+		// Dense round-trip: the cooked payloads must survive byte-exact
+		// (BC6H blocks + R16F halves — the runtime uploads them as-is).
+		size_t denseMismatch = 0;
+		if (reloaded.denseLevels.size() != volume.denseLevels.size()) {
+			++denseMismatch;
+		} else {
+			for (size_t l = 0; l < volume.denseLevels.size(); ++l) {
+				const auto& a = volume.denseLevels[l];
+				const auto& b = reloaded.denseLevels[l];
+				if (a.present != b.present) {
+					++denseMismatch;
+					continue;
+				}
+				if (!a.present)
+					continue;
+				if (a.dims[0] != b.dims[0] || a.dims[1] != b.dims[1]
+					|| a.dims[2] != b.dims[2]) {
+					++denseMismatch;
+					continue;
+				}
+				for (uint32_t lb = 0; lb < smvk::gi::kSgLobeCount; ++lb)
+					if (a.lobeBlocks[lb] != b.lobeBlocks[lb]) {
+						++denseMismatch;
+						break;
+					}
+				if (a.weight != b.weight)
+					++denseMismatch;
+			}
+		}
+		std::cout << "  verify: dense levels byte-exact, "
+			<< denseMismatch << " mismatches"
+			<< (denseMismatch ? " BAD!" : " OK") << "\n";
+		if (mismatches || denseMismatch)
 			return 1;
 	}
 

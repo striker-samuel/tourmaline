@@ -24,7 +24,12 @@
 //    no runtime rays needed.
 //
 // Storage: 96 B per probe on the GPU (SgProbeGpu, half-float amplitudes).
-// The .sggi file stores the same data LZ4-compressed (~64-80 B/probe).
+// The .sggi file stores the same data LZ4-compressed (~64-80 B/probe) plus,
+// since v2, the DENSE runtime layers (see DenseLevel): per octree level the
+// visibility-weighted blend baked at every lookup-cell center into nine
+// BC6H block payloads + one R16F weight volume — the runtime's ONLY probe
+// payload (the shader trilinear-filters these; the per-pixel probe-list
+// walk is gone).
 
 #include <cstdint>
 #include <span>
@@ -101,6 +106,54 @@ public:
 	// at a world position with the same weights the GPU uses. Returns false
 	// when nothing covers the point.
 	bool Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) const;
+
+	// Dense trilinear resample (the BC6H Texture3D runtime path): for one
+	// level, evaluates the visibility-weighted partition-of-unity blend
+	// at every grid cell center (the SAME per-cell math Sample applies —
+	// ProbeWeight x VisibilityFactor over the cell's probe list) into
+	// dense per-voxel (amps, weight). This is the genuinely nonlinear
+	// part hardware trilinear cannot express from the raw lattice
+	// (irregular per-cell probe selection + wall rejection + partition
+	// weights); the runtime only interpolates the baked result. Returns
+	// false for an empty/invalid level (the caller keeps it absent).
+	bool ResampleLevelDense(uint32_t level,
+		std::vector<glm::vec3>& outAmps, // dims^3 * kSgLobeCount (raw sums)
+		std::vector<float>& outWeight,  // dims^3 (the partition weight sum)
+		glm::vec3& outMin, uint32_t (&outDims)[3], float& outCell) const;
+
+	// Dense runtime layers (baked by BakeDenseLayers, shipped in the
+	// .sggi): per level nine BC6H payloads (SG-lobe RGB RAW SUMS — the
+	// runtime divides by the weight volume's lerped sum, preserving
+	// normalized weighted blending near validity boundaries) + one R16F
+	// weight volume. The VkImage extent is EXACTLY dims on every axis —
+	// no padding anywhere: BC6H blocks are 4x4x1, and Vulkan allows
+	// partial edge blocks, so only the ENCODER sees padded staging
+	// slices (the stored payloads hold ceil(w/4) x ceil(h/4) x d blocks).
+	struct DenseLevel {
+		bool present = false;          // false = sparse/failed level (absent)
+		uint32_t dims[3] = { 1, 1, 1 }; // voxel grid per axis (the image extent)
+		std::vector<uint8_t> lobeBlocks[kSgLobeCount]; // BC6H blocks per lobe
+		std::vector<uint16_t> weight;                 // R16F halves (w*h*d)
+		size_t LobeStride() const {
+			return size_t((dims[0] + 3) / 4) * ((dims[1] + 3) / 4)
+				* dims[2] * 16;
+		}
+		size_t Bytes() const {
+			size_t b = size_t(dims[0]) * dims[1] * dims[2] * 2;
+			for (uint32_t l = 0; l < kSgLobeCount; ++l)
+				b += lobeBlocks[l].size();
+			return b;
+		}
+	};
+	std::vector<DenseLevel> denseLevels; // index = octree level
+
+	// Bakes denseLevels from the built grids (call after a bake or a
+	// load; GiBaker does this before WriteFile so the .sggi ships
+	// finished payloads and the runtime never encodes). This is the
+	// COOK step of the dense path — the bake cost (resample + BC6H
+	// encode) belongs here, not at load. Returns true when at least one
+	// level baked; sparse levels stay absent (present = false).
+	bool BakeDenseLayers();
 
 	// Packs the GPU payload: probe array, grid header, per-cell ranges and
 	// probe index list. All vectors are cleared and filled.

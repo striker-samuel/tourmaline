@@ -174,10 +174,13 @@ PSOut mainPS(PSIn IN)
         // path — octree world field base, convex volumes compositing
         // over it by ordered priority (the mean is linear in the amps,
         // so lerping the per-source means is exact), sky-IBL fallback
-        // where nothing covers (same discipline as default_lit --
-        // never additive).
+        // where nothing covers (same discipline as default_lit —
+        // never additive). Gating mirrors the lit body: the octree needs
+        // giEnabled (frame.giEnabled), the volumes need cvolEnabled —
+        // cvol-only scenes (no world field) still light the fog from
+        // their volumes.
         float3 ambient = float3(0.0, 0.0, 0.0);
-        if (giOn > 0.5)
+        if (giOn > 0.5 || frame.cvolEnabled != 0u)
         {
             float3 ambientE;
             bool covered;
@@ -197,8 +200,11 @@ PSOut mainPS(PSIn IN)
             {
             float3 amps[SG_GI_LOBES];
             float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-            const bool octreeCovered =
-                SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL);
+            // Octree base (gated on the octree flag only — the cvol loop
+            // below runs on cvolEnabled alone, so cvol-only scenes keep
+            // their fog GI without a world field).
+            const bool octreeCovered = (giOn > 0.5)
+                && SgGiSample(frame, wpos, amps, dbgW, dbgC, dbgF, dbgL);
             ambientE = octreeCovered ? VolGiMean(amps)
                 : EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env)
                     * 0.31831;

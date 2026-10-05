@@ -40,6 +40,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
+#include <vulkan/utility/vk_format_utils.h>
 
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/Vulkan/vulkanApp.h>
@@ -171,70 +172,91 @@ namespace {
 
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
+
 	struct FormatInfo {
 		uint32_t blockWidth;
 		uint32_t blockHeight;
 		uint32_t bytesPerBlock;
 	};
+
 	FormatInfo getFormatInfo(VkFormat format) {
-		switch (format) {
-			// 8-bit per pixel
-		case VK_FORMAT_R8_UNORM:
-		case VK_FORMAT_R8_SRGB:
-			return { 1, 1, 1 };
+		const VkExtent3D extent = vkuFormatTexelBlockExtent(format);
+		const uint32_t size = vkuFormatTexelBlockSize(format);
 
-			// 16-bit per pixel
-		case VK_FORMAT_R8G8_UNORM:
-		case VK_FORMAT_R8G8_SRGB:
-		case VK_FORMAT_R16_UNORM:
-		case VK_FORMAT_D16_UNORM:
-			return { 1, 1, 2 };
+		assert(size != 0 && "Unsupported/undefined VkFormat");
+		assert(extent.depth == 1 && "3D block-compressed format requires blockDepth");
 
-			// 32-bit per pixel
-		case VK_FORMAT_R8G8B8A8_UNORM:
-		case VK_FORMAT_R8G8B8A8_SRGB:
-		case VK_FORMAT_B8G8R8A8_UNORM:
-		case VK_FORMAT_B8G8R8A8_SRGB:
-		case VK_FORMAT_R16G16_UNORM:
-		case VK_FORMAT_R32_SFLOAT:
-		case VK_FORMAT_D32_SFLOAT:
-			return { 1, 1, 4 };
-
-			// 64-bit per pixel
-		case VK_FORMAT_R16G16B16A16_SFLOAT:
-		case VK_FORMAT_R32G32_SFLOAT:
-			return { 1, 1, 8 };
-
-			// 128-bit per pixel
-		case VK_FORMAT_R32G32B32A32_SFLOAT:
-			return { 1, 1, 16 };
-
-			// BC compressed formats
-		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
-		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
-		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
-		case VK_FORMAT_BC4_UNORM_BLOCK:
-		case VK_FORMAT_BC4_SNORM_BLOCK:
-			return { 4, 4, 8 };
-
-		case VK_FORMAT_BC2_UNORM_BLOCK:
-		case VK_FORMAT_BC2_SRGB_BLOCK:
-		case VK_FORMAT_BC3_UNORM_BLOCK:
-		case VK_FORMAT_BC3_SRGB_BLOCK:
-		case VK_FORMAT_BC5_UNORM_BLOCK:
-		case VK_FORMAT_BC5_SNORM_BLOCK:
-		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
-		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
-		case VK_FORMAT_BC7_UNORM_BLOCK:
-		case VK_FORMAT_BC7_SRGB_BLOCK:
-			return { 4, 4, 16 };
-
-		default:
-			assert(false && "Unsupported VkFormat");
-			return { 1, 1, 0 };
-		}
+		return {
+			extent.width,
+			extent.height,
+			size
+		};
 	}
+
+	//struct FormatInfo {
+	//	uint32_t blockWidth;
+	//	uint32_t blockHeight;
+	//	uint32_t bytesPerBlock;
+	//};
+	//FormatInfo getFormatInfo(VkFormat format) {
+	//	switch (format) {
+	//		// 8-bit per pixel
+	//	case VK_FORMAT_R8_UNORM:
+	//	case VK_FORMAT_R8_SRGB:
+	//		return { 1, 1, 1 };
+
+	//		// 16-bit per pixel
+	//	case VK_FORMAT_R8G8_UNORM:
+	//	case VK_FORMAT_R8G8_SRGB:
+	//	case VK_FORMAT_R16_UNORM:
+	//	case VK_FORMAT_D16_UNORM:
+	//		return { 1, 1, 2 };
+
+	//		// 32-bit per pixel
+	//	case VK_FORMAT_R8G8B8A8_UNORM:
+	//	case VK_FORMAT_R8G8B8A8_SRGB:
+	//	case VK_FORMAT_B8G8R8A8_UNORM:
+	//	case VK_FORMAT_B8G8R8A8_SRGB:
+	//	case VK_FORMAT_R16G16_UNORM:
+	//	case VK_FORMAT_R32_SFLOAT:
+	//	case VK_FORMAT_D32_SFLOAT:
+	//		return { 1, 1, 4 };
+
+	//		// 64-bit per pixel
+	//	case VK_FORMAT_R16G16B16A16_SFLOAT:
+	//	case VK_FORMAT_R32G32_SFLOAT:
+	//		return { 1, 1, 8 };
+
+	//		// 128-bit per pixel
+	//	case VK_FORMAT_R32G32B32A32_SFLOAT:
+	//		return { 1, 1, 16 };
+
+	//		// BC compressed formats
+	//	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+	//	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+	//	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+	//	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+	//	case VK_FORMAT_BC4_UNORM_BLOCK:
+	//	case VK_FORMAT_BC4_SNORM_BLOCK:
+	//		return { 4, 4, 8 };
+
+	//	case VK_FORMAT_BC2_UNORM_BLOCK:
+	//	case VK_FORMAT_BC2_SRGB_BLOCK:
+	//	case VK_FORMAT_BC3_UNORM_BLOCK:
+	//	case VK_FORMAT_BC3_SRGB_BLOCK:
+	//	case VK_FORMAT_BC5_UNORM_BLOCK:
+	//	case VK_FORMAT_BC5_SNORM_BLOCK:
+	//	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+	//	case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+	//	case VK_FORMAT_BC7_UNORM_BLOCK:
+	//	case VK_FORMAT_BC7_SRGB_BLOCK:
+	//		return { 4, 4, 16 };
+
+	//	default:
+	//		assert(false && "Unsupported VkFormat");
+	//		return { 1, 1, 0 };
+	//	}
+	//}
 	bool IsHostTransferSupported(VkFormat format) {
 		if (physicalDevice_ == VK_NULL_HANDLE) return false;
 		VkFormatProperties3 props3{ VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3, nullptr };
@@ -4504,8 +4526,18 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		assert(image.mipLevels == 1 && image.arrayLayers == 1
 			&& "3D uploads support single-mip, single-layer images");
 		const FormatInfo fmt3 = getFormatInfo(toVkFormat(image.format));
-		const VkDeviceSize size3 = static_cast<VkDeviceSize>(image.extent.width)
-			* image.extent.height * image.extent.depth * fmt3.bytesPerBlock;
+		// Block-aware size (matches the 2D path below): bytesPerBlock is
+		// per blockWidth x blockHeight block, NOT per texel. The old
+		// w*h*d*bytesPerBlock math was right for the uncompressed SG
+		// volumes (1x1 blocks) but read 16x past the real data for the
+		// BC6H dense-GI layers (4x4 blocks) — an OOB memcpy in the
+		// streamer ring.
+		const uint32_t blocksX =
+			(image.extent.width + fmt3.blockWidth - 1) / fmt3.blockWidth;
+		const uint32_t blocksY =
+			(image.extent.height + fmt3.blockHeight - 1) / fmt3.blockHeight;
+		const VkDeviceSize size3 = static_cast<VkDeviceSize>(blocksX)
+			* blocksY * image.extent.depth * fmt3.bytesPerBlock;
 		assert(m_streamer && "3D uploads require the upload streamer");
 		if (m_streamer) {
 			ImageHandle found{};

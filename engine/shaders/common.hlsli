@@ -547,6 +547,14 @@ uint decalCount;                                         // 776 0 = decals off
     // shaders skip off-by-default payloads (like dsVizParams above)
     // without a BDA chase. Unconditional like every other field. ----
     uint64_t flags;                                              // 1312 kFrameFlag* bits (C++ mirror)
+    // ---- Dense octree resample (the BC6H Texture3D runtime path): per
+    // level 9 SG-lobe RGB layers (BC6H 3D) + 1 weight layer (R16F 3D) in
+    // the shared volumeTextures bindless array; UINT32_MAX = absent level
+    // (beyond the baked levelCount). The diffuse sampler trilinear-
+    // filters these instead of walking probe lists per pixel (the probes
+    // never move — baked once at load). Must match the C++ mirror +
+    // static_asserts (giLevelLayers at 1320, 80 slots).
+    uint giLevelLayers[80];                                      // 1320 8 levels x (9 amp + 1 weight)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

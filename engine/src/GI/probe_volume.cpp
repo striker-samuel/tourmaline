@@ -6,16 +6,20 @@
 #include <fstream>
 
 #include <Engine/Asset/compression.h>
+#include <Engine/GI/bc6h.h>
 #include <Engine/platform.h>
 
 namespace smvk::gi {
 
 namespace {
 
-constexpr uint32_t kSggiVersion = 1;
+// v2: the probe stream gained a length field (the dense section follows
+// it in the file), so old files are rejected on version — re-bake.
+constexpr uint32_t kSggiVersion = 2;
 constexpr uint32_t kSggiMaxCellsPerLevel = 4u * 1024u * 1024u; // 4M uint2 cells
 
-// File layout: header (fixed) + LZ4 payload (probe stream).
+// File layout: probe header (fixed) + LZ4 probe payload (length below) +
+// dense header + LZ4 dense payload (v2 — see SggiDenseHeader).
 struct SggiFileHeader {
 	char magic[4] = { 'S', 'G', 'G', 'I' };
 	uint32_t version = kSggiVersion;
@@ -26,11 +30,41 @@ struct SggiFileHeader {
 	float boundsMin[3] = {};
 	float boundsMax[3] = {};
 	float cellSize[kSgGiMaxLevels] = {};
-	uint32_t payloadBytes = 0; // uncompressed size
+	uint32_t payloadBytes = 0; // uncompressed probe-payload size
 	uint32_t compressed = 0;  // 1 = LZ4 block
-	uint32_t pad = 0;
+	uint32_t probeCompressedBytes = 0; // compressed probe-payload size (v2;
+	                                   // the dense section follows it)
 };
 static_assert(sizeof(SggiFileHeader) == 4 + 4 * 4 + 4 + 12 + 12 + 32 + 4 * 3);
+
+// Dense section header (v2): the baked runtime layers, one LZ4 payload.
+struct SggiDenseHeader {
+	char magic[4] = { 'S', 'G', 'G', 'D' };
+	uint32_t version = 1;
+	uint32_t levelCount = 0;   // entries in the payload (incl. absent)
+	uint32_t payloadBytes = 0; // uncompressed dense-payload size
+	uint32_t compressed = 1;   // 1 = LZ4 block
+	uint32_t pad = 0;
+};
+static_assert(sizeof(SggiDenseHeader) == 24);
+
+// Per-level mini-header inside the dense payload: 9 BC6H lobe payloads
+// (identical stride — ceil(w/4) x ceil(h/4) x d blocks x 16 B) + the R16F
+// weight halves follow.
+struct SggiDenseLevelDisk {
+	uint32_t dims[3];
+	uint32_t present;
+	uint64_t lobeStride;
+	uint64_t weightBytes;
+};
+static_assert(sizeof(SggiDenseLevelDisk) == 32);
+
+// BC6H-UF covers [0, 65504] and the SG fit is NNLS (non-negative), so raw
+// resample sums clamp into range instead of encoding sign/overflow garbage
+// (a negative residual or a > 65504 sum would decode as noise).
+inline uint16_t PackHalfClamped(float v) {
+	return PackHalf(std::clamp(v, 0.0f, 65504.0f));
+}
 
 // Disk probe record: 88 B (pos+radius, 27 half amplitudes, 6 half
 // visibility distances, valid/level flags).
@@ -251,6 +285,129 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 	return false;
 }
 
+bool SgGiVolume::ResampleLevelDense(uint32_t level,
+	std::vector<glm::vec3>& outAmps, std::vector<float>& outWeight,
+	glm::vec3& outMin, uint32_t (&outDims)[3], float& outCell) const {
+	outAmps.clear();
+	outWeight.clear();
+	if (level >= levelCount || level >= levelGrids_.size())
+		return false;
+	const LevelGrid& grid = levelGrids_[level];
+	const float cs = cellSize[level];
+	if (grid.indices.empty() || cs <= 0.0f)
+		return false;
+	outMin = grid.volumeMin;
+	outDims[0] = grid.dims[0];
+	outDims[1] = grid.dims[1];
+	outDims[2] = grid.dims[2];
+	outCell = cs;
+	const uint64_t n = uint64_t(outDims[0]) * outDims[1] * outDims[2];
+	outAmps.assign(size_t(n) * kSgLobeCount, glm::vec3(0.0f));
+	outWeight.assign(size_t(n), 0.0f);
+	// Per voxel (= the lookup grid's cell): the SAME visibility-weighted
+	// partition-of-unity blend Sample applies per cell, evaluated at the
+	// cell center. Raw sums (NOT normalized — the runtime accumulates
+	// across levels exactly like the walk: finest-first, early-out at
+	// 0.5, normalize at the end).
+	for (uint32_t z = 0; z < outDims[2]; ++z) {
+		for (uint32_t y = 0; y < outDims[1]; ++y) {
+			for (uint32_t x = 0; x < outDims[0]; ++x) {
+				const uint32_t cell =
+					x + outDims[0] * (y + outDims[1] * z);
+				const glm::vec3 pos = outMin + glm::vec3(
+					(float(x) + 0.5f) * cs,
+					(float(y) + 0.5f) * cs,
+					(float(z) + 0.5f) * cs);
+				const uint32_t begin = grid.cellStart[cell];
+				const uint32_t end = grid.cellStart[cell + 1];
+				float sumW = 0.0f;
+				glm::vec3 sumA[kSgLobeCount] = {};
+				for (uint32_t k = begin; k < end; ++k) {
+					const uint32_t probeIdx = grid.indices[k];
+					if (probeIdx >= probes.size())
+						continue;
+					const SgProbe& p = probes[probeIdx];
+					if (!p.valid)
+						continue;
+					const float w = ProbeWeight(pos, p);
+					if (w <= 0.0f)
+						continue;
+					const float wv = w * VisibilityFactor(pos, p);
+					if (wv <= 0.0f)
+						continue;
+					sumW += wv;
+					for (uint32_t i = 0; i < kSgLobeCount; ++i)
+						sumA[i] += p.amps[i] * wv;
+				}
+				outWeight[size_t(cell)] = sumW;
+				for (uint32_t i = 0; i < kSgLobeCount; ++i)
+					outAmps[size_t(cell) * kSgLobeCount + i] = sumA[i];
+			}
+		}
+	}
+	return true;
+}
+
+bool SgGiVolume::BakeDenseLayers() {
+	denseLevels.assign(std::min<uint32_t>(levelCount, kSgGiMaxLevels),
+		DenseLevel{});
+	bool any = false;
+	for (uint32_t lvl = 0; lvl < denseLevels.size(); ++lvl) {
+		std::vector<glm::vec3> amps;
+		std::vector<float> weight;
+		glm::vec3 mn(0.0f);
+		uint32_t dims[3] = { 1, 1, 1 };
+		float cs = 0.0f;
+		DenseLevel& out = denseLevels[lvl];
+		if (!ResampleLevelDense(lvl, amps, weight, mn, dims, cs))
+			continue; // sparse/empty level — stays absent (present = false)
+		out.dims[0] = dims[0];
+		out.dims[1] = dims[1];
+		out.dims[2] = dims[2];
+		out.present = true;
+		const uint32_t w = dims[0], h = dims[1], d = dims[2];
+		// BC6H blocks are 4x4x1: only the ENCODER needs 4-multiple
+		// staging slices (edge-replicated — the partial edge block
+		// encodes padded texels; only real texels are ever sampled).
+		// The stored payloads (and the runtime VkImages) keep the REAL
+		// w x h x d — Vulkan allows partial edge blocks, so nothing is
+		// padded in Z or in the image; blocks per level =
+		// ceil(w/4) x ceil(h/4) x d.
+		const uint32_t ew = (w + 3) & ~3u;
+		const uint32_t eh = (h + 3) & ~3u;
+		// ONE staging slice reused across every (lobe, z): no per-slice
+		// allocations. Bc6hEncodeImage APPENDS, so each lobe's payload
+		// accumulates its z slices in order.
+		std::vector<uint16_t> slice(size_t(ew) * eh * 3);
+		for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe) {
+			std::vector<uint8_t>& blocks = out.lobeBlocks[lobe];
+			blocks.reserve(size_t(ew / 4) * (eh / 4) * 16 * d);
+			for (uint32_t z = 0; z < d; ++z) {
+				for (uint32_t y = 0; y < eh; ++y) {
+					const uint32_t sy = std::min(y, h - 1);
+					for (uint32_t x = 0; x < ew; ++x) {
+						const uint32_t sx = std::min(x, w - 1);
+						const size_t src = (size_t(z) * h + sy) * w + sx;
+						const glm::vec3& a =
+							amps[src * kSgLobeCount + lobe];
+						const size_t dst = (size_t(y) * ew + x) * 3;
+						slice[dst + 0] = PackHalfClamped(a.r);
+						slice[dst + 1] = PackHalfClamped(a.g);
+						slice[dst + 2] = PackHalfClamped(a.b);
+					}
+				}
+				Bc6hEncodeImage(slice.data(), ew, eh, blocks);
+			}
+		}
+		// Weight volume (R16F halves, real dims, raw partition sums).
+		out.weight.resize(size_t(w) * h * d);
+		for (size_t i = 0; i < out.weight.size(); ++i)
+			out.weight[i] = PackHalfClamped(weight[i]);
+		any = true;
+	}
+	return any;
+}
+
 void SgGiVolume::PackGpu(std::vector<SgProbeGpu>& outProbes, SgGiGridGpu& outGrid,
 	std::vector<uint32_t>& outCells, std::vector<uint32_t>& outIndices) const {
 	outProbes.clear();
@@ -349,10 +506,65 @@ bool SgGiVolume::WriteFile(const std::string& path, std::string& err) const {
 		err = "SgGiVolume: LZ4 compression failed";
 		return false;
 	}
+	hdr.probeCompressedBytes = uint32_t(compressed.size());
 
-	std::vector<uint8_t> file(sizeof(SggiFileHeader) + compressed.size());
+	// ---- Dense section (v2): level mini-headers + BC6H lobe payloads +
+	// R16F weight halves, one LZ4 payload. Strict gate: a .sggi without
+	// dense layers is useless to the runtime (the probe-list walk is
+	// gone from the shader), so a write without them fails loudly here —
+	// a baker that forgot BakeDenseLayers ships nothing at all, not a
+	// file the app would reject at load.
+	{
+		bool anyDense = false;
+		for (const DenseLevel& dl : denseLevels)
+			anyDense = anyDense || dl.present;
+		if (!anyDense) {
+			err = "SgGiVolume: no dense layers baked (call BakeDenseLayers"
+				" before WriteFile)";
+			return false;
+		}
+	}
+	std::vector<uint8_t> densePayload;
+	const auto append = [](std::vector<uint8_t>& dst,
+			const void* p, size_t n) {
+		const auto* b = static_cast<const uint8_t*>(p);
+		dst.insert(dst.end(), b, b + n);
+	};
+	SggiDenseHeader dhdr{};
+	dhdr.levelCount = uint32_t(denseLevels.size());
+	for (const DenseLevel& dl : denseLevels) {
+		SggiDenseLevelDisk ld{};
+		ld.dims[0] = dl.dims[0];
+		ld.dims[1] = dl.dims[1];
+		ld.dims[2] = dl.dims[2];
+		ld.present = dl.present ? 1u : 0u;
+		ld.lobeStride = dl.present ? dl.LobeStride() : 0;
+		ld.weightBytes = dl.present
+			? size_t(dl.dims[0]) * dl.dims[1] * dl.dims[2] * 2 : 0;
+		append(densePayload, &ld, sizeof(ld));
+		if (!dl.present)
+			continue;
+		for (uint32_t l = 0; l < kSgLobeCount; ++l)
+			append(densePayload, dl.lobeBlocks[l].data(),
+				dl.lobeBlocks[l].size());
+		append(densePayload, dl.weight.data(),
+			dl.weight.size() * sizeof(uint16_t));
+	}
+	dhdr.payloadBytes = uint32_t(densePayload.size());
+	std::vector<uint8_t> denseCompressed;
+	if (!Lz4Compress(densePayload, denseCompressed, 1)) {
+		err = "SgGiVolume: dense LZ4 compression failed";
+		return false;
+	}
+
+	std::vector<uint8_t> file(sizeof(SggiFileHeader) + compressed.size()
+		+ sizeof(SggiDenseHeader) + denseCompressed.size());
 	std::memcpy(file.data(), &hdr, sizeof(hdr));
 	std::memcpy(file.data() + sizeof(hdr), compressed.data(), compressed.size());
+	std::memcpy(file.data() + sizeof(hdr) + compressed.size(), &dhdr,
+		sizeof(dhdr));
+	std::memcpy(file.data() + sizeof(hdr) + compressed.size()
+		+ sizeof(dhdr), denseCompressed.data(), denseCompressed.size());
 
 	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) {
@@ -394,13 +606,23 @@ bool SgGiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err
 
 	std::vector<uint8_t> payload;
 	const std::span<const uint8_t> stored(bytes.data() + sizeof(hdr), bytes.size() - sizeof(hdr));
+	// v2: the probe stream has a recorded compressed length — the dense
+	// section follows it. (Uncompressed writes still carry the exact
+	// payload size, so the boundary is unambiguous either way.)
+	const size_t probeBytes = hdr.compressed
+		? size_t(hdr.probeCompressedBytes) : size_t(hdr.payloadBytes);
+	if (probeBytes > stored.size()) {
+		err = "sggi: probe payload overruns file";
+		return false;
+	}
+	const std::span<const uint8_t> probeStored = stored.first(probeBytes);
 	if (hdr.compressed) {
-		if (!Lz4Decompress(stored, hdr.payloadBytes, payload)) {
+		if (!Lz4Decompress(probeStored, hdr.payloadBytes, payload)) {
 			err = "sggi: LZ4 decompression failed";
 			return false;
 		}
 	} else {
-		payload.assign(stored.begin(), stored.end());
+		payload.assign(probeStored.begin(), probeStored.end());
 	}
 	if (payload.size() != size_t(hdr.probeCount) * sizeof(SggiProbeDisk)) {
 		err = "sggi: payload size mismatch";
@@ -432,6 +654,100 @@ bool SgGiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err
 	levelCount = hdr.levelCount;
 	for (uint32_t l = 0; l < kSgGiMaxLevels; ++l)
 		cellSize[l] = hdr.cellSize[l];
+
+	// ---- Dense section (v2, required): the runtime's only probe payload —
+	// the shader trilinear-filters these layers (the probe-list walk is
+	// gone), so a file without them is unusable for rendering (the runtime
+	// rejects it loudly: re-bake). Parse + cross-check every level's
+	// stride/weight sizes against the dims the runtime will compute for
+	// image creation (corruption guard).
+	denseLevels.clear();
+	{
+		const std::span<const uint8_t> rest = stored.subspan(probeBytes);
+		if (rest.size() < sizeof(SggiDenseHeader)) {
+			err = "sggi: dense section missing (v2 file must carry the"
+				" baked runtime layers — re-bake)";
+			return false;
+		}
+		SggiDenseHeader dhdr{};
+		std::memcpy(&dhdr, rest.data(), sizeof(dhdr));
+		if (std::memcmp(dhdr.magic, "SGGD", 4) != 0) {
+			err = "sggi: bad dense magic";
+			return false;
+		}
+		if (dhdr.version != 1) {
+			err = "sggi: unsupported dense version "
+				+ std::to_string(dhdr.version);
+			return false;
+		}
+		if (dhdr.levelCount > kSgGiMaxLevels) {
+			err = "sggi: dense level count too large";
+			return false;
+		}
+		std::vector<uint8_t> densePayload;
+		const std::span<const uint8_t> denseStored =
+			rest.subspan(sizeof(dhdr));
+		if (dhdr.compressed) {
+			if (!Lz4Decompress(denseStored, dhdr.payloadBytes, densePayload)) {
+				err = "sggi: dense LZ4 decompression failed";
+				return false;
+			}
+		} else {
+			densePayload.assign(denseStored.begin(), denseStored.end());
+		}
+		if (densePayload.size() != dhdr.payloadBytes) {
+			err = "sggi: dense payload size mismatch";
+			return false;
+		}
+		denseLevels.assign(dhdr.levelCount, DenseLevel{});
+		size_t off = 0;
+		for (uint32_t lvl = 0; lvl < dhdr.levelCount; ++lvl) {
+			SggiDenseLevelDisk ld{};
+			if (off + sizeof(ld) > densePayload.size()) {
+				err = "sggi: dense section truncated (level header)";
+				return false;
+			}
+			std::memcpy(&ld, densePayload.data() + off, sizeof(ld));
+			off += sizeof(ld);
+			DenseLevel& dl = denseLevels[lvl];
+			dl.present = ld.present != 0;
+			if (!dl.present)
+				continue;
+			dl.dims[0] = ld.dims[0];
+			dl.dims[1] = ld.dims[1];
+			dl.dims[2] = ld.dims[2];
+			if (dl.dims[0] == 0 || dl.dims[1] == 0 || dl.dims[2] == 0
+				|| ld.lobeStride != dl.LobeStride()
+				|| ld.weightBytes != size_t(dl.dims[0]) * dl.dims[1]
+					* dl.dims[2] * 2) {
+				err = "sggi: dense level " + std::to_string(lvl)
+					+ " header inconsistent (dims/strides)";
+				return false;
+			}
+			for (uint32_t l = 0; l < kSgLobeCount; ++l) {
+				if (off + ld.lobeStride > densePayload.size()) {
+					err = "sggi: dense section truncated (lobe payload)";
+					return false;
+				}
+				dl.lobeBlocks[l].assign(densePayload.data() + off,
+					densePayload.data() + off + ld.lobeStride);
+				off += ld.lobeStride;
+			}
+			if (off + ld.weightBytes > densePayload.size()) {
+				err = "sggi: dense section truncated (weight payload)";
+				return false;
+			}
+			dl.weight.resize(ld.weightBytes / 2);
+			std::memcpy(dl.weight.data(), densePayload.data() + off,
+				ld.weightBytes);
+			off += ld.weightBytes;
+		}
+		if (off != densePayload.size()) {
+			err = "sggi: dense section size mismatch (trailing bytes)";
+			return false;
+		}
+	}
+
 	BuildGrids();
 	return true;
 }
@@ -448,9 +764,12 @@ bool SgGiVolume::ReadFile(const std::string& path, SgGiVolume& out, std::string&
 }
 
 size_t SgGiVolume::GpuBytes() const {
-	size_t bytes = probes.size() * sizeof(SgProbeGpu) + sizeof(SgGiGridGpu);
-	for (const LevelStats& s : levelStats)
-		bytes += size_t(s.cellCount) * 8 + size_t(s.indexCount) * 4;
+	// The dense layers own the runtime probe payload; the grid header is
+	// the only buffer left (the probe/cell/index arrays are gone).
+	size_t bytes = sizeof(SgGiGridGpu);
+	for (const DenseLevel& dl : denseLevels)
+		if (dl.present)
+			bytes += dl.Bytes();
 	return bytes;
 }
 

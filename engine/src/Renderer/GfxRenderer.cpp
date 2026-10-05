@@ -106,6 +106,19 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 			filteredLitSg_[li] = { .shaders = { vs, fs }, .shaderCount = 2 };
 		}
 	}
+	// GI permutation twins (same filtered VS + the .giN lit FS — the
+	// same modules the direct draws bind as mainProgramGi). Built only
+	// for configured modules; the batch bind falls back to the generic
+	// filtered program per missing variant, which compiles the GI
+	// branches out (see FilteredProgramGi).
+	for (uint32_t gi = 0; gi < 4; ++gi) {
+		if (filteredProgramGi_[gi].shaderCount == 0
+			&& !filteredVsModule.empty() && !litFragGiModules_[gi].empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = litFragGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredProgramGi_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+	}
 	// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 	// emits a single entry point per file). Missing seed frag
 	// (ConfigureSeedFrag not called) disables seeding but leaves the
