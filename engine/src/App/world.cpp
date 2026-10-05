@@ -106,6 +106,9 @@ namespace smvk {
 		// the first cluster scene carrying an authored look wins the
 		// world scene's resolved/default blocks.
 		bool envTaken = false;
+		// Default-camera first-wins (same contract): the first cluster
+		// scene with an authored default camera wins the world slot.
+		bool defaultCamTaken = false;
 
 		// World root node (parent = -1)
 		const int root = addNode(scene, -1, 0);
@@ -332,6 +335,16 @@ namespace smvk {
 			scene.hasEnvironment = true;
 			scene.defaultEnvironment = cs.defaultEnvironment;
 			envTaken = true;
+		}
+		// Default camera (world settings' typed camera.default field):
+		// cluster-space -> world-space offset remap, first-wins across
+		// clusters like the resolved env (the owning scene's default
+		// stands; UINT32_MAX = none is a no-op).
+		if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX
+			&& cs.defaultCameraNode < cs.hierarchy.size()) {
+			scene.defaultCameraNode =
+				cs.defaultCameraNode + nodeOffset;
+			defaultCamTaken = true;
 		}
 
 		markAsChanged(scene, clusterRootNode);

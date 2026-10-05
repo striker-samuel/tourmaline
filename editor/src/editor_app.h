@@ -681,6 +681,8 @@ private:
 	void ModalDelete(); // Del: DeleteSelection() (skipped while the
 	                     // placement graph window owns the keyboard —
 	                     // its canvas Del removes graph nodes instead)
+	void ModalDuplicate(); // Ctrl+D: DuplicateSelection() (same
+	                       // placement-graph keyboard guard as Del)
 	void ModalToggleVisibility(); // Ctrl+H: hide/unhide the selection
 	                               // (all nodes follow the primary's inverse)
 	void ModalGizmoTranslate();
@@ -891,6 +893,25 @@ private:
 	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created camera, same contract.
 	int CreatedCameraIndex(uint32_t worldNode) const;
+	// True when this history create's CmdToTour emission survives (it
+	// lands in the FILE's create set): alive per family AND its recorded
+	// parent slot resolves in the file (see ParentResolvesInTour). The
+	// family -ref index helpers above skip non-emitting creates so the
+	// save-time -ref spaces stay identical to the file's create sets —
+	// the mismatch emitted dangling "setCubemapAttr -ref k" lines that
+	// failed cooks ("tour: setCubemapAttr ref out of range: 0": the
+	// create was dropped for an unmappable parent while its attrs and
+	// renames still emitted against the missing create).
+	static bool CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h);
+	// A create's parent slot resolves IN THE FILE when it addresses a
+	// cluster-backed node (numeric -p; the bind builds it), the world
+	// root (-p 0), or an editor-created node whose OWN create emits
+	// (symbolic -p "name/path"/uuid, resolvable at replay because the
+	// parent's create lands earlier in file order) — recursively: a
+	// deleted/tombstoned ancestor drops its whole subtree of creates.
+	// Terrain tiles emit with their group's createTerrain. Recursion
+	// terminates: each step walks to a strictly earlier create.
+	static bool ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot);
 	// Tour-stable default parent for new lights: the primary cluster's
 	// root (WorldToCluster maps it to cluster id 0), else world root.
 	uint32_t DefaultCreateParent() const;
@@ -904,6 +925,11 @@ private:
 	std::string UniqueCameraName() const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
+	// Unique copy name for duplicates (Edit > Duplicate / Ctrl+D):
+	// keeps the original's prefix ("HeroCam_1" -> "HeroCam_2"; a bare
+	// name gains the "_1" suffix) and finds the first free index —
+	// Maya-style, so duplicates stay visually grouped in the outliner.
+	std::string UniqueCopyName(const std::string& base) const;
 	// Live command helpers (editor_commands.cpp).
 	void ReadLocalTRS(uint32_t node, glm::vec3& t, glm::vec3& rDeg,
 		glm::vec3& s) const;
@@ -955,6 +981,13 @@ private:
 	// World pseudo-node; terrain tiles resolve to their group), logging
 	// refusals.
 	void DeleteSelection();
+	// Edit > Duplicate / Ctrl+D: re-emit a Create for every selected
+	// duplicable node from its LIVE state (lens/params/transform), under
+	// the same parent, with a unique copy name. Cluster-backed mesh
+	// nodes, terrain groups/tiles and reference placeholders own no
+	// create verb — skipped with a log line. The new nodes become the
+	// selection (multi-duplicates select the batch).
+	void DuplicateSelection();
 	void ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		glm::vec4& v4, double& num);
 	void WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
@@ -1453,6 +1486,20 @@ private:
 	void SaveEnvToDoc(smvk::tour::Doc& doc) const;
 	void LoadEnvFromDoc(const smvk::tour::Doc& doc);
 
+	// ---- default camera (world settings' TYPED field — tour
+	// editorSettings camera.default, cooked into paks for the App) ----
+	// The authored camera node the runtime App spawns at (replaces the
+	// generic bounds framing). World node id (UINT32_MAX = none); a
+	// node that loses its camera link reads as none in the combo and
+	// saves as absent. Editor-created cameras address via "ref k"
+	// (CreatedCameraIndex — the setCamAttr -ref family space), imported
+	// glTF cameras via "node <clusterId>"; both resolve at cook
+	// (ApplyTourToCluster) and at editor replay. Not undoable (world
+	// settings, like the env blocks).
+	uint32_t m_defaultCameraNode = UINT32_MAX;
+	void SaveDefaultCameraToDoc(smvk::tour::Doc& doc) const;
+	void LoadDefaultCameraFromDoc(const smvk::tour::Doc& doc);
+
 	// ---- bake references (the .tour carries its bake) ----
 	// GUIDs of the bake assets a cook minted/updated for this scene
 	// (RecordBakeAssetsFromCook): the GiCook manifest asset + the cubemap
@@ -1692,6 +1739,11 @@ private:
 	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
 	std::optional<smvk::cook::GiCookAsset> m_assetInspectGiCook;
 	std::optional<smvk::cook::LightmapCookAsset> m_assetInspectLmCook;
+	// .texture asset page: the parsed asset + the probed SOURCE header
+	// (read-only facts for KTX2 sources; LDR sources edit the settings).
+	std::optional<smvk::assets::TextureAsset> m_assetInspectTex;
+	TextureSourceInfo m_assetInspectTexInfo{};
+	bool m_assetInspectTexInfoOk = false;
 	// The copy+adopt half of ImportAsset (no scene switch, no cook
 	// priming): copies a .gltf/.glb + companions into the project's
 	// content/models/<stem>/, adopts its GUID (.meta sidecar + asset
@@ -1708,6 +1760,19 @@ private:
 	// like ImportAsset, unlike the scene-node Create entries. Returns
 	// the new path ({} + log on failure).
 	std::string CreateCookAsset(bool gi, const std::string& dir);
+	// TEXTURE-ASSET creation (the Asset browser's New button + context
+	// menu): copies the picked source image (png/jpg/jpeg/tga/bmp/ktx2)
+	// into the browsed dir, writes <stem>.texture (import settings — see
+	// smvk::assets::TextureAsset: colorSpace, format, mipLevels, filter,
+	// wrap) + its .meta identity sidecar, adopts the GUID into the
+	// assetdb (kind texture), selects it in the browser. Default
+	// settings: sRGB, rgba8, full chain, linear/repeat — edit them in
+	// the Inspector (KTX2 sources show colorSpace/format/mipLevels
+	// READ-ONLY: the .ktx2 header pre-decided them; a jpg/png source
+	// converts with them at the next import/cook). Returns the new path
+	// ({} + log on failure).
+	std::string CreateTextureAsset(const std::string& srcPath,
+		const std::string& dir);
 	// Cook-completion bookkeeping (PollCookProcess on a successful cook):
 	// the cook's bake outputs become/refresh BAKE ASSETS tied to this
 	// scene — the GiCook manifest (settings + the fresh .sggi result

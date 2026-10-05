@@ -1650,39 +1650,102 @@ if (!m_resources.fragVertexColorShader.empty()) {
 				m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
-				// Generic framing: no curated viewpoints exist anymore —
-				// park the camera radius*2.2 from the bounds center and
-				// fit the far clip to the framed view (the 2000 m default
-				// stretches the cascade splits over empty space; cascade 0
-				// covers ~100 m -> blurry EVSM/PCF at the mesh). Explicit
-				// VULKANTOY_CAM_POS/FWD/YAW pins win (bench determinism).
-				// YAW included: the Configure-time yaw override is one of
-				// the documented pins — without it here a yaw-only bench
-				// would silently re-frame onto the generic orbit pose
-				// (observed: four yaw A/B runs rendered bit-identical).
+				// Framing: the authored DEFAULT CAMERA (world settings'
+				// typed camera.default field, cooked into the pak) wins
+				// over generic framing — the author's pose + lens is the
+				// shot. Otherwise generic framing: no curated viewpoints
+				// exist anymore — park the camera radius*2.2 from the
+				// bounds center and fit the far clip to the framed view
+				// (the 2000 m default stretches the cascade splits over
+				// empty space; cascade 0 covers ~100 m -> blurry EVSM/PCF
+				// at the mesh). Explicit VULKANTOY_CAM_POS/FWD/YAW pins
+				// win over BOTH (bench determinism). YAW included: the
+				// Configure-time yaw override is one of the documented
+				// pins — without it here a yaw-only bench would silently
+				// re-frame onto the generic orbit pose (observed: four
+				// yaw A/B runs rendered bit-identical).
 				if (!std::getenv("VULKANTOY_CAM_POS") &&
 					!std::getenv("VULKANTOY_CAM_FWD") &&
 					!std::getenv("VULKANTOY_CAM_YAW")) {
 					const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 					const float radius =
 						glm::length(bounds.mx - bounds.mn) * 0.5f;
-					const float dist = std::max(radius * 2.2f, 1.0f);
-					const float yaw = glm::radians(35.0f);
-					const float pitch = glm::radians(-18.0f);
-					const glm::vec3 eye = center + dist * glm::vec3(
-						std::cos(pitch) * std::sin(yaw),
-						-std::sin(pitch),
-						std::cos(pitch) * std::cos(yaw));
-					m_cameraPositioner.lookAt(eye, center,
-						glm::vec3(0.0f, 1.0f, 0.0f));
-					// Far clip covers the orbit distance plus the scene
-					// diameter, clamped sane.
-					{
-						const float fitted = dist + radius * 2.0f;
-						m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+					// Default camera: pose from the node's global
+					// transform (forward = node -Z, engine space — the
+					// same convention as the editor's locked
+					// look-through), lens from the cameras-pool def.
+					// Perspective lens swaps the App defaults (fov/near/
+					// far; far fitted to cover the authored view). An
+					// ORTHO lens keeps the App's perspective defaults
+					// (the FPS camera has no ortho path — the pose still
+					// applies).
+					const ::Scene* fs = &m_world->scene;
+					auto camIt = fs->cameraForNode.find(
+						fs->defaultCameraNode);
+					const ::SceneCamera* defCam = nullptr;
+					if (fs->defaultCameraNode < fs->hierarchy.size()
+						&& camIt != fs->cameraForNode.end()
+						&& camIt->second
+							< m_world->cameraLocations.size()) {
+						const auto& loc =
+							m_world->cameraLocations[camIt->second];
+						if (loc.cluster && loc.handle.valid())
+							defCam = loc.cluster->cameras.get(loc.handle);
 					}
-					std::cerr << "[Scene] camera framed: dist=" << dist
-						<< " farClip=" << m_sceneFarClip << "\n";
+					bool framed = false;
+					if (defCam) {
+						const glm::mat4& G = fs->globalTransform[
+							fs->defaultCameraNode];
+						const glm::vec3 eye(G[3]);
+						glm::vec3 fwd = glm::vec3(
+							G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+						if (glm::length(fwd) > 1e-6f) {
+							fwd = glm::normalize(fwd);
+							m_cameraPositioner.lookAt(eye, eye + fwd,
+								ResolveLookAtUp(eye, eye + fwd));
+							m_sceneNearClip = std::max(
+								defCam->nearClip, 1e-4f);
+							m_sceneFovYDeg = (defCam->projection
+								== ::SceneCamera::Projection::Perspective)
+								? std::clamp(defCam->fovYDeg, 1.0f, 179.0f)
+								: kCameraFovYDegrees;
+							// Far: the authored clip, but never shorter
+							// than the generic fit would give (the
+							// authored pose may look ACROSS the scene).
+							const float dist = std::max(radius * 2.2f, 1.0f);
+							m_sceneFarClip = std::clamp(
+								std::max(defCam->farClip, dist + radius * 2.0f),
+								50.0f, 10000.0f);
+							framed = true;
+							std::cerr << "[Scene] default camera '"
+								<< (defCam->name.empty()
+									? "<unnamed>" : defCam->name)
+								<< "': eye=(" << eye.x << "," << eye.y
+								<< "," << eye.z << ") fovY="
+								<< m_sceneFovYDeg << " near="
+								<< m_sceneNearClip << " far="
+								<< m_sceneFarClip << "\n";
+						}
+					}
+					if (!framed) {
+						const float dist = std::max(radius * 2.2f, 1.0f);
+						const float yaw = glm::radians(35.0f);
+						const float pitch = glm::radians(-18.0f);
+						const glm::vec3 eye = center + dist * glm::vec3(
+							std::cos(pitch) * std::sin(yaw),
+							-std::sin(pitch),
+							std::cos(pitch) * std::cos(yaw));
+						m_cameraPositioner.lookAt(eye, center,
+							glm::vec3(0.0f, 1.0f, 0.0f));
+						// Far clip covers the orbit distance plus the scene
+						// diameter, clamped sane.
+						{
+							const float fitted = dist + radius * 2.0f;
+							m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+						}
+						std::cerr << "[Scene] camera framed: dist=" << dist
+							<< " farClip=" << m_sceneFarClip << "\n";
+					}
 				}
 			}
 		}

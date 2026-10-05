@@ -299,12 +299,56 @@ private:
 };
 
 // In-process texture conversion (tex_transcode.cpp): stb-decodes LDR
-// sources (PNG/JPG/TGA/BMP/...) and writes an uncompressed RGBA8 KTX2
-// with a full mip chain (gamma-correct for sRGB) via libktx, attempting
-// zstd supercompression. False + err when the source isn't decodable
-// (HDR .hdr/.exr must be checked by the caller — stb would mangle them).
+// sources (PNG/JPG/TGA/BMP/...) and writes a KTX2 (full or clamped mip
+// chain, gamma-correct for sRGB) via libktx, attempting zstd
+// supercompression. The encode format picks the payload: Rgba8
+// (uncompressed — the default) or a block-compressed target (BCn,
+// encoded in-process through DirectXTex's block codecs; the sRGB flag
+// picks the sRGB VkFormat variant — same block bytes, a view
+// interpretation). maxMipLevels > 0 clamps the generated chain to the
+// top N levels. False + err when the source isn't decodable (HDR
+// .hdr/.exr must be checked by the caller — stb would mangle them).
+enum class KtxEncodeFormat : int {
+	Rgba8 = 0, // uncompressed RGBA8 (the import default)
+	Bc1 = 1,   // BC1 RGB (+1-bit alpha) — opaque color
+	Bc3 = 2,   // BC3 RGBA — alpha color
+	Bc4 = 3,   // BC4 R — single-channel data
+	Bc5 = 4,   // BC5 RG — two-channel data (normal XY)
+	Bc7 = 5,   // BC7 RGBA — high-quality alpha color
+};
+// "rgba8"|"bc1"|"bc3"|"bc4"|"bc5"|"bc7" (round-trip; false on unknown).
+const char* KtxEncodeFormatName(KtxEncodeFormat f);
+bool KtxEncodeFormatFromName(const std::string& name, KtxEncodeFormat& f);
+// Vulkan VkFormat for a target + transfer (core values, stable —
+// hardcoded like the R8G8B8A8 constants below, no Vulkan header
+// dependency).
+uint32_t KtxEncodeFormatVkFormat(KtxEncodeFormat f, bool srgb);
+// True for the block-compressed targets (Rgba8 is not).
+inline bool KtxEncodeFormatIsBcn(KtxEncodeFormat f) { return f != KtxEncodeFormat::Rgba8; }
 bool TranscodeImageToKtx2(const uint8_t* srcBytes, size_t srcSize, bool srgb,
-	const std::string& logName, std::vector<uint8_t>& outKtx2, std::string& err);
+	const std::string& logName, std::vector<uint8_t>& outKtx2, std::string& err,
+	KtxEncodeFormat format = KtxEncodeFormat::Rgba8,
+	uint32_t maxMipLevels = 0);
+
+// Source-header probe (tex_transcode.cpp; read-only texture-asset
+// inspector fields): a KTX2 source reports its header-decided facts
+// (dims, chain depth, VkFormat, transfer, Basis-family payload); an
+// LDR source (PNG/JPG/TGA/BMP/...) reports its dims + components only
+// (the import settings decide everything else). False on undecodable
+// bytes (the caller reports it).
+struct TextureSourceInfo {
+	bool isKtx2 = false;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t components = 0;  // LDR only (stb report)
+	uint32_t mipLevels = 0;   // KTX2 only (the file's chain)
+	uint32_t vkFormat = 0;    // KTX2 only
+	bool srgb = false;        // KTX2 transfer (LDR: the import setting)
+	bool bcn = false;         // KTX2 payload is block-compressed
+	bool basis = false;       // KTX2 payload needs a (cook-time) transcode
+};
+bool ProbeTextureSource(const uint8_t* data, size_t size,
+	TextureSourceInfo& out);
 
 // VFS texture source (cooker path): reads through an OverlayVfs mounted
 // with the content tree; identity is the VFS path itself.

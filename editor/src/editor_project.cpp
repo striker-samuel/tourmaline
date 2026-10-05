@@ -463,6 +463,94 @@ std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 	return dest.generic_string();
 }
 
+std::string EditorApp::CreateTextureAsset(const std::string& srcPath,
+	const std::string& dir) {
+	// TEXTURE-ASSET creation (see the header): copy the source image in,
+	// write <stem>.texture + identity (.meta sidecar + assetdb row), select.
+	if (m_projectRoot.empty()) {
+		Log("Create texture: open or create a project first (File > New / "
+			"Open Project...).");
+		return {};
+	}
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	fs::path src(srcPath);
+	if (!fs::is_regular_file(src, ec)) {
+		Log("Create texture: source not found: " + srcPath);
+		return {};
+	}
+	std::string ext = src.extension().string();
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	if (ext != ".png" && ext != ".jpg" && ext != ".jpeg"
+		&& ext != ".tga" && ext != ".bmp" && ext != ".ktx2") {
+		Log("Create texture: unsupported source '" + ext
+			+ "' (want png/jpg/jpeg/tga/bmp/ktx2): " + srcPath);
+		return {};
+	}
+	// The browsed dir (fallback: <root>/content — the browser heals
+	// m_assetsDir on the next draw).
+	std::string destDir = dir;
+	if (destDir.empty() || !IsProjectDir(destDir))
+		destDir = (fs::path(m_projectRoot) / "content").generic_string();
+	fs::create_directories(destDir, ec);
+	if (ec) {
+		Log("Create texture: cannot create '" + destDir + "': "
+			+ ec.message());
+		return {};
+	}
+	// Copy the source in (skip when already there).
+	fs::path srcIn = fs::path(destDir) / src.filename();
+	if (!fs::equivalent(src, srcIn, ec)) {
+		fs::copy_file(src, srcIn, fs::copy_options::overwrite_existing, ec);
+		if (ec) {
+			Log("Create texture: copy failed '" + srcPath + "': "
+				+ ec.message());
+			return {};
+		}
+	}
+	// Existing .texture for the stem: select it (delete it to re-create
+	// — the import dedupes by the .texture path, so a re-create is the
+	// settings-reset path).
+	const std::string stem = src.filename().stem().string();
+	fs::path texPath = fs::path(destDir) / (stem + ".texture");
+	if (fs::is_regular_file(texPath, ec)) {
+		m_assetsSel = texPath.generic_string();
+		Log("Create texture: '" + stem + ".texture' already exists — "
+			"selected (delete it to re-create).");
+		return texPath.generic_string();
+	}
+	// Defaults: sRGB color, rgba8, full chain, linear/repeat (edit them
+	// in the Inspector; a KTX2 source reads colorSpace/format/mipLevels
+	// read-only from its header).
+	smvk::assets::TextureAsset t{};
+	t.guid = smvk::tour::GenerateUuid();
+	t.name = stem;
+	t.source = src.filename().string();
+	std::string err;
+	if (!smvk::assets::SaveTextureAsset(texPath, t, err)) {
+		Log("Create texture: cannot write '" + texPath.generic_string()
+			+ "': " + err);
+		return {};
+	}
+	// Identity: the guid rides the file (inline) AND the sidecar (the
+	// assetdb's adoption path) — one guid, both views.
+	{
+		std::string merr;
+		if (!smvk::cache::WriteAssetMeta(texPath.generic_string(),
+				t.guid, "texture", merr))
+			Log("Create texture: cannot write .meta for '"
+				+ texPath.generic_string() + "': " + merr);
+	}
+	AdoptProjectAsset(texPath.generic_string(), "texture");
+	m_assetsSel = texPath.generic_string();
+	Log("Create texture: '" + texPath.filename().string() + "' from '"
+		+ src.filename().string() + "' (edit the import settings in the "
+		"Inspector; materials reference it as tex.<slot>="
+		+ stem + ".texture).");
+	return texPath.generic_string();
+}
+
 bool EditorApp::ImportAsset(const std::string& srcPath) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");

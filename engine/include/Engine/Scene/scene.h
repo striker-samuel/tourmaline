@@ -213,6 +213,15 @@ struct Scene {
 	// resolved into `environment` by whoever owns the selection (the
 	// editor; the cook at bake time).
 	std::unordered_map<NodeId, SceneEnv> envForNode;
+	// DEFAULT CAMERA (world settings' typed camera field, tour
+	// editorSettings camera.default -> cook -> pak v10): the authored
+	// camera node the runtime App spawns at/looks through instead of the
+	// generic bounds framing (editors orbit freely; the App honors the
+	// author's framing). Cluster-space in cooked paks, world-space in
+	// the live World scene (ResolveAndFixup remaps). UINT32_MAX = none
+	// (generic framing stands). Not to be confused with the per-viewport
+	// editor look-through binding (view state, never persisted).
+	NodeId defaultCameraNode = UINT32_MAX;
 	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
 	// editor for nodes a Delete line addresses (persisted as `uuid`
 	// lines ahead of the deletes) and recorded back by replay and

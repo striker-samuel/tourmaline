@@ -1214,7 +1214,9 @@ protected:
 		if (extent.width == 0 || extent.height == 0)
 			return;
 		// External camera (editor live view): the editor's lens drives
-		// the frame; otherwise the App defaults.
+		// the frame; otherwise the App defaults (or the scene's default-
+		// camera lens — m_sceneFovYDeg/m_sceneNearClip/m_sceneFarClip,
+		// set by the default-camera framing at load).
 		const bool ext = IsHosted() && m_extCamera;
 		if (ext && m_extOrthoHalfH > 0.0f)
 			m_camera.setOrtho3D(m_extOrthoHalfH,
@@ -1222,9 +1224,9 @@ protected:
 				m_extNear, m_extFar);
 		else
 			m_camera.setPerspective(
-				glm::radians(ext ? m_extFovYDeg : kCameraFovYDegrees),
+				glm::radians(ext ? m_extFovYDeg : m_sceneFovYDeg),
 				float(extent.width) / float(extent.height),
-				ext ? m_extNear : default_near_clip,
+				ext ? m_extNear : m_sceneNearClip,
 				ext ? m_extFar : kMainViewFarPlane
 			);
 	}
@@ -1661,6 +1663,14 @@ protected:
 	// fitted to the framed bounds at load (generic framing parks the
 	// camera radius*2.2 away unless VULKANTOY_CAM_POS/FWD pin it).
 	float m_sceneFarClip = 2000.0f;
+	// Scene lens (default-camera framing only — see the World settings'
+	// camera.default typed field): when the scene carries an authored
+	// DEFAULT CAMERA, its perspective lens replaces the App defaults in
+	// UpdateCameraAspect (generic framing leaves these untouched). The
+	// hosted editor drives its own lens (m_extCamera) and never reads
+	// these.
+	float m_sceneFovYDeg = kCameraFovYDegrees;
+	float m_sceneNearClip = default_near_clip;
 	// Project root for the content VFS (see SetProjectRoot).
 	std::string m_projectRoot;
 	// Camera control frozen (see SetDisableControl; --disable_control).

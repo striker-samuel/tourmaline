@@ -436,6 +436,8 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	// dropped from the tour (live-state emission), so the file's -ref
 	// space only spans ALIVE creates — this keeps save-time indices and
 	// replay-time m_tourCreatedNodes addressing identical.
+	// Non-EMITTING creates are skipped too (CreateCmdEmitsInTour): the
+	// file's -ref space is the creates that actually land in the file.
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -443,6 +445,8 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 			continue;
 		if (!m_world || !m_world->scene.lightForNode.contains(h.node))
 			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -452,9 +456,10 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 
 int EditorApp::CreatedCvolIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the cvolume family:
-	// alive creates only (a deleted cvolume's CreateCVolume is dropped
-	// from the tour, so the file's -ref space spans the survivors —
-	// save-time indices and replay-time m_tourCreatedCvolNodes match).
+	// alive + emitting creates only (a deleted cvolume's CreateCVolume
+	// is dropped from the tour, so the file's -ref space spans the
+	// survivors — save-time indices and replay-time
+	// m_tourCreatedCvolNodes match).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -462,6 +467,8 @@ int EditorApp::CreatedCvolIndex(uint32_t worldNode) const {
 			continue;
 		if (!m_world || !m_world->scene.cvolForNode.contains(h.node))
 			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -487,7 +494,8 @@ std::string EditorApp::UniqueCvolName() const {
 }
 
 int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
-	// Same contract as CreatedCvolIndex, for the cubemap-capture family.
+	// Same contract as CreatedCvolIndex, for the cubemap-capture family
+	// (alive + emitting creates only).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -495,6 +503,8 @@ int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
 			continue;
 		if (!m_world || !m_world->scene.cubemapForNode.contains(h.node))
 			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -521,8 +531,9 @@ std::string EditorApp::UniqueCubemapName() const {
 
 int EditorApp::CreatedCameraIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the camera family: alive
-	// creates only (a deleted camera's CreateCamera is dropped from the
-	// tour, so the file's -ref space spans the survivors).
+	// + emitting creates only (a deleted camera's CreateCamera is
+	// dropped from the tour, so the file's -ref space spans the
+	// survivors).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -530,6 +541,8 @@ int EditorApp::CreatedCameraIndex(uint32_t worldNode) const {
 			continue;
 		if (!m_world || !m_world->scene.cameraForNode.contains(h.node))
 			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -571,10 +584,40 @@ std::string EditorApp::UniqueTerrainName() const {
 	return "Terrain_" + std::to_string(n);
 }
 
+std::string EditorApp::UniqueCopyName(const std::string& base) const {
+	// Duplicate naming (Edit > Duplicate): keep the original's prefix
+	// and find the first free "_N" index, so duplicates stay grouped in
+	// the outliner ("HeroCam_1" -> "HeroCam_2"; "HeroCam" -> "HeroCam_1").
+	// A trailing "_<digits>" is treated as an index; anything else keeps
+	// the whole name as the prefix.
+	if (!m_world)
+		return base;
+	std::string prefix = base;
+	size_t us = base.rfind('_');
+	if (us != std::string::npos && us + 1 < base.size()) {
+		bool digits = true;
+		for (size_t d = us + 1; d < base.size(); ++d)
+			if (!std::isdigit(static_cast<unsigned char>(base[d]))) {
+				digits = false;
+				break;
+			}
+		if (digits)
+			prefix = base.substr(0, us);
+	}
+	for (int n = 1;; ++n) {
+		const std::string want = prefix + "_" + std::to_string(n);
+		bool taken = false;
+		for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+			taken = getNodeName(m_world->scene, int(i)) == want;
+		if (!taken)
+			return want;
+	}
+}
+
 int EditorApp::CreatedTerrainIndex(uint32_t worldNode) const {
-	// Same contract as CreatedLightIndex: alive creates only (deleted
-	// groups' CreateTerrain is dropped from the tour, so the file's
-	// TerrainPaint -ref space spans the survivors).
+	// Same contract as CreatedLightIndex: alive + emitting creates
+	// only (deleted groups' CreateTerrain is dropped from the tour, so
+	// the file's TerrainPaint -ref space spans the survivors).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -583,11 +626,114 @@ int EditorApp::CreatedTerrainIndex(uint32_t worldNode) const {
 		auto it = m_terrainGroups.find(h.node);
 		if (it == m_terrainGroups.end() || it->second.deleted)
 			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
 		if (h.node == worldNode)
 			return count;
 		++count;
 	}
 	return -1;
+}
+
+bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
+	// Mirrors CmdToTour's per-family drop conditions EXACTLY (alive
+	// link + not deleted + parent slot resolvable) so the family -ref
+	// index spaces stay identical to the file's create sets. Any
+	// divergence re-produces dangling "setXAttr -ref k" lines (the
+	// "ref out of range" cook failures).
+	if (!app.m_world)
+		return false;
+	const Scene& scene = app.m_world->scene;
+	const uint32_t created = h.node;
+	if (created == UINT32_MAX || created >= scene.hierarchy.size())
+		return false;
+	if (app.m_deletedNodes.contains(created))
+		return false;
+	uint32_t parentSlot = UINT32_MAX;
+	switch (h.verb) {
+	case EditVerb::CreateLight: {
+		if (!app.FindNodeLight(created, nullptr))
+			return false; // detached (tombstoned)
+		parentSlot = h.node2;
+		break;
+	}
+	case EditVerb::CreateCVolume: {
+		if (!scene.cvolForNode.contains(created))
+			return false; // detached (tombstoned)
+		parentSlot = h.node2;
+		break;
+	}
+	case EditVerb::CreateCubemap: {
+		if (!scene.cubemapForNode.contains(created))
+			return false; // detached (tombstoned)
+		parentSlot = h.node2;
+		break;
+	}
+	case EditVerb::CreateCamera: {
+		if (!app.FindNodeCamera(created))
+			return false; // detached (tombstoned)
+		parentSlot = h.node2;
+		break;
+	}
+	case EditVerb::CreateTransform:
+		// No links to detach: alive == not deleted (checked above).
+		parentSlot = h.node2;
+		break;
+	case EditVerb::CreateTerrain: {
+		auto git = app.m_terrainGroups.find(created);
+		if (git == app.m_terrainGroups.end() || git->second.deleted)
+			return false; // deleted (tombstoned) group
+		parentSlot = h.beforeParent; // node2 packs tilesX|tilesZ<<16
+		break;
+	}
+	default:
+		return false;
+	}
+	return ParentResolvesInTour(app, parentSlot);
+}
+
+bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) {
+	if (!app.m_world)
+		return false;
+	const Scene& scene = app.m_world->scene;
+	if (parentSlot == UINT32_MAX || parentSlot >= scene.hierarchy.size())
+		return false;
+	if (parentSlot == 0)
+		return true; // world root: -p 0 (the primary cluster's root)
+	if (app.WorldToCluster(parentSlot) >= 0)
+		return true; // cluster-backed: numeric -p (the bind builds it)
+	// Editor-created parent: it emits only through its OWN create —
+	// terrain TILES ride their group's createTerrain (the tile is not
+	// a standalone create in history).
+	if (app.TerrainGroupOf(parentSlot) != UINT32_MAX
+		&& !app.m_terrainGroups.contains(parentSlot)) {
+		// A tile of a (possibly tombstoned) group: resolvable exactly
+		// when the group's createTerrain emits.
+		const uint32_t group = app.TerrainGroupOf(parentSlot);
+		for (size_t i = 0; i < app.m_historyCursor
+			&& i < app.m_history.size(); ++i) {
+			const EditCmd& h = app.m_history[i];
+			if (h.verb == EditVerb::CreateTerrain && h.node == group)
+				return CreateCmdEmitsInTour(app, h);
+		}
+		return false;
+	}
+	// Any other editor-created node: the history create that made it
+	// must emit (recursion: the create's own parent must resolve).
+	for (size_t i = 0; i < app.m_historyCursor
+		&& i < app.m_history.size(); ++i) {
+		const EditCmd& h = app.m_history[i];
+		if (h.node != parentSlot)
+			continue;
+		if (h.verb == EditVerb::CreateLight
+			|| h.verb == EditVerb::CreateCVolume
+			|| h.verb == EditVerb::CreateCubemap
+			|| h.verb == EditVerb::CreateCamera
+			|| h.verb == EditVerb::CreateTransform
+			|| h.verb == EditVerb::CreateTerrain)
+			return CreateCmdEmitsInTour(app, h);
+	}
+	return false; // not cluster-backed, not a create: unaddressable
 }
 
 void EditorApp::DraftCreateTerrain(const TerrainDraft& d) {
@@ -1527,6 +1673,158 @@ void EditorApp::DeleteSelection() {
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate (Edit > Duplicate / Ctrl+D): a fresh Create per selected
+// duplicable node, seeded from the LIVE state (post-creation edits ride
+// along exactly like the Create-menu drafts read the world). Editor-
+// created families only: cluster-backed mesh nodes and terrain groups/
+// tiles own no create verb (imported content would need an instancing
+// system; a duplicated terrain would silently lose its paint stamps).
+// The new nodes become the selection, like the Create-menu drafts.
+// ---------------------------------------------------------------------------
+void EditorApp::DuplicateSelection() {
+	if (!m_world) {
+		Log("Duplicate: no scene open.");
+		return;
+	}
+	if (m_worldSelected) {
+		Log("Duplicate: 'World' holds global settings (not a scene node).");
+		return;
+	}
+	std::vector<uint32_t> targets(m_selection);
+	if (targets.empty() && m_selected != UINT32_MAX)
+		targets.push_back(m_selected);
+	if (targets.empty()) {
+		Log("Duplicate: nothing selected.");
+		return;
+	}
+	std::vector<uint32_t> created; // new ids, in target order
+	int skippedMesh = 0, skippedTerrain = 0, skippedRef = 0;
+	for (uint32_t t : targets) {
+		if (t == UINT32_MAX || t >= m_world->scene.hierarchy.size()
+			|| m_deletedNodes.contains(t))
+			continue;
+		if (IsRefPlaceholder(t)) {
+			// The placeholder IS the reference binding anchor —
+			// duplicating the reference is the References panel's job.
+			++skippedRef;
+			continue;
+		}
+		// Terrain: groups/tiles ride one CreateTerrain (immutable params
+		// + TerrainPaint stamps). A duplicate would silently drop the
+		// painted state — skip with a log line instead.
+		if (TerrainGroupOf(t) != UINT32_MAX) {
+			++skippedTerrain;
+			continue;
+		}
+		// Cluster-backed mesh nodes own no create verb (imported
+		// geometry — a duplicate needs an instancing system).
+		if (m_world->scene.meshForNode.contains(t)) {
+			++skippedMesh;
+			continue;
+		}
+		// Same parent, live transform, unique copy name.
+		const int parent = m_world->scene.hierarchy[t].parent;
+		const std::string name = UniqueCopyName(
+			getNodeName(m_world->scene, int(t)));
+		glm::vec3 tr, rot, sc;
+		ReadLocalTRS(t, tr, rot, sc);
+		EditCmd c{};
+		if (const ::SceneLight* L = FindNodeLight(t, nullptr)) {
+			c.verb = EditVerb::CreateLight;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.lightType = (L->type == ::SceneLight::Type::Spot) ? 2u : 1u;
+			c.lightColor = L->color;
+			c.lightIntensity = L->intensity;
+			c.lightRange = L->range;
+			c.lightInnerDeg = glm::degrees(L->innerConeAngle);
+			c.lightOuterDeg = glm::degrees(L->outerConeAngle);
+			c.lightStatic =
+				(L->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
+			c.lightShadow =
+				(L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
+		}
+		else if (const ::SceneCamera* C = FindNodeCamera(t)) {
+			c.verb = EditVerb::CreateCamera;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.camRot = rot;
+			c.camProjection =
+				(C->projection == ::SceneCamera::Projection::Orthographic)
+				? 1u : 0u;
+			c.camFovY = C->fovYDeg;
+			c.camNear = C->nearClip;
+			c.camFar = C->farClip;
+			c.camOrthoHalfH = C->orthoHalfH;
+		}
+		else if (auto cmit = m_world->scene.cubemapForNode.find(t);
+			cmit != m_world->scene.cubemapForNode.end()) {
+			c.verb = EditVerb::CreateCubemap;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.cubemapRadius = cmit->second.radius;
+		}
+		else if (auto cvit = m_world->scene.cvolForNode.find(t);
+			cvit != m_world->scene.cvolForNode.end()) {
+			c.verb = EditVerb::CreateCVolume;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.svec = sc;
+			c.cvolPriority = cvit->second.priority;
+			c.cvolSpacing = cvit->second.spacing;
+			c.cvolInsideFade = cvit->second.insideFade;
+			c.cvolOutsideFade = cvit->second.outsideFade;
+		}
+		else {
+			// Plain transform: created transforms AND imported empty
+			// group nodes (no links) — both are just a DAG transform.
+			c.verb = EditVerb::CreateTransform;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.vec4 = glm::vec4(rot, 0.0f);
+			c.svec = sc;
+		}
+		Do(c);
+		if (c.node != UINT32_MAX)
+			created.push_back(c.node);
+	}
+	if (created.empty()) {
+		Log("Duplicate: nothing duplicable in the selection"
+			+ std::string(skippedMesh > 0 ? " (imported mesh nodes have"
+				" no create verb)" : "")
+			+ std::string(skippedTerrain > 0 ? " (terrain duplicates"
+				" would lose painted state)" : "")
+			+ std::string(skippedRef > 0 ? " (reference placeholders are"
+				" not nodes)" : "") + ".");
+		return;
+	}
+	// The creates each auto-selected themselves; make the BATCH the
+	// selection (mirrors SetSelection's invariants: world page off,
+	// non-DAG/asset selections cleared, primary = the newest).
+	m_worldSelected = false;
+	ClearNonDagSelection();
+	m_assetsSel.clear();
+	m_selection = created;
+	m_selected = created.back();
+	if (skippedMesh + skippedTerrain + skippedRef > 0)
+		Log("Duplicate: " + std::to_string(created.size()) + " node"
+			+ (created.size() > 1 ? "s" : "") + " duplicated (skipped: "
+			+ std::to_string(skippedMesh) + " imported mesh"
+			+ (skippedMesh == 1 ? "" : "es") + ", "
+			+ std::to_string(skippedTerrain) + " terrain, "
+			+ std::to_string(skippedRef) + " reference placeholder"
+			+ (skippedRef == 1 ? "" : "s") + ").");
+	else
+		Log("Duplicate: " + std::to_string(created.size()) + " node"
+			+ (created.size() > 1 ? "s" : "") + " duplicated.");
+}
+
+// ---------------------------------------------------------------------------
 // CreateTransform: plain transform nodes (Maya group locators). No mesh,
 // no light, no pool entry — the reference system uses them as
 // displacement placeholders for created content parented under a
@@ -2303,6 +2601,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetCvolAttr: return "cvolume edit";
 	case editor::EditVerb::CreateCubemap: return "create cubemap";
 	case editor::EditVerb::SetCubemapAttr: return "cubemap edit";
+	case editor::EditVerb::CreateCamera: return "create camera";
+	case editor::EditVerb::SetCamAttr: return "camera edit";
 	}
 	return "?";
 }
@@ -2533,9 +2833,20 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	case EditVerb::Parent: {
 		if (!needNode())
 			return false;
-		const int pn = app.WorldToCluster(c.node2);
-		if (pn < 0)
-			return false;
+		int pn = app.WorldToCluster(c.node2);
+		if (pn < 0) {
+			if (c.node2 == 0)
+				pn = 0; // world root: the primary cluster's root (id 0)
+			else {
+				// Editor-created new parent: symbolic -p emission (see
+				// the CreateLight case) — the reparent survives saves
+				// instead of silently vanishing from the cooked scene.
+				if (parentRefFor(c.node2).empty()
+					|| !EditorApp::ParentResolvesInTour(app, c.node2))
+					return false;
+				pn = 0; // numeric fallback unused (writer prefers -pStr)
+			}
+		}
 		out.verb = smvk::tour::Verb::Parent;
 		out.node2 = uint32_t(pn);
 		out.parentRef = parentRefFor(c.node2);
@@ -2554,11 +2865,15 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!L)
 			return false; // detached (tombstoned): nothing to persist
 		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0) {
-			// World root has no cluster id: the primary cluster's root
-			// (id 0) is the replay-stable equivalent.
-			if (c.node2 == 0)
-				pp = 0;
+		if (pp < 0 && c.node2 != 0) {
+			// Editor-created parent (no cluster id until replay): emit
+			// the SYMBOLIC -p form (name/path; the parent's own create
+			// lands earlier in file order, so replay resolves it)
+			// instead of dropping the create — the drop desynced the
+			// family -ref spaces ("setLightAttr ref out of range").
+			if (!parentRefFor(c.node2).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.node2))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -2596,11 +2911,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 				return false;
 		}
 		int pp = app.WorldToCluster(c.beforeParent);
-		if (pp < 0) {
-			// World root has no cluster id: the primary cluster's root
-			// (id 0) is the replay-stable equivalent.
-			if (c.beforeParent == 0)
-				pp = 0;
+		if (pp < 0 && c.beforeParent != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the terrain silently.
+			if (!parentRefFor(c.beforeParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.beforeParent))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -2632,9 +2948,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (app.m_deletedNodes.contains(created))
 			return false;
 		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0) {
-			if (c.node2 == 0)
-				pp = 0;
+		if (pp < 0 && c.node2 != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the transform silently.
+			if (!parentRefFor(c.node2).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.node2))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -2699,9 +3018,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (app.m_deletedNodes.contains(created))
 			return false;
 		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0) {
-			if (c.node2 == 0)
-				pp = 0;
+		if (pp < 0 && c.node2 != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the cvolume silently.
+			if (!parentRefFor(c.node2).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.node2))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -2753,9 +3075,17 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (app.m_deletedNodes.contains(created))
 			return false;
 		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0) {
-			if (c.node2 == 0)
-				pp = 0;
+		if (pp < 0 && c.node2 != 0) {
+			// Editor-created parent (e.g. the auto-selected previous
+			// create — DraftCreateCubemap parents under the selection):
+			// emit the SYMBOLIC -p form instead of dropping the create.
+			// The historical drop is what produced orphaned
+			// "setCubemapAttr -ref k" lines and the cook failure
+			// "tour: setCubemapAttr ref out of range: 0" (GiBaker and
+			// PakCooker both abort on it).
+			if (!parentRefFor(c.node2).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.node2))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -2802,9 +3132,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (app.m_deletedNodes.contains(created))
 			return false;
 		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0) {
-			if (c.node2 == 0)
-				pp = 0;
+		if (pp < 0 && c.node2 != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the camera silently.
+			if (!parentRefFor(c.node2).empty()
+				&& EditorApp::ParentResolvesInTour(app, c.node2))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
 		}
@@ -3116,15 +3449,22 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 				(std::filesystem::path(m_gltfHostPath).parent_path()
 					/ (std::filesystem::path(m_gltfHostPath).stem()
 						.string() + ".mesh")).generic_string();
-			if (std::filesystem::is_regular_file(meshSibling, mec)) {
+		// Reference the .mesh ASSET only when its manifest GUID resolves:
+		// source and GUID must stay a CONSISTENT pair. Switching the source
+		// to .mesh while keeping the glTF GUID (manifest entry missing)
+		// produced a mismatch the heal loop below rewrote EVERY save (the
+		// "Tour save: reference ..." log spam — SaveTourTo runs per edit,
+		// per snapshot, per close), re-derived to .mesh again next save.
+		if (std::filesystem::is_regular_file(meshSibling, mec)) {
+			const std::string meshGuid =
+				DerivedAssetGuid(meshSibling);
+			if (!meshGuid.empty()) {
 				posix = (std::filesystem::path(posix).parent_path()
 					/ (std::filesystem::path(m_gltfHostPath).stem()
 						.string() + ".mesh")).generic_string();
-				const std::string meshGuid =
-					DerivedAssetGuid(meshSibling);
-				if (!meshGuid.empty())
-					rootGuid = meshGuid;
+				rootGuid = meshGuid;
 			}
+		}
 		}
 		smvk::tour::ReferenceCmd rootRef{};
 		rootRef.root = true;
@@ -3194,7 +3534,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			|| c.verb == EditVerb::CreateTerrain
 			|| c.verb == EditVerb::CreateTransform
 			|| c.verb == EditVerb::CreateCVolume
-			|| c.verb == EditVerb::CreateCubemap) {
+			|| c.verb == EditVerb::CreateCubemap
+			|| c.verb == EditVerb::CreateCamera) {
 			ensureUuid(c.node2);
 		}
 	}
@@ -3251,11 +3592,75 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// Orphans (unresolved at the last replay — e.g. edits on a replaced
 	// or failed reference): re-emit VERBATIM so they resolve again when
 	// their nodes come back. A reference round-trip must never erase
-	// edits from the file.
+	// edits from the file. EXCEPT family-ref attr orphans pointing past
+	// the create set this save emits (setLightAttr/setCvolAttr/
+	// setCubemapAttr/setCamAttr/terrainPaint with -ref k >= the
+	// family's emitted creates): a create set is fixed per file, so a
+	// past-the-end -ref can never resolve again — re-emitting it only
+	// poisons every cook with "ref out of range" (the strict replay
+	// aborts). Drop those with a log line instead.
+	{
+		const auto familyRefOutOfRange =
+			[&](const smvk::tour::Command& tc) {
+				using smvk::tour::Verb;
+				auto baseOf = [](Verb v) -> uint32_t {
+					switch (v) {
+					case Verb::SetLightAttr:
+						return smvk::tour::kCreateLightRefBase;
+					case Verb::SetCvolAttr:
+						return smvk::tour::kCreateCvolRefBase;
+					case Verb::SetCubemapAttr:
+						return smvk::tour::kCreateCubemapRefBase;
+					case Verb::SetCamAttr:
+						return smvk::tour::kCreateCameraRefBase;
+					case Verb::TerrainPaint:
+						return smvk::tour::kCreateTerrainRefBase;
+					default:
+						return 0;
+					}
+				};
+				const uint32_t base = baseOf(tc.verb);
+				if (base == 0 || (tc.node & base) == 0)
+					return false; // not a family-ref line (-n addressing)
+				const uint32_t k = tc.node & ~base;
+				uint32_t emitted = 0;
+				for (size_t i = 0; i < m_historyCursor
+					&& i < m_history.size(); ++i) {
+					const EditVerb ev = m_history[i].verb;
+					if ((tc.verb == Verb::SetLightAttr
+							&& ev == EditVerb::CreateLight)
+						|| (tc.verb == Verb::SetCvolAttr
+							&& ev == EditVerb::CreateCVolume)
+						|| (tc.verb == Verb::SetCubemapAttr
+							&& ev == EditVerb::CreateCubemap)
+						|| (tc.verb == Verb::SetCamAttr
+							&& ev == EditVerb::CreateCamera)
+						|| (tc.verb == Verb::TerrainPaint
+							&& ev == EditVerb::CreateTerrain)) {
+						if (CreateCmdEmitsInTour(*this, m_history[i]))
+							++emitted;
+					}
+				}
+				return k >= emitted;
+			};
+		for (size_t oi = 0; oi < m_orphanTourCmds.size();) {
+			if (familyRefOutOfRange(m_orphanTourCmds[oi])) {
+				Log("tour: dropping orphan '" + smvk::tour::Describe(
+						m_orphanTourCmds[oi])
+					+ "' (family -ref past this save's create set — it "
+					"can never resolve).");
+				m_orphanTourCmds.erase(m_orphanTourCmds.begin()
+					+ ptrdiff_t(oi));
+				continue;
+			}
+			++oi;
+		}
+	}
 	doc.commands.insert(doc.commands.end(),
 		m_orphanTourCmds.begin(), m_orphanTourCmds.end());
 	SaveOverridesToDoc(doc);
 	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
+	SaveDefaultCameraToDoc(doc); // world default camera (typed ref field)
 	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
 	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
 	// (Texture relinks no longer ride the tour: they are INPUT PLUGS on
@@ -3267,7 +3672,12 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// live list updates too so the panel shows the stored form, and
 	// the rewrite is stable (no log spam on later saves).
 	// Unresolvable sources persist verbatim (the bind reports them).
+	// The ROOT entry skips: its source+GUID pair is freshly (and
+	// consistently) derived above, so it can never be stale — healing
+	// it would only fight the derivation.
 	for (auto& r : m_references) {
+		if (r.root)
+			continue; // freshly derived above: never stale
 		if (r.guid.empty() || m_projectRoot.empty()
 			|| !m_assetDb.IsOpen())
 			continue;
@@ -4059,6 +4469,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	m_tourDirty = false; // fresh replay matches its file
 	LoadOverridesFromDoc(doc);
 	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
+	LoadDefaultCameraFromDoc(doc); // world default camera (typed ref field)
 	LoadPlacementFromDoc(doc); // scatter graphs (place.* editorSet lines)
 	LoadImagesFromDoc(doc); // image definitions (img.* editorSet lines)
 	// (No path-remap editorSettings anymore: texture relinks are input

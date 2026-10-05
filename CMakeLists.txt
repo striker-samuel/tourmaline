@@ -23,6 +23,7 @@ add_subdirectory(external/xatlas)
 # D3DXEncodeBC6HU/D3DXDecodeBC6HU, cook + load-side only)
 add_library(directxtex_bc STATIC
 	external/DirectXTex/DirectXTex/BC.cpp
+	external/DirectXTex/DirectXTex/BC4BC5.cpp
 	external/DirectXTex/DirectXTex/BC6HBC7.cpp
 )
 target_include_directories(directxtex_bc PUBLIC external/DirectXTex)

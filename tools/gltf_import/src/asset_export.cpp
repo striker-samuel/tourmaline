@@ -516,6 +516,98 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
 	return true;
 }
 
+// ---- .texture (the texture asset: import settings + source ref) ----------
+
+bool LoadTextureAsset(const std::filesystem::path& path,
+	TextureAsset& out, std::string& err) {
+	out = TextureAsset{};
+	std::ifstream in(path);
+	if (!in) {
+		err = "cannot open '" + path.generic_string() + "'";
+		return false;
+	}
+	std::string text((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return LoadTextureAssetText(text, out, err);
+}
+
+bool LoadTextureAssetText(const std::string& text, TextureAsset& out,
+	std::string& err) {
+	out = TextureAsset{};
+	std::istringstream in(text);
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		const std::string key = line.substr(0, eq);
+		const std::string val = line.substr(eq + 1);
+		if (key == "guid")
+			out.guid = val;
+		else if (key == "name")
+			out.name = val;
+		else if (key == "source")
+			out.source = val;
+		else if (key == "colorspace")
+			out.colorspace = (val == "linear") ? 1 : 0;
+		else if (key == "format") {
+			KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
+			if (!KtxEncodeFormatFromName(val, f)) {
+				err = "unknown format '" + val
+					+ "' (want rgba8|bc1|bc3|bc4|bc5|bc7)";
+				return false;
+			}
+			out.format = int(f);
+		}
+		else if (key == "mipLevels")
+			out.mipLevels = (val == "auto")
+				? 0 : std::max(0, std::atoi(val.c_str()));
+		else if (key == "wrap")
+			out.wrap = (val == "clamp") ? 1 : (val == "mirror") ? 2 : 0;
+		else if (key == "filter")
+			out.filter = (val == "nearest") ? 1 : 0;
+	}
+	if (out.guid.empty()) {
+		err = "texture asset carries no guid";
+		return false;
+	}
+	if (out.source.empty()) {
+		err = "texture asset carries no source";
+		return false;
+	}
+	return true;
+}
+
+bool SaveTextureAsset(const std::filesystem::path& path,
+	const TextureAsset& t, std::string& err) {
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out) {
+		err = "cannot write '" + path.generic_string() + "'";
+		return false;
+	}
+	out << "# Tourmaline texture asset (import settings + source image.\n"
+		"# Identity: the guid + the .meta sidecar beside this file.\n"
+		"# KTX2 sources pre-decide colorspace/format/mipLevels in their\n"
+		"# header - those rows read read-only in the inspector.)\n";
+	out << "guid=" << t.guid << "\n";
+	out << "name=" << t.name << "\n";
+	out << "source=" << t.source << "\n";
+	out << "colorspace=" << (t.colorspace == 1 ? "linear" : "srgb") << "\n";
+	out << "format="
+		<< KtxEncodeFormatName(KtxEncodeFormat(t.format)) << "\n";
+	out << "mipLevels="
+		<< (t.mipLevels > 0 ? std::to_string(t.mipLevels) : "auto") << "\n";
+	out << "wrap="
+		<< (t.wrap == 1 ? "clamp" : t.wrap == 2 ? "mirror" : "repeat")
+		<< "\n";
+	out << "filter=" << (t.filter != 0 ? "nearest" : "linear") << "\n";
+	return !!out;
+}
+
 // ---------------------------------------------------------------------------
 // .mesh (binary, MESH v1)
 // ---------------------------------------------------------------------------
@@ -1326,6 +1418,28 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 			return;
 		const std::string uri =
 			(base / t.path).generic_string();
+		// TEXTURE-ASSET ref (a .texture file): route through its own
+		// import settings (colorspace/format/mipLevels/filter/wrap — the
+		// asset's colorspace WINS over the TexRef srgb flag; the settings
+		// bake at import). Repeat refs dedupe through the .texture URI.
+		{
+			std::string ext =
+				std::filesystem::path(t.path).extension().string();
+			for (char& c : ext)
+				c = char(std::tolower((unsigned char)c));
+			if (ext == ".texture") {
+				std::string terr;
+				smvk::TextureHandle h = ImportTextureAssetToCluster(
+					cluster, base / t.path, ctx, terr);
+				if (h.empty()) {
+					std::cerr << "[materialAsset] texture asset import "
+						"failed '" << t.path << "': " << terr << "\n";
+					return;
+				}
+				slot = h;
+				return;
+			}
+		}
 		// Reuse an existing registration (a repeat import, or the texture
 		// arrived via the glTF): the pool entry + source already stand.
 		if (auto hit = cluster.FindTextureByUri(uri)) {
@@ -1430,6 +1544,114 @@ smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(
 	const smvk::ClusterMaterialHandle h =
 		cluster.materials.create(std::move(def));
 	cluster.RegisterMaterialUri("editor://default", h);
+	return h;
+}
+
+// ---- shared texture-asset import (editor + cook) --------------------------
+// The SINGLE import path for .texture assets (see asset_export.h): the
+// settings bake at import (LDR -> RGBA8/BCn KTX2 honoring colorspace/
+// format/mipLevels; KTX2 sources pass through verbatim), the sampler rows
+// ride the per-texture sampler registration, and the GPU-READY payload
+// rides the cluster source stash (the cook passthrough-embeds it).
+smvk::TextureHandle ImportTextureAssetToCluster(
+	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
+	smvk::ResourceManager* ctx, std::string& err) {
+	err.clear();
+	TextureAsset t;
+	if (!LoadTextureAsset(assetPath, t, err))
+		return {};
+	const std::string uri = assetPath.generic_string();
+	// Repeat import: the pool entry + stash already stand. A settings
+	// change applies at the NEXT import (a fresh session, a cook, or a
+	// delete + re-create — the URI-keyed reuse never re-imports).
+	if (auto hit = cluster.FindTextureByUri(uri))
+		return *hit;
+	const std::filesystem::path srcPath =
+		assetPath.parent_path() / t.source;
+	std::ifstream in(srcPath, std::ios::binary);
+	if (!in) {
+		err = "cannot open source '" + t.source + "' (beside '"
+			+ assetPath.generic_string() + "')";
+		return {};
+	}
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (bytes.empty()) {
+		err = "source file is empty: " + srcPath.generic_string();
+		return {};
+	}
+	TextureSourceInfo info{};
+	if (!ProbeTextureSource(bytes.data(), bytes.size(), info)) {
+		err = "undecodable source (not PNG/JPG/TGA/BMP/KTX2): "
+			+ srcPath.generic_string();
+		return {};
+	}
+	// KTX2: verbatim (the header pre-decided colorspace/format/mips; the
+	// settings rows read read-only in the inspector). LDR: convert with
+	// the asset's import settings baked in.
+	std::vector<uint8_t> payload = bytes;
+	if (!info.isKtx2) {
+		std::string ext = srcPath.extension().string();
+		for (char& c : ext)
+			c = char(std::tolower((unsigned char)c));
+		if (ext == ".hdr" || ext == ".exr") {
+			err = "HDR source needs a float transcode (unsupported): "
+				+ srcPath.generic_string();
+			return {};
+		}
+		const bool srgb = t.colorspace == 0;
+		std::string terr;
+		if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), srgb, uri,
+				payload, terr, KtxEncodeFormat(t.format),
+				t.mipLevels > 0 ? uint32_t(t.mipLevels) : 0)) {
+			err = "texture conversion failed: " + terr;
+			return {};
+		}
+	}
+	smvk::TextureHandle h;
+	if (cluster.IsCookMode()) {
+		// Cook: mint the pool id (the glTF importer's cook path); the
+		// serializer reads the stashed payload below.
+		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+	}
+	else {
+		if (!ctx) {
+			err = "editor import wants a GPU context: " + uri;
+			return {};
+		}
+		auto holder = smvk::LoadKtxTextureMemory(*ctx,
+			payload.data(), payload.size(), uri);
+		if (!holder.valid()) {
+			err = "KTX2 load failed: " + uri;
+			return {};
+		}
+		h = holder;
+		cluster.textures.create(std::move(holder));
+	}
+	cluster.RegisterTextureUri(uri, h);
+	// Sampler rows (the FileNode GL-enum vocabulary): filter/wrap intent
+	// persists into the cooked pak's per-texture sampler record.
+	{
+		smvk::TextureSamplerDesc samp;
+		samp.wrapS = samp.wrapT =
+			(t.wrap == 1) ? 33071   // CLAMP_TO_EDGE
+			: (t.wrap == 2) ? 33648 // MIRRORED_REPEAT
+			: 10497;                // REPEAT
+		if (t.filter != 0) {
+			samp.magFilter = 9728; // NEAREST (no mips sampled)
+			samp.minFilter = 9728;
+		}
+		else {
+			samp.magFilter = 9729; // LINEAR
+			samp.minFilter = 9987; // LINEAR_MIPMAP_LINEAR (chain assumed)
+		}
+		cluster.RegisterTextureSampler(uri, samp);
+	}
+	// GPU-READY payload stash: the conversion is baked at import, so the
+	// cook passthrough-embeds these bytes (RGBA8/BCn payloads never need
+	// a cook-time transcode; a Basis-family KTX2 source still rides the
+	// cook's per-semantic transcode + pink-error fallback).
+	cluster.SetTextureSource(uri, std::move(payload));
 	return h;
 }
 

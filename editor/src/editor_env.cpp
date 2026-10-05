@@ -8,6 +8,7 @@
 
 #include "editor_app.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <sstream>
 
@@ -324,6 +325,62 @@ void EditorApp::DrawWorldPanel() {
 	// collided their ImGui IDs ("Sun color" etc.); DrawEnvPanel now
 	// carries both sun blocks with ##-tagged rows.
 	DrawEnvPanel();
+	// ---- default camera (typed scene-object field) ----
+	// The runtime App spawns at this camera (pose + lens) instead of
+	// the generic bounds framing; the editor orbits freely (per-
+	// viewport look-through stays a viewport chip, never persisted).
+	// NOT editor-exclusive: the setting rides the tour's
+	// editorSettings (camera.default), resolves into the cluster
+	// scene at cook and lands in the pak (v10) for the App.
+	{
+		std::vector<uint32_t> cams;
+		if (m_world) {
+			for (const auto& [n, idx] : m_world->scene.cameraForNode)
+				cams.push_back(n);
+			std::sort(cams.begin(), cams.end());
+		}
+		// Dangling selection (camera deleted/detached) reads as none.
+		if (m_defaultCameraNode != UINT32_MAX
+			&& (!m_world
+				|| m_defaultCameraNode
+					>= m_world->scene.hierarchy.size()
+				|| !m_world->scene.cameraForNode.contains(
+					m_defaultCameraNode)))
+			m_defaultCameraNode = UINT32_MAX;
+		const std::string none = "None (generic framing)";
+		std::string cur = (m_defaultCameraNode == UINT32_MAX)
+			? none : getNodeName(m_world->scene,
+				int(m_defaultCameraNode));
+		if (cur.empty())
+			cur = "Camera #" + std::to_string(m_defaultCameraNode);
+		ImGui::SetNextItemWidth(-60.0f);
+		if (ImGui::BeginCombo("Default camera##worlddefcam",
+				cur.c_str())) {
+			if (ImGui::Selectable(none.c_str(),
+					m_defaultCameraNode == UINT32_MAX)) {
+				m_defaultCameraNode = UINT32_MAX;
+				AutosaveTour();
+			}
+			for (uint32_t n : cams) {
+				const bool sel = n == m_defaultCameraNode;
+				std::string label = getNodeName(m_world->scene, int(n));
+				if (label.empty())
+					label = "Camera #" + std::to_string(n);
+				if (ImGui::Selectable(label.c_str(), sel)) {
+					m_defaultCameraNode = n;
+					AutosaveTour();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip(
+				"The camera the cooked App spawns at (pose + lens),\n"
+				"replacing the generic bounds framing. Select from the\n"
+				"scene's camera objects (Create > Camera); not editor-\n"
+				"exclusive — it rides the tour and the pak (v10).");
+		}
+	}
 	// ---- active-viewport orbit camera (moved off the node pages) ----
 	// Free-orbit navigation state lives here on the World page; authored
 	// camera nodes (outliner [camera]) carry their own lens + pose and
@@ -508,6 +565,78 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 	if (!scene.envForNode.empty())
 		Log("tour: restored " + std::to_string(scene.envForNode.size()) +
 			" environment node(s) + editor default IBL.");
+}
+
+void EditorApp::SaveDefaultCameraToDoc(smvk::tour::Doc& doc) const {
+	// Typed scene-object reference field (see tour.h's editorSettings
+	// note): "ref <k>" (the k-th createCamera in the doc — the same
+	// family ref space setCamAttr -ref uses, replay-stable across
+	// imports) or "node <clusterId>" (an imported glTF camera).
+	// Absent when unset/dangling (the world panel's combo keeps the
+	// member valid; the cook warns + drops unresolvable values).
+	if (m_defaultCameraNode == UINT32_MAX || !m_world)
+		return;
+	if (m_defaultCameraNode >= m_world->scene.hierarchy.size()
+		|| !m_world->scene.cameraForNode.contains(m_defaultCameraNode))
+		return; // dangling (deleted/detached camera): save as none
+	const int k = CreatedCameraIndex(m_defaultCameraNode);
+	std::string val;
+	if (k >= 0) {
+		val = "ref " + std::to_string(k);
+	}
+	else {
+		const int cn = WorldToCluster(m_defaultCameraNode);
+		if (cn < 0)
+			return; // neither ref nor node addressable: drop
+		val = "node " + std::to_string(uint32_t(cn));
+	}
+	doc.editorSettings.emplace_back("camera.default", std::move(val));
+}
+
+void EditorApp::LoadDefaultCameraFromDoc(const smvk::tour::Doc& doc) {
+	// Resolve AFTER the command replay (the caller ordering guarantees
+	// it: a "ref k" indexes m_tourCreatedCameraNodes, rebuilt by the
+	// replayed createCamera commands). Dangling values warn and leave
+	// the member at none — never fatal, like the env blocks.
+	m_defaultCameraNode = UINT32_MAX;
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	for (const auto& [key, val] : doc.editorSettings) {
+		if (key != "camera.default" || val.empty())
+			continue;
+		uint32_t target = UINT32_MAX;
+		if (val.rfind("ref ", 0) == 0) {
+			uint32_t k = 0;
+			if (!sscanf(val.c_str() + 4, "%u", &k)
+				|| k >= m_tourCreatedCameraNodes.size()) {
+				Log("tour: camera.default ref out of range: '" + val
+					+ "' (none stands).");
+				continue;
+			}
+			target = m_tourCreatedCameraNodes[k];
+		}
+		else {
+			// "node <clusterId>" (a bare number reads as one too — the
+			// env.n.node convention).
+			const char* num =
+				val.rfind("node ", 0) == 0 ? val.c_str() + 5 : val.c_str();
+			uint32_t cn = 0;
+			if (!sscanf(num, "%u", &cn)) {
+				Log("tour: camera.default unparsable: '" + val
+					+ "' (none stands).");
+				continue;
+			}
+			target = ClusterToWorld(cn);
+		}
+		if (target == UINT32_MAX || target >= scene.hierarchy.size()
+			|| !scene.cameraForNode.contains(target)) {
+			Log("tour: camera.default target does not resolve: '" + val
+				+ "' (none stands).");
+			continue;
+		}
+		m_defaultCameraNode = target;
+	}
 }
 
 } // namespace editor

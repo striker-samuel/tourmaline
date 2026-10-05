@@ -51,7 +51,7 @@ EditorApp::IconType EditorApp::IconTypeFor(const std::string& name,
 		return IconType::Scene;
 	if (ext == ".ktx2" || ext == ".png" || ext == ".jpg"
 		|| ext == ".jpeg" || ext == ".hdr" || ext == ".dds"
-		|| ext == ".tga" || ext == ".bmp")
+		|| ext == ".tga" || ext == ".bmp" || ext == ".texture")
 		return IconType::Texture;
 	if (ext == ".pak")
 		return IconType::Pak;

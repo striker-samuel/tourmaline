@@ -270,6 +270,8 @@ void EditorApp::UpdateModalInput() {
 			"ui: panels on/off", "I" },
 		{ GLFW_KEY_DELETE, 0, kScopeGlobal, &EditorApp::ModalDelete,
 			"delete: selection", "Del" },
+		{ GLFW_KEY_D, kModalCtrl, kScopeGlobal, &EditorApp::ModalDuplicate,
+			"duplicate: selection", "Ctrl+D" },
 		{ GLFW_KEY_H, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalToggleVisibility,
 			"visibility: hide/unhide selection", "Ctrl+H" },
@@ -360,6 +362,16 @@ void EditorApp::ModalDelete() {
 	if (m_imguiFocusInPlacementGraph)
 		return;
 	DeleteSelection();
+}
+
+void EditorApp::ModalDuplicate() {
+	// Ctrl+D / Edit > Duplicate — one handler, one binding (same
+	// contract as Del above: the placement graph window owns Ctrl+D
+	// while its hierarchy is focused, so its own node duplication
+	// stays reachable there without a double action).
+	if (m_imguiFocusInPlacementGraph)
+		return;
+	DuplicateSelection();
 }
 
 void EditorApp::ModalToggleVisibility() {

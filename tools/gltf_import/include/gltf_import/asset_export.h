@@ -99,6 +99,43 @@ struct MaterialAsset {
 	TexRef emissiveTex;
 };
 
+// ---- .texture (the texture asset) -----------------------------------------
+// A user-authored TEXTURE ASSET: an import-settings record + a source
+// image reference (the file format mirrors .material: key=value text).
+// The import settings drive the LDR -> KTX2 conversion (colorspace picks
+// the transfer, format the payload: RGBA8 or a BCn target, mipLevels
+// clamps the generated chain); the sampler rows (filter/wrap) ride the
+// cluster's per-texture sampler registration into the cooked pak. A
+// KTX2 SOURCE pre-decided all of that in its header: those fields read
+// READ-ONLY in the inspector (ProbeTextureSource reports the header
+// facts) and the import passes the payload through verbatim.
+// Identity: the guid rides the file (inline, the .material convention)
+// AND the <file>.meta sidecar (the assetdb's adoption path; the editor
+// writes both at creation, see EditorApp::CreateTextureAsset). Material
+// tex refs may point at a .texture file: the import routes through its
+// settings (its colorspace wins over the ref's srgb flag).
+struct TextureAsset {
+	std::string guid;
+	std::string name;
+	std::string source;     // image file beside the .texture (png/jpg/
+	                        // jpeg/tga/bmp/ktx2; POSIX-relative path)
+	int colorspace = 0;     // 0 = sRGB (color), 1 = linear (data): the
+	                        // FileNode convention; KTX2 sources: read-only
+	int format = 0;         // KtxEncodeFormat value (0 = rgba8); KTX2
+	                        // sources: read-only (the file's payload)
+	int mipLevels = 0;      // 0 = auto (the full chain), N = clamp to N;
+	                        // KTX2 sources: read-only (the file's chain)
+	int wrap = 0;           // 0 = repeat, 1 = clamp-edge, 2 = mirrored
+	                        // repeat (S+T; the FileNode convention)
+	int filter = 0;         // 0 = linear, 1 = nearest (mag+min)
+};
+bool LoadTextureAsset(const std::filesystem::path& path,
+	TextureAsset& out, std::string& err);
+bool LoadTextureAssetText(const std::string& text, TextureAsset& out,
+	std::string& err);
+bool SaveTextureAsset(const std::filesystem::path& path,
+	const TextureAsset& t, std::string& err);
+
 // ---- .mesh (the scene-graph + geometry asset) ----------------------------
 // Everything the world build needs: the hierarchy (RAW locals as the glTF
 // authored them â€” the coordFix basis rides the scene root at load, same
@@ -243,5 +280,25 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 // 0, roughness 0.9). The editor wraps this with its world materialLocations
 // bookkeeping; cooks call it directly when a tour carries the seed record.
 smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster);
+
+// ---- shared texture-asset import (editor + cook) --------------------------
+// The SINGLE import path for .texture assets (a .texture + its source image
+// beside it, see TextureAsset): parses the asset, reads the source (KTX2
+// passthrough — the header pre-decided colorspace/format/mips; LDR sources
+// converted honoring the asset's import settings), registers the cluster
+// texture + its sampler (filter/wrap) and stashes the GPU-READY payload
+// bytes (the conversion is baked at import; the cook passthrough-embeds them
+// — RGBA8/BCn payloads never need a cook-time transcode). URI = the POSIX
+// .texture file path (re-imports dedupe through it). Materials reference
+// .texture files through their tex refs — ImportMaterialAssetToCluster
+// routes those here.
+//
+// ctx != nullptr (editor): the texture also GPU-loads through it (the caller
+// refreshes its pool->RHI map afterwards). ctx == nullptr (cook): pool +
+// URI + source registration only; no GPU work.
+// Returns the cluster texture handle (empty + err on failure).
+smvk::TextureHandle ImportTextureAssetToCluster(
+	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
+	smvk::ResourceManager* ctx, std::string& err);
 
 } // namespace smvk::assets

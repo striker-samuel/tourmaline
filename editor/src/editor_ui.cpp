@@ -10,7 +10,9 @@
 #include <cstring>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <unordered_map>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -348,6 +350,14 @@ void EditorApp::DrawMenuBar() {
 				m_world && (m_selected != UINT32_MAX
 					|| !m_selection.empty())))
 			DeleteSelection();
+		// Ctrl+D twin (modal registry 'Ctrl+D'): fresh Creates seeded
+		// from the LIVE state of every selected duplicable node
+		// (lights/cameras/cubemaps/cvolumes/transforms under the same
+		// parent); imports/terrain are refused with a log.
+		if (ImGui::MenuItem("Duplicate selection", "Ctrl+D", false,
+				m_world && (m_selected != UINT32_MAX
+					|| !m_selection.empty())))
+			DuplicateSelection();
 		ImGui::Separator();
 		// Collapse the stack to the current state: superseded per-node /
 		// per-attr edits drop (their LAST occurrence already carries the
@@ -2014,15 +2024,17 @@ void EditorApp::DrawInspector() {
 		DrawMaterialFocusPage();
 		return;
 	}
-	// Browser-selected ASSET page (read-only): a .material/.mesh click
-	// in the asset browser inspects here (view parameters only; edits
-	// happen on scenes — Unity-style).
+	// Browser-selected ASSET page: a .material/.mesh click in the asset
+	// browser inspects here (view parameters only; edits happen on
+	// scenes — Unity-style). A .texture click opens the TEXTURE-ASSET
+	// page: its import settings ARE the authoring (editable for LDR
+	// sources; a KTX2 source pre-decided them — read-only).
 	if (!m_assetsSel.empty()) {
 		std::string e =
 			std::filesystem::path(m_assetsSel).extension().string();
 		for (char& c : e)
 			c = char(std::tolower((unsigned char)c));
-		if (e == ".material" || e == ".mesh") {
+		if (e == ".material" || e == ".mesh" || e == ".texture") {
 			DrawAssetReadonlyPage();
 			return;
 		}
@@ -3729,16 +3741,21 @@ void EditorApp::DrawAssetReadonlyPage() {
 	// derived/cook assets (derived assets regenerate on reimport; cook
 	// assets rebake through the bake execution). The loaded asset caches
 	// per selection (never per frame: .mesh blobs can be megabytes).
-	const bool wantMat = m_assetsSel.size() > 9
+	// EXCEPTION — .texture (user-authored, not derived): its IMPORT
+	// SETTINGS are the authoring, so LDR sources edit them here (a
+	// KTX2 source pre-decided them in its header — read-only rows).
+	const bool wantTex = m_assetsSel.size() > 8
+		&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".texture") == 0;
+	const bool wantMat = !wantTex && m_assetsSel.size() > 9
 		&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".material") == 0;
-	const bool wantMesh = !wantMat && m_assetsSel.size() > 5
+	const bool wantMesh = !wantTex && !wantMat && m_assetsSel.size() > 5
 		&& m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0;
-	const bool wantGi = !wantMat && !wantMesh && m_assetsSel.size() > 7
+	const bool wantGi = !wantTex && !wantMat && !wantMesh && m_assetsSel.size() > 7
 		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".gicook") == 0;
-	const bool wantLm = !wantMat && !wantMesh && !wantGi
+	const bool wantLm = !wantTex && !wantMat && !wantMesh && !wantGi
 		&& m_assetsSel.size() > 7
 		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".lmcook") == 0;
-	if (!wantMat && !wantMesh && !wantGi && !wantLm)
+	if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm)
 		return;
 	// Cache refresh on selection change (or a failed load retries never:
 	// a re-derive/re-bake + re-click reloads).
@@ -3748,8 +3765,36 @@ void EditorApp::DrawAssetReadonlyPage() {
 		m_assetInspectMesh.reset();
 		m_assetInspectGiCook.reset();
 		m_assetInspectLmCook.reset();
+		m_assetInspectTex.reset();
+		m_assetInspectTexInfoOk = false;
 		std::string err;
-		if (wantMat) {
+		if (wantTex) {
+			m_assetInspectTex.emplace();
+			if (!smvk::assets::LoadTextureAsset(m_assetsSel,
+					*m_assetInspectTex, err)) {
+				Log("Assets: texture inspect failed: " + err);
+				m_assetInspectTex.reset();
+			}
+			else {
+				// Probe the SOURCE (beside the .texture): the read-only
+				// header facts for KTX2, the dims for LDR.
+				std::ifstream in(std::filesystem::path(m_assetsSel)
+					.parent_path() / m_assetInspectTex->source,
+					std::ios::binary);
+				if (in) {
+					std::vector<uint8_t> bytes(
+						(std::istreambuf_iterator<char>(in)),
+						std::istreambuf_iterator<char>());
+					m_assetInspectTexInfoOk = ProbeTextureSource(
+						bytes.data(), bytes.size(),
+						m_assetInspectTexInfo);
+				}
+				if (!m_assetInspectTexInfoOk)
+					Log("Assets: texture source not probeable: "
+						+ m_assetInspectTex->source);
+			}
+		}
+		else if (wantMat) {
 			m_assetInspectMat.emplace();
 			if (!smvk::assets::LoadMaterialAsset(m_assetsSel,
 					*m_assetInspectMat, err)) {
@@ -3781,6 +3826,122 @@ void EditorApp::DrawAssetReadonlyPage() {
 				m_assetInspectLmCook.reset();
 			}
 		}
+	}
+	// TEXTURE ASSET page: user-authored import settings (the authoring
+	// surface, not read-only). KTX2 sources show the header-decided rows
+	// READ-ONLY; LDR sources edit them (saved into the .texture; applied
+	// at the next import/cook — materials referencing this asset pick the
+	// settings up through ImportTextureAssetToCluster).
+	if (m_assetInspectTex) {
+		smvk::assets::TextureAsset& t = *m_assetInspectTex;
+		const TextureSourceInfo& info = m_assetInspectTexInfo;
+		const bool infoOk = m_assetInspectTexInfoOk;
+		ImGui::Text("Texture asset: '%s'",
+			t.name.empty()
+				? std::filesystem::path(m_assetsSel).stem().string().c_str()
+				: t.name.c_str());
+		ImGui::TextDisabled("guid %s", t.guid.c_str());
+		ImGui::TextDisabled("source %s (%s)", t.source.c_str(),
+			infoOk ? (info.isKtx2 ? "KTX2" : "LDR image") : "not probeable");
+		if (infoOk)
+			ImGui::TextDisabled("%ux%u%s", info.width, info.height,
+				info.isKtx2 ? "" : (info.components
+					? (info.components == 4 ? " RGBA" : " RGB") : ""));
+		ImGui::Separator();
+		if (infoOk && info.isKtx2) {
+			// The .ktx2 pre-decided these in its header — read-only rows.
+			ImGui::TextDisabled("colorSpace: %s (from the .ktx2 header)",
+				info.srgb ? "sRGB" : "linear");
+			ImGui::TextDisabled("format: %s (vkFormat %u)",
+				info.bcn ? "BCn block-compressed"
+				: (info.vkFormat == 37 ? "rgba8"
+					: (info.vkFormat == 43 ? "rgba8 sRGB" : "other")),
+				info.vkFormat);
+			if (info.basis)
+				ImGui::TextDisabled("payload: Basis-family (the cook "
+					"transcodes to per-semantic BCn)");
+			ImGui::TextDisabled("mip levels: %u (the .ktx2 chain)",
+				info.mipLevels);
+			ImGui::Separator();
+			ImGui::TextWrapped("The KTX2 source carries its own encoding: "
+				"colorSpace, format and mip levels are read-only. The "
+				"sampler rows still apply.");
+		}
+		else {
+			// LDR source: the import settings ARE the authoring (the
+			// sampler rows below are shared with KTX2 sources).
+			bool changed = false;
+			{
+				const char* items[] = { "sRGB (color)", "linear (data)" };
+				int cs = t.colorspace == 1 ? 1 : 0;
+				ImGui::SetNextItemWidth(-1.0f);
+				if (ImGui::Combo("colorSpace##texasset", &cs, items, 2)) {
+					t.colorspace = cs;
+					changed = true;
+				}
+			}
+			{
+				const char* items[] = { "rgba8 (uncompressed)", "bc1 (RGB)",
+					"bc3 (RGBA)", "bc4 (R)", "bc5 (RG)", "bc7 (RGBA hq)" };
+				int fmt = std::clamp(t.format, 0, 5);
+				ImGui::SetNextItemWidth(-1.0f);
+				if (ImGui::Combo("format##texasset", &fmt, items, 6)) {
+					t.format = fmt;
+					changed = true;
+				}
+			}
+			{
+				int mips = t.mipLevels;
+				ImGui::SetNextItemWidth(-1.0f);
+				if (ImGui::InputInt("mip levels (0 = auto)##texasset",
+						&mips, 1, 1)) {
+					t.mipLevels = std::clamp(mips, 0, 32);
+					changed = true;
+				}
+			}
+			if (changed) {
+				std::string serr;
+				if (smvk::assets::SaveTextureAsset(m_assetsSel, t, serr))
+					Log("Texture asset saved: "
+						+ std::filesystem::path(m_assetsSel)
+							.filename().string()
+						+ " (applies at the next import/cook).");
+				else
+					Log("Texture asset save failed: " + serr);
+			}
+		}
+		// Sampler rows apply to BOTH source kinds (never baked into a
+		// KTX2 payload; they ride the pak's per-texture sampler record).
+		{
+			const char* items[] = { "linear", "nearest" };
+			int f = t.filter != 0 ? 1 : 0;
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::Combo("filter##texassetsmp", &f, items, 2)) {
+				t.filter = f;
+				std::string serr;
+				if (smvk::assets::SaveTextureAsset(m_assetsSel, t, serr))
+					Log("Texture asset saved: "
+						+ std::filesystem::path(m_assetsSel)
+							.filename().string() + " (sampler).");
+			}
+			const char* wraps[] = { "repeat", "clamp", "mirror" };
+			int w = std::clamp(t.wrap, 0, 2);
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::Combo("wrap##texassetsmp", &w, wraps, 3)) {
+				t.wrap = w;
+				std::string serr;
+				if (smvk::assets::SaveTextureAsset(m_assetsSel, t, serr))
+					Log("Texture asset saved: "
+						+ std::filesystem::path(m_assetsSel)
+							.filename().string() + " (sampler).");
+			}
+		}
+		ImGui::Separator();
+		ImGui::TextWrapped("Materials reference this asset by file name: "
+			"tex.baseColor=<name>.texture in a .material (the import "
+			"routes through these settings). The cook embeds the "
+			"converted payload as KTX2 in the pak.");
+		return;
 	}
 	ImGui::TextDisabled("Asset (read-only) - edits happen on scenes");
 	ImGui::Separator();
@@ -4115,6 +4276,13 @@ void EditorApp::DrawAssetsPanel() {
 		if (ImGui::MenuItem("Lightmap Cook Asset")) {
 			CreateCookAsset(false, m_assetsDir);
 		}
+		// Texture asset (from a picked source image): the .texture
+		// import-settings record + identity (see CreateTextureAsset).
+		if (ImGui::MenuItem("Texture (from image)...")) {
+			std::string picked;
+			if (NativeOpenFile(picked, true) && !picked.empty())
+				CreateTextureAsset(picked, m_assetsDir);
+		}
 		ImGui::EndPopup();
 	}
 	if (m_assetDb.IsOpen()) {
@@ -4194,6 +4362,11 @@ void EditorApp::DrawAssetsPanel() {
 			CreateCookAsset(true, m_assetsDir);
 		if (ImGui::MenuItem("New Lightmap Cook Asset"))
 			CreateCookAsset(false, m_assetsDir);
+		if (ImGui::MenuItem("New Texture (from image)...")) {
+			std::string picked;
+			if (NativeOpenFile(picked, true) && !picked.empty())
+				CreateTextureAsset(picked, m_assetsDir);
+		}
 		ImGui::EndPopup();
 	}
 	// Registered GUID map (assets.db) for badges + tooltips. The rows

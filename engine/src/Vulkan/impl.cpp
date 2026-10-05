@@ -6373,19 +6373,23 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 	// a full synchronous transcode (tens to ~150 ms for 2-4K textures) —
 	// the exact hitch this pipeline is built to never have. The v4 cook
 	// contract guarantees GPU-ready BCn payloads (see CookTexturePayload:
-	// per-semantic BCn pre-transcode at cook); a payload that still needs
-	// transcoding means a stale/foreign pak — refuse loudly and abort (no
-	// recovery path, by design). Recook the pak.
+	// per-semantic BCn pre-transcode at cook, pink error texture on
+	// failure); a payload that still needs transcoding means a stale/
+	// foreign pak. Refuse loudly and FAIL — no silent synchronous
+	// transcode, ever. The TextureStreamer PRE-CHECKS this condition and
+	// swaps in the pink error texture instead (never fatal there); this
+	// throw is the direct-caller defense (the streamer's catch path logs
+	// and skips it). Recook the pak.
 	if (ktxTexture2_NeedsTranscoding(&texture))
 	{
-		std::fprintf(stderr,
-			"[TexStream] retarget refused: '%s' carries a Basis-family payload "
-			"(a synchronous transcode on the render thread would follow). "
-			"Streaming paks must embed GPU-ready BCn textures — recook the pak "
-			"and retry. Aborting.\n",
+		char msg[512];
+		std::snprintf(msg, sizeof(msg),
+			"[TexStream] retarget refused: '%s' carries a Basis-family "
+			"payload (a synchronous transcode on the render thread would "
+			"follow). Streaming paks must embed GPU-ready BCn textures — "
+			"recook the pak and retry.",
 			debugName ? debugName : "<unnamed>");
-		std::fflush(stderr);
-		std::abort();
+		throw std::runtime_error(msg);
 	}
 	Texture* rec = textures_.get(handle);
 	if (!rec)

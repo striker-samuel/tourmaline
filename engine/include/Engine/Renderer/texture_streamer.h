@@ -213,6 +213,13 @@ private:
 		uint32_t lastRequestFrame = 0;
 		uint32_t lastChangeFrame = 0;
 		bool everRequested = false;
+		// Sticky error flag: this entry's payload was refused at a
+		// retarget (a Basis-family payload in a streaming pak — the v4
+		// cook contract violation) and its backing image was swapped to
+		// the solid-pink error texture. Pinned entries never retarget
+		// again (one pink swap per entry per run — the fix is recooking
+		// the pak, not re-decoding the same broken payload).
+		bool errorPinned = false;
 	};
 
 	static uint64_t EntryKey(TextureHandle h) {

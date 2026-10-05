@@ -3318,7 +3318,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// settles first; node ids are cluster-space (dangling blocks warn +
 	// drop, never fatal — same discipline as the command replay above).
 	// NOTE: the only editorSettings keys the cook reads — everything else
-	// in that section stays cook-ignored by contract.
+	// in that section stays cook-ignored by contract (camera.default
+	// below is the second exception).
 	{
 		TourEnvBlocks eb = ParseTourEnvBlocks(doc);
 		if (eb.hasBlocks) {
@@ -3344,6 +3345,51 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.hasEnvironment = true;
 			scene.defaultEnvironment = eb.def;
 			scene.envForNode = std::move(table);
+		}
+	}
+	// DEFAULT CAMERA (tour camera.default -> cluster scene): the typed
+	// scene-object reference field (see tour.h's editorSettings note).
+	// Resolves AFTER command replay (a "ref k" points into the replayed
+	// createdCameras set) + env blocks, into the pak's
+	// Scene::defaultCameraNode for the runtime App's spawn framing.
+	// Dangling refs warn + drop (never fatal — the same discipline as the
+	// env blocks); a target that lost its camera link warns + drops too.
+	{
+		for (const auto& [key, val] : doc.editorSettings) {
+			if (key != "camera.default" || val.empty())
+				continue;
+			const bool isRef = val.rfind("ref ", 0) == 0;
+			uint32_t target = UINT32_MAX;
+			if (isRef) {
+				uint32_t k = 0;
+				if (!ParseU32(val.substr(4), k)
+					|| k >= createdCameras.size()) {
+					warn("tour: camera.default ref out of range: '" + val
+						+ "' (dropped — generic framing stands)");
+					continue;
+				}
+				target = createdCameras[k];
+			}
+			else {
+				// "node <clusterId>" (a bare number reads as one too —
+				// lenient, the env.n.node convention).
+				const std::string num =
+					val.rfind("node ", 0) == 0 ? val.substr(5) : val;
+				uint32_t n = 0;
+				if (!ParseU32(num, n) || n >= scene.hierarchy.size()) {
+					warn("tour: camera.default node out of range: '" + val
+						+ "' (dropped — generic framing stands)");
+					continue;
+				}
+				target = n;
+			}
+			if (scene.cameraForNode.find(target)
+				== scene.cameraForNode.end()) {
+				warn("tour: camera.default target #" +
+					std::to_string(target) + " carries no camera (dropped)");
+				continue;
+			}
+			scene.defaultCameraNode = target;
 		}
 	}
 	return true;

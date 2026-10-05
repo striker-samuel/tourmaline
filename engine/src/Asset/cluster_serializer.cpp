@@ -17,6 +17,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/texture_streamer.h>
+#include <Engine/Utils/ktx_error_texture.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Utils/thread_pool.h>
 
@@ -142,7 +143,7 @@ ktx_transcode_fmt_e CookBcnTarget(const std::vector<uint8_t>& src,
 	return SourceAlphaAllOpaque(src) ? KTX_TTF_BC1_RGB : KTX_TTF_BC3_RGBA;
 }
 
-TexCookResult CookTexturePayload(const TexCookJob& job) {
+	TexCookResult CookTexturePayload(const TexCookJob& job) {
 	TexCookResult r;
 	r.uri = job.uri;
 	r.filePart = job.filePart;
@@ -156,14 +157,20 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
 	// pak.h's ParseTexturePayload note: "the embedded ktx is always
 	// GPU-ready (transcoded at cook)") — the runtime's retarget path
 	// (LOD/texture promotion) never pays a synchronous transcode on the
-	// render thread, and first load skips it too. NO transcode failure is
-	// fatal: the raw payload stays embedded and the runtime's
-	// transcode-if-needed path handles it, as before.
+	// render thread, and first load skips it too. Transcode/write-back
+	// failure embeds the solid-pink ERROR TEXTURE (structure-mirrored,
+	// GPU-ready — WritePinkKtx2Blob) instead of the raw Basis bytes: a
+	// streaming pak must never ship a Basis payload (the runtime retarget
+	// REFUSES those — pink + pinned, never a hitch and never fatal). The
+	// pink surface is the visible "this texture failed to cook" flag;
+	// recook with a fixed source. Only a pink-mint failure falls all the
+	// way back to the raw embed (the runtime's pink refusal catches it).
 	TextureStreamMeta meta{};
 	std::vector<uint8_t> digestBytes;
 	bool haveDigest = false;
-	// Cooked BCn bytes (when the source is Basis-family): must outlive the
-	// r.blob build below, so it lives here — embedBytes points into it.
+	// Cooked GPU-ready bytes (transcoded BCn or the pink error texture):
+	// must outlive the r.blob build below, so it lives here — embedBytes
+	// points into it.
 	std::vector<uint8_t> cooked;
 	const uint8_t* embedBytes = src.data();
 	size_t embedSize = src.size();
@@ -187,8 +194,18 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
 			const ktx_transcode_fmt_e target = CookBcnTarget(src, comps, srgb);
 			if (ktxTexture2_TranscodeBasis(ktxTex, target, 0) != KTX_SUCCESS) {
 				std::fprintf(stderr,
-					"[cook] texture '%s': BCn transcode failed, embedding raw (runtime will transcode)\n",
-					job.uri.c_str());
+					"[cook] texture '%s': BCn transcode failed (%u comps%s, vkFormat %u) — embedding the pink error texture (recook with a fixed source)\n",
+					job.uri.c_str(), comps, srgb ? " sRGB" : "", ktxTex->vkFormat);
+				if (!WritePinkKtx2Blob(*ktxTex, cooked)) {
+					std::fprintf(stderr,
+						"[cook] texture '%s': pink error mint ALSO failed — embedding raw (the runtime retarget will refuse it and pink-pin the entry)\n",
+						job.uri.c_str());
+				}
+				else {
+					embedBytes = cooked.data();
+					embedSize = cooked.size();
+					r.srcBytes = cooked.size();
+				}
 			}
 			else {
 				ktx_uint8_t* out = nullptr;
@@ -209,8 +226,18 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
 				else {
 					free(out); // defensive: partial allocation
 					std::fprintf(stderr,
-						"[cook] texture '%s': BCn write-back failed, embedding raw\n",
+						"[cook] texture '%s': BCn write-back failed — embedding the pink error texture (recook with a fixed source)\n",
 						job.uri.c_str());
+					if (!WritePinkKtx2Blob(*ktxTex, cooked)) {
+						std::fprintf(stderr,
+							"[cook] texture '%s': pink error mint ALSO failed — embedding raw (the runtime retarget will refuse it and pink-pin the entry)\n",
+							job.uri.c_str());
+					}
+					else {
+						embedBytes = cooked.data();
+						embedSize = cooked.size();
+						r.srcBytes = cooked.size();
+					}
 				}
 			}
 		}
@@ -950,6 +977,15 @@ bool SerializeClusters(
 				PutSceneEnv(blob, env);
 			}
 		}
+		// Default camera (v10; v9 blobs end after the env section): the
+		// authored camera node the runtime App spawns at (world settings'
+		// typed camera.default field — see Scene::defaultCameraNode).
+		// One u32 node id (UINT32_MAX = none). Always written so the
+		// layout is uniform; old readers fail the trailing-bytes check
+		// on v10 blobs (the sanctioned break — no conversions).
+		{
+			PutU32(blob, scene.defaultCameraNode);
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1260,6 +1296,18 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			scene.hasEnvironment = envFlag != 0;
 			scene.defaultEnvironment = def;
 			scene.envForNode = std::move(table);
+		}
+		// Default camera (v10): the authored camera node the runtime App
+		// spawns at (see the writer above). v9 blobs end after the env
+		// section — defaultCameraNode stays UINT32_MAX (no default).
+		if (c.off < c.img.size()) {
+			scene.defaultCameraNode = c.u32();
+			if (!c.ok)
+				return fail("truncated scene default camera section");
+			if (scene.defaultCameraNode >= nodeCount) {
+				// Dangling target (foreign/hand-edited blob): none.
+				scene.defaultCameraNode = UINT32_MAX;
+			}
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

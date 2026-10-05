@@ -1,6 +1,7 @@
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Utils/ktx_error_texture.h>
 
 #include <algorithm>
 #include <chrono>
@@ -357,6 +358,55 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 	KtxGuard guard(ktxTex);
 	const auto traceT1 = std::chrono::steady_clock::now();
 
+	// Render-thread transcode REFUSAL (the v4 cook contract: streaming
+	// paks embed GPU-ready BCn). A Basis-family payload here would pay a
+	// full synchronous transcode on the render thread (tens to ~150 ms
+	// for 2-4K textures) — the exact hitch this pipeline is built to
+	// never have. Refuse loudly and swap the entry's backing to the
+	// solid-pink error texture (structure-mirrored, so the handle/view/
+	// bindless slot all keep working) instead of aborting the process:
+	// the error is REPORTED and the pink surface is the visible "recook
+	// the pak" flag; the entry is pinned (errorPinned) so demand never
+	// re-attempts the same broken payload. Unreachable for freshly
+	// cooked paks (the cook pink-embeds failed transcodes).
+	if (ktxTexture2_NeedsTranscoding(ktxTex))
+	{
+		std::fprintf(stderr,
+			"[TexStream] retarget refused: '%s' carries a Basis-family payload "
+			"(a synchronous transcode on the render thread would follow). "
+			"Streaming paks must embed GPU-ready BCn textures — recook the pak "
+			"and retry. Swapping in the pink error texture (entry pinned).\n",
+			e.name.c_str());
+		std::fflush(stderr);
+		ktxTexture2* pink = smvk::CreatePinkKtx2(*ktxTex);
+		if (!pink)
+		{
+			std::fprintf(stderr,
+				"[TexStream] pink error texture mint failed for '%s' "
+				"(skipping the retarget; residency stands).\n",
+				e.name.c_str());
+			return false;
+		}
+		KtxGuard pinkGuard(pink);
+		try
+		{
+			ctx_.RetargetStreamingTexture(e.handle, *pink, newBase,
+				e.fullMips - newBase, e.name.c_str());
+		}
+		catch (const std::exception& ex)
+		{
+			std::fprintf(stderr,
+				"[TexStream] pink error swap failed for '%s': %s "
+				"(skipping the retarget; residency stands).\n",
+				e.name.c_str(), ex.what());
+			return false;
+		}
+		e.errorPinned = true;
+		e.residentBase = newBase;
+		e.lastChangeFrame = frameIndex;
+		return true;
+	}
+
 	try
 	{
 		SMVK_PROFILE_STREAM("TexStreamer_RetargetUpload");
@@ -401,10 +451,13 @@ void TextureStreamer::Update(uint32_t frameIndex)
 	SMVK_PROFILE_STREAM("TexStreamer_Update");
 	SMVK_PROFILE_TAG("entries", entries_.size());
 	// 1. Decay demand for textures nobody asked for recently. Without this
-	//    the first close-up would pin full res forever.
+	//    the first close-up would pin full res forever. Pinned (pink error)
+	//    entries stay inert: their demand never moves again.
 	for (auto& [key, e] : entries_)
 	{
 		(void)key;
+		if (e.errorPinned)
+			continue;
 		const bool stale = !e.everRequested ||
 			(frameIndex - e.lastRequestFrame) > config_.evictCooldownFrames;
 		if (stale)
@@ -412,12 +465,15 @@ void TextureStreamer::Update(uint32_t frameIndex)
 	}
 
 	// 2. Upgrades: demand is sharper than residency. Biggest deficit first
-	//    (pops in where it matters most), cheapest first on ties.
+	//    (pops in where it matters most), cheapest first on ties. Pinned
+	//    (pink error) entries never re-attempt their broken payload.
 	struct Candidate { Entry* e; uint32_t deficit; };
 	std::vector<Candidate> upgrades;
 	for (auto& [key, e] : entries_)
 	{
 		(void)key;
+		if (e.errorPinned)
+			continue; // pink error entry: demand is final
 		if (e.desiredBase < e.residentBase)
 			upgrades.push_back({ &e, e.residentBase - e.desiredBase });
 	}
@@ -475,6 +531,8 @@ void TextureStreamer::Update(uint32_t frameIndex)
 		for (auto& [key, e] : entries_)
 		{
 			(void)key;
+			if (e.errorPinned)
+				continue; // pink error entry: never retargeted again
 			if (e.residentBase < maxBaseFor(e.fullMips) &&
 				e.desiredBase > e.residentBase)
 				cands.push_back(&e);

@@ -6,6 +6,7 @@
 // PASS/FAIL, the process exits nonzero on any failure.
 
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,6 +18,9 @@
 #include <Engine/Scene/scene.h>
 
 #include <gltf_import/gltf.h>
+#include <gltf_import/asset_export.h>
+
+#include <ktx.h>
 
 namespace {
 
@@ -2128,6 +2132,137 @@ void TestMaterialAssets() {
 	Check(!warns.empty(), "materialasset missing path warns");
 }
 
+// ---- .texture assets (import settings + source ref) -----------------------
+// Text round-trip + the LDR -> KTX2 conversion with the settings baked
+// (BCn payload, clamped chain) + the source probes (read-only inspector
+// facts). The LDR source is a hand-rolled 16x16 TGA (no fixture files).
+void TestTextureAssets() {
+	smvk::assets::TextureAsset t{};
+	t.guid = "3f3458f33359f0a4822a6ad788d7c3a0";
+	t.name = "brick";
+	t.source = "brick.png";
+	t.colorspace = 1; // linear (data map)
+	t.format = int(KtxEncodeFormat::Bc5);
+	t.mipLevels = 3;
+	t.wrap = 1;      // clamp
+	t.filter = 1;    // nearest
+	std::string err;
+	const std::string text =
+		"# test\n"
+		"guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
+		"name=brick\n"
+		"source=brick.png\n"
+		"colorspace=linear\n"
+		"format=bc5\n"
+		"mipLevels=3\n"
+		"wrap=clamp\n"
+		"filter=nearest\n";
+	smvk::assets::TextureAsset back{};
+	Check(smvk::assets::LoadTextureAssetText(text, back, err),
+		"textureasset parse");
+	Check(back.guid == t.guid && back.source == t.source
+		&& back.colorspace == t.colorspace && back.format == t.format
+		&& back.mipLevels == t.mipLevels && back.wrap == t.wrap
+		&& back.filter == t.filter,
+		"textureasset fields round-trip");
+	Check(!smvk::assets::LoadTextureAssetText(
+			"guid=x\nsource=a.png\nformat=bc2\n", back, err),
+		"textureasset unknown format fails");
+	Check(!smvk::assets::LoadTextureAssetText(
+			"guid=x\n", back, err),
+		"textureasset missing source fails");
+	{
+		const std::filesystem::path p =
+			std::filesystem::temp_directory_path()
+			/ "vulkantoy_test.texture";
+		Check(smvk::assets::SaveTextureAsset(p, t, err),
+			"textureasset save");
+		smvk::assets::TextureAsset f{};
+		Check(smvk::assets::LoadTextureAsset(p, f, err)
+			&& f.format == int(KtxEncodeFormat::Bc5) && f.mipLevels == 3
+			&& f.wrap == 1 && f.filter == 1 && f.colorspace == 1,
+			"textureasset file round-trip");
+	}
+	{
+		KtxEncodeFormat f = KtxEncodeFormat::Rgba8;
+		Check(KtxEncodeFormatFromName("bc7", f)
+			&& f == KtxEncodeFormat::Bc7 && KtxEncodeFormatIsBcn(f)
+			&& !KtxEncodeFormatIsBcn(KtxEncodeFormat::Rgba8),
+			"ktxencodeformat name round-trip");
+		Check(KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, true) == 146
+			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc7, false) == 145
+			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Bc3, true) == 138
+			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, false) == 37
+			&& KtxEncodeFormatVkFormat(KtxEncodeFormat::Rgba8, true) == 43,
+			"ktxencodeformat vkformats");
+	}
+	// LDR -> KTX2 with the settings baked: BC7 sRGB, chain clamped to 3
+	// (a 16x16 full chain is 5 levels). The hand-rolled TGA is an
+	// uncompressed 32-bit top-left raster (no CRC/container to fake).
+	{
+		std::vector<uint8_t> tga;
+		const uint16_t w = 16, h = 16;
+		auto put8 = [&](uint8_t v) { tga.push_back(v); };
+		auto put16 = [&](uint16_t v) {
+			put8(uint8_t(v & 0xFF));
+			put8(uint8_t(v >> 8));
+		};
+		put8(0); put8(0); put8(2); // id, no colormap, uncompressed truecolor
+		put16(0); put16(0); put8(0);
+		put16(0); put16(0); // origin
+		put16(w); put16(h);
+		put8(32);          // 32 bpp (BGRA)
+		put8(0x28);         // 8 alpha bits + top-left origin
+		for (uint32_t i = 0; i < uint32_t(w) * h; ++i) {
+			put8(uint8_t((i * 7) & 0xFF));
+			put8(uint8_t((i * 13) & 0xFF));
+			put8(uint8_t((i * 29) & 0xFF));
+			put8(255);
+		}
+		TextureSourceInfo info{};
+		Check(ProbeTextureSource(tga.data(), tga.size(), info)
+			&& !info.isKtx2 && info.width == 16 && info.height == 16,
+			"textureasset probe ldr tga");
+		std::vector<uint8_t> ktx;
+		std::string terr;
+		Check(TranscodeImageToKtx2(tga.data(), tga.size(), true, "test",
+				ktx, terr, KtxEncodeFormat::Bc7, 3),
+			"textureasset transcode bc7");
+		ktxTexture2* tex = nullptr;
+		const bool parsed = ktxTexture2_CreateFromMemory(
+			ktx.data(), ktx_size_t(ktx.size()),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &tex) == KTX_SUCCESS;
+		Check(parsed && tex, "textureasset transcode output parses");
+		if (parsed && tex) {
+			Check(tex->vkFormat == 146, "textureasset bc7 srgb vkformat");
+			Check(tex->numLevels == 3, "textureasset chain clamped to 3");
+			Check(ktxTexture2_NeedsTranscoding(tex) == KTX_FALSE,
+				"textureasset payload gpu-ready (no transcode)");
+			ktxTexture2_Destroy(tex);
+		}
+		else if (tex)
+			ktxTexture2_Destroy(tex);
+		TextureSourceInfo kInfo{};
+		Check(ProbeTextureSource(ktx.data(), ktx.size(), kInfo)
+			&& kInfo.isKtx2 && kInfo.width == 16 && kInfo.height == 16
+			&& kInfo.mipLevels == 3 && kInfo.vkFormat == 146
+			&& kInfo.srgb && kInfo.bcn && !kInfo.basis,
+			"textureasset probe ktx2 header facts");
+		// Uncompressed default (no clamp): full chain, RGBA8 sRGB.
+		{
+			std::vector<uint8_t> rgba;
+			Check(TranscodeImageToKtx2(tga.data(), tga.size(), true,
+					"test", rgba, terr),
+				"textureasset transcode rgba8");
+			TextureSourceInfo rInfo{};
+			Check(ProbeTextureSource(rgba.data(), rgba.size(), rInfo)
+				&& rInfo.isKtx2 && rInfo.vkFormat == 43
+				&& rInfo.mipLevels == 5 && !rInfo.bcn && !rInfo.basis,
+				"textureasset rgba8 full chain");
+		}
+	}
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -2150,6 +2285,7 @@ int main() {
 	TestReferenceGuid();
 	TestCreateNode();
 	TestMaterialAssets();
+	TestTextureAssets();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

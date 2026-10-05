@@ -424,7 +424,22 @@ struct Doc {
 	// Editor-only settings (editorSet lines): viewport/env authoring state
 	// the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
 	// — the cook silently ignores this whole section (editor IBL and
-	// friends must not leak into paks).
+	// friends must not leak into paks). The ONLY exception: the env
+	// blocks (env.default.* / env.n.* / env.current — resolved into the
+	// cluster scene by ApplyTourToCluster) and the TYPED scene-object
+	// reference fields below — both are world settings the runtime App
+	// consumes through the cooked pak, not editor view state.
+	//
+	// TYPED SCENE-OBJECT REFERENCE FIELD (the reusable pattern): the key
+	// names the object family, the value is a replay-stable address in
+	// the family's own addressing grammar. camera.default is the first
+	// field: "ref <k>" (the k-th CreateCamera in the doc — the same
+	// family ref space setCamAttr -ref uses) or "node <clusterId>" (a
+	// cluster-backed camera, e.g. an imported glTF camera). Resolved at
+	// cook (ApplyTourToCluster -> Scene::defaultCameraNode, validated
+	// against the replayed scene, dangling refs warn + drop like env
+	// blocks) and at editor replay (the live world node id). Future
+	// typed fields (light.default, ...) reuse this grammar.
 	std::vector<std::pair<std::string, std::string>> editorSettings;
 	TourCook cook;
 	bool hasCook = false;
