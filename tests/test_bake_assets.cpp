@@ -53,84 +53,6 @@ std::string TempDir() {
 	return dir.generic_string();
 }
 
-void TestSidecarRoundTrip() {
-	namespace fs = std::filesystem;
-	const std::string dir = TempDir() + "/sidecar";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	const std::string file = dir + "/abc123.sglm";
-	{
-		std::ofstream f(file, std::ios::binary | std::ios::trunc);
-		f << "payload";
-	}
-	std::string err;
-	const std::string guid = "0123456789abcdef0123456789abcdef";
-	Check(smvk::bake::WriteBakeAssetSidecar(file, guid,
-			smvk::bake::kBakeAssetKindGi, "lightmap:test", err),
-		"bake.sidecar.write");
-	smvk::bake::BakeAssetSidecar side;
-	Check(smvk::bake::ReadBakeAssetSidecar(file, side, err)
-		&& side.guid == guid && side.kind == "gi"
-		&& side.logical == "lightmap:test", "bake.sidecar.read");
-	Check(smvk::bake::PayloadBakeGuid(file) == guid,
-		"bake.sidecar.payload-guid");
-	// Missing sidecar reads absent; garbage guid reads invalid.
-	smvk::bake::BakeAssetSidecar missing;
-	Check(!smvk::bake::ReadBakeAssetSidecar(dir + "/nope.sglm",
-			missing, err), "bake.sidecar.missing");
-	{
-		std::ofstream f(file + ".meta",
-			std::ios::binary | std::ios::trunc);
-		f << "guid=not-a-guid\nkind=gi\n";
-	}
-	smvk::bake::BakeAssetSidecar bad;
-	Check(!smvk::bake::ReadBakeAssetSidecar(file, bad, err),
-		"bake.sidecar.invalid-guid");
-	Check(!smvk::bake::IsBakeAssetGuid("XYZ")
-		&& smvk::bake::IsBakeAssetGuid(guid)
-		&& !smvk::bake::IsBakeAssetGuid(
-			"0123456789ABCDEF0123456789ABCDEF"),
-		"bake.guid.valid");
-	fs::remove_all(dir, ec);
-}
-
-void TestEnsureGuid() {
-	namespace fs = std::filesystem;
-	const std::string dir = TempDir() + "/ensure";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	std::string err;
-	// First bake mints.
-	const std::string g1 = smvk::bake::EnsureBakeAssetGuid(dir, "gi",
-		"lightmap:test", err);
-	Check(!g1.empty() && smvk::bake::IsBakeAssetGuid(g1),
-		"bake.ensure.mint");
-	{
-		std::ofstream f(dir + "/" + g1 + ".sglm",
-			std::ios::binary | std::ios::trunc);
-		f << "payload";
-	}
-	Check(smvk::bake::WriteBakeAssetSidecar(dir + "/" + g1 + ".sglm",
-			g1, "gi", "lightmap:test", err),
-		"bake.ensure.sidecar");
-	// Rebake reuses by (kind, logical).
-	const std::string g2 = smvk::bake::EnsureBakeAssetGuid(dir, "gi",
-		"lightmap:test", err);
-	Check(g2 == g1, "bake.ensure.reuse");
-	// A different logical mints independently.
-	const std::string g3 = smvk::bake::EnsureBakeAssetGuid(dir, "gi",
-		"probe:test", err);
-	Check(!g3.empty() && g3 != g1, "bake.ensure.logical-distinct");
-	// Rename heals: move payload + sidecar, the scan still matches.
-	fs::rename(dir + "/" + g1 + ".sglm", dir + "/moved.sglm", ec);
-	fs::rename(dir + "/" + g1 + ".sglm.meta",
-		dir + "/moved.sglm.meta", ec);
-	const std::string g4 = smvk::bake::EnsureBakeAssetGuid(dir, "gi",
-		"lightmap:test", err);
-	Check(g4 == g1, "bake.ensure.rename-heals");
-	fs::remove_all(dir, ec);
-}
-
 void TestSplitManifestRow() {
 	using smvk::bake::SplitManifestRow;
 	Check(SplitManifestRow("gi/abc.sgrv")
@@ -326,8 +248,6 @@ void TestCookAssetRejects() {
 }
 
 int main() {
-	TestSidecarRoundTrip();
-	TestEnsureGuid();
 	TestSplitManifestRow();
 	TestCubemanifestGuid();
 	TestGiCookRoundTrip();

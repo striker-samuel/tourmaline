@@ -3851,9 +3851,9 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	// Named GI sidecars (Cluster::giBindings across the loaded clusters).
 	// Model supports N bindings; exactly one per kind is honored for now
 	// (first wins + warn). Empty outcome = registry-less pak: callers
-	// fall back to the scene id. Since the bake-asset migration the
-	// names are bake GUIDs (see Engine/Asset/bake_asset.h); legacy paks
-	// record human stems — both resolve through the same VFS paths.
+	// fall back to the scene id. The names are STABLE bake stems (the
+	// gi/<stem>.<ext> files GiBaker writes — like mesh blob paths); both
+	// resolve through the same VFS overlay (pak or loose).
 	// ---------------------------------------------------------------------
 	void WorldRenderer::ResolveGiSidecars() {
 		m_giProbeName.clear();

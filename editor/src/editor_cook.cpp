@@ -20,7 +20,6 @@
 #include <windows.h>
 #endif
 
-#include <Engine/Asset/bake_asset.h> // bake GUID resolution (live view)
 #include <Engine/Asset/tour.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -494,15 +493,15 @@ void EditorApp::BakeGI() {
 		});
 }
 
-// Bake-asset GI bindings for the hosted live view (see
-// Engine/Asset/bake_asset.h): resolves the current scene's bake GUIDs
-// (sidecar scan by logical — project content first, bundled content
-// second, mirroring the hosted VFS priority) and registers them on the
-// editor world's clusters, so the hosted view's binding-first loaders
-// follow rebakes/renames. Session state, re-derived on every world
-// build + after every Bake GI (never persisted — the sidecars are the
-// record). glTF sessions only: pak opens carry their own Gi registry
-// blob (untouched here).
+// Live-view GI bindings (see the stable bake paths): resolves the
+// current scene's STABLE bake paths (project content first, bundled
+// content second, mirroring the hosted VFS priority — a readable file
+// marks the bake) and registers their stems on the editor world's
+// clusters, so the hosted view's binding-first loaders follow rebakes.
+// Session state, re-derived on every world build + after every Bake GI
+// (never persisted — the files at their stable paths are the record).
+// glTF sessions only: pak opens carry their own Gi registry blob
+// (untouched here).
 void EditorApp::RefreshLiveViewGiBindings() {
 	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
 		return;
@@ -519,41 +518,41 @@ void EditorApp::RefreshLiveViewGiBindings() {
 				.generic_string() });
 	}
 	dirs.push_back({ "content/gi", "content/textures/cubemaps" });
-	auto findGi = [&](const std::string& logical) {
-		for (const auto& d : dirs) {
-			const std::string g = smvk::bake::FindBakeAssetGuid(
-				d.gi, smvk::bake::kBakeAssetKindGi, logical);
-			if (!g.empty())
-				return g;
-		}
-		return std::string();
+	// A bake exists iff its stable file is readable under one of the
+	// roots: the gi/ probes/lightmap/manifests (gi/<scene>.<ext>) and
+	// the cubemap manifest (textures/cubemaps/<scene>.cubemanifest).
+	std::error_code ec;
+	auto hasGi = [&](const char* ext) {
+		for (const auto& d : dirs)
+			if (std::filesystem::is_regular_file(
+					std::filesystem::path(d.gi)
+						/ (scene + "." + ext), ec))
+				return true;
+		return false;
 	};
-	auto findCube = [&](const std::string& logical) {
-		for (const auto& d : dirs) {
-			const std::string g = smvk::bake::FindBakeAssetGuid(
-				d.cubes, smvk::bake::kBakeAssetKindCubemap, logical);
-			if (!g.empty())
-				return g;
-		}
-		return std::string();
+	auto hasCube = [&]() {
+		for (const auto& d : dirs)
+			if (std::filesystem::is_regular_file(
+					std::filesystem::path(d.cubes)
+						/ (scene + ".cubemanifest"), ec))
+				return true;
+		return false;
 	};
-	auto reg = [&](smvk::GiBinding::Kind kind, const std::string& guid,
+	auto reg = [&](smvk::GiBinding::Kind kind, bool has,
 			const char* label) {
-		if (guid.empty())
+		if (!has)
 			return;
-		cl->RegisterGiBinding(kind, guid);
-		std::cerr << "[GI] live view " << label << " -> bake guid '"
-			<< guid << "'\n";
+		cl->RegisterGiBinding(kind, scene);
+		std::cerr << "[GI] live view " << label << " -> '"
+			<< scene << "'\n";
 	};
-	reg(smvk::GiBinding::Kind::Probe, findGi("probe:" + scene), "probe");
-	reg(smvk::GiBinding::Kind::Lightmap,
-		findGi("lightmap:" + scene), "lightmap");
-	reg(smvk::GiBinding::Kind::RegManifest,
-		findGi("regmanifest:" + scene), "regmanifest");
-	reg(smvk::GiBinding::Kind::CvolManifest,
-		findGi("cvolmanifest:" + scene), "cvolmanifest");
-	reg(smvk::GiBinding::Kind::Cubemap,
-		findCube("cubemanifest:" + scene), "cubemanifest");
+	reg(smvk::GiBinding::Kind::Probe, hasGi("sggi"), "probe");
+	reg(smvk::GiBinding::Kind::Lightmap, hasGi("sglm"), "lightmap");
+	reg(smvk::GiBinding::Kind::RegManifest, hasGi("regmanifest"),
+		"regmanifest");
+	reg(smvk::GiBinding::Kind::CvolManifest, hasGi("cvmanifest"),
+		"cvolmanifest");
+	reg(smvk::GiBinding::Kind::Cubemap, hasCube(), "cubemap");
 }
 
 void EditorApp::PollBakeProcess() {

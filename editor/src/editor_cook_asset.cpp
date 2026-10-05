@@ -5,7 +5,7 @@
 
 #include <filesystem>
 
-#include <Engine/Asset/bake_asset.h> // bake-asset GUID discovery (FindBakeAssetGuid)
+#include <Engine/Asset/bake_asset.h> // kBakeAssetKindCubemap (assetdb kind)
 
 namespace editor {
 
@@ -131,11 +131,12 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	const std::string contentRoot = fs::absolute(
 		fs::path(m_cook.outPak).parent_path() / "..")
 		.lexically_normal().generic_string();
-	const std::string giDir = (fs::path(contentRoot) / "gi")
-		.generic_string();
-	// World-field result of this cook ("" = giWorld off / not baked).
-	const std::string sggiGuid = smvk::bake::FindBakeAssetGuid(giDir,
-		smvk::bake::kBakeAssetKindGi, std::string("probe:") + scene);
+	// World-field result of this cook: the STABLE path
+	// gi/<scene>.sggi ("" = giWorld off / not baked).
+	const std::string sggiVfs = "gi/" + scene + ".sggi";
+	const std::filesystem::path sggiHost =
+		fs::path(contentRoot) / sggiVfs;
+	const bool hasSggi = fs::is_regular_file(sggiHost, ec);
 
 	// ---- GiCook manifest: this scene's asset, else a fresh mint ----
 	smvk::cook::GiCookAsset a{};
@@ -199,13 +200,15 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	}
 	// Settings + result snapshot (the blob pointer only when this cook
 	// baked a world field — cvol-only cooks keep a previous result
-	// alive if one exists; the hash covers whatever is stored).
+	// alive if one exists; the hash covers whatever is stored). The
+	// result rides the STABLE path (blobGuid now carries the bake stem
+	// — the "has a result" identity inside gi/ — not a minted guid).
 	a.scene = scene;
 	a.cvol = m_cook.giCvol;
 	a.world = m_cook.giWorld;
-	if (!sggiGuid.empty()) {
-		a.blobGuid = sggiGuid;
-		a.blobPath = "gi/" + sggiGuid + ".sggi";
+	if (hasSggi) {
+		a.blobGuid = scene;
+		a.blobPath = sggiVfs;
 	}
 	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
 	{
@@ -235,25 +238,19 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	m_bakeCubemapGuid.clear();
 	if (m_cook.cubemap) {
 		// The capture-set base: the authored name, else the pak stem
-		// (the cook's default) — the manifest identity the cook minted.
+		// (the cook's default) — the manifest's stable name.
 		const std::string base = m_cook.cubemapName.empty()
 			? fs::path(m_cook.outPak).stem().generic_string()
 			: m_cook.cubemapName;
 		const std::string cubesDir =
 			(fs::path(contentRoot) / "textures" / "cubemaps")
 				.generic_string();
-		const std::string manifestGuid =
-			smvk::bake::FindBakeAssetGuid(cubesDir,
-				smvk::bake::kBakeAssetKindCubemap,
-				std::string("cubemanifest:") + base);
-		if (!manifestGuid.empty()) {
-			const std::string manifestPath =
-				(fs::path(cubesDir)
-					/ (manifestGuid + ".cubemanifest"))
-					.generic_string();
-			AdoptProjectAsset(manifestPath,
+		const std::filesystem::path manifestHost =
+			fs::path(cubesDir) / (base + ".cubemanifest");
+		if (fs::is_regular_file(manifestHost, ec)) {
+			AdoptProjectAsset(manifestHost.generic_string(),
 				smvk::bake::kBakeAssetKindCubemap);
-			m_bakeCubemapGuid = manifestGuid;
+			m_bakeCubemapGuid = base;
 		}
 	}
 	Log("cook assets: GiCook '" + a.name + "' " + (fresh ? "created"
