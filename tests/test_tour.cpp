@@ -1066,6 +1066,88 @@ void TestCvolVerbs() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
+// Create-parent sentinel regression (10/6): the editor used to emit
+// uint32_t(-1) as the create lines' -p when a create's LIVE parent was
+// the SCENE ROOT (world node 0 — below the cluster base, so
+// WorldToCluster(0) = -1), writing "-p 4294967295" into tours. The
+// replay then failed twice over: resolveNode's terrain-ref check
+// matched the sentinel's bit pattern and misreported the failure as
+// "terrain ref out of range" (UINT32_MAX carries every create-family
+// base bit). Contract: the sentinel parent replays at the CLUSTER ROOT
+// (legacy tolerance), a garbage node fails with an honest node error
+// (never the terrain-ref misattribution), and a REAL out-of-range
+// terrain ref still reports the terrain error.
+void TestCreateParentSentinel() {
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	const int g0 = addNode(cluster->scene, root, 1);
+	setNodeName(cluster->scene, g0, "Wall");
+
+	// 1. Legacy "-p 4294967295": replays, parented at the cluster ROOT.
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command c{};
+		c.verb = smvk::tour::Verb::CreateCubemap;
+		c.node = UINT32_MAX; // the leaked uint32_t(-1) parent
+		c.text = "Cube_1";
+		c.vec = glm::vec3(0.0f);
+		c.number = 1.5;
+		doc.commands.push_back(c);
+		std::vector<std::string> warns;
+		std::string err;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"sentinel parent replays (legacy -p 4294967295)");
+		Check(cluster->scene.cubemapForNode.size() == 1,
+			"sentinel-parent cubemap def created");
+		if (cluster->scene.cubemapForNode.size() == 1) {
+			const uint32_t created = cluster->scene.cubemapForNode.begin()->first;
+			Check(cluster->scene.hierarchy[created].parent == root,
+				"sentinel parent lands at the cluster root");
+		}
+	}
+
+	// 2. Garbage node (UINT32_MAX) on a GENERIC verb: fails with an
+	// honest node error — never the terrain-ref misattribution (the
+	// sentinel carries every create-family base bit, so the old
+	// single-bit test read it as a terrain ref).
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command c{};
+		c.verb = smvk::tour::Verb::Rename;
+		c.node = UINT32_MAX;
+		c.text = "Nope";
+		c.name = "Wall";
+		doc.commands.push_back(c);
+		std::vector<std::string> warns;
+		std::string err;
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"garbage node fails");
+		Check(err.find("terrain ref out of range") == std::string::npos,
+			"garbage node is not misattributed as a terrain ref");
+	}
+
+	// 3. A REAL out-of-range terrain ref (a paint with no createTerrain
+	// before it) still reports the terrain error — the exclusive-form
+	// check keeps genuine refs working.
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command c{};
+		c.verb = smvk::tour::Verb::TerrainPaint;
+		c.node = smvk::tour::kCreateTerrainRefBase | 5u;
+		c.text = "raise";
+		c.vec4 = glm::vec4(0.0f, 0.0f, 4.0f, 0.0f);
+		c.number = 1.0;
+		doc.commands.push_back(c);
+		std::vector<std::string> warns;
+		std::string err;
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"real out-of-range terrain ref fails");
+		Check(err.find("terrainPaint ref out of range") != std::string::npos,
+			"real terrain ref reports the terrain error");
+	}
+}
+
 // Authored cubemap captures (pinned specular probes): createCubemap/
 // setCubemapAttr round-trip, cook replay (node + node-local def,
 // -ref addressing), delete drops the def, unified form lowers.
@@ -2281,6 +2363,7 @@ int main() {
 	TestTerrainVerbs();
 	TestCvolVerbs();
 	TestCubemapVerbs();
+	TestCreateParentSentinel();
 	TestRootReference();
 	TestReferenceGuid();
 	TestCreateNode();

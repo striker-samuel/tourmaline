@@ -410,6 +410,18 @@ inline constexpr uint32_t kCreateCubemapRefBase = 0x10000000u;
 // CreateCamera in file order). Disjoint from all bases above.
 inline constexpr uint32_t kCreateCameraRefBase = 0x08000000u;
 
+// All create-family ref bases OR'd together: a create-family ref
+// carries EXACTLY ONE base bit plus a small k (< 0x08000000 — the
+// create counts are bounded far below the lowest base). A value with
+// SEVERAL high bits set (a sentinel like UINT32_MAX, or any garbage) is
+// a ref of NO family — ref checks must test the exclusive form
+// ((n & mask) == base), never a single bit (a single-bit test made
+// UINT32_MAX masquerade as a terrain ref and misreported the replay
+// as "terrain ref out of range" instead of the honest node error).
+inline constexpr uint32_t kCreateRefFamilyMask =
+	kCreateLightRefBase | kCreateTerrainRefBase | kCreateCvolRefBase
+	| kCreateCubemapRefBase | kCreateCameraRefBase;
+
 struct Doc {
 	int version = kTourVersion;
 	std::string source;      // source glTF path (DEPRECATED: geometry may

@@ -2307,7 +2307,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	};
 	std::vector<TourTerrainGroup> terrainGroups;
 	auto resolveNode = [&](uint32_t n, const Command& c, uint32_t& out) {
-		if ((n & kCreateTerrainRefBase) != 0) {
+		// TERRAIN REF: the EXCLUSIVE family form (kCreateTerrainRefBase
+		// and NO other create-family base bit — see kCreateRefFamilyMask).
+		// The old single-bit test made sentinel/garbage nodes like
+		// UINT32_MAX masquerade as terrain refs (the 10/6 broken-save
+		// case: creates parented at the scene root emitted -p 4294967295,
+		// and the replay misreported "terrain ref out of range" instead
+		// of the honest node error).
+		if ((n & kCreateRefFamilyMask) == kCreateTerrainRefBase) {
 			const uint32_t k = n & ~kCreateTerrainRefBase;
 			if (k >= createdTerrains.size()) {
 				if (err)
@@ -2332,17 +2339,27 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		if (!c.parentRef.empty()) {
 			if (ResolveParentTarget(scene, c.parentRef, parent))
 				return true;
-			if (err)
-				*err = std::string("tour: ") + what + " parent '"
-					+ c.parentRef + "' unresolved";
-			return false;
-		}
-		uint32_t target = 0;
-		if (!resolveNode(parentId, c, target))
-			return false;
-		parent = target;
-		return true;
-	};
+		if (err)
+			*err = std::string("tour: ") + what + " parent '"
+				+ c.parentRef + "' unresolved";
+		return false;
+	}
+	// LEGACY SENTINEL: -p 4294967295 — the pre-10/6 editor emitted
+	// uint32_t(-1) for creates parented at the SCENE ROOT (world node 0:
+	// WorldToCluster(0) = -1, the synthetic root sits below the cluster
+	// base). Normalized to the CLUSTER ROOT (-p 0): the id space has no
+	// world-0, and the cluster root is the closest valid parent — the
+	// replay lands the create one level under the merged root, same as
+	// every cluster-root-parented create. The emission-side fix (10/6)
+	// stopped writing it; this keeps every existing tour replayable.
+	if (parentId == UINT32_MAX)
+		parentId = 0;
+	uint32_t target = 0;
+	if (!resolveNode(parentId, c, target))
+		return false;
+	parent = target;
+	return true;
+};
 	for (const Command& c : doc.commands) {
 		switch (c.verb) {
 		case Verb::Rename: {

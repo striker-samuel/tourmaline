@@ -2694,6 +2694,20 @@ std::string EditorApp::RedoLabel() const {
 
 bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	smvk::tour::Command& out) {
+	// Cluster id for a create's LIVE parent, NORMALIZED (the six create
+	// families below share it): the SCENE-ROOT parent (world node 0 — the
+	// synthetic root ABOVE the cluster base, so WorldToCluster(0) reads
+	// -1) maps to the CLUSTER ROOT (id 0): the tour id space has no
+	// world-0, and the cluster root is the closest valid parent. The
+	// un-normalized -1 leaked into the create lines as -p 4294967295
+	// (uint32_t(-1)) — those files then failed replay (resolveNode's
+	// create-ref check) — 10/6. A lambda for the private member access.
+	auto createParentClusterId = [&app](uint32_t liveParent) {
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent == 0)
+			pp = 0; // the scene-root parent: the cluster root
+		return pp;
+	};
 	const int cn = app.WorldToCluster(c.node);
 	auto needNode = [&]() {
 		if (cn < 0)
@@ -2933,7 +2947,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// itself — see CreateEmitParent; Parent verbs on created
 		// children skip silently at save).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		int pp = app.WorldToCluster(liveParent);
+		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent (no cluster id until replay): emit
 			// the SYMBOLIC -p form (name/path; the parent's own create
@@ -2984,7 +2998,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// itself — see CreateEmitParent; Parent verbs on created
 		// children skip silently at save).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		pp = app.WorldToCluster(liveParent);
+		pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the terrain silently.
@@ -3024,7 +3038,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// Parent = the LIVE parent (reparents ride the create line
 		// itself — see CreateEmitParent).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		int pp = app.WorldToCluster(liveParent);
+		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the transform silently.
@@ -3099,7 +3113,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		// Parent = the LIVE parent (see CreateEmitParent).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		int pp = app.WorldToCluster(liveParent);
+		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the cvolume silently.
@@ -3158,7 +3172,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		// Parent = the LIVE parent (see CreateEmitParent).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		int pp = app.WorldToCluster(liveParent);
+		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent (e.g. the auto-selected previous
 			// create — DraftCreateCubemap parents under the selection):
@@ -3217,7 +3231,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		// Parent = the LIVE parent (see CreateEmitParent).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
-		int pp = app.WorldToCluster(liveParent);
+		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the camera silently.
