@@ -580,7 +580,8 @@ uint decalCount;                                         // 776 0 = decals off
     uint giLevelLayers[80];                                      // 1320 8 levels x (9 amp + 1 weight)
     // ---- Convex-volume isotropic-mean textures (the volumetric fog's
     // one-fetch-per-volume payload — PackGpuMeanLayer +
-    // sg_cvol.hlsli SgCvCompositeMean): 8 bindless slots, UINT32_MAX =
+    // SgCvSampleVolumeMean, blended by SgCvRayComposite): 8 bindless
+    // slots, UINT32_MAX =
     // none. APPEND-ONLY tail: every pinned offset above stays put. ----
     uint cvolMeanLayers[8];                                       // 1640 8 volumes x 1 mean slot
 };

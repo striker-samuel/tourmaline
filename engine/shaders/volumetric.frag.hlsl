@@ -65,10 +65,10 @@ float VolPhaseHg(float cosT, float g)
 // divided by 4pi. Integral of one unit SG lobe = 2pi/l*(1-e^-2l); with the
 // fixed sharpness 4 the mean weight is (1-e^-8)/8 ~= 0.125 per lobe.
 // The mean is LINEAR in the amps — the fog consumes it through the
-// dedicated one-fetch/one-accumulator paths (SgCvCompositeMean +
-// SgGiSampleMean; the CPU packs per-volume mean textures with the same
-// constant, CvVolume::PackGpuMeanLayer): the constant MUST stay in sync
-// in all three places.
+// dedicated one-fetch/one-accumulator paths (SgCvRayComposite's lazy
+// mean fetch + SgGiSampleMean; the CPU packs per-volume mean textures
+// with the same constant, CvVolume::PackGpuMeanLayer): the constant MUST
+// stay in sync in all three places.
 float3 VolGiMean(float3 amps[SG_GI_LOBES])
 {
     float3 sum = float3(0.0, 0.0, 0.0);
@@ -173,18 +173,29 @@ PSOut mainPS(PSIn IN)
     // segment clean of the max()).
     const float intensity_ = intensity;
 
-    // GI refresh cadence: the GI field is spatially low-frequency next
-    // to the extinction integration, so the march samples it every
-    // kVolGiRefreshDist world units along the ray and HOLDS the value
+    // GI refresh cadence: means and the octree/sky base are spatially
+    // low-frequency, so the march refreshes them every
+    // kVolGiRefreshDist world units along the ray and HOLDS them
     // between refreshes — 16-64 fog steps no longer mean 16-64
-    // independent octree walks + volume composites per pixel.
-    // Distance-based, not step-based: the quadratic step distribution
-    // makes near steps millimeters and far steps meters, so a step
-    // cadence would thrash the near end (no savings) and starve the
-    // far end. 0.75 m sits in the 0.5-1.0 m band ~ typical probe
-    // spacing at bake densities.
+    // independent octree walks + mean fetches per pixel. The volume
+    // WEIGHTS are exact per segment (ray-space FMA ramps — no cadence
+    // on the blend itself), so fade bands stay crisp while the held
+    // quantities are the smooth ones. Distance-based, not step-based:
+    // the quadratic step distribution makes near steps millimeters and
+    // far steps meters, so a step cadence would thrash the near end
+    // (no savings) and starve the far end. 0.75 m sits in the 0.5-1.0 m
+    // band ~ typical probe spacing at bake densities.
     static const float kVolGiRefreshDist = 0.75;
     float giT = -1e30; // distance of the last refresh (expired -> seg 0)
+
+    // Ray-space volume prep (once per pixel): tile mask -> fade-expanded
+    // AABB intervals vs the march ray -> base/slope plane coefficients
+    // for the overlapping volumes. The march then blends exact weights
+    // with FMA-only ramps (no plane loads, no dot3s per segment).
+    CvRayPrep rayPrep;
+    float3 baseHeld = skyMean;
+    if (fogGiOn)
+        SgCvRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
 
     // Ambient base: the GI-off value is pixel-constant (one sky eval for
     // the whole march); the GI-on value refreshes on the cadence below.
@@ -221,33 +232,30 @@ PSOut mainPS(PSIn IN)
         if (vp.heightFalloff > 0.0)
             sigma *= exp(-max(wpos.y - vp.heightBase, 0.0) * vp.heightFalloff);
 
-        // ---- Ambient refresh (cadence above): the stacked-probe blend
-        // as the lit path, in MEAN form only — the fog consumes the
-        // isotropic mean, which is linear in the lobe amps, so the
-        // dedicated mean paths (SgCvCompositeMean / SgGiSampleMean)
-        // never materialize the SG lobe arrays that made this loop
-        // prime register-spill territory at 64-128 segments per pixel.
-        // Convex volumes composite FIRST (high->low transmittance, see
-        // sg_cvol.hlsli: one MEAN texture fetch per volume), the
-        // octree/sky base multiplied by the leftover transmission; a
-        // weight-1 volume zeroes the transmission and the octree walk
-        // is skipped entirely.
-        if (fogGiOn && t - giT >= kVolGiRefreshDist)
+        // ---- Ambient: EXACT per-segment volume weights from the
+        // ray-space table (FMA-only ramps — no plane loads, no dot3s
+        // in the march), composited with means held on the cadence
+        // below. The volume stack is linear in the means, so holding
+        // the (low-frequency) means while evaluating the (exact)
+        // weights per segment is both cheaper and more faithful than
+        // holding the whole composite.
+        float3 volAcc = float3(0.0, 0.0, 0.0);
+        float volTrans = 1.0;
+        if (fogGiOn)
         {
-            giT = t;
-            float3 volMean = float3(0.0, 0.0, 0.0);
-            float volTrans = 1.0;
-            SgCvCompositeMean(frame, volMask, wpos, volMean, volTrans);
-            float3 octMean = float3(0.0, 0.0, 0.0);
-            const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
-                && SgGiSampleMean(frame, wpos, octMean);
-            // Base by the leftover transmission (octree mean, or the
-            // sky's up-facing mean where the world field has no
-            // coverage; with no volume and no octree this is exactly
-            // the old pure-sky ambient — never additive).
-            ambient = (volMean
-                + (octreeCovered ? octMean * volTrans : skyMean * volTrans))
-                * giStrength;
+            SgCvRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
+            if (t - giT >= kVolGiRefreshDist)
+            {
+                giT = t;
+                // Octree base (gated on the octree flag AND the live
+                // transmission — the walk is dead work under a
+                // weight-1 volume).
+                float3 octMean = float3(0.0, 0.0, 0.0);
+                const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
+                    && SgGiSampleMean(frame, wpos, octMean);
+                baseHeld = octreeCovered ? octMean : skyMean;
+            }
+            ambient = (volAcc + baseHeld * volTrans) * giStrength;
         }
 
         float3 source = ambient;

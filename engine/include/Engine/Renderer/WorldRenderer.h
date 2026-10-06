@@ -667,7 +667,8 @@ struct FrameUniforms
 	uint32_t giLevelLayers[80] = {}; // 1320 8 levels x (9 amp + 1 weight)
 	// ---- Convex-volume isotropic-mean textures (the volumetric fog's
 	// one-fetch-per-volume payload — PackGpuMeanLayer +
-	// SgCvCompositeMean): 8 bindless slots, UINT32_MAX = none. Deliberate
+	// SgCvSampleVolumeMean, blended by SgCvRayComposite): 8 bindless
+	// slots, UINT32_MAX = none. Deliberate
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint32_t cvolMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
@@ -1075,8 +1076,7 @@ public:
 	void PushVolumetricEnv(const SceneEnv& env) {
 		const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
 		m_volumetricEnabled = volTier;
-		if (volTier) {
-			m_volumetricIntensity = env.volumetrics;
+		if (volTier) {			m_volumetricIntensity = env.volumetrics;
 			m_volumetricSteps = int(env.volumetricSteps);
 			m_volumetricMaxDistance = env.volumetricMaxDistance;
 			m_volumetricDensity = env.volumetricDensity;
@@ -1091,6 +1091,13 @@ public:
 			m_volumetricQuality = smvk::VolumetricQuality::Custom;
 		}
 	}
+	// Headless volumetric overrides (VULKANTOY_VOLUMETRIC,
+	// VULKANTOY_VOLUMETRIC_STEPS, VULKANTOY_VOLUMETRIC_CVOL): the
+	// AGENTS.md contract is "scene fog settings lose" — the scene seed
+	// above would otherwise stomp a headless force-on at every scene
+	// load/rebind, so the overrides re-apply after the seed (and at
+	// startup Configure). The UI panel stays live afterwards.
+	void ApplyHeadlessVolumetricOverrides();
 
 	// ---------------------------------------------------------------------
 	// MULTIVIEW (hosted): N secondary views, each rendering the world from

@@ -560,6 +560,51 @@ void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 		ResolveLookAtUp(eye, target));
 }
 
+	// Headless volumetric overrides (see the header): VULKANTOY_VOLUMETRIC
+	// / VOLUMETRIC_STEPS / VOLUMETRIC_CVOL win over the scene seed (the
+	// AGENTS.md "scene fog settings lose" contract). Called at startup
+	// Initialize AND after the per-scene PushVolumetricEnv seed in
+	// BuildCookedLightsFromWorld (scene load/rebind would otherwise
+	// stomp a headless force-on).
+	void WorldRenderer::ApplyHeadlessVolumetricOverrides() {
+		auto trim = [](const char* s) -> std::string_view {
+			std::string_view v{ s ? s : "" };
+			while (!v.empty() && (v.front() == ' ' || v.front() == '\t'
+				|| v.front() == '\r' || v.front() == '\n'))
+				v.remove_prefix(1);
+			while (!v.empty() && (v.back() == ' ' || v.back() == '\t'
+				|| v.back() == '\r' || v.back() == '\n'))
+				v.remove_suffix(1);
+			return v;
+		};
+		if (const char* volEnv = std::getenv("VULKANTOY_VOLUMETRIC")) {
+			const std::string_view vol = trim(volEnv);
+			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
+			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
+		}
+		// March-step override for headless A/B runs (4..128; heavy fog
+		// configs without UI interaction — the quality preset combos
+		// stay live after).
+		if (const char* vsEnv = std::getenv("VULKANTOY_VOLUMETRIC_STEPS")) {
+			const int vs = std::atoi(vsEnv);
+			if (vs >= 4 && vs <= 128)
+				m_volumetricSteps = vs;
+			else
+				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_STEPS out of range (4..128): " << vsEnv << "\n";
+		}
+		// Fog-GI quality bypass for headless A/B runs: 0 = the fog
+		// composites octree/sky only (no convex-volume walk per
+		// refresh). Pairs with VULKANTOY_VOLUMETRIC for pure-octree fog
+		// cost measurements.
+		if (const char* vcEnv = std::getenv("VULKANTOY_VOLUMETRIC_CVOL")) {
+			const std::string_view vc = trim(vcEnv);
+			if (vc == "1" || vc == "on") m_volumetricUseCvolGi = true;
+			else if (vc == "0" || vc == "off") m_volumetricUseCvolGi = false;
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC_CVOL value: " << vc << "\n";
+		}
+	}
+
 bool WorldRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
@@ -704,32 +749,8 @@ bool WorldRenderer::Initialize() {
 			else if (ssr == "0" || ssr == "off") m_ssrEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_SSR value: " << ssr << "\n";
 		}
-		if (const char* volEnv = std::getenv("VULKANTOY_VOLUMETRIC")) {
-			const std::string_view vol = trimEnv(volEnv);
-			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
-			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
-		}
-		// Volumetric march-step override for headless A/B runs (4..128;
-		// heavy fog configs without UI interaction — the quality preset
-		// combos stay live after).
-		if (const char* vsEnv = std::getenv("VULKANTOY_VOLUMETRIC_STEPS")) {
-			const int vs = std::atoi(vsEnv);
-			if (vs >= 4 && vs <= 128)
-				m_volumetricSteps = vs;
-			else
-				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_STEPS out of range (4..128): " << vsEnv << "\n";
-		}
-		// Fog-GI quality bypass for headless A/B runs: 0 = the fog
-		// composites octree/sky only (no convex-volume walk per
-		// refresh). Pairs with VULKANTOY_VOLUMETRIC for pure-octree fog
-		// cost measurements.
-		if (const char* vcEnv = std::getenv("VULKANTOY_VOLUMETRIC_CVOL")) {
-			const std::string_view vc = trimEnv(vcEnv);
-			if (vc == "1" || vc == "on") m_volumetricUseCvolGi = true;
-			else if (vc == "0" || vc == "off") m_volumetricUseCvolGi = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC_CVOL value: " << vc << "\n";
-		}
+		ApplyHeadlessVolumetricOverrides();
+		// Bloom tuning overrides for headless A/B runs (threshold is
 		// Bloom tuning overrides for headless A/B runs (threshold is
 		// pre-exposure HDR, same units as the ImGui sliders; intensity is
 		// the tonemap add scale). The ImGui sliders stay live after.
@@ -2682,8 +2703,7 @@ void WorldRenderer::Shutdown() {
 	// GPU pack (must mirror CvVolumeGpu/CvPlaneGpu in
 	// sg_lightmap_types.hlsli — all float4/uint4 rows, std430-clean).
 	struct CvolPlaneGpu {
-		float equation[4];      // xyz plane normal, w = d (inside n.P + d <= 0)
-		float fadeScaleBias[4]; // x fadeScale = 1/max(in+out fade), y fadeBias = out*fadeScale
+		float weightEquation[4]; // xyz -normal*fadeScale, w fadeBias - d*fadeScale
 	};
 	struct CvolVolumeGpu {
 		float aabbMin[4];       // xyz fade-expanded hull AABB min, w pad
@@ -2696,9 +2716,9 @@ void WorldRenderer::Shutdown() {
 		CvolVolumeGpu volumes[8];          // SG_CV_MAX_VOLUMES
 		CvolPlaneGpu planes[8 * 16];      // SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES
 	};
-	static_assert(sizeof(CvolPlaneGpu) == 32);
+	static_assert(sizeof(CvolPlaneGpu) == 16);
 	static_assert(sizeof(CvolVolumeGpu) == 80);
-	static_assert(sizeof(CvolVolumesGpu) == 8 * 80 + 128 * 32);
+	static_assert(sizeof(CvolVolumesGpu) == 8 * 80 + 128 * 16);
 
 	void WorldRenderer::LoadCvolumes(smvk::OverlayVfs& vfs) {
 		m_cvolLoaded = false;
@@ -2865,12 +2885,14 @@ void WorldRenderer::Shutdown() {
 			g.uvwBias[0] = -vol.gridMin.x * scale.x;
 			g.uvwBias[1] = -vol.gridMin.y * scale.y;
 			g.uvwBias[2] = -vol.gridMin.z * scale.z;
-			// Plane span into the shared pool; fades pre-normalized:
-			// t = saturate(inside * fadeScale + fadeBias) — the packed
-			// form of the old smoothstep(-outsideFade, insideFade,
-			// inside) with the division hoisted here. Degenerate spans
-			// (< 1e-5 m, authored-CPU step branch) pack as a 1e-5 m ramp
-			// — identical below any content-relevant epsilon.
+			// Plane span into the shared pool, FOLDED into one ramp:
+			// t = saturate(dot(wEq.xyz, pos) + wEq.w) with
+			// wEq = (-n * fadeScale, fadeBias - d * fadeScale) — the
+			// packed form of the old smoothstep(-outsideFade,
+			// insideFade, inside) with the division hoisted here.
+			// Degenerate spans (< 1e-5 m, authored-CPU step branch)
+			// pack as a 1e-5 m ramp — identical below any
+			// content-relevant epsilon.
 			const uint32_t planeCount = std::min<uint32_t>(
 				uint32_t(vol.def.planes.size()), 16u);
 			g.planeCountBase[0] = planeCount;
@@ -2878,13 +2900,17 @@ void WorldRenderer::Shutdown() {
 			for (uint32_t p = 0; p < planeCount; ++p) {
 				const smvk::gi::CvPlane& pl = vol.def.planes[p];
 				CvolPlaneGpu& pg = descs.planes[planeBase + p];
-				pg.equation[0] = pl.normal.x;
-				pg.equation[1] = pl.normal.y;
-				pg.equation[2] = pl.normal.z;
-				pg.equation[3] = pl.d;
+				// Folded ramp: t = saturate(dot(wEq.xyz, pos) + wEq.w)
+				// with wEq = (-n * fadeScale, fadeBias - d * fadeScale)
+				// (fadeScale = 1/max(in+out fade), fadeBias =
+				// out*fadeScale) — one 16 B slot, dot3 + FMA + saturate.
 				const float span = std::max(pl.insideFade + pl.outsideFade, 1e-5f);
-				pg.fadeScaleBias[0] = 1.0f / span;
-				pg.fadeScaleBias[1] = pl.outsideFade * pg.fadeScaleBias[0];
+				const float fadeScale = 1.0f / span;
+				pg.weightEquation[0] = -pl.normal.x * fadeScale;
+				pg.weightEquation[1] = -pl.normal.y * fadeScale;
+				pg.weightEquation[2] = -pl.normal.z * fadeScale;
+				pg.weightEquation[3] = pl.outsideFade * fadeScale
+					- pl.d * fadeScale;
 			}
 			planeBase += planeCount;
 		}
@@ -4099,6 +4125,11 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		if (m_world->scene.hasEnvironment) {
 			const SceneEnv& se = m_world->scene.environment;
 			PushVolumetricEnv(se);
+			// Headless overrides win over the scene seed (AGENTS.md:
+			// "scene fog settings lose") — without this a headless
+			// VULKANTOY_VOLUMETRIC=1 force-on dies here on any
+			// non-volumetric scene (the seed writes enabled=false).
+			ApplyHeadlessVolumetricOverrides();
 			const bool volOn = se.fogQuality == 2 && se.volumetrics > 0.0f;
 			std::cerr << "[Scene] fog: quality="
 				<< (se.fogQuality == 0 ? "off"
@@ -10502,6 +10533,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				// Debug views: fog would Beer-Lambert the flat readout
 				// and add scatter on top (DebugVisualizationActive).
 				&& !DebugVisualizationActive();
+			// TEMP-DIAG: one-shot vol gate (16-step invisibility probe).
+			{
+				static bool sVolGateLogged = false;
+				if (!sVolGateLogged) {
+					sVolGateLogged = true;
+					std::fprintf(stderr,
+						"[VolGate2] enabled=%d steps=%d dens=%.4f useCvol=%d => %s\n",
+						m_volumetricEnabled ? 1 : 0, m_volumetricSteps,
+						m_volumetricDensity, m_volumetricUseCvolGi ? 1 : 0,
+						volOn ? "RUN" : "SKIP");
+				}
+			}
 		if (volOn) {
 			auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 				*m_rendergraph,
@@ -11209,8 +11252,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3))
 								authored();
 
-							// Fog mode is the single source of truth for the active path.
-							volumetricSelected = se.fogQuality == 2;
+						// Fog mode is the single source of truth for the active path.
+						volumetricSelected = se.fogQuality == 2;
+						// Headless override wins (VULKANTOY_VOLUMETRIC): the
+						// AGENTS.md contract is "scene fog settings lose" —
+						// without this the env force-on/off dies here on
+						// every frame (tier mismatch with the override).
+						// Cached: the env cannot change mid-process.
+						static const bool sVolumetricEnvPinned =
+							std::getenv("VULKANTOY_VOLUMETRIC") != nullptr;
+						if (!sVolumetricEnvPinned)
 							m_volumetricEnabled = volumetricSelected;
 
 							if (se.fogQuality == 1) {

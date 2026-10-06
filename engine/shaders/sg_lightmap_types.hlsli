@@ -40,26 +40,31 @@ struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
 // the blend helpers dominated the shader's data-movement instruction
 // mix). Volumes are 80 B headers (fade-expanded AABB broad-phase + the
 // CPU-precomputed world->uvw lattice transform + the plane span); planes
-// live in a shared packed pool fetched one 32 B slot at a time (only the
-// planes a volume actually has). All members are float4/uint4 — std430
-// keeps vec3 16-byte-stride, explicit vec4s mirror the C++ packer with
-// zero padding surprises (the SgRegularObbGpu rule above).
+// live in a shared packed pool fetched one 16 B slot at a time (only
+// the planes a volume actually has). All members are float4/uint4 —
+// std430 keeps vec3 16-byte-stride, explicit vec4s mirror the C++ packer
+// with zero padding surprises (the SgRegularObbGpu rule above).
 #define SG_CV_MAX_VOLUMES 8
 #define SG_CV_LAYERS 7     // RGBA16F 3D textures per volume (sgrv layout)
 #define SG_CV_MAX_PLANES 16
+// Ray-space table cap for the fog march (sg_cvol.hlsli): at most this
+// many interval-overlapping volumes hold base/slope coefficients across
+// the march; the excess (pathological-only) evaluates per segment from
+// the pool, exactly.
+#define SG_CV_MAX_RAY_VOLUMES 4
 
-// One convex half-space. equation = (n.xyz, d), inside: dot(n, P) + d
-// <= 0. fadeScaleBias packs the CPU-normalized fade ramp:
-// t = saturate(inside * fadeScaleBias.x + fadeScaleBias.y) is the
-// plane's normalized fade position (0 = beyond the outside fade, 1 =
-// past the inside fade) — the packed form of smoothstep(-outsideFade,
-// insideFade, inside) with the division hoisted to the CPU
-// (fadeScale = 1/(insideFade + outsideFade), fadeBias =
-// outsideFade * fadeScale).
+// One convex half-space, folded into ONE pre-normalized float4:
+//   t = saturate(inside * fadeScale + fadeBias)
+//     = saturate(dot(-n * fadeScale, pos) + (fadeBias - d * fadeScale))
+//   weightEquation.xyz = -normal * fadeScale
+//   weightEquation.w   = fadeBias - d * fadeScale
+// (fadeScale = 1/max(insideFade+outsideFade, 1e-5), fadeBias =
+// outsideFade * fadeScale — packed by the CPU, LoadCvolumes). The plane
+// test is one dot3 + FMA + saturate on 16 B of data; the second float4
+// the old layout carried is gone.
 struct CvPlaneGpu
 {
-    float4 equation;      // xyz plane normal, w = d
-    float4 fadeScaleBias; // x fadeScale, y fadeBias, zw pad
+    float4 weightEquation; // pre-normalized plane ramp (see above)
 };
 
 struct CvVolumeGpu
@@ -77,5 +82,5 @@ struct CvVolumeGpu
 struct CvVolumesBuffer
 {
     CvVolumeGpu volumes[SG_CV_MAX_VOLUMES];                    // 8 x 80 B
-    CvPlaneGpu planes[SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES];   // up to 128 x 32 B
+    CvPlaneGpu planes[SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES];   // up to 128 x 16 B
 };
