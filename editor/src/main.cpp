@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 
 #ifdef _WIN32
@@ -253,6 +254,22 @@ void PrintUsage(const char* prog) {
 	// (they are the only per-run visibility into the live pipeline);
 	// fault/warning lines stay unconditional here too.
 	smvk::SetTraceEnabled(false);
+	// Disk pipeline cache OFF in the editor (see impl.cpp's
+	// VULKANTOY_PIPELINE_CACHE contract — "off" = no disk seed or save;
+	// the in-process pipeline-object dedup still runs): compute-pipeline
+	// creation against a driver-seeded cache still crashes the driver on
+	// some configurations (the blob validates — same driver/GPU — but
+	// the driver faults on its own cached data anyway). The shipped App
+	// keeps the cache (startup speed + bench determinism). An explicit
+	// user setting wins — this only defaults when unset, so the cache
+	// can be re-enabled for A/B runs without a rebuild.
+	if (!std::getenv("VULKANTOY_PIPELINE_CACHE")) {
+#ifdef _WIN32
+		_putenv("VULKANTOY_PIPELINE_CACHE=off");
+#else
+		setenv("VULKANTOY_PIPELINE_CACHE", "off", 0);
+#endif
+	}
 #ifdef _WIN32
 	// Crash stack writer (see the comment block above): FIRST, before any
 	// subsystem init, so any boot-time fault is captured too.
