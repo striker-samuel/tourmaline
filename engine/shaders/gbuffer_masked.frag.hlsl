@@ -57,11 +57,23 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     else if (baseAlpha < alphaCutoff)
         discard;
 
-    const float roughness =
-        clamp(mat.params.z, 0.04f, 1.0f);
-    const float metal =
-        (mat.params.y >= 0.50f) ? 1.0f : 0.0f;
+    // glTF metallicRoughness factors x texture (the same tap as
+    // gbuffer.frag / the lit path's non-layered branch — the bare
+    // factor read the whole scene matte when the factors were the
+    // multiplier-default 1.0).
+    float roughness = mat.params.z;
+    float metallic = mat.params.y;
+    const int mrIdx = mat.tex.y;
+    if (mrIdx >= 0)
+    {
+        Texture2D mrTex = textures[NonUniformResourceIndex((uint)mrIdx)];
+        float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
+        roughness *= mrSample.g;
+        metallic *= mrSample.b;
+    }
+    const float metalFlag = (saturate(metallic) >= 0.50f) ? 1.0f : 0.0f;
     float3 n = normalize(IN.normal);
-    OUT.gbuffer = float4(OctEncodeNormal(n), roughness, metal);
+    OUT.gbuffer = float4(OctEncodeNormal(n),
+        clamp(roughness, 0.04f, 1.0f), metalFlag);
     return OUT;
 }

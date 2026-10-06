@@ -25,8 +25,11 @@
 
 struct PSIn
 {
-    // Location 3 = default.vert's world normal output (explicit so the
-    // FS interface can be a subset of the VS outputs).
+    // Location 1 = default.vert's uv (material texture coordinates — the
+    // metallicRoughness tap below needs them); location 3 = the world
+    // normal output (explicit so the FS interface can be a subset of
+    // the VS outputs).
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
 };
 
@@ -50,15 +53,25 @@ PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
-    // Layered materials: layer 0's factors (the per-draw quantization
-    // the layered lit path blends — the G-buffer carries the dominant
-    // surface response; per-pixel layer weights need the vertex-color
-    // stream and buy nothing for a reflection lobe).
-    const float roughness =
-        clamp(mat.params.z, 0.04f, 1.0f);
-    const float metal =
-        (mat.params.y >= 0.50f) ? 1.0f : 0.0f;
+    // glTF metallicRoughness: the params are FACTORS, the final values
+    // are factor x texture (G=roughness, B=metallic — the same tap the
+    // lit path's non-layered branch does). The old writer stored the
+    // bare factor, and a pak whose factors are all 1.0 (the common
+    // multiplier default) read as a fully matte scene — the classify
+    // then correctly emitted zero rays and SSR silently died.
+    float roughness = mat.params.z;
+    float metallic = mat.params.y;
+    const int mrIdx = mat.tex.y;
+    if (mrIdx >= 0)
+    {
+        Texture2D mrTex = textures[NonUniformResourceIndex((uint)mrIdx)];
+        float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
+        roughness *= mrSample.g;
+        metallic *= mrSample.b;
+    }
+    const float metalFlag = (saturate(metallic) >= 0.50f) ? 1.0f : 0.0f;
     float3 n = normalize(IN.normal);
-    OUT.gbuffer = float4(OctEncodeNormal(n), roughness, metal);
+    OUT.gbuffer = float4(OctEncodeNormal(n),
+        clamp(roughness, 0.04f, 1.0f), metalFlag);
     return OUT;
 }

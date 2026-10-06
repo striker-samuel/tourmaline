@@ -598,6 +598,18 @@ void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 			else
 				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_STEPS out of range (4..128): " << vsEnv << "\n";
 		}
+		// Extinction-density override for headless A/B runs (0..2): heavy
+		// densities make the march output PURE in-scatter (throughput
+		// decays to 0, the composited base vanishes), which isolates the
+		// scatter sources (sun / GI ambient / forward lights) from the
+		// lit-surface base for pixel-diff verification.
+		if (const char* vdEnv = std::getenv("VULKANTOY_VOLUMETRIC_DENSITY")) {
+			const float vd = std::strtof(vdEnv, nullptr);
+			if (vd >= 0.0f && vd <= 2.0f)
+				m_volumetricDensity = vd;
+			else
+				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_DENSITY out of range (0..2): " << vdEnv << "\n";
+		}
 		// Fog-GI quality bypass for headless A/B runs: 0 = the fog
 		// composites octree/sky only (no convex-volume walk per
 		// refresh). Pairs with VULKANTOY_VOLUMETRIC for pure-octree fog
@@ -10546,18 +10558,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				// Debug views: fog would Beer-Lambert the flat readout
 				// and add scatter on top (DebugVisualizationActive).
 				&& !DebugVisualizationActive();
-			// TEMP-DIAG: one-shot vol gate (16-step invisibility probe).
-			{
-				static bool sVolGateLogged = false;
-				if (!sVolGateLogged) {
-					sVolGateLogged = true;
-					std::fprintf(stderr,
-						"[VolGate2] enabled=%d steps=%d dens=%.4f useCvol=%d => %s\n",
-						m_volumetricEnabled ? 1 : 0, m_volumetricSteps,
-						m_volumetricDensity, m_volumetricUseCvolGi ? 1 : 0,
-						volOn ? "RUN" : "SKIP");
-				}
-			}
 		if (volOn) {
 			// Forward+ tile lists for the fog's in-scatter leg: published
 			// under the cvol-mask freshness contract (TileCullWillRun —
@@ -11378,7 +11378,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 						}
 						ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
-						ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
+						ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 200000.0f, "%.0f");
 						int spots = m_fpDemo.spotCount;
 						if (ImGui::SliderInt("Spots", &spots, 0, 16)) m_fpDemo.spotCount = spots;
 						ImGui::SliderFloat("Spot intensity (cd)", &m_fpDemo.spotIntensity, 0.0f, 4000.0f);

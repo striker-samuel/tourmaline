@@ -113,11 +113,15 @@ PSOut mainPS(PSIn IN)
 
     // Screen-space march radius: view radius -> pixels at the center depth.
     // Project a view-space offset of `radius` to NDC with the projection
-    // matrix scale factors (proj[0][0], proj[1][1] are focal lengths).
+    // matrix scale factors (proj[0][0], proj[1][1] are focal lengths), then
+    // NDC -> pixels (ndc spans 2 units over the full width: px = ndc * W/2 —
+    // the missing *0.5 here made the spiral 2x too wide, so the world-space
+    // radius reject killed the outer half of the taps and SAO read ~dead).
     float2 focal = float2(abs(frame.proj[0][0]), abs(frame.proj[1][1]));
     focal = max(focal, float2(1e-4f, 1e-4f));
     float2 fullDepth = float2(1.0f / sp.invDepthW, 1.0f / sp.invDepthH);
-    float2 radiusPx = radius * focal * fullDepth / max(centerDist, 1e-3f);
+    float2 radiusPx = radius * focal * fullDepth * 0.5f
+        / max(centerDist, 1e-3f);
     // Clamp the spiral so far-field pixels don't gather across the screen.
     radiusPx = min(radiusPx, fullDepth * 0.25f);
 
@@ -128,6 +132,12 @@ PSOut mainPS(PSIn IN)
     // corners while distant walls and below-surface taps do not.
     float angle0 = SaoIGN(float2(halfPx)) * 6.2831853f;
     float occ = 0.0f;
+    // Denominator semantics mirror SSAO's wSum: normalize by the taps
+    // that could VOTE (passed the in-quad / non-sky / radius checks,
+    // weighted by their shell falloff) instead of by all n — the bare
+    // /n diluted every partially-occluded pixel by the rejected taps
+    // and SAO read near-dead next to SSAO.
+    float wSum = 0.0f;
     for (uint i = 0; i < 32; ++i)
     {
         if (i >= n)
@@ -145,7 +155,7 @@ PSOut mainPS(PSIn IN)
         int2 tapPx = int2(tapFullF);
         float tapD = depthTex.Load(int3(tapPx, 0)).r;
         if (AoIsBackground(tapD))
-            continue; // sky behind the spiral: no occluder
+            continue; // sky behind the spiral: no occluder, no vote
         float2 tapNdc = float2(
             (float(tapPx.x) + 0.5f) * sp.invDepthW * 2.0f - 1.0f,
             (float(tapPx.y) + 0.5f) * sp.invDepthH * 2.0f - 1.0f);
@@ -158,6 +168,7 @@ PSOut mainPS(PSIn IN)
         // Spherical shell falloff: 1 at the center, 0 at the radius edge.
         float falloff = max(1.0f - vv / max(radius2, 1e-12f), 0.0f);
         falloff *= falloff;
+        wSum += falloff;
         // Normal-weighted obscurance: how far the tap sits above the
         // surface plane (bias eats self-occlusion), as a cosine so flat
         // walls beside the pixel barely vote.
@@ -168,7 +179,9 @@ PSOut mainPS(PSIn IN)
         occ += falloff * cosine;
     }
 
-    float ao = 1.0f - saturate(occ / float(max(n, 1)));
+    float ao = 1.0f;
+    if (wSum > 1e-4f)
+        ao = 1.0f - saturate(occ / wSum);
     // Distance fade: full strength nearby, none past maxDistance.
     float fade = 1.0f - smoothstep(sp.maxDistance * 0.5f, sp.maxDistance, centerDist);
     ao = lerp(1.0f, ao, fade);

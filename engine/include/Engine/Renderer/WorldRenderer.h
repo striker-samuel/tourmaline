@@ -370,7 +370,13 @@ struct ForwardPlusDemo {
 	float spacingZ = 1.8f;
 	float baseY = 1.2f;
 	float range = 9.0f;
-	float intensity = 600.0f;
+	// Fog-visible bulbs: in-scatter falls off as I/(4pi r^2) and pays the
+	// HG phase (~0.08) on top, so a haze glow that READS next to the
+	// sun/GI scatter needs ~60000 cd (600 cd was proven wired but
+	// invisible — 4 orders below the sun at 8-14 m; the pure-scatter
+	// density-1.0 A/B measured it at +-1 tonemap quantum). Surfaces near
+	// a bulb go near-white — physically right for a bright bulb in haze.
+	float intensity = 60000.0f;
 	// Fit-to-scene: when true the point grid is centered on the loaded
 	// scene's world bounds and the per-axis spacing is derived as
 	// extent / (count - 1). Off by default now (manual placement above
