@@ -355,12 +355,16 @@ struct CookedSceneLights {
 // the ImGui overlay draws them as colored points + indices.
 struct ForwardPlusDemo {
 	bool enabled = false;
-	// Grid defaults sit at the UI slider maxima (12x8x12 -> 1152 grid
-	// lights, clamped to FP_MAX_LIGHTS minus the spot reserve): the dense
-	// crowd is the stress case the deferred-shadow pipeline is built for.
-	int gridX = 12;
-	int gridY = 8;
-	int gridZ = 12;
+	// Compact static 3x3x4 grid (36 points) around the origin, manual
+	// placement (no bounds fit): the deterministic fog/light A/B crowd
+	// (headless: VULKANTOY_LIGHTS=1 to enable, VULKANTOY_LIGHTS_STATIC=1
+	// to freeze). Spots stay 0 here — they orbit by wall-clock time and
+	// would break cross-run determinism; points carry no light
+	// function. UI sliders stay live for stress configs (the old dense
+	// 12x8x12 crowd was the DS pipeline stress case).
+	int gridX = 3;
+	int gridY = 3;
+	int gridZ = 4;
 	float spacingX = 3.0f;
 	float spacingY = 2.2f;
 	float spacingZ = 1.8f;
@@ -369,10 +373,9 @@ struct ForwardPlusDemo {
 	float intensity = 600.0f;
 	// Fit-to-scene: when true the point grid is centered on the loaded
 	// scene's world bounds and the per-axis spacing is derived as
-	// extent / (count - 1), so the crowd fills the scene (e.g. Bistro)
-	// instead of clustering around the origin. Spacing/baseY above are
-	// the manual fallback (fit off). Refit at load; the UI can refit.
-	bool fitToSceneBounds = true;
+	// extent / (count - 1). Off by default now (manual placement above
+	// is the deterministic A/B setup); the UI can refit + re-enable.
+	bool fitToSceneBounds = false;
 	glm::vec3 fitMin{ 0.0f }; // scene bounds at last fit (read-only in UI)
 	glm::vec3 fitMax{ 0.0f };
 	bool fitValid = false;    // false = bounds empty, manual placement used
@@ -381,9 +384,9 @@ struct ForwardPlusDemo {
 		fitMax = mx;
 		fitValid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z;
 	}
-	bool animate = true;
+	bool animate = false;
 	float speed = 0.6f;
-	int spotCount = 4;
+	int spotCount = 0;
 	float spotRange = 100.0f;
 	float spotIntensity = 900.0f;
 	// Spot shadows: per-light opt-in flag (demo sets it on all spots) +
@@ -2675,7 +2678,7 @@ protected:
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
-	float m_bloomThreshold = 1000.0f; // pre-exposure HDR threshold (== BLOOM_THRESHOLD; knee tracks at 0.25x)
+	float m_bloomThreshold = 400.0f; // pre-exposure HDR at the manual-exposure reference (== BLOOM_THRESHOLD; knee tracks at 0.25x; exposure-aware scaling inverts to 1/exposure)
 	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.

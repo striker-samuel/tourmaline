@@ -89,8 +89,13 @@ static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no ste
 // -----------------------------------------------------------------------------
 static constexpr uint32_t BLOOM_MIP_COUNT = 5;
 static constexpr uint32_t BLOOM_BASE_DIVISOR = 2; // base = hdr / 2 (half-res)
-static constexpr float BLOOM_THRESHOLD = 1000.0f; // pre-exposure HDR; sun-lit diffuse spans ~0-1600
-static constexpr float BLOOM_KNEE = 250.0f;       // keeps soft ratio knee/threshold = 0.25
+// Pre-exposure HDR reference (at TONEMAP_EXPOSURE = 0.001): 400 -> the
+// prefilter passes content above ~0.4 POST-exposure — the bright-but-
+// not-clipped zone of the GT7 curve (sky/windows/sun-lit walls, with
+// the knee rolling in from ~0.15). The old 1000 (1.0 post) sat above
+// GT7's shoulder start, so ONLY sun/sky ever bloomed.
+static constexpr float BLOOM_THRESHOLD = 400.0f;
+static constexpr float BLOOM_KNEE = 100.0f;        // keeps soft ratio knee/threshold = 0.25
 static constexpr float BLOOM_INTENSITY = 0.6f;
 static constexpr float BLOOM_UPSAMPLE_RADIUS = 1.0f;
 
@@ -111,7 +116,7 @@ static smvk::BloomDesc MakeBloomDesc() {
 // Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
 // -----------------------------------------------------------------------------
 static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 ≈ HDR 5 pre-tonemap
-static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7
+static constexpr uint32_t TONEMAP_MODE = 3; // 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7 (== m_tonemapMode default)
 
 static smvk::TonemapDesc MakeTonemapDesc() {
 	smvk::TonemapDesc d{};
@@ -7628,12 +7633,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// FrameExposure; 1-frame adaptation lag in the Lit view).
 		const float frameExposure = FrameExposure();
 		// Exposure-aware bloom: the threshold/knee are authored for the
-		// reference (manual) exposure; scale them so bloom strength stays
-		// constant as auto-exposure shifts. Applied after Ensure (which
-		// resets desc to MakeBloomDesc) and before the bloom passes below.
-		// Intensity rides along so the tonemap add matches the sliders.
+		// reference (manual) exposure; scale them so the bloom trigger
+		// stays on the same VISUAL content as auto-exposure shifts. A
+		// pixel's tonemapped output depends only on L*exposure, so
+		// "blooms iff L*exposure > K" means the pre-exposure threshold
+		// scales with 1/exposure — the OLD direct scaling (threshold *
+		// exposure) inverted this: dark-adapting scenes (exposure up)
+		// pushed the effective threshold to 2-3x the slider value, and
+		// bloom silently died until the threshold was slid way down.
+		// Applied after Ensure (which resets desc to MakeBloomDesc) and
+		// before the bloom passes below. Intensity rides along so the
+		// tonemap add matches the sliders.
 		if (m_viewportResources.bloom.Valid() && TONEMAP_EXPOSURE > 0.0f) {
-			const float bloomScale = frameExposure / TONEMAP_EXPOSURE;
+			const float bloomScale = TONEMAP_EXPOSURE
+				/ std::max(frameExposure, 1e-9f);
 			m_viewportResources.bloom.desc.threshold = m_bloomThreshold * bloomScale;
 			m_viewportResources.bloom.desc.knee = m_bloomThreshold * 0.25f * bloomScale;
 			m_viewportResources.bloom.desc.intensity = m_bloomIntensity;
@@ -10546,6 +10559,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 			}
 		if (volOn) {
+			// Forward+ tile lists for the fog's in-scatter leg: published
+			// under the cvol-mask freshness contract (TileCullWillRun —
+			// same dispatch writes both, so frameData.cvolTileCountX != 0
+			// in the shader implies these are fresh too). Zeros = the
+			// shader walks [0, fpLightCount) directly instead.
+			uint64_t volFpTileCounts = 0, volFpTileIndices = 0;
+			if (m_viewportResources.forwardPlus.Valid() && TileCullWillRun()) {
+				volFpTileCounts =
+					m_viewportResources.forwardPlus.TileCountsAddress(*m_context);
+				volFpTileIndices =
+					m_viewportResources.forwardPlus.TileIndicesAddress(*m_context);
+			}
 			auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 				*m_rendergraph,
 				sceneHdrView,
@@ -10557,7 +10582,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				renderExtent,
 				frameData.time,
 				volDesc,
-				"Volumetric");
+				"Volumetric",
+				volFpTileCounts,
+				volFpTileIndices,
+				fpLightsAddress,
+				fpLightCount,
+				FP_MAX_PER_TILE);
 			// Convex-volume tile masks: the fog march reads the per-tile
 			// volume bitmask (fragment) after the tile cull wrote it
 			// (compute) — order the edge (same freshness contract as the
@@ -10565,6 +10595,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			if (frameData.cvolTileMasks != 0) {
 				smvk::ForwardPlus::AddVolumeMaskReadHints(volPass,
 					m_viewportResources.forwardPlus.volumeTileMasksLogical);
+			}
+			// Forward+ tile lists: same cull->fog edge for the in-scatter
+			// leg (published iff the cull ran — see above).
+			if (volFpTileCounts != 0) {
+				smvk::ForwardPlus::AddTileReadHints(volPass,
+					m_viewportResources.forwardPlus.tileCountsLogical,
+					m_viewportResources.forwardPlus.tileIndicesLogical);
 			}
 			sceneHdrView = m_viewportResources.volumetric.OutputView();
 			sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
@@ -12131,9 +12168,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
 						(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
 					if (!m_viewportResources.exposure.Valid())
-						ImGui::TextDisabled("Meter missing � manual exposure only");
+						ImGui::TextDisabled("Meter missing manual exposure only");
 					else
-						ImGui::TextDisabled("Bloom threshold scales with exposure (ref %.4f); percentile %.0f%%, key %.2f",
+						ImGui::TextDisabled("Bloom threshold scales with 1/exposure (ref %.4f); percentile %.0f%%, key %.2f",
 							TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
 							m_viewportResources.exposure.desc.keyValue);
 				}

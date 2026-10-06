@@ -72,7 +72,7 @@ ConstantBuffer<SsrTracePush> sp;
 // reflections at defaults top out around the sun disc (~5000). Past the
 // cap lives only aliasing spikes (a noisy normal + dithered origin
 // striking the disc for a single pixel) and half-overflow garbage —
-// exactly what blooms (threshold 1000) and the exposure top bin would
+// exactly what blooms (threshold 400) and the exposure top bin would
 // otherwise amplify. The intensity knob stays the artistic gate below it.
 static const float kSsrMaxReflected = 8192.0f;
 
@@ -595,7 +595,7 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
     // normal + dithered origin striking the sun disc would otherwise
     // inject up to 4x sun lux next to ~100s neighbors — the spike bloom
-    // (threshold 1000) and the exposure top bin then amplify.
+    // (threshold 400) and the exposure top bin then amplify.
     float3 capped = min(reflected * (fres * glossFade * sp.intensity),
                         float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
     OUT.outColor = float4(capped, hitFade);

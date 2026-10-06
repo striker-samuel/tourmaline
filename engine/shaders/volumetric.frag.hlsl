@@ -17,7 +17,7 @@ struct PSOut
     float4 outColor : SV_Target0;
 };
 
-// Must match Engine/Rendergraph/volumetric.h VolumetricPush (96 bytes).
+// Must match Engine/Rendergraph/volumetric.h VolumetricPush (128 bytes).
 struct VolumetricPush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -40,7 +40,15 @@ struct VolumetricPush
     float heightFalloff;
     float heightBase;
     float time;
-    uint pad1;
+    uint pad1;              // 8-align filler for the BDA tail below
+    // Forward+ light feed for fog in-scatter (tile lists ride the cull
+    // freshness contract — frame.cvolTileCountX != 0 implies fresh;
+    // the light buffer + count publish whenever uploaded).
+    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts; // 0 = stale
+    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices; // 0 = stale
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
+    uint fpLightCount;      // lights-only bound (probes sort after)
+    uint fpMaxPerTile;      // list stride - probe slots (matches pc)
 };
 
 [[vk::push_constant]]
@@ -76,6 +84,105 @@ float3 VolGiMean(float3 amps[SG_GI_LOBES])
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         sum += amps[i];
     return sum * 0.124959f;
+}
+
+// ---------------------------------------------------------------------------
+// Forward+ tiled lights -> fog in-scatter (the same lights that shade the
+// surfaces now light the medium). SCALAR ONLY (fog has no normal: no
+// Lambert, no specular, no shadowing — single scattering) — the in-scatter
+// core of EvaluateForwardPlusLight (default_lit_body.hlsli) with its
+// Cook-Torrance half dropped, plus the HG phase toward the VIEWER (the
+// same p(cosT)/4pi the sun leg applies). Cookies/light functions are
+// surface effects and stay out. Per REFRESH, not per segment (ambient
+// cadence): the lights sit at fixed world positions, so the field is as
+// smooth as the ambient — and the per-light loop never runs inside the
+// hot march.
+// Tile lists are fresh when the cull ran this frame (the app publishes the
+// list addresses under the same freshness contract as the cvol tile masks;
+// frame.cvolTileCountX != 0 is the cross-check — one dispatch writes both).
+// Stale/absent lists (or an off-grid tile) walk [0, fpLightCount)
+// directly — correct, just unculled.
+// ---------------------------------------------------------------------------
+static const float kVolPi = 3.14159265359;
+
+// One light's in-scatter radiance contribution at pos (candela convention:
+// intensity * window / (4pi r^2), spots add the cone angular fade).
+float3 VolLightInScatter(ForwardPlusLight pl, float3 pos, float3 rayDir)
+{
+    float3 toLight = pl.position - pos;
+    float dist2 = dot(toLight, toLight);
+    if (pl.range > 0.0f && dist2 > pl.range * pl.range)
+        return float3(0.0, 0.0, 0.0);
+    const float dist = sqrt(dist2);
+    const float3 L = toLight / max(dist, 1e-6f);
+    // Frostbite windowed falloff (EvaluateForwardPlusLight's core).
+    float window_ = 1.0f;
+    if (pl.range > 0.0f)
+    {
+        const float x = dist / max(pl.range, 1e-6f);
+        window_ = pow(saturate(1.0f - x * x * x * x), 2.0f);
+    }
+    const float atten = window_ / max(4.0f * kVolPi * dist * dist, 1e-2f);
+    float3 plColor = pl.color.rgb * pl.intensity;
+    if (pl.type == 1) // spot: cone angular fade
+    {
+        const float cosA = dot(-L, pl.direction);
+        const float cosOuter = cos(pl.outerAngle);
+        if (cosA < cosOuter)
+            return float3(0.0, 0.0, 0.0);
+        const float cosInner = cos(pl.innerAngle);
+        plColor *= smoothstep(cosOuter, cosInner, cosA);
+    }
+    // Phase toward the viewer (the sun leg's p(cosT)/4pi — the medium
+    // scatters light from every arrival direction, so each light pays
+    // its own phase instead of the sun's fixed cosSun).
+    const float phase = VolPhaseHg(dot(rayDir, L), vp.anisotropy) * 0.0795775f;
+    return plColor * (atten * phase);
+}
+
+// All forward+ lights' in-scatter at pos: tile-list walk when the lists
+// are fresh (cull ran this frame), else the unculled light head.
+float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
+    uint2 pix)
+{
+    const uint nLights = min(vp.fpLightCount, (uint)MAX_FP_LIGHTS);
+    if (nLights == 0u)
+        return float3(0.0, 0.0, 0.0);
+    if (frame.cvolTileCountX != 0u)
+    {
+        const uint ts = max(frame.cvolTileSize, 1u);
+        const uint tx = (uint)(pix.x / (float)ts);
+        if (tx < frame.cvolTileCountX)
+        {
+            const uint ty = (uint)(pix.y / (float)ts);
+            const uint tile = ty * frame.cvolTileCountX + tx;
+            if (tile < (uint)MAX_FP_TILES)
+            {
+                const uint perTile = min(vp.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+                const uint listCount = min(
+                    vp.fpTileCounts.Get().counts[tile] & 0xFFFFu, perTile);
+                const uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
+                const uint baseIdx = tile * stride;
+                float3 acc = float3(0.0, 0.0, 0.0);
+                [loop]
+                for (uint s = 0u; s < listCount; ++s)
+                {
+                    const uint li = vp.fpTileIndices.Get().indices[baseIdx + s];
+                    if (li >= nLights)
+                        continue; // probe entry (rides the buffer tail)
+                    acc += VolLightInScatter(vp.fpLights.Get().lights[li],
+                        pos, rayDir);
+                }
+                return acc;
+            }
+        }
+    }
+    // Stale/absent lists: unculled walk over the light head.
+    float3 acc = float3(0.0, 0.0, 0.0);
+    [loop]
+    for (uint li = 0u; li < nLights; ++li)
+        acc += VolLightInScatter(vp.fpLights.Get().lights[li], pos, rayDir);
+    return acc;
 }
 
 PSOut mainPS(PSIn IN)
@@ -197,6 +304,12 @@ PSOut mainPS(PSIn IN)
     if (fogGiOn)
         SgCvRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
 
+    // Held forward+ light in-scatter (per-ambient-refresh — the lights
+    // sit at fixed world positions, so the field is as smooth as the
+    // ambient; never evaluated inside the hot march).
+    float3 lightsHeld = float3(0.0, 0.0, 0.0);
+    const bool fogLightsOn = vp.fpLightCount > 0u;
+
     // Ambient base: the GI-off value is pixel-constant (one sky eval for
     // the whole march); the GI-on value refreshes on the cadence below.
     float3 ambient = skyMean * giStrength;
@@ -254,11 +367,16 @@ PSOut mainPS(PSIn IN)
                 const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
                     && SgGiSampleMean(frame, wpos, octMean);
                 baseHeld = octreeCovered ? octMean : skyMean;
+                // Forward+ lights (same cadence — smooth field): the
+                // direct in-scatter contribution at this depth.
+                if (fogLightsOn)
+                    lightsHeld = VolForwardPlusLights(frame, wpos, rayDir,
+                        (uint2)IN.pos.xy);
             }
             ambient = (volAcc + baseHeld * volTrans) * giStrength;
         }
 
-        float3 source = ambient;
+        float3 source = ambient + lightsHeld;
         if (sunOn > 0.5)
             source += sunHdr * (phase * max(vp.sunScale, 0.0f));
         // Quarantine: a non-finite baked probe amplitude (NaN/Inf) must cost
