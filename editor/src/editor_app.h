@@ -912,6 +912,19 @@ private:
 	// Terrain tiles emit with their group's createTerrain. Recursion
 	// terminates: each step walks to a strictly earlier create.
 	static bool ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot);
+	// The parent slot a create EMITS (the LIVE parent — reparents ride
+	// the create line itself, so the tour always carries the current
+	// parenting and Parent verbs on created children are redundant).
+	// -1 (detached) reads as the world root (0).
+	static uint32_t CreateEmitParent(const EditorApp& app, const EditCmd& h);
+	// True when this world node is the child of a history create (any of
+	// the six create verbs): its Parent verbs never persist as Parent
+	// lines (the child owns no cluster id to address one by) — when the
+	// create emits, the create line carries the live parent (see
+	// CreateEmitParent); when it doesn't, the child isn't in the file
+	// at all. Save skips such Parent lines silently either way.
+	static bool IsCreatedChild(const EditorApp& app,
+		uint32_t childNode);
 	// Tour-stable default parent for new lights: the primary cluster's
 	// root (WorldToCluster maps it to cluster id 0), else world root.
 	uint32_t DefaultCreateParent() const;

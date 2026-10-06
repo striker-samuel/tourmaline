@@ -4108,10 +4108,50 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 					? " (volumetrics=0: analytic fallback)" : ""))
 				<< "\n";
 		}
+		PackCookedLightsFromWorld(true);
+		// Seed the SCENE's sun from the authored light so the sky disc, IBL
+		// tint and shadow-casting light stay in sync (sun fields only — the
+		// env block is lux-native, so the light's lux copy straight in,
+		// like the editor's cooked-sun seed). Runs only when the scene
+		// carries no authored look (old content without env blocks); a
+		// tour/cooked env always wins. The user can still retouch the look
+		// afterwards (this runs once at load/rebind).
+		if (m_cookedLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
+			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
+			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+			sceneEnv.sunElevation = glm::degrees(std::asin(
+				std::clamp(t.y, -1.0f, 1.0f)));
+			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
+			sceneEnv.sunColor = m_cookedLights.sunColor;
+			sceneEnv.sunIntensity = m_cookedLights.sunIntensity;
+			m_world->scene.environment = sceneEnv;
+			m_world->scene.hasEnvironment = true;
+			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
+				<< " el=" << sceneEnv.sunElevation
+				<< " I=" << sceneEnv.sunIntensity << "\n";
+		}
+	}
+
+	// Per-edit refresh entry (the editor calls it after every command so
+	// created/moved/deleted lights show in the hosted view the same
+	// frame — the bind-time build above runs once per load/rebind and
+	// would otherwise leave the hosted pack stale).
+	void WorldRenderer::RebuildCookedLights() {
+		if (!m_world)
+			return;
+		PackCookedLightsFromWorld(false);
+	}
+
+	// Light pack shared by the bind-time build (log there) and the
+	// per-edit refresh (pack only — no env writes, no world mutation,
+	// no log). Reads the LIVE world, so edits apply.
+	void WorldRenderer::PackCookedLightsFromWorld(bool log) {
+		m_cookedLights.clear();
 		const ::Scene& scene = m_world->scene;
 		const auto& lightLocs = m_world->lightLocations;
 		if (lightLocs.empty() || scene.lightForNode.empty()) {
-			std::cerr << "[Scene] no cooked lights (procedural Forward+ active)\n";
+			if (log)
+				std::cerr << "[Scene] no cooked lights (procedural Forward+ active)\n";
 			return;
 		}
 		// Deterministic node order (pak order is already sorted, but the
@@ -4224,7 +4264,10 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 							break;
 						}
 					}
-					if (sl.cookieIndex < 0)
+					if (sl.cookieIndex >= 0)
+						m_cookieWarnedUris.erase(L.cookieUri);
+					else if (m_cookieWarnedUris.insert(
+							L.cookieUri).second)
 						std::cerr << "[Scene] spot '" << L.name
 							<< "': cookie '" << L.cookieUri
 							<< "' unresolved (no cluster texture) — "
@@ -4244,37 +4287,19 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 		m_cookedLights.pointSpots.insert(
 			m_cookedLights.pointSpots.end(), points.begin(), points.end());
 		if (m_cookedLights.pointSpots.size() > FP_MAX_LIGHTS) {
-			std::cerr << "[Scene] cooked lights clamped: "
-				<< m_cookedLights.pointSpots.size() << " -> " << FP_MAX_LIGHTS << "\n";
+			if (log)
+				std::cerr << "[Scene] cooked lights clamped: "
+					<< m_cookedLights.pointSpots.size() << " -> " << FP_MAX_LIGHTS << "\n";
 			m_cookedLights.pointSpots.resize(FP_MAX_LIGHTS);
 		}
-		// Seed the SCENE's sun from the authored light so the sky disc, IBL
-		// tint and shadow-casting light stay in sync (sun fields only — the
-		// env block is lux-native, so the light's lux copy straight in,
-		// like the editor's cooked-sun seed). Runs only when the scene
-		// carries no authored look (old content without env blocks); a
-		// tour/cooked env always wins. The user can still retouch the look
-		// afterwards (this runs once at load/rebind).
-		if (m_cookedLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
-			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
-			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
-			sceneEnv.sunElevation = glm::degrees(std::asin(
-				std::clamp(t.y, -1.0f, 1.0f)));
-			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
-			sceneEnv.sunColor = m_cookedLights.sunColor;
-			sceneEnv.sunIntensity = m_cookedLights.sunIntensity;
-			m_world->scene.environment = sceneEnv;
-			m_world->scene.hasEnvironment = true;
-			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
-				<< " el=" << sceneEnv.sunElevation
-				<< " I=" << sceneEnv.sunIntensity << "\n";
-		}
-		std::cerr << "[Scene] cooked lights: spots=" << spots.size()
-			<< " points=" << points.size()
-			<< (m_cookedLights.hasSun ? " + sun" : " (no sun)");
-		if (staticBakeOnly > 0)
-			std::cerr << " | static(bake-only)=" << staticBakeOnly;
-		std::cerr << "\n";
+		if (log)
+			std::cerr << "[Scene] cooked lights: spots=" << spots.size()
+				<< " points=" << points.size()
+				<< (m_cookedLights.hasSun ? " + sun" : " (no sun)")
+				<< (staticBakeOnly > 0
+					? " | static(bake-only)=" + std::to_string(staticBakeOnly)
+					: "")
+				<< "\n";
 	}
 
 	// ---------------------------------------------------------------------
@@ -4285,9 +4310,9 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 	// bob animation) and the orbiting spots on the CPU and uploads the
 	// Forward+ light buffer directly. The ImGui overlay draws the lights
 	// as colored points + indices (see the UI block in RenderFrame).
-	// When the scene carries cooked KHR_lights_punctual lights (and the
-	// cooked toggle is on) those are uploaded INSTEAD — static authored
-	// placement, no orbit/bob, no cookies/functions.
+	// When the scene carries cooked KHR_lights_punctual lights those are
+	// uploaded INSTEAD — static authored placement, no orbit/bob (cookies
+	// + light functions ride the authored fields).
 	// ---------------------------------------------------------------------
 	// Builds the procedural Forward+ demo light set into the per-frame upload
 	// buffer. Returns the number of lights written (clamped to FP_MAX_LIGHTS).

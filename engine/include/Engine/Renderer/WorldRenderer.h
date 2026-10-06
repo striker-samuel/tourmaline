@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -1125,6 +1126,13 @@ public:
 	// the lines and every Main draws them. The windowed App never
 	// enables it (no UI, no key — off by default).
 	void DriveGrid(bool show, float cellSizeMeters, uint32_t extentCells);
+	// HOSTED cooked-lights refresh (editor live view): re-packs the
+	// forward+ light set from the borrowed world NOW (the bind-time
+	// build runs once per load/rebind). The editor calls it after every
+	// command so created/moved/deleted lights show the same frame.
+	// Pack only: no env seeding, no world mutation, no log. The windowed
+	// App never calls it (its world is immutable after load).
+	void RebuildCookedLights();
 	// Per-view output extent (recreates the view's image at the next
 	// rendered frame; 0 = keep).
 	void SetViewExtent(uint32_t view, smvk::Extent2D extent);
@@ -1690,6 +1698,12 @@ protected:
 	// switchable; cooked lights win over it whenever present).
 	CookedSceneLights m_cookedLights{};
 	void BuildCookedLightsFromWorld();
+	// Light pack shared by the bind-time build (log=true) and the
+	// per-edit refresh (log=false). Reads the LIVE world.
+	void PackCookedLightsFromWorld(bool log);
+	// Unresolved cookie URIs already warned about (warn-once-until-
+	// resolved, so a dangling cookie doesn't spam per refresh).
+	std::unordered_set<std::string> m_cookieWarnedUris;
 	bool CookedLightsActive() const {
 		return m_cookedLights.hasLights();
 	}

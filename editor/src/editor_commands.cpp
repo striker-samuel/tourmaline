@@ -640,7 +640,10 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 	// link + not deleted + parent slot resolvable) so the family -ref
 	// index spaces stay identical to the file's create sets. Any
 	// divergence re-produces dangling "setXAttr -ref k" lines (the
-	// "ref out of range" cook failures).
+	// "ref out of range" cook failures). The parent slot is the LIVE
+	// parent (see CreateEmitParent): reparents ride the create line
+	// itself, so the check must follow the live hierarchy, not the
+	// recorded creation-time parent.
 	if (!app.m_world)
 		return false;
 	const Scene& scene = app.m_world->scene;
@@ -649,47 +652,76 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 		return false;
 	if (app.m_deletedNodes.contains(created))
 		return false;
-	uint32_t parentSlot = UINT32_MAX;
 	switch (h.verb) {
 	case EditVerb::CreateLight: {
 		if (!app.FindNodeLight(created, nullptr))
 			return false; // detached (tombstoned)
-		parentSlot = h.node2;
 		break;
 	}
 	case EditVerb::CreateCVolume: {
 		if (!scene.cvolForNode.contains(created))
 			return false; // detached (tombstoned)
-		parentSlot = h.node2;
 		break;
 	}
 	case EditVerb::CreateCubemap: {
 		if (!scene.cubemapForNode.contains(created))
 			return false; // detached (tombstoned)
-		parentSlot = h.node2;
 		break;
 	}
 	case EditVerb::CreateCamera: {
 		if (!app.FindNodeCamera(created))
 			return false; // detached (tombstoned)
-		parentSlot = h.node2;
 		break;
 	}
 	case EditVerb::CreateTransform:
 		// No links to detach: alive == not deleted (checked above).
-		parentSlot = h.node2;
 		break;
 	case EditVerb::CreateTerrain: {
 		auto git = app.m_terrainGroups.find(created);
 		if (git == app.m_terrainGroups.end() || git->second.deleted)
 			return false; // deleted (tombstoned) group
-		parentSlot = h.beforeParent; // node2 packs tilesX|tilesZ<<16
 		break;
 	}
 	default:
 		return false;
 	}
-	return ParentResolvesInTour(app, parentSlot);
+	return ParentResolvesInTour(app, CreateEmitParent(app, h));
+}
+
+uint32_t EditorApp::CreateEmitParent(const EditorApp& app, const EditCmd& h) {
+	// Live-parent emission (see the header note): the hierarchy IS the
+	// current parenting (reparents, undos and replays all land there),
+	// so the file carries it directly instead of relying on a Parent
+	// verb the child may not be addressable by (editor-created children
+	// own no cluster id — their Parent lines could never persist).
+	if (!app.m_world)
+		return UINT32_MAX;
+	const Scene& scene = app.m_world->scene;
+	if (h.node == UINT32_MAX || h.node >= scene.hierarchy.size())
+		return UINT32_MAX;
+	const int p = scene.hierarchy[h.node].parent;
+	return p < 0 ? 0 : uint32_t(p); // detached reads as the world root
+}
+
+bool EditorApp::IsCreatedChild(const EditorApp& app,
+	uint32_t childNode) {
+	// Any history create targeting this child (the six create verbs):
+	// the child's Parent verbs never persist as Parent lines (see the
+	// header note) and skip silently at save.
+	for (size_t i = 0; i < app.m_historyCursor
+		&& i < app.m_history.size(); ++i) {
+		const EditCmd& h = app.m_history[i];
+		if (h.node != childNode)
+			continue;
+		if (h.verb == EditVerb::CreateLight
+			|| h.verb == EditVerb::CreateCVolume
+			|| h.verb == EditVerb::CreateCubemap
+			|| h.verb == EditVerb::CreateCamera
+			|| h.verb == EditVerb::CreateTransform
+			|| h.verb == EditVerb::CreateTerrain)
+			return true;
+	}
+	return false;
 }
 
 bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) {
@@ -2334,6 +2366,12 @@ void EditorApp::Do(EditCmd c) {
 	// mirror (creates/deletes/attr edits) — the lazy per-frame rebuild
 	// below diffs and no-ops when nothing changed.
 	m_cubemapBallsDirty = true;
+	// Any edit can change the light set the hosted view renders
+	// (creates/deletes/moves/attr edits): refresh the hosted cooked
+	// pack now — the bind-time build runs once per load/rebind and
+	// would otherwise leave fresh lights dark until the next rebind.
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->RebuildCookedLights();
 	AutosaveTour();
 }
 
@@ -2356,6 +2394,8 @@ void EditorApp::PushDone(EditCmd c) {
 		--m_historyCursor;
 	}
 	m_cubemapBallsDirty = true; // see Do() above
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();
 }
 
@@ -2366,6 +2406,8 @@ bool EditorApp::Undo() {
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
 	m_cubemapBallsDirty = true; // see Do() above
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2386,6 +2428,8 @@ bool EditorApp::Redo() {
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
 	m_cubemapBallsDirty = true; // see Do() above
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2894,15 +2938,19 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		const ::SceneLight* L = app.FindNodeLight(created, nullptr);
 		if (!L)
 			return false; // detached (tombstoned): nothing to persist
-		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0 && c.node2 != 0) {
+		// Parent = the LIVE parent (reparents ride the create line
+		// itself — see CreateEmitParent; Parent verbs on created
+		// children skip silently at save).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent (no cluster id until replay): emit
 			// the SYMBOLIC -p form (name/path; the parent's own create
 			// lands earlier in file order, so replay resolves it)
 			// instead of dropping the create — the drop desynced the
 			// family -ref spaces ("setLightAttr ref out of range").
-			if (!parentRefFor(c.node2).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.node2))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -2913,7 +2961,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.nodeType = (L->type == ::SceneLight::Type::Spot)
 			? "spotLight" : "pointLight";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.node2);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = L->name;
 		out.vec = t;
 		out.vec4 = glm::vec4(
@@ -2940,12 +2988,17 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			if (git != app.m_terrainGroups.end() && git->second.deleted)
 				return false;
 		}
-		int pp = app.WorldToCluster(c.beforeParent);
-		if (pp < 0 && c.beforeParent != 0) {
+		int pp = 0;
+		// Parent = the LIVE parent (reparents ride the create line
+		// itself — see CreateEmitParent; Parent verbs on created
+		// children skip silently at save).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the terrain silently.
-			if (!parentRefFor(c.beforeParent).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.beforeParent))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -2955,7 +3008,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "terrain";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.beforeParent);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = c.afterText;
 		out.vec = t;
 		out.vec4 = c.vec4;         // (size, res, height, freq)
@@ -2977,12 +3030,15 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		if (app.m_deletedNodes.contains(created))
 			return false;
-		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0 && c.node2 != 0) {
+		// Parent = the LIVE parent (reparents ride the create line
+		// itself — see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the transform silently.
-			if (!parentRefFor(c.node2).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.node2))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -2992,7 +3048,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "transform";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.node2);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
 		out.vec4 = glm::vec4(r, 0.0f);
@@ -3050,12 +3106,14 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
-		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0 && c.node2 != 0) {
+		// Parent = the LIVE parent (see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the cvolume silently.
-			if (!parentRefFor(c.node2).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.node2))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -3065,7 +3123,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "cvolume";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.node2);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
 		out.svec = glm::vec3(std::max(s.x, 1e-3f),
@@ -3107,8 +3165,10 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
-		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0 && c.node2 != 0) {
+		// Parent = the LIVE parent (see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent (e.g. the auto-selected previous
 			// create — DraftCreateCubemap parents under the selection):
 			// emit the SYMBOLIC -p form instead of dropping the create.
@@ -3116,8 +3176,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			// "setCubemapAttr -ref k" lines and the cook failure
 			// "tour: setCubemapAttr ref out of range: 0" (GiBaker and
 			// PakCooker both abort on it).
-			if (!parentRefFor(c.node2).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.node2))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -3127,7 +3187,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "cubemap";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.node2);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
 		out.number = double(cmit->second.radius);
@@ -3164,12 +3224,14 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
-		int pp = app.WorldToCluster(c.node2);
-		if (pp < 0 && c.node2 != 0) {
+		// Parent = the LIVE parent (see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = app.WorldToCluster(liveParent);
+		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
 			// CreateLight case) — never drop the camera silently.
-			if (!parentRefFor(c.node2).empty()
-				&& EditorApp::ParentResolvesInTour(app, c.node2))
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
 			else
 				return false;
@@ -3179,7 +3241,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::CreateNode;
 		out.nodeType = "camera";
 		out.node = uint32_t(pp);
-		out.parentRef = parentRefFor(c.node2);
+		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
 		out.svec = r;
@@ -3559,6 +3621,9 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		}
 		// Symbolic parents: unnamed targets need recorded uuids so
 		// the -p slot can carry them (named ones ride names/paths).
+		// Creates emit their LIVE parent (see CreateEmitParent), so
+		// the uuid pass follows the live hierarchy, not the recorded
+		// creation-time parent.
 		if (c.verb == EditVerb::Parent) {
 			ensureUuid(c.node);
 			ensureUuid(c.node2);
@@ -3569,7 +3634,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			|| c.verb == EditVerb::CreateCVolume
 			|| c.verb == EditVerb::CreateCubemap
 			|| c.verb == EditVerb::CreateCamera) {
-			ensureUuid(c.node2);
+			ensureUuid(CreateEmitParent(*this, c));
 		}
 	}
 	// Emit the whole identity map (cluster-backed, node-id order —
@@ -3614,6 +3679,15 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// bool — never the command log (purges legacy toggle lines).
 		if (m_history[i].verb == EditVerb::SetVisibility
 			&& IsRefPlaceholder(m_history[i].node))
+			continue;
+		// Parent verbs on editor-created children never persist (see
+		// IsCreatedChild): when the child's create emits, the create
+		// line carries the live parent; when it doesn't, the child
+		// isn't in the file at all. Skip silently either way (no
+		// "unmapped command" spam — the outcome is structural, not a
+		// translation miss).
+		if (m_history[i].verb == EditVerb::Parent
+			&& IsCreatedChild(*this, m_history[i].node))
 			continue;
 		smvk::tour::Command tc{};
 		if (!CmdToTour(*this, m_history[i], tc)) {
@@ -4555,6 +4629,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// editor state matches the parsed doc exactly.
 	if (!doc.references.empty())
 		m_references = doc.references;
+	// The replay rebuilt the world in place (same object — no rebind):
+	// refresh the hosted cooked pack now, or reloaded lights stay dark
+	// until the next command.
+	if (m_wysiwyg && m_world)
+		m_wysiwyg->RebuildCookedLights();
 	return true;
 }
 
