@@ -1685,11 +1685,13 @@ protected:
 	ForwardPlusDemo m_fpDemo{};
 	// Cooked KHR_lights_punctual set for the loaded scene (built once in
 	// BuildCookedLightsFromWorld after Resolve; see world_renderer.cpp).
+	// If the scene carries ANY lights, they render — no enable toggle
+	// (the procedural demo crowd below is the test path and stays
+	// switchable; cooked lights win over it whenever present).
 	CookedSceneLights m_cookedLights{};
-	bool m_useCookedLights = true;
 	void BuildCookedLightsFromWorld();
 	bool CookedLightsActive() const {
-		return m_useCookedLights && m_cookedLights.hasLights();
+		return m_cookedLights.hasLights();
 	}
 	// ---- Forward+ decals (tiled projected splats; see DecalDemo) ----
 	DecalDemo m_decalDemo{};

@@ -11232,12 +11232,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (ImGui::CollapsingHeader("Lighting & Shadows")) {
 					if (ImGui::CollapsingHeader("Forward+ Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (!m_cookedLights.pointSpots.empty() || m_cookedLights.hasSun) {
-							ImGui::Checkbox("Use cooked scene lights", &m_useCookedLights);
+							// The scene's lights always render when present
+							// (no enable toggle — cooked wins over the
+							// procedural crowd below whenever it exists).
 							ImGui::TextDisabled("Cooked: %u point/spot%s%s",
 								(unsigned)m_cookedLights.pointSpots.size(),
 								m_cookedLights.hasSun ? " + sun" : "",
-								CookedLightsActive() ? " (active — procedural off)"
-								: " (off — procedural fallback)");
+								" (active — procedural off)");
 						}
 						ImGui::Checkbox("Tiled point/spot lights (F)", &m_fpDemo.enabled);
 						ImGui::Checkbox("Animate", &m_fpDemo.animate);
