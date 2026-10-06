@@ -148,6 +148,20 @@ struct MaterialAssetCmd {
 	std::string name; // display name
 };
 
+// Texture-asset import (ordered editor-side POOL imports, replayed
+// BEFORE the command list on both sides so the textures the scene needs
+// resolve exactly like the authoring session): cookie .texture files
+// (a .texture + its source image beside it) minted into the cluster
+// pool. The record order IS the TEXTURE import order (before the
+// material-asset records, so a material referencing a .texture finds
+// its pool entry). Textures the glTF itself imports need no record
+// (reference-bound, like every other cluster content).
+struct TextureAssetCmd {
+	std::string path;  // .texture source (project-relative or absolute,
+	                   // POSIX separators — the reference-source convention)
+	std::string name; // display name
+};
+
 enum class Verb : uint8_t {
 	Rename,
 	SetTranslate,
@@ -417,6 +431,11 @@ struct Doc {
 	// the editor AND the cook BEFORE the command list, so pool indices
 	// recorded by assignMaterial/-m lines match the authoring session.
 	std::vector<MaterialAssetCmd> materialAssets;
+	// Texture-asset imports (ordered; see TextureAssetCmd): replayed by
+	// the editor AND the cook BEFORE the material-asset records, so a
+	// material (or a light cookie) referencing a .texture finds its pool
+	// entry exactly like the authoring session.
+	std::vector<TextureAssetCmd> textureAssets;
 	// fileInfo constants (Maya fileInfo block): fixed format metadata
 	// (application/product/version), then anything carried. Written
 	// right after the references.

@@ -147,6 +147,12 @@ public:
 		virtual void Update() {}
 		virtual void LateUpdate() {}
 		virtual void OnFramebufferResized(int width, int height);
+		// RAW SDL event tap (every event PollEvents pumps, after the
+		// ImGui hook, before the Input consume). Hosts that need non-
+		// input events — e.g. the editor's OS drag-and-drop
+		// (SDL_EVENT_DROP_FILE) — override this instead of duplicating
+		// the pump. Default: no-op.
+		virtual void OnSDLEvent(const SDL_Event&) {}
 #pragma endregion
 	};
 

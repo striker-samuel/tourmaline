@@ -57,12 +57,14 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 	}
 }
 
-bool smvk::App::PollEvents() {
+	bool smvk::App::PollEvents() {
 	SDL_Event e;
 	while (SDL_PollEvent(&e)) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
 		if (imguiEventHook_)
 			imguiEventHook_(&e);
+		// Raw event tap (the editor's OS drag-and-drop rides it).
+		OnSDLEvent(e);
 		if ((e.type == SDL_EVENT_WINDOW_RESIZED ||
 				e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
 			window && e.window.windowID == SDL_GetWindowID(window)) {

@@ -570,6 +570,15 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 				m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
+		if (ImGui::MenuItem("Cubemap capture balls", nullptr,
+				m_showCubemapBalls)) {
+			m_showCubemapBalls = !m_showCubemapBalls;
+			m_cubemapBallsDirty = true;
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Chrome spheres parented under the capture "
+				"nodes, lit by the scene IBL — each ball reads its baked "
+				"cubemap at the capture spot.");
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
@@ -1147,6 +1156,8 @@ void EditorApp::DrawSceneOutliner() {
 				continue; // deleted (Maya delete): out of the live scene
 			if (InDisabledRefSubtree(n))
 				continue; // disabled reference tree: not shown, not read
+			if (IsVisualHelperNode(n))
+				continue; // editor-visual (cubemap balls): not scene content
 			const std::string name = getNodeName(m_world->scene, int(n));
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
@@ -1208,6 +1219,8 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
 	if (m_deletedNodes.contains(node))
 		return; // deleted (Maya delete): out of the live scene
+	if (IsVisualHelperNode(node))
+		return; // editor-visual (cubemap balls): not scene content
 	m_outlinerOrder.push_back(node); // visible-row order (shift-range)
 	const Scene& scene = m_world->scene;	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);
@@ -2038,6 +2051,14 @@ void EditorApp::DrawInspector() {
 			DrawAssetReadonlyPage();
 			return;
 		}
+		// IMPORTABLE SOURCE page: a supported image format selected but
+		// not yet imported as an asset — probe + the import button (the
+		// .texture wrap picks the settings up from here on).
+		if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".tga"
+			|| e == ".bmp" || e == ".ktx2") {
+			DrawImportableTexturePage();
+			return;
+		}
 	}
 	// World pseudo-node page (global render settings, not a scene node).
 	if (m_worldSelected) {
@@ -2476,20 +2497,119 @@ void EditorApp::DrawInspector() {
 					c.beforeFlag, c.beforeText);
 				Do(c);
 			}
-			if (isSpot) {
-				bool lshadow = (li->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
-				if (ImGui::Checkbox("Cast shadows", &lshadow)) {
-					EditCmd c{};
-					c.verb = EditVerb::SetLightAttr;
-					c.node = node;
-					c.lightAttr = "shadow";
-					c.afterFlag = lshadow;
-					ReadNodeLightAttr(node, "shadow", c.beforeVec4, c.beforeNum,
-						c.beforeFlag, c.beforeText);
-					Do(c);
+		if (isSpot) {
+			bool lshadow = (li->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
+			if (ImGui::Checkbox("Cast shadows", &lshadow)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetLightAttr;
+				c.node = node;
+				c.lightAttr = "shadow";
+				c.afterFlag = lshadow;
+				ReadNodeLightAttr(node, "shadow", c.beforeVec4, c.beforeNum,
+					c.beforeFlag, c.beforeText);
+				Do(c);
+			}
+			// Spot COOKIE (gobo): a .texture asset path (or image URI)
+			// projected through the cone — the authored cookieUri the
+			// light build resolves to the bindless index (empty = none).
+			// Browse imports the picked image as a .texture beside the
+			// asset tree in one click (see CreateTextureAsset).
+			ImGui::Separator();
+			ImGui::TextDisabled("Cookie (spot gobo)");
+			char cookieBuf[512] = {};
+			std::snprintf(cookieBuf, sizeof(cookieBuf), "%s",
+				li->cookieUri.c_str());
+			ImGui::SetNextItemWidth(-90.0f);
+			if (ImGui::InputText("##lightcookie", cookieBuf,
+					sizeof(cookieBuf),
+					ImGuiInputTextFlags_EnterReturnsTrue)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetLightAttr;
+				c.node = node;
+				c.lightAttr = "cookie";
+				c.afterText = cookieBuf;
+				ReadNodeLightAttr(node, "cookie", c.beforeVec4, c.beforeNum,
+					c.beforeFlag, c.beforeText);
+				ImportCookieTexture(cookieBuf);
+				Do(c);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Browse...")) {
+				std::string picked;
+				if (NativeOpenFile(picked, true) && !picked.empty()) {
+					// Full asset flow in one click: the picked image
+					// becomes a .texture (import settings wrap it from
+					// here on) and the cookie ref points at it.
+					const std::string tex =
+						CreateTextureAsset(picked, m_assetsDir);
+					if (!tex.empty()) {
+						std::string rel = ProjectRelativePath(tex);
+						for (char& ch : rel)
+							if (ch == '\\')
+								ch = '/';
+						EditCmd c{};
+						c.verb = EditVerb::SetLightAttr;
+						c.node = node;
+						c.lightAttr = "cookie";
+						c.afterText =
+							rel.empty() ? tex : rel;
+						ReadNodeLightAttr(node, "cookie", c.beforeVec4,
+							c.beforeNum, c.beforeFlag, c.beforeText);
+						ImportCookieTexture(c.afterText);
+						Do(c);
+					}
 				}
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("The .texture (or image) projected "
+					"through the cone as a gobo. Empty = none. "
+					"Unresolvable refs warn at the light build and "
+					"drop (the light renders unmodified).");
 		} else {
 			ImGui::TextDisabled("points cannot cast shadows (spot atlas only)");
+		}
+		// Procedural light FUNCTION (points + spots): per-pixel intensity
+		// modulation — flicker (candle-like time noise), pulse (sine
+		// breathing), bands (moving diagonal bands across the cone;
+		// points fall back to pulse). Speed scales time, scale is the
+		// modulation depth (1 = dips to black). See light.hlsli.
+		ImGui::Separator();
+		ImGui::TextDisabled("Light function (procedural)");
+		{
+			const char* items[] = { "none", "flicker", "pulse",
+				"bands" };
+			int fn = int(std::clamp(li->functionType, 0u, 3u));
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::Combo("##lightfunction", &fn, items, 4)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetLightAttr;
+				c.node = node;
+				c.lightAttr = "function";
+				c.number = double(fn);
+				ReadNodeLightAttr(node, "function", c.beforeVec4,
+					c.beforeNum, c.beforeFlag, c.beforeText);
+				Do(c);
+			}
+			float fnspeed = li->functionSpeed;
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::DragFloat("speed##lightfunction", &fnspeed,
+					0.01f, 0.01f, 10.0f, "%.2f")) {
+				beginLightDrag("functionSpeed");
+				WriteNodeLightAttr(node, "functionSpeed", glm::vec4(0),
+					fnspeed, false, {});
+				m_pending.cmd.number = fnspeed;
+			}
+			endLightDrag("functionSpeed");
+			float fnscale = li->functionScale;
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::DragFloat("depth##lightfunction", &fnscale,
+					0.01f, 0.0f, 1.0f, "%.2f")) {
+				beginLightDrag("functionScale");
+				WriteNodeLightAttr(node, "functionScale", glm::vec4(0),
+					fnscale, false, {});
+				m_pending.cmd.number = fnscale;
+			}
+			endLightDrag("functionScale");
 		}
 	}
 	}
@@ -4069,6 +4189,62 @@ void EditorApp::DrawAssetReadonlyPage() {
 	}
 }
 
+void EditorApp::DrawImportableTexturePage() {
+	// IMPORTABLE SOURCE page: a supported image format selected in the
+	// browser but not yet imported as a .texture asset. Probes the file
+	// (dims + kind) and offers the import button — the .texture wrap
+	// carries the import settings (colorSpace/format/mipLevels/filter/
+	// wrap) from here on. A project is required (the .texture lands
+	// beside the source, adopted into the assetdb).
+	namespace fs = std::filesystem;
+	ImGui::Text("Texture source: '%s'",
+		fs::path(m_assetsSel).filename().string().c_str());
+	ImGui::TextDisabled("%s", m_assetsSel.c_str());
+	ImGui::Separator();
+	// Probe on selection change (cached like the asset pages).
+	if (m_assetInspectPath != m_assetsSel) {
+		m_assetInspectPath = m_assetsSel;
+		m_assetInspectTex.reset();
+		m_assetInspectTexInfoOk = false;
+		std::ifstream in(m_assetsSel, std::ios::binary);
+		if (in) {
+			std::vector<uint8_t> bytes(
+				(std::istreambuf_iterator<char>(in)),
+				std::istreambuf_iterator<char>());
+			m_assetInspectTexInfoOk = ProbeTextureSource(
+				bytes.data(), bytes.size(), m_assetInspectTexInfo);
+		}
+		if (!m_assetInspectTexInfoOk)
+			Log("Assets: texture source not probeable: " + m_assetsSel);
+	}
+	if (m_assetInspectTexInfoOk) {
+		const TextureSourceInfo& info = m_assetInspectTexInfo;
+		ImGui::TextDisabled("%ux%u %s", info.width, info.height,
+			info.isKtx2 ? "KTX2 (settings read-only at import)"
+			: (info.components == 4 ? "RGBA" : "RGB"));
+		ImGui::TextWrapped("Importing wraps this source in a .texture "
+			"asset: import settings (colorSpace, format, mip levels, "
+			"filter, wrap) %s, identity (.meta + assetdb), and "
+			"materials reference it as tex.<slot>=<name>.texture.",
+			info.isKtx2
+			? "read from the .ktx2 header (it pre-decided them)"
+			: "you author in the Inspector after the import");
+	}
+	ImGui::Separator();
+	ImGui::BeginDisabled(m_projectRoot.empty());
+	if (ImGui::Button("Import as .texture")) {
+		// The .texture lands beside the source (same dir — the copy in
+		// CreateTextureAsset is a no-op for an in-project file).
+		const std::string dir =
+			fs::path(m_assetsSel).parent_path().generic_string();
+		CreateTextureAsset(m_assetsSel, dir);
+	}
+	ImGui::EndDisabled();
+	if (m_projectRoot.empty() && ImGui::IsItemHovered())
+		ImGui::SetTooltip("Open or create a project first (File > New / "
+			"Open Project...).");
+}
+
 void EditorApp::DrawProjectDialog() {
 	// FORCED startup project selection: a blocking modal (no close â€”
 	// the editor is project-bound; smoke flows never see it). Recents
@@ -4173,6 +4349,30 @@ void EditorApp::DrawAssetsPanel() {
 		m_assetsDir =
 			(fs::path(m_projectRoot) / "content").generic_string();
 		m_assetsSel.clear();
+	}
+
+	// ---- OS drag-and-drop target (Windows Explorer -> browser) -------
+	// The SDL hook (OnSDLEvent) collects SDL_EVENT_DROP_FILE batches;
+	// route them HERE by the drop point against this panel's rect (the
+	// only drop target in the editor): images become .texture assets in
+	// the browsed dir, .gltf/.glb run the full import. A drop outside
+	// the panel drops with a log (nothing silently swallowed).
+	if (m_pendingDropX >= 0.0f) {
+		const ImVec2 wp = ImGui::GetWindowPos();
+		const ImVec2 ws = ImGui::GetWindowSize();
+		const ImVec2 vp = ImGui::GetMainViewport()->Pos;
+		const float dx = vp.x + m_pendingDropX;
+		const float dy = vp.y + m_pendingDropY;
+		if (dx >= wp.x && dx < wp.x + ws.x
+			&& dy >= wp.y && dy < wp.y + ws.y)
+			HandleDroppedFiles(m_pendingDropFiles);
+		else if (!m_pendingDropFiles.empty())
+			Log("Drop: landed outside the asset browser ("
+				+ std::to_string(m_pendingDropFiles.size())
+				+ " file(s) ignored — drop onto the Assets panel).");
+		m_pendingDropX = -1.0f;
+		m_pendingDropY = -1.0f;
+		m_pendingDropFiles.clear();
 	}
 
 	// ---- header row 1: Up + breadcrumb + current dir ----------------

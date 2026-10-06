@@ -51,6 +51,22 @@ struct TextureStreamerConfig {
 	uint32_t maxDowngradesPerFrame = 8;
 	uint32_t evictCooldownFrames = 30;    // idle hysteresis before decaying to the floor
 	float mipBias = 0.0f;                 // added to wanted mip (negative = sharper)
+	// Retarget transcode POLICY (a Basis-family payload re-decoded at a
+	// demand upgrade/downgrade):
+	//   false (default; the shipped App + cooked paks): REFUSE + swap in
+	//     the solid-pink error texture (entry pinned). A Basis payload in
+	//     a streaming pak violates the v4 cook contract (the cook
+	//     pink-embeds failed transcodes, so GPU-ready paks never hit
+	//     this) — the error is REPORTED and the pink surface is the
+	//     visible "recook the pak" flag. Never a hitch, never a crash.
+	//   true (the editor/authoring hosts): TRANSCODE in place (the same
+	//     Basis->BC7 the first load runs — see PrepareKtxStreamPlan) and
+	//     proceed with the REAL content. Authoring clusters stash SOURCE
+	//     bytes by design (a foreign Basis .ktx2 rides the pool verbatim
+	//     until the cook converts it), so refusing would pink every
+	//     legitimately-sourced texture on its first demand upgrade —
+	//     correctness over frame cost in the editor.
+	bool allowRetargetTranscode = false;
 };
 
 struct TextureStreamingStats {

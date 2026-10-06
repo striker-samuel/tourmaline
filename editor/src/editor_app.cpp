@@ -476,6 +476,9 @@ void EditorApp::CloseScene() {
 	m_refPlaceholders.shrink_to_fit();
 	m_references.clear();
 	m_materialAssets.clear(); // session pool-import records (fresh scene)
+	m_textureAssets.clear(); // cookie/.texture pool imports (fresh scene)
+	m_cubemapBallNodes.clear(); // editor-visual (rebuilt for the new world)
+	m_cubemapBallsSignature = 0;
 	m_refPhCluster.clear();
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
@@ -566,6 +569,13 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		streamCfg.maxDowngradesPerFrame = 8;
 		streamCfg.evictCooldownFrames = (m_texMode == TexMode::Coarse) ? 0 : 60;
 		streamCfg.mipBias = 0.0f;
+		// AUTHORING policy (see the config): the editor's clusters stash
+		// SOURCE bytes by design (a foreign Basis .ktx2 rides the pool
+		// verbatim until the cook converts it), so demand retargets that
+		// re-decode the source MUST transcode in place (like the first
+		// load does) — correct content with a hitch, never the pink
+		// error texture. Cooked runs keep the default (refuse + pink).
+		streamCfg.allowRetargetTranscode = true;
 		m_textureStreamer =
 			smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
 	}
@@ -589,6 +599,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 		")...");
 	m_references.clear();
 	m_materialAssets.clear(); // rebuilt from the tour's records below
+	m_textureAssets.clear(); // cookie/.texture imports (rebuilt below)
+	m_cubemapBallNodes.clear(); // editor-visual (rebuilt for the new world)
+	m_cubemapBallsSignature = 0;
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
 	m_refIssues.clear();
@@ -1904,8 +1917,18 @@ void EditorApp::DrawFrame() {
 		// GRID DRIVE: the hosted renderer draws the construction grid
 		// itself (depth-tested against each view's own depth — the host
 		// has no depth to test against, which is why the overlay grid
-		// drew over everything). Same settings as the editor's grid.
-		m_wysiwyg->DriveGrid(m_showGrid, m_gridSize, m_gridExtent);
+		// drew over everything). Same settings as the editor's grid;
+		// LIGHTING mode steps the grid aside (the modal-mode gizmo focus
+		// keeps the viewport on the light authoring set — see
+		// RecordGizmoPass).
+		m_wysiwyg->DriveGrid(m_showGrid
+			&& m_mode != EditorMode::Lighting, m_gridSize, m_gridExtent);
+		// CUBEMAP-BALL VISUALS (editor-visual chrome spheres, see
+		// RebuildCubemapBallVisuals): called every frame; the signature
+		// check inside no-ops when the capture set (+radii, +flag) is
+		// unchanged, so edits/loads that cannot affect the balls cost a
+		// handful of map lookups.
+		RebuildCubemapBallVisuals();
 		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
 		// own hosted view (viewport i+1 -> renderer view i): the view
 		// count follows the viewport layout (SetViewCount no-ops while

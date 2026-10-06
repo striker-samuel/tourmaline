@@ -3489,6 +3489,42 @@ int main(int argc, char** argv) {
 				<< " reference subtree(s) ("
 				<< tour.references.size() << " top-level)\n";
 		}
+		// Texture-asset POOL imports (ordered; see the tour's
+		// textureAsset records): replayed BEFORE the material records
+		// (a material tex ref or a light cookie naming a .texture must
+		// find its pool entry — the shared ImportTextureAssetToCluster,
+		// cook mode: no GPU). A failed import FAILS the cook loudly
+		// (the cookie would otherwise resolve empty and cook a
+		// wrong-texture pak).
+		for (const auto& ta : tour.textureAssets) {
+			// Resolve: project-relative records against --content-dir
+			// FIRST (same convention as materialAsset records), then
+			// as-is for absolute/out-of-project records.
+			namespace fs = std::filesystem;
+			fs::path hp;
+			std::error_code ec;
+			if (!args.contentDir.empty())
+				hp = fs::path(args.contentDir) / ta.path;
+			if (hp.empty() || !fs::exists(hp, ec))
+				hp = fs::path(ta.path);
+			if (!fs::exists(hp, ec)) {
+				std::cerr << "Tour textureAsset not found: '"
+					<< ta.path << "' (under --content-dir '"
+					<< args.contentDir << "', then as-is)\n";
+				return 1;
+			}
+			std::string imErr;
+			if (smvk::assets::ImportTextureAssetToCluster(
+					*cluster, hp, nullptr, imErr).empty()) {
+				std::cerr << "Tour textureAsset import failed: '"
+					<< ta.path << "': " << imErr << "\n";
+				return 1;
+			}
+		}
+		if (!tour.textureAssets.empty())
+			std::cout << "Definition: imported "
+				<< tour.textureAssets.size()
+				<< " texture asset(s)\n";
 		// Material-asset POOL imports (ordered; see the tour's
 		// materialAsset records): the editor session minted these into
 		// the cluster pool beyond the reference-bound materials, and the

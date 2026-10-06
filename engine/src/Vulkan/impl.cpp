@@ -6369,28 +6369,19 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName)
 {
 	// Retarget is a RENDER-THREAD hot path (streaming demand upgrades +
-	// budget downgrades, per frame). A Basis-family payload here would pay
-	// a full synchronous transcode (tens to ~150 ms for 2-4K textures) —
-	// the exact hitch this pipeline is built to never have. The v4 cook
-	// contract guarantees GPU-ready BCn payloads (see CookTexturePayload:
-	// per-semantic BCn pre-transcode at cook, pink error texture on
-	// failure); a payload that still needs transcoding means a stale/
-	// foreign pak. Refuse loudly and FAIL — no silent synchronous
-	// transcode, ever. The TextureStreamer PRE-CHECKS this condition and
-	// swaps in the pink error texture instead (never fatal there); this
-	// throw is the direct-caller defense (the streamer's catch path logs
-	// and skips it). Recook the pak.
-	if (ktxTexture2_NeedsTranscoding(&texture))
-	{
-		char msg[512];
-		std::snprintf(msg, sizeof(msg),
-			"[TexStream] retarget refused: '%s' carries a Basis-family "
-			"payload (a synchronous transcode on the render thread would "
-			"follow). Streaming paks must embed GPU-ready BCn textures — "
-			"recook the pak and retry.",
-			debugName ? debugName : "<unnamed>");
-		throw std::runtime_error(msg);
-	}
+	// budget downgrades, per frame). A Basis-family payload here pays a
+	// full synchronous transcode (tens to ~150 ms for 2-4K textures) —
+	// the exact hitch this pipeline is built to never have, so the v4
+	// cook contract guarantees GPU-ready BCn payloads in SHIPPED paks
+	// (see CookTexturePayload: per-semantic BCn pre-transcode at cook,
+	// pink error texture on failure). The TextureStreamer ENFORCES the
+	// policy (see its config): cooked runs refuse Basis payloads up
+	// front (pink error texture + pinned entry), authoring hosts (the
+	// editor — clusters stash SOURCE bytes by design) allow the
+	// in-place transcode below and get the real content. Reaching here
+	// with Basis means either the authoring path (transcoded by
+	// PrepareKtxStreamPlan, like the first load) or a direct caller
+	// with a stale/foreign payload (same transcode; recook the pak).
 	Texture* rec = textures_.get(handle);
 	if (!rec)
 	{

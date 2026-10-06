@@ -1207,6 +1207,21 @@ private:
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
 	bool m_showCameraGizmos = true;
+	// Cubemap-capture BALLS (editor-visual chrome spheres parented
+	// under the capture nodes, lit by the scene IBL so each ball reads
+	// its baked cubemap). Editor-visual: physical nodes for the draw
+	// path, but filtered from the outliner/picks and never in the tour
+	// (no commands reference them). Rebuilt when dirty (see
+	// m_cubemapBallsDirty) so capture create/delete/undo/redo/replay
+	// stay consistent for free.
+	bool m_showCubemapBalls = true;
+	std::unordered_set<uint32_t> m_cubemapBallNodes; // visual node ids
+	bool m_cubemapBallsDirty = true; // rebuild before the next frame
+	uint64_t m_cubemapBallsSignature = 0; // last built (flag+captures+radii)
+	void RebuildCubemapBallVisuals();
+	bool IsVisualHelperNode(uint32_t node) const {
+		return m_cubemapBallNodes.contains(node);
+	}
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1349,6 +1364,13 @@ private:
 	// reload/cook exactly like the authoring session. Reset with the
 	// session (a fresh world bind rebuilds from the tour's records).
 	std::vector<smvk::tour::MaterialAssetCmd> m_materialAssets;
+	// Texture-asset POOL imports in import order (see
+	// smvk::tour::TextureAssetCmd): cookie .texture files imported into
+	// cluster 0's pool beyond the reference-bound textures. Replayed
+	// BEFORE the material records on reload/cook, so material tex refs
+	// and light cookies resolve like the authoring session. Reset with
+	// the session.
+	std::vector<smvk::tour::TextureAssetCmd> m_textureAssets;
 	bool AddSceneReference(const std::string& source, const std::string& name);
 	// Reference input (asset UUID or file path) -> in-project asset:
 	// absolute path + project-relative -source + asset -guid. GUIDs
@@ -1724,6 +1746,14 @@ private:
 	// SELECTED subtree (undoable AssignMaterial). Nothing selected =
 	// log + no-op.
 	void AssignMaterialAsset(const std::string& assetPath);
+	// COOKIE .texture import (spot-light inspector): the cookie ref's
+	// .texture lands in cluster 0's pool NOW (the live view's light
+	// build resolves it) + a textureAsset record rides the tour (the
+	// cook replays it before the command list). Empty = nothing to
+	// import; non-.texture paths are refused with a log (raw images are
+	// not cluster-registered — import them as .texture first). No-op
+	// during tour replay (the tour's records replay there).
+	void ImportCookieTexture(const std::string& cookieRef);
 	// GUID of a derived asset file (its glTF manifest entry; "" when
 	// unknown). Scans the sibling .gltf.meta manifests.
 	std::string DerivedAssetGuid(const std::string& assetPath);
@@ -1732,6 +1762,10 @@ private:
 	// the Inspector when m_assetsSel is a .material/.mesh file; empty
 	// selection draws nothing.
 	void DrawAssetReadonlyPage();
+	// IMPORTABLE-SOURCE page (a raw image selected in the browser, not
+	// yet imported): probe + the "Import as .texture" button (the wrap
+	// carries the import settings from here on).
+	void DrawImportableTexturePage();
 	// Asset inspection cache (loaded on selection change, never per
 	// frame): the inspected file + its loaded content.
 	std::string m_assetInspectPath;
@@ -1773,6 +1807,17 @@ private:
 	// ({} + log on failure).
 	std::string CreateTextureAsset(const std::string& srcPath,
 		const std::string& dir);
+	// OS DRAG-AND-DROP (Windows Explorer -> the asset browser): the SDL
+	// hook (App::OnSDLEvent override, below) collects SDL_EVENT_DROP_FILE
+	// batches + the drop point (window coords); DrawAssetsPanel routes
+	// them against its rect (the only drop target) into
+	// HandleDroppedFiles — images become .texture assets in the browsed
+	// dir, .gltf/.glb run the full import.
+	void HandleDroppedFiles(const std::vector<std::string>& files);
+	void OnSDLEvent(const SDL_Event& e) override;
+	std::vector<std::string> m_pendingDropFiles;
+	float m_pendingDropX = -1.0f; // < 0 = no pending drop
+	float m_pendingDropY = -1.0f;
 	// Cook-completion bookkeeping (PollCookProcess on a successful cook):
 	// the cook's bake outputs become/refresh BAKE ASSETS tied to this
 	// scene — the GiCook manifest (settings + the fresh .sggi result

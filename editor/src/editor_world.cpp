@@ -2,12 +2,21 @@
 //
 // All edits preserve node indices (no add/delete), so the world's drawItems,
 // selection, overrides and pick map stay valid without a Resolve pass.
+//
+// The one exception: the CUBEMAP-BALL VISUALS (see
+// RebuildCubemapBallVisuals below) — chrome spheres parented under the
+// capture nodes so the authored pins read as balls carrying the scene's
+// baked cubemap (the shared lit chrome material samples the IBL like the
+// check-scene chrome ball). Physical nodes (they draw through the normal
+// drawItems path), but EDITOR-VISUAL: filtered from the outliner/picks,
+// never in the tour (no commands reference them).
 
 #include "editor_app.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include <Engine/Asset/tour.h>
 #include <gltf_import/gltf.h>
@@ -164,6 +173,206 @@ uint32_t EditorApp::FindCameraNode() const {
 			best = node;
 	}
 	return best;
+}
+
+// ---- cubemap-ball visuals (editor-only chrome spheres) -------------------
+// One shared unit-sphere upload + one shared chrome material per world
+// (pool reuse by URI — rebuilds never regrow the pools); one child node
+// per ALIVE capture (local = the ball's scale at the capture origin, so
+// gizmo moves track for free). The balls draw through the normal lit
+// path — a white-metal sphere lit by the scene IBL reads the baked
+// cubemap at the capture spot (the check-scene chrome-ball precedent).
+void EditorApp::RebuildCubemapBallVisuals() {
+	// Desired signature (the flag + the alive capture set + their
+	// radii): rebuild ONLY on mismatch or when forced dirty. Moves,
+	// renames and unrelated edits then no-op instead of churning node
+	// ids every command (the dirty flag rides Do/PushDone/Undo/Redo).
+	uint64_t sig = m_showCubemapBalls ? 0x9e3779b97f4a7c15ull : 0;
+	if (m_showCubemapBalls && m_world) {
+		std::vector<uint32_t> caps;
+		for (const auto& [n, def] : m_world->scene.cubemapForNode) {
+			(void)def;
+			if (n < m_world->scene.hierarchy.size()
+				&& !m_deletedNodes.contains(n))
+				caps.push_back(n);
+		}
+		std::sort(caps.begin(), caps.end());
+		for (uint32_t cap : caps) {
+			sig = sig * 1315423911u + uint64_t(cap) * 2u + 1u;
+			const float r = m_world->scene.cubemapForNode.at(cap).radius;
+			uint32_t rb = 0;
+			std::memcpy(&rb, &r, 4);
+			sig = sig * 1315423911u + uint64_t(rb);
+		}
+	}
+	if (!m_cubemapBallsDirty && sig == m_cubemapBallsSignature)
+		return; // capture set (+ radii) unchanged: nothing to do
+	m_cubemapBallsDirty = false;
+	m_cubemapBallsSignature = sig;
+	// Tear down the previous set PHYSICALLY (they carry no undo state
+	// and no history references them — ids are free to churn).
+	if (m_world) {
+		for (uint32_t n : m_cubemapBallNodes) {
+			for (size_t i = m_world->drawItems.size(); i-- > 0;) {
+				if (m_world->drawItems[i].node == n) {
+					m_world->drawItems.erase(
+						m_world->drawItems.begin() + ptrdiff_t(i));
+					if (i < m_world->itemFlags.size())
+						m_world->itemFlags.erase(
+							m_world->itemFlags.begin() + ptrdiff_t(i));
+					break;
+				}
+			}
+			m_world->scene.meshForNode.erase(n);
+			m_world->scene.materialForNode.erase(n);
+		}
+		if (!m_world->drawItems.empty())
+			m_world->flagLists.clear();
+	}
+	m_cubemapBallNodes.clear();
+	if (!m_showCubemapBalls || !m_world || m_world->clusters.empty()
+		|| !m_world->clusters[0] || !m_context)
+		return;
+	Scene& scene = m_world->scene;
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	// Alive captures, deterministic order.
+	std::vector<uint32_t> caps;
+	for (const auto& [n, def] : scene.cubemapForNode) {
+		(void)def;
+		if (n < scene.hierarchy.size() && !m_deletedNodes.contains(n))
+			caps.push_back(n);
+	}
+	if (caps.empty())
+		return;
+	std::sort(caps.begin(), caps.end());
+	// Shared chrome material (pool reuse by URI: "editor://cubeball" —
+	// metallic 1, low roughness; castsShadows off so the helper balls
+	// never shadow the scene they visualize).
+	uint32_t matWorld = UINT32_MAX;
+	{
+		if (auto hit = cl->FindMaterialByUri("editor://cubeball")) {
+			for (uint32_t i = 0;
+				i < uint32_t(m_world->materialLocations.size()); ++i) {
+				const auto& loc = m_world->materialLocations[i];
+				if (loc.cluster == cl
+					&& loc.handle.index() == hit->index()) {
+					matWorld = i;
+					break;
+				}
+			}
+		}
+		if (matWorld == UINT32_MAX) {
+			smvk::Material def{};
+			def.values.diffuse = glm::vec4(1.0f);
+			def.values.params.y = 1.0f;  // metallic
+			def.values.params.z = 0.13f; // roughness (chrome-ish)
+			def.castsShadows = false;    // helper balls never shadow
+			def.rebuildPipeline();
+			const smvk::ClusterMaterialHandle h =
+				cl->materials.create(std::move(def));
+			if (h.empty())
+				return;
+			cl->RegisterMaterialUri("editor://cubeball", h);
+			matWorld = uint32_t(m_world->materialLocations.size());
+			m_world->materialLocations.push_back({ cl, h });
+			RebuildTexHandleMap();
+		}
+	}
+	// Shared unit-sphere upload (pool reuse by mesh URI).
+	uint32_t ballMesh = UINT32_MAX;
+	{
+		if (auto hit = cl->FindMeshByUri("editor://cubeball")) {
+			for (uint32_t i = 0;
+				i < uint32_t(m_world->meshLocations.size()); ++i) {
+				const auto& loc = m_world->meshLocations[i];
+				if (loc.cluster == cl
+					&& loc.handle.index() == hit->index()) {
+					ballMesh = i;
+					break;
+				}
+			}
+		}
+		if (ballMesh == UINT32_MAX) {
+			smvk::StaticMeshUpload up{};
+			up.aabbMin = glm::vec3(-1.0f);
+			up.aabbMax = glm::vec3(1.0f);
+			// Unit UV sphere (24x16 — the check-scene chrome-ball
+			// pattern, trimmed; static-upload vertex layout).
+			const int slices = 24, stacks = 16;
+			const float pi = 3.14159265f;
+			for (int j = 0; j <= stacks; ++j) {
+				const float phi = pi * float(j) / float(stacks);
+				const float sinPhi = std::sin(phi);
+				const float cosPhi = std::cos(phi);
+				for (int i = 0; i <= slices; ++i) {
+					const float theta = 2.0f * pi * float(i)
+						/ float(slices);
+					const glm::vec3 n(sinPhi * std::cos(theta), cosPhi,
+						sinPhi * std::sin(theta));
+					smvk::StaticVertex v{};
+					v.pos = n;
+					v.color = glm::vec4(1.0f);
+					v.texCoord = glm::vec2(float(i) / float(slices),
+						float(j) / float(stacks));
+					v.normal = n;
+					glm::vec3 t(-std::sin(theta), 0.0f, std::cos(theta));
+					if (glm::dot(t, t) < 1e-12f)
+						t = glm::vec3(1.0f, 0.0f, 0.0f);
+					v.tangent = glm::vec4(glm::normalize(t), 1.0f);
+					up.vertices.push_back(v);
+				}
+			}
+			const uint32_t row = uint32_t(slices) + 1u;
+			for (int j = 0; j < stacks; ++j) {
+				for (int i = 0; i < slices; ++i) {
+					const uint32_t a = uint32_t(j) * row + uint32_t(i);
+					const uint32_t b = a + 1u;
+					const uint32_t c = a + row + 1u;
+					const uint32_t d = a + row;
+					up.indices.insert(up.indices.end(),
+						{ a, b, c, a, c, d });
+				}
+			}
+			const smvk::ClusterStaticMeshHandle mh =
+				cl->UploadStaticMesh(up);
+			if (!mh.valid())
+				return;
+			cl->RegisterMeshUri("editor://cubeball", mh);
+			ballMesh = uint32_t(m_world->meshLocations.size());
+			m_world->meshLocations.push_back({ cl, mh });
+		}
+	}
+	for (uint32_t cap : caps) {
+		const auto defIt = scene.cubemapForNode.find(cap);
+		if (defIt == scene.cubemapForNode.end())
+			continue;
+		const int level = scene.hierarchy[cap].level + 1;
+		const int created = addNode(scene, int(cap), level);
+		if (created < 0)
+			continue;
+		// Ball radius reads the influence at a glance (proportional,
+		// clamped — a 10 m capture must not fill the frame).
+		const float r = std::clamp(defIt->second.radius * 0.15f,
+			0.1f, 0.4f);
+		scene.localTransform[size_t(created)] =
+			glm::scale(glm::mat4(1.0f), glm::vec3(r));
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back("CaptureBall");
+		scene.nameForNode[uint32_t(created)] = nameId;
+		scene.meshForNode[uint32_t(created)] = ballMesh;
+		scene.materialForNode[uint32_t(created)] = matWorld;
+		if (m_world->flags.size() <= size_t(created))
+			m_world->flags.resize(size_t(created) + 1, 0);
+		m_world->drawItems.push_back(smvk::World::RenderItem{
+			uint32_t(created), ballMesh, matWorld,
+			m_world->flags[size_t(created)] });
+		m_world->itemFlags.push_back(m_world->flags[size_t(created)]);
+		RefreshNodeDrawState(uint32_t(created));
+		m_cubemapBallNodes.insert(uint32_t(created));
+	}
+	m_world->flagLists.clear();
+	markAsChanged(scene, 0);
+	recalculateGlobalTransforms(scene);
 }
 
 // Cooked-light census + viewport-sun seeding. First directional wins as

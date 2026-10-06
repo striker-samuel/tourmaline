@@ -280,6 +280,16 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 // 0, roughness 0.9). The editor wraps this with its world materialLocations
 // bookkeeping; cooks call it directly when a tour carries the seed record.
 smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster);
+// The BUILT-IN solid-pink error texture asset ("editor://error_texture"):
+// reuses the registered handle when one exists, else mints it from the
+// standalone pink KTX2 (64x64 sRGB RGBA8 — see ktx_error_texture.h).
+// Texture slots that FAIL to load (missing/empty/undecodable source,
+// failed conversion) bind this instead of empty, so a broken texture
+// reads as an unmistakable pink surface — reported, never invisible and
+// never fatal. Cook mode mints the pool id + stash only (the cook
+// embeds the pink payload; the runtime streams it like any texture).
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
+	smvk::ResourceManager* ctx);
 
 // ---- shared texture-asset import (editor + cook) --------------------------
 // The SINGLE import path for .texture assets (a .texture + its source image

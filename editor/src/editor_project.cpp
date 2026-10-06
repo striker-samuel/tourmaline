@@ -551,6 +551,58 @@ std::string EditorApp::CreateTextureAsset(const std::string& srcPath,
 	return texPath.generic_string();
 }
 
+void EditorApp::OnSDLEvent(const SDL_Event& e) {
+	// OS drag-and-drop (Windows Explorer -> the asset browser): collect
+	// the SDL_EVENT_DROP_FILE batch + the drop point (window coords; the
+	// LAST file's point is the release point). The data string is
+	// SDL-owned — copy NOW (the event memory does not outlive the pump).
+	// DrawAssetsPanel routes the batch next frame against its rect (the
+	// only drop target — see HandleDroppedFiles).
+	if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
+		m_pendingDropX = e.drop.x;
+		m_pendingDropY = e.drop.y;
+		m_pendingDropFiles.emplace_back(e.drop.data);
+	}
+}
+
+void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
+	// Drop routing (the asset browser's drop target): images become
+	// .texture assets in the browsed dir; .gltf/.glb run the full import
+	// (copy + derive + open). Everything else drops with a log — never
+	// silently.
+	if (m_projectRoot.empty()) {
+		Log("Drop: open a project first (File > New / Open Project...).");
+		return;
+	}
+	if (files.empty())
+		return;
+	int imported = 0;
+	int unsupported = 0;
+	for (const std::string& p : files) {
+		std::string ext =
+			std::filesystem::path(p).extension().string();
+		for (char& c : ext)
+			c = char(std::tolower((unsigned char)c));
+		if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+			|| ext == ".tga" || ext == ".bmp" || ext == ".ktx2") {
+			if (!CreateTextureAsset(p, m_assetsDir).empty())
+				++imported;
+		}
+		else if (ext == ".gltf" || ext == ".glb") {
+			if (ImportAsset(p))
+				++imported;
+		}
+		else {
+			++unsupported;
+			Log("Drop: unsupported format '" + p + "' (want png/jpg/jpeg/"
+				"tga/bmp/ktx2/gltf/glb).");
+		}
+	}
+	if (imported > 0)
+		Log("Drop: imported " + std::to_string(imported) + " file"
+			+ (imported > 1 ? "s" : "") + ".");
+}
+
 bool EditorApp::ImportAsset(const std::string& srcPath) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");

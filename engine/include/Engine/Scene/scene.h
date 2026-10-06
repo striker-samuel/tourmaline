@@ -64,6 +64,22 @@ struct SceneLight {
 	float innerConeAngle = 0.0f; // radians, spot only
 	float outerConeAngle = 0.0f; // radians, spot only
 	uint32_t flags = 0; // kSceneLightFlag_*
+	// Spot COOKIE (gobo; see Renderer/cookies.h + the spot shading path):
+	// a texture asset ref (a .texture file path or a plain image URI —
+	// the cluster pool texture it names is projected through the cone;
+	// the light build resolves it to the bindless index). Spots only;
+	// points ignore it. Empty = none. Authored via setLightAttr cookie.
+	std::string cookieUri;
+	// Procedural light FUNCTION (per-pixel intensity modulation, see
+	// kForwardPlusFunction_* + light.hlsli EvaluateLightFunction):
+	// 0 none, 1 flicker (stepped candle-like time noise), 2 pulse
+	// (sine breathing), 3 bands (moving diagonal bands across the spot
+	// cone; points fall back to pulse). Speed scales time, scale is the
+	// modulation depth (1 = dips to black, 0 = flat). Applies to points
+	// and spots alike (the shader picks the spatial form for spots).
+	uint32_t functionType = 0;
+	float functionSpeed = 1.0f;
+	float functionScale = 0.5f;
 	std::string name;
 };
 

@@ -54,11 +54,11 @@ public:
     // untouched. Old backing memory retires through the deferred-destroy
     // queue (safe while frames are in flight); the caller must still
     // FlushUploads() afterwards to kick the re-upload. A Basis-family
-    // payload (NeedsTranscoding) is REFUSED with std::runtime_error — a
-    // synchronous render-thread transcode is the hitch this pipeline is
-    // built to never have. The TextureStreamer pre-checks that condition
-    // and swaps in the pink error texture instead (see
-    // ktx_error_texture.h), so this throw is the direct-caller defense.
+    // payload is transcoded IN PLACE here (PrepareKtxStreamPlan, like the
+    // first load — a render-thread hitch); the TextureStreamer fronts
+    // this with its cooked/authoring policy (cooked runs refuse Basis
+    // payloads up front with the pink error texture; the editor allows
+    // the transcode).
     void RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
                                   const char* debugName = "Texture");
     Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, ImageLayout readLayout);

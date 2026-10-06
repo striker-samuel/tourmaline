@@ -1703,10 +1703,21 @@ void TestClusterSerializeCook() {
 			Check(std::abs(inner - glm::radians(15.0f)) < 1e-6f &&
 				std::abs(outer - glm::radians(30.0f)) < 1e-6f,
 				"cook.pak.light.cones");
-			Check(name == "STATIC_LampA", "cook.pak.light.name");
-			Check(flags == SceneLight::kSceneLightFlag_Static,
-				"cook.pak.light.flags.static");
-			Check(off == p.size(), "cook.pak.light.exactend");
+		Check(name == "STATIC_LampA", "cook.pak.light.name");
+		Check(flags == SceneLight::kSceneLightFlag_Static,
+			"cook.pak.light.flags.static");
+		// v6 gobo/function section (the test light carries no cookie:
+		// empty URI + the function defaults).
+		const std::string cookie = str();
+		const uint32_t fn = u32();
+		const float fnSpeed = f32();
+		const float fnScale = f32();
+		Check(ok, "cook.pak.light.gobo.parse");
+		Check(cookie.empty() && fn == 0
+			&& std::abs(fnSpeed - 1.0f) < 1e-6f
+			&& std::abs(fnScale - 0.5f) < 1e-6f,
+			"cook.pak.light.gobo.defaults");
+		Check(off == p.size(), "cook.pak.light.exactend");
 		}
 	}
 

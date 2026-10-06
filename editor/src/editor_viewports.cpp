@@ -280,6 +280,8 @@ void EditorApp::FinishBoxSelect() {
 	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
 		if (!IsVisibleNode(m_world->scene, int(item.node)))
 			return;
+		if (IsVisualHelperNode(item.node))
+			return; // editor-visual (cubemap balls): never box-selected
 		const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 		if (!mesh)
 			return;

@@ -29,7 +29,10 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Utils/ktx_error_texture.h> // EnsureClusterErrorTexture mint
 #include <Engine/Utils/texture_loader.h>
+
+#include "ktx.h"
 
 namespace tinygltf { class Model; }
 namespace smvk::assets {
@@ -1409,11 +1412,21 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 	info.doubleSided = m.info.doubleSided;
 	info.castsShadows = m.info.castsShadows;
 	// Texture refs: image files beside the .material (the URI IS the POSIX
-	// file path). Failures leave the slot unbound (editor parity: a broken
-	// texture link must not kill the material).
+	// file path). Failures bind the BUILT-IN pink error texture
+	// (editor://error_texture) instead of leaving the slot empty: a
+	// broken texture link reads as an unmistakable pink surface —
+	// reported, never invisible, never fatal.
 	const std::filesystem::path base = assetPath.parent_path();
 	auto loadTex = [&](const MaterialAsset::TexRef& t,
 			smvk::TextureHandle& slot) {
+		auto failPink = [&]() {
+			if (smvk::TextureHandle e =
+					EnsureClusterErrorTexture(cluster, ctx)) {
+				slot = e;
+				std::cerr << "[materialAsset] binding the pink error "
+					"texture (editor://error_texture).\n";
+			}
+		};
 		if (t.path.empty())
 			return;
 		const std::string uri =
@@ -1434,6 +1447,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 				if (h.empty()) {
 					std::cerr << "[materialAsset] texture asset import "
 						"failed '" << t.path << "': " << terr << "\n";
+					failPink();
 					return;
 				}
 				slot = h;
@@ -1450,6 +1464,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 		if (!in) {
 			std::cerr << "[materialAsset] cannot open texture: "
 				<< uri << "\n";
+			failPink();
 			return;
 		}
 		std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
@@ -1457,6 +1472,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 		if (bytes.empty()) {
 			std::cerr << "[materialAsset] texture file is empty: "
 				<< uri << "\n";
+			failPink();
 			return;
 		}
 		// KTX2 passthrough; other sources transcode (the TexRef srgb flag —
@@ -1475,6 +1491,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 			if (ext == ".hdr" || ext == ".exr") {
 				std::cerr << "[materialAsset] HDR source needs a float "
 					"transcode (unsupported): " << uri << "\n";
+				failPink();
 				return;
 			}
 			std::vector<uint8_t> ktx;
@@ -1483,6 +1500,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 					uri, ktx, terr)) {
 				std::cerr << "[materialAsset] texture transcode failed '"
 					<< uri << "': " << terr << "\n";
+				failPink();
 				return;
 			}
 			payload = std::move(ktx);
@@ -1497,6 +1515,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 			if (!ctx) {
 				std::cerr << "[materialAsset] editor import wants a GPU "
 					"context: " << uri << "\n";
+				failPink();
 				return;
 			}
 			auto holder = smvk::LoadKtxTextureMemory(*ctx,
@@ -1504,6 +1523,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 			if (!holder.valid()) {
 				std::cerr << "[materialAsset] KTX2 load failed: "
 					<< uri << "\n";
+				failPink();
 				return;
 			}
 			h = holder;
@@ -1544,6 +1564,57 @@ smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(
 	const smvk::ClusterMaterialHandle h =
 		cluster.materials.create(std::move(def));
 	cluster.RegisterMaterialUri("editor://default", h);
+	return h;
+}
+
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
+	smvk::ResourceManager* ctx) {
+	// Reuse an existing pool entry when the URI is already registered
+	// (a cooked-from-tour scene may have minted one) — NO pool growth
+	// on repeat asks.
+	if (auto hit = cluster.FindTextureByUri("editor://error_texture"))
+		return *hit;
+	// Mint the pink payload (standalone form: 64x64 sRGB RGBA8, full
+	// chain — small enough to upload once, unmistakable at any LOD).
+	ktxTexture2* pink = smvk::CreatePinkKtx2(64, 64);
+	if (!pink)
+		return {};
+	struct PinkGuard {
+		ktxTexture2* t;
+		~PinkGuard() { if (t) ktxTexture2_Destroy(t); }
+	} guard{ pink };
+	ktx_uint8_t* mem = nullptr;
+	ktx_size_t memLen = 0;
+	if (ktxTexture_WriteToMemory(ktxTexture(pink), &mem, &memLen)
+		!= KTX_SUCCESS || !mem || memLen == 0)
+		return {};
+	std::vector<uint8_t> payload(mem, mem + memLen);
+	// KTX-Software documents free() for this buffer; the prebuilt KTX
+	// DLL is Release-built, so a Debug CRT free would cross heaps (the
+	// tex_transcode precedent: leak in Debug, free in Release).
+#ifdef _DEBUG
+	(void)mem;
+#else
+	std::free(mem);
+#endif
+	smvk::TextureHandle h;
+	if (cluster.IsCookMode()) {
+		// Cook: pool id + stash only (the serializer embeds the pink
+		// payload; the runtime streams it like any GPU-ready texture).
+		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+	}
+	else {
+		if (!ctx)
+			return {};
+		auto holder = smvk::LoadKtxTextureMemory(*ctx,
+			payload.data(), payload.size(), "editor://error_texture");
+		if (!holder.valid())
+			return {};
+		h = holder;
+		cluster.textures.create(std::move(holder));
+	}
+	cluster.RegisterTextureUri("editor://error_texture", h);
+	cluster.SetTextureSource("editor://error_texture", std::move(payload));
 	return h;
 }
 

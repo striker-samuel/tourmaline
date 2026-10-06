@@ -759,6 +759,14 @@ bool SerializeClusters(
 		// Trailing flags section (v5 light blobs; v4 blobs end after the
 		// name and readers default to 0 — see the read side).
 		PutU32(blob, l->flags);
+		// Trailing gobo/function section (v6): the spot cookie URI +
+		// the procedural light function (type/speed/scale). Old readers
+		// fail v6 blobs on the trailing-bytes check (see the read side)
+		// — the sanctioned break.
+		PutStr(blob, l->cookieUri);
+		PutU32(blob, l->functionType);
+		PutF32(blob, l->functionSpeed);
+		PutF32(blob, l->functionScale);
 
 		if (!writer.AddBlob(PakAssetKind::Light, uri, std::move(blob)))
 			return fail("invalid light uri: " + uri);
@@ -1823,6 +1831,24 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			lightFlags = c.u32();
 		if (!c.ok)
 			return fail("truncated light flags: " + e->path);
+		// Trailing gobo/function section (v6 light blobs; v5 blobs end
+		// after the flags): the spot cookie URI (.texture path or image
+		// URI — empty = none) + the procedural light function (type/
+		// speed/scale). Old readers stop after the flags (exact-end
+		// check) and fail v6 blobs loudly — the sanctioned break.
+		std::string lightCookie;
+		uint32_t lightFn = 0;
+		float lightFnSpeed = 1.0f;
+		float lightFnScale = 0.5f;
+		if (c.off < c.img.size())
+			lightCookie = c.str();
+		if (c.off + 12 <= c.img.size()) {
+			lightFn = c.u32();
+			lightFnSpeed = c.f32();
+			lightFnScale = c.f32();
+		}
+		if (!c.ok)
+			return fail("truncated light gobo section: " + e->path);
 		SceneLight l;
 		l.type = static_cast<SceneLight::Type>(type);
 		l.color = color;
@@ -1832,6 +1858,10 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		l.outerConeAngle = outer;
 		l.name = name;
 		l.flags = lightFlags;
+		l.cookieUri = std::move(lightCookie);
+		l.functionType = lightFn;
+		l.functionSpeed = lightFnSpeed;
+		l.functionScale = lightFnScale;
 		const ClusterLightHandle h = cluster->CreateLight(std::move(l));
 		if (!h.valid())
 			return fail("CreateLight failed for: " + uri);

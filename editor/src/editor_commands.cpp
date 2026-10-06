@@ -1606,6 +1606,8 @@ void EditorApp::DeleteSelection() {
 			continue;
 		if (m_deletedNodes.contains(n))
 			continue; // already deleted
+		if (IsVisualHelperNode(n))
+			continue; // editor-visual (cubemap balls): not scene content
 		if (n == 0) {
 			Log("Delete: the scene root stays (delete children instead).");
 			continue;
@@ -1948,6 +1950,15 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node, const std::string& attr,
 		flag = (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
 	} else if (attr == "name") {
 		text = L->name;
+	} else if (attr == "cookie") {
+		// Spot gobo ref (a .texture path or image URI; empty = none).
+		text = L->cookieUri;
+	} else if (attr == "function") {
+		num = double(L->functionType);
+	} else if (attr == "functionSpeed") {
+		num = double(L->functionSpeed);
+	} else if (attr == "functionScale") {
+		num = double(L->functionScale);
 	} else if (attr == "position" || attr == "rotation") {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return false;
@@ -2000,6 +2011,18 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(text);
 		scene.nameForNode[node] = id;
+	} else if (attr == "cookie") {
+		// Spot gobo ref: the string persists verbatim (the light build
+		// resolves it to the bindless index; empty = none). Unresolved
+		// refs warn + drop there — never fatal (none/black on error).
+		L->cookieUri = text;
+	} else if (attr == "function") {
+		L->functionType = uint32_t(
+			std::clamp(int(num), 0, 3)); // 0 none,1 flicker,2 pulse,3 bands
+	} else if (attr == "functionSpeed") {
+		L->functionSpeed = std::max(float(num), 0.01f);
+	} else if (attr == "functionScale") {
+		L->functionScale = std::clamp(float(num), 0.0f, 1.0f);
 	} else if (attr == "position" || attr == "rotation") {
 		if (node >= scene.hierarchy.size())
 			return false;
@@ -2307,6 +2330,10 @@ void EditorApp::Do(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
+	// Any edit can change the capture set the cubemap-ball visuals
+	// mirror (creates/deletes/attr edits) — the lazy per-frame rebuild
+	// below diffs and no-ops when nothing changed.
+	m_cubemapBallsDirty = true;
 	AutosaveTour();
 }
 
@@ -2328,6 +2355,7 @@ void EditorApp::PushDone(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
+	m_cubemapBallsDirty = true; // see Do() above
 	AutosaveTour();
 }
 
@@ -2337,6 +2365,7 @@ bool EditorApp::Undo() {
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
+	m_cubemapBallsDirty = true; // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2356,6 +2385,7 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
+	m_cubemapBallsDirty = true; // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2994,11 +3024,14 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (c.lightAttr == "color" || c.lightAttr == "position"
 			|| c.lightAttr == "rotation") {
 			out.vec4 = c.vec4;
-		} else if (c.lightAttr == "name") {
+		} else if (c.lightAttr == "name" || c.lightAttr == "cookie") {
+			// String attrs ride the name slot (cookie = the gobo uri).
 			out.name = c.afterText;
 		} else if (c.lightAttr == "static" || c.lightAttr == "shadow") {
 			out.flag = c.afterFlag;
 		} else {
+			// Scalars (intensity/range/inner/outer/function/
+			// functionSpeed/functionScale) ride the number slot.
 			out.number = c.number;
 		}
 		return true;
@@ -3697,6 +3730,10 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// the identical pool — the tour's assignMaterial/-m indices recorded
 	// against this pool resolve on both sides.
 	doc.materialAssets = m_materialAssets;
+	// Texture-asset POOL imports (ordered; see TextureAssetCmd): the
+	// session's cookie/.texture pool imports, replayed by reload/cook
+	// BEFORE the material records so refs resolve identically.
+	doc.textureAssets = m_textureAssets;
 	doc.hasCook = true;
 	// Cook SETTINGS persist; the DESTINATION does not: outPak is
 	// machine/session state (entered per cook in the Cook panel),
@@ -4194,7 +4231,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (tc.text == "color" || tc.text == "position"
 			|| tc.text == "rotation") {
 			out.vec4 = tc.vec4;
-		} else if (tc.text == "name") {
+		} else if (tc.text == "name" || tc.text == "cookie") {
 			out.afterText = tc.name;
 		} else if (tc.text == "static" || tc.text == "shadow") {
 			out.afterFlag = tc.flag;
@@ -4362,6 +4399,46 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// exact and the whole tour stays undoable). Wide rules load AFTER the
 	// direct commands so locals win over matching regex (more specific
 	// wins); rules skip locally-overridden nodes when they apply.
+	// TEXTURE-asset pool imports replay FIRST (before the material
+	// records): the records mirror the session's texture pool imports,
+	// so .texture pool entries (light cookies, material tex refs) resolve
+	// exactly as authored. Failed records stay in the mirror (the next
+	// save re-emits them verbatim — the orphan-command contract: a reload
+	// must never erase records; restoring the file heals the next replay).
+	m_textureAssets = doc.textureAssets; // session mirror (save re-emits)
+	// Replay mode FIRST: the import loops below call the shared imports,
+	// and their record pushes must stay gated (the records arrive from
+	// the doc here — a second push would duplicate every entry).
+	m_replayingTour = true;
+	for (const auto& ta : doc.textureAssets) {
+		// Resolve: project-relative records against the PROJECT ROOT
+		// first (the record's in-project convention), then as-is for
+		// absolute/out-of-project records.
+		std::filesystem::path hp;
+		std::error_code ec;
+		if (!m_projectRoot.empty())
+			hp = std::filesystem::path(m_projectRoot) / ta.path;
+		if (hp.empty() || !std::filesystem::exists(hp, ec))
+			hp = std::filesystem::path(ta.path);
+		smvk::Cluster* cl =
+			m_world->clusters.empty() ? nullptr
+			: m_world->clusters[0].get();
+		if (!cl)
+			break;
+		std::string imErr;
+		const smvk::TextureHandle h =
+			smvk::assets::ImportTextureAssetToCluster(
+				*cl, hp, m_context.get(), imErr);
+		if (h.empty()) {
+			Log("tour: textureAsset import failed: '" + ta.path
+				+ "': " + (imErr.empty()
+					? "not found (under the project root, then as-is)"
+					: imErr)
+				+ " (cookie/material refs to it resolve empty).");
+			continue;
+		}
+		RebuildTexHandleMap();
+	}
 	// Material-asset POOL imports replay FIRST: the records mirror the
 	// session's pool creations in order, so the pool indices the later
 	// assignMaterial/-m commands carry resolve exactly as authored.
@@ -4371,9 +4448,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	m_materialAssets = doc.materialAssets; // session mirror (save re-emits)
 	// Replay mode FIRST: the materialAsset loop below calls
 	// EnsureDefaultMaterial + the shared import, and their record pushes
-	// must stay gated (the records arrive from the doc here — a second
+	// must stay gated (the records arrive from the doc there — a second
 	// push would duplicate every entry in the next save).
-	m_replayingTour = true;
 	for (const auto& ma : doc.materialAssets) {
 		if (ma.editorDefault) {
 			// The deterministic seed (records no new entry here:
@@ -5033,6 +5109,78 @@ std::string EditorApp::DerivedAssetGuid(const std::string& assetPath) {
 				return e.guid;
 	}
 	return {};
+}
+
+void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
+	// Spot-cookie LIVE import (see the header): the cookie ref's
+	// .texture lands in cluster 0's pool NOW (the live view's light
+	// build resolves it through FindTextureByUri) + a textureAsset
+	// record rides the tour (the cook replays it before the command
+	// list). Empty clears the slot (no import); non-.texture refs are
+	// refused with a log (a raw image is not cluster-registered —
+	// import it as a .texture first). NOT during replay (the tour's
+	// records replay there). The record dedupes by path (one .texture
+	// cooks cookies on any number of lights).
+	if (cookieRef.empty() || m_replayingTour || !m_world
+		|| m_world->clusters.empty() || !m_world->clusters[0]
+		|| !m_context)
+		return;
+	{
+		std::string ext =
+			std::filesystem::path(cookieRef).extension().string();
+		for (char& c : ext)
+			c = char(std::tolower((unsigned char)c));
+		if (ext != ".texture") {
+			Log("Cookie: '" + cookieRef + "' is not a .texture asset — "
+				"reference a .texture (Browse to import an image, or "
+				"select an image file + 'Import as .texture').");
+			return;
+		}
+	}
+	// Resolve: project-relative refs against the PROJECT ROOT first
+	// (the record's in-project convention), then as-is.
+	std::filesystem::path hp;
+	{
+		std::error_code ec;
+		if (!m_projectRoot.empty())
+			hp = std::filesystem::path(m_projectRoot) / cookieRef;
+		if (hp.empty() || !std::filesystem::exists(hp, ec))
+			hp = std::filesystem::path(cookieRef);
+	}
+	smvk::Cluster* cl = m_world->clusters[0].get();
+	std::string imErr;
+	const smvk::TextureHandle h =
+		smvk::assets::ImportTextureAssetToCluster(
+			*cl, hp, m_context.get(), imErr);
+	if (h.empty()) {
+		Log("Cookie: texture import failed for '" + cookieRef + "': "
+			+ (imErr.empty() ? "not found" : imErr)
+			+ " (the light renders unshadowed until it resolves).");
+		return;
+	}
+	RebuildTexHandleMap();
+	// Record the pool import (the tour's textureAsset list — deduped by
+	// path so one .texture cooks every light's cookie).
+	{
+		std::string posix = cookieRef;
+		for (char& c : posix)
+			if (c == '\\')
+				c = '/';
+		bool known = false;
+		for (const auto& ta : m_textureAssets)
+			if (ta.path == posix) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			smvk::tour::TextureAssetCmd rec{};
+			rec.path = posix;
+			rec.name = std::filesystem::path(cookieRef).stem().string();
+			m_textureAssets.push_back(std::move(rec));
+		}
+	}
+	Log("Cookie: imported '" + cookieRef + "' (live view + the tour's "
+		"textureAsset record).");
 }
 
 void EditorApp::AssignMaterialAsset(const std::string& assetPath) {

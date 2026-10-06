@@ -358,18 +358,25 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 	KtxGuard guard(ktxTex);
 	const auto traceT1 = std::chrono::steady_clock::now();
 
-	// Render-thread transcode REFUSAL (the v4 cook contract: streaming
-	// paks embed GPU-ready BCn). A Basis-family payload here would pay a
-	// full synchronous transcode on the render thread (tens to ~150 ms
-	// for 2-4K textures) — the exact hitch this pipeline is built to
-	// never have. Refuse loudly and swap the entry's backing to the
-	// solid-pink error texture (structure-mirrored, so the handle/view/
-	// bindless slot all keep working) instead of aborting the process:
-	// the error is REPORTED and the pink surface is the visible "recook
-	// the pak" flag; the entry is pinned (errorPinned) so demand never
-	// re-attempts the same broken payload. Unreachable for freshly
+	// Render-thread transcode POLICY (see TextureStreamerConfig): a
+	// Basis-family payload re-decoded at a demand upgrade/downgrade.
+	// The v4 cook contract (streaming paks embed GPU-ready BCn) means a
+	// shipped App never legitimately sees one — REFUSE loudly and swap
+	// the entry's backing to the solid-pink error texture
+	// (structure-mirrored, so the handle/view/bindless slot all keep
+	// working) instead of paying a full synchronous transcode on the
+	// render thread (tens to ~150 ms for 2-4K textures — the exact hitch
+	// this pipeline is built to never have): the error is REPORTED and
+	// the pink surface is the visible "recook the pak" flag; the entry
+	// is pinned (errorPinned) so demand never re-attempts the same
+	// broken payload. Authoring hosts (the editor — clusters stash
+	// SOURCE bytes by design, a foreign Basis .ktx2 rides the pool
+	// verbatim until the cook converts it) instead TRANSCODE in place
+	// (the same Basis->BC7 the first load runs) and proceed with the
+	// real content — correct, with a hitch. Unreachable for freshly
 	// cooked paks (the cook pink-embeds failed transcodes).
-	if (ktxTexture2_NeedsTranscoding(ktxTex))
+	if (ktxTexture2_NeedsTranscoding(ktxTex)
+		&& !config_.allowRetargetTranscode)
 	{
 		std::fprintf(stderr,
 			"[TexStream] retarget refused: '%s' carries a Basis-family payload "

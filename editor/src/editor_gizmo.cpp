@@ -248,12 +248,19 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		return;
 	SetupDefaultCameras();
 	std::vector<LineBatch> batches;
+	// MODAL-MODE GIZMO FOCUS: LIGHTING concentrates the viewport on the
+	// light authoring set — light markers (sun/point/spot), convex GI
+	// volumes and cubemap pins stay, everything else (cameras, the
+	// ground grid) steps aside so the light reads dominate the frame.
+	// Every other mode keeps the full set; the View-menu toggles stay
+	// live in both.
+	const bool lightingFocus = m_mode == EditorMode::Lighting;
 	// Ground grid (XZ at y = 0): minor + major cells; the translate snap
 	// step equals the cell size (Shift-drag). Editor-drawn ONLY without
 	// a live hosted view (its own depth path tests correctly there);
 	// with the live view up the hosted renderer draws the grid itself,
 	// depth-tested against each view's own depth.
-	if (m_showGrid && !m_wysiwyg) {
+	if (m_showGrid && !m_wysiwyg && !lightingFocus) {
 		EditorAppViewGizmo cfg{};
 		cfg.cellSize = std::max(m_gridSize, 0.01f);
 		cfg.extentCells = int(std::clamp<uint32_t>(m_gridExtent, 2, 512));
@@ -426,7 +433,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// reads apart from lights (orange/cyan/yellow), cvolumes (priority
 	// hues) and cubemaps (magenta); the selection draws bright. Aspect
 	// follows the active viewport (schematic when panels disagree).
-	if (m_showCameraGizmos && !m_world->scene.cameraForNode.empty()) {
+	// LIGHTING mode steps these aside (the light set owns the viewport).
+	if (m_showCameraGizmos && !lightingFocus
+		&& !m_world->scene.cameraForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		const ViewportRect& ar = m_viewports[m_activeVp].rect;
 		const float aspect = ar.h > 0.0f ? ar.w / ar.h : 16.0f / 9.0f;

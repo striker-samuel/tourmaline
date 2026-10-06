@@ -383,7 +383,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			|| c.text == "rotation")
 			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
 				<< " " << c.vec4.z;
-		else if (c.text == "name")
+		else if (c.text == "name" || c.text == "cookie")
 			f << " -type \"string\" -v " << Quote(c.name);
 		else if (c.text == "static" || c.text == "shadow")
 			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
@@ -608,11 +608,22 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << ";\n";
 			continue;
 		}
-		if (ma.path.empty())
+	if (ma.path.empty())
+		continue; // half-written record: skip (mirrors fileNode)
+	f << "materialAsset -path " << Quote(ma.path);
+	if (!ma.name.empty())
+		f << " -name " << Quote(ma.name);
+	f << ";\n";
+	}
+	// Texture-asset imports (ordered; see TextureAssetCmd): replayed
+	// BEFORE the material-asset records so .texture pool entries resolve
+	// exactly like the authoring session.
+	for (const TextureAssetCmd& ta : doc.textureAssets) {
+		if (ta.path.empty())
 			continue; // half-written record: skip (mirrors fileNode)
-		f << "materialAsset -path " << Quote(ma.path);
-		if (!ma.name.empty())
-			f << " -name " << Quote(ma.name);
+		f << "textureAsset -path " << Quote(ta.path);
+		if (!ta.name.empty())
+			f << " -name " << Quote(ta.name);
 		f << ";\n";
 	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
@@ -1190,11 +1201,41 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					ma.editorDefault = true;
 			}
 		}
-		if (ma.editorDefault || !ma.path.empty())
-			doc.materialAssets.push_back(std::move(ma));
+	if (ma.editorDefault || !ma.path.empty())
+		doc.materialAssets.push_back(std::move(ma));
+	else
+		warn("tour:" + std::to_string(lineNo) +
+			": materialAsset without -path/-default (skipped)");
+	continue;
+	}
+	if (verb == "textureAsset") {
+		// textureAsset -path "<p>" -name "<n>";
+		// Ordered editor-side TEXTURE pool imports (see TextureAssetCmd):
+		// replayed BEFORE the material-asset records so .texture entries
+		// resolve (materials + light cookies reference them).
+		TextureAssetCmd ta;
+		for (size_t i = 1; i < toks.size(); ++i) {
+			auto get = [&](const char* key, std::string& out) {
+				if (toks[i] == key && i + 1 < toks.size()) {
+					out = toks[i + 1];
+					if (!out.empty() && out.back() == ';')
+						out.pop_back();
+					++i;
+					return true;
+				}
+				return false;
+			};
+			std::string v;
+			if (get("-path", v))
+				ta.path = v;
+			else if (get("-name", v))
+				ta.name = v;
+		}
+		if (!ta.path.empty())
+			doc.textureAssets.push_back(std::move(ta));
 		else
 			warn("tour:" + std::to_string(lineNo) +
-				": materialAsset without -path/-default (skipped)");
+				": textureAsset without -path (skipped)");
 		continue;
 	}
 		if (verb == "cook") {
@@ -1763,40 +1804,42 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.vec4 = glm::vec4(float(v[0]), float(v[1]), float(v[2]), float(v[3]));
 			c.number = strength;
 		}
-		else if (effVerb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
-			static const char* kAttrs[] = { "color", "intensity", "range",
-				"inner", "outer", "static", "shadow", "name", "position",
-				"rotation" };
-			bool known = false;
-			for (const char* a : kAttrs)
-				if (fl.at == a) {
-					known = true;
-					break;
-				}
-			if (!known) {
-				err = "line " + std::to_string(lineNo) + ": bad light attr '" + fl.at + "'";
-				return false;
+	else if (effVerb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		static const char* kAttrs[] = { "color", "intensity", "range",
+			"inner", "outer", "static", "shadow", "name", "position",
+			"rotation", "cookie", "function", "functionSpeed",
+			"functionScale" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
 			}
-		c.verb = Verb::SetLightAttr;
-		c.node = fl.hasRef ? (kCreateLightRefBase | fl.ref) : fl.n;
-		c.text = fl.at;
-		if (fl.at == "color" || fl.at == "position" || fl.at == "rotation") {
-			if (fl.t.size() < 3) {
-				err = "line " + std::to_string(lineNo) + ": light triple wants 3 values";
-				return false;
-			}
-			double r = 0, g = 0, b = 0;
-			if (!ParseDouble(fl.t[0], r) || !ParseDouble(fl.t[1], g) ||
-				!ParseDouble(fl.t[2], b)) {
-				err = "line " + std::to_string(lineNo) + ": bad light triple";
-				return false;
-			}
-			c.vec4 = glm::vec4(float(r), float(g), float(b), 1.0f);
+		if (!known) {
+			err = "line " + std::to_string(lineNo) + ": bad light attr '" + fl.at + "'";
+			return false;
 		}
-		else if (fl.at == "name") {
-			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+	c.verb = Verb::SetLightAttr;
+	c.node = fl.hasRef ? (kCreateLightRefBase | fl.ref) : fl.n;
+	c.text = fl.at;
+	if (fl.at == "color" || fl.at == "position" || fl.at == "rotation") {
+		if (fl.t.size() < 3) {
+			err = "line " + std::to_string(lineNo) + ": light triple wants 3 values";
+			return false;
 		}
-		else if (fl.at == "static" || fl.at == "shadow") {
+		double r = 0, g = 0, b = 0;
+		if (!ParseDouble(fl.t[0], r) || !ParseDouble(fl.t[1], g) ||
+			!ParseDouble(fl.t[2], b)) {
+			err = "line " + std::to_string(lineNo) + ": bad light triple";
+			return false;
+		}
+		c.vec4 = glm::vec4(float(r), float(g), float(b), 1.0f);
+	}
+	else if (fl.at == "name" || fl.at == "cookie") {
+		// String attrs: -v (quoted) or a bare -t token (the name form).
+		c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+	}
+	else if (fl.at == "static" || fl.at == "shadow") {
 			bool on = false;
 			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
 			if (!ParseFlagWord(w, on)) {
@@ -2858,12 +2901,30 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				else
 					def->flags &= ~SceneLight::kSceneLightFlag_CastShadow;
 			}
-			else if (c.text == "name") {
-				def->name = c.name;
-				const uint32_t id = uint32_t(scene.nodeNames.size());
-				scene.nodeNames.push_back(c.name);
-				scene.nameForNode[target] = id;
-			}
+		else if (c.text == "name") {
+			def->name = c.name;
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			scene.nameForNode[target] = id;
+		}
+		else if (c.text == "cookie") {
+			// Spot gobo ref (a .texture path or image URI; the light
+			// build resolves it to the bindless index). Empty clears it.
+			def->cookieUri = c.name;
+		}
+		else if (c.text == "function") {
+			// Procedural light function (0 none, 1 flicker, 2 pulse,
+			// 3 bands — see kForwardPlusFunction_*).
+			def->functionType = uint32_t(
+				std::clamp(int(c.number), 0, 3));
+		}
+		else if (c.text == "functionSpeed") {
+			def->functionSpeed = std::max(float(c.number), 0.01f);
+		}
+		else if (c.text == "functionScale") {
+			def->functionScale =
+				std::clamp(float(c.number), 0.0f, 1.0f);
+		}
 			else if (c.text == "position" || c.text == "rotation") {
 				// Rebuild the node's local TRS with one channel replaced
 				// (editor TRS convention: Rz*Ry*Rx, degrees).

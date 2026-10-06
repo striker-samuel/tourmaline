@@ -15,10 +15,12 @@
 namespace smvk {
 namespace {
 
-// VkFormat core value (Vulkan 1.x, stable): R8G8B8A8_UNORM = 37.
-// Hardcoded so this TU doesn't inherit a Vulkan header dependency
-// (same convention as gltf_import's tex_transcode.cpp).
+// VkFormat core values (Vulkan 1.x, stable): R8G8B8A8_UNORM = 37,
+// R8G8B8A8_SRGB = 43. Hardcoded so this TU doesn't inherit a Vulkan
+// header dependency (same convention as gltf_import's
+// tex_transcode.cpp).
 constexpr uint32_t kVkR8G8B8A8Unorm = 37;
+constexpr uint32_t kVkR8G8B8A8Srgb = 43;
 
 constexpr uint8_t kPinkRgba[4] = { 255, 0, 255, 255 };
 
@@ -43,6 +45,19 @@ bool FillPinkSlice(ktxTexture2* tex, uint32_t level, uint32_t layer,
 	}
 	return ktxTexture_SetImageFromMemory(ktxTexture(tex), level, layer,
 		faceSlice, px.data(), ktx_size_t(sliceBytes)) == KTX_SUCCESS;
+}
+
+// Levels for a 2D base (down to 1x1; >= 1).
+uint32_t PinkMipLevels(uint32_t w, uint32_t h) {
+	uint32_t levels = 1;
+	while (w > 1 || h > 1) {
+		if (w > 1)
+			w /= 2;
+		if (h > 1)
+			h /= 2;
+		++levels;
+	}
+	return levels;
 }
 
 } // namespace
@@ -81,6 +96,40 @@ ktxTexture2* CreatePinkKtx2(const ktxTexture2& mirror) {
 					return nullptr;
 				}
 			}
+		}
+	}
+	return tex;
+}
+
+ktxTexture2* CreatePinkKtx2(uint32_t width, uint32_t height,
+	uint32_t levels) {
+	// Standalone form (the built-in error texture asset): plain 2D,
+	// sRGB, full chain (or the caller's clamp). sRGB matches the color
+	// texture slots it stands in for (pink stays pink either way).
+	if (width == 0 || height == 0)
+		return nullptr;
+	if (levels == 0)
+		levels = PinkMipLevels(width, height);
+	ktxTextureCreateInfo ci{};
+	ci.vkFormat = kVkR8G8B8A8Srgb;
+	ci.baseWidth = width;
+	ci.baseHeight = height;
+	ci.baseDepth = 1;
+	ci.numDimensions = 2;
+	ci.numLevels = std::max(1u, levels);
+	ci.numLayers = 1;
+	ci.numFaces = 1;
+	ci.isArray = KTX_FALSE;
+	ci.generateMipmaps = KTX_FALSE;
+	ktxTexture2* tex = nullptr;
+	if (ktxTexture2_Create(&ci, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &tex)
+		!= KTX_SUCCESS || !tex)
+		return nullptr;
+	ktxTexture2_SetOETF(tex, KHR_DF_TRANSFER_SRGB);
+	for (uint32_t level = 0; level < tex->numLevels; ++level) {
+		if (!FillPinkSlice(tex, level, 0, 0)) {
+			ktxTexture2_Destroy(tex);
+			return nullptr;
 		}
 	}
 	return tex;

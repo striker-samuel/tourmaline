@@ -4167,19 +4167,23 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 				m_cookedLights.hasSun = true;
 				sunTaken = true;
 			}
-			else if (L.type == ::SceneLight::Type::Point) {
-				smvk::ForwardPlusLight pl{};
-				pl.color = glm::vec4(L.color, 1.0f);
-				pl.position = glm::vec3(G[3]);
-				pl.range = L.range; // 0 = infinite (shaders handle <= 0)
-				pl.intensity = L.intensity;
-				pl.type = (int32_t)smvk::kForwardPlusPoint;
-				pl.shadowTile = -1;
-				pl.shadowMapIndex = -1;
-				pl.cookieIndex = -1;
-				pl.functionType = smvk::kForwardPlusFunction_None;
-				points.push_back(pl);
-			}
+		else if (L.type == ::SceneLight::Type::Point) {
+			smvk::ForwardPlusLight pl{};
+			pl.color = glm::vec4(L.color, 1.0f);
+			pl.position = glm::vec3(G[3]);
+			pl.range = L.range; // 0 = infinite (shaders handle <= 0)
+			pl.intensity = L.intensity;
+			pl.type = (int32_t)smvk::kForwardPlusPoint;
+			pl.shadowTile = -1;
+			pl.shadowMapIndex = -1;
+			pl.cookieIndex = -1; // points never project a gobo
+			// Authored light function (flicker/pulse; the shader's bands
+			// form degrades to pulse for points — see EvaluateLightFunction).
+			pl.functionType = int32_t(L.functionType);
+			pl.functionSpeed = L.functionSpeed;
+			pl.functionScale = L.functionScale;
+			points.push_back(pl);
+		}
 		else if (L.type == ::SceneLight::Type::Spot) {
 			glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 				if (glm::length(emis) < 1e-6f)
@@ -4201,8 +4205,35 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 					sl.flags |= smvk::kForwardPlusFlag_CastShadow;
 				sl.shadowTile = -1;
 				sl.shadowMapIndex = -1;
+				// Authored spot COOKIE (gobo): the .texture asset path (or
+				// image URI) resolves through the world's cluster texture
+				// pool to the bindless gobo index the shader projects
+				// through the cone (cookies.h pattern set; see
+				// default_lit_body's cookie eval). Unresolved refs warn +
+				// drop (never fatal) — the App's pak must carry the
+				// texture (the tour's textureAsset records import it).
 				sl.cookieIndex = -1;
-				sl.functionType = smvk::kForwardPlusFunction_None;
+				if (!L.cookieUri.empty() && m_context) {
+					for (const auto& cp : m_world->clusters) {
+						if (!cp)
+							continue;
+						if (auto hit =
+								cp->FindTextureByUri(L.cookieUri)) {
+							sl.cookieIndex = int32_t(
+								m_context->GetTextureBindlessIndex(*hit));
+							break;
+						}
+					}
+					if (sl.cookieIndex < 0)
+						std::cerr << "[Scene] spot '" << L.name
+							<< "': cookie '" << L.cookieUri
+							<< "' unresolved (no cluster texture) — "
+							"unshadowed gobo dropped\n";
+				}
+				// Authored light function (flicker/pulse/bands).
+				sl.functionType = int32_t(L.functionType);
+				sl.functionSpeed = L.functionSpeed;
+				sl.functionScale = L.functionScale;
 				spots.push_back(sl);
 			}
 		}
