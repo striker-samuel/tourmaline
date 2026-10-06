@@ -59,6 +59,7 @@
 #include <Engine/Rendergraph/ssgi.h>
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/envzones.h>
+#include <Engine/Rendergraph/probeball.h>
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -1244,6 +1245,30 @@ public:
 	// smvk::DlssSetStartupEnabled(false), which keeps the Streamline
 	// interposer out of the Vulkan call chain for RenderDoc captures.
 	void SetDlssMode(smvk::DlssMode mode) { m_dlssMode = mode; }
+	// Chrome-ball probe visual toggle (see Rendergraph/probeball.h): the
+	// editor's View menu drives it through the hosted renderer — the
+	// balls render inside Main with the scene's depth/IBL, so the toggle
+	// belongs to the renderer, not the host.
+	void SetCubemapShowBalls(bool on) { m_cubemapShowBalls = on; }
+	bool CubemapShowBalls() const { return m_cubemapShowBalls; }
+	// ---- Host-driven renderer settings (the editor's live-view panel) ----
+	// The App drives these through its debug panel; hosts without the UI
+	// pass (the editor's hosted view renders into the hosted target and
+	// the editor composites it) drive them through here. The m_passes
+	// SHAPE stays untouched (Configure owns the pipeline shape) — these
+	// are the runtime toggles every pass gates on.
+	void SetBloomEnabled(bool v) { m_bloomEnabled = v; }
+	bool BloomEnabled() const { return m_bloomEnabled; }
+	void SetMotionBlurEnabled(bool v) { m_motionBlurEnabled = v; }
+	bool MotionBlurEnabled() const { return m_motionBlurEnabled; }
+	void SetDofEnabled(bool v) { m_dofEnabled = v; }
+	bool DofEnabled() const { return m_dofEnabled; }
+	void SetSsrEnabled(bool v) { m_ssrEnabled = v; }
+	bool SsrEnabled() const { return m_ssrEnabled; }
+	void SetVolumetricEnabled(bool v) { m_volumetricEnabled = v; }
+	bool VolumetricEnabled() const { return m_volumetricEnabled; }
+	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
+	bool SkydomeEnabled() const { return m_skyEnabled; }
 
 protected:
 	void UpdateCamera(float dt);
@@ -2763,6 +2788,28 @@ protected:
 	// envZone* block carries the UINT32_MAX sentinel index).
 	bool m_envZonesEnabled = true;
 	smvk::envzones::EnvZoneMap m_envZones{};
+	// Chrome-ball visualization of the LOADED cubemap probes (see
+	// Rendergraph/probeball.h): one lit sphere per baked capture, sampling
+	// its own cubemap — the editor's old scene-node chrome balls done as a
+	// renderer-owned debug pass (zero scene footprint). Toggled with
+	// m_cubemapShowBalls (UI; the editor's View menu drives it through the
+	// hosted renderer).
+	bool m_cubemapShowBalls = true;
+	smvk::probeball::ProbeBallVisual m_probeBalls{};
+	// ---- Texture inspector (aux-texture debug view) ----
+	// Lists the LIVE textures (ResourceManager::ListTextureInfos — one
+	// row per pool texture; content/material textures carry load-path
+	// names and hide behind the toggle) and previews a clicked one through
+	// the ImGui OVERLAY's user-texture binding (AddUserTexture — the
+	// backend's descriptor registration wrapped behind RHI-opaque types;
+	// NO Vulkan detail crosses into this renderer). Staleness is a
+	// FEATURE: a selected handle dropping out of the listing (destroyed —
+	// the pool generation bumped, exactly what UpdateTexture's recreate
+	// path does) drops the preview instead of sampling a dead view.
+	bool m_texDebugShowContent = false;      // include load-path (content) textures
+	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
+	ImTextureID m_texDebugPreview = 0;       // the overlay's user-texture binding (0 = none)
+	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

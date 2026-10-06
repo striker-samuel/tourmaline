@@ -737,6 +737,10 @@ namespace smvk {
 
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+		// Live-texture listing (debug UIs; render thread only — the pool
+		// walk is unsynchronized): one TextureInfo row per live texture,
+		// pool order.
+		std::vector<smvk::TextureInfo> ListTextureInfos();
 		// True when the texture's backing image is cube-compatible with a
 		// ViewCube / ViewCubeArray sampled view (manual isCubemap images
 		// and KTX2 cubemap uploads). False for invalid handles.

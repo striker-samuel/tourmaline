@@ -3,6 +3,10 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
+// ImTextureID (the UI texture identifier the binding below returns; the
+// overlay owns the UI side of the engine, so the ImGui type lives here).
+#include <imgui.h>
+
 // SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
 struct SDL_Window;
 
@@ -78,6 +82,18 @@ public:
     // App::imguiEventHook_ after Init so App::PollEvents feeds ImGui:
     //   imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
     static bool ProcessEvent(const void* sdlEvent);
+
+    // ---- User-texture binding (in-UI image display, e.g. debug previews) ----
+    // Binds a LIVE texture's sampled view + a bindless sampler slot through
+    // the backend's user-texture descriptor registration; the returned
+    // identifier is valid for ImGui::Image until RemoveUserTexture. The
+    // backend owns one descriptor per Add (leaks are descriptor-pool
+    // slots) — always pair them. Staleness is built in: a dead handle
+    // (its pool generation bumped — destroyed, or UpdateTexture's
+    // recreate path) returns a null id, so a freed view can never slip
+    // into a descriptor. Render thread only.
+    ImTextureID AddUserTexture(TextureHandle texture, uint32_t samplerIndex);
+    void RemoveUserTexture(ImTextureID id);
 
     // ---- DPI control ----
     // Monitor content scale of the window (1.0 on standard displays).

@@ -404,6 +404,39 @@ void EditorApp::DrawWorldPanel() {
 	// camera nodes (outliner [camera]) carry their own lens + pose and
 	// are bound per viewport from the viewport chips.
 	DrawCameraSection();
+	// ---- renderer settings (the hosted live view) -----------------------
+	// The WorldRenderer's runtime toggles (the App owns the same controls
+	// through its debug panel): strip the look down for authoring —
+	// bloom/postfx off keep the viewport reference-sharp. Only with a
+	// live hosted view; the pass SHAPE stays the full pipeline (Configure
+	// owns it), these flip the runtime gates.
+	if (m_wysiwyg) {
+		ImGui::Separator();
+		if (ImGui::CollapsingHeader("Renderer (live view)",
+				ImGuiTreeNodeFlags_DefaultOpen)) {
+			bool on = m_wysiwyg->BloomEnabled();
+			if (ImGui::Checkbox("Bloom", &on))
+				m_wysiwyg->SetBloomEnabled(on);
+			on = m_wysiwyg->MotionBlurEnabled();
+			if (ImGui::Checkbox("Motion blur", &on))
+				m_wysiwyg->SetMotionBlurEnabled(on);
+			on = m_wysiwyg->DofEnabled();
+			if (ImGui::Checkbox("Depth of field", &on))
+				m_wysiwyg->SetDofEnabled(on);
+			on = m_wysiwyg->SsrEnabled();
+			if (ImGui::Checkbox("SSR (reflections)", &on))
+				m_wysiwyg->SetSsrEnabled(on);
+			on = m_wysiwyg->VolumetricEnabled();
+			if (ImGui::Checkbox("Volumetric fog", &on))
+				m_wysiwyg->SetVolumetricEnabled(on);
+			on = m_wysiwyg->SkydomeEnabled();
+			if (ImGui::Checkbox("Sky dome", &on))
+				m_wysiwyg->SetSkydomeEnabled(on);
+			ImGui::TextDisabled("Runtime gates over the full pass shape "
+				"(the App's debug panel owns the same controls). Turn "
+				"bloom/postfx off for a reference-sharp authoring view.");
+		}
+	}
 }
 
 void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {

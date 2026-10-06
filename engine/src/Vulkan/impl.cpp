@@ -7430,6 +7430,35 @@ bool smvk::VulkanResourceManager::IsCubemapTexture(TextureHandle handle) const
 	return view->viewType == ImageViewType::ViewCube
 		|| view->viewType == ImageViewType::ViewCubeArray;
 }
+
+// Live-texture listing (see the header contract): pool order, one row per
+// live texture. Render thread only (the ShardedPool walk is
+// unsynchronized — the documented forEach contract).
+std::vector<smvk::TextureInfo> smvk::VulkanResourceManager::ListTextureInfos()
+{
+	std::vector<smvk::TextureInfo> out;
+	textures_.forEachHandle([&](TextureHandle handle) {
+		const Texture* texture = textures_.get(handle);
+		if (!texture)
+			return;
+		const Image* image = images_.get(texture->image);
+		if (!image)
+			return;
+		smvk::TextureInfo info{};
+		info.handle = handle;
+		info.name = image->name ? image->name : "";
+		info.format = image->format;
+		info.type = image->type;
+		info.extent = image->extent;
+		info.mipLevels = image->mipLevels;
+		info.arrayLayers = image->arrayLayers;
+		info.isCubemap = image->isCubemap;
+		info.bindless = texture->bindless.empty()
+			? -1 : int32_t(GetBindlessIndex(texture->bindless));
+		out.push_back(info);
+	});
+	return out;
+}
 uint32_t smvk::VulkanResourceManager::GetTextureArrayLayers(TextureHandle handle) const
 {
 	const Texture* texture = textures_.get(handle);

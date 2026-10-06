@@ -570,13 +570,21 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 				m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
-		if (ImGui::MenuItem("Cubemap capture balls", nullptr,
-				m_showCubemapBalls))
-			m_showCubemapBalls = !m_showCubemapBalls;
+		// Chrome balls at the loaded baked captures: the hosted renderer's
+		// lit probe-ball pass (see Rendergraph/probeball.h) — each ball
+		// samples its own baked cubemap. Toggles the WorldRenderer directly
+		// (the toggle only exists with a live hosted view).
+		bool ballsOn = m_wysiwyg && m_wysiwyg->CubemapShowBalls();
+		if (ImGui::MenuItem("Cubemap capture balls (chrome)", nullptr,
+				m_wysiwyg ? &ballsOn : nullptr)) {
+			if (m_wysiwyg)
+				m_wysiwyg->SetCubemapShowBalls(!ballsOn);
+		}
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Wire spheres at the capture pins, drawn in "
-				"the gizmo pass — render-only helpers (no scene nodes, "
-				"never cooked).");
+			ImGui::SetTooltip("Lit chrome spheres at the loaded baked\n"
+				"captures (the hosted renderer's probe-ball pass):\n"
+				"each ball samples its own cubemap — render-pass\n"
+				"visual only, never scene content.");
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;

@@ -1455,6 +1455,25 @@ struct ImageCreateInfo
 		size_t srcOffset = 0;
 	};
 
+	// One LIVE texture's listing metadata (ResourceManager::
+	// ListTextureInfos — the debug panels' texture inspector). `name` is
+	// the texture's debug name: engine/auxiliary textures carry their
+	// creation names ("env zone map", "cvol layer", "Cubemap", ...),
+	// while CONTENT/material textures carry their load paths (they
+	// contain a '/' — the inspector's content filter keys on that).
+	// bindless = the sampled bindless slot (-1 = not registered).
+	struct TextureInfo {
+		TextureHandle handle{};
+		const char* name = "";
+		Format format = Format::Undefined;
+		ImageType type = ImageType::Image2D;
+		Extent3D extent{ 0, 0, 0 };
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+		bool isCubemap = false;
+		int32_t bindless = -1;
+	};
+
 	// One CPU->GPU staged copy for the bulk table-driven upload (see
 	// ResourceManager::BulkCopyBuffer): the caller supplies ONE content
 	// blob plus a table of {srcOffset, dstOffset, size} entries; the RHI

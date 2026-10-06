@@ -299,6 +299,45 @@ bool ImGuiOverlay::WantsCaptureAny() const {
     return WantsCaptureMouse() || WantsCaptureKeyboard();
 }
 
+ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture,
+    uint32_t samplerIndex) {
+    // User-texture binding (see the header contract): the backend's
+    // descriptor registration over the texture's sampled view + a
+    // bindless sampler slot. Vulkan types resolve through the RMI's
+    // opaque handles — nothing leaks past this file. Liveness is
+    // verified against the LIVE listing at bind time (a scan at
+    // selection-change cadence, not per frame): a dead handle — its pool
+    // generation bumped, exactly what UpdateTexture's recreate path
+    // does — returns a null id, so a freed view can never slip into a
+    // descriptor.
+    if (!initialized_ || !ctx_ || texture.empty())
+        return ImTextureID(0);
+    bool live = false;
+    for (const TextureInfo& t : ctx_->ListTextureInfos())
+        if (t.handle == texture) {
+            live = true;
+            break;
+        }
+    if (!live)
+        return ImTextureID(0);
+    const void* view = ctx_->GetTextureVkImageView(texture);
+    const void* sampler = ctx_->GetVkSamplerOpaque(samplerIndex);
+    if (!view || !sampler)
+        return ImTextureID(0);
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
+        reinterpret_cast<VkImageView>(const_cast<void*>(view)),
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return ImTextureID(reinterpret_cast<uint64_t>(ds));
+}
+
+void ImGuiOverlay::RemoveUserTexture(ImTextureID id) {
+    if (!initialized_ || id == ImTextureID(0))
+        return;
+    ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(
+        static_cast<uint64_t>(id)));
+}
+
 float ImGuiOverlay::GetWindowDpiScale() const {
     if (!window_) return 1.0f;
     float scale = SDL_GetWindowDisplayScale(window_);

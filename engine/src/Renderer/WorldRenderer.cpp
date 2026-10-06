@@ -2011,6 +2011,10 @@ if (!m_resources.fragVertexColorShader.empty()) {
 				std::cerr << "[WorldRenderer] env zone map build failed – "
 					"consumers take the plain env path\n";
 		}
+		// Chrome-ball probe visual (Rendergraph/probeball.h): the shared
+		// sphere + programs; draws gate on ShadersValid (a missing .spv
+		// only skips the balls).
+		m_probeBalls.Ensure(*m_context);
 
 		{
 			auto vkExt = m_swapchain->GetExtent();
@@ -10137,6 +10141,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		});
 	}
 
+	// ---------------------------------------------------------------------
+	// Chrome-ball cubemap probe visual (Rendergraph/probeball.h): a
+	// DEDICATED pass after Main + particles — one sphere per loaded baked
+	// capture, the FS paints the probe's OWN baked cubemap onto the
+	// surface (reflect(-V,N) -> TextureCube LOD 0). HDR load/store (the
+	// balls composite over the scene; bloom/tonemap see them) + the
+	// prepass depth TEST-ONLY (the particles' rationale: 1x in both MSAA
+	// modes, occluded balls hide behind the opaque scene, the debug visual
+	// never writes depth). Zero scene footprint (the editor's old chrome
+	// balls were scene nodes — outliner leaks + the sky-drift bug); the
+	// rows come straight from the loaded probe table.
+	// ---------------------------------------------------------------------
+	if (m_passes.terrain && m_cubemapShowBalls
+		&& !m_cubemapProbes.empty()) {
+		std::vector<smvk::probeball::ProbeBallRow> ballRows;
+		ballRows.reserve(m_cubemapProbes.size());
+		for (const CubemapProbeGpu& p : m_cubemapProbes) {
+			smvk::probeball::ProbeBallRow row{};
+			row.center = glm::vec3(p.posInfluence);
+			row.influenceRadius = p.posInfluence.w;
+			row.fadeRadius = p.fadeCubemap.x;
+			row.cubemapIndex = int32_t(p.fadeCubemap.y);
+			row.mipLevels = p.fadeCubemap.z;
+			ballRows.push_back(row);
+		}
+		(void)m_probeBalls.AppendPass(*m_rendergraph,
+			m_viewportResources.hdr.logicalView,
+			m_viewportResources.renderDepth.logicalView,
+			renderExtent,
+			frameData.viewProj,
+			m_cameraPositioner.cameraPosition_,
+			ballRows.data(), uint32_t(ballRows.size()),
+			m_cubemapIntensity,
+			m_cubemapSampler);
+	}
+
 		// ---------------------------------------------------------------------
 		// SSGI – the shared final-depth MAX-HZB + the AO chain (see
 		// Engine/Rendergraph/ssgi.h). Runs AFTER Main + particles and
@@ -11358,13 +11398,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							}
 						}
 					}
-					if (ImGui::CollapsingHeader("Reflection Probes / Cubemaps")) {
-						ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
-						ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
-						ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
-						ImGui::Checkbox("Probe locations overlay", &m_cubemapShowProbes);
-						if (m_cubemapShowProbes)
-							ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
+				if (ImGui::CollapsingHeader("Reflection Probes / Cubemaps")) {
+					ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
+					ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
+					ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
+					ImGui::Checkbox("Probe locations overlay", &m_cubemapShowProbes);
+					if (m_cubemapShowProbes)
+						ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
+					ImGui::Checkbox("Chrome balls (lit probe visual)", &m_cubemapShowBalls);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip(
+							"One lit chrome sphere per loaded baked capture,\n"
+							"sampling ITS OWN cubemap in the reflection direction\n"
+							"(radius reads the influence at a glance). Render-pass\n"
+							"visual - no scene nodes, never picked, never cooked.");
 						{
 							static const char* const kCubeDbgNames[3] = {
 								"Off", "Cubemap only (no Fresnel)", "Probe weight heat",
@@ -11416,9 +11463,139 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							" (N cycles isolate diffuse only). Baked cubemaps are TRUE radiance scaled"
 							" only by this panel's intensity (mirrors match the sun-lit scene); the"
 							" Environment IBL intensity scales the analytic-sky fallback only.");
-						ImGui::TextDisabled("Probes upload once per scene load (see [Cubemap] log lines);"
+					ImGui::TextDisabled("Probes upload once per scene load (see [Cubemap] log lines);"
 							" intensity/debug/LOD apply instantly.");
+				}
+				// ---- Texture inspector (aux-texture debug view) --------
+				// Lists the LIVE textures (one row per pool texture; the
+				// metadata: debug name, extent, format, mips/layers, the
+				// bindless slot) and previews a clicked one through the
+				// ImGui Vulkan backend's user-texture binding. Content/
+				// material textures (load-path names, i.e. containing a
+				// '/') hide behind the toggle — the aux set (GI volumes,
+				// cubemaps, the env zone map, LUTs, cookies, terrain-adjacent
+				// textures, ...) is the point. 2D single-layer textures
+				// preview; arrays/3D/cubes list only (the ImGui backend
+				// samples Texture2D). Staleness: a selected handle dropping
+				// out of the listing (destroyed, generation bumped —
+				// UpdateTexture's recreate path) drops the preview.
+				if (ImGui::CollapsingHeader("Textures (debug)")) {
+					// Preview sampler: clamp + linear, created once.
+					if (m_texDebugSampler == UINT32_MAX) {
+						smvk::SamplerCreateInfo sci{};
+						sci.magFilter = smvk::Filter::Linear;
+						sci.minFilter = smvk::Filter::Linear;
+						sci.mipmapMode = smvk::MipmapMode::Nearest;
+						sci.addressU = smvk::AddressMode::ClampToEdge;
+						sci.addressV = smvk::AddressMode::ClampToEdge;
+						sci.addressW = smvk::AddressMode::ClampToEdge;
+						m_texDebugSampler = m_context->GetOrCreateSampler(sci);
 					}
+					ImGui::Checkbox("Content (material) textures",
+						&m_texDebugShowContent);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Textures whose debug name is a load"
+							"\npath (contains '/') — pak/scene content.\n"
+							"Off = the auxiliary set only (GI volumes,\n"
+							"cubemaps, zone map, LUTs, cookies, ...).");
+					std::vector<smvk::TextureInfo> texs =
+						m_context->ListTextureInfos();
+					// Common-format label (debug shorthand; numeric for
+					// the rest).
+					auto fmtName = [](smvk::Format f) -> const char* {
+						switch (f) {
+						case smvk::Format::RGBA8_UNorm: return "RGBA8_UN";
+						case smvk::Format::RGBA8_SRGB: return "RGBA8_SRGB";
+						case smvk::Format::RGBA16_Float: return "RGBA16F";
+						case smvk::Format::RGBA32_Float: return "RGBA32F";
+						case smvk::Format::R16_Float: return "R16F";
+						case smvk::Format::R32_Float: return "R32F";
+						case smvk::Format::RG16_Float: return "RG16F";
+						case smvk::Format::D32_Float: return "D32F";
+						default: return "(other)";
+						}
+					};
+					// Selection staleness: the handle must still be live.
+					bool selAlive = m_texDebugSelected.empty();
+					ImGui::BeginChild("##texlist", ImVec2(0.0f, 220.0f), true);
+					for (const smvk::TextureInfo& t : texs) {
+						const bool content =
+							std::strchr(t.name ? t.name : "", '/') != nullptr;
+						if (content && !m_texDebugShowContent)
+							continue;
+						if (!m_texDebugSelected.empty()
+							&& m_texDebugSelected == t.handle)
+							selAlive = true;
+						const bool previewable =
+							t.type == smvk::ImageType::Image2D
+							&& !t.isCubemap && t.arrayLayers == 1;
+						char label[320];
+						std::snprintf(label, sizeof(label),
+							"%s%s %ux%u %s mips=%u layers=%u bindless=%d",
+							t.name ? t.name : "(unnamed)",
+							previewable ? "" : " [no 2D preview]",
+							t.extent.width, t.extent.height, fmtName(t.format),
+							t.mipLevels, t.arrayLayers, t.bindless);
+					if (ImGui::Selectable(label,
+							m_texDebugSelected == t.handle)) {
+						// Selection change: drop the old binding (the
+						// overlay owns one descriptor per Add — always
+						// pair them).
+						if (m_texDebugPreview != 0) {
+							m_imgui->RemoveUserTexture(m_texDebugPreview);
+							m_texDebugPreview = 0;
+						}
+						m_texDebugSelected = t.handle;
+						if (previewable && t.bindless >= 0) {
+							// The overlay's user-texture binding: the
+							// backend's descriptor registration wrapped
+							// behind RHI-opaque types (a dead handle
+							// returns 0 there — the preview simply
+							// doesn't appear).
+							m_texDebugPreview = m_imgui->AddUserTexture(
+								t.handle, m_texDebugSampler);
+						}
+					}
+					}
+					ImGui::EndChild();
+					if (!m_texDebugSelected.empty() && !selAlive) {
+						// Died under the selection (generation bumped):
+						// drop the preview, never sample a dead view.
+						if (m_texDebugPreview != 0) {
+							m_imgui->RemoveUserTexture(m_texDebugPreview);
+							m_texDebugPreview = 0;
+						}
+						m_texDebugSelected = {};
+						ImGui::TextDisabled("selected texture was destroyed "
+							"(generation bumped) - selection cleared");
+					}
+					if (m_texDebugSelected.empty()) {
+						ImGui::TextDisabled("%zu live textures%s - click one to inspect.",
+							texs.size(), m_texDebugShowContent ? " (all)" : " (aux only)");
+					}
+					else {
+						// Preview: fit the panel width, keep the aspect.
+						// Raw sample — HDR formats read blown/crushed
+						// (inspect, not grade).
+						const smvk::TextureInfo* sel = nullptr;
+						for (const smvk::TextureInfo& t : texs)
+							if (t.handle == m_texDebugSelected) {
+								sel = &t;
+								break;
+							}
+					if (sel && m_texDebugPreview != 0) {
+						const float w = ImGui::GetContentRegionAvail().x;
+						const float aspect =
+							float(std::max(sel->extent.height, 1u))
+							/ float(std::max(sel->extent.width, 1u));
+						ImGui::Image(m_texDebugPreview,
+							ImVec2(w, w * aspect));
+						ImGui::TextDisabled("%s %ux%u (raw sample - HDR "
+							"formats read unexposed)", sel->name,
+							sel->extent.width, sel->extent.height);
+					}
+					}
+				}
 					if (ImGui::CollapsingHeader("Screen-Space Reflections (SSR)")) {
 						ImGui::Checkbox("Reflections (SSGI composite)", &m_ssrEnabled);
 						if (m_ssrEnabled) {

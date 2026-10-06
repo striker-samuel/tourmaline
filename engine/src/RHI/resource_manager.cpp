@@ -224,6 +224,7 @@ uint32_t ResourceManager::UpdateTexture(Holder<TextureHandle>& holder,
 void ResourceManager::UpdateDescriptors(uint32_t frameIndex) { impl_->vulkan.UpdateDescriptors(frameIndex); }
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { return impl_->vulkan.GetBindlessIndex(handle); }
 uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const { return impl_->vulkan.GetTextureBindlessIndex(handle); }
+std::vector<TextureInfo> ResourceManager::ListTextureInfos() { return impl_->vulkan.ListTextureInfos(); }
 bool ResourceManager::IsCubemapTexture(TextureHandle handle) const { return impl_->vulkan.IsCubemapTexture(handle); }
 uint32_t ResourceManager::GetTextureArrayLayers(TextureHandle handle) const { return impl_->vulkan.GetTextureArrayLayers(handle); }
 uint32_t ResourceManager::GetTextureCubemapSize(TextureHandle handle) const { return impl_->vulkan.GetTextureCubemapSize(handle); }

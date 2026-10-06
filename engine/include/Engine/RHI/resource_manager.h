@@ -146,6 +146,12 @@ public:
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
     // Bindless descriptor-array slot of a TextureHandle (its sampled view).
     uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+    // Live-texture listing for debug UIs (the texture inspector): one row
+    // per live texture, pool order. RENDER THREAD ONLY — the pool walk is
+    // unsynchronized (the ShardedPool forEach contract). Content/material
+    // textures are included (their names carry the load path — callers
+    // filter on '/').
+    std::vector<TextureInfo> ListTextureInfos();
     // Cubemap introspection (backing image + sampled view). Used by the
     // cubemap renderer loader to validate KTX2 cubemap uploads.
     bool IsCubemapTexture(TextureHandle handle) const;

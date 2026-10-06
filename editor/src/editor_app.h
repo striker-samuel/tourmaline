@@ -1220,15 +1220,14 @@ private:
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
 	bool m_showCameraGizmos = true;
-	// Cubemap-capture BALLS: wire spheres drawn in the GIZMO PASS
-	// (RecordGizmoPass, next to the capture markers) at each capture
-	// pin. Pure render-only visualization helpers — no scene nodes, no
-	// outliner/pick/delete filtering, nothing cooked or persisted. The
-	// position reads the capture's global translate directly, the same
-	// source the markers read, so a ball can never drift off its pin
-	// (the old chrome-ball scene nodes composed transforms through a
-	// second hierarchy path and leaked nodes into the outliner).
-	bool m_showCubemapBalls = true;
+	// Cubemap-capture BALLS: LIT chrome spheres at the loaded baked
+	// captures, rendered by the HOSTED WorldRenderer's probe-ball pass
+	// (see Rendergraph/probeball.h) — each ball samples its own baked
+	// cubemap in the reflection direction, so it reads exactly what the
+	// specular IBL serves at that capture spot. Pure render-pass visual:
+	// no scene nodes, no outliner/pick/delete filtering, nothing cooked
+	// or persisted. The toggle lives on the hosted renderer
+	// (m_cubemapShowBalls; the View menu drives it through m_wysiwyg).
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
