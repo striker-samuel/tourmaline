@@ -61,14 +61,23 @@ bool BuildSphere(ResourceManager& ctx, ProbeBallVisual& v) {
 				const uint32_t b = a + 1u;
 				const uint32_t c = a + cols;
 				const uint32_t d = c + 1u;
-				// Out-facing winding (+Y-up CCW front — the same
-				// convention as the terrain/placement grids).
+				// Out-facing winding (+Y-up CCW front — the terrain/
+				// placement grid convention), SPHERE-ADAPTED: the stack
+				// axis runs DOWN (phi 0 = top, pi = bottom), so the grid's
+				// (a, +row, +col) order winds INWARD here (cross(stack-,
+				// slice-tangent) = -radial). The mirrored order (a, +col,
+				// +row) keeps the geometric normal OUTWARD — the terrain
+				// grid's axis (+Z) points AWAY from its up axis, the
+				// sphere's stack axis points TOWARD it (-Y), which flips
+				// the cross. Inward winding rendered the balls inside-out
+				// (back-face culled to the inner surface, reflect sampling
+				// mirrored — "the wall is on the wrong side").
 				indices[k++] = a;
-				indices[k++] = c;
-				indices[k++] = b;
 				indices[k++] = b;
 				indices[k++] = c;
+				indices[k++] = b;
 				indices[k++] = d;
+				indices[k++] = c;
 			}
 		}
 	}

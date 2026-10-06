@@ -579,7 +579,7 @@ private:
 	// World selection: selecting any one clears the others. Extend
 	// NonDagKind + CollectNonDagEntries for future node sets — the
 	// section rendering and picking below stay kind-driven.
-	enum class NonDagKind : uint8_t { Image = 0, Material = 1 };
+	enum class NonDagKind : uint8_t { Image = 0, Material = 1, Terrain = 2 };
 	struct NonDagSel {
 		bool valid = false;
 		NonDagKind kind = NonDagKind::Image;
@@ -593,6 +593,15 @@ private:
 	NonDagSel m_nonDagSel;
 	uint32_t m_imageFocus = UINT32_MAX; // Images-tab highlight row
 	bool m_showNonDag = false;          // outliner non-DAG section toggle
+	// TERRAIN FIELD non-DAG node (the hosted renderer's default world
+	// dressing — Rendergraph/terrain.h; NOT scene content, never cooked):
+	// selecting the outliner row focuses the inspector's terrain page
+	// (edit desc -> rebuild, enable toggle, destroy). The draft seeds from
+	// the renderer's live desc once, then edits locally until Rebuild.
+	bool m_terrainFocus = false;
+	bool m_terrainDraftValid = false;
+	smvk::terrain::TerrainDesc m_terrainDraft{};
+	void DrawTerrainFieldPage();
 	void CollectNonDagEntries(std::vector<NonDagEntry>& out) const;
 	void SelectNonDag(NonDagKind kind, uint32_t index); // single
 	void ClearNonDagSelection();

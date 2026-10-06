@@ -330,6 +330,85 @@ void EditorApp::DrawEnvPanel() {
 		m_wysiwyg->PushVolumetricEnv(m_world->scene.environment);
 }
 
+void EditorApp::DrawTerrainFieldPage() {
+	// TERRAIN FIELD page (the hosted renderer's default world dressing —
+	// see Rendergraph/terrain.h): renderer state, NOT scene content —
+	// never cooked, never in the tour, no undo (session state like the
+	// editor cameras). The draft (m_terrainDraft, seeded once from the
+	// live desc) edits locally; Rebuild applies it to the renderer
+	// (Destroy + Build + staging flush); Delete removes the field entirely
+	// (the outliner row follows TerrainValid — a rebuild from THIS page
+	// restores it).
+	if (!m_wysiwyg) {
+		ImGui::TextDisabled("No live view - the terrain field lives on the "
+			"hosted renderer.");
+		m_terrainFocus = false;
+		return;
+	}
+	ImGui::Text("Terrain field");
+	ImGui::TextDisabled(
+		"Hosted-renderer world dressing (non-DAG): renderer state, never "
+		"cooked. Deterministic: same settings -> identical field.");
+	if (!m_wysiwyg->TerrainValid()) {
+		ImGui::TextDisabled("No terrain field (deleted). Rebuild below to "
+			"restore it from the draft.");
+	}
+	smvk::terrain::TerrainDesc& d = m_terrainDraft;
+	{
+		float worldSize = d.worldSize;
+		if (ImGui::SliderFloat("World size (m)", &worldSize, 100.0f, 16000.0f,
+				"%.0f"))
+			d.worldSize = worldSize - std::fmod(worldSize, 100.0f);
+		float tileSize = d.tileSize;
+		if (ImGui::SliderFloat("Tile size (m)", &tileSize, 25.0f, 500.0f,
+				"%.0f"))
+			d.tileSize = std::max(25.0f, tileSize - std::fmod(tileSize, 25.0f));
+		int res = int(d.tileRes);
+		if (ImGui::SliderInt("Tile resolution (quads/edge)", &res, 4, 64))
+			d.tileRes = uint32_t(std::clamp(res, 4, 64));
+		ImGui::SliderFloat("Height scale (m)", &d.heightScale, 1.0f, 400.0f,
+			"%.0f");
+		ImGui::SliderFloat("Noise frequency (1/m)", &d.noiseFreq, 0.0001f,
+			0.01f, "%.5f");
+		ImGui::SliderFloat("LOD distance (m)", &d.lodDistance, 100.0f, 4000.0f,
+			"%.0f");
+		// Seed as hex (deterministic identity): typed back as uint64.
+		{
+			char seedBuf[32];
+			std::snprintf(seedBuf, sizeof(seedBuf), "%llx",
+				unsigned long long(d.seed));
+			if (ImGui::InputText("Seed (hex)", seedBuf, sizeof(seedBuf),
+					ImGuiInputTextFlags_CharsHexadecimal
+					| ImGuiInputTextFlags_EnterReturnsTrue))
+				d.seed = strtoull(seedBuf, nullptr, 16);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Same seed + settings -> the identical field "
+				"(deterministic two-octave value noise).");
+	}
+	const uint32_t tiles = uint32_t(std::max(1.0f,
+		std::round(d.worldSize / std::max(d.tileSize, 1.0f))));
+	ImGui::TextDisabled("%u x %u tiles, %u quads/edge, %u verts total",
+		tiles, tiles, d.tileRes,
+		tiles * tiles * (d.tileRes + 1u) * (d.tileRes + 1u));
+	if (ImGui::Button("Rebuild"))
+		m_wysiwyg->RebuildTerrain(d);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Applies the settings above (rebuilds the whole "
+			"vertex stream).");
+	ImGui::SameLine();
+	if (ImGui::Button("Delete"))
+		m_wysiwyg->DestroyTerrain();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Removes the field from the renderer (the outliner "
+			"row goes with it; Rebuild restores it from the draft).");
+	if (m_wysiwyg->TerrainValid()) {
+		bool on = m_wysiwyg->TerrainEnabled();
+		if (ImGui::Checkbox("Enabled", &on))
+			m_wysiwyg->SetTerrainEnabled(on);
+	}
+}
+
 void EditorApp::DrawWorldPanel() {
 	ImGui::Text("World");
 	ImGui::TextDisabled(

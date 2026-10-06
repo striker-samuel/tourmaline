@@ -622,9 +622,29 @@ void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 		}
 	}
 
+// Terrain field host API (the editor's non-DAG "Terrain field" node):
+// rebuild swaps the whole field (Destroy + Build + a staging flush so the
+// fresh vertex/index uploads land before the next frame records draws);
+// destroy removes it entirely (the outliner row follows TerrainValid).
+void WorldRenderer::RebuildTerrain(const smvk::terrain::TerrainDesc& d) {
+	m_terrain.Destroy();
+	if (!m_terrain.Build(*m_context, d))
+		std::cerr << "[WorldRenderer] terrain rebuild failed - field removed\n";
+	m_context->FlushUploads();
+}
+
+void WorldRenderer::DestroyTerrain() {
+	m_terrain.Destroy();
+}
+
 bool WorldRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
+
+		// Chrome-ball probe visual default (Rendergraph/probeball.h): the
+		// EDITOR wants the baked-capture previews, the standalone App keeps
+		// the clean look — the toggle stays live in both panels.
+		m_cubemapShowBalls = IsHosted();
 
 		// Static geo heaps FIRST (3 x 512 MB device buffers + VMA virtual
 		// blocks): everything downstream (pak world source upload below,
@@ -6402,19 +6422,33 @@ smvk::ImageHandle WorldRenderer::ViewOutImage(uint32_t view) const {
 }
 
 void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
-	// The renderer's content overlay (see Initialize): loose content/
-	// at the bottom, the project root BELOW it (project files win on
-	// collisions), the flintbase cache + engine resources on top.
-	// Mounts into the CALLER'S vfs (OverlayVfs is non-copyable).
+	// HOSTED (editor) vs APP split — the two hosts own DIFFERENT content
+	// models and never read each other's:
+	//
+	//   HOSTED: the editor's own VFS is the PROJECT tree (its artifact-db
+	//   world: sources under <root>/content/, bake sidecars at <root>/gi
+	//   + <root>/textures/cubemaps, paks under <root>/paks — the
+	//   GiBaker/quick-bake sidecar stems land exactly there). The editor
+	//   NEVER reads the app's bundled content/ layout. Engine-owned
+	//   staged resources (light cookies) + the //flintbase/ source scheme
+	//   stay — engine/source-owned, not app content. No project open:
+	//   nothing project-visible resolves (open the content root as a
+	//   project — that IS the model).
+	//
+	//   APP: the shipped layout — loose content/ at the bottom, flintbase
+	//   + engine resources on top. The project root is editor-only and
+	//   stays unset here.
+	if (IsHosted()) {
+		if (!m_projectRoot.empty())
+			vfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
+				-10, "project");
+		vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
+		vfs.Mount(
+			std::make_shared<smvk::LooseBackend>("engine_resources"), 100,
+			"engine_resources");
+		return;
+	}
 	vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
-	// Project root (editor WYSIWYG, see SetProjectRoot): the whole
-	// project tree mounts BELOW the bundled content/ priority so
-	// project files win — <root>/content/* shadows the shipped
-	// samples, and <root>/gi/* + <root>/paks/* resolve the sidecars
-	// the cooker wrote next to the project paks.
-	if (!m_projectRoot.empty())
-		vfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
-			-10, "project");
 	vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 	vfs.Mount(
 		std::make_shared<smvk::LooseBackend>("engine_resources"), 100,

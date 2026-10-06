@@ -1269,6 +1269,19 @@ public:
 	bool VolumetricEnabled() const { return m_volumetricEnabled; }
 	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
 	bool SkydomeEnabled() const { return m_skyEnabled; }
+	// ---- Terrain field (the default world dressing; see Rendergraph/
+	// terrain.h): the editor's non-DAG "Terrain field" node drives it —
+	// read the live desc, edit + rebuild, toggle, or destroy it entirely
+	// (the outliner row follows TerrainValid).
+	smvk::terrain::TerrainDesc TerrainSettings() const {
+		return m_terrain.valid ? m_terrain.desc
+			: smvk::terrain::TerrainDesc{};
+	}
+	void RebuildTerrain(const smvk::terrain::TerrainDesc& d);
+	void DestroyTerrain();
+	[[nodiscard]] bool TerrainValid() const { return m_terrain.valid; }
+	void SetTerrainEnabled(bool v) { m_terrainEnabled = v; }
+	bool TerrainEnabled() const { return m_terrainEnabled; }
 
 protected:
 	void UpdateCamera(float dt);

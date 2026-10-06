@@ -948,6 +948,7 @@ void EditorApp::DrawOutliner() {
 void EditorApp::ClearNonDagSelection() {
 	m_nonDagSel = NonDagSel{};
 	m_imageFocus = UINT32_MAX;
+	m_terrainFocus = false; // the terrain page is a non-DAG focus too
 }
 
 void EditorApp::SelectNonDag(NonDagKind kind, uint32_t index) {
@@ -968,6 +969,16 @@ void EditorApp::SelectNonDag(NonDagKind kind, uint32_t index) {
 	}
 	else if (kind == NonDagKind::Image) {
 		m_imageFocus = index; // Images-tab highlight (sticky)
+	}
+	else if (kind == NonDagKind::Terrain) {
+		// The terrain-field page (the hosted renderer's dressing — NOT
+		// scene content): the draft seeds from the live desc once, then
+		// edits locally until Rebuild.
+		m_terrainFocus = true;
+		if (!m_terrainDraftValid && m_wysiwyg) {
+			m_terrainDraft = m_wysiwyg->TerrainSettings();
+			m_terrainDraftValid = true;
+		}
 	}
 }
 
@@ -1000,6 +1011,21 @@ void EditorApp::CollectNonDagEntries(std::vector<NonDagEntry>& out) const {
 				+ std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
 			out.push_back(std::move(e));
 		}
+	}
+	// The hosted renderer's terrain field (the default world dressing —
+	// renderer state, never scene content): present while the field lives
+	// (the row follows TerrainValid — Delete removes it, Rebuild restores).
+	if (m_wysiwyg && m_wysiwyg->TerrainValid()) {
+		NonDagEntry e;
+		e.kind = NonDagKind::Terrain;
+		e.index = 0;
+		const smvk::terrain::TerrainDesc td = m_wysiwyg->TerrainSettings();
+		char buf[128];
+		std::snprintf(buf, sizeof(buf),
+			"[terrain] Terrain field (%.0fm world, %.0fm tiles)",
+			td.worldSize, td.tileSize);
+		e.label = buf;
+		out.push_back(std::move(e));
 	}
 }
 
@@ -1099,6 +1125,7 @@ void EditorApp::DrawNonDagSection() {
 	};
 	drawGroup("Images", NonDagKind::Image);
 	drawGroup("Materials", NonDagKind::Material);
+	drawGroup("World dressing", NonDagKind::Terrain);
 	ImGui::PushID("editorcams");
 	const bool eopen = ImGui::TreeNodeEx("##g",
 		ImGuiTreeNodeFlags_DefaultOpen, "Editor (%zu)",
@@ -2037,6 +2064,12 @@ void EditorApp::DrawInspector() {
 	// Material focus page: the Inspector is "traveling" in a material.
 	if (m_world && m_materialFocus != UINT32_MAX) {
 		DrawMaterialFocusPage();
+		return;
+	}
+	// TERRAIN FIELD page (the hosted renderer's world dressing — the
+	// non-DAG outliner row focuses here): desc edits + rebuild/destroy.
+	if (m_terrainFocus) {
+		DrawTerrainFieldPage();
 		return;
 	}
 	// Browser-selected ASSET page: a .material/.mesh click in the asset
