@@ -58,6 +58,8 @@
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssgi.h>
 #include <Engine/Rendergraph/ssr.h>
+#include <Engine/Rendergraph/envzones.h>
+#include <Engine/Rendergraph/terrain.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/ui.h>
@@ -95,6 +97,7 @@ struct ScenePassConfig {
 	bool ui = true;                 // separated ImGui target + composite
 	bool msaa = true;               // 2x MSAA Main (when device supports it)
 	bool skydome = true;            // fullscreen-triangle sky in Main
+	bool terrain = true;             // tiled heightfield dressing in Main
 	bool smaa = true;               // SMAA post-process chain (mode via UI AA combo)
 	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
 	bool particles = true;          // GPU particle system (compute emitters + tiled-lit billboards)
@@ -118,6 +121,7 @@ struct ScenePassConfig {
 		c.ui = false;
 		c.msaa = false;
 		c.skydome = false;
+		c.terrain = false;
 		c.smaa = false;
 		c.deferredShadows = false;
 		c.particles = false;
@@ -681,6 +685,23 @@ struct FrameUniforms
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint32_t cvolMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
+	// ---- Environment zone map (tiled world/env separation, see
+	// Rendergraph/envzones.h): the RGBA8 weight texture (texelSize meters
+	// per texel over envZoneWorldSize; R/G/B/A = the weights of zone
+	// definitions 0..3, normalized at sample) + the four zone definitions
+	// (the blendable env subset: sky tint + ambient intensity, fog color +
+	// density, volumetric scattering + extinction). envZoneMapIndex =
+	// UINT32_MAX = off (every consumer takes the plain env path). The sun
+	// stays global — one sun everywhere; zones own sky/fog/volumetrics.
+	// APPEND-ONLY tail (after cvolMeanLayers): every pinned offset above
+	// stays put when this grows. ----
+	uint32_t envZoneMapIndex = UINT32_MAX; // 1672 bindless Texture2D (off = max)
+	uint32_t envZoneSampler = 0;          // 1676 bindless sampler (0 = linear)
+	float envZoneWorldSize = 4000.0f;     // 1680 the map's world extent (m)
+	uint32_t envZonePad_ = 0;             // 1684 (16-align to envZoneSky)
+	glm::vec4 envZoneSky[4] = {};         // 1688 rgb skyTint, a ambientI (per zone)
+	glm::vec4 envZoneFog[4] = {};         // 1752 rgb fogColor, a fogDensity
+	glm::vec4 envZoneVol[4] = {};         // 1816 x volumetrics, y volumetricDensity
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -709,7 +730,13 @@ static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mir
 static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, cvolMeanLayers) == 1640, "cvolMeanLayers offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1680, "FrameUniforms size: HLSL mirror");
+// Env-zone block (the append-only tail): the map binding + the 4 zone
+// definition arrays, pinned like every other HLSL-mirrored member.
+static_assert(offsetof(FrameUniforms, envZoneMapIndex) == 1672, "envZoneMapIndex offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneSky) == 1688, "envZoneSky offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneFog) == 1752, "envZoneFog offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneVol) == 1816, "envZoneVol offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1888, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2721,6 +2748,21 @@ protected:
 	// m_passes.skydome stays the pipeline-shape switch.
 	bool m_skyEnabled = true;
 	smvk::Skydome m_skydome{};
+	// Tiled terrain heightfield (visual-only dressing; see Rendergraph/
+	// terrain.h): the DEFAULT 4 km x 4 km field of 100 m tiles rendered in
+	// the Main pass right after the sky. m_passes.terrain is the pipeline
+	// shape switch; m_terrainEnabled is the debug visibility toggle (like
+	// the skydome's K).
+	bool m_terrainEnabled = true;
+	smvk::terrain::TerrainField m_terrain{};
+	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8
+	// weight texture (10 m per texel over the 4 km world) + up to 4 zone
+	// definitions (sky tint/ambient, fog, volumetrics), blended per zone
+	// by the terrain + the volumetric fog. m_envZonesEnabled is the master
+	// (off = every consumer takes the plain env path; the FrameUniforms
+	// envZone* block carries the UINT32_MAX sentinel index).
+	bool m_envZonesEnabled = true;
+	smvk::envzones::EnvZoneMap m_envZones{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

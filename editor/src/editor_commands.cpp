@@ -1638,8 +1638,6 @@ void EditorApp::DeleteSelection() {
 			continue;
 		if (m_deletedNodes.contains(n))
 			continue; // already deleted
-		if (IsVisualHelperNode(n))
-			continue; // editor-visual (cubemap balls): not scene content
 		if (n == 0) {
 			Log("Delete: the scene root stays (delete children instead).");
 			continue;
@@ -2362,10 +2360,6 @@ void EditorApp::Do(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	// Any edit can change the capture set the cubemap-ball visuals
-	// mirror (creates/deletes/attr edits) — the lazy per-frame rebuild
-	// below diffs and no-ops when nothing changed.
-	m_cubemapBallsDirty = true;
 	// Any edit can change the light set the hosted view renders
 	// (creates/deletes/moves/attr edits): refresh the hosted cooked
 	// pack now — the bind-time build runs once per load/rebind and
@@ -2393,7 +2387,6 @@ void EditorApp::PushDone(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	m_cubemapBallsDirty = true; // see Do() above
 	if (m_wysiwyg && m_world)
 		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();
@@ -2405,7 +2398,6 @@ bool EditorApp::Undo() {
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
-	m_cubemapBallsDirty = true; // see Do() above
 	if (m_wysiwyg && m_world)
 		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();
@@ -2427,7 +2419,6 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
-	m_cubemapBallsDirty = true; // see Do() above
 	if (m_wysiwyg && m_world)
 		m_wysiwyg->RebuildCookedLights(); // see Do() above
 	AutosaveTour();

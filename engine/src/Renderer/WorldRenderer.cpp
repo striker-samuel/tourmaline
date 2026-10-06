@@ -1964,6 +1964,53 @@ if (!m_resources.fragVertexColorShader.empty()) {
 		if (!m_skydome.Ensure(*m_context)) {
 			std::cerr << "[WorldRenderer] Skydome program unavailable – running without sky\n";
 		}
+		// Tiled terrain heightfield (visual-only dressing; Rendergraph/
+		// terrain.h): the DEFAULT 4 km x 4 km field of 100 m tiles. Build
+		// failure is non-fatal the same way (Main skips the field).
+		{
+			smvk::terrain::TerrainDesc td{};
+			if (!m_terrain.Build(*m_context, td))
+				std::cerr << "[WorldRenderer] terrain build failed – running "
+					"without the default field\n";
+			// The vertex/index uploads must land before the first frame
+			// records the terrain draws (staging flush; the surrounding
+			// init flushed earlier uploads before this block).
+			m_context->FlushUploads();
+		}
+		// Environment zone map (Rendergraph/envzones.h): the default 4 km
+		// map of 10 m texels with the default zone set — zone 0 mirrors the
+		// plain env look (identity tint, the env ambient, the env fog), so
+		// the un-painted world renders exactly as before; zones 1..3 seed
+		// visible starter looks (warm/low, cold/high, humid valley) for the
+		// panel's paint brush. Failure is non-fatal: every consumer takes
+		// the plain env path (UINT32_MAX index).
+		{
+			smvk::envzones::EnvZoneDesc zd{};
+			// Zone 0: identity (the plain env look).
+			zd.zones[0] = smvk::envzones::EnvZone{};
+			// Zone 1 "warm lowlands": warm tint, stronger ambient, light fog.
+			zd.zones[1].skyTint = glm::vec3(1.15f, 1.0f, 0.85f);
+			zd.zones[1].ambientI = 28.0f;
+			zd.zones[1].fogColor = glm::vec3(0.85f, 0.75f, 0.6f);
+			zd.zones[1].fogDensity = 0.008f;
+			zd.zones[1].volumetrics = 0.0f;
+			// Zone 2 "cold heights": cool tint, weaker ambient, thin air.
+			zd.zones[2].skyTint = glm::vec3(0.8f, 0.9f, 1.15f);
+			zd.zones[2].ambientI = 14.0f;
+			zd.zones[2].fogColor = glm::vec3(0.75f, 0.8f, 0.9f);
+			zd.zones[2].fogDensity = 0.004f;
+			zd.zones[2].volumetrics = 0.0f;
+			// Zone 3 "humid valley": greenish tint, dense fog + volumetrics.
+			zd.zones[3].skyTint = glm::vec3(0.9f, 1.05f, 0.95f);
+			zd.zones[3].ambientI = 22.0f;
+			zd.zones[3].fogColor = glm::vec3(0.65f, 0.75f, 0.7f);
+			zd.zones[3].fogDensity = 0.028f;
+			zd.zones[3].volumetrics = 1.2f;
+			zd.zones[3].volumetricDensity = 0.03f;
+			if (!m_envZones.Build(*m_context, zd))
+				std::cerr << "[WorldRenderer] env zone map build failed – "
+					"consumers take the plain env path\n";
+		}
 
 		{
 			auto vkExt = m_swapchain->GetExtent();
@@ -3261,6 +3308,28 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
 			data.cvolTileSize = m_viewportResources.forwardPlus.desc.tileSize;
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
+
+		// ---- Environment zone map (see Rendergraph/envzones.h): publish
+		// whenever built (the shader flag and GPU contents can never
+		// disagree); m_envZonesEnabled only gates the index (off = the
+		// UINT32_MAX sentinel -> every consumer takes the plain env path).
+		// The zone definitions ride the FrameUniforms tail every frame (the
+		// panel's sliders mutate the desc live; the map's WEIGHTS are the
+		// painted state — re-uploaded on paint cadence via UpdateTexture).
+		{
+			for (uint32_t z = 0; z < smvk::envzones::kEnvZoneMax; ++z) {
+				const smvk::envzones::EnvZone& zd =
+					m_envZones.desc.zones[z];
+				data.envZoneSky[z] = glm::vec4(zd.skyTint, zd.ambientI);
+				data.envZoneFog[z] = glm::vec4(zd.fogColor, zd.fogDensity);
+				data.envZoneVol[z] = glm::vec4(zd.volumetrics,
+					zd.volumetricDensity, 0.0f, 0.0f);
+			}
+			data.envZoneWorldSize = m_envZones.desc.worldSize;
+			data.envZoneMapIndex = (m_envZones.Valid() && m_envZonesEnabled)
+				? m_envZones.bindlessIndex : UINT32_MAX;
+			data.envZoneSampler = 0; // bindless slot 0: linear
+		}
 
 		// ---- Forward+ decals (tiled projected splats) ----
 		// Contract with the cull + shading shaders (see forwardplus.cs.hlsl
@@ -9287,6 +9356,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			);
 			cmd.Draw(3, 1, 0, 0);
 		}
+		// ---- Terrain field (visual-only dressing): right after the sky,
+		// before the scene opaques — depth GreaterEqual against the
+		// prepass depth (1x) / the transient cleared depth (2x MSAA), so
+		// scene geometry occludes the field and the field composites over
+		// the sky background. NOT in the depth prepass / shadow passes by
+		// design: in 1x the Main depth is read-only, so post-Main depth
+		// consumers (SSR/volumetric marching) see the prepass depth over
+		// terrain pixels — accepted for the visual-only first cut.
+		if (m_passes.terrain && m_terrainEnabled && m_terrain.valid) {
+			m_terrain.RecordDraws(
+				cmd,
+				frameViewProj,
+				m_cameraPositioner.cameraPosition_,
+				pc,
+				opaqueDepth,
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings
+			);
+		}
 		cmd.BindRenderPipeline(
 			// Initial bind: the flat-line twin of main while P is on.
 			wireTwinOf(m_resources.mainProgram),
@@ -11136,8 +11225,85 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
 					if (ImGui::CollapsingHeader("Sky & Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
 						ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
+						ImGui::Checkbox("Terrain field", &m_terrainEnabled);
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip(
+								"The default 4 km x 4 km tiled heightfield (100 m tiles,\n"
+								"visual-only dressing rendered after the sky). Near tiles\n"
+								"draw with the full terrain format (pos/normal/tangent/color),\n"
+								"far tiles with the low format (pos/color off the same buffer).");
 						ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 							AmbientModeName(m_ambientMode));
+						// ---- Environment zones (tiled world/env separation; see
+						// Rendergraph/envzones.h): the RGBA8 weight map (10 m per
+						// texel over the 4 km world, R/G/B/A = zones 0..3) blends
+						// each zone's sky tint/ambient, fog and volumetrics across
+						// the terrain + the volumetric fog. The brush stamps at the
+						// camera's XZ (hold to paint continuously); each stamp
+						// re-uploads the map through UpdateTexture (a fresh
+						// texture + bindless slot by design — the old slot's
+						// generation bumps so stale indices are detectably dead).
+						if (ImGui::CollapsingHeader("Zones (paint world/env)")) {
+							ImGui::Checkbox("Zones enabled", &m_envZonesEnabled);
+							if (!m_envZones.Valid()) {
+								ImGui::TextDisabled("Zone map not built - the plain env path renders.");
+							}
+							else {
+								static int s_zone = 1;
+								static float s_radius = 120.0f;
+								static float s_strength = 0.35f;
+								const char* names[4] = {
+									"0: identity", "1: warm lowlands",
+									"2: cold heights", "3: humid valley"
+								};
+								ImGui::Combo("Paint zone", &s_zone, names, 4);
+								ImGui::SliderFloat("Brush radius (m)",
+									&s_radius, 5.0f, 1500.0f, "%.0f");
+								ImGui::SliderFloat("Brush strength",
+									&s_strength, 0.02f, 1.0f, "%.2f");
+								// Hold-to-paint: every held frame stamps at the
+								// camera's XZ (walking the camera paints stripes).
+								if (ImGui::Button("Paint at camera (hold)")) {}
+								if (ImGui::IsItemActive()) {
+									const glm::vec3 p =
+										m_cameraPositioner.cameraPosition_;
+									m_envZones.Paint(p.x, p.z,
+										uint32_t(s_zone), s_radius, s_strength);
+									m_envZones.Upload(*m_context);
+								}
+								ImGui::SameLine();
+								if (ImGui::Button("Clear to zone 0")) {
+									// Rebuild = the default zone-0 weight fill
+									// (wipes the paint; the zone definitions
+									// above stay authored).
+									smvk::envzones::EnvZoneDesc zd =
+										m_envZones.desc;
+									m_envZones.Build(*m_context, zd);
+								}
+								// Zone definition sliders: mutate the desc live
+								// (the FrameUniforms fill publishes every frame).
+								for (int z = 0; z < 4; ++z) {
+									if (!ImGui::TreeNode(names[z]))
+										continue;
+									smvk::envzones::EnvZone& zd =
+										m_envZones.desc.zones[z];
+									ImGui::ColorEdit3("Sky tint",
+										glm::value_ptr(zd.skyTint));
+									ImGui::DragFloat("Ambient intensity",
+										&zd.ambientI, 0.5f, 0.0f, 200.0f, "%.1f");
+									ImGui::ColorEdit3("Fog color",
+										glm::value_ptr(zd.fogColor));
+									ImGui::DragFloat("Fog density", &zd.fogDensity,
+										0.001f, 0.0f, 0.2f, "%.4f");
+									ImGui::DragFloat("Volumetrics",
+										&zd.volumetrics, 0.01f, 0.0f, 4.0f, "%.2f");
+									ImGui::DragFloat("Volumetric density",
+										&zd.volumetricDensity, 0.001f, 0.0f, 0.2f,
+										"%.4f");
+									ImGui::TreePop();
+								}
+							}
+						}
 						if (!m_world) {
 							ImGui::TextDisabled("No world - nothing to author.");
 						}

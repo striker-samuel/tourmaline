@@ -331,6 +331,13 @@ namespace smvk {
 		// via the per-draw chart offset (see GfxDraw).
 		ChartId,
 
+		// Terrain tangent + bitangent-flip handedness (R16G16B16A16_Float:
+		// xyz = tangent, w = the bitangent flip sign, +1/-1 — the bitangent
+		// itself is never stored, B = cross(N, T) * flip in the shader).
+		// The terrain format's own attribute (RGBA16 halves instead of the
+		// static stream's oct32 packing — generated geometry, no chart data).
+		TangentBFlip,
+
 		JointIndices,
 		JointWeights,
 	};

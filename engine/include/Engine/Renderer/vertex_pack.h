@@ -158,5 +158,42 @@ inline uint32_t PackColorUnorm8(const glm::vec4& color) noexcept {
 	return glm::packUnorm4x8(color);
 }
 
+// ---- Terrain stream packing (see TerrainVertex in mesh.h) --------------
+// The terrain format stores normal/tangent as RGBA16_FLOAT halves (not the
+// static stream's oct32): generated geometry with no chart data, and the
+// tangent needs its w channel for the bitangent-flip handedness anyway.
+// out[4] is the raw 4x half-word attribute (w unused for the normal).
+
+// Normal -> 4x half (xyz normalized, w = 0). Degenerate input maps to +Z.
+inline void PackTerrainNormalHalf(const glm::vec3& n, uint16_t out[4]) noexcept {
+	glm::vec3 v = n;
+	const float l2 = glm::dot(v, v);
+	if (!(l2 > 1e-24f))
+		v = glm::vec3(0.0f, 0.0f, 1.0f);
+	else
+		v *= 1.0f / sqrtf(l2);
+	out[0] = glm::packHalf1x16(v.x);
+	out[1] = glm::packHalf1x16(v.y);
+	out[2] = glm::packHalf1x16(v.z);
+	out[3] = 0;
+}
+
+// Tangent xyz + bitangent-flip handedness -> 4x half (xyz normalized
+// tangent, w = +1/-1 flip; B = cross(N, T) * flip in the shader — the
+// bitangent itself is never stored). Degenerate tangent maps to +X.
+inline void PackTerrainTangentHalf(const glm::vec3& t, float flip,
+	uint16_t out[4]) noexcept {
+	glm::vec3 v = t;
+	const float l2 = glm::dot(v, v);
+	if (!(l2 > 1e-24f))
+		v = glm::vec3(1.0f, 0.0f, 0.0f);
+	else
+		v *= 1.0f / sqrtf(l2);
+	out[0] = glm::packHalf1x16(v.x);
+	out[1] = glm::packHalf1x16(v.y);
+	out[2] = glm::packHalf1x16(v.z);
+	out[3] = glm::packHalf1x16(flip < 0.0f ? -1.0f : 1.0f);
+}
+
 } // namespace vertexpack
 } // namespace smvk

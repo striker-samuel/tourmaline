@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <span>
 #include <vector>
 #include <optional>
@@ -186,6 +187,60 @@ namespace smvk {
 		uint32_t weights;  // RGBA8_UNORM — blend weights x4 (renormalize in VS)
 	};
 	static_assert(sizeof(VertexSkin) == 8);
+
+	// GPU TERRAIN vertex (32 bytes, ONE interleaved binding): the tiled
+	// heightfield's own stream — never the glTF static streams (generated
+	// geometry, no UVs/charts/skin; the tangent carries its bitangent-flip
+	// handedness in w so no side channel is needed). Layout (offsets are
+	// load-bearing, see TerrainVertexFormat):
+	//   POSITION      R32G32B32_FLOAT  @ 0   (pos.pos)
+	//   NORMAL        R16G16B16A16_FLOAT @ 12  (normal[4], xyz + pad)
+	//   TANGENT_BFLIP R16G16B16A16_FLOAT @ 20  (tangent[4], xyz + flip w)
+	//   COLOR         R8G8B8A8_UNORM    @ 28  (color[4], albedo tint)
+	// The LOWER-DETAIL format (TerrainLowVertexFormat) binds POSITION +
+	// COLOR only, at the SAME offsets in the SAME 32-byte stride — one
+	// vertex buffer serves both pipelines; the far/low pipeline just
+	// fetches two attributes instead of four (the terrain LOD's cheap
+	// shading path skips normal/tangent entirely).
+	struct TerrainVertex {
+		glm::vec3 pos;         // @ 0  (12 B)
+		uint16_t normal[4];     // @ 12 (8 B)  half xyz (w pad)
+		uint16_t tangent[4];   // @ 20 (8 B)  half xyz + bitangent flip w
+		uint8_t color[4];      // @ 28 (4 B)  RGBA8_UNORM albedo tint
+	};
+	static_assert(sizeof(TerrainVertex) == 32);
+	static_assert(offsetof(TerrainVertex, pos) == 0);
+	static_assert(offsetof(TerrainVertex, normal) == 12);
+	static_assert(offsetof(TerrainVertex, tangent) == 20);
+	static_assert(offsetof(TerrainVertex, color) == 28);
+
+	// CPU-side terrain vertex authoring form (floats in, packed at build
+	// time): terrain.tile builders fill these and PackTerrainVertex
+	// writes the GPU struct. colorAlpha rides the color.w channel (the
+	// layered-blend weight future path; 1 by default).
+	struct TerrainVertexSrc {
+		glm::vec3 pos;
+		glm::vec3 normal{ 0.0f, 0.0f, 1.0f };
+		glm::vec3 tangent{ 1.0f, 0.0f, 0.0f };
+		float tangentFlip = 1.0f;
+		glm::vec4 color{ 1.0f };
+	};
+
+	inline void PackTerrainVertex(const TerrainVertexSrc& src,
+		TerrainVertex& out) noexcept {
+		out.pos = src.pos;
+		vertexpack::PackTerrainNormalHalf(src.normal, out.normal);
+		vertexpack::PackTerrainTangentHalf(src.tangent, src.tangentFlip,
+			out.tangent);
+		out.color[0] = uint8_t(glm::clamp(
+			int(src.color.r * 255.0f + 0.5f), 0, 255));
+		out.color[1] = uint8_t(glm::clamp(
+			int(src.color.g * 255.0f + 0.5f), 0, 255));
+		out.color[2] = uint8_t(glm::clamp(
+			int(src.color.b * 255.0f + 0.5f), 0, 255));
+		out.color[3] = uint8_t(glm::clamp(
+			int(src.color.a * 255.0f + 0.5f), 0, 255));
+	}
 
 
 	// CPU-side import vertex. texCoord2 is the LIGHTMAP chart-UV channel
@@ -428,6 +483,74 @@ namespace smvk {
 	};
 
 
+	// Terrain FULL-detail format: ONE interleaved binding, 32-byte
+	// stride, four attributes (near tiles; the shading path reads the
+	// normal + tangent + bitangent flip). Attribute order is
+	// load-bearing: terrain VSIn locations are 0=Position, 1=Normal,
+	// 2=TangentBFlip, 3=Color (locations are assigned in list order,
+	// see getVkVertexAttributeDescriptions).
+	inline const VertexFormatDescription TerrainVertexFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(TerrainVertex),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGB32_Float,
+						.offset = offsetof(TerrainVertex, pos)
+					},
+					{
+						.semantic = VertexSemantic::Normal,
+						.format = Format::RGBA16_Float,
+						.offset = offsetof(TerrainVertex, normal)
+					},
+					{
+						.semantic = VertexSemantic::TangentBFlip,
+						.format = Format::RGBA16_Float,
+						.offset = offsetof(TerrainVertex, tangent)
+					},
+					{
+						.semantic = VertexSemantic::Color,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(TerrainVertex, color)
+					}
+				}
+			}
+		}
+	};
+
+	// Terrain LOWER-detail format: the SAME binding + stride + offsets,
+	// two attributes only (far tiles; the cheap shading path skips the
+	// normal/tangent fetch entirely — POSITION @0 and COLOR @28). One
+	// vertex buffer serves BOTH formats: the far pipeline simply binds
+	// fewer attributes out of the same 32-byte records. VSIn locations
+	// are 0=Position, 1=Color (the far terrain shader declares only
+	// these two).
+	inline const VertexFormatDescription TerrainLowVertexFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(TerrainVertex),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGB32_Float,
+						.offset = offsetof(TerrainVertex, pos)
+					},
+					{
+						.semantic = VertexSemantic::Color,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(TerrainVertex, color)
+					}
+				}
+			}
+		}
+	};
+
+
 	// -----------------------------------------------------------------------------
 	// Draw information
 	// -----------------------------------------------------------------------------
@@ -495,6 +618,8 @@ namespace smvk {
 		, StaticVertexFormat
 		, SkinnedVertexFormat
 		, DebugLine
+		, TerrainVertexFormat
+		, TerrainLowVertexFormat
 	};
 
 	// Returns the static description for the given format (no per-call

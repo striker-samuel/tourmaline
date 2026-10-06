@@ -475,10 +475,8 @@ void EditorApp::CloseScene() {
 	m_refPlaceholders.clear();
 	m_refPlaceholders.shrink_to_fit();
 	m_references.clear();
-	m_materialAssets.clear(); // session pool-import records (fresh scene)
-	m_textureAssets.clear(); // cookie/.texture pool imports (fresh scene)
-	m_cubemapBallNodes.clear(); // editor-visual (rebuilt for the new world)
-	m_cubemapBallsSignature = 0;
+ 	m_materialAssets.clear(); // session pool-import records (fresh scene)
+ 	m_textureAssets.clear(); // cookie/.texture pool imports (fresh scene)
 	m_refPhCluster.clear();
 	m_envCurrent = UINT32_MAX;
 	m_materialFocus = UINT32_MAX;
@@ -600,8 +598,6 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	m_references.clear();
 	m_materialAssets.clear(); // rebuilt from the tour's records below
 	m_textureAssets.clear(); // cookie/.texture imports (rebuilt below)
-	m_cubemapBallNodes.clear(); // editor-visual (rebuilt for the new world)
-	m_cubemapBallsSignature = 0;
 	m_refPlaceholders.clear();
 	m_refPhCluster.clear();
 	m_refIssues.clear();
@@ -1923,12 +1919,6 @@ void EditorApp::DrawFrame() {
 		// RecordGizmoPass).
 		m_wysiwyg->DriveGrid(m_showGrid
 			&& m_mode != EditorMode::Lighting, m_gridSize, m_gridExtent);
-		// CUBEMAP-BALL VISUALS (editor-visual chrome spheres, see
-		// RebuildCubemapBallVisuals): called every frame; the signature
-		// check inside no-ops when the capture set (+radii, +flag) is
-		// unchanged, so edits/loads that cannot affect the balls cost a
-		// handful of map lookups.
-		RebuildCubemapBallVisuals();
 		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
 		// own hosted view (viewport i+1 -> renderer view i): the view
 		// count follows the viewport layout (SetViewCount no-ops while

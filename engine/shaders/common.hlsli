@@ -584,6 +584,21 @@ uint decalCount;                                         // 776 0 = decals off
     // slots, UINT32_MAX =
     // none. APPEND-ONLY tail: every pinned offset above stays put. ----
     uint cvolMeanLayers[8];                                       // 1640 8 volumes x 1 mean slot
+    // ---- Environment zone map (tiled world/env separation, see
+    // Rendergraph/envzones.h + the C++ mirror's envZone* block): the RGBA8
+    // weight texture (R/G/B/A = the weights of zone definitions 0..3,
+    // normalized at sample) + the four zone definitions (blendable env
+    // subset: sky tint + ambient intensity, fog color + density,
+    // volumetric scattering + extinction). envZoneMapIndex = 0xffffffff
+    // = off (consumers take the plain env path). Sun stays global.
+    // APPEND-ONLY tail: every pinned offset above stays put. ----
+    uint envZoneMapIndex;                                         // 1672 bindless Texture2D (off = max)
+    uint envZoneSampler;                                          // 1676 bindless sampler (0 = linear)
+    float envZoneWorldSize;                                       // 1680 the map's world extent (m)
+    uint envZonePad_;                                             // 1684 (16-align to envZoneSky)
+    float4 envZoneSky[4];                                         // 1688 rgb skyTint, a ambientI (per zone)
+    float4 envZoneFog[4];                                         // 1752 rgb fogColor, a fogDensity
+    float4 envZoneVol[4];                                         // 1816 x volumetrics, y volumetricDensity
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

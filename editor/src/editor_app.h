@@ -1220,21 +1220,15 @@ private:
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
 	bool m_showCameraGizmos = true;
-	// Cubemap-capture BALLS (editor-visual chrome spheres parented
-	// under the capture nodes, lit by the scene IBL so each ball reads
-	// its baked cubemap). Editor-visual: physical nodes for the draw
-	// path, but filtered from the outliner/picks and never in the tour
-	// (no commands reference them). Rebuilt when dirty (see
-	// m_cubemapBallsDirty) so capture create/delete/undo/redo/replay
-	// stay consistent for free.
+	// Cubemap-capture BALLS: wire spheres drawn in the GIZMO PASS
+	// (RecordGizmoPass, next to the capture markers) at each capture
+	// pin. Pure render-only visualization helpers — no scene nodes, no
+	// outliner/pick/delete filtering, nothing cooked or persisted. The
+	// position reads the capture's global translate directly, the same
+	// source the markers read, so a ball can never drift off its pin
+	// (the old chrome-ball scene nodes composed transforms through a
+	// second hierarchy path and leaked nodes into the outliner).
 	bool m_showCubemapBalls = true;
-	std::unordered_set<uint32_t> m_cubemapBallNodes; // visual node ids
-	bool m_cubemapBallsDirty = true; // rebuild before the next frame
-	uint64_t m_cubemapBallsSignature = 0; // last built (flag+captures+radii)
-	void RebuildCubemapBallVisuals();
-	bool IsVisualHelperNode(uint32_t node) const {
-		return m_cubemapBallNodes.contains(node);
-	}
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1315,7 +1309,18 @@ private:
 		EditCmd& out);
 
 	// ---- cook (editor_cook.cpp) ----
-	void CookToPak(); // save tour + PakCooker --tour on a worker
+	// Full cook (quickBakes = false): stage 1 re-runs the scene's GI bake
+	// IN PLACE (GiBaker — the world field + convex volumes), stage 2 runs
+	// PakCooker (meshopt/LODs/lightmaps/cubemap captures + the pak write).
+	// Quick bakes (quickBakes = true, the env panel's "Update bakes now"):
+	// stage 1 unchanged, stage 2 runs PakCooker --quick-bakes on — the
+	// cubemap capture stage ONLY, writing the loose
+	// textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest sidecars
+	// (no pak write, no lightmap/LOD/collapse stages). One click refreshes
+	// the GI sidecars AND the capture set; the last pak stays untouched
+	// and the fresh loose sidecars override its blobs through the VFS
+	// overlay.
+	void CookToPak(bool quickBakes = false); // save tour + PakCooker --tour on a worker
 	void PollCookProcess();
 	// TEMP tour snapshot shared by the cooker/baker subprocesses (see
 	// editor_cook.cpp): outTempTour + definition fingerprint.

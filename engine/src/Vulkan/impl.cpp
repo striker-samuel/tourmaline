@@ -5225,11 +5225,11 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		.bindless = bindless.release()
 	};
 
-	return Holder<TextureHandle>{
-		this,
-			textures_.create(std::move(texture))
-	};
-}
+ 	return Holder<TextureHandle>{
+ 		this,
+ 			textures_.create(std::move(texture))
+ 	};
+ }
 static VkFormat toSRGBVkFormat(VkFormat format)
 {
 	// Returns the sRGB variant of a UNORM color format (so sampling auto-linearizes),

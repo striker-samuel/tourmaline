@@ -77,7 +77,7 @@ bool EditorApp::SnapshotTourForProcess(const char* tag,
 	return true;
 }
 
-void EditorApp::CookToPak() {
+void EditorApp::CookToPak(bool quickBakes) {
 	// Definition scenes only — with pak opens gone (paks run in the App),
 	// every open editor scene is definition-backed; the gate left is
 	// content (empty sourceless worlds have nothing to cook — the cooker
@@ -170,10 +170,18 @@ void EditorApp::CookToPak() {
 	// re-runs it at the stable stem paths (overwrites; RecordBakeAssets-
 	// FromCook overwrites the bake guid reference in the current scene's
 	// tour and deletes the superseded old bake), then the pak follows.
-	Log(std::string("Cook started -> ") + cook.outPak
-		+ std::string(wantWorld ? " (GI bake updated in place: world field "
-			"+ convex volumes, then the pak)"
-			: " (GI bake updated in place: convex volumes, then the pak)"));
+	// Quick bakes: the same GiBaker stage, then PakCooker --quick-bakes
+	// (capture-only refresh — the loose sidecars are the output; no pak
+	// is written).
+	Log(std::string(quickBakes ? "Update bakes started -> " : "Cook started -> ")
+		+ cook.outPak
+		+ (quickBakes
+			? std::string(" (GI bake updated in place + cubemap captures "
+				"refreshed; no pak write)")
+			: std::string(wantWorld
+				? " (GI bake updated in place: world field + convex "
+					"volumes, then the pak)"
+				: " (GI bake updated in place: convex volumes, then the pak)")));
 	auto feed = std::make_shared<CookFeed>();
 	m_cookFeed = feed;
 	// Cache acceleration (opt-in, never required): when the project
@@ -184,7 +192,7 @@ void EditorApp::CookToPak() {
 	const std::string scratchDir =
 		m_store ? m_store->Root() : std::string();
 	m_cookFuture = std::async(std::launch::async,
-		[cook, feed, scratchDir, pakStem, wantWorld, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			// Live feed: each pipe line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -266,13 +274,15 @@ void EditorApp::CookToPak() {
 				push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
 					"under " + contentDir + "/gi/)");
 			}
-			// ---- stage 2: PakCooker (the pak: meshopt/LODs/lightmaps/
-			// cubemaps + the GI sidecar discovery/embed from stage 1).
-			std::filesystem::path cooker =
-				std::filesystem::path(exePath).parent_path() /
-				"PakCooker.exe";
-			if (!std::filesystem::exists(cooker))
-				cooker = "PakCooker.exe"; // PATH fallback
+		// ---- stage 2: PakCooker (the pak: meshopt/LODs/lightmaps/
+		// cubemaps + the GI sidecar discovery/embed from stage 1).
+		// Quick bakes add --quick-bakes on: the capture stage ONLY, no
+		// pak write (the loose sidecars it writes are the output).
+		std::filesystem::path cooker =
+			std::filesystem::path(exePath).parent_path() /
+			"PakCooker.exe";
+		if (!std::filesystem::exists(cooker))
+			cooker = "PakCooker.exe"; // PATH fallback
 // Required paths + tour on the CLI; everything else rides the
 // tour's cook block (CLI wins when both are given).
 // If we have a tour loaded, use it as the PRIMARY input (PakCooker
@@ -286,11 +296,14 @@ if (!tempTourPath.empty()) {
 	cmd << " --in-vfs " << QuoteArg(inVfs);
 }
 cmd << " --out-pak " << QuoteArg(cook.outPak);
+if (quickBakes)
+	cmd << " --quick-bakes on";
 // Cache acceleration flag (captured by value above; empty = off).
 if (!scratchDir.empty())
 	cmd << " --scratch-dir " << QuoteArg(scratchDir);
 cmd << " 2>&1";
-			push("cook: " + cmd.str());
+			push(quickBakes ? "update-bakes: " : "cook: ");
+			push(cmd.str());
 #ifdef _WIN32
 			FILE* pipe = _popen(cmd.str().c_str(), "r");
 #else

@@ -571,14 +571,12 @@ void EditorApp::DrawMenuBar() {
 				m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
 		if (ImGui::MenuItem("Cubemap capture balls", nullptr,
-				m_showCubemapBalls)) {
+				m_showCubemapBalls))
 			m_showCubemapBalls = !m_showCubemapBalls;
-			m_cubemapBallsDirty = true;
-		}
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Chrome spheres parented under the capture "
-				"nodes, lit by the scene IBL — each ball reads its baked "
-				"cubemap at the capture spot.");
+			ImGui::SetTooltip("Wire spheres at the capture pins, drawn in "
+				"the gizmo pass — render-only helpers (no scene nodes, "
+				"never cooked).");
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
@@ -1156,8 +1154,6 @@ void EditorApp::DrawSceneOutliner() {
 				continue; // deleted (Maya delete): out of the live scene
 			if (InDisabledRefSubtree(n))
 				continue; // disabled reference tree: not shown, not read
-			if (IsVisualHelperNode(n))
-				continue; // editor-visual (cubemap balls): not scene content
 			const std::string name = getNodeName(m_world->scene, int(n));
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
@@ -1219,8 +1215,6 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
 	if (m_deletedNodes.contains(node))
 		return; // deleted (Maya delete): out of the live scene
-	if (IsVisualHelperNode(node))
-		return; // editor-visual (cubemap balls): not scene content
 	m_outlinerOrder.push_back(node); // visible-row order (shift-range)
 	const Scene& scene = m_world->scene;	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);

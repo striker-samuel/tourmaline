@@ -339,12 +339,20 @@ struct Args {
 	// baked path scales by the cubemap panel intensity only, matching the
 	// direct sun view. No bake-time intensity knob by design.
 	// Authored convex GI volumes (tour cvolume nodes) baked INTO the pak
-	// (the --cvolume stage: in-process BakeCvVolume, embedded as Texture
+	// (the --cvolume stage: in-process BakeCvolume, embedded as Texture
 	// blobs under gi/ — the runtime App resolves the manifest + volumes
 	// straight out of the pak, no loose sidecars). Default on: authoring
 	// the nodes IS the intent to bake them; --cvolume off skips (GiBaker
 	// loose sidecars stay the on-demand/hand-tuning path).
 	bool cvolume = true;
+	// Quick-bakes mode (the editor's "Update bakes now" button): run the
+	// capture stage ONLY and STOP — no pak write, no lightmap/LOD/collapse
+	// stages. The loose sidecars the stage writes
+	// (textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest) are the
+	// output; they override the last pak's blobs through the runtime VFS
+	// overlay by the same paths. Forces --cubemap on and the heavy stages
+	// off; the pak from the last full cook stays untouched.
+	bool quickBakes = false;
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -988,6 +996,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.cvolume = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--quick-bakes") {
+			std::string v;
+			if (!need(v)) return false;
+			out.quickBakes = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--cubemap") {
 			std::string v;
 			if (!need(v)) return false;
@@ -1230,6 +1243,13 @@ void Usage() {
 		<< "--dump-pak <pak path>: read-only inspection of an existing pak\n"
 		<< "(no cooking): prints meshes + lmChunk, materials + texture URIs,\n"
 		<< "and embedded textures.\n"
+		<< "--quick-bakes on: capture-only refresh (the editor's 'Update\n"
+		<< "bakes now' button): runs the --cubemap capture stage and stops -\n"
+		<< "the loose textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
+		<< "sidecars ARE the output (they override the last pak's blobs\n"
+		<< "through the runtime VFS overlay). No pak is written; the\n"
+		<< "lightmap/LOD/collapse/cvolume stages are forced off. The out-pak\n"
+		<< "stem still names the capture set.\n"
 		<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
 		<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
 		<< "onto the imported cluster before cooking. Tour cook settings\n"
@@ -3233,6 +3253,30 @@ int main(int argc, char** argv) {
 	if (!ParseArgs(argc, argv, args)) {
 		Usage();
 		return 2;
+	}
+
+	// Quick-bakes mode (--quick-bakes on, the editor's "Update bakes now"
+	// button): the capture stage ONLY, then stop. The heavy stages are
+	// forced off (the cubemap stage needs just the imported trace scene);
+	// the capture set runs --cubemap on regardless of the tour's cook
+	// block. The loose sidecars the stage writes are the whole output —
+	// the early return below skips serialization + the pak write, so the
+	// pak from the last full cook stays untouched (loose sidecars override
+	// its blobs through the runtime VFS overlay by the same paths).
+	if (args.quickBakes) {
+		args.lightmap = false;
+		args.lods = false;
+		args.collapseStatic = false;
+		args.cvolume = false;
+		args.cubemap = true;
+		// Pin the forced gates in explicitSet so the tour cook-default
+		// merge below ("CLI wins") cannot refill them from the tour's
+		// cook block (a tour authored with cubemap off would otherwise
+		// silently cancel the refresh).
+		for (const char* k : { "lightmap", "lods", "cubemap" })
+			args.explicitSet.insert(k);
+		std::cout << "quick-bakes: capture-only refresh (no pak write; "
+			"loose cubemap sidecars under textures/cubemaps/)\n";
 	}
 
 	// Lightmap bake (voxel-remesh proxy path): --lightmap on charts +
@@ -5540,6 +5584,18 @@ int main(int argc, char** argv) {
 		if (!BakePreconvolvedCubemaps(*cluster, args, cubemapKtx,
 				cubemapManifestBase))
 			return 1;
+	}
+
+	// Quick-bakes stop HERE: the capture stage above wrote the loose
+	// sidecars (textures/cubemaps/<base>[_N].ktx2 + the .cubemanifest) —
+	// that IS the quick-refresh output. Serialization, the pak write and
+	// every post-capture stage below belong to the full cook; skipping
+	// them keeps the last pak untouched (its blobs stay overridden by
+	// these fresh loose files through the runtime VFS overlay).
+	if (args.quickBakes) {
+		std::cout << "quick-bakes: cubemap captures updated (loose sidecars"
+			" under textures/cubemaps/) - pak write skipped\n";
+		return 0;
 	}
 
 	// ---------------------------------------------------------------------------

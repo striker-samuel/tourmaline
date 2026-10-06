@@ -72,6 +72,18 @@ public:
     Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
     Holder<DescriptorPoolHandle> CreateDescriptorPool(const std::vector<std::pair<uint32_t,uint32_t>>& poolSizes, const char* debugName = "DescriptorPool");
 
+    // Content refresh of a texture by RECREATION: creates a fresh texture
+    // from (ci, data) and reseats `holder` — releasing the old record, so
+    // its pool generation BUMPS (anything still holding the old handle or
+    // a captured bindless index is detectably dead instead of silently
+    // reading a recycled slot; in-flight frames stay safe through the
+    // deferred-destroy queue, exactly like every other texture retire).
+    // The bindless index is NOT stable by design — the fresh one returns
+    // here and callers re-read it per use (e.g. per-frame frame-uniform
+    // fills). Returns UINT32_MAX on failure (the holder is left empty).
+    uint32_t UpdateTexture(Holder<TextureHandle>& holder,
+                           const ImageCreateInfo& ci, const void* data);
+
     // SPIR-V readback (CPU-only, headless-safe). Retained bytes per module
     // feed ReflectSpirv*; program helper merges push ranges across stages.
     std::span<const char> GetShaderModuleCode(ShaderModuleHandle handle) const;

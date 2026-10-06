@@ -322,3 +322,125 @@ float ComputeFogFactor(float viewDepth, float worldY, EnvironmentFrameData env)
     }
     return saturate(f);
 }
+
+// ---------------------------------------------------------------------------
+// Environment zones (tiled world/env separation; see Rendergraph/envzones.h
+// + the FrameUniforms envZone* tail). The map is one RGBA8 weight texture
+// (R/G/B/A = zone definitions 0..3); the weights normalize at sample so a
+// texel blends up to four zones, and the texture's bilinear filtering
+// blends BETWEEN texels. Zones own the sky tint + ambient intensity, the
+// fog color/density and the volumetric scattering/extinction — the sun
+// stays global. All helpers fall back to the plain env path when
+// envZoneMapIndex is off (weight 1 on zone 0 == the authored env look when
+// zone 0 mirrors it).
+// ---------------------------------------------------------------------------
+
+// Normalized zone weights at world XZ (zone 0 when the map is off/empty).
+float4 EnvZoneWeights(float2 worldXZ, FrameUniforms frame)
+{
+    if (frame.envZoneMapIndex == 0xffffffffu)
+        return float4(1.0, 0.0, 0.0, 0.0);
+    Texture2D map = textures[frame.envZoneMapIndex];
+    SamplerState smp = samplers[frame.envZoneSampler];
+    float2 uv = worldXZ / max(frame.envZoneWorldSize, 1e-3) + 0.5;
+    float4 w = map.Sample(smp, saturate(uv));
+    float s = dot(w, float4(1.0, 1.0, 1.0, 1.0));
+    return (s > 1e-4) ? w / s : float4(1.0, 0.0, 0.0, 0.0);
+}
+
+// Zone-tinted + zone-intensity ambient irradiance for N (the
+// EvaluateIrradiance shape with each zone's skyTint applied to the env
+// colors and its ambientI scaling the result). w = EnvZoneWeights.
+float3 EnvZoneIrradiance(float3 N, float4 w, EnvironmentFrameData env,
+    FrameUniforms frame)
+{
+    // Blend the tints + intensities (weights already normalized).
+    float3 tint = w.x * frame.envZoneSky[0].rgb
+        + w.y * frame.envZoneSky[1].rgb
+        + w.z * frame.envZoneSky[2].rgb
+        + w.w * frame.envZoneSky[3].rgb;
+    float ambI = w.x * frame.envZoneSky[0].a
+        + w.y * frame.envZoneSky[1].a
+        + w.z * frame.envZoneSky[2].a
+        + w.w * frame.envZoneSky[3].a;
+    if (ambI <= 0.0f)
+        return float3(0.0, 0.0, 0.0);
+    // Tinted hemisphere: the EvaluateIrradiance shape over tinted colors.
+    float exponent = max(env.skyHorizon.w, 0.01f);
+    float up = saturate(N.y);
+    float dn = saturate(-N.y);
+    float3 zenith = env.skyZenith.rgb * tint;
+    float3 horizon = env.skyHorizon.rgb * tint;
+    float3 groundCol = env.ground.rgb * tint;
+    float3 skyPart = lerp(horizon, zenith, pow(up, exponent));
+    float3 gndPart = lerp(horizon, groundCol, saturate(dn * 1.5f));
+    float3 hemi = lerp(gndPart, skyPart, saturate(N.y * 0.5f + 0.5f));
+    return hemi * ambI;
+}
+
+// Zone-blended fog color (HDR) + density for the analytic fog term. The
+// fog INTENSITY stays global (fogColor.w); zones own color + density.
+void EnvZoneFog(float4 w, FrameUniforms frame,
+    out float3 fogHdr, out float fogDensity)
+{
+    float3 c = w.x * frame.envZoneFog[0].rgb
+        + w.y * frame.envZoneFog[1].rgb
+        + w.z * frame.envZoneFog[2].rgb
+        + w.w * frame.envZoneFog[3].rgb;
+    float d = w.x * frame.envZoneFog[0].a
+        + w.y * frame.envZoneFog[1].a
+        + w.z * frame.envZoneFog[2].a
+        + w.w * frame.envZoneFog[3].a;
+    fogHdr = c * frame.env.fogColor.w;
+    fogDensity = max(d, 0.0);
+}
+
+// Exp2 fog factor with an EXPLICIT density (the zone-blended density —
+// ComputeFogFactor reads the env's). Same mode/height logic.
+float ComputeFogFactorDensity(float viewDepth, float worldY,
+    EnvironmentFrameData env, float density)
+{
+    float fogMode = env.fogEndAndFlags.z;
+    if (fogMode < 0.5f)
+        return 0.0f;
+    float f = 0.0f;
+    if (fogMode < 1.5f)
+    {
+        float d = max(density, 0.0f);
+        float x = d * max(viewDepth, 0.0f);
+        f = 1.0f - exp(-x * x);
+    }
+    else
+    {
+        float s = env.fogDensityHeight.w;
+        float e = max(env.fogEndAndFlags.x, s + 1e-4f);
+        f = saturate((max(viewDepth, 0.0f) - s) / (e - s));
+    }
+    float falloff = env.fogDensityHeight.z;
+    if (falloff > 0.0f)
+    {
+        float h = env.fogDensityHeight.y;
+        float hf = exp(-max(worldY - h, 0.0f) * falloff);
+        f *= hf;
+    }
+    return saturate(f);
+}
+
+// Zone-blended volumetric params (scattering intensity + extinction
+// density) — the volumetric pass blends its march constants at the ray
+// start. Both return the plain-env pass values when the map is off.
+void EnvZoneVolumetrics(float4 w, FrameUniforms frame,
+    float baseIntensity, float baseDensity,
+    out float intensity, out float density)
+{
+    float vi = w.x * frame.envZoneVol[0].x
+        + w.y * frame.envZoneVol[1].x
+        + w.z * frame.envZoneVol[2].x
+        + w.w * frame.envZoneVol[3].x;
+    float vd = w.x * frame.envZoneVol[0].y
+        + w.y * frame.envZoneVol[1].y
+        + w.z * frame.envZoneVol[2].y
+        + w.w * frame.envZoneVol[3].y;
+    intensity = max(baseIntensity, 0.0) * max(vi, 0.0);
+    density = max(vd, 0.0);
+}

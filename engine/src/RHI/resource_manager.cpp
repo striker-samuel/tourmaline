@@ -205,6 +205,22 @@ void ResourceManager::UploadDataToImage2D(const Image& image, const void* data,
     VkAccessFlags2 vkAccess = toVkAccess(dstAccess);
     impl_->vulkan.UploadDataToImage2D(image, data, vkStage, vkAccess, src_offset);
 }
+uint32_t ResourceManager::UpdateTexture(Holder<TextureHandle>& holder,
+    const ImageCreateInfo& ci, const void* data) {
+    // Recreate-based content refresh (see resource_manager.h): create the
+    // fresh texture FIRST (the old record stays alive through the call),
+    // reseat the holder (releases the old — its pool generation bumps, the
+    // staleness detection the contract documents), then return the fresh
+    // bindless index.
+    Holder<TextureHandle> tex = CreateTexture(ci, data);
+    if (tex.empty())
+        return UINT32_MAX;
+    const uint32_t slot = GetTextureBindlessIndex(tex);
+    if (slot == UINT32_MAX)
+        return UINT32_MAX; // tex releases here; the old holder stays valid
+    holder = std::move(tex);
+    return slot;
+}
 void ResourceManager::UpdateDescriptors(uint32_t frameIndex) { impl_->vulkan.UpdateDescriptors(frameIndex); }
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { return impl_->vulkan.GetBindlessIndex(handle); }
 uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const { return impl_->vulkan.GetTextureBindlessIndex(handle); }

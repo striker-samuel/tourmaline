@@ -148,8 +148,6 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
 		if (!IsVisibleNode(m_world->scene, int(item.node)))
 			return; // hidden subtrees are not pickable
-		if (IsVisualHelperNode(item.node))
-			return; // editor-visual (cubemap balls): not scene content
 		smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 		if (!mesh)
 			return;

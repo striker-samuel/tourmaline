@@ -75,6 +75,10 @@ namespace smvk {
 			return SkinnedVertexFormat;
 		case VertexFormat::DebugLine:
 			return DebugLineFormat;
+		case VertexFormat::TerrainVertexFormat:
+			return TerrainVertexFormat;
+		case VertexFormat::TerrainLowVertexFormat:
+			return TerrainLowVertexFormat;
 		}
 		static const VertexFormatDescription fallbackFormat{};
 		return fallbackFormat;

@@ -397,12 +397,25 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
-	// Cubemap capture markers: one X-ray diamond + influence circle
-	// per authored capture node (position = node translate, radius =
-	// the def; fade = radius/2 — a dashed feel is overkill, one ring
-	// reads). Magenta reads apart from lights (orange/cyan/yellow)
-	// and cvolumes (priority hues); the selection draws bright.
-	if (m_showCubemapGizmos && !m_world->scene.cubemapForNode.empty()) {
+	// Cubemap capture visuals, one X-ray batch per authored capture
+	// node (position = the node's global translate — the SAME source
+	// every other capture consumer reads, so the ball can never
+	// diverge from the pin):
+	//   - markers (m_showCubemapGizmos): a distance-scaled diamond +
+	//     the influence circle (radius = the def; fade = radius/2 — a
+	//     dashed feel is overkill, one ring reads).
+	//   - balls (m_showCubemapBalls): a wire sphere at the pin,
+	//     radius proportional to the influence (clamped so a 10 m
+	//     capture never fills the frame). GIZMO-PASS ONLY by design:
+	//     the previous chrome-ball implementation parented real scene
+	//     nodes under the captures, which leaked nodes into the
+	//     outliner/cook on every rebuild and composed transforms
+	//     through a second hierarchy path (the "ball in the sky"
+	//     bug). A gizmo batch has no scene footprint at all.
+	// Magenta reads apart from lights (orange/cyan/yellow) and
+	// cvolumes (priority hues); the selection draws bright.
+	if ((m_showCubemapGizmos || m_showCubemapBalls)
+		&& !m_world->scene.cubemapForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		for (const auto& [node, def] : m_world->scene.cubemapForNode) {
 			if (node >= m_world->scene.hierarchy.size()
@@ -420,10 +433,30 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			b.color = (node == m_selected)
 				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
 				: glm::vec4(0.9f, 0.3f, 1.0f, 1.0f);
-			AddDiamond(b, p, s);
-			// Influence ring (horizontal): the weight-tie radius.
-			AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
-				def.radius, 48);
+			if (m_showCubemapGizmos) {
+				AddDiamond(b, p, s);
+				// Influence ring (horizontal): the weight-tie radius.
+				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
+					def.radius, 48);
+			}
+			if (m_showCubemapBalls) {
+				// Wire ball: equator + two meridians + two latitude
+				// rings at +/-45 deg reads as a sphere at a glance.
+				const float r = std::clamp(def.radius * 0.15f,
+					0.1f, 0.4f);
+				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
+					r, 32);
+				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 1, 0),
+					r, 32);
+				AddCircle(b, p, glm::vec3(0, 0, 1), glm::vec3(0, 1, 0),
+					r, 32);
+				const float latR = r * 0.70710678f;
+				const float latO = r * 0.70710678f;
+				AddCircle(b, p + glm::vec3(0, latO, 0),
+					glm::vec3(1, 0, 0), glm::vec3(0, 0, 1), latR, 24);
+				AddCircle(b, p - glm::vec3(0, latO, 0),
+					glm::vec3(1, 0, 0), glm::vec3(0, 0, 1), latR, 24);
+			}
 			if (!b.verts.empty())
 				batches.push_back(std::move(b));
 		}
