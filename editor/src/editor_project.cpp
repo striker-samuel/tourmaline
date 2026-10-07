@@ -614,10 +614,10 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 	if (dest.empty())
 		return false;
 	// ASSET DERIVATION (Unity-style preprocessed assets): the glTF ->
-	// <stem>.mesh + <stem>.mat<N>_*.material + <stem>.anim<N>_*.anim +
-	// the <stem>.gltf.meta manifest (stable GUIDs). Scenes reference the
-	// ASSETS; the glTF stays the container/source of truth (reimport
-	// regenerates the blobs without breaking scenes).
+	// <stem>.geometry (the data blob) + <stem>.mat<N>_*.material +
+	// <stem>.anim<N>_*.anim + the <stem>.gltf.meta manifest (stable GUIDs).
+	// Scenes reference the ASSETS; the glTF stays the container/source of
+	// truth (reimport regenerates the blobs without breaking scenes).
 	{
 		tinygltf::Model model;
 		if (LoadModelFromAsciiFile(model, dest.c_str())) {

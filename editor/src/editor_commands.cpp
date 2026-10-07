@@ -3535,34 +3535,37 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		const std::string rel = ProjectRelativePath(m_gltfHostPath);
 		if (!rel.empty())
 			posix = rel;
-		// ROOT = THE DERIVED .MESH ASSET (the preprocessed scene graph —
-		// see asset_export.h): the tour references the ASSET, not the
-		// glTF; the bind imports the sibling source glTF (the .mesh
+		// ROOT = THE DERIVED .GEOMETRY DATA BLOB (the preprocessed scene
+		// graph — see asset_export.h): the tour references the ASSET, not
+		// the glTF; the bind imports the sibling source glTF (the
 		// derivation wrote them next to each other; node ids are
-		// identical — the same deterministic import). GUID = the mesh
-		// entry's manifest GUID (stable across reimports). Falls back
-		// to the glTF when no .mesh was derived yet.
+		// identical — the same deterministic import). GUID = the geometry
+		// entry's manifest GUID (stable across reimports). Falls back to
+		// the glTF when no .geometry was derived yet (a pre-rename
+		// derivation's legacy ".mesh" blob still binds — the loader takes
+		// both — but the next re-import derives ".geometry" and the swap
+		// below re-targets it).
 		std::string rootGuid = ProjectAssetGuid(m_gltfHostPath);
 		{
 			std::error_code mec;
-			const std::string meshSibling =
+			const std::filesystem::path gltfStem =
+				std::filesystem::path(m_gltfHostPath).stem();
+			const std::string geometrySibling =
 				(std::filesystem::path(m_gltfHostPath).parent_path()
-					/ (std::filesystem::path(m_gltfHostPath).stem()
-						.string() + ".mesh")).generic_string();
-		// Reference the .mesh ASSET only when its manifest GUID resolves:
+					/ (gltfStem.string() + ".geometry")).generic_string();
+		// Reference the .geometry ASSET only when its manifest GUID resolves:
 		// source and GUID must stay a CONSISTENT pair. Switching the source
-		// to .mesh while keeping the glTF GUID (manifest entry missing)
+		// to .geometry while keeping the glTF GUID (manifest entry missing)
 		// produced a mismatch the heal loop below rewrote EVERY save (the
 		// "Tour save: reference ..." log spam — SaveTourTo runs per edit,
-		// per snapshot, per close), re-derived to .mesh again next save.
-		if (std::filesystem::is_regular_file(meshSibling, mec)) {
-			const std::string meshGuid =
-				DerivedAssetGuid(meshSibling);
-			if (!meshGuid.empty()) {
+		// per snapshot, per close), re-derived to .geometry again next save.
+		if (std::filesystem::is_regular_file(geometrySibling, mec)) {
+			const std::string geometryGuid =
+				DerivedAssetGuid(geometrySibling);
+			if (!geometryGuid.empty()) {
 				posix = (std::filesystem::path(posix).parent_path()
-					/ (std::filesystem::path(m_gltfHostPath).stem()
-						.string() + ".mesh")).generic_string();
-				rootGuid = meshGuid;
+					/ (gltfStem.string() + ".geometry")).generic_string();
+				rootGuid = geometryGuid;
 			}
 		}
 		}

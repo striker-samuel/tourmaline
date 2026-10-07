@@ -2082,7 +2082,7 @@ void EditorApp::DrawInspector() {
 			std::filesystem::path(m_assetsSel).extension().string();
 		for (char& c : e)
 			c = char(std::tolower((unsigned char)c));
-		if (e == ".material" || e == ".mesh" || e == ".texture") {
+		if (e == ".material" || e == ".geometry" || e == ".texture") {
 			DrawAssetReadonlyPage();
 			return;
 		}
@@ -3903,8 +3903,11 @@ void EditorApp::DrawAssetReadonlyPage() {
 		&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".texture") == 0;
 	const bool wantMat = !wantTex && m_assetsSel.size() > 9
 		&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".material") == 0;
-	const bool wantMesh = !wantTex && !wantMat && m_assetsSel.size() > 5
-		&& m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0;
+	const bool wantMesh = !wantTex && !wantMat && m_assetsSel.size() > 9
+		&& (m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".geometry") == 0
+			// legacy pre-10/6 blobs (read-only inspection keeps working
+			// until the next re-import derives ".geometry")
+			|| m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0);
 	const bool wantGi = !wantTex && !wantMat && !wantMesh && m_assetsSel.size() > 7
 		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".gicook") == 0;
 	const bool wantLm = !wantTex && !wantMat && !wantMesh && !wantGi
@@ -4664,7 +4667,7 @@ void EditorApp::DrawAssetsPanel() {
 	std::vector<Entry> dirs, files;
 	const auto iconForAsset = [&](smvk::assets::AssetKind k) {
 		switch (k) {
-		case smvk::assets::AssetKind::Mesh: return IconType::Model;
+		case smvk::assets::AssetKind::Geometry: return IconType::Model;
 		case smvk::assets::AssetKind::Material:
 			return IconType::Texture;
 		case smvk::assets::AssetKind::Anim: return IconType::Animation;
@@ -4691,7 +4694,7 @@ void EditorApp::DrawAssetsPanel() {
 			t.name = e.name.empty() ? e.file : e.name;
 			t.abs = (fs::path(base) / e.file).generic_string();
 			t.icon = iconForAsset(e.kind);
-			t.dragMesh = (e.kind == smvk::assets::AssetKind::Mesh);
+			t.dragMesh = (e.kind == smvk::assets::AssetKind::Geometry);
 			t.dragMaterial =
 				(e.kind == smvk::assets::AssetKind::Material);
 			out.push_back(std::move(t));
@@ -4869,7 +4872,7 @@ void EditorApp::DrawAssetsPanel() {
 				if (isTour)
 					icon = IconType::Folder;
 			}
-			else if (e == ".mesh")
+			else if (e == ".geometry" || e == ".mesh")
 				dragMesh = true;
 			else if (e == ".material")
 				dragMaterial = true;

@@ -117,31 +117,55 @@ void TestDerivedSet() {
 	const std::string root = Root();
 	const std::string gltf = root + "/content/models/foo.gltf";
 	Write(gltf, "{}");
+	// The manifest's data-blob row is "geometry=" now (the pre-10/6
+	// ".mesh" derived asset renamed — ".mesh" is the higher placeable
+	// asset's name; a legacy "mesh=" row still parses, see ParseManifestLine).
 	Write(std::string(gltf) + ".meta",
 		std::string("guid=") + kGuidB + "\nsource=foo.gltf\nstem=foo\n"
-		+ "mesh=foo.mesh " + kGuidC + " FooMesh\n"
+		+ "geometry=foo.geometry " + kGuidC + " FooGeometry\n"
 		+ "material.0=foo.mat0_Base.material " + kGuidD + " Base\n");
-	Write(root + "/content/models/foo.mesh", "meshblob");
+	Write(root + "/content/models/foo.geometry", "geometryblob");
 	Write(root + "/content/models/foo.mat0_Base.material", "matblob");
 	editor::AssetDeletePlan plan;
 	std::string err;
 	// A derived file alone refuses (the manifest would desync).
-	Check(!editor::PlanAssetDelete(root + "/content/models/foo.mesh",
+	Check(!editor::PlanAssetDelete(root + "/content/models/foo.geometry",
 			root, plan, err)
 		&& err.find("derived") != std::string::npos,
 		"ops.derived.refuses-alone");
 	// The source takes its derived set with it.
 	Check(editor::PlanAssetDelete(gltf, root, plan, err)
-		&& plan.also.size() == 3 // .meta + mesh + material
+		&& plan.also.size() == 3 // .meta + geometry + material
 		&& !plan.notes.empty(), "ops.derived.source-takes-set");
 	Check(editor::ExecuteAssetDelete(plan, err), "ops.derived.executes");
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	Check(!fs::exists(fs::path(gltf), ec)
 		&& !fs::exists(
-			fs::path(root + "/content/models/foo.mesh"), ec),
+			fs::path(root + "/content/models/foo.geometry"), ec),
 		"ops.derived.gone");
 	fs::remove_all(root, ec);
+}
+
+void TestDerivedSetLegacyMesh() {
+	// The legacy manifest form ("mesh=<file>.mesh" rows, pre-10/6
+	// derivations) still parses + plans: the blob delete refuses alone,
+	// the source takes the derived set.
+	const std::string root = Root();
+	const std::string gltf = root + "/content/models/foo.gltf";
+	Write(gltf, "{}");
+	Write(std::string(gltf) + ".meta",
+		std::string("guid=") + kGuidB + "\nsource=foo.gltf\nstem=foo\n"
+		+ "mesh=foo.mesh " + kGuidC + " FooMesh\n");
+	Write(root + "/content/models/foo.mesh", "meshblob");
+	editor::AssetDeletePlan plan;
+	std::string err;
+	Check(!editor::PlanAssetDelete(root + "/content/models/foo.mesh",
+			root, plan, err), "ops.derived.legacy-mesh.refuses-alone");
+	Check(editor::PlanAssetDelete(gltf, root, plan, err)
+		&& plan.also.size() == 2, "ops.derived.legacy-mesh.set");
+	std::error_code ec;
+	std::filesystem::remove_all(root, ec);
 }
 
 void TestCookAssetAndDir() {
@@ -178,6 +202,7 @@ int main() {
 	TestStandaloneFile();
 	TestRefusals();
 	TestDerivedSet();
+	TestDerivedSetLegacyMesh();
 	TestCookAssetAndDir();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";

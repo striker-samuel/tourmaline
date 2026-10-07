@@ -2968,22 +2968,29 @@ size_t ApplySceneReferences(
 			std::string baseDir;   // source dir for ITS references
 			tinygltf::Model model;
 			bool ok = false;
-			// DERIVED-ASSET (.mesh) resolution: a .mesh reference (the
-			// tour binds the ASSET by GUID) resolves + LOADS the
+			// DERIVED-ASSET (.geometry) resolution: a .geometry reference
+			// (the tour binds the ASSET by GUID) resolves + LOADS the
 			// preprocessed blobs here; the BUILD happens below where
 			// the placeholder exists (pure preprocessed loading; node
 			// ids are the derivation's = the import's, so
 			// replays/overrides/cooks address the same nodes). Any
 			// failure falls back to the SIBLING glTF import (the
-			// derivation wrote them together).
+			// derivation wrote them together). The pre-10/6 ".mesh"
+			// derived asset renamed to ".geometry" (the data blob's
+			// name; ".mesh" is the higher placeable asset's now) —
+			// legacy ".mesh" sources still resolve here.
 			smvk::assets::MeshAsset meshAsset;
 			smvk::assets::AssetManifest meshManifest;
 			bool meshLoaded = false;
 			{
-				const size_t dot = modelSource.rfind(".mesh");
-				const bool isMesh = dot != std::string::npos
-					&& modelSource.size() - dot == 5;
-				if (isMesh) {
+				const size_t dotGeo = modelSource.rfind(".geometry");
+				const size_t dotMesh = modelSource.rfind(".mesh");
+				const bool isGeometry = dotGeo != std::string::npos
+					&& modelSource.size() - dotGeo == 9;
+				const bool isLegacyMesh = !isGeometry
+					&& dotMesh != std::string::npos
+					&& modelSource.size() - dotMesh == 5;
+				if (isGeometry || isLegacyMesh) {
 					// Resolve + read the .mesh (vfs or host).
 					std::string meshResolved;
 					std::optional<std::vector<uint8_t>> meshBytes;
@@ -3039,10 +3046,15 @@ size_t ApplySceneReferences(
 				if (!meshLoaded) {
 					// BRIDGE FALLBACK: import the SIBLING source glTF
 					// (the derivation wrote them next to each other
-					// with the same stem; identical node ids).
-					if (isMesh)
+					// with the same stem; identical node ids). The
+					// blob's extension ("\.geometry" or the legacy
+					// ".mesh") swaps to ".gltf".
+					if (isGeometry || isLegacyMesh) {
+						const size_t dot = isGeometry
+							? dotGeo : dotMesh;
 						modelSource =
 							modelSource.substr(0, dot) + ".gltf";
+					}
 				}
 			}
 			// Candidate dirs: the tour's own dir first (tour sources),
@@ -3165,9 +3177,14 @@ size_t ApplySceneReferences(
 				{
 					std::string stem =
 						smvk::vfs::FileName(resolved);
-					const size_t mdot = stem.rfind(".mesh");
+					// Strip the data-blob extension (".geometry"; the
+					// legacy ".mesh" too) to the derivation stem.
+					const size_t mdot = stem.rfind(".geometry");
+					const size_t mdotLegacy = stem.rfind(".mesh");
 					if (mdot != std::string::npos)
 						stem = stem.substr(0, mdot);
+					else if (mdotLegacy != std::string::npos)
+						stem = stem.substr(0, mdotLegacy);
 					const std::string meshDir =
 						smvk::vfs::BaseDir(resolved);
 					const std::string metaRel =

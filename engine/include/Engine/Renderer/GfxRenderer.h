@@ -12,8 +12,6 @@
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/App/world.h>
 #include <Engine/Renderer/renderview.h>
-#include <Engine/Rendergraph/PushConstants.h>
-
 #include <functional>
 
 namespace engine {
@@ -404,10 +402,17 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Shared two-phase depth-list recorder (opaque VS-only, then masked
 	// per-material). remainder=false draws the seed list (visDraws
 	// snapshot), true draws the remainder list (current draws).
-	void RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, bool remainder, uint64_t drawsAddr,
-		uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		const PushConstants& depthPC);
+	void RecordDepthList(
+		smvk::CommandBuffer& cmd,
+		smvk::ResourceManager& ctx,
+		uint32_t slot,
+		bool remainder,
+		uint64_t drawsAddr,
+		uint64_t renderViewsAddr,
+		uint32_t renderViewIndex,
+		const void* depthPC,
+		size_t pcSize
+	);
 	// Depth pass 2 over the remainder list (call after AppendFilterDispatch
 	// when RemainderPending; Load/Store over seeded depth). The Northlight
 	// depth split uses this pass as the newly-visible (disocclusion/LOD
@@ -462,9 +467,15 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Consume side: opaque multi-draw + per-material masked ranges over
 	// the view's CPU-built command list. Shadow-atlas depth is normal-Z
 	// (LessEqual), unlike the reversed-Z seed path (GreaterEqual).
-	void RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t sview, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		const PushConstants& shadowPC);
+	void RecordShadowList(
+		smvk::CommandBuffer& cmd,
+		smvk::ResourceManager& ctx,
+		uint32_t sview,
+		uint64_t renderViewsAddr, 
+		uint32_t renderViewIndex,
+		const void* shadowPC,
+		size_t pcSize
+	);
 	// Consume-side barriers: cluster-ordered index heap + shadow draws +
 	// shadow indirect as vertex/draw-indirect reads.
 	void AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview);

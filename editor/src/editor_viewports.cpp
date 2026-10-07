@@ -369,10 +369,10 @@ void EditorApp::DrawViewportChrome() {
 							const std::string asset(p,
 								p + accepted->DataSize - 1);
 							if (isMesh) {
-								Log("Assets: dropping mesh asset '"
-									+ asset + "' - adding a scene "
-									"reference.");
-								AddSceneReference(asset, {});
+								Log("Assets: dropping geometry asset '"
+									+ asset + "' - placing its content "
+									"(asset bind).");
+								AddSceneReference(asset, {}, true);
 							}
 							else {
 								AssignMaterialAsset(asset);

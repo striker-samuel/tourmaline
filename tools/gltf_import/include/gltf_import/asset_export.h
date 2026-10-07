@@ -4,20 +4,24 @@
 // Importing a glTF into the project writes PREPROCESSED assets next to the
 // source (the glTF itself stays as the container/source of truth):
 //
-//   <stem>.mesh                  â€” the whole scene graph (hierarchy, raw
-//                                  TRS as authored, node names, static/
-//                                  noLightmap flags, light/camera defs)
-//                                  + the geometry blobs (the packed SoA
-//                                  GPU heap streams â€” the same layout the
-//                                  pak cooker stores) + per-instance
-//                                  MATERIAL ASSET GUID bindings.
-//   <stem>.mat<idx>_<name>.material â€” one per glTF material: the PBR
+//   <stem>.geometry               — the DATA BLOB: the whole scene graph
+//                                  (hierarchy, raw TRS as authored, node
+//                                  names, static/noLightmap flags, light/
+//                                  camera defs) + the geometry blobs (the
+//                                  packed SoA GPU heap streams — the same
+//                                  layout the pak cooker stores) +
+//                                  per-instance MATERIAL ASSET GUID
+//                                  bindings. The ".mesh" name is the
+//                                  HIGHER asset's now: a scene-placeable
+//                                  mesh (geometry + material) the asset
+//                                  browser drag-drops into viewports.
+//   <stem>.mat<idx>_<name>.material — one per glTF material: the PBR
 //                                  values + texture refs (image files
 //                                  beside the glTF, as-authored URIs).
-//   <stem>.anim<idx>_<name>.anim â€” one per glTF animation (the .tourAnim
-//                                  format; tracks target the .mesh's
-//                                  node ids â€” same deterministic import).
-//   <stem>.gltf.meta             â€” the MANIFEST: the glTF's GUID + every
+//   <stem>.anim<idx>_<name>.anim — one per glTF animation (the .tourAnim
+//                                  format; tracks target the .geometry's
+//                                  node ids — same deterministic import).
+//   <stem>.gltf.meta             — the MANIFEST: the glTF's GUID + every
 //                                  derived asset (kind, file, GUID,
 //                                  source index). GUIDs are STABLE:
 //                                  re-importing keeps them (matched by
@@ -27,9 +31,9 @@
 //                                  ones drop (scenes report them).
 //
 // The editor's scene (.tour) references these ASSETS by GUID (the root
-// reference points at the .mesh; the .mesh binds its .material GUIDs);
-// the glTF never opens as a scene directly anymore â€” the asset browser
-// shows it as a FOLDER of the derived assets.
+// source points at the .geometry; the .geometry binds its .material
+// GUIDs); the glTF never opens as a scene directly anymore — the asset
+// browser shows it as a FOLDER of the derived assets.
 
 #include <cstdint>
 #include <filesystem>
@@ -51,11 +55,11 @@ class ResourceManager; // GPU-load context (ImportMaterialAssetToCluster)
 
 namespace smvk::assets {
 
-enum class AssetKind : uint8_t { Mesh = 0, Material = 1, Anim = 2 };
+enum class AssetKind : uint8_t { Geometry = 0, Material = 1, Anim = 2 };
 
 inline const char* AssetKindName(AssetKind k) {
 	switch (k) {
-	case AssetKind::Mesh: return "mesh";
+	case AssetKind::Geometry: return "geometry";
 	case AssetKind::Material: return "material";
 	case AssetKind::Anim: return "anim";
 	}
@@ -64,7 +68,7 @@ inline const char* AssetKindName(AssetKind k) {
 
 // One manifest entry (a derived asset of the glTF).
 struct AssetEntry {
-	AssetKind kind = AssetKind::Mesh;
+	AssetKind kind = AssetKind::Geometry;
 	std::string file;       // file NAME next to the glTF (no dirs)
 	std::string guid;       // 32-hex asset GUID (stable across reimports)
 	std::string name;       // display name (the material/anim name)
@@ -75,7 +79,7 @@ struct AssetEntry {
 struct AssetManifest {
 	std::string guid;       // the glTF asset's GUID (the .meta identity)
 	std::string source;     // the glTF file NAME (display + reimport)
-	std::string stem;       // the asset file stem ("<stem>.mesh" etc.)
+	std::string stem;       // the asset file stem ("<stem>.geometry" etc.)
 	std::vector<AssetEntry> entries;
 };
 

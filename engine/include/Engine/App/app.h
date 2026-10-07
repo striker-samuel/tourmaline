@@ -155,9 +155,4 @@ public:
 		virtual void OnSDLEvent(const SDL_Event&) {}
 #pragma endregion
 	};
-
-	// Backward-compat aliases – old code used IApp / AppImpl (VulkanApp)
-	using IApp = App;
-	using AppImpl = App;
-
 };

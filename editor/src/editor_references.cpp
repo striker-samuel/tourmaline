@@ -285,6 +285,16 @@ bool EditorApp::RefSourceResolves(const std::string& source,
 
 bool EditorApp::ResolveReferenceAsset(const std::string& input,
 	std::string& outAbs, std::string& outRel, std::string& outGuid) {
+	// PANEL gate (the References panel adds SCENE references): .tour only
+	// — the viewport drop uses the asset-bind path instead
+	// (ResolveReferenceAsset with allowGeometryAsset, see the drop
+	// handler + AddSceneReference).
+	return ResolveReferenceAssetEx(input, false, outAbs, outRel, outGuid);
+}
+
+bool EditorApp::ResolveReferenceAssetEx(const std::string& input,
+	bool allowGeometryAsset,
+	std::string& outAbs, std::string& outRel, std::string& outGuid) {
 	outAbs.clear();
 	outRel.clear();
 	outGuid.clear();
@@ -328,63 +338,71 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 		}
 		abs = hp.generic_string();
 	}
-	// Kind gate: paks are cooked blobs, not referenceable scenes (no
-	// import, no tour to replay).
+	// Kind gate: the REFERENCE system only takes .tour SCENES — content
+	// (glTFs, the .geometry data blobs, paks) enters scenes as ASSETS
+	// (import a glTF: it derives its .geometry + .material set; place
+	// meshes from the asset browser), never as references. Paks are
+	// cooked blobs besides. EXCEPTION — the viewport DROP path
+	// (allowGeometryAsset): dragging a derived .geometry blob onto a
+	// viewport places its content through the ASSET-BIND mechanism (the
+	// tour's source machinery binds the blob by its manifest GUID —
+	// the transition path until the .mesh HIGHER-asset instances land
+	// (the drag-drop placement flow: geometry + material per mesh,
+	// placed as scene instances). Legacy ".mesh" blobs (pre-10/6
+	// derivations) bind the same way until the next re-import derives
+	// ".geometry").
 	std::string ext = fs::path(abs).extension().string();
 	for (char& c : ext)
 		c = char(std::tolower((unsigned char)c));
-	const bool isTour = (ext == ".tour");
-	const bool isMesh = (ext == ".mesh");
-	if (!isTour && ext != ".gltf" && ext != ".glb" && !isMesh) {
+	const bool isGeometry = ext == ".geometry" || ext == ".mesh";
+	if (ext != ".tour" && !(allowGeometryAsset && isGeometry)) {
 		if (HasPakExtension(abs))
-			Log("References: sources must be .gltf, .tour or .mesh "
-				"(paks are cooked, not referenceable).");
+			Log("References: sources must be .tour scenes (paks are "
+				"cooked, not referenceable).");
+		else if (ext == ".gltf" || ext == ".glb")
+			Log("References: glTFs are ASSETS, not references — import "
+				"one (it derives its .geometry set) and place meshes "
+				"from the asset browser.");
+		else if (isGeometry && !allowGeometryAsset)
+			Log("References: data blobs are not references — place "
+				"meshes from the asset browser (drag onto a viewport).");
 		else
-			Log("References: sources must be .gltf, .tour or .mesh: '"
-				+ abs + "'.");
+			Log("References: sources must be .tour scenes: '" + abs + "'.");
 		return false;
 	}
-	// In-project assets adopt in place; out-of-project .gltf sources
-	// auto-import (copy + adopt) per the project workflow; an
-	// out-of-project .tour is refused — bring the scene into
-	// <project>/content/scenes/ first (its own sources bind by UUID
-	// once adopted there).
-	if (!InProjectDir(abs)) {
-		if (isTour) {
+	std::string guid;
+	if (!isGeometry) {
+		// Out-of-project .tour sources are refused — bring the scene into
+		// <project>/content/scenes/ first (its own sources bind by UUID
+		// once adopted there).
+		if (!InProjectDir(abs)) {
 			Log("References: '" + abs + "' is outside the project — "
 				"copy the scene into '" + m_projectRoot
 				+ "/content/scenes/' first.");
 			return false;
 		}
-		if (isMesh) {
-			Log("References: '" + abs + "' is outside the project — "
-				"import the source glTF first (it derives the .mesh "
-				"asset).");
-			return false;
-		}
-		abs = ImportAssetFile(abs);
-		if (abs.empty())
-			return false; // ImportAssetFile logged
-		Log("References: auto-imported '" + abs + "'.");
-	}
-	// A .MESH asset: the derived asset binds BY ITS MANIFEST GUID (the
-	// glTF manifest is the identity source — the .mesh never gets its
-	// own .meta sidecar). A .gltf/.tour source adopts as before.
-	std::string guid;
-	if (isMesh) {
-		guid = DerivedAssetGuid(abs);
-		if (guid.empty()) {
-			Log("References: no manifest GUID for '" + abs
-				+ "' (reimport the source glTF).");
+		// A .tour source adopts as a scene.
+		AdoptProjectAsset(abs, "scene");
+		if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
+			Log("References: cannot adopt '" + abs
+				+ "' (asset GUID unavailable).");
 			return false;
 		}
 	}
 	else {
-		AdoptProjectAsset(abs,
-			isTour ? "scene" : "model");
-		if (!m_assetDb.GuidForPath(abs, guid) || guid.empty()) {
-			Log("References: cannot adopt '" + abs
-				+ "' (asset GUID unavailable).");
+		// The derived data blob binds BY ITS MANIFEST GUID (the glTF
+		// manifest is the identity source — the blob never gets its own
+		// .meta sidecar). Out-of-project blobs are refused — import the
+		// source glTF first (it derives the blob next to itself).
+		if (!InProjectDir(abs)) {
+			Log("References: '" + abs + "' is outside the project — "
+				"import the source glTF first (it derives the asset).");
+			return false;
+		}
+		guid = DerivedAssetGuid(abs);
+		if (guid.empty()) {
+			Log("References: no manifest GUID for '" + abs
+				+ "' (reimport the source glTF).");
 			return false;
 		}
 	}
@@ -400,7 +418,7 @@ bool EditorApp::ResolveReferenceAsset(const std::string& input,
 }
 
 bool EditorApp::AddSceneReference(const std::string& source,
-	const std::string& name) {
+	const std::string& name, bool allowGeometryAsset) {
 	if (m_gltfPath.empty() || source.empty()) {
 		Log("References: no loaded source scene / empty reference path.");
 		return false;
@@ -409,11 +427,16 @@ bool EditorApp::AddSceneReference(const std::string& source,
 		Log("References: a cook is running — wait for it to finish.");
 		return false;
 	}
-	// Project-bound assets only (UUID or path input; out-of-project
-	// .gltf auto-imports): the tour records the project-relative
-	// source + the asset UUID — never an absolute path.
+	// Project-bound assets only (UUID or path input): the tour records the
+	// project-relative source + the asset UUID — never an absolute path.
+	// allowGeometryAsset: the viewport DROP path (dragging a derived
+	// .geometry blob onto a viewport places its content through the
+	// asset-bind mechanism — the transition path until the .mesh
+	// higher-asset instances land); the References PANEL adds .tour
+	// scenes only.
 	std::string abs, rel, guid;
-	if (!ResolveReferenceAsset(source, abs, rel, guid))
+	if (!ResolveReferenceAssetEx(source, allowGeometryAsset,
+			abs, rel, guid))
 		return false; // logged
 	smvk::tour::ReferenceCmd r{};
 	// Parent: the primary selection (cluster space), else cluster root.

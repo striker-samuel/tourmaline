@@ -978,8 +978,56 @@ struct ViewportResources {
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
-class WorldRenderer : public smvk::AppImpl {
-	using Super = smvk::AppImpl;
+struct alignas(16) PushConstants {
+	float model[16];
+	uint64_t frameUniforms;
+	uint64_t lightsBuffer;
+	uint64_t materialsBuffer;
+	uint64_t cascadeBuffer;
+	uint32_t materialId;
+	uint32_t comparisonSamplerId;
+	uint32_t numCascades;
+	uint32_t cascadeIndex;
+	uint64_t fpLights;
+	uint64_t fpTileCounts;
+	uint64_t fpTileIndices;
+	uint32_t fpTileCountX;
+	uint32_t fpLightCount;
+	uint32_t fpTileSize;
+	uint32_t fpMaxPerTile;
+	uint64_t spotShadowBuffer;
+	uint32_t spotShadowMapIndex;
+	uint32_t spotShadowCount;
+	uint32_t spotIndex;
+	uint32_t pad_pc;
+	// RenderView system (see smvk::RenderViewSet): the per-frame
+	// virtual-camera slab + the main camera index. renderViewIndex is
+	// the view the current pass renders from (UINT32_MAX = none).
+	uint64_t renderViews;
+	uint32_t mainRenderView;
+	uint32_t renderViewIndex;
+	// Motion vector pass: last frame's model as float3x4 (last row 0,0,0,1 implied).
+	// Starts at byte 192, ends at byte 240 (12 floats = 48 bytes; the
+	// SPV packs it RowMajor stride 12, consumed via v4 x M, so the blob
+	// holds the matrix COLUMNS — glm columns xyz + translation, i.e.
+	// source floats {0,1,2, 4,5,6, 8,9,10, 12,13,14}, see the pack loop
+	// in world_renderer.cpp drawMotionNode).
+	float prevModel[12];
+	uint32_t padEnd_[4];
+};
+static_assert(sizeof(PushConstants) == 256, "PushConstants must be exactly 256 bytes (engine limit; mirrors common.hlsli)");
+
+static_assert(offsetof(PushConstants, prevModel) == 192, "prevModel must start at byte 192");
+static_assert(sizeof(PushConstants::prevModel) == 48, "prevModel must be 12 floats (float3x4)");
+static_assert(offsetof(PushConstants, model) == 0, "model must start at byte 0");
+static_assert(offsetof(PushConstants, frameUniforms) == 64, "frameUniforms mirror drift");
+static_assert(offsetof(PushConstants, lightsBuffer) == 72, "lightsBuffer mirror drift (sub-192 invariant)");
+static_assert(offsetof(PushConstants, renderViews) == 176, "renderViews mirror drift");
+static_assert(offsetof(PushConstants, mainRenderView) == 184, "mainRenderView mirror drift");
+static_assert(offsetof(PushConstants, renderViewIndex) == 188, "renderViewIndex mirror drift");
+
+class WorldRenderer : public smvk::App {
+	using Super = smvk::App;
 public:
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
@@ -1066,50 +1114,19 @@ public:
 		smvk::Format format = smvk::Format::BGRA8_SRGB);
 	// Default ctor (windowed runs + member init order).
 	WorldRenderer() = default;
-
-	// HOSTED live-view camera drive: the EDITOR owns the camera (its
-	// orbit state + lens); push it here every frame (before
-	// HostedDrawFrame). Zero GPU work — the positioner + the frame's
-	// proj constants follow; UpdateCamera stays disabled
-	// (SetDisableControl) so nothing integrates on top. fovYDeg in
-	// DEGREES, near/far in meters. A view direction parallel to the
-	// up vector (top-down framing) is nudged — lookAt would NaN.
-	// orthoHalfH > 0 = TRUE orthographic lens (the editor's Top/Side
-	// cameras): vertical half-extent in world METERS; fovYDeg ignored
-	// (the old fov-approximation dolly-distorted the live view —
-	// parallel lines must stay parallel).
-	void DriveExternalCamera(const glm::vec3& eye, const glm::vec3& target,
-		float fovYDeg, float zNear, float zFar,
-		float orthoHalfH = 0.0f);
-	// HOSTED live-view debug drive (the editor pushes its view modes
-	// onto the frame): the editor's debug-view selection (F1/F2/F4/
-	// F6/F9/F10...) maps onto the frame's DebugView here, and the
-	// baked-irradiance view onto giDebug (1 = flat irradiance; see
-	// the R/F8 cycle). Zero = off.
+	void DriveExternalCamera(
+		const glm::vec3& eye,
+		const glm::vec3& target,
+		float fovYDeg,
+		float zNear, 
+		float zFar,
+		float orthoHalfH = 0.0f
+	);
 	void SetDebugView(DebugView v) { m_debugView = v; }
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
-	// HOSTED lighting-view drive (the editor's GI tri-view): Fully Lit
-	// (With GI) pins AmbientMode::All (the baked GI sources render when
-	// their bake-asset bindings resolve), Realtime Lit pins SkyIbl (the
-	// analytic ambient, no bake). Same state the N key cycles in the App;
-	// a host driving this every frame simply pins it.
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
-	// HOSTED live-view AA: the editor renders with AA OFF (crisp,
-	// pixel-accurate authoring view — MSAA resolves and SMAA temporal
-	// smearing have no place in a live authoring view).
 	void SetAaMode(AaMode m) { m_aaMode = m; }
-	// HOSTED live-view wireframe (editor P/Z — App parity): Line
-	// polygon mode over the Fill depth prepass, so hidden lines are
-	// removed (lines never draw over the objects in front).
 	void SetWireframe(bool v) { m_wireframe = v; }
-	// HOSTED live scattering drive (the editor's Environment sliders):
-	// the frame env (sky/exposure/analytic fog) rebuilds from the scene
-	// every frame, but the volumetric pass members snapshot at load —
-	// this re-seeds them from the CURRENT scene env so slider drags
-	// retouch the hosted live view without a re-cook/reload (same
-	// discipline as SetGiDebug/SetAmbientMode for the GI knobs). A hand
-	// push is Custom quality by definition. The App never calls this
-	// (its own panel writes these members directly).
 	void PushVolumetricEnv(const SceneEnv& env) {
 		const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
 		m_volumetricEnabled = volTier;
@@ -1395,6 +1412,9 @@ protected:
 		}
 	}
 
+
+	// this needs a keybind layer, this is bad
+
 	// Global feature shortcuts (work in both FPS and UI modes so A/B
 	// comparisons don't require opening the panel; see the footer readout
 	// in RenderFrame for the full list). WASDQE/Space/Shift/Ctrl are
@@ -1467,11 +1487,6 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_K)) {
 			m_skyEnabled = !m_skyEnabled;
-		}
-		if (m_input.isKeyPressed(GLFW_KEY_T)) {
-			m_transparentMode = (m_transparentMode == smvk::TransparentMode::Blended)
-				? smvk::TransparentMode::Dithered
-				: smvk::TransparentMode::Blended;
 		}
 		// Z cycles AA: Off -> MSAA 2x -> SMAA 1x -> SMAA T2x. 1..4 jump
 		// directly to a mode.
@@ -2162,8 +2177,6 @@ protected:
 	// leg; skydome, cone-line overlays and the depth prepass stay Fill so
 	// lines keep hidden-line removal against the prepass depth.
 	bool m_wireframe = false;
-	// Transparency technique for AlphaMode::Blend materials (default:
-	// dithered screen-door, opaque state; optional classic alpha blend).
 	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Blended;
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB

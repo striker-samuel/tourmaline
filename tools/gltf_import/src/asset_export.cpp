@@ -248,7 +248,8 @@ void WriteTourAnimAsset(const std::filesystem::path& path,
 // Key=value lines; sections by kind:
 //   guid=<32hex>            the glTF asset GUID
 //   source=<file name>      the glTF (display/reimport)
-//   mesh=<file> <guid> <name>
+//   geometry=<file> <guid> <name>   (legacy "mesh=" rows still parse —
+//                                   pre-10/6 manifests wrote that key)
 //   material.<idx>=<file> <guid> <name>
 //   anim.<idx>=<file> <guid> <name>
 bool ParseManifestLine(const std::string& key, const std::string& val,
@@ -258,8 +259,11 @@ bool ParseManifestLine(const std::string& key, const std::string& val,
 	if (key == "stem") { m.stem = val; return true; }
 	AssetEntry e{};
 	bool have = false;
-	if (key == "mesh") {
-		e.kind = AssetKind::Mesh;
+	if (key == "geometry" || key == "mesh") {
+		// ".geometry" is the data blob's name now (the pre-10/6 ".mesh"
+		// derived asset renamed; ".mesh" is the higher placeable asset).
+		// Both keys parse; only "geometry" is written.
+		e.kind = AssetKind::Geometry;
 		have = true;
 	}
 	else if (key.rfind("material.", 0) == 0) {
@@ -345,7 +349,7 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
 	for (const AssetEntry& e : m.entries) {
 		std::string key;
 		switch (e.kind) {
-		case AssetKind::Mesh: key = "mesh"; break;
+		case AssetKind::Geometry: key = "geometry"; break;
 		case AssetKind::Material:
 			key = "material." + std::to_string(e.sourceIndex);
 			break;
@@ -1031,7 +1035,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		if (LoadAssetManifest(gltfPath, old, fail) && old.guid == gltfGuid) {
 			for (const AssetEntry& e : old.entries) {
 				const bool match =
-					(e.kind == AssetKind::Mesh)
+					(e.kind == AssetKind::Geometry)
 					|| (e.kind == AssetKind::Material
 						&& e.sourceIndex >= 0
 						&& e.sourceIndex < int(model.materials.size()))
@@ -1263,29 +1267,31 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 			}
 		}
 	}
-	const std::string meshFile = stem + ".mesh";
+	// The data-blob file: "<stem>.geometry" (the pre-10/6 ".mesh" derived
+	// asset renamed; ".mesh" is the higher placeable asset's name now).
+	const std::string geometryFile = stem + ".geometry";
 	for (AssetEntry& e : manifest.entries)
-		if (e.kind == AssetKind::Mesh) {
-			e.file = meshFile;
+		if (e.kind == AssetKind::Geometry) {
+			e.file = geometryFile;
 			e.name = stem;
 		}
 	{
 		AssetEntry e{};
-		e.kind = AssetKind::Mesh;
+		e.kind = AssetKind::Geometry;
 		e.sourceIndex = -1;
-		e.guid = guidFor(AssetKind::Mesh, -1);
-		e.file = meshFile;
+		e.guid = guidFor(AssetKind::Geometry, -1);
+		e.file = geometryFile;
 		e.name = stem;
 		for (AssetEntry& x : manifest.entries)
-			if (x.kind == AssetKind::Mesh && &x != &e) {
-				x.file = meshFile;
+			if (x.kind == AssetKind::Geometry && &x != &e) {
+				x.file = geometryFile;
 				x.name = stem;
 			}
 	}
-	WriteMeshAsset(dir / meshFile, mesh, fail);
+	WriteMeshAsset(dir / geometryFile, mesh, fail);
 
 	// 5) Animation assets (the .tourAnim format; tracks retargeted onto
-	// the .mesh's node ids via the import's gltf node map).
+	// the .geometry's node ids via the import's gltf node map).
 	for (int ai = 0; ai < int(model.animations.size()); ++ai) {
 		const tinygltf::Animation& ga = model.animations[size_t(ai)];
 		smvk::touranim::AnimDoc doc{};

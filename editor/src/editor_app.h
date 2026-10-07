@@ -1397,15 +1397,26 @@ private:
 	// and light cookies resolve like the authoring session. Reset with
 	// the session.
 	std::vector<smvk::tour::TextureAssetCmd> m_textureAssets;
-	bool AddSceneReference(const std::string& source, const std::string& name);
+	// AddSceneReference: the References PANEL path takes .tour SCENES
+	// only (references are scene documents — content enters scenes as
+	// ASSETS). allowGeometryAsset = the viewport DROP path (dragging a
+	// derived .geometry blob onto a viewport places its content through
+	// the asset-bind mechanism — the transition path until the .mesh
+	// higher-asset instances land).
+	bool AddSceneReference(const std::string& source, const std::string& name,
+		bool allowGeometryAsset = false);
 	// Reference input (asset UUID or file path) -> in-project asset:
 	// absolute path + project-relative -source + asset -guid. GUIDs
-	// resolve through the asset directory; out-of-project .gltf
-	// sources auto-import (copy + adopt) per the project workflow;
-	// out-of-project .tour sources are refused (bring the scene in
-	// first). False + log on any failure. References never record
-	// absolute paths — tours stay project-portable.
+	// resolve through the asset directory; out-of-project sources are
+	// refused (bring the scene/derive the asset in-project first).
+	// False + log on any failure. References never record absolute
+	// paths — tours stay project-portable. ResolveReferenceAsset = the
+	// PANEL gate (.tour only); the Ex variant exposes the drop path's
+	// geometry-asset bind.
 	bool ResolveReferenceAsset(const std::string& input,
+		std::string& outAbs, std::string& outRel, std::string& outGuid);
+	bool ResolveReferenceAssetEx(const std::string& input,
+		bool allowGeometryAsset,
 		std::string& outAbs, std::string& outRel, std::string& outGuid);
 	// Bind-time existence probe for the panel (GUID-first, recorded
 	// path second — mirrors ApplySceneReferences).
@@ -1785,7 +1796,7 @@ private:
 	std::string DerivedAssetGuid(const std::string& assetPath);
 	// Read-only inspector page for a browser-selected material/mesh
 	// ASSET (view parameters only; edits happen on scenes). Draws into
-	// the Inspector when m_assetsSel is a .material/.mesh file; empty
+	// the Inspector when m_assetsSel is a .material/.geometry file; empty
 	// selection draws nothing.
 	void DrawAssetReadonlyPage();
 	// IMPORTABLE-SOURCE page (a raw image selected in the browser, not

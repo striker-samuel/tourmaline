@@ -6,8 +6,6 @@
 #include <Engine/App/world.h>
 #include <Engine/Rendergraph/renderer.h>
 
-#include <Engine/Rendergraph/PushConstants.h>
-
 #include <glm/glm.hpp>
 
 #include <functional>
@@ -47,13 +45,10 @@ struct AppFrameContext : public smvk::FrameContext {
 	// ranges accordingly (see GfxRenderer::FilterMainView). Mirrors
 	// WorldRenderer::ShaderLodActive() — both sides must agree per frame.
 	bool lodShaderEnabled = false;
-	// Dithered transparency (default) vs classic alpha blend for
-	// AlphaMode::Blend materials. Mirrors WorldRenderer::m_transparentMode.
 	// The depth prepass intentionally ignores it: transparent is always
 	// excluded from depth so SSAO/HZB/tile-cull see opaque only.
 	// (Main + MotionVectors branch on the mode directly today; kept here
 	// for frame renderers that need it without reaching into WorldRenderer.)
-	bool ditheredTransparency = true;
 	// SSSR-style thin G-buffer (oct normal + roughness + metal, RGBA8 —
 	// see gbuffer.frag.hlsl): written by the Forward+ depth prepass when
 	// set (the prepass already rasterizes every opaque surface, so the

@@ -14,7 +14,7 @@
 //     orphan identity; the assetdb row stays as a MISSING retarget so
 //     GUID references report cleanly instead of vanishing — the db's
 //     standing "retarget, not a delete" contract).
-//   - Derived assets (.mesh/.material/.anim listed in a sibling
+//   - Derived assets (.geometry/.material/.anim listed in a sibling
 //     <stem>.gltf.meta manifest) are REFUSED on their own — deleting one
 //     would desync the manifest. Delete the source .gltf instead, which
 //     takes its derived set with it (planned explicitly, noted in the
