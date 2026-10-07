@@ -8,6 +8,5 @@ namespace smvk {
 	using ResourceManagerImpl = ResourceManager;
 	using SwapchainImpl = Swapchain;
 	using FrameBufferImpl = Framebuffer;
-	using AppImpl = App;
 	// Pipeline/CommandBuffer are opaque in RenderGraph
 }

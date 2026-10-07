@@ -7,6 +7,7 @@
 // LOD, grouped into two pipeline phases (near full / far low).
 
 #include <Engine/Rendergraph/terrain.h>
+#include <Engine/Renderer/Renderer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -341,7 +342,7 @@ inline bool AabbInFrustum(const glm::vec3& mn, const glm::vec3& mx,
 
 uint32_t TerrainField::RecordDraws(CommandBuffer& cmd,
 	const glm::mat4& viewProj, const glm::vec3& eye,
-	const engine::PushConstants& push, const DepthSettings& depth,
+	const engine::IRenderer::PushConstants& push, const DepthSettings& depth,
 	const StencilSettings& stencil, const BlendSettings& blend,
 	const MSAASettings& msaa) {
 	if (!valid || tiles.empty() || vertexBuffer.empty()
@@ -382,7 +383,7 @@ uint32_t TerrainField::RecordDraws(CommandBuffer& cmd,
 	// bind: pushed AFTER each pipeline bind so the draws never depend on a
 	// prior push in the pass.
 	const auto pushPc = [&cmd, &push]() {
-		cmd.PushConstants(0, sizeof(engine::PushConstants), &push,
+		cmd.PushConstants(0, sizeof(engine::IRenderer::PushConstants), &push,
 			ShaderStage::All);
 	};
 	// Near phase: full format (positions + normals + tangents).

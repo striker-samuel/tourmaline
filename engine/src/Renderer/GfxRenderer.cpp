@@ -1,6 +1,6 @@
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
-#include <Engine/Rendergraph/PushConstants.h>
+#include <Engine/Renderer/Renderer.h>
 
 #include <Engine/Renderer/mesh.h>
 #include <Engine/debug_log.h>
@@ -185,8 +185,7 @@ namespace engine {
 		uint64_t drawsAddr,
 		uint64_t renderViewsAddr,
 		uint32_t renderViewIndex,
-		const void* depthPC,
-		size_t pcSize
+		const IRenderer::PushConstants& depthPC
 	) {
 		const std::vector<smvk::gfx::SeedRange>& ranges = remainder
 			? smvk::gfx::RemainderRanges(gfx, slot)
@@ -219,7 +218,7 @@ namespace engine {
 				smvk::MSAASettings{},
 				smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
 				);
-			cmd.PushConstants(0, pcSize, depthPC, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(depthPC), &depthPC, smvk::ShaderStage::All);
 			PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
 			cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 		}
@@ -247,17 +246,17 @@ namespace engine {
 				smvk::RasterSettings{
 					.cullMode = MaterialDepth(r.material).cullMode }
 					);
-			PushConstants matPC{};
+			IRenderer::PushConstants matPC{};
 			matPC.materialId = r.material;
 			cmd.PushConstants(
-				offsetof(PushConstants, materialId),
+				offsetof(IRenderer::PushConstants, materialId),
 				sizeof(matPC.materialId),
 				&matPC.materialId,
 				smvk::ShaderStage::All
 			);
 			cmd.PushConstants(
 				0,
-				offsetof(PushConstants, frameUniforms),
+				offsetof(IRenderer::PushConstants, frameUniforms),
 				&depthPC,
 				smvk::ShaderStage::All
 			);
@@ -333,7 +332,7 @@ namespace engine {
 					smvk::gfx::SeedIndirectLogical(gfx, slot));
 				GfxRenderer* self = this;
 				smvk::ResourceManager* ctx = fc.ctx;
-				const PushConstants depthPC = fc.pc;
+				const IRenderer::PushConstants depthPC = fc.pc;
 				const uint64_t renderViewsAddr =
 					fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
 				const uint32_t renderViewIndex = fc.mainViewIndex;
@@ -406,8 +405,7 @@ namespace engine {
 		uint32_t sview,
 		uint64_t renderViewsAddr,
 		uint32_t renderViewIndex,
-		const void* shadowPC,
-		size_t pcSize
+		const IRenderer::PushConstants& shadowPC
 	) {
 		const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
 		const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
@@ -440,7 +438,7 @@ namespace engine {
 				smvk::MSAASettings{},
 				smvk::RasterSettings{ .cullMode = smvk::CullMode::Front }
 			);
-			cmd.PushConstants(0, pcSize, shadowPC, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(shadowPC), &shadowPC, smvk::ShaderStage::All);
 			PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
 			cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 		}
@@ -470,10 +468,10 @@ namespace engine {
 				smvk::RasterSettings{
 					.cullMode = MaterialDepth(r.material).cullMode }
 					);
-			PushConstants matPC{};
+			IRenderer::PushConstants matPC{};
 			matPC.materialId = r.material;
 			cmd.PushConstants(
-				offsetof(PushConstants, materialId),
+				offsetof(IRenderer::PushConstants, materialId),
 				sizeof(matPC.materialId),
 				&matPC.materialId,
 				smvk::ShaderStage::All
@@ -482,7 +480,7 @@ namespace engine {
 			// seed path does; the VS tail rides bytes 192..216).
 			cmd.PushConstants(
 				0,
-				offsetof(PushConstants, frameUniforms),
+				offsetof(IRenderer::PushConstants, frameUniforms),
 				&shadowPC,
 				smvk::ShaderStage::All
 			);
@@ -511,7 +509,7 @@ namespace engine {
 			smvk::gfx::RemainderIndirectLogical(gfx, slot));
 		GfxRenderer* self = this;
 		smvk::ResourceManager* ctx = fc.ctx;
-		const PushConstants depthPC = fc.pc;
+		const IRenderer::PushConstants depthPC = fc.pc;
 		const uint64_t renderViewsAddr =
 			fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
 		const uint32_t renderViewIndex = fc.mainViewIndex;

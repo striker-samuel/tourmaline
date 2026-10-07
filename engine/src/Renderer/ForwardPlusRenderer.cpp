@@ -1,5 +1,6 @@
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
+#include <Engine/Renderer/Renderer.h>
 
 #include <Engine/App/world.h>
 #include <Engine/Renderer/mesh.h>
@@ -80,7 +81,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 	// Snapshots for the recording lambdas (recorded now, executed later at
 	// Execute(); nothing here may reference the frame-local fc).
 	smvk::World* world = fc.world;
-	const PushConstants depthPC = fc.pc;
+	const IRenderer::PushConstants depthPC = fc.pc;
 	const smvk::LogicalImageViewHandle depthView = fc.depthView;
 	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
@@ -173,7 +174,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					smvk::MSAASettings{},
 					smvk::RasterSettings{ .cullMode = cull }
 				);
-				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
 				boundMaskedCull = cull;
 			};
 			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
@@ -263,7 +264,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					meshDesc = world->GetMesh(item.mesh);
 				}
 			if (!meshDesc) return;
-			PushConstants objectPC{};
+			IRenderer::PushConstants objectPC{};
 			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 			if (maskedPhase) {
 				smvk::CullMode cull = smvk::CullMode::None;
@@ -275,11 +276,11 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 			// G-buffer solid FS reads it too (roughness/metal lookup).
 			if (maskedPhase || gbufferOn) {
 				objectPC.materialId = item.material;
-				cmd.PushConstants(offsetof(PushConstants, materialId),
+				cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
 					sizeof(objectPC.materialId), &objectPC.materialId,
 					smvk::ShaderStage::All);
 			}
-			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
 			for (auto& draw_set : meshDesc->geometry.surfaces) {
 				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
@@ -303,7 +304,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 				.cullMode = smvk::CullMode::Back
 			}
 		);
-		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+		cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
 		// Phase order: MOST EXPENSIVE FIRST. Phase 1 = MASK cutout
 		// (alpha-tested FS: baseColor fetch + discard — the expensive
 		// per-fragment work): it runs against empty depth, but masked
@@ -352,7 +353,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 	// Snapshots for the recording lambda (recorded now, executed later at
 	// Execute(); nothing here may reference the frame-local fc).
 	smvk::World* world = fc.world;
-	const PushConstants depthPC = fc.pc;
+	const IRenderer::PushConstants depthPC = fc.pc;
 	const float minPixels = occluderMinPixels;
 	const float minRadius = occluderMinRadius;
 	const glm::vec3 eye = fc.eye;
@@ -445,9 +446,9 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 				}
 				if (!meshDesc)
 					return;
-				PushConstants objectPC{};
+				IRenderer::PushConstants objectPC{};
 				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-				cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+				cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 				};
@@ -467,7 +468,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 					.cullMode = smvk::CullMode::Back
 				}
 			);
-			cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
 			world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque

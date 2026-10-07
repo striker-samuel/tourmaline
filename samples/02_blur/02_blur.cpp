@@ -198,8 +198,8 @@ static void MakeProceduralChecker(std::vector<uint8_t>& out, int w, int h) {
 	}
 }
 
-class BlurApp : public smvk::AppImpl {
-	using Super = smvk::AppImpl;
+class BlurApp : public smvk::App {
+	using Super = smvk::App;
 
 public:
 	BlurApp() = default;

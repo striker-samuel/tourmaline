@@ -10,6 +10,7 @@
 
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Rendergraph/renderer.h>
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/App/world.h>
 #include <Engine/Renderer/renderview.h>
 #include <functional>
@@ -410,8 +411,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		uint64_t drawsAddr,
 		uint64_t renderViewsAddr,
 		uint32_t renderViewIndex,
-		const void* depthPC,
-		size_t pcSize
+		const IRenderer::PushConstants& depthPC
 	);
 	// Depth pass 2 over the remainder list (call after AppendFilterDispatch
 	// when RemainderPending; Load/Store over seeded depth). The Northlight
@@ -473,8 +473,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		uint32_t sview,
 		uint64_t renderViewsAddr, 
 		uint32_t renderViewIndex,
-		const void* shadowPC,
-		size_t pcSize
+		const IRenderer::PushConstants& shadowPC
 	);
 	// Consume-side barriers: cluster-ordered index heap + shadow draws +
 	// shadow indirect as vertex/draw-indirect reads.

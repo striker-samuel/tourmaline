@@ -21,6 +21,7 @@
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Rendergraph/environment.h>
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/core.h>
@@ -718,7 +719,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
-		const engine::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
+		const engine::IRenderer::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
 		bool shadowPass, bool bakedOnly, bool chartTail) {
 		(void)basePc;
 		if (!m_world)
@@ -757,12 +758,12 @@ namespace editor {
 			if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
 				return;
 			const glm::mat4& model = m_world->scene.globalTransform[item.node];
-			engine::PushConstants objPc{};
+			engine::IRenderer::PushConstants objPc{};
 			std::memcpy(objPc.model, glm::value_ptr(model), sizeof(objPc.model));
 			objPc.materialId = item.material;
-			cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
 				sizeof(objPc.materialId), &objPc.materialId, smvk::ShaderStage::All);
-			cmd.PushConstants(offsetof(engine::PushConstants, model),
+			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
 				sizeof(objPc.model), objPc.model, smvk::ShaderStage::All);
 			if (chartTail) {
 				// Per-mesh chart tail: the direct VS unpacks chart uvs to
@@ -836,7 +837,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
-		const engine::PushConstants& pc) {
+		const engine::IRenderer::PushConstants& pc) {
 		// Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
 		// the chosen UV channel with the texture content behind them. No
 		// selection = empty panel (classic UV editor: one asset at a time).
@@ -888,7 +889,7 @@ namespace editor {
 			if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
 				return;
 			uint32_t matId = item.material;
-			cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
 				sizeof(matId), &matId, smvk::ShaderStage::All);
 			if (mode == ViewMode::FlatUv1) {
 				// Per-mesh chart tail: the flat VS unpacks chart uvs to
@@ -1039,7 +1040,7 @@ namespace editor {
 		}
 		// Flat fill push: identity model with the window zoom/pan (must
 		// match uvflat.vert.hlsli + UvToFlatNdc).
-		engine::PushConstants pc{};
+		engine::IRenderer::PushConstants pc{};
 		{
 			const float z = (m_uvWinZoom > 1e-6f) ? m_uvWinZoom : 1.0f;
 			pc.model[0] = z;
@@ -1148,7 +1149,7 @@ namespace editor {
 			m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 			flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-		engine::PushConstants pc{};
+		engine::IRenderer::PushConstants pc{};
 		pc.frameUniforms = frameAddr;
 		pc.lightsBuffer = lightsAddr;
 		pc.materialsBuffer = matsAddr;
@@ -1244,7 +1245,7 @@ namespace editor {
 					smvk::RasterSettings{ .polygonMode = wireAll
 						? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
 						.cullMode = smvk::CullMode::None });
-				engine::PushConstants tpc = pc;
+				engine::IRenderer::PushConstants tpc = pc;
 				tpc.pad_pc = 1; // classic alpha blend
 				cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
 				if (m_world) {
@@ -1264,9 +1265,9 @@ namespace editor {
 							return;
 						const glm::mat4& model = m_world->scene.globalTransform[item.node];
 						uint32_t matId = item.material;
-						cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
 							sizeof(matId), &matId, smvk::ShaderStage::All);
-						cmd.PushConstants(offsetof(engine::PushConstants, model),
+						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
 							sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
 						for (const auto& s : mesh->geometry.surfaces)
 							cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
@@ -1317,7 +1318,7 @@ namespace editor {
 			m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 			flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-		engine::PushConstants pc{};
+		engine::IRenderer::PushConstants pc{};
 		pc.frameUniforms = m_lastInsetFrameAddr;
 		pc.lightsBuffer = lightsAddr;
 		pc.materialsBuffer = matsAddr;
@@ -1372,7 +1373,7 @@ namespace editor {
 					smvk::StencilSettings{},
 					smvk::BlendSettings::AlphaBlend(),
 					smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-				engine::PushConstants tpc = pc;
+				engine::IRenderer::PushConstants tpc = pc;
 				tpc.pad_pc = 1;
 				cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
 				if (m_world) {
@@ -1390,9 +1391,9 @@ namespace editor {
 							return;
 						const glm::mat4& model = m_world->scene.globalTransform[item.node];
 						uint32_t matId = item.material;
-						cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
 							sizeof(matId), &matId, smvk::ShaderStage::All);
-						cmd.PushConstants(offsetof(engine::PushConstants, model),
+						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
 							sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
 						for (const auto& s : mesh->geometry.surfaces)
 							cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);

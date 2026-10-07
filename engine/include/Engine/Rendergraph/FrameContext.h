@@ -5,6 +5,7 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Rendergraph/renderer.h>
+#include <Engine/Renderer/Renderer.h>
 
 #include <glm/glm.hpp>
 
@@ -13,8 +14,9 @@
 namespace engine {
 
 struct AppFrameContext : public smvk::FrameContext {
-	// Full scene push (value-copied into recording lambdas).
-	PushConstants pc{};
+	// Full scene push (value-copied into recording lambdas). Owned by
+	// the renderer interface — see IRenderer::PushConstants.
+	IRenderer::PushConstants pc{};
 	// Forward+:
 	smvk::LogicalImageViewHandle depthView{}; // 1x prepass depth target
 	smvk::ImageViewHandle depthViewHandle{};  // physical view (bindless)

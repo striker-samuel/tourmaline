@@ -69,7 +69,7 @@
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
-#include <Engine/Rendergraph/PushConstants.h>
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GfxRenderer.h>
 
 namespace engine {
@@ -978,57 +978,10 @@ struct ViewportResources {
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
-struct alignas(16) PushConstants {
-	float model[16];
-	uint64_t frameUniforms;
-	uint64_t lightsBuffer;
-	uint64_t materialsBuffer;
-	uint64_t cascadeBuffer;
-	uint32_t materialId;
-	uint32_t comparisonSamplerId;
-	uint32_t numCascades;
-	uint32_t cascadeIndex;
-	uint64_t fpLights;
-	uint64_t fpTileCounts;
-	uint64_t fpTileIndices;
-	uint32_t fpTileCountX;
-	uint32_t fpLightCount;
-	uint32_t fpTileSize;
-	uint32_t fpMaxPerTile;
-	uint64_t spotShadowBuffer;
-	uint32_t spotShadowMapIndex;
-	uint32_t spotShadowCount;
-	uint32_t spotIndex;
-	uint32_t pad_pc;
-	// RenderView system (see smvk::RenderViewSet): the per-frame
-	// virtual-camera slab + the main camera index. renderViewIndex is
-	// the view the current pass renders from (UINT32_MAX = none).
-	uint64_t renderViews;
-	uint32_t mainRenderView;
-	uint32_t renderViewIndex;
-	// Motion vector pass: last frame's model as float3x4 (last row 0,0,0,1 implied).
-	// Starts at byte 192, ends at byte 240 (12 floats = 48 bytes; the
-	// SPV packs it RowMajor stride 12, consumed via v4 x M, so the blob
-	// holds the matrix COLUMNS — glm columns xyz + translation, i.e.
-	// source floats {0,1,2, 4,5,6, 8,9,10, 12,13,14}, see the pack loop
-	// in world_renderer.cpp drawMotionNode).
-	float prevModel[12];
-	uint32_t padEnd_[4];
-};
-static_assert(sizeof(PushConstants) == 256, "PushConstants must be exactly 256 bytes (engine limit; mirrors common.hlsli)");
-
-static_assert(offsetof(PushConstants, prevModel) == 192, "prevModel must start at byte 192");
-static_assert(sizeof(PushConstants::prevModel) == 48, "prevModel must be 12 floats (float3x4)");
-static_assert(offsetof(PushConstants, model) == 0, "model must start at byte 0");
-static_assert(offsetof(PushConstants, frameUniforms) == 64, "frameUniforms mirror drift");
-static_assert(offsetof(PushConstants, lightsBuffer) == 72, "lightsBuffer mirror drift (sub-192 invariant)");
-static_assert(offsetof(PushConstants, renderViews) == 176, "renderViews mirror drift");
-static_assert(offsetof(PushConstants, mainRenderView) == 184, "mainRenderView mirror drift");
-static_assert(offsetof(PushConstants, renderViewIndex) == 188, "renderViewIndex mirror drift");
-
-class WorldRenderer : public smvk::App {
+class WorldRenderer : public smvk::App, public IRenderer {
 	using Super = smvk::App;
 public:
+	const char* RendererName() const override { return "World"; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	void Configure(ScenePassConfig passes);
@@ -2127,7 +2080,7 @@ protected:
 		const smvk::EnvironmentSettings& env);
 	void UploadSecondaryForwardPlusLights(SecondaryView& v, uint32_t vi,
 		uint32_t frameIdx);
-	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const PushConstants& pc,
+	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const IRenderer::PushConstants& pc,
 		const smvk::RenderView& cullView, const glm::vec3& viewEye);
 	// The renderer's content overlay (loose content/ + the project root
 	// below it + flintbase + engine resources), mounted into the CALLER'S
@@ -2151,7 +2104,7 @@ protected:
 	// (skipFiltered=true skips registered meshes — they are covered by
 	// the per-view command list).
 	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
-		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
+		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered,
 		const smvk::MSAASettings& msaa = smvk::MSAASettings{});
 	smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;

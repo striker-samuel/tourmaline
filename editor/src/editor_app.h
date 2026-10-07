@@ -57,6 +57,7 @@
 #include <Engine/Renderer/texture_streamer.h>
 
 // ABI-checked shared structs (offsets asserted against common.hlsli).
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/WorldRenderer.h>
 
 #include <tiny_gltf.h>
@@ -325,8 +326,8 @@ struct CookSettings {
 	bool autoKtx = true;
 };
 
-class EditorApp : public smvk::AppImpl {
-	using Super = smvk::AppImpl;
+class EditorApp : public smvk::App {
+	using Super = smvk::App;
 public:
 	EditorApp();
 	~EditorApp() override = default;
@@ -405,7 +406,7 @@ private:
 	// Flat UV draw path: the PRIMARY SELECTION's subtree meshes drawn
 	// through the uvflat projection (unwrapped + texture content).
 	void DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
-		const engine::PushConstants& pc);
+		const engine::IRenderer::PushConstants& pc);
 	// Flat UV wires (glTF model accessors) as line batches in NDC space.
 	// Zoom/pan version (the UV window owns its nav); whole-scene exports
 	// pass identity nav (1.0/zero, ignored — applyNav is false there).
@@ -438,7 +439,7 @@ private:
 	// inset pass + label. outX is window-absolute.
 	bool SecondViewActive() const;
 	static smvk::Extent2D InsetStrip(const ViewportRect& vp, uint32_t& outX);
-	void DrawWorldNodes(smvk::CommandBuffer& cmd, const engine::PushConstants& basePc,
+	void DrawWorldNodes(smvk::CommandBuffer& cmd, const engine::IRenderer::PushConstants& basePc,
 		bool maskedPhase, bool selectedOnly, bool shadowPass,
 		bool bakedOnly = false, // bakedOnly: skip unbaked meshes (F8 view)
 		bool chartTail = false); // chartTail: push the per-mesh chart tail

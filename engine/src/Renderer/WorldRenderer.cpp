@@ -50,7 +50,7 @@
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Utils/LutIo.h>
 #include <Engine/Rendergraph/FrameContext.h>
-#include <Engine/Rendergraph/PushConstants.h>
+#include <Engine/Renderer/Renderer.h>
 
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
@@ -540,7 +540,7 @@ namespace engine {
 // Class declaration lives in App/world_renderer.h; out-of-line method
 // definitions follow.
 namespace engine {
-	using Super = smvk::AppImpl;
+	using Super = smvk::App;
 
 	void WorldRenderer::DriveExternalCamera(const glm::vec3& eye,
 		const glm::vec3& target, float fovYDeg, float zNear, float zFar,
@@ -5573,7 +5573,7 @@ namespace engine {
 	}
 
 	void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
-		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
+		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered,
 		const smvk::MSAASettings& msaa) {
 		// Phase 2 masked pipeline: cull follows the material raster so
@@ -5601,7 +5601,7 @@ namespace engine {
 				msaa,
 				smvk::RasterSettings{ .cullMode = cull }
 			);
-			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
 			boundShadowMaskedCull = cull;
 		};		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
@@ -5636,15 +5636,15 @@ namespace engine {
 					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
 					return;
 			}
-			PushConstants objectPC{};
+			IRenderer::PushConstants objectPC{};
 			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 			if (maskedPhase) {
 				objectPC.materialId = item.material;
-				cmd.PushConstants(offsetof(PushConstants, materialId),
+				cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
 					sizeof(objectPC.materialId), &objectPC.materialId,
 					smvk::ShaderStage::All);
 			}
-			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
 			for (auto& draw_set : meshDesc->geometry.surfaces) {
 				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 			};
@@ -5675,7 +5675,7 @@ namespace engine {
 				.cullMode = smvk::CullMode::Front
 			}
 		);
-		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
 		// Opaque only: BLEND transparent must not cast (full-quad depth).
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
@@ -7161,7 +7161,7 @@ namespace engine {
 		auto makeViewPc = [&](uint32_t vi) {
 			const SecondaryView& v = m_views[vi];
 			const uint32_t lightCount = (uint32_t)v.lightScratch.size();
-			PushConstants viewPc{};
+			IRenderer::PushConstants viewPc{};
 			viewPc.frameUniforms = frameUniformsBase
 				+ ViewSlabOffset(1u + vi, fb.frameIndex, sizeof(FrameUniforms));
 			viewPc.lightsBuffer = lightsBase
@@ -7200,10 +7200,10 @@ namespace engine {
 			SecondaryView& v = m_views[vi];
 			if (!v.desc.enabled || !v.dirLightValid || !v.outValid)
 				continue;
-			const PushConstants viewPc = makeViewPc(vi);
+			const IRenderer::PushConstants viewPc = makeViewPc(vi);
 			if (m_passes.directionalShadows && v.vp.directionalShadows.Valid()) {
 				for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
-					PushConstants cascadePC = viewPc;
+					IRenderer::PushConstants cascadePC = viewPc;
 					cascadePC.cascadeIndex = ci;
 					const uint32_t casterViewIndex =
 						v.cascadeViewBase != smvk::RenderViewSet::kInvalidIndex
@@ -7226,7 +7226,7 @@ namespace engine {
 				const uint32_t spotCount = std::min(v.spotShadowCount,
 					v.vp.spotShadows.slotCount);
 				for (uint32_t si = 0; si < spotCount; ++si) {
-					PushConstants spotPC = viewPc;
+					IRenderer::PushConstants spotPC = viewPc;
 					spotPC.spotIndex = si;
 					const uint32_t casterViewIndex =
 						v.spotViewBase != smvk::RenderViewSet::kInvalidIndex
@@ -7252,7 +7252,7 @@ namespace engine {
 				|| v.mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
 				continue;
 			const uint32_t lightCount = (uint32_t)v.lightScratch.size();
-			const PushConstants pc = makeViewPc(vi);
+			const IRenderer::PushConstants pc = makeViewPc(vi);
 			// Forward+ prepass + tile cull (the renderer is re-configured to
 			// the VIEW's builder + depth; EnsureSized is idempotent per view).
 			if (m_passes.forwardPlusPrepass || m_passes.forwardPlusCull) {
@@ -7376,7 +7376,7 @@ namespace engine {
 	}
 
 	void WorldRenderer::RecordSecondaryMain(smvk::CommandBuffer& cmd,
-		const PushConstants& pc, const smvk::RenderView& cullView,
+		const IRenderer::PushConstants& pc, const smvk::RenderView& cullView,
 		const glm::vec3& viewEye)
 	{
 		// Lean Main twin (direct draws — no GPU filter, no MSAA, no debug-view
@@ -7428,10 +7428,10 @@ namespace engine {
 			smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 			if (!meshDesc)
 				return;
-			PushConstants objPC = pc;
+			IRenderer::PushConstants objPC = pc;
 			objPC.materialId = materialId;
 			std::copy_n(glm::value_ptr(model), 16, objPC.model);
-			cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
 			for (auto& draw_set : meshDesc->geometry.surfaces) {
 				cmd.DrawIndexed(draw_set.indexCount, 1,
 					draw_set.firstIndex, draw_set.baseVertex);
@@ -7470,7 +7470,7 @@ namespace engine {
 				msaaSettings,
 				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 			);
-			cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+			cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
 			cmd.Draw(3, 1, 0, 0);
 		}
 		// Opaque + MASK cutout (alpha-tested in shader), per-material binds.
@@ -8050,7 +8050,7 @@ namespace engine {
 		const uint32_t fpTileCountY = fp.tileCountY;
 
 		// Scene push (see App/push_constants.h; must match HLSL common.hlsli).
-		PushConstants pc{
+		IRenderer::PushConstants pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
 			.materialsBuffer = materialsAddress,
@@ -8171,7 +8171,7 @@ namespace engine {
 			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
 				SMVK_PROFILE_SCOPE_COLOR("ShadowCascade", Optick::Color::OrangeRed);
 				SMVK_PROFILE_TAG("cascadeIndex", ci);
-				PushConstants cascadePC = pc;
+				IRenderer::PushConstants cascadePC = pc;
 				cascadePC.cascadeIndex = ci;
 				// Each cascade renders from its own allocated RenderView.
 				const uint32_t casterViewIndex =
@@ -8268,7 +8268,7 @@ namespace engine {
 			for (uint32_t si = 0; si < spotCount; ++si) {
 				SMVK_PROFILE_SCOPE_COLOR("SpotShadow", Optick::Color::Orange);
 				SMVK_PROFILE_TAG("spotIndex", si);
-				PushConstants spotPC = pc;
+				IRenderer::PushConstants spotPC = pc;
 				spotPC.spotIndex = si;
 				// Each spot tile renders from its own allocated RenderView.
 				const uint32_t casterViewIndex =
@@ -8320,8 +8320,7 @@ namespace engine {
 						m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
 							renderViewsAddress,
 							casterViewIndex,
-							&spotPC, 
-							sizeof(spotPC)
+							spotPC
 						);
 						// Fallback: unregistered casters only (registered ones
 						// are covered by the indirect command list).
@@ -8873,7 +8872,7 @@ namespace engine {
 		// shadingModel == Masked (Cull None phase, like the prepass).
 		// ---------------------------------------------------------------------
 		if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
-			PushConstants motionPC = pc;
+			IRenderer::PushConstants motionPC = pc;
 			// Filtered motion path (option b): static filtered geometry
 			// draws through the HZB-culled indirect list with the
 			// gfxfilteredmotion VS (prevWorld == model). Moved filtered
@@ -8940,7 +8939,7 @@ namespace engine {
 						smvk::MSAASettings::Count1(),
 						smvk::RasterSettings{ .cullMode = cull }
 					);
-					cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
 					boundMotionMaskedCull = cull;
 				};
 				auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase, bool ignoreFilter = false) {
@@ -8982,7 +8981,7 @@ namespace engine {
 					auto& model = m_world->scene.globalTransform[item.node];
 					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 					if (!meshDesc) return;
-					PushConstants objectPC{};
+					IRenderer::PushConstants objectPC{};
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 					// Previous frame's transform: zero motion on the first
 					// frame or after the node count changed (scene rebuild).
@@ -8995,12 +8994,12 @@ namespace engine {
 					// the projection row — see the helper's comment).
 					smvk::PackPushFloat3x4(glm::value_ptr(prevModel), objectPC.prevModel);
 					objectPC.materialId = item.material; // FS alpha test
-					cmd.PushConstants(offsetof(PushConstants, materialId),
+					cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
 						sizeof(objectPC.materialId), &objectPC.materialId,
 						smvk::ShaderStage::All);
-					cmd.PushConstants(offsetof(PushConstants, model),
+					cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
 						sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-					cmd.PushConstants(offsetof(PushConstants, prevModel),
+					cmd.PushConstants(offsetof(IRenderer::PushConstants, prevModel),
 						sizeof(objectPC.prevModel), objectPC.prevModel, smvk::ShaderStage::All);
 					for (auto& draw_set : meshDesc->geometry.surfaces) {
 						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
@@ -9030,8 +9029,8 @@ namespace engine {
 						// Full scene push first (a pipeline must be bound
 						// before any push), then the per-range materialId
 						// and the filtered VS tail.
-						cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
-						cmd.PushConstants(offsetof(PushConstants, materialId),
+						cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
+						cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
 							sizeof(materialId), &materialId, smvk::ShaderStage::All);
 						m_gfxRenderer.PushMotionViewConstants(
 							cmd, *m_context, gfxSlot, renderViewsAddress,
@@ -9049,7 +9048,7 @@ namespace engine {
 					smvk::MSAASettings::Count1(),
 					smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
 				);
-				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
 				m_world->forEachRenderItem(
 					smvk::IteratorFlagBit_Renderable
 					| smvk::IteratorFlagBit_Opaque
@@ -9119,7 +9118,7 @@ namespace engine {
 						smvk::MSAASettings::Count1(),
 						smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
 					);
-					cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
 					drawDitheredMotion(false);
 					cmd.BindRenderPipeline(
 						m_viewportResources.motionVectors.program,
@@ -9130,7 +9129,7 @@ namespace engine {
 						smvk::MSAASettings::Count1(),
 						smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 					);
-					cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
 					drawDitheredMotion(true);
 				}
 			});
@@ -9314,19 +9313,19 @@ namespace engine {
 				smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 				if (!meshDesc)
 					return;
-				PushConstants pc{};
+				IRenderer::PushConstants pc{};
 				pc.materialId = materialId;
 				const float* modelData = glm::value_ptr(model);
 				std::copy_n(modelData, 16, pc.model);
 				cmd.PushConstants(
-					offsetof(PushConstants, materialId),
+					offsetof(IRenderer::PushConstants, materialId),
 					sizeof(pc.materialId),
 					&pc.materialId,
 					smvk::ShaderStage::All
 				);
 				cmd.PushConstants(
 					0,
-					offsetof(PushConstants, frameUniforms),
+					offsetof(IRenderer::PushConstants, frameUniforms),
 					&pc,
 					smvk::ShaderStage::All
 				);
@@ -9413,7 +9412,7 @@ namespace engine {
 				);
 				cmd.PushConstants(
 					0,
-					sizeof(PushConstants),
+					sizeof(IRenderer::PushConstants),
 					&pc,
 					smvk::ShaderStage::All
 				);
@@ -9451,7 +9450,7 @@ namespace engine {
 			);
 			cmd.PushConstants(
 				0,
-				sizeof(PushConstants),
+				sizeof(IRenderer::PushConstants),
 				&pc,
 				smvk::ShaderStage::All
 			);
@@ -9681,10 +9680,10 @@ namespace engine {
 					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 					if (!meshDesc)
 						return;
-					PushConstants objPC = pc;
+					IRenderer::PushConstants objPC = pc;
 					objPC.materialId = materialId;
 					std::copy_n(glm::value_ptr(model), 16, objPC.model);
-					cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
 					for (auto& draw_set : meshDesc->geometry.surfaces) {
 						cmd.DrawIndexed(
 							draw_set.indexCount,
@@ -9714,10 +9713,10 @@ namespace engine {
 						: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount);
 					bindForMaterial(materialId, litProg,
 						m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
-					PushConstants matPC{};
+					IRenderer::PushConstants matPC{};
 					matPC.materialId = materialId;
 					cmd.PushConstants(
-						offsetof(PushConstants, materialId),
+						offsetof(IRenderer::PushConstants, materialId),
 						sizeof(matPC.materialId),
 						&matPC.materialId,
 						smvk::ShaderStage::All
@@ -9947,10 +9946,10 @@ namespace engine {
 						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
 						if (!meshDesc)
 							continue;
-						PushConstants objPC = pc;
+						IRenderer::PushConstants objPC = pc;
 						objPC.materialId = d.materialId;
 						std::copy_n(glm::value_ptr(model), 16, objPC.model);
-						cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+						cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
 						for (auto& draw_set : meshDesc->geometry.surfaces) {
 							cmd.DrawIndexed(
 								draw_set.indexCount,
@@ -9997,10 +9996,10 @@ namespace engine {
 						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
 						if (!meshDesc)
 							continue;
-						PushConstants objPC = pc;
+						IRenderer::PushConstants objPC = pc;
 						objPC.materialId = d.materialId;
 						std::copy_n(glm::value_ptr(model), 16, objPC.model);
-						cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+						cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
 						for (auto& draw_set : meshDesc->geometry.surfaces) {
 							cmd.DrawIndexed(
 								draw_set.indexCount,

@@ -63,8 +63,8 @@ float4 mainPS(
 
 )";
 
-class TriangleApp : public smvk::AppImpl {
-	using Super = smvk::AppImpl;
+class TriangleApp : public smvk::App {
+	using Super = smvk::App;
 
 public:
 	TriangleApp() = default;

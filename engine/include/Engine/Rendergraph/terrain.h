@@ -30,7 +30,7 @@
 
 #include <Engine/Memory/pool.h>
 #include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/Rendergraph/PushConstants.h>
+#include <Engine/Renderer/Renderer.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/platform.h>
@@ -138,14 +138,14 @@ struct TerrainField {
 
 	// Frustum-culls + LOD-splits the tiles and records the draws on the
 	// command buffer. `push` = the SCENE push constants (engine::
-	// PushConstants — the terrain rides the scene pc: frame uniforms env +
+	// IRenderer::PushConstants — the terrain rides the scene pc: frame uniforms env +
 	// the RenderView viewProj); pushed after each pipeline bind so the
 	// draws are self-contained (no ordering dependency on a prior push).
 	// Non-const only because CommandBuffer::BindRenderPipeline takes
 	// ShaderProgram& (the same contract as placement's PushAndDispatch).
 	// Returns the drawn tile count.
 	uint32_t RecordDraws(CommandBuffer& cmd, const glm::mat4& viewProj,
-		const glm::vec3& eye, const engine::PushConstants& push,
+		const glm::vec3& eye, const engine::IRenderer::PushConstants& push,
 		const DepthSettings& depth, const StencilSettings& stencil,
 		const BlendSettings& blend, const MSAASettings& msaa);
 };

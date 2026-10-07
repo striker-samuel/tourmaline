@@ -7,6 +7,8 @@
 
 #include "editor_app.h"
 
+#include <Engine/Renderer/Renderer.h>
+
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -114,7 +116,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 		m_context->GetBufferDeviceAddress(m_cascadeBuf) +
 		flight * sizeof(smvk::GpuDirectionalLightDescription);
 
-	engine::PushConstants pc{};
+	engine::IRenderer::PushConstants pc{};
 	pc.frameUniforms = frameAddr;
 	pc.lightsBuffer = lightsAddr;
 	pc.materialsBuffer = matsAddr;
@@ -199,7 +201,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 				if (!mesh || mesh->lmChunk == 0xFFFFFFFFu)
 					return; // baked meshes only
 				uint32_t matId = item.material;
-				cmd.PushConstants(offsetof(engine::PushConstants, materialId),
+				cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
 					sizeof(matId), &matId, smvk::ShaderStage::All);
 				// Per-mesh chart tail (same unpack as the flat panel).
 				smvk::gfx::UvFlatVsPushTail tail{};
