@@ -42,6 +42,7 @@ struct SsrComposePush
     uint fullH;
     uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
     uint hzbMip1Stride; // mip1 row stride (floats)
+    float vignetteWidth; // NDC edge fade width (outer % of NDC range)
     uint pad0;
     uint pad1;
 };
@@ -125,9 +126,9 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         outColor += (accRgb / wSum) * (accA / wSum);
     // NDC vignette: fade reflections near screen edges using the target
     // pixel's NDC coordinates. max(|ndc|) ramps from 0 (center) to 1
-    // (border); linear ramp over the outer 15% of the NDC range.
+    // (border); linear ramp over the outer vignetteWidth of the NDC range.
     float edge = max(abs(ndcC.x), abs(ndcC.y));
-    float vignette = saturate((1.0f - edge) / 0.15f);
+    float vignette = saturate((1.0f - edge) / max(cp.vignetteWidth, 0.01f));
     outColor = lerp(base, outColor, vignette);
     OUT.outColor = float4(SanitizeHdr(outColor), 1.0f);
     return OUT;

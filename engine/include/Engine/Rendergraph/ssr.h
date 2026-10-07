@@ -109,12 +109,16 @@ namespace smvk {
 struct SsrDesc {
 	Format format = Format::RGBA16_Float; // must match the HDR target
 	uint32_t steps = 32;                 // raymarch steps, 1..128
+	uint32_t maxIntersections = 24;      // Hi-Z traversal loop cap, 4..128
 	uint32_t refineSteps = 4;            // binary refine iterations, 0..8
 	float maxDistance = 50.0f;           // ray length (m)
 	float thickness = 0.3f;              // depth acceptance band (m, view units)
 	float intensity = 1.0f;              // reflection strength multiplier
 	float f0 = 0.04f;                    // dielectric base reflectance (glass)
 	float blurSharpness = 10.0f;         // bilateral depth edge weight (higher = tighter)
+	float glossThreshold = 0.94f;        // classify: rays wanted for roughness < this (mirrors < 0.0001 always shoot)
+	float vignetteWidth = 0.15f;         // composite: NDC edge fade width (outer % of NDC range)
+	float temporalBlend = 0.9f;          // TAA history weight, 0..0.98 (before attenuation)
 	const char* name = "ssr";
 	const char* viewName = "ssrView";
 	const char* logicalName = "ssrLogical";
@@ -260,8 +264,8 @@ struct SsrComposePush {
 	uint32_t fullH = 0;
 	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
+	float vignetteWidth = 0.15f; // NDC edge fade width (outer % of NDC range)
 	uint32_t pad0 = 0;
-	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsrComposePush) == 64);
 
@@ -891,9 +895,11 @@ void AddSsrPasses(RenderGraph& rg,
 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
 	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		&& hzbMip1Stride != 0;
-	assert(hzbOn); // blur/compose dereference the HZB unconditionally (see
-	               // SsrBlurPush/SsrComposePush); the app gates the chain on
-	               // the HZB build instead of a depth-load fallback.
+	if (!hzbOn) {
+		// HZB unavailable (disabled or not built): skip the entire SSR chain.
+		// The app should gate this via m_passes.ssr = false when HZB is unavailable.
+		return;
+	}
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
 	const float fullH = static_cast<float>(std::max(1u, extent.height));
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
@@ -912,7 +918,7 @@ void AddSsrPasses(RenderGraph& rg,
 		push.radianceAddr = radianceAddr;
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 		push.depthTextureIndex = depthBindlessIndex;
-		push.glossThreshold = 0.94f; // sub-quantization matte cutoff (matches the old early-out)
+		push.glossThreshold = overrideDesc.glossThreshold;
 		push.halfW = halfExtent.width;
 		push.halfH = halfExtent.height;
 		RenderPass& pass = rg.AddComputePass("SSRClassify");
@@ -995,7 +1001,7 @@ ShaderProgram progCopy = indirectProgram;
 		push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
 		push.frameIndex = frameIndex;
 		push.mostDetailedMip = 1;
-		push.maxIntersections = std::clamp(overrideDesc.steps, 4u, 64u);
+		push.maxIntersections = std::clamp(overrideDesc.maxIntersections, 4u, 64u);
 		push.minOccupancy = 4;
 		push.ssrHzbMipCount = hzbOn ? hzbMips : 0u;
 		RenderPass& pass = rg.AddComputePass(traceName ? traceName : "SSRIntersect");
@@ -1129,8 +1135,8 @@ ShaderProgram progCopy = copyProgram;
 		push.fullH = extent.height;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
+		push.vignetteWidth = overrideDesc.vignetteWidth;
 		push.pad0 = 0;
-		push.pad1 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
@@ -1213,7 +1219,10 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
 const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		&& hzbMip1Stride != 0;
-	assert(hzbOn); // blur/composite dereference the HZB (see the spatial path)
+	if (!hzbOn) {
+		// HZB unavailable: skip temporal SSR path as well.
+		return;
+	}
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
 	const float fullH = static_cast<float>(std::max(1u, extent.height));
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
@@ -1273,21 +1282,21 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		const Target& histCurr = history[parity & 1u];
 		{
 			SsrTemporalPush push{};
-			push.frameUniforms = frameUniformsAddr;
-			push.currTextureIndex = blurred.bindlessIndex;
-			push.historyTextureIndex = histPrev.bindlessIndex;
-			push.motionTextureIndex = motionBindlessIndex;
-			push.depthTextureIndex = depthBindlessIndex;
-			push.samplerIndex = linearSamplerIndex;
-			push.historyValid = historyValid ? 1u : 0u;
-			push.jitterDeltaX = jitterDeltaX;
-			push.jitterDeltaY = jitterDeltaY;
-			push.texelX = 1.0f / halfW;
-			push.texelY = 1.0f / halfH;
-			push.invDepthW = 1.0f / fullW;
-			push.invDepthH = 1.0f / fullH;
-			push.blend = std::clamp(taaBlend, 0.0f, 0.98f);
-			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
+push.frameUniforms = frameUniformsAddr;
+		push.currTextureIndex = blurred.bindlessIndex;
+		push.historyTextureIndex = histPrev.bindlessIndex;
+		push.motionTextureIndex = motionBindlessIndex;
+		push.depthTextureIndex = depthBindlessIndex;
+		push.samplerIndex = linearSamplerIndex;
+		push.historyValid = historyValid ? 1u : 0u;
+		push.jitterDeltaX = jitterDeltaX;
+		push.jitterDeltaY = jitterDeltaY;
+		push.texelX = 1.0f / halfW;
+		push.texelY = 1.0f / halfH;
+		push.invDepthW = 1.0f / fullW;
+		push.invDepthH = 1.0f / fullH;
+		push.blend = std::clamp(overrideDesc.temporalBlend, 0.0f, 0.98f);
+		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
 
 			RenderPass& pass = rg.AddPass(temporalName ? temporalName : "SSRTemporal");
 			pass.SetOffset(0, 0)
@@ -1330,7 +1339,6 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
 		push.pad0 = 0;
-		push.pad1 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
