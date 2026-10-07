@@ -304,7 +304,7 @@ struct CookSettings {
 	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
-	uint32_t cubemapBounces = 3;
+	uint32_t cubemapBounces = 5;
 	// GI bake selectors (ON-DEMAND Bake GI only — cooks never bake;
 	// see BakeGI): authored convex volumes (cvol nodes) via GiBaker —
 	// sidecars gi/<pak-stem>_* keyed to the pak stem. No-op when the

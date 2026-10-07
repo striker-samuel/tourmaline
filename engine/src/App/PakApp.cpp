@@ -233,6 +233,7 @@ void ApplyPassCsv(ScenePassConfig& passCfg, const char* csv, bool enable) {
 		else if (tok == "exposure") flag = &passCfg.exposure;
 		else if (tok == "msaa") flag = &passCfg.msaa;
 		else if (tok == "skydome") flag = &passCfg.skydome;
+		else if (tok == "terrain") flag = &passCfg.terrain;
 		else if (tok == "ui") flag = &passCfg.ui;
 		else if (tok == "cull") flag = &passCfg.forwardPlusCull;
 		else if (tok == "prepass") flag = &passCfg.forwardPlusPrepass;

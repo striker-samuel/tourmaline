@@ -5,7 +5,7 @@
 //                [--out-dir engine/resources] [--name sky]
 //                [--position x,y,z]... [--height 1.5]
 //                [--size 256] [--mips on|off] [--prefilter box|ggx]
-//                [--prefilter-rays 128] [--bounces 3]
+//                [--prefilter-rays 128] [--bounces 5]
 //                [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]
 //                [--sky-intensity 600] [--test-pattern]
 //                [--pak <host path>] [--verify on|off] [--threads 0]
@@ -94,7 +94,7 @@ struct Args {
 	// probes/lightmaps own diffuse + low-frequency specular).
 	std::string prefilter = "box";
 	uint32_t prefilterRays = 128; // GGX samples per output texel
-	uint32_t bounces = 3;
+	uint32_t bounces = 5; // diffuse path depth after the first hit (NEE at every vertex)
 	uint32_t spp = 8;             // transport paths per capture texel (bounce GI)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
@@ -307,7 +307,7 @@ void Usage() {
 		<< "         [--in-vfs models/X/x.gltf] [--out-dir engine/resources]\n"
 		<< "         [--name sky] [--position x,y,z]... [--height 1.5]\n"
 		<< "         [--size 256] [--mips on|off] [--prefilter box|ggx]\n"
-		<< "         [--prefilter-rays 128] [--bounces 3]\n"
+		<< "         [--prefilter-rays 128] [--bounces 5]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55]\n"
 		<< "         [--sun-intensity 10000] [--sky-intensity 600]\n"
 		<< "         [--test-pattern] [--pak <host path>] [--verify on|off]\n"

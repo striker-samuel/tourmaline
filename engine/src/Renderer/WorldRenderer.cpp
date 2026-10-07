@@ -482,6 +482,12 @@ namespace engine {
 				std::cerr << "[WorldRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
 				"trilinear|2x|4x|8x|16x): " << filtEnv << "\n";
 		}
+		// Headless terrain override (same discipline as VULKANTOY_VOLUMETRIC
+		// / VULKANTOY_SSR): VULKANTOY_TERRAIN=0/1 pins the terrain pass
+		// for headless A/B runs (the UI checkbox / combo stays live).
+		if (const char* terrEnv = std::getenv("VULKANTOY_TERRAIN")) {
+			m_passes.terrain = std::atoi(terrEnv) != 0;
+		}
 		// Point the FPS camera at a generic default viewpoint (Camera keeps a
 		// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 		// Initialize re-poses this on the loaded world's bounds (generic
@@ -1998,9 +2004,10 @@ namespace engine {
 			std::cerr << "[WorldRenderer] Skydome program unavailable – running without sky\n";
 		}
 		// Tiled terrain heightfield (visual-only dressing; Rendergraph/
-		// terrain.h): the DEFAULT 4 km x 4 km field of 100 m tiles. Build
-		// failure is non-fatal the same way (Main skips the field).
-		{
+		// terrain.h): a 4 km x 4 km field of 100 m tiles. Build is gated by
+		// m_passes.terrain (off by default); the field is only built when the
+		// pass is enabled. Failure is non-fatal (Main skips the field).
+		if (m_passes.terrain) {
 			smvk::terrain::TerrainDesc td{};
 			if (!m_terrain.Build(*m_context, td))
 				std::cerr << "[WorldRenderer] terrain build failed – running "
@@ -11811,7 +11818,7 @@ namespace engine {
 									m_cookedLights.hasSun ? " + sun" : "",
 									" (active — procedural off)");
 							}
-							ImGui::Checkbox("Tiled point/spot lights (F)", &m_fpDemo.enabled);
+							ImGui::Checkbox("Tiled point/spot lights (T)", &m_fpDemo.enabled);
 							ImGui::Checkbox("Animate", &m_fpDemo.animate);
 							ImGui::SliderFloat("Speed", &m_fpDemo.speed, 0.0f, 3.0f);
 							int gx = m_fpDemo.gridX, gy = m_fpDemo.gridY, gz = m_fpDemo.gridZ;
@@ -12009,7 +12016,7 @@ namespace engine {
 					}
 					if (ImGui::CollapsingHeader("Scene Effects")) {
 						if (ImGui::CollapsingHeader("Particles (GPU Emitters)", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::Checkbox("Enable particles", &m_particlesEnabled);
+							ImGui::Checkbox("Enable particles (F)", &m_particlesEnabled);
 							ImGui::SameLine();
 							ImGui::TextDisabled(ParticlesActive() ? "(active)" : "(off)");
 							if (m_passes.deferredShadows)
@@ -13838,18 +13845,11 @@ namespace engine {
 	{
 		auto& movement = m_cameraPositioner.movement_;
 
-		// Debug keys (the overlay legends claim them; the hosted EDITOR
-		// drives its own keys — its renderer instance never sees key
-		// events, so this stays App-only): R / F8 cycle the GI debug views
-		// (off -> flat irradiance -> source palette -> isolated level ->
-		// dominant level), N cycles the ambient sources (All -> Lightmaps ->
-		// Probes -> SkyIbl -> Off — the same modes VULKANTOY_AMBIENT pins
-		// headlessly).
-		if (m_input.isKeyPressed(GLFW_KEY_R) || m_input.isKeyPressed(GLFW_KEY_F8))
-			m_giDebug = (m_giDebug + 1) % 5;
-		if (m_input.isKeyPressed(GLFW_KEY_N))
-			CycleAmbientMode();
-
+		// Movement only here: toggles live in HandleShortcuts (which owns
+		// the centralized keybind:: names, including the R/F8 GI-debug and
+		// N ambient cycles — duplicating them here double-fired in FPS
+		// mode). The hosted EDITOR drives its own keys — its renderer
+		// instance never sees key events, so this stays App-only.
 		movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
 		movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
 		movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);

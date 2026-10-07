@@ -24,6 +24,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/app.h>
+#include <Engine/App/keybindings.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Camera/camera.h>
@@ -98,7 +99,7 @@ struct ScenePassConfig {
 	bool ui = true;                 // separated ImGui target + composite
 	bool msaa = true;               // 2x MSAA Main (when device supports it)
 	bool skydome = true;            // fullscreen-triangle sky in Main
-	bool terrain = true;             // tiled heightfield dressing in Main
+	bool terrain = false;             // tiled heightfield dressing in Main (off by default)
 	bool smaa = true;               // SMAA post-process chain (mode via UI AA combo)
 	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
 	bool particles = true;          // GPU particle system (compute emitters + tiled-lit billboards)
@@ -1366,99 +1367,103 @@ protected:
 	}
 
 
-	// this needs a keybind layer, this is bad
-
 	// Global feature shortcuts (work in both FPS and UI modes so A/B
 	// comparisons don't require opening the panel; see the footer readout
 	// in RenderFrame for the full list). WASDQE/Space/Shift/Ctrl are
-	// reserved for camera movement and are never used here.
+	// reserved for camera movement and are never used here. Keys live in
+	// Engine/App/keybindings.h — this handler consumes semantic names
+	// (keybind::LIGHTS_TOGGLE), never raw GLFW_KEY_* reads.
 	void HandleShortcuts() {
-		if (m_input.isKeyPressed(GLFW_KEY_I)) {
+		if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
 			SetUIMode(!m_uiMode);
 		}
-		// Gamepad Start mirrors I (UI <-> FPS) so controller-only users
+		// Gamepad Start mirrors UI toggle so controller-only users
 		// can reach the debug panel.
 		if (m_input.hasGamepad() &&
 			m_input.gamepadButtonPressed(0, SDL_GAMEPAD_BUTTON_START)) {
 			SetUIMode(!m_uiMode);
 		}
 		// U toggles the fixed debug-panel side: Right <-> Left.
-		if (m_input.isKeyPressed(GLFW_KEY_U)) {
+		if (m_input.isKeyPressed(keybind::UI_DOCK_CYCLE)) {
 			CycleUiDock();
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_M)) {
+		if (m_input.isKeyPressed(keybind::MOTION_BLUR_TOGGLE)) {
 			m_motionBlurEnabled = !m_motionBlurEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_O)) {
+		if (m_input.isKeyPressed(keybind::AO_CYCLE)) {
 			m_aoMode = static_cast<AoMode>(
 				(static_cast<int>(m_aoMode) + 1) % 3); // None -> Ssao -> Sao
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_B)) {
+		if (m_input.isKeyPressed(keybind::BLOOM_TOGGLE)) {
 			m_bloomEnabled = !m_bloomEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_X)) {
+		if (m_input.isKeyPressed(keybind::AUTO_EXPOSURE_TOGGLE)) {
 			m_autoExposureEnabled = !m_autoExposureEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_V)) {
+		if (m_input.isKeyPressed(keybind::MOTION_DEBUG_TOGGLE)) {
 			m_showMotionDebug = !m_showMotionDebug;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_L)) {
+		if (m_input.isKeyPressed(keybind::LOD_TOGGLE)) {
 			m_lodEnabled = !m_lodEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F)) {
+		// F toggles the GPU particle system (visibility only; the pool
+		// keeps its state so re-enabling resumes mid-flight).
+		if (m_input.isKeyPressed(keybind::PARTICLES_TOGGLE)) {
+			m_particlesEnabled = !m_particlesEnabled;
+		}
+		// T toggles the tiled point/spot light demo (was F before F
+		// became the particles toggle — see keybindings.h).
+		if (m_input.isKeyPressed(keybind::LIGHTS_TOGGLE)) {
 			m_fpDemo.enabled = !m_fpDemo.enabled;
 		}
 		// J spawns a blood splat on whatever the camera crosshair hits
 		// (CPU raycast over the scene triangle soup; the pick BVH builds
 		// lazily on first use — see SpawnDecalAtCrosshair).
-		if (m_input.isKeyPressed(GLFW_KEY_J)) {
+		if (m_input.isKeyPressed(keybind::DECAL_SPLAT)) {
 			SpawnDecalAtCrosshair();
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_H)) {
+		if (m_input.isKeyPressed(keybind::DEFERRED_SHADOWS_TOGGLE)) {
 			m_dsEnabled = !m_dsEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_G)) {
+		if (m_input.isKeyPressed(keybind::GFX_FILTER_TOGGLE)) {
 			m_useGfxFilter = !m_useGfxFilter;
 		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
 		// SkyIbl -> Off (see AmbientMode — single-source isolation for
 		// bisection, All is the production state).
-		// R cycles the baked-GI debug views: 0 off, 1 flat irradiance of
-		// the active source, 2 source palette (red lm, green grid, blue
-		// probes; magenta = none). F8 is an alias for R. Both work in
-		// every ambient mode. (R because I is taken — I toggles the
-		// UI/FPS mode.)
-		if (m_input.isKeyPressed(GLFW_KEY_N)) {
+		// R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
+		// F8 is an alias for R. Both work in every ambient mode.
+		if (m_input.isKeyPressed(keybind::AMBIENT_CYCLE)) {
 			CycleAmbientMode();
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_R)
-			|| m_input.isKeyPressed(GLFW_KEY_F8)) {
-			m_giDebug = (m_giDebug + 1) % 3;
+		if (m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE)
+			|| m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
+			keybind::CycleGiDebug(m_giDebug);
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_C)) {
+		if (m_input.isKeyPressed(keybind::COOKIES_TOGGLE)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_K)) {
+		if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
 			m_skyEnabled = !m_skyEnabled;
 		}
 		// Z cycles AA: Off -> MSAA 2x -> SMAA 1x -> SMAA T2x. 1..4 jump
 		// directly to a mode.
-		if (m_input.isKeyPressed(GLFW_KEY_Z)) {
+		if (m_input.isKeyPressed(keybind::AA_CYCLE)) {
 			m_aaMode = static_cast<AaMode>((static_cast<int>(m_aaMode) + 1) % 4);
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_1)) {
+		if (m_input.isKeyPressed(keybind::AA_OFF)) {
 			m_aaMode = AaMode::Off;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_2)) {
+		if (m_input.isKeyPressed(keybind::AA_MSAA2X)) {
 			m_aaMode = AaMode::Msaa2x;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_3)) {
+		if (m_input.isKeyPressed(keybind::AA_SMAA1X)) {
 			m_aaMode = AaMode::Smaa1x;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_4)) {
+		if (m_input.isKeyPressed(keybind::AA_SMAAT2X)) {
 			m_aaMode = AaMode::SmaaT2x;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F7)) {
+		if (m_input.isKeyPressed(keybind::CAPTURE)) {
 			ExportNeutralLut();
 			m_captureQueued = true;
 		}
@@ -1466,51 +1471,51 @@ protected:
 		// shadow cascades, F5 LODs by color, F6 vertex-color layer
 		// weights, F9 base-UV checker, F10 lightmap-uv2 checker,
 		// F11 parallax occlusion mapping.
-		if (m_input.isKeyPressed(GLFW_KEY_F1)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LIT)) {
 			m_debugView = DebugView::Lit;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F2)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UNLIT)) {
 			m_debugView = DebugView::Unlit;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F3)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_MESHLETS)) {
 			m_debugView = DebugView::Meshlets;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F4)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CASCADES)) {
 			m_debugView = DebugView::Cascades;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F5)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LODS)) {
 			m_debugView = DebugView::Lods;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F6)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_VERTEXCOLORS)) {
 			m_debugView = DebugView::VertexColors;
 		}
 		// UV debug views: F9 = base UV (TEXCOORD0), F10 = lightmap
 		// atlas UV (uv2). Checker + gradient + seam glow (see
 		// default_uv_debug.hlsli) — lightmap chart layout and
 		// cross-island streaks read at a glance.
-		if (m_input.isKeyPressed(GLFW_KEY_F9)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
 			m_debugView = DebugView::Uv0;
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F10)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV1)) {
 			m_debugView = DebugView::Uv1;
 		}
 		// Parallax occlusion mapping (F11): every material texture
 		// sampled at a ray-marched parallax uv through the occlusion-
 		// map heightfield, with sun self-shadowing (default_pom).
-		if (m_input.isKeyPressed(GLFW_KEY_F11)) {
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_POM)) {
 			m_debugView = DebugView::Pom;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
 		// active debug view — a raster override, not a shading swap, so
 		// it stacks with F1..F6.
-		if (m_input.isKeyPressed(GLFW_KEY_P)) {
+		if (m_input.isKeyPressed(keybind::WIREFRAME_TOGGLE)) {
 			m_wireframe = !m_wireframe;
 		}
 		// F12: live frame-time histogram — a separate bottom strip UI
 		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles
 		// the same state). Zero cost while disabled: RecordFrameTime is a
 		// single compare-and-return (see profiler::RecordFrameTime).
-		if (m_input.isKeyPressed(GLFW_KEY_F12)) {
+		if (m_input.isKeyPressed(keybind::FRAME_HISTOGRAM_TOGGLE)) {
 			const bool on = !smvk::profiler::FrameHistogramEnabled();
 			smvk::profiler::SetFrameHistogramEnabled(on);
 			std::fprintf(stderr, "[profiler] frame-time histogram %s\n",
@@ -1523,7 +1528,7 @@ protected:
 		// F6 selects the vertex-color debug view, and some
 		// keyboards/overlays remap or swallow function keys, never
 		// letters.
-		if (m_input.isKeyPressed(GLFW_KEY_Y)) {
+		if (m_input.isKeyPressed(keybind::DS_VIZ_CYCLE)) {
 			m_dsDebugMode = static_cast<DsDebugViz>(
 				(static_cast<int>(m_dsDebugMode) + 1)
 				% (static_cast<int>(DsDebugViz::LightVis) + 1));
@@ -2753,10 +2758,10 @@ protected:
 	bool m_skyEnabled = true;
 	smvk::Skydome m_skydome{};
 	// Tiled terrain heightfield (visual-only dressing; see Rendergraph/
-	// terrain.h): the DEFAULT 4 km x 4 km field of 100 m tiles rendered in
+	// terrain.h): a 4 km x 4 km field of 100 m tiles rendered in
 	// the Main pass right after the sky. m_passes.terrain is the pipeline
 	// shape switch; m_terrainEnabled is the debug visibility toggle (like
-	// the skydome's K).
+	// the skydome's K). OFF by default (m_passes.terrain=false).
 	bool m_terrainEnabled = true;
 	smvk::terrain::TerrainField m_terrain{};
 	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8

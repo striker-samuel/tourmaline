@@ -303,7 +303,7 @@ struct Args {
 	std::string cubemapName;
 	uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
 	uint32_t cubemapRays = 128;   // GGX importance samples per output texel
-	uint32_t cubemapBounces = 3;  // diffuse path depth after the first hit
+	uint32_t cubemapBounces = 5;  // diffuse path depth after the first hit
 	// Transport samples per capture texel: the NEE sun/spot term is
 	// analytic (clean at 1 spp), but the bounce field is a Monte-Carlo
 	// path estimate — 1 spp reads as speckle, not GI, and the capture
@@ -1182,7 +1182,7 @@ void Usage() {
 		<< "          GI for the App; loose GiBaker sidecars still override\n"
 		<< "          through the overlay when present.\n"
 		<< "          [--cubemap on|off --cubemap-name <name>\n"
-		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
+		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 5\n"
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
 		<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
 		<< "           --cubemap-octree-max 8.0 --cubemap-octree-min 2.0\n"
