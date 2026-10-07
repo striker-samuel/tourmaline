@@ -2889,6 +2889,24 @@ namespace engine {
 				std::cerr << "[CV] volume rejected: " << verr << "\n";
 				continue;
 			}
+			// Bake-content audit (distinguishes an empty bake — all-zero
+			// coeffs claim full weight and black the field — from a
+			// sampling/align bug, which shows nonzero content here).
+			{
+				double sum = 0.0, mx = 0.0;
+				size_t nz = 0, total = 0;
+				for (const glm::vec3& a : cv.volume.coeffs) {
+					const double l = std::abs(a.x) + std::abs(a.y) + std::abs(a.z);
+					sum += l;
+					mx = std::max(mx, l);
+					nz += (l > 1e-6) ? 1 : 0;
+					++total;
+				}
+				std::cerr << "[CV] coeffs '" << line << "': voxels="
+					<< (total / 9) << " nonzero=" << nz << "/" << total
+					<< " mean=" << (total ? sum / total : 0.0)
+					<< " max=" << mx << "\n";
+			}
 			// 7 RGBA16F 3D textures (bindless; volumeTextures mirror).
 			std::vector<uint16_t> layers[7];
 			cv.volume.PackGpuLayers(layers);
@@ -3036,6 +3054,13 @@ namespace engine {
 
 		m_cvolLoaded = true;
 		m_cvolEnabled = true; // on by default when baked; UI can toggle
+		// Headless A/B (same state as the panel checkbox): VULKANTOY_CVOL=0
+		// drops the FULL variant to Octree for the run (isolates whether a
+		// dark interior comes from the convex volumes or the octree field).
+		if (const char* cvolEnv = std::getenv("VULKANTOY_CVOL")) {
+			if (std::atoi(cvolEnv) == 0)
+				m_cvolEnabled = false;
+		}
 		std::cerr << "[CV] loaded " << m_cvolVolumes.size()
 			<< " convex volume(s) from '" << manifestPath << "'\n";
 		for (const auto& cv : m_cvolVolumes) {
