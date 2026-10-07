@@ -112,6 +112,57 @@ float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)
     return hemi * ibl;
 }
 
+// Box parallax correction for a probe capture (classic box projection):
+// the capture is treated as if it lived on the faces of an AABB around
+// the probe center, so a reflection off a surface AWAY from the center
+// samples the capture in the direction the surface would actually see.
+// Without it every pixel samples along the raw reflect vector R, as if
+// the capture surrounded the PIXEL — interior surfaces then read dark
+// capture regions (floor/ceiling texels) instead of the bright geometry
+// across the room (the Sponza-atrium gold-cloth streaks).
+//
+// The box is derived from the probe entry itself (center = L.position,
+// half-extent = influence radius): the influence sphere is the cooker's
+// estimate of the probe's valid region (roughly the room), tighter than
+// the cull outer sphere (influence + fade, which reaches into walls and
+// neighbor rooms). Every full-weight pixel (dist <= influence) lies
+// INSIDE the cube (radial dist <= half-extent implies all coords <=
+// half-extent), and fade-ring pixels use the same far-plane exit
+// projection — continuous across the box faces by construction (near and
+// far planes coincide there), additionally faded by the probe weight at
+// the call site. Returns R unchanged when the box is degenerate or the
+// ray misses (keeps the helper total).
+float3 BoxParallaxCorrect(float3 worldPos, float3 R, float3 center, float halfExtent)
+{
+    if (halfExtent <= 1e-3f)
+        return R;
+    float3 boxMin = center - halfExtent;
+    float3 boxMax = center + halfExtent;
+    // Safe per-axis reciprocal (R is normalized but can sit ~0 on an axis;
+    // IEEE inf would still work in the slab test, but the clamp keeps it
+    // total on drivers with imprecise inf handling).
+    float3 safeR = R;
+    safeR.x = abs(safeR.x) < 1e-6f ? (safeR.x < 0.0f ? -1e-6f : 1e-6f) : safeR.x;
+    safeR.y = abs(safeR.y) < 1e-6f ? (safeR.y < 0.0f ? -1e-6f : 1e-6f) : safeR.y;
+    safeR.z = abs(safeR.z) < 1e-6f ? (safeR.z < 0.0f ? -1e-6f : 1e-6f) : safeR.z;
+    float3 invR = 1.0f / safeR;
+    float3 tMin = (boxMin - worldPos) * invR;
+    float3 tMax = (boxMax - worldPos) * invR;
+    float3 tNear3 = min(tMin, tMax);
+    float3 tFar3 = max(tMin, tMax);
+    float tNear = max(max(tNear3.x, tNear3.y), tNear3.z);
+    float tFar = min(min(tFar3.x, tFar3.y), tFar3.z);
+    if (tFar < max(tNear, 0.0f))
+        return R;
+    float3 hit = worldPos + R * tFar;
+    float3 corr = hit - center;
+    // Degenerate (pixel at the probe center looking outward: hit == center
+    // only when tFar == 0 with worldPos == center — length ~0): keep R.
+    if (dot(corr, corr) < 1e-12f)
+        return R;
+    return normalize(corr);
+}
+
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
 // F0-weighted reflections, rougher surfaces fade out.
 // Probe selection walks the caller's Forward+ tile list and filters
@@ -161,6 +212,13 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     float bestWeight = 0.0f;
     uint bestCubemapIdx = 0xffffffffu;
     float bestMips = 1.0f;
+    // Box-parallax source for the winning probe (center + half-extent of
+    // its influence cube — see BoxParallaxCorrect). Captured alongside
+    // the best-weight pick so the sample below corrects R before the LOD
+    // fetch; the correction lerps by bestWeight (full inside, raw R at
+    // the fade edge), so probe boundaries stay pop-free.
+    float3 bestCenter = float3(0.0f, 0.0f, 0.0f);
+    float bestHalf = 0.0f;
 
     // Tile-bucketed probe scan. The cull's outer-sphere test is
     // conservative (influence + fade vs tile frustum + depth range), so a
@@ -211,6 +269,10 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
                 bestWeight = weight;
                 bestCubemapIdx = cubemapIdx;
                 bestMips = max(L.direction.z, 1.0f);
+                bestCenter = L.position;
+                // Influence (not the cull outer range): the room-scale box.
+                // L.range = influence + fade; L.direction.x = fade.
+                bestHalf = max(L.range - L.direction.x, 0.0f);
                 if (bestWeight >= 1.0f)
                     break;
             }
@@ -218,16 +280,30 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         if (bestWeight > 0.0f && bestCubemapIdx != 0xffffffffu) {
             float lod = clamp(roughness * (bestMips - 1.0f) + lodBias, 0.0f, bestMips - 1.0f);
             TextureCube cubemap = cubemaps[NonUniformResourceIndex(bestCubemapIdx)];
-            envCol = cubemap.SampleLevel(cubeSampler, R, lod).rgb;
+            // Box parallax: re-aim R at the probe box before sampling, faded
+            // by the probe weight so fade-ring pixels blend back to raw R.
+            float3 Rs = R;
+            if (bestHalf > 1e-3f && bestWeight > 1e-4f) {
+                float3 Rcorr = BoxParallaxCorrect(worldPos, R, bestCenter, bestHalf);
+                Rs = normalize(lerp(R, Rcorr, clamp(bestWeight, 0.0f, 1.0f)));
+            }
+            envCol = cubemap.SampleLevel(cubeSampler, Rs, lod).rgb;
             foundProbe = true;
         }
     }
 
     if (!foundProbe && useBaked && frame.cubemapIndex != 0xffffffffu) {
-        // Fallback to global cubemap (sharp LOD + UI bias; no per-probe
-        // mip count is carried for this path, so bias only).
+        // Fallback to global cubemap. Roughness-aware LOD like the tile
+        // path (the old sharp-only fetch sampled a single dark texel on
+        // mid-rough metals instead of the blurred mean — streaky). The
+        // mip count is queried from the texture itself (bakes always ship
+        // full chains); clamped defensively for procedural fallbacks.
         TextureCube cubemap = cubemaps[NonUniformResourceIndex(frame.cubemapIndex)];
-        envCol = cubemap.SampleLevel(cubeSampler, R, max(lodBias, 0.0f)).rgb;
+        uint fbW = 0u, fbH = 0u, fbLevels = 1u;
+        cubemap.GetDimensions(0, fbW, fbH, fbLevels);
+        float fbMips = max((float)fbLevels, 1.0f);
+        float fbLod = clamp(roughness * (fbMips - 1.0f) + lodBias, 0.0f, fbMips - 1.0f);
+        envCol = cubemap.SampleLevel(cubeSampler, R, fbLod).rgb;
         foundProbe = true;
         bestWeight = 1.0f;
     }

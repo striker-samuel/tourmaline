@@ -942,6 +942,25 @@ namespace engine {
 			if (std::atoi(iblEnv) == 0 && m_ambientMode != AmbientMode::Off)
 				m_ambientMode = AmbientMode::Off;
 		}
+		// Baked-cubemap kill switch for headless runs (same state as the
+		// panel's "Cubemap specular IBL" checkbox; off falls back to the
+		// analytic sky, never to black): VULKANTOY_CUBEMAP=0 disables,
+		// 1 (or unset) keeps the baked specular path.
+		if (const char* cubeEnv = std::getenv("VULKANTOY_CUBEMAP")) {
+			if (std::atoi(cubeEnv) == 0)
+				m_cubemapEnabled = false;
+		}
+		// Cubemap debug view for headless runs (same modes as the panel
+		// combo; see the cubemapDebug field): 0 off, 1 raw cubemap
+		// (no Fresnel/roughness — shows which probe serves each pixel),
+		// 2 probe blend weight as heat.
+		if (const char* cubeDbgEnv = std::getenv("VULKANTOY_CUBEMAP_DEBUG")) {
+			const int mode = std::atoi(cubeDbgEnv);
+			if (mode >= 0 && mode <= 2)
+				m_cubemapDebug = mode;
+			else
+				std::cerr << "[WorldRenderer] VULKANTOY_CUBEMAP_DEBUG wants 0..2\n";
+		}
 		// Ambient / GI source override for headless runs (same states the
 		// N key cycles; the runtime cycle stays live after):
 		//   VULKANTOY_AMBIENT=all|lightmaps|probes|skyibl|off
