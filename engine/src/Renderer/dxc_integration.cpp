@@ -19,6 +19,8 @@ static const wchar_t* GetShaderProfile(DxcShaderStage stage)
     case DxcShaderStage::Vertex:   return L"vs_6_6";
     case DxcShaderStage::Fragment: return L"ps_6_6";
     case DxcShaderStage::Compute:  return L"cs_6_6";
+    case DxcShaderStage::Task:     return L"as_6_7";
+    case DxcShaderStage::Mesh:     return L"ms_6_7";
     }
 
     return nullptr;

@@ -193,4 +193,15 @@ compile_shaders(
         "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
         "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
         "default_lit.frag.hlsl|.gi3|GI_FULL=1"
+        # Mesh-path FS twins (gfxmesh_lit: material from a flat varying):
+        # same SG/GI permutations, selected exactly like the indexed leg
+        # (see GfxRenderer::MeshProgramFor).
+        "gfxmesh_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
+        "gfxmesh_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+        "gfxmesh_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
+        "gfxmesh_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
+        "gfxmesh_lit.frag.hlsl|.gi0|GI_NONE=1"
+        "gfxmesh_lit.frag.hlsl|.gi1|GI_OCTREE=1"
+        "gfxmesh_lit.frag.hlsl|.gi2|GI_REGULAR=1"
+        "gfxmesh_lit.frag.hlsl|.gi3|GI_FULL=1"
 )

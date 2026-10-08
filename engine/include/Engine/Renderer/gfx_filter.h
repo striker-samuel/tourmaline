@@ -248,6 +248,64 @@ struct FilteredVsPush {
 };
 static_assert(sizeof(FilteredVsPush) == 32);
 
+// ---- Task-less mesh path (gfxfilter.mesh.hlsl + gfxmesh_lit FS twins) ----
+// One mesh workgroup per cluster HALF of a CPU-partitioned batch list
+// (DrawMeshTasks(2 * listCount) per FS variant). Batches are already CPU
+// pre-culled (BuildBatches); the mesh shader runs the per-triangle
+// CullTriangle tests and compacts via wave prefix sums. Eligibility lives
+// on the CPU (RecordMeshMain partitions eligible batches per variant —
+// opaque, single-sided, variant twin exists; the indexed loop skips
+// exactly those ranges). Masked/two-sided/motion/seed/shadow stay indexed.
+inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hlsl.spv";
+inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
+
+// Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
+// (viewProj first for 16-alignment, then 8 BDAs, then 6 uints = 152B).
+// batchList points at this dispatch's slice of the compacted eligible
+// batch indices (base folded into the address); listCount bounds it.
+struct GfxMeshParams {
+	glm::mat4 viewProj{};
+	uint64_t draws = 0;
+	uint64_t clusters = 0;
+	uint64_t batches = 0;
+	uint64_t positions = 0;
+	uint64_t shading = 0;
+	uint64_t indices = 0;
+	uint64_t lmXforms = 0;
+	uint64_t batchList = 0;
+	uint32_t cullFlags = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t listCount = 0;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+};
+static_assert(sizeof(GfxMeshParams) == 152);
+
+// Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
+// the record pushes this after the 32B FilteredVsPush tail at 192).
+// paramsAddress is identical for every span of the frame (one params
+// upload — per-span uploads to the same buffer race transfer writes
+// against graphics reads); listBase/listCount slice this dispatch.
+static constexpr uint32_t kMeshTailPushOffset = 224;
+struct MeshTailPush {
+	uint64_t paramsAddress = 0;
+	uint32_t listBase = 0;
+	uint32_t listCount = 0;
+};
+static_assert(sizeof(MeshTailPush) == 16);
+
+// Draw-side mesh eligibility (the variant/program side is resolved by the
+// caller via MeshProgramFor): opaque draw-set, single-sided. Exact with
+// nothing on the shader side — the shader trusts its CPU-partitioned list.
+inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
+	if (drawSet != DrawSetBit_Opaque)
+		return false;
+	if ((drawFlags & DrawFlagBit_TwoSided) != 0)
+		return false;
+	return true;
+}
+
 // Per-mesh chart tail for direct-path vertex shaders (uvflat1.vert.hlsl,
 // default.vert.hlsl — 16 bytes). Pushed at kUvFlatVsPushOffset (the scene
 // push's unused prevModel scratch, bytes 192..208) per mesh. Zeroed
@@ -336,6 +394,7 @@ struct View {
 	// steady-state batch build allocates nothing).
 	std::vector<uint32_t> drawOrderScratch; // material sort permutation
 	std::vector<uint8_t> indirectZeroScratch; // zero-fill upload bytes
+	std::vector<uint32_t> meshListScratch; // compacted mesh batch indices
 	// Per-view outputs AND inputs, ringed by frame in flight.
 	// Everything mutable is per (view, frame): frames overlap (the swapchain
 	// only retires the same slot), and uploads flush immediately, so any
@@ -695,6 +754,19 @@ struct State {
 	ShaderProgram filterProgram{};
 	Holder<ShaderModuleHandle> hizModule;
 	ShaderProgram hizProgram{};
+	// Task-less mesh path (main-leg opaque only): mesh module + base-lit
+	// twin program { mesh, gfxmesh_lit FS }. Per-flight params blob +
+	// rendergraph aliases (uploaded per mesh dispatch).
+	Holder<ShaderModuleHandle> meshModule;
+	Holder<ShaderModuleHandle> meshFsModule;
+	ShaderProgram meshProgram{};
+	Holder<BufferHandle> meshParamsBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle meshParamsLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	// Compacted eligible batch indices, rewritten per mesh dispatch set
+	// (one upload per frame covering all variant spans; dispatches slice
+	// it via the listBDA base). kMaxBatches uints per flight.
+	Holder<BufferHandle> meshBatchLists[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle meshBatchListLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	std::vector<View> views;
 	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
@@ -713,6 +785,26 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 
 bool EnsureShaders(State& s, ResourceManager& ctx,
 	const char* csPath = kGfxFilterCsPath);
+// Task-less mesh path ring (per-flight 152B params blob + logicals).
+// Best-effort: failure only disables the mesh record (indexed stays).
+bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg);
+// Mesh record: upload params, bind mesh pipeline, push tails,
+// DrawMeshTasks(2*batchCount). The full scene push must already be pushed
+// (same as the indexed leg). Null-BDA guard refuses the dispatch (same
+// MMU-fault rule as PushAndDispatch).
+// Uploads the frame's mesh params blob once (shared BDAs + dims; the
+// per-dispatch list slice rides the tail push, never this buffer).
+// Returns the params BDA, 0 on null-BDA refuse (indexed covers).
+uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
+	uint64_t listBDA, uint64_t lmXformsAddr);
+// One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
+// Params must already be uploaded (UploadMeshParams); listBase/listCount
+// slice this dispatch out of the shared compacted list.
+void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, ShaderProgram& meshProg, uint64_t paramsBDA,
+	uint32_t listBase, uint32_t listCount,
+	uint64_t renderViewsAddr, uint32_t renderViewIndex, uint64_t lmXformsAddr,
+	const DepthSettings& depth, const MSAASettings& msaa);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.
 bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg,

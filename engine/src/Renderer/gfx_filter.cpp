@@ -268,6 +268,14 @@ void Destroy(State& s, RenderGraph& rg) {
 	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	if (!s.meshBoundsLogical.empty()) rg.FreeBuffer(s.meshBoundsLogical);
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		if (!s.meshParamsLogicals[f].empty()) rg.FreeBuffer(s.meshParamsLogicals[f]);
+		if (!s.meshBatchListLogicals[f].empty()) rg.FreeBuffer(s.meshBatchListLogicals[f]);
+		s.meshParamsLogicals[f] = {};
+		s.meshParamsBuffers[f] = {};
+		s.meshBatchListLogicals[f] = {};
+		s.meshBatchLists[f] = {};
+	}
 	s.indexHeapLogical = {};
 	s.clusterLogical = {};
 	s.meshBoundsLogical = {};
@@ -1986,6 +1994,115 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch(v.batchCount, 1, 1);
+}
+
+bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		if (s.meshParamsBuffers[f].empty()) {
+			s.meshParamsBuffers[f] = ctx.CreateBuffer(
+				sizeof(GfxMeshParams), BufferType_Storage, "gfx mesh params");
+			if (s.meshParamsBuffers[f].empty())
+				return false;
+			s.meshParamsLogicals[f] = rg.AddExternalBuffer(
+				s.meshParamsBuffers[f], "gfx mesh params");
+			if (s.meshParamsLogicals[f].empty()) {
+				s.meshParamsBuffers[f] = {};
+				return false;
+			}
+		}
+		if (s.meshBatchLists[f].empty()) {
+			s.meshBatchLists[f] = ctx.CreateBuffer(
+				kMaxBatches * sizeof(uint32_t), BufferType_Storage, "gfx mesh batch list");
+			if (s.meshBatchLists[f].empty())
+				return false;
+			s.meshBatchListLogicals[f] = rg.AddExternalBuffer(
+				s.meshBatchLists[f], "gfx mesh batch list");
+			if (s.meshBatchListLogicals[f].empty()) {
+				s.meshBatchLists[f] = {};
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
+	uint64_t listBDA, uint64_t lmXformsAddr) {
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
+	if (s.meshParamsBuffers[f].empty())
+		return 0; // EnsureMeshParams failed: the indexed loop covers the frame
+
+	GfxMeshParams p{};
+	p.viewProj = v.viewProj;
+	p.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	p.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+	p.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+	p.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
+	p.shading = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
+	const uint64_t indexHeapAddr = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
+	p.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
+	p.lmXforms = lmXformsAddr;
+	p.batchList = listBDA;
+	p.cullFlags = v.cullFlags;
+	p.width = v.width;
+	p.height = v.height;
+	p.listCount = 0; // unused (slicing rides the tail push)
+	// Same MMU-fault rule as PushAndDispatch: never publish a null BDA
+	// (the indexed loop draws the frame instead; its commands and the
+	// seed/remainder depth are intact).
+	if (p.draws == 0 || p.batches == 0 || p.clusters == 0 || p.positions == 0
+		|| p.shading == 0 || p.indices == 0 || p.batchList == 0) {
+		static uint64_t s_meshNullWarns = 0;
+		if ((s_meshNullWarns++ % 300) == 0)
+			std::fprintf(stderr, "[GfxMesh] refusing dispatch: null BDA\n");
+		return 0;
+	}
+	ctx.UploadDataToBuffer(s.meshParamsBuffers[f], &p, sizeof(p),
+		PipelineStage(PipelineStageBit_Mesh), AccessFlags::ShaderRead);
+	return ctx.GetBufferDeviceAddress(s.meshParamsBuffers[f]);
+}
+
+// One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
+// Params must already be uploaded (UploadMeshParams); listBase/listCount
+// slice this dispatch out of the shared compacted list.
+void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, ShaderProgram& meshProg, uint64_t paramsBDA,
+	uint32_t listBase, uint32_t listCount,
+	uint64_t renderViewsAddr, uint32_t renderViewIndex, uint64_t lmXformsAddr,
+	const DepthSettings& depth, const MSAASettings& msaa) {
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	if (listCount == 0 || meshProg.shaderCount != 2 || paramsBDA == 0)
+		return;
+	const uint32_t f = v.frameIndex;
+	uint64_t drawsBDA = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+
+	// Opaque single-sided state (mirrors bindForMaterial for standard
+	// opaque materials: Cull Back + Opaque blend; masked/two-sided draws
+	// never reach this dispatch — see MeshDrawEligible).
+	cmd.BindRenderPipeline(
+		meshProg,
+		VertexFormat::Empty, // no VS stage: vertex input ignored, keep empty
+		depth,
+		StencilSettings::DefaultDisabled(),
+		BlendSettings::Opaque(),
+		msaa,
+		RasterSettings{ .cullMode = CullMode::Back });
+	FilteredVsPush tail{};
+	tail.draws = drawsBDA;
+	tail.renderViews = renderViewsAddr;
+	tail.renderViewIndex = renderViewIndex;
+	tail.lmXforms = lmXformsAddr;
+	cmd.PushConstants(kFilteredVsPushOffset, sizeof(tail), &tail, ShaderStage::All);
+	MeshTailPush ext{};
+	ext.paramsAddress = paramsBDA;
+	ext.listBase = listBase;
+	ext.listCount = listCount;
+	cmd.PushConstants(kMeshTailPushOffset, sizeof(ext), &ext, ShaderStage::All);
+	// One workgroup per cluster half of this variant's list slice.
+	cmd.DrawMeshTasks(listCount * 2, 1, 1);
 }
 
 // ---------------------------------------------------------------------------

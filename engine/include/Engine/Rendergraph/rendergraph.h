@@ -74,6 +74,16 @@ namespace smvk
 			uint32_t drawCount,
 			uint32_t stride);
 
+		// Mesh-task draw (VK_EXT_mesh_shader): launches groupCountX/Y/Z
+		// task-shader workgroups (or mesh workgroups directly when the
+		// pipeline has no task stage). Requires SupportsMeshShaders() —
+		// the mesh-shader gfx filter path gates on it and keeps the
+		// compute+indexed CPU fallback otherwise.
+		void DrawMeshTasks(
+			uint32_t groupCountX,
+			uint32_t groupCountY,
+			uint32_t groupCountZ);
+
 		void BindComputePipeline(
 			ShaderProgram& shaderProgram);
 

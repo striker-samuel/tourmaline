@@ -698,12 +698,12 @@ namespace smvk {
 		Geometry = 1u << 3, // 0x08
 		Fragment = 1u << 4, // 0x10
 		Compute = 1u << 5, // 0x20
+		Task = 1u << 6, // 0x40, VK_SHADER_STAGE_TASK_BIT_EXT
+		Mesh = 1u << 7, // 0x80, VK_SHADER_STAGE_MESH_BIT_EXT
 
-		AllGraphics = (1u << 5) - 1u, // 0x1F
+		AllGraphics = (1u << 8) - 1u, // 0xFF (VS..Mesh)
 		All = 0x7FFFFFFF,
 		// Future:
-		// Task
-		// Mesh
 		// RayGen
 		// AnyHit
 		// ClosestHit
@@ -1568,7 +1568,8 @@ struct ImageCreateInfo
 		if ((access & AccessFlags::ShaderRead) != AccessFlags::None ||
 			(access & AccessFlags::ShaderWrite) != AccessFlags::None ||
 			(access & AccessFlags::UniformRead) != AccessFlags::None)
-			return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute;
+			return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute
+				| PipelineStageBit_Task | PipelineStageBit_Mesh;
 		if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
 			(access & AccessFlags::TransferWrite) != AccessFlags::None)
 			return PipelineStageBit_Transfer;

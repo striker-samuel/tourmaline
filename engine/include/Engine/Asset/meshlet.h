@@ -22,8 +22,10 @@ struct StaticMeshUpload;
 
 struct MeshletConfig {
 	bool enabled = false; // off by default; cooker opts in via CLI
+	// 64v/64t: one mesh-shader workgroup (64 threads, <= 192 verts)
+	// covers a whole cluster with no dedup hash (see gfxfilter.mesh.hlsl).
 	uint32_t maxVertices = 64;
-	uint32_t maxTriangles = 124;
+	uint32_t maxTriangles = 64;
 	float coneWeight = 0.0f;
 };
 

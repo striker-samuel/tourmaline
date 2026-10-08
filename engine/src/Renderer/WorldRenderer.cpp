@@ -817,6 +817,12 @@ namespace engine {
 			else std::cerr << "[WorldRenderer] VULKANTOY_BLOOM_INTENSITY out of range "
 				<< "(0..4): " << biEnv << "\n";
 		}
+		// Mesh-shader main leg (VULKANTOY_MESH=0 forces the indexed
+		// multi-draws for A/B captures; =1 forces the mesh dispatch when
+		// the device supports it). The UI checkbox stays live.
+		if (const char* meshEnv = std::getenv("VULKANTOY_MESH")) {
+			m_useGfxMesh = std::atoi(meshEnv) != 0;
+		}
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
 		if (const char* rsEnv = std::getenv("VULKANTOY_RENDER_SCALE")) {
@@ -9288,7 +9294,16 @@ namespace engine {
 				);
 		}
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView](smvk::CommandBuffer& cmd)
+		// Task-less mesh leg (build-time gate): device support + enabled +
+		// programs + opaque state (no wireframe). Execute-time eligibility
+		// is per range (RangeMeshEligible: opaque, single-sided, variant
+		// twin exists); the indexed loop skips exactly those ranges.
+		const bool meshActiveForFrame = m_passes.gfxMesh && m_useGfxMesh
+			&& smvk::SupportsMeshShaders()
+			&& m_gfxRenderer.MeshProgramsValid()
+			&& !m_wireframe
+			&& m_useGfxFilter && gfxSlot != UINT32_MAX;
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, meshActiveForFrame](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
 			// 2x: transient depth is cleared above, main writes it
@@ -9752,6 +9767,18 @@ namespace engine {
 				);
 			}
 			if (gfxActive && !bypassFilter) {
+				// Mesh leg first (one DrawMeshTasks per eligible range); the
+				// indexed loop below skips exactly those ranges
+				// (RangeMeshEligible), so nothing draws twice and
+				// nothing drops. Debug views bypass (direct draws above).
+				const bool meshActive = meshActiveForFrame && !bypassFilter;
+				if (meshActive) {
+					const engine::GIVariant meshGiVar = GetActiveGIVariant();
+					const bool giActive = meshGiVar != engine::GIVariant::None;
+					m_gfxRenderer.RecordMeshMain(cmd, *m_context, gfxSlot,
+						renderViewsAddress, mainRenderView,
+						giActive, uint32_t(meshGiVar), opaqueDepth, msaaSettings);
+				}
 				const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 				// The GI permutation is a per-frame uniform decision (the
 				// loaded GI state — one FS for the whole frame): the .giN
@@ -9763,6 +9790,12 @@ namespace engine {
 				// when NO GI variant is active.
 				const engine::GIVariant giVar = GetActiveGIVariant();
 				for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
+					// Mesh-drawn ranges skip the indexed multi-draw (the
+					// mesh dispatches above covered them; the contract is
+					// exact — see RecordMeshMain/RangeMeshEligible).
+					if (meshActive && m_gfxRenderer.RangeMeshEligible(gfxSlot, ri,
+						giVar != engine::GIVariant::None, uint32_t(giVar)))
+						continue;
 					const uint32_t materialId = gfxRanges[ri].material;
 					smvk::ShaderProgram& litProg = giVar != engine::GIVariant::None
 						? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar))
@@ -10111,6 +10144,10 @@ namespace engine {
 		// heap bind).
 		if (m_useGfxFilter && gfxSlot != UINT32_MAX)
 			m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
+		// Mesh-shader consume barriers (batches/clusters/params/draws for
+		// the DrawMeshTasks in the record above).
+		if (meshActiveForFrame)
+			m_gfxRenderer.AddMeshConsumeHints(mainPass, gfxSlot);
 		// Forward+ tile lists are device-written by the cull pass and
 		// device-read here: explicit read hints order cull -> main and emit
 		// the compute->fragment buffer barriers. With deferred shadows ON the
@@ -12133,6 +12170,12 @@ namespace engine {
 						if (ImGui::CollapsingHeader("GPU Culling / GfxFilter")) {
 							ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
+							// Task-less mesh-shader main leg (opaque single-sided,
+							// base FS): needs device mesh shaders, else the
+							// indexed multi-draws stay (CPU fallback).
+							ImGui::Checkbox("Enable mesh-shader main leg", &m_useGfxMesh);
+							ImGui::SameLine();
+							ImGui::TextDisabled(smvk::SupportsMeshShaders() ? "" : "(no device mesh shaders)");
 							// Cull-flag toggles write straight into the renderer config
 							// (takes effect next frame). FlipWinding default-off is
 							// pinned by gfxfilter_tests (det>0 == back, exactly).

@@ -25,6 +25,10 @@ ShaderStage ToRhiStages(uint32_t reflectStages)
 		out |= ShaderStage::Fragment;
 	if (reflectStages & SPV_REFLECT_SHADER_STAGE_COMPUTE_BIT)
 		out |= ShaderStage::Compute;
+	if (reflectStages & SPV_REFLECT_SHADER_STAGE_TASK_BIT_EXT)
+		out |= ShaderStage::Task;
+	if (reflectStages & SPV_REFLECT_SHADER_STAGE_MESH_BIT_EXT)
+		out |= ShaderStage::Mesh;
 	return out;
 }
 

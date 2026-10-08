@@ -106,6 +106,11 @@ static bool g_fillModeNonSolid = false;
 // True when VK_EXT_device_fault was enabled at device creation (probed,
 // never required). Gates DumpDeviceFaultInfo below.
 static bool g_deviceFaultSupported = false;
+// True when VK_EXT_mesh_shader was enabled at device creation (probed,
+// never required): taskShader + meshShader features. Gates the
+// mesh-shader gfx filter path (DrawMeshTasks); the compute+indexed CPU
+// fallback stays otherwise.
+static bool g_meshShaderSupported = false;
 struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
@@ -1596,6 +1601,18 @@ static bool HostCopyKilledByEnv()
 	return killed;
 }
 
+// VULKANTOY_MESH=0: kill switch for VK_EXT_mesh_shader — the extension
+// is never enabled on the device and the mesh-shader gfx filter path
+// stays off (compute+indexed CPU fallback). Mirrors HostCopyKilledByEnv.
+static bool MeshKilledByEnv()
+{
+	static const bool killed = [] {
+		const char* e = std::getenv("VULKANTOY_MESH");
+		return e && *e && std::string_view{ e } == "0";
+	}();
+	return killed;
+}
+
 // Nsight Aftermath shader debug tables (VK_NV_device_diagnostics_config):
 // the second half of shader-crash symbolication. DXC's -Zi /
 // -fspv-debug=vulkan only embeds the HLSL -> SPIR-V line info in the module
@@ -2353,19 +2370,59 @@ bool smvk::VulkanCore::Init() {
 			if (hostImageCopyAvailable && hostCopyKilled)
 				printf("[UploadStreamer] VK_EXT_host_image_copy disabled (VULKANTOY_HOST_COPY=0)\n");
 
-			VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
-				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
-				nullptr,
-				enableHostCopy ? VK_TRUE : VK_FALSE
-			};
+		// VK_EXT_mesh_shader (task/mesh pipelines for the mesh-shader gfx
+		// filter path): strictly optional. When present + the taskShader
+		// and meshShader features are supported, the extension is enabled
+		// and the features chained below; otherwise the engine keeps the
+		// compute+indexed CPU-fallback path.
+		bool meshExtPresent = false;
+		{
+			uint32_t extCount = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+				&& extCount != 0) {
+				std::vector<VkExtensionProperties> exts(extCount);
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+					for (const auto& e : exts) {
+						if (std::strcmp(e.extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
+							meshExtPresent = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		const bool meshKilled = MeshKilledByEnv();
+		bool enableMeshShader = false;
+		VkPhysicalDeviceMeshShaderFeaturesEXT deviceMeshFeatures{};
+		deviceMeshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+		if (meshExtPresent && !meshKilled) {
+			VkPhysicalDeviceMeshShaderFeaturesEXT supportedMesh{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT, nullptr };
+			VkPhysicalDeviceFeatures2 supported2{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedMesh };
+			vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+			if (supportedMesh.taskShader == VK_TRUE && supportedMesh.meshShader == VK_TRUE) {
+				enableMeshShader = true;
+				deviceMeshFeatures.taskShader = VK_TRUE;
+				deviceMeshFeatures.meshShader = VK_TRUE;
+			}
+		}
+		if (meshExtPresent && meshKilled)
+			printf("[Vulkan] VK_EXT_mesh_shader disabled (VULKANTOY_MESH=0)\n");
 
-			VkPhysicalDeviceVulkan11Features deviceFeatures11
-			{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-				.pNext = enableHostCopy ? (void*)&deviceHostCopyFeatures : nullptr,
-				.storageBuffer16BitAccess = VK_TRUE,
-				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
-			};
+		VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
+			enableMeshShader ? (void*)&deviceMeshFeatures : nullptr,
+			enableHostCopy ? VK_TRUE : VK_FALSE
+		};
+
+		VkPhysicalDeviceVulkan11Features deviceFeatures11
+		{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+			.pNext = enableHostCopy ? (void*)&deviceHostCopyFeatures : (enableMeshShader ? (void*)&deviceMeshFeatures : nullptr),
+			.storageBuffer16BitAccess = VK_TRUE,
+			.uniformAndStorageBuffer16BitAccess = VK_TRUE,
+		};
 VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 			deviceFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 			deviceFeatures12.pNext = &deviceFeatures11;
@@ -2595,6 +2652,7 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 
 		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+		if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
 		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
@@ -2617,9 +2675,14 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				createInfo.pNext = &diagnosticsConfigInfo;
 			}
 
-		if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create logical device!");
-		}
+	if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create logical device!");
+	}
+	g_meshShaderSupported = enableMeshShader;
+	std::fprintf(stderr, "[Vulkan] VK_EXT_mesh_shader %s\n",
+		enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
+			: meshKilled ? "off (VULKANTOY_MESH=0, compute+indexed CPU fallback)"
+			: "not supported - compute+indexed CPU fallback");
 		if (!g_multiDrawIndirect) {
 			fprintf(stderr,
 				"[Vulkan Warning] multiDrawIndirect not supported by this device; "
@@ -12250,6 +12313,16 @@ void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCoun
 		firstInstance
 	);
 }
+void smvk::CommandBuffer::DrawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+{
+	assert(vkCmdDrawMeshTasksEXT != nullptr && "DrawMeshTasks without VK_EXT_mesh_shader (gate on SupportsMeshShaders)");
+	vkCmdDrawMeshTasksEXT(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		groupCountX,
+		groupCountY,
+		groupCountZ
+	);
+}
 void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset)
 {
 	// Manual index rebind: see BindVertexBuffer.
@@ -12426,6 +12499,7 @@ void smvk::CommandBuffer::SetStencilReference(uint32_t frontAndBackReference)
 VkInstance smvk::GetVkInstance() { return instance_; }
 VkDevice smvk::GetVkDevice() { return device_; }
 bool smvk::SupportsMultiDrawIndirect() { return g_multiDrawIndirect; }
+bool smvk::SupportsMeshShaders() { return g_meshShaderSupported; }
 VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
 VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
 VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }

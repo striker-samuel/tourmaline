@@ -86,6 +86,7 @@ struct ScenePassConfig {
 	bool forwardPlusPrepass = true; // depth prepass feeding the tile cull
 	bool forwardPlusCull = true;    // tile light cull
 	bool gfxFilter = true;          // GPU-driven per-view triangle filter
+	bool gfxMesh = true;            // task-less mesh-shader main leg (needs device mesh shaders)
 	bool filteredMotion = true;     // filtered motion-vector path
 	bool motionVectors = true;      // motion-vector target pass
 	bool motionBlur = true;         // HDR velocity-gather blur
@@ -112,6 +113,7 @@ struct ScenePassConfig {
 		c.forwardPlusCull = false;
 		c.gfxFilter = false;
 		c.filteredMotion = false;
+		c.gfxMesh = false;
 		c.motionVectors = false;
 		c.motionBlur = false;
 		c.dof = false;
@@ -2095,6 +2097,10 @@ protected:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	engine::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	// Task-less mesh-shader main leg (opaque single-sided ranges, mesh
+	// FS twins for base/sg/gi variants). False or unsupported device =
+	// indexed multi-draws (CPU fallback).
+	bool m_useGfxMesh = true;
 	// ---- Cooperative shadow draw lists (cascade + spot tiles) ----
 	// Candidates are prebuilt once per frame on the render thread (LOD
 	// decisions mutate the World halfrate cache — not thread-safe), then

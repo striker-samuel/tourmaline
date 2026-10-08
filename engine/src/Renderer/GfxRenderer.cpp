@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace engine {
 
@@ -176,7 +178,204 @@ namespace engine {
 				lineProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 			}
 		}
+		// Task-less mesh twin (mesh mainMS + mesh FS twin): best-effort —
+		// failure only disables the mesh record, the indexed path stays.
+		EnsureMeshPrograms(ctx, rg);
 		return true;
+	}
+
+	void GfxRenderer::EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
+		if (meshProgram.shaderCount == 0) {
+			try {
+				if (meshMsModule.empty())
+					meshMsModule = ctx.CreateShaderModule(
+						readFile(smvk::gfx::kGfxMeshMsPath), "gfxMeshMS");
+				if (meshFsModule.empty())
+					meshFsModule = ctx.CreateShaderModule(
+						readFile(smvk::gfx::kGfxMeshFsPath), "gfxMeshFS");
+			}
+			catch (...) {
+			}
+			if (!meshMsModule.empty() && !meshFsModule.empty()) {
+				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+				smvk::Shader fs{ .module = meshFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				meshProgram = { .shaders = { ms, fs }, .shaderCount = 2 };
+			}
+		}
+		// Mesh FS variant twins (same SG/GI permutation scheme as the
+		// indexed leg, on the mesh FS twin): built only for configured
+		// modules; MeshProgramFor falls back per missing variant.
+		static const char* kSgSuffix[4] = { ".sg5", ".sg6", ".sg9", ".sg12" };
+		for (uint32_t li = 0; li < 4; ++li) {
+			if (meshLitSg_[li].shaderCount != 0 || meshMsModule.empty())
+				continue;
+			try {
+				// kGfxMeshFsPath already ends in .spv: strip it, add the
+				// variant suffix (same layout as the default_lit twins).
+				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+				const std::string variant = base.substr(0, base.size() - 4)
+					+ kSgSuffix[li] + ".spv";
+				meshFsSgModules_[li] = ctx.CreateShaderModule(
+					readFile(variant), "gfxMeshFsSg");
+			}
+			catch (...) {
+			}
+			if (!meshFsSgModules_[li].empty()) {
+				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+				smvk::Shader fs{ .module = meshFsSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				meshLitSg_[li] = { .shaders = { ms, fs }, .shaderCount = 2 };
+			}
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (meshProgramGi_[gi].shaderCount != 0 || meshMsModule.empty())
+				continue;
+			try {
+				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+				const std::string variant = base.substr(0, base.size() - 4)
+					+ ".gi" + std::to_string(gi) + ".spv";
+				meshFsGiModules_[gi] = ctx.CreateShaderModule(
+					readFile(variant), "gfxMeshFsGi");
+			}
+			catch (...) {
+			}
+			if (!meshFsGiModules_[gi].empty()) {
+				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+				smvk::Shader fs{ .module = meshFsGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				meshProgramGi_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
+			}
+		}
+		smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
+	}
+
+	smvk::ShaderProgram* GfxRenderer::MeshProgramFor(bool giActive,
+		uint32_t giVariant, uint32_t lobeCount) {
+		if (!MeshProgramsValid())
+			return nullptr;
+		// Mirrors the indexed leg's program selection exactly (GI twin
+		// when active, else the sg twin for the lobe count, else generic —
+		// same fallbacks as FilteredProgramGi/FilteredLitProgram).
+		if (giActive) {
+			if (giVariant <= 3u && meshProgramGi_[giVariant].shaderCount == 2)
+				return &meshProgramGi_[giVariant];
+			return &meshProgram;
+		}
+		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
+			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+		if (li <= 3 && meshLitSg_[li].shaderCount == 2)
+			return &meshLitSg_[li];
+		return &meshProgram;
+	}
+
+	bool GfxRenderer::RangeMeshEligible(uint32_t slot, uint32_t rangeIdx,
+		bool giActive, uint32_t giVariant) {
+		if (slot >= gfx.views.size())
+			return false;
+		const std::vector<smvk::gfx::MaterialRange>& ranges =
+			smvk::gfx::MaterialRanges(gfx, slot);
+		if (rangeIdx >= ranges.size())
+			return false;
+		const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
+		if (r.commandCount == 0)
+			return false;
+		// A mesh twin must exist for the range's variant (same selection
+		// as the indexed bind would use).
+		if (MeshProgramFor(giActive, giVariant, r.lobeCount) == nullptr)
+			return false;
+		// Every batch's draw opaque + single-sided (a mixed range stays
+		// fully indexed, never split — the record partitions exactly the
+		// batches of eligible ranges).
+		const smvk::gfx::View& v = gfx.views[slot];
+		for (uint32_t i = 0; i < r.commandCount; ++i) {
+			const uint32_t batchIdx = r.firstCommand + i;
+			if (batchIdx >= (uint32_t)v.batches.size())
+				return false;
+			const smvk::gfx::Batch& b = v.batches[batchIdx];
+			if (b.draw >= (uint32_t)v.drawConstants.size())
+				return false;
+			const smvk::gfx::Draw& d = v.drawConstants[b.draw];
+			if (!smvk::gfx::MeshDrawEligible(d.drawSet, d.flags))
+				return false;
+		}
+		return true;
+	}
+
+	void GfxRenderer::AddMeshConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
+		using namespace smvk::gfx;
+		if (slot >= gfx.views.size())
+			return;
+		const uint32_t f = gfx.views[slot].frameIndex;
+		// Mesh-shader reads (compute-written this frame).
+		smvk::BufferSyncRequest meshRead{};
+		meshRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		meshRead.barrierMasks.stageMask = smvk::PipelineStageBit_Mesh;
+		pass.AddBufferHint(BatchLogical(gfx, slot), meshRead);
+		pass.AddBufferHint(gfx.clusterLogical, meshRead);
+		pass.AddBufferHint(gfx.meshParamsLogicals[f], meshRead);
+		pass.AddBufferHint(gfx.meshBatchListLogicals[f], meshRead);
+		// Draws merge Vertex|Mesh: indexed ranges in the same pass still
+		// resolve models in the VS (Replace-semantics: one merged hint).
+		smvk::BufferSyncRequest drawsRead{};
+		drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		drawsRead.barrierMasks.stageMask =
+			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Mesh;
+		pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
+	}
+
+	void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		bool giActive, uint32_t giVariant,
+		const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa) {
+		if (!MeshProgramsValid() || slot >= gfx.views.size())
+			return;
+		smvk::gfx::View& v = gfx.views[slot];
+		if (v.batchCount == 0)
+			return;
+		const uint32_t f = v.frameIndex;
+		if (gfx.meshParamsBuffers[f].empty() || gfx.meshBatchLists[f].empty())
+			return; // EnsureMeshParams failed: indexed loop covers the frame
+		// Compact eligible ranges' batches (ranges are contiguous batch
+		// spans; one span per eligible range, same 1:1 shape as the
+		// indexed multi-draw loop).
+		struct Span { smvk::ShaderProgram* prog; uint32_t base; uint32_t count; };
+		std::vector<Span> spans;
+		auto& list = v.meshListScratch;
+		list.clear();
+		const std::vector<smvk::gfx::MaterialRange>& ranges =
+			smvk::gfx::MaterialRanges(gfx, slot);
+		for (uint32_t ri = 0; ri < (uint32_t)ranges.size(); ++ri) {
+			if (!RangeMeshEligible(slot, ri, giActive, giVariant))
+				continue;
+			smvk::ShaderProgram* prog = MeshProgramFor(giActive, giVariant,
+				ranges[ri].lobeCount);
+			if (prog == nullptr || ranges[ri].commandCount == 0)
+				continue; // belt (eligibility already resolved the program)
+			Span sp{ prog, (uint32_t)list.size(), ranges[ri].commandCount };
+			for (uint32_t i = 0; i < ranges[ri].commandCount; ++i)
+				list.push_back(ranges[ri].firstCommand + i);
+			spans.push_back(sp);
+		}
+		if (spans.empty())
+			return;
+		ctx.UploadDataToBuffer(gfx.meshBatchLists[f],
+			list.data(), list.size() * sizeof(uint32_t),
+			smvk::PipelineStage(smvk::PipelineStageBit_Mesh),
+			smvk::AccessFlags::ShaderRead);
+		const uint64_t listBDA =
+			ctx.GetBufferDeviceAddress(gfx.meshBatchLists[f]);
+		if (listBDA == 0)
+			return; // indexed loop covers the frame
+		// One params upload shared by all spans (per-span uploads to the
+		// same buffer race transfer writes against graphics reads).
+		const uint64_t paramsBDA = smvk::gfx::UploadMeshParams(gfx, ctx, slot,
+			listBDA, ChartXformsAddress());
+		if (paramsBDA == 0)
+			return;
+		for (const Span& sp : spans) {
+			smvk::gfx::RecordMeshVariant(gfx, cmd, ctx, slot, *sp.prog,
+				paramsBDA, sp.base, sp.count,
+				renderViewsAddr, renderViewIndex, ChartXformsAddress(),
+				depth, msaa);
+		}
 	}
 
 	void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,

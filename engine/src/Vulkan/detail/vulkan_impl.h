@@ -1393,6 +1393,10 @@ namespace smvk {
 	// CommandBuffer::DrawIndexedIndirect uses the single-call fast path
 	// then, and falls back to one-by-one emulation otherwise.
 	bool             SupportsMultiDrawIndirect();
+	// True when the device was created with VK_EXT_mesh_shader enabled
+	// (taskShader + meshShader features). Gates the mesh-shader gfx
+	// filter path; the compute+indexed CPU fallback stays otherwise.
+	bool             SupportsMeshShaders();
 	uint32_t         GetVkTransferQueueFamily();
 
 }; // namespace smvk

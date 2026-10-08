@@ -22,6 +22,12 @@ namespace smvk {
 // returns true, so the normal path keeps the leanest usage set.
 bool DebugImageDumpArmed();
 
+// True when the device was created with VK_EXT_mesh_shader enabled
+// (taskShader + meshShader features, probed, never required). Gates the
+// mesh-shader gfx filter path; the compute+indexed CPU fallback stays
+// otherwise. Also settable off at device level via VULKANTOY_MESH=0.
+bool SupportsMeshShaders();
+
 class ResourceManager {
 public:
     // Creates Vulkan core + allocator. window may be nullptr for headless.

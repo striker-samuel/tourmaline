@@ -536,6 +536,67 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
 	Check(smvk::ValidatePushConstants(merged, 256), "spirv.spd.fits256");
 }
 
+// Mesh/task stage reflection: a mesh entry point must reflect the Mesh
+// stage bit (ToRhiStages mapping), with push ranges intact. Guards the
+// gfxfilter.mesh.hlsl contract (push layout + stage masks the pipeline
+// builder consumes). Skipped gracefully when DXC is unavailable.
+void TestMeshStageContract() {
+	static constexpr const char* kSrc = R"(
+struct MeshPush { uint a; uint b; float c; uint d; };
+[[vk::push_constant]] ConstantBuffer<MeshPush> pc;
+struct VOut { float4 pos : SV_Position; [[vk::location(0)]] float4 col : COLOR0; };
+[outputtopology("triangle")]
+[numthreads(32, 1, 1)]
+void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
+  out vertices VOut verts[3], out indices uint3 prims[1]) {
+  SetMeshOutputCounts(3, 1);
+  uint s = pc.a + pc.b + gtid.x + gid.x;
+  float f = pc.c + (float)pc.d;
+  for (int i = 0; i < 3; ++i) {
+    verts[i].pos = float4((float)s, f, 0.0f, 1.0f);
+    verts[i].col = float4(f, 0.0f, 0.0f, 1.0f);
+  }
+  prims[0] = uint3(0, 1, 2);
+}
+)";
+	std::vector<char> spv;
+	try {
+		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Mesh, L"mainMS");
+	} catch (const std::exception& e) {
+		std::cout << "SKIP spirv.mesh (DXC unavailable: " << e.what() << ")\n";
+		return;
+	}
+	Check(!spv.empty() && spv.size() % 4 == 0, "spirv.mesh.code");
+	if (spv.empty() || spv.size() % 4 != 0)
+		return;
+	smvk::SpirvReflection r =
+		smvk::ReflectSpirvBytes(std::span<const char>(spv.data(), spv.size()));
+	Check(r.valid, "spirv.mesh.valid");
+	if (!r.valid) {
+		std::cout << "  reflect error: " << r.error << "\n";
+		return;
+	}
+	bool hasMainMS = false;
+	for (const auto& e : r.entryPoints) {
+		if (e == "mainMS")
+			hasMainMS = true;
+	}
+	Check(hasMainMS, "spirv.mesh.entry");
+	// Push block: 4 members x 4 bytes = 16 bytes at offset 0, Mesh stage.
+	bool foundPush = false;
+	for (const auto& pc : r.pushConstants) {
+		if (pc.offset == 0 && pc.size >= 16 &&
+			(pc.stages & smvk::ShaderStage::Mesh) != smvk::ShaderStage::None)
+			foundPush = true;
+	}
+	Check(foundPush, "spirv.mesh.push");
+	auto merged = smvk::MergePushConstantRanges({ r.pushConstants });
+	Check(!merged.empty() &&
+			smvk::PushConstantFootprint(merged) >= 16,
+		"spirv.mesh.merge");
+	Check(smvk::ValidatePushConstants(merged, 256), "spirv.mesh.fits256");
+}
+
 } // namespace
 
 int main() {
@@ -551,6 +612,7 @@ int main() {
 	TestDxcRoundTrip();
 	TestPushFloat3x4();
 	TestSpdPushContract();
+	TestMeshStageContract();
 	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

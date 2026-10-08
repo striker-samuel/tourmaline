@@ -7,6 +7,17 @@
 // Entry files include light/common/environment/sggi first and define (or
 // not) ALPHA_TO_COVERAGE before including this body.
 
+// Material fetch override (mesh-shader path): the mesh FS twin feeds
+// per-draw material through a flat varying (one dispatch covers many
+// materials, so the per-range pc.materialId push cannot work there).
+// Default = the classic push; the mesh twin defines GFX_MATERIAL_ID as
+// (IN.meshMaterial) before including this body.
+#ifndef GFX_MATERIAL_ID
+#define GFX_MATERIAL_ID (pc.materialId)
+#endif
+// The mesh FS twin declares its own PSIn (extra TEXCOORD5 material) and
+// defines GFX_MESH_PSIN to skip this one.
+#ifndef GFX_MESH_PSIN
 struct PSIn
 {
     float4 color : COLOR0;
@@ -20,6 +31,7 @@ struct PSIn
     nointerpolation uint lmChunk : TEXCOORD4;
     bool isFrontFace : SV_IsFrontFace;
 };
+#endif
 // NOTE: deliberately NO SV_Depth output. Bench data (RTX 5070 Ti, bistro
 // foliage view): DepthReplacing routes Main's depth writes through the
 // post-shader path for every material — in 2x MSAA that costs early-write
@@ -353,7 +365,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     FrameUniforms frame = pc.frameUniforms.Get();
     FramePSHot hot = frame.frameHot.Get();
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[GFX_MATERIAL_ID];
 
     // ---------------------------------------------------------------
     // Layered materials (vertex-color blending).

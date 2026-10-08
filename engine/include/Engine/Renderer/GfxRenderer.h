@@ -95,6 +95,22 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// EnsureFilteredMotion once the motion target exists.
 	smvk::Holder<smvk::ShaderModuleHandle> filteredMotionVsModule;
 	smvk::ShaderProgram filteredMotionProgram{};
+	// Task-less mesh twin (gfxfilter.mesh.hlsl mainMS + the gfxmesh_lit
+	// FS twin, which takes material from a flat varying): the main leg
+	// draws mesh-eligible ranges with one DrawMeshTasks instead of the
+	// indexed multi-draw. Best-effort (EnsureMeshPrograms); the indexed
+	// path stays when the modules fail or the device lacks mesh shaders.
+	smvk::Holder<smvk::ShaderModuleHandle> meshMsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsModule;
+	smvk::ShaderProgram meshProgram{};
+	// Mesh FS variant twins (same SG/GI permutation scheme as the indexed
+	// leg, but on the mesh FS twin): built only for configured modules;
+	// MeshProgramFor falls back to the generic mesh program per missing
+	// variant, exactly like FilteredLitProgram/FilteredProgramGi.
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsSgModules_[4]{};
+	smvk::ShaderProgram meshLitSg_[4]{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsGiModules_[4]{};
+	smvk::ShaderProgram meshProgramGi_[4]{};
 	// Seed-depth programs (T3): draw the previous frame's visible clusters
 	// straight from the cluster-ordered index heap to prime depth.
 	smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
@@ -286,6 +302,45 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Consume side (caller has bound FilteredProgram() with its own PSO).
 	// PushViewConstants writes the 24B VS tail push once per pass;
 	// DrawRange issues one multi-draw over the material's command range.
+	// ---- Task-less mesh path (main-leg opaque only) ----
+	// Idempotent mesh program + params-ring creation. Best-effort: never
+	// fails Ensure (the indexed path stays when modules fail to load).
+	void EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
+	[[nodiscard]] bool MeshProgramsValid() const {
+		return meshProgram.shaderCount == 2
+			&& !meshMsModule.empty() && !meshFsModule.empty();
+	}
+	// Bitmask of built sg twins for the mesh eligibility predicate.
+	[[nodiscard]] uint32_t MeshSgTwinMask() const {
+		uint32_t m = 0;
+		for (uint32_t li = 0; li < 4; ++li)
+			if (filteredLitSg_[li].shaderCount == 2)
+				m |= (1u << li);
+		return m;
+	}
+	// Mesh program for a range's variant (mirrors the indexed leg's
+	// program selection exactly: GI twin when active, else the sg twin
+	// for the lobe count, else the generic mesh program). Null when the
+	// mesh system itself is down (base program invalid).
+	[[nodiscard]] smvk::ShaderProgram* MeshProgramFor(bool giActive,
+		uint32_t giVariant, uint32_t lobeCount);
+	// CPU side of the mesh eligibility contract: a mesh twin exists for
+	// the range's variant and every batch's draw is opaque + single-sided.
+	// The indexed loop skips exactly these ranges; the record partitions
+	// their batches per variant program.
+	[[nodiscard]] bool RangeMeshEligible(uint32_t slot, uint32_t rangeIdx,
+		bool giActive, uint32_t giVariant);
+	// Mesh consume barriers (call alongside AddMainConsumeHints when the
+	// mesh path records): batches/clusters/params ShaderRead@Mesh, draws
+	// merged Vertex|Mesh (indexed ranges in the same pass still read them).
+	void AddMeshConsumeHints(smvk::RenderPass& pass, uint32_t slot);
+	// Record: one DrawMeshTasks per eligible range (same 1:1 shape as
+	// the indexed loop), sharing one compacted batch-index upload. The
+	// full scene push must already be pushed (same as the indexed leg).
+	void RecordMeshMain(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		bool giActive, uint32_t giVariant,
+		const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa);
 	void PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex);
 	void PushMotionViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,

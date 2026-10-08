@@ -39,6 +39,14 @@ function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
         set(_stage "rt")
         set(_entry "")              # entry via [shader("…")] attributes
         set(_profile "lib_6_7")
+    elseif (_name MATCHES "\\.(as|task|amp)\\.hlsl$") # Amplification / task
+        set(_stage "as")
+        set(_entry "mainAS")
+        set(_profile "as_6_7")
+    elseif (_name MATCHES "\\.(ms|mesh)\\.hlsl$") # Mesh
+        set(_stage "ms")
+        set(_entry "mainMS")
+        set(_profile "ms_6_7")
     else()
         # Fallback: assume vertex
         set(_stage "vs")
@@ -104,6 +112,8 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     "${NORM_SOURCE_DIR}/*.rgen.hlsl" "${NORM_SOURCE_DIR}/*.rchit.hlsl"
     "${NORM_SOURCE_DIR}/*.rmiss.hlsl" "${NORM_SOURCE_DIR}/*.rahit.hlsl"
     "${NORM_SOURCE_DIR}/*.rint.hlsl" "${NORM_SOURCE_DIR}/*.rcall.hlsl"
+    "${NORM_SOURCE_DIR}/*.as.hlsl"   "${NORM_SOURCE_DIR}/*.task.hlsl" "${NORM_SOURCE_DIR}/*.amp.hlsl"
+    "${NORM_SOURCE_DIR}/*.ms.hlsl"   "${NORM_SOURCE_DIR}/*.mesh.hlsl"
   )
 
   message(STATUS "[Shaders] SOURCE_DIR = ${NORM_SOURCE_DIR}")

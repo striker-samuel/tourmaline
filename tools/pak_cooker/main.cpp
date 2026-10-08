@@ -157,7 +157,7 @@ struct Args {
 	// Meshlet cook path (off by default; indirect-draw foundation only).
 	bool meshlets = false;
 	uint32_t maxVerts = 64;
-	uint32_t maxTris = 124;
+	uint32_t maxTris = 64;
 	float coneWeight = 0.0f;
 	// KTX auto-convert (on by default): non-KTX sources transcode
 	// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
@@ -1142,7 +1142,7 @@ void Usage() {
 		<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
 		<< " [--dump-manifest on|off]\n"
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
-		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
+		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 64]\n"
 		<< "          [--auto-ktx on|off]\n"
 		<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
 		<< "                                  never required)\n"
