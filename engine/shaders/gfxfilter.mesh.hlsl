@@ -195,8 +195,15 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
         header = P.batches.Get().batch[batch];
         draw = P.draws.Get().draws[header.y];
         uint triCount = P.clusters.Get().cluster[header.x].a.y;
+        // The filter's own decision for this cluster (written this frame,
+        // before Main): indexCount == 0 = fully dropped — per-triangle cull
+        // OR the T4 whole-cluster HZB-occlusion/contribution tests this
+        // shader does not duplicate. Gating on it keeps mesh/indexed parity
+        // exact, including under the culling freeze (the held HZB drops
+        // clusters the live view sees).
+        const uint kept = P.indirect.Get().cmds[batch].indexCount;
         uint halfStart = half * GFX_MESH_MAX_TRIS;
-        if (halfStart < triCount)
+        if (kept != 0u && halfStart < triCount)
         {
             gated = false;
             triBase = P.clusters.Get().cluster[header.x].a.x + halfStart;
@@ -279,7 +286,11 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             MeshVert v;
             float4 world = mul(draw.model, float4(p, 1.0f));
             v.worldPos = world.xyz;
-            v.pos = mul(P.viewProj, world);
+            // OUTPUT projection: the LIVE main-view matrix (the indexed VS
+            // resolves the same through the render-view slab), NOT the cull
+            // matrix — under the debug culling freeze they differ (viewProj
+            // holds the frozen one; culling above ran against it on purpose).
+            v.pos = mul(P.outViewProj, world);
             v.color = float4(
                 (float)(cW & 0xFFu),
                 (float)((cW >> 8) & 0xFFu),

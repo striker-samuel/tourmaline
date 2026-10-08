@@ -756,6 +756,13 @@ namespace engine {
 			m_gfxRenderer.config.cullFlags =
 				static_cast<smvk::gfx::CullFlags>(flags);
 		}
+		// Headless culling-freeze override (same checkbox semantics: batch
+		// expansion + the filter CS hold the frozen (view, eye) while the
+		// camera keeps moving — pairs with --bench_move to reproduce/verify
+		// frozen-cull rendering headlessly).
+		if (const char* fzEnv = std::getenv("VULKANTOY_FREEZE_CULL")) {
+			m_freezeCullingView = std::atoi(fzEnv) != 0;
+		}
 		// Debug: one-shot [GfxAudit] indirect dump at frame N (stderr,
 		// stalls; per-batch GPU kill reasons for bisecting the filter).
 		if (const char* audEnv = std::getenv("VULKANTOY_AUDIT")) {
@@ -9891,9 +9898,15 @@ namespace engine {
 				if (meshActive) {
 					const engine::GIVariant meshGiVar = GetActiveGIVariant();
 					const bool giActive = meshGiVar != engine::GIVariant::None;
+					// frameViewProj = the LIVE main-view matrix (the output
+					// projection): under the debug culling freeze the view
+					// record's matrix is the frozen CULL one, and the mesh
+					// output must still project through the live view (the
+					// indexed VS does the same through the render-view slab).
 					m_gfxRenderer.RecordMeshMain(cmd, *m_context, gfxSlot,
 						renderViewsAddress, mainRenderView,
-						giActive, uint32_t(meshGiVar), opaqueDepth, msaaSettings);
+						giActive, uint32_t(meshGiVar), frameViewProj,
+						opaqueDepth, msaaSettings);
 				}
 				const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 				// The GI permutation is a per-frame uniform decision (the

@@ -383,11 +383,23 @@ namespace engine {
 		drawsRead.barrierMasks.stageMask =
 			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Mesh;
 		pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
+		// Indirect commands merge ShaderRead@Mesh|IndirectRead@DrawIndirect:
+		// the mesh shader gates fully-dropped clusters on the filter's
+		// indexCount == 0 (a STORAGE read), while the indexed multi-draws in
+		// the same pass consume the same buffer through the indirect
+		// mechanism (AddMainConsumeHints' hint — Replace-semantics: this
+		// unioned hint must be added AFTER it, which the Main pass does).
+		smvk::BufferSyncRequest indirectRead{};
+		indirectRead.barrierMasks.accessMask =
+			smvk::AccessFlags::ShaderRead | smvk::AccessFlags::IndirectCommandRead;
+		indirectRead.barrierMasks.stageMask =
+			smvk::PipelineStageBit_Mesh | smvk::PipelineStageBit_DrawIndirect;
+		pass.AddBufferHint(IndirectLogical(gfx, slot), indirectRead);
 	}
 
 	void GfxRenderer::RecordMeshMain(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		bool giActive, uint32_t giVariant,
+		bool giActive, uint32_t giVariant, const glm::mat4& liveViewProj,
 		const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa) {
 		if (!MeshProgramsValid() || slot >= gfx.views.size())
 			return;
@@ -429,9 +441,11 @@ namespace engine {
 		if (listBDA == 0)
 			return; // indexed loop covers the frame
 		// One params upload shared by all spans (per-span uploads to the
-		// same buffer race transfer writes against graphics reads).
+		// same buffer race transfer writes against graphics reads). The
+		// liveViewProj carries the OUTPUT projection (the view record's
+		// matrix in the blob is the CULL one — they differ under freeze).
 		const uint64_t paramsBDA = smvk::gfx::UploadMeshParams(gfx, ctx, slot,
-			listBDA, ChartXformsAddress());
+			listBDA, ChartXformsAddress(), liveViewProj);
 		if (paramsBDA == 0)
 			return;
 		for (const Span& sp : spans) {

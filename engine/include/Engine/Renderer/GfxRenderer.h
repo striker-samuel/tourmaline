@@ -374,9 +374,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Record: one DrawMeshTasks per eligible range (same 1:1 shape as
 	// the indexed loop), sharing one compacted batch-index upload. The
 	// full scene push must already be pushed (same as the indexed leg).
+	// liveViewProj is the LIVE main-view matrix (the output projection —
+	// equals the view record's matrix unless the debug culling freeze
+	// holds the filter on a frozen view).
 	void RecordMeshMain(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
-		bool giActive, uint32_t giVariant,
+		bool giActive, uint32_t giVariant, const glm::mat4& liveViewProj,
 		const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa);
 	void PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex);

@@ -2027,7 +2027,7 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
 }
 
 uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
-	uint64_t listBDA, uint64_t lmXformsAddr) {
+	uint64_t listBDA, uint64_t lmXformsAddr, const glm::mat4& liveViewProj) {
 	assert(view < s.views.size());
 	View& v = s.views[view];
 	const uint32_t f = v.frameIndex;
@@ -2035,7 +2035,11 @@ uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
 		return 0; // EnsureMeshParams failed: the indexed loop covers the frame
 
 	GfxMeshParams p{};
+	// CULL matrix: the view record's (frozen while the debug freeze holds
+	// the filter). OUTPUT matrix: the live main view (the indexed VS
+	// resolves the same through the render-view slab).
 	p.viewProj = v.viewProj;
+	p.outViewProj = liveViewProj;
 	p.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
 	p.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
 	p.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
@@ -2045,6 +2049,7 @@ uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
 	p.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
 	p.lmXforms = lmXformsAddr;
 	p.batchList = listBDA;
+	p.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
 	p.cullFlags = v.cullFlags;
 	p.width = v.width;
 	p.height = v.height;
@@ -2053,7 +2058,8 @@ uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
 	// (the indexed loop draws the frame instead; its commands and the
 	// seed/remainder depth are intact).
 	if (p.draws == 0 || p.batches == 0 || p.clusters == 0 || p.positions == 0
-		|| p.shading == 0 || p.indices == 0 || p.batchList == 0) {
+		|| p.shading == 0 || p.indices == 0 || p.batchList == 0
+		|| p.indirect == 0) {
 		static uint64_t s_meshNullWarns = 0;
 		if ((s_meshNullWarns++ % 300) == 0)
 			std::fprintf(stderr, "[GfxMesh] refusing dispatch: null BDA\n");

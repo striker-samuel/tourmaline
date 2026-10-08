@@ -45,12 +45,20 @@ struct GfxMeshBatchList { uint batch[GFX_MAX_BATCHES * 2]; };
 // The CPU partitions eligible batches per FS variant (base/sg/gi, exactly
 // the indexed leg's program selection), so the shader trusts its list —
 // no eligibility predicate here.
+//
+// TWO matrices (the culling-freeze contract): viewProj is the CULL matrix
+// (the gfx view record — the FROZEN one while the debug freeze holds the
+// filter), outViewProj is the LIVE main-view matrix the rasterizer
+// projects through (the indexed VS resolves the same through the live
+// render-view slab; the two are equal when not frozen). CullTriangle runs
+// against viewProj; SV_Position comes from outViewProj.
 struct GfxMeshParamsData
 {
-    // viewProj FIRST: 16-aligned at offset 0 on both sides (a pointer
-    // run before it would leave offset 56, padded differently by HLSL
+    // Matrices FIRST: 16-aligned at offsets 0/64 on both sides (a pointer
+    // run before them would leave offset 56, padded differently by HLSL
     // vs C++ packing — the static_assert below guards the whole blob).
     float4x4 viewProj;
+    float4x4 outViewProj;
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<GfxClusters> clusters;
     vk::BufferPointer<GfxBatches> batches;
@@ -59,6 +67,14 @@ struct GfxMeshParamsData
     vk::BufferPointer<GfxIndices> indices;
     vk::BufferPointer<GfxChartXforms> lmXforms;
     vk::BufferPointer<GfxMeshBatchList> batchList;
+    // This flight's indirect command array (written by the filter CS this
+    // frame, before Main): cmds[batch].indexCount == 0 marks a cluster the
+    // filter fully dropped (per-triangle cull OR the T4 whole-cluster
+    // HZB-occlusion/contribution tests the mesh path deliberately does not
+    // duplicate). Gating on it keeps mesh/indexed picture parity EXACT —
+    // including under the debug culling freeze, where the held HZB drops
+    // clusters the live view sees.
+    vk::BufferPointer<GfxIndirect> indirect;
     uint cullFlags;
     uint width;
     uint height;

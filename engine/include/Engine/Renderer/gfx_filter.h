@@ -260,11 +260,19 @@ inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hl
 inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
 
 // Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
-// (viewProj first for 16-alignment, then 8 BDAs, then 6 uints = 152B).
+// (two matrices first for 16-alignment, then 9 BDAs, then 6 uints = 224B).
 // batchList points at this dispatch's slice of the compacted eligible
 // batch indices (base folded into the address); listCount bounds it.
+// TWO matrices (the culling-freeze contract): viewProj = the gfx view
+// record's matrix (frozen while the debug freeze holds the filter — the
+// CULL matrix), outViewProj = the live main-view matrix the rasterizer
+// projects through (the indexed VS resolves the same through the live
+// render-view slab; equal to viewProj when not frozen). indirect is this
+// flight's indirect command array — the mesh gates fully-dropped clusters
+// on the filter's own indexCount == 0 decision (exact mesh/indexed parity).
 struct GfxMeshParams {
 	glm::mat4 viewProj{};
+	glm::mat4 outViewProj{};
 	uint64_t draws = 0;
 	uint64_t clusters = 0;
 	uint64_t batches = 0;
@@ -273,6 +281,9 @@ struct GfxMeshParams {
 	uint64_t indices = 0;
 	uint64_t lmXforms = 0;
 	uint64_t batchList = 0;
+	// This flight's indirect commands (the filter's per-batch decisions —
+	// the mesh gates fully-dropped clusters on indexCount == 0).
+	uint64_t indirect = 0;
 	uint32_t cullFlags = 0;
 	uint32_t width = 0;
 	uint32_t height = 0;
@@ -280,7 +291,7 @@ struct GfxMeshParams {
 	uint32_t pad0 = 0;
 	uint32_t pad1 = 0;
 };
-static_assert(sizeof(GfxMeshParams) == 152);
+static_assert(sizeof(GfxMeshParams) == 224);
 
 // Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
 // the record pushes this after the 32B FilteredVsPush tail at 192).
@@ -794,9 +805,12 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg);
 // MMU-fault rule as PushAndDispatch).
 // Uploads the frame's mesh params blob once (shared BDAs + dims; the
 // per-dispatch list slice rides the tail push, never this buffer).
-// Returns the params BDA, 0 on null-BDA refuse (indexed covers).
+// liveViewProj is the LIVE main-view matrix the output projection uses
+// (== the view record's matrix when the culling freeze is off; the two
+// differ while the freeze holds the filter). Returns the params BDA,
+// 0 on null-BDA refuse (indexed covers).
 uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
-	uint64_t listBDA, uint64_t lmXformsAddr);
+	uint64_t listBDA, uint64_t lmXformsAddr, const glm::mat4& liveViewProj);
 // One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
 // Params must already be uploaded (UploadMeshParams); listBase/listCount
 // slice this dispatch out of the shared compacted list.
