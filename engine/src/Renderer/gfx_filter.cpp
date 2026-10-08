@@ -47,13 +47,29 @@ void GfxProbeReport() {
 }
 } // namespace
 
-static constexpr size_t kBatchBufferBytes = kMaxBatches * sizeof(Batch);
+static constexpr size_t kBatchBufferBytes = kMaxBatchSlots * sizeof(Batch);
 static constexpr size_t kDrawBufferBytes = kMaxDraws * sizeof(Draw);
+// The filtered ring stays sized by SURVIVORS (kMaxBatches): candidate
+// slots allocate their filtered ranges through the filter's atomic counter,
+// clamped at this capacity (the GPU twin of the old CPU cap + warning).
 static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * sizeof(uint32_t);
-static constexpr size_t kIndirectBytes = kMaxBatches * 20; // VkDrawIndexedIndirectCommand
+static constexpr size_t kIndirectBytes = kMaxBatchSlots * 20; // VkDrawIndexedIndirectCommand
 static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
 static constexpr size_t kVisDrawBytes = kMaxDraws * sizeof(Draw);
-static constexpr size_t kSeedIndirectBytes = kMaxBatches * sizeof(SeedCommand);
+// Temporal seed/remainder command arrays: candidate-slot capacity (GPU
+// cull mode writes one positional command per candidate; the legacy path's
+// CPU lists stay far below this).
+static constexpr size_t kSeedIndirectBytes = kMaxBatchSlots * sizeof(SeedCommand);
+// Shadow-list indirect arrays: survivor-capped (the CPU shadow path emits
+// only surviving commands, kMaxBatches — no candidate positional layout).
+static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand);
+// GPU cull chain per-(view, flight) buffers: the kept-bit ring (two parity
+// regions inside one buffer — the frame with parity P writes region P and
+// reads 1-P, written MAX_FRAMES_IN_FLIGHT frames earlier, flight-fenced
+// complete) and the cullState words (draw verdicts + the filter's atomic
+// filtered-offset counter).
+static constexpr size_t kKeptBytes = kMaxBatchSlots * 2 * sizeof(uint32_t);
+static constexpr size_t kCullStateBytes = kCullStateWords * sizeof(uint32_t);
 
 static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
 	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
@@ -91,9 +107,13 @@ static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 		if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
 		if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
 		if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
+		if (!v.keptLogicals[f].empty()) rg.FreeBuffer(v.keptLogicals[f]);
+		if (!v.cullStateLogicals[f].empty()) rg.FreeBuffer(v.cullStateLogicals[f]);
 		v.batchLogicals[f] = {};
 		v.drawLogicals[f] = {};
 		v.indirectLogicals[f] = {};
+		v.keptLogicals[f] = {};
+		v.cullStateLogicals[f] = {};
 		FreeIndexRegion(v.filteredAllocBits[f]);
 		v.filteredBase[f] = 0;
 	}
@@ -123,16 +143,40 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
 		// bufferTypeToUsageFlags).
 		v.indirectBuffers[f] = ctx.CreateBuffer(
 			kIndirectBytes, BufferType_Storage, "gfx indirect");
+		// GPU cull chain state (kept-bit parity ring + verdict/counter
+		// words). Zero-filled at creation so the first frames seed nothing
+		// (prev-kept = 0 -> empty seed, remainder = all kept — the same
+		// arming behavior InvalidateHistory gives the legacy path); every
+		// candidate slot gets a definitive 0/1 write per frame afterwards,
+		// so no per-frame clearing upload exists.
+		v.keptBuffers[f] = ctx.CreateBuffer(
+			kKeptBytes, BufferType_Storage, "gfx keptBits");
+		v.cullStateBuffers[f] = ctx.CreateBuffer(
+			kCullStateBytes, BufferType_Storage, "gfx cullState");
 		if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty()
-			|| v.indirectBuffers[f].empty()) {
+			|| v.indirectBuffers[f].empty() || v.keptBuffers[f].empty()
+			|| v.cullStateBuffers[f].empty()) {
 			RollbackSlotBuffers(rg, v, f);
 			return false;
 		}
+		// Creation zero-fill (the kept ring is 2MB — one shared static fill).
+		static std::vector<uint8_t> s_zeroFill;
+		if (s_zeroFill.size() < kKeptBytes)
+			s_zeroFill.assign(kKeptBytes, 0);
+		ctx.UploadDataToBuffer(v.keptBuffers[f], s_zeroFill.data(), kKeptBytes,
+			PipelineStage(PipelineStageBit_Compute),
+			AccessFlags::ShaderRead | AccessFlags::ShaderWrite, 0, 0);
+		ctx.UploadDataToBuffer(v.cullStateBuffers[f], s_zeroFill.data(), kCullStateBytes,
+			PipelineStage(PipelineStageBit_Compute),
+			AccessFlags::ShaderRead | AccessFlags::ShaderWrite, 0, 0);
 		v.batchLogicals[f] = rg.AddExternalBuffer(v.batchBuffers[f], "gfx batches");
 		v.drawLogicals[f] = rg.AddExternalBuffer(v.drawBuffers[f], "gfx draws");
 		v.indirectLogicals[f] = rg.AddExternalBuffer(v.indirectBuffers[f], "gfx indirect");
+		v.keptLogicals[f] = rg.AddExternalBuffer(v.keptBuffers[f], "gfx keptBits");
+		v.cullStateLogicals[f] = rg.AddExternalBuffer(v.cullStateBuffers[f], "gfx cullState");
 		if (v.batchLogicals[f].empty() || v.drawLogicals[f].empty()
-			|| v.indirectLogicals[f].empty()) {
+			|| v.indirectLogicals[f].empty() || v.keptLogicals[f].empty()
+			|| v.cullStateLogicals[f].empty()) {
 			RollbackSlotBuffers(rg, v, f + 1);
 			return false;
 		}
@@ -166,7 +210,72 @@ bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath)
 	(void)rg; // per-(view, frame) buffers are pooled on demand by BeginView
 	if (!EnsureShaders(s, ctx, csPath))
 		return false;
-	return EnsureHizShaders(s, ctx);
+	if (!EnsureHizShaders(s, ctx))
+		return false;
+	// GPU cull chain programs (missing .spv only downgrades the frame to
+	// the CPU-cull legacy path — EnsureShaders-style best effort, never
+	// fatal; BeginFrame re-mirrors the env flag every frame).
+	if (GpuCullEnabled()) {
+		(void)EnsureBatchCullShaders(s, ctx);
+		(void)EnsureDrawCullShaders(s, ctx);
+	}
+	return true;
+}
+
+// GPU cull chain kill switch (VULKANTOY_GFX_GPU_CULL=0). Read once per
+// process; the GfxRenderer branches the frame assembly on it and gfx::State
+// mirrors it (BuildBatches/FinalizeView seed CPU vs GPU layouts).
+bool GpuCullEnabled() {
+	static const bool enabled = [] {
+		const char* e = std::getenv("VULKANTOY_GFX_GPU_CULL");
+		return !(e && std::strcmp(e, "0") == 0);
+	}();
+	return enabled;
+}
+
+// Kept-bit parity for the frame being recorded: alternates between a
+// flight's consecutive users (MAX_FRAMES_IN_FLIGHT frames apart), so the
+// region this frame writes was last written by the previous same-flight
+// user — fence-complete, race-free (the rendergraph never needs to track
+// the cross-frame dependency; the flight submission ordering carries it).
+static uint32_t KeptParity(const State& s) {
+	return (s.frameCounter / MAX_FRAMES_IN_FLIGHT) % 2u;
+}
+
+bool EnsureBatchCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
+	if (s.batchCullProgram.shaderCount != 0 && !s.batchCullModule.empty())
+		return true;
+	try {
+		if (s.batchCullModule.empty())
+			s.batchCullModule = ctx.CreateShaderModule(
+				readFile(csPath ? csPath : kGfxBatchCullCsPath), "gfxBatchCullCS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (s.batchCullModule.empty())
+		return false;
+	Shader cs{ .module = s.batchCullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+	s.batchCullProgram = { .shaders = { cs }, .shaderCount = 1 };
+	return true;
+}
+
+bool EnsureDrawCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
+	if (s.drawCullProgram.shaderCount != 0 && !s.drawCullModule.empty())
+		return true;
+	try {
+		if (s.drawCullModule.empty())
+			s.drawCullModule = ctx.CreateShaderModule(
+				readFile(csPath ? csPath : kGfxDrawCullCsPath), "gfxDrawCullCS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (s.drawCullModule.empty())
+		return false;
+	Shader cs{ .module = s.drawCullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+	s.drawCullProgram = { .shaders = { cs }, .shaderCount = 1 };
+	return true;
 }
 
 bool EnsureHizShaders(State& s, ResourceManager& ctx, const char* csPath) {
@@ -238,6 +347,10 @@ void Destroy(State& s, RenderGraph& rg) {
 			if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
 			if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
 			if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
+			if (!v.keptLogicals[f].empty()) rg.FreeBuffer(v.keptLogicals[f]);
+			if (!v.cullStateLogicals[f].empty()) rg.FreeBuffer(v.cullStateLogicals[f]);
+			v.keptLogicals[f] = {};
+			v.cullStateLogicals[f] = {};
 			FreeIndexRegion(v.filteredAllocBits[f]);
 			v.filteredBase[f] = 0;
 		}
@@ -280,6 +393,9 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.clusterLogical = {};
 	s.meshBoundsLogical = {};
 	s.meshBoundsBuffer = {};
+	if (!s.meshesLogical.empty()) rg.FreeBuffer(s.meshesLogical);
+	s.meshesLogical = {};
+	s.meshesBuffer = {};
 	// Demand source (no rendergraph logicals by design — the retired
 	// feedback-ring pattern: transfer fills + the async readback chain
 	// carry the sync, the rendergraph never tracks these buffers).
@@ -299,6 +415,12 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.filterModule = {};
 	s.hizProgram = ShaderProgram{};
 	s.hizModule = {};
+	s.batchCullProgram = ShaderProgram{};
+	s.batchCullModule = {};
+	s.drawCullProgram = ShaderProgram{};
+	s.drawCullModule = {};
+	s.gpuCull = false;
+	s.frameCounter = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +1008,9 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 		table[i].triCount = s.clusters[i].triCount;
 		table[i].boundCenter = s.clusters[i].boundCenter;
 		table[i].boundRadius = s.clusters[i].boundRadius;
+		table[i].coneApex = s.clusters[i].coneApex;
+		table[i].coneAxis = s.clusters[i].coneAxis;
+		table[i].coneCutoff = s.clusters[i].coneCutoff;
 	}
 	s.clusterBuffer = ctx.CreateBuffer(
 		table.size() * sizeof(ClusterConstants),
@@ -901,7 +1026,8 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 		PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 	s.clusterLogical = rg.AddExternalBuffer(s.clusterBuffer, "gfx clusters");
 	// Per-mesh union bounds (static like the cluster table; the designated
-	// demand-publisher groups read them every dispatch).
+	// demand-publisher groups and the GPU cull chain's draw gates read them
+	// every dispatch).
 	if (!s.meshBounds.empty()) {
 		s.meshBoundsBuffer = ctx.CreateBuffer(
 			s.meshBounds.size() * sizeof(glm::vec4),
@@ -914,6 +1040,28 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 				s.meshBoundsBuffer, "gfx mesh bounds");
 		}
 	}
+	// Per-mesh cluster ranges (the GPU cull chain's workgroup-per-draw
+	// derives each draw's cluster window from it; static like the rest).
+	if (!s.meshesLogical.empty()) rg.FreeBuffer(s.meshesLogical);
+	s.meshesLogical = {};
+	s.meshesBuffer = {};
+	if (!s.meshes.empty()) {
+		s.meshesBuffer = ctx.CreateBuffer(
+			s.meshes.size() * 2 * sizeof(uint32_t),
+			BufferType_Storage, "gfx mesh ranges");
+		if (!s.meshesBuffer.empty()) {
+			std::vector<uint32_t> meshRanges(s.meshes.size() * 2);
+			for (size_t i = 0; i < s.meshes.size(); ++i) {
+				meshRanges[i * 2 + 0] = s.meshes[i].clusterStart;
+				meshRanges[i * 2 + 1] = s.meshes[i].clusterCount;
+			}
+			ctx.UploadDataToBuffer(s.meshesBuffer,
+				meshRanges.data(), meshRanges.size() * sizeof(uint32_t),
+				PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+			s.meshesLogical = rg.AddExternalBuffer(
+				s.meshesBuffer, "gfx mesh ranges");
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +1070,11 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 
 void BeginFrame(State& s) {
 	s.viewCount = 0;
+	// GPU cull chain flag + kept-parity source: one BeginFrame per rendered
+	// frame (FilterMainView), so the parity alternates between a flight's
+	// consecutive users exactly MAX_FRAMES_IN_FLIGHT frames apart.
+	s.gpuCull = GpuCullEnabled();
+	++s.frameCounter;
 }
 
 static bool EnsureViewSlots(State& s, ResourceManager& ctx, RenderGraph& rg, uint32_t count) {
@@ -1343,6 +1496,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	v.batches.clear();
 	v.drawConstants.clear();
 	v.materialRanges.clear();
+	v.cullRanges.clear();
+	v.cullOpaqueCommands = 0;
 	v.batchCount = 0;
 	v.stats = Stats{};
 	// Fresh stamp: cached curr keys from a previous frame of this slot
@@ -1418,6 +1573,29 @@ bool CullCluster(const Cluster& c, const glm::mat4& model,
 	return false;
 }
 
+// Mesh-bound fast-discard gate for shadow lists (pure CPU, headless-
+// testable; the CPU twin of the main view's GPU draw cull): true = the
+// whole draw leaves before the per-cluster meshlet loop. The bound is
+// the per-mesh union sphere (State::meshBounds, object space — the same
+// containment source the demand publisher and GfxDrawCull use; a draw
+// bound that misses means every cluster bound misses too).
+bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
+	const RenderView& shadowView, const RenderView* contributionView) {
+	const glm::vec3 worldCenter =
+		glm::vec3(model * glm::vec4(glm::vec3(meshBound), 1.0f));
+	const float worldRadius = meshBound.w * MaxBasisScale(model);
+	if (!RenderViewIntersectsSphere(shadowView, worldCenter, worldRadius))
+		return true; // fully outside the shadow view's frustum
+	// Contribution: a caster that cannot touch the main camera's view
+	// (guard-dilated planes, the same conservatism the direct fallback
+	// path's item-level test uses) contributes nothing to it — drop the
+	// whole draw. Null view = contribution culling off.
+	if (contributionView
+		&& !RenderViewIntersectsSphere(*contributionView, worldCenter, worldRadius))
+		return true;
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // CPU-built shadow draw lists (cascade + spot tiles)
 // ---------------------------------------------------------------------------
@@ -1434,7 +1612,7 @@ static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowVie
 		sv.drawBuffers[f] = ctx.CreateBuffer(
 			kDrawBufferBytes, BufferType_Storage, "gfx shadow draws");
 		sv.indirectBuffers[f] = ctx.CreateBuffer(
-			kSeedIndirectBytes, BufferType_Storage, "gfx shadow indirect");
+			kShadowIndirectBytes, BufferType_Storage, "gfx shadow indirect");
 		if (sv.drawBuffers[f].empty() || sv.indirectBuffers[f].empty())
 			return false;
 		sv.drawLogicals[f] = rg.AddExternalBuffer(sv.drawBuffers[f], "gfx shadow draws");
@@ -1452,7 +1630,8 @@ void BeginShadowFrame(State& s) {
 
 uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const RenderView& renderView, CullFlags cullFlags,
-	uint32_t width, uint32_t height) {
+	uint32_t width, uint32_t height,
+	const RenderView* contributionView) {
 	const uint32_t slot = s.shadowViewCount;
 	if (slot >= kMaxViews)
 		return UINT32_MAX;
@@ -1466,6 +1645,10 @@ uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	if (!sv.buffersReady && !EnsureShadowBuffers(ctx, rg, sv))
 		return UINT32_MAX;
 	sv.renderView = &renderView;
+	// Contribution gate for the mesh-bound fast discard in BuildShadowList
+	// (claimed on the main thread before any worker build — the same
+	// threading contract as renderView).
+	sv.contributionView = contributionView;
 	sv.cullFlags = cullFlags;
 	sv.width = width;
 	sv.height = height;
@@ -1538,6 +1721,18 @@ void BuildShadowList(State& s, uint32_t sview) {
 		sv.drawConstants.push_back(dc);
 		const Mesh& mesh = s.meshes[d.mesh];
 		const float basisScale = MaxBasisScale(d.model);
+		// Mesh-bound fast discard (Northlight-style draw gate, the CPU
+		// twin of the main view's GPU GfxDrawCull): the whole draw leaves
+		// before the per-cluster meshlet loop when the mesh union bound
+		// misses the shadow view, or (contribution cull) when it cannot
+		// touch the main camera's view at all. One sphere pair per draw
+		// instead of per cluster; the per-cluster sphere test below stays
+		// (meshlet granularity inside surviving draws).
+		if (d.mesh < s.meshBounds.size()
+			&& CullShadowMeshBound(s.meshBounds[d.mesh], d.model,
+				*sv.renderView, sv.contributionView)) {
+			continue;
+		}
 		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
 			const Cluster& c = s.clusters[mesh.clusterStart + ci];
 			++sv.stats.clustersProcessed;
@@ -1646,8 +1841,7 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 
 	BuildBatches(s, view);
 
-#if 0 // TMP-DIAG scanlands hunt (disabled): validate batch->cluster references. Remove later.
-	{
+#if 0 // TMP-DIAG scanlands hunt (disabled): validate batch->cluster references. Remove later.	{
 		static bool kOnce = false;
 		if (!kOnce && std::getenv("VULKANTOY_DUMPBATCH")) {
 			kOnce = true;
@@ -1679,6 +1873,20 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	}
 #endif
 
+	// GPU cull mode: the ONLY per-frame CPU upload is the draws ring slice
+	// (the candidate layout is pure arithmetic; gfxbatchcull — recorded
+	// later this frame — writes the batch array, the filter indirect
+	// statics and the seed/remainder commands GPU-side; the filtered-offset
+	// counter is zeroed by gfxbatchcull group 0).
+	if (s.gpuCull) {
+		if (!v.drawConstants.empty()) {
+			SMVK_PROFILE_SCOPE("GfxUploadDraws");
+			ctx.UploadDataToBuffer(v.drawBuffers[frameIndex],
+				v.drawConstants.data(), v.drawConstants.size() * sizeof(Draw),
+				PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+		}
+		return v.stats;
+	}
 	if (v.batchCount > 0) {
 		SMVK_PROFILE_SCOPE("GfxUploadBatches");
 		ctx.UploadDataToBuffer(v.batchBuffers[frameIndex],
@@ -1714,18 +1922,36 @@ void BuildBatches(State& s, uint32_t view) {
 	SMVK_PROFILE_RENDER("GfxBuildBatches");
 	SMVK_PROFILE_TAG("draws", v.draws.size());
 
-	// Sort draws by (material, lightmap lobe class) — stable, so submission
-	// order is kept within a class. Commands are emitted in this order, so
-	// each (material, lobeCount) pair owns one contiguous indirect range
-	// (single multi-draw per material per lobe class). The Main filtered
-	// leg binds the matching lit program once per range: the generic lit
-	// FS, or the SG_LM_LOBE_COUNT-specialized twin when every draw in the
-	// range shares one cooked count (the shader then drops the runtime
-	// basis dispatch and folds the evaluation loops).
+	// GPU cull mode: this is the CPU SEED step of the chain — no per-cluster
+	// tests here at all. The draw list is material/bucket-sorted, each draw
+	// carries its candidate-slot base, and the (bucket, material) range
+	// layout is computed; gfxbatchcull (recorded later this frame) runs the
+	// sphere + cone tests on the GPU and writes the batch array, the
+	// indirect statics and the temporal seed/remainder commands. The
+	// legacy path keeps the per-(draw x cluster) CullCluster pre-cull and
+	// emits only survivors.
+	const bool gpu = s.gpuCull;
+	const uint32_t cap = gpu ? kMaxBatchSlots : kMaxBatches;
+
+	// Sort draws by (drawSet, material, lightmap lobe class) — stable, so
+	// submission order is kept within a class. Bucket-major (opaque first)
+	// so the seed pass's opaque phase is one contiguous command span, and
+	// commands are emitted in this order so each (material, lobeCount)
+	// pair owns one contiguous indirect range (single multi-draw per
+	// material per lobe class). The Main filtered leg binds the matching
+	// lit program once per range: the generic lit FS, or the
+	// SG_LM_LOBE_COUNT-specialized twin when every draw in the range
+	// shares one cooked count (the shader then drops the runtime basis
+	// dispatch and folds the evaluation loops). A material belongs to one
+	// bucket, so (material, lmChunk) spans never straddle a bucket edge —
+	// the legacy grouping is unchanged, only the range ORDER turns
+	// bucket-major (every consumer binds per range, order-independent).
 	std::vector<uint32_t>& order = v.drawOrderScratch;
 	order.resize(v.draws.size());
 	std::iota(order.begin(), order.end(), 0u);
 	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+		if (v.draws[a].drawSet != v.draws[b].drawSet)
+			return v.draws[a].drawSet < v.draws[b].drawSet;
 		if (v.draws[a].material != v.draws[b].material)
 			return v.draws[a].material < v.draws[b].material;
 		return v.draws[a].lmChunk < v.draws[b].lmChunk;
@@ -1742,6 +1968,9 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.lmChunk = d.lmChunk;
 		dc.lmChartOffset = d.lmChartOffset;
 		dc.material = d.material;
+		// GPU mode: filled below with the draw's candidate-slot base
+		// (0xFFFFFFFF = the cap dropped the draw).
+		dc.candidateBase = 0;
 		v.drawConstants.push_back(dc);
 	}
 
@@ -1749,6 +1978,23 @@ void BuildBatches(State& s, uint32_t view) {
 	uint32_t cmdMaterial = UINT32_MAX;
 	uint32_t cmdLobes = UINT32_MAX;
 	uint32_t rangeStart = 0;
+	// GPU-mode seed/remainder range build: (bucket, material) spans over
+	// the candidate slots (coalesced across lmChunk — the sort puts the
+	// same-(bucket, material) draws adjacent), opaque-then-masked order.
+	uint32_t cullRangeStart = 0;
+	uint32_t cullRangeSet = DrawSetBit_Opaque;
+	uint32_t cullRangeMaterial = UINT32_MAX;
+	uint32_t cullOpaque = 0;
+	auto pushCullRange = [&](uint32_t endSlot) {
+		if (cullRangeMaterial == UINT32_MAX || endSlot <= cullRangeStart)
+			return;
+		SeedRange r{};
+		r.drawSet = cullRangeSet;
+		r.material = cullRangeMaterial;
+		r.firstCommand = cullRangeStart;
+		r.commandCount = endSlot - cullRangeStart;
+		v.cullRanges.push_back(r);
+	};
 	for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
 		const DrawRequest& d = v.draws[order[sorted]];
 		const Mesh& mesh = s.meshes[d.mesh];
@@ -1766,14 +2012,36 @@ void BuildBatches(State& s, uint32_t view) {
 			cmdLobes = d.lmChunk;
 			rangeStart = batchSlot;
 		}
-		if (batchSlot >= kMaxBatches) {
-			static bool warnedBatchCap = false;
-			if (!warnedBatchCap) {
-				warnedBatchCap = true;
-				SMVK_DEBUG_LOG(
-					"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
-					"clusters (increase kMaxBatches).\n", kMaxBatches);
+		if (gpu) {
+			// Candidate-slot base + GPU-mode (bucket, material) range walk.
+			if (batchSlot >= cap) {
+				v.drawConstants[sorted].candidateBase = 0xFFFFFFFFu;
 			}
+			else {
+				v.drawConstants[sorted].candidateBase = batchSlot;
+				if (d.drawSet != cullRangeSet || d.material != cullRangeMaterial) {
+					pushCullRange(batchSlot);
+					cullRangeSet = d.drawSet;
+					cullRangeMaterial = d.material;
+					cullRangeStart = batchSlot;
+				}
+				if (cullRangeSet == DrawSetBit_Masked && cullOpaque == 0)
+					cullOpaque = batchSlot; // first masked slot (opaque span end)
+			}
+		}
+		if (batchSlot >= cap) {
+			static bool warnedBatchCap[2] = { false, false };
+			const uint32_t index = gpu ? 1u : 0u;
+			if (!warnedBatchCap[index]) {
+				warnedBatchCap[index] = true;
+				SMVK_DEBUG_LOG(
+					"[GfxFilter] BuildBatches: %s cap %u hit, dropping "
+					"clusters (increase %s).\n",
+					gpu ? "candidate slot" : "batch",
+					cap, gpu ? "kMaxBatchSlots" : "kMaxBatches");
+			}
+			if (gpu)
+				continue; // mark the remaining draws' bases sentinel below
 			break;
 		}
 		const glm::mat4 invModel = glm::inverse(d.model);
@@ -1782,30 +2050,24 @@ void BuildBatches(State& s, uint32_t view) {
 		// (BatchFlagBit_DemandPublisher): every group of the draw shares
 		// the material, so one designated group per draw keeps the
 		// publication count at (in-frustum draws x <=5 atomics) instead
-		// of (surviving clusters x 5).
+		// of (surviving clusters x 5). GPU mode: the flag moves to
+		// gfxbatchcull (the first KEPT slot — a dropped publisher would
+		// miss demand for a visible draw), so the CPU emits 0 here.
 		bool firstBatchForDraw = true;
 		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
-			if (batchSlot >= kMaxBatches) {
-				static bool warnedInnerCap = false;
-				if (!warnedInnerCap) {
-					warnedInnerCap = true;
-					SMVK_DEBUG_LOG(
-						"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
-						"clusters (increase kMaxBatches).\n", kMaxBatches);
-				}
-				break;
-			}
+			if (batchSlot >= cap)
+				break; // gpu: partial draw (shader guards slot >= cap); legacy: warned above
 			const Cluster& c = s.clusters[mesh.clusterStart + ci];
 			++v.stats.clustersProcessed;
-			if (CullCluster(c, d.model, invModel, v.eye, *v.renderView, twoSided)) {
+			if (!gpu && CullCluster(c, d.model, invModel, v.eye, *v.renderView, twoSided)) {
 				++v.stats.clustersCulled;
 				continue;
 			}
 		Batch b{};
 		b.cluster = mesh.clusterStart + ci;
 		b.draw = sorted;
-		b.outputOffset = batchSlot * kMaxClusterTris * 3;
-		b.flags = firstBatchForDraw ? BatchFlagBit_DemandPublisher : 0u;
+		b.outputOffset = gpu ? 0u : batchSlot * kMaxClusterTris * 3;
+		b.flags = (!gpu && firstBatchForDraw) ? BatchFlagBit_DemandPublisher : 0u;
 		firstBatchForDraw = false;
 		v.batches.push_back(b);
 			v.stats.trianglesProcessed += c.triCount;
@@ -1819,6 +2081,13 @@ void BuildBatches(State& s, uint32_t view) {
 		r.commandCount = batchSlot - rangeStart;
 		r.lobeCount = cmdLobes;
 		v.materialRanges.push_back(r);
+	}
+	if (gpu) {
+		pushCullRange(batchSlot);
+		// No masked draw at all: the whole span is opaque.
+		if (cullOpaque == 0)
+			cullOpaque = batchSlot;
+		v.cullOpaqueCommands = cullOpaque;
 	}
 	v.batchCount = batchSlot;
 	// Fresh stamp once the lists are final: the temporal key cache treats
@@ -1859,6 +2128,18 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	// covers the compute write here and the index/vertex reads downstream.
 	pass.AddBufferHint(s.indexHeapLogical, computeRW);
 	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
+	// GPU cull chain verdicts: the kept-bit region (gfxbatchcull, earlier
+	// this frame) + the draw verdicts / filtered-offset counter
+	// (gfxdrawcull earlier this frame; the counter is read-modify-write
+	// through the allocation atomics, so RW — compute stage only, the
+	// indirect consumption hints below stay as they are).
+	if (s.gpuCull) {
+		pass.AddBufferHint(v.keptLogicals[f], computeRead);
+		BufferSyncRequest stateRW{};
+		stateRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		stateRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+		pass.AddBufferHint(v.cullStateLogicals[f], stateRW);
+	}
 	// HZB read (T4 occlusion): built by the HZB passes earlier in the frame.
 	// Current flight's slice (same rule as every other ringed buffer).
 	if (view < s.temporals.size() && view < s.views.size()
@@ -1915,8 +2196,10 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	push.indexBase = v.filteredBase[f];
 	// A null BDA dereferenced by the filter CS is an MMU fault and takes the
 	// whole device down (Aftermath: compute read at 0xa000). Never dispatch
-	// in that state: the indirect buffers were zero-filled by FinalizeView,
-	// so skipping draws nothing instead of faulting. Loud + throttled.
+	// in that state: the CPU-cull legacy path's indirect buffers were
+	// zero-filled by FinalizeView (and the GPU cull path's statics come from
+	// gfxbatchcull), so skipping draws nothing instead of faulting. Loud +
+	// throttled.
 	if (push.positions == 0 || push.indices == 0 || push.clusters == 0
 		|| push.batches == 0 || push.draws == 0 || push.filtered == 0
 		|| push.indirect == 0) {
@@ -1983,6 +2266,25 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 		push.textureMetaCount = 0;
 	}
 
+	// GPU cull chain inputs: the kept-bit region (parity-indexed — the
+	// region gfxbatchcull wrote this frame) and the cullState buffer
+	// (gfxdrawcull's draw verdicts + the atomic filtered-offset counter
+	// gfxbatchcull zeroed). Same null-BDA belt-and-braces rule: a null pair
+	// falls back to the legacy positional path (keptParity sentinel).
+	if (s.gpuCull) {
+		const uint64_t keptBda = ctx.GetBufferDeviceAddress(v.keptBuffers[f]);
+		const uint64_t stateBda = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+		if (keptBda != 0 && stateBda != 0) {
+			push.kept = keptBda + (uint64_t)KeptParity(s) * kMaxBatchSlots * sizeof(uint32_t);
+			push.cullState = stateBda;
+			push.keptParity = KeptParity(s);
+		} else {
+			push.keptParity = kKeptParityLegacy;
+		}
+	} else {
+		push.keptParity = kKeptParityLegacy;
+	}
+
 	// DEBUG: Log filter dispatch HZB parameters
 	static uint64_t s_filterDispatchCount = 0;
 	if ((s_filterDispatchCount++ % 60) == 0) {
@@ -1994,6 +2296,192 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch(v.batchCount, 1, 1);
+}
+
+// ---------------------------------------------------------------------------
+// GPU cull chain (GfxBatchCull + GfxDrawCull)
+// ---------------------------------------------------------------------------
+
+RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
+	assert(view < s.viewCount);
+	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
+	RenderPass& pass = rg.AddComputePass("GfxBatchCull");
+	BufferSyncRequest computeRead{};
+	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+	// This frame's draws (FinalizeView upload -> compute read).
+	pass.AddBufferHint(v.drawLogicals[f], computeRead);
+	// Static tables (load-time uploads).
+	pass.AddBufferHint(s.clusterLogical, computeRead);
+	if (!s.meshesLogical.empty())
+		pass.AddBufferHint(s.meshesLogical, computeRead);
+	if (!s.meshBoundsLogical.empty())
+		pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+	BufferSyncRequest computeRW{};
+	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+	// The chain's outputs, all consumed later this frame: the batch array
+	// + the filter indirect statics (the filter pass — write here, the
+	// filter's own RW hint takes over), and the seed/remainder command
+	// arrays (the seed/remainder passes' IndirectCommandRead hints — the
+	// compute-write -> draw-indirect-read barriers are the rendergraph's
+	// standard cross-stage transitions, the same ones the CPU uploads used
+	// to make).
+	pass.AddBufferHint(v.batchLogicals[f], computeRW);
+	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
+	if (view < s.temporals.size()) {
+		TemporalView& t = s.temporals[view];
+		pass.AddBufferHint(t.seedIndirectLogicals[f], computeRW);
+		pass.AddBufferHint(t.remainderIndirectLogicals[f], computeRW);
+	}
+	// The kept-bit ring: current parity region write + prev parity region
+	// read (ONE buffer — RW covers both; the prev region's last writer was
+	// MAX_FRAMES_IN_FLIGHT frames ago, flight-fence complete, so the
+	// rendergraph's own within-frame tracking never sees that dependency —
+	// the submission ordering carries it, like every other ringed buffer).
+	pass.AddBufferHint(v.keptLogicals[f], computeRW);
+	// The cullState buffer: the filtered-offset counter zero (group 0).
+	// gfxdrawcull writes the verdict words in a LATER pass this frame —
+	// the rendergraph sequences the WAW pair by hints.
+	pass.AddBufferHint(v.cullStateLogicals[f], computeRW);
+	return pass;
+}
+
+void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view) {
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	if (s.batchCullProgram.shaderCount == 0 || s.batchCullModule.empty())
+		return; // missing shader: the frame records the legacy CPU path
+	const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+	if (drawCount == 0 || drawCount > kMaxDraws)
+		return;
+	const uint32_t f = v.frameIndex;
+	BatchCullPush push{};
+	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+	push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+	push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+	push.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+	push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+	if (view < s.temporals.size()) {
+		TemporalView& t = s.temporals[view];
+		push.seedCmds = ctx.GetBufferDeviceAddress(t.seedIndirectBuffers[f]);
+		push.remCmds = ctx.GetBufferDeviceAddress(t.remainderIndirectBuffers[f]);
+	}
+	// Full kept-ring BDA: the shader indexes both parity regions itself.
+	push.kept = ctx.GetBufferDeviceAddress(v.keptBuffers[f]);
+	push.cullState = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+	// Same MMU-fault rule as PushAndDispatch: never dispatch on a null BDA
+	// (the frame falls back to the legacy CPU path instead of faulting).
+	if (push.draws == 0 || push.meshes == 0 || push.clusters == 0
+		|| push.meshBounds == 0 || push.batches == 0 || push.indirect == 0
+		|| push.seedCmds == 0 || push.remCmds == 0 || push.kept == 0
+		|| push.cullState == 0) {
+		static uint64_t s_nullBdaWarns = 0;
+		if ((s_nullBdaWarns++ % 300) == 0)
+			std::fprintf(stderr, "[GfxBatchCull] refusing dispatch: null BDA\n");
+		return;
+	}
+	// LIVE view (seed/remainder semantics): the gfx view record's matrix,
+	// NOT the culling-freeze override (everything that writes the live
+	// depth buffer stays on the live main view — the freeze contract).
+	push.viewProj = v.viewProj;
+	push.eye = v.eye;
+	push.drawCount = drawCount;
+	push.drawSetMask = DrawSetMask_All;
+	if (view < s.temporals.size())
+		push.drawSetMask = s.temporals[view].drawSetMask;
+	push.clusterIndexBase = s.clusterIndexBase;
+	push.keptParity = KeptParity(s);
+	push.width = v.width;
+	push.height = v.height;
+	cmd.BindComputePipeline(s.batchCullProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	// One 128-thread workgroup per material-sorted draw.
+	cmd.Dispatch(drawCount, 1, 1);
+}
+
+RenderPass& AddDrawCullPass(State& s, RenderGraph& rg, uint32_t view) {
+	assert(view < s.viewCount);
+	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
+	RenderPass& pass = rg.AddComputePass("GfxDrawCull");
+	BufferSyncRequest computeRead{};
+	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+	pass.AddBufferHint(v.drawLogicals[f], computeRead);
+	if (!s.meshBoundsLogical.empty())
+		pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+	// HZB read: the pyramid the GfxHiz passes built earlier this frame
+	// (current flight's slice, same rule as the filter's read).
+	if (view < s.temporals.size()
+		&& !s.temporals[view].hiz[v.frameIndex].logical.empty())
+		pass.AddBufferHint(s.temporals[view].hiz[v.frameIndex].logical, computeRead);
+	BufferSyncRequest computeRW{};
+	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+	// Verdict words: gfxbatchcull's counter zero writes the SAME buffer
+	// earlier this frame (WAW by hints; the filter reads the words after
+	// this pass — also by hints).
+	pass.AddBufferHint(v.cullStateLogicals[f], computeRW);
+	return pass;
+}
+
+void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view) {
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	if (s.drawCullProgram.shaderCount == 0 || s.drawCullModule.empty())
+		return;
+	const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+	if (drawCount == 0 || drawCount > kMaxDraws)
+		return;
+	const uint32_t f = v.frameIndex;
+	DrawCullPush push{};
+	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	push.meshBounds = ctx.GetBufferDeviceAddress(s.meshBoundsBuffer);
+	push.cullState = ctx.GetBufferDeviceAddress(v.cullStateBuffers[f]);
+	if (push.draws == 0 || push.meshBounds == 0 || push.cullState == 0) {
+		static uint64_t s_nullBdaWarns = 0;
+		if ((s_nullBdaWarns++ % 300) == 0)
+			std::fprintf(stderr, "[GfxDrawCull] refusing dispatch: null BDA\n");
+		return;
+	}
+	// FROZEN view: the gfx view record's matrix — under the debug culling
+	// freeze this is the HELD view (the filter legs cull against it; the
+	// batch cull above deliberately stays LIVE for the seed/remainder
+	// semantics, matching the legacy split).
+	push.viewProj = v.viewProj;
+	push.eye = v.eye;
+	push.cullFlags = v.cullFlags;
+	push.drawCount = drawCount;
+	push.width = v.width;
+	push.height = v.height;
+	if (view < s.temporals.size()) {
+		const TemporalView& t = s.temporals[view];
+		const HizResources& hz = t.hiz[v.frameIndex];
+		push.hzb = ctx.GetBufferDeviceAddress(hz.buffer);
+		push.hizMips = hz.mipCount;
+		// Belt and braces: the shader gates on hizMips, so a null address
+		// can never slip through to a dereference (device-lost class).
+		if (push.hzb == 0)
+			push.hizMips = 0;
+	}
+	cmd.BindComputePipeline(s.drawCullProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	cmd.Dispatch((drawCount + 63u) / 64u, 1, 1);
+}
+
+const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].cullRanges;
+}
+
+uint32_t CullOpaqueCommands(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].cullOpaqueCommands;
 }
 
 bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
@@ -2011,8 +2499,12 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
 			}
 		}
 		if (s.meshBatchLists[f].empty()) {
+			// Candidate-slot capacity (GPU cull mode records every eligible
+			// candidate slot — dropped slots gate out through the MS's
+			// indexCount == 0 check; the legacy path's survivors stayed
+			// within kMaxBatches but the buffer sizes both paths).
 			s.meshBatchLists[f] = ctx.CreateBuffer(
-				kMaxBatches * sizeof(uint32_t), BufferType_Storage, "gfx mesh batch list");
+				kMaxBatchSlots * sizeof(uint32_t), BufferType_Storage, "gfx mesh batch list");
 			if (s.meshBatchLists[f].empty())
 				return false;
 			s.meshBatchListLogicals[f] = rg.AddExternalBuffer(

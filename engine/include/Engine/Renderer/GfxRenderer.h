@@ -554,12 +554,15 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	// Per-frame slot claim (main thread; claim all views of the frame
 	// before dispatching any BuildShadowList — see gfx::ShadowView).
+	// contributionView: the main camera's view for the mesh-bound
+	// contribution fast discard in BuildShadowList (null = off).
 	void BeginShadowFrame() { smvk::gfx::BeginShadowFrame(gfx); }
 	uint32_t BeginShadowView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const smvk::RenderView& renderView, smvk::gfx::CullFlags cullFlags,
-		uint32_t width, uint32_t height) {
+		uint32_t width, uint32_t height,
+		const smvk::RenderView* contributionView = nullptr) {
 		return smvk::gfx::BeginShadowView(gfx, ctx, rg, renderView,
-			cullFlags, width, height);
+			cullFlags, width, height, contributionView);
 	}
 	// Worker-thread side: per-view candidate push + list build (pure CPU;
 	// the engine's sync-state tables are not safe for concurrent uploads).

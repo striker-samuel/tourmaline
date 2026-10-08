@@ -84,8 +84,12 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   #     fine). Pinned to the exact proven Release flags (-O3
   #     -Qstrip_debug), so this one shader is not RenderDoc-debuggable in
   #     Debug trees until the driver bug is fixed / worked around in-shader.
+  #   - gfxbatchcull.cs.hlsl / gfxdrawcull.cs.hlsl: the GPU cull chain —
+  #     the same BDA-heavy vk::BufferPointer traffic class (the batch cull
+  #     also shares gfxfilter.hlsli's big struct bounds), pinned
+  #     preemptively.
   if (NOT DEFINED HLSL_FORCE_O3_FILES)
-    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl")
+    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl")
   endif()
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)

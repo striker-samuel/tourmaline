@@ -9,7 +9,9 @@
 // Deviations from the DirectX original:
 //   - Units are meshlet clusters (<=128 tris), not 256-tri slices; the CPU
 //     pre-culls per (draw x cluster) with sphere + normal-cone tests, so the
-//     GPU only sees surviving clusters.
+//     GPU only sees surviving clusters (GPU cull mode: gfxbatchcull wrote
+//     the batch list; this shader re-gates on the kept/draw verdicts and
+//     skips the projection work for dropped slots).
 //   - Frustum test runs in CLIP space (-w<=x<=w, -w<=y<=w, 0<=z<=w, Vulkan
 //     zero-to-one depth) instead of divided NDC 0..1 space. This is exact
 //     under the engine's reversed infinite-Z projection (GreaterEqual,
@@ -22,10 +24,12 @@
 //
 // Buffers arrive via buffer-device-address push (vk::BufferPointer, same as
 // forwardplus.cs.hlsl) so no descriptor/pipeline-layout changes are needed.
-// Indirect-arg clearing is done CPU-side (zero-fill upload before the pass),
-// replacing ClearDrawIndirectArgsCS.
+// Indirect-arg clearing is done CPU-side (zero-fill upload before the pass)
+// in the CPU-cull legacy path; in GPU cull mode gfxbatchcull writes the
+// static parts of every candidate slot, replacing both the zero-fill upload
+// and the CPU batch upload.
 //
-// C++ mirror: Engine/Renderer/gfx_filter.h (FilterPush, 200 bytes).
+// C++ mirror: Engine/Renderer/gfx_filter.h (FilterPush, 256 bytes).
 
 #define GFXFILTER_PASS
 #include "common.hlsli"
@@ -36,249 +40,21 @@ ConstantBuffer<GfxFilterPush> pcF;
 
 groupshared uint gLocalCount;
 groupshared uint gClusterCull; // T4: 1 = whole cluster dropped (occlusion/contribution)
+groupshared uint gOutBase;     // GPU cull: this group's filtered-offset base (0xFFFFFFFF = dropped)
 
-// Conservative interval for n / w when:
-//   n in [nCenter - nRadius, nCenter + nRadius]
-//   w in [wMin, wMax], with wMin > 0.
-//
-// Treating numerator/denominator intervals independently is deliberately
-// conservative. The returned interval may be wider than the true projected
-// sphere, but it must not be narrower.
-float2 ConservativeRatioInterval(
-    float nCenter,
-    float nRadius,
-    float wMin,
-    float wMax)
+// HZB context for this dispatch (the T4 occlusion/contribution inputs and
+// the demand publisher share one core — see the moved shared helpers in
+// gfxfilter.hlsli, also consumed by gfxdrawcull.cs.hlsl).
+GfxHzbCtx FilterHzbCtx()
 {
-    float nMin = nCenter - nRadius;
-    float nMax = nCenter + nRadius;
-
-    float r0 = nMin / wMin;
-    float r1 = nMin / wMax;
-    float r2 = nMax / wMin;
-    float r3 = nMax / wMax;
-
-    float lo = min(min(r0, r1), min(r2, r3));
-    float hi = max(max(r0, r1), max(r2, r3));
-    return float2(lo, hi);
-}
-
-// Projection result shared by the per-cluster occlusion test and the
-// draw-level texture-demand publisher (one projection core, two callers).
-struct BoundProjection
-{
-    bool testable;  // false: eye inside the sphere / near-plane cross / NaN
-                    // -> cull side KEEPS, demand side publishes the sharpest
-    bool onTarget;  // false: rect fully off-screen -> cull side keeps
-                    // (frustum stages handle it), demand side skips
-    float4 rect;   // (sx0, sy0, sx1, sy1) px, clamped + jitter-guard widened
-    float dNear;   // conservative nearest reversed-Z depth (0..1)
-};
-
-// Conservative projection of an object-space bound sphere (xyz center, w
-// radius) by `model` into the framebuffer rect + nearest depth. All
-// failure paths return testable=false — every caller's failure direction
-// is the conservative one (keep geometry / over-request texture detail).
-//
-// Deviations-from-exactness notes (carried over from the old inline
-// ClusterOccluded math):
-//   - Max basis length turns the object-space sphere into a conservative
-//     world-space sphere even under non-uniform scale.
-//   - Treating numerator/denominator intervals independently widens the
-//     projected rect (deliberately conservative; must not be narrower).
-//   - dNear may be slightly nearer than the true sphere (safe: reduces
-//     culling; on the demand side it can only over-request).
-BoundProjection ProjectBound(float4 bound, float4x4 model)
-{
-    BoundProjection p;
-    p.testable = false;
-    p.onTarget = false;
-    p.rect = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    p.dNear = 0.0f;
-
-    float width = (float) pcF.hizWidth;
-    float height = (float) pcF.hizHeight;
-    if (!(width > 0.0f) || !(height > 0.0f))
-        return p; // no extent: untestable
-
-    // World-space bounding sphere.
-    float3 wc = mul(model, float4(bound.xyz, 1.0f)).xyz;
-    // Explicit columns (._RC is row/column by position, independent of the
-    // matrix majorness): basis vectors for the world-sphere scale.
-    float bs = max(
-        length(float3(model._11, model._21, model._31)),
-        max(length(float3(model._12, model._22, model._32)),
-            length(float3(model._13, model._23, model._33))));
-    float wr = bound.w * bs;
-
-    if (!(wr >= 0.0f))
-        return p; // catches NaN
-
-    // Eye inside the sphere -> never occlusion-cull / always sharpest.
-    float3 toEye = pcF.eye - wc;
-    float dist = length(toEye);
-    if (!(dist > wr))
-        return p;
-
-    float4 clipC = mul(pcF.viewProj, float4(wc, 1.0f));
-
-    // For p = wc + delta, |delta| <= wr: each clip component varies by at
-    // most wr * length(row_i.xyz). Rows are spelled out with ._RC
-    // accessors (row/column by position, independent of matrix majorness):
-    // with the push uploaded untransposed, pcF.viewProj[i] would be column
-    // i, not row i, so single-subscript indexing must not be used here.
-    float xRadius = wr * length(float3(pcF.viewProj._11, pcF.viewProj._12, pcF.viewProj._13));
-    float yRadius = wr * length(float3(pcF.viewProj._21, pcF.viewProj._22, pcF.viewProj._23));
-    float zRadius = wr * length(float3(pcF.viewProj._31, pcF.viewProj._32, pcF.viewProj._33));
-    float wRadius = wr * length(float3(pcF.viewProj._41, pcF.viewProj._42, pcF.viewProj._43));
-
-    float wMin = clipC.w - wRadius;
-    float wMax = clipC.w + wRadius;
-
-    // Sphere touches/crosses the camera plane, or invalid math.
-    if (!(wMin > 1e-6f) || !(wMax >= wMin))
-        return p;
-
-    // Conservative projected NDC intervals for the complete world sphere.
-    float2 ndcX = ConservativeRatioInterval(
-        clipC.x, xRadius, wMin, wMax);
-    float2 ndcY = ConservativeRatioInterval(
-        clipC.y, yRadius, wMin, wMax);
-
-    // Reversed-Z nearest depth = maximum projected z/w over the sphere.
-    float2 ndcZ = ConservativeRatioInterval(
-        clipC.z, zRadius, wMin, wMax);
-    float dNear = ndcZ.y;
-
-    // NaN / invalid depth / near-plane intersection -> keep.
-    if (!(dNear >= 0.0f))
-        return p;
-    if (dNear > 1.0f)
-        return p;
-
-    // Framebuffer coordinates. The projection already contains the Y flip,
-    // so no additional texture-space flip is applied.
-    float x0 = (ndcX.x * 0.5f + 0.5f) * width;
-    float x1 = (ndcX.y * 0.5f + 0.5f) * width;
-    float y0 = (ndcY.x * 0.5f + 0.5f) * height;
-    float y1 = (ndcY.y * 0.5f + 0.5f) * height;
-
-    if (!(x1 >= x0) || !(y1 >= y0))
-        return p;
-
-    // Completely off-target: leave this to the frustum stages (cull side
-    // keeps; the demand side skips publication).
-    if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height) {
-        p.testable = true;
-        p.onTarget = false;
-        return p;
-    }
-
-    // Clamp only after the off-target test, then widen by the jitter guard
-    // (conservative: more overlapped texels must ALL occlude, so this only
-    // keeps; both jitter phases test a superset and agree instead of
-    // flickering boundary clusters).
-    float sx0 = clamp(clamp(x0, 0.0f, width) - GFX_CULL_GUARD_PX, 0.0f, width);
-    float sx1 = clamp(clamp(x1, 0.0f, width) + GFX_CULL_GUARD_PX, 0.0f, width);
-    float sy0 = clamp(clamp(y0, 0.0f, height) - GFX_CULL_GUARD_PX, 0.0f, height);
-    float sy1 = clamp(clamp(y1, 0.0f, height) + GFX_CULL_GUARD_PX, 0.0f, height);
-
-    p.testable = true;
-    p.onTarget = true;
-    p.rect = float4(sx0, sy0, sx1, sy1);
-    p.dNear = dNear;
-    return p;
-}
-
-// HZB verdict for a projected bound: true = provably fully occluded (the
-// nearest conservative depth sits behind EVERY covered MIN-reduced texel).
-// Empty footprints/ranges keep (callers decide their own keep direction).
-// Mirrors the old inline ClusterOccluded loop exactly.
-bool BoundHzbOccluded(BoundProjection p)
-{
-    const float rectW = max(p.rect.z - p.rect.x, 0.0f);
-    const float rectH = max(p.rect.w - p.rect.y, 0.0f);
-
-    // Empty / subnormal projected footprint: keep.
-    if (!(rectW > 0.0f) || !(rectH > 0.0f))
-        return false;
-
-    // Choose the first mip whose nominal source footprint covers the
-    // rectangle's longest axis.
-    uint level = 0;
-    float texel = 1.0f;
-    float rectMax = max(rectW, rectH);
-
-    while (texel < rectMax && level + 1u < pcF.hizMips)
-    {
-        texel *= 2.0f;
-        ++level;
-    }
-
-    // Packed HZB mip dimensions + float offset.
-    // Must match the ceil-halved HZB builder/layout (hzb.cs.hlsl clamped
-    // 2x2 + HzbMipDims: dst = max((src + 1u) >> 1, 1u)).
-    uint lw = pcF.hizWidth;
-    uint lh = pcF.hizHeight;
-    uint off = 0;
-
-    for (uint k = 0; k < level; ++k)
-    {
-        off += lw * lh;
-        lw = max((lw + 1u) >> 1, 1u);
-        lh = max((lh + 1u) >> 1, 1u);
-    }
-
-    if (lw == 0u || lh == 0u)
-        return false;
-
-    // Ceil-halved chain covers the full extent (lw * texel >= width and
-    // lh * texel >= height; the builder's clamped 2x2 folds the odd edge
-    // into the last texel), so there is no dropped row/column and no
-    // represented-extent early-out. A floor-halved chain would need one.
-
-    uint tx0 = (uint) clamp(
-        floor(p.rect.x / texel), 0.0f, (float) (lw - 1u));
-    uint tx1 = (uint) clamp(
-        floor(p.rect.z / texel), 0.0f, (float) (lw - 1u));
-    uint ty0 = (uint) clamp(
-        floor(p.rect.y / texel), 0.0f, (float) (lh - 1u));
-    uint ty1 = (uint) clamp(
-        floor(p.rect.w / texel), 0.0f, (float) (lh - 1u));
-
-    // Empty range must NEVER mean "occluded".
-    if (tx0 > tx1 || ty0 > ty1)
-        return false;
-
-    // Tiny conservative reversed-Z bias. Moving dNear slightly toward the
-    // camera makes borderline comparisons fail toward VISIBLE.
-    float depthBias = max(1e-7f, abs(p.dNear) * 1e-5f);
-    float testDepth = p.dNear + depthBias;
-
-    // MIN HZB under reversed-Z:
-    //
-    // stored = farthest/smallest depth in that coarse texel.
-    //
-    // The sphere is occluded only when its nearest possible depth is
-    // strictly behind EVERY overlapped HZB texel.
-    //
-    // Do not cap this to an assumed 2x2 range. The chosen mip normally
-    // produces <=2 samples/axis, but sampling the actual range is safer.
-    for (uint ty = ty0; ty <= ty1; ++ty)
-    {
-        for (uint tx = tx0; tx <= tx1; ++tx)
-        {
-            float stored = pcF.hzb.Get().texels[off + ty * lw + tx];
-
-            // Reversed-Z: larger means closer.
-            // If the sphere is at or in front of this conservative depth,
-            // it is not fully occluded.
-            if (testDepth >= stored)
-                return false;
-        }
-    }
-
-    return true;
+    GfxHzbCtx ctx;
+    ctx.viewProj = pcF.viewProj;
+    ctx.eye = pcF.eye;
+    ctx.width = pcF.hizWidth;
+    ctx.height = pcF.hizHeight;
+    ctx.mips = pcF.hizMips;
+    ctx.hzb = pcF.hzb;
+    return ctx;
 }
 
 // T4 per-cluster occlusion + contribution: thin composition of
@@ -312,9 +88,11 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     if (!(width > 0.0f) || !(height > 0.0f))
         return false;
 
+    GfxHzbCtx ctx = FilterHzbCtx();
+
     BoundProjection p = ProjectBound(
         pcF.clusters.Get().cluster[clusterIdx].b, // xyz center, w radius
-        pcF.draws.Get().draws[drawIdx].model);
+        pcF.draws.Get().draws[drawIdx].model, ctx);
 
     if (!p.testable)
         return false; // eye inside / near-plane cross / NaN: keep
@@ -335,7 +113,7 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     if (!wantOcc)
         return false;
 
-    return BoundHzbOccluded(p);
+    return BoundHzbOccluded(p, ctx);
 }
 
 // Draw-level texture-demand publication (the designated publisher group
@@ -381,8 +159,9 @@ void PublishDrawDemand(uint drawIdx)
     float coveragePx = 1e9f; // "sharper than any texture"
     if (pcF.hizWidth != 0u && pcF.hizHeight != 0u)
     {
+        GfxHzbCtx ctx = FilterHzbCtx();
         const BoundProjection p = ProjectBound(
-            pcF.meshBounds.Get().centerRadius[d.misc.x], d.model);
+            pcF.meshBounds.Get().centerRadius[d.misc.x], d.model, ctx);
         if (p.testable)
         {
             if (!p.onTarget)
@@ -398,7 +177,7 @@ void PublishDrawDemand(uint drawIdx)
             if (wantOcc && (flags & GFX_CULL_HZBSKIPMASKED) != 0
                 && (d.misc.z & GFX_DRAWSET_MASKED) != 0)
                 wantOcc = false;
-            if (wantOcc && BoundHzbOccluded(p))
+            if (wantOcc && BoundHzbOccluded(p, ctx))
                 return; // provably hidden: nothing of this draw survives
             coveragePx = max(
                 p.rect.z - p.rect.x,
@@ -551,6 +330,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     {
         gLocalCount = 0;
         gClusterCull = 0;
+        gOutBase = 0;
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -558,6 +338,25 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     uint4 header = (uint4) 0;
     if (gid < pcF.batchCount)
         header = pcF.batches.Get().batch[gid];
+
+    // GPU cull chain verdicts (keptParity != 0xFFFFFFFF): the batch cull's
+    // per-slot verdict (LIVE-view sphere + cone) and the draw cull's
+    // per-draw verdict (FROZEN view + HZB draw-bound occlusion). Either 0
+    // -> the whole group exits before any projection work: gfxbatchcull
+    // already wrote the slot's indirect statics (indexCount 0), so nothing
+    // is left to do. Legacy CPU-cull path (keptParity == 0xFFFFFFFF):
+    // both pass-through (the CPU build pre-culled the batch list).
+    const bool gpuChain = pcF.keptParity != 0xFFFFFFFFu;
+    bool slotKept = true;
+    bool drawOk = true;
+    if (gpuChain && gid < pcF.batchCount)
+    {
+        // kept points at THIS frame's parity region (the CPU adds the
+        // region offset to the BDA); keptParity rides the push only as
+        // the chain/legacy sentinel.
+        slotKept = pcF.kept.Get().kept[gid] != 0;
+        drawOk = pcF.cullState.Get().v[header.y] != 0;
+    }
 
     uint2 cluster = (uint2) 0;
     uint triCount = 0;
@@ -568,7 +367,9 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     }
 
     // T4: whole-cluster drop computed once (thread 0 has header + table).
-    if (gid < pcF.batchCount && tid == 0)
+    // Skipped for verdict-dropped slots (already gone; the containment
+    // argument in PublishDrawDemand covers the draw-bound verdict too).
+    if (gid < pcF.batchCount && tid == 0 && slotKept && drawOk)
     {
         if (ClusterOccluded(header.x, header.y))
             gClusterCull = 1;
@@ -585,7 +386,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     bool cull = true;
     uint slot = 0;
     uint3 tri = (uint3) 0;
-    if (gid < pcF.batchCount && tid < triCount)
+    if (gid < pcF.batchCount && tid < triCount && slotKept && drawOk)
     {
         uint baseIndex = cluster.x + tid * 3;
         tri = uint3(
@@ -615,24 +416,63 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
 
     GroupMemoryBarrierWithGroupSync();
 
-    // This group owns command gid exclusively: plain stores, no atomics.
-    // firstIndex is absolute into the static index monoblock (indexBase +
-    // output slot); the input-assembly index binding never switches buffers.
+    // This group owns command gid exclusively for the indexCount/firstIndex
+    // writes. GPU cull mode: the surviving triangles allocate the group's
+    // filtered-index range through the cullState counter ATOMICALLY
+    // (candidate slots are positional and pre-sized; survivors are not —
+    // the counter turns them into a compacted ring fill, clamped at the
+    // flight slice's capacity exactly the way the old CPU kMaxBatches cap
+    // dropped overflow batches with a warning).
+    // firstIndex stays absolute into the static index monoblock (indexBase +
+    // output base); the input-assembly index binding never switches buffers.
     if (gid < pcF.batchCount && tid == 0)
     {
-        pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
-        pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + header.z;
-        pcF.indirect.Get().cmds[gid].vertexOffset = 0; // indices are heap-global ids
-        pcF.indirect.Get().cmds[gid].firstInstance = header.y; // draw id for VS
-        pcF.indirect.Get().cmds[gid].instanceCount = 1;
+        if (gpuChain)
+        {
+            uint outBase = 0;
+            bool fits = gLocalCount > 0;
+            if (fits)
+            {
+                InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
+                    gLocalCount, outBase);
+                fits = outBase + gLocalCount <= GFX_MAX_FILTERED;
+            }
+            if (fits)
+            {
+                gOutBase = outBase;
+                pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
+                pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + outBase;
+                pcF.indirect.Get().cmds[gid].vertexOffset = 0; // heap-global ids
+                pcF.indirect.Get().cmds[gid].firstInstance = header.y;
+                pcF.indirect.Get().cmds[gid].instanceCount = 1;
+            }
+            else
+            {
+                gOutBase = 0xFFFFFFFFu; // dropped (empty or ring cap): no writes
+                pcF.indirect.Get().cmds[gid].indexCount = 0;
+            }
+        }
+        else
+        {
+            // Legacy CPU-cull path: the CPU build pre-sized the positional
+            // outputOffset (header.z) — no atomics, exactly as before.
+            gOutBase = header.z;
+            pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
+            pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + header.z;
+            pcF.indirect.Get().cmds[gid].vertexOffset = 0; // indices are heap-global ids
+            pcF.indirect.Get().cmds[gid].firstInstance = header.y; // draw id for VS
+            pcF.indirect.Get().cmds[gid].instanceCount = 1;
+        }
     }
 
+    // AllMemory covers BOTH the groupshared gOutBase read below and the
+    // device-memory ordering the old DeviceMemoryBarrier provided.
     GroupMemoryBarrierWithGroupSync();
-    DeviceMemoryBarrierWithGroupSync();
+    AllMemoryBarrierWithGroupSync();
 
-    if (gid < pcF.batchCount && !cull)
+    if (gid < pcF.batchCount && !cull && gOutBase != 0xFFFFFFFFu)
     {
-        uint outBase = header.z + slot; // reserved slot + intra-group slot
+        uint outBase = gOutBase + slot; // group base + intra-group slot
         pcF.filtered.Get().idx[outBase + 0] = tri.x;
         pcF.filtered.Get().idx[outBase + 1] = tri.y;
         pcF.filtered.Get().idx[outBase + 2] = tri.z;

@@ -1856,6 +1856,195 @@ void TestJitterCullStability() {
 	Check(keepsSphere(vpB, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-b");
 }
 
+// ---------------------------------------------------------------------------
+// GPU cull chain: the CPU seed step (BuildBatches with State::gpuCull).
+//
+// The chain's CPU side emits the CANDIDATE layout only — no per-cluster
+// tests, no publisher flags (gfxbatchcull assigns those on the GPU), the
+// per-draw candidate-slot base riding Draw::candidateBase, and the
+// (bucket, material) seed/remainder ranges over the positional slots
+// (bucket-major: opaque span first, exactly the legacy seed emitter's
+// command order).
+// ---------------------------------------------------------------------------
+
+void TestGpuCandidateBuild() {
+	using namespace smvk::gfx;
+	State s{};
+	// Four single-triangle meshes (each cooks to exactly 1 cluster) so
+	// candidateBase walks 0,1,2,... across the sorted draws.
+	const glm::mat4 ident(1.0f);
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	const uint32_t m2 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
+	const uint32_t m3 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(6, 0, 0), glm::vec3(7, 0, 0), glm::vec3(6, 1, 0)), 9);
+	Check(m0 != UINT32_MAX && m1 != UINT32_MAX
+		&& m2 != UINT32_MAX && m3 != UINT32_MAX, "gfx.gpu.mesh-ids");
+
+	// One camera; m3's draw sits far OUTSIDE the frustum to prove the GPU
+	// build never runs a CPU cull (the legacy build would drop it).
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(3.5f, 0.5f, 50.0f);
+	const glm::mat4 view =
+		glm::lookAt(eye, glm::vec3(3.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(30.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	v.cullFlags = CullFlagBit_Frustum | CullFlagBit_Backface | CullFlagBit_FlipWinding;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	// Mixed buckets + materials, shuffled push order (the sort must group
+	// bucket-major then material): masked material 9 first in push order,
+	// opaque materials 3/7 after.
+	PushDraw(s, 0, m3, ident, 9, 0, DrawSetBit_Masked);
+	PushDraw(s, 0, m1, ident, 7, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m2, ident, 7, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, ident, 3, 0, DrawSetBit_Opaque);
+	s.gpuCull = true;
+	BuildBatches(s, 0);
+
+	const View& out = s.views[0];
+	// ALL four draws' clusters are candidates (m3 is far outside the
+	// frustum — the GPU batch cull owns that verdict now).
+	Check(out.batchCount == 4, "gfx.gpu.candidates-all");
+	Check(out.stats.clustersProcessed == 4, "gfx.gpu.candidates-counted");
+	Check(out.stats.clustersCulled == 0, "gfx.gpu.no-cpu-cull");
+	// Candidate bases walk the sorted order 0,1,2,3; publisher flags are
+	// the GPU batch cull's (first KEPT slot) — never CPU-set here.
+	bool basesOk = true, flagsZero = true, outputZero = true;
+	for (uint32_t d = 0; d < (uint32_t)out.drawConstants.size(); ++d) {
+		if (out.drawConstants[d].candidateBase != d)
+			basesOk = false;
+	}
+	for (uint32_t b = 0; b < out.batchCount; ++b) {
+		if (out.batches[b].flags != 0)
+			flagsZero = false;
+		if (out.batches[b].outputOffset != 0)
+			outputZero = false;
+	}
+	Check(basesOk, "gfx.gpu.candidate-bases");
+	Check(flagsZero, "gfx.gpu.publisher-gpu-assigned");
+	Check(outputZero, "gfx.gpu.atomic-offsets");
+
+	// Material ranges cover the candidates contiguously (the Main indexed
+	// leg's positional contract). Bucket-major order: opaque (3, 7) first,
+	// masked (9) last.
+	uint32_t covered = 0;
+	bool contig = true, orderOk = !out.materialRanges.empty();
+	uint32_t prevSet = 0, prevMat = 0;
+	for (size_t i = 0; i < out.materialRanges.size(); ++i) {
+		const MaterialRange& r = out.materialRanges[i];
+		if (r.firstCommand != covered)
+			contig = false;
+		covered += r.commandCount;
+		const uint32_t drawSet = out.drawConstants[out.batches[r.firstCommand].draw].drawSet;
+		if (i > 0 && (drawSet < prevSet || (drawSet == prevSet && r.material < prevMat)))
+			orderOk = false;
+		prevSet = drawSet;
+		prevMat = r.material;
+	}
+	Check(contig, "gfx.gpu.material-ranges-contiguous");
+	Check(covered == out.batchCount, "gfx.gpu.material-ranges-cover");
+	Check(orderOk, "gfx.gpu.material-ranges-bucket-major");
+	Check(out.materialRanges.size() == 3, "gfx.gpu.material-ranges-count");
+
+	// Seed/remainder ranges: the positional candidate layout, bucket-major
+	// (opaque first) and coalesced per (bucket, material) across lmChunk;
+	// the opaque span is exactly the leading opaque candidates.
+	bool cullOk = !out.cullRanges.empty();
+	uint32_t cullCover = 0, cullOpaque = 0;
+	for (size_t i = 0; i < out.cullRanges.size(); ++i) {
+		const SeedRange& r = out.cullRanges[i];
+		if (r.firstCommand != cullCover)
+			cullOk = false;
+		if (i == 0 && r.drawSet != DrawSetBit_Opaque)
+			cullOk = false;
+		if (i > 0 && r.drawSet < out.cullRanges[i - 1].drawSet)
+			cullOk = false; // opaque runs before masked
+		cullCover += r.commandCount;
+		if (r.drawSet == DrawSetBit_Opaque)
+			cullOpaque += r.commandCount;
+	}
+	Check(cullOk, "gfx.gpu.cull-ranges-bucket-major");
+	Check(cullCover == out.batchCount, "gfx.gpu.cull-ranges-cover");
+	Check(out.cullOpaqueCommands == cullOpaque, "gfx.gpu.cull-opaque-span");
+	Check(out.cullOpaqueCommands == 3, "gfx.gpu.cull-opaque-count");
+}
+
+// ---------------------------------------------------------------------------
+// Shadow mesh-bound fast discard (CullShadowMeshBound): the whole draw
+// leaves the per-cluster meshlet loop when the mesh union bound misses the
+// shadow view, or (contribution cull) when it cannot touch the main
+// camera's view at all.
+// ---------------------------------------------------------------------------
+
+void TestShadowMeshGate() {
+	using namespace smvk::gfx;
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	// Main camera at the origin looking -Z (fov 90: half-width == depth);
+	// the shadow view shares the axis but sits 10 units back (z=10), also
+	// looking -Z — a superset frustum in front of it. On-axis bounds are
+	// inside both; z in (0, 10) is behind the MAIN camera but inside the
+	// shadow view (the contribution-gate case); z > 10 is behind both.
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const glm::vec3 eyeA(0.0f, 0.0f, 0.0f);
+	const glm::mat4 viewA =
+		glm::lookAt(eyeA, glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
+	const uint32_t rvA = views.AllocateMainView(proj * viewA, { 800.0f, 600.0f });
+	const glm::vec3 eyeB(0.0f, 0.0f, 10.0f);
+	const glm::mat4 viewB =
+		glm::lookAt(eyeB, glm::vec3(0.0f, 0.0f, 9.0f), glm::vec3(0, 1, 0));
+	const uint32_t rvB = views.AllocateView(proj * viewB, { 800.0f, 600.0f },
+		smvk::RenderViewFlagBit_Custom);
+	const smvk::RenderView& mainView = views.Get(rvA);
+	const smvk::RenderView& shadowView = views.Get(rvB);
+
+	const glm::mat4 ident(1.0f);
+	// On-axis, in front of both: kept either way.
+	const glm::vec4 between(0.0f, 0.0f, -5.0f, 1.0f);
+	Check(!CullShadowMeshBound(between, ident, shadowView, nullptr),
+		"gfx.shadow-gate.inside-both-keeps");
+	Check(!CullShadowMeshBound(between, ident, shadowView, &mainView),
+		"gfx.shadow-gate.contribution-inside-keeps");
+	// Behind the MAIN camera, inside the shadow view: kept without the
+	// contribution gate, dropped with it (a caster the main view cannot
+	// see cannot contribute to it).
+	const glm::vec4 behindMain(0.0f, 0.0f, 5.0f, 1.0f);
+	Check(!CullShadowMeshBound(behindMain, ident, shadowView, nullptr),
+		"gfx.shadow-gate.no-contribution-view-keeps");
+	Check(CullShadowMeshBound(behindMain, ident, shadowView, &mainView),
+		"gfx.shadow-gate.contribution-drops");
+	// Behind the shadow camera too: dropped with or without the gate.
+	const glm::vec4 outsideShadow(0.0f, 0.0f, 15.0f, 1.0f);
+	Check(CullShadowMeshBound(outsideShadow, ident, shadowView, nullptr),
+		"gfx.shadow-gate.shadow-frustum-drops");
+	Check(CullShadowMeshBound(outsideShadow, ident, shadowView, &mainView),
+		"gfx.shadow-gate.both-drops");
+	// Far off-axis (well past the 45-degree half-angle at depth 5): gone.
+	const glm::vec4 tiny(40.0f, 0.0f, -5.0f, 0.25f);
+	Check(CullShadowMeshBound(tiny, ident, shadowView, &mainView),
+		"gfx.shadow-gate.tiny-bound-drops");
+	// Conservative under scale: an inside bound with uniform scale 2 (the
+	// world center moves to z=-10, the radius doubles) stays kept.
+	const glm::mat4 scale2 = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+	Check(!CullShadowMeshBound(between, scale2, shadowView, &mainView),
+		"gfx.shadow-gate.scaled-bound-conservative");
+}
+
 } // namespace
 
 int main() {
@@ -1877,6 +2066,8 @@ int main() {
 	TestVisKeyMerge();
 	TestSeedDuplicateBatches();
 	TestJitterCullStability();
+	TestGpuCandidateBuild();
+	TestShadowMeshGate();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

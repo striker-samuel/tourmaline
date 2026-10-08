@@ -8308,6 +8308,17 @@ namespace engine {
 			// Claim ALL shadow view slots before dispatching any build: the
 			// slot vector must not grow while workers hold element refs
 			// (gfx::ShadowView threading contract).
+			//
+			// Contribution view (mesh-bound fast discard in BuildShadowList):
+			// the main camera's view — a caster that cannot touch it
+			// contributes nothing to it (the indirect-path twin of the
+			// direct fallback's item-level m_shadowContributionCulling).
+			// The main view was allocated above (indices stable for the
+			// frame); RenderViewSet outlives the worker builds.
+			const smvk::RenderView* shadowContributionView = nullptr;
+			if (m_shadowContributionCulling
+				&& mainRenderView != smvk::RenderViewSet::kInvalidIndex)
+				shadowContributionView = &m_renderViews.Get(mainRenderView);
 			m_gfxRenderer.BeginShadowFrame();
 			if (cascadeViewsValid)
 				for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
@@ -8315,14 +8326,16 @@ namespace engine {
 						*m_context, *m_rendergraph,
 						m_renderViews.Get(cascadeViewBase + ci),
 						smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-						CascadeTileExtent().width, CascadeTileExtent().height);
+						CascadeTileExtent().width, CascadeTileExtent().height,
+						shadowContributionView);
 			if (spotViewsValid)
 				for (uint32_t si = 0; si < spotSlotCount; ++si)
 					spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
 						*m_context, *m_rendergraph,
 						m_renderViews.Get(spotViewBase + si),
 						smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-						SPOT_SHADOW_RES, SPOT_SHADOW_RES);
+						SPOT_SHADOW_RES, SPOT_SHADOW_RES,
+						shadowContributionView);
 			// Cooperative per-view list builds: workers overlap the rest of
 			// the frame's pass recording; futures join before Execute.
 			if (!m_shadowWorkers) {
