@@ -818,6 +818,14 @@ struct AppResources {
 	// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
 	// Selected at draw time based on loaded GI assets (WorldRenderer::GIVariant).
 	smvk::ShaderProgram mainProgramGi[4];
+	// Standard-material twins (default_lit .std/.giNstd — MAT_STANDARD: the
+	// layered machinery compiled out). Bound for materials with
+	// layerMaterials.w <= 1; layered materials keep the programs above
+	// (fail-safe: missing std modules fall back to the monolith picks).
+	smvk::Holder<smvk::ShaderModuleHandle> fragStdModule;
+	smvk::ShaderProgram mainProgramStd;
+	smvk::Holder<smvk::ShaderModuleHandle> fragLitGiStdModules[4];
+	smvk::ShaderProgram mainProgramGiStd[4];
 	// Fixed-lobe lit FS twins (default_lit SG_LM_LOBE_COUNT variants):
 	// same VS + per-count SG evaluation, bound per filtered material
 	// range (see GfxRenderer::FilteredLitProgram). Missing modules leave
@@ -1031,6 +1039,12 @@ public:
 		}
 		return GIVariant::None;
 	}
+	// Direct-path lit program for one material: the active GI variant's
+	// program (or base), with the standard-material twin swapped in for
+	// non-layered materials (layerMaterials.w <= 1; layered materials and
+	// missing twins keep the monolith — fail-safe). Mirrors the filtered
+	// leg's GfxRenderer::FilteredProgramGi/FilteredLitProgram picks.
+	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
 
 	// HOSTED drive API (the editor embeds this renderer offscreen —
 	// App::RequestHostedBoot + the WYSIWYG compose pass). Public

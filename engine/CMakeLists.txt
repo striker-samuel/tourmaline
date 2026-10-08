@@ -193,6 +193,15 @@ compile_shaders(
         "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
         "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
         "default_lit.frag.hlsl|.gi3|GI_FULL=1"
+        # Standard-material twins (MAT_STANDARD: no layered machinery —
+        # the 3 extra MaterialValues + per-layer texture loops compile
+        # out; GfxRenderer binds them for layerMaterials.w <= 1, the
+        # monolith keeps layered materials — fail-safe fallback).
+        "default_lit.frag.hlsl|.std|MAT_STANDARD=1"
+        "default_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
+        "default_lit.frag.hlsl|.gi1std|GI_OCTREE=1|MAT_STANDARD=1"
+        "default_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
+        "default_lit.frag.hlsl|.gi3std|GI_FULL=1|MAT_STANDARD=1"
         # Mesh-path FS twins (gfxmesh_lit: material from a flat varying):
         # same SG/GI permutations, selected exactly like the indexed leg
         # (see GfxRenderer::MeshProgramFor).
@@ -204,4 +213,9 @@ compile_shaders(
         "gfxmesh_lit.frag.hlsl|.gi1|GI_OCTREE=1"
         "gfxmesh_lit.frag.hlsl|.gi2|GI_REGULAR=1"
         "gfxmesh_lit.frag.hlsl|.gi3|GI_FULL=1"
+        "gfxmesh_lit.frag.hlsl|.std|MAT_STANDARD=1"
+        "gfxmesh_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
+        "gfxmesh_lit.frag.hlsl|.gi1std|GI_OCTREE=1|MAT_STANDARD=1"
+        "gfxmesh_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
+        "gfxmesh_lit.frag.hlsl|.gi3std|GI_FULL=1|MAT_STANDARD=1"
 )

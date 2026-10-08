@@ -378,7 +378,19 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // state (shading model, alpha mode) always comes from layer 0.
     // ---------------------------------------------------------------
     int layerMode = mat.layerMaterials.w;
+#if defined(MAT_STANDARD)
+    // Standard-material variant (MAT_STANDARD — the .std / .giNstd twins):
+    // the layered machinery (the 3 extra MaterialValues fetches + the
+    // per-layer unrolled texture loops) compiles out entirely — DXC
+    // const-folds the false branches (verified with a probe: zero
+    // OpBranch/OpImageSample emitted, register pressure drops with the
+    // dead paths). The runtime bind picks this twin for materials with
+    // layerMaterials.w <= 1; layered materials keep the monolith twin
+    // (fail-safe: a missed bind renders correct, just slower).
+    const bool layered = false;
+#else
     const bool layered = (layerMode > 1);
+#endif
     float4 layerW = layered
         ? IN.color / max(IN.color.x + IN.color.y + IN.color.z + IN.color.w, 1e-6f)
         : float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -758,6 +770,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         // Clamp to finite half range: the RGBA16F target rounds anything
         // above 65504 to +inf (specular x lux-scale intensity overflows),
         // and inf texels NaN the bloom/tonemap chain.
+        // MRT contract (see PSOut): every early return writes BOTH outputs
+        // — unwritten attachment content is undefined, and the SSGI compose
+        // pass reconstructs hdr - aoTerm*(1-aoEff) from it (garbage aoTerm
+        // poisons unlit pixels the moment AO is on).
+        OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);

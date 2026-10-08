@@ -83,6 +83,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// scene is gfx-clustered, so the base FS shaded everything).
 	smvk::ShaderModuleHandle litFragGiModules_[4]{};
 	smvk::ShaderProgram filteredProgramGi_[4]{};
+	// Standard-material twins (MAT_STANDARD — the layered machinery
+	// compiled out; bound for layerMaterials.w <= 1 materials, monolith
+	// keeps layered ones): base + GI permutation set. Missing modules
+	// leave shaderCount 0 and the picks fall back to the monolith twins.
+	smvk::ShaderProgram filteredProgramStd{};
+	smvk::ShaderProgram filteredProgramGiStd_[4]{};
 	// Wireframe (P) twin of filteredProgram (same VS + default_wire.frag):
 	// Main binds it instead of the lit A2C/filtered programs while the
 	// wireframe raster override is on, so line pixels skip the heavy lit
@@ -111,6 +117,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	smvk::ShaderProgram meshLitSg_[4]{};
 	smvk::Holder<smvk::ShaderModuleHandle> meshFsGiModules_[4]{};
 	smvk::ShaderProgram meshProgramGi_[4]{};
+	// Mesh std twins (MAT_STANDARD on the mesh FS twin): MeshProgramFor
+	// picks them for non-layered materials; missing modules fall back to
+	// the monolith twins (fail-safe).
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsStdModule;
+	smvk::ShaderProgram meshProgramStd{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsGiStdModules_[4]{};
+	smvk::ShaderProgram meshProgramGiStd_[4]{};
 	// Seed-depth programs (T3): draw the previous frame's visible clusters
 	// straight from the cluster-ordered index heap to prime depth.
 	smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
@@ -231,6 +244,29 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Wireframe flat-line FS module (default_wire.frag): pairs with the
 	// filtered VS for the wireframe twin of FilteredProgram().
 	void ConfigureWireFrag(smvk::ShaderModuleHandle wireFrag) { wireFrag_ = wireFrag; }
+	// Standard-material lit FS module (default_lit .std twin — MAT_STANDARD:
+	// the layered machinery compiled out). Bound for materials with
+	// layerMaterials.w <= 1; layered materials keep the monolith (fail-safe
+	// fallback: FilteredProgramStd/FilteredProgramGiStd pick the monolith
+	// when the twin is missing or the material is layered).
+	void ConfigureFragStd(smvk::ShaderModuleHandle fragStd) { mainFragStd_ = fragStd; }
+	void ConfigureLitFragGiStd(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			litFragGiStdModules_[variantIndex] = frag;
+	}
+	// Material layered-ness resolver (the std-twin pick): the GfxRenderer
+	// walks material ranges without the app's World, so the app injects
+	// "is this world material layered" (layerMaterials.w > 1). Unset
+	// resolver = every material layered = monolith everywhere (today's
+	// behavior, fail-safe).
+	void ConfigureMaterialLayered(std::function<bool(uint32_t)> resolve) {
+		materialLayered_ = std::move(resolve);
+	}
+	[[nodiscard]] bool MaterialLayered(uint32_t materialId) const {
+		if (materialLayered_)
+			return materialLayered_(materialId);
+		return true; // unknown -> monolith (fail-safe)
+	}
 	// Material depth-phase state resolver (cull + alpha-tested flag) for
 	// the range-based depth recorders (seed/remainder/shadow ranges):
 	// those walks only carry a material id, and the material table
@@ -320,10 +356,11 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	// Mesh program for a range's variant (mirrors the indexed leg's
 	// program selection exactly: GI twin when active, else the sg twin
-	// for the lobe count, else the generic mesh program). Null when the
-	// mesh system itself is down (base program invalid).
+	// for the lobe count, else the generic mesh program; the std twins
+	// replace the generic/gi picks for non-layered materials). Null
+	// when the mesh system itself is down (base program invalid).
 	[[nodiscard]] smvk::ShaderProgram* MeshProgramFor(bool giActive,
-		uint32_t giVariant, uint32_t lobeCount);
+		uint32_t giVariant, uint32_t lobeCount, bool layered);
 	// CPU side of the mesh eligibility contract: a mesh twin exists for
 	// the range's variant and every batch's draw is opaque + single-sided.
 	// The indexed loop skips exactly these ranges; the record partitions
@@ -364,33 +401,52 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// whole frame), so the batch bind consults it FIRST: the lobe-count
 	// sgN twins predate the GI permutations (no -DGI_* in their compiles)
 	// and would compile the GI ambient + the F8 debug views out.
-	[[nodiscard]] smvk::ShaderProgram& FilteredProgramGi(uint32_t giVariant) {
-		if (giVariant <= 3u && filteredProgramGi_[giVariant].shaderCount == 2)
+	// layered=false swaps in the .giNstd twin when built (MAT_STANDARD:
+	// the layered machinery compiled out — see ConfigureFragStd).
+	[[nodiscard]] smvk::ShaderProgram& FilteredProgramGi(uint32_t giVariant,
+		bool layered = true) {
+		if (giVariant <= 3u && filteredProgramGi_[giVariant].shaderCount == 2) {
+			if (!layered && filteredProgramGiStd_[giVariant].shaderCount == 2)
+				return filteredProgramGiStd_[giVariant];
 			return filteredProgramGi_[giVariant];
-		return filteredProgram;
+		}
+		return layered ? filteredProgram
+			: (filteredProgramStd.shaderCount == 2 ? filteredProgramStd : filteredProgram);
 	}
 	// Lit program for a material range's cooked lobe count: the matching
 	// fixed-count twin when built, else the generic FilteredProgram()
 	// (unknown/mixed counts incl. 0xFFFFFFFFu = unlightmapped draws).
-	[[nodiscard]] smvk::ShaderProgram& FilteredLitProgram(uint32_t lobeCount) {
+	// layered=false prefers the .std base twin over the generic monolith
+	// (the sgN twins stay monolith-only — lightmap lobe specialization
+	// only binds in no-GI scenes, and std materials fall back safely).
+	[[nodiscard]] smvk::ShaderProgram& FilteredLitProgram(uint32_t lobeCount,
+		bool layered = true) {
 		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
 			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+		if (li <= 3 && filteredLitSg_[li].shaderCount == 2 && layered)
+			return filteredLitSg_[li];
+		if (!layered && filteredProgramStd.shaderCount == 2)
+			return filteredProgramStd;
 		if (li <= 3 && filteredLitSg_[li].shaderCount == 2)
 			return filteredLitSg_[li];
 		return filteredProgram;
 	}
-	// True for the generic lit program, its A2C twin and every built
-	// lobe-count twin — the wireframe override resolves all of them to
-	// the flat twin (wireTwinOf in the Main pass).
+	// True for the generic lit program, its A2C twin, every built lobe-count
+	// twin and every std twin — the wireframe override resolves all of them
+	// to the flat twin (wireTwinOf in the Main pass).
 	[[nodiscard]] bool IsFilteredLitProgram(const smvk::ShaderProgram& prog) const {
-		if (&prog == &filteredProgram || &prog == &filteredProgramA2C)
+		if (&prog == &filteredProgram || &prog == &filteredProgramA2C
+			|| &prog == &filteredProgramStd)
 			return true;
 		for (uint32_t li = 0; li < 4; ++li)
 			if (&prog == &filteredLitSg_[li])
 				return true;
-		for (uint32_t gi = 0; gi < 4; ++gi)
+		for (uint32_t gi = 0; gi < 4; ++gi) {
 			if (&prog == &filteredProgramGi_[gi])
 				return true;
+			if (&prog == &filteredProgramGiStd_[gi])
+				return true;
+		}
 		return false;
 	}
 	// A2C twin for Masked material ranges in 2x MSAA Main (invalid when
@@ -570,6 +626,11 @@ private:
 	std::function<MaterialDepthState(uint32_t)> materialDepth_{};
 	smvk::ShaderModuleHandle mainA2CFrag_{};
 	smvk::ShaderModuleHandle wireFrag_{};
+	// Standard-material lit FS modules (the .std/.giNstd twins; see
+	// ConfigureFragStd/ConfigureLitFragGiStd) + the layered-ness resolver.
+	smvk::ShaderModuleHandle mainFragStd_{};
+	smvk::ShaderModuleHandle litFragGiStdModules_[4]{};
+	std::function<bool(uint32_t)> materialLayered_{};
 	// Lightmap chart transform GPU mirror (see EnsureChartXforms).
 	smvk::Holder<smvk::BufferHandle> lmXformsBuf_;
 	uint64_t lmXformsAddr_ = 0;

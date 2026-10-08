@@ -454,6 +454,31 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
 // ---------------------------------------------------------------------------
 namespace engine {
 
+	smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
+		const GIVariant giVar = GetActiveGIVariant();
+		const uint32_t gv = static_cast<uint32_t>(giVar);
+		// Layered-ness for the std-twin pick (mirrors the GfxRenderer
+		// resolver: unknown material = layered = monolith, fail-safe).
+		const bool layered = [&]() {
+			if (!m_world)
+				return true;
+			const smvk::Material* mat = m_world->GetMaterial(materialId);
+			return mat ? (mat->values.layerMaterials.w > 1) : true;
+		}();
+		const bool stdReady = !layered
+			&& m_resources.mainProgramStd.shaderCount == 2;
+		if (giVar != GIVariant::None) {
+			smvk::ShaderProgram& gi = m_resources.mainProgramGi[gv];
+			if (gi.shaderCount == 2) {
+				if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2)
+					return m_resources.mainProgramGiStd[gv];
+				return gi;
+			}
+			return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
+		}
+		return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
+	}
+
 	void WorldRenderer::Configure(ScenePassConfig passes) {
 		m_passes = passes;
 		// Debug: force the AA mode for headless A/B benches (the UI combo
@@ -1212,6 +1237,59 @@ namespace engine {
 					<< gi << " unavailable - falls back to generic lit\n";
 			}
 		}
+		// Standard-material lit twins (default_lit .std/.giNstd — MAT_STANDARD:
+		// the layered machinery compiled out; bound for layerMaterials.w <= 1).
+		// Non-fatal: missing modules fall back to the monolith picks.
+		try {
+			m_resources.fragStdModule = m_context->CreateShaderModule(
+				readFile("content/shaders/default_lit.frag.hlsl.std.spv"), "fragLitStd");
+			m_resources.mainProgramStd = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragStdModule,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] std-material lit variant unavailable"
+				" - non-layered materials keep the monolith\n";
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			try {
+				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
+					+ std::to_string(gi) + "std.spv";
+				m_resources.fragLitGiStdModules[gi] =
+					m_context->CreateShaderModule(readFile(path), "fragLitGiStd");
+				m_resources.mainProgramGiStd[gi] = {
+					.shaders = {
+						smvk::Shader{
+							.module = m_resources.vertShader,
+							.entryPoint = "mainVS",
+							.stage = smvk::ShaderStage::Vertex
+						},
+						smvk::Shader{
+							.module = m_resources.fragLitGiStdModules[gi],
+							.entryPoint = "mainPS",
+							.stage = smvk::ShaderStage::Fragment
+						}
+					},
+					.shaderCount = 2
+				};
+			}
+			catch (...) {
+				std::cerr << "[WorldRenderer] std-material GI variant " << gi
+					<< " unavailable - non-layered materials keep the monolith\n";
+			}
+		}
 		if (!m_resources.fragA2CShader.empty()) {
 			m_resources.mainProgramA2C = {
 				.shaders = {
@@ -1866,6 +1944,21 @@ namespace engine {
 			// scene (the direct draws select mainProgramGi separately).
 			for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
 				m_gfxRenderer.ConfigureLitFragGi(gi, m_resources.fragLitGiModules[gi]);
+			// Standard-material twins (MAT_STANDARD, layered machinery out):
+			// the filtered/mesh picks use them for layerMaterials.w <= 1.
+			m_gfxRenderer.ConfigureFragStd(m_resources.fragStdModule);
+			for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+				m_gfxRenderer.ConfigureLitFragGiStd(gi, m_resources.fragLitGiStdModules[gi]);
+			// Material layered-ness for the std-twin pick (same lazy-resolve
+			// pattern as ConfigureMaterialDepth — the world's material table
+			// is authoritative; unknown = layered = monolith, fail-safe).
+			m_gfxRenderer.ConfigureMaterialLayered(
+				[this](uint32_t materialId) -> bool {
+				if (!m_world)
+					return true;
+				const smvk::Material* mat = m_world->GetMaterial(materialId);
+				return mat ? (mat->values.layerMaterials.w > 1) : true;
+			});
 			// Main-view seed masked phase is reversed-Z: prefer the
 			// conservative shadow_rev module (falls back to the normal-Z
 			// shadow.frag module — perf hint, not correctness).
@@ -7579,12 +7672,9 @@ namespace engine {
 					return;
 				const uint32_t materialId = item.material;
 				if (materialId != boundMaterial) {
-					// Select GI permutation program based on loaded assets
-					const engine::GIVariant giVar = GetActiveGIVariant();
-					smvk::ShaderProgram& prog = m_resources.mainProgramGi[static_cast<uint32_t>(giVar)];
-					if (prog.shaderCount == 0) {
-						prog = m_resources.mainProgram; // fallback
-					}
+					// Select GI permutation program based on loaded assets +
+					// material layered-ness (std twin for non-layered).
+					smvk::ShaderProgram& prog = MainLitProgramFor(materialId);
 					bindForMaterial(materialId, prog, opaqueDepth);
 					boundMaterial = materialId;
 				}
@@ -7653,9 +7743,7 @@ namespace engine {
 					}
 					else {
 						bindForMaterial(d.materialId,
-							GetActiveGIVariant() != GIVariant::None && m_resources.mainProgramGi[static_cast<uint32_t>(GetActiveGIVariant())].shaderCount
-							? m_resources.mainProgramGi[static_cast<uint32_t>(GetActiveGIVariant())]
-							: m_resources.mainProgram,
+							MainLitProgramFor(d.materialId),
 							transparentDepth);
 					}
 					boundMaterial = d.materialId;
@@ -9824,10 +9912,14 @@ namespace engine {
 					if (meshActive && m_gfxRenderer.RangeMeshEligible(gfxSlot, ri,
 						giVar != engine::GIVariant::None, uint32_t(giVar)))
 						continue;
-					const uint32_t materialId = gfxRanges[ri].material;
-					smvk::ShaderProgram& litProg = giVar != engine::GIVariant::None
-						? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar))
-						: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount);
+				const uint32_t materialId = gfxRanges[ri].material;
+				// Std twin pick per range (non-layered materials bind the
+				// MAT_STANDARD FS — the layered machinery compiled out;
+				// layered keep the monolith).
+				const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
+				smvk::ShaderProgram& litProg = giVar != engine::GIVariant::None
+					? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar), rangeLayered)
+					: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount, rangeLayered);
 					bindForMaterial(materialId, litProg,
 						m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
 					IRenderer::PushConstants matPC{};

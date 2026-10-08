@@ -121,6 +121,24 @@ namespace engine {
 				filteredProgramGi_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
 			}
 		}
+		// Standard-material twins (same filtered VS + the .std/.giNstd lit
+		// FS — MAT_STANDARD, the layered machinery compiled out). Best-effort
+		// per module: missing variants fall back to the monolith twins
+		// (FilteredProgramGi/FilteredLitProgram pick per layered-ness).
+		if (filteredProgramStd.shaderCount == 0
+			&& !filteredVsModule.empty() && !mainFragStd_.empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = mainFragStd_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredProgramStd = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (filteredProgramGiStd_[gi].shaderCount == 0
+				&& !filteredVsModule.empty() && !litFragGiStdModules_[gi].empty()) {
+				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+				smvk::Shader fs{ .module = litFragGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				filteredProgramGiStd_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
+			}
+		}
 		// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 		// emits a single entry point per file). Missing seed frag
 		// (ConfigureSeedFrag not called) disables seeding but leaves the
@@ -244,23 +262,67 @@ namespace engine {
 				meshProgramGi_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
 			}
 		}
+		// Mesh std twins (MAT_STANDARD on the mesh FS twin): best-effort,
+		// missing modules fall back to the monolith twins (MeshProgramFor).
+		if (meshProgramStd.shaderCount == 0 && !meshMsModule.empty()) {
+			try {
+				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+				const std::string variant = base.substr(0, base.size() - 4) + ".std.spv";
+				meshFsStdModule = ctx.CreateShaderModule(
+					readFile(variant), "gfxMeshFsStd");
+			}
+			catch (...) {
+			}
+			if (!meshFsStdModule.empty()) {
+				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+				smvk::Shader fs{ .module = meshFsStdModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				meshProgramStd = { .shaders = { ms, fs }, .shaderCount = 2 };
+			}
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (meshProgramGiStd_[gi].shaderCount != 0 || meshMsModule.empty())
+				continue;
+			try {
+				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
+				const std::string variant = base.substr(0, base.size() - 4)
+					+ ".gi" + std::to_string(gi) + "std.spv";
+				meshFsGiStdModules_[gi] = ctx.CreateShaderModule(
+					readFile(variant), "gfxMeshFsGiStd");
+			}
+			catch (...) {
+			}
+			if (!meshFsGiStdModules_[gi].empty()) {
+				smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+				smvk::Shader fs{ .module = meshFsGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				meshProgramGiStd_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
+			}
+		}
 		smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
 	}
 
 	smvk::ShaderProgram* GfxRenderer::MeshProgramFor(bool giActive,
-		uint32_t giVariant, uint32_t lobeCount) {
+		uint32_t giVariant, uint32_t lobeCount, bool layered) {
 		if (!MeshProgramsValid())
 			return nullptr;
 		// Mirrors the indexed leg's program selection exactly (GI twin
 		// when active, else the sg twin for the lobe count, else generic —
-		// same fallbacks as FilteredProgramGi/FilteredLitProgram).
+		// same fallbacks as FilteredProgramGi/FilteredLitProgram; the std
+		// twins replace the generic/gi picks for non-layered materials).
 		if (giActive) {
-			if (giVariant <= 3u && meshProgramGi_[giVariant].shaderCount == 2)
+			if (giVariant <= 3u && meshProgramGi_[giVariant].shaderCount == 2) {
+				if (!layered && meshProgramGiStd_[giVariant].shaderCount == 2)
+					return &meshProgramGiStd_[giVariant];
 				return &meshProgramGi_[giVariant];
-			return &meshProgram;
+			}
+			return layered ? &meshProgram
+				: (meshProgramStd.shaderCount == 2 ? &meshProgramStd : &meshProgram);
 		}
 		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
 			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+		if (li <= 3 && meshLitSg_[li].shaderCount == 2 && layered)
+			return &meshLitSg_[li];
+		if (!layered && meshProgramStd.shaderCount == 2)
+			return &meshProgramStd;
 		if (li <= 3 && meshLitSg_[li].shaderCount == 2)
 			return &meshLitSg_[li];
 		return &meshProgram;
@@ -278,8 +340,10 @@ namespace engine {
 		if (r.commandCount == 0)
 			return false;
 		// A mesh twin must exist for the range's variant (same selection
-		// as the indexed bind would use).
-		if (MeshProgramFor(giActive, giVariant, r.lobeCount) == nullptr)
+		// as the indexed bind would use; the std twin exists whenever the
+		// base does, so layered-ness cannot flip eligibility).
+		if (MeshProgramFor(giActive, giVariant, r.lobeCount,
+				MaterialLayered(r.material)) == nullptr)
 			return false;
 		// Every batch's draw opaque + single-sided (a mixed range stays
 		// fully indexed, never split — the record partitions exactly the
@@ -346,7 +410,7 @@ namespace engine {
 			if (!RangeMeshEligible(slot, ri, giActive, giVariant))
 				continue;
 			smvk::ShaderProgram* prog = MeshProgramFor(giActive, giVariant,
-				ranges[ri].lobeCount);
+				ranges[ri].lobeCount, MaterialLayered(ranges[ri].material));
 			if (prog == nullptr || ranges[ri].commandCount == 0)
 				continue; // belt (eligibility already resolved the program)
 			Span sp{ prog, (uint32_t)list.size(), ranges[ri].commandCount };
