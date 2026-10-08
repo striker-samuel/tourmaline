@@ -2,6 +2,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
 
 #include <cassert>

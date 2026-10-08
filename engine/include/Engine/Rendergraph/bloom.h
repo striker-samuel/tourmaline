@@ -8,7 +8,12 @@
 //
 // Chain layout:
 //   base = hdrExtent / baseDivisor (default half-res), mip[i+1] = mip[i] / 2.
-//   down:  mip[0] = prefilter(HDR, threshold+knee) + 13-tap downsample
+//   down (SPD, default): one compute dispatch cascades all 5 mips through
+//          groupshared (2x2 Karis per level, prefilter on mip 0) — see
+//          spd_downsample.cs.hlsl. Falls back to the raster path below
+//          when useSpd is off, mipCount != 5, or the SPD program failed.
+//   down (raster fallback):
+//          mip[0] = prefilter(HDR, threshold+knee) + 13-tap downsample
 //          mip[i] = 13-tap downsample(mip[i-1])            (DontCare -> Store)
 //   up:    mip[i] += tentUpsample(mip[i+1])  (Load -> Store, Blend::Add)
 // After the up chain, mip[0] holds the combined bloom (HDR, pre-tonemap).
@@ -43,6 +48,7 @@ struct BloomDesc {
 	float knee = 0.25f;                  // soft-knee width
 	float intensity = 0.6f;              // composite strength (tonemap side)
 	float upsampleRadius = 1.0f;         // tent radius in higher-mip texels
+	bool useSpd = true;                  // single-pass compute downsample (needs mipCount == 5)
 	const char* name = "bloom";
 };
 
@@ -72,28 +78,60 @@ struct BloomUpPush {
 };
 static_assert(sizeof(BloomUpPush) == 32);
 
+// Must match spd_downsample.cs.hlsl SpdPush (48 bytes).
+// The cascade handles exactly 5 levels (16x16 workgroup tile), so the
+// SPD path requires mipCount == 5 — anything else uses raster downsample.
+struct SpdPush {
+	uint32_t srcIndex = UINT32_MAX;   // bindless textures[] index of HDR
+	uint32_t dstIndex0 = UINT32_MAX;   // bindless storage indices of the 5 mips
+	uint32_t dstIndex1 = UINT32_MAX;
+	uint32_t dstIndex2 = UINT32_MAX;
+	uint32_t dstIndex3 = UINT32_MAX;
+	uint32_t dstIndex4 = UINT32_MAX;
+	uint32_t baseWidth = 0;            // bloom mip 0 extent (tiling + bounds)
+	uint32_t baseHeight = 0;
+	uint32_t hdrWidth = 0;             // HDR source extent (tap clamp)
+	uint32_t hdrHeight = 0;
+	float threshold = 1.0f;            // soft-knee prefilter (mip 0 only)
+	float knee = 0.25f;
+};
+static_assert(sizeof(SpdPush) == 48);
+static constexpr uint32_t kSpdMipLevels = 5; // cascade depth the shader implements
+static constexpr uint32_t kSpdBlock = 16;    // workgroup tile of mip 0 pixels
+
 // Default SPVs (fullscreen-triangle VS shared with tonemap + down/up PS).
 inline constexpr const char* kBloomFullscreenVsPath = "content/shaders/tonemap.vert.hlsl.spv";
 inline constexpr const char* kBloomDownPsPath = "content/shaders/bloom_down.frag.hlsl.spv";
 inline constexpr const char* kBloomUpPsPath = "content/shaders/bloom_up.frag.hlsl.spv";
+inline constexpr const char* kBloomSpdCsPath = "content/shaders/spd_downsample.cs.hlsl.spv";
 
 struct BloomChain {
 	MipBuilder::BuiltChain chain{};
 	BloomDesc desc{};
 	Extent2D hdrExtent{ 0, 0 };
 
-	// Default programs (fullscreen VS + down/up PS). Created by
-	// EnsureShaders/Create/Ensure so apps don't own bloom modules.
+	// Default programs (fullscreen VS + down/up PS, SPD compute CS).
+	// Created by EnsureShaders/Create/Ensure so apps don't own bloom modules.
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> downFragModule;
 	Holder<ShaderModuleHandle> upFragModule;
+	Holder<ShaderModuleHandle> spdModule;
 	ShaderProgram downProgram{};
 	ShaderProgram upProgram{};
+	ShaderProgram spdProgram{};
 
 	[[nodiscard]] bool Valid() const { return chain.Valid(); }
 	[[nodiscard]] bool ShadersValid() const {
 		return downProgram.shaderCount != 0 && upProgram.shaderCount != 0 &&
 			!vsModule.empty() && !downFragModule.empty() && !upFragModule.empty();
+	}
+	[[nodiscard]] bool SpdShadersValid() const {
+		return spdProgram.shaderCount != 0 && !spdModule.empty();
+	}
+	// SPD replaces the raster down chain only for the integer it was
+	// written for (5 mips); anything else keeps the 13-tap path.
+	[[nodiscard]] bool SpdPathAvailable() const {
+		return desc.useSpd && chain.MipCount() == kSpdMipLevels && SpdShadersValid();
 	}
 	[[nodiscard]] uint32_t MipCount() const { return chain.MipCount(); }
 
@@ -118,63 +156,94 @@ struct BloomChain {
 		};
 	}
 
-	// Idempotent default program creation (fullscreen VS + down/up PS).
-	// Returns true when both programs are ready afterwards.
-	bool EnsureShaders(ResourceManager& ctx,
-		const char* vsPath = kBloomFullscreenVsPath,
-		const char* downPath = kBloomDownPsPath,
-		const char* upPath = kBloomUpPsPath) {
-		if (ShadersValid())
+	// Best-effort SPD program creation (compute CS). Failure only falls
+	// back to the raster downsample — never fails EnsureShaders.
+	bool EnsureSpdShaders(ResourceManager& ctx,
+		const char* csPath = kBloomSpdCsPath) {
+		if (SpdShadersValid())
 			return true;
 		try {
-			const std::string vs = vsPath ? vsPath : kBloomFullscreenVsPath;
-			const std::string down = downPath ? downPath : kBloomDownPsPath;
-			const std::string up = upPath ? upPath : kBloomUpPsPath;
-			if (vsModule.empty())
-				vsModule = ctx.CreateShaderModule(readFile(vs), "bloomFullscreenVS");
-			if (downFragModule.empty())
-				downFragModule = ctx.CreateShaderModule(readFile(down), "bloomDownFrag");
-			if (upFragModule.empty())
-				upFragModule = ctx.CreateShaderModule(readFile(up), "bloomUpFrag");
+			const std::string cs = csPath ? csPath : kBloomSpdCsPath;
+			if (spdModule.empty())
+				spdModule = ctx.CreateShaderModule(readFile(cs), "bloomSpdCS");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || downFragModule.empty() || upFragModule.empty())
+		if (spdModule.empty())
 			return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader downPS{ .module = downFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		Shader upPS{ .module = upFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		downProgram = { .shaders = { vs, downPS }, .shaderCount = 2 };
-		upProgram = { .shaders = { vs, upPS }, .shaderCount = 2 };
+		Shader cs{ .module = spdModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		spdProgram = { .shaders = { cs }, .shaderCount = 1 };
+		return true;
+	}
+
+	// Idempotent default program creation (fullscreen VS + down/up PS).
+	// Returns true when both programs are ready afterwards. SPD is
+	// best-effort on top (a missing SPD SPV keeps the raster path alive).
+	bool EnsureShaders(ResourceManager& ctx,
+		const char* vsPath = kBloomFullscreenVsPath,
+		const char* downPath = kBloomDownPsPath,
+		const char* upPath = kBloomUpPsPath,
+		const char* spdPath = kBloomSpdCsPath) {
+		if (!ShadersValid()) {
+			try {
+				const std::string vs = vsPath ? vsPath : kBloomFullscreenVsPath;
+				const std::string down = downPath ? downPath : kBloomDownPsPath;
+				const std::string up = upPath ? upPath : kBloomUpPsPath;
+				if (vsModule.empty())
+					vsModule = ctx.CreateShaderModule(readFile(vs), "bloomFullscreenVS");
+				if (downFragModule.empty())
+					downFragModule = ctx.CreateShaderModule(readFile(down), "bloomDownFrag");
+				if (upFragModule.empty())
+					upFragModule = ctx.CreateShaderModule(readFile(up), "bloomUpFrag");
+			} catch (...) {
+				return false;
+			}
+			if (vsModule.empty() || downFragModule.empty() || upFragModule.empty())
+				return false;
+			Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
+			Shader downPS{ .module = downFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+			Shader upPS{ .module = upFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+			downProgram = { .shaders = { vs, downPS }, .shaderCount = 2 };
+			upProgram = { .shaders = { vs, upPS }, .shaderCount = 2 };
+		}
+		EnsureSpdShaders(ctx, spdPath);
 		return true;
 	}
 
 	void DestroyShaders() {
 		downProgram = ShaderProgram{};
 		upProgram = ShaderProgram{};
+		spdProgram = ShaderProgram{};
 		vsModule = {};
 		downFragModule = {};
 		upFragModule = {};
+		spdModule = {};
 	}
 
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d,
 		const char* vsPath = kBloomFullscreenVsPath,
 		const char* downPath = kBloomDownPsPath,
-		const char* upPath = kBloomUpPsPath) {
+		const char* upPath = kBloomUpPsPath,
+		const char* spdPath = kBloomSpdCsPath) {
 		if (hdr.width == 0 || hdr.height == 0 || d.mipCount == 0)
 			return false;
 		Destroy(rg);
 		const Extent2D base = BaseExtentFor(hdr, d.baseDivisor);
+		// Storage usage + General bindless registration: the SPD compute
+		// pass stores into these mips (the raster upsample still samples
+		// them — sampling a General-registered image is the EVSM blurTemp
+		// precedent).
 		MipBuilder::BuiltChain built = MipBuilder::BuildSeparated(
 			ctx, rg, base, d.mipCount, d.format,
-			ImageUsage::ColorAttachment | ImageUsage::Sampled,
-			d.name);
+			ImageUsage::ColorAttachment | ImageUsage::Sampled | ImageUsage::Storage,
+			d.name,
+			ImageLayout::General);
 		if (!built.Valid())
 			return false;
 		chain = std::move(built);
 		desc = d;
 		hdrExtent = hdr;
-		return EnsureShaders(ctx, vsPath, downPath, upPath);
+		return EnsureShaders(ctx, vsPath, downPath, upPath, spdPath);
 	}
 
 	void Destroy(RenderGraph& rg) {
@@ -187,7 +256,8 @@ struct BloomChain {
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d,
 		const char* vsPath = kBloomFullscreenVsPath,
 		const char* downPath = kBloomDownPsPath,
-		const char* upPath = kBloomUpPsPath) {
+		const char* upPath = kBloomUpPsPath,
+		const char* spdPath = kBloomSpdCsPath) {
 		const Extent2D wantBase = BaseExtentFor(hdr, d.baseDivisor);
 		if (Valid() &&
 			hdrExtent.width == hdr.width && hdrExtent.height == hdr.height &&
@@ -195,9 +265,9 @@ struct BloomChain {
 			chain.baseExtent.width == wantBase.width &&
 			chain.baseExtent.height == wantBase.height) {
 			desc = d; // live-update threshold/intensity without realloc
-			return EnsureShaders(ctx, vsPath, downPath, upPath);
+			return EnsureShaders(ctx, vsPath, downPath, upPath, spdPath);
 		}
-		return Create(ctx, rg, hdr, d, vsPath, downPath, upPath);
+		return Create(ctx, rg, hdr, d, vsPath, downPath, upPath, spdPath);
 	}
 
 	// ---- Low-level pass shells (caller sets the recording func) ----
@@ -214,6 +284,57 @@ struct BloomChain {
 			.SetColor({ chain.mips[mipIndex].logical },
 				AttachmentLoadOp::DontCare,
 				AttachmentStoreOp::Store);
+		return pass;
+	}
+
+	// SPD down: ONE compute dispatch writes all 5 mips from HDR (each
+	// mip its own physical image, so no layout aliasing — barriers come
+	// from the image hints, same as the EVSM blur legs). Replaces the n
+	// raster AddDownsamplePass passes when SpdPathAvailable().
+	RenderPass& AddSpdDownsamplePass(RenderGraph& rg,
+		ShaderProgram& spdProg,
+		LogicalImageViewHandle hdrView,
+		uint32_t hdrBindlessIndex,
+		const char* name = "BloomSPD") const {
+		assert(Valid());
+		assert(chain.MipCount() == kSpdMipLevels);
+		assert(!hdrView.empty());
+
+		RenderPass& pass = rg.AddComputePass(name);
+
+		ImageSyncRequest srcR{};
+		srcR.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		srcR.barrierMasks.stageMask = PipelineStageBit_Compute;
+		srcR.layout = ImageLayout::ShaderReadOnlyOptimal;
+		ImageSyncRequest dstW{};
+		dstW.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+		dstW.barrierMasks.stageMask = PipelineStageBit_Compute;
+		dstW.layout = ImageLayout::General;
+		pass.AddImageHint(hdrView, srcR);
+		for (uint32_t i = 0; i < kSpdMipLevels; ++i)
+			pass.AddImageHint(chain.mips[i].logical, dstW);
+
+		SpdPush push{};
+		push.srcIndex = hdrBindlessIndex;
+		push.dstIndex0 = chain.mips[0].bindlessIndex;
+		push.dstIndex1 = chain.mips[1].bindlessIndex;
+		push.dstIndex2 = chain.mips[2].bindlessIndex;
+		push.dstIndex3 = chain.mips[3].bindlessIndex;
+		push.dstIndex4 = chain.mips[4].bindlessIndex;
+		push.baseWidth = chain.baseExtent.width;
+		push.baseHeight = chain.baseExtent.height;
+		push.hdrWidth = hdrExtent.width;
+		push.hdrHeight = hdrExtent.height;
+		push.threshold = desc.threshold;
+		push.knee = desc.knee;
+
+		const uint32_t groupsX = (chain.baseExtent.width + kSpdBlock - 1) / kSpdBlock;
+		const uint32_t groupsY = (chain.baseExtent.height + kSpdBlock - 1) / kSpdBlock;
+		pass.SetRecordingFunc([spdProg, push, groupsX, groupsY](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(spdProg);
+			cmd.PushConstants(0, sizeof(SpdPush), &push, ShaderStage::Compute);
+			cmd.Dispatch(groupsX, groupsY, 1);
+		});
 		return pass;
 	}
 
@@ -280,6 +401,16 @@ struct BloomChain {
 		}
 
 		// Up chain coarse->fine, additive onto the downsampled content.
+		AddUpsampleChain(rg, upProg, linearSamplerIndex);
+	}
+
+	// Up chain coarse->fine, additive onto the downsampled content.
+	// Shared by the raster and SPD down paths (the upsample never changed).
+	void AddUpsampleChain(RenderGraph& rg,
+		ShaderProgram& upProg,
+		uint32_t linearSamplerIndex) const {
+		assert(Valid());
+		const uint32_t n = chain.MipCount();
 		for (int32_t i = static_cast<int32_t>(n) - 2; i >= 0; --i) {
 			const uint32_t dst = static_cast<uint32_t>(i);
 			const uint32_t src = static_cast<uint32_t>(i + 1);
@@ -313,12 +444,22 @@ struct BloomChain {
 
 	// Default overload: uses the internal downProgram/upProgram created by
 	// EnsureShaders/Create/Ensure. Asserts when shaders aren't ready.
+	// Prefers the SPD single-dispatch downsample; falls back to raster.
 	void AddBloomPasses(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
 		uint32_t linearSamplerIndex) const {
 		assert(ShadersValid());
-		// const_cast is safe: explicit overload only copies the programs.
+		// const_cast is safe: the callees only copy the programs.
+		if (SpdPathAvailable()) {
+			AddSpdDownsamplePass(rg,
+				const_cast<ShaderProgram&>(spdProgram),
+				hdrView, hdrBindlessIndex);
+			AddUpsampleChain(rg,
+				const_cast<ShaderProgram&>(upProgram),
+				linearSamplerIndex);
+			return;
+		}
 		AddBloomPasses(rg,
 			const_cast<ShaderProgram&>(downProgram),
 			const_cast<ShaderProgram&>(upProgram),

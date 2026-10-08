@@ -109,6 +109,11 @@ static smvk::BloomDesc MakeBloomDesc() {
 	d.intensity = BLOOM_INTENSITY;
 	d.upsampleRadius = BLOOM_UPSAMPLE_RADIUS;
 	d.name = "bloom";
+	// Headless SPD override (VULKANTOY_SPD=0 forces the raster 13-tap
+	// downsample for A/B captures; =1 forces the single-pass compute path).
+	if (const char* spdEnv = std::getenv("VULKANTOY_SPD")) {
+		d.useSpd = std::atoi(spdEnv) != 0;
+	}
 	return d;
 }
 

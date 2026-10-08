@@ -12,6 +12,7 @@
 
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/Renderer/dxc_integration.h>
+#include <Engine/Rendergraph/bloom.h>
 
 namespace {
 
@@ -463,6 +464,78 @@ float4 mainPS(PSIn i) : SV_Target0 {
 	Check(r.valid, "spirv.sanitize.dxc.stillvalid");
 }
 
+// SPD contract: the HLSL SpdPush block in engine/shaders/spd_downsample.cs.hlsl
+// must stay layout-identical to smvk::SpdPush in Engine/Rendergraph/bloom.h.
+// The shader below mirrors the real block member-for-member (keep in sync by
+// hand — the real file needs common.hlsli includes the test compiler has no
+// search path for); every member is consumed so DXC cannot trim the range.
+// Skipped gracefully when DXC is unavailable.
+void TestSpdPushContract() {
+	static constexpr const char* kSrc = R"(
+struct SpdPush {
+  uint srcIndex;
+  uint dstIndex0;
+  uint dstIndex1;
+  uint dstIndex2;
+  uint dstIndex3;
+  uint dstIndex4;
+  uint baseWidth;
+  uint baseHeight;
+  uint hdrWidth;
+  uint hdrHeight;
+  float threshold;
+  float knee;
+};
+[[vk::push_constant]] ConstantBuffer<SpdPush> spd;
+[[vk::binding(2, 0)]] RWTexture2D<float4> spdImages[];
+[numthreads(16, 16, 1)]
+void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
+  uint s = spd.srcIndex + spd.dstIndex0 + spd.dstIndex1 + spd.dstIndex2
+    + spd.dstIndex3 + spd.dstIndex4 + spd.baseWidth + spd.baseHeight
+    + spd.hdrWidth + spd.hdrHeight;
+  float f = spd.threshold + spd.knee;
+  spdImages[spd.dstIndex4][gtid.xy + gid.xy] = float4((float)s, f, 0.0f, 1.0f);
+}
+)";
+	static_assert(sizeof(smvk::SpdPush) == 48, "SpdPush must stay 48 bytes");
+	std::vector<char> spv;
+	try {
+		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Compute, L"mainCS");
+	} catch (const std::exception& e) {
+		std::cout << "SKIP spirv.spd (DXC unavailable: " << e.what() << ")\n";
+		return;
+	}
+	Check(!spv.empty() && spv.size() % 4 == 0, "spirv.spd.code");
+	if (spv.empty() || spv.size() % 4 != 0)
+		return;
+	smvk::SpirvReflection r =
+		smvk::ReflectSpirvBytes(std::span<const char>(spv.data(), spv.size()));
+	Check(r.valid, "spirv.spd.valid");
+	if (!r.valid) {
+		std::cout << "  reflect error: " << r.error << "\n";
+		return;
+	}
+	bool hasMainCS = false;
+	for (const auto& e : r.entryPoints) {
+		if (e == "mainCS")
+			hasMainCS = true;
+	}
+	Check(hasMainCS, "spirv.spd.entry");
+	// The reflected push footprint must equal the C++ struct: any drift
+	// (added/removed/reordered member) fails here before it can corrupt
+	// the bloom chain's dispatch.
+	auto merged = smvk::MergePushConstantRanges({ r.pushConstants });
+	Check(smvk::PushConstantFootprint(merged) == sizeof(smvk::SpdPush),
+		"spirv.spd.footprint48");
+	bool computeStage = false;
+	for (const auto& pc : r.pushConstants) {
+		if ((pc.stages & smvk::ShaderStage::Compute) != smvk::ShaderStage::None)
+			computeStage = true;
+	}
+	Check(computeStage, "spirv.spd.compute");
+	Check(smvk::ValidatePushConstants(merged, 256), "spirv.spd.fits256");
+}
+
 } // namespace
 
 int main() {
@@ -477,6 +550,7 @@ int main() {
 	TestShaderEqualityWithSpec();
 	TestDxcRoundTrip();
 	TestPushFloat3x4();
+	TestSpdPushContract();
 	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

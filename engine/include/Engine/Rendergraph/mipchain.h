@@ -163,7 +163,11 @@ namespace smvk {
 
 		// Builds mipCount separated images, mip 0 = baseExtent, each next
 		// halved (clamped to 1). Returns empty chain on failure.
-		// usage must include ColorAttachment | Sampled for bloom.
+		// usage must include ColorAttachment | Sampled for bloom, plus
+		// Storage when a compute downsampler (SPD) writes the mips.
+		// bindlessLayout selects the descriptor registration: General for
+		// images a compute pass stores into (EVSM blurTemp precedent —
+		// sampling a General-registered image works the same).
 		static BuiltChain BuildSeparated(
 			ResourceManager& ctx,
 			RenderGraph& rg,
@@ -171,7 +175,8 @@ namespace smvk {
 			uint32_t mipCount,
 			Format format,
 			ImageUsage usage,
-			const char* name = "mip") {
+			const char* name = "mip",
+			ImageLayout bindlessLayout = ImageLayout::ShaderReadOnlyOptimal) {
 			BuiltChain out{};
 			if (mipCount == 0 || baseExtent.width == 0 || baseExtent.height == 0)
 				return out;
@@ -207,7 +212,7 @@ namespace smvk {
 				if (m.view.empty())
 					return BuiltChain{};
 
-				m.bindless = ctx.CreateBindlessImage(m.view, ImageLayout::ShaderReadOnlyOptimal);
+				m.bindless = ctx.CreateBindlessImage(m.view, bindlessLayout);
 				if (m.bindless.empty())
 					return BuiltChain{};
 				m.bindlessIndex = ctx.GetBindlessIndex(m.bindless);
