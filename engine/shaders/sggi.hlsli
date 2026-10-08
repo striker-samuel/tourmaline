@@ -8,9 +8,43 @@
 // math the CPU reference SgGiVolume::Sample applies per cell, baked once
 // because the probes never move). The walk below just trilinear-filters
 // those layers per level, finest first, accumulating raw sums + early-out
-// at dense coverage — no per-probe weight/visibility/lobe loops, no tile
+// at dense coverage — no per-probe weight/visibility/lobe-MAD loops, no tile
 // lists. Finer probes dominate near geometry; coarse fill open space. The
 // reference walk survives as ResampleLevelDense (unit tested).
+//
+// ---- Sampling experiments (texture-fetch bottleneck probes) ----
+// Each defaults to production behavior; flip one + rebuild (header dep
+// tracking recompiles all includers) + bench to A/B. Requires
+// SG_GI_LOBES from sggi_types.hlsli (all includers come via common.hlsli).
+// MEASURED (Sponza6, RTX 5070 Ti, --bench 256 x3, medians of the frame
+// avg; bench-64 after a fresh rebuild is pipeline-compile noise — every
+// rebuild mints new SPIR-V hashes and the first frames compile them):
+//   merge accum      : no measurable change (DXC already eliminated the
+//                     shadow-array cost; kept as the simpler form).
+//   lobes 9 -> 3    : -0.17 ms (~8% of frame) — pure diagnostic, the SG
+//                     basis needs all 9 lobes for fidelity, do not ship.
+//   finest level only: no win — the weight>=0.5 early-out already skips
+//                     coarse levels for most pixels.
+//   unroll levels   : +0.26 ms WORSE — the [loop] form lets the driver
+//                     keep occupancy; unrolled it trades it away.
+// Conclusion: the Nsight texture-fetch attribution (29.75% of the lit
+// shader's dependency-stalled samples) is real but already well hidden
+// at frame level — no structural win without changing output.
+#ifndef SG_GI_EXP_LOBES
+#define SG_GI_EXP_LOBES SG_GI_LOBES   // lobes fetched per level (rest zero)
+#endif
+#ifndef SG_GI_EXP_FINEST_ONLY
+#define SG_GI_EXP_FINEST_ONLY 0     // 1 = sample only the finest present
+                                    //     level (no coarse traversal)
+#endif
+#ifndef SG_GI_EXP_UNROLL_LEVELS
+#define SG_GI_EXP_UNROLL_LEVELS 0   // 1 = [unroll] the level loop (vs [loop])
+#endif
+#ifndef SG_GI_EXP_MERGE_ACCUM
+#define SG_GI_EXP_MERGE_ACCUM 1     // 1 = accumulate straight into amps
+                                    //     (no ampsVis shadow array); 0 keeps
+                                    //     the original for A/B
+#endif
 
 // Lobe basis value for a direction.
 float SgGiBasisValue(uint lobe, float3 dir)
@@ -143,10 +177,15 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     }
 
     float weightVis = 0.0;
+#if SG_GI_EXP_MERGE_ACCUM
+    // amps (init-zeroed above) IS the accumulator — no shadow array, ~27
+    // fewer live floats across the fetch loop (register pressure).
+#else
     float3 ampsVis[SG_GI_LOBES];
     [unroll]
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         ampsVis[i] = float3(0, 0, 0);
+#endif
     // Fallback bookkeeping removed (coverage-test mode): with the
     // visibility-weighted blend finding nothing, returning false exposes
     // the hole (magenta/black) instead of leaking a wall-ignoring probe.
@@ -165,7 +204,11 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     // bake evaluated the visibility-weighted partition-of-unity blend
     // per voxel), a fraction of the per-pixel cost — no per-probe
     // weight/visibility/lobe-MAD loops, no tile lists to maintain.
+#if SG_GI_EXP_UNROLL_LEVELS
+    [unroll]
+#else
     [loop]
+#endif
     for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
     {
         // Debug level isolation (mode 3): gather ONLY the selected level
@@ -207,13 +250,21 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         weightVis += w_l;
         ++debugContributors;
         [unroll]
-        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+        for (uint lobe = 0; lobe < SG_GI_EXP_LOBES; ++lobe)
         {
             const float3 a_l = volumeTextures[
                 frame.giLevelLayers[uint(lvl) * 10u + lobe]].Sample(
                 samplers[2], uvw).rgb;
+#if SG_GI_EXP_MERGE_ACCUM
+            amps[lobe] += a_l;
+#else
             ampsVis[lobe] += a_l;
+#endif
         }
+#if SG_GI_EXP_FINEST_ONLY
+        // Experiment: finest present level only (no coarse traversal).
+        break;
+#endif
         // Early-out (production only): fine coverage is dense enough —
         // coarser octaves cannot meaningfully change this pixel. 0.5 with
         // R = spacing kernels (accumulated partition-of-unity sums run
@@ -247,13 +298,19 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         const float inv = 1.0 / weightVis;
         [unroll]
         for (uint i = 0; i < SG_GI_LOBES; ++i)
+#if SG_GI_EXP_MERGE_ACCUM
+            amps[i] *= inv;
+#else
             amps[i] = ampsVis[i] * inv;
+#endif
         return true;
     }
     // No fallback: uncovered stays uncovered (returns false; the caller
     // keeps sky-IBL ambient and the debug views flag it magenta).
     // debugFellBack is kept as an output (always false) so existing
     // callers and the violet-fallback debug branch keep compiling.
+    // Discard partial sums (visited levels may have accumulated before
+    // coverage failed) so amps reads clean on every return path.
     [unroll]
     for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
         amps[lobe] = float3(0, 0, 0);
@@ -282,7 +339,11 @@ bool SgGiSampleMean(FrameUniforms frame, float3 pos, out float3 mean)
 
     float weightVis = 0.0;
     float3 meanVis = float3(0.0, 0.0, 0.0);
+#if SG_GI_EXP_UNROLL_LEVELS
+    [unroll]
+#else
     [loop]
+#endif
     for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
     {
         // Absent level (sparse octree / a failed cook bake): the slot
@@ -301,12 +362,16 @@ bool SgGiSampleMean(FrameUniforms frame, float3 pos, out float3 mean)
             samplers[2], uvw).r;
         weightVis += w_l;
         [unroll]
-        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+        for (uint lobe = 0; lobe < SG_GI_EXP_LOBES; ++lobe)
         {
             meanVis += volumeTextures[
                 frame.giLevelLayers[uint(lvl) * 10u + lobe]].Sample(
                 samplers[2], uvw).rgb;
         }
+#if SG_GI_EXP_FINEST_ONLY
+        // Experiment: finest present level only (no coarse traversal).
+        break;
+#endif
         // Production early-out (same as the surface walk's): fine
         // coverage dense enough — coarser octaves cannot meaningfully
         // change this sample.
