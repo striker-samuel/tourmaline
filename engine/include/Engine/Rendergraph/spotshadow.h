@@ -268,6 +268,25 @@ struct SpotShadowAtlas {
 		return tile;
 	}
 
+	// LiSPSM (Light Space Perspective Shadow Maps) variant for spotlights.
+	// Warps the spot projection to match the camera's perspective frustum,
+	// providing better texel density in camera/view space.
+	GpuCascadeDescription BuildSpotTileLiSPSM(
+		const glm::vec3& position,
+		const glm::vec3& direction,
+		float outerAngle,
+		float range,
+		int32_t shadowMapIndex,
+		uint32_t tileIndex,
+		const glm::mat4& cameraView,
+		const glm::mat4& cameraProj,
+		float cameraNear,
+		float cameraFar,
+		float nearPlane = 0.5f,
+		float bias = 0.0f,
+		float lightSize = 0.35f,
+		float softness = 1.0f) const;
+
 	// Adds one depth pass rendering slotIndex into its atlas tile. Every
 	// spot tile is cleared: each pass owns a disjoint pass area (offset +
 	// tileExtent) and Execute() clears exactly that tile (full-area render

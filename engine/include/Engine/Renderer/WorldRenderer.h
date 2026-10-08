@@ -405,7 +405,7 @@ struct ForwardPlusDemo {
 	float spotIntensity = 900.0f;
 	// Spot shadows: per-light opt-in flag (demo sets it on all spots) +
 	// frame upper limit + screenspace/distance culling. Points never shadow.
-	bool spotShadowsEnabled = true;
+bool spotShadowsEnabled = true;
 	int spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
 	float spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
 	// Light cookies: per-spot gobo projected through the cone; spot s gets
@@ -1836,6 +1836,17 @@ protected:
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	// Shadow contribution culling: during shadow map rendering, cull casters
+	// that fall outside the main camera's view frustum. Only geometry that
+	// could contribute to the final image is rendered into shadow maps.
+	// This is enabled by default for shadow views only (not the main view).
+	bool m_shadowContributionCulling = true;
+	// LiSPSM (Light Space Perspective Shadow Maps) for spotlights: warp the
+	// spot projection to match the camera's perspective frustum, maximizing
+	// texel density in camera/view space. When enabled, the spot projection is
+	// warped to match the main camera's perspective frustum for better texel
+	// density.
+	bool m_spotLightLiSPSM = true;
 	// ---- EVSM (Exponential Variance Shadow Maps, prefiltered async) ----
 	// Opt-IN (default OFF; the ImGui checkbox or VULKANTOY_EVSM=1). When
 	// enabled (and the device supports RG32F 2xMSAA moments), the

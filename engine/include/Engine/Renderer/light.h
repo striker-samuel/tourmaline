@@ -157,6 +157,23 @@ namespace smvk {
 		float nearPlane = 0.5f,
 		float aspect = 1.0f
 	);
+	// LiSPSM (Light Space Perspective Shadow Maps) for spotlights.
+	// Warps the spot projection to match the camera's perspective frustum,
+	// providing better texel density in camera/view space.
+	// Based on LiSPSM (Light Space Perspective Shadow Maps) by Wimmer et al.
+	// Returns the LiSPSM view-projection matrix for the spot light.
+	glm::mat4 GetSpotLightVPLiSPSM(
+		const glm::vec3& position,
+		const glm::vec3& direction,
+		float outerAngle,
+		float range,
+		float nearPlane,
+		float aspect,
+		const glm::mat4& cameraView,
+		const glm::mat4& cameraProj,
+		float cameraNear,
+		float cameraFar
+	);
 	void GetDirectionalLightOrthoVP(
 		const glm::vec3 lightDir,
 		const glm::mat4& invCameraView,

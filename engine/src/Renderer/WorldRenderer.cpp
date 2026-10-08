@@ -4697,14 +4697,27 @@ namespace engine {
 					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& sl = lights[selected[k].lightIndex];
-						tiles[k] = m_viewportResources.spotShadows.BuildSpotTile(
-							glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
-							glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
-							sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
-							SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
-							// Soft spot shadows: emitting-sphere diameter +
-							// artistic softness (tile pads, see evsm.hlsli).
-							m_evsmSpotLightSize, m_evsmSoftness);
+						if (m_spotLightLiSPSM) {
+							tiles[k] = m_viewportResources.spotShadows.BuildSpotTileLiSPSM(
+								glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
+								glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
+								sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
+								frame.view, frame.proj,
+								frame.nearPlane, frame.farPlane,
+								SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
+								// Soft spot shadows: emitting-sphere diameter +
+								// artistic softness (tile pads, see evsm.hlsli).
+								m_evsmSpotLightSize, m_evsmSoftness);
+						} else {
+							tiles[k] = m_viewportResources.spotShadows.BuildSpotTile(
+								glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
+								glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
+								sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
+								SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
+								// Soft spot shadows: emitting-sphere diameter +
+								// artistic softness (tile pads, see evsm.hlsli).
+								m_evsmSpotLightSize, m_evsmSoftness);
+						}
 						sl.shadowTile = (int32_t)k;
 						sl.shadowMapIndex = sampleIdx;
 						sl.shadowBias = SPOT_SHADOW_BIAS;
@@ -5696,6 +5709,21 @@ namespace engine {
 					sphereCenter, sphereRadius);
 				if (!smvk::RenderViewIntersectsSphere(
 					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+					return;
+			}
+			// Shadow contribution cull: skip casters outside the MAIN camera's
+			// view frustum. Only geometry that could contribute to the final
+			// image (i.e., is visible from the camera) is rendered into the
+			// shadow map. This is enabled by m_shadowContributionCulling and
+			// only applied to shadow views (casterViewIndex != kInvalidIndex).
+			if (m_shadowContributionCulling && casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+				glm::vec3 sphereCenter;
+				float sphereRadius = 0.0f;
+				smvk::MeshBoundsToWorld(
+					model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+					sphereCenter, sphereRadius);
+				if (!smvk::RenderViewIntersectsSphere(
+					m_renderViews.Get(0), sphereCenter, sphereRadius))
 					return;
 			}
 			IRenderer::PushConstants objectPC{};

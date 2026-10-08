@@ -25,7 +25,7 @@ inline float length2(const T& v) {
 //	//
 //	// Assumes right-handed view space where camera looks down -Z (GLM lookAt style).
 //	// zNear/zFar are in the same space as your light-view transformed points.
-//
+//	//
 //	const float rl = right - left;
 //	const float tb = top - bottom;
 //	const float fn = zFar - zNear;
@@ -39,7 +39,6 @@ inline float length2(const T& v) {
 //	m[3][2] = -zNear / fn;                // ZO: near->0, far->1
 //	return m;
 //}
-
 
 glm::mat4 smvk::GetSpotLightView(const smvk::SpotLight& l)
 {
@@ -112,7 +111,6 @@ GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
 
 	return corners;
 }
-
 
 static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 {
@@ -235,14 +233,9 @@ void smvk::GetDirectionalLightOrthoVP(
 	//
 	// Optional texel snapping.
 	//
-	// Snap the light view's translation column (the light-space position of
-	// the world origin) onto the texel grid. The slice cannot do this job:
-	// the view is glued to the frustum-slice center, so every light-space
-	// quantity derived from the slice (bounds, center, their deltas) is
-	// invariant under pure camera translation, and quantizing any of them
-	// cannot stop the texel grid from sliding. Rounding the view origin
-	// instead makes the world-space texel grid jump in whole-texel steps as
-	// the camera translates, which removes the shadow-edge shimmer.
+	// This is not the old hardcoded coverage radius.
+	// It only expands the calculated frustum bounds slightly so tiny numerical
+	// errors don't clip shadows exactly at the edge.
 	//
 	if (enableTexelSnap && shadowMapRes > 0)
 	{
@@ -325,10 +318,10 @@ void smvk::GetDirectionalLightOrthoVP(
 	//{
 	//	glm::vec4 clip =
 	//		lightVP * glm::vec4(corner, 1.0f);
-
+	//
 	//	glm::vec3 ndc =
 	//		glm::vec3(clip) / clip.w;
-
+	//
 	//	printf(
 	//		"NDC: %f %f %f\n",
 	//		ndc.x,
@@ -375,4 +368,78 @@ glm::mat4 smvk::GetSpotLightVP(
 	// NOTE: no Y-flip (same convention as BuildDirectionalLight): the shadow
 	// pass and the sampler share this exact matrix.
 	return proj * view;
+}
+
+// LiSPSM (Light Space Perspective Shadow Maps) for spotlights.
+// Warps the spot projection to match the camera's perspective frustum,
+// providing better texel density in camera/view space.
+// Based on LiSPSM (Light Space Perspective Shadow Maps) by Wimmer et al.
+// Returns the LiSPSM view-projection matrix for the spot light.
+glm::mat4 smvk::GetSpotLightVPLiSPSM(
+	const glm::vec3& position,
+	const glm::vec3& direction,
+	float outerAngle,
+	float range,
+	float nearPlane,
+	float aspect,
+	const glm::mat4& cameraView,
+	const glm::mat4& cameraProj,
+	float cameraNear,
+	float cameraFar
+)
+{
+	// Standard spot light VP (without LiSPSM)
+	glm::vec3 dir = direction;
+	if (glm::dot(dir, dir) < 1e-6f)
+		dir = glm::vec3(0.0f, -1.0f, 0.0f);
+	dir = glm::normalize(dir);
+
+	glm::vec3 up(0.0f, 1.0f, 0.0f);
+	if (glm::abs(glm::dot(dir, up)) > 0.99f)
+		up = glm::vec3(0.0f, 0.0f, 1.0f);
+
+	const glm::mat4 lightView = glm::lookAt(position, position + dir, up);
+	const float farPlane = std::max(range, nearPlane + 0.01f);
+	const float fov = glm::clamp(outerAngle * 2.0f, 0.05f, glm::radians(170.0f));
+	const glm::mat4 lightProj = glm::perspectiveRH_ZO(fov, aspect, nearPlane, farPlane);
+
+	// LiSPSM: Warp the light projection to match camera perspective
+	// Transform camera frustum corners to light view space
+	const glm::mat4 invCameraView = glm::inverse(cameraView);
+	const glm::mat4 invCameraProj = glm::inverse(cameraProj);
+
+	// Get camera frustum corners in world space
+	std::array<glm::vec3, 8> frustumCorners = GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
+		invCameraProj, invCameraView, cameraNear, cameraFar);
+
+	// Transform to light view space
+	glm::vec3 minBounds(FLT_MAX), maxBounds(-FLT_MAX);
+	for (const auto& corner : frustumCorners) {
+		glm::vec4 lightSpacePos = lightView * glm::vec4(corner, 1.0f);
+		minBounds = glm::min(minBounds, glm::vec3(lightSpacePos));
+		maxBounds = glm::max(maxBounds, glm::vec3(lightSpacePos));
+	}
+
+	// Compute LiSPSM projection matrix
+	// We want to fit the light projection to the camera frustum in light space
+	const float lightNear = std::max(minBounds.z, nearPlane);
+	const float lightFar = std::min(maxBounds.z, farPlane);
+
+	// Orthographic fit in X/Y, perspective in Z
+	const float left = minBounds.x;
+	const float right = maxBounds.x;
+	const float bottom = minBounds.y;
+	const float top = maxBounds.y;
+
+	// Create LiSPSM projection matrix
+	glm::mat4 lispProj(1.0f);
+	lispProj[0][0] = 2.0f / (right - left);
+	lispProj[1][1] = 2.0f / (top - bottom);
+	lispProj[2][2] = -1.0f / (lightFar - lightNear);  // Vulkan ZO: near=0, far=1
+	lispProj[3][0] = -(right + left) / (right - left);
+	lispProj[3][1] = -(top + bottom) / (top - bottom);
+	lispProj[3][2] = -lightNear / (lightFar - lightNear);  // ZO: near->0, far->1
+
+	// Note: no Y-flip (same convention as standard shadow): shadow pass and sampler share this matrix
+	return lispProj * lightView;
 }
