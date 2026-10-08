@@ -1444,6 +1444,15 @@ protected:
 		if (m_input.isKeyPressed(keybind::GFX_FILTER_TOGGLE)) {
 			m_useGfxFilter = !m_useGfxFilter;
 		}
+		// Backtick pops the texture inspector OUT of the debug panel: a
+		// separate floating window (see the draw site after the panel End).
+		// Closing drops the preview binding + selection (no dead-view
+		// sampling, no leaked overlay descriptor).
+		if (m_input.isKeyPressed(keybind::TEXTURE_VIEWER_TOGGLE)) {
+			m_texDebugWindow = !m_texDebugWindow;
+			if (!m_texDebugWindow)
+				DropTexDebugSelection();
+		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
 		// SkyIbl -> Off (see AmbientMode — single-source isolation for
 		// bisection, All is the production state).
@@ -2812,6 +2821,9 @@ protected:
 	bool m_cubemapShowBalls = true;
 	smvk::probeball::ProbeBallVisual m_probeBalls{};
 	// ---- Texture inspector (aux-texture debug view) ----
+	// A SEPARATE floating ImGui window (not part of the debug panel — it
+	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),
+	// so the panel stays lean and the list/preview never cost panel space.
 	// Lists the LIVE textures (ResourceManager::ListTextureInfos — one
 	// row per pool texture; content/material textures carry load-path
 	// names and hide behind the toggle) and previews a clicked one through
@@ -2821,10 +2833,22 @@ protected:
 	// FEATURE: a selected handle dropping out of the listing (destroyed —
 	// the pool generation bumped, exactly what UpdateTexture's recreate
 	// path does) drops the preview instead of sampling a dead view.
+	bool m_texDebugWindow = false;           // backtick opens/closes
 	bool m_texDebugShowContent = false;      // include load-path (content) textures
 	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
 	ImTextureID m_texDebugPreview = 0;       // the overlay's user-texture binding (0 = none)
 	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
+	// Drops the preview binding + selection (window closed / toggle off):
+	// the overlay owns one descriptor per Add — every removal pairs with
+	// the Add that minted it, and a dropped selection never samples a
+	// dead view.
+	void DropTexDebugSelection() {
+		if (m_texDebugPreview != 0) {
+			m_imgui->RemoveUserTexture(m_texDebugPreview);
+			m_texDebugPreview = 0;
+		}
+		m_texDebugSelected = {};
+	}
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

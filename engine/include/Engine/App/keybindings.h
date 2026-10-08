@@ -45,6 +45,9 @@ constexpr int GI_DEBUG_CYCLE_ALT = GLFW_KEY_F8;
 constexpr int DECAL_SPLAT = GLFW_KEY_J;     // blood splat at the crosshair
 constexpr int CAPTURE = GLFW_KEY_F7;        // LUT export + screenshot
 
+// ---- Tool windows (pop up on demand, outside the debug panel) ----
+constexpr int TEXTURE_VIEWER_TOGGLE = GLFW_KEY_GRAVE_ACCENT; // ` texture inspector window
+
 // ---- AA bank ----
 constexpr int AA_CYCLE = GLFW_KEY_Z;        // Off -> MSAA 2x -> SMAA 1x -> SMAA T2x
 constexpr int AA_OFF = GLFW_KEY_1;
