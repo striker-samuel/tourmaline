@@ -1,8 +1,13 @@
-// Thin entry point: all host logic (CLI parse, pak preload, world source,
-// renderer wiring, main loop) lives in the engine — see
-// Engine/App/Host.h (engine::RunPakApp).
-#include <Engine/App/Host.h>
+// App host entry: CLI parse -> pak-viewer run. The pak loading (preload,
+// world source, sponza check-scene extras, demo-content seeding) lives in
+// this target — PakApp.cpp/PakPreload.cpp/Host.h — NOT in the engine; the
+// engine's WorldRenderer renders whatever world the host hands it.
+#include "Host.h"
 
 int main(int argc, const char* argv[]) {
-	return engine::RunPakApp(argc, argv);
+	app::PakAppConfig cfg;
+	int exitCode = 0;
+	if (!app::ParsePakAppArgs(argc, argv, cfg, exitCode))
+		return exitCode;
+	return app::RunPakApp(cfg);
 }

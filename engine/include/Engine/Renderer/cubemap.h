@@ -24,6 +24,7 @@
 //    sampled in HLSL with TextureCube.Sample(S, dir).
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -188,8 +189,7 @@ struct ReflectionProbeLibrary {
 	bool Load(ResourceManager& ctx, const OverlayVfs& vfs,
 		const std::string& name, const glm::vec3& position,
 		float influenceRadius = 10.0f, float fadeRadius = 5.0f,
-		const std::string& vfsPath = {},
-		uint32_t fallbackSize = kCubemapDefaultSize);
+		const std::string& vfsPath = {},		uint32_t fallbackSize = kCubemapDefaultSize);
 
 	// Get the nearest probe to a world position (returns null if none loaded).
 	const ReflectionProbe* Nearest(const glm::vec3& worldPos) const;
@@ -203,12 +203,14 @@ struct ReflectionProbeLibrary {
 struct CubemapLibrary {
 	std::unordered_map<std::string, CubemapEntry> entries;
 
-	// Loads `name` from `vfsPath` (or CubemapVfsPath(name) when empty)
-	// through the overlay and resolves its bindless index. Falls back to
-	// procedural faces when the VFS file is missing or fails to decode
-	// as a cubemap. Returns true when the entry is available.
-	bool Load(ResourceManager& ctx, const OverlayVfs& vfs,
-		const std::string& name, const std::string& vfsPath = {},
+	// Loads `name` from KTX2 `bytes` (the caller resolves the payload —
+	// cluster bake channel / pak / host file) and resolves its bindless
+	// index. Empty bytes or a decode that is not a cubemap falls back to
+	// procedural faces (the caller decides whether a procedural entry is
+	// acceptable, e.g. probes never place one). Returns true when the
+	// entry is available.
+	bool Load(ResourceManager& ctx, const std::string& name,
+		std::span<const uint8_t> ktxBytes,
 		uint32_t fallbackSize = kCubemapDefaultSize);
 
 	int32_t Bindless(const std::string& name) const {

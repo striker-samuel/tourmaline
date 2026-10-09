@@ -50,6 +50,10 @@ void EditorApp::MarkEnvNode(uint32_t node) {
 		Log("Node " + std::to_string(node) + " marked as Environment.");
 	}
 	ResolveSceneEnv();
+	// The zone SET changed: re-derive the hosted zone map now (marking
+	// mid-session bypasses the command flow's refresh).
+	if (m_wysiwyg)
+		m_wysiwyg->RefreshEnvZones();
 }
 
 void EditorApp::UnmarkEnvNode(uint32_t node) {
@@ -58,6 +62,8 @@ void EditorApp::UnmarkEnvNode(uint32_t node) {
 	if (m_world->scene.envForNode.erase(node) > 0 && m_envCurrent == node)
 		m_envCurrent = UINT32_MAX; // fall back to the editor default
 	ResolveSceneEnv();
+	if (m_wysiwyg)
+		m_wysiwyg->RefreshEnvZones(); // see MarkEnvNode
 }
 
 void EditorApp::ResolveSceneEnv() {
@@ -137,6 +143,21 @@ void EditorApp::DrawEnvPanel() {
 				m_envCurrent = node;
 		}
 		ImGui::EndCombo();
+	}
+	// ZONE controls (node sources only — the node IS the zone: coverage
+	// from its transform, see ZoneCovers; the default block has no zone).
+	if (m_envCurrent != UINT32_MAX) {
+		EditorEnv& e = CurrentEnv();
+		ImGui::DragFloat("Zone priority##envzone", &e.zonePriority, 0.25f,
+			0.0f, 100.0f, "%.0f");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"Zone overlap resolution: higher priority wins; ties go to\n"
+				"the innermost (smallest bounded volume; an INFINITE scale\n"
+				"axis is an unbounded slab and loses ties). Coverage:\n"
+				"node translate/rotation = placement, scale = half extents\n"
+				"(set an axis to INF for an infinite slab — the transform\n"
+				"gizmo + inspector scale rows author it).");
 	}
 	// ---- sun: scene light (content — only when a directional node exists) ----
 	ImGui::Separator();
@@ -297,6 +318,100 @@ void EditorApp::DrawEnvPanel() {
 				"renders no fog at all. The editor viewport previews "
 				"none of them — the hosted live view renders them.");
 	}
+	// ---- postfx look (bloom + tonemap + exposure + AO + SSR + misc) ----
+	// The SAME settings the App's panels expose (its passes seed from
+	// these at scene load; saved forward tour -> pak -> App). Rows write
+	// the scene-backed source; ResolveSceneEnv + the live push at the
+	// panel tail keep the hosted viewport on the authored look per tweak.
+	ImGui::Separator();
+	ImGui::Text("Postfx look (bloom / tonemap / exposure / AO / SSR)");
+	ImGui::TextDisabled("Authored look — every row saves forward into the "
+		"tour, the pak and the App (which seeds its passes once per load).");
+	// Bloom (complete): enable + tonemap add scale + pre-exposure HDR
+	// threshold (the knee derives at 0.25x threshold, as always).
+	ImGui::Checkbox("Bloom##envbloom", &e.bloomEnabled);
+	if (e.bloomEnabled) {
+		ImGui::SliderFloat("Bloom intensity##envbloom",
+			&e.bloomIntensity, 0.0f, 2.0f, "%.2f");
+		ImGui::DragFloat("Bloom threshold (HDR)##envbloom",
+			&e.bloomThreshold, 1.0f, 0.0f, 16000.0f, "%.0f");
+	}
+	// Tonemap operator.
+	{
+		const char* modes[4] = { "Reinhard", "ACES", "Uncharted2", "GT7" };
+		int tm = int(std::min(e.tonemapMode, 3u));
+		if (ImGui::Combo("Tonemap##envtonemap", &tm, modes, 4))
+			e.tonemapMode = uint32_t(tm);
+	}
+	// Exposure (histogram meter + eye adaptation).
+	ImGui::Checkbox("Auto exposure##envexp", &e.autoExposure);
+	if (e.autoExposure) {
+		ImGui::SliderFloat("EV bias##envexp",
+			&e.exposureEvBias, -4.0f, 4.0f, "%.2f");
+		ImGui::DragFloat("Adapt to dark (/s)##envexp",
+			&e.exposureSpeedToDark, 0.05f, 0.01f, 8.0f, "%.2f");
+		ImGui::DragFloat("Adapt to bright (/s)##envexp",
+			&e.exposureSpeedToBright, 0.05f, 0.01f, 8.0f, "%.2f");
+		ImGui::DragFloat("Exposure min##envexp",
+			&e.exposureMin, 0.000001f, 0.000001f, 1.0f, "%.6f");
+		ImGui::DragFloat("Exposure max##envexp",
+			&e.exposureMax, 0.0005f, 0.00001f, 1.0f, "%.5f");
+	}
+	else {
+		ImGui::DragFloat("Manual exposure##envexp",
+			&e.manualExposure, 0.00005f, 0.00001f, 0.05f, "%.5f");
+	}
+	// AO (SSGI post chain).
+	{
+		const char* aoModes[3] = { "None", "SSAO", "SAO" };
+		int am = std::clamp(e.aoMode, 0, 2);
+		if (ImGui::Combo("AO mode (O)##envao", &am, aoModes, 3))
+			e.aoMode = am;
+		if (e.aoMode != 0) {
+			ImGui::SliderFloat("AO radius (m)##envao",
+				&e.aoRadius, 0.05f, 2.0f, "%.2f");
+			ImGui::SliderFloat("AO bias##envao",
+				&e.aoBias, 0.0f, 0.1f, "%.3f");
+			ImGui::SliderFloat("AO intensity##envao",
+				&e.aoIntensity, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("AO max distance (m)##envao",
+				&e.aoMaxDistance, 2.0f, 100.0f, "%.0f");
+			if (e.aoMode == 1) {
+				int s = e.aoSsaoSamples;
+				if (ImGui::SliderInt("SSAO samples##envao", &s, 1, 32))
+					e.aoSsaoSamples = s;
+				ImGui::SliderFloat("Blur sharpness##envao",
+					&e.aoBlurSharpness, 0.0f, 32.0f, "%.1f");
+			}
+			else {
+				int s = e.aoSaoSamples;
+				if (ImGui::SliderInt("SAO samples##envao", &s, 1, 32))
+					e.aoSaoSamples = s;
+				int t = e.aoSaoSpiralTurns;
+				if (ImGui::SliderInt("SAO spiral turns##envao", &t, 1, 16))
+					e.aoSaoSpiralTurns = t;
+			}
+		}
+	}
+	// SSR + the remaining runtime toggles.
+	ImGui::Checkbox("SSR reflections##envssr", &e.ssrEnabled);
+	if (e.ssrEnabled) {
+		ImGui::SliderFloat("SSR intensity##envssr",
+			&e.ssrIntensity, 0.0f, 4.0f, "%.2f");
+	}
+	ImGui::Checkbox("Motion blur (M)##envmisc", &e.motionBlurEnabled);
+	ImGui::Checkbox("Depth of field##envmisc", &e.dofEnabled);
+	{
+		const char* aaModes[4] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
+		int am = std::clamp(e.aaMode, 0, 3);
+		if (ImGui::Combo("Anti-aliasing##envmisc", &am, aaModes, 4))
+			e.aaMode = am;
+	}
+	ImGui::Checkbox("Cubemap specular IBL##envmisc", &e.cubemapEnabled);
+	if (e.cubemapEnabled) {
+		ImGui::SliderFloat("Cubemap intensity##envmisc",
+			&e.cubemapIntensity, 0.0f, 4.0f, "%.2f");
+	}
 	{
 		char skybox[512];
 		std::snprintf(skybox, sizeof(skybox), "%s", e.skyboxUri.c_str());
@@ -322,12 +437,17 @@ void EditorApp::DrawEnvPanel() {
 	// block or selected node block) — resolve into the rendered look.
 	// Cheap (one struct copy + flag); keeps the viewport live per tweak.
 	ResolveSceneEnv();
-	// Live scattering: the hosted view seeds its volumetric pass members
-	// at load — push the CURRENT env every panel tick so the fog rows
-	// above retouch it without a re-cook (the tour still saves forward
-	// for the pak; the frame env already rebuilds per frame).
-	if (m_wysiwyg && m_world)
+	// Live look: the hosted view seeds its passes at load — push the
+	// CURRENT env every panel tick so the rows above retouch it without
+	// a re-cook (the tour still saves forward for the pak; the frame env
+	// already rebuilds per frame). Volumetric + postfx alike.
+	if (m_wysiwyg && m_world) {
 		m_wysiwyg->PushVolumetricEnv(m_world->scene.environment);
+		m_wysiwyg->PushPostfxEnv(m_world->scene.environment);
+		// Env-zone map: hash-gated re-derive (defs tier for look edits,
+		// re-rasterize when zone coverage changed).
+		m_wysiwyg->RefreshEnvZones();
+	}
 }
 
 void EditorApp::DrawTerrainFieldPage() {
@@ -489,33 +609,6 @@ void EditorApp::DrawWorldPanel() {
 	// bloom/postfx off keep the viewport reference-sharp. Only with a
 	// live hosted view; the pass SHAPE stays the full pipeline (Configure
 	// owns it), these flip the runtime gates.
-	if (m_wysiwyg) {
-		ImGui::Separator();
-		if (ImGui::CollapsingHeader("Renderer (live view)",
-				ImGuiTreeNodeFlags_DefaultOpen)) {
-			bool on = m_wysiwyg->BloomEnabled();
-			if (ImGui::Checkbox("Bloom", &on))
-				m_wysiwyg->SetBloomEnabled(on);
-			on = m_wysiwyg->MotionBlurEnabled();
-			if (ImGui::Checkbox("Motion blur", &on))
-				m_wysiwyg->SetMotionBlurEnabled(on);
-			on = m_wysiwyg->DofEnabled();
-			if (ImGui::Checkbox("Depth of field", &on))
-				m_wysiwyg->SetDofEnabled(on);
-			on = m_wysiwyg->SsrEnabled();
-			if (ImGui::Checkbox("SSR (reflections)", &on))
-				m_wysiwyg->SetSsrEnabled(on);
-			on = m_wysiwyg->VolumetricEnabled();
-			if (ImGui::Checkbox("Volumetric fog", &on))
-				m_wysiwyg->SetVolumetricEnabled(on);
-			on = m_wysiwyg->SkydomeEnabled();
-			if (ImGui::Checkbox("Sky dome", &on))
-				m_wysiwyg->SetSkydomeEnabled(on);
-			ImGui::TextDisabled("Runtime gates over the full pass shape "
-				"(the App's debug panel owns the same controls). Turn "
-				"bloom/postfx off for a reference-sharp authoring view.");
-		}
-	}
 }
 
 void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
@@ -558,6 +651,35 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 		put(prefix + ".volJitter", std::to_string(e.volumetricJitter));
 		put(prefix + ".volHeightFalloff", std::to_string(e.volumetricHeightFalloff));
 		put(prefix + ".volHeightBase", std::to_string(e.volumetricHeightBase));
+		// Postfx look (the App's panels seed from these — the same
+		// settings the panels expose; the tour carries the look).
+		put(prefix + ".bloomEnabled", e.bloomEnabled ? "1" : "0");
+		put(prefix + ".bloomIntensity", std::to_string(e.bloomIntensity));
+		put(prefix + ".bloomThreshold", std::to_string(e.bloomThreshold));
+		put(prefix + ".tonemapMode", std::to_string(e.tonemapMode));
+		put(prefix + ".autoExposure", e.autoExposure ? "1" : "0");
+		put(prefix + ".manualExposure", std::to_string(e.manualExposure));
+		put(prefix + ".exposureEvBias", std::to_string(e.exposureEvBias));
+		put(prefix + ".exposureSpeedToDark", std::to_string(e.exposureSpeedToDark));
+		put(prefix + ".exposureSpeedToBright", std::to_string(e.exposureSpeedToBright));
+		put(prefix + ".exposureMin", std::to_string(e.exposureMin));
+		put(prefix + ".exposureMax", std::to_string(e.exposureMax));
+		put(prefix + ".aoMode", std::to_string(e.aoMode));
+		put(prefix + ".aoRadius", std::to_string(e.aoRadius));
+		put(prefix + ".aoBias", std::to_string(e.aoBias));
+		put(prefix + ".aoIntensity", std::to_string(e.aoIntensity));
+		put(prefix + ".aoMaxDistance", std::to_string(e.aoMaxDistance));
+		put(prefix + ".aoSsaoSamples", std::to_string(e.aoSsaoSamples));
+		put(prefix + ".aoBlurSharpness", std::to_string(e.aoBlurSharpness));
+		put(prefix + ".aoSaoSamples", std::to_string(e.aoSaoSamples));
+		put(prefix + ".aoSaoSpiralTurns", std::to_string(e.aoSaoSpiralTurns));
+		put(prefix + ".ssrEnabled", e.ssrEnabled ? "1" : "0");
+		put(prefix + ".ssrIntensity", std::to_string(e.ssrIntensity));
+		put(prefix + ".motionBlurEnabled", e.motionBlurEnabled ? "1" : "0");
+		put(prefix + ".dofEnabled", e.dofEnabled ? "1" : "0");
+		put(prefix + ".aaMode", std::to_string(e.aaMode));
+		put(prefix + ".cubemapEnabled", e.cubemapEnabled ? "1" : "0");
+		put(prefix + ".cubemapIntensity", std::to_string(e.cubemapIntensity));
 		put(prefix + ".skyboxUri", e.skyboxUri);
 	};
 	// Sceneless save (shouldn't happen — tours save scenes): struct
@@ -640,6 +762,35 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		else if (f == "volJitter") e.volumetricJitter = StrFloat(v, e.volumetricJitter);
 		else if (f == "volHeightFalloff") e.volumetricHeightFalloff = StrFloat(v, e.volumetricHeightFalloff);
 		else if (f == "volHeightBase") e.volumetricHeightBase = StrFloat(v, e.volumetricHeightBase);
+		// Postfx look (missing keys keep struct defaults — old tours
+		// load with the classic look).
+		else if (f == "bloomEnabled") e.bloomEnabled = StrFloat(v, e.bloomEnabled ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "bloomIntensity") e.bloomIntensity = StrFloat(v, e.bloomIntensity);
+		else if (f == "bloomThreshold") e.bloomThreshold = StrFloat(v, e.bloomThreshold);
+		else if (f == "tonemapMode") e.tonemapMode = uint32_t(StrFloat(v, float(e.tonemapMode)));
+		else if (f == "autoExposure") e.autoExposure = StrFloat(v, e.autoExposure ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "manualExposure") e.manualExposure = StrFloat(v, e.manualExposure);
+		else if (f == "exposureEvBias") e.exposureEvBias = StrFloat(v, e.exposureEvBias);
+		else if (f == "exposureSpeedToDark") e.exposureSpeedToDark = StrFloat(v, e.exposureSpeedToDark);
+		else if (f == "exposureSpeedToBright") e.exposureSpeedToBright = StrFloat(v, e.exposureSpeedToBright);
+		else if (f == "exposureMin") e.exposureMin = StrFloat(v, e.exposureMin);
+		else if (f == "exposureMax") e.exposureMax = StrFloat(v, e.exposureMax);
+		else if (f == "aoMode") e.aoMode = int(StrFloat(v, float(e.aoMode)));
+		else if (f == "aoRadius") e.aoRadius = StrFloat(v, e.aoRadius);
+		else if (f == "aoBias") e.aoBias = StrFloat(v, e.aoBias);
+		else if (f == "aoIntensity") e.aoIntensity = StrFloat(v, e.aoIntensity);
+		else if (f == "aoMaxDistance") e.aoMaxDistance = StrFloat(v, e.aoMaxDistance);
+		else if (f == "aoSsaoSamples") e.aoSsaoSamples = int(StrFloat(v, float(e.aoSsaoSamples)));
+		else if (f == "aoBlurSharpness") e.aoBlurSharpness = StrFloat(v, e.aoBlurSharpness);
+		else if (f == "aoSaoSamples") e.aoSaoSamples = int(StrFloat(v, float(e.aoSaoSamples)));
+		else if (f == "aoSaoSpiralTurns") e.aoSaoSpiralTurns = int(StrFloat(v, float(e.aoSaoSpiralTurns)));
+		else if (f == "ssrEnabled") e.ssrEnabled = StrFloat(v, e.ssrEnabled ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "ssrIntensity") e.ssrIntensity = StrFloat(v, e.ssrIntensity);
+		else if (f == "motionBlurEnabled") e.motionBlurEnabled = StrFloat(v, e.motionBlurEnabled ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "dofEnabled") e.dofEnabled = StrFloat(v, e.dofEnabled ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "aaMode") e.aaMode = int(StrFloat(v, float(e.aaMode)));
+		else if (f == "cubemapEnabled") e.cubemapEnabled = StrFloat(v, e.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
+		else if (f == "cubemapIntensity") e.cubemapIntensity = StrFloat(v, e.cubemapIntensity);
 		else if (f == "skyboxUri") e.skyboxUri = v;
 	};
 

@@ -175,6 +175,14 @@ namespace smvk {
 		Cluster* cluster;
 		ClusterCameraHandle handle;
 	};
+	// Authored/runtime decals: pool assets like lights — scene.decalForNode
+	// stores world indices into this table, each entry resolving back to
+	// the owning Cluster + handle. The shape rides the node transform
+	// (see SceneDecal).
+	struct DecalLocation {
+		Cluster* cluster;
+		ClusterDecalHandle handle;
+	};
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
@@ -183,6 +191,7 @@ namespace smvk {
 	std::vector<TextureLocation> textureLocations;
 	std::vector<LightLocation> lightLocations;
 	std::vector<CameraLocation> cameraLocations;
+	std::vector<DecalLocation> decalLocations;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).
@@ -200,9 +209,41 @@ namespace smvk {
 			uint32_t sceneIndex = 0,
 			struct TextureStreamer* streamer = nullptr,
 			std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
+		// The world's DYNAMIC cluster (see Cluster::isDynamic): the
+		// dedicated home for runtime-created entities (editor-created
+		// lights/cameras, app demo content, later decals/particles).
+		// Lazily created on first call — repeat calls return the SAME
+		// cluster. ctx is the host context (nullptr only in GPU-less
+		// tests: value entities need no GPU). NOT resolved here: callers
+		// either edit incrementally (node in the merged scene + location
+		// push, the editor's live path) or keep their nodes in the
+		// dynamic cluster's own scene so a later resolve folds them in.
+		Cluster& EnsureDynamicCluster(ResourceManager* ctx);
+		// Runtime decal creation (app presets, the renderer's J crosshair
+		// spawn): appends a node with `frame` as its local transform
+		// (translation = projector center, local -Z into the surface, +Y
+		// texture V up, scale = half extents x/y/z — see SceneDecal) plus a
+		// SceneDecal look def in the DYNAMIC cluster. The durable home is
+		// the dynamic cluster's OWN scene, so a later ResolveAndFixup
+		// (e.g. a pak-cluster unload) folds the decal back in like cooked
+		// content — runtime entities survive pak unloads. A MIRROR node +
+		// link land in the merged scene incrementally for immediate
+		// visibility (the mirror dies at the next resolve; the original
+		// folds in). Returns the merged-scene node id (UINT32_MAX on
+		// failure).
+		NodeId CreateDecalAt(const glm::mat4& frame, SceneDecal def);
+		// Erases the cluster and REBUILDS the world: after the erase the
+		// merged scene + every location table still point into the
+		// destroyed cluster, so a full ResolveAndFixup_clusters() runs
+		// over the survivors — the unloaded cluster's entities vanish.
+		// Refuses the dynamic cluster (runtime state, never pak content).
+		// Load-time operation, not a hot path.
 		void UnloadCluster(smvk::Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);
+		// Detaches (does not destroy) + rebuilds like UnloadCluster; the
+		// returned cluster is re-parentable into another World. Refuses
+		// the dynamic cluster.
 		std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
 		void ResolveAndFixup_clusters();
 
@@ -339,6 +380,28 @@ namespace smvk {
 		// (mirrors the VFS overlay rule). Used for cross-pak references.
 		std::optional<MeshLocation> ResolveMeshAcrossClusters(StringViewT uri) const;
 		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(StringViewT uri) const;
+	// Bake-payload channel (see Cluster::bakePayloads): the bytes at a
+	// GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
+	// DYNAMIC cluster first — runtime injections (editor quick-bake)
+	// override cooked pak payloads — then pak clusters in registration
+	// order. Empty span = nothing carries it.
+	[[nodiscard]] std::span<const uint8_t> ReadBakeBytes(
+		const std::string& vfsPath) const;
+	// ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
+	// The zone covering a world-space point / a node's world ORIGIN:
+	// priority descending, then innermost (smallest bounded volume),
+	// INFINITE scale axes = unbounded slabs. UINT32_MAX = no zone — the
+	// resolved default environment stands. The zone's look block:
+	// scene.envForNode[zone].
+	[[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
+		return ZoneAtPosition(scene, p);
+	}
+	[[nodiscard]] NodeId zoneForNode(NodeId node) const {
+		if (node >= scene.globalTransform.size())
+			return UINT32_MAX;
+		return ZoneAtPosition(scene,
+			glm::vec3(scene.globalTransform[node][3]));
+	}
 
 		// ---- Static BVH for CPU frustum culling ---------------------
 		// Built once from frozen static-subtree nodes (see Scene::

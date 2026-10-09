@@ -48,7 +48,6 @@
 #include <gltf_import/asset_export.h> // the preprocessed asset derivation
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
-#include <Engine/Flintbase/flintbase_client.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
@@ -474,6 +473,12 @@ private:
 	struct PickHit { uint32_t node = UINT32_MAX; float t = 0.0f; };
 	std::optional<PickHit> PickNode(int vpIdx, float mouseX, float mouseY,
 		smvk::Extent2D extent) const;
+	// Screen-space gizmo-marker pick (lights, cvolume centers, cubemap
+	// pins — nodes with no mesh to raycast): nearest marker within the
+	// pixel threshold, X-ray semantics (wins over mesh hits). Honors the
+	// same View-menu visibility toggles the markers draw with.
+	std::optional<PickHit> PickGizmoMarker(int vpIdx, float mouseX,
+		float mouseY, smvk::Extent2D extent) const;
 	glm::vec3 MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
 		const glm::mat4& viewProj, glm::vec3& outOrigin) const;
 
@@ -1236,8 +1241,23 @@ private:
 	// cubemap in the reflection direction, so it reads exactly what the
 	// specular IBL serves at that capture spot. Pure render-pass visual:
 	// no scene nodes, no outliner/pick/delete filtering, nothing cooked
-	// or persisted. The toggle lives on the hosted renderer
-	// (m_cubemapShowBalls; the View menu drives it through m_wysiwyg).
+	// or persisted. MODAL: the whole light-authoring set (light markers,
+	// cvolume boxes, capture pins/balls, GI previews, chrome balls) shows
+	// ONLY in LIGHTING mode — LAYOUT stays on the object set. The View
+	// menu toggles are the per-kind master switches inside that mode.
+	// Chrome-ball user toggle (View menu); the per-frame hosted drive
+	// applies it ANDed with the lighting mode onto the renderer.
+	bool m_showChromeBalls = true;
+	// App-parity probe overlay (View menu): the hosted live view's LOADED
+	// probe rows drawn per viewport exactly like the App's probe-location
+	// overlay (dot + C<idx> + influence/fade rings, camera-distance
+	// colored). LIGHTING mode only, like the rest of the light set.
+	bool m_showProbeOverlay = true;
+	float m_probeOverlayMaxDist = 80.0f; // overlay distance cutoff (m)
+	// App-parity cubemap debug view (View menu combo, driven per frame
+	// onto the hosted renderer): 0 off, 1 raw cubemap (which probe
+	// serves each pixel), 2 probe blend weight as heat.
+	int m_cubemapDebugView = 0;
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1366,11 +1386,6 @@ private:
 	void EnsureLightmapExportTarget(smvk::Extent2D extent);
 	void RecordLightmapExportPass(uint32_t flight);
 	void ExportLightmapPng(); // readback + stb write (after Execute)
-
-	// ---- flintbase (editor_flintbase.cpp) ----
-	void DrawFlintbasePanel();   // product browser (toggle: View menu)
-	void PublishToFlintbase();   // spawn `python -m flintbase.publish`
-	void PollPublishProcess();
 
 	// ---- Clarisse-style nested scene references -------------------------
 	// References are scene DEFINITION (bound at import like the source
@@ -1594,9 +1609,9 @@ private:
 	placement::EditorDoc m_placement;
 
 	// ---- source scene ----
-	// m_gltfPath is the scene identity (a //flintbase/ scheme path when
-	// opened from a product); m_gltfHostPath is the resolved file used
-	// for loading and fingerprinting (equal to m_gltfPath for local files).
+	// m_gltfPath is the scene identity (a local file path);
+	// m_gltfHostPath is the resolved file used for loading and
+	// fingerprinting (equal to m_gltfPath for local files).
 	std::string m_gltfPath;
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
@@ -1811,6 +1826,8 @@ private:
 	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
 	std::optional<smvk::cook::GiCookAsset> m_assetInspectGiCook;
 	std::optional<smvk::cook::LightmapCookAsset> m_assetInspectLmCook;
+	std::optional<smvk::cook::CubemapAsset> m_assetInspectCubemap;
+	std::optional<smvk::cook::GicvolumeAsset> m_assetInspectGicvolume;
 	// .texture asset page: the parsed asset + the probed SOURCE header
 	// (read-only facts for KTX2 sources; LDR sources edit the settings).
 	std::optional<smvk::assets::TextureAsset> m_assetInspectTex;
@@ -1823,8 +1840,10 @@ private:
 	// The add-reference flow uses it to auto-import out-of-project
 	// sources — scenes only ever reference in-project assets.
 	std::string ImportAssetFile(const std::string& srcPath);
-	// Cook-asset creation (the Asset browser's New buttons + the Create
-	// menu): writes a fresh UNBAKED manifest (<dir>/NewGiCook<N>.gicook
+	// Cook-asset creation (INTERNAL: not in any menu — .gicook/.lmcook
+	// are a consequence of baking, minted/updated per scene by
+	// RecordBakeAssetsFromCook; this helper stays for programmatic use).
+	// Writes a fresh UNBAKED manifest (<dir>/NewGiCook<N>.gicook
 	// or NewLightmapCook<N>.lmcook — settings from the cook defaults,
 	// scene seeded from the open scene when one exists, empty blob),
 	// adopts its GUID (.meta sidecar + assetdb row kind gicook/lmcook),
@@ -1832,6 +1851,13 @@ private:
 	// like ImportAsset, unlike the scene-node Create entries. Returns
 	// the new path ({} + log on failure).
 	std::string CreateCookAsset(bool gi, const std::string& dir);
+	// Typed GI product assets (content/gi/ folder): fresh UNBAKED
+	// .cubemap / .gicvolume manifests, adopted into the registry
+	// (assetdb kinds cubemap/gicvolume). No loose sidecars — the bake
+	// payload path rides blobPath inside the manifest.
+	std::string CreateCubemapAsset(const std::string& dir);
+	std::string CreateGicvolumeAsset(const std::string& dir,
+		uint32_t node = UINT32_MAX);
 	// TEXTURE-ASSET creation (the Asset browser's New button + context
 	// menu): copies the picked source image (png/jpg/jpeg/tga/bmp/ktx2)
 	// into the browsed dir, writes <stem>.texture (import settings — see
@@ -2019,6 +2045,42 @@ private:
 	};
 	std::vector<CvolPreview> m_cvolPreviews;
 	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
+	// Capture balls + App-parity probe overlay (editor_viewports.cpp,
+	// ImGui foreground, LIGHTING mode only): the hosted live view's
+	// LOADED probe rows drawn exactly like the App's probe-location
+	// overlay (dot + C<idx> + influence/fade rings, camera-distance
+	// colored), plus black balls for authored pins with no loaded probe
+	// behind them ("nothing rendered here yet"). Honors
+	// m_showProbeOverlay (loaded rows) and m_showCubemapGizmos (pins).
+	void DrawCaptureBallOverlay();
+	// Baked/unbaked census for the authored pins (overlay + cook dialog
+	// share it): pins within kCaptureBakeMatchM of a hosted loaded probe
+	// count as baked. No live view (or no probes) = 0 baked.
+	static constexpr float kCaptureBakeMatchM = 2.0f;
+	void CaptureBakeState(size_t& bakedOut, size_t& totalOut);
+	// ---- octree PRECOOK visualization (GI authoring overlay) ----
+	// Fast authored overlay (no baker run): the world-field bounds tile
+	// grid + authored cvol boxes (capture balls ride the dedicated
+	// DrawCaptureBallOverlay above so the two never double up).
+	// Tiles split the scene AABB at the root-brick size; every tile
+	// starts dirty, a bake cleans them, any scene edit dirties them
+	// again (partial-update model: only dirty tiles need rebaking).
+	// "Update" recomputes the grid; "auto" recomputes on scene change
+	// and capture clicks select + refresh when auto is on.
+	bool m_octreePreviewOn = false;
+	bool m_octreeAutoUpdate = false;
+	float m_octreeTileSize = 8.0f; // root-brick size (m)
+	struct OctreeTile {
+		glm::vec3 mn{ 0.0f };
+		glm::vec3 mx{ 0.0f };
+		bool dirty = true;
+	};
+	std::vector<OctreeTile> m_octreeTiles;
+	glm::vec3 m_octreeMn{ 0.0f };
+	glm::vec3 m_octreeMx{ 0.0f };
+	void UpdateOctreePreview(); // recompute tiles from the live scene
+	void DrawOctreePreviewOverlay(); // wire tiles + world bounds
+	void MarkOctreeDirty(); // scene edit -> all tiles dirty
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
 	// ---- panel sizes (drag the splitters to resize; constants above
@@ -2249,6 +2311,42 @@ private:
 	};
 	std::shared_ptr<CookFeed> m_cookFeed;
 	std::shared_ptr<CookFeed> m_bakeFeed; // Bake-GI live feed (see above)
+	// ---- blocking modal task window (cook / bake / publish) ----
+	// Long subprocesses run on worker threads with a mutex-guarded line
+	// feed (CookFeed); the completion lands through the Poll* pumps on
+	// the main thread. This window is the SINGLE progress surface for
+	// all of them: a blocking modal popup (viewport mouse is eaten by
+	// the modal itself, keyboard shortcuts by the TaskWindowBlocking
+	// gate in UpdateModalInput) with the live stage, a progress bar and
+	// a scrolling detail log. "Run in background" drops the popup while
+	// the worker continues; the top-bar button reopens it on demand.
+	struct ModalTaskWindow {
+		bool wantOpen = false;   // a task owns the popup (armed/running/done)
+		bool inBackground = false; // user sent it behind; worker continues
+		bool opened = false;     // OpenPopup consumed (re-armed on reopen)
+		std::string popupId = "TaskProgress";
+		std::string title;       // header, e.g. "Bake GI"
+		std::string stage;       // current stage line
+		float progress = -1.0f;  // <0 indeterminate, else 0..1 fraction
+		std::vector<std::string> lines; // detail tail (capped below)
+		bool done = false;       // process finished (success or failure)
+		bool ok = false;         // result flag
+		std::string result;      // one-line result for the footer
+	};
+	ModalTaskWindow m_taskWindow;
+	// True while the task popup blocks the UI (armed or up, not
+	// backgrounded, result not yet acknowledged): keyboard dispatch and
+	// top-bar actions consult this.
+	bool TaskWindowBlocking() const {
+		return m_taskWindow.wantOpen && !m_taskWindow.inBackground;
+	}
+	void TaskWindowBegin(const std::string& title,
+		const std::string& stage);
+	void TaskWindowPush(const std::string& line); // detail log (capped)
+	void TaskWindowStage(const std::string& stage, float progress = -1.0f);
+	void TaskWindowFinish(bool ok, const std::string& result);
+	void ReopenTaskWindow(); // background -> foreground (top-bar button)
+	void DrawTaskWindow();   // blocking modal popup (DrawMenuBar tail)
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Cook | Bake | Textures
@@ -2258,21 +2356,6 @@ private:
 	// Content root for definition-source resolution ("models/..." style
 	// references): the current scene's content dir, else ./content.
 	std::string ResolveVfsRoot() const;
-
-	// ---- flintbase panel state ----
-	bool m_showFlintbasePanel = false;
-	char m_fbProject[64] = "";
-	char m_fbItem[128] = "";
-	char m_fbTarget[512] = "";
-	char m_fbPublishSource[512] = "";
-	struct FbItemRow { std::string name; std::string type; };
-	std::vector<FbItemRow> m_fbItems;
-	int m_fbItemSel = -1;
-	std::vector<smvk::FlintbaseProductInfo> m_fbProducts;
-	int m_fbProductSel = -1;
-	bool m_publishRunning = false;
-	struct PublishResult { bool ok = false; std::string log; };
-	std::future<PublishResult> m_publishFuture{};
 
 	// ---- add-reference dialog state ----
 };

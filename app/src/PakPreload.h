@@ -1,9 +1,8 @@
 #pragma once
-// Private (engine-internal, NOT public API): background pak file read +
+// Private (app-host-internal, NOT public API): background pak file read +
 // parse + decompress, kicked before renderer init so it overlaps Vulkan
 // init + shader loading. Consumed by PakApp.cpp's world source.
 #include <Engine/Asset/pak.h>
-#include <Engine/Flintbase/flintbase_backend.h>
 
 #include <cstdint>
 #include <future>
@@ -11,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace engine {
+namespace app {
 
 // Background pak preload result. The backend owns the image + the parsed
 // reader (already decompressed); the world source consumes it on the render
@@ -31,4 +30,4 @@ std::string ResolvePakOpenPath(const std::string& scenePak);
 
 std::future<PakPreload> KickPakPreload(const std::string& pakPath);
 
-} // namespace engine
+} // namespace app

@@ -313,23 +313,19 @@ set_target_properties(CacheTests PROPERTIES
 
 add_test(NAME cache_tests COMMAND CacheTests)
 
-project(FlintbaseTests)
+# Cluster unload + dynamic-cluster contracts (GPU-less value worlds).
+add_executable(WorldEntityTests test_world_entities.cpp)
 
-add_executable(FlintbaseTests test_flintbase.cpp)
-
-target_link_libraries(FlintbaseTests
+target_link_libraries(WorldEntityTests
     PRIVATE
         engine
 )
 
-set_target_properties(FlintbaseTests PROPERTIES
+set_target_properties(WorldEntityTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# Disabled for now: fb.backend.tryread.verified fails on this machine
-# (product resolve against the fake API) — environmental, not engine code.
-# Re-enable when the flintbase client/backend is next looked at.
-#add_test(NAME flintbase_tests COMMAND FlintbaseTests)
+add_test(NAME world_entity_tests COMMAND WorldEntityTests)
 
 add_executable(PlacementTests test_placement.cpp)
 
@@ -374,7 +370,7 @@ vulkantoy_stage_sdl3(ParticlesTests)
 vulkantoy_stage_sdl3(MotionBlurTests)
 vulkantoy_stage_sdl3(TourTests)
 vulkantoy_stage_sdl3(AssetOpsTests)
-vulkantoy_stage_sdl3(FlintbaseTests)
+vulkantoy_stage_sdl3(WorldEntityTests)
 vulkantoy_stage_sdl3(PlacementTests)
 vulkantoy_stage_sdl3(PlacementEditorTests)
 vulkantoy_stage_sdl3(MemoryTests)

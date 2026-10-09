@@ -23,40 +23,7 @@ namespace smvk {
 // Normalization (backslashes -> '/', '.' / duplicate-separator collapsing,
 // '..' resolution with root-escape rejection) lives in vfs::Normalize().
 // An empty normalized path means "invalid".
-//
-// Reserved scheme: paths under "//flintbase/" (the Flintbase asset
-// system) keep the scheme prefix verbatim through normalization:
-//   "//flintbase/{project}/{item}/{task}[/{step}]/{vNNN|latest}/{product}[/{file}]"
-// Scheme paths are routed exclusively to backends that opt in via
-// ServesSchemePaths(); regular backends never see them and scheme
-// backends never see regular paths. The normalized form is stable, so
-// asset URIs round-trip through paks unchanged.
 using VfsPath = std::string;
-
-namespace vfs {
-// The reserved Flintbase scheme prefix in its canonical (lowercase,
-// forward-slash) normalized form.
-inline constexpr std::string_view kFlintbaseScheme = "//flintbase/";
-
-// True when a RAW (possibly unnormalized, any-case, any-separator)
-// input begins with the scheme authority ("//flintbase/" or
-// "\\flintbase\", case-insensitive).
-[[nodiscard]] bool HasFlintbasePrefix(std::string_view path);
-
-// True when a NORMALIZED path is a scheme path.
-[[nodiscard]] inline bool IsFlintbasePath(std::string_view normalized) {
-	return normalized.size() >= kFlintbaseScheme.size()
-		&& normalized.compare(0, kFlintbaseScheme.size(), kFlintbaseScheme) == 0;
-}
-
-// The scheme-free remainder of a normalized scheme path
-// ("project/item/..."). Empty when not a scheme path.
-[[nodiscard]] inline std::string_view FlintbaseRemainder(std::string_view normalized) {
-	if (!IsFlintbasePath(normalized))
-		return {};
-	return normalized.substr(kFlintbaseScheme.size());
-}
-} // namespace vfs
 
 struct VfsStat {
 	uint64_t size = 0;
@@ -70,10 +37,6 @@ class IVfsBackend {
 public:
 	virtual ~IVfsBackend() = default;
 	virtual std::string Name() const = 0;
-	// Backends that serve the reserved //flintbase/ scheme exclusively.
-	// OverlayVfs routes scheme paths only to such backends, and regular
-	// paths only to the rest.
-	virtual bool ServesSchemePaths() const { return false; }
 	virtual bool Exists(const VfsPath& path) const = 0;
 	virtual std::optional<std::vector<uint8_t>> TryRead(const VfsPath& path) const = 0;
 	virtual std::vector<VfsPath> ListDir(const VfsPath& dir) const = 0;
@@ -150,9 +113,6 @@ private:
 namespace vfs {
 // Normalizes to posix-relative form. Returns "" when the input is empty,
 // absolute (leading '/' or drive letter), or escapes the root via '..'.
-// Inputs with the reserved //flintbase/ scheme keep the (lowercased)
-// prefix verbatim and normalize the remainder; bare unknown authorities
-// ("//other/...") remain invalid.
 VfsPath Normalize(const std::string& path);
 inline bool IsValid(const std::string& path) { return !Normalize(path).empty(); }
 VfsPath Join(const std::string& a, const std::string& b);

@@ -23,7 +23,6 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/Asset/tour.h>
-#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Vfs/vfs.h>
@@ -847,8 +846,7 @@ void EditorApp::DraftCreateCamera() {
 }
 
 void EditorApp::ExecCreateLight(EditCmd& c) {
-	if (!m_world || m_world->clusters.empty()
-		|| !m_world->clusters[0])
+	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
 	uint32_t parent = c.node2;
@@ -869,8 +867,11 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
 	scene.nameForNode[uint32_t(created)] = nameId;
-	// Pool definition on the primary cluster (FindNodeLight resolves
-	// world lights through lightLocations -> cluster + handle).
+	// Pool definition on the DYNAMIC cluster (World::EnsureDynamicCluster):
+	// runtime-created entities live there, never in the scene's cluster —
+	// pak unloads leave them alone and the scene cluster stays pure cooked
+	// content. FindNodeLight resolves world lights through lightLocations
+	// -> cluster + handle, so nothing downstream changes.
 	::SceneLight def{};
 	def.type = c.lightType == 2u
 		? ::SceneLight::Type::Spot : ::SceneLight::Type::Point;
@@ -884,7 +885,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	if (c.lightShadow && def.type == ::SceneLight::Type::Spot)
 		def.flags |= ::SceneLight::kSceneLightFlag_CastShadow;
 	def.name = c.afterText;
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
 	auto handle = cl->lights.create(std::move(def));
 	const uint32_t worldLightIdx = uint32_t(m_world->lightLocations.size());
 	m_world->lightLocations.push_back({ cl, handle });
@@ -991,8 +992,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 // addresses later creates via kCreateCameraRefBase (creation order).
 // ---------------------------------------------------------------------------
 void EditorApp::ExecCreateCamera(EditCmd& c) {
-	if (!m_world || m_world->clusters.empty()
-		|| !m_world->clusters[0])
+	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
 	uint32_t parent = c.node2;
@@ -1014,8 +1014,10 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
 	scene.nameForNode[uint32_t(created)] = nameId;
-	// Lens definition on the primary cluster (FindNodeCamera resolves
-	// world cameras through cameraLocations -> cluster + handle).
+	// Lens definition on the DYNAMIC cluster (World::EnsureDynamicCluster:
+	// runtime-created entities live there — see ExecCreateLight).
+	// FindNodeCamera resolves world cameras through cameraLocations ->
+	// cluster + handle.
 	::SceneCamera def{};
 	def.projection = (c.camProjection != 0)
 		? ::SceneCamera::Projection::Orthographic
@@ -1025,7 +1027,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	def.farClip = std::max(c.camFar, def.nearClip * 1.1f + 1e-3f);
 	def.orthoHalfH = std::clamp(c.camOrthoHalfH, 1e-2f, 1e5f);
 	def.name = c.afterText;
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
 	auto handle = cl->cameras.create(std::move(def));
 	const uint32_t worldCamIdx = uint32_t(m_world->cameraLocations.size());
 	m_world->cameraLocations.push_back({ cl, handle });
@@ -2364,8 +2366,12 @@ void EditorApp::Do(EditCmd c) {
 	// (creates/deletes/moves/attr edits): refresh the hosted cooked
 	// pack now — the bind-time build runs once per load/rebind and
 	// would otherwise leave fresh lights dark until the next rebind.
-	if (m_wysiwyg && m_world)
+	if (m_wysiwyg && m_world) {
 		m_wysiwyg->RebuildCookedLights();
+		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
+		// - look-only edits cost the defs tier, coverage edits re-rasterize.
+		m_wysiwyg->RefreshEnvZones();
+	}
 	AutosaveTour();
 }
 
@@ -2387,8 +2393,12 @@ void EditorApp::PushDone(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	if (m_wysiwyg && m_world)
-		m_wysiwyg->RebuildCookedLights(); // see Do() above
+	if (m_wysiwyg && m_world) {
+		m_wysiwyg->RebuildCookedLights();
+		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
+		// - look-only edits cost the defs tier, coverage edits re-rasterize.
+		m_wysiwyg->RefreshEnvZones();
+	} // see Do() above
 	AutosaveTour();
 }
 
@@ -2398,8 +2408,12 @@ bool EditorApp::Undo() {
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
-	if (m_wysiwyg && m_world)
-		m_wysiwyg->RebuildCookedLights(); // see Do() above
+	if (m_wysiwyg && m_world) {
+		m_wysiwyg->RebuildCookedLights();
+		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
+		// - look-only edits cost the defs tier, coverage edits re-rasterize.
+		m_wysiwyg->RefreshEnvZones();
+	} // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2419,8 +2433,12 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
-	if (m_wysiwyg && m_world)
-		m_wysiwyg->RebuildCookedLights(); // see Do() above
+	if (m_wysiwyg && m_world) {
+		m_wysiwyg->RebuildCookedLights();
+		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
+		// - look-only edits cost the defs tier, coverage edits re-rasterize.
+		m_wysiwyg->RefreshEnvZones();
+	} // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -3299,14 +3317,6 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 std::string EditorApp::TourPath() const {
 	if (m_gltfPath.empty())
 		return {};
-	// Flintbase scheme scenes keep their identity in the tour; the tour
-	// file itself is local working state, so it never lands inside the
-	// (immutable) product version folder on storage.
-	if (smvk::vfs::HasFlintbasePrefix(m_gltfPath)) {
-		std::filesystem::path p(m_gltfHostPath);
-		std::filesystem::create_directories("content/tours");
-		return ("content/tours/" + p.filename().replace_extension(".tour").string());
-	}
 	std::filesystem::path p(m_gltfPath);
 	p.replace_extension(".tour");
 	return p.string();
@@ -4640,8 +4650,12 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// The replay rebuilt the world in place (same object — no rebind):
 	// refresh the hosted cooked pack now, or reloaded lights stay dark
 	// until the next command.
-	if (m_wysiwyg && m_world)
+	if (m_wysiwyg && m_world) {
 		m_wysiwyg->RebuildCookedLights();
+		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
+		// - look-only edits cost the defs tier, coverage edits re-rasterize.
+		m_wysiwyg->RefreshEnvZones();
+	}
 	return true;
 }
 

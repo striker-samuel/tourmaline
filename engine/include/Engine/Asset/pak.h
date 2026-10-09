@@ -19,20 +19,22 @@ namespace smvk {
 //
 // Layout (all integers little-endian, all blobs 16-byte aligned):
 //
-//   Header  (32 B): magic "SMP4", u32 reserved, u32 flags, u64 tocOffset,
+//   Header  (32 B): magic "SMP5", u32 reserved, u32 flags, u64 tocOffset,
 //                   u64 tocCount, u32 reserved
 //   Blobs   : [payload bytes ...] (opaque to this layer; see
 //             Engine/Asset/cluster_serializer.h for Scene/Mesh/Material/
 //             Texture/Light blob encodings)
 //   TOC     : tocCount × { u64 pathHash, u32 kind, u32 flags,
 //                          u64 offset, u64 size, u32 pathLen, path bytes }
-//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM4"
+//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM5"
 //                   (crc covers header+blobs+TOC)
 //
 // NO FORMAT VERSIONS: the magic IS the version. A breaking format change
 // bumps the trailing magic char (SMP4 -> SMP5, KPM4 -> KPM5) and the
 // reader fails closed on mismatch — content is recooked from zero, never
 // migrated. (The reserved header slots stay zero.)
+// SMP5 (the decal-entity break): PakAssetKind::Decal blobs + the scene
+// blob's v11 decal-link section.
 //
 // TOC pathHash = FNV-1a64 over the normalized VFS path (textures: the
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
@@ -59,8 +61,8 @@ namespace smvk {
 // blobs (e.g. bakery-appended textures) keep the full-resident path.
 // A breaking change to any of this bumps the magic below (never a
 // version field); content recooks from zero.
-inline constexpr uint32_t kPakMagic = 0x34504D53; // "SMP4" LE
-inline constexpr uint32_t kPakFooterMagic = 0x344D504B; // "KPM4" LE
+inline constexpr uint32_t kPakMagic = 0x35504D53; // "SMP5" LE
+inline constexpr uint32_t kPakFooterMagic = 0x354D504B; // "KPM5" LE
 
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
@@ -81,6 +83,12 @@ enum class PakAssetKind : uint32_t {
 	// by its asset URI — loaded back into the Cluster cameras pool
 	// exactly like Light blobs (see cluster_serializer.cpp).
 	Camera = 7,
+	// Authored decal (editor/app decal node). One blob per decal, keyed
+	// by its asset URI — loaded back into the Cluster decals pool
+	// exactly like Light blobs (see cluster_serializer.cpp). The SHAPE
+	// rides the node transform (scene-blob decal links), the blob carries
+	// the look (texture URIs + material knobs).
+	Decal = 8,
 };
 
 enum PakEntryFlags : uint32_t {

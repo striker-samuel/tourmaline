@@ -61,9 +61,10 @@ EditorApp::IconType EditorApp::IconTypeFor(const std::string& name,
 	// do the bake payloads/manifests themselves (previously File).
 	if (ext == ".gicook" || ext == ".lmcook" || ext == ".sggi"
 		|| ext == ".sglm" || ext == ".sgrv" || ext == ".cvol"
-		|| ext == ".regmanifest" || ext == ".cvmanifest")
+		|| ext == ".regmanifest" || ext == ".cvmanifest"
+		|| ext == ".gicvolume")
 		return IconType::GI;
-	if (ext == ".cubemanifest")
+	if (ext == ".cubemanifest" || ext == ".cubemap")
 		return IconType::Env;
 	return IconType::File;
 }

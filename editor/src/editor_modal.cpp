@@ -140,6 +140,12 @@ int EditorApp::ValidateModalBindings() {
 }
 
 void EditorApp::UpdateModalInput() {
+	// A blocking task window (cook / bake / publish progress) owns the
+	// UI while up: no mode switches, gizmo ops, deletes or undos behind
+	// the modal (viewport mouse is already eaten by the modal itself via
+	// WantsCaptureMouse; this gate covers the keyboard half).
+	if (TaskWindowBlocking())
+		return;
 	// Keys belong to ImGui while typing into a field, and to the Q
 	// radial popup while it is open (its 1/2/3 must not switch modes).
 	if (m_uiMode && m_imgui && m_imgui->WantsCaptureKeyboard())
@@ -193,11 +199,11 @@ void EditorApp::UpdateModalInput() {
 			"frame selection", "F" },
 		{ GLFW_KEY_F, kModalShift, kScopeLighting, &EditorApp::ModalFrameAll,
 			"frame all", "Shift+F" },
-		{ GLFW_KEY_L, 0, kScopeLighting, &EditorApp::ModalLightGizmosToggle,
+		{ GLFW_KEY_L, 0, kScopeGlobal, &EditorApp::ModalLightGizmosToggle,
 			"light gizmos", "L" },
-		{ GLFW_KEY_J, 0, kScopeLighting, &EditorApp::ModalCvolPreviewCycle,
+		{ GLFW_KEY_J, 0, kScopeGlobal, &EditorApp::ModalCvolPreviewCycle,
 			"view: GI volumes (off/wire/solid)", "J" },
-		{ GLFW_KEY_F8, 0, kScopeLighting, &EditorApp::ModalViewBaked,
+		{ GLFW_KEY_F8, 0, kScopeGlobal, &EditorApp::ModalViewBaked,
 			"view: baked irradiance", "F8" },
 		{ GLFW_KEY_F5, kModalShift, kScopeLighting,
 			&EditorApp::ModalUvInsetCycle, "UV inset: cycle", "Shift+F5" },

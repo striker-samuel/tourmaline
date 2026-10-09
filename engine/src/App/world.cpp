@@ -54,11 +54,105 @@ namespace smvk {
 		return ref;
 	}
 
+	Cluster& World::EnsureDynamicCluster(ResourceManager* ctx)	{
+		for (auto& c : clusters)
+			if (c && c->isDynamic)
+				return *c;
+		auto cluster = std::make_unique<Cluster>(ctx);
+		cluster->isDynamic = true;
+		Cluster& ref = *cluster;
+		RegisterCluster(std::move(cluster));
+		return ref;
+	}
+
+	NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def)
+	{
+		Cluster& dyn = EnsureDynamicCluster(nullptr);
+
+		// Durable home: a root node in the DYNAMIC CLUSTER's own scene.
+		// ResolveAndFixup folds cluster scenes into the merged world, so
+		// this node (and its decal link) re-enters every rebuild — the
+		// runtime entity survives pak-cluster unloads exactly like cooked
+		// content.
+		const int cnode = addNode(dyn.scene, -1, 0);
+		if (cnode < 0)
+			return UINT32_MAX;
+		dyn.scene.localTransform[size_t(cnode)] = frame;
+		dyn.scene.globalTransform[size_t(cnode)] = frame;
+		if (!def.name.empty()) {
+			const uint32_t cnameId = uint32_t(dyn.scene.nodeNames.size());
+			dyn.scene.nodeNames.push_back(def.name);
+			dyn.scene.nameForNode[uint32_t(cnode)] = cnameId;
+		}
+		const ClusterDecalHandle handle = dyn.CreateDecal(std::move(def));
+		if (!handle.valid())
+			return UINT32_MAX;
+		// Cluster-local pool index — the resolve remap rewrites it to a
+		// world decalLocations index (same as cooked links).
+		dyn.scene.decalForNode[uint32_t(cnode)] = handle.index();
+
+		// Merged-scene mirror for IMMEDIATE visibility (no resolve ran):
+		// same frame + name, linked to the same pool entry through a
+		// pushed decalLocations row. The mirror (and this row) die at the
+		// next resolve — the cluster-scene original above folds back in.
+		const int mnode = addNode(scene, -1, 0);
+		if (mnode < 0)
+			return UINT32_MAX;
+		scene.localTransform[size_t(mnode)] = frame;
+		scene.globalTransform[size_t(mnode)] = frame;
+		if (!dyn.scene.nameForNode.empty()) {
+			const auto nit = dyn.scene.nameForNode.find(uint32_t(cnode));
+			if (nit != dyn.scene.nameForNode.end()) {
+				const uint32_t nameId = uint32_t(scene.nodeNames.size());
+				scene.nodeNames.push_back(
+					dyn.scene.nodeNames[nit->second]);
+				scene.nameForNode[uint32_t(mnode)] = nameId;
+			}
+		}
+		const uint32_t worldDecalIdx = uint32_t(decalLocations.size());
+		decalLocations.push_back({ &dyn, handle });
+		scene.decalForNode[uint32_t(mnode)] = worldDecalIdx;
+		markAsChanged(scene, mnode);
+		return uint32_t(mnode);
+	}
+
+	std::span<const uint8_t> World::ReadBakeBytes(
+		const std::string& vfsPath) const
+	{
+		// Dynamic cluster FIRST: runtime injections (the editor's
+		// quick-bake) override cooked pak payloads, mirroring the loose-
+		// file-overrides-pak overlay rule the sidecar era had.
+		for (auto it = clusters.rbegin(); it != clusters.rend(); ++it) {
+			const auto& c = *it;
+			if (!c || !c->isDynamic)
+				continue;
+			if (const Cluster::BakePayload* p = c->FindBakePayload(vfsPath))
+				return std::span<const uint8_t>(p->data(), p->size());
+		}
+		// Then pak clusters in registration order.
+		for (const auto& c : clusters) {
+			if (!c || c->isDynamic)
+				continue;
+			if (const Cluster::BakePayload* p = c->FindBakePayload(vfsPath))
+				return std::span<const uint8_t>(p->data(), p->size());
+		}
+		return {};
+	}
+
 	void World::UnloadCluster(Cluster& cluster)
 	{
+		// The dynamic cluster is runtime-created state, never pak
+		// content: unloading it would drop every runtime entity — refuse.
+		if (cluster.isDynamic)
+			return;
 		for (auto it = clusters.begin(); it != clusters.end(); ++it) {
 			if (it->get() == &cluster) {
 				clusters.erase(it);
+				// The merged scene + every location table still hold
+				// pointers/indices into the destroyed cluster: rebuild
+				// from the survivors. ResolveAndFixup is the only
+				// rebuilder (load-time operation — not a hot path).
+				ResolveAndFixup_clusters();
 				return;
 			}
 		}
@@ -73,11 +167,20 @@ namespace smvk {
 
 	std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster)
 	{
+		// Same refusal as UnloadCluster: the dynamic cluster is runtime
+		// state and stays with its world.
+		if (cluster.isDynamic)
+			return nullptr;
 		for (auto it = clusters.begin(); it != clusters.end(); ++it) {
 			if (it->get() == &cluster) {
 				std::unique_ptr<Cluster> detached = std::move(*it);
 				clusters.erase(it);
 				detached->world = nullptr;
+				// The detached cluster's nodes leave the merged scene:
+				// rebuild over the survivors (same contract as
+				// UnloadCluster; the detached cluster stays alive for
+				// re-parenting into another world).
+				ResolveAndFixup_clusters();
 				return detached;
 			}
 		}
@@ -97,6 +200,7 @@ namespace smvk {
 		textureLocations.clear();
 		lightLocations.clear();
 		cameraLocations.clear();
+		decalLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
 		// World material dedup (see the materialForNode remap below).
@@ -215,18 +319,25 @@ namespace smvk {
 					h.lastSibling = h.lastSibling + nodeOffset;
 			}
 
-			// Reparent the cluster root under the world root.
+			// Reparent the cluster root under the world root. EMPTY
+			// cluster scenes (a payload-only dynamic cluster, a cook
+			// cluster with assets but no nodes) contribute no hierarchy:
+			// nodeOffset points past the merge — skip (nothing to
+			// reparent or dirty below).
 			const uint32_t clusterRootNode = nodeOffset;
-			scene.hierarchy[clusterRootNode].parent = root;
-			if (scene.hierarchy[root].firstChild == -1) {
-				scene.hierarchy[root].firstChild = clusterRootNode;
+			if (!cs.hierarchy.empty()) {
+				scene.hierarchy[clusterRootNode].parent = root;
+				if (scene.hierarchy[root].firstChild == -1) {
+					scene.hierarchy[root].firstChild = clusterRootNode;
+				}
+				else {
+					const uint32_t prevFirst =
+						scene.hierarchy[root].firstChild;
+					scene.hierarchy[clusterRootNode].nextSibling = prevFirst;
+					scene.hierarchy[root].firstChild = clusterRootNode;
+				}
+				scene.hierarchy[clusterRootNode].level += 1;
 			}
-			else {
-				const uint32_t prevFirst = scene.hierarchy[root].firstChild;
-				scene.hierarchy[clusterRootNode].nextSibling = prevFirst;
-				scene.hierarchy[root].firstChild = clusterRootNode;
-			}
-			scene.hierarchy[clusterRootNode].level += 1;
 
 			// Remap nameForNode indices (they index into nodeNames).
 			for (auto& [node, nameIdx] : cs.nameForNode) {
@@ -323,6 +434,24 @@ namespace smvk {
 			scene.cameraForNode[worldNode] = worldCamIdx;
 		}
 
+		// Remap decalForNode: cluster-local decal pool index -> world
+		// decal index. decalLocations resolves back to Cluster + handle
+		// exactly like lightLocations (authored/runtime decals are pool
+		// assets; the shape rides the node transform).
+		for (auto& [node, decIdx] : cs.decalForNode) {
+			const uint32_t worldNode = node + nodeOffset;
+			const uint32_t worldDecalIdx =
+				static_cast<uint32_t>(decalLocations.size());
+
+			ClusterDecalHandle handle =
+				cluster.decals.getHandle(decIdx);
+
+			decalLocations.push_back(
+				DecalLocation{ .cluster = &cluster, .handle = handle }
+			);
+			scene.decalForNode[worldNode] = worldDecalIdx;
+		}
+
 		// Authored environment: per-node blocks offset-merge like the
 		// other node maps (values are inline structs — direct copy);
 		// the resolved look + default block ride first-wins across
@@ -347,7 +476,8 @@ namespace smvk {
 			defaultCamTaken = true;
 		}
 
-		markAsChanged(scene, clusterRootNode);
+		if (!cs.hierarchy.empty())
+			markAsChanged(scene, clusterRootNode);
 		++clusterOrdinal;
 	}
 

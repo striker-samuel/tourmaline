@@ -2203,6 +2203,36 @@ void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) 
 	else if (f == "volJitter") e.volumetricJitter = TourEnvFloat(v, e.volumetricJitter);
 	else if (f == "volHeightFalloff") e.volumetricHeightFalloff = TourEnvFloat(v, e.volumetricHeightFalloff);
 	else if (f == "volHeightBase") e.volumetricHeightBase = TourEnvFloat(v, e.volumetricHeightBase);
+	// Postfx look (the App's panels seed from the env — same settings
+	// the panels expose; missing keys keep struct defaults, so old
+	// tours load with the classic look).
+	else if (f == "bloomEnabled") e.bloomEnabled = TourEnvFloat(v, e.bloomEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "bloomIntensity") e.bloomIntensity = TourEnvFloat(v, e.bloomIntensity);
+	else if (f == "bloomThreshold") e.bloomThreshold = TourEnvFloat(v, e.bloomThreshold);
+	else if (f == "tonemapMode") e.tonemapMode = uint32_t(TourEnvFloat(v, float(e.tonemapMode)));
+	else if (f == "autoExposure") e.autoExposure = TourEnvFloat(v, e.autoExposure ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "manualExposure") e.manualExposure = TourEnvFloat(v, e.manualExposure);
+	else if (f == "exposureEvBias") e.exposureEvBias = TourEnvFloat(v, e.exposureEvBias);
+	else if (f == "exposureSpeedToDark") e.exposureSpeedToDark = TourEnvFloat(v, e.exposureSpeedToDark);
+	else if (f == "exposureSpeedToBright") e.exposureSpeedToBright = TourEnvFloat(v, e.exposureSpeedToBright);
+	else if (f == "exposureMin") e.exposureMin = TourEnvFloat(v, e.exposureMin);
+	else if (f == "exposureMax") e.exposureMax = TourEnvFloat(v, e.exposureMax);
+	else if (f == "aoMode") e.aoMode = int(TourEnvFloat(v, float(e.aoMode)));
+	else if (f == "aoRadius") e.aoRadius = TourEnvFloat(v, e.aoRadius);
+	else if (f == "aoBias") e.aoBias = TourEnvFloat(v, e.aoBias);
+	else if (f == "aoIntensity") e.aoIntensity = TourEnvFloat(v, e.aoIntensity);
+	else if (f == "aoMaxDistance") e.aoMaxDistance = TourEnvFloat(v, e.aoMaxDistance);
+	else if (f == "aoSsaoSamples") e.aoSsaoSamples = int(TourEnvFloat(v, float(e.aoSsaoSamples)));
+	else if (f == "aoBlurSharpness") e.aoBlurSharpness = TourEnvFloat(v, e.aoBlurSharpness);
+	else if (f == "aoSaoSamples") e.aoSaoSamples = int(TourEnvFloat(v, float(e.aoSaoSamples)));
+	else if (f == "aoSaoSpiralTurns") e.aoSaoSpiralTurns = int(TourEnvFloat(v, float(e.aoSaoSpiralTurns)));
+	else if (f == "ssrEnabled") e.ssrEnabled = TourEnvFloat(v, e.ssrEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "ssrIntensity") e.ssrIntensity = TourEnvFloat(v, e.ssrIntensity);
+	else if (f == "motionBlurEnabled") e.motionBlurEnabled = TourEnvFloat(v, e.motionBlurEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "dofEnabled") e.dofEnabled = TourEnvFloat(v, e.dofEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "aaMode") e.aaMode = int(TourEnvFloat(v, float(e.aaMode)));
+	else if (f == "cubemapEnabled") e.cubemapEnabled = TourEnvFloat(v, e.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "cubemapIntensity") e.cubemapIntensity = TourEnvFloat(v, e.cubemapIntensity);
 	else if (f == "skyboxUri") e.skyboxUri = v;
 }
 TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {

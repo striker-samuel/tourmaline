@@ -3,6 +3,7 @@
 
 
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,7 @@ namespace smvk {
 	using ClusterTextureHandle = Handle<struct Texture>;
 	using ClusterLightHandle = Handle<SceneLight>;
 	using ClusterCameraHandle = Handle<SceneCamera>;
+	using ClusterDecalHandle = Handle<SceneDecal>;
 
 	// Cooked GI binding (named sidecar payload): the GI payloads themselves
 	// (probe volumes, lightmap atlases, manifests, cubemap captures) live
@@ -73,16 +75,9 @@ namespace smvk {
 		//Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
 		Pool<Material, Material> materials;
 		Pool<Texture, Holder<TextureHandle>> textures;
-		// Cooked punctual lights (KHR_lights_punctual): value-only pool
-		// assets like meshes. scene.lightForNode stores pool indices; the
-		// pak round-trip is one Light blob per entry (see
-		// cluster_serializer.cpp), loaded back through this pool.
 		Pool<SceneLight, SceneLight> lights;
-		// Authored cameras (editor camera nodes): value-only pool assets
-		// like lights. scene.cameraForNode stores pool indices; the pak
-		// round-trip is one Camera blob per entry, loaded back through
-		// this pool. Poses resolve from node globals at use time.
 		Pool<SceneCamera, SceneCamera> cameras;
+		Pool<SceneDecal, SceneDecal> decals;
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
 		// Batched UploadStaticMesh: identical semantics per entry (heap
@@ -140,6 +135,11 @@ namespace smvk {
 		// asset, no GPU side. The pose resolves from the camera node's
 		// global transform at use time.
 		ClusterCameraHandle CreateCamera(SceneCamera def);
+		// Authored/runtime decal look (see Scene::decalForNode + SceneDecal):
+		// pure value asset, no GPU side (the textures resolve through the
+		// cluster pool at use). The shape resolves from the decal node's
+		// global transform at use time.
+		ClusterDecalHandle CreateDecal(SceneDecal def);
 
 		// Cooked GI bindings (named sidecar payloads): probe volumes
 		// (.sggi) and lightmap atlases (.sglm) live OUTSIDE the pak under
@@ -148,6 +148,44 @@ namespace smvk {
 		// enforce one binding per kind for now (first wins + warn).
 		std::vector<GiBinding> giBindings;
 		void RegisterGiBinding(GiBinding::Kind kind, const std::string& name);
+
+		// ---- Bake payloads (entity-home for GI/cubemap content) ----------
+		// The baked bytes a cluster's scenes were cooked against (sggi
+		// octree, sgrv/cvol volumes, reg/cv/cubemap manifests, cubemap
+		// KTX2s, sglm atlas), keyed by their VFS path — the payload half
+		// of the giBindings registry. Loaded pak clusters carry them
+		// zero-copy (spans into the PINNED pak image; owned copies only
+		// for LZ4 entries); runtime hosts (the editor's quick-bake)
+		// INJECT owned bytes through AddBakePayload — typically on the
+		// dynamic cluster, whose bindings/payloads override cooked ones
+		// (see World::ReadBakeBytes). Cluster-owned content: unloading
+		// the cluster drops it, exactly like meshes/lights/decals.
+		struct BakePayload {
+			// Borrowed span into the pinned pak image (uncompressed pak
+			// entries) — valid for the cluster's lifetime (PinPakImage).
+			std::span<const uint8_t> borrowed{};
+			// Owned bytes (LZ4 pak entries, editor injections).
+			std::vector<uint8_t> owned{};
+			[[nodiscard]] const uint8_t* data() const {
+				return owned.empty() ? borrowed.data() : owned.data();
+			}
+			[[nodiscard]] size_t size() const {
+				return owned.empty() ? borrowed.size() : owned.size();
+			}
+			[[nodiscard]] bool empty() const {
+				return owned.empty() && borrowed.empty();
+			}
+		};
+		// Runtime injection (editor quick-bake / app-side content).
+		void AddBakePayload(const std::string& vfsPath,
+			std::vector<uint8_t> bytes);
+		// Pak-load path only (DeserializeCluster): borrowed span into the
+		// PINNED pak image — the caller must PinPakImage first/after.
+		void AddBakePayloadBorrowed(const std::string& vfsPath,
+			std::span<const uint8_t> bytes);
+		// Lookup by VFS path ("gi/<stem>.sggi", ...). Null = not carried.
+		[[nodiscard]] const BakePayload* FindBakePayload(
+			const std::string& vfsPath) const;
 
 		// Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
 		// of every upload keyed by pool index so the pak cooker can embed
@@ -165,6 +203,14 @@ namespace smvk {
 		// or render from it. Implies SetRetainUploads(true).
 		void SetCookMode(bool cook);
 		bool IsCookMode() const { return cookMode_; }
+		// DYNAMIC cluster (see World::EnsureDynamicCluster): the World's
+		// dedicated home for runtime-created entities (editor-created
+		// lights/cameras, app demo content, later decals/particles) —
+		// never pak content. Nothing serializes it; World::UnloadCluster
+		// refuses it (pak unloads must not destroy runtime state). Purely
+		// semantic otherwise: resolve folds it into the merged scene like
+		// any other cluster.
+		bool isDynamic = false;
 		// Allocates the next cook texture id (valid Handle::Mint index for
 		// MaterialValues texture slots).
 		uint32_t AllocCookTextureId();
@@ -191,6 +237,7 @@ namespace smvk {
 		bool RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle);
 		bool RegisterLightUri(StringViewT uri, ClusterLightHandle handle);
 		bool RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle);
+		bool RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle);
 		// Textures live in the global RHI pool for binding (materials store
 		// RHI TextureHandles); the Cluster pool only owns lifetime Holders.
 		// The uri map therefore stores the RHI handle used at bind time.
@@ -201,6 +248,7 @@ namespace smvk {
 		std::optional<ClusterMaterialHandle> FindMaterialByUri(StringViewT uri) const;
 		std::optional<ClusterLightHandle> FindLightByUri(StringViewT uri) const;
 		std::optional<ClusterCameraHandle> FindCameraByUri(StringViewT uri) const;
+		std::optional<ClusterDecalHandle> FindDecalByUri(StringViewT uri) const;
 		std::optional<TextureHandle> FindTextureByUri(StringViewT uri) const;
 
 		// Resolves an AssetRef in place: keeps ref.uri, fills cluster/handle
@@ -218,6 +266,7 @@ namespace smvk {
 		StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
 		StringViewT GetLightUri(ClusterLightHandle handle) const;
 		StringViewT GetCameraUri(ClusterCameraHandle handle) const;
+		StringViewT GetDecalUri(ClusterDecalHandle handle) const;
 
 		// Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
 		// MeshBlobs; the renderer does not branch on it.
@@ -275,6 +324,7 @@ namespace smvk {
 		UriMap<ClusterMaterialHandle> materialByUri_;
 		UriMap<ClusterLightHandle> lightByUri_;
 		UriMap<ClusterCameraHandle> cameraByUri_;
+		UriMap<ClusterDecalHandle> decalByUri_;
 		UriMap<TextureHandle> textureByUri_;
 		UriMap<TextureSamplerDesc> textureSamplers_;
 		UriMap<std::vector<uint8_t>> textureSources_;
@@ -288,6 +338,10 @@ namespace smvk {
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Pak-image pin for borrowed texture payloads (see PinPakImage).
 		std::shared_ptr<const std::vector<uint8_t>> pakImagePin_;
+		// Bake payloads by VFS path (see the public block): borrowed spans
+		// point into pakImagePin_, owned vectors cover LZ4 entries +
+		// runtime injections.
+		std::unordered_map<std::string, BakePayload> bakePayloads_;
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
 		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;

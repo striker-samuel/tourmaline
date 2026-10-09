@@ -1,8 +1,9 @@
-// Pak-viewer host run: renderer setup + world source + main loop.
-// Moved verbatim from the old App/main.cpp (host logic now lives in the
-// engine); the only delta is app:: -> smvk:: after the renderer move.
+// Pak-viewer host run: renderer setup + world source + main loop. This is
+// the APP's host layer (moved out of the engine — the engine renders
+// worlds, the app owns pak loading, check-scene extras and demo content).
+// Identifiers: smvk:: = engine runtime, engine:: = the renderer layer.
 
-#include <Engine/App/Host.h>
+#include "Host.h"
 #include "PakPreload.h"
 
 #include <Engine/Memory/memory.h>
@@ -12,7 +13,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
-#include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
@@ -26,11 +27,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-namespace engine {
+namespace app {
 namespace {
 
 // Pak stem -> scene id (GI sidecars resolve gi/<id>.*, check-scene
@@ -205,6 +207,22 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 			MarkSubtreeStatic(clusterPtr->scene, 0);
 	}
 	world->ResolveAndFixup_clusters();
+	// Demo decal content (app-host owned): the procedural blood textures
+	// + the sponza check-scene hero splats become WORLD entities in the
+	// dynamic cluster — the renderer reads decals from the world only.
+	// VULKANTOY_DECALS=0 skips creating the presets entirely (the
+	// renderer's visibility toggle also reads it).
+	{
+		bool decalsOn = true;
+		if (const char* decEnv = std::getenv("VULKANTOY_DECALS")) {
+			const std::string_view dec = decEnv;
+			if (dec == "0" || dec == "off")
+				decalsOn = false;
+		}
+		if (decalsOn && InitDemoDecalTextures(ctx, *world)
+			&& StemOf(pre.scenePak) == "sponza")
+			SpawnSponzaDecalPresets(*world);
+	}
 	// Serve pak-embedded textures through the renderer's content
 	// overlay (below loose content/, so dev overrides win).
 	contentVfs.Mount(pre.backend, 10, pre.scenePak);
@@ -213,7 +231,7 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 
 // Bisection: layer extra passes onto the base config
 // (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull,particles).
-void ApplyPassCsv(ScenePassConfig& passCfg, const char* csv, bool enable) {
+void ApplyPassCsv(engine::WorldRendererConfig& passCfg, const char* csv, bool enable) {
 	if (!csv || !*csv) return;
 	const std::string s = csv;
 	size_t pos = 0;
@@ -269,7 +287,7 @@ int RunPakApp(PakAppConfig cfg) {
 	auto preloadFuture = std::make_shared<std::future<PakPreload>>(
 		KickPakPreload(cfg.pakPath));
 
-	WorldRenderer renderer;
+	engine::WorldRenderer renderer;
 	renderer.SetSceneId(sceneId);
 	// The HOST owns scene loading: the renderer calls this once during
 	// Initialize, after its context exists (nothing can upload before
@@ -286,14 +304,20 @@ int RunPakApp(PakAppConfig cfg) {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
 				ctx, contentVfs, renderer.GetTextureStreamer());
 		});
-	ScenePassConfig passCfg = ScenePassConfig::All();
+	engine::WorldRendererConfig passCfg = engine::WorldRendererConfig::All();
 	if (cfg.filterOnly)
-		passCfg = ScenePassConfig::FilterOnly();
+		passCfg = engine::WorldRendererConfig::FilterOnly();
 	else if (cfg.minimal)
-		passCfg = ScenePassConfig::Minimal();
+		passCfg = engine::WorldRendererConfig::Minimal();
 	ApplyPassCsv(passCfg, cfg.withCsv.c_str(), true);
 	ApplyPassCsv(passCfg, cfg.withoutCsv.c_str(), false);
 	renderer.Configure(passCfg);
+	// Demo content (embers at the origin, sponza decal presets): an APP
+	// host opt-in — the renderer never seeds content on its own (the
+	// editor's hosted view stays clean). Transitional: presets/emitters
+	// become world entities in the entity-system phase, then this call
+	// seeds them through the world instead.
+	renderer.SetDemoContentEnabled(true);
 	// --no-dlss: suppress the Streamline load BEFORE the renderer runs
 	// (App::Initialize consults the flag before DlssStartup /
 	// pointing volk at the interposer — after that the decision is locked
@@ -361,12 +385,4 @@ int RunPakApp(PakAppConfig cfg) {
 	return EXIT_SUCCESS;
 }
 
-int RunPakApp(int argc, const char* argv[]) {
-	PakAppConfig cfg;
-	int exitCode = EXIT_SUCCESS;
-	if (!ParsePakAppArgs(argc, argv, cfg, exitCode))
-		return exitCode;
-	return RunPakApp(cfg);
-}
-
-} // namespace engine
+} // namespace app

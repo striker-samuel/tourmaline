@@ -118,6 +118,17 @@ float SpecularAARoughness(float perceptualRoughness, float3 N)
     float3 dNdx = ddx(N);
     float3 dNdy = ddy(N);
     float variance = 0.15f * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
+    // NaN guard (bistro glass editor crash, 10/8): a NaN/Inf variance —
+    // degenerate derivative inputs (see the N guard below) — survives
+    // min/saturate as NaN on this hardware (NaN comparisons are false),
+    // and the NaN roughness then flows into the shadow-cascade and env-
+    // specular sampler coordinate math. A NaN texture coordinate wedges
+    // the GPU sampler past the Windows TDR window: nvlddmkm reset 4101,
+    // VK_ERROR_DEVICE_LOST at the editor's first hosted frame. Collapse
+    // to the un-filtered roughness instead (the AA kernel is meaningless
+    // without valid derivatives anyway).
+    if (!(variance >= 0.0f) || variance > 1e30f)
+        return perceptualRoughness;
     float alpha = perceptualRoughness * perceptualRoughness;
     // Clamp keeps silhouettes / UV seams from turning everything rough.
     float kernel = min(2.0f * variance, 0.20f);
@@ -572,6 +583,21 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // Normal mapping
     // ---------------------------------------------------------------
     float3 N = normalize(IN.normal);
+    // Degenerate-interpolation guard (bistro glass editor crash, 10/8): a
+    // near-zero INTERPOLATED normal — opposite-facing vertex normals of the
+    // same double-sided pane crossing zero on sliver triangles — underflows
+    // normalize() to NaN (length2 denormal-flushes to 0, rsqrt(0) = Inf,
+    // tiny * Inf = NaN). NaN N then NaNs every downstream consumer that
+    // feeds sampler coordinates (shadow-cascade bias/projection, env
+    // specular), and a NaN texture coordinate wedges the GPU sampler past
+    // the Windows TDR window (nvlddmkm reset, VK_ERROR_DEVICE_LOST at the
+    // editor's first hosted frame — only sliver pixels on far LOD glass
+    // hit it, so the whole frame died for a handful of texels). The dot
+    // test rejects NaN (comparisons with NaN are false) and non-unit
+    // garbage alike; the Y axis is the same fallback the TBN frame below
+    // uses for degenerate tangents.
+    if (!(dot(N, N) >= 0.5f))
+        N = float3(0.0f, 1.0f, 0.0f);
     // Double-sided handling: flip if backface when no culling
     if (!IN.isFrontFace)
         N = -N;
@@ -817,6 +843,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // shading normal's screen-space variance. Material F0/albedo stay on the
     // unfiltered values; every specular width below uses shadingRoughness.
     float shadingRoughness = SpecularAARoughness(roughness, N);
+    // Defense in depth (see the guards above): a NaN/Inf shadingRoughness
+    // feeds the shadow/env sampler coordinate math downstream — never let
+    // one through (NaN comparisons are false, so the range test rejects it).
+    if (!(shadingRoughness >= 0.0f && shadingRoughness <= 1.0f))
+        shadingRoughness = roughness;
 
     Light light = pc.bLights.Get().lights[0];
     float3 L = normalize(-light.direction);

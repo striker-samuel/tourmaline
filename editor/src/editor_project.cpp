@@ -273,8 +273,6 @@ void EditorApp::AdoptProjectAsset(const std::string& assetPath,
 	if (m_projectRoot.empty() || !m_assetDb.IsOpen()
 		|| assetPath.empty())
 		return;
-	if (smvk::vfs::HasFlintbasePrefix(assetPath))
-		return;
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	if (!fs::is_regular_file(assetPath, ec))

@@ -345,4 +345,207 @@ bool LoadLightmapCookAsset(const std::string& path, LightmapCookAsset& out,
 	return LoadLightmapCookAssetText(text, out, err);
 }
 
+CubemapAsset DefaultCubemapAsset(const std::string& name,
+	const std::string& scene) {
+	CubemapAsset a;
+	a.name = name;
+	a.scene = scene;
+	a.capture = scene;
+	return a;
+}
+
+GicvolumeAsset DefaultGicvolumeAsset(const std::string& name,
+	const std::string& scene, uint32_t node) {
+	GicvolumeAsset a;
+	a.name = name;
+	a.scene = scene;
+	a.node = node;
+	return a;
+}
+
+std::string CubemapSettingsHash(const CubemapAsset& a) {
+	std::ostringstream o;
+	o << "scene=" << a.scene << "\n";
+	o << "size=" << a.size << "\n";
+	o << "rays=" << a.rays << "\n";
+	o << "capture=" << a.capture << "\n";
+	return Hex16(HashStr(o.str()));
+}
+
+std::string GicvolumeSettingsHash(const GicvolumeAsset& a) {
+	std::ostringstream o;
+	o << "scene=" << a.scene << "\n";
+	o << "node=" << a.node << "\n";
+	o << "priority=" << a.priority << "\n";
+	return Hex16(HashStr(o.str()));
+}
+
+bool SaveCubemapAssetText(std::string& out, const CubemapAsset& a) {
+	std::ostringstream o;
+	o << "# Tourmaline cubemap capture asset v1 (settings + baked result)\n";
+	o << "guid=" << a.guid << "\n";
+	o << "name=" << a.name << "\n";
+	o << "scene=" << a.scene << "\n";
+	o << "size=" << a.size << "\n";
+	o << "rays=" << a.rays << "\n";
+	o << "capture=" << a.capture << "\n";
+	o << "blobGuid=" << a.blobGuid << "\n";
+	o << "blobPath=" << a.blobPath << "\n";
+	o << "bakedHash=" << a.bakedHash << "\n";
+	out = o.str();
+	return true;
+}
+
+bool LoadCubemapAssetText(const std::string& text, CubemapAsset& out,
+	std::string& err) {
+	out = CubemapAsset{};
+	const CubemapAsset defaults;
+	std::istringstream in(text);
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		const std::string key = Trim(line.substr(0, eq));
+		const std::string val = Trim(line.substr(eq + 1));
+		if (key == "guid") out.guid = val;
+		else if (key == "name") out.name = val;
+		else if (key == "scene") out.scene = val;
+		else if (key == "size") out.size = ParseInt(val, defaults.size);
+		else if (key == "rays") out.rays = ParseInt(val, defaults.rays);
+		else if (key == "capture") out.capture = val;
+		else if (key == "blobGuid") out.blobGuid = val;
+		else if (key == "blobPath") out.blobPath = val;
+		else if (key == "bakedHash") out.bakedHash = val;
+	}
+	if (!IsCookAssetGuid(out.guid)) {
+		err = "cubemap asset carries no/invalid guid";
+		out = CubemapAsset{};
+		return false;
+	}
+	if (!out.blobGuid.empty() && !IsCookAssetGuid(out.blobGuid)) {
+		err = "cubemap asset carries invalid blobGuid";
+		out = CubemapAsset{};
+		return false;
+	}
+	return true;
+}
+
+bool SaveCubemapAsset(const std::string& path, const CubemapAsset& a,
+	std::string& err) {
+	std::string text;
+	SaveCubemapAssetText(text, a);
+	std::ofstream f(fs::path(path), std::ios::binary | std::ios::trunc);
+	if (!f) {
+		err = "cannot write '" + path + "'";
+		return false;
+	}
+	f << text;
+	if (!f) {
+		err = "cannot write '" + path + "'";
+		return false;
+	}
+	return true;
+}
+
+bool LoadCubemapAsset(const std::string& path, CubemapAsset& out,
+	std::string& err) {
+	std::ifstream in(fs::path(path), std::ios::binary);
+	if (!in) {
+		err = "cannot open '" + path + "'";
+		return false;
+	}
+	const std::string text((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return LoadCubemapAssetText(text, out, err);
+}
+
+bool SaveGicvolumeAssetText(std::string& out, const GicvolumeAsset& a) {
+	std::ostringstream o;
+	o << "# Tourmaline convex-volume asset v1 (settings + baked result)\n";
+	o << "guid=" << a.guid << "\n";
+	o << "name=" << a.name << "\n";
+	o << "scene=" << a.scene << "\n";
+	o << "node=" << a.node << "\n";
+	o << "priority=" << a.priority << "\n";
+	o << "blobGuid=" << a.blobGuid << "\n";
+	o << "blobPath=" << a.blobPath << "\n";
+	o << "bakedHash=" << a.bakedHash << "\n";
+	out = o.str();
+	return true;
+}
+
+bool LoadGicvolumeAssetText(const std::string& text, GicvolumeAsset& out,
+	std::string& err) {
+	out = GicvolumeAsset{};
+	const GicvolumeAsset defaults;
+	std::istringstream in(text);
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if (line.empty() || line[0] == '#')
+			continue;
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		const std::string key = Trim(line.substr(0, eq));
+		const std::string val = Trim(line.substr(eq + 1));
+		if (key == "guid") out.guid = val;
+		else if (key == "name") out.name = val;
+		else if (key == "scene") out.scene = val;
+		else if (key == "node")
+			out.node = ParseU32(val, defaults.node);
+		else if (key == "priority")
+			out.priority = ParseU32(val, defaults.priority);
+		else if (key == "blobGuid") out.blobGuid = val;
+		else if (key == "blobPath") out.blobPath = val;
+		else if (key == "bakedHash") out.bakedHash = val;
+	}
+	if (!IsCookAssetGuid(out.guid)) {
+		err = "gicvolume asset carries no/invalid guid";
+		out = GicvolumeAsset{};
+		return false;
+	}
+	if (!out.blobGuid.empty() && !IsCookAssetGuid(out.blobGuid)) {
+		err = "gicvolume asset carries invalid blobGuid";
+		out = GicvolumeAsset{};
+		return false;
+	}
+	return true;
+}
+
+bool SaveGicvolumeAsset(const std::string& path, const GicvolumeAsset& a,
+	std::string& err) {
+	std::string text;
+	SaveGicvolumeAssetText(text, a);
+	std::ofstream f(fs::path(path), std::ios::binary | std::ios::trunc);
+	if (!f) {
+		err = "cannot write '" + path + "'";
+		return false;
+	}
+	f << text;
+	if (!f) {
+		err = "cannot write '" + path + "'";
+		return false;
+	}
+	return true;
+}
+
+bool LoadGicvolumeAsset(const std::string& path, GicvolumeAsset& out,
+	std::string& err) {
+	std::ifstream in(fs::path(path), std::ios::binary);
+	if (!in) {
+		err = "cannot open '" + path + "'";
+		return false;
+	}
+	const std::string text((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return LoadGicvolumeAssetText(text, out, err);
+}
+
 } // namespace smvk::cook

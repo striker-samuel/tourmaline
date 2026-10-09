@@ -39,15 +39,6 @@ namespace smvk {
 [[nodiscard]] inline bool UriAlreadyNormalized(StringViewT uri) {
 	if (uri.empty())
 		return false;
-	// Reserved //flintbase/ scheme: canonical (lowercase, forward-slash)
-	// prefix plus a normalized remainder. Fragments ride the last segment;
-	// a fragment-only remainder is the bare scheme root (invalid).
-	if (uri.starts_with("//flintbase/")) {
-		const StringViewT rest = uri.substr(vfs::kFlintbaseScheme.size());
-		if (rest.empty() || rest[0] == '#')
-			return false;
-		return UriAlreadyNormalized(rest);
-	}
 	// Drive-letter absolute (C:/..., C:\...) or posix absolute.
 	if (uri.size() >= 2 && uri[1] == ':')
 		return false;

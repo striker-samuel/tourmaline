@@ -27,22 +27,12 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	if (file.empty())
 		return {}; // "#frag" has no file part
 
-	// Reserved //flintbase/ scheme: keep the (lowercased, canonical)
-	// prefix verbatim and normalize the remainder. Regular paths reject
-	// drive-letter/leading-slash inputs.
-	const bool scheme =
-		vfs::HasFlintbasePrefix(std::string_view(file.data(), file.size()));
+	// Regular paths reject drive-letter/leading-slash inputs.
+	if (file.size() >= 2 && file[1] == ':')
+		return {}; // drive-letter absolute
+	if (file[0] == '/' || file[0] == '\\')
+		return {}; // posix absolute
 	StringViewT body = file;
-	if (scheme) {
-		const size_t kPrefixLen = vfs::kFlintbaseScheme.size();
-		body = file.size() <= kPrefixLen ? StringViewT{} : file.substr(kPrefixLen);
-	}
-	else {
-		if (file.size() >= 2 && file[1] == ':')
-			return {}; // drive-letter absolute
-		if (file[0] == '/' || file[0] == '\\')
-			return {}; // posix absolute
-	}
 
 	// Segment pass: collapse separators, skip '.', reject "..".
 	std::vector<StringViewT> parts;
@@ -61,10 +51,7 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	if (parts.empty())
 		return {};
 
-	constexpr std::string_view kPrefix = "//flintbase/";
 	size_t total = 1; // NUL
-	if (scheme)
-		total += kPrefix.size();
 	for (size_t i = 0; i < parts.size(); ++i) {
 		if (i)
 			total += 1;
@@ -75,10 +62,6 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 
 	char* buf = static_cast<char*>(scratch.Allocate(total));
 	size_t off = 0;
-	if (scheme) {
-		std::memcpy(buf, kPrefix.data(), kPrefix.size());
-		off += kPrefix.size();
-	}
 	for (size_t i = 0; i < parts.size(); ++i) {
 		if (i)
 			buf[off++] = '/';
@@ -132,9 +115,43 @@ bool Cluster::RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle) {
 	return true;
 }
 
+bool Cluster::RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle) {
+	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
+	if (n.empty() || !handle.valid())
+		return false;
+	decalByUri_.Insert(uriArena_.AllocateString(n), handle);
+	return true;
+}
+
 void Cluster::RegisterGiBinding(GiBinding::Kind kind, const std::string& name) {
 	if (!name.empty())
 		giBindings.push_back(GiBinding{ kind, name });
+}
+
+void Cluster::AddBakePayload(const std::string& vfsPath,
+	std::vector<uint8_t> bytes) {
+	if (vfsPath.empty() || bytes.empty())
+		return;
+	BakePayload p;
+	p.owned = std::move(bytes);
+	bakePayloads_[vfsPath] = std::move(p);
+}
+
+void Cluster::AddBakePayloadBorrowed(const std::string& vfsPath,
+	std::span<const uint8_t> bytes) {
+	if (vfsPath.empty() || bytes.empty())
+		return;
+	BakePayload p;
+	p.borrowed = bytes;
+	bakePayloads_[vfsPath] = std::move(p);
+}
+
+const Cluster::BakePayload* Cluster::FindBakePayload(
+	const std::string& vfsPath) const {
+	const auto it = bakePayloads_.find(vfsPath);
+	if (it == bakePayloads_.end())
+		return nullptr;
+	return &it->second;
 }
 
 bool Cluster::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
@@ -153,6 +170,7 @@ void Cluster::UnregisterUri(StringViewT uri) {
 	materialByUri_.Erase(n);
 	lightByUri_.Erase(n);
 	cameraByUri_.Erase(n);
+	decalByUri_.Erase(n);
 	textureByUri_.Erase(n);
 	textureSamplers_.Erase(n);
 	textureSources_.Erase(n);
@@ -195,6 +213,16 @@ std::optional<ClusterCameraHandle> Cluster::FindCameraByUri(StringViewT uri) con
 	if (n.empty())
 		return std::nullopt;
 	const ClusterCameraHandle* hit = cameraByUri_.Find(n);
+	if (!hit)
+		return std::nullopt;
+	return *hit;
+}
+
+std::optional<ClusterDecalHandle> Cluster::FindDecalByUri(StringViewT uri) const {
+	const StringViewT n = NormalizeAssetUri(uri);
+	if (n.empty())
+		return std::nullopt;
+	const ClusterDecalHandle* hit = decalByUri_.Find(n);
 	if (!hit)
 		return std::nullopt;
 	return *hit;
@@ -254,12 +282,27 @@ StringViewT Cluster::GetCameraUri(ClusterCameraHandle handle) const {
 	return found;
 }
 
+StringViewT Cluster::GetDecalUri(ClusterDecalHandle handle) const {
+	if (!handle.valid())
+		return {};
+	StringViewT found;
+	decalByUri_.ForEach([&](StringViewT uri, const ClusterDecalHandle& h) {
+		if (h == handle)
+			found = uri;
+	});
+	return found;
+}
+
 ClusterLightHandle Cluster::CreateLight(SceneLight def) {
 	return lights.create(std::move(def));
 }
 
 ClusterCameraHandle Cluster::CreateCamera(SceneCamera def) {
 	return cameras.create(std::move(def));
+}
+
+ClusterDecalHandle Cluster::CreateDecal(SceneDecal def) {
+	return decals.create(std::move(def));
 }
 
 void Cluster::RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc) {

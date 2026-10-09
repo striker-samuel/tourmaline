@@ -1,28 +1,30 @@
 #pragma once
 // Tiled environment-zone separation: the world/env look (sky tint, ambient
-// intensity, fog, volumetrics) becomes PAINTABLE per world region and blends
-// across region borders.
+// intensity, fog, volumetrics) varies per world region and blends across
+// region borders.
 //
 // The map: ONE RGBA8_UNORM texture over the world extent, each texel
 // covering `texelSize` meters (default 10 m -> 400x400 over the default
 // 4 km terrain). The R/G/B/A channels are the WEIGHTS of zone definitions
 // 0..3 at that texel — normalized at sample time, so a texel can blend up
-// to four zones and painting a channel paints that zone's blend share
-// (soft brushes land on texel weights, then bilinear filtering blends
-// between texels at runtime — 10 m texels give a 4 km world painting
-// granularity of 1/400th of its extent).
+// to four zones; bilinear filtering blends between texels at runtime.
 //
-// The zones: up to 4 EnvZone definitions — the blendable env subset (sky
-// tint + ambient intensity, fog color + density, volumetric scattering
-// intensity + density). The sun stays global (one sun). Zone definitions
-// ride FrameUniforms (the envZone* tail; see WorldRenderer.h), the map
-// rides the bindless Texture2D array — every shader that includes
-// common.hlsli can blend them via EnvZoneWeights (environment.hlsli).
+// The zones are ENTITIES (scene.envForNode nodes — see WorldRenderer::
+// RebuildEnvZoneMap): coverage from the node TRANSFORM (translation +
+// rotation = placement, scale = half extents per local axis, an INFINITE
+// component = an unbounded slab), the look from the node's SceneEnv
+// block. Channel 0 = the resolved environment (weight 1 outside every
+// zone); channels 1..3 = the top-3 zones (priority descending, then
+// innermost — the same order ZoneAtPosition resolves by). The sun stays
+// global (one sun). Zone definitions ride FrameUniforms (the envZone*
+// tail; see WorldRenderer.h), the map rides the bindless Texture2D
+// array — every shader that includes common.hlsli can blend them via
+// EnvZoneWeights (environment.hlsli).
 //
-// Consumers today: the terrain field (its ambient + fog blend per zone —
-// painting zones visibly paints the terrain) and the volumetric fog (its
-// march density/scatter blend per zone at the ray start). CPU-side
-// SampleAt mirrors the GPU blend for tooling/tests.
+// Consumers today: the terrain field (its ambient + fog blend per zone)
+// and the volumetric fog (its march density/scatter blend per zone at
+// the ray start). CPU-side SampleAt mirrors the GPU blend for
+// tooling/tests.
 
 #include <Engine/Memory/pool.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -98,12 +100,6 @@ struct EnvZoneMap {
 	void WorldToTexel(float wx, float wz, float& outX, float& outZ) const;
 	// Texel-space weight fetch (clamped, nearest).
 	glm::vec4 WeightsAtTexel(float x, float z) const;
-
-	// CPU paint: one additive brush stamp at WORLD XZ onto zone `zone`
-	// (0..3), radius in meters, strength 0..1 (smoothstep falloff, then
-	// renormalized so channels stay 8-bit representable). Deterministic.
-	void Paint(float wx, float wz, uint32_t zone, float radiusM,
-		float strength);
 
 	// CPU blend at world XZ (bilinear over the grid, then the weighted
 	// zone mix) — mirrors the GPU blend (EnvZoneWeights + the envZone*

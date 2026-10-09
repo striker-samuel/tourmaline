@@ -292,6 +292,39 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 	PutF32(out, e.volumetricJitter);
 	PutF32(out, e.volumetricHeightFalloff);
 	PutF32(out, e.volumetricHeightBase);
+	// Postfx look (SceneEnv — the App's panels seed from the resolved
+	// env). Appended AFTER the volumetric tail: older paks fail the
+	// reader loudly (the sanctioned break — old format, no conversions).
+	PutU32(out, e.bloomEnabled ? 1u : 0u);
+	PutF32(out, e.bloomIntensity);
+	PutF32(out, e.bloomThreshold);
+	PutU32(out, e.tonemapMode);
+	PutU32(out, e.autoExposure ? 1u : 0u);
+	PutF32(out, e.manualExposure);
+	PutF32(out, e.exposureEvBias);
+	PutF32(out, e.exposureSpeedToDark);
+	PutF32(out, e.exposureSpeedToBright);
+	PutF32(out, e.exposureMin);
+	PutF32(out, e.exposureMax);
+	PutU32(out, uint32_t(e.aoMode));
+	PutF32(out, e.aoRadius);
+	PutF32(out, e.aoBias);
+	PutF32(out, e.aoIntensity);
+	PutF32(out, e.aoMaxDistance);
+	PutU32(out, uint32_t(e.aoSsaoSamples));
+	PutF32(out, e.aoBlurSharpness);
+	PutU32(out, uint32_t(e.aoSaoSamples));
+	PutU32(out, uint32_t(e.aoSaoSpiralTurns));
+	PutU32(out, e.ssrEnabled ? 1u : 0u);
+	PutF32(out, e.ssrIntensity);
+	PutU32(out, e.motionBlurEnabled ? 1u : 0u);
+	PutU32(out, e.dofEnabled ? 1u : 0u);
+	PutU32(out, uint32_t(e.aaMode));
+	PutU32(out, e.cubemapEnabled ? 1u : 0u);
+	PutF32(out, e.cubemapIntensity);
+	// Zone-entity tail (the zonePriority break): older paks fail the
+	// reader loudly (sanctioned — no conversions).
+	PutF32(out, e.zonePriority);
 }
 
 struct Cursor {
@@ -378,6 +411,39 @@ struct Cursor {
 		e.volumetricJitter = f32();
 		e.volumetricHeightFalloff = f32();
 		e.volumetricHeightBase = f32();
+		// Postfx look (mirrors PutSceneEnv's appended tail; older blobs
+		// truncate here — the scene-env section fails loudly per the
+		// sanctioned no-conversions break).
+		e.bloomEnabled = u32() != 0;
+		e.bloomIntensity = f32();
+		e.bloomThreshold = f32();
+		e.tonemapMode = u32();
+		e.autoExposure = u32() != 0;
+		e.manualExposure = f32();
+		e.exposureEvBias = f32();
+		e.exposureSpeedToDark = f32();
+		e.exposureSpeedToBright = f32();
+		e.exposureMin = f32();
+		e.exposureMax = f32();
+		e.aoMode = int(u32());
+		e.aoRadius = f32();
+		e.aoBias = f32();
+		e.aoIntensity = f32();
+		e.aoMaxDistance = f32();
+		e.aoSsaoSamples = int(u32());
+		e.aoBlurSharpness = f32();
+		e.aoSaoSamples = int(u32());
+		e.aoSaoSpiralTurns = int(u32());
+		e.ssrEnabled = u32() != 0;
+		e.ssrIntensity = f32();
+		e.motionBlurEnabled = u32() != 0;
+		e.dofEnabled = u32() != 0;
+		e.aaMode = int(u32());
+		e.cubemapEnabled = u32() != 0;
+		e.cubemapIntensity = f32();
+		// Zone-entity tail (mirrors PutSceneEnv): older blobs truncate
+		// here — the section fails loudly (sanctioned — no conversions).
+		e.zonePriority = f32();
 		return e;
 	}
 };
@@ -445,11 +511,12 @@ bool SerializeClusters(
 	// of one model, so each unique blob is written once and every scene
 	// references the shared pak ids.
 	std::unordered_map<std::string, uint32_t> meshIdByUri, matIdByUri,
-		lightIdByUri, camIdByUri;
+		lightIdByUri, camIdByUri, decalIdByUri;
 	std::unordered_set<std::string> texturesDone;
 	uint64_t textureBytes = 0;
 	struct LocalMaps {
-		std::unordered_map<uint32_t, uint32_t> mesh, mat, light, camera;
+		std::unordered_map<uint32_t, uint32_t> mesh, mat, light, camera,
+			decal;
 	};
 	std::vector<LocalMaps> locals(clusters.size());
 
@@ -811,6 +878,50 @@ bool SerializeClusters(
 			return fail("invalid camera uri: " + uri);
 	}
 
+	// --- Decals (one blob per authored/runtime decal, URI-keyed like
+	// lights). The look only — the shape rides the node transform and
+	// travels in the Scene blob's decal links section (see below).
+	{
+		std::vector<ClusterDecalHandle> decalHandles;
+		// constcast: Pool::forEachHandle is non-const (historic).
+		const_cast<Cluster&>(cluster).decals.forEachHandle(
+			[&](ClusterDecalHandle h) { decalHandles.push_back(h); });
+		for (uint32_t k = 0; k < decalHandles.size(); ++k) {
+			const auto h = decalHandles[k];
+			std::string uri = cluster.GetDecalUri(h).Str();
+			if (uri.empty())
+				uri = "<cluster-local>#decal." + std::to_string(h.index());
+			auto idIt = decalIdByUri.find(uri);
+			if (idIt != decalIdByUri.end()) {
+				local.decal[h.index()] = idIt->second;
+				continue;
+			}
+			const uint32_t pakId = static_cast<uint32_t>(decalIdByUri.size());
+			decalIdByUri[uri] = pakId;
+			local.decal[h.index()] = pakId;
+
+			const SceneDecal* d = const_cast<Cluster&>(cluster).decals.get(h);
+			if (!d)
+				return fail("stale decal handle in pool");
+
+			std::vector<uint8_t> blob;
+			PutStr(blob, uri);
+			PutStr(blob, d->albedoUri);
+			PutStr(blob, d->normalUri);
+			PutVec3(blob, d->tint);
+			PutF32(blob, d->opacity);
+			PutF32(blob, d->normalStrength);
+			PutF32(blob, d->roughnessTarget);
+			PutF32(blob, d->metalTarget);
+			PutF32(blob, d->depthFadeStart);
+			PutU32(blob, d->seed);
+			PutStr(blob, d->name);
+
+			if (!writer.AddBlob(PakAssetKind::Decal, uri, std::move(blob)))
+				return fail("invalid decal uri: " + uri);
+		}
+	}
+
 	// --- Scene ---------------------------------------------------------------
 	{
 		const Scene& scene = cluster.scene;
@@ -994,6 +1105,26 @@ bool SerializeClusters(
 		{
 			PutU32(blob, scene.defaultCameraNode);
 		}
+		// Per-node decal links (v11; v10 blobs end after the default
+		// camera). Definitions are PakAssetKind::Decal blobs; this
+		// section carries only the node links as (node, decalPakId)
+		// pairs in node order — the same pak-id indirection the lights/
+		// cameras sections use. Always written (possibly empty) so the
+		// layout is uniform.
+		{
+			std::vector<std::pair<uint32_t, uint32_t>> decalPairs(
+				scene.decalForNode.begin(), scene.decalForNode.end());
+			std::sort(decalPairs.begin(), decalPairs.end());
+			PutU32(blob, static_cast<uint32_t>(decalPairs.size()));
+			for (const auto& [node, localIdx] : decalPairs) {
+				const auto it = local.decal.find(localIdx);
+				if (it == local.decal.end())
+					return fail("scene references unknown decal pool index " +
+						std::to_string(localIdx));
+				PutU32(blob, node);
+				PutU32(blob, it->second);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1069,6 +1200,7 @@ struct SceneLinkMaps {
 	const std::vector<ClusterMaterialHandle>* materials = nullptr;
 	const std::vector<ClusterLightHandle>* lights = nullptr;
 	const std::vector<ClusterCameraHandle>* cameras = nullptr;
+	const std::vector<ClusterDecalHandle>* decals = nullptr;
 };
 
 // Shared Scene-blob parse (see the v2/v3/v4/v5 trailing sections in the
@@ -1317,6 +1449,30 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				scene.defaultCameraNode = UINT32_MAX;
 			}
 		}
+		// Per-node decal links (v11): u32 pairCount + (node, decalPakId)
+		// pairs, remapped exactly like lights/cameras. v10 blobs end
+		// after the default camera (no decals).
+		if (c.off < c.img.size()) {
+			const uint32_t decPairCount = c.u32();
+			if (!c.ok || decPairCount > 1024 * 1024)
+				return fail("bad scene decal mapping");
+			for (uint32_t i = 0; i < decPairCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t pakId = c.u32();
+				if (!c.ok || node >= nodeCount)
+					return fail("bad scene decal mapping");
+				if (maps && maps->decals) {
+					if (pakId >= maps->decals->size())
+						return fail("bad scene decal mapping");
+					const ClusterDecalHandle h = (*maps->decals)[pakId];
+					if (!h.valid())
+						return fail("scene references invalid decal pak id");
+					scene.decalForNode[node] = h.index();
+				}
+			}
+			if (!c.ok)
+				return fail("truncated scene decals section");
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
@@ -1435,6 +1591,45 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	// contract; the streamer's demand upgrades borrow PAST this call —
 	// those payloads stay pinned on the cluster below.
 	const auto texEntries = reader.BlobsOfKind(PakAssetKind::Texture);
+	// --- Bake payloads (GI/cubemap content riding as Texture blobs) ------
+	// sggi/sgrv/cvol/manifests/sglm under gi/ + cubemap manifests/KTX2s
+	// under textures/cubemaps/: CLUSTER-OWNED payload bytes (the entity
+	// home — see Cluster::bakePayloads / World::ReadBakeBytes), never RHI
+	// textures. Excluded from the texture passes below (the KTX decoder
+	// would fail the non-KTX ones anyway; the CubemapLibrary decodes the
+	// cubemap KTX2s itself, so the old double-decode dies too).
+	const auto isBakePath = [](const std::string& p) {
+		return p.rfind("gi/", 0) == 0
+			|| p.rfind("textures/cubemaps/", 0) == 0;
+	};
+	bool bakeBorrowedAny = false;
+	for (const PakTocEntry* e : texEntries) {
+		if (!isBakePath(e->path))
+			continue;
+		PakTexturePayload p;
+		const bool v4 = ParseTexturePayloadV4(reader.Payload(*e), p);
+		if (!v4 && !ParseTexturePayload(reader.Payload(*e), p)) {
+			// Not a texture-envelope payload (foreign blob): skip.
+			continue;
+		}
+		if ((e->flags & PakEntryFlag_Lz4) != 0 || !imagePin) {
+			// LZ4 entries decompress into the READER's cache (reader
+			// lifetime, not the pinned image) — and without an image pin
+			// there is nothing to borrow from: own a copy either way.
+			Cluster::BakePayload bp;
+			bp.owned.assign(p.ktxBytes.begin(), p.ktxBytes.end());
+			cluster->AddBakePayload(e->path, std::move(bp.owned));
+		}
+		else {
+			// Uncompressed + pinned image: the payload span borrows the
+			// pak IMAGE — pin it on the cluster (same contract as the
+			// digest tails) and keep the span zero-copy.
+			cluster->AddBakePayloadBorrowed(e->path, p.ktxBytes);
+			bakeBorrowedAny = true;
+		}
+	}
+	if (bakeBorrowedAny)
+		cluster->PinPakImage(imagePin); // lvalue: shared copy, digest pass may still move
 	struct TexLoad {
 		std::string uri; // full asset uri (== file part for textures)
 		PakTexturePayload payload;
@@ -1446,6 +1641,8 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	digestLoads.reserve(texEntries.size());
 	legacyLoads.reserve(texEntries.size());
 	for (const PakTocEntry* e : texEntries) {
+		if (isBakePath(e->path))
+			continue; // bake payload, harvested above
 		PakTexturePayload p;
 		bool v4 = ParseTexturePayloadV4(reader.Payload(*e), p);
 		if (!v4 && !ParseTexturePayload(reader.Payload(*e), p))
@@ -1907,6 +2104,48 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		camByPakId.push_back(h);
 	}
 
+	// --- Decals (definitions; the Scene blob links nodes to pak ids) ----
+	// Loaded exactly like lights: one pool entry per blob, URI
+	// re-registered, and the scene's (node, pakId) pairs below remap to
+	// fresh pool handle indices. The SHAPE rides the node transform.
+	const auto decalEntries = reader.BlobsOfKind(PakAssetKind::Decal);
+	std::vector<ClusterDecalHandle> decalByPakId;
+	decalByPakId.reserve(decalEntries.size());
+	for (const PakTocEntry* e : decalEntries) {
+		Cursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const std::string albedoUri = c.str();
+		const std::string normalUri = c.str();
+		const glm::vec3 tint = c.vec3();
+		const float opacity = c.f32();
+		const float normalStrength = c.f32();
+		const float roughnessTarget = c.f32();
+		const float metalTarget = c.f32();
+		const float depthFadeStart = c.f32();
+		const uint32_t seed = c.u32();
+		const std::string name = c.str();
+		if (!c.ok)
+			return fail("truncated decal blob: " + e->path);
+		if (c.off != c.img.size())
+			return fail("trailing bytes in decal blob: " + e->path);
+		SceneDecal d;
+		d.albedoUri = std::move(albedoUri);
+		d.normalUri = std::move(normalUri);
+		d.tint = tint;
+		d.opacity = opacity;
+		d.normalStrength = normalStrength;
+		d.roughnessTarget = roughnessTarget;
+		d.metalTarget = metalTarget;
+		d.depthFadeStart = depthFadeStart;
+		d.seed = seed;
+		d.name = std::move(name);
+		const ClusterDecalHandle h = cluster->CreateDecal(std::move(d));
+		if (!h.valid())
+			return fail("CreateDecal failed for: " + uri);
+		cluster->RegisterDecalUri(uri, h);
+		decalByPakId.push_back(h);
+	}
+
 	// --- Cooked GI registry (named sidecars; 0..1 blobs, first wins) -----
 	for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::Gi)) {
 		std::vector<GiBinding> bindings;
@@ -1928,7 +2167,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			" scene(s) in pak)");
 	{
 		SceneLinkMaps maps{ &meshByPakId, &matByPakId, &lightByPakId,
-			&camByPakId };
+			&camByPakId, &decalByPakId };
 		std::string sceneName, perr;
 		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
 				cluster->scene, sceneName, &maps, perr))

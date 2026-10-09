@@ -27,7 +27,6 @@
 
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
-#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
@@ -262,7 +261,6 @@ void EditorApp::Shutdown() {
 	m_textureStreamer.reset();
 	PollCookProcess();
 	PollBakeProcess();
-	PollPublishProcess();
 	m_imgui.reset();
 	m_depth = smvk::DepthTarget{};
 	m_frameUniforms = {};
@@ -532,19 +530,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path,
 	// early returns are harmless (the next import re-scopes first).
 	if (m_texCacheAdapter)
 		m_texCacheAdapter->SetKeyScope(ProjectAssetGuid(loadPath));
-	// Scheme paths keep their //flintbase/ identity in m_gltfPath but
-	// load (and fingerprint) from the resolved storage file. The PARSE
-	// itself happens inside ApplySceneReferences (the import system —
-	// per source, nested included); the editor never holds the parsed
-	// model, its CPU geometry rides the clusters' retained uploads and
-	// its image rows the importer records (m_importImages).
-	if (!path.empty() && smvk::vfs::HasFlintbasePrefix(path)) {
-		loadPath = smvk::FlintbaseHostPath(path);
-		if (loadPath.empty()) {
-			Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
-			return false;
-		}
-	}
+	// The PARSE itself happens inside ApplySceneReferences (the import
+	// system — per source, nested included); the editor never holds the
+	// parsed model, its CPU geometry rides the clusters' retained uploads
+	// and its image rows the importer records (m_importImages).
 	WaitForDeviceIdle();
 	// Fresh streamer per load: entries view the old cluster's stashed
 	// payload bytes, so drop them before the world (and its clusters)
@@ -1919,6 +1908,11 @@ void EditorApp::DrawFrame() {
 		// RecordGizmoPass).
 		m_wysiwyg->DriveGrid(m_showGrid
 			&& m_mode != EditorMode::Lighting, m_gridSize, m_gridExtent);
+		// CHROME-BALL DRIVE (modal): baked-probe balls render only in
+		// LIGHTING mode with the rest of the light-authoring set — the
+		// View-menu toggle is the master switch inside that mode.
+		m_wysiwyg->SetCubemapShowBalls(m_showChromeBalls
+			&& m_mode == EditorMode::Lighting);
 		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
 		// own hosted view (viewport i+1 -> renderer view i): the view
 		// count follows the viewport layout (SetViewCount no-ops while
@@ -1986,6 +1980,10 @@ void EditorApp::DrawFrame() {
 		m_wysiwyg->SetAmbientMode(
 			m_litView == 0 ? engine::AmbientMode::All
 			: engine::AmbientMode::SkyIbl);
+		// CUBEMAP-DEBUG DRIVE (App parity, View menu combo): which probe
+		// serves each pixel (1) or the blend weight as heat (2). A frame
+		// switch like the debug views above — viewport-independent.
+		m_wysiwyg->SetCubemapDebug(m_cubemapDebugView);
 		// WIREFRAME DRIVE (P / Z — App parity): the frame's wireframe
 		// is Line polygon mode over the Fill depth prepass, so hidden
 		// lines are removed (lines never draw over the objects in
@@ -2133,7 +2131,6 @@ void EditorApp::DrawFrame() {
 	}
 	PollCookProcess();
 	PollBakeProcess();
-	PollPublishProcess();
 	DriveWysiwygSmoke();
 }
 
@@ -2196,6 +2193,22 @@ void EditorApp::DriveWysiwygSmoke() {
 			m_wireframeAll = !m_wireframeAll;
 			std::cerr << "[SMOKE] editor view mode -> Unlit + wireframe "
 				"on — the live view must follow\n";
+		}
+		// Plain smoke runs (no VULKANTOY_WYSIWYG_DUMP armed) have no
+		// shot-2 contract to preserve: restore Lit + wireframe-off one
+		// frame after the proof so the remaining stages (cook under the
+		// live view, the product-step cook, the post-rebind render)
+		// verify in the Lit look instead of riding Unlit+wireframe to
+		// the exit. The dump-armed restore in the shot block only fires
+		// when a dump actually captured (kDumpFrame >= 0), so this gate
+		// mirrors it on the env's absence — armed runs keep the
+		// Unlit+wire control shot untouched.
+		else if (m_smokeFrames == 17
+			&& std::getenv("VULKANTOY_WYSIWYG_DUMP") == nullptr) {
+			ActiveViewMode() = ViewMode::Lit;
+			m_wireframeAll = false;
+			std::cerr << "[SMOKE] editor view mode -> Lit, wireframe off — "
+				"no dump armed, the rest of the smoke stays verifiable\n";
 		}
 		if (++m_smokeFrames > 20) {
 			if (m_cookRunning)

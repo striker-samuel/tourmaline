@@ -105,6 +105,136 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 	return path.generic_string();
 }
 
+namespace {
+// Typed-asset placement: the GI folder (<project>/content/gi/) owns
+// .cubemap/.gicvolume manifests (no loose sidecars anywhere else).
+std::string GiTypedDir(const std::string& projectRoot) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	fs::path d = projectRoot.empty()
+		? fs::path("content") / "gi"
+		: fs::path(projectRoot) / "content" / "gi";
+	fs::create_directories(d, ec);
+	return d.generic_string();
+}
+} // namespace
+
+std::string EditorApp::CreateCubemapAsset(const std::string& dir) {
+	namespace fs = std::filesystem;
+	if (m_projectRoot.empty()) {
+		Log("New cubemap asset: open or create a project first.");
+		return {};
+	}
+	std::error_code ec;
+	std::string target = dir;
+	if (target.empty() || !fs::is_directory(fs::path(target), ec)
+		|| !InProjectDir(target))
+		target = GiTypedDir(m_projectRoot);
+	const std::string base = "NewCapture";
+	fs::path path;
+	for (int i = 0; i < 10000; ++i) {
+		const std::string stem = base
+			+ (i == 0 ? std::string() : std::to_string(i));
+		path = fs::path(target) / (stem + smvk::cook::kCubemapExt);
+		if (!fs::exists(path, ec))
+			break;
+		path.clear();
+	}
+	if (path.empty()) {
+		Log("New cubemap asset: no free file name under '" + target + "'.");
+		return {};
+	}
+	std::string scene;
+	if (!SceneEmpty())
+		scene = SceneIdForHost();
+	smvk::cook::CubemapAsset a =
+		smvk::cook::DefaultCubemapAsset(path.stem().string(), scene);
+	a.guid = smvk::tour::GenerateUuid();
+	a.size = m_cook.cubemapSize;
+	a.rays = m_cook.cubemapRays;
+	a.capture = m_cook.cubemapName.empty() ? scene : m_cook.cubemapName;
+	std::string werr;
+	if (!smvk::cook::SaveCubemapAsset(path.generic_string(), a, werr)) {
+		Log("New cubemap asset: cannot write '" + path.generic_string()
+			+ "': " + werr);
+		return {};
+	}
+	std::string merr;
+	if (!smvk::cache::WriteAssetMeta(path.generic_string(), a.guid,
+			smvk::cook::kCookAssetKindCubemap, merr)) {
+		Log("New cubemap asset: .meta write failed: " + merr);
+		return {};
+	}
+	AdoptProjectAsset(path.generic_string(),
+		smvk::cook::kCookAssetKindCubemap);
+	m_assetsDir = target;
+	m_assetsSel = path.generic_string();
+	Log("Cubemap asset created: '" + path.generic_string()
+		+ "' (unbaked).");
+	return path.generic_string();
+}
+
+std::string EditorApp::CreateGicvolumeAsset(const std::string& dir,
+	uint32_t node) {
+	namespace fs = std::filesystem;
+	if (m_projectRoot.empty()) {
+		Log("New GI volume asset: open or create a project first.");
+		return {};
+	}
+	std::error_code ec;
+	std::string target = dir;
+	if (target.empty() || !fs::is_directory(fs::path(target), ec)
+		|| !InProjectDir(target))
+		target = GiTypedDir(m_projectRoot);
+	const std::string base = "NewVolume";
+	fs::path path;
+	for (int i = 0; i < 10000; ++i) {
+		const std::string stem = base
+			+ (i == 0 ? std::string() : std::to_string(i));
+		path = fs::path(target) / (stem + smvk::cook::kGicvolumeExt);
+		if (!fs::exists(path, ec))
+			break;
+		path.clear();
+	}
+	if (path.empty()) {
+		Log("New GI volume asset: no free file name under '" + target + "'.");
+		return {};
+	}
+	std::string scene;
+	if (!SceneEmpty())
+		scene = SceneIdForHost();
+	uint32_t useNode = node;
+	uint32_t priority = 0;
+	if (m_world && useNode != UINT32_MAX) {
+		auto it = m_world->scene.cvolForNode.find(useNode);
+		if (it != m_world->scene.cvolForNode.end())
+			priority = it->second.priority;
+	}
+	smvk::cook::GicvolumeAsset a = smvk::cook::DefaultGicvolumeAsset(
+		path.stem().string(), scene, useNode);
+	a.guid = smvk::tour::GenerateUuid();
+	a.priority = priority;
+	std::string werr;
+	if (!smvk::cook::SaveGicvolumeAsset(path.generic_string(), a, werr)) {
+		Log("New GI volume asset: cannot write '" + path.generic_string()
+			+ "': " + werr);
+		return {};
+	}
+	std::string merr;
+	if (!smvk::cache::WriteAssetMeta(path.generic_string(), a.guid,
+			smvk::cook::kCookAssetKindGicvolume, merr)) {
+		Log("New GI volume asset: .meta write failed: " + merr);
+		return {};
+	}
+	AdoptProjectAsset(path.generic_string(),
+		smvk::cook::kCookAssetKindGicvolume);
+	m_assetsDir = target;
+	m_assetsSel = path.generic_string();
+	Log("GI volume asset created: '" + path.generic_string()
+		+ "' (unbaked).");
+	return path.generic_string();
+}
+
 void EditorApp::RecordBakeAssetsFromCook() {
 	// The cook's bake outputs become/refresh BAKE ASSETS tied to this
 	// scene + tour (runs on the main thread from PollCookProcess after
@@ -269,23 +399,123 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	m_bakeGiCookGuid = a.guid;
 
 	// ---- cubemap capture set (only when this cook baked cubemaps) ----
+	// Typed asset (content/gi/<scene>.cubemap): no loose sidecars are
+	// written by the editor anymore. The legacy loose manifest
+	// (textures/cubemaps/<base>.cubemanifest) is still adopted when
+	// present (migration) so old cooks keep resolving.
 	m_bakeCubemapGuid.clear();
 	if (m_cook.cubemap) {
-		// The capture-set base: the authored name, else the pak stem
-		// (the cook's default) — the manifest's stable name.
 		const std::string base = m_cook.cubemapName.empty()
 			? fs::path(m_cook.outPak).stem().generic_string()
 			: m_cook.cubemapName;
-		const std::string cubesDir =
+		// Migrate/read the legacy loose manifest when the cooker wrote one.
+		const std::string legacyCubesDir =
 			(fs::path(contentRoot) / "textures" / "cubemaps")
 				.generic_string();
-		const std::filesystem::path manifestHost =
-			fs::path(cubesDir) / (base + ".cubemanifest");
-		if (fs::is_regular_file(manifestHost, ec)) {
-			AdoptProjectAsset(manifestHost.generic_string(),
+		const fs::path legacyManifest =
+			fs::path(legacyCubesDir) / (base + ".cubemanifest");
+		if (fs::is_regular_file(legacyManifest, ec)) {
+			AdoptProjectAsset(legacyManifest.generic_string(),
 				smvk::bake::kBakeAssetKindCubemap);
-			m_bakeCubemapGuid = base;
 		}
+		// Typed asset: content/gi/<scene>.cubemap (one per scene).
+		const fs::path giDir = m_projectRoot.empty()
+			? fs::path("content") / "gi"
+			: fs::path(m_projectRoot) / "content" / "gi";
+		std::error_code gec;
+		fs::create_directories(giDir, gec);
+		const fs::path cmPath = giDir / (scene + smvk::cook::kCubemapExt);
+		smvk::cook::CubemapAsset cm;
+		bool cmFresh = true;
+		{
+			std::string lerr;
+			if (fs::is_regular_file(cmPath, ec)
+				&& smvk::cook::LoadCubemapAsset(cmPath.generic_string(),
+					cm, lerr)
+				&& cm.scene == scene)
+				cmFresh = false;
+			else {
+				cm = smvk::cook::DefaultCubemapAsset(scene, scene);
+				cm.guid = smvk::tour::GenerateUuid();
+			}
+		}
+		cm.scene = scene;
+		cm.size = m_cook.cubemapSize;
+		cm.rays = m_cook.cubemapRays;
+		cm.capture = base;
+		// Payload pointer: the baked set for this scene (registry-owned
+		// path under gi/; the loose ktx2 rows stay readable via VFS).
+		cm.blobGuid = cm.guid;
+		cm.blobPath = std::string("gi/") + scene + ".cubedata";
+		cm.bakedHash = smvk::cook::CubemapSettingsHash(cm);
+		{
+			std::string werr;
+			if (smvk::cook::SaveCubemapAsset(cmPath.generic_string(), cm,
+					werr)) {
+				if (cmFresh) {
+					std::string merr;
+					smvk::cache::WriteAssetMeta(cmPath.generic_string(),
+						cm.guid, smvk::cook::kCookAssetKindCubemap, merr);
+				}
+				AdoptProjectAsset(cmPath.generic_string(),
+					smvk::cook::kCookAssetKindCubemap);
+				m_bakeCubemapGuid = cm.guid;
+			}
+			else {
+				Log("cook assets: Cubemap save failed ('"
+					+ cmPath.generic_string() + "'): " + werr);
+			}
+		}
+	}
+	// ---- convex-volume assets (one typed .gicvolume per authored node) ----
+	// Each cvol node owns its bake pointer; the cook refreshes the
+	// settings snapshot + baked hash (payload e.g. gi/<scene>_<i>.cvol).
+	if (m_world && !m_world->scene.cvolForNode.empty()) {
+		const fs::path giDir = m_projectRoot.empty()
+			? fs::path("content") / "gi"
+			: fs::path(m_projectRoot) / "content" / "gi";
+		std::error_code gec;
+		fs::create_directories(giDir, gec);
+		for (const auto& [node, def] : m_world->scene.cvolForNode) {
+			const std::string stem =
+				scene + "_cvol" + std::to_string(node);
+			const fs::path cvPath =
+				giDir / (stem + smvk::cook::kGicvolumeExt);
+			smvk::cook::GicvolumeAsset cv;
+			bool cvFresh = true;
+			{
+				std::string lerr;
+				if (fs::is_regular_file(cvPath, ec)
+					&& smvk::cook::LoadGicvolumeAsset(
+						cvPath.generic_string(), cv, lerr)
+					&& cv.scene == scene)
+					cvFresh = false;
+				else {
+					cv = smvk::cook::DefaultGicvolumeAsset(
+						stem, scene, node);
+					cv.guid = smvk::tour::GenerateUuid();
+				}
+			}
+			cv.scene = scene;
+			cv.node = node;
+			cv.priority = def.priority;
+			cv.blobGuid = cv.guid;
+			cv.blobPath = std::string("gi/") + stem + ".cvol";
+			cv.bakedHash = smvk::cook::GicvolumeSettingsHash(cv);
+			std::string werr;
+			if (smvk::cook::SaveGicvolumeAsset(cvPath.generic_string(),
+					cv, werr)) {
+				if (cvFresh) {
+					std::string merr;
+					smvk::cache::WriteAssetMeta(cvPath.generic_string(),
+						cv.guid,
+						smvk::cook::kCookAssetKindGicvolume, merr);
+				}
+				AdoptProjectAsset(cvPath.generic_string(),
+					smvk::cook::kCookAssetKindGicvolume);
+			}
+		}
+		MarkOctreeDirty(); // baked output moved -> precook grid is stale
 	}
 	Log("cook assets: GiCook '" + a.name + "' " + (fresh ? "created"
 			: "updated") + (a.blobGuid.empty() ? std::string(" (no world")

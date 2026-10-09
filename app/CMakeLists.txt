@@ -5,12 +5,19 @@ set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
 message(STATUS "APP_DIR = ${APP_DIR}")
 
 # ---------------------------------------------------------------------------
-# App.exe: thin entry over the engine host API (Engine/App/Host.h).
-# The world renderer + frame renderers + host logic all live in `engine`;
-# this target is main.cpp + content/shader staging only. (appcore, the old
-# WorldRenderer static lib, is deleted.)
+# App.exe: the pak-viewer HOST. The engine renders worlds; this target owns
+# everything app-specific — CLI parsing, pak preload + world source, the
+# sponza check-scene extras and demo-content seeding (PakApp.cpp /
+# PakAppArgs.cpp / PakPreload.cpp; see src/Host.h). Content/shader staging
+# below. (appcore, the old WorldRenderer static lib, is long deleted.)
 # ---------------------------------------------------------------------------
-add_executable(App src/main.cpp)
+add_executable(App
+    src/main.cpp
+    src/PakApp.cpp
+    src/PakAppArgs.cpp
+    src/PakPreload.cpp
+    src/DecalAssets.cpp
+)
 
 set_target_properties(App PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
@@ -23,7 +30,6 @@ add_custom_command(TARGET App POST_BUILD
         "$<TARGET_FILE_DIR:App>"
 )
 
-message(STATUS "App source files: ${APP_SRC}")
 find_package(Vulkan REQUIRED)
 message(STATUS "Vulkan_FOUND: ${Vulkan_FOUND}")
 message(STATUS "Vulkan_INCLUDE_DIRS: ${Vulkan_INCLUDE_DIRS}")
@@ -83,9 +89,10 @@ foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
     endif()
 endforeach()
 
-# Engine-owned baked resources (light cookies, see tools/cookie_baker).
-# Staged next to the executables' working dir; the app mounts it as the
-# lowest-priority VFS backend (root dir name: "engine_resources").
+# Engine-owned staged resources (engine_resources: the WYSIWYG compose
+# shaders under resources/shaders). Staged next to the executables'
+# working dir; the app mounts it as the lowest-priority VFS backend
+# (root dir name: "engine_resources").
 if(EXISTS "${CMAKE_SOURCE_DIR}/engine/resources")
     add_custom_command(TARGET App POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -116,8 +123,8 @@ endif()
 # optimized builds — see the x64-Release-DSViz CMakeSettings preset). The
 # same define is passed to DXC (CompileShaders.cmake); clean release trees
 # compile the visualizer UI, uniform fields and shader paths out entirely.
-# main.cpp includes the engine WorldRenderer header, so it must see the
-# same layout as the engine TUs.
+# The host TUs (PakApp.cpp) include the engine WorldRenderer header, so they
+# must see the same layout as the engine TUs.
 if(DS_VIZ_ON)
     target_compile_definitions(App PRIVATE DS_DEBUG_VIZ=1)
 endif()

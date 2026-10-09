@@ -1,6 +1,6 @@
 #pragma once
 // WorldRenderer: whole-frame renderer over a WORLD. The host (App's
-// main.cpp, the editor's live view) owns all content loading — scenes
+// main.cpp, the editor's live view) owns all content loading â€” scenes
 // arrive as a resolved smvk::World whose clusters/resources are already
 // uploaded to the context and render by handles. The renderer knows
 // nothing about paks, scene files or scene discovery; it owns every
@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <cstdio>
 #include <algorithm>
 #include <array>
@@ -35,7 +36,6 @@
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
-#include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/renderview.h>
@@ -80,7 +80,7 @@ namespace engine {
 // (or A/B experiments) toggle passes without touching pass code. Defaults
 // are the full pipeline (previous behavior).
 // ---------------------------------------------------------------------------
-struct ScenePassConfig {
+struct WorldRendererConfig {
 	bool directionalShadows = true; // CSM cascade passes
 	bool spotShadows = true;        // spot atlas selection + tile passes
 	bool forwardPlusPrepass = true; // depth prepass feeding the tile cull
@@ -105,8 +105,8 @@ struct ScenePassConfig {
 	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
 	bool particles = true;          // GPU particle system (compute emitters + tiled-lit billboards)
 
-	static ScenePassConfig All() { return ScenePassConfig{}; }
-	static ScenePassConfig Minimal() {		ScenePassConfig c{};
+	static WorldRendererConfig All() { return WorldRendererConfig{}; }
+	static WorldRendererConfig Minimal() {		WorldRendererConfig c{};
 		c.directionalShadows = false;
 		c.spotShadows = false;
 		c.forwardPlusPrepass = false;
@@ -134,8 +134,8 @@ struct ScenePassConfig {
 	// Bisection config: filtered Main + HZB + tonemap only (depth prepass
 	// feeds the occluder/HZB chain, the GPU filter picks draws, Main shades
 	// survivors). Everything else off.
-	static ScenePassConfig FilterOnly() {
-		ScenePassConfig c = Minimal();
+	static WorldRendererConfig FilterOnly() {
+		WorldRendererConfig c = Minimal();
 		c.forwardPlusPrepass = true;
 		c.gfxFilter = true;
 		return c;
@@ -257,7 +257,7 @@ inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out
 
 // ---------------------------------------------------------------------------
 // Ambient / GI source selection (N cycles): exactly one active source set
-// for clean isolation — All is the production state, the rest isolate a
+// for clean isolation â€” All is the production state, the rest isolate a
 // single GI contribution for bisection. The ambient is the only thing
 // this drives; the visible sky dome (K) and the direct sun / cascaded
 // shadows are unaffected (Off = direct light only).
@@ -265,7 +265,7 @@ inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out
 //               regular grid > probe volume); the sky IBL is the
 //               FALLBACK for uncovered pixels only, never additive
 //   Lightmaps:  baked 2D SG lightmaps ONLY (static draws)
-//   Probes:     baked 3D probes ONLY (regular grids + octree volume —
+//   Probes:     baked 3D probes ONLY (regular grids + octree volume â€”
 //               the palette view splits grid vs volume per pixel)
 //   SkyIbl:     analytic sky IBL only (all baked sources disabled)
 //   Off:        no GI/ambient contribution at all (pure direct sun frame)
@@ -322,7 +322,7 @@ enum class DebugView : int {
 #if defined(DS_DEBUG_VIZ)
 // ---------------------------------------------------------------------------
 // Deferred-shadow debug visualizers (paper sections 5.3/5.4; debug builds
-// only — DS_DEBUG_VIZ, see app/CMakeLists.txt + CompileShaders.cmake).
+// only â€” DS_DEBUG_VIZ, see app/CMakeLists.txt + CompileShaders.cmake).
 // Rendered in default_lit.frag.hlsl, blended over the lit image or
 // replacing it. Numeric values must match the DS_VIZ_* defines in
 // engine/shaders/deferredshadow.hlsli.
@@ -340,124 +340,21 @@ enum class DsDebugViz : int {
 #endif
 
 // Cooked scene lights (KHR_lights_punctual via the pak/glTF import).
-// When non-empty and enabled, these REPLACE the procedural demo grid:
-// the sun drives the environment/directional light and the points/spots
+// The sun drives the environment/directional light and the points/spots
 // upload directly as the Forward+ set (static, no orbit/bob). Empty on
-// scenes without authored lights (e.g. Sponza) — the procedural path is
-// then the fallback.
+// scenes without authored lights (e.g. Sponza) â€” the Forward+ set is
+// then empty and only the sun/ambient terms light the frame.
 struct CookedSceneLights {
 	bool hasSun = false;
 	glm::vec3 sunDirToSun{ 0.0f, 1.0f, 0.0f };
 	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 	float sunIntensity = 10000.0f;
 	// World-space static lights, spots FIRST (per-tile lists keep only
-	// the first FP_MAX_PER_TILE passing lights — cone lights must not
+	// the first FP_MAX_PER_TILE passing lights â€” cone lights must not
 	// compete with the point crowd for those slots).
 	std::vector<smvk::ForwardPlusLight> pointSpots;
 	void clear() { hasSun = false; pointSpots.clear(); }
 	bool hasLights() const { return !pointSpots.empty(); }
-};
-
-// Procedural demo lights (grid of points + a few orbiting spots).
-// Point lights are pure GPU lights (no scene nodes / emissive balls);
-// the ImGui overlay draws them as colored points + indices.
-struct ForwardPlusDemo {
-	bool enabled = false;
-	// Compact static 3x3x4 grid (36 points) around the origin, manual
-	// placement (no bounds fit): the deterministic fog/light A/B crowd
-	// (headless: VULKANTOY_LIGHTS=1 to enable, VULKANTOY_LIGHTS_STATIC=1
-	// to freeze). Spots stay 0 here — they orbit by wall-clock time and
-	// would break cross-run determinism; points carry no light
-	// function. UI sliders stay live for stress configs (the old dense
-	// 12x8x12 crowd was the DS pipeline stress case).
-	int gridX = 3;
-	int gridY = 3;
-	int gridZ = 4;
-	float spacingX = 3.0f;
-	float spacingY = 2.2f;
-	float spacingZ = 1.8f;
-	float baseY = 1.2f;
-	float range = 9.0f;
-	// Fog-visible bulbs: in-scatter falls off as I/(4pi r^2) and pays the
-	// HG phase (~0.08) on top, so a haze glow that READS next to the
-	// sun/GI scatter needs ~60000 cd (600 cd was proven wired but
-	// invisible — 4 orders below the sun at 8-14 m; the pure-scatter
-	// density-1.0 A/B measured it at +-1 tonemap quantum). Surfaces near
-	// a bulb go near-white — physically right for a bright bulb in haze.
-	float intensity = 60000.0f;
-	// Fit-to-scene: when true the point grid is centered on the loaded
-	// scene's world bounds and the per-axis spacing is derived as
-	// extent / (count - 1). Off by default now (manual placement above
-	// is the deterministic A/B setup); the UI can refit + re-enable.
-	bool fitToSceneBounds = false;
-	glm::vec3 fitMin{ 0.0f }; // scene bounds at last fit (read-only in UI)
-	glm::vec3 fitMax{ 0.0f };
-	bool fitValid = false;    // false = bounds empty, manual placement used
-	void FitToBounds(const glm::vec3& mn, const glm::vec3& mx) {
-		fitMin = mn;
-		fitMax = mx;
-		fitValid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z;
-	}
-	bool animate = false;
-	float speed = 0.6f;
-	int spotCount = 0;
-	float spotRange = 100.0f;
-	float spotIntensity = 900.0f;
-	// Spot shadows: per-light opt-in flag (demo sets it on all spots) +
-	// frame upper limit + screenspace/distance culling. Points never shadow.
-bool spotShadowsEnabled = true;
-	int spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
-	float spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
-	// Light cookies: per-spot gobo projected through the cone; spot s gets
-	// pattern s % kCookiePatternCount (soft disc / blinds / starburst).
-	bool cookiesEnabled = true;
-	// Light functions: procedural per-light intensity curve on the spots
-	// (flicker / pulse / cone bands), animated with frame time.
-	bool lightFunctionsEnabled = true;
-	int functionType = smvk::kForwardPlusFunction_Flicker;
-	float functionSpeed = 0.6f;
-	float functionScale = 0.65f;
-	// Debug overlay: project light positions into the ImGui pass and draw
-	// them as colored points with their light-buffer index.
-	bool showLightPoints = false;
-	bool showLightNumbers = false;
-	float lightPointSize = 6.0f; // ImGui circle radius (px)
-	int maxLightLabels = 256;    // cap text draws (points are all drawn)
-};
-
-// ---------------------------------------------------------------------------
-// Forward+ decals demo (tiled projected splats, see smvk::ForwardPlusDecal
-// + forwardplus.cs.hlsl). Splats are kept as PLACEMENT descriptors and
-// re-derived into GPU decals every frame, so the sliders below retouch
-// every live decal immediately. Blood look: procedural splat albedo
-// (coverage in alpha) + derived normal map, roughness lerped to
-// roughnessTarget for the wet-glossy read, metallic 0.
-// ---------------------------------------------------------------------------
-struct DecalDemo {
-	bool enabled = false;
-	float opacity = 1.0f;          // global splat opacity
-	float normalStrength = 0.85f;  // decal normal-map strength
-	float roughnessTarget = 0.14f; // wet-blood roughness (metal stays 0)
-	float metalTarget = 0.0f;
-	float depthFadeStart = 0.6f;   // |local.z| fade start (box-face pop guard)
-	// Splat size range for spawned decals (half extents, meters).
-	float sizeMin = 0.28f;
-	float sizeMax = 0.55f;
-	// Live placement list (re-derived per frame; capped at FP_MAX_DECALS).
-	struct Splat {
-		glm::vec3 center;    // box center (world)
-		glm::vec3 axisZ;     // unit projection axis (decal -> surface)
-		glm::vec3 upHint;    // texture V direction hint
-		glm::vec3 half;      // half extents (x, y, depth)
-		uint32_t seed = 0;   // in-plane yaw RNG
-		float alphaScale = 1.0f; // per-splat opacity trim (smaller = fainter)
-	};
-	std::vector<Splat> splats;
-	uint32_t dropped = 0; // spawns that fell out of the cap (UI note)
-	// Crosshair-picking acceleration (smvk::gi::GiTraceScene BVH, built
-	// lazily on the first crosshair spawn — Sponza builds in a few
-	// seconds; see WorldRenderer::EnsureDecalPickBvh).
-	int pickBvhState = 0; // 0 = not built, 1 = ready, -1 = unavailable
 };
 
 // ---------------------------------------------------------------------------
@@ -486,7 +383,7 @@ struct ParticleDemo {
 
 // Deferred-shadow visualizer parameters (paper 5.3/5.4).
 // Standalone 32-byte payload, uploaded into a tiny per-flight ring and
-// reached through FrameUniforms::dsVizParams — deliberately NOT inlined
+// reached through FrameUniforms::dsVizParams â€” deliberately NOT inlined
 // in FrameUniforms: viz-gated #ifdefs inside GPU-pushed structs once made
 // the CPU/GPU layout config-dependent (per-flight stride bugs). This
 // struct is UNCONDITIONAL on both sides (C++/HLSL mirror in
@@ -516,7 +413,7 @@ struct FrameUniforms
 	glm::mat4 invView;
 	glm::mat4 invProj;
 	glm::mat4 invViewProj;
-	glm::mat4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
+	glm::mat4 prevViewProj; // last frame's proj*view (post Y-flip) â€“ motion vectors
 
 	glm::vec3 cameraPos;
 	float     time;
@@ -528,13 +425,13 @@ struct FrameUniforms
 	float farPlane;
 	float exposure;
 	// AO (DORMANT since the SSGI rework): the lighting pass no longer
-	// samples AO — Main exports the AO-sensitive lighting through the
+	// samples AO â€” Main exports the AO-sensitive lighting through the
 	// aoTerm MRT target and the SSGI compose pass applies it (see ssgi.h
 	// + ssao_compose.frag.hlsl). The FIELDS stay: FrameUniforms offsets
-	// are asserted vs the HLSL mirror — removing them would shift every
+	// are asserted vs the HLSL mirror â€” removing them would shift every
 	// later field. Always UINT32_MAX / 0 ("no AO here") for any future
 	// reader.
-	// Must match HLSL FrameUniforms in common.hlsli — offsets asserted below.
+	// Must match HLSL FrameUniforms in common.hlsli â€” offsets asserted below.
 	uint32_t aoTextureIndex = UINT32_MAX; // dormant (was: full-res composed AO bindless)
 	float aoIntensity = 0.0f;            // dormant (was: ambient composite strength)
 	// Explicit pad so env lands at offset 512 (16-byte aligned), matching
@@ -554,10 +451,10 @@ struct FrameUniforms
 	float cubemapIntensity = 1.0f;      // 648 specular IBL scale (UI)
 	uint32_t cubemapDebug = 0;          // 652 0 off, 1 cubemap-only, 2 probe weight
 	// Reflection probes for local specular IBL ride the Forward+ light
-	// buffer as type-2 entries (see smvk::kForwardPlusProbe) — no probe
+	// buffer as type-2 entries (see smvk::kForwardPlusProbe) â€” no probe
 	// storage buffer, no parallel tile lists. probeEntries is the tail
 	// length: the shader's index bound is fpLightCount + probeEntries
-	// (lights [0,L), probes [L,L+P) — a lights-only bound skips probes).
+	// (lights [0,L), probes [L,L+P) â€” a lights-only bound skips probes).
 	float cubemapLodBias = 0.0f;       // 656 added to roughness LOD (UI)
 	uint32_t probeTileFresh = 0;       // 660 1 = tile cull filed probe entries
 	uint32_t probeEntries = 0;         // 664 type-2 tail length
@@ -587,7 +484,7 @@ struct FrameUniforms
 	// 1 = prefiltered EVSM moments (blurred RG32F, 1-frame lag). The
 	// shadow_map_index / spotShadowMapIndex fields then address the
 	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
-	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
+	// HLSL FrameUniforms::evsmMode â€” see the static_asserts below.
 	uint32_t evsmMode = 1;      // 748
 	// ---- Forward+ decals (tiled projected splats, see
 	// smvk::ForwardPlusDecal + forwardplus.cs.hlsl). decals points at
@@ -595,7 +492,7 @@ struct FrameUniforms
 	// ForwardPlus builder's decal buffers (same tiling as the light
 	// lists; the tile-cull dispatch refreshes them every frame it runs,
 	// storing 0 with no decals). decalCount > 0 only when the cull
-	// dispatch runs this frame, so the shader never reads stale lists —
+	// dispatch runs this frame, so the shader never reads stale lists â€”
 	// and the tile pointers stay valid whenever the cull can run. ----
 	uint64_t decals = 0;            // 752 per-frame decal ring slice
 	uint64_t decalTileCounts = 0;   // 760 builder decal list counts
@@ -611,7 +508,7 @@ struct FrameUniforms
 	// are COOKED into the pak's vertex payloads (texCoord2/chartId),
 	// the per-chart atlas transforms into the scene table (unpacked in
 	// the VS via the draw's chart offset), and the lobe count rides the
-	// draw ring — NO chunk buffer exists at runtime. Static/dynamic
+	// draw ring â€” NO chunk buffer exists at runtime. Static/dynamic
 	// separation: draws carrying a lobe count sample the atlas; dynamic
 	// objects sample the regular grids below. ----
 	uint32_t lmLayers[12] = {};      // 784 atlas bindless slots
@@ -648,21 +545,21 @@ struct FrameUniforms
 	// Convex-volume tile masks (the cull's per-tile bitmask, see
 	// forwardplus.cs.hlsl): address + tile grid publish together under
 	// the decal tile-list freshness contract; zeros together mean "no
-	// tile cull refreshed the masks this view/frame" — the shader then
+	// tile cull refreshed the masks this view/frame" â€” the shader then
 	// walks every volume (per-volume AABB reject keeps it correct).
 	uint64_t cvolTileMasks = 0;  // 1280 per-tile volume bitmask buffer
 	uint32_t cvolTileCountX = 0; // 1288 mask tile grid width (0 = no mask)
 	uint32_t cvolTileSize = 0;   // 1292 mask tile size (16; fp tiling)
 	// ---- FramePSHot slab BDA (the FS-only hot struct, see FramePSHot
 	// below): the pixel shader reaches the hot slab through FrameUniforms
-	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member —
+	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member â€”
 	// a pc member shifted every sub-192 pc field and broke the HLSL
 	// mirror structs (the 10/1 device-loss crash; see
 	// App/push_constants.h layout invariant). Filled per view slab in
 	// UpdateFrameUniforms / BuildSecondaryFrameUniforms. ----
 	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
 	// ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
-	// view's DsVizParams slice — the standalone 32 B payload (per-flight
+	// view's DsVizParams slice â€” the standalone 32 B payload (per-flight
 	// ring + one zero slice shared by secondary views, see
 	// UpdateFrameUniforms). Deliberately a BDA, not inlined fields:
 	// viz-gated #ifdefs inside this struct once made the CPU/GPU layout
@@ -673,17 +570,17 @@ struct FrameUniforms
 	// shaders skip off-by-default payloads (like dsVizParams above)
 	// without a BDA chase. Unconditional like every other field. ----
 	uint64_t flags = 0;         // 1312 kFrameFlag* bits
-	// ---- Dense octree resample (the BC6H Texture3D runtime path — see
+	// ---- Dense octree resample (the BC6H Texture3D runtime path â€” see
 	// m_giLevelTextures): per level 9 SG-lobe RGB layers (BC6H 3D) + 1
 	// weight layer (R16F 3D) in the shared volumeTextures bindless
 	// array; UINT32_MAX = absent level (beyond the baked levelCount).
 	// The diffuse sampler trilinear-filters these instead of walking
 	// probe lists per pixel (the probes never move). NOTE: uint32
-	// arrays align to 4 (not 16) on both sides — this member sits at
+	// arrays align to 4 (not 16) on both sides â€” this member sits at
 	// 1320, matching the HLSL mirror exactly (see the asserts below).
 	uint32_t giLevelLayers[80] = {}; // 1320 8 levels x (9 amp + 1 weight)
 	// ---- Convex-volume isotropic-mean textures (the volumetric fog's
-	// one-fetch-per-volume payload — PackGpuMeanLayer +
+	// one-fetch-per-volume payload â€” PackGpuMeanLayer +
 	// SgCvSampleVolumeMean, blended by SgCvRayComposite): 8 bindless
 	// slots, UINT32_MAX = none. Deliberate
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
@@ -696,7 +593,7 @@ struct FrameUniforms
 	// (the blendable env subset: sky tint + ambient intensity, fog color +
 	// density, volumetric scattering + extinction). envZoneMapIndex =
 	// UINT32_MAX = off (every consumer takes the plain env path). The sun
-	// stays global — one sun everywhere; zones own sky/fog/volumetrics.
+	// stays global â€” one sun everywhere; zones own sky/fog/volumetrics.
 	// APPEND-ONLY tail (after cvolMeanLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint32_t envZoneMapIndex = UINT32_MAX; // 1672 bindless Texture2D (off = max)
@@ -708,7 +605,7 @@ struct FrameUniforms
 	glm::vec4 envZoneVol[4] = {};         // 1816 x volumetrics, y volumetricDensity
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
-// every field by absolute offset — any drift desyncs the GPU reads.
+// every field by absolute offset â€” any drift desyncs the GPU reads.
 // dsVizParams must directly follow frameHot (no config-dependent tail).
 static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
@@ -722,7 +619,7 @@ static_assert(offsetof(FrameUniforms, cvolTileMasks) == 1280, "cvolTileMasks off
 static_assert(offsetof(FrameUniforms, cvolTileCountX) == 1288, "cvolTileCountX offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, cvolTileSize) == 1292, "cvolTileSize offset: HLSL mirror");
 // GI block (the lit shader's frame.gi* reads + the F8 debug views live
-// or die by these — the debug view once silently read the wrong word
+// or die by these â€” the debug view once silently read the wrong word
 // here, so every member of the block is pinned, not just the tail).
 static_assert(offsetof(FrameUniforms, giProbes) == 704, "giProbes offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giGrid) == 712, "giGrid offset: HLSL mirror");
@@ -742,7 +639,7 @@ static_assert(offsetof(FrameUniforms, envZoneFog) == 1752, "envZoneFog offset: H
 static_assert(offsetof(FrameUniforms, envZoneVol) == 1816, "envZoneVol offset: HLSL mirror");
 static_assert(sizeof(FrameUniforms) == 1888, "FrameUniforms size: HLSL mirror");
 
-// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
+// FramePSHot â€” tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
 // Uploaded as a separate buffer slice per frame to keep PS register pressure low.
 struct FramePSHot
@@ -796,7 +693,8 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> fpLightsBuffer; // ForwardPlusLight * FP_MAX_LIGHTS per frame
 	smvk::LogicalBufferHandle fpLightsLogical{}; // rendergraph alias (stable: buffer never resized)
 	// Decal ring (ForwardPlusDecal * FP_MAX_DECALS per flight frame):
-	// rebuilt + uploaded every frame from DecalDemo splats (live sliders).
+	// rebuilt + uploaded every frame from the WORLD's decal entities
+	// (see UpdateDecals â€” per-frame re-derivation, live edits included).
 	smvk::Holder<smvk::BufferHandle> decalsBuffer;
 	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
@@ -810,7 +708,7 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
 	// Alpha-to-coverage lit FS (default_lit_a2c): same VS, coverage-from-
-	// alpha cutout without discard — bound for Masked materials in 2x MSAA
+	// alpha cutout without discard â€” bound for Masked materials in 2x MSAA
 	// Main. Missing module leaves shaderCount 0 and Main keeps the
 	// discard variant everywhere.
 	smvk::Holder<smvk::ShaderModuleHandle> fragA2CShader;
@@ -818,7 +716,7 @@ struct AppResources {
 	// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
 	// Selected at draw time based on loaded GI assets (WorldRenderer::GIVariant).
 	smvk::ShaderProgram mainProgramGi[4];
-	// Standard-material twins (default_lit .std/.giNstd — MAT_STANDARD: the
+	// Standard-material twins (default_lit .std/.giNstd â€” MAT_STANDARD: the
 	// layered machinery compiled out). Bound for materials with
 	// layerMaterials.w <= 1; layered materials keep the programs above
 	// (fail-safe: missing std modules fall back to the monolith picks).
@@ -897,7 +795,7 @@ struct AppResources {
 	// Reuses the main VS and the reversed-Z masked-shadow FS module.
 	smvk::ShaderProgram prepassMaskedProgram;
 	// SSSR-style thin G-buffer programs (see gbuffer.frag.hlsl): default.vert
-	// + the trivial solid/cutout G-buffer FS pair — the Forward+ depth
+	// + the trivial solid/cutout G-buffer FS pair â€” the Forward+ depth
 	// prepass's G-buffer writers (bound instead of the VS-only
 	// depthProgram + prepassMaskedProgram when the G-buffer layer is
 	// wanted). Empty when the shaders failed to load (the prepass keeps
@@ -916,12 +814,12 @@ struct AppResources {
 // full pipeline every frame into the swapchain / hosted target. Each
 // SECONDARY view (see WorldRenderer::SetViewCount) renders from its own
 // camera into its own offscreen image and picks a refresh schedule:
-//   Full — render every frame,
-//   Tic  — render every OTHER frame (global even phase),
-//   Toc  — render every OTHER frame (global odd phase).
+//   Full â€” render every frame,
+//   Tic  â€” render every OTHER frame (global even phase),
+//   Toc  â€” render every OTHER frame (global odd phase).
 // Assigning Tic/Toc across the secondary views SPREADS the multiview load
 // over two alternating frames (tic-frame renders the Tic views, toc-frame
-// the Toc views); an off-phase view's image persists — the host keeps
+// the Toc views); an off-phase view's image persists â€” the host keeps
 // compositing the last rendered content every frame.
 // ---------------------------------------------------------------------------
 enum class ViewRefresh : uint8_t {
@@ -995,16 +893,16 @@ public:
 	const char* RendererName() const override { return "World"; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
-	void Configure(ScenePassConfig passes);
+	void Configure(WorldRendererConfig passes);
 
-	// WORLD SOURCE — the host owns all content loading (the renderer
+	// WORLD SOURCE â€” the host owns all content loading (the renderer
 	// knows nothing about paks, scene files or scene discovery). Called
 	// ONCE during Initialize, after the context exists and before the
 	// world is first used: load the scene (clusters + resources into
-	// the context — everything renders by handles), resolve, and
+	// the context â€” everything renders by handles), resolve, and
 	// return the world to render. The renderer's content overlay is
 	// handed in so the host can mount its content backends into it
-	// (pak-embedded textures, project roots, …) — the renderer itself
+	// (pak-embedded textures, project roots, â€¦) â€” the renderer itself
 	// only ever reads its own pipeline resources through it.
 	// Return nullptr = load failed (Initialize fails loudly).
 	// Unset + no borrowed world (SetHostedBorrowedWorld) = nothing to
@@ -1042,11 +940,11 @@ public:
 	// Direct-path lit program for one material: the active GI variant's
 	// program (or base), with the standard-material twin swapped in for
 	// non-layered materials (layerMaterials.w <= 1; layered materials and
-	// missing twins keep the monolith — fail-safe). Mirrors the filtered
+	// missing twins keep the monolith â€” fail-safe). Mirrors the filtered
 	// leg's GfxRenderer::FilteredProgramGi/FilteredLitProgram picks.
 	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
 
-	// HOSTED drive API (the editor embeds this renderer offscreen —
+	// HOSTED drive API (the editor embeds this renderer offscreen â€”
 	// App::RequestHostedBoot + the WYSIWYG compose pass). Public
 	// wrappers over the protected virtuals with the hosted invariant
 	// enforced at each step; windowed runs keep using Run().
@@ -1070,14 +968,14 @@ public:
 	// HOSTED one-call setup (the dumb-hosted-world API): boot off the
 	// host's context, borrow `world`, configure the full framegraph +
 	// the hosted invariants (input disabled, DLSS off, AA off) and
-	// initialize — the host specifies the world and is done. Throws
+	// initialize â€” the host specifies the world and is done. Throws
 	// std::runtime_error when the boot is rejected or Initialize fails
 	// (the host catches it at its launch boundary, like the old
-	// LaunchWysiwyg did). Pair with HostedShutdown() (or just destroy —
+	// LaunchWysiwyg did). Pair with HostedShutdown() (or just destroy â€”
 	// the editor's StopWysiwyg keeps the explicit idle + log + bindless
 	// teardown). sceneId names the GI sidecars (gi/<id>.*); projectRoot
 	// mounts into the content VFS (empty = no project mount). Both must
-	// precede Initialize (sidecar loads run there) — hence ctor params,
+	// precede Initialize (sidecar loads run there) â€” hence ctor params,
 	// not setters.
 	WorldRenderer(smvk::App& host, smvk::World& world, smvk::Extent2D extent,
 		std::string sceneId, std::string projectRoot = {},
@@ -1117,16 +1015,60 @@ public:
 	}
 	// Headless volumetric overrides (VULKANTOY_VOLUMETRIC,
 	// VULKANTOY_VOLUMETRIC_STEPS, VULKANTOY_VOLUMETRIC_CVOL): the
-	// AGENTS.md contract is "scene fog settings lose" — the scene seed
+	// AGENTS.md contract is "scene fog settings lose" â€” the scene seed
 	// above would otherwise stomp a headless force-on at every scene
 	// load/rebind, so the overrides re-apply after the seed (and at
 	// startup Configure). The UI panel stays live afterwards.
 	void ApplyHeadlessVolumetricOverrides();
+	// Postfx look seed (the App panels' settings, authored in SceneEnv):
+	// bloom (complete) + tonemap + exposure + AO + SSR + motion blur +
+	// DOF + AA + cubemap IBL. Runs once per scene load/rebind from the
+	// resolved env; the panels/keys stay live afterwards (the volumetric
+	// contract). Headless VULKANTOY_* pins win over the seed (see
+	// ApplyHeadlessPostfxOverrides).
+	void PushPostfxEnv(const SceneEnv& env) {
+		m_bloomEnabled = env.bloomEnabled;
+		m_bloomIntensity = std::clamp(env.bloomIntensity, 0.0f, 2.0f);
+		m_bloomThreshold = std::max(env.bloomThreshold, 0.0f);
+		m_tonemapMode = std::min(env.tonemapMode, 3u);
+		m_autoExposureEnabled = env.autoExposure;
+		m_manualExposure = std::clamp(env.manualExposure,
+			0.00001f, 0.05f);
+		m_exposureEvBias = std::clamp(env.exposureEvBias, -4.0f, 4.0f);
+		m_exposureSpeedToDark = std::max(env.exposureSpeedToDark, 0.01f);
+		m_exposureSpeedToBright =
+			std::max(env.exposureSpeedToBright, 0.01f);
+		m_exposureMin = std::max(env.exposureMin, 0.000001f);
+		m_exposureMax = std::min(std::max(env.exposureMax,
+			m_exposureMin), 1.0f);
+		m_aoMode = static_cast<AoMode>(std::clamp(env.aoMode, 0, 2));
+		m_ssaoRadius = std::clamp(env.aoRadius, 0.05f, 2.0f);
+		m_ssaoBias = std::clamp(env.aoBias, 0.0f, 0.1f);
+		m_ssaoIntensity = std::clamp(env.aoIntensity, 0.0f, 2.0f);
+		m_ssaoMaxDistance = std::clamp(env.aoMaxDistance, 2.0f, 100.0f);
+		m_ssaoSamples = std::clamp(env.aoSsaoSamples, 1, 32);
+		m_ssaoBlurSharpness = std::clamp(env.aoBlurSharpness, 0.0f, 32.0f);
+		m_saoSamples = std::clamp(env.aoSaoSamples, 1, 32);
+		m_saoSpiralTurns = std::clamp(env.aoSaoSpiralTurns, 1, 16);
+		m_ssrEnabled = env.ssrEnabled;
+		m_ssrIntensity = std::clamp(env.ssrIntensity, 0.0f, 4.0f);
+		m_motionBlurEnabled = env.motionBlurEnabled;
+		m_dofEnabled = env.dofEnabled;
+		m_aaMode = static_cast<AaMode>(std::clamp(env.aaMode, 0, 3));
+		m_cubemapEnabled = env.cubemapEnabled;
+		m_cubemapIntensity = std::clamp(env.cubemapIntensity, 0.0f, 4.0f);
+	}
+	// Headless postfx overrides (VULKANTOY_AA/SSR/BLOOM_*/AO/
+	// AUTO_EXPOSURE/CUBEMAP): same "scene settings lose" contract as the
+	// volumetric ones â€” called at startup Configure AND after the
+	// per-scene PushPostfxEnv seed (scene load/rebind would otherwise
+	// stomp a headless pin).
+	void ApplyHeadlessPostfxOverrides();
 
 	// ---------------------------------------------------------------------
 	// MULTIVIEW (hosted): N secondary views, each rendering the world from
 	// its own camera into its OWN offscreen image buffer (viewports /
-	// multiview setups). View 0 stays the MAIN view — the full pipeline
+	// multiview setups). View 0 stays the MAIN view â€” the full pipeline
 	// into the hosted target (the editor composes it as today). Secondary
 	// views run a lean per-view pipeline: own CSM + spot shadows (fitted to
 	// the view camera), Forward+ prepass + tile cull, direct-draw Main
@@ -1140,7 +1082,7 @@ public:
 	static constexpr uint32_t kMaxSecondaryViews = 3; // + main view = 4
 	// (Re)set the secondary-view count (hosted only; windowed runs ignore
 	// it). Extent 0 per view adopts the hosted target extent at set time.
-	// Destroys/recreates ALL per-view state + GPU resources — call at
+	// Destroys/recreates ALL per-view state + GPU resources â€” call at
 	// frame boundaries only (idle), like the hosted launch itself.
 	void SetViewCount(uint32_t count);
 	[[nodiscard]] uint32_t GetViewCount() const { return (uint32_t)m_views.size(); }
@@ -1152,10 +1094,10 @@ public:
 	// owns the grid settings (show / cell size / half-extent cells) and
 	// pushes them here every frame, like the cameras. The renderer draws
 	// the XZ-plane grid itself, depth-tested against each view's own
-	// depth (which is exactly why it lives here — the host has no depth
-	// to test against). Zero GPU work — the next RenderFrame rebuilds
+	// depth (which is exactly why it lives here â€” the host has no depth
+	// to test against). Zero GPU work â€” the next RenderFrame rebuilds
 	// the lines and every Main draws them. The windowed App never
-	// enables it (no UI, no key — off by default).
+	// enables it (no UI, no key â€” off by default).
 	void DriveGrid(bool show, float cellSizeMeters, uint32_t extentCells);
 	// HOSTED cooked-lights refresh (editor live view): re-packs the
 	// forward+ light set from the borrowed world NOW (the bind-time
@@ -1167,7 +1109,7 @@ public:
 	// Per-view output extent (recreates the view's image at the next
 	// rendered frame; 0 = keep).
 	void SetViewExtent(uint32_t view, smvk::Extent2D extent);
-	// Refresh schedule per view (Full / Tic / Toc — see ViewRefresh).
+	// Refresh schedule per view (Full / Tic / Toc â€” see ViewRefresh).
 	void SetViewRefresh(uint32_t view, ViewRefresh refresh);
 	[[nodiscard]] ViewRefresh GetViewRefresh(uint32_t view) const;
 	// Per-view enable (a disabled view renders nothing; its image persists).
@@ -1179,14 +1121,14 @@ public:
 	// UINT32_MAX before the view first rendered) + its extent.
 	[[nodiscard]] uint32_t ViewOutBindless(uint32_t view) const;
 	[[nodiscard]] smvk::Extent2D ViewOutExtent(uint32_t view) const;
-	// The view's output IMAGE (diagnostic readbacks — the editor's
+	// The view's output IMAGE (diagnostic readbacks â€” the editor's
 	// hosted-target dump path; empty handle before the first render).
 	[[nodiscard]] smvk::ImageHandle ViewOutImage(uint32_t view) const;
 
 	// ---------------------------------------------------------------------
 	// HOSTED live-view IN-PLACE world rebind: swap the borrowed world and
 	// rebuild ONLY the world-derived state (cooked lights, GI sidecars,
-	// cubemaps, decal presets, gfx registration, temporal histories) —
+	// cubemaps, decal presets, gfx registration, temporal histories) â€”
 	// every framegraph resource (programs, atlases, targets, buffers, the
 	// per-view images) persists. Scene opens / reimports / pak switches /
 	// GI-bake sidecar refreshes all ride this path: the hosted renderer is
@@ -1197,7 +1139,7 @@ public:
 	// ---------------------------------------------------------------------
 	void RebindWorld(smvk::World* world);
 
-	ScenePassConfig& Passes() { return m_passes; }
+	WorldRendererConfig& Passes() { return m_passes; }
 	// Scene id (host-provided): names the GI sidecars (gi/<id>.sggi/
 	// .sglm/.regmanifest/.cvmanifest, superseded by the loaded world's
 	// Gi bindings) and gates the sponza check-scene extras (preset
@@ -1207,7 +1149,7 @@ public:
 	// Project root (editor WYSIWYG): when the scene lives in a project,
 	// the project root mounts into the content VFS below the bundled
 	// content/ (project files win on collisions) so project-side
-	// cook/bake sidecars (gi/<stem>.*, cubemaps, …) resolve exactly
+	// cook/bake sidecars (gi/<stem>.*, cubemaps, â€¦) resolve exactly
 	// where the cooker wrote them. Empty = no project mount.
 	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
 	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
@@ -1217,10 +1159,17 @@ public:
 	// the whole run and A/B comparisons are deterministic. The I-key UI
 	// mode and the feature shortcuts (L/G/H/...) keep working.
 	void SetDisableControl(bool v) { m_disableControl = v; }
+	// Host-owned demo content (the APP host opts in): seeds the demo
+	// particle emitters at init and the sponza preset decal splats at
+	// scene load/rebind. Default OFF â€” the renderer never seeds content
+	// on its own, so the editor's hosted view stays clean. Transitional:
+	// once decals/particles become world entities this gate dies and the
+	// host seeds through the world instead.
+	void SetDemoContentEnabled(bool v) { m_demoContent = v; }
 	// Bench flight (--bench_move <m/s>): integrate the camera straight
 	// along the spawn forward vector at a constant velocity past warmup
 	// (stationary through warmup so every run starts at the same pose).
-	// Deterministic — no input ramp/damping — and drives LOD promotion
+	// Deterministic â€” no input ramp/damping â€” and drives LOD promotion
 	// + texture streaming churn through the measured frames. 0 = off.
 	void SetBenchMoveSpeed(float v) { m_benchMoveSpeed = v; }
 	// Bench determinism: fixed manual exposure (no eye adaptation), so
@@ -1233,16 +1182,36 @@ public:
 	// interposer out of the Vulkan call chain for RenderDoc captures.
 	void SetDlssMode(smvk::DlssMode mode) { m_dlssMode = mode; }
 	// Chrome-ball probe visual toggle (see Rendergraph/probeball.h): the
-	// editor's View menu drives it through the hosted renderer — the
+	// editor's View menu drives it through the hosted renderer â€” the
 	// balls render inside Main with the scene's depth/IBL, so the toggle
 	// belongs to the renderer, not the host.
 	void SetCubemapShowBalls(bool on) { m_cubemapShowBalls = on; }
 	bool CubemapShowBalls() const { return m_cubemapShowBalls; }
+	// Centers of the LOADED baked probes (the chrome-ball rows): hosts
+	// match authored capture positions against these to tell baked pins
+	// (preview) from unbaked ones (black placeholder balls).
+	void CubemapProbeCenters(std::vector<glm::vec3>& out) const;
+	// Full loaded-probe rows for host overlays (the App's probe-location
+	// overlay reads the same table: center + influence/fade radii).
+	struct CubemapProbeRow {
+		glm::vec3 center{ 0.0f };
+		float influence = 0.0f; // full-weight radius (m)
+		float fade = 0.0f;      // fade extent past influence (m)
+	};
+	void CubemapProbeRows(std::vector<CubemapProbeRow>& out) const;
+	// Cubemap debug view (same modes as the App panel combo + the
+	// VULKANTOY_CUBEMAP_DEBUG headless switch): 0 off, 1 raw cubemap
+	// (no Fresnel/roughness â€” which probe serves each pixel), 2 probe
+	// blend weight as heat. Hosts (the editor's View menu) drive it
+	// per frame; the frame reads it through FrameUniforms.
+	void SetCubemapDebug(int mode) {
+		m_cubemapDebug = (mode < 0) ? 0 : ((mode > 2) ? 2 : mode);
+	}
 	// ---- Host-driven renderer settings (the editor's live-view panel) ----
 	// The App drives these through its debug panel; hosts without the UI
 	// pass (the editor's hosted view renders into the hosted target and
 	// the editor composites it) drive them through here. The m_passes
-	// SHAPE stays untouched (Configure owns the pipeline shape) — these
+	// SHAPE stays untouched (Configure owns the pipeline shape) â€” these
 	// are the runtime toggles every pass gates on.
 	void SetBloomEnabled(bool v) { m_bloomEnabled = v; }
 	bool BloomEnabled() const { return m_bloomEnabled; }
@@ -1257,7 +1226,7 @@ public:
 	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
 	bool SkydomeEnabled() const { return m_skyEnabled; }
 	// ---- Terrain field (the default world dressing; see Rendergraph/
-	// terrain.h): the editor's non-DAG "Terrain field" node drives it —
+	// terrain.h): the editor's non-DAG "Terrain field" node drives it â€”
 	// read the live desc, edit + rebuild, toggle, or destroy it entirely
 	// (the outliner row follows TerrainValid).
 	smvk::terrain::TerrainDesc TerrainSettings() const {
@@ -1291,7 +1260,7 @@ protected:
 			return;
 		// External camera (editor live view): the editor's lens drives
 		// the frame; otherwise the App defaults (or the scene's default-
-		// camera lens — m_sceneFovYDeg/m_sceneNearClip/m_sceneFarClip,
+		// camera lens â€” m_sceneFovYDeg/m_sceneNearClip/m_sceneFarClip,
 		// set by the default-camera framing at load).
 		const bool ext = IsHosted() && m_extCamera;
 		if (ext && m_extOrthoHalfH > 0.0f)
@@ -1322,14 +1291,14 @@ protected:
 	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
 	// VSync / presentation mode (overlay combo; applied via swapchain Recreate).
 	// Immediate default: uncapped, lowest latency (the overlay combo can pick
-	// the vsync modes; FIFO is strict — a missed 16.6ms locks to 30fps).
+	// the vsync modes; FIFO is strict â€” a missed 16.6ms locks to 30fps).
 	smvk::PresentMode m_presentMode = smvk::PresentMode::Immediate;
 	// Frame timing: CPU wall time vs GPU execution time (EMA-smoothed ms
 	// for the debug overlay). GPU lags 1-2 frames (retired-frame readback).
 	double m_cpuMsSmooth = 0.0;
 	double m_gpuMsSmooth = 0.0;
 	bool m_gpuTimingValid = false;
-	// GPU stage timings (shadow-path instrumentation, both PCF + EVSM —
+	// GPU stage timings (shadow-path instrumentation, both PCF + EVSM â€”
 	// see GpuStageTimer): last retired frame's per-stage ms + validity,
 	// EMA-smoothed copies for the UI overlay, and --bench accumulators
 	// (avg per measured frame, printed with the [perf] split).
@@ -1347,7 +1316,7 @@ protected:
 	std::vector<smvk::GpuMemoryHeap> m_gpuMemHeaps{};
 	double m_gpuMemLastQuerySec = -1e9; // throttle: max 1 Hz
 	double m_gpuMemLastLogSec = -1e9; // console: max ~1 per 10 s (when enabled)
-	double m_gpuMemQueryUs = 0.0; // last query wall time (µs, shown in UI)
+	double m_gpuMemQueryUs = 0.0; // last query wall time (Âµs, shown in UI)
 	bool m_gpuMemShowAllHeaps = false; // collapsed by default: VRAM heap only
 	bool m_gpuMemConsoleAutoLog = false; // periodic stderr snapshot; button always works
 	void RefreshGpuMemoryStats(bool force = false); // throttled query
@@ -1387,8 +1356,8 @@ protected:
 	// comparisons don't require opening the panel; see the footer readout
 	// in RenderFrame for the full list). WASDQE/Space/Shift/Ctrl are
 	// reserved for camera movement and are never used here. Keys live in
-	// Engine/App/keybindings.h — this handler consumes semantic names
-	// (keybind::LIGHTS_TOGGLE), never raw GLFW_KEY_* reads.
+	// Engine/App/keybindings.h â€” this handler consumes semantic names,
+	// never raw GLFW_KEY_* reads.
 	void HandleShortcuts() {
 		if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
 			SetUIMode(!m_uiMode);
@@ -1427,14 +1396,9 @@ protected:
 		if (m_input.isKeyPressed(keybind::PARTICLES_TOGGLE)) {
 			m_particlesEnabled = !m_particlesEnabled;
 		}
-		// T toggles the tiled point/spot light demo (was F before F
-		// became the particles toggle — see keybindings.h).
-		if (m_input.isKeyPressed(keybind::LIGHTS_TOGGLE)) {
-			m_fpDemo.enabled = !m_fpDemo.enabled;
-		}
 		// J spawns a blood splat on whatever the camera crosshair hits
 		// (CPU raycast over the scene triangle soup; the pick BVH builds
-		// lazily on first use — see SpawnDecalAtCrosshair).
+		// lazily on first use â€” see SpawnDecalAtCrosshair).
 		if (m_input.isKeyPressed(keybind::DECAL_SPLAT)) {
 			SpawnDecalAtCrosshair();
 		}
@@ -1454,7 +1418,7 @@ protected:
 				DropTexDebugSelection();
 		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
-		// SkyIbl -> Off (see AmbientMode — single-source isolation for
+		// SkyIbl -> Off (see AmbientMode â€” single-source isolation for
 		// bisection, All is the production state).
 		// R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
 		// F8 is an alias for R. Both work in every ambient mode.
@@ -1464,9 +1428,6 @@ protected:
 		if (m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE)
 			|| m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
 			keybind::CycleGiDebug(m_giDebug);
-		}
-		if (m_input.isKeyPressed(keybind::COOKIES_TOGGLE)) {
-			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
 		}
 		if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
 			m_skyEnabled = !m_skyEnabled;
@@ -1516,7 +1477,7 @@ protected:
 		}
 		// UV debug views: F9 = base UV (TEXCOORD0), F10 = lightmap
 		// atlas UV (uv2). Checker + gradient + seam glow (see
-		// default_uv_debug.hlsli) — lightmap chart layout and
+		// default_uv_debug.hlsli) â€” lightmap chart layout and
 		// cross-island streaks read at a glance.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
 			m_debugView = DebugView::Uv0;
@@ -1531,12 +1492,12 @@ protected:
 			m_debugView = DebugView::Pom;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
-		// active debug view — a raster override, not a shading swap, so
+		// active debug view â€” a raster override, not a shading swap, so
 		// it stacks with F1..F6.
 		if (m_input.isKeyPressed(keybind::WIREFRAME_TOGGLE)) {
 			m_wireframe = !m_wireframe;
 		}
-		// F12: live frame-time histogram — a separate bottom strip UI
+		// F12: live frame-time histogram â€” a separate bottom strip UI
 		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles
 		// the same state). Zero cost while disabled: RecordFrameTime is a
 		// single compare-and-return (see profiler::RecordFrameTime).
@@ -1585,28 +1546,35 @@ protected:
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
 
-	// ---- Forward+ decals (tiled projected splats; see DecalDemo +
-	// smvk::ForwardPlusDecal) ----
+	// ---- Forward+ decals (tiled projected splats; world entities, see
+	// SceneDecal + scene.decalForNode + smvk::ForwardPlusDecal) ----
 	// Single gate for every consumer (FrameUniforms decalCount/BDAs, the
 	// decal leg of the forward+ tile cull, Main read hints) so the shader
 	// flag and the GPU lists can never disagree. Requires the forward+
 	// tile buffers: the cull dispatch refreshes the decal lists (storing
-	// 0 per tile with no decals), so decals ride the same pass as lights —
+	// 0 per tile with no decals), so decals ride the same pass as lights â€”
 	// including when the deferred-shadow pipeline owns the LIGHT lists
-	// (lightCount=0 cull; decals keep working).
+	// (lightCount=0 cull; decals keep working). The world carries the
+	// CONTENT (decal entities in cluster pools); this is only visibility
+	// + machinery.
 	bool DecalsActive() const {
-		return m_decalDemo.enabled && m_passes.forwardPlusCull
+		return m_decalsEnabled && m_passes.forwardPlusCull
 			&& m_viewportResources.forwardPlus.Valid()
 			&& !m_resources.decalsBuffer.empty()
-			&& m_decalAlbedoBindless != UINT32_MAX;
+			&& m_world && !m_world->decalLocations.empty();
 	}
-	// Re-derives the GPU decal list from DecalDemo splats and uploads the
-	// flight-sliced ring; returns the live count. Runs before
+	// Re-derives the GPU decal list from the WORLD's decal entities
+	// (decalForNode -> decalLocations -> Cluster decals pool; textures
+	// resolve through the cluster pools like light cookies) and uploads
+	// the flight-sliced ring; returns the live count. Runs before
 	// UpdateFrameUniforms (which reads the count via m_decalFrameCount).
+	// Per-frame re-derivation: dynamically-created decals (app presets,
+	// J spawns) appear the same frame without any refresh call.
 	uint32_t UpdateDecals(uint32_t currentFrame);
 	// J: lazily builds the CPU pick BVH (scene triangle soup, see
 	// smvk::gi::BuildTraceSceneFromCluster) and raycasts the camera
-	// center ray; on hit spawns a blood splat oriented to the surface.
+	// center ray; on hit spawns a blood-splat ENTITY (World::
+	// CreateDecalAt into the dynamic cluster).
 	void SpawnDecalAtCrosshair();
 	// Lazy CPU pick scene (same triangle soup the GI baker sees): shared
 	// by crosshair picking and the probe-overlay occlusion cull. Builds
@@ -1617,18 +1585,12 @@ protected:
 	// crosshair spawn at the given frame so capture/A-B runs verify the
 	// pick path without window focus. -1 = off.
 	int m_decalAutoSplatAtFrame = -1;
-	// Hero splats for the loaded scene (Sponza: floor pools + a wall smear
-	// visible from the default camera; no-op elsewhere — J covers the
-	// rest).
-	void SpawnDecalPresets();
-	// Procedural blood-splat textures: RGBA albedo (coverage in alpha,
-	// sRGB) + a tangent-space normal map derived from the splat height
-	// field. Bound bindless for the decal material slots.
-	bool InitDecalTextures();
-	void ClearDecals() {
-		m_decalDemo.splats.clear();
-		m_decalDemo.dropped = 0;
-	}
+	// Decal visibility (UI checkbox + VULKANTOY_DECALS env): a render
+	// toggle over whatever entities the world carries, never content.
+	bool m_decalsEnabled = true;
+	// Unresolved decal texture URIs already warned about (warn-once-until-
+	// resolved, so a dangling ref doesn't spam per frame).
+	std::unordered_set<std::string> m_decalTexWarnedUris;
 
 	// ---- Deferred shadows (Square-Enix-style tiled/zBin pipeline, see
 	// smvk::DeferredShadows) ----
@@ -1689,7 +1651,7 @@ protected:
 	// Runtime LOD switch: pixel budget for the projected simplifier error
 	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
 	// Per-node decisions are cached in the World and refreshed EVERY frame
-	// (full rate, the default; halfrate parity opt-out — see World::
+	// (full rate, the default; halfrate parity opt-out â€” see World::
 	// LodIndexForNode and m_lodFullRate); m_lodFrameInputs.frameId is the
 	// monotonic key. Selection is hysteretic around the budget
 	// (kLodSelectHysteresis), so switch distances don't flip siblings
@@ -1706,7 +1668,7 @@ protected:
 	bool m_lodFullRate = true;
 	// Debug: VULKANTOY_SPLIT=0 forces the legacy depth assembly (full
 	// prepass before the HZB + remainder pass) even when the seed primed
-	// depth — bisects regressions between the split and the rest.
+	// depth â€” bisects regressions between the split and the rest.
 	bool m_splitDisabled = false;
 	// Debug: one-shot [GfxAudit] dump at this frame (VULKANTOY_AUDIT=N;
 	// same stderr dump as the UI button; stalls the GPU).
@@ -1716,7 +1678,7 @@ protected:
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
 	uint32_t m_lodChainLods = 0;   // total cooked siblings (per frame)
 	// The farthest level of a cooked chain shades with the vertex-lit
-	// program instead of full PBR (same coarsest geometry — see World::
+	// program instead of full PBR (same coarsest geometry â€” see World::
 	// LodShaderAt). Toggle = pure fallback: off/A/B (UI checkbox or
 	// VULKANTOY_SHADERLOD=0) keeps every level full-lit.
 	bool m_lodShaderEnabled = false;
@@ -1737,7 +1699,7 @@ protected:
 	// positions and the frustum far plane is functional.
 	static constexpr float kMainViewFarPlane = 100000.0f;
 
-	ScenePassConfig m_passes{};
+	WorldRendererConfig m_passes{};
 	// Host world loader (see SetWorldSource): called once during
 	// Initialize on windowed runs. The hosted live view instead borrows
 	// the host's world (SetHostedBorrowedWorld).
@@ -1750,7 +1712,7 @@ protected:
 	// fitted to the framed bounds at load (generic framing parks the
 	// camera radius*2.2 away unless VULKANTOY_CAM_POS/FWD pin it).
 	float m_sceneFarClip = 2000.0f;
-	// Scene lens (default-camera framing only — see the World settings'
+	// Scene lens (default-camera framing only â€” see the World settings'
 	// camera.default typed field): when the scene carries an authored
 	// DEFAULT CAMERA, its perspective lens replaces the App defaults in
 	// UpdateCameraAspect (generic framing leaves these untouched). The
@@ -1762,6 +1724,8 @@ protected:
 	std::string m_projectRoot;
 	// Camera control frozen (see SetDisableControl; --disable_control).
 	bool m_disableControl = false;
+	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.
+	bool m_demoContent = false;
 	// Constant-velocity bench flight speed in m/s (see SetBenchMoveSpeed;
 	// --bench_move). 0 = stationary bench (pre-existing behavior).
 	float m_benchMoveSpeed = 0.0f;
@@ -1769,12 +1733,9 @@ protected:
 	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
-	ForwardPlusDemo m_fpDemo{};
 	// Cooked KHR_lights_punctual set for the loaded scene (built once in
 	// BuildCookedLightsFromWorld after Resolve; see world_renderer.cpp).
-	// If the scene carries ANY lights, they render — no enable toggle
-	// (the procedural demo crowd below is the test path and stays
-	// switchable; cooked lights win over it whenever present).
+	// If the scene carries ANY lights, they render â€” no enable toggle.
 	CookedSceneLights m_cookedLights{};
 	void BuildCookedLightsFromWorld();
 	// Light pack shared by the bind-time build (log=true) and the
@@ -1786,23 +1747,33 @@ protected:
 	bool CookedLightsActive() const {
 		return m_cookedLights.hasLights();
 	}
-	// ---- Forward+ decals (tiled projected splats; see DecalDemo) ----
-	DecalDemo m_decalDemo{};
+	// Spot-shadow selection for the cooked spot lights: per-light opt-in
+	// comes from the authored cast-shadow flag; the frame selection below
+	// ranks requesters by the screenspace/distance heuristic and uploads
+	// the top-N atlas tiles (upper limit + hard camera-distance cutoff).
+	bool m_spotShadowsEnabled = true;
+	int m_spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
+	float m_spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
+	bool m_showLightPoints = false;
+	bool m_showLightNumbers = false;
+	float m_lightPointSize = 6.0f; // ImGui circle radius (px)
+	int m_maxLightLabels = 256;    // cap text draws (points are all drawn)
+
+	// ---- Forward+ decals (world entities; see the decl block above) ----
 	uint32_t m_decalFrameCount = 0; // live decal count (set by UpdateDecals,
 	                                // read by UpdateFrameUniforms)
 	uint32_t m_decalSpawnSeed = 1;  // splat yaw RNG stream (Pcg32)
-	smvk::Holder<smvk::TextureHandle> m_decalBloodAlbedo;  // sRGB rgba splat
-	smvk::Holder<smvk::TextureHandle> m_decalBloodNormal;  // tangent-space map
-	uint32_t m_decalAlbedoBindless = UINT32_MAX;
-	uint32_t m_decalNormalBindless = UINT32_MAX;
 	// Lazy crosshair-pick acceleration (J): full scene triangle soup +
 	// CPU BVH, built on first use from the resolved world clusters.
+	// 0 = not built, 1 = ready, -1 = unavailable (cooked worlds carry no
+	// CPU triangle soup â€” consumers fail open).
+	int m_decalPickState = 0;
 	std::unique_ptr<smvk::gi::GiTraceScene> m_decalPickScene;
 	// ---- GPU particles (compute emitters, see ParticleDemo + smvk::Particles) ----
 	// Single gate for every consumer (Ensure, emitter ring upload, emit/sim
 	// dispatches, draw pass) so the flag and the GPU state can never
 	// disagree. Requires the Forward+ light pipeline only for the TILED
-	// lighting path — the draw shader falls back to a brute-force light
+	// lighting path â€” the draw shader falls back to a brute-force light
 	// loop when the tile lists are not fresh (deferred shadows own them).
 	bool m_particlesEnabled = true;
 	ParticleDemo m_particleDemo{};
@@ -1816,7 +1787,6 @@ protected:
 	uint32_t UpdateParticles(uint32_t currentFrame);
 	// Demo default emitters (embers + drifting motes at the scene origin).
 	void SeedParticleEmitters();
-	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
 	smvk::CubemapLibrary m_cubemaps{}; // reflection cubemaps for IBL
 	// ---- Reflection cubemap UI + cached probe rows ----
 	// Probe data rides the Forward+ light buffer as type-2 entries
@@ -1837,7 +1807,7 @@ protected:
 	};
 	static_assert(sizeof(CubemapProbeGpu) == 32);
 	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
-	void LoadCubemaps(smvk::OverlayVfs& vfs);
+	void LoadCubemaps();
 	// Probe entries appended to the FP light upload this frame (0 when
 	// disabled or nothing loaded). The dispatch gate + the freshness bit
 	// share this so shader and GPU lists can never disagree.
@@ -1876,7 +1846,7 @@ protected:
 	// main view's cascade/spot depth passes are replaced by EVSM moment
 	// passes (RG32F 2xMSAA + resolve) followed by separable Gaussian blur
 	// passes marked AsyncCompute. The blur runs on the dedicated compute
-	// queue (G1/C/G2 split submit, SameFrame default — no shadow lag); the
+	// queue (G1/C/G2 split submit, SameFrame default â€” no shadow lag); the
 	// OneFrameLag pipeline stays available in the UI. shadow_map_index
 	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
 	// shaders. Falls back to PCF automatically when unsupported/invalid.
@@ -1889,13 +1859,13 @@ protected:
 	smvk::EvsmPipelineMode m_evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
 	// Directional sampling descriptors for OneFrameLag: the blurred atlas
 	// read by lighting trails one flight slot, so it was baked with LAST
-	// frame's cascade fit — the sampling copy of
+	// frame's cascade fit â€” the sampling copy of
 	// GpuDirectionalLightDescription must trail one frame too or the
 	// receiver projection disagrees with the stale map content (EVSM-only
 	// acne under camera motion). SameFrame uploads the current fit.
 	smvk::GpuDirectionalLightDescription m_dirSamplePrev{};
 	bool m_dirSamplePrevValid = false;
-	// Soft shadows: artistic scalar over the physical penumbrae —
+	// Soft shadows: artistic scalar over the physical penumbrae â€”
 	// directional uses the sun disc angular radius (environment
 	// sunDiscSizeDeg) projected per cascade; spots use the emitting-sphere
 	// diameter (m_evsmSpotLightSize) with PCSS similar-triangles. 0 = hard.
@@ -1949,14 +1919,14 @@ protected:
 	//    histogram point: one tiny distant object must not dictate the
 	//    whole range), padded and clamped to [nearClip, CascadeFar()].
 	//  - Temporal stabilization: the applied range follows the measured
-	//    range with asymmetric hysteresis (instant expand — never clip a
-	//    receiver; slow contract ~2%/frame — projections don't swim) and
+	//    range with asymmetric hysteresis (instant expand â€” never clip a
+	//    receiver; slow contract ~2%/frame â€” projections don't swim) and
 	//    is quantized to 0.25 m steps (tiny distribution changes don't
 	//    move the light projections at all).
 	//  - CUT/discards: a camera teleport (per-frame position jump), stale
 	//    stats, or a measured range escaping the applied one by >30%
 	//    discards the hysteresis history. A teleport additionally cools
-	//    down on the fixed heuristic range for 2 frames — the 1-frame-old
+	//    down on the fixed heuristic range for 2 frames â€” the 1-frame-old
 	//    stats describe the OLD view, so they are wrong for the new one;
 	//    the fresh post-cut stats snap in after the cooldown.
 	static constexpr uint32_t kSdsmGroups = 256; // must match SDSM_GROUPS (sdsm_stats.cs.hlsl)
@@ -2013,7 +1983,7 @@ protected:
 			&& m_viewportResources.evsmSpot.ShadersValid();
 	}
 	// Direct-path EVSM moment recording: depth-only 2x MSAA through the
-	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
+	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) â€”
 	// the per-sample resolve (evsm_resolve.cs.hlsl) reconstructs the
 	// moments from the MSAA depth right after the caster passes.
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
@@ -2036,7 +2006,7 @@ protected:
 		Camera camera{ positioner }; // per-view lens (aspect from desc.extent)
 		ViewportResources vp{};      // per-view target set (subset Ensured)
 		// Debug-name storage (per-view ordinal suffixes for RenderDoc
-		// readability; idx only picks the buffer slot — Name writes once
+		// readability; idx only picks the buffer slot â€” Name writes once
 		// per slot per view, so a stable pointer lives until the next
 		// recreate).
 		char nameBufs[16][48] = {};
@@ -2048,7 +2018,7 @@ protected:
 			return b;
 		}
 		// Output image (post-tonemap, surface-format sibling): persists
-		// across off-phase frames — the host keeps compositing it.
+		// across off-phase frames â€” the host keeps compositing it.
 		smvk::Holder<smvk::ImageHandle> outImage;
 		smvk::Holder<smvk::ImageViewHandle> outView;
 		smvk::Holder<smvk::BindlessImageHandle> outBindless;
@@ -2081,7 +2051,7 @@ protected:
 	std::vector<SecondaryView> m_views; // hosted secondary views (0..kMaxSecondaryViews)
 	// Global tic/toc frame phase (advances once per RenderFrame).
 	uint32_t m_viewPhase = 0;
-	// The frame's final Forward+ light set (post DS-sort, pre probe tail —
+	// The frame's final Forward+ light set (post DS-sort, pre probe tail â€”
 	// captured by UpdateForwardPlusLights; secondary views copy + per-view
 	// spot-patch it into their own slabs).
 	std::vector<smvk::ForwardPlusLight> m_frameLights;
@@ -2113,7 +2083,7 @@ protected:
 	// before the shadow-futures join).
 	void RenderSecondaryViews(smvk::Framebuffer& fb);
 	// Shared internals of the two above (vi = the 0-based secondary index;
-	// the slab index is 1 + vi — view 0 is the main view).
+	// the slab index is 1 + vi â€” view 0 is the main view).
 	void EnsureSecondaryTargets(SecondaryView& v, uint32_t vi);
 	FrameUniforms BuildSecondaryFrameUniforms(SecondaryView& v, uint32_t vi,
 		uint32_t frameIdx, const smvk::EnvironmentSettings& env);
@@ -2124,8 +2094,8 @@ protected:
 	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const IRenderer::PushConstants& pc,
 		const smvk::RenderView& cullView, const glm::vec3& viewEye);
 	// The renderer's content overlay (loose content/ + the project root
-	// below it + flintbase + engine resources), mounted into the CALLER'S
-	// vfs (OverlayVfs is non-copyable) — shared by Initialize and
+	// below it + engine resources), mounted into the CALLER'S
+	// vfs (OverlayVfs is non-copyable) â€” shared by Initialize and
 	// RebindWorld (the sidecar loaders).
 	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
@@ -2137,7 +2107,7 @@ protected:
 	bool m_useGfxMesh = true;
 	// ---- Cooperative shadow draw lists (cascade + spot tiles) ----
 	// Candidates are prebuilt once per frame on the render thread (LOD
-	// decisions mutate the World halfrate cache — not thread-safe), then
+	// decisions mutate the World halfrate cache â€” not thread-safe), then
 	// each shadow view's command list is built on a worker while the main
 	// thread records the rest of the frame. Futures join before Execute
 	// (the tile-pass lambdas read the built ranges) and the ring uploads
@@ -2146,7 +2116,7 @@ protected:
 	// Direct caster recording, both phases (opaque VS-only + masked
 	// alpha-test): the full legacy loop when the filter is off, and the
 	// unfiltered-caster fallback inside the indirect tile passes
-	// (skipFiltered=true skips registered meshes — they are covered by
+	// (skipFiltered=true skips registered meshes â€” they are covered by
 	// the per-view command list).
 	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc,
@@ -2170,7 +2140,7 @@ protected:
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the
-	// Main pass — PolygonMode::Line + Cull None (see backfaces). Composes
+	// Main pass â€” PolygonMode::Line + Cull None (see backfaces). Composes
 	// with any debug view (lit/unlit/meshlets/LODs) and the transparent
 	// leg; skydome, cone-line overlays and the depth prepass stay Fill so
 	// lines keep hidden-line removal against the prepass depth.
@@ -2182,7 +2152,7 @@ protected:
 	// ---- Ground grid (editor construction grid, XZ at y = 0) ----
 	// Driven by the host (DriveGrid); drawn depth-tested in every Main
 	// (main + secondary views) against that view's own depth. Off unless
-	// driven — the windowed App never shows it.
+	// driven â€” the windowed App never shows it.
 	bool m_gridEnabled = false;
 	float m_gridCellSize = 1.0f;   // meters (driven)
 	uint32_t m_gridExtentCells = 40; // half-extent in cells (driven)
@@ -2195,7 +2165,7 @@ protected:
 	void BuildGridLines();
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	// Opt-in EVSM atlas debug dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
-	// after Execute — per-stage stats (moments/temp/blurred) + a log-encoded
+	// after Execute â€” per-stage stats (moments/temp/blurred) + a log-encoded
 	// PNG of the cascade-0 tile in exports/ (edge-band width = prefilter
 	// width). Same pattern as VULKANTOY_DS_DUMP (stalls; debug only).
 	int m_evsmDumpAtFrame = -1;
@@ -2220,21 +2190,21 @@ protected:
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewVs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewPs;
 	smvk::ShaderProgram m_ssrStencilViewProgram{};
-	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth —
+	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth â€”
 	// see hzb_max.cs.hlsl): the tracing twin of the gfx filter's culling
 	// HZB. The culling pyramid is MIN-reduced (farthest-surface, the
 	// occlusion-cull conservatism) and built over the seed's partial set
-	// / Option A crudest-LOD occluders BEFORE the depth passes complete —
+	// / Option A crudest-LOD occluders BEFORE the depth passes complete â€”
 	// unusable for ray marching. This one is MAX-reduced (NEAREST surface
-	// per block — the ray-trace direction) over the final renderDepth,
+	// per block â€” the ray-trace direction) over the final renderDepth,
 	// emitted AFTER all depth passes. The BUFFER + mip layout moved into
-	// smvk::Ssgi::hzb (Engine/Rendergraph/ssgi.h) — it became a SHARED
+	// smvk::Ssgi::hzb (Engine/Rendergraph/ssgi.h) â€” it became a SHARED
 	// screen-space primitive (the SSR trace's mip walk, the SSR
 	// blur/compose block reps and the SSGI AO chain all read it); this
 	// renderer keeps only the module/program that runs the build passes.
 	// The trace's empty-space skip proves "every surface in the covered
 	// block is behind the ray's next position" from the block's nearest
-	// value — only provably-empty blocks are skipped (a missed reflection
+	// value â€” only provably-empty blocks are skipped (a missed reflection
 	// at worst, never a see-through).
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbModule;
 	smvk::ShaderProgram m_ssrHzbProgram{};
@@ -2260,8 +2230,9 @@ protected:
 	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
 	bool m_dsEnabled = true;
 	// ---- SG-GI baked probe volume (tools/gi_baker output, see
-	// smvk::gi + Engine/GI). Loaded once at scene init from
-	// content/gi/<scene>.sggi (loose content or a pak). N cycles the
+	// smvk::gi + Engine/GI). Loaded once at scene init from the
+	// CLUSTER bake-payload channel (ReadBakeBytes: gi/<scene>.sggi,
+	// pak-embedded or editor-injected). N cycles the
 	// ambient source (All -> Lightmaps -> Probes -> SkyIbl -> Off — see
 	// AmbientMode); R / F8 cycle the baked-GI debug views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
@@ -2288,12 +2259,12 @@ protected:
 	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (probe overlay + stats)
 	// Grid header only (the shader reads each level's volumeMin/cellSize/
 	// dims from frame.giGrid). The probe/cell/index storage buffers are
-	// GONE — the dense BC6H layers replaced the probe-list walk, so the
+	// GONE â€” the dense BC6H layers replaced the probe-list walk, so the
 	// FrameUniforms giProbes/giCells/giIndices BDA slots are legacy-zero
 	// (kept for the mirror layout; nothing reads them).
 	smvk::Holder<smvk::BufferHandle> m_giGridBuffer;
 	uint64_t m_giGridAddress = 0;
-	// Dense trilinear resample (the BC6H Texture3D runtime path — the
+	// Dense trilinear resample (the BC6H Texture3D runtime path â€” the
 	// probes never move, so the per-voxel visibility-weighted blend is
 	// baked once at load and filtered per pixel instead of walking probe
 	// lists): per level 9 SG-lobe RGB layers (BC6H 3D) + 1 weight layer
@@ -2335,19 +2306,27 @@ protected:
 	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giCvolName,
 		m_giCubemapName;
 	void ResolveGiSidecars();
+	// Bake-payload channel read (see World::ReadBakeBytes): the bytes at
+	// a GI/cubemap VFS path from the world's clusters — dynamic cluster
+	// first, so runtime quick-bakes override pak payloads. Empty = miss.
+	std::span<const uint8_t> ReadBakeBytes(const std::string& vfsPath) const {
+		return m_world ? m_world->ReadBakeBytes(vfsPath)
+			: std::span<const uint8_t>{};
+	}
 	void CycleAmbientMode() {
 		m_ambientMode = static_cast<AmbientMode>(
 			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
-	void LoadGiVolume(smvk::OverlayVfs& vfs);
+	void LoadGiVolume();
 	// (LoadCubemaps declared with the cubemap members above.)
 	// ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
 	// atlas textures plus a runtime branch). The pak-side chart payloads
-	// (texCoord2/chartId, lmChartXforms) stay cooked — the GPU filter's VS
+	// (texCoord2/chartId, lmChartXforms) stay cooked â€” the GPU filter's VS
 	// still indexes the chart-transform table (see EnsureChartXforms).
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
-	// Loaded from content/gi/<scene>.regmanifest: up to 8 volumes, each 7
+	// Loaded from the CLUSTER bake-payload channel (ReadBakeBytes:
+	// gi/<scene>.regmanifest + its rows): up to 8 volumes, each 7
 	// RGBA16F 3D textures + one OBB descriptor. Inside a volume's OBB the
 	// grid REPLACES the sky-IBL ambient for unflagged (dynamic) draws. ----
 	bool m_regLoaded = false;
@@ -2361,10 +2340,11 @@ protected:
 	smvk::Holder<smvk::BufferHandle> m_regObbsBuffer;
 	uint64_t m_regObbsAddress = 0;
 	bool RegActive() const { return m_regLoaded && m_regEnabled; }
-	void LoadGiRegularVolumes(smvk::OverlayVfs& vfs);
+	void LoadGiRegularVolumes();
 	// ---- Convex GI volumes (Engine/GI/cubemap_volume.h; the probes-only
-	// pivot's confined-space path). Loaded from content/gi/<scene>.cvmanifest:
-	// up to 8 volumes, each 7 RGBA16F 3D textures (dense probe grid, HW
+	// pivot's confined-space path). Loaded from the CLUSTER bake-payload
+	// channel (ReadBakeBytes: gi/<scene>.cvmanifest + its rows): up to 8
+	// volumes, each 7 RGBA16F 3D textures (dense probe grid, HW
 	// trilinear) + one descriptor (convex planes + per-plane fades +
 	// priority). The lit shader composites them ordered over the sparse
 	// octree world field (volumes BLEND by priority — never cross-
@@ -2375,7 +2355,7 @@ protected:
 		smvk::gi::CvVolume volume;       // CPU mirror (def; coeffs freed)
 		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
 		uint32_t layerSlots[7] = {};    // bindless slots
-		// Isotropic-mean twin (the volumetric fog's one-fetch path ΓÇö
+		// Isotropic-mean twin (the volumetric fog's one-fetch path Î“Ã‡Ã¶
 		// PackGpuMeanLayer): created under the same failure discipline
 		// as the 7 layers (a volume publishes only with all 8 up).
 		smvk::Holder<smvk::TextureHandle> meanTex;
@@ -2387,7 +2367,7 @@ protected:
 	bool CvolActive() const {
 		return m_cvolLoaded && m_cvolEnabled && ProbesWanted();
 	}
-	// Forward+ tile-cull DISPATCH gate — the frame's single source of
+	// Forward+ tile-cull DISPATCH gate â€” the frame's single source of
 	// truth, consumed by the dispatch site AND the FrameUniforms
 	// cvol-tile-mask publish (the mask address may only go out when the
 	// dispatch actually refreshes the masks this frame; a skipped
@@ -2404,7 +2384,7 @@ protected:
 		return (DecalsActive() && m_decalFrameCount > 0)
 			|| ProbeTileListsWanted() || (m_cvolLoaded && m_cvolEnabled);
 	}
-	void LoadCvolumes(smvk::OverlayVfs& vfs);
+	void LoadCvolumes();
 	// Degrades single-source ambient modes whose source did not load
 	// (called once after all three GI loaders at scene init): keeps the
 	// isolation states meaningful instead of silently empty.
@@ -2431,7 +2411,7 @@ protected:
 	bool m_dsDebugLightValid = false;
 #endif
 	// Retired-slice counter readback for the debug overlay (list/vis slot
-	// peaks, ~2 frames old — same lag as the exposure meter). Includes
+	// peaks, ~2 frames old â€” same lag as the exposure meter). Includes
 	// the phase 3/4 classification histogram (telemetry).
 	struct DsStats {
 		uint32_t listSlots = 0;
@@ -2458,7 +2438,7 @@ protected:
 	// jittered matrix would make every marker buzz +/-0.25 px per frame.
 	glm::mat4 m_unjitteredViewProj{ 1.0f };
 	// This frame's projection WITHOUT jitter (post Y-flip): DLSS wants the
-	// clip transform unjittered (cameraViewToClip) — jitter travels as the
+	// clip transform unjittered (cameraViewToClip) â€” jitter travels as the
 	// separate pixel-space offset, never inside the matrices.
 	glm::mat4 m_unjitteredProj{ 1.0f };
 	// Last frame's m_unjitteredViewProj (same validity as m_prevViewProj):
@@ -2500,11 +2480,11 @@ protected:
 	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
 	// Receiver materials come from the THIN G-BUFFER (full-res RGBA8 oct
 	// normal + roughness + metal, written by the Forward+ prepass when
-	// SSR OR AO wants it — see fc.ssrGbufferWanted). Every depth read in
+	// SSR OR AO wants it â€” see fc.ssrGbufferWanted). Every depth read in
 	// the blur/composite goes through the SHARED final-depth MAX-HZB
 	// (smvk::Ssgi::hzb, built by the SSGI block after Main + particles:
 	// mip0 = the exact 1:1 depth copy, mip1 = nearest-of-2x2 block reps);
-	// the pyramid is a hard requirement now — frames without a built
+	// the pyramid is a hard requirement now â€” frames without a built
 	// pyramid skip SSR entirely (the old linear-march fallback died with
 	// the depth-load blur). The pane/glass A/B layer is gone (the pane
 	// pass was removed long before the SSGI rework; its knob + dead
@@ -2554,7 +2534,7 @@ protected:
 	bool m_volumetricUseGi = true; // sample SG-GI probes (else sky-IBL fallback)
 	bool m_volumetricUseSun = true; // analytic sun single-scatter
 	// Fog-GI quality switch: convex volumes stack into the fog ambient
-	// (default, matches the lit path). Off = octree/sky only — the fog
+	// (default, matches the lit path). Off = octree/sky only â€” the fog
 	// bypasses the per-refresh volume walk entirely (A/B knob for heavy
 	// fog configs; UI checkbox + VULKANTOY_VOLUMETRIC_CVOL=0 headless).
 	bool m_volumetricUseCvolGi = true;
@@ -2602,7 +2582,7 @@ protected:
 	// (VULKANTOY_A2C=1, default off). Bench data (bistro foliage view,
 	// RTX 5070 Ti): A2C moves the masked coverage/depth test after the FS
 	// (coverage needs the output alpha), so overlapping foliage layers
-	// can no longer early-reject — +6ms vs the demote-discard path. Keep
+	// can no longer early-reject â€” +6ms vs the demote-discard path. Keep
 	// it as a quality mode: foliage silhouettes resolve AA'd in MSAA.
 	bool m_msaaAlphaToCoverage = false;
 	// Global T2x toggle (see SmaaT2xState in smaa.h). The phase belongs to
@@ -2645,7 +2625,7 @@ protected:
 	uint32_t m_dlssPhaseCount = 8;
 	smvk::DlssJitter m_dlssJitter{};
 	// slDLSSSetOptions drift tracking (re-applied on mode/output change;
-	// slFreeResources on deactivate — see RenderFrame's DLSS block).
+	// slFreeResources on deactivate â€” see RenderFrame's DLSS block).
 	bool m_dlssOptionsApplied = false;
 	smvk::DlssMode m_dlssOptionsMode = smvk::DlssMode::Off;
 	uint32_t m_dlssOptionsW = 0;
@@ -2734,7 +2714,7 @@ protected:
 	// the last scene exposure). Rendering at a FIXED exposure instead of
 	// the held one keeps debug frames deterministic and the authored
 	// colors independent of the scene's adaptation state. Mirrors
-	// TONEMAP_EXPOSURE (world_renderer.cpp) — keep in sync.
+	// TONEMAP_EXPOSURE (world_renderer.cpp) â€” keep in sync.
 	static constexpr float kDebugViewExposure = 0.001f;
 	// Exposure actually applied this frame: the adapted/manual value in
 	// the Lit view, the fixed debug reference otherwise. Shading
@@ -2747,10 +2727,10 @@ protected:
 	// True when a debug visualization REPLACES the scene pixels this
 	// record: any non-Lit DebugView (F2..F11 flat programs), the GI
 	// baked debug views (R/F8) or a DS visualizer (Y, DS_DEBUG_VIZ).
-	// Scene post-fx that composites ON TOP of those pixels — SSR
-	// reflections (additive), volumetric fog (Beer-Lambert throughput +
+	// Scene post-fx that composites ON TOP of those pixels â€” SSR
+	// reflections (additive), bloom (additive), volumetric fog (Beer-Lambert throughput +
 	// scatter) and the SSR-only receiver-material layer (prepass
-	// stencil + PaneMask) — stays off while true,
+	// stencil + PaneMask) â€” stays off while true,
 	// same discipline as the metering freeze in ExposureMeteringActive:
 	// compositing over a flat readout pollutes it (reflections of the
 	// palette itself, fog-faded heat colors) the way metering it would
@@ -2765,10 +2745,10 @@ protected:
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
 	uint32_t m_tonemapMode = smvk::kTonemapGT7;
-	// ---- AO (the SSGI post chain — Engine/Rendergraph/ssgi.h; GTAO is
+	// ---- AO (the SSGI post chain â€” Engine/Rendergraph/ssgi.h; GTAO is
 	// deprecated and removed). Runs AFTER Main (Main exports the
 	// AO-sensitive lighting through an aoTerm MRT target, the compose
-	// subtracts aoTerm*(1-aoEff) from the HDR — no temporal lag, Main
+	// subtracts aoTerm*(1-aoEff) from the HDR â€” no temporal lag, Main
 	// never samples AO). O cycles No AO -> SSAO -> SAO. ----
 	enum class AoMode : int { None = 0, Ssao = 1, Sao = 2 };
 	AoMode m_aoMode = AoMode::Sao;
@@ -2792,7 +2772,7 @@ protected:
 	};
 	std::vector<DebugLight> m_debugLights;
 	// Skydome visibility (K): a debug visibility toggle like wireframe /
-	// hide-transparent — NOT environment state (the renderer owns no
+	// hide-transparent â€” NOT environment state (the renderer owns no
 	// environment; it renders the world's scene env). The pass-set flag
 	// m_passes.skydome stays the pipeline-shape switch.
 	bool m_skyEnabled = true;
@@ -2807,30 +2787,48 @@ protected:
 	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8
 	// weight texture (10 m per texel over the 4 km world) + up to 4 zone
 	// definitions (sky tint/ambient, fog, volumetrics), blended per zone
-	// by the terrain + the volumetric fog. m_envZonesEnabled is the master
-	// (off = every consumer takes the plain env path; the FrameUniforms
-	// envZone* block carries the UINT32_MAX sentinel index).
+	// by the terrain + the volumetric fog. The CONTENT is derived from
+	// the world's ZONE ENTITIES (scene.envForNode nodes — coverage from
+	// the node transform rasterized into the XZ weight grid; channel 0 =
+	// the resolved environment, channels 1..3 = the top-3 zones by
+	// priority/innermost). m_envZonesEnabled is the master (off = every
+	// consumer takes the plain env path; the FrameUniforms envZone* block
+	// carries the UINT32_MAX sentinel index).
 	bool m_envZonesEnabled = true;
 	smvk::envzones::EnvZoneMap m_envZones{};
+	// Zone-entity map rebuild (Initialize + RebindWorld + editor zone
+	// edits via RefreshEnvZones). Two-tier: the zone DEFINITIONS
+	// (desc.zones -> FrameUniforms every frame) recompute on every call;
+	// the weight-grid RASTERIZE (+ upload) only when the zone coverage
+	// changed (the zone set, their transforms or priorities — hashed).
+	// Failure is non-fatal (plain env path).
+	void RebuildEnvZoneMap();
+	uint64_t m_envZoneCoverageHash = ~0ull;
+	// Public hook for HOSTED zone edits: the editor calls it after env
+	// zone nodes change (transform/priority/block) so the map re-
+	// derives without a rebind.
+public:
+	void RefreshEnvZones() { RebuildEnvZoneMap(); }
+private:
 	// Chrome-ball visualization of the LOADED cubemap probes (see
 	// Rendergraph/probeball.h): one lit sphere per baked capture, sampling
-	// its own cubemap — the editor's old scene-node chrome balls done as a
+	// its own cubemap â€” the editor's old scene-node chrome balls done as a
 	// renderer-owned debug pass (zero scene footprint). Toggled with
 	// m_cubemapShowBalls (UI; the editor's View menu drives it through the
 	// hosted renderer).
 	bool m_cubemapShowBalls = true;
 	smvk::probeball::ProbeBallVisual m_probeBalls{};
 	// ---- Texture inspector (aux-texture debug view) ----
-	// A SEPARATE floating ImGui window (not part of the debug panel — it
+	// A SEPARATE floating ImGui window (not part of the debug panel â€” it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),
 	// so the panel stays lean and the list/preview never cost panel space.
-	// Lists the LIVE textures (ResourceManager::ListTextureInfos — one
+	// Lists the LIVE textures (ResourceManager::ListTextureInfos â€” one
 	// row per pool texture; content/material textures carry load-path
 	// names and hide behind the toggle) and previews a clicked one through
-	// the ImGui OVERLAY's user-texture binding (AddUserTexture — the
+	// the ImGui OVERLAY's user-texture binding (AddUserTexture â€” the
 	// backend's descriptor registration wrapped behind RHI-opaque types;
 	// NO Vulkan detail crosses into this renderer). Staleness is a
-	// FEATURE: a selected handle dropping out of the listing (destroyed —
+	// FEATURE: a selected handle dropping out of the listing (destroyed â€”
 	// the pool generation bumped, exactly what UpdateTexture's recreate
 	// path does) drops the preview instead of sampling a dead view.
 	bool m_texDebugWindow = false;           // backtick opens/closes
@@ -2839,7 +2837,7 @@ protected:
 	ImTextureID m_texDebugPreview = 0;       // the overlay's user-texture binding (0 = none)
 	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
 	// Drops the preview binding + selection (window closed / toggle off):
-	// the overlay owns one descriptor per Add — every removal pairs with
+	// the overlay owns one descriptor per Add â€” every removal pairs with
 	// the Add that minted it, and a dropped selection never samples a
 	// dead view.
 	void DropTexDebugSelection() {
@@ -2873,7 +2871,7 @@ protected:
 	// on the graphics-queue backlog (the old sync download locked for the
 	// whole in-flight frame). One ticket in flight; while pending, new
 	// ticks skip their submit (results land 1-2 frames later instead of
-	// the old 2-3 — adaptation is time-damped, streaming is laggy anyway).
+	// the old 2-3 â€” adaptation is time-damped, streaming is laggy anyway).
 	uint64_t m_asyncReadbackTicket = 0;
 	uint32_t m_pendingReadbackSlot = 0;
 	bool m_pendingReadbackHasExposure = false;
@@ -2885,7 +2883,7 @@ protected:
 	// count at submit time; kDemandNoReport entries are skipped at poll).
 	std::vector<uint32_t> m_pendingGfxDemand;
 	// Streamer slot-meta epoch last uploaded into the gfx filter (0 = none
-	// yet; register/unregister bumps it — retargets never do).
+	// yet; register/unregister bumps it â€” retargets never do).
 	uint64_t m_gfxMetaEpochUploaded = 0;
 	// Last consume's reported-slot count (telemetry).
 	uint32_t m_gfxDemandReported = 0;

@@ -1,7 +1,6 @@
 // Background pak preload: file read + whole-image CRC + per-entry LZ4
 // decompression, kicked BEFORE the renderer starts Vulkan so it overlaps
-// instance/device/swapchain init and shader loading. Moved verbatim from
-// the old App/main.cpp (host logic now lives in the engine).
+// instance/device/swapchain init and shader loading. App-host logic.
 
 #include "PakPreload.h"
 
@@ -16,7 +15,7 @@
 #include <Windows.h> // GetModuleFileNameA (exe-relative pak resolution)
 #endif
 
-namespace engine {
+namespace app {
 
 std::string ResolvePakOpenPath(const std::string& scenePak) {
 	std::string pakOpenPath;
@@ -55,7 +54,7 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 	return std::async(std::launch::async, [pakPath]() {
 		const auto t0 = std::chrono::steady_clock::now();
 		PakPreload p;
-		p.scenePak = smvk::FlintbaseHostPath(pakPath);
+		p.scenePak = pakPath;
 		p.openPath = ResolvePakOpenPath(p.scenePak);
 		if (p.openPath.empty()) {
 			p.error = "pak not found: '" + p.scenePak
@@ -104,4 +103,4 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 	});
 }
 
-} // namespace engine
+} // namespace app

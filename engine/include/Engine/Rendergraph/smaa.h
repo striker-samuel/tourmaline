@@ -333,7 +333,7 @@ struct Smaa {
 
 	// One-time upload of the official area (160x560 RG8) + search (64x16
 	// R8) tables. Call before ResourceManager::FlushUploads (staged
-	// uploads; CookieLibrary-style).
+	// uploads join that flush).
 	bool EnsureLuts(ResourceManager& ctx) {
 		if (LutsValid())
 			return true;

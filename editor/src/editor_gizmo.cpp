@@ -250,11 +250,17 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	std::vector<LineBatch> batches;
 	// MODAL-MODE GIZMO FOCUS: LIGHTING concentrates the viewport on the
 	// light authoring set — light markers (sun/point/spot), convex GI
-	// volumes and cubemap pins stay, everything else (cameras, the
-	// ground grid) steps aside so the light reads dominate the frame.
-	// Every other mode keeps the full set; the View-menu toggles stay
-	// live in both.
+	// volumes and cubemap pins show ONLY here, so LAYOUT stays on the
+	// object set (meshes/cameras/grid). Cameras and the ground grid step
+	// aside in LIGHTING so the light reads dominate the frame; the
+	// View-menu toggles stay live in both and gate the kinds inside
+	// LIGHTING mode.
 	const bool lightingFocus = m_mode == EditorMode::Lighting;
+	// MODAL LIGHT SET: light markers, convex GI volumes and cubemap pins
+	// belong to LIGHTING mode (the light-authoring viewport) — LAYOUT
+	// stays on the object set (meshes/cameras/grid). The View-menu
+	// toggles below are the per-kind master switches INSIDE that mode.
+	const bool lightSetVisible = lightingFocus;
 	// Ground grid (XZ at y = 0): minor + major cells; the translate snap
 	// step equals the cell size (Shift-drag). Editor-drawn ONLY without
 	// a live hosted view (its own depth path tests correctly there);
@@ -277,10 +283,11 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	}
 	// Light markers: one small distance-scaled diamond per light node
 	// (sun = yellow + emission arrow, point = orange, spot = cyan +
-	// cone), always visible — light nodes carry no mesh to click.
+	// cone), LIGHTING mode only — light nodes carry no mesh to click.
 	// Flat-UV wires live in the UV editor window (its own record pass
 	// with the window's zoom/pan) — never in viewport gizmo batches.
-	if (m_showLightGizmos && !m_world->scene.lightForNode.empty()) {
+	if (lightSetVisible && m_showLightGizmos
+		&& !m_world->scene.lightForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		for (const auto& [node, li] : m_world->scene.lightForNode) {
 			if (node >= m_world->scene.hierarchy.size() ||
@@ -346,9 +353,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// Convex-volume boxes: one X-ray wire box per cvolume node (shape =
 	// node translate/scale/ROTATION — an OBB), priority-hued like the GI
 	// preview overlay so authored and baked volumes read the same; the
-	// selection draws bright. Always visible — cvolume nodes carry no
-	// mesh to click.
-	if (m_showCvolGizmos && !m_world->scene.cvolForNode.empty()) {
+	// selection draws bright. LIGHTING mode only — cvolume nodes carry
+	// no mesh to click.
+	if (lightSetVisible && m_showCvolGizmos
+		&& !m_world->scene.cvolForNode.empty()) {
 		const auto priorityRgb = [](uint32_t priority) {
 			// HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
 			// hue as DrawCvolPreviewOverlay's priorityColor).
@@ -405,7 +413,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// captures is the WorldRenderer's lit probe-ball pass (see
 	// Rendergraph/probeball.h + the View menu) — not a gizmo: it renders
 	// through the hosted renderer's Main pass with the scene's depth/IBL.
-	if (m_showCubemapGizmos && !m_world->scene.cubemapForNode.empty()) {
+	// LIGHTING mode only, like the rest of the light set.
+	if (lightSetVisible && m_showCubemapGizmos
+		&& !m_world->scene.cubemapForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		for (const auto& [node, def] : m_world->scene.cubemapForNode) {
 			if (node >= m_world->scene.hierarchy.size()

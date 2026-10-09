@@ -1,4 +1,4 @@
-﻿// Portions Copyright (c) 2022 Packt
+// Portions Copyright (c) 2022 Packt
 // Modified by Samuel Martin, 2026
 // Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
 
@@ -7,6 +7,8 @@
 
 #include <cassert>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <numeric>
 
 
@@ -214,21 +216,38 @@ void loadMap(FILE* f, std::unordered_map<uint32_t, uint32_t>& map)
     map[ms[i * 2 + 0]] = ms[i * 2 + 1];
 }
 
-// Authored-environment record I/O (see SceneEnv): 16 floats in fixed
-// order + a length-prefixed NUL-terminated string (saveStringList
-// encoding). Returns false on any short read (caller keeps defaults;
-// the env section is always last, so a short read simply ends parsing).
+// Authored-environment record I/O (see SceneEnv): kSceneEnvFloatCount
+// floats in fixed order + a length-prefixed NUL-terminated string
+// (saveStringList encoding). Returns false on any short read (caller
+// keeps defaults; the env section is always last, so a short read simply
+// ends parsing). Bools/modes ride as 0/1 floats (see kSceneEnvFloatCount
+// for the postfx order).
 static void saveEnvFloats(FILE* f, const SceneEnv& e)
 {
-  const float floats[16] = {
+  const float floats[kSceneEnvFloatCount] = {
     e.skyColor.x, e.skyColor.y, e.skyColor.z, e.skyIntensity,
     e.sunColor.x, e.sunColor.y, e.sunColor.z,
     e.sunAzimuth, e.sunElevation, e.sunIntensity,
     e.exposure, e.fogDensity,
     e.fogColor.x, e.fogColor.y, e.fogColor.z,
     e.volumetrics,
+    e.bloomEnabled ? 1.0f : 0.0f, e.bloomIntensity, e.bloomThreshold,
+    float(e.tonemapMode),
+    e.autoExposure ? 1.0f : 0.0f, e.manualExposure, e.exposureEvBias,
+    e.exposureSpeedToDark, e.exposureSpeedToBright,
+    e.exposureMin, e.exposureMax,
+    float(e.aoMode), e.aoRadius, e.aoBias, e.aoIntensity,
+    e.aoMaxDistance, float(e.aoSsaoSamples), e.aoBlurSharpness,
+    float(e.aoSaoSamples), float(e.aoSaoSpiralTurns),
+    e.ssrEnabled ? 1.0f : 0.0f, e.ssrIntensity,
+    e.motionBlurEnabled ? 1.0f : 0.0f, e.dofEnabled ? 1.0f : 0.0f,
+    float(e.aaMode),
+    e.cubemapEnabled ? 1.0f : 0.0f, e.cubemapIntensity,
+    e.zonePriority,
   };
-  fwrite(floats, sizeof(float), 16, f);
+  static_assert(sizeof(floats) / sizeof(float) == kSceneEnvFloatCount,
+    "postfx float order drifted from kSceneEnvFloatCount");
+  fwrite(floats, sizeof(float), kSceneEnvFloatCount, f);
   const uint32_t len = (uint32_t)e.skyboxUri.length();
   fwrite(&len, sizeof(len), 1, f);
   if (len > 0)
@@ -237,8 +256,9 @@ static void saveEnvFloats(FILE* f, const SceneEnv& e)
 
 static bool loadEnvFloats(FILE* f, SceneEnv& e)
 {
-  float floats[16] = {};
-  if (fread(floats, sizeof(float), 16, f) != 16)
+  float floats[kSceneEnvFloatCount] = {};
+  if (fread(floats, sizeof(float), kSceneEnvFloatCount, f)
+      != kSceneEnvFloatCount)
     return false;
   e.skyColor = glm::vec3(floats[0], floats[1], floats[2]);
   e.skyIntensity = floats[3];
@@ -250,6 +270,34 @@ static bool loadEnvFloats(FILE* f, SceneEnv& e)
   e.fogDensity = floats[11];
   e.fogColor = glm::vec3(floats[12], floats[13], floats[14]);
   e.volumetrics = floats[15];
+  e.bloomEnabled = floats[16] != 0.0f;
+  e.bloomIntensity = floats[17];
+  e.bloomThreshold = floats[18];
+  e.tonemapMode = uint32_t(floats[19]);
+  e.autoExposure = floats[20] != 0.0f;
+  e.manualExposure = floats[21];
+  e.exposureEvBias = floats[22];
+  e.exposureSpeedToDark = floats[23];
+  e.exposureSpeedToBright = floats[24];
+  e.exposureMin = floats[25];
+  e.exposureMax = floats[26];
+  e.aoMode = int(floats[27]);
+  e.aoRadius = floats[28];
+  e.aoBias = floats[29];
+  e.aoIntensity = floats[30];
+  e.aoMaxDistance = floats[31];
+  e.aoSsaoSamples = int(floats[32]);
+  e.aoBlurSharpness = floats[33];
+  e.aoSaoSamples = int(floats[34]);
+  e.aoSaoSpiralTurns = int(floats[35]);
+  e.ssrEnabled = floats[36] != 0.0f;
+  e.ssrIntensity = floats[37];
+  e.motionBlurEnabled = floats[38] != 0.0f;
+  e.dofEnabled = floats[39] != 0.0f;
+  e.aaMode = int(floats[40]);
+  e.cubemapEnabled = floats[41] != 0.0f;
+  e.cubemapIntensity = floats[42];
+  e.zonePriority = floats[43];
   uint32_t len = 0;
   if (fread(&len, sizeof(len), 1, f) != 1 || len > 1024 * 1024)
     return false;
@@ -523,6 +571,91 @@ void fprintfMat4(FILE* f, const glm::mat4& m)
       fprintf(f, "\n");
     }
   }
+}
+
+// ---- Env zones (see scene.h for the coverage contract) ------------------
+
+// Zone half extents from the node's global transform columns (column
+// lengths). An INFINITE component = unbounded on that local axis.
+static inline void ZoneHalfExtents(const Scene& scene, NodeId zone,
+  float out[3])
+{
+  const glm::mat4& g = scene.globalTransform[zone];
+  out[0] = glm::length(glm::vec3(g[0]));
+  out[1] = glm::length(glm::vec3(g[1]));
+  out[2] = glm::length(glm::vec3(g[2]));
+}
+
+bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p)
+{
+  if (zone >= scene.globalTransform.size())
+    return false;
+  const glm::mat4& g = scene.globalTransform[zone];
+  float half[3];
+  ZoneHalfExtents(scene, zone, half);
+  // The transform IS the extents: g maps the unit cube [-1,1]^3 onto
+  // the zone box, so the coverage test is the UNIT cube per axis in
+  // g^-1 * p space. A degenerate (zero-length) finite axis flattens the
+  // zone to a plane — nothing lands inside.
+  for (int a = 0; a < 3; ++a) {
+    if (std::isfinite(half[a]) && !(half[a] > 0.0f))
+      return false; // flat on this axis: an empty zone
+  }
+  // INFINITE (or NaN) axes: replace with unit columns BEFORE inverting —
+  // INF entries poison the inverse (INF/INF = NaN in the cofactor
+  // arithmetic), and those axes are skipped by the test anyway.
+  glm::mat4 frame = g;
+  for (int a = 0; a < 3; ++a) {
+    if (!std::isfinite(half[a]))
+      frame[a] = glm::vec4(a == 0, a == 1, a == 2, 0.0f);
+  }
+  const glm::vec3 local = glm::vec3(
+    glm::inverse(frame) * glm::vec4(p, 1.0f));
+  for (int a = 0; a < 3; ++a) {
+    if (!std::isfinite(half[a]))
+      continue; // INFINITE extent: unbounded on this axis (a slab)
+    if (!(std::abs(local[a]) <= 1.0f))
+      return false;
+  }
+  return true;
+}
+
+NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
+{
+  NodeId best = UINT32_MAX;
+  float bestPriority = 0.0f;
+  double bestVolume = 0.0;
+  for (const auto& [node, env] : scene.envForNode) {
+    if (!ZoneCovers(scene, node, p))
+      continue;
+    // Bounded volume = the product of the finite half extents; any
+    // INFINITE axis = unbounded volume (loses ties against bounded
+    // zones — "innermost" wins among equal priorities).
+    float half[3];
+    ZoneHalfExtents(scene, node, half);
+    double volume = 1.0;
+    bool unbounded = false;
+    for (int a = 0; a < 3; ++a) {
+      if (!std::isfinite(half[a])) {
+        unbounded = true;
+        break;
+      }
+      volume *= double(half[a]);
+    }
+    if (unbounded)
+      volume = std::numeric_limits<double>::infinity();
+    const bool better = best == UINT32_MAX
+      || env.zonePriority > bestPriority
+      || (env.zonePriority == bestPriority && volume < bestVolume)
+      || (env.zonePriority == bestPriority && volume == bestVolume
+        && node < best); // deterministic last-resort tiebreak
+    if (better) {
+      best = node;
+      bestPriority = env.zonePriority;
+      bestVolume = volume;
+    }
+  }
+  return best;
 }
 
 void dumpTransforms(const char* fileName, const Scene& scene)

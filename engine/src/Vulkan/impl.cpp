@@ -2547,6 +2547,15 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 		// simply skip it (isDeviceSuitable above only gates the required
 		// config_.deviceExtensions list). No feature struct exists for
 		// this extension — the name alone switches it on.
+		// GATED on the Streamline integration actually running: the
+		// extension exists ONLY for the Reflex/PCL path, so enabling it
+		// without sl.common driving it (the editor never loads
+		// Streamline — see Editor's main.cpp) leaves the device's
+		// low-latency queue state initialized-but-undriven. The hosted
+		// editor's first heavy frame wedged the GPU past the Windows TDR
+		// window in exactly that state (bistro glass, VK_ERROR_DEVICE_LOST
+		// + nvlddmkm 4101 reset); with the extension gated off the same
+		// frame runs in tens of ms.
 		bool enableLowLatency2 = false;
 		{
 			uint32_t extCount = 0;
@@ -2562,8 +2571,19 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 					}
 				}
 			}
-			std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 %s\n",
-				enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
+			// DlssStartup() ran before any Vulkan object exists (the
+			// interposer bootstrap above), so its result is authoritative
+			// here: no Streamline -> no low-latency extension either.
+			if (enableLowLatency2 && !DlssAvailable()) {
+				enableLowLatency2 = false;
+				std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 supported"
+					" - NOT enabling (Streamline not loaded; Reflex/PCL"
+					" has no driver here)\n");
+			}
+			else {
+				std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 %s\n",
+					enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
+			}
 		}
 
 		// VK_EXT_device_fault (post-mortem GPU fault reports): strictly

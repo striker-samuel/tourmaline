@@ -56,7 +56,6 @@
 #include <Engine/GI/lightmap.h> // lightmap-chain diagnostic (--lm-probe)
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
-#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 #include <gltf_import/gltf.h>
@@ -1006,11 +1005,9 @@ int main(int argc, char** argv) {
 
 	const auto t0 = std::chrono::steady_clock::now();
 
-	// Input scene (glTF via the VFS; same lookup rules as the runtime,
-	// plus the Flintbase scheme for //flintbase/ inputs).
+	// Input scene (glTF via the VFS; same lookup rules as the runtime).
 	smvk::OverlayVfs vfs;
 	vfs.Mount(std::make_shared<smvk::LooseBackend>(args.contentDir), 0, "content");
-	vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 
 	std::string inVfs = args.inVfs;
 	std::string sceneId = args.scene;

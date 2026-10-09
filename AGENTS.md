@@ -50,7 +50,7 @@ Headless-ish deterministic capture (auto-exits after the bench budget):
 ```powershell
 $env:VULKANTOY_SSR='1'; $env:VULKANTOY_AA='off'; $env:VULKANTOY_AUTO_EXPOSURE='0'
 $env:VULKANTOY_CAM_POS='24.26,1.82,-9.52'; $env:VULKANTOY_CAM_FWD='-0.947,-0.022,-0.321'
-$env:VULKANTOY_LIGHTS_STATIC='1'; $env:VULKANTOY_CAPTURE='48'
+$env:VULKANTOY_CAPTURE='48'
 & .\App.exe --pak content/paks/bistro.pak --disable_control --bench 64
 ```
 

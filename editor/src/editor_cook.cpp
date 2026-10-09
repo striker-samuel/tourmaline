@@ -20,8 +20,13 @@
 #include <windows.h>
 #endif
 
+#include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Renderer/cubemap.h>
 #include <Engine/Vfs/vfs.h>
+
+#include <fstream>
+#include <optional>
 
 namespace editor {
 namespace {
@@ -37,7 +42,51 @@ std::string QuoteArg(const std::string& s) {
 		o += (c == '"') ? "\\\"" : std::string(1, c);
 	return o + "\"";
 }
+
+// Host-side whole-file read (binary). The editor's bake-content injection
+// reads the fresh GiBaker/cook outputs directly from disk and pushes the
+// bytes into the world's bake-payload channel — never through the VFS.
+std::optional<std::vector<uint8_t>> ReadHostFileBytes(
+	const std::string& path) {
+	std::ifstream f(path, std::ios::binary | std::ios::ate);
+	if (!f)
+		return std::nullopt;
+	const auto end = f.tellg();
+	if (end == std::ifstream::pos_type(-1))
+		return std::nullopt;
+	f.seekg(0);
+	std::vector<uint8_t> bytes(static_cast<size_t>(end));
+	if (!bytes.empty()
+		&& !f.read(reinterpret_cast<char*>(bytes.data()),
+			static_cast<std::streamsize>(bytes.size())))
+		return std::nullopt;
+	return bytes;
+}
+
+// Line-split helper shared by the reg/cv manifest injections (rows are
+// bare VFS paths, optionally "<guid> <path>" legacy — SplitManifestRow).
+std::vector<std::string> ManifestRowLines(
+	const std::vector<uint8_t>& bytes) {
+	std::vector<std::string> out;
+	std::string cur;
+	for (char c : bytes) {
+		if (c == '\n' || c == '\r') {
+			const std::string p = smvk::bake::SplitManifestRow(cur);
+			if (!p.empty())
+				out.push_back(p);
+			cur.clear();
+		}
+		else {
+			cur.push_back(c);
+		}
+	}
+	const std::string p = smvk::bake::SplitManifestRow(cur);
+	if (!p.empty())
+		out.push_back(p);
+	return out;
+}
 } // namespace
+
 
 // Shared snapshot for the cooker/baker subprocesses: a TEMP coalesced
 // tour (the canonical .tour is never overwritten; becomeTarget = false
@@ -98,21 +147,15 @@ void EditorApp::CookToPak(bool quickBakes) {
 		return;
 	// Definition fingerprint: the scene artifact's cache source key.
 	m_cookDefHash = defHash;
-	// contentDir = absolute path to the content root (parent of "content/").
-	// For F:\content\models\... -> F:\
-	// For //flintbase/ -> not used (flintbase handles its own resolution).
+	// contentDir = absolute path to the content root (parent of
+	// "content/"): for F:\content\models\... it is the drive root.
 	std::string contentDir, inVfs;
 	{
 		std::string posix = m_gltfPath;
 		for (char& c : posix)
 			if (c == '\\')
 				c = '/';
-		if (smvk::vfs::HasFlintbasePrefix(posix)) {
-			// Flintbase paths are resolved by the cooker's own VFS.
-			contentDir = std::filesystem::absolute("content").string();
-			inVfs = posix;
-		}
-		else {
+		{
 			const std::string marker = "content/";
 			const size_t at = posix.find(marker);
 			if (at != std::string::npos) {
@@ -166,6 +209,11 @@ void EditorApp::CookToPak(bool quickBakes) {
 		std::filesystem::path(cook.outPak).stem().string();
 	const bool wantWorld = m_cook.giWorld;
 	m_cookRunning = true;
+	// Blocking progress surface (modal task window): the stage flips to
+	// the pak half when the drain below sees the cooker stage start.
+	TaskWindowBegin("Cook to .pak", quickBakes
+		? "Updating bakes (GI + captures, no pak write)..."
+		: "Cook stage 1/2: GI bake...");
 	// Label honesty: the cook UPDATES the scene's bake in place — GiBaker
 	// re-runs it at the stable stem paths (overwrites; RecordBakeAssets-
 	// FromCook overwrites the bake guid reference in the current scene's
@@ -239,10 +287,15 @@ void EditorApp::CookToPak(bool quickBakes) {
 					<< " --content-dir " << QuoteArg(contentDir)
 					<< " --scene " << QuoteArg(pakStem)
 					<< " --tour " << QuoteArg(tempTourPath);
-				if (wantWorld)
-					gi << " --out " << QuoteArg(
-						(std::filesystem::path(contentDir) / "gi" /
-							(pakStem + ".sggi")).generic_string());
+				// Temp-file bake (same as BakeGI): publish atomically so
+				// a failed baker never corrupts the live world field.
+				std::string cookFinal, cookTemp;
+				if (wantWorld) {
+					cookFinal = (std::filesystem::path(contentDir) / "gi" /
+						(pakStem + ".sggi")).generic_string();
+					cookTemp = cookFinal + ".tmp";
+					gi << " --out " << QuoteArg(cookTemp);
+				}
 				gi << " 2>&1";
 				push("cook-gi: " + gi.str());
 #ifdef _WIN32
@@ -273,6 +326,19 @@ void EditorApp::CookToPak(bool quickBakes) {
 				}
 				push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
 					"under " + contentDir + "/gi/)");
+				if (wantWorld && !cookTemp.empty()) {
+					std::error_code rec;
+					std::filesystem::rename(cookTemp, cookFinal, rec);
+					if (rec) {
+						r.ok = false;
+						r.log = "cook-gi: temp publish failed ("
+							+ rec.message() + ") — pak cook SKIPPED\n";
+						std::error_code ec;
+						std::filesystem::remove(tempTourPath, ec);
+						return r;
+					}
+					push("cook-gi: published '" + cookFinal + "'");
+				}
 			}
 		// ---- stage 2: PakCooker (the pak: meshopt/LODs/lightmaps/
 		// cubemaps + the GI sidecar discovery/embed from stage 1).
@@ -331,8 +397,10 @@ cmd << " 2>&1";
 void EditorApp::PollCookProcess() {
 	if (!m_cookRunning)
 		return;
-	// Drain the live pipe feed every frame so the Console shows
-	// progress while the cook runs (stuck vs. working is visible).
+	// Drain the live pipe feed every frame: the Console keeps the
+	// persistent record AND the modal task window details live progress
+	// (stuck vs. working is visible in both). The pak-stage marker line
+	// flips the task stage from the GI half to the pak half.
 	auto drainFeed = [this]() {
 		std::shared_ptr<CookFeed> feed = m_cookFeed;
 		if (!feed)
@@ -342,8 +410,15 @@ void EditorApp::PollCookProcess() {
 			std::lock_guard<std::mutex> lk(feed->mutex);
 			ready.swap(feed->lines);
 		}
-		for (auto& line : ready)
+		for (auto& line : ready) {
 			Log(line);
+			TaskWindowPush(line);
+			// Full-cook stage marker ("cook: " — NOT "cook-gi: ...",
+			// NOT the quick-bakes "update-bakes: " marker): the pak
+			// half starts, flip the task stage.
+			if (line.compare(0, 6, "cook: ") == 0)
+				TaskWindowStage("Cook stage 2/2: pak...");
+		}
 	};
 	drainFeed();
 	if (!m_cookFuture.valid())
@@ -358,10 +433,14 @@ void EditorApp::PollCookProcess() {
 	std::istringstream ss(r.log);
 	std::string line;
 	while (std::getline(ss, line)) {
-		if (!line.empty())
+		if (!line.empty()) {
 			Log(line);
+			TaskWindowPush(line);
+		}
 	}
 	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
+	TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
+		: "Cook FAILED (detail above; Console keeps the full log).");
 	if (r.ok) {
 		RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
 		// The cook's GiBaker-from-0 stage wrote fresh GI sidecars: re-resolve
@@ -442,6 +521,11 @@ void EditorApp::BakeGI() {
 		.lexically_normal().string();
 	m_giBakePendingHash = defHash; // adopted as m_giBakedHash on success
 	m_bakeRunning = true;
+	// Blocking progress surface (modal task window).
+	TaskWindowBegin("Bake GI", "Baking GI ("
+		+ std::string(wantWorld ? "world field" : "")
+		+ std::string((wantWorld && wantCvols) ? " + " : "")
+		+ std::string(wantCvols ? "convex volumes" : "") + ")...");
 	Log("Bake GI started ("
 		+ std::string(wantWorld ? "world field" : "")
 		+ std::string((wantWorld && wantCvols) ? " + " : "")
@@ -481,10 +565,16 @@ void EditorApp::BakeGI() {
 				<< " --content-dir " << QuoteArg(contentRoot)
 				<< " --scene " << QuoteArg(pakStem)
 				<< " --tour " << QuoteArg(tempTourPath);
-			if (wantWorld)
-				gi << " --out " << QuoteArg(
-					(std::filesystem::path(contentRoot) / "gi" /
-						(pakStem + ".sggi")).generic_string());
+			// Temp-file bake: GiBaker writes gi/<stem>.sggi.tmp, the
+			// worker atomically renames to gi/<stem>.sggi on success —
+			// a failed bake never leaves a half-written world field.
+			std::string bakeFinal, bakeTemp;
+			if (wantWorld) {
+				bakeFinal = (std::filesystem::path(contentRoot) / "gi" /
+					(pakStem + ".sggi")).generic_string();
+				bakeTemp = bakeFinal + ".tmp";
+				gi << " --out " << QuoteArg(bakeTemp);
+			}
 			gi << " 2>&1";
 			push("bake-gi: " + gi.str());
 #ifdef _WIN32
@@ -508,6 +598,19 @@ void EditorApp::BakeGI() {
 				r.log += "bake-gi: GI bake FAILED (previous sidecars, "
 					"if any, are untouched; unbaked scenes render sky "
 					"IBL)\n";
+			else if (wantWorld && !bakeTemp.empty()) {
+				// Atomic publish of the temp bake output.
+				std::error_code rec;
+				std::filesystem::rename(bakeTemp, bakeFinal, rec);
+				if (rec) {
+					r.ok = false;
+					r.log += "bake-gi: temp publish failed (" + rec.message()
+						+ ") — bake discarded\n";
+				}
+				else {
+					push("bake-gi: published '" + bakeFinal + "'");
+				}
+			}
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
 			return r;
@@ -522,41 +625,79 @@ void EditorApp::BakeGI() {
 // Session state, re-derived on every world build + after every Bake GI
 // (never persisted — the files at their stable paths are the record).
 // glTF sessions only: pak opens carry their own Gi registry blob
-// (untouched here).
+// (untouched here). Bindings + payload BYTES land on the DYNAMIC cluster
+// (World::EnsureDynamicCluster — runtime-injected state, never mixed into
+// the scene cluster); ResolveGiSidecars/ReadBakeBytes consult it FIRST,
+// so quick-bakes override cooked pak content.
 void EditorApp::RefreshLiveViewGiBindings() {
-	if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+	if (!m_world)
 		return;
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
 	cl->giBindings.clear();
 	const std::string scene = SceneIdForHost();
-	struct DirSet { std::string gi; std::string cubes; };
-	std::vector<DirSet> dirs;
-	if (!m_projectRoot.empty()) {
-		namespace fs = std::filesystem;
-		dirs.push_back({
-			(fs::path(m_projectRoot) / "gi").generic_string(),
-			(fs::path(m_projectRoot) / "textures" / "cubemaps")
-				.generic_string() });
-	}
-	dirs.push_back({ "content/gi", "content/textures/cubemaps" });
-	// A bake exists iff its stable file is readable under one of the
-	// roots: the gi/ probes/lightmap/manifests (gi/<scene>.<ext>) and
-	// the cubemap manifest (textures/cubemaps/<scene>.cubemanifest).
-	std::error_code ec;
-	auto hasGi = [&](const char* ext) {
-		for (const auto& d : dirs)
-			if (std::filesystem::is_regular_file(
-					std::filesystem::path(d.gi)
-						/ (scene + "." + ext), ec))
+	// Content roots (the bake files' parent trees): the project root
+	// first, then the editor-relative bundled content tree.
+	std::vector<std::string> roots;
+	if (!m_projectRoot.empty())
+		roots.push_back(m_projectRoot);
+	roots.push_back("content");
+	// Inject a payload at its stable VFS path, reading the host file
+	// under any root that has it. Returns whether bytes landed.
+	auto injectAt = [&](const std::string& relVfsPath) -> bool {
+		for (const auto& root : roots) {
+			const std::filesystem::path host =
+				std::filesystem::path(root)
+					/ std::filesystem::path(relVfsPath);
+			if (auto bytes = ReadHostFileBytes(host.generic_string())) {
+				cl->AddBakePayload(relVfsPath, std::move(*bytes));
 				return true;
+			}
+		}
 		return false;
 	};
-	auto hasCube = [&]() {
-		for (const auto& d : dirs)
+	auto hasGi = [&](const char* ext) -> bool {
+		const std::string mrel = "gi/" + scene + "." + ext;
+		const bool present = injectAt(mrel);
+		// Manifests also carry their row payloads (each row is a bare
+		// VFS path relative to the same root): inject those too.
+		if (present
+			&& (std::string_view(ext) == "regmanifest"
+				|| std::string_view(ext) == "cvmanifest")) {
+			if (const auto* manifest = cl->FindBakePayload(mrel)) {
+				const std::vector<uint8_t> text(
+					manifest->data(), manifest->data() + manifest->size());
+				for (const std::string& row : ManifestRowLines(text))
+					injectAt(row);
+			}
+		}
+		return present;
+	};
+	auto hasCube = [&]() -> bool {
+		const std::string mrel =
+			"textures/cubemaps/" + scene + ".cubemanifest";
+		if (injectAt(mrel)) {
+			// Every manifest row's KTX rides too (positions/influence
+			// stay in the manifest text the renderer parses).
+			if (const auto* manifest = cl->FindBakePayload(mrel)) {
+				std::string mErr;
+				std::vector<smvk::CubemapManifestEntry> rows;
+				const std::string_view text(
+					reinterpret_cast<const char*>(manifest->data()),
+					manifest->size());
+				if (smvk::CubemapManifestParse(text, rows, mErr))
+					for (const auto& row : rows)
+						injectAt(row.vfsPath);
+			}
+			return true;
+		}
+		// Typed asset (content/gi/<scene>.cubemap) — the no-sidecar home
+		// (RecordBakeAssetsFromCook materializes it after a full cook).
+		for (const auto& root : roots) {
 			if (std::filesystem::is_regular_file(
-					std::filesystem::path(d.cubes)
-						/ (scene + ".cubemanifest"), ec))
+					std::filesystem::path(root) / "gi"
+						/ (scene + ".cubemap")))
 				return true;
+		}
 		return false;
 	};
 	auto reg = [&](smvk::GiBinding::Kind kind, bool has,
@@ -579,7 +720,8 @@ void EditorApp::RefreshLiveViewGiBindings() {
 void EditorApp::PollBakeProcess() {
 	if (m_bakeRunning)
 		return;
-	// Drain the live pipe feed every frame (same pattern as the cook).
+	// Drain the live pipe feed every frame (same pattern as the cook):
+	// Console record + modal task window detail.
 	auto drainFeed = [this]() {
 		std::shared_ptr<CookFeed> feed = m_bakeFeed;
 		if (!feed)
@@ -589,8 +731,10 @@ void EditorApp::PollBakeProcess() {
 			std::lock_guard<std::mutex> lk(feed->mutex);
 			ready.swap(feed->lines);
 		}
-		for (auto& line : ready)
+		for (auto& line : ready) {
 			Log(line);
+			TaskWindowPush(line);
+		}
 	};
 	drainFeed();
 	if (!m_bakeFuture.valid())
@@ -603,8 +747,10 @@ void EditorApp::PollBakeProcess() {
 	std::istringstream ss(r.log);
 	std::string line;
 	while (std::getline(ss, line)) {
-		if (!line.empty())
+		if (!line.empty()) {
 			Log(line);
+			TaskWindowPush(line);
+		}
 	}
 	if (r.ok) {
 		// The sidecars now match the baked definition: record it so a
@@ -623,9 +769,12 @@ void EditorApp::PollBakeProcess() {
 			m_wysiwyg->SetProjectRoot(m_projectRoot);
 			m_wysiwyg->RebindWorld(m_world.get());
 		}
+		TaskWindowFinish(true, "Bake GI finished OK — live view rebound.");
 	}
 	else {
 		Log("Bake GI FAILED (see log above).");
+		TaskWindowFinish(false,
+			"Bake GI FAILED (detail above; Console keeps the full log).");
 	}
 	m_giBakePendingHash.clear();
 }

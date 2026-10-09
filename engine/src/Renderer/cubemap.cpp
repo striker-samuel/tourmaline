@@ -228,7 +228,7 @@ Holder<TextureHandle> CreateCubemapTexture(ResourceManager& ctx,
 		for (uint32_t f = 0; f < kCubemapFaceCount; ++f)
 			std::memcpy(upload.data() + size_t(f) * faceBytes, faces[f], faceBytes);
 	} else {
-		// Per-face box-filtered chain (same math as the cookie baker).
+		// Per-face box-filtered mip chain.
 		std::vector<std::vector<uint8_t>> chains[kCubemapFaceCount];
 		for (uint32_t f = 0; f < kCubemapFaceCount; ++f) {
 			const auto* src = static_cast<const uint8_t*>(faces[f]);
@@ -276,15 +276,14 @@ Holder<TextureHandle> CreateCubemapTexture(ResourceManager& ctx,
 	return tex;
 }
 
-bool CubemapLibrary::Load(ResourceManager& ctx, const OverlayVfs& vfs,
-	const std::string& name, const std::string& vfsPath, uint32_t fallbackSize) {
+bool CubemapLibrary::Load(ResourceManager& ctx, const std::string& name,
+	std::span<const uint8_t> ktxBytes, uint32_t fallbackSize) {
 	auto it = entries.find(name);
 	if (it != entries.end() && it->second.bindless >= 0)
 		return true;
-	const std::string path = vfsPath.empty() ? CubemapVfsPath(name) : vfsPath;
 	const std::string debugName = "cubemap_" + name;
-	if (auto bytes = vfs.TryRead(path)) {
-		auto tex = LoadKtxTextureMemory(ctx, bytes->data(), bytes->size(), debugName);
+	if (!ktxBytes.empty()) {
+		auto tex = LoadKtxTextureMemory(ctx, ktxBytes.data(), ktxBytes.size(), debugName);
 		if (!tex.empty() && ctx.IsCubemapTexture(tex)) {
 			CubemapEntry e{};
 			e.size = ctx.GetTextureCubemapSize(tex);
@@ -293,16 +292,16 @@ bool CubemapLibrary::Load(ResourceManager& ctx, const OverlayVfs& vfs,
 			e.mipLevels = ctx.GetTextureMipLevels(tex);
 			e.texture = std::move(tex);
 			entries[name] = std::move(e);
-			std::cout << "[cubemap] '" << name << "' loaded from baked file: "
-				<< path << " (" << entries[name].size << "px)" << std::endl;
+			std::cout << "[cubemap] '" << name << "' loaded from baked payload: "
+				<< "(" << entries[name].size << "px)" << std::endl;
 			return true;
 		}
 		if (!tex.empty())
 			std::cerr << "[cubemap] '" << name << "' decoded but is not a cubemap: "
-				<< path << " (falling back to procedural)" << std::endl;
+				<< "(falling back to procedural)" << std::endl;
 		else
-			std::cerr << "[cubemap] baked file failed to decode: "
-				<< path << " (falling back to procedural)" << std::endl;
+			std::cerr << "[cubemap] baked payload failed to decode: "
+				<< "(falling back to procedural)" << std::endl;
 	}
 	// Fallback: procedural per-face gobos (identical math to the baker's
 	// test-pattern mode, single mip level).

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -547,6 +548,8 @@ void EditorApp::DrawViewportChrome() {
 	}
 	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
 	DrawCvolPreviewOverlay();
+	DrawCaptureBallOverlay();
+	DrawOctreePreviewOverlay();
 	DrawPlacementOverlay();
 }
 
@@ -560,6 +563,9 @@ void EditorApp::DrawViewportChrome() {
 // gizmo batches instead — depth-tested scene objects, all view
 // modes): name + priority at the box center, same priority hue.
 void EditorApp::DrawCvolPreviewOverlay() {
+	// MODAL: GI authoring previews belong to LIGHTING mode.
+	if (m_mode != EditorMode::Lighting)
+		return;
 	const bool showBaked = m_cvolPreviewMode != 0
 		&& !m_cvolPreviews.empty();
 	const bool showAuthored = m_showCvolGizmos && m_world
@@ -633,6 +639,328 @@ void EditorApp::DrawCvolPreviewOverlay() {
 					dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f),
 						priorityColor(def.priority, 220), label);
 				}
+			}
+		}
+		dl->PopClipRect();
+	}
+}
+
+// ---- octree PRECOOK visualization --------------------------------------
+// In-process authored overlay (no baker subprocess): tiles the live
+// scene AABB at the root-brick size, colors dirty tiles (need rebake)
+// apart from clean ones, and draws cubemap captures as BLACK balls so
+// the precook layout reads apart from the chrome bake preview.
+// Partial-update model: UpdateOctreePreview() rebuilds the grid,
+// MarkOctreeDirty() dirties every tile (called on scene edits + cooks).
+void EditorApp::MarkOctreeDirty() {
+	for (OctreeTile& t : m_octreeTiles)
+		t.dirty = true;
+}
+
+void EditorApp::UpdateOctreePreview() {
+	m_octreeTiles.clear();
+	if (!m_world)
+		return;
+	// Scene AABB: node translations + authored cvol boxes (so empty
+	// scenes still frame their volumes).
+	glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+	bool any = false;
+	const Scene& scene = m_world->scene;
+	if (scene.globalTransform.size() == scene.hierarchy.size()) {
+		for (size_t n = 0; n < scene.globalTransform.size(); ++n) {
+			const glm::vec3 p(scene.globalTransform[n][3]);
+			if (!std::isfinite(p.x + p.y + p.z))
+				continue;
+			mn = glm::min(mn, p);
+			mx = glm::max(mx, p);
+			any = true;
+		}
+	}
+	for (const auto& [node, def] : scene.cvolForNode) {
+		glm::vec3 bmn, bmx;
+		if (!CvolBox(node, bmn, bmx))
+			continue;
+		mn = glm::min(mn, bmn);
+		mx = glm::max(mx, bmx);
+		any = true;
+		(void)def;
+	}
+	if (!any) {
+		mn = glm::vec3(-8.0f);
+		mx = glm::vec3(8.0f);
+	}
+	// Pad one tile so captures on the boundary stay inside.
+	const float pad = std::max(m_octreeTileSize, 1.0f);
+	mn -= glm::vec3(pad);
+	mx += glm::vec3(pad);
+	m_octreeMn = mn;
+	m_octreeMx = mx;
+	const float ts = std::max(m_octreeTileSize, 0.5f);
+	const int nx = std::clamp(int((mx.x - mn.x) / ts) + 1, 1, 32);
+	const int ny = std::clamp(int((mx.y - mn.y) / ts) + 1, 1, 32);
+	const int nz = std::clamp(int((mx.z - mn.z) / ts) + 1, 1, 32);
+	if (nx * ny * nz > 4096) {
+		// Scene too large for a per-tile overlay at this size: keep
+		// the bounds box only (the GI panel says so).
+		Log("Octree preview: grid capped ("
+			+ std::to_string(nx * ny * nz) + " tiles) — bounds only.");
+		return;
+	}
+	m_octreeTiles.reserve(size_t(nx * ny * nz));
+	for (int ix = 0; ix < nx; ++ix)
+		for (int iy = 0; iy < ny; ++iy)
+			for (int iz = 0; iz < nz; ++iz) {
+				OctreeTile t;
+				t.mn = mn + glm::vec3(ix * ts, iy * ts, iz * ts);
+				t.mx = glm::min(t.mn + glm::vec3(ts), mx);
+				t.dirty = true; // fresh grid needs its bake
+				m_octreeTiles.push_back(t);
+			}
+	Log("Octree preview: " + std::to_string(m_octreeTiles.size())
+		+ " tiles (" + std::to_string(nx) + "x" + std::to_string(ny)
+		+ "x" + std::to_string(nz) + " @ " + std::to_string(ts)
+		+ "m) — all dirty.");
+}
+
+void EditorApp::DrawOctreePreviewOverlay() {
+	// MODAL: GI authoring previews belong to LIGHTING mode.
+	if (m_mode != EditorMode::Lighting)
+		return;
+	if (!m_octreePreviewOn || !m_world)
+		return;
+	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	for (int i = 0; i < ViewportCount(); ++i) {
+		const EditorViewport& vp = m_viewports[i];
+		const glm::mat4 vpm = vp.viewProj;
+		const auto project = [&](const glm::vec3& w, ImVec2& out) {
+			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+			if (c.w <= 1e-6f)
+				return false;
+			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+			return true;
+		};
+		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
+			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		// Tiles: dirty = orange-red wire, clean = teal wire.
+		for (const OctreeTile& t : m_octreeTiles) {
+			const ImU32 col = t.dirty ? IM_COL32(255, 120, 40, 160)
+				: IM_COL32(60, 220, 200, 120);
+			const glm::vec3 c[8] = {
+				{ t.mn.x, t.mn.y, t.mn.z }, { t.mx.x, t.mn.y, t.mn.z },
+				{ t.mx.x, t.mx.y, t.mn.z }, { t.mn.x, t.mx.y, t.mn.z },
+				{ t.mn.x, t.mn.y, t.mx.z }, { t.mx.x, t.mn.y, t.mx.z },
+				{ t.mx.x, t.mx.y, t.mx.z }, { t.mn.x, t.mx.y, t.mx.z },
+			};
+			static const int kE[12][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 },
+				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+			for (const auto& e : kE) {
+				ImVec2 a, b;
+				if (project(c[e[0]], a) && project(c[e[1]], b))
+					dl->AddLine(a, b, col, 1.0f);
+			}
+		}
+		// World bounds: white wire.
+		{
+			const glm::vec3 mn = m_octreeMn, mx = m_octreeMx;
+			const glm::vec3 c[8] = {
+				{ mn.x, mn.y, mn.z }, { mx.x, mn.y, mn.z },
+				{ mx.x, mx.y, mn.z }, { mn.x, mx.y, mn.z },
+				{ mn.x, mn.y, mx.z }, { mx.x, mn.y, mx.z },
+				{ mx.x, mx.y, mx.z }, { mn.x, mx.y, mx.z },
+			};
+			static const int kE[12][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 },
+				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+			for (const auto& e : kE) {
+				ImVec2 a, b;
+				if (project(c[e[0]], a) && project(c[e[1]], b))
+					dl->AddLine(a, b, IM_COL32(255, 255, 255, 200), 2.0f);
+			}
+		}
+		// Captures read through DrawCaptureBallOverlay (baked-aware balls,
+		// always on with the cubemap gizmos) — the precook grid draws
+		// tiles + bounds only so the two never double up.
+		dl->PopClipRect();
+	}
+}
+
+// Baked/unbaked census over the authored pins (overlay + cook dialog
+// share it so the readout and the balls can never disagree).
+void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
+	bakedOut = 0;
+	totalOut = 0;
+	if (!m_world)
+		return;
+	totalOut = m_world->scene.cubemapForNode.size();
+	if (totalOut == 0)
+		return;
+	std::vector<glm::vec3> baked;
+	if (m_wysiwyg)
+		m_wysiwyg->CubemapProbeCenters(baked);
+	if (baked.empty())
+		return;
+	for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+		(void)def;
+		if (node >= m_world->scene.globalTransform.size())
+			continue;
+		const glm::vec3 p(m_world->scene.globalTransform[node][3]);
+		for (const glm::vec3& b : baked) {
+			if (glm::distance(p, b) < kCaptureBakeMatchM) {
+				++bakedOut;
+				break;
+			}
+		}
+	}
+}
+
+// Capture balls + App-parity probe overlay (LIGHTING mode only). Two
+// halves sharing one viewport walk:
+//   1. LOADED probes (the hosted live view's probe table — the SAME rows
+//      the App's probe-location overlay reads): center dot + C<idx> +
+//      influence ring (solid) + fade ring (dim), camera-distance colored
+//      (green = inside influence, yellow = in fade, gray = out of range),
+//      capped at 64 within the overlay max distance. Answers "is there a
+//      cubemap near X?" exactly like the App.
+//   2. AUTHORED pins with no loaded probe behind them: black balls (the
+//      editor-only half — "nothing rendered here yet"; bake + rebind to
+//      promote them into half 1).
+// The click twin lives in PickGizmoMarker.
+void EditorApp::DrawCaptureBallOverlay() {
+	// MODAL: the light-authoring set shows only in LIGHTING mode.
+	if (m_mode != EditorMode::Lighting)
+		return;
+	if (!m_world)
+		return;
+	// Loaded probe rows from the hosted live view (empty when the live
+	// view is down — pins all read unbaked, probes draw nothing).
+	std::vector<engine::WorldRenderer::CubemapProbeRow> rows;
+	if (m_wysiwyg)
+		m_wysiwyg->CubemapProbeRows(rows);
+	const bool showPins = m_showCubemapGizmos
+		&& !m_world->scene.cubemapForNode.empty();
+	if (!m_showProbeOverlay && !showPins)
+		return;
+	const auto pinBaked = [&](const glm::vec3& p) {
+		for (const auto& r : rows)
+			if (glm::distance(p, r.center) < kCaptureBakeMatchM)
+				return true;
+		return false;
+	};
+	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	const Scene& scene = m_world->scene;
+	const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
+	const float maxDist2 = maxDist * maxDist;
+	for (int i = 0; i < ViewportCount(); ++i) {
+		const EditorViewport& vp = m_viewports[i];
+		const glm::mat4 vpm = vp.viewProj;
+		glm::vec3 eye(0.0f);
+		if (vp.camIdx >= 0
+			&& size_t(vp.camIdx) < m_editorCams.size())
+			eye = EditorCamEye(m_editorCams[size_t(vp.camIdx)]);
+		const auto project = [&](const glm::vec3& w, ImVec2& out) {
+			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+			if (c.w <= 1e-6f)
+				return false; // behind the camera
+			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
+			return true;
+		};
+		const auto projectInView = [&](const glm::vec3& w, ImVec2& out) {
+			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
+			if (c.w <= 1e-6f)
+				return false;
+			const glm::vec3 ndc = glm::vec3(c) / c.w;
+			if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
+				return false; // off-screen (the App culls the same way)
+			out.x = vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
+			out.y = vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
+			return true;
+		};
+		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
+			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
+		// ---- half 1: App-parity probe overlay ----
+		uint32_t drawn = 0;
+		if (m_showProbeOverlay) {
+			uint32_t ci = 0;
+			for (const auto& pr : rows) {
+				const uint32_t idx = ci++;
+				if (drawn >= 64)
+					break;
+				const glm::vec3 dc = pr.center - eye;
+				if (glm::dot(dc, dc) > maxDist2)
+					continue;
+				ImVec2 cpt;
+				if (!projectInView(pr.center, cpt))
+					continue;
+				const float cdist = std::sqrt(glm::dot(dc, dc));
+				ImU32 col;
+				if (cdist <= pr.influence)
+					col = IM_COL32(80, 255, 120, 230);
+				else if (pr.fade > 0.0f
+					&& cdist <= pr.influence + pr.fade)
+					col = IM_COL32(255, 220, 80, 230);
+				else
+					col = IM_COL32(120, 140, 160, 160);
+				// Influence ring: project a world-X offset of one radius
+				// (the App's trick); fade ring scales from it.
+				ImVec2 ept;
+				if (projectInView(pr.center + glm::vec3(
+						std::max(pr.influence, 0.01f), 0.0f, 0.0f), ept)) {
+					const float dx = ept.x - cpt.x, dy = ept.y - cpt.y;
+					const float rPx = std::sqrt(dx * dx + dy * dy);
+					if (rPx > 2.0f && rPx < 4000.0f) {
+						dl->AddCircle(cpt, rPx,
+							col & IM_COL32(255, 255, 255, 90), 48);
+						if (pr.fade > 0.0f) {
+							const float fr = rPx * (pr.influence + pr.fade)
+								/ std::max(pr.influence, 1e-3f);
+							if (fr < 4000.0f)
+								dl->AddCircle(cpt, fr,
+									col & IM_COL32(255, 255, 255, 45), 48);
+						}
+					}
+				}
+				dl->AddCircleFilled(cpt, 3.5f, col);
+				char clab[16];
+				std::snprintf(clab, sizeof(clab), "C%u", idx);
+				dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f), col, clab);
+				++drawn;
+			}
+			// Caption (the App draws it top-left of the full display;
+			// per viewport here so quads stay readable).
+			char ccap[96];
+			std::snprintf(ccap, sizeof(ccap), "Cubemap probes: %u drawn",
+				drawn);
+			dl->AddText(ImVec2(vp.rect.x + 9.0f, vp.rect.y + 37.0f),
+				IM_COL32(0, 0, 0, 200), ccap);
+			dl->AddText(ImVec2(vp.rect.x + 8.0f, vp.rect.y + 36.0f),
+				IM_COL32_WHITE, ccap);
+		}
+		// ---- half 2: authored pins with no loaded probe: black balls ----
+		if (showPins) {
+			for (const auto& [node, def] : scene.cubemapForNode) {
+				(void)def;
+				if (node >= scene.globalTransform.size())
+					continue;
+				const glm::vec3 p(scene.globalTransform[node][3]);
+				if (pinBaked(p))
+					continue; // the loaded-probe marker above owns it
+				ImVec2 s;
+				if (!project(p, s))
+					continue;
+				const bool selected = (node == m_selected);
+				// Big readable balls: halo + thick ring so pins read on
+				// any background.
+				const float r = selected ? 17.0f : 13.0f;
+				dl->AddCircleFilled(s, r + 5.0f,
+					IM_COL32(255, 255, 255, 26));
+				dl->AddCircleFilled(s, r, IM_COL32(0, 0, 0, 255));
+				dl->AddCircle(s, r,
+					selected ? IM_COL32(255, 220, 80, 255)
+					: IM_COL32(255, 255, 255, 230), 0,
+					selected ? 3.5f : 2.5f);
 			}
 		}
 		dl->PopClipRect();

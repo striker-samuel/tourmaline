@@ -1,15 +1,14 @@
-// CLI parsing for the pak-viewer host. Moved verbatim from the old
-// App/main.cpp (host logic now lives in the engine); adapted to fill
-// PakAppConfig instead of locals.
+// CLI parsing for the pak-viewer host (the APP's own host layer; fills
+// PakAppConfig from argv — see Host.h).
 
-#include <Engine/App/Host.h>
+#include "Host.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 
-namespace engine {
+namespace app {
 namespace {
 
 void PrintUsage(const char* prog) {
@@ -130,4 +129,4 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 	return true;
 }
 
-} // namespace engine
+} // namespace app

@@ -209,7 +209,6 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawViewportChrome(); // borders, camera chips, box-select rect
 	DrawUvEditorWindow(); // floating UV editor (View menu; canvas via GPU)
 	DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
-	DrawFlintbasePanel();
 	DrawReferencesPanel(); // Maya-style reference list (View menu)
 	DrawPathsPanel(); // consolidated file/path view (File menu)
 	if (m_placement.showGraph)
@@ -259,12 +258,6 @@ void EditorApp::DrawMenuBar() {
 			if (NativeOpenFile(picked) && !picked.empty())
 				AddSceneReference(picked, {});
 		}
-		if (ImGui::MenuItem("Reference editor...", nullptr,
-				m_showReferencesPanel))
-			m_showReferencesPanel = !m_showReferencesPanel;
-		if (ImGui::MenuItem("Path editor...", nullptr,
-				m_showPathsPanel))
-			m_showPathsPanel = !m_showPathsPanel;
 		if (ImGui::MenuItem("Save tour...")) {
 			std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 				"%s", TourTarget().c_str());
@@ -315,19 +308,9 @@ void EditorApp::DrawMenuBar() {
 			if (NativeOpenFile(picked, true) && !picked.empty())
 				AddImageDef(picked);
 		}
-		// Cook assets (settings + blob manifests): project-bound FILES,
-		// not scene nodes — like Image they bypass DraftCreate*/EditVerb
-		// (no tour verb, no undo entry), but unlike the nodes above they
-		// need only a PROJECT (no open scene; the scene seed stays empty
-		// and binds at bake time).
-		ImGui::Separator();
-		const bool canCookAsset = !m_projectRoot.empty();
-		if (ImGui::MenuItem("GI Cook Asset...", nullptr, false,
-				canCookAsset))
-			CreateCookAsset(true, m_assetsDir);
-		if (ImGui::MenuItem("Lightmap Cook Asset...", nullptr, false,
-				canCookAsset))
-			CreateCookAsset(false, m_assetsDir);
+		// NOTE: cook assets (.gicook/.lmcook) are intentionally NOT
+		// menu-creatable: they are an internal consequence of baking
+		// (RecordBakeAssetsFromCook mints/updates them per scene).
 		if (!canCreate)
 			ImGui::TextDisabled("open a scene first");
 		ImGui::EndMenu();
@@ -557,13 +540,17 @@ void EditorApp::DrawMenuBar() {
 			m_uvWinPan = glm::vec2(0.0f);
 		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
-			m_showFlintbasePanel = !m_showFlintbasePanel;
 		if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 			m_placement.showGraph = !m_placement.showGraph;
+		if (ImGui::MenuItem("Reference editor...", nullptr,
+				m_showReferencesPanel))
+			m_showReferencesPanel = !m_showReferencesPanel;
+		if (ImGui::MenuItem("Path editor...", nullptr,
+				m_showPathsPanel))
+			m_showPathsPanel = !m_showPathsPanel;
 		ImGui::Separator();
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
-		if (ImGui::MenuItem("Light gizmos", "L (LIGHTING)", m_showLightGizmos))
+		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
 		if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
 			m_showCvolGizmos = !m_showCvolGizmos;
@@ -572,19 +559,42 @@ void EditorApp::DrawMenuBar() {
 			m_showCubemapGizmos = !m_showCubemapGizmos;
 		// Chrome balls at the loaded baked captures: the hosted renderer's
 		// lit probe-ball pass (see Rendergraph/probeball.h) — each ball
-		// samples its own baked cubemap. Toggles the WorldRenderer directly
-		// (the toggle only exists with a live hosted view).
-		bool ballsOn = m_wysiwyg && m_wysiwyg->CubemapShowBalls();
+		// samples its own baked cubemap. Master switch here; the per-frame
+		// hosted drive ANDs it with LIGHTING mode (modal light set).
 		if (ImGui::MenuItem("Cubemap capture balls (chrome)", nullptr,
-				m_wysiwyg ? &ballsOn : nullptr)) {
-			if (m_wysiwyg)
-				m_wysiwyg->SetCubemapShowBalls(!ballsOn);
-		}
+				m_showChromeBalls))
+			m_showChromeBalls = !m_showChromeBalls;
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Lit chrome spheres at the loaded baked\n"
 				"captures (the hosted renderer's probe-ball pass):\n"
 				"each ball samples its own cubemap — render-pass\n"
-				"visual only, never scene content.");
+				"visual only, never scene content. Shows in\n"
+				"LIGHTING mode only (modal light set).");
+		// App-parity probe overlay: the hosted live view's loaded rows
+		// as dot + C<idx> + influence/fade rings (same table, same
+		// colors as the App's probe-location overlay).
+		if (ImGui::MenuItem("Probe locations overlay", nullptr,
+				m_showProbeOverlay))
+			m_showProbeOverlay = !m_showProbeOverlay;
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Loaded baked probes per viewport (dot +\n"
+				"C<idx> + influence/fade rings, camera-distance\n"
+				"colored) — the App's probe overlay, LIGHTING only.");
+		// App-parity cubemap debug view (driven per frame onto the
+		// hosted renderer): which probe serves each pixel, or the
+		// blend weight as heat.
+		{
+			static const char* const kCubeDbgNames[3] = { "Off",
+				"Cubemap only (no Fresnel)", "Probe weight heat" };
+			if (ImGui::BeginCombo("Cubemap debug",
+					kCubeDbgNames[std::clamp(m_cubemapDebugView, 0, 2)])) {
+				for (int i = 0; i < 3; ++i)
+					if (ImGui::Selectable(kCubeDbgNames[i],
+							m_cubemapDebugView == i))
+						m_cubemapDebugView = i;
+				ImGui::EndCombo();
+			}
+		}
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
@@ -607,6 +617,34 @@ void EditorApp::DrawMenuBar() {
 		ImGui::EndMenu();
 	}
 
+	// Update GI (top-bar bake entry, right-aligned): the click twin of the
+	// cook dialog's "Bake GI now" — rebakes stay one click away instead
+	// of hiding in a dialog. While a task runs the button reopens its
+	// progress window (backgrounded or finished-unacknowledged). Guards
+	// + logs live inside BakeGI.
+	{
+		const bool taskLive = m_bakeRunning || m_cookRunning;
+		const char* label = m_bakeRunning ? "Baking GI..."
+			: m_cookRunning ? "Cooking..." : "Update GI";
+		const float w = ImGui::CalcTextSize(label).x
+			+ ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+		ImGui::SameLine(ImGui::GetWindowWidth() - w
+			- ImGui::GetStyle().WindowPadding.x);
+		ImGui::BeginDisabled(!taskLive && SceneEmpty());
+		if (ImGui::SmallButton(label)) {
+			if (taskLive)
+				ReopenTaskWindow();
+			else
+				BakeGI();
+		}
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(taskLive
+				? "A task is running — click to reopen its progress."
+				: "Rebake GI (world field + convex volumes)\n"
+				"over the current definition — same as Bake GI now.");
+	}
+
 	if (m_showSaveDialog) {
 		ImGui::OpenPopup("Save tour as");
 		m_showSaveDialog = false;
@@ -626,6 +664,9 @@ void EditorApp::DrawMenuBar() {
 	if (m_showCookDialog)
 		ImGui::OpenPopup("Cook to .pak");
 	DrawCookDialog();
+	// Blocking task window (cook / bake / publish progress): drawn last
+	// so its modal sits on top of every other popup.
+	DrawTaskWindow();
 	// Forced startup project selection (pending flag from Initialize,
 	// cleared on the first frame; the dialog is a blocking modal).
 	if (m_projectDialogPending) {
@@ -3605,7 +3646,7 @@ void EditorApp::DrawCookDialog() {
 			: "may predate this cook â€” rebake to refresh");
 	}
 	if (m_bakeRunning) {
-		ImGui::Text("Baking GI... (see Console)");
+		ImGui::Text("Baking GI... (detail in the task window)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Baking GI..."); // indeterminate
 	}
 	else if (ImGui::Button("Bake GI now")) {
@@ -3617,11 +3658,74 @@ void EditorApp::DrawCookDialog() {
 			"rebinds itself on completion. Cooks stay GI-free.");
 
 	ImGui::Separator();
+	ImGui::Text("Octree precook (in-process overlay, no baker run)");
+	size_t dirtyTiles = 0;
+	for (const OctreeTile& t : m_octreeTiles)
+		if (t.dirty)
+			++dirtyTiles;
+	ImGui::TextDisabled("%zu tile(s), %zu dirty",
+		m_octreeTiles.size(), dirtyTiles);
+	ImGui::Checkbox("Show precook overlay", &m_octreePreviewOn);
+	ImGui::Checkbox("Auto-update on edit/select", &m_octreeAutoUpdate);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Recompute the tile grid when the scene changes\n"
+			"and refresh when a capture below is clicked.");
+	float tileSize = m_octreeTileSize;
+	ImGui::SetNextItemWidth(120.0f);
+	if (ImGui::DragFloat("Tile size (m)", &tileSize, 0.5f, 1.0f, 32.0f)) {
+		m_octreeTileSize = std::clamp(tileSize, 1.0f, 32.0f);
+		if (m_octreeAutoUpdate)
+			UpdateOctreePreview();
+		else
+			MarkOctreeDirty();
+	}
+	if (ImGui::Button("Update precook")) {
+		UpdateOctreePreview();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("New .cubemap")) {
+		CreateCubemapAsset(m_assetsDir);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("New .gicvolume")) {
+		CreateGicvolumeAsset(m_assetsDir,
+			m_selected != UINT32_MAX ? m_selected : UINT32_MAX);
+	}
+	// Clickable captures: selecting one also refreshes the overlay
+	// when auto-update is on (the "automatic update" half). The census
+	// shares the overlay's match, so the readout and the balls agree —
+	// black balls with "0/N baked" means no baked cubemap is loaded for
+	// these pins (bake + rebind first), not a display bug.
+	if (m_world && !m_world->scene.cubemapForNode.empty()) {
+		size_t bakedCount = 0, totalCount = 0;
+		CaptureBakeState(bakedCount, totalCount);
+		ImGui::TextDisabled("captures (click to select): %zu/%zu baked",
+			bakedCount, totalCount);
+		int shown = 0;
+		for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+			if (shown++ >= 12)
+				break;
+			(void)def;
+			char btn[128];
+			std::snprintf(btn, sizeof(btn), "%s (#%u)##cube%u",
+				getNodeName(m_world->scene, int(node)).c_str(),
+				node, node);
+			if (ImGui::SmallButton(btn)) {
+				SetSelection(node);
+				if (m_octreeAutoUpdate)
+					UpdateOctreePreview();
+			}
+			if (shown % 3 != 0)
+				ImGui::SameLine();
+		}
+	}
+
+	ImGui::Separator();
 	ImGui::TextDisabled("Cook = PRODUCT step: a .pak for the game/App "
 		"(Run in App loads it). The live view (the hosted renderer over "
 		"the editor's world) is unaffected by cooks.");
 	if (m_cookRunning) {
-		ImGui::Text("Cooking... (see Console)");
+		ImGui::Text("Cooking... (detail in the task window)");
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate
 		if (ImGui::Button("Hide")) {
 			// The cook keeps running; the dialog closes and the
@@ -3913,7 +4017,13 @@ void EditorApp::DrawAssetReadonlyPage() {
 	const bool wantLm = !wantTex && !wantMat && !wantMesh && !wantGi
 		&& m_assetsSel.size() > 7
 		&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".lmcook") == 0;
-	if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm)
+	const bool wantCm = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm
+		&& m_assetsSel.size() > 8
+		&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".cubemap") == 0;
+	const bool wantCv = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm
+		&& m_assetsSel.size() > 10
+		&& m_assetsSel.compare(m_assetsSel.size() - 10, 10, ".gicvolume") == 0;
+	if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm && !wantCv)
 		return;
 	// Cache refresh on selection change (or a failed load retries never:
 	// a re-derive/re-bake + re-click reloads).
@@ -3923,6 +4033,8 @@ void EditorApp::DrawAssetReadonlyPage() {
 		m_assetInspectMesh.reset();
 		m_assetInspectGiCook.reset();
 		m_assetInspectLmCook.reset();
+		m_assetInspectCubemap.reset();
+		m_assetInspectGicvolume.reset();
 		m_assetInspectTex.reset();
 		m_assetInspectTexInfoOk = false;
 		std::string err;
@@ -3974,6 +4086,22 @@ void EditorApp::DrawAssetReadonlyPage() {
 					*m_assetInspectGiCook, err)) {
 				Log("Assets: GI cook inspect failed: " + err);
 				m_assetInspectGiCook.reset();
+			}
+		}
+		else if (wantCm) {
+			m_assetInspectCubemap.emplace();
+			if (!smvk::cook::LoadCubemapAsset(m_assetsSel,
+					*m_assetInspectCubemap, err)) {
+				Log("Assets: cubemap inspect failed: " + err);
+				m_assetInspectCubemap.reset();
+			}
+		}
+		else if (wantCv) {
+			m_assetInspectGicvolume.emplace();
+			if (!smvk::cook::LoadGicvolumeAsset(m_assetsSel,
+					*m_assetInspectGicvolume, err)) {
+				Log("Assets: GI volume inspect failed: " + err);
+				m_assetInspectGicvolume.reset();
 			}
 		}
 		else {
@@ -4169,6 +4297,11 @@ void EditorApp::DrawAssetReadonlyPage() {
 		ImGui::Separator();
 		ImGui::TextDisabled("Drop onto a viewport to add a scene "
 			"reference; the tour binds it by GUID.");
+		if (m_world && !m_cookRunning && ImGui::Button("Add to scene")) {
+			Log("Assets: adding geometry asset '" + m_assetsSel
+				+ "' (asset bind).");
+			AddSceneReference(m_assetsSel, {}, true);
+		}
 	}
 	else if (m_assetInspectGiCook) {
 		// GI cook asset (settings + blob result): the Bake GI execution
@@ -4217,6 +4350,44 @@ void EditorApp::DrawAssetReadonlyPage() {
 		}
 		else {
 			const bool stale = smvk::cook::LightmapCookBlobStale(c);
+			ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
+				c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
+				stale ? "  STALE (settings changed)" : "  fresh");
+		}
+	}
+	else if (m_assetInspectCubemap) {
+		const smvk::cook::CubemapAsset& c = *m_assetInspectCubemap;
+		ImGui::Text("Cubemap: '%s'", c.name.c_str());
+		ImGui::TextDisabled("guid %s", c.guid.c_str());
+		ImGui::TextDisabled("scene: %s",
+			c.scene.empty() ? "(unbound)" : c.scene.c_str());
+		ImGui::TextDisabled("capture: %s  size: %d  rays: %d",
+			c.capture.empty() ? "(scene stem)" : c.capture.c_str(),
+			c.size, c.rays);
+		ImGui::Separator();
+		if (c.blobGuid.empty()) {
+			ImGui::TextDisabled("blob: unbaked (no result yet)");
+		}
+		else {
+			const bool stale = smvk::cook::CubemapBlobStale(c);
+			ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
+				c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
+				stale ? "  STALE (settings changed)" : "  fresh");
+		}
+	}
+	else if (m_assetInspectGicvolume) {
+		const smvk::cook::GicvolumeAsset& c = *m_assetInspectGicvolume;
+		ImGui::Text("GI volume: '%s'", c.name.c_str());
+		ImGui::TextDisabled("guid %s", c.guid.c_str());
+		ImGui::TextDisabled("scene: %s",
+			c.scene.empty() ? "(unbound)" : c.scene.c_str());
+		ImGui::TextDisabled("node: %u  priority: %u", c.node, c.priority);
+		ImGui::Separator();
+		if (c.blobGuid.empty()) {
+			ImGui::TextDisabled("blob: unbaked (no result yet)");
+		}
+		else {
+			const bool stale = smvk::cook::GicvolumeBlobStale(c);
 			ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
 				c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
 				stale ? "  STALE (settings changed)" : "  fresh");
@@ -4458,10 +4629,10 @@ void EditorApp::DrawAssetsPanel() {
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(140.0f);
 	{
-		const char* filters[8] = { "All (files)", "Meshes",
+		const char* filters[9] = { "All (files)", "Meshes",
 			"Materials", "Animations", "GI bakes", "Cubemaps",
-			"GI cooks", "Lightmap cooks" };
-		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 8);
+			"GI cooks", "Lightmap cooks", "GI volumes" };
+		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 9);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Collection views: every derived asset of "
 				"the kind across the project's content tree (the glTF "
@@ -4508,11 +4679,14 @@ void EditorApp::DrawAssetsPanel() {
 		ImGui::OpenPopup("##newcookasset");
 	}
 	if (ImGui::BeginPopup("##newcookasset")) {
-		if (ImGui::MenuItem("GI Cook Asset")) {
-			CreateCookAsset(true, m_assetsDir);
+		// NOTE: .gicook/.lmcook are NOT listed here on purpose — they
+		// are an internal consequence of baking (minted/updated per
+		// scene by RecordBakeAssetsFromCook), never user-created.
+		if (ImGui::MenuItem("Cubemap Asset (.cubemap)")) {
+			CreateCubemapAsset(m_assetsDir);
 		}
-		if (ImGui::MenuItem("Lightmap Cook Asset")) {
-			CreateCookAsset(false, m_assetsDir);
+		if (ImGui::MenuItem("GI Volume Asset (.gicvolume)")) {
+			CreateGicvolumeAsset(m_assetsDir);
 		}
 		// Texture asset (from a picked source image): the .texture
 		// import-settings record + identity (see CreateTextureAsset).
@@ -4563,6 +4737,61 @@ void EditorApp::DrawAssetsPanel() {
 		if (ImGui::SmallButton("Reveal##sel"))
 			RevealInExplorer(m_assetsSel);
 		ImGui::EndDisabled();
+		// Add-to-scene (mesh/geometry selection): the click twin of the
+		// viewport drag-drop (AddSceneReference asset-bind). Imports
+		// land in-project first (ImportAsset), so this only ever adds
+		// in-project assets. A .gltf/.glb container adds its first
+		// derived geometry (same as expanding it and dropping the tile).
+		{
+			auto isMeshAsset = [](const std::string& p) {
+				std::string e = fs::path(p).extension().string();
+				for (char& c : e)
+					c = char(std::tolower((unsigned char)c));
+				return e == ".geometry" || e == ".mesh";
+			};
+			auto isGltfContainer = [](const std::string& p) {
+				std::string e = fs::path(p).extension().string();
+				for (char& c : e)
+					c = char(std::tolower((unsigned char)c));
+				return e == ".gltf" || e == ".glb";
+			};
+			const bool canAdd = selFile && m_world != nullptr && !m_cookRunning
+				&& (isMeshAsset(m_assetsSel) || isGltfContainer(m_assetsSel));
+			ImGui::SameLine();
+			ImGui::BeginDisabled(!canAdd);
+			if (ImGui::SmallButton("Add to scene##sel")) {
+				std::string target = m_assetsSel;
+				if (isGltfContainer(target) && !isMeshAsset(target)) {
+					// Resolve the container's first derived geometry.
+					smvk::assets::AssetManifest man;
+					std::string merr;
+					if (smvk::assets::LoadAssetManifest(target, man, merr)) {
+						const std::string base = fs::path(target)
+							.parent_path().generic_string();
+						for (const auto& e : man.entries) {
+							if (e.kind == smvk::assets::AssetKind::Geometry) {
+								target = (fs::path(base) / e.file)
+									.generic_string();
+								break;
+							}
+						}
+					}
+				}
+				if (isMeshAsset(target) || target != m_assetsSel) {
+					Log("Assets: adding geometry asset '" + target
+						+ "' (asset bind).");
+					AddSceneReference(target, {}, true);
+				}
+				else {
+					Log("Assets: '" + m_assetsSel
+						+ "' has no derived mesh yet — reimport it first.");
+				}
+			}
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Add the selected mesh to the scene\n"
+					"(same as dropping its tile on a viewport).");
+		}
 		// Delete (selection action): plans + confirms through the modal
 		// (refusals — open scene, derived assets, cache — log + no-op).
 		ImGui::SameLine();
@@ -4592,14 +4821,15 @@ void EditorApp::DrawAssetsPanel() {
 	// ---- grid --------------------------------------------------------
 	ImGui::BeginChild("##assetgrid", ImVec2(0, 0));
 	// Background context menu (right-click the grid background): the
-	// same cook-asset creation as the header New... button and the
-	// Create menu (placement dir = the browsed directory).
+	// same creation as the header New... button (placement dir = the
+	// browsed directory). .gicook/.lmcook are NOT listed — internal
+	// bake consequences, never user-created.
 	if (ImGui::BeginPopupContextWindow("##assetgrid_ctx",
 			ImGuiPopupFlags_MouseButtonRight)) {
-		if (ImGui::MenuItem("New GI Cook Asset"))
-			CreateCookAsset(true, m_assetsDir);
-		if (ImGui::MenuItem("New Lightmap Cook Asset"))
-			CreateCookAsset(false, m_assetsDir);
+		if (ImGui::MenuItem("New Cubemap Asset (.cubemap)"))
+			CreateCubemapAsset(m_assetsDir);
+		if (ImGui::MenuItem("New GI Volume Asset (.gicvolume)"))
+			CreateGicvolumeAsset(m_assetsDir);
 		if (ImGui::MenuItem("New Texture (from image)...")) {
 			std::string picked;
 			if (NativeOpenFile(picked, true) && !picked.empty())
@@ -4749,8 +4979,12 @@ void EditorApp::DrawAssetsPanel() {
 			// retargets).
 			const char* want = (m_assetsFilter == 4) ? "gi"
 				: (m_assetsFilter == 5) ? "cubemap"
-				: (m_assetsFilter == 6) ? "gicook" : "lmcook";
+				: (m_assetsFilter == 6) ? "gicook"
+				: (m_assetsFilter == 7) ? "lmcook" : "gicvolume";
 			for (const auto& r : assetRows) {
+				// The cubemap collection also lists legacy loose rows
+				// (kind "cubemap" covers typed .cubemap assets AND the
+				// migrated textures/cubemaps manifests).
 				if (r.kind != want)
 					continue;
 				const std::string abs = m_assetDb.ResolvePath(r.path);

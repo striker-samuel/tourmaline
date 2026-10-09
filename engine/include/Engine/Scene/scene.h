@@ -5,6 +5,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -64,11 +65,11 @@ struct SceneLight {
 	float innerConeAngle = 0.0f; // radians, spot only
 	float outerConeAngle = 0.0f; // radians, spot only
 	uint32_t flags = 0; // kSceneLightFlag_*
-	// Spot COOKIE (gobo; see Renderer/cookies.h + the spot shading path):
-	// a texture asset ref (a .texture file path or a plain image URI —
-	// the cluster pool texture it names is projected through the cone;
-	// the light build resolves it to the bindless index). Spots only;
-	// points ignore it. Empty = none. Authored via setLightAttr cookie.
+	// Spot COOKIE (gobo; see the spot shading path): a texture asset ref
+	// (a .texture file path or a plain image URI — the cluster pool
+	// texture it names is projected through the cone; the light build
+	// resolves it to the bindless index). Spots only; points ignore it.
+	// Empty = none. Authored via setLightAttr cookie.
 	std::string cookieUri;
 	// Procedural light FUNCTION (per-pixel intensity modulation, see
 	// kForwardPlusFunction_* + light.hlsli EvaluateLightFunction):
@@ -98,6 +99,65 @@ struct SceneCamera {
 	float farClip = 1000.0f;
 	std::string name;
 };
+
+// Authored/runtime decal (tiled projected splat; see smvk::ForwardPlusDecal
+// + forwardplus.cs.hlsl). Pool asset like SceneLight: the definition lives
+// in the owning Cluster's decals pool, the SHAPE rides the node's transform
+// — translation = projector center, rotation = projection frame (local -Z
+// points INTO the receiving surface, local +Y is the texture V direction),
+// scale = half extents (x, y in-plane, z depth reach). This struct carries
+// the LOOK: cluster-pool texture refs (resolved to bindless at use like
+// light cookies) + material knobs.
+struct SceneDecal {
+	// Texture refs (cluster texture pool URIs — a .texture asset path or
+	// image URI). Albedo: RGBA, rgb linear color + a coverage mask.
+	// Normal: tangent-space xy. Empty = channel off.
+	std::string albedoUri;
+	std::string normalUri;
+	glm::vec3 tint{ 1.0f };   // linear multiplier on the albedo texture
+	float opacity = 1.0f;
+	float normalStrength = 0.85f;  // decal normal-map strength
+	float roughnessTarget = 0.14f; // wet-glossy roughness target
+	float metalTarget = 0.0f;
+	float depthFadeStart = 0.6f;   // |local.z| fade start (box-face pop guard)
+	uint32_t seed = 0;             // in-plane yaw RNG (Pcg32)
+	std::string name;
+};
+
+// Default blood-splat texture URIs: the app host's demo content registers
+// these into the dynamic cluster's texture pool (see app/src/DecalAssets);
+// the renderer's J crosshair spawn references the same contract. Shared
+// constants so the two sides cannot drift. (char arrays: both StringViewT
+// and std::string construct from them directly.)
+inline constexpr char kDecalBloodAlbedoUri[] = "decals/blood_albedo";
+inline constexpr char kDecalBloodNormalUri[] = "decals/blood_normal";
+
+// Builds a decal node's LOCAL transform from a placement frame: the
+// node's local -Z = axisZ (the projection axis, pointing INTO the
+// receiving surface), local +Y = upHint (the texture V direction),
+// scale = half extents (x, y in-plane, z depth reach) — see SceneDecal.
+// The up hint is orthogonalized against the frame's Z with a safe
+// fallback (floor splats pass world up with axisZ = -Y).
+inline glm::mat4 DecalNodeFrame(const glm::vec3& center, glm::vec3 axisZ,
+	glm::vec3 upHint, const glm::vec3& half) {
+	axisZ = glm::normalize(axisZ);
+	const glm::vec3 z = -axisZ; // node +Z faces back toward the projector
+	glm::vec3 y = upHint - z * glm::dot(upHint, z);
+	if (glm::length(y) < 1e-4f) {
+		y = glm::vec3(0.0f, 1.0f, 0.0f) - z * z.y;
+		if (glm::length(y) < 1e-4f)
+			y = glm::vec3(1.0f, 0.0f, 0.0f);
+	}
+	y = glm::normalize(y);
+	const glm::vec3 x = glm::normalize(glm::cross(y, z));
+	y = glm::normalize(glm::cross(z, x));
+	glm::mat4 m(1.0f);
+	m[0] = glm::vec4(x * half.x, 0.0f);
+	m[1] = glm::vec4(y * half.y, 0.0f);
+	m[2] = glm::vec4(z * half.z, 0.0f);
+	m[3] = glm::vec4(center, 1.0f);
+	return m;
+}
 
 // Authored convex GI volume (editor cvolume node / tour createCvolume):
 // a box-shaped dense-probe region (gi_baker box-spec shape). The SHAPE
@@ -173,9 +233,68 @@ struct SceneEnv {
 	float volumetricJitter = 1.0f;       // IGN dither 0..1 (banding guard)
 	float volumetricHeightFalloff = 0.0f; // height falloff (1/m, 0 = off)
 	float volumetricHeightBase = 0.0f;    // reference height (m)
+	// Postfx look (bloom + tonemap + exposure + AO + SSR + motion blur
+	// + DOF + AA + cubemap IBL): the SAME settings the App's panels
+	// expose, authored here and saved forward tour -> pak -> App (the
+	// App seeds its pass state from the resolved env once per scene
+	// load; the panel/keys stay live afterwards — the volumetric
+	// contract above). Headless VULKANTOY_* pins win over the seed
+	// (see ApplyHeadlessPostfxOverrides).
+	// Bloom (complete: enable + add scale + pre-exposure threshold; the
+	// knee derives at 0.25x threshold, as the baker always assumed).
+	bool bloomEnabled = true;
+	float bloomIntensity = 0.6f;   // tonemap bloom-add scale
+	float bloomThreshold = 400.0f; // pre-exposure HDR trigger
+	// Tonemap operator: 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7.
+	uint32_t tonemapMode = 3;
+	// Exposure (histogram meter + eye adaptation): auto flag, manual
+	// exposure when auto is off, EV trim, adapt rates, absolute clamps.
+	bool autoExposure = true;
+	float manualExposure = 0.001f;
+	float exposureEvBias = 0.0f;      // -4..+4
+	float exposureSpeedToDark = 1.0f;
+	float exposureSpeedToBright = 3.0f;
+	float exposureMin = 0.00001f;
+	float exposureMax = 0.05f;
+	// AO (SSGI post chain): 0=None, 1=SSAO, 2=SAO + the shared knobs.
+	int aoMode = 2;
+	float aoRadius = 0.5f;
+	float aoBias = 0.025f;
+	float aoIntensity = 1.0f;
+	float aoMaxDistance = 25.0f;
+	int aoSsaoSamples = 16;
+	float aoBlurSharpness = 8.0f;
+	int aoSaoSamples = 11;
+	int aoSaoSpiralTurns = 7;
+	// SSR (SSGI reflections) + motion blur + DOF + AA + cubemap IBL.
+	bool ssrEnabled = true;
+	float ssrIntensity = 1.0f;
+	bool motionBlurEnabled = true;
+	bool dofEnabled = false;
+	int aaMode = 3; // 0=Off, 1=Msaa2x, 2=Smaa1x, 3=SmaaT2x
+	bool cubemapEnabled = true;
+	float cubemapIntensity = 1.0f;
+	// ZONE priority (only meaningful on per-node env blocks): when several
+	// zones cover a point, higher priority wins; ties go to the smallest
+	// bounded volume (innermost). 0 = the default precedence.
+	float zonePriority = 0.0f;
 	std::string skyboxUri;     // stored (skybox sampling is TODO)
 };
 
+// Authored-environment binary record (see saveEnvFloats/loadEnvFloats
+// in Scene.cpp): 16 base floats + the postfx block below, fixed order.
+// Extended wholesale when the postfx block landed (old files fail the
+// read loudly — the sanctioned no-conversions break, AGENTS.md).
+// Postfx floats (28): bloomEnabled, bloomIntensity, bloomThreshold (3) +
+// tonemapMode (1) + autoExposure, manualExposure, exposureEvBias,
+// exposureSpeedToDark, exposureSpeedToBright, exposureMin,
+// exposureMax (7) + aoMode, aoRadius, aoBias, aoIntensity,
+// aoMaxDistance, aoSsaoSamples, aoBlurSharpness, aoSaoSamples,
+// aoSaoSpiralTurns (9) + ssrEnabled, ssrIntensity (2) +
+// motionBlurEnabled, dofEnabled, aaMode (3) + cubemapEnabled,
+// cubemapIntensity (2) + zonePriority (1 — the zone-entity break).
+// Bools/modes ride as 0/1 floats.
+inline constexpr int kSceneEnvFloatCount = 16 + 28;
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -197,6 +316,12 @@ struct Scene {
 	// resolves from globalTransform[node] at use time (viewport
 	// look-through, framing). Forward = node -Z in world, engine space.
 	std::unordered_map<NodeId, uint32_t> cameraForNode;
+	// Node -> Cluster decal pool index (authored/runtime decal node). The
+	// look definition lives in the owning Cluster's decals pool; the shape
+	// resolves from globalTransform[node] at use time — translation =
+	// projector center, local -Z into the surface, +Y texture V up, scale
+	// = half extents (x, y, depth). See SceneDecal.
+	std::unordered_map<NodeId, uint32_t> decalForNode;
 	// Node -> authored convex GI volume params (tour createCvolume /
 	// editor cvolume node). The definition is node-local (a few floats
 	// — no pool indirection); the box shape rides the node's transform.
@@ -338,6 +463,19 @@ inline bool IsVisibleNode(const Scene& scene, int node)
 	}
 	return true;
 }
+
+// ---- Env zones (see SceneEnv + Scene::envForNode) ------------------------
+// A zone = an env node whose transform defines COVERAGE: translation +
+// rotation = the placement, scale = half extents per LOCAL axis (an
+// INFINITE component = unbounded on that axis — an infinite slab). True
+// when `p` lands inside the zone's oriented box.
+bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p);
+// The zone covering `p`: ZONE PRIORITY descending (SceneEnv::zonePriority),
+// then smallest bounded volume (innermost wins ties; an INFINITE axis
+// counts as unbounded volume and loses against bounded zones); the node id
+// breaks remaining ties for determinism. UINT32_MAX = no zone covers the
+// point (the resolved default environment stands).
+NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p);
 
 // Marks node hidden (self flag; subtree effect via IsVisibleNode).
 // Grows the array if needed.

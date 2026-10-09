@@ -12,6 +12,7 @@
 
 #include <Engine/Memory/memory.h>
 #include <Engine/debug_log.h> // SetTraceEnabled (mute engine dashboards)
+#include <Engine/Rendergraph/dlss.h> // DlssSetStartupEnabled (Streamline never loads here)
 
 #include <cstring>
 #include <cstdio>
@@ -309,6 +310,16 @@ void PrintUsage(const char* prog) {
 			return EXIT_FAILURE;
 		}
 	}
+
+	// NO NVIDIA Streamline in the editor (DLSS + Reflex/PCL): the editor is
+	// the authoring tool, not a latency-sensitive game — it never loads the
+	// SL interposer, so no SL proxy sits in its Vulkan call chain and no
+	// DLSS/Reflex feature ever initializes. Must run BEFORE app.Run()
+	// (App::Initialize consults the flag before DlssStartup / pointing volk
+	// at the interposer; after that the decision is locked in). The
+	// hosted WYSIWYG renderer then evaluates no features either — same
+	// contract as the App's --no-dlss. The shipped App keeps its DLSS.
+	smvk::DlssSetStartupEnabled(false);
 
 	editor::EditorApp app;
 	if (projectSmoke) {

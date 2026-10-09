@@ -227,6 +227,85 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 	return best;
 }
 
+// ---- gizmo-marker picking (nodes with no mesh to raycast) -------------
+// Lights, cvolume centers and cubemap pins draw as X-ray markers with no
+// geometry behind them, so the triangle walk can never hit them. This
+// projects each marker center to viewport pixels and takes the nearest
+// one inside the threshold — the click twin of what the eye sees. Only
+// markers whose View-menu toggle is on participate (hidden kinds are not
+// clickable, exactly like they are not drawn).
+std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
+	float mouseX, float mouseY, smvk::Extent2D extent) const {
+	// MODAL: markers only draw (and only pick) in LIGHTING mode.
+	if (m_mode != EditorMode::Lighting)
+		return std::nullopt;
+	if (!m_world || m_world->scene.hierarchy.empty())
+		return std::nullopt;
+	if (extent.width == 0 || extent.height == 0)
+		return std::nullopt;
+	const glm::mat4 viewProj =
+		m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
+	glm::vec3 origin;
+	const glm::vec3 dir = MouseRay(mouseX, mouseY, extent, viewProj,
+		origin);
+	const Scene& scene = m_world->scene;
+	PickHit best{};
+	best.t = FLT_MAX;
+	bool found = false;
+	static constexpr float kPxThreshold = 14.0f;
+	auto consider = [&](uint32_t node, const glm::vec3& center) {
+		if (node >= scene.hierarchy.size()
+			|| node >= scene.globalTransform.size())
+			return;
+		if (!IsVisibleNode(scene, int(node)))
+			return; // hidden subtrees are not pickable
+		const float t = glm::dot(center - origin, dir);
+		if (!(t > 0.0f) || t >= best.t)
+			return; // behind the camera, or farther than the best
+		const glm::vec4 c = viewProj * glm::vec4(center, 1.0f);
+		if (!(c.w > 1e-6f))
+			return;
+		// Same NDC->pixel convention as the overlay projection (no
+		// Y-flip on either side, so the threshold test is consistent).
+		const float px = (c.x / c.w * 0.5f + 0.5f) * float(extent.width);
+		const float py = (c.y / c.w * 0.5f + 0.5f) * float(extent.height);
+		const float dx = px - mouseX, dy = py - mouseY;
+		if (dx * dx + dy * dy > kPxThreshold * kPxThreshold)
+			return;
+		best.node = node;
+		best.t = t;
+		found = true;
+	};
+	if (m_showLightGizmos) {
+		for (const auto& [node, li] : scene.lightForNode) {
+			(void)li;
+			if (node >= scene.globalTransform.size())
+				continue;
+			consider(node, glm::vec3(scene.globalTransform[node][3]));
+		}
+	}
+	if (m_showCvolGizmos) {
+		for (const auto& [node, def] : scene.cvolForNode) {
+			(void)def;
+			glm::vec3 mn, mx;
+			if (!CvolBox(node, mn, mx))
+				continue;
+			consider(node, (mn + mx) * 0.5f);
+		}
+	}
+	if (m_showCubemapGizmos) {
+		for (const auto& [node, def] : scene.cubemapForNode) {
+			(void)def;
+			if (node >= scene.globalTransform.size())
+				continue;
+			consider(node, glm::vec3(scene.globalTransform[node][3]));
+		}
+	}
+	if (!found)
+		return std::nullopt;
+	return best;
+}
+
 std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
 	float mouseX, float mouseY, smvk::Extent2D extent) const {
 	// Brute-force triangle walk (no acceleration structures, per request):

@@ -1760,17 +1760,25 @@ namespace editor {
 				}
 				else if (m_world && m_vpBoxVp == m_activeVp) {
 					const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-					if (m_selMode == SelMode::Mesh) {
-						if (auto hit = PickNode(m_activeVp, lmx, lmy, vpExt)) {
-							if (shiftHeld)
-								AddToSelection(hit->node);
-							else
-								SetSelection(hit->node);
-							m_revealNode = hit->node;
-						}
-						else if (!shiftHeld)
-							ClearSelection();
+				if (m_selMode == SelMode::Mesh) {
+					// X-ray markers first (lights/cvol centers/cubemap
+					// pins carry no mesh to raycast — the click twin of
+					// the gizmo diamonds and capture balls); meshes
+					// otherwise.
+					std::optional<PickHit> hit =
+						PickGizmoMarker(m_activeVp, lmx, lmy, vpExt);
+					if (!hit)
+						hit = PickNode(m_activeVp, lmx, lmy, vpExt);
+					if (hit) {
+						if (shiftHeld)
+							AddToSelection(hit->node);
+						else
+							SetSelection(hit->node);
+						m_revealNode = hit->node;
 					}
+					else if (!shiftHeld)
+						ClearSelection();
+				}
 					else {
 						if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
 							ApplySubSelection(*sub);

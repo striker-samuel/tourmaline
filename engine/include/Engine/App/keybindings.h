@@ -8,7 +8,7 @@
 // - WASDQE/Space/Shift/Ctrl are camera movement (held, in UpdateCamera)
 //   and are NEVER bound here.
 // - One action per key: adding a binding on an occupied key steals it from
-//   the previous owner (F moved FP-lights to T when particles took F).
+//   the previous owner.
 // - Debug-view selectors (F1..F11) and the AA bank (Z, 1..4) are names
 //   too, so the panel hints and the handlers cannot drift apart.
 
@@ -28,11 +28,9 @@ constexpr int BLOOM_TOGGLE = GLFW_KEY_B;
 constexpr int AUTO_EXPOSURE_TOGGLE = GLFW_KEY_X;
 constexpr int MOTION_DEBUG_TOGGLE = GLFW_KEY_V;
 constexpr int LOD_TOGGLE = GLFW_KEY_L;
-constexpr int LIGHTS_TOGGLE = GLFW_KEY_T;   // tiled point/spot light demo (was F; F is particles now)
 constexpr int PARTICLES_TOGGLE = GLFW_KEY_F;// GPU particle system on/off
 constexpr int DEFERRED_SHADOWS_TOGGLE = GLFW_KEY_H;
 constexpr int GFX_FILTER_TOGGLE = GLFW_KEY_G;
-constexpr int COOKIES_TOGGLE = GLFW_KEY_C;  // light-cookie gobos on the FP demo lights
 constexpr int SKY_TOGGLE = GLFW_KEY_K;
 constexpr int WIREFRAME_TOGGLE = GLFW_KEY_P;
 

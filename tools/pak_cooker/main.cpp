@@ -114,7 +114,6 @@
 #include <Engine/GI/bake.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
-#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
@@ -3329,11 +3328,9 @@ int main(int argc, char** argv) {
 
 	const auto t0 = std::chrono::steady_clock::now();
 
-	// VFS: cooker reads inputs through the same overlay rules as runtime
-	// (plus the Flintbase scheme for //flintbase/ inputs).
+	// VFS: cooker reads inputs through the same overlay rules as runtime.
 	smvk::OverlayVfs vfs;
 	vfs.Mount(std::make_shared<smvk::LooseBackend>(args.contentDir), 0, "content");
-	vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
@@ -5725,6 +5722,49 @@ int main(int argc, char** argv) {
 				cubemapManifestBase);
 		std::cout << "Registered cubemap manifest GI '"
 			<< cubemapManifestBase << "'\n";
+	}
+	// LOOSE cubemap bakes (an earlier --cubemap run / the editor's
+	// quick-bake left them at their stable paths): when the bake stage
+	// did not run, discover textures/cubemaps/<stem>.cubemanifest by the
+	// same stable stems and EMBED it + every row's KTX — no re-bake, the
+	// payloads ARE the bake output. Registered by its base like above;
+	// the embed loop below carries the cubemapKtx rows into the pak.
+	if (cubemapManifestBase.empty()) {
+		for (const std::string& stem : SidecarStems(args)) {
+			const std::string mrel =
+				"textures/cubemaps/" + stem + ".cubemanifest";
+			std::vector<uint8_t> manifest =
+				ReadSidecarFile(args.contentDir, mrel);
+			if (manifest.empty())
+				continue;
+			std::string mErr;
+			std::vector<smvk::CubemapManifestEntry> rows;
+			const std::string_view text(
+				reinterpret_cast<const char*>(manifest.data()),
+				manifest.size());
+			if (!smvk::CubemapManifestParse(text, rows, mErr)) {
+				std::cerr << "loose cubemap manifest '" << mrel
+					<< "' rejected: " << mErr << " — not embedded\n";
+				continue;
+			}
+			cubemapKtx.emplace_back(mrel, std::move(manifest));
+			for (const auto& row : rows) {
+				std::vector<uint8_t> ktx =
+					ReadSidecarFile(args.contentDir, row.vfsPath);
+				if (ktx.empty()) {
+					std::cerr << "loose cubemap row '" << row.vfsPath
+						<< "' unreadable — not embedded\n";
+					continue;
+				}
+				cubemapKtx.emplace_back(row.vfsPath, std::move(ktx));
+			}
+			for (auto& sc : sceneClusters)
+				sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
+					stem);
+			std::cout << "Registered + embedded loose cubemap manifest '"
+				<< stem << "' (" << rows.size() << " captures)\n";
+			break;
+		}
 	}
 	// Loose GI bakes (GiBaker writes these — the editor cook flow runs
 	// GiBaker from 0 BEFORE PakCooker): discover by STABLE PATH in the
