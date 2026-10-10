@@ -449,6 +449,16 @@ bool EditorApp::AddSceneReference(const std::string& source,
 	r.guid = guid;
 	r.name = name.empty()
 		? std::filesystem::path(abs).stem().string() : name;
+	// VERB SPLIT (the tour format): mesh assets record as SOURCED
+	// assets (`source -n ... -p "<blob>"`); `reference` is for .tour
+	// scenes only. The resolved path's extension decides — the same
+	// classification the tour parser applies to legacy lines.
+	{
+		std::string ext = std::filesystem::path(abs).extension().string();
+		for (char& c : ext)
+			c = char(std::tolower((unsigned char)c));
+		r.asset = (ext == ".geometry" || ext == ".mesh");
+	}
 	m_references.push_back(std::move(r));
 	SaveTour(); // persist the reference list
 	Log("Reference added: '" + rel + "' (uuid " + guid

@@ -1328,6 +1328,10 @@ namespace smvk {
 		StencilSettings stencil{};
 		BlendSettings blend{};
 		MSAASettings msaa{};
+		// MULTIVIEW: the pass's view mask rides the key (a multiview
+		// pipeline is NOT interchangeable with the single-view one — the
+		// mask is baked into the pipeline object).
+		uint32_t viewMask = 0;
 
 		bool operator==(const PipelineKey& rhs) const noexcept
 		{
@@ -1338,6 +1342,7 @@ namespace smvk {
 				depthFormat == rhs.depthFormat &&
 				stencilFormat == rhs.stencilFormat &&
 				topology == rhs.topology &&
+				viewMask == rhs.viewMask &&
 
 				!(raster < rhs.raster) &&
 				!(rhs.raster < raster) &&

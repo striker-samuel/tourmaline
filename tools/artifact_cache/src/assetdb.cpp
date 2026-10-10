@@ -96,7 +96,14 @@ void ParseManifestSidecar(const fs::path& metaPath,
 		const std::string key = line.substr(0, eq);
 		const std::string val = line.substr(eq + 1);
 		const char* kind = nullptr;
-		if (key == "mesh")
+		// "geometry" is the post-10/6 rename of the derived data blob
+		// (".mesh" -> ".geometry"); BOTH keys are the same asset class and
+		// must register under the manifest guid — the parser skipping the
+		// renamed key made the DB adopt the blob under a FRESH guid while
+		// tours/AddSceneReference recorded the MANIFEST guid, so the
+		// guid-first reference resolution never matched (Add to scene
+		// broken, references skipped after a reimport).
+		if (key == "mesh" || key == "geometry")
 			kind = "mesh";
 		else if (key.rfind("material.", 0) == 0)
 			kind = "material";
@@ -627,7 +634,15 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 		// same way (GUID-stable re-registration).
 		{
 			std::vector<ManifestEntry> entries;
-			ParseManifestSidecar(p, entries);
+			// THE SIDECAR, not the asset itself: this call passed the
+			// walked .gltf straight through, so the parser read glTF
+			// JSON as a manifest - zero entries ever parsed, zero
+			// derived guids ever registered, and the importer's own
+			// adoption minted FRESH guids instead (manifest guid vs DB
+			// guid mismatch: tours/AddSceneReference record the manifest
+			// guid, the loader resolves through the DB - never matched,
+			// references skipped, Add to scene broken).
+			ParseManifestSidecar(MetaPathFor(p.generic_string()), entries);
 			for (const ManifestEntry& e : entries) {
 				const fs::path derived =
 					p.parent_path() / e.file;

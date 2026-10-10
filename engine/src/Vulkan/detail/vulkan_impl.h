@@ -1240,6 +1240,8 @@ namespace smvk {
 			HashEnum(seed, key.depthFormat);
 			HashEnum(seed, key.stencilFormat);
 			HashEnum(seed, key.topology);
+			// MULTIVIEW: the mask is pipeline state (see PipelineKey).
+			HashValue(seed, key.viewMask);
 
 			HashEnum(seed, key.raster.polygonMode);
 			HashEnum(seed, key.raster.cullMode);
@@ -1350,7 +1352,9 @@ namespace smvk {
 			const DepthSettings& depth = DepthSettings::DepthTest(),
 			const StencilSettings& stencil = StencilSettings::DefaultDisabled(),
 			const BlendSettings& blend = BlendSettings::Opaque(),
-			const MSAASettings& msaa = MSAASettings::Count1());
+			const MSAASettings& msaa = MSAASettings::Count1(),
+			// MULTIVIEW: the recording pass's view mask (0 = single-view).
+			uint32_t viewMask = 0);
 		PipelineBundle GetComputePipeline(
 			ShaderProgram& program);
 		void Clear();

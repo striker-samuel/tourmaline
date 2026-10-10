@@ -490,27 +490,67 @@ void TestReferences() {
 	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refs";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
+	// One-triangle glTF (the .geometry artifact build needs real
+	// geometry: a node-only source derives an empty blob).
 	auto writeGltf = [&](const char* file, const char* nodeName) {
 		const fs::path p = dir / file;
 		std::ofstream f(p, std::ios::binary | std::ios::trunc);
 		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
 			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"" << nodeName << "\"}]}";
+			"\"nodes\":[{\"name\":\"" << nodeName << "\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
 		return p;
+	};
+	// Artifact world (the 10/6 pivot): glTFs are IMPORT-ONLY; scenes
+	// bind the derived .geometry through their tour's `source -p` line.
+	// Derive beside each source (GPU-free cook-mode import).
+	auto deriveGeometry = [&](const fs::path& gltf, const char* checkName) {
+		smvk::assets::AssetManifest man;
+		std::string ierr;
+		smvk::assets::DeriveConfig cfg{};
+		Check(smvk::assets::ImportMeshSource(gltf, "", cfg, man,
+				nullptr, &ierr),
+			checkName);
+		return fs::path(gltf).replace_extension(".geometry");
 	};
 	writeGltf("gear.gltf", "Gear");
 	writeGltf("wheel.gltf", "Wheel");
-	// wheel's OWN tour references gear -> shot(wheel) -> wheel(gear).
+	deriveGeometry(dir / "gear.gltf", "ref derive gear artifact");
+	deriveGeometry(dir / "wheel.gltf", "ref derive wheel artifact");
+	// wheel's OWN tour sources its artifact + references gear's TOUR
+	// (`reference` = another .tour SCENE; never a mesh blob) ->
+	// shot(wheel) -> wheel(gear).
 	{
 		std::ofstream f(dir / "wheel.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"wheel.gltf\";\n"
-			"reference -n 0 -source \"gear.gltf\" -name \"gear\";\n";
+		f << "source -p \"wheel.geometry\";\n"
+			"reference -n 0 -source \"gear.tour\" -name \"gear\";\n";
+	}
+	{
+		std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
+		f << "source -p \"gear.geometry\";\n";
 	}
 	// Round-trip in the master tour file.
 	smvk::tour::Doc doc;
 	smvk::tour::ReferenceCmd r{};
 	r.parent = 0;
-	r.source = "wheel.gltf";
+	r.source = "wheel.tour";
 	r.name = "wheel";
 	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
 	r.hasTranslate = true;
@@ -523,7 +563,8 @@ void TestReferences() {
 	Check(smvk::tour::LoadTour(masterTour, back, err, &warns), "ref load");
 	Check(back.references.size() == 1, "ref count");
 	if (back.references.size() == 1) {
-		Check(back.references[0].source == "wheel.gltf" &&
+		Check(back.references[0].source == "wheel.tour" &&
+			!back.references[0].asset &&
 			back.references[0].name == "wheel" &&
 			back.references[0].parent == 0 &&
 			back.references[0].hasTranslate &&
@@ -551,24 +592,27 @@ void TestReferences() {
 	Check(findNodeByName(cluster->scene, "wheel:gear:Gear") >= 0,
 		"ref nested namespaced chain");
 	// Resolved sources: one canonical path per doc reference, in order
-	// (the raw string is what the file says; this is what bound).
+	// (the raw string is what the file says; this is what bound — the
+	// wheel TOUR's resolved model source is its .geometry artifact).
 	Check(resolved.size() == back.references.size(),
 		"ref resolved count matches");
 	if (resolved.size() == back.references.size() && !resolved.empty()) {
 		Check(!resolved[0].empty()
-			&& resolved[0].find("wheel.gltf") != std::string::npos,
+			&& resolved[0].find("wheel.geometry") != std::string::npos,
 			"ref resolved canonical path");
 	}
 	// Cycle guard: a scene whose tour references itself inlines once.
 	writeGltf("self.gltf", "Self");
+	deriveGeometry(dir / "self.gltf", "ref derive self artifact");
 	{
 		std::ofstream f(dir / "self.tour", std::ios::binary | std::ios::trunc);
-		f << "reference -n 0 -source \"self.gltf\";\n";
+		f << "source -p \"self.geometry\";\n"
+			"reference -n 0 -source \"self.tour\";\n";
 	}
 	smvk::tour::Doc selfDoc;
 	smvk::tour::ReferenceCmd sr{};
 	sr.parent = 0;
-	sr.source = "self.gltf";
+	sr.source = "self.tour";
 	selfDoc.references.push_back(sr);
 	auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
 	cluster2->SetCookMode(true);
@@ -593,23 +637,56 @@ void TestRootReference() {
 	fs::create_directories(dir, ec);
 	const fs::path gltf = dir / "scene.gltf";
 	{
+		// One-triangle glTF (the artifact build needs real geometry);
+		// mesh on Alpha only — Beta still rides as a plain node.
 		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
 		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
 			"\"scenes\":[{\"nodes\":[0,1]}],"
-			"\"nodes\":[{\"name\":\"Alpha\"},{\"name\":\"Beta\"}]}";
+			"\"nodes\":[{\"name\":\"Alpha\",\"mesh\":0},"
+			"{\"name\":\"Beta\"}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
 	}
+	// Artifact-reference world: derive the .geometry beside the source;
+	// the ROOT reference binds the artifact (the direct-import parity
+	// below still parses the glTF itself - a plain import, not a ref).
+	smvk::assets::AssetManifest sceneMan;
+	std::string derr;
+	smvk::assets::DeriveConfig dcfg{};
+	Check(smvk::assets::ImportMeshSource(gltf, "", dcfg, sceneMan,
+			nullptr, &derr),
+		"rootref derive artifact");
 	std::string err;
 	// Round-trip: writer emits `reference -root`, parser reads it back.
 	smvk::tour::Doc doc;
 	smvk::tour::ReferenceCmd root{};
 	root.root = true;
-	root.source = "scene.gltf";
+	root.source = "scene.geometry";
 	root.name = "scene";
 	doc.references.push_back(root);
 	smvk::tour::ReferenceCmd other{};
 	other.parent = 0;
-	other.source = "extra.gltf";
+	other.source = "extra.geometry";
 	other.name = "extra";
+	// VERB SPLIT: a sourced MESH ASSET (not a .tour scene) — the writer
+	// must serialize it as the per-node `source` verb.
+	other.asset = true;
 	doc.references.push_back(other);
 	const std::string tourPath = (dir / "def.tour").string();
 	Check(smvk::tour::SaveTour(tourPath, doc, err), "rootref save");
@@ -618,8 +695,12 @@ void TestRootReference() {
 		std::stringstream ss;
 		ss << f.rdbuf();
 		const std::string text = ss.str();
-		Check(text.find("reference -root -n 0 -source \"scene.gltf\"")
+		Check(text.find("reference -root -n 0 -source \"scene.geometry\"")
 			!= std::string::npos, "rootref -root line");
+		// The asset entry rides the `source` verb (meshes never ride
+		// `reference`).
+		Check(text.find("source -n 0 -p \"extra.geometry\"")
+			!= std::string::npos, "rootref asset source verb line");
 	}
 	smvk::tour::Doc back;
 	std::vector<std::string> warns;
@@ -627,9 +708,11 @@ void TestRootReference() {
 		"rootref load");
 	Check(back.references.size() == 2, "rootref count");
 	if (back.references.size() == 2) {
-		Check(back.references[0].root && back.references[0].source == "scene.gltf",
+		Check(back.references[0].root && back.references[0].source == "scene.geometry",
 			"rootref roundtrip");
-		Check(!back.references[1].root, "rootref second stays normal");
+		Check(!back.references[1].root && back.references[1].asset
+			&& back.references[1].source == "extra.geometry",
+			"rootref second stays normal (sourced asset)");
 	}
 	// Bind parity A: definition build (empty root + root reference).
 	auto defCluster = std::make_unique<smvk::Cluster>(nullptr);
@@ -637,7 +720,7 @@ void TestRootReference() {
 	addNode(defCluster->scene, -1, 0);
 	std::vector<int> defPh;
 	std::vector<std::string> defResolved;
-	smvk::tour::Doc defDoc; // root ref only (extra.gltf does not exist)
+	smvk::tour::Doc defDoc; // root ref only (extra.geometry does not exist)
 	defDoc.references.push_back(root);
 	const size_t applied = ApplySceneReferences(*defCluster, defDoc,
 		dir.generic_string(), nullptr, nullptr, nullptr,
@@ -687,10 +770,36 @@ void TestRootReference() {
 	// Root + normal reference together: the normal one keeps its
 	// placeholder and namespace; the root one stays bare.
 	{
+		// One-triangle gltf (the sourced-asset build needs geometry).
 		std::ofstream f(dir / "extra.gltf", std::ios::binary | std::ios::trunc);
 		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
 			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"Extra\"}]}";
+			"\"nodes\":[{\"name\":\"Extra\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
+	}
+	{
+		smvk::assets::AssetManifest extraMan;
+		smvk::assets::DeriveConfig extraCfg{};
+		Check(smvk::assets::ImportMeshSource(dir / "extra.gltf", "",
+				extraCfg, extraMan, nullptr, &derr),
+			"rootref derive extra artifact");
 	}
 	{
 		auto both = std::make_unique<smvk::Cluster>(nullptr);
@@ -719,23 +828,60 @@ void TestTourReferences() {
 	std::error_code ec;
 	fs::create_directories(dir, ec);
 	auto writeGltf = [&](const char* file, const char* nodeName) {
+		// One-triangle glTF (the artifact build needs real geometry).
 		const fs::path p = dir / file;
 		std::ofstream f(p, std::ios::binary | std::ios::trunc);
 		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
 			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"" << nodeName << "\"}]}";
+			"\"nodes\":[{\"name\":\"" << nodeName << "\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
 		return p;
 	};
 	writeGltf("sub.gltf", "Box");
 	writeGltf("gear.gltf", "Gear");
-	// The referenced tour: rename + move its node, nest a gltf, create
-	// a light and tune it via -ref.
+	// Artifact world: derive both (the referenced tour's source line
+	// binds the derived .geometry; its nested reference binds gear's
+	// TOUR — `reference` = another .tour scene, never a mesh blob).
+	{
+		smvk::assets::AssetManifest man;
+		std::string ierr;
+		smvk::assets::DeriveConfig cfg{};
+		Check(smvk::assets::ImportMeshSource(dir / "sub.gltf", "", cfg,
+				man, nullptr, &ierr),
+			"tourref derive sub artifact");
+		Check(smvk::assets::ImportMeshSource(dir / "gear.gltf", "", cfg,
+				man, nullptr, &ierr),
+			"tourref derive gear artifact");
+	}
+	{
+		std::ofstream f(dir / "gear.tour", std::ios::binary | std::ios::trunc);
+		f << "source -p \"gear.geometry\";\n";
+	}
+	// The referenced tour: rename + move its node, nest gear's tour,
+	// create a light and tune it via -ref.
 	{
 		std::ofstream f(dir / "sub.tour", std::ios::binary | std::ios::trunc);
-		f << "source -p \"sub.gltf\";\n"
+		f << "source -p \"sub.geometry\";\n"
 			"rename -n 0 \"BoxRenamed\";\n"
 			"setAttr -n 0 -at translate -t 5 0 0;\n"
-			"reference -n 0 -source \"gear.gltf\" -name \"gear\";\n"
+			"reference -n 0 -source \"gear.tour\" -name \"gear\";\n"
 			"createLight -p 0 -name \"Sub Spot\" -at spot -t 1 2 3 100 10 15 30 0 1;\n"
 			"setLightAttr -ref 0 -at intensity -v 200;\n";
 	}
@@ -762,8 +908,10 @@ void TestTourReferences() {
 	// sub inlined + its tour replayed + nested gear inlined.
 	Check(applied == 2, "tourref applied (sub + nested gear)");
 	Check(ph.size() == 1, "tourref placeholder list");
-	// Id layout: 0 root, 1 "REF sub", 2 BoxRenamed, 3 created light
-	// (+ gear placeholder + Gear appended after).
+	// Id layout (the artifact world): 0 root, 1 "REF sub", 2 BoxRenamed,
+	// 3 Box's primitive-instance node (the import unrolls each gltf
+	// primitive into a child node), 4 the created light (the artifact
+	// build's contract: sub-tour id i lands at ph+1+i).
 	Check(findNodeByName(cluster->scene, "REF sub") == 1,
 		"tourref placeholder");
 	Check(findNodeByName(cluster->scene, "sub:BoxRenamed") == 2,
@@ -772,9 +920,9 @@ void TestTourReferences() {
 		"tourref subtree parent");
 	Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
 		"tourref replayed transform with offset");
-	Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 3,
+	Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 4,
 		"tourref created light with offset parent");
-	const uint32_t lightNode = 3;
+	const uint32_t lightNode = 4;
 	auto lit = cluster->scene.lightForNode.find(lightNode);
 	Check(lit != cluster->scene.lightForNode.end(), "tourref light link");
 	if (lit != cluster->scene.lightForNode.end()) {
@@ -2071,21 +2219,49 @@ void TestReferenceGuid() {
 	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refguid";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
-	// The referenced source lives at a NEW path; the tour still records
-	// the OLD one (a rename that happened outside the editor).
+	// The referenced asset lives at a NEW path; the tour still records
+	// the OLD one (a rename that happened outside the editor). A mesh
+	// blob (the sourced-asset semantic: `source -n ... -p ...`).
 	const fs::path gltf = dir / "moved.gltf";
 	{
 		std::ofstream f(gltf, std::ios::binary | std::ios::trunc);
 		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scene\":0,"
 			"\"scenes\":[{\"nodes\":[0]}],"
-			"\"nodes\":[{\"name\":\"Solo\"}]}";
+			"\"nodes\":[{\"name\":\"Solo\",\"mesh\":0}],"
+			"\"meshes\":[{\"primitives\":[{\"attributes\":"
+			"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+			"\"accessors\":["
+			"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+			"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+			"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+			"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+			"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+			"\"bufferViews\":["
+			"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+			"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+			"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+			"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+			"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+			"\"byteLength\":78}]}";
+	}
+	{
+		smvk::assets::AssetManifest man;
+		std::string derr;
+		smvk::assets::DeriveConfig cfg{};
+		Check(smvk::assets::ImportMeshSource(gltf, "", cfg, man,
+				nullptr, &derr),
+			"refguid derive artifact");
 	}
 	const std::string kGuid = "0123456789abcdef0123456789abcdef";
 	// Round-trip: emit + parse keep the guid beside the source.
 	smvk::tour::Doc doc;
 	smvk::tour::ReferenceCmd r{};
 	r.parent = 0;
-	r.source = "old_name.gltf"; // stale (the file was renamed)
+	r.asset = true; // a sourced mesh blob (the `source` verb)
+	r.source = "old_name.geometry"; // stale (the file was renamed)
 	r.guid = kGuid;
 	r.name = "solo";
 	doc.references.push_back(r);
@@ -2106,7 +2282,8 @@ void TestReferenceGuid() {
 		"refguid load");
 	Check(back.references.size() == 1
 		&& back.references[0].guid == kGuid
-		&& back.references[0].source == "old_name.gltf",
+		&& back.references[0].asset
+		&& back.references[0].source == "old_name.geometry",
 		"refguid roundtrip");
 	// Resolver: GUID -> the moved file's path.
 	struct FakeResolver final : public GltfGuidResolver {
@@ -2118,7 +2295,8 @@ void TestReferenceGuid() {
 		}
 	};
 	FakeResolver resolver;
-	resolver.movedTo = gltf.generic_string();
+	resolver.movedTo = fs::path(gltf).replace_extension(".geometry")
+		.generic_string();
 	// Identity-first: stale -source + GUID resolves to the moved file.
 	{
 		auto cluster = std::make_unique<smvk::Cluster>(nullptr);

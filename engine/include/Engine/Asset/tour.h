@@ -341,6 +341,17 @@ struct ReferenceCmd {
 	// import exactly. Editor and cook build identical worlds from the
 	// identical doc. Never disabled/removed/replaced.
 	bool root = false;
+	// SOURCED MESH ASSET (the asset-bind semantic): true = the entry
+	// places a derived .geometry/.mesh data blob's content under
+	// `parent` — serialized as the per-node `source` verb (`source -n
+	// <p> -p "<blob>"`). Meshes NEVER ride the `reference` verb: that
+	// verb is for referencing another .tour SCENE. Legacy tours naming
+	// a blob in `reference -source` parse back with this set (the kind
+	// is extension-derived), so old files keep binding; a re-save
+	// migrates them to the `source` verb. ROOT entries ignore it (the
+	// scene's own source stays `reference -root` whatever it points
+	// at — every existing model tour records it that way).
+	bool asset = false;
 };
 
 struct Command {

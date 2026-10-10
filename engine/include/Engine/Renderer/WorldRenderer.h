@@ -742,6 +742,14 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragCascadeShader; // default_cascade_debug (F4)
 	smvk::ShaderProgram unlitProgram;
 	smvk::ShaderProgram cascadeProgram;
+	// MULTIVIEW lean secondary programs (the quad-viewport panels):
+	// mview.vert (default.vert's twin selecting the VP per SV_ViewID)
+	// + the SAME flat/depth FSes — one multiview pass renders every
+	// view's layer; missing module leaves shaderCount 0 and the
+	// secondary panels keep their last image.
+	smvk::Holder<smvk::ShaderModuleHandle> mviewVertShader;   // mview.vert
+	smvk::ShaderProgram mviewUnlitProgram;    // + default_unlit FS
+	smvk::ShaderProgram mviewPrepassProgram;  // + shadow conservative FS (wireframe depth-fill)
 	smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
 	smvk::ShaderProgram vertexColorProgram;
 	// UV debug views (F9 base UV / F10 lightmap uv2): checker + gradient
@@ -2146,6 +2154,40 @@ protected:
 		bool renderedLastFrame = false;
 	};
 	std::vector<SecondaryView> m_views; // hosted secondary views (0..kMaxSecondaryViews)
+	// ---------------------------------------------------------------------
+	// ---- MULTIVIEW lean secondary set (the quad-viewport panels) --------
+	// ONE multiview pass (viewMask over the enabled views) renders every
+	// secondary view UNLIT/WIREFRAME into shared ARRAY targets — layer i
+	// = view i. The old per-view LIT pipelines (own CSM + spot atlases +
+	// Forward+ tile buffers per view) are gone: their first-frame
+	// resource/compile storm + the lit-FS-on-direct-PSO driver pathology
+	// hard-bugchecked the machine (0x12B) on the quad toggle. Draw cost
+	// now: one command stream, one pipeline bind, one vertex fetch pass
+	// (per-view raster only). Recreated on drift with the create-new +
+	// Holder-SWAP pattern (deferred retire — see EnsureInlineTarget for
+	// why NEVER RecreateImage mid-flight).
+	// ---------------------------------------------------------------------
+	smvk::Holder<smvk::ImageHandle> m_mviewDepthArr; // D32, N layers
+	smvk::Holder<smvk::ImageHandle> m_mviewHdrArr;   // RGBA16F, N layers
+	smvk::Holder<smvk::ImageHandle> m_mviewOutArr;   // surface sRGB, N layers
+	// Wide (layerCount = N) views: the multiview passes' attachments.
+	smvk::Holder<smvk::ImageViewHandle> m_mviewDepthWide;
+	smvk::Holder<smvk::ImageViewHandle> m_mviewHdrWide;
+	smvk::Holder<smvk::ImageViewHandle> m_mviewOutWide;
+	// Per-layer views + bindless slots: the tonemap inputs (hdr) and the
+	// host compose sources (out; SecondaryView::outBindlessIndex aliases).
+	std::vector<smvk::Holder<smvk::ImageViewHandle>> m_mviewHdrLayerViews;
+	std::vector<smvk::Holder<smvk::BindlessImageHandle>> m_mviewHdrLayerBindless;
+	std::vector<smvk::Holder<smvk::ImageViewHandle>> m_mviewOutLayerViews;
+	std::vector<smvk::Holder<smvk::BindlessImageHandle>> m_mviewOutLayerBindless;
+	smvk::LogicalImageViewHandle m_mviewDepthLogical; // wide
+	smvk::LogicalImageViewHandle m_mviewHdrLogical;   // wide
+	smvk::LogicalImageViewHandle m_mviewOutLogical;   // wide (export barrier anchor)
+	std::vector<smvk::LogicalImageViewHandle> m_mviewHdrLayerLogical;
+	std::vector<smvk::LogicalImageViewHandle> m_mviewOutLayerLogical;
+	smvk::Extent2D m_mviewExtent{ 0, 0 };
+	uint32_t m_mviewCount = 0;
+	smvk::Format m_mviewOutFormat = smvk::Format::Undefined;
 	// Global tic/toc frame phase (advances once per RenderFrame).
 	uint32_t m_viewPhase = 0;
 	// The frame's final Forward+ light set (post DS-sort, pre probe tail â€”
@@ -2170,26 +2212,22 @@ protected:
 		return false;
 	}
 	// Per-view frame work (all hosted-only; no-ops on windowed runs):
-	// Prep: target Ensure + lean FrameUniforms + per-view CSM fit/spot
-	// selection + slab uploads (runs inside RenderFrame, before the
-	// RenderView allocation block so the per-view views ride the same
-	// slab upload).
+	// Prep: the shared multiview array set + lean per-view FrameUniforms
+	// + RenderView registration (runs inside RenderFrame, before the
+	// main-view allocation so the per-view views ride the same slab).
 	void PrepareSecondaryViews(uint32_t frameIdx, const smvk::EnvironmentSettings& env);
-	// Passes: per-view shadows + Forward+ prepass/cull + direct Main +
-	// tonemap into the view image (runs after the main view's post/UI,
-	// before the shadow-futures join).
+	// Passes: ONE multiview depth-fill (wireframe only) + ONE multiview
+	// unlit Main + per-layer tonemaps into the out array (runs after the
+	// main view's post/UI, before the shadow-futures join).
 	void RenderSecondaryViews(smvk::Framebuffer& fb);
-	// Shared internals of the two above (vi = the 0-based secondary index;
-	// the slab index is 1 + vi â€” view 0 is the main view).
-	void EnsureSecondaryTargets(SecondaryView& v, uint32_t vi);
+	// Shared internals (vi = the 0-based secondary index; the slab index
+	// is 1 + vi — view 0 is the main view).
+	// The shared array set: create/retire on count/extent/format drift
+	// (Holder-swap, deferred retire); DestroyMViewTargets for teardown.
+	void EnsureMViewTargets(uint32_t count);
+	void DestroyMViewTargets();
 	FrameUniforms BuildSecondaryFrameUniforms(SecondaryView& v, uint32_t vi,
 		uint32_t frameIdx, const smvk::EnvironmentSettings& env);
-	void UpdateSecondaryLights(SecondaryView& v, uint32_t vi, uint32_t frameIdx,
-		const smvk::EnvironmentSettings& env);
-	void UploadSecondaryForwardPlusLights(SecondaryView& v, uint32_t vi,
-		uint32_t frameIdx);
-	void RecordSecondaryMain(smvk::CommandBuffer& cmd, const IRenderer::PushConstants& pc,
-		const smvk::RenderView& cullView, const glm::vec3& viewEye);
 	// The renderer's content overlay (loose content/ + the project root
 	// below it + engine resources), mounted into the CALLER'S
 	// vfs (OverlayVfs is non-copyable) â€” shared by Initialize and

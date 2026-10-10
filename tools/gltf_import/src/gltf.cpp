@@ -2617,6 +2617,24 @@ size_t ApplySceneReferences(
 		if (outIssues)
 			outIssues->push_back(msg);
 	};
+	// HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
+	// utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
+	// by design, so calling them on a resolved HOST path returns EMPTY
+	// (the nested-level baseDir died there: relative nested sources
+	// like "gear.tour" could never resolve on the host path). This
+	// helper pair picks the right machinery per mode.
+	auto baseDirOf = [&](const std::string& p) -> std::string {
+		if (vfs)
+			return smvk::vfs::BaseDir(p);
+		return std::filesystem::path(p).parent_path()
+			.generic_string();
+	};
+	auto fileNameOf = [&](const std::string& p) -> std::string {
+		if (vfs)
+			return smvk::vfs::FileName(p);
+		return std::filesystem::path(p).filename()
+			.generic_string();
+	};
 	if (doc.references.empty())
 		return 0;
 	struct Level {
@@ -2762,7 +2780,7 @@ size_t ApplySceneReferences(
 					continue;
 				}
 				haveRefTour = true;
-				refTourDir = smvk::vfs::BaseDir(tourResolved);
+				refTourDir = baseDirOf(tourResolved);
 				modelSource = refTour.source;
 			}
 			std::string resolved;   // canonical path (host or vfs)
@@ -2856,8 +2874,7 @@ size_t ApplySceneReferences(
 								meshAsset, meshErr)) {
 							meshLoaded = true;
 							resolved = meshResolved;
-							baseDir = smvk::vfs::BaseDir(
-								meshResolved);
+							baseDir = baseDirOf(meshResolved);
 							ok = true;
 						}
 					}
@@ -2959,8 +2976,7 @@ size_t ApplySceneReferences(
 				// The manifest (the .material file table) sits beside
 				// the sibling glTF: <stem>.gltf.meta.
 				{
-					std::string stem =
-						smvk::vfs::FileName(resolved);
+					std::string stem = fileNameOf(resolved);
 					// Strip the data-blob extension (".geometry"; the
 					// legacy ".mesh" too) to the derivation stem.
 					const size_t mdot = stem.rfind(".geometry");
@@ -2969,8 +2985,7 @@ size_t ApplySceneReferences(
 						stem = stem.substr(0, mdot);
 					else if (mdotLegacy != std::string::npos)
 						stem = stem.substr(0, mdotLegacy);
-					const std::string meshDir =
-						smvk::vfs::BaseDir(resolved);
+					const std::string meshDir = baseDirOf(resolved);
 					const std::string metaRel =
 						stem + ".gltf.meta";
 					std::optional<std::vector<uint8_t>> metaBytes;
@@ -2982,8 +2997,7 @@ size_t ApplySceneReferences(
 					}
 					else {
 						std::ifstream in(
-							std::filesystem::path(resolved)
-							.parent_path() / metaRel,
+							std::filesystem::path(meshDir) / metaRel,
 							std::ios::binary);
 						if (in)
 							metaBytes = std::vector<uint8_t>(

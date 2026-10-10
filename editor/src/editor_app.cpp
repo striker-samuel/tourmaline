@@ -909,8 +909,21 @@ void EditorApp::CloseScene() {
 std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
 	// Closed db (no project / cache off) answers "": the reference falls
 	// back to its recorded -source path — exactly the pre-GUID behavior.
+	// Unknown guid: ONE rescan before giving up (mirrors
+	// ResolveReferenceAssetEx) — a guid minted by another session's
+	// import (or a manifest entry the rescan had not seen yet: the
+	// geometry= parser gap) heals here instead of silently skipping the
+	// reference.
 	std::string path;
-	if (!app.m_assetDb.IsOpen() || !app.m_assetDb.PathForGuid(guid, path))
+	if (!app.m_assetDb.IsOpen())
+		return {};
+	if (!app.m_assetDb.PathForGuid(guid, path) || path.empty()) {
+		std::string dberr;
+		smvk::cache::RescanStats stats;
+		if (app.m_assetDb.RescanProject(stats, dberr))
+			app.m_assetDb.PathForGuid(guid, path);
+	}
+	if (path.empty())
 		return {};
 	return path;
 }

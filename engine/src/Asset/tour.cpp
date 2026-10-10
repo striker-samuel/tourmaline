@@ -538,12 +538,19 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -fingerprint " << Quote(doc.fingerprint) << ";\n";
 	// References FIRST (Maya file-block order), then the fileInfo
 	// constants block, then the command list.
+	// VERB SPLIT: `reference` references another .tour SCENE; sourced
+	// MESH ASSETS (.geometry/.mesh blobs placed under a node) serialize
+	// as the per-node `source` verb (`source -n <p> -p "<blob>"`) —
+	// meshes never ride `reference`. ROOT entries always keep
+	// `reference -root` (the scene's own source is the sourcing
+	// semantic itself; every existing model tour records it that way).
 	for (const ReferenceCmd& r : doc.references) {
-		f << "reference";
+		const bool sourceVerb = r.asset && !r.root;
+		f << (sourceVerb ? "source" : "reference");
 		if (r.root)
 			f << " -root"; // the scene's own source: no placeholder/ns
 		f << " -n " << r.parent
-			<< " -source " << Quote(r.source);
+			<< (sourceVerb ? " -p " : " -source ") << Quote(r.source);
 		if (!r.guid.empty())
 			f << " -guid " << r.guid;
 		if (!r.name.empty())
@@ -1067,8 +1074,83 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			continue;
 		const std::string& verb = toks[0];
 		if (verb == "source") {
-			// source -p "<path>" [-fingerprint "<hex>"]; (-p is a PATH
-			// here, not a parent id, so parse manually, not via ParseFlags)
+			// TWO forms:
+			//   TOUR-LEVEL: `source -p "<path>" [-fingerprint ...]` (no
+			//   -n) — the doc's own source scene. (-p is a PATH here,
+			//   not a parent id, so parse manually, not via ParseFlags.)
+			//   PER-NODE ASSET: `source -n <parent> -p "<blob>" [-guid
+			//   <g>] [-name "<n>"] [-t x y z] [-enabled off]` — a sourced
+			//   MESH ASSET (.geometry/.mesh) placed under the parent:
+			//   the asset-bind semantic. Meshes never ride `reference`
+			//   (that verb references another .tour scene).
+			bool hasN = false;
+			for (size_t i = 1; i + 1 < toks.size(); ++i)
+				if (toks[i] == "-n") { hasN = true; break; }
+			if (hasN) {
+				ReferenceCmd r{};
+				r.asset = true;
+				for (size_t i = 1; i < toks.size(); ++i) {
+					std::string tok = toks[i];
+					if (!tok.empty() && tok.back() == ';')
+						tok.pop_back();
+					auto next = [&](std::string& out) {
+						if (i + 1 >= toks.size())
+							return false;
+						out = toks[i + 1];
+						if (!out.empty() && out.back() == ';')
+							out.pop_back();
+						++i;
+						return true;
+					};
+					if (tok == "-n") {
+						std::string v;
+						if (next(v))
+							r.parent = uint32_t(std::strtoul(
+								v.c_str(), nullptr, 10));
+					}
+					else if (tok == "-p") {
+						std::string v;
+						if (!next(v))
+							continue;
+						r.source = v;
+					}
+					else if (tok == "-guid") {
+						std::string v;
+						if (!next(v))
+							continue;
+						r.guid = v;
+					}
+					else if (tok == "-name") {
+						std::string v;
+						if (!next(v))
+							continue;
+						r.name = v;
+					}
+					else if (tok == "-enabled") {
+						std::string v;
+						if (!next(v))
+							continue;
+						ParseFlagWord(v, r.enabled);
+					}
+					else if (tok == "-t") {
+						double x = 0, y = 0, z = 0;
+						std::string v;
+						if (next(v)) ParseDouble(v, x);
+						if (next(v)) ParseDouble(v, y);
+						if (next(v)) ParseDouble(v, z);
+						r.translate = glm::vec3(float(x), float(y), float(z));
+						r.hasTranslate = true;
+					}
+				}
+				if (!r.source.empty()) {
+					doc.references.push_back(std::move(r));
+					continue;
+				}
+				// -n without -p: malformed — fall through to the
+				// tour-level handler (it ignores -n) so the line warns
+				// downstream instead of hard-failing here.
+			}
+			// source -p "<path>" [-fingerprint "<hex>"];
 			for (size_t i = 1; i < toks.size(); ++i) {
 				std::string tok = toks[i];
 				if (!tok.empty() && tok.back() == ';')
@@ -1523,8 +1605,21 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			// (recursively, via each source's own tour) at scene build.
 			// -root marks the scene's OWN source (reference #0): inlined
 			// under the scene root, no placeholder, no namespace.
+			// VERB SPLIT: `reference` is for .tour SCENE sources; a
+			// legacy line naming a mesh blob (.geometry/.mesh) parses
+			// back as a sourced ASSET (asset=true) so it keeps binding —
+			// a re-save migrates it to the `source` verb.
 			ReferenceCmd r{};
 			r.source = fl.source;
+			{
+				const std::string& s = r.source;
+				const size_t dotGeo = s.rfind(".geometry");
+				const size_t dotMesh = s.rfind(".mesh");
+				r.asset = (dotGeo != std::string::npos
+						&& s.size() - dotGeo == 9)
+					|| (dotMesh != std::string::npos
+						&& s.size() - dotMesh == 5);
+			}
 			// Stored verbatim (validated at resolve: malformed GUIDs
 			// fall back to the -source path silently).
 			r.guid = fl.hasGuid ? fl.guid : "";
