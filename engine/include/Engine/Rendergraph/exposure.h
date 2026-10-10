@@ -262,8 +262,17 @@ struct ExposureMeter {
 		for (uint32_t i = 0; i < bins; ++i) {
 			accum += lastBins[i];
 			if (accum >= want) {
-				const float t =
-					(static_cast<float>(i) + 0.5f) / static_cast<float>(bins);
+				// Bin-center inversion MUST mirror the shader's binning
+				// (exposure_histogram.cs.hlsl: bin = saturate(t) * (bins-1)),
+				// so bin i covers t in [i/(bins-1), (i+1)/(bins-1)) and its
+				// center is (i+0.5)/(bins-1). The old /bins denominator was a
+				// consistent ~half-bin low bias in metered luminance (~0.17 EV
+				// over the default range) — every scene metered slightly
+				// darker than authored.
+				const float t = bins > 1
+					? (static_cast<float>(i) + 0.5f)
+						/ static_cast<float>(bins - 1)
+					: 0.5f;
 				const float logLum =
 					desc.minLogLum + t * (desc.maxLogLum - desc.minLogLum);
 				return exp2f(logLum);

@@ -3276,9 +3276,16 @@ namespace engine {
 		// Linear exposure multiplier for the tonemapper (ACES).
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
 		// mid-gray (albedo 0.18, NÂ·L=1) at HDR â‰ˆ 0.29 pre-ACES â†’ no clipping.
-		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
-		// tonemap push constant is the live knob. Kept in sync with the
-		// effective exposure (auto-adapted or manual) for future readers.
+		// NOTE: the LIVE tonemap knob is the tonemap push constant, not this
+		// field — but FrameUniforms.exposure IS read by the shaders: the
+		// debug-view FSes pre-scale their authored display-space palette by
+		// 1/max(frame.exposure,1e-6) so flat readouts survive any exposure
+		// (default_unlit.frag.hlsl:163, default_wire.frag.hlsl:30,
+		// default_cascade_debug.frag.hlsl:95, default_vertexcolor_debug.
+		// frag.hlsl:130, default_uv_debug.hlsli:112, default_lit_body.
+		// hlsli:1221/1233/1241/1290). Keep it in sync with the effective
+		// exposure (auto-adapted or manual) — dropping it would break the
+		// debug-view gain.
 		data.exposure = FrameExposure();
 		// AO (DORMANT since the SSGI rework): the lighting pass no longer
 		// samples AO â€” Main exports the AO-sensitive lighting through the
@@ -3817,6 +3824,35 @@ namespace engine {
 		return dir;
 	}
 
+	// Pool index -> bindless slot for the world's cluster textures (see
+	// the header). The pool==bindless identity is CREATION-ORDER LUCK that
+	// the windowed App gets by loading its world first into a fresh context
+	// — the hosted editor context does not: every live-view relaunch mints
+	// + frees ~dozens of bindless entries (hosted target, envzone map, LUT,
+	// GI dense layers) and a re-import allocates cluster textures BEHIND
+	// still-live entries, so pool indices stop matching slots and the raw
+	// upload below made the shaders sample WRONG (or freed, dangling-
+	// descriptor) slots — the same device-death class the editor's own
+	// UploadMaterials fixed with m_bindlessBySlot (see editor_render.cpp
+	// "[MATSLOT] remap MISS" note: "the observed device-death"). Rebuilt
+	// per call so live editor texture edits apply without a rebind signal.
+	std::unordered_map<uint32_t, uint32_t> WorldRenderer::BuildPoolToBindlessMap() const {
+		std::unordered_map<uint32_t, uint32_t> byPool;
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
+				(void)uri; // enumeration only: pool idx -> RHI handle
+				if (h.empty())
+					continue;
+				// RHI texture pool indices are GLOBAL (one pool per
+				// context), so cluster ordering cannot collide keys.
+				byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
+			}
+		}
+		return byPool;
+	}
+
 	void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
 		// Preserve world material slots: shaders index by world materialId,
 		// so a missing slot must stay a hole (default values), not shift
@@ -3828,10 +3864,42 @@ namespace engine {
 				<< ") - clamping upload, trailing materials will use defaults\n";
 		}
 		const uint32_t uploadCount = std::min(slotCount, MAX_MATERIALS);
+		// POOL -> BINDLESS remap (the engine twin of the editor's own
+		// material upload fix): MaterialValues.textures store RHI texture
+		// POOL indices, but the shaders index the bindless descriptor array.
+		// The identity only holds while nothing else churns the bindless
+		// pool (see BuildPoolToBindlessMap). A MISS means the pool index
+		// points at no live texture (stale material reference into a
+		// destroyed texture): upload it raw, matching the editor's
+		// diagnostic behavior — the freed-slot null-write in impl.cpp's
+		// destroy(BindlessImageHandle) makes that a safe black sample
+		// instead of the old dangling-descriptor device death.
+		const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
+			BuildPoolToBindlessMap();
+		auto remapSlot = [&](int poolIdx) -> int {
+			if (poolIdx < 0)
+				return -1;
+			const auto hit = bindlessByPool.find(static_cast<uint32_t>(poolIdx));
+			if (hit == bindlessByPool.end()) {
+				static uint64_t s_matSlotMissTick = 0;
+				if (s_matSlotMissTick++ < 16)
+					std::fprintf(stderr,
+						"[MATSLOT] engine remap MISS: poolIdx=%d not live (map=%zu) - raw upload (null-sample)\n",
+						poolIdx, bindlessByPool.size());
+				return poolIdx;
+			}
+			return static_cast<int>(hit->second);
+		};
 		std::vector<smvk::MaterialValues> mats(uploadCount);
 		for (uint32_t i = 0; i < uploadCount; ++i) {
-			if (auto* mat = m_world->GetMaterial(i))
+			if (auto* mat = m_world->GetMaterial(i)) {
 				mats[i] = mat->values;
+				mats[i].textures.x = remapSlot(mat->values.textures.x);
+				mats[i].textures.y = remapSlot(mat->values.textures.y);
+				mats[i].textures.z = remapSlot(mat->values.textures.z);
+				mats[i].textures.w = remapSlot(mat->values.textures.w);
+				mats[i].textures2.x = remapSlot(mat->values.textures2.x);
+			}
 		}
 
 		constexpr size_t MATERIAL_FRAME_STRIDE =
@@ -3869,13 +3937,25 @@ namespace engine {
 			std::unordered_map<uint32_t, float> minDist;
 			minDist.reserve(256);
 			const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
-			auto note = [&](int slot, float dist) {
-				if (slot < 0)
+			// The streamer keys demand by BINDLESS slot (RequestMip/
+			// RequestMipsByDistance look entries up through
+			// GetTextureBindlessIndex), but MaterialValues.textures store
+			// POOL indices — remap through the same pool->bindless map as
+			// UpdateMaterials, or the CPU demand leg misses every entry
+			// once pool!=bindless (the hosted editor context) and streamed
+			// textures never upgrade on distance.
+			const std::unordered_map<uint32_t, uint32_t> bindlessByPool =
+				BuildPoolToBindlessMap();
+			auto note = [&](int poolIdx, float dist) {
+				if (poolIdx < 0)
 					return;
-				const uint32_t s = static_cast<uint32_t>(slot);
-				auto it = minDist.find(s);
+				const auto hit = bindlessByPool.find(
+					static_cast<uint32_t>(poolIdx));
+				if (hit == bindlessByPool.end())
+					return; // no live texture: nothing to demand
+				auto it = minDist.find(hit->second);
 				if (it == minDist.end() || dist < it->second)
-					minDist[s] = dist;
+					minDist[hit->second] = dist;
 			};
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable,
@@ -3956,44 +4036,17 @@ namespace engine {
 	// m_deferredMutex) is gone.
 	static constexpr bool kHistogramReadbackEnabled = true;
 
-	// Pre-record eye adaptation (see exposure.h): downloads the 256-byte
-	// histogram for frameIndex BEFORE this frame zeroes it. The download
-	// must precede both the zero-fill and the main-submit of this frame:
-	// UpdateAutoExposure used to run after Execute (but Execute only
-	// records into fb.commandBuffer â€” EndAndPresent submits it later), so
-	// the download's copy was submitted BEFORE this frame's histogram
-	// compute and could only ever observe the just-zeroed buffer (flat
-	// ImGui plot; a stale nonzero flash only when transfer/GPU timing
-	// slipped). Reading the current flight slice after Acquire (which
-	// retires this slot) yields the completed 2-frames-ago accumulation
-	// with no extra stall. Refreshes the debug copy, and damps
-	// m_exposureAdapted toward the percentile target. Holds the current
-	// exposure when the meter is missing or the histogram is empty.
-	void WorldRenderer::UpdateAutoExposure(uint32_t frameIndex) {
-		if (!kHistogramReadbackEnabled)
-			return; // readback disabled (see above): hold the seed/manual exposure
-		if (!ExposureMeteringActive())
-			return;
-		auto& meter = m_viewportResources.exposure;
-		if (!meter.Valid())
-			return;
-		// Current flight slice, read BEFORE this frame's zero-fill below.
-		// Acquire already retired this slot, so its bins are the completed
-		// accumulation from two frames ago ï¿½ no cross-flight torn reads and
-		// no wait on the still-in-flight previous frame.
-		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
-			return;
-		m_exposureFrame = frameIndex;
-		std::array<uint32_t, smvk::kExposureBinCount> bins{};
-		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(frameIndex),
-			bins.data(), sizeof(uint32_t) * bins.size()))
-			return;
-		AdaptExposureFromBins(bins);
-	}
+	// REMOVED: WorldRenderer::UpdateAutoExposure — the old SYNC pre-record
+	// download (DownloadDataFromBuffer waits UINT64_MAX, stalling the whole
+	// in-flight graphics backlog every frame; it also ran after Execute and
+	// mostly read just-zeroed bins). Fully replaced by the ASYNC ticket
+	// path in UpdateReadbacks below (submit every 4th frame, poll each
+	// frame, adapt on completion — see AdaptExposureFromBins). The
+	// declaration went with it: dead code that "looked" like the exposure
+	// entry point invited fixes that never took effect.
 
 	// Metering gates shared by the histogram download and the batched
-	// feedback pairing (debug views hold the last scene exposure; see the
-	// note on UpdateAutoExposure).
+	// feedback pairing (debug views hold the last scene exposure).
 	bool WorldRenderer::ExposureMeteringActive() const {
 		if (!m_autoExposureEnabled || !m_passes.exposure)
 			return false;
@@ -4069,9 +4122,18 @@ namespace engine {
 			target = std::clamp(target, m_exposureMin, m_exposureMax);
 			m_exposureTarget = target;
 		}
+		// Adapt on the ELAPSED time since the last completed adapt, not one
+		// frame's delta: polls complete every ~4-8 frames (every-4th submit +
+		// 1-2 frame poll latency), so a single-frame dt made the effective
+		// convergence ~4-8x slower than the "/s" the UI labels promise. The
+		// clamp keeps a stall (load hitch, debug-view freeze) from slamming
+		// the exposure to its target in one step — the classic post-hitch
+		// brightness pop.
+		const float adaptDt = std::min(m_exposureAdaptDt, 0.25f);
+		m_exposureAdaptDt = 0.0f;
 		m_exposureAdapted = meter.Adapt(m_exposureAdapted, m_exposureEvBias,
 			m_exposureSpeedToDark, m_exposureSpeedToBright,
-			m_exposureMin, m_exposureMax, delta_time_s);
+			m_exposureMin, m_exposureMax, adaptDt);
 	}
 
 	// Async GPU->CPU readback tick (exposure histogram + texture feedback
@@ -4090,6 +4152,11 @@ namespace engine {
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
+		// Adaptation clock: accumulate the elapsed time BETWEEN adapt steps
+		// (the steps only run when a poll completes, every ~4-8 frames) so
+		// AdaptExposureFromBins can damp with the true elapsed seconds —
+		// see the note on m_exposureAdaptDt.
+		m_exposureAdaptDt += delta_time_s;
 		// Gfx draw-level demand source (designated publisher): active once
 		// the filter runs AND the meta table is live (streaming enabled +
 		// at least one streamed slot). Gated off => no download leg, no
@@ -4201,7 +4268,15 @@ namespace engine {
 		const bool tick = (m_frameCounter & 3u) == 2u;
 		if (tick && m_asyncReadbackTicket == 0) {
 			m_pendingReadbackSlot = frameSlot;
-			m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
+			// ExposureMeteringActive gates the SUBMIT too, not just the
+			// adapt: with auto off from boot the histogram zero-fill +
+			// compute never ran, so the retired slices are uninitialized
+			// device memory — submitting their downloads anyway (the old
+			// gate) meant the first 1-2 polls after pressing X adapted
+			// once from garbage bins. Same while any debug view holds the
+			// meter frozen (stale pre-view bins). No submit, no stale read.
+			m_pendingReadbackHasExposure = kHistogramReadbackEnabled
+				&& meterValid && ExposureMeteringActive();
 			// Gfx demand slice rides the same batch (no extra submit): sized
 			// to the LIVE slot count at submit time (the retired slice holds
 			// at least that many reporting draws' publications; the poll's
@@ -4413,10 +4488,33 @@ namespace engine {
 			// the env): once per scene load/rebind, panels/keys live on.
 			PushPostfxEnv(se);
 			// Headless overrides win over the scene seed (AGENTS.md:
-			// "scene settings lose") â€” without this a headless pin dies
+			// "scene settings lose") — without this a headless pin dies
 			// here on any scene whose env disagrees (the seed writes the
 			// members unconditionally).
 			ApplyHeadlessPostfxOverrides();
+			// --bench determinism pin (see m_autoExposurePin): the seed
+			// above re-seeds m_autoExposureEnabled from the authored env
+			// (default ON), silently re-enabling live eye adaptation
+			// mid-bench; the pin re-applies here, after the seed AND the
+			// headless overrides (a VULKANTOY_AUTO_EXPOSURE snapshot pin
+			// stays the more deliberate headless choice and wins). Lives
+			// here — not in ApplyHeadlessPostfxOverrides — so the bench
+			// contract doesn't entangle with the headless-pin migration
+			// happening in that function. X/UI stay live afterwards (this
+			// runs only at load/rebind; a bench never rebinds).
+			if (m_autoExposurePin >= 0)
+				m_autoExposureEnabled = (m_autoExposurePin != 0);
+			// Re-seed the eye adaptation from the FINAL exposure state
+			// (seed + overrides above): without this a new scene rendered
+			// its first frames at the PREVIOUS scene's adapted exposure
+			// and converged from there — a world swap from bright to dark
+			// (or vice versa) flashed the wrong look for a good second.
+			// The authored manual exposure is the scene's own "correct"
+			// starting point; adaptation takes over from the next poll.
+			m_exposureAdapted = std::clamp(m_manualExposure,
+				m_exposureMin, m_exposureMax);
+			m_exposureTarget = m_exposureAdapted;
+			m_exposureAdaptDt = 0.0f;
 			std::cerr << "[Scene] postfx: bloom="
 				<< (m_bloomEnabled ? "on" : "off")
 				<< " int=" << m_bloomIntensity
@@ -11109,10 +11207,19 @@ namespace engine {
 		{
 			SMVK_PROFILE_CATEGORY("ExposureHistogram", Optick::Category::Rendering);
 			auto& meter = m_viewportResources.exposure;
+			// ExposureMeteringActive() folds in the debug-view / DS-viz
+			// freeze: without it the histogram compute + zero-fill kept
+			// running under debug views, accumulating the debug palette's
+			// exposure-compensated colors (~1/0.001 pre-scaled — far "brighter"
+			// than any scene) into the ring, so the first poll after leaving
+			// the view adapted once against those bins (a visible dip toward
+			// min exposure). Freezing the whole leg holds the ring at the
+			// last REAL scene accumulation instead.
 			const bool meterGate = m_passes.exposure && m_autoExposureEnabled &&
 				meter.Valid() && meter.ShadersValid() &&
 				!sceneHdrView.empty() && sceneHdrBindless != UINT32_MAX &&
-				renderExtent.width != 0 && renderExtent.height != 0;
+				renderExtent.width != 0 && renderExtent.height != 0 &&
+				ExposureMeteringActive();
 			// One-run diagnostic (throttled): WHY the meter is quiet.
 			{
 				static uint64_t s_expRecTick = 0;

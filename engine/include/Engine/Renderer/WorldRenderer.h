@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -1034,7 +1035,20 @@ public:
 		m_autoExposureEnabled = env.autoExposure;
 		m_manualExposure = std::clamp(env.manualExposure,
 			0.00001f, 0.05f);
-		m_exposureEvBias = std::clamp(env.exposureEvBias, -4.0f, 4.0f);
+		// EV bias + the editor VIEWPORT exposure row folded together: the
+		// env's "exposure" (0.1..4 slider, serialized at floats[10]) is a
+		// plain brightness multiplier the editor's OWN direct rendering
+		// applies via FrameUniforms.exposure — but the hosted live view
+		// (and the windowed App) never read it, so the row was inert in
+		// the default WYSIWYG mode. Fold it as log2 (stops): 1.0 = neutral
+		// (log2(1)=0 — every existing scene renders identically), the
+		// slider range is ±2 EV inside the ±4 clamp. The editor's live
+		// push re-applies this per panel tick, so the row retouches the
+		// hosted view live like every other postfx row.
+		const float viewportEv = env.exposure > 0.0f
+			? std::log2(env.exposure) : 0.0f;
+		m_exposureEvBias = std::clamp(
+			env.exposureEvBias + viewportEv, -4.0f, 4.0f);
 		m_exposureSpeedToDark = std::max(env.exposureSpeedToDark, 0.01f);
 		m_exposureSpeedToBright =
 			std::max(env.exposureSpeedToBright, 0.01f);
@@ -1176,6 +1190,11 @@ public:
 	// captures from different runs are directly comparable. main.cpp
 	// forces this off for --bench; X toggles it back live.
 	void SetAutoExposureEnabled(bool v) { m_autoExposureEnabled = v; }
+	// Seed-proof variant for --bench (see m_autoExposurePin): applied in
+	// BuildCookedLightsFromWorld after the seed + headless overrides; the
+	// plain setter above does not survive the seed. X still toggles live
+	// afterwards.
+	void SetAutoExposurePinned(bool v) { m_autoExposurePin = v ? 1 : 0; }
 	// CLI override (main.cpp --no-dlss): force the DLSS mode (Off skips
 	// the feature passes entirely). Pairs with
 	// smvk::DlssSetStartupEnabled(false), which keeps the Streamline
@@ -1542,6 +1561,13 @@ protected:
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env);
 	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env);
 	void UpdateMaterials(uint32_t currentFrame);
+	// RHI texture POOL index -> bindless descriptor slot for the world's
+	// cluster textures (see UpdateMaterials: the pool==bindless identity
+	// only holds by creation-order luck, and the hosted editor context
+	// churns the bindless pool across relaunches + re-imports). Rebuilt
+	// per call (cheap: one pass over the clusters' registered textures)
+	// so live editor texture edits are picked up without a rebind.
+	std::unordered_map<uint32_t, uint32_t> BuildPoolToBindlessMap() const;
 
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
@@ -2685,8 +2711,25 @@ protected:
 	// frame (1-frame lag) and scales the bloom threshold/knee so bloom
 	// strength stays constant as exposure shifts.
 	bool m_autoExposureEnabled = true;
+	// Bench determinism pin (survives the scene seed — applied in
+	// BuildCookedLightsFromWorld): --bench pins fixed manual exposure,
+	// but the per-scene PushPostfxEnv seed re-seeds m_autoExposureEnabled
+	// from the authored env, silently re-enabling live eye adaptation
+	// mid-bench and breaking capture comparability (only
+	// VULKANTOY_AUTO_EXPOSURE re-pinned before). The pin re-applies after
+	// every seed; -1 = no pin. The X key / UI checkbox stay live
+	// afterwards (the pin applies only at load/rebind; a bench never
+	// rebinds, so "X toggles it back live" keeps working).
+	int m_autoExposurePin = -1; // -1 none, 0 pinned off, 1 pinned on
 	float m_manualExposure = 0.001f; // used when auto is off (== TONEMAP_EXPOSURE)
 	float m_exposureAdapted = 0.001f; // smoothed exposure (seeded to manual)
+	// Seconds accumulated since the last Adapt step. The adapt only runs
+	// when an async histogram poll COMPLETES (every ~4-8 frames at the
+	// every-4th-frame submit cadence), so passing a single frame's
+	// delta_time_s made the effective convergence ~4-8x slower than the
+	// "/s" the UI labels promise. Accumulate per frame, clamp at use, and
+	// reset on every adapt — the labeled rates are now the real rates.
+	float m_exposureAdaptDt = 0.0f;
 	float m_exposureTarget = 0.001f; // last computed target (debug readout)
 	float m_exposureEvBias = 0.0f; // user EV trim (-4..+4)
 	float m_exposureSpeedToDark = 1.0f; // adapt rate when exposure rises (/s)
@@ -2736,7 +2779,6 @@ protected:
 	// palette itself, fog-faded heat colors) the way metering it would
 	// poison the exposure.
 	bool DebugVisualizationActive() const;
-	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
@@ -2898,7 +2940,9 @@ private:
 	// True when this frame may meter exposure (auto + pass + lit view).
 	// Shared by the histogram download and the batched feedback pairing.
 	bool ExposureMeteringActive() const;
-	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure).
+	// Bins -> percentile target + damped adapt (tail of the async-poll
+	// path; the old sync UpdateAutoExposure — a full-graphics-backlog
+	// stall per frame — was replaced by UpdateReadbacks and removed).
 	void AdaptExposureFromBins(const std::array<uint32_t, smvk::kExposureBinCount>& bins);
 	// Combined GPU->CPU readback tick (replaces the lone UpdateAutoExposure
 	// call): on GPU-feedback frames the histogram + feedback + DS-counter

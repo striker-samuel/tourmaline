@@ -349,6 +349,11 @@ int RunPakApp(PakAppConfig cfg) {
 		renderer.SetFrameBudget(benchFrames);
 		// Bench captures must be pixel-comparable across runs: drop eye
 		// adaptation and pin the fixed manual exposure (X re-enables live).
+		// PINNED, not just set: the per-scene PushPostfxEnv seed inside
+		// Initialize/RebindWorld re-seeds auto-exposure from the authored
+		// env (default ON), silently re-enabling adaptation mid-bench;
+		// the pin survives the seed (see m_autoExposurePin).
+		renderer.SetAutoExposurePinned(false);
 		renderer.SetAutoExposureEnabled(false);
 		std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 	}
@@ -359,6 +364,7 @@ int RunPakApp(PakAppConfig cfg) {
 		if (benchFrames <= 0) {
 			benchFrames = 300;
 			renderer.SetFrameBudget(benchFrames);
+			renderer.SetAutoExposurePinned(false);
 			renderer.SetAutoExposureEnabled(false);
 			std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 		}

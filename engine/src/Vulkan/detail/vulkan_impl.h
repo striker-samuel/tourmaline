@@ -729,6 +729,18 @@ namespace smvk {
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 
+	// Retire a freed bindless descriptor-array slot with the 1x1 nil
+	// texture's view (see destroy(BindlessImageHandle) in impl.cpp):
+	// UpdateDescriptors only rewrites slots that have LIVE entries, so a
+	// freed slot would otherwise keep a descriptor write pointing at the
+	// VkImageView being destroyed — any stale slot reference (material
+	// texture slots, editor live-view relaunch churn, one-frame-late
+	// pushes) sampled a destroyed view and took the device down. No-op
+	// before init / during teardown (m_nullImageView is the guard: it dies
+	// with the nil texture at ~VulkanResourceManager, whose own frees then
+	// skip the write).
+	void NullBindlessSlotWrites(uint32_t slot);
+
 		// Engine globals (set 0 / kBinding_EngineGlobals): time / deltaTime /
 		// frameIndex / fps, computed engine-side from the acquire rhythm and
 		// uploaded once per frame. Called by the swapchain right after the
@@ -842,6 +854,14 @@ namespace smvk {
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
+		// Raw sampled view of m_nilTexture, cached at init: the null image the
+		// freed-slot descriptor writes point at (NullBindlessSlotWrites). Raw
+		// on purpose — a stale m_nilTexture HANDLE would trip the pool's
+		// gen-assert in GetTextureVkImageView after the nil texture's own
+		// destroy; this cache is null-guarded instead. Cleared in the dtor
+		// right after the nil texture dies, so teardown-time frees (leaked
+		// Holders) skip the descriptor write.
+		VkImageView m_nullImageView = VK_NULL_HANDLE;
 
 		// Engine globals: storage buffer (one slice per frame in flight) +
 		// engine-side timing state. time/deltaTime derive from the acquire

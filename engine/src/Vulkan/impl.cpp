@@ -2942,6 +2942,13 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		},
 		&pixel
 	).release();
+	// Cache the nil view NOW (see the member comment): freed bindless
+	// slots retire their descriptor writes with this view +
+	// ShaderReadOnlyOptimal (the layout UploadDataToImage2D leaves it in
+	// for the fragment sampled-read usage above, the same layout every
+	// CreateTexture bindless entry declares).
+	m_nullImageView = GetTextureVkImageView(m_nilTexture);
+	assert(m_nullImageView != VK_NULL_HANDLE && "nilTexture view missing");
 
 	// Engine globals buffer: one EngineGlobals slice per frame in flight,
 	// read by every shader through set 0 / kBinding_EngineGlobals.
@@ -3086,6 +3093,14 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	}
 
 	destroy(this, m_nilTexture);
+	// The nil VIEW died with the nil texture above (its ImageView destroy
+	// runs inline here — DeferDestroy has no semaphore left to key on;
+	// the nil entry's own free inside destroy() above still wrote with the
+	// then-live view, which is harmless: the sets die with the pool
+	// below). Clear the cache so all LATER teardown-time frees (leaked
+	// Holders in the member teardown below) skip the freed-slot descriptor
+	// write instead of writing the now-dead view.
+	m_nullImageView = VK_NULL_HANDLE;
 	destroy(this, m_engineGlobalsBuffer);
 	destroy(this, m_readbackStaging);
 	destroy(this, m_asyncStaging);
@@ -7420,6 +7435,58 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	m_needToUpdateSamplers = false;
 }
 
+// Freed-slot retirement (see the header + destroy(BindlessImageHandle)
+// above). A stale sample now reads the 1x1 opaque-black nil texture
+// instead of a destroyed VkImageView: wrong-colors, never device loss.
+void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
+{
+	if (m_nullImageView == VK_NULL_HANDLE)
+		return; // pre-init / teardown: nothing to write with
+	if (slot >= MAX_TEXTURES)
+		return; // outside the Textures array: nothing was written here
+	for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame)
+	{
+		if (defaultDescriptorSets_[frame] == VK_NULL_HANDLE)
+			continue;
+		VkDescriptorImageInfo info{};
+		info.sampler = VK_NULL_HANDLE; // SAMPLED_IMAGE descriptors
+		info.imageView = m_nullImageView;
+		// Matches the layout every CreateTexture bindless entry declares
+		// and the layout the nil image's own sampled upload left it in;
+		// nothing else ever transitions the nil image.
+		info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkWriteDescriptorSet writes[4]{};
+		uint32_t n = 0;
+		auto pushWrite = [&](uint32_t binding) {
+			VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+			write.dstSet = defaultDescriptorSets_[frame];
+			write.dstBinding = binding;
+			write.dstArrayElement = slot;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			write.descriptorCount = 1;
+			write.pImageInfo = &info;
+			writes[n++] = write;
+		};
+		pushWrite(smvk::Bindings::kBinding_Textures);
+		// Mirror bindings keep the same slot-space reads live: 3D views
+		// (SG/dense-GI layers — freed on EVERY live-view relaunch), cube
+		// views and MSAA views all had their old writes retired here too.
+		// The 2D nil view in a typed (3D/cube) array slot is only
+		// view-type-mismatched IF a stale index ever reaches a typed read
+		// — still strictly safer than a use-after-free of a destroyed
+		// view. VolumeTextures declares only MAX_VOLUME_TEXTURES entries.
+		if (slot < MAX_VOLUME_TEXTURES)
+			pushWrite(smvk::Bindings::kBinding_VolumeTextures);
+		pushWrite(smvk::Bindings::kBinding_Cubemaps);
+		pushWrite(smvk::Bindings::kBinding_MsaaTextures);
+		// kBinding_StorageImages deliberately NOT nulled: the nil texture
+		// carries no Storage usage (VUID-00339 forbids the write), and the
+		// only consumers (evsm blur/resolve dstIndex) push per-frame from
+		// live slots, so no data-side stale slot can reach that binding.
+		vkUpdateDescriptorSets(device_, n, writes, 0, nullptr);
+	}
+}
+
 // Compute this frame's EngineGlobals from the acquire rhythm, upload them
 // into the frame's slice and point the engine-globals descriptor at it.
 // Called by the swapchain after the in-flight slot retires (timeline wait),
@@ -7757,10 +7824,16 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle h
 	const uint32_t slot =
 		bindless->descriptorIndex;
 
-	// Ideally overwrite this descriptor with your null/default image.
-	//ctx->ClearBindlessImageSlot(slot);
-
 	ctx->bindlessImages_.destroy(handle);
+	// Retire the descriptor write with the nil image (see the method
+	// comment): UpdateDescriptors only rewrites slots with LIVE entries,
+	// so without this the freed slot kept pointing at the view being
+	// destroyed below — any stale slot reference (material texture slots,
+	// editor live-view relaunch churn, one-frame-late pushes) sampled a
+	// destroyed VkImageView and took the device down (the [MATSLOT]-class
+	// device death; the editor's relaunch path frees ~dozens of slots per
+	// boot, so the window grew with every resize until it fired).
+	ctx->NullBindlessSlotWrites(slot);
 	// If descriptors are replicated per-frame.
 	ctx->m_needToUpdateTextures = true;
 }

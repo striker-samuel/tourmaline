@@ -5,6 +5,12 @@
 //
 // Hand-rolled runner (no test framework dependency): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
+//
+// NOTE (drift risk): this file DUPLICATES ExposureMeter::Percentile-
+// Luminance/Adapt instead of including exposure.h (which pulls the whole
+// rendergraph). Any change to the real math (e.g. the (bins-1) bin-center
+// inversion mirroring the shader's t*(bins-1) binning) must be mirrored
+// here by hand — the bin-center expectations below pin that convention.
 
 #include <algorithm>
 #include <cmath>
@@ -57,8 +63,11 @@ struct ExposureMeter {
 		for (uint32_t i = 0; i < bins; ++i) {
 			accum += lastBins[i];
 			if (accum >= want) {
-				const float t =
-					(static_cast<float>(i) + 0.5f) / static_cast<float>(bins);
+				// Mirrors the shader (bin = saturate(t)*(bins-1)): bin i
+				// center = (i+0.5)/(bins-1). Must match exposure.h exactly.
+				const float t = bins > 1
+					? (static_cast<float>(i) + 0.5f) / static_cast<float>(bins - 1)
+					: 0.5f;
 				const float logLum =
 					desc.minLogLum + t * (desc.maxLogLum - desc.minLogLum);
 				return exp2f(logLum);
@@ -114,7 +123,7 @@ void TestPercentileSingleBin() {
 	m.lastBins[32] = 1000;
 	m.lastTotal = 1000;
 	const float lum = m.PercentileLuminance();
-	const float want = exp2f(-10.0f + (32.5f / 64.0f) * 22.0f);
+	const float want = exp2f(-10.0f + (32.5f / 63.0f) * 22.0f);
 	Check(Near(lum, want, 1e-4f), "exp.pct.singlebin");
 }
 
@@ -125,8 +134,8 @@ void TestPercentileSplit() {
 	m.lastBins[63] = 500;
 	m.lastTotal = 1000;
 	const float lum = m.PercentileLuminance();
-	const float wantBright = exp2f(-10.0f + (63.5f / 64.0f) * 22.0f);
-	const float wantDark = exp2f(-10.0f + (0.5f / 64.0f) * 22.0f);
+	const float wantBright = exp2f(-10.0f + (63.5f / 63.0f) * 22.0f);
+	const float wantDark = exp2f(-10.0f + (0.5f / 63.0f) * 22.0f);
 	Check(Near(lum, wantBright, 1e-4f) && lum > wantDark * 100.0f, "exp.pct.split60");
 	m.desc.percentile = 0.4f;
 	Check(Near(m.PercentileLuminance(), wantDark, 1e-4f), "exp.pct.split40");
