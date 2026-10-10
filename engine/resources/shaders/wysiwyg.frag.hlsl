@@ -7,7 +7,7 @@
 // drags the scene PushConstants block in — one push block per shader),
 // so the bindless tables are declared directly with the engine's
 // binding attributes (same layout as common.hlsli).
-// C++ mirror: WysiwygGpuPush (editor_render.cpp, 16 bytes).
+// C++ mirror: WysiwygGpuPush (editor_render.cpp, 24 bytes).
 [[vk::binding(0, 0)]]
 Texture2D textures[];
 [[vk::binding(1, 0)]]
@@ -17,7 +17,8 @@ struct WysiwygPush
 {
     uint textureIndex;   // bindless slot of the hosted target view
     uint samplerIndex;   // linear sampler slot
-    float2 pad;
+    float2 uvScale;      // aspect-preserving cover-crop (1,1) steady-state
+    float2 uvOffset;     // centered sub-region offset (0,0) steady-state
 };
 
 [[vk::push_constant]]
@@ -36,8 +37,13 @@ struct PSOut
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
+    // Aspect-preserving cover-crop (see RecordWysiwygPass): identity in
+    // the steady state (target extent == viewport rect); during an extent
+    // drift the centered sub-region keeps geometry undistorted while the
+    // debounced relaunch lands.
+    float2 uv = IN.uv * wp.uvScale + wp.uvOffset;
     float3 rgb = textures[NonUniformResourceIndex(wp.textureIndex)]
-        .Sample(samplers[NonUniformResourceIndex(wp.samplerIndex)], IN.uv)
+        .Sample(samplers[NonUniformResourceIndex(wp.samplerIndex)], uv)
         .rgb;
     OUT.outColor = float4(rgb, 1.0f);
     return OUT;

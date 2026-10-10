@@ -1844,8 +1844,13 @@ namespace editor {
 				const uint32_t source = (vpIdx == 0)
 					? m_wysiwygBindlessIndex
 					: m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
+				// Source texel size for the aspect-preserving cover-crop
+				// (steady state: equals the rect, identity mapping).
+				const smvk::Extent2D srcExtent = (vpIdx == 0)
+					? m_wysiwygExtent
+					: m_wysiwyg->ViewOutExtent(uint32_t(vpIdx - 1));
 				RecordWysiwygPass(m_swapViews[fb.imageIndex],
-					m_viewports[vpIdx].rect, source);
+					m_viewports[vpIdx].rect, source, srcExtent);
 			}
 			// Gizmo overlay on top of the hosted image (the hosted views
 			// render the grid themselves now — see WorldRenderer grid drive):
@@ -1939,16 +1944,22 @@ namespace editor {
 		return true;
 	}
 
-	// HLSL mirror: WysiwygPush in wysiwyg.frag.hlsl (16 bytes).
+	// HLSL mirror: WysiwygPush in wysiwyg.frag.hlsl (24 bytes read).
+	// uvScale/uvOffset implement the aspect-preserving cover-crop (see
+	// RecordWysiwygPass): identity (1,1)/(0,0) in the steady state.
+	// alignas(16) pads the struct to 32 (24 + 8 tail pad the HLSL never
+	// reads); the push writes the whole struct, the shader its first 24.
 	struct alignas(16) WysiwygGpuPush {
 		uint32_t textureIndex;
 		uint32_t samplerIndex;
-		float pad[2];
+		float uvScale[2];
+		float uvOffset[2];
 	};
-	static_assert(sizeof(WysiwygGpuPush) == 16, "WysiwygPush layout");
+	static_assert(sizeof(WysiwygGpuPush) == 32, "WysiwygPush layout");
 
 	void EditorApp::RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect, uint32_t sourceBindless) {
+		const ViewportRect& rect, uint32_t sourceBindless,
+		smvk::Extent2D srcExtent) {
 		if (!EnsureWysiwygProgram())
 			return;
 		if (rect.w <= 0.0f || rect.h <= 0.0f)
@@ -1958,6 +1969,36 @@ namespace editor {
 		WysiwygGpuPush wp{};
 		wp.textureIndex = sourceBindless;
 		wp.samplerIndex = m_wysiwygSamplerIndex;
+		// Aspect-preserving cover-crop: the hosted target extent only
+		// equals the viewport rect in the steady state — during an extent
+		// drift (I toggles panels, splitter drags, layout switches) the
+		// target still has the OLD size until the debounced relaunch lands,
+		// and a naive fullscreen blit stretches it non-uniformly (circles
+		// become ellipses — the "pixel aspect changed" report). Sample a
+		// CENTERED sub-region with a UNIFORM scale instead: geometry stays
+		// correct through the transition (edges crop for a few frames),
+		// then the relaunch restores the exact 1:1 below.
+		// Cover scale s = max(rect/src) per axis; displayed src region =
+		// rect/s texels, centered: uv' = uv*(rect/(s*src)) + (1-...)/2.
+		wp.uvScale[0] = 1.0f; wp.uvScale[1] = 1.0f;
+		wp.uvOffset[0] = 0.0f; wp.uvOffset[1] = 0.0f;
+		if (srcExtent.width != 0 && srcExtent.height != 0) {
+			const float srcW = float(srcExtent.width);
+			const float srcH = float(srcExtent.height);
+			const float dstAspect = rect.w / rect.h;
+			const float srcAspect = srcW / srcH;
+			// Epsilon snap: identical aspects (the steady state, up to
+			// float rounding) keep the exact identity mapping — no
+			// resampling shimmer from a ~1.0 scale.
+			if (std::fabs(dstAspect - srcAspect)
+				> 1e-4f * std::max(dstAspect, srcAspect)) {
+				const float s = std::max(rect.w / srcW, rect.h / srcH);
+				wp.uvScale[0] = rect.w / (s * srcW);
+				wp.uvScale[1] = rect.h / (s * srcH);
+				wp.uvOffset[0] = 0.5f * (1.0f - wp.uvScale[0]);
+				wp.uvOffset[1] = 0.5f * (1.0f - wp.uvScale[1]);
+			}
+		}
 		auto& pass = m_rendergraph->AddPass("WysiwygCompose")
 			.SetOffset(uint32_t(rect.x), uint32_t(rect.y))
 			.SetExtent(smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) })

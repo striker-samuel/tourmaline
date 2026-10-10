@@ -1669,9 +1669,12 @@ private:
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
 	// Draws one hosted source image (view 0 = the hosted target, views
 	// 1+ = the multiview images; sourceBindless picks which) into one
-	// viewport rect (compose pass).
+	// viewport rect (compose pass). srcExtent is that image's texel size
+	// (m_wysiwygExtent / ViewOutExtent): the cover-crop needs it to keep
+	// the aspect through extent drifts (see RecordWysiwygPass).
 	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect, uint32_t sourceBindless);
+		const ViewportRect& rect, uint32_t sourceBindless,
+		smvk::Extent2D srcExtent);
 	// Hosted-view scene id (the open scene's stem; see LaunchWysiwyg) —
 	// shared by the launch and the in-place world rebind (DrawFrame /
 	// bake-done) so the GI sidecar loaders resolve the same names.
