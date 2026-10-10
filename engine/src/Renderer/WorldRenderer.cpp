@@ -7750,9 +7750,13 @@ namespace engine {
 		}
 		// Render-extent changes are worth a line: they resize every render
 		// target (DLSS mode/quality changes, renderScale edits, resizes).
+		// Tag is [EXTENT], NOT [DLSS]: the line fires for ANY extent change
+		// (viewport drift, resizes) — DLSS is only one cause, and the old
+		// tag had users reading it as "DLSS active in the editor?" (it
+		// never is: main.cpp disables the Streamline startup).
 		if (renderExtent.width != m_dlssLastRenderExtent.width
 			|| renderExtent.height != m_dlssLastRenderExtent.height) {
-			std::fprintf(stderr, "[DLSS] render extent %ux%u -> swap %ux%u%s\n",
+			std::fprintf(stderr, "[EXTENT] render extent %ux%u -> swap %ux%u%s\n",
 				renderExtent.width, renderExtent.height,
 				swapExtent.width, swapExtent.height,
 				dlssUsable ? " (DLSS optimal)" : "");
