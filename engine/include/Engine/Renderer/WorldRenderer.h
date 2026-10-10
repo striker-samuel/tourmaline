@@ -1364,6 +1364,11 @@ protected:
 	// same single submit - only the swap-image write removed). The host
 	// composites this target 1:1 (a bindless sample, like the secondary
 	// views' images, which have always been safe).
+	// Extent drift recreates the target with create-new + Holder SWAP
+	// (the old image/view/bindless retire through the deferred-destroy
+	// queue, timeline-keyed - in-flight frames keep them alive); NEVER
+	// RecreateImage/RecreateImageView on this path (immediate destroys -
+	// device loss while frames are in flight). See EnsureInlineTarget.
 	smvk::Holder<smvk::ImageHandle> m_inlineTargetImage;
 	smvk::Holder<smvk::ImageViewHandle> m_inlineTargetView;
 	smvk::Holder<smvk::BindlessImageHandle> m_inlineTargetBindless;

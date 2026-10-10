@@ -6270,9 +6270,8 @@ namespace engine {
 	// ===========================================================================
 
 	void WorldRenderer::EnsureInlineTarget() {
-		// The target tracks the driven extent; recreate IN PLACE on drift
-		// (Holder-stable handles; the bindless slot re-registers like the
-		// secondary views'). Steady state: nothing to do.
+		// The target tracks the driven extent; recreate on drift. Steady
+		// state: nothing to do.
 		const auto ext = m_swapchain->GetExtent();
 		if (m_inlineTargetExtent.width == ext.width
 			&& m_inlineTargetExtent.height == ext.height
@@ -6289,41 +6288,67 @@ namespace engine {
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = "inline target image";
-		if (m_inlineTargetImage.empty())
-			m_inlineTargetImage = m_context->CreateImage(ci, nullptr);
-		else
-			m_context->RecreateImage(m_inlineTargetImage, ci, nullptr);
+		// -------------------------------------------------------------------
+		// NEVER RecreateImage/RecreateImageView here: those destroy the old
+		// VkImage/VkImageView IMMEDIATELY (impl.cpp) while in-flight frames
+		// still reference them (tonemap writes the image, the host's
+		// compose samples the view) — VUID-vkDestroyImage-01000, device
+		// loss (the I-toggle/resize churn crash). Instead: create the NEW
+		// objects as locals, then SWAP them into the members — Holder's
+		// move-assign swaps handles, so the locals receive the OLD handles
+		// and retire them at scope exit through the DEFERRED-destroy queue
+		// (timeline-keyed; see destroy() in impl.cpp) — in-flight frames
+		// keep the old objects alive until they retire. Same pattern as
+		// HdrTarget::Create / EnsureSecondaryTargets.
+		// Declaration order matters: locals destroy in REVERSE order, so
+		// image-first/view-second queues the retire FIFO as
+		// bindless -> view -> image — the view's liveViewCount-- lands
+		// BEFORE DestroyImageNow's liveViewCount == 0 assert.
+		// -------------------------------------------------------------------
+		smvk::Holder<smvk::ImageHandle> newImage =
+			m_context->CreateImage(ci, nullptr);
+		if (newImage.empty())
+			return;
 		const smvk::ImageViewCreateInfo vci{
 			.viewType = smvk::ImageViewType::View2D,
 			.format = m_swapchain->GetSurfaceFormat(),
 			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 }
 		};
-		if (m_inlineTargetView.empty())
-			m_inlineTargetView = m_context->CreateImageView(
-				m_inlineTargetImage, vci);
-		else
-			m_context->RecreateImageView(m_inlineTargetView,
-				m_inlineTargetImage, vci);
-		m_inlineTargetBindless = m_context->CreateBindlessImage(
-			m_inlineTargetView, smvk::ImageLayout::ShaderReadOnlyOptimal);
-		m_inlineTargetBindlessIndex = m_inlineTargetBindless.empty()
-			? UINT32_MAX
-			: m_context->GetBindlessIndex(m_inlineTargetBindless);
-		if (!m_inlineTargetLogical.empty())
-			m_rendergraph->FreeImageView(m_inlineTargetLogical);
-		// The tonemap's swap-image set holds exactly the previous inline
-		// target's logical view — retire the whole set (the free above
-		// only ran for the CURRENT logical; the set may still hold the
-		// older one from before a drift, and double-freeing the same
-		// handle corrupts the graph's tables).
+		smvk::Holder<smvk::ImageViewHandle> newView =
+			m_context->CreateImageView(newImage, vci);
+		if (newView.empty())
+			return;
+		smvk::Holder<smvk::BindlessImageHandle> newBindless =
+			m_context->CreateBindlessImage(newView,
+				smvk::ImageLayout::ShaderReadOnlyOptimal);
+		if (newBindless.empty())
+			return;
+		const uint32_t newBindlessIndex =
+			m_context->GetBindlessIndex(newBindless);
+		// The tonemap's swap-image set holds the previous logical view —
+		// retire the whole set (guard: the CURRENT logical is freed right
+		// below; double-freeing the same handle corrupts the graph's
+		// tables).
 		for (auto h : m_viewportResources.swapImages)
 			if (h != m_inlineTargetLogical)
 				m_rendergraph->FreeImageView(h);
 		m_viewportResources.swapImages.clear();
-		m_inlineTargetLogical = m_rendergraph->AddExternalImageView(
-			m_inlineTargetView, m_swapchain->GetSurfaceFormat(),
-			"inlineTargetLogical");
-		m_viewportResources.swapImages.push_back(m_inlineTargetLogical);
+		if (!m_inlineTargetLogical.empty())
+			m_rendergraph->FreeImageView(m_inlineTargetLogical);
+		const smvk::LogicalImageViewHandle newLogical =
+			m_rendergraph->AddExternalImageView(
+				newView, m_swapchain->GetSurfaceFormat(),
+				"inlineTargetLogical");
+		if (newLogical.empty())
+			return;
+		// SWAP: the members take the new handles; the locals received the
+		// old ones above and retire them (deferred) at scope exit.
+		m_inlineTargetBindless = std::move(newBindless);
+		m_inlineTargetBindlessIndex = newBindlessIndex;
+		m_inlineTargetView = std::move(newView);
+		m_inlineTargetImage = std::move(newImage);
+		m_inlineTargetLogical = newLogical;
+		m_viewportResources.swapImages.push_back(newLogical);
 		m_inlineTargetExtent = ext;
 	}
 
