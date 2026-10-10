@@ -5206,8 +5206,18 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	BindlessImageHandle handle =
 		bindlessImages_.create(std::move(bindless));
 
+	// Pool-full (or any create failure) returns an EMPTY handle — deref
+	// it and we AV on the spot (the crash class behind the live-view
+	// churn reports: extent drift mints ~7 fresh bindless slots per drag
+	// frame; sustained churn can pressure the pool). Return the empty
+	// Holder instead: every caller already treats an empty bindless as
+	// "registration failed" and skips/falls back.
+	if (handle.empty())
+		return {};
+
 	BindlessImage* resource =
 		bindlessImages_.get(handle);
+	assert(resource);
 
 	// The bindless pool is intentionally also our descriptor-slot allocator.
 	// NOTE (sharded pools): handle.index() is the global sharded index

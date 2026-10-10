@@ -6994,10 +6994,20 @@ namespace engine {
 			smvk::Extent2D e = m_views[i].desc.extent;
 			e.width = std::clamp(e.width, 64u, 16384u);
 			e.height = std::clamp(e.height, 64u, 16384u);
-			m_views[i].desc.extent = e;
 			ext.width = std::max(ext.width, e.width);
 			ext.height = std::max(ext.height, e.height);
 		}
+		// NORMALIZE every view's extent to the uniform layer extent: the
+		// layer IS the uniform extent, so each view's camera aspect +
+		// viewportSize must be computed FOR THE LAYER. A view left at its
+		// own smaller driven extent (splitter drags, unequal panels)
+		// builds a VP for a different aspect, renders it into the uniform
+		// layer, and the compose cover-crop shows an offset crop — the
+		// "ortho cameras not aligned" report: ortho views are exquisitely
+		// aspect-sensitive (a wrong aspect reads as a shifted/zoomed
+		// ortho frame, not just a stretch).
+		for (uint32_t i = 0; i < count && i < m_views.size(); ++i)
+			m_views[i].desc.extent = ext;
 		const smvk::Format surface = m_swapchain->GetSurfaceFormat();
 		smvk::Format outFmt = surface;
 		if (surface != smvk::Format::BGRA8_SRGB && surface != smvk::Format::RGBA8_SRGB
