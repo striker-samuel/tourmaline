@@ -19,12 +19,15 @@ namespace smvk {
 // Header-only so both engine and samples can use it without
 // adding a new translation unit.
 //
-// Task queue: bounded ring of task slots pre-allocated in transient
+// Task queue: bounded ring of task slots pre-allocated in PROCESS
 // linear memory (capacity = mem::config::kThreadPoolQueueSlots, the single
-// place to resize). Steady state performs ZERO container mallocs —
-// std::queue's deque chunk churn is gone. The per-task packaged_task
-// shared state still mallocs (std::future internals; removing that needs
-// custom futures — explicitly out of scope).
+// place to resize). Process, not transient: slots live for the pool's whole
+// lifetime, and any transient reset while the pool lives would be a UAF
+// ring queue (the transient allocator is UploadInFlight-monotonic — see
+// Engine/Memory/memory.h + Vulkan/detail/vulkan_impl.h). Steady state
+// performs ZERO container mallocs — std::queue's deque chunk churn is
+// gone. The per-task packaged_task shared state still mallocs (std::future
+// internals; removing that needs custom futures — explicitly out of scope).
 //
 // Backpressure contract: enqueue BLOCKS when the ring is full instead of
 // growing. Never enqueue from a pool worker task — workers drain the ring,
@@ -51,11 +54,11 @@ public:
 		// unique shards (main owns shard 0).
 		if (threadCount > 16) threadCount = 16;
 		if (threadCount > kNumPoolShards - 1) threadCount = kNumPoolShards - 1;
-		// Ring storage from the transient allocator (allocation failure
+		// Ring storage from the process allocator (allocation failure
 		// crashes with the OOM diagnostic — no fallback). Slots are
 		// default-constructed (empty std::function: no allocation) and
 		// torn down explicitly; the storage itself is never freed.
-		slots_ = static_cast<std::function<void()>*>(mem::TransientAllocator().Allocate(
+		slots_ = static_cast<std::function<void()>*>(mem::ProcessAllocator().Allocate(
 			kCapacity * sizeof(std::function<void()>), alignof(std::function<void()>)));
 		for (size_t i = 0; i < kCapacity; ++i)
 			new (&slots_[i]) std::function<void()>();

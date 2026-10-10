@@ -13,6 +13,13 @@ struct PSIn
 {
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
+    // Dither-on-closeup inputs (Scene::ditherCloseup): pairs with
+    // default.vert, which forwards the direct legs' per-draw pc word
+    // (byte 240) flat here + the world position for the distance term
+    // (the MAIN camera via FrameUniforms). Holes keep the loaded G-buffer
+    // value exactly like they keep background depth.
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 struct PSOut
@@ -32,6 +39,17 @@ float2 OctEncodeNormal(float3 n)
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
+
+    // Dither-on-closeup (Scene::ditherCloseup; see common.hlsli Closeup-
+    // DitherKeep): the G-buffer screen-doors in step with the depth and
+    // the lit fade. First: discarded fragments skip the material fetch.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameD = pc.frameUniforms.Get();
+        if (!CloseupDitherKeep(IN.worldPos, frameD.cameraPos, pos.xy))
+            discard;
+    }
+
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
     // Alpha test (mirrors shadow_body.hlsli line-for-line — the leaf

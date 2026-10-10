@@ -353,6 +353,51 @@ set_target_properties(MemoryTests PROPERTIES
 
 add_test(NAME memory_tests COMMAND MemoryTests)
 
+# Push-constant mirror contract (C++ Renderer.h <-> HLSL push_constants.hlsli).
+# Compile-time static_asserts catch C++ drift; this pins every offset at
+# runtime too. CI additionally runs tools/push_constants_idl/codegen.py --check.
+add_executable(PushConstantLayoutTests test_push_constants.cpp)
+
+target_link_libraries(PushConstantLayoutTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(PushConstantLayoutTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME push_constant_tests COMMAND PushConstantLayoutTests)
+
+# Central run-config contract (VULKANTOY_* parse/log/warn).
+add_executable(RunConfigTests test_runconfig.cpp)
+
+target_link_libraries(RunConfigTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(RunConfigTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME runconfig_tests COMMAND RunConfigTests)
+
+# Frame-renderer contracts (overlay-scratch discipline, mesh eligibility,
+# GPU-driven defaults). GPU-less; headless goldens via tools/golden_capture.py.
+add_executable(RendergraphContractTests test_rendergraph_contract.cpp)
+
+target_link_libraries(RendergraphContractTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(RendergraphContractTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME rendergraph_contract_tests COMMAND RendergraphContractTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -374,3 +419,6 @@ vulkantoy_stage_sdl3(WorldEntityTests)
 vulkantoy_stage_sdl3(PlacementTests)
 vulkantoy_stage_sdl3(PlacementEditorTests)
 vulkantoy_stage_sdl3(MemoryTests)
+vulkantoy_stage_sdl3(PushConstantLayoutTests)
+vulkantoy_stage_sdl3(RunConfigTests)
+vulkantoy_stage_sdl3(RendergraphContractTests)

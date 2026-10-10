@@ -105,8 +105,15 @@ typedef uint32_t CullFlags;
 // delete geometry the rasterizer is supposed to keep). Frustum,
 // degenerate and small-prim tests still apply.
 inline constexpr uint32_t DrawFlagBit_TwoSided = 0x1;
-typedef uint32_t DrawFlags;
+// Scene::ditherCloseup fade band this frame (DitherCloseupStateFor ==
+// Fade at PushDraw time; see DrawSetBit_Masked — Fade draws also route
+// into the masked bucket so the alpha-tested depth/shadow legs can
+// screen-door with them). HLSL mirror: GFX_DRAW_DITHER_CLOSEUP
+// (gfxfilter.hlsli), read by gfxfiltered.vert / gfxfilter.mesh and
+// forwarded flat (VS location 8) to the lit FS family.
+inline constexpr uint32_t DrawFlagBit_DitherCloseup = 0x2;
 
+typedef uint32_t DrawFlags;
 // Draw-set buckets: geometry grouped by properties that affect
 // rasterization (Alan Wake 2 style). The seed depth pass (T3) issues one
 // PSO per bucket (opaque single-sided vs. alpha-tested double-sided);

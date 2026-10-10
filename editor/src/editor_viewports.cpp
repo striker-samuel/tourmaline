@@ -319,7 +319,14 @@ void EditorApp::FinishBoxSelect() {
 
 void EditorApp::DrawViewportChrome() {
 	// Borders + per-viewport label (camera combo) + the rubber-band box.
-	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	// BACKGROUND list, not foreground: both composite above the Vulkan 3D
+	// scene, but the foreground list renders above EVERY ImGui window —
+	// the active viewport's (brighter, 2px) selection border painted over
+	// panels, combo dropdowns and tooltips touching the viewport edge.
+	// On the background list the chrome stays under all windows (a 1px
+	// edge spill hides beneath the abutting sibling panel, which is
+	// correct — panels are siblings, never covered by viewport chrome).
+	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	const int count = ViewportCount();
 	for (int i = 0; i < count; ++i) {
 		const EditorViewport& vp = m_viewports[i];
@@ -388,9 +395,14 @@ void EditorApp::DrawViewportChrome() {
 			}
 		}
 	}
-	// Rubber-band box (window pixels).
+	// Rubber-band box (window pixels), clipped to its viewport: a drag
+	// past the viewport edge used to paint the selection tint over the
+	// neighboring panels (same foreground-layer defect as the borders
+	// above — now background + clipped).
 	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
 		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
+		dl->PushClipRect(ImVec2(vp.x, vp.y),
+			ImVec2(vp.x + vp.w, vp.y + vp.h), true);
 		const float bx0 = vp.x + std::min(m_vpBoxX0, m_vpBoxX1);
 		const float by0 = vp.y + std::min(m_vpBoxY0, m_vpBoxY1);
 		const float bx1 = vp.x + std::max(m_vpBoxX0, m_vpBoxX1);
@@ -399,6 +411,7 @@ void EditorApp::DrawViewportChrome() {
 			IM_COL32(120, 200, 255, 28));
 		dl->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1),
 			IM_COL32(120, 200, 255, 200), 0.0f, 0, 1.5f);
+		dl->PopClipRect();
 	}
 	// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
 	// types: any panel can show UV0/UV1/lightmap debug like a camera

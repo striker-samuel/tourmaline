@@ -6,9 +6,15 @@
 // mark/reset, never per-object) — so only use these aliases with
 // containers whose lifetime is bounded by the backing allocator's reset:
 //
-//   ProcessVector<T>   — lives until process teardown (never reset).
-//   FrameVector<T>     — destroyed/reset before the frame mark resets.
-//   TransientVector<T> — destroyed/reset before the transient mark resets.
+//   ProcessVector<T>       — lives until process teardown (never reset).
+//   FrameVector<T>         — destroyed/reset before the frame mark resets.
+//   TransientVector<T>     — destroyed/reset before the transient mark resets.
+//   UploadInFlightVector<T> — monotonic UploadInFlight storage (fence-scoped,
+//     per-element clear/erase reclaims; the backing bump is NEVER rewound
+//     while any element is live). Same storage as TransientVector, distinct
+//     name so frame scratch can never be mis-declared in-flight: use
+//     FrameVector for scope-local temps, UploadInFlightVector for streamer
+//     pendingRanges/acquires that span frames (see vulkan_impl.h).
 //
 // Construction always takes an explicit allocator instance:
 //   smvk::mem::ProcessVector<int> v{smvk::mem::LinearAllocatorSTL<int>{&alloc}};
@@ -60,5 +66,9 @@ template<typename T>
 using FrameVector = std::vector<T, LinearAllocatorSTL<T>>;
 template<typename T>
 using TransientVector = std::vector<T, LinearAllocatorSTL<T>>;
+// Monotonic in-flight storage over the transient allocator (never reset
+// while live; reclaimed per-element). Identical layout to TransientVector.
+template<typename T>
+using UploadInFlightVector = std::vector<T, LinearAllocatorSTL<T>>;
 
 } // namespace smvk::mem

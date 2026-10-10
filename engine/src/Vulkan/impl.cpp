@@ -3358,7 +3358,9 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 		const bool ringTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
 		const auto ringT0 = std::chrono::steady_clock::now();
 		double waitMs = 0.0;
-		std::vector<InFlightRingRange> live;
+		// FrameScratch: scope-local filter temp (dies before return —
+		// safe under the DrawFrame rewind; must NOT be UploadInFlight).
+		auto live = MakeFrameScratchVec<InFlightRingRange>();
 		live.reserve(ust.pendingRanges.size());
 		for (const InFlightRingRange& r : ust.pendingRanges) {
 			const bool overlaps = (r.start < aligned + size) && (r.end > aligned);

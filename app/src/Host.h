@@ -14,6 +14,8 @@
 
 #include <string>
 
+#include <Engine/App/RunConfig.h>
+
 namespace smvk {
 	class ResourceManager;
 	struct World;
@@ -38,6 +40,9 @@ struct PakAppConfig {
 	bool noDlss = false;
 	// Scene id (GI sidecar stem + check-scene gating). Empty = pak stem.
 	std::string sceneId;
+	// Central run config (parsed once in main; Log/WarnUnknown there).
+	// Carried by value so the renderer consumes the same snapshot.
+	engine::RunConfig run;
 };
 
 // Parse argv into cfg. Returns true on success; on `--help`/unknown args

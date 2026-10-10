@@ -69,6 +69,11 @@ struct VSOut
     // Lightmap chunk for this draw (flat: constant over the triangle);
     // 0xFFFFFFFF = no lightmap (dynamic / unbaked draws).
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
+    // Dither-on-closeup flag (flat; Scene::ditherCloseup): the Draw ring's
+    // per-draw state this frame (GFX_DRAW_DITHER_CLOSEUP) forwarded so the
+    // lit FS family reads ONE channel on both paths (default.vert delivers
+    // the direct legs' pc word at the same location).
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 VSOut mainVS(VSIn IN)
@@ -95,6 +100,11 @@ VSOut mainVS(VSIn IN)
 
     // Lightmap chunk rides the draw record (misc.w; 0xFFFFFFFF = none).
     OUT.lmChunk = draw.misc.w;
+
+    // Dither-on-closeup per-draw flag rides the ring (misc.y bit 1 —
+    // GFX_DRAW_DITHER_CLOSEUP; set at PushDraw time together with the
+    // MASKED bucket routing for the depth legs).
+    OUT.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
 
     // Packed shading stream: normal/tangent ride as R32_UInt oct words.
     float3 normal = OctDecodeNormal(IN.normalPacked);

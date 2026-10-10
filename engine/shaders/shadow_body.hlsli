@@ -26,6 +26,14 @@ struct ShadowPSIn
 {
     float4 color : COLOR0;
     float2 uv : TEXCOORD0;
+    // Dither-on-closeup inputs (Scene::ditherCloseup; the flat flag from
+    // shadow.vert's pc word / the gfx seed twins' Draw-ring bit, + the
+    // world position for the per-pixel camera-distance factor — the MAIN
+    // camera is the fade's anchor even in light-view passes). Declared by
+    // the FS; the VS twins (shadow.vert / gfxseedmasked / gfxshadowseed-
+    // masked) deliver both.
+    float3 worldPos : TEXCOORD2;
+    nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 #if defined(SHADOW_NORMAL_Z)
@@ -43,6 +51,21 @@ struct ShadowPSOut
 ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
 {
     ShadowPSOut OUT;
+
+    // Dither-on-closeup (Scene::ditherCloseup; see common.hlsli Closeup-
+    // DitherKeep): the depth screen-doors in step with the lit pass's
+    // fade, so the holes keep the REAL background depth (solid depth
+    // would leave black holes through the fading subtree) and the
+    // subtree's shadow fades with it. The eye is the MAIN camera's (the
+    // fade follows what the camera sees, not the light), reached through
+    // the FrameUniforms this FS already reads below. First: discarded
+    // fragments skip the material fetch entirely.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameD = pc.frameUniforms.Get();
+        if (!CloseupDitherKeep(IN.worldPos, frameD.cameraPos, clipPos.xy))
+            discard;
+    }
     // Window-depth guard: SV_Position.z can leave [0,1] (or go NaN) when
     // the VS z-squash clamp (shadow.vert: clip.z = max(z, 0) so casters
     // behind the light's near plane rasterize) meets w-crossing triangles —

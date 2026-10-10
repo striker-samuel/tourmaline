@@ -966,12 +966,20 @@ void EditorApp::DrawSaveDialog() {
 
 std::string EditorApp::ResolveVfsRoot() const {
 	// Prefer the content dir the current scene came from, else ./content.
-	std::string posix = m_gltfPath;
+	// The CANONICAL HOST PATH drives the marker walk (m_gltfHostPath — the
+	// file that actually loaded, GUID-resolved on tour opens): the recorded
+	// identity (m_gltfPath) can be a project-RELATIVE "content/models/..."
+	// on tour-opened scenes, whose relative root then resolved against the
+	// editor CWD (the build dir) instead of the project (same defect the
+	// cook's contentDir walk had — see CookToPak).
+	const std::string identity = !m_gltfHostPath.empty()
+		? m_gltfHostPath : m_gltfPath;
+	std::string posix = identity;
 	for (char& c : posix)
 		if (c == '\\')
 			c = '/';
 	if (const size_t at = posix.find("content/");
-		at != std::string::npos && !m_gltfPath.empty())
+		at != std::string::npos && !identity.empty())
 		return posix.substr(0, at + 7); // keep trailing "content/"
 	std::error_code ec;
 	if (std::filesystem::is_directory("content", ec))
@@ -2736,7 +2744,9 @@ void EditorApp::DrawInspector() {
 			inherited ? "excluded" : "baked");
 	}
 
-	// Dither on camera closeup (subtree flag; GPU fade is TODO).
+	// Dither on camera closeup (subtree flag; the GPU fade is LIVE — per
+	// frame, per draw, no rebake needed: the renderer re-resolves the flag
+	// every frame, so a checkbox toggle reflects on the next frame).
 	{
 		ImGui::Separator();
 		const bool inherited = IsDitherCloseupNode(scene, int(node));
@@ -2749,7 +2759,9 @@ void EditorApp::DrawInspector() {
 			c.beforeFlag = !self;
 			Do(c);
 		}
-		ImGui::TextDisabled("effective: %s", inherited ? "dithered" : "off");
+		ImGui::TextDisabled("effective: %s (1 m fully hidden .. 8 m solid,\n"
+			"screen-door fade from the subtree anchor; live per frame)",
+			inherited ? "dithered" : "off");
 	}
 
 	// Terrain group/tile: height paint controls (editor paint mode).

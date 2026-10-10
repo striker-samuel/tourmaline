@@ -29,6 +29,11 @@ struct PSIn
     // Location 6: lightmap chunk (flat, per-draw; 0xFFFFFFFF = none —
     // dynamic/unbaked draws sample the 3D probe grids instead).
     nointerpolation uint lmChunk : TEXCOORD4;
+    // Location 8: dither-on-closeup flag (flat, per-draw; Scene::
+    // ditherCloseup — see common.hlsli CloseupDitherKeep). Both paths
+    // deliver it: default.vert forwards the direct legs' pc word, the
+    // filtered VS / mesh MS forward the Draw ring's flag bit.
+    nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 #endif
@@ -371,10 +376,27 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     // Frame data up front: the hot slab is reached through FrameUniforms
     // (frame.frameHot — a pc member shifted every sub-192 pc field and
-    // broke the direct-VS mirrors; see App/push_constants.h). The spot
+    // broke the direct-VS mirrors; see Engine/Renderer/Renderer.h). The spot
     // cookie eval below needs hot.time, the tail needs both.
     FrameUniforms frame = pc.frameUniforms.Get();
     FramePSHot hot = frame.frameHot.Get();
+
+    // Dither-on-closeup (per-draw flag, flat; Scene::ditherCloseup — see
+    // common.hlsli CloseupDitherKeep): the flagged subtree screen-doors
+    // away as the camera closes on its anchor. Placed FIRST so discarded
+    // fragments skip every fetch below (the depth legs pair the same
+    // pattern, so the holes see the real background). Debug-view FSs
+    // deliberately never declare the flag: they show the authored
+    // geometry solid. The A2C variant expresses the fade through the
+    // output coverage instead (no OpKill — see the remap at the output).
+#if !defined(ALPHA_TO_COVERAGE)
+    if (IN.ditherCloseup != 0u
+        && !CloseupDitherKeep(IN.worldPos, hot.cameraPos, clipPos.xy))
+        discard;
+#else
+    const float closeupKeepA2C = (IN.ditherCloseup != 0u)
+        ? CloseupDitherFactor(IN.worldPos, hot.cameraPos) : 1.0f;
+#endif
 
     MaterialValues mat = pc.bMats.Get().mats[GFX_MATERIAL_ID];
 
@@ -805,8 +827,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);
     // above-cutoff scales into partial coverage for AA'd silhouettes.
+    // Dither-on-closeup folds its keep factor into the coverage (the A2C
+    // variant never discards — OpKill kills the early-Z it exists for).
     OUT.outColor = float4(SanitizeHdr(color),
-        saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)));
+        saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)) * closeupKeepA2C);
 #else
         OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
 #endif
@@ -1314,8 +1338,10 @@ float envVis = 1.0f;
     // above-cutoff scales into partial coverage for AA'd silhouettes.
     // Coverage masks BOTH attachments' samples identically, so the
     // resolved aoTerm stays the exact companion of the resolved color.
+    // Dither-on-closeup folds its keep factor into the coverage (the A2C
+    // variant never discards — OpKill kills the early-Z it exists for).
     OUT.outColor = float4(SanitizeHdr(color),
-        saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)));
+        saturate((baseAlpha - alphaCutoff) / max(1.0f - alphaCutoff, 1e-4f)) * closeupKeepA2C);
 #else
     OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
 #endif

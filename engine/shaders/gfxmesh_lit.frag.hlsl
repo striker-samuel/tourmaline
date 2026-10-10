@@ -30,6 +30,10 @@ struct PSIn
     nointerpolation uint lmChunk : TEXCOORD4;
     // Mesh-only: per-draw material (misc2.y) for the multi-material dispatch.
     nointerpolation uint meshMaterial : TEXCOORD5;
+    // Dither-on-closeup flag (flat; Scene::ditherCloseup — the ring's
+    // GFX_DRAW_DITHER_CLOSEUP forwarded by the mesh MS; see the body's
+    // discard + common.hlsli CloseupDitherKeep).
+    nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 #define GFX_MATERIAL_ID (IN.meshMaterial)

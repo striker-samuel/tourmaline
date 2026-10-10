@@ -67,6 +67,13 @@ struct MeshVert
     // Mesh-only: per-draw material for the multi-material dispatch (the
     // mesh FS twin reads this; the classic FS keeps pc.materialId).
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
+    // Dither-on-closeup flag (flat; Scene::ditherCloseup): the Draw ring's
+    // per-draw state this frame (GFX_DRAW_DITHER_CLOSEUP) — the unified
+    // per-path channel (default.vert / gfxfiltered.vert deliver theirs at
+    // the same location). The mesh leg is opaque-only (MeshDrawEligible
+    // skips masked buckets), so this stays 0 here today; kept for the
+    // interface parity the lit FS twin declares.
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 // Per-triangle cull: verbatim port of CullTriangle (gfxfilter.cs.hlsl),
@@ -305,6 +312,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                 : GfxLightmapUv(chartUv, chW, draw.misc2.x, P.lmXforms);
             v.lmChunk = draw.misc.w;
             v.meshMaterial = draw.misc2.y;
+            v.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
 
             float3 normal = OctDecodeNormal(nW);
             float4 tangent = OctDecodeTangent(tW);

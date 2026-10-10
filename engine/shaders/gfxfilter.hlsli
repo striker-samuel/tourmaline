@@ -72,6 +72,12 @@ struct GfxBatches { uint4 batch[GFX_MAX_BATCH_SLOTS]; };
 #define GFX_BATCH_DEMAND 0x1 // batch.w bit 0
 
 #define GFX_DRAW_TWOSIDED 0x1 // misc.y: double-sided, skip backface cull
+// misc.y bit 1: Scene::ditherCloseup fade band this frame (C++ mirror
+// DrawFlagBit_DitherCloseup): the filtered VS / mesh MS forward it flat
+// (VS location 8) to the lit FS family + the masked seed FSs so they
+// screen-door with CloseupDitherKeep (common.hlsli). Set at PushDraw time
+// together with the MASKED bucket routing (the alpha-tested depth legs).
+#define GFX_DRAW_DITHER_CLOSEUP 0x2
 
 // Draw-set buckets (T1; mirrors C++ DrawSetBit_*). The seed depth pass
 // issues one PSO per bucket; views mask which buckets they accept.

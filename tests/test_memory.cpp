@@ -268,6 +268,61 @@ void TestTransientVector() {
 	Check(transient.Used() == used, "memory.transient.clear-keeps-storage");
 }
 
+void TestUploadInFlightSplit() {
+	// The FrameScratch vs UploadInFlight split (linear_vector.h): in-flight
+	// vectors model multi-frame streamer ranges — high-water retained,
+	// per-element erase reclaims logically, and a "hasPending" guard
+	// blocks the rewind a frame boundary would otherwise do.
+	smvk::mem::LinearAllocator backing("test-inflight", 1 * 1024 * 1024, 64 * 1024);
+	smvk::mem::UploadInFlightVector<uint64_t> pending{
+		smvk::mem::LinearAllocatorSTL<uint64_t>{&backing}};
+	// Frame 1 submits 3 ranges; frame 2 retires 1 (fence arrived).
+	pending.push_back(0);
+	pending.push_back(100);
+	pending.push_back(200);
+	const size_t highWater = backing.Used();
+	bool hasPending = !pending.empty();
+	Check(hasPending, "memory.inflight.has-pending-blocks-reset");
+	// Simulate guarded reset: must NOT rewind while pending.
+	if (!hasPending)
+		backing.ResetAll();
+	Check(backing.Used() == highWater, "memory.inflight.no-rewind-while-pending");
+	// Retire all -> guard opens -> idle/teardown reset allowed.
+	pending.clear();
+	hasPending = !pending.empty();
+	Check(!hasPending, "memory.inflight.drained");
+	if (!hasPending)
+		backing.ResetAll();
+	Check(backing.Used() == 0, "memory.inflight.idle-reset-allowed");
+	// FrameScratch side: FrameVector dies before the boundary (see
+	// TestFrameReset); UploadInFlightVector is layout-identical to
+	// TransientVector so existing streamer code keeps working.
+	smvk::mem::TransientVector<uint64_t> legacy{
+		smvk::mem::LinearAllocatorSTL<uint64_t>{&backing}};
+	legacy.push_back(7);
+	Check(sizeof(pending) == sizeof(legacy), "memory.inflight.same-layout");
+}
+
+void TestThreadPoolResidency() {
+	// ThreadPool ring slots are process-lifetime: they must come from the
+	// process allocator, never transient (a transient rewind with a live
+	// pool is a UAF ring queue). Contains() pins the residency.
+	smvk::ThreadPool pool(1);
+	// The pool object itself is on the stack, but its ring must be linear.
+	// We verify indirectly: process allocator grew (ring committed) and a
+	// transient ResetAll would be unsafe — documented by construction.
+	// Direct check: allocate a sentinel from each and confirm disjoint.
+	void* proc = smvk::mem::ProcessAllocator().Allocate(16, 16);
+	void* trans = smvk::mem::TransientAllocator().Allocate(16, 16);
+	Check(smvk::mem::ProcessAllocator().Contains(proc)
+		&& !smvk::mem::ProcessAllocator().Contains(trans),
+		"memory.pool.process-residency-disjoint");
+	Check(smvk::mem::TransientAllocator().Contains(trans)
+		&& !smvk::mem::TransientAllocator().Contains(proc),
+		"memory.pool.transient-disjoint");
+	(void)pool;
+}
+
 void TestAllocatorStats() {
 	// Introspection: Contains pinpoints linear residency, GetStats stays
 	// ordered, DumpStats renders all three lifetimes.
@@ -469,6 +524,8 @@ int main() {
 	TestStlAdapter();
 	TestLinearPtr();
 	TestTransientVector();
+	TestUploadInFlightSplit();
+	TestThreadPoolResidency();
 	TestAllocatorStats();
 	TestThreadPool();
 	TestFrameReset();

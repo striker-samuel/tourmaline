@@ -418,3 +418,23 @@ meshoptimizerConfigVersion.cmake
 /external/FidelityFX-SDK-v1.1.4/docs
 /external/FidelityFX-SDK-v1.1.4
 /build-asan
+
+# --- VulkanToy runtime products (never commit) ---
+# pipeline_cache.bin: Vulkan pipeline-cache blob written next to the CWD
+# (VULKANTOY_PIPELINE_CACHE default path). Local perf artifact, not source.
+# exports/screenshot_*.png + dumps: headless VULKANTOY_CAPTURE / SSR / EVSM
+# / WYSIWYG dumps (capture frame must land inside --bench). The tracked
+# exports/lut_neutral.png stays tracked — gitignore never untracks it.
+# Redirect bench/cook *.log output to out/logs/ (out/ is ignored wholesale).
+/pipeline_cache.bin
+pipeline_cache*.bin
+/exports/screenshot_*.png
+/exports/*dump*.png
+/exports/ssr_*.png
+/exports/evsm_*.png
+
+# --- vendored SDK / data clones (build inputs, never source) ---
+# Same convention as external/FidelityFX-SDK-v1.1.4 above: full upstream
+# clones stay untracked; the build consumes them in place.
+/external/FidelityFX-SDK/
+/external/df_game_data/

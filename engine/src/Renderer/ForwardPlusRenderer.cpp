@@ -82,6 +82,11 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 	// Execute(); nothing here may reference the frame-local fc).
 	smvk::World* world = fc.world;
 	const IRenderer::PushConstants depthPC = fc.pc;
+	// Dither-on-closeup anchor eye (Scene::ditherCloseup; per frame): the
+	// state walk measures the camera distance to the flagged subtree's
+	// anchor, exactly like the filtered path (GfxRenderer::FilterMainView)
+	// and the direct Main/shadow legs — one decision per draw per frame.
+	const glm::vec3 ditherEye = fc.eye;
 	const smvk::LogicalImageViewHandle depthView = fc.depthView;
 	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
@@ -145,7 +150,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 			gbufferView, gbufferLoad);
 		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
 			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable,
-			gbufferOn](smvk::CommandBuffer& cmd)
+			gbufferOn, ditherEye](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			// Phase 2 masked pipeline: cull follows the material raster
@@ -178,11 +183,28 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 				boundMaskedCull = cull;
 			};
 			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+				// Dither-on-closeup (Scene::ditherCloseup; per frame, per
+				// draw): Hidden draws drop out of the depth entirely (the
+				// CPU cull — no leg sees them this frame); Fade draws join
+				// the MASKED phase so their depth runs the alpha-tested FS
+				// (the closeup screen-door — solid depth would leave black
+				// holes through the fading subtree where the lit pass
+				// discards) and carry the per-draw flag
+				// (PushConstants::padEnd_[0] -> default.vert forwards it
+				// flat to the FS).
+				const DitherCloseupState ditherState =
+					DitherCloseupStateFor(world->scene,
+						int(item.node), ditherEye);
+				if (ditherState == DitherCloseupState::Hidden)
+					return;
+				const bool ditherFade =
+					ditherState == DitherCloseupState::Fade;
 				// Masked (cutout) flag replaces the per-node material
 				// fetch the phase split used to pay. Material-less meshes
 				// carry no flag and stay in the solid phase (drawn, like
 				// the old mat == nullptr path).
-				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0
+						|| ditherFade) != maskedPhase)
 					return;
 				// Fallback-only mode (Northlight depth split): the gfx
 				// filter's temporal set owns this item's depth — the seed
@@ -272,6 +294,14 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					cull = mat->pipeline.raster.cullMode;
 				ensureMaskedPipeline(cull);
 			}
+			// Per-draw dither-on-closeup flag (padEnd_[0] — the partial
+			// push range persists across draws, so EVERY draw pushes its
+			// word: 0 or 1, never a stale Fade flag leaking into the next
+			// draw's pipeline state).
+			objectPC.padEnd_[0] = ditherFade ? 1u : 0u;
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
+				sizeof(objectPC.padEnd_[0]), &objectPC.padEnd_[0],
+				smvk::ShaderStage::All);
 			// materialId: the masked FS always read it (alpha test); the
 			// G-buffer solid FS reads it too (roughness/metal lookup).
 			if (maskedPhase || gbufferOn) {

@@ -4,8 +4,17 @@
 // engine's WorldRenderer renders whatever world the host hands it.
 #include "Host.h"
 
+#include <Engine/App/RunConfig.h>
+
 int main(int argc, const char* argv[]) {
+	// Central run config: parse ALL VULKANTOY_* once, log one line, warn
+	// on unknown names (typos silently no-op'd before). Subsystems read
+	// their slab from here; legacy getenv sites migrate incrementally.
+	const engine::RunConfig runCfg = engine::RunConfig::Parse();
+	runCfg.Log();
+	engine::RunConfig::WarnUnknown();
 	app::PakAppConfig cfg;
+	cfg.run = runCfg;
 	int exitCode = 0;
 	if (!app::ParsePakAppArgs(argc, argv, cfg, exitCode))
 		return exitCode;

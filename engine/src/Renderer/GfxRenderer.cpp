@@ -1191,6 +1191,22 @@ namespace engine {
 			if (worldMesh >= meshMap_.size())
 				return; // unknown mesh: legacy direct path still draws it
 			const glm::mat4& model = world.scene.globalTransform[item.node];
+			// Dither-on-closeup (Scene::ditherCloseup; per frame, per
+			// draw): Hidden draws drop out of the frame's filtered set
+			// entirely (the CPU cull — no leg sees them); Fade draws
+			// carry the ring flag (GFX_DRAW_DITHER_CLOSEUP -> the
+			// filtered VS / mesh MS forward it flat to the lit FS
+			// family) and route into the MASKED bucket so the seed /
+			// remainder depth legs bind their alpha-tested FSs — the
+			// depth screen-doors with the lit pixels (solid depth
+			// would leave black holes through the fading subtree).
+			// The direct legs make the same per-frame decision inline
+			// (ForwardPlusRenderer prepass, RecordShadowCastersDirect,
+			// the Main direct fallback) so both paths agree per draw.
+			const DitherCloseupState ditherState =
+				DitherCloseupStateFor(world.scene, int(item.node), eye);
+			if (ditherState == DitherCloseupState::Hidden)
+				return;
 			// LOD-aware push (World::LodIndexForNode shares the halfrate
 			// cache with every direct-draw consumer, so both sides agree
 			// per node per frame): the selected sibling's gfx mesh goes
@@ -1271,6 +1287,16 @@ namespace engine {
 					drawFlags |= smvk::gfx::DrawFlagBit_TwoSided;
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					drawSet = smvk::gfx::DrawSetBit_Masked;
+			}
+			// Dither-on-closeup Fade band (see the state check above): the
+			// ring flag forwards flat (VS location 8) into the lit FS
+			// family, and the MASKED bucket routes the seed/remainder depth
+			// legs through their alpha-tested FSs so the depth screen-doors
+			// in step with the lit pixels (solid depth would leave black
+			// holes through the fading subtree).
+			if (ditherState == DitherCloseupState::Fade) {
+				drawFlags |= smvk::gfx::DrawFlagBit_DitherCloseup;
+				drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
 			// Lightmap chunk rides the draw: resolved from the SELECTED LOD
 			// sibling, whose own texCoord2 addresses its own atlas rects.

@@ -1,4 +1,18 @@
 cmake_minimum_required(VERSION 3.17)
+# Build hygiene (see docs/project_guide.md): this repo is Ninja-only and
+# out-of-source. In-source configures pollute the tree (CMakeCache.txt,
+# *.vcxproj, Testing/, Debug/ next to the sources) and the Visual Studio
+# generator breaks the Ninja-configured out/build/<config> dirs.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+  message(FATAL_ERROR "In-source builds are forbidden: configure out-of-source "
+    "with Ninja, e.g. cmake -B out/build/x64-Release -G Ninja "
+    "-DCMAKE_BUILD_TYPE=Release . (If you already configured in-source, "
+    "delete CMakeCache.txt + CMakeFiles/ + Testing/ from the source root.)")
+endif()
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+  message(FATAL_ERROR "The Visual Studio generator is unsupported: use Ninja "
+    "(-G Ninja). See AGENTS.md.")
+endif()
 project(VulkanToy LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)

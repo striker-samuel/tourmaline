@@ -20,6 +20,15 @@ struct VSOut
     // the declared interface must agree.
     [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
+    // Dither-on-closeup inputs for shadow_body's screen-door (Scene::
+    // ditherCloseup; see common.hlsli CloseupDitherKeep): the world
+    // position for the per-pixel camera-distance factor (the MAIN camera
+    // is the fade's anchor even in light-view passes) + the per-draw
+    // flag from the pc word (PushConstants::padEnd_.x — the direct
+    // shadow/prepass legs push it per draw; the filtered seed twins
+    // deliver the Draw ring's flag at the same locations).
+    [[vk::location(2)]] float3 worldPos : TEXCOORD2;
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 VSOut mainVS(VSIn IN)
@@ -30,6 +39,10 @@ VSOut mainVS(VSIn IN)
 
     OUT.color = IN.color;
     OUT.uv = IN.uv;
+    OUT.worldPos = world.xyz;
+    // Byte 240 of the scene pc (padEnd_.x — the per-draw overlay scratch's
+    // last word): the direct legs' per-draw dither-on-closeup flag.
+    OUT.ditherCloseup = pc.padEnd.x;
 
     // RenderView path: every shadow pass owns an allocated view (one per
     // directional cascade / spot tile); its VP is the single source of

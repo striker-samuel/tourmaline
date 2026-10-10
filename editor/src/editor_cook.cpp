@@ -149,18 +149,36 @@ void EditorApp::CookToPak(bool quickBakes) {
 	m_cookDefHash = defHash;
 	// contentDir = absolute path to the content root (parent of
 	// "content/"): for F:\content\models\... it is the drive root.
+	// THE CANONICAL HOST PATH drives the marker walk (m_gltfHostPath —
+	// the file that actually loaded, GUID-resolved on tour opens): the
+	// recorded identity (m_gltfPath) can be a project-RELATIVE
+	// "content/models/..." on tour-opened scenes, whose "." parent then
+	// resolved against the EDITOR CWD (the build dir) — every bake
+	// sidecar the cook stages (gi/*.sggi + *.cvol, textures/cubemaps/
+	// <base>[_N].ktx2 + the .cubemanifest) landed next to the exe
+	// instead of the project, and the hosted view's project-root VFS
+	// never saw them (the "cubemap probe preview not drawn in the
+	// editor" report — the probes bake fine, they just surface in the
+	// wrong tree). A RELATIVE marker (at 0) resolves against the
+	// project root when one is open (the tour records project-space
+	// sources; the project owns the content tree), else the CWD like
+	// before.
 	std::string contentDir, inVfs;
 	{
-		std::string posix = m_gltfPath;
+		const std::string identity = !m_gltfHostPath.empty()
+			? m_gltfHostPath : m_gltfPath;
+		std::string posix = identity;
 		for (char& c : posix)
 			if (c == '\\')
 				c = '/';
 		{
 			const std::string marker = "content/";
 			const size_t at = posix.find(marker);
-			if (at != std::string::npos) {
+			if (at != std::string::npos && !identity.empty()) {
 				// contentDir = parent of "content/" so VFS mount works.
-				std::string parentPath = (at > 0) ? posix.substr(0, at) : ".";
+				std::string parentPath = (at > 0) ? posix.substr(0, at)
+					: (m_projectRoot.empty() ? std::string(".")
+						: m_projectRoot);
 				contentDir = std::filesystem::absolute(parentPath).string();
 				inVfs = posix.substr(at); // "content/models/..."
 			}

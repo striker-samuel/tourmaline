@@ -1,8 +1,9 @@
 #pragma once
 // Renderer interface: owns the scene push-constant layout.
 //
-// Was `engine::PushConstants` (Engine/Rendergraph/PushConstants.h) — an
-// engine-wide definition every frame renderer included. The layout is
+// Migration complete (10/2): was `engine::PushConstants`
+// (Engine/Rendergraph/PushConstants.h, deleted) — an engine-wide
+// definition every frame renderer included. The layout is
 // really a renderer contract: it must match the HLSL PushConstants in
 // engine/shaders/common.hlsli field-for-field, and only a renderer that
 // binds those shaders can own it. Helpers that record draws against it
@@ -62,6 +63,12 @@ public:
 		// {0,1,2, 4,5,6, 8,9,10, 12,13,14}, see the pack loop in
 		// world_renderer.cpp drawMotionNode).
 		float prevModel[12];
+		// padEnd_[0]: the DIRECT legs' per-draw dither-on-closeup flag
+		// (Scene::ditherCloseup — pushed per draw, 0/1, by the direct
+		// prepass / Main / shadow legs; default.vert / shadow.vert
+		// forward it flat at VS location 8 so the FS family reads ONE
+		// channel on both paths — the filtered legs deliver the gfx Draw
+		// ring's DrawFlagBit_DitherCloseup there). [1..3] stay scratch.
 		uint32_t padEnd_[4];
 	};
 
@@ -95,11 +102,49 @@ static_assert(offsetof(IRenderer::PushConstants, frameUniforms) == 64,
 	"frameUniforms mirror drift");
 static_assert(offsetof(IRenderer::PushConstants, lightsBuffer) == 72,
 	"lightsBuffer mirror drift (sub-192 invariant)");
+static_assert(offsetof(IRenderer::PushConstants, materialsBuffer) == 80,
+	"materialsBuffer mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, cascadeBuffer) == 88,
+	"cascadeBuffer mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, materialId) == 96,
+	"materialId mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, comparisonSamplerId) == 100,
+	"comparisonSamplerId mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, numCascades) == 104,
+	"numCascades mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, cascadeIndex) == 108,
+	"cascadeIndex mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpLights) == 112,
+	"fpLights mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpTileCounts) == 120,
+	"fpTileCounts mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpTileIndices) == 128,
+	"fpTileIndices mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpTileCountX) == 136,
+	"fpTileCountX mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpLightCount) == 140,
+	"fpLightCount mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpTileSize) == 144,
+	"fpTileSize mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, fpMaxPerTile) == 148,
+	"fpMaxPerTile mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, spotShadowBuffer) == 152,
+	"spotShadowBuffer mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, spotShadowMapIndex) == 160,
+	"spotShadowMapIndex mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, spotShadowCount) == 164,
+	"spotShadowCount mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, spotIndex) == 168,
+	"spotIndex mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, pad_pc) == 172,
+	"pad_pc mirror drift (transparency technique word)");
 static_assert(offsetof(IRenderer::PushConstants, renderViews) == 176,
 	"renderViews mirror drift");
 static_assert(offsetof(IRenderer::PushConstants, mainRenderView) == 184,
 	"mainRenderView mirror drift");
 static_assert(offsetof(IRenderer::PushConstants, renderViewIndex) == 188,
 	"renderViewIndex mirror drift");
+static_assert(offsetof(IRenderer::PushConstants, padEnd_) == 240,
+	"padEnd_ mirror drift");
 
 } // namespace engine

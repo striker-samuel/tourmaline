@@ -127,6 +127,40 @@ bool DitherKeep(float alpha, float2 pix)
     return alpha > DitherBayer4(pix);
 }
 
+// -------------------------------------------------------------------------
+// Dither-on-closeup (Scene::ditherCloseup; see scene.h): the flagged
+// subtree screen-doors away as the camera closes on its anchor — LOD-pop
+// hiding for impostors/foliage. The CPU routes the per-frame per-draw state
+// (DitherCloseupStateFor): Hidden draws are CPU-culled outright; Fade draws
+// carry a per-draw flag (the gfx Draw ring's GFX_DRAW_DITHER_CLOSEUP ->
+// the filtered VS / mesh MS forward it flat at location 8, or
+// PushConstants::padEnd.x -> default.vert / shadow.vert forward it) and
+// every discarding leg — the lit FS family, the masked depth/shadow FSs —
+// screen-doors with THIS keep-test: the same ordered Bayer pattern as
+// dithered transparency, so SMAA T2x integrates both identically. The
+// factor is per-PIXEL (worldPos vs the camera eye), so the CPU pushes
+// only the 0/1 flag. Band constants mirror C++ kDitherCloseup* (scene.h).
+// -------------------------------------------------------------------------
+#define DITHER_CLOSEUP_HIDE_M   1.0f  // fully hidden at/below (m from the anchor)
+#define DITHER_CLOSEUP_SOLID_M  8.0f  // fully solid at/beyond
+
+// Closeup keep FACTOR (0..1): the camera distance [hide, solid] mapped
+// hidden -> 0, solid -> 1 (the per-pixel distance, so the CPU pushes only
+// the 0/1 flag). The A2C lit twin folds this into its output coverage.
+float CloseupDitherFactor(float3 worldPos, float3 eye)
+{
+    float d = distance(worldPos, eye);
+    return saturate(
+        (d - DITHER_CLOSEUP_HIDE_M)
+        / (DITHER_CLOSEUP_SOLID_M - DITHER_CLOSEUP_HIDE_M));
+}
+
+// True when a dither-closeup-flagged fragment survives at this pixel.
+bool CloseupDitherKeep(float3 worldPos, float3 eye, float2 pix)
+{
+    return DitherKeep(CloseupDitherFactor(worldPos, eye), pix);
+}
+
 // Configurable environment block (skydome IBL + fog).
 // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
 struct EnvironmentFrameData
@@ -555,7 +589,7 @@ uint decalCount;                                         // 776 0 = decals off
     // pixel shader reaches the hot slab through FrameUniforms (FramePSHot
     // hot = frame.frameHot.Get()) instead of a pc member — a pc member
     // shifted every sub-192 pc field and broke the HLSL mirror structs
-    // (the 10/1 device-loss crash; see App/push_constants.h). Filled per
+    // (the 10/1 device-loss crash; see Engine/Renderer/Renderer.h). Filled per
     // view slab by the app (UpdateFrameUniforms/BuildSecondaryFrameUniforms).
     vk::BufferPointer<FramePSHot> frameHot;                   // 1296 this view's hot slab
     // ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
@@ -606,71 +640,12 @@ uint decalCount;                                         // 776 0 = decals off
 // which is guarded and free-standing).
 #include "deferredshadow.hlsli"
 
-// LAYOUT INVARIANT: real shared fields stay within bytes 0..192 — the
-// HLSL mirror structs (DefaultVsPush, UvFlatVsPush, the seed/shadow/
-// placement/filtered tails) hard-code the sub-192 offsets and bytes
-// 192..256 are the per-draw overlay scratch (filtered VS tail 192..224,
-// direct chart tail 192..208, per-draw prevModel push 192..240). The
-// FS-only hot slab is reached via FrameUniforms::frameHot, NOT a pc
-// member (a pc member here shifted every later field and broke every
-// mirror — async device loss; see App/push_constants.h).
-struct PushConstants
-{
-    float4x4 model;
-    vk::BufferPointer<FrameUniforms>
-    frameUniforms;
-    vk::BufferPointer<LightBuffer>
-    bLights;
-    vk::BufferPointer<MaterialsBuffer>
-    bMats;
-    vk::BufferPointer<DirectionalCascadeBuffer>
-    cascadeBuffer;
-    uint materialId;
-    uint comparisonSamplerId;
-    uint numCascades;
-    uint cascadeIndex;
-    // Forward+ (opaque pass; ignored when fpLightCount == 0)
-    vk::BufferPointer<ForwardPlusLightBuffer>
-    fpLights;
-    vk::BufferPointer<ForwardPlusTileCountBuffer>
-    fpTileCounts;
-    vk::BufferPointer<ForwardPlusTileIndexBuffer>
-    fpTileIndices;
-    uint fpTileCountX;
-    uint fpLightCount;
-    uint fpTileSize;
-    uint fpMaxPerTile;
-    // Spot shadows (opaque pass sampling + spot depth passes).
-    // spotShadowBuffer: tile descriptors (GpuCascadeDescription tiles).
-    // spotShadowMapIndex: bindless spot atlas, UINT32_MAX when none.
-    // spotShadowCount: active tiles this frame (<= MAX_SPOT_SHADOWS).
-    // spotIndex: tile rendered by the current shadow pass,
-    //   0xFFFFFFFF when the pass is NOT a spot shadow pass.
-    vk::BufferPointer<SpotShadowBuffer>
-    spotShadowBuffer;
-    uint spotShadowMapIndex;
-    uint spotShadowCount;
-    uint spotIndex;
-    // Transparency technique for AlphaMode::Blend materials (see DitherKeep
-    // above): 0 = dithered screen-door (default, opaque state), 1 = classic
-    // alpha blend. Must match App/push_constants.h pad_pc.
-    uint pad_pc;
-    // RenderView system (see renderview.hlsli): per-frame virtual cameras
-    // (main game camera + one view per shadow cascade / spot tile / custom
-    // pass). mainRenderView indexes the game camera view; renderViewIndex
-    // is the view the current pass renders from, 0xFFFFFFFF when the pass
-    // has no view of its own (compute / post passes).
-    vk::BufferPointer<RenderViewBuffer>
-    renderViews;
-    uint mainRenderView;
-    uint renderViewIndex;
-    // Motion vector pass: last frame's model matrix per draw as float3x4 (192..240).
-	// Last row (0,0,0,1) is implied. 12 floats = 48 bytes. The CPU pack
-	// (world_renderer.cpp) stores matrix COLUMNS (glm columns xyz +
-	// translation), matching the SPV RowMajor/stride-12 v4 x M lowering.
-	float3x4 prevModel;
-    uint4 padEnd;
-};
+// Scene push-constant mirror lives in push_constants.hlsli (single source
+// of truth: tools/push_constants_idl/push_constants.yaml; verify with
+// python tools/push_constants_idl/codegen.py --check). Included here so
+// legacy `#include "common.hlsli"` translation units keep working; new
+// shaders may include push_constants.hlsli directly for fine-grained deps.
+#include "push_constants.hlsli"
 
 // Specialization constants (driver constant-folds these per permutation).
 // REAL DXC spec-constant form: [[vk::constant_id(N)]] on a const with a

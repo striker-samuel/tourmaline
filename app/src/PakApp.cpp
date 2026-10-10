@@ -311,7 +311,7 @@ int RunPakApp(PakAppConfig cfg) {
 		passCfg = engine::WorldRendererConfig::Minimal();
 	ApplyPassCsv(passCfg, cfg.withCsv.c_str(), true);
 	ApplyPassCsv(passCfg, cfg.withoutCsv.c_str(), false);
-	renderer.Configure(passCfg);
+	renderer.Configure(passCfg, cfg.run);
 	// Demo content (embers at the origin, sponza decal presets): an APP
 	// host opt-in — the renderer never seeds content on its own (the
 	// editor's hosted view stays clean). Transitional: presets/emitters

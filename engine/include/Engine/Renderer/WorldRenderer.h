@@ -27,6 +27,7 @@
 
 #include <Engine/App/app.h>
 #include <Engine/App/keybindings.h>
+#include <Engine/App/RunConfig.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Camera/camera.h>
@@ -556,7 +557,7 @@ struct FrameUniforms
 	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member â€”
 	// a pc member shifted every sub-192 pc field and broke the HLSL
 	// mirror structs (the 10/1 device-loss crash; see
-	// App/push_constants.h layout invariant). Filled per view slab in
+	// Engine/Renderer/Renderer.h layout invariant). Filled per view slab in
 	// UpdateFrameUniforms / BuildSecondaryFrameUniforms. ----
 	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
 	// ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
@@ -894,7 +895,12 @@ public:
 	const char* RendererName() const override { return "World"; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
+	// The RunConfig overload applies the central VULKANTOY_* environment
+	// (parsed once by main); the bare overload parses it locally for
+	// hosts that have not migrated yet (editor). Prefer the two-arg form.
 	void Configure(WorldRendererConfig passes);
+	void Configure(WorldRendererConfig passes, const RunConfig& run);
+	void ApplyRunConfig(const RunConfig& run);
 
 	// WORLD SOURCE â€” the host owns all content loading (the renderer
 	// knows nothing about paks, scene files or scene discovery). Called
@@ -1014,12 +1020,11 @@ public:
 			m_volumetricQuality = smvk::VolumetricQuality::Custom;
 		}
 	}
-	// Headless volumetric overrides (VULKANTOY_VOLUMETRIC,
-	// VULKANTOY_VOLUMETRIC_STEPS, VULKANTOY_VOLUMETRIC_CVOL): the
-	// AGENTS.md contract is "scene fog settings lose" â€” the scene seed
-	// above would otherwise stomp a headless force-on at every scene
-	// load/rebind, so the overrides re-apply after the seed (and at
-	// startup Configure). The UI panel stays live afterwards.
+	// Headless volumetric pins (the Configure snapshot): the AGENTS.md
+	// contract is "scene fog settings lose" — the scene seed above would
+	// otherwise stomp a headless force-on at every scene load/rebind, so
+	// the pins re-apply after the seed (and at startup Configure). The UI
+	// panel stays live afterwards.
 	void ApplyHeadlessVolumetricOverrides();
 	// Postfx look seed (the App panels' settings, authored in SceneEnv):
 	// bloom (complete) + tonemap + exposure + AO + SSR + motion blur +
@@ -1072,11 +1077,10 @@ public:
 		m_cubemapEnabled = env.cubemapEnabled;
 		m_cubemapIntensity = std::clamp(env.cubemapIntensity, 0.0f, 4.0f);
 	}
-	// Headless postfx overrides (VULKANTOY_AA/SSR/BLOOM_*/AO/
-	// AUTO_EXPOSURE/CUBEMAP): same "scene settings lose" contract as the
-	// volumetric ones â€” called at startup Configure AND after the
-	// per-scene PushPostfxEnv seed (scene load/rebind would otherwise
-	// stomp a headless pin).
+	// Headless postfx pins (the Configure snapshot): same "scene settings
+	// lose" contract as the volumetric ones — called at startup Configure
+	// AND after the per-scene PushPostfxEnv seed (scene load/rebind would
+	// otherwise stomp a headless pin).
 	void ApplyHeadlessPostfxOverrides();
 
 	// ---------------------------------------------------------------------
@@ -2721,6 +2725,12 @@ protected:
 	// afterwards (the pin applies only at load/rebind; a bench never
 	// rebinds, so "X toggles it back live" keeps working).
 	int m_autoExposurePin = -1; // -1 none, 0 pinned off, 1 pinned on
+	// Headless-pin snapshot (layer 2 of the authored-content layering, see
+	// Engine/App/RunConfig.h): stored once at Configure, re-applied by
+	// ApplyHeadless*Overrides after every authored scene seed. Never
+	// re-reads the environment, so pins are stable for the whole run and
+	// the UI stays live after each application.
+	RunConfig m_headlessPins{};
 	float m_manualExposure = 0.001f; // used when auto is off (== TONEMAP_EXPOSURE)
 	float m_exposureAdapted = 0.001f; // smoothed exposure (seeded to manual)
 	// Seconds accumulated since the last Adapt step. The adapt only runs

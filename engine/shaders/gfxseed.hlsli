@@ -44,6 +44,15 @@ struct SeedVSOut
     float4 pos : SV_Position;
     [[vk::location(0)]] float3 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
+    // Dither-on-closeup inputs (the MASKED seed/remainder twins pair with
+    // shadow.frag's screen-door — see common.hlsli CloseupDitherKeep):
+    // the per-draw flag from the Draw ring + the world position for the
+    // per-pixel camera-distance factor. The OPAQUE seed twins are VS-only
+    // pipelines with no FS: they leave these unwritten and no stage
+    // declares them (locations a VS never writes are fine when no FS
+    // input consumes them — the same rule as the color/uv pair above).
+    [[vk::location(2)]] float3 worldPos : TEXCOORD2;
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 float4 SeedClipPos(float3 position, uint instanceID,
@@ -56,4 +65,23 @@ float4 SeedClipPos(float3 position, uint instanceID,
     float4x4 viewProj =
         renderViews.Get().views[renderViewIndex].m_viewProjectionMatrix;
     return mul(viewProj, world);
+}
+
+// World-space seed position (the masked twins' dither-closeup distance
+// term — the same ring fetch SeedClipPos pays, L1-resident by the time
+// the draw record is re-read).
+float3 SeedWorldPos(float3 position, uint instanceID,
+    vk::BufferPointer<GfxDraws> draws)
+{
+    return mul(draws.Get().draws[instanceID].model,
+        float4(position, 1.0)).xyz;
+}
+
+// Per-draw dither-on-closeup flag from the Draw ring (misc.y bit 1 —
+// GFX_DRAW_DITHER_CLOSEUP; set at PushDraw time together with the MASKED
+// bucket routing that lands the draw in these alpha-tested twins).
+uint SeedDitherCloseup(uint instanceID, vk::BufferPointer<GfxDraws> draws)
+{
+    return (draws.Get().draws[instanceID].misc.y
+        & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
 }

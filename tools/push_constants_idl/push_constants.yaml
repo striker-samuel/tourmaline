@@ -1,0 +1,39 @@
+# Single source of truth for the scene push-constant mirror.
+# C++ owner: engine/include/Engine/Renderer/Renderer.h (engine::IRenderer::PushConstants)
+# HLSL owner: engine/shaders/push_constants.hlsli (struct PushConstants, included by common.hlsli)
+# Generated: codegen.py --check verifies both sides field-for-field (offset + size).
+# Rule: real shared fields MUST stay within bytes 0..192; 192..256 is per-draw overlay scratch.
+#   Scratch map: 192..208 direct chart tail, 192..224 filtered VS tail, 192..240 motion
+#   prevModel, 240..244 padEnd_.x = the DIRECT legs' per-draw dither-on-closeup flag
+#   (Scene::ditherCloseup; pushed per draw by the direct prepass/Main/shadow legs,
+#   forwarded flat by default.vert/shadow.vert at VS location 8).
+# Total must be exactly 256 bytes (engine push budget, single global range).
+total_size: 256
+scratch_start: 192
+fields:
+  - { name: model, cpp: "float model[16]", hlsl: "float4x4 model", offset: 0, size: 64 }
+  - { name: frameUniforms, cpp: "uint64_t frameUniforms", hlsl: "vk::BufferPointer<FrameUniforms> frameUniforms", offset: 64, size: 8 }
+  - { name: lightsBuffer, cpp: "uint64_t lightsBuffer", hlsl: "vk::BufferPointer<LightBuffer> bLights", offset: 72, size: 8 }
+  - { name: materialsBuffer, cpp: "uint64_t materialsBuffer", hlsl: "vk::BufferPointer<MaterialsBuffer> bMats", offset: 80, size: 8 }
+  - { name: cascadeBuffer, cpp: "uint64_t cascadeBuffer", hlsl: "vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer", offset: 88, size: 8 }
+  - { name: materialId, cpp: "uint32_t materialId", hlsl: "uint materialId", offset: 96, size: 4 }
+  - { name: comparisonSamplerId, cpp: "uint32_t comparisonSamplerId", hlsl: "uint comparisonSamplerId", offset: 100, size: 4 }
+  - { name: numCascades, cpp: "uint32_t numCascades", hlsl: "uint numCascades", offset: 104, size: 4 }
+  - { name: cascadeIndex, cpp: "uint32_t cascadeIndex", hlsl: "uint cascadeIndex", offset: 108, size: 4 }
+  - { name: fpLights, cpp: "uint64_t fpLights", hlsl: "vk::BufferPointer<ForwardPlusLightBuffer> fpLights", offset: 112, size: 8 }
+  - { name: fpTileCounts, cpp: "uint64_t fpTileCounts", hlsl: "vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts", offset: 120, size: 8 }
+  - { name: fpTileIndices, cpp: "uint64_t fpTileIndices", hlsl: "vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices", offset: 128, size: 8 }
+  - { name: fpTileCountX, cpp: "uint32_t fpTileCountX", hlsl: "uint fpTileCountX", offset: 136, size: 4 }
+  - { name: fpLightCount, cpp: "uint32_t fpLightCount", hlsl: "uint fpLightCount", offset: 140, size: 4 }
+  - { name: fpTileSize, cpp: "uint32_t fpTileSize", hlsl: "uint fpTileSize", offset: 144, size: 4 }
+  - { name: fpMaxPerTile, cpp: "uint32_t fpMaxPerTile", hlsl: "uint fpMaxPerTile", offset: 148, size: 4 }
+  - { name: spotShadowBuffer, cpp: "uint64_t spotShadowBuffer", hlsl: "vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer", offset: 152, size: 8 }
+  - { name: spotShadowMapIndex, cpp: "uint32_t spotShadowMapIndex", hlsl: "uint spotShadowMapIndex", offset: 160, size: 4 }
+  - { name: spotShadowCount, cpp: "uint32_t spotShadowCount", hlsl: "uint spotShadowCount", offset: 164, size: 4 }
+  - { name: spotIndex, cpp: "uint32_t spotIndex", hlsl: "uint spotIndex", offset: 168, size: 4 }
+  - { name: pad_pc, cpp: "uint32_t pad_pc", hlsl: "uint pad_pc", offset: 172, size: 4 }
+  - { name: renderViews, cpp: "uint64_t renderViews", hlsl: "vk::BufferPointer<RenderViewBuffer> renderViews", offset: 176, size: 8 }
+  - { name: mainRenderView, cpp: "uint32_t mainRenderView", hlsl: "uint mainRenderView", offset: 184, size: 4 }
+  - { name: renderViewIndex, cpp: "uint32_t renderViewIndex", hlsl: "uint renderViewIndex", offset: 188, size: 4 }
+  - { name: prevModel, cpp: "float prevModel[12]", hlsl: "float3x4 prevModel", offset: 192, size: 48 }
+  - { name: padEnd_, cpp: "uint32_t padEnd_[4]", hlsl: "uint4 padEnd", offset: 240, size: 16 }

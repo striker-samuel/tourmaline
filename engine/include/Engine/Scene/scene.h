@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -392,9 +393,29 @@ struct Scene {
 	// Dither on camera closeup (editor + cook): ditherCloseup[node] == 1
 	// marks the node's subtree for a dithered fade when the camera gets
 	// close (LOD-pop hiding for impostors/foliage). Subtree-inherited like
-	// noLightmap. Stored, cooked and replayed end to end; the GPU dither
-	// itself is TODO (no per-node channel in the draw ring yet — the
-	// distance term will ride the per-draw data when that lands).
+	// noLightmap. Stored, cooked and replayed end to end.
+	//
+	// GPU fade (per frame, per draw; see DitherCloseupStateFor): the CPU
+	// walk (IsDitherCloseupNode) resolves the flag to a per-draw state —
+	// Off / Fade / Hidden — measured from the camera to the FLAGGED
+	// ancestor's world translate (the subtree's anchor). Hidden draws
+	// skip the frame's draw lists outright (CPU cull); Fade draws carry a
+	// per-draw flag (the gfx Draw ring's DrawFlagBit_DitherCloseup, or
+	// PushConstants::padEnd_[0] on the direct legs) and every leg that
+	// can discard screen-doors with CloseupDitherKeep (common.hlsli) —
+	// the same ordered Bayer pattern as dithered transparency, so SMAA
+	// T2x integrates both: the lit FS family (default_lit/_a2c/
+	// gfxmesh_lit), the masked depth legs (shadow_body: the direct
+	// prepass/shadow casters + the filtered seed/remainder twins) and
+	// the G-buffer masked writer — the DEPTH dithers in step so the
+	// holes see the real background, and the subtree's shadow fades
+	// with it. Deliberately NOT dithered: the debug-view FSs (they show
+	// the authored geometry solid), the motion-vector legs (the TAA
+	// input is depth-derived; revisit if the fade ever smears under
+	// T2x), and the editor's own direct passes (the hosted live view
+	// owns the WYSIWYG image). The band is fixed meters
+	// (kDitherCloseup* below): fade spans the camera distance [hide,
+	// solid] mapped keep 0..1.
 	// Empty or size-mismatched == off. Carried through merge/serialize
 	// paths alongside staticRoot.
 	std::vector<uint8_t> ditherCloseup;
@@ -441,6 +462,60 @@ inline bool IsDitherCloseupNode(const Scene& scene, int node)
 		n = scene.hierarchy[size_t(n)].parent;
 	}
 	return false;
+}
+
+// Dither-on-closeup fade band (meters from the camera to the flagged
+// subtree's anchor — the flagged node's world translate). Mirrors the HLSL
+// constants DITHER_CLOSEUP_HIDE_M / DITHER_CLOSEUP_SOLID_M (common.hlsli,
+// CloseupDitherKeep): keep 0 at/below hide (fully hidden), keep 1 at/beyond
+// solid (fully solid), the ordered Bayer screen-door between.
+inline constexpr float kDitherCloseupHideM = 1.0f;
+inline constexpr float kDitherCloseupSolidM = 8.0f;
+
+// Per-frame closeup-dither state for one draw's node (see ditherCloseup):
+//   Off    — beyond the band: draw normally, no per-draw flag
+//   Fade   — inside the band: carry the per-draw flag (the Draw ring's
+//            DrawFlagBit_DitherCloseup / PushConstants::padEnd_[0]) so the
+//            discarding legs screen-door; route the draw into the masked
+//            (alpha-tested) depth/shadow programs so the DEPTH dithers
+//            with it — solid depth would leave black holes where the lit
+//            pass discarded
+//   Hidden — at/below the hide distance: skip the draw entirely (CPU
+//            cull; no leg sees it this frame)
+// The anchor is the FLAGGED ancestor's world translate (the nearest one —
+// the tightest authoring intent wins), so the whole flagged subtree fades
+// as one cluster around its anchor, exactly the LOD-pop-hiding use.
+// Fast path: an empty flag table answers Off for every node (one branch —
+// unflagged scenes pay nothing).
+enum class DitherCloseupState { Off = 0, Fade = 1, Hidden = 2 };
+inline DitherCloseupState DitherCloseupStateFor(const Scene& scene,
+	int node, const glm::vec3& eye)
+{
+	if (scene.ditherCloseup.empty())
+		return DitherCloseupState::Off;
+	// Nearest flagged ancestor (or the node itself).
+	int anchor = -1;
+	for (int n = node; n >= 0 && n < int(scene.hierarchy.size()); ) {
+		if ((size_t)n < scene.ditherCloseup.size()
+			&& scene.ditherCloseup[(size_t)n] != 0) {
+			anchor = n;
+			break;
+		}
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	if (anchor < 0)
+		return DitherCloseupState::Off;
+	if (anchor >= int(scene.globalTransform.size()))
+		return DitherCloseupState::Off;
+	const glm::vec3 p(scene.globalTransform[size_t(anchor)][3]);
+	if (!std::isfinite(p.x + p.y + p.z))
+		return DitherCloseupState::Off;
+	const float d = glm::distance(eye, p);
+	if (d <= kDitherCloseupHideM)
+		return DitherCloseupState::Hidden;
+	if (d >= kDitherCloseupSolidM)
+		return DitherCloseupState::Off;
+	return DitherCloseupState::Fade;
 }
 
 // Visibility (Clarisse-style hierarchical override): true when the node

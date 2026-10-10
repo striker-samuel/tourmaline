@@ -5,8 +5,15 @@
 //                          objects (Phase 1), AppArena blocks, resource pools.
 //   FrameAllocator()     — reset at frame start. FrameArena blocks, per-frame
 //                          temporaries (Phase 2).
-//   TransientAllocator() — reset after GPU sync at the frame boundary.
-//                          Staging rings, readback, scratch (Phase 4).
+//   TransientAllocator() — UploadInFlight-monotonic (Phase 4). Staging
+//                          rings, readback, in-flight ranges. The backing
+//                          bump is NEVER rewound while streamer vectors are
+//                          live (they span frames); reclamation is per-
+//                          element clear/erase. FrameScratch (FrameVector +
+//                          ResetFrameArena at DrawFrame start) is the ONLY
+//                          per-frame-reset scratch — never put in-flight
+//                          state in it. A guarded ResetAll is allowed solely
+//                          at device-idle/teardown when nothing is pending.
 //
 // Sizes come from mem::config (alloc_config.h) — resize there.
 //

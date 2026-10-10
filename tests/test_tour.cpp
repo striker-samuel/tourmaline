@@ -2345,6 +2345,250 @@ void TestTextureAssets() {
 	}
 }
 
+namespace {
+
+// Deterministic xorshift64 (fixed seed: the fuzz corpus is reproducible,
+// no time-seeded flakes in ctest).
+struct FuzzRng {
+	uint64_t s = 0x9E3779B97F4A7C15ull;
+	uint64_t next() {
+		s ^= s << 13;
+		s ^= s >> 7;
+		s ^= s << 17;
+		return s;
+	}
+	size_t below(size_t n) { return size_t(next() % uint64_t(n)); }
+};
+
+// Fresh GPU-free cook cluster: root + Wall + Floor + one material (same
+// shape as TestReplay; heap-allocated — Cluster is multi-MB).
+std::unique_ptr<smvk::Cluster> FreshFuzzCluster() {
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	const int root = addNode(cluster->scene, -1, 0);
+	const int g0 = addNode(cluster->scene, root, 1);
+	const int g1 = addNode(cluster->scene, root, 1);
+	setNodeName(cluster->scene, g0, "Wall");
+	setNodeName(cluster->scene, g1, "Floor");
+	smvk::MaterialCreateInfo ci{};
+	ci.baseColorFactor = glm::vec4(1.0f);
+	smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+	cluster->scene.materialForNode[uint32_t(g0)] = m0.index();
+	RebuildStaticCache(cluster->scene);
+	return cluster;
+}
+
+size_t FuzzClusterNodeCount(smvk::Cluster& c) {
+	return c.scene.hierarchy.size();
+}
+
+} // namespace
+
+// Property test: random EditCmd-shaped tour text must never crash, hang,
+// or corrupt — LoadTourFromString either rejects (err set) or parses;
+// ApplyTourToCluster(strict=false) either replays or warns+skips (never
+// aborts the process); Describe never throws; replay is deterministic
+// (two fresh clusters converge). Covers the id-translation surface
+// (numeric ids, UINT32_MAX sentinel, -ref family bases, symbolic -p,
+// bad regex, dup uuid) that hand-written tests only sample.
+void TestTourFuzz() {
+	static const char* kSeeds[] = {
+		"rename -n 1 Wall;",
+		"setTranslate -n 1 -v 1 2 3;",
+		"setRotate -n 1 -v 0 90 0;",
+		"setScale -n 2 -v 1 2 1;",
+		"assignMaterial -n 1 -m 0;",
+		"setMatAttr -m 0 -at baseColor -v 1 0.5 0.25 1;",
+		"setNoLightmap -n 1 -v 1;",
+		"setVisibility -n 2 -v 0;",
+		"parent -n 2 -p 1;",
+		"createLight -n 0 -at point -v 1 2 3;",
+		"setLightAttr -n 4 -at intensity -v 5;",
+		"delete -n 2;",
+		"setUuid -n 1 -uuid 0123456789abcdef0123456789abcdef;",
+		"createNode -at group Group_1;",
+		"createCVolume -n 0 -at box -v 1 1 1;",
+		"setCvolAttr -n 4 -at density -v 0.5;",
+		"createCubemap -n 0 -at probe -v 0 1 0;",
+		"createCamera -n 0 -at persp;",
+		"setCamAttr -n 4 -at fov -v 60;",
+		"terrainPaint -n 1 -at raise -v 0 0 4 0 -t 1;",
+	};
+	static const char* kMutIds[] = {
+		"0", "1", "2", "3", "999999", "4294967295", "-1", "2147483647",
+		"2147483648", "0x80000000", "0x40000003", "0x20000000",
+	};
+	static const char* kMutTails[] = {
+		"", ";", ";;", "-v 0;", "-v 1e38 1e38 1e38;", "-v nan nan nan;",
+		"-v inf -inf 0;", "-p 4294967295;", "-p \"Wall\";",
+		"-p \"No/Such/Path\";", "-ref 999;", "-ref 0;",
+		"-uuid 0123456789abcdef0123456789abcdef;",
+		"-uuid not-a-uuid;", "-uuid 0123456789abcdef0123456789abcde;",
+		"-pattern \"[\";", "-pattern \"(unclosed\";", "-pattern \"*\";",
+		"-pattern \".*\";", "-at bogusAttr;", "-t 1 2;",
+		"\"unterminated;", "\xFF\xFE-binary;",
+	};
+	FuzzRng rng;
+	const int kIters = 240;
+	int parsed = 0, rejected = 0, replayed = 0, skipped = 0;
+	for (int i = 0; i < kIters; ++i) {
+		std::string text = "source -p \"x.gltf\";\n";
+		const int lines = 1 + int(rng.below(3));
+		for (int l = 0; l < lines; ++l) {
+			std::string seed = kSeeds[rng.below(sizeof(kSeeds) / sizeof(kSeeds[0]))];
+			// 50%: rewrite the first -n id with an edge id.
+			if (rng.below(2) == 0) {
+				const size_t at = seed.find("-n ");
+				if (at != std::string::npos) {
+					const size_t end = seed.find_first_of(" ;", at + 3);
+					seed.replace(at + 3, end - (at + 3),
+						kMutIds[rng.below(sizeof(kMutIds) / sizeof(kMutIds[0]))]);
+				}
+			}
+			seed += kMutTails[rng.below(sizeof(kMutTails) / sizeof(kMutTails[0]))];
+			text += seed + "\n";
+		}
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		const bool ok = smvk::tour::LoadTourFromString(text, doc, err, &warns);
+		if (!ok) {
+			++rejected;
+			continue; // honest reject: err set, no partial crash
+		}
+		++parsed;
+		// Describe must never throw, even on garbage commands.
+		for (const auto& c : doc.commands)
+			(void)smvk::tour::Describe(c);
+		// Non-strict replay on a fresh cluster: returns bool, bounded
+		// warnings, node count sane. Run twice for determinism.
+		auto c1 = FreshFuzzCluster();
+		auto c2 = FreshFuzzCluster();
+		const size_t before = FuzzClusterNodeCount(*c1);
+		std::vector<std::string> w1, w2;
+		std::string e1, e2;
+		const bool r1 = smvk::tour::ApplyTourToCluster(*c1, doc, &w1, &e1, false);
+		const bool r2 = smvk::tour::ApplyTourToCluster(*c2, doc, &w2, &e2, false);
+		if (r1)
+			++replayed;
+		else
+			++skipped;
+		if (r1 != r2 || w1.size() != w2.size()
+			|| FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
+			Check(false, "tour fuzz deterministic replay");
+			return;
+		}
+		if (w1.size() > doc.commands.size() + doc.overrides.size() + 8) {
+			Check(false, "tour fuzz warnings bounded");
+			return;
+		}
+		if (FuzzClusterNodeCount(*c1) > before + doc.commands.size() + 4) {
+			Check(false, "tour fuzz node growth bounded");
+			return;
+		}
+		// Strict replay must also just return (never abort).
+		auto c3 = FreshFuzzCluster();
+		std::vector<std::string> w3;
+		std::string e3;
+		(void)smvk::tour::ApplyTourToCluster(*c3, doc, &w3, &e3, true);
+	}
+	Check(parsed > 0 && rejected > 0, "tour fuzz parsed-and-rejected");
+	Check(replayed + skipped == parsed, "tour fuzz replay accounting");
+	// Orphan contract: unresolvable node with strict=false warns and
+	// skips (verbatim re-emit upstream) — never drops silently, never
+	// takes the cluster down.
+	{
+		auto cluster = FreshFuzzCluster();
+		const size_t before = FuzzClusterNodeCount(*cluster);
+		smvk::tour::Doc doc;
+		smvk::tour::Command c{};
+		c.verb = smvk::tour::Verb::Rename;
+		c.node = 9999;
+		c.text = "Ghost";
+		c.name = "Wall";
+		doc.commands.push_back(c);
+		std::vector<std::string> warns;
+		std::string err;
+		const bool ok = smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err, false);
+		Check(!warns.empty(), "tour fuzz orphan warns (never silent)");
+		Check(FuzzClusterNodeCount(*cluster) == before, "tour fuzz orphan no-mutate");
+		(void)ok;
+	}
+	std::cout << "tour fuzz: parsed=" << parsed << " rejected=" << rejected
+		<< " replayed=" << replayed << " skipped=" << skipped << "\n";
+}
+
+// Dither-on-closeup (Scene::ditherCloseup): the per-frame per-draw state
+// walk (DitherCloseupStateFor) — the band edges measured from the camera
+// to the FLAGGED ancestor's world translate, subtree inheritance, the
+// nearest-flagged-ancestor rule, the empty-table fast path, and the
+// setDitherCloseup tour verb round-trip that authors the flag.
+void TestDitherCloseup() {
+	Scene scene;
+	const int root = addNode(scene, -1, 0);
+	const int grp = addNode(scene, root, 1);
+	const int mesh = addNode(scene, grp, 2);
+	const int far = addNode(scene, root, 2);
+	scene.globalTransform.resize(scene.hierarchy.size());
+	scene.globalTransform[grp][3] = glm::vec4(10.0f, 0.0f, 0.0f, 1.0f);
+	scene.globalTransform[far][3] = glm::vec4(100.0f, 0.0f, 0.0f, 1.0f);
+	const glm::vec3 atGrp(10.0f, 0.0f, 0.0f);
+	// Empty flag table: everything Off (the one-branch fast path).
+	Check(DitherCloseupStateFor(scene, mesh, atGrp)
+		== DitherCloseupState::Off, "dither empty table off");
+	// Author the flag on the GROUP (subtree inheritance below it).
+	MarkDitherCloseup(scene, grp);
+	Check(IsDitherCloseupNode(scene, mesh), "dither subtree inherited");
+	Check(!IsDitherCloseupNode(scene, far), "dither sibling unaffected");
+	Check(!IsDitherCloseupNode(scene, root), "dither root unaffected");
+	// Band edges against the flagged ancestor's translate (grp @ 10,0,0).
+	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0))
+		== DitherCloseupState::Hidden, "dither hide edge");
+	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupSolidM, 0, 0))
+		== DitherCloseupState::Off, "dither solid edge");
+	Check(DitherCloseupStateFor(scene, mesh,
+			glm::vec3(10.0f + 0.5f * (kDitherCloseupHideM + kDitherCloseupSolidM), 0, 0))
+		== DitherCloseupState::Fade, "dither mid band fade");
+	Check(DitherCloseupStateFor(scene, mesh, atGrp)
+		== DitherCloseupState::Hidden, "dither camera at anchor hidden");
+	// Unflagged node: Off everywhere.
+	Check(DitherCloseupStateFor(scene, far, atGrp)
+		== DitherCloseupState::Off, "dither unflagged node off");
+	// Flag the ROOT too: the mesh's NEAREST flagged ancestor (grp) wins
+	// (the tighter authoring intent owns the fade band).
+	MarkDitherCloseup(scene, root);
+	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(10.0f + kDitherCloseupHideM, 0, 0))
+		== DitherCloseupState::Hidden, "dither nearest ancestor wins");
+	// Clearing the group flag falls back to the root anchor (0,0,0).
+	ClearDitherCloseup(scene, grp);
+	Check(DitherCloseupStateFor(scene, mesh, glm::vec3(kDitherCloseupHideM, 0, 0))
+		== DitherCloseupState::Hidden, "dither root anchor fallback");
+	// Tour verb round-trip: setDitherCloseup replays onto the scene.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "setDitherCloseup -n " << grp << " -type \"bool\" -v 1;\n";
+		f.close();
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
+			"dither verb parse");
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		addNode(cluster->scene, -1, 0);
+		const int cGrp = addNode(cluster->scene, 0, 1);
+		const int cMesh = addNode(cluster->scene, cGrp, 2);
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+			"dither verb replay ok");
+		Check(IsDitherCloseupNode(cluster->scene, cMesh),
+			"dither verb replay flag");
+		std::error_code ec;
+		std::filesystem::remove(TempTour(), ec);
+	}
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -2369,6 +2613,8 @@ int main() {
 	TestCreateNode();
 	TestMaterialAssets();
 	TestTextureAssets();
+	TestTourFuzz();
+	TestDitherCloseup();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

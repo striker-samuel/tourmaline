@@ -478,43 +478,51 @@ namespace engine {
 	}
 
 	void WorldRenderer::Configure(WorldRendererConfig passes) {
+		// Compat path for hosts that have not migrated to parse-once yet
+		// (editor): parse locally. Prefer Configure(passes, run).
+		Configure(passes, RunConfig::Parse());
+	}
+	void WorldRenderer::Configure(WorldRendererConfig passes, const RunConfig& run) {
 		m_passes = passes;
+		// Snapshot the headless pins: ApplyHeadless*Overrides re-apply
+		// this snapshot after every authored scene seed (Initialize +
+		// every load/rebind). The snapshot never re-reads the environment,
+		// so pins are stable for the whole run.
+		m_headlessPins = run;
+		ApplyRunConfig(run);
+	}
+	void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
 		// Debug: force the AA mode for headless A/B benches (the UI combo
-		// keeps working after this; values: off | msaa2x | smaa1x | smaat2x).
-		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
-			if (!_stricmp(aaEnv, "off"))
-				m_aaMode = AaMode::Off;
-			else if (!_stricmp(aaEnv, "msaa2x"))
-				m_aaMode = AaMode::Msaa2x;
-			else if (!_stricmp(aaEnv, "smaa1x"))
-				m_aaMode = AaMode::Smaa1x;
-			else if (!_stricmp(aaEnv, "smaat2x"))
-				m_aaMode = AaMode::SmaaT2x;
-			else
-				std::cerr << "[WorldRenderer] bad VULKANTOY_AA (want "
-				"off|msaa2x|smaa1x|smaat2x): " << aaEnv << "\n";
+		// keeps working after this). The pin is validated once in
+		// RunConfig::Parse; ApplyHeadlessPostfxOverrides re-applies the
+		// same snapshot after every scene seed.
+		if (run.aa.has_value()) {
+			switch (*run.aa) {
+			case AaPin::Off: m_aaMode = AaMode::Off; break;
+			case AaPin::Msaa2x: m_aaMode = AaMode::Msaa2x; break;
+			case AaPin::Smaa1x: m_aaMode = AaMode::Smaa1x; break;
+			case AaPin::SmaaT2x: m_aaMode = AaMode::SmaaT2x; break;
+			}
 		}
 		// Opt-in A2C for masked cutout in MSAA mode (quality trade-off, see
 		// m_msaaAlphaToCoverage).
-		if (const char* a2cEnv = std::getenv("VULKANTOY_A2C")) {
-			m_msaaAlphaToCoverage = std::atoi(a2cEnv) != 0;
-		}
+		m_msaaAlphaToCoverage = run.a2c;
 		// Texture filtering default for headless A/B
 		// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
 		// applied every RenderFrame.
-		if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
+		if (run.textureFilter.has_value()) {
 			TextureFiltering parsed{};
-			if (TextureFilteringFromString(filtEnv, parsed))
+			if (TextureFilteringFromString(run.textureFilter->c_str(), parsed))
 				m_textureFiltering = parsed;
 			else
 				std::cerr << "[WorldRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
-				"trilinear|2x|4x|8x|16x): " << filtEnv << "\n";
+				"trilinear|2x|4x|8x|16x): " << *run.textureFilter << "\n";
 		}
 		// Headless terrain override (same discipline as VULKANTOY_VOLUMETRIC
 		// / VULKANTOY_SSR): VULKANTOY_TERRAIN=0/1 pins the terrain pass
 		// for headless A/B runs (the UI checkbox / combo stays live).
-		if (const char* terrEnv = std::getenv("VULKANTOY_TERRAIN")) {
-			m_passes.terrain = std::atoi(terrEnv) != 0;
+		if (run.terrainPinned) {
+			m_passes.terrain = run.terrain;
 		}
 		// Point the FPS camera at a generic default viewpoint (Camera keeps a
 		// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
@@ -527,11 +535,12 @@ namespace engine {
 		// without mouse input.
 		glm::vec3 dir = glm::normalize(camTarget - camPos);
 		bool dirOverridden = false;
-		if (const char* fwdEnv = std::getenv("VULKANTOY_CAM_FWD")) {
+		if (run.camFwd.has_value()) {
 			// Absolute forward override ("x,y,z"): wins over the yaw env so a
 			// fully specified diagnostic camera reproduces exactly.
 			glm::vec3 fwd(0.0f);
-			if (std::sscanf(fwdEnv, "%f,%f,%f", &fwd.x, &fwd.y, &fwd.z) == 3
+			const std::string& fwdEnv = *run.camFwd;
+			if (std::sscanf(fwdEnv.c_str(), "%f,%f,%f", &fwd.x, &fwd.y, &fwd.z) == 3
 				&& glm::length(fwd) > 1e-4f) {
 				dir = glm::normalize(fwd);
 				dirOverridden = true;
@@ -542,9 +551,8 @@ namespace engine {
 			}
 		}
 		if (!dirOverridden) {
-			if (const char* yawEnv = std::getenv("VULKANTOY_CAM_YAW")) {
-				const float yaw = std::strtof(yawEnv, nullptr);
-				const float rad = glm::radians(yaw);
+			if (run.camYawDeg.has_value()) {
+				const float rad = glm::radians(*run.camYawDeg);
 				dir = glm::vec3(
 					dir.x * std::cos(rad) + dir.z * std::sin(rad), dir.y,
 					-dir.x * std::sin(rad) + dir.z * std::cos(rad));
@@ -553,9 +561,10 @@ namespace engine {
 		// Debug: override the spawn position ("x,y,z"); composes with the
 		// yaw env (the view keeps looking along the yaw-rotated default
 		// direction) or with the absolute VULKANTOY_CAM_FWD.
-		if (const char* posEnv = std::getenv("VULKANTOY_CAM_POS")) {
+		if (run.camPos.has_value()) {
 			glm::vec3 pos(camPos);
-			if (std::sscanf(posEnv, "%f,%f,%f", &pos.x, &pos.y, &pos.z) == 3) {
+			const std::string& posEnv = *run.camPos;
+			if (std::sscanf(posEnv.c_str(), "%f,%f,%f", &pos.x, &pos.y, &pos.z) == 3) {
 				m_cameraPositioner.lookAt(pos, pos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 				return;
 			}
@@ -600,142 +609,88 @@ namespace engine {
 			ResolveLookAtUp(eye, target));
 	}
 
-	// Headless volumetric overrides (see the header): VULKANTOY_VOLUMETRIC
-	// / VOLUMETRIC_STEPS / VOLUMETRIC_CVOL win over the scene seed (the
-	// AGENTS.md "scene fog settings lose" contract). Called at startup
-	// Initialize AND after the per-scene PushVolumetricEnv seed in
-	// BuildCookedLightsFromWorld (scene load/rebind would otherwise
-	// stomp a headless force-on).
+	// Headless volumetric pins (see the header): the Configure snapshot wins
+	// over the authored scene seed (the AGENTS.md "scene fog settings lose"
+	// contract). Called at startup Initialize AND after the per-scene
+	// PushVolumetricEnv seed in BuildCookedLightsFromWorld (scene
+	// load/rebind would otherwise stomp a headless force-on).
 	void WorldRenderer::ApplyHeadlessVolumetricOverrides() {
-		auto trim = [](const char* s) -> std::string_view {
-			std::string_view v{ s ? s : "" };
-			while (!v.empty() && (v.front() == ' ' || v.front() == '\t'
-				|| v.front() == '\r' || v.front() == '\n'))
-				v.remove_prefix(1);
-			while (!v.empty() && (v.back() == ' ' || v.back() == '\t'
-				|| v.back() == '\r' || v.back() == '\n'))
-				v.remove_suffix(1);
-			return v;
-		};
-		if (const char* volEnv = std::getenv("VULKANTOY_VOLUMETRIC")) {
-			const std::string_view vol = trim(volEnv);
-			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
-			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
-		}
+		// Validated snapshot (see RunConfig + m_headlessPins): invalid
+		// values warned once at startup, authored scene wins those.
+		const RunConfig& pins = m_headlessPins;
+		if (pins.volumetric.has_value())
+			m_volumetricEnabled = (*pins.volumetric == OnOffPin::On);
 		// March-step override for headless A/B runs (4..128; heavy fog
 		// configs without UI interaction â€” the quality preset combos
 		// stay live after).
-		if (const char* vsEnv = std::getenv("VULKANTOY_VOLUMETRIC_STEPS")) {
-			const int vs = std::atoi(vsEnv);
-			if (vs >= 4 && vs <= 128)
-				m_volumetricSteps = vs;
-			else
-				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_STEPS out of range (4..128): " << vsEnv << "\n";
-		}
+		// March-step pin (heavy fog configs without UI interaction — the
+		// quality preset combos stay live after).
+		if (pins.volumetricSteps.has_value())
+			m_volumetricSteps = *pins.volumetricSteps;
 		// Extinction-density override for headless A/B runs (0..2): heavy
 		// densities make the march output PURE in-scatter (throughput
 		// decays to 0, the composited base vanishes), which isolates the
 		// scatter sources (sun / GI ambient / forward lights) from the
 		// lit-surface base for pixel-diff verification.
-		if (const char* vdEnv = std::getenv("VULKANTOY_VOLUMETRIC_DENSITY")) {
-			const float vd = std::strtof(vdEnv, nullptr);
-			if (vd >= 0.0f && vd <= 2.0f)
-				m_volumetricDensity = vd;
-			else
-				std::cerr << "[WorldRenderer] VULKANTOY_VOLUMETRIC_DENSITY out of range (0..2): " << vdEnv << "\n";
-		}
-		// Fog-GI quality bypass for headless A/B runs: 0 = the fog
-		// composites octree/sky only (no convex-volume walk per
-		// refresh). Pairs with VULKANTOY_VOLUMETRIC for pure-octree fog
-		// cost measurements.
-		if (const char* vcEnv = std::getenv("VULKANTOY_VOLUMETRIC_CVOL")) {
-			const std::string_view vc = trim(vcEnv);
-			if (vc == "1" || vc == "on") m_volumetricUseCvolGi = true;
-			else if (vc == "0" || vc == "off") m_volumetricUseCvolGi = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_VOLUMETRIC_CVOL value: " << vc << "\n";
-		}
+		// Extinction-density pin (heavy densities isolate the scatter
+		// sources from the lit-surface base for pixel-diff verification).
+		if (pins.volumetricDensity.has_value())
+			m_volumetricDensity = *pins.volumetricDensity;
+		// Fog-GI quality bypass pin (pairs with the volumetric pin for
+		// pure-octree fog cost measurements).
+		if (pins.volumetricCvol.has_value())
+			m_volumetricUseCvolGi = (*pins.volumetricCvol == OnOffPin::On);
 	}
 
-	// Headless postfx overrides (see the header): VULKANTOY_AA / SSR /
-	// BLOOM_THRESHOLD / BLOOM_INTENSITY / AO / AUTO_EXPOSURE / CUBEMAP
-	// win over the scene seed (the AGENTS.md "scene settings lose"
-	// contract). Called at startup Configure AND after the per-scene
-	// PushPostfxEnv seed in BuildCookedLightsFromWorld (scene
-	// load/rebind would otherwise stomp a headless pin). The moved
-	// blocks read exactly as they did inline (same ranges, same
-	// warnings); the UI panel/keys stay live afterwards.
+	// Headless postfx pins (see the header): the Configure snapshot wins over
+	// the authored scene seed (the AGENTS.md "scene settings lose" contract).
+	// Called at startup Initialize AND after the per-scene PushPostfxEnv seed
+	// in BuildCookedLightsFromWorld (scene load/rebind would otherwise stomp
+	// a headless pin). Invalid values warned once at startup (RunConfig::Parse);
+	// the UI panel/keys stay live afterwards.
 	void WorldRenderer::ApplyHeadlessPostfxOverrides() {
-		auto trim = [](const char* s) -> std::string_view {
-			std::string_view v{ s ? s : "" };
-			while (!v.empty() && (v.front() == ' ' || v.front() == '\t'
-				|| v.front() == '\r' || v.front() == '\n'))
-				v.remove_prefix(1);
-			while (!v.empty() && (v.back() == ' ' || v.back() == '\t'
-				|| v.back() == '\r' || v.back() == '\n'))
-				v.remove_suffix(1);
-			return v;
-		};
-		// AA mode override for A/B runs without UI interaction
-		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
-		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
-			const std::string_view aa = trim(aaEnv);
-			if (aa == "off") m_aaMode = AaMode::Off;
-			else if (aa == "msaa") m_aaMode = AaMode::Msaa2x;
-			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
-			else if (aa == "t2x") m_aaMode = AaMode::SmaaT2x;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
+		const RunConfig& pins = m_headlessPins;
+		// AA mode pin for A/B runs without UI interaction. The ImGui combo
+		// stays live after.
+		if (pins.aa.has_value()) {
+			switch (*pins.aa) {
+			case AaPin::Off: m_aaMode = AaMode::Off; break;
+			case AaPin::Msaa2x: m_aaMode = AaMode::Msaa2x; break;
+			case AaPin::Smaa1x: m_aaMode = AaMode::Smaa1x; break;
+			case AaPin::SmaaT2x: m_aaMode = AaMode::SmaaT2x; break;
+			}
 		}
-		// SSR toggle for headless A/B + capture runs (the ImGui checkbox
+		// SSR pin for headless A/B + capture runs (the ImGui checkbox
 		// stays live after). SSR (SSGI reflections) defaults ON.
-		if (const char* ssrEnv = std::getenv("VULKANTOY_SSR")) {
-			const std::string_view ssr = trim(ssrEnv);
-			if (ssr == "1" || ssr == "on") m_ssrEnabled = true;
-			else if (ssr == "0" || ssr == "off") m_ssrEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_SSR value: " << ssr << "\n";
-		}
-		// Bloom tuning overrides for headless A/B runs (threshold is
-		// pre-exposure HDR, same units as the ImGui sliders; intensity is
-		// the tonemap add scale). The ImGui sliders stay live after.
-		if (const char* btEnv = std::getenv("VULKANTOY_BLOOM_THRESHOLD")) {
-			const float bt = std::strtof(btEnv, nullptr);
-			if (bt >= 0.0f && bt <= 16000.0f)
-				m_bloomThreshold = bt;
-			else std::cerr << "[WorldRenderer] VULKANTOY_BLOOM_THRESHOLD out of range "
-				<< "(0..16000): " << btEnv << "\n";
-		}
-		if (const char* biEnv = std::getenv("VULKANTOY_BLOOM_INTENSITY")) {
-			const float bi = std::strtof(biEnv, nullptr);
-			if (bi >= 0.0f && bi <= 4.0f)
-				m_bloomIntensity = bi;
-			else std::cerr << "[WorldRenderer] VULKANTOY_BLOOM_INTENSITY out of range "
-				<< "(0..4): " << biEnv << "\n";
-		}
+		if (pins.ssr.has_value())
+			m_ssrEnabled = (*pins.ssr == OnOffPin::On);
+		// Bloom tuning pins (threshold is pre-exposure HDR, same units as
+		// the ImGui sliders; intensity is the tonemap add scale). The
+		// ImGui sliders stay live after.
+		if (pins.bloomThreshold.has_value())
+			m_bloomThreshold = *pins.bloomThreshold;
+		if (pins.bloomIntensity.has_value())
+			m_bloomIntensity = *pins.bloomIntensity;
 		// AO mode override for headless A/B runs (off | ssao | sao) â€” the
 		// O key is interactive-only, so captures/benches pin the mode
 		// through here. The ImGui combo + O key stay live after.
-		if (const char* aoEnv = std::getenv("VULKANTOY_AO")) {
-			const std::string_view ao = trim(aoEnv);
-			if (ao == "0" || ao == "off" || ao == "none")
-				m_aoMode = AoMode::None;
-			else if (ao == "ssao") m_aoMode = AoMode::Ssao;
-			else if (ao == "sao") m_aoMode = AoMode::Sao;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AO value: " << ao << "\n";
+		// AO mode pin (the O key is interactive-only, so captures/benches
+		// pin the mode through here). The ImGui combo + O key stay live.
+		if (pins.ao.has_value()) {
+			switch (*pins.ao) {
+			case AoPin::None: m_aoMode = AoMode::None; break;
+			case AoPin::Ssao: m_aoMode = AoMode::Ssao; break;
+			case AoPin::Sao: m_aoMode = AoMode::Sao; break;
+			}
 		}
 		// Deterministic A/B helper: manual exposure removes the eye
 		// adaptation feedback path so pixel diffs isolate the change.
-		if (const char* expEnv = std::getenv("VULKANTOY_AUTO_EXPOSURE")) {
-			if (std::atoi(expEnv) == 0)
-				m_autoExposureEnabled = false;
-			else
-				m_autoExposureEnabled = true;
-		}
-		// Baked-cubemap kill switch for headless runs (off falls back to
-		// the analytic sky, never to black).
-		if (const char* cubeEnv = std::getenv("VULKANTOY_CUBEMAP")) {
-			if (std::atoi(cubeEnv) == 0)
-				m_cubemapEnabled = false;
-		}
+		if (pins.autoExposure.has_value())
+			m_autoExposureEnabled = *pins.autoExposure;
+		// Baked-cubemap kill pin (off falls back to the analytic sky,
+		// never to black).
+		if (pins.cubemap.has_value() && !*pins.cubemap)
+			m_cubemapEnabled = false;
 	}
 
 	// Terrain field host API (the editor's non-DAG "Terrain field" node):
@@ -5669,9 +5624,24 @@ namespace engine {
 				&& m_gfxRenderer.GfxMeshForLod(item.mesh,
 					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
 				return;
+			// Dither-on-closeup (Scene::ditherCloseup; per frame, per draw —
+			// the MAIN camera is the anchor eye even in light-view passes,
+			// the fade follows what the camera sees): Hidden casters drop
+			// out (a fully faded subtree casts nothing); Fade casters join
+			// the MASKED phase so the alpha-tested shadow FS screen-doors
+			// the shadow with the lit view's fade (the per-draw flag rides
+			// PushConstants::padEnd_[0] -> shadow.vert forwards it flat).
+			const DitherCloseupState ditherState =
+				DitherCloseupStateFor(m_world->scene, int(item.node),
+					m_cameraPositioner.cameraPosition_);
+			if (ditherState == DitherCloseupState::Hidden)
+				return;
+			const bool ditherFade =
+				ditherState == DitherCloseupState::Fade;
 			// Masked (cutout) flag replaces the per-node material fetch the
 			// phase split used to pay.
-			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0
+					|| ditherFade) != maskedPhase)
 				return;
 			if (maskedPhase) {
 				smvk::CullMode cull = smvk::CullMode::None;
@@ -5708,19 +5678,26 @@ namespace engine {
 					m_renderViews.Get(0), sphereCenter, sphereRadius))
 					return;
 			}
-			IRenderer::PushConstants objectPC{};
-			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-			if (maskedPhase) {
-				objectPC.materialId = item.material;
-				cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-					sizeof(objectPC.materialId), &objectPC.materialId,
-					smvk::ShaderStage::All);
-			}
-			cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-			for (auto& draw_set : meshDesc->geometry.surfaces) {
-				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-			};
+		IRenderer::PushConstants objectPC{};
+		std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+		// Per-draw dither-on-closeup flag (padEnd_[0]; always pushed — the
+		// partial push range persists across draws, so a stale Fade flag
+		// must never leak into the next caster's shadow depth).
+		objectPC.padEnd_[0] = ditherFade ? 1u : 0u;
+		cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
+			sizeof(objectPC.padEnd_[0]), &objectPC.padEnd_[0],
+			smvk::ShaderStage::All);
+		if (maskedPhase) {
+			objectPC.materialId = item.material;
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+				sizeof(objectPC.materialId), &objectPC.materialId,
+				smvk::ShaderStage::All);
+		}
+		cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+		for (auto& draw_set : meshDesc->geometry.surfaces) {
+			cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 		};
+	};
 		// Phase 1: solid casters, depth-only program. FRONT-face culling
 		// (render the back faces only): the classic shadow-map anti-acne â€”
 		// the back face of a solid occluder sits behind its lit face by
@@ -8316,7 +8293,7 @@ namespace engine {
 		const uint32_t fpTileCountX = fp.tileCountX;
 		const uint32_t fpTileCountY = fp.tileCountY;
 
-		// Scene push (see App/push_constants.h; must match HLSL common.hlsli).
+		// Scene push (see Engine/Renderer/Renderer.h; must match HLSL common.hlsli).
 		IRenderer::PushConstants pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
@@ -8344,7 +8321,7 @@ namespace engine {
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
 		};
-		// (size checked in App/push_constants.h)
+		// (size checked by static_assert in Engine/Renderer/Renderer.h)
 
 		// ---- Cascaded shadow map passes â€“ one per cascade tile (builder owns offsets/extents/load ops) ----
 		// Pass-config gate: no shadow sampling without tiles (the main
@@ -9597,36 +9574,53 @@ namespace engine {
 				return prog;
 			};
 
-			auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
-				auto& model = m_world->scene.globalTransform[node];
-				smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
-				if (!meshDesc)
-					return;
-				IRenderer::PushConstants pc{};
-				pc.materialId = materialId;
-				const float* modelData = glm::value_ptr(model);
-				std::copy_n(modelData, 16, pc.model);
-				cmd.PushConstants(
-					offsetof(IRenderer::PushConstants, materialId),
-					sizeof(pc.materialId),
-					&pc.materialId,
-					smvk::ShaderStage::All
+		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
+			auto& model = m_world->scene.globalTransform[node];
+			smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
+			if (!meshDesc)
+				return;
+			// Dither-on-closeup (Scene::ditherCloseup; per frame, per
+			// draw): Hidden draws never reach here (the leg loops skip
+			// them below); Fade draws carry the per-draw flag
+			// (PushConstants::padEnd_[0] — default.vert forwards it flat
+			// to the FS family) so the lit leg screen-doors in step with
+			// the depth/shadow legs. Always pushed (0 or 1): the partial
+			// push range persists across draws, so a stale Fade flag must
+			// never leak into the next draw.
+			IRenderer::PushConstants pc{};
+			pc.materialId = materialId;
+			pc.padEnd_[0] = (DitherCloseupStateFor(m_world->scene,
+				int(node), m_cameraPositioner.cameraPosition_)
+				== DitherCloseupState::Fade) ? 1u : 0u;
+			cmd.PushConstants(
+				offsetof(IRenderer::PushConstants, padEnd_),
+				sizeof(pc.padEnd_[0]),
+				&pc.padEnd_[0],
+				smvk::ShaderStage::All
+			);
+			const float* modelData = glm::value_ptr(model);
+			std::copy_n(modelData, 16, pc.model);
+			cmd.PushConstants(
+				offsetof(IRenderer::PushConstants, materialId),
+				sizeof(pc.materialId),
+				&pc.materialId,
+				smvk::ShaderStage::All
+			);
+			cmd.PushConstants(
+				0,
+				offsetof(IRenderer::PushConstants, frameUniforms),
+				&pc,
+				smvk::ShaderStage::All
+			);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(
+					draw_set.indexCount,
+					1,
+					draw_set.firstIndex,
+					draw_set.baseVertex
 				);
-				cmd.PushConstants(
-					0,
-					offsetof(IRenderer::PushConstants, frameUniforms),
-					&pc,
-					smvk::ShaderStage::All
-				);
-				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					cmd.DrawIndexed(
-						draw_set.indexCount,
-						1,
-						draw_set.firstIndex,
-						draw_set.baseVertex
-					);
-				}
-			};
+			}
+		};
 
 			// A2C fallback for program families without an alpha-to-coverage
 			// twin (debug views, vertex-lit LODs, transparents): shaderCount 0
@@ -10084,12 +10078,22 @@ namespace engine {
 							return;
 					}
 #endif
-					// Shader LODs: instances whose selected level is the farthest
-					// one draw HERE with the vertex-lit program â€” FilterMainView
-					// skipped them at registration for the same reason (the
-					// filtered VS is lit-only), so this is the exactly-once draw.
-					const bool vertexLitLevel = shaderLodOn
-						&& LodShaderForNode(item.node, item.mesh) == smvk::LodShader::VertexLit;
+				// Dither-on-closeup (Scene::ditherCloseup; per frame, per
+				// draw): Hidden draws drop out of the direct leg entirely
+				// (the CPU cull — no leg sees them this frame; the filter
+				// makes the same call at registration, so both paths
+				// agree). Fade draws pass through drawNode, which pushes
+				// the per-draw flag (padEnd_[0]) for the lit FS family.
+				if (DitherCloseupStateFor(m_world->scene, int(item.node),
+						m_cameraPositioner.cameraPosition_)
+					== DitherCloseupState::Hidden)
+					return;
+				// Shader LODs: instances whose selected level is the farthest
+				// one draw HERE with the vertex-lit program â€” FilterMainView
+				// skipped them at registration for the same reason (the
+				// filtered VS is lit-only), so this is the exactly-once draw.
+				const bool vertexLitLevel = shaderLodOn
+					&& LodShaderForNode(item.node, item.mesh) == smvk::LodShader::VertexLit;
 					// Filtered instances already drew above via indirect
 					// ranges (FilterMainView pushes the selected LOD sibling).
 					// Only LODs whose registration failed fall through to the

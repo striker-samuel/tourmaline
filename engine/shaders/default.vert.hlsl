@@ -45,6 +45,14 @@ struct DefaultVsPush
     uint hasXforms;
     uint chartOffset;
     vk::BufferPointer<GfxChartXforms> lmXforms;
+    // Byte 240 = PushConstants::padEnd_.x (the per-draw overlay scratch's
+    // last word; the motion tail 192..240 stops short of it): the DIRECT
+    // legs' per-draw dither-on-closeup flag (Scene::ditherCloseup — the
+    // legs push it per draw, 0/1). Forwarded flat at location 8 so the FS
+    // family reads ONE channel on both paths (the filtered legs deliver
+    // the ring's GFX_DRAW_DITHER_CLOSEUP at the same location).
+    float4 _padTail[2]; // 208..240: unused prevModel scratch tail
+    uint ditherCloseup; // 240
 };
 
 [[vk::push_constant]]
@@ -83,6 +91,12 @@ struct VSOut
     // vert) carries the real per-draw chunk. Static/dynamic GI
     // separation keys off this + FrameUniforms.lmEnabled.
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
+    // Dither-on-closeup flag (flat; Scene::ditherCloseup): the direct
+    // legs' per-draw pc word (byte 240) forwarded so the FS family reads
+    // one channel on both paths (the filtered legs deliver the Draw
+    // ring's flag at the same location). FSs that do not declare it
+    // simply do not fetch it.
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 VSOut mainVS(VSIn IN)
@@ -120,6 +134,10 @@ VSOut mainVS(VSIn IN)
         ? IN.chartUv
         : GfxLightmapUv(IN.chartUv, IN.chartId, pcDB.chartOffset, pcDB.lmXforms);
     OUT.lmChunk = 0xFFFFFFFFu;
+
+    // Dither-on-closeup per-draw flag (byte 240 of this push — see the
+    // struct tail above; the direct legs push it per draw).
+    OUT.ditherCloseup = pcDB.ditherCloseup;
 
     // Properly transform normal/tangent to world space.
     // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.

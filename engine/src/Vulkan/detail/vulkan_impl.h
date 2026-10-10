@@ -556,16 +556,24 @@ namespace smvk {
 			CommandSubmitHandle curHandle{};
 			VkCommandBuffer curCmd = VK_NULL_HANDLE;
 			bool hasPending = false;
-			// Transient-backed scratch (never mallocs on the upload hot
-			// path). Monotonic: pending ranges can stay in flight across
-			// frames, so the transient allocator is NOT reset while these
-			// are live — storage grows to the high-water mark and is
-			// reused, exactly like the old malloc high-water behavior but
-			// without free churn. See alloc_config.h (single place to
-			// resize) and memory.h (reset discipline).
-			mem::TransientVector<VkBufferMemoryBarrier2> pendingBufferAcquires{
+			// UploadInFlight storage (never mallocs on the upload hot
+			// path). Monotonic: pending ranges/acquires stay in flight
+			// across frames (MAX_FRAMES_IN_FLIGHT + transfer->graphics
+			// chain), so the backing transient bump is NEVER rewound
+			// while these are live — storage grows to the high-water
+			// mark and is reused per-element (clear/erase keeps
+			// capacity), exactly like the old malloc high-water
+			// behavior but without free churn. This is the UploadInFlight
+			// half of the split (see linear_vector.h): FrameScratch
+			// (FrameVector + ResetFrameArena at DrawFrame start) is for
+			// scope-local temps only. A guarded ResetAll is allowed
+			// solely at device-idle/teardown when hasPending is false,
+			// every pendingRanges is empty and m_deferredTasks is empty.
+			// See alloc_config.h (single place to resize) and memory.h
+			// (reset discipline).
+			mem::UploadInFlightVector<VkBufferMemoryBarrier2> pendingBufferAcquires{
 				mem::LinearAllocatorSTL<VkBufferMemoryBarrier2>{&mem::TransientAllocator()}};
-			mem::TransientVector<VkImageMemoryBarrier2> pendingImageAcquires{
+			mem::UploadInFlightVector<VkImageMemoryBarrier2> pendingImageAcquires{
 				mem::LinearAllocatorSTL<VkImageMemoryBarrier2>{&mem::TransientAllocator()}};
 			std::vector<std::packaged_task<void()>> pendingCleanups;
 			VkDeviceSize stagedBytesSinceFlush = 0;
@@ -574,7 +582,7 @@ namespace smvk {
 			// pendingRanges at submit; the precise wrap/alloc sync in
 			// allocFromRing consumes it.
 			VkDeviceSize batchRingStart = VK_WHOLE_SIZE;
-			mem::TransientVector<InFlightRingRange> pendingRanges{
+			mem::UploadInFlightVector<InFlightRingRange> pendingRanges{
 				mem::LinearAllocatorSTL<InFlightRingRange>{&mem::TransientAllocator()}};
 		};
 		ThreadUploadState states_[kNumPoolShards];

@@ -2,8 +2,10 @@
   set(GLSLC "$ENV{VULKAN_SDK}/Bin/glslc.exe")
   set(DXC   "$ENV{VULKAN_SDK}/Bin/dxc.exe")
 else()
-  set(GLSLC "%VULKAN_SDK%/Bin/glslc.exe")
-  set(DXC   "%VULKAN_SDK%/Bin/dxc.exe")
+  # No literal %VULKAN_SDK% — CMake never expands that. Fail fast at
+  # configure time instead of emitting broken per-shader commands.
+  message(FATAL_ERROR "[Shaders] VULKAN_SDK is not set: install the Vulkan SDK "
+    "or set VULKAN_SDK to its root (contains Bin/dxc.exe).")
 endif()
 
 # Helper: map filename to stage + entry for HLSL
@@ -48,10 +50,10 @@ function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
         set(_entry "mainMS")
         set(_profile "ms_6_7")
     else()
-        # Fallback: assume vertex
-        set(_stage "vs")
-        set(_entry "mainVS")
-        set(_profile "vs_6_7")
+        # Fail closed: a mistyped suffix (e.g. *.mesh.hlsl vs *.ms.hlsl)
+        # must not silently compile as the wrong stage.
+        message(FATAL_ERROR "[Shaders] Unknown HLSL stage suffix for '${_name}': "
+            "expected .vert/.frag/.cs/.gs/.hs/.ds/.rgen/.as/.ms.hlsl (or aliases).")
     endif()
 
     # Per-file overrides (optional)
@@ -90,6 +92,16 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   #     preemptively.
   if (NOT DEFINED HLSL_FORCE_O3_FILES)
     set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl")
+  endif()
+  # Unpin escape hatch for driver re-tests: -DVULKANTOY_SHADER_OD_RETRY=ON
+  # clears the -O3 pin so CI (tools/shader_od_retry.py) can retry the -Od
+  # codegen that AVs nvgpucomp64.dll. Do NOT set this for normal builds —
+  # a successful -Od pipeline compile still crashes affected drivers.
+  # When the retry goes green on the pinned driver/DXC pair, delete the
+  # file from HLSL_FORCE_O3_FILES (keep the comment trail).
+  if (VULKANTOY_SHADER_OD_RETRY)
+    set(HLSL_FORCE_O3_FILES "")
+    message(STATUS "[Shaders] VULKANTOY_SHADER_OD_RETRY=ON: -O3 pin cleared, retrying -Od codegen")
   endif()
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
@@ -238,9 +250,8 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 string(REPLACE "|" ";" _VPARTS "${_VSPEC}")
                 list(LENGTH _VPARTS _VLEN)
                 if (_VLEN LESS 3)
-                    message(WARNING "[Shaders] malformed VARIANTS entry "
+                    message(FATAL_ERROR "[Shaders] malformed VARIANTS entry "
                         "(need file|suffix|DEFINE[=v]): ${_VSPEC}")
-                    continue()
                 endif()
                 list(GET _VPARTS 0 _VFILE)
                 list(GET _VPARTS 1 _VSUFFIX)
@@ -279,7 +290,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ glslc: ${FILE_NAME}"
                 COMMAND "${GLSLC}" ${_GLSLC_FLAGS} -o "${OUTPUT_FILE}" "${SHADER}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ glslc OK: ${FILE_NAME}"
-                DEPENDS "${SHADER}"
+                DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling GLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
                 VERBATIM
             )
