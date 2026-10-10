@@ -6031,6 +6031,12 @@ namespace engine {
 	}
 
 	void WorldRenderer::DrawFrame() {
+		// WINDOWED frame loop only. Hosted runs drive through
+		// RenderInlineFrame (the host's own acquire/submit rhythm); this
+		// path's acquire/present would hit the hosted FAKE swapchain,
+		// which owns no images or sync objects.
+		if (IsHosted())
+			return;
 		// Frame-arena scratch (URI probing, normalized rewrites) is
 		// dead at frame end by definition â€” recycle the blocks.
 		smvk::ResetFrameArena();
@@ -6140,14 +6146,11 @@ namespace engine {
 		// one immediately regardless of this toggle.
 		if (m_gpuMemConsoleAutoLog && std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() - m_gpuMemLastLogSec >= 10.0)
 			LogGpuMemoryToConsole();
-		if (m_captureReadbackPending) {
-			// The frame's submit (RenderFrame records, EndAndPresent
-			// submits) wrote the capture target; it is now safe to stall
-			// for the readback (F7-pressed only).
-			m_captureReadbackPending = false;
-			WaitForDeviceIdle();
-			ExportScreenshot(m_captureExtent);
-		}
+		// Capture readback (F7): the frame's submit (RenderFrame records,
+		// EndAndPresent submits) wrote the capture target — safe to stall
+		// for the readback now. INLINE HOSTED frames never get here (the
+		// host calls PollCaptureReadback after ITS present instead).
+		PollCaptureReadback();
 	}
 
 	// Shared transparent draw list (see header). Mirrors Main's transparent
@@ -6229,7 +6232,8 @@ namespace engine {
 		smvk::Format format)
 	{
 		// Hosted boot BEFORE Initialize (App::Initialize takes the hosted
-		// branch: borrowed context + offscreen target, no window/SDL).
+		// branch: borrowed context + the INLINE fake swapchain — formats +
+		// driven extent + the host's flight count, no images, no window).
 		if (!RequestHostedBoot(host, extent, format)) {
 			throw std::runtime_error(
 				"WorldRenderer: hosted boot request rejected");
@@ -6256,6 +6260,119 @@ namespace engine {
 			throw std::runtime_error(
 				"WorldRenderer::Initialize failed (see the errors above)");
 		}
+	}
+
+	// ===========================================================================
+	// INLINE HOSTED FRAME (see WorldRenderer.h): the editor's own frame
+	// records the world pipeline into ITS command buffer; the final tonemap
+	// writes the renderer's own INLINE TARGET, which the editor composites
+	// 1:1 into viewport 0's rect.
+	// ===========================================================================
+
+	void WorldRenderer::EnsureInlineTarget() {
+		// The target tracks the driven extent; recreate IN PLACE on drift
+		// (Holder-stable handles; the bindless slot re-registers like the
+		// secondary views'). Steady state: nothing to do.
+		const auto ext = m_swapchain->GetExtent();
+		if (m_inlineTargetExtent.width == ext.width
+			&& m_inlineTargetExtent.height == ext.height
+			&& !m_inlineTargetLogical.empty())
+			return;
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { ext.width, ext.height, 1 };
+		ci.format = m_swapchain->GetSurfaceFormat();
+		// Sampled: the host composites it bindless. TransferSrc rides the
+		// debug-dump arm (the live-view diagnostic readback).
+		ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled;
+		if (smvk::DebugImageDumpArmed())
+			ci.usage = ci.usage | smvk::ImageUsage::TransferSrc;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "inline target image";
+		if (m_inlineTargetImage.empty())
+			m_inlineTargetImage = m_context->CreateImage(ci, nullptr);
+		else
+			m_context->RecreateImage(m_inlineTargetImage, ci, nullptr);
+		const smvk::ImageViewCreateInfo vci{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = m_swapchain->GetSurfaceFormat(),
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 }
+		};
+		if (m_inlineTargetView.empty())
+			m_inlineTargetView = m_context->CreateImageView(
+				m_inlineTargetImage, vci);
+		else
+			m_context->RecreateImageView(m_inlineTargetView,
+				m_inlineTargetImage, vci);
+		m_inlineTargetBindless = m_context->CreateBindlessImage(
+			m_inlineTargetView, smvk::ImageLayout::ShaderReadOnlyOptimal);
+		m_inlineTargetBindlessIndex = m_inlineTargetBindless.empty()
+			? UINT32_MAX
+			: m_context->GetBindlessIndex(m_inlineTargetBindless);
+		if (!m_inlineTargetLogical.empty())
+			m_rendergraph->FreeImageView(m_inlineTargetLogical);
+		// The tonemap's swap-image set holds exactly the previous inline
+		// target's logical view — retire the whole set (the free above
+		// only ran for the CURRENT logical; the set may still hold the
+		// older one from before a drift, and double-freeing the same
+		// handle corrupts the graph's tables).
+		for (auto h : m_viewportResources.swapImages)
+			if (h != m_inlineTargetLogical)
+				m_rendergraph->FreeImageView(h);
+		m_viewportResources.swapImages.clear();
+		m_inlineTargetLogical = m_rendergraph->AddExternalImageView(
+			m_inlineTargetView, m_swapchain->GetSurfaceFormat(),
+			"inlineTargetLogical");
+		m_viewportResources.swapImages.push_back(m_inlineTargetLogical);
+		m_inlineTargetExtent = ext;
+	}
+
+	void WorldRenderer::RenderInlineFrame(smvk::Framebuffer& hostFb) {
+		if (!IsHosted())
+			return;
+		EnsureInlineTarget();
+		// ONE rhythm with the host: its flight index drives every per-frame
+		// ring (frame-uniform/light/cascade BDAs, render-view slabs) and its
+		// command buffer carries the whole world frame. No second acquire
+		// (the host's fence already gated this slot), no engine-globals
+		// flush (the host's acquire already wrote this slot's slice - the
+		// shared-slot hazard class that used to force the device-idle
+		// ping-pong is gone), no submit (the host's EndAndPresent lands
+		// everything, uploads included).
+		smvk::Framebuffer fb{};
+		fb.frameIndex = hostFb.frameIndex;
+		fb.imageIndex = 0; // the single inline target
+		fb.commandBufferOpaque = hostFb.commandBufferOpaque;
+		fb.swapchain = m_swapchain.get();
+		fb.inlineHostFrame = true;
+		if (std::getenv("VULKANTOY_HOSTED_TRACE")) {
+			std::fprintf(stderr,
+				"[HOSTED] inline frame flight=%u ext=%ux%u\n",
+				fb.frameIndex, m_inlineTargetExtent.width,
+				m_inlineTargetExtent.height);
+			std::fflush(stderr);
+		}
+		UpdateDeltaTime();
+		RenderFrame(fb);
+	}
+
+	void WorldRenderer::SetMainViewExtent(smvk::Extent2D extent) {
+		if (!IsHosted())
+			return;
+		// Clamp + no-op-when-equal live in the fake swapchain; the next
+		// RenderInlineFrame's Ensure() block resizes every render target
+		// in place on actual drift (the renderScale-change path).
+		m_swapchain->SetHostedExtent(extent);
+	}
+
+	void WorldRenderer::PollCaptureReadback() {
+		if (!m_captureReadbackPending)
+			return;
+		// The host's submit (this inline frame's TonemapCapture included)
+		// has landed — safe to stall for the readback.
+		m_captureReadbackPending = false;
+		WaitForDeviceIdle();
+		ExportScreenshot(m_captureExtent);
 	}
 
 	// ===========================================================================
@@ -7834,7 +7951,11 @@ namespace engine {
 		// the selected sampler state on the bindless sampler slots every frame
 		// (no-op when already set; recreates slots 0 + 2 on change).
 		ApplyTextureFiltering();
-		const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
+		// Swap extent: the OWNING swapchain's (identical to fb.swapchain on
+		// windowed runs; on inline hosted frames fb.swapchain is the host's
+		// while the render extent comes from THIS renderer's fake — the
+		// editor-driven viewport rect).
+		const smvk::Extent2D swapExtent{ m_swapchain->GetExtent().width, m_swapchain->GetExtent().height };
 		// DLSS owns the internal resolution when requested and runnable: the
 		// driver-recommended optimal render size replaces the renderScale
 		// slider (the slider stays authoritative on the fallback path).
@@ -11540,6 +11661,27 @@ namespace engine {
 					m_jitterDeltaUV.x,
 					m_jitterDeltaUV.y);
 			}
+		}
+
+		// ---------------------------------------------------------------------
+		// INLINE HOSTED FRAME - output export transition: the host samples
+		// the inline target (bindless) in ITS graph rounds, later in this
+		// same command buffer - leave the target in SHADER_READ (the graph
+		// emits the tonemap write -> sampled-read barrier from the pass
+		// above; the next inline frame's tonemap transitions back). Same
+		// idiom as the secondary views' ViewOutExport (see there for the
+		// layout-mismatch rationale). Barrier-only compute pass (no
+		// dispatch): stays in the graphics stream so it orders right after
+		// the tonemap; the dst stage names the real (fragment) consumer.
+		// ---------------------------------------------------------------------
+		if (IsHosted() && !m_inlineTargetLogical.empty()) {
+			smvk::ImageSyncRequest outRead{};
+			outRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			outRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			outRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			auto& exportPass = m_rendergraph->AddComputePass("InlineTargetExport");
+			exportPass.AddImageHint(m_inlineTargetLogical, outRead);
+			exportPass.SetRecordingFunc([](smvk::CommandBuffer&) {});
 		}
 
 		// ---------------------------------------------------------------------

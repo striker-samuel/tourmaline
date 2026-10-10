@@ -955,17 +955,50 @@ public:
 	// App::RequestHostedBoot + the WYSIWYG compose pass). Public
 	// wrappers over the protected virtuals with the hosted invariant
 	// enforced at each step; windowed runs keep using Run().
+	// HOSTED drive API (the editor embeds this renderer INLINE: its own
+	// frame calls RenderInlineFrame between its acquire and present).
+	// Public wrappers over the protected virtuals with the hosted
+	// invariant enforced at each step; windowed runs keep using Run().
 	bool HostedInitialize() {
 		if (!IsHosted())
 			return false;
 		return Initialize();
 	}
-	void HostedDrawFrame() {
-		if (!IsHosted())
-			return;
-		UpdateDeltaTime();
-		DrawFrame();
+	// INLINE HOSTED FRAME: record the whole world frame into the HOST's
+	// command buffer (hostFb), on the host's flight rhythm — one
+	// acquire, one submit, one present per host frame; no second
+	// acquire, no device-idle boundaries. The final tonemap writes THIS
+	// renderer's own INLINE TARGET (an LDR image at the driven extent —
+	// SetMainViewExtent), which the host composites 1:1 (the direct
+	// sub-rect write into the host's swapchain image was measured to
+	// wedge nvlddmkm past the TDR window on this driver — see the
+	// inline-target members below). The async-compute split is refused
+	// for inline frames (its mid-recording G1 submit would cut the
+	// host's command buffer in half); async passes emulate on the
+	// graphics queue instead.
+	void RenderInlineFrame(smvk::Framebuffer& hostFb);
+	// World render-extent drive (the editor viewport rect, per frame).
+	// Clamped to something renderable; no-op when unchanged - the next
+	// frame's Ensure() calls resize every render target IN PLACE (the
+	// same path as a renderScale change), never a relaunch.
+	void SetMainViewExtent(smvk::Extent2D extent);
+	// The inline target's bindless slot + texel extent for the host's
+	// 1:1 compose blit (UINT32_MAX / 0x0 before the first inline frame).
+	uint32_t InlineTargetBindlessIndex() const {
+		return m_inlineTargetBindlessIndex;
 	}
+	smvk::Extent2D InlineTargetExtent() const {
+		return m_inlineTargetExtent;
+	}
+	// (Re)create the inline target when missing or extent-drifted (in
+	// place, Holder-stable handles; the bindless slot re-registers on
+	// drift like the secondary views'). No-op in steady state.
+	void EnsureInlineTarget();
+	// One-shot capture readback (VULKANTOY_CAPTURE): the inline frame's
+	// TonemapCapture wrote m_captureImage and the host's submit landed
+	// it - the host calls this AFTER its present; it stalls (device
+	// idle) and exports the PNG only on the pending frame.
+	void PollCaptureReadback();
 	void HostedShutdown() {
 		if (!IsHosted())
 			return;
@@ -984,6 +1017,19 @@ public:
 	// mounts into the content VFS (empty = no project mount). Both must
 	// precede Initialize (sidecar loads run there) â€” hence ctor params,
 	// not setters.
+	// HOSTED one-call setup (the dumb-hosted-world API): boot off the
+	// host's context, borrow `world`, configure the full framegraph +
+	// the hosted invariants (input disabled, DLSS off, AA off) and
+	// initialize. Throws std::runtime_error when the boot is rejected
+	// or Initialize fails (the host catches it at its launch boundary).
+	// Pair with HostedShutdown() (or just destroy - the editor's
+	// StopWysiwyg keeps the explicit idle + log). sceneId names the GI
+	// sidecars (gi/<id>.*); projectRoot mounts into the content VFS
+	// (empty = no project mount). `format` MUST be the HOST swapchain's
+	// surface format (the inline tonemap writes the host's image);
+	// `extent` is the initial viewport rect (SetMainViewExtent drives it
+	// per frame after). Both must precede Initialize (sidecar loads run
+	// there) - hence ctor params, not setters.
 	WorldRenderer(smvk::App& host, smvk::World& world, smvk::Extent2D extent,
 		std::string sceneId, std::string projectRoot = {},
 		smvk::Format format = smvk::Format::BGRA8_SRGB);
@@ -1308,6 +1354,22 @@ protected:
 	float m_extOrthoHalfH = 0.0f;
 	float m_extNear = 0.1f;
 	float m_extFar = 100.0f;
+	// INLINE HOSTED FRAME (RenderInlineFrame): the renderer's own LDR
+	// output target at the driven extent. The direct sub-rect write into
+	// the HOST's swapchain image (the original inline design) wedges
+	// nvlddmkm past the Windows TDR window on this driver - reproducible
+	// with a trivial avocado scene at the first inline frame, TDR 4101 +
+	// VK_ERROR_DEVICE_LOST, and it disappears the moment the tonemap
+	// targets this PRIVATE image instead (same shared command buffer,
+	// same single submit - only the swap-image write removed). The host
+	// composites this target 1:1 (a bindless sample, like the secondary
+	// views' images, which have always been safe).
+	smvk::Holder<smvk::ImageHandle> m_inlineTargetImage;
+	smvk::Holder<smvk::ImageViewHandle> m_inlineTargetView;
+	smvk::Holder<smvk::BindlessImageHandle> m_inlineTargetBindless;
+	smvk::LogicalImageViewHandle m_inlineTargetLogical;
+	uint32_t m_inlineTargetBindlessIndex = UINT32_MAX;
+	smvk::Extent2D m_inlineTargetExtent{ 0, 0 };
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;

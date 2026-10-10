@@ -95,6 +95,12 @@ void Swapchain::EndAndPresentFramebuffer(Framebuffer& fb) {
 void Swapchain::SetPresentMode(PresentMode mode) {
     impl_->vulkan->SetRequestedPresentMode(ToVkPresentMode(mode));
 }
+void Swapchain::SetHostedExtent(Extent2D extent) {
+    impl_->vulkan->SetHostedExtent(VkExtent2D{ extent.width, extent.height });
+}
+void Swapchain::SetHostedFramesInFlight(uint32_t count) {
+    impl_->vulkan->SetHostedFramesInFlight(count);
+}
 PresentMode Swapchain::GetPresentMode() const {
     return FromVkPresentMode(impl_->vulkan->GetRequestedPresentMode());
 }

@@ -1616,31 +1616,40 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
-	// ---- LIVE VIEW (the hosted WorldRenderer is the viewport driver) ----
-// The viewports render through a HOSTED engine::WorldRenderer (offscreen
-// target composed into the viewport rects) that renders THE EDITOR'S
-// OWN WORLD — the live engine representation (imports preprocessed,
-// GUID references bound, edits applied). The hosted renderer BORROWS
-// m_world (SetHostedBorrowedWorld): the editor keeps owning + mutating
-// it (edits show up live, per frame); the hosted renderer never imports
-// anything of its own. Cooks are the separate PRODUCT step and never
-// feed the view. World swaps (opens/reimports/paks/bakes) rebind IN
-// PLACE (RebindWorld): the renderer is never relaunched for a world
-// change. The edit world stays the authoring model underneath:
-// outliner, inspector and gizmos keep working on it.
-	// The hosted WorldRenderer instance (engine). Null when off.
+	// ---- LIVE VIEW (the INLINE hosted WorldRenderer is the viewport driver) ----
+// The viewports render through an INLINE engine::WorldRenderer that renders
+// THE EDITOR'S OWN WORLD — the live engine representation (imports
+// preprocessed, GUID references bound, edits applied) — inside the editor's
+// own frame: RenderFrame (editor_render.cpp) records the whole world
+// pipeline into the editor's command buffer between its background-clear
+// round and its overlay round, on the editor's flight rhythm. One acquire,
+// one submit, one present per editor frame — no offscreen hosted swapchain
+// rhythm, no device-idle ping-pong. The world's tonemap writes the
+// renderer's own INLINE TARGET (extent driven per frame = the exact
+// viewport-0 rect, resized in place — no relaunch, no aspect drift), which
+// the editor composites 1:1. (The original design wrote the rect of the
+// editor's swapchain image directly; that write wedges nvlddmkm past the
+// TDR window on this driver — see WorldRenderer.h's inline-target members.)
+// The hosted renderer BORROWS m_world (SetHostedBorrowedWorld): the editor
+// keeps owning + mutating it (edits show up live, per frame); the hosted
+// renderer never imports anything of its own. Cooks are the separate
+// PRODUCT step and never feed the view. World swaps (opens/reimports/paks/
+// bakes) rebind IN PLACE (RebindWorld): the renderer is never relaunched
+// for a world change; extent drift never relaunches either. The edit world
+// stays the authoring model underneath: outliner, inspector and gizmos
+// keep working on it.
+	// The inline hosted WorldRenderer instance (engine). Null when off.
 	// Linear process-owned (dtor-only deleter; never freed).
 	smvk::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
 	// Scene id storage (the renderer keeps its own copy): the scene
 	// stem naming the GI sidecars (gi/<stem>.*).
 	std::string m_wysiwygSceneId;
-	// Compose pass (editor_render.cpp): fullscreen blit of the hosted
-	// target into a viewport rect. Bindless slot over the hosted view.
+	// Compose program (editor_render.cpp): the MULTIVIEW blit of each
+	// SECONDARY hosted view's own image into its viewport rect (view 0
+	// renders INLINE — direct sub-rect tonemap — and needs no blit).
 	smvk::ShaderProgram m_wysiwygProgram{};
 	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygFsModule;
-	smvk::Holder<smvk::BindlessImageHandle> m_wysiwygBindless;
-	uint32_t m_wysiwygBindlessIndex = UINT32_MAX;
 	uint32_t m_wysiwygSamplerIndex = UINT32_MAX;
 	// Launch/stop the hosted LIVE view. Launch borrows m_world (the
 	// caller must have one) as the hosted renderer's world; false + log
@@ -1653,25 +1662,16 @@ private:
 	// Runs at the end of every glTF scene load (fresh world) and after
 	// every successful Bake GI, before the hosted view (re)binds.
 	void RefreshLiveViewGiBindings();
-	// Hosted target extent (current launch snapshot; the dump reads it).
+	// Current world render extent (viewport 0's rect, clamped >= 64):
+	// driven per frame (SetMainViewExtent) — the launch snapshot the
+	// log prints, and the smoke/dump paths read.
 	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
-	// EXTENT DRIFT watch (aspect fix): the hosted target is fixed per
-	// launch ("fresh instance per launch (world + extent change)") and
-	// the compose blit STRETCHES when viewport 0's rect drifts (layout
-	// switch, window resize, splitter drag). The watcher (DrawFrame,
-	// before the hosted drive) counts STABLE wanted extents and
-	// relaunches the live view at the new extent once settled — never
-	// per-frame during a live drag (stretched as today until it
-	// settles). A relaunch resets the per-view tic/toc refresh combos
-	// to defaults (re-set on the viewport chips).
-	smvk::Extent2D m_wysiwygResizeWant{ 0, 0 };
-	uint32_t m_wysiwygResizeStable = 0; // consecutive frames at ResizeWant
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
-	// Draws one hosted source image (view 0 = the hosted target, views
-	// 1+ = the multiview images; sourceBindless picks which) into one
-	// viewport rect (compose pass). srcExtent is that image's texel size
-	// (m_wysiwygExtent / ViewOutExtent): the cover-crop needs it to keep
-	// the aspect through extent drifts (see RecordWysiwygPass).
+	// Draws one SECONDARY hosted view's image (multiview; view 0 renders
+	// inline) into its viewport rect (compose pass). srcExtent is that
+	// image's texel size (ViewOutExtent): the cover-crop needs it to keep
+	// the aspect through the view's off-phase frames (see
+	// RecordWysiwygPass).
 	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
 		const ViewportRect& rect, uint32_t sourceBindless,
 		smvk::Extent2D srcExtent);

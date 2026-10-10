@@ -1812,17 +1812,17 @@ namespace editor {
 		// NOW drive/render hosted views from this exact snapshot.
 		// DriveHostedViewsFromEditorState(); (handled by RecordWysiwygPass)
 
-		m_rendergraph->NewFrame();
-		// WYSIWYG hosted view: the viewports show the hosted
-		// WorldRenderer's target (compose pass) WHENEVER it is live —
-		// source mode (open scene, full App pipeline, no cook needed) or
-		// pak mode (WYSIWYG of a cook). The edit world stays loaded
-		// underneath — outliner/inspector/commands keep working, and the
-		// gizmo overlay still draws on top so manipulation stays visible.
+		// ---- PASS ROUND 1: window background clear ---------------------
+		// The whole window clears FIRST (the dark chrome color shows
+		// through the gaps between the ImGui panels), then the INLINE
+		// world frame renders into the editor's command buffer, then
+		// round 2 composites the world target + draws the overlays on
+		// top — one command buffer, ordered by the graph rounds
+		// (cross-graph ordering rides the context-global sync-state
+		// tables: every round's first use of a shared image barriers
+		// against the previous round's writes).
 		const bool wysiwygPreview = m_wysiwyg != nullptr;
-		// Window background: the viewport passes cover only their rects, so
-		// clear the whole window first (the dark chrome color shows through
-		// the gaps between the ImGui panels).
+		m_rendergraph->NewFrame();
 		{
 			auto& bg = m_rendergraph->AddPass("EditorBg")
 				.SetOffset(0, 0)
@@ -1835,27 +1835,59 @@ namespace editor {
 					smvk::ClearDepthStencil(0.0f, 0));
 			bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
 		}
+		m_rendergraph->Execute(fb);
+
+		// ---- INLINE WORLD FRAME (viewport 0) ----------------------------
+		// The hosted WorldRenderer records its whole pipeline into THIS
+		// frame's command buffer on the editor's own flight rhythm (one
+		// acquire, one submit, one present — no device-idle ping-pong).
+		// Its tonemap writes the renderer's OWN inline target at the
+		// driven extent (= the exact viewport-0 rect, resized IN PLACE on
+		// drift — no relaunch, no aspect drift); round 2 composites it
+		// 1:1. (The direct sub-rect write into the editor's swapchain
+		// image — the original design — wedges nvlddmkm past the TDR
+		// window on this driver; see WorldRenderer.h's inline-target
+		// members.)
 		if (wysiwygPreview) {
-			// MULTIVIEW compose: viewport 0 blits the hosted main-view target
-			// (as today); every additional viewport blits ITS hosted view's
-			// own image (SetViewCount/DriveView above) — including off-phase
-			// frames, where the last rendered content persists.
-			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-				const uint32_t source = (vpIdx == 0)
-					? m_wysiwygBindlessIndex
-					: m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
+			const ViewportRect& vp0 = m_viewports[0].rect;
+			const smvk::Extent2D worldExtent{
+				std::max(uint32_t(vp0.w), 64u),
+				std::max(uint32_t(vp0.h), 64u) };
+			m_wysiwygExtent = worldExtent;
+			m_wysiwyg->SetMainViewExtent(worldExtent);
+			m_wysiwyg->RenderInlineFrame(fb);
+		}
+
+		// ---- PASS ROUND 2: overlays over the world pixels --------------
+		m_rendergraph->NewFrame();
+		if (wysiwygPreview) {
+			// Viewport 0: composite the inline target 1:1 into its rect.
+			// Steady state the target extent equals the rect exactly
+			// (driven per frame above) — the aspect cover-crop is the
+			// identity; it stays as a safety net for the 1-frame extent
+			// lag of a live splitter drag (the target resizes IN PLACE on
+			// the next frame).
+			RecordWysiwygPass(m_swapViews[fb.imageIndex],
+				m_viewports[0].rect,
+				m_wysiwyg->InlineTargetBindlessIndex(),
+				m_wysiwyg->InlineTargetExtent());
+			// MULTIVIEW: every ADDITIONAL viewport blits ITS hosted view's
+			// own image (SetViewCount/DriveView above) — including
+			// off-phase frames, where the last rendered content persists.
+			for (int vpIdx = 1; vpIdx < ViewportCount(); ++vpIdx) {
+				const uint32_t source =
+					m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
 				// Source texel size for the aspect-preserving cover-crop
 				// (steady state: equals the rect, identity mapping).
-				const smvk::Extent2D srcExtent = (vpIdx == 0)
-					? m_wysiwygExtent
-					: m_wysiwyg->ViewOutExtent(uint32_t(vpIdx - 1));
+				const smvk::Extent2D srcExtent =
+					m_wysiwyg->ViewOutExtent(uint32_t(vpIdx - 1));
 				RecordWysiwygPass(m_swapViews[fb.imageIndex],
 					m_viewports[vpIdx].rect, source, srcExtent);
 			}
-			// Gizmo overlay on top of the hosted image (the hosted views
-			// render the grid themselves now — see WorldRenderer grid drive):
-			// selection + manipulation stay visible while the hosted view
-			// drives the pixels (the edit world never unloads).
+			// Gizmo overlay on top of the world pixels (the hosted views
+			// render the grid themselves now — see WorldRenderer grid
+			// drive): selection + manipulation stay visible while the
+			// world view drives the pixels (the edit world never unloads).
 			RecordGizmoPass(m_swapViews[fb.imageIndex]);
 		}
 		else {

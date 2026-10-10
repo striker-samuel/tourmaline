@@ -8663,10 +8663,15 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context,
 	: ctx_(context)
 	, window_(nullptr)
 {
-	// Hosted render target (see vulkan_impl.h): no window, no surface,
-	// no swapchain — one offscreen color image the whole acquire/
-	// submit rhythm drives unchanged. Consumed by an external
-	// compositor (the editor's WYSIWYG viewport pass).
+	// HOSTED FAKE (see vulkan_impl.h): the editor's inline live view. No
+	// window, no surface, no swapchain, no images, no sync objects, no
+	// frame command pools — the host's own frame does ALL the rhythm work
+	// (acquire, command buffer, submit, present). This object is only the
+	// renderer's view of a swapchain: surface + depth formats, a
+	// host-driven extent (the editor viewport rect) and a flight count
+	// pinned to the host's (App::Initialize's hosted branch). The world
+	// pipeline records into the HOST's command buffer and its final
+	// tonemap writes a sub-rect of the HOST's swapchain image directly.
 	hosted_ = true;
 	depthFormat = fromVkFormat(findDepthFormat());
 	surfaceFormat = colorFormat;
@@ -8675,71 +8680,32 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context,
 	windowHeight = int(hostedExtent.height);
 	if (extent_.width == 0 || extent_.height == 0)
 		throw std::runtime_error("hosted swapchain extent is 0");
-	CreateHostedImage();
-	// Modest flight count: the compositor serializes against the
-	// host's frames anyway (device-idle boundaries), so deep
-	// pipelining buys nothing here.
+	// Placeholder until the host's count is pinned (App::Initialize calls
+	// SetHostedFramesInFlight right after constructing this); every
+	// per-flight ring the renderer sizes off this stays in-bounds for the
+	// host's frame indices.
 	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, 3u);
-	CreateDepthResources();
-	CreateSyncObjects();
-	// Graphics family WITHOUT a surface: present support is
-	// meaningless offscreen (findQueueFamilies queries the surface).
-	uint32_t graphicsFamily = UINT32_MAX;
-	{
-		uint32_t count = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count,
-			nullptr);
-		std::vector<VkQueueFamilyProperties> families(count);
-		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count,
-			families.data());
-		for (uint32_t i = 0; i < count; ++i)
-			if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
-				graphicsFamily = i;
-				break;
-			}
-		if (graphicsFamily == UINT32_MAX)
-			throw std::runtime_error("no graphics queue family (hosted)");
-	}
-	InitFrameCommands(graphicsFamily);
-	CreateTimestampPools();
 }
 
-void smvk::VulkanSwapchain::CreateHostedImage() {
-	// The "surface": one color image, Holder-owned through the context
-	// (same in-place recreate pattern as the depth image). Usage adds
-	// Sampled so an external compositor reads it bindless; TransferSrc
-	// rides the debug-dump arm (the live-view diagnostic readback).
-	ImageCreateInfo ci{};
-	ci.extent = { extent_.width, extent_.height };
-	ci.format = surfaceFormat;
-	ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
-	if (DebugImageDumpArmed())
-		ci.usage = ci.usage | ImageUsage::TransferSrc;
-	ci.mipLevels = 1;
-	ci.arrayLayers = 1;
-	ci.name = "hosted target image";
-	hostedImage_ = ctx_.CreateImage(ci, nullptr);
-	if (hostedImage_.empty())
-		throw std::runtime_error("failed to create hosted target image");
-	const auto* image = ctx_.images_.get(hostedImage_);
-	if (!image)
-		throw std::runtime_error("hosted target image stale handle");
-	// Raw image + view land in the same vectors a real swapchain
-	// fills, so every consumer (rendergraph view resolution,
-	// GetCurrentImage barriers, view handles) works unchanged.
-	images_.assign(1, image->vkImage);
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = image->vkImage;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = toVkFormat(surfaceFormat);
-	viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-	VkImageView view = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
-	imageViews_.assign(1, view);
-	imageViewHandles_.clear();
-	imageViewHandles_.push_back(
-		ctx_.RegisterImageView(view, surfaceFormat, "hosted target view"));
+void smvk::VulkanSwapchain::SetHostedExtent(VkExtent2D extent) {
+	// Hosted-fake only (see the hosted ctor): the editor drives the world
+	// render extent per frame. Clamp to something renderable — a rect can
+	// go degenerate mid-drag (minimized panels, splitters collapsing).
+	if (!hosted_)
+		return;
+	extent.width = std::clamp(extent.width, 64u, 16384u);
+	extent.height = std::clamp(extent.height, 64u, 16384u);
+	if (extent.width == extent_.width && extent.height == extent_.height)
+		return;
+	extent_ = extent;
+	windowWidth = int(extent.width);
+	windowHeight = int(extent.height);
+}
+
+void smvk::VulkanSwapchain::SetHostedFramesInFlight(uint32_t count) {
+	if (!hosted_ || count == 0)
+		return;
+	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, count);
 }
 
 void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
@@ -8798,8 +8764,9 @@ void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
 }
 
 void smvk::VulkanSwapchain::Recreate() {
-	// Hosted: fixed extent by design — the compositor scales, and a
-	// "resize" would only churn the target for nothing.
+	// Hosted fake: nothing to recreate — no surface, no images. The
+	// extent is host-driven (SetHostedExtent) and every renderer target
+	// resizes in place through its own Ensure() keys.
 	if (hosted_)
 		return;
 	// No new sync objects. Should investigate, can iamge# change? on OOD
@@ -10594,26 +10561,15 @@ bool smvk::App::RequestHostedBoot(App& host, Extent2D targetExtent,
 	return true;
 }
 
-smvk::ImageViewHandle smvk::App::HostedTargetView() const {
-	if (!hostedBoot_ || !m_swapchain)
-		return {};
-	return m_swapchain->HostedViewHandle();
-}
-
-smvk::ImageHandle smvk::App::HostedTargetImage() const {
-	if (!hostedBoot_ || !m_swapchain)
-		return {};
-	return m_swapchain->HostedImageHandle();
-}
-
 bool smvk::App::Initialize() {
 
 	if (hostedBoot_) {
 		// HOSTED BOOT (embedded render-service mode — see app.h): the
 		// host App owns the process's single Vulkan context (volk's
 		// globals forbid a second instance); borrow it and run our own
-		// hosted swapchain (offscreen render target) + rendergraph +
-		// world. No window, no SDL, no Streamline — the host owns all
+		// hosted FAKE swapchain (formats + driven extent + host flight
+		// count — no images, no acquire/present) + rendergraph + world.
+		// No window, no SDL, no Streamline — the host owns all
 		// process-global state.
 		if (!hostedHost_ || !hostedHost_->m_context)
 			return false;
@@ -10626,6 +10582,13 @@ bool smvk::App::Initialize() {
 		contextBorrowed_ = true;
 		m_swapchain = smvk::mem::MakeProcess<Swapchain>(*m_context,
 			hostedExtent_, hostedFormat_);
+		// HOSTED FAKE (see VulkanSwapchain's hosted ctor): pin its flight
+		// count to the host's — the hosted renderer sizes every per-flight
+		// ring off it and its frames now run on the host's flight indices
+		// (RenderInlineFrame passes the host fb through).
+		if (hostedHost_->m_swapchain)
+			m_swapchain->SetHostedFramesInFlight(
+				hostedHost_->m_swapchain->framesInFlight());
 		m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
 		// LIVE-VIEW borrowed world: the host (editor) may hand over its
 		// OWN resolved world — the hosted renderer then renders the
@@ -10641,8 +10604,9 @@ bool smvk::App::Initialize() {
 		}
 		hostedInitialized_ = true;
 		std::cerr << "[App] hosted boot: " << hostedExtent_.width << "x"
-			<< hostedExtent_.height << " offscreen target on the host's "
-			"context" << (worldBorrowed_ ? " (live borrowed world)\n" : "\n");
+			<< hostedExtent_.height << " inline fake swapchain (formats + "
+			"driven extent) on the host's context"
+			<< (worldBorrowed_ ? " (live borrowed world)\n" : "\n");
 		return true;
 	}
 
@@ -11466,7 +11430,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			std::fprintf(stderr, "[AsyncCompute] split disabled (VULKANTOY_ASYNC_COMPUTE=0): async passes record inline on the graphics queue\n");
 		}
 	}
-	else if (hasDedicatedCompute && anyAsync && fb.swapchain)
+	else if (hasDedicatedCompute && anyAsync && fb.swapchain && !fb.inlineHostFrame)
+		// INLINE HOSTED FRAME: the split's mid-recording G1 submit would
+		// cut the HOST's command buffer in half (the editor still has
+		// passes to record after this graph) — async passes emulate on
+		// the graphics queue instead (see Framebuffer::inlineHostFrame).
 		vkSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
 	if (vkSwap && !vkSwap->EnsureAsyncSplit(flight)) {
 		// No dedicated compute after all (or resource failure): emulate.

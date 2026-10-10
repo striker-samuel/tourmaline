@@ -944,29 +944,42 @@ namespace smvk {
 			VulkanResourceManager& context
 			, SDL_Window* window
 		);
-		// HOSTED render target: an offscreen color image instead of a
-		// window surface. Acquire/submit run unchanged (frame command
-		// pools, timeline retirement); "present" transitions the target
-		// to SHADER_READ and skips the queue present entirely — the
-		// image is consumed by an external compositor (the editor's
-		// WYSIWYG viewport). One image, one view, fixed extent
-		// (the compositor scales; Recreate is a no-op).
+		// HOSTED FAKE (the editor's INLINE live view): no surface, no
+		// images, no acquire/present rhythm at all — just the renderer's
+		// view of a "swapchain": surface + depth formats, a HOST-DRIVEN
+		// extent (the editor viewport rect, settable per frame) and the
+		// host's flight count. The host's own frame calls
+		// WorldRenderer::RenderInlineFrame(hostFb, rect) which records the
+		// whole world pipeline into the HOST's command buffer — the final
+		// tonemap writes a sub-rect of the host's swapchain image directly
+		// (viewport/scissor offset). One acquire, one submit, one present
+		// per editor frame; no device-idle ping-pong; extent drift resizes
+		// the renderer's targets in place (Ensure keys), never relaunches.
 		VulkanSwapchain(
 			VulkanResourceManager& context
 			, VkExtent2D hostedExtent
 			, Format colorFormat
 		);
 		bool hosted() const { return hosted_; }
-		// Bindless-composition access: the stable handle of the hosted
-		// target view (registered like a swapchain view so rendergraph
-		// resolves work unchanged).
+		// Hosted-fake extent drive (the editor viewport rect). Clamped to
+		// something renderable; no-op when unchanged (the renderer's
+		// per-frame Ensure() calls key off GetExtent and resize targets in
+		// place only on actual drift).
+		void SetHostedExtent(VkExtent2D extent);
+		// Pin the fake's flight count to the HOST swapchain's: the hosted
+		// renderer sizes every per-flight ring (frame uniforms, lights,
+		// render-view slabs) off this, and its frames now run on the
+		// host's flight indices.
+		void SetHostedFramesInFlight(uint32_t count);
+		// Bindless-composition access: EMPTY on the hosted fake (no
+		// images); windowed swapchains never register hosted views either.
 		ImageViewHandle HostedViewHandle() const {
 			return imageViewHandles_.empty() ? ImageViewHandle{}
 				: imageViewHandles_[0];
 		}
-		// The hosted target IMAGE (readback/dump paths want the image,
-		// not the view).
-		ImageHandle HostedImageHandle() const { return hostedImage_; }
+		// The hosted target IMAGE: always empty on the hosted fake (the
+		// inline live view renders straight into the host's swapchain).
+		ImageHandle HostedImageHandle() const { return {}; }
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 		VulkanSwapchain(VulkanSwapchain&&) = delete;
@@ -1040,12 +1053,14 @@ namespace smvk {
 		SDL_Window* window_ = nullptr;
 		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
 
-		// Hosted render-target mode (see the hosted ctor): the offscreen
-		// color image backing the "surface". Holder-owned through the
-		// context (in-place recreate support); raw views live in
-		// imageViews_ exactly like swapchain views.
+		// Hosted FAKE-swapchain marker (see the hosted ctor): formats +
+		// driven extent + host flight count only. No image, no views, no
+		// sync objects, no frame pools — AcquireFramebuffer /
+		// EndAndPresentFramebuffer are never called on it (the host's
+		// own frame drives everything; RenderGraph::Execute refuses the
+		// async split for inline-hosted frames so nothing ever submits
+		// from inside the recording).
 		bool hosted_ = false;
-		Holder<ImageHandle> hostedImage_;
 
 		Format surfaceFormat{};
 		Format depthFormat{};
@@ -1085,11 +1100,10 @@ namespace smvk {
 		bool asyncSplitReady_[MAX_FRAMES_IN_FLIGHT] = {};
 		bool EnsureAsyncSplit(uint32_t flight); // false = no dedicated compute
 		bool EnsureAsyncPassBuffers(uint32_t flight, uint32_t count); // grow per-pass C CBs
-		// Shared frame-command setup (windowed + hosted ctors): pool
-		// per flight on the given graphics family.
+		// Shared frame-command setup (the WINDOWED ctor): pool per flight
+		// on the given graphics family. The hosted fake never creates
+		// frame commands (its frames run on the host's command buffer).
 		void InitFrameCommands(uint32_t graphicsFamily);
-		// Hosted-mode "surface": the single offscreen color image.
-		void CreateHostedImage();
 #pragma endregion
 
 		bool framebufferResized = false;

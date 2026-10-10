@@ -50,23 +50,20 @@ public:
 
 		// HOSTED boot (embedded render-service mode): an external host
 		// App (same process, same Vulkan context — volk's globals rule
-		// out a second instance) drives this App's frame loop manually.
-		// The hosted instance borrows the host's graphics members, then
-		// runs its own hosted swapchain (offscreen render target),
-		// rendergraph and world. Call BEFORE Initialize(); the host
-		// then drives: UpdateDeltaTime() + DrawFrame() per its own
-		// frame, with device-idle boundaries around the hosted frame
-		// (engine globals are per-frame-slot shared state — no overlap).
+		// out a second instance) embeds this App's renderer INLINE. The
+		// hosted instance borrows the host's graphics members, then runs
+		// its own hosted FAKE swapchain (formats + a host-driven extent
+		// + the host's flight count — no images, no acquire/present),
+		// rendergraph and world. Call BEFORE Initialize(); the host then
+		// drives RenderInlineFrame(hostFb) INSIDE its own frame — the
+		// hosted renderer records into the host's command buffer on the
+		// host's flight rhythm (one submit per host frame, no
+		// device-idle boundaries) and its tonemap writes the renderer's
+		// own inline target, which the host composites.
 		// Returns false when this App is already initialized.
 		bool RequestHostedBoot(App& host, Extent2D targetExtent,
 			Format targetFormat);
 		bool IsHosted() const { return hostedBoot_; }
-		// The hosted render target (offscreen "surface" view) for
-		// external composition. Empty when not hosted.
-		ImageViewHandle HostedTargetView() const;
-		// The hosted render target IMAGE (readback/dump paths).
-		// Empty when not hosted.
-		ImageHandle HostedTargetImage() const;
 		// LIVE VIEW: hand the host's OWN resolved world to the hosted
 		// renderer (call AFTER RequestHostedBoot, BEFORE Initialize).
 		// The hosted renderer then renders the host's live engine
@@ -117,9 +114,10 @@ public:
 		int benchFrames_ = 0;   // measured frames (post warmup)
 		int benchWarmup_ = 0;   // warmup frames skipped from stats
 		double benchAccum_ = 0.0;
-		// Hosted-boot state (RequestHostedBoot): borrowed graphics +
-		// an offscreen target instead of a window surface. The host
-		// drives the loop; Run() is never called.
+		// Hosted-boot state (RequestHostedBoot): borrowed graphics + a
+		// hosted FAKE swapchain (formats + driven extent + host flight
+		// count — no images). The host drives RenderInlineFrame inside
+		// its own frame; Run() is never called.
 		bool hostedBoot_ = false;
 		bool hostedInitialized_ = false;
 		App* hostedHost_ = nullptr;

@@ -916,21 +916,26 @@ std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
 }
 
 bool EditorApp::LaunchWysiwyg() {
-	// LIVE VIEW: the hosted renderer renders THE EDITOR'S OWN WORLD —
-	// (see the full comment above the call site in the deferred block).
+	// LIVE VIEW: the inline hosted renderer renders THE EDITOR'S OWN
+	// WORLD (see the full comment above the call site in the deferred
+	// block).
 	if (!m_world) {
 		Log("Live view: no world to host — open a scene first.");
 		return false;
 	}
-	// Frame-boundary contract: creating the hosted swapchain and
+	// Frame-boundary contract: creating the hosted renderer and
 	// (re)binding descriptors while editor frames are in flight
 	// faults. Callers run between frames; idle anyway so a direct
 	// call can never wedge the shared context.
 	WaitForDeviceIdle();
-	StopWysiwyg(); // fresh instance per launch (world + extent change)
-	// Viewport-sized target: matches the common case 1:1; rect drift is
-	// handled by the DrawFrame extent watcher (stable drift relaunches
-	// at the new extent — see m_wysiwygResizeWant).
+	StopWysiwyg(); // fresh instance per launch (first launch only in
+	// practice — world swaps rebind in place; extent drift never
+	// relaunches, the per-frame SetMainViewExtent resizes targets in
+	// place inside the renderer's Ensure() keys).
+	// Viewport-sized initial extent (the current rect; RenderFrame
+	// drives it per frame after — splitter drags and layout switches
+	// resize the world targets in place, 1:1 with the rect at all
+	// times).
 	const ViewportRect& vp = m_viewports[0].rect;
 	uint32_t w = std::max(uint32_t(vp.w), 64u);
 	uint32_t h = std::max(uint32_t(vp.h), 64u);
@@ -945,28 +950,22 @@ bool EditorApp::LaunchWysiwyg() {
 	// One call: boot off this context, borrow the editor's world (it
 	// keeps owning + mutating it — edits show up per frame; the hosted
 	// renderer never imports anything), full framegraph + hosted
-	// invariants, initialized. Cooks are the separate PRODUCT step —
-	// they never feed the viewport.
+	// invariants, initialized. The format MUST be the editor window's
+	// surface format — the inline tonemap writes the editor's swapchain
+	// image. Cooks are the separate PRODUCT step — they never feed the
+	// viewport.
 	try {
-		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this, *m_world,
-			m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot);
+		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this,
+			*m_world, m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot,
+			m_swapchain->GetSurfaceFormat());
 	}
 	catch (const std::exception& e) {
 		Log(std::string("Live view: launch threw: ") + e.what());
 		StopWysiwyg();
 		return false;
 	}
-	// Compose plumbing: bindless slot over the hosted target + the
-	// compose program.
-	m_wysiwygBindless = m_context->CreateBindlessImage(
-		m_wysiwyg->HostedTargetView(),
-		smvk::ImageLayout::ShaderReadOnlyOptimal);
-	if (m_wysiwygBindless.empty()) {
-		Log("Live view: hosted target bindless registration failed.");
-		StopWysiwyg();
-		return false;
-	}
-	m_wysiwygBindlessIndex = m_context->GetBindlessIndex(m_wysiwygBindless);
+	// Compose plumbing for the SECONDARY multiview images (view 0 renders
+	// inline — no blit): the compose program + its linear sampler.
 	m_wysiwygSamplerIndex = m_context->GetOrCreateSampler(
 		smvk::SamplerCreateInfo{
 			.magFilter = smvk::Filter::Linear,
@@ -982,7 +981,7 @@ bool EditorApp::LaunchWysiwyg() {
 		StopWysiwyg();
 		return false;
 	}
-	Log("Live view: hosted WorldRenderer rendering the editor's world "
+	Log("Live view: INLINE WorldRenderer rendering the editor's world "
 		"'" + m_wysiwygSceneId + "' (full App pipeline, live; edits "
 		"show per frame - world swaps rebind in place).");
 	return true;
@@ -991,8 +990,9 @@ bool EditorApp::LaunchWysiwyg() {
 void EditorApp::StopWysiwyg() {
 	if (!m_wysiwyg)
 		return;
-	// Retire in-flight editor frames first: their compose passes still
-	// reference the bindless slot + hosted target being torn down here.
+	// Retire in-flight editor frames first: they still reference the
+	// hosted renderer's resources being torn down here (the inline
+	// world passes of the last frame included).
 	WaitForDeviceIdle();
 	// Release the hosted instance's GPU resources while the shared
 	// context is alive (its Shutdown releases Holders; ~App then
@@ -1005,8 +1005,7 @@ void EditorApp::StopWysiwyg() {
 		Log(std::string("Live view: shutdown threw: ") + e.what());
 	}
 	m_wysiwyg.reset();
-	m_wysiwygBindless = {};
-	m_wysiwygBindlessIndex = UINT32_MAX;
+	m_wysiwygSamplerIndex = UINT32_MAX;
 	Log("Live view: hosted renderer stopped.");
 }
 
@@ -1814,61 +1813,16 @@ void EditorApp::DrawFrame() {
 			m_worldRetire.reset();
 		}
 	}
-	// HOSTED EXTENT DRIFT (aspect fix): the hosted target extent is a
-	// launch-time snapshot — the compose blit stretches on rect drift
-	// (layout switch, window resize, splitter drag). "Fresh instance
-	// per launch (world + extent change)" is the designed answer, wired
-	// here: relaunch on a STABLE drift only (3 identical wanted extents)
-	// so transient resize flicker never churns and a live splitter drag
-	// stretches as today until it settles (then one relaunch, 1:1 again).
-	// Rects are last frame's here (RenderFrame recomputes them after);
-	// the debounce rides that 1-frame lag fine.
-	if (m_wysiwyg && m_world) {
-		const ViewportRect& vp0 = m_viewports[0].rect;
-		const smvk::Extent2D want{
-			std::max(uint32_t(vp0.w), 64u),
-			std::max(uint32_t(vp0.h), 64u) };
-		if (want.width == m_wysiwygExtent.width
-			&& want.height == m_wysiwygExtent.height) {
-			m_wysiwygResizeWant = { 0, 0 };
-			m_wysiwygResizeStable = 0;
-		}
-		else {
-			if (want.width == m_wysiwygResizeWant.width
-				&& want.height == m_wysiwygResizeWant.height)
-				++m_wysiwygResizeStable;
-			else {
-				m_wysiwygResizeWant = want;
-				m_wysiwygResizeStable = 1;
-			}
-			if (m_wysiwygResizeStable >= 3) {
-				const smvk::Extent2D old = m_wysiwygExtent;
-				// Relaunch (StopWysiwyg + fresh instance at the new
-				// extent — the world is borrowed again, edits keep
-				// flowing; refresh schedules reset to defaults).
-				if (LaunchWysiwyg())
-					Log("Live view: extent drift "
-						+ std::to_string(old.width) + "x"
-						+ std::to_string(old.height) + " -> "
-						+ std::to_string(want.width) + "x"
-						+ std::to_string(want.height)
-						+ " (relaunched; compose 1:1 again).");
-				m_wysiwygResizeWant = { 0, 0 };
-				m_wysiwygResizeStable = 0;
-			}
-		}
-	}
-	// HOSTED WYSIWYG drive: run the WorldRenderer frame between our own
-	// frames, wrapped in device-idle boundaries. Both renderers share
-	// ONE Vulkan context (volk globals forbid a second instance), so
-	// their per-frame engine-global slots must never be in flight
-	// together: idle -> hosted submit -> idle -> the editor's own frame.
+	// HOSTED EXTENT DRIFT: GONE with the inline live view — the world
+	// render extent is driven per frame (SetMainViewExtent inside
+	// RenderFrame, current rect) and the renderer resizes its targets
+	// IN PLACE through the Ensure() keys. The old relaunch watcher (and
+	// the crash window it opened mid-session) is deleted.
 	// Dev crash-repro vehicle #2 (VULKANTOY_EDITOR_OPEN_AT2="<frame>:
 	// <file>"): same as OPEN_AT but fires AFTER the deferred block, so
 	// the pending live-view launch consumes one frame LATER — the exact
 	// dialog shape from the user's crash log (one editor frame renders
-	// with the new world between the open and the launch; the device
-	// dies in that window).
+	// with the new world between the open and the launch).
 	{
 		struct OpenAt2 {
 			int frame = -1;
@@ -1904,19 +1858,23 @@ void EditorApp::DrawFrame() {
 		}
 	}
 	if (m_wysiwyg) {
-		const bool trace = std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr;
-		if (trace) { std::fprintf(stderr, "[DRIVE] idle-pre\n"); std::fflush(stderr); }
-		WaitForDeviceIdle();
+		// CPU drives only — pure renderer-state latches (camera, grid,
+		// multiview descriptors, debug views). The world FRAME itself
+		// runs INLINE inside RenderFrame (editor_render.cpp): between
+		// the editor's background-clear round and its overlay round, on
+		// the editor's own acquire/submit rhythm. No device-idle
+		// boundaries anywhere on this path anymore.
 		// CAMERA DRIVE: viewport 0's camera drives the hosted MAIN view —
-		// the compose blits it into panel 0, so the panel's camera chip and
-		// its content must agree (the ACTIVE camera drove it before:
-		// hovering any other panel desynced panel 0 from its own camera
-		// while that camera rendered nowhere). Each additional viewport
-		// keeps driving its OWN hosted view below (viewport i+1 -> view i)
-		// with its own camera. Top/Side ortho cameras drive a TRUE
-		// orthographic lens (orthoHalfH; the old fov-approximation
-		// dolly-distorted the live view). Locked look-through (bound scene
-		// cameras) stays an editor-pass feature for now.
+		// the inline tonemap writes it into panel 0's rect, so the
+		// panel's camera chip and its content must agree (the ACTIVE
+		// camera drove it before: hovering any other panel desynced
+		// panel 0 from its own camera while that camera rendered
+		// nowhere). Each additional viewport keeps driving its OWN
+		// hosted view below (viewport i+1 -> view i) with its own
+		// camera. Top/Side ortho cameras drive a TRUE orthographic lens
+		// (orthoHalfH; the old fov-approximation dolly-distorted the
+		// live view). Locked look-through (bound scene cameras) stays
+		// an editor-pass feature for now.
 		{
 			const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
 			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
@@ -2014,18 +1972,40 @@ void EditorApp::DrawFrame() {
 		// lines are removed (lines never draw over the objects in
 		// front — the prepass depth occludes them).
 	m_wysiwyg->SetWireframe(m_wireframeAll);
-	if (trace) { std::fprintf(stderr, "[DRIVE] hosted frame\n"); std::fflush(stderr); }
-	m_wysiwyg->HostedDrawFrame();
-		if (trace) { std::fprintf(stderr, "[DRIVE] idle-post\n"); std::fflush(stderr); }
-		WaitForDeviceIdle();
-		if (trace) { std::fprintf(stderr, "[DRIVE] done\n"); std::fflush(stderr); }
-		// Diagnostic dump (VULKANTOY_WYSIWYG_DUMP=<frame>): read the
-		// hosted target back at the device-idle boundary (its layout
-		// is SHADER_READ here) and write a PNG + pixel stats —
-		// "is the hosted renderer actually drawing the mesh" becomes
+	}
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);
+	}
+	auto fb = m_swapchain->AcquireFramebuffer();
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-render begin img=%d\n", (int)fb.imageIndex); std::fflush(stderr);
+	}
+	if (fb.imageIndex >= 0)
+		RenderFrame(fb);
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-present begin\n"); std::fflush(stderr);
+	}
+	m_swapchain->EndAndPresentFramebuffer(fb);
+	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
+		std::fprintf(stderr, "[DRIVE] ed-present done\n"); std::fflush(stderr);
+	}
+	// Post-present hosted diagnostics: the frame (editor passes + the
+	// INLINE world frame they carried) has landed — safe to stall.
+	if (m_wysiwyg) {
+		// One-shot capture export (VULKANTOY_CAPTURE=<frame> — the
+		// renderer's TonemapCapture wrote its own target this frame):
+		// view-0 pixel proof now that the world renders inline (scene
+		// only, no editor UI — exactly the grading-reference capture).
+		m_wysiwyg->PollCaptureReadback();
+		// Diagnostic dump (VULKANTOY_WYSIWYG_DUMP=<frame>): read each
+		// SECONDARY hosted view's own image back (they keep their own
+		// offscreen targets; view 0 renders inline — use
+		// VULKANTOY_CAPTURE for its pixel proof) and write PNGs + pixel
+		// stats — "is the renderer actually drawing the mesh" stays
 		// answerable headlessly. Two shots (frame N and N+11) so
 		// before/after comparisons (camera moves, view switches) come
-		// out of ONE run. Ships in all builds (env-gated dev tool).
+		// out of ONE run. Ships in all builds (env-gated dev tool);
+		// stalls only on the dump frames.
 		static const int kDumpFrame = []() {
 			const char* e = std::getenv("VULKANTOY_WYSIWYG_DUMP");
 			return e ? std::atoi(e) : -1;
@@ -2034,51 +2014,9 @@ void EditorApp::DrawFrame() {
 		const int dumpAt = (dumpShots == 0) ? kDumpFrame
 			: (dumpShots == 1 ? kDumpFrame + 11 : -1);
 		if (kDumpFrame >= 0 && dumpAt >= 0
-			&& int(m_frameCounter) == dumpAt
-			&& m_wysiwygExtent.width > 0 && m_wysiwygExtent.height > 0) {
+			&& int(m_frameCounter) == dumpAt) {
 			++dumpShots;
-			const size_t bytes = size_t(m_wysiwygExtent.width)
-				* m_wysiwygExtent.height * 4;
-			std::vector<uint8_t> px(bytes);
-			if (m_context->DownloadDataFromImage(
-					m_wysiwyg->HostedTargetImage(),
-					smvk::ImageLayout::ShaderReadOnlyOptimal,
-					px.data(), px.size())) {
-				// BGRA -> RGBA for stb + stats.
-				uint64_t sum[3] = { 0, 0, 0 };
-				size_t nonBlack = 0;
-				for (size_t i = 0; i + 3 < px.size(); i += 4) {
-					std::swap(px[i], px[i + 2]); // B,R
-					sum[0] += px[i]; sum[1] += px[i + 1];
-					sum[2] += px[i + 2];
-					if (px[i] > 8 || px[i + 1] > 8 || px[i + 2] > 8)
-						++nonBlack;
-				}
-				const size_t n = px.size() / 4;
-				char buf[256];
-				std::snprintf(buf, sizeof(buf),
-					"hosted-target dump #%d: %ux%u mean=(%u,%u,%u) "
-					"non-black %.1f%% -> wysiwyg_hosted.png",
-					dumpShots,
-					m_wysiwygExtent.width, m_wysiwygExtent.height,
-					unsigned(sum[0] / n), unsigned(sum[1] / n),
-					unsigned(sum[2] / n),
-					100.0 * double(nonBlack) / double(n));
-				Log(buf);
-				stbi_write_png(
-					dumpShots == 1 ? "wysiwyg_hosted.png"
-						: "wysiwyg_hosted2.png",
-					int(m_wysiwygExtent.width),
-					int(m_wysiwygExtent.height), 4, px.data(),
-					int(m_wysiwygExtent.width) * 4);
-			}
-			else {
-				Log("hosted-target dump: readback failed.");
-			}
-			// MULTIVIEW: dump each hosted view's own image at the same
-			// shots (wysiwyg_viewN.png + stats + the view's refresh state)
-			// — per-view content and the tic/toc phase split become
-			// answerable headlessly.
+			WaitForDeviceIdle();
 			for (uint32_t i = 0; i < m_wysiwyg->GetViewCount(); ++i) {
 				const smvk::Extent2D ext = m_wysiwyg->ViewOutExtent(i);
 				const smvk::ImageHandle img = m_wysiwyg->ViewOutImage(i);
@@ -2137,22 +2075,6 @@ void EditorApp::DrawFrame() {
 					"off — the live view must follow\n";
 			}
 		}
-	}
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);
-	}
-	auto fb = m_swapchain->AcquireFramebuffer();
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-render begin img=%d\n", (int)fb.imageIndex); std::fflush(stderr);
-	}
-	if (fb.imageIndex >= 0)
-		RenderFrame(fb);
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-present begin\n"); std::fflush(stderr);
-	}
-	m_swapchain->EndAndPresentFramebuffer(fb);
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-present done\n"); std::fflush(stderr);
 	}
 	PollCookProcess();
 	PollBakeProcess();
