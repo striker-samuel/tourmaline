@@ -108,6 +108,10 @@ std::string TextureConversionHash(const void* data, size_t size,
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Vfs/vfs.h>
 
+#include <gltf_import/asset_export.h>
+
+#include <functional>
+
 namespace smvk { class TextureStreamer; }
 
 struct GltfToSceneImporter
@@ -361,41 +365,36 @@ private:
 	std::string vfsBaseDir_;
 };
 
-// Lists the scenes of a VFS glTF model (index order, names may be empty).
-// Lightweight: parses the JSON only, no buffers/textures. Used by the
-// cooker to fan out per-scene cooks. Returns false on error (err filled).
-bool ListGltfScenesFromVfs(
-	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath,
-	std::vector<std::string>& outNames,
-	std::string* err = nullptr);
-
-// VFS-first import: reads the .gltf JSON, external .bin buffers and all
-// textures through vfs (the cooker mounts its content tree), stamps asset
-// URIs from modelVfsPath, and optionally runs the meshopt cook pass.
-// ctx may be nullptr together with a cook-mode cluster (see
-// Cluster::SetCookMode) for a fully GPU-free cook. Example:
-//   auto cluster = std::make_unique<Cluster>(nullptr);
-//   cluster->SetCookMode(true);
-//   GltfToClusterFromVfs(nullptr, vfs, "models/Sponza/sponza.gltf", *cluster, opt);
-// gltfSceneIndex selects which glTF scene to import (<0 = default scene,
-// matching the historic behavior); out of range fails loudly.
-// autoKtx gates in-process KTX conversion of non-KTX sources (default on);
-// fileNodes carries cooked file-node records for conversion intent (null =
-// usage inference only — the VFS path has no tour).
-void GltfToClusterFromVfs(
-	smvk::ResourceManager* ctx,
-	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath,
-	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
-	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
-	int coordFix = 0,
-	const glm::mat4& preTransform = glm::mat4(1.0f),
-	int gltfSceneIndex = -1,
-	bool autoKtx = true,
-	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
-	GltfArtifactCache* artifactCache = nullptr);
+// ---------------------------------------------------------------------------
+// THE MESH ARTIFACT BUILD (the .geometry preprocessed asset — see
+// asset_export.h, the MeshImporter): builds the referenced subtree from
+// the DERIVED blobs with NO glTF re-parse, no tinygltf, no re-import.
+// Node ids are IDENTICAL to the source import (the derivation copied
+// them), so nested .tour replays, overrides and cooks address the same
+// nodes. Materials bind through their .material assets (GUID ->
+// manifest file -> values + textures, loaded/transcoded through
+// textureSource); meshlets + LOD chains ride the trailing registry
+// section. Cook mode works (AoS uploads, cook texture ids); the runtime
+// streams/uploads through `streamer` when set.
+// `ph` anchors the subtree: the cluster scene node the artifact's node 0
+// (its import root) grafts under (0 = the scene root — the plain
+// artifact-session shape; ApplySceneReferences passes its placeholder).
+// `readSibling` reads the .material files beside the .geometry (host or
+// vfs — the caller's resolution). Returns the node count built
+// (0 = failure; the caller reports, never falls back).
+// ---------------------------------------------------------------------------
+size_t BuildFromMeshAsset(
+	smvk::Cluster& cluster,
+	smvk::TextureStreamer* streamer,
+	const smvk::assets::MeshAsset& asset,
+	const smvk::assets::AssetManifest& manifest,
+	const std::string& meshBaseUri,
+	int ph,
+	const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+	bool autoKtx,
+	GltfArtifactCache* artifactCache,
+	const std::function<std::optional<std::vector<uint8_t>>(
+		const std::string&)>& readSibling);
 
 // ---------------------------------------------------------------------------
 // Clarisse-style nested SCENE REFERENCES.

@@ -1391,6 +1391,55 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	return true;
 }
 
+bool ImportMeshSource(
+	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
+	const DeriveConfig& config, AssetManifest& outManifest,
+	DeriveStats* outStats, std::string* err) {
+	auto giveUp = [&](const std::string& e) {
+		if (err)
+			*err = e;
+		return false;
+	};
+	// Host-side parse (glTF is an import-time SOURCE format — never
+	// runtime/VFS content; see the header).
+	tinygltf::Model model;
+	if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+		return giveUp("source parse failed: "
+			+ gltfPath.generic_string());
+	return DeriveGltfAssets(model, gltfPath, gltfGuid, config,
+		outManifest, outStats, err);
+}
+
+bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path geometry =
+		fs::path(gltfPath).replace_extension(".geometry");
+	if (!fs::is_regular_file(geometry, ec))
+		return true; // no artifact yet (never imported)
+	if (file_size(geometry, ec) == 0)
+		return true;
+	// Manifest present + parseable (the .material GUID table the build
+	// resolves): a missing/corrupt manifest means a half-written or
+	// hand-mangled derivation — re-derive.
+	{
+		AssetManifest m;
+		std::string merr;
+		if (!LoadAssetManifest(gltfPath, m, merr))
+			return true;
+	}
+	// Source newer than the artifact (mtime): the artifact predates the
+	// last source edit. (fs::last_write_time errors read as stale — the
+	// safe side always re-derives.)
+	const auto srcTime = fs::last_write_time(gltfPath, ec);
+	if (ec)
+		return true;
+	const auto artTime = fs::last_write_time(geometry, ec);
+	if (ec || artTime < srcTime)
+		return true;
+	return false;
+}
+
 // ---- shared material-asset import (editor + cook) ------------------------
 // Mirrors the editor's AssignMaterialAsset + AddTextureFromFile flow, with
 // the cook mode (cluster.IsCookMode(), ctx == nullptr) replacing the GPU

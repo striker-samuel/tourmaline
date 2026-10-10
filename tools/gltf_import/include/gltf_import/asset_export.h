@@ -1,8 +1,14 @@
 #pragma once
-// glTF -> project ASSET derivation (Unity-style preprocessed assets).
+// THE MESH IMPORTER: glTF -> the engine-native MESH ARTIFACT family
+// (Unity-style preprocessed assets). This is the ONLY glTF-aware import
+// surface in the codebase — every consumer downstream (editor sessions,
+// PakCooker, GiBaker, ApplySceneReferences) builds from the ARTIFACTS:
 //
-// Importing a glTF into the project writes PREPROCESSED assets next to the
-// source (the glTF itself stays as the container/source of truth):
+//   cameras, materials, lights, geometry, animations — ALL of it rides
+//   the derived asset set; the glTF never parses outside this module.
+//
+// Importing a glTF writes PREPROCESSED assets next to the source (the
+// glTF itself stays as the container/source of truth):
 //
 //   <stem>.geometry               — the DATA BLOB: the whole scene graph
 //                                  (hierarchy, raw TRS as authored, node
@@ -32,8 +38,10 @@
 //
 // The editor's scene (.tour) references these ASSETS by GUID (the root
 // source points at the .geometry; the .geometry binds its .material
-// GUIDs); the glTF never opens as a scene directly anymore — the asset
-// browser shows it as a FOLDER of the derived assets.
+// GUIDs); the glTF never opens as a scene — a .gltf OPEN in the editor
+// routes through the importer (derive-if-stale beside the source) and
+// the session records the .geometry. The asset browser shows the glTF
+// as a FOLDER of the derived assets.
 
 #include <cstdint>
 #include <filesystem>
@@ -227,7 +235,7 @@ struct DeriveStats {
 // every derived asset + the manifest next to it (its directory). Existing
 // manifest GUIDs are KEPT (matched by kind+sourceIndex); entries with no
 // source are dropped (counted). Returns false + err on a failed import or
-// a failed write (a partial derivation leaves older files â€” the next
+// a failed write (a partial derivation leaves older files — the next
 // successful derive overwrites them).
 bool DeriveGltfAssets(
 	const tinygltf::Model& model,
@@ -237,6 +245,30 @@ bool DeriveGltfAssets(
 	AssetManifest& outManifest,
 	DeriveStats* outStats = nullptr,
 	std::string* err = nullptr);
+
+// THE MESH IMPORTER entry: parse + derive in one call. The parse is
+// host-side (glTF is an import-time SOURCE format, never runtime/VFS
+// content). `gltfGuid` is the source's project identity (the .meta GUID —
+// the editor's ProjectAssetGuid; callers without an assetdb pass ""
+// (the manifest then carries no source identity, entries keep their own).
+// On success the .geometry + .material/.anim set + the manifest sit next
+// to the source, and outManifest carries the table. The natural driver is
+// MeshArtifactStale below (derive only when the artifacts are missing or
+// the source changed).
+bool ImportMeshSource(
+	const std::filesystem::path& gltfPath,
+	const std::string& gltfGuid,
+	const DeriveConfig& config,
+	AssetManifest& outManifest,
+	DeriveStats* outStats = nullptr,
+	std::string* err = nullptr);
+
+// The re-import gate: TRUE when the derived .geometry beside `gltfPath`
+// is missing/empty, the manifest is missing/unparseable, or the SOURCE is
+// newer than the .geometry (mtime — the derivation products are stale
+// relative to the edited source). FALSE = the artifact set is current;
+// open the .geometry directly without re-deriving.
+bool MeshArtifactStale(const std::filesystem::path& gltfPath);
 
 // Readers (round-trip; the world build + the read-only inspector use them).
 bool LoadMeshAsset(

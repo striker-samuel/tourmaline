@@ -601,6 +601,54 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 			+ (imported > 1 ? "s" : "") + ".");
 }
 
+// THE MESH IMPORTER drive (editor side): glTF is IMPORT-ONLY — parse +
+// derive the artifact family beside the source when (and only when) the
+// artifacts are missing/stale (MeshArtifactStale: the .geometry absent,
+// the manifest corrupt, or the source newer), then hand back the
+// .geometry path the session references. "" = failure (logged). This is
+// the SINGLE place a .gltf turns into a session: opens (direct or
+// tour-recorded), drops and the project import all land here.
+std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
+	namespace fs = std::filesystem;
+	if (gltfPath.empty())
+		return {};
+	const fs::path geometry =
+		fs::path(gltfPath).replace_extension(".geometry");
+	if (!smvk::assets::MeshArtifactStale(gltfPath)) {
+		Log("Import: artifact current — opening '" + geometry.generic_string()
+			+ "' (no re-import).");
+		return geometry.generic_string();
+	}
+	smvk::assets::DeriveConfig cfg{};
+	if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS"))
+		cfg.meshlets = std::atoi(e) != 0;
+	if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
+		cfg.lods = std::atoi(e) != 0;
+	const std::string guid = ProjectAssetGuid(gltfPath);
+	smvk::assets::AssetManifest manifest;
+	smvk::assets::DeriveStats stats;
+	std::string derr;
+	Log("Import: deriving the mesh artifact from '"
+		+ fs::path(gltfPath).filename().generic_string() + "'...");
+	if (!smvk::assets::ImportMeshSource(gltfPath, guid, cfg,
+			manifest, &stats, &derr)) {
+		Log("Import: mesh importer failed: " + derr
+			+ " — the scene does NOT open from the glTF (glTF is "
+			"import-only; fix the source and re-import).");
+		return {};
+	}
+	Log("Import: derived assets ("
+		+ std::to_string(stats.geometryBlobs) + " geometry, "
+		+ std::to_string(stats.materials) + " materials, "
+		+ std::to_string(stats.anims) + " anims, "
+		+ std::to_string(stats.instances) + " instances"
+		+ (stats.newGuids ? ", " + std::to_string(stats.newGuids)
+			+ " new GUID(s)" : "")
+		+ (stats.keptGuids ? ", " + std::to_string(stats.keptGuids)
+			+ " kept GUID(s)" : "") + ").");
+	return geometry.generic_string();
+}
+
 bool EditorApp::ImportAsset(const std::string& srcPath) {
 	if (m_cookRunning) {
 		Log("Import: a cook is already running — wait for it to finish.");
@@ -611,45 +659,22 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 	const std::string dest = ImportAssetFile(srcPath);
 	if (dest.empty())
 		return false;
-	// ASSET DERIVATION (Unity-style preprocessed assets): the glTF ->
+	// THE MESH IMPORTER (Unity-style preprocessed assets): the glTF ->
 	// <stem>.geometry (the data blob) + <stem>.mat<N>_*.material +
-	// <stem>.anim<N>_*.anim + the <stem>.gltf.meta manifest (stable GUIDs).
-	// Scenes reference the ASSETS; the glTF stays the container/source of
-	// truth (reimport regenerates the blobs without breaking scenes).
-	{
-		tinygltf::Model model;
-		if (LoadModelFromAsciiFile(model, dest.c_str())) {
-			smvk::assets::DeriveConfig cfg{};
-			if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS"))
-				cfg.meshlets = std::atoi(e) != 0;
-			if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
-				cfg.lods = std::atoi(e) != 0;
-			const std::string guid = ProjectAssetGuid(dest);
-			smvk::assets::AssetManifest manifest;
-			smvk::assets::DeriveStats stats;
-			std::string derr;
-			if (smvk::assets::DeriveGltfAssets(model, dest, guid, cfg,
-					manifest, &stats, &derr)) {
-				Log("Import: derived assets ("
-					+ std::to_string(stats.geometryBlobs) + " geometry, "
-					+ std::to_string(stats.materials) + " materials, "
-					+ std::to_string(stats.anims) + " anims, "
-					+ std::to_string(stats.instances) + " instances"
-					+ (stats.newGuids ? ", " + std::to_string(stats.newGuids)
-						+ " new GUID(s)" : "") + ").");
-			}
-			else {
-				Log("Import: asset derivation failed: " + derr
-					+ " (the scene still opens from the glTF).");
-			}
-		}
-		else {
-			Log("Import: source parse failed — no derived assets "
-				"(the scene still opens from the glTF).");
-		}
+	// <stem>.anim<N_>*.anim + the <stem>.gltf.meta manifest (stable GUIDs)
+	// — cameras, materials, lights, geometry, anims: ALL of it rides the
+	// artifacts; the session (and the tour it saves) references the
+	// .geometry, and the glTF NEVER opens as a scene (import-only, see
+	// ImportMeshArtifactFor). A failed import FAILS here — no glTF
+	// session fallback.
+	const std::string artifact = ImportMeshArtifactFor(dest);
+	if (artifact.empty()) {
+		Log("Import: could not derive the mesh artifact — aborting "
+			"(the copied glTF stays for a fixed re-import).");
+		return false;
 	}
-	if (!OpenScene(dest)) {
-		Log("Import: could not open the copied asset.");
+	if (!OpenScene(artifact)) {
+		Log("Import: could not open the derived artifact.");
 		return false;
 	}
 	const std::string stem =

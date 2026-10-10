@@ -1,7 +1,10 @@
-// PakCooker: offline glTF -> .pak cooker that works exclusively on the VFS
-// and needs NO GPU (cook-mode Cluster, see Cluster::SetCookMode).
+// PakCooker: offline ARTIFACT -> .pak cooker that works exclusively on the
+// VFS and needs NO GPU (cook-mode Cluster, see Cluster::SetCookMode). The
+// cook inputs are the DERIVED .geometry artifacts (the MeshImporter's
+// output — glTF is IMPORT-ONLY, never a cook input; see
+// gltf_import/asset_export.h).
 //
-//   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
+//   PakCooker --content-dir content --in-vfs models/Sponza/sponza.geometry
 //             --out-pak content/paks/sponza.pak [--meshopt on|off]
 //             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
 //             [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
@@ -1119,7 +1122,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 	if (!out.dumpPak.empty())
 		return true; // inspection mode needs no cook inputs
 	if (out.dumpPak.empty() && out.inVfs.empty() && out.tour.empty()) {
-		std::cerr << "Required: --in-vfs <model vfs path> OR --tour <scene.tour>, and --out-pak <host path>" << std::endl;
+		std::cerr << "Required: --in-vfs <artifact .geometry vfs path> OR --tour <scene.tour>, and --out-pak <host path>" << std::endl;
 		return false;
 	}
 	if (out.outPak.empty()) {
@@ -1132,12 +1135,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 }
 
 void Usage() {
-	std::cout << "PakCooker --content-dir content [--in-vfs models/Sponza/sponza.gltf] [--tour scenes/sponza.tour]\n"
-		<< "          --out-pak content/paks/sponza.pak [--scene-index N] [--meshopt on|off]\n"
-		<< "          (default cooks ALL glTF scenes: one Scene blob each\n"
-		<< "          (#scene, #scene.1, ...) sharing one asset pool; the\n"
-		<< "          runtime loads index 0 unless told otherwise.\n"
-		<< "          --lightmap/--tour need exactly one cooked scene.)\n"
+	std::cout << "PakCooker --content-dir content [--in-vfs models/Sponza/sponza.geometry] [--tour scenes/sponza.tour]\n"
+		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
+		<< "          (--in-vfs names the DERIVED .geometry artifact — glTF\n"
+		<< "          is IMPORT-ONLY (the MeshImporter: open/drop the .gltf\n"
+		<< "          in the editor to derive it beside the source); the\n"
+		<< "          artifact carries the one derived scene.)\n"
 		<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
 		<< " [--dump-manifest on|off]\n"
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
@@ -1251,11 +1254,12 @@ void Usage() {
 		<< "stem still names the capture set.\n"
 		<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
 		<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
-		<< "onto the imported cluster before cooking. Tour cook settings\n"
+		<< "onto the built cluster before cooking. Tour cook settings\n"
 		<< "fill flags the CLI did not set (CLI wins). Deterministic:\n"
-		<< "source glTF + tour in, identical pak out. Can be used as the\n"
-		<< "PRIMARY input (with no --in-vfs) — the tour's 'source' field\n"
-		<< "provides the glTF path." << std::endl;
+		<< "the tour (or --in-vfs names the derived .geometry — glTF is\n"
+		<< "IMPORT-ONLY, never a cook input; the editor's open/drop of a\n"
+		<< ".gltf runs the MeshImporter and derives the artifacts beside\n"
+		<< "the source) + identical pak out." << std::endl;
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -3625,97 +3629,116 @@ int main(int argc, char** argv) {
 			sceneClusters.push_back(std::move(cluster));
 		}
 	} else {
-		// No tour: original VFS-based multi-scene logic
-		// Scene selection (multi-scene paks: one Scene blob per glTF scene,
-		// shared asset pool; the runtime loads index 0 unless told otherwise).
-		struct SceneCook { int gltfIndex; std::string name; };
-		std::vector<SceneCook> toCook;
-	{
-		std::vector<std::string> gltfScenes;
-		std::string lerr;
-		if (!ListGltfScenesFromVfs(vfs, args.inVfs, gltfScenes, &lerr)) {
-			std::cerr << "Scene list failed: " << lerr << std::endl;
-			return 1;
+		// No tour: ARTIFACT cook. --in-vfs names the DERIVED .geometry
+		// blob (the MeshImporter's output beside the source glTF) — glTF
+		// is IMPORT-ONLY and never cooks (the old GltfToClusterFromVfs
+		// in-cook glTF import is GONE): open/drop the .gltf in the editor
+		// (derive-if-stale) or run the importer, then cook the .geometry.
+		// The artifact carries the ONE derived scene (the source import's
+		// default scene) — no multi-scene fan-out, no --scene-index.
+		if (args.sceneIndex >= 0) {
+			std::cerr << "--scene-index is a glTF-era flag: the .geometry "
+				"artifact carries the one derived scene (dropped)"
+				<< std::endl;
 		}
-		if (gltfScenes.empty()) {
-			toCook.push_back({ -1, "" }); // sceneless: legacy roots fallback
-		}
-		else if (args.sceneIndex >= 0) {
-			if (args.sceneIndex >= int(gltfScenes.size())) {
-				std::cerr << "--scene-index " << args.sceneIndex
-					<< " out of range (" << gltfScenes.size()
-					<< " scenes)" << std::endl;
-				return 2;
-			}
-			toCook.push_back(
-				{ args.sceneIndex, gltfScenes[size_t(args.sceneIndex)] });
-		}
-		else {
-			for (int i = 0; i < int(gltfScenes.size()); ++i)
-				toCook.push_back({ i, gltfScenes[size_t(i)] });
-		}
-		std::cout << "Cooking " << toCook.size() << " scene(s):";
-		for (size_t i = 0; i < toCook.size(); ++i)
-			std::cout << " [" << i << "]'" << toCook[i].name << "'";
-		std::cout << "\n";
-		if (toCook.size() > 1 && args.lightmap) {
-			std::cerr << "--lightmap needs exactly one cooked scene "
-				"(bake is per-scene): pass --scene-index N" << std::endl;
-			return 2;
-		}
-		if (toCook.size() > 1 && args.cubemap) {
-			std::cerr << "--cubemap needs exactly one cooked scene "
-				"(bake is per-scene): pass --scene-index N" << std::endl;
-			return 2;
-		}
-		if (toCook.size() > 1 && !args.tour.empty()) {
-			std::cerr << "--tour needs exactly one cooked scene "
-				"(tour ids are scene-local): pass --scene-index N" << std::endl;
-			return 2;
-		}
-	}
-
-	// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
-	// never live on the (1MB) thread stack. Cook mode = GPU-free: CPU
-	// geometry + retained uploads only, textures are validated .ktx2
-	// payloads with minted slot ids. (No redeclare: the outer sceneClusters/
-	// sceneNames at the tour-path head serve BOTH paths — a shadow copy
-	// here would be freed at the else-block close while the code below
-	// reads the empty outer ones. That shadow crashed every no-tour cook
-	// at the Single-scene alias: front() on an empty vector.)
-	for (const SceneCook& sc : toCook) {
-		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-		cluster->SetCookMode(true);
-
-		try {
-			GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster,
-				opt, importMeshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex,
-				args.autoKtx, nullptr, artifactCache);
-		}
-		catch (const std::exception& e) {
-			std::cerr << "Import failed (scene '" << sc.name
-				<< "'): " << e.what() << std::endl;
-			return 1;
-		}
+		// Resolve + read the .geometry through the VFS (the runtime
+		// content abstraction — loose files today; pak-embedded /
+		// patched artifacts land through the same reads later).
 		{
-			size_t nDir = 0, nPoint = 0, nSpot = 0;
-			cluster->lights.forEachHandle([&](smvk::ClusterLightHandle h) {
-				const SceneLight* l = cluster->lights.get(h);
-				if (!l)
-					return;
-				if (l->type == SceneLight::Type::Directional) ++nDir;
-				else if (l->type == SceneLight::Type::Spot) ++nSpot;
-				else ++nPoint;
-			});
-			std::cout << "Imported lights '" << sc.name << "': "
-				<< cluster->lights.numObjects()
-				<< " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
-				<< ", links=" << cluster->scene.lightForNode.size() << ")\n";
+			std::string artPath = smvk::NormalizeAssetUri(
+				args.inVfs).Str();
+			if (artPath.empty())
+				artPath = args.inVfs; // host-style path (as-is)
+			auto artBytes = vfs.TryRead(artPath);
+			if (!artBytes || artBytes->empty()) {
+				std::cerr << "Artifact read failed: '" << args.inVfs
+					<< "' not in VFS (want the derived .geometry — import "
+					"the source glTF first: the editor's open/drop runs "
+					"the MeshImporter)" << std::endl;
+				return 1;
+			}
+			smvk::assets::MeshAsset meshAsset;
+			std::string aerr;
+			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
+					artBytes->size(), meshAsset, aerr)) {
+				std::cerr << "Artifact parse failed: '" << args.inVfs
+					<< "': " << aerr << " (re-import the source glTF — "
+					"the MeshImporter overwrites the artifacts)"
+					<< std::endl;
+				return 1;
+			}
+			// The manifest (<stem>.gltf.meta beside the blob): the
+			// .material file table the artifact build resolves.
+			smvk::assets::AssetManifest meshManifest;
+			{
+				std::string stem = smvk::vfs::FileName(artPath);
+				const size_t mdot = stem.rfind(".geometry");
+				const size_t mdotLegacy = stem.rfind(".mesh");
+				if (mdot != std::string::npos)
+					stem = stem.substr(0, mdot);
+				else if (mdotLegacy != std::string::npos)
+					stem = stem.substr(0, mdotLegacy);
+				const std::string metaRel = stem + ".gltf.meta";
+				if (auto metaBytes = vfs.TryRead(smvk::vfs::Join(
+						smvk::vfs::BaseDir(artPath), metaRel))) {
+					if (!metaBytes->empty()) {
+						std::string merr;
+						smvk::assets::LoadAssetManifestText(
+							std::string(metaBytes->begin(),
+								metaBytes->end()),
+							meshManifest, merr);
+					}
+				}
+			}
+			auto readSibling =
+				[&](const std::string& file)
+				-> std::optional<std::vector<uint8_t>> {
+				const std::string p = smvk::vfs::Join(
+					smvk::vfs::BaseDir(artPath), file);
+				if (vfs.Exists(p))
+					return vfs.TryRead(p);
+				return std::nullopt;
+			};
+			// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays
+			// and must never live on the (1MB) thread stack. Cook mode =
+			// GPU-free: CPU geometry + retained uploads only, textures
+			// are minted cook ids.
+			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+			cluster->SetCookMode(true);
+			addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+			const std::string baseDir = smvk::vfs::BaseDir(artPath);
+			auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);
+			const size_t built = BuildFromMeshAsset(*cluster, nullptr,
+				meshAsset, meshManifest, artPath, 0, texSrc, args.autoKtx,
+				artifactCache, readSibling);
+			if (built == 0) {
+				std::cerr << "Artifact build failed: '" << args.inVfs
+					<< "' built 0 nodes (degenerate/empty — re-import "
+					"the source glTF)" << std::endl;
+				return 1;
+			}
+			{
+				size_t nDir = 0, nPoint = 0, nSpot = 0;
+				cluster->lights.forEachHandle(
+					[&](smvk::ClusterLightHandle h) {
+					const SceneLight* l = cluster->lights.get(h);
+					if (!l)
+						return;
+					if (l->type == SceneLight::Type::Directional) ++nDir;
+					else if (l->type == SceneLight::Type::Spot) ++nSpot;
+					else ++nPoint;
+				});
+				std::cout << "Artifact built: " << built << " nodes, "
+					<< cluster->lights.numObjects() << " lights"
+					<< " (dir=" << nDir << " point=" << nPoint
+					<< " spot=" << nSpot << ", links="
+					<< cluster->scene.lightForNode.size() << ")\n";
+			}
+			std::cout << "Cooking 1 scene: '" << args.inVfs << "'\n";
+			sceneNames.push_back("");
+			sceneClusters.push_back(std::move(cluster));
 		}
-		sceneNames.push_back(sc.name);
-		sceneClusters.push_back(std::move(cluster));
-	}
-	} // close else block for VFS path
+	} // close else block for the artifact path
 	// Import phase finished: commit any staged scratch artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
 	// only — staged bytes were already used in the import.

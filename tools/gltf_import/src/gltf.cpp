@@ -2257,190 +2257,17 @@ std::vector<GltfTextureRemap> ReadTextureRemapPlugs(
 	return out;
 }
 
-namespace {
-// Shared VFS glTF JSON parse (buffers via the overlay callbacks): the full
-// import and the lightweight scene listing both start here.
-tinygltf::Model LoadGltfModelFromVfs(
-	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath) {
-	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
-	if (modelPath.empty())
-		throw std::runtime_error("GltfVfs: invalid VFS path: " + modelVfsPath);
-	auto bytes = vfs.TryRead(modelPath);
-	if (!bytes)
-		throw std::runtime_error("GltfToClusterFromVfs: not in VFS: " + modelPath);
-
-	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
-
-	// Route tinygltf's external reads (.bin buffers) through the VFS so the
-	// whole cook works on the overlay, never on raw host paths.
-	struct GltfFsCtx {
-		const smvk::OverlayVfs* vfs;
-		std::string baseDir;
-	} fsCtx{ &vfs, baseDir };
-	tinygltf::Model model;
-	{
-		tinygltf::FsCallbacks cbs;
-		cbs.user_data = &fsCtx;
-		cbs.ExpandFilePath = [](const std::string& path, void*) { return path; };
-		cbs.FileExists = [](const std::string& path, void* user) -> bool {
-			const auto* c = static_cast<const GltfFsCtx*>(user);
-			return c->vfs->Exists(path) ||
-				c->vfs->Exists(smvk::vfs::Join(c->baseDir, path));
-		};
-		cbs.ReadWholeFile = [](std::vector<unsigned char>* out, std::string* err,
-				const std::string& filepath, void* user) -> bool {
-			const auto* c = static_cast<const GltfFsCtx*>(user);
-			if (auto b = c->vfs->TryRead(filepath)) {
-				*out = std::move(*b);
-				return true;
-			}
-			if (auto b = c->vfs->TryRead(smvk::vfs::Join(c->baseDir, filepath))) {
-				*out = std::move(*b);
-				return true;
-			}
-			if (err)
-				*err = "VFS read failed: " + filepath;
-			return false;
-		};
-		cbs.WriteWholeFile = [](std::string*, const std::string&,
-				const std::vector<unsigned char>&, void*) { return false; };
-		cbs.GetFileSizeInBytes = [](size_t* sizeOut, std::string*,
-				const std::string& filepath, void* user) -> bool {
-			const auto* c = static_cast<const GltfFsCtx*>(user);
-			auto stat = c->vfs->Stat(filepath);
-			if (!stat)
-				stat = c->vfs->Stat(smvk::vfs::Join(c->baseDir, filepath));
-			if (!stat)
-				return false;
-			if (sizeOut)
-				*sizeOut = static_cast<size_t>(stat->size);
-			return true;
-		};
-
-		tinygltf::TinyGLTF loader;
-		loader.SetFsCallbacks(cbs);
-		std::string err, warn;
-		const std::string json(reinterpret_cast<const char*>(bytes->data()), bytes->size());
-		if (!loader.LoadASCIIFromString(&model, &err, &warn,
-				json.c_str(), static_cast<unsigned int>(json.size()), baseDir)) {
-			throw std::runtime_error("GltfToClusterFromVfs: parse failed: " + modelPath + ": " + err);
-		}
-		if (!warn.empty())
-#ifndef NDEBUG
-			std::cout << "WARN: " << warn << std::endl;
-		std::cout << "Loaded glTF from VFS: " << modelPath << std::endl;
-#else
-			(void)warn;
-#endif
-	}
-	return model;
-}
-
-} // namespace
-
-bool ListGltfScenesFromVfs(
-	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath,
-	std::vector<std::string>& outNames,
-	std::string* err) {
-	try {
-		tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
-		outNames.clear();
-		for (const auto& s : model.scenes)
-			outNames.push_back(s.name);
-		return true;
-	}
-	catch (const std::exception& e) {
-		if (err)
-			*err = e.what();
-		return false;
-	}
-}
-
-void GltfToClusterFromVfs(
-	smvk::ResourceManager* ctx,
-	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath,
-	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt,
-	const smvk::MeshletConfig& meshlets,
-	int coordFix,
-	const glm::mat4& preTransform,
-	int gltfSceneIndex,
-	bool autoKtx,
-	const std::vector<smvk::tour::FileNode>* fileNodes,
-	GltfArtifactCache* artifactCache) {
-	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
-	tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
-	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
-
-	GltfToSceneImporter importer{ out, model, std::filesystem::path(modelPath) };
-	importer.setTextureSource(
-		std::make_shared<VfsTextureSource>(&vfs, baseDir));
-	importer.setModelUriBase(modelPath);
-	importer.setMeshOptConfig(meshOpt);
-	importer.setMeshletConfig(meshlets);
-	importer.setArtifactCache(artifactCache);
-	importer.setAutoKtx(autoKtx);
-	if (fileNodes)
-		importer.setFileNodes(*fileNodes);
-	importer.setCoordFix(coordFix);
-	importer.setPreTransform(preTransform);
-
-	// Same tail as GltfToCluster (gltf_import/gltf.h): cluster root,
-	// top-level glTF nodes, preload, import, fixup, flush.
-	assert(out.scene.hierarchy.empty());
-	const int root = addNode(out.scene, -1, 0);
-	out.scene.localTransform[root] = glm::mat4(1.0f);
-	out.scene.globalTransform[root] = glm::mat4(1.0f);
-
-	std::vector<int> gltfRoots;
-	if (gltfSceneIndex >= 0) {
-		// Explicit scene cook (multi-scene paks): no silent fallback.
-		if (gltfSceneIndex >= (int)model.scenes.size())
-			throw std::runtime_error("GltfToClusterFromVfs: scene index " +
-				std::to_string(gltfSceneIndex) + " out of range (" +
-				std::to_string(model.scenes.size()) + " scenes): " + modelPath);
-		gltfRoots = model.scenes[gltfSceneIndex].nodes;
-	}
-	else if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
-		gltfRoots = model.scenes[model.defaultScene].nodes;
-	}
-	else if (!model.scenes.empty()) {
-		gltfRoots = model.scenes.front().nodes;
-	}
-	else {
-		std::vector<bool> referenced(model.nodes.size());
-		for (const auto& n : model.nodes)
-			for (int c : n.children)
-				if (c >= 0 && c < (int)model.nodes.size())
-					referenced[c] = true;
-		for (int i = 0; i < (int)model.nodes.size(); ++i)
-			if (!referenced[i]) gltfRoots.push_back(i);
-	}
-
-	importer.preloadTextures();
-
-	for (int gltfNode : gltfRoots)
-		importer.import(gltfNode);
-
-	importer.applyPreTransform(out.scene, root);
-
-	RebuildStaticCache(out.scene);
-	markAsChanged(out.scene, root);
-	recalculateGlobalTransforms(out.scene);
-	// Bake node world scale into cooked LOD errors (max over instances).
-	smvk::FinalizeLodWorldErrors(out);
-	if (out.ctx_)
-		out.ctx_->FlushUploads();
-	(void)ctx;
-}
-
-
-
 // ---------------------------------------------------------------------------
 // Nested scene references (see ApplySceneReferences in gltf.h).
+// ---------------------------------------------------------------------------
+// (The VFS glTF import entries — LoadGltfModelFromVfs /
+// ListGltfScenesFromVfs / GltfToClusterFromVfs — were REMOVED: glTF is
+// IMPORT-ONLY (the MeshImporter, asset_export.h ImportMeshSource, parses
+// the HOST source once and writes the .geometry artifact family). The
+// runtime/build side (the editor, PakCooker, GiBaker, this reference
+// resolution) reads the ARTIFACTS through the VFS/host — the VFS stays the
+// runtime abstraction (patching, overlays, pak-embedded artifacts later);
+// it just never carries glTF. Raw --in-vfs model paths name the .geometry.)
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -2482,35 +2309,11 @@ bool ReadTourTextAt(const std::string& tourPath,
 	return true;
 }
 
-// glTF root nodes of a model (default scene, else unreferenced roots).
-std::vector<int> GltfRootNodesOf(const tinygltf::Model& model) {
-	if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
-		return model.scenes[size_t(model.defaultScene)].nodes;
-	if (!model.scenes.empty())
-		return model.scenes.front().nodes;
-	std::vector<bool> referenced(model.nodes.size());
-	for (const auto& n : model.nodes)
-		for (int c : n.children)
-			if (c >= 0 && c < (int)model.nodes.size())
-				referenced[size_t(c)] = true;
-	std::vector<int> roots;
-	for (int i = 0; i < (int)model.nodes.size(); ++i)
-		if (!referenced[size_t(i)])
-			roots.push_back(i);
-	return roots;
-}
+} // namespace
 
-// DERIVED-ASSET (.mesh) DIRECT BUILD: builds the referenced subtree from
-// the PREPROCESSED blobs (asset_export.h — the derivation's deterministic
-// import output) — no glTF re-parse, no re-import, no tinygltf. Node ids
-// are IDENTICAL to the sibling-glTF import (the derivation copied them),
-// so nested .tour replays, overrides and cooks address the same nodes.
-// Materials bind through their .material assets (GUID -> manifest file ->
-// values + textures, loaded/transcoded through the texture source); the
-// meshlets + LOD chains ride the trailing registry section. Cook mode
-// works (AoS uploads, cook texture ids); the runtime streams/uploads.
-// Returns the node count built (0 = failure; the caller falls back to
-// the sibling-glTF import).
+// (See the header decl for the contract.) The definition stays here beside
+// the reference resolution (its primary consumer) + the helpers it shares
+// (ReferenceTourPathFor / the anonymous-namespace block above).
 size_t BuildFromMeshAsset(
 	smvk::Cluster& cluster,
 	smvk::TextureStreamer* streamer,
@@ -2791,8 +2594,6 @@ size_t BuildFromMeshAsset(
 	return asset.nodes.size() - 1;
 }
 
-} // namespace
-
 size_t ApplySceneReferences(
 	smvk::Cluster& cluster,
 	const smvk::tour::Doc& doc,
@@ -2966,19 +2767,20 @@ size_t ApplySceneReferences(
 			}
 			std::string resolved;   // canonical path (host or vfs)
 			std::string baseDir;   // source dir for ITS references
-			tinygltf::Model model;
 			bool ok = false;
-			// DERIVED-ASSET (.geometry) resolution: a .geometry reference
-			// (the tour binds the ASSET by GUID) resolves + LOADS the
-			// preprocessed blobs here; the BUILD happens below where
-			// the placeholder exists (pure preprocessed loading; node
-			// ids are the derivation's = the import's, so
-			// replays/overrides/cooks address the same nodes). Any
-			// failure falls back to the SIBLING glTF import (the
-			// derivation wrote them together). The pre-10/6 ".mesh"
-			// derived asset renamed to ".geometry" (the data blob's
-			// name; ".mesh" is the higher placeable asset's now) —
-			// legacy ".mesh" sources still resolve here.
+			// THE MESH ARTIFACT (.geometry) — the ONLY model source kind
+			// (the glTF privileges are gone): a reference resolves +
+			// LOADS the preprocessed blobs here; the BUILD happens below
+			// where the placeholder exists (pure preprocessed loading;
+			// node ids are the derivation's = the import's, so
+			// replays/overrides/cooks address the same nodes). A failed
+			// artifact load is a LOUD skip — NEVER a glTF fallback: the
+			// glTF is IMPORT-ONLY (the MeshImporter, asset_export.h
+			// ImportMeshSource); re-import the source to regenerate the
+			// artifacts. The pre-10/6 ".mesh" derived asset renamed to
+			// ".geometry" (the data blob's name; ".mesh" is the higher
+			// placeable asset's now) — legacy ".mesh" sources still
+			// resolve here.
 			smvk::assets::MeshAsset meshAsset;
 			smvk::assets::AssetManifest meshManifest;
 			bool meshLoaded = false;
@@ -2990,6 +2792,29 @@ size_t ApplySceneReferences(
 				const bool isLegacyMesh = !isGeometry
 					&& dotMesh != std::string::npos
 					&& modelSource.size() - dotMesh == 5;
+				const size_t dotGltf = modelSource.rfind(".gltf");
+				const size_t dotGlb = modelSource.rfind(".glb");
+				const bool isGltf = (dotGltf != std::string::npos
+						&& modelSource.size() - dotGltf == 5)
+					|| (dotGlb != std::string::npos
+						&& modelSource.size() - dotGlb == 4);
+				if (isGltf) {
+					// glTF sources are IMPORT-ONLY: the editor's open of
+					// a .gltf routes through the MeshImporter (derive
+					// beside the source) and records the .geometry; the
+					// build processes (this resolution, the cooker, the
+					// GiBaker) read artifacts ONLY. A tour still naming a
+					// .gltf is pre-artifact — re-open the source in the
+					// editor (derive + re-save) or run ImportMeshSource.
+					const std::string m = "[References] glTF sources are "
+						"import-only (the MeshImporter): '" + modelSource
+						+ "' — reference the derived .geometry (re-open "
+						"the source in the editor / import it) (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
+					++warnings;
+					continue;
+				}
 				if (isGeometry || isLegacyMesh) {
 					// Resolve + read the .mesh (vfs or host).
 					std::string meshResolved;
@@ -3035,75 +2860,34 @@ size_t ApplySceneReferences(
 								meshResolved);
 							ok = true;
 						}
-						else {
-							std::cerr << "[References] .mesh load '"
-								<< meshResolved << "' failed: "
-								<< meshErr
-								<< " (glTF import fallback)\n";
-						}
 					}
-				}
-				if (!meshLoaded) {
-					// BRIDGE FALLBACK: import the SIBLING source glTF
-					// (the derivation wrote them next to each other
-					// with the same stem; identical node ids). The
-					// blob's extension ("\.geometry" or the legacy
-					// ".mesh") swaps to ".gltf".
-					if (isGeometry || isLegacyMesh) {
-						const size_t dot = isGeometry
-							? dotGeo : dotMesh;
-						modelSource =
-							modelSource.substr(0, dot) + ".gltf";
-					}
-				}
-			}
-			// Candidate dirs: the tour's own dir first (tour sources),
-			// then the level's base dir. (Unchanged single-base behavior
-			// for plain .gltf references.)
-			std::vector<std::string> tryBases;
-			if (haveRefTour && !refTourDir.empty())
-				tryBases.push_back(refTourDir);
-			if (!cur.baseDir.empty())
-				tryBases.push_back(cur.baseDir);
-			if (vfs && !ok) {
-				std::vector<std::string> candidates;
-				candidates.push_back(smvk::NormalizeAssetUri(
-					smvk::StringViewT(modelSource)).Str());
-				for (const std::string& b : tryBases)
-					candidates.push_back(smvk::vfs::Join(b, modelSource));
-				for (const std::string& p : candidates) {
-					if (!vfs->Exists(p))
+					if (!meshLoaded) {
+						// LOUD skip — never a glTF fallback (the glTF is
+						// import-only; see the header note above): a
+						// missing/corrupt .geometry means the source was
+						// never imported (or the derivation half-wrote):
+						// re-import it (the editor's open / the asset
+						// browser / ImportMeshSource).
+						const std::string m = "[References] .geometry "
+							"artifact '" + meshResolved + "' missing or "
+							"unparseable — re-import the source (the "
+							"MeshImporter) (skipped)";
+						std::cerr << m << "\n";
+						issue(m);
+						++warnings;
 						continue;
-					try {
-						model = LoadGltfModelFromVfs(*vfs, p);
-						resolved = p;
-						baseDir = smvk::vfs::BaseDir(p);
-						ok = true;
 					}
-					catch (const std::exception& e) {
-						std::cerr << "[References] '" << p << "': " <<
-							e.what() << "\n";
-					}
-					if (ok)
-						break;
 				}
-			}
-			else if (!ok) {
-				std::vector<std::filesystem::path> candidates;
-				candidates.emplace_back(modelSource);
-				for (const std::string& b : tryBases)
-					candidates.push_back(
-						std::filesystem::path(b) / modelSource);
-				for (const std::filesystem::path& hp : candidates) {
-					std::error_code ec;
-					if (!std::filesystem::exists(hp, ec))
-						continue;
-					if (LoadModelFromAsciiFile(model, hp.string().c_str())) {
-						resolved = hp.generic_string();
-						baseDir = hp.parent_path().generic_string();
-						ok = true;
-						break;
-					}
+				else {
+					// Not a .geometry/.mesh and not a .gltf (checked
+					// above): an unknown source kind — loud skip.
+					const std::string m = "[References] unknown source '"
+						+ modelSource + "' (want the derived .geometry "
+						"artifact) (skipped)";
+					std::cerr << m << "\n";
+					issue(m);
+					++warnings;
+					continue;
 				}
 			}
 			if (!ok) {
@@ -3167,9 +2951,9 @@ size_t ApplySceneReferences(
 			// lands; the subtree's own tour ids translate by these).
 			const uint32_t matBaseBefore = cluster.materials.numObjects();
 			// Import the referenced scene beneath the placeholder:
-			// the DERIVED .mesh asset builds from the preprocessed
-			// blobs (no glTF re-parse; node ids match the import);
-			// the glTF importer is the legacy/fallback path.
+			// the ARTIFACT (.geometry) build — the ONLY path (the
+			// glTF import fallback is gone: glTF is import-only, see
+			// the resolution head). A build failure is a LOUD skip.
 			bool builtFromMesh = false;
 			if (meshLoaded) {
 				// The manifest (the .material file table) sits beside
@@ -3245,72 +3029,30 @@ size_t ApplySceneReferences(
 				else
 					texSrc = std::make_shared<HostTextureSource>(
 						std::filesystem::path(baseDir));
-				const size_t built = BuildFromMeshAsset(cluster,
-					streamer, meshAsset, meshManifest, resolved,
-					ph, texSrc, autoKtx, artifactCache, readSibling);
-				if (built > 0) {
-					builtFromMesh = true;
-					std::cerr << "[References] built '" << resolved
-						<< "' from the .mesh asset (" << built
-						<< " nodes, preprocessed)\n";
-				}
-				else {
-					std::cerr << "[References] .mesh build failed '"
-						<< resolved << "' (glTF import fallback)\n";
-				}
+			const size_t built = BuildFromMeshAsset(cluster,
+				streamer, meshAsset, meshManifest, resolved,
+				ph, texSrc, autoKtx, artifactCache, readSibling);
+			if (built > 0) {
+				builtFromMesh = true;
+				std::cerr << "[References] built '" << resolved
+					<< "' from the .geometry artifact (" << built
+					<< " nodes, preprocessed)\n";
 			}
+		}
 		if (!builtFromMesh) {
-			GltfToSceneImporter importer{ cluster, model,
-				std::filesystem::path(resolved) };
-			if (vfs)
-				importer.setTextureSource(std::make_shared<VfsTextureSource>(
-					vfs, baseDir));
-			else
-				importer.setTextureSource(std::make_shared<HostTextureSource>(
-					std::filesystem::path(baseDir)));
-			// INPUT PLUGS (see ReadTextureRemapPlugs): this source's own
-			// .meta texture-relink rows — applied identically by the
-			// editor (live import), PakCooker (cook) and GiBaker (bake).
-			// Host-resolved sources read their sidecar; VFS sources keep
-			// the sidecar on the host next to the underlying file (the
-			// cooker's content dir mirrors it 1:1).
-			const std::vector<GltfTextureRemap> remaps =
-				ReadTextureRemapPlugs(resolved);
-			if (!remaps.empty())
-				importer.setTextureRemaps(&remaps);
-			// Importer data out (see setImportImages): the importer appends
-			// its per-image rows (loaded + failed, with users).
-			if (outImages)
-				importer.setImportImages(outImages);
-		importer.setMeshOptConfig(meshOpt);
-			importer.setMeshletConfig(meshlets);
-			importer.setAutoKtx(autoKtx);
-			importer.setArtifactCache(artifactCache);
-				// Nested tours carry their own file nodes; a level without
-				// any falls back to the top doc's set (or none).
-				if (!cur.doc.fileNodes.empty())
-					importer.setFileNodes(cur.doc.fileNodes);
-				else if (fileNodes)
-					importer.setFileNodes(*fileNodes);
-				importer.setCoordFix(coordFix);
-				if (streamer)
-					importer.setTextureStreamer(streamer);
-			const std::string asPosix =
-				std::filesystem::path(resolved).generic_string();
-			// Unconditional: setModelUriBase falls back to a
-			// content-relative/filename base for absolute host paths
-			// (which NormalizeAssetUri rejects) so mesh URIs — and
-			// with them LOD chains + meshlets — survive the tour path.
-			importer.setModelUriBase(asPosix);
-				importer.preloadTextures();
-				const std::vector<int> roots = GltfRootNodesOf(model);
-				// Root children sit AT `level` (direct-import parity:
-				// glTF roots under the scene root at level 1);
-				// placeholder children at level+1.
-				const int childLevel = isRoot ? level : level + 1;
-				for (int gltfNode : roots)
-					importer.importUnder(gltfNode, ph, childLevel);
-			}
+			// The ONLY path is the artifact build (above): a zero node
+			// count means the .geometry parsed but built nothing
+			// (degenerate geometry / empty pool / heap full) — LOUD,
+			// never a glTF fallback (the glTF import here is GONE: the
+			// MeshImporter owns glTF parsing, asset_export.cpp).
+			const std::string m = "[References] .geometry artifact '"
+				+ resolved + "' built 0 nodes — degenerate/empty "
+				"(re-import the source, the MeshImporter) (skipped)";
+			std::cerr << m << "\n";
+			issue(m);
+			++warnings;
+			continue;
+		}
 			// Id offsets for .tour replay: the import above is
 			// deterministic (same traversal as the referenced scene's own
 			// import), so its cluster ids land at base + id; materials

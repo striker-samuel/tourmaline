@@ -38,7 +38,7 @@ rem variant (coarse density, 5 lobes, uncompressed, no LODs/meshlets).
 rem --cubemap-extra-pos appends artist-PINNED probes (manifest 'pin' rows
 rem sort first at load, winning weight ties): 0,0.25,0 = the chrome ball
 rem center, so the ball mirrors a capture taken exactly at itself.
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.1 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.1 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail

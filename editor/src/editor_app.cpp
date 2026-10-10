@@ -72,6 +72,9 @@ bool EditorApp::OpenScene(const std::string& path) {
 			"source scenes (WYSIWYG): '" + path + "'");
 		return false;
 	}
+	// The .gltf redirect happens INSIDE LoadGltfIntoWorld (the session
+	// funnel — direct opens AND tour-recorded sources both land there; see
+	// its head).
 	if (!LoadGltfIntoWorld(path))
 		return false;
 	// Project outputs follow the project (unless customized), and the
@@ -514,15 +517,37 @@ void EditorApp::CloseScene() {
 	Log("Scene closed.");
 }
 
-bool EditorApp::LoadGltfIntoWorld(const std::string& path,
-	const std::string& tourOverride) {
-	// Empty path = sourceless tour (DEPRECATED source mechanism): no
-	// glTF to import â€” an empty world whose geometry comes entirely
-	// from references. tourOverride pins the reference lookup to the
-	// opened tour file (otherwise <stem>.tour next to the source,
-	// which does not exist here).
-	std::string loadPath = path;
-	const bool directOpen = !path.empty(); // direct glTF open vs tour open
+	bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn,
+		const std::string& tourOverride) {
+		// Empty path = sourceless tour (DEPRECATED source mechanism): no
+		// source to import — an empty world whose geometry comes entirely
+		// from references. tourOverride pins the reference lookup to the
+		// opened tour file (otherwise <stem>.tour next to the source,
+		// which does not exist here).
+		// THE MESH IMPORTER redirect (the glTF privileges are gone): a
+		// .gltf/.glb NEVER loads as a session — the source routes through
+		// the importer (derive-if-stale beside it, ImportMeshArtifactFor)
+		// and the SESSION (m_gltfPath identity, the recorded definition
+		// reference, SaveTour) names the derived .geometry. Every funnel
+		// lands here: direct opens (OpenScene), tour-recorded sources
+		// (OpenTourFile / ResolveTourSource) and reloads. A failed import
+		// fails the load — NO glTF session fallback (the glTF is
+		// import-only; the cooker/baker/session build refuse it outright).
+		std::string path = pathIn;
+		if (!path.empty()) {
+			std::string ext =
+				std::filesystem::path(path).extension().string();
+			for (char& c : ext)
+				c = char(std::tolower((unsigned char)c));
+			if (ext == ".gltf" || ext == ".glb") {
+				const std::string artifact = ImportMeshArtifactFor(path);
+				if (artifact.empty())
+					return false; // logged (no glTF session fallback)
+				path = artifact;
+			}
+		}
+		std::string loadPath = path;
+		const bool directOpen = !path.empty(); // direct source open vs tour open
 	// Texture-cache key scope for this import (GUID-namespaced when the
 	// model lives in a project): identically-NAMED textures across models
 	// stop thrashing the one (klass, uri) row. Nested reference imports

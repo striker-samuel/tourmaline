@@ -323,10 +323,12 @@ void Usage() {
 }
 
 std::optional<std::string> SceneGltf(const std::string& id) {
-	if (id == "sponza") return std::string("models/Sponza/sponza.gltf");
-	if (id == "bistro") return std::string("models/Bistro/bistro.gltf");
-	if (id == "bistro-niagara") return std::string("models/BistroNiagara/bistro.gltf");
-	if (id == "scanlands") return std::string("models/Scanlands/scanlands.gltf");
+	// Scene presets name the DERIVED .geometry artifact (the MeshImporter's
+	// output; glTF is import-only — same as GiBaker/PakCooker).
+	if (id == "sponza") return std::string("models/Sponza/Sponza.geometry");
+	if (id == "bistro") return std::string("models/Bistro/bistro.geometry");
+	if (id == "bistro-niagara") return std::string("models/BistroNiagara/bistro.geometry");
+	if (id == "scanlands") return std::string("models/Scanlands/scanlands.geometry");
 	return std::nullopt;
 }
 
@@ -655,14 +657,75 @@ int main(int argc, char** argv) {
 
 		std::cout << "CubemapBaker: scene '" << sceneId << "' from " << inVfs << "\n";
 
-		// GPU-free cook-mode Cluster (same import as GiBaker / PakCooker).
+		// GPU-free cook-mode Cluster — ARTIFACT build (glTF is IMPORT-ONLY,
+		// same as GiBaker / PakCooker): --in-vfs names the DERIVED .geometry
+		// (open/drop the .gltf in the editor to derive it beside the source).
 		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 		cluster->SetCookMode(true);
 		try {
-			GltfToClusterFromVfs(nullptr, vfs, inVfs, *cluster,
-				smvk::MeshOptConfig{}, smvk::MeshletConfig{});
+			std::string artPath = smvk::NormalizeAssetUri(inVfs).Str();
+			if (artPath.empty())
+				artPath = inVfs; // host-style path (as-is)
+			auto artBytes = vfs.TryRead(artPath);
+			if (!artBytes || artBytes->empty()) {
+				std::cerr << "Artifact read failed: '" << inVfs
+					<< "' not in VFS (want the derived .geometry — import "
+					"the source glTF first)" << std::endl;
+				return 1;
+			}
+			smvk::assets::MeshAsset meshAsset;
+			std::string aerr;
+			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
+					artBytes->size(), meshAsset, aerr)) {
+				std::cerr << "Artifact parse failed: '" << inVfs
+					<< "': " << aerr << " (re-import the source glTF)"
+					<< std::endl;
+				return 1;
+			}
+			smvk::assets::AssetManifest meshManifest;
+			{
+				std::string stem = smvk::vfs::FileName(artPath);
+				const size_t mdot = stem.rfind(".geometry");
+				const size_t mdotLegacy = stem.rfind(".mesh");
+				if (mdot != std::string::npos)
+					stem = stem.substr(0, mdot);
+				else if (mdotLegacy != std::string::npos)
+					stem = stem.substr(0, mdotLegacy);
+				if (auto metaBytes = vfs.TryRead(smvk::vfs::Join(
+						smvk::vfs::BaseDir(artPath), stem + ".gltf.meta"))) {
+					if (!metaBytes->empty()) {
+						std::string merr;
+						smvk::assets::LoadAssetManifestText(
+							std::string(metaBytes->begin(),
+								metaBytes->end()),
+							meshManifest, merr);
+					}
+				}
+			}
+			auto readSibling =
+				[&](const std::string& file)
+				-> std::optional<std::vector<uint8_t>> {
+				const std::string p = smvk::vfs::Join(
+					smvk::vfs::BaseDir(artPath), file);
+				if (vfs.Exists(p))
+					return vfs.TryRead(p);
+				return std::nullopt;
+			};
+			addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+			auto texSrc = std::make_shared<VfsTextureSource>(
+				&vfs, smvk::vfs::BaseDir(artPath));
+			const size_t built = BuildFromMeshAsset(*cluster, nullptr,
+				meshAsset, meshManifest, artPath, 0, texSrc, true,
+				nullptr, readSibling);
+			if (built == 0) {
+				std::cerr << "Artifact build failed: '" << inVfs
+					<< "' built 0 nodes (re-import the source glTF)"
+					<< std::endl;
+				return 1;
+			}
+			std::cout << "Artifact built: " << built << " nodes\n";
 		} catch (const std::exception& e) {
-			std::cerr << "Import failed: " << e.what() << std::endl;
+			std::cerr << "Artifact build failed: " << e.what() << std::endl;
 			return 1;
 		}
 

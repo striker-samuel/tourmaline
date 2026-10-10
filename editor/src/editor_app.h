@@ -1741,6 +1741,13 @@ private:
 	// (Ctrl+Shift+C) — as is Bake GI (on demand). False + log without
 	// an open project, while cooking, or for foreign extensions.
 	bool ImportAsset(const std::string& srcPath);
+	// THE MESH IMPORTER drive (editor side; see ImportAsset +
+	// editor_project.cpp): glTF is IMPORT-ONLY — derive the .geometry
+	// artifact family beside the source when stale (MeshArtifactStale),
+	// return the .geometry path the session references. "" = failure
+	// (logged; the caller must NOT open the glTF). Every .gltf session
+	// entry (opens, tour-recorded sources, drops) lands here.
+	std::string ImportMeshArtifactFor(const std::string& gltfPath);
 	// Asset browser (bottom dock "Assets" tab): a GRID directory
 	// explorer of the project folder (Unity Project window style):
 	// breadcrumb + Up navigation, folders first, SVG icons, registered
