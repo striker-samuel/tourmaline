@@ -87,3 +87,30 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
+
+## Strict resources (`--strict` / `VULKANTOY_STRICT=1`) + the RHI error contract
+
+**Intention**: resource-pool exhaustion (bindless descriptor budget, image/view
+pools) must never hide — but the RHI never decides policy. **The Vulkan RHI
+returns error signals (empty handles) and the responsibility to handle them is
+at call sites**: the default is graceful (skip/fall back — editing sessions
+survive budget pressure), strict turns exhaustion into a LOUD abort at the
+call site so silent skips cannot hide leaks or budget-size bugs. Asserts
+INSIDE the RHI are for invariants only (programmer errors) — never for
+operational conditions like pool exhaustion.
+
+- `Editor --strict` (editor/src/main.cpp) and `VULKANTOY_STRICT=1` (any host,
+  any build) gate `smvk::StrictResources()` (engine/include/Engine/smvk.h,
+  implemented in engine/src/Vulkan/impl.cpp).
+- **Call-site pattern** (the RHI has no abort paths):
+  `if (handle.empty()) { smvk::OnResourceExhaustion("site"); return; }` —
+  OnResourceExhaustion is a no-op unless strict, in which case it aborts with
+  the diagnostic (`vulkantoy_fatal.log` + stderr). Debug builds also keep the
+  pools' own `assert`s — strict is the RELEASE-visible form.
+- **Work is NOT yet done across the whole project**: the gate currently lives
+  at the live-view churn sites (EnsureInlineTarget/EnsureMViewTargets in
+  WorldRenderer — the demonstrated exhaustion points; extent drift mints ~7
+  fresh bindless slots per drag frame). The other creation sites still handle
+  gracefully without the strict report. Spreading the gate is in-progress
+  work; **using the pattern in new code is OK** (and expected at any new
+  exhaustion-prone creation site).

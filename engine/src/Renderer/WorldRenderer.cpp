@@ -6361,8 +6361,12 @@ namespace engine {
 		// -------------------------------------------------------------------
 		smvk::Holder<smvk::ImageHandle> newImage =
 			m_context->CreateImage(ci, nullptr);
-		if (newImage.empty())
+		if (newImage.empty()) {
+			// CALL-SITE exhaustion gate (the RHI's empty handle is its
+			// error signal — handling is ours, see smvk.h).
+			smvk::OnResourceExhaustion("inline target image");
 			return;
+		}
 		const smvk::ImageViewCreateInfo vci{
 			.viewType = smvk::ImageViewType::View2D,
 			.format = m_swapchain->GetSurfaceFormat(),
@@ -6370,13 +6374,17 @@ namespace engine {
 		};
 		smvk::Holder<smvk::ImageViewHandle> newView =
 			m_context->CreateImageView(newImage, vci);
-		if (newView.empty())
+		if (newView.empty()) {
+			smvk::OnResourceExhaustion("inline target view");
 			return;
+		}
 		smvk::Holder<smvk::BindlessImageHandle> newBindless =
 			m_context->CreateBindlessImage(newView,
 				smvk::ImageLayout::ShaderReadOnlyOptimal);
-		if (newBindless.empty())
+		if (newBindless.empty()) {
+			smvk::OnResourceExhaustion("inline target bindless");
 			return;
+		}
 		const uint32_t newBindlessIndex =
 			m_context->GetBindlessIndex(newBindless);
 		// The tonemap's swap-image set holds the previous logical view Ã¢â‚¬â€
@@ -7052,8 +7060,14 @@ namespace engine {
 		smvk::Holder<smvk::ImageHandle> newDepthArr = m_context->CreateImage(depthCi, nullptr);
 		smvk::Holder<smvk::ImageHandle> newHdrArr = m_context->CreateImage(hdrCi, nullptr);
 		smvk::Holder<smvk::ImageHandle> newOutArr = m_context->CreateImage(outCi, nullptr);
-		if (newDepthArr.empty() || newHdrArr.empty() || newOutArr.empty())
+		if (newDepthArr.empty() || newHdrArr.empty() || newOutArr.empty()) {
+			// CALL-SITE exhaustion gate (the RHI returned an empty
+			// handle — its error signal; handling is ours, see smvk.h):
+			// graceful default = skip this frame's mview rebuild; strict
+			// aborts through OnResourceExhaustion.
+			smvk::OnResourceExhaustion("mview array images");
 			return; // the partial locals retire (deferred)
+		}
 		// Wide (layerCount = count) attachment views for the multiview
 		// passes + per-layer views for the tonemaps / host compose.
 		auto wideCi = [](smvk::ImageAspect aspect, uint32_t layers) {
@@ -7093,15 +7107,22 @@ namespace engine {
 				m_context->CreateImageView(newOutArr, layerCi(smvk::ImageAspect::Color, i));
 			smvk::Holder<smvk::BindlessImageHandle> ob =
 				m_context->CreateBindlessImage(ov, smvk::ImageLayout::ShaderReadOnlyOptimal);
-			if (hv.empty() || hb.empty() || ov.empty() || ob.empty())
+			if (hv.empty() || hb.empty() || ov.empty() || ob.empty()) {
+				// CALL-SITE exhaustion gate (bindless budget pressure —
+				// the demonstrated churn point: extent drift mints ~7
+				// fresh slots per drag frame).
+				smvk::OnResourceExhaustion("mview layer views/bindless");
 				return; // the partial locals retire (deferred)
+			}
 			newHdrLayerViews.push_back(std::move(hv));
 			newHdrLayerBindless.push_back(std::move(hb));
 			newOutLayerViews.push_back(std::move(ov));
 			newOutLayerBindless.push_back(std::move(ob));
 		}
-		if (newDepthWide.empty() || newHdrWide.empty() || newOutWide.empty())
+		if (newDepthWide.empty() || newHdrWide.empty() || newOutWide.empty()) {
+			smvk::OnResourceExhaustion("mview wide attachment views");
 			return;
+		}
 		// Logical views: retire the old set (guarded frees Ã¢â‚¬â€ the same
 		// double-free discipline as EnsureInlineTarget), register the new.
 		auto freeLogical = [&](smvk::LogicalImageViewHandle& h) {
@@ -7469,10 +7490,25 @@ namespace engine {
 			v.dirLightValid = true;
 			v.renderedLastFrame = true;
 			if (mvTrace) {
+				// [MV] trace: eye/target + the RESOLVED up + the viewProj
+				// basis rows — the ortho alignment diagnostic (screen-up
+				// reads straight off row 1 of the view matrix).
+				const glm::vec3 up =
+					ResolveLookAtUp(v.desc.eye, v.desc.target);
 				std::fprintf(stderr,
-					"[MV] view %u prepared %ux%u eye=(%.1f,%.1f,%.1f)\n",
+					"[MV] view %u prepared %ux%u eye=(%.2f,%.2f,%.2f) "
+					"tgt=(%.2f,%.2f,%.2f) up=(%.2f,%.2f,%.2f) "
+					"orthoH=%.2f\n",
 					vi + 1u, v.desc.extent.width, v.desc.extent.height,
-					v.desc.eye.x, v.desc.eye.y, v.desc.eye.z);
+					v.desc.eye.x, v.desc.eye.y, v.desc.eye.z,
+					v.desc.target.x, v.desc.target.y, v.desc.target.z,
+					up.x, up.y, up.z, v.desc.orthoHalfH);
+				const glm::mat4& vp = v.frameData.viewProj;
+				std::fprintf(stderr,
+					"[MV]   vp r0=(%.3f,%.3f,%.3f,%.3f) "
+					"r1=(%.3f,%.3f,%.3f,%.3f)\n",
+					vp[0][0], vp[0][1], vp[0][2], vp[0][3],
+					vp[1][0], vp[1][1], vp[1][2], vp[1][3]);
 			}
 		}
 	}
@@ -7539,7 +7575,7 @@ namespace engine {
 		cullViews.reserve(count);
 		for (uint32_t vi = 0; vi < count; ++vi)
 			cullViews.push_back(m_renderViews.Get(m_views[vi].mainViewIdx));
-		auto itemVisible = [&](const smvk::World::RenderItem& item) {
+		auto itemVisible = [this, cullViews](const smvk::World::RenderItem& item) {
 			const glm::mat4& model = m_world->scene.globalTransform[item.node];
 			smvk::StaticMesh* desc = m_world->GetMesh(item.mesh);
 			if (!desc)
@@ -7554,9 +7590,16 @@ namespace engine {
 			return false;
 		};
 		// Shared draw loop (the depth-fill prepass and the unlit Main draw
-		// the SAME item set Ã¢â‚¬â€ one command stream each, rasterized per
+		// the SAME item set — one command stream each, rasterized per
 		// view layer by the multiview mask).
-		auto drawOpaqueSet = [this, &pc, &itemVisible](
+		// CAPTURE DISCIPLINE: everything captures BY VALUE. The recording
+		// lambdas run inside Execute — AFTER RenderSecondaryViews returned —
+		// so any `&` capture of a stack local here is DANGLING by then (the
+		// first quad frame crashed with a null `this` inside the old
+		// by-reference itemVisible: the dead stack slot holding its closure
+		// was overwritten between pass-add and Execute). pc + itemVisible +
+		// cullViews ride as copies — cheap next to the draws they gate.
+		auto drawOpaqueSet = [this, pc, itemVisible](
 			smvk::CommandBuffer& cmd, smvk::ShaderProgram& prog,
 			const smvk::DepthSettings& depth) {
 			const smvk::StencilSettings noStencil{};

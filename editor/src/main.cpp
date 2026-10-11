@@ -229,18 +229,21 @@ void InstallCrashHandler() {
 
 namespace {
 
-void PrintUsage(const char* prog) {
-	std::cout << "Usage: " << (prog ? prog : "Editor")
-		<< " [--gltf <path.gltf>] [--out-pak <path.pak>]\n"
-		<< "  Source scenes only: cooked paks run in the App (the editor\n"
-		<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
-		<< "  --wysiwyg-smoke: headless-ish crash repro — cooks the scene\n"
-		<< "  minimal, exercises the auto-preview + the in-place rebind, then\n"
-		<< "  exits (dev tool).\n"
-		<< "  --project-smoke <dir>: with --gltf <asset>: create/open the\n"
-		<< "  project at <dir>, import the asset, cook it (product step),\n"
-		<< "  then run the wysiwyg-smoke stages over it (dev tool).\n";
-}
+	void PrintUsage(const char* prog) {
+		std::cout << "Usage: " << (prog ? prog : "Editor")
+			<< " [--gltf <path.gltf>] [--out-pak <path.pak>] [--strict]\n"
+			<< "  Source scenes only: cooked paks run in the App (the editor\n"
+			<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
+			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
+			<< "  diagnostic instead of degrading silently (dev/diagnosis;\n"
+			<< "  same as VULKANTOY_STRICT=1 — see AGENTS.md).\n"
+			<< "  --wysiwyg-smoke: headless-ish crash repro — cooks the scene\n"
+			<< "  minimal, exercises the auto-preview + the in-place rebind, then\n"
+			<< "  exits (dev tool).\n"
+			<< "  --project-smoke <dir>: with --gltf <asset>: create/open the\n"
+			<< "  project at <dir>, import the asset, cook it (product step),\n"
+			<< "  then run the wysiwyg-smoke stages over it (dev tool).\n";
+	}
 
 } // namespace
 
@@ -280,6 +283,7 @@ void PrintUsage(const char* prog) {
 	const char* outPak = nullptr;
 	const char* projectSmoke = nullptr;
 	bool wysiwygSmoke = false;
+	bool strict = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if (std::strcmp(a, "--gltf") == 0 && i + 1 < argc) {
@@ -300,6 +304,13 @@ void PrintUsage(const char* prog) {
 		else if (std::strcmp(a, "--project-smoke") == 0 && i + 1 < argc) {
 			projectSmoke = argv[++i];
 		}
+		else if (std::strcmp(a, "--strict") == 0) {
+			// STRICT RESOURCES (see AGENTS.md): resource-pool exhaustion
+			// aborts with a fatal diagnostic instead of degrading
+			// silently. Dev/diagnosis flag — the default stays graceful
+			// so editing sessions survive budget pressure.
+			strict = true;
+		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
 			return EXIT_SUCCESS;
@@ -309,6 +320,11 @@ void PrintUsage(const char* prog) {
 			PrintUsage(argv[0]);
 			return EXIT_FAILURE;
 		}
+	}
+	if (strict) {
+		smvk::SetStrictResources(true);
+		std::cerr << "[STRICT] resources: pool exhaustion will abort "
+			"with a diagnostic (see AGENTS.md)\n";
 	}
 
 	// NO NVIDIA Streamline in the editor (DLSS + Reflex/PCL): the editor is

@@ -2560,6 +2560,33 @@ size_t FuzzClusterNodeCount(smvk::Cluster& c) {
 	return c.scene.hierarchy.size();
 }
 
+// One-triangle glTF (the .geometry artifact build needs real geometry;
+// same shape as the reference tests' writers). The nesting fuzz derives
+// its artifact zoo from these.
+std::string TriangleGltfJson(const char* nodeName) {
+	return std::string("{\"asset\":{\"version\":\"2.0\"},"
+		"\"scene\":0,"
+		"\"scenes\":[{\"nodes\":[0]}],"
+		"\"nodes\":[{\"name\":\"") + nodeName + "\",\"mesh\":0}],"
+		"\"meshes\":[{\"primitives\":[{\"attributes\":"
+		"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
+		"\"accessors\":["
+		"{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+		"\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,1]},"
+		"{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+		"\"type\":\"VEC3\",\"min\":[0,0,1],\"max\":[0,0,1]},"
+		"{\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+		"\"type\":\"SCALAR\",\"min\":[0],\"max\":[2]}],"
+		"\"bufferViews\":["
+		"{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+		"{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36},"
+		"{\"buffer\":0,\"byteOffset\":72,\"byteLength\":6}],"
+		"\"buffers\":[{\"uri\":\"data:application/octet-stream;"
+		"base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+		"AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA\","
+		"\"byteLength\":78}]}";
+}
+
 } // namespace
 
 // Property test: random EditCmd-shaped tour text must never crash, hang,
@@ -2591,6 +2618,13 @@ void TestTourFuzz() {
 		"createCamera -n 0 -at persp;",
 		"setCamAttr -n 4 -at fov -v 60;",
 		"terrainPaint -n 1 -at raise -v 0 0 4 0 -t 1;",
+		// Nesting verbs (parse coverage through the same mutations;
+		// ApplyTourToCluster ignores references, so the bounds stay).
+		"reference -n 1 -source \"a.tour\" -name \"a\";",
+		"reference -root -n 0 -source \"a.geometry\";",
+		"source -n 1 -p \"b.geometry\" -name \"b\";",
+		"reference -n 2 -source \"b.tour\" -guid 0123456789abcdef0123456789abcdef;",
+		"source -n 1 -p \"c.geometry\" -t 1 2 3;",
 	};
 	static const char* kMutIds[] = {
 		"0", "1", "2", "3", "999999", "4294967295", "-1", "2147483647",
@@ -2692,8 +2726,275 @@ void TestTourFuzz() {
 		Check(FuzzClusterNodeCount(*cluster) == before, "tour fuzz orphan no-mutate");
 		(void)ok;
 	}
+	// ------------------------------------------------------------------
+	// NESTING fuzz: the reference/source verbs + ApplySceneReferences
+	// over generated nested tour graphs. Setup: three derived triangle
+	// artifacts + a tour-file zoo covering every nesting shape — chain
+	// (nest_a->nest_b->nest_c), self-cycle, a 10-deep chain past the
+	// depth cap (kMaxRefDepth=8), the per-node `source` asset verb, the
+	// legacy mesh-through-reference line, a source-less tour and a
+	// missing source. Properties: parse or honest reject; apply returns
+	// (the chain guard + depth cap terminate the BFS — never hangs);
+	// deterministic across two fresh clusters; node growth bounded per
+	// bind; issues bounded (no runaway queue).
+	// ------------------------------------------------------------------
+	int nestParsed = 0, nestRejected = 0, nestBinds = 0;
+	{
+		namespace fs = std::filesystem;
+		const fs::path dir = fs::temp_directory_path() / "vulkantoy_fuzznest";
+		std::error_code ec;
+		fs::create_directories(dir, ec);
+		auto writeGltf = [&](const char* file, const char* nodeName) {
+			const fs::path p = dir / file;
+			std::ofstream f(p, std::ios::binary | std::ios::trunc);
+			f << TriangleGltfJson(nodeName);
+			return p;
+		};
+		auto derive = [&](const char* stem) {
+			smvk::assets::AssetManifest man;
+			std::string derr;
+			smvk::assets::DeriveConfig cfg{};
+			(void)smvk::assets::ImportMeshSource(
+				dir / (std::string(stem) + ".gltf"), "", cfg, man,
+				nullptr, &derr);
+		};
+		writeGltf("a.gltf", "A");
+		writeGltf("b.gltf", "B");
+		writeGltf("c.gltf", "C");
+		derive("a");
+		derive("b");
+		derive("c");
+		auto writeTour = [&](const char* file, const std::string& body) {
+			std::ofstream f(dir / file, std::ios::binary | std::ios::trunc);
+			f << body;
+		};
+		writeTour("nest_a.tour", "source -p \"a.geometry\";\n"
+			"reference -n 0 -source \"nest_b.tour\" -name \"b\";\n");
+		writeTour("nest_b.tour", "source -p \"b.geometry\";\n"
+			"reference -n 0 -source \"nest_c.tour\" -name \"c\";\n");
+		writeTour("nest_c.tour", "source -p \"c.geometry\";\n");
+		writeTour("cycle.tour", "source -p \"a.geometry\";\n"
+			"reference -n 0 -source \"cycle.tour\" -name \"self\";\n");
+		for (int k = 0; k < 10; ++k) {
+			// Each level sources a DISTINCT artifact: the cycle guard
+			// keys on the resolved model source, so a shared source
+			// would collapse the chain after the first bind and the
+			// depth cap would never be exercised.
+			writeGltf(("d" + std::to_string(k) + ".gltf").c_str(),
+				("D" + std::to_string(k)).c_str());
+			derive(("d" + std::to_string(k)).c_str());
+			std::string body = "source -p \"d" + std::to_string(k)
+				+ ".geometry\";\n";
+			if (k < 9)
+				body += "reference -n 0 -source \"deep"
+					+ std::to_string(k + 1) + ".tour\" -name \"d"
+					+ std::to_string(k + 1) + "\";\n";
+			writeTour(("deep" + std::to_string(k) + ".tour").c_str(), body);
+		}
+		writeTour("mixed.tour", "source -p \"a.geometry\";\n"
+			"source -n 0 -p \"b.geometry\" -name \"bb\";\n"
+			"reference -n 0 -source \"cycle.tour\" -name \"cy\";\n");
+		writeTour("nosrc.tour", "reference -n 0 -source \"nest_c.tour\";\n");
+		writeTour("missing.tour", "source -p \"nope.geometry\";\n");
+
+		static const char* kNestSources[] = {
+			"nest_a.tour", "nest_b.tour", "nest_c.tour",
+			"cycle.tour", "deep0.tour", "deep5.tour", "mixed.tour",
+			"nosrc.tour", "missing.tour",
+			"a.geometry", "b.geometry", "c.geometry",
+			"nothere.tour", "nothere.geometry",
+			"", ".", "x/y.tour", "a.gltf",
+		};
+		static const char* kNestIds[] = {
+			"0", "1", "2", "7", "999999", "4294967295",
+		};
+		static const char* kNestGuids[] = {
+			"0123456789abcdef0123456789abcdef",
+			"ffffffffffffffffffffffffffffffff",
+			"bad-guid",
+			"0123456789abcdef0123456789abcde",
+		};
+		static const char* kNestTails[] = {
+			"", ";;", "\"unterminated;", "-pattern \"[\"", "-t 1 2",
+			"-guid", ";; ;",
+		};
+		auto makeNestLine = [&]() -> std::string {
+			const bool assetVerb = rng.below(2) == 0;
+			const char* src =
+				kNestSources[rng.below(sizeof(kNestSources) / sizeof(kNestSources[0]))];
+			const char* id =
+				kNestIds[rng.below(sizeof(kNestIds) / sizeof(kNestIds[0]))];
+			std::string line = assetVerb
+				? std::string("source -n ") + id + " -p \"" + src + "\""
+				: std::string("reference -n ") + id + " -source \"" + src + "\"";
+			if (!assetVerb && rng.below(10) == 0)
+				line += " -root";
+			if (rng.below(5) == 0)
+				line += std::string(" -guid ")
+					+ kNestGuids[rng.below(sizeof(kNestGuids) / sizeof(kNestGuids[0]))];
+			if (rng.below(2) == 0)
+				line += " -name \"n" + std::to_string(rng.below(8)) + "\"";
+			if (rng.below(3) == 0)
+				line += " -t 1 2 3";
+			if (rng.below(5) == 0)
+				line += " -enabled off";
+			if (rng.below(10) == 0)
+				line += kNestTails[rng.below(sizeof(kNestTails) / sizeof(kNestTails[0]))];
+			return line + ";\n";
+		};
+
+		const int kNestIters = 96;
+		bool nestFailed = false;
+		for (int i = 0; i < kNestIters && !nestFailed; ++i) {
+			std::string text;
+			const int lines = 1 + int(rng.below(3));
+			for (int l = 0; l < lines; ++l)
+				text += makeNestLine();
+			// 10%: a deliberately-broken reference (no -source) — the
+			// parser must reject honestly, never crash.
+			if (rng.below(10) == 0)
+				text += "reference -n 1;\n";
+			smvk::tour::Doc doc;
+			std::string err;
+			std::vector<std::string> warns;
+			if (!smvk::tour::LoadTourFromString(text, doc, err, &warns)) {
+				++nestRejected;
+				continue;
+			}
+			++nestParsed;
+			if (doc.references.empty())
+				continue;
+			auto c1 = FreshFuzzCluster();
+			auto c2 = FreshFuzzCluster();
+			const size_t before = FuzzClusterNodeCount(*c1);
+			std::vector<int> ph1, ph2;
+			std::vector<std::string> is1, is2;
+			const size_t a1 = ApplySceneReferences(*c1, doc,
+				dir.generic_string(), nullptr, nullptr, nullptr,
+				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+				&ph1, &is1, nullptr, true, nullptr, nullptr, nullptr);
+			const size_t a2 = ApplySceneReferences(*c2, doc,
+				dir.generic_string(), nullptr, nullptr, nullptr,
+				smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+				&ph2, &is2, nullptr, true, nullptr, nullptr, nullptr);
+			nestBinds += int(a1);
+			if (a1 != a2 || is1.size() != is2.size()
+				|| FuzzClusterNodeCount(*c1) != FuzzClusterNodeCount(*c2)) {
+				Check(false, "tour fuzz nesting deterministic apply");
+				nestFailed = true;
+				break;
+			}
+			// Each bound reference adds at most a placeholder + the
+			// triangle artifact's 2 content nodes (see BuildFromMeshAsset:
+			// asset node 0 maps to the placeholder; nodes 1.. land at
+			// ph+i). Strict > would signal duplicated/dangling builds.
+			if (FuzzClusterNodeCount(*c1) > before + a1 * 3 + 4) {
+				Check(false, "tour fuzz nesting node growth bounded");
+				nestFailed = true;
+				break;
+			}
+			// Issues stay bounded: the depth cap (8) + per-file ref counts
+			// bound the BFS visits; anything past double digits is a
+			// runaway queue.
+			if (is1.size() > 64) {
+				Check(false, "tour fuzz nesting issues bounded");
+				nestFailed = true;
+				break;
+			}
+		}
+		Check(nestParsed > 0 && nestRejected > 0,
+			"tour fuzz nesting parsed-and-rejected");
+		if (!nestFailed) {
+			// Pinned nesting contracts (deterministic, not random):
+			auto applyDoc = [&](const char* refSource) {
+				smvk::tour::Doc doc;
+				smvk::tour::ReferenceCmd r{};
+				r.parent = 0;
+				r.source = refSource;
+				r.name = "x";
+				doc.references.push_back(r);
+				auto cluster = FreshFuzzCluster();
+				return ApplySceneReferences(*cluster, doc,
+					dir.generic_string(), nullptr, nullptr, nullptr,
+					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+					nullptr, nullptr, nullptr, true, nullptr, nullptr,
+					nullptr);
+			};
+			// Self-cycle: binds exactly once (the chain guard terminates).
+			Check(applyDoc("cycle.tour") == 1,
+				"tour fuzz nesting cycle terminates once");
+			// 10-deep chain: the depth cap (kMaxRefDepth=8) binds levels
+			// 0..7 and skips level 8+ (8 binds).
+			Check(applyDoc("deep0.tour") == 8,
+				"tour fuzz nesting depth cap binds 8");
+			// Tour-LEVEL source (no -n) stays doc.source (the verb
+			// split's disambiguation) and a references-empty doc applies
+			// nothing.
+			{
+				smvk::tour::Doc doc;
+				std::string err;
+				Check(smvk::tour::LoadTourFromString(
+						"source -p \"b.geometry\";\n", doc, err),
+					"tour fuzz nesting tour-level source parses");
+				Check(doc.source == "b.geometry" && doc.references.empty(),
+					"tour fuzz nesting tour-level source stays doc.source");
+				auto cluster = FreshFuzzCluster();
+				Check(ApplySceneReferences(*cluster, doc,
+						dir.generic_string(), nullptr, nullptr, nullptr,
+						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+						nullptr, nullptr, nullptr, true, nullptr, nullptr,
+						nullptr) == 0,
+					"tour fuzz nesting no-refs applies nothing");
+			}
+			// Legacy mesh-through-reference line: parses back as a
+			// sourced ASSET (extension-derived) and still binds.
+			{
+				smvk::tour::Doc doc;
+				std::string err;
+				Check(smvk::tour::LoadTourFromString(
+						"reference -n 0 -source \"b.geometry\";\n",
+						doc, err),
+					"tour fuzz nesting legacy line parses");
+				Check(doc.references.size() == 1
+						&& doc.references[0].asset,
+					"tour fuzz nesting legacy blob parses as asset");
+				auto cluster = FreshFuzzCluster();
+				Check(ApplySceneReferences(*cluster, doc,
+						dir.generic_string(), nullptr, nullptr, nullptr,
+						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+						nullptr, nullptr, nullptr, true, nullptr, nullptr,
+						nullptr) == 1,
+					"tour fuzz nesting legacy blob binds");
+			}
+			// The per-node `source` verb (mesh assets never ride
+			// `reference`): parses as a sourced asset and binds.
+			{
+				smvk::tour::Doc doc;
+				std::string err;
+				Check(smvk::tour::LoadTourFromString(
+						"source -n 1 -p \"c.geometry\" -name \"cee\";\n",
+						doc, err),
+					"tour fuzz nesting source verb parses");
+				Check(doc.references.size() == 1
+						&& doc.references[0].asset
+						&& doc.references[0].parent == 1
+						&& doc.references[0].name == "cee",
+					"tour fuzz nesting source verb carries node+name");
+				auto cluster = FreshFuzzCluster();
+				Check(ApplySceneReferences(*cluster, doc,
+						dir.generic_string(), nullptr, nullptr, nullptr,
+						smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+						nullptr, nullptr, nullptr, true, nullptr, nullptr,
+						nullptr) == 1,
+					"tour fuzz nesting source verb binds");
+			}
+		}
+		fs::remove_all(dir, ec);
+	}
 	std::cout << "tour fuzz: parsed=" << parsed << " rejected=" << rejected
-		<< " replayed=" << replayed << " skipped=" << skipped << "\n";
+		<< " replayed=" << replayed << " skipped=" << skipped
+		<< " | nesting: parsed=" << nestParsed << " rejected=" << nestRejected
+		<< " binds=" << nestBinds << "\n";
 }
 
 // Dither-on-closeup (Scene::ditherCloseup): the per-frame per-draw state

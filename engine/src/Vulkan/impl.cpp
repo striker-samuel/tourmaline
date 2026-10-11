@@ -5194,6 +5194,47 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	return range;
 }
+// ---------------------------------------------------------------------------
+// STRICT RESOURCES (see smvk.h): --strict / VULKANTOY_STRICT=1. Default is
+// the graceful degradation (editor sessions survive budget pressure);
+// strict turns exhaustion into a LOUD abort — silent skips hide leaks.
+// Device-level knob: getenv at first use (the RunConfig.h migration
+// discipline for device/debug knobs).
+// ---------------------------------------------------------------------------
+// Fatal-diagnostics helpers (defined further down, next to the device-fault
+// post-mortem): forward-declared here so the strict gate can use them.
+namespace {
+void FatalMirrorOpen();
+void FatalPrintf(const char* fmt, ...);
+void FatalFlush();
+void FatalMirrorClose();
+}
+namespace smvk {
+static bool g_strictResources = false;
+void SetStrictResources(bool on) { g_strictResources = on; }
+bool StrictResources() {
+	static const bool envOn = [] {
+		const char* e = std::getenv("VULKANTOY_STRICT");
+		return e && *e && std::strcmp(e, "0") != 0;
+	}();
+	return g_strictResources || envOn;
+}
+// CALL-SITE exhaustion gate (the RHI stays PURE — see smvk.h). No-op
+// unless strict; aborts with the fatal diagnostic when it is.
+void OnResourceExhaustion(const char* site) {
+	if (!StrictResources())
+		return;
+	FatalMirrorOpen();
+	FatalPrintf("[STRICT] resource exhaustion at '%s' — a pool/budget "
+		"refused a creation. Raise the budget, fix the leak, or rerun "
+		"without --strict to degrade gracefully.\n",
+		site ? site : "?");
+	FatalFlush();
+	FatalMirrorClose();
+	std::abort();
+}
+} // namespace smvk
+
 [[nodiscard]] smvk::Holder<smvk::BindlessImageHandle> smvk::VulkanResourceManager::CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout)
 {
 	ImageView* view = imageViews_.get(viewHandle);
@@ -5206,12 +5247,11 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	BindlessImageHandle handle =
 		bindlessImages_.create(std::move(bindless));
 
-	// Pool-full (or any create failure) returns an EMPTY handle — deref
-	// it and we AV on the spot (the crash class behind the live-view
-	// churn reports: extent drift mints ~7 fresh bindless slots per drag
-	// frame; sustained churn can pressure the pool). Return the empty
-	// Holder instead: every caller already treats an empty bindless as
-	// "registration failed" and skips/falls back.
+	// Pool-full (or any create failure) returns an EMPTY handle — the
+	// RHI's error signal. The RHI itself stays PURE: no aborts here, no
+	// strict checks — handling is the CALLER's responsibility (see
+	// smvk.h + AGENTS.md: call sites gate with OnResourceExhaustion;
+	// asserts inside the RHI are for invariants only).
 	if (handle.empty())
 		return {};
 

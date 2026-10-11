@@ -38,6 +38,20 @@ static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 
 namespace smvk {
 
+// STRICT RESOURCES (--strict / VULKANTOY_STRICT=1) + the RHI ERROR
+// CONTRACT. The RHI stays PURE: resource creators return EMPTY handles
+// on failure (the error signal) — never abort, never crash; asserts
+// inside the RHI are for INVARIANTS only (programmer errors), never
+// for operational conditions like pool exhaustion. Handling is the
+// CALLER's responsibility: default = graceful (skip/fall back); strict
+// = the call site gates with OnResourceExhaustion (no-op unless
+// strict, fatal abort when it is — loud beats silent for leaks).
+// Device-level knob: getenv-based per the RunConfig.h migration
+// discipline; hosts call SetStrictResources for the --strict CLI form.
+void SetStrictResources(bool on);
+bool StrictResources();
+void OnResourceExhaustion(const char* site);
+
 	struct Image;
 
 	// ============================================================================
