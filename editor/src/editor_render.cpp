@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -341,6 +342,28 @@ namespace editor {
 
 			m_viewports[vp].frame = frame;
 			m_viewports[vp].viewProj = viewProj;
+			// Basis trace (VULKANTOY_BASIS_TRACE=1): one line per viewport
+			// every 60 frames — eye + the screen basis (view-matrix rows:
+			// row 0 = right, row 1 = screen-up) + the rect. Compare against
+			// the hosted renderer's [BASIS] wr lines (same env var): any
+			// basis disagreement (e.g. a 90-degree roll of boxes/clicks vs
+			// pixels) shows up as different right/up rows for the same eye.
+			if ((m_frameCounter % 60) == 0) {
+				static const bool basisTrace =
+					std::getenv("VULKANTOY_BASIS_TRACE") != nullptr;
+				if (basisTrace) {
+					const glm::vec3 bRight(view[0][0], view[1][0], view[2][0]);
+					const glm::vec3 bUp(view[0][1], view[1][1], view[2][1]);
+					std::fprintf(stderr,
+						"[BASIS] ed vp=%d rect=%.0fx%.0f@%.0f,%.0f "
+						"eye=(%.2f,%.2f,%.2f) "
+						"right=(%.3f,%.3f,%.3f) up=(%.3f,%.3f,%.3f)\n",
+						vp, rect.w, rect.h, rect.x, rect.y,
+						eye.x, eye.y, eye.z,
+						bRight.x, bRight.y, bRight.z,
+						bUp.x, bUp.y, bUp.z);
+				}
+			}
 			m_viewports[vp].frameAddr = baseAddr +
 				(size_t(flight) * kMaxViewports + size_t(vp)) * sliceStride;
 			m_context->UploadDataToBuffer(m_frameUniforms, &frame, sizeof(frame),
@@ -520,8 +543,7 @@ namespace editor {
 	// global pose + lens (forward = node -Z in world). False when unbound
 	// or the node lost its camera (deleted/detached) — callers fall back
 	// to the orbit camera, and the binding survives so undo restores it.
-	bool EditorApp::BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
-		glm::vec3& eye, float& nearClip, float& farClip) const {
+	bool EditorApp::BoundCameraPoseFor(int vp, BoundCameraPose& out) const {
 		if (!m_world || vp < 0 || vp >= kMaxViewports)
 			return false;
 		const int bound = m_viewports[vp].boundNode;
@@ -531,35 +553,49 @@ namespace editor {
 		if (!C)
 			return false;
 		const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
-		eye = glm::vec3(G[3]);
-		glm::vec3 fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
-		if (!(glm::length(fwd) > 1e-6f))
+		out.eye = glm::vec3(G[3]);
+		out.fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+		if (!(glm::length(out.fwd) > 1e-6f))
 			return false;
-		fwd = glm::normalize(fwd);
+		out.fwd = glm::normalize(out.fwd);
 		glm::vec3 up = glm::vec3(G * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
 		if (!(glm::length(up) > 1e-6f)
-			|| std::abs(glm::dot(up, fwd)) > 0.999f)
+			|| std::abs(glm::dot(up, out.fwd)) > 0.999f)
 			// Degenerate (or parallel to the view direction): the SHARED
 			// resolution (same convention as every other camera framing —
-			// see ResolveLookAtUp) instead of this path's old ad-hoc
-			// +X pick, which disagreed with the hosted drive paths.
-			up = ResolveLookAtUp(eye, eye + fwd);
+			// see ResolveLookAtUp) instead of an ad-hoc +X pick, which
+			// disagreed with the hosted drive paths.
+			up = ResolveLookAtUp(out.eye, out.eye + out.fwd);
 		else
 			up = glm::normalize(up);
-		view = glm::lookAt(eye, eye + fwd, up);
+		out.up = up;
+		out.nearClip = std::max(C->nearClip, 1e-4f);
+		out.farClip = std::max(C->farClip, out.nearClip * 1.1f + 1e-3f);
+		out.fovYDeg = std::clamp(C->fovYDeg, 1.0f, 179.0f);
+		out.orthoHalfH = (C->projection == ::SceneCamera::Projection::Orthographic)
+			? std::max(C->orthoHalfH, 0.01f) : 0.0f;
+		return true;
+	}
+
+	bool EditorApp::BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
+		glm::vec3& eye, float& nearClip, float& farClip) const {
+		BoundCameraPose pose;
+		if (!BoundCameraPoseFor(vp, pose))
+			return false;
+		eye = pose.eye;
+		nearClip = pose.nearClip;
+		farClip = pose.farClip;
+		view = glm::lookAt(eye, eye + pose.fwd, pose.up);
 		const ViewportRect& rect = m_viewports[vp].rect;
 		const float aspect = rect.h > 0.0f ? rect.w / rect.h : 1.0f;
-		nearClip = std::max(C->nearClip, 1e-4f);
-		farClip = std::max(C->farClip, nearClip * 1.1f + 1e-3f);
 		glm::mat4 p(1.0f);
-		if (C->projection == ::SceneCamera::Projection::Orthographic) {
-			const float h = std::max(C->orthoHalfH, 0.01f);
-			p = glm::orthoRH_ZO(-h * aspect, h * aspect, -h, h,
+		if (pose.orthoHalfH > 0.0f) {
+			p = glm::orthoRH_ZO(-pose.orthoHalfH * aspect,
+				pose.orthoHalfH * aspect, -pose.orthoHalfH, pose.orthoHalfH,
 				farClip, nearClip);
 		}
 		else {
-			p = MakeReversedZProjRH(glm::radians(
-				std::clamp(C->fovYDeg, 1.0f, 179.0f)), aspect,
+			p = MakeReversedZProjRH(glm::radians(pose.fovYDeg), aspect,
 				nearClip, farClip);
 		}
 		p[1][1] *= -1.0f; // Vulkan Y-flip
@@ -1824,12 +1860,15 @@ namespace editor {
 		const bool wysiwygPreview = m_wysiwyg != nullptr;
 		m_rendergraph->NewFrame();
 		{
+			// Window chrome backdrop: neutral mid grey (no blue tint — the
+			// old 0.07/0.07/0.09 read blue next to the scene). Shows
+			// through the gaps between panels + viewports.
 			auto& bg = m_rendergraph->AddPass("EditorBg")
 				.SetOffset(0, 0)
 				.SetExtent(extent)
 				.SetColor({ m_swapViews[fb.imageIndex] },
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-					smvk::ClearColor(0.07f, 0.07f, 0.09f, 1.0f))
+					smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
 				.SetDepth(m_depth.logicalView,
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 					smvk::ClearDepthStencil(0.0f, 0));
@@ -1841,48 +1880,45 @@ namespace editor {
 		// The hosted WorldRenderer records its whole pipeline into THIS
 		// frame's command buffer on the editor's own flight rhythm (one
 		// acquire, one submit, one present — no device-idle ping-pong).
-		// Its tonemap writes the renderer's OWN inline target at the
-		// driven extent (= the exact viewport-0 rect, resized IN PLACE on
-		// drift — no relaunch, no aspect drift); round 2 composites it
-		// 1:1. (The direct sub-rect write into the editor's swapchain
-		// image — the original design — wedges nvlddmkm past the TDR
-		// window on this driver; see WorldRenderer.h's inline-target
-		// members.)
+		// RECT-SIZED targets: every hosted target tracks its viewport
+		// rect's size (SetMainViewExtent/SetViewExtent) — the lens draws
+		// the rect's frustum full-frame from (0,0) and round 2 composites
+		// the rect 1:1. Rect moves are free; resizes re-Ensure in place.
 		if (wysiwygPreview) {
 			const ViewportRect& vp0 = m_viewports[0].rect;
-			const smvk::Extent2D worldExtent{
+			// Host extent (fake-swapchain sizing + the pre-drive target
+			// fallback) + rect-size drive: the renderer draws the rect
+			// frustum into its rect-sized chain + canvas (full writes at
+			// (0,0)), so the composite above maps 1:1 onto the exact
+			// overlay/pick frustum. Rect moves never realloc (same size).
+			m_wysiwyg->SetHostedExtent(extent);
+			m_wysiwyg->SetMainViewExtent(smvk::Extent2D{
 				std::max(uint32_t(vp0.w), 64u),
-				std::max(uint32_t(vp0.h), 64u) };
-			m_wysiwygExtent = worldExtent;
-			m_wysiwyg->SetMainViewExtent(worldExtent);
+				std::max(uint32_t(vp0.h), 64u) });
 			m_wysiwyg->RenderInlineFrame(fb);
 		}
 
 		// ---- PASS ROUND 2: overlays over the world pixels --------------
 		m_rendergraph->NewFrame();
 		if (wysiwygPreview) {
-			// Viewport 0: composite the inline target 1:1 into its rect.
-			// Steady state the target extent equals the rect exactly
-			// (driven per frame above) — the aspect cover-crop is the
-			// identity; it stays as a safety net for the 1-frame extent
-			// lag of a live splitter drag (the target resizes IN PLACE on
-			// the next frame).
+			// Viewport 0: 1:1 blit of the rect-sized inline target (the
+			// renderer drew the rect frustum full-frame into it).
 			RecordWysiwygPass(m_swapViews[fb.imageIndex],
 				m_viewports[0].rect,
 				m_wysiwyg->InlineTargetBindlessIndex(),
-				m_wysiwyg->InlineTargetExtent());
+				m_wysiwyg->InlineTargetExtent(),
+				0, 0);
 			// MULTIVIEW: every ADDITIONAL viewport blits ITS hosted view's
-			// own image (SetViewCount/DriveView above) — including
-			// off-phase frames, where the last rendered content persists.
+			// own rect-sized image 1:1 (SetViewCount/DriveView above) —
+			// including off-phase frames, where the last rendered content
+			// persists.
 			for (int vpIdx = 1; vpIdx < ViewportCount(); ++vpIdx) {
 				const uint32_t source =
 					m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
-				// Source texel size for the aspect-preserving cover-crop
-				// (steady state: equals the rect, identity mapping).
 				const smvk::Extent2D srcExtent =
 					m_wysiwyg->ViewOutExtent(uint32_t(vpIdx - 1));
 				RecordWysiwygPass(m_swapViews[fb.imageIndex],
-					m_viewports[vpIdx].rect, source, srcExtent);
+					m_viewports[vpIdx].rect, source, srcExtent, 0, 0);
 			}
 			// Gizmo overlay on top of the world pixels (the hosted views
 			// render the grid themselves now — see WorldRenderer grid
@@ -1991,7 +2027,7 @@ namespace editor {
 
 	void EditorApp::RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
 		const ViewportRect& rect, uint32_t sourceBindless,
-		smvk::Extent2D srcExtent) {
+		smvk::Extent2D srcExtent, uint32_t contentX, uint32_t contentY) {
 		if (!EnsureWysiwygProgram())
 			return;
 		if (rect.w <= 0.0f || rect.h <= 0.0f)
@@ -2001,42 +2037,31 @@ namespace editor {
 		WysiwygGpuPush wp{};
 		wp.textureIndex = sourceBindless;
 		wp.samplerIndex = m_wysiwygSamplerIndex;
-		// Aspect-preserving cover-crop: the hosted target extent only
-		// equals the viewport rect in the steady state — during an extent
-		// drift (I toggles panels, splitter drags, layout switches) the
-		// target still has the OLD size until the debounced relaunch lands,
-		// and a naive fullscreen blit stretches it non-uniformly (circles
-		// become ellipses — the "pixel aspect changed" report). Sample a
-		// CENTERED sub-region with a UNIFORM scale instead: geometry stays
-		// correct through the transition (edges crop for a few frames),
-		// then the relaunch restores the exact 1:1 below.
-		// Cover scale s = max(rect/src) per axis; displayed src region =
-		// rect/s texels, centered: uv' = uv*(rect/(s*src)) + (1-...)/2.
+		// Content-rect sampling (exact 1:1, no resampling): the hosted view
+		// rendered its rect frustum full-frame from (0,0) into its
+		// rect-sized image — the main view's inline target (tracked to the
+		// rect by EnsureInlineTarget) and each secondary's own image alike —
+		// and the lens aspect matches the rect, so sampling the whole image
+		// maps pixels back onto the exact overlay/pick frustum. The old
+		// center cover-crop showed a ZOOMED subset whenever aspects differed
+		// (selection boxes + clicks could never match it); the target tracks
+		// the rect same-frame, so no drift fallback is needed either.
 		wp.uvScale[0] = 1.0f; wp.uvScale[1] = 1.0f;
 		wp.uvOffset[0] = 0.0f; wp.uvOffset[1] = 0.0f;
 		if (srcExtent.width != 0 && srcExtent.height != 0) {
 			const float srcW = float(srcExtent.width);
 			const float srcH = float(srcExtent.height);
-			const float dstAspect = rect.w / rect.h;
-			const float srcAspect = srcW / srcH;
-			// Epsilon snap: identical aspects (the steady state, up to
-			// float rounding) keep the exact identity mapping — no
-			// resampling shimmer from a ~1.0 scale.
-			if (std::fabs(dstAspect - srcAspect)
-				> 1e-4f * std::max(dstAspect, srcAspect)) {
-				const float s = std::max(rect.w / srcW, rect.h / srcH);
-				wp.uvScale[0] = rect.w / (s * srcW);
-				wp.uvScale[1] = rect.h / (s * srcH);
-				wp.uvOffset[0] = 0.5f * (1.0f - wp.uvScale[0]);
-				wp.uvOffset[1] = 0.5f * (1.0f - wp.uvScale[1]);
-			}
+			wp.uvScale[0] = rect.w / srcW;
+			wp.uvScale[1] = rect.h / srcH;
+			wp.uvOffset[0] = float(contentX) / srcW;
+			wp.uvOffset[1] = float(contentY) / srcH;
 		}
 		auto& pass = m_rendergraph->AddPass("WysiwygCompose")
 			.SetOffset(uint32_t(rect.x), uint32_t(rect.y))
 			.SetExtent(smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) })
 			.SetColor({ swapView },
 				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-				smvk::ClearColor(0, 0, 0, 1))
+				smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
 			.SetDepth(m_depth.logicalView,
 				smvk::AttachmentLoadOp::DontCare,
 				smvk::AttachmentStoreOp::DontCare,

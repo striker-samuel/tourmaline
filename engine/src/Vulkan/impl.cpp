@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <atomic>
-#include <bit> // std::popcount (multiview layerCount)
 #include <chrono>
 #include <cstdarg>
 #include <cstdint>
@@ -10265,11 +10264,6 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 		.sType =
 			VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 
-		// MULTIVIEW: baked into the pipeline — every draw of a pass with
-		// this mask rasterizes per set bit (SV_ViewID in the shaders).
-		.viewMask =
-			key.viewMask,
-
 		.colorAttachmentCount =
 			static_cast<uint32_t>(
 				vkColorFormats.size()),
@@ -10342,8 +10336,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 	const DepthSettings& depth,
 	const StencilSettings& stencil,
 	const BlendSettings& blend,
-	const MSAASettings& msaa,
-	uint32_t viewMask
+	const MSAASettings& msaa
 )
 {
 	PipelineKey key{
@@ -10360,7 +10353,6 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 		.stencil = stencil,
 		.blend = blend,
 		.msaa = msaa,
-		.viewMask = viewMask,
 	};
 
 	if (auto it = pipelines_.find(key);
@@ -12035,9 +12027,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// Unresolvable extents keep the pass-area render + implicit clear
 			// (correct, only potentially slow on tile passes).
 		}
-		// MULTIVIEW: layerCount must cover every view in the pass's mask
-		// (the attachments' views span the layers; bit i renders to layer i).
-		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = pass.viewMask_ ? (std::popcount(pass.viewMask_)) : 1u, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
+		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
 		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
 		renderInfo.pStencilAttachment = hasStencil ? &depthInfo : nullptr;
 		if (pass.IsCompute()) {
@@ -12314,9 +12304,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		depthSettings,
 		stencilSettings,
 		blendSettings,
-		msaaSettings,
-		// MULTIVIEW: the recording pass's mask rides the pipeline.
-		renderPass_->viewMask_
+		msaaSettings
 	);
 
 	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");

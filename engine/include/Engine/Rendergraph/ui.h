@@ -185,6 +185,9 @@ struct UiComposite {
 	// to linear so the hardware store encode restores them; with a
 	// non-sRGB surface they pass through raw. Captures only copyable
 	// handles/indices.
+	// Layer sub-rect (see Tonemapper::AddTonemapPass): offsetX/Y confine
+	// the composite to the element's rect. Load is unconditional here so
+	// sub-rect layers always preserve siblings.
 	RenderPass& AddCompositePass(RenderGraph& rg,
 		LogicalImageViewHandle uiView,
 		uint32_t uiBindlessIndex,
@@ -192,7 +195,9 @@ struct UiComposite {
 		const std::vector<LogicalImageViewHandle>& swapViews,
 		Extent2D swapExtent,
 		bool decodeOutput = false,
-		const char* name = nullptr) const {
+		const char* name = nullptr,
+		uint32_t offsetX = 0,
+		uint32_t offsetY = 0) const {
 		assert(ShadersValid());
 		assert(!uiView.empty());
 		assert(!swapViews.empty());
@@ -203,7 +208,7 @@ struct UiComposite {
 		push.decodeOutput = decodeOutput ? 1u : 0u;
 
 		RenderPass& pass = rg.AddPass(name ? name : "UiComposite");
-		pass.SetOffset(0, 0)
+		pass.SetOffset(offsetX, offsetY)
 			.SetExtent(swapExtent)
 			.SetInputImages({ uiView })
 			.SetColor(swapViews,

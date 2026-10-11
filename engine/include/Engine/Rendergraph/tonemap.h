@@ -141,6 +141,11 @@ struct Tonemapper {
 	// jitterDeltaX/Y: the jitter component of the motion vectors in UV,
 	// stripped by the debugView 1 motion visualizer so it shows TRUE
 	// motion (zero when no temporal jitter is active).
+	// Layer sub-rect (nvpro-style element stacking): offsetX/Y + the
+	// swapExtent above confine the write to the element's rect of the swap
+	// image. Full-swap layers keep offset 0,0 + Clear (today's behavior);
+	// sub-rect layers MUST pass Load so sibling layers outside the rect
+	// survive (Clear would wipe the whole attachment).
 	RenderPass& AddTonemapPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -163,7 +168,10 @@ struct Tonemapper {
 		uint32_t lutBindlessIndex = UINT32_MAX,
 		float lutIntensity = 0.0f,
 		float jitterDeltaX = 0.0f,
-		float jitterDeltaY = 0.0f) const {
+		float jitterDeltaY = 0.0f,
+		uint32_t offsetX = 0,
+		uint32_t offsetY = 0,
+		AttachmentLoadOp colorLoad = AttachmentLoadOp::Clear) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -202,11 +210,11 @@ struct Tonemapper {
 			inputs.push_back(aoView);
 
 		RenderPass& pass = rg.AddPass(name ? name : overrideDesc.name);
-		pass.SetOffset(0, 0)
+		pass.SetOffset(offsetX, offsetY)
 			.SetExtent(swapExtent)
 			.SetInputImages(inputs)
 			.SetColor(swapViews,
-				AttachmentLoadOp::Clear,
+				colorLoad,
 				AttachmentStoreOp::Store,
 				ClearColor(0, 0, 0, 1));
 		ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)

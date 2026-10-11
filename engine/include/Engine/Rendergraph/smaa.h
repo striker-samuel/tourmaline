@@ -483,6 +483,11 @@ struct Smaa {
 	// it; with a non-sRGB surface the encoded bytes pass through raw.
 	// Captures only copyable handles/indices, so the passes are safe once
 	// this call returns.
+	// Layer sub-rect (see Tonemapper::AddTonemapPass): offsetX/Y confine
+	// the SWAP-WRITING passes (SMAA 1x neighborhood + T2x resolve) to the
+	// element's rect. Both already use DontCare (no sibling wipe); the
+	// edge/weights/history passes target internal images at passExtent and
+	// stay full-extent. rtMetrics still describe passExtent.
 	void AddSmaaPasses(RenderGraph& rg,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindless,
@@ -497,7 +502,9 @@ struct Smaa {
 		bool swapTargetsAreSrgb = false,
 		float jitterDeltaX = 0.0f,
 		float jitterDeltaY = 0.0f,
-		const char* name = nullptr) const {
+		const char* name = nullptr,
+		uint32_t offsetX = 0,
+		uint32_t offsetY = 0) const {
 		assert(Valid());
 		assert(LutsValid());
 		assert(!ldr.logicalView.empty());
@@ -589,7 +596,8 @@ struct Smaa {
 			// slot (alpha carries the packed velocity for the resolve).
 			// SMAA 1x: straight to the swapchain (alpha ignored).
 			RenderPass& pass = rg.AddPass(name ? name : "SmaaNeighborhood");
-			pass.SetOffset(0, 0)
+			const bool toSwap = !t2x;
+			pass.SetOffset(toSwap ? offsetX : 0, toSwap ? offsetY : 0)
 				.SetExtent(passExtent)
 				.SetInputImages({ ldr.logicalView, weights.logicalView, motionView })
 				.SetColor({ t2x ? historyCurrent.logicalView : swapViews[0] },
@@ -616,7 +624,7 @@ struct Smaa {
 			resolvePush.outputLinear = swapTargetsAreSrgb ? 1u : 0u;
 
 			RenderPass& pass = rg.AddPass(name ? name : "SmaaResolve");
-			pass.SetOffset(0, 0)
+			pass.SetOffset(offsetX, offsetY)
 				.SetExtent(passExtent)
 				.SetInputImages({ historyCurrent.logicalView,
 					historyPrevious.logicalView, motionView })

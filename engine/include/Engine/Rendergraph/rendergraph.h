@@ -523,18 +523,6 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		return *this;
 	}
 
-	// MULTIVIEW (VK_KHR_multiview, core 1.1): a nonzero mask makes every
-	// draw of this pass rasterize once per set bit, into the matching
-	// ARRAY LAYER of the attachments (their views must span the layers;
-	// Execute sizes vkCmdBeginRendering's layerCount off the mask's
-	// popcount). Pipelines built for this pass carry the mask (separate
-	// cache entries); the shaders select per-view state with SV_ViewID.
-	RenderPass& SetViewMask(uint32_t viewMask)
-	{
-		viewMask_ = viewMask;
-		return *this;
-	}
-
 
 		RenderPass& SetRecordingFunc(
 			RecordingFunction fn)
@@ -618,14 +606,10 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		bool hasDepthAttachment_ =
 			false;
 
-	Extent2D extent_{};
+		Extent2D extent_{};
 
-	int32_t offsetX_ = 0;
-	int32_t offsetY_ = 0;
-
-	// MULTIVIEW (see SetViewMask): bit i = array layer i of the
-	// attachments; 0 = classic single-view pass.
-	uint32_t viewMask_ = 0;
+		int32_t offsetX_ = 0;
+		int32_t offsetY_ = 0;
 
 	RecordingFunction
 		recordingFunction_{};
@@ -676,7 +660,6 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		{
 			passes_.clear();
 		}
-
 
 		RenderPass& AddPass(
 			const char* name = nullptr)

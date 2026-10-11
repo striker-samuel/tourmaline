@@ -6,6 +6,8 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_set>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -529,6 +531,15 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		const glm::mat4 invFrame = glm::inverse(frame);
 		bool has = false;
 		glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+		// [SELBOX] dev trace (VULKANTOY_SELBOX_TRACE=1): the box-vs-mesh
+		// rotation diagnostic — prints the OBB's world corner extents +
+		// the frame basis next to the subtree cloud's RAW world AABB.
+		// A 90-degree disagreement (box X extent == cloud Z extent with
+		// the other axes crossed) = the frame/AABB basis bug class.
+		static const bool selboxTrace =
+			std::getenv("VULKANTOY_SELBOX_TRACE") != nullptr;
+		static int selboxPrints = 0;
+		glm::vec3 wMn(FLT_MAX), wMx(-FLT_MAX);
 		std::vector<uint32_t> stack{ m_selected };
 		std::unordered_set<uint32_t> inSubtree;
 		while (!stack.empty()) {
@@ -552,13 +563,17 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 					(k & 1) ? m->geometry.aabbMax.x : m->geometry.aabbMin.x,
 					(k & 2) ? m->geometry.aabbMax.y : m->geometry.aabbMin.y,
 					(k & 4) ? m->geometry.aabbMax.z : m->geometry.aabbMin.z);
-				const glm::vec3 w = glm::vec3(model * glm::vec4(corner, 1.0f));
-				// Frame-local: min/max in the node's own coordinates.
-				const glm::vec3 q =
-					glm::vec3(invFrame * glm::vec4(w, 1.0f));
-				mn = glm::min(mn, q);
-				mx = glm::max(mx, q);
-				has = true;
+			const glm::vec3 w = glm::vec3(model * glm::vec4(corner, 1.0f));
+			if (selboxTrace) {
+				wMn = glm::min(wMn, w);
+				wMx = glm::max(wMx, w);
+			}
+			// Frame-local: min/max in the node's own coordinates.
+			const glm::vec3 q =
+				glm::vec3(invFrame * glm::vec4(w, 1.0f));
+			mn = glm::min(mn, q);
+			mx = glm::max(mx, q);
+			has = true;
 			}
 		}
 		if (has) {
@@ -571,6 +586,25 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 					(k & 2) ? mx.y : mn.y,
 					(k & 4) ? mx.z : mn.z);
 				c[k] = glm::vec3(frame * glm::vec4(q, 1.0f));
+			}
+			if (selboxTrace && selboxPrints < 3 && ++selboxPrints) {
+				glm::vec3 bMn(FLT_MAX), bMx(-FLT_MAX);
+				for (int k = 0; k < 8; ++k) {
+					bMn = glm::min(bMn, c[k]);
+					bMx = glm::max(bMx, c[k]);
+				}
+				const glm::vec3 fx(frame[0]), fy(frame[1]), fz(frame[2]);
+				std::fprintf(stderr,
+					"[SELBOX] node=%u cloudWorld=(%.2f..%.2f, %.2f..%.2f, "
+					"%.2f..%.2f) boxWorld=(%.2f..%.2f, %.2f..%.2f, "
+					"%.2f..%.2f)\n[SELBOX]   frameBasis x=(%.3f,%.3f,%.3f) "
+					"y=(%.3f,%.3f,%.3f) z=(%.3f,%.3f,%.3f)\n",
+					m_selected,
+					wMn.x, wMx.x, wMn.y, wMx.y, wMn.z, wMx.z,
+					bMn.x, bMx.x, bMn.y, bMx.y, bMn.z, bMx.z,
+					fx.x, fx.y, fx.z, fy.x, fy.y, fy.z,
+					fz.x, fz.y, fz.z);
+				std::fflush(stderr);
 			}
 			AddBoxCorners(box, c);
 			batches.push_back(std::move(box));

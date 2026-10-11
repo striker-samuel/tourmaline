@@ -520,6 +520,20 @@ private:
 	// orbit camera otherwise).
 	bool BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
 		glm::vec3& eye, float& nearClip, float& farClip) const;
+	// The SAME bound-camera framing as a hosted-renderer drive payload:
+	// pose (eye/forward/up — up already carries the shared degenerate
+	// fallback) + lens (fov / TRUE ortho half-height / clips). Single
+	// source of truth with BoundCameraView (which builds its overlay
+	// matrices from this) — the hosted WYSIWYG drive passes it to
+	// DriveExternalCamera/DriveView so the live pixels and the overlay
+	// share one camera when a viewport is locked look-through.
+	struct BoundCameraPose {
+		glm::vec3 eye, fwd, up;
+		float fovYDeg = 60.0f;
+		float orthoHalfH = 0.0f; // > 0 = orthographic lens
+		float nearClip = 0.1f, farClip = 100.0f;
+	};
+	bool BoundCameraPoseFor(int vp, BoundCameraPose& out) const;
 	ViewMode& ActiveViewMode() { return m_viewports[m_activeVp].viewMode; }
 	ViewMode ActiveViewMode() const { return m_viewports[m_activeVp].viewMode; }
 	void SetupDefaultCameras();
@@ -1624,12 +1638,21 @@ private:
 // pipeline into the editor's command buffer between its background-clear
 // round and its overlay round, on the editor's flight rhythm. One acquire,
 // one submit, one present per editor frame — no offscreen hosted swapchain
-// rhythm, no device-idle ping-pong. The world's tonemap writes the
-// renderer's own INLINE TARGET (extent driven per frame = the exact
-// viewport-0 rect, resized in place — no relaunch, no aspect drift), which
-// the editor composites 1:1. (The original design wrote the rect of the
-// editor's swapchain image directly; that write wedges nvlddmkm past the
-// TDR window on this driver — see WorldRenderer.h's inline-target members.)
+// rhythm, no device-idle ping-pong.
+// RECT-SIZED TARGETS + 1:1 COMPOSE: every hosted target (the inline
+// target, the secondary views' depth/hdr/out) tracks its viewport
+// rect's SIZE — the lens renders the rect's frustum full-frame from
+// (0,0), so the compose blit is an exact 1:1 and the overlay/pick
+// frustum matches the pixels. Rect MOVES (panels, splitters, layouts)
+// are free (same size = Ensure no-op); rect RESIZES re-Ensure the
+// chain + canvas in place (transient, like a window resize — the
+// create-new + Holder-swap pattern with deferred retire keeps in-flight
+// frames alive). (The original design wrote the rect of the editor's
+// swapchain image directly; that write wedges nvlddmkm past the TDR
+// window on this driver — see WorldRenderer.h's inline-target members.
+// An interim full-extent-targets + cover-crop design lost that 1:1 —
+// whenever the target and rect aspects differed the compose showed a
+// zoomed subset no overlay/click could match.)
 // The hosted renderer BORROWS m_world (SetHostedBorrowedWorld): the editor
 // keeps owning + mutating it (edits show up live, per frame); the hosted
 // renderer never imports anything of its own. Cooks are the separate
@@ -1644,9 +1667,9 @@ private:
 	// Scene id storage (the renderer keeps its own copy): the scene
 	// stem naming the GI sidecars (gi/<stem>.*).
 	std::string m_wysiwygSceneId;
-	// Compose program (editor_render.cpp): the MULTIVIEW blit of each
-	// SECONDARY hosted view's own image into its viewport rect (view 0
-	// renders INLINE — direct sub-rect tonemap — and needs no blit).
+	// Compose program (editor_render.cpp): the exact 1:1 blit of each
+	// hosted view's rect-sized image (view 0's inline target + each
+	// secondary view's own image) into its viewport rect.
 	smvk::ShaderProgram m_wysiwygProgram{};
 	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygFsModule;
@@ -1662,19 +1685,19 @@ private:
 	// Runs at the end of every glTF scene load (fresh world) and after
 	// every successful Bake GI, before the hosted view (re)binds.
 	void RefreshLiveViewGiBindings();
-	// Current world render extent (viewport 0's rect, clamped >= 64):
-	// driven per frame (SetMainViewExtent) — the launch snapshot the
-	// log prints, and the smoke/dump paths read.
+	// Launch snapshot only: the viewport-0 rect size handed to the
+	// hosted ctor (the initial inline extent — SetMainViewExtent drives
+	// the live value every frame after).
 	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
 	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
-	// Draws one SECONDARY hosted view's image (multiview; view 0 renders
-	// inline) into its viewport rect (compose pass). srcExtent is that
-	// image's texel size (ViewOutExtent): the cover-crop needs it to keep
-	// the aspect through the view's off-phase frames (see
-	// RecordWysiwygPass).
+	// Content-rect blit of one hosted source image into its viewport
+	// rect (exact 1:1): the main view's rect-sized inline target and
+	// each secondary's rect-sized image both render full-frame from
+	// (0, 0). srcExtent is the source image's texel size; (contentX,
+	// contentY) stays for future sub-region sources.
 	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
 		const ViewportRect& rect, uint32_t sourceBindless,
-		smvk::Extent2D srcExtent);
+		smvk::Extent2D srcExtent, uint32_t contentX, uint32_t contentY);
 	// Hosted-view scene id (the open scene's stem; see LaunchWysiwyg) —
 	// shared by the launch and the in-place world rebind (DrawFrame /
 	// bake-done) so the GI sidecar loaders resolve the same names.

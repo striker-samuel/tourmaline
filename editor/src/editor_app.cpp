@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -942,9 +944,9 @@ bool EditorApp::LaunchWysiwyg() {
 	// call can never wedge the shared context.
 	WaitForDeviceIdle();
 	StopWysiwyg(); // fresh instance per launch (first launch only in
-	// practice — world swaps rebind in place; extent drift never
-	// relaunches, the per-frame SetMainViewExtent resizes targets in
-	// place inside the renderer's Ensure() keys).
+	// practice — world swaps rebind in place; nothing relaunches for
+	// extent drift: rect resizes re-Ensure the hosted targets in place,
+	// rect moves are free).
 	// Viewport-sized initial extent (the current rect; RenderFrame
 	// drives it per frame after — splitter drags and layout switches
 	// resize the world targets in place, 1:1 with the rect at all
@@ -1826,11 +1828,50 @@ void EditorApp::DrawFrame() {
 			m_worldRetire.reset();
 		}
 	}
-	// HOSTED EXTENT DRIFT: GONE with the inline live view — the world
-	// render extent is driven per frame (SetMainViewExtent inside
-	// RenderFrame, current rect) and the renderer resizes its targets
-	// IN PLACE through the Ensure() keys. The old relaunch watcher (and
-	// the crash window it opened mid-session) is deleted.
+	// HOSTED EXTENT DRIFT: GONE with the inline live view — the hosted
+	// targets track the viewport rect's SIZE (resizes re-Ensure in
+	// place, moves are free). The old relaunch watcher (and the crash
+	// window it opened mid-session) is deleted.
+	// Dev selection pin (VULKANTOY_EDITOR_SELECT=<node>|list, one-shot at
+	// the first frame a world exists): headless box-vs-mesh diagnostics
+	// (see the [SELBOX] trace in RecordGizmoPass) need a selection
+	// without input. "list" prints every draw item's node + global
+	// basis (the rotated-frame hunt). Absent = off.
+	{
+		static const char* selRaw = std::getenv("VULKANTOY_EDITOR_SELECT");
+		static const bool selList = selRaw
+			&& std::strcmp(selRaw, "list") == 0;
+		static const int selNode = selRaw ? std::atoi(selRaw) : -1;
+		static bool selDone = false;
+		if (!selDone && m_world && selRaw) {
+			if (selList) {
+				selDone = true;
+				for (const auto& item : m_world->drawItems) {
+					const glm::mat4& g =
+						m_world->scene.globalTransform[item.node];
+					std::fprintf(stderr,
+						"[SELLIST] node=%u parent=%d basis "
+						"x=(%.3f,%.3f,%.3f) y=(%.3f,%.3f,%.3f) "
+						"z=(%.3f,%.3f,%.3f)\n",
+						item.node,
+						m_world->scene.hierarchy[item.node].parent,
+						g[0][0], g[0][1], g[0][2],
+						g[1][0], g[1][1], g[1][2],
+						g[2][0], g[2][1], g[2][2]);
+				}
+				std::fflush(stderr);
+			}
+			else if (selNode >= 0
+				&& selNode < int(m_world->scene.hierarchy.size())) {
+				selDone = true;
+				m_selected = uint32_t(selNode);
+				std::cerr << "[SELECT] dev pin: node " << selNode
+					<< " selected (" << m_world->scene.hierarchy.size()
+					<< " nodes)\n";
+				std::fflush(stderr);
+			}
+		}
+	}
 	// Dev crash-repro vehicle #2 (VULKANTOY_EDITOR_OPEN_AT2="<frame>:
 	// <file>"): same as OPEN_AT but fires AFTER the deferred block, so
 	// the pending live-view launch consumes one frame LATER — the exact
@@ -1886,14 +1927,27 @@ void EditorApp::DrawFrame() {
 		// hosted view below (viewport i+1 -> view i) with its own
 		// camera. Top/Side ortho cameras drive a TRUE orthographic lens
 		// (orthoHalfH; the old fov-approximation dolly-distorted the
-		// live view). Locked look-through (bound scene cameras) stays
-		// an editor-pass feature for now.
+		// live view). LOCKED LOOK-THROUGH drives the hosted view through
+		// the BOUND camera too (BoundCameraPoseFor — pose + lens + the
+		// node's up), so the live pixels and the overlay share one
+		// camera in every viewport state (the old orbit-only drive drew
+		// the overlay with the bound camera over orbit-camera pixels —
+		// misaligned by construction).
 		{
-			const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
-			m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
-				cam.fovYDeg, cam.nearClip, cam.farClip,
-				(cam.type == EditorCam::Type::Orthographic)
-					? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
+			BoundCameraPose pose;
+			if (BoundCameraPoseFor(0, pose)) {
+				m_wysiwyg->DriveExternalCamera(pose.eye,
+					pose.eye + pose.fwd, pose.fovYDeg,
+					pose.nearClip, pose.farClip, pose.orthoHalfH,
+					pose.up);
+			}
+			else {
+				const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
+				m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
+					cam.fovYDeg, cam.nearClip, cam.farClip,
+					(cam.type == EditorCam::Type::Orthographic)
+						? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
+			}
 		}
 		// GRID DRIVE: the hosted renderer draws the construction grid
 		// itself (depth-tested against each view's own depth — the host
@@ -1915,8 +1969,9 @@ void EditorApp::DrawFrame() {
 		// unchanged; a layout change recreates the per-view targets
 		// here at the idle boundary), extents track the viewport rects
 		// and each viewport's OWN camera renders its view — ortho
-		// cameras with a TRUE orthographic lens (same as the main
-		// drive). The views carry per-view tic/toc refresh schedules
+		// cameras with a TRUE orthographic lens, locked look-through
+		// with the bound camera's pose + up (same as the main drive
+		// above). The views carry per-view tic/toc refresh schedules
 		// (see the live-view panel); off-phase views keep their last
 		// image and compose anyway.
 		{
@@ -1930,11 +1985,19 @@ void EditorApp::DrawFrame() {
 				m_wysiwyg->SetViewExtent(i, smvk::Extent2D{
 					std::max(uint32_t(vp.rect.w), 64u),
 					std::max(uint32_t(vp.rect.h), 64u) });
-				const EditorCam& cam = m_editorCams[vp.camIdx];
-				m_wysiwyg->DriveView(i, EditorCamEye(cam), cam.target,
-					cam.fovYDeg, cam.nearClip, cam.farClip,
-					(cam.type == EditorCam::Type::Orthographic)
-						? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
+				BoundCameraPose pose;
+				if (BoundCameraPoseFor(int(i + 1), pose)) {
+					m_wysiwyg->DriveView(i, pose.eye, pose.eye + pose.fwd,
+						pose.fovYDeg, pose.nearClip, pose.farClip,
+						pose.orthoHalfH, pose.up);
+				}
+				else {
+					const EditorCam& cam = m_editorCams[vp.camIdx];
+					m_wysiwyg->DriveView(i, EditorCamEye(cam), cam.target,
+						cam.fovYDeg, cam.nearClip, cam.farClip,
+						(cam.type == EditorCam::Type::Orthographic)
+							? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
+				}
 			}
 		}
 		// DEBUG-VIEW DRIVE: the editor's view modes hook the hosted
