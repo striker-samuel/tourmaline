@@ -1,18 +1,24 @@
-#pragma once
+﻿#pragma once
 //
-// SDL3 application host: window, event pump (feeds Input), audio engine,
-// graphics members (context/swapchain/rendergraph/world).
+// SDL3 application host (nvapp::Application-style): window, event pump
+// (feeds Input), audio engine, graphics members (context/swapchain/
+// rendergraph/world) and a stack of IAppElements. The ELEMENT stack is
+// the renderer extension point — hosts subclass for shell customization
+// (EditorApp, the samples), renderers are elements (WorldRenderer).
 //
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
+#include <Engine/App/Element.h>
 #include <Engine/Audio/audio.h>
 #include <Engine/Memory/memory.h>
 
 #include "input.h"
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <future>
 #include <memory>
+#include <vector>
 
 // SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
 struct SDL_Window;
@@ -24,133 +30,145 @@ namespace smvk
 
 class App {
 public:
-		Input m_input{};
-		audio::AudioEngine m_audio{};
-		App() = default;
-		virtual ~App();
-		virtual bool Initialize() = 0;
-		virtual void DrawFrame() = 0;
-		// Called while object is still fully constructed, after MainLoop exits
-		// and before any members are destroyed. Override to release Holders
-		// that depend on the graphics context while GPU is still valid.
-		virtual void Shutdown();
-		bool Run();
-		void MainLoop();
-		void UpdateDeltaTime();
+	Input m_input{};
+	audio::AudioEngine m_audio{};
+	App() = default;
+	// The pasted-pattern contract: Shutdown detaches + destroys the
+	// element stack while the graphics members are alive — an assert
+	// here (debug builds) catches a forgotten Shutdown.
+	virtual ~App();
 
-		// Window helpers (SDL3).
-		SDL_Window* GetWindow() const { return window; }
-		bool ShouldClose() const { return windowShouldClose_; }
-		void RequestClose() { windowShouldClose_ = true; }
-		void SetRelativeMouseMode(bool enabled);
-		bool GetRelativeMouseMode() const { return relativeMouseMode_; }
-		// Benchmark: auto-quit after N frames and report average frame time
-		// (`--bench N` in App/main.cpp). 0 = run interactively (default).
-		void SetFrameBudget(int n) { frameBudget_ = n; }
+	// Shell customization. Initialize boots the windowed graphics
+	// members (SDL window, context, swapchain, rendergraph, world);
+	// Run drives the loop (attach elements -> pump frames -> shutdown);
+	// Shutdown detaches the element stack while everything is alive.
+	// Hosts override for custom boot/teardown or a custom DrawFrame
+	// (EditorApp); the DEFAULT DrawFrame below is the element pump.
+	virtual bool Initialize();
+	virtual void Shutdown();
+	virtual bool Run();
+	void MainLoop();
+	void UpdateDeltaTime();
 
-		// HOSTED boot (embedded render-service mode): an external host
-		// App (same process, same Vulkan context — volk's globals rule
-		// out a second instance) embeds this App's renderer INLINE. The
-		// hosted instance borrows the host's graphics members, then runs
-		// its own hosted FAKE swapchain (formats + a host-driven extent
-		// + the host's flight count — no images, no acquire/present),
-		// rendergraph and world. Call BEFORE Initialize(); the host then
-		// drives RenderInlineFrame(hostFb) INSIDE its own frame — the
-		// hosted renderer records into the host's command buffer on the
-		// host's flight rhythm (one submit per host frame, no
-		// device-idle boundaries) and its tonemap writes the renderer's
-		// own inline target, which the host composites.
-		// Returns false when this App is already initialized.
-		bool RequestHostedBoot(App& host, Extent2D targetExtent,
-			Format targetFormat);
-		bool IsHosted() const { return hostedBoot_; }
-		// LIVE VIEW: hand the host's OWN resolved world to the hosted
-		// renderer (call AFTER RequestHostedBoot, BEFORE Initialize).
-		// The hosted renderer then renders the host's live engine
-		// representation (references bound, edits applied) instead of
-		// importing a scene of its own — the hosted world is BORROWED:
-		// ~App releases it, the host owns and destroys it. The host
-		// must keep the world alive for the hosted renderer's lifetime.
-		void SetHostedBorrowedWorld(World* world) {
-			hostedBorrowedWorld_ = world;
-		}
-		// True when the hosted renderer runs on a borrowed world.
-		bool HostedWorldBorrowed() const { return worldBorrowed_; }
-		// IN-PLACE borrowed-world rebind (hosted live view): swap the
-		// borrowed pointer WITHOUT releasing the old one — the host
-		// owns BOTH worlds and must keep the old one alive across the
-		// in-flight frames (a retire stash). No state resets here; the
-		// derived renderer's rebind owns the world-derived rebuild.
-		void RebindBorrowedWorld(World* world) {
-			if (!hostedBoot_ || !worldBorrowed_ || !world)
-				return;
-			m_world.release(); // borrowed: never delete (the host owns it)
-			m_world.reset(world); // borrowed in spirit; ~App releases it
-			hostedBorrowedWorld_ = world;
-		}
+	// Window helpers (SDL3).
+	SDL_Window* GetWindow() const { return window; }
+	bool ShouldClose() const { return windowShouldClose_; }
+	void RequestClose() { windowShouldClose_ = true; }
+	void SetRelativeMouseMode(bool enabled);
+	bool GetRelativeMouseMode() const { return relativeMouseMode_; }
+	// Benchmark: auto-quit after N frames and report average frame time
+	// (`--bench N` in App/main.cpp). 0 = run interactively (default).
+	void SetFrameBudget(int n) { frameBudget_ = n; }
+	int GetFrameBudget() const { return frameBudget_; }
+	// True while the measured window runs (post warmup) — element-side
+	// bench accounting (WorldRenderer's [perf] phase split) keys on it.
+	bool BenchMeasuring() const { return frameBudget_ > 0 && benchWarmup_ >= 10; }
+	bool BenchFinalFrame() const { return frameBudget_ > 0 && benchFrames_ + 1 >= frameBudget_; }
 
-	protected:
+	// ------------------------------------------------------------------
+	// ELEMENT STACK (nvapp-style): renderers plug in as IAppElements.
+	// AddElement BEFORE Run(); Run attaches (onAttach) after Initialize,
+	// the default DrawFrame pump drives update/pre-render/render between
+	// the host's acquire and present, and Shutdown detaches (onDetach,
+	// reverse order) while the graphics members are still alive.
+	// Elements render into the host's swapchain image through the
+	// ElementFrame handed to onRender — never their own acquire/present
+	// (see Engine/App/Element.h for the full contract).
+	// ------------------------------------------------------------------
+	void AddElement(const std::shared_ptr<engine::IAppElement>& element);
+	// Safely free GPU resources: the fn runs after the frames in flight
+	// retire (the pump drains the submitting flight's queue right after
+	// its acquire fence wait) — safe against in-flight use.
+	void SubmitResourceFree(std::function<void()>&& func);
+	// Swapchain sync-owner controls (the element contract: elements never
+	// Recreate — they observe rebuilds through onResize). The requested
+	// present mode applies at the next frame's rebuild check.
+	void SetPresentMode(PresentMode mode) { m_presentMode = mode; }
+	PresentMode GetPresentMode() const { return m_presentMode; }
+	void RequestSwapchainRebuild() {
+		if (m_swapchain)
+			m_swapchain->SetFramebufferResized(true);
+	}
+	// Last acquire wait (ms): the element-side CPU/wait timing split
+	// (WorldRenderer's [perf] lines) reads the host's acquire idle.
+	double GetLastAcquireWaitMs() const { return m_lastAcquireWaitMs; }
+
+	// Optional ImGui event hook (set by scenes owning an ImGuiOverlay).
+	// Signature matches ImGui_ImplSDL3_ProcessEvent(const SDL_Event*).
+	using ImGuiEventFn = bool(*)(const void* sdlEvent);
+	void SetImGuiEventHook(ImGuiEventFn fn) { imguiEventHook_ = fn; }
+
+	// ---- Graphics-member access (elements + hosts): null before boot ----
+	ResourceManager* GetResourceManager() const { return m_context.get(); }
+	Swapchain* GetSwapchain() const { return m_swapchain.get(); }
+	RenderGraph* GetRendergraph() const { return m_rendergraph.get(); }
+	// Stall until the device drains (frame-boundary contract: teardown,
+	// readbacks, structural rebuilds).
+	void WaitForDeviceIdle();
+
+protected:
 #pragma region ===[ App / Core State ]===
-		float delta_time_s = .0f;
-		float time_since_start_s = .0f;
+	float delta_time_s = .0f;
+	float time_since_start_s = .0f;
 #pragma endregion
 
 #pragma region ===[ Graphics State ]===
-		// Graphics members live in App so they are destroyed BEFORE window.
-		// Linear process-owned (dtor-only deleter; never freed). Borrowed
-		// hosted pointers (m_context/m_world) are release()d, never destroyed.
-		mem::LinearPtr<ResourceManager> m_context;
-		mem::LinearPtr<Swapchain> m_swapchain;
-		mem::LinearPtr<RenderGraph> m_rendergraph;
-		mem::LinearPtr<World> m_world;
-		void WaitForDeviceIdle();
+	// Graphics members live in App so they are destroyed BEFORE window.
+	// Linear process-owned (dtor-only deleter; never freed). The CONTEXT
+	// + SWAPCHAIN are the frame-sync owners — elements borrow them
+	// through the ElementFrame / onAttach host accessors; the graph and
+	// world below are the HOST's own (EditorApp's scene world; the
+	// rendergraph its own passes record into). Elements own theirs.
+	mem::LinearPtr<ResourceManager> m_context;
+	mem::LinearPtr<Swapchain> m_swapchain;
+	mem::LinearPtr<RenderGraph> m_rendergraph;
+	mem::LinearPtr<World> m_world;
+#pragma endregion
+
+#pragma region ===[ Element Stack ]===
+	// Owned elements (nvapp-style shared ownership; detach at Shutdown).
+	// The default DrawFrame pump drives them; custom-frame hosts
+	// (EditorApp) drive their own flow and keep this stack empty.
+	std::vector<std::shared_ptr<engine::IAppElement>> m_elements;
+	// Per-flight deferred-free queues (SubmitResourceFree): the pump
+	// drains the acquired flight's queue after its fence wait.
+	std::vector<std::vector<std::function<void()>>> m_resourceFreeQueue;
+	uint32_t m_freeQueueRingCurrent = 0;
+	void ResetFreeQueue(uint32_t size);
+	void DrainFreeQueue(uint32_t flight);
+	PresentMode m_presentMode = PresentMode::Fifo; // requested; pump applies
+	double m_lastAcquireWaitMs = 0.0;
+	// DEFAULT element pump (overridable host frame): present-mode drift +
+	// resize rebuilds (elements observe via onResize), acquire ->
+	// onPreRender/onRender stack -> present, deferred frees.
+	virtual void DrawFrame();
 #pragma endregion
 
 #pragma region ===[ SDL3 / Window State ]===
-		SDL_Window* window = nullptr;
-		bool windowShouldClose_ = false;
-		bool relativeMouseMode_ = false;
-		int frameBudget_ = 0;   // benchmark frame budget (0 = interactive)
-		int benchFrames_ = 0;   // measured frames (post warmup)
-		int benchWarmup_ = 0;   // warmup frames skipped from stats
-		double benchAccum_ = 0.0;
-		// Hosted-boot state (RequestHostedBoot): borrowed graphics + a
-		// hosted FAKE swapchain (formats + driven extent + host flight
-		// count — no images). The host drives RenderInlineFrame inside
-		// its own frame; Run() is never called.
-		bool hostedBoot_ = false;
-		bool hostedInitialized_ = false;
-		App* hostedHost_ = nullptr;
-		Extent2D hostedExtent_{};
-		Format hostedFormat_ = Format::Undefined;
-		// Live-view borrowed world (SetHostedBorrowedWorld): the host's
-		// own world, rendered by the hosted renderer; released (never
-		// destroyed) on teardown.
-		World* hostedBorrowedWorld_ = nullptr;
-		bool worldBorrowed_ = false;
-		// borrowed-context marker (no-op deleter) — Shutdown/teardown
-		// must not destroy or quit anything the host owns.
-		bool contextBorrowed_ = false;
-		// Drains the SDL queue into m_input; returns false when quit requested.
-		// Also forwards events to the ImGui SDL3 backend when hooked.
-		bool PollEvents();
-		// Optional ImGui event hook (set by scenes owning an ImGuiOverlay).
-		// Signature matches ImGui_ImplSDL3_ProcessEvent(const SDL_Event*).
-		using ImGuiEventFn = bool(*)(const void* sdlEvent);
-		ImGuiEventFn imguiEventHook_ = nullptr;
+	SDL_Window* window = nullptr;
+	bool windowShouldClose_ = false;
+	bool relativeMouseMode_ = false;
+	int frameBudget_ = 0;   // benchmark frame budget (0 = interactive)
+	int benchFrames_ = 0;   // measured frames (post warmup)
+	int benchWarmup_ = 0;   // warmup frames skipped from stats
+	double benchAccum_ = 0.0;
+	// Drains the SDL queue into m_input; returns false when quit requested.
+	// Also forwards events to the ImGui SDL3 backend when hooked.
+	bool PollEvents();
+	ImGuiEventFn imguiEventHook_ = nullptr;
 #pragma endregion
 
 #pragma region Events
-		virtual void EarlyUpdate() {}
-		virtual void Update() {}
-		virtual void LateUpdate() {}
-		virtual void OnFramebufferResized(int width, int height);
-		// RAW SDL event tap (every event PollEvents pumps, after the
-		// ImGui hook, before the Input consume). Hosts that need non-
-		// input events — e.g. the editor's OS drag-and-drop
-		// (SDL_EVENT_DROP_FILE) — override this instead of duplicating
-		// the pump. Default: no-op.
-		virtual void OnSDLEvent(const SDL_Event&) {}
+	virtual void EarlyUpdate() {}
+	virtual void Update() {}
+	virtual void LateUpdate() {}
+	virtual void OnFramebufferResized(int width, int height);
+	// RAW SDL event tap (every event PollEvents pumps, after the
+	// ImGui hook, before the Input consume). Hosts that need non-
+	// input events — e.g. the editor's OS drag-and-drop
+	// (SDL_EVENT_DROP_FILE) — override this instead of duplicating
+	// the pump. Default: no-op.
+	virtual void OnSDLEvent(const SDL_Event&) {}
 #pragma endregion
 	};
 };

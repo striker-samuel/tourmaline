@@ -1,4 +1,4 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -43,7 +43,7 @@
 #include <vulkan/utility/vk_format_utils.h>
 
 #include "../Vulkan/detail/vulkan_impl.h"
-#include <Engine/Vulkan/vulkanApp.h>
+#include <Engine/App/app.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -2551,7 +2551,7 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 		// extension exists ONLY for the Reflex/PCL path, so enabling it
 		// without sl.common driving it (the editor never loads
 		// Streamline — see Editor's main.cpp) leaves the device's
-		// low-latency queue state initialized-but-undriven. The hosted
+		// low-latency queue state initialized-but-undrained. An editor
 		// editor's first heavy frame wedged the GPU past the Windows TDR
 		// window in exactly that state (bistro glass, VK_ERROR_DEVICE_LOST
 		// + nvlddmkm 4101 reset); with the extension gated off the same
@@ -8708,56 +8708,6 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Windo
 	CreateTimestampPools();
 }
 
-smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context,
-	VkExtent2D hostedExtent, Format colorFormat)
-	: ctx_(context)
-	, window_(nullptr)
-{
-	// HOSTED FAKE (see vulkan_impl.h): the editor's inline live view. No
-	// window, no surface, no swapchain, no images, no sync objects, no
-	// frame command pools — the host's own frame does ALL the rhythm work
-	// (acquire, command buffer, submit, present). This object is only the
-	// renderer's view of a swapchain: surface + depth formats, a
-	// host-driven extent (the editor viewport rect) and a flight count
-	// pinned to the host's (App::Initialize's hosted branch). The world
-	// pipeline records into the HOST's command buffer and its final
-	// tonemap writes a sub-rect of the HOST's swapchain image directly.
-	hosted_ = true;
-	depthFormat = fromVkFormat(findDepthFormat());
-	surfaceFormat = colorFormat;
-	extent_ = hostedExtent;
-	windowWidth = int(hostedExtent.width);
-	windowHeight = int(hostedExtent.height);
-	if (extent_.width == 0 || extent_.height == 0)
-		throw std::runtime_error("hosted swapchain extent is 0");
-	// Placeholder until the host's count is pinned (App::Initialize calls
-	// SetHostedFramesInFlight right after constructing this); every
-	// per-flight ring the renderer sizes off this stays in-bounds for the
-	// host's frame indices.
-	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, 3u);
-}
-
-void smvk::VulkanSwapchain::SetHostedExtent(VkExtent2D extent) {
-	// Hosted-fake only (see the hosted ctor): the editor drives the world
-	// render extent per frame. Clamp to something renderable — a rect can
-	// go degenerate mid-drag (minimized panels, splitters collapsing).
-	if (!hosted_)
-		return;
-	extent.width = std::clamp(extent.width, 64u, 16384u);
-	extent.height = std::clamp(extent.height, 64u, 16384u);
-	if (extent.width == extent_.width && extent.height == extent_.height)
-		return;
-	extent_ = extent;
-	windowWidth = int(extent.width);
-	windowHeight = int(extent.height);
-}
-
-void smvk::VulkanSwapchain::SetHostedFramesInFlight(uint32_t count) {
-	if (!hosted_ || count == 0)
-		return;
-	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, count);
-}
-
 void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
 	VkCommandPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -8814,11 +8764,6 @@ void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
 }
 
 void smvk::VulkanSwapchain::Recreate() {
-	// Hosted fake: nothing to recreate — no surface, no images. The
-	// extent is host-driven (SetHostedExtent) and every renderer target
-	// resizes in place through its own Ensure() keys.
-	if (hosted_)
-		return;
 	// No new sync objects. Should investigate, can iamge# change? on OOD
 	static uint64_t recreateCount = 0;
 	fprintf(stderr, "[swapchain] Recreate #%llu\n", (unsigned long long)++recreateCount);
@@ -9377,13 +9322,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	uint32_t imageIndex;
 	VkResult acquireResult = VK_SUCCESS;
-	if (hosted_) {
-		// Hosted: one image, no acquire — the timeline wait above is
-		// the real frame gate (the compositor's device-idle
-		// boundaries serialize us against the host's frames).
-		imageIndex = 0;
-	}
-	else {
+	{
 		acquireResult = vkAcquireNextImageKHR(
 			device_,
 			vk_swapchain_,
@@ -9468,14 +9407,11 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// (G2) records here. Single-submit frames use commandBuffer as before.
 	VkCommandBuffer tailCmd = (fb.splitCommandBuffer != VK_NULL_HANDLE)
 		? fb.splitCommandBuffer : fb.commandBuffer;
-	// Hosted: no PRESENT_SRC — hand the target to the external
-	// compositor as a sampled image (SHADER_READ).
 	ImageBarrier(
 		tailCmd,
 		GetCurrentImage(),
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		hosted_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		{
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.baseMipLevel = 0,
@@ -9542,19 +9478,13 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			++waitCount;
 		}
 	}
-	else if (!hosted_) {
-		// Hosted mode: nothing signals the acquire semaphore (no
-		// vkAcquireNextImageKHR) — waiting on it would deadlock.
+	else {
 		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
 		++waitCount;
 		if (timelineValue_ != 0) {
 			waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timelineSemaphore_, timelineValue_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
 			++waitCount;
 		}
-	}
-	else if (timelineValue_ != 0) {
-		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timelineSemaphore_, timelineValue_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
-		++waitCount;
 	}
 	if (uploadTp.valid()) {
 		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, uploadTp.semaphore, uploadTp.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
@@ -9585,59 +9515,13 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	signalInfos[1].deviceIndex = 0;
 	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, tailCmd, 0 };
-	// HOSTED submits retire through the timeline only: the binary
-	// renderFinished semaphore has no present to wait on it, and
-	// signaling it here would BOTH leave the timeline value recorded
-	// below unsignaled (every later waiter — transfer batches via
-	// m_lastGraphics, the next hosted frame's acquire/submit — wedges
-	// forever on it) AND illegally re-signal the binary on the next
-	// hosted frame. So the hosted signal array is just the timeline.
-	VkSemaphoreSubmitInfo* signalArray = signalInfos;
-	uint32_t signalCount = 2;
-	if (hosted_) {
-		signalArray = &signalInfos[1];
-		signalCount = 1;
-	}
 	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo,
-		signalCount, signalArray };
+		2, signalInfos };
 	// PCL latency markers (no-ops unless DlssBeginFrame opened a token and
 	// the PCL plugin is loaded): CPU sim work ends here, the render
-	// submit starts. Covers all hosts (app + editor); hosted frames skip
-	// only the present pair below (no vkQueuePresentKHR there).
+	// submit starts.
 	DlssPclMarker(PclMarker::SimulationEnd);
 	DlssPclMarker(PclMarker::RenderSubmitStart);
-	if (hosted_) {
-		// HOSTED: submit + retire, no present. The binary
-		// renderFinished semaphore is NOT signaled (nothing waits it,
-		// and a binary semaphore can only signal once — re-signaling
-		// without a wait is invalid). The compositor's device-idle
-		// boundary retires this submit before the target is read.
-		std::mutex& mg = GetQueueMutex(graphicsQueue_);
-		std::lock_guard<std::mutex> lock(mg);
-		if (std::getenv("VULKANTOY_HOSTED_TRACE")) {
-			std::fprintf(stderr,
-				"[HOSTED] tail submit (waits=%u signal=%llu split=%d)\n",
-				waitCount, (unsigned long long)signalValue,
-				fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
-			for (uint32_t w = 0; w < waitCount; ++w)
-				std::fprintf(stderr,
-					"[HOSTED]   wait[%u] sem=0x%llx value=%llu (upload=%d)\n",
-					w, (unsigned long long)(uintptr_t)waitInfos[w].semaphore,
-					(unsigned long long)waitInfos[w].value,
-					uploadTp.valid()
-						&& waitInfos[w].semaphore == uploadTp.semaphore
-						&& waitInfos[w].value == uploadTp.value ? 1 : 0);
-			std::fflush(stderr);
-		}
-		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
-		DlssPclMarker(PclMarker::RenderSubmitEnd);
-		frameTimelineValues_[currentFrame_] = signalValue;
-		imageTimelineValues_[currentImageIndex_] = signalValue;
-		ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
-		AdvanceFrame();
-		DlssEndFrame();
-		return;
-	}
 	{
 		// Single-threaded: all queue ops on render thread, but use per-queue mutex for correctness when transferQueue is distinct
 		std::mutex& mg = GetQueueMutex(graphicsQueue_);
@@ -9646,11 +9530,6 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		std::unique_lock<std::mutex> lockP(mp, std::defer_lock);
 		if (&mg == &mp) {
 			lockG.lock();
-			if (std::getenv("VULKANTOY_HOSTED_TRACE"))
-				std::fprintf(stderr,
-					"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
-					waitCount, (unsigned long long)signalValue,
-					fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
 			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 			DlssPclMarker(PclMarker::RenderSubmitEnd);
 			DlssPclMarker(PclMarker::PresentStart);
@@ -9699,15 +9578,10 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		DlssEndFrame();
 		return;
 	}
-		else {
-			{
-				std::lock_guard<std::mutex> lock(mg);
-				if (std::getenv("VULKANTOY_HOSTED_TRACE"))
-					std::fprintf(stderr,
-						"[WIN] tail submit (waits=%u signal=%llu split=%d)\n",
-						waitCount, (unsigned long long)signalValue,
-						fb.splitCommandBuffer != VK_NULL_HANDLE ? 1 : 0);
-				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
+	else {
+		{
+			std::lock_guard<std::mutex> lock(mg);
+			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 				DlssPclMarker(PclMarker::RenderSubmitEnd);
 				DlssPclMarker(PclMarker::PresentStart);
 				// Same publish-on-success as the single-mutex path above.
@@ -9730,11 +9604,9 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				presentInfo.pImageIndices = &currentImageIndex_;
 				const auto presentStart = std::chrono::steady_clock::now();
 				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-				lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
-					std::chrono::steady_clock::now() - presentStart).count();
-				if (std::getenv("VULKANTOY_HOSTED_TRACE"))
-					std::fprintf(stderr, "[WIN] presented rc=%d\n", int(result));
-				if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+			lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - presentStart).count();
+			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 					framebufferResized) {
 					framebufferResized = false;
 					Recreate();
@@ -10600,66 +10472,7 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 	return vctx.imageViews_.get(view->resolvedViewHandle)->vkView;
 }
 
-bool smvk::App::RequestHostedBoot(App& host, Extent2D targetExtent,
-	Format targetFormat) {
-	if (hostedInitialized_ || m_context)
-		return false; // already booted (windowed or hosted)
-	hostedBoot_ = true;
-	hostedHost_ = &host;
-	hostedExtent_ = targetExtent;
-	hostedFormat_ = targetFormat;
-	return true;
-}
-
 bool smvk::App::Initialize() {
-
-	if (hostedBoot_) {
-		// HOSTED BOOT (embedded render-service mode — see app.h): the
-		// host App owns the process's single Vulkan context (volk's
-		// globals forbid a second instance); borrow it and run our own
-		// hosted FAKE swapchain (formats + driven extent + host flight
-		// count — no images, no acquire/present) + rendergraph + world.
-		// No window, no SDL, no Streamline — the host owns all
-		// process-global state.
-		if (!hostedHost_ || !hostedHost_->m_context)
-			return false;
-		if (hostedExtent_.width == 0 || hostedExtent_.height == 0)
-			return false;
-		// Borrowed context: points at the host's manager without owning
-		// it — ~App RELEASES it (contextBorrowed_) so the default
-		// deleter never runs on the host's object.
-		m_context.reset(hostedHost_->m_context.get());
-		contextBorrowed_ = true;
-		m_swapchain = smvk::mem::MakeProcess<Swapchain>(*m_context,
-			hostedExtent_, hostedFormat_);
-		// HOSTED FAKE (see VulkanSwapchain's hosted ctor): pin its flight
-		// count to the host's — the hosted renderer sizes every per-flight
-		// ring off it and its frames now run on the host's flight indices
-		// (RenderInlineFrame passes the host fb through).
-		if (hostedHost_->m_swapchain)
-			m_swapchain->SetHostedFramesInFlight(
-				hostedHost_->m_swapchain->framesInFlight());
-		m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
-		// LIVE-VIEW borrowed world: the host (editor) may hand over its
-		// OWN resolved world — the hosted renderer then renders the
-		// host's live engine representation (references bound, edits
-		// applied) instead of importing a scene of its own. ~App
-		// RELEASES it (worldBorrowed_) — the host owns and destroys it.
-		if (hostedBorrowedWorld_) {
-			m_world.reset(hostedBorrowedWorld_);
-			worldBorrowed_ = true;
-		}
-		else {
-			m_world = smvk::mem::MakeProcess<World>();
-		}
-		hostedInitialized_ = true;
-		std::cerr << "[App] hosted boot: " << hostedExtent_.width << "x"
-			<< hostedExtent_.height << " inline fake swapchain (formats + "
-			"driven extent) on the host's context"
-			<< (worldBorrowed_ ? " (live borrowed world)\n" : "\n");
-		return true;
-	}
-
 	// NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
 	// runs before any Vulkan call and volk is pointed at the interposer's
 	// vkGetInstanceProcAddr, so instance/device/swapchain/acquire/present
@@ -10759,38 +10572,37 @@ void smvk::App::Shutdown() {
 	// be destroyed after the Vulkan context (after Run returns, during
 	// destructor unwinding), which is safe only if we waited here first.
 	WaitForDeviceIdle();
+	// Detach the element stack FIRST (reverse attach order), while every
+	// member is still alive: elements release their Holders/pipelines
+	// against the live context here, before any teardown below.
+	for (auto it = m_elements.rbegin(); it != m_elements.rend(); ++it)
+		if (*it)
+			(*it)->onDetach();
+	m_elements.clear();
 	// Derived Shutdown (TestApp::Shutdown) will run first via virtual
 	// dispatch then this base Shutdown. TestApp should release its Holders
 	// that reference m_context before we reset the context below.
 	// We do not reset m_* here to allow TestApp::Shutdown to still use
-	// m_context if needed; actual destruction happens in ~VulkanApp via
-	// member order (TestApp members -> VulkanApp members -> IApp window).
+	// m_context if needed; actual destruction happens in ~App via\r
+	// member order (derived members -> App members -> window).
 	// Streamline teardown: slShutdown must run before the VkInstance /
 	// VkDevice are destroyed (~App tears down m_context). The interposer
 	// DLL itself stays mapped until ~VulkanCore unloads it (DlssRelease)
 	// because volk/VMA still call through its proxies during teardown.
-	// HOSTED: no Streamline was started and the HOST owns the process
-	// globals — nothing to quit here.
-	if (!contextBorrowed_)
-		DlssShutdown();
+	DlssShutdown();
 }
 
 smvk::App::~App()
 {
+	// The pasted-pattern contract: Shutdown detached + destroyed the
+	// element stack while the graphics members were alive. Anything
+	// left here missed Shutdown (its Holders would release against a
+	// dead context) — the debug assert catches the forgotten call.
+	assert(m_elements.empty());
 	WaitForDeviceIdle();
 	m_audio.Shutdown();
 	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
 	// (App holds them directly; window is last member so destroyed after Vulkan).
-	// HOSTED: the context is BORROWED — release it (the host owns and
-	// destroys it), never touch the host's window/SDL/Streamline state.
-	if (contextBorrowed_) {
-		m_context.release();
-		// The LIVE-VIEW world is borrowed too: release (the host's
-		// EditorApp owns it and destroys it with its own state).
-		if (worldBorrowed_)
-			m_world.release();
-		return;
-	}
 	if (window) {
 		SDL_DestroyWindow(window);
 		window = nullptr;
@@ -11480,11 +11292,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			std::fprintf(stderr, "[AsyncCompute] split disabled (VULKANTOY_ASYNC_COMPUTE=0): async passes record inline on the graphics queue\n");
 		}
 	}
-	else if (hasDedicatedCompute && anyAsync && fb.swapchain && !fb.inlineHostFrame)
-		// INLINE HOSTED FRAME: the split's mid-recording G1 submit would
-		// cut the HOST's command buffer in half (the editor still has
-		// passes to record after this graph) — async passes emulate on
-		// the graphics queue instead (see Framebuffer::inlineHostFrame).
+	else if (hasDedicatedCompute && anyAsync && fb.swapchain)
 		vkSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
 	if (vkSwap && !vkSwap->EnsureAsyncSplit(flight)) {
 		// No dedicated compute after all (or resource failure): emulate.
@@ -11660,11 +11468,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			g2cVal = ++vkSwap->asyncG2CValue_[flight];
 			VkSemaphoreSubmitInfo g1wait[3]{};
 			uint32_t g1WaitCount = 0;
-			// HOSTED swapchain: no acquire happens (offscreen target), so
-			// the acquire semaphore is never signaled — waiting on it
-			// deadlocks the queue. The timeline wait below (previous
-			// frame) covers cross-frame ordering instead.
-			if (!vkSwap->hosted_) {
+			{
 				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 				g1wait[g1WaitCount].semaphore = vkSwap->imageAvailableSemaphores_[flight];
 				g1wait[g1WaitCount].value = 0;

@@ -1,4 +1,4 @@
-// Editor environment (IBL) settings: viewport lighting lives in the
+﻿// Editor environment (IBL) settings: viewport lighting lives in the
 // SCENE (smvk::SceneEnv blocks — the scene default, plus per-node
 // ENVIRONMENT NODES; skybox + EV/volumetrics authoring; position = node
 // translate, size = node scale; convex-volume rendering comes later).
@@ -50,10 +50,6 @@ void EditorApp::MarkEnvNode(uint32_t node) {
 		Log("Node " + std::to_string(node) + " marked as Environment.");
 	}
 	ResolveSceneEnv();
-	// The zone SET changed: re-derive the hosted zone map now (marking
-	// mid-session bypasses the command flow's refresh).
-	if (m_wysiwyg)
-		m_wysiwyg->RefreshEnvZones();
 }
 
 void EditorApp::UnmarkEnvNode(uint32_t node) {
@@ -61,10 +57,7 @@ void EditorApp::UnmarkEnvNode(uint32_t node) {
 		return;
 	if (m_world->scene.envForNode.erase(node) > 0 && m_envCurrent == node)
 		m_envCurrent = UINT32_MAX; // fall back to the editor default
-	ResolveSceneEnv();
-	if (m_wysiwyg)
-		m_wysiwyg->RefreshEnvZones(); // see MarkEnvNode
-}
+	ResolveSceneEnv();}
 
 void EditorApp::ResolveSceneEnv() {
 	// Resolve the current selection (default block or selected node
@@ -261,8 +254,7 @@ void EditorApp::DrawEnvPanel() {
 	// Fog quality tiers (see SceneEnv): the combo picks what the App
 	// renders — the volumetric raymarch (with the analytic fallback when
 	// the pass cannot run), the cheap analytic exp2 fog, or no fog at
-	// all. Tiered rows below (the editor viewport previews none of them;
-	// the hosted live view does).
+	// all. Tiered rows below (the editor viewport previews none of them).
 	{
 		const char* tiers[3] = { "Off", "Analytic (exp2, fallback)",
 			"Volumetric (raymarched GI-lit)" };
@@ -315,14 +307,14 @@ void EditorApp::DrawEnvPanel() {
 				"App): volumetric renders the raymarched GI-lit fog (the "
 				"App falls back to the analytic tier when the pass cannot "
 				"run); analytic is the cheap exp2 distance fog; off "
-				"renders no fog at all. The editor viewport previews "
-				"none of them — the hosted live view renders them.");
+				"renders\ no\ fog\ at\ all\.\ The\ editor\ viewport\ previews\ "
+				"none of them — the App renders them.");
 	}
 	// ---- postfx look (bloom + tonemap + exposure + AO + SSR + misc) ----
 	// The SAME settings the App's panels expose (its passes seed from
 	// these at scene load; saved forward tour -> pak -> App). Rows write
-	// the scene-backed source; ResolveSceneEnv + the live push at the
-	// panel tail keep the hosted viewport on the authored look per tweak.
+	// the scene-backed source; ResolveSceneEnv at the
+	// panel tail keeps the scene on the authored look per tweak.
 	ImGui::Separator();
 	ImGui::Text("Postfx look (bloom / tonemap / exposure / AO / SSR)");
 	ImGui::TextDisabled("Authored look — every row saves forward into the "
@@ -435,98 +427,8 @@ void EditorApp::DrawEnvPanel() {
 	}
 	// Every slider/button above writes the scene-backed source (default
 	// block or selected node block) — resolve into the rendered look.
-	// Cheap (one struct copy + flag); keeps the viewport live per tweak.
+	// Cheap (one struct copy + flag); keeps the scene live per tweak.
 	ResolveSceneEnv();
-	// Live look: the hosted view seeds its passes at load — push the
-	// CURRENT env every panel tick so the rows above retouch it without
-	// a re-cook (the tour still saves forward for the pak; the frame env
-	// already rebuilds per frame). Volumetric + postfx alike.
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->PushVolumetricEnv(m_world->scene.environment);
-		m_wysiwyg->PushPostfxEnv(m_world->scene.environment);
-		// Env-zone map: hash-gated re-derive (defs tier for look edits,
-		// re-rasterize when zone coverage changed).
-		m_wysiwyg->RefreshEnvZones();
-	}
-}
-
-void EditorApp::DrawTerrainFieldPage() {
-	// TERRAIN FIELD page (the hosted renderer's default world dressing —
-	// see Rendergraph/terrain.h): renderer state, NOT scene content —
-	// never cooked, never in the tour, no undo (session state like the
-	// editor cameras). The draft (m_terrainDraft, seeded once from the
-	// live desc) edits locally; Rebuild applies it to the renderer
-	// (Destroy + Build + staging flush); Delete removes the field entirely
-	// (the outliner row follows TerrainValid — a rebuild from THIS page
-	// restores it).
-	if (!m_wysiwyg) {
-		ImGui::TextDisabled("No live view - the terrain field lives on the "
-			"hosted renderer.");
-		m_terrainFocus = false;
-		return;
-	}
-	ImGui::Text("Terrain field");
-	ImGui::TextDisabled(
-		"Hosted-renderer world dressing (non-DAG): renderer state, never "
-		"cooked. Deterministic: same settings -> identical field.");
-	if (!m_wysiwyg->TerrainValid()) {
-		ImGui::TextDisabled("No terrain field (deleted). Rebuild below to "
-			"restore it from the draft.");
-	}
-	smvk::terrain::TerrainDesc& d = m_terrainDraft;
-	{
-		float worldSize = d.worldSize;
-		if (ImGui::SliderFloat("World size (m)", &worldSize, 100.0f, 16000.0f,
-				"%.0f"))
-			d.worldSize = worldSize - std::fmod(worldSize, 100.0f);
-		float tileSize = d.tileSize;
-		if (ImGui::SliderFloat("Tile size (m)", &tileSize, 25.0f, 500.0f,
-				"%.0f"))
-			d.tileSize = std::max(25.0f, tileSize - std::fmod(tileSize, 25.0f));
-		int res = int(d.tileRes);
-		if (ImGui::SliderInt("Tile resolution (quads/edge)", &res, 4, 64))
-			d.tileRes = uint32_t(std::clamp(res, 4, 64));
-		ImGui::SliderFloat("Height scale (m)", &d.heightScale, 1.0f, 400.0f,
-			"%.0f");
-		ImGui::SliderFloat("Noise frequency (1/m)", &d.noiseFreq, 0.0001f,
-			0.01f, "%.5f");
-		ImGui::SliderFloat("LOD distance (m)", &d.lodDistance, 100.0f, 4000.0f,
-			"%.0f");
-		// Seed as hex (deterministic identity): typed back as uint64.
-		{
-			char seedBuf[32];
-			std::snprintf(seedBuf, sizeof(seedBuf), "%llx",
-				unsigned long long(d.seed));
-			if (ImGui::InputText("Seed (hex)", seedBuf, sizeof(seedBuf),
-					ImGuiInputTextFlags_CharsHexadecimal
-					| ImGuiInputTextFlags_EnterReturnsTrue))
-				d.seed = strtoull(seedBuf, nullptr, 16);
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Same seed + settings -> the identical field "
-				"(deterministic two-octave value noise).");
-	}
-	const uint32_t tiles = uint32_t(std::max(1.0f,
-		std::round(d.worldSize / std::max(d.tileSize, 1.0f))));
-	ImGui::TextDisabled("%u x %u tiles, %u quads/edge, %u verts total",
-		tiles, tiles, d.tileRes,
-		tiles * tiles * (d.tileRes + 1u) * (d.tileRes + 1u));
-	if (ImGui::Button("Rebuild"))
-		m_wysiwyg->RebuildTerrain(d);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Applies the settings above (rebuilds the whole "
-			"vertex stream).");
-	ImGui::SameLine();
-	if (ImGui::Button("Delete"))
-		m_wysiwyg->DestroyTerrain();
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Removes the field from the renderer (the outliner "
-			"row goes with it; Rebuild restores it from the draft).");
-	if (m_wysiwyg->TerrainValid()) {
-		bool on = m_wysiwyg->TerrainEnabled();
-		if (ImGui::Checkbox("Enabled", &on))
-			m_wysiwyg->SetTerrainEnabled(on);
-	}
 }
 
 void EditorApp::DrawWorldPanel() {
@@ -603,12 +505,6 @@ void EditorApp::DrawWorldPanel() {
 	// camera nodes (outliner [camera]) carry their own lens + pose and
 	// are bound per viewport from the viewport chips.
 	DrawCameraSection();
-	// ---- renderer settings (the hosted live view) -----------------------
-	// The WorldRenderer's runtime toggles (the App owns the same controls
-	// through its debug panel): strip the look down for authoring —
-	// bloom/postfx off keep the viewport reference-sharp. Only with a
-	// live hosted view; the pass SHAPE stays the full pipeline (Configure
-	// owns it), these flip the runtime gates.
 }
 
 void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {

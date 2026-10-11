@@ -1,4 +1,4 @@
-// camera_tests: CPU-side regression tests for the finite reversed-Z main
+﻿// camera_tests: CPU-side regression tests for the finite reversed-Z main
 // view projection + the shared degenerate-lookAt resolution
 // (Engine/Camera/camera.h). No GPU required: pure matrix math.
 //
@@ -99,7 +99,7 @@ void TestSafeLookAt() {
 	// The SHARED degenerate-lookAt resolution (ResolveLookAtUp/SafeLookAt):
 	// every camera framing that can look straight down/up resolves through
 	// it, so all consumers of one (eye, target) pair agree on the screen
-	// basis (the editor's overlay camera + the hosted drive paths picking
+	// basis (the editor's overlay camera + the drive paths picking
 	// their own fallbacks rotated the editor's wire boxes 90 degrees
 	// against the scene in the straight-down top view).
 	const glm::vec3 upPref(0.0f, 1.0f, 0.0f);
@@ -150,7 +150,7 @@ void TestSafeLookAt() {
 		Check(MatMaxDiff(a, b) < 1e-4f,
 			"camera.safelookat.topcam-equals-exact-straight-down");
 	}
-	// The hosted drive paths feed the resolved up into the POSITIONER's
+	// The camera drive paths feed the resolved up into the POSITIONER's
 	// lookAt (quat orientation -> mat4_cast view): it must agree with the
 	// mat4 SafeLookAt for the same (eye, target, resolved up) — straight
 	// down AND a normal framing.

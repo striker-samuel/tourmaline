@@ -1,4 +1,4 @@
-// Editor CRUD command stack: execute/do/undo/redo + .tour persistence.
+﻿// Editor CRUD command stack: execute/do/undo/redo + .tour persistence.
 //
 // Live commands use WORLD-space ids; the .tour file uses CLUSTER-space ids
 // (import-deterministic). Translation happens only at the save/load
@@ -2362,16 +2362,6 @@ void EditorApp::Do(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	// Any edit can change the light set the hosted view renders
-	// (creates/deletes/moves/attr edits): refresh the hosted cooked
-	// pack now — the bind-time build runs once per load/rebind and
-	// would otherwise leave fresh lights dark until the next rebind.
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->RebuildCookedLights();
-		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
-		// - look-only edits cost the defs tier, coverage edits re-rasterize.
-		m_wysiwyg->RefreshEnvZones();
-	}
 	AutosaveTour();
 }
 
@@ -2393,12 +2383,6 @@ void EditorApp::PushDone(EditCmd c) {
 		m_history.erase(m_history.begin());
 		--m_historyCursor;
 	}
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->RebuildCookedLights();
-		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
-		// - look-only edits cost the defs tier, coverage edits re-rasterize.
-		m_wysiwyg->RefreshEnvZones();
-	} // see Do() above
 	AutosaveTour();
 }
 
@@ -2408,12 +2392,6 @@ bool EditorApp::Undo() {
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
 	ReassertWideOverrides(m_history[m_historyCursor].node);
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->RebuildCookedLights();
-		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
-		// - look-only edits cost the defs tier, coverage edits re-rasterize.
-		m_wysiwyg->RefreshEnvZones();
-	} // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -2433,12 +2411,6 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->RebuildCookedLights();
-		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
-		// - look-only edits cost the defs tier, coverage edits re-rasterize.
-		m_wysiwyg->RefreshEnvZones();
-	} // see Do() above
 	AutosaveTour();
 	return true;
 }
@@ -4647,15 +4619,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// editor state matches the parsed doc exactly.
 	if (!doc.references.empty())
 		m_references = doc.references;
-	// The replay rebuilt the world in place (same object — no rebind):
-	// refresh the hosted cooked pack now, or reloaded lights stay dark
-	// until the next command.
-	if (m_wysiwyg && m_world) {
-		m_wysiwyg->RebuildCookedLights();
-		// Env-zone map: hash-gated re-derive (see RebuildEnvZoneMap)
-		// - look-only edits cost the defs tier, coverage edits re-rasterize.
-		m_wysiwyg->RefreshEnvZones();
-	}
+	// The replay rebuilt the world in place (same object).
 	return true;
 }
 

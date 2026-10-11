@@ -1,4 +1,4 @@
-// Portions Copyright (c) 2022 Packt
+﻿// Portions Copyright (c) 2022 Packt
 // Modified by Samuel Martin, 2026
 // Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
 
@@ -412,8 +412,7 @@ struct Scene {
 	// with it. Deliberately NOT dithered: the debug-view FSs (they show
 	// the authored geometry solid), the motion-vector legs (the TAA
 	// input is depth-derived; revisit if the fade ever smears under
-	// T2x), and the editor's own direct passes (the hosted live view
-	// owns the WYSIWYG image). The band is fixed meters
+	// T2x), and the editor's own direct passes. The band is fixed meters
 	// (kDitherCloseup* below): fade spans the camera distance [hide,
 	// solid] mapped keep 0..1.
 	// Empty or size-mismatched == off. Carried through merge/serialize

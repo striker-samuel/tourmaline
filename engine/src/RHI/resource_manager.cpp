@@ -20,11 +20,7 @@ bool DebugImageDumpArmed() {
     static const bool armed = [] {
         const char* ssr = std::getenv("VULKANTOY_SSR_DUMP");
         const char* evsm = std::getenv("VULKANTOY_EVSM_DUMP");
-        // Editor live-view diagnostic dump (VULKANTOY_WYSIWYG_DUMP):
-        // arms TransferSrc on the hosted target so the readback works.
-        const char* wysiwyg = std::getenv("VULKANTOY_WYSIWYG_DUMP");
-        return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0)
-            || (wysiwyg && std::atoi(wysiwyg) >= 0);
+        return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0);
     }();
     return armed;
 }

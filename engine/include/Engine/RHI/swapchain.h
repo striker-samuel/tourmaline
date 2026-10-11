@@ -25,23 +25,11 @@ struct Framebuffer {
     // construction (same-queue submissions may overlap per spec).
     void* splitWaitSemaphore2Opaque = nullptr;
     uint64_t splitWaitValue2 = 0;
-    // INLINE HOSTED FRAME (the editor's live view): the frame's command
-    // buffer belongs to the HOST swapchain and this swapchain is the
-    // hosted renderer's fake (formats + driven extent, no images). Set by
-    // WorldRenderer::RenderInlineFrame. RenderGraph::Execute refuses the
-    // async-compute split for such frames (the split ends + submits G1
-    // mid-recording, which would cut the host's command buffer in half).
-    bool inlineHostFrame = false;
 };
 
 class Swapchain {
 public:
     Swapchain(ResourceManager& ctx, SDL_Window* window);
-    // HOSTED render target: an offscreen color image instead of a
-    // window surface (external composition — see VulkanSwapchain's
-    // hosted ctor). Acquire/submit run unchanged; "present" hands the
-    // image to the compositor (SHADER_READ) and never presents.
-    Swapchain(ResourceManager& ctx, Extent2D hostedExtent, Format colorFormat);
     ~Swapchain();
 
     Swapchain(const Swapchain&) = delete;
@@ -87,19 +75,6 @@ public:
     // stage reports false until it has run + retired at least once.
     // False when the device lacks cross-queue timestamps.
     bool GetGpuStageTimings(double* outMs, bool* outValid, uint32_t count) const;
-    // Hosted-target view (stable handle, registered like a swapchain
-    // view) for external bindless composition. Empty when windowed.
-    ImageViewHandle HostedViewHandle() const;
-    // The hosted target IMAGE (readback/dump paths).
-    ImageHandle HostedImageHandle() const;
-    // INLINE HOSTED FRAME (the editor live view): the hosted swapchain is
-    // a FAKE — formats + a driven extent + the host's flight count; it
-    // owns no images and never acquires/presents. The host's editor frame
-    // drives the world render extent per frame (viewport-rect sized);
-    // the renderer's own Ensure() machinery resizes every render target
-    // in place — no relaunch, no device-idle boundaries.
-    void SetHostedExtent(Extent2D extent);
-    void SetHostedFramesInFlight(uint32_t count);
     // Last vkQueuePresentKHR wall time (ms): FIFO VSync throttle, i.e.
     // wait rather than CPU work.
     double GetPresentWaitMs() const;

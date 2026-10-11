@@ -108,9 +108,8 @@ operational conditions like pool exhaustion.
   the diagnostic (`vulkantoy_fatal.log` + stderr). Debug builds also keep the
   pools' own `assert`s — strict is the RELEASE-visible form.
 - **Work is NOT yet done across the whole project**: the gate currently lives
-  at the live-view churn sites (EnsureInlineTarget/EnsureMViewTargets in
-  WorldRenderer — the demonstrated exhaustion points; extent drift mints ~7
-  fresh bindless slots per drag frame). The other creation sites still handle
+  at the element churn sites in WorldRenderer (the demonstrated exhaustion
+  points). The other creation sites still handle
   gracefully without the strict report. Spreading the gate is in-progress
   work; **using the pattern in new code is OK** (and expected at any new
   exhaustion-prone creation site).

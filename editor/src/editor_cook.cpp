@@ -1,4 +1,4 @@
-// Cook flow: save the .tour command log, then run PakCooker --tour on a
+﻿// Cook flow: save the .tour command log, then run PakCooker --tour on a
 // worker thread (full bake support; the cooker replays the tour onto a
 // fresh import — deterministic source + tour in, pak out).
 
@@ -41,49 +41,6 @@ std::string QuoteArg(const std::string& s) {
 	for (char c : s)
 		o += (c == '"') ? "\\\"" : std::string(1, c);
 	return o + "\"";
-}
-
-// Host-side whole-file read (binary). The editor's bake-content injection
-// reads the fresh GiBaker/cook outputs directly from disk and pushes the
-// bytes into the world's bake-payload channel — never through the VFS.
-std::optional<std::vector<uint8_t>> ReadHostFileBytes(
-	const std::string& path) {
-	std::ifstream f(path, std::ios::binary | std::ios::ate);
-	if (!f)
-		return std::nullopt;
-	const auto end = f.tellg();
-	if (end == std::ifstream::pos_type(-1))
-		return std::nullopt;
-	f.seekg(0);
-	std::vector<uint8_t> bytes(static_cast<size_t>(end));
-	if (!bytes.empty()
-		&& !f.read(reinterpret_cast<char*>(bytes.data()),
-			static_cast<std::streamsize>(bytes.size())))
-		return std::nullopt;
-	return bytes;
-}
-
-// Line-split helper shared by the reg/cv manifest injections (rows are
-// bare VFS paths, optionally "<guid> <path>" legacy — SplitManifestRow).
-std::vector<std::string> ManifestRowLines(
-	const std::vector<uint8_t>& bytes) {
-	std::vector<std::string> out;
-	std::string cur;
-	for (char c : bytes) {
-		if (c == '\n' || c == '\r') {
-			const std::string p = smvk::bake::SplitManifestRow(cur);
-			if (!p.empty())
-				out.push_back(p);
-			cur.clear();
-		}
-		else {
-			cur.push_back(c);
-		}
-	}
-	const std::string p = smvk::bake::SplitManifestRow(cur);
-	if (!p.empty())
-		out.push_back(p);
-	return out;
 }
 } // namespace
 
@@ -156,7 +113,7 @@ void EditorApp::CookToPak(bool quickBakes) {
 	// resolved against the EDITOR CWD (the build dir) — every bake
 	// sidecar the cook stages (gi/*.sggi + *.cvol, textures/cubemaps/
 	// <base>[_N].ktx2 + the .cubemanifest) landed next to the exe
-	// instead of the project, and the hosted view's project-root VFS
+	// instead of the project (and the project-relative resolution below
 	// never saw them (the "cubemap probe preview not drawn in the
 	// editor" report — the probes bake fine, they just surface in the
 	// wrong tree). A RELATIVE marker (at 0) resolves against the
@@ -461,21 +418,9 @@ void EditorApp::PollCookProcess() {
 		: "Cook FAILED (detail above; Console keeps the full log).");
 	if (r.ok) {
 		RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
-		// The cook's GiBaker-from-0 stage wrote fresh GI sidecars: re-resolve
-		// the bake GUIDs + rebind the live view IN PLACE so the editor
-		// renders the fresh GI immediately (the same flow as Bake GI's
-		// completion — the loaders re-run over the same world).
-		RefreshLiveViewGiBindings();
-		if (m_wysiwyg && m_world) {
-			m_wysiwyg->SetSceneId(SceneIdForHost());
-			m_wysiwyg->SetProjectRoot(m_projectRoot);
-			m_wysiwyg->RebindWorld(m_world.get());
-			Log("Cook: live view rebound to the fresh GI sidecars.");
-		}
 	}
 	// The cook is the PRODUCT step (a pak for the game/App — Run in
-	// App loads it): it never touches the viewport. The LIVE view
-	// (the hosted renderer over the editor's own world) is unaffected.
+	// App loads it): it never touches the viewport.
 	// The cook dialog shows its own progress; close it on finish
 	// (DrawCookDialog consumes the flag inside the begin block).
 	m_cookJustFinished = true;
@@ -635,106 +580,6 @@ void EditorApp::BakeGI() {
 		});
 }
 
-// Live-view GI bindings (see the stable bake paths): resolves the
-// current scene's STABLE bake paths (project content first, bundled
-// content second, mirroring the hosted VFS priority — a readable file
-// marks the bake) and registers their stems on the editor world's
-// clusters, so the hosted view's binding-first loaders follow rebakes.
-// Session state, re-derived on every world build + after every Bake GI
-// (never persisted — the files at their stable paths are the record).
-// glTF sessions only: pak opens carry their own Gi registry blob
-// (untouched here). Bindings + payload BYTES land on the DYNAMIC cluster
-// (World::EnsureDynamicCluster — runtime-injected state, never mixed into
-// the scene cluster); ResolveGiSidecars/ReadBakeBytes consult it FIRST,
-// so quick-bakes override cooked pak content.
-void EditorApp::RefreshLiveViewGiBindings() {
-	if (!m_world)
-		return;
-	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
-	cl->giBindings.clear();
-	const std::string scene = SceneIdForHost();
-	// Content roots (the bake files' parent trees): the project root
-	// first, then the editor-relative bundled content tree.
-	std::vector<std::string> roots;
-	if (!m_projectRoot.empty())
-		roots.push_back(m_projectRoot);
-	roots.push_back("content");
-	// Inject a payload at its stable VFS path, reading the host file
-	// under any root that has it. Returns whether bytes landed.
-	auto injectAt = [&](const std::string& relVfsPath) -> bool {
-		for (const auto& root : roots) {
-			const std::filesystem::path host =
-				std::filesystem::path(root)
-					/ std::filesystem::path(relVfsPath);
-			if (auto bytes = ReadHostFileBytes(host.generic_string())) {
-				cl->AddBakePayload(relVfsPath, std::move(*bytes));
-				return true;
-			}
-		}
-		return false;
-	};
-	auto hasGi = [&](const char* ext) -> bool {
-		const std::string mrel = "gi/" + scene + "." + ext;
-		const bool present = injectAt(mrel);
-		// Manifests also carry their row payloads (each row is a bare
-		// VFS path relative to the same root): inject those too.
-		if (present
-			&& (std::string_view(ext) == "regmanifest"
-				|| std::string_view(ext) == "cvmanifest")) {
-			if (const auto* manifest = cl->FindBakePayload(mrel)) {
-				const std::vector<uint8_t> text(
-					manifest->data(), manifest->data() + manifest->size());
-				for (const std::string& row : ManifestRowLines(text))
-					injectAt(row);
-			}
-		}
-		return present;
-	};
-	auto hasCube = [&]() -> bool {
-		const std::string mrel =
-			"textures/cubemaps/" + scene + ".cubemanifest";
-		if (injectAt(mrel)) {
-			// Every manifest row's KTX rides too (positions/influence
-			// stay in the manifest text the renderer parses).
-			if (const auto* manifest = cl->FindBakePayload(mrel)) {
-				std::string mErr;
-				std::vector<smvk::CubemapManifestEntry> rows;
-				const std::string_view text(
-					reinterpret_cast<const char*>(manifest->data()),
-					manifest->size());
-				if (smvk::CubemapManifestParse(text, rows, mErr))
-					for (const auto& row : rows)
-						injectAt(row.vfsPath);
-			}
-			return true;
-		}
-		// Typed asset (content/gi/<scene>.cubemap) — the no-sidecar home
-		// (RecordBakeAssetsFromCook materializes it after a full cook).
-		for (const auto& root : roots) {
-			if (std::filesystem::is_regular_file(
-					std::filesystem::path(root) / "gi"
-						/ (scene + ".cubemap")))
-				return true;
-		}
-		return false;
-	};
-	auto reg = [&](smvk::GiBinding::Kind kind, bool has,
-			const char* label) {
-		if (!has)
-			return;
-		cl->RegisterGiBinding(kind, scene);
-		std::cerr << "[GI] live view " << label << " -> '"
-			<< scene << "'\n";
-	};
-	reg(smvk::GiBinding::Kind::Probe, hasGi("sggi"), "probe");
-	reg(smvk::GiBinding::Kind::Lightmap, hasGi("sglm"), "lightmap");
-	reg(smvk::GiBinding::Kind::RegManifest, hasGi("regmanifest"),
-		"regmanifest");
-	reg(smvk::GiBinding::Kind::CvolManifest, hasGi("cvmanifest"),
-		"cvolmanifest");
-	reg(smvk::GiBinding::Kind::Cubemap, hasCube(), "cubemap");
-}
-
 void EditorApp::PollBakeProcess() {
 	if (m_bakeRunning)
 		return;
@@ -774,20 +619,8 @@ void EditorApp::PollBakeProcess() {
 		// The sidecars now match the baked definition: record it so a
 		// later cook can warn when they go stale.
 		m_giBakedHash = m_giBakePendingHash;
-		// Re-resolve the fresh bake GUIDs onto the editor world's
-		// clusters BEFORE the in-place rebind below (its sidecar
-		// loaders read the registry).
-		RefreshLiveViewGiBindings();
-		// The live view picks the fresh sidecars up IN PLACE (RebindWorld
-		// re-runs the sidecar loaders over the same world — the renderer
-		// never relaunches).
-		Log("Bake GI finished OK — refreshing the live view in place.");
-		if (m_wysiwyg && m_world) {
-			m_wysiwyg->SetSceneId(SceneIdForHost());
-			m_wysiwyg->SetProjectRoot(m_projectRoot);
-			m_wysiwyg->RebindWorld(m_world.get());
-		}
-		TaskWindowFinish(true, "Bake GI finished OK — live view rebound.");
+		Log("Bake GI finished OK — sidecars at their stable paths.");
+		TaskWindowFinish(true, "Bake GI finished OK.");
 	}
 	else {
 		Log("Bake GI FAILED (see log above).");

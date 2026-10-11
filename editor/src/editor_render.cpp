@@ -1,4 +1,4 @@
-// EditorApp viewport renderer: Unlit / Lit forward passes.
+﻿// EditorApp viewport renderer: Unlit / Lit forward passes.
 //
 // Reuses App's compiled shaders (default.vert + default_unlit/default_lit/
 // default_wire + shadow.vert/masked) and App's ABI-checked FrameUniforms +
@@ -6,8 +6,8 @@
 // goes straight to the
 // swapchain (LDR preview): sun/sky intensities default to LDR-friendly
 // values, exposure stays 1.0. (The legacy Lit+Shadows editor mode + its
-// single-cascade shadow atlas are gone — the hosted live view carries
-// shadows with the full App pipeline.)
+// single-cascade shadow atlas are gone — the editor passes render
+// per-view-mode previews.)
 
 #include "editor_app.h"
 
@@ -36,7 +36,7 @@ namespace editor {
 		constexpr uint32_t kMaxLights = 64;
 		// Lux-native env block (SceneEnv) -> this LDR preview's scale: the old
 		// scene-unit look (sun 7.851 scene units == 7851 lux). Every HDR consumer
-		// (the hosted WorldRenderer, the bakes, the pak/App) takes lux raw.
+		// (the bakes, the pak/App) take lux raw.
 		constexpr float kEditorPreviewLuxScale = 0.001f;
 
 		std::vector<char> LoadSpv(const char* path) {
@@ -345,7 +345,7 @@ namespace editor {
 			// Basis trace (VULKANTOY_BASIS_TRACE=1): one line per viewport
 			// every 60 frames — eye + the screen basis (view-matrix rows:
 			// row 0 = right, row 1 = screen-up) + the rect. Compare against
-			// the hosted renderer's [BASIS] wr lines (same env var): any
+			//\ wr\ twin\ gone;\ kept\ for\ the\ editor's\ own
 			// basis disagreement (e.g. a 90-degree roll of boxes/clicks vs
 			// pixels) shows up as different right/up rows for the same eye.
 			if ((m_frameCounter % 60) == 0) {
@@ -379,7 +379,7 @@ namespace editor {
 		// The env block is LUX-NATIVE (see SceneEnv); the editor's own viewport
 		// is an LDR preview, so the intensities scale down (x 0.001 — the old
 		// scene-unit look: 7851 lux -> 7.85) while every HDR consumer (the
-		// hosted WorldRenderer, the bakes, the pak) takes the lux raw.
+		// the bakes, the pak) take the lux raw.
 		const EditorEnv& envSet = CurrentEnv();
 		smvk::EnvironmentSettings env{};
 		env.sunAzimuthDeg = envSet.sunAzimuth;
@@ -398,7 +398,7 @@ namespace editor {
 		}
 
 		// Cascade descriptor: no cascades in the editor's own pass (the
-		// hosted live view carries shadows with the full App pipeline).
+		// editor passes render shadows per view mode).
 		// Zeroed, uploaded anyway so the shaders never read a null BDA.
 		smvk::GpuDirectionalLightDescription dir{};
 		m_context->UploadDataToBuffer(m_lightsBuf, lights, sizeof(lights),
@@ -472,7 +472,7 @@ namespace editor {
 				return -1;
 			auto hit = m_bindlessBySlot.find(static_cast<uint32_t>(poolIdx));
 			if (hit == m_bindlessBySlot.end()) {
-				// Hosted-crash diagnostic: a map miss uploads the RAW POOL
+				// Crash diagnostic: a map miss uploads the RAW POOL
 				// INDEX as the bindless slot — a bogus descriptor sample on
 				// the first world-drawing frame (the observed device-death).
 				// Log the miss so the offender material/slot is named.
@@ -515,9 +515,9 @@ namespace editor {
 
 	glm::mat4 EditorCamView(const EditorCam& c) {
 		// SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
-		// the hosted renderer's drive paths use). The old direct lookAt picked
+		// the camera drive paths use). The old direct lookAt picked
 		// its own near-degenerate basis for the straight-down Top camera,
-		// which rotated the editor's wire boxes 90 degrees against the hosted
+		// which rotated the editor's wire boxes 90 degrees against the scene
 		// scene in the top view (the two agreed everywhere else).
 		return SafeLookAt(EditorCamEye(c), c.target);
 	}
@@ -564,7 +564,7 @@ namespace editor {
 			// Degenerate (or parallel to the view direction): the SHARED
 			// resolution (same convention as every other camera framing —
 			// see ResolveLookAtUp) instead of an ad-hoc +X pick, which
-			// disagreed with the hosted drive paths.
+			// disagreed with the drive paths.
 			up = ResolveLookAtUp(out.eye, out.eye + out.fwd);
 		else
 			up = glm::normalize(up);
@@ -1845,19 +1845,14 @@ namespace editor {
 				UpdateInsetFrameData(flight, insetStrip);
 		}
 
-		// NOW drive/render hosted views from this exact snapshot.
-		// DriveHostedViewsFromEditorState(); (handled by RecordWysiwygPass)
-
-		// ---- PASS ROUND 1: window background clear ---------------------
+		// ---- PASSES: background clear + per-viewport scene + overlays ----
 		// The whole window clears FIRST (the dark chrome color shows
-		// through the gaps between the ImGui panels), then the INLINE
-		// world frame renders into the editor's command buffer, then
-		// round 2 composites the world target + draws the overlays on
-		// top — one command buffer, ordered by the graph rounds
-		// (cross-graph ordering rides the context-global sync-state
+		// through the gaps between the ImGui panels), then each viewport
+		// renders its editor pass, then the gizmo overlay draws on top
+		// — one command buffer, ordered by the graph rounds
+		// (cross-round ordering rides the context-global sync-state
 		// tables: every round's first use of a shared image barriers
 		// against the previous round's writes).
-		const bool wysiwygPreview = m_wysiwyg != nullptr;
 		m_rendergraph->NewFrame();
 		{
 			// Window chrome backdrop: neutral mid grey (no blue tint — the
@@ -1876,62 +1871,12 @@ namespace editor {
 		}
 		m_rendergraph->Execute(fb);
 
-		// ---- INLINE WORLD FRAME (viewport 0) ----------------------------
-		// The hosted WorldRenderer records its whole pipeline into THIS
-		// frame's command buffer on the editor's own flight rhythm (one
-		// acquire, one submit, one present — no device-idle ping-pong).
-		// RECT-SIZED targets: every hosted target tracks its viewport
-		// rect's size (SetMainViewExtent/SetViewExtent) — the lens draws
-		// the rect's frustum full-frame from (0,0) and round 2 composites
-		// the rect 1:1. Rect moves are free; resizes re-Ensure in place.
-		if (wysiwygPreview) {
-			const ViewportRect& vp0 = m_viewports[0].rect;
-			// Host extent (fake-swapchain sizing + the pre-drive target
-			// fallback) + rect-size drive: the renderer draws the rect
-			// frustum into its rect-sized chain + canvas (full writes at
-			// (0,0)), so the composite above maps 1:1 onto the exact
-			// overlay/pick frustum. Rect moves never realloc (same size).
-			m_wysiwyg->SetHostedExtent(extent);
-			m_wysiwyg->SetMainViewExtent(smvk::Extent2D{
-				std::max(uint32_t(vp0.w), 64u),
-				std::max(uint32_t(vp0.h), 64u) });
-			m_wysiwyg->RenderInlineFrame(fb);
-		}
-
-		// ---- PASS ROUND 2: overlays over the world pixels --------------
+		// ---- scene passes (per viewport) + overlay ---------------------
 		m_rendergraph->NewFrame();
-		if (wysiwygPreview) {
-			// Viewport 0: 1:1 blit of the rect-sized inline target (the
-			// renderer drew the rect frustum full-frame into it).
-			RecordWysiwygPass(m_swapViews[fb.imageIndex],
-				m_viewports[0].rect,
-				m_wysiwyg->InlineTargetBindlessIndex(),
-				m_wysiwyg->InlineTargetExtent(),
-				0, 0);
-			// MULTIVIEW: every ADDITIONAL viewport blits ITS hosted view's
-			// own rect-sized image 1:1 (SetViewCount/DriveView above) —
-			// including off-phase frames, where the last rendered content
-			// persists.
-			for (int vpIdx = 1; vpIdx < ViewportCount(); ++vpIdx) {
-				const uint32_t source =
-					m_wysiwyg->ViewOutBindless(uint32_t(vpIdx - 1));
-				const smvk::Extent2D srcExtent =
-					m_wysiwyg->ViewOutExtent(uint32_t(vpIdx - 1));
-				RecordWysiwygPass(m_swapViews[fb.imageIndex],
-					m_viewports[vpIdx].rect, source, srcExtent, 0, 0);
-			}
-			// Gizmo overlay on top of the world pixels (the hosted views
-			// render the grid themselves now — see WorldRenderer grid
-			// drive): selection + manipulation stay visible while the
-			// world view drives the pixels (the edit world never unloads).
-			RecordGizmoPass(m_swapViews[fb.imageIndex]);
-		}
-		else {
-			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
-				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
-			RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-			RecordGizmoPass(m_swapViews[fb.imageIndex]);
-		}
+		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
+			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+		RecordInsetPass(m_swapViews[fb.imageIndex], flight);
+		RecordGizmoPass(m_swapViews[fb.imageIndex]);
 		// One-shot lightmap PNG export: renders the offscreen target this
 		// frame, then reads it back after the submit (button in Bake panel).
 		const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
@@ -1968,118 +1913,6 @@ namespace editor {
 			ExportLightmapPng();
 		}
 		++m_frameCounter;
-	}
-
-	// ---- WYSIWYG hosted-preview compose (editor_app.h) ----------------------
-	// Fullscreen blit of the hosted WorldRenderer's offscreen target into
-	// one viewport rect. The hosted renderer already produced the App's
-	// final LDR frame (sRGB surface-format target): sampling decodes to
-	// linear and the editor's sRGB swap re-encodes — identity passthrough,
-	// no tonemap/exposure work here.
-
-	bool EditorApp::EnsureWysiwygProgram() {
-		if (m_wysiwygProgram.shaderCount == 2)
-			return true;
-		if (m_wysiwygVsModule.empty() || m_wysiwygFsModule.empty()) {
-			try {
-				// ENGINE-SHIPPED shader set (engine/resources/shaders),
-				// staged as engine_resources/shaders next to the exe —
-				// distinct from the content/shaders scene set.
-				if (m_wysiwygVsModule.empty())
-					m_wysiwygVsModule = m_context->CreateShaderModule(
-						LoadSpv("engine_resources/shaders/wysiwyg.vert.hlsl.spv"),
-						"wysiwygVS");
-				if (m_wysiwygFsModule.empty())
-					m_wysiwygFsModule = m_context->CreateShaderModule(
-						LoadSpv("engine_resources/shaders/wysiwyg.frag.hlsl.spv"),
-						"wysiwygFS");
-			}
-			catch (const std::exception& e) {
-				std::cerr << "[Editor] WYSIWYG shader load failed: "
-					<< e.what() << "\n";
-				return false;
-			}
-		}
-		if (m_wysiwygVsModule.empty() || m_wysiwygFsModule.empty())
-			return false;
-		const smvk::Shader vs{
-			.module = m_wysiwygVsModule, .entryPoint = "mainVS",
-			.stage = smvk::ShaderStage::Vertex };
-		m_wysiwygProgram = { .shaders = { vs,
-			{ .module = m_wysiwygFsModule, .entryPoint = "mainPS",
-			  .stage = smvk::ShaderStage::Fragment } },
-			.shaderCount = 2 };
-		return true;
-	}
-
-	// HLSL mirror: WysiwygPush in wysiwyg.frag.hlsl (24 bytes read).
-	// uvScale/uvOffset implement the aspect-preserving cover-crop (see
-	// RecordWysiwygPass): identity (1,1)/(0,0) in the steady state.
-	// alignas(16) pads the struct to 32 (24 + 8 tail pad the HLSL never
-	// reads); the push writes the whole struct, the shader its first 24.
-	struct alignas(16) WysiwygGpuPush {
-		uint32_t textureIndex;
-		uint32_t samplerIndex;
-		float uvScale[2];
-		float uvOffset[2];
-	};
-	static_assert(sizeof(WysiwygGpuPush) == 32, "WysiwygPush layout");
-
-	void EditorApp::RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect, uint32_t sourceBindless,
-		smvk::Extent2D srcExtent, uint32_t contentX, uint32_t contentY) {
-		if (!EnsureWysiwygProgram())
-			return;
-		if (rect.w <= 0.0f || rect.h <= 0.0f)
-			return;
-		if (sourceBindless == UINT32_MAX)
-			return; // source not registered (teardown raced / view not rendered yet)
-		WysiwygGpuPush wp{};
-		wp.textureIndex = sourceBindless;
-		wp.samplerIndex = m_wysiwygSamplerIndex;
-		// Content-rect sampling (exact 1:1, no resampling): the hosted view
-		// rendered its rect frustum full-frame from (0,0) into its
-		// rect-sized image — the main view's inline target (tracked to the
-		// rect by EnsureInlineTarget) and each secondary's own image alike —
-		// and the lens aspect matches the rect, so sampling the whole image
-		// maps pixels back onto the exact overlay/pick frustum. The old
-		// center cover-crop showed a ZOOMED subset whenever aspects differed
-		// (selection boxes + clicks could never match it); the target tracks
-		// the rect same-frame, so no drift fallback is needed either.
-		wp.uvScale[0] = 1.0f; wp.uvScale[1] = 1.0f;
-		wp.uvOffset[0] = 0.0f; wp.uvOffset[1] = 0.0f;
-		if (srcExtent.width != 0 && srcExtent.height != 0) {
-			const float srcW = float(srcExtent.width);
-			const float srcH = float(srcExtent.height);
-			wp.uvScale[0] = rect.w / srcW;
-			wp.uvScale[1] = rect.h / srcH;
-			wp.uvOffset[0] = float(contentX) / srcW;
-			wp.uvOffset[1] = float(contentY) / srcH;
-		}
-		auto& pass = m_rendergraph->AddPass("WysiwygCompose")
-			.SetOffset(uint32_t(rect.x), uint32_t(rect.y))
-			.SetExtent(smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) })
-			.SetColor({ swapView },
-				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-				smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
-			.SetDepth(m_depth.logicalView,
-				smvk::AttachmentLoadOp::DontCare,
-				smvk::AttachmentStoreOp::DontCare,
-				smvk::ClearDepthStencil(0.0f, 0));
-		pass.SetRecordingFunc([this, wp](smvk::CommandBuffer& cmd) {
-			cmd.BindRenderPipeline(m_wysiwygProgram,
-				smvk::VertexFormat::Empty,
-				// Depth off for the blit (DontCare attachment + Disabled()).
-				smvk::DepthSettings::Disabled(),
-				smvk::StencilSettings{},
-				smvk::BlendSettings::Opaque(),
-				smvk::MSAASettings{},
-				smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-			cmd.PushConstants(0, sizeof(wp), &wp, smvk::ShaderStage::All);
-			// Fullscreen triangle (SV_VertexID) — the vert's uv covers
-			// [0,1]^2 across the rect.
-			cmd.Draw(3, 1, 0, 0);
-		});
 	}
 
 } // namespace editor

@@ -280,29 +280,36 @@ int RunPakApp(PakAppConfig cfg) {
 		<< "', index " << cfg.sceneIndex << ")\n";
 
 	// Pak preload: kick the file read + parse + decompress NOW, before
-	// the renderer starts, so it overlaps Vulkan init + shader loading
-	// (the old flow did all of it inside Initialize, after the GPU and
-	// every shader were already up). The future rides a shared_ptr so
-	// the copyable WorldSource can hold it until the renderer calls.
+	// the app boots, so it overlaps Vulkan init + shader loading. The
+	// future rides a shared_ptr so the copyable WorldSource can hold it
+	// until the renderer calls.
 	auto preloadFuture = std::make_shared<std::future<PakPreload>>(
 		KickPakPreload(cfg.pakPath));
 
-	engine::WorldRenderer renderer;
-	renderer.SetSceneId(sceneId);
+	// App host + WorldRenderer ELEMENT (nvapp-style: the host owns the
+	// window/context/swapchain + the frame sync — the default DrawFrame
+	// pump drives the element between its acquire and present; the
+	// renderer never acquires/presents on its own).
+	smvk::App app;
+	auto renderer = std::make_shared<engine::WorldRenderer>(app);
+	renderer->SetSceneId(sceneId);
 	// The HOST owns scene loading: the renderer calls this once during
-	// Initialize, after its context exists (nothing can upload before
-	// that), and renders the returned world by handles. By then the
-	// preload has typically been running for the whole of renderer init.
+	// onAttach, after the host's context exists (nothing can upload
+	// before that), and renders the returned world by handles. By then
+	// the preload has typically been running for the whole of app boot.
 	// The renderer's texture streamer rides along so v4 digest textures
 	// register for demand upgrades (null when streaming is off → full
 	// resident, the pre-v4 behavior). The preloaded image pins the
-	// borrowed tail payloads.
+	// borrowed tail payloads. The lambda captures the RAW element
+	// pointer (it runs once INSIDE onAttach, where the element is alive
+	// by definition) — a shared_ptr capture would self-cycle.
 	const int sceneIndex = cfg.sceneIndex;
-	renderer.SetWorldSource(
-		[preloadFuture, sceneIndex, &renderer](smvk::ResourceManager& ctx,
+	engine::WorldRenderer* rendererRaw = renderer.get();
+	renderer->SetWorldSource(
+		[preloadFuture, sceneIndex, rendererRaw](smvk::ResourceManager& ctx,
 			smvk::OverlayVfs& contentVfs) -> smvk::mem::LinearPtr<smvk::World> {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
-				ctx, contentVfs, renderer.GetTextureStreamer());
+				ctx, contentVfs, rendererRaw->GetTextureStreamer());
 		});
 	engine::WorldRendererConfig passCfg = engine::WorldRendererConfig::All();
 	if (cfg.filterOnly)
@@ -311,34 +318,34 @@ int RunPakApp(PakAppConfig cfg) {
 		passCfg = engine::WorldRendererConfig::Minimal();
 	ApplyPassCsv(passCfg, cfg.withCsv.c_str(), true);
 	ApplyPassCsv(passCfg, cfg.withoutCsv.c_str(), false);
-	renderer.Configure(passCfg, cfg.run);
+	renderer->Configure(passCfg, cfg.run);
 	// Demo content (embers at the origin, sponza decal presets): an APP
-	// host opt-in — the renderer never seeds content on its own (the
-	// editor's hosted view stays clean). Transitional: presets/emitters
-	// become world entities in the entity-system phase, then this call
-	// seeds them through the world instead.
-	renderer.SetDemoContentEnabled(true);
-	// --no-dlss: suppress the Streamline load BEFORE the renderer runs
+	// host opt-in — the renderer never seeds content on its own.
+	// Transitional: presets/emitters become world entities in the
+	// entity-system phase, then this call seeds them through the world
+	// instead.
+	renderer->SetDemoContentEnabled(true);
+	// --no-dlss: suppress the Streamline load BEFORE the app runs
 	// (App::Initialize consults the flag before DlssStartup /
 	// pointing volk at the interposer — after that the decision is locked
 	// in) and force the mode off so no feature evaluation happens either.
 	// This is the RenderDoc-safe configuration.
 	if (cfg.noDlss) {
 		smvk::DlssSetStartupEnabled(false);
-		renderer.SetDlssMode(smvk::DlssMode::Off);
+		renderer->SetDlssMode(smvk::DlssMode::Off);
 		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
 	}
 	if (cfg.disableControl) {
-		renderer.SetDisableControl(true);
+		renderer->SetDisableControl(true);
 		std::cerr << "[Scene] camera control disabled (--disable_control)\n";
 	}
 	if (!cfg.presentMode.empty()) {
 		if (cfg.presentMode == "fifo")
-			renderer.SetPresentMode(smvk::PresentMode::Fifo);
+			app.SetPresentMode(smvk::PresentMode::Fifo);
 		else if (cfg.presentMode == "mailbox")
-			renderer.SetPresentMode(smvk::PresentMode::Mailbox);
+			app.SetPresentMode(smvk::PresentMode::Mailbox);
 		else if (cfg.presentMode == "immediate")
-			renderer.SetPresentMode(smvk::PresentMode::Immediate);
+			app.SetPresentMode(smvk::PresentMode::Immediate);
 		else {
 			std::cerr << "Unknown present mode: '" << cfg.presentMode << "' (fifo|mailbox|immediate)\n";
 			return EXIT_FAILURE;
@@ -346,15 +353,15 @@ int RunPakApp(PakAppConfig cfg) {
 	}
 	int benchFrames = cfg.benchFrames;
 	if (benchFrames > 0) {
-		renderer.SetFrameBudget(benchFrames);
+		app.SetFrameBudget(benchFrames);
 		// Bench captures must be pixel-comparable across runs: drop eye
 		// adaptation and pin the fixed manual exposure (X re-enables live).
 		// PINNED, not just set: the per-scene PushPostfxEnv seed inside
-		// Initialize/RebindWorld re-seeds auto-exposure from the authored
+		// onAttach re-seeds auto-exposure from the authored
 		// env (default ON), silently re-enabling adaptation mid-bench;
 		// the pin survives the seed (see m_autoExposurePin).
-		renderer.SetAutoExposurePinned(false);
-		renderer.SetAutoExposureEnabled(false);
+		renderer->SetAutoExposurePinned(false);
+		renderer->SetAutoExposureEnabled(false);
 		std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 	}
 	if (cfg.benchMoveSpeed > 0.0f) {
@@ -363,15 +370,22 @@ int RunPakApp(PakAppConfig cfg) {
 		// bare --bench_move still does the right thing.
 		if (benchFrames <= 0) {
 			benchFrames = 300;
-			renderer.SetFrameBudget(benchFrames);
-			renderer.SetAutoExposurePinned(false);
-			renderer.SetAutoExposureEnabled(false);
+			app.SetFrameBudget(benchFrames);
+			renderer->SetAutoExposurePinned(false);
+			renderer->SetAutoExposureEnabled(false);
 			std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 		}
-		renderer.SetBenchMoveSpeed(cfg.benchMoveSpeed);
+		renderer->SetBenchMoveSpeed(cfg.benchMoveSpeed);
 		std::cout << "bench: constant-velocity flight " << cfg.benchMoveSpeed
 			<< " m/s forward from the spawn pose (past warmup)\n";
 	}
+	// Attach the renderer to the host's stack and DROP the host-side
+	// reference: the App owns the element now (Shutdown's detach pass
+	// destroys it INSIDE the shutdown window, Holders releasing while
+	// the context is alive — an outliving host reference would defer
+	// element destruction to after ~App and leak the GPU handles).
+	app.AddElement(renderer);
+	renderer.reset();
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the
 	// warmup frames. --use_optick_gpu implies --use_optick.
@@ -379,7 +393,7 @@ int RunPakApp(PakAppConfig cfg) {
 	if (cfg.useOptickGpu)
 		smvk::profiler::SetGpuEnabled(true);
 	try {
-		renderer.Run();
+		app.Run();
 	}
 	catch (const std::exception& e) {
 		std::cerr << "\nERROR: " << e.what() << std::endl;

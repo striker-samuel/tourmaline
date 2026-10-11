@@ -1,4 +1,4 @@
-// GltfEditor entry point: inspect + cook glTF scenes.
+﻿// GltfEditor entry point: inspect + cook glTF scenes.
 //
 // Usage:
 //   Editor [--gltf <path>] [--out-pak <path>]
@@ -119,7 +119,7 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 		return EXCEPTION_CONTINUE_SEARCH;
 	// Hardware watchpoint report (see App::StartGraphWatchdog): Dr0 watches
 	// an 8-byte WRITE on RenderGraph+32 (topoHeap_._Myproxy) during the
-	// hosted first frame — a trap here is the STOMPER ITSELF: dump the
+	// editor's first frame - a trap here is the STOMPER ITSELF: dump the
 	// writer's RIP + registers + the written value + the writer's full
 	// stack. Dr6 bit 0 (B0) confirms it is the Dr0 breakpoint.
 	if (code == 0x80000004 && ep->ContextRecord && (ep->ContextRecord->Dr6 & 1)) {
@@ -236,13 +236,7 @@ namespace {
 			<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
 			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
 			<< "  diagnostic instead of degrading silently (dev/diagnosis;\n"
-			<< "  same as VULKANTOY_STRICT=1 — see AGENTS.md).\n"
-			<< "  --wysiwyg-smoke: headless-ish crash repro — cooks the scene\n"
-			<< "  minimal, exercises the auto-preview + the in-place rebind, then\n"
-			<< "  exits (dev tool).\n"
-			<< "  --project-smoke <dir>: with --gltf <asset>: create/open the\n"
-			<< "  project at <dir>, import the asset, cook it (product step),\n"
-			<< "  then run the wysiwyg-smoke stages over it (dev tool).\n";
+			<< "  same as VULKANTOY_STRICT=1 — see AGENTS.md).\n";
 	}
 
 } // namespace
@@ -281,8 +275,6 @@ namespace {
 #endif
 	const char* scenePath = nullptr;
 	const char* outPak = nullptr;
-	const char* projectSmoke = nullptr;
-	bool wysiwygSmoke = false;
 	bool strict = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
@@ -297,12 +289,6 @@ namespace {
 		}
 		else if (std::strncmp(a, "--out-pak=", 10) == 0) {
 			outPak = a + 10;
-		}
-		else if (std::strcmp(a, "--wysiwyg-smoke") == 0) {
-			wysiwygSmoke = true;
-		}
-		else if (std::strcmp(a, "--project-smoke") == 0 && i + 1 < argc) {
-			projectSmoke = argv[++i];
 		}
 		else if (std::strcmp(a, "--strict") == 0) {
 			// STRICT RESOURCES (see AGENTS.md): resource-pool exhaustion
@@ -332,22 +318,12 @@ namespace {
 	// SL interposer, so no SL proxy sits in its Vulkan call chain and no
 	// DLSS/Reflex feature ever initializes. Must run BEFORE app.Run()
 	// (App::Initialize consults the flag before DlssStartup / pointing volk
-	// at the interposer; after that the decision is locked in). The
-	// hosted WYSIWYG renderer then evaluates no features either — same
+	// at the interposer; after that the decision is locked in). Same
 	// contract as the App's --no-dlss. The shipped App keeps its DLSS.
 	smvk::DlssSetStartupEnabled(false);
 
 	editor::EditorApp app;
-	if (projectSmoke) {
-		// Project flow owns the --gltf path as its import source (it
-		// is copied into the project, not opened in place).
-		if (!scenePath) {
-			std::cerr << "--project-smoke <dir> needs --gltf <asset>\n";
-			return EXIT_FAILURE;
-		}
-		app.SetProjectSmoke(projectSmoke, scenePath);
-	}
-	else if (scenePath) {
+	if (scenePath) {
 		// Same dispatch as the open dialog (OpenAnySceneFile): .tour
 		// files replay through the tour-open path instead of failing the
 		// glTF import; also gives headless smoke runs the exact dialog
@@ -359,8 +335,6 @@ namespace {
 	}
 	if (outPak)
 		app.SetOutPak(outPak);
-	if (wysiwygSmoke)
-		app.SetWysiwygSmoke();
 	try {
 		if (!app.Run())
 			return EXIT_FAILURE;

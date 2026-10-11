@@ -1,4 +1,4 @@
-// Editor UI: menu bar, outliner (hierarchy), inspector (transform /
+﻿// Editor UI: menu bar, outliner (hierarchy), inspector (transform /
 // material / flags), cook panel, console, viewport overlay.
 //
 // Every edit goes through the CRUD command stack (Do/Undo/Redo); drags
@@ -225,7 +225,7 @@ namespace editor {
 		if (ImGui::BeginMenu("File")) {
 			// Project first (Unity/Unreal style): a project folder owns
 			// content/, paks/, gi/ and its own artifacts/ cache. Imports
-			// land in it and the hosted view shows them with the full
+			// land in it and the editor shows them
 			// pipeline â€” no manual staging.
 			if (ImGui::MenuItem("New / Open Project...")) {
 				std::string picked;
@@ -557,20 +557,7 @@ namespace editor {
 			if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 				m_showCubemapGizmos))
 				m_showCubemapGizmos = !m_showCubemapGizmos;
-			// Chrome balls at the loaded baked captures: the hosted renderer's
-			// lit probe-ball pass (see Rendergraph/probeball.h) — each ball
-			// samples its own baked cubemap. Master switch here; the per-frame
-			// hosted drive ANDs it with LIGHTING mode (modal light set).
-			if (ImGui::MenuItem("Cubemap capture balls (chrome)", nullptr,
-				m_showChromeBalls))
-				m_showChromeBalls = !m_showChromeBalls;
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Lit chrome spheres at the loaded baked\n"
-					"captures (the hosted renderer's probe-ball pass):\n"
-					"each ball samples its own cubemap — render-pass\n"
-					"visual only, never scene content. Shows in\n"
-					"LIGHTING mode only (modal light set).");
-			// App-parity probe overlay: the hosted live view's loaded rows
+			// App-parity probe overlay: the manifest sidecar's loaded rows
 			// as dot + C<idx> + influence/fade rings (same table, same
 			// colors as the App's probe-location overlay).
 			if (ImGui::MenuItem("Probe locations overlay", nullptr,
@@ -580,21 +567,6 @@ namespace editor {
 				ImGui::SetTooltip("Loaded baked probes per viewport (dot +\n"
 					"C<idx> + influence/fade rings, camera-distance\n"
 					"colored) — the App's probe overlay, LIGHTING only.");
-			// App-parity cubemap debug view (driven per frame onto the
-			// hosted renderer): which probe serves each pixel, or the
-			// blend weight as heat.
-			{
-				static const char* const kCubeDbgNames[3] = { "Off",
-					"Cubemap only (no Fresnel)", "Probe weight heat" };
-				if (ImGui::BeginCombo("Cubemap debug",
-					kCubeDbgNames[std::clamp(m_cubemapDebugView, 0, 2)])) {
-					for (int i = 0; i < 3; ++i)
-						if (ImGui::Selectable(kCubeDbgNames[i],
-							m_cubemapDebugView == i))
-							m_cubemapDebugView = i;
-					ImGui::EndCombo();
-				}
-			}
 			if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 				m_showCameraGizmos = !m_showCameraGizmos;
@@ -997,7 +969,6 @@ namespace editor {
 	void EditorApp::ClearNonDagSelection() {
 		m_nonDagSel = NonDagSel{};
 		m_imageFocus = UINT32_MAX;
-		m_terrainFocus = false; // the terrain page is a non-DAG focus too
 	}
 
 	void EditorApp::SelectNonDag(NonDagKind kind, uint32_t index) {
@@ -1018,16 +989,6 @@ namespace editor {
 		}
 		else if (kind == NonDagKind::Image) {
 			m_imageFocus = index; // Images-tab highlight (sticky)
-		}
-		else if (kind == NonDagKind::Terrain) {
-			// The terrain-field page (the hosted renderer's dressing — NOT
-			// scene content): the draft seeds from the live desc once, then
-			// edits locally until Rebuild.
-			m_terrainFocus = true;
-			if (!m_terrainDraftValid && m_wysiwyg) {
-				m_terrainDraft = m_wysiwyg->TerrainSettings();
-				m_terrainDraftValid = true;
-			}
 		}
 	}
 
@@ -1053,28 +1014,13 @@ namespace editor {
 				const auto& loc = m_world->materialLocations[i];
 				if (!loc.cluster || !loc.handle.valid())
 					continue;
-				NonDagEntry e;
-				e.kind = NonDagKind::Material;
-				e.index = i;
-				e.label = "[mat] mat." + std::to_string(i) + " "
-					+ std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
-				out.push_back(std::move(e));
-			}
-		}
-		// The hosted renderer's terrain field (the default world dressing —
-		// renderer state, never scene content): present while the field lives
-		// (the row follows TerrainValid — Delete removes it, Rebuild restores).
-		if (m_wysiwyg && m_wysiwyg->TerrainValid()) {
 			NonDagEntry e;
-			e.kind = NonDagKind::Terrain;
-			e.index = 0;
-			const smvk::terrain::TerrainDesc td = m_wysiwyg->TerrainSettings();
-			char buf[128];
-			std::snprintf(buf, sizeof(buf),
-				"[terrain] Terrain field (%.0fm world, %.0fm tiles)",
-				td.worldSize, td.tileSize);
-			e.label = buf;
+			e.kind = NonDagKind::Material;
+			e.index = i;
+			e.label = "[mat] mat." + std::to_string(i) + " "
+				+ std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
 			out.push_back(std::move(e));
+		}
 		}
 	}
 
@@ -2113,12 +2059,6 @@ namespace editor {
 		// Material focus page: the Inspector is "traveling" in a material.
 		if (m_world && m_materialFocus != UINT32_MAX) {
 			DrawMaterialFocusPage();
-			return;
-		}
-		// TERRAIN FIELD page (the hosted renderer's world dressing — the
-		// non-DAG outliner row focuses here): desc edits + rebuild/destroy.
-		if (m_terrainFocus) {
-			DrawTerrainFieldPage();
 			return;
 		}
 		// Browser-selected ASSET page: a .material/.mesh click in the asset
@@ -3735,8 +3675,7 @@ namespace editor {
 
 		ImGui::Separator();
 		ImGui::TextDisabled("Cook = PRODUCT step: a .pak for the game/App "
-			"(Run in App loads it). The live view (the hosted renderer over "
-			"the editor's world) is unaffected by cooks.");
+			"(Run in App loads it). The editor is unaffected by cooks.");
 		if (m_cookRunning) {
 			ImGui::Text("Cooking... (detail in the task window)");
 			ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate
@@ -5428,7 +5367,7 @@ namespace editor {
 		if (absPath.empty())
 			return;
 		// Refuse the live scene's files (deleting the open scene from under
-		// the editor desyncs the tour autosave + the hosted view).
+		// the editor desyncs the tour autosave).
 		{
 			namespace fs = std::filesystem;
 			std::error_code ec;

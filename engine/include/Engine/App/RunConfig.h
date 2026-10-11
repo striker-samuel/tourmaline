@@ -151,9 +151,6 @@ struct RunConfig {
 
 	// ---- trace ----
 	bool texstreamTrace = false; // any of 4 presence sites
-	bool hostedTrace = false;
-	bool multiviewTrace = false;
-	int wysiwygDump = -1;
 
 	// ---- editor ----
 	bool editorVpQuad = false;

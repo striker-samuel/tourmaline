@@ -1,4 +1,4 @@
-// vi-style modal input: the ACTIVE mode's keymap interprets keys.
+﻿// vi-style modal input: the ACTIVE mode's keymap interprets keys.
 //
 // Architecture (see modal_bindings.h — the single registry):
 //   - EVERY binding lives in kModalBindings exactly once, with the
@@ -229,7 +229,7 @@ void EditorApp::UpdateModalInput() {
 			"profile: placeholder", "O" },
 		// GLOBAL: mode switches, App-parity debug views (F1/F2/F3/F4/F5/
 		// F6/F9/F10/F11 — the same keys the standalone App uses, wired
-		// straight through to the hosted live view), wireframe (P —
+		// straight through to the editor passes), wireframe (P -
 		// App parity; Z stays as the LAYOUT alias), window toggles,
 		// document ops — reachable from ANY mode.
 		{ GLFW_KEY_1, 0, kScopeGlobal, &EditorApp::ModalModeLayout,

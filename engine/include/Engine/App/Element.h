@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Render-layer / element system (nvpro_core2 nvapp-style).
 //
 // The swapchain (acquire / present / resize / present-mode) is owned by the
@@ -57,7 +57,7 @@ struct LayerRect {
 
 // Per-frame sync + target block handed to elements. Thin view over the
 // host's Framebuffer plus the resolved swap extent: elements stay oblivious
-// to HOW the frame was acquired (windowed swapchain, hosted fake, etc.).
+// to HOW the frame was acquired (the host always acquires).).
 struct ElementFrame {
 	smvk::Framebuffer* fb = nullptr; // host-acquired frame (never null in onRender)
 	smvk::Extent2D swapExtent{ 0, 0 }; // sync-owner extent (fb->swapchain)
@@ -69,7 +69,10 @@ public:
 	virtual ~IAppElement() = default;
 	virtual const char* ElementName() const = 0;
 
-	virtual void onAttach() {}
+	// Lifecycle: onAttach runs after the host booted (its graphics members
+	// exist); false = attach FAILED (the host's Run aborts loudly). onDetach
+	// runs at host shutdown while everything is still alive.
+	virtual bool onAttach() { return true; }
 	virtual void onDetach() {}
 	virtual void onResize(smvk::Extent2D /*swapExtent*/) {}
 	virtual void onUpdate(float /*dt*/) {}
@@ -104,6 +107,12 @@ public:
 				return;
 			}
 		}
+	}
+	bool AttachAll() {
+		for (auto* el : m_elements)
+			if (el && !el->onAttach())
+				return false;
+		return true;
 	}
 	void DetachAll() {
 		for (auto* el : m_elements)

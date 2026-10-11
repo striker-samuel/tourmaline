@@ -1,4 +1,4 @@
-// EditorApp: init / frame loop / scene loading / frame-data upload.
+﻿// EditorApp: init / frame loop / scene loading / frame-data upload.
 // Rendering passes live in editor_render.cpp, UI in editor_ui.cpp.
 
 // Editor app implementation. NOMINMAX must precede EVERY include: the
@@ -33,7 +33,7 @@
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
 #include <gltf_import/gltf.h>
-#include <stb_image_write.h> // hosted-target diagnostic dump (PNG)
+#include <stb_image_write.h> // PNG writers (probe previews)
 #include <Engine/core.h>
 
 #include <imgui.h>
@@ -115,15 +115,12 @@ bool EditorApp::Initialize() {
 	if (!Super::Initialize())
 		return false;
 	// Dev quad-layout switch (VULKANTOY_EDITOR_VP_QUAD=1): start in the
-	// four-viewport layout so headless smoke runs exercise the hosted
-	// MULTIVIEW path (every additional viewport drives its own hosted
-	// view; see the live-view drive in DrawFrame). The V toggle keeps
-	// working after.
+	// four-viewport layout so headless smoke runs exercise the per-
+	// viewport editor passes. The V toggle keeps working after.
 	if (const char* quad = std::getenv("VULKANTOY_EDITOR_VP_QUAD")) {
 		if (std::atoi(quad) != 0) {
 			m_vpLayout = 1;
-			std::cerr << "[Editor] quad viewport layout (dev env) — "
-				"hosted multiview engaged\n";
+			std::cerr << "[Editor] quad viewport layout (dev env)\n";
 		}
 	}
 	// Static mesh heap (VMA virtual blocks + GPU buffers) backing
@@ -176,8 +173,7 @@ bool EditorApp::Initialize() {
 	// the editor is project-bound — the blocking dialog (recents +
 	// New/Browse) demands one. Smoke flows drive their own projects
 	// and never see it.
-	if (!m_wysiwygSmoke && m_projectSmokeDir.empty())
-		m_projectDialogPending = true;
+	m_projectDialogPending = true;
 
 
 	m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
@@ -227,41 +223,17 @@ bool EditorApp::Initialize() {
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
 	}
 
-	// Headless project flow (--project-smoke <dir> + --gltf <asset>):
-	// create/open the project, import the asset (engine representation
-	// ready), then COOK it explicitly (product step, full settings) and
-	// run the regular wysiwyg-smoke stages over the result (the cook is
-	// already running, so stage 0 just waits for it).
-	if (!m_projectSmokeDir.empty() && !m_projectSmokeAsset.empty()) {
-		const std::string d = m_projectSmokeDir;
-		const std::string a = m_projectSmokeAsset;
-		m_projectSmokeDir.clear();
-		m_projectSmokeAsset.clear();
-		if (!NewProjectOrOpen(d) || !ImportAsset(a)) {
-			std::cerr << "[ProjectSmoke] setup failed (see log)\n";
-		}
-		else {
-			CookToPak();
-			m_wysiwygSmoke = true;
-		}
-	}
-
 	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
 	return true;
 }
 
 void EditorApp::Shutdown() {
 	// Flush the working tour to the project .tour on exit (per-edit
-	// saves went to the %APPDATA% autosave) â€” same contract as
+	// saves went to the %APPDATA% autosave) — same contract as
 	// CloseScene, so closing the editor never loses edits.
 	if (m_world && !TourTarget().empty())
 		SaveTour();
 	SavePrefs(); // save editor prefs on close
-	// Hosted WYSIWYG renderer FIRST: its GPU resources (pipelines,
-	// targets, its own rendergraph world) release through the SHARED
-	// context â€” must happen before the editor tears its own state.
-	if (m_wysiwyg)
-		StopWysiwyg();
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
 	PollCookProcess();
@@ -360,7 +332,7 @@ void EditorApp::LoadPrefs() {
 					m_recentProjects[size_t(idx)] = val;
 				}
 			}
-			// [wysiwyg] preview key retired: the hosted view is the
+			// preview key retired: the editor passes are the
 			// viewport driver unconditionally (no toggle to persist).
 		}
 		catch (...) {
@@ -427,11 +399,11 @@ bool EditorApp::OpenCacheDb() {
 		+ " [project '" + m_projectName + "']");
 	// Editor VFS: register the scratch class paks (the cooked-resource
 	// overlay the display path resolves through). ONLY tour + scratch
-	// mount here â€” never the release content tree (editor -> release
+	// mount here — never the release content tree (editor -> release
 	// is one-way; reading content/paks back would feed stale cooked
 	// content into authoring). The scene class is consumed by the
-	// HOSTED WorldRenderer (its own VFS, App --pak parity), not by
-	// this overlay; these are the resource classes.
+	// App (its own --pak VFS), not by this overlay; these are the
+	// resource classes.
 	for (const char* klass : { "texture", "mesh", "material", "light",
 			"camera" }) {
 		std::vector<uint8_t> img;
@@ -458,10 +430,6 @@ void EditorApp::CloseScene() {
 	if (!m_world)
 		return;
 	SavePrefs();
-	// Mid-frame safe: the hosted live view dies with its scene — the
-	// world moves to the retire stash (alive for the borrowed pointer)
-	// and the actual stop runs at the next frame boundary.
-	SuspendWysiwygForWorldSwap();
 	m_world.reset();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
@@ -568,10 +536,6 @@ void EditorApp::CloseScene() {
 	m_textureStreamer.reset();
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
-	// The world is about to be replaced: suspend the live view (the
-	// old world retires at the frame boundary after the hosted stop)
-	// — the pending refresh below rebinds onto the NEW world.
-	SuspendWysiwygForWorldSwap();
 	if (m_textureStreamingEnabled && m_texMode != TexMode::Full) {
 		smvk::TextureStreamerConfig streamCfg;
 		streamCfg.budgetBytes = 256ull * 1024 * 1024;
@@ -659,7 +623,7 @@ void EditorApp::CloseScene() {
 		if (!refDoc.references.empty()) {
 			// Meshlets + LOD siblings at import (the live world renders
 			// through the same GPU filter + LOD selection as cooked paks
-			// — the hosted WYSIWYG view matches the App, and the F3/F5
+			// - the editor view modes match the App's, and the F3/F5
 			// views work on live worlds). Configs mirror the cooker
 			// defaults (meshlets 64/124, LOD ratios 60/30/12%) and ride
 			// into every nested reference (ApplySceneReferences forwards
@@ -897,14 +861,6 @@ void EditorApp::CloseScene() {
 	// anything importing outside this path).
 	if (m_texCacheAdapter)
 		m_texCacheAdapter->SetKeyScope({});
-	// Bake-asset GI bindings for the hosted live view (fresh world —
-	// the clusters carry no Gi registry yet; the hosted rebind below
-	// reads them).
-	RefreshLiveViewGiBindings();
-	// The hosted view drives the viewport for this scene from its
-	// source (full App pipeline, no cook needed): the pending suspend
-	// above rebinds it IN PLACE at the next frame boundary — a fresh
-	// launch only when no live view exists yet.
 	return true;
 }
 
@@ -930,116 +886,9 @@ std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
 	return path;
 }
 
-bool EditorApp::LaunchWysiwyg() {
-	// LIVE VIEW: the inline hosted renderer renders THE EDITOR'S OWN
-	// WORLD (see the full comment above the call site in the deferred
-	// block).
-	if (!m_world) {
-		Log("Live view: no world to host — open a scene first.");
-		return false;
-	}
-	// Frame-boundary contract: creating the hosted renderer and
-	// (re)binding descriptors while editor frames are in flight
-	// faults. Callers run between frames; idle anyway so a direct
-	// call can never wedge the shared context.
-	WaitForDeviceIdle();
-	StopWysiwyg(); // fresh instance per launch (first launch only in
-	// practice — world swaps rebind in place; nothing relaunches for
-	// extent drift: rect resizes re-Ensure the hosted targets in place,
-	// rect moves are free).
-	// Viewport-sized initial extent (the current rect; RenderFrame
-	// drives it per frame after — splitter drags and layout switches
-	// resize the world targets in place, 1:1 with the rect at all
-	// times).
-	const ViewportRect& vp = m_viewports[0].rect;
-	uint32_t w = std::max(uint32_t(vp.w), 64u);
-	uint32_t h = std::max(uint32_t(vp.h), 64u);
-	m_wysiwygExtent = smvk::Extent2D{ w, h };
-	// Scene id = the open scene's stem (SceneIdForHost; GI sidecar names
-	// resolve gi/<stem>.* through the hosted content VFS: project root
-	// first, bundled content under). The string lives in a member; the
-	// renderer keeps its own copy.
-	m_wysiwygSceneId = SceneIdForHost();
-	if (m_wysiwygSceneId.empty())
-		m_wysiwygSceneId = "scene";
-	// One call: boot off this context, borrow the editor's world (it
-	// keeps owning + mutating it — edits show up per frame; the hosted
-	// renderer never imports anything), full framegraph + hosted
-	// invariants, initialized. The format MUST be the editor window's
-	// surface format — the inline tonemap writes the editor's swapchain
-	// image. Cooks are the separate PRODUCT step — they never feed the
-	// viewport.
-	try {
-		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this,
-			*m_world, m_wysiwygExtent, m_wysiwygSceneId, m_projectRoot,
-			m_swapchain->GetSurfaceFormat());
-	}
-	catch (const std::exception& e) {
-		Log(std::string("Live view: launch threw: ") + e.what());
-		StopWysiwyg();
-		return false;
-	}
-	// Compose plumbing for the SECONDARY multiview images (view 0 renders
-	// inline — no blit): the compose program + its linear sampler.
-	m_wysiwygSamplerIndex = m_context->GetOrCreateSampler(
-		smvk::SamplerCreateInfo{
-			.magFilter = smvk::Filter::Linear,
-			.minFilter = smvk::Filter::Linear,
-			.mipmapMode = smvk::MipmapMode::Linear,
-			.addressU = smvk::AddressMode::ClampToEdge,
-			.addressV = smvk::AddressMode::ClampToEdge,
-			.addressW = smvk::AddressMode::ClampToEdge,
-			.maxAnisotropy = 1.0f });
-	if (!EnsureWysiwygProgram()) {
-		Log("Live view: compose shaders unavailable "
-			"(engine_resources/shaders/wysiwyg.*.spv missing?).");
-		StopWysiwyg();
-		return false;
-	}
-	Log("Live view: INLINE WorldRenderer rendering the editor's world "
-		"'" + m_wysiwygSceneId + "' (full App pipeline, live; edits "
-		"show per frame - world swaps rebind in place).");
-	return true;
-}
-
-void EditorApp::StopWysiwyg() {
-	if (!m_wysiwyg)
-		return;
-	// Retire in-flight editor frames first: they still reference the
-	// hosted renderer's resources being torn down here (the inline
-	// world passes of the last frame included).
-	WaitForDeviceIdle();
-	// Release the hosted instance's GPU resources while the shared
-	// context is alive (its Shutdown releases Holders; ~App then
-	// RELEASES the borrowed context AND the borrowed world — the
-	// editor keeps ownership of both).
-	try {
-		m_wysiwyg->HostedShutdown();
-	}
-	catch (const std::exception& e) {
-		Log(std::string("Live view: shutdown threw: ") + e.what());
-	}
-	m_wysiwyg.reset();
-	m_wysiwygSamplerIndex = UINT32_MAX;
-	Log("Live view: hosted renderer stopped.");
-}
-
-void EditorApp::SuspendWysiwygForWorldSwap() {
-	// Mid-frame world-swap safety (scene opens/closes fire inside
-	// RenderFrame): the OLD world moves to the retire stash — it stays
-	// ALIVE for the hosted renderer's borrowed pointer — and the actual
-	// swap is deferred to the frame boundary (rebinding GPU-side state
-	// mid-frame faults on the already-recorded compose pass). Flags the
-	// pending swap REGARDLESS of the live view's state: DrawFrame's
-	// consumption rebinds an existing hosted renderer IN PLACE, LAUNCHES
-	// the first one when no live view exists yet, and STOPS it when the
-	// scene closed — then retires the stash after.
-	m_wysiwygSuspendPending = true;
-	m_worldRetire = std::move(m_world);
-}
 
 std::string EditorApp::SceneIdForHost() const {
-	// Hosted-view scene id (the open scene's stem; the resolved source
+	// Scene id (the open scene's stem; the resolved source
 	// wins — paks never open here). Shared by the launch and the in-place
 	// rebind (the GI sidecar loaders resolve gi/<id>.* through the
 	// project-aware VFS).
@@ -1719,30 +1568,18 @@ void EditorApp::FrameAll() {
 }
 
 void EditorApp::DrawFrame() {
-	// Frame-arena reset at the EDITOR's own frame boundary: ResetFrameArena
-	// lived only in WorldRenderer::DrawFrame, so editor frames without a
-	// running hosted renderer (empty editor, mid-open, scene closed) never
-	// rewound the frame arena — every editor frame's compose/pass scratch
-	// (barrier vectors etc., ~KBs each) accumulated unboundedly until the
-	// 256 MB reservation OOM-aborted minutes into a session. Resetting here
-	// is safe by the same discipline as the renderer's own reset: frame
-	// start, nothing frame-allocated is live (last frame presented; the
-	// hosted drive below resets again at its own start, covering anything
-	// the editor's own frame allocated in between).
-	smvk::ResetFrameArena();
-	UpdateDeltaTime();
+	// Frame-arena + dt live in the HOST loop (App::MainLoop resets the
+	// arena + advances the clock every frame — see app.cpp).
 	// Frame-time histogram hook (View menu / F12; zero cost while
-	// disabled — the hosted renderer's own hook is gated off when
-	// hosted so this is the single record per editor frame).
+	// disabled): the single record per editor frame.
 	smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
 	Update();
 	// Dev crash-repro vehicle (VULKANTOY_EDITOR_OPEN_AT=
 	// "<frame>:<file>[;<frame>:<file>...]"): opens scene files MID-LOOP at
 	// the given frame indices — the exact open-DIALOG timing (the open
-	// completes during a frame, the deferred block below launches or
-	// rebinds the live view on the same DrawFrame walk). Multiple entries
+	// completes during a frame). Multiple entries
 	// drive sequences (e.g. a plain open first, then a tour open over a
-	// RUNNING live view — the user-crash shape). The --gltf CLI path opens
+	// loaded scene — the user-crash shape). The --gltf CLI path opens
 	// at Initialize time instead (before any present), so driver bugs
 	// that need "presents happened before the open" never fire there.
 	{
@@ -1786,52 +1623,6 @@ void EditorApp::DrawFrame() {
 			std::fflush(stderr);
 		}
 	}
-	// Deferred live-view world swaps, consumed HERE between frames and
-	// idle — never inside the editor's open frame: the OLD world stays
-	// alive in the retire stash for the in-flight frames, then
-	//  - a NEW world: IN-PLACE rebind (the hosted renderer keeps every
-	//    GPU resource; only the world-derived state rebuilds) — or the
-	//    first launch when no live view exists yet;
-	//  - no world (scene closed): the live view dies with its scene.
-	if (m_wysiwygSuspendPending) {
-		m_wysiwygSuspendPending = false;
-		if (m_world) {
-			if (m_wysiwyg) {
-				// In-place rebind onto the newly opened world (scene
-				// open / reimport / pak switch): scene id + project root
-				// first (the GI sidecar loaders resolve gi/<id>.* through
-				// the project-aware VFS), then the swap + rebuild. The old
-				// world retires right after (its in-flight frames are done
-				// — the rebind waited for device idle).
-				m_wysiwyg->SetSceneId(SceneIdForHost());
-				m_wysiwyg->SetProjectRoot(m_projectRoot);
-				m_wysiwyg->RebindWorld(m_world.get());
-				Log("Live view: rebound in place onto the new world "
-					"(framegraph kept).");
-			}
-			else {
-				// First open (no live view yet): launch — viewport rects
-				// first so the target sizes off viewport 0 instead of a
-				// degenerate 64x64 (RenderFrame recomputes them anyway —
-				// pure math, safe to run here).
-				{
-					const auto vkExt = m_swapchain->GetExtent();
-					ComputeViewportRects(smvk::Extent2D{ vkExt.width,
-						vkExt.height });
-				}
-				LaunchWysiwyg();
-			}
-			m_worldRetire.reset();
-		}
-		else {
-			StopWysiwyg(); // scene closed: the live view dies with it
-			m_worldRetire.reset();
-		}
-	}
-	// HOSTED EXTENT DRIFT: GONE with the inline live view — the hosted
-	// targets track the viewport rect's SIZE (resizes re-Ensure in
-	// place, moves are free). The old relaunch watcher (and the crash
-	// window it opened mid-session) is deleted.
 	// Dev selection pin (VULKANTOY_EDITOR_SELECT=<node>|list, one-shot at
 	// the first frame a world exists): headless box-vs-mesh diagnostics
 	// (see the [SELBOX] trace in RecordGizmoPass) need a selection
@@ -1911,413 +1702,14 @@ void EditorApp::DrawFrame() {
 			std::fflush(stderr);
 		}
 	}
-	if (m_wysiwyg) {
-		// CPU drives only — pure renderer-state latches (camera, grid,
-		// multiview descriptors, debug views). The world FRAME itself
-		// runs INLINE inside RenderFrame (editor_render.cpp): between
-		// the editor's background-clear round and its overlay round, on
-		// the editor's own acquire/submit rhythm. No device-idle
-		// boundaries anywhere on this path anymore.
-		// CAMERA DRIVE: viewport 0's camera drives the hosted MAIN view —
-		// the inline tonemap writes it into panel 0's rect, so the
-		// panel's camera chip and its content must agree (the ACTIVE
-		// camera drove it before: hovering any other panel desynced
-		// panel 0 from its own camera while that camera rendered
-		// nowhere). Each additional viewport keeps driving its OWN
-		// hosted view below (viewport i+1 -> view i) with its own
-		// camera. Top/Side ortho cameras drive a TRUE orthographic lens
-		// (orthoHalfH; the old fov-approximation dolly-distorted the
-		// live view). LOCKED LOOK-THROUGH drives the hosted view through
-		// the BOUND camera too (BoundCameraPoseFor — pose + lens + the
-		// node's up), so the live pixels and the overlay share one
-		// camera in every viewport state (the old orbit-only drive drew
-		// the overlay with the bound camera over orbit-camera pixels —
-		// misaligned by construction).
-		{
-			BoundCameraPose pose;
-			if (BoundCameraPoseFor(0, pose)) {
-				m_wysiwyg->DriveExternalCamera(pose.eye,
-					pose.eye + pose.fwd, pose.fovYDeg,
-					pose.nearClip, pose.farClip, pose.orthoHalfH,
-					pose.up);
-			}
-			else {
-				const EditorCam& cam = m_editorCams[m_viewports[0].camIdx];
-				m_wysiwyg->DriveExternalCamera(EditorCamEye(cam), cam.target,
-					cam.fovYDeg, cam.nearClip, cam.farClip,
-					(cam.type == EditorCam::Type::Orthographic)
-						? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
-			}
-		}
-		// GRID DRIVE: the hosted renderer draws the construction grid
-		// itself (depth-tested against each view's own depth — the host
-		// has no depth to test against, which is why the overlay grid
-		// drew over everything). Same settings as the editor's grid;
-		// LIGHTING mode steps the grid aside (the modal-mode gizmo focus
-		// keeps the viewport on the light authoring set — see
-		// RecordGizmoPass).
-		m_wysiwyg->DriveGrid(m_showGrid
-			&& m_mode != EditorMode::Lighting, m_gridSize, m_gridExtent);
-		// CHROME-BALL DRIVE (modal): baked-probe balls render only in
-		// LIGHTING mode with the rest of the light-authoring set — the
-		// View-menu toggle is the master switch inside that mode.
-		m_wysiwyg->SetCubemapShowBalls(m_showChromeBalls
-			&& m_mode == EditorMode::Lighting);
-		// MULTIVIEW drive: every ADDITIONAL editor viewport drives its
-		// own hosted view (viewport i+1 -> renderer view i): the view
-		// count follows the viewport layout (SetViewCount no-ops while
-		// unchanged; a layout change recreates the per-view targets
-		// here at the idle boundary), extents track the viewport rects
-		// and each viewport's OWN camera renders its view — ortho
-		// cameras with a TRUE orthographic lens, locked look-through
-		// with the bound camera's pose + up (same as the main drive
-		// above). The views carry per-view tic/toc refresh schedules
-		// (see the live-view panel); off-phase views keep their last
-		// image and compose anyway.
-		{
-			const int extraViewports = ViewportCount() - 1;
-			const uint32_t viewCount = (uint32_t)std::clamp(
-				extraViewports, 0, (int)engine::WorldRenderer::kMaxSecondaryViews);
-			m_wysiwyg->SetViewCount(viewCount);
-			for (uint32_t i = 0; i < viewCount; ++i) {
-				const EditorViewport& vp = m_viewports[i + 1];
-				m_wysiwyg->SetViewEnabled(i, true);
-				m_wysiwyg->SetViewExtent(i, smvk::Extent2D{
-					std::max(uint32_t(vp.rect.w), 64u),
-					std::max(uint32_t(vp.rect.h), 64u) });
-				BoundCameraPose pose;
-				if (BoundCameraPoseFor(int(i + 1), pose)) {
-					m_wysiwyg->DriveView(i, pose.eye, pose.eye + pose.fwd,
-						pose.fovYDeg, pose.nearClip, pose.farClip,
-						pose.orthoHalfH, pose.up);
-				}
-				else {
-					const EditorCam& cam = m_editorCams[vp.camIdx];
-					m_wysiwyg->DriveView(i, EditorCamEye(cam), cam.target,
-						cam.fovYDeg, cam.nearClip, cam.farClip,
-						(cam.type == EditorCam::Type::Orthographic)
-							? std::max(cam.orthoHalfH, 0.01f) : 0.0f);
-				}
-			}
-		}
-		// DEBUG-VIEW DRIVE: the editor's view modes hook the hosted
-		// frame with APP PARITY (the F-keys match the standalone App's
-		// DebugView shortcuts 1:1). Mapped 1:1 where the frame has the
-		// view; the editor-only flat/baked views map onto their closest
-		// frame views (flat unwraps -> the UV checkers, baked -> flat
-		// irradiance).
-		{
-			int giDebug = 0;
-			engine::DebugView dv = engine::DebugView::Lit;
-			switch (ActiveViewMode()) {
-			case ViewMode::Unlit: dv = engine::DebugView::Unlit; break;
-			case ViewMode::Lit: dv = engine::DebugView::Lit; break;
-			case ViewMode::Uv0:
-			case ViewMode::FlatUv0: dv = engine::DebugView::Uv0; break;
-			case ViewMode::Uv1:
-			case ViewMode::FlatUv1: dv = engine::DebugView::Uv1; break;
-			case ViewMode::VertexColors:
-				dv = engine::DebugView::VertexColors; break;
-			case ViewMode::Meshlets: dv = engine::DebugView::Meshlets; break;
-			case ViewMode::Cascades: dv = engine::DebugView::Cascades; break;
-			case ViewMode::Lods: dv = engine::DebugView::Lods; break;
-			case ViewMode::Pom: dv = engine::DebugView::Pom; break;
-			case ViewMode::Baked:
-				dv = engine::DebugView::Lit;
-				giDebug = 1; // flat baked irradiance
-				break;
-			}
-			m_wysiwyg->SetDebugView(dv);
-			m_wysiwyg->SetGiDebug(giDebug);
-		}
-		// LIGHTING-VIEW DRIVE (the GI tri-view, View menu radios): Fully
-		// Lit (With GI) pins AmbientMode::All — the baked GI sources
-		// (world field + convex volumes + cubemaps) render when their
-		// bake-asset bindings resolve; Realtime Lit pins SkyIbl — the
-		// analytic ambient without the bake. Unlit's FS replaces shading
-		// wholesale, so the pin is irrelevant there (same All default).
-		m_wysiwyg->SetAmbientMode(
-			m_litView == 0 ? engine::AmbientMode::All
-			: engine::AmbientMode::SkyIbl);
-		// CUBEMAP-DEBUG DRIVE (App parity, View menu combo): which probe
-		// serves each pixel (1) or the blend weight as heat (2). A frame
-		// switch like the debug views above — viewport-independent.
-		m_wysiwyg->SetCubemapDebug(m_cubemapDebugView);
-		// WIREFRAME DRIVE (P / Z — App parity): the frame's wireframe
-		// is Line polygon mode over the Fill depth prepass, so hidden
-		// lines are removed (lines never draw over the objects in
-		// front — the prepass depth occludes them).
-	m_wysiwyg->SetWireframe(m_wireframeAll);
-	}
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-acquire\n"); std::fflush(stderr);
-	}
+	// ---- frame sync: acquire -> editor passes -> present (the host pump
+	// shape, driven editor-side for the custom frame flow). ----
 	auto fb = m_swapchain->AcquireFramebuffer();
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-render begin img=%d\n", (int)fb.imageIndex); std::fflush(stderr);
-	}
 	if (fb.imageIndex >= 0)
 		RenderFrame(fb);
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-present begin\n"); std::fflush(stderr);
-	}
 	m_swapchain->EndAndPresentFramebuffer(fb);
-	if (std::getenv("VULKANTOY_HOSTED_TRACE") != nullptr) {
-		std::fprintf(stderr, "[DRIVE] ed-present done\n"); std::fflush(stderr);
-	}
-	// Post-present hosted diagnostics: the frame (editor passes + the
-	// INLINE world frame they carried) has landed — safe to stall.
-	if (m_wysiwyg) {
-		// One-shot capture export (VULKANTOY_CAPTURE=<frame> — the
-		// renderer's TonemapCapture wrote its own target this frame):
-		// view-0 pixel proof now that the world renders inline (scene
-		// only, no editor UI — exactly the grading-reference capture).
-		m_wysiwyg->PollCaptureReadback();
-		// Diagnostic dump (VULKANTOY_WYSIWYG_DUMP=<frame>): read each
-		// SECONDARY hosted view's own image back (they keep their own
-		// offscreen targets; view 0 renders inline — use
-		// VULKANTOY_CAPTURE for its pixel proof) and write PNGs + pixel
-		// stats — "is the renderer actually drawing the mesh" stays
-		// answerable headlessly. Two shots (frame N and N+11) so
-		// before/after comparisons (camera moves, view switches) come
-		// out of ONE run. Ships in all builds (env-gated dev tool);
-		// stalls only on the dump frames.
-		static const int kDumpFrame = []() {
-			const char* e = std::getenv("VULKANTOY_WYSIWYG_DUMP");
-			return e ? std::atoi(e) : -1;
-		}();
-		static int dumpShots = 0;
-		const int dumpAt = (dumpShots == 0) ? kDumpFrame
-			: (dumpShots == 1 ? kDumpFrame + 11 : -1);
-		if (kDumpFrame >= 0 && dumpAt >= 0
-			&& int(m_frameCounter) == dumpAt) {
-			++dumpShots;
-			WaitForDeviceIdle();
-			for (uint32_t i = 0; i < m_wysiwyg->GetViewCount(); ++i) {
-				const smvk::Extent2D ext = m_wysiwyg->ViewOutExtent(i);
-				const smvk::ImageHandle img = m_wysiwyg->ViewOutImage(i);
-				if (ext.width == 0 || ext.height == 0 || img.empty())
-					continue;
-				const size_t vbytes = size_t(ext.width) * ext.height * 4;
-				std::vector<uint8_t> vpx(vbytes);
-				if (!m_context->DownloadDataFromImage(
-						img, smvk::ImageLayout::ShaderReadOnlyOptimal,
-						vpx.data(), vpx.size())) {
-					Log("hosted-view dump: readback failed.");
-					continue;
-				}
-				uint64_t vsum[3] = { 0, 0, 0 };
-				size_t vNonBlack = 0;
-				for (size_t p = 0; p + 3 < vpx.size(); p += 4) {
-					std::swap(vpx[p], vpx[p + 2]); // B,R
-					vsum[0] += vpx[p]; vsum[1] += vpx[p + 1];
-					vsum[2] += vpx[p + 2];
-					if (vpx[p] > 8 || vpx[p + 1] > 8 || vpx[p + 2] > 8)
-						++vNonBlack;
-				}
-				const size_t vn = vpx.size() / 4;
-				char vbuf[256];
-				std::snprintf(vbuf, sizeof(vbuf),
-					"hosted-view %u dump #%d: %ux%u mean=(%u,%u,%u) "
-					"non-black %.1f%% refresh=%s%s -> wysiwyg_view%u.png",
-					i + 1u, dumpShots,
-					ext.width, ext.height,
-					unsigned(vsum[0] / vn), unsigned(vsum[1] / vn),
-					unsigned(vsum[2] / vn),
-					100.0 * double(vNonBlack) / double(vn),
-					engine::ViewRefreshName(m_wysiwyg->GetViewRefresh(i)),
-					m_wysiwyg->ViewRenderedThisFrame(i)
-						? " (rendered this frame)" : " (held image)",
-					i + 1u);
-				Log(vbuf);
-				char png[64];
-				std::snprintf(png, sizeof(png), "wysiwyg_view%u%s.png",
-					i + 1u, dumpShots == 1 ? "" : "b");
-				stbi_write_png(png, int(ext.width), int(ext.height), 4,
-					vpx.data(), int(ext.width) * 4);
-			}
-			// Lit restore for the SECOND shot (smoke runs only): shot 1
-			// stays whatever mode was active (the Unlit+wire reference
-			// in the smoke flow — the control), shot 2 renders Lit with
-			// the scene state as of shot 1 + 11 frames (the swung scene
-			// sun in the smoke flow — the scene-env proof). Firing here
-			// (right after shot 1 is captured) keeps the two shots
-			// deterministically apart regardless of stage timing; manual
-			// dump runs never touch the view mode.
-			if (dumpShots == 1 && m_wysiwygSmoke) {
-				ActiveViewMode() = ViewMode::Lit;
-				m_wireframeAll = false;
-				std::cerr << "[SMOKE] editor view mode -> Lit, wireframe "
-					"off — the live view must follow\n";
-			}
-		}
-	}
 	PollCookProcess();
 	PollBakeProcess();
-	DriveWysiwygSmoke();
-}
-
-void EditorApp::SetWysiwygSmoke() {
-	m_wysiwygSmoke = true;
-}
-
-void EditorApp::DriveWysiwygSmoke() {
-	// Dev crash-repro (--wysiwyg-smoke): cook the loaded scene minimally,
-	// let the auto-preview launch, render frames, cook as the product
-	// step under the live view, render, then exit. The project flow
-	// (--project-smoke) additionally covers on-demand Bake GI between
-	// preview and the in-place sidecar rebind. Every stage logs so a
-	// crash position is identifiable from stderr.
-	if (!m_wysiwygSmoke)
-		return;
-	switch (m_smokeStage) {
-	case 0: // the live hosted view must be up from the open (no cook!)
-		if (!m_world) {
-			std::cerr << "[SMOKE] FAILED: no world (see log)\n";
-			RequestClose();
-			return;
-		}
-		if (m_wysiwyg) {
-			std::cerr << "[SMOKE] stage 0 -> 1: live view up "
-				"(hosted renderer on the editor's world)\n";
-			m_smokeStage = 1;
-			m_smokeFrames = 0;
-		}
-		return;
-	case 1: // render under the live view; then the PRODUCT step
-		// Camera-drive proof (frame 12): rotate the ACTIVE editor
-		// camera — the hosted live view must follow (dump-armed runs
-		// capture a post-rotation frame; see VULKANTOY_WYSIWYG_DUMP).
-		if (m_smokeFrames == 12 && !m_editorCams.empty()) {
-			EditorCam& cam =
-				m_editorCams[m_viewports[m_activeVp].camIdx];
-			cam.yaw += 0.9f;
-			cam.pitch = std::clamp(cam.pitch - 0.35f, -1.5f, 1.5f);
-			cam.dist = std::max(cam.dist * 0.15f, 0.05f); // close-up
-			std::cerr << "[SMOKE] editor camera rotated+zoomed — "
-				"the live view must follow\n";
-			// Scene-env proof: swing the authored sun IN THE SCENE
-			// (CurrentEnv is scene-backed; ResolveSceneEnv refreshes
-			// the rendered copy) — the hosted live view's sun
-			// (directional light + shadows + skydome disc) must follow.
-			CurrentEnv().sunAzimuth += 90.0f;
-			ResolveSceneEnv();
-			std::cerr << "[SMOKE] scene sun azimuth +90 — "
-				"the live view must follow\n";
-		}
-		// Debug-view-drive proof (frame 16): the editor's Unlit mode
-		// must hook the hosted frame (same camera as the rotated
-		// reference run — a differing dump isolates the view switch).
-		// Wireframe proof rides the same shot: P toggles the hidden-
-		// line wireframe (Line mode over the Fill prepass — lines
-		// never draw over the objects in front).
-		if (m_smokeFrames == 16) {
-			ActiveViewMode() = ViewMode::Unlit;
-			m_wireframeAll = !m_wireframeAll;
-			std::cerr << "[SMOKE] editor view mode -> Unlit + wireframe "
-				"on — the live view must follow\n";
-		}
-		// Plain smoke runs (no VULKANTOY_WYSIWYG_DUMP armed) have no
-		// shot-2 contract to preserve: restore Lit + wireframe-off one
-		// frame after the proof so the remaining stages (cook under the
-		// live view, the product-step cook, the post-rebind render)
-		// verify in the Lit look instead of riding Unlit+wireframe to
-		// the exit. The dump-armed restore in the shot block only fires
-		// when a dump actually captured (kDumpFrame >= 0), so this gate
-		// mirrors it on the env's absence — armed runs keep the
-		// Unlit+wire control shot untouched.
-		else if (m_smokeFrames == 17
-			&& std::getenv("VULKANTOY_WYSIWYG_DUMP") == nullptr) {
-			ActiveViewMode() = ViewMode::Lit;
-			m_wireframeAll = false;
-			std::cerr << "[SMOKE] editor view mode -> Lit, wireframe off — "
-				"no dump armed, the rest of the smoke stays verifiable\n";
-		}
-		if (++m_smokeFrames > 20) {
-			if (m_cookRunning)
-				return;
-		if (m_projectSmoke) {
-			// Project flow additionally covers on-demand Bake GI: bake,
-			// wait it out, then the in-place sidecar rebind below.
-			std::cerr << "[SMOKE] stage 1 -> 1b: Bake GI (on demand)\n";
-			BakeGI();
-			m_smokeStage = 4;
-			m_smokeFrames = 0;
-		}
-		else {
-			// Plain flow: cook as the PRODUCT step under the live
-			// view (the cook never touches the viewport — the view
-			// must stay live across it).
-			std::cerr << "[SMOKE] stage 1 -> 1c: cook (product step "
-				"under the live view)\n";
-			m_cook.lightmap = false;
-			m_cook.cubemap = false;
-			m_cook.lods = false;
-			m_cook.meshlets = false;
-			m_cook.giCvol = false;
-			m_cook.giWorld = false;
-			CookToPak();
-			m_smokeStage = 3;
-			m_smokeFrames = 0;
-		}
-	}
-	return;
-case 3: // cook done: the live view must have survived it (no rebind —
-		// the cook never changed the world; the in-place rebind makes a
-		// post-cook relaunch unnecessary by construction).
-	if (m_cookRunning)
-		return;
-	if (++m_smokeFrames > 3) {
-		if (!m_wysiwyg) {
-			std::cerr << "[SMOKE] FAILED: live view died across the "
-				"cook (see log)\n";
-			RequestClose();
-			return;
-		}
-		std::cerr << "[SMOKE] stage 1c -> 2: live view survived the cook "
-			"(no rebind needed)\n";
-		m_smokeStage = 2;
-		m_smokeFrames = 0;
-	}
-	return;
-case 4: // on-demand bake running; then the in-place sidecar rebind
-	if (!m_bakeRunning) {
-		if (m_giBakedHash.empty()) {
-			std::cerr << "[SMOKE] FAILED: Bake GI did not complete "
-				"(see log)\n";
-			RequestClose();
-			return;
-		}
-		// Same path as the bake-done UI flow (editor_cook.cpp): the
-		// sidecars refresh IN PLACE — no renderer relaunch exists.
-		std::cerr << "[SMOKE] stage 1b -> 2: in-place sidecar rebind\n";
-		if (m_wysiwyg && m_world) {
-			m_wysiwyg->SetSceneId(SceneIdForHost());
-			m_wysiwyg->SetProjectRoot(m_projectRoot);
-			m_wysiwyg->RebindWorld(m_world.get());
-		}
-		m_smokeStage = 2;
-		m_smokeFrames = 0;
-	}
-	else if (++m_smokeFrames > 3600) {
-		std::cerr << "[SMOKE] FAILED: Bake GI timed out (see log)\n";
-		RequestClose();
-	}
-	return;
-	case 2: // render after the product step (cook/bake + the sidecar
-		// rebind in the project flow), then exit
-		if (++m_smokeFrames > 20) {
-		if (!m_wysiwyg) {
-			std::cerr << "[SMOKE] FAILED: live view died across the "
-				"sidecar rebind (see log)\n";
-			RequestClose();
-			return;
-		}
-		std::cerr << "[SMOKE] stage 2 done: exiting cleanly\n";
-		RequestClose();
-	}
-	return;
-	}
 }
 
 void EditorApp::Log(const std::string& s) {

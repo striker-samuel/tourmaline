@@ -8,9 +8,11 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Renderer/cubemap.h>
 #include <imgui.h>
 
 namespace editor {
@@ -531,30 +533,6 @@ void EditorApp::DrawViewportChrome() {
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Q opens the selection radial.");
-			ImGui::SameLine();
-			// Per-view hosted refresh (viewport 0 = the main hosted view,
-			// always full-rate; viewports 1+ map to hosted views 0+).
-			if (m_wysiwyg && i > 0
-				&& i - 1 < (int)m_wysiwyg->GetViewCount()) {
-				const char* ritems[3] = {
-					engine::ViewRefreshName(engine::ViewRefresh::Full),
-					engine::ViewRefreshName(engine::ViewRefresh::Tic),
-					engine::ViewRefreshName(engine::ViewRefresh::Toc),
-				};
-				int cur = static_cast<int>(
-					m_wysiwyg->GetViewRefresh(uint32_t(i - 1)));
-				ImGui::SetNextItemWidth(72.0f);
-				char rlabel[32];
-				std::snprintf(rlabel, sizeof(rlabel), "##refresh%d", i);
-				if (ImGui::Combo(rlabel, &cur, ritems, 3))
-					m_wysiwyg->SetViewRefresh(uint32_t(i - 1),
-						static_cast<engine::ViewRefresh>(cur));
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip(
-						"Hosted-view refresh: every frame, or every other "
-						"frame on the tic/toc phase (off-phase frames keep "
-						"the last image).");
-			}
 		}
 		ImGui::End();
 		ImGui::PopID();
@@ -799,6 +777,49 @@ void EditorApp::DrawOctreePreviewOverlay() {
 	}
 }
 
+// Loaded cubemap probe rows parsed straight from the scene's manifest
+// sidecar (see the header): the same rows the renderer loads at runtime.
+bool EditorApp::CubemapProbeRowsFromFile(
+	std::vector<CubemapProbeRow>& out) const {
+	out.clear();
+	if (m_gltfPath.empty() && m_gltfHostPath.empty())
+		return false;
+	namespace fs = std::filesystem;
+	const std::string rel =
+		smvk::CubemapManifestVfsPath(SceneIdForHost());
+	std::vector<std::string> roots;
+	if (!m_projectRoot.empty())
+		roots.push_back(m_projectRoot);
+	roots.push_back("content");
+	for (const auto& root : roots) {
+		const fs::path host = fs::path(root) / fs::path(rel);
+		std::ifstream f(host, std::ios::binary | std::ios::ate);
+		if (!f)
+			continue;
+		const auto end = f.tellg();
+		if (end == std::ifstream::pos_type(-1) || end <= 0)
+			return false;
+		f.seekg(0);
+		std::string text(static_cast<size_t>(end), '\0');
+		if (!f.read(text.data(), static_cast<std::streamsize>(text.size())))
+			return false;
+		std::string mErr;
+		std::vector<smvk::CubemapManifestEntry> rows;
+		if (!smvk::CubemapManifestParse(text, rows, mErr))
+			return false;
+		out.reserve(rows.size());
+		for (const auto& row : rows) {
+			CubemapProbeRow r;
+			r.center = row.position;
+			r.influence = row.influenceRadius;
+			r.fade = row.fadeRadius;
+			out.push_back(r);
+		}
+		return !out.empty();
+	}
+	return false;
+}
+
 // Baked/unbaked census over the authored pins (overlay + cook dialog
 // share it so the readout and the balls can never disagree).
 void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
@@ -809,18 +830,16 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 	totalOut = m_world->scene.cubemapForNode.size();
 	if (totalOut == 0)
 		return;
-	std::vector<glm::vec3> baked;
-	if (m_wysiwyg)
-		m_wysiwyg->CubemapProbeCenters(baked);
-	if (baked.empty())
+	std::vector<CubemapProbeRow> rows;
+	if (!CubemapProbeRowsFromFile(rows))
 		return;
 	for (const auto& [node, def] : m_world->scene.cubemapForNode) {
 		(void)def;
 		if (node >= m_world->scene.globalTransform.size())
 			continue;
 		const glm::vec3 p(m_world->scene.globalTransform[node][3]);
-		for (const glm::vec3& b : baked) {
-			if (glm::distance(p, b) < kCaptureBakeMatchM) {
+		for (const auto& r : rows) {
+			if (glm::distance(p, r.center) < kCaptureBakeMatchM) {
 				++bakedOut;
 				break;
 			}
@@ -830,15 +849,15 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 
 // Capture balls + App-parity probe overlay (LIGHTING mode only). Two
 // halves sharing one viewport walk:
-//   1. LOADED probes (the hosted live view's probe table — the SAME rows
-//      the App's probe-location overlay reads): center dot + C<idx> +
+//   1. LOADED probes (the manifest sidecar rows - see
+//      CubemapProbeRowsFromFile): center dot + C<idx> +
 //      influence ring (solid) + fade ring (dim), camera-distance colored
 //      (green = inside influence, yellow = in fade, gray = out of range),
 //      capped at 64 within the overlay max distance. Answers "is there a
 //      cubemap near X?" exactly like the App.
 //   2. AUTHORED pins with no loaded probe behind them: black balls (the
-//      editor-only half — "nothing rendered here yet"; bake + rebind to
-//      promote them into half 1).
+//      editor-only half — "nothing rendered here yet"; bake to promote
+//      them into half 1).
 // The click twin lives in PickGizmoMarker.
 void EditorApp::DrawCaptureBallOverlay() {
 	// MODAL: the light-authoring set shows only in LIGHTING mode.
@@ -846,11 +865,10 @@ void EditorApp::DrawCaptureBallOverlay() {
 		return;
 	if (!m_world)
 		return;
-	// Loaded probe rows from the hosted live view (empty when the live
-	// view is down — pins all read unbaked, probes draw nothing).
-	std::vector<engine::WorldRenderer::CubemapProbeRow> rows;
-	if (m_wysiwyg)
-		m_wysiwyg->CubemapProbeRows(rows);
+	// Loaded probe rows (empty when no manifest sidecar - pins all read
+	// unbaked, probes draw nothing).
+	std::vector<CubemapProbeRow> rows;
+	CubemapProbeRowsFromFile(rows);
 	const bool showPins = m_showCubemapGizmos
 		&& !m_world->scene.cubemapForNode.empty();
 	if (!m_showProbeOverlay && !showPins)

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <assert.h>
 #include <algorithm>
@@ -21,7 +21,7 @@ glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear,
 // Degenerate-lookAt resolution (the SINGLE shared convention — every
 // camera framing that can look straight down/up must go through these so
 // all consumers of one (eye, target) pair agree on the screen basis:
-// the editor's overlay camera, the hosted renderer's drive paths and the
+// the editor's overlay camera, the camera drive paths and the
 // locked look-through each used to pick their own fallback (a sideways
 // target nudge here, an arbitrary up-axis there), which rotated the
 // editor's wire boxes 90 degrees against the scene in the straight-down

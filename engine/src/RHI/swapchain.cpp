@@ -33,20 +33,7 @@ Swapchain::Swapchain(ResourceManager& ctx, SDL_Window* window) : impl_(std::make
     auto* vm = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
     impl_->vulkan = std::make_unique<VulkanSwapchain>(*vm, window);
 }
-Swapchain::Swapchain(ResourceManager& ctx, Extent2D hostedExtent,
-    Format colorFormat) : impl_(std::make_unique<Impl>()) {
-    // Hosted render target (see swapchain.h): offscreen composition.
-    auto* vm = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
-    impl_->vulkan = std::make_unique<VulkanSwapchain>(*vm,
-        VkExtent2D{ hostedExtent.width, hostedExtent.height }, colorFormat);
-}
 Swapchain::~Swapchain() = default;
-ImageViewHandle Swapchain::HostedViewHandle() const {
-    return impl_->vulkan->HostedViewHandle();
-}
-ImageHandle Swapchain::HostedImageHandle() const {
-    return impl_->vulkan->HostedImageHandle();
-}
 void Swapchain::Create() { impl_->vulkan->Create(); }
 void Swapchain::Recreate() { impl_->vulkan->Recreate(); }
 Extent2D Swapchain::GetExtent() const {
@@ -94,12 +81,6 @@ void Swapchain::EndAndPresentFramebuffer(Framebuffer& fb) {
 }
 void Swapchain::SetPresentMode(PresentMode mode) {
     impl_->vulkan->SetRequestedPresentMode(ToVkPresentMode(mode));
-}
-void Swapchain::SetHostedExtent(Extent2D extent) {
-    impl_->vulkan->SetHostedExtent(VkExtent2D{ extent.width, extent.height });
-}
-void Swapchain::SetHostedFramesInFlight(uint32_t count) {
-    impl_->vulkan->SetHostedFramesInFlight(count);
 }
 PresentMode Swapchain::GetPresentMode() const {
     return FromVkPresentMode(impl_->vulkan->GetRequestedPresentMode());

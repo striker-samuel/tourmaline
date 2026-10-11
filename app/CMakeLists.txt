@@ -89,35 +89,6 @@ foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
     endif()
 endforeach()
 
-# Engine-owned staged resources (engine_resources: the WYSIWYG compose
-# shaders under resources/shaders). Staged next to the executables'
-# working dir; the app mounts it as the lowest-priority VFS backend
-# (root dir name: "engine_resources").
-if(EXISTS "${CMAKE_SOURCE_DIR}/engine/resources")
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_SOURCE_DIR}/engine/resources"
-                "$<TARGET_FILE_DIR:App>/engine_resources"
-        COMMENT "Copying engine resources to $<TARGET_FILE_DIR:App>/engine_resources"
-    )
-endif()
-
-# Engine-shipped SHADERS (engine/resources/shaders, compiled by the
-# engine target into ${CMAKE_BINARY_DIR}/engine_resources/shaders):
-# the WYSIWYG compose blit first. Stage next to App.exe like the
-# engine resources above; the ALL target guarantees the spvs exist.
-if(TARGET EngineRes_shaders)
-    add_dependencies(App EngineRes_shaders)
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:App>/engine_resources/shaders"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_BINARY_DIR}/engine_resources/shaders"
-                "$<TARGET_FILE_DIR:App>/engine_resources/shaders"
-        COMMENT "Syncing engine-shipped shaders next to App.exe"
-    )
-endif()
-
 # Deferred-shadow debug visualizers (paper 5.3/5.4): resolved by the root
 # CMakeLists (auto = Debug trees; VULKANTOY_DS_VIZ=ON forces them into
 # optimized builds — see the x64-Release-DSViz CMakeSettings preset). The

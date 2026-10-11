@@ -146,23 +146,6 @@ add_custom_command(TARGET engine POST_BUILD
 )
 
 # ---------------------------------------------------------------------------
-# Engine-shipped shaders (engine/resources/shaders): ENGINE/EDITOR
-# concerns, DISTINCT from the App scene set (engine/shaders, which
-# compiles into content/shaders and loads relative to the working dir
-# alongside user content). Engine shaders stage next to the
-# executables as engine_resources/shaders — first inhabitant: the
-# WYSIWYG compose blit (the editor's hosted-preview viewport pass;
-# see editor_app.h). App + Editor both stage the outputs POST_BUILD.
-# ---------------------------------------------------------------------------
-compile_shaders(
-    "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders"
-    "${CMAKE_BINARY_DIR}/engine_resources/shaders"
-    EngineRes
-    INCLUDE_DIRS
-        "${CMAKE_SOURCE_DIR}/engine/shaders"
-)
-
-# ---------------------------------------------------------------------------
 # Scene shaders (engine/shaders -> content/shaders/*.spv): the world
 # renderer's pipeline set, loaded relative to the working directory
 # alongside user content. Owned here since the renderer moved into the

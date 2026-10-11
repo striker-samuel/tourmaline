@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Central Optick integration for VulkanToy.
 //
 // Usage (CPU):
@@ -99,7 +99,7 @@ bool GpuEnabled();
 // Frame-time histogram (live distribution over the last frames)
 // ---------------------------------------------------------------------------
 // Opt-in live frame-time distribution for the App (the F12 shortcut) and
-// the editor (View menu / the same hosted F12). DISABLED =
+// the editor (View menu / the same F12). DISABLED =
 // RecordFrameTime() is a single compare-and-return — zero cost; ENABLED
 // costs a few ns/frame on fixed storage (no allocation, no locks; the main
 // thread is the only writer/reader). While an Optick capture runs, frame
@@ -108,7 +108,7 @@ bool GpuEnabled();
 void SetFrameHistogramEnabled(bool enabled);
 bool FrameHistogramEnabled();
 // Records one frame — hooked at the two once-per-frame UpdateDeltaTime
-// call sites (windowed WorldRenderer::DrawFrame, gated off when hosted;
+// call sites (the WorldRenderer element; the editor host records itsd;
 // EditorApp::DrawFrame). No-op while disabled.
 void RecordFrameTime(double milliseconds);
 struct FrameHistogramData {

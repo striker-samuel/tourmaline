@@ -264,11 +264,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// toggles below are the per-kind master switches INSIDE that mode.
 	const bool lightSetVisible = lightingFocus;
 	// Ground grid (XZ at y = 0): minor + major cells; the translate snap
-	// step equals the cell size (Shift-drag). Editor-drawn ONLY without
-	// a live hosted view (its own depth path tests correctly there);
-	// with the live view up the hosted renderer draws the grid itself,
-	// depth-tested against each view's own depth.
-	if (m_showGrid && !m_wysiwyg && !lightingFocus) {
+	// step equals the cell size (Shift-drag). Editor-drawn, depth-tested
+	// against the editor pass's own depth.
+	if (m_showGrid && !lightingFocus) {
 		EditorAppViewGizmo cfg{};
 		cfg.cellSize = std::max(m_gridSize, 0.01f);
 		cfg.extentCells = int(std::clamp<uint32_t>(m_gridExtent, 2, 512));
@@ -413,8 +411,8 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// (orange/cyan/yellow) and cvolumes (priority hues); the selection
 	// draws bright. The CHROME-BALL visualization of the LOADED baked
 	// captures is the WorldRenderer's lit probe-ball pass (see
-	// Rendergraph/probeball.h + the View menu) — not a gizmo: it renders
-	// through the hosted renderer's Main pass with the scene's depth/IBL.
+	// Rendergraph/probeball.h + the View menu) — not a gizmo: the App
+	// renders it inside Main with the scene's depth/IBL.
 	// LIGHTING mode only, like the rest of the light set.
 	if (lightSetVisible && m_showCubemapGizmos
 		&& !m_world->scene.cubemapForNode.empty()) {

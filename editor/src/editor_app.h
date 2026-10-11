@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 // GltfEditor: inspect + cook glTF scenes with a .tour overlay.
 //
 // Loads a glTF straight into a GPU World (same importer as App/PakCooker),
 // shows it in a minimal forward viewport with two shading modes
-// (Unlit / Lit — the hosted live view carries shadows when live), and lets the user:
+// (Unlit / Lit - lighting varies by view mode), and lets the user:
 //   - pick nodes in the 3D view (CPU raycast) or the outliner,
 //   - move/rotate/scale them with a selection gizmo (highlight drawn as a
 //     wireframe overlay + AABB lines),
@@ -127,7 +127,7 @@ inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 // Viewport shading mode. The F-keys match the APP'S DebugView shortcuts
 // 1:1 (F1 lit, F2 unlit, F3 meshlets, F4 cascades, F5 lods, F6 vertex
 // colors, F9 UV0, F10 UV1/lightmap, F11 POM) + P wireframe — the live
-// view (the hosted WorldRenderer) is driven by exactly these, so the
+// viewport view modes are driven by exactly these, so the
 // editor and a standalone App render the same view on the same key.
 // ---------------------------------------------------------------------------
 enum class ViewMode : int {
@@ -338,10 +338,6 @@ public:
 	bool OpenAnySceneFile(const std::string& path);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
 	void SetOutPak(const std::string& p) { m_cook.outPak = p; }
-	void SetWysiwygSmoke(); // dev crash-repro (--wysiwyg-smoke)
-	// Headless project flow (--project-smoke <dir> + --gltf <asset>).
-	void SetProjectSmoke(const std::string& dir,
-		const std::string& asset);
 
 protected:
 	bool Initialize() override;
@@ -520,13 +516,10 @@ private:
 	// orbit camera otherwise).
 	bool BoundCameraView(int vp, glm::mat4& view, glm::mat4& proj,
 		glm::vec3& eye, float& nearClip, float& farClip) const;
-	// The SAME bound-camera framing as a hosted-renderer drive payload:
+	// The SAME bound-camera framing as the overlay matrices build:
 	// pose (eye/forward/up — up already carries the shared degenerate
 	// fallback) + lens (fov / TRUE ortho half-height / clips). Single
-	// source of truth with BoundCameraView (which builds its overlay
-	// matrices from this) — the hosted WYSIWYG drive passes it to
-	// DriveExternalCamera/DriveView so the live pixels and the overlay
-	// share one camera when a viewport is locked look-through.
+	// source of truth with BoundCameraView.
 	struct BoundCameraPose {
 		glm::vec3 eye, fwd, up;
 		float fovYDeg = 60.0f;
@@ -540,13 +533,10 @@ private:
 	bool GridVisible() const { return m_showGrid; }
 	// ---- lighting view (the GI tri-view: View menu radios) ----
 	// The bake workflow's three looks: Unlit (albedo), Fully Lit (With
-	// GI) — the live view renders the baked GI sources (world field +
-	// convex volumes + cubemaps; AmbientMode::All) — and Realtime Lit —
-	// the analytic look without the bake (direct sun + sky IBL;
-	// AmbientMode::SkyIbl). 0 = Fully, 1 = Realtime; Unlit is the F2 view
-	// mode (the unlit FS replaces shading wholesale). Driven onto the
-	// hosted renderer every frame (SetAmbientMode) next to the
-	// debug-view drive.
+	// GI) — the baked GI sources (world field + convex volumes +
+	// cubemaps) — and Realtime Lit — the analytic look without the bake
+	// (direct sun + sky IBL). 0 = Fully, 1 = Realtime; Unlit is the F2
+	// view mode (the unlit FS replaces shading wholesale).
 	int m_litView = 0;
 
 	// ---- selection (multi) ----
@@ -613,15 +603,6 @@ private:
 	NonDagSel m_nonDagSel;
 	uint32_t m_imageFocus = UINT32_MAX; // Images-tab highlight row
 	bool m_showNonDag = false;          // outliner non-DAG section toggle
-	// TERRAIN FIELD non-DAG node (the hosted renderer's default world
-	// dressing — Rendergraph/terrain.h; NOT scene content, never cooked):
-	// selecting the outliner row focuses the inspector's terrain page
-	// (edit desc -> rebuild, enable toggle, destroy). The draft seeds from
-	// the renderer's live desc once, then edits locally until Rebuild.
-	bool m_terrainFocus = false;
-	bool m_terrainDraftValid = false;
-	smvk::terrain::TerrainDesc m_terrainDraft{};
-	void DrawTerrainFieldPage();
 	void CollectNonDagEntries(std::vector<NonDagEntry>& out) const;
 	void SelectNonDag(NonDagKind kind, uint32_t index); // single
 	void ClearNonDagSelection();
@@ -1249,29 +1230,13 @@ private:
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
 	bool m_showCameraGizmos = true;
-	// Cubemap-capture BALLS: LIT chrome spheres at the loaded baked
-	// captures, rendered by the HOSTED WorldRenderer's probe-ball pass
-	// (see Rendergraph/probeball.h) — each ball samples its own baked
-	// cubemap in the reflection direction, so it reads exactly what the
-	// specular IBL serves at that capture spot. Pure render-pass visual:
-	// no scene nodes, no outliner/pick/delete filtering, nothing cooked
-	// or persisted. MODAL: the whole light-authoring set (light markers,
-	// cvolume boxes, capture pins/balls, GI previews, chrome balls) shows
-	// ONLY in LIGHTING mode — LAYOUT stays on the object set. The View
-	// menu toggles are the per-kind master switches inside that mode.
-	// Chrome-ball user toggle (View menu); the per-frame hosted drive
-	// applies it ANDed with the lighting mode onto the renderer.
-	bool m_showChromeBalls = true;
-	// App-parity probe overlay (View menu): the hosted live view's LOADED
-	// probe rows drawn per viewport exactly like the App's probe-location
+	// App-parity probe overlay (View menu): the LOADED
+	// probe rows (the manifest sidecar - see CubemapProbeRowsFromFile)
+	// drawn per viewport exactly like the App's probe-location
 	// overlay (dot + C<idx> + influence/fade rings, camera-distance
 	// colored). LIGHTING mode only, like the rest of the light set.
 	bool m_showProbeOverlay = true;
 	float m_probeOverlayMaxDist = 80.0f; // overlay distance cutoff (m)
-	// App-parity cubemap debug view (View menu combo, driven per frame
-	// onto the hosted renderer): 0 off, 1 raw cubemap (which probe
-	// serves each pixel), 2 probe blend weight as heat.
-	int m_cubemapDebugView = 0;
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1373,7 +1338,7 @@ private:
 	// definition tour the cook snapshots (never part of the cook —
 	// cooks stay fast and GI-free; unbaked scenes render sky IBL).
 	// Sidecars key to the cook's out-pak stem; completion refreshes
-	// the hosted view so the new bake shows immediately.
+	// the next open so the new bake shows immediately.
 	void BakeGI();
 	void PollBakeProcess();
 
@@ -1630,116 +1595,23 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
-	// ---- LIVE VIEW (the INLINE hosted WorldRenderer is the viewport driver) ----
-// The viewports render through an INLINE engine::WorldRenderer that renders
-// THE EDITOR'S OWN WORLD — the live engine representation (imports
-// preprocessed, GUID references bound, edits applied) — inside the editor's
-// own frame: RenderFrame (editor_render.cpp) records the whole world
-// pipeline into the editor's command buffer between its background-clear
-// round and its overlay round, on the editor's flight rhythm. One acquire,
-// one submit, one present per editor frame — no offscreen hosted swapchain
-// rhythm, no device-idle ping-pong.
-// RECT-SIZED TARGETS + 1:1 COMPOSE: every hosted target (the inline
-// target, the secondary views' depth/hdr/out) tracks its viewport
-// rect's SIZE — the lens renders the rect's frustum full-frame from
-// (0,0), so the compose blit is an exact 1:1 and the overlay/pick
-// frustum matches the pixels. Rect MOVES (panels, splitters, layouts)
-// are free (same size = Ensure no-op); rect RESIZES re-Ensure the
-// chain + canvas in place (transient, like a window resize — the
-// create-new + Holder-swap pattern with deferred retire keeps in-flight
-// frames alive). (The original design wrote the rect of the editor's
-// swapchain image directly; that write wedges nvlddmkm past the TDR
-// window on this driver — see WorldRenderer.h's inline-target members.
-// An interim full-extent-targets + cover-crop design lost that 1:1 —
-// whenever the target and rect aspects differed the compose showed a
-// zoomed subset no overlay/click could match.)
-// The hosted renderer BORROWS m_world (SetHostedBorrowedWorld): the editor
-// keeps owning + mutating it (edits show up live, per frame); the hosted
-// renderer never imports anything of its own. Cooks are the separate
-// PRODUCT step and never feed the view. World swaps (opens/reimports/paks/
-// bakes) rebind IN PLACE (RebindWorld): the renderer is never relaunched
-// for a world change; extent drift never relaunches either. The edit world
-// stays the authoring model underneath: outliner, inspector and gizmos
-// keep working on it.
-	// The inline hosted WorldRenderer instance (engine). Null when off.
-	// Linear process-owned (dtor-only deleter; never freed).
-	smvk::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
-	// Scene id storage (the renderer keeps its own copy): the scene
-	// stem naming the GI sidecars (gi/<stem>.*).
-	std::string m_wysiwygSceneId;
-	// Compose program (editor_render.cpp): the exact 1:1 blit of each
-	// hosted view's rect-sized image (view 0's inline target + each
-	// secondary view's own image) into its viewport rect.
-	smvk::ShaderProgram m_wysiwygProgram{};
-	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygVsModule;
-	smvk::Holder<smvk::ShaderModuleHandle> m_wysiwygFsModule;
-	uint32_t m_wysiwygSamplerIndex = UINT32_MAX;
-	// Launch/stop the hosted LIVE view. Launch borrows m_world (the
-	// caller must have one) as the hosted renderer's world; false + log
-	// on failure. Frame-boundary callers only (DrawFrame consumption).
-	bool LaunchWysiwyg();
-	void StopWysiwyg();
-	// Bake-asset GI bindings for the hosted live view (resolves the
-	// current scene's bake GUIDs and registers them on the editor
-	// world's clusters — see RefreshLiveViewGiBindings in editor_cook).
-	// Runs at the end of every glTF scene load (fresh world) and after
-	// every successful Bake GI, before the hosted view (re)binds.
-	void RefreshLiveViewGiBindings();
-	// Launch snapshot only: the viewport-0 rect size handed to the
-	// hosted ctor (the initial inline extent — SetMainViewExtent drives
-	// the live value every frame after).
-	smvk::Extent2D m_wysiwygExtent{ 0, 0 };
-	bool EnsureWysiwygProgram(); // compose shaders (idempotent)
-	// Content-rect blit of one hosted source image into its viewport
-	// rect (exact 1:1): the main view's rect-sized inline target and
-	// each secondary's rect-sized image both render full-frame from
-	// (0, 0). srcExtent is the source image's texel size; (contentX,
-	// contentY) stays for future sub-region sources.
-	void RecordWysiwygPass(smvk::LogicalImageViewHandle swapView,
-		const ViewportRect& rect, uint32_t sourceBindless,
-		smvk::Extent2D srcExtent, uint32_t contentX, uint32_t contentY);
-	// Hosted-view scene id (the open scene's stem; see LaunchWysiwyg) —
-	// shared by the launch and the in-place world rebind (DrawFrame /
-	// bake-done) so the GI sidecar loaders resolve the same names.
+	// Scene id (the open scene's stem): names the bake-asset sidecars
+	// the cooks/bakes write and the bake-asset flows read back
+	// (gi/<stem>.*, textures/cubemaps/<stem>.cubemanifest - see
+	// SceneIdForHost and the cook/bake flows in editor_cook*).
 	std::string SceneIdForHost() const;
-	// Dev crash-repro (--wysiwyg-smoke): live view from open, cook as
-	// the product step under it, the project flow's in-place sidecar
-	// rebind after a bake, then close. Drives itself from DrawFrame.
-	bool m_wysiwygSmoke = false;
-	int m_smokeStage = 0; // 0=live 1=cook 2=post-product (+4=baking GI)
-	int m_smokeFrames = 0;
-	void DriveWysiwygSmoke();
-	// Mid-frame world-swap safety: the load/close paths move the OLD
-	// world into a retire stash (it stays ALIVE for the hosted
-	// renderer's borrowed pointer) and flag the suspend; DrawFrame
-	// consumes it at the next frame boundary, idle — an IN-PLACE
-	// rebind onto the new world (or the launch on a first open, or
-	// the stop when the scene closed) — and only THEN retires the
-	// stash. Direct in-place world destruction with a live hosted
-	// renderer is a use-after-free.
-	bool m_wysiwygSuspendPending = false;
-	smvk::mem::LinearPtr<smvk::World> m_worldRetire;
-	// Called by every path that replaces or drops m_world while the
-	// hosted live view runs (scene opens, close, project switch):
-	// stashes the old world + flags the deferred in-place rebind (or
-	// the stop, on close) at the frame boundary.
-	void SuspendWysiwygForWorldSwap();
 	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
 	// A project folder owns the whole body of work: content/ sources,
 	// paks/ cook outputs, gi/ bake sidecars, and its OWN artifacts/
 	// cache (the Unity Library/ equivalent: cache.db + assets.db GUID
 	// directory + per-class paks — no scratch disk, without a project
 	// the cache is off). Opening a project repoints the artifact
-	// cache, the cook defaults and the hosted view's VFS at it;
-	// importing copies an asset in with a UUID (.meta sidecar) and the
-	// hosted view shows it with the full render pipeline. Scenes and
+	// cache and the cook defaults at it;
+	// importing copies an asset in with a UUID (.meta sidecar). Scenes and
 	// references live project-bound: references record the asset
 	// UUID + project-relative path, saves stay inside the project.
 	std::string m_projectRoot; // normalized, has project.tourproj
 	std::string m_projectName; // display name (marker or folder name)
-	bool m_projectSmoke = false; // --project-smoke dev flow (see main)
-	std::string m_projectSmokeDir;   // project root to create/open
-	std::string m_projectSmokeAsset; // source asset to import
 	// Opens (or validates) <dir> as the project: closes the live
 	// scene, repoints the artifact cache at <dir>/artifacts, persists.
 	// False + log when <dir> has no project.tourproj marker.
@@ -2079,16 +1951,30 @@ private:
 	std::vector<CvolPreview> m_cvolPreviews;
 	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	// Capture balls + App-parity probe overlay (editor_viewports.cpp,
-	// ImGui foreground, LIGHTING mode only): the hosted live view's
-	// LOADED probe rows drawn exactly like the App's probe-location
-	// overlay (dot + C<idx> + influence/fade rings, camera-distance
-	// colored), plus black balls for authored pins with no loaded probe
-	// behind them ("nothing rendered here yet"). Honors
-	// m_showProbeOverlay (loaded rows) and m_showCubemapGizmos (pins).
+	// ImGui foreground, LIGHTING mode only): the scene's LOADED probe
+	// rows (the cubemap manifest sidecar - see CubemapProbeRowsFromFile)
+	// drawn exactly like the App's probe-location overlay (dot + C<idx>
+	// + influence/fade rings, camera-distance colored), plus black balls
+	// for authored pins with no loaded probe behind them ("nothing
+	// rendered here yet"). Honors m_showProbeOverlay (loaded rows) and
+	// m_showCubemapGizmos (pins).
 	void DrawCaptureBallOverlay();
+	// One loaded probe row (the manifest sidecar's placement half).
+	struct CubemapProbeRow {
+		glm::vec3 center{ 0.0f };
+		float influence = 0.0f; // full-weight radius (m)
+		float fade = 0.0f;      // fade extent past influence (m)
+	};
+	// Loaded probe rows parsed straight from the scene's cubemap manifest
+	// sidecar (textures/cubemaps/<stem>.cubemanifest - the same file the
+	// renderer loads at runtime), read under the project root first, then
+	// the bundled content tree. Empty (no manifest / no scene) = no
+	// loaded probes: the census reads all pins unbaked and the overlay
+	// draws the authored pins only.
+	bool CubemapProbeRowsFromFile(std::vector<CubemapProbeRow>& out) const;
 	// Baked/unbaked census for the authored pins (overlay + cook dialog
-	// share it): pins within kCaptureBakeMatchM of a hosted loaded probe
-	// count as baked. No live view (or no probes) = 0 baked.
+	// share it): pins within kCaptureBakeMatchM of a loaded probe
+	// count as baked. No probes = 0 baked.
 	static constexpr float kCaptureBakeMatchM = 2.0f;
 	void CaptureBakeState(size_t& bakedOut, size_t& totalOut);
 	// ---- octree PRECOOK visualization (GI authoring overlay) ----

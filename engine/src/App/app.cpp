@@ -10,6 +10,7 @@
 #include <Engine/core.h>
 #include <Engine/App/app.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/platform.h>
 #include <Engine/Profile/profile.h>
 
@@ -24,13 +25,58 @@ bool smvk::App::Run() {
 		Shutdown();
 		return false;
 	}
+	// Attach the stack AFTER boot: elements see live graphics members
+	// through their onAttach (context/swapchain resolve there). A failed
+	// attach aborts the run loudly (Shutdown still detaches the rest
+	// while everything is alive).
+	for (const auto& element : m_elements) {
+		if (!element)
+			continue;
+		if (!element->onAttach()) {
+			std::cerr << "[App] element '" << element->ElementName()
+				<< "' failed to attach — exiting\n";
+			Shutdown();
+			return false;
+		}
+	}
 	MainLoop();
-	// Ensure GPU idle and derived Holders are released while object is
+	// Ensure GPU idle and elements are released while object is
 	// still fully constructed (all members alive). This avoids destroying
 	// VkImage/Buffer-backed Holders after the device/allocator is gone.
 	Shutdown();
 	return true;
 };
+
+void smvk::App::AddElement(const std::shared_ptr<engine::IAppElement>& element) {
+	if (element)
+		m_elements.push_back(element);
+}
+
+void smvk::App::SubmitResourceFree(std::function<void()>&& func) {
+	if (!func)
+		return;
+	// Lazy ring: sized to the live swapchain's flight count on first use.
+	const uint32_t flights = m_swapchain ? m_swapchain->framesInFlight() : 1u;
+	if (m_resourceFreeQueue.size() != flights)
+		ResetFreeQueue(flights);
+	m_resourceFreeQueue[m_freeQueueRingCurrent].push_back(std::move(func));
+}
+
+void smvk::App::ResetFreeQueue(uint32_t size) {
+	m_resourceFreeQueue.clear();
+	m_resourceFreeQueue.resize(size ? size : 1u);
+	m_freeQueueRingCurrent = 0;
+}
+
+void smvk::App::DrainFreeQueue(uint32_t flight) {
+	if (m_resourceFreeQueue.empty())
+		return;
+	if (flight >= m_resourceFreeQueue.size())
+		flight = 0; // flight-count drift (rebuild): drain slot 0
+	for (auto& fn : m_resourceFreeQueue[flight])
+		fn();
+	m_resourceFreeQueue[flight].clear();
+}
 
 void smvk::App::UpdateDeltaTime() {
 
@@ -58,8 +104,8 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 }
 
 	bool smvk::App::PollEvents() {
-	SDL_Event e;
-	while (SDL_PollEvent(&e)) {
+		SDL_Event e;
+		while (SDL_PollEvent(&e)) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
 		if (imguiEventHook_)
 			imguiEventHook_(&e);
@@ -80,6 +126,49 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 	return !windowShouldClose_;
 }
 
+void smvk::App::DrawFrame() {
+	// DEFAULT element pump (nvapp-style host frame): sync stays HERE —
+	// present-mode drift + resize rebuilds (elements observe via
+	// onResize), one acquire, the stack's pre-render/render record into
+	// the host's frame, one present, then the deferred frees drain.
+	if (!m_swapchain)
+		return;
+	if (m_presentMode != m_swapchain->GetPresentMode()) {
+		m_swapchain->SetPresentMode(m_presentMode);
+		m_swapchain->Recreate();
+		const auto ext = m_swapchain->GetExtent();
+		for (const auto& element : m_elements)
+			if (element)
+				element->onResize(ext);
+		m_swapchain->ClearFramebufferResized();
+	}
+	if (m_swapchain->FramebufferResized()) {
+		m_swapchain->Recreate();
+		const auto ext = m_swapchain->GetExtent();
+		for (const auto& element : m_elements)
+			if (element)
+				element->onResize(ext);
+		m_swapchain->ClearFramebufferResized();
+	}
+	const auto acquireStart = std::chrono::steady_clock::now();
+	auto fb = m_swapchain->AcquireFramebuffer();
+	m_lastAcquireWaitMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - acquireStart).count();
+	if (m_resourceFreeQueue.size() != m_swapchain->framesInFlight())
+		ResetFreeQueue(m_swapchain->framesInFlight());
+	DrainFreeQueue(fb.frameIndex);
+	m_freeQueueRingCurrent = fb.frameIndex % uint32_t(m_resourceFreeQueue.size());
+	const auto ext = m_swapchain->GetExtent();
+	engine::ElementFrame frame{ &fb, ext, engine::LayerRect::Full() };
+	for (const auto& element : m_elements)
+		if (element)
+			element->onPreRender(frame);
+	for (const auto& element : m_elements)
+		if (element)
+			element->onRender(frame);
+	m_swapchain->EndAndPresentFramebuffer(fb);
+}
+
 void smvk::App::MainLoop() {
 	SMVK_PROFILE_THREAD("MainThread");
 	windowShouldClose_ = false;
@@ -92,6 +181,12 @@ void smvk::App::MainLoop() {
 			m_input.beginFrame();
 			PollEvents();
 		}
+		UpdateDeltaTime();
+		// Frame-arena rewind at the frame boundary: everything frame-
+		// allocated last frame is dead by definition (the frame presented;
+		// the acquire fence gates reuse). Hosts + elements rely on this —
+		// never reset the arena themselves.
+		smvk::ResetFrameArena();
 		auto t1 = std::chrono::steady_clock::now();
 		{
 			SMVK_PROFILE_CATEGORY("EarlyUpdate", Optick::Category::GameLogic);
@@ -105,6 +200,12 @@ void smvk::App::MainLoop() {
 			SMVK_PROFILE_CATEGORY("LateUpdate", Optick::Category::GameLogic);
 			LateUpdate();
 		}
+		// Element CPU update (the renderer extension point): runs on the
+		// host's clock — hosts that never attach elements pay one empty
+		// vector walk.
+		for (const auto& element : m_elements)
+			if (element)
+				element->onUpdate(delta_time_s);
 		auto t2 = std::chrono::steady_clock::now();
 		{
 			SMVK_PROFILE_CATEGORY("DrawFrame", Optick::Category::Rendering);

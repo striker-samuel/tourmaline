@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // WorldRenderer: whole-frame renderer over a WORLD. The host (App's
 // main.cpp, the editor's live view) owns all content loading â€” scenes
 // arrive as a resolved smvk::World whose clusters/resources are already
@@ -558,8 +558,8 @@ struct FrameUniforms
 	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member â€”
 	// a pc member shifted every sub-192 pc field and broke the HLSL
 	// mirror structs (the 10/1 device-loss crash; see
-	// Engine/Renderer/Renderer.h layout invariant). Filled per view slab in
-	// UpdateFrameUniforms / BuildSecondaryFrameUniforms. ----
+	// Engine/Renderer/Renderer.h layout invariant). Filled per frame in
+	// UpdateFrameUniforms. ----
 	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
 	// ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
 	// view's DsVizParams slice â€” the standalone 32 B payload (per-flight
@@ -812,51 +812,6 @@ struct AppResources {
 	// ForwardPlus).
 };
 
-// ---------------------------------------------------------------------------
-// MULTIVIEW refresh scheduling (tic/toc). The main view (view 0) renders the
-// full pipeline every frame into the swapchain / hosted target. Each
-// SECONDARY view (see WorldRenderer::SetViewCount) renders from its own
-// camera into its own offscreen image and picks a refresh schedule:
-//   Full â€” render every frame,
-//   Tic  â€” render every OTHER frame (global even phase),
-//   Toc  â€” render every OTHER frame (global odd phase).
-// Assigning Tic/Toc across the secondary views SPREADS the multiview load
-// over two alternating frames (tic-frame renders the Tic views, toc-frame
-// the Toc views); an off-phase view's image persists â€” the host keeps
-// compositing the last rendered content every frame.
-// ---------------------------------------------------------------------------
-enum class ViewRefresh : uint8_t {
-	Full = 0, // every frame
-	Tic = 1,  // half rate, even frame phase
-	Toc = 2,  // half rate, odd frame phase
-};
-inline const char* ViewRefreshName(ViewRefresh r) {
-	switch (r) {
-	case ViewRefresh::Full: return "Full";
-	case ViewRefresh::Tic: return "Half (tic)";
-	case ViewRefresh::Toc: return "Half (toc)";
-	}
-	return "?";
-}
-
-// One secondary multiview descriptor: an externally-driven camera (the host
-// owns the lens; see WorldRenderer::DriveView) + the output image extent +
-// the refresh schedule. Extent 0 = the hosted target extent at set time.
-struct SceneViewDesc {
-	bool enabled = true;
-	ViewRefresh refresh = ViewRefresh::Tic;
-	glm::vec3 eye{ 0.0f, 1.0f, 0.0f };
-	glm::vec3 target{ 0.0f, 1.0f, 0.0f };
-	float fovYDeg = 60.0f; // degrees (Camera::setPerspective takes radians)
-	// > 0 = TRUE orthographic lens (the editor's Top/Side cameras):
-	// vertical half-extent in world METERS (Camera::setOrtho3D);
-	// fovYDeg is ignored while this is set.
-	float orthoHalfH = 0.0f;
-	float zNear = 0.1f;
-	float zFar = 100.0f;
-	smvk::Extent2D extent{ 0, 0 };
-};
-
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
 	smvk::SpotShadowAtlas spotShadows; // perspective atlas for shadowed spots + Ensure
@@ -890,12 +845,27 @@ struct ViewportResources {
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
-class WorldRenderer : public smvk::App, public IRenderer, public IAppElement {
-	using Super = smvk::App;
+class WorldRenderer : public IRenderer, public IAppElement {
 public:
 	const char* RendererName() const override { return "World"; }
 	// IAppElement identity (the layer/element name in host stacks).
 	const char* ElementName() const override { return RendererName(); }
+
+	// ------------------------------------------------------------------
+	// HOST: the App owns the window/context/swapchain (the frame-sync
+	// owner); this renderer is an ELEMENT on it (AddElement before Run —
+	// see Engine/App/Element.h). Construction is cheap; onAttach (Run
+	// time, after the host's Initialize) resolves the host members and
+	// builds the framegraph; onDetach (host Shutdown, reverse stack
+	// order) releases everything while the context is alive.
+	// ------------------------------------------------------------------
+	explicit WorldRenderer(smvk::App& host);
+	~WorldRenderer() override;
+	smvk::App& Host() { return m_host; }
+
+	// IAppElement lifecycle: the old Initialize/Shutdown pair verbatim.
+	bool onAttach() override;
+	void onDetach() override;
 
 	// ------------------------------------------------------------------
 	// LAYER (nvpro-style element): the renderer draws into a sub-rect of
@@ -926,16 +896,15 @@ public:
 
 	// WORLD SOURCE â€” the host owns all content loading (the renderer
 	// knows nothing about paks, scene files or scene discovery). Called
-	// ONCE during Initialize, after the context exists and before the
+	// ONCE during onAttach, after the context exists and before the
 	// world is first used: load the scene (clusters + resources into
 	// the context â€” everything renders by handles), resolve, and
 	// return the world to render. The renderer's content overlay is
 	// handed in so the host can mount its content backends into it
 	// (pak-embedded textures, project roots, â€¦) â€” the renderer itself
 	// only ever reads its own pipeline resources through it.
-	// Return nullptr = load failed (Initialize fails loudly).
-	// Unset + no borrowed world (SetHostedBorrowedWorld) = nothing to
-	// render, Initialize fails.
+	// Return nullptr = load failed (onAttach fails loudly).
+	// Unset = nothing to render, onAttach fails.
 	using WorldSource = std::function<smvk::mem::LinearPtr<smvk::World>(
 		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
 	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
@@ -973,100 +942,12 @@ public:
 	// leg's GfxRenderer::FilteredProgramGi/FilteredLitProgram picks.
 	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
 
-	// HOSTED drive API (the editor embeds this renderer INLINE: its own
-	// frame calls RenderInlineFrame between its acquire and present).
-	// Public wrappers over the protected virtuals with the hosted
-	// invariant enforced at each step; windowed runs keep using Run().
-	bool HostedInitialize() {
-		if (!IsHosted())
-			return false;
-		return Initialize();
-	}
-	// INLINE HOSTED FRAME: record the whole world frame into the HOST's
-	// command buffer (hostFb), on the host's flight rhythm — one
-	// acquire, one submit, one present per host frame; no second
-	// acquire, no device-idle boundaries. The final tonemap writes THIS
-	// renderer's own INLINE TARGET (an LDR image at the driven extent —
-	// SetMainViewExtent), which the host composites 1:1 (the direct
-	// sub-rect write into the host's swapchain image was measured to
-	// wedge nvlddmkm past the TDR window on this driver — see the
-	// inline-target members below). The async-compute split is refused
-	// for inline frames (its mid-recording G1 submit would cut the
-	// host's command buffer in half); async passes emulate on the
-	// graphics queue instead.
-	void RenderInlineFrame(smvk::Framebuffer& hostFb);
-	// MAIN-VIEW RECT (the editor viewport rect's size, per frame). The
-	// lens renders this frustum at the rect's SIZE into the rect-sized
-	// internal chain and the rect-sized canvas (EnsureInlineTarget tracks
-	// the same rect) — so the host composites 1:1 with no resampling and
-	// the overlay/pick frustum matches the pixels exactly. Every canvas
-	// write is a full write at (0,0) (non-zero render areas are avoided
-	// on this driver — see EnsureInlineTarget). Rect MOVES never resize
-	// anything (same size = Ensure no-op); rect RESIZES re-Ensure the
-	// chain + canvas (transient, like a window resize).
-	void SetMainViewExtent(smvk::Extent2D extent);
-	// HOST EXTENT (the full editor extent): forwards to the fake
-	// swapchain (its clamped extent + flight count ride the hosted
-	// frame sync; per-target sizing falls back to it before the first
-	// rect drive lands). No-op unless changed — drive it every frame;
-	// it fires once per window resize.
-	void SetHostedExtent(smvk::Extent2D extent);
-	// The inline target's bindless slot + texel extent for the host's
-	// 1:1 compose blit (UINT32_MAX / 0x0 before the first inline frame).
-	uint32_t InlineTargetBindlessIndex() const {
-		return m_inlineTargetBindlessIndex;
-	}
-	smvk::Extent2D InlineTargetExtent() const {
-		return m_inlineTargetExtent;
-	}
-	// (Re)create the inline target when missing or extent-drifted (in
-	// place, Holder-stable handles; the bindless slot re-registers on
-	// drift like the secondary views'). No-op in steady state.
-	void EnsureInlineTarget();
-	// One-shot capture readback (VULKANTOY_CAPTURE): the inline frame's
-	// TonemapCapture wrote m_captureImage and the host's submit landed
-	// it - the host calls this AFTER its present; it stalls (device
-	// idle) and exports the PNG only on the pending frame.
+	// One-shot capture readback (VULKANTOY_CAPTURE): the last rendered
+	// frame's TonemapCapture wrote m_captureImage and the submit landed
+	// — onUpdate polls this at the next frame's top (before the host's
+	// acquire); it stalls (device idle) and exports the PNG only on the
+	// pending frame.
 	void PollCaptureReadback();
-	void HostedShutdown() {
-		if (!IsHosted())
-			return;
-		Shutdown();
-	}
-
-	// HOSTED one-call setup (the dumb-hosted-world API): boot off the
-	// host's context, borrow `world`, configure the full framegraph +
-	// the hosted invariants (input disabled, DLSS off, AA off) and
-	// initialize. Throws std::runtime_error when the boot is rejected
-	// or Initialize fails (the host catches it at its launch boundary).
-	// Pair with HostedShutdown() (or just destroy — the editor's
-	// StopWysiwyg keeps the explicit idle + log). sceneId names the GI
-	// sidecars (gi/<id>.*); projectRoot mounts into the content VFS
-	// (empty = no project mount). `format` MUST be the HOST swapchain's
-	// surface format (the inline tonemap writes the host's image);
-	// `extent` is the initial viewport rect (SetMainViewExtent drives it
-	// per frame after). Both must precede Initialize (sidecar loads run
-	// there) — hence ctor params, not setters.
-	WorldRenderer(smvk::App& host, smvk::World& world, smvk::Extent2D extent,
-		std::string sceneId, std::string projectRoot = {},
-		smvk::Format format = smvk::Format::BGRA8_SRGB);
-	// Default ctor (windowed runs + member init order).
-	WorldRenderer() = default;
-	// `up` = the preferred screen-up (default: world Y). LOCKED
-	// LOOK-THROUGH passes the bound camera node's up so rolled scene
-	// cameras frame identically to the editor's overlay (which reads the
-	// same node basis); a (near-)parallel up falls back to the SHARED
-	// ResolveLookAtUp resolution so the hosted pixels and the overlay
-	// never pick different fallback axes.
-	void DriveExternalCamera(
-		const glm::vec3& eye,
-		const glm::vec3& target,
-		float fovYDeg,
-		float zNear,
-		float zFar,
-		float orthoHalfH = 0.0f,
-		const glm::vec3& up = glm::vec3(0.0f, 1.0f, 0.0f)
-	);
 	void SetDebugView(DebugView v) { m_debugView = v; }
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
@@ -1112,14 +993,9 @@ public:
 			0.00001f, 0.05f);
 		// EV bias + the editor VIEWPORT exposure row folded together: the
 		// env's "exposure" (0.1..4 slider, serialized at floats[10]) is a
-		// plain brightness multiplier the editor's OWN direct rendering
-		// applies via FrameUniforms.exposure — but the hosted live view
-		// (and the windowed App) never read it, so the row was inert in
-		// the default WYSIWYG mode. Fold it as log2 (stops): 1.0 = neutral
-		// (log2(1)=0 — every existing scene renders identically), the
-		// slider range is ±2 EV inside the ±4 clamp. The editor's live
-		// push re-applies this per panel tick, so the row retouches the
-		// hosted view live like every other postfx row.
+		// plain brightness multiplier. Fold it as log2 (stops): 1.0 =
+		// neutral (log2(1)=0 — every existing scene renders identically),
+		// the slider range is ±2 EV inside the ±4 clamp.
 		const float viewportEv = env.exposure > 0.0f
 			? std::log2(env.exposure) : 0.0f;
 		m_exposureEvBias = std::clamp(
@@ -1153,98 +1029,22 @@ public:
 	// otherwise stomp a headless pin).
 	void ApplyHeadlessPostfxOverrides();
 
-	// ---------------------------------------------------------------------
-	// MULTIVIEW (hosted): N secondary views, each rendering the world from
-	// its own camera into its OWN offscreen image buffer (viewports /
-	// multiview setups). View 0 stays the MAIN view â€” the full pipeline
-	// into the hosted target (the editor composes it as today). Secondary
-	// views run a lean per-view pipeline: own CSM + spot shadows (fitted to
-	// the view camera), Forward+ prepass + tile cull, direct-draw Main
-	// (sky + opaque + masked + transparent) and tonemap into the view's
-	// image; no GPU triangle filter (direct draws), no motion vectors /
-	// AO / motion blur / DOF / SSR / volumetric / bloom / SMAA / DLSS /
-	// deferred shadows / UI on secondary views. The per-view images
-	// persist across skipped (off-phase) frames so the host composites
-	// every view every frame.
-	// ---------------------------------------------------------------------
-	static constexpr uint32_t kMaxSecondaryViews = 3; // + main view = 4
-	// (Re)set the secondary-view count (hosted only; windowed runs ignore
-	// it). Extent 0 per view adopts the hosted target extent at set time.
-	// Destroys/recreates ALL per-view state + GPU resources â€” call at
-	// frame boundaries only (idle), like the hosted launch itself.
-	void SetViewCount(uint32_t count);
-	[[nodiscard]] uint32_t GetViewCount() const { return (uint32_t)m_views.size(); }
-	// Per-view camera drive (mirrors DriveExternalCamera — same `up`
-	// handling for locked look-through, same shared degenerate
-	// resolution). fovYDeg in DEGREES.
-	void DriveView(uint32_t view, const glm::vec3& eye, const glm::vec3& target,
-		float fovYDeg, float zNear, float zFar, float orthoHalfH = 0.0f,
-		const glm::vec3& up = glm::vec3(0.0f, 1.0f, 0.0f));
-	// HOSTED ground-grid drive (editor construction grid): the editor
-	// owns the grid settings (show / cell size / half-extent cells) and
-	// pushes them here every frame, like the cameras. The renderer draws
-	// the XZ-plane grid itself, depth-tested against each view's own
-	// depth (which is exactly why it lives here â€” the host has no depth
-	// to test against). Zero GPU work â€” the next RenderFrame rebuilds
-	// the lines and every Main draws them. The windowed App never
-	// enables it (no UI, no key â€” off by default).
-	void DriveGrid(bool show, float cellSizeMeters, uint32_t extentCells);
-	// HOSTED cooked-lights refresh (editor live view): re-packs the
-	// forward+ light set from the borrowed world NOW (the bind-time
-	// build runs once per load/rebind). The editor calls it after every
-	// command so created/moved/deleted lights show the same frame.
-	// Pack only: no env seeding, no world mutation, no log. The windowed
-	// App never calls it (its world is immutable after load).
-	void RebuildCookedLights();
-	// Per-view output extent (the viewport rect's size): the per-view
-	// LENS aspect + the view's own target size (rect-sized targets, 1:1
-	// host compose — see EnsureSecondaryTargets). 0 = keep.
-	void SetViewExtent(uint32_t view, smvk::Extent2D extent);
-	// Refresh schedule per view (Full / Tic / Toc â€” see ViewRefresh).
-	void SetViewRefresh(uint32_t view, ViewRefresh refresh);
-	[[nodiscard]] ViewRefresh GetViewRefresh(uint32_t view) const;
-	// Per-view enable (a disabled view renders nothing; its image persists).
-	void SetViewEnabled(uint32_t view, bool enabled);
-	// True when this view renders THIS frame (phase match; a Full view is
-	// always true, a disabled/unknown view false).
-	[[nodiscard]] bool ViewRenderedThisFrame(uint32_t view) const;
-	// Compose hooks: the view's tonemapped output image (bindless index,
-	// UINT32_MAX before the view first rendered) + its extent.
-	[[nodiscard]] uint32_t ViewOutBindless(uint32_t view) const;
-	[[nodiscard]] smvk::Extent2D ViewOutExtent(uint32_t view) const;
-	// The view's output IMAGE (diagnostic readbacks â€” the editor's
-	// hosted-target dump path; empty handle before the first render).
-	[[nodiscard]] smvk::ImageHandle ViewOutImage(uint32_t view) const;
-
-	// ---------------------------------------------------------------------
-	// HOSTED live-view IN-PLACE world rebind: swap the borrowed world and
-	// rebuild ONLY the world-derived state (cooked lights, GI sidecars,
-	// cubemaps, decal presets, gfx registration, temporal histories) â€”
-	// every framegraph resource (programs, atlases, targets, buffers, the
-	// per-view images) persists. Scene opens / reimports / pak switches /
-	// GI-bake sidecar refreshes all ride this path: the hosted renderer is
-	// never stopped + relaunched for a world change. Call SetSceneId /
-	// SetProjectRoot FIRST (the sidecar loaders resolve gi/<id>.* through
-	// the project-aware VFS). Frame-boundary only (the rebind waits for
-	// device idle internally, like the launch).
-	// ---------------------------------------------------------------------
-	void RebindWorld(smvk::World* world);
-
 	WorldRendererConfig& Passes() { return m_passes; }
 	// Scene id (host-provided): names the GI sidecars (gi/<id>.sggi/
 	// .sglm/.regmanifest/.cvmanifest, superseded by the loaded world's
 	// Gi bindings) and gates the sponza check-scene extras (preset
-	// splats). The pak host passes the pak stem; the editor passes the
-	// open scene's stem (the borrowed world IS the scene).
+	// splats). The pak host passes the pak stem.
 	void SetSceneId(const std::string& id) { m_sceneId = id; }
-	// Project root (editor WYSIWYG): when the scene lives in a project,
-	// the project root mounts into the content VFS below the bundled
-	// content/ (project files win on collisions) so project-side
-	// cook/bake sidecars (gi/<stem>.*, cubemaps, â€¦) resolve exactly
-	// where the cooker wrote them. Empty = no project mount.
+	// Project root: when the scene lives in a project, the project root
+	// mounts into the content VFS below the bundled content/ (project
+	// files win on collisions) so project-side cook/bake sidecars
+	// (gi/<stem>.*, cubemaps, …) resolve exactly where the cooker wrote
+	// them. Empty = no project mount.
 	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
-	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
-	void SetPresentMode(smvk::PresentMode m) { m_presentMode = m; }
+	// Present-mode request: the HOST owns the swapchain — this forwards
+	// to it (the pump applies it at the next frame's rebuild check; see
+	// App::SetPresentMode / RequestSwapchainRebuild).
+	void SetPresentMode(smvk::PresentMode m) { m_host.SetPresentMode(m); }
 	// Bench freeze: skip every camera-control update (keyboard/gamepad/
 	// mouselook) so the camera stays at the scene's configured pose for
 	// the whole run and A/B comparisons are deterministic. The I-key UI
@@ -1252,10 +1052,10 @@ public:
 	void SetDisableControl(bool v) { m_disableControl = v; }
 	// Host-owned demo content (the APP host opts in): seeds the demo
 	// particle emitters at init and the sponza preset decal splats at
-	// scene load/rebind. Default OFF â€” the renderer never seeds content
-	// on its own, so the editor's hosted view stays clean. Transitional:
-	// once decals/particles become world entities this gate dies and the
-	// host seeds through the world instead.
+	// scene load. Default OFF — the renderer never seeds content
+	// on its own. Transitional: once decals/particles become world
+	// entities this gate dies and the host seeds through the world
+	// instead.
 	void SetDemoContentEnabled(bool v) { m_demoContent = v; }
 	// Bench flight (--bench_move <m/s>): integrate the camera straight
 	// along the spawn forward vector at a constant velocity past warmup
@@ -1277,37 +1077,16 @@ public:
 	// smvk::DlssSetStartupEnabled(false), which keeps the Streamline
 	// interposer out of the Vulkan call chain for RenderDoc captures.
 	void SetDlssMode(smvk::DlssMode mode) { m_dlssMode = mode; }
-	// Chrome-ball probe visual toggle (see Rendergraph/probeball.h): the
-	// editor's View menu drives it through the hosted renderer â€” the
-	// balls render inside Main with the scene's depth/IBL, so the toggle
-	// belongs to the renderer, not the host.
-	void SetCubemapShowBalls(bool on) { m_cubemapShowBalls = on; }
-	bool CubemapShowBalls() const { return m_cubemapShowBalls; }
-	// Centers of the LOADED baked probes (the chrome-ball rows): hosts
-	// match authored capture positions against these to tell baked pins
-	// (preview) from unbaked ones (black placeholder balls).
-	void CubemapProbeCenters(std::vector<glm::vec3>& out) const;
-	// Full loaded-probe rows for host overlays (the App's probe-location
-	// overlay reads the same table: center + influence/fade radii).
-	struct CubemapProbeRow {
-		glm::vec3 center{ 0.0f };
-		float influence = 0.0f; // full-weight radius (m)
-		float fade = 0.0f;      // fade extent past influence (m)
-	};
-	void CubemapProbeRows(std::vector<CubemapProbeRow>& out) const;
 	// Cubemap debug view (same modes as the App panel combo + the
 	// VULKANTOY_CUBEMAP_DEBUG headless switch): 0 off, 1 raw cubemap
-	// (no Fresnel/roughness â€” which probe serves each pixel), 2 probe
-	// blend weight as heat. Hosts (the editor's View menu) drive it
-	// per frame; the frame reads it through FrameUniforms.
+	// (no Fresnel/roughness — which probe serves each pixel), 2 probe
+	// blend weight as heat. The frame reads it through FrameUniforms.
 	void SetCubemapDebug(int mode) {
 		m_cubemapDebug = (mode < 0) ? 0 : ((mode > 2) ? 2 : mode);
 	}
-	// ---- Host-driven renderer settings (the editor's live-view panel) ----
-	// The App drives these through its debug panel; hosts without the UI
-	// pass (the editor's hosted view renders into the hosted target and
-	// the editor composites it) drive them through here. The m_passes
-	// SHAPE stays untouched (Configure owns the pipeline shape) â€” these
+	// ---- Runtime renderer settings (the App's debug panel) ----
+	// The App drives these through its debug panel. The m_passes
+	// SHAPE stays untouched (Configure owns the pipeline shape) — these
 	// are the runtime toggles every pass gates on.
 	void SetBloomEnabled(bool v) { m_bloomEnabled = v; }
 	bool BloomEnabled() const { return m_bloomEnabled; }
@@ -1321,21 +1100,27 @@ public:
 	bool VolumetricEnabled() const { return m_volumetricEnabled; }
 	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
 	bool SkydomeEnabled() const { return m_skyEnabled; }
-	// ---- Terrain field (the default world dressing; see Rendergraph/
-	// terrain.h): the editor's non-DAG "Terrain field" node drives it â€”
-	// read the live desc, edit + rebuild, toggle, or destroy it entirely
-	// (the outliner row follows TerrainValid).
-	smvk::terrain::TerrainDesc TerrainSettings() const {
-		return m_terrain.valid ? m_terrain.desc
-			: smvk::terrain::TerrainDesc{};
-	}
-	void RebuildTerrain(const smvk::terrain::TerrainDesc& d);
-	void DestroyTerrain();
-	[[nodiscard]] bool TerrainValid() const { return m_terrain.valid; }
-	void SetTerrainEnabled(bool v) { m_terrainEnabled = v; }
-	bool TerrainEnabled() const { return m_terrainEnabled; }
 
 protected:
+	// Host (the App this element rides on): the frame-sync owner
+	// (context + swapchain), the window + input the shortcuts/UI read,
+	// and the bench budget the [perf] split keys on. Borrowed — the host
+	// owns the element (AddElement) and detaches it before teardown.
+	smvk::App& m_host;
+	Input& m_input;
+	// Element clock (onUpdate latches the host's dt): camera
+	// integration + exposure adaptation key on it.
+	float m_deltaTime = 0.0f;
+	float m_timeSinceStart = 0.0f;
+	// Borrowed graphics members (onAttach resolves them off the host —
+	// they exist by then). The rendergraph + world below are the
+	// ELEMENT's own (its passes record into its own graph; the world
+	// arrives through the host's WorldSource).
+	smvk::ResourceManager* m_context = nullptr;
+	smvk::Swapchain* m_swapchain = nullptr;
+	smvk::mem::LinearPtr<smvk::RenderGraph> m_rendergraph;
+	smvk::mem::LinearPtr<smvk::World> m_world;
+
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
 	// Keeps the projection aspect in sync with the rendered (internal)
@@ -1354,67 +1139,22 @@ protected:
 	void UpdateCameraAspect(smvk::Extent2D extent) {
 		if (extent.width == 0 || extent.height == 0)
 			return;
-		// External camera (editor live view): the editor's lens drives
-		// the frame; otherwise the App defaults (or the scene's default-
-		// camera lens â€” m_sceneFovYDeg/m_sceneNearClip/m_sceneFarClip,
-		// set by the default-camera framing at load).
-		const bool ext = IsHosted() && m_extCamera;
-		if (ext && m_extOrthoHalfH > 0.0f)
-			m_camera.setOrtho3D(m_extOrthoHalfH,
-				float(extent.width) / float(extent.height),
-				m_extNear, m_extFar);
-		else
-			m_camera.setPerspective(
-				glm::radians(ext ? m_extFovYDeg : m_sceneFovYDeg),
-				float(extent.width) / float(extent.height),
-				ext ? m_extNear : m_sceneNearClip,
-				ext ? m_extFar : kMainViewFarPlane
-			);
+		// The scene's default-camera lens (m_sceneFovYDeg/
+		// m_sceneNearClip/m_sceneFarClip, set by the default-camera
+		// framing at load).
+		m_camera.setPerspective(
+			glm::radians(m_sceneFovYDeg),
+			float(extent.width) / float(extent.height),
+			m_sceneNearClip,
+			kMainViewFarPlane
+		);
 	}
 	bool m_uiMode = false;
 	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
-	// External camera overrides (see DriveExternalCamera): the editor's
-	// lens drives UpdateCameraAspect while set (hosted live view).
-	// m_extOrthoHalfH > 0 = TRUE orthographic lens (setOrtho3D).
-	bool m_extCamera = false;
-	float m_extFovYDeg = 60.0f;
-	float m_extOrthoHalfH = 0.0f;
-	float m_extNear = 0.1f;
-	float m_extFar = 100.0f;
-	// INLINE HOSTED FRAME (RenderInlineFrame): the renderer's own LDR
-	// output target at the driven extent. The direct sub-rect write into
-	// the HOST's swapchain image (the original inline design) wedges
-	// nvlddmkm past the Windows TDR window on this driver - reproducible
-	// with a trivial avocado scene at the first inline frame, TDR 4101 +
-	// VK_ERROR_DEVICE_LOST, and it disappears the moment the tonemap
-	// targets this PRIVATE image instead (same shared command buffer,
-	// same single submit - only the swap-image write removed). The host
-	// composites this target 1:1 (a bindless sample, like the secondary
-	// views' images, which have always been safe).
-	// Extent drift recreates the target with create-new + Holder SWAP
-	// (the old image/view/bindless retire through the deferred-destroy
-	// queue, timeline-keyed - in-flight frames keep them alive); NEVER
-	// RecreateImage/RecreateImageView on this path (immediate destroys -
-	// device loss while frames are in flight). See EnsureInlineTarget.
-	smvk::Holder<smvk::ImageHandle> m_inlineTargetImage;
-	smvk::Holder<smvk::ImageViewHandle> m_inlineTargetView;
-	smvk::Holder<smvk::BindlessImageHandle> m_inlineTargetBindless;
-	smvk::LogicalImageViewHandle m_inlineTargetLogical;
-	uint32_t m_inlineTargetBindlessIndex = UINT32_MAX;
-	smvk::Extent2D m_inlineTargetExtent{ 0, 0 };
-	// MAIN-VIEW LENS extent (the editor viewport rect's SIZE): the lens
-	// renders this frustum at this size into the rect-sized internal
-	// chain + canvas (see SetMainViewExtent). Pure numbers — moves never
-	// resize anything.
-	smvk::Extent2D m_mainViewExtent{ 0, 0 };
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
 	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
-	// VSync / presentation mode (overlay combo; applied via swapchain Recreate).
-	// Immediate default: uncapped, lowest latency (the overlay combo can pick
-	// the vsync modes; FIFO is strict â€” a missed 16.6ms locks to 30fps).
-	smvk::PresentMode m_presentMode = smvk::PresentMode::Immediate;
 	// Frame timing: CPU wall time vs GPU execution time (EMA-smoothed ms
 	// for the debug overlay). GPU lags 1-2 frames (retired-frame readback).
 	double m_cpuMsSmooth = 0.0;
@@ -1444,12 +1184,7 @@ protected:
 	void RefreshGpuMemoryStats(bool force = false); // throttled query
 	void LogGpuMemoryToConsole(); // fprintf(stderr) one snapshot
 
-	void EarlyUpdate() override {
-		Super::EarlyUpdate();
-	}
-
 	void Update() {
-		Super::Update();
 		HandleShortcuts();
 		// Headless crosshair splat (VULKANTOY_DECAL_AUTOSPLAT=<frame>):
 		// same path as the J key, fired once past the frame index so
@@ -1459,17 +1194,17 @@ protected:
 			SpawnDecalAtCrosshair();
 		}
 		if (!m_uiMode && !m_disableControl) {
-			UpdateCamera(delta_time_s);
+			UpdateCamera(m_deltaTime);
 		}
 		// Bench flight (--bench_move): constant-velocity forward
 		// integration, straight along the spawn forward vector. Runs
 		// past warmup only (warmup stays at the spawn pose so every
 		// measured run starts identically) and stacks on --disable_control
 		// (frozen inputs, deterministic flight).
-		if (m_benchMoveSpeed > 0.0f && frameBudget_ > 0
-			&& benchWarmup_ >= 10 && !m_uiMode) {
+		if (m_benchMoveSpeed > 0.0f && m_host.GetFrameBudget() > 0
+			&& m_host.BenchMeasuring() && !m_uiMode) {
 			m_cameraPositioner.cameraPosition_ +=
-				m_cameraPositioner.getForward() * (m_benchMoveSpeed * delta_time_s);
+				m_cameraPositioner.getForward() * (m_benchMoveSpeed * m_deltaTime);
 		}
 	}
 
@@ -1654,20 +1389,12 @@ protected:
 		return (m_uiDock == UiDock::Left) ? "Left" : "Right";
 	}
 
-	void LateUpdate() {
-		Super::LateUpdate();
-	}
-
-	bool Initialize() override;
-	void Shutdown() override;
-
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env);
 	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env);
 	void UpdateMaterials(uint32_t currentFrame);
 	// RHI texture POOL index -> bindless descriptor slot for the world's
 	// cluster textures (see UpdateMaterials: the pool==bindless identity
-	// only holds by creation-order luck, and the hosted editor context
-	// churns the bindless pool across relaunches + re-imports). Rebuilt
+	// only holds by creation-order luck, and live worlds churn the\r\n\t// bindless pool across re-imports). Rebuilt
 	// per call (cheap: one pass over the clusters' registered textures)
 	// so live editor texture edits are picked up without a rebind.
 	std::unordered_map<uint32_t, uint32_t> BuildPoolToBindlessMap() const;
@@ -1740,7 +1467,6 @@ protected:
 		smvk::LogicalBufferHandle fpLightsLogical);
 
 	void RebuildSwapViews();
-	void DrawFrame() override;
 	// By reference: RenderGraph::Execute publishes the async-split second
 	// graphics part (G2 CB + compute wait) back through fb for
 	// EndAndPresent. By value would drop it and G1's CB would be ended +
@@ -1830,8 +1556,7 @@ protected:
 
 	WorldRendererConfig m_passes{};
 	// Host world loader (see SetWorldSource): called once during
-	// Initialize on windowed runs. The hosted live view instead borrows
-	// the host's world (SetHostedBorrowedWorld).
+	// onAttach (after the context exists).
 	WorldSource m_worldSource;
 	// Scene id: names the GI sidecars (gi/<id>.sggi/.sglm/.regmanifest/
 	// .cvmanifest, superseded by the loaded world's Gi bindings) and
@@ -1844,9 +1569,7 @@ protected:
 	// Scene lens (default-camera framing only â€” see the World settings'
 	// camera.default typed field): when the scene carries an authored
 	// DEFAULT CAMERA, its perspective lens replaces the App defaults in
-	// UpdateCameraAspect (generic framing leaves these untouched). The
-	// hosted editor drives its own lens (m_extCamera) and never reads
-	// these.
+	// UpdateCameraAspect (generic framing leaves these untouched).
 	float m_sceneFovYDeg = kCameraFovYDegrees;
 	float m_sceneNearClip = default_near_clip;
 	// Project root for the content VFS (see SetProjectRoot).
@@ -1928,6 +1651,12 @@ protected:
 	float m_cubemapLodBias = 0.0f;  // added to roughness LOD (UI, FrameUniforms)
 	int m_cubemapDebug = 0;         // 0 off, 1 cubemap-only, 2 probe weight (UI)
 	bool m_cubemapShowProbes = false; // overlay: probe positions + influence rings (UI)
+	// Chrome-ball visualization of the LOADED cubemap probes (see
+	// Rendergraph/probeball.h): one lit sphere per baked capture, sampling
+	// its own cubemap - a renderer-owned debug pass (zero scene footprint),
+	// toggled from the App's panel (off by default: the clean look).
+	bool m_cubemapShowBalls = false;
+	smvk::probeball::ProbeBallVisual m_probeBalls{};
 	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
 	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
 	struct CubemapProbeGpu {
@@ -2116,82 +1845,13 @@ protected:
 	// the per-sample resolve (evsm_resolve.cs.hlsl) reconstructs the
 	// moments from the MSAA depth right after the caster passes.
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
-	// ---------------------------------------------------------------------
-	// ---- MULTIVIEW per-view state (hosted; see SetViewCount) ------------
-	// One SecondaryView per hosted secondary view: external camera (own
-	// positioner + Camera so the math matches DriveExternalCamera/
-	// UpdateCameraAspect exactly), own ViewportResources subset, own output
-	// image, per-view light fits (CSM fit to the view camera + spot-tile
-	// selection) and per-view temporal bookkeeping. Buffers shared with the
-	// main view (frameUniforms / lights / cascade / fpLights / spotShadow)
-	// are slabs with a VIEW-MAJOR stride: (view * framesInFlight + frame).
-	// ---------------------------------------------------------------------
-	struct SecondaryView {
-		SceneViewDesc desc{}; // camera + extent + refresh + enabled
-		uint32_t ordinal = 0; // 1-based view number (debug names, logs)
-		CameraPositioner_FirstPerson positioner = CameraPositioner_FirstPerson(
-			glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 1.0f),
-			glm::vec3(0.0f, 1.0f, 0.0f));
-		Camera camera{ positioner }; // per-view lens (aspect from desc.extent)
-		ViewportResources vp{};      // per-view target set (subset Ensured)
-		// Debug-name storage (per-view ordinal suffixes for RenderDoc
-		// readability; idx only picks the buffer slot â€” Name writes once
-		// per slot per view, so a stable pointer lives until the next
-		// recreate).
-		char nameBufs[16][48] = {};
-		const char* Name(const char* base, uint32_t slot) {
-			if (slot >= 16 || base == nullptr)
-				return base;
-			char (&b)[48] = nameBufs[slot];
-			std::snprintf(b, sizeof(b), "%s%u", base, ordinal);
-			return b;
-		}
-		// Output image (post-tonemap, surface-format sibling): persists
-		// across off-phase frames â€” the host keeps compositing it.
-		smvk::Holder<smvk::ImageHandle> outImage;
-		smvk::Holder<smvk::ImageViewHandle> outView;
-		smvk::Holder<smvk::BindlessImageHandle> outBindless;
-		uint32_t outBindlessIndex = UINT32_MAX;
-		smvk::LogicalImageViewHandle outLogical;
-		smvk::Extent2D outExtent{ 0, 0 };
-		smvk::Format outFormat = smvk::Format::Undefined;
-		bool outValid = false;
-		// Per-view light fits (built on rendered frames, read by the passes):
-		smvk::GpuDirectionalLightDescription dirLight{};
-		bool dirLightValid = false;
-		uint32_t spotShadowCount = 0;
-		int32_t spotShadowMapIndex = -1;
-		std::vector<smvk::GpuCascadeDescription> spotShadowTiles;
-		// Per-view light scratch (the shared set copied + spot-patched).
-		std::vector<smvk::ForwardPlusLight> lightScratch;
-		// This frame's FrameUniforms snapshot (built at prep, read at pass
-		// emission + the RenderView allocation).
-		FrameUniforms frameData{};
-		glm::mat4 prevViewProj{ 1.0f };
-		bool prevViewProjValid = false;
-		// RenderView indices for the frame (into the shared slab).
-		uint32_t mainViewIdx = smvk::RenderViewSet::kInvalidIndex;
-		uint32_t cascadeViewBase = smvk::RenderViewSet::kInvalidIndex;
-		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
-		// True when the view rendered the previous frame (persistence gate:
-		// the first rendered frame after a skip/creation must clear).
-		bool renderedLastFrame = false;
-	};
-	std::vector<SecondaryView> m_views; // hosted secondary views (0..kMaxSecondaryViews)
-	// Global tic/toc frame phase (advances once per RenderFrame).
-	uint32_t m_viewPhase = 0;
-	// The frame's final Forward+ light set (post DS-sort, pre probe tail â€”
-	// captured by UpdateForwardPlusLights; secondary views copy + per-view
-	// spot-patch it into their own slabs).
-	std::vector<smvk::ForwardPlusLight> m_frameLights;
 	// Sync owner of a frame: fb.swapchain when the host supplied one
-	// (external sync — windowed DrawFrame, editor inline frames), else the
-	// owned swapchain (init-time sizing). RenderFrame must resolve EVERY
+	// (the element contract — the host acquires), else the borrowed
+	// host swapchain (init-time sizing). RenderFrame must resolve EVERY
 	// per-frame sync property (extent, formats, flights) through these —
-	// never m_swapchain directly — so the renderer stays oblivious to who
-	// acquired the frame.
+	// so the renderer stays oblivious to who acquired the frame.
 	smvk::Swapchain* FrameSync(const smvk::Framebuffer& fb) const {
-		return fb.swapchain ? fb.swapchain : m_swapchain.get();
+		return fb.swapchain ? fb.swapchain : m_swapchain;
 	}
 	smvk::Extent2D FrameSwapExtent(const smvk::Framebuffer& fb) const {
 		if (const smvk::Swapchain* s = FrameSync(fb))
@@ -2213,15 +1873,6 @@ protected:
 			return s->framesInFlight();
 		return 0;
 	}
-	// Slab offset helpers (view-major: view 0 keeps today's layout).
-	uint64_t ViewSlabOffset(uint32_t view, uint64_t frame, uint64_t stride) const {
-		return ViewSlabOffset(view, frame, stride,
-			m_swapchain ? m_swapchain->framesInFlight() : 0);
-	}
-	uint64_t ViewSlabOffset(uint32_t view, uint64_t frame, uint64_t stride,
-		uint32_t flights) const {
-		return (static_cast<uint64_t>(view) * flights + frame) * stride;
-	}
 	// This frame's layer rect clamped into the sync-owner extent (full swap
 	// when unset). Swap writes (tonemap / SMAA resolve / UI composite)
 	// confine to it via pass SetOffset/SetExtent with Load semantics; the
@@ -2230,40 +1881,9 @@ protected:
 		return ClampLayerRect(m_layerRect, FrameSwapExtent(fb));
 	}
 	LayerRect m_layerRect = LayerRect::Full();
-	[[nodiscard]] bool SecondaryViewHosted(uint32_t i) const {
-		return i < m_views.size();
-	}
-	// Phase gate: Full every frame; Tic on even, Toc on odd frame phases.
-	[[nodiscard]] bool ViewRefreshDue(const SceneViewDesc& d) const {
-		switch (d.refresh) {
-		case ViewRefresh::Full: return true;
-		case ViewRefresh::Tic: return m_viewPhase == 0;
-		case ViewRefresh::Toc: return m_viewPhase != 0;
-		}
-		return false;
-	}
-	// Per-view frame work (all hosted-only; no-ops on windowed runs):
-	// Prep: lean per-view FrameUniforms + RenderView registration (runs
-	// inside RenderFrame, before the main-view allocation so the
-	// per-view views ride the same slab).
-	void PrepareSecondaryViews(uint32_t frameIdx, const smvk::EnvironmentSettings& env);
-	// Passes: per-view lean passes (optional depth-fill for wireframe +
-	// unlit Main + tonemap into the view's own full-extent image), each
-	// confined to the view's sub-rect via SetOffset/SetExtent (runs
-	// after the main view's post/UI, before the shadow-futures join).
-	void RenderSecondaryViews(smvk::Framebuffer& fb);
-	// Shared internals (vi = the 0-based secondary index; the slab index
-	// is 1 + vi — view 0 is the main view).
-	// The view's own targets (depth/hdr/out at the FULL host extent —
-	// sized once, never by rect moves); recreated only when the host
-	// extent itself changes.
-	void EnsureSecondaryTargets(SecondaryView& v, uint32_t vi);
-	FrameUniforms BuildSecondaryFrameUniforms(SecondaryView& v, uint32_t vi,
-		uint32_t frameIdx, const smvk::EnvironmentSettings& env);
 	// The renderer's content overlay (loose content/ + the project root
-	// below it + engine resources), mounted into the CALLER'S
-	// vfs (OverlayVfs is non-copyable) â€” shared by Initialize and
-	// RebindWorld (the sidecar loaders).
+	// below it), mounted into the CALLER'S
+	// vfs (OverlayVfs is non-copyable).
 	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	engine::GfxRenderer m_gfxRenderer{};
@@ -2316,20 +1936,6 @@ protected:
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
-	// ---- Ground grid (editor construction grid, XZ at y = 0) ----
-	// Driven by the host (DriveGrid); drawn depth-tested in every Main
-	// (main + secondary views) against that view's own depth. Off unless
-	// driven â€” the windowed App never shows it.
-	bool m_gridEnabled = false;
-	float m_gridCellSize = 1.0f;   // meters (driven)
-	uint32_t m_gridExtentCells = 40; // half-extent in cells (driven)
-	smvk::Holder<smvk::BufferHandle> m_gridLines; // pos-only grid line VB
-	uint32_t m_gridLinesCap = 0; // verts allocated
-	uint32_t m_gridMinorVerts = 0; // minor range: [0, minor)
-	uint32_t m_gridMajorVerts = 0; // major range: [minor, minor + major)
-	// (Re)builds + uploads the grid lines for this frame (no-op unless
-	// driven). Runs in RenderFrame before any pass records.
-	void BuildGridLines();
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	// Opt-in EVSM atlas debug dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
 	// after Execute â€” per-stage stats (moments/temp/blurred) + a log-encoded
@@ -3000,28 +2606,13 @@ protected:
 	// carries the UINT32_MAX sentinel index).
 	bool m_envZonesEnabled = true;
 	smvk::envzones::EnvZoneMap m_envZones{};
-	// Zone-entity map rebuild (Initialize + RebindWorld + editor zone
-	// edits via RefreshEnvZones). Two-tier: the zone DEFINITIONS
-	// (desc.zones -> FrameUniforms every frame) recompute on every call;
-	// the weight-grid RASTERIZE (+ upload) only when the zone coverage
-	// changed (the zone set, their transforms or priorities — hashed).
-	// Failure is non-fatal (plain env path).
+	// Zone-entity map rebuild (Initialize + world loads). Two-tier: the
+	// zone DEFINITIONS (desc.zones -> FrameUniforms every frame) recompute
+	// on every call; the weight-grid RASTERIZE (+ upload) only when the
+	// zone coverage changed (the zone set, their transforms or priorities
+	// — hashed). Failure is non-fatal (plain env path).
 	void RebuildEnvZoneMap();
 	uint64_t m_envZoneCoverageHash = ~0ull;
-	// Public hook for HOSTED zone edits: the editor calls it after env
-	// zone nodes change (transform/priority/block) so the map re-
-	// derives without a rebind.
-public:
-	void RefreshEnvZones() { RebuildEnvZoneMap(); }
-private:
-	// Chrome-ball visualization of the LOADED cubemap probes (see
-	// Rendergraph/probeball.h): one lit sphere per baked capture, sampling
-	// its own cubemap â€” the editor's old scene-node chrome balls done as a
-	// renderer-owned debug pass (zero scene footprint). Toggled with
-	// m_cubemapShowBalls (UI; the editor's View menu drives it through the
-	// hosted renderer).
-	bool m_cubemapShowBalls = true;
-	smvk::probeball::ProbeBallVisual m_probeBalls{};
 	// ---- Texture inspector (aux-texture debug view) ----
 	// A SEPARATE floating ImGui window (not part of the debug panel â€” it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),

@@ -1,4 +1,4 @@
-// Project abstraction (Unity/Unreal style): a project folder owns
+﻿// Project abstraction (Unity/Unreal style): a project folder owns
 // everything the editor needs for one body of work —
 //   <root>/project.tourproj   marker (name + version)
 //   <root>/content/            sources (models/<stem>/*.gltf, scenes/*.tour)
@@ -10,7 +10,7 @@
 //                             artifacts/). No scratch disk: without a
 //                             project the cache is off.
 // Opening a project repoints the artifact cache, the cook defaults and
-// the hosted view's VFS at it. Importing an asset copies it into the
+// the artifact cache at it. Importing an asset copies it into the
 // project, adopts its GUID and cooks show the result with the full
 // render pipeline — no manual staging, no global cache.
 
@@ -49,13 +49,6 @@ bool HasModelExtension(const std::string& path) {
 }
 
 } // namespace
-
-void EditorApp::SetProjectSmoke(const std::string& dir,
-	const std::string& asset) {
-	m_projectSmoke = true;
-	m_projectSmokeDir = dir;
-	m_projectSmokeAsset = asset;
-}
 
 std::string EditorApp::ProjectArtifactDir() const {	if (m_projectRoot.empty())
 		return {};
@@ -213,7 +206,7 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	SavePrefs();
 	UpdateWindowTitle();
 	Log("Project open: '" + m_projectName + "' (" + m_projectRoot
-		+ ") — artifact cache, cooks and the hosted view live here now.");
+		+ ") — artifact\ cache\ and\ cooks\ live\ here\ now.");
 	return true;
 }
 
