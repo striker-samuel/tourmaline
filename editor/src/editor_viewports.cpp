@@ -415,128 +415,128 @@ void EditorApp::DrawViewportChrome() {
 			IM_COL32(120, 200, 255, 200), 0.0f, 0, 1.5f);
 		dl->PopClipRect();
 	}
-	// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
-	// types: any panel can show UV0/UV1/lightmap debug like a camera
-	// view). Top-left inside each rect.
-	for (int i = 0; i < count; ++i) {
-		EditorViewport& vp = m_viewports[i];
-		ImGui::SetNextWindowPos(
-			ImVec2(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
-		ImGui::SetNextWindowBgAlpha(1.0f);
-		ImGui::PushID(i);
-		char label[32];
-		std::snprintf(label, sizeof(label), "##vpchip%d", i);
-		if (ImGui::Begin(label, nullptr,
-			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-			ImGuiWindowFlags_NoSavedSettings |
-			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
-			ImGuiWindowFlags_NoNav)) {
-			// Camera combo: free orbit cameras, or a locked look-through
-			// binding to a scene camera node (viewport follows the node
-			// until released back to an orbit camera).
-			std::string bindLabel;
-			bool bound = false;
-			uint32_t boundNode = UINT32_MAX;
-			if (vp.boundNode >= 0 && m_world
-				&& FindNodeCamera(uint32_t(vp.boundNode)) != nullptr) {
-				bound = true;
-				boundNode = uint32_t(vp.boundNode);
-				bindLabel = "Cam: "
-					+ getNodeName(m_world->scene, int(boundNode));
-			}
-			else {
-				bindLabel = m_editorCams[vp.camIdx].name;
-			}
-			if (ImGui::BeginCombo("##cam", bindLabel.c_str())) {
-				for (size_t c = 0; c < m_editorCams.size(); ++c)
-					if (ImGui::Selectable(m_editorCams[c].name.c_str(),
-							!bound && int(c) == vp.camIdx)) {
-						vp.camIdx = int(c);
-						vp.boundNode = -1;
-					}
-				// Scene cameras (hierarchy order, stable list).
-				if (m_world && !m_world->scene.cameraForNode.empty()) {
-					ImGui::Separator();
-					std::vector<uint32_t> camNodes;
-					for (const auto& [n, ci] : m_world->scene.cameraForNode) {
-						(void)ci;
-						if (n < m_world->scene.hierarchy.size()
-							&& !m_deletedNodes.contains(n))
-							camNodes.push_back(n);
-					}
-					std::sort(camNodes.begin(), camNodes.end());
-					for (uint32_t n : camNodes) {
-						const std::string item = "Cam: "
-							+ getNodeName(m_world->scene, int(n));
-						if (ImGui::Selectable(item.c_str(),
-								bound && boundNode == n)) {
-							vp.boundNode = int(n);
-							Log("Viewport " + std::to_string(i)
-								+ " look-through: '"
-								+ getNodeName(m_world->scene, int(n))
-								+ "' (#" + std::to_string(n) + ").");
-						}
-					}
-				}
-				else {
-					ImGui::TextDisabled("no scene cameras (Create > Camera)");
-				}
-				ImGui::EndCombo();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(bound
-					? "Locked look-through: viewport follows the camera "
-					  "node (orbit nav parked; move the node instead). "
-					  "Pick an orbit camera to release."
-					: "Free orbit. Bind a scene camera node for locked "
-					  "look-through.");
-			if (bound) {
-				ImGui::SameLine();
-				ImGui::TextDisabled("[locked]");
-			}
-			ImGui::SameLine();
-			// View type combo (this panel's shading/debug view). Flat UV
-			// panes are not viewports anymore (separate UV editor
-			// window) — 3D modes only here.
-			if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
-				for (int m = 0; m <= int(ViewMode::Pom); ++m) {
-					const ViewMode vm = ViewMode(m);
-					if (vm == ViewMode::FlatUv0 || vm == ViewMode::FlatUv1)
-						continue;
-					// Atlas views need the loaded lightmap GPU layers.
-					if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
-						continue;
-					if (ImGui::Selectable(ViewModeName(vm),
-							int(vp.viewMode) == m)) {
-						vp.viewMode = vm;
-						if (vp.viewMode == ViewMode::Meshlets &&
-							!m_meshletDebugHasData && !EnsureMeshletDebug())
-							Log("Meshlet view: no cooked meshlets in this "
-								"scene; meshes show as flat fallbacks.");
-					}
-				}
-				ImGui::EndCombo();
-			}
-			ImGui::SameLine();
-			// Selection-mode combo (Mesh/Face/Vertex highlight, Q radial).
-			if (ImGui::BeginCombo("##selmode", SelModeName(m_selMode))) {
-				for (int m = 0; m <= int(SelMode::Vertex); ++m) {
-					if (ImGui::Selectable(SelModeName(SelMode(m)),
-							int(m_selMode) == m)) {
-						m_selMode = SelMode(m);
-						ClearSubSelection();
-						Log(std::string("Selection mode: ") +
-							SelModeName(m_selMode) + " (highlight only).");
-					}
-				}
-				ImGui::EndCombo();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Q opens the selection radial.");
-		}
-		ImGui::End();
-		ImGui::PopID();
-	}
+	//// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
+	//// types: any panel can show UV0/UV1/lightmap debug like a camera
+	//// view). Top-left inside each rect.
+	//for (int i = 0; i < count; ++i) {
+	//	EditorViewport& vp = m_viewports[i];
+	//	ImGui::SetNextWindowPos(
+	//		ImVec2(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
+	//	ImGui::SetNextWindowBgAlpha(1.0f);
+	//	ImGui::PushID(i);
+	//	char label[32];
+	//	std::snprintf(label, sizeof(label), "##vpchip%d", i);
+	//	if (ImGui::Begin(label, nullptr,
+	//		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+	//		ImGuiWindowFlags_NoSavedSettings |
+	//		ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
+	//		ImGuiWindowFlags_NoNav)) {
+	//		// Camera combo: free orbit cameras, or a locked look-through
+	//		// binding to a scene camera node (viewport follows the node
+	//		// until released back to an orbit camera).
+	//		std::string bindLabel;
+	//		bool bound = false;
+	//		uint32_t boundNode = UINT32_MAX;
+	//		if (vp.boundNode >= 0 && m_world
+	//			&& FindNodeCamera(uint32_t(vp.boundNode)) != nullptr) {
+	//			bound = true;
+	//			boundNode = uint32_t(vp.boundNode);
+	//			bindLabel = "Cam: "
+	//				+ getNodeName(m_world->scene, int(boundNode));
+	//		}
+	//		else {
+	//			bindLabel = m_editorCams[vp.camIdx].name;
+	//		}
+	//		if (ImGui::BeginCombo("##cam", bindLabel.c_str())) {
+	//			for (size_t c = 0; c < m_editorCams.size(); ++c)
+	//				if (ImGui::Selectable(m_editorCams[c].name.c_str(),
+	//						!bound && int(c) == vp.camIdx)) {
+	//					vp.camIdx = int(c);
+	//					vp.boundNode = -1;
+	//				}
+	//			// Scene cameras (hierarchy order, stable list).
+	//			if (m_world && !m_world->scene.cameraForNode.empty()) {
+	//				ImGui::Separator();
+	//				std::vector<uint32_t> camNodes;
+	//				for (const auto& [n, ci] : m_world->scene.cameraForNode) {
+	//					(void)ci;
+	//					if (n < m_world->scene.hierarchy.size()
+	//						&& !m_deletedNodes.contains(n))
+	//						camNodes.push_back(n);
+	//				}
+	//				std::sort(camNodes.begin(), camNodes.end());
+	//				for (uint32_t n : camNodes) {
+	//					const std::string item = "Cam: "
+	//						+ getNodeName(m_world->scene, int(n));
+	//					if (ImGui::Selectable(item.c_str(),
+	//							bound && boundNode == n)) {
+	//						vp.boundNode = int(n);
+	//						Log("Viewport " + std::to_string(i)
+	//							+ " look-through: '"
+	//							+ getNodeName(m_world->scene, int(n))
+	//							+ "' (#" + std::to_string(n) + ").");
+	//					}
+	//				}
+	//			}
+	//			else {
+	//				ImGui::TextDisabled("no scene cameras (Create > Camera)");
+	//			}
+	//			ImGui::EndCombo();
+	//		}
+	//		if (ImGui::IsItemHovered())
+	//			ImGui::SetTooltip(bound
+	//				? "Locked look-through: viewport follows the camera "
+	//				  "node (orbit nav parked; move the node instead). "
+	//				  "Pick an orbit camera to release."
+	//				: "Free orbit. Bind a scene camera node for locked "
+	//				  "look-through.");
+	//		if (bound) {
+	//			ImGui::SameLine();
+	//			ImGui::TextDisabled("[locked]");
+	//		}
+	//		ImGui::SameLine();
+	//		// View type combo (this panel's shading/debug view). Flat UV
+	//		// panes are not viewports anymore (separate UV editor
+	//		// window) — 3D modes only here.
+	//		if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
+	//			for (int m = 0; m <= int(ViewMode::Pom); ++m) {
+	//				const ViewMode vm = ViewMode(m);
+	//				if (vm == ViewMode::FlatUv0 || vm == ViewMode::FlatUv1)
+	//					continue;
+	//				// Atlas views need the loaded lightmap GPU layers.
+	//				if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
+	//					continue;
+	//				if (ImGui::Selectable(ViewModeName(vm),
+	//						int(vp.viewMode) == m)) {
+	//					vp.viewMode = vm;
+	//					if (vp.viewMode == ViewMode::Meshlets &&
+	//						!m_meshletDebugHasData && !EnsureMeshletDebug())
+	//						Log("Meshlet view: no cooked meshlets in this "
+	//							"scene; meshes show as flat fallbacks.");
+	//				}
+	//			}
+	//			ImGui::EndCombo();
+	//		}
+	//		ImGui::SameLine();
+	//		// Selection-mode combo (Mesh/Face/Vertex highlight, Q radial).
+	//		if (ImGui::BeginCombo("##selmode", SelModeName(m_selMode))) {
+	//			for (int m = 0; m <= int(SelMode::Vertex); ++m) {
+	//				if (ImGui::Selectable(SelModeName(SelMode(m)),
+	//						int(m_selMode) == m)) {
+	//					m_selMode = SelMode(m);
+	//					ClearSubSelection();
+	//					Log(std::string("Selection mode: ") +
+	//						SelModeName(m_selMode) + " (highlight only).");
+	//				}
+	//			}
+	//			ImGui::EndCombo();
+	//		}
+	//		if (ImGui::IsItemHovered())
+	//			ImGui::SetTooltip("Q opens the selection radial.");
+	//	}
+	//	ImGui::End();
+	//	ImGui::PopID();
+	//}
 	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
 	DrawCvolPreviewOverlay();
 	DrawCaptureBallOverlay();

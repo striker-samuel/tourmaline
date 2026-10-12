@@ -777,16 +777,16 @@ namespace engine {
 		// Headless debug-view select (lit|unlit|meshlets|cascades|lods|vertexcolors).
 		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
 			const std::string_view dv = trimEnv(dvEnv);
-			if (dv == "lit") m_debugView = DebugView::Lit;
-			else if (dv == "unlit") m_debugView = DebugView::Unlit;
-			else if (dv == "meshlets") m_debugView = DebugView::Meshlets;
-			else if (dv == "cascades") m_debugView = DebugView::Cascades;
-			else if (dv == "lods") m_debugView = DebugView::Lods;
-			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = DebugView::VertexColors;
-			else if (dv == "uv0" || dv == "uv1_base") m_debugView = DebugView::Uv0;
-			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = DebugView::Uv1;
-			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = DebugView::Pom;
-			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = DebugView::SsrContribution;
+			if (dv == "lit") m_debugView = ViewMode::Lit;
+			else if (dv == "unlit") m_debugView = ViewMode::Unlit;
+			else if (dv == "meshlets") m_debugView = ViewMode::Meshlets;
+			else if (dv == "cascades") m_debugView = ViewMode::Cascades;
+			else if (dv == "lods") m_debugView = ViewMode::Lods;
+			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = ViewMode::VertexColors;
+			else if (dv == "uv0" || dv == "uv1_base") m_debugView = ViewMode::Uv0;
+			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = ViewMode::Uv1;
+			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = ViewMode::Pom;
+			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -1439,9 +1439,10 @@ namespace engine {
 			};
 		}
 
-		// Shader-LOD program (farthest level, see World::LodShaderAt):
-		// vertex-lit VS + pass-through FS. Failure is non-fatal - the
-		// subsystem falls back to full-lit everywhere (ShaderLodActive).
+		// Shader-LOD program (farthest level, see World::
+		// UseVertexLitShaderAt): vertex-lit VS + pass-through FS. Failure
+		// is non-fatal - the subsystem falls back to full-lit everywhere
+		// (ShaderLodActive).
 		try {
 			auto vlVertCode = readFile("content/shaders/default_vertexlit.vert.hlsl.spv");
 			auto vlFragCode = readFile("content/shaders/default_vertexlit.frag.hlsl.spv");
@@ -3908,15 +3909,6 @@ namespace engine {
 	// m_deferredMutex) is gone.
 	static constexpr bool kHistogramReadbackEnabled = true;
 
-	// REMOVED: WorldRenderer::UpdateAutoExposure - the old SYNC pre-record
-	// download (DownloadDataFromBuffer waits UINT64_MAX, stalling the whole
-	// in-flight graphics backlog every frame; it also ran after Execute and
-	// mostly read just-zeroed bins). Fully replaced by the ASYNC ticket
-	// path in UpdateReadbacks below (submit every 4th frame, poll each
-	// frame, adapt on completion - see AdaptExposureFromBins). The
-	// declaration went with it: dead code that "looked" like the exposure
-	// entry point invited fixes that never took effect.
-
 	// Metering gates shared by the histogram download and the batched
 	// feedback pairing (debug views hold the last scene exposure).
 	bool WorldRenderer::ExposureMeteringActive() const {
@@ -3932,7 +3924,7 @@ namespace engine {
 		// lit HDR the same way, so any active mode freezes adaptation at
 		// the pre-switch value too; turning the view/mode off resumes
 		// adapting from the held exposure.
-		if (m_debugView != DebugView::Lit)
+		if (m_debugView != ViewMode::Lit)
 			return false;
 #if defined(DS_DEBUG_VIZ)
 		if (m_dsDebugMode != DsDebugViz::Off)
@@ -3952,7 +3944,7 @@ namespace engine {
 		// F2..F11 replace the Main opaque/transparent legs with flat
 		// programs; the GI debug views (R/F8) and the DS visualizers (Y)
 		// early-out of the lit fragment shader the same way.
-		if (m_debugView != DebugView::Lit)
+		if (m_debugView != ViewMode::Lit)
 			return true;
 		if (m_giDebug != 0)
 			return true;
@@ -5434,17 +5426,50 @@ namespace engine {
 		return base;
 	}
 
-	// Shader-LOD decision for an instance's selected level (see World::
-	// LodShaderAt): Lit unless the subsystem is on, the level index hits a
-	// cooked chain and the level is the farthest one. Shares the halfrate
-	// LOD cache with every geometry consumer, so shading and geometry
-	// always resolve off the SAME level within a frame.
-	smvk::LodShader WorldRenderer::LodShaderForNode(NodeId node,
-		uint32_t worldMesh) const {
+	// Shader-LOD decision for an instance's selected level + material
+	// (see World::FarShadingAt): vertex-lit substitution, specialized
+	// lit, or default full-lit. Shares the halfrate LOD cache with every
+	// geometry consumer, so shading and geometry always resolve off the
+	// SAME level within a frame.
+	smvk::World::FarShading WorldRenderer::FarShadingForNode(NodeId node,
+		uint32_t worldMesh, uint32_t material) const {
 		if (!ShaderLodActive() || !m_world)
-			return smvk::LodShader::Lit;
+			return smvk::World::FarShading{};
 		const uint32_t lod = LodIndexForNode(node, worldMesh);
-		return m_world->LodShaderAt(worldMesh, lod);
+		return m_world->FarShadingAt(worldMesh, lod, material);
+	}
+
+	// Specialized lit twins for a far-level quality (see the m_farSpec-
+	// Programs comment in WorldRenderer.h): the base twin's modules with
+	// the quality spec payload attached to the fragment stage. Only
+	// non-default quality values get entries (the shader folds the
+	// defaults, so a default entry would duplicate the base program).
+	WorldRenderer::FarSpecPrograms* WorldRenderer::FarSpecProgramsFor(
+		const smvk::ShaderLodQuality& quality) {
+		const uint32_t key = (quality.specular ? 1u : 0u)
+			| (quality.normalMap ? 2u : 0u);
+		auto hit = m_farSpecPrograms.find(key);
+		if (hit != m_farSpecPrograms.end())
+			return &hit->second;
+		FarSpecPrograms out{};
+		auto spec = std::make_shared<smvk::ShaderSpecialization>();
+		if (!quality.specular)
+			spec->SetBool(smvk::kSpecLitSpecular, false);
+		if (!quality.normalMap)
+			spec->SetBool(smvk::kSpecLitNormalMap, false);
+		auto specialize = [&](const smvk::ShaderProgram& base) {
+			smvk::ShaderProgram p = base;
+			for (size_t i = 0; i < p.shaderCount; ++i)
+				if (p.shaders[i].stage == smvk::ShaderStage::Fragment)
+					p.shaders[i].specialization = spec;
+			return p;
+		};
+		if (m_resources.mainProgram.shaderCount == 2)
+			out.main = specialize(m_resources.mainProgram);
+		if (m_resources.mainProgramA2C.shaderCount == 2)
+			out.a2c = specialize(m_resources.mainProgramA2C);
+		m_farSpecPrograms[key] = out;
+		return &m_farSpecPrograms[key];
 	}
 
 	void WorldRenderer::BuildShadowDrawCandidates() {
@@ -5968,25 +5993,8 @@ namespace engine {
 		// a stale rect can't pin later full-swap frames.
 		if (frame.layer.full)
 			m_layerRect = LayerRect::Full();
-		RenderLayer(*frame.fb);
-	}
-	// EXTERNAL-SYNC frame: record the whole world frame into an
-	// already-acquired fb. Never acquires, presents, recreates, or touches
-	// present modes - pure record. The host's DrawFrame pump drives this
-	// between its acquire and present.
-	void WorldRenderer::RenderLayer(smvk::Framebuffer& fb) {
-		if (fb.swapchain && m_swapchain && fb.swapchain != m_swapchain) {
-			// Cross-graph external view (host swapchain != this graph's):
-			// swapImages[imageIndex] would address the wrong images. Bail
-			// loudly; the supported external path is the host frame itself.
-			std::fprintf(stderr,
-				"[WorldRenderer] RenderLayer: fb.swapchain != host swapchain "
-				"(cross-graph external views unsupported yet)\n");
-			return;
-		}
-		// Frame-time histogram hook (zero cost while disabled - the F12
-		// toggle; see profiler::RecordFrameTime). The host records its own
-		// frame separately.
+
+		// Frame-time histogram hook
 		smvk::profiler::RecordFrameTime(double(m_deltaTime) * 1000.0);
 		// Busy-only CPU clock: the record span below. The host's acquire
 		// idle and the present throttle are reported as wait instead (the
@@ -5994,7 +6002,7 @@ namespace engine {
 		// the last RETIRED frame's value here - the EMA absorbs the
 		// one-frame lag).
 		const auto busyStart = std::chrono::steady_clock::now();
-		RenderFrame(fb);
+		RenderFrame(*frame.fb);
 		const auto frameEnd = std::chrono::steady_clock::now();
 		const double presentWaitMs =
 			m_swapchain ? m_swapchain->GetPresentWaitMs() : 0.0;
@@ -6140,7 +6148,6 @@ namespace engine {
 		return draws;
 	}
 
-
 	void WorldRenderer::PollCaptureReadback() {
 		if (!m_captureReadbackPending)
 			return;
@@ -6150,9 +6157,7 @@ namespace engine {
 		m_host.WaitForDeviceIdle();
 		ExportScreenshot(m_captureExtent);
 	}
-
-
-
+	
 	// Scene->frame environment mapping (see SceneEnv): the scene authors
 	// LUX-NATIVE intensities (sun 10000 / sky 600 defaults - the same units
 	// this EnvironmentSettings and every bake use), so both ride through
@@ -6392,7 +6397,6 @@ namespace engine {
 			<< (cands.empty() ? " (identity - no zones authored)" : "")
 			<< "\n";
 	}
-
 	void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 		// The shipped layout: the project root (when the scene lives in
 		// one - project files win on collisions) over loose content/ at
@@ -6689,7 +6693,7 @@ namespace engine {
 		// back to engine defaults (Initialize refuses those anyway).
 		smvk::EnvironmentSettings frameEnv = m_world
 			? MapSceneEnv(m_world->scene.environment,
-				m_debugView == DebugView::Unlit)
+				m_debugView == ViewMode::Unlit)
 			: smvk::EnvironmentSettings{};
 		// Fog degrade (see SceneEnv::fogQuality): the VOLUMETRIC tier
 		// falls back to the ANALYTIC exp2 fog when the raymarched pass
@@ -7484,19 +7488,21 @@ namespace engine {
 			&& !m_splitDisabled
 			&& !fc.ssrGbufferWanted;
 		fc.gfxLodFilterable = depthSplit
-			? std::function<bool(NodeId, uint32_t, uint32_t)>(
-				[this](NodeId node, uint32_t worldMesh, uint32_t lodIdx) {
-			// Shader-LOD vertex-lit levels draw direct in Main -
-			// the prepass must keep covering them.
-			if (ShaderLodActive()
-				&& m_world->LodShaderAt(worldMesh, lodIdx)
-				== smvk::LodShader::VertexLit)
+			? std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>(
+				[this](NodeId node, uint32_t worldMesh, uint32_t lodIdx,
+					uint32_t material) {
+			// Shader-LOD far levels with non-default shading (vertex-lit
+			// substitution or quality specialization) draw direct in Main
+			// - the prepass must keep covering them.
+			if (ShaderLodActive() && m_world
+				&& !m_world->FarShadingAt(worldMesh, lodIdx,
+					material).isDefault())
 				return false;
 			(void)node;
 			return m_gfxRenderer.GfxMeshForLod(worldMesh, lodIdx)
 				!= UINT32_MAX;
 		})
-			: std::function<bool(NodeId, uint32_t, uint32_t)>{};
+			: std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>{};
 		auto appendHizPasses = [&]() {
 			if (hizOccluderOn)
 				m_gfxRenderer.AppendHizPasses(fc,
@@ -8113,7 +8119,8 @@ namespace engine {
 				if (!m_wireframe)
 					return prog;
 				if (&prog == &m_resources.mainProgram
-					|| &prog == &m_resources.mainProgramA2C) {
+					|| &prog == &m_resources.mainProgramA2C
+					|| IsFarSpecProgram(prog)) {
 					return m_resources.mainWireProgram.shaderCount == 2
 						? m_resources.mainWireProgram : prog;
 				}
@@ -8312,32 +8319,32 @@ namespace engine {
 			// filter with direct draws (no filtered-VS variant exists for them).
 			// Missing programs fall back to Lit so a bad cook never blanks
 			// the frame.
-			DebugView effView = m_debugView;
-			if ((effView == DebugView::Meshlets || effView == DebugView::Lods)
+			ViewMode effView = m_debugView;
+			if ((effView == ViewMode::Meshlets || effView == ViewMode::Lods)
 				&& !m_gfxRenderer.DebugProgramsValid())
-				effView = DebugView::Lit;
-			if (effView == DebugView::Unlit && m_resources.unlitProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			if (effView == DebugView::Cascades && m_resources.cascadeProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			if (effView == DebugView::VertexColors && m_resources.vertexColorProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			if (effView == DebugView::Uv0 && m_resources.uv0DebugProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			if (effView == DebugView::Uv1 && m_resources.uv1DebugProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			if (effView == DebugView::Pom && m_resources.pomProgram.shaderCount != 2)
-				effView = DebugView::Lit;
-			const bool meshletDbg = (effView == DebugView::Meshlets);
-			const bool lodDbg = (effView == DebugView::Lods);
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::Unlit && m_resources.unlitProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::Cascades && m_resources.cascadeProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::VertexColors && m_resources.vertexColorProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::Uv0 && m_resources.uv0DebugProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::Uv1 && m_resources.uv1DebugProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::Pom && m_resources.pomProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			const bool meshletDbg = (effView == ViewMode::Meshlets);
+			const bool lodDbg = (effView == ViewMode::Lods);
 			const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
-			const bool unlitDbg = (effView == DebugView::Unlit);
-			const bool cascadeDbg = (effView == DebugView::Cascades);
-			const bool vertexColorDbg = (effView == DebugView::VertexColors);
-			const bool uvDbg = (effView == DebugView::Uv0 || effView == DebugView::Uv1);
-			const bool pomDbg = (effView == DebugView::Pom);
+			const bool unlitDbg = (effView == ViewMode::Unlit);
+			const bool cascadeDbg = (effView == ViewMode::Cascades);
+			const bool vertexColorDbg = (effView == ViewMode::VertexColors);
+			const bool uvDbg = (effView == ViewMode::Uv0 || effView == ViewMode::Uv1);
+			const bool pomDbg = (effView == ViewMode::Pom);
 			const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg; // default.vert + debug FS
-			const bool bypassFilter = (effView != DebugView::Lit);
+			const bool bypassFilter = (effView != ViewMode::Lit);
 			// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 			// so they survive the HDR -> tonemap path).
 			static const float kLodPalette[8][3] = {
@@ -8468,13 +8475,14 @@ namespace engine {
 					if (!meshDesc)
 						return;
 					// Shader-LOD overlay: when the subsystem is on, instances
-					// shading vertex-lit (farthest level) report WHITE instead
-					// of their LOD palette color, so shading downgrades are
+					// with non-default far shading (vertex-lit substitution
+					// or quality specialization) report WHITE instead of
+					// their LOD palette color, so shading downgrades are
 					// visible next to geometry ones.
 					static const float kLodVertexLit[3] = { 1.0f, 1.0f, 1.0f };
-					const bool vlitLevel = ShaderLodActive()
-						&& m_world->LodShaderAt(item.mesh, lod)
-						== smvk::LodShader::VertexLit;
+					const bool vlitLevel = ShaderLodActive() && m_world
+						&& !m_world->FarShadingAt(item.mesh, lod,
+							item.material).isDefault();
 					const float* pal = vlitLevel
 						? kLodVertexLit : kLodPalette[lod < 8 ? lod : 4];
 					lp2.color[0] = pal[0] * flatGain;
@@ -8501,8 +8509,8 @@ namespace engine {
 					: cascadeDbg ? m_resources.cascadeProgram
 					: vertexColorDbg ? m_resources.vertexColorProgram
 					: pomDbg ? m_resources.pomProgram
-					: effView == DebugView::Uv1 ? m_resources.uv1DebugProgram
-					: effView == DebugView::SsrContribution ? m_resources.ssrContributionDebugProgram
+					: effView == ViewMode::Uv1 ? m_resources.uv1DebugProgram
+					: effView == ViewMode::SsrContribution ? m_resources.ssrContributionDebugProgram
 					: m_resources.uv0DebugProgram;
 				uint32_t boundMaterial = UINT32_MAX;
 				m_world->forEachRenderItem(
@@ -8649,11 +8657,22 @@ namespace engine {
 						== DitherCloseupState::Hidden)
 						return;
 					// Shader LODs: instances whose selected level is the farthest
-					// one draw HERE with the vertex-lit program - FilterMainView
-					// skipped them at registration for the same reason (the
-					// filtered VS is lit-only), so this is the exactly-once draw.
-					const bool vertexLitLevel = shaderLodOn
-						&& LodShaderForNode(item.node, item.mesh) == smvk::LodShader::VertexLit;
+					// one draw HERE - vertex-lit substitution, or the lit
+					// program with the material's quality specialization -
+					// FilterMainView skipped them at registration for the
+					// same reason (the filtered VS is lit-only), so this is
+					// the exactly-once draw.
+					const smvk::World::FarShading farShading = shaderLodOn
+						? FarShadingForNode(item.node, item.mesh,
+							item.material)
+						: smvk::World::FarShading{};
+					const bool vertexLitLevel = farShading.vertexLit;
+					// Specialized far shading: the cached twin pair for the
+					// material's quality (falls back to the plain twins when
+					// the base programs are missing - never binds empty).
+					FarSpecPrograms* farSpec =
+						(!vertexLitLevel && !farShading.isDefault())
+						? FarSpecProgramsFor(farShading.quality) : nullptr;
 					// Filtered instances already drew above via indirect
 					// ranges (FilterMainView pushes the selected LOD sibling).
 					// Only LODs whose registration failed fall through to the
@@ -8663,10 +8682,12 @@ namespace engine {
 						return;
 					smvk::ShaderProgram& prog = vertexLitLevel
 						? m_resources.vertexLitProgram
-						: m_resources.mainProgram;
+						: (farSpec && farSpec->main.shaderCount == 2)
+						? farSpec->main : m_resources.mainProgram;
 					smvk::ShaderProgram& progA2c = vertexLitLevel
 						? noA2CProgram
-						: m_resources.mainProgramA2C;
+						: (farSpec && farSpec->a2c.shaderCount == 2)
+						? farSpec->a2c : m_resources.mainProgramA2C;
 					const uint32_t materialId = item.material;
 					if (materialId != boundMaterial
 						|| (&prog != boundProgram && &progA2c != boundProgram)) {
@@ -8699,7 +8720,7 @@ namespace engine {
 					(m_transparentMode == smvk::TransparentMode::Dithered);
 				std::vector<TransparentDrawItem> draws =
 					CollectTransparentDraws(transparentCullView, !ditheredTransp);
-				const bool lodDbg = (effView == DebugView::Lods);
+				const bool lodDbg = (effView == ViewMode::Lods);
 
 				// Transparent follows the opaque debug view (Unlit/Cascades shade
 				// it with the same debug FS via full pushes; LODs draws it flat
@@ -8721,7 +8742,7 @@ namespace engine {
 				// Shader LODs apply to transparent too, but only in the Lit view
 				// (debug views replace shading wholesale, see above).
 				const bool transShaderLodOn = ShaderLodActive()
-					&& effView == DebugView::Lit;
+					&& effView == ViewMode::Lit;
 				MeshDebugPush transLp{};
 				if (lodDbg)
 					std::copy_n(glm::value_ptr(frameViewProj), 16, transLp.viewProj);
@@ -8745,7 +8766,7 @@ namespace engine {
 				// the same clobbered BDAs). Restore the frame push once, before
 				// the loop; the Lit view needs nothing (the filtered/direct
 				// legs left a valid range in it).
-				if (effView == DebugView::Meshlets)
+				if (effView == ViewMode::Meshlets)
 					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc,
 						smvk::ShaderStage::All);
 
@@ -8774,9 +8795,9 @@ namespace engine {
 						const glm::mat4& model = m_world->scene.globalTransform[d.node];
 						std::copy_n(glm::value_ptr(model), 16, transLp.model);
 						static const float kLodVertexLitTrans[3] = { 1.0f, 1.0f, 1.0f };
-						const bool vlitLevelTrans = ShaderLodActive()
-							&& m_world->LodShaderAt(d.meshId, lod)
-							== smvk::LodShader::VertexLit;
+						const bool vlitLevelTrans = ShaderLodActive() && m_world
+							&& !m_world->FarShadingAt(d.meshId, lod,
+								d.materialId).isDefault();
 						const float* pal = vlitLevelTrans
 							? kLodVertexLitTrans : kLodPalette[lod < 8 ? lod : 4];
 						transLp.color[0] = pal[0] * flatGain;
@@ -8791,10 +8812,26 @@ namespace engine {
 						continue;
 					}
 					// Shader LODs: farthest-level transparents shade vertex-lit
-					// with a full push (the per-material delta push below feeds
-					// the lit program only). Same coarsest geometry.
-					const bool vlitTrans = transShaderLodOn
-						&& LodShaderForNode(d.node, d.meshId) == smvk::LodShader::VertexLit;
+					// (or the quality-specialized lit program when the
+					// material opts out) with a full push (the per-material
+					// delta push below feeds the lit program only). Same
+					// coarsest geometry.
+					const smvk::World::FarShading farShadingTrans = transShaderLodOn
+						? FarShadingForNode(d.node, d.meshId, d.materialId)
+						: smvk::World::FarShading{};
+					const bool vlitTrans = farShadingTrans.vertexLit;
+					// Specialized far shading (see the opaque leg): the
+					// cached twin pair for the material's quality. Plain
+					// mainProgram-based (like the opaque direct leg), not
+					// the std/gi twin selection - correct everywhere, and
+					// far + transparent + specialized is rare enough that
+					// the twin-selection parity gap doesn't matter.
+					FarSpecPrograms* farSpecTrans =
+						(!vlitTrans && !farShadingTrans.isDefault())
+						? FarSpecProgramsFor(farShadingTrans.quality)
+						: nullptr;
+					const bool farSpecTransValid = farSpecTrans
+						&& farSpecTrans->main.shaderCount == 2;
 					if (vlitTrans) {
 						if (d.materialId != boundMaterial
 							|| boundProgram != &m_resources.vertexLitProgram) {
@@ -8822,6 +8859,58 @@ namespace engine {
 							}
 							boundMaterial = d.materialId;
 							boundProgram = &m_resources.vertexLitProgram;
+						}
+						auto& model = m_world->scene.globalTransform[d.node];
+						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+						if (!meshDesc)
+							continue;
+						IRenderer::PushConstants objPC = pc;
+						objPC.materialId = d.materialId;
+						std::copy_n(glm::value_ptr(model), 16, objPC.model);
+						cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(
+								draw_set.indexCount,
+								1,
+								draw_set.firstIndex,
+								draw_set.baseVertex
+							);
+						}
+						++m_lodShaderDraws;
+						continue;
+					}
+					// Specialized transparent far leg (mirrors the vertex-lit
+					// leg's full-push shape above, but binds the
+					// quality-specialized twin): same coarsest geometry, same
+					// dithered/blended handling, cheaper shading.
+					if (farSpecTransValid) {
+						if (d.materialId != boundMaterial
+							|| boundProgram != &farSpecTrans->main) {
+							if (ditheredTransp) {
+								smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+								smvk::RasterSettings raster{};
+								if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+									raster = mat->pipeline.raster;
+								}
+								cmd.BindRenderPipeline(
+									wireTwinOf(farSpecTrans->main),
+									smvk::VertexFormat::StaticVertexFormat,
+									opaqueDepth,
+									noStencil,
+									opaqueBlend,
+									msaaSettings,
+									wireframeRaster(raster)
+								);
+							}
+							else {
+								bindForMaterial(d.materialId, farSpecTrans->main,
+									farSpecTrans->a2c.shaderCount == 2
+									? farSpecTrans->a2c : noA2CProgram,
+									transparentDepth,
+									/*writeStencilClass=*/false);
+							}
+							boundMaterial = d.materialId;
+							boundProgram = &farSpecTrans->main;
 						}
 						auto& model = m_world->scene.globalTransform[d.node];
 						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
@@ -10976,7 +11065,7 @@ namespace engine {
 							};
 							int view = static_cast<int>(m_debugView);
 							if (ImGui::Combo("Debug view", &view, viewNames, 9))
-								m_debugView = static_cast<DebugView>(view);
+								m_debugView = static_cast<ViewMode>(view);
 						}
 						ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 							"legacy materials show the raw vertex tint.");
@@ -11572,7 +11661,7 @@ namespace engine {
 						}
 					}
 					if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched, %llu vertex-lit)",
+						ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched, %llu far-shaded)",
 							m_lodChainMeshes, m_lodChainLods,
 							(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched,
 							(unsigned long long)m_lodShaderDraws);

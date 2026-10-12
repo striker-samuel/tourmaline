@@ -951,7 +951,9 @@ namespace smvk {
 		~VulkanSwapchain();
 
 		void Create() {
-			// A minimized window reports a 0x0 client size; the swapchain
+			// A minimized window is not presentable (0x0 client size on
+			// platforms that zero it, SDL_WINDOW_MINIMIZED on Windows where
+			// the reported size stays at the restored value); the swapchain
 			// and every derived target cannot exist at extent 0 (the very
 			// first depth image dies with VK_ERROR_INITIALIZATION_FAILED).
 			WaitForNonMinimizedExtent();
@@ -1120,9 +1122,13 @@ namespace smvk {
 		void CreateSyncObjects();
 		void DestroySyncObjects();
 		void CleanupSwapchain(bool fullDestroy = false);
-		// Blocks while the window is minimized (0x0 client size): the OS
-		// queue is pumped via SDL_WaitEvent so restore/resize events can
-		// arrive while we wait. Used by Create() and Recreate() before any
+		// Blocks while the window is minimized - detected via the
+		// SDL_WINDOW_MINIMIZED flag (Windows keeps reporting the restored,
+		// non-zero client size while minimized) OR a 0x0 client size on
+		// platforms that zero it: the OS queue is pumped via SDL_PumpEvents
+		// (NOT SDL_WaitEvent(NULL) - that does not pump on Windows and the
+		// window then cannot even restore) so restore/resize can proceed
+		// while we wait. Used by Create() and Recreate() before any
 		// extent-dependent resource is (re)built.
 		void WaitForNonMinimizedExtent();
 

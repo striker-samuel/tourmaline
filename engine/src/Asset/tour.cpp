@@ -2210,6 +2210,12 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 		mat.doubleSided = (c.number != 0.0);
 	else if (at == "castsShadows")
 		mat.castsShadows = (c.number != 0.0);
+	else if (at == "farVertexLit")
+		mat.shaderLod.allowFarVertexLit = (c.number != 0.0);
+	else if (at == "farSpecular")
+		mat.shaderLod.farQuality.specular = (c.number != 0.0);
+	else if (at == "farNormalMap")
+		mat.shaderLod.farQuality.normalMap = (c.number != 0.0);
 	else if (at == "layers") {
 		// Cluster-local pool ids (the cook domain, pre-merge): x/y/z =
 		// layers 1..3 (-1 none), w = active layer count (0 = legacy).

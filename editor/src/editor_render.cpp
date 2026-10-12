@@ -2,12 +2,18 @@
 //
 // Reuses App's compiled shaders (default.vert + default_unlit/default_lit/
 // default_wire + shadow.vert/masked) and App's ABI-checked FrameUniforms +
-// PushConstants. Depth is reversed-Z (clear 0, GreaterEqual) like App. Output
-// goes straight to the
-// swapchain (LDR preview): sun/sky intensities default to LDR-friendly
-// values, exposure stays 1.0. (The legacy Lit+Shadows editor mode + its
-// single-cascade shadow atlas are gone — the editor passes render
-// per-view-mode previews.)
+// PushConstants. Depth is reversed-Z (clear 0, GreaterEqual) like App.
+//
+// Display chain (the "washed out colors" fix): the tonemap-chain view
+// modes (Lit + the 1/exposure-pre-scaled debug views: Unlit/Uv0/Uv1/
+// VertexColors/Meshlets + the wire overlays - see their shader headers)
+// render RAW-LUX HDR into the shared preview HDR (m_sceneHdr) and one
+// engine-tonemapper layer per viewport rect resolves it to the LDR
+// swapchain (authored operator + manual exposure - the App's chain).
+// Baked + the UV editor window canvas keep their own Reinhard + gamma
+// display mapping and write the swap directly. (The legacy Lit+Shadows
+// editor mode + its single-cascade shadow atlas are gone — the editor
+// passes render per-view-mode previews.)
 
 #include "editor_app.h"
 
@@ -34,10 +40,6 @@ namespace editor {
 	namespace {
 		constexpr uint32_t kMaxMaterials = 4096;
 		constexpr uint32_t kMaxLights = 64;
-		// Lux-native env block (SceneEnv) -> this LDR preview's scale: the old
-		// scene-unit look (sun 7.851 scene units == 7851 lux). Every HDR consumer
-		// (the bakes, the pak/App) take lux raw.
-		constexpr float kEditorPreviewLuxScale = 0.001f;
 
 		std::vector<char> LoadSpv(const char* path) {
 			return readFile(path);
@@ -198,6 +200,10 @@ namespace editor {
 			.addressU = smvk::AddressMode::ClampToEdge,
 			.addressV = smvk::AddressMode::ClampToEdge,
 			.addressW = smvk::AddressMode::ClampToEdge, .maxAnisotropy = 1.0f });
+		// Preview tonemapper (the m_sceneHdr display chain, see the file
+		// header): best-effort - a missing SPV never kills the editor, the
+		// routing in RecordMainPass falls back to the direct LDR write.
+		(void)m_previewTonemap.EnsureShaders(*m_context);
 		return true;
 	}
 
@@ -281,10 +287,15 @@ namespace editor {
 			frame.invViewportSize = glm::vec2(
 				rect.w > 0.0f ? 1.0f / rect.w : 0.0f,
 				rect.h > 0.0f ? 1.0f / rect.h : 0.0f);
-			frame.nearPlane = nearClip;
-			frame.farPlane = farClip;
-			frame.exposure = CurrentEnv().exposure;
-			frame.aoTextureIndex = UINT32_MAX;
+		frame.nearPlane = nearClip;
+		frame.farPlane = farClip;
+		// The App feeds the SAME number to its frame uniforms and the
+		// tonemap push (see WorldRenderer: data.exposure = FrameExposure()
+		// == tonemapDesc.exposure) - the preview mirrors that with its
+		// standing exposure so the 1/exposure-pre-scaled debug views and
+		// the tonemap layer agree exactly (see PreviewExposure).
+		frame.exposure = PreviewExposure();
+		frame.aoTextureIndex = UINT32_MAX;
 			frame.aoIntensity = 0.0f;
 			frame.evsmMode = 0;
 			frame.decalCount = 0;
@@ -375,27 +386,27 @@ namespace editor {
 		m_lastFrame = m_viewports[m_activeVp].frame;
 		m_lastViewProj = m_viewports[m_activeVp].viewProj;
 
-		// Sun light (lights[0], same convention as App) from the CURRENT env.
-		// The env block is LUX-NATIVE (see SceneEnv); the editor's own viewport
-		// is an LDR preview, so the intensities scale down (x 0.001 — the old
-		// scene-unit look: 7851 lux -> 7.85) while every HDR consumer (the
-		// the bakes, the pak) take the lux raw.
-		const EditorEnv& envSet = CurrentEnv();
-		smvk::EnvironmentSettings env{};
-		env.sunAzimuthDeg = envSet.sunAzimuth;
-		env.sunElevationDeg = envSet.sunElevation;
-		const glm::vec3 toSun = env.SunDirectionToSun();
-		smvk::Light lights[kMaxLights]{};
-		{
-			smvk::Light& l = lights[0];
-			l.color = glm::vec4(envSet.sunColor, 1.0f);
-			l.direction[0] = -toSun.x;
-			l.direction[1] = -toSun.y;
-			l.direction[2] = -toSun.z;
-			l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
-				: envSet.sunIntensity * kEditorPreviewLuxScale;
-			l.shadow_map_index = -1;
-		}
+	// Sun light (lights[0], same convention as App) from the CURRENT env.
+	// The env block is LUX-NATIVE (see SceneEnv) and the lit view now runs
+	// the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
+	// - the lux go in unscaled and the per-viewport tonemap layer brings
+	// them down with the authored operator + exposure, exactly like the App.
+	const EditorEnv& envSet = CurrentEnv();
+	smvk::EnvironmentSettings env{};
+	env.sunAzimuthDeg = envSet.sunAzimuth;
+	env.sunElevationDeg = envSet.sunElevation;
+	const glm::vec3 toSun = env.SunDirectionToSun();
+	smvk::Light lights[kMaxLights]{};
+	{
+		smvk::Light& l = lights[0];
+		l.color = glm::vec4(envSet.sunColor, 1.0f);
+		l.direction[0] = -toSun.x;
+		l.direction[1] = -toSun.y;
+		l.direction[2] = -toSun.z;
+		l.intensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
+			: envSet.sunIntensity;
+		l.shadow_map_index = -1;
+	}
 
 		// Cascade descriptor: no cascades in the editor's own pass (the
 		// editor passes render shadows per view mode).
@@ -415,21 +426,23 @@ namespace editor {
 	void EditorApp::ApplyEnvToFrame(engine::FrameUniforms& frame,
 		smvk::EnvironmentSettings& env) const {
 		const EditorEnv& e = CurrentEnv();
-		// LDR preview of the lux-native env block (see SceneEnv): the
-		// intensities scale down (kEditorPreviewLuxScale) — the old
-		// scene-unit look — while the HDR consumers take the lux raw.
+		// RAW lux in (see the file header + m_sceneHdr): the lit view runs
+		// the App's HDR + tonemap display chain, so the env values are the
+		// same numbers the App renders with (sky 600, sun 10000...) and the
+		// per-viewport tonemap layer (authored operator + manual
+		// exposure) brings them to LDR exactly like the App's Tonemap pass.
 		env.skyEnabled = true;
 		env.iblEnabled = true;
 		env.skyZenithColor = e.skyColor;
 		env.skyHorizonColor = e.skyColor;
-		env.skyIntensity = e.skyIntensity * kEditorPreviewLuxScale;
+		env.skyIntensity = e.skyIntensity;
 		env.groundColor = e.skyColor * 0.5f;
-		env.iblIntensity = e.skyIntensity * kEditorPreviewLuxScale;
+		env.iblIntensity = e.skyIntensity;
 		env.sunAzimuthDeg = e.sunAzimuth;
 		env.sunElevationDeg = e.sunElevation;
 		env.sunColor = e.sunColor;
 		env.sunIntensity = (ActiveViewMode() == ViewMode::Unlit) ? 0.0f
-			: e.sunIntensity * kEditorPreviewLuxScale;
+			: e.sunIntensity;
 		env.fogMode = 0; // volumetrics authored, not yet rendered here
 	}
 
@@ -606,7 +619,7 @@ namespace editor {
 	void EditorApp::SetupDefaultCameras() {
 		if (!m_editorCams.empty())
 			return;
-		m_editorCams.resize(3);
+		m_editorCams.resize(4);
 		m_editorCams[0].name = "Perspective";
 		m_editorCams[0].type = EditorCam::Type::Perspective;
 		m_editorCams[0].target = glm::vec3(0.0f, 1.0f, 0.0f);
@@ -625,9 +638,21 @@ namespace editor {
 		m_editorCams[2].pitch = 0.0f;
 		m_editorCams[2].dist = 25.0f;
 		m_editorCams[2].orthoHalfH = 10.0f;
-		// Viewport 0 = perspective; quad adds Top (1) + Side (2) + Persp (0).
+		m_editorCams[3].name = "Front";
+		m_editorCams[3].type = EditorCam::Type::Orthographic;
+		m_editorCams[3].target = glm::vec3(0.0f);
+		// yaw 0 = eye at +Z looking along -Z: the engine's -Z-forward
+		// convention seen head-on (Side is the same construction at yaw
+		// pi/2 looking along -X).
+		m_editorCams[3].yaw = 0.0f;
+		m_editorCams[3].pitch = 0.0f;
+		m_editorCams[3].dist = 25.0f;
+		m_editorCams[3].orthoHalfH = 10.0f;
+		// Viewport 0 = perspective; quad adds Top (1) + Side (2) +
+		// Front (3) — the fourth slot was a second Perspective before.
 		for (int i = 0; i < kMaxViewports; ++i)
-			m_viewports[i].camIdx = (i == 1) ? 1 : (i == 2) ? 2 : 0;
+			m_viewports[i].camIdx =
+				(i == 1) ? 1 : (i == 2) ? 2 : (i == 3) ? 3 : 0;
 	}
 
 	void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
@@ -1158,6 +1183,64 @@ namespace editor {
 		}
 	}
 
+	float EditorApp::PreviewExposure() const {
+		// The preview's standing exposure: the authored MANUAL value. The
+		// App seeds its runtime adaptation from the same number
+		// (m_exposureAdapted starts at manual, see BuildCookedLights-
+		// FromWorld) and meters + adapts from there; the preview has no
+		// histogram pass to meter with, so the manual look is its best
+		// faithful standing approximation (the same "the App renders the
+		// rest" contract as the volumetric settings).
+		return std::max(CurrentEnv().manualExposure, 1e-6f);
+	}
+
+	void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
+		const ViewportRect& rect, const char* name) {
+		// One tonemap layer per rect (the nvapp element-layer pattern, see
+		// m_sceneHdr): the layer writes the rect of the swap (Load keeps
+		// the chrome + sibling layers outside it) and samples the MATCHING
+		// sub-rect of the shared full-window HDR through the srcUv window -
+		// texel centers, so linear taps never bleed the neighbouring
+		// viewport's content at the rect edges.
+		if (swapView.empty() || !m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
+			return;
+		if (rect.w < 1.0f || rect.h < 1.0f)
+			return;
+		const float invW = 1.0f / std::max(float(m_sceneHdr.extent.width), 1.0f);
+		const float invH = 1.0f / std::max(float(m_sceneHdr.extent.height), 1.0f);
+		const float uvMinX = (rect.x + 0.5f) * invW;
+		const float uvMinY = (rect.y + 0.5f) * invH;
+		const float uvMaxX = (rect.x + rect.w - 0.5f) * invW;
+		const float uvMaxY = (rect.y + rect.h - 0.5f) * invH;
+		smvk::TonemapDesc d{};
+		// Authored look: the env's operator + the standing exposure (see
+		// PreviewExposure - no bloom layer, the preview shows the scene).
+		d.exposure = PreviewExposure();
+		d.tonemapMode = CurrentEnv().tonemapMode;
+		m_previewTonemap.AddTonemapPass(*m_rendergraph,
+			m_sceneHdr.logicalView,
+			m_sceneHdr.bindlessIndex,
+			{}, UINT32_MAX, 0.0f,   // no bloom layer in the preview
+			m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
+				.magFilter = smvk::Filter::Linear, .minFilter = smvk::Filter::Linear,
+				.mipmapMode = smvk::MipmapMode::Linear,
+				.addressU = smvk::AddressMode::ClampToEdge,
+				.addressV = smvk::AddressMode::ClampToEdge,
+				.addressW = smvk::AddressMode::ClampToEdge,
+				.maxAnisotropy = 1.0f }), // dedupes to slot 0 (EnsureShaders)
+			{ swapView },
+			smvk::Extent2D{ uint32_t(rect.w), uint32_t(rect.h) },
+			d, name,
+			{}, UINT32_MAX, 0u, 16.0f,   // no motion-vector debug layer
+			{}, UINT32_MAX, 0.0f,        // no AO layer
+			false,                       // sRGB swapchain: linear store
+			UINT32_MAX, 0.0f,            // no artistic LUT
+			0.0f, 0.0f,                  // no jitter (no temporal AA here)
+			uint32_t(rect.x), uint32_t(rect.y),
+			smvk::AttachmentLoadOp::Load, // keep chrome + sibling layers
+			uvMinX, uvMinY, uvMaxX, uvMaxY);
+	}
+
 	void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		uint32_t flight, bool selectedWireOverlay) {
 		const ViewportRect& vp = m_viewports[vpIdx].rect;
@@ -1206,15 +1289,29 @@ namespace editor {
 		// Viewport rect only (the EditorBg pass clears the rest of the
 		// window behind the panels). Color loads the bg clear; depth
 		// clears in the rect (reversed-Z).
+		// Display-chain routing (see m_sceneHdr + the file header): every
+		// MainProgram view except Baked is a tonemap-chain shader (raw-lux
+		// radiance or a 1/frame.exposure pre-scale for the App's
+		// hdr * exposure -> operator chain) - those render into the shared
+		// full-window HDR at the SAME rect (offset/extent/depth unchanged:
+		// the gizmo grid keeps its depth-tested occlusion) and a tonemap
+		// layer resolves the rect to the swap. Baked carries its own
+		// Reinhard + gamma display mapping and stays direct. HDR/tonemapper
+		// unavailable (creation failure) falls back to the direct write
+		// (washed out, but never dead).
+		const bool viaHdr = !bakedOnly
+			&& m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
+		const smvk::LogicalImageViewHandle colorTarget =
+			viaHdr ? m_sceneHdr.logicalView : swapView;
 		auto& pass = m_rendergraph->AddPass("EditorMain")
 			.SetOffset(uint32_t(vp.x), uint32_t(vp.y))
 			.SetExtent(smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) })
-			.SetColor({ swapView },
-				smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
-				smvk::ClearColor(0.07f, 0.07f, 0.09f, 1.0f))
-			.SetDepth(m_depth.logicalView,
-				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
-				smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
+		.SetColor({ colorTarget },
+			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
+			smvk::ClearColor(0.07f, 0.07f, 0.09f, 1.0f))
+		.SetDepth(m_depth.logicalView,
+			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
 		pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](smvk::CommandBuffer& cmd) {
 			// Meshlet debug leg (F4): flat per-meshlet colors, own program +
 			// expanded index buffer; skips the shaded legs entirely.
@@ -1326,6 +1423,12 @@ namespace editor {
 				DrawWorldNodes(cmd, pc, true, true, false);
 			}
 		});
+		// The matching tonemap layer for this viewport rect (declared right
+		// after the scene pass: the topo sort orders the HDR read after this
+		// write, and the stable declaration order keeps it under the gizmo/
+		// imgui overlays - see RenderFrame).
+		if (viaHdr)
+			RecordViewportTonemap(swapView, vp, "EditorTonemap");
 	}
 
 	void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
@@ -1372,10 +1475,19 @@ namespace editor {
 		pc.mainRenderView = UINT32_MAX;
 		pc.renderViewIndex = UINT32_MAX;
 
+		// Display-chain routing (same as RecordMainPass, see m_sceneHdr):
+		// the inset's programs (uv0/uv1/lit) are tonemap-chain shaders, so
+		// the strip renders into the shared HDR at the strip rect and a
+		// tonemap layer resolves it; a missing HDR/tonemapper falls back to
+		// the direct write.
+		const bool viaHdr =
+			m_previewTonemap.ShadersValid() && m_sceneHdr.Valid();
+		const smvk::LogicalImageViewHandle colorTarget =
+			viaHdr ? m_sceneHdr.logicalView : swapView;
 		auto& pass = m_rendergraph->AddPass("EditorInset")
 			.SetOffset(stripX, uint32_t(vp.y))
 			.SetExtent(strip)
-			.SetColor({ swapView },
+			.SetColor({ colorTarget },
 				smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1))
 			.SetDepth(m_depth.logicalView,
@@ -1431,12 +1543,18 @@ namespace editor {
 							sizeof(matId), &matId, smvk::ShaderStage::All);
 						cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
 							sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
-						for (const auto& s : mesh->geometry.surfaces)
-							cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+					for (const auto& s : mesh->geometry.surfaces)
+						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
 					});
 				}
 			}
 		});
+		// The matching tonemap layer for the strip rect (see RecordMainPass).
+		if (viaHdr)
+			RecordViewportTonemap(swapView,
+				ViewportRect{ float(stripX), float(vp.y), float(strip.width),
+					float(strip.height) },
+				"EditorInsetTonemap");
 	}
 
 	// ---- meshlet debug view (F4) -------------------------------------------
@@ -1575,6 +1693,12 @@ namespace editor {
 	void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
 		if (!m_world || !EnsureMeshletDebug())
 			return;
+		// The meshdebug contract (meshdebug.frag.hlsl): the C++ side
+		// pre-scales the push color by 1/frame exposure so the
+		// tonemapper's hdr * exposure reproduces the authored display
+		// color (App parity - the preview's tonemap layer applies the
+		// same exposure, see PreviewExposure).
+		const float meshletColorPreScale = 1.0f / PreviewExposure();
 		const smvk::VertexFormat fmt =
 			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
 			: smvk::VertexFormat::Empty;
@@ -1597,9 +1721,10 @@ namespace editor {
 			smvk::IteratorFlagBit_StaticVertexFmt);
 		// Fallback leg (static monoblock indices): meshes without cooked
 		// meshlets draw dim gray — nothing vanishes in the debug view.
-		dp.color[0] = 0.45f;
-		dp.color[1] = 0.45f;
-		dp.color[2] = 0.5f;
+		// (Pre-scaled per the contract above, like the palette leg below.)
+		dp.color[0] = 0.45f * meshletColorPreScale;
+		dp.color[1] = 0.45f * meshletColorPreScale;
+		dp.color[2] = 0.5f * meshletColorPreScale;
 		dp.color[3] = 1.0f;
 		m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
 			if (item.material == smvk::World::kInvalidIndex)
@@ -1636,6 +1761,11 @@ namespace editor {
 				const MeshletRange& r = m_meshletRanges[ri];
 				MeshletDebugColor(item.mesh, r.meshlet, r.coneCutoff,
 					m_debugMeshletMode, dp.color);
+				// Contract pre-scale (see DrawMeshletNodes top): rgb only,
+				// the alpha carries no color.
+				dp.color[0] *= meshletColorPreScale;
+				dp.color[1] *= meshletColorPreScale;
+				dp.color[2] *= meshletColorPreScale;
 				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
 				cmd.DrawIndexed(r.indexCount, 1, r.firstIndex, 0);
 			}
@@ -1661,6 +1791,14 @@ namespace editor {
 			return;
 		if (!EnsureDepth(extent))
 			return;
+		// Preview HDR (best-effort, see m_sceneHdr): a creation failure
+		// falls back to the direct LDR write (RecordMainPass/RecordInsetPass
+		// gate on m_sceneHdr.Valid()), never a dead editor.
+		(void)m_sceneHdr.Ensure(*m_context, *m_rendergraph, extent,
+			smvk::HdrDesc{
+				.name = "editorPreviewHdr",
+				.viewName = "editorPreviewHdrView",
+				.logicalName = "editorPreviewHdrLogical" });
 
 		// Viewport rects (single central or 2x2 quad) between the panels;
 		  // the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
@@ -1868,6 +2006,21 @@ namespace editor {
 					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 					smvk::ClearDepthStencil(0.0f, 0));
 			bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+		}
+		if (m_sceneHdr.Valid()) {
+			// Preview HDR black clear (full window, see m_sceneHdr): the
+			// sub-rect scene passes LOAD their rects, so UV-shell gaps
+			// (and a shrunken viewport's vacated margin) would otherwise
+			// tonemap STALE rects. Full-extent clear = no sub-rect render
+			// area (the driver slow path the shadow-tile workaround exists
+			// for), and black clears to black through every operator.
+			auto& hdrBg = m_rendergraph->AddPass("EditorHdrBg")
+				.SetOffset(0, 0)
+				.SetExtent(extent)
+				.SetColor({ m_sceneHdr.logicalView },
+					smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+					smvk::ClearColor(0, 0, 0, 1));
+			hdrBg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
 		}
 		m_rendergraph->Execute(fb);
 

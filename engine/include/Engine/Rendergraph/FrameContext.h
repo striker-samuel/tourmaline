@@ -41,11 +41,12 @@ struct AppFrameContext : public smvk::FrameContext {
 	// decisions within a frame.
 	bool lodEnabled = false;
 	smvk::LodFrameInputs lodInputs{};
-	// Shader LODs: the Main pass draws instances whose selected level is
-	// World::LodShader::VertexLit with the cheap vertex-lit program
-	// (direct leg); the gfx filter excludes them from the indirect
-	// ranges accordingly (see GfxRenderer::FilterMainView). Mirrors
-	// WorldRenderer::ShaderLodActive() — both sides must agree per frame.
+	// Shader LODs: the Main pass draws instances whose selected level
+	// shades vertex-lit (see World::UseVertexLitShaderAt) with the cheap
+	// program (direct leg); the gfx filter excludes them from the
+	// indirect ranges accordingly (see GfxRenderer::FilterMainView).
+	// Mirrors WorldRenderer::ShaderLodActive() — both sides must agree
+	// per frame.
 	bool lodShaderEnabled = false;
 	// The depth prepass intentionally ignores it: transparent is always
 	// excluded from depth so SSAO/HZB/tile-cull see opaque only.
@@ -70,11 +71,13 @@ struct AppFrameContext : public smvk::FrameContext {
 	// covers them: the seed pass draws their prev∩curr clusters and the
 	// remainder pass the newly visible curr−prev ones (each cluster
 	// depthed exactly once, masked with the real alpha test).
-	// Resolver: (node, worldMesh, lodIdx) -> the filter owns this item's
-	// depth (registered gfx mesh, not a shader-LOD vertex-lit level —
-	// those draw direct and keep their prepass depth).
+	// Resolver: (node, worldMesh, lodIdx, material) -> the filter owns
+	// this item's depth (registered gfx mesh, not a shader-LOD
+	// vertex-lit level — those draw direct and keep their prepass
+	// depth). The material rides along because the far-level shading
+	// program is per-material data (see ShaderLodPolicy).
 	// Cleared (null) for full-prepass frames.
-	std::function<bool(NodeId, uint32_t, uint32_t)> gfxLodFilterable{};
+	std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)> gfxLodFilterable{};
 };
 
 } // namespace engine

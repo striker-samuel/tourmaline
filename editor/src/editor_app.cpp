@@ -240,6 +240,9 @@ void EditorApp::Shutdown() {
 	PollBakeProcess();
 	m_imgui.reset();
 	m_depth = smvk::DepthTarget{};
+	// Preview HDR + tonemapper teardown (see m_sceneHdr in editor_app.h).
+	m_sceneHdr.Destroy(*m_rendergraph);
+	m_previewTonemap.DestroyShaders();
 	m_frameUniforms = {};
 	m_insetFrameUniforms = {};
 	m_materialsBuf = {};

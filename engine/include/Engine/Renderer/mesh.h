@@ -70,6 +70,45 @@ namespace smvk {
 		BlendSettings blend{};
 	};
 
+	// ---- Shader-LOD policy (per material) ---------------------------
+	// Replaces the old hardcoded LodShader enum: each material declares
+	// how its farthest cooked LOD level shades. Two mechanisms, both
+	// data-driven per material:
+	//   1. Whole-program substitution: the farthest level may use the
+	//      cheap vertex-lit program (per-vertex sun + ambient, no
+	//      textures/shadows), so far instances trade shading quality
+	//      for fragment cost; materials the cheap program cannot shade
+	//      stay fully lit at every level.
+	//   2. Quality specialization: when the farthest level stays on the
+	//      lit program, it binds with the specialization constants below
+	//      (simplified BRDF, no normal-map fetch, ...), so the far
+	//      program pays for only what the material needs at distance.
+	struct ShaderLodQuality {
+		// GGX specular lobe (false = Lambert-only "simplified BRDF": no
+		// specular math, no specular env fetch, no per-light specular).
+		bool specular = true;
+		// Tangent-space normal-map fetch (false = geometric normal: no
+		// normal-texture sample, no TBN work).
+		bool normalMap = true;
+		bool operator==(const ShaderLodQuality&) const = default;
+	};
+	struct ShaderLodPolicy {
+		// Farthest cooked level may use the cheap vertex-lit program.
+		// Disable for materials that need the full program at distance
+		// (alpha-tested cutouts with alpha textures, emissives you want
+		// to keep glowing, view-dependent effects...).
+		bool allowFarVertexLit = true;
+		// Quality spec applied to the lit program when the farthest
+		// level stays lit (allowFarVertexLit == false). Default =
+		// full quality (indistinguishable from the base program).
+		ShaderLodQuality farQuality{};
+	};
+
+	// Specialization constant IDs for the far-level quality knobs above.
+	// Must match common.hlsli (SPEC_LIT_*).
+	inline constexpr uint32_t kSpecLitSpecular = 20;
+	inline constexpr uint32_t kSpecLitNormalMap = 21;
+
 	struct MaterialCreateInfo {
 		// Primary PBR textures – baseColorTexture == diffuse for backward compat.
 		TextureHandle baseColorTexture{};
@@ -97,6 +136,16 @@ namespace smvk {
 		// overlay materials opt out at cook/import time; the World flag
 		// build gates IteratorFlagBit_CastShadow on it.
 		bool castsShadows = true;
+		// Far-LOD shading program (see ShaderLodPolicy): the farthest
+		// cooked level may use the cheap vertex-lit program. Author
+		// false for materials the cheap program cannot shade (the glTF
+		// importer derives this from alphaMode: masked/blend stay lit).
+		bool allowFarVertexLit = true;
+		// Far-LOD quality spec for materials that stay on the lit
+		// program (see ShaderLodQuality): specular/normal-map switches
+		// for the farthest cooked level. Tour attributes farSpecular /
+		// farNormalMap (1 = full quality, 0 = simplified).
+		ShaderLodQuality farQuality{};
 	};
 
 	MaterialPipelineState MakePipelineStateForMaterial(
@@ -111,6 +160,7 @@ namespace smvk {
 		float alphaCutoff = 0.5f;
 		bool doubleSided = false;
 		bool castsShadows = true;
+		ShaderLodPolicy shaderLod{};
 
 		// Derived / cached pipeline state. Authoritative for PSO selection
 		// and for World iterator flags. Mutated only via helpers so values

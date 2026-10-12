@@ -737,6 +737,13 @@ bool SerializeClusters(
 		// Trailing field (appended after the texture URIs so older
 		// readers stop cleanly before it; pre-flag paks read as casting).
 		PutU32(blob, mat->castsShadows ? 1u : 0u);
+		// Trailing shader-LOD policy (see ShaderLodPolicy): per-material
+		// far-level shading program. Same convention — appended last.
+		PutU32(blob, mat->shaderLod.allowFarVertexLit ? 1u : 0u);
+		// Trailing far-quality spec (see ShaderLodQuality): the quality
+		// switches for farthest levels that stay on the lit program.
+		PutU32(blob, mat->shaderLod.farQuality.specular ? 1u : 0u);
+		PutU32(blob, mat->shaderLod.farQuality.normalMap ? 1u : 0u);
 
 		if (!writer.AddBlob(PakAssetKind::Material, uri, std::move(blob)))
 			return fail("invalid material uri: " + uri);
@@ -1777,6 +1784,24 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			return fail("truncated material blob (missing castsShadows; "
 				"stale pak - recook the pak): " + e->path);
 		const bool castsShadows = cs != 0;
+		// Shader-LOD policy trailer (after castsShadows; see
+		// ShaderLodPolicy). Strict like every other trailing field:
+		// stale paks fail loudly and get recooked, no silent defaults.
+		const uint32_t svl = c.u32();
+		if (!c.ok)
+			return fail("truncated material blob (missing shaderLod; "
+				"stale pak - recook the pak): " + e->path);
+		const bool allowFarVertexLit = svl != 0;
+		// Far-quality trailer (after the policy; see ShaderLodQuality).
+		// Same strictness: stale paks fail loudly, no silent defaults.
+		ShaderLodQuality farQuality{};
+		const uint32_t fqSpec = c.u32();
+		const uint32_t fqNorm = c.u32();
+		if (!c.ok)
+			return fail("truncated material blob (missing farQuality; "
+				"stale pak - recook the pak): " + e->path);
+		farQuality.specular = fqSpec != 0;
+		farQuality.normalMap = fqNorm != 0;
 
 		// Exact MaterialValues round-trip: everything (factors, params,
 		// ambient) is preserved verbatim except the texture slots, which
@@ -1800,7 +1825,9 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			alpha <= 2 ? static_cast<AlphaMode>(alpha) : AlphaMode::Opaque,
 			cutoff,
 			ds != 0,
-			castsShadows);
+			castsShadows,
+			allowFarVertexLit,
+			farQuality);
 		if (!h.valid())
 			return fail("CreateMaterial failed for: " + uri);
 		cluster->RegisterMaterialUri(uri, h);

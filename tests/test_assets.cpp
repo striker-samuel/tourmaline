@@ -1101,6 +1101,9 @@ void TestLodSelection() {
 		const int root = addNode(cluster->scene, -1, 0);
 		const int n1 = addNode(cluster->scene, root, 1);
 		cluster->scene.meshForNode[n1] = mh.index();
+		MaterialCreateInfo shaderLodCi{};
+		const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
+		cluster->scene.materialForNode[n1] = shaderLodMatH.index();
 		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
 		markAsChanged(cluster->scene, root);
 		recalculateGlobalTransforms(cluster->scene);
@@ -1134,14 +1137,54 @@ void TestLodSelection() {
 				"lod.world.hyst.refine");
 		}
 
-		// ---- Shader LODs (level = geometry + shading program) ----------
-		// The farthest level of a cooked chain carries the vertex-lit
-		// program while keeping the coarsest geometry; every other level
-		// and out-of-range probes stay full-lit.
-		Check(world.LodShaderAt(0, 0) == LodShader::Lit, "lod.shader.l0");
-		Check(world.LodShaderAt(0, 1) == LodShader::VertexLit, "lod.shader.farthest");
-		Check(world.LodShaderAt(0, 2) == LodShader::Lit, "lod.shader.oob");
+		// ---- Shader LODs (per-material far-level shading) -----------
+		// The farthest level of a cooked chain substitutes vertex-lit
+		// when the material programs it (see ShaderLodPolicy), or stays
+		// on lit with the material's quality specialization; every other
+		// level, out-of-range probes and invalid materials resolve
+		// default (full-lit, no spec). World node ids are re-based on
+		// merge (the world reserves its own root), so the material is
+		// located by (cluster, handle) in materialLocations, not by the
+		// cluster-scene node id.
+		uint32_t shaderLodMat = UINT32_MAX;
+		for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
+			const auto& loc = world.materialLocations[i];
+			if (loc.cluster == world.clusters.front().get()
+				&& loc.handle == shaderLodMatH)
+				shaderLodMat = i;
+		}
+		Check(shaderLodMat != UINT32_MAX, "lod.shader.matwired");
+		{
+			const auto fs0 = world.FarShadingAt(0, 0, shaderLodMat);
+			Check(fs0.isDefault() && !fs0.vertexLit, "lod.shader.l0");
+			const auto fs1 = world.FarShadingAt(0, 1, shaderLodMat);
+			Check(!fs1.isDefault() && fs1.vertexLit, "lod.shader.farthest");
+			const auto fs2 = world.FarShadingAt(0, 2, shaderLodMat);
+			Check(fs2.isDefault(), "lod.shader.oob");
+			const auto fsBad = world.FarShadingAt(0, 1, UINT32_MAX);
+			Check(fsBad.isDefault(), "lod.shader.badmat");
+		}
 		Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
+		// Opt-out: a material that disallows the cheap program stays on
+		// lit at the farthest level (default quality = default shading),
+		// and a non-default quality resolves specialized (and back).
+		if (smvk::Material* m = world.GetMaterial(shaderLodMat)) {
+			m->shaderLod.allowFarVertexLit = false;
+			const auto fsOpt = world.FarShadingAt(0, 1, shaderLodMat);
+			Check(fsOpt.isDefault() && !fsOpt.vertexLit, "lod.shader.optout");
+			m->shaderLod.farQuality.specular = false;
+			const auto fsSpec = world.FarShadingAt(0, 1, shaderLodMat);
+			Check(!fsSpec.isDefault() && !fsSpec.vertexLit
+				&& !fsSpec.quality.specular && fsSpec.quality.normalMap,
+				"lod.shader.specquality");
+			m->shaderLod.farQuality.specular = true;
+			m->shaderLod.allowFarVertexLit = true;
+			const auto fsBack = world.FarShadingAt(0, 1, shaderLodMat);
+			Check(!fsBack.isDefault() && fsBack.vertexLit, "lod.shader.optin");
+		}
+		else {
+			Check(false, "lod.shader.matfetch");
+		}
 
 		// ---- Decision cache cadence ------------------------------------
 		// Node n1 sits at the origin scaled 3x; drive the eye instead of
@@ -1253,13 +1296,23 @@ void TestLodSelection() {
 			}
 			Check(uncookedMesh != UINT32_MAX && cookedMesh != UINT32_MAX,
 				"lod.shader.uris");
+			uint32_t shaderLodMat2 = UINT32_MAX;
+			for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
+				const auto& loc = world.materialLocations[i];
+				if (loc.cluster == world.clusters.front().get()
+					&& loc.handle == shaderLodMatH)
+					shaderLodMat2 = i;
+			}
+			Check(shaderLodMat2 != UINT32_MAX, "lod.shader.matwired2");
 			Check(world.LodChainLength(uncookedMesh) == 1, "lod.shader.uncooked.len");
-			Check(world.LodShaderAt(uncookedMesh, 0) == LodShader::Lit,
+			Check(world.FarShadingAt(uncookedMesh, 0, shaderLodMat2).isDefault(),
 				"lod.shader.uncooked.lit");
-			Check(world.LodShaderAt(uncookedMesh, 3) == LodShader::Lit,
+			Check(world.FarShadingAt(uncookedMesh, 3, shaderLodMat2).isDefault(),
 				"lod.shader.uncooked.oob");
-			Check(world.LodShaderAt(cookedMesh, 1) == LodShader::VertexLit,
-				"lod.shader.restamp");
+			{
+				const auto fsRe = world.FarShadingAt(cookedMesh, 1, shaderLodMat2);
+				Check(!fsRe.isDefault() && fsRe.vertexLit, "lod.shader.restamp");
+			}
 		}
 	}
 }

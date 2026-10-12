@@ -58,8 +58,19 @@ struct TonemapPush {
 	// still camera (they must carry the offset for SMAA T2x / DLSS).
 	float jitterDeltaX = 0.0f;
 	float jitterDeltaY = 0.0f;
+	// Sub-rect source window (element stacking): the HDR image can be
+	// larger than this pass's rect (a shared full-window HDR with
+	// per-viewport layers); xy = min uv, zw = max uv - the fullscreen
+	// triangle's 0..1 uv remaps into this window before every sample.
+	// Default (0,0,1,1) = the full image (identity). Callers pass TEXEL
+	// CENTERS of the source rect so linear taps never bleed the content
+	// just outside the rect: (x + 0.5)/W .. (x + w - 0.5)/W etc.
+	float srcUvMinX = 0.0f;
+	float srcUvMinY = 0.0f;
+	float srcUvMaxX = 1.0f;
+	float srcUvMaxY = 1.0f;
 };
-static_assert(sizeof(TonemapPush) == 64);
+static_assert(sizeof(TonemapPush) == 80);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -146,6 +157,12 @@ struct Tonemapper {
 	// image. Full-swap layers keep offset 0,0 + Clear (today's behavior);
 	// sub-rect layers MUST pass Load so sibling layers outside the rect
 	// survive (Clear would wipe the whole attachment).
+	// srcUv window (sub-rect SOURCE sampling): the matching sub-rect of the
+	// HDR image when the HDR is larger than this pass's rect (a shared
+	// full-window HDR with per-rect layers) - texel centers, min/max uv.
+	// Default (0,0,1,1) samples the full image (the HDR == the pass rect,
+	// today's behavior). Must stay layout-identical to the HLSL mirror
+	// (tonemap.frag.hlsl TonemapPush srcUvWindow).
 	RenderPass& AddTonemapPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -171,7 +188,11 @@ struct Tonemapper {
 		float jitterDeltaY = 0.0f,
 		uint32_t offsetX = 0,
 		uint32_t offsetY = 0,
-		AttachmentLoadOp colorLoad = AttachmentLoadOp::Clear) const {
+		AttachmentLoadOp colorLoad = AttachmentLoadOp::Clear,
+		float srcUvMinX = 0.0f,
+		float srcUvMinY = 0.0f,
+		float srcUvMaxX = 1.0f,
+		float srcUvMaxY = 1.0f) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -198,6 +219,10 @@ struct Tonemapper {
 		push.lutIntensity = lutOn ? lutIntensity : 0.0f;
 		push.jitterDeltaX = jitterDeltaX;
 		push.jitterDeltaY = jitterDeltaY;
+		push.srcUvMinX = srcUvMinX;
+		push.srcUvMinY = srcUvMinY;
+		push.srcUvMaxX = srcUvMaxX;
+		push.srcUvMaxY = srcUvMaxY;
 
 		std::vector<LogicalImageViewHandle> inputs;
 		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);

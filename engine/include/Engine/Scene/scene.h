@@ -181,7 +181,7 @@ struct SceneCvol {
 // row (sorted first at load — a pinned probe wins weight ties, e.g.
 // the capture exactly at a chrome ball). Node-local like SceneCvol.
 struct SceneCubemap {
-	float radius = 1.5f;   // influence radius (m); fade = radius/2
+	float radius = 5.5f;   // influence radius (m); fade = radius/2
 };
 
 // Authored environment block (editor LIGHTING authoring): LUX-NATIVE

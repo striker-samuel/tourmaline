@@ -1222,8 +1222,8 @@ namespace engine {
 			// Same halfrate cache read as the Main leg: both sides agree
 			// per node per frame, so each instance rasterizes exactly once.
 			if (lodShaderVertexLit
-				&& world.LodShaderAt(worldMesh, lodIdx)
-				== smvk::LodShader::VertexLit)
+				&& !world.FarShadingAt(worldMesh, lodIdx,
+					item.material).isDefault())
 				return;
 			uint32_t gfxMesh = UINT32_MAX;
 			if (worldMesh < lodMeshMap_.size()

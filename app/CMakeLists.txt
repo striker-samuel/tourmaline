@@ -6,17 +6,16 @@ message(STATUS "APP_DIR = ${APP_DIR}")
 
 # ---------------------------------------------------------------------------
 # App.exe: the pak-viewer HOST. The engine renders worlds; this target owns
-# everything app-specific — CLI parsing, pak preload + world source, the
-# sponza check-scene extras and demo-content seeding (PakApp.cpp /
-# PakAppArgs.cpp / PakPreload.cpp; see src/Host.h). Content/shader staging
-# below. (appcore, the old WorldRenderer static lib, is long deleted.)
-# ---------------------------------------------------------------------------
+# everything app-specific — CLI parsing, pak preload + world source
+# (PakApp.cpp / PakAppArgs.cpp / PakPreload.cpp; see src/Host.h).
+# Content/shader staging below. (appcore, the old WorldRenderer static
+# lib, is long deleted; DecalAssets.cpp went with the demo-decal
+# seeding — decals resolve from world content only now.)
 add_executable(App
     src/main.cpp
     src/PakApp.cpp
     src/PakAppArgs.cpp
     src/PakPreload.cpp
-    src/DecalAssets.cpp
 )
 
 set_target_properties(App PROPERTIES

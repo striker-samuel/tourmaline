@@ -207,22 +207,10 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 			MarkSubtreeStatic(clusterPtr->scene, 0);
 	}
 	world->ResolveAndFixup_clusters();
-	// Demo decal content (app-host owned): the procedural blood textures
-	// + the sponza check-scene hero splats become WORLD entities in the
-	// dynamic cluster — the renderer reads decals from the world only.
-	// VULKANTOY_DECALS=0 skips creating the presets entirely (the
-	// renderer's visibility toggle also reads it).
-	{
-		bool decalsOn = true;
-		if (const char* decEnv = std::getenv("VULKANTOY_DECALS")) {
-			const std::string_view dec = decEnv;
-			if (dec == "0" || dec == "off")
-				decalsOn = false;
-		}
-		if (decalsOn && InitDemoDecalTextures(ctx, *world)
-			&& StemOf(pre.scenePak) == "sponza")
-			SpawnSponzaDecalPresets(*world);
-	}
+	// (Demo decal seeding — the procedural blood textures + sponza hero
+	// splats — is gone with DecalAssets.cpp: decals resolve from world
+	// content only now. The renderer's own VULKANTOY_DECALS visibility
+	// toggle is untouched.)
 	// Serve pak-embedded textures through the renderer's content
 	// overlay (below loose content/, so dev overrides win).
 	contentVfs.Mount(pre.backend, 10, pre.scenePak);

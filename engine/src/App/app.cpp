@@ -9,7 +9,7 @@
 
 #include <Engine/core.h>
 #include <Engine/App/app.h>
-#include <Engine/Rendergraph/rendergraph.h>
+//#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/platform.h>
 #include <Engine/Profile/profile.h>
@@ -17,10 +17,6 @@
 
 bool smvk::App::Run() {
 	if (!Initialize()) {
-		// HONOR the failure: MainLoop on a half-initialized renderer
-		// faults (the old assert compiles out in Release and the app
-		// limped on — or crashed — with no scene). Shutdown still runs
-		// so partial GPU state tears down while members are alive.
 		std::cerr << "[App] initialization failed — exiting\n";
 		Shutdown();
 		return false;
@@ -34,7 +30,7 @@ bool smvk::App::Run() {
 			continue;
 		if (!element->onAttach()) {
 			std::cerr << "[App] element '" << element->ElementName()
-				<< "' failed to attach — exiting\n";
+				<< "' failed to attach. exiting\n";
 			Shutdown();
 			return false;
 		}

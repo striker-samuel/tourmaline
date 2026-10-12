@@ -125,7 +125,9 @@ namespace smvk {
 			AlphaMode alphaMode,
 			float alphaCutoff,
 			bool doubleSided,
-			bool castsShadows = true);
+			bool castsShadows = true,
+			bool allowFarVertexLit = true,
+			ShaderLodQuality farQuality = {});
 
 		// Cooked punctual light (KHR_lights_punctual): pure value asset,
 		// no GPU side. World position/direction resolve from the light

@@ -91,7 +91,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
 	// Null on full-prepass frames (fallbackOnly stays false then).
-	const std::function<bool(NodeId, uint32_t, uint32_t)> lodFilterable =
+	const std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)> lodFilterable =
 		fc.gfxLodFilterable;
 	// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): on when wanted AND
 	// the programs loaded. On temporal-split frames (fallbackOnly) the
@@ -225,7 +225,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					const uint32_t lod = lodEnabled
 						? world->LodIndexForNode(item.node, item.mesh, lodInputs)
 						: 0u;
-					if (lodFilterable(item.node, item.mesh, lod))
+					if (lodFilterable(item.node, item.mesh, lod, item.material))
 						return;
 				}
 				// Static frustum cull: O(1) mask lookup from the single

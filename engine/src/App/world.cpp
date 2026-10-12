@@ -25,8 +25,7 @@ namespace smvk {
 	// context and the back-pointer to the owning World.
 	Cluster::Cluster(ResourceManager* ctx)
 		: ctx_(ctx)
-	{
-	}
+	{}
 
 	// ---------------------------------------------------------------------------
 	// World
@@ -54,7 +53,7 @@ namespace smvk {
 		return ref;
 	}
 
-	Cluster& World::EnsureDynamicCluster(ResourceManager* ctx)	{
+	Cluster& World::EnsureDynamicCluster(ResourceManager* ctx) {
 		for (auto& c : clusters)
 			if (c && c->isDynamic)
 				return *c;
@@ -247,62 +246,62 @@ namespace smvk {
 				cs.globalTransform.begin(),
 				cs.globalTransform.end()
 			);
-		scene.nodeNames.insert(
-			scene.nodeNames.end(),
-			cs.nodeNames.begin(),
-			cs.nodeNames.end()
-		);
-		const uint32_t nodeCount =
-			static_cast<uint32_t>(cs.hierarchy.size());
-		// Carry the static-subtree spec (missing == all dynamic).
-		if (cs.staticRoot.size() == cs.hierarchy.size()) {
-			scene.staticRoot.insert(
-				scene.staticRoot.end(),
-				cs.staticRoot.begin(),
-				cs.staticRoot.end()
+			scene.nodeNames.insert(
+				scene.nodeNames.end(),
+				cs.nodeNames.begin(),
+				cs.nodeNames.end()
 			);
-		}
-		else {
-			scene.staticRoot.insert(
-				scene.staticRoot.end(), nodeCount, 0);
-		}
-		// Carry the lightmap-exclusion flags (missing == bake everything).
-		if (cs.noLightmap.size() == cs.hierarchy.size()) {
-			scene.noLightmap.insert(
-				scene.noLightmap.end(),
-				cs.noLightmap.begin(),
-				cs.noLightmap.end()
-			);
-		}
-		else {
-			scene.noLightmap.insert(
-				scene.noLightmap.end(), nodeCount, 0);
-		}
-		// Carry the dither-on-closeup flags (missing == off).
-		if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
-			scene.ditherCloseup.insert(
-				scene.ditherCloseup.end(),
-				cs.ditherCloseup.begin(),
-				cs.ditherCloseup.end()
-			);
-		}
-		else {
-			scene.ditherCloseup.insert(
-				scene.ditherCloseup.end(), nodeCount, 0);
-		}
-		// Carry visibility (hidden) flags (missing == all visible).
-		if (cs.hidden.size() == cs.hierarchy.size()) {
-			scene.hidden.insert(
-				scene.hidden.end(),
-				cs.hidden.begin(),
-				cs.hidden.end()
-			);
-		}
-		else {
-			scene.hidden.insert(
-				scene.hidden.end(), nodeCount, 0);
-		}
-		scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
+			const uint32_t nodeCount =
+				static_cast<uint32_t>(cs.hierarchy.size());
+			// Carry the static-subtree spec (missing == all dynamic).
+			if (cs.staticRoot.size() == cs.hierarchy.size()) {
+				scene.staticRoot.insert(
+					scene.staticRoot.end(),
+					cs.staticRoot.begin(),
+					cs.staticRoot.end()
+				);
+			}
+			else {
+				scene.staticRoot.insert(
+					scene.staticRoot.end(), nodeCount, 0);
+			}
+			// Carry the lightmap-exclusion flags (missing == bake everything).
+			if (cs.noLightmap.size() == cs.hierarchy.size()) {
+				scene.noLightmap.insert(
+					scene.noLightmap.end(),
+					cs.noLightmap.begin(),
+					cs.noLightmap.end()
+				);
+			}
+			else {
+				scene.noLightmap.insert(
+					scene.noLightmap.end(), nodeCount, 0);
+			}
+			// Carry the dither-on-closeup flags (missing == off).
+			if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
+				scene.ditherCloseup.insert(
+					scene.ditherCloseup.end(),
+					cs.ditherCloseup.begin(),
+					cs.ditherCloseup.end()
+				);
+			}
+			else {
+				scene.ditherCloseup.insert(
+					scene.ditherCloseup.end(), nodeCount, 0);
+			}
+			// Carry visibility (hidden) flags (missing == all visible).
+			if (cs.hidden.size() == cs.hierarchy.size()) {
+				scene.hidden.insert(
+					scene.hidden.end(),
+					cs.hidden.begin(),
+					cs.hidden.end()
+				);
+			}
+			else {
+				scene.hidden.insert(
+					scene.hidden.end(), nodeCount, 0);
+			}
+			scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
 
 			// Shift parent/firstChild/nextSibling/lastSibling indices so they
 			// point into the world node array. The cluster root's parent (which
@@ -344,156 +343,156 @@ namespace smvk {
 				scene.nameForNode[node + nodeOffset] = nameIdx + nameOffset;
 			}
 
-		// Remap meshForNode: cluster-local handle index -> world mesh index.
-		for (auto& [node, meshIdx] : cs.meshForNode) {
-			const uint32_t worldNode = node + nodeOffset;
-			const uint32_t worldMeshIdx =
-				static_cast<uint32_t>(meshLocations.size());
+			// Remap meshForNode: cluster-local handle index -> world mesh index.
+			for (auto& [node, meshIdx] : cs.meshForNode) {
+				const uint32_t worldNode = node + nodeOffset;
+				const uint32_t worldMeshIdx =
+					static_cast<uint32_t>(meshLocations.size());
 
-			ClusterStaticMeshHandle handle =
-				cluster.staticMeshes.getHandle(meshIdx);
+				ClusterStaticMeshHandle handle =
+					cluster.staticMeshes.getHandle(meshIdx);
 
-			meshLocations.push_back(
-				MeshLocation{ .cluster = &cluster, .handle = handle }
-			);
-			// Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
-			LodInfo lod;
-			lod.groupId = meshIdx;
-			if (const StringViewT uri = cluster.GetMeshUri(handle);
-				!uri.empty()) {
-				if (auto hit = cluster.GetMeshLod(uri))
-					lod = *hit;
+				meshLocations.push_back(
+					MeshLocation{ .cluster = &cluster, .handle = handle }
+				);
+				// Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
+				LodInfo lod;
+				lod.groupId = meshIdx;
+				if (const StringViewT uri = cluster.GetMeshUri(handle);
+					!uri.empty()) {
+					if (auto hit = cluster.GetMeshLod(uri))
+						lod = *hit;
+				}
+				if (const StaticMesh* m = cluster.staticMeshes.get(handle))
+					lod.triCount = m->geometry.indexCount / 3;
+				meshLodInfos.push_back(lod);
+				scene.meshForNode[worldNode] = worldMeshIdx;
 			}
-			if (const StaticMesh* m = cluster.staticMeshes.get(handle))
-				lod.triCount = m->geometry.indexCount / 3;
-			meshLodInfos.push_back(lod);
-			scene.meshForNode[worldNode] = worldMeshIdx;
+
+			// Remap materialForNode: cluster-local handle index -> world mat idx.
+			// Deduplicated by (cluster, cluster-local material): instanced
+			// scenes share a handful of materials across hundreds of thousands
+			// of nodes (scanlands: 96 materials over 374k instances). One slot
+			// per instance overflows the GPU materials buffer (MAX_MATERIALS)
+			// and shaders read OOB past it (GPU fault / device loss on heavy
+			// views). Mesh slots stay per-node (CPU-side only); material slots
+			// are GPU-indexed by materialId, so they must stay addressable.
+			for (auto& [node, matIdx] : cs.materialForNode) {
+				const uint32_t worldNode = node + nodeOffset;
+				const uint64_t matKey =
+					(static_cast<uint64_t>(clusterOrdinal) << 32) | matIdx;
+				auto matHit = worldMatByClusterMat.find(matKey);
+				if (matHit != worldMatByClusterMat.end()) {
+					scene.materialForNode[worldNode] = matHit->second;
+					continue;
+				}
+				const uint32_t worldMatIdx =
+					static_cast<uint32_t>(materialLocations.size());
+
+				ClusterMaterialHandle handle =
+					cluster.materials.getHandle(matIdx);
+
+				materialLocations.push_back(
+					MaterialLocation{ .cluster = &cluster, .handle = handle }
+				);
+				worldMatByClusterMat[matKey] = worldMatIdx;
+				scene.materialForNode[worldNode] = worldMatIdx;
+			}
+
+			// Remap lightForNode: cluster-local light pool index -> world
+			// light index. lightLocations resolves back to Cluster + handle
+			// exactly like meshLocations (cooked lights are pool assets).
+			for (auto& [node, lightIdx] : cs.lightForNode) {
+				const uint32_t worldNode = node + nodeOffset;
+				const uint32_t worldLightIdx =
+					static_cast<uint32_t>(lightLocations.size());
+
+				ClusterLightHandle handle =
+					cluster.lights.getHandle(lightIdx);
+
+				lightLocations.push_back(
+					LightLocation{ .cluster = &cluster, .handle = handle }
+				);
+				scene.lightForNode[worldNode] = worldLightIdx;
+			}
+
+			// Remap cameraForNode: cluster-local camera pool index -> world
+			// camera index. cameraLocations resolves back to Cluster + handle
+			// exactly like lightLocations (authored cameras are pool assets).
+			for (auto& [node, camIdx] : cs.cameraForNode) {
+				const uint32_t worldNode = node + nodeOffset;
+				const uint32_t worldCamIdx =
+					static_cast<uint32_t>(cameraLocations.size());
+
+				ClusterCameraHandle handle =
+					cluster.cameras.getHandle(camIdx);
+
+				cameraLocations.push_back(
+					CameraLocation{ .cluster = &cluster, .handle = handle }
+				);
+				scene.cameraForNode[worldNode] = worldCamIdx;
+			}
+
+			// Remap decalForNode: cluster-local decal pool index -> world
+			// decal index. decalLocations resolves back to Cluster + handle
+			// exactly like lightLocations (authored/runtime decals are pool
+			// assets; the shape rides the node transform).
+			for (auto& [node, decIdx] : cs.decalForNode) {
+				const uint32_t worldNode = node + nodeOffset;
+				const uint32_t worldDecalIdx =
+					static_cast<uint32_t>(decalLocations.size());
+
+				ClusterDecalHandle handle =
+					cluster.decals.getHandle(decIdx);
+
+				decalLocations.push_back(
+					DecalLocation{ .cluster = &cluster, .handle = handle }
+				);
+				scene.decalForNode[worldNode] = worldDecalIdx;
+			}
+
+			// Authored environment: per-node blocks offset-merge like the
+			// other node maps (values are inline structs — direct copy);
+			// the resolved look + default block ride first-wins across
+			// clusters (registration order: the owning scene first), so an
+			// unauthored default never shadows another scene's authored look.
+			for (auto& [node, env] : cs.envForNode)
+				scene.envForNode[node + nodeOffset] = env;
+			if (!envTaken && cs.hasEnvironment) {
+				scene.environment = cs.environment;
+				scene.hasEnvironment = true;
+				scene.defaultEnvironment = cs.defaultEnvironment;
+				envTaken = true;
+			}
+			// Default camera (world settings' typed camera.default field):
+			// cluster-space -> world-space offset remap, first-wins across
+			// clusters like the resolved env (the owning scene's default
+			// stands; UINT32_MAX = none is a no-op).
+			if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX
+				&& cs.defaultCameraNode < cs.hierarchy.size()) {
+				scene.defaultCameraNode =
+					cs.defaultCameraNode + nodeOffset;
+				defaultCamTaken = true;
+			}
+
+			if (!cs.hierarchy.empty())
+				markAsChanged(scene, clusterRootNode);
+			++clusterOrdinal;
 		}
 
-		// Remap materialForNode: cluster-local handle index -> world mat idx.
-		// Deduplicated by (cluster, cluster-local material): instanced
-		// scenes share a handful of materials across hundreds of thousands
-		// of nodes (scanlands: 96 materials over 374k instances). One slot
-		// per instance overflows the GPU materials buffer (MAX_MATERIALS)
-		// and shaders read OOB past it (GPU fault / device loss on heavy
-		// views). Mesh slots stay per-node (CPU-side only); material slots
-		// are GPU-indexed by materialId, so they must stay addressable.
-		for (auto& [node, matIdx] : cs.materialForNode) {
-			const uint32_t worldNode = node + nodeOffset;
-			const uint64_t matKey =
-				(static_cast<uint64_t>(clusterOrdinal) << 32) | matIdx;
-			auto matHit = worldMatByClusterMat.find(matKey);
-			if (matHit != worldMatByClusterMat.end()) {
-				scene.materialForNode[worldNode] = matHit->second;
+		// Layered materials: remap cluster-local layer ids to world material
+		// slots. Layer ids in MaterialValues are cluster-local pool indices
+		// (cook/pak domain); the GPU buffer is indexed by world materialId, so
+		// each referenced layer material needs a world slot — appended here
+		// when no node references it directly (the dedup loop above only
+		// creates slots for node-referenced materials).
+		for (uint32_t clusterOrdinal = 0;
+			clusterOrdinal < (uint32_t)clusters.size(); ++clusterOrdinal) {
+			Cluster* cluster = clusters[clusterOrdinal].get();
+			if (!cluster)
 				continue;
-			}
-			const uint32_t worldMatIdx =
-				static_cast<uint32_t>(materialLocations.size());
-
-			ClusterMaterialHandle handle =
-				cluster.materials.getHandle(matIdx);
-
-			materialLocations.push_back(
-				MaterialLocation{ .cluster = &cluster, .handle = handle }
-			);
-			worldMatByClusterMat[matKey] = worldMatIdx;
-			scene.materialForNode[worldNode] = worldMatIdx;
-		}
-
-		// Remap lightForNode: cluster-local light pool index -> world
-		// light index. lightLocations resolves back to Cluster + handle
-		// exactly like meshLocations (cooked lights are pool assets).
-		for (auto& [node, lightIdx] : cs.lightForNode) {
-			const uint32_t worldNode = node + nodeOffset;
-			const uint32_t worldLightIdx =
-				static_cast<uint32_t>(lightLocations.size());
-
-			ClusterLightHandle handle =
-				cluster.lights.getHandle(lightIdx);
-
-			lightLocations.push_back(
-				LightLocation{ .cluster = &cluster, .handle = handle }
-			);
-			scene.lightForNode[worldNode] = worldLightIdx;
-		}
-
-		// Remap cameraForNode: cluster-local camera pool index -> world
-		// camera index. cameraLocations resolves back to Cluster + handle
-		// exactly like lightLocations (authored cameras are pool assets).
-		for (auto& [node, camIdx] : cs.cameraForNode) {
-			const uint32_t worldNode = node + nodeOffset;
-			const uint32_t worldCamIdx =
-				static_cast<uint32_t>(cameraLocations.size());
-
-			ClusterCameraHandle handle =
-				cluster.cameras.getHandle(camIdx);
-
-			cameraLocations.push_back(
-				CameraLocation{ .cluster = &cluster, .handle = handle }
-			);
-			scene.cameraForNode[worldNode] = worldCamIdx;
-		}
-
-		// Remap decalForNode: cluster-local decal pool index -> world
-		// decal index. decalLocations resolves back to Cluster + handle
-		// exactly like lightLocations (authored/runtime decals are pool
-		// assets; the shape rides the node transform).
-		for (auto& [node, decIdx] : cs.decalForNode) {
-			const uint32_t worldNode = node + nodeOffset;
-			const uint32_t worldDecalIdx =
-				static_cast<uint32_t>(decalLocations.size());
-
-			ClusterDecalHandle handle =
-				cluster.decals.getHandle(decIdx);
-
-			decalLocations.push_back(
-				DecalLocation{ .cluster = &cluster, .handle = handle }
-			);
-			scene.decalForNode[worldNode] = worldDecalIdx;
-		}
-
-		// Authored environment: per-node blocks offset-merge like the
-		// other node maps (values are inline structs — direct copy);
-		// the resolved look + default block ride first-wins across
-		// clusters (registration order: the owning scene first), so an
-		// unauthored default never shadows another scene's authored look.
-		for (auto& [node, env] : cs.envForNode)
-			scene.envForNode[node + nodeOffset] = env;
-		if (!envTaken && cs.hasEnvironment) {
-			scene.environment = cs.environment;
-			scene.hasEnvironment = true;
-			scene.defaultEnvironment = cs.defaultEnvironment;
-			envTaken = true;
-		}
-		// Default camera (world settings' typed camera.default field):
-		// cluster-space -> world-space offset remap, first-wins across
-		// clusters like the resolved env (the owning scene's default
-		// stands; UINT32_MAX = none is a no-op).
-		if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX
-			&& cs.defaultCameraNode < cs.hierarchy.size()) {
-			scene.defaultCameraNode =
-				cs.defaultCameraNode + nodeOffset;
-			defaultCamTaken = true;
-		}
-
-		if (!cs.hierarchy.empty())
-			markAsChanged(scene, clusterRootNode);
-		++clusterOrdinal;
-	}
-
-	// Layered materials: remap cluster-local layer ids to world material
-	// slots. Layer ids in MaterialValues are cluster-local pool indices
-	// (cook/pak domain); the GPU buffer is indexed by world materialId, so
-	// each referenced layer material needs a world slot — appended here
-	// when no node references it directly (the dedup loop above only
-	// creates slots for node-referenced materials).
-	for (uint32_t clusterOrdinal = 0;
-		clusterOrdinal < (uint32_t)clusters.size(); ++clusterOrdinal) {
-		Cluster* cluster = clusters[clusterOrdinal].get();
-		if (!cluster)
-			continue;
-		cluster->materials.forEachHandle(
-			[&](ClusterMaterialHandle handle) {
+			cluster->materials.forEachHandle(
+				[&](ClusterMaterialHandle handle) {
 				Material* mat = cluster->materials.get(handle);
 				if (!mat || mat->values.layerMaterials.w == 0)
 					return;
@@ -527,26 +526,26 @@ namespace smvk {
 						static_cast<int32_t>(worldMatIdx);
 				}
 			});
-	}
+		}
 
-	RebuildStaticCache(scene);
-	recalculateGlobalTransforms(scene);
+		RebuildStaticCache(scene);
+		recalculateGlobalTransforms(scene);
 
-	// Build the per-node iterator flags from the resolved scene: renderable
-	// nodes are those carrying a mesh; material drives Opaque vs Transparent.
-	// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
-	// they keep None so no pass iterates them (see drawItems below).
-	flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
-	for (auto& [node, meshIdx] : scene.meshForNode) {
-		if (node >= flags.size())
-			continue;
-		if (!IsVisibleNode(scene, int(node)))
-			continue;
+		// Build the per-node iterator flags from the resolved scene: renderable
+		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
+		// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
+		// they keep None so no pass iterates them (see drawItems below).
+		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
+		for (auto& [node, meshIdx] : scene.meshForNode) {
+			if (node >= flags.size())
+				continue;
+			if (!IsVisibleNode(scene, int(node)))
+				continue;
 
-		IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
-			| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
-		if (IsStaticNode(scene, (int)node))
-			f |= static_cast<IteratorFlags>(IteratorFlagBit_Static);
+			IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
+				| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+			if (IsStaticNode(scene, (int)node))
+				f |= static_cast<IteratorFlags>(IteratorFlagBit_Static);
 
 			// Material-driven classification. Falls back to Opaque if node has
 			// no material (e.g. default).
@@ -561,33 +560,37 @@ namespace smvk {
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_Transparent);
 							else {
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
-							// Cook-classified non-casters (decal overlays,
-							// see SMVK_materials_shadows) drop out of the
-							// shadow passes only; Opaque keeps them in the
-							// depth prepass / main view.
+								// Cook-classified non-casters (decal overlays,
+								// see SMVK_materials_shadows) drop out of the
+								// shadow passes only; Opaque keeps them in the
+								// depth prepass / main view.
 								if (mat->castsShadows)
 									f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 
-							// Masked (cutout) still casts shadow but via alpha-tested path.
-							// Transparent (BLEND) does not cast: full-quad depth would
-							// darken behind glass/foliage. Shadow passes additionally
-							// filter Opaque so this flag is defense-in-depth.
+								// Masked (cutout) still casts shadow but via alpha-tested path.
+								// Transparent (BLEND) does not cast: full-quad depth would
+								// darken behind glass/foliage. Shadow passes additionally
+								// filter Opaque so this flag is defense-in-depth.
 								if (mat->shadingModel == ShadingModel::Masked)
 									f |= static_cast<IteratorFlags>(IteratorFlagBit_Masked);
 							}
-						} else {
+						}
+						else {
 							f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 								| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 						}
-					} else {
+					}
+					else {
 						f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 							| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 					}
-				} else {
+				}
+				else {
 					f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 						| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 				}
-			} else {
+			}
+			else {
 				f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 					| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 			}
@@ -600,27 +603,27 @@ namespace smvk {
 		// precomputed, material-sorted so per-material pipeline binds and
 		// phase splits happen once per material per pass instead of per
 		// node. stable_sort keeps hierarchy order within a material.
-	drawItems.clear();
-	drawItems.reserve(scene.meshForNode.size());
-	flagLists.clear();
-	for (auto& [node, meshIdx] : scene.meshForNode) {
-		if (node >= flags.size())
-			continue;
-		if (!IsVisibleNode(scene, int(node)))
-			continue; // hidden override: not drawn, not picked, not baked-listed
-		const auto matIt = scene.materialForNode.find(node);
+		drawItems.clear();
+		drawItems.reserve(scene.meshForNode.size());
+		flagLists.clear();
+		for (auto& [node, meshIdx] : scene.meshForNode) {
+			if (node >= flags.size())
+				continue;
+			if (!IsVisibleNode(scene, int(node)))
+				continue; // hidden override: not drawn, not picked, not baked-listed
+			const auto matIt = scene.materialForNode.find(node);
 			drawItems.push_back(RenderItem{
 				.node = node,
 				.mesh = meshIdx,
 				.material = (matIt != scene.materialForNode.end())
 					? matIt->second : kInvalidIndex,
 				.flags = flags[node],
-			});
+				});
 		}
 		std::stable_sort(drawItems.begin(), drawItems.end(),
 			[](const RenderItem& a, const RenderItem& b) {
-				return a.material < b.material;
-			});
+			return a.material < b.material;
+		});
 		// SoA flags mirror, rebuilt AFTER the sort so index i means the
 		// same item in both arrays (the SIMD scan in ItemIndicesFor
 		// walks this column).
@@ -671,6 +674,18 @@ namespace smvk {
 		return loc.cluster->materials.get(loc.handle);
 	}
 
+	const Material* World::GetMaterial(uint32_t materialIndex) const
+	{
+		if (materialIndex >= materialLocations.size())
+			return nullptr;
+
+		const MaterialLocation& loc = materialLocations[materialIndex];
+		if (loc.cluster == nullptr || !loc.handle.valid())
+			return nullptr;
+
+		return loc.cluster->materials.get(loc.handle);
+	}
+
 	const LodInfo* World::GetLodInfo(uint32_t meshIndex) const
 	{
 		if (meshIndex >= meshLodInfos.size())
@@ -682,9 +697,9 @@ namespace smvk {
 	// end of ResolveAndFixup_clusters; hot paths below only index the
 	// cache). Sibling URIs are composed into the frame arena and consumed
 	// immediately; only resolved MeshLocations + errors are stored.
-	// Shader LODs: the farthest level of a cooked chain (length > 1) is
-	// stamped LodShader::VertexLit — same coarsest geometry, cheap
-	// per-vertex shading. Uncooked chains stay fully lit.
+	// Shader LODs are NOT stamped here: the shading program is resolved
+	// per (level, material) at draw time (see UseVertexLitShaderAt), so
+	// materials program their own far-level shading via ShaderLodPolicy.
 	void World::RebuildLodChains() {
 		lodChains.clear();
 		lodChains.resize(meshLocations.size());
@@ -694,7 +709,7 @@ namespace smvk {
 			const MeshLocation& lod0 = meshLocations[i];
 			if (lod0.cluster == nullptr || !lod0.handle.valid())
 				continue;
-			chain.levels.push_back(LodChain::Level{ lod0, 0.0f, LodShader::Lit });
+			chain.levels.push_back(LodChain::Level{ lod0, 0.0f });
 			const StringViewT base =
 				BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
 			if (base.empty())
@@ -718,11 +733,8 @@ namespace smvk {
 				if (!meshHit || meshHit->cluster == nullptr ||
 					!meshHit->handle.valid())
 					break;
-				chain.levels.push_back(
-					LodChain::Level{ *meshHit, err, LodShader::Lit });
+				chain.levels.push_back(LodChain::Level{ *meshHit, err });
 			}
-			if (chain.levels.size() > 1)
-				chain.levels.back().shader = LodShader::VertexLit;
 		}
 	}
 
@@ -842,14 +854,30 @@ namespace smvk {
 		return chain.levels[lodIndex].error;
 	}
 
-	LodShader World::LodShaderAt(uint32_t meshIndex, uint32_t lodIndex) const {
+	World::FarShading World::FarShadingAt(uint32_t meshIndex,
+		uint32_t lodIndex, uint32_t materialIndex) const {
 		EnsureLodChainsCached(*this);
+		FarShading out{};
 		if (meshIndex >= lodChains.size())
-			return LodShader::Lit;
+			return out;
 		const LodChain& chain = lodChains[meshIndex];
-		if (lodIndex >= chain.levels.size())
-			return LodShader::Lit;
-		return chain.levels[lodIndex].shader;
+		// Farthest level of a cooked chain only (length > 1); every other
+		// level and out-of-range probes resolve default (full-lit).
+		if (chain.levels.size() <= 1
+			|| lodIndex >= chain.levels.size()
+			|| lodIndex + 1 < chain.levels.size())
+			return out;
+		// Invalid materials resolve default (their draws are skipped
+		// elsewhere, and default keeps every consumer on the base path).
+		const Material* mat = GetMaterial(materialIndex);
+		if (!mat)
+			return out;
+		if (mat->shaderLod.allowFarVertexLit) {
+			out.vertexLit = true;
+			return out;
+		}
+		out.quality = mat->shaderLod.farQuality;
+		return out;
 	}
 
 	uint32_t World::SelectLodIndex(uint32_t meshIndex, float distance,
@@ -925,45 +953,28 @@ namespace smvk {
 		return 0;
 	}
 
-std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(
-	StringViewT uri) const
-{
-	for (const auto& clusterPtr : clusters) {
-		if (!clusterPtr)
-			continue;
-		if (auto hit = clusterPtr->FindMeshByUri(uri))
-			return MeshLocation{ .cluster = clusterPtr.get(), .handle = *hit };
-	}
-	return std::nullopt;
-}
-
-std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
-	StringViewT uri) const
-{
-	for (const auto& clusterPtr : clusters) {
-		if (!clusterPtr)
-			continue;
-		if (auto hit = clusterPtr->FindMaterialByUri(uri))
-			return MaterialLocation{ .cluster = clusterPtr.get(), .handle = *hit };
-	}
-	return std::nullopt;
-}
-
-	// Stub culling: everything is considered visible until a real culler exists.
-	void World::Cull(CullConfiguration config)
+	std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(
+		StringViewT uri) const
 	{
-		for (uint32_t i = 0; i < flags.size(); ++i) {
-			flags[i] |= static_cast<IteratorFlags>(IteratorFlagBit_PassedCullTest);
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (auto hit = clusterPtr->FindMeshByUri(uri))
+				return MeshLocation{ .cluster = clusterPtr.get(), .handle = *hit };
 		}
-		// Keep the compact draw list in sync with flags[] (its entries
-		// carry a copy; see forEachRenderItem) and drop the cooked index
-		// lists — the flag bits they were built from just changed.
-		for (size_t i = 0; i < drawItems.size() && i < itemFlags.size(); ++i) {
-			drawItems[i].flags |= static_cast<IteratorFlags>(IteratorFlagBit_PassedCullTest);
-			itemFlags[i] = drawItems[i].flags;
+		return std::nullopt;
+	}
+
+	std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
+		StringViewT uri) const
+	{
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (auto hit = clusterPtr->FindMaterialByUri(uri))
+				return MaterialLocation{ .cluster = clusterPtr.get(), .handle = *hit };
 		}
-		flagLists.clear();
-		dirtyCull = false;
+		return std::nullopt;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -987,14 +998,14 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
 			const glm::vec3 localMin = mesh->geometry.aabbMin;
 			const glm::vec3 localMax = mesh->geometry.aabbMax;
 			const glm::vec3 corners[8] = {
-				{localMin.x, localMin.y, localMin.z},
-				{localMin.x, localMin.y, localMax.z},
-				{localMin.x, localMax.y, localMin.z},
-				{localMin.x, localMax.y, localMax.z},
-				{localMax.x, localMin.y, localMin.z},
-				{localMax.x, localMin.y, localMax.z},
-				{localMax.x, localMax.y, localMin.z},
-				{localMax.x, localMax.y, localMax.z},
+				{ localMin.x, localMin.y, localMin.z },
+				{ localMin.x, localMin.y, localMax.z },
+				{ localMin.x, localMax.y, localMin.z },
+				{ localMin.x, localMax.y, localMax.z },
+				{ localMax.x, localMin.y, localMin.z },
+				{ localMax.x, localMin.y, localMax.z },
+				{ localMax.x, localMax.y, localMin.z },
+				{ localMax.x, localMax.y, localMax.z },
 			};
 			for (const auto& c : corners) {
 				glm::vec4 wp4 = model * glm::vec4(c, 1.0f);

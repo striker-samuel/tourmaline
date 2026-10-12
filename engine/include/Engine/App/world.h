@@ -17,16 +17,6 @@ namespace smvk {
 	class PakReader;
 	class TextureStreamer;
 
-	enum struct CullType {
-		CPU
-		//, GPU
-	};
-
-	struct CullConfiguration {
-		CullType cullType = CullType::CPU;
-		glm::mat4 viewProj{};
-	};
-
 	// Per-frame inputs for error-driven LOD selection (see World::
 	// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
 	// RHI ring index is NOT — it wraps); it keys the per-node decision
@@ -39,20 +29,18 @@ namespace smvk {
 		float pixelBudget = 1.0f;
 	};
 
-	// ---- Shader LODs (per-level shading programs) -------------------
-	// A LOD level carries BOTH a geometry sibling and the shading
-	// program that draws it (the Main pass reads the shader, geometry
-	// consumers — shadows, prepass, motion, culling — ignore it). The
-	// farthest level of a cooked chain keeps the coarsest geometry but
-	// downgrades shading to the cheap vertex-lit program: lighting is
-	// computed per vertex (directional sun + sky ambient, no shadow-map
-	// sampling, no forward+ lights, no specular, no textures), so far
-	// instances trade shading quality for fragment cost. Every other
-	// level (and every uncooked chain) stays fully lit.
-	enum class LodShader : uint8_t {
-		Lit = 0,        // full PBR (default_lit)
-		VertexLit = 1,  // per-vertex sun + ambient (default_vertexlit)
-	};
+	// ---- Shader LODs (per-material shading programs) ---------------
+	// A LOD level carries a geometry sibling; the shading program that
+	// draws it is resolved per MATERIAL (see ShaderLodPolicy), not
+	// stamped on the level. The Main pass reads the resolved program,
+	// geometry consumers — shadows, prepass, motion, culling — ignore
+	// it. The farthest level of a cooked chain keeps the coarsest
+	// geometry and — when the material allows it — downgrades shading
+	// to the cheap vertex-lit program: lighting is computed per vertex
+	// (directional sun + ambient, no shadow-map sampling, no forward+
+	// lights, no specular, no textures), so far instances trade shading
+	// quality for fragment cost. Every other level (and every uncooked
+	// chain) stays fully lit.
 
 	typedef enum IteratorFlagBits {
 		IteratorFlagBit_None = 0,
@@ -76,7 +64,6 @@ namespace smvk {
 		// fetching the material per node per pass.
 		IteratorFlagBit_Masked = 1u << 10,
 		//IteratorFlagBit_Skinned,
-		//IteratorFlagBit_Static
 	} IteratorFlagBits;
 	typedef uint32_t IteratorFlags;
 
@@ -157,41 +144,41 @@ namespace smvk {
 			Cluster* cluster;
 			ClusterMaterialHandle handle;
 		};
-	struct TextureLocation {
-		Cluster* cluster;
-		ClusterTextureHandle handle;
-	};
-	// Cooked punctual lights (KHR_lights_punctual): pool assets like
-	// meshes — scene.lightForNode stores world indices into this table,
-	// each entry resolving back to the owning Cluster + handle.
-	struct LightLocation {
-		Cluster* cluster;
-		ClusterLightHandle handle;
-	};
-	// Authored cameras: pool assets like lights — scene.cameraForNode
-	// stores world indices into this table, each entry resolving back
-	// to the owning Cluster + handle.
-	struct CameraLocation {
-		Cluster* cluster;
-		ClusterCameraHandle handle;
-	};
-	// Authored/runtime decals: pool assets like lights — scene.decalForNode
-	// stores world indices into this table, each entry resolving back to
-	// the owning Cluster + handle. The shape rides the node transform
-	// (see SceneDecal).
-	struct DecalLocation {
-		Cluster* cluster;
-		ClusterDecalHandle handle;
-	};
+		struct TextureLocation {
+			Cluster* cluster;
+			ClusterTextureHandle handle;
+		};
+		// Cooked punctual lights (KHR_lights_punctual): pool assets like
+		// meshes — scene.lightForNode stores world indices into this table,
+		// each entry resolving back to the owning Cluster + handle.
+		struct LightLocation {
+			Cluster* cluster;
+			ClusterLightHandle handle;
+		};
+		// Authored cameras: pool assets like lights — scene.cameraForNode
+		// stores world indices into this table, each entry resolving back
+		// to the owning Cluster + handle.
+		struct CameraLocation {
+			Cluster* cluster;
+			ClusterCameraHandle handle;
+		};
+		// Authored/runtime decals: pool assets like lights — scene.decalForNode
+		// stores world indices into this table, each entry resolving back to
+		// the owning Cluster + handle. The shape rides the node transform
+		// (see SceneDecal).
+		struct DecalLocation {
+			Cluster* cluster;
+			ClusterDecalHandle handle;
+		};
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
-	std::vector<MeshLocation> meshLocations;
-	std::vector<MaterialLocation> materialLocations;
-	std::vector<TextureLocation> textureLocations;
-	std::vector<LightLocation> lightLocations;
-	std::vector<CameraLocation> cameraLocations;
-	std::vector<DecalLocation> decalLocations;
+		std::vector<MeshLocation> meshLocations;
+		std::vector<MaterialLocation> materialLocations;
+		std::vector<TextureLocation> textureLocations;
+		std::vector<LightLocation> lightLocations;
+		std::vector<CameraLocation> cameraLocations;
+		std::vector<DecalLocation> decalLocations;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).
@@ -250,6 +237,7 @@ namespace smvk {
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
 		smvk::Material* GetMaterial(uint32_t materialIndex);
+		const smvk::Material* GetMaterial(uint32_t materialIndex) const;
 		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
 		// world-scaled simplifier error). Null when the index is out of range.
 		const LodInfo* GetLodInfo(uint32_t meshIndex) const;
@@ -263,18 +251,17 @@ namespace smvk {
 		// scans — the previous per-draw probing showed up as a major CPU
 		// regression once every Bistro mesh had a cooked chain).
 		//
-		// One LEVEL = one geometry sibling + its shading program (shader
-		// LODs): selection picks a level index ONCE (SelectLodIndex) and
-		// every consumer resolves geometry (GetLodMesh) or shading
-		// (LodShaderAt) off the same level — there is no separate shader
-		// LOD level. The farthest level of a cooked chain (length > 1)
-		// is LodShader::VertexLit; level 0 and uncooked chains are Lit.
+		// One LEVEL = one geometry sibling; the shading program is
+		// resolved per (level, material) off the same level index
+		// (UseVertexLitShaderAt) — there is no separate shader LOD
+		// level. The farthest level of a cooked chain (length > 1)
+		// shades vertex-lit when the material allows it (see
+		// ShaderLodPolicy); level 0 and uncooked chains stay lit.
 		struct LodChain {
 			// Resolved levels, LOD0..N (levels[0].mesh == meshLocations[i]).
 			struct Level {
 				MeshLocation mesh;  // geometry sibling for this level
 				float error;        // world-space simplifier error (0 for LOD0)
-				LodShader shader;   // shading program for this level
 			};
 			std::vector<Level> levels;
 		};
@@ -285,9 +272,24 @@ namespace smvk {
 		// Simplifier error for a chain entry (0 for LOD0, world units).
 		// Falls back to 0 when the marker is missing.
 		float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
-		// Shading program carried by a chain entry (shader LODs; see
-		// LodShader). Falls back to Lit when the index is out of range.
-		LodShader LodShaderAt(uint32_t meshIndex, uint32_t lodIndex) const;
+		// Resolved far-level shading for a (mesh level, material) pair
+		// (shader LODs; see ShaderLodPolicy): the farthest level of a
+		// cooked chain (length > 1) either substitutes the cheap
+		// vertex-lit program (the material allows it) or stays on the
+		// lit program with the material's quality specialization.
+		// Every other level, every uncooked chain, out-of-range probes
+		// and invalid materials resolve default (full-lit, no spec).
+		struct FarShading {
+			bool vertexLit = false;     // use the cheap vertex-lit program
+			ShaderLodQuality quality{}; // quality spec when staying on lit
+			// Default full-lit shading: neither substitution nor
+			// specialization (the level draws exactly like LOD0).
+			bool isDefault() const {
+				return !vertexLit && quality == ShaderLodQuality{};
+			}
+		};
+		FarShading FarShadingAt(uint32_t meshIndex, uint32_t lodIndex,
+			uint32_t materialIndex) const;
 		// Error-driven selection: coarsest LOD whose projected screen error
 		// (LodProjectedPixelError over each entry's simplifyError) stays
 		// within maxPixelError at `distance`. Returns 0 (full mesh) when no
@@ -380,28 +382,28 @@ namespace smvk {
 		// (mirrors the VFS overlay rule). Used for cross-pak references.
 		std::optional<MeshLocation> ResolveMeshAcrossClusters(StringViewT uri) const;
 		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(StringViewT uri) const;
-	// Bake-payload channel (see Cluster::bakePayloads): the bytes at a
-	// GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
-	// DYNAMIC cluster first — runtime injections (editor quick-bake)
-	// override cooked pak payloads — then pak clusters in registration
-	// order. Empty span = nothing carries it.
-	[[nodiscard]] std::span<const uint8_t> ReadBakeBytes(
-		const std::string& vfsPath) const;
-	// ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
-	// The zone covering a world-space point / a node's world ORIGIN:
-	// priority descending, then innermost (smallest bounded volume),
-	// INFINITE scale axes = unbounded slabs. UINT32_MAX = no zone — the
-	// resolved default environment stands. The zone's look block:
-	// scene.envForNode[zone].
-	[[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
-		return ZoneAtPosition(scene, p);
-	}
-	[[nodiscard]] NodeId zoneForNode(NodeId node) const {
-		if (node >= scene.globalTransform.size())
-			return UINT32_MAX;
-		return ZoneAtPosition(scene,
-			glm::vec3(scene.globalTransform[node][3]));
-	}
+		// Bake-payload channel (see Cluster::bakePayloads): the bytes at a
+		// GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
+		// DYNAMIC cluster first — runtime injections (editor quick-bake)
+		// override cooked pak payloads — then pak clusters in registration
+		// order. Empty span = nothing carries it.
+		[[nodiscard]] std::span<const uint8_t> ReadBakeBytes(
+			const std::string& vfsPath) const;
+		// ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
+		// The zone covering a world-space point / a node's world ORIGIN:
+		// priority descending, then innermost (smallest bounded volume),
+		// INFINITE scale axes = unbounded slabs. UINT32_MAX = no zone — the
+		// resolved default environment stands. The zone's look block:
+		// scene.envForNode[zone].
+		[[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
+			return ZoneAtPosition(scene, p);
+		}
+		[[nodiscard]] NodeId zoneForNode(NodeId node) const {
+			if (node >= scene.globalTransform.size())
+				return UINT32_MAX;
+			return ZoneAtPosition(scene,
+				glm::vec3(scene.globalTransform[node][3]));
+		}
 
 		// ---- Static BVH for CPU frustum culling ---------------------
 		// Built once from frozen static-subtree nodes (see Scene::
@@ -438,11 +440,6 @@ namespace smvk {
 		std::vector<uint8_t> StaticVisibilityMask(
 			const glm::vec4* planes, int planeCount) const;
 
-		//void NewFrame();
-		//if (dirtyCull && flags.size() == scene.hierarchy.size())
-		//	Cull(CullConfiguration{});
-		//void EndFrame();
-
 		template<typename Func>
 		void forEachNode(IteratorFlags requiredFlags, Func&& func)
 		{
@@ -458,8 +455,6 @@ namespace smvk {
 			}
 		}
 
-	private:
-		void Cull(CullConfiguration config);
 	};
 
 };

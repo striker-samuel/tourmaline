@@ -29,6 +29,11 @@ struct TonemapPush
     float lutIntensity;
     float2 jitterDelta; // debugView 1: (prevJitter - currJitter) UV, stripped
                         // so the motion visualizer shows TRUE motion
+    // Sub-rect source window (element stacking, see the C++ mirror in
+    // tonemap.h): xy = min uv, zw = max uv of the sampled rect of the
+    // (possibly larger) HDR image - the render-area 0..1 uv remaps into
+    // this window before every sample. (0,0,1,1) = full image (identity).
+    float4 srcUvWindow;
 };
 
 [[vk::push_constant]]
@@ -198,6 +203,14 @@ PSOut mainPS(PSIn IN)
     float exposure = tp.exposure;
     uint mode = tp.tonemapMode;
 
+    // Sub-rect source window (element stacking): the fullscreen triangle's
+    // uv spans 0..1 across THIS PASS's render area; a layered caller (a
+    // shared full-window HDR with per-viewport layers) needs the pass's
+    // pixels to sample the matching SUB-RECT of the source image instead.
+    // The window carries texel centers, so linear taps never bleed the
+    // content just outside the rect. Full-image layers pass (0,0,1,1).
+    const float2 uv = lerp(tp.srcUvWindow.xy, tp.srcUvWindow.zw, IN.uv);
+
     // Motion vector debug view: direction -> hue, magnitude -> intensity.
     // Replaces the scene composite entirely while enabled. The raw vectors
     // include the temporal-jitter delta (non-zero on a still camera with
@@ -206,7 +219,7 @@ PSOut mainPS(PSIn IN)
     if (tp.debugView == 1 && tp.motionTextureIndex != 0xffffffff && tp.motionTextureIndex < 100000)
     {
         float2 v = textures[NonUniformResourceIndex(tp.motionTextureIndex)]
-            .Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rg;
+            .Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).rg;
         v = (v - tp.jitterDelta) * tp.motionDebugScale;
         float mag = saturate(length(v));
         float hue = atan2(v.y, v.x) * 0.15915494 + 0.5; // /2pi + 0.5
@@ -220,7 +233,7 @@ PSOut mainPS(PSIn IN)
         // Sanitize: a stale/foreign +inf texel in the RGBA16F target turns
         // Reinhard/ACES into inf/inf = NaN -> saturate(NaN) = 0 (black
         // blocks); same discipline as bloom_down's tap clamp.
-        hdr = SanitizeHdr(textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb);
+        hdr = SanitizeHdr(textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).rgb);
 
     // SSAO composite (half-res AO, bilinearly upscaled by the sampler).
     // Pre-bloom, pre-tonemap; disabled when index is 0xffffffff.
@@ -230,14 +243,14 @@ PSOut mainPS(PSIn IN)
     // it would leak AO across geometry/sky silhouettes if ever reused.
     if (tp.aoTextureIndex != 0xffffffff && tp.aoTextureIndex < 100000 && tp.aoIntensity > 0.0f)
     {
-        float ao = textures[NonUniformResourceIndex(tp.aoTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).r;
+        float ao = textures[NonUniformResourceIndex(tp.aoTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).r;
         hdr *= lerp(1.0f, saturate(ao), saturate(tp.aoIntensity));
     }
 
     // Bloom composite (HDR add, pre-tonemap). Disabled when index is 0xffffffff.
     if (tp.bloomTextureIndex != 0xffffffff && tp.bloomTextureIndex < 100000 && tp.bloomIntensity > 0.0f)
     {
-        float3 bloom = textures[NonUniformResourceIndex(tp.bloomTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb;
+        float3 bloom = textures[NonUniformResourceIndex(tp.bloomTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).rgb;
         hdr += bloom * tp.bloomIntensity;
     }
 

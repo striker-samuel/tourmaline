@@ -57,15 +57,4 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 // code.
 int RunPakApp(PakAppConfig cfg);
 
-// ---- Demo decal assets (DecalAssets.cpp) ------------------------------
-// Procedural blood-splat textures (deterministic Pcg32 field) registered
-// into the world's DYNAMIC cluster under the kDecalBlood*Uri contract —
-// decal entities resolve them through the cluster pool like cooked
-// content. Idempotent per world. False only on texture-creation failure.
-bool InitDemoDecalTextures(smvk::ResourceManager& ctx, smvk::World& world);
-// Sponza check-scene hero splats (floor pools + wall smear + arcade
-// spray) as WORLD entities (CreateDecalAt into the dynamic cluster).
-// No-op when the world already carries decal content.
-void SpawnSponzaDecalPresets(smvk::World& world);
-
 } // namespace app

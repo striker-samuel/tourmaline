@@ -134,6 +134,7 @@ struct WorldRendererConfig {
 		c.particles = false;
 		return c;
 	}
+
 	// Bisection config: filtered Main + HZB + tonemap only (depth prepass
 	// feeds the occluder/HZB chain, the GPU filter picks draws, Main shades
 	// survivors). Everything else off.
@@ -309,7 +310,7 @@ enum class GIVariant : uint32_t {
 // Unlit/Cascades/VertexColors/UV have their own fragment shaders pairing
 // with default.vert.hlsl.
 // ---------------------------------------------------------------------------
-enum class DebugView : int {
+enum class ViewMode : int {
 	Lit = 0,      // F1: full PBR (default_lit)
 	Unlit = 1,    // F2: baseColor + emissive, no lighting (default_unlit)
 	Meshlets = 2, // F3: per-cluster colors, bypasses GPU cull (meshdebug)
@@ -760,7 +761,7 @@ struct AppResources {
 	// SSR contribution debug view (F12): isolated SSR layer (ssr_contribution_debug.frag.hlsl)
 	smvk::Holder<smvk::ShaderModuleHandle> fragSsrContributionDebugShader; // ssr_contribution_debug (F12)
 	smvk::ShaderProgram ssrContributionDebugProgram;
-	// Shader-LOD farthest-level program (World::LodShader::VertexLit):
+	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
 	// Missing modules leave shaderCount 0 and every level stays lit.
@@ -880,11 +881,6 @@ public:
 	void onResize(smvk::Extent2D swapExtent) override;
 	void onUpdate(float dt) override;
 	void onRender(ElementFrame& frame) override;
-	// EXTERNAL-SYNC frame: record the whole world frame into an
-	// already-acquired fb. Never acquires, presents, recreates, or touches
-	// present modes — pure record. DrawFrame (windowed Run loop) is just
-	// acquire → RenderLayer → present.
-	void RenderLayer(smvk::Framebuffer& fb);
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	// The RunConfig overload applies the central VULKANTOY_* environment
@@ -894,17 +890,22 @@ public:
 	void Configure(WorldRendererConfig passes, const RunConfig& run);
 	void ApplyRunConfig(const RunConfig& run);
 
-	// WORLD SOURCE â€” the host owns all content loading (the renderer
-	// knows nothing about paks, scene files or scene discovery). Called
-	// ONCE during onAttach, after the context exists and before the
-	// world is first used: load the scene (clusters + resources into
-	// the context â€” everything renders by handles), resolve, and
-	// return the world to render. The renderer's content overlay is
-	// handed in so the host can mount its content backends into it
-	// (pak-embedded textures, project roots, â€¦) â€” the renderer itself
-	// only ever reads its own pipeline resources through it.
-	// Return nullptr = load failed (onAttach fails loudly).
-	// Unset = nothing to render, onAttach fails.
+	// WORLD SOURCE
+	// The host is responsible for all content loading. The renderer knows
+	// nothing about paks, scene files, or scene discovery.
+	//
+	// Called once during onAttach, after the context is created and before
+	// the world is used. The host loads the scene (clusters and resources)
+	// into the context, resolves all references, and returns the world to render.
+	// All rendering resources are accessed through handles.
+	//
+	// The renderer provides its content overlay so the host can mount content
+	// backends (pak-embedded textures, project roots, etc.). The renderer
+	// itself uses this overlay only to access its own pipeline resources.
+	//
+	// Returning nullptr indicates a load failure.
+	// If the callback is unset, there is no world to render.
+	// In either case, onAttach fails with an error.
 	using WorldSource = std::function<smvk::mem::LinearPtr<smvk::World>(
 		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
 	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
@@ -935,11 +936,15 @@ public:
 		}
 		return GIVariant::None;
 	}
-	// Direct-path lit program for one material: the active GI variant's
-	// program (or base), with the standard-material twin swapped in for
-	// non-layered materials (layerMaterials.w <= 1; layered materials and
-	// missing twins keep the monolith â€” fail-safe). Mirrors the filtered
-	// leg's GfxRenderer::FilteredProgramGi/FilteredLitProgram picks.
+	// Selects the direct-path lit program for a material.
+	//
+	// Uses the active GI variant's program, falling back to the base program.
+	// For non-layered materials (layerMaterials.w <= 1), substitutes the
+	// standard-material twin when available. Layered materials or missing
+	// twins retain the original monolithic program as a safe fallback.
+	//
+	// Mirrors the filtered path's GfxRenderer::FilteredProgramGi and
+	// GfxRenderer::FilteredLitProgram selection logic.
 	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
 
 	// One-shot capture readback (VULKANTOY_CAPTURE): the last rendered
@@ -948,7 +953,7 @@ public:
 	// acquire); it stalls (device idle) and exports the PNG only on the
 	// pending frame.
 	void PollCaptureReadback();
-	void SetDebugView(DebugView v) { m_debugView = v; }
+	void SetDebugView(ViewMode v) { m_debugView = v; }
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }
@@ -1315,38 +1320,38 @@ protected:
 		// weights, F9 base-UV checker, F10 lightmap-uv2 checker,
 		// F11 parallax occlusion mapping.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LIT)) {
-			m_debugView = DebugView::Lit;
+			m_debugView = ViewMode::Lit;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UNLIT)) {
-			m_debugView = DebugView::Unlit;
+			m_debugView = ViewMode::Unlit;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_MESHLETS)) {
-			m_debugView = DebugView::Meshlets;
+			m_debugView = ViewMode::Meshlets;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CASCADES)) {
-			m_debugView = DebugView::Cascades;
+			m_debugView = ViewMode::Cascades;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LODS)) {
-			m_debugView = DebugView::Lods;
+			m_debugView = ViewMode::Lods;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_VERTEXCOLORS)) {
-			m_debugView = DebugView::VertexColors;
+			m_debugView = ViewMode::VertexColors;
 		}
 		// UV debug views: F9 = base UV (TEXCOORD0), F10 = lightmap
 		// atlas UV (uv2). Checker + gradient + seam glow (see
 		// default_uv_debug.hlsli) â€” lightmap chart layout and
 		// cross-island streaks read at a glance.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
-			m_debugView = DebugView::Uv0;
+			m_debugView = ViewMode::Uv0;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV1)) {
-			m_debugView = DebugView::Uv1;
+			m_debugView = ViewMode::Uv1;
 		}
 		// Parallax occlusion mapping (F11): every material texture
 		// sampled at a ray-marched parallax uv through the occlusion-
 		// map heightfield, with sun self-shadowing (default_pom).
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_POM)) {
-			m_debugView = DebugView::Pom;
+			m_debugView = ViewMode::Pom;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
 		// active debug view â€” a raster override, not a shading swap, so
@@ -1460,11 +1465,15 @@ protected:
 	}
 	// Phases 2-4 compute passes (called after the Forward+ tile cull
 	// spot, i.e. over complete depth).
-	void AppendDeferredShadowPhases(uint32_t frameIndex,
-		uint64_t frameUniformsAddress, uint64_t fpLightsAddress,
-		uint64_t spotShadowBufferAddress, uint32_t fpLightCount,
+	void AppendDeferredShadowPhases(
+		uint32_t frameIndex,
+		uint64_t frameUniformsAddress, 
+		uint64_t fpLightsAddress,
+		uint64_t spotShadowBufferAddress, 
+		uint32_t fpLightCount,
 		smvk::LogicalImageViewHandle depthView,
-		smvk::LogicalBufferHandle fpLightsLogical);
+		smvk::LogicalBufferHandle fpLightsLogical
+	);
 
 	void RebuildSwapViews();
 	// By reference: RenderGraph::Execute publishes the async-split second
@@ -1485,7 +1494,7 @@ protected:
 	uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh) const;
 
 	// ---- Transparent list (AlphaMode::Blend + dithered) ---------------
-	// Shared by Main's transparent leg and the SSR PaneMask redraw so
+	// Shared by Main's transparent leg and the SSR  redraw so
 	// both draw the same geometry against the same cull view: items are
 	// Renderable|Transparent|StaticVertexFmt, frustum-tested against the
 	// frozen transparent cull view (conservative LOD union, matching
@@ -1499,8 +1508,11 @@ protected:
 		float dist2;
 	};
 	std::vector<TransparentDrawItem> CollectTransparentDraws(
-		const smvk::RenderView& cullView, bool sortBackToFront,
-		std::optional<glm::vec3> sortCamPos = std::nullopt);
+		const smvk::RenderView& cullView,
+		bool sortBackToFront,
+		std::optional<glm::vec3> sortCamPos = std::nullopt
+	);
+
 	void ResetLodStats();
 	// ---- Shader LODs (per-level shading programs) -------------------
 	// Runtime LOD switch: pixel budget for the projected simplifier error
@@ -1523,7 +1535,7 @@ protected:
 	bool m_lodFullRate = true;
 	// Debug: VULKANTOY_SPLIT=0 forces the legacy depth assembly (full
 	// prepass before the HZB + remainder pass) even when the seed primed
-	// depth â€” bisects regressions between the split and the rest.
+	// depth bisects regressions between the split and the rest.
 	bool m_splitDisabled = false;
 	// Debug: one-shot [GfxAudit] dump at this frame (VULKANTOY_AUDIT=N;
 	// same stderr dump as the UI button; stalls the GPU).
@@ -1533,14 +1545,45 @@ protected:
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
 	uint32_t m_lodChainLods = 0;   // total cooked siblings (per frame)
 	// The farthest level of a cooked chain shades with the vertex-lit
-	// program instead of full PBR (same coarsest geometry â€” see World::
-	// LodShaderAt). Toggle = pure fallback: off/A/B (UI checkbox or
-	// VULKANTOY_SHADERLOD=0) keeps every level full-lit.
+	// program instead of full PBR when the material allows it (same
+	// coarsest geometry — see World::UseVertexLitShaderAt). Toggle =
+	// pure fallback: off/A/B (UI checkbox or VULKANTOY_SHADERLOD=0)
+	// keeps every level full-lit.
 	bool m_lodShaderEnabled = false;
-	uint64_t m_lodShaderDraws = 0; // Main draws shaded vertex-lit this frame
-	// Effective decision for an instance's selected level: full-lit when
-	// LODs/shader-LODs are disabled, uncooked, or the program is missing.
-	smvk::LodShader LodShaderForNode(NodeId node, uint32_t worldMesh) const;
+	uint64_t m_lodShaderDraws = 0; // Main far-shading draws this frame (vertex-lit + specialized)
+	// Effective decision for an instance's selected level + material
+	// (see World::FarShadingAt): vertex-lit substitution, specialized
+	// lit, or default full-lit. Shares the halfrate LOD cache with every
+	// geometry consumer, so shading and geometry always resolve off the
+	// SAME level within a frame. Full-lit when LODs/shader-LODs are
+	// disabled, uncooked, or the program is missing.
+	smvk::World::FarShading FarShadingForNode(NodeId node, uint32_t worldMesh,
+		uint32_t material) const;
+	// Far-level specialized lit twins (see ShaderLodQuality):
+	// mainProgram / mainProgramA2C modules + the material's quality spec
+	// payload on the fragment stage. Keyed by quality bits (specular?1:0
+	// | normalMap?2:0); the default quality never queries (the plain
+	// twins bind instead), so entries are exactly the non-default combos
+	// in use. Module handles are shared (no duplication); pipelines key
+	// on the spec payload, so each combo mints its own PSOs on first
+	// bind. The m_resources twins are init-once, so cached entries never
+	// go stale within a run.
+	struct FarSpecPrograms { smvk::ShaderProgram main{}; smvk::ShaderProgram a2c{}; };
+	std::unordered_map<uint32_t, FarSpecPrograms> m_farSpecPrograms;
+	// Specialized pair for a far-level quality (builds + caches on miss).
+	// Programs are empty when the base twins are missing — the caller
+	// falls back to the plain twins then. Never null (unordered_map
+	// nodes stay put, so the pointer survives later inserts).
+	FarSpecPrograms* FarSpecProgramsFor(const smvk::ShaderLodQuality& quality);
+	// True when prog is one of the cached far-level specialized twins
+	// (for the wireframe twin swap — they shade through the lit FS
+	// family like mainProgram, so they take the same flat twin).
+	bool IsFarSpecProgram(const smvk::ShaderProgram& prog) const {
+		for (const auto& [key, pair] : m_farSpecPrograms)
+			if (&pair.main == &prog || &pair.a2c == &prog)
+				return true;
+		return false;
+	}
 	bool ShaderLodActive() const {
 		return m_lodShaderEnabled && m_resources.vertexLitProgram.shaderCount == 2;
 	}
@@ -1923,7 +1966,7 @@ protected:
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
 	// m_debugView selects the Main opaque program (F1..F6); anything but Lit
 	// bypasses the GPU filter with direct draws so culled data stays visible.
-	DebugView m_debugView = DebugView::Lit;
+	ViewMode m_debugView = ViewMode::Lit;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the
@@ -2532,11 +2575,11 @@ protected:
 	// (FrameUniforms.exposure), the flat debug gains AND the tonemap pass
 	// all read this, so the 1/exposure pre-scale cancels end-to-end.
 	float FrameExposure() const {
-		return (m_debugView == DebugView::Lit)
+		return (m_debugView == ViewMode::Lit)
 			? EffectiveExposure() : kDebugViewExposure;
 	}
 	// True when a debug visualization REPLACES the scene pixels this
-	// record: any non-Lit DebugView (F2..F11 flat programs), the GI
+	// record: any non-Lit ViewMode (F2..F11 flat programs), the GI
 	// baked debug views (R/F8) or a DS visualizer (Y, DS_DEBUG_VIZ).
 	// Scene post-fx that composites ON TOP of those pixels â€” SSR
 	// reflections (additive), bloom (additive), volumetric fog (Beer-Lambert throughput +

@@ -52,6 +52,8 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
+#include <Engine/Rendergraph/hdr.h>
+#include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Renderer/light.h>
 #include <Engine/Renderer/texture_streamer.h>
 
@@ -95,7 +97,7 @@ struct ViewportRect {
 // ---------------------------------------------------------------------------
 // Editor cameras: orbit-frame cameras owned by the EDITOR (never cooked,
 // never part of the scene). Perspective (finite reversed-Z) or orthographic
-// (Top/Side); per-camera FOV + near/far + ortho half-height.
+// (Top/Side/Front); per-camera FOV + near/far + ortho half-height.
 // ---------------------------------------------------------------------------
 struct EditorCam {
 	enum class Type : int { Perspective = 0, Orthographic = 1 };
@@ -417,6 +419,16 @@ private:
 		uint32_t flight, bool selectedWireOverlay);
 	void RecordInsetPass(smvk::LogicalImageViewHandle swapView,
 		uint32_t flight); // UV side-strip (single layout, viewport 0)
+	// Preview HDR -> swap tonemap layer for one rect (see m_sceneHdr): the
+	// layer's rect on the swap (Load keeps the chrome + sibling layers),
+	// the matching sub-rect (texel centers) of the shared full-window HDR
+	// sampled through the tonemapper's srcUv window.
+	void RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
+		const ViewportRect& rect, const char* name);
+	// The preview's standing exposure: the authored MANUAL value (the
+	// App's adaptation seed - auto metering is App-only, the editor
+	// preview has no histogram pass).
+	float PreviewExposure() const;
 	// Line overlay (grid + gizmos + light markers): ONE upload, ONE pass
 	// PER VISIBLE VIEWPORT (that viewport's viewProj + rect).
 	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView);
@@ -504,7 +516,7 @@ private:
 		// node falls back to orbit until it comes back).
 		int boundNode = -1;
 	};
-	std::vector<EditorCam> m_editorCams;   // Persp + Top + Side defaults
+	std::vector<EditorCam> m_editorCams;   // Persp + Top + Side + Front defaults
 	EditorViewport m_viewports[kMaxViewports];
 	int m_vpLayout = 0;  // 0 = single, 1 = quad (four panels)
 	int m_activeVp = 0;  // hovered/last-active viewport index
@@ -2109,6 +2121,28 @@ private:
 	smvk::ShaderProgram m_wireProgram{}; // selected highlight overlay
 	smvk::ShaderProgram m_lineProgram{}; // gizmo/AABB lines
 	smvk::DepthTarget m_depth{};
+	// Preview HDR + tonemapper (the "washed out colors" fix): the editor
+	// used to write the tonemap-chain shaders' RAW output straight to the
+	// LDR swapchain - the lit body emits raw-lux HDR radiance (sun 10000
+	// lux -> albedo*E/pi is ~3x albedo), so everything above 1.0 crushed
+	// to flat white; and the 1/exposure-pre-scaled debug views (unlit/uv/
+	// vertexcolor/wire, see their shader headers) would crush to black
+	// the moment frame.exposure left 1.0. The preview now runs the App's
+	// display chain: the scene passes write a shared FULL-WINDOW HDR at
+	// the SAME offset/extent/depth rect discipline as the direct path
+	// (the gizmo grid keeps its depth-tested occlusion against the scene
+	// depth), a full-window clear pass blacks it (UV-shell gaps never
+	// show a shrunken viewport's stale rect), then ONE TONEMAP LAYER PER
+	// VIEWPORT RECT resolves it to the swap (the nvapp element-layer
+	// pattern: AddTonemapPass offset/extent + Load + the srcUv sub-rect
+	// window). Exposure: the authored MANUAL value (the App meters +
+	// adapts at runtime - it seeds its adaptation from the same number -
+	// the preview can't meter); operator: the authored tonemapMode.
+	// Baked + the UV window canvas keep their own Reinhard + gamma
+	// mapping and stay direct. Creation failure (HDR or tonemap SPVs)
+	// falls back to the old direct write (washed out, never dead).
+	smvk::HdrTarget m_sceneHdr{};
+	smvk::Tonemapper m_previewTonemap{};
 	std::vector<smvk::LogicalImageViewHandle> m_swapViews;
 	uint32_t m_flightCount = 0;
 	engine::FrameUniforms m_lastFrame{}; // CPU copy for gizmo/pick math

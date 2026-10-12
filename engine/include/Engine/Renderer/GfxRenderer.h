@@ -311,10 +311,11 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// the same cache the main pass reads, so both sides agree per node
 	// per frame.
 	// `lodShaderVertexLit` (shader LODs): when set, instances whose
-	// selected level is World::LodShader::VertexLit (farthest level of a
-	// cooked chain) are NOT pushed — the filtered VS is lit-only, so the
-	// Main direct leg draws them with the vertex-lit program instead.
-	// Must mirror the main pass decision exactly (same halfrate cache).
+	// selected level shades vertex-lit (farthest level of a cooked chain
+	// whose material allows it — see World::UseVertexLitShaderAt) are NOT
+	// pushed — the filtered VS is lit-only, so the Main direct leg draws
+	// them with the vertex-lit program instead. Must mirror the main pass
+	// decision exactly (same halfrate cache).
 	uint32_t FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,

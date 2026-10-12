@@ -246,11 +246,17 @@ plColor *= EvaluateLightFunction(
     if (shadowFactor <= 0.0f)
         return;
 
-    float3 Hp = normalize(V + Lp);
-    float Dp = DistributionGGX(N, Hp, roughness);
-    float Gp = GeometrySmith(N, V, Lp, roughness);
-    float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
-    float3 specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+    // (Same far-LOD gate as the sun lobe above: no per-light specular
+    // when the material programs simplified far shading.)
+    float3 specP = float3(0.0f, 0.0f, 0.0f);
+    if (litSpecular != 0u)
+    {
+        float3 Hp = normalize(V + Lp);
+        float Dp = DistributionGGX(N, Hp, roughness);
+        float Gp = GeometrySmith(N, V, Lp, roughness);
+        float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
+        specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+    }
 
     direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
 }
@@ -629,7 +635,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // bias would sprinkle acne/detachment noise over textured surfaces.
     float3 geomN = N;
 
-    if (!layered && normalIdx >= 0)
+    // Far-LOD quality (SPEC_LIT_NORMALMAP): skip the tangent-space fetch
+    // and keep the geometric normal - no normal-texture sample, no TBN
+    // work. The degenerate guard + double-sided flip above already ran,
+    // so N is a valid shading normal either way.
+    if (litNormalMap != 0u && !layered && normalIdx >= 0)
     {
         // Build TBN from interpolated vertex data. Gram-Schmidt re-orthogonalize
         // the tangent against the normal so interpolation doesn't skew the frame.
@@ -677,7 +687,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         float ncLen = length(Nc);
         N = ncLen > 1e-12f ? Nc / ncLen : N;
     }
-    if (layered)
+    if (litNormalMap != 0u && layered)
     {
         // Layered normal blend: build the TBN frame once (shared by all
         // layers — same vertex), blend each layer's tangent-space normal
@@ -916,7 +926,15 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     float3 numerator = D * G * F;
     float denominator = max(4.0f * NdotV * NdotL, 1e-7f);
-    float3 specular = numerator / denominator;
+    // Far-LOD quality (SPEC_LIT_SPECULAR): Lambert-only "simplified
+    // BRDF" - the lobe is zero and kD loses the Fresnel complement, so
+    // the far program shades pure diffuse. The specular env sample, the
+    // per-light specular and the GI specular crossover key off the same
+    // constant below.
+    float3 specular = (litSpecular != 0u)
+        ? numerator / denominator : float3(0.0f, 0.0f, 0.0f);
+    if (litSpecular == 0u)
+        kD = float3(1.0f - metallic, 1.0f - metallic, 1.0f - metallic);
 
     // Diffuse is Lambert * (1/PI) folded into kD
     float3 diffuse = kD * baseColor / PI;
@@ -1016,18 +1034,27 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // envVis (GI-visibility proxy) damps the env where the surface cannot
     // actually see the environment its probe captured — set by whichever
     // baked source covers the pixel below; 1 when none does.
+    // R/Fenv stay unconditional (cheap ALU): the GI specular crossovers
+    // below still reference them - the far program zeroes the composed
+    // ambientSpec instead (see the gate before aoTerm). Only the probe
+    // SAMPLE (the expensive fetch) is skipped when simplified.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
-    uint specTileIdx = 0xffffffffu;
+    // (Same far-LOD gate: no specular env fetch when simplified.)
+    float3 envSpec = float3(0.0f, 0.0f, 0.0f);
+    if (litSpecular != 0u)
     {
-        uint specTs = max(pc.fpTileSize, 1u);
-        uint stx = (uint) (clipPos.x / (float) specTs);
-        uint sty = (uint) (clipPos.y / (float) specTs);
-        if (stx < pc.fpTileCountX)
-            specTileIdx = sty * pc.fpTileCountX + stx;
+        uint specTileIdx = 0xffffffffu;
+        {
+            uint specTs = max(pc.fpTileSize, 1u);
+            uint stx = (uint) (clipPos.x / (float) specTs);
+            uint sty = (uint) (clipPos.y / (float) specTs);
+            if (stx < pc.fpTileCountX)
+                specTileIdx = sty * pc.fpTileCountX + stx;
+        }
+        envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
+            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion;
     }
-    float3 envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion;
 float envVis = 1.0f;
     float3 ambientSpec = envSpec;
 
@@ -1275,6 +1302,12 @@ float envVis = 1.0f;
     // reconstructs exactly — every factor between here and the HDR store
     // is linear (occ, emissive, the fog lerp, alpha blending, the 2x
     // resolve), so the export survives all of them untouched.
+    // (Same far-LOD gate: the GI specular crossovers above still ran on
+    // fetched amps — the far program zeroes the composed term instead of
+    // restructuring every GI path. The remaining GI-spec ALU is trivial
+    // next to the skipped env fetch.)
+    if (litSpecular == 0u)
+        ambientSpec = float3(0.0f, 0.0f, 0.0f);
     float3 aoTerm = (ambient + ambientSpec) * occlusion;
     float3 color = direct * occlusion + aoTerm;
 

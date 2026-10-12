@@ -2,12 +2,13 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 
-// Vertex-lit shader-LOD program (World::LodShader::VertexLit): the whole
-// lighting response is computed PER VERTEX and interpolated (Gouraud
-// shading); the paired fragment shader is a fog/compositing pass-through.
-// Selected for the FARTHEST level of a cooked LOD chain by the Main pass
-// (see World::LodShaderAt) — the level keeps the coarsest geometry
-// sibling and only the shading program downgrades.
+// Vertex-lit shader-LOD program (see World::UseVertexLitShaderAt): the
+// whole lighting response is computed PER VERTEX and interpolated
+// (Gouraud shading); the paired fragment shader is a fog/compositing
+// pass-through. Selected for the FARTHEST level of a cooked LOD chain
+// by the Main pass when the material programs it (see ShaderLodPolicy)
+// — the level keeps the coarsest geometry sibling and only the shading
+// program downgrades.
 //
 // Deliberately cheap (that is the point of a shader LOD): no shadow-map
 // sampling, no forward+ point/spot lights, no GI/IBL, no specular, no

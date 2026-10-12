@@ -665,19 +665,22 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	// block instead. See comment in mesh.h.
 	return CreateMaterialFromValues(
 		values, info.shadingModel, info.alphaMode, info.alphaCutoff,
-		info.doubleSided, info.castsShadows);
+		info.doubleSided, info.castsShadows, info.allowFarVertexLit,
+		info.farQuality);
 }
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
-	const MaterialValues& values,
-	ShadingModel shadingModel,
-	AlphaMode alphaMode,
-	float alphaCutoff,
-	bool doubleSided,
-	bool castsShadows)
-{
-	smvk::Material material{};
-	material.values = values;
+	smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
+		const MaterialValues& values,
+		ShadingModel shadingModel,
+		AlphaMode alphaMode,
+		float alphaCutoff,
+		bool doubleSided,
+		bool castsShadows,
+		bool allowFarVertexLit,
+		ShaderLodQuality farQuality)
+	{
+		smvk::Material material{};
+		material.values = values;
 	// Authoritative alphaMode mirror for the shader (params2.w): Blend
 	// materials need screen-door dither in the fragment shader, but
 	// shadingModel alone cannot distinguish them from Opaque (both are
@@ -689,6 +692,8 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
 	material.alphaCutoff = alphaCutoff;
 	material.doubleSided = doubleSided;
 	material.castsShadows = castsShadows;
+	material.shaderLod.allowFarVertexLit = allowFarVertexLit;
+	material.shaderLod.farQuality = farQuality;
 	material.pipeline = MakePipelineStateForMaterial(alphaMode, doubleSided, shadingModel);
 	return materials.create(std::move(material));
 }

@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -8751,14 +8751,32 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 	CleanupSwapchain(true);
 }
 void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
+	// Two minimized signatures must both gate here:
+	// - platforms that zero the client size while minimized (0x0 extent,
+	//   the original gate)
+	// - Windows, where SDL keeps reporting the RESTORED window size while
+	//   minimized (GetClientRect stays at the pre-minimize size), so the
+	//   0x0 check never trips and acquire/present keep failing with
+	//   OUT_OF_DATE/SUBOPTIMAL - without the SDL_WINDOW_MINIMIZED flag
+	//   check, Recreate() would tear down and rebuild the whole swapchain
+	//   every single frame of the minimize (the "Recreate #N" spam).
+	SDL_WindowFlags flags = SDL_GetWindowFlags(window_);
 	int width = 0;
 	int height = 0;
 	SDL_GetWindowSizeInPixels(window_, &width, &height);
-	while (width == 0 || height == 0) {
-		// Block until the window is restored; SDL_WaitEvent pumps the OS
-		// queue so minimize/restore can proceed (events are inspected,
-		// not consumed - the app's own poll loop still sees them later).
-		SDL_WaitEvent(nullptr);
+	while ((flags & SDL_WINDOW_MINIMIZED) != 0 || width == 0 || height == 0) {
+		// Pump + polite sleep until restore. NOT SDL_WaitEvent(NULL):
+		// measured against this exact SDL build, the NULL-event wait
+		// does NOT pump the OS queue - a cross-thread ShowWindow(SW_MINIMIZE)
+		// blocked 11 seconds and no window flag ever flipped, i.e. exactly
+		// the "hangs, does not respond on deminimize" wedge (the sent
+		// WM_WINDOWPOSCHANGING never gets processed without a pump, so
+		// the window cannot even complete its own restore). SDL_PumpEvents()
+		// processes OS messages without consuming SDL events - the app's
+		// own poll loop still sees them later.
+		SDL_PumpEvents();
+		SDL_Delay(50);
+		flags = SDL_GetWindowFlags(window_);
 		SDL_GetWindowSizeInPixels(window_, &width, &height);
 	}
 }
@@ -9287,7 +9305,17 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 			throw std::runtime_error("vkWaitForFences failed");
 		}
-		VK_CHECK(vkResetFences(device_, 1, &inFlightFences_[currentFrame_]));
+		// NOTE: the fence RESET moved below the acquire, on purpose. The
+		// acquire-OUT_OF_DATE path below recurses into AcquireFramebuffer
+		// after Recreate(); if this pass had reset the fence BEFORE the
+		// acquire, the retry would vkWaitForFences(UINT64_MAX) on the very
+		// fence this call just unsignaled — no submit can re-signal it (the
+		// frame that would is stuck in this wait) and the app wedges
+		// forever ("hangs, does not respond on deminimize": any acquire
+		// OUT_OF_DATE - minimize landing between frames, some resizes -
+		// deadlocks deterministically). With the reset after a successful
+		// acquire, the retry's wait passes on the still-signaled fence and
+		// resets only once the acquire actually succeeded.
 	}
 
 	// Frame retired => its start/end timestamps are ready. Pull the GPU
@@ -9340,6 +9368,11 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 			throw std::runtime_error("failed to acquire swap chain image!");
 		}
 	}
+
+	// Acquire succeeded => this frame's submit WILL run and re-signal this
+	// slot's fence; safe to unsignal it here (see the NOTE above the fence
+	// wait for why this must not happen before a successful acquire).
+	VK_CHECK(vkResetFences(device_, 1, &inFlightFences_[currentFrame_]));
 
 	SetCurrentImageIndex(imageIndex);
 
@@ -9602,8 +9635,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				presentInfo.swapchainCount = 1;
 				presentInfo.pSwapchains = swapChains;
 				presentInfo.pImageIndices = &currentImageIndex_;
-				const auto presentStart = std::chrono::steady_clock::now();
-				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+			const auto presentStart = std::chrono::steady_clock::now();
+		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
 			lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
 				std::chrono::steady_clock::now() - presentStart).count();
 			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||

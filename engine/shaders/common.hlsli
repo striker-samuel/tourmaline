@@ -15,6 +15,14 @@
 
 #define SPEC_GI_VARIANT     10  // GI variant: 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
 
+// Far-LOD quality knobs for the lit program family (see ShaderLodPolicy
+// + World::FarShadingAt): applied as specialization constants on the
+// fragment stage when a farthest cooked level stays lit. Unspecialized
+// pipelines fold the defaults (full quality) - every existing caller
+// keeps today's behavior with zero changes.
+#define SPEC_LIT_SPECULAR    20  // 0=Lambert-only ("simplified BRDF": no GGX, no specular env/FP terms), 1=full specular
+#define SPEC_LIT_NORMALMAP   21  // 0=geometric normal (no normal-texture fetch/TBN), 1=tangent-space normal mapping
+
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
 
@@ -660,6 +668,8 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_SSR_ENABLED)]] const uint ssrEnabled = 0;   // 0=disable SSR, 1=enable SSR
 [[vk::constant_id(SPEC_GI_INTENSITY)]] const float giIntensity = 1.0f; // intensity scale
 [[vk::constant_id(SPEC_GI_VARIANT)]]  const uint giVariant = 0;     // 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
+[[vk::constant_id(SPEC_LIT_SPECULAR)]] const uint litSpecular = 1;   // 0=Lambert-only far shading, 1=full GGX specular
+[[vk::constant_id(SPEC_LIT_NORMALMAP)]] const uint litNormalMap = 1; // 0=geometric normal, 1=tangent-space normal fetch
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
