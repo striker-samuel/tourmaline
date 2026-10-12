@@ -71,6 +71,11 @@ namespace smvk {
 		}
 		case VertexFormat::StaticVertexFormat:
 			return StaticVertexFormat;
+		case VertexFormat::LightmappedStaticVertexFormat:
+			// Gated-off lightmap option (see mesh.h): nothing binds it
+			// while lightmaps stay deprecated; the case keeps the format
+			// reachable the moment the chart-unpack VSs return.
+			return LightmappedStaticVertexFormat;
 		case VertexFormat::SkinnedVertexFormat:
 			return SkinnedVertexFormat;
 		case VertexFormat::DebugLine:

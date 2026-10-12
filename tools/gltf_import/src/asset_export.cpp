@@ -1032,6 +1032,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		importer.setMeshOptConfig(meshOpt);
 		if (config.meshlets)
 			importer.setMeshletConfig(smvk::MeshletConfig{});
+		// Far-shading derivation (default off; see DeriveConfig::shaderLods).
+		importer.setDeriveShaderLods(config.shaderLods);
 		importer.setAutoKtx(true);
 		importer.setModelUriBase(gltfPath.generic_string());
 		// The classic GltfToCluster body (cook mode, no RM): cluster

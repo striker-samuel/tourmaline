@@ -617,6 +617,10 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 		cfg.meshlets = std::atoi(e) != 0;
 	if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
 		cfg.lods = std::atoi(e) != 0;
+	// Far-shading derivation (default OFF — see DeriveConfig::shaderLods):
+	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
+	if (const char* e = std::getenv("VULKANTOY_EDITOR_SHADERLODS"))
+		cfg.shaderLods = std::atoi(e) != 0;
 	// NO project guid: the derivation derives the asset identity from the
 	// SOURCE FILE CONTENT (SourceAssetGuid — see asset_export.h), so an
 	// in-project import and a from-zero re-import (another dir, machine,

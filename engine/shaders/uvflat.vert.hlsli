@@ -50,9 +50,12 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Location 5 = chart-local lightmap UV, location 6 = ChartId.
-    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
-    [[vk::location(6)]] uint chartId : TEXCOORD5;
+    // Lightmaps are deprecated: StaticVertexFormat no longer binds the
+    // second UV channel (TexCoord1/ChartId would be locations 5/6), so
+    // this VS declares neither — the channel-1 (lightmap) flat view is
+    // parked with it: every vertex collapses to uv 0 until the
+    // gated-off LightmappedStaticVertexFormat option returns with a
+    // chart-unpack VS variant.
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -70,12 +73,12 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 #if UVFLAT_CHANNEL == 1
-    // Atlas unpack per mesh (chart tail pushed at byte 192 per draw;
-    // missing tail falls back to raw chart uvs).
-    const float2 atlasUv = (pcUV.hasXforms == 0u)
-        ? IN.chartUv
-        : GfxLightmapUv(IN.chartUv, IN.chartId,
-            pcUV.chartOffset, pcUV.lmXforms);
+    // Lightmaps deprecated (see VSIn): no chart UV rides this format, so
+    // the parked channel-1 flat view collapses to uv 0 — the chart-tail
+    // push fields stay declared for layout identity with the C++ mirror,
+    // nothing reads them. Restore the unpack when the
+    // LightmappedStaticVertexFormat option comes back.
+    const float2 atlasUv = float2(0.0f, 0.0f);
     const float2 uvFlat = atlasUv;
     float uvZoom = pcUV.model[0][0];
     float2 uvPan = float2(pcUV.model[3][0], pcUV.model[3][1]);
@@ -108,7 +111,7 @@ VSOut mainVS(VSIn IN)
 #if UVFLAT_CHANNEL == 1
     OUT.lightmapUv = atlasUv;
 #else
-    OUT.lightmapUv = IN.chartUv;
+    OUT.lightmapUv = float2(0.0f, 0.0f);
 #endif
     return OUT;
 }

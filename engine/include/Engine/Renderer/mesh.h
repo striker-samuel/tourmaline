@@ -94,10 +94,14 @@ namespace smvk {
 	};
 	struct ShaderLodPolicy {
 		// Farthest cooked level may use the cheap vertex-lit program.
-		// Disable for materials that need the full program at distance
-		// (alpha-tested cutouts with alpha textures, emissives you want
-		// to keep glowing, view-dependent effects...).
-		bool allowFarVertexLit = true;
+		// DEFAULT OFF: the glTF importer only derives this when the
+		// derive config opts in (DeriveConfig::shaderLods — see
+		// asset_export.h); tour/material authoring still sets it
+		// explicitly per material. Disable for materials that need the
+		// full program at distance (alpha-tested cutouts with alpha
+		// textures, emissives you want to keep glowing, view-dependent
+		// effects...).
+		bool allowFarVertexLit = false;
 		// Quality spec applied to the lit program when the farthest
 		// level stays lit (allowFarVertexLit == false). Default =
 		// full quality (indistinguishable from the base program).
@@ -137,10 +141,11 @@ namespace smvk {
 		// build gates IteratorFlagBit_CastShadow on it.
 		bool castsShadows = true;
 		// Far-LOD shading program (see ShaderLodPolicy): the farthest
-		// cooked level may use the cheap vertex-lit program. Author
-		// false for materials the cheap program cannot shade (the glTF
-		// importer derives this from alphaMode: masked/blend stay lit).
-		bool allowFarVertexLit = true;
+		// cooked level may use the cheap vertex-lit program. DEFAULT
+		// OFF — the glTF importer only derives this when the derive
+		// config opts in (DeriveConfig::shaderLods); masked/blend stay
+		// lit regardless (the cheap program has no cutout/blend).
+		bool allowFarVertexLit = false;
 		// Far-LOD quality spec for materials that stay on the lit
 		// program (see ShaderLodQuality): specular/normal-map switches
 		// for the farthest cooked level. Tour attributes farSpecular /
@@ -194,7 +199,11 @@ namespace smvk {
 	// unpacked by hand in the vertex shader (see vertex_pack.hlsli).
 	// The bitangent is never stored (B = cross(N, T) * w in the fragment).
 	// chart (R32_UInt) is the owning lightmap chart index (0xFFFFFFFF =
-	// uncharted); the vertex shader resolves the final atlas UV as
+	// uncharted). LIGHTMAPS ARE DEPRECATED: the chartUv/chart words stay
+	// in the stream (serializer + mesh-shader heap reads round-trip them
+	// and one buffer serves both formats), but StaticVertexFormat does
+	// NOT bind them — only the gated-off LightmappedStaticVertexFormat
+	// does, whose vertex shader resolves the final atlas UV as
 	// chartUv * xform.scale + xform.offset with the per-draw chart offset
 	// (see GfxDraw::lmChartOffset). The ATLAS-space uv2 no longer rides
 	// the vertex stream — it is unpacked in the shader.
@@ -426,10 +435,67 @@ namespace smvk {
 			.attributes = {
 				// Location order is load-bearing: shader VSIn locations
 				// 0..4 are Position, Color, TexCoord0, Normal, Tangent.
-				// TexCoord1 (chart-local lightmap UV) appends as location
-				// 5 and ChartId as location 6 so existing vertex shaders
-				// keep their locations; shaders that don't declare them
-				// simply ignore the attributes.
+				// Lightmaps are DEPRECATED: the second UV channel
+				// (chartUv + chart) stays in the 24-byte stream and the
+				// serializer, but this format does not bind it — the
+				// static vertex shaders declare no TexCoord1/ChartId
+				// inputs. LightmappedStaticVertexFormat below keeps the
+				// option alive (gated off until lightmaps return).
+					{
+						.semantic = VertexSemantic::Color,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(VertexShading, color)
+					},
+					{
+						.semantic = VertexSemantic::TexCoord0,
+						.format = Format::RG16_Float,
+						.offset = offsetof(VertexShading, uv)
+					},
+					{
+						.semantic = VertexSemantic::Normal,
+						.format = Format::R32_UInt,
+						.offset = offsetof(VertexShading, normal)
+					},
+					{
+						.semantic = VertexSemantic::Tangent,
+						.format = Format::R32_UInt,
+						.offset = offsetof(VertexShading, tangent)
+					}
+			}
+		}
+	}
+};
+
+	// LIGHTMAPPED static format (the gated-off lightmap option): the SAME
+	// bindings + stride as StaticVertexFormat, with the second UV channel
+	// appended — TexCoord1 (chart-local lightmap UV, RG16_UNorm) as VSIn
+	// location 5 and ChartId (R32_UInt) as location 6. Nothing binds this
+	// format while lightmaps stay deprecated; when they return, the
+	// lightmap-aware vertex shaders (chart-unpack tail: atlasUv =
+	// chartUv * xform.xy + xform.zw with the per-draw chart offset) pair
+	// with it, and the classic static VSs above keep their 0..4 locations.
+	// The heap stream, PackStaticVertex and the pak blobs carry the
+	// chartUv/chart words unchanged either way — one buffer serves both
+	// formats, like the terrain full/low pair.
+	inline const VertexFormatDescription LightmappedStaticVertexFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(VertexPos),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGB32_Float,
+						.offset = offsetof(VertexPos, pos)
+					}
+				}
+			},
+			{
+				.binding = 1,
+				.stride = sizeof(VertexShading),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
 						.format = Format::RGBA8_UNorm,
@@ -450,20 +516,20 @@ namespace smvk {
 						.format = Format::R32_UInt,
 						.offset = offsetof(VertexShading, tangent)
 					},
-				{
-					.semantic = VertexSemantic::TexCoord1,
-					.format = Format::RG16_UNorm,
-					.offset = offsetof(VertexShading, chartUv)
-				},
-				{
-					.semantic = VertexSemantic::ChartId,
-					.format = Format::R32_UInt,
-					.offset = offsetof(VertexShading, chart)
+					{
+						.semantic = VertexSemantic::TexCoord1,
+						.format = Format::RG16_UNorm,
+						.offset = offsetof(VertexShading, chartUv)
+					},
+					{
+						.semantic = VertexSemantic::ChartId,
+						.format = Format::R32_UInt,
+						.offset = offsetof(VertexShading, chart)
+					}
 				}
 			}
 		}
-	}
-};
+	};
 
 	// Skinned vertex format: bindings 0 (position) + 1 (chart-free
 	// VertexSkinnedShading: color/uv/normal/tangent only) plus the
@@ -666,6 +732,7 @@ namespace smvk {
 	enum struct VertexFormat {
 		Empty
 		, StaticVertexFormat
+		, LightmappedStaticVertexFormat
 		, SkinnedVertexFormat
 		, DebugLine
 		, TerrainVertexFormat

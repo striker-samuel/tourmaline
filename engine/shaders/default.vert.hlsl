@@ -65,14 +65,13 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Location 5 = StaticVertexFormat's TexCoord1 (chart-local lightmap
-    // UV), location 6 = ChartId (appended last so 0..4 stay stable).
-    // Shaders that don't declare them just ignore the attributes. The
-    // direct path has no draw ring / transform buffer, so it forwards
-    // the chart UV raw (debug views show chart space); direct draws are
-    // never lightmapped (lmChunk none below).
-    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
-    [[vk::location(6)]] uint chartId : TEXCOORD5;
+    // Lightmaps are deprecated: StaticVertexFormat no longer binds the
+    // second UV channel (TexCoord1/ChartId would be locations 5/6), so
+    // this VS declares neither (a bound-format/pipeline mismatch would
+    // fail validation). The gated-off LightmappedStaticVertexFormat
+    // keeps the option; a future chart-unpack VS pairs with it. The
+    // lightmapUv output below is a constant zero and lmChunk stays the
+    // unlightmapped sentinel, so the FS lightmap paths gate off.
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -125,14 +124,14 @@ VSOut mainVS(VSIn IN)
     // material carries layerMaterials (see default_lit.frag.hlsl).
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    // Chart unpack for direct draws that pushed a chart tail (editor
-    // Baked/Uv1 views); zeroed scratch (hasXforms == 0) selects the raw
-    // chart-uv passthrough — direct draws are never lightmapped (lmChunk
-    // none). Gated per-vertex on chartId inside GfxLightmapUv
-    // (uncharted = 0).
-    OUT.lightmapUv = (pcDB.hasXforms == 0u)
-        ? IN.chartUv
-        : GfxLightmapUv(IN.chartUv, IN.chartId, pcDB.chartOffset, pcDB.lmXforms);
+    // Lightmaps deprecated: no chart UV rides this format (see VSIn) and
+    // direct draws are never lightmapped — the constant sentinel pair
+    // (uv 0, chunk none) keeps the FS interpolant contract alive for the
+    // gated-off LightmappedStaticVertexFormat option. The chart tail
+    // words in the push (hasXforms/chartOffset/lmXforms at 192..208) stay
+    // declared for layout identity with the C++ mirror; nothing reads
+    // them here.
+    OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xFFFFFFFFu;
 
     // Dither-on-closeup per-draw flag (byte 240 of this push — see the

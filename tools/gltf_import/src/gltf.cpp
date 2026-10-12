@@ -1665,11 +1665,15 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	ci.alphaCutoff = static_cast<float>(mat.alphaCutoff);
 	ci.doubleSided = mat.doubleSided;
 	ci.castsShadows = mat.castsShadows;
-	// Far-LOD shading program (see ShaderLodPolicy): the cheap vertex-lit
-	// program has no alpha-texture cutout and no blending, so only opaque
-	// materials may downgrade at distance - masked/blend stay fully lit.
-	// Tour authors can still program any material either way (farVertexLit).
-	ci.allowFarVertexLit = (ci.alphaMode == smvk::AlphaMode::Opaque);
+	// Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
+	// derivation only runs when the derive config opts in
+	// (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
+	// vertex-lit program has no alpha-texture cutout and no blending, so
+	// only opaque materials may downgrade at distance - masked/blend stay
+	// fully lit regardless. Tour authors can still program any material
+	// either way (farVertexLit).
+	ci.allowFarVertexLit = deriveShaderLods_
+		&& (ci.alphaMode == smvk::AlphaMode::Opaque);
 
 	slot = cluster.CreateMaterial(ci);
 	if (!modelUriBase.empty())

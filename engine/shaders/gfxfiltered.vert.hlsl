@@ -42,11 +42,11 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Location 5 = StaticVertexFormat's TexCoord1 (chart-local lightmap
-    // UV); location 6 = ChartId. The atlas UV is unpacked below via the
-    // draw's chart offset + the scene transform buffer.
-    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
-    [[vk::location(6)]] uint chartId : TEXCOORD5;
+    // Lightmaps are deprecated: StaticVertexFormat no longer binds the
+    // second UV channel (TexCoord1/ChartId would be locations 5/6), so
+    // this VS declares neither. The gated-off LightmappedStaticVertexFormat
+    // keeps the option; the MESH leg (gfxfilter.mesh.hlsl) still reads the
+    // chart words straight from the shading heap, untouched.
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -90,13 +90,12 @@ VSOut mainVS(VSIn IN)
 
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    // Chart unpack: chart-local UV -> atlas UV via the per-draw chart
-    // offset + the scene-wide transform buffer (no measurable VS cost).
-    // Gated on the draw's lobe count (the per-draw flag, never the UV
-    // value): unlightmapped draws output 0 without touching the buffer.
-    OUT.lightmapUv = (draw.misc.w == 0xFFFFFFFFu)
-        ? float2(0.0f, 0.0f)
-        : GfxLightmapUv(IN.chartUv, IN.chartId, draw.misc2.x, pcFV.lmXforms);
+    // Lightmaps deprecated: no chart UV rides this format (see VSIn) —
+    // the atlas unpack the draw's lmChunk would gate stays a constant
+    // zero (the FS gates on lmChunk none and never samples it). The
+    // lmXforms BDA stays declared in the push tail for layout identity
+    // with the C++ mirror; nothing reads it here.
+    OUT.lightmapUv = float2(0.0f, 0.0f);
 
     // Lightmap chunk rides the draw record (misc.w; 0xFFFFFFFF = none).
     OUT.lmChunk = draw.misc.w;

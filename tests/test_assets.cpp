@@ -1101,7 +1101,11 @@ void TestLodSelection() {
 		const int root = addNode(cluster->scene, -1, 0);
 		const int n1 = addNode(cluster->scene, root, 1);
 		cluster->scene.meshForNode[n1] = mh.index();
+		// Explicit opt-in: the ShaderLodPolicy default is vertex-lit OFF
+		// (the derivation only stamps it when DeriveConfig::shaderLods
+		// is set), so this test material programs it on by hand.
 		MaterialCreateInfo shaderLodCi{};
+		shaderLodCi.allowFarVertexLit = true;
 		const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
 		cluster->scene.materialForNode[n1] = shaderLodMatH.index();
 		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));

@@ -156,6 +156,7 @@ struct RunConfig {
 	bool editorVpQuad = false;
 	bool editorMeshlets = true;
 	bool editorLods = true;
+	bool editorShaderLods = false; // far-shading derivation opt-in (default off)
 	std::optional<std::string> editorOpenAt;
 	std::optional<std::string> editorOpenAt2;
 

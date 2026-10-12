@@ -323,6 +323,8 @@ RunConfig RunConfig::Parse() {
 		c.editorMeshlets = std::atoi(v) != 0;
 	if ((v = Get("VULKANTOY_EDITOR_LODS")) != nullptr)
 		c.editorLods = std::atoi(v) != 0;
+	if ((v = Get("VULKANTOY_EDITOR_SHADERLODS")) != nullptr)
+		c.editorShaderLods = std::atoi(v) != 0;
 	if ((v = Get("VULKANTOY_EDITOR_OPEN_AT")) != nullptr)
 		c.editorOpenAt = v;
 	if ((v = Get("VULKANTOY_EDITOR_OPEN_AT2")) != nullptr)
@@ -420,7 +422,8 @@ void RunConfig::WarnUnknown() {
 		"VULKANTOY_GFX_GPU_CULL",
 		"VULKANTOY_STRICT",
 		"VULKANTOY_SPD", "VULKANTOY_EDITOR_VP_QUAD", "VULKANTOY_EDITOR_MESHLETS",
-		"VULKANTOY_EDITOR_LODS", "VULKANTOY_EDITOR_OPEN_AT",
+		"VULKANTOY_EDITOR_LODS", "VULKANTOY_EDITOR_SHADERLODS",
+		"VULKANTOY_EDITOR_OPEN_AT",
 		"VULKANTOY_EDITOR_OPEN_AT2",
 		// Build-time / CMake-only (legit in env, not runtime knobs):
 		"VULKANTOY_CONTENT_DIR", "VULKANTOY_PCH", "VULKANTOY_OIDN",

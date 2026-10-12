@@ -220,10 +220,16 @@ struct MeshAsset {
 };
 
 // Derivation CONFIG (mirrors the editor import gates; defaults = the
-// editor's on-by-default cook acceleration).
+// editor's on-by-default cook acceleration). shaderLods is the EXCEPTION:
+// the per-material far-shading derivation (ShaderLodPolicy — the importer
+// stamping allowFarVertexLit on opaque materials) is DEFAULT OFF; opt in to
+// have fresh derivations carry far vertex-lit policies again. Explicit
+// tour/material authoring (farVertexLit/farSpecular/farNormalMap) is
+// unaffected — this gate only controls what the importer DERIVES.
 struct DeriveConfig {
 	bool meshlets = true;   // VULKANTOY_EDITOR_MESHLETS parity
 	bool lods = true;       // VULKANTOY_EDITOR_LODS parity
+	bool shaderLods = false; // VULKANTOY_EDITOR_SHADERLODS parity (opt-in)
 };
 
 struct DeriveStats {

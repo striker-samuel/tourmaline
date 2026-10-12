@@ -174,6 +174,14 @@ struct GltfToSceneImporter
 	// getOrCreateMesh builds meshlets from the optimized upload and stamps
 	// them on the Cluster keyed by mesh URI.
 	void setMeshletConfig(const smvk::MeshletConfig& config);
+	// Far-shading derivation (DeriveConfig::shaderLods parity; DEFAULT
+	// OFF). When enabled, getOrCreateMaterial derives
+	// MaterialCreateInfo::allowFarVertexLit for opaque materials (the
+	// cheap vertex-lit program has no cutout/blend, so masked/blend stay
+	// lit regardless). Off = fresh imports carry the ShaderLodPolicy
+	// default (vertex-lit off); explicit tour/material authoring
+	// (farVertexLit) always wins.
+	void setDeriveShaderLods(bool enabled) { deriveShaderLods_ = enabled; }
 	// Cooked file nodes (tour fileNode records / editor image defs):
 	// per-texture colorspace + sampler intent for KTX conversion, matched
 	// to glTF images by path basename then stem. Empty = usage inference
@@ -238,6 +246,7 @@ private:
 	std::string modelUriBase; // normalized VFS file part for asset URIs
 	smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
 	smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
+	bool deriveShaderLods_ = false; // setDeriveShaderLods (far-shading derivation, default off)
 	bool autoKtx_ = true;
 	std::vector<smvk::tour::FileNode> fileNodes_;
 	int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale

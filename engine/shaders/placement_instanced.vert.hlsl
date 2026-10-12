@@ -61,8 +61,10 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
-    [[vk::location(6)]] uint chartId : TEXCOORD5;
+    // No TexCoord1/ChartId (locations 5/6): placement draws are dynamic and
+    // never lightmapped (the outputs below carry the unlightmapped
+    // sentinel), and StaticVertexFormat no longer binds the second UV
+    // channel anyway (lightmaps deprecated — see mesh.h).
     // NOTE: via SPIR-V, SV_InstanceID maps to InstanceIndex, which already
     // includes the indirect command's firstInstance. No BaseInstance fetch
     // (and no shaderDrawParameters requirement): idx below IS the tile
