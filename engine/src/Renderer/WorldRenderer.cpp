@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -588,8 +588,7 @@ namespace engine {
 	// host's Initialize). The dtor only releases what onDetach did not
 	// (onDetach runs at host Shutdown while every member is alive).
 	WorldRenderer::WorldRenderer(smvk::App& host)
-		: m_host(host)
-		, m_input(host.m_input) {
+		: m_host(host) {
 	}
 	WorldRenderer::~WorldRenderer() = default;
 
@@ -2128,7 +2127,9 @@ namespace engine {
 		}
 		else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
-			SetUIMode(false); // start in FPS (DISABLED), I toggles to UI (NORMAL)
+			// (Start-in-FPS + the ImGui event hook moved to the ELEMENT's
+			// onAttach — the mode switch is control; see
+			// WorldRendererElement::onAttach.)
 			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
 			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
 		}
@@ -6143,29 +6144,24 @@ namespace engine {
 	// LAYER / ELEMENT driver (nvpro-style, see Engine/App/Element.h). Sync
 	// stays outside: the host acquires fb, drives the stack, presents.
 	// ------------------------------------------------------------------
-	void WorldRenderer::onResize(smvk::Extent2D swapExtent) {
-		(void)swapExtent;
-		// Host recreated ITS swapchain (the only sync-legal place to do so):
-		// rebuild our swap views + invalidate temporal histories. RenderLayer
+	void WorldRenderer::OnSwapchainRecreated() {
+		// The host recreated ITS swapchain (the only sync-legal place to
+		// do so — the ELEMENT forwards its onResize here): rebuild our
+		// swap views + invalidate temporal histories. The frame path
 		// never recreates.
 		if (!m_swapchain)
 			return;
 		RebuildSwapViews();
 		m_swapchain->ClearFramebufferResized();
 	}
-	void WorldRenderer::onUpdate(float dt) {
-		// Capture readback FIRST (VULKANTOY_CAPTURE / F7): the previous
-		// frame's submit has landed by now (its present waited), so the
-		// stall is free; the export lands one frame after the capture
-		// frame.
-		PollCaptureReadback();
-		// Element clock on the host's time, then the CPU update (the old
-		// App::MainLoop Update slot).
+	void WorldRenderer::Tick(float dt) {
+		// Element clock latch (the element's onUpdate calls this BEFORE
+		// its control pass): camera integration + exposure adaptation key
+		// on m_deltaTime; the shader time rides m_timeSinceStart.
 		m_deltaTime = dt;
 		m_timeSinceStart += dt;
-		Update();
 	}
-	void WorldRenderer::onRender(ElementFrame& frame) {
+	void WorldRenderer::RenderLayerInto(const ElementFrame& frame) {
 		if (!frame.fb)
 			return;
 		// The host owns the rect per frame (Full by default); adopt it so
@@ -11491,28 +11487,31 @@ namespace engine {
 							ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
 						}
 						// Controller status: name + live stick state, or "none".
-						if (m_input.hasGamepad()) {
-							ImGui::Text("Gamepad: %s", m_input.gamepadName(0).c_str());
+						// (m_inputUi: the ELEMENT's input back-pointer — pure
+						// status/config widgets; this class never polls input
+						// for control.)
+						if (m_inputUi && m_inputUi->hasGamepad()) {
+							ImGui::Text("Gamepad: %s", m_inputUi->gamepadName(0).c_str());
 							ImGui::TextDisabled("LX %+.2f LY %+.2f  RX %+.2f RY %+.2f",
-								m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTX),
-								m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTY),
-								m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTX),
-								m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTY));
+								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTX),
+								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTY),
+								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTX),
+								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTY));
 							ImGui::TextDisabled("Left stick move, right stick look, LT/RT down/up, RB sprint, Start UI");
 						}
 						else {
 							ImGui::TextDisabled("Gamepad: none connected");
 						}
-						{
-							float dzMove = m_input.stickDeadzone();
-							float dzLook = m_input.lookDeadzone();
-							float dzTrig = m_input.triggerDeadzone();
+						if (m_inputUi) {
+							float dzMove = m_inputUi->stickDeadzone();
+							float dzLook = m_inputUi->lookDeadzone();
+							float dzTrig = m_inputUi->triggerDeadzone();
 							if (ImGui::SliderFloat("Move deadzone", &dzMove, 0.0f, 0.5f))
-								m_input.setStickDeadzone(dzMove);
+								m_inputUi->setStickDeadzone(dzMove);
 							if (ImGui::SliderFloat("Look deadzone", &dzLook, 0.0f, 0.5f))
-								m_input.setLookDeadzone(dzLook);
+								m_inputUi->setLookDeadzone(dzLook);
 							if (ImGui::SliderFloat("Trigger deadzone", &dzTrig, 0.0f, 0.5f))
-								m_input.setTriggerDeadzone(dzTrig);
+								m_inputUi->setTriggerDeadzone(dzTrig);
 						}
 						ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 							fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
@@ -11901,9 +11900,9 @@ namespace engine {
 							ImGui::TextDisabled("Shader LODs OFF (toggle or missing program) - every level full-lit.");
 					}
 					ImGui::Separator();
-					ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
-					if (m_input.hasGamepad())
-						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_input.gamepadName(0).c_str());
+						ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiModeHint ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
+					if (m_inputUi && m_inputUi->hasGamepad())
+						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_inputUi->gamepadName(0).c_str());
 					else
 						ImGui::TextDisabled("[Gamepad] none connected");
 					ImGui::TextDisabled("Keys: M blur  O AO (No/SSAO/GTAO/SAO)  B bloom  X exposure  V vectors");
@@ -13022,103 +13021,9 @@ namespace engine {
 		}
 	}
 
-	void WorldRenderer::UpdateCamera(float dt)
-	{
-		auto& movement = m_cameraPositioner.movement_;
-
-		// Movement only here: toggles live in HandleShortcuts (which owns
-		// the centralized keybind:: names, including the R/F8 GI-debug and
-		// N ambient cycles - duplicating them here double-fired in FPS
-		// mode). The editor drives its own keys - its viewport
-		// instance never sees key events, so this stays App-only.
-		movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
-		movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
-		movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
-		movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
-
-		// Check the behacviour of this. 
-		// is up and down in camera orientation, not world space.
-		movement.up_ = m_input.isKeyHeld(GLFW_KEY_E) || m_input.isKeyHeld(GLFW_KEY_SPACE);
-		movement.down_ = m_input.isKeyHeld(GLFW_KEY_Q) || m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
-
-		movement.fastSpeed_ =
-			m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-
-		// Gamepad camera: left stick moves (camera-relative), right stick
-		// looks, triggers rise/sink, right shoulder sprints. Mouse/keyboard
-		// above keep working - inputs sum. Sticks use radial deadzones with
-		// rescaling (see Input deadzone sliders in Stats).
-		if (m_input.hasGamepad()) {
-			float lx = 0.0f, ly = 0.0f, rx = 0.0f, ry = 0.0f;
-			m_input.gamepadStick(0, true, lx, ly);
-			m_input.gamepadStick(0, false, rx, ry);
-			movement.stickMove_.x = lx;
-			movement.stickMove_.y = -ly;
-			movement.stickLook_.x = rx;
-			movement.stickLook_.y = -ry;
-			movement.vertical_ =
-				m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) -
-				m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-			movement.fastSpeed_ = movement.fastSpeed_ ||
-				m_input.gamepadButtonHeld(0, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
-		}
-		else {
-			movement.stickMove_ = glm::vec2(0.0f);
-			movement.stickLook_ = glm::vec2(0.0f);
-			movement.vertical_ = 0.0f;
-		}
-
-		// ---- Mouselook (SDL relative deltas -> virtual cursor) ----
-		// SDL relative mode warps the OS cursor every frame, so the absolute
-		// x/y positions the old GLFW path consumed are garbage while captured
-		// (they ping-pong around the warp point) - that is what broke mouse
-		// look. xrel/yrel are valid in BOTH captured and normal modes, so
-		// fold them into an unbounded virtual NDC cursor (y down - same
-		// mapping the old getMouseX/getMouseY path produced, so
-		// rotationSpeed_ keeps its calibration). The cursor is captured in
-		// FPS mode (nothing to click), so look is always active here; UI
-		// mode never reaches UpdateCamera.
-		{
-			const float w = static_cast<float>(std::max(1, m_swapchain->GetWindowWidth()));
-			const float h = static_cast<float>(std::max(1, m_swapchain->GetWindowHeight()));
-			m_virtualMouse.x += (m_input.getRelativeDeltaX() / w) * 2.0f;
-			// Y flip: the old absolute mapping was 1 - (y/h)*2 (screen-up = +NDC),
-			// so mouse-down must DECREASE virtual Y for the positioner's
-			// pitch = -rotSpeed * deltaY to look down. relY is +down in SDL.
-			m_virtualMouse.y -= (m_input.getRelativeDeltaY() / h) * 2.0f;
-		}
-		const glm::vec2 mousePos = m_virtualMouse;
-
-		if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
-		{
-			// Zero the pending delta so a click never yanks the camera.
-			m_cameraPositioner.resetMousePosition(mousePos);
-		}
-
-		m_cameraPositioner.update(
-			static_cast<double>(dt),
-			mousePos,
-			true
-		);
-	}
-
-	void WorldRenderer::SetUIMode(bool ui)
-	{
-		m_uiMode = ui;
-		// SDL3: relative mode captures the mouse for FPS; normal mode frees it
-		// for ImGui interaction (replaces glfwSetInputMode CURSOR_DISABLED/NORMAL).
-		m_host.SetRelativeMouseMode(!ui);
-		if (ui) {
-			// Center cursor for UI interaction; let ImGui take over.
-			// Don't reset camera mouse pos on mode switch to avoid jump when returning to FPS.
-		}
-		else {
-			// When returning to FPS, sync positioner to the virtual cursor so
-			// the first relative delta doesn't yank the camera.
-			m_cameraPositioner.resetMousePosition(m_virtualMouse);
-		}
-	}
+	// (UpdateCamera + SetUIMode moved to WorldRendererElement with the
+	// input polling and the virtual cursor â€” see its UpdateCamera/
+	// SetUIMode. The frame build reads the driven camera off Camera().)
 
 	void WorldRenderer::SetTextureFiltering(TextureFiltering mode)
 	{

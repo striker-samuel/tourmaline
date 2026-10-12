@@ -14,6 +14,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/Renderer/WorldRendererElement.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
@@ -279,8 +280,14 @@ int RunPakApp(PakAppConfig cfg) {
 	// pump drives the element between its acquire and present; the
 	// renderer never acquires/presents on its own).
 	smvk::App app;
-	auto renderer = std::make_shared<engine::WorldRenderer>(app);
-	renderer->SetSceneId(sceneId);
+	// The ELEMENT owns the control layer (input, keybinds, camera drive,
+	// UI mode, lifecycle) and wraps the pure frame renderer (see
+	// WorldRendererElement.h). Host config drives the renderer through
+	// the element's Renderer() directly; control (disable_control /
+	// bench_move) goes through the element.
+	auto element = std::make_shared<engine::WorldRendererElement>(app);
+	engine::WorldRenderer& renderer = element->Renderer();
+	renderer.SetSceneId(sceneId);
 	// The HOST owns scene loading: the renderer calls this once during
 	// onAttach, after the host's context exists (nothing can upload
 	// before that), and renders the returned world by handles. By then
@@ -288,12 +295,13 @@ int RunPakApp(PakAppConfig cfg) {
 	// The renderer's texture streamer rides along so v4 digest textures
 	// register for demand upgrades (null when streaming is off → full
 	// resident, the pre-v4 behavior). The preloaded image pins the
-	// borrowed tail payloads. The lambda captures the RAW element
-	// pointer (it runs once INSIDE onAttach, where the element is alive
-	// by definition) — a shared_ptr capture would self-cycle.
+	// borrowed tail payloads. The lambda captures the RAW renderer
+	// pointer (it runs once INSIDE the element's onAttach, where the
+	// element is alive by definition) — a shared_ptr capture would
+	// self-cycle.
 	const int sceneIndex = cfg.sceneIndex;
-	engine::WorldRenderer* rendererRaw = renderer.get();
-	renderer->SetWorldSource(
+	engine::WorldRenderer* rendererRaw = &renderer;
+	renderer.SetWorldSource(
 		[preloadFuture, sceneIndex, rendererRaw](smvk::ResourceManager& ctx,
 			smvk::OverlayVfs& contentVfs) -> smvk::mem::LinearPtr<smvk::World> {
 			return LoadPakWorld(preloadFuture->get(), sceneIndex,
@@ -306,13 +314,13 @@ int RunPakApp(PakAppConfig cfg) {
 		passCfg = engine::WorldRendererConfig::Minimal();
 	ApplyPassCsv(passCfg, cfg.withCsv.c_str(), true);
 	ApplyPassCsv(passCfg, cfg.withoutCsv.c_str(), false);
-	renderer->Configure(passCfg, cfg.run);
+	renderer.Configure(passCfg, cfg.run);
 	// Demo content (embers at the origin, sponza decal presets): an APP
 	// host opt-in — the renderer never seeds content on its own.
 	// Transitional: presets/emitters become world entities in the
 	// entity-system phase, then this call seeds them through the world
 	// instead.
-	renderer->SetDemoContentEnabled(true);
+	renderer.SetDemoContentEnabled(true);
 	// --no-dlss: suppress the Streamline load BEFORE the app runs
 	// (App::Initialize consults the flag before DlssStartup /
 	// pointing volk at the interposer — after that the decision is locked
@@ -320,11 +328,11 @@ int RunPakApp(PakAppConfig cfg) {
 	// This is the RenderDoc-safe configuration.
 	if (cfg.noDlss) {
 		smvk::DlssSetStartupEnabled(false);
-		renderer->SetDlssMode(smvk::DlssMode::Off);
+		renderer.SetDlssMode(smvk::DlssMode::Off);
 		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
 	}
 	if (cfg.disableControl) {
-		renderer->SetDisableControl(true);
+		element->SetDisableControl(true);
 		std::cerr << "[Scene] camera control disabled (--disable_control)\n";
 	}
 	if (!cfg.presentMode.empty()) {
@@ -348,8 +356,8 @@ int RunPakApp(PakAppConfig cfg) {
 		// onAttach re-seeds auto-exposure from the authored
 		// env (default ON), silently re-enabling adaptation mid-bench;
 		// the pin survives the seed (see m_autoExposurePin).
-		renderer->SetAutoExposurePinned(false);
-		renderer->SetAutoExposureEnabled(false);
+		renderer.SetAutoExposurePinned(false);
+		renderer.SetAutoExposureEnabled(false);
 		std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 	}
 	if (cfg.benchMoveSpeed > 0.0f) {
@@ -359,21 +367,21 @@ int RunPakApp(PakAppConfig cfg) {
 		if (benchFrames <= 0) {
 			benchFrames = 300;
 			app.SetFrameBudget(benchFrames);
-			renderer->SetAutoExposurePinned(false);
-			renderer->SetAutoExposureEnabled(false);
+			renderer.SetAutoExposurePinned(false);
+			renderer.SetAutoExposureEnabled(false);
 			std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
 		}
-		renderer->SetBenchMoveSpeed(cfg.benchMoveSpeed);
+		element->SetBenchMoveSpeed(cfg.benchMoveSpeed);
 		std::cout << "bench: constant-velocity flight " << cfg.benchMoveSpeed
 			<< " m/s forward from the spawn pose (past warmup)\n";
 	}
-	// Attach the renderer to the host's stack and DROP the host-side
+	// Attach the element to the host's stack and DROP the host-side
 	// reference: the App owns the element now (Shutdown's detach pass
 	// destroys it INSIDE the shutdown window, Holders releasing while
 	// the context is alive — an outliving host reference would defer
 	// element destruction to after ~App and leak the GPU handles).
-	app.AddElement(renderer);
-	renderer.reset();
+	app.AddElement(element);
+	element.reset();
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the
 	// warmup frames. --use_optick_gpu implies --use_optick.

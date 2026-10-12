@@ -846,41 +846,67 @@ struct ViewportResources {
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
-class WorldRenderer : public IRenderer, public IAppElement {
+// Pure frame renderer: builds the rendergraph + records the frame (scene,
+// post chain, its own settings/debug panel) for the current camera state.
+// All CONTROL (input polling, keybinds, camera drive, UI mode, bench
+// flight, host lifecycle) lives in WorldRendererElement — the element owns
+// an instance of this class and drives it through the public API below.
+// The element is a friend: its shortcuts flip render settings directly
+// (the same knobs the panel's widgets touch) without a parallel
+// toggle-method for every checkbox; the control FLOW (who decides, when)
+// is still entirely the element's.
+class WorldRenderer : public IRenderer {
+	// The control layer (see WorldRendererElement.h): drives the camera,
+	// polls the input, owns the host lifecycle. Friend scope = the
+	// shortcuts + the decal autosplat trigger; everything else goes
+	// through the public API.
+	friend class WorldRendererElement;
 public:
 	const char* RendererName() const override { return "World"; }
-	// IAppElement identity (the layer/element name in host stacks).
-	const char* ElementName() const override { return RendererName(); }
 
 	// ------------------------------------------------------------------
 	// HOST: the App owns the window/context/swapchain (the frame-sync
-	// owner); this renderer is an ELEMENT on it (AddElement before Run —
-	// see Engine/App/Element.h). Construction is cheap; onAttach (Run
-	// time, after the host's Initialize) resolves the host members and
-	// builds the framegraph; onDetach (host Shutdown, reverse stack
-	// order) releases everything while the context is alive.
+	// owner) and provides services this renderer queries (bench budget,
+	// present mode, acquire wait). Construction is cheap; Attach (run
+	// time, after the host's Initialize — the ELEMENT forwards its
+	// onAttach) resolves the host members and builds the framegraph;
+	// Detach (host shutdown, reverse stack order) releases everything
+	// while the context is alive.
 	// ------------------------------------------------------------------
 	explicit WorldRenderer(smvk::App& host);
-	~WorldRenderer() override;
+	~WorldRenderer();
 	smvk::App& Host() { return m_host; }
 
-	// IAppElement lifecycle: the old Initialize/Shutdown pair verbatim.
-	bool onAttach() override;
-	void onDetach() override;
+	// Lifecycle pair (the ELEMENT forwards its IAppElement hooks here):
+	// the old Initialize/Shutdown verbatim.
+	bool onAttach();
+	void onDetach();
+	// The host recreated its swapchain (the only sync-legal place):
+	// rebuild the swap views + invalidate temporal histories.
+	void OnSwapchainRecreated();
+	// Frame clock advance (the element's onUpdate calls this BEFORE the
+	// render): camera-time integration + the headless decal autosplat
+	// trigger key on it.
+	void Tick(float dt);
+	// One frame: layer adopt (the host's per-frame rect; see
+	// ClampedLayer) + stats + RenderFrame. The element's onRender calls
+	// this with the host's ElementFrame.
+	void RenderLayerInto(const ElementFrame& frame);
 
 	// ------------------------------------------------------------------
 	// LAYER (nvpro-style element): the renderer draws into a sub-rect of
 	// the host's swapchain image. Sync (acquire/present/resize) stays
-	// OUTSIDE — the host acquires fb, calls onRender/RenderLayer, then
+	// OUTSIDE — the host acquires fb, calls the element's onRender, then
 	// presents. Default = full swap image.
 	// ------------------------------------------------------------------
 	void SetLayerRect(LayerRect rect) { m_layerRect = rect; }
 	void SetLayerFull() { m_layerRect = LayerRect::Full(); }
 	[[nodiscard]] LayerRect GetLayerRect() const { return m_layerRect; }
-	// IAppElement hooks (thin wrappers over the layer API below).
-	void onResize(smvk::Extent2D swapExtent) override;
-	void onUpdate(float dt) override;
-	void onRender(ElementFrame& frame) override;
+	// The frame camera positioner (the element's camera drive moves
+	// this; the frame build reads position/orientation off it). Named
+	// CameraPositioner, not Camera: a Camera()-named member would shadow
+	// the smvk::Camera TYPE at the m_camera member declaration below.
+	CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	// The RunConfig overload applies the central VULKANTOY_* environment
@@ -1050,11 +1076,9 @@ public:
 	// to it (the pump applies it at the next frame's rebuild check; see
 	// App::SetPresentMode / RequestSwapchainRebuild).
 	void SetPresentMode(smvk::PresentMode m) { m_host.SetPresentMode(m); }
-	// Bench freeze: skip every camera-control update (keyboard/gamepad/
-	// mouselook) so the camera stays at the scene's configured pose for
-	// the whole run and A/B comparisons are deterministic. The I-key UI
-	// mode and the feature shortcuts (L/G/H/...) keep working.
-	void SetDisableControl(bool v) { m_disableControl = v; }
+	// (Bench freeze (--disable_control) + bench flight (--bench_move)
+	// moved to WorldRendererElement: they gate the CAMERA DRIVE, which
+	// is the element's. See SetDisableControl/SetBenchMoveSpeed there.)
 	// Host-owned demo content (the APP host opts in): seeds the demo
 	// particle emitters at init and the sponza preset decal splats at
 	// scene load. Default OFF — the renderer never seeds content
@@ -1062,12 +1086,6 @@ public:
 	// entities this gate dies and the host seeds through the world
 	// instead.
 	void SetDemoContentEnabled(bool v) { m_demoContent = v; }
-	// Bench flight (--bench_move <m/s>): integrate the camera straight
-	// along the spawn forward vector at a constant velocity past warmup
-	// (stationary through warmup so every run starts at the same pose).
-	// Deterministic â€” no input ramp/damping â€” and drives LOD promotion
-	// + texture streaming churn through the measured frames. 0 = off.
-	void SetBenchMoveSpeed(float v) { m_benchMoveSpeed = v; }
 	// Bench determinism: fixed manual exposure (no eye adaptation), so
 	// captures from different runs are directly comparable. main.cpp
 	// forces this off for --bench; X toggles it back live.
@@ -1107,13 +1125,15 @@ public:
 	bool SkydomeEnabled() const { return m_skyEnabled; }
 
 protected:
-	// Host (the App this element rides on): the frame-sync owner
-	// (context + swapchain), the window + input the shortcuts/UI read,
-	// and the bench budget the [perf] split keys on. Borrowed — the host
-	// owns the element (AddElement) and detaches it before teardown.
+	// Host (the App this renderer rides on): the frame-sync owner
+	// (context + swapchain) and the bench budget the [perf] split keys
+	// on. Borrowed — the element (which owns this renderer) is added to
+	// the host's stack and detached before teardown. NO Input here: the
+	// element owns the input and drives the camera; this class never
+	// polls it (the gamepad widgets below read m_inputUi, a UI-config
+	// back-pointer the element installs).
 	smvk::App& m_host;
-	Input& m_input;
-	// Element clock (onUpdate latches the host's dt): camera
+	// Element clock (Tick latches the element's dt): camera
 	// integration + exposure adaptation key on it.
 	float m_deltaTime = 0.0f;
 	float m_timeSinceStart = 0.0f;
@@ -1126,8 +1146,9 @@ protected:
 	smvk::mem::LinearPtr<smvk::RenderGraph> m_rendergraph;
 	smvk::mem::LinearPtr<smvk::World> m_world;
 
-	void UpdateCamera(float dt);
-	void SetUIMode(bool ui);
+	// (Camera drive + UI-mode switching moved to WorldRendererElement:
+	// the element polls the input, accumulates the virtual cursor and
+	// moves Camera() — see UpdateCamera/SetUIMode there.)
 	// Keeps the projection aspect in sync with the rendered (internal)
 	// extent. Must run whenever the swapchain extent or render scale
 	// changes (init + resize); otherwise the image stretches and
@@ -1154,7 +1175,19 @@ protected:
 			kMainViewFarPlane
 		);
 	}
-	bool m_uiMode = false;
+	// (m_uiMode/m_virtualMouse/m_disableControl/m_benchMoveSpeed moved to
+	// WorldRendererElement — pure control state. The panel footer + gamepad
+	// widgets below read the hint/input back-pointers the element pushes.)
+	// The element's UI-mode hint (FPS vs UI): panel footer text only.
+	bool m_uiModeHint = false;
+	// Input back-pointer for the panel's gamepad CONFIG widgets (axis
+	// readouts + deadzone sliders) — the renderer never polls input for
+	// control; the element installs this at attach.
+	Input* m_inputUi = nullptr;
+public:
+	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
+	void SetInputForUi(Input* in) { m_inputUi = in; }
+protected:
 	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
@@ -1189,201 +1222,14 @@ protected:
 	void RefreshGpuMemoryStats(bool force = false); // throttled query
 	void LogGpuMemoryToConsole(); // fprintf(stderr) one snapshot
 
-	void Update() {
-		HandleShortcuts();
-		// Headless crosshair splat (VULKANTOY_DECAL_AUTOSPLAT=<frame>):
-		// same path as the J key, fired once past the frame index so
-		// capture/A-B runs exercise the pick-BVH + raycast glue.
-		if (m_decalAutoSplatAtFrame >= 0 && (int64_t)m_frameCounter >= m_decalAutoSplatAtFrame) {
-			m_decalAutoSplatAtFrame = -1;
-			SpawnDecalAtCrosshair();
-		}
-		if (!m_uiMode && !m_disableControl) {
-			UpdateCamera(m_deltaTime);
-		}
-		// Bench flight (--bench_move): constant-velocity forward
-		// integration, straight along the spawn forward vector. Runs
-		// past warmup only (warmup stays at the spawn pose so every
-		// measured run starts identically) and stacks on --disable_control
-		// (frozen inputs, deterministic flight).
-		if (m_benchMoveSpeed > 0.0f && m_host.GetFrameBudget() > 0
-			&& m_host.BenchMeasuring() && !m_uiMode) {
-			m_cameraPositioner.cameraPosition_ +=
-				m_cameraPositioner.getForward() * (m_benchMoveSpeed * m_deltaTime);
-		}
-	}
+	// (The per-frame CONTROL block — Update()/HandleShortcuts(): keybind
+	// polling, feature toggles, decal autosplat, camera-drive gating,
+	// bench flight — moved to WorldRendererElement (its onUpdate). This
+	// class is the pure frame builder; see WorldRendererElement.h.)
 
-
-	// Global feature shortcuts (work in both FPS and UI modes so A/B
-	// comparisons don't require opening the panel; see the footer readout
-	// in RenderFrame for the full list). WASDQE/Space/Shift/Ctrl are
-	// reserved for camera movement and are never used here. Keys live in
-	// Engine/App/keybindings.h â€” this handler consumes semantic names,
-	// never raw GLFW_KEY_* reads.
-	void HandleShortcuts() {
-		if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
-			SetUIMode(!m_uiMode);
-		}
-		// Gamepad Start mirrors UI toggle so controller-only users
-		// can reach the debug panel.
-		if (m_input.hasGamepad() &&
-			m_input.gamepadButtonPressed(0, SDL_GAMEPAD_BUTTON_START)) {
-			SetUIMode(!m_uiMode);
-		}
-		// U toggles the fixed debug-panel side: Right <-> Left.
-		if (m_input.isKeyPressed(keybind::UI_DOCK_CYCLE)) {
-			CycleUiDock();
-		}
-		if (m_input.isKeyPressed(keybind::MOTION_BLUR_TOGGLE)) {
-			m_motionBlurEnabled = !m_motionBlurEnabled;
-		}
-		if (m_input.isKeyPressed(keybind::AO_CYCLE)) {
-			m_aoMode = static_cast<AoMode>(
-				(static_cast<int>(m_aoMode) + 1) % 3); // None -> Ssao -> Sao
-		}
-		if (m_input.isKeyPressed(keybind::BLOOM_TOGGLE)) {
-			m_bloomEnabled = !m_bloomEnabled;
-		}
-		if (m_input.isKeyPressed(keybind::AUTO_EXPOSURE_TOGGLE)) {
-			m_autoExposureEnabled = !m_autoExposureEnabled;
-		}
-		if (m_input.isKeyPressed(keybind::MOTION_DEBUG_TOGGLE)) {
-			m_showMotionDebug = !m_showMotionDebug;
-		}
-		if (m_input.isKeyPressed(keybind::LOD_TOGGLE)) {
-			m_lodEnabled = !m_lodEnabled;
-		}
-		// F toggles the GPU particle system (visibility only; the pool
-		// keeps its state so re-enabling resumes mid-flight).
-		if (m_input.isKeyPressed(keybind::PARTICLES_TOGGLE)) {
-			m_particlesEnabled = !m_particlesEnabled;
-		}
-		// J spawns a blood splat on whatever the camera crosshair hits
-		// (CPU raycast over the scene triangle soup; the pick BVH builds
-		// lazily on first use â€” see SpawnDecalAtCrosshair).
-		if (m_input.isKeyPressed(keybind::DECAL_SPLAT)) {
-			SpawnDecalAtCrosshair();
-		}
-		if (m_input.isKeyPressed(keybind::DEFERRED_SHADOWS_TOGGLE)) {
-			m_dsEnabled = !m_dsEnabled;
-		}
-		if (m_input.isKeyPressed(keybind::GFX_FILTER_TOGGLE)) {
-			m_useGfxFilter = !m_useGfxFilter;
-		}
-		// Backtick pops the texture inspector OUT of the debug panel: a
-		// separate floating window (see the draw site after the panel End).
-		// Closing drops the preview binding + selection (no dead-view
-		// sampling, no leaked overlay descriptor).
-		if (m_input.isKeyPressed(keybind::TEXTURE_VIEWER_TOGGLE)) {
-			m_texDebugWindow = !m_texDebugWindow;
-			if (!m_texDebugWindow)
-				DropTexDebugSelection();
-		}
-		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
-		// SkyIbl -> Off (see AmbientMode â€” single-source isolation for
-		// bisection, All is the production state).
-		// R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
-		// F8 is an alias for R. Both work in every ambient mode.
-		if (m_input.isKeyPressed(keybind::AMBIENT_CYCLE)) {
-			CycleAmbientMode();
-		}
-		if (m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE)
-			|| m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
-			keybind::CycleGiDebug(m_giDebug);
-		}
-		if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
-			m_skyEnabled = !m_skyEnabled;
-		}
-		// Z cycles AA: Off -> MSAA 2x -> SMAA 1x -> SMAA T2x. 1..4 jump
-		// directly to a mode.
-		if (m_input.isKeyPressed(keybind::AA_CYCLE)) {
-			m_aaMode = static_cast<AaMode>((static_cast<int>(m_aaMode) + 1) % 4);
-		}
-		if (m_input.isKeyPressed(keybind::AA_OFF)) {
-			m_aaMode = AaMode::Off;
-		}
-		if (m_input.isKeyPressed(keybind::AA_MSAA2X)) {
-			m_aaMode = AaMode::Msaa2x;
-		}
-		if (m_input.isKeyPressed(keybind::AA_SMAA1X)) {
-			m_aaMode = AaMode::Smaa1x;
-		}
-		if (m_input.isKeyPressed(keybind::AA_SMAAT2X)) {
-			m_aaMode = AaMode::SmaaT2x;
-		}
-		if (m_input.isKeyPressed(keybind::CAPTURE)) {
-			ExportNeutralLut();
-			m_captureQueued = true;
-		}
-		// Debug views (F1..F6, F9..F11): F1 lit, F2 unlit, F3 meshlets, F4
-		// shadow cascades, F5 LODs by color, F6 vertex-color layer
-		// weights, F9 base-UV checker, F10 lightmap-uv2 checker,
-		// F11 parallax occlusion mapping.
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LIT)) {
-			m_debugView = ViewMode::Lit;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UNLIT)) {
-			m_debugView = ViewMode::Unlit;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_MESHLETS)) {
-			m_debugView = ViewMode::Meshlets;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CASCADES)) {
-			m_debugView = ViewMode::Cascades;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LODS)) {
-			m_debugView = ViewMode::Lods;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_VERTEXCOLORS)) {
-			m_debugView = ViewMode::VertexColors;
-		}
-		// UV debug views: F9 = base UV (TEXCOORD0), F10 = lightmap
-		// atlas UV (uv2). Checker + gradient + seam glow (see
-		// default_uv_debug.hlsli) â€” lightmap chart layout and
-		// cross-island streaks read at a glance.
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
-			m_debugView = ViewMode::Uv0;
-		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV1)) {
-			m_debugView = ViewMode::Uv1;
-		}
-		// Parallax occlusion mapping (F11): every material texture
-		// sampled at a ray-marched parallax uv through the occlusion-
-		// map heightfield, with sun self-shadowing (default_pom).
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_POM)) {
-			m_debugView = ViewMode::Pom;
-		}
-		// P toggles wireframe (PolygonMode::Line, Cull None) over the
-		// active debug view â€” a raster override, not a shading swap, so
-		// it stacks with F1..F6.
-		if (m_input.isKeyPressed(keybind::WIREFRAME_TOGGLE)) {
-			m_wireframe = !m_wireframe;
-		}
-		// F12: live frame-time histogram â€” a separate bottom strip UI
-		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles
-		// the same state). Zero cost while disabled: RecordFrameTime is a
-		// single compare-and-return (see profiler::RecordFrameTime).
-		if (m_input.isKeyPressed(keybind::FRAME_HISTOGRAM_TOGGLE)) {
-			const bool on = !smvk::profiler::FrameHistogramEnabled();
-			smvk::profiler::SetFrameHistogramEnabled(on);
-			std::fprintf(stderr, "[profiler] frame-time histogram %s\n",
-				on ? "on" : "off");
-		}
-#if defined(DS_DEBUG_VIZ)
-		// Deferred-shadow visualizer cycle (Y): Off -> counts -> diff ->
-		// light-scoped modes. Needs the pipeline on (H); see the panel's
-		// "DS visualizers" block for the mode list. Y is the key (not F6):
-		// F6 selects the vertex-color debug view, and some
-		// keyboards/overlays remap or swallow function keys, never
-		// letters.
-		if (m_input.isKeyPressed(keybind::DS_VIZ_CYCLE)) {
-			m_dsDebugMode = static_cast<DsDebugViz>(
-				(static_cast<int>(m_dsDebugMode) + 1)
-				% (static_cast<int>(DsDebugViz::LightVis) + 1));
-		}
-#endif
-	}
-
+public:
+	// Debug-panel dock (the panel is this renderer's own settings UI —
+	// nvpro-style; the ELEMENT's U key calls CycleUiDock).
 	void CycleUiDock() {
 		m_uiDock = (m_uiDock == UiDock::Right) ? UiDock::Left : UiDock::Right;
 	}
@@ -1617,13 +1463,10 @@ protected:
 	float m_sceneNearClip = default_near_clip;
 	// Project root for the content VFS (see SetProjectRoot).
 	std::string m_projectRoot;
-	// Camera control frozen (see SetDisableControl; --disable_control).
-	bool m_disableControl = false;
+	// (Camera-control freeze + bench-flight speed moved to
+	// WorldRendererElement with the camera drive.)
 	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.
 	bool m_demoContent = false;
-	// Constant-velocity bench flight speed in m/s (see SetBenchMoveSpeed;
-	// --bench_move). 0 = stationary bench (pre-existing behavior).
-	float m_benchMoveSpeed = 0.0f;
 
 	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
@@ -2723,11 +2566,8 @@ protected:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
-	// Virtual cursor for FPS mouselook: SDL relative mode warps the real
-	// cursor, so absolute positions are garbage while captured. The look
-	// deltas (xrel/yrel, valid in BOTH relative and normal mode) fold
-	// into this unbounded NDC-space position that feeds the positioner.
-	glm::vec2 m_virtualMouse{ 0.0f };
+	// (The virtual cursor for FPS mouselook moved to WorldRendererElement
+	// with the camera drive.)
 	// ---- Texture streaming (mip-tail residency, see
 	// Engine/Renderer/texture_streamer.h). Owns residency for glTF-loaded
 	// textures and for pak v4 digest textures (objects + tail registered
