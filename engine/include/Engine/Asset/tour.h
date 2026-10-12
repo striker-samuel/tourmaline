@@ -52,6 +52,8 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/Asset/meshlet.h> // kMeshletMaxVertices/Triangles (the cook defaults below)
+
 namespace smvk {
 struct Cluster;
 } // namespace smvk
@@ -101,10 +103,14 @@ struct TourCook {
 	uint32_t cubemapRays = 128;
 	// Meshlet cook (PakCooker --meshlets stage): per-meshlet build
 	// over the cooked topology (max verts/tris per meshlet + the
-	// cone-weight partitioning bias, 0..1).
+	// cone-weight partitioning bias, 0..1). The size limits are the
+	// ENGINE's kMeshletMaxVertices/Triangles (64v/64t: one mesh-shader
+	// workgroup covers a whole meshlet — see meshlet.h); the old 124-tris
+	// default was a stale pre-workgroup number (BuildMeshletsForUpload
+	// now clamps over-limit authored cooks to the engine max anyway).
 	bool meshlets = false;
-	uint32_t meshletMaxVerts = 64;
-	uint32_t meshletMaxTris = 124;
+	uint32_t meshletMaxVerts = kMeshletMaxVertices;
+	uint32_t meshletMaxTris = kMeshletMaxTriangles;
 	float meshletConeWeight = 0.0f;
 	// GI bakes (cook dialog, editor-driven): authored convex volumes
 	// (GiBaker cvol stage, gi/<pak-stem>_* sidecars) and the adaptive

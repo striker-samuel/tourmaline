@@ -20,12 +20,22 @@ namespace smvk {
 
 struct StaticMeshUpload;
 
+// THE meshlet size limits (kMax constants — the one place the number lives).
+// 64v/64t is an ENGINE invariant, not a tunable: one mesh-shader workgroup
+// (64 threads, <= 192 = 64*3 verts — see gfxmesh.hlsli GFX_MESH_MAX_TRIS/
+// GFX_MESH_MAX_VERTS) covers a WHOLE meshlet with no dedup hash, and the
+// meshlet-cluster HZB cull (gfxfilter) assumes that coverage. Everything
+// defaults to these (MeshletConfig, TourCook, the cooker CLI) and
+// BuildMeshletsForUpload CLAMPS over-limit configs (stale authored cooks
+// carrying e.g. meshletTris 124) down to them — a bigger meshlet than the
+// workgroup can draw would drop geometry.
+inline constexpr uint32_t kMeshletMaxVertices = 64;
+inline constexpr uint32_t kMeshletMaxTriangles = 64;
+
 struct MeshletConfig {
 	bool enabled = false; // off by default; cooker opts in via CLI
-	// 64v/64t: one mesh-shader workgroup (64 threads, <= 192 verts)
-	// covers a whole cluster with no dedup hash (see gfxfilter.mesh.hlsl).
-	uint32_t maxVertices = 64;
-	uint32_t maxTriangles = 64;
+	uint32_t maxVertices = kMeshletMaxVertices;
+	uint32_t maxTriangles = kMeshletMaxTriangles;
 	float coneWeight = 0.0f;
 };
 

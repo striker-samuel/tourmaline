@@ -157,9 +157,13 @@ struct Args {
 	std::string lodRatios = "0.6,0.3,0.12";
 	float lodError = 0.02f; // relative error budget per simplify call
 	// Meshlet cook path (off by default; indirect-draw foundation only).
+	// Size limits default to the ENGINE's kMeshletMax constants (64v/64t:
+	// one mesh-shader workgroup covers a whole meshlet — see meshlet.h);
+	// BuildMeshletsForUpload clamps over-limit configs (stale authored cooks)
+	// down to them.
 	bool meshlets = false;
-	uint32_t maxVerts = 64;
-	uint32_t maxTris = 64;
+	uint32_t maxVerts = smvk::kMeshletMaxVertices;
+	uint32_t maxTris = smvk::kMeshletMaxTriangles;
 	float coneWeight = 0.0f;
 	// KTX auto-convert (on by default): non-KTX sources transcode
 	// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
@@ -3355,8 +3359,8 @@ int main(int argc, char** argv) {
 
 	smvk::MeshletConfig meshletCfg;
 	meshletCfg.enabled = args.meshlets;
-	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
-	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
+	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, smvk::kMeshletMaxVertices);
+	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, smvk::kMeshletMaxTriangles);
 	meshletCfg.coneWeight = args.coneWeight;
 	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
 	// re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex

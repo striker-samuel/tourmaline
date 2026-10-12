@@ -634,7 +634,8 @@ void EditorApp::CloseScene() {
 			// through the same GPU filter + LOD selection as cooked paks
 			// - the editor view modes match the App's, and the F3/F5
 			// views work on live worlds). Configs mirror the cooker
-			// defaults (meshlets 64/124, LOD ratios 60/30/12%) and ride
+			// defaults (meshlets 64v/64t — the kMeshletMax constants —
+			// and LOD ratios 60/30/12%) and ride
 			// into every nested reference (ApplySceneReferences forwards
 			// them). Kill-switches for giant imports
 			// (VULKANTOY_EDITOR_MESHLETS=0 / VULKANTOY_EDITOR_LODS=0).

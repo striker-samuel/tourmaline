@@ -51,8 +51,28 @@ bool BuildMeshletsForUpload(
 	if (vcount == 0 || icount < 3 || (icount % 3) != 0)
 		return fail("degenerate mesh");
 
-	uint32_t maxVerts = std::clamp(config.maxVertices, 3u, 255u);
-	uint32_t maxTris = std::clamp(config.maxTriangles, 1u, 512u);
+	// ENGINE limits first (kMeshletMaxVertices/Triangles — 64v/64t: one
+	// mesh-shader workgroup covers a whole meshlet, the invariant the mesh
+	// path and the cluster HZB cull assume): over-limit configs (stale
+	// authored cooks carrying e.g. meshletTris 124) clamp down — a meshlet
+	// bigger than the workgroup can draw would drop geometry. The absolute
+	// meshoptimizer bounds (3..255v / 1..512t) stay as the outer defense,
+	// unreachable for engine callers since the engine clamp is tighter.
+	// One loud line the first time a config overruns (stale authored data
+	// should be visible, not silently reinterpreted).
+	static bool sNotedEngineClamp = false;
+	if ((config.maxVertices > kMeshletMaxVertices ||
+			config.maxTriangles > kMeshletMaxTriangles) && !sNotedEngineClamp) {
+		sNotedEngineClamp = true;
+		std::fprintf(stderr,
+			"[Meshlets] config over the engine limit (mesh-shader workgroup "
+			"covers <= %uu/%ut; got %uu/%ut) - clamped to the engine limit "
+			"(update the cook settings: the 124-tris authored default is stale)\n",
+			kMeshletMaxVertices, kMeshletMaxTriangles,
+			config.maxVertices, config.maxTriangles);
+	}
+	uint32_t maxVerts = std::clamp(config.maxVertices, 3u, kMeshletMaxVertices);
+	uint32_t maxTris = std::clamp(config.maxTriangles, 1u, kMeshletMaxTriangles);
 
 	const size_t bound = meshopt_buildMeshletsBound(icount, maxVerts, maxTris);
 	if (bound == 0)
