@@ -725,17 +725,26 @@ namespace engine {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
+		// Headless pixel-budget pin (VULKANTOY_LODBUDGET=<px>): forces
+		// far-level selection for geometry/shader-LOD A/B runs without
+		// the UI slider (a huge budget pushes everything to its coarsest
+		// sibling). Clamped to a sane range; the UI slider stays live.
+		if (const char* lodBudgetEnv = std::getenv("VULKANTOY_LODBUDGET")) {
+			const float b = float(std::atof(trimEnv(lodBudgetEnv).data()));
+			if (b >= 0.05f && b <= 256.0f)
+				m_lodPixelBudget = b;
+		}
 		// Headless LOD cadence kill (VULKANTOY_LODFULL=0 restores the old
 		// halfrate refresh: parity-split, 1-frame-stale decisions).
 		if (const char* lodFullEnv = std::getenv("VULKANTOY_LODFULL")) {
 			if (std::atoi(lodFullEnv) == 0)
 				m_lodFullRate = false;
 		}
-		// Headless shader-LOD kill (VULKANTOY_SHADERLOD=0 keeps the
-		// farthest level full-lit) for A/B shading-cost runs.
+		// Headless shader-LOD pin (VULKANTOY_SHADERLOD=0 keeps the
+		// farthest level full-lit, =1 forces the subsystem on) for A/B
+		// shading-cost runs without the UI checkbox.
 		if (const char* lodShEnv = std::getenv("VULKANTOY_SHADERLOD")) {
-			if (std::atoi(lodShEnv) == 0)
-				m_lodShaderEnabled = false;
+			m_lodShaderEnabled = std::atoi(lodShEnv) != 0;
 		}
 		// Debug: kill the Northlight depth split (VULKANTOY_SPLIT=0 falls
 		// back to the legacy flow: full prepass before the HZB, remainder
@@ -2409,6 +2418,8 @@ namespace engine {
 	void WorldRenderer::LoadCubemaps() {
 		m_cubemaps.entries.clear();
 		m_cubemapProbes.clear();
+		m_cubemapRows.clear();
+		m_cubemapStreamPrimed = false;
 
 		// Clamp sampler for TextureCube sampling (cube seams must not wrap;
 		// linear min/mag + linear mips for the GGX-prefiltered chains).
@@ -2427,11 +2438,11 @@ namespace engine {
 		cubemapBases.push_back("sky");
 
 		bool fileBakeFound = false;
-		// Pinned manifest rows ('pin', cook --cubemap-extra-pos) that loaded:
-		// they sort before every auto-placed probe (ties keep the first
-		// entry, so an artist-placed capture - e.g. at the chrome ball -
-		// wins against overlapping coverage probes).
-		size_t pinnedLoaded = 0;
+		// Pinned manifest rows ('pin', cook --cubemap-extra-pos) sort
+		// before every auto-placed probe (ties keep the first entry, so
+		// an artist-placed capture - e.g. at the chrome ball - wins
+		// against overlapping coverage probes). They stay resident always
+		// (see m_cubemapRows); other rows stream by camera distance.
 		for (const auto& base : cubemapBases) {
 			if (base.empty())
 				continue;
@@ -2459,9 +2470,16 @@ namespace engine {
 				// Pinned rows first (stable: file order within groups).
 				std::stable_partition(rows.begin(), rows.end(),
 					[](const smvk::CubemapManifestEntry& e) { return e.pinned; });
-				size_t loaded = 0;
-				pinnedLoaded = 0;
-				m_cubemapProbes.reserve(rows.size());
+				// Streaming setup (see m_cubemapRows): rows are metadata
+				// until needed - only pinned rows (artist captures, always
+				// resident) upload now; the rest stream by camera distance
+				// in UpdateCubemapStreaming. Row order stays pinned-first
+				// so the probe-row rebuild keeps the pinned-wins-ties
+				// contract.
+				m_cubemapRows.clear();
+				m_cubemapRows.reserve(rows.size());
+				size_t pinnedResident = 0;
+				size_t usableRows = 0;
 				for (const auto& row : rows) {
 					// Derive the library name from the KTX basename so the
 					// entry key stays human-readable (e.g. "sponza_3").
@@ -2470,21 +2488,40 @@ namespace engine {
 						entryName = entryName.substr(slash + 1);
 					if (auto dot = entryName.find_last_of('.'); dot != std::string::npos)
 						entryName = entryName.substr(0, dot);
+					CubemapRow crow{};
+					crow.entryName = entryName;
+					crow.vfsPath = row.vfsPath;
+					crow.position = row.position;
+					crow.influenceRadius = row.influenceRadius;
+					crow.fadeRadius = row.fadeRadius;
+					crow.pinned = row.pinned;
+					if (!row.pinned) {
+						m_cubemapRows.push_back(std::move(crow));
+						++usableRows;
+						continue;
+					}
 					const std::span<const uint8_t> rowBytes =
 						ReadBakeBytes(row.vfsPath);
 					if (rowBytes.empty()) {
 						std::cerr << "[Cubemap] manifest row missing: "
 							<< row.vfsPath << " - skipped\n";
+						crow.failed = true;
+						m_cubemapRows.push_back(std::move(crow));
 						continue;
 					}
 					if (!m_cubemaps.Load(*m_context, entryName, rowBytes)) {
 						std::cerr << "[Cubemap] manifest row load failed: "
 							<< row.vfsPath << " - skipped\n";
+						crow.failed = true;
+						m_cubemapRows.push_back(std::move(crow));
 						continue;
 					}
 					const auto* entry = m_cubemaps.Find(entryName);
-					if (!entry || entry->bindless < 0)
+					if (!entry || entry->bindless < 0) {
+						crow.failed = true;
+						m_cubemapRows.push_back(std::move(crow));
 						continue;
+					}
 					if (!entry->baked) {
 						// Decode failed and Load fell back to the neon
 						// procedural pattern: never place that as a grid
@@ -2492,30 +2529,28 @@ namespace engine {
 						std::cerr << "[Cubemap] manifest row not a cubemap: "
 							<< row.vfsPath << " - skipped\n";
 						m_cubemaps.entries.erase(entryName);
+						crow.failed = true;
+						m_cubemapRows.push_back(std::move(crow));
 						continue;
 					}
-					CubemapProbeGpu p{};
-					p.posInfluence = glm::vec4(row.position, row.influenceRadius);
-					p.fadeCubemap = glm::vec4(row.fadeRadius,
-						static_cast<float>(entry->bindless),
-						static_cast<float>(entry->mipLevels), 0.0f);
-					m_cubemapProbes.push_back(p);
-					if (row.pinned)
-						++pinnedLoaded;
-					++loaded;
+					m_cubemapRows.push_back(std::move(crow));
+					++pinnedResident;
+					++usableRows;
 				}
-				if (loaded == 0) {
+				if (usableRows == 0) {
 					std::cerr << "[Cubemap] manifest '" << base
-						<< "' loaded 0 probes - trying next candidate\n";
+						<< "' has 0 usable rows - trying next candidate\n";
+					m_cubemapRows.clear();
 					m_cubemapProbes.clear();
-					pinnedLoaded = 0;
 					continue;
 				}
-				std::cerr << "[Cubemap] loaded manifest '" << base << "': "
-					<< loaded << "/" << rows.size() << " probes"
-					<< (pinnedLoaded > 0
-						? " (" + std::to_string(pinnedLoaded) + " pinned first)"
-						: "") << "\n";
+				RebuildCubemapProbeRows();
+				std::cerr << "[Cubemap] cached manifest '" << base << "': "
+					<< usableRows << "/" << rows.size() << " rows"
+					<< (pinnedResident > 0
+						? " (" + std::to_string(pinnedResident) + " pinned resident)"
+						: "")
+					<< " - the rest stream by distance\n";
 				fileBakeFound = true;
 				break;
 			}
@@ -2605,21 +2640,165 @@ namespace engine {
 			}
 		}
 
-		// Order: pinned rows first (artist-placed captures win weight
-		// ties - ties keep the first entry), then widest influence within
-		// each block (the lit-shader probe walk breaks at the first
-		// full-weight entry, and tile overflow keeps the earliest upload
-		// slots). Probe data rides the FP light buffer as type-2 entries,
-		// appended post-selection in UpdateForwardPlusLights.
-		const size_t pinSplit = std::min(pinnedLoaded, m_cubemapProbes.size());
+	}
+
+	// Rebuilds the cached probe rows from resident entries (see
+	// m_cubemapRows): bindless indices are baked into the rows at upload,
+	// so every residency change (stream load/evict) rebuilds. Order:
+	// pinned rows first (artist-placed captures win weight ties - ties
+	// keep the first entry), then widest influence within each block
+	// (the lit-shader probe walk breaks at the first full-weight entry,
+	// and tile overflow keeps the earliest upload slots). m_cubemapRows
+	// stays pinned-first (stable_partition at parse), so resident pinned
+	// rows are already front - the sorts below only order within the
+	// blocks. Probe data rides the FP light buffer as type-2 entries,
+	// appended post-selection in UpdateForwardPlusLights.
+	void WorldRenderer::RebuildCubemapProbeRows() {
+		m_cubemapProbes.clear();
+		if (m_cubemapRows.empty())
+			return;
+		m_cubemapProbes.reserve(m_cubemapRows.size());
+		size_t pinnedResident = 0;
+		for (const CubemapRow& row : m_cubemapRows) {
+			if (row.failed)
+				continue;
+			const auto* entry = m_cubemaps.Find(row.entryName);
+			if (!entry || entry->bindless < 0 || !entry->baked)
+				continue; // not resident (streamed out or never loaded)
+			CubemapProbeGpu p{};
+			p.posInfluence = glm::vec4(row.position, row.influenceRadius);
+			p.fadeCubemap = glm::vec4(row.fadeRadius,
+				static_cast<float>(entry->bindless),
+				static_cast<float>(entry->mipLevels), 0.0f);
+			m_cubemapProbes.push_back(p);
+			if (row.pinned)
+				++pinnedResident;
+		}
+		const size_t pinSplit = std::min(pinnedResident, m_cubemapProbes.size());
 		std::sort(m_cubemapProbes.begin(), m_cubemapProbes.begin() + pinSplit,
 			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
-			return a.posInfluence.w > b.posInfluence.w;
-		});
+				return a.posInfluence.w > b.posInfluence.w;
+			});
 		std::sort(m_cubemapProbes.begin() + pinSplit, m_cubemapProbes.end(),
 			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
-			return a.posInfluence.w > b.posInfluence.w;
-		});
+				return a.posInfluence.w > b.posInfluence.w;
+			});
+	}
+
+	// Per-frame probe residency (see m_cubemapRows): pinned rows are
+	// always resident (loaded at parse); other rows stream by camera
+	// distance - the nearest-K plus any probe whose influence+fade
+	// covers the eye (mandatory: the shader breaks at the first
+	// full-weight entry, so a covering probe MUST be resident or nearby
+	// lighting pops to the global fallback). Loads throttle (KTX decode
+	// is synchronous); evictions carry hysteresis (rank slack + range
+	// margin) so boundary orbits don't thrash; any residency change
+	// rebuilds the probe rows (fresh bindless indices). The first update
+	// after a load fills synchronously (no throttle), so the opening
+	// frame already shades with its neighborhood.
+	void WorldRenderer::UpdateCubemapStreaming(const glm::vec3& eye) {
+		if (m_cubemapRows.empty() || !m_world || !m_cubemapEnabled)
+			return;
+		// Headless budget pin (VULKANTOY_CUBEMAP_BUDGET=N): bench A/B over
+		// the resident set + eviction verification without the UI slider.
+		// The UI slider stays live afterwards (this wins while set).
+		uint32_t budget = m_cubemapStreamBudget;
+		if (const char* e = std::getenv("VULKANTOY_CUBEMAP_BUDGET")) {
+			const long v = std::atol(e);
+			if (v >= 0 && v <= 64)
+				budget = uint32_t(v);
+		}
+		const bool priming = !m_cubemapStreamPrimed;
+		if (priming) {
+			m_cubemapStreamPrimed = true;
+		}
+		else if ((static_cast<uint32_t>(m_frameCounter) & 3u) != 0u) {
+			return; // throttle like texture streaming (loads hitch)
+		}
+		// Rank non-pinned, non-failed rows by camera distance.
+		struct Rank { size_t row; float dist; };
+		std::vector<Rank> ranks;
+		ranks.reserve(m_cubemapRows.size());
+		std::vector<size_t> rankOf(m_cubemapRows.size(), SIZE_MAX);
+		for (size_t i = 0; i < m_cubemapRows.size(); ++i) {
+			const CubemapRow& row = m_cubemapRows[i];
+			if (row.pinned || row.failed)
+				continue;
+			rankOf[i] = ranks.size();
+			ranks.push_back(Rank{ i, glm::distance(eye, row.position) });
+		}
+		std::sort(ranks.begin(), ranks.end(),
+			[](const Rank& a, const Rank& b) { return a.dist < b.dist; });
+		for (size_t r = 0; r < ranks.size(); ++r)
+			rankOf[ranks[r].row] = r;
+		auto isResident = [&](const CubemapRow& row) {
+			const auto* entry = m_cubemaps.Find(row.entryName);
+			return entry && entry->bindless >= 0 && entry->baked;
+		};
+		bool changed = false;
+		uint32_t loadsDone = 0, evictsDone = 0;
+		// Loads: nearest-K + covering (throttled past the priming fill).
+		uint32_t loadsLeft = priming ? UINT32_MAX : m_cubemapStreamLoadsPerUpdate;
+		for (const Rank& r : ranks) {
+			CubemapRow& row = m_cubemapRows[r.row];
+			if (isResident(row))
+				continue;
+			const bool inBudget =
+				rankOf[r.row] < size_t(budget);
+			const bool covering =
+				r.dist < row.influenceRadius + row.fadeRadius;
+			if (!inBudget && !covering)
+				continue;
+			if (loadsLeft == 0)
+				continue;
+			--loadsLeft;
+			const std::span<const uint8_t> bytes = ReadBakeBytes(row.vfsPath);
+			if (bytes.empty()) {
+				std::cerr << "[Cubemap] stream row missing: "
+					<< row.vfsPath << " - skipped\n";
+				row.failed = true;
+				continue;
+			}
+			if (!m_cubemaps.Load(*m_context, row.entryName, bytes)) {
+				std::cerr << "[Cubemap] stream row load failed: "
+					<< row.vfsPath << " - skipped\n";
+				row.failed = true;
+				continue;
+			}
+			const auto* entry = m_cubemaps.Find(row.entryName);
+			if (!entry || entry->bindless < 0 || !entry->baked) {
+				if (entry && !entry->baked)
+					m_cubemaps.entries.erase(row.entryName);
+				row.failed = true;
+				continue;
+			}
+			++loadsDone;
+			changed = true;
+		}
+		// Evictions (hysteresis: rank slack + range margin past fade).
+		if (!priming) {
+			for (const Rank& r : ranks) {
+				CubemapRow& row = m_cubemapRows[r.row];
+				if (!isResident(row))
+					continue;
+				const bool overBudget = rankOf[r.row]
+					>= size_t(budget)
+						+ size_t(m_cubemapStreamEvictRankSlack);
+				const bool outOfRange = r.dist > row.influenceRadius
+					+ row.fadeRadius + m_cubemapStreamEvictRangeMargin;
+				if (overBudget && outOfRange) {
+					m_cubemaps.entries.erase(row.entryName);
+					++evictsDone;
+					changed = true;
+				}
+			}
+		}
+		if (changed) {
+			RebuildCubemapProbeRows();
+			std::cerr << "[Cubemap] streaming: +" << loadsDone << "/-"
+				<< evictsDone << " -> " << m_cubemapProbes.size()
+				<< " resident probe rows\n";
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -5468,6 +5647,9 @@ namespace engine {
 			out.main = specialize(m_resources.mainProgram);
 		if (m_resources.mainProgramA2C.shaderCount == 2)
 			out.a2c = specialize(m_resources.mainProgramA2C);
+		std::cerr << "[ShaderLOD] built specialized far program (specular="
+			<< (quality.specular ? 1 : 0) << ", normalMap="
+			<< (quality.normalMap ? 1 : 0) << ")\n";
 		m_farSpecPrograms[key] = out;
 		return &m_farSpecPrograms[key];
 	}
@@ -6715,6 +6897,9 @@ namespace engine {
 		UpdateMaterials(fb.frameIndex);
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
+		// Probe residency for this frame's eye (throttled inside; the
+		// FP upload below reads the rebuilt rows - see m_cubemapRows).
+		UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);
 		UpdateGfxTextureDemand(fb.frameIndex);
 		const auto rfT0c = bench_clk::now();
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
@@ -10560,10 +10745,45 @@ namespace engine {
 								if (entry.bindless >= 0 && !entry.texture.empty())
 									(entry.baked ? bakedCount : procCount)++;
 							}
-							ImGui::Text("Cubemaps: %u (baked %u, procedural %u)  Probes: %u (light tail)  Sampler: %u",
+							size_t streamResident = 0, streamOut = 0, streamFailed = 0;
+							for (const CubemapRow& row : m_cubemapRows) {
+								if (row.failed)
+									++streamFailed;
+								else if (m_cubemaps.Find(row.entryName))
+									++streamResident;
+								else
+									++streamOut;
+							}
+							ImGui::Text("Cubemaps: %u resident / %u rows (baked %u, procedural %u)  Probes: %u (light tail)  Sampler: %u",
 								(unsigned)m_cubemaps.entries.size(),
+								(unsigned)m_cubemapRows.size(),
 								(unsigned)bakedCount, (unsigned)procCount,
 								(unsigned)ProbeEntryCount(), m_cubemapSampler);
+							if (!m_cubemapRows.empty()) {
+								int streamBudget = int(m_cubemapStreamBudget);
+								if (ImGui::SliderInt("Stream budget (nearest rows)",
+									&streamBudget, 0, 64))
+									m_cubemapStreamBudget =
+									uint32_t(std::clamp(streamBudget, 0, 64));
+								ImGui::TextDisabled("Probe textures stream by camera distance"
+									" (nearest-N + covering + pinned stay resident);"
+									" failed rows never retry.");
+								if (streamFailed > 0)
+									ImGui::TextDisabled("stream failed rows: %u (see [Cubemap] log)",
+										(unsigned)streamFailed);
+								size_t listedOut = 0;
+								for (const CubemapRow& row : m_cubemapRows) {
+									if (listedOut >= 8)
+										break;
+									if (row.failed || m_cubemaps.Find(row.entryName))
+										continue;
+									ImGui::BulletText("streamed out: %s", row.entryName.c_str());
+									++listedOut;
+								}
+								if (streamOut > listedOut)
+									ImGui::TextDisabled("... +%u more streamed out",
+										(unsigned)(streamOut - listedOut));
+							}
 							{
 								const bool tiled = ProbeTileListsWanted();
 								ImGui::Text("Tiled probes: %s (stride %u shared, tiles %ux%u)",
@@ -10598,8 +10818,8 @@ namespace engine {
 								" (N cycles isolate diffuse only). Baked cubemaps are TRUE radiance scaled"
 								" only by this panel's intensity (mirrors match the sun-lit scene); the"
 								" Environment IBL intensity scales the analytic-sky fallback only.");
-							ImGui::TextDisabled("Probes upload once per scene load (see [Cubemap] log lines);"
-								" intensity/debug/LOD apply instantly.");
+							ImGui::TextDisabled("Probe textures stream by distance (see [Cubemap] log lines);"
+								" rows/intensity/debug/LOD apply instantly.");
 						}
 						if (ImGui::CollapsingHeader("Screen-Space Reflections (SSR)")) {
 							ImGui::Checkbox("Reflections (SSGI composite)", &m_ssrEnabled);

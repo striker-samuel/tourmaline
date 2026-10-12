@@ -14,6 +14,8 @@
 //      straight-down/up pick a deterministic horizontal basis, the
 //      editor's truncated-pitch Top camera equals the exact straight-down
 //      framing, and the positioner's quat path agrees with the mat4 one.
+//   5. Mouse-look framerate independence: deltas are displacements, so
+//      the same cursor travel yields the same orientation at any dt.
 
 #include <algorithm>
 #include <cmath>
@@ -178,12 +180,40 @@ void TestSafeLookAt() {
 	}
 }
 
+void TestMouseLookFramerateIndependent() {
+	// Mouse deltas are per-frame displacements, not rates: the same
+	// cursor travel must produce the same orientation at ANY dt (the old
+	// `* deltaSeconds` turned 2x slower per second at 2x fps for
+	// identical physical movement). Same splits, different dts =>
+	// bit-identical forward vectors.
+	const glm::vec2 total(0.35f, -0.2f);
+	auto drive = [&](int steps, double dt) {
+		CameraPositioner_FirstPerson p;
+		glm::vec2 cursor(0.0f);
+		const glm::vec2 step = total / float(steps);
+		for (int i = 0; i < steps; ++i) {
+			cursor += step;
+			p.update(dt, cursor, true);
+		}
+		return p.getForward();
+	};
+	const glm::vec3 f60 = drive(4, 1.0 / 60.0);
+	const glm::vec3 f30 = drive(4, 1.0 / 30.0);
+	const glm::vec3 f240 = drive(4, 1.0 / 240.0);
+	Check(glm::distance(f60, f30) < 1e-6f, "camera.mouselook.dt-invariant-30");
+	Check(glm::distance(f60, f240) < 1e-6f, "camera.mouselook.dt-invariant-240");
+	// Sanity: it actually turned (not a vacuous comparison).
+	Check(glm::distance(f60, glm::vec3(0.0f, 0.0f, -1.0f)) > 0.05f,
+		"camera.mouselook.turns");
+}
+
 } // namespace
 
 int main() {
 	TestFiniteMapping();
 	TestMatchesInfiniteInRange();
 	TestSafeLookAt();
+	TestMouseLookFramerateIndependent();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

@@ -331,7 +331,11 @@ struct Args {
 	// capture exactly at the chrome ball. Unlike --cubemap-pos these never
 	// replace the automatic placement, they add to it.
 	std::vector<std::string> cubemapExtraPos;
-	float cubemapExtraRadius = 1.5f; // pinned-probe influence (fade = half)
+	// Pinned-probe influence (fade = half). Matches the SceneCubemap
+	// authoring default (1.5m covered almost nothing - probes dropped
+	// out of influence immediately); explicit --cubemap-extra-radius
+	// still overrides per cook.
+	float cubemapExtraRadius = 5.5f;
 	// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
 	// per-capture face strips (+ mip sheets) + a top-down probe map.
 	// Loose files under <contentDir>/textures/cubemaps/, never in the pak.

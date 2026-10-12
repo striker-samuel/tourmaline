@@ -2184,9 +2184,26 @@ VfsTextureSource::VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsB
 	, vfsBaseDir_(std::move(vfsBaseDir)) {
 }
 
+namespace {
+	// True when uri already lives under dir (a full VFS URI, not a bare
+	// filename): joining it again would double the path (base + base/file)
+	// and miss. Derivations store either form (the MeshImporter writes
+	// full URIs; older derivations wrote bare names) - both must read.
+	bool VfsUriUnderDir(const std::string& uri, const std::string& dir) {
+		if (dir.empty() || uri.size() <= dir.size())
+			return false;
+		if (uri.compare(0, dir.size(), dir) != 0)
+			return false;
+		const char c = uri[dir.size()];
+		return c == '/' || c == '\\';
+	}
+} // namespace
+
 std::optional<std::vector<uint8_t>> VfsTextureSource::ReadBytes(const std::string& imageUri) {
 	if (!vfs_ || imageUri.empty() || starts_with(imageUri, "data:"))
 		return std::nullopt;
+	if (VfsUriUnderDir(imageUri, vfsBaseDir_))
+		return vfs_->TryRead(imageUri);
 	return vfs_->TryRead(smvk::vfs::Join(vfsBaseDir_, imageUri));
 }
 
@@ -2196,7 +2213,10 @@ std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const
 	// view dangling at the end of the full expression — the UAF that
 	// crashed every cook at preloadTextures (ASan: freed at :2119, read at
 	// :2120). Mirror HostTextureSource::ResolveIdentity's named `joined`.
-	const std::string joined = smvk::vfs::Join(vfsBaseDir_, imageUri);
+	// Full VFS URIs resolve as-is (see ReadBytes above); bare names join.
+	const std::string joined = VfsUriUnderDir(imageUri, vfsBaseDir_)
+		? imageUri
+		: smvk::vfs::Join(vfsBaseDir_, imageUri);
 	const smvk::StringViewT n = smvk::NormalizeAssetUri(joined);
 	return n.empty() ? imageUri : n.Str();
 }
@@ -2427,8 +2447,13 @@ size_t BuildFromMeshAsset(
 			cluster.textures.create(std::move(holder));
 		}
 		cluster.RegisterTextureUri(identity, h);
-		if (!cluster.IsCookMode())
-			cluster.SetTextureSource(identity, std::move(ktx));
+		// Stash unconditionally (cook mode included): the pak serializer
+		// embeds these bytes, and the CLI-cook cluster is built fresh from
+		// the artifact - nothing else stashes them (the editor path has
+		// them from its import session). Skipping the stash in cook mode
+		// made every CLI cook fail at serialize with "missing embedded
+		// .ktx2 source".
+		cluster.SetTextureSource(identity, std::move(ktx));
 		return h;
 	};
 

@@ -1709,6 +1709,38 @@ protected:
 	static_assert(sizeof(CubemapProbeGpu) == 32);
 	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
 	void LoadCubemaps();
+	// ---- Cubemap probe streaming (distance residency) -----------------
+	// LoadCubemaps used to upload EVERY manifest row up front (KTX decode
+	// + GPU upload per probe at scene load). Grid manifests with dozens
+	// of probes made that a load hitch + resident VRAM for probes the
+	// camera may never approach. Rows are now metadata until needed (see
+	// CubemapRow): pinned rows (artist captures) stay resident always;
+	// other rows stream by camera distance - nearest-K plus any probe
+	// whose influence+fade covers the eye (mandatory: the shader breaks
+	// at the first full-weight entry, so a covering probe MUST be
+	// resident or lighting pops to the global fallback). Loads throttle
+	// to a couple per update (KTX decode is synchronous); evictions
+	// carry hysteresis (rank slack + range margin) so boundary orbits
+	// don't thrash. Probe rows rebuild from resident entries (fresh
+	// bindless indices) whenever residency changes. The global /
+	// single-capture path (one probe, no rows) never streams.
+	struct CubemapRow {
+		std::string entryName;  // library key (manifest basename)
+		std::string vfsPath;    // KTX payload source (reloads)
+		glm::vec3 position{ 0.0f };
+		float influenceRadius = 10.0f;
+		float fadeRadius = 5.0f;
+		bool pinned = false;
+		bool failed = false;    // payload missing/undecodable: skip forever
+	};
+	std::vector<CubemapRow> m_cubemapRows; // manifest metadata (all rows)
+	uint32_t m_cubemapStreamBudget = 24;   // resident non-pinned rows (UI)
+	uint32_t m_cubemapStreamLoadsPerUpdate = 2;
+	float m_cubemapStreamEvictRankSlack = 8.0f;
+	float m_cubemapStreamEvictRangeMargin = 4.0f; // meters past fade
+	bool m_cubemapStreamPrimed = false;    // first update fills synchronously
+	void UpdateCubemapStreaming(const glm::vec3& eye);
+	void RebuildCubemapProbeRows();
 	// Probe entries appended to the FP light upload this frame (0 when
 	// disabled or nothing loaded). The dispatch gate + the freshness bit
 	// share this so shader and GPU lists can never disagree.

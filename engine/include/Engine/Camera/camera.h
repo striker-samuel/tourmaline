@@ -133,8 +133,10 @@ public:
 		float vertical_ = 0.0f;
 	} movement_;
 
-	//rotationSpeed is in radians per second per NDC mouse unit
-	float rotationSpeed_ = 50.0f;
+	// rotationSpeed is in radians per NDC mouse unit (mouse deltas are
+	// displacements, not rates - see update()). Default preserves the old
+	// 60fps feel exactly (the old 50 rad/s/NDC times a 1/60s frame).
+	float rotationSpeed_ = 50.0f / 60.0f;
 
 	// Right-stick look rate (rad/s at full deflection).
 	float stickLookSpeed_ = 2.8f;

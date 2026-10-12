@@ -65,10 +65,15 @@ void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& 
 	if (mousePressed)
 	{
 		const glm::vec2 delta = mousePos - mousePos_;
-		glm::vec2 frameDelta = delta * static_cast<float>(deltaSeconds);
+		// Mouse deltas are already per-frame displacements (NDC units
+		// moved since the last update) - NOT a rate. The old
+		// `* deltaSeconds` made look speed framerate-dependent (2x fps =
+		// 2x slower turning per second for the same physical movement);
+		// rotation tracks displacement only. (The stick path below IS a
+		// deflection rate and keeps its * dt.)
 		const glm::quat deltaQuat = glm::quat(glm::vec3(
-			-rotationSpeed_ * frameDelta.y,
-			rotationSpeed_ * frameDelta.x,
+			-rotationSpeed_ * delta.y,
+			rotationSpeed_ * delta.x,
 			0.0f));
 
 		cameraOrientation_ = deltaQuat * cameraOrientation_;
