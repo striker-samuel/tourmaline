@@ -34,7 +34,16 @@ void PrintUsage(const char* prog) {
 
 bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 	int& exitCode) {
+	// Clean slate — EXCEPT cfg.run: main() pre-installs the central
+	// RunConfig (parsed once, logged, unknowns warned) BEFORE this parse.
+	// The old wholesale reset silently wiped it, so every RunConfig-carried
+	// env pin no-op'd: VULKANTOY_CAM_POS/FWD/YAW above all (the documented
+	// bench pins) never reached the renderer — headless A/B cameras sat at
+	// the hard-coded (4,3,6) default pose no matter the pin (observed:
+	// three different pinned poses rendered byte-identical captures).
+	const engine::RunConfig runPreserve = cfg.run;
 	cfg = PakAppConfig{};
+	cfg.run = runPreserve;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--pak") == 0) && i + 1 < argc) {
