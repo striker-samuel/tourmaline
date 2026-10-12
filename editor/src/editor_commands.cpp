@@ -3527,7 +3527,13 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// derivation's legacy ".mesh" blob still binds — the loader takes
 		// both — but the next re-import derives ".geometry" and the swap
 		// below re-targets it).
-		std::string rootGuid = ProjectAssetGuid(m_gltfHostPath);
+		// The root GUID starts as the SOURCE CONTENT identity (the same
+		// one the derived .meta records — see ImportMeshArtifactFor /
+		// asset_export.h): project sessions and from-zero re-imports
+		// agree on ONE identity (the project DB's guid is separate
+		// bookkeeping, not the artifact identity).
+		std::string rootGuid =
+			smvk::assets::SourceAssetGuid(m_gltfHostPath);
 		{
 			std::error_code mec;
 			const std::filesystem::path gltfStem =

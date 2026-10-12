@@ -617,7 +617,13 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 		cfg.meshlets = std::atoi(e) != 0;
 	if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
 		cfg.lods = std::atoi(e) != 0;
-	const std::string guid = ProjectAssetGuid(gltfPath);
+	// NO project guid: the derivation derives the asset identity from the
+	// SOURCE FILE CONTENT (SourceAssetGuid — see asset_export.h), so an
+	// in-project import and a from-zero re-import (another dir, machine,
+	// no project DB) produce the SAME uuids and byte-identical artifacts.
+	// The project DB still adopts the file for its own bookkeeping
+	// (ProjectAssetGuid elsewhere); the ARTIFACT identity is the source's.
+	const std::string guid;
 	smvk::assets::AssetManifest manifest;
 	smvk::assets::DeriveStats stats;
 	std::string derr;

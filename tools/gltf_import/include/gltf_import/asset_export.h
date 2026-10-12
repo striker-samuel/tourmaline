@@ -87,6 +87,13 @@ struct AssetEntry {
 struct AssetManifest {
 	std::string guid;       // the glTF asset's GUID (the .meta identity)
 	std::string source;     // the glTF file NAME (display + reimport)
+	// The ORIGINAL SOURCE FILE's content identity (32-hex, derived from the
+	// glTF bytes — see SourceAssetGuid). Registered in the .meta so the
+	// artifact family always knows the exact source content it came from:
+	// a from-zero re-import reproduces it anywhere, and staleness/matching
+	// can key on CONTENT (the mtime rule alone misfires on copies that
+	// preserve or reorders mtimes). Empty on legacy metas (pre-digest).
+	std::string sourceDigest;
 	std::string stem;       // the asset file stem ("<stem>.geometry" etc.)
 	std::vector<AssetEntry> entries;
 };
@@ -226,15 +233,19 @@ struct DeriveStats {
 	uint32_t instances = 0;
 	uint32_t lights = 0;
 	uint32_t cameras = 0;
-	uint32_t keptGuids = 0; // manifest entries that kept their GUID
+	// (keptGuids/dropped counted the old random-mint/keep-the-old-manifest
+	// scheme; the deterministic derivation always derives — newGuids is the
+	// live counter, the other two stay 0.)
+	uint32_t keptGuids = 0;
 	uint32_t newGuids = 0;
-	uint32_t dropped = 0;   // manifest entries with no source match
+	uint32_t dropped = 0;
 };
 
 // Runs the (deterministic, GPU-free cook-mode) import of the glTF + writes
-// every derived asset + the manifest next to it (its directory). Existing
-// manifest GUIDs are KEPT (matched by kind+sourceIndex); entries with no
-// source are dropped (counted). Returns false + err on a failed import or
+// every derived asset + the manifest next to it (its directory). Identity is
+// DETERMINISTIC (see SourceAssetGuid/DerivedEntryGuid): a from-zero
+// re-import anywhere reproduces the same GUIDs (and byte-identical derived
+// files — they embed the GUIDs). Returns false + err on a failed import or
 // a failed write (a partial derivation leaves older files — the next
 // successful derive overwrites them).
 bool DeriveGltfAssets(
@@ -248,11 +259,13 @@ bool DeriveGltfAssets(
 
 // THE MESH IMPORTER entry: parse + derive in one call. The parse is
 // host-side (glTF is an import-time SOURCE format, never runtime/VFS
-// content). `gltfGuid` is the source's project identity (the .meta GUID —
-// the editor's ProjectAssetGuid; callers without an assetdb pass ""
-// (the manifest then carries no source identity, entries keep their own).
-// On success the .geometry + .material/.anim set + the manifest sit next
-// to the source, and outManifest carries the table. The natural driver is
+// content). `gltfGuid` is the source's project identity — callers WITHOUT
+// their own (assetdb-less, from-zero) pass "" and the derivation derives it
+// from the SOURCE FILE CONTENT (SourceAssetGuid: the same uuid anywhere;
+// the editor passes "" by design so project sessions agree with from-zero
+// re-imports). On success the .geometry + .material/.anim set + the
+// manifest sit next to the source, and outManifest carries the table. The
+// natural driver is
 // MeshArtifactStale below (derive only when the artifacts are missing or
 // the source changed).
 bool ImportMeshSource(
@@ -262,6 +275,26 @@ bool ImportMeshSource(
 	AssetManifest& outManifest,
 	DeriveStats* outStats = nullptr,
 	std::string* err = nullptr);
+
+// ---- from-zero identity (register the original source, same uuid anywhere) --
+// SourceAssetGuid: the glTF asset GUID derived DETERMINISTICALLY from the
+// SOURCE FILE CONTENT (two-lane FNV-1a over the glTF bytes, 32-hex — the
+// .meta GUID format). Identical bytes derive the identical GUID on any
+// machine, in any directory, with no project DB and no .meta — a from-zero
+// re-import reproduces the identity. DeriveGltfAssets falls back to this
+// when the caller passes no guid (the editor passes none: project sessions
+// and from-zero imports now agree), and records it as the manifest's
+// sourceDigest either way.
+[[nodiscard]] std::string SourceAssetGuid(
+	const std::filesystem::path& gltfPath);
+// DerivedEntryGuid: the deterministic GUID of one derived entry (a .material
+// / .anim / the .geometry), keyed on (source guid, kind, source index) —
+// the same two-lane hash over the seed. With the source guid content-
+// derived, a from-zero re-import reproduces the WHOLE manifest (and with
+// it the .geometry/.material bytes: entries embed these GUIDs), so the
+// artifact family is byte-stable across re-imports.
+[[nodiscard]] std::string DerivedEntryGuid(
+	const std::string& sourceGuid, AssetKind kind, int sourceIndex);
 
 // The re-import gate: TRUE when the derived .geometry beside `gltfPath`
 // is missing/empty, the manifest is missing/unparseable, or the SOURCE is

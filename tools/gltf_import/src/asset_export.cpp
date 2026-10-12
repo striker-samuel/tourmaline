@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -38,6 +39,42 @@ namespace tinygltf { class Model; }
 namespace smvk::assets {
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// From-zero identity (see the header decls): a deterministic 32-hex GUID
+// over a byte span. Two independent FNV-1a 64 lanes (different seed and
+// multiplier) with the same avalanche finish as TextureConversionHash
+// (gltf.cpp — the repo's content-hash discipline), printed as one 32-char
+// hex string: the .meta GUID format, so content-derived GUIDs are
+// indistinguishable from (and interchangeable with) minted ones. Two lanes
+// = 128 derived bits, so from-zero re-imports cannot birthday-collide on a
+// single 64-bit lane. THE identity rule: identical bytes -> identical GUID,
+// anywhere, no DB, no .meta, no clock.
+// ---------------------------------------------------------------------------
+inline std::string GuidHexFromBytes(const void* data, size_t size) {
+	const auto* bytes = static_cast<const uint8_t*>(data);
+	uint64_t a = 1469598103934665603ull; // lane A: the classic FNV offset
+	uint64_t b = 1099511628211ull;       // lane B: different seed + multiplier
+	for (size_t i = 0; i < size; ++i) {
+		a ^= bytes[i];
+		a *= 1099511628211ull;
+		b ^= uint64_t(bytes[i]) + uint64_t(i) * 0x9E3779B97F4A7C15ull;
+		b *= 0xC2B2AE3D27D4EB4Full;
+	}
+	const auto finish = [&](uint64_t h) { // the avalanche finish, per lane
+		h ^= uint64_t(size) * 0x9E3779B97F4A7C15ull;
+		h *= 0xFF51AFD7ED558CCDull;
+		h ^= h >> 32;
+		return h;
+	};
+	a = finish(a);
+	b = finish(b);
+	char hex[33] = {};
+	std::snprintf(hex, sizeof(hex), "%016llx%016llx",
+		static_cast<unsigned long long>(a),
+		static_cast<unsigned long long>(b));
+	return std::string(hex, 32);
+}
 
 // ---------------------------------------------------------------------------
 // Binary put/get (the .mesh format)
@@ -248,6 +285,8 @@ void WriteTourAnimAsset(const std::filesystem::path& path,
 // Key=value lines; sections by kind:
 //   guid=<32hex>            the glTF asset GUID
 //   source=<file name>      the glTF (display/reimport)
+//   sourcedigest=<32hex>     the ORIGINAL SOURCE content identity (from-zero
+//                           re-imports reproduce it; see SourceAssetGuid)
 //   geometry=<file> <guid> <name>   (legacy "mesh=" rows still parse —
 //                                   pre-10/6 manifests wrote that key)
 //   material.<idx>=<file> <guid> <name>
@@ -256,6 +295,7 @@ bool ParseManifestLine(const std::string& key, const std::string& val,
 	AssetManifest& m) {
 	if (key == "guid") { m.guid = val; return true; }
 	if (key == "source") { m.source = val; return true; }
+	if (key == "sourcedigest") { m.sourceDigest = val; return true; }
 	if (key == "stem") { m.stem = val; return true; }
 	AssetEntry e{};
 	bool have = false;
@@ -345,6 +385,8 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
 	lines.push_back("source=" + (m.source.empty()
 		? std::filesystem::path(gltfPath).filename().generic_string()
 		: m.source));
+	if (!m.sourceDigest.empty())
+		lines.push_back("sourcedigest=" + m.sourceDigest);
 	lines.push_back("stem=" + m.stem);
 	for (const AssetEntry& e : m.entries) {
 		std::string key;
@@ -1023,42 +1065,31 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		gltfNodeMap = importer.gltfNodeMap();
 	}
 
-	// 2) Manifest stability: keep the GUIDs of an existing manifest
-	// (matched by kind + source index), fresh GUIDs for new entries.
+	// 2) Manifest identity: REGISTER THE ORIGINAL SOURCE (the .meta records
+	// the source file name + its CONTENT digest — SourceAssetGuid, derived
+	// from the glTF bytes) and derive every GUID deterministically off it,
+	// so a FROM-ZERO RE-IMPORT (no project DB, no .meta, another machine,
+	// another directory) reproduces the SAME UUIDs — and with them the same
+	// .geometry/.material bytes (entries embed the GUIDs), i.e. a
+	// byte-stable artifact family. The caller's guid (an assetdb identity)
+	// still wins when given; the editor passes none, so project sessions
+	// and from-zero imports agree. (The old random-mint + keep-the-old-
+	// manifest block is gone: deterministic derivation IS the stability —
+	// a re-import over the same content derives the same values; changed
+	// content is a new identity by design, and old metas with random GUIDs
+	// re-derive deterministically on the next import.)
 	AssetManifest manifest;
-	manifest.guid = gltfGuid;
+	const std::string sourceDigest = SourceAssetGuid(gltfPath);
+	manifest.guid = gltfGuid.empty() ? sourceDigest : gltfGuid;
 	manifest.source =
 		std::filesystem::path(gltfPath).filename().generic_string();
+	manifest.sourceDigest = sourceDigest;
 	manifest.stem = stem;
-	{
-		AssetManifest old;
-		if (LoadAssetManifest(gltfPath, old, fail) && old.guid == gltfGuid) {
-			for (const AssetEntry& e : old.entries) {
-				const bool match =
-					(e.kind == AssetKind::Geometry)
-					|| (e.kind == AssetKind::Material
-						&& e.sourceIndex >= 0
-						&& e.sourceIndex < int(model.materials.size()))
-					|| (e.kind == AssetKind::Anim
-						&& e.sourceIndex >= 0
-						&& e.sourceIndex < int(model.animations.size()));
-				if (match) {
-					manifest.entries.push_back(e);
-					++stats.keptGuids;
-				}
-				else
-					++stats.dropped;
-			}
-		}
-	}
 	auto guidFor = [&](AssetKind kind, int sourceIndex) -> std::string {
-		for (const AssetEntry& e : manifest.entries)
-			if (e.kind == kind && e.sourceIndex == sourceIndex)
-				return e.guid;
 		AssetEntry e{};
 		e.kind = kind;
 		e.sourceIndex = sourceIndex;
-		e.guid = smvk::tour::GenerateUuid();
+		e.guid = DerivedEntryGuid(manifest.guid, kind, sourceIndex);
 		manifest.entries.push_back(e);
 		++stats.newGuids;
 		return e.guid;
@@ -1410,6 +1441,32 @@ bool ImportMeshSource(
 		outManifest, outStats, err);
 }
 
+std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
+	// The content identity: hash the SOURCE FILE bytes. Registered in the
+	// .meta (sourcedigest=) AND used as the from-zero asset GUID (see
+	// DeriveGltfAssets). Read errors fall back to the file name — a
+	// deterministic-but-weaker identity beats none (the derivation's own
+	// read of the glTF would fail loudly right after anyway).
+	std::ifstream in(gltfPath, std::ios::binary);
+	if (!in)
+		return GuidHexFromBytes(gltfPath.generic_string().data(),
+			gltfPath.generic_string().size());
+	const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return GuidHexFromBytes(bytes.data(), bytes.size());
+}
+
+std::string DerivedEntryGuid(const std::string& sourceGuid,
+	AssetKind kind, int sourceIndex) {
+	// Seed = the source identity + the entry's (kind, index): a short,
+	// unambiguous seed string (the kind as one char + the index decimal,
+	// separators fixed) hashed with the same two-lane discipline.
+	char seed[80] = {};
+	std::snprintf(seed, sizeof(seed), "%s|%c|%d", sourceGuid.c_str(),
+		char(kind), sourceIndex);
+	return GuidHexFromBytes(seed, std::strlen(seed));
+}
+
 bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
 	namespace fs = std::filesystem;
 	std::error_code ec;
@@ -1422,13 +1479,20 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
 	// Manifest present + parseable (the .material GUID table the build
 	// resolves): a missing/corrupt manifest means a half-written or
 	// hand-mangled derivation — re-derive.
-	{
-		AssetManifest m;
-		std::string merr;
-		if (!LoadAssetManifest(gltfPath, m, merr))
-			return true;
-	}
-	// Source newer than the artifact (mtime): the artifact predates the
+	AssetManifest m;
+	std::string merr;
+	if (!LoadAssetManifest(gltfPath, m, merr))
+		return true;
+	// CONTENT rule (metas that carry a sourcedigest — every derivation
+	// after the from-zero change): the artifact is current exactly when
+	// the source CONTENT matches the recorded digest. This replaces the
+	// mtime rule for digest-carrying metas: copies that preserve or
+	// reorder mtimes no longer misfire (a same-content copy stays
+	// current, a different-content source with a NEWER artifact still
+	// re-derives — the digest, not the clock, is the identity).
+	if (!m.sourceDigest.empty())
+		return SourceAssetGuid(gltfPath) != m.sourceDigest;
+	// Legacy mtime rule (digest-less metas): the artifact predates the
 	// last source edit. (fs::last_write_time errors read as stale — the
 	// safe side always re-derives.)
 	const auto srcTime = fs::last_write_time(gltfPath, ec);

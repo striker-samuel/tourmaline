@@ -614,7 +614,13 @@ void EditorApp::CloseScene() {
 			rootRef.root = true;
 			rootRef.parent = 0;
 			rootRef.source = loadPath;
-			rootRef.guid = ProjectAssetGuid(loadPath);
+			// The root reference's GUID = the SOURCE CONTENT identity
+			// (smvk::assets::SourceAssetGuid — the same one the derived
+			// .meta records): project sessions and from-zero re-imports
+			// agree on ONE identity. (The project DB's guid is separate
+			// bookkeeping — the tex cache scope above; the artifact
+			// identity is the source's, not the DB's.)
+			rootRef.guid = smvk::assets::SourceAssetGuid(loadPath);
 			rootRef.name = std::filesystem::path(loadPath).stem().string();
 			if (haveDoc && !refDoc.references.empty()
 				&& refDoc.references[0].root)
