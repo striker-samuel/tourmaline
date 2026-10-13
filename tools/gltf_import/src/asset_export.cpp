@@ -1119,6 +1119,14 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		m.info.alphaMode = (gm.alphaMode == "MASK")
 			? smvk::AlphaMode::Mask : (gm.alphaMode == "BLEND")
 			? smvk::AlphaMode::Blend : smvk::AlphaMode::Opaque;
+		// Derive the shading model like the direct glTF import does: MASK
+		// -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
+		// lost flag killed the alpha test and masked foliage rendered
+		// fully opaque - the round-trip used to write shading=lit for
+		// alphaMode=mask).
+		m.info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask)
+			? smvk::ShadingModel::Masked
+			: smvk::ShadingModel::DefaultLit;
 		m.info.alphaCutoff = float(gm.alphaCutoff);
 		m.info.doubleSided = gm.doubleSided;
 		auto texRef = [&](int texIndex, bool srgb) {

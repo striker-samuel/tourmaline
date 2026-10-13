@@ -2497,7 +2497,16 @@ size_t BuildFromMeshAsset(
 		info.roughnessFactor = m.info.roughnessFactor;
 		info.normalScale = m.info.normalScale;
 		info.occlusionStrength = m.info.occlusionStrength;
-		info.shadingModel = m.info.shadingModel;
+		// Shading model: the asset round-trip historically lost Masked
+		// here (the exporter wrote shading=lit for alphaMode=mask) - the
+		// lit FS's cutout gates on ShadingModel::Masked (== 2.0f), so the
+		// lost flag killed the alpha test and masked foliage rendered
+		// fully opaque. Derive like the direct glTF import does (the
+		// alphaMode mapping at getOrCreateMaterial): Mask + DefaultLit ->
+		// Masked. An explicitly-authored Unlit/Masked shading wins.
+		info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask
+			&& m.info.shadingModel == smvk::ShadingModel::DefaultLit)
+			? smvk::ShadingModel::Masked : m.info.shadingModel;
 		info.alphaMode = m.info.alphaMode;
 		info.alphaCutoff = m.info.alphaCutoff;
 		info.doubleSided = m.info.doubleSided;
