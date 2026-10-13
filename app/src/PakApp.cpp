@@ -246,6 +246,15 @@ void ApplyPassCsv(engine::WorldRendererConfig& passCfg, const char* csv, bool en
 		else if (tok == "prepass") flag = &passCfg.forwardPlusPrepass;
 		else if (tok == "filter") flag = &passCfg.gfxFilter;
 		else if (tok == "particles") flag = &passCfg.particles;
+		// Memory aliasing (the target-heap master gate - see
+		// smvk::TargetHeapAliasingEnabled): not a pass bool - the token
+		// maps to the global gate directly. --without memory_aliasing
+		// (default state) keeps every packed range disjoint; --with
+		// memory_aliasing honors the declared windows. Composes with the
+		// env pin (VULKANTOY_ALIASING): the CLI token applies here, at
+		// attach time, BEFORE any target claims - so it wins.
+		else if (tok == "memory_aliasing" || tok == "aliasing")
+			smvk::SetTargetHeapAliasing(enable);
 		else if (!tok.empty()) std::cerr << "Unknown pass token: '" << tok << "'\n";
 		if (flag) *flag = enable;
 		pos = end + 1;

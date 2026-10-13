@@ -2084,30 +2084,27 @@ namespace engine {
 			const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
 		smvk::DepthDesc depthDesc{};
 		depthDesc.format = m_swapchain->GetDepthFormat();
-		// Target-heap window (design A - see DepthDesc): the HONEST
-		// full span. The window CANNOT start at Seed: the SDSM cascade
-		// fit (SdsmStats, TargetPhase::Shadows) reads renderDepth as a
-		// CROSS-FRAME history (the previous frame's depth) - a real use
-		// at phase 0 that must be declared (the undeclared-user bug this
-		// window caused: the fit raced the previous frame's late writes
-		// through the shared range and the cascades jumped frame to
-		// frame). With [Shadows..Tonemap] the pair's windows OVERLAP
-		// hizDepth's [OccluderPrepass..Hzb] - the two full-screen depths
-		// NEVER share (the honest outcome; the sharing only becomes
-		// sound if the SDSM history read moves onto its own retention
-		// target or the range gains cross-frame handoff).
-		depthDesc.firstPhase = smvk::TargetPhase::Shadows;
-		depthDesc.lastPhase = smvk::TargetPhase::Tonemap;
+		// Target-heap window (design A - see DepthDesc): renderDepth
+		// stays at the DEFAULT FULL-FRAME window - the honest declaration.
+		// Two undeclared users proved any narrower window wrong: the SDSM
+		// cascade fit (SdsmStats, TargetPhase::Shadows) reads renderDepth
+		// as a CROSS-FRAME history (the previous frame's depth - the
+		// racing history read through the shared range made the cascades
+		// jump frame to frame), and DLSS reads it at PostAA. With the
+		// full-frame window the depth pair NEVER shares (hizDepth's
+		// [OccluderPrepass..Hzb] overlaps); the sharing only becomes
+		// sound with a retention copy for the history read or cross-frame
+		// range handoff.
 		if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
 			std::cerr << "[WorldRenderer] Failed to create render depth target\n";
 			return false;
 		}
 		// Option A occluder depth (HZB source): same extent/format as
 		// the full depth - its OWN IMAGE (the two prepasses never write
-		// one image); its window [OccluderPrepass..Hzb] would share with
-		// renderDepth only under a disjoint partner window (see above -
-		// the depth pair does not share; the declaration stays for any
-		// future honest partner).
+		// one image); its window [OccluderPrepass..Hzb] is honest (the
+		// occluder fill writes, the HZB build reads) but can never share
+		// with renderDepth's full-frame window - the declaration stays
+		// for any future same-shape disjoint partner.
 		smvk::DepthDesc hizDepthDesc{};
 		hizDepthDesc.format = m_swapchain->GetDepthFormat();
 		hizDepthDesc.name = "hizDepth";
