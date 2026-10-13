@@ -1230,6 +1230,19 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
 	return s.demandBuffers[frameIndex];
 }
+// GPU cull-state slice for the readback consumer (empty handle when the
+// GPU cull never ran): word kCullStateCounterWord holds that dispatch
+// chain's final KEPT-entry count (the filter's atomic filtered-offset
+// counter - zeroed by the batch-cull dispatch, accumulated per kept
+// entry), i.e. the GPU-side cull survivor count the CPU stats cannot see.
+// MAIN view (views[0] - the filter's view 0; shadow legs keep their own).
+[[nodiscard]] inline BufferHandle CullStateBuffer(
+		const State& s, uint32_t frameIndex) {
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	if (s.views.empty())
+		return BufferHandle{};
+	return s.views[0].cullStateBuffers[frameIndex];
+}
 // Live slot count in the uploaded meta table (bounds the consumer's
 // download + forward range; 0 = demand source inactive — the shader's
 // publisher is gated off too).

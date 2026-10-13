@@ -746,17 +746,23 @@ namespace smvk {
 	void World::InvalidateLodCache() {
 		nodeLod_.clear();
 		nodeLodStamp_.clear();
+		nodeLodCountFrame_.clear();
+		lodStatDraws_ = 0;
+		lodStatSwitched_ = 0;
 		lodTick_ = 0;
 		lodLastFrameId_ = ~uint64_t(0);
 	}
 
 	uint32_t World::LodIndexForNode(NodeId node, uint32_t worldMesh,
 		const LodFrameInputs& inputs) const {
-		// Frame rollover: adopt this frame's inputs, tick the parity.
+		// Frame rollover: adopt this frame's inputs, tick the parity,
+		// reset the per-frame decision stats (see the header block).
 		if (inputs.frameId != lodLastFrameId_) {
 			lodLastFrameId_ = inputs.frameId;
 			lodInputs_ = inputs;
 			++lodTick_;
+			lodStatDraws_ = 0;
+			lodStatSwitched_ = 0;
 		}
 		if (node < 0)
 			return 0;
@@ -783,6 +789,21 @@ namespace smvk {
 					lodInputs_.pixelBudget, nodeLod_[n]));
 				nodeLodStamp_[n] = inputs.frameId;
 			}
+		}
+		// Per-frame decision stats: count the node ONCE per frame (the
+		// first leg to ask - filter, prepass, shadow, direct, motion -
+		// marks it; every later leg reads the cache and skips the count).
+		// A separate mark from nodeLodStamp_: halfrate parity-skips do
+		// NOT stamp the decision but still SERVE (and count) the stale
+		// level this frame.
+		if (nodeLodCountFrame_.size() != nodeLod_.size())
+			nodeLodCountFrame_.assign(nodeLod_.size(), ~uint64_t(0));
+		if (n < nodeLodCountFrame_.size()
+			&& nodeLodCountFrame_[n] != inputs.frameId) {
+			nodeLodCountFrame_[n] = inputs.frameId;
+			++lodStatDraws_;
+			if (nodeLod_[n] > 0)
+				++lodStatSwitched_;
 		}
 		return nodeLod_[n];
 	}

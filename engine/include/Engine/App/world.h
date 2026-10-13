@@ -370,10 +370,27 @@ namespace smvk {
 		void SetLodFullRate(bool on) { lodFullRate = on; }
 		bool LodFullRate() const { return lodFullRate; }
 		bool lodFullRate = true;
+		// ---- Per-frame LOD decision stats (the always-0 bug fix) ------
+		// The renderer-side counters (LodMeshForNode) only fired on the
+		// DIRECT draw legs; the filtered legs (Main via the gfx filter,
+		// the filtered shadow registration) decide through LodIndexForNode
+		// directly, so the panel/HUD read 0/0/0 with the filter on (the
+		// default). Counting HERE - once per (node, frame) at the FIRST
+		// query, whichever leg asks first - counts EVERY leg's decision
+		// exactly once: a chain instance that draws always queries at
+		// least once, all legs share the value from then on.
+		// draws = chain instances decided this frame; switched = decided
+		// onto a non-LOD0 level (halfrate parity-skips still count the
+		// stale level they actually serve). Reset at frame rollover.
+		[[nodiscard]] uint32_t LodStatDraws() const { return lodStatDraws_; }
+		[[nodiscard]] uint32_t LodStatSwitched() const { return lodStatSwitched_; }
 		// Cache storage (lazily sized to the node count; reset by
 		// ResolveAndFixup_clusters).
 		mutable std::vector<uint8_t> nodeLod_;
 		mutable std::vector<uint64_t> nodeLodStamp_; // frameId of computation
+		mutable std::vector<uint64_t> nodeLodCountFrame_; // frameId of stat count
+		mutable uint32_t lodStatDraws_ = 0;
+		mutable uint32_t lodStatSwitched_ = 0;
 		mutable uint64_t lodTick_ = 0;               // parity source
 		mutable uint64_t lodLastFrameId_ = ~uint64_t(0);
 		mutable LodFrameInputs lodInputs_{};

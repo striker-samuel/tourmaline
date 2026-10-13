@@ -1047,14 +1047,93 @@ namespace engine {
 				if (gfxMesh != UINT32_MAX)
 					++fromUpload;
 			}
-			if (gfxMesh == UINT32_MAX)
-				skippedTris += mesh->geometry.indexCount / 3;
-			done.emplace(key, gfxMesh);
-			return gfxMesh;
-		};
+		if (gfxMesh == UINT32_MAX)
+			skippedTris += mesh->geometry.indexCount / 3;
+		// TMP-DIAG (VULKANTOY_DUMPGFX, the LOD-sibling draw-drop hunt): the
+		// runtime vertex window vs the cooked-meshlet lifted-id coverage per
+		// registered gfx mesh. The CPU/GPU cull chains and the filter CS all
+		// consume the lifted global ids (RegisterMeshFromCooked lifts
+		// window[tri] by surfaces[0].baseVertex); ids that fall outside
+		// [baseVertex, baseVertex + vertexCount) fetch OTHER meshes'
+		// positions/attributes — triangles that pass every cull (bounds are
+		// cooked from the local geometry, still correct) yet rasterize
+		// nowhere near the object (the distant-sibling black band). The
+		// window-id audit catches it at the source: cooked.vertices[] must
+		// stay under the MESH's vertexCount. Remove later.
+		if (gfxMesh != UINT32_MAX && std::getenv("VULKANTOY_DUMPGFX")) {
+			std::string uri = loc.cluster
+				? loc.cluster->GetMeshUri(loc.handle).Str() : std::string{};
+			const uint32_t vcount = mesh->geometry.vertexCount;
+			const int32_t baseVertexI = mesh->geometry.surfaces.empty()
+				? -1 : mesh->geometry.surfaces[0].baseVertex;
+			uint32_t idMin = UINT32_MAX, idMax = 0;
+			uint32_t kept = 0, skippedMl = 0;
+			size_t badWindow = 0, badTri = 0;
+			if (mesh->meshlets && !mesh->meshlets->empty()) {
+				const smvk::CookedMeshlets& cm = *mesh->meshlets;
+				for (const smvk::Meshlet& m : cm.meshlets) {
+					if (m.triangleCount == 0 || m.triangleCount > 64
+						|| m.vertexCount == 0
+						|| m.vertexOffset + m.vertexCount > cm.vertices.size()
+						|| m.triangleOffset + m.triangleCount * 3u > cm.triangles.size()) {
+						++skippedMl;
+						continue;
+					}
+					++kept;
+					for (uint32_t v = 0; v < m.vertexCount; ++v)
+						if (cm.vertices[m.vertexOffset + v] >= vcount)
+							++badWindow;
+					for (uint32_t t = 0; t < m.triangleCount * 3u; ++t) {
+						const uint8_t local = cm.triangles[m.triangleOffset + t];
+						if (local >= m.vertexCount) {
+							++badTri;
+							continue;
+						}
+						const uint32_t id = (uint32_t)std::max<int32_t>(baseVertexI, 0)
+							+ cm.vertices[m.vertexOffset + local];
+						idMin = std::min(idMin, id);
+						idMax = std::max(idMax, id);
+					}
+				}
+			}
+			const auto& mb = gfx.meshBounds[gfxMesh];
+			const auto& me = gfx.meshes[gfxMesh];
+			std::fprintf(stderr,
+				"[TMP-DIAG] gfx=%u uri=%s baseVertex=%d vcount=%u "
+				"meshlets=%u/%u ids=[%u..%u] badWindow=%zu badTri=%zu "
+				"clusters=%u union=(%.2f,%.2f,%.2f r=%.2f) "
+				"aabb=[%.2f,%.2f,%.2f..%.2f,%.2f,%.2f]\n",
+				gfxMesh, uri.c_str(), baseVertexI, vcount,
+				kept, kept + skippedMl, idMin, idMax, badWindow, badTri,
+				me.clusterCount, mb.x, mb.y, mb.z, mb.w,
+				mesh->geometry.aabbMin.x, mesh->geometry.aabbMin.y,
+				mesh->geometry.aabbMin.z, mesh->geometry.aabbMax.x,
+				mesh->geometry.aabbMax.y, mesh->geometry.aabbMax.z);
+		}
+		done.emplace(key, gfxMesh);
+		return gfxMesh;
+	};
 		// Every LOD sibling gets its own gfx mesh so FilterMainView can push
 		// the selected LOD into the HZB-culled indirect ranges (previously
 		// only LOD0 was registered and LOD>0 drew direct, unculled).
+		// TMP-DIAG (VULKANTOY_DUMPGFX): chain length + per-level world
+		// error for the first meshes (the LOD-selection inputs: zero
+		// errors pin everything at LOD0 regardless of budget). Remove later.
+		if (std::getenv("VULKANTOY_DUMPGFX")) {
+			for (size_t i = 0; i < world.meshLocations.size() && i < 8; ++i) {
+				const uint32_t cl = world.LodChainLength((uint32_t)i);
+				std::string es;
+				for (uint32_t l = 0; l < cl && l < 8; ++l) {
+					char b[64];
+					std::snprintf(b, sizeof(b), " %.4g",
+						(double)world.LodErrorAt((uint32_t)i, l));
+					es += b;
+				}
+				std::fprintf(stderr,
+					"[TMP-DIAG] chain worldMesh=%zu len=%u err=[%s ]\n",
+					i, cl, es.c_str());
+			}
+		}
 		for (size_t i = 0; i < world.meshLocations.size(); ++i) {
 			const uint32_t chainLen = world.LodChainLength((uint32_t)i);
 			if (chainLen <= 1) {
@@ -1132,13 +1211,25 @@ namespace engine {
 		EnsureChartXforms(world, ctx);
 
 		SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
+		// TMP-DIAG (VULKANTOY_DUMPGFX): per-gate push counters, first frame
+		// only. Remove later (folds into the draw dump above).
+		struct PushGates { uint64_t items = 0, badMat = 0, unknownMesh = 0;
+			uint64_t ditherHidden = 0, shaderLod = 0, unreg = 0, preculled = 0,
+				pushed = 0; uint32_t lodHist[8] = {}; };
+		static PushGates s_gates{};
+		static bool s_gatesDone = false;
+		const bool dumpGates = std::getenv("VULKANTOY_DUMPGFX") != nullptr
+			&& !s_gatesDone;
 		world.forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable
 			| smvk::IteratorFlagBit_Opaque
 			| smvk::IteratorFlagBit_StaticVertexFmt,
 			[&](const smvk::World::RenderItem& item) {
-			if (item.material == smvk::World::kInvalidIndex)
+			if (dumpGates) ++s_gates.items;
+			if (item.material == smvk::World::kInvalidIndex) {
+				if (dumpGates) ++s_gates.badMat;
 				return;
+			}
 			const uint32_t worldMesh = item.mesh;
 #if 0 // TMP-DIAG scanlands hunt (disabled): mesh hide/show + model-matrix dump. Remove later.
 			// Hide glTF mesh groupIds in VULKANTOY_HIDEGROUP="lo-hi".
@@ -1188,8 +1279,10 @@ namespace engine {
 				}
 			}
 #endif
-			if (worldMesh >= meshMap_.size())
+			if (worldMesh >= meshMap_.size()) {
+				if (dumpGates) ++s_gates.unknownMesh;
 				return; // unknown mesh: legacy direct path still draws it
+			}
 			const glm::mat4& model = world.scene.globalTransform[item.node];
 			// Dither-on-closeup (Scene::ditherCloseup; per frame, per
 			// draw): Hidden draws drop out of the frame's filtered set
@@ -1205,8 +1298,10 @@ namespace engine {
 			// the Main direct fallback) so both paths agree per draw.
 			const DitherCloseupState ditherState =
 				DitherCloseupStateFor(world.scene, int(item.node), eye);
-			if (ditherState == DitherCloseupState::Hidden)
+			if (ditherState == DitherCloseupState::Hidden) {
+				if (dumpGates) ++s_gates.ditherHidden;
 				return;
+			}
 			// LOD-aware push (World::LodIndexForNode shares the halfrate
 			// cache with every direct-draw consumer, so both sides agree
 			// per node per frame): the selected sibling's gfx mesh goes
@@ -1216,6 +1311,8 @@ namespace engine {
 			uint32_t lodIdx = 0;
 			if (lod && world.LodChainLength(worldMesh) > 1)
 				lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
+			if (dumpGates && lodIdx < 8)
+				++s_gates.lodHist[lodIdx];
 			// Shader LODs: levels shading vertex-lit (farthest level) skip
 			// the filtered indirect ranges — the filtered VS is lit-only,
 			// so the Main direct leg draws them with the cheap program.
@@ -1223,14 +1320,18 @@ namespace engine {
 			// per node per frame, so each instance rasterizes exactly once.
 			if (lodShaderVertexLit
 				&& !world.FarShadingAt(worldMesh, lodIdx,
-					item.material).isDefault())
+					item.material).isDefault()) {
+				if (dumpGates) ++s_gates.shaderLod;
 				return;
+			}
 			uint32_t gfxMesh = UINT32_MAX;
 			if (worldMesh < lodMeshMap_.size()
 				&& lodIdx < lodMeshMap_[worldMesh].size())
 				gfxMesh = lodMeshMap_[worldMesh][lodIdx];
-			if (gfxMesh == UINT32_MAX)
-				return; // not filterable at this LOD (unregistered, or the
+			if (gfxMesh == UINT32_MAX) {
+				if (dumpGates) ++s_gates.unreg;
+				return;
+			} // not filterable at this LOD (unregistered, or the
 			// runtime chain outgrew the registered one): the direct
 			// path draws it. GfxMeshForLod reports the same value for
 			// the same (mesh, lodIdx), so the filtered and direct
@@ -1265,8 +1366,10 @@ namespace engine {
 				else if (selDesc) {
 					selC = baseC; selR = baseR; selHit = baseHit;
 				}
-				if (!baseHit && !selHit)
+				if (!baseHit && !selHit) {
+					if (dumpGates) ++s_gates.preculled;
 					return;
+				}
 				if (baseHit != selHit) {
 					static uint64_t s_lodBoundsDisagree = 0;
 					if ((++s_lodBoundsDisagree % 512) == 1) {
@@ -1313,7 +1416,45 @@ namespace engine {
 			const uint32_t chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				item.material, drawFlags, drawSet, lmChunk, chartOffset);
+			if (dumpGates) ++s_gates.pushed;
+			// TMP-DIAG (VULKANTOY_DUMPGFX, the LOD-sibling draw-drop hunt):
+			// the pushed draw list, once per process (the camera is static
+			// in the headless repro, so the first frame is the repro frame).
+			// Maps the pushed (worldMesh -> selected LOD -> gfx mesh) chain
+			// to the registration dump above. Remove later.
+			if (std::getenv("VULKANTOY_DUMPGFX")) {
+				static bool s_dumpedDraws = false;
+				if (!s_dumpedDraws) {
+					s_dumpedDraws = true;
+					fprintf(stderr, "[TMP-DIAG] pushed draws (first frame):\n");
+				}
+				std::string uri;
+				if (auto hit = world.ResolveLodMesh(worldMesh, lodIdx))
+					uri = hit->cluster
+						? hit->cluster->GetMeshUri(hit->handle).Str() : std::string{};
+				fprintf(stderr,
+					"[TMP-DIAG] draw worldMesh=%u node=%u lod=%u gfx=%u uri=%s\n",
+					worldMesh, (unsigned)item.node, lodIdx, gfxMesh, uri.c_str());
+			}
 		});
+		if (dumpGates && !s_gatesDone) {
+			s_gatesDone = true;
+			std::fprintf(stderr,
+				"[TMP-DIAG] push gates: items=%llu badMat=%llu unknownMesh=%llu "
+				"ditherHidden=%llu shaderLod=%llu unreg=%llu preculled=%llu "
+				"pushed=%llu lodHist=[%u %u %u %u %u %u %u %u]\n",
+				(unsigned long long)s_gates.items,
+				(unsigned long long)s_gates.badMat,
+				(unsigned long long)s_gates.unknownMesh,
+				(unsigned long long)s_gates.ditherHidden,
+				(unsigned long long)s_gates.shaderLod,
+				(unsigned long long)s_gates.unreg,
+				(unsigned long long)s_gates.preculled,
+				(unsigned long long)s_gates.pushed,
+				s_gates.lodHist[0], s_gates.lodHist[1], s_gates.lodHist[2],
+				s_gates.lodHist[3], s_gates.lodHist[4], s_gates.lodHist[5],
+				s_gates.lodHist[6], s_gates.lodHist[7]);
+		}
 		const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 		// NOTE: Release-visible trace (not SMVK_DEBUG_LOG): this is the only
 		// per-run visibility into filter load (draws/batches vs

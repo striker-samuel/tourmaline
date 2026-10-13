@@ -23,16 +23,16 @@ if not exist build\Release\PakCooker.exe (
   popd
   exit /b 1
 )
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --lightmap on --lm-meters-per-texel 0.0625 --lm-rays 64 --lm-bounces 2 --lm-lobes 5 --lm-lobe-relerr 0 --lm-compress uncompressed --lm-curve-target 0 --cubemap on --cubemap-size 64 --cubemap-rays 32
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --lightmap off --lm-meters-per-texel 0.0625 --lm-rays 64 --lm-bounces 2 --lm-lobes 5 --lm-lobe-relerr 0 --lm-compress uncompressed --lm-curve-target 0 --cubemap on --cubemap-size 64 --cubemap-rays 32
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Release\content\paks\sponza.pak
 if errorlevel 1 goto fail
-copy /y F:\content\gi\sponza.sglm build\Debug\content\gi\sponza.sglm
-if errorlevel 1 goto fail
-copy /y F:\content\gi\sponza.sglm build\Release\content\gi\sponza.sglm
-if errorlevel 1 goto fail
+rem sglm sync retired with the lightmap deprecation (no atlas is baked;
+rem the runtime never loads one). Kept as comments for the path layout.
+rem copy /y F:\content\gi\sponza.sglm build\Debug\content\gi\sponza.sglm
+rem copy /y F:\content\gi\sponza.sglm build\Release\content\gi\sponza.sglm
 echo sponza.pak test-cooked (low quality, uncompressed) and synced.
 popd
 exit /b 0

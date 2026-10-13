@@ -61,16 +61,29 @@ void ComputeSmoothNormals(StaticMeshUpload& upload) {
 	const size_t vcount = upload.vertices.size();
 	if (vcount == 0) return;
 	for (auto& v : upload.vertices) v.normal = glm::vec3(0.0f);
+	// Dominant (largest-area) face normal per vertex, for the inversion
+	// repair below. Squared-area weighting matches the accumulation, so
+	// the dominant face is the accumulation's biggest contributor.
+	std::vector<glm::vec3> dominant(vcount, glm::vec3(0.0f));
+	std::vector<float> domArea2(vcount, 0.0f);
 	auto accumTri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
 		if (i0 >= vcount || i1 >= vcount || i2 >= vcount) return;
 		const glm::vec3& p0 = upload.vertices[i0].pos;
 		const glm::vec3& p1 = upload.vertices[i1].pos;
 		const glm::vec3& p2 = upload.vertices[i2].pos;
 		const glm::vec3 fn = glm::cross(p1 - p0, p2 - p0);
-		if (glm::dot(fn, fn) <= 1e-24f) return; // degenerate
+		const float a2 = glm::dot(fn, fn);
+		if (a2 <= 1e-24f) return; // degenerate
 		upload.vertices[i0].normal += fn;
 		upload.vertices[i1].normal += fn;
 		upload.vertices[i2].normal += fn;
+		const uint32_t ids[3] = { i0, i1, i2 };
+		for (int k = 0; k < 3; ++k) {
+			if (a2 > domArea2[ids[k]]) {
+				domArea2[ids[k]] = a2;
+				dominant[ids[k]] = fn;
+			}
+		}
 	};
 	if (!upload.indices.empty()) {
 		for (size_t t = 0; t + 2 < upload.indices.size() + 1; t += 3)
@@ -80,10 +93,43 @@ void ComputeSmoothNormals(StaticMeshUpload& upload) {
 		for (uint32_t t = 0; t + 2 < vcount + 1; t += 3)
 			accumTri(t, t + 1, t + 2);
 	}
-	for (auto& v : upload.vertices) {
-		const float l2 = glm::dot(v.normal, v.normal);
-		v.normal = (l2 > 1e-24f) ? glm::normalize(v.normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+	size_t repaired = 0;
+	for (size_t i = 0; i < vcount; ++i) {
+		glm::vec3& n = upload.vertices[i].normal;
+		const float l2 = glm::dot(n, n);
+		if (!(l2 > 1e-24f)) {
+			// No contributing faces (unreferenced vertex), or exact
+			// cancellation across opposing faces: start from the old
+			// up-fallback and fall through to the repair below, which
+			// replaces it with the dominant face normal whenever one
+			// exists (unreferenced vertices have none, so they keep the
+			// fallback exactly as before).
+			n = glm::vec3(0.0f, 1.0f, 0.0f);
+		}
+		else {
+			n = glm::normalize(n);
+		}
+		// Inversion repair: a smoothed normal that disagrees with its
+		// biggest contributor (dot <= 0) comes from cancellation across
+		// opposing faces — thin double-sided cards merged by decimation
+		// (front/back quads sharing vertices average to ~0/garbage, and
+		// the normalize then points anywhere, including backwards). Such
+		// normals shade black where they interpolate backwards (NdotL <=
+		// 0 kills the sun, the GI SH samples the dark lobe) — the
+		// distant-LOD-sibling black-band repro (sponza atrium foliage).
+		// Fall back to the dominant face normal, which is consistent
+		// with at least one real triangle by construction. The gate is
+		// strict (only true inversions): clean manifold meshes agree
+		// with every adjacent face, so they never repair.
+		if (domArea2[i] > 1e-24f
+			&& glm::dot(n, dominant[i]) <= 0.0f) {
+			n = glm::normalize(dominant[i]);
+			++repaired;
+		}
 	}
+	if (repaired > 0)
+		std::cout << "  [MeshOpt] ComputeSmoothNormals: repaired "
+			<< repaired << "/" << vcount << " inverted normals.\n" << std::flush;
 }
 
 void GenerateTangents(StaticMeshUpload& upload) {
@@ -580,6 +626,17 @@ void FinalizeLodWorldErrors(Cluster& cluster) {
 	Scene& scene = cluster.scene;
 	if (scene.globalTransform.size() != scene.hierarchy.size() || scene.hierarchy.empty())
 		return;
+	// Current globals are load-bearing here (the max world scale below):
+	// cook pipelines that skip the lightmap block (which recalculates as
+	// a side effect) otherwise finalize against stale (identity-scale)
+	// transforms, leaving LOCAL-unit errors — 125x too big for Sponza's
+	// 0.008 root — and the runtime LOD selection pins at LOD0 at any
+	// sane budget. Marking roots covers the whole scene; the recalculate
+	// is incremental (a no-op when current).
+	for (size_t n = 0; n < scene.hierarchy.size(); ++n)
+		if (scene.hierarchy[n].parent < 0)
+			::markAsChanged(scene, (int)n);
+	::recalculateGlobalTransforms(scene);
 
 	// Max world scale per base-mesh pool index over all instancing nodes.
 	std::unordered_map<uint32_t, float> maxScaleByMesh;

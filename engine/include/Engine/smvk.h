@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Engine/Memory/handle.h>
+#include <Engine/Memory/string_view.h>
 
 #include <cassert>
 #include <array>
@@ -1471,14 +1472,17 @@ struct ImageCreateInfo
 
 	// One LIVE texture's listing metadata (ResourceManager::
 	// ListTextureInfos — the debug panels' texture inspector). `name` is
-	// the texture's debug name: engine/auxiliary textures carry their
-	// creation names ("env zone map", "cvol layer", "Cubemap", ...),
-	// while CONTENT/material textures carry their load paths (they
-	// contain a '/' — the inspector's content filter keys on that).
-	// bindless = the sampled bindless slot (-1 = not registered).
+	// the image's ARENA-OWNED debug name (copied at creation - caller
+	// strings carry no lifetime contract; see VulkanResourceManager's
+	// nameArena_): engine/auxiliary textures carry their creation names
+	// ("env zone map", "cvol layer", ...), content/material textures
+	// carry their load paths (they contain a '/'). NUL-terminated
+	// (arena copies) for %s interop; empty view = unnamed. The inspector
+	// lists everything - no filter. bindless = the sampled bindless slot
+	// (-1 = not registered).
 	struct TextureInfo {
 		TextureHandle handle{};
-		const char* name = "";
+		StringViewT name{};
 		Format format = Format::Undefined;
 		ImageType type = ImageType::Image2D;
 		Extent3D extent{ 0, 0, 0 };

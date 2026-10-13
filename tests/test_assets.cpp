@@ -681,6 +681,71 @@ void TestMeshOpt() {
 	Check(q2.vertices.size() == 4, "meshopt.disabled.untouched");
 }
 
+void TestSmoothNormalRepair() {
+	// Thin double-sided card modeled as one triangle wound both ways
+	// (shared vertices, opposing faces — the decimated-foliage case that
+	// produced the distant-sibling black band): the area-weighted
+	// accumulation cancels to exactly zero. Pre-repair this left the
+	// (0,1,0) fallback, which disagrees with both faces (dot == 0) and
+	// shades black where it interpolates backwards (NdotL <= 0 kills
+	// the sun, the GI SH samples the dark lobe).
+	smvk::StaticMeshUpload u;
+	auto vert = [&](float x, float y, float z) {
+		smvk::StaticVertex v{};
+		v.pos = { x, y, z };
+		v.color = { 1, 1, 1, 1 };
+		v.texCoord = { x, y };
+		v.normal = { 0, 0, 1 };
+		v.tangent = { 1, 0, 0, 1 };
+		u.vertices.push_back(v);
+	};
+	vert(0.0f, 0.0f, 0.0f); // 0
+	vert(1.0f, 0.0f, 0.0f); // 1
+	vert(0.0f, 1.0f, 0.0f); // 2
+	vert(5.0f, 5.0f, 5.0f); // 3: unreferenced (keeps the +Y fallback)
+	u.indices = { 0, 1, 2, 0, 2, 1 }; // +Z then -Z, same verts
+	u.aabbMin = { 0, 0, 0 };
+	u.aabbMax = { 1, 1, 0 };
+	smvk::ComputeSmoothNormals(u);
+	// Every referenced vertex must end unit-length and agreeing with its
+	// dominant face (dot > 0). The dominant face is T0 (+Z: first max on
+	// the area tie), so the repaired normals must point +Z here.
+	for (int i = 0; i < 3; ++i) {
+		const glm::vec3& n = u.vertices[i].normal;
+		Check(std::isfinite(n.x + n.y + n.z)
+			&& fabsf(glm::length(n) - 1.0f) < 1e-5f, "smoothnorm.repair.unit");
+		Check(glm::dot(n, glm::vec3(0.0f, 0.0f, 1.0f)) > 0.0f,
+			"smoothnorm.repair.agrees");
+	}
+	// Unreferenced vertices keep the legacy +Y fallback (no face to
+	// agree with, so the repair correctly skips them).
+	{
+		const glm::vec3& n = u.vertices[3].normal;
+		Check(fabsf(n.x) < 1e-6f && fabsf(n.y - 1.0f) < 1e-6f
+			&& fabsf(n.z) < 1e-6f, "smoothnorm.repair.unreferenced");
+	}
+	// Clean single-sided quad (consistent CCW winding — note MakeQuad
+	// itself mixes windings, so this control builds its own): pure
+	// accumulation, repair must not fire (exact +Z preserved).
+	smvk::StaticMeshUpload q;
+	for (int i = 0; i < 4; ++i) {
+		smvk::StaticVertex v{};
+		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
+		v.color = { 1, 1, 1, 1 };
+		v.texCoord = { v.pos.x, v.pos.y };
+		v.normal = { 0, 0, 1 };
+		v.tangent = { 1, 0, 0, 1 };
+		q.vertices.push_back(v);
+	}
+	q.indices = { 0, 1, 2, 1, 3, 2 }; // both CCW (+Z)
+	q.aabbMin = { 0, 0, 0 };
+	q.aabbMax = { 1, 1, 0 };
+	smvk::ComputeSmoothNormals(q);
+	for (const auto& v : q.vertices)
+		Check(fabsf(v.normal.x) < 1e-6f && fabsf(v.normal.y) < 1e-6f
+			&& fabsf(v.normal.z - 1.0f) < 1e-6f, "smoothnorm.repair.clean");
+}
+
 smvk::StaticMeshUpload MakeGrid(int n) {
 	smvk::StaticMeshUpload u;
 	for (int iy = 0; iy <= n; ++iy)
@@ -2233,6 +2298,7 @@ int main() {
 	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
 	run("TestMeshOpt", TestMeshOpt);
+	run("TestSmoothNormalRepair", TestSmoothNormalRepair);
 	run("TestLodChain", TestLodChain);
 	run("TestLodSelection", TestLodSelection);
 	run("TestLodLightmapAudit", TestLodLightmapAudit);

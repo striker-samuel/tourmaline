@@ -93,6 +93,12 @@ public:
     // recreate path) returns a null id, so a freed view can never slip
     // into a descriptor. Render thread only.
     ImTextureID AddUserTexture(TextureHandle texture, uint32_t samplerIndex);
+    // View variant: binds a STANDALONE caller-created view (e.g. a
+    // per-face View2D of a cubemap — the texture variant above only
+    // reaches the texture's own default view, whose cube/array/3D type
+    // cannot be sampled as the 2D the ImGui shader expects). Same
+    // liveness contract (dead view -> null id) and pairing rule.
+    ImTextureID AddUserTextureView(ImageViewHandle view, uint32_t samplerIndex);
     void RemoveUserTexture(ImTextureID id);
 
     // ---- DPI control ----

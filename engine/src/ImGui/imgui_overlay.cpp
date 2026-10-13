@@ -331,6 +331,28 @@ ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture,
     return ImTextureID(reinterpret_cast<uint64_t>(ds));
 }
 
+ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
+    uint32_t samplerIndex) {
+    // View variant of AddUserTexture (see the header contract): same
+    // descriptor registration, but over a STANDALONE caller-created view
+    // (e.g. a per-face View2D of a cubemap) instead of the texture's own
+    // default view. Liveness here is the opaque getter: the pool get
+    // returns null once the view's generation bumped (destroyed), so a
+    // freed view can never slip into a descriptor. (The texture variant
+    // scans the LIVE texture listing instead; views have no listing.)
+    if (!initialized_ || !ctx_ || view.empty())
+        return ImTextureID(0);
+    const void* vkView = ctx_->GetImageViewVkImageView(view);
+    const void* sampler = ctx_->GetVkSamplerOpaque(samplerIndex);
+    if (!vkView || !sampler)
+        return ImTextureID(0);
+    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
+        reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
+        reinterpret_cast<VkImageView>(const_cast<void*>(vkView)),
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return ImTextureID(reinterpret_cast<uint64_t>(ds));
+}
+
 void ImGuiOverlay::RemoveUserTexture(ImTextureID id) {
     if (!initialized_ || id == ImTextureID(0))
         return;

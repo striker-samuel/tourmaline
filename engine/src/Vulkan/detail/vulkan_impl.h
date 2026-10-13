@@ -4,6 +4,7 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/Renderer/spirv_reflection.h>
 
 #include "volk.h"
@@ -123,7 +124,10 @@ namespace smvk {
 		// Mirrors ImageCreateInfo::isCubemap (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT).
 		// KTX cubemap uploads set it from texture.isCubemap.
 		bool isCubemap = false;
-		const char* name;
+		// Debug name: an ARENA-owned copy (nameArena_ - caller strings have
+		// no lifetime contract), NUL-terminated for %s interop. Empty view =
+		// unnamed (creation passed no name; displays show "(unnamed)").
+		StringViewT name{};
 	};
 
 	struct ImageView
@@ -556,6 +560,18 @@ namespace smvk {
 			CommandSubmitHandle curHandle{};
 			VkCommandBuffer curCmd = VK_NULL_HANDLE;
 			bool hasPending = false;
+			// Flush contract (see flush/flushAndGetTimeline): each shard has
+			// ONE owner at a time. A producer (uploadBuffer/uploadImage/
+			// uploadImageKtx/uploadBufferBulk) marks its shard ACTIVE for the
+			// whole recording; the cross-shard drains (flush,
+			// flushAndGetTimeline) assert QUIESCENCE - iterating a shard a
+			// worker is still recording into is a C++ data race (staging
+			// offsets, pending barriers, command handles, cleanup vectors).
+			// flushLocal only drains the CALLER's own shard (same-thread
+			// producers are sequential). Debug-visible: the assert also
+			// catches a pool mis-assignment handing two live threads the
+			// same shard.
+			std::atomic<bool> active{ false };
 			// UploadInFlight storage (never mallocs on the upload hot
 			// path). Monotonic: pending ranges/acquires stay in flight
 			// across frames (MAX_FRAMES_IN_FLIGHT + transfer->graphics
@@ -692,6 +708,16 @@ namespace smvk {
 
 		void* MapBuffer(BufferHandle handle);
 		void UnmapBuffer(BufferHandle handle);
+		// Non-coherent staging fix (the readback paths): the staging
+		// allocations request HOST_VISIBLE memory but do NOT require
+		// HOST_COHERENT - on a non-coherent memory type the CPU can
+		// observe STALE bytes even after the GPU copy completed. The spec
+		// requires an explicit invalidate between the completion wait and
+		// the mapped read; coherent memory makes the call a harmless no-op
+		// (the spec allows invalidating coherent ranges), so the call is
+		// unconditional. Call BEFORE reading any mapped staging bytes.
+		void InvalidateStagingRange(BufferHandle handle,
+			VkDeviceSize offset, VkDeviceSize size);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		// Table-driven bulk staged copy (RHI: ResourceManager::BulkCopyBuffer;
@@ -768,6 +794,9 @@ namespace smvk {
 		// Backing-image array layers (6 = single cubemap, 6*N = cube
 		// array) and base-extent edge length. 0 for invalid handles.
 		uint32_t GetTextureArrayLayers(TextureHandle handle) const;
+		// The texture's underlying ImageHandle (for standalone view
+		// creation on it, e.g. per-face 2D views of a cubemap texture).
+		ImageHandle GetTextureImageHandle(TextureHandle handle) const;
 		uint32_t GetTextureCubemapSize(TextureHandle handle) const;
 		uint32_t GetTextureMipLevels(TextureHandle handle) const;
 		// Raw Vulkan interop (opaque, for external UI/render layers, e.g.
@@ -775,6 +804,11 @@ namespace smvk {
 		// VkImageView + a cached sampler's VkSampler. nullptr on an
 		// invalid handle/index.
 		VkImageView GetTextureVkImageView(TextureHandle handle) const;
+		// Same opaque interop for a STANDALONE view (a caller-created
+		// ImageViewHandle, e.g. a per-face 2D view of a cubemap) - the
+		// texture variant above only reaches the texture's own default
+		// view. Dead handles (pool generation bumped) return null.
+		VkImageView GetImageViewVkImageView(ImageViewHandle handle) const;
 		const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
 		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
@@ -812,6 +846,22 @@ namespace smvk {
 		// create() allocates in the calling thread's shard; get()/destroy()
 		// decode the shard from the handle. Cross-thread reads after join
 		// are safe; concurrent mutation of the same entry is UB.
+		// nameArena_: debug-name storage for pool entries (Image::name).
+		// The create-info names are CALLER strings (literals, std::string
+		// c_str()s, stack buffers) with no lifetime contract, so the RHI
+		// copies every name into its OWN arena and stores the arena view -
+		// the pool entries never dangle. Strings are not freed per entry
+		// (arena bump; see Memory/arena.h) - bounded by name churn, freed
+		// wholesale with the RMI. THREAD SAFETY: image/texture creation
+		// runs on the render thread AND worker threads (pak preload,
+		// streaming) - the arena itself is not synchronized, so every copy
+		// goes through CopyImageName (mutex + arena). Name copies are rare,
+		// small and off the hot path - the lock is uncontended in
+		// practice.
+		Arena nameArena_;
+		mutable std::mutex nameArenaMutex_;
+		// Thread-safe arena copy (see above). Empty view for a null name.
+		StringViewT CopyImageName(const char* name);
 		ShardedPool<ImageTag, Image> images_;
 		ShardedPool<TextureTag, Texture> textures_;
 		ShardedPool<BufferTag, Buffer> buffers_;

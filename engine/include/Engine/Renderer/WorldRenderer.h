@@ -147,15 +147,9 @@ struct WorldRendererConfig {
 };
 
 // ---------------------------------------------------------------------------
-// Debug-UI dock position. Fixed full-height side bar (no floating): Right
-// or Left. U toggles the side. The panel position/size is enforced every
-// frame (ImGuiWindowFlags_NoMove | NoResize) with a TabBar inside
-// (Quality / Debug / Stats).
+// (Debug-UI dock position: removed - the panel is a fixed full-height side
+// bar on the Right. The top-left corner stays free for the stats HUD.)
 // ---------------------------------------------------------------------------
-enum class UiDock : int {
-	Right = 0,
-	Left = 1,
-};
 
 // ---------------------------------------------------------------------------
 // Antialiasing mode (ImGui combo). MSAA 2x and SMAA are mutually exclusive:
@@ -320,7 +314,14 @@ enum class ViewMode : int {
 	Uv0 = 6,      // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
 	Uv1 = 7,      // F10: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
 	Pom = 8,      // F11: parallax occlusion mapping (default_pom)
-	SsrContribution = 9, // F12: SSR contribution isolated (ssr_contribution_debug)
+	SsrContribution = 9, // env/UI only (no F-key: F-keys exhausted):
+	                     // SSR contribution isolated (ssr_contribution_debug)
+	SsrMask = 10, // env/UI only: SSR receiver mask by material
+	              // (default_ssrmask_debug) - green smooth dielectric,
+	              // blue smooth metal, black matte (trace early-outs),
+	              // dimmed Blend (never writes the G-buffer the trace
+	              // reads). Mirrors the G-buffer writer + the trace's
+	              // 0.94 matte gate exactly: what you see is what marches.
 };
 
 #if defined(DS_DEBUG_VIZ)
@@ -758,9 +759,15 @@ struct AppResources {
 	// and the view falls back to Lit.
 	smvk::Holder<smvk::ShaderModuleHandle> fragPomShader; // default_pom (F11)
 	smvk::ShaderProgram pomProgram;
-	// SSR contribution debug view (F12): isolated SSR layer (ssr_contribution_debug.frag.hlsl)
-	smvk::Holder<smvk::ShaderModuleHandle> fragSsrContributionDebugShader; // ssr_contribution_debug (F12)
+	// SSR contribution debug view (env/UI only): isolated SSR layer (ssr_contribution_debug.frag.hlsl)
+	smvk::Holder<smvk::ShaderModuleHandle> fragSsrContributionDebugShader; // ssr_contribution_debug
 	smvk::ShaderProgram ssrContributionDebugProgram;
+	// SSR receiver-mask debug view (env/UI only): per-material classification
+	// mirroring the thin G-buffer writer + the trace matte gate
+	// (default_ssrmask_debug.frag.hlsl). Missing module keeps shaderCount 0
+	// and the view falls back to Lit at record time (same as unlit/etc.).
+	smvk::Holder<smvk::ShaderModuleHandle> fragSsrMaskDebugShader;
+	smvk::ShaderProgram ssrMaskDebugProgram;
 	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
@@ -1188,7 +1195,6 @@ public:
 	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
 	void SetInputForUi(Input* in) { m_inputUi = in; }
 protected:
-	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
@@ -1221,6 +1227,12 @@ protected:
 	bool m_gpuMemConsoleAutoLog = false; // periodic stderr snapshot; button always works
 	void RefreshGpuMemoryStats(bool force = false); // throttled query
 	void LogGpuMemoryToConsole(); // fprintf(stderr) one snapshot
+	// Text-only stats HUD (top-left overlay): framerate, GPU, camera,
+	// filter culls, LODs, exposure, streaming. No-op unless m_showHud.
+	// Reads the same members as the panel rows it replaces (see the
+	// Stats tab + panel header); the panel keeps controls, explanations
+	// and detail breakdowns.
+	void DrawHudOverlay();
 
 	// (The per-frame CONTROL block — Update()/HandleShortcuts(): keybind
 	// polling, feature toggles, decal autosplat, camera-drive gating,
@@ -1228,18 +1240,6 @@ protected:
 	// class is the pure frame builder; see WorldRendererElement.h.)
 
 public:
-	// Debug-panel dock (the panel is this renderer's own settings UI —
-	// nvpro-style; the ELEMENT's U key calls CycleUiDock).
-	void CycleUiDock() {
-		m_uiDock = (m_uiDock == UiDock::Right) ? UiDock::Left : UiDock::Right;
-	}
-	void SetUiDock(UiDock dock) {
-		m_uiDock = (dock == UiDock::Left) ? UiDock::Left : UiDock::Right;
-	}
-	const char* UiDockName() const {
-		return (m_uiDock == UiDock::Left) ? "Left" : "Right";
-	}
-
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env);
 	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env);
 	void UpdateMaterials(uint32_t currentFrame);
@@ -1386,8 +1386,11 @@ public:
 	// Debug: one-shot [GfxAudit] dump at this frame (VULKANTOY_AUDIT=N;
 	// same stderr dump as the UI button; stalls the GPU).
 	int m_auditAtFrame = -1;
-	uint64_t m_lodDraws = 0;     // direct draws this frame
-	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
+	// (Per-frame LOD draws/switched counters removed: they only fired on
+	// the DIRECT legs (LodMeshForNode), reading 0/0/0 with the gfx filter
+	// on - the default. The live numbers are World-level per-frame decision
+	// stats now (World::LodStatDraws/LodStatSwitched - every leg's first
+	// query counts once; see World::LodIndexForNode).)
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
 	uint32_t m_lodChainLods = 0;   // total cooked siblings (per frame)
 	// The farthest level of a cooked chain shades with the vertex-lit
@@ -1842,6 +1845,11 @@ public:
 	// m_debugView selects the Main opaque program (F1..F6); anything but Lit
 	// bypasses the GPU filter with direct draws so culled data stays visible.
 	ViewMode m_debugView = ViewMode::Lit;
+	// Text-only stats HUD (top-left overlay, Ctrl+T): framerate, GPU,
+	// camera, filter culls, LODs, exposure, streaming. Defaults on: it
+	// carries the live numbers removed from the panel header + Stats tab
+	// (which keep controls, explanations and detail breakdowns).
+	bool m_showHud = true;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the
@@ -2532,34 +2540,55 @@ public:
 	void RebuildEnvZoneMap();
 	uint64_t m_envZoneCoverageHash = ~0ull;
 	// ---- Texture inspector (aux-texture debug view) ----
-	// A SEPARATE floating ImGui window (not part of the debug panel â€” it
+	// A SEPARATE floating ImGui window (not part of the debug panel — it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),
 	// so the panel stays lean and the list/preview never cost panel space.
-	// Lists the LIVE textures (ResourceManager::ListTextureInfos â€” one
-	// row per pool texture; content/material textures carry load-path
-	// names and hide behind the toggle) and previews a clicked one through
-	// the ImGui OVERLAY's user-texture binding (AddUserTexture â€” the
+	// Lists the LIVE textures (ResourceManager::ListTextureInfos — one
+	// row per pool texture, no content filter: every texture is one click
+	// away) and previews a clicked one through the ImGui OVERLAY's
+	// user-texture bindings (AddUserTexture / AddUserTextureView — the
 	// backend's descriptor registration wrapped behind RHI-opaque types;
-	// NO Vulkan detail crosses into this renderer). Staleness is a
-	// FEATURE: a selected handle dropping out of the listing (destroyed â€”
-	// the pool generation bumped, exactly what UpdateTexture's recreate
-	// path does) drops the preview instead of sampling a dead view.
+	// NO Vulkan detail crosses into this renderer). Plain 2D previews
+	// directly; CUBEMAPS get six per-face View2D bindings (+X -X +Y -Y
+	// +Z -Z, shown as a 3x2 grid — the ImGui backend samples Texture2D
+	// only, so the cube's own default view is unusable as a preview).
+	// Staleness is a FEATURE: a selected handle dropping out of the
+	// listing (destroyed — the pool generation bumped, exactly what
+	// UpdateTexture's recreate path does) drops the preview and the face
+	// views instead of sampling a dead view.
 	bool m_texDebugWindow = false;           // backtick opens/closes
-	bool m_texDebugShowContent = false;      // include load-path (content) textures
 	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
-	ImTextureID m_texDebugPreview = 0;       // the overlay's user-texture binding (0 = none)
+	ImTextureID m_texDebugPreview = 0;       // 2D: the overlay's user-texture binding (0 = none)
+	// Cubemap selection: 6 per-face 2D views (Holder = auto-destroy on
+	// reassign/reset) + their overlay bindings. Cube arrays (6*N layers)
+	// preview cube 0 (faces 0..5).
+	std::array<smvk::Holder<smvk::ImageViewHandle>, 6> m_texDebugCubeViews{};
+	std::array<ImTextureID, 6> m_texDebugCubePreview{};
 	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
-	// Drops the preview binding + selection (window closed / toggle off):
-	// the overlay owns one descriptor per Add â€” every removal pairs with
-	// the Add that minted it, and a dropped selection never samples a
-	// dead view.
+	// Drops the preview binding(s) + selection (window closed / toggle
+	// off): the overlay owns one descriptor per Add — every removal pairs
+	// with the Add that minted it; the face views' Holders reset (their
+	// VkImageViews retire through the RMI destroy) so a dropped selection
+	// never samples a dead view.
 	void DropTexDebugSelection() {
 		if (m_texDebugPreview != 0) {
 			m_imgui->RemoveUserTexture(m_texDebugPreview);
 			m_texDebugPreview = 0;
 		}
+		for (ImTextureID& id : m_texDebugCubePreview) {
+			if (id != 0) {
+				m_imgui->RemoveUserTexture(id);
+				id = 0;
+			}
+		}
+		for (auto& v : m_texDebugCubeViews)
+			v = nullptr; // Holder reset -> DestroyImageView
 		m_texDebugSelected = {};
 	}
+	// Selects + previews a listed texture (click OR arrow-key nav focus -
+	// the shared body of both paths; see the viewer draw site). 2D gets
+	// one binding; cubemaps get the six per-face views + bindings.
+	void SelectTexDebugTexture(const smvk::TextureInfo& t);
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
@@ -2587,11 +2616,40 @@ public:
 	bool m_pendingReadbackHasExposure = false;
 	bool m_pendingReadbackHasDs = false;
 	bool m_pendingReadbackHasGfxDemand = false;
+	bool m_pendingReadbackHasGfxKept = false;
 	std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
 	std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
 	// Gfx draw-level demand download destination (sized to the live slot
 	// count at submit time; kDemandNoReport entries are skipped at poll).
 	std::vector<uint32_t> m_pendingGfxDemand;
+	// GPU-cull kept-count readback (the "0/797 culled" fix): the CPU stats
+	// cannot see the GPU-mode cull (clustersCulled only counts the CPU-mode
+	// path), so the filter's atomic filtered-offset counter word (zeroed by
+	// the batch-cull dispatch, accumulated per KEPT entry - word
+	// kCullStateCounterWord in the cullState slice) rides the same ticket:
+	// 4 bytes, ~a few frames stale (retired-slice cadence), landed into
+	// m_gfxKeptBatches for the HUD/panel culled computation.
+	uint32_t m_pendingGfxKept = 0;
+	uint32_t m_gfxKeptBatches = 0;
+	bool m_gfxKeptValid = false;
+	// TMP-DIAG (VULKANTOY_FILTERAUDIT=<frame>): one-shot async readback of
+	// the gfx filter chain's per-frame state — the draw-cull verdict words
+	// (cullState), the batch-cull kept bits (both parity regions' live
+	// slot span), the filter's indirect commands and the batch headers —
+	// for the LOD-sibling draw-drop hunt (distant sibling draws pushed,
+	// never culled by any flag-gated stage, yet nothing rasterizes; the
+	// data side is fully audited clean, so the kill is in the chain). The
+	// poll prints per-draw verdict/kept/command tables to correlate with
+	// the registration dump (gfx mesh -> uri). Remove later.
+	uint64_t m_filterAuditTicket = 0;
+	uint32_t m_filterAuditSlot = 0;
+	uint32_t m_filterAuditBatchCount = 0;
+	uint32_t m_filterAuditDrawCount = 0;
+	std::vector<uint32_t> m_filterAuditVerdicts;   // kCullStateWords
+	std::vector<uint32_t> m_filterAuditKept[2];   // per parity region, live slots
+	std::vector<uint32_t> m_filterAuditIndirect;  // 5 words per slot
+	std::vector<uint32_t> m_filterAuditBatches;   // 4 words per slot
+	std::vector<uint32_t> m_filterAuditMeshes;    // drawConstants[].mesh snapshot
 	// Streamer slot-meta epoch last uploaded into the gfx filter (0 = none
 	// yet; register/unregister bumps it â€” retargets never do).
 	uint64_t m_gfxMetaEpochUploaded = 0;

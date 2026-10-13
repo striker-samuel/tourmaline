@@ -795,6 +795,7 @@ namespace engine {
 			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = ViewMode::Uv1;
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = ViewMode::Pom;
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
+			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -1371,6 +1372,13 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_pom unavailable - F11 falls back to Lit\n";
 		}
+		try {
+			auto ssrmaskCode = readFile("content/shaders/default_ssrmask_debug.frag.hlsl.spv");
+			m_resources.fragSsrMaskDebugShader = m_context->CreateShaderModule(ssrmaskCode, "fragSsrMaskDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_ssrmask_debug unavailable - SSR mask view falls back to Lit\n";
+		}
 		if (!m_resources.fragUv0DebugShader.empty()) {
 			m_resources.uv0DebugProgram = {
 				.shaders = {
@@ -1422,6 +1430,28 @@ namespace engine {
 					},
 					smvk::Shader{
 						.module = m_resources.fragSsrContributionDebugShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		// SSR receiver-mask debug view (env/UI only): per-material
+		// classification mirroring the thin G-buffer writer + the trace
+		// matte gate (default_ssrmask_debug.frag.hlsl). Same VS as main.
+		// Failure is non-fatal (program stays at shaderCount 0 and the
+		// view falls back to Lit at record time, like unlit/etc.).
+		if (!m_resources.fragSsrMaskDebugShader.empty()) {
+			m_resources.ssrMaskDebugProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragSsrMaskDebugShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -4210,9 +4240,13 @@ namespace engine {
 			&& m_textureStreamer
 			&& smvk::gfx::Valid(gfx)
 			&& smvk::gfx::TextureMetaCount(gfx) > 0;
+		// GPU-cull kept-counter leg: active whenever the GPU cull chain ran
+		// (the word rides the cullState slice the dispatches wrote).
+		const bool gfxKeptActive = smvk::gfx::Valid(gfx) && gfx.gpuCull
+			&& !smvk::gfx::CullStateBuffer(gfx, frameSlot).empty();
 		// Layout helper: the SAME span shape must accompany the submit and
 		// its poll (destinations are stable members; handles/sizes are fixed).
-		std::array<smvk::BufferDownload, 3> dls{};
+		std::array<smvk::BufferDownload, 4> dls{};
 		const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
 			uint32_t n = 0;
 			if (m_pendingReadbackHasExposure) {
@@ -4232,6 +4266,14 @@ namespace engine {
 						m_pendingReadbackSlot),
 					m_pendingDsCounters.data(), m_pendingDsCounters.size()
 					* sizeof(uint32_t), 0 };
+				++n;
+			}
+			if (m_pendingReadbackHasGfxKept) {
+				// 4 bytes at the counter word (see the member block): the
+				// final kept-entry count of that retired dispatch chain.
+				dls[n] = { smvk::gfx::CullStateBuffer(gfx, m_pendingReadbackSlot),
+					&m_pendingGfxKept, sizeof(uint32_t),
+					smvk::gfx::kCullStateCounterWord * sizeof(uint32_t) };
 				++n;
 			}
 			return { dls.data(), n };
@@ -4280,18 +4322,26 @@ namespace engine {
 				// overlay slots + throttled telemetry. Saturation of the
 				// flexible allocations means tiles/lights degrade (clamped
 				// stores, shadows read as fully lit).
-				if (m_pendingReadbackHasDs) {
-					m_dsStats.listSlots = m_pendingDsCounters[0];
-					m_dsStats.visSlots = m_pendingDsCounters[1];
-					m_dsStats.clsAllLit = m_pendingDsCounters[2];
-					m_dsStats.clsAllShadow = m_pendingDsCounters[3];
-					m_dsStats.clsPenumbra = m_pendingDsCounters[4];
-					m_dsStats.sumEarly = m_pendingDsCounters[5];
-					m_dsStats.sumFinal = m_pendingDsCounters[6];
-					m_dsStats.dbgSpotCone = m_pendingDsCounters[7];
-					m_dsStats.dbgSpotClip = m_pendingDsCounters[8];
-					static uint64_t s_dsTick = 0;
-					const uint64_t tick = s_dsTick++;
+			// GPU-cull kept count (retired slice, ~a few frames old): the
+			// final kept-entry count of that dispatch chain - the number
+			// the CPU stats cannot see in GPU mode (the cull runs in
+			// compute; the CPU stat only counts the CPU-mode path).
+			if (m_pendingReadbackHasGfxKept) {
+				m_gfxKeptBatches = m_pendingGfxKept;
+				m_gfxKeptValid = true;
+			}
+			if (m_pendingReadbackHasDs) {
+				m_dsStats.listSlots = m_pendingDsCounters[0];
+				m_dsStats.visSlots = m_pendingDsCounters[1];
+				m_dsStats.clsAllLit = m_pendingDsCounters[2];
+				m_dsStats.clsAllShadow = m_pendingDsCounters[3];
+				m_dsStats.clsPenumbra = m_pendingDsCounters[4];
+				m_dsStats.sumEarly = m_pendingDsCounters[5];
+				m_dsStats.sumFinal = m_pendingDsCounters[6];
+				m_dsStats.dbgSpotCone = m_pendingDsCounters[7];
+				m_dsStats.dbgSpotClip = m_pendingDsCounters[8];
+				static uint64_t s_dsTick = 0;
+				const uint64_t tick = s_dsTick++;
 					if (tick < 5 || tick % 600 == 0) {
 						std::fprintf(stderr,
 							"[ds] list=%u/%u vis=%u/%u early=%u final=%u lit=%u shadow=%u penumbra=%u spotCone=%u spotClip=%u lights=%u\n",
@@ -4329,6 +4379,10 @@ namespace engine {
 			if (m_pendingReadbackHasGfxDemand)
 				m_pendingGfxDemand.assign(
 					smvk::gfx::TextureMetaCount(gfx), smvk::gfx::kDemandNoReport);
+			// GPU-cull kept counter (4 B) rides the same batch (no extra
+			// submit): see the member block - the CPU stats cannot see the
+			// GPU-mode cull, so the counter word is the kept number.
+			m_pendingReadbackHasGfxKept = gfxKeptActive;
 			// DS counters (40 B) ride the same batch (no extra submit): the
 			// slice's zero-fill was only STAGED in UpdateForwardPlusLights
 			// (ring flush happens at EndAndPresent), so the transfer-queue
@@ -4339,6 +4393,184 @@ namespace engine {
 			if (!dlsSpan.empty())
 				m_asyncReadbackTicket =
 				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
+		}
+
+		// TMP-DIAG (VULKANTOY_FILTERAUDIT=<frame>): one-shot async download
+		// of the filter chain's per-frame state (draw verdicts + kept bits +
+		// indirect commands + batch headers of the retired flight slice —
+		// same retirement rule as the demand ring above), printed at poll
+		// time. The distant-LOD-sibling draw-drop hunt: the data side
+		// (meshlet ids/bounds/cones, the cluster index ranges, the mesh
+		// registrations) audits clean and every flag-gated cull stage can be
+		// disabled without restoring the draws, so the kill must show up in
+		// these words: a 0 verdict (the draw-cull frustum on the union
+		// bound), 0 kept (the batch-cull sphere/cone) or indexCount==0
+		// commands (the filter's compaction/ring cap). Remove later.
+		{
+			static const int filterAuditFrame = [] {
+				const char* e = std::getenv("VULKANTOY_FILTERAUDIT");
+				return e ? std::atoi(e) : -1;
+			}();
+			if (filterAuditFrame >= 0 && smvk::gfx::Valid(gfx)
+				&& !gfx.views.empty()) {
+				smvk::gfx::View& v0 = gfx.views[0];
+				const auto buildAuditSpan = [&]() -> std::span<const smvk::BufferDownload> {
+					static std::array<smvk::BufferDownload, 5> s_auditDls{};
+					uint32_t an = 0;
+					s_auditDls[an++] = { v0.cullStateBuffers[m_filterAuditSlot],
+						m_filterAuditVerdicts.data(),
+						m_filterAuditVerdicts.size() * sizeof(uint32_t), 0 };
+					for (uint32_t reg = 0; reg < 2; ++reg)
+						s_auditDls[an++] = { v0.keptBuffers[m_filterAuditSlot],
+							m_filterAuditKept[reg].data(),
+							m_filterAuditKept[reg].size() * sizeof(uint32_t),
+							reg * smvk::gfx::kMaxBatchSlots * sizeof(uint32_t) };
+					s_auditDls[an++] = { v0.indirectBuffers[m_filterAuditSlot],
+						m_filterAuditIndirect.data(),
+						m_filterAuditIndirect.size() * sizeof(uint32_t), 0 };
+					s_auditDls[an++] = { v0.batchBuffers[m_filterAuditSlot],
+						m_filterAuditBatches.data(),
+						m_filterAuditBatches.size() * sizeof(uint32_t), 0 };
+					return { s_auditDls.data(), an };
+				};
+				if (m_filterAuditTicket != 0) {
+					if (m_context->PollAsyncDownloadDataFromBuffers(
+							m_filterAuditTicket, buildAuditSpan())) {
+						m_filterAuditTicket = 0;
+						std::fprintf(stderr,
+							"[FILTERAUDIT] slot=%u draws=%u batches=%u "
+							"filteredCounter=%u\n",
+							m_filterAuditSlot, m_filterAuditDrawCount,
+							m_filterAuditBatchCount,
+							m_filterAuditVerdicts[
+								smvk::gfx::kCullStateCounterWord]);
+						for (uint32_t d = 0; d < m_filterAuditDrawCount; ++d) {
+							uint32_t keptCount[2] = { 0, 0 };
+							uint32_t clusterCount = 0;
+							uint32_t cmdCount = 0;
+							uint64_t sumIndex = 0;
+							for (uint32_t s = 0; s < m_filterAuditBatchCount; ++s) {
+								if (m_filterAuditBatches[s * 4 + 1] != d)
+									continue;
+								++clusterCount;
+								for (uint32_t reg = 0; reg < 2; ++reg)
+									if (m_filterAuditKept[reg][s] != 0)
+										++keptCount[reg];
+								const uint32_t indexCount =
+									m_filterAuditIndirect[s * 5 + 0];
+								if (indexCount > 0) {
+									++cmdCount;
+									sumIndex += indexCount;
+								}
+							}
+							const uint32_t mesh = d < m_filterAuditMeshes.size()
+								? m_filterAuditMeshes[d] : 0xFFFFFFFFu;
+							std::fprintf(stderr,
+								"[FILTERAUDIT] draw=%u mesh=%u verdict=%u "
+								"kept0=%u/%u kept1=%u/%u cmds=%u sumIdx=%llu\n",
+								d, mesh, m_filterAuditVerdicts[d],
+								keptCount[0], clusterCount,
+								keptCount[1], clusterCount,
+								cmdCount, (unsigned long long)sumIndex);
+						}
+						// Per-slot screen footprints (the same projection the
+						// filter's own stages use): answers WHICH clusters
+						// cover a screen band — kept or killed. In particular
+						// whether the black-band draws' killed clusters land
+						// ON the band pixels (cone kill with misplaced/wrong
+						// cones: the bound is on-screen but the cone rejects
+						// it) or OFF it (sphere kill: the bound itself is
+						// misplaced — the triangles project elsewhere than
+						// their bounds claim).
+						{
+							const smvk::gfx::View& vv = gfx.views[0];
+							for (uint32_t s = 0; s < m_filterAuditBatchCount; ++s) {
+								const uint32_t bd = m_filterAuditBatches[s * 4 + 1];
+								const uint32_t bcl = m_filterAuditBatches[s * 4 + 0];
+								const bool keptLive = m_filterAuditKept[0][s] != 0
+									|| m_filterAuditKept[1][s] != 0;
+								// Only the partially-killed draws (the black
+								// band): full-kept draws drown the log.
+								bool partial = false;
+								{
+									uint32_t kc = 0, tc = 0;
+									for (uint32_t s2 = 0; s2 < m_filterAuditBatchCount; ++s2) {
+										if (m_filterAuditBatches[s2 * 4 + 1] != bd)
+											continue;
+										++tc;
+										if (m_filterAuditKept[0][s2] != 0
+											|| m_filterAuditKept[1][s2] != 0)
+											++kc;
+									}
+									partial = (kc < tc);
+								}
+								if (!partial)
+									continue;
+								if (bd >= vv.drawConstants.size())
+									continue;
+								const smvk::gfx::Draw& ddc = vv.drawConstants[bd];
+								size_t ci = ddc.mesh;
+								// NOTE: drawConstants[].mesh is the gfx mesh
+								// index; the cluster table below is indexed by
+								// the batch's absolute cluster id.
+								if (bcl >= gfx.clusters.size())
+									continue;
+								const smvk::gfx::Cluster& ccl = gfx.clusters[bcl];
+								const glm::vec3 wc = glm::vec3(
+									ddc.model * glm::vec4(ccl.boundCenter, 1.0f));
+								const float bs = std::max({ glm::length(glm::vec3(
+									ddc.model[0])), glm::length(glm::vec3(
+									ddc.model[1])), glm::length(glm::vec3(
+									ddc.model[2])) });
+								const smvk::gfx::ClusterFootprint f =
+									smvk::gfx::ProjectClusterFootprint(wc,
+										ccl.boundRadius * bs, vv.eye, vv.viewProj,
+										vv.width, vv.height);
+								const uint32_t idxCnt =
+									m_filterAuditIndirect[s * 5 + 0];
+								std::fprintf(stderr,
+									"[FILTERAUDIT] slot draw=%u slot=%u cl=%u "
+									"kept=%u idx=%u c=(%.0f,%.0f) r=(%.0f,%.0f)\n",
+									bd, s, bcl, keptLive ? 1u : 0u, idxCnt,
+									f.centerX, f.centerY, f.radiusX, f.radiusY);
+							}
+						}
+					}
+				}
+				else if ((int)m_frameCounter >= filterAuditFrame
+					&& v0.batchCount > 0) {
+					// Submit at the pinned frame (the retired slice the
+					// demand ring reads: the previous same-flight user's
+					// state — the static bench camera keeps it
+					// representative).
+					m_filterAuditSlot = frameSlot;
+					m_filterAuditBatchCount = v0.batchCount;
+					m_filterAuditDrawCount = v0.stats.draws;
+					m_filterAuditVerdicts.assign(
+						smvk::gfx::kCullStateWords, 0u);
+					for (uint32_t reg = 0; reg < 2; ++reg)
+						m_filterAuditKept[reg].assign(v0.batchCount, 0u);
+					m_filterAuditIndirect.assign(
+						size_t(v0.batchCount) * 5, 0u);
+					m_filterAuditBatches.assign(
+						size_t(v0.batchCount) * 4, 0u);
+					m_filterAuditMeshes.clear();
+					for (const smvk::gfx::Draw& dc : v0.drawConstants)
+						m_filterAuditMeshes.push_back(dc.mesh);
+					m_filterAuditTicket = m_context
+						->SubmitAsyncDownloadDataFromBuffers(buildAuditSpan());
+					std::fprintf(stderr,
+						"[FILTERAUDIT] submit frame=%llu slot=%u ticket=%llu "
+						"batches=%u draws=%u kept=%u cullState=%u indirect=%u batch=%u\n",
+						(unsigned long long)m_frameCounter, m_filterAuditSlot,
+						(unsigned long long)m_filterAuditTicket,
+						m_filterAuditBatchCount, m_filterAuditDrawCount,
+						(uint32_t)v0.keptBuffers[m_filterAuditSlot].valid(),
+						(uint32_t)v0.cullStateBuffers[m_filterAuditSlot].valid(),
+						(uint32_t)v0.indirectBuffers[m_filterAuditSlot].valid(),
+						(uint32_t)v0.batchBuffers[m_filterAuditSlot].valid());
+				}
+			}
 		}
 
 		// Demand clear (download-before-clear: the transfer chain orders this
@@ -5597,9 +5829,9 @@ namespace engine {
 		const uint32_t lod = m_world->LodIndexForNode(node, worldMesh, m_lodFrameInputs);
 		if (outLod)
 			*outLod = lod;
-		++m_lodDraws;
+		// (No local counters: the World's per-frame decision stats count
+		// every leg's query once - see World::LodIndexForNode.)
 		if (lod > 0) {
-			++m_lodSwitched;
 			if (smvk::StaticMesh* m = m_world->GetLodMesh(worldMesh, lod))
 				return m;
 		}
@@ -5850,8 +6082,6 @@ namespace engine {
 	}
 
 	void WorldRenderer::ResetLodStats() {
-		m_lodDraws = 0;
-		m_lodSwitched = 0;
 		m_lodShaderDraws = 0;
 		m_lodChainMeshes = 0;
 		m_lodChainLods = 0;
@@ -5877,6 +6107,175 @@ namespace engine {
 		m_gpuMemHeaps = m_context->GetGpuMemoryInfo();
 		const auto t1 = std::chrono::steady_clock::now();
 		m_gpuMemQueryUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
+	}
+
+	// Text-only stats HUD (top-left overlay, Ctrl+T): framerate, GPU,
+	// camera, filter culls, LODs, exposure, streaming. Reads the same
+	// members as the panel header + Stats tab rows it replaces (which
+	// keep controls, explanations and detail breakdowns). Text only: no
+	// bars, plots or widgets (ImGui::Text + one window chrome bit).
+	// The window takes no input (clicks pass through to the scene) and
+	// never saves settings.
+	// Texture-viewer selection body (the shared click / arrow-nav path -
+	// see the viewer draw site). A plain 2D gets ONE user-texture binding;
+	// a cubemap gets SIX per-face View2D bindings (+X -X +Y -Y +Z -Z - the
+	// ImGui backend samples Texture2D only, so the cube's own default
+	// ViewCube cannot serve as the preview; each face = one array layer
+	// of the cube image). Everything the previous selection owned drops
+	// first (one descriptor per Add, always paired; face-view Holders
+	// reset -> their VkImageViews retire through the RMI destroy).
+	void WorldRenderer::SelectTexDebugTexture(const smvk::TextureInfo& t) {
+		DropTexDebugSelection();
+		m_texDebugSelected = t.handle;
+		const bool plain2d = t.type == smvk::ImageType::Image2D
+			&& !t.isCubemap && t.arrayLayers == 1;
+		// Cubemap (or 6*N cube array) preview: per-face 2D views.
+		// Cube arrays preview cube 0 (faces 0..5).
+		const bool cube = t.isCubemap
+			&& smvk::IsCubemapLayerCount(t.arrayLayers);
+		if (plain2d && t.bindless >= 0) {
+			// The overlay's user-texture binding: the backend's descriptor
+			// registration wrapped behind RHI-opaque types (a dead handle
+			// returns 0 there - the preview simply doesn't appear).
+			m_texDebugPreview = m_imgui->AddUserTexture(
+				t.handle, m_texDebugSampler);
+		}
+		else if (cube) {
+			// A dead view (destroyed, generation bumped) returns 0 - that
+			// face's preview simply doesn't appear.
+			static const char* const kFaceNames[6] = {
+				"+X", "-X", "+Y", "-Y", "+Z", "-Z"
+			};
+			const smvk::ImageHandle img =
+				m_context->GetTextureImageHandle(t.handle);
+			for (uint32_t face = 0; face < 6 && !img.empty(); ++face) {
+				smvk::ImageViewCreateInfo vci{};
+				vci.viewType = smvk::ImageViewType::View2D;
+				vci.format = smvk::Format::Undefined; // inherit
+				vci.subresourceRange = {
+					smvk::ImageAspect::Color, 0,
+					smvk::RemainingSubresources,
+					face, 1
+				};
+				char name[48];
+				std::snprintf(name, sizeof(name),
+					"texviewer face %s", kFaceNames[face]);
+				vci.name = name; // consumed at creation (debug names only)
+				m_texDebugCubeViews[face] =
+					m_context->CreateImageView(img, vci);
+				if (!m_texDebugCubeViews[face].empty())
+					m_texDebugCubePreview[face] =
+						m_imgui->AddUserTextureView(
+							m_texDebugCubeViews[face], m_texDebugSampler);
+			}
+		}
+	}
+
+	void WorldRenderer::DrawHudOverlay() {
+		if (!m_showHud)
+			return;
+		ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+		ImGui::SetNextWindowBgAlpha(0.55f);
+		if (!ImGui::Begin("##vulkantoy_hud", nullptr,
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+				| ImGuiWindowFlags_NoSavedSettings
+				| ImGuiWindowFlags_NoFocusOnAppearing
+				| ImGuiWindowFlags_NoInputs)) {
+			ImGui::End();
+			return;
+		}
+		// Frame rate + CPU/GPU times (same sources as the old panel header).
+		const float fps = ImGui::GetIO().Framerate;
+		if (m_gpuTimingValid)
+			ImGui::Text("%.0f FPS (%.1f ms) CPU %.2f GPU %.2f",
+				(double)fps, fps > 1e-6f ? 1000.0f / fps : 0.0,
+				m_cpuMsSmooth, m_gpuMsSmooth);
+		else
+			ImGui::Text("%.0f FPS (%.1f ms) CPU %.2f GPU ... (warming up)",
+				(double)fps, fps > 1e-6f ? 1000.0f / fps : 0.0,
+				m_cpuMsSmooth);
+		// GPU memory (VMA budgets; throttled to 1 Hz inside). DEVICE_LOCAL
+		// (VRAM) heaps ONLY: summing every heap double-counts host budgets -
+		// a 16 GiB card would read ~30 GiB "total". Fallback: if no heap
+		// reports deviceLocal (integrated/uniform-memory GPUs), sum all.
+		RefreshGpuMemoryStats(false);
+		if (!m_gpuMemHeaps.empty()) {
+			uint64_t totalUsed = 0, totalBudget = 0;
+			bool anyDeviceLocal = false;
+			for (const auto& h : m_gpuMemHeaps) {
+				if (!h.deviceLocal)
+					continue;
+				anyDeviceLocal = true;
+				totalUsed += h.usageBytes;
+				totalBudget += h.budgetBytes;
+			}
+			if (!anyDeviceLocal) {
+				for (const auto& h : m_gpuMemHeaps) {
+					totalUsed += h.usageBytes;
+					totalBudget += h.budgetBytes;
+				}
+			}
+			const double usedMiB = (double)totalUsed / 1048576.0;
+			const double budgetMiB = (double)totalBudget / 1048576.0;
+			ImGui::Text("%s %.0f/%.0f MiB (%.0f%%)", anyDeviceLocal ? "VRAM" : "GPU mem",
+				usedMiB, budgetMiB,
+				totalBudget > 0 ? 100.0 * usedMiB / budgetMiB : 0.0);
+		}
+		else {
+			ImGui::TextDisabled("GPU mem n/a");
+		}
+		// Camera pose (same sources as the Stats tab camera rows).
+		{
+			const glm::vec3& p = m_cameraPositioner.cameraPosition_;
+			const glm::vec3 fwd = m_cameraPositioner.getForward();
+			ImGui::Text("cam %.2f %.2f %.2f", p.x, p.y, p.z);
+			ImGui::Text("fwd %.3f %.3f %.3f", fwd.x, fwd.y, fwd.z);
+		}
+		// Filter culls (last filtered view; zeros when inactive). GPU mode
+		// (the default with VK_EXT_mesh_shader): the cull runs in COMPUTE
+		// (gfxbatchcull) - the CPU stat only counts candidates, so the kept
+		// number lands via the async counter-word readback (~a few frames
+		// stale) and culled = candidates - kept. CPU mode reads the CPU
+		// cull counters directly.
+		{
+			const smvk::gfx::Stats fs = m_gfxRenderer.LastStats();
+			const bool gpuKept = m_gfxKeptValid
+				&& m_gfxRenderer.State().gpuCull;
+			uint32_t kept = fs.clustersProcessed - fs.clustersCulled;
+			if (gpuKept)
+				kept = std::min(m_gfxKeptBatches, fs.clustersProcessed);
+			// 6 numeric + 1 string specs = 7 args EXACTLY (a missing arg
+			// reads stack garbage as the %s pointer - an AV in the CRT's
+			// strlen; this exact bug crashed every frame-0 run).
+			ImGui::Text("filter draws %u cmd %u tris %u | cl %u kept %u culled %u%s",
+				fs.draws, fs.commands, fs.trianglesProcessed,
+				fs.clustersProcessed, kept, fs.clustersProcessed - kept,
+				gpuKept ? " (GPU)" : "");
+		}
+		// LOD decisions this frame (World-level stats: every leg - filter,
+		// prepass, shadow, direct, motion - counts once at its first query;
+		// far = far-shading draws counted at the Main direct leg).
+		ImGui::Text("LOD %u draws (%u sw, %llu far)",
+			m_world ? m_world->LodStatDraws() : 0u,
+			m_world ? m_world->LodStatSwitched() : 0u,
+			(unsigned long long)m_lodShaderDraws);
+		// Exposure (applied + target).
+		ImGui::Text("exp %.5f (tgt %.5f)",
+			(double)FrameExposure(), (double)m_exposureTarget);
+		// Texture streaming residency.
+		if (m_textureStreamer) {
+			const smvk::TextureStreamingStats tstats = m_textureStreamer->GetStats();
+			const double resMiB = (double)tstats.residentBytes / 1048576.0;
+			const double fullMiB = (double)tstats.fullBytes / 1048576.0;
+			ImGui::Text("stream %u tex %.0f/%.0f MiB (%.0f%%) +%u -%u",
+				tstats.textureCount, resMiB, fullMiB,
+				fullMiB > 0.0 ? 100.0 * (1.0 - resMiB / fullMiB) : 0.0,
+				tstats.upgradesLastUpdate, tstats.downgradesLastUpdate);
+		}
+		else {
+			ImGui::TextDisabled("stream off (full-resident)");
+		}
+		ImGui::End();
 	}
 
 	void WorldRenderer::LogGpuMemoryToConsole() {
@@ -8387,13 +8786,27 @@ namespace engine {
 				// gbuffer.frag.hlsl); every bind carries noStencil.
 				smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
 				smvk::RasterSettings raster{};
-				bool maskedCutout = false;
-				if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
-					blend = mat->pipeline.blend;
-					raster = mat->pipeline.raster;
-					maskedCutout =
-						mat->shadingModel == smvk::ShadingModel::Masked;
-				}
+			bool maskedCutout = false;
+			if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
+				blend = mat->pipeline.blend;
+				raster = mat->pipeline.raster;
+				maskedCutout =
+					mat->shadingModel == smvk::ShadingModel::Masked;
+			}
+			// TMP-DIAG (VULKANTOY_NOCULL=1): force CullMode::None on every
+			// bindForMaterial bind — the facing proof for the distant-
+			// sibling draw-drop (the commands are written with real counts
+			// at CULLFLAGS=0x0 yet the pixels stay black; if the band
+			// appears with culling off, the filtered leg inverts facing
+			// vs the direct legs). Remove later.
+			{
+				static const bool noCull = [] {
+					const char* e = std::getenv("VULKANTOY_NOCULL");
+					return e && std::strcmp(e, "1") == 0;
+				}();
+				if (noCull)
+					raster.cullMode = smvk::CullMode::None;
+			}
 				// Masked cutout in 2x MSAA + A2C opt-in (VULKANTOY_A2C):
 				// alpha-to-coverage program (coverage remap in the FS, zero
 				// discard) + A2C multisample state - foliage silhouettes
@@ -8516,6 +8929,10 @@ namespace engine {
 				effView = ViewMode::Lit;
 			if (effView == ViewMode::Pom && m_resources.pomProgram.shaderCount != 2)
 				effView = ViewMode::Lit;
+			if (effView == ViewMode::SsrContribution && m_resources.ssrContributionDebugProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
+			if (effView == ViewMode::SsrMask && m_resources.ssrMaskDebugProgram.shaderCount != 2)
+				effView = ViewMode::Lit;
 			const bool meshletDbg = (effView == ViewMode::Meshlets);
 			const bool lodDbg = (effView == ViewMode::Lods);
 			const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
@@ -8524,7 +8941,8 @@ namespace engine {
 			const bool vertexColorDbg = (effView == ViewMode::VertexColors);
 			const bool uvDbg = (effView == ViewMode::Uv0 || effView == ViewMode::Uv1);
 			const bool pomDbg = (effView == ViewMode::Pom);
-			const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg; // default.vert + debug FS
+			const bool ssrMaskDbg = (effView == ViewMode::SsrMask);
+			const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg || ssrMaskDbg; // default.vert + debug FS
 			const bool bypassFilter = (effView != ViewMode::Lit);
 			// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 			// so they survive the HDR -> tonemap path).
@@ -8692,6 +9110,7 @@ namespace engine {
 					: pomDbg ? m_resources.pomProgram
 					: effView == ViewMode::Uv1 ? m_resources.uv1DebugProgram
 					: effView == ViewMode::SsrContribution ? m_resources.ssrContributionDebugProgram
+					: ssrMaskDbg ? m_resources.ssrMaskDebugProgram
 					: m_resources.uv0DebugProgram;
 				uint32_t boundMaterial = UINT32_MAX;
 				m_world->forEachRenderItem(
@@ -8961,16 +9380,27 @@ namespace engine {
 						if (!meshDesc)
 							continue;
 						if (d.materialId != boundMaterial) {
-							cmd.BindRenderPipeline(
-								m_gfxRenderer.MeshDebugProgram(),
-								smvk::VertexFormat::StaticVertexFormat,
-								ditheredTransp ? opaqueDepth : transparentDepth,
-								noStencil,
-								smvk::BlendSettings::Opaque(),
-								msaaSettings,
-								wireframeRaster(smvk::RasterSettings{ .cullMode = smvk::CullMode::None })
-							);
-							cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(
+					m_gfxRenderer.MeshDebugProgram(),
+					smvk::VertexFormat::StaticVertexFormat,
+					opaqueDepth,
+					noStencil,
+					smvk::BlendSettings::Opaque(),
+					msaaSettings,
+					// TMP-DIAG (VULKANTOY_LODVIEW_CULLBACK=1): bind Back instead
+					// of None in the LODs flat view — the winding-flip proof
+					// for the distant-sibling draw-drop (every winding-
+					// sensitive stage kills them; the winding-agnostic views
+					// draw them). With Back bound, LOD3 instances whose
+					// decimated triangles are inverted vanish here too while
+					// LOD0 stays. Remove later.
+					wireframeRaster(smvk::RasterSettings{
+						.cullMode = (std::getenv("VULKANTOY_LODVIEW_CULLBACK")
+							&& std::strcmp(
+								std::getenv("VULKANTOY_LODVIEW_CULLBACK"), "1") == 0)
+							? smvk::CullMode::Back : smvk::CullMode::None })
+				);
+				cmd.BindStaticVertexFmt();
 							boundMaterial = d.materialId;
 						}
 						const glm::mat4& model = m_world->scene.globalTransform[d.node];
@@ -10431,44 +10861,29 @@ namespace engine {
 			// ImGui draw data + font raster density onto the UI target.
 			m_imgui->NewFrame(uiExtent);
 
-			// Fixed debug panel: full-height side bar (Right/Left, U toggles side).
+			// Fixed debug panel: full-height side bar on the Right (fixed
+			// side - dock cycling removed; the top-left corner stays free
+			// for the text stats HUD).
 			// Position + size enforced every frame (NoMove/NoResize/NoCollapse):
 			// never floating, never lost behind the scene. Content is classified
 			// into Quality (settings) / Debug (views + overlays) / Stats (readback)
-			// tabs; the perf line above the tabs stays always visible.
+			// tabs; live numbers live in the text HUD (Ctrl+T) — the panel
+			// keeps controls, explanations and detail breakdowns.
 			{
 				const ImVec2 disp = ImGui::GetIO().DisplaySize;
 				const float pad = 8.0f;
 				const float sideW = 480.0f;
-				ImVec2 pos{ 0, 0 }, size{ 0, 0 };
-				if (m_uiDock == UiDock::Left) {
-					pos = ImVec2(pad, pad);
-					size = ImVec2(sideW, disp.y - pad * 2.0f);
-				}
-				else {
-					pos = ImVec2(disp.x - sideW - pad, pad);
-					size = ImVec2(sideW, disp.y - pad * 2.0f);
-				}
-				ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
-				ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+				ImGui::SetNextWindowPos(ImVec2(disp.x - sideW - pad, pad), ImGuiCond_Always);
+				ImGui::SetNextWindowSize(ImVec2(sideW, disp.y - pad * 2.0f), ImGuiCond_Always);
 			}
 			ImGui::Begin("VulkanToy - Debug", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 			{
-				// Dock selector + cycle button (same action as the U shortcut).
-				const char* dockNames[] = { "Right", "Left" };
-				int dockIdx = static_cast<int>(m_uiDock);
-				if (ImGui::Combo("UI dock", &dockIdx, dockNames, 2))
-					SetUiDock(static_cast<UiDock>(dockIdx));
-				ImGui::SameLine();
-				if (ImGui::Button("Cycle (U)"))
-					CycleUiDock();
+				// Live FPS/CPU/GPU readouts live in the text HUD (Ctrl+T)
+				// now (DrawHudOverlay); the panel keeps controls only.
+				if (ImGui::Button(m_showHud ? "Hide stats HUD (Ctrl+T)" : "Show stats HUD (Ctrl+T)"))
+					m_showHud = !m_showHud;
 			}
-			ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-			if (m_gpuTimingValid)
-				ImGui::Text("CPU %.3f ms (wait %.3f ms)  GPU %.3f ms", m_cpuMsSmooth, m_waitMsSmooth, m_gpuMsSmooth);
-			else
-				ImGui::Text("CPU %.3f ms (wait %.3f ms)  GPU ... (warming up)", m_cpuMsSmooth, m_waitMsSmooth);
 			if (ImGui::BeginTabBar("VulkanToyTabs")) {
 				// ---------------------------------------------------------
 				// Quality: every setting that changes the image. No readback
@@ -11278,11 +11693,28 @@ namespace engine {
 								"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
 								"F9 UV0 (base)", "F10 UV1 (lightmap)",
 								"F11 POM (parallax occlusion)",
+								"SSR mask (receivers)",
 							};
-							int view = static_cast<int>(m_debugView);
-							if (ImGui::Combo("Debug view", &view, viewNames, 9))
-								m_debugView = static_cast<ViewMode>(view);
+							// Combo index <-> ViewMode mapping (SsrContribution has
+							// no combo entry: it stays env-only; the combo
+							// jumps over it so indices never alias views).
+							static const ViewMode kComboViews[] = {
+								ViewMode::Lit, ViewMode::Unlit,
+								ViewMode::Meshlets, ViewMode::Cascades,
+								ViewMode::Lods, ViewMode::VertexColors,
+								ViewMode::Uv0, ViewMode::Uv1,
+								ViewMode::Pom, ViewMode::SsrMask,
+							};
+							int view = 0;
+							for (int i = 0; i < 10; ++i)
+								if (kComboViews[i] == m_debugView)
+									view = i;
+							if (ImGui::Combo("Debug view", &view, viewNames, 10))
+								m_debugView = kComboViews[view];
 						}
+						ImGui::TextDisabled("SSR mask: per-material receiver class mirroring the thin G-buffer writer +\n"
+							"the trace matte gate (roughness < 0.94 marches): green smooth dielectric, blue smooth\n"
+							"metal, black matte (skipped), dimmed Blend (never writes the G-buffer the trace reads).");
 						ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 							"legacy materials show the raw vertex tint.");
 						ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap atlas uv (chart uv + chart id,\n"
@@ -11477,13 +11909,11 @@ namespace engine {
 						}
 					}
 					if (ImGui::CollapsingHeader("Camera + swapchain", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
+						// Live pos/fwd readouts live in the text HUD (Ctrl+T).
 						{
 							const glm::vec3 euler = m_cameraPositioner.getEulerDegrees(); // x=pitch, y=yaw, z=roll
-							const glm::vec3 fwd = m_cameraPositioner.getForward();
 							const glm::quat q = m_cameraPositioner.getOrientation();
 							ImGui::Text("Camera rot yaw: %.1f pitch: %.1f roll: %.1f (deg)", euler.y, euler.x, euler.z);
-							ImGui::Text("Camera fwd: %.3f %.3f %.3f", fwd.x, fwd.y, fwd.z);
 							ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
 						}
 						// Controller status: name + live stick state, or "none".
@@ -11528,9 +11958,11 @@ namespace engine {
 					}
 					if (ImGui::CollapsingHeader("GPU memory + streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
 						// ---- GPU memory (VMA budgets, VK_EXT_memory_budget) ----
-						// Throttled to 1 Hz (see RefreshGpuMemoryStats); the bar
-						// shows total usage vs budget. Query cost is shown so a
-						// slow driver budget query can't hide behind this UI.
+						// Throttled to 1 Hz (see RefreshGpuMemoryStats).
+						// Totals live in the text HUD (Ctrl+T); this section
+						// keeps the controls + the per-heap breakdown below.
+						// Query cost is shown so a slow driver budget query
+						// can't hide behind this UI.
 						RefreshGpuMemoryStats(false);
 						auto fmtMiB = [](uint64_t bytes, char* out, size_t n) {
 							const double mib = (double)bytes / (1024.0 * 1024.0);
@@ -11540,28 +11972,6 @@ namespace engine {
 								snprintf(out, n, "%.0f MiB", mib);
 						};
 						if (!m_gpuMemHeaps.empty()) {
-							uint64_t totalUsed = 0, totalBudget = 0;
-							for (const auto& h : m_gpuMemHeaps) {
-								totalUsed += h.usageBytes;
-								totalBudget += h.budgetBytes;
-							}
-							const float frac = totalBudget > 0
-								? (float)((double)totalUsed / (double)totalBudget) : 0.0f;
-							char usedS[32], budgetS[32];
-							fmtMiB(totalUsed, usedS, sizeof(usedS));
-							fmtMiB(totalBudget, budgetS, sizeof(budgetS));
-							char overlay[64];
-							snprintf(overlay, sizeof(overlay), "%s / %s (%.1f%%)",
-								usedS, budgetS, frac * 100.0f);
-							// Bar color ramps green -> yellow -> red with pressure.
-							const ImVec4 barCol = frac < 0.6f
-								? ImVec4(0.20f, 0.70f, 0.30f, 1.0f)
-								: (frac < 0.85f ? ImVec4(0.85f, 0.75f, 0.20f, 1.0f)
-									: ImVec4(0.85f, 0.25f, 0.20f, 1.0f));
-							ImGui::Text("GPU memory %s", overlay);
-							ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barCol);
-							ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
-							ImGui::PopStyleColor();
 							// Per-heap breakdown (collapsed by default: VRAM heap only
 							// matters on most discrete GPUs; integrated shows host).
 							if (ImGui::SmallButton(m_gpuMemShowAllHeaps ? "heaps: all [-]" : "heaps: details [+]"))
@@ -11601,19 +12011,9 @@ namespace engine {
 						else {
 							ImGui::TextDisabled("GPU memory: no heap data");
 						}
-						// Texture streaming: resident tail vs full-residency cost.
-						if (m_textureStreamer) {
-							const smvk::TextureStreamingStats tstats = m_textureStreamer->GetStats();
-							const double resMiB = (double)tstats.residentBytes / 1048576.0;
-							const double fullMiB = (double)tstats.fullBytes / 1048576.0;
-							const double savedPct = fullMiB > 0.0
-								? 100.0 * (1.0 - resMiB / fullMiB) : 0.0;
-							ImGui::Text("Streaming: %u tex (%u full)  %.0f/%.0f MiB resident (%.0f%% saved)  +%u -%u",
-								tstats.textureCount, tstats.fullResidentCount,
-								resMiB, fullMiB, savedPct,
-								tstats.upgradesLastUpdate, tstats.downgradesLastUpdate);
-						}
-						else {
+						// Texture streaming residency lives in the text HUD
+						// (Ctrl+T); nothing else to show here.
+						if (!m_textureStreamer) {
 							ImGui::TextDisabled("Streaming: off (full-resident)");
 						}
 					}
@@ -11682,11 +12082,7 @@ namespace engine {
 						else {
 							ImGui::TextDisabled("Bloom: OFF");
 						}
-						// Reports what this frame actually applies (debug views
-						// run at the fixed reference - see FrameExposure).
-						const float effExposure = FrameExposure();
-						ImGui::Text("Exposure: %.5f (target %.5f)  metered %u px",
-							effExposure, m_exposureTarget, m_exposureSamples);
+						// Live exposure numbers live in the text HUD (Ctrl+T).
 						float histPeak = 1.0f;
 						for (float v : m_exposureBinsUi)
 							histPeak = std::max(histPeak, v);
@@ -11838,9 +12234,20 @@ namespace engine {
 							ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
 						ImGui::Separator();
 						const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
-						ImGui::Text("view: %u draws %u cmds %u tris | clusters %u/%u culled",
+						// GPU mode: the cull runs in compute (the CPU stat
+						// only counts CPU-mode culls - always 0/797 in GPU
+						// mode); the kept count lands via the async counter-
+						// word readback (see UpdateReadbacks), culled =
+						// candidates - kept. See the HUD filter line too.
+						const bool gpuKept = m_gfxKeptValid
+							&& m_gfxRenderer.State().gpuCull;
+						uint32_t kept = gs.clustersProcessed - gs.clustersCulled;
+						if (gpuKept)
+							kept = std::min(m_gfxKeptBatches, gs.clustersProcessed);
+						ImGui::Text("view: %u draws %u cmds %u tris | clusters %u kept %u culled %u%s",
 							gs.draws, gs.commands, gs.trianglesProcessed,
-							gs.clustersCulled, gs.clustersProcessed);
+							gs.clustersProcessed, kept, gs.clustersProcessed - kept,
+							gpuKept ? " (GPU cull)" : "");
 						ImGui::Text("materials: %u ranges  batches: %u",
 							(unsigned)m_gfxRenderer.LastMaterialRangeCount(),
 							(unsigned)m_gfxRenderer.LastBatchCount());
@@ -11880,10 +12287,10 @@ namespace engine {
 						}
 					}
 					if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched, %llu far-shaded)",
-							m_lodChainMeshes, m_lodChainLods,
-							(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched,
-							(unsigned long long)m_lodShaderDraws);
+						// Per-frame draws/switched/far-shaded live in the text
+						// HUD (Ctrl+T); the cooked counts stay here.
+						ImGui::Text("Cooked: %u meshes / %u siblings",
+							m_lodChainMeshes, m_lodChainLods);
 						ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
 							"(2*tan(fov/2)*dist) <= budget), hysteretic around the budget. "
 							"Every level registers its own gfx mesh: the selected LOD draws "
@@ -11914,12 +12321,17 @@ namespace engine {
 					ImGui::TextDisabled("      Y DS visualizer (%s)",
 						m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
 #endif
-					ImGui::TextDisabled("      Z/1-4 AA  U dock (%s)  P wireframe  \\ texture viewer", UiDockName());
+					ImGui::TextDisabled("      Z/1-4 AA  P wireframe  ` texture viewer  Ctrl+T stats HUD");
 					ImGui::EndTabItem();
 				}
 				ImGui::EndTabBar();
 			}
 			ImGui::End();
+
+			// Text-only stats HUD (top-left overlay, Ctrl+T): drawn after
+			// the panel; the panel is a fixed Right side bar, so the two
+			// never overlap.
+			DrawHudOverlay();
 
 			// Frame-time histogram (F12): SEPARATE UI from the debug panel -
 			// a full-width bottom strip (see profiler::DrawFrameHistogramUi).
@@ -11933,16 +12345,22 @@ namespace engine {
 			// ---- Texture inspector (aux-texture debug view) --------
 			// Lists the LIVE textures (one row per pool texture; the
 			// metadata: debug name, extent, format, mips/layers, the
-			// bindless slot) and previews a clicked one through the
-			// ImGui Vulkan backend's user-texture binding. Content/
-			// material textures (load-path names, i.e. containing a
-			// '/') hide behind the toggle - the aux set (GI volumes,
-			// cubemaps, the env zone map, LUTs, cookies, terrain-adjacent
-			// textures, ...) is the point. 2D single-layer textures
-			// preview; arrays/3D/cubes list only (the ImGui backend
-			// samples Texture2D). Staleness: a selected handle dropping
-			// out of the listing (destroyed, generation bumped -
-			// UpdateTexture's recreate path) drops the preview.
+			// bindless slot - NO content filter: every texture is one
+			// click away) and previews a clicked one through the
+			// ImGui Vulkan backend's user-texture bindings. Plain 2D
+			// single-layer textures preview directly; CUBEMAPS preview
+			// through six per-face View2D bindings (+X -X +Y -Y +Z -Z,
+			// 3x2 grid - the ImGui backend samples Texture2D only, so
+			// the cube's own default view cannot serve as the preview);
+			// cube arrays preview cube 0. Other arrays/3D list only.
+			// Staleness: a selected handle dropping out of the listing
+			// (destroyed, generation bumped - UpdateTexture's recreate
+			// path) drops the preview + face views.
+			// Selection is shared by CLICK and ARROW-KEY NAV: ImGui moves
+			// the keyboard-nav cursor onto rows with the arrow keys and
+			// the focused row previews IMMEDIATELY (no Enter - the nav
+			// branch below treats focus as selection). Click still works;
+			// Enter still activates (both funnel into the same select).
 			if (m_texDebugWindow) {
 				ImGui::SetNextWindowSize(ImVec2(560.0f, 760.0f), ImGuiCond_Appearing);
 				ImGui::Begin("Texture Viewer", &m_texDebugWindow);
@@ -11957,19 +12375,31 @@ namespace engine {
 					sci.addressW = smvk::AddressMode::ClampToEdge;
 					m_texDebugSampler = m_context->GetOrCreateSampler(sci);
 				}
-				ImGui::Checkbox("Content (material) textures",
-					&m_texDebugShowContent);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Textures whose debug name is a load"
-						"\npath (contains '/') - pak/scene content.\n"
-						"Off = the auxiliary set only (GI volumes,\n"
-						"cubemaps, zone map, LUTs, cookies, ...).");
 				std::vector<smvk::TextureInfo> texs =
 					m_context->ListTextureInfos();
-				// Common-format label (debug shorthand; numeric for
-				// the rest).
+				// Common-format label (debug shorthand; see the format
+				// legend at the bottom of this window). BC compressed
+				// formats included: pak CONTENT textures are BC (the
+				// cook transcodes), so the content rows would otherwise
+				// all read "(other)".
 				auto fmtName = [](smvk::Format f) -> const char* {
 					switch (f) {
+					case smvk::Format::BC1_RGB_UNorm: return "BC1_RGB";
+					case smvk::Format::BC1_RGB_SRGB: return "BC1_RGB_sRGB";
+					case smvk::Format::BC1_RGBA_UNorm: return "BC1_RGBA";
+					case smvk::Format::BC1_RGBA_SRGB: return "BC1_RGBA_sRGB";
+					case smvk::Format::BC2_UNorm: return "BC2";
+					case smvk::Format::BC2_SRGB: return "BC2_sRGB";
+					case smvk::Format::BC3_UNorm: return "BC3";
+					case smvk::Format::BC3_SRGB: return "BC3_sRGB";
+					case smvk::Format::BC4_UNorm: return "BC4_UN";
+					case smvk::Format::BC4_SNorm: return "BC4_SN";
+					case smvk::Format::BC5_UNorm: return "BC5_UN";
+					case smvk::Format::BC5_SNorm: return "BC5_SN";
+					case smvk::Format::BC6H_UFloat: return "BC6H_UF";
+					case smvk::Format::BC6H_SFloat: return "BC6H_SF";
+					case smvk::Format::BC7_UNorm: return "BC7";
+					case smvk::Format::BC7_SRGB: return "BC7_sRGB";
 					case smvk::Format::RGBA8_UNorm: return "RGBA8_UN";
 					case smvk::Format::RGBA8_SRGB: return "RGBA8_SRGB";
 					case smvk::Format::RGBA16_Float: return "RGBA16F";
@@ -11985,59 +12415,58 @@ namespace engine {
 				bool selAlive = m_texDebugSelected.empty();
 				ImGui::BeginChild("##texlist", ImVec2(0.0f, 220.0f), true);
 				for (const smvk::TextureInfo& t : texs) {
-					const bool content =
-						std::strchr(t.name ? t.name : "", '/') != nullptr;
-					if (content && !m_texDebugShowContent)
-						continue;
 					if (!m_texDebugSelected.empty()
 						&& m_texDebugSelected == t.handle)
 						selAlive = true;
-					const bool previewable =
+					const bool plain2d =
 						t.type == smvk::ImageType::Image2D
 						&& !t.isCubemap && t.arrayLayers == 1;
+					// Cubemap (or 6*N cube array) preview: per-face 2D
+					// views. Cube arrays preview cube 0 (faces 0..5).
+					const bool cube = t.isCubemap
+						&& smvk::IsCubemapLayerCount(t.arrayLayers);
+					const bool previewable = plain2d || cube;
 					char label[320];
 					std::snprintf(label, sizeof(label),
 						"%s%s %ux%u %s mips=%u layers=%u bindless=%d",
-						t.name ? t.name : "(unnamed)",
-						previewable ? "" : " [no 2D preview]",
+						t.name.empty() ? "(unnamed)" : t.name.data(),
+						cube ? (t.arrayLayers > 6 ? " [cube array: cube 0 preview]"
+							: " [cube 6-face preview]")
+						: (previewable ? "" : " [no 2D preview]"),
 						t.extent.width, t.extent.height, fmtName(t.format),
 						t.mipLevels, t.arrayLayers, t.bindless);
 					if (ImGui::Selectable(label,
 						m_texDebugSelected == t.handle)) {
-						// Selection change: drop the old binding (the
-						// overlay owns one descriptor per Add - always
-						// pair them).
-						if (m_texDebugPreview != 0) {
-							m_imgui->RemoveUserTexture(m_texDebugPreview);
-							m_texDebugPreview = 0;
-						}
-						m_texDebugSelected = t.handle;
-						if (previewable && t.bindless >= 0) {
-							// The overlay's user-texture binding: the
-							// backend's descriptor registration wrapped
-							// behind RHI-opaque types (a dead handle
-							// returns 0 there - the preview simply
-							// doesn't appear).
-							m_texDebugPreview = m_imgui->AddUserTexture(
-								t.handle, m_texDebugSampler);
-						}
+						// Click (or Enter/gamepad activate): preview
+						// immediately. See SelectTexDebugTexture for the
+						// shared selection body.
+						SelectTexDebugTexture(t);
+					}
+					else if (ImGui::IsItemFocused()
+						&& m_texDebugSelected != t.handle
+						&& previewable) {
+						// ARROW-KEY NAV: ImGui moved the keyboard-nav
+						// cursor onto this row - treat focus as
+						// selection so the preview displays immediately
+						// (no Enter). The != guard makes this a no-op on
+						// the already-selected row (focus persists on it
+						// every frame); previewable keeps 3D/arrays
+						// non-selectable by nav.
+						SelectTexDebugTexture(t);
 					}
 				}
 				ImGui::EndChild();
 				if (!m_texDebugSelected.empty() && !selAlive) {
 					// Died under the selection (generation bumped):
-					// drop the preview, never sample a dead view.
-					if (m_texDebugPreview != 0) {
-						m_imgui->RemoveUserTexture(m_texDebugPreview);
-						m_texDebugPreview = 0;
-					}
-					m_texDebugSelected = {};
+					// drop the preview + face views, never sample a
+					// dead view.
+					DropTexDebugSelection();
 					ImGui::TextDisabled("selected texture was destroyed "
 						"(generation bumped) - selection cleared");
 				}
 				if (m_texDebugSelected.empty()) {
-					ImGui::TextDisabled("%zu live textures%s - click one to inspect.",
-						texs.size(), m_texDebugShowContent ? " (all)" : " (aux only)");
+					ImGui::TextDisabled("%zu live textures - click one to inspect.",
+						texs.size());
 				}
 				else {
 					// Preview: fit the window width, keep the aspect.
@@ -12049,17 +12478,179 @@ namespace engine {
 							sel = &t;
 							break;
 						}
-					if (sel && m_texDebugPreview != 0) {
-						const float w = ImGui::GetContentRegionAvail().x;
-						const float aspect =
-							float(std::max(sel->extent.height, 1u))
-							/ float(std::max(sel->extent.width, 1u));
-						ImGui::Image(m_texDebugPreview,
-							ImVec2(w, w * aspect));
-						ImGui::TextDisabled("%s %ux%u (raw sample - HDR "
-							"formats read unexposed)", sel->name,
-							sel->extent.width, sel->extent.height);
+				if (sel) {
+					// The texture NAME, prominent (the list rows
+					// truncate long load paths; the preview states
+					// what is actually on screen). Arena-owned copy
+					// (NUL-terminated), so the (begin, end) form needs
+					// no NUL reliance at all.
+					ImGui::TextUnformatted(
+						sel->name.empty() ? "(unnamed)"
+						: sel->name.data(),
+						sel->name.empty() ? "(unnamed)"
+						: sel->name.data() + sel->name.size());
+						if (sel->isCubemap) {
+							// Cubemap: the 3x2 per-face grid (+X -X +Y -Y
+							// +Z -Z, row-major). One image per face - a
+							// face whose view died (its texture streamed
+							// a recreation) shows a blank cell (binding 0
+							// renders the backend's null texture).
+							static const char* const kFaceNames[6] = {
+								"+X", "-X", "+Y", "-Y", "+Z", "-Z"
+							};
+							const float gap = 6.0f;
+							const float cell =
+								(ImGui::GetContentRegionAvail().x - gap * 2.0f)
+								/ 3.0f;
+							for (uint32_t face = 0; face < 6; ++face) {
+								if (face > 0 && (face % 3) != 0)
+									ImGui::SameLine(0.0f, gap);
+								ImGui::BeginGroup();
+								if (m_texDebugCubePreview[face] != 0) {
+									ImGui::Image(m_texDebugCubePreview[face],
+										ImVec2(cell, cell));
+								}
+								else {
+									// Dead binding (the view died after the
+									// Add - never hand a null descriptor to
+									// the backend): placeholder keeps the grid
+									// aligned.
+									ImGui::Dummy(ImVec2(cell, cell));
+									ImGui::TextDisabled("(view died)");
+								}
+								ImGui::TextDisabled("%s", kFaceNames[face]);
+								ImGui::EndGroup();
+							}
+							ImGui::TextDisabled("%ux%u cube (raw sample - HDR "
+								"formats read unexposed; cube arrays show "
+								"cube 0)",
+								sel->extent.width, sel->extent.height);
+							// Probe row: world position + partition info.
+							// Matched by the library entry's TEXTURE HANDLE
+							// (exact - the bindless slot could alias after
+							// churn); entryName is the library key, so at
+							// most one row matches. (The Holder converts
+							// to Handle - extract BEFORE comparing: the
+							// implicit conversion on the left side of the
+							// member operator trips MSVC's rewritten-
+							// candidate rules.)
+							for (const CubemapRow& row : m_cubemapRows) {
+								const auto* entry =
+									m_cubemaps.Find(row.entryName);
+								if (!entry || entry->texture.empty())
+									continue;
+								const smvk::TextureHandle entryTex =
+									entry->texture;
+								if (entryTex != sel->handle)
+									continue;
+								ImGui::Text("probe %s @ (%.1f, %.1f, %.1f)"
+									"  influence %.1fm  fade %.1fm  %s",
+									row.entryName.c_str(),
+									row.position.x, row.position.y,
+									row.position.z,
+									row.influenceRadius, row.fadeRadius,
+									row.pinned
+										? "pinned (always resident)"
+										: "streamed (distance residency)");
+								break;
+							}
+							// No row matched: the global/skybox capture
+							// (no manifest row) - nothing to place.
+						}
+						else if (m_texDebugPreview != 0) {
+							const float w = ImGui::GetContentRegionAvail().x;
+							const float aspect =
+								float(std::max(sel->extent.height, 1u))
+								/ float(std::max(sel->extent.width, 1u));
+							ImGui::Image(m_texDebugPreview,
+								ImVec2(w, w * aspect));
+							ImGui::TextDisabled("%ux%u (raw sample - HDR "
+								"formats read unexposed)",
+								sel->extent.width, sel->extent.height);
+						}
+						// Material use (2D only - cubemaps serve IBL, not
+						// material slots). Materials store the texture POOL
+						// index (TextureHandle::index() - NOT the bindless
+						// slot; the two diverge once textures churn, see
+						// GetTextureBindlessIndex), so match on that.
+						if (!sel->isCubemap && m_world) {
+							const int poolIdx =
+								static_cast<int>(sel->handle.index());
+							uint32_t useBase = 0, useMetRough = 0,
+								useNormal = 0, useOcc = 0, useEmis = 0,
+								useMats = 0;
+							const size_t slotCount =
+								m_world->materialLocations.size();
+							for (size_t i = 0; i < slotCount; ++i) {
+								const smvk::Material* mat =
+									m_world->GetMaterial((uint32_t)i);
+								if (!mat)
+									continue;
+								bool uses = false;
+								if (mat->values.textures.x == poolIdx)
+									{ ++useBase; uses = true; }
+								if (mat->values.textures.y == poolIdx)
+									{ ++useMetRough; uses = true; }
+								if (mat->values.textures.z == poolIdx)
+									{ ++useNormal; uses = true; }
+								if (mat->values.textures.w == poolIdx)
+									{ ++useOcc; uses = true; }
+								if (mat->values.textures2.x == poolIdx)
+									{ ++useEmis; uses = true; }
+								if (uses)
+									++useMats;
+							}
+							if (useMats == 0) {
+								ImGui::TextDisabled(
+									"no material uses this texture (aux)");
+							}
+							else {
+								// Channel names as users author them:
+								// diffuse (baseColor), metallicRoughness
+								// (G=roughness B=metallic), normal,
+								// occlusion, emissive.
+								char usage[256];
+								int off = 0;
+								const auto append =
+									[&](const char* chan, uint32_t n) {
+										if (!n || off >= (int)sizeof(usage) - 1)
+											return;
+										off += std::snprintf(usage + off,
+											sizeof(usage) - off, "%s%s x%u",
+											off ? ", " : "", chan, n);
+									};
+								append("diffuse", useBase);
+								append("metallicRoughness", useMetRough);
+								append("normal", useNormal);
+								append("occlusion", useOcc);
+								append("emissive", useEmis);
+								ImGui::Text("material use (%u material%s): %s",
+									useMats, useMats == 1 ? "" : "s", usage);
+							}
+						}
 					}
+				}
+				// Format legend: the row labels above are debug shorthand.
+				if (ImGui::CollapsingHeader("Format legend")) {
+					ImGui::TextDisabled(
+						"RGBA8_UN    8-bit/channel linear LDR - vertex-color\n"
+						"            charts, engine scratch\n"
+						"RGBA8_SRGB  8-bit sRGB-encoded color - imported\n"
+						"            albedo/diffuse, decal tints\n"
+						"RGBA16F     16-bit float HDR - GI volumes, cubemaps,\n"
+						"            bloom, SSR targets\n"
+						"RGBA32F     32-bit float HDR - light/debug buffers\n"
+						"R16F/RG16F/R32F  1-2 channel float - depth meters,\n"
+						"            velocity, SH taps, exposure\n"
+						"D32F        depth attachment (32-bit float)\n"
+						"BC1/BC3/BC5/BC7  block-compressed pak CONTENT\n"
+						"            (cook transcodes): albedo / alpha-smooth\n"
+						"            / normal / roughness-metallic packed\n"
+						"BC4/BC6H    1-channel UN/SN + HDR float blocks\n"
+						"            (rare in this content)\n"
+						"(other)     everything else (numeric formats,\n"
+						"            packed 101010/111110, ...)\n"
+						"_sRGB suffix = sRGB variant of the same layout");
 				}
 				ImGui::End();
 			}

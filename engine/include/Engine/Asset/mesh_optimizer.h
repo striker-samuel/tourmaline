@@ -147,6 +147,12 @@ struct CookedLod {
 // (Lengyel) Gram-Schmidt orthogonalized against N with a handedness sign.
 // Creases survive because crease vertices are duplicated. Call
 // ComputeSmoothNormals first (GenerateTangents consumes its normals).
+// Inversion repair: a smoothed normal that disagrees with its biggest
+// contributor (dot <= 0 — cancellation across opposing faces on thin
+// decimated topology) falls back to that dominant face normal, so every
+// repaired vertex agrees with at least one real triangle (double-sided
+// materials shade either side; single-sided ones match a true face
+// instead of pointing backwards into black).
 // ---------------------------------------------------------------------------
 void ComputeSmoothNormals(StaticMeshUpload& upload);
 void GenerateTangents(StaticMeshUpload& upload);

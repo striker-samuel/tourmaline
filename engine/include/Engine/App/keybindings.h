@@ -19,7 +19,6 @@ namespace keybind {
 
 // ---- Mode / UI ----
 constexpr int UI_TOGGLE = GLFW_KEY_I;       // FPS <-> UI panel mode
-constexpr int UI_DOCK_CYCLE = GLFW_KEY_U;   // debug panel Right <-> Left
 
 // ---- Feature toggles ----
 constexpr int MOTION_BLUR_TOGGLE = GLFW_KEY_M;
@@ -67,6 +66,12 @@ constexpr int DEBUG_VIEW_POM = GLFW_KEY_F11;
 // ---- Diagnostics ----
 constexpr int FRAME_HISTOGRAM_TOGGLE = GLFW_KEY_F12; // live frame-time strip (keep; do not add more F12 uses)
 constexpr int DS_VIZ_CYCLE = GLFW_KEY_Y;             // deferred-shadow visualizers (DS_DEBUG_VIZ builds)
+// Text-only stats HUD (top-left overlay): Ctrl held + T pressed. T alone
+// does nothing (no bare binding); Ctrl alone stays camera-descend (the
+// WASDQE/Space/Shift/Ctrl movement reservation is untouched — only the
+// chord toggles). No F-key was free (F12 is forbidden), and Ctrl+C would
+// collide with ImGui copy while typing.
+constexpr int HUD_TOGGLE = GLFW_KEY_T;
 
 // Shared GI-debug cycle length: flat irradiance, source palette,
 // isolated level, dominant level, + off. HandleShortcuts and UpdateCamera

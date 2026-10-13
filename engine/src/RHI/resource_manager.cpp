@@ -223,9 +223,11 @@ uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const { 
 std::vector<TextureInfo> ResourceManager::ListTextureInfos() { return impl_->vulkan.ListTextureInfos(); }
 bool ResourceManager::IsCubemapTexture(TextureHandle handle) const { return impl_->vulkan.IsCubemapTexture(handle); }
 uint32_t ResourceManager::GetTextureArrayLayers(TextureHandle handle) const { return impl_->vulkan.GetTextureArrayLayers(handle); }
+ImageHandle ResourceManager::GetTextureImageHandle(TextureHandle handle) const { return impl_->vulkan.GetTextureImageHandle(handle); }
 uint32_t ResourceManager::GetTextureCubemapSize(TextureHandle handle) const { return impl_->vulkan.GetTextureCubemapSize(handle); }
 uint32_t ResourceManager::GetTextureMipLevels(TextureHandle handle) const { return impl_->vulkan.GetTextureMipLevels(handle); }
 const void* ResourceManager::GetTextureVkImageView(TextureHandle handle) const { return impl_->vulkan.GetTextureVkImageView(handle); }
+const void* ResourceManager::GetImageViewVkImageView(ImageViewHandle handle) const { return impl_->vulkan.GetImageViewVkImageView(handle); }
 const void* ResourceManager::GetVkSamplerOpaque(uint32_t samplerIndex) const { return impl_->vulkan.GetVkSamplerOpaque(samplerIndex); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }

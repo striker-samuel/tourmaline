@@ -198,70 +198,6 @@ namespace {
 		};
 	}
 
-	//struct FormatInfo {
-	//	uint32_t blockWidth;
-	//	uint32_t blockHeight;
-	//	uint32_t bytesPerBlock;
-	//};
-	//FormatInfo getFormatInfo(VkFormat format) {
-	//	switch (format) {
-	//		// 8-bit per pixel
-	//	case VK_FORMAT_R8_UNORM:
-	//	case VK_FORMAT_R8_SRGB:
-	//		return { 1, 1, 1 };
-
-	//		// 16-bit per pixel
-	//	case VK_FORMAT_R8G8_UNORM:
-	//	case VK_FORMAT_R8G8_SRGB:
-	//	case VK_FORMAT_R16_UNORM:
-	//	case VK_FORMAT_D16_UNORM:
-	//		return { 1, 1, 2 };
-
-	//		// 32-bit per pixel
-	//	case VK_FORMAT_R8G8B8A8_UNORM:
-	//	case VK_FORMAT_R8G8B8A8_SRGB:
-	//	case VK_FORMAT_B8G8R8A8_UNORM:
-	//	case VK_FORMAT_B8G8R8A8_SRGB:
-	//	case VK_FORMAT_R16G16_UNORM:
-	//	case VK_FORMAT_R32_SFLOAT:
-	//	case VK_FORMAT_D32_SFLOAT:
-	//		return { 1, 1, 4 };
-
-	//		// 64-bit per pixel
-	//	case VK_FORMAT_R16G16B16A16_SFLOAT:
-	//	case VK_FORMAT_R32G32_SFLOAT:
-	//		return { 1, 1, 8 };
-
-	//		// 128-bit per pixel
-	//	case VK_FORMAT_R32G32B32A32_SFLOAT:
-	//		return { 1, 1, 16 };
-
-	//		// BC compressed formats
-	//	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
-	//	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
-	//	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-	//	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
-	//	case VK_FORMAT_BC4_UNORM_BLOCK:
-	//	case VK_FORMAT_BC4_SNORM_BLOCK:
-	//		return { 4, 4, 8 };
-
-	//	case VK_FORMAT_BC2_UNORM_BLOCK:
-	//	case VK_FORMAT_BC2_SRGB_BLOCK:
-	//	case VK_FORMAT_BC3_UNORM_BLOCK:
-	//	case VK_FORMAT_BC3_SRGB_BLOCK:
-	//	case VK_FORMAT_BC5_UNORM_BLOCK:
-	//	case VK_FORMAT_BC5_SNORM_BLOCK:
-	//	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
-	//	case VK_FORMAT_BC6H_SFLOAT_BLOCK:
-	//	case VK_FORMAT_BC7_UNORM_BLOCK:
-	//	case VK_FORMAT_BC7_SRGB_BLOCK:
-	//		return { 4, 4, 16 };
-
-	//	default:
-	//		assert(false && "Unsupported VkFormat");
-	//		return { 1, 1, 0 };
-	//	}
-	//}
 	bool IsHostTransferSupported(VkFormat format) {
 		if (physicalDevice_ == VK_NULL_HANDLE) return false;
 		VkFormatProperties3 props3{ VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3, nullptr };
@@ -712,17 +648,6 @@ const char* vkResultToString(VkResult result) {
 	}
 }
 
-//smvk::Format ChooseSwapSurfaceFormat(const std::vector<smvk::Format>& availableFormats) {
-//	for (const auto& availableFormat : availableFormats) {
-//		if (availableFormat.format == smvk::Format::BGRA8_SRGB &&
-//			availableFormat.colorSpace == smvk::ColorSpace::SRGB_Nonlinear)
-//		{
-//			return availableFormat;
-//		}
-//	}
-//	return availableFormats[0];
-//}
-
 // RHI to vulkan
 constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
 	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Index (addressable: GPU-driven filter/index reads via BDA)
@@ -748,14 +673,6 @@ constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
 	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
 };
 
-//constexpr bool HasAnyFlag(
-//	smvk::ImageUsage value,
-//	smvk::ImageUsage flags)
-//{
-//	return
-//		(static_cast<uint32_t>(value) &
-//			static_cast<uint32_t>(flags)) != 0;
-//}
 constexpr VkImageUsageFlags     smvk::toVkImageUsageFlags(ImageUsage usage)
 {
 	VkImageUsageFlags flags = 0;
@@ -1702,7 +1619,10 @@ static const SerializeMode& RgSerializeMode()
 	}();
 	return m;
 }
-static void RgSerializeGate(bool on, VkQueue queue)
+// The gate's queue wait holds the queue mutex like every queue call:
+// vkQueueWaitIdle is not internally synchronized and can race a
+// concurrent Submitter::submit() on the same queue from another thread.
+static void RgSerializeGate(bool on, VkQueue queue, std::mutex& queueMutex)
 {
 	if (!on || queue == VK_NULL_HANDLE)
 		return;
@@ -1710,6 +1630,7 @@ static void RgSerializeGate(bool on, VkQueue queue)
 	if (!s_noticed.exchange(true))
 		std::fprintf(stderr,
 			"[Serialize] VULKANTOY_SERIALIZE active: queue idle after gated submits\n");
+	std::lock_guard<std::mutex> lock(queueMutex);
 	vkQueueWaitIdle(queue);
 }
 
@@ -3045,35 +2966,74 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	};
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &defaultPipeLayout));
 
+	// Pool sizing: an update-after-bind pool charges the LAYOUT's maximum
+	// counts per allocated set (not the descriptors actually written - the
+	// partially-bound bindings do not shrink the allocation charge). The
+	// layout carries FOUR sampled-image arrays (Textures, VolumeTextures,
+	// Cubemaps, MsaaTextures): 3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES
+	// sampled slots. The old MAX_TEXTURES + MAX_VOLUME_TEXTURES reservation
+	// was HALF the requirement - this driver's allocation happened to
+	// succeed anyway, but the spec lets it fail (OUT_OF_POOL_MEMORY), and
+	// the unchecked call below would have kept NULL sets silently (every
+	// frame skips its descriptor updates - UpdateDescriptors skips null
+	// sets - and draws bind garbage).
 	std::vector<VkDescriptorPoolSize> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES + MAX_VOLUME_TEXTURES },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices
 	  }
 	};
+	// Device limits for update-after-bind sets: the plain per-set limits
+	// do NOT govern UAB pools - the descriptor-indexing properties'
+	// update-after-bind variants do (fetched through the properties2
+	// pNext chain, like the Vulkan samples do).
+	{
+		VkPhysicalDeviceDescriptorIndexingPropertiesEXT indexingProps{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES_EXT };
+		VkPhysicalDeviceProperties2 props2{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &indexingProps };
+		vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+		const uint32_t needSampled = 3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES;
+		if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < needSampled
+			|| indexingProps.maxDescriptorSetUpdateAfterBindSamplers < MAX_SAMPLERS
+			|| indexingProps.maxDescriptorSetUpdateAfterBindStorageImages < MAX_TEXTURES) {
+			throw std::runtime_error(
+				"device update-after-bind descriptor limits are below the "
+				"bindless table requirements (sampled " +
+				std::to_string(needSampled) + ", storage " +
+				std::to_string(MAX_TEXTURES) + ", samplers " +
+				std::to_string(MAX_SAMPLERS) + ")");
+		}
+	}
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
 
 	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
-	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT]{};
-	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
-		layouts[frame] = defaultSetLayout;
-	}
+	// ONE set, shared by every frame: the bindless table is frame-invariant
+	// except EngineGlobals, which is REWRITTEN in place each frame
+	// (update-after-bind) to point at the current frame's slice - see
+	// FlushEngineGlobals and the UpdateDescriptors null-set skip.
+	VkDescriptorSetLayout layout = defaultSetLayout;
 
 	VkDescriptorSetAllocateInfo info
 	{
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.descriptorPool = pool,
-		.descriptorSetCount = 1, // We are just allocating the first layout namespace
-		.pSetLayouts = layouts
+		.descriptorSetCount = 1,
+		.pSetLayouts = &layout
 	};
-	vkAllocateDescriptorSets(
+	VkResult allocResult = vkAllocateDescriptorSets(
 		device_,
 		&info,
 		defaultDescriptorSets_
 	);
+	if (allocResult != VK_SUCCESS) {
+		fprintf(stderr, "[Vulkan Error] bindless descriptor set allocation failed: %s\n",
+			vkResultToString(allocResult));
+		throw std::runtime_error("bindless descriptor set allocation failed");
+	}
 
 	// ============================================================================
 
@@ -3504,6 +3464,20 @@ bool smvk::UploadStreamer::hasAnyPending() const noexcept {
 	for (auto& ust : states_) if (ust.hasPending) return true;
 	return false;
 }
+// Flush-contract producer guard (see ThreadUploadState::active): marks the
+// shard ACTIVE for the whole recording; the cross-shard drains assert
+// quiescence. The exchange assert doubles as the same-shard-two-threads
+// check (a pool mis-assignment handing two live threads one shard).
+// Debug builds only (assert): the Release contract is documentation +
+// call-site discipline (workers joined / quiescent before flush()).
+struct UploadShardActiveGuard {
+	std::atomic<bool>& a;
+	explicit UploadShardActiveGuard(std::atomic<bool>& a_) : a(a_) {
+		assert(!a.exchange(true, std::memory_order_acq_rel)
+			&& "upload shard entered by two threads (pool shard mis-assignment?)");
+	}
+	~UploadShardActiveGuard() { a.store(false, std::memory_order_release); }
+};
 void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
 	if (!data || size == 0 || dst.empty()) return;
@@ -3527,6 +3501,7 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		}
 	}
 	ThreadUploadState& ust = states_[CurrentPoolShard()];
+	UploadShardActiveGuard shardGuard{ ust.active };
 	Buffer* dstBuf = m_rm->buffers_.get(dst);
 	if (!dstBuf) return;
 	// allocate from ring
@@ -3625,6 +3600,7 @@ void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst, const void* conten
 	}
 	if (!ensureBulkRing()) return;
 	ThreadUploadState& ust = bulk_;
+	UploadShardActiveGuard shardGuard{ ust.active };
 	VkDeviceSize chunkBytes = 0; // staged bytes in the current blob
 	VkDeviceSize chunkDstMin = std::numeric_limits<VkDeviceSize>::max();
 	VkDeviceSize chunkDstMax = 0; // exclusive end of the chunk's dst span
@@ -3850,6 +3826,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	}
 	// fallback to staging ring copy path
 	ThreadUploadState& ust = states_[CurrentPoolShard()];
+	UploadShardActiveGuard shardGuard{ ust.active };
 	// allocate from ring
 	VkDeviceSize ringOff = allocFromRing(ust, dataSize, 16);
 	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
@@ -3959,13 +3936,17 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		}
 	}
 	ust.hasPending = true;
+	// Defer staging destruction until the transfer batch retires
+	// (TimelinePoint). Registered BEFORE the threshold check:
+	// submitState CONSUMES pendingCleanups and resets the batch, so
+	// registering AFTER it would orphan the cleanup in a shard that may
+	// never flush again (a leaked tmp staging buffer).
+	if (useTmp) {
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+	}
 	ust.stagedBytesSinceFlush += dataSize;
 	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
 		submitState(ust, false);
-	}
-	// defer staging destruction until transfer batch is submitted (TimelinePoint)
-	if (useTmp) {
-		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	// update global sync
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
@@ -4033,6 +4014,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
 	const auto texT0 = std::chrono::steady_clock::now();
 	ThreadUploadState& ust = states_[CurrentPoolShard()];
+	UploadShardActiveGuard shardGuard{ ust.active };
 	VkDeviceSize ringOff = allocFromRing(ust, dataSize, 16);
 	const auto texT1 = std::chrono::steady_clock::now();
 	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
@@ -4105,12 +4087,17 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		}
 	}
 	ust.hasPending = true;
+	// Defer staging destruction until the transfer batch retires
+	// (TimelinePoint). Registered BEFORE the threshold check for the same
+	// reason as uploadImage's tail: submitState consumes pendingCleanups,
+	// so a cleanup registered after it can be orphaned in a shard that
+	// never flushes again (a leaked tmp staging buffer).
+	if (useTmp) {
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+	}
 	ust.stagedBytesSinceFlush += dataSize;
 	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
 		submitState(ust, false);
-	}
-	if (useTmp) {
-		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 	if (texTrace) {
@@ -4127,15 +4114,33 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 }
 void smvk::UploadStreamer::flush() {
 	SMVK_PROFILE_STREAM("UploadFlush");
+	// Flush contract (see ThreadUploadState::active): cross-shard drains
+	// require QUIESCENT producers - a worker recording into its shard while
+	// this loop touches it is a data race, so the assert makes the contract
+	// debug-visible. (flushLocal is the same-thread escape hatch.)
+	for (const auto& ust : states_)
+		assert(!ust.active.load(std::memory_order_acquire)
+			&& "flush() during an active upload recording (producers must be quiescent)");
+	assert(!bulk_.active.load(std::memory_order_acquire)
+		&& "flush() during an active bulk upload recording");
 	if (bulk_.hasPending) submitState(bulk_, true);
 	for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
 void smvk::UploadStreamer::flushLocal() {
 	SMVK_PROFILE_STREAM("UploadFlushLocal");
+	// Same-thread shard only: the producer's own sequential drain (the
+	// caller IS the shard's owner - no quiescence needed).
 	ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
 smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	// Drains all shards (quiescent: call after workers joined). Returns the
-	// last timeline point for callers that need to chain.
+	// last timeline point for callers that need to chain. Same flush
+	// contract as flush() - the assert makes a mid-recording drain
+	// debug-visible instead of a silent race.
 	TimelinePoint last{};
+	for (const auto& ust : states_)
+		assert(!ust.active.load(std::memory_order_acquire)
+			&& "flushAndGetTimeline() during an active upload recording (producers must be quiescent)");
+	assert(!bulk_.active.load(std::memory_order_acquire)
+		&& "flushAndGetTimeline() during an active bulk upload recording");
 	if (bulk_.hasPending && bulk_.curCmd != VK_NULL_HANDLE) {
 		submitState(bulk_, true);
 		last = lastTransferPoint();
@@ -4319,6 +4324,9 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffers(std::span<const smvk::
 	m_submitter->wait(han, UINT64_MAX);
 	// Safe to reuse on the next call: every download waits for its own
 	// copy before returning, so the staging is never read in flight.
+	// GPU done != CPU-visible on non-coherent staging: invalidate the
+	// copied range before reading it (see InvalidateStagingRange).
+	InvalidateStagingRange(m_readbackStaging, 0, static_cast<VkDeviceSize>(total));
 	void* mapped = MapBuffer(m_readbackStaging);
 	if (!mapped)
 		return false;
@@ -4446,6 +4454,11 @@ bool smvk::VulkanResourceManager::PollAsyncDownloadDataFromBuffers(
 		return false;
 	if (completed < ticket)
 		return false; // still in flight; try again next frame
+	// Non-coherent staging: invalidate the submitted range before the
+	// reads (see InvalidateStagingRange - the timeline completion says the
+	// GPU wrote the bytes, not that the CPU can SEE them yet).
+	InvalidateStagingRange(m_asyncStaging, 0,
+		static_cast<VkDeviceSize>(m_asyncReadbackBytes));
 	void* mapped = MapBuffer(m_asyncStaging);
 	if (!mapped)
 		return false;
@@ -4503,7 +4516,7 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 	if ((srcImg->usage & ImageUsage::TransferSrc) == ImageUsage::None) {
 		std::fprintf(stderr,
 			"[DownloadDataFromImage] image '%s' lacks TransferSrc usage — cannot copy\n",
-			srcImg->name ? srcImg->name : "<anon>");
+			srcImg->name.valid() ? srcImg->name.data() : "<anon>");
 		return false;
 	}
 	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(outSize)))
@@ -4564,6 +4577,9 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 		VK_ACCESS_2_HOST_READ_BIT);
 	m_submitter->submit(han);
 	m_submitter->wait(han, UINT64_MAX);
+	// Non-coherent staging: invalidate the copied range before the read
+	// (see InvalidateStagingRange - GPU completion alone is not enough).
+	InvalidateStagingRange(m_readbackStaging, 0, static_cast<VkDeviceSize>(outSize));
 	void* mapped = MapBuffer(m_readbackStaging);
 	if (!mapped)
 		return false;
@@ -5021,6 +5037,15 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	//image.flags = ci.flags;
 	image.ownership = ResourceOwnership::Owned;
 	image.isCubemap = ci.isCubemap;
+	// Arena-owned copy of the caller's name (caller strings carry no
+	// lifetime contract - literals, c_str()s, stack buffers): the pool
+	// entry keeps a stable view for ListTextureInfos/debug prints.
+	// Arena-owned copy of the caller's name (caller strings carry no
+		// lifetime contract - literals, c_str()s, stack buffers): the pool
+		// entry keeps a stable view for ListTextureInfos/debug prints.
+	// CopyImageName: the mutex-guarded arena copy (image/texture creation
+	// is cross-thread - render + pak-preload workers).
+	image.name = CopyImageName(ci.name);
 
 	VkImageCreateInfo vkCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
@@ -5054,15 +5079,33 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	// EVSM-style async resources: CONCURRENT graphics+compute avoids the
 	// per-frame ownership ping-pong (events + barriers order the queues).
-	uint32_t concurrentFamilies[2] = {};
+	uint32_t concurrentFamilies[3] = {};
 	if (ci.concurrentCompute && core_ && core_->indices.computeFamily
 		&& core_->indices.graphicsFamily
 		&& *core_->indices.computeFamily != *core_->indices.graphicsFamily) {
 		concurrentFamilies[0] = *core_->indices.graphicsFamily;
 		concurrentFamilies[1] = *core_->indices.computeFamily;
+		uint32_t familyCount = 2;
+		// The upload streamer copies into TransferDst images from the
+		// DEDICATED TRANSFER family (core_->indices.transferFamily - the
+		// streamer's queue is created on it): a CONCURRENT image shared
+		// with graphics+compute only would be accessed by a family it was
+		// NOT shared with. Include the transfer family when distinct.
+		if (core_->indices.transferFamily
+			&& *core_->indices.transferFamily != *core_->indices.graphicsFamily
+			&& *core_->indices.transferFamily != *core_->indices.computeFamily) {
+			concurrentFamilies[2] = *core_->indices.transferFamily;
+			familyCount = 3;
+		}
 		vkCI.sharingMode = VK_SHARING_MODE_CONCURRENT;
-		vkCI.queueFamilyIndexCount = 2;
+		vkCI.queueFamilyIndexCount = familyCount;
 		vkCI.pQueueFamilyIndices = concurrentFamilies;
+		// Metadata MUST match the actual sharing mode (the old code never
+		// set it here - the upload streamer's cross-queue ownership
+		// decision keys on isConcurrent: a CONCURRENT image with a stale
+		// false flag got release/acquire barriers for families it was not
+		// shared with, an invalid barrier set).
+		image.isConcurrent = true;
 	}
 	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -5952,6 +5995,9 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 
 	image.isConcurrent = concurrentSharing;
 	image.isCubemap = isCubemap;
+	// Arena-owned copy (same contract as CreateImageImpl:
+	// CopyImageName - cross-thread mutex-guarded arena copy).
+	image.name = CopyImageName(debugName);
 
 
 	const ImageHandle imageHandle =
@@ -6435,6 +6481,9 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 	image.liveViewCount = 0;
 	image.ownership = ResourceOwnership::Owned;
 	image.isCubemap = plan.isCubemap;
+	// Arena-owned copy (same contract as CreateImageImpl:
+	// CopyImageName - cross-thread mutex-guarded arena copy).
+	image.name = CopyImageName(debugName);
 
 	const ImageHandle imageHandle =
 		images_.create(std::move(image));
@@ -6907,7 +6956,11 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	image->mipLevels = fresh.mipLevels;
 	image->arrayLayers = fresh.arrayLayers;
 	image->isCubemap = fresh.isCubemap;
-	image->name = fresh.name;
+	// Name: prefer the fresh ci's name, but the recreate callers often pass
+	// a bare ImageCreateInfo (no name) - keep the OLD name then (the
+	// arena view stays valid; streaming recreates keep their identity).
+	if (fresh.name.valid())
+		image->name = fresh.name;
 	SetImageSyncState(handle, ImageGlobalSyncState{});
 
 	return handle;
@@ -7062,6 +7115,17 @@ smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderMod
 #endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
+smvk::StringViewT smvk::VulkanResourceManager::CopyImageName(const char* name) {
+	// See the member block: image/texture creation runs on the render
+	// thread AND worker threads (pak preload, streaming) - the arena is
+	// not synchronized, so the copy is mutex-guarded. The empty-view
+	// return for a null name IS the unnamed contract (displays read
+	// "(unnamed)").
+	if (!name)
+		return StringViewT{};
+	std::lock_guard<std::mutex> lock(nameArenaMutex_);
+	return nameArena_.AllocateString(StringViewT(name));
+}
 [[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(BufferHandle  handle) {
 	// Hardened: in Release the asserts below compile out, and an empty /
 	// retired handle would reach vmaMapMemory with a null allocation
@@ -7086,6 +7150,21 @@ void smvk::VulkanResourceManager::UnmapBuffer(BufferHandle handle) {
 	// non-coherent staging buffers later.
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
 	vmaUnmapMemory(m_allocator, buf->vma_alloc);
+}
+void smvk::VulkanResourceManager::InvalidateStagingRange(BufferHandle handle,
+	VkDeviceSize offset, VkDeviceSize size) {
+	// See the header contract: the readback staging is host-visible but
+	// not guaranteed host-COHERENT (VMA may pick a non-coherent cached
+	// type); without this the CPU can read STALE bytes after the GPU copy
+	// completed (the spec requires the explicit invalidate). Coherent
+	// memory makes this a no-op that the spec still allows.
+	auto buf = this->buffers_.get(handle);
+	if (!buf || buf->vma_alloc == VK_NULL_HANDLE)
+		return;
+	VkResult r = vmaInvalidateAllocation(m_allocator, buf->vma_alloc, offset, size);
+	if (r != VK_SUCCESS)
+		fprintf(stderr, "[Vulkan Warning] vmaInvalidateAllocation (%llu..+%llu) failed: %s\n",
+			(unsigned long long)offset, (unsigned long long)size, vkResultToString(r));
 }
 std::vector<smvk::GpuMemoryHeap> smvk::VulkanResourceManager::GetGpuMemoryInfo() const {
 	std::vector<smvk::GpuMemoryHeap> out;
@@ -7648,7 +7727,7 @@ std::vector<smvk::TextureInfo> smvk::VulkanResourceManager::ListTextureInfos()
 			return;
 		smvk::TextureInfo info{};
 		info.handle = handle;
-		info.name = image->name ? image->name : "";
+		info.name = image->name;
 		info.format = image->format;
 		info.type = image->type;
 		info.extent = image->extent;
@@ -7668,6 +7747,14 @@ uint32_t smvk::VulkanResourceManager::GetTextureArrayLayers(TextureHandle handle
 		return 0;
 	const Image* image = images_.get(texture->image);
 	return image ? image->arrayLayers : 0;
+}
+smvk::ImageHandle smvk::VulkanResourceManager::GetTextureImageHandle(TextureHandle handle) const
+{
+	// The texture's underlying image (for standalone view creation on
+	// it). Dead texture handles (generation bumped) return an empty
+	// handle - CreateImageView's assert never sees a stale entry.
+	const Texture* texture = textures_.get(handle);
+	return texture ? texture->image : smvk::ImageHandle{};
 }
 uint32_t smvk::VulkanResourceManager::GetTextureCubemapSize(TextureHandle handle) const
 {
@@ -7695,6 +7782,14 @@ VkImageView smvk::VulkanResourceManager::GetTextureVkImageView(TextureHandle han
 	if (!texture)
 		return VK_NULL_HANDLE;
 	const ImageView* view = imageViews_.get(texture->view);
+	return view ? view->vkView : VK_NULL_HANDLE;
+}
+VkImageView smvk::VulkanResourceManager::GetImageViewVkImageView(ImageViewHandle handle) const
+{
+	// Same interop for a standalone (caller-created) view: pool-get
+	// returns null for dead handles (generation bumped), so a freed
+	// view can never slip into a descriptor.
+	const ImageView* view = imageViews_.get(handle);
 	return view ? view->vkView : VK_NULL_HANDLE;
 }
 const void* smvk::VulkanResourceManager::GetVkSamplerOpaque(uint32_t samplerIndex) const
@@ -8366,7 +8461,7 @@ smvk::TimelinePoint smvk::Submitter::submit(
 	// VULKANTOY_SERIALIZE=uploads (see RgSerializeGate): every engine-side
 	// submit funnels through here — upload batches, acquire barriers,
 	// readback copies, one-off dumps.
-	RgSerializeGate(RgSerializeMode().uploads, m_queue);
+	RgSerializeGate(RgSerializeMode().uploads, m_queue, GetQueueMutex(m_queue));
 
 	return {
 		.semaphore = m_timelineSemaphore,
@@ -8806,27 +8901,62 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	CreateSwapchain();
 	CreateImageViews();
-	// Handle sync objects resize if imageCount or framesInFlight changed (hybrid timeline)
-	if (renderFinishedSemaphores_.size() != images_.size() || imageTimelineValues_.size() != images_.size()) {
-		for (auto s : renderFinishedSemaphores_) if (s) vkDestroySemaphore(device_, s, nullptr);
+	// Per-image sync objects: rebuild when the swapchain's image count
+	// changed. Every OLD semaphore is destroyed BEFORE the vector is
+	// touched (resize() must never be the destroy path: truncation would
+	// leak handles, growth would leave null slots). CreateSwapchain no
+	// longer resizes this vector for exactly that reason - the old code's
+	// size check always matched (the resize had already run), so the
+	// rebuild fired only when imageTimelineValues_ happened to mismatch
+	// (an accidental policy, not a lifecycle).
+	if (renderFinishedSemaphores_.size() != images_.size()
+		|| imageTimelineValues_.size() != images_.size()) {
+		for (VkSemaphore s : renderFinishedSemaphores_) {
+			if (s != VK_NULL_HANDLE)
+				vkDestroySemaphore(device_, s, nullptr);
+		}
 		renderFinishedSemaphores_.clear();
-		imageTimelineValues_.assign(images_.size(), 0);
-		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 		renderFinishedSemaphores_.resize(images_.size(), VK_NULL_HANDLE);
-		for (size_t i = 0; i < images_.size(); ++i) vkCreateSemaphore(device_, &info, nullptr, &renderFinishedSemaphores_[i]);
+		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+		for (size_t i = 0; i < images_.size(); ++i) {
+			if (vkCreateSemaphore(device_, &info, nullptr,
+					&renderFinishedSemaphores_[i]) != VK_SUCCESS) {
+				throw std::runtime_error("Failed to recreate render-finished semaphore.");
+			}
+		}
+		// Fresh semaphores => fresh timeline payload values.
+		imageTimelineValues_.assign(images_.size(), 0);
 	}
-	if (frameTimelineValues_.size() != framesInFlight_) {
+	// Per-frame sync objects: rebuild when the frames-in-flight count
+	// changed (Recreate already vkDeviceWaitIdle'd + flushed the deferred
+	// queue, so nothing is in flight - safe to destroy). The old path
+	// CLEARED inFlightFences_ without destroying: a VkFence leak on every
+	// frames-in-flight change.
+	if (frameTimelineValues_.size() != framesInFlight_
+		|| imageAvailableSemaphores_.size() != framesInFlight_
+		|| inFlightFences_.size() != framesInFlight_) {
 		frameTimelineValues_.assign(framesInFlight_, 0);
-		for (auto s : imageAvailableSemaphores_) if (s) vkDestroySemaphore(device_, s, nullptr);
+		for (VkSemaphore s : imageAvailableSemaphores_) {
+			if (s != VK_NULL_HANDLE)
+				vkDestroySemaphore(device_, s, nullptr);
+		}
 		imageAvailableSemaphores_.clear();
+		for (VkFence f : inFlightFences_) {
+			if (f != VK_NULL_HANDLE)
+				vkDestroyFence(device_, f, nullptr);
+		}
 		inFlightFences_.clear();
 		VkSemaphoreCreateInfo sinfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 		VkFenceCreateInfo finfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
 		imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 		inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
 		for (size_t i = 0; i < framesInFlight_; ++i) {
-			vkCreateSemaphore(device_, &sinfo, nullptr, &imageAvailableSemaphores_[i]);
-			vkCreateFence(device_, &finfo, nullptr, &inFlightFences_[i]);
+			if (vkCreateSemaphore(device_, &sinfo, nullptr,
+					&imageAvailableSemaphores_[i]) != VK_SUCCESS
+				|| vkCreateFence(device_, &finfo, nullptr,
+					&inFlightFences_[i]) != VK_SUCCESS) {
+				throw std::runtime_error("Failed to recreate per-frame sync objects.");
+			}
 		}
 	}
 	CreateDepthResources();
@@ -8912,7 +9042,11 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, nullptr);
 	images_.resize(actualImageCount);
 	imageViews_.resize(actualImageCount);
-	renderFinishedSemaphores_.resize(actualImageCount, VK_NULL_HANDLE);
+	// (No sync-object resize here - renderFinishedSemaphores_ is owned by
+	// the sync-object lifecycle: CreateSyncObjects at init, the count-
+	// change block in Recreate(). Resizing here made the recreate check
+	// size-match ALWAYS (null slots left live on growth) and leaked the
+	// truncated-away handles on shrink.)
 	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, images_.data());
 
 
@@ -9575,15 +9709,14 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// freed from here on retires once this submit (and all before it)
 			// has completed.
 			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
-			// Drop the queue lock before present/Recreate: present is
-			// ordered by the renderFinished semaphore, and Recreate starts
+			// Drop the queue lock before present/Recreate: Recreate starts
 			// with vkDeviceWaitIdle plus preservation submits that re-lock
 			// this same mutex (swapchain depth copy) — holding it across
 			// the call deadlocks with EDEADLK on present-driven recreates.
 			lockG.unlock();
 			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
 			// frame's tail waits queue idle before present.
-			RgSerializeGate(RgSerializeMode().main, graphicsQueue_);
+			RgSerializeGate(RgSerializeMode().main, graphicsQueue_, mg);
 			VkPresentInfoKHR presentInfo{};
 			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 			presentInfo.waitSemaphoreCount = 1;
@@ -9592,20 +9725,30 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			presentInfo.swapchainCount = 1;
 			presentInfo.pSwapchains = swapChains;
 			presentInfo.pImageIndices = &currentImageIndex_;
-			// FIFO VSync throttles inside vkQueuePresentKHR (vertical-blank
-			// wait). Time it so the caller can report it as wait, not CPU.
-			const auto presentStart = std::chrono::steady_clock::now();
-		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-		lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - presentStart).count();
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-			framebufferResized) {
-			framebufferResized = false;
-			Recreate();
-		}
-		else if (result != VK_SUCCESS) {
-			throw std::runtime_error("failed to present swap chain image!");
-		}
+			// The present call itself holds the queue mutex:
+			// vkQueuePresentKHR is not internally synchronized, and
+			// Submitter::submit() (the upload streamer's acquire-barrier
+			// submits) runs on other threads against this same queue.
+			// Released immediately after the call, BEFORE Recreate — the
+			// present-vs-Recreate unlock note above still applies.
+			VkResult result;
+			{
+				std::lock_guard<std::mutex> presentLock(mg);
+				// FIFO VSync throttles inside vkQueuePresentKHR (vertical-blank
+				// wait). Time it so the caller can report it as wait, not CPU.
+				const auto presentStart = std::chrono::steady_clock::now();
+				result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+				lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - presentStart).count();
+			}
+			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+				framebufferResized) {
+				framebufferResized = false;
+				Recreate();
+			}
+			else if (result != VK_SUCCESS) {
+				throw std::runtime_error("failed to present swap chain image!");
+			}
 		DlssPclMarker(PclMarker::PresentEnd);
 		AdvanceFrame();
 		DlssEndFrame();
@@ -9623,8 +9766,9 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			}
 			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
-			// frame's tail waits queue idle before present.
-			RgSerializeGate(RgSerializeMode().main, graphicsQueue_);
+			// frame's tail waits queue idle before present (gate holds the
+			// graphics queue mutex; the present below locks mp).
+			RgSerializeGate(RgSerializeMode().main, graphicsQueue_, mg);
 			{
 				std::lock_guard<std::mutex> lock(mp);
 				VkPresentInfoKHR presentInfo{};
@@ -10863,26 +11007,37 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 	std::vector<PassUsage> out;
 	out.reserve(passes_.size());
+	// Logical-view -> physical-image resolution (external views resolve to
+	// the RMI view's backing image; transient views to the resolved image).
+	// EMPTY result = no backing image (swapchain external - sync stays in
+	// Acquire/Present) or a dead view - the caller skips THAT ONE sync
+	// entry. NEVER skip the rest of the pass on an empty result: `out` must
+	// stay exactly ONE entry per `passes_` entry (TopologicalSort + Execute
+	// index them 1:1) - the old depth-attachment `continue`s skipped the
+	// image/buffer hints AND the push_back, corrupting the pass mapping.
+	const auto resolveViewImage =
+		[&](LogicalImageViewHandle view) -> ImageHandle {
+		if (view.empty())
+			return {};
+		auto* v = imageViews_.get(view);
+		if (!v)
+			return {};
+		if (v->type == LogicalImageView::Type::ExternalPhysical) {
+			auto* ext = vctx.imageViews_.get(v->externalViewHandle);
+			if (!ext)
+				return {};
+			return ext->image; // empty = swapchain - external sync
+		}
+		auto* li = images_.get(v->key.image);
+		if (!li)
+			return {};
+		return li->resolvedImageHandle;
+	};
 	for (const auto& pass : passes_) {
 		PassUsage pu;
 		// Color attachments – writes
 		for (auto& att : pass.colorAttachments_) {
-			if (att.view.empty()) continue;
-			auto* v = imageViews_.get(att.view);
-			if (!v) continue;
-			ImageHandle phys{};
-			if (v->type == LogicalImageView::Type::ExternalPhysical) {
-				// Resolve external view to physical image; if no backing image (swapchain) skip – swapchain sync stays in Acquire/Present
-				auto* ext = vctx.imageViews_.get(v->externalViewHandle);
-				if (!ext) continue;
-				phys = ext->image;
-				if (phys.empty()) continue; // swapchain – external sync
-			}
-			else {
-				auto* li = images_.get(v->key.image);
-				if (!li) continue;
-				phys = li->resolvedImageHandle;
-			}
+			const ImageHandle phys = resolveViewImage(att.view);
 			if (phys.empty()) continue;
 			ImageSyncRequest req{};
 			req.barrierMasks.accessMask = AccessFlags::ColorAttachmentWrite;
@@ -10893,47 +11048,22 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			pu.images.emplace_back(phys, req);
 			// MSAA resolve destination – also a color-attachment write.
 			if (!att.resolveView.empty()) {
-				auto* rv = imageViews_.get(att.resolveView);
-				if (rv) {
-					ImageHandle rphys{};
-					if (rv->type == LogicalImageView::Type::ExternalPhysical) {
-						auto* rext = vctx.imageViews_.get(rv->externalViewHandle);
-						if (rext) rphys = rext->image;
-						// swapchain resolve dest has no backing image – external sync
-					}
-					else {
-						auto* rli = images_.get(rv->key.image);
-						if (rli) rphys = rli->resolvedImageHandle;
-					}
-					if (!rphys.empty() && rphys != phys) {
-						ImageSyncRequest rreq{};
-						rreq.barrierMasks.accessMask = AccessFlags::ColorAttachmentWrite;
-						rreq.barrierMasks.stageMask = PipelineStageBit_Fragment;
-						rreq.layout = ImageLayout::ColorAttachmentOptimal;
-						pu.images.emplace_back(rphys, rreq);
-					}
+				const ImageHandle rphys = resolveViewImage(att.resolveView);
+				if (!rphys.empty() && rphys != phys) {
+					ImageSyncRequest rreq{};
+					rreq.barrierMasks.accessMask = AccessFlags::ColorAttachmentWrite;
+					rreq.barrierMasks.stageMask = PipelineStageBit_Fragment;
+					rreq.layout = ImageLayout::ColorAttachmentOptimal;
+					pu.images.emplace_back(rphys, rreq);
 				}
 			}
 		}
-		// Depth attachment
+		// Depth attachment: an unresolvable view skips ONLY the depth sync
+		// entry (see the helper contract above) - never the pass.
 		if (pass.hasDepthAttachment_) {
 			auto& att = pass.depthAttachment_;
-			if (!att.view.empty()) {
-				auto* v = imageViews_.get(att.view);
-				if (!v) continue;
-				ImageHandle phys{};
-				if (v->type == LogicalImageView::Type::ExternalPhysical) {
-					auto* ext = vctx.imageViews_.get(v->externalViewHandle);
-					if (!ext) continue;
-					phys = ext->image;
-					if (phys.empty()) continue;
-				}
-				else {
-					auto* li = images_.get(v->key.image);
-					if (!li) continue;
-					phys = li->resolvedImageHandle;
-				}
-				if (phys.empty()) continue;
+			const ImageHandle phys = resolveViewImage(att.view);
+			if (!phys.empty()) {
 				ImageSyncRequest req{};
 				req.barrierMasks.accessMask = AccessFlags::DepthStencilAttachmentWrite | AccessFlags::DepthStencilAttachmentRead;
 				req.barrierMasks.stageMask = PipelineStageBit_Fragment;
@@ -10941,23 +11071,11 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 				pu.images.emplace_back(phys, req);
 			}
 		}
-		// Explicit image hints (includes SetInput/Storage derived)
+		// Explicit image hints (includes SetInput/Storage derived). The
+		// continues below skip ONE hint (inner loop) - the pass entry still
+		// lands in `out`.
 		for (auto& h : pass.imageHints_) {
-			if (h.view.empty()) continue;
-			auto* v = imageViews_.get(h.view);
-			if (!v) continue;
-			ImageHandle phys{};
-			if (v->type == LogicalImageView::Type::ExternalPhysical) {
-				auto* ext = vctx.imageViews_.get(v->externalViewHandle);
-				if (!ext) continue;
-				phys = ext->image;
-				if (phys.empty()) continue; // swapchain – skip
-			}
-			else {
-				auto* li = images_.get(v->key.image);
-				if (!li) continue;
-				phys = li->resolvedImageHandle;
-			}
+			const ImageHandle phys = resolveViewImage(h.view);
 			if (phys.empty()) continue;
 			// deduplicate if already covered by attachment (attachment takes precedence)
 			bool dup = false;
@@ -10999,6 +11117,9 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 		}
 		out.push_back(std::move(pu));
 	}
+	// The 1:1 invariant the sort + Execute rely on (an inner skip must
+	// never cost a pass entry - see the resolveViewImage contract).
+	assert(out.size() == passes_.size());
 	return out;
 }
 
@@ -11356,7 +11477,14 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		bool overlap = false;
 		for (size_t pos = firstAsyncPos + 1; pos < lastAsyncPos && !overlap; ++pos) {
 			const RenderPass& p = passes_[sorted[pos]];
-			if (p.IsAsyncCompute() || p.IsCompute())
+			// Skip only the ASYNC passes themselves (they are the reference
+			// set recorded into C). ORDINARY compute passes inside the
+			// window record into G2 exactly like graphics passes - a write
+			// of an async-touched resource is the same unrepresentable
+			// ordering (sort says before-C, G2 submission says after-C), so
+			// they must be checked too. The old `|| p.IsCompute()` let
+			// those writers slip through the guard.
+			if (p.IsAsyncCompute())
 				continue;
 			for (auto& pr : usages[sorted[pos]].images) {
 				if (asyncImages.count(keyForGuard(pr.first))
@@ -11559,7 +11687,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					g1Uploads.valid() ? " +uploadTimeline" : "",
 					vkSwap->timelineValue_ != 0 ? " +prevFrame" : "",
 					(unsigned long long)g2cVal);
-			RgSerializeGate(RgSerializeMode().split, graphicsQueue_);
+			RgSerializeGate(RgSerializeMode().split, graphicsQueue_, GetQueueMutex(graphicsQueue_));
 		}
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
@@ -11602,7 +11730,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					auto* dbgImg = vctx.images_.get(h);
 					std::fprintf(stderr,
 						"[RG]   img '%s' need=%d src[%s acc=%06x stage=%06x qfam=%u] dst[%s acc=%06x stage=%06x]\n",
-						(dbgImg && dbgImg->name) ? dbgImg->name : "<anon>",
+						(dbgImg && dbgImg->name.valid()) ? dbgImg->name.data() : "<anon>",
 						needBarrier ? 1 : 0,
 						RgTraceImageLayoutName(src.layout),
 						static_cast<uint32_t>(src.masks.accessMask),
@@ -11616,8 +11744,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					auto* img = vctx.images_.get(h);
 					if (!img || img->vkImage == VK_NULL_HANDLE) {
 						if (traceRg)
-							std::fprintf(stderr, "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
-								(img && img->name) ? img->name : "<anon>");
+						std::fprintf(stderr, "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
+							(img && img->name.valid()) ? img->name.data() : "<anon>");
 						continue;
 					}
 					VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
@@ -11652,7 +11780,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 						const bool crossQ = useAsyncCompute && traceSrcQ != passQFam;
 						std::fprintf(stderr,
 							"[RG]     barrier img '%s' old=%s new=%s srcStage=%llx srcAcc=%llx dstStage=%llx dstAcc=%llx%s\n",
-							img->name ? img->name : "<anon>",
+							img->name.valid() ? img->name.data() : "<anon>",
 							RgTraceVkImageLayoutName(b.oldLayout),
 							RgTraceVkImageLayoutName(b.newLayout),
 							(unsigned long long)b.srcStageMask,
@@ -11940,7 +12068,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 						(unsigned long long)pWait.value,
 						lastAsync ? "C2G" : "G2C",
 						(unsigned long long)pSig.value);
-				RgSerializeGate(RgSerializeMode().split, computeQueue_);
+				RgSerializeGate(RgSerializeMode().split, computeQueue_, GetQueueMutex(computeQueue_));
 				++asyncChainIdx;
 			}
 			continue;

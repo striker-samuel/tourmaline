@@ -99,10 +99,6 @@ namespace engine {
 			m_input.gamepadButtonPressed(0, SDL_GAMEPAD_BUTTON_START)) {
 			SetUIMode(!m_uiMode);
 		}
-		// U toggles the fixed debug-panel side: Right <-> Left.
-		if (m_input.isKeyPressed(keybind::UI_DOCK_CYCLE)) {
-			m_renderer.CycleUiDock();
-		}
 		if (m_input.isKeyPressed(keybind::MOTION_BLUR_TOGGLE)) {
 			m_renderer.m_motionBlurEnabled = !m_renderer.m_motionBlurEnabled;
 		}
@@ -216,10 +212,20 @@ namespace engine {
 			m_renderer.m_debugView = ViewMode::Pom;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
-		// active debug view â€” a raster override, not a shading swap, so
+		// active debug view — a raster override, not a shading swap, so
 		// it stacks with F1..F6.
 		if (m_input.isKeyPressed(keybind::WIREFRAME_TOGGLE)) {
 			m_renderer.m_wireframe = !m_renderer.m_wireframe;
+		}
+		// Ctrl+T toggles the text-only stats HUD (top-left overlay). The
+		// chord (either Ctrl) avoids every bare-key binding; T alone does
+		// nothing. Works in FPS and UI modes like the other toggles.
+		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+			&& m_input.isKeyPressed(keybind::HUD_TOGGLE)) {
+			m_renderer.m_showHud = !m_renderer.m_showHud;
+			std::fprintf(stderr, "[ui] stats HUD %s\n",
+				m_renderer.m_showHud ? "on" : "off");
 		}
 		// F12: live frame-time histogram â€” a separate bottom strip UI
 		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles

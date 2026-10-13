@@ -11,11 +11,13 @@ if not exist build\Release\PakCooker.exe (
   popd
   exit /b 1
 )
-rem NOTE: --lightmap on is load-bearing here, not optional. It bakes the
-rem per-vertex lightmap UVs + per-mesh lobe counts INTO the pak and writes
-rem the atlas to F:\content\gi\sponza.sglm alongside. A pak cooked without
-rem it carries lmChunk=-1 everywhere (F8 palette goes all-green) while a
-rem stale sponza.sglm lingers next to it.
+rem NOTE: lightmaps are DEPRECATED (the lit FS never samples the atlas;
+rem sg_lightmap.hlsli is commented out and no .sglm is loaded at runtime),
+rem so the bake stays OFF here (--lightmap off is explicit so it also wins
+rem over any tour cook block that enables it). A pak cooked without it
+rem carries lmChunk=-1 everywhere (the FS gates on lmChunk none and never
+rem samples it) and no sglm sidecar is written. The --lm-* tuning below is
+rem inert without the trigger (kept as the last-good bake config).
 rem The atlas width is fixed at the default 1024 (--lm-atlas-width); the
 rem height grows with the content up to --lm-max-height 8192 (1024x8192
 rem = 8M texels at the cap) — no texel budget anymore, the density
@@ -38,16 +40,16 @@ rem variant (coarse density, 5 lobes, uncompressed, no LODs/meshlets).
 rem --cubemap-extra-pos appends artist-PINNED probes (manifest 'pin' rows
 rem sort first at load, winning weight ties): 0,0.25,0 = the chrome ball
 rem center, so the ball mirrors a capture taken exactly at itself.
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.1 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap off --lm-meters-per-texel 0.1 --sun-intensity 10000 --sky-intensity 6000 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Release\content\paks\sponza.pak
 if errorlevel 1 goto fail
-copy /y F:\content\gi\sponza.sglm build\Debug\content\gi\sponza.sglm
-if errorlevel 1 goto fail
-copy /y F:\content\gi\sponza.sglm build\Release\content\gi\sponza.sglm
-if errorlevel 1 goto fail
+rem sglm sync retired with the lightmap deprecation (no atlas is baked;
+rem the runtime never loads one). Kept as comments for the path layout.
+rem copy /y F:\content\gi\sponza.sglm build\Debug\content\gi\sponza.sglm
+rem copy /y F:\content\gi\sponza.sglm build\Release\content\gi\sponza.sglm
 echo sponza.pak recooked and synced.
 popd
 exit /b 0

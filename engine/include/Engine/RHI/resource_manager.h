@@ -153,23 +153,29 @@ public:
     // Bindless descriptor-array slot of a TextureHandle (its sampled view).
     uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
     // Live-texture listing for debug UIs (the texture inspector): one row
-    // per live texture, pool order. RENDER THREAD ONLY — the pool walk is
-    // unsynchronized (the ShardedPool forEach contract). Content/material
-    // textures are included (their names carry the load path — callers
-    // filter on '/').
+    // per live texture, pool order, NO content filter. RENDER THREAD ONLY —
+    // the pool walk is unsynchronized (the ShardedPool forEach contract).
     std::vector<TextureInfo> ListTextureInfos();
     // Cubemap introspection (backing image + sampled view). Used by the
     // cubemap renderer loader to validate KTX2 cubemap uploads.
     bool IsCubemapTexture(TextureHandle handle) const;
     uint32_t GetTextureArrayLayers(TextureHandle handle) const;
     uint32_t GetTextureCubemapSize(TextureHandle handle) const;
+    // The texture's underlying image handle — standalone view creation on
+    // it (e.g. per-face 2D views of a cubemap for the texture inspector).
+    // Empty handle on a dead texture (generation bumped).
+    ImageHandle GetTextureImageHandle(TextureHandle handle) const;
     uint32_t GetTextureMipLevels(TextureHandle handle) const;
     // Raw Vulkan interop (opaque native handles for external UI/render
     // layers, e.g. ImGui user textures via ImGui_ImplVulkan_AddTexture):
     // the texture's SAMPLED VkImageView + a cached sampler's VkSampler.
     // nullptr on an invalid handle/index (view/sampler indices are the
-    // GetOrCreateSampler cache slots).
+    // GetOrCreateSampler cache slots). The view variant reaches a
+    // STANDALONE caller-created view (e.g. a per-face 2D view of a
+    // cubemap) - the texture variant only reaches the texture's own
+    // default view (cube/array/3D - unusable as a 2D sample).
     const void* GetTextureVkImageView(TextureHandle handle) const;
+    const void* GetImageViewVkImageView(ImageViewHandle handle) const;
     const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
