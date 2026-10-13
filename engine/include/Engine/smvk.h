@@ -1450,6 +1450,22 @@ struct ImageCreateInfo
 		Count = 21
 	};
 
+	// Target-heap aliasing MASTER GATE (default OFF): when off,
+	// ClaimTargetHeapRange forces every window to the full frame - no
+	// range ever shares (targets pack to DISJOINT ranges in the same
+	// blocks, which is plain multi-bind placement, always sound). When
+	// on, declared windows are honored (same-shape disjoint-window
+	// targets share ranges). The regression that forced the gate: the
+	// SDSM cascade fit reads renderDepth at TargetPhase::Shadows - a
+	// cross-frame HISTORY read (the previous frame's depth through the
+	// shared range) that races the previous frame's late writes under
+	// submit overlap - the cascades jumped frame to frame. The env pin
+	// (VULKANTOY_ALIASING=1) parses once at first use; the setter is the
+	// UI's live toggle (affects FUTURE claims - existing ranges stand
+	// until their targets rebuild).
+	[[nodiscard]] bool TargetHeapAliasingEnabled();
+	void SetTargetHeapAliasing(bool on);
+
 	struct ImageViewCreateInfo
 	{
 		ImageViewType viewType = ImageViewType::View2D;

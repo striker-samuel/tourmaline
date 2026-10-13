@@ -5232,6 +5232,27 @@ void smvk::VulkanResourceManager::BindHeapImage(ImageHandle handle,
 }
 
 // ---- Target heap (design-A interval-aliased target memory) ----
+// The master gate's single storage (see smvk.h's
+// TargetHeapAliasingEnabled contract): default OFF -
+// VULKANTOY_ALIASING=1 opts in. The gate forces every window to the
+// full frame so no range ever shares (disjoint-range placement only,
+// always sound).
+namespace {
+	bool& TargetHeapAliasingGate() {
+		static bool value = [] {
+			const char* e = std::getenv("VULKANTOY_ALIASING");
+			return e != nullptr && std::atoi(e) == 1;
+		}();
+		return value;
+	}
+}
+bool smvk::TargetHeapAliasingEnabled() {
+	return TargetHeapAliasingGate();
+}
+void smvk::SetTargetHeapAliasing(bool on) {
+	TargetHeapAliasingGate() = on;
+}
+
 // See the resource_manager.h contract + the state block in
 // vulkan_impl.h: the same packing as the rendergraph's
 // CompileTransientHeap (shape buckets + interval slots + VMA virtual
@@ -5266,6 +5287,15 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 		mix(static_cast<uint64_t>(img->samples));
 		mix(img->mipLevels); mix(img->arrayLayers);
 		mix(img->isCubemap ? 1u : 0u);
+	}
+	// The master gate (see the gate block above): OFF forces the full
+	// frame - the span-disjointness check fails against every live slot,
+	// so every claim packs to a DISJOINT range (plain multi-bind
+	// placement, no aliasing, always sound). The declared windows are
+	// honored only when opted in.
+	if (!TargetHeapAliasingEnabled()) {
+		firstPhase = TargetPhase::Shadows;
+		lastPhase = TargetPhase::Composite;
 	}
 	const uint32_t first = static_cast<uint32_t>(firstPhase);
 	const uint32_t last = static_cast<uint32_t>(lastPhase);

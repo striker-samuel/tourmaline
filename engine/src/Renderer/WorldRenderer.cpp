@@ -2084,14 +2084,19 @@ namespace engine {
 			const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
 		smvk::DepthDesc depthDesc{};
 		depthDesc.format = m_swapchain->GetDepthFormat();
-		// Target-heap window (design A - see DepthDesc): the temporal
-		// seed writes this at TargetPhase::Seed, the post chain reads it
-		// through tonemap. Disjoint from hizDepth's window below - the
-		// two full-screen depths share one packed range.
-		// A/B verified pixel-clean (0.005% temporal-noise-floor diff vs the
-		// full-frame-default control; the two full-screen depths share one
-		// 10.5 MiB range).
-		depthDesc.firstPhase = smvk::TargetPhase::Seed;
+		// Target-heap window (design A - see DepthDesc): the HONEST
+		// full span. The window CANNOT start at Seed: the SDSM cascade
+		// fit (SdsmStats, TargetPhase::Shadows) reads renderDepth as a
+		// CROSS-FRAME history (the previous frame's depth) - a real use
+		// at phase 0 that must be declared (the undeclared-user bug this
+		// window caused: the fit raced the previous frame's late writes
+		// through the shared range and the cascades jumped frame to
+		// frame). With [Shadows..Tonemap] the pair's windows OVERLAP
+		// hizDepth's [OccluderPrepass..Hzb] - the two full-screen depths
+		// NEVER share (the honest outcome; the sharing only becomes
+		// sound if the SDSM history read moves onto its own retention
+		// target or the range gains cross-frame handoff).
+		depthDesc.firstPhase = smvk::TargetPhase::Shadows;
 		depthDesc.lastPhase = smvk::TargetPhase::Tonemap;
 		if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
 			std::cerr << "[WorldRenderer] Failed to create render depth target\n";
@@ -2099,9 +2104,10 @@ namespace engine {
 		}
 		// Option A occluder depth (HZB source): same extent/format as
 		// the full depth - its OWN IMAGE (the two prepasses never write
-		// one image) at a SHARED packed range: the use windows are
-		// disjoint (this one's last read is the HZB pyramid build,
-		// renderDepth's first write is the temporal seed).
+		// one image); its window [OccluderPrepass..Hzb] would share with
+		// renderDepth only under a disjoint partner window (see above -
+		// the depth pair does not share; the declaration stays for any
+		// future honest partner).
 		smvk::DepthDesc hizDepthDesc{};
 		hizDepthDesc.format = m_swapchain->GetDepthFormat();
 		hizDepthDesc.name = "hizDepth";
@@ -11655,6 +11661,13 @@ namespace engine {
 								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
 								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
 							ImGui::Checkbox("HZB occluder fill + cull (big crudest-LOD; the hizDepth image is a fixed cost)", &m_hizOccluderDepth);
+						// Memory-aliasing master gate (default off; env
+						// VULKANTOY_ALIASING=1 pins on). Affects FUTURE
+						// claims: existing packed ranges stand until
+						// their targets rebuild (extent changes).
+						static bool s_aliasingOn = smvk::TargetHeapAliasingEnabled();
+						if (ImGui::Checkbox("Target-heap memory aliasing (next target rebuild)", &s_aliasingOn))
+							smvk::SetTargetHeapAliasing(s_aliasingOn);
 							ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
 							ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
 							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
