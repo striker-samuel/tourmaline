@@ -9,24 +9,29 @@
 // physical-units exposure (~0.001) that would crush albedo to black, so the
 // output is pre-scaled by 1/exposure (same trick as the meshlet debug view).
 // NO fog: debug views stay unfogged by discipline (flat readouts must not
-// be Beer-Lamberted — see DebugVisualizationActive, which also keeps the
+// be Beer-Lamberted ??? see DebugVisualizationActive, which also keeps the
 // volumetric/SSR composites off these pixels).
 
 struct PSIn
 {
-    float4 color : COLOR0;
-    float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1;
-    float3 normal : TEXCOORD2;
-    float4 tangent : TANGENT;
-    // Location 8: dither-on-closeup flag (flat, per-draw; Scene::
+    [[vk::location(0)]] float4 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    [[vk::location(3)]] float3 normal : TEXCOORD2;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    // Dither-on-closeup flag (flat, per-draw; Scene::
     // ditherCloseup - see common.hlsli CloseupDitherKeep). default.vert
     // forwards it (padEnd word); the unlit view must screen-door with it
     // like the lit path or a flagged subtree renders SOLID here while it
     // dissolves in lit - the silhouette disagreement read as "F2 shows
     // problems". (The other flat readouts - vertex colors/UVs - stay
     // solid on purpose: they show the authored data.)
-    nointerpolation uint ditherCloseup : TEXCOORD7;
+    // ALL inputs carry EXPLICIT locations (DXC rejects partial explicit
+    // assignment; see default_lit_body.hlsli's note) - the sequential
+    // assignment made this member land on 5, the VS's SMOOTH lightmapUv
+    // slot read as a FLAT uint (a decoration mismatch whose garbage reads
+    // made unflagged meshes dissolve - "a lot of meshes go transparent").
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 
@@ -177,7 +182,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     FrameUniforms frame = pc.frameUniforms.Get();
 
-    // Exposure compensation (albedo -> HDR). No fog — see the header:
+    // Exposure compensation (albedo -> HDR). No fog ??? see the header:
     // debug views never fog (flat readouts).
     float exp = max(frame.exposure, 1e-6f);
     color /= exp;

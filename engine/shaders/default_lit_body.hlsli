@@ -20,20 +20,26 @@
 #ifndef GFX_MESH_PSIN
 struct PSIn
 {
-    float4 color : COLOR0;
-    float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1;
-    float3 normal : TEXCOORD2;
-    float4 tangent : TANGENT;
-    float2 lightmapUv : TEXCOORD3; // location 5: lightmap UV (uv2 stream)
-    // Location 6: lightmap chunk (flat, per-draw; 0xFFFFFFFF = none —
+    [[vk::location(0)]] float4 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    [[vk::location(3)]] float3 normal : TEXCOORD2;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD3; // lightmap UV (uv2 stream)
+    // Lightmap chunk (flat, per-draw; 0xFFFFFFFF = none —
     // dynamic/unbaked draws sample the 3D probe grids instead).
-    nointerpolation uint lmChunk : TEXCOORD4;
-    // Location 8: dither-on-closeup flag (flat, per-draw; Scene::
+    [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
+    // Dither-on-closeup flag (flat, per-draw; Scene::
     // ditherCloseup — see common.hlsli CloseupDitherKeep). Both paths
     // deliver it: default.vert forwards the direct legs' pc word, the
     // filtered VS / mesh MS forward the Draw ring's flag bit.
-    nointerpolation uint ditherCloseup : TEXCOORD7;
+    // ALL inputs carry EXPLICIT locations (DXC rejects partial explicit
+    // assignment): without them DXC assigns sequentially by declaration
+    // order, which made this member land on 7 (after stripping) while
+    // the vertex shaders write 8 - the FS read an UNWRITTEN location
+    // (garbage) and the closeup dissolve fired on unflagged draws
+    // ("too strong, starts too early"). gbuffer_masked already pinned 8.
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 #endif

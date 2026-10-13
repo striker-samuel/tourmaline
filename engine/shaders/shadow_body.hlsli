@@ -24,16 +24,19 @@
 
 struct ShadowPSIn
 {
-    float4 color : COLOR0;
-    float2 uv : TEXCOORD0;
+    [[vk::location(0)]] float4 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
     // Dither-on-closeup inputs (Scene::ditherCloseup; the flat flag from
     // shadow.vert's pc word / the gfx seed twins' Draw-ring bit, + the
     // world position for the per-pixel camera-distance factor — the MAIN
     // camera is the fade's anchor even in light-view passes). Declared by
     // the FS; the VS twins (shadow.vert / gfxseedmasked / gfxshadowseed-
     // masked) deliver both.
-    float3 worldPos : TEXCOORD2;
-    nointerpolation uint ditherCloseup : TEXCOORD7;
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    // EXPLICIT location 8 (all ditherCloseup declarations pin it now -
+    // see default_lit_body.hlsli's note; the sequential assignment made
+    // this one land on 5/6 depending on the stripped members).
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 };
 
 #if defined(SHADOW_NORMAL_Z)

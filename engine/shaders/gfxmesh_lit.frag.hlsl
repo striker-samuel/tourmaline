@@ -21,19 +21,22 @@
 #define GFX_MESH_PSIN
 struct PSIn
 {
-    float4 color : COLOR0;
-    float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1;
-    float3 normal : TEXCOORD2;
-    float4 tangent : TANGENT;
-    float2 lightmapUv : TEXCOORD3;
-    nointerpolation uint lmChunk : TEXCOORD4;
+    [[vk::location(0)]] float4 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    [[vk::location(3)]] float3 normal : TEXCOORD2;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD3;
+    [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
     // Mesh-only: per-draw material (misc2.y) for the multi-material dispatch.
-    nointerpolation uint meshMaterial : TEXCOORD5;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     // Dither-on-closeup flag (flat; Scene::ditherCloseup — the ring's
     // GFX_DRAW_DITHER_CLOSEUP forwarded by the mesh MS; see the body's
-    // discard + common.hlsli CloseupDitherKeep).
-    nointerpolation uint ditherCloseup : TEXCOORD7;
+    // discard + common.hlsli CloseupDitherKeep). EXPLICIT location 8
+    // (pinned like every ditherCloseup declaration — the mesh MS writes
+    // location 8; sequential assignment happened to match here but
+    // dead-stripping could shift it).
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 #define GFX_MATERIAL_ID (IN.meshMaterial)
