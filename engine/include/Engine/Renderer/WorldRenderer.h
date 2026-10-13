@@ -1834,10 +1834,12 @@ public:
 	std::vector<std::future<void>> m_shadowFutures;
 	std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
 	// ---- Option A: occluder-only HZB depth ----
-	// True = the HZB pyramid builds from hizDepth (big solid occluders at
-	// crudest LOD) while Main/SSAO/tile-cull stay on the full renderDepth.
-	// False = legacy single-depth path (HZB over the full prepass depth).
-	bool m_hizOccluderDepth = false;
+	// (The m_hizOccluderDepth toggle is GONE: the occluder-depth fill +
+	// the HZB pyramid are a FIXED COST of the renderer - the fill is the
+	// pyramid's only source, hizDepth is not used for anything else. The
+	// lever for HZB CULLING is the filter's occlusion cull flag
+	// (CullFlagBit_HzbOcclusion - VULKANTOY_HIZ=0, VULKANTOY_CULLFLAGS,
+	// or the UI checkbox), never the fill/build.)
 	float m_hizOccluderMinPixels = 24.0f; // projected bound-diameter threshold (px)
 	float m_hizOccluderMinRadius = 0.5f;  // world-space bound-radius threshold (m)
 	bool m_useFilteredMotion = true; // false = motion stays fully direct

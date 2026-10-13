@@ -713,12 +713,16 @@ namespace engine {
 			return v;
 		};
 
-		// Headless toggles for A/B runs without UI interaction.
-		// Kill the occluder fill + HZB cull (VULKANTOY_HIZ=0; the hizDepth
-		// IMAGE + its claim stay a fixed cost - see the fc.hizDepthView note).
+		// Headless HZB-cull kill (VULKANTOY_HIZ=0): clears the filter's
+		// occlusion-cull flag - the occluder-depth fill + the pyramid are a
+		// FIXED COST (always built over hizDepth; see the fc.hizDepthView
+		// note). VULKANTOY_CULLFLAGS stays the full-flags override.
 		if (const char* hizEnv = std::getenv("VULKANTOY_HIZ")) {
 			if (std::atoi(hizEnv) == 0)
-				m_hizOccluderDepth = false;
+				m_gfxRenderer.config.cullFlags =
+					static_cast<smvk::gfx::CullFlags>(
+						static_cast<uint32_t>(m_gfxRenderer.config.cullFlags)
+						& ~uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion));
 		}
 		// Headless LOD kill (VULKANTOY_LOD=0 forces LOD0).
 		if (const char* lodEnv = std::getenv("VULKANTOY_LOD")) {
@@ -8024,14 +8028,18 @@ namespace engine {
 					counts[0], counts[1], counts[2], counts[3]);
 			}
 		}
-		// Option A split: the occluder prepass fills hizDepth (Clear,
-		// independent of the seed) for the HZB build below; renderDepth
-		// (seeded) serves Main, SSAO, tile-cull and deferred shadows.
-		// Skipped while the culling view is frozen (the held pyramid
-		// must not be rebuilt).
-		const bool hizOccluderOn = gfxFilterOn && m_hizOccluderDepth
-			&& !cullingFrozen && !fc.hizDepthView.empty();
-		if (hizOccluderOn)
+		// The occluder prepass fills hizDepth (Clear, independent of the
+		// seed) for the HZB build below - UNCONDITIONAL now: the
+		// occluder-depth fill + the pyramid are a FIXED COST of the
+		// renderer (the fill is the pyramid's only source; skipping it
+		// left the filter culling against a never-built pyramid - the
+		// "hzb cull broken + foliage opaque" regression). The lever for
+		// turning HZB CULLING off is the filter's occlusion cull flag
+		// (CullFlagBit_HzbOcclusion: VULKANTOY_CULLFLAGS without 0x40, or
+		// VULKANTOY_HIZ=0 / the UI checkbox) - never the fill. Skipped
+		// only while the culling view is frozen (the held pyramid must
+		// not be rebuilt).
+		if (!cullingFrozen)
 			m_fpRenderer.AppendOccluderPrepass(fc);
 
 		// Northlight depth split (filter on + seed primed depth): the HZB
@@ -8100,13 +8108,11 @@ namespace engine {
 				!= UINT32_MAX;
 		})
 			: std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>{};
-		// HZB source: ALWAYS hizDepth (the fixed-cost occluder depth - see
-		// the fc.hizDepthView note above; the old renderDepth fallback path
-		// is gone). The PYRAMID + the filter's HZB cull toggle WITH the
-		// occluder fill (hizOccluderOn): culling over an unfilled depth
-		// would cull visible clusters; the hizDepth IMAGE itself stays a
-		// fixed cost either way (the target-heap aliasing window declares
-		// it [OccluderPrepass..Hzb] regardless).
+		// HZB source: ALWAYS hizDepth (the fixed-cost occluder fill above
+		// is its only source; the renderDepth fallback path is gone). The
+		// pyramid ALWAYS builds (the freeze is the only skip: the held
+		// pyramid must not be rebuilt) - the filter's occlusion TEST is
+		// the cull-flag lever (CullFlagBit_HzbOcclusion), never the build.
 		auto appendHizPasses = [&]() {
 			m_gfxRenderer.AppendHizPasses(fc,
 				m_viewportResources.hizDepth.logicalView,
@@ -8115,7 +8121,7 @@ namespace engine {
 		if (depthSplit) {
 			// Seed (prev-visible occluders, current LOD, alpha-tested) ->
 			// HZB over that depth -> filter culls the rest.
-			if (!cullingFrozen && hizOccluderOn)
+			if (!cullingFrozen)
 				appendHizPasses();
 			m_gfxRenderer.AppendFilterDispatch(fc);
 			// Depth pass 2: slim direct fallback (Loads the seeded depth)
@@ -8131,7 +8137,7 @@ namespace engine {
 			if (m_passes.forwardPlusPrepass)
 				m_fpRenderer.AppendPrepass(fc);
 			if (gfxFilterOn) {
-				if (!cullingFrozen && hizOccluderOn)
+				if (!cullingFrozen)
 					appendHizPasses();
 				m_gfxRenderer.AppendFilterDispatch(fc);
 				if (m_gfxRenderer.RemainderPending()) {
@@ -11657,7 +11663,22 @@ namespace engine {
 								m_gfxRenderer.config.cullFlags = b
 								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
 								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
-							ImGui::Checkbox("HZB occluder fill + cull (big crudest-LOD; the hizDepth image is a fixed cost)", &m_hizOccluderDepth);
+							// HZB occlusion CULL toggle: the occluder-depth
+						// fill + the pyramid are a FIXED COST (always
+						// built over hizDepth); the flag only gates the
+						// filter's occlusion TEST. VULKANTOY_HIZ=0 / the
+						// VULKANTOY_CULLFLAGS override are the headless
+						// forms.
+						{
+							bool occ = (m_gfxRenderer.config.cullFlags
+								& smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
+							if (ImGui::Checkbox("HZB occlusion cull (the occluder-depth fill + pyramid are a fixed cost)", &occ))
+								m_gfxRenderer.config.cullFlags = occ
+									? (m_gfxRenderer.config.cullFlags
+										| smvk::gfx::CullFlagBit_HzbOcclusion)
+									: (m_gfxRenderer.config.cullFlags
+										& ~smvk::gfx::CullFlagBit_HzbOcclusion);
+						}
 						// Memory-aliasing master gate (default off; env
 						// VULKANTOY_ALIASING=1 pins on). Affects FUTURE
 						// claims: existing packed ranges stand until
@@ -12293,14 +12314,14 @@ namespace engine {
 									smvk::gfx::Hiz(m_gfxRenderer.State(), gfxSlot);
 								hw = hz.width; hh = hz.height; hm = hz.mipCount;
 							}
-						// HZB source is FIXED (hizDepth - see the fc.hizDepthView
-						// note); the toggle gates the occluder fill + cull.
+						// HZB source is FIXED (hizDepth - the always-on
+						// occluder fill; see the fc.hizDepthView note); the
+						// cull-flag lever gates only the occlusion TEST.
 						const bool depthOk =
 							m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX;
-						ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s fill=%s",
+						ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s (src: occluder fill, fixed)",
 							hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
-							cullingFrozen ? "FROZEN" : "live",
-							m_hizOccluderDepth ? "occluder" : "OFF");
+							cullingFrozen ? "FROZEN" : "live");
 						if (!occOn)
 							ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
 						else if (hm == 0)
