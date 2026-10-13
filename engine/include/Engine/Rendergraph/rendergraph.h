@@ -958,6 +958,35 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		// Linear process-owned (dtor-only deleter; never freed).
 		mem::LinearPtr<PipelineCacheOpaque> pipelineCacheOpaque_;
 
+		// ---- Transient heap (design B: interval-packed memory aliasing) ----
+		// Execute compiles the frame: transient images are created UNBOUND
+		// (handles + views resolve for the analysis), then packed by their
+		// [firstUse, lastUse] pass intervals into ranges of graph-owned
+		// device-local heap blocks. SHAPE-COMPATIBLE images with DISJOINT
+		// intervals SHARE ranges (VK_IMAGE_CREATE_ALIAS_BIT + identical
+		// parameters + no simultaneous use - the sharer's first barrier
+		// transitions from UNDEFINED, discarding the previous occupant's
+		// contents, the standard transient lifetime handoff). Overlapping
+		// intervals or incompatible shapes get disjoint ranges. Steady
+		// state (unchanged layout fingerprint): zero churn - the same
+		// images + placements persist frame to frame. A layout change
+		// (config toggles, extent changes, resource churn) detonates the
+		// packed set once: fresh images re-create + re-pack + re-bind, the
+		// old set retires through the RMI's deferred-destroy queue.
+		// Returns true when the packed set was detonated (fresh handles -
+		// the caller MUST recompute its usages/sort/snapshot).
+		struct TransientHeapOpaque;
+		mem::LinearPtr<TransientHeapOpaque> transientHeapOpaque_{};
+		bool CompileTransientHeap(
+			const std::vector<PassUsage>& usages,
+			const std::vector<size_t>& sorted);
+		// Releases ONE placed transient (FreeImage + the repack detonation):
+		// destroys the physical (deferred) and queues the packed range's
+		// free BEHIND the destroy (DeferDestroy appends at the current
+		// point, FIFO - a range can never be re-bound while its previous
+		// binding's object still exists).
+		void ReleaseTransientPlacement(LogicalImageHandle handle);
+
 		// --------------------------------------------------------
 		// Pipeline cache introspection
 		// --------------------------------------------------------

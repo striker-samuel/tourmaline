@@ -5143,6 +5143,310 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	return image;
 }
+
+// Transient-heap image support (design B - see the header contract): the
+// raw vkCreateImage mirror of CreateImageImpl WITHOUT the VmaAllocation -
+// the object exists unbound for the rendergraph's compile-time handle/view
+// resolution; BindHeapImage places it at a packed range later.
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateHeapImage(
+	const ImageCreateInfo& ci)
+{
+	// Heap placement binds manually - host-transfer images carry binding
+	// requirements that path does not honor (they stay on the VMA path).
+	assert(!ci.hostTransfer && "hostTransfer images cannot heap-place");
+
+	// Cube rules mirror CreateImageImpl (the shape must be alias-legal for
+	// bucket sharers regardless).
+	assert(ci.type == ImageType::Image2D || !ci.isCubemap);
+	if (ci.isCubemap) {
+		assert(ci.extent.width == ci.extent.height);
+		assert((ci.arrayLayers % 6u) == 0u);
+		assert(ci.samples == SampleCount::Count1);
+	}
+
+	VkImageCreateInfo vkCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	// ALIAS_BIT on every heap image: packed sharers overlap ranges by
+	// construction (identical parameters + disjoint use intervals), and
+	// the flag is harmless for solo-placed ranges (it only opts into the
+	// aliasing rules).
+	vkCI.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
+	if (ci.isCubemap)
+		vkCI.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	vkCI.imageType = toVkImageType(ci.type);
+	vkCI.extent = { ci.extent.width, ci.extent.height, ci.extent.depth };
+	vkCI.format = toVkFormat(ci.format);
+	vkCI.mipLevels = ci.mipLevels;
+	vkCI.arrayLayers = ci.arrayLayers;
+	vkCI.samples = toVkSampleCount(ci.samples);
+	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	vkCI.usage = toVkImageUsageFlags(ci.usage);
+	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	Image image{};
+	image.type = ci.type;
+	image.extent = ci.extent;
+	image.format = ci.format;
+	image.usage = ci.usage;
+	image.samples = ci.samples;
+	image.mipLevels = ci.mipLevels;
+	image.arrayLayers = ci.arrayLayers;
+	image.ownership = ResourceOwnership::Owned;
+	image.isCubemap = ci.isCubemap;
+	image.transientHeap = true;
+	image.name = CopyImageName(ci.name);
+
+	VK_CHECK(vkCreateImage(device_, &vkCI, nullptr, &image.vkImage));
+
+#if defined(_DEBUG)
+	if (ci.name)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(image.vkImage);
+		nameInfo.pObjectName = ci.name;
+		SetDebugObjectName(device_, &nameInfo);
+	}
+#endif
+
+	ImageHandle handle = images_.create(std::move(image));
+	SetImageSyncState(handle, ImageGlobalSyncState{});
+	return { this, handle };
+}
+
+void smvk::VulkanResourceManager::BindHeapImage(ImageHandle handle,
+	VkDeviceMemory memory, VkDeviceSize offset)
+{
+	auto* image = images_.get(handle);
+	if (!image || image->vkImage == VK_NULL_HANDLE) {
+		assert(false && "BindHeapImage on a dead/uncreated image");
+		return;
+	}
+	assert(image->transientHeap && "BindHeapImage on a non-heap image");
+	VkBindImageMemoryInfo bind{
+		VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, nullptr,
+		image->vkImage, memory, offset };
+	VK_CHECK(vkBindImageMemory2(device_, 1, &bind));
+}
+
+// ---- Target heap (design-A interval-aliased target memory) ----
+// See the resource_manager.h contract + the state block in
+// vulkan_impl.h: the same packing as the rendergraph's
+// CompileTransientHeap (shape buckets + interval slots + VMA virtual
+// blocks over big device-local blocks), with slot live-user refcounts -
+// graph-EXTERNAL targets claim by declared [firstPhase, lastPhase]
+// windows (canonical TargetPhase order).
+[[nodiscard]] smvk::Holder<smvk::TargetHeapClaimHandle>
+smvk::VulkanResourceManager::ClaimTargetHeapRange(
+	ImageHandle image, TargetPhase firstPhase, TargetPhase lastPhase)
+{
+	auto* img = images_.get(image);
+	if (!img || img->vkImage == VK_NULL_HANDLE || !img->transientHeap) {
+		assert(false && "ClaimTargetHeapRange needs an unbound heap image");
+		return {};
+	}
+	VkMemoryRequirements reqs{};
+	vkGetImageMemoryRequirements(device_, img->vkImage, &reqs);
+	const VkDeviceSize need = (reqs.size + reqs.alignment - 1)
+		/ reqs.alignment * reqs.alignment;
+	// Shape identity off the Image's own fields (the aliasing parameter
+	// set: everything CreateHeapImage received except the debug name).
+	uint64_t shape = 1469598103934665603ull;
+	{
+		const auto mix = [&shape](uint64_t v) {
+			shape = (shape ^ v) * 1099511628211ull;
+		};
+		mix(static_cast<uint64_t>(img->type));
+		mix(img->extent.width); mix(img->extent.height);
+		mix(img->extent.depth);
+		mix(static_cast<uint64_t>(img->format));
+		mix(static_cast<uint64_t>(img->usage));
+		mix(static_cast<uint64_t>(img->samples));
+		mix(img->mipLevels); mix(img->arrayLayers);
+		mix(img->isCubemap ? 1u : 0u);
+	}
+	const uint32_t first = static_cast<uint32_t>(firstPhase);
+	const uint32_t last = static_cast<uint32_t>(lastPhase);
+
+	// Join a live slot: same shape + the newcomer's window is DISJOINT
+	// from every live user's span (arrival-order-independent: a wide
+	// first claimer never blocks an entirely-earlier newcomer, and vice
+	// versa). Tombstones (liveUsers == 0, the range retiring) never join -
+	// their ranges are freeing.
+	for (uint32_t s = 0; s < m_targetHeap.slots.size(); ++s) {
+		TargetHeapState::Slot& slot = m_targetHeap.slots[s];
+		if (slot.liveUsers == 0 || slot.shape != shape)
+			continue;
+		bool disjoint = true;
+		for (const auto& span : slot.liveSpans)
+			if (!(last < span.first || first > span.second)) {
+				disjoint = false;
+				break;
+			}
+		if (!disjoint)
+			continue;
+		++slot.liveUsers;
+		slot.liveSpans.push_back({ first, last });
+		BindHeapImage(image,
+			m_targetHeap.blocks[slot.block].memory, slot.offset);
+		m_targetHeap.aliasedBytes += need;
+		++m_targetHeap.claimCount;
+		std::fprintf(stderr,
+			"[TargetHeap] claim #%u: shape 0x%llx window [%u..%u] -> "
+			"JOIN slot %u (offset %llu, %.1f MiB shared)\n",
+			m_targetHeap.claimCount,
+			(unsigned long long)shape, first, last, s,
+			(unsigned long long)slot.offset,
+			double(need) / 1048576.0);
+		return { this, targetHeapClaims_.create(
+			{ s, shape, firstPhase, lastPhase }) };
+	}
+
+	// New slot: first-fit into an existing compatible block, else grow
+	// one (the size ladder honors the OOM policy: loud abort).
+	uint32_t block = ~0u;
+	VkDeviceSize offset = 0;
+	VmaVirtualAllocation alloc = VK_NULL_HANDLE;
+	for (uint32_t bi = 0; bi < m_targetHeap.blocks.size(); ++bi) {
+		if (!((reqs.memoryTypeBits
+				>> m_targetHeap.blocks[bi].memoryTypeIndex) & 1u))
+			continue;
+		VmaVirtualAllocationCreateInfo vi{};
+		vi.size = need;
+		vi.alignment = reqs.alignment;
+		VkDeviceSize off = 0;
+		VmaVirtualAllocation a = VK_NULL_HANDLE;
+		if (vmaVirtualAllocate(m_targetHeap.blocks[bi].virtualBlock,
+				&vi, &a, &off) == VK_SUCCESS) {
+			block = bi;
+			offset = off;
+			alloc = a;
+			break;
+		}
+	}
+	if (block == ~0u) {
+		// Grow: lowest set memoryTypeBit that is device-local.
+		uint32_t typeIndex = ~0u;
+		{
+			VkPhysicalDeviceMemoryProperties memProps{};
+			vkGetPhysicalDeviceMemoryProperties(physicalDevice_,
+				&memProps);
+			for (uint32_t t = 0; t < memProps.memoryTypeCount; ++t) {
+				if (!((reqs.memoryTypeBits >> t) & 1u))
+					continue;
+				if (!(memProps.memoryTypes[t].propertyFlags
+						& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+					continue;
+				typeIndex = t;
+				break;
+			}
+			if (typeIndex == ~0u) {
+				std::fprintf(stderr,
+					"[TargetHeap] no device-local memory type in mask "
+					"0x%x - aborting\n", reqs.memoryTypeBits);
+				std::fflush(stderr);
+				std::abort();
+			}
+		}
+		VkDeviceSize size = 64ull << 20; // ladder: 64 MiB down
+		VkDeviceSize allocSize = 0;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		while (true) {
+			allocSize = std::max(size, need);
+			VkMemoryAllocateInfo ai{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+				nullptr, allocSize, typeIndex };
+			if (vkAllocateMemory(device_, &ai, nullptr, &memory)
+				== VK_SUCCESS)
+				break;
+			if (size <= need) {
+				std::fprintf(stderr,
+					"[TargetHeap] heap block allocation of %llu bytes "
+					"failed. No recovery - aborting.\n",
+					(unsigned long long)allocSize);
+				std::fflush(stderr);
+				std::abort();
+			}
+			size /= 2;
+		}
+		VmaVirtualBlockCreateInfo vbci{};
+		vbci.size = allocSize;
+		VmaVirtualBlock vb = VK_NULL_HANDLE;
+		VK_CHECK(vmaCreateVirtualBlock(&vbci, &vb));
+		m_targetHeap.blocks.push_back({ memory, allocSize, typeIndex, vb });
+		VmaVirtualAllocationCreateInfo vi{};
+		vi.size = need;
+		vi.alignment = reqs.alignment;
+		VkDeviceSize off = 0;
+		VK_CHECK(vmaVirtualAllocate(vb, &vi, &alloc, &off));
+		block = static_cast<uint32_t>(m_targetHeap.blocks.size() - 1);
+		offset = off;
+	}
+	m_targetHeap.slots.push_back({ shape, block, alloc, offset,
+		need, 1, { { first, last } } });
+	m_targetHeap.rangeBytes += need;
+	++m_targetHeap.claimCount;
+	BindHeapImage(image, m_targetHeap.blocks[block].memory, offset);
+	std::fprintf(stderr,
+		"[TargetHeap] claim #%u: shape 0x%llx window [%u..%u] -> NEW slot "
+		"%zu (block %u, offset %llu, %.1f MiB; ranges %.1f MiB, shared "
+		"%.1f MiB)\n",
+		m_targetHeap.claimCount,
+		(unsigned long long)shape, first, last,
+		m_targetHeap.slots.size() - 1, block,
+		(unsigned long long)offset,
+		double(need) / 1048576.0,
+		double(m_targetHeap.rangeBytes) / 1048576.0,
+		double(m_targetHeap.aliasedBytes) / 1048576.0);
+	return { this, targetHeapClaims_.create({ static_cast<uint32_t>(
+		m_targetHeap.slots.size() - 1), shape, firstPhase, lastPhase }) };
+}
+
+void smvk::VulkanResourceManager::ReleaseTargetHeapClaim(
+	TargetHeapClaimHandle claim)
+{
+	if (claim.empty())
+		return;
+	auto* c = targetHeapClaims_.get(claim);
+	if (!c)
+		return;
+	// Capture everything off the claim BEFORE the pool destroy (the entry
+	// dies below; the span fields must not be read after).
+	const uint32_t s = c->slot;
+	const uint32_t f = static_cast<uint32_t>(c->firstPhase);
+	const uint32_t l = static_cast<uint32_t>(c->lastPhase);
+	targetHeapClaims_.destroy(claim);
+	if (s >= m_targetHeap.slots.size())
+		return;
+	TargetHeapState::Slot& slot = m_targetHeap.slots[s];
+	if (slot.liveUsers == 0)
+		return; // stale (defensive)
+	// Remove this claim's span from the live-span set (the remaining
+	// live users' spans keep the slot's sharing state correct).
+	for (auto it = slot.liveSpans.begin(); it != slot.liveSpans.end();
+		++it)
+		if (it->first == f && it->second == l) {
+			slot.liveSpans.erase(it);
+			break;
+		}
+	if (--slot.liveUsers > 0)
+		return;
+	// The LAST user: the shared range frees RETIREMENT-ORDERED -
+	// DeferDestroy appends at the current point (the caller already
+	// destroyed the image, so this free lands BEHIND that destroy in the
+	// FIFO; a future claim can never re-bind the range while a previous
+	// binding's image object still exists). The slot stays as a
+	// tombstone (liveUsers == 0): never joined, its index stays stable
+	// for the remaining live claims.
+	const VmaVirtualBlock vb =
+		m_targetHeap.blocks[slot.block].virtualBlock;
+	const VmaVirtualAllocation alloc = slot.allocation;
+	DeferDestroy(std::packaged_task<void()>([vb, alloc] {
+		vmaVirtualFree(vb, alloc);
+	}));
+}
+
 [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateImage(ImageCreateInfo ci, const void* data)
 {
 	Image image = CreateImageImpl(ci);
@@ -7279,6 +7583,44 @@ void smvk::VulkanResourceManager::NotifyGraphicsSubmit(VkSemaphore semaphore, ui
 }
 void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task)
 {
+	// ---------------------------------------------------------------------------
+	// KNOWN DESIGN RISK (review finding 2.3 - documented, deliberately NOT
+	// fixed yet): the retire point below is the last published GRAPHICS
+	// timeline point, which does not model EVERY queue that can still
+	// reference the destroyed resource:
+	//
+	//   (a) ASYNC COMPUTE submits issued after the published point: the C
+	//       chain is covered only indirectly - its C2G signal is waited by
+	//       the NEXT main submit, which then publishes a LATER point. A
+	//       deferred destroy keyed on point P can retire while a C submit
+	//       that started before P's publish but signals C2G after it is
+	//       still running.
+	//   (b) TRANSFER batches flushed after the published point: the swapchain
+	//       waits the NEWEST transfer point before G1/G2/main of the next
+	//       frame, but THIS retire point predates that wait - a worker
+	//       flush (or the acquire-barrier graphics submit the streamer
+	//       makes from a non-render thread) landing between the point's
+	//       publish and the destroy is not ordered behind the retire.
+	//   (c) Command buffers still RECORDING on another thread: a recording
+	//       has no timeline point yet. The waitAll() drain below covers the
+	//       STREAMER's recordings only - the RMI's own submitters (readback
+	//       copies, one-off dumps) and any future external Submitter use
+	//       are not drained and not represented by any point.
+	//
+	// Why this is a risk on paper but not a proven use-after-free today:
+	// every current destroy site runs on the render thread between frames
+	// (after the frame's submits + flushes), so the published point does
+	// cover the producers that exist in practice. The gap only opens for
+	// cross-thread or mid-frame destroys, which the current callers never
+	// issue. Treat that as the API contract until the fix lands: DO NOT
+	// destroy from worker threads or mid-frame from new call sites.
+	//
+	// THE FIX, when taken: key the retirement on the JOIN of per-queue
+	// last-use points - max over {graphics, compute, transfer} points at
+	// defer time, with per-submitter drain for still-recording buffers -
+	// or track per-resource last-use points at every submit site. Do not
+	// bolt more single-queue special cases onto this path.
+	// ---------------------------------------------------------------------------
 	// Unflushed streamer batches still RECORD (transfer cmd) or hold
 	// pending acquire barriers referencing the resource being destroyed.
 	// They have no timeline point yet, so no retire point could cover
@@ -8020,6 +8362,18 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) 
 	std::packaged_task<void()> task([ctx, handle] { DestroyBufferNow(ctx, handle); });
 	ctx->DeferDestroy(std::move(task));
 }
+// Target-heap claim release (the Holder deleter - see
+// ClaimTargetHeapRange's contract): drops the slot's live-user count; the
+// LAST user's release queues the range free retirement-ordered. In target
+// structs the claim Holder is declared BEFORE the image Holder so the
+// claim releases BEHIND the image's deferred destroy (the free must land
+// behind the destroy in the FIFO).
+void smvk::destroy(smvk::VulkanResourceManager* ctx,
+	smvk::TargetHeapClaimHandle handle) {
+	if (handle.empty())
+		return;
+	ctx->ReleaseTargetHeapClaim(handle);
+}
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle handle) {
 	if (handle.empty()) { return; };
 	auto sm = ctx->shaderModules_.get(handle);
@@ -8044,11 +8398,20 @@ void DestroyImageNow(VulkanResourceManager* ctx, ImageHandle handle)
 	if (image->ownership == ResourceOwnership::Owned &&
 		image->vkImage != VK_NULL_HANDLE)
 	{
-		vmaDestroyImage(
-			ctx->m_allocator,
-			image->vkImage,
-			image->allocation
-		);
+		if (image->transientHeap) {
+			// Heap-placed (rendergraph design B): no VmaAllocation - the
+			// packed-range memory is the graph's heap block (frees
+			// wholesale with the graph). Plain vkDestroyImage only.
+			assert(image->allocation == VK_NULL_HANDLE);
+			vkDestroyImage(device_, image->vkImage, nullptr);
+		}
+		else {
+			vmaDestroyImage(
+				ctx->m_allocator,
+				image->vkImage,
+				image->allocation
+			);
+		}
 	}
 
 	ctx->images_.destroy(handle);
@@ -10792,8 +11155,101 @@ struct smvk::RenderGraph::PipelineCacheOpaque {
 	VulkanPipelineCache cache;
 	explicit PipelineCacheOpaque(VulkanResourceManager* rm) : cache(rm) {}
 };
-smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))) {}
-smvk::RenderGraph::~RenderGraph() { ReleaseResolvedResources(); }
+
+// ---------------------------------------------------------------------------
+// Transient heap (design B - see the RenderGraph header contract): the
+// opaque state behind CompileTransientHeap.
+// ---------------------------------------------------------------------------
+// Logical-image handle key (index | gen<<32): stable pool identity for the
+// placement map (handles themselves churn on repacks).
+static uint64_t RgLogicalImageKey(smvk::LogicalImageHandle h) {
+	return static_cast<uint64_t>(h.index())
+		| (static_cast<uint64_t>(h.gen()) << 32);
+}
+// RMI image handle key (the interval map's key).
+static uint64_t RgPhysicalImageKey(smvk::ImageHandle h) {
+	return static_cast<uint64_t>(h.index())
+		| (static_cast<uint64_t>(h.gen()) << 32);
+}
+// SHAPE identity (the spec's aliasing parameter-identity requirement): two
+// images may share a packed range only when EVERY creation parameter
+// matches except the debug name. Anything else packs to a disjoint range.
+static uint64_t RgTransientShapeHash(const smvk::ImageCreateInfo& k) {
+	uint64_t h = 1469598103934665603ull;
+	const auto mix = [&h](uint64_t v) {
+		h = (h ^ v) * 1099511628211ull;
+	};
+	mix(static_cast<uint64_t>(k.type));
+	mix(k.extent.width); mix(k.extent.height); mix(k.extent.depth);
+	mix(static_cast<uint64_t>(k.format));
+	mix(static_cast<uint64_t>(k.usage));
+	mix(static_cast<uint64_t>(k.samples));
+	mix(k.mipLevels); mix(k.arrayLayers);
+	mix(k.isCubemap ? 1u : 0u);
+	mix(k.concurrentCompute ? 1u : 0u);
+	// hostTransfer candidates never reach the heap (asserted at creation);
+	// mixed in anyway so the hash stays total.
+	mix(k.hostTransfer ? 1u : 0u);
+	return h;
+}
+
+struct smvk::RenderGraph::TransientHeapOpaque {
+	// One device-local block per growth; the VMA virtual block does the
+	// placement bookkeeping (offset + alignment honoring), the real
+	// VkDeviceMemory is graph-owned and frees wholesale at teardown.
+	struct Block {
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		VkDeviceSize size = 0;
+		uint32_t memoryTypeIndex = ~0u;
+		VmaVirtualBlock virtualBlock = VK_NULL_HANDLE;
+	};
+	// Logical-image-handle key -> its packed range. The virtual allocation
+	// is set on the SLOT OWNER only (disjoint-interval sharers carry null -
+	// the shared range frees once, retirement-ordered with the owner).
+	struct Placement {
+		uint32_t block = ~0u;
+		VmaVirtualAllocation allocation = VK_NULL_HANDLE;
+		VkDeviceSize offset = 0;
+		VkDeviceSize size = 0;        // aligned memory requirements
+		uint32_t bucket = ~0u;        // shape bucket id (diagnostics)
+		uint32_t firstUse = ~0u, lastUse = 0;
+	};
+	std::vector<Block> blocks;
+	std::unordered_map<uint64_t, Placement> placements;
+	// Layout fingerprint of the packed set: unchanged -> steady state
+	// (zero churn), changed -> detonate + repack once.
+	uint64_t packedEpoch = ~0ull;
+	// Pack diagnostics (one stderr line per pack - rare: toggles).
+	uint32_t packCount = 0;
+	VkDeviceSize rangeBytes = 0;    // total packed ranges (the heap footprint)
+	VkDeviceSize aliasedBytes = 0;  // union bytes saved by interval sharing
+};
+
+smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))), transientHeapOpaque_(smvk::mem::ProcessAllocator().Create<TransientHeapOpaque>()) {}
+smvk::RenderGraph::~RenderGraph() {
+	ReleaseResolvedResources();
+	// The heap blocks free retirement-ordered BEHIND every image + placement
+	// retire (same-point FIFO: queued after them all). The placement-free
+	// tasks already queued reference the block handles by value; they run
+	// before these teardown tasks (queued earlier, FIFO), so the virtual
+	// block dies after its last free and the memory after its last image.
+	{
+		VulkanResourceManager& vctx =
+			*static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+		for (const auto& block : transientHeapOpaque_->blocks) {
+			const VkDeviceMemory memory = block.memory;
+			const VmaVirtualBlock vb = block.virtualBlock;
+			if (memory == VK_NULL_HANDLE && vb == VK_NULL_HANDLE)
+				continue;
+			vctx.DeferDestroy(std::packaged_task<void()>(
+				[dev = device_, memory, vb] {
+					vmaDestroyVirtualBlock(vb);
+					vkFreeMemory(dev, memory, nullptr);
+				}));
+		}
+		transientHeapOpaque_->blocks.clear();
+	}
+}
 
 size_t smvk::RenderGraph::PipelineCacheCount() const
 {
@@ -10908,18 +11364,28 @@ void smvk::RenderGraph::ReleaseResolvedResources()
 	}
 	);
 
-	images_.forEach(
-		[this, &vctx](LogicalImage& image)
+	images_.forEachHandle(
+		[this, &vctx](LogicalImageHandle h)
 	{
-		if (image.type == ResourceType::External)
+		LogicalImage* image = images_.get(h);
+		if (!image || image->type == ResourceType::External)
 		{
 			return;
 		}
 
-		if (!image.resolvedImageHandle.empty())
+		if (image->resolvedImageHandle.empty())
 		{
-			destroy(&vctx, image.resolvedImageHandle);
+			return;
 		}
+
+		// Heap-placed transients route through the placement-aware
+		// release (the packed range frees retirement-ordered with the
+		// image); plain VMA-path transients (hostTransfer) destroy
+		// directly.
+		if (transientHeapOpaque_->placements.count(RgLogicalImageKey(h)))
+			ReleaseTransientPlacement(h);
+		else
+			destroy(&vctx, image->resolvedImageHandle);
 	}
 	);
 }
@@ -10956,7 +11422,13 @@ void smvk::RenderGraph::FreeImage(
 		!image->resolvedImageHandle.empty())
 	{
 		VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
-		destroy(&vctx, image->resolvedImageHandle);
+		// Heap-placed transients release their packed range with the
+		// image (retirement-ordered - see ReleaseTransientPlacement);
+		// plain VMA-path transients destroy directly.
+		if (transientHeapOpaque_->placements.count(RgLogicalImageKey(handle)))
+			ReleaseTransientPlacement(handle);
+		else
+			destroy(&vctx, image->resolvedImageHandle);
 	}
 
 	images_.destroy(handle);
@@ -10977,12 +11449,369 @@ void smvk::RenderGraph::ResolveImages() {
 		[this, &vctx](smvk::LogicalImage& logicalImage) {
 		if (logicalImage.resolvedImageHandle.empty()) {
 			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-			//CreateTransientImaeg(key, sync_req);
-			logicalImage.resolvedImageHandle = vctx.CreateImage(logicalImage.key, nullptr).release();
+			// Design B (the transient heap): transients create UNBOUND
+			// (handles + views exist for the compile-time interval
+			// analysis), memory binds at CompileTransientHeap's packed
+			// ranges. hostTransfer images stay on the plain VMA path -
+			// host-copy binding requirements are not honored by the
+			// manual bind.
+			if (logicalImage.key.hostTransfer)
+				logicalImage.resolvedImageHandle = vctx.CreateImage(logicalImage.key, nullptr).release();
+			else
+				logicalImage.resolvedImageHandle = vctx.CreateHeapImage(logicalImage.key).release();
 		};
 	}
 	);
 };
+
+// Releases one heap-placed transient (FreeImage + the repack detonation):
+// destroys the physical (deferred, retire-ordered) and queues the packed
+// range's virtual free BEHIND the destroy (DeferDestroy appends at the
+// current point, FIFO - the range can never be re-bound while its previous
+// binding's object still exists).
+void smvk::RenderGraph::ReleaseTransientPlacement(LogicalImageHandle handle)
+{
+	VulkanResourceManager& vctx =
+		*static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	TransientHeapOpaque& heap = *transientHeapOpaque_;
+	auto it = heap.placements.find(RgLogicalImageKey(handle));
+	if (it == heap.placements.end())
+		return; // not heap-placed (plain VMA path or not yet packed)
+	const TransientHeapOpaque::Placement p = it->second;
+	heap.placements.erase(it);
+	LogicalImage* li = images_.get(handle);
+	if (li && !li->resolvedImageHandle.empty())
+		smvk::destroy(&vctx, li->resolvedImageHandle);
+	if (li)
+		li->resolvedImageHandle = {};
+	if (p.allocation != VK_NULL_HANDLE) {
+		// The slot owner frees the shared range (sharers carry null).
+		const VmaVirtualBlock vb = heap.blocks[p.block].virtualBlock;
+		const VmaVirtualAllocation alloc = p.allocation;
+		vctx.DeferDestroy(std::packaged_task<void()>([vb, alloc] {
+			vmaVirtualFree(vb, alloc);
+		}));
+	}
+}
+
+// Design B compile step (see the header contract): interval-packed memory
+// aliasing for the graph's transients.
+bool smvk::RenderGraph::CompileTransientHeap(
+	const std::vector<PassUsage>& usages,
+	const std::vector<size_t>& sorted)
+{
+	VulkanResourceManager& vctx =
+		*static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	TransientHeapOpaque& heap = *transientHeapOpaque_;
+
+	// ---- 1. Heap candidates: live logical transients (hostTransfer stays
+	// on the plain VMA path - see ResolveImages). ----
+	std::vector<LogicalImageHandle> candidates;
+	images_.forEachHandle([&](LogicalImageHandle h) {
+		const LogicalImage* li = images_.get(h);
+		if (!li || li->type != ResourceType::Transient)
+			return;
+		if (li->key.hostTransfer)
+			return;
+		candidates.push_back(h);
+	});
+	if (candidates.empty())
+		return false;
+
+	// ---- 2. Use intervals: per physical image, the [first, last] span
+	// of SORTED positions whose passes touch it. The positions are stable
+	// across a detonation+re-sort by construction (TopologicalSort builds
+	// edges in pass-index order over the same logical structure and runs
+	// a stable min-heap Kahn), so intervals computed from THIS sort stay
+	// valid for the recomputed one after a detonation. ----
+	std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> physInterval;
+	for (size_t pos = 0; pos < sorted.size(); ++pos) {
+		const PassUsage& pu = usages[sorted[pos]];
+		for (const auto& pr : pu.images) {
+			const uint64_t k = RgPhysicalImageKey(pr.first);
+			auto [it, inserted] = physInterval.try_emplace(k,
+				static_cast<uint32_t>(pos), static_cast<uint32_t>(pos));
+			if (!inserted) {
+				it->second.first = std::min(it->second.first,
+					static_cast<uint32_t>(pos));
+				it->second.second = std::max(it->second.second,
+					static_cast<uint32_t>(pos));
+			}
+		}
+	}
+
+	struct CandInfo {
+		LogicalImageHandle handle;
+		LogicalImage* image = nullptr;
+		uint64_t shape = 0;
+		uint32_t firstUse = 0, lastUse = 0;
+		VkImage vkImage = VK_NULL_HANDLE;
+	};
+	std::vector<CandInfo> infos;
+	infos.reserve(candidates.size());
+	const uint32_t unusedPos = static_cast<uint32_t>(sorted.size());
+	for (LogicalImageHandle h : candidates) {
+		LogicalImage* li = images_.get(h);
+		if (!li)
+			continue;
+		uint32_t first = unusedPos, last = unusedPos;
+		if (!li->resolvedImageHandle.empty()) {
+			auto it = physInterval.find(
+				RgPhysicalImageKey(li->resolvedImageHandle));
+			if (it != physInterval.end()) {
+				first = it->second.first;
+				last = it->second.second;
+			}
+		}
+		const Image* phys = li->resolvedImageHandle.empty()
+			? nullptr : vctx.images_.get(li->resolvedImageHandle);
+		infos.push_back({ h, li, RgTransientShapeHash(li->key),
+			first, last, phys ? phys->vkImage : VK_NULL_HANDLE });
+	}
+
+	// ---- 3. Layout fingerprint: the pass count + every candidate's
+	// (shape, interval). Unchanged -> steady state: the packed images +
+	// placements stand, zero churn. ----
+	uint64_t epoch = 1099511628211ull * (candidates.size() + 1)
+		+ sorted.size();
+	for (const CandInfo& ci : infos) {
+		epoch = (epoch ^ ci.shape) * 1099511628211ull;
+		epoch = (epoch ^ ci.firstUse) * 1099511628211ull;
+		epoch = (epoch ^ ci.lastUse) * 1099511628211ull;
+	}
+	if (!heap.placements.empty() && epoch == heap.packedEpoch)
+		return false;
+
+	// ---- 4. Layout change (or first pack). Detonate the packed set: the
+	// views first (FIFO retire: views before their images), then every
+	// placed image + range through ReleaseTransientPlacement. ----
+	const bool detonated = !heap.placements.empty();
+	if (detonated) {
+		// Views on placed transients die + clear (fresh views recreate
+		// after ResolveImages below).
+		imageViews_.forEach([&](LogicalImageView& view) {
+			if (view.type == LogicalImageView::Type::ExternalPhysical)
+				return;
+			if (view.resolvedViewHandle.empty())
+				return;
+			const LogicalImage* li = images_.get(view.key.image);
+			if (!li || li->type != ResourceType::Transient)
+				return;
+			if (li->key.hostTransfer)
+				return;
+			if (!heap.placements.count(RgLogicalImageKey(view.key.image)))
+				return;
+			smvk::destroy(&vctx, view.resolvedViewHandle);
+			view.resolvedViewHandle = {};
+		});
+		std::vector<LogicalImageHandle> placed;
+		images_.forEachHandle([&](LogicalImageHandle h) {
+			if (heap.placements.count(RgLogicalImageKey(h)))
+				placed.push_back(h);
+		});
+		for (LogicalImageHandle h : placed)
+			ReleaseTransientPlacement(h);
+	}
+
+	// ---- 5. (Re)create unresolved transients (unbound heap images) +
+	// their views (fresh handles after a detonation). ----
+	ResolveImages();
+	if (detonated)
+		ResolveImageViews();
+	for (CandInfo& ci : infos) {
+		ci.image = images_.get(ci.handle);
+		if (!ci.image || ci.image->resolvedImageHandle.empty())
+			continue;
+		const Image* phys = vctx.images_.get(ci.image->resolvedImageHandle);
+		ci.vkImage = phys ? phys->vkImage : VK_NULL_HANDLE;
+		// The interval stays: the positions are logical (see step 2).
+	}
+
+	// ---- 6. Shape buckets (alias-identity; see RgTransientShapeHash). ----
+	std::vector<uint64_t> bucketShape;
+	std::vector<std::vector<uint32_t>> bucketMembers;
+	for (uint32_t i = 0; i < infos.size(); ++i) {
+		uint32_t b = 0;
+		for (; b < bucketShape.size(); ++b)
+			if (bucketShape[b] == infos[i].shape)
+				break;
+		if (b == bucketShape.size()) {
+			bucketShape.push_back(infos[i].shape);
+			bucketMembers.emplace_back();
+		}
+		bucketMembers[b].push_back(i);
+	}
+
+	// ---- 7. Per bucket: interval scheduling into shared range slots. ----
+	// First-fit over slots whose occupant finished before this image
+	// starts (classic interval scheduling - not optimal, good enough for
+	// a debug-grade packer; the heap is correct regardless of the fit
+	// quality: every non-shared range is disjoint by construction).
+	heap.rangeBytes = 0;
+	heap.aliasedBytes = 0;
+	VkDeviceSize packedUnionBytes = 0; // the no-aliasing footprint
+	for (uint32_t b = 0; b < bucketShape.size(); ++b) {
+		std::vector<uint32_t>& members = bucketMembers[b];
+		std::sort(members.begin(), members.end(),
+			[&](uint32_t a, uint32_t c) {
+				return infos[a].firstUse < infos[c].firstUse;
+			});
+		struct Slot {
+			uint32_t lastUse = 0;
+			uint32_t block = ~0u;
+			VmaVirtualAllocation alloc = VK_NULL_HANDLE;
+			VkDeviceSize offset = 0, size = 0;
+		};
+		std::vector<Slot> slots;
+		for (uint32_t m : members) {
+			CandInfo& ci = infos[m];
+			if (!ci.image || ci.image->resolvedImageHandle.empty()
+				|| ci.vkImage == VK_NULL_HANDLE)
+				continue;
+			VkMemoryRequirements reqs{};
+			vkGetImageMemoryRequirements(device_, ci.vkImage, &reqs);
+			const VkDeviceSize need = (reqs.size + reqs.alignment - 1)
+				/ reqs.alignment * reqs.alignment;
+			packedUnionBytes += need;
+			// Join a free slot?
+			int64_t join = -1;
+			for (size_t s = 0; s < slots.size(); ++s) {
+				if (slots[s].lastUse < ci.firstUse) {
+					join = static_cast<int64_t>(s);
+					break;
+				}
+			}
+			uint32_t block = ~0u;
+			VkDeviceSize offset = 0;
+			VmaVirtualAllocation alloc = VK_NULL_HANDLE;
+			if (join >= 0) {
+				// Shared range (identical shape + disjoint use interval:
+				// the aliasing identity holds; the sharer's first barrier
+				// transitions from UNDEFINED, discarding the previous
+				// occupant's contents).
+				block = slots[join].block;
+				offset = slots[join].offset;
+				slots[join].lastUse = std::max(slots[join].lastUse,
+					ci.lastUse);
+				heap.aliasedBytes += need;
+			}
+			else {
+				// New slot: first-fit into an existing compatible block,
+				// else grow one (the size ladder honors the OOM policy:
+				// loud abort, like EnsureReadbackStaging).
+				bool placed = false;
+				for (uint32_t bi = 0; bi < heap.blocks.size() && !placed;
+					++bi) {
+					if (!((reqs.memoryTypeBits
+							>> heap.blocks[bi].memoryTypeIndex) & 1u))
+						continue;
+					VmaVirtualAllocationCreateInfo vi{};
+					vi.size = need;
+					vi.alignment = reqs.alignment;
+					VkDeviceSize off = 0;
+					VmaVirtualAllocation a = VK_NULL_HANDLE;
+					if (vmaVirtualAllocate(heap.blocks[bi].virtualBlock,
+							&vi, &a, &off) == VK_SUCCESS) {
+						block = bi;
+						offset = off;
+						alloc = a;
+						placed = true;
+					}
+				}
+				if (!placed) {
+					// Grow: lowest set memoryTypeBit that is device-local.
+					uint32_t typeIndex = ~0u;
+					{
+						VkPhysicalDeviceMemoryProperties memProps{};
+						vkGetPhysicalDeviceMemoryProperties(
+							physicalDevice_, &memProps);
+						for (uint32_t t = 0;
+							t < memProps.memoryTypeCount; ++t) {
+							if (!((reqs.memoryTypeBits >> t) & 1u))
+								continue;
+							if (!(memProps.memoryTypes[t].propertyFlags
+									& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+								continue;
+							typeIndex = t;
+							break;
+						}
+						if (typeIndex == ~0u) {
+							std::fprintf(stderr,
+								"[TransientHeap] no device-local memory "
+								"type in mask 0x%x - aborting\n",
+								reqs.memoryTypeBits);
+							std::fflush(stderr);
+							std::abort();
+						}
+					}
+					VkDeviceSize size = 64ull << 20; // ladder: 64 MiB down
+					VkDeviceSize allocSize = 0;
+					VkDeviceMemory memory = VK_NULL_HANDLE;
+					while (true) {
+						allocSize = std::max(size, need);
+						VkMemoryAllocateInfo ai{
+							VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr,
+							allocSize, typeIndex };
+						if (vkAllocateMemory(device_, &ai, nullptr,
+								&memory) == VK_SUCCESS)
+							break;
+						if (size <= need) {
+							std::fprintf(stderr,
+								"[TransientHeap] heap block allocation of "
+								"%llu bytes failed. No recovery - "
+								"aborting.\n",
+								(unsigned long long)allocSize);
+							std::fflush(stderr);
+							std::abort();
+						}
+						size /= 2;
+					}
+					VmaVirtualBlockCreateInfo vbci{};
+					vbci.size = allocSize;
+					VmaVirtualBlock vb = VK_NULL_HANDLE;
+					VK_CHECK(vmaCreateVirtualBlock(&vbci, &vb));
+					heap.blocks.push_back({ memory, allocSize, typeIndex,
+						vb });
+					VmaVirtualAllocationCreateInfo vi{};
+					vi.size = need;
+					vi.alignment = reqs.alignment;
+					VkDeviceSize off = 0;
+					VK_CHECK(vmaVirtualAllocate(vb, &vi, &alloc, &off));
+					block = static_cast<uint32_t>(heap.blocks.size() - 1);
+					offset = off;
+				}
+				slots.push_back({ ci.lastUse, block, alloc, offset, need });
+				heap.rangeBytes += need;
+			}
+			// Bind + record the placement (the slot owner carries the
+			// virtual allocation; sharers free through it).
+			vctx.BindHeapImage(ci.image->resolvedImageHandle,
+				heap.blocks[block].memory, offset);
+			TransientHeapOpaque::Placement p{};
+			p.block = block;
+			p.allocation = (join >= 0) ? VK_NULL_HANDLE : alloc;
+			p.offset = offset;
+			p.size = need;
+			p.bucket = b;
+			p.firstUse = ci.firstUse;
+			p.lastUse = ci.lastUse;
+			heap.placements[RgLogicalImageKey(ci.handle)] = p;
+		}
+	}
+
+	heap.packedEpoch = epoch;
+	++heap.packCount;
+	std::fprintf(stderr,
+		"[TransientHeap] pack #%u: %zu images / %zu buckets / %zu blocks, "
+		"%.1f MiB ranges vs %.1f MiB union (%.1f MiB interval-shared)%s\n",
+		heap.packCount, infos.size(), bucketShape.size(),
+		heap.blocks.size(),
+		double(heap.rangeBytes) / 1048576.0,
+		double(packedUnionBytes) / 1048576.0,
+		double(heap.aliasedBytes) / 1048576.0,
+		detonated ? " (repacked: layout changed)" : "");
+	return detonated;
+}
 void smvk::RenderGraph::ResolveBuffers()
 {
 	//	buffers.forEach(
@@ -11384,8 +12213,19 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	ResolveImageViews();
 	ResolveBuffers();
 
+	// Design B compile (see the transient-heap contract on the class):
+	// the FIRST usages+sort feed the interval analysis; a layout change
+	// detonates + recreates the packed set (fresh handles), so the
+	// usages/sort/snapshot the frame proceeds on are recomputed after.
+	// Steady state (unchanged fingerprint): the analysis pass only - the
+	// second collect+sort is skipped.
 	auto usages = CollectPassUsages();
-	const std::vector<size_t>& sorted = TopologicalSort(usages);
+	const std::vector<size_t>* sortedPtr = &TopologicalSort(usages);
+	if (CompileTransientHeap(usages, *sortedPtr)) {
+		usages = CollectPassUsages();
+		sortedPtr = &TopologicalSort(usages);
+	}
+	const std::vector<size_t>& sorted = *sortedPtr;
 
 	VkCommandBuffer cmd =
 		reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);

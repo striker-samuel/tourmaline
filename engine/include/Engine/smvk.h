@@ -1407,6 +1407,49 @@ struct ImageCreateInfo
 		External
 	};
 
+	// Canonical frame phase order (design-A target-heap aliasing, see
+	// ResourceManager::ClaimTargetHeapRange): the monotonic keyspace the
+	// target-heap interval scheduling keys on. The values mirror the frame's
+	// DATAFLOW order (the rendergraph's topological order - shadow legs,
+	// the occluder depth + HZB pyramid, the temporal seed, the mesh-shader
+	// filter, prepass, motion, Main, the post chain, UI, the composite).
+	// Targets declare a [firstPhase, lastPhase] use window; same-shape
+	// targets with disjoint windows share a packed memory range. WINDOWS
+	// ONLY CONSTRAIN SHARING: a too-wide window just loses sharing, a
+	// too-narrow window CORRUPTS (two live targets on one range) - declare
+	// conservatively (the last REAL consumer, plus slack when unsure).
+	// The depth pair's key order (OccluderPrepass < Hzb < Seed): the seed
+	// pass (the temporal prev-visible draw into renderDepth) appends inside
+	// the filter dispatch - AFTER the HZB pass - and the stable Kahn sort
+	// preserves append order between the (edge-free) HZB and the seed, so
+	// hizDepth [OccluderPrepass..Hzb] and renderDepth [Seed..] are genuinely
+	// sequential. Any change that lets the seed sort before the pyramid
+	// build must revisit the depth windows.
+	enum class TargetPhase : uint32_t {
+		Shadows = 0,        // SDSM fit + dir/spot casts + EVSM moments/blur
+		OccluderPrepass = 1,// occluder-only depth (hizDepth write)
+		Hzb = 2,            // HZB pyramid build (reads hizDepth)
+		Seed = 3,           // temporal seed draw (renderDepth write)
+		GfxFilter = 4,      // mesh-shader filter dispatch (reads the pyramid)
+		DepthPrepass = 5,   // depth prepass / remainder (renderDepth)
+		TileCull = 6,       // forward+ tile/light cull
+		Motion = 7,        // motion vectors
+		Main = 8,           // main scene raster (+MSAA, resolve -> hdr)
+		ProbeBalls = 9,     // chrome-ball cubemap debug
+		Ssgi = 10,           // SSGI AO chain (Main MRTs + compose)
+		Ssr = 11,           // SSR prep (stencil/depth views) + composite
+		Volumetric = 12,    // GI-probe raymarched fog
+		Exposure = 13,      // exposure histogram compute
+		Bloom = 14,         // bloom down/up chain
+		Dof = 15,           // depth of field
+		MotionBlur = 16,    // motion blur gather
+		Tonemap = 17,       // tonemap -> LDR
+		Ui = 18,            // ImGui overlay
+		PostAA = 19,        // SMAA / DLSS
+		Composite = 20,     // UI composite to the swapchain
+		Count = 21
+	};
+
 	struct ImageViewCreateInfo
 	{
 		ImageViewType viewType = ImageViewType::View2D;
@@ -1451,6 +1494,9 @@ struct ImageCreateInfo
 	struct SamplerTag;
 	struct BindlessImageTag;
 	struct DescriptorPoolTag;
+	// Target-heap claim (design-A aliasing, see
+	// ResourceManager::ClaimTargetHeapRange): one packed-range lease.
+	struct TargetHeapClaimTag;
 
 	using ImageHandle = Handle<ImageTag>;
 	using ImageViewHandle = Handle<ImageViewTag>;
@@ -1459,6 +1505,7 @@ struct ImageCreateInfo
 	using SamplerHandle = Handle<SamplerTag>;
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
+	using TargetHeapClaimHandle = Handle<TargetHeapClaimTag>;
 
 	// One GPU->CPU buffer copy for a batched readback (see
 	// ResourceManager::DownloadDataFromBuffers): multiple sources share one

@@ -43,9 +43,27 @@ struct DepthDesc {
 	const char* logicalName = "renderDepthLogical";
 	const char* stencilViewName = "renderDepthStencilView";
 	const char* stencilLogicalName = "renderDepthStencilLogical";
+	// Target-heap use window (design-A interval aliasing, see
+	// ClaimTargetHeapRange + TargetPhase): same-shape targets with
+	// DISJOINT windows share one packed memory range. DEFAULTS are the
+	// full frame (never shares - always CORRECT, just no win); the two
+	// real depth targets declare their true windows at the call site:
+	//   renderDepth: [Seed .. Tonemap] (seed/prepass write, post reads)
+	//   hizDepth:    [OccluderPrepass .. Hzb] (fill, pyramid build read)
+	// The pair is exactly disjoint - the two full-screen depths share one
+	// range (the biggest aliasing win in the target set). A too-narrow
+	// window CORRUPTS (two live targets on one range) - widen, never
+	// narrow, when unsure.
+	TargetPhase firstPhase = TargetPhase::Shadows;
+	TargetPhase lastPhase = TargetPhase::Composite;
 };
 
 struct DepthTarget {
+	// Target-heap claim (FIRST member: destruction order - the claim
+	// releases BEHIND the image's deferred destroy; the range free must
+	// land behind the destroy in the deferred FIFO). Empty = unclaimed
+	// (the plain VMA path or pre-conversion targets).
+	Holder<TargetHeapClaimHandle> claim;
 	Holder<ImageHandle> image;
 	// Depth-aspect sampled view (bindless depth reads — unchanged).
 	Holder<ImageViewHandle> view;
@@ -93,8 +111,19 @@ struct DepthTarget {
 		ci.arrayLayers = 1;
 		ci.name = d.name;
 
-		Holder<ImageHandle> newImage = ctx.CreateImage(ci, nullptr);
+		// LOCAL DECLARATION ORDER MATTERS: newClaim declared FIRST
+		// destroys LAST on the fail path's scope exit - the range free
+		// must land BEHIND the image's deferred destroy in the FIFO.
+		Holder<TargetHeapClaimHandle> newClaim;
+		// Design-A interval aliasing: the target is an UNBOUND heap image
+		// (CreateHeapImage - no VmaAllocation), then claimed + bound at a
+		// packed range (same-shape disjoint-window targets share ranges -
+		// see the desc's window comment).
+		Holder<ImageHandle> newImage = ctx.CreateHeapImage(ci);
 		if (newImage.empty())
+			return false;
+		newClaim = ctx.ClaimTargetHeapRange(newImage, d.firstPhase, d.lastPhase);
+		if (newClaim.empty())
 			return false;
 
 		// Depth-only sampled view (bindless depth reads — the pre-change
@@ -171,6 +200,7 @@ struct DepthTarget {
 				return false;
 		}
 
+		claim = std::move(newClaim);
 		image = std::move(newImage);
 		view = std::move(newView);
 		bindless = std::move(newBindless);
@@ -200,7 +230,11 @@ struct DepthTarget {
 		bindlessIndex = UINT32_MAX;
 		bindless = {};
 		view = {};
+		// ORDER: the image Holder drops first (deferred destroy @ P),
+		// THEN the claim Holder (its range free queues @ P, behind -
+		// see the member-order note at the top of the struct).
 		image = {};
+		claim = {};
 		extent = { 0, 0 };
 	}
 

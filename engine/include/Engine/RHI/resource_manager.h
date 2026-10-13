@@ -165,6 +165,27 @@ public:
     // it (e.g. per-face 2D views of a cubemap for the texture inspector).
     // Empty handle on a dead texture (generation bumped).
     ImageHandle GetTextureImageHandle(TextureHandle handle) const;
+    // ---- Target heap (design-A interval-aliased target memory) ----
+    // Facade forwarders; the full contracts live on the Vulkan impl
+    // (vulkan_impl.h - see VulkanResourceManager's block) and the
+    // canonical phase order on TargetPhase (smvk.h):
+    //   CreateHeapImage: unbound VK_IMAGE_CREATE_ALIAS_BIT image (no
+    //     VmaAllocation) for a later packed-range bind.
+    //   ClaimTargetHeapRange: claim + bind a packed range by the
+    //     declared [firstPhase, lastPhase] use window; same-shape
+    //     disjoint-window targets share ranges. The returned Holder
+    //     AUTO-RELEASES on destruction (see destroy(VulkanResourceManager*,
+    //     TargetHeapClaimHandle)) - in target structs declare it BEFORE
+    //     the image Holder so destruction releases the claim BEHIND the
+    //     image's deferred destroy (the range free must land behind the
+    //     destroy in the deferred FIFO).
+    //   ReleaseTargetHeapClaim: the LAST user's release frees the range
+    //     retirement-ordered. No-op on an empty/dead claim handle.
+    [[nodiscard]] Holder<ImageHandle> CreateHeapImage(
+        const ImageCreateInfo& ci);
+    [[nodiscard]] Holder<TargetHeapClaimHandle> ClaimTargetHeapRange(
+        ImageHandle image, TargetPhase firstPhase, TargetPhase lastPhase);
+    void ReleaseTargetHeapClaim(TargetHeapClaimHandle claim);
     uint32_t GetTextureMipLevels(TextureHandle handle) const;
     // Raw Vulkan interop (opaque native handles for external UI/render
     // layers, e.g. ImGui user textures via ImGui_ImplVulkan_AddTexture):

@@ -714,7 +714,8 @@ namespace engine {
 		};
 
 		// Headless toggles for A/B runs without UI interaction.
-		// Kill the occluder-depth path (VULKANTOY_HIZ=0).
+		// Kill the occluder fill + HZB cull (VULKANTOY_HIZ=0; the hizDepth
+		// IMAGE + its claim stay a fixed cost - see the fc.hizDepthView note).
 		if (const char* hizEnv = std::getenv("VULKANTOY_HIZ")) {
 			if (std::atoi(hizEnv) == 0)
 				m_hizOccluderDepth = false;
@@ -2081,23 +2082,37 @@ namespace engine {
 			const smvk::Extent2D swapExtent{ vkExt.width, vkExt.height };
 			const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
 			const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
-			smvk::DepthDesc depthDesc{};
-			depthDesc.format = m_swapchain->GetDepthFormat();
-			if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
-				std::cerr << "[WorldRenderer] Failed to create render depth target\n";
-				return false;
-			}
-			// Option A occluder depth (HZB source): same extent/format as
-			// the full depth, own image so the two prepasses don't alias.
-			smvk::DepthDesc hizDepthDesc{};
-			hizDepthDesc.format = m_swapchain->GetDepthFormat();
-			hizDepthDesc.name = "hizDepth";
-			hizDepthDesc.viewName = "hizDepthView";
-			hizDepthDesc.logicalName = "hizDepthLogical";
-			if (!m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, hizDepthDesc)) {
-				std::cerr << "[WorldRenderer] Failed to create HZB occluder depth target\n";
-				return false;
-			}
+		smvk::DepthDesc depthDesc{};
+		depthDesc.format = m_swapchain->GetDepthFormat();
+		// Target-heap window (design A - see DepthDesc): the temporal
+		// seed writes this at TargetPhase::Seed, the post chain reads it
+		// through tonemap. Disjoint from hizDepth's window below - the
+		// two full-screen depths share one packed range.
+		// A/B verified pixel-clean (0.005% temporal-noise-floor diff vs the
+		// full-frame-default control; the two full-screen depths share one
+		// 10.5 MiB range).
+		depthDesc.firstPhase = smvk::TargetPhase::Seed;
+		depthDesc.lastPhase = smvk::TargetPhase::Tonemap;
+		if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
+			std::cerr << "[WorldRenderer] Failed to create render depth target\n";
+			return false;
+		}
+		// Option A occluder depth (HZB source): same extent/format as
+		// the full depth - its OWN IMAGE (the two prepasses never write
+		// one image) at a SHARED packed range: the use windows are
+		// disjoint (this one's last read is the HZB pyramid build,
+		// renderDepth's first write is the temporal seed).
+		smvk::DepthDesc hizDepthDesc{};
+		hizDepthDesc.format = m_swapchain->GetDepthFormat();
+		hizDepthDesc.name = "hizDepth";
+		hizDepthDesc.viewName = "hizDepthView";
+		hizDepthDesc.logicalName = "hizDepthLogical";
+		hizDepthDesc.firstPhase = smvk::TargetPhase::OccluderPrepass;
+		hizDepthDesc.lastPhase = smvk::TargetPhase::Hzb;
+		if (!m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, hizDepthDesc)) {
+			std::cerr << "[WorldRenderer] Failed to create HZB occluder depth target\n";
+			return false;
+		}
 			if (!m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
 				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view)) {
 				std::cerr << "[WorldRenderer] Failed to create Forward+ tile buffers\n";
@@ -7834,17 +7849,16 @@ namespace engine {
 		fc.pc = pc;
 		fc.depthView = m_viewportResources.renderDepth.logicalView;
 		fc.depthViewHandle = m_viewportResources.renderDepth.view;
-		// Option A: HZB source handles (empty when the occluder path is
-		// off; AppendOccluderPrepass then no-ops and HZB stays on depth).
-		fc.hizDepthView = m_hizOccluderDepth
-			? m_viewportResources.hizDepth.logicalView
-			: smvk::LogicalImageViewHandle{};
-		fc.hizDepthViewHandle = m_hizOccluderDepth
-			? m_viewportResources.hizDepth.view
-			: smvk::ImageViewHandle{};
-		fc.hizDepthBindless = m_hizOccluderDepth
-			? m_viewportResources.hizDepth.bindlessIndex
-			: UINT32_MAX;
+		// Option A: HZB source handles - UNCONDITIONAL (the hizDepth image
+		// is a fixed cost of the renderer: the HZB pyramid ALWAYS builds
+		// over it; the occluder toggle below gates only the big-crudest-LOD
+		// occluder FILL and the filter's HZB cull usage, never the source).
+		// This also keeps the depth targets' use windows unambiguous for
+		// the target-heap aliasing (hizDepth [OccluderPrepass..Hzb] vs
+		// renderDepth [Seed..] - see TargetPhase).
+		fc.hizDepthView = m_viewportResources.hizDepth.logicalView;
+		fc.hizDepthViewHandle = m_viewportResources.hizDepth.view;
+		fc.hizDepthBindless = m_viewportResources.hizDepth.bindlessIndex;
 		m_fpRenderer.occluderMinPixels = m_hizOccluderMinPixels;
 		m_fpRenderer.occluderMinRadius = m_hizOccluderMinRadius;
 		fc.fpLights = m_resources.fpLightsLogical;
@@ -8083,20 +8097,22 @@ namespace engine {
 				!= UINT32_MAX;
 		})
 			: std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>{};
+		// HZB source: ALWAYS hizDepth (the fixed-cost occluder depth - see
+		// the fc.hizDepthView note above; the old renderDepth fallback path
+		// is gone). The PYRAMID + the filter's HZB cull toggle WITH the
+		// occluder fill (hizOccluderOn): culling over an unfilled depth
+		// would cull visible clusters; the hizDepth IMAGE itself stays a
+		// fixed cost either way (the target-heap aliasing window declares
+		// it [OccluderPrepass..Hzb] regardless).
 		auto appendHizPasses = [&]() {
-			if (hizOccluderOn)
-				m_gfxRenderer.AppendHizPasses(fc,
-					m_viewportResources.hizDepth.logicalView,
-					m_viewportResources.hizDepth.bindlessIndex);
-			else
-				m_gfxRenderer.AppendHizPasses(fc,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.forwardPlus.depthBindlessIndex);
+			m_gfxRenderer.AppendHizPasses(fc,
+				m_viewportResources.hizDepth.logicalView,
+				m_viewportResources.hizDepth.bindlessIndex);
 		};
 		if (depthSplit) {
 			// Seed (prev-visible occluders, current LOD, alpha-tested) ->
 			// HZB over that depth -> filter culls the rest.
-			if (!cullingFrozen)
+			if (!cullingFrozen && hizOccluderOn)
 				appendHizPasses();
 			m_gfxRenderer.AppendFilterDispatch(fc);
 			// Depth pass 2: slim direct fallback (Loads the seeded depth)
@@ -8112,7 +8128,7 @@ namespace engine {
 			if (m_passes.forwardPlusPrepass)
 				m_fpRenderer.AppendPrepass(fc);
 			if (gfxFilterOn) {
-				if (!cullingFrozen)
+				if (!cullingFrozen && hizOccluderOn)
 					appendHizPasses();
 				m_gfxRenderer.AppendFilterDispatch(fc);
 				if (m_gfxRenderer.RemainderPending()) {
@@ -11638,7 +11654,7 @@ namespace engine {
 								m_gfxRenderer.config.cullFlags = b
 								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
 								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
-							ImGui::Checkbox("HZB occluder depth (big crudest-LOD)", &m_hizOccluderDepth);
+							ImGui::Checkbox("HZB occluder fill + cull (big crudest-LOD; the hizDepth image is a fixed cost)", &m_hizOccluderDepth);
 							ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
 							ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
 							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
@@ -12267,20 +12283,20 @@ namespace engine {
 									smvk::gfx::Hiz(m_gfxRenderer.State(), gfxSlot);
 								hw = hz.width; hh = hz.height; hm = hz.mipCount;
 							}
-							const bool depthOk = m_hizOccluderDepth
-								? m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX
-								: m_viewportResources.forwardPlus.depthBindlessIndex != UINT32_MAX;
-							ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s src=%s",
-								hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
-								cullingFrozen ? "FROZEN" : "live",
-								m_hizOccluderDepth ? "occluder"
-								: (m_gfxRenderer.SeededThisFrame() ? "seed" : "full"));
-							if (!occOn)
-								ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
-							else if (hm == 0)
-								ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
-							else if (!depthOk)
-								ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
+						// HZB source is FIXED (hizDepth - see the fc.hizDepthView
+						// note); the toggle gates the occluder fill + cull.
+						const bool depthOk =
+							m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX;
+						ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s fill=%s",
+							hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
+							cullingFrozen ? "FROZEN" : "live",
+							m_hizOccluderDepth ? "occluder" : "OFF");
+						if (!occOn)
+							ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
+						else if (hm == 0)
+							ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
+						else if (!depthOk)
+							ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
 							if ((m_gfxRenderer.config.cullFlags
 								& smvk::gfx::CullFlagBit_HzbSkipMasked) != 0)
 								ImGui::TextDisabled("MASK draws excluded from the HZB test (cutout poison guard).");

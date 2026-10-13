@@ -128,6 +128,13 @@ namespace smvk {
 		// no lifetime contract), NUL-terminated for %s interop. Empty view =
 		// unnamed (creation passed no name; displays show "(unnamed)").
 		StringViewT name{};
+		// TRANSIENT-HEAP image (the rendergraph's design-B interval
+		// packing): created UNBOUND (no VmaAllocation - see
+		// CreateHeapImage), bound later at a packed range of a
+		// rendergraph-owned VkDeviceMemory (BindHeapImage), destroyed
+		// WITHOUT an allocation free (DestroyImageNow: plain vkDestroyImage
+		// - the heap memory is graph-owned and frees wholesale).
+		bool transientHeap = false;
 	};
 
 	struct ImageView
@@ -680,6 +687,81 @@ namespace smvk {
 		// (GPU is idle by definition). Render thread only, like AddDeferredTask.
 		void DeferDestroy(std::packaged_task<void()>&& task);
 		//
+		// Transient-heap image support (the rendergraph's design-B
+		// interval packing): create UNBOUND (no VmaAllocation - the object
+		// exists for compile-time handle/view resolution), then bind at a
+		// packed range of a CALLER-OWNED VkDeviceMemory once the layout is
+		// compiled. Created with VK_IMAGE_CREATE_ALIAS_BIT: packed
+		// sharers overlap ranges by construction (identical parameters,
+		// disjoint use intervals - the spec's aliasing identity holds).
+		// DestroyImageNow skips the VmaAllocation free for these (the
+		// heap memory is the graph's).
+		[[nodiscard]] Holder<ImageHandle> CreateHeapImage(
+			const ImageCreateInfo& ci);
+		// Binds a heap image at (memory, offset). The caller guarantees the
+		// range satisfies the image's memory requirements (alignment, size
+		// and memoryTypeBits) and the aliasing rules for any overlap.
+		void BindHeapImage(ImageHandle handle, VkDeviceMemory memory,
+			VkDeviceSize offset);
+		// Target-heap claim (design A - the full contract lives on the
+		// ResourceManager facade in RHI/resource_manager.h): claim + bind
+		// a packed range for an externally-created target by its declared
+		// [firstPhase, lastPhase] use window. The image must be an
+		// UNBOUND heap image (CreateHeapImage's product). Empty handle on
+		// failure.
+		[[nodiscard]] Holder<TargetHeapClaimHandle> ClaimTargetHeapRange(
+			ImageHandle image, TargetPhase firstPhase,
+			TargetPhase lastPhase);
+		// Drops the slot's live-user count; the LAST user's release frees
+		// the range RETIREMENT-ORDERED (DeferDestroy - behind the caller's
+		// image destroy in the deferred FIFO). No-op on empty/dead handles.
+		void ReleaseTargetHeapClaim(TargetHeapClaimHandle claim);
+		// ---- Target heap (design-A interval-aliased target memory) ----
+		// The packing state behind ClaimTargetHeapRange (see
+		// resource_manager.h's contract): graph-external targets claim
+		// packed ranges by [firstPhase, lastPhase] windows. Same algorithm
+		// as the rendergraph's CompileTransientHeap (shape buckets +
+		// interval slots + VMA virtual blocks over big device-local
+		// blocks), with SLOT LIVE-USER REFCOUNTS: a range shared by N
+		// same-shape disjoint-window targets frees only when the last
+		// user's release retires.
+		struct TargetHeapState {
+			struct Block {
+				VkDeviceMemory memory = VK_NULL_HANDLE;
+				VkDeviceSize size = 0;
+				uint32_t memoryTypeIndex = ~0u;
+				VmaVirtualBlock virtualBlock = VK_NULL_HANDLE;
+			};
+			struct Slot {
+				uint64_t shape = 0;        // aliasing parameter identity
+				uint32_t block = ~0u;
+				VmaVirtualAllocation allocation = VK_NULL_HANDLE;
+				VkDeviceSize offset = 0, size = 0;
+				uint32_t liveUsers = 0;
+				// Live users' [firstPhase, lastPhase] spans: the join
+				// test is a FULL disjointness check against all of them
+				// (not just a busy-until key) - sharing is
+				// ARRIVAL-ORDER-INDEPENDENT (a wide-window claimer never
+				// blocks an entirely-earlier newcomer). Spans remove at
+				// release; the tombstone (liveUsers == 0, the range
+				// retiring) never joins.
+				std::vector<std::pair<uint32_t, uint32_t>> liveSpans;
+			};
+			struct Claim {
+				uint32_t slot = ~0u;
+				uint64_t shape = 0;
+				TargetPhase firstPhase = TargetPhase::Count,
+					lastPhase = TargetPhase::Count;
+			};
+			std::vector<Block> blocks;
+			std::vector<Slot> slots;
+			// Stats (one stderr line per pack - rare: target churn).
+			uint32_t claimCount = 0;
+			VkDeviceSize rangeBytes = 0;
+			VkDeviceSize aliasedBytes = 0;
+		};
+		TargetHeapState m_targetHeap;
+		ShardedPool<TargetHeapClaimTag, TargetHeapState::Claim> targetHeapClaims_;
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
@@ -1428,6 +1510,11 @@ namespace smvk {
 	void destroy(VulkanResourceManager* ctx, ImageViewHandle handle);
 	void destroy(VulkanResourceManager* ctx, DescriptorPoolHandle handle);
 	void destroy(VulkanResourceManager* ctx, ShaderModuleHandle handle);
+	// Target-heap claim Holder deleter (the auto-release contract - see
+	// ClaimTargetHeapRange): the LAST user's release frees the packed
+	// range retirement-ordered behind the image destroys.
+	void destroy(VulkanResourceManager* ctx,
+		TargetHeapClaimHandle handle);
 
 	// Vulkan globals accessors for ImGui / external integrations (implemented in impl.cpp).
 	VkInstance       GetVkInstance();

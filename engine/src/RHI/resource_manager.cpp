@@ -224,6 +224,17 @@ std::vector<TextureInfo> ResourceManager::ListTextureInfos() { return impl_->vul
 bool ResourceManager::IsCubemapTexture(TextureHandle handle) const { return impl_->vulkan.IsCubemapTexture(handle); }
 uint32_t ResourceManager::GetTextureArrayLayers(TextureHandle handle) const { return impl_->vulkan.GetTextureArrayLayers(handle); }
 ImageHandle ResourceManager::GetTextureImageHandle(TextureHandle handle) const { return impl_->vulkan.GetTextureImageHandle(handle); }
+// Target heap (design A) facade forwarders - see resource_manager.h's
+// contract block.
+Holder<ImageHandle> ResourceManager::CreateHeapImage(
+    const ImageCreateInfo& ci) { return impl_->vulkan.CreateHeapImage(ci); }
+Holder<TargetHeapClaimHandle> ResourceManager::ClaimTargetHeapRange(
+    ImageHandle image, TargetPhase firstPhase, TargetPhase lastPhase) {
+    return impl_->vulkan.ClaimTargetHeapRange(image, firstPhase, lastPhase);
+}
+void ResourceManager::ReleaseTargetHeapClaim(TargetHeapClaimHandle claim) {
+    impl_->vulkan.ReleaseTargetHeapClaim(claim);
+}
 uint32_t ResourceManager::GetTextureCubemapSize(TextureHandle handle) const { return impl_->vulkan.GetTextureCubemapSize(handle); }
 uint32_t ResourceManager::GetTextureMipLevels(TextureHandle handle) const { return impl_->vulkan.GetTextureMipLevels(handle); }
 const void* ResourceManager::GetTextureVkImageView(TextureHandle handle) const { return impl_->vulkan.GetTextureVkImageView(handle); }
