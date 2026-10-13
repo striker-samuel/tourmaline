@@ -472,12 +472,16 @@ inline bool IsDitherCloseupNode(const Scene& scene, int node)
 }
 
 // Dither-on-closeup fade band (meters from the camera to the flagged
-// subtree's anchor — the flagged node's world translate). Mirrors the HLSL
+// subtree's anchor - the flagged node's world translate). Mirrors the HLSL
 // constants DITHER_CLOSEUP_HIDE_M / DITHER_CLOSEUP_SOLID_M (common.hlsli,
 // CloseupDitherKeep): keep 0 at/below hide (fully hidden), keep 1 at/beyond
 // solid (fully solid), the ordered Bayer screen-door between.
-inline constexpr float kDitherCloseupHideM = 1.0f;
-inline constexpr float kDitherCloseupSolidM = 8.0f;
+// Tuned TIGHT (was [1, 8] - the dissolve read too strong and started too
+// early: 8 m away is doorway distance in these scenes, and the band covered
+// most of a walk-up): nothing before 3 m, the dissolve only engages inside
+// arm's reach, fully hidden only in the last half meter.
+inline constexpr float kDitherCloseupHideM = 0.5f;
+inline constexpr float kDitherCloseupSolidM = 3.0f;
 
 // Per-frame closeup-dither state for one draw's node (see ditherCloseup):
 //   Off    — beyond the band: draw normally, no per-draw flag

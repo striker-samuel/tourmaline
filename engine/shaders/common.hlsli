@@ -149,8 +149,10 @@ bool DitherKeep(float alpha, float2 pix)
 // factor is per-PIXEL (worldPos vs the camera eye), so the CPU pushes
 // only the 0/1 flag. Band constants mirror C++ kDitherCloseup* (scene.h).
 // -------------------------------------------------------------------------
-#define DITHER_CLOSEUP_HIDE_M   1.0f  // fully hidden at/below (m from the anchor)
-#define DITHER_CLOSEUP_SOLID_M  8.0f  // fully solid at/beyond
+#define DITHER_CLOSEUP_HIDE_M   0.5f  // fully hidden at/below (m from the anchor)
+#define DITHER_CLOSEUP_SOLID_M  3.0f  // fully solid at/beyond (tight band: the
+                                     // old [1, 8] started dissolving at doorway
+                                     // distance and read too strong)
 
 // Closeup keep FACTOR (0..1): the camera distance [hide, solid] mapped
 // hidden -> 0, solid -> 1 (the per-pixel distance, so the CPU pushes only

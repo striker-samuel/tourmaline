@@ -19,6 +19,14 @@ struct PSIn
     float3 worldPos : TEXCOORD1;
     float3 normal : TEXCOORD2;
     float4 tangent : TANGENT;
+    // Location 8: dither-on-closeup flag (flat, per-draw; Scene::
+    // ditherCloseup - see common.hlsli CloseupDitherKeep). default.vert
+    // forwards it (padEnd word); the unlit view must screen-door with it
+    // like the lit path or a flagged subtree renders SOLID here while it
+    // dissolves in lit - the silhouette disagreement read as "F2 shows
+    // problems". (The other flat readouts - vertex colors/UVs - stay
+    // solid on purpose: they show the authored data.)
+    nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 
@@ -111,6 +119,17 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
     float baseAlpha = baseAlphaFactor * baseSample.a;
+
+    // Dither-on-closeup (matches lit): the flagged subtree screen-doors
+    // away with the same keep-test so the unlit silhouette agrees with
+    // lit while the dissolve runs.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameEarly = pc.frameUniforms.Get();
+        FramePSHot hotEarly = frameEarly.frameHot.Get();
+        if (!CloseupDitherKeep(IN.worldPos, hotEarly.cameraPos, clipPos.xy))
+            discard;
+    }
 
     // Masked cutout (matches lit).
     if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
