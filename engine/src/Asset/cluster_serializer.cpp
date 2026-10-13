@@ -1489,7 +1489,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	if (scene.hidden.empty())
 		scene.hidden.assign(nodeCount, 0);
 	RebuildStaticCache(scene);
-	markAsChanged(scene, 0);
+	MarkAllRootsChanged(scene);
 	recalculateGlobalTransforms(scene);
 	return true;
 }

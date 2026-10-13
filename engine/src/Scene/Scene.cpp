@@ -63,6 +63,15 @@ void markAsChanged(Scene& scene, int node)
   }
 }
 
+void MarkAllRootsChanged(Scene& scene)
+{
+  // See the header contract: every ROOT (parent == -1), not just node 0.
+  for (size_t n = 0; n < scene.hierarchy.size(); ++n) {
+    if (scene.hierarchy[n].parent == -1)
+      markAsChanged(scene, (int)n);
+  }
+}
+
 void markAsChangedDynamic(Scene& scene, int node)
 {
   // Frozen subtrees never re-enter the dirty set after the initial build.
@@ -148,17 +157,26 @@ bool recalculateGlobalTransforms(Scene& scene)
 {
   bool wasUpdated = false;
 
-  if (!scene.changedAtThisFrame[0].empty()) {
-    const int c              = scene.changedAtThisFrame[0][0];
+  // Level 0: process EVERY changed entry (the old code took only [0] -
+  // single-root assumption; a scene with several level-0 roots left the
+  // rest identity). Root nodes: global = local (no parent to fold).
+  for (int c : scene.changedAtThisFrame[0]) {
     scene.globalTransform[c] = scene.localTransform[c];
-    scene.changedAtThisFrame[0].clear();
     wasUpdated = true;
   }
+  scene.changedAtThisFrame[0].clear();
 
   for (int i = 1; i < MAX_NODE_LEVEL; i++) {
     for (int c : scene.changedAtThisFrame[i]) {
-      const int p              = scene.hierarchy[c].parent;
-      scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      const int p = scene.hierarchy[c].parent;
+      // Root-level nodes at a deeper level (the cooker's WorldSun is
+      // addNode(scene, -1, 1) - a deliberate root, see EnsureWorldSun):
+      // global = local (the old code read globalTransform[-1] - UB that
+      // showed up as an identity/horizontal sun: az=0/el=0).
+      if (p <= -1)
+        scene.globalTransform[c] = scene.localTransform[c];
+      else
+        scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
     }
     wasUpdated |= !scene.changedAtThisFrame[i].empty();
     scene.changedAtThisFrame[i].clear();
@@ -437,7 +455,7 @@ void loadScene(const char* fileName, Scene& scene)
 
   fclose(f);
 
-  markAsChanged(scene, 0);
+  MarkAllRootsChanged(scene);
   recalculateGlobalTransforms(scene);
 }
 

@@ -202,7 +202,7 @@ StaticMergeResult CollapseStaticSubtrees(
 		RebuildStaticCache(scene);
 	}
 
-	markAsChanged(scene, 0);
+	MarkAllRootsChanged(scene);
 	recalculateGlobalTransforms(scene);
 
 	result.ok = true;

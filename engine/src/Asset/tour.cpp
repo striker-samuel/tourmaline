@@ -3444,7 +3444,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			markAsChanged(scene, int(node));
 		}
 	}
-	markAsChanged(scene, 0);
+	MarkAllRootsChanged(scene);
 	recalculateGlobalTransforms(scene);
 	// Wide override pass (Clarisse-style): regex rules in order, later
 	// wins. Per-node local commands are MORE specific and win over any

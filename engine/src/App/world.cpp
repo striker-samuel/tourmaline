@@ -529,6 +529,11 @@ namespace smvk {
 		}
 
 		RebuildStaticCache(scene);
+		// Full-recalc marking at the merge boundary: root-level nodes
+		// (the cooker's WorldSun is addNode(scene,-1,1)) fall outside
+		// node 0's subtree - without this their world globals keep the
+		// identity default and the sun decodes horizontal (az=0/el=0).
+		MarkAllRootsChanged(scene);
 		recalculateGlobalTransforms(scene);
 
 		// Build the per-node iterator flags from the resolved scene: renderable

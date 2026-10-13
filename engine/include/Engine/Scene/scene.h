@@ -435,6 +435,14 @@ void markAsChanged(Scene& scene, int node);
 // changedAtThisFrame after the initial build. Prefer this on the per-frame
 // path; use markAsChanged for initial builds / collapse baking.
 void markAsChangedDynamic(Scene& scene, int node);
+// Full-recalc marking for load/merge/collapse boundaries: marks EVERY
+// ROOT node (parent == -1) as changed - each root's subtree follows via
+// markAsChanged. The old markAsChanged(scene, 0) idiom assumed node 0 is
+// the only root; a deliberate root-level node (the cooker's WorldSun is
+// addNode(scene, -1, 1)) falls outside node 0's subtree and kept an
+// identity global transform (the horizon-sun bug: the WorldSun frame
+// decoded az=0/el=0).
+void MarkAllRootsChanged(Scene& scene);
 
 inline bool IsStaticNode(const Scene& scene, int node)
 {
