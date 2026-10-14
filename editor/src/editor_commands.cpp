@@ -3828,6 +3828,11 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	doc.cook.cubemapName = m_cook.cubemapName;
 	doc.cook.cubemapSize = m_cook.cubemapSize;
 	doc.cook.cubemapRays = m_cook.cubemapRays;
+	doc.cook.cubemapOctree = m_cook.cubemapOctree;
+	doc.cook.cubemapOctreeMax = m_cook.cubemapOctreeMax;
+	doc.cook.cubemapOctreeMin = m_cook.cubemapOctreeMin;
+	doc.cook.cubemapOctreeDepth = m_cook.cubemapOctreeDepth;
+	doc.cook.cubemapExtraRadius = m_cook.cubemapExtraRadius;
 	doc.cook.meshlets = m_cook.meshlets;
 	doc.cook.meshletMaxVerts = m_cook.meshletMaxVerts;
 	doc.cook.meshletMaxTris = m_cook.meshletMaxTris;
@@ -4457,6 +4462,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_cook.cubemapName = doc.cook.cubemapName;
 		m_cook.cubemapSize = doc.cook.cubemapSize;
 		m_cook.cubemapRays = doc.cook.cubemapRays;
+		m_cook.cubemapOctree = doc.cook.cubemapOctree;
+		m_cook.cubemapOctreeMax = doc.cook.cubemapOctreeMax;
+		m_cook.cubemapOctreeMin = doc.cook.cubemapOctreeMin;
+		m_cook.cubemapOctreeDepth = doc.cook.cubemapOctreeDepth;
+		m_cook.cubemapExtraRadius = doc.cook.cubemapExtraRadius;
 		m_cook.meshlets = doc.cook.meshlets;
 		m_cook.meshletMaxVerts = doc.cook.meshletMaxVerts;
 		m_cook.meshletMaxTris = doc.cook.meshletMaxTris;

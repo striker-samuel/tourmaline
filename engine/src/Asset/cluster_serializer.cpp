@@ -292,39 +292,46 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 	PutF32(out, e.volumetricJitter);
 	PutF32(out, e.volumetricHeightFalloff);
 	PutF32(out, e.volumetricHeightBase);
-	// Postfx look (SceneEnv — the App's panels seed from the resolved
-	// env). Appended AFTER the volumetric tail: older paks fail the
-	// reader loudly (the sanctioned break — old format, no conversions).
-	PutU32(out, e.bloomEnabled ? 1u : 0u);
-	PutF32(out, e.bloomIntensity);
-	PutF32(out, e.bloomThreshold);
-	PutU32(out, e.tonemapMode);
-	PutU32(out, e.autoExposure ? 1u : 0u);
-	PutF32(out, e.manualExposure);
-	PutF32(out, e.exposureEvBias);
-	PutF32(out, e.exposureSpeedToDark);
-	PutF32(out, e.exposureSpeedToBright);
-	PutF32(out, e.exposureMin);
-	PutF32(out, e.exposureMax);
-	PutU32(out, uint32_t(e.aoMode));
-	PutF32(out, e.aoRadius);
-	PutF32(out, e.aoBias);
-	PutF32(out, e.aoIntensity);
-	PutF32(out, e.aoMaxDistance);
-	PutU32(out, uint32_t(e.aoSsaoSamples));
-	PutF32(out, e.aoBlurSharpness);
-	PutU32(out, uint32_t(e.aoSaoSamples));
-	PutU32(out, uint32_t(e.aoSaoSpiralTurns));
-	PutU32(out, e.ssrEnabled ? 1u : 0u);
-	PutF32(out, e.ssrIntensity);
-	PutU32(out, e.motionBlurEnabled ? 1u : 0u);
-	PutU32(out, e.dofEnabled ? 1u : 0u);
-	PutU32(out, uint32_t(e.aaMode));
-	PutU32(out, e.cubemapEnabled ? 1u : 0u);
-	PutF32(out, e.cubemapIntensity);
+	// Postfx look: SPLIT OUT — the env record ends at the volumetric
+	// tail + zonePriority; the look rides its own scene-level record
+	// (PutSceneRenderSettings below). Older paks fail the reader loudly
+	// (the sanctioned break — old format, no conversions).
 	// Zone-entity tail (the zonePriority break): older paks fail the
 	// reader loudly (sanctioned — no conversions).
 	PutF32(out, e.zonePriority);
+}
+
+// Render-settings record (see SceneRenderSettings): the global postfx
+// look — 28 words, written ONCE per scene (never per env block).
+void PutSceneRenderSettings(std::vector<uint8_t>& out,
+	const SceneRenderSettings& r) {
+	PutU32(out, r.bloomEnabled ? 1u : 0u);
+	PutF32(out, r.bloomIntensity);
+	PutF32(out, r.bloomThreshold);
+	PutU32(out, r.tonemapMode);
+	PutU32(out, r.autoExposure ? 1u : 0u);
+	PutF32(out, r.manualExposure);
+	PutF32(out, r.exposureEvBias);
+	PutF32(out, r.exposureSpeedToDark);
+	PutF32(out, r.exposureSpeedToBright);
+	PutF32(out, r.exposureMin);
+	PutF32(out, r.exposureMax);
+	PutU32(out, uint32_t(r.aoMode));
+	PutF32(out, r.aoRadius);
+	PutF32(out, r.aoBias);
+	PutF32(out, r.aoIntensity);
+	PutF32(out, r.aoMaxDistance);
+	PutU32(out, uint32_t(r.aoSsaoSamples));
+	PutF32(out, r.aoBlurSharpness);
+	PutU32(out, uint32_t(r.aoSaoSamples));
+	PutU32(out, uint32_t(r.aoSaoSpiralTurns));
+	PutU32(out, r.ssrEnabled ? 1u : 0u);
+	PutF32(out, r.ssrIntensity);
+	PutU32(out, r.motionBlurEnabled ? 1u : 0u);
+	PutU32(out, r.dofEnabled ? 1u : 0u);
+	PutU32(out, uint32_t(r.aaMode));
+	PutU32(out, r.cubemapEnabled ? 1u : 0u);
+	PutF32(out, r.cubemapIntensity);
 }
 
 struct Cursor {
@@ -411,40 +418,46 @@ struct Cursor {
 		e.volumetricJitter = f32();
 		e.volumetricHeightFalloff = f32();
 		e.volumetricHeightBase = f32();
-		// Postfx look (mirrors PutSceneEnv's appended tail; older blobs
-		// truncate here — the scene-env section fails loudly per the
-		// sanctioned no-conversions break).
-		e.bloomEnabled = u32() != 0;
-		e.bloomIntensity = f32();
-		e.bloomThreshold = f32();
-		e.tonemapMode = u32();
-		e.autoExposure = u32() != 0;
-		e.manualExposure = f32();
-		e.exposureEvBias = f32();
-		e.exposureSpeedToDark = f32();
-		e.exposureSpeedToBright = f32();
-		e.exposureMin = f32();
-		e.exposureMax = f32();
-		e.aoMode = int(u32());
-		e.aoRadius = f32();
-		e.aoBias = f32();
-		e.aoIntensity = f32();
-		e.aoMaxDistance = f32();
-		e.aoSsaoSamples = int(u32());
-		e.aoBlurSharpness = f32();
-		e.aoSaoSamples = int(u32());
-		e.aoSaoSpiralTurns = int(u32());
-		e.ssrEnabled = u32() != 0;
-		e.ssrIntensity = f32();
-		e.motionBlurEnabled = u32() != 0;
-		e.dofEnabled = u32() != 0;
-		e.aaMode = int(u32());
-		e.cubemapEnabled = u32() != 0;
-		e.cubemapIntensity = f32();
-		// Zone-entity tail (mirrors PutSceneEnv): older blobs truncate
-		// here — the section fails loudly (sanctioned — no conversions).
+		// Postfx look: SPLIT OUT — the env record ends at zonePriority;
+		// the look reads from the scene-level render-settings record
+		// (sceneRenderSettings below). Older blobs truncate here — the
+		// scene-env section fails loudly per the sanctioned
+		// no-conversions break.
 		e.zonePriority = f32();
 		return e;
+	}
+	// Render-settings record (mirrors PutSceneRenderSettings): the
+	// global postfx look. Truncation keeps defaults (ok=false).
+	SceneRenderSettings sceneRenderSettings() {
+		SceneRenderSettings r{};
+		r.bloomEnabled = u32() != 0;
+		r.bloomIntensity = f32();
+		r.bloomThreshold = f32();
+		r.tonemapMode = u32();
+		r.autoExposure = u32() != 0;
+		r.manualExposure = f32();
+		r.exposureEvBias = f32();
+		r.exposureSpeedToDark = f32();
+		r.exposureSpeedToBright = f32();
+		r.exposureMin = f32();
+		r.exposureMax = f32();
+		r.aoMode = int(u32());
+		r.aoRadius = f32();
+		r.aoBias = f32();
+		r.aoIntensity = f32();
+		r.aoMaxDistance = f32();
+		r.aoSsaoSamples = int(u32());
+		r.aoBlurSharpness = f32();
+		r.aoSaoSamples = int(u32());
+		r.aoSaoSpiralTurns = int(u32());
+		r.ssrEnabled = u32() != 0;
+		r.ssrIntensity = f32();
+		r.motionBlurEnabled = u32() != 0;
+		r.dofEnabled = u32() != 0;
+		r.aaMode = int(u32());
+		r.cubemapEnabled = u32() != 0;
+		r.cubemapIntensity = f32();
+		return r;
 	}
 };
 
@@ -1103,6 +1116,14 @@ bool SerializeClusters(
 				PutSceneEnv(blob, env);
 			}
 		}
+		// Render settings (the postfx look — see SceneRenderSettings):
+		// u32 authored flag + ONE record (the look is scene-global,
+		// never per-node). Always written so the layout is uniform; old
+		// readers fail the trailing-bytes check (the sanctioned break).
+		{
+			PutU32(blob, scene.hasRenderSettings ? 1u : 0u);
+			PutSceneRenderSettings(blob, scene.renderSettings);
+		}
 		// Default camera (v10; v9 blobs end after the env section): the
 		// authored camera node the runtime App spawns at (world settings'
 		// typed camera.default field — see Scene::defaultCameraNode).
@@ -1443,6 +1464,18 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			scene.hasEnvironment = envFlag != 0;
 			scene.defaultEnvironment = def;
 			scene.envForNode = std::move(table);
+		}
+		// Render settings (the postfx look): u32 authored flag + ONE
+		// record. Blobs from before the split end after the env section —
+		// the struct defaults stand (the sanctioned break).
+		if (c.off < c.img.size()) {
+			const uint32_t renderFlag = c.u32();
+			SceneRenderSettings rs = c.sceneRenderSettings();
+			if (!c.ok)
+				return fail("truncated scene render settings section");
+			scene.renderSettings = rs;
+			scene.defaultRenderSettings = rs;
+			scene.hasRenderSettings = renderFlag != 0;
 		}
 		// Default camera (v10): the authored camera node the runtime App
 		// spawns at (see the writer above). v9 blobs end after the env

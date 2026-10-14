@@ -234,13 +234,27 @@ struct SceneEnv {
 	float volumetricJitter = 1.0f;       // IGN dither 0..1 (banding guard)
 	float volumetricHeightFalloff = 0.0f; // height falloff (1/m, 0 = off)
 	float volumetricHeightBase = 0.0f;    // reference height (m)
-	// Postfx look (bloom + tonemap + exposure + AO + SSR + motion blur
-	// + DOF + AA + cubemap IBL): the SAME settings the App's panels
-	// expose, authored here and saved forward tour -> pak -> App (the
-	// App seeds its pass state from the resolved env once per scene
-	// load; the panel/keys stay live afterwards — the volumetric
-	// contract above). Headless VULKANTOY_* pins win over the seed
-	// (see ApplyHeadlessPostfxOverrides).
+	// Postfx look: SPLIT OUT — see SceneRenderSettings (the render-grade
+	// knobs are a global scene look, never zoned; env blocks own
+	// sky/sun/fog/volumetrics only).
+	// ZONE priority (only meaningful on per-node env blocks): when several
+	// zones cover a point, higher priority wins; ties go to the smallest
+	// bounded volume (innermost). 0 = the default precedence.
+	float zonePriority = 0.0f;
+	std::string skyboxUri;     // stored (skybox sampling is TODO)
+};
+
+// RENDER SETTINGS (the postfx LOOK): the render-grade knobs — bloom,
+// tonemap, exposure, AO, SSR, motion blur, DOF, AA, cubemap IBL. Split
+// out of SceneEnv (they rode the env block historically): the look is a
+// GLOBAL scene grade, never zoned — env nodes/zone blocks own sky/sun/
+// fog/volumetrics ONLY, this struct owns what the App's panels expose.
+// Authored once per scene (Scene::defaultRenderSettings), resolved into
+// Scene::renderSettings, saved forward tour (render.* keys) -> pak ->
+// App (the renderer seeds its pass state from it once per scene load;
+// panels/keys stay live afterwards). Headless VULKANTOY_* pins win over
+// the seed (see ApplyHeadlessPostfxOverrides).
+struct SceneRenderSettings {
 	// Bloom (complete: enable + add scale + pre-exposure threshold; the
 	// knee derives at 0.25x threshold, as the baker always assumed).
 	bool bloomEnabled = true;
@@ -275,27 +289,20 @@ struct SceneEnv {
 	int aaMode = 3; // 0=Off, 1=Msaa2x, 2=Smaa1x, 3=SmaaT2x
 	bool cubemapEnabled = true;
 	float cubemapIntensity = 1.0f;
-	// ZONE priority (only meaningful on per-node env blocks): when several
-	// zones cover a point, higher priority wins; ties go to the smallest
-	// bounded volume (innermost). 0 = the default precedence.
-	float zonePriority = 0.0f;
-	std::string skyboxUri;     // stored (skybox sampling is TODO)
 };
 
 // Authored-environment binary record (see saveEnvFloats/loadEnvFloats
-// in Scene.cpp): 16 base floats + the postfx block below, fixed order.
-// Extended wholesale when the postfx block landed (old files fail the
+// in Scene.cpp): 16 base floats + zonePriority, fixed order. Shrunk when
+// the postfx block split into SceneRenderSettings (old files fail the
 // read loudly — the sanctioned no-conversions break, AGENTS.md).
-// Postfx floats (28): bloomEnabled, bloomIntensity, bloomThreshold (3) +
-// tonemapMode (1) + autoExposure, manualExposure, exposureEvBias,
-// exposureSpeedToDark, exposureSpeedToBright, exposureMin,
-// exposureMax (7) + aoMode, aoRadius, aoBias, aoIntensity,
-// aoMaxDistance, aoSsaoSamples, aoBlurSharpness, aoSaoSamples,
-// aoSaoSpiralTurns (9) + ssrEnabled, ssrIntensity (2) +
-// motionBlurEnabled, dofEnabled, aaMode (3) + cubemapEnabled,
-// cubemapIntensity (2) + zonePriority (1 — the zone-entity break).
 // Bools/modes ride as 0/1 floats.
-inline constexpr int kSceneEnvFloatCount = 16 + 28;
+inline constexpr int kSceneEnvFloatCount = 17;
+// Render-settings record (see saveRenderFloats/loadRenderFloats):
+// 27 floats, the look block's fixed order (bloom 3 + tonemap 1 +
+// exposure 7 + AO 9 + SSR 2 + motionblur/dof/aa 3 + cubemap 2).
+// Bools/modes ride as 0/1 floats.
+inline constexpr int kSceneRenderFloatCount = 27;
+
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -355,6 +362,18 @@ struct Scene {
 	// resolved into `environment` by whoever owns the selection (the
 	// editor; the cook at bake time).
 	std::unordered_map<NodeId, SceneEnv> envForNode;
+	// RENDER SETTINGS (see SceneRenderSettings): the resolved GLOBAL
+	// look — what the renderer seeds from. Like `environment`, consumers
+	// read `renderSettings` and nothing else; the editor resolves the
+	// authored default into it (no per-node render blocks by design:
+	// the look is a scene grade, never zoned).
+	SceneRenderSettings renderSettings;
+	// True when `renderSettings` was authored (tour render.* block /
+	// editor publish) rather than default-constructed.
+	bool hasRenderSettings = false;
+	// Authoring default (the editor's Render settings panel edits this;
+	// the tour persists it as render.* keys).
+	SceneRenderSettings defaultRenderSettings;
 	// DEFAULT CAMERA (world settings' typed camera field, tour
 	// editorSettings camera.default -> cook -> pak v10): the authored
 	// camera node the runtime App spawns at/looks through instead of the

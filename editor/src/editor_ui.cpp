@@ -3571,6 +3571,43 @@ namespace editor {
 				m_cook.cubemapRays = std::clamp(rays, 1, 4096);
 				AutosaveTour();
 			}
+			// Placement density (the octree knobs — Cook.exe's
+			// --cubemap-octree* set): adaptive placement instead of the
+			// uniform lattice. Open cells over the max subdivide for
+			// coverage; the min is the detail floor; the depth caps the
+			// tree; growth stops at the 32-probe runtime budget.
+			if (ImGui::Checkbox("Octree placement (adaptive)", &m_cook.cubemapOctree))
+				AutosaveTour();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Sparse adaptive placement: open volumes stay coarse,\nnear-surface cells refine to the detail floor, embedded centers\ndrop, growth stops at the 32-probe runtime budget.");
+			if (m_cook.cubemapOctree) {
+				ImGui::Indent();
+				if (ImGui::DragFloat("Max cell (m)##cubeoct",
+						&m_cook.cubemapOctreeMax, 0.25f, 0.5f, 64.0f, "%.1f"))
+					AutosaveTour();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Open cells larger than this subdivide (coverage).");
+				if (ImGui::DragFloat("Min cell (m)##cubeoct",
+						&m_cook.cubemapOctreeMin, 0.1f, 0.125f,
+						std::max(m_cook.cubemapOctreeMax, 0.25f), "%.2f"))
+					AutosaveTour();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Detail floor: never subdivide below this (probe DENSITY).");
+				{
+					int depth = int(m_cook.cubemapOctreeDepth);
+					ImGui::SetNextItemWidth(-FLT_MIN);
+					if (ImGui::DragInt("Depth cap##cubeoct", &depth, 0.25f, 0, 8)) {
+						m_cook.cubemapOctreeDepth = uint32_t(std::clamp(depth, 0, 8));
+						AutosaveTour();
+					}
+				}
+				if (ImGui::DragFloat("Pinned influence (m)##cubeoct",
+						&m_cook.cubemapExtraRadius, 0.25f, 0.5f, 50.0f, "%.1f"))
+					AutosaveTour();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Influence radius of pinned extra probes (fade = half).\nMatches the SceneCubemap authoring default.");
+				ImGui::Unindent();
+			}
 			ImGui::Unindent();
 		}
 

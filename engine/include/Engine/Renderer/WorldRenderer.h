@@ -1029,13 +1029,18 @@ public:
 	// resolved env; the panels/keys stay live afterwards (the volumetric
 	// contract). Headless VULKANTOY_* pins win over the seed (see
 	// ApplyHeadlessPostfxOverrides).
-	void PushPostfxEnv(const SceneEnv& env) {
-		m_bloomEnabled = env.bloomEnabled;
-		m_bloomIntensity = std::clamp(env.bloomIntensity, 0.0f, 2.0f);
-		m_bloomThreshold = std::max(env.bloomThreshold, 0.0f);
-		m_tonemapMode = std::min(env.tonemapMode, 3u);
-		m_autoExposureEnabled = env.autoExposure;
-		m_manualExposure = std::clamp(env.manualExposure,
+	// Postfx seed from the RENDER SETTINGS (the split look — see
+	// SceneRenderSettings). The env block still contributes its
+	// "exposure" row (the editor VIEWPORT brightness multiplier — an
+	// environment-authored value, folded as EV below); everything else
+	// look-related reads the render settings.
+	void PushPostfxEnv(const SceneRenderSettings& r, const SceneEnv& env) {
+		m_bloomEnabled = r.bloomEnabled;
+		m_bloomIntensity = std::clamp(r.bloomIntensity, 0.0f, 2.0f);
+		m_bloomThreshold = std::max(r.bloomThreshold, 0.0f);
+		m_tonemapMode = std::min(r.tonemapMode, 3u);
+		m_autoExposureEnabled = r.autoExposure;
+		m_manualExposure = std::clamp(r.manualExposure,
 			0.00001f, 0.05f);
 		// EV bias + the editor VIEWPORT exposure row folded together: the
 		// env's "exposure" (0.1..4 slider, serialized at floats[10]) is a
@@ -1045,29 +1050,29 @@ public:
 		const float viewportEv = env.exposure > 0.0f
 			? std::log2(env.exposure) : 0.0f;
 		m_exposureEvBias = std::clamp(
-			env.exposureEvBias + viewportEv, -4.0f, 4.0f);
-		m_exposureSpeedToDark = std::max(env.exposureSpeedToDark, 0.01f);
+			r.exposureEvBias + viewportEv, -4.0f, 4.0f);
+		m_exposureSpeedToDark = std::max(r.exposureSpeedToDark, 0.01f);
 		m_exposureSpeedToBright =
-			std::max(env.exposureSpeedToBright, 0.01f);
-		m_exposureMin = std::max(env.exposureMin, 0.000001f);
-		m_exposureMax = std::min(std::max(env.exposureMax,
+			std::max(r.exposureSpeedToBright, 0.01f);
+		m_exposureMin = std::max(r.exposureMin, 0.000001f);
+		m_exposureMax = std::min(std::max(r.exposureMax,
 			m_exposureMin), 1.0f);
-		m_aoMode = static_cast<AoMode>(std::clamp(env.aoMode, 0, 2));
-		m_ssaoRadius = std::clamp(env.aoRadius, 0.05f, 2.0f);
-		m_ssaoBias = std::clamp(env.aoBias, 0.0f, 0.1f);
-		m_ssaoIntensity = std::clamp(env.aoIntensity, 0.0f, 2.0f);
-		m_ssaoMaxDistance = std::clamp(env.aoMaxDistance, 2.0f, 100.0f);
-		m_ssaoSamples = std::clamp(env.aoSsaoSamples, 1, 32);
-		m_ssaoBlurSharpness = std::clamp(env.aoBlurSharpness, 0.0f, 32.0f);
-		m_saoSamples = std::clamp(env.aoSaoSamples, 1, 32);
-		m_saoSpiralTurns = std::clamp(env.aoSaoSpiralTurns, 1, 16);
-		m_ssrEnabled = env.ssrEnabled;
-		m_ssrIntensity = std::clamp(env.ssrIntensity, 0.0f, 4.0f);
-		m_motionBlurEnabled = env.motionBlurEnabled;
-		m_dofEnabled = env.dofEnabled;
-		m_aaMode = static_cast<AaMode>(std::clamp(env.aaMode, 0, 3));
-		m_cubemapEnabled = env.cubemapEnabled;
-		m_cubemapIntensity = std::clamp(env.cubemapIntensity, 0.0f, 4.0f);
+		m_aoMode = static_cast<AoMode>(std::clamp(r.aoMode, 0, 2));
+		m_ssaoRadius = std::clamp(r.aoRadius, 0.05f, 2.0f);
+		m_ssaoBias = std::clamp(r.aoBias, 0.0f, 0.1f);
+		m_ssaoIntensity = std::clamp(r.aoIntensity, 0.0f, 2.0f);
+		m_ssaoMaxDistance = std::clamp(r.aoMaxDistance, 2.0f, 100.0f);
+		m_ssaoSamples = std::clamp(r.aoSsaoSamples, 1, 32);
+		m_ssaoBlurSharpness = std::clamp(r.aoBlurSharpness, 0.0f, 32.0f);
+		m_saoSamples = std::clamp(r.aoSaoSamples, 1, 32);
+		m_saoSpiralTurns = std::clamp(r.aoSaoSpiralTurns, 1, 16);
+		m_ssrEnabled = r.ssrEnabled;
+		m_ssrIntensity = std::clamp(r.ssrIntensity, 0.0f, 4.0f);
+		m_motionBlurEnabled = r.motionBlurEnabled;
+		m_dofEnabled = r.dofEnabled;
+		m_aaMode = static_cast<AaMode>(std::clamp(r.aaMode, 0, 3));
+		m_cubemapEnabled = r.cubemapEnabled;
+		m_cubemapIntensity = std::clamp(r.cubemapIntensity, 0.0f, 4.0f);
 	}
 	// Headless postfx pins (the Configure snapshot): same "scene settings
 	// lose" contract as the volumetric ones — called at startup Configure

@@ -249,22 +249,10 @@ static void saveEnvFloats(FILE* f, const SceneEnv& e)
     e.exposure, e.fogDensity,
     e.fogColor.x, e.fogColor.y, e.fogColor.z,
     e.volumetrics,
-    e.bloomEnabled ? 1.0f : 0.0f, e.bloomIntensity, e.bloomThreshold,
-    float(e.tonemapMode),
-    e.autoExposure ? 1.0f : 0.0f, e.manualExposure, e.exposureEvBias,
-    e.exposureSpeedToDark, e.exposureSpeedToBright,
-    e.exposureMin, e.exposureMax,
-    float(e.aoMode), e.aoRadius, e.aoBias, e.aoIntensity,
-    e.aoMaxDistance, float(e.aoSsaoSamples), e.aoBlurSharpness,
-    float(e.aoSaoSamples), float(e.aoSaoSpiralTurns),
-    e.ssrEnabled ? 1.0f : 0.0f, e.ssrIntensity,
-    e.motionBlurEnabled ? 1.0f : 0.0f, e.dofEnabled ? 1.0f : 0.0f,
-    float(e.aaMode),
-    e.cubemapEnabled ? 1.0f : 0.0f, e.cubemapIntensity,
     e.zonePriority,
   };
   static_assert(sizeof(floats) / sizeof(float) == kSceneEnvFloatCount,
-    "postfx float order drifted from kSceneEnvFloatCount");
+    "env float order drifted from kSceneEnvFloatCount");
   fwrite(floats, sizeof(float), kSceneEnvFloatCount, f);
   const uint32_t len = (uint32_t)e.skyboxUri.length();
   fwrite(&len, sizeof(len), 1, f);
@@ -288,34 +276,7 @@ static bool loadEnvFloats(FILE* f, SceneEnv& e)
   e.fogDensity = floats[11];
   e.fogColor = glm::vec3(floats[12], floats[13], floats[14]);
   e.volumetrics = floats[15];
-  e.bloomEnabled = floats[16] != 0.0f;
-  e.bloomIntensity = floats[17];
-  e.bloomThreshold = floats[18];
-  e.tonemapMode = uint32_t(floats[19]);
-  e.autoExposure = floats[20] != 0.0f;
-  e.manualExposure = floats[21];
-  e.exposureEvBias = floats[22];
-  e.exposureSpeedToDark = floats[23];
-  e.exposureSpeedToBright = floats[24];
-  e.exposureMin = floats[25];
-  e.exposureMax = floats[26];
-  e.aoMode = int(floats[27]);
-  e.aoRadius = floats[28];
-  e.aoBias = floats[29];
-  e.aoIntensity = floats[30];
-  e.aoMaxDistance = floats[31];
-  e.aoSsaoSamples = int(floats[32]);
-  e.aoBlurSharpness = floats[33];
-  e.aoSaoSamples = int(floats[34]);
-  e.aoSaoSpiralTurns = int(floats[35]);
-  e.ssrEnabled = floats[36] != 0.0f;
-  e.ssrIntensity = floats[37];
-  e.motionBlurEnabled = floats[38] != 0.0f;
-  e.dofEnabled = floats[39] != 0.0f;
-  e.aaMode = int(floats[40]);
-  e.cubemapEnabled = floats[41] != 0.0f;
-  e.cubemapIntensity = floats[42];
-  e.zonePriority = floats[43];
+  e.zonePriority = floats[16];
   uint32_t len = 0;
   if (fread(&len, sizeof(len), 1, f) != 1 || len > 1024 * 1024)
     return false;
@@ -328,6 +289,68 @@ static bool loadEnvFloats(FILE* f, SceneEnv& e)
   else {
     e.skyboxUri.clear();
   }
+  return true;
+}
+
+// Render-settings record (see SceneRenderSettings): the postfx look's
+// 27 floats in fixed order (bloom 3 + tonemap 1 + exposure 7 + AO 9 +
+// SSR 2 + motionblur/dof/aa 3 + cubemap 2). Bools/modes ride as 0/1
+// floats. Split out of the env record (old files fail loudly — the
+// sanctioned no-conversions break, AGENTS.md).
+static void saveRenderFloats(FILE* f, const SceneRenderSettings& r)
+{
+  const float floats[kSceneRenderFloatCount] = {
+    r.bloomEnabled ? 1.0f : 0.0f, r.bloomIntensity, r.bloomThreshold,
+    float(r.tonemapMode),
+    r.autoExposure ? 1.0f : 0.0f, r.manualExposure, r.exposureEvBias,
+    r.exposureSpeedToDark, r.exposureSpeedToBright,
+    r.exposureMin, r.exposureMax,
+    float(r.aoMode), r.aoRadius, r.aoBias, r.aoIntensity,
+    r.aoMaxDistance, float(r.aoSsaoSamples), r.aoBlurSharpness,
+    float(r.aoSaoSamples), float(r.aoSaoSpiralTurns),
+    r.ssrEnabled ? 1.0f : 0.0f, r.ssrIntensity,
+    r.motionBlurEnabled ? 1.0f : 0.0f, r.dofEnabled ? 1.0f : 0.0f,
+    float(r.aaMode),
+    r.cubemapEnabled ? 1.0f : 0.0f, r.cubemapIntensity,
+  };
+  static_assert(sizeof(floats) / sizeof(float) == kSceneRenderFloatCount,
+    "render float order drifted from kSceneRenderFloatCount");
+  fwrite(floats, sizeof(float), kSceneRenderFloatCount, f);
+}
+
+static bool loadRenderFloats(FILE* f, SceneRenderSettings& r)
+{
+  float floats[kSceneRenderFloatCount] = {};
+  if (fread(floats, sizeof(float), kSceneRenderFloatCount, f)
+      != kSceneRenderFloatCount)
+    return false;
+  r.bloomEnabled = floats[0] != 0.0f;
+  r.bloomIntensity = floats[1];
+  r.bloomThreshold = floats[2];
+  r.tonemapMode = uint32_t(floats[3]);
+  r.autoExposure = floats[4] != 0.0f;
+  r.manualExposure = floats[5];
+  r.exposureEvBias = floats[6];
+  r.exposureSpeedToDark = floats[7];
+  r.exposureSpeedToBright = floats[8];
+  r.exposureMin = floats[9];
+  r.exposureMax = floats[10];
+  r.aoMode = int(floats[11]);
+  r.aoRadius = floats[12];
+  r.aoBias = floats[13];
+  r.aoIntensity = floats[14];
+  r.aoMaxDistance = floats[15];
+  r.aoSsaoSamples = int(floats[16]);
+  r.aoBlurSharpness = floats[17];
+  r.aoSaoSamples = int(floats[18]);
+  r.aoSaoSpiralTurns = int(floats[19]);
+  r.ssrEnabled = floats[20] != 0.0f;
+  r.ssrIntensity = floats[21];
+  r.motionBlurEnabled = floats[22] != 0.0f;
+  r.dofEnabled = floats[23] != 0.0f;
+  r.aaMode = int(floats[24]);
+  r.cubemapEnabled = floats[25] != 0.0f;
+  r.cubemapIntensity = floats[26];
   return true;
 }
 
@@ -449,6 +472,19 @@ void loadScene(const char* fileName, Scene& scene)
       }
     }
   }
+  // Render-settings section (last; absent in old files — a short read
+  // keeps the defaults): u32 authored flag + the record.
+  {
+    uint32_t renderFlag = 0;
+    if (fread(&renderFlag, sizeof(renderFlag), 1, f) == 1) {
+      SceneRenderSettings rs{};
+      if (loadRenderFloats(f, rs)) {
+        scene.renderSettings = rs;
+        scene.defaultRenderSettings = rs;
+        scene.hasRenderSettings = renderFlag != 0;
+      }
+    }
+  }
   // Cooked punctual lights are NOT carried in this legacy format: they
   // are Cluster pool assets (see Scene::lightForNode) and round-trip
   // through paks only.
@@ -566,6 +602,13 @@ void saveScene(const char* fileName, const Scene& scene)
       fwrite(&node, sizeof(node), 1, f);
       saveEnvFloats(f, env);
     }
+  }
+  // Render-settings section (last; old loaders stop after the env
+  // section — trailing bytes ignored): u32 authored flag + the record.
+  {
+    const uint32_t renderFlag = scene.hasRenderSettings ? 1u : 0u;
+    fwrite(&renderFlag, sizeof(renderFlag), 1, f);
+    saveRenderFloats(f, scene.renderSettings);
   }
   fclose(f);
 }
@@ -850,6 +893,13 @@ void mergeScenes(
       scene.hasEnvironment = true;
       scene.defaultEnvironment = s->defaultEnvironment;
       envTaken = true;
+    }
+    // Render settings: first authored look wins (same rule as the env;
+    // the look is scene-global, never node-shifted).
+    if (!scene.hasRenderSettings && s->hasRenderSettings) {
+      scene.renderSettings = s->renderSettings;
+      scene.defaultRenderSettings = s->defaultRenderSettings;
+      scene.hasRenderSettings = true;
     }
 
     offs += nodeCount;

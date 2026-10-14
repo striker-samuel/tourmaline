@@ -4789,9 +4789,11 @@ namespace engine {
 			const SceneEnv& se = m_world->scene.environment;
 			PushVolumetricEnv(se);
 			// Postfx look seed (bloom/tonemap/exposure/AO/SSR/motion
-			// blur/DOF/AA/cubemap - the App panels' settings, authored in
-			// the env): once per scene load/rebind, panels/keys live on.
-			PushPostfxEnv(se);
+			// blur/DOF/AA/cubemap - the App panels' settings): from the
+			// RENDER SETTINGS (the split look - Scene::renderSettings;
+			// the env contributes only its viewport exposure fold).
+			// Once per scene load/rebind, panels/keys live on.
+			PushPostfxEnv(m_world->scene.renderSettings, se);
 			// Headless overrides win over the scene seed (AGENTS.md:
 			// "scene settings lose") - without this a headless pin dies
 			// here on any scene whose env disagrees (the seed writes the

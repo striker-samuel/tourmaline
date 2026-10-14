@@ -306,6 +306,15 @@ struct CookSettings {
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	uint32_t cubemapBounces = 5;
+	// Placement DENSITY (the octree knobs — Cook.exe's --cubemap-octree*
+	// set, authored here): adaptive placement instead of a grid; the
+	// max/min cell sizes + depth cap drive how dense the probe set
+	// grows before the 32-probe runtime budget stops it.
+	bool cubemapOctree = false;
+	float cubemapOctreeMax = 8.0f;
+	float cubemapOctreeMin = 2.0f;
+	uint32_t cubemapOctreeDepth = 4;
+	float cubemapExtraRadius = 5.5f;
 	// GI bake selectors (ON-DEMAND Bake GI only — cooks never bake;
 	// see BakeGI): authored convex volumes (cvol nodes) via GiBaker —
 	// sidecars gi/<pak-stem>_* keyed to the pak stem. No-op when the
@@ -1531,8 +1540,12 @@ private:
 	// the environment through any other channel.
 	using EditorEnv = SceneEnv;
 	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = default block renders
+
 	EditorEnv& CurrentEnv();   // the source that renders (scene-backed)
 	const EditorEnv& CurrentEnv() const;
+	// The scene's render look (the split postfx settings): the resolved
+	// block when a scene stands, defaults otherwise (sceneless-safe).
+	const SceneRenderSettings& RenderLook() const;
 	bool IsEnvNode(uint32_t node) const { return m_world && m_world->scene.envForNode.contains(node); }
 	void MarkEnvNode(uint32_t node);     // flag node + copy current settings
 	void UnmarkEnvNode(uint32_t node);
@@ -1548,6 +1561,10 @@ private:
 	// editor when one exists — plus sky/fog/exposure and the Cook now
 	// button (the full cook flow from the section that owns its inputs).
 	void DrawEnvPanel();
+	// RENDER SETTINGS (the split postfx look — SceneRenderSettings):
+	// its own section on the World page, editing the scene-global look
+	// (no per-node blocks by design: a grade is never zoned).
+	void DrawRenderSettingsPanel();
 	// editorSet persistence (tour editorSettings; cluster-space node ids).
 	void SaveEnvToDoc(smvk::tour::Doc& doc) const;
 	void LoadEnvFromDoc(const smvk::tour::Doc& doc);

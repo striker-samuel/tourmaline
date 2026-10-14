@@ -1007,22 +1007,26 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				out.cubemapOctree = (v == "on" || v == "1" || v == "true");
+				out.explicitSet.insert("cubemapOctree");
 			}
 			else if (a == "--cubemap-octree-max") {
 				std::string v;
 				if (!need(v)) return false;
 				out.cubemapOctreeMax = std::max(0.5f, std::stof(v));
+				out.explicitSet.insert("cubemapOctreeMax");
 			}
 			else if (a == "--cubemap-octree-min") {
 				std::string v;
 				if (!need(v)) return false;
 				out.cubemapOctreeMin = std::max(0.25f, std::stof(v));
+				out.explicitSet.insert("cubemapOctreeMin");
 			}
 			else if (a == "--cubemap-octree-depth") {
 				std::string v;
 				if (!need(v)) return false;
 				out.cubemapOctreeDepth = std::clamp<uint32_t>(
 					static_cast<uint32_t>(std::stoul(v)), 1, 6);
+				out.explicitSet.insert("cubemapOctreeDepth");
 			}
 			else if (a == "--cubemap-extra-pos") {
 				std::string v;
@@ -1033,6 +1037,7 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				out.cubemapExtraRadius = std::max(0.25f, std::stof(v));
+				out.explicitSet.insert("cubemapExtraRadius");
 			}
 			else if (a == "--cubemap-png") {
 				std::string v;
@@ -3665,6 +3670,13 @@ int main(int argc, char** argv) {
 			use("cubemapName", args.cubemapName, k.cubemapName);
 			use("cubemapSize", args.cubemapSize, k.cubemapSize);
 			use("cubemapRays", args.cubemapRays, k.cubemapRays);
+			// Placement density (the octree knobs — the editor's cubemap
+			// section authors them; CLI flags win when explicitly given).
+			use("cubemapOctree", args.cubemapOctree, k.cubemapOctree);
+			use("cubemapOctreeMax", args.cubemapOctreeMax, k.cubemapOctreeMax);
+			use("cubemapOctreeMin", args.cubemapOctreeMin, k.cubemapOctreeMin);
+			use("cubemapOctreeDepth", args.cubemapOctreeDepth, k.cubemapOctreeDepth);
+			use("cubemapExtraRadius", args.cubemapExtraRadius, k.cubemapExtraRadius);
 			// LOD detail + meshlet settings ride the tour cook block
 			// the same way (CLI flags win when explicitly given).
 			use("lodRatios", args.lodRatios, k.lodRatios);

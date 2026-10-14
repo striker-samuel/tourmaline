@@ -101,6 +101,20 @@ struct TourCook {
 	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
+	// Placement DENSITY (the octree knobs, editor-authored — the same
+	// set Cook.exe's --cubemap-octree* flags drive): sparse adaptive
+	// placement instead of a uniform --cubemap-grid lattice. Open cells
+	// larger than cubemapOctreeMax (m) subdivide for coverage; the
+	// detail floor cubemapOctreeMin (m) never subdivides below; the
+	// depth cap bounds the tree (root = 0); embedded centers drop,
+	// growth stops at the 32-probe runtime budget. Pinned extras
+	// (manifest 'pin' rows) add after placement with the
+	// cubemapExtraRadius influence (fade = half).
+	bool cubemapOctree = false;
+	float cubemapOctreeMax = 8.0f;
+	float cubemapOctreeMin = 2.0f;
+	uint32_t cubemapOctreeDepth = 4;
+	float cubemapExtraRadius = 5.5f;
 	// Meshlet cook (PakCooker --meshlets stage): per-meshlet build
 	// over the cooked topology (max verts/tris per meshlet + the
 	// cone-weight partitioning bias, 0..1). The size limits are the

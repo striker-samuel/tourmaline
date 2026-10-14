@@ -742,6 +742,11 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -cubemapName " << Quote(k.cubemapName)
 			<< " -cubemapSize " << k.cubemapSize
 			<< " -cubemapRays " << k.cubemapRays
+			<< " -cubemapOctree " << (k.cubemapOctree ? "on" : "off")
+			<< " -cubemapOctreeMax " << k.cubemapOctreeMax
+			<< " -cubemapOctreeMin " << k.cubemapOctreeMin
+			<< " -cubemapOctreeDepth " << k.cubemapOctreeDepth
+			<< " -cubemapExtraRadius " << k.cubemapExtraRadius
 			<< " -meshlets " << (k.meshlets ? "on" : "off")
 			<< " -meshletVerts " << k.meshletMaxVerts
 			<< " -meshletTris " << k.meshletMaxTris
@@ -1388,6 +1393,18 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			else if (get("-cubemapRays", v))
 				k.cubemapRays = std::max<uint32_t>(
 					uint32_t(std::stoul(v)), 1);
+			else if (get("-cubemapOctree", v))
+				k.cubemapOctree = (v == "on" || v == "1");
+			else if (get("-cubemapOctreeMax", v))
+				k.cubemapOctreeMax = std::max(std::stof(v), 0.25f);
+			else if (get("-cubemapOctreeMin", v))
+				k.cubemapOctreeMin = std::clamp(std::stof(v),
+					0.125f, k.cubemapOctreeMax);
+			else if (get("-cubemapOctreeDepth", v))
+				k.cubemapOctreeDepth = std::min<uint32_t>(
+					uint32_t(std::stoul(v)), 8);
+			else if (get("-cubemapExtraRadius", v))
+				k.cubemapExtraRadius = std::max(std::stof(v), 0.5f);
 			else if (get("-meshlets", v))
 				k.meshlets = (v == "on" || v == "1");
 			else if (get("-meshletVerts", v))
@@ -2260,6 +2277,10 @@ struct TourEnvBlocks {
 	uint32_t currentCluster = UINT32_MAX;
 	bool haveCurrent = false;
 	bool hasBlocks = false;
+	// Scene-level render settings (render.* keys — the postfx look,
+	// never per-node). haveRender gates the loader's apply.
+	SceneRenderSettings render{};
+	bool haveRender = false;
 };
 float TourEnvFloat(const std::string& s, float fallback) {
 	try {
@@ -2304,37 +2325,45 @@ void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) 
 	else if (f == "volJitter") e.volumetricJitter = TourEnvFloat(v, e.volumetricJitter);
 	else if (f == "volHeightFalloff") e.volumetricHeightFalloff = TourEnvFloat(v, e.volumetricHeightFalloff);
 	else if (f == "volHeightBase") e.volumetricHeightBase = TourEnvFloat(v, e.volumetricHeightBase);
-	// Postfx look (the App's panels seed from the env — same settings
-	// the panels expose; missing keys keep struct defaults, so old
-	// tours load with the classic look).
-	else if (f == "bloomEnabled") e.bloomEnabled = TourEnvFloat(v, e.bloomEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "bloomIntensity") e.bloomIntensity = TourEnvFloat(v, e.bloomIntensity);
-	else if (f == "bloomThreshold") e.bloomThreshold = TourEnvFloat(v, e.bloomThreshold);
-	else if (f == "tonemapMode") e.tonemapMode = uint32_t(TourEnvFloat(v, float(e.tonemapMode)));
-	else if (f == "autoExposure") e.autoExposure = TourEnvFloat(v, e.autoExposure ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "manualExposure") e.manualExposure = TourEnvFloat(v, e.manualExposure);
-	else if (f == "exposureEvBias") e.exposureEvBias = TourEnvFloat(v, e.exposureEvBias);
-	else if (f == "exposureSpeedToDark") e.exposureSpeedToDark = TourEnvFloat(v, e.exposureSpeedToDark);
-	else if (f == "exposureSpeedToBright") e.exposureSpeedToBright = TourEnvFloat(v, e.exposureSpeedToBright);
-	else if (f == "exposureMin") e.exposureMin = TourEnvFloat(v, e.exposureMin);
-	else if (f == "exposureMax") e.exposureMax = TourEnvFloat(v, e.exposureMax);
-	else if (f == "aoMode") e.aoMode = int(TourEnvFloat(v, float(e.aoMode)));
-	else if (f == "aoRadius") e.aoRadius = TourEnvFloat(v, e.aoRadius);
-	else if (f == "aoBias") e.aoBias = TourEnvFloat(v, e.aoBias);
-	else if (f == "aoIntensity") e.aoIntensity = TourEnvFloat(v, e.aoIntensity);
-	else if (f == "aoMaxDistance") e.aoMaxDistance = TourEnvFloat(v, e.aoMaxDistance);
-	else if (f == "aoSsaoSamples") e.aoSsaoSamples = int(TourEnvFloat(v, float(e.aoSsaoSamples)));
-	else if (f == "aoBlurSharpness") e.aoBlurSharpness = TourEnvFloat(v, e.aoBlurSharpness);
-	else if (f == "aoSaoSamples") e.aoSaoSamples = int(TourEnvFloat(v, float(e.aoSaoSamples)));
-	else if (f == "aoSaoSpiralTurns") e.aoSaoSpiralTurns = int(TourEnvFloat(v, float(e.aoSaoSpiralTurns)));
-	else if (f == "ssrEnabled") e.ssrEnabled = TourEnvFloat(v, e.ssrEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "ssrIntensity") e.ssrIntensity = TourEnvFloat(v, e.ssrIntensity);
-	else if (f == "motionBlurEnabled") e.motionBlurEnabled = TourEnvFloat(v, e.motionBlurEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "dofEnabled") e.dofEnabled = TourEnvFloat(v, e.dofEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "aaMode") e.aaMode = int(TourEnvFloat(v, float(e.aaMode)));
-	else if (f == "cubemapEnabled") e.cubemapEnabled = TourEnvFloat(v, e.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "cubemapIntensity") e.cubemapIntensity = TourEnvFloat(v, e.cubemapIntensity);
+	// Postfx look: SPLIT OUT — the env block owns sky/sun/fog/
+	// volumetrics ONLY; the look rides the scene-level render.* keys
+	// (TourRenderApplyField below). Old tours carrying the postfx keys
+	// on env blocks IGNORE them (the sanctioned break — the look
+	// re-authors in the Render settings panel).
+	else if (f == "zonePriority") e.zonePriority = TourEnvFloat(v, e.zonePriority);
 	else if (f == "skyboxUri") e.skyboxUri = v;
+}
+// Render-settings block (render.* keys — scene-level, never per-node):
+// the postfx look. Missing keys keep struct defaults.
+void TourRenderApplyField(SceneRenderSettings& r, const std::string& f,
+	const std::string& v) {
+	if (f == "bloomEnabled") r.bloomEnabled = TourEnvFloat(v, r.bloomEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "bloomIntensity") r.bloomIntensity = TourEnvFloat(v, r.bloomIntensity);
+	else if (f == "bloomThreshold") r.bloomThreshold = TourEnvFloat(v, r.bloomThreshold);
+	else if (f == "tonemapMode") r.tonemapMode = uint32_t(TourEnvFloat(v, float(r.tonemapMode)));
+	else if (f == "autoExposure") r.autoExposure = TourEnvFloat(v, r.autoExposure ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "manualExposure") r.manualExposure = TourEnvFloat(v, r.manualExposure);
+	else if (f == "exposureEvBias") r.exposureEvBias = TourEnvFloat(v, r.exposureEvBias);
+	else if (f == "exposureSpeedToDark") r.exposureSpeedToDark = TourEnvFloat(v, r.exposureSpeedToDark);
+	else if (f == "exposureSpeedToBright") r.exposureSpeedToBright = TourEnvFloat(v, r.exposureSpeedToBright);
+	else if (f == "exposureMin") r.exposureMin = TourEnvFloat(v, r.exposureMin);
+	else if (f == "exposureMax") r.exposureMax = TourEnvFloat(v, r.exposureMax);
+	else if (f == "aoMode") r.aoMode = int(TourEnvFloat(v, float(r.aoMode)));
+	else if (f == "aoRadius") r.aoRadius = TourEnvFloat(v, r.aoRadius);
+	else if (f == "aoBias") r.aoBias = TourEnvFloat(v, r.aoBias);
+	else if (f == "aoIntensity") r.aoIntensity = TourEnvFloat(v, r.aoIntensity);
+	else if (f == "aoMaxDistance") r.aoMaxDistance = TourEnvFloat(v, r.aoMaxDistance);
+	else if (f == "aoSsaoSamples") r.aoSsaoSamples = int(TourEnvFloat(v, float(r.aoSsaoSamples)));
+	else if (f == "aoBlurSharpness") r.aoBlurSharpness = TourEnvFloat(v, r.aoBlurSharpness);
+	else if (f == "aoSaoSamples") r.aoSaoSamples = int(TourEnvFloat(v, float(r.aoSaoSamples)));
+	else if (f == "aoSaoSpiralTurns") r.aoSaoSpiralTurns = int(TourEnvFloat(v, float(r.aoSaoSpiralTurns)));
+	else if (f == "ssrEnabled") r.ssrEnabled = TourEnvFloat(v, r.ssrEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "ssrIntensity") r.ssrIntensity = TourEnvFloat(v, r.ssrIntensity);
+	else if (f == "motionBlurEnabled") r.motionBlurEnabled = TourEnvFloat(v, r.motionBlurEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "dofEnabled") r.dofEnabled = TourEnvFloat(v, r.dofEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "aaMode") r.aaMode = int(TourEnvFloat(v, float(r.aaMode)));
+	else if (f == "cubemapEnabled") r.cubemapEnabled = TourEnvFloat(v, r.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
+	else if (f == "cubemapIntensity") r.cubemapIntensity = TourEnvFloat(v, r.cubemapIntensity);
 }
 TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 	TourEnvBlocks eb{};
@@ -2369,6 +2398,12 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 		else if (key == "env.current") {
 			eb.currentCluster = uint32_t(TourEnvFloat(val, -1.0f));
 			eb.haveCurrent = true;
+		}
+		else if (key.rfind("render.", 0) == 0) {
+			// Scene-level render settings (the postfx look): render.*
+			// keys, never per-node.
+			eb.haveRender = true;
+			TourRenderApplyField(eb.render, field, val);
 		}
 	}
 	if (inNode)
@@ -3554,6 +3589,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.hasEnvironment = true;
 			scene.defaultEnvironment = eb.def;
 			scene.envForNode = std::move(table);
+		}
+		// Render settings (render.* keys — the scene-level postfx look,
+		// see SceneRenderSettings). No blocks: one global record.
+		if (eb.haveRender) {
+			scene.renderSettings = eb.render;
+			scene.defaultRenderSettings = eb.render;
+			scene.hasRenderSettings = true;
 		}
 	}
 	// DEFAULT CAMERA (tour camera.default -> cluster scene): the typed

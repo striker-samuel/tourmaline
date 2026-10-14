@@ -475,6 +475,19 @@ namespace editor {
 		return m_world->scene.defaultEnvironment;
 	}
 
+	const SceneRenderSettings& EditorApp::RenderLook() const {
+		// The scene's render look (the split postfx settings — see
+		// SceneRenderSettings): the resolved block when a scene stands,
+		// defaults otherwise (sceneless-safe like CurrentEnv's
+		// fallbacks). No source selection — the look is scene-global.
+		static const SceneRenderSettings fallback{};
+		if (!m_world)
+			return fallback;
+		return m_world->scene.hasRenderSettings
+			? m_world->scene.renderSettings
+			: m_world->scene.defaultRenderSettings;
+	}
+
 	void EditorApp::UploadMaterials(uint32_t flight) {
 		if (!m_world)
 			return;
@@ -1191,7 +1204,7 @@ namespace editor {
 		// histogram pass to meter with, so the manual look is its best
 		// faithful standing approximation (the same "the App renders the
 		// rest" contract as the volumetric settings).
-		return std::max(CurrentEnv().manualExposure, 1e-6f);
+		return std::max(RenderLook().manualExposure, 1e-6f);
 	}
 
 	void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
@@ -1213,10 +1226,11 @@ namespace editor {
 		const float uvMaxX = (rect.x + rect.w - 0.5f) * invW;
 		const float uvMaxY = (rect.y + rect.h - 0.5f) * invH;
 		smvk::TonemapDesc d{};
-		// Authored look: the env's operator + the standing exposure (see
-		// PreviewExposure - no bloom layer, the preview shows the scene).
+		// Authored look: the render settings' operator + the standing
+		// exposure (see PreviewExposure - no bloom layer, the preview
+		// shows the scene).
 		d.exposure = PreviewExposure();
-		d.tonemapMode = CurrentEnv().tonemapMode;
+		d.tonemapMode = RenderLook().tonemapMode;
 		m_previewTonemap.AddTonemapPass(*m_rendergraph,
 			m_sceneHdr.logicalView,
 			m_sceneHdr.bindlessIndex,
