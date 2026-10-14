@@ -798,6 +798,7 @@ namespace engine {
 			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = ViewMode::VertexColors;
 			else if (dv == "uv0" || dv == "uv1_base") m_debugView = ViewMode::Uv0;
 			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = ViewMode::Uv1;
+			else if (dv == "cubemap" || dv == "cubemaponly" || dv == "cubemap_only") m_debugView = ViewMode::Cubemap;
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = ViewMode::Pom;
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
@@ -3421,7 +3422,13 @@ namespace engine {
 		data.cubemapIndex = UINT32_MAX;
 		data.cubemapSampler = m_cubemapSampler;
 		data.cubemapIntensity = m_cubemapEnabled ? m_cubemapIntensity : 0.0f;
-		data.cubemapDebug = static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
+		// The Cubemap debug view (F10) pins the raw-radiance mode while
+		// active - the cubemaps panel's "Cubemap only (no Fresnel)" - so
+		// the panel's own selection (and the VULKANTOY_CUBEMAP_DEBUG pin)
+		// resumes the moment the view is left. View wins while active.
+		data.cubemapDebug = (m_debugView == ViewMode::Cubemap)
+			? 1u
+			: static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
 		data.cubemapLodBias = m_cubemapLodBias;
 		data.probeTileFresh = ProbeTileListsWanted() ? 1u : 0u;
 		data.probeEntries = ProbeEntryCount();
@@ -8929,14 +8936,17 @@ namespace engine {
 			// SV_InstanceID; materialId is pushed per range for the frag).
 			// Meshes the filter skipped (no clusters) still draw direct.
 			const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
-			// Debug views (F1..F6) replace the shaded opaque leg. Meshlet mode
-			// draws EVERY registered cluster direct with a stable per-meshlet
-			// color, so HZB-culled meshlets stay visible here. Compare with
-			// the shaded view to see exactly what the GPU filter dropped.
-			// Unlit / cascade / LOD / vertex-color views likewise bypass the
-			// filter with direct draws (no filtered-VS variant exists for them).
-			// Missing programs fall back to Lit so a bad cook never blanks
-			// the frame.
+		// Debug views (F1..F6) replace the shaded opaque leg. Meshlet mode
+		// draws EVERY registered cluster direct with a stable per-meshlet
+		// color, so HZB-culled meshlets stay visible here. Compare with
+		// the shaded view to see exactly what the GPU filter dropped.
+		// Unlit / cascade / LOD / vertex-color views likewise bypass the
+		// filter with direct draws (no filtered-VS variant exists for them).
+		// The Cubemap view is the EXCEPTION: no fragment swap - it stays on
+		// the filtered lit path and only pins the frame's cubemapDebug to 1
+		// (the env specular term returns raw radiance; see the publish site).
+		// Missing programs fall back to Lit so a bad cook never blanks
+		// the frame.
 			ViewMode effView = m_debugView;
 			if ((effView == ViewMode::Meshlets || effView == ViewMode::Lods)
 				&& !m_gfxRenderer.DebugProgramsValid())
@@ -8966,8 +8976,11 @@ namespace engine {
 			const bool uvDbg = (effView == ViewMode::Uv0 || effView == ViewMode::Uv1);
 			const bool pomDbg = (effView == ViewMode::Pom);
 			const bool ssrMaskDbg = (effView == ViewMode::SsrMask);
-			const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg || ssrMaskDbg; // default.vert + debug FS
-			const bool bypassFilter = (effView != ViewMode::Lit);
+		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg || ssrMaskDbg; // default.vert + debug FS
+		// Cubemap keeps the filtered lit leg (no bypass): only its frame
+		// knob differs, so the GPU cull chain runs exactly as in Lit.
+		const bool bypassFilter = (effView != ViewMode::Lit
+			&& effView != ViewMode::Cubemap);
 			// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 			// so they survive the HDR -> tonemap path).
 			static const float kLodPalette[8][3] = {
@@ -11735,30 +11748,34 @@ namespace engine {
 				// changes the frame permanently; toggles are for bisection.
 				// ---------------------------------------------------------
 				if (ImGui::BeginTabItem("Debug")) {
-					if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6, F9..F11)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					if (ImGui::CollapsingHeader("Debug views (F1..F6, F9..F11; FS swaps bypass GPU cull)", ImGuiTreeNodeFlags_DefaultOpen)) {
 						{
 							const char* viewNames[] = {
 								"F1 Lit", "F2 Unlit", "F3 Meshlets",
 								"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
-								"F9 UV0 (base)", "F10 UV1 (lightmap)",
+								"F9 UV0 (base)", "UV1 (lightmap atlas)",
+								"F10 Cubemap (IBL raw)",
 								"F11 POM (parallax occlusion)",
 								"SSR mask (receivers)",
 							};
 							// Combo index <-> ViewMode mapping (SsrContribution has
 							// no combo entry: it stays env-only; the combo
-							// jumps over it so indices never alias views).
+							// jumps over it so indices never alias views). UV1
+							// (lightmap atlas) has no F-key anymore - F10 was
+							// reassigned to the Cubemap view.
 							static const ViewMode kComboViews[] = {
 								ViewMode::Lit, ViewMode::Unlit,
 								ViewMode::Meshlets, ViewMode::Cascades,
 								ViewMode::Lods, ViewMode::VertexColors,
 								ViewMode::Uv0, ViewMode::Uv1,
+								ViewMode::Cubemap,
 								ViewMode::Pom, ViewMode::SsrMask,
 							};
 							int view = 0;
-							for (int i = 0; i < 10; ++i)
+							for (int i = 0; i < 11; ++i)
 								if (kComboViews[i] == m_debugView)
 									view = i;
-							if (ImGui::Combo("Debug view", &view, viewNames, 10))
+							if (ImGui::Combo("Debug view", &view, viewNames, 11))
 								m_debugView = kComboViews[view];
 						}
 						ImGui::TextDisabled("SSR mask: per-material receiver class mirroring the thin G-buffer writer +\n"
@@ -11766,10 +11783,16 @@ namespace engine {
 							"metal, black matte (skipped), dimmed Blend (never writes the G-buffer the trace reads).");
 						ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 							"legacy materials show the raw vertex tint.");
-						ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap atlas uv (chart uv + chart id,\n"
+						ImGui::TextDisabled("F9 + UV1 checkers (UV1: combo/env only - F10 moved to the cubemap view):\n"
+							"base TEXCOORD0 vs lightmap atlas uv (chart uv + chart id,\n"
 							"unpacked in the VS via the draw's chart offset). Magenta glow = huge uv\n"
 							"screen-derivative (a chart corner landing in the wrong atlas rect).\n"
 							"UV1 stripes magenta when the atlas uv leaves [0,1] (transform bug).");
+						ImGui::TextDisabled("F10 Cubemap (IBL raw): the filtered lit path with the env specular\n"
+							"term pinned to the cubemaps panel's \"Cubemap only (no Fresnel)\" mode -\n"
+							"raw probe radiance, no Fresnel/roughness weighting (which probe serves\n"
+							"each pixel). Not a fragment swap: GPU culling runs exactly as in Lit;\n"
+							"the panel's own cubemap-debug selection resumes when the view is left.");
 						ImGui::TextDisabled("F11 POM: ray-marched parallax uv through the occlusion-map heightfield\n"
 							"(AO 1 = surface, 0 = cavity) + sun self-shadowing. Sun/sky shading at the displaced\n"
 							"uv; baked GI / decals / forward+ off so the only delta vs F1 is the technique itself.\n"

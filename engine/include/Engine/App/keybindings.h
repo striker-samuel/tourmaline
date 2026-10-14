@@ -60,7 +60,10 @@ constexpr int DEBUG_VIEW_CASCADES = GLFW_KEY_F4;
 constexpr int DEBUG_VIEW_LODS = GLFW_KEY_F5;
 constexpr int DEBUG_VIEW_VERTEXCOLORS = GLFW_KEY_F6;
 constexpr int DEBUG_VIEW_UV0 = GLFW_KEY_F9;
-constexpr int DEBUG_VIEW_UV1 = GLFW_KEY_F10;
+constexpr int DEBUG_VIEW_CUBEMAP = GLFW_KEY_F10; // reused from the lightmap-UV view
+// F11: parallax occlusion mapping. The lightmap atlas UV view (Uv1) has NO
+// key now - F10 was reassigned to the cubemap-only view above; Uv1 stays
+// selectable via the Debug panel combo + VULKANTOY_DEBUGVIEW=uv1.
 constexpr int DEBUG_VIEW_POM = GLFW_KEY_F11;
 
 // ---- Diagnostics ----

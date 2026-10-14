@@ -205,8 +205,12 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
 			m_renderer.m_debugView = ViewMode::Uv0;
 		}
-		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV1)) {
-			m_renderer.m_debugView = ViewMode::Uv1;
+		// F10 (reused from the lightmap-UV view): the cubemap-only IBL
+		// view - the filtered lit path with the frame's cubemapDebug
+		// pinned to 1 (raw probe radiance). Uv1 lost its key here; it
+		// stays reachable via the Debug combo + VULKANTOY_DEBUGVIEW=uv1.
+		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CUBEMAP)) {
+			m_renderer.m_debugView = ViewMode::Cubemap;
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_POM)) {
 			m_renderer.m_debugView = ViewMode::Pom;

@@ -322,6 +322,14 @@ enum class ViewMode : int {
 	              // dimmed Blend (never writes the G-buffer the trace
 	              // reads). Mirrors the G-buffer writer + the trace's
 	              // 0.94 matte gate exactly: what you see is what marches.
+	Cubemap = 11, // F10 (reused from the lightmap-UV view, which is now
+	              // combo/env-only): cubemap-only IBL - the frame's
+	              // cubemapDebug pinned to 1 while active (raw probe
+	              // radiance, no Fresnel/roughness weighting; the
+	              // cubemaps panel's "Cubemap only (no Fresnel)" mode,
+	              // see environment.hlsli). NOT a fragment swap: the view
+	              // stays on the filtered lit path - only the env
+	              // specular term changes.
 };
 
 #if defined(DS_DEBUG_VIZ)
