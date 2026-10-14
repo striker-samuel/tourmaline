@@ -5734,7 +5734,7 @@ namespace engine {
 				evsmRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 				evsmRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
 				pass.AddImageHint(
-					m_viewportResources.evsmSpot.blurredLogical[
+					m_viewportResources.evsmSpot.slotLogical[
 						m_viewportResources.evsmSpot.SampleSlot(frameIndex)],
 						evsmRead);
 			}
@@ -9893,8 +9893,8 @@ namespace engine {
 			evsmRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 			evsmRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
 			const uint32_t sampleSlot = m_viewportResources.evsmDir.SampleSlot(fb.frameIndex);
-			mainPass.AddImageHint(m_viewportResources.evsmDir.blurredLogical[sampleSlot], evsmRead);
-			mainPass.AddImageHint(m_viewportResources.evsmSpot.blurredLogical[sampleSlot], evsmRead);
+			mainPass.AddImageHint(m_viewportResources.evsmDir.slotLogical[sampleSlot], evsmRead);
+			mainPass.AddImageHint(m_viewportResources.evsmSpot.slotLogical[sampleSlot], evsmRead);
 		}
 
 		// ---------------------------------------------------------------------
@@ -14281,31 +14281,33 @@ namespace engine {
 
 	void WorldRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 		// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
-		// cascade-0 tile of the moments/temp/blurred images - channels are
+		// cascade-0 tile of the slot/temp images - channels are
 		// (M1+ = E[exp(+c d)], M2+ = E[exp(+2c d)], M1- = E[exp(-c d)],
 		// M2- = E[exp(-2c d)]) - plus a log-encoded M1- PNG per stage in
 		// exports/ (dark = far). The PNG edge-band width IS the prefilter
 		// width, which is how the softness knob's effect was verified.
+		// NOTE: the SEPARABLE merge means the "moments" and "blurred"
+		// stages are the SAME slot image read at different frame phases —
+		// the dump reads it once (post-blur layout: the blurred output).
 		const smvk::EvsmAtlas& atlas = m_viewportResources.evsmDir;
 		// (Holder is move-only: reference the originals instead of copies.)
-		const smvk::Holder<smvk::ImageHandle>* stagesArr[3] = {
-			&atlas.moments[0], &atlas.blurTemp[0], &atlas.blurred[0]
+		const smvk::Holder<smvk::ImageHandle>* stagesArr[2] = {
+			&atlas.slotBuf[0], &atlas.blurTemp
 		};
-		const char* stageNames[3] = { "moments", "temp", "blurred" };
-		// moments: written by the resolve (General) then read by the blur H
-		// (ShaderReadOnly) - its post-frame layout; temp: blur H write (General);
-		// blurred: blur V write (General) -> light sampling (ShaderReadOnly).
-		const smvk::ImageLayout stageLayouts[3] = {
+		const char* stageNames[2] = { "slot (blurred)", "temp" };
+		// slot: the resolve writes moments (General), the blur V
+		// overwrites with blurred (General) -> lighting samples
+		// (ShaderReadOnly); temp: blur H write (General).
+		const smvk::ImageLayout stageLayouts[2] = {
 			smvk::ImageLayout::ShaderReadOnlyOptimal,
 			smvk::ImageLayout::General,
-			smvk::ImageLayout::ShaderReadOnlyOptimal,
 		};
 		const uint32_t w = atlas.atlasExtent.width;
 		const uint32_t h = atlas.atlasExtent.height;
 		const size_t bytes = size_t(w) * h * 16; // RGBA32F moments
 		std::vector<uint8_t> px(bytes);
 		const uint32_t tile = std::min(atlas.tileExtent.width, w);
-		for (int s = 0; s < 3; ++s) {
+		for (int s = 0; s < 2; ++s) {
 			const smvk::Holder<smvk::ImageHandle>& img = *stagesArr[s];
 			const char* name = stageNames[s];
 			if (img.empty())
