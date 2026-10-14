@@ -12733,6 +12733,491 @@ namespace engine {
 				&& (m_texDebugPreview != 0 || !m_texDebugSelected.empty()))
 				DropTexDebugSelection();
 
+			// ---- VRAM usage viewer (Ctrl+M) --------------------------
+			// Floating tool window like the texture inspector (never part
+			// of the debug panel): one row per GPU memory HEAP - the
+			// device-reported size, the VMA budget (VK_EXT_memory_budget:
+			// what the OS says is usable), the USAGE (every Vulkan
+			// allocation on the heap) + a bar, and the VMA block stats
+			// (allocationBytes = committed inside blocks; blockBytes =
+			// the blocks themselves, so block - allocation = space wasted
+			// inside partially-used blocks). Totals sum DEVICE_LOCAL
+			// heaps ONLY (the HUD's rule: summing every heap
+			// double-counts host budgets - a 16 GiB card would read ~30
+			// GiB "total"; integrated/uniform-memory GPUs fall back to
+			// summing all when nothing reports deviceLocal). Data
+			// refreshes at 1 Hz (RefreshGpuMemoryStats throttles inside)
+			// and only while the window is open - zero cost closed.
+			if (m_vramWindow) {
+				ImGui::SetNextWindowSize(ImVec2(560.0f, 420.0f),
+					ImGuiCond_Appearing);
+				ImGui::Begin("VRAM Usage", &m_vramWindow);
+				RefreshGpuMemoryStats(false);
+				if (m_gpuMemHeaps.empty()) {
+					ImGui::TextDisabled("GPU memory info unavailable\n"
+						"(needs a device + an initialized VMA allocator)");
+				}
+				else {
+					auto mib = [](uint64_t b) {
+						return double(b) / 1048576.0;
+					};
+					// Per-class accumulators (device-local vs host; the
+					// totals block below reads them after the table).
+					uint64_t vramUsed = 0, vramBudget = 0, vramSize = 0;
+					uint64_t hostUsed = 0, hostBudget = 0, hostSize = 0;
+					if (ImGui::BeginTable("vram_heaps", 7,
+						ImGuiTableFlags_BordersInnerH
+						| ImGuiTableFlags_RowBg)) {
+						ImGui::TableSetupColumn("Heap");
+						ImGui::TableSetupColumn("Type");
+						ImGui::TableSetupColumn("Size");
+						ImGui::TableSetupColumn("Budget");
+						ImGui::TableSetupColumn("Usage");
+						ImGui::TableSetupColumn("Committed");
+						ImGui::TableSetupColumn("Blocks");
+						ImGui::TableHeadersRow();
+						for (size_t i = 0; i < m_gpuMemHeaps.size(); ++i) {
+							const smvk::GpuMemoryHeap& h = m_gpuMemHeaps[i];
+							ImGui::TableNextRow();
+							ImGui::TableNextColumn();
+							ImGui::TextUnformatted(std::to_string(i).c_str());
+							ImGui::TableNextColumn();
+							ImGui::TextUnformatted(h.deviceLocal
+								? "VRAM (device)" : "HOST");
+							ImGui::TableNextColumn();
+							ImGui::Text("%.0f MiB", mib(h.heapSizeBytes));
+							ImGui::TableNextColumn();
+							ImGui::Text("%.0f MiB", mib(h.budgetBytes));
+							ImGui::TableNextColumn();
+							{
+								// Row usage bar (budget-relative; the
+								// bar text carries the exact MiB + %).
+								const float frac = h.budgetBytes > 0
+									? float(double(h.usageBytes)
+										/ double(h.budgetBytes))
+									: 0.0f;
+								char overlay[48];
+								std::snprintf(overlay, sizeof(overlay),
+									"%.0f MiB (%.0f%%)", mib(h.usageBytes),
+									100.0 * frac);
+								ImGui::ProgressBar(frac,
+									ImVec2(ImGui::GetContentRegionAvail().x,
+										0.0f), overlay);
+							}
+							ImGui::TableNextColumn();
+							ImGui::Text("%.0f MiB", mib(h.allocationBytes));
+							ImGui::TableNextColumn();
+							// Blocks + the wasted-inside-blocks delta
+							// (block - committed): the pool's internal
+							// free space (large values = fragmentation /
+							// over-allocated pools).
+							ImGui::Text("%.0f MiB (+%.0f)",
+								mib(h.blockBytes),
+								mib(h.blockBytes > h.allocationBytes
+									? h.blockBytes - h.allocationBytes : 0));
+							if (h.deviceLocal) {
+								vramUsed += h.usageBytes;
+								vramBudget += h.budgetBytes;
+								vramSize += h.heapSizeBytes;
+							}
+							else {
+								hostUsed += h.usageBytes;
+								hostBudget += h.budgetBytes;
+								hostSize += h.heapSizeBytes;
+							}
+						}
+						ImGui::EndTable();
+					}
+					ImGui::Separator();
+					// Totals: the HUD's device-local-only rule (the
+					// fallback to sum-all mirrors it exactly, so the two
+					// displays can never disagree).
+					{
+						bool anyDeviceLocal = false;
+						for (const auto& h : m_gpuMemHeaps)
+							anyDeviceLocal = anyDeviceLocal || h.deviceLocal;
+						uint64_t used = anyDeviceLocal ? vramUsed
+							: vramUsed + hostUsed;
+						uint64_t budget = anyDeviceLocal ? vramBudget
+							: vramBudget + hostBudget;
+						uint64_t size = anyDeviceLocal ? vramSize
+							: vramSize + hostSize;
+						const float frac = budget > 0
+							? float(double(used) / double(budget)) : 0.0f;
+						char overlay[48];
+						std::snprintf(overlay, sizeof(overlay),
+							"%.0f / %.0f MiB (%.0f%%)",
+							(double(used)) / 1048576.0,
+							(double(budget)) / 1048576.0, 100.0 * frac);
+						ImGui::TextUnformatted(anyDeviceLocal
+							? "VRAM (device-local heaps)" : "GPU memory");
+						ImGui::ProgressBar(frac,
+							ImVec2(ImGui::GetContentRegionAvail().x, 0.0f),
+							overlay);
+						if (anyDeviceLocal && hostBudget > 0) {
+							ImGui::TextDisabled("HOST heaps (not VRAM): %.0f / %.0f MiB",
+								(double(hostUsed)) / 1048576.0,
+								(double(hostBudget)) / 1048576.0);
+						}
+						// ---- Breakdown: textures/images vs geometry -------
+						// The heap rows above say how MUCH lives in VRAM;
+						// this block says WHAT: the engine's own pools.
+						// Both sides are ESTIMATES (labeled): the RMI has
+						// no per-allocation byte query, so textures sum
+						// the mip chain over the live image pool (format
+						// bpp; BC per-texel figures fold the 4x4 blocks)
+						// and geometry sums the static heap residency
+						// (VertexPos 12 + VertexShading 24 B/vert + 4
+						// B/index over the world's unique meshes, + the
+						// filter's cluster-ordered index copy). "Other"
+						// is the remainder: render targets, the draw/
+						// batch/indirect rings, HZB, staging, UI.
+						ImGui::Separator();
+						ImGui::TextUnformatted("Breakdown (engine estimate)");
+						{
+							// Per-texel bytes by format (the texture
+							// viewer's format set + sane defaults).
+							auto formatBpp = [](smvk::Format f) -> double {
+								switch (f) {
+								case smvk::Format::BC1_RGB_UNorm:
+								case smvk::Format::BC1_RGB_SRGB:
+								case smvk::Format::BC1_RGBA_UNorm:
+								case smvk::Format::BC1_RGBA_SRGB:
+								case smvk::Format::BC4_UNorm:
+								case smvk::Format::BC4_SNorm:
+									return 0.5; // 8 B / 4x4 block
+								case smvk::Format::BC2_UNorm:
+								case smvk::Format::BC2_SRGB:
+								case smvk::Format::BC3_UNorm:
+								case smvk::Format::BC3_SRGB:
+								case smvk::Format::BC5_UNorm:
+								case smvk::Format::BC5_SNorm:
+								case smvk::Format::BC6H_UFloat:
+								case smvk::Format::BC6H_SFloat:
+								case smvk::Format::BC7_UNorm:
+								case smvk::Format::BC7_SRGB:
+									return 1.0; // 16 B / 4x4 block
+								case smvk::Format::RGBA16_Float: return 8.0;
+								case smvk::Format::RGBA32_Float: return 16.0;
+								case smvk::Format::R16_Float: return 2.0;
+								case smvk::Format::RG16_Float: return 4.0;
+								case smvk::Format::R32_Float: return 4.0;
+								case smvk::Format::D32_Float: return 4.0;
+								default: return 4.0; // RGBA8-family + unknown
+								}
+							};
+							// Mip-chain sum over the LIVE image pool
+							// (the texture viewer's listing source).
+							// arrayLayers already counts cube FACES
+							// (cube arrays are 6*N layers).
+							uint64_t texBytes = 0;
+							size_t texCount = 0;
+							uint64_t texLargest = 0;
+							// Per-image estimate table for the ownership
+							// attribution below (handle index -> bytes;
+							// index-only match - a stale cluster
+							// registration could misattribute one image
+							// at worst, fine for a debug view).
+							std::unordered_map<uint32_t, uint64_t>
+								texBytesByIdx;
+							for (const smvk::TextureInfo& t :
+									m_context->ListTextureInfos()) {
+								++texCount;
+								uint64_t bytes = 0;
+								for (uint32_t m = 0; m < t.mipLevels; ++m) {
+									const uint32_t w = std::max(
+										t.extent.width >> m, 1u);
+									const uint32_t h = std::max(
+										t.extent.height >> m, 1u);
+									const uint32_t d = std::max(
+										t.extent.depth >> m, 1u);
+									bytes += uint64_t(double(w * h * d)
+										* formatBpp(t.format));
+								}
+								bytes *= t.arrayLayers;
+								texBytesByIdx[t.handle.index()] = bytes;
+								texBytes += bytes;
+								texLargest = std::max(texLargest, bytes);
+							}
+							// ---- Ownership by cluster --------------------
+							// Each scene cluster (one artifact/scene in
+							// the pak) gets a RANDOM-but-STABLE color
+							// (pointer hash -> hue; random per run, fixed
+							// per frame so nothing flickers) and owns:
+							//   geometry - its unique meshes' static heap
+							//              residency (VertexPos 12 +
+							//              VertexShading 24 B/vert + 4
+							//              B/index; instances share pool
+							//              entries)
+							//   textures - its REGISTERED images
+							//              (cluster->ListTextureUris ->
+							//              live pool handles; an image
+							//              several clusters reference
+							//              attributes to the FIRST - the
+							//              totals above never
+							//              double-count)
+							// The label is the cluster's first mesh URI's
+							// file part (the artifact it came from).
+							struct Owner {
+								uint64_t geo = 0;
+								uint64_t tex = 0;
+								size_t meshes = 0;
+								std::string label;
+								uint32_t color = 0;
+							};
+							std::vector<Owner> owners;
+							uint64_t geoBytes = 0;
+							size_t meshCount = 0;
+							// cluster pointer -> owner index (+ the typed
+							// back-vector: the attribution loop needs the
+							// Cluster* to walk its texture registrations).
+							std::unordered_map<const void*, size_t>
+								clusterIdx;
+							std::vector<const smvk::Cluster*> clusterPtrs;
+							if (m_world) {
+								std::set<std::pair<const void*, uint32_t>>
+									seenMesh;
+								std::set<uint32_t> seenTex;
+								for (const auto& loc :
+										m_world->meshLocations) {
+									if (!loc.cluster || !loc.handle.valid())
+										continue;
+									size_t ci;
+									const auto cit =
+										clusterIdx.find(loc.cluster);
+									if (cit == clusterIdx.end()) {
+										ci = owners.size();
+										clusterIdx[loc.cluster] = ci;
+										clusterPtrs.push_back(loc.cluster);
+										Owner o{};
+										// Label: the first mesh URI's
+										// file part ("models/x/Y.geometry#f"
+										// -> "Y.geometry").
+										std::string uri = loc.cluster
+											->GetMeshUri(loc.handle).Str();
+										const size_t slash = uri.rfind('/');
+										if (slash != std::string::npos)
+											uri = uri.substr(slash + 1);
+										const size_t hashMark = uri.find('#');
+										if (hashMark != std::string::npos)
+											uri = uri.substr(0, hashMark);
+										o.label = uri.empty()
+											? "cluster "
+											+ std::to_string(ci)
+											: uri;
+										// Color: pointer hash spread on
+										// the golden-ratio constant, hue
+										// bucketed to integer degrees (no
+										// float drift), fixed s/v.
+										const uintptr_t ptr =
+											reinterpret_cast<uintptr_t>(
+												loc.cluster);
+										const uint64_t mixed =
+											(uint64_t(ptr >> 4))
+											* 11400714819323198485ull;
+										const float hue = float(
+											(mixed >> 32) % 360ull)
+											/ 360.0f;
+										float r, g, b;
+										ImGui::ColorConvertHSVtoRGB(
+											hue, 0.55f, 0.85f,
+											r, g, b);
+										o.color = IM_COL32(
+											int(r * 255.0f + 0.5f),
+											int(g * 255.0f + 0.5f),
+											int(b * 255.0f + 0.5f), 255);
+										owners.push_back(std::move(o));
+									}
+									else
+										ci = cit->second;
+									// Geometry: unique meshes only.
+									if (!seenMesh.insert({ loc.cluster,
+											loc.handle.index() }).second)
+										continue;
+									const smvk::StaticMesh* m =
+										loc.cluster->staticMeshes.get(
+											loc.handle);
+									if (!m)
+										continue;
+									++meshCount;
+									const uint64_t bytes = 36ull
+										* m->geometry.vertexCount
+										+ 4ull * m->geometry.indexCount;
+									owners[ci].geo += bytes;
+									owners[ci].meshes += 1;
+									geoBytes += bytes;
+								}
+								// Texture attribution per cluster (the
+								// registered URIs -> live image handles).
+								for (size_t ci = 0; ci < clusterPtrs.size();
+										++ci) {
+									for (const auto& th : clusterPtrs[ci]
+											->ListTextureUris()) {
+										const smvk::TextureHandle& handle =
+											th.second;
+										if (!handle.valid())
+											continue;
+										const auto it = texBytesByIdx.find(
+											handle.index());
+										if (it == texBytesByIdx.end())
+											continue;
+										if (!seenTex.insert(
+												handle.index()).second)
+											continue; // shared: first wins
+										owners[ci].tex += it->second;
+									}
+								}
+							}
+							// + the filter's cluster-ordered index copy
+							// (the owned monoblock the indirect draws
+							// read; baseVertex-lifted global ids). Not
+							// attributable to one cluster - it stays in
+							// the geometry total but outside the rows.
+							uint64_t filterIdxBytes = 0;
+							if (smvk::gfx::Valid(m_gfxRenderer.gfx))
+								filterIdxBytes = 4ull
+									* m_gfxRenderer.gfx.filterIndices.size();
+							geoBytes += filterIdxBytes;
+							// "Other": heap usage minus the two estimates,
+							// clamped (the estimates carry BC tail-block
+							// rounding + alignment slop, so a few % drift
+							// is expected; negative would be noise).
+							const uint64_t heapUsed = vramUsed + hostUsed;
+							const uint64_t otherBytes = texBytes + geoBytes
+								< heapUsed
+								? heapUsed - texBytes - geoBytes : 0;
+							auto row = [](const char* label, uint64_t bytes,
+									uint64_t total) {
+								const float frac = total > 0
+									? float(double(bytes)
+										/ double(total)) : 0.0f;
+								char overlay[64];
+								std::snprintf(overlay, sizeof(overlay),
+									"%.0f MiB (%.0f%%)",
+									(double(bytes)) / 1048576.0,
+									100.0 * frac);
+								ImGui::TextUnformatted(label);
+								ImGui::ProgressBar(frac, ImVec2(
+									ImGui::GetContentRegionAvail().x, 0.0f),
+									overlay);
+							};
+							row("Textures & images", texBytes, heapUsed);
+							ImGui::TextDisabled(
+								"  %zu image(s), largest %.0f MiB",
+								texCount, (double(texLargest)) / 1048576.0);
+							row("Geometry (static meshes)", geoBytes, heapUsed);
+							ImGui::TextDisabled(
+								"  %zu unique mesh(es): pos 12 + shading 24"
+								" B/vert + 4 B/index%s",
+								meshCount,
+								filterIdxBytes > 0
+									? " + the filter index copy" : "");
+							row("Other (targets, rings, HZB, staging, UI)",
+								otherBytes, heapUsed);
+							// ---- Ownership rows + stacked color bar ----
+							if (!owners.empty()) {
+								ImGui::Separator();
+								ImGui::TextUnformatted(
+									"Ownership by cluster (random colors)");
+								// Sorted desc by owned total; the bar
+								// draws EVERY cluster, the rows cap at 12.
+								std::vector<size_t> order(owners.size());
+								for (size_t i = 0; i < order.size(); ++i)
+									order[i] = i;
+								std::sort(order.begin(), order.end(),
+									[&](size_t a, size_t b) {
+										return owners[a].geo + owners[a].tex
+											> owners[b].geo + owners[b].tex;
+									});
+								uint64_t ownedTotal = 0;
+								for (const Owner& o : owners)
+									ownedTotal += o.geo + o.tex;
+								// Stacked bar: one colored segment per
+								// cluster, width = its share of the owned
+								// total (sub-pixel segments collapse so
+								// tiny clusters never alias the layout).
+								if (ownedTotal > 0) {
+									ImDrawList* dl =
+										ImGui::GetWindowDrawList();
+									const ImVec2 p0 =
+										ImGui::GetCursorScreenPos();
+									const float w =
+										ImGui::GetContentRegionAvail().x;
+									const float h = 14.0f;
+									float x = p0.x;
+									for (size_t i : order) {
+										const float seg = float(double(
+											owners[i].geo + owners[i].tex)
+											/ double(ownedTotal)) * w;
+										if (seg < 0.75f)
+											continue;
+										dl->AddRectFilled(
+											ImVec2(x, p0.y),
+											ImVec2(x + seg, p0.y + h),
+											owners[i].color, 3.0f);
+										x += seg;
+									}
+									dl->AddRect(p0,
+										ImVec2(p0.x + w, p0.y + h),
+										IM_COL32(255, 255, 255, 70), 3.0f);
+									ImGui::Dummy(ImVec2(w, h + 6.0f));
+									if (ImGui::IsItemHovered()) {
+										char tip[128];
+										std::snprintf(tip, sizeof(tip),
+											"%.0f MiB attributed across"
+											" %zu cluster(s)",
+											(double(ownedTotal)) / 1048576.0,
+											owners.size());
+										ImGui::SetTooltip("%s", tip);
+									}
+								}
+								const size_t cap = std::min<size_t>(
+									order.size(), 12);
+								for (size_t k = 0; k < cap; ++k) {
+									const Owner& o = owners[order[k]];
+									ImGui::PushID(int(k));
+									// Swatch from the packed IM_COL32
+									// (r = low byte).
+									ImGui::ColorButton("##own",
+										ImVec4(
+											float(o.color & 0xFF) / 255.0f,
+											float((o.color >> 8) & 0xFF)
+												/ 255.0f,
+											float((o.color >> 16) & 0xFF)
+												/ 255.0f,
+											1.0f),
+										ImGuiColorEditFlags_NoTooltip
+											| ImGuiColorEditFlags_NoPicker,
+										ImVec2(10.0f, 10.0f));
+									ImGui::SameLine();
+									ImGui::Text("%s: %.0f MiB"
+										" (geo %.0f + tex %.0f,"
+										" %zu meshes)",
+										o.label.c_str(),
+										(double(o.geo + o.tex)) / 1048576.0,
+										(double(o.geo)) / 1048576.0,
+										(double(o.tex)) / 1048576.0,
+										o.meshes);
+									ImGui::PopID();
+								}
+								if (order.size() > cap) {
+									ImGui::TextDisabled("  + %zu more"
+										" cluster(s)",
+										order.size() - cap);
+								}
+							}
+						}
+					}
+					ImGui::TextDisabled(
+						"Budget/usage: VMA + VK_EXT_memory_budget (the OS's\n"
+						"usable figure - can sit under the heap size when\n"
+						"other processes hold memory). Committed/Blocks:\n"
+						"VMA block statistics. Refresh: 1 Hz (Ctrl+M, the\n"
+						"HUD's VRAM line reads the same members).");
+				}
+				ImGui::End();
+			}
+
 			// Forward+ light debug overlay: project the CPU light copy
 			// (m_debugLights, filled in UpdateForwardPlusLights) through the
 			// UNJITTERED viewProj into the ImGui foreground draw list. It

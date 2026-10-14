@@ -146,6 +146,15 @@ namespace engine {
 			if (!m_renderer.m_texDebugWindow)
 				m_renderer.DropTexDebugSelection();
 		}
+		// Ctrl+M pops the VRAM usage viewer: the GPU memory heaps
+		// (sizes + VMA budgets/usage) as another floating tool window.
+		// The chord mirrors HUD_TOGGLE (Ctrl+T): bare M stays the
+		// motion-blur toggle, bare Ctrl stays camera-descend.
+		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+			&& m_input.isKeyPressed(keybind::VRAM_VIEWER_TOGGLE)) {
+			m_renderer.m_vramWindow = !m_renderer.m_vramWindow;
+		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
 		// SkyIbl -> Off (see AmbientMode â€” single-source isolation for
 		// bisection, All is the production state).

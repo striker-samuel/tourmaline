@@ -2572,6 +2572,11 @@ public:
 	// UpdateTexture's recreate path does) drops the preview and the face
 	// views instead of sampling a dead view.
 	bool m_texDebugWindow = false;           // backtick opens/closes
+	// VRAM usage viewer (Ctrl+M): floating tool window listing the GPU
+	// memory heaps — sizes + VMA budgets/usage per heap (see
+	// RefreshGpuMemoryStats / GpuMemoryHeap). No owned GPU state; pure
+	// read of m_gpuMemHeaps.
+	bool m_vramWindow = false;               // Ctrl+M opens/closes
 	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
 	ImTextureID m_texDebugPreview = 0;       // 2D: the overlay's user-texture binding (0 = none)
 	// Cubemap selection: 6 per-face 2D views (Holder = auto-destroy on

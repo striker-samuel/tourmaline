@@ -19,6 +19,12 @@ namespace keybind {
 
 // ---- Mode / UI ----
 constexpr int UI_TOGGLE = GLFW_KEY_I;       // FPS <-> UI panel mode
+// VRAM usage viewer (Ctrl+M, the HUD_TOGGLE chord pattern): a floating
+// tool window listing the GPU memory heaps (sizes + VMA budgets/usage).
+// The CHORD avoids the bare-M motion-blur toggle; Ctrl alone stays
+// camera-descend (the movement reservation is untouched — only the
+// chord toggles). Works in FPS and UI modes like the texture viewer.
+constexpr int VRAM_VIEWER_TOGGLE = GLFW_KEY_M;
 
 // ---- Feature toggles ----
 constexpr int MOTION_BLUR_TOGGLE = GLFW_KEY_M;
