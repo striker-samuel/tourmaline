@@ -315,35 +315,37 @@ void EditorApp::CookToPak(bool quickBakes) {
 					push("cook-gi: published '" + cookFinal + "'");
 				}
 			}
-		// ---- stage 2: PakCooker (the pak: meshopt/LODs/lightmaps/
-		// cubemaps + the GI sidecar discovery/embed from stage 1).
-		// Quick bakes add --quick-bakes on: the capture stage ONLY, no
-		// pak write (the loose sidecars it writes are the output).
-		std::filesystem::path cooker =
-			std::filesystem::path(exePath).parent_path() /
-			"PakCooker.exe";
-		if (!std::filesystem::exists(cooker))
-			cooker = "PakCooker.exe"; // PATH fallback
-// Required paths + tour on the CLI; everything else rides the
-// tour's cook block (CLI wins when both are given).
-// If we have a tour loaded, use it as the PRIMARY input (PakCooker
-// resolves its 'source' field as --in-vfs). Else fall back to --in-vfs.
-std::ostringstream cmd;
-cmd << QuoteArg(cooker.string())
-	<< " --content-dir " << QuoteArg(contentDir);
-if (!tempTourPath.empty()) {
-	cmd << " --tour " << QuoteArg(tempTourPath);
-} else {
-	cmd << " --in-vfs " << QuoteArg(inVfs);
-}
-cmd << " --out-pak " << QuoteArg(cook.outPak);
-if (quickBakes)
-	cmd << " --quick-bakes on";
-// Cache acceleration flag (captured by value above; empty = off).
-if (!scratchDir.empty())
-	cmd << " --scratch-dir " << QuoteArg(scratchDir);
-cmd << " 2>&1";
-			push(quickBakes ? "update-bakes: " : "cook: ");
+		// ---- stage 2: Cook.exe then Pak.exe (the import/cook/pak split:
+		// cook runs the bakes + writes them back into the artifacts,
+		// pak assembles the .pak from the cooked artifacts + the GI
+		// sidecar discovery/embed from stage 1). Quick bakes run the
+		// Cook capture stage ONLY, no pak write (the loose sidecars it
+		// writes are the output).
+		auto toolPath = [&](const char* exe) {
+			std::filesystem::path p =
+				std::filesystem::path(exePath).parent_path() / exe;
+			if (!std::filesystem::exists(p))
+				p = exe; // PATH fallback
+			return p;
+		};
+		// Positional tool CLI (tool.exe <contentDir> [--tour T | <artifact>]
+		// [...]). The tour carries the cook block; CLI wins when both.
+		auto baseArgs = [&]() {
+			std::ostringstream a;
+			a << QuoteArg(contentDir);
+			if (!tempTourPath.empty())
+				a << " --tour " << QuoteArg(tempTourPath);
+			else
+				a << " " << QuoteArg(inVfs);
+			if (!scratchDir.empty())
+				a << " --scratch-dir " << QuoteArg(scratchDir);
+			return a.str();
+		};
+		auto spawnTool = [&](const std::string& exe,
+			const std::string& args, const char* tag) -> int {
+			std::ostringstream cmd;
+			cmd << QuoteArg(exe) << " " << args << " 2>&1";
+			push(std::string(tag) + ": ");
 			push(cmd.str());
 #ifdef _WIN32
 			FILE* pipe = _popen(cmd.str().c_str(), "r");
@@ -351,8 +353,9 @@ cmd << " 2>&1";
 			FILE* pipe = popen(cmd.str().c_str(), "r");
 #endif
 			if (!pipe) {
-				r.log = "cook: failed to spawn PakCooker\n";
-				return r;
+				r.log = std::string(tag) + ": failed to spawn "
+					+ exe + "\n";
+				return 1;
 			}
 			pushPipe(pipe);
 #ifdef _WIN32
@@ -360,8 +363,21 @@ cmd << " 2>&1";
 #else
 			const int rc = pclose(pipe);
 #endif
+			return rc;
+		};
+		int rc = spawnTool(toolPath("Cook.exe").string(),
+			baseArgs() + (quickBakes ? " --quick-bakes on" : ""),
+			quickBakes ? "update-bakes" : "cook");
+		r.ok = (rc == 0);
+		r.log = std::string(quickBakes ? "update-bakes: " : "cook: ")
+			+ "Cook exit=" + std::to_string(rc) + "\n";
+		if (r.ok && !quickBakes) {
+			rc = spawnTool(toolPath("Pak.exe").string(),
+				baseArgs() + " --out-pak " + QuoteArg(cook.outPak),
+				"pak");
 			r.ok = (rc == 0);
-			r.log = "cook: PakCooker exit=" + std::to_string(rc) + "\n";
+			r.log += "pak: Pak exit=" + std::to_string(rc) + "\n";
+		}
 			// Cleanup temp tour file.
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
@@ -388,10 +404,12 @@ void EditorApp::PollCookProcess() {
 		for (auto& line : ready) {
 			Log(line);
 			TaskWindowPush(line);
-			// Full-cook stage marker ("cook: " — NOT "cook-gi: ...",
-			// NOT the quick-bakes "update-bakes: " marker): the pak
-			// half starts, flip the task stage.
+			// Full-cook stage markers ("cook: " = the bake half, "pak: " =
+			// the assembly half — NOT "cook-gi: ...", NOT the
+			// quick-bakes "update-bakes: " marker).
 			if (line.compare(0, 6, "cook: ") == 0)
+				TaskWindowStage("Cook stage 1/2: bakes...");
+			else if (line.compare(0, 5, "pak: ") == 0)
 				TaskWindowStage("Cook stage 2/2: pak...");
 		}
 	};

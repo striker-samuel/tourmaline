@@ -71,7 +71,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
-#include "../pak_cooker/cube_png.h"
+#include "../cook/src/cube_png.h"
 #include <gltf_import/gltf.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>

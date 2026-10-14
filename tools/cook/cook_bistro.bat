@@ -5,11 +5,17 @@ rem loads (content/paks relative to the App working directory).
 rem Usage: run from anywhere (paths anchor at the repo root via this script).
 setlocal
 pushd "%~dp0..\.."
-if not exist build\Release\Pak.exe (
-  echo ERROR: build\Release\Pak.exe not found.
-  echo Build it first: cmake --build out/build/x64-Release --target Pak
-  popd
-  exit /b 1
+if not exist out\build\x64-Release\Cook.exe (
+echo ERROR: out\build\x64-Release\Cook.exe not found.
+echo Build it first: cmake --build out/build/x64-Release --target Cook
+popd
+exit /b 1
+)
+if not exist out\build\x64-Release\Pak.exe (
+echo ERROR: out\build\x64-Release\Pak.exe not found.
+echo Build it first: cmake --build out/build/x64-Release --target Pak
+popd
+exit /b 1
 )
 rem NOTE: lightmaps are DEPRECATED (the lit FS never samples the atlas;
 rem sg_lightmap.hlsli is commented out and no .sglm is loaded at runtime),
@@ -31,7 +37,9 @@ rem (textures/cubemaps/bistro.ktx2, high-frequency specular only;
 rem probes/lightmaps own diffuse + low-freq specular).
 rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
-out\build\x64-Release\Pak.exe F:\content models/Bistro/bistro.geometry --out-pak F:\content\paks\bistro.pak --meshlets on --lods on --verify on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
+out\build\x64-Release\Cook.exe F:\content models/Bistro/bistro.geometry --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
+if errorlevel 1 goto fail
+out\build\x64-Release\Pak.exe F:\content models/Bistro/bistro.geometry --out-pak F:\content\paks\bistro.pak --verify on
 if errorlevel 1 goto fail
 copy /y F:\content\paks\bistro.pak build\Debug\content\paks\bistro.pak
 if errorlevel 1 goto fail

@@ -2551,6 +2551,43 @@ int main(int argc, char** argv) {
 					<< std::endl;
 				return 1;
 			}
+			// The cooked manifest (<stem>.cooked beside the blob): proof
+			// cook.exe baked THIS artifact and wrote the cooked blobs
+			// back. Missing = never cooked (run cook.exe); artifact
+			// newer than the manifest = re-derived/touched after the
+			// cook (import.exe --force invalidates cooking — rerun
+			// cook.exe). Pak never bakes, so this is a hard error.
+			{
+				std::string stem = smvk::vfs::FileName(artPath);
+				const size_t mdot = stem.rfind(".geometry");
+				const size_t mdotLegacy = stem.rfind(".mesh");
+				if (mdot != std::string::npos)
+					stem = stem.substr(0, mdot);
+				else if (mdotLegacy != std::string::npos)
+					stem = stem.substr(0, mdotLegacy);
+				const std::string manRel = smvk::vfs::Join(
+					smvk::vfs::BaseDir(artPath), stem + ".cooked");
+				if (auto manBytes = vfs.TryRead(manRel);
+					!manBytes || manBytes->empty()) {
+					std::cerr << "Artifact not cooked: '" << inVfs
+						<< "' has no '" << manRel << "' (run cook.exe "
+						"on the artifact first — pak.exe assembles "
+						"cooked artifacts only)" << std::endl;
+					return 1;
+				}
+				std::error_code ec1, ec2;
+				const auto artTime = std::filesystem::last_write_time(
+					std::filesystem::path(args.contentDir) / artPath, ec1);
+				const auto manTime = std::filesystem::last_write_time(
+					std::filesystem::path(args.contentDir) / manRel, ec2);
+				if (!ec1 && !ec2 && artTime > manTime) {
+					std::cerr << "Artifact stale: '" << inVfs
+						<< "' is newer than its '" << manRel
+						<< "' (re-derived after the cook — rerun cook.exe)"
+						<< std::endl;
+					return 1;
+				}
+			}
 			// The manifest (<stem>.gltf.meta beside the blob): the
 			// .material file table the artifact build resolves.
 			smvk::assets::AssetManifest meshManifest;
@@ -2623,6 +2660,51 @@ int main(int argc, char** argv) {
 			sceneClusters.push_back(std::move(cluster));
 		}
 	} // close else block for the artifact path
+	// Tour-bound artifacts carry the same cook contract (the artifact-loop
+	// check above does not see them): every source artifact behind the
+	// replayed cluster must have its <stem>.cooked manifest, and no
+	// artifact may be newer than it. URIs key the check (file parts).
+	if (!args.tour.empty()) {
+		std::unordered_set<std::string> files;
+		for (auto& sc : sceneClusters) {
+			for (const auto& [node, meshIdx] : sc->scene.meshForNode) {
+				const auto h = sc->staticMeshes.getHandle(meshIdx);
+				if (!h.valid())
+					continue;
+				const auto uri = sc->GetMeshUri(h);
+				if (!uri.empty())
+					files.insert(smvk::AssetFilePart(uri));
+			}
+		}
+		for (const std::string& file : files) {
+			std::string stem = smvk::vfs::FileName(file);
+			if (const size_t mdot = stem.rfind(".geometry");
+				mdot != std::string::npos)
+				stem = stem.substr(0, mdot);
+			const std::string manRel = smvk::vfs::Join(
+				smvk::vfs::BaseDir(file), stem + ".cooked");
+			if (auto manBytes = vfs.TryRead(manRel);
+				!manBytes || manBytes->empty()) {
+				std::cerr << "Tour source not cooked: '" << file
+					<< "' has no '" << manRel << "' (run cook.exe "
+					"--tour first — pak.exe assembles cooked "
+					"artifacts only)" << std::endl;
+				return 1;
+			}
+			std::error_code ec1, ec2;
+			const auto artTime = std::filesystem::last_write_time(
+				std::filesystem::path(args.contentDir) / file, ec1);
+			const auto manTime = std::filesystem::last_write_time(
+				std::filesystem::path(args.contentDir) / manRel, ec2);
+			if (!ec1 && !ec2 && artTime > manTime) {
+				std::cerr << "Tour source stale: '" << file
+					<< "' is newer than its '" << manRel
+					<< "' (re-derived after the cook — rerun cook.exe "
+					"--tour)" << std::endl;
+				return 1;
+			}
+		}
+	}
 	// Import phase finished: commit any staged scratch artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
 	// only â€” staged bytes were already used in the import.

@@ -17,13 +17,21 @@ rem   --lm-curve-target 0           uniform density
 rem Usage: run from anywhere (paths anchor at the repo root).
 setlocal
 pushd "%~dp0..\.."
-if not exist build\Release\Pak.exe (
-  echo ERROR: build\Release\Pak.exe not found.
-  echo Build it first: cmake --build out/build/x64-Release --target Pak
-  popd
-  exit /b 1
+if not exist out\build\x64-Release\Cook.exe (
+echo ERROR: out\build\x64-Release\Cook.exe not found.
+echo Build it first: cmake --build out/build/x64-Release --target Cook
+popd
+exit /b 1
 )
-out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --lightmap off --lm-meters-per-texel 0.0625 --lm-rays 64 --lm-bounces 2 --lm-lobes 5 --lm-lobe-relerr 0 --lm-compress uncompressed --lm-curve-target 0 --cubemap on --cubemap-size 64 --cubemap-rays 32
+if not exist out\build\x64-Release\Pak.exe (
+echo ERROR: out\build\x64-Release\Pak.exe not found.
+echo Build it first: cmake --build out/build/x64-Release --target Pak
+popd
+exit /b 1
+)
+out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --lightmap off --lm-meters-per-texel 0.0625 --lm-rays 64 --lm-bounces 2 --lm-lobes 5 --lm-lobe-relerr 0 --lm-compress uncompressed --lm-curve-target 0 --cubemap on --cubemap-size 64 --cubemap-rays 32
+if errorlevel 1 goto fail
+out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail

@@ -5,6 +5,12 @@ rem App loads (content/paks relative to the App working directory).
 rem Usage: run from anywhere (paths anchor at the repo root via this script).
 setlocal
 pushd "%~dp0..\.."
+if not exist out\build\x64-Release\Cook.exe (
+  echo ERROR: out\build\x64-Release\Cook.exe not found.
+  echo Build it first: cmake --build out/build/x64-Release --target Cook
+  popd
+  exit /b 1
+)
 if not exist out\build\x64-Release\Pak.exe (
   echo ERROR: out\build\x64-Release\Pak.exe not found.
   echo Build it first: cmake --build out/build/x64-Release --target Pak
@@ -36,7 +42,14 @@ rem runtime environment defaults + the Pak docs).
 rem --cubemap-extra-pos appends artist-PINNED probes (manifest 'pin' rows
 rem sort first at load, winning weight ties): 0,0.25,0 = the chrome ball
 rem center, so the ball mirrors a capture taken exactly at itself.
-out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+rem PIPELINE (import/cook/pak split): import.exe derives the .geometry
+rem once; cook.exe runs the bakes + writes them back into the artifacts
+rem (+ Sponza.cooked); pak.exe assembles the .pak from the cooked
+rem artifacts (pure serialization - bake flags are rejected there).
+rem SUN flags ride BOTH steps (cook bakes with that sun, pak serializes it).
+out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+if errorlevel 1 goto fail
+out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak out\build\x64-Release\content\paks\sponza.pak
 if errorlevel 1 goto fail
