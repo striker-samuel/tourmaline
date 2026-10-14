@@ -298,9 +298,32 @@ bool ImportMeshSource(
 // re-import reproduces the identity. DeriveGltfAssets falls back to this
 // when the caller passes no guid (the editor passes none: project sessions
 // and from-zero imports now agree), and records it as the manifest's
-// sourceDigest either way.
+// sourceDigest either way. NOTE: this is the STABLE identity (the .gltf
+// file alone) — staleness uses SourceContentDigest below (the full source
+// set), so a texture/.bin edit re-derives without re-GUIDing the family.
 [[nodiscard]] std::string SourceAssetGuid(
 	const std::filesystem::path& gltfPath);
+// SourceContentDigest: the STALENESS identity — the same two-lane hash
+// over the .gltf bytes PLUS every external source it pulls in (.bin
+// buffers + referenced images, sorted by authored URI for determinism;
+// missing/unreadable files contribute a ":missing:<uri>" marker, remote
+// http(s) URIs contribute the URI alone). Same bytes anywhere = same
+// digest; any edited dependency flips it. Recorded as sourcedigest= and
+// compared by MeshArtifactStale: a texture or .bin edit re-derives (the
+// old single-file digest missed those — the source .gltf never changes
+// when a texture is repainted). .glb (all-embedded) digests to the .glb
+// bytes alone = byte-identical to SourceAssetGuid (no churn).
+[[nodiscard]] std::string SourceContentDigest(
+	const std::filesystem::path& gltfPath,
+	const tinygltf::Model& model);
+// Single-image import (import.exe + loose-image drops): writes
+// <stem>.texture beside the source (editor CreateTextureAsset parity:
+// sRGB/rgba8/full-chain/repeat/linear defaults; the guid is the source
+// CONTENT digest, deterministic). Never overwrites an existing .texture
+// (import settings live there — delete it to re-create); force=true
+// recreates (settings reset). Returns false + err on IO failure.
+bool ImportTextureSource(const std::filesystem::path& imagePath,
+	bool force, std::string& outTexturePath, std::string* err = nullptr);
 // DerivedEntryGuid: the deterministic GUID of one derived entry (a .material
 // / .anim / the .geometry), keyed on (source guid, kind, source index) —
 // the same two-lane hash over the seed. With the source guid content-
@@ -311,10 +334,11 @@ bool ImportMeshSource(
 	const std::string& sourceGuid, AssetKind kind, int sourceIndex);
 
 // The re-import gate: TRUE when the derived .geometry beside `gltfPath`
-// is missing/empty, the manifest is missing/unparseable, or the SOURCE is
-// newer than the .geometry (mtime — the derivation products are stale
-// relative to the edited source). FALSE = the artifact set is current;
-// open the .geometry directly without re-deriving.
+// is missing/empty, the manifest is missing/unparseable, or the SOURCE
+// SET changed (SourceContentDigest: the .gltf + .bin + referenced images
+// — a repainted texture re-derives). FALSE = the artifact set is current;
+// open the .geometry directly without re-deriving. Digest-less (legacy)
+// metas fall back to the mtime rule.
 bool MeshArtifactStale(const std::filesystem::path& gltfPath);
 
 // Readers (round-trip; the world build + the read-only inspector use them).

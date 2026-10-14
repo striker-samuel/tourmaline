@@ -1,31 +1,41 @@
-// import.exe - THE raw-3d -> engine-format converter (the asset
+// import.exe - THE raw-source -> engine-format converter (the asset
 // creation). POSITIONAL grammar:
 //
-//   import.exe <input.glb|gltf> [--meshlets on|off] [--lods on|off]
+//   import.exe <input> [--meshlets on|off] [--lods on|off]
 //       [--shader-lods on|off] [--force] [--help]
 //
-// Parse + derive in ONE call (the MeshImporter: gltf_import's
-// ImportMeshSource - the SAME import the editor's open/drop runs):
-// the Tourmaline artifact family lands next to the source -
-//   <stem>.geometry            the scene blob (hierarchy + SoA streams)
-//   <stem>.mat<idx>_<name>.material (one per glTF material)
-//   <stem>.anim<idx>_<name>.anim   (one per animation)
-//   <stem>.gltf.meta            the manifest (stable GUIDs)
-// Identity is DETERMINISTIC (SourceAssetGuid): a from-zero re-import
-// reproduces byte-identical artifacts.
+// Dispatch by extension (ONE raw-import place — the editor's open/drop
+// runs the same calls):
+//   .glb/.gltf  parse + derive in ONE call (the MeshImporter:
+//               gltf_import's ImportMeshSource): the Tourmaline artifact
+//               family lands next to the source -
+//     <stem>.geometry            the scene blob (hierarchy + SoA streams)
+//     <stem>.mat<idx>_<name>.material (one per glTF material)
+//     <stem>.anim<idx>_<name>.anim   (one per animation)
+//     <stem>.gltf.meta            the manifest (stable GUIDs)
+//   .png/.jpg/.jpeg/.tga/.bmp/.ktx2
+//               single-image import (ImportTextureSource, the editor's
+//               CreateTextureAsset parity): <stem>.texture beside the
+//               source (import settings + source ref; deterministic
+//               content guid). Never overwrites an existing .texture
+//               (settings live there) — --force recreates (settings reset).
+// Identity is DETERMINISTIC (SourceAssetGuid / content digests): a
+// from-zero re-import reproduces byte-identical artifacts.
 //
 // The DERIVE settings mirror the editor's env pins
 // (VULKANTOY_EDITOR_MESHLETS/LODS/SHADERLODS - see DeriveConfig).
 // Default: derive-if-stale (MeshArtifactStale: missing artifacts or a
-// changed source re-derives; a fresh import is a no-op when current).
+// changed source SET re-derives — .gltf + .bin + referenced images,
+// not just the .gltf; a fresh import is a no-op when current).
 // --force always re-derives.
 //
 // The SECOND half of the content pipeline is pak.exe (tools/pak):
 // it consumes the ALREADY-PROCESSED artifacts + a VFS root and cooks
-// the pak (cubemap bake, LOD/meshlet cook, serializer). Raw glTF
-// NEVER cooks - this is the clean split: ONE raw-import place (this
+// the pak (cubemap bake, LOD/meshlet cook, serializer). Raw sources
+// NEVER cook - this is the clean split: ONE raw-import place (this
 // tool / the editor's MeshImporter), ONE artifact-consumer place.
 
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -39,17 +49,21 @@ bool ParseOnOff(const std::string& v) {
 	return v == "on" || v == "1" || v == "true";
 }
 
-void Usage() {
-	std::cout
-		<< "import.exe <input.glb|gltf> [--meshlets on|off] [--lods on|off]\n"
-		<< "    [--shader-lods on|off] [--force]\n"
-		<< "  (the raw-3d -> engine-format converter: derives the .geometry\n"
-		<< "   + .material/.anim + .gltf.meta artifact family next to the\n"
-		<< "   source - the SAME import the editor's open/drop runs;\n"
-		<< "   deterministic GUIDs, byte-identical from-zero re-imports.\n"
-		<< "   Default derive-if-stale; --force always re-derives. Cook\n"
-		<< "   the artifacts into a pak with pak.exe.)\n";
-}
+	void Usage() {
+		std::cout
+			<< "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
+			<< "    [--shader-lods on|off] [--force]\n"
+			<< "  (the raw-source -> engine-format converter:\n"
+			<< "   .glb/.gltf derives the .geometry + .material/.anim +\n"
+			<< "   .gltf.meta artifact family next to the source - the SAME\n"
+			<< "   import the editor's open/drop runs; deterministic GUIDs,\n"
+			<< "   byte-identical from-zero re-imports.\n"
+			<< "   .png/.jpg/.jpeg/.tga/.bmp/.ktx2 writes <stem>.texture\n"
+			<< "   beside the source (editor parity; never overwrites -\n"
+			<< "   --force recreates and resets its settings).\n"
+			<< "   Default derive-if-stale; --force always re-derives. Cook\n"
+			<< "   the artifacts into a pak with pak.exe.)\n";
+	}
 
 } // namespace
 
@@ -109,7 +123,8 @@ int main(int argc, char** argv) {
 		}
 	}
 	if (input.empty()) {
-		std::cerr << "Required: import.exe <input.glb|gltf>" << std::endl;
+		std::cerr << "Required: import.exe <input> (.glb/.gltf or"
+			" .png/.jpg/.jpeg/.tga/.bmp/.ktx2)" << std::endl;
 		Usage();
 		return 1;
 	}
@@ -118,6 +133,50 @@ int main(int argc, char** argv) {
 	if (!std::filesystem::exists(inPath)) {
 		std::cerr << "Input not found: " << input << std::endl;
 		return 1;
+	}
+	std::string ext = inPath.extension().string();
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	const bool isModel = (ext == ".glb" || ext == ".gltf");
+	const bool isImage = (ext == ".png" || ext == ".jpg"
+		|| ext == ".jpeg" || ext == ".tga" || ext == ".bmp"
+		|| ext == ".ktx2");
+	if (!isModel && !isImage) {
+		std::cerr << "Unsupported input '" << ext << "' (want .glb/.gltf"
+			" or .png/.jpg/.jpeg/.tga/.bmp/.ktx2): " << input << std::endl;
+		return 1;
+	}
+
+	// Single-image import (editor CreateTextureAsset parity): an
+	// existing .texture is never stale (settings live there; source
+	// repaints flow through the loose read at cook) — --force recreates.
+	if (isImage) {
+		const std::filesystem::path texGuess =
+			inPath.parent_path()
+			/ (inPath.stem().string() + ".texture");
+		std::error_code tec;
+		if (!force && std::filesystem::is_regular_file(texGuess, tec)) {
+			std::cout << "Texture asset current: '"
+				<< texGuess.generic_string()
+				<< "' exists (settings live there - delete it to"
+				" re-create, or --force to reset them)\n";
+			return 0;
+		}
+		std::string texPath;
+		std::string terr;
+		if (!smvk::assets::ImportTextureSource(inPath, force, texPath,
+				&terr)) {
+			std::cerr << "Import failed: " << (terr.empty()
+				? "unknown" : terr) << std::endl;
+			return 1;
+		}
+		std::cout << "Imported texture: " << input << "\n"
+			<< "  asset=" << texPath << "\n"
+			<< (force
+				? "  (--force: settings reset to the defaults)\n"
+				: "")
+			<< "  reference it from materials as a .texture source\n";
+		return 0;
 	}
 
 	// Default: derive-if-stale (the editor's open/drop parity - a fresh

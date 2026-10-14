@@ -24,6 +24,8 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <set>
+
 #include <gltf_import/gltf.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/touranim.h>
@@ -1143,11 +1145,13 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	// content is a new identity by design, and old metas with random GUIDs
 	// re-derive deterministically on the next import.)
 	AssetManifest manifest;
-	const std::string sourceDigest = SourceAssetGuid(gltfPath);
-	manifest.guid = gltfGuid.empty() ? sourceDigest : gltfGuid;
+	// Stable identity (the .gltf file alone — texture/.bin edits must not
+	// re-GUID the family); staleness is the FULL source set below.
+	const std::string sourceGuid = SourceAssetGuid(gltfPath);
+	manifest.guid = gltfGuid.empty() ? sourceGuid : gltfGuid;
 	manifest.source =
 		std::filesystem::path(gltfPath).filename().generic_string();
-	manifest.sourceDigest = sourceDigest;
+	manifest.sourceDigest = SourceContentDigest(gltfPath, model);
 	manifest.stem = stem;
 	auto guidFor = [&](AssetKind kind, int sourceIndex) -> std::string {
 		AssetEntry e{};
@@ -1528,6 +1532,120 @@ std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
 	return GuidHexFromBytes(bytes.data(), bytes.size());
 }
 
+std::string SourceContentDigest(const std::filesystem::path& gltfPath,
+	const tinygltf::Model& model) {
+	namespace fs = std::filesystem;
+	// Seed: the .gltf bytes (missing/unreadable = the path string — the
+	// derivation's own read fails loudly right after anyway).
+	std::vector<uint8_t> seed;
+	{
+		std::ifstream in(gltfPath, std::ios::binary);
+		if (in)
+			seed.assign(std::istreambuf_iterator<char>(in),
+				std::istreambuf_iterator<char>());
+	}
+	if (seed.empty()) {
+		const std::string p = gltfPath.generic_string();
+		seed.assign(p.begin(), p.end());
+	}
+	// Dependencies: external buffer + image URIs, SORTED by authored URI
+	// (deterministic regardless of glTF section order; relative stays
+	// relative — machine-independent). data: URIs are embedded (already
+	// in the hashed bytes).
+	std::set<std::string> uris;
+	auto collect = [&](const std::string& uri) {
+		if (uri.empty() || uri.rfind("data:", 0) == 0)
+			return;
+		uris.insert(uri);
+	};
+	for (const auto& b : model.buffers)
+		collect(b.uri);
+	for (const auto& im : model.images)
+		collect(im.uri);
+	const fs::path dir = gltfPath.parent_path();
+	std::vector<uint8_t> all = seed;
+	for (const std::string& uri : uris) {
+		all.push_back(0);
+		all.insert(all.end(), uri.begin(), uri.end());
+		all.push_back(0);
+		const bool remote = uri.rfind("http://", 0) == 0
+			|| uri.rfind("https://", 0) == 0;
+		bool hashed = false;
+		if (!remote) {
+			const fs::path full = fs::path(uri).is_absolute()
+				? fs::path(uri) : dir / fs::path(uri);
+			std::ifstream in(full, std::ios::binary);
+			if (in) {
+				const std::vector<uint8_t> bytes(
+					(std::istreambuf_iterator<char>(in)),
+					std::istreambuf_iterator<char>());
+				all.insert(all.end(), bytes.begin(), bytes.end());
+				hashed = true;
+			}
+		}
+		if (!hashed) {
+			// Missing/unreadable/remote: the URI is the identity (a
+			// deleted texture re-derives — the digest can never match a
+			// recorded bytes-digest; a remote pin is content-constant).
+			const std::string mark = ":missing:" + uri;
+			all.insert(all.end(), mark.begin(), mark.end());
+		}
+	}
+	return GuidHexFromBytes(all.data(), all.size());
+}
+
+bool ImportTextureSource(const std::filesystem::path& imagePath,
+	bool force, std::string& outTexturePath, std::string* err) {
+	namespace fs = std::filesystem;
+	auto giveUp = [&](const std::string& e) {
+		if (err)
+			*err = e;
+		return false;
+	};
+	std::error_code ec;
+	if (!fs::is_regular_file(imagePath, ec))
+		return giveUp("input not found: " + imagePath.generic_string());
+	// Editor CreateTextureAsset parity (the supported set).
+	std::string ext = imagePath.extension().string();
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	static const char* kSupported[] = { ".png", ".jpg", ".jpeg",
+		".tga", ".bmp", ".ktx2" };
+	bool ok = false;
+	for (const char* k : kSupported)
+		ok = ok || (ext == k);
+	if (!ok)
+		return giveUp("unsupported image '" + ext + "' (want "
+			"png/jpg/jpeg/tga/bmp/ktx2): " + imagePath.generic_string());
+	const std::string stem = imagePath.stem().string();
+	const fs::path texPath = imagePath.parent_path() / (stem + ".texture");
+	outTexturePath = texPath.generic_string();
+	// Settings live in the .texture (delete it to re-create — editor
+	// parity); a source repaint flows through the loose read at cook,
+	// so an existing file is never stale.
+	if (fs::is_regular_file(texPath, ec) && !force)
+		return true;
+	std::ifstream in(imagePath, std::ios::binary);
+	if (!in)
+		return giveUp("cannot read: " + imagePath.generic_string());
+	const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (bytes.empty())
+		return giveUp("image file is empty: " + imagePath.generic_string());
+	// Editor defaults (sRGB/rgba8/full-chain/repeat/linear — see the
+	// TextureAsset rows); the guid is the CONTENT digest (deterministic;
+	// the editor mints random ones — same format, both valid).
+	TextureAsset t{};
+	t.guid = GuidHexFromBytes(bytes.data(), bytes.size());
+	t.name = stem;
+	t.source = imagePath.filename().generic_string();
+	std::string serr;
+	if (!SaveTextureAsset(texPath, t, serr))
+		return giveUp("cannot write '" + texPath.generic_string()
+			+ "': " + serr);
+	return true;
+}
+
 std::string DerivedEntryGuid(const std::string& sourceGuid,
 	AssetKind kind, int sourceIndex) {
 	// Seed = the source identity + the entry's (kind, index): a short,
@@ -1561,9 +1679,18 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
 	// mtime rule for digest-carrying metas: copies that preserve or
 	// reorder mtimes no longer misfire (a same-content copy stays
 	// current, a different-content source with a NEWER artifact still
-	// re-derives — the digest, not the clock, is the identity).
-	if (!m.sourceDigest.empty())
+	// re-derives — the digest, not the clock, is the identity). The
+	// digest covers the FULL source set (.gltf + .bin + referenced
+	// images — a repainted texture or edited buffer re-derives). When
+	// the source no longer parses, fall back to the single-file digest
+	// (a corrupt source with good artifacts keeps working until the
+	// derivation itself runs and fails loudly).
+	if (!m.sourceDigest.empty()) {
+		tinygltf::Model model;
+		if (LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+			return SourceContentDigest(gltfPath, model) != m.sourceDigest;
 		return SourceAssetGuid(gltfPath) != m.sourceDigest;
+	}
 	// Legacy mtime rule (digest-less metas): the artifact predates the
 	// last source edit. (fs::last_write_time errors read as stale — the
 	// safe side always re-derives.)
