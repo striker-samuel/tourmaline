@@ -307,6 +307,7 @@ add_subdirectory(engine)
 # ClosestDistance path).
 target_link_libraries(engine PRIVATE embree)
 add_subdirectory(tools/gltf_import)
+add_subdirectory(tools/import)
 add_subdirectory(tools/artifact_cache)
 add_subdirectory(app)
 add_subdirectory(tools/pak_cooker)

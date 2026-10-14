@@ -1,23 +1,26 @@
-// PakCooker: offline ARTIFACT -> .pak cooker that works exclusively on the
-// VFS and needs NO GPU (cook-mode Cluster, see Cluster::SetCookMode). The
-// cook inputs are the DERIVED .geometry artifacts (the MeshImporter's
-// output — glTF is IMPORT-ONLY, never a cook input; see
-// gltf_import/asset_export.h).
+// pak.exe: offline ARTIFACT -> .pak cooker that works exclusively on the
+// VFS and needs NO GPU (cook-mode Cluster, see Cluster::SetCookMode).
+// The COOK-SPLIT (the clean separation): the cook inputs are the
+// ALREADY-PROCESSED .geometry artifacts (import.exe / the MeshImporter /
+// the editor's open-drop produce them - glTF is IMPORT-ONLY, never a
+// cook input; see gltf_import/asset_export.h; the raw import lives in
+// tools/import, ONE place).
 //
-//   PakCooker --content-dir content --in-vfs models/Sponza/sponza.geometry
-//             --out-pak content/paks/sponza.pak [--meshopt on|off]
-//             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
-//             [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
-//             [--compress on|off] [--lz4-accel 1]
-//             [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
-//              --lm-atlas-width 1024 --lm-gutter 1
-//              --lm-rays 1024
-//              --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
-//              --lm-lod-lock attr|hard
-//              --lm-denoise on|off (DEPRECATED, off by default)
-//              --lm-denoise-quality high|balanced (DEPRECATED)
-//              --lm-curve-target 7.0 --lm-curve-max 2.5
-//              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
+//   pak.exe <vfs_path> <artifact...> [--options]
+//             pak.exe F:/content models/sponza/Sponza.geometry
+//                 --out-pak F:/content/paks/sponza.pak [--meshopt on|off]
+//                 [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
+//                 [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
+//                 [--compress on|off] [--lz4-accel 1]
+//                 [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
+//                  --lm-atlas-width 1024 --lm-gutter 1
+//                  --lm-rays 1024
+//                  --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
+//                  --lm-lod-lock attr|hard
+//                  --lm-denoise on|off (DEPRECATED, off by default)
+//                  --lm-denoise-quality high|balanced (DEPRECATED)
+//                  --lm-curve-target 7.0 --lm-curve-max 2.5
+//                  --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
 // --cubemap on bakes preconvolved SPECULAR cubemaps DURING the cook (same
 // CPU path-tracer capture as tools/cubemap_baker, GGX importance-sampled
@@ -134,7 +137,15 @@ namespace {
 
 	struct Args {
 		std::string contentDir = "content";
-		std::string inVfs;
+		// POSITIONAL CLI (pak.exe <vfs_path> <artifact...> [--options]):
+		// argv[1] = the VFS content root (was --content-dir), argv[2..]
+		// until the first --option = the ALREADY-PROCESSED artifact list
+		// (.geometry files - import.exe/the editor's MeshImporter
+		// produces them; raw glTF NEVER cooks here). inVfsList holds the
+		// artifacts; inVfs keeps the IDENTITY (the first artifact, or the
+		// tour's root reference) for the logs/sidecar stems.
+		std::vector<std::string> inVfsList;
+		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
 		// Legacy glTF-era scene-selection flag. A .geometry artifact carries
 		// one derived scene, and the artifact cook rejects --scene-index.
@@ -501,8 +512,9 @@ namespace {
 
 	// Sidecar name stems (see the GI-sidecar discovery in main): the pak
 	// stem first (the runtime's fallback identity), then the source scene
-	// stem (the tour reference / --in-vfs). Bakes key on the SCENE they ran
-	// over (GiBaker --scene, the .sggi stem) — without the second stem a
+	// stems (the artifact list - every listed .geometry, or the tour
+	// reference identity). Bakes key on the SCENE they ran over
+	// (GiBaker --scene, the .sggi stem) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
 	std::vector<std::string> SidecarStems(const Args& args) {
 		std::vector<std::string> stems;
@@ -510,11 +522,19 @@ namespace {
 			std::filesystem::path(args.outPak).stem().generic_string();
 		if (!pakStem.empty())
 			stems.push_back(pakStem);
-		const std::string srcStem =
-			std::filesystem::path(args.inVfs).stem().generic_string();
-		if (!srcStem.empty()
-			&& std::find(stems.begin(), stems.end(), srcStem) == stems.end())
-			stems.push_back(srcStem);
+		auto push = [&](const std::string& src) {
+			if (src.empty())
+				return;
+			const std::string srcStem =
+				std::filesystem::path(src).stem().generic_string();
+			if (!srcStem.empty()
+				&& std::find(stems.begin(), stems.end(), srcStem)
+					== stems.end())
+				stems.push_back(srcStem);
+		};
+		for (const std::string& art : args.inVfsList)
+			push(art);
+		push(args.inVfs); // tour-reference identity (set in main)
 		if (stems.empty())
 			stems.push_back("pak");
 		return stems;
@@ -678,6 +698,18 @@ namespace {
 	}
 
 	bool ParseArgs(int argc, char** argv, Args& out) {
+		// POSITIONAL grammar (pak.exe <vfs_path> <artifact...> [--options]):
+		// the first positional = the VFS content root (was --content-dir),
+		// every positional after it until the first flag = one
+		// ALREADY-PROCESSED .geometry artifact (was the single --in-vfs).
+		// Raw glTF NEVER cooks here - import.exe (tools/import) / the
+		// editor's MeshImporter produce the artifacts; this is the clean
+		// split: ONE raw-import place, ONE artifact-consumer place.
+		// --tour stays a flag (the editor-authored scene overlay); with a
+		// tour the artifact list may be empty (the tour's references are
+		// the definition).
+		std::vector<std::string> positional;
+		bool sawFlag = false;
 		for (int i = 1; i < argc; ++i) {
 			const std::string a = argv[i];
 			auto need = [&](std::string& dst) {
@@ -688,13 +720,28 @@ namespace {
 				dst = argv[++i];
 				return true;
 			};
-			if (a == "--content-dir") {
-				if (!need(out.contentDir)) return false;
+			if (a == "--content-dir" || a == "--in-vfs") {
+				std::cerr << "'" << a << "' is gone: positional grammar now"
+					" - pak.exe <vfs_path> <artifact...> [--options]"
+					<< std::endl;
+				return false;
 			}
-			else if (a == "--in-vfs") {
-				if (!need(out.inVfs)) return false;
+			else if (a.size() >= 2 && a[0] == '-' && a[1] == '-') {
+				// The flag chain below parses this argv (the positionals
+				// end at the first flag).
+				sawFlag = true;
 			}
-			else if (a == "--out-pak") {
+			else if (!sawFlag) {
+				positional.push_back(a);
+				continue;
+			}
+			else {
+				std::cerr << "Artifact '" << a << "' after flags: all"
+					" artifacts come before the first --option"
+					<< std::endl;
+				return false;
+			}
+			if (a == "--out-pak") {
 				if (!need(out.outPak)) return false;
 			}
 			else if (a == "--scene-index") {
@@ -704,6 +751,12 @@ namespace {
 			}
 			else if (a == "--tour") {
 				if (!need(out.tour)) return false;
+			}
+			else if (a == "--meshopt") {
+				std::string v;
+				if (!need(v)) return false;
+				out.meshopt = (v == "on" || v == "1" || v == "true");
+				out.explicitSet.insert("meshopt");
 			}
 			else if (a == "--meshopt") {
 				std::string v;
@@ -1115,36 +1168,53 @@ namespace {
 				if (!need(v)) return false;
 				out.dumpNodes.push_back(static_cast<uint32_t>(std::stoul(v)));
 			}
-			else if (a == "--help" || a == "-h") {
-				return false;
-			}
-			else {
-				std::cerr << "Unknown arg: " << a << std::endl;
-				return false;
-			}
-		}
-		if (!out.dumpPak.empty())
-			return true; // inspection mode needs no cook inputs
-		if (out.dumpPak.empty() && out.inVfs.empty() && out.tour.empty()) {
-			std::cerr << "Required: --in-vfs <artifact .geometry vfs path> OR --tour <scene.tour>, and --out-pak <host path>" << std::endl;
+		else if (a == "--help" || a == "-h") {
 			return false;
 		}
-		if (out.outPak.empty()) {
-			std::cerr << "Required: --out-pak <host path>" << std::endl;
+		else {
+			std::cerr << "Unknown arg: " << a << std::endl;
 			return false;
 		}
-		// --tour is the DEFINITION (self-contained: the source glTF rides
-		// as root reference #0) — no --in-vfs inference needed.
-		return true;
 	}
+	// Positionals: [0] = the VFS root, [1..] = the artifact list.
+	if (!out.dumpPak.empty())
+		return true; // inspection mode needs no cook inputs
+	if (positional.empty()) {
+		std::cerr << "Required: pak.exe <vfs_path> <artifact...> [--options]"
+			" - the VFS content root + the processed .geometry list"
+			" (import raw glTF with import.exe / the editor first)"
+			<< std::endl;
+		return false;
+	}
+	out.contentDir = positional[0];
+	if (positional.size() > 1) {
+		out.inVfsList.assign(positional.begin() + 1, positional.end());
+		out.inVfs = out.inVfsList.front();
+	}
+	if (out.inVfsList.empty() && out.tour.empty()) {
+		std::cerr << "Required: at least one artifact .geometry (or --tour"
+			" <scene.tour> - the editor-authored definition), and"
+			" --out-pak <host path>" << std::endl;
+		return false;
+	}
+	if (out.outPak.empty()) {
+		std::cerr << "Required: --out-pak <host path>" << std::endl;
+		return false;
+	}
+	// --tour is the DEFINITION (self-contained: the source glTF rides
+	// as root reference #0) — no artifact inference needed.
+	return true;
+}
 
 	void Usage() {
-		std::cout << "PakCooker --content-dir content [--in-vfs models/Sponza/sponza.geometry] [--tour scenes/sponza.tour]\n"
-			<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
-			<< "          (--in-vfs names the DERIVED .geometry artifact — glTF\n"
-			<< "          is IMPORT-ONLY (the MeshImporter: open/drop the .gltf\n"
-			<< "          in the editor to derive it beside the source); the\n"
-			<< "          artifact carries the one derived scene.)\n"
+		std::cout << "pak.exe <vfs_path> <artifact...> [--options]\n"
+			<< "          pak.exe F:/content models/sponza/Sponza.geometry\n"
+			<< "              --out-pak F:/content/paks/sponza.pak [...]\n"
+			<< "          (positional grammar: the VFS content root + the\n"
+			<< "          ALREADY-PROCESSED .geometry artifact list — glTF is\n"
+			<< "          IMPORT-ONLY (import.exe <input> / the editor's\n"
+			<< "          MeshImporter derives the artifacts); the artifacts\n"
+			<< "          carry the scenes; the pak cooks ALL of them.)\n"
 			<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
 			<< " [--dump-manifest on|off]\n"
 			<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
@@ -3441,10 +3511,10 @@ int main(int argc, char** argv) {
 		haveTour = true;
 		for (auto& w : twarn)
 			std::cerr << "Tour warning: " << w << std::endl;
-		// The tour's root reference doubles as the --in-vfs identity when
-		// none was given (the "Cooked <inVfs> -> ..." log + SidecarStems:
-		// bake-asset logicals key on the SCENE stem, so scene-keyed
-		// sidecar bakes survive differently-named out paks).
+		// The tour's root reference doubles as the artifact identity when
+		// the positional list is empty (the "Cooked <identity> -> ..." log
+		// + SidecarStems: bake-asset logicals key on the SCENE stem, so
+		// scene-keyed sidecar bakes survive differently-named out paks).
 		if (args.inVfs.empty() && !tour.references.empty())
 			args.inVfs = tour.references[0].source;
 		// Apply tour cook defaults (CLI wins)
@@ -3640,39 +3710,40 @@ int main(int argc, char** argv) {
 		}
 	}
 	else {
-		// No tour: ARTIFACT cook. --in-vfs names the DERIVED .geometry
-		// blob (the MeshImporter's output beside the source glTF) — glTF
-		// is IMPORT-ONLY and never cooks (the old GltfToClusterFromVfs
-		// in-cook glTF import is GONE): open/drop the .gltf in the editor
-		// (derive-if-stale) or run the importer, then cook the .geometry.
-		// The artifact carries the ONE derived scene (the source import's
-		// default scene) — no multi-scene fan-out, no --scene-index.
+		// No tour: ARTIFACT cook — the POSITIONAL artifact list (the
+		// ALREADY-PROCESSED .geometry blobs; the MeshImporter/import.exe
+		// output). glTF is IMPORT-ONLY and never cooks (the old
+		// GltfToClusterFromVfs in-cook glTF import is GONE): open/drop
+		// the .gltf in the editor (derive-if-stale) or run import.exe,
+		// then cook the .geometry. Each artifact carries the ONE derived
+		// scene (the source import's default scene) — no multi-scene
+		// fan-out, no --scene-index; the pak cooks ALL listed artifacts.
 		if (args.sceneIndex >= 0) {
 			std::cerr << "--scene-index is a glTF-era flag: the .geometry "
 				"artifact carries the one derived scene (dropped)"
 				<< std::endl;
 		}
-		// Resolve + read the .geometry through the VFS (the runtime
+		// Resolve + read each .geometry through the VFS (the runtime
 		// content abstraction — loose files today; pak-embedded /
 		// patched artifacts land through the same reads later).
-		{
+		for (const std::string& inVfs : args.inVfsList) {
 			std::string artPath = smvk::NormalizeAssetUri(
-				args.inVfs).Str();
+				inVfs).Str();
 			if (artPath.empty())
-				artPath = args.inVfs; // host-style path (as-is)
+				artPath = inVfs; // host-style path (as-is)
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
-				std::cerr << "Artifact read failed: '" << args.inVfs
+				std::cerr << "Artifact read failed: '" << inVfs
 					<< "' not in VFS (want the derived .geometry — import "
-					"the source glTF first: the editor's open/drop runs "
-					"the MeshImporter)" << std::endl;
+					"the source glTF first: import.exe / the editor's "
+					"MeshImporter)" << std::endl;
 				return 1;
 			}
 			smvk::assets::MeshAsset meshAsset;
 			std::string aerr;
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 				artBytes->size(), meshAsset, aerr)) {
-				std::cerr << "Artifact parse failed: '" << args.inVfs
+				std::cerr << "Artifact parse failed: '" << inVfs
 					<< "': " << aerr << " (re-import the source glTF — "
 					"the MeshImporter overwrites the artifacts)"
 					<< std::endl;
@@ -3723,7 +3794,7 @@ int main(int argc, char** argv) {
 				meshAsset, meshManifest, artPath, 0, texSrc, args.autoKtx,
 				artifactCache, readSibling);
 			if (built == 0) {
-				std::cerr << "Artifact build failed: '" << args.inVfs
+				std::cerr << "Artifact build failed: '" << inVfs
 					<< "' built 0 nodes (degenerate/empty — re-import "
 					"the source glTF)" << std::endl;
 				return 1;
@@ -3745,7 +3816,7 @@ int main(int argc, char** argv) {
 					<< " spot=" << nSpot << ", links="
 					<< cluster->scene.lightForNode.size() << ")\n";
 			}
-			std::cout << "Cooking 1 scene: '" << args.inVfs << "'\n";
+			std::cout << "Cooking artifact: '" << inVfs << "'\n";
 			sceneNames.push_back("");
 			sceneClusters.push_back(std::move(cluster));
 		}
@@ -6025,7 +6096,12 @@ int main(int argc, char** argv) {
 	const auto t1 = std::chrono::steady_clock::now();
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
 
-	std::cout << "Cooked " << args.inVfs << " -> " << args.outPak << "\n"
+	std::cout << "Cooked " << args.inVfs
+		<< (args.inVfsList.size() > 1
+			? " +" + std::to_string(args.inVfsList.size() - 1)
+				+ " more artifact(s)"
+			: (!args.tour.empty() ? " (tour definition)" : ""))
+		<< " -> " << args.outPak << "\n"
 		<< "  scenes=" << sceneNames.size()
 		<< " meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"

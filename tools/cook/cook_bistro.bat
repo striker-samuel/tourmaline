@@ -5,9 +5,9 @@ rem loads (content/paks relative to the App working directory).
 rem Usage: run from anywhere (paths anchor at the repo root via this script).
 setlocal
 pushd "%~dp0..\.."
-if not exist build\Release\PakCooker.exe (
-  echo ERROR: build\Release\PakCooker.exe not found.
-  echo Build it first: cmake --build build --config Release --target PakCooker
+if not exist build\Release\Pak.exe (
+  echo ERROR: build\Release\Pak.exe not found.
+  echo Build it first: cmake --build out/build/x64-Release --target Pak
   popd
   exit /b 1
 )
@@ -31,7 +31,7 @@ rem (textures/cubemaps/bistro.ktx2, high-frequency specular only;
 rem probes/lightmaps own diffuse + low-freq specular).
 rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/Bistro/bistro.geometry --out-pak F:\content\paks\bistro.pak --meshlets on --lods on --verify on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
+out\build\x64-Release\Pak.exe F:\content models/Bistro/bistro.geometry --out-pak F:\content\paks\bistro.pak --meshlets on --lods on --verify on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
 if errorlevel 1 goto fail
 copy /y F:\content\paks\bistro.pak build\Debug\content\paks\bistro.pak
 if errorlevel 1 goto fail
