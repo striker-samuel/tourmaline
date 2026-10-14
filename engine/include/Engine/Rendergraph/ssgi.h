@@ -335,10 +335,11 @@ struct Ssgi {
 	Target raw;      // half-res (ao, encRepDist, octN)
 	Target blurred;  // half-res, same representation
 	Target aoTerm;   // FULL-res RGBA16F: Main's MRT export (pre-AO ambient)
-	Target aoTermMsaa; // FULL-res 2x RGBA16F: Main's MSAA twin (resolve -> aoTerm)
+	Target aoTermMsaa; // FULL-res 2x RGBA16F: Main's MSAA twin (resolve -> aoTerm). LAZY (see EnsureMsaaTerm).
 	Target composed; // FULL-res RGBA16F: the AO-applied scene HDR (compose output)
 	Extent2D fullExtent{ 0, 0 };
 	Extent2D halfExtent{ 0, 0 };
+	Extent2D aoTermMsaaExtent{ 0, 0 }; // the lazy twin's create key
 	Format aoFormat = Format::RGBA16_UNorm;
 	Format hdrFormat = Format::RGBA16_Float;
 	SsgiDesc desc{};
@@ -355,8 +356,14 @@ struct Ssgi {
 	ShaderProgram composeProgram{};
 
 	[[nodiscard]] bool TargetsValid() const {
+		// aoTermMsaa deliberately NOT required: the 1x chain (raw ->
+		// blur -> aoTerm -> compose) is self-sufficient; the MSAA twin
+		// rides only the Main MSAA resolve leg (gated by the
+		// WorldRenderer's useMsaa + MsaaTermValid). Requiring it here
+		// would kill the whole SSGI chain in every non-MSAA mode once
+		// the twin went lazy.
 		return raw.Valid() && blurred.Valid() && aoTerm.Valid()
-			&& aoTermMsaa.Valid() && composed.Valid();
+			&& composed.Valid();
 	}
 	[[nodiscard]] bool ShadersValid() const {
 		return ssaoRawProgram.shaderCount != 0 && saoRawProgram.shaderCount != 0
@@ -539,7 +546,7 @@ struct Ssgi {
 			return false;
 		DestroyTargets(rg);
 		const Extent2D half = HalfExtentFor(full);
-		Target newRaw, newBlur, newTerm, newTermMsaa, newComposed;
+		Target newRaw, newBlur, newTerm, newComposed;
 		if (!CreateTarget(ctx, rg, half, d.aoFormat, d.aoRawName, newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.aoFormat, d.aoBlurName, newBlur)) {
@@ -551,23 +558,18 @@ struct Ssgi {
 			DestroyTarget(rg, newBlur);
 			return false;
 		}
-		if (!CreateMsaaTarget(ctx, rg, full, d.hdrFormat, d.aoTermMsaaName, newTermMsaa)) {
-			DestroyTarget(rg, newRaw);
-			DestroyTarget(rg, newBlur);
-			DestroyTarget(rg, newTerm);
-			return false;
-		}
+		// aoTermMsaa is NOT created here: it is the LAZY twin (see
+		// EnsureMsaaTerm) — the WorldRenderer lifecycle owns it, so
+		// non-MSAA modes never carry its ~34 MiB.
 		if (!CreateTarget(ctx, rg, full, d.hdrFormat, d.composedName, newComposed)) {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newTerm);
-			DestroyTarget(rg, newTermMsaa);
 			return false;
 		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		aoTerm = std::move(newTerm);
-		aoTermMsaa = std::move(newTermMsaa);
 		composed = std::move(newComposed);
 		fullExtent = full;
 		halfExtent = half;
@@ -581,10 +583,39 @@ struct Ssgi {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
 		DestroyTarget(rg, aoTerm);
-		DestroyTarget(rg, aoTermMsaa);
+		DestroyMsaaTerm(rg);
 		DestroyTarget(rg, composed);
 		fullExtent = { 0, 0 };
 		halfExtent = { 0, 0 };
+	}
+
+	// ---- the LAZY MSAA twin -------------------------------------------
+	// aoTermMsaa rides the Main MSAA resolve leg ONLY (SetColorWithResolve
+	// pairs it with the msaa color target). In every non-MSAA mode
+	// (Off / SMAA / DLSS) it is dead weight (~34 MiB at 1080p, 2x
+	// RGBA16F) — the WorldRenderer lifecycle Ensures it when the
+	// effective mode turns on and Destroys it when it leaves; the
+	// useMsaa gate requires MsaaTermValid so a failed create degrades
+	// to the plain 1x resolve instead of binding an empty logical.
+	[[nodiscard]] bool MsaaTermValid() const {
+		return aoTermMsaa.Valid();
+	}
+	bool EnsureMsaaTerm(ResourceManager& ctx, RenderGraph& rg,
+		Extent2D full, const char* name) {
+		if (aoTermMsaa.Valid()
+			&& aoTermMsaaExtent.width == full.width
+			&& aoTermMsaaExtent.height == full.height)
+			return true; // steady-state no-op (extent drift recreates)
+		DestroyMsaaTerm(rg);
+		if (!CreateMsaaTarget(ctx, rg, full, hdrFormat, name,
+				aoTermMsaa))
+			return false;
+		aoTermMsaaExtent = full;
+		return true;
+	}
+	void DestroyMsaaTerm(RenderGraph& rg) {
+		DestroyTarget(rg, aoTermMsaa);
+		aoTermMsaaExtent = { 0, 0 };
 	}
 
 	// Recreate only when extent/format drift. Live-updates desc (radius /

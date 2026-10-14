@@ -2141,7 +2141,16 @@ namespace engine {
 			{
 				smvk::MsaaDesc msaaDesc{};
 				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, msaaDesc)) {
+				// LAZY: the transient 2x color+depth pair + the SSGI MSAA
+				// resolve twin exist ONLY in the effective MSAA mode
+				// (~89 MiB at 1080p otherwise dead); the per-frame
+				// lifecycle at the msaaEnabled site owns every flip
+				// (mode changes, DLSS taking over), this just covers the
+				// starts-already-in-MSAA case.
+				if (m_passes.msaa && m_aaMode == AaMode::Msaa2x
+						&& m_context->SupportsMSAA2x()
+						&& !m_viewportResources.msaa.Ensure(*m_context,
+							*m_rendergraph, renderExtent, msaaDesc)) {
 					std::cerr << "[WorldRenderer] MSAA target unavailable - falling back to 1x\n";
 				}
 			}
@@ -6466,9 +6475,15 @@ namespace engine {
 		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssgi.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsgiDesc());
-		smvk::MsaaDesc rebuildMsaaDesc{};
-		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
+		// MSAA pair: lazy (the frame lifecycle at the msaaEnabled site
+		// owns it) — recreate here only when the mode is active; the
+		// inactive resize leaves it destroyed.
+		if (m_passes.msaa && m_aaMode == AaMode::Msaa2x
+				&& m_context->SupportsMSAA2x()) {
+			smvk::MsaaDesc rebuildMsaaDesc{};
+			rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
+			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
+		}
 		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
 		{
 			smvk::DofDesc rebuildDofDesc = MakeDofDesc();
@@ -7201,9 +7216,6 @@ namespace engine {
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 			m_viewportResources.ssgi.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsgiDesc());
-			smvk::MsaaDesc frameMsaaDesc{};
-			frameMsaaDesc.depthFormat = FrameDepthFormat(fb);
-			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
 			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
 			{
 				smvk::DofDesc frameDofDesc = MakeDofDesc();
@@ -7247,6 +7259,28 @@ namespace engine {
 			// resolve; device support is still gated at the Main pass).
 			// DLSS replaces all AA when active.
 			m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x) && !dlssUsable;
+			// MSAA target lifecycle (lazy, the EVSM pattern): the
+			// transient 2x color+depth pair + the SSGI MSAA resolve twin
+			// (~89 MiB at 1080p) exist ONLY in the effective MSAA mode —
+			// Off / SMAA / DLSS never read them. Ensure is a
+			// steady-state no-op (extent/format drift recreates);
+			// Destroy when the mode leaves. useMsaa (the Main-leg gate)
+			// requires Valid, so the 1x path is the path the whole time
+			// they are gone.
+			if (m_passes.msaa && m_viewportResources.msaaEnabled
+					&& m_context->SupportsMSAA2x()) {
+				smvk::MsaaDesc frameMsaaDesc{};
+				frameMsaaDesc.depthFormat = FrameDepthFormat(fb);
+				m_viewportResources.msaa.Ensure(*m_context,
+					*m_rendergraph, renderExtent, frameMsaaDesc);
+				m_viewportResources.ssgi.EnsureMsaaTerm(*m_context,
+					*m_rendergraph, renderExtent, "ssgiAoTermMsaa");
+			}
+			else {
+				if (m_viewportResources.msaa.Valid())
+					m_viewportResources.msaa.Destroy(*m_rendergraph);
+				m_viewportResources.ssgi.DestroyMsaaTerm(*m_rendergraph);
+			}
 			// Directional cascade atlas follows the UI tile resolution (Ensure
 			// is a no-op in steady state; recreates once on slider change).
 			m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph,
@@ -8041,7 +8075,11 @@ namespace engine {
 		// stencil is DontCare-stored, so the 1x stencil aspect goes
 		// unwritten there and the layer must fall back).
 		const bool useMsaa = m_passes.msaa && m_viewportResources.msaaEnabled
-			&& m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid();
+			&& m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid()
+			// The SSGI MSAA twin rides the SAME resolve (SetColorWithResolve
+			// pairs it with the msaa color); a failed lazy create degrades
+			// to the plain 1x resolve instead of binding an empty logical.
+			&& m_viewportResources.ssgi.MsaaTermValid();
 		// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): the Forward+
 		// depth prepass writes it (RGBA8 oct normal + roughness + metal -
 		// the prepass already rasterizes every opaque surface; Main is
