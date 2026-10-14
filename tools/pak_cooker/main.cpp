@@ -1,4 +1,4 @@
-﻿// pak.exe: offline ARTIFACT -> .pak cooker that works exclusively on the
+// pak.exe: offline ARTIFACT -> .pak cooker that works exclusively on the
 // VFS and needs NO GPU (cook-mode Cluster, see Cluster::SetCookMode).
 // The COOK-SPLIT (the clean separation): the cook inputs are the
 // ALREADY-PROCESSED .geometry artifacts (import.exe / the MeshImporter /

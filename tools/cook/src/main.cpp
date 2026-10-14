@@ -1,4 +1,4 @@
-﻿// cook.exe: offline ARTIFACT -> COOKED-ARTIFACT cooker that works
+// cook.exe: offline ARTIFACT -> COOKED-ARTIFACT cooker that works
 // exclusively on the VFS and needs NO GPU (cook-mode Cluster, see
 // Cluster::SetCookMode). GI / cubemaps / LODs / meshlets / de-instance
 // run here and write back into the artifacts (+ <stem>.cooked);
