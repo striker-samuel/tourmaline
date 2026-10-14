@@ -2546,7 +2546,7 @@ int main(int argc, char** argv) {
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 				artBytes->size(), meshAsset, aerr)) {
 				std::cerr << "Artifact parse failed: '" << inVfs
-					<< "': " << aerr << " (re-import the source glTF â€” "
+					<< "': " << aerr << " (re-import the source glTF — "
 					"the MeshImporter overwrites the artifacts)"
 					<< std::endl;
 				return 1;

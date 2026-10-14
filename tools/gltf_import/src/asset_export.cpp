@@ -134,7 +134,16 @@ struct BlobReader {
 		std::memcpy(&v, &u, 4);
 		return v;
 	}
-	glm::vec3 Vec3() { return glm::vec3(F32(), F32(), F32()); }
+	glm::vec3 Vec3() {
+		// Sequenced reads: function-argument evaluation order is
+		// unsequenced, and MSVC folds glm::vec3(F32(), F32(), F32())
+		// right-to-left under /O2 (a silent x/z transpose of every
+		// vec3 read — AABBs, meshlet bounds/cones, light colors).
+		const float x = F32();
+		const float y = F32();
+		const float z = F32();
+		return glm::vec3(x, y, z);
+	}
 	glm::mat4 Mat4() {
 		glm::mat4 m;
 		for (int i = 0; i < 16; ++i)
