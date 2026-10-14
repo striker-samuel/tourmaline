@@ -1141,6 +1141,39 @@ void OnResourceExhaustion(const char* site);
  bool deviceLocal = false; // heap is DEVICE_LOCAL (likely VRAM)
  };
 
+ // ---- Allocation ledger (exact per-resource device bytes) -----------
+ // EXACT VMA committed bytes, captured from VmaAllocationInfo::size at
+ // every create (no estimation) and stored ON the pool entries — the
+ // queries below are immediate-mode pool walks (the ListTextureInfos
+ // contract: render thread, unsynchronized, zero cost when not called).
+ // Destroy needs no bookkeeping: the bytes die with the entry. NOT
+ // tracked (0 bytes, they land in the viewer's "untracked" remainder):
+ // heap-placed design-B targets (graph-owned VkDeviceMemory), external
+ // images, and the raw upload/staging rings created outside
+ // CreateBuffer. See the VRAM viewer (Ctrl+M).
+ enum class MemoryCategory : uint32_t {
+     ImageContent = 0, // sampled content images (textures, skyboxes)
+     ImageTarget,      // attachment-usage images (color/depth/storage)
+     Vertex,           // static/vertex heaps (CreateBuffer Vertex)
+     Index,            // index buffers
+     Uniform,          // uniform/frame constant buffers
+     Storage,          // compute storage (gfx rings, HZB, draws)
+     Indirect,         // indirect command buffers
+     Staging,          // staging/transfer (CreateBuffer-typed)
+     Count,
+ };
+ inline constexpr uint32_t kMemoryCategoryCount =
+     uint32_t(MemoryCategory::Count);
+ // One per-item ledger row (GetMemoryAllocInfos): the exact bytes + the
+ // entry's arena-owned debug name + its category.
+ struct MemoryAllocInfo {
+     StringViewT name{};
+     MemoryCategory category = MemoryCategory::ImageContent;
+     uint64_t bytes = 0;     // exact VMA committed bytes
+     bool isImage = true;
+ };
+
+
  typedef enum PipelineStageBits {
 		PipelineStageBit_None = 0,
 
@@ -1553,6 +1586,10 @@ struct ImageCreateInfo
 		uint32_t arrayLayers = 1;
 		bool isCubemap = false;
 		int32_t bindless = -1;
+		// EXACT device bytes of the backing image (VmaAllocationInfo::size
+		// captured at create — see the allocation ledger); 0 = untracked
+		// (external/heap-placed backing).
+		uint64_t allocBytes = 0;
 	};
 
 	// One CPU->GPU staged copy for the bulk table-driven upload (see

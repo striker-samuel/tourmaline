@@ -12859,22 +12859,35 @@ namespace engine {
 								(double(hostUsed)) / 1048576.0,
 								(double(hostBudget)) / 1048576.0);
 						}
-						// ---- Breakdown: textures/images vs geometry -------
-						// The heap rows above say how MUCH lives in VRAM;
-						// this block says WHAT: the engine's own pools.
-						// Both sides are ESTIMATES (labeled): the RMI has
-						// no per-allocation byte query, so textures sum
-						// the mip chain over the live image pool (format
-						// bpp; BC per-texel figures fold the 4x4 blocks)
-						// and geometry sums the static heap residency
-						// (VertexPos 12 + VertexShading 24 B/vert + 4
-						// B/index over the world's unique meshes, + the
-						// filter's cluster-ordered index copy). "Other"
-						// is the remainder: render targets, the draw/
-						// batch/indirect rings, HZB, staging, UI.
+						// ---- Breakdown: EXACT ledger + estimates ----------
+						// IMMEDIATE MODE: everything below recomputes from
+						// the live state every frame the window is open
+						// (zero cost closed). Two data sources:
+						//   EXACT - the RMI allocation ledger (see the
+						//            smvk.h block): VmaAllocationInfo::size
+						//            captured at every create, stored on
+						//            the pool entries; per-category sums
+						//            + per-item rows via immediate pool
+						//            walks.
+						//   ESTIMATE (cross-check) - the mip-chain sums by
+						//            format bpp + the static-heap residency
+						//            formula (36 B/vert + 4 B/index): keeps
+						//            the ledger honest (pool slack, BC
+						//            tail rounding) and covers the heap-
+						//            placed/untracked entries the ledger
+						//            skips by design.
 						ImGui::Separator();
-						ImGui::TextUnformatted("Breakdown (engine estimate)");
+						ImGui::TextUnformatted(
+							"Breakdown (exact ledger, estimates as cross-check)");
 						{
+							// ---- shared texture pass (joins below) ----
+							// One walk: the estimate (cross-check) + the
+							// handle join table for the cluster
+							// attribution + the top-texture list.
+							std::vector<smvk::TextureInfo> texs =
+								m_context->ListTextureInfos();
+							std::unordered_map<uint32_t,
+								const smvk::TextureInfo*> texByIdx;
 							// Per-texel bytes by format (the texture
 							// viewer's format set + sane defaults).
 							auto formatBpp = [](smvk::Format f) -> double {
@@ -12906,23 +12919,13 @@ namespace engine {
 								default: return 4.0; // RGBA8-family + unknown
 								}
 							};
-							// Mip-chain sum over the LIVE image pool
-							// (the texture viewer's listing source).
-							// arrayLayers already counts cube FACES
-							// (cube arrays are 6*N layers).
-							uint64_t texBytes = 0;
-							size_t texCount = 0;
+							// Mip-chain estimate (arrayLayers counts cube
+							// FACES; BC per-texel figures fold the 4x4
+							// blocks).
+							uint64_t texEstBytes = 0;
 							uint64_t texLargest = 0;
-							// Per-image estimate table for the ownership
-							// attribution below (handle index -> bytes;
-							// index-only match - a stale cluster
-							// registration could misattribute one image
-							// at worst, fine for a debug view).
-							std::unordered_map<uint32_t, uint64_t>
-								texBytesByIdx;
-							for (const smvk::TextureInfo& t :
-									m_context->ListTextureInfos()) {
-								++texCount;
+							for (const smvk::TextureInfo& t : texs) {
+								texByIdx[t.handle.index()] = &t;
 								uint64_t bytes = 0;
 								for (uint32_t m = 0; m < t.mipLevels; ++m) {
 									const uint32_t w = std::max(
@@ -12935,42 +12938,41 @@ namespace engine {
 										* formatBpp(t.format));
 								}
 								bytes *= t.arrayLayers;
-								texBytesByIdx[t.handle.index()] = bytes;
-								texBytes += bytes;
+								texEstBytes += bytes;
 								texLargest = std::max(texLargest, bytes);
 							}
-							// ---- Ownership by cluster --------------------
-							// Each scene cluster (one artifact/scene in
-							// the pak) gets a RANDOM-but-STABLE color
-							// (pointer hash -> hue; random per run, fixed
-							// per frame so nothing flickers) and owns:
-							//   geometry - its unique meshes' static heap
-							//              residency (VertexPos 12 +
-							//              VertexShading 24 B/vert + 4
-							//              B/index; instances share pool
-							//              entries)
-							//   textures - its REGISTERED images
-							//              (cluster->ListTextureUris ->
-							//              live pool handles; an image
-							//              several clusters reference
-							//              attributes to the FIRST - the
-							//              totals above never
-							//              double-count)
-							// The label is the cluster's first mesh URI's
-							// file part (the artifact it came from).
+							// ---- EXACT ledger (per-category sums) ----
+							const auto ledger =
+								m_context->GetMemoryLedger();
+							const auto allocs =
+								m_context->GetMemoryAllocInfos();
+							uint64_t ledgerTotal = 0;
+							for (uint32_t c = 0;
+									c < smvk::kMemoryCategoryCount; ++c)
+								ledgerTotal += ledger[c];
+							// ---- ownership walk (clusters own meshes +
+							// textures) --------------------------------
+							// Geometry: the residency ESTIMATE per unique
+							// mesh (36 B/vert + 4 B/index — the packed
+							// SoA heap layout; instances share pool
+							// entries). Textures: EXACT ledger bytes via
+							// the cluster's registered handles (fallback
+							// to the estimate for untracked backings).
+							// Per-cluster item lists feed the drill-down.
 							struct Owner {
 								uint64_t geo = 0;
 								uint64_t tex = 0;
 								size_t meshes = 0;
 								std::string label;
 								uint32_t color = 0;
+								std::vector<std::pair<uint64_t,
+									const smvk::TextureInfo*>> texList;
+								std::vector<std::pair<uint64_t,
+									std::string>> meshList;
 							};
 							std::vector<Owner> owners;
 							uint64_t geoBytes = 0;
 							size_t meshCount = 0;
-							// cluster pointer -> owner index (+ the typed
-							// back-vector: the attribution loop needs the
-							// Cluster* to walk its texture registrations).
 							std::unordered_map<const void*, size_t>
 								clusterIdx;
 							std::vector<const smvk::Cluster*> clusterPtrs;
@@ -12978,6 +12980,16 @@ namespace engine {
 								std::set<std::pair<const void*, uint32_t>>
 									seenMesh;
 								std::set<uint32_t> seenTex;
+								auto uriFilePart =
+									[](std::string uri) {
+									const size_t slash = uri.rfind('/');
+									if (slash != std::string::npos)
+										uri = uri.substr(slash + 1);
+									const size_t hashMark = uri.find('#');
+									if (hashMark != std::string::npos)
+										uri = uri.substr(0, hashMark);
+									return uri;
+								};
 								for (const auto& loc :
 										m_world->meshLocations) {
 									if (!loc.cluster || !loc.handle.valid())
@@ -12990,25 +13002,17 @@ namespace engine {
 										clusterIdx[loc.cluster] = ci;
 										clusterPtrs.push_back(loc.cluster);
 										Owner o{};
-										// Label: the first mesh URI's
-										// file part ("models/x/Y.geometry#f"
-										// -> "Y.geometry").
-										std::string uri = loc.cluster
-											->GetMeshUri(loc.handle).Str();
-										const size_t slash = uri.rfind('/');
-										if (slash != std::string::npos)
-											uri = uri.substr(slash + 1);
-										const size_t hashMark = uri.find('#');
-										if (hashMark != std::string::npos)
-											uri = uri.substr(0, hashMark);
-										o.label = uri.empty()
+										std::string file = uriFilePart(
+											loc.cluster->GetMeshUri(
+												loc.handle).Str());
+										o.label = file.empty()
 											? "cluster "
 											+ std::to_string(ci)
-											: uri;
-										// Color: pointer hash spread on
-										// the golden-ratio constant, hue
-										// bucketed to integer degrees (no
-										// float drift), fixed s/v.
+											: file;
+										// Random-but-STABLE color:
+										// pointer hash -> golden-ratio
+										// hue (integer degrees, no float
+										// drift), fixed s/v.
 										const uintptr_t ptr =
 											reinterpret_cast<uintptr_t>(
 												loc.cluster);
@@ -13046,9 +13050,14 @@ namespace engine {
 									owners[ci].geo += bytes;
 									owners[ci].meshes += 1;
 									geoBytes += bytes;
+									owners[ci].meshList.emplace_back(bytes,
+										uriFilePart(loc.cluster
+											->GetMeshUri(loc.handle)
+											.Str()));
 								}
 								// Texture attribution per cluster (the
-								// registered URIs -> live image handles).
+								// registered URIs -> live texture handles;
+								// shared images attribute to the FIRST).
 								for (size_t ci = 0; ci < clusterPtrs.size();
 										++ci) {
 									for (const auto& th : clusterPtrs[ci]
@@ -13057,70 +13066,234 @@ namespace engine {
 											th.second;
 										if (!handle.valid())
 											continue;
-										const auto it = texBytesByIdx.find(
+										const auto it = texByIdx.find(
 											handle.index());
-										if (it == texBytesByIdx.end())
+										if (it == texByIdx.end()
+											|| it->second == nullptr)
 											continue;
 										if (!seenTex.insert(
 												handle.index()).second)
 											continue; // shared: first wins
-										owners[ci].tex += it->second;
+										const smvk::TextureInfo* t =
+											it->second;
+										// EXACT ledger bytes (0 = untracked
+										// backing -> the estimate).
+										uint64_t bytes = t->allocBytes;
+										if (bytes == 0) {
+											uint64_t est = 0;
+											for (uint32_t m = 0;
+													m < t->mipLevels; ++m) {
+												const uint32_t w = std::max(
+													t->extent.width >> m, 1u);
+												const uint32_t h = std::max(
+													t->extent.height >> m, 1u);
+												const uint32_t d = std::max(
+													t->extent.depth >> m, 1u);
+												est += uint64_t(double(
+													w * h * d)
+													* formatBpp(t->format));
+											}
+											bytes = est * t->arrayLayers;
+										}
+										owners[ci].tex += bytes;
+										owners[ci].texList.emplace_back(
+											bytes, t);
 									}
 								}
 							}
 							// + the filter's cluster-ordered index copy
-							// (the owned monoblock the indirect draws
-							// read; baseVertex-lifted global ids). Not
-							// attributable to one cluster - it stays in
-							// the geometry total but outside the rows.
+							// (not attributable to one cluster — it stays
+							// in the geometry total but outside the rows).
 							uint64_t filterIdxBytes = 0;
 							if (smvk::gfx::Valid(m_gfxRenderer.gfx))
 								filterIdxBytes = 4ull
 									* m_gfxRenderer.gfx.filterIndices.size();
 							geoBytes += filterIdxBytes;
-							// "Other": heap usage minus the two estimates,
-							// clamped (the estimates carry BC tail-block
-							// rounding + alignment slop, so a few % drift
-							// is expected; negative would be noise).
 							const uint64_t heapUsed = vramUsed + hostUsed;
-							const uint64_t otherBytes = texBytes + geoBytes
-								< heapUsed
-								? heapUsed - texBytes - geoBytes : 0;
-							auto row = [](const char* label, uint64_t bytes,
-									uint64_t total) {
-								const float frac = total > 0
-									? float(double(bytes)
-										/ double(total)) : 0.0f;
-								char overlay[64];
-								std::snprintf(overlay, sizeof(overlay),
-									"%.0f MiB (%.0f%%)",
-									(double(bytes)) / 1048576.0,
-									100.0 * frac);
-								ImGui::TextUnformatted(label);
-								ImGui::ProgressBar(frac, ImVec2(
-									ImGui::GetContentRegionAvail().x, 0.0f),
-									overlay);
-							};
-							row("Textures & images", texBytes, heapUsed);
-							ImGui::TextDisabled(
-								"  %zu image(s), largest %.0f MiB",
-								texCount, (double(texLargest)) / 1048576.0);
-							row("Geometry (static meshes)", geoBytes, heapUsed);
-							ImGui::TextDisabled(
-								"  %zu unique mesh(es): pos 12 + shading 24"
-								" B/vert + 4 B/index%s",
-								meshCount,
-								filterIdxBytes > 0
-									? " + the filter index copy" : "");
-							row("Other (targets, rings, HZB, staging, UI)",
-								otherBytes, heapUsed);
+							// ---- category table (EXACT) ---------------
+							{
+								static const char* const kCatNames[
+									smvk::kMemoryCategoryCount] = {
+									"Image content (textures)",
+									"Image targets (attachments)",
+									"Vertex buffers",
+									"Index buffers",
+									"Uniforms",
+									"Storage (gfx rings, HZB, draws)",
+									"Indirect",
+									"Staging / transfer",
+								};
+								auto row = [](const char* label,
+										uint64_t bytes, uint64_t total) {
+									const float frac = total > 0
+										? float(double(bytes)
+											/ double(total)) : 0.0f;
+									char overlay[64];
+									std::snprintf(overlay, sizeof(overlay),
+										"%.0f MiB (%.0f%%)",
+										(double(bytes)) / 1048576.0,
+										100.0 * frac);
+									ImGui::TextUnformatted(label);
+									ImGui::ProgressBar(frac, ImVec2(
+										ImGui::GetContentRegionAvail().x,
+										0.0f), overlay);
+								};
+								for (uint32_t c = 0;
+										c < smvk::kMemoryCategoryCount; ++c)
+									if (ledger[c] > 0)
+										row(kCatNames[c], ledger[c],
+											heapUsed);
+								row("Ledger total (exact)", ledgerTotal,
+									heapUsed);
+								// Untracked: everything the ledger skips
+								// by design + VMA block slack. The heap
+								// usage minus the exact ledger.
+								const uint64_t untracked = ledgerTotal
+									< heapUsed ? heapUsed - ledgerTotal : 0;
+								row("Untracked (staging rings, heap-placed"
+									" targets, VMA block slack)",
+									untracked, heapUsed);
+								// Cross-check lines (estimates): the
+								// texture estimate vs the exact image
+								// categories; the geometry formula.
+								ImGui::TextDisabled(
+									"  cross-check: textures est %.0f MiB"
+									" vs exact %.0f | largest est %.0f MiB"
+									" | geometry est %.0f MiB"
+									" (%zu meshes: 36 B/v + 4 B/i%s)",
+									(double(texEstBytes)) / 1048576.0,
+									(double(ledger[size_t(
+										smvk::MemoryCategory::ImageContent)]
+										+ ledger[size_t(
+											smvk::MemoryCategory::
+												ImageTarget)]))
+										/ 1048576.0,
+									(double(texLargest)) / 1048576.0,
+									(double(geoBytes)) / 1048576.0,
+									meshCount,
+									filterIdxBytes > 0
+										? " + filter index copy" : "");
+							}
+							// ---- top lists (immediate, exact where the
+							// ledger covers; geometry is the formula) ----
+							{
+								auto mibStr = [](uint64_t b) {
+									char buf[32];
+									std::snprintf(buf, sizeof(buf),
+										"%.1f", (double(b)) / 1048576.0);
+									return std::string(buf);
+								};
+								// Top-16 textures by EXACT bytes (estimate
+								// fallback sorts after exact — same-key
+								// sort, the column marks which).
+								ImGui::Separator();
+								ImGui::TextUnformatted(
+									"Top textures (exact; est fallback)");
+								{
+									std::vector<std::pair<uint64_t,
+										const smvk::TextureInfo*>> list;
+									list.reserve(texs.size());
+									for (const smvk::TextureInfo& t : texs) {
+										uint64_t b = t.allocBytes;
+										if (b == 0) {
+											// untracked: estimate.
+											uint64_t est = 0;
+											for (uint32_t m = 0;
+													m < t.mipLevels; ++m) {
+												const uint32_t w = std::max(
+													t.extent.width >> m, 1u);
+												const uint32_t h = std::max(
+													t.extent.height >> m, 1u);
+												const uint32_t d = std::max(
+													t.extent.depth >> m, 1u);
+												est += uint64_t(double(
+													w * h * d)
+													* formatBpp(t.format));
+											}
+										b = est * t.arrayLayers;
+										}
+										list.emplace_back(b, &t);
+									}
+									std::sort(list.begin(), list.end(),
+										[](const auto& a, const auto& b) {
+											return a.first > b.first;
+										});
+									const size_t cap = std::min<size_t>(
+										list.size(), 16);
+									for (size_t k = 0; k < cap; ++k) {
+										const auto& [bytes, t] = list[k];
+										ImGui::BulletText(
+											"%s%s: %s MiB  %ux%u mips=%u"
+											" layers=%u",
+											t->allocBytes > 0 ? "" : "~",
+											t->name.Str().c_str(),
+											mibStr(bytes).c_str(),
+											t->extent.width,
+											t->extent.height,
+											t->mipLevels, t->arrayLayers);
+									}
+									if (list.size() > cap)
+										ImGui::TextDisabled("  + %zu more",
+											list.size() - cap);
+								}
+								// Top-16 meshes (residency formula).
+								ImGui::Separator();
+								ImGui::TextUnformatted(
+									"Top meshes (36 B/v + 4 B/i)");
+								{
+									std::vector<const std::pair<uint64_t,
+										std::string>*> list;
+									for (const Owner& o : owners)
+										for (const auto& m : o.meshList)
+											list.push_back(&m);
+									std::sort(list.begin(), list.end(),
+										[](const auto* a, const auto* b) {
+											return a->first > b->first;
+										});
+									const size_t cap = std::min<size_t>(
+										list.size(), 16);
+									for (size_t k = 0; k < cap; ++k)
+										ImGui::BulletText("%s: %s MiB",
+											list[k]->second.c_str(),
+											mibStr(list[k]->first).c_str());
+									if (list.size() > cap)
+										ImGui::TextDisabled("  + %zu more",
+											list.size() - cap);
+								}
+								// Top-12 buffers (EXACT, from the ledger
+								// detail rows).
+								ImGui::Separator();
+								ImGui::TextUnformatted("Top buffers (exact)");
+								{
+									std::vector<const smvk::MemoryAllocInfo*>
+										list;
+									for (const auto& a : allocs)
+										if (!a.isImage)
+											list.push_back(&a);
+									std::sort(list.begin(), list.end(),
+										[](const auto* a, const auto* b) {
+											return a->bytes > b->bytes;
+										});
+									const size_t cap = std::min<size_t>(
+										list.size(), 12);
+									for (size_t k = 0; k < cap; ++k)
+										ImGui::BulletText("%s: %s MiB",
+											list[k]->name.Str().c_str(),
+											mibStr(list[k]->bytes).c_str());
+									if (list.size() > cap)
+										ImGui::TextDisabled("  + %zu more",
+											list.size() - cap);
+								}
+							}
 							// ---- Ownership rows + stacked color bar ----
+							// Cluster rows are TreeNodes: expanding one
+							// drills into ITS top textures (exact) +
+							// meshes (formula).
 							if (!owners.empty()) {
 								ImGui::Separator();
 								ImGui::TextUnformatted(
-									"Ownership by cluster (random colors)");
-								// Sorted desc by owned total; the bar
-								// draws EVERY cluster, the rows cap at 12.
+									"Ownership by cluster (random colors,"
+									" expand for detail)");
 								std::vector<size_t> order(owners.size());
 								for (size_t i = 0; i < order.size(); ++i)
 									order[i] = i;
@@ -13132,10 +13305,6 @@ namespace engine {
 								uint64_t ownedTotal = 0;
 								for (const Owner& o : owners)
 									ownedTotal += o.geo + o.tex;
-								// Stacked bar: one colored segment per
-								// cluster, width = its share of the owned
-								// total (sub-pixel segments collapse so
-								// tiny clusters never alias the layout).
 								if (ownedTotal > 0) {
 									ImDrawList* dl =
 										ImGui::GetWindowDrawList();
@@ -13176,8 +13345,6 @@ namespace engine {
 								for (size_t k = 0; k < cap; ++k) {
 									const Owner& o = owners[order[k]];
 									ImGui::PushID(int(k));
-									// Swatch from the packed IM_COL32
-									// (r = low byte).
 									ImGui::ColorButton("##own",
 										ImVec4(
 											float(o.color & 0xFF) / 255.0f,
@@ -13190,14 +13357,71 @@ namespace engine {
 											| ImGuiColorEditFlags_NoPicker,
 										ImVec2(10.0f, 10.0f));
 									ImGui::SameLine();
-									ImGui::Text("%s: %.0f MiB"
+									const std::string nodeLabel =
+										o.label + "##own";
+									const bool open = ImGui::TreeNode(
+										nodeLabel.c_str());
+									ImGui::SameLine();
+									ImGui::Text("%.0f MiB"
 										" (geo %.0f + tex %.0f,"
 										" %zu meshes)",
-										o.label.c_str(),
 										(double(o.geo + o.tex)) / 1048576.0,
 										(double(o.geo)) / 1048576.0,
 										(double(o.tex)) / 1048576.0,
 										o.meshes);
+									if (open) {
+										ImGui::Indent();
+										// Drill-down: this cluster's top
+										// textures + meshes (sorted desc,
+										// capped 6 each).
+										{
+											auto texTop = o.texList;
+											std::sort(texTop.begin(),
+												texTop.end(),
+												[](const auto& a,
+														const auto& b) {
+													return a.first
+														> b.first;
+												});
+											const size_t n = std::min<size_t>(
+												texTop.size(), 6);
+											for (size_t j = 0; j < n; ++j)
+												ImGui::BulletText(
+													"%s: %.1f MiB",
+													texTop[j].second
+														->name.Str().c_str(),
+													(double(texTop[j].first))
+														/ 1048576.0);
+											if (texTop.size() > n)
+												ImGui::TextDisabled(
+													"  + %zu more texture(s)",
+													texTop.size() - n);
+										}
+										{
+											auto meshTop = o.meshList;
+											std::sort(meshTop.begin(),
+												meshTop.end(),
+												[](const auto& a,
+														const auto& b) {
+													return a.first
+														> b.first;
+												});
+											const size_t n = std::min<size_t>(
+												meshTop.size(), 6);
+											for (size_t j = 0; j < n; ++j)
+												ImGui::BulletText(
+													"%s: %.1f MiB",
+													meshTop[j].second.c_str(),
+													(double(meshTop[j].first))
+														/ 1048576.0);
+											if (meshTop.size() > n)
+												ImGui::TextDisabled(
+													"  + %zu more mesh(es)",
+													meshTop.size() - n);
+										}
+										ImGui::Unindent();
+										ImGui::TreePop();
+									}
 									ImGui::PopID();
 								}
 								if (order.size() > cap) {

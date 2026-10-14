@@ -1,4 +1,5 @@
 #include <Engine/RHI/resource_manager.h>
+#include <array>
 #include <Engine/smvk.h>
 #include <Engine/Renderer/spirv_reflection.h>
 #ifndef VK_NO_PROTOTYPES
@@ -9,6 +10,7 @@
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <ktx.h>
 #include <cstdlib>
+#include <array>
 
 namespace smvk {
 
@@ -247,6 +249,16 @@ std::vector<GpuMemoryHeap> ResourceManager::GetGpuMemoryInfo() const {
     if (!impl_)
         return {};
     return impl_->vulkan.GetGpuMemoryInfo();
+}
+std::array<uint64_t, kMemoryCategoryCount> ResourceManager::GetMemoryLedger() {
+    if (!impl_)
+        return {};
+    return impl_->vulkan.GetMemoryLedger();
+}
+std::vector<MemoryAllocInfo> ResourceManager::GetMemoryAllocInfos() {
+    if (!impl_)
+        return {};
+    return impl_->vulkan.GetMemoryAllocInfos();
 }
 bool ResourceManager::SupportsMSAA2x() {
     if (!impl_ || !impl_->vulkan.core_)

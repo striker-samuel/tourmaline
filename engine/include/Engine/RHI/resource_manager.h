@@ -240,6 +240,13 @@ public:
     // call once per frame for the debug UI / console stats.
     std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
+    // Allocation ledger (see the smvk.h block): EXACT per-category
+    // committed-byte sums + per-item rows. Immediate-mode pool walks
+    // (render thread, the ListTextureInfos contract); zero cost when not
+    // called — the bytes live on the pool entries, captured at create.
+    std::array<uint64_t, kMemoryCategoryCount> GetMemoryLedger();
+    std::vector<MemoryAllocInfo> GetMemoryAllocInfos();
+
     // Internal helpers for PIMPL firewall – used by Swapchain/RenderGraph private TUs
     struct Impl;
     Impl* GetImpl() { return impl_.get(); }

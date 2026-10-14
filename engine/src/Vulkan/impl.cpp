@@ -6,6 +6,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -5043,9 +5044,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	// Arena-owned copy of the caller's name (caller strings carry no
 		// lifetime contract - literals, c_str()s, stack buffers): the pool
 		// entry keeps a stable view for ListTextureInfos/debug prints.
-	// CopyImageName: the mutex-guarded arena copy (image/texture creation
+	// CopyResourceName: the mutex-guarded arena copy (image/texture creation
 	// is cross-thread - render + pak-preload workers).
-	image.name = CopyImageName(ci.name);
+	image.name = CopyResourceName(ci.name);
 
 	VkImageCreateInfo vkCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
@@ -5113,14 +5114,18 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 	allocCI.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
+	// Allocation ledger: capture the EXACT committed bytes (the out-info
+	// vmaCreateImage already writes; one extra stack struct, no query).
+	VmaAllocationInfo allocInfo{};
 	VK_CHECK(vmaCreateImage(
 		m_allocator,
 		&vkCI,
 		&allocCI,
 		&image.vkImage,
 		&image.allocation,
-		nullptr
+		&allocInfo
 	));
+	image.allocBytes = allocInfo.size;
 
 #if defined(_DEBUG)
 	if (ci.name)
@@ -5194,7 +5199,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	image.ownership = ResourceOwnership::Owned;
 	image.isCubemap = ci.isCubemap;
 	image.transientHeap = true;
-	image.name = CopyImageName(ci.name);
+	image.name = CopyResourceName(ci.name);
 
 	VK_CHECK(vkCreateImage(device_, &vkCI, nullptr, &image.vkImage));
 
@@ -6258,6 +6263,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		VK_NULL_HANDLE;
 
 
+	VmaAllocationInfo ledgerInfo{};
 	VK_CHECK(
 		vmaCreateImage(
 			m_allocator,
@@ -6265,7 +6271,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 			&allocCI,
 			&vkImage,
 			&allocation,
-			nullptr
+			&ledgerInfo
 		)
 	);
 
@@ -6281,6 +6287,9 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 
 	image.allocation =
 		allocation;
+
+	// Allocation ledger: exact committed bytes (see the smvk.h block).
+	image.allocBytes = ledgerInfo.size;
 
 
 	if (is1D)
@@ -6330,8 +6339,8 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	image.isConcurrent = concurrentSharing;
 	image.isCubemap = isCubemap;
 	// Arena-owned copy (same contract as CreateImageImpl:
-	// CopyImageName - cross-thread mutex-guarded arena copy).
-	image.name = CopyImageName(debugName);
+	// CopyResourceName - cross-thread mutex-guarded arena copy).
+	image.name = CopyResourceName(debugName);
 
 
 	const ImageHandle imageHandle =
@@ -6798,13 +6807,17 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 	VkImage vkImage = VK_NULL_HANDLE;
 	VmaAllocation allocation = VK_NULL_HANDLE;
 
+	// Allocation ledger: capture the exact committed bytes (the out-info
+	// vmaCreateImage already writes).
+	VmaAllocationInfo ledgerInfo{};
 	VK_CHECK(vmaCreateImage(
 		m_allocator, &imageCI, &allocCI,
-		&vkImage, &allocation, nullptr));
+		&vkImage, &allocation, &ledgerInfo));
 
 	Image image{};
 	image.vkImage = vkImage;
 	image.allocation = allocation;
+	image.allocBytes = ledgerInfo.size;
 	image.type = KtxStreamRhiType(plan);
 	image.extent = { plan.width, plan.height, plan.depth };
 	image.format = plan.format;
@@ -6816,8 +6829,8 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 	image.ownership = ResourceOwnership::Owned;
 	image.isCubemap = plan.isCubemap;
 	// Arena-owned copy (same contract as CreateImageImpl:
-	// CopyImageName - cross-thread mutex-guarded arena copy).
-	image.name = CopyImageName(debugName);
+	// CopyResourceName - cross-thread mutex-guarded arena copy).
+	image.name = CopyResourceName(debugName);
 
 	const ImageHandle imageHandle =
 		images_.create(std::move(image));
@@ -6953,9 +6966,12 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 
 	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
 	const auto texT0 = std::chrono::steady_clock::now();
+	// Allocation ledger: the retarget swaps the backing - capture the NEW
+	// allocation's exact bytes for the entry update below.
+	VmaAllocationInfo ledgerInfo{};
 	VK_CHECK(vmaCreateImage(
 		m_allocator, &imageCI, &allocCI,
-		&newImage, &newAlloc, nullptr));
+		&newImage, &newAlloc, &ledgerInfo));
 	const auto texT1 = std::chrono::steady_clock::now();
 
 	// Retire the old backing lazily: in-flight frames may still sample
@@ -6976,6 +6992,10 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 
 	img->vkImage = newImage;
 	img->allocation = newAlloc;
+	// Ledger: the entry's exact bytes follow the swap (the old backing's
+	// bytes retire with its deferred destroy - the entry only ever
+	// reports its CURRENT allocation).
+	img->allocBytes = ledgerInfo.size;
 	img->type = KtxStreamRhiType(plan);
 	img->extent = { plan.width, plan.height, plan.depth };
 	img->format = plan.format;
@@ -7342,16 +7362,23 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	}
 
 	// Optionally choose pools here based on usage_flags/usage
+	// Allocation ledger: capture the EXACT committed bytes (the out-info
+	// vmaCreateBuffer already writes) + the creation type + the
+	// arena-owned name (buffers now name-track like images - see
+	// GetMemoryAllocInfos).
+	VmaAllocationInfo ledgerInfo{};
 	VK_CHECK(vmaCreateBuffer(
 		m_allocator,
 		&ci,
 		&aci,
 		&desc.vkBuffer,
 		&desc.vma_alloc,
-		nullptr
-		//&desc.allocInfo
+		&ledgerInfo
 	)
 	);
+	desc.allocBytes = ledgerInfo.size;
+	desc.type = bufferType;
+	desc.name = CopyResourceName(debugName);
 
 	const VkBufferDeviceAddressInfo ai = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
@@ -7374,8 +7401,6 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		nameInfo.pObjectName = debugName;
 		SetDebugObjectName(device_, &nameInfo);
 	}
-#else
-	(void)debugName;
 #endif
 	auto handle = buffers_.create(std::move(desc));
 	// Init global sync state: Undefined / None until first use.
@@ -7449,17 +7474,110 @@ smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderMod
 #endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
-smvk::StringViewT smvk::VulkanResourceManager::CopyImageName(const char* name) {
-	// See the member block: image/texture creation runs on the render
-	// thread AND worker threads (pak preload, streaming) - the arena is
-	// not synchronized, so the copy is mutex-guarded. The empty-view
-	// return for a null name IS the unnamed contract (displays read
-	// "(unnamed)").
+smvk::StringViewT smvk::VulkanResourceManager::CopyResourceName(const char* name) {
+	// See the member block: image/texture/buffer creation runs on the
+	// render thread AND worker threads (pak preload, streaming) - the
+	// arena is not synchronized, so the copy is mutex-guarded. The
+	// empty-view return for a null name IS the unnamed contract
+	// (displays read "(unnamed)").
 	if (!name)
 		return StringViewT{};
 	std::lock_guard<std::mutex> lock(nameArenaMutex_);
 	return nameArena_.AllocateString(StringViewT(name));
 }
+
+// ---------------------------------------------------------------------------
+// Allocation ledger (see the smvk.h block): immediate-mode pool walks.
+// Exact bytes live ON the entries (captured at create); destroy needs no
+// hooks. Render thread only (the ListTextureInfos forEach contract).
+// ---------------------------------------------------------------------------
+namespace smvk {
+static MemoryCategory ImageLedgerCategory(const ImageUsage& usage) {
+	// Attachment-usage images are TARGETS (rendergraph color/depth, the
+	// thin G-buffer Storage images); everything else (sampled content,
+	// transfer-only) is CONTENT. TransferSrc/Dst never implies a target
+	// (content images keep their upload flags after staging).
+	const bool target = (usage & (ImageUsage::ColorAttachment
+		| ImageUsage::DepthStencilAttachment
+		| ImageUsage::Storage
+		| ImageUsage::InputAttachment)) != ImageUsage::None;
+	return target ? MemoryCategory::ImageTarget : MemoryCategory::ImageContent;
+}
+
+std::array<uint64_t, kMemoryCategoryCount>
+VulkanResourceManager::GetMemoryLedger() {
+	std::array<uint64_t, kMemoryCategoryCount> out{};
+	out.fill(0);
+	images_.forEachHandle([&](ImageHandle handle) {
+		const Image* image = images_.get(handle);
+		if (!image || image->allocBytes == 0)
+			return; // untracked (heap-placed/external) - the remainder row
+		out[size_t(ImageLedgerCategory(image->usage))]
+			+= image->allocBytes;
+	});
+	buffers_.forEachHandle([&](BufferHandle handle) {
+		const Buffer* buffer = buffers_.get(handle);
+		if (!buffer || buffer->allocBytes == 0)
+			return;
+		// BufferType maps 1:1 onto the ledger categories (the enum orders
+		// match: Index, Vertex, Uniform, Storage, Indirect, Transfer*,
+		// Staging -> Staging).
+		size_t cat = size_t(MemoryCategory::Staging);
+		switch (buffer->type) {
+		case BufferType_Index: cat = size_t(MemoryCategory::Index); break;
+		case BufferType_Vertex: cat = size_t(MemoryCategory::Vertex); break;
+		case BufferType_Uniform: cat = size_t(MemoryCategory::Uniform); break;
+		case BufferType_Storage: cat = size_t(MemoryCategory::Storage); break;
+		case BufferType_Indirect: cat = size_t(MemoryCategory::Indirect); break;
+		default: break; // TransferSrc/Dst/Staging
+		}
+		out[cat] += buffer->allocBytes;
+	});
+	return out;
+}
+
+std::vector<MemoryAllocInfo> VulkanResourceManager::GetMemoryAllocInfos() {
+	std::vector<MemoryAllocInfo> out;
+	images_.forEachHandle([&](ImageHandle handle) {
+		const Image* image = images_.get(handle);
+		if (!image || image->allocBytes == 0)
+			return;
+		MemoryAllocInfo info{};
+		info.name = image->name;
+		info.category = ImageLedgerCategory(image->usage);
+		info.bytes = image->allocBytes;
+		info.isImage = true;
+		out.push_back(info);
+	});
+	buffers_.forEachHandle([&](BufferHandle handle) {
+		const Buffer* buffer = buffers_.get(handle);
+		if (!buffer || buffer->allocBytes == 0)
+			return;
+		MemoryAllocInfo info{};
+		info.name = buffer->name;
+		info.bytes = buffer->allocBytes;
+		info.isImage = false;
+		// Category: same mapping as GetMemoryLedger.
+		switch (buffer->type) {
+		case BufferType_Index:
+			info.category = MemoryCategory::Index; break;
+		case BufferType_Vertex:
+			info.category = MemoryCategory::Vertex; break;
+		case BufferType_Uniform:
+			info.category = MemoryCategory::Uniform; break;
+		case BufferType_Storage:
+			info.category = MemoryCategory::Storage; break;
+		case BufferType_Indirect:
+			info.category = MemoryCategory::Indirect; break;
+		default:
+			info.category = MemoryCategory::Staging; break;
+		}
+		out.push_back(info);
+	});
+	return out;
+}
+} // namespace smvk
+
 [[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(BufferHandle  handle) {
 	// Hardened: in Release the asserts below compile out, and an empty /
 	// retired handle would reach vmaMapMemory with a null allocation
@@ -8108,6 +8226,9 @@ std::vector<smvk::TextureInfo> smvk::VulkanResourceManager::ListTextureInfos()
 		info.isCubemap = image->isCubemap;
 		info.bindless = texture->bindless.empty()
 			? -1 : int32_t(GetBindlessIndex(texture->bindless));
+		// Allocation ledger: the backing image's exact committed bytes
+		// (0 = untracked external/heap-placed backing).
+		info.allocBytes = image->allocBytes;
 		out.push_back(info);
 	});
 	return out;

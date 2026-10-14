@@ -135,6 +135,11 @@ namespace smvk {
 		// WITHOUT an allocation free (DestroyImageNow: plain vkDestroyImage
 		// - the heap memory is graph-owned and frees wholesale).
 		bool transientHeap = false;
+		// ALLOCATION LEDGER (see the smvk.h block): exact VMA committed
+		// bytes from VmaAllocationInfo::size, captured at every create
+		// site. 0 = untracked (heap-placed/external). Dies with the entry
+		// — the ledger queries are live pool walks, no destroy hooks.
+		uint64_t allocBytes = 0;
 	};
 
 	struct ImageView
@@ -157,6 +162,12 @@ namespace smvk {
 		VkMemoryPropertyFlags memoryFlags = 0;
 		VkDeviceAddress deviceAddress = 0;
 		bool isConcurrent = false;
+		// ALLOCATION LEDGER (see the smvk.h block): exact committed bytes
+		// + the creation type + the arena-owned debug name (same contract
+		// as Image::name). Dies with the entry.
+		uint64_t allocBytes = 0;
+		BufferType type = BufferType_Index;
+		StringViewT name{};
 
 		bool isMappable() const noexcept
 		{
@@ -893,6 +904,12 @@ namespace smvk {
 		VkImageView GetImageViewVkImageView(ImageViewHandle handle) const;
 		const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
 		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
+		// ALLOCATION LEDGER (see the smvk.h block): exact per-category
+		// committed-byte sums + per-item rows. Immediate-mode pool walks
+		// (render thread, the ListTextureInfos contract) — no atomics, no
+		// create/destroy bookkeeping beyond the entry fields themselves.
+		std::array<uint64_t, kMemoryCategoryCount> GetMemoryLedger();
+		std::vector<MemoryAllocInfo> GetMemoryAllocInfos();
 
 		// Process-lifetime objects owned by the linear process allocator
 		// (never freed individually — LinearPtr runs the dtor only).
@@ -937,13 +954,14 @@ namespace smvk {
 		// wholesale with the RMI. THREAD SAFETY: image/texture creation
 		// runs on the render thread AND worker threads (pak preload,
 		// streaming) - the arena itself is not synchronized, so every copy
-		// goes through CopyImageName (mutex + arena). Name copies are rare,
+		// goes through CopyResourceName (mutex + arena). Name copies are rare,
 		// small and off the hot path - the lock is uncontended in
 		// practice.
 		Arena nameArena_;
 		mutable std::mutex nameArenaMutex_;
-		// Thread-safe arena copy (see above). Empty view for a null name.
-		StringViewT CopyImageName(const char* name);
+		// Thread-safe arena copy (see above — images AND buffers). Empty
+		// view for a null name.
+		StringViewT CopyResourceName(const char* name);
 		ShardedPool<ImageTag, Image> images_;
 		ShardedPool<TextureTag, Texture> textures_;
 		ShardedPool<BufferTag, Buffer> buffers_;
