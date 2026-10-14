@@ -665,7 +665,13 @@ namespace {
 
 constexpr uint32_t kMeshMagic =
 	('M' << 24) | ('E' << 16) | ('S' << 8) | 'H';
-constexpr uint32_t kMeshVersion = 1;
+// v2: the trailing registry carries the per-blob cooked lightmap
+// binding (lmChunk + chart xforms) so the COOK can write cooked
+// artifacts back and pak assembly needs no bake. v1 files still
+// load (the binding defaults to uncharted).
+constexpr uint32_t kMeshVersion = 2;
+
+} // namespace
 
 void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 	std::string& err) {
@@ -789,6 +795,16 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 		const MeshAsset::Geometry& g = m.geometry[gi];
 		PutStr(b, g.uriFragment);
 		putMeshlets(g.meshlets);
+		// Cooked lightmap binding (v2): the atlas chunk + the chart
+		// xforms, parallel to the cook's chart indices.
+		PutU32(b, g.lmChunk);
+		PutU32(b, uint32_t(g.lmChartXforms.size()));
+		for (const glm::vec4& x : g.lmChartXforms) {
+			PutF32(b, x.x);
+			PutF32(b, x.y);
+			PutF32(b, x.z);
+			PutF32(b, x.w);
+		}
 		const std::vector<MeshAsset::LodSibling>& chain =
 			(gi < m.lodChains.size()) ? m.lodChains[gi]
 			: std::vector<MeshAsset::LodSibling>();
@@ -797,6 +813,14 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 			putGeometryStreams(s.geo);
 			PutStr(b, s.geo.uriFragment);
 			putMeshlets(s.geo.meshlets);
+			PutU32(b, s.geo.lmChunk);
+			PutU32(b, uint32_t(s.geo.lmChartXforms.size()));
+			for (const glm::vec4& x : s.geo.lmChartXforms) {
+				PutF32(b, x.x);
+				PutF32(b, x.y);
+				PutF32(b, x.z);
+				PutF32(b, x.w);
+			}
 			PutU32(b, s.lodIndex);
 			PutF32(b, s.simplifyError);
 			PutF32(b, s.screenThreshold);
@@ -808,7 +832,15 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 		return;
 }
 
-} // namespace
+// Public write-back (the COOK persists cooked artifacts: the worker
+// above already serializes meshlets/LODs/stamped chart UVs; v2 adds
+// the per-blob lightmap binding).
+bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
+	std::string& err) {
+	err.clear();
+	WriteMeshAsset(path, m, err);
+	return err.empty();
+}
 
 bool LoadMeshAsset(const std::filesystem::path& path, MeshAsset& out,
 	std::string& err) {
@@ -829,7 +861,7 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 		err = "not a .mesh asset";
 		return false;
 	}
-	if (version != kMeshVersion) {
+	if (version != kMeshVersion && version != 1) {
 		err = "unsupported .mesh version " + std::to_string(version);
 		return false;
 	}
@@ -974,10 +1006,30 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 			err = "corrupt .mesh registry section";
 			return false;
 		}
+		// v2 carries the cooked lightmap binding per blob (base +
+		// siblings); v1 leaves the defaults (uncharted).
+		auto getLmBinding = [&r](MeshAsset::Geometry& g, uint32_t version) {
+			g.lmChunk = 0xFFFFFFFFu;
+			g.lmChartXforms.clear();
+			if (version < 2 || !r.ok)
+				return;
+			g.lmChunk = r.U32();
+			const uint32_t xn = r.U32();
+			if (!r.ok || xn > 1024 * 1024)
+				return;
+			g.lmChartXforms.resize(xn);
+			for (glm::vec4& x : g.lmChartXforms) {
+				x.x = r.F32();
+				x.y = r.F32();
+				x.z = r.F32();
+				x.w = r.F32();
+			}
+		};
 		out.lodChains.resize(out.geometry.size());
 		for (uint32_t gi = 0; gi < regCount; ++gi) {
 			out.geometry[gi].uriFragment = r.Str();
 			getMeshlets(out.geometry[gi].meshlets);
+			getLmBinding(out.geometry[gi], version);
 			std::vector<MeshAsset::LodSibling>& chain =
 				out.lodChains[gi];
 			chain.resize(r.U32());
@@ -985,6 +1037,7 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 				getStreams(s.geo);
 				s.geo.uriFragment = r.Str();
 				getMeshlets(s.geo.meshlets);
+				getLmBinding(s.geo, version);
 				s.lodIndex = r.U32();
 				s.simplifyError = r.F32();
 				s.screenThreshold = r.F32();

@@ -202,6 +202,14 @@ struct MeshAsset {
 		// Cooked meshlets (the derivation's meshlet pass; F3 + cooked
 		// parity). Empty when none.
 		smvk::CookedMeshlets meshlets;
+		// Cooked lightmap binding (the COOK's lightmap bake writes these
+		// back; import.exe leaves them empty). lmChunk = the atlas chunk
+		// index (0xFFFFFFFF = uncharted); lmChartXforms parallels the
+		// cook's chart indices (one float4 per chart: xy = scale,
+		// zw = offset). The cluster restore stamps them onto the
+		// StaticMesh so pak assembly needs no bake.
+		uint32_t lmChunk = 0xFFFFFFFFu;
+		std::vector<glm::vec4> lmChartXforms;
 	};
 	std::vector<Geometry> geometry;
 	// LOD chains, PARALLEL to geometry (per base blob): the derived
@@ -319,6 +327,12 @@ bool LoadMaterialAsset(
 bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 	std::string& err);
 bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out,
+	std::string& err);
+// Writer (round-trip; the COOK writes cooked artifacts back: stamped
+// chart UVs ride the shading blobs verbatim, meshlets/LODs persist,
+// and the v2 trailing registry carries the per-blob lightmap binding).
+// Returns false with err set on IO failure.
+bool SaveMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 	std::string& err);
 // Reads <gltfPath>.meta (the manifest of an already-imported glTF).
 bool LoadAssetManifest(

@@ -2547,8 +2547,14 @@ size_t BuildFromMeshAsset(
 				? "mesh." + std::to_string(gi) : g.uriFragment).Str();
 			cluster.RegisterMeshUri(uri, h);
 			cluster.RegisterMeshMeshlets(uri, g.meshlets);
-			if (auto* m = cluster.staticMeshes.get(h))
+			if (auto* m = cluster.staticMeshes.get(h)) {
 				m->meshlets = g.meshlets;
+				// Cooked lightmap binding (the COOK wrote it back;
+				// import.exe leaves it uncharted). Stamping it here
+				// restores the bake without running one.
+				m->lmChunk = g.lmChunk;
+				m->lmChartXforms = g.lmChartXforms;
+			}
 			smvk::LodInfo lod{};
 			lod.lodIndex = 0;
 			lod.candidateCount = uint32_t(1
@@ -2567,8 +2573,11 @@ size_t BuildFromMeshAsset(
 						s.lodIndex > 0 ? s.lodIndex : 1).Str();
 				cluster.RegisterMeshUri(sibUri, h);
 				cluster.RegisterMeshMeshlets(sibUri, s.geo.meshlets);
-				if (auto* m = cluster.staticMeshes.get(h))
+				if (auto* m = cluster.staticMeshes.get(h)) {
 					m->meshlets = s.geo.meshlets;
+					m->lmChunk = s.geo.lmChunk;
+					m->lmChartXforms = s.geo.lmChartXforms;
+				}
 				smvk::LodInfo lod{};
 				lod.lodIndex = s.lodIndex;
 				lod.simplifyError = s.simplifyError;
