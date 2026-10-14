@@ -6112,7 +6112,7 @@ int main(int argc, char** argv) {
 		<< " artifacts=" << wb.artifacts
 		<< " blobs=" << wb.blobs
 		<< " siblings=" << wb.siblings
-		<< " meshleted=" << wb.meshleted
+		<< " meshleted=" << wb.meshleted << "/" << wb.blobs << " blobs"
 		<< " lmBound=" << wb.lmBound
 		<< " in " << secs << "s\n";
 	return 0;

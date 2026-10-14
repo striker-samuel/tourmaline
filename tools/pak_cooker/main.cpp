@@ -3081,7 +3081,8 @@ int main(int argc, char** argv) {
 		<< " cubemaps=" << cubemapKtx.size()
 		<< " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
-		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount
+		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshes
+		<< " meshes," << stats.meshletCount << " meshlets"
 		<< " compressed=" << writer.CompressedEntryCount() << "/" << writer.EntryCount()
 		<< (args.compress ? " (lz4)" : " (raw)")
 		<< " in " << secs << "s\n";
