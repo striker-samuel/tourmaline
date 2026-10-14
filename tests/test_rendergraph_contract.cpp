@@ -8,8 +8,8 @@
 //   2. Mesh eligibility: MeshDrawEligible truth table (opaque-only,
 //      single-sided) — the CPU partition feeds DrawMeshTasks exactly the
 //      ranges the indexed loop skips (exactly-once).
-//   3. GPU-driven defaults: GpuCullEnabled defaults ON (kill only via
-//      VULKANTOY_GFX_GPU_CULL=0); RunConfig mesh/gpu-cull defaults ON.
+//   3. GPU-driven culling is the only path (no kill switch, no legacy
+//      CPU regime); RunConfig mesh default ON.
 //   4. Filtered/motion tail prefix identity: FilteredVsPush's first 24B
 //      (draws/renderViews/renderViewIndex at 192..216) match the motion
 //      VS tail's reads (documented in gfx_filter.h:348-359).
@@ -80,24 +80,15 @@ int main() {
 		"contract.mesh-masked-excluded");
 	Check(!smvk::gfx::MeshDrawEligible(0, 0), "contract.mesh-empty-set-excluded");
 
-	// 3. GPU-driven defaults (process env at test time: CI runs clean).
-	// GpuCullEnabled reads once per process; default ON unless the kill
-	// var is set in this environment (then the expectation flips — the
-	// check documents the coupling instead of flaking).
-	{
-		const char* kill = std::getenv("VULKANTOY_GFX_GPU_CULL");
-		const bool expectOn = !(kill && std::string(kill) == "0");
-		Check(smvk::gfx::GpuCullEnabled() == expectOn, "contract.gpucull-default-on");
-	}
+	// 3. GPU-driven culling is the only path (no kill switch, no legacy
+	// CPU regime — the chain always runs; VULKANTOY_GFX_GPU_CULL is an
+	// unknown var now).
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		const char* mesh = std::getenv("VULKANTOY_MESH");
 		const bool expectMesh = !(mesh && std::string(mesh) == "0");
 		Check((!c.meshSet && c.mesh) || (c.mesh == expectMesh),
 			"contract.runconfig-mesh-default-on");
-		Check(c.gfxGpuCull == (std::getenv("VULKANTOY_GFX_GPU_CULL") == nullptr
-			|| std::string(std::getenv("VULKANTOY_GFX_GPU_CULL")) != "0"),
-			"contract.runconfig-gpucull-mirrors-env");
 	}
 
 	// 4. Filtered/motion tail prefix identity (192..216 shared).

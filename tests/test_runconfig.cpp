@@ -50,7 +50,7 @@ int main() {
 
 	// Defaults with a clean slate for the touched vars.
 	const char* kTouched[] = {"VULKANTOY_AA", "VULKANTOY_MESH", "VULKANTOY_CAPTURE",
-		"VULKANTOY_CAM_YAW", "VULKANTOY_GFX_GPU_CULL", "VULKANTOY_TERRAIN"};
+		"VULKANTOY_CAM_YAW", "VULKANTOY_TERRAIN"};
 	for (const char* n : kTouched)
 		UnsetVar(n);
 	{
@@ -58,7 +58,6 @@ int main() {
 		Check(!c.aa.has_value(), "runconfig.default-aa-empty");
 		Check(!c.meshSet && c.mesh, "runconfig.default-mesh-on");
 		Check(c.capture < 0, "runconfig.default-capture-off");
-		Check(c.gfxGpuCull, "runconfig.default-gpu-cull-on");
 		Check(!c.terrainPinned, "runconfig.default-terrain-unpinned");
 	}
 

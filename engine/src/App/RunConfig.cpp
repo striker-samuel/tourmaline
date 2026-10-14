@@ -267,8 +267,6 @@ RunConfig RunConfig::Parse() {
 		c.meshSet = true;
 		c.mesh = std::atoi(v) != 0;
 	}
-	if ((v = Get("VULKANTOY_GFX_GPU_CULL")) != nullptr)
-		c.gfxGpuCull = std::strcmp(v, "0") != 0;
 	if ((v = Get("VULKANTOY_STREAMING")) != nullptr)
 		c.streamingKilled = std::atoi(v) == 0;
 
@@ -380,8 +378,6 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " CAM_FWD=%s", camFwd->c_str());
 	if (meshSet && !mesh)
 		std::fprintf(stderr, " MESH=0");
-	if (!gfxGpuCull)
-		std::fprintf(stderr, " GFX_GPU_CULL=0");
 	if (wireframe)
 		std::fprintf(stderr, " WIREFRAME=1");
 	if (hitchLogMs > 0)
@@ -419,7 +415,6 @@ void RunConfig::WarnUnknown() {
 		"VULKANTOY_SERIALIZE", "VULKANTOY_BARRIER_TRACE", "VULKANTOY_ASYNC_COMPUTE",
 		"VULKANTOY_PIPELINE_CACHE", "VULKANTOY_NO_VALIDATION",
 		"VULKANTOY_TEXSTREAM_TRACE", "VULKANTOY_TRACE_WAITS",
-		"VULKANTOY_GFX_GPU_CULL",
 		"VULKANTOY_STRICT",
 		"VULKANTOY_SPD", "VULKANTOY_EDITOR_VP_QUAD", "VULKANTOY_EDITOR_MESHLETS",
 		"VULKANTOY_EDITOR_LODS", "VULKANTOY_EDITOR_SHADERLODS",

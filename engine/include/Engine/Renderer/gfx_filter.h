@@ -12,12 +12,12 @@
 //     BeginFrame/BeginView/PushDraw/FinalizeView/...).
 //
 // Units are CLUSTERS (meshlets, <= kGfxMaxClusterTris triangles), not whole
-// meshes. Two cull regimes share this state:
+// meshes. ONE cull regime owns this state:
 //
-//   GPU cull chain (default, Northlight style; VULKANTOY_GFX_GPU_CULL=0
-//   pins the legacy path): the CPU seeds state only — the material/bucket-
-//   sorted draw list (with each draw's candidate-slot base riding
-//   Draw::candidateBase) and the (bucket, material) range layout. Then,
+//   GPU cull chain (Northlight style, the only path): the CPU seeds state
+//   only — the material/bucket-sorted draw list (with each draw's
+//   candidate-slot base riding Draw::candidateBase) and the (bucket,
+//   material) range layout. Then,
 //   with ZERO mid-pipeline CPU readbacks:
 //     GfxBatchCull  — one workgroup per draw: mesh-bound fast discard
 //                     (frustum, LIVE view) -> per-cluster sphere +
@@ -37,14 +37,8 @@
 //                     ring capacity); verdict-dropped slots exit before
 //                     any projection work
 //     GfxRemainderDepth — the disocclusion leg (T5)
-//     Main          — the mesh-shader leg (its indexCount==0 gate keeps
+//   Main          — the mesh-shader leg (its indexCount==0 gate keeps
 //                     exact mesh/indexed parity) + indexed ranges
-//
-//   CPU-cull legacy path: BuildBatches pre-culls per (draw x cluster) on
-//   the CPU (CullCluster sphere + cone), uploads batches/draws/zero-filled
-//   indirect, and builds the temporal seed/remainder lists CPU-side
-//   (SnapshotVisible + the (model-hash, cluster) key merges). Kept as the
-//   kill-switch fallback and the headless-testable pure-CPU path.
 //
 // Geometry layout ("rearranged heap", load-time): cluster-ordered global
 // vertex ids are baked once into an owned index buffer (positions stay in
@@ -153,8 +147,8 @@ static constexpr uint32_t kCullStateCounterWord = kMaxDraws;
 // (indexOffset, triCount, 0, 0) + (boundCenter.xyz, boundRadius) for the
 // per-cluster HZB occlusion / contribution tests (T4) +
 // (coneApex.xyz, coneCutoff) + (coneAxis.xyz, pad) for the GPU cull
-// chain's world-space normal-cone test (gfxbatchcull; the CPU-cull legacy
-// path reads the same fields through C++ CullCluster).
+// chain's world-space normal-cone test (gfxbatchcull; C++ CullCluster
+// mirrors the same math as the tested CPU reference).
 struct ClusterConstants {
 	uint32_t indexOffset = 0; // into the cluster-ordered index buffer (uints)
 	uint32_t triCount = 0;
@@ -256,10 +250,8 @@ struct FilterPush {
 	uint32_t width = 0;
 	uint32_t height = 0;
 	uint32_t batchCount = 0;
-	// GPU cull chain: kept-bit parity (0/1) for the kept-region lookup;
-	// kKeptParityLegacy (0xFFFFFFFF) = CPU-cull legacy path (the shader
-	// passes verdicts through and uses the positional outputOffset).
-	uint32_t keptParity = 0xFFFFFFFFu;
+	// GPU cull chain: kept-bit parity (0/1) for the kept-region lookup.
+	uint32_t keptParity = 0;
 	uint32_t pad2 = 0;
 	// T4 occlusion/contribution inputs (0/empty disables the tests).
 	uint64_t hzb = 0; // BDA of the MIN-reduced HZB float buffer
@@ -284,7 +276,7 @@ struct FilterPush {
 	uint64_t textureDemand = 0;  // BDA of this flight's demand ring slice
 	uint32_t textureMetaCount = 0; // live slot count (atomic range bound)
 	float mipBias = 0.0f;         // mirrors TextureStreamerConfig::mipBias
-	// GPU cull chain inputs (null when keptParity == kKeptParityLegacy):
+	// GPU cull chain inputs (always the kept-bit region + cullState):
 	//   kept      — this frame's kept-bit region (gfxbatchcull verdicts)
 	//   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
 	//               counter (word kCullStateCounterWord) this dispatch
@@ -293,9 +285,6 @@ struct FilterPush {
 	uint64_t cullState = 0;
 };
 static_assert(sizeof(FilterPush) == 256);
-
-// KeptParity sentinel: the CPU-cull legacy path (no GPU verdicts).
-inline constexpr uint32_t kKeptParityLegacy = 0xFFFFFFFFu;
 
 // GfxBatchCull push (first compute pass of the frame). Must match HLSL
 // GfxBatchCullPush in gfxfilter.hlsli (192 bytes). One 128-thread
@@ -502,8 +491,7 @@ struct Mesh {
 };
 
 // One indirect draw over the cluster-ordered index heap (20 bytes, matches
-// VkDrawIndexedIndirectCommand; firstInstance indexes the visDraws snapshot
-// in the CPU-cull legacy path / this frame's draws in the GPU cull path).
+// VkDrawIndexedIndirectCommand; firstInstance indexes this frame's draws).
 struct SeedCommand {
 	uint32_t indexCount = 0;
 	uint32_t instanceCount = 1;
@@ -542,7 +530,6 @@ struct View {
 	// Per-frame build scratch (capacity retained across frames: the
 	// steady-state batch build allocates nothing).
 	std::vector<uint32_t> drawOrderScratch; // material sort permutation
-	std::vector<uint8_t> indirectZeroScratch; // zero-fill upload bytes (legacy path)
 	std::vector<uint32_t> meshListScratch; // compacted mesh batch indices
 	// GPU-cull mode seed/remainder ranges: positional (bucket, material)
 	// spans over the candidate slot layout (identical for both passes —
@@ -884,13 +871,12 @@ struct State {
 	// chain derives each draw group's cluster window from it).
 	Holder<BufferHandle> meshesBuffer;
 	LogicalBufferHandle meshesLogical{};
-	// GPU cull chain (Northlight style; VULKANTOY_GFX_GPU_CULL=0 disables):
-	// the CPU seeds the draw list + candidate slot layout, then
-	// GfxBatchCull -> GfxSeedDepth -> GfxHiz -> GfxDrawCull -> GfxFilter all
-	// run GPU-side with zero mid-pipeline CPU readbacks (the temporal
-	// seed/remainder link stays GPU-resident through the kept-bit parity
-	// rings on the views). BeginFrame refreshes the flag from the env.
-	bool gpuCull = false;
+	// GPU cull chain (Northlight style, the only path): the CPU seeds
+	// the draw list + candidate slot layout, then GfxBatchCull ->
+	// GfxSeedDepth -> GfxHiz -> GfxDrawCull -> GfxFilter all run GPU-side
+	// with zero mid-pipeline CPU readbacks (the temporal seed/remainder
+	// link stays GPU-resident through the kept-bit parity rings on the
+	// views).
 	uint32_t frameCounter = 0; // BeginFrame ++; keptParity source
 	Holder<ShaderModuleHandle> batchCullModule;
 	ShaderProgram batchCullProgram{};
@@ -954,11 +940,6 @@ inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gfxfiltered.v
 inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 inline constexpr const char* kGfxBatchCullCsPath = "content/shaders/gfxbatchcull.cs.hlsl.spv";
 inline constexpr const char* kGfxDrawCullCsPath = "content/shaders/gfxdrawcull.cs.hlsl.spv";
-
-// GPU cull chain kill switch: VULKANTOY_GFX_GPU_CULL=0 pins the CPU-cull
-// legacy path (BuildBatches tests + CPU seed/remainder lists + uploads).
-// Read once; returns a stable per-process answer.
-bool GpuCullEnabled();
 
 // Mesh-bound fast-discard gate for shadow lists (pure CPU, testable):
 // true = discard the whole draw before the per-cluster meshlet loop.
@@ -1059,15 +1040,15 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
 	const RenderView& renderView, bool twoSided = false);
-// Pure-CPU batch expansion: sorts draws by material, expands surviving
-// (draw x cluster) with CullCluster, fills batches/drawConstants/
-// materialRanges/stats. No GPU upload (called by FinalizeView; unit tests
-// drive it directly on a hand-built View).
+// Pure-CPU batch expansion: sorts draws by material, expands every
+// (draw x cluster) candidate (no pre-cull — gfxbatchcull owns verdicts),
+// fills batches/drawConstants/materialRanges/stats. No GPU upload (called
+// by FinalizeView; unit tests drive it directly on a hand-built View).
 void BuildBatches(State& s, uint32_t view);
-// Sorts draws by material, expands surviving (draw x cluster) with CPU
-// sphere + cone pre-cull, uploads batches/draws/indirect zero-fill into
-// the frameIndex ring slice. Returns exact counters (trianglesProcessed
-// counts emitted triangles).
+// Sorts draws by material, expands every (draw x cluster) candidate,
+// uploads the draws ring slice into the frameIndex slot (everything else
+// is GPU-written by the cull chain). Returns exact counters
+// (trianglesProcessed counts emitted triangles).
 Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 
 // ---- Temporal visibility (T1 state, T3/T5 consumers) ----
@@ -1176,8 +1157,8 @@ void UploadShadowList(State& s, ResourceManager& ctx,
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, ResourceManager& ctx,
 	const char* csPath = kHizCsPath);
-// GPU cull chain programs (best effort: failure only downgrades the frame
-// to the CPU-cull legacy path — AppendPasses gates on the programs).
+// Cull chain programs (best effort: failure skips the chain's passes
+// loudly at record time — AppendPasses gates on the programs).
 bool EnsureBatchCullShaders(State& s, ResourceManager& ctx,
 	const char* csPath = kGfxBatchCullCsPath);
 bool EnsureDrawCullShaders(State& s, ResourceManager& ctx,
@@ -1312,23 +1293,15 @@ void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
 }
 [[nodiscard]] inline const std::vector<SeedRange>& SeedRanges(
 	const State& s, uint32_t view) {
-	// GPU cull mode: the positional candidate ranges (the GPU-written
-	// instanceCounts gate the actual draws; firstInstance indexes the
-	// current draws). Identical list for seed and remainder.
-	if (s.gpuCull) {
-		assert(view < s.views.size());
-		return s.views[view].cullRanges;
-	}
-	assert(view < s.temporals.size());
-	return s.temporals[view].seedRanges;
+	// The positional candidate ranges (the GPU-written instanceCounts
+	// gate the actual draws; firstInstance indexes the current draws).
+	// Identical list for seed and remainder.
+	assert(view < s.views.size());
+	return s.views[view].cullRanges;
 }
 [[nodiscard]] inline uint32_t SeedOpaqueCommands(const State& s, uint32_t view) {
-	if (s.gpuCull) {
-		assert(view < s.views.size());
-		return s.views[view].cullOpaqueCommands;
-	}
-	assert(view < s.temporals.size());
-	return s.temporals[view].seedOpaqueCommands;
+	assert(view < s.views.size());
+	return s.views[view].cullOpaqueCommands;
 }
 [[nodiscard]] inline BufferHandle RemainderIndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
@@ -1340,20 +1313,12 @@ void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
 }
 [[nodiscard]] inline const std::vector<SeedRange>& RemainderRanges(
 	const State& s, uint32_t view) {
-	if (s.gpuCull) {
-		assert(view < s.views.size());
-		return s.views[view].cullRanges;
-	}
-	assert(view < s.temporals.size());
-	return s.temporals[view].remainderRanges;
+	assert(view < s.views.size());
+	return s.views[view].cullRanges;
 }
 [[nodiscard]] inline uint32_t RemainderOpaqueCommands(const State& s, uint32_t view) {
-	if (s.gpuCull) {
-		assert(view < s.views.size());
-		return s.views[view].cullOpaqueCommands;
-	}
-	assert(view < s.temporals.size());
-	return s.temporals[view].remainderOpaqueCommands;
+	assert(view < s.views.size());
+	return s.views[view].cullOpaqueCommands;
 }
 [[nodiscard]] inline LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());

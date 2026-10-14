@@ -4265,7 +4265,7 @@ namespace engine {
 			&& smvk::gfx::TextureMetaCount(gfx) > 0;
 		// GPU-cull kept-counter leg: active whenever the GPU cull chain ran
 		// (the word rides the cullState slice the dispatches wrote).
-		const bool gfxKeptActive = smvk::gfx::Valid(gfx) && gfx.gpuCull
+		const bool gfxKeptActive = smvk::gfx::Valid(gfx)
 			&& !smvk::gfx::CullStateBuffer(gfx, frameSlot).empty();
 		// Layout helper: the SAME span shape must accompany the submit and
 		// its poll (destinations are stable members; handles/sizes are fixed).
@@ -6258,12 +6258,10 @@ namespace engine {
 		// (the default with VK_EXT_mesh_shader): the cull runs in COMPUTE
 		// (gfxbatchcull) - the CPU stat only counts candidates, so the kept
 		// number lands via the async counter-word readback (~a few frames
-		// stale) and culled = candidates - kept. CPU mode reads the CPU
-		// cull counters directly.
+		// stale) and culled = candidates - kept.
 		{
 			const smvk::gfx::Stats fs = m_gfxRenderer.LastStats();
-			const bool gpuKept = m_gfxKeptValid
-				&& m_gfxRenderer.State().gpuCull;
+			const bool gpuKept = m_gfxKeptValid;
 			uint32_t kept = fs.clustersProcessed - fs.clustersCulled;
 			if (gpuKept)
 				kept = std::min(m_gfxKeptBatches, fs.clustersProcessed);
@@ -12285,13 +12283,12 @@ namespace engine {
 							ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
 						ImGui::Separator();
 						const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
-						// GPU mode: the cull runs in compute (the CPU stat
-						// only counts CPU-mode culls - always 0/797 in GPU
-						// mode); the kept count lands via the async counter-
-						// word readback (see UpdateReadbacks), culled =
-						// candidates - kept. See the HUD filter line too.
-						const bool gpuKept = m_gfxKeptValid
-							&& m_gfxRenderer.State().gpuCull;
+						// The cull runs in compute (the CPU stat counts
+						// nothing now — always 0); the kept count lands via
+						// the async counter-word readback (see
+						// UpdateReadbacks), culled = candidates - kept. See
+						// the HUD filter line too.
+						const bool gpuKept = m_gfxKeptValid;
 						uint32_t kept = gs.clustersProcessed - gs.clustersCulled;
 						if (gpuKept)
 							kept = std::min(m_gfxKeptBatches, gs.clustersProcessed);

@@ -127,7 +127,6 @@ struct RunConfig {
 	bool freezeCull = false;
 	bool meshSet = false; // renderer-level pin (WorldRenderer.cpp:909)
 	bool mesh = true;
-	bool gfxGpuCull = true; // GFX_GPU_CULL != "0", default on
 	bool streamingKilled = false; // STREAMING=0 full-resident
 
 	// ---- capture / audit ----

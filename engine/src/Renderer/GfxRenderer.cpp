@@ -568,18 +568,16 @@ namespace engine {
 			cullView = cullView_;
 			cullEye = cullEye_;
 		}
-		// GPU cull chain frame gate (VULKANTOY_GFX_GPU_CULL=0 pins the legacy
-		// CPU path): the env kill switch refined with program availability +
-		// the static mesh-ranges table. Must land BEFORE FilterMainView —
-		// BuildBatches branches on gfx.gpuCull inside FinalizeView there —
-		// and a missing piece downgrades the WHOLE frame to the legacy path
-		// (half a chain would leave the filter's verdict reads on stale
-		// words: the draw verdicts are only written when the whole chain
-		// runs).
-		gfx.gpuCull = smvk::gfx::GpuCullEnabled()
-			&& smvk::gfx::EnsureBatchCullShaders(gfx, *fc.ctx)
-			&& smvk::gfx::EnsureDrawCullShaders(gfx, *fc.ctx)
-			&& !gfx.meshesLogical.empty();
+		// Cull chain program gate: the batch/draw-cull shaders must exist
+		// (build-synced .spv). A missing piece fails the chain's passes
+		// loudly at record time — there is no fallback path, so a broken
+		// install draws holes, not silently-uncalled geometry. Must land
+		// BEFORE FilterMainView.
+		if (!smvk::gfx::EnsureBatchCullShaders(gfx, *fc.ctx)
+			|| !smvk::gfx::EnsureDrawCullShaders(gfx, *fc.ctx)) {
+			std::fprintf(stderr,
+				"[GfxFilter] cull chain shaders missing - frame draws holes\n");
+		}
 		lastSlot_ = FilterMainView(*fc.ctx, *fc.rg, fc.frameIndex, *fc.world,
 			*fc.views, cullView, cullEye,
 			{ fc.extent.width, fc.extent.height }, config.cullFlags,
@@ -602,13 +600,12 @@ namespace engine {
 				fc.extent.width, fc.extent.height);
 		}
 		// ---- Temporal seed (T3) + remainder (T5) source ----
-		if (gfx.gpuCull) {
-			// GPU cull chain: GfxBatchCull FIRST — its outputs gate the seed
-			// pass (the seed commands + the draws the seed VS resolves are
-			// written here, GPU-side; the rendergraph orders this before the
-			// seed through the seedIndirect write -> indirect-read hints).
-			// Recorded even when the seed programs are missing (the filter
-			// still consumes the batches/kept/indirect statics).
+		// Cull chain: GfxBatchCull FIRST — its outputs gate the seed
+		// pass (the seed commands + the draws the seed VS resolves are
+		// written here, GPU-side; the rendergraph orders this before the
+		// seed through the seedIndirect write -> indirect-read hints).
+		// Recorded even when the seed programs are missing (the filter
+		// still consumes the batches/kept/indirect statics).
 			{
 				smvk::RenderPass& cullPass =
 					smvk::gfx::AddBatchCullPass(gfx, *fc.rg, slot);
@@ -624,8 +621,7 @@ namespace engine {
 			// armed — the kept-bit parity rings self-arm (creation zeroes:
 			// the first frames seed nothing, remainder = all kept) and no
 			// CPU rotation exists. firstInstance = CURRENT draw index (the
-			// batch cull writes it against this frame's draws; the visDraws
-			// mirror is a legacy-only concern).
+			// batch cull writes it against this frame's draws).
 			if (seedOpaqueProgram.shaderCount != 0
 				&& seedMaskedProgram.shaderCount != 0) {
 				const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
@@ -657,67 +653,7 @@ namespace engine {
 			// passes (the instanceCounts gate the actual draws).
 			remainderPending_ = seededThisFrame_
 				&& !smvk::gfx::RemainderRanges(gfx, slot).empty();
-			// No CPU rotation exists in GPU mode: the kept-bit parity rings
-			// ARE the history (the legacy SnapshotVisible/UploadVisible pair
-			// below is deliberately skipped).
-		}
-		else {
-		// Seed depth from last frame's visible set (prev* intact: rotation into
-		// prev* happens below, after the seed block).
-		if (smvk::gfx::Temporal(gfx, slot).historyValid
-			&& seedOpaqueProgram.shaderCount != 0
-			&& seedMaskedProgram.shaderCount != 0) {
-			// One sorted-key merge builds BOTH the seed intersection and the
-			// remainder difference before prev* rotates below (they share the
-			// curr sort; calling the builders separately would sort twice).
-			smvk::gfx::BuildSeedAndRemainder(gfx, slot);
-			smvk::gfx::UploadSeed(gfx, *fc.ctx, fc.frameIndex, slot);
-			const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
-			if (!ranges.empty()) {
-				smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(
-					gfx, *fc.rg, slot, fc.depthView);
-				smvk::gfx::AddSeedConsumeHints(seedPass,
-					smvk::gfx::IndexHeapLogical(gfx),
-					smvk::gfx::VisDrawLogical(gfx, slot),
-					smvk::gfx::SeedIndirectLogical(gfx, slot));
-				GfxRenderer* self = this;
-				smvk::ResourceManager* ctx = fc.ctx;
-				const IRenderer::PushConstants depthPC = fc.pc;
-				const uint64_t renderViewsAddr =
-					fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
-				const uint32_t renderViewIndex = fc.mainViewIndex;
-				const uint64_t drawsAddr =
-					ctx->GetBufferDeviceAddress(smvk::gfx::VisDrawBuffer(gfx, slot));
-				seedPass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
-				{
-					// GPU context + pass scope come from RenderGraph::Execute.
-					self->RecordDepthList(cmd, *ctx, slot, false, drawsAddr,
-						renderViewsAddr, renderViewIndex, depthPC);
-				});
-				seededThisFrame_ = true;
-			}
-		}
-		// Remainder upload for depth pass 2 (T5): the difference (curr minus
-		// prev) was built together with the seed above, before rotation
-		// overwrites prev* below. Only meaningful when the seed primed depth
-		// (otherwise the full prepass covered everything).
-		if (seededThisFrame_) {
-			smvk::gfx::UploadRemainder(gfx, *fc.ctx, fc.frameIndex, slot);
-			remainderPending_ = !smvk::gfx::RemainderRanges(gfx, slot).empty();
-		}
-		// Publish this frame's seed source, then rotate for next frame. Order
-		// matters: UploadVisible must push the OLD snapshot (prev = last
-		// frame) into the current ring slice BEFORE SnapshotVisible
-		// overwrites prev with the current frame. The seed pass above reads
-		// VisDrawBuffer(current slice), so uploading after the snapshot would
-		// hand it the current draws under the previous frame's firstInstance
-		// indices — wrong model matrices whenever the draw list churns
-		// (camera moves, frustum changes), i.e. corrupt seed depth, broken
-		// 1x Main (read-only depth) and wrong tile-cull min/max. Static
-		// scenes hide it (prev == curr, same order).
-		smvk::gfx::UploadVisible(gfx, *fc.ctx, fc.frameIndex, slot);
-		smvk::gfx::SnapshotVisible(gfx, slot);
-		}
+			// The kept-bit parity rings ARE the history (no CPU rotation).
 	}
 
 	bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
@@ -885,20 +821,18 @@ namespace engine {
 
 		GfxRenderer* self = this;
 		smvk::ResourceManager* ctx = fc.ctx;
-		// GPU cull chain: the draw-level fast discard (mesh-bound frustum on
+		// Cull chain: the draw-level fast discard (mesh-bound frustum on
 		// the FROZEN view + HZB draw-bound occlusion) runs between the HZB
 		// build and the filter — the rendergraph orders it after GfxHiz
 		// (the pyramid read hint) and before GfxFilter (the verdict-write ->
 		// verdict-read hints).
-		if (gfx.gpuCull) {
-			smvk::RenderPass& drawCullPass =
-				smvk::gfx::AddDrawCullPass(gfx, *fc.rg, slot);
-			drawCullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
-			{
-				// GPU context + pass scope come from RenderGraph::Execute.
-				smvk::gfx::PushAndDispatchDrawCull(self->gfx, cmd, *ctx, slot);
-			});
-		}
+		smvk::RenderPass& drawCullPass =
+			smvk::gfx::AddDrawCullPass(gfx, *fc.rg, slot);
+		drawCullPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
+		{
+			// GPU context + pass scope come from RenderGraph::Execute.
+			smvk::gfx::PushAndDispatchDrawCull(self->gfx, cmd, *ctx, slot);
+		});
 		smvk::RenderPass& pass = AddFilterPass(*fc.rg, slot);
 		pass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
 		{
@@ -1281,7 +1215,7 @@ namespace engine {
 #endif
 			if (worldMesh >= meshMap_.size()) {
 				if (dumpGates) ++s_gates.unknownMesh;
-				return; // unknown mesh: legacy direct path still draws it
+				return; // unknown mesh: the direct path still draws it
 			}
 			const glm::mat4& model = world.scene.globalTransform[item.node];
 			// Dither-on-closeup (Scene::ditherCloseup; per frame, per

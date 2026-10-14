@@ -50,15 +50,14 @@ struct GfxPositions { uint words[GFX_POS_WORDS]; }; // static pos heap (global i
 struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global ids (owned)
 // Per cluster: a = (indexOffset, triCount, 0, 0), b = (center.xyz, radius),
 // c = (coneApex.xyz, coneCutoff), d = (coneAxis.xyz, pad). The cone tail
-// feeds the GPU cull chain's world-space normal-cone test (gfxbatchcull);
-// the CPU-cull legacy path reads the same fields through C++ CullCluster.
+// feeds the cull chain's world-space normal-cone test (gfxbatchcull;
+// C++ CullCluster mirrors the same math as the tested CPU reference).
 struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
 struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 
 // One uint4 per batch: (clusterIndex, drawIndex, outputOffset, flags).
-// GPU cull mode: written by gfxbatchcull (outputOffset stays 0 — the filter
-// allocates real filtered offsets through the cullState counter atomically;
-// the field is the CPU-cull legacy path's positional slot).
+// Written by gfxbatchcull (outputOffset stays 0 — the filter allocates
+// real filtered offsets through the cullState counter atomically).
 // flags bit 0 (GFX_BATCH_DEMAND): this group is the DESIGNATED PUBLISHER
 // for its draw's texture demand — the first KEPT batch of the draw
 // (gfxbatchcull assigns it via a groupshared first-kept reduction; the
@@ -104,8 +103,7 @@ struct GfxDraw
     // (the designated publisher's PublishDrawDemand resolves the 5 texture
     // slots through the materials buffer); z = GPU-cull candidate slot
     // base (this draw's first (draw x cluster) candidate slot, 0xFFFFFFFF
-    // = the build dropped the draw; 0 in the CPU-cull legacy path, which
-    // never reads it); w reserved.
+    // = the build dropped the draw); w reserved.
     // The VS resolves the atlas UV as
     // chartUv * xforms[misc2.x + chartId].xy + xforms[misc2.x + chartId].zw.
     uint4 misc2;
@@ -603,10 +601,8 @@ struct GfxFilterPush
     uint width;
     uint height;
     uint batchCount;
-    // GPU cull chain: kept-bit parity (0/1) for this frame's kept region
-    // lookup; 0xFFFFFFFF = CPU-cull legacy path (no verdicts — kept/
-    // cullState BDAs are null and the shader falls back to the positional
-    // outputOffset written by the CPU build).
+    // Cull chain: kept-bit parity (0/1) for this frame's kept region
+    // lookup.
     uint keptParity;
     uint pad2;
     // T4 occlusion/contribution inputs (0/empty disables the tests).
@@ -630,11 +626,10 @@ struct GfxFilterPush
     vk::BufferPointer<GfxDemand> textureDemand;      // this flight's ring slice
     uint textureMetaCount; // live slot count (upper bound for slots/atomics)
     float mipBias;        // mirrors TextureStreamerConfig::mipBias
-    // GPU cull chain inputs (null when keptParity == 0xFFFFFFFF):
+    // Cull chain inputs (always the kept-bit region + cullState):
     //   kept      — this frame's kept region base (the CPU adds the parity
     //               region offset to the BDA; the shader indexes from it
-    //               directly — keptParity rides the push only as the
-    //               chain/legacy sentinel)
+    //               directly)
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
     //               counter (word GFX_CULL_STATE_COUNTER) this dispatch
     //               allocates through atomically

@@ -318,7 +318,9 @@ void TestBatching() {
 				refsOk = false;
 			else if (out.drawConstants[b.draw].mesh >= s.meshes.size())
 				refsOk = false;
-			if (b.outputOffset != (r.firstCommand + k) * kMaxClusterTris * 3)
+			// Chain layout: outputOffset stays 0 (the filter CS allocates
+			// real filtered offsets through the cullState counter atomically).
+			if (b.outputOffset != 0)
 				refsOk = false;
 		}
 	}
@@ -503,9 +505,8 @@ void TestDemandPlumbing() {
 		&& out.drawConstants[2].material == 9 && out.drawConstants[2].mesh == sphere;
 	Check(sortOk, "gfx.demand.material-mirror");
 
-	// Designated-publisher bit: exactly one per draw, on its FIRST batch
-	// (batches of a draw are contiguous after the material sort; the
-	// first emitted batch carries the bit, later ones never do).
+	// Designated-publisher bit: the CPU emits NONE (gfxbatchcull assigns
+	// the first KEPT slot on the GPU). Every batch flag reads 0 here.
 	uint32_t designated = 0;
 	bool firstOnly = true;
 	uint32_t prevDraw = UINT32_MAX;
@@ -524,10 +525,10 @@ void TestDemandPlumbing() {
 		}
 	}
 	Check(firstOnly, "gfx.demand.first-only");
-	// 3 surviving draws => exactly 3 designated publishers.
-	Check(designated == 3, "gfx.demand.one-per-draw");
-	// The single-cluster tri draw has exactly one batch and it is the
-	// designated one (the degenerate-only cull keeps it).
+	// 3 draws, GPU-assigned publishers => the CPU designates none.
+	Check(designated == 0, "gfx.demand.cpu-designates-none");
+	// The single-cluster tri draw has exactly one batch (the degenerate-only
+	// cull keeps it; cone/frustum verdicts are the GPU's).
 	size_t triBatches = 0, triDesignated = 0;
 	for (size_t bi = 0; bi < out.batchCount; ++bi) {
 		if (out.batches[bi].draw < out.drawConstants.size()
@@ -537,15 +538,17 @@ void TestDemandPlumbing() {
 				(out.batches[bi].flags & BatchFlagBit_DemandPublisher) ? 1 : 0;
 		}
 	}
-	Check(triBatches == 1 && triDesignated == 1, "gfx.demand.tri-single");
+	Check(triBatches == 1 && triDesignated == 0, "gfx.demand.tri-single");
 }
 
 // ---------------------------------------------------------------------------
-// T4: pre-cull wiring (sphere + cone) on a real mesh.
+// T4: candidate wiring (sphere + cone bounds) on a real mesh.
 //
-// ExpectedCull re-implements the decision independently (world-space sphere
-// vs planes + cone); agreement with CullCluster guards the
-// wiring (spaces, transforms), not just the formula.
+// ExpectedCull re-implements the verdict independently (world-space
+// sphere vs planes + cone); agreement with CullCluster guards the
+// wiring (spaces, transforms), not just the formula. CullCluster is
+// the tested CPU reference for the GPU batch-cull math (no production
+// callers — the chain culls GPU-side).
 // ---------------------------------------------------------------------------
 
 bool ExpectedCull(const smvk::gfx::Cluster& c, const glm::mat4& model,
@@ -572,13 +575,13 @@ bool ExpectedCull(const smvk::gfx::Cluster& c, const glm::mat4& model,
 void TestPreCull() {
 	using namespace smvk::gfx;
 	State s{};
-	// Large enough for real meshlets (~15+ clusters so the back hemisphere
-	// actually cone-culls; a tiny sphere collapses to a few fat clusters).
+	// Large enough for real meshlets (~15+ clusters).
 	const auto up = MakeSphere(24, 36, 1.0f);
 	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
 	Check(m == 0, "gfx.cull.mesh-id");
 
-	// Front view: back hemisphere cone-culled, front kept.
+	// Front view: the build emits every candidate (cone verdicts are the
+	// GPU batch cull's).
 	{
 		s.views.clear();
 		s.viewCount = 0;
@@ -606,20 +609,17 @@ void TestPreCull() {
 			<< " processed=" << out.stats.clustersProcessed << "\n";
 #endif
 		Check(out.batchCount > 0, "gfx.cull.front-keeps-some");
-		Check(out.stats.clustersCulled > 0, "gfx.cull.front-culls-back");
+		Check(out.stats.clustersCulled == 0, "gfx.cull.no-cpu-cull");
 		Check(out.batchCount + out.stats.clustersCulled == out.stats.clustersProcessed,
 			"gfx.cull.accounts-all");
 
-		bool wiringOk = true;
-		const smvk::RenderView& renderView = views.Get(rv);
-		for (const Batch& b : out.batches) {
-			if (ExpectedCull(s.clusters[b.cluster], glm::mat4(1.0f), eye, renderView))
-				wiringOk = false; // a kept batch must survive independent retest
-		}
-		Check(wiringOk, "gfx.cull.kept-survive-retest");
+		// (No per-batch CPU retest: the build emits every candidate and
+		// the GPU batch cull owns verdicts. ExpectedCull below still guards
+		// the reference math against CullCluster directly.)
 	}
 
-	// Looking away: everything outside the frustum -> zero batches.
+	// Looking away: the build still emits every candidate (frustum
+	// verdicts are the GPU draw cull's, not the CPU build's).
 	{
 		s.views.clear();
 		s.viewCount = 0;
@@ -640,13 +640,16 @@ void TestPreCull() {
 		s.viewCount = 1;
 		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
 		BuildBatches(s, 0);
-		Check(s.views[0].batchCount == 0, "gfx.cull.away-culls-all");
+		Check(s.views[0].batchCount == (uint32_t)s.clusters.size(),
+			"gfx.cull.away-keeps-all");
 	}
 }
 
 // ---------------------------------------------------------------------------
 // T5: two-sided draws skip backface (cone) culling; mirrored instances
-// agree with the rasterizer (world-space cone test).
+// agree with the rasterizer (world-space cone test). The build emits
+// every candidate in both cases (verdicts are the GPU's); the cone
+// behavior below is pinned against CullCluster directly.
 // ---------------------------------------------------------------------------
 
 void TestTwoSided() {
@@ -666,7 +669,10 @@ void TestTwoSided() {
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
-	// Single-sided draw culls the back hemisphere...
+	// Single- and two-sided draws alike emit every candidate here
+	// (cone verdicts are the GPU's; the whole sphere is inside the
+	// frustum from here) — the behavioral difference rides the draw
+	// flags below, the cone math is pinned against CullCluster after.
 	uint32_t singleKept = 0;
 	{
 		s.views.clear();
@@ -683,8 +689,7 @@ void TestTwoSided() {
 		BuildBatches(s, 0);
 		singleKept = s.views[0].batchCount;
 	}
-	// ...while a two-sided draw of the same mesh keeps every cluster
-	// (the whole sphere is inside the frustum from here).
+	// ...and a two-sided draw of the same mesh emits the same set.
 	{
 		s.views.clear();
 		s.viewCount = 0;
@@ -703,9 +708,9 @@ void TestTwoSided() {
 		std::cout << "[gfx.twosided] single=" << singleKept
 			<< " double=" << out.batchCount << " total=" << clusterTotal << "\n";
 #endif
-		Check(singleKept < clusterTotal, "gfx.twosided.single-culls");
+		Check(singleKept == clusterTotal, "gfx.twosided.single-keeps-all");
 		Check(out.batchCount == clusterTotal, "gfx.twosided.double-keeps-all");
-		Check(out.batchCount > singleKept, "gfx.twosided.double-keeps-more");
+		Check(out.batchCount == singleKept, "gfx.twosided.no-cpu-cull");
 		// Flags survive into draw constants (the GPU reads misc.y from these).
 		Check(out.drawConstants.size() == 1, "gfx.twosided.one-drawconst");
 		Check((out.drawConstants[0].flags & DrawFlagBit_TwoSided) != 0,
@@ -1857,14 +1862,13 @@ void TestJitterCullStability() {
 }
 
 // ---------------------------------------------------------------------------
-// GPU cull chain: the CPU seed step (BuildBatches with State::gpuCull).
+// Cull chain: the CPU seed step (BuildBatches).
 //
 // The chain's CPU side emits the CANDIDATE layout only — no per-cluster
 // tests, no publisher flags (gfxbatchcull assigns those on the GPU), the
 // per-draw candidate-slot base riding Draw::candidateBase, and the
 // (bucket, material) seed/remainder ranges over the positional slots
-// (bucket-major: opaque span first, exactly the legacy seed emitter's
-// command order).
+// (bucket-major: opaque span first).
 // ---------------------------------------------------------------------------
 
 void TestGpuCandidateBuild() {
@@ -1912,7 +1916,6 @@ void TestGpuCandidateBuild() {
 	PushDraw(s, 0, m1, ident, 7, 0, DrawSetBit_Opaque);
 	PushDraw(s, 0, m2, ident, 7, 0, DrawSetBit_Opaque);
 	PushDraw(s, 0, m0, ident, 3, 0, DrawSetBit_Opaque);
-	s.gpuCull = true;
 	BuildBatches(s, 0);
 
 	const View& out = s.views[0];

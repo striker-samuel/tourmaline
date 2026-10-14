@@ -25,7 +25,7 @@
 // Buffers arrive via buffer-device-address push (vk::BufferPointer, same as
 // forwardplus.cs.hlsl) so no descriptor/pipeline-layout changes are needed.
 // Indirect-arg clearing is done CPU-side (zero-fill upload before the pass)
-// in the CPU-cull legacy path; in GPU cull mode gfxbatchcull writes the
+// in the candidate layout; the cull chain writes the
 // static parts of every candidate slot, replacing both the zero-fill upload
 // and the CPU batch upload.
 //
@@ -339,21 +339,17 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     if (gid < pcF.batchCount)
         header = pcF.batches.Get().batch[gid];
 
-    // GPU cull chain verdicts (keptParity != 0xFFFFFFFF): the batch cull's
-    // per-slot verdict (LIVE-view sphere + cone) and the draw cull's
-    // per-draw verdict (FROZEN view + HZB draw-bound occlusion). Either 0
-    // -> the whole group exits before any projection work: gfxbatchcull
-    // already wrote the slot's indirect statics (indexCount 0), so nothing
-    // is left to do. Legacy CPU-cull path (keptParity == 0xFFFFFFFF):
-    // both pass-through (the CPU build pre-culled the batch list).
-    const bool gpuChain = pcF.keptParity != 0xFFFFFFFFu;
+    // Batch-cull verdicts: the batch cull's per-slot verdict (LIVE-view
+    // sphere + cone) and the draw cull's per-draw verdict (FROZEN view +
+    // HZB draw-bound occlusion). Either 0 -> the whole group exits before
+    // any projection work: gfxbatchcull already wrote the slot's indirect
+    // statics (indexCount 0), so nothing is left to do.
     bool slotKept = true;
     bool drawOk = true;
-    if (gpuChain && gid < pcF.batchCount)
+    if (gid < pcF.batchCount)
     {
         // kept points at THIS frame's parity region (the CPU adds the
-        // region offset to the BDA); keptParity rides the push only as
-        // the chain/legacy sentinel.
+        // region offset to the BDA).
         slotKept = pcF.kept.Get().kept[gid] != 0;
         drawOk = pcF.cullState.Get().v[header.y] != 0;
     }
@@ -417,51 +413,35 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     GroupMemoryBarrierWithGroupSync();
 
     // This group owns command gid exclusively for the indexCount/firstIndex
-    // writes. GPU cull mode: the surviving triangles allocate the group's
-    // filtered-index range through the cullState counter ATOMICALLY
-    // (candidate slots are positional and pre-sized; survivors are not —
-    // the counter turns them into a compacted ring fill, clamped at the
-    // flight slice's capacity exactly the way the old CPU kMaxBatches cap
-    // dropped overflow batches with a warning).
+    // writes. The surviving triangles allocate the group's filtered-index
+    // range through the cullState counter ATOMICALLY (candidate slots are
+    // positional and pre-sized; survivors are not — the counter turns them
+    // into a compacted ring fill, clamped at the flight slice's capacity).
     // firstIndex stays absolute into the static index monoblock (indexBase +
     // output base); the input-assembly index binding never switches buffers.
     if (gid < pcF.batchCount && tid == 0)
     {
-        if (gpuChain)
+        uint outBase = 0;
+        bool fits = gLocalCount > 0;
+        if (fits)
         {
-            uint outBase = 0;
-            bool fits = gLocalCount > 0;
-            if (fits)
-            {
-                InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
-                    gLocalCount, outBase);
-                fits = outBase + gLocalCount <= GFX_MAX_FILTERED;
-            }
-            if (fits)
-            {
-                gOutBase = outBase;
-                pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
-                pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + outBase;
-                pcF.indirect.Get().cmds[gid].vertexOffset = 0; // heap-global ids
-                pcF.indirect.Get().cmds[gid].firstInstance = header.y;
-                pcF.indirect.Get().cmds[gid].instanceCount = 1;
-            }
-            else
-            {
-                gOutBase = 0xFFFFFFFFu; // dropped (empty or ring cap): no writes
-                pcF.indirect.Get().cmds[gid].indexCount = 0;
-            }
+            InterlockedAdd(pcF.cullState.Get().v[GFX_CULL_STATE_COUNTER],
+                gLocalCount, outBase);
+            fits = outBase + gLocalCount <= GFX_MAX_FILTERED;
+        }
+        if (fits)
+        {
+            gOutBase = outBase;
+            pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
+            pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + outBase;
+            pcF.indirect.Get().cmds[gid].vertexOffset = 0; // heap-global ids
+            pcF.indirect.Get().cmds[gid].firstInstance = header.y;
+            pcF.indirect.Get().cmds[gid].instanceCount = 1;
         }
         else
         {
-            // Legacy CPU-cull path: the CPU build pre-sized the positional
-            // outputOffset (header.z) — no atomics, exactly as before.
-            gOutBase = header.z;
-            pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
-            pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + header.z;
-            pcF.indirect.Get().cmds[gid].vertexOffset = 0; // indices are heap-global ids
-            pcF.indirect.Get().cmds[gid].firstInstance = header.y; // draw id for VS
-            pcF.indirect.Get().cmds[gid].instanceCount = 1;
+            gOutBase = 0xFFFFFFFFu; // dropped (empty or ring cap): no writes
+            pcF.indirect.Get().cmds[gid].indexCount = 0;
         }
     }
 
