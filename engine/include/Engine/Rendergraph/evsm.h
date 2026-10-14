@@ -113,7 +113,7 @@ static_assert(sizeof(EvsmBlurPush) == 48, "EVSM blur push must mirror the HLSL E
 // EvsmResolvePush (16 bytes, DX layout).
 struct EvsmResolvePush {
 	uint32_t srcIndex;    // bindless texturesMS[] index of the 2x MSAA depth view
-	uint32_t dstIndex;    // bindless storage index of the slot image (moments-then-blurred, see EvsmAtlas)
+	uint32_t dstIndex;    // bindless storage index of moments[flight]
 	uint32_t atlasWidth;  // atlas extent in texels (one dispatch covers it)
 	uint32_t atlasHeight;
 };
@@ -129,28 +129,39 @@ struct EvsmAtlas {
 	Holder<ImageViewHandle> msaaDepthView;
 	Holder<BindlessImageHandle> msaaDepthBindless;
 	LogicalImageViewHandle msaaDepthLogical{};
-	// ---- The SEPARABLE slot ping-pong (merged moments + blurred) -----
-	// PER FLIGHT: ONE image per slot that carries moments (resolve
-	// write, H read) and then, IN PLACE, the blurred output (V write
-	// after H consumed the moments via the temp dependency). The old
-	// per-flight x3 (moments + blurTemp + blurred) was 6 RGBA32F images
-	// per atlas; moments and blurred never coexist on the same slot
-	// (moments dies at H's last read, blurred is born at V's first
-	// write), so the merge is lifetime-safe: 6 -> 2 slot images + 1
-	// shared scratch = 3 images (~50% of the old atlas cost — the
-	// evsmDir set alone drops ~768 MiB at 2048-res x4 cascades).
-	Holder<ImageHandle> slotBuf[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageViewHandle> slotView[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<BindlessImageHandle> slotBindless[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalImageViewHandle slotLogical[MAX_FRAMES_IN_FLIGHT]{};
-	// ONE shared horizontal-blur scratch (compute General): dead
-	// between frames, the rendergraph orders every use within a frame
-	// (H writes it, V reads it; the slot dependency chains tiles). No
-	// per-flight copies — the scratch has no cross-frame state.
-	Holder<ImageHandle> blurTemp;
-	Holder<ImageViewHandle> blurTempView;
-	Holder<BindlessImageHandle> blurTempBindless;
-	LogicalImageViewHandle blurTempLogical{};
+	// ---- Per-flight moments + blur scratch + blurred (the ORIGINAL
+	// 6-image layout, fully reverted) ----------------------------------
+	// Both merge attempts (in-place slot + shared scratch) produced
+	// cross-frame hazards the async compute timeline cannot close:
+	//
+	//   In-place slot: frame N's lighting reads slot[!s] (blurred) while
+	//   frame N+1's resolve writes the SAME slot with fresh moments —
+	//   the lighting reads moments, every shadow test fails.
+	//
+	//   Shared scratch: frame N's V reads blurTemp while frame N+1's H
+	//   writes it — the rendergraph's async compute timeline chains
+	//   passes WITHIN a frame but the cross-frame ordering relies on the
+	//   frame fence, which the rendergraph does not enforce for
+	//   compute-queue scratch (the 6940-pixel shadow-edge diff that
+	//   survived the in-place revert IS this hazard — deterministic
+	//   captures, so not timing noise).
+	//
+	// The lazy-allocation fix (atlases only exist when EVSM is on) is
+	// the memory win that matters; the ping-pong layout is the price
+	// of correctness. 6 images per atlas, 3 per flight, all disjoint
+	// across the overlapping frame windows.
+	Holder<ImageHandle> moments[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageViewHandle> momentsView[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BindlessImageHandle> momentsBindless[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalImageViewHandle momentsLogical[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageHandle> blurTemp[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageViewHandle> blurTempView[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BindlessImageHandle> blurTempBindless[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalImageViewHandle blurTempLogical[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageHandle> blurred[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageViewHandle> blurredView[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BindlessImageHandle> blurredBindless[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalImageViewHandle blurredLogical[MAX_FRAMES_IN_FLIGHT]{};
 
 	Holder<ShaderModuleHandle> resolveModule;
 	Holder<ShaderModuleHandle> blurHModule;
@@ -169,9 +180,9 @@ struct EvsmAtlas {
 	uint32_t writeSlot = 0; // flight slot moments were last resolved into
 
 	[[nodiscard]] bool Valid() const {
-		return !msaaDepth.empty() && tileCount != 0 && !slotBuf[0].empty()
+		return !msaaDepth.empty() && tileCount != 0 && !moments[0].empty()
 			&& !msaaDepthLogical.empty() && !msaaDepthBindless.empty()
-			&& !blurTempBindless.empty();
+			&& !blurTempBindless[0].empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
 		return resolveProgram.shaderCount == 1
@@ -201,23 +212,25 @@ struct EvsmAtlas {
 		outY = static_cast<int32_t>((index / cols) * tileExtent.height);
 	}
 
-	// Bindless index of the slot image (moments-when-just-resolved /
-	// blurred-when-lighting-samples — the SAME image, the lifetime
-	// separability is the point; see the struct comment).
-	int32_t SlotBindlessIndex(ResourceManager& ctx, uint32_t flight) const {
-		if (slotBindless[flight % MAX_FRAMES_IN_FLIGHT].empty())
+	// Bindless index of the moments image (resolve write / blur H read).
+	int32_t MomentsBindlessIndex(ResourceManager& ctx, uint32_t flight) const {
+		if (momentsBindless[flight % MAX_FRAMES_IN_FLIGHT].empty())
 			return -1;
-		return static_cast<int32_t>(ctx.GetBindlessIndex(slotBindless[flight % MAX_FRAMES_IN_FLIGHT]));
+		return static_cast<int32_t>(ctx.GetBindlessIndex(momentsBindless[flight % MAX_FRAMES_IN_FLIGHT]));
 	}
-	// The lighting side: same slot image, SampleSlot resolves the lag.
+	// Bindless index of the blurred image (blur V write / lighting read).
 	int32_t BlurredBindlessIndex(ResourceManager& ctx, uint32_t sampleFlight) const {
-		return SlotBindlessIndex(ctx, sampleFlight);
-	}
-	// Shared scratch (no flight param — it has no per-flight state).
-	int32_t TempBindlessIndex(ResourceManager& ctx) const {
-		if (blurTempBindless.empty())
+		const uint32_t s = SampleSlot(sampleFlight);
+		if (blurredBindless[s].empty())
 			return -1;
-		return static_cast<int32_t>(ctx.GetBindlessIndex(blurTempBindless));
+		return static_cast<int32_t>(ctx.GetBindlessIndex(blurredBindless[s]));
+	}
+	// Per-flight scratch (the cross-frame hazard of a shared scratch is
+	// why this is NOT shared — see the struct comment).
+	int32_t TempBindlessIndex(ResourceManager& ctx, uint32_t flight) const {
+		if (blurTempBindless[flight % MAX_FRAMES_IN_FLIGHT].empty())
+			return -1;
+		return static_cast<int32_t>(ctx.GetBindlessIndex(blurTempBindless[flight % MAX_FRAMES_IN_FLIGHT]));
 	}
 	// Bindless texturesMS[] index of the transient 2x MSAA depth view (the
 	// per-sample resolve's source). -1 until the atlas is created.
@@ -259,19 +272,25 @@ struct EvsmAtlas {
 			rg.FreeImageView(msaaDepthLogical);
 		msaaDepthLogical = {};
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
-			if (!slotLogical[f].empty())
-				rg.FreeImageView(slotLogical[f]);
-			slotLogical[f] = {};
-			slotBindless[f] = {};
-			slotView[f] = {};
-			slotBuf[f] = {};
+			if (!blurredLogical[f].empty())
+				rg.FreeImageView(blurredLogical[f]);
+			if (!momentsLogical[f].empty())
+				rg.FreeImageView(momentsLogical[f]);
+			if (!blurTempLogical[f].empty())
+				rg.FreeImageView(blurTempLogical[f]);
+			blurredLogical[f] = {};
+			momentsLogical[f] = {};
+			blurTempLogical[f] = {};
+			blurredBindless[f] = {};
+			blurredView[f] = {};
+			blurred[f] = {};
+			blurTempBindless[f] = {};
+			blurTempView[f] = {};
+			blurTemp[f] = {};
+			momentsBindless[f] = {};
+			momentsView[f] = {};
+			moments[f] = {};
 		}
-		if (!blurTempLogical.empty())
-			rg.FreeImageView(blurTempLogical);
-		blurTempLogical = {};
-		blurTempBindless = {};
-		blurTempView = {};
-		blurTemp = {};
 		msaaDepthBindless = {};
 		msaaDepthView = {};
 		msaaDepth = {};
@@ -313,26 +332,28 @@ struct EvsmAtlas {
 		if (newDepthView.empty())
 			return false;
 
-		// ---- The SEPARABLE slot ping-pong (see the struct comment) ----
-		// Per flight: ONE image (moments-then-blurred, in place). Storage
-		// so the resolve + the async compute blur can write them (General),
-		// sampled so lighting + the next blur tap can read them,
-		// TransferSrc for the opt-in atlas dump (VULKANTOY_EVSM_DUMP) —
-		// armed dumps only. CONCURRENT graphics+compute: the resolve
-		// (graphics) and the blur (compute queue) ping-pong these images
-		// every frame, so no ownership transfers — events + layout
-		// barriers order the queues.
+		// ---- Per-flight moments + blur scratch + blurred (the ORIGINAL
+		// 6-image layout — see the struct comment for why BOTH merge
+		// attempts were reverted). Storage so the resolve + the async
+		// compute blur can write them (General), sampled so lighting +
+		// the next blur tap can read them, TransferSrc for the opt-in
+		// atlas dump — armed dumps only. CONCURRENT graphics+compute:
+		// the resolve (graphics) and the blur (compute queue) ping-pong
+		// these images every frame, so no ownership transfers — events +
+		// layout barriers order the queues.
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
-			ImageCreateInfo slotCI{};
-			slotCI.format = desc.momentsFormat;
-			slotCI.extent = { atlas.width, atlas.height, 1u };
-			slotCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst;
+			ImageCreateInfo mCI{};
+			mCI.format = desc.momentsFormat;
+			mCI.extent = { atlas.width, atlas.height, 1u };
+			mCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst;
 			if (DebugImageDumpArmed())
-				slotCI.usage |= ImageUsage::TransferSrc;
-			slotCI.concurrentCompute = true;
-			slotCI.name = desc.name;
-			slotBuf[f] = ctx.CreateImage(slotCI, nullptr);
-			if (slotBuf[f].empty()) {
+				mCI.usage |= ImageUsage::TransferSrc;
+			mCI.concurrentCompute = true;
+			mCI.name = desc.name;
+			moments[f] = ctx.CreateImage(mCI, nullptr);
+			blurTemp[f] = ctx.CreateImage(mCI, nullptr);
+			blurred[f] = ctx.CreateImage(mCI, nullptr);
+			if (moments[f].empty() || blurTemp[f].empty() || blurred[f].empty()) {
 				Destroy(rg);
 				msaaDepthView = {};
 				msaaDepth = {};
@@ -341,65 +362,28 @@ struct EvsmAtlas {
 			ImageViewCreateInfo vci{};
 			vci.viewType = ImageViewType::View2D;
 			vci.subresourceRange = { .aspect = ImageAspect::Color };
-			slotView[f] = ctx.CreateImageView(slotBuf[f], vci);
-			if (slotView[f].empty()) {
+			momentsView[f] = ctx.CreateImageView(moments[f], vci);
+			blurTempView[f] = ctx.CreateImageView(blurTemp[f], vci);
+			blurredView[f] = ctx.CreateImageView(blurred[f], vci);
+			if (momentsView[f].empty() || blurTempView[f].empty() || blurredView[f].empty()) {
 				Destroy(rg);
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
 			}
-			slotBindless[f] = ctx.CreateBindlessImage(slotView[f], ImageLayout::ShaderReadOnlyOptimal);
-			if (slotBindless[f].empty()) {
+			momentsBindless[f] = ctx.CreateBindlessImage(momentsView[f], ImageLayout::ShaderReadOnlyOptimal);
+			blurTempBindless[f] = ctx.CreateBindlessImage(blurTempView[f], ImageLayout::General);
+			blurredBindless[f] = ctx.CreateBindlessImage(blurredView[f], ImageLayout::ShaderReadOnlyOptimal);
+			if (momentsBindless[f].empty() || blurTempBindless[f].empty() || blurredBindless[f].empty()) {
 				Destroy(rg);
 				msaaDepthView = {};
 				msaaDepth = {};
 				return false;
 			}
-			slotLogical[f] = rg.AddExternalImageView(slotView[f], desc.momentsFormat, "evsmSlot");
-			if (slotLogical[f].empty()) {
-				Destroy(rg);
-				msaaDepthView = {};
-				msaaDepth = {};
-				return false;
-			}
-		}
-
-		// ONE shared horizontal-blur scratch (compute General; the blur
-		// writes it during H, V reads it — dead between frames, the
-		// rendergraph chains every use within a frame).
-		{
-			ImageCreateInfo tempCI{};
-			tempCI.format = desc.momentsFormat;
-			tempCI.extent = { atlas.width, atlas.height, 1u };
-			tempCI.usage = ImageUsage::Storage;
-			tempCI.concurrentCompute = true;
-			tempCI.name = "evsmTemp";
-			blurTemp = ctx.CreateImage(tempCI, nullptr);
-			if (blurTemp.empty()) {
-				Destroy(rg);
-				msaaDepthView = {};
-				msaaDepth = {};
-				return false;
-			}
-			ImageViewCreateInfo tvci{};
-			tvci.viewType = ImageViewType::View2D;
-			tvci.subresourceRange = { .aspect = ImageAspect::Color };
-			blurTempView = ctx.CreateImageView(blurTemp, tvci);
-			if (blurTempView.empty()) {
-				Destroy(rg);
-				msaaDepthView = {};
-				msaaDepth = {};
-				return false;
-			}
-			blurTempBindless = ctx.CreateBindlessImage(blurTempView, ImageLayout::General);
-			if (blurTempBindless.empty()) {
-				Destroy(rg);
-				msaaDepthView = {};
-				msaaDepth = {};
-				return false;
-			}
-			blurTempLogical = rg.AddExternalImageView(blurTempView, desc.momentsFormat, "evsmTemp");
-			if (blurTempLogical.empty()) {
+			momentsLogical[f] = rg.AddExternalImageView(momentsView[f], desc.momentsFormat, "evsmMoments");
+			blurTempLogical[f] = rg.AddExternalImageView(blurTempView[f], desc.momentsFormat, "evsmTemp");
+			blurredLogical[f] = rg.AddExternalImageView(blurredView[f], desc.momentsFormat, "evsmBlurred");
+			if (momentsLogical[f].empty() || blurTempLogical[f].empty() || blurredLogical[f].empty()) {
 				Destroy(rg);
 				msaaDepthView = {};
 				msaaDepth = {};
@@ -480,9 +464,8 @@ struct EvsmAsyncPrefilter {
 	// Per-sample resolve (ONE per atlas per frame, after ALL moment
 	// passes, before the blurs): evsm_resolve.cs.hlsl loads BOTH depth
 	// samples of every atlas texel, warps each (warp-then-average — exp
-	// is nonlinear), averages into the single-sample moments — which
-	// LIVE IN the merged slot image (see the struct comment; the blur
-	// V pass later overwrites the same slot with the blurred output).
+	// is nonlinear), averages into the single-sample moments[flight]
+	// (the separate moments image; the blur reads it, V writes blurred).
 	// Graphics-queue compute pass (not AsyncCompute-marked): it sorts
 	// after every moment pass (reads the whole depth) and before every
 	// blur (writes every slot texel), keeping the async blur window
@@ -492,7 +475,7 @@ struct EvsmAsyncPrefilter {
 		assert(atlas.Valid());
 		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
 		const int32_t srcIdx = atlas.MsaaDepthBindlessIndex(ctx);
-		const int32_t dstIdx = atlas.SlotBindlessIndex(ctx, slot);
+		const int32_t dstIdx = atlas.MomentsBindlessIndex(ctx, slot);
 		assert(srcIdx >= 0 && dstIdx >= 0);
 
 		ImageSyncRequest depthRead{};
@@ -512,7 +495,7 @@ struct EvsmAsyncPrefilter {
 
 		RenderPass& pass = rg.AddComputePass(name ? name : "EvsmResolve");
 		pass.AddImageHint(atlas.msaaDepthLogical, depthRead);
-		pass.AddImageHint(atlas.slotLogical[slot], slotWrite);
+		pass.AddImageHint(atlas.momentsLogical[slot], slotWrite);
 		ShaderProgram* resolveProg = const_cast<ShaderProgram*>(&atlas.resolveProgram);
 		const uint32_t aw = atlas.atlasExtent.width, ah = atlas.atlasExtent.height;
 		pass.SetRecordingFunc([resolveProg, push, aw, ah](CommandBuffer& cmd) {
@@ -568,27 +551,21 @@ struct EvsmAsyncPrefilter {
 		return p;
 	}
 
-	// Full-tile blur pair for one tile: H (slot moments -> temp) then V
-	// (temp -> slot blurred, IN PLACE — the same slot image H just read,
-	// lifetime-safe because H fully consumed the moments before V's
-	// first write; the temp dependency chains them), both
-	// AsyncCompute-marked, one entry point per leg (atlas.blurHProgram /
-	// blurVProgram — the legs share evsm_blur.hlsli). Recording funcs
-	// are set here (bind program + push + dispatch); the caller only
-	// supplies the rendergraph + context. Barriers come from the image
-	// hints: H reads slotLogical, V WRITES slotLogical (the rendergraph
-	// orders V after H via the shared temp dependency AND sees the
-	// slot read-write for cross-tile ordering).
+	// Full-tile blur pair for one tile: H (moments -> temp) then V
+	// (temp -> blurred), both AsyncCompute-marked, one entry point per
+	// leg (atlas.blurHProgram / blurVProgram — the legs share
+	// evsm_blur.hlsli). Recording funcs are set here (bind program +
+	// push + dispatch); the caller only supplies the rendergraph +
+	// context. Barriers come from the image hints.
 	static void AddTileBlurPasses(RenderGraph& rg, const EvsmAtlas& atlas,
 		ResourceManager& ctx, uint32_t flight, uint32_t tileIndex,
 		const char* nameH = nullptr, const char* nameV = nullptr) {
 		assert(atlas.Valid());
 		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
-		// H reads the slot's moments, V writes the slot's blurred — the
-		// SAME bindless index (the same image, the merge).
-		const int32_t slotIdx = atlas.SlotBindlessIndex(ctx, slot);
-		const int32_t tmpIdx = atlas.TempBindlessIndex(ctx);
-		assert(slotIdx >= 0 && tmpIdx >= 0);
+		const int32_t srcIdx = atlas.MomentsBindlessIndex(ctx, slot);
+		const int32_t tmpIdx = atlas.TempBindlessIndex(ctx, slot);
+		const int32_t dstIdx = atlas.BlurredBindlessIndex(ctx, slot);
+		assert(srcIdx >= 0 && tmpIdx >= 0 && dstIdx >= 0);
 
 		ImageSyncRequest srcR{};
 		srcR.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -600,11 +577,11 @@ struct EvsmAsyncPrefilter {
 		dstW.layout = ImageLayout::General;
 
 		const EvsmBlurPush pushH = MakeBlurPush(atlas, tileIndex,
-			static_cast<uint32_t>(slotIdx), static_cast<uint32_t>(tmpIdx));
+			static_cast<uint32_t>(srcIdx), static_cast<uint32_t>(tmpIdx));
 		RenderPass& hPass = rg.AddComputePass(nameH ? nameH : "EvsmBlurH");
 		hPass.MarkAsAsyncCompute();
-		hPass.AddImageHint(atlas.slotLogical[slot], srcR);
-		hPass.AddImageHint(atlas.blurTempLogical, dstW);
+		hPass.AddImageHint(atlas.momentsLogical[slot], srcR);
+		hPass.AddImageHint(atlas.blurTempLogical[slot], dstW);
 		// Capture the program pointer + push by value: Execute() runs the
 		// lambda after this function returns (per-frame record).
 		ShaderProgram* blurHProg = const_cast<ShaderProgram*>(&atlas.blurHProgram);
@@ -616,14 +593,12 @@ struct EvsmAsyncPrefilter {
 				(th + kEvsmBlurBlock - 1) / kEvsmBlurBlock, 1);
 		});
 
-		// V reads the shared temp, writes the slot image IN PLACE (the
-		// moments are dead after H; the blurred output takes their bytes).
 		const EvsmBlurPush pushV = MakeBlurPush(atlas, tileIndex,
-			static_cast<uint32_t>(tmpIdx), static_cast<uint32_t>(slotIdx));
+			static_cast<uint32_t>(tmpIdx), static_cast<uint32_t>(dstIdx));
 		RenderPass& vPass = rg.AddComputePass(nameV ? nameV : "EvsmBlurV");
 		vPass.MarkAsAsyncCompute();
-		vPass.AddImageHint(atlas.blurTempLogical, srcR);
-		vPass.AddImageHint(atlas.slotLogical[slot], dstW);
+		vPass.AddImageHint(atlas.blurTempLogical[slot], srcR);
+		vPass.AddImageHint(atlas.blurredLogical[slot], dstW);
 		ShaderProgram* blurVProg = const_cast<ShaderProgram*>(&atlas.blurVProgram);
 		vPass.SetRecordingFunc([blurVProg, pushV, tw, th](CommandBuffer& cmd) {
 			cmd.BindComputePipeline(*blurVProg);
