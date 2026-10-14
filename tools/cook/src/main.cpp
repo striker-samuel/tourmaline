@@ -9,16 +9,13 @@
 //   cook.exe <vfs_path> <artifact...> [--options]
 //             cook.exe F:/content models/sponza/Sponza.geometry
 //                 [--meshopt on|off]
-//                 [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
+//                 [--overdraw 1.05]
 //                 [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
-//                 [--compress on|off] [--lz4-accel 1]
 //                 [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
 //                  --lm-atlas-width 1024 --lm-gutter 1
 //                  --lm-rays 1024
 //                  --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
 //                  --lm-lod-lock attr|hard
-//                  --lm-denoise on|off (DEPRECATED, off by default)
-//                  --lm-denoise-quality high|balanced (DEPRECATED)
 //                  --lm-curve-target 7.0 --lm-curve-max 2.5
 //                  --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
@@ -54,13 +51,6 @@
 // baking and receive the LOD0 atlas layout through UV transfer. In
 // either path, LOD levels share atlas rects and do not need new bakes.
 //
-// Denoising (DEPRECATED, off by default): with --lm-denoise on, the
-// fitted per-lobe amplitude layers are denoised with Intel Open Image
-// Denoise's RTLightmap filter (prebuilt release in external/oidn, linked
-// into PakCooker only â€” engine and App never see OIDN). Denoised
-// payloads are written into the .sglm; the runtime path is unchanged.
-// --lm-rays stays independent: denoising recovers low-sample bakes, so
-// try e.g. --lm-rays 128 for a ~8x faster trace.
 //
 // Curvature-weighted density (default on): --lm-meters-per-texel is the
 // BASE request; smoothly bending meshes chart at up to --lm-curve-max
@@ -147,9 +137,6 @@ namespace {
 		std::vector<std::string> inVfsList;
 		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
-		// Legacy glTF-era scene-selection flag. A .geometry artifact carries
-		// one derived scene, and the artifact cook rejects --scene-index.
-		int sceneIndex = -1;
 		// .tour replay (editor scene overlay): applied to the cook cluster
 		// right after import, before collapse/LOD/bake/serialize. CLI flags
 		// win over tour cook defaults (tracked via explicitSet).
@@ -157,36 +144,26 @@ namespace {
 		std::unordered_set<std::string> explicitSet;
 		bool meshopt = true;
 		float overdraw = 1.05f;
-		bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
-		bool verify = true; // re-open the written pak with PakReader (self-check)
 		// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
 		bool lods = false;
 		std::string lodRatios = "0.6,0.3,0.12";
 		float lodError = 0.02f; // relative error budget per simplify call
-		// Meshlet cook path (off by default; indirect-draw foundation only).
-		// Size limits default to the ENGINE's kMeshletMax constants (64v/64t:
-		// one mesh-shader workgroup covers a whole meshlet â€” see meshlet.h);
-		// BuildMeshletsForUpload clamps over-limit configs (stale authored cooks)
-		// down to them.
+		// Meshlet cook path (SETUP-TIME on/off only): the engine canon is
+		// fixed at 64 verts / 64 tris per meshlet (kMeshletMaxVertices /
+		// kMeshletMaxTriangles - one mesh-shader workgroup covers a whole
+		// meshlet, Northlight-style); there are no tuning flags.
 		bool meshlets = false;
-		uint32_t maxVerts = smvk::kMeshletMaxVertices;
-		uint32_t maxTris = smvk::kMeshletMaxTriangles;
-		float coneWeight = 0.0f;
 		// KTX auto-convert (on by default): non-KTX sources transcode
 		// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
 		// to the source). Off restores warn-and-skip for non-KTX payloads.
 		bool autoKtx = true;
 		// Collapse static subtrees into per-material mega-mesh blocks.
 		bool collapseStatic = false;
-		// Per-blob LZ4 compression (default on: only stores when it shrinks).
-		bool compress = true;
-		int lz4Accel = 1; // 1 = best ratio, higher = faster
 		// ---- Lightmap cook (--lightmap on) ----
 		bool lightmap = false;
 		// Chart density request, METERS PER TEXEL (world space): 0.25 = one
 		// texel per 25 cm (4 texels/m). The engine chart options speak
 		// texels/m; the cook converts (1/mpt, floored at 2 texels/m).
-		// --lm-density <texels/m> stays as a deprecated converting alias.
 		float lmMetersPerTexel = 0.25f;
 		uint32_t lmLobes = 12;       // 5|6|9|12 â€” PREFERRED max; the bake
 		// selects the smallest count per mesh
@@ -237,14 +214,6 @@ namespace {
 		// pair (less reduction). In the legacy per-mesh lightmap path, LOD
 		// siblings cook before baking and inherit LOD0 charts via UV transfer.
 		std::string lmLodLock = "attr";
-		// ---- OIDN denoising (fitted atlas amplitudes, cook-time only) ------
-		// Denoise the baked per-lobe amplitude layers with Intel Open Image
-		// Denoise's RTLightmap filter (see lm_denoise.cpp). DEPRECATED: off
-		// by default, kept functional for old scripts; the high-ray-count
-		// bake stands on its own (the overlapping-rect guard rejects most
-		// xatlas atlases anyway).
-		bool lmDenoise = false;
-		std::string lmDenoiseQuality = "high"; // high | balanced
 		// Bright-pink fault map (<scene>_pink.png): chart-id layout with
 		// empty/corrupt/overlapping chunk rects painted solid (255,0,255).
 		// Off by default (extra full-atlas PNG write + O(n^2) overlap
@@ -310,8 +279,7 @@ namespace {
 		// all diffuse + low-frequency specular), and embeds the KTX2 cubes
 		// as Texture blobs at textures/cubemaps/<name>.ktx2 â€” served by
 		// PakBackend through the VFS, so CubemapLibrary::Load finds them
-		// with no code change. Empty cubemapName defaults to the out-pak
-		// stem (sponza.pak -> "sponza", mirroring gi/<scene>.sglm).
+		// with no code change. Empty cubemapName defaults to "sky".
 		bool cubemap = false;
 		std::string cubemapName;
 		uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
@@ -720,13 +688,7 @@ namespace {
 				dst = argv[++i];
 				return true;
 			};
-			if (a == "--content-dir" || a == "--in-vfs") {
-				std::cerr << "'" << a << "' is gone: positional grammar now"
-					" - cook.exe <vfs_path> <artifact...> [--options]"
-					<< std::endl;
-				return false;
-			}
-			else if (a.size() >= 2 && a[0] == '-' && a[1] == '-') {
+			if (a.size() >= 2 && a[0] == '-' && a[1] == '-') {
 				// The flag chain below parses this argv (the positionals
 				// end at the first flag).
 				sawFlag = true;
@@ -741,15 +703,7 @@ namespace {
 					<< std::endl;
 				return false;
 			}
-			if (a == "--out-pak") {
-				if (!need(out.outPak)) return false;
-			}
-			else if (a == "--scene-index") {
-				std::string v;
-				if (!need(v)) return false;
-				out.sceneIndex = std::stoi(v);
-			}
-			else if (a == "--tour") {
+			if (a == "--tour") {
 				if (!need(out.tour)) return false;
 			}
 			else if (a == "--meshopt") {
@@ -768,16 +722,6 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				out.overdraw = std::stof(v);
-			}
-			else if (a == "--dump-manifest") {
-				std::string v;
-				if (!need(v)) return false;
-				out.dumpManifest = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--verify") {
-				std::string v;
-				if (!need(v)) return false;
-				out.verify = (v == "on" || v == "1" || v == "true");
 			}
 			else if (a == "--lods") {
 				std::string v;
@@ -801,24 +745,6 @@ namespace {
 				out.meshlets = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("meshlets");
 			}
-			else if (a == "--max-verts") {
-				std::string v;
-				if (!need(v)) return false;
-				out.maxVerts = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("maxVerts");
-			}
-			else if (a == "--max-tris") {
-				std::string v;
-				if (!need(v)) return false;
-				out.maxTris = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("maxTris");
-			}
-			else if (a == "--cone-weight") {
-				std::string v;
-				if (!need(v)) return false;
-				out.coneWeight = std::stof(v);
-				out.explicitSet.insert("coneWeight");
-			}
 			else if (a == "--collapse-static") {
 				std::string v;
 				if (!need(v)) return false;
@@ -835,16 +761,6 @@ namespace {
 				if (!need(v)) return false;
 				out.scratchDir = v;
 			}
-			else if (a == "--compress") {
-				std::string v;
-				if (!need(v)) return false;
-				out.compress = (v == "on" || v == "1" || v == "true" || v == "lz4");
-			}
-			else if (a == "--lz4-accel") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lz4Accel = std::max(1, std::stoi(v));
-			}
 			else if (a == "--lightmap") {
 				std::string v;
 				if (!need(v)) return false;
@@ -855,16 +771,6 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				out.lmMetersPerTexel = std::max(std::stof(v), 1e-4f);
-				out.explicitSet.insert("lmMetersPerTexel");
-			}
-			else if (a == "--lm-density") {
-				// Deprecated alias: value is old-semantics texels/meter.
-				std::string v;
-				if (!need(v)) return false;
-				const float tpm = std::max(std::stof(v), 2.0f);
-				out.lmMetersPerTexel = 1.0f / tpm;
-				std::cerr << "warning: --lm-density (texels/m) is deprecated; "
-					"use --lm-meters-per-texel (default 0.25 = 4 texels/m)\n";
 				out.explicitSet.insert("lmMetersPerTexel");
 			}
 			else if (a == "--lm-lobes") {
@@ -927,20 +833,6 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				out.lmLodLock = (v == "hard" || v == "border") ? "hard" : "attr";
-			}
-			else if (a == "--lm-denoise") {
-				std::string v;
-				if (!need(v)) return false;
-				std::cerr << "warning: --lm-denoise is deprecated (off by "
-					"default) and will be removed; the bake stands on its own\n";
-				out.lmDenoise = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--lm-denoise-quality") {
-				std::string v;
-				if (!need(v)) return false;
-				std::cerr << "warning: --lm-denoise-quality is deprecated "
-					"(see --lm-denoise)\n";
-				out.lmDenoiseQuality = (v == "balanced") ? "balanced" : "high";
 			}
 			else if (a == "--lm-debug-pink") {
 				std::string v;
@@ -1213,15 +1105,13 @@ namespace {
 			<< "          IMPORT-ONLY (import.exe <input> / the editor's\n"
 			<< "          MeshImporter derives the artifacts); the artifacts\n"
 			<< "          carry the scenes; the pak cooks ALL of them.)\n"
-			<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
-			<< " [--dump-manifest on|off]\n"
+			<< "          [--tour <scene.tour>] [--overdraw 1.05]\n"
 			<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
-			<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 64]\n"
-			<< "          [--auto-ktx on|off]\n"
-			<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
-			<< "                                  never required)\n"
-			<< "          [--cone-weight 0] [--collapse-static on|off]\n"
-			<< "          [--compress on|off] [--lz4-accel 1]\n"
+		<< "          [--meshlets on|off] (setup-time; fixed 64v/64t canon)\n"
+		<< "          [--auto-ktx on|off]\n"
+		<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
+		<< "                                  never required)\n"
+			<< "          [--collapse-static on|off]\n"
 			<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
 			<< "           --lm-atlas-width 1024 --lm-max-height 8192\n"
 			<< "           --lm-gutter 1 --lm-rays 1024\n"
@@ -1233,8 +1123,6 @@ namespace {
 			<< "           --backend builtin|embree (bake ray-tracing backend)\n"
 			<< "           --sun-color 1,0.95,0.9\n"
 			<< "           --lm-lod-lock attr|hard\n"
-			<< "           --lm-denoise on|off (DEPRECATED)"
-			<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
 			<< "           --lm-debug-pink on|off\n"
 			<< "           --lm-stitch on|off\n"
 			<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
@@ -1290,7 +1178,7 @@ namespace {
 			<< "          textures/cubemaps/<name>.cubemanifest (positions +\n"
 			<< "          radii) next to the KTX blobs; embedded as Texture\n"
 			<< "          blobs at textures/cubemaps/<name>[_N].ktx2 (name\n"
-			<< "          defaults to the out-pak stem). Debug PNGs\n"
+			<< "          defaults to --cubemap-name, else \"sky\"). Debug PNGs\n"
 			<< "          (<name>_N.png faces, <name>_N_mips.png prefilter stack,\n"
 			<< "          <name>_probes.png top-down placement map) land loose\n"
 			<< "          in <contentDir>/textures/cubemaps/. Needs exactly\n"
@@ -1301,8 +1189,7 @@ namespace {
 			<< "real materials; transmissive (Blend) meshes pass light through.\n"
 			<< "--lm-meters-per-texel is a WORLD-space request (m/texel; 0.25 =\n"
 			<< "one texel per 25 cm = 4 texels/m; scaled nodes like sponza's\n"
-			<< "0.008 root convert through their world scale. --lm-density\n"
-			<< "<texels/m> stays as a deprecated converting alias). The atlas\n"
+			<< "0.008 root convert through their world scale). The atlas\n"
 			<< "WIDTH is fixed at --lm-atlas-width; the HEIGHT grows with the\n"
 			<< "content (rows appended at the bottom) up to --lm-max-height â€”\n"
 			<< "only a height-cap overflow (or a chart wider than the atlas)\n"
@@ -1322,8 +1209,8 @@ namespace {
 			<< "the loose textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
 			<< "sidecars ARE the output (they override the last pak's blobs\n"
 			<< "through the runtime VFS overlay). No pak is written; the\n"
-			<< "lightmap/LOD/collapse/cvolume stages are forced off. The out-pak\n"
-			<< "stem still names the capture set.\n"
+			<< "lightmap/LOD/collapse/cvolume stages are forced off (the\n"
+			<< "--cubemap-name, else \"sky\", stem names the capture set).\n"
 			<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
 			<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
 			<< "onto the built cluster before cooking. Tour cook settings\n"
@@ -3574,15 +3461,6 @@ int main(int argc, char** argv) {
 		Usage();
 		return 2;
 	}
-	// Cook writes cooked artifacts, never paks (--out-pak is pak.exe's
-	// flag; accepting it here would imply a pak gets written).
-	if (!args.outPak.empty()) {
-		std::cerr << "--out-pak is a pak.exe flag: cook.exe writes "
-			"cooked artifacts + <stem>.cooked in place (run pak.exe "
-			"to assemble the pak)" << std::endl;
-		return 2;
-	}
-
 	// Quick-bakes mode (--quick-bakes on, the editor's "Update bakes now"
 	// button): the capture stage ONLY, then stop. The heavy stages are
 	// forced off (the cubemap stage needs just the imported trace scene);
@@ -3676,9 +3554,7 @@ int main(int argc, char** argv) {
 
 	smvk::MeshletConfig meshletCfg;
 	meshletCfg.enabled = args.meshlets;
-	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, smvk::kMeshletMaxVertices);
-	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, smvk::kMeshletMaxTriangles);
-	meshletCfg.coneWeight = args.coneWeight;
+	// (canon sizes ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
 	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
 	// re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex
 	// duplication + index remap), so meshlets must NOT be built before
@@ -3794,9 +3670,6 @@ int main(int argc, char** argv) {
 			use("lodRatios", args.lodRatios, k.lodRatios);
 			use("lodError", args.lodError, k.lodError);
 			use("meshlets", args.meshlets, k.meshlets);
-			use("maxVerts", args.maxVerts, k.meshletMaxVerts);
-			use("maxTris", args.maxTris, k.meshletMaxTris);
-			use("coneWeight", args.coneWeight, k.meshletConeWeight);
 			use("autoKtx", args.autoKtx, k.autoKtx);
 			if (!k.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
@@ -3828,11 +3701,9 @@ int main(int argc, char** argv) {
 		opt.enabled = args.meshopt;
 		opt.lodRatios = ParseLodRatios(args.lodRatios);
 		opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
-		meshletCfg.enabled = args.meshlets;
-		meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
-		meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
-		meshletCfg.coneWeight = args.coneWeight;
-		importMeshletCfg = meshletCfg;
+	meshletCfg.enabled = args.meshlets;
+	// (canon sizes ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
+	importMeshletCfg = meshletCfg;
 		if (args.lightmap)
 			importMeshletCfg.enabled = false;
 		// DEFINITION BUILD â€” identical to the editor: empty scene root,
@@ -3963,11 +3834,6 @@ int main(int argc, char** argv) {
 		// then cook the .geometry. Each artifact carries the ONE derived
 		// scene (the source import's default scene) â€” no multi-scene
 		// fan-out, no --scene-index; the pak cooks ALL listed artifacts.
-		if (args.sceneIndex >= 0) {
-			std::cerr << "--scene-index is a glTF-era flag: the .geometry "
-				"artifact carries the one derived scene (dropped)"
-				<< std::endl;
-		}
 		// Resolve + read each .geometry through the VFS (the runtime
 		// content abstraction â€” loose files today; pak-embedded /
 		// patched artifacts land through the same reads later).
@@ -5449,42 +5315,6 @@ int main(int argc, char** argv) {
 				<< atlas.height << "\n" << std::flush;
 		}
 
-		// OIDN denoise pass: RTLightmap over the fitted per-lobe
-		// amplitude layers, in place (see lm_denoise.cpp). Runs after
-		// the (single) bake and all stamping, before the atlas write,
-		// so the pak + .sglm carry denoised data. Failure is non-fatal:
-		// the cook continues on the (possibly partially denoised)
-		// amplitudes.
-		if (args.lmDenoise && !work.empty()) {
-			if (!pakcook::DenoiseAvailable()) {
-				std::cerr << "[LM-DN] --lm-denoise on but this PakCooker "
-					"was built without OIDN (extract the prebuilt release "
-					"into external/oidn, reconfigure with VULKANTOY_OIDN) "
-					"- denoise skipped\n" << std::flush;
-			}
-			else {
-				const auto dnT0 = std::chrono::steady_clock::now();
-				const pakcook::DenoiseQuality dq =
-					args.lmDenoiseQuality == "balanced"
-					? pakcook::DenoiseQuality::Balanced
-					: pakcook::DenoiseQuality::High;
-				if (pakcook::DenoiseLightmapAtlas(atlas, dq)) {
-					std::cerr << "  [LM-DN] atlas denoised in "
-						<< std::chrono::duration<double>(
-							std::chrono::steady_clock::now() - dnT0).count()
-						<< "s\n" << std::flush;
-				}
-				else {
-					std::cerr << "[LM-DN] denoise FAILED - continuing with "
-						"the current amplitudes\n" << std::flush;
-				}
-				if (args.lmRays >= 512)
-					std::cerr << "  [LM-DN] hint: --lm-rays " << args.lmRays
-					<< " is wasted with denoising on - try --lm-rays 128 "
-					"for a ~" << (args.lmRays / 128) << "x faster trace\n"
-					<< std::flush;
-			}
-		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
 		// Write the loose lightmap atlas as gi/<scene>.sglm, using the

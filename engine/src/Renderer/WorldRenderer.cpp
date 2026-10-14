@@ -837,8 +837,9 @@ namespace engine {
 		ApplyHeadlessVolumetricOverrides();
 		ApplyHeadlessPostfxOverrides();
 		// Mesh-shader main leg (VULKANTOY_MESH=0 forces the indexed
-		// multi-draws for A/B captures; =1 forces the mesh dispatch when
-		// the device supports it). The UI checkbox stays live.
+		// multi-draws; =1 forces the mesh dispatch when the device
+		// supports it; unset = on). Setup-time: read once here, no live
+		// toggle (the UI shows the resolved state only).
 		if (const char* meshEnv = std::getenv("VULKANTOY_MESH")) {
 			m_useGfxMesh = std::atoi(meshEnv) != 0;
 		}
@@ -11619,12 +11620,15 @@ namespace engine {
 						if (ImGui::CollapsingHeader("GPU Culling / GfxFilter")) {
 							ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
-							// Task-less mesh-shader main leg (opaque single-sided,
-							// base FS): needs device mesh shaders, else the
-							// indexed multi-draws stay (CPU fallback).
-							ImGui::Checkbox("Enable mesh-shader main leg", &m_useGfxMesh);
-							ImGui::SameLine();
-							ImGui::TextDisabled(smvk::SupportsMeshShaders() ? "" : "(no device mesh shaders)");
+							// Task-less mesh-shader main leg: SETUP-TIME only
+							// (VULKANTOY_MESH=0/1 at startup + device support;
+							// no live toggle — the leg is canonical, not an
+							// A/B switch). Opaque single-sided base FS; without
+							// device mesh shaders the indexed multi-draws stay.
+							ImGui::TextDisabled(smvk::SupportsMeshShaders()
+								? (m_useGfxMesh ? "mesh-shader main leg: on (setup)"
+									: "mesh-shader main leg: off (VULKANTOY_MESH=0)")
+								: "mesh-shader main leg: unavailable (no device mesh shaders)");
 							// Cull-flag toggles write straight into the renderer config
 							// (takes effect next frame). FlipWinding default-off is
 							// pinned by gfxfilter_tests (det>0 == back, exactly).

@@ -143,9 +143,6 @@ namespace {
 		std::vector<std::string> inVfsList;
 		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
-		// Legacy glTF-era scene-selection flag. A .geometry artifact carries
-		// one derived scene, and the artifact cook rejects --scene-index.
-		int sceneIndex = -1;
 		// .tour replay (editor scene overlay): applied to the cook cluster
 		// right after import, before collapse/LOD/bake/serialize. CLI flags
 		// win over tour cook defaults (tracked via explicitSet).
@@ -155,126 +152,13 @@ namespace {
 		float overdraw = 1.05f;
 		bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 		bool verify = true; // re-open the written pak with PakReader (self-check)
-		// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
-		bool lods = false;
-		std::string lodRatios = "0.6,0.3,0.12";
-		float lodError = 0.02f; // relative error budget per simplify call
-		// Meshlet cook path (off by default; indirect-draw foundation only).
-		// Size limits default to the ENGINE's kMeshletMax constants (64v/64t:
-		// one mesh-shader workgroup covers a whole meshlet â€” see meshlet.h);
-		// BuildMeshletsForUpload clamps over-limit configs (stale authored cooks)
-		// down to them.
-		bool meshlets = false;
-		uint32_t maxVerts = smvk::kMeshletMaxVertices;
-		uint32_t maxTris = smvk::kMeshletMaxTriangles;
-		float coneWeight = 0.0f;
 		// KTX auto-convert (on by default): non-KTX sources transcode
 		// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
 		// to the source). Off restores warn-and-skip for non-KTX payloads.
 		bool autoKtx = true;
-		// Collapse static subtrees into per-material mega-mesh blocks.
-		bool collapseStatic = false;
 		// Per-blob LZ4 compression (default on: only stores when it shrinks).
 		bool compress = true;
 		int lz4Accel = 1; // 1 = best ratio, higher = faster
-		// ---- Lightmap cook (--lightmap on) ----
-		bool lightmap = false;
-		// Chart density request, METERS PER TEXEL (world space): 0.25 = one
-		// texel per 25 cm (4 texels/m). The engine chart options speak
-		// texels/m; the cook converts (1/mpt, floored at 2 texels/m).
-		// --lm-density <texels/m> stays as a deprecated converting alias.
-		float lmMetersPerTexel = 0.25f;
-		uint32_t lmLobes = 12;       // 5|6|9|12 â€” PREFERRED max; the bake
-		// selects the smallest count per mesh
-		// whose fit residual fits the budget
-		// (SgLightmapBakeConfig::lobeRelError)
-// FIXED atlas width (texels). The atlas never shrinks below or grows
-// past this width; content that does not fit the width lowers the
-// density. The HEIGHT grows with content (rows appended at the
-// bottom) up to --lm-max-height.
-		uint32_t lmAtlasWidth = 1024;
-		// Atlas height cap (texels): exceeding this makes density convergence
-		// lower the density (or drop meshes at the floor). The default 8192
-		// fits within typical 2D texture limits; test cooks can raise it
-		// (uncompressed GPU cost: width * height * 72 B).
-		uint32_t lmMaxHeight = 8192;
-		// Per-chart inner margin texels. Island-to-island padding is this +
-		// the 2-texel pack gap + the neighbor's margin (4 total at 1); see
-		// SgLightmapAtlas::PackRects. Large gutters are paid per CHART, and
-		// ornamented scenes carry tens of thousands of tiny charts, so keep
-		// this at 1 and let the packer provide the separation.
-		uint32_t lmGutter = 1;
-		// Atlas payload compression: "bc6hopt" (default, Frostbite-inspired:
-		// BC6H with the invalid-texel block-average prefill so uncovered
-		// zeros do not expand a block's endpoint box), "bc6h" (plain BC6H)
-		// or "uncompressed" (9 RGBA16F layers, 72 B/texel). BC6H stores one
-		// texture per lobe (8 B/texel per lobe) â€” ~6x smaller GPU footprint
-		// at 12 lobes, block-compression artifacts on top of the bake.
-		smvk::gi::SgLightmapCompression lmCompress =
-			smvk::gi::SgLightmapCompression::Bc6HOpt;
-		uint32_t lmRays = 1024;      // radiance samples per texel
-		uint32_t lmBounces = 3;
-		// Voxel-remesh scene proxy (bake once on the proxy, UV-transfer to
-		// the real meshes): merged world-space soup of all bake-eligible
-		// meshes is remeshed with meshopt_remesh (solid, Solve) at this
-		// voxel-grid resolution [4..256], then charted + baked once. Every
-		// real mesh inherits the layout via TransferLightmapCharts
-		// (closest-point projection onto the proxy). 0 = legacy per-mesh
-		// LOD0 path (kept for A/B only).
-		int lmProxyRes = 256;
-		// Per-mesh lobe selection budget: relative RMS degradation from the
-		// preferred-count reconstruction the mesh may cost by dropping
-		// lobes. 0.15 keeps contrast-heavy meshes at 9-12 and lets smooth
-		// ones drop lower; 0 pins everything at --lm-lobes.
-		float lmLobeRelErr = 0.15f;
-		// ---- LOD sibling cooking --------------------------------------------
-		// Sibling simplification seam protection: "attr" uses UV attributes
-		// as error terms (default); "hard" locks vertices along every seam
-		// pair (less reduction). In the legacy per-mesh lightmap path, LOD
-		// siblings cook before baking and inherit LOD0 charts via UV transfer.
-		std::string lmLodLock = "attr";
-		// ---- OIDN denoising (fitted atlas amplitudes, cook-time only) ------
-		// Denoise the baked per-lobe amplitude layers with Intel Open Image
-		// Denoise's RTLightmap filter (see lm_denoise.cpp). DEPRECATED: off
-		// by default, kept functional for old scripts; the high-ray-count
-		// bake stands on its own (the overlapping-rect guard rejects most
-		// xatlas atlases anyway).
-		bool lmDenoise = false;
-		std::string lmDenoiseQuality = "high"; // high | balanced
-		// Bright-pink fault map (<scene>_pink.png): chart-id layout with
-		// empty/corrupt/overlapping chunk rects painted solid (255,0,255).
-		// Off by default (extra full-atlas PNG write + O(n^2) overlap
-		// pass on tens of thousands of chunks).
-		bool lmDebugPink = false;
-		// Cross-chart seam stitching (post-bake): boundary texels blend
-		// toward same-normal sibling-chunk texels so duplicated seam
-		// vertices sample one value on both sides; margins re-dilate after.
-		// On by default (boundary-only, deterministic); off for A/B.
-		bool lmStitch = true;
-		// ---- Curvature-weighted density (banding fix on curved shapes) ----
-		// Target normal-turn per texel on smoothly bending surfaces: meshes
-		// bending faster than the target chart at up to --lm-curve-max times
-		// the base density; the fixed-width atlas pays for it in HEIGHT (the
-		// density search only runs when the height cap overflows).
-		// Uniform density reads as faceted/hard-normal shading on curved
-		// geometry (a column at ~20 texels/m turns ~18 deg per texel).
-		// 0 disables.
-		float lmCurveTarget = 7.0f;  // degrees of normal turn per texel
-		float lmCurveMax = 2.5f;     // max per-mesh density multiplier
-		// Comma-separated node-name keywords whose SUBTREES are excluded from
-		// charts/bake entirely (word-boundary match, case-insensitive: "tree"
-		// hits Linden_Tree, not StreetSign; "glass" hits Wine_Glass). Excluded
-		// geometry stays in the trace scene (occludes/casts) and renders
-		// probe/sky-lit at runtime (the FS falls back to probe/grid ambient
-		// for draws with no lightmap chunk). Empty = no exclusion.
-		std::string lmExclude;
-		std::vector<std::string> lmExcludeKeywords;
-		// World-space size gate (meters, bbox diagonal): meshes smaller than
-		// this skip charts/bake entirely (probe/sky-lit at runtime). Bistro
-		// glassware/cutlery bake to a handful of texels at scene density
-		// anyway â€” probes serve them better, and the atlas keeps its texels
-		// for walls and facades. 0 = no gating.
-		float lmExcludeSmall = 0.0f;
 		float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 		float sunElevation = 55.0f;
 		float sunIntensity = 10000.0f;
@@ -287,85 +171,10 @@ namespace {
 		// EnvironmentSettings so covered pixels match the sky fallback
 		// pixels see. 0 = sky-less field (old behavior).
 		float skyIntensity = 600.0f;
-		// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
-		std::vector<std::string> spots;
-		// Ray-tracing backend for the in-pak bake transport (cvolumes,
-		// cubemap captures, lightmaps): "embree" (vendored external/embree,
-		// packet/SIMD traversal â€” the fast default) or "builtin" (the
-		// deterministic binned-SAH BVH reference; agrees within
-		// Monte-Carlo noise).
-		std::string backend = "embree";
 		// Probe-volume sidecars this pak's scenes sample (repeatable):
 		// registers gi/<name>.sggi names into the clusters (bake the matching
 		// volumes with GiBaker --out). Runtime resolves by name.
 		std::vector<std::string> giProbes;
-		// ---- Preconvolved specular cubemaps (--cubemap on) ----
-		// Captures the scene with the CPU path tracer at one or more points
-		// (same transport as CubemapBaker), GGX-prefilters each capture for
-		// the HIGH-frequency specular path (probes/lightmaps already carry
-		// all diffuse + low-frequency specular), and embeds the KTX2 cubes
-		// as Texture blobs at textures/cubemaps/<name>.ktx2 â€” served by
-		// PakBackend through the VFS, so CubemapLibrary::Load finds them
-		// with no code change. Empty cubemapName defaults to the out-pak
-		// stem (sponza.pak -> "sponza", mirroring gi/<scene>.sglm).
-		bool cubemap = false;
-		std::string cubemapName;
-		uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
-		uint32_t cubemapRays = 128;   // GGX importance samples per output texel
-		uint32_t cubemapBounces = 5;  // diffuse path depth after the first hit
-		// Transport samples per capture texel: the NEE sun/spot term is
-		// analytic (clean at 1 spp), but the bounce field is a Monte-Carlo
-		// path estimate â€” 1 spp reads as speckle, not GI, and the capture
-		// stops representing the (multi-ray, denoised) lightmapped scene.
-		// 8 spp smooths the bounce term at ~8x capture cost.
-		uint32_t cubemapSpp = 8;
-		std::vector<std::string> cubemapPos; // repeatable "x,y,z" (empty =
-		// bounds center at cubemapHeight)
-		float cubemapHeight = 1.5f;
-		float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
-		// Sparse adaptive octree placement (Engine/Renderer/cubemap_placement):
-		// occupancy-driven subdivision instead of a uniform lattice â€” open
-		// volumes stay coarse, near-surface cells refine, embedded centers
-		// drop, growth stops at the 32-probe runtime budget. Wins over --grid
-		// when set (explicit --cubemap-pos still wins over both).
-		bool cubemapOctree = false;
-		float cubemapOctreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
-		float cubemapOctreeMin = 2.0f;   // detail floor: never subdivide below this
-		uint32_t cubemapOctreeDepth = 4; // octree depth cap (root = 0)
-		// Artist-pinned extra probes (repeatable "x,y,z"): appended AFTER
-		// grid/octree placement and marked 'pin' in the manifest so the
-		// runtime sorts them first â€” a pinned probe wins weight ties, e.g. a
-		// capture exactly at the chrome ball. Unlike --cubemap-pos these never
-		// replace the automatic placement, they add to it.
-		std::vector<std::string> cubemapExtraPos;
-		// Pinned-probe influence (fade = half). Matches the SceneCubemap
-		// authoring default (1.5m covered almost nothing - probes dropped
-		// out of influence immediately); explicit --cubemap-extra-radius
-		// still overrides per cook.
-		float cubemapExtraRadius = 5.5f;
-		// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
-		// per-capture face strips (+ mip sheets) + a top-down probe map.
-		// Loose files under <contentDir>/textures/cubemaps/, never in the pak.
-		bool cubemapPng = true;
-		bool cubemapPngMips = true;
-		// NOTE: captures store TRUE radiance (physical units); the runtime's
-		// baked path scales by the cubemap panel intensity only, matching the
-		// direct sun view. No bake-time intensity knob by design.
-		// Authored convex GI volumes (tour cvolume nodes) baked INTO the pak
-		// (the --cvolume stage: in-process BakeCvolume, embedded as Texture
-		// blobs under gi/ â€” the runtime App resolves the manifest + volumes
-		// straight out of the pak, no loose sidecars). Default on: authoring
-		// the nodes IS the intent to bake them; --cvolume off skips (GiBaker
-		// loose sidecars stay the on-demand/hand-tuning path).
-		bool cvolume = true;
-		// Quick-bakes mode (the editor's "Update bakes now" button): run the
-		// capture stage ONLY and STOP â€” no pak write, no lightmap/LOD/collapse
-		// stages. The loose sidecars the stage writes
-		// (textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest) are the
-		// output; they override the last pak's blobs through the runtime VFS
-		// overlay by the same paths. Forces --cubemap on and the heavy stages
-		// off; the pak from the last full cook stays untouched.
-		bool quickBakes = false;
 		// Read-only inspection: open an existing pak and print its manifest
 		// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 		std::string dumpPak;
@@ -536,163 +345,6 @@ namespace {
 		return stems;
 	}
 
-	// Authored convex GI volumes baked INTO the pak (the --cvolume stage):
-	// the same engine core as GiBaker (BuildTraceSceneFromCluster +
-	// BakeCvVolume over the tour's cvolume nodes â€” identical bake inputs:
-	// no collapse, no LODs, the definition cluster exactly as GiBaker sees
-	// it). Output = (vfsPath, bytes) pairs for pak embedding: one .cvol
-	// per volume at gi/<pak-stem>_<name>.cvol + the runtime manifest text
-	// at gi/<pak-stem>.cvmanifest (bare-path rows: the runtime's
-	// SplitManifestRow + vfs.ReadBinary resolve them straight out of the
-	// pak through PakBackend's serve-Texture-by-path â€” the proven
-	// cubemap-manifest embed pattern). Returns false on a bake failure â€”
-	// the cook fails loudly (a silently missing GI volume is exactly the
-	// "cooked cvolumes never reached the App" bug).
-	bool BakeAuthoredCvolumes(
-		std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
-		const Args& args, const std::string& sceneId,
-		std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
-		using namespace smvk::gi;
-		std::vector<std::string> manifestRows;
-		for (auto& sc : sceneClusters) {
-			if (!sc || sc->scene.cvolForNode.empty())
-				continue;
-			// Trace scene per cluster: bake inputs mirror the lightmap/
-			// cubemap stages (texture-averaged albedo, cooked-punctual aim
-			// axis, the env-block sun/sky record (EnvForBake â€” ONE authored
-			// sun/sky everywhere), static light harvest) so the volume
-			// matches what the rest of the cook bakes.
-			const BakeEnv be = EnvForBake(*sc, args);
-			GiSceneBuildOptions buildOpts{};
-			uint32_t averaged = 0;
-			for (const auto& [uri, handle] : sc->ListTextureUris()) {
-				const std::vector<uint8_t>* src = sc->GetTextureSource(uri);
-				if (!src || src->empty())
-					continue;
-				std::optional<glm::vec3> avg =
-					GiAverageKtxTexel(std::span<const uint8_t>(*src));
-				if (!avg)
-					continue;
-				buildOpts.texelAvg[handle.index()] = *avg;
-				++averaged;
-			}
-			buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
-			buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
-			buildOpts.env.sunElevationDeg = be.sunElevation;
-			buildOpts.env.sunIntensity = be.sunIntensity;
-			buildOpts.env.skyIntensity = be.skyIntensity;
-			buildOpts.traceBackendEmbree = (args.backend == "embree");
-			GiTraceScene traceScene;
-			std::string terr;
-			BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
-			if (!terr.empty()) {
-				std::cerr << "[CV] trace scene failed: " << terr << std::endl;
-				return false;
-			}
-			std::cout << "  [CV] trace scene: "
-				<< traceScene.Bvh().TriangleCount() << " tris ("
-				<< averaged << " averaged textures)\n" << std::flush;
-			// Deterministic node order (hash-map iteration is not).
-			std::vector<uint32_t> nodes;
-			nodes.reserve(sc->scene.cvolForNode.size());
-			for (const auto& [node, def] : sc->scene.cvolForNode)
-				nodes.push_back(node);
-			std::sort(nodes.begin(), nodes.end());
-			for (uint32_t node : nodes) {
-				if (node >= sc->scene.globalTransform.size())
-					continue;
-				const SceneCvol& cv = sc->scene.cvolForNode[node];
-				// World box decode (GiBaker parity): translation = center,
-				// basis lengths = full extents, normalized basis = the box
-				// axes (an OBB â€” six planes, CvBoxPlanesRotated).
-				const glm::mat4& g = sc->scene.globalTransform[node];
-				const glm::vec3 c(g[3]);
-				glm::vec3 half;
-				glm::mat3 axes;
-				for (int i = 0; i < 3; ++i) {
-					const float len = glm::length(g[i]);
-					half[i] = 0.5f * len;
-					axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len
-						: glm::vec3(0.0f);
-				}
-				std::string name = getNodeName(sc->scene, int(node));
-				if (name.empty())
-					name = "cvol" + std::to_string(node);
-				name = SanitizeVfsToken(name);
-				CvVolumeDef def{};
-				def.name = name;
-				def.priority = cv.priority;
-				def.planes = CvBoxPlanesRotated(c, axes, half,
-					cv.insideFade, cv.outsideFade);
-				std::cout << "  [CV] volume '" << def.name << "': priority="
-					<< def.priority << " spacing=" << cv.spacing
-					<< " planes=" << def.planes.size() << "\n" << std::flush;
-				// Engine defaults (1536 capture dirs, 3 bounces, auto
-				// capture lattice, HW threads): GiBaker stays the tuning
-				// tool for anything finer.
-				CvBakeConfig cfg{};
-				CvVolume vol;
-				CvBakeStats stats;
-				if (!BakeCvVolume(traceScene, def, cv.spacing, cfg, vol,
-					stats, [](const char* line) { std::cout << line; })) {
-					std::cerr << "[CV] bake failed for '" << def.name
-						<< "'\n";
-					return false;
-				}
-				std::vector<uint8_t> bytes;
-				std::string werr;
-				if (!vol.WriteToMemory(bytes, werr)) {
-					std::cerr << "[CV] serialize failed for '" << def.name
-						<< "': " << werr << "\n";
-					return false;
-				}
-				const std::string vfsPath =
-					"gi/" + sceneId + "_" + def.name + ".cvol";
-				out.emplace_back(vfsPath, std::move(bytes));
-				manifestRows.push_back(vfsPath + "  # " + def.name);
-				std::cout << "  [CV] baked '" << def.name << "': dims="
-					<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
-					<< " captures=" << stats.captures
-					<< " probes=" << stats.probes
-					<< " (" << stats.seconds << "s)\n";
-			}
-		}
-		if (manifestRows.empty())
-			return true; // no authored cvolumes: nothing to embed
-		// Runtime manifest: bare-path rows (SplitManifestRow takes the first
-		// token; the '# name' notes are ignored by the parser, read by us).
-		std::string manifest =
-			"# convex GI volumes (cooked into this pak; pak vfs paths)\n";
-		for (const std::string& row : manifestRows)
-			manifest += row + "\n";
-		out.emplace_back("gi/" + sceneId + ".cvmanifest",
-			std::vector<uint8_t>(manifest.begin(), manifest.end()));
-		return true;
-	}
-
-	std::vector<float> ParseLodRatios(const std::string& s) {
-		std::vector<float> out;
-		size_t pos = 0;
-		while (pos <= s.size()) {
-			size_t comma = s.find(',', pos);
-			const std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-			try {
-				const float v = std::stof(tok);
-				if (v > 0.0f && v < 1.0f)
-					out.push_back(v);
-				else
-					std::cerr << "Ignoring out-of-range lod ratio: " << tok << std::endl;
-			}
-			catch (...) {
-				std::cerr << "Ignoring bad lod ratio: " << tok << std::endl;
-			}
-			if (comma == std::string::npos)
-				break;
-			pos = comma + 1;
-		}
-		return out;
-	}
-
 	bool ParseArgs(int argc, char** argv, Args& out) {
 		// POSITIONAL grammar (pak.exe <vfs_path> <artifact...> [--options]):
 		// the first positional = the VFS content root (was --content-dir),
@@ -716,13 +368,7 @@ namespace {
 				dst = argv[++i];
 				return true;
 			};
-			if (a == "--content-dir" || a == "--in-vfs") {
-				std::cerr << "'" << a << "' is gone: positional grammar now"
-					" - pak.exe <vfs_path> <artifact...> [--options]"
-					<< std::endl;
-				return false;
-			}
-			else if (a.size() >= 2 && a[0] == '-' && a[1] == '-') {
+			if (a.size() >= 2 && a[0] == '-' && a[1] == '-') {
 				// The flag chain below parses this argv (the positionals
 				// end at the first flag).
 				sawFlag = true;
@@ -739,11 +385,6 @@ namespace {
 			}
 			if (a == "--out-pak") {
 				if (!need(out.outPak)) return false;
-			}
-			else if (a == "--scene-index") {
-				std::string v;
-				if (!need(v)) return false;
-				out.sceneIndex = std::stoi(v);
 			}
 			else if (a == "--tour") {
 				if (!need(out.tour)) return false;
@@ -775,52 +416,6 @@ namespace {
 				if (!need(v)) return false;
 				out.verify = (v == "on" || v == "1" || v == "true");
 			}
-			else if (a == "--lods") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lods = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("lods");
-			}
-			else if (a == "--lod-ratios") {
-				if (!need(out.lodRatios)) return false;
-				out.explicitSet.insert("lodRatios");
-			}
-			else if (a == "--lod-error") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lodError = std::stof(v);
-				out.explicitSet.insert("lodError");
-			}
-			else if (a == "--meshlets") {
-				std::string v;
-				if (!need(v)) return false;
-				out.meshlets = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("meshlets");
-			}
-			else if (a == "--max-verts") {
-				std::string v;
-				if (!need(v)) return false;
-				out.maxVerts = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("maxVerts");
-			}
-			else if (a == "--max-tris") {
-				std::string v;
-				if (!need(v)) return false;
-				out.maxTris = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("maxTris");
-			}
-			else if (a == "--cone-weight") {
-				std::string v;
-				if (!need(v)) return false;
-				out.coneWeight = std::stof(v);
-				out.explicitSet.insert("coneWeight");
-			}
-	else if (a == "--collapse-static") {
-		std::string v;
-		if (!need(v)) return false;
-		out.collapseStatic = (v == "on" || v == "1" || v == "true");
-		out.explicitSet.insert("collapseStatic");
-	}
 			else if (a == "--auto-ktx") {
 				std::string v;
 				if (!need(v)) return false;
@@ -842,166 +437,11 @@ namespace {
 				if (!need(v)) return false;
 				out.lz4Accel = std::max(1, std::stoi(v));
 			}
-			else if (a == "--lightmap") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lightmap = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("lightmap");
-			}
-			else if (a == "--lm-meters-per-texel") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmMetersPerTexel = std::max(std::stof(v), 1e-4f);
-				out.explicitSet.insert("lmMetersPerTexel");
-			}
-			else if (a == "--lm-density") {
-				// Deprecated alias: value is old-semantics texels/meter.
-				std::string v;
-				if (!need(v)) return false;
-				const float tpm = std::max(std::stof(v), 2.0f);
-				out.lmMetersPerTexel = 1.0f / tpm;
-				std::cerr << "warning: --lm-density (texels/m) is deprecated; "
-					"use --lm-meters-per-texel (default 0.25 = 4 texels/m)\n";
-				out.explicitSet.insert("lmMetersPerTexel");
-			}
-			else if (a == "--lm-lobes") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmLobes = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("lmLobes");
-			}
-			else if (a == "--lm-atlas-width") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmAtlasWidth = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("lmAtlasWidth");
-			}
-			else if (a == "--lm-max-height") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmMaxHeight = std::max<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 256);
-				out.explicitSet.insert("lmMaxHeight");
-			}
-			else if (a == "--lm-gutter") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmGutter = static_cast<uint32_t>(std::stoul(v));
-			}
-			else if (a == "--lm-compress") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmCompress = (v == "bc6h")
-					? smvk::gi::SgLightmapCompression::Bc6H
-					: (v == "uncompressed" || v == "none" || v == "off")
-					? smvk::gi::SgLightmapCompression::Uncompressed
-					: smvk::gi::SgLightmapCompression::Bc6HOpt;
-				out.explicitSet.insert("lmCompress");
-			}
-			else if (a == "--lm-rays") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmRays = static_cast<uint32_t>(std::stoul(v));
-				out.explicitSet.insert("lmRays");
-			}
-			else if (a == "--lm-bounces") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmBounces = static_cast<uint32_t>(std::stoul(v));
-			}
-			else if (a == "--lm-proxy-res") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmProxyRes = std::clamp(std::stoi(v), 0, 256);
-				out.explicitSet.insert("lmProxyRes");
-			}
-			else if (a == "--lm-lobe-relerr") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmLobeRelErr = std::stof(v);
-			}
-			else if (a == "--lm-lod-lock") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmLodLock = (v == "hard" || v == "border") ? "hard" : "attr";
-			}
-			else if (a == "--lm-denoise") {
-				std::string v;
-				if (!need(v)) return false;
-				std::cerr << "warning: --lm-denoise is deprecated (off by "
-					"default) and will be removed; the bake stands on its own\n";
-				out.lmDenoise = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--lm-denoise-quality") {
-				std::string v;
-				if (!need(v)) return false;
-				std::cerr << "warning: --lm-denoise-quality is deprecated "
-					"(see --lm-denoise)\n";
-				out.lmDenoiseQuality = (v == "balanced") ? "balanced" : "high";
-			}
-			else if (a == "--lm-debug-pink") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmDebugPink = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--lm-stitch") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmStitch = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--lm-curve-target") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmCurveTarget = std::stof(v);
-			}
-			else if (a == "--lm-curve-max") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmCurveMax = std::max(std::stof(v), 1.0f);
-			}
-			else if (a == "--lm-exclude" || a == "--lm-exclude-veg") {
-				std::string v;
-				if (!need(v)) return false;
-				out.explicitSet.insert("lmExclude");
-				if (!out.lmExclude.empty() && !v.empty())
-					out.lmExclude += ",";
-				out.lmExclude += v;
-				out.lmExcludeKeywords.clear();
-				std::string low;
-				for (char ch : out.lmExclude)
-					low.push_back(char(std::tolower(uint8_t(ch))));
-				size_t pos = 0;
-				while (pos < low.size()) {
-					const size_t end = low.find(',', pos);
-					const std::string kw =
-						low.substr(pos, end == std::string::npos
-							? std::string::npos : end - pos);
-					if (!kw.empty())
-						out.lmExcludeKeywords.push_back(kw);
-					pos = (end == std::string::npos)
-						? low.size() : end + 1;
-				}
-			}
-			else if (a == "--lm-exclude-small") {
-				std::string v;
-				if (!need(v)) return false;
-				out.lmExcludeSmall = std::max(std::stof(v), 0.0f);
-				out.explicitSet.insert("lmExcludeSmall");
-			}
 			else if (a == "--sun-azimuth") {
 				std::string v;
 				if (!need(v)) return false;
 				out.sunAzimuth = std::stof(v);
 				out.explicitSet.insert("sunAzimuth");
-			}
-			else if (a == "--backend") {
-				std::string v;
-				if (!need(v)) return false;
-				if (v != "builtin" && v != "embree") {
-					std::cerr << "--backend must be builtin|embree" << std::endl;
-					return false;
-				}
-				out.backend = v;
 			}
 			else if (a == "--sun-elevation") {
 				std::string v;
@@ -1037,127 +477,10 @@ namespace {
 				}
 				out.explicitSet.insert("sunColor");
 			}
-			else if (a == "--spot") {
-				std::string v;
-				if (!need(v)) return false;
-				out.spots.push_back(v);
-			}
 			else if (a == "--gi-probe") {
 				std::string v;
 				if (!need(v)) return false;
 				out.giProbes.push_back(v);
-			}
-	else if (a == "--cvolume") {
-		std::string v;
-		if (!need(v)) return false;
-		out.cvolume = (v == "on" || v == "1" || v == "true");
-		out.explicitSet.insert("cvolume");
-	}
-	else if (a == "--quick-bakes") {
-		std::string v;
-		if (!need(v)) return false;
-		out.quickBakes = (v == "on" || v == "1" || v == "true");
-		out.explicitSet.insert("quickBakes");
-	}
-			else if (a == "--cubemap") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemap = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("cubemap");
-			}
-			else if (a == "--cubemap-name") {
-				if (!need(out.cubemapName)) return false;
-				out.explicitSet.insert("cubemapName");
-			}
-			else if (a == "--cubemap-size") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapSize = std::clamp<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 4, 1024);
-				out.explicitSet.insert("cubemapSize");
-			}
-			else if (a == "--cubemap-rays") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapRays = std::max<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 1);
-			}
-			else if (a == "--cubemap-spp") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapSpp = std::clamp<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 1, 64);
-			}
-			else if (a == "--cubemap-bounces") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapBounces = std::min<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 8);
-				out.explicitSet.insert("cubemapBounces");
-			}
-			else if (a == "--cubemap-pos") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapPos.push_back(v);
-			}
-			else if (a == "--cubemap-height") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapHeight = std::stof(v);
-			}
-			else if (a == "--cubemap-grid") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapGrid = std::stof(v);
-			}
-			else if (a == "--cubemap-octree") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapOctree = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--cubemap-octree-max") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapOctreeMax = std::max(0.5f, std::stof(v));
-			}
-			else if (a == "--cubemap-octree-min") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapOctreeMin = std::max(0.25f, std::stof(v));
-			}
-			else if (a == "--cubemap-octree-depth") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapOctreeDepth = std::clamp<uint32_t>(
-					static_cast<uint32_t>(std::stoul(v)), 1, 6);
-			}
-			else if (a == "--cubemap-extra-pos") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapExtraPos.push_back(v);
-			}
-			else if (a == "--cubemap-extra-radius") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapExtraRadius = std::max(0.25f, std::stof(v));
-			}
-			else if (a == "--cubemap-png") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapPng = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--cubemap-png-mips") {
-				std::string v;
-				if (!need(v)) return false;
-				out.cubemapPngMips = (v == "on" || v == "1" || v == "true");
-			}
-			else if (a == "--cubemap-ibl-intensity") {
-				// Removed: captures store true radiance by design (the runtime
-				// scales with the cubemap panel intensity). Reject explicitly
-				// rather than silently ignoring a stale script flag.
-				std::cerr << "--cubemap-ibl-intensity was removed (captures are"
-					" true radiance; use the runtime cubemap intensity)\n";
-				return false;
 			}
 			else if (a == "--dump-pak") {
 				if (!need(out.dumpPak)) return false;
@@ -1209,130 +532,22 @@ namespace {
 		std::cout << "pak.exe <vfs_path> <artifact...> [--options]\n"
 			<< "          pak.exe F:/content models/sponza/Sponza.geometry\n"
 			<< "              --out-pak F:/content/paks/sponza.pak [...]\n"
-			<< "          (positional grammar: the VFS content root + the\n"
-			<< "          ALREADY-PROCESSED .geometry artifact list â€” glTF is\n"
-			<< "          IMPORT-ONLY (import.exe <input> / the editor's\n"
-			<< "          MeshImporter derives the artifacts); the artifacts\n"
-			<< "          carry the scenes; the pak cooks ALL of them.)\n"
-			<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
-			<< " [--dump-manifest on|off]\n"
-			<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
-			<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 64]\n"
+			<< "          (ASSEMBLY ONLY: cooked artifacts + loose bake\n"
+			<< "          sidecars in, .pak out. import.exe derives the\n"
+			<< "          artifacts, cook.exe runs the bakes (GI/cubemaps/\n"
+			<< "          LODs/meshlets) + writes them back with <stem>.cooked.\n"
+			<< "          Pak refuses uncooked/stale artifacts. No bakes run\n"
+			<< "          here, so there are no bake flags.)\n"
+			<< "          [--tour <scene.tour>] [--out-pak <host path>]\n"
+			<< "          [--verify on|off] [--dump-pak <pak path>]\n"
+			<< "          [--dump-manifest on|off] [--dump-node <id> ...]\n"
+			<< "          [--meshopt on|off] [--overdraw 1.05]\n"
 			<< "          [--auto-ktx on|off]\n"
-			<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
-			<< "                                  never required)\n"
-			<< "          [--cone-weight 0] [--collapse-static on|off]\n"
-			<< "          [--compress on|off] [--lz4-accel 1]\n"
-			<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
-			<< "           --lm-atlas-width 1024 --lm-max-height 8192\n"
-			<< "           --lm-gutter 1 --lm-rays 1024\n"
-			<< "           --lm-proxy-res 256 (voxel-remesh scene proxy; 0 = legacy per-mesh)\n"
-			<< "           --lm-compress bc6hopt|bc6h|uncompressed\n"
-			<< "           --lm-bounces 3\n"
-			<< "           --sun-azimuth 30 --sun-elevation 55\n"
-			<< "           --sun-intensity 10000 --sky-intensity 600\n"
-			<< "           --backend builtin|embree (bake ray-tracing backend)\n"
-			<< "           --sun-color 1,0.95,0.9\n"
-			<< "           --lm-lod-lock attr|hard\n"
-			<< "           --lm-denoise on|off (DEPRECATED)"
-			<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
-			<< "           --lm-debug-pink on|off\n"
-			<< "           --lm-stitch on|off\n"
-			<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
-			<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
-			<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
-			<< "          (world sun: when the scene carries no directional light,\n"
-			<< "           one is synthesized from the sun settings above, so the\n"
-			<< "           editor world sun travels pak -> App)\n"
-			<< "          [--gi-probe <name> ...]: registers probe sidecar names\n"
-			<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
-			<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
-			<< "          resolves GI by these names (one per kind for now).\n"
-			<< "          [--cvolume on|off (default on)]: bakes the tour's\n"
-			<< "          authored convex GI volumes (cvolume nodes) in-process\n"
-			<< "          (same engine core as GiBaker) and embeds them into\n"
-			<< "          the pak as Texture blobs under gi/ (volumes at\n"
-			<< "          gi/<pak-stem>_<name>.cvol, the runtime manifest at\n"
-			<< "          gi/<pak-stem>.cvmanifest) â€” the pak is self-contained\n"
-			<< "          GI for the App; loose GiBaker sidecars still override\n"
-			<< "          through the overlay when present.\n"
-			<< "          [--cubemap on|off --cubemap-name <name>\n"
-			<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 5\n"
-			<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
-			<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
-			<< "           --cubemap-octree-max 8.0 --cubemap-octree-min 2.0\n"
-			<< "           --cubemap-octree-depth 4\n"
-			<< "           --cubemap-extra-pos x,y,z (repeatable, pinned)\n"
-			<< "           --cubemap-extra-radius 1.5\n"
-			<< "           --cubemap-spp 8\n"
-			<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
-			<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
-			<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
-			<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
-			<< "          specular). Captures store true radiance (the runtime\n"
-			<< "          scales them with the cubemap panel intensity, so a\n"
-			<< "          mirror matches the sun-lit scene; no bake-time\n"
-			<< "          intensity is frozen in). One capture per\n"
-			<< "          --cubemap-pos (default: scene-bounds center at +height).\n"
-			<< "          If --cubemap-grid > 0, captures a uniform 3D grid\n"
-			<< "          of probes at that spacing (meters) within the scene\n"
-			<< "          bounds; --cubemap-octree on replaces the lattice with\n"
-			<< "          sparse adaptive placement (open volumes stay coarse,\n"
-			<< "          near-surface cells refine to --cubemap-octree-min at\n"
-			<< "          depth --cubemap-octree-depth, embedded centers drop,\n"
-			<< "          growth stops at 32 probes). --cubemap-extra-pos\n"
-			<< "          appends artist-PINNED probes after placement (manifest\n"
-			<< "          'pin' rows sort first at load, so they win weight ties\n"
-			<< "          -- e.g. a capture at the chrome ball; influence\n"
-			<< "          --cubemap-extra-radius, fade half). --cubemap-spp\n"
-			<< "          averages N transport paths per texel so the bounce\n"
-			<< "          field is coherent GI (1 spp = speckle), matching the\n"
-			<< "          multi-ray lightmap look. Multi captures write\n"
-			<< "          textures/cubemaps/<name>.cubemanifest (positions +\n"
-			<< "          radii) next to the KTX blobs; embedded as Texture\n"
-			<< "          blobs at textures/cubemaps/<name>[_N].ktx2 (name\n"
-			<< "          defaults to the out-pak stem). Debug PNGs\n"
-			<< "          (<name>_N.png faces, <name>_N_mips.png prefilter stack,\n"
-			<< "          <name>_probes.png top-down placement map) land loose\n"
-			<< "          in <contentDir>/textures/cubemaps/. Needs exactly\n"
-			<< "          one cooked scene, like --lightmap.\n"
-			<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
-			<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
-			<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots +\n"
-			<< "real materials; transmissive (Blend) meshes pass light through.\n"
-			<< "--lm-meters-per-texel is a WORLD-space request (m/texel; 0.25 =\n"
-			<< "one texel per 25 cm = 4 texels/m; scaled nodes like sponza's\n"
-			<< "0.008 root convert through their world scale. --lm-density\n"
-			<< "<texels/m> stays as a deprecated converting alias). The atlas\n"
-			<< "WIDTH is fixed at --lm-atlas-width; the HEIGHT grows with the\n"
-			<< "content (rows appended at the bottom) up to --lm-max-height â€”\n"
-			<< "only a height-cap overflow (or a chart wider than the atlas)\n"
-			<< "triggers the density search, which then halves until the pack\n"
-			<< "fits and logs the converged texels/m + texels/m^2.\n"
-			<< "--lm-lobes is the PREFERRED (max) SG lobe count: the bake fits\n"
-			<< "5/6/9/12 bases per texel and keeps the smallest count per MESH\n"
-			<< "whose fitted irradiance degrades less than --lm-lobe-relerr\n"
-			<< "(default 0.15) from the preferred-count reconstruction\n"
-			<< "(contrast-heavy meshes keep 9-12, smooth ones drop lower; the\n"
-			<< "runtime fetches only the layers the count needs).\n"
-			<< "--dump-pak <pak path>: read-only inspection of an existing pak\n"
-			<< "(no cooking): prints meshes + lmChunk, materials + texture URIs,\n"
-			<< "and embedded textures.\n"
-			<< "--quick-bakes on: capture-only refresh (the editor's 'Update\n"
-			<< "bakes now' button): runs the --cubemap capture stage and stops -\n"
-			<< "the loose textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
-			<< "sidecars ARE the output (they override the last pak's blobs\n"
-			<< "through the runtime VFS overlay). No pak is written; the\n"
-			<< "lightmap/LOD/collapse/cvolume stages are forced off. The out-pak\n"
-			<< "stem still names the capture set.\n"
-			<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
-			<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
-			<< "onto the built cluster before cooking. Tour cook settings\n"
-			<< "fill flags the CLI did not set (CLI wins). Deterministic:\n"
-			<< "the tour (or --in-vfs names the derived .geometry â€” glTF is\n"
-			<< "IMPORT-ONLY, never a cook input; the editor's open/drop of a\n"
-			<< ".gltf runs the MeshImporter and derives the artifacts beside\n"
-			<< "the source) + identical pak out." << std::endl;
+			<< "          [--sun-azimuth 30 --sun-elevation 55\n"
+			<< "           --sun-intensity 10000 --sky-intensity 6000\n"
+			<< "           --sun-color 1,0.95,0.9]\n"
+			<< "          [--gi-probe <name> ...] [--compress on|off]\n"
+			<< "          [--lz4-accel 1] [--scratch-dir <dir>]\n";
 	}
 
 	// Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -2154,25 +1369,6 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
-	// Bakes moved to cook.exe: pak assembles COOKED artifacts only
-	// (import.exe derives, cook.exe bakes + writes back, pak serializes).
-	// Any explicitly-set bake flag is a hard error — silent ignore would
-	// produce an unbaked pak that looks cooked. Prefix match covers the
-	// detail flags (lm-*, cubemap-*) without enumerating every key.
-	for (const std::string& k : args.explicitSet) {
-		const bool bake =
-			(k.rfind("lm", 0) == 0 || k.rfind("cubemap", 0) == 0
-				|| k.rfind("lod", 0) == 0 || k.rfind("max", 0) == 0
-				|| k == "meshlets" || k == "coneWeight"
-				|| k == "cvolume" || k == "collapseStatic"
-				|| k == "quickBakes");
-		if (bake) {
-			std::cerr << "--" << k << " is a cook.exe flag: pak.exe takes "
-				"cooked artifacts only (run cook.exe first)" << std::endl;
-			return 2;
-		}
-	}
-
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
 		std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
@@ -2225,36 +1421,10 @@ int main(int argc, char** argv) {
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
 	opt.overdrawThreshold = args.overdraw;
-	// Disable the importer's in-pass LOD generation. The legacy per-mesh
-	// lightmap path cooks siblings before baking for UV transfer; the
-	// successful proxy path cooks them afterward from stamped uploads.
-	// Without lightmaps, the final stage produces the usual LOD chain.
-	opt.generateLods = false;
-	opt.lodRatios = ParseLodRatios(args.lodRatios);
-	opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
-	opt.lodSeamLock = (args.lmLodLock == "hard")
-		? smvk::LodSeamLock::Hard : smvk::LodSeamLock::Attribute;
-
-	smvk::MeshletConfig meshletCfg;
-	meshletCfg.enabled = args.meshlets;
-	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, smvk::kMeshletMaxVertices);
-	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, smvk::kMeshletMaxTriangles);
-	meshletCfg.coneWeight = args.coneWeight;
-	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
-	// re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex
-	// duplication + index remap), so meshlets must NOT be built before
-	// it â€” an import-time meshlet set references the PRE-stamp vertex
-	// layout and draws the wrong chart uv per corner at runtime
-	// (stale-window GI corruption). With lightmaps on the importer and
-	// merged-block paths get a DISABLED config, and the cooker builds
-	// meshlets ONCE after the bake from the FINAL stamped topology
-	// (see the "Meshlet restore" stage below the lightmap block). The
-	// rule that keeps GI whole: meshlet generation may partition
-	// triangles, but it must never take part in â€” or see â€” the
-	// parameterization. With --lightmap off nothing mutates uploads
-	// after import, so import-time meshlets stay valid and the pipeline
-	// is unchanged.
-	smvk::MeshletConfig importMeshletCfg = meshletCfg;
+	// Assembly never builds meshlets (they ride the cooked artifacts from
+	// cook.exe; the meshlet restore is cook's stage). Default-constructed
+	// = disabled inline builds = the engine canon (64v/64t per meshlet).
+	smvk::MeshletConfig importMeshletCfg;
 
 	// Scratch cache (--scratch-dir, optional acceleration, NEVER a
 	// precondition): open the editor's artifact registry so texture
@@ -2331,67 +1501,13 @@ int main(int argc, char** argv) {
 				}
 			};
 			use("meshopt", args.meshopt, k.meshopt);
-			use("lods", args.lods, k.lods);
-			use("lightmap", args.lightmap, k.lightmap);
-			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
-			use("lmLobes", args.lmLobes, k.lmLobes);
-			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
-			use("lmRays", args.lmRays, k.lmRays);
-			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
-			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
 			// NOTE: no sun/sky keys here â€” TourCook dropped them; the env
 			// blocks (env.default.* / env.n.*, applied by ApplyTourToCluster
 			// into the cluster scene) are the sun/sky of record for every
 			// stage (see EnvForBake). Legacy tour cook lines carrying the
 			// old keys ignore them (the tour-side parse skips them).
-			use("cubemap", args.cubemap, k.cubemap);
-			use("cubemapName", args.cubemapName, k.cubemapName);
-			use("cubemapSize", args.cubemapSize, k.cubemapSize);
-			use("cubemapRays", args.cubemapRays, k.cubemapRays);
-			// LOD detail + meshlet settings ride the tour cook block
-			// the same way (CLI flags win when explicitly given).
-			use("lodRatios", args.lodRatios, k.lodRatios);
-			use("lodError", args.lodError, k.lodError);
-			use("meshlets", args.meshlets, k.meshlets);
-			use("maxVerts", args.maxVerts, k.meshletMaxVerts);
-			use("maxTris", args.maxTris, k.meshletMaxTris);
-			use("coneWeight", args.coneWeight, k.meshletConeWeight);
 			use("autoKtx", args.autoKtx, k.autoKtx);
-			if (!k.lmExcludeKw.empty() &&
-				!args.explicitSet.contains("lmExclude")) {
-				if (!args.lmExclude.empty())
-					args.lmExclude += ",";
-				args.lmExclude += k.lmExcludeKw;
-				std::cout << "Tour cook default: lmExclude\n";
-			}
 		}
-		// Re-derive keyword list after the merge above.
-		args.lmExcludeKeywords.clear();
-		{
-			std::string low;
-			for (char ch : args.lmExclude)
-				low.push_back(char(std::tolower(uint8_t(ch))));
-			size_t pos = 0;
-			while (pos < low.size()) {
-				const size_t end = low.find(',', pos);
-				const std::string kw = low.substr(pos, end == std::string::npos
-					? std::string::npos : end - pos);
-				if (!kw.empty())
-					args.lmExcludeKeywords.push_back(kw);
-				pos = (end == std::string::npos) ? low.size() : end + 1;
-			}
-		}
-		// Rebuild the meshopt/LOD/meshlet configs from the MERGED
-		// args (the pre-branch build read the pre-merge values; the
-		// tour block may have filled any of them).
-		opt.enabled = args.meshopt;
-		opt.lodRatios = ParseLodRatios(args.lodRatios);
-		opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
-		meshletCfg.enabled = args.meshlets;
-		meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
-		meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
-		meshletCfg.coneWeight = args.coneWeight;
-		importMeshletCfg = meshletCfg;
 		// DEFINITION BUILD â€” identical to the editor: empty scene root,
 		// then the reference bind (root reference #0 imports the source
 		// glTF under the scene root; the rest inline beneath it), then
@@ -2520,11 +1636,6 @@ int main(int argc, char** argv) {
 		// then cook the .geometry. Each artifact carries the ONE derived
 		// scene (the source import's default scene) â€” no multi-scene
 		// fan-out, no --scene-index; the pak cooks ALL listed artifacts.
-		if (args.sceneIndex >= 0) {
-			std::cerr << "--scene-index is a glTF-era flag: the .geometry "
-				"artifact carries the one derived scene (dropped)"
-				<< std::endl;
-		}
 		// Resolve + read each .geometry through the VFS (the runtime
 		// content abstraction â€” loose files today; pak-embedded /
 		// patched artifacts land through the same reads later).
