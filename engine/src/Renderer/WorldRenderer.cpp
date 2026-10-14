@@ -2023,14 +2023,21 @@ namespace engine {
 		// EVSM moment atlases (RGBA32F 2xMSAA + async blur). Non-fatal: when
 		// the device lacks RGBA32F render/blur/filter support (or shaders
 		// fail), EvsmActive() stays false and every consumer keeps the PCF path.
+		// LAZY: the atlases allocate ONLY when the opt-in is on. They are
+		// ~1.7 GiB (dir: 4096x4096 RGBA32F x 3 per flight + MSAA depth) +
+		// ~1 GiB (spot) of dead weight while EVSM is off (the PCF path
+		// never reads them); the per-frame site below destroys them when
+		// the toggle flips off and re-Ensures when it flips on.
 		if (!m_context->SupportsEvsm()) {
 			std::cerr << "[WorldRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) - PCF shadows\n";
 		}
-		if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
-			std::cerr << "[WorldRenderer] EVSM directional atlas unavailable - PCF fallback\n";
-		}
-		if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
-			std::cerr << "[WorldRenderer] EVSM spot atlas unavailable - PCF fallback\n";
+		if (m_evsmEnabled) {
+			if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
+				std::cerr << "[WorldRenderer] EVSM directional atlas unavailable - PCF fallback\n";
+			}
+			if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
+				std::cerr << "[WorldRenderer] EVSM spot atlas unavailable - PCF fallback\n";
+			}
 		}
 		if (EvsmActive()) {
 			std::cerr << "[EVSM] moment atlases ready: depth-only 2xMSAA D32 casters + per-sample"
@@ -4425,6 +4432,85 @@ namespace engine {
 				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
 		}
 
+		// TMP-DIAG (VULKANTOY_MEMDUMP=<frame>): one-shot stderr dump of the
+		// allocation ledger — every image/buffer row (name, category,
+		// geometry, exact bytes) + the per-category sums + the VMA heap
+		// rows. The headless audit companion to the VRAM viewer (Ctrl+M):
+		// rank the rows, name the memory. Remove later.
+		{
+			static const int memDumpFrame = [] {
+				const char* e = std::getenv("VULKANTOY_MEMDUMP");
+				return e ? std::atoi(e) : -1;
+			}();
+			static bool memDumpDone = false;
+			if (memDumpFrame >= 0 && !memDumpDone
+				&& (int)m_frameCounter >= memDumpFrame) {
+				memDumpDone = true;
+				RefreshGpuMemoryStats(true);
+				const auto ledger = m_context->GetMemoryLedger();
+				const auto allocs = m_context->GetMemoryAllocInfos();
+				static const char* const kCatNames[] = {
+					"ImageContent", "ImageTarget", "Vertex", "Index",
+					"Uniform", "Storage", "Indirect", "Staging",
+				};
+				uint64_t ledgerTotal = 0;
+				std::fprintf(stderr, "[MEMDUMP] frame=%llu ledger:\n",
+					(unsigned long long)m_frameCounter);
+				for (uint32_t c = 0;
+						c < smvk::kMemoryCategoryCount; ++c) {
+					ledgerTotal += ledger[c];
+					if (ledger[c] > 0)
+						std::fprintf(stderr,
+							"[MEMDUMP]   %-12s %10.1f MiB\n",
+							kCatNames[c],
+							(double(ledger[c])) / 1048576.0);
+				}
+				std::fprintf(stderr,
+					"[MEMDUMP]   %-12s %10.1f MiB\n", "TOTAL",
+					(double(ledgerTotal)) / 1048576.0);
+				for (size_t i = 0; i < m_gpuMemHeaps.size(); ++i) {
+					const auto& h = m_gpuMemHeaps[i];
+					std::fprintf(stderr,
+						"[MEMDUMP] heap%zu %s size=%.0f budget=%.0f"
+						" usage=%.0f committed=%.0f blocks=%.0f MiB\n",
+						i, h.deviceLocal ? "VRAM" : "HOST",
+						(double(h.heapSizeBytes)) / 1048576.0,
+						(double(h.budgetBytes)) / 1048576.0,
+						(double(h.usageBytes)) / 1048576.0,
+						(double(h.allocationBytes)) / 1048576.0,
+						(double(h.blockBytes)) / 1048576.0);
+				}
+				// Rows sorted by bytes desc (tracked first, then the
+				// untracked images by their listed order).
+				std::vector<const smvk::MemoryAllocInfo*> sorted;
+				for (const auto& a : allocs)
+					sorted.push_back(&a);
+				std::sort(sorted.begin(), sorted.end(),
+					[](const smvk::MemoryAllocInfo* a,
+							const smvk::MemoryAllocInfo* b) {
+						return a->bytes > b->bytes;
+					});
+				for (const smvk::MemoryAllocInfo* a : sorted) {
+					if (a->isImage)
+						std::fprintf(stderr,
+							"[MEMDUMP]   img  %-11s %10.1f MiB"
+							" %ux%ux%u mips=%u layers=%u %s\n",
+							kCatNames[size_t(a->category)],
+							(double(a->bytes)) / 1048576.0,
+							a->extent.width, a->extent.height,
+							a->extent.depth, a->mipLevels,
+							a->arrayLayers,
+							a->name.Str().c_str());
+					else
+						std::fprintf(stderr,
+							"[MEMDUMP]   buf  %-11s %10.1f MiB %s\n",
+							kCatNames[size_t(a->category)],
+							(double(a->bytes)) / 1048576.0,
+							a->name.Str().c_str());
+				}
+				std::fflush(stderr);
+			}
+		}
 		// TMP-DIAG (VULKANTOY_FILTERAUDIT=<frame>): one-shot async download
 		// of the filter chain's per-frame state (draw verdicts + kept bits +
 		// indirect commands + batch headers of the retired flight slice —
@@ -7166,12 +7252,24 @@ namespace engine {
 			m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph,
 				MakeShadowDesc(m_cascadeResolution, m_cascadeLambda));
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
-			// EVSM atlases follow the pipeline-mode member so flipping
-			// m_evsmPipeline (OneFrameLag <-> SameFrame) takes effect on
-			// the next frame without a restart (Ensure is a no-op in
-			// steady state; shaders persist across the flip).
-			m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution));
-			m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
+			// EVSM atlas lifecycle follows the FEATURE FLAG (lazy):
+			// Ensure only when the opt-in is on (also covers the
+			// pipeline-mode flip - a no-op in steady state, shaders
+			// persist); Destroy when it flips off - the off state must
+			// not carry ~2.7 GiB of moment ping-pong the PCF path never
+			// reads. Both are idempotent; consumers gate on EvsmActive()
+			// which requires Valid atlases, so PCF is the path the whole
+			// time they are gone.
+			if (m_evsmEnabled) {
+				m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution));
+				m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
+			}
+			else {
+				if (m_viewportResources.evsmDir.Valid())
+					m_viewportResources.evsmDir.Destroy(*m_rendergraph);
+				if (m_viewportResources.evsmSpot.Valid())
+					m_viewportResources.evsmSpot.Destroy(*m_rendergraph);
+			}
 			// Soft shadows: the softness knob drives the PREFILTER width -
 			// the dominant visible softness (stride-dilated Gaussian; the
 			// per-receiver solar/light-size disk in evsm.hlsli adds the
@@ -13173,6 +13271,106 @@ namespace engine {
 									meshCount,
 									filterIdxBytes > 0
 										? " + filter index copy" : "");
+							}
+							// ---- render targets map (the ask: name every
+							// ImageTarget-category image, exact bytes;
+							// heap-placed/untracked get the computed
+							// estimate marked ~). Scrollable, uncapped:
+							// the target set is ~30 rows — the blob above
+							// becomes an addressable list.
+							ImGui::Separator();
+							ImGui::TextUnformatted(
+								"Render targets (exact; ~ = untracked est)");
+							{
+								auto fmtShort =
+									[](smvk::Format f) -> const char* {
+									switch (f) {
+									case smvk::Format::BC1_RGB_UNorm:
+									case smvk::Format::BC1_RGB_SRGB:
+									case smvk::Format::BC1_RGBA_UNorm:
+									case smvk::Format::BC1_RGBA_SRGB:
+										return "BC1";
+									case smvk::Format::BC2_UNorm:
+									case smvk::Format::BC2_SRGB: return "BC2";
+									case smvk::Format::BC3_UNorm:
+									case smvk::Format::BC3_SRGB: return "BC3";
+									case smvk::Format::BC4_UNorm:
+									case smvk::Format::BC4_SNorm: return "BC4";
+									case smvk::Format::BC5_UNorm:
+									case smvk::Format::BC5_SNorm: return "BC5";
+									case smvk::Format::BC6H_UFloat:
+									case smvk::Format::BC6H_SFloat: return "BC6H";
+									case smvk::Format::BC7_UNorm:
+									case smvk::Format::BC7_SRGB: return "BC7";
+									case smvk::Format::RGBA8_UNorm:
+									case smvk::Format::RGBA8_SRGB:
+										return "RGBA8";
+									case smvk::Format::RGBA16_Float:
+										return "RGBA16F";
+									case smvk::Format::RGBA32_Float:
+										return "RGBA32F";
+									case smvk::Format::R16_Float: return "R16F";
+									case smvk::Format::RG16_Float:
+										return "RG16F";
+									case smvk::Format::R32_Float: return "R32F";
+									case smvk::Format::D32_Float: return "D32F";
+									default: return "fmt?";
+									}
+								};
+								struct TargetRow {
+									const smvk::MemoryAllocInfo* a;
+									uint64_t sortBytes; // max(exact, est)
+									uint64_t est;
+								};
+								std::vector<TargetRow> rows;
+								for (const auto& a : allocs) {
+									if (!a.isImage || a.category
+											!= smvk::MemoryCategory::
+												ImageTarget)
+										continue;
+									// Estimate (the untracked backings
+									// AND a live cross-check on the
+									// tracked ones).
+									uint64_t est = 0;
+									for (uint32_t m = 0;
+											m < a.mipLevels; ++m) {
+										const uint32_t w = std::max(
+											a.extent.width >> m, 1u);
+										const uint32_t h = std::max(
+											a.extent.height >> m, 1u);
+										const uint32_t d = std::max(
+											a.extent.depth >> m, 1u);
+										est += uint64_t(double(w * h * d)
+											* formatBpp(a.format));
+									}
+									est *= a.arrayLayers;
+									rows.push_back({ &a,
+										std::max(a.bytes, est), est });
+								}
+								std::sort(rows.begin(), rows.end(),
+									[](const TargetRow& x,
+											const TargetRow& y) {
+										return x.sortBytes > y.sortBytes;
+									});
+								ImGui::BeginChild("##targets",
+									ImVec2(0.0f, 200.0f), true);
+								for (const TargetRow& r : rows) {
+									const smvk::MemoryAllocInfo& a = *r.a;
+									const uint64_t show = a.bytes > 0
+										? a.bytes : r.est;
+									ImGui::Text("%s%s: %.1f MiB  %ux%u %s"
+										" x%u%s mips=%u layers=%u",
+										a.bytes > 0 ? "" : "~",
+										a.name.Str().c_str(),
+										(double(show)) / 1048576.0,
+										a.extent.width, a.extent.height,
+										fmtShort(a.format),
+										uint32_t(a.samples),
+										a.bytes > 0 && a.bytes != r.est
+											? " (est differs)" : "",
+										a.mipLevels, a.arrayLayers);
+								}
+								ImGui::EndChild();
 							}
 							// ---- top lists (immediate, exact where the
 							// ledger covers; geometry is the formula) ----

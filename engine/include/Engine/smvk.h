@@ -1165,12 +1165,20 @@ void OnResourceExhaustion(const char* site);
  inline constexpr uint32_t kMemoryCategoryCount =
      uint32_t(MemoryCategory::Count);
  // One per-item ledger row (GetMemoryAllocInfos): the exact bytes + the
- // entry's arena-owned debug name + its category.
+ // entry's arena-owned debug name + its category. Images carry their
+ // geometry (the map/display fields; zeros for buffers); bytes == 0 on
+ // an image = UNTRACKED backing (heap-placed design-B target / external
+ // — display it with a computed estimate).
  struct MemoryAllocInfo {
      StringViewT name{};
      MemoryCategory category = MemoryCategory::ImageContent;
      uint64_t bytes = 0;     // exact VMA committed bytes
      bool isImage = true;
+     Extent3D extent{ 0, 0, 0 };
+     Format format = Format::Undefined;
+     SampleCount samples = SampleCount::Count1;
+     uint32_t mipLevels = 0;
+     uint32_t arrayLayers = 0;
  };
 
 

@@ -7538,15 +7538,24 @@ VulkanResourceManager::GetMemoryLedger() {
 
 std::vector<MemoryAllocInfo> VulkanResourceManager::GetMemoryAllocInfos() {
 	std::vector<MemoryAllocInfo> out;
+	// ALL images, tracked or not: bytes == 0 marks an untracked backing
+	// (heap-placed design-B target / external) — the display computes an
+	// estimate from the geometry. The LEDGER sums (GetMemoryLedger)
+	// count tracked bytes only; this list is the complete MAP.
 	images_.forEachHandle([&](ImageHandle handle) {
 		const Image* image = images_.get(handle);
-		if (!image || image->allocBytes == 0)
+		if (!image)
 			return;
 		MemoryAllocInfo info{};
 		info.name = image->name;
 		info.category = ImageLedgerCategory(image->usage);
 		info.bytes = image->allocBytes;
 		info.isImage = true;
+		info.extent = image->extent;
+		info.format = image->format;
+		info.samples = image->samples;
+		info.mipLevels = image->mipLevels;
+		info.arrayLayers = image->arrayLayers;
 		out.push_back(info);
 	});
 	buffers_.forEachHandle([&](BufferHandle handle) {
