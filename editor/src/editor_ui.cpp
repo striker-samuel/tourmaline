@@ -158,6 +158,11 @@ namespace editor {
 						DrawInspector();
 						ImGui::EndTabItem();
 					}
+					if (ImGui::BeginTabItem("Render")) {
+						m_rightTab = 2;
+						DrawRenderSettingsPanel();
+						ImGui::EndTabItem();
+					}
 					if (ImGui::BeginTabItem("UV")) {
 						m_rightTab = 1;
 						DrawUvPanel();

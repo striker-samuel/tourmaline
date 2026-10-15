@@ -529,19 +529,18 @@ void EditorApp::DrawWorldPanel() {
 		"reparent, no delete. The sun + environment (and their "
 		"layered zones) live in the Environment section below — "
 		"scene-light sun edits are undoable light commands; the "
-		"render grade (bloom/tonemap/exposure/AO/SSR) is its own "
-		"section; both ride editorSet tour lines.");
+		"render grade lives in the Inspector's Render tab; both "
+		"ride editorSet tour lines.");
 	// ---- sun + environment + atmosphere: ONE section ----
 	// This used to be a separate "Sun (directional)" block above the
 	// environment rows — the two sun halves doubled the display and
 	// collided their ImGui IDs ("Sun color" etc.); DrawEnvPanel now
 	// carries both sun blocks with ##-tagged rows.
 	DrawEnvPanel();
-	// ---- render settings (the split postfx look) ----
-	// The scene-global grade: bloom on/off + tonemap + exposure + AO +
-	// SSR + motion blur + DOF + AA + cubemap IBL. Separated from the
-	// environment on purpose (a grade is never zoned).
-	DrawRenderSettingsPanel();
+	// NOTE: the render grade (bloom/tonemap/exposure/AO/SSR) is NOT
+	// here anymore — it has its own Inspector "Render" tab
+	// (DrawRenderSettingsPanel), separated on purpose (a grade is
+	// never zoned).
 	// ---- default camera (typed scene-object field) ----
 	// The runtime App spawns at this camera (pose + lens) instead of
 	// the generic bounds framing; the editor orbits freely (per-

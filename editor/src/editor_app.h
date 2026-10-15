@@ -2319,7 +2319,7 @@ private:
 	void DrawTaskWindow();   // blocking modal popup (DrawMenuBar tail)
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
-	int m_rightTab = 0; // Inspector | UV | Cook | Bake | Textures
+	int m_rightTab = 0; // Inspector | UV | Render | Material
 	int m_bottomTab = 0; // bottom dock: Overrides | Console
 	void DrawSceneOutliner();
 	void DrawUvPanel();
