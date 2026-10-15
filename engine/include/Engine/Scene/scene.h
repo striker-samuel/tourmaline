@@ -174,6 +174,34 @@ struct SceneCvol {
 	float outsideFade = 0.1f;// blend width outside each face (m)
 };
 
+// Env-volume inf-mask bits (per-face infinity over the node's transform
+// box, which stays the shape): a set bit pushes that face to -/+infinity.
+// Both bits on one axis = the whole axis unbounded (the legacy INF-scale
+// slab); neither = the box faces. All six = infinite everywhere (Unreal
+// bUnbound). Single-sided bits give half-spaces: e.g. a box with its top
+// face at y=0 plus YNEG covers y <= 0 (underwater); bottom at y=50 plus
+// YPOS covers y >= 50.
+inline constexpr uint32_t kEnvInfNegX = 1u << 0;
+inline constexpr uint32_t kEnvInfPosX = 1u << 1;
+inline constexpr uint32_t kEnvInfNegY = 1u << 2;
+inline constexpr uint32_t kEnvInfPosY = 1u << 3;
+inline constexpr uint32_t kEnvInfNegZ = 1u << 4;
+inline constexpr uint32_t kEnvInfPosZ = 1u << 5;
+
+// Authored env-volume settings (Unreal PostProcessVolume-style blending
+// over the transform-box bounds): node-local like SceneCvol, resolved
+// against globalTransform[node] at use. The LOOK stays in the node's
+// SceneEnv block; this carries the SHAPE-side knobs (bounds/priority/
+// blending). Absent entry = legacy zone (full box, priority from the
+// look block, weight 1, radius 0, enabled).
+struct EnvVolume {
+	uint32_t infMask = 0;      // kEnvInf* bits
+	float priority = 0.0f;     // higher wins (same units as zonePriority)
+	float blendWeight = 1.0f;  // 0..1 global multiplier (Unreal BlendWeight)
+	float blendRadius = 0.0f;  // soft edge outside the faces, meters (Unreal BlendRadius)
+	bool enabled = true;       // Unreal bEnabled
+};
+
 // Authored cubemap capture (editor cubemap node / tour createCubemap):
 // an artist-PINNED specular probe position. The POSITION rides the
 // node's transform (translate, world-resolved); this carries the
@@ -363,6 +391,11 @@ struct Scene {
 	// resolved into `environment` by whoever owns the selection (the
 	// editor; the cook at bake time).
 	std::unordered_map<NodeId, SceneEnv> envForNode;
+	// Node -> env-volume settings (tour envvol.* / editor volume panel;
+	// see EnvVolume). Merged across scenes with the node-offset remap
+	// like envForNode (no first-wins — every block coexists). Absent =
+	// legacy zone behavior.
+	std::unordered_map<NodeId, EnvVolume> envVolumeForNode;
 	// RENDER SETTINGS (see SceneRenderSettings): the resolved GLOBAL
 	// look — what the renderer seeds from. Like `environment`, consumers
 	// read `renderSettings` and nothing else; the editor resolves the
@@ -579,18 +612,25 @@ inline bool IsVisibleNode(const Scene& scene, int node)
 	return true;
 }
 
-// ---- Env zones (see SceneEnv + Scene::envForNode) ------------------------
+// ---- Env zones (see SceneEnv + Scene::envForNode + EnvVolume) -----------
 // A zone = an env node whose transform defines COVERAGE: translation +
-// rotation = the placement, scale = half extents per LOCAL axis (an
-// INFINITE component = unbounded on that axis — an infinite slab). True
-// when `p` lands inside the zone's oriented box.
+// rotation = the placement, scale = half extents per LOCAL axis. The
+// unit cube [-1,1]^3 maps onto the box; an EnvVolume entry (when present)
+// pushes individual faces to infinity (kEnvInf* bits — half-spaces and
+// slabs), while a legacy INFINITE scale component unbounds the whole
+// axis. A disabled volume covers nothing. True when `p` lands inside
+// the zone's (possibly unbounded) oriented box.
 bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p);
-// The zone covering `p`: ZONE PRIORITY descending (SceneEnv::zonePriority),
-// then smallest bounded volume (innermost wins ties; an INFINITE axis
-// counts as unbounded volume and loses against bounded zones); the node id
-// breaks remaining ties for determinism. UINT32_MAX = no zone covers the
-// point (the resolved default environment stands).
+// The zone covering `p`: PRIORITY descending (the volume entry's priority
+// when present, else the look block's zonePriority), then smallest
+// bounded volume (innermost wins ties; an unbounded face/axis counts as
+// unbounded volume and loses against bounded zones); the node id breaks
+// remaining ties for determinism. UINT32_MAX = no zone covers the point
+// (the resolved default environment stands).
 NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p);
+// Effective priority of an env node: the volume entry wins when present,
+// else the look block's zonePriority (legacy zones).
+float ZonePriority(const Scene& scene, NodeId zone, const SceneEnv& env);
 
 // Marks node hidden (self flag; subtree effect via IsVisibleNode).
 // Grows the array if needed.

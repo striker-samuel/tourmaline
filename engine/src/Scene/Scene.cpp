@@ -651,34 +651,71 @@ bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p)
 {
   if (zone >= scene.globalTransform.size())
     return false;
+  // Disabled volumes cover nothing (Unreal bEnabled).
+  const auto vit = scene.envVolumeForNode.find(zone);
+  const bool hasVol = vit != scene.envVolumeForNode.end();
+  if (hasVol && !vit->second.enabled)
+    return false;
+  const uint32_t infMask = hasVol ? vit->second.infMask : 0u;
+  const uint32_t negBit[3] = { kEnvInfNegX, kEnvInfNegY, kEnvInfNegZ };
+  const uint32_t posBit[3] = { kEnvInfPosX, kEnvInfPosY, kEnvInfPosZ };
   const glm::mat4& g = scene.globalTransform[zone];
   float half[3];
   ZoneHalfExtents(scene, zone, half);
   // The transform IS the extents: g maps the unit cube [-1,1]^3 onto
   // the zone box, so the coverage test is the UNIT cube per axis in
-  // g^-1 * p space. A degenerate (zero-length) finite axis flattens the
-  // zone to a plane — nothing lands inside.
+  // g^-1 * p space — except per-face infinity (a set bit pushes that
+  // face out) and degenerate flat axes without bits (an empty zone).
+  // A degenerate axis WITH either bit unbounds the whole axis (faces
+  // coincide at the node origin; same rule as the map raster).
   for (int a = 0; a < 3; ++a) {
-    if (std::isfinite(half[a]) && !(half[a] > 0.0f))
+    const bool flat = std::isfinite(half[a]) && !(half[a] > 0.0f);
+    const bool faceInf = (infMask & negBit[a]) != 0
+      || (infMask & posBit[a]) != 0;
+    if (flat && !faceInf)
       return false; // flat on this axis: an empty zone
   }
-  // INFINITE (or NaN) axes: replace with unit columns BEFORE inverting —
-  // INF entries poison the inverse (INF/INF = NaN in the cofactor
-  // arithmetic), and those axes are skipped by the test anyway.
+  // Per-face infinity: a set inf bit pushes that face to -/+infinity;
+  // a legacy INFINITE (or NaN) scale unbounds the whole axis. INF entries
+  // poison the inverse (INF/INF = NaN in the cofactor arithmetic), so
+  // unbounded axes get unit columns BEFORE inverting — those axes are
+  // skipped by the test anyway.
   glm::mat4 frame = g;
   for (int a = 0; a < 3; ++a) {
-    if (!std::isfinite(half[a]))
+    // Unbounded axes get unit columns BEFORE inverting (INF entries
+    // poison the inverse); a degenerate (zero-length) finite axis with
+    // either inf bit unbounds the whole axis the same way. Tested axes
+    // keep their real columns.
+    const bool flat = std::isfinite(half[a]) && !(half[a] > 0.0f);
+    if (!std::isfinite(half[a])
+      || (flat
+        && ((infMask & negBit[a]) != 0 || (infMask & posBit[a]) != 0)))
       frame[a] = glm::vec4(a == 0, a == 1, a == 2, 0.0f);
   }
   const glm::vec3 local = glm::vec3(
     glm::inverse(frame) * glm::vec4(p, 1.0f));
   for (int a = 0; a < 3; ++a) {
-    if (!std::isfinite(half[a]))
-      continue; // INFINITE extent: unbounded on this axis (a slab)
-    if (!(std::abs(local[a]) <= 1.0f))
+    const bool flat = std::isfinite(half[a]) && !(half[a] > 0.0f);
+    const bool faceInf = (infMask & negBit[a]) != 0
+      || (infMask & posBit[a]) != 0;
+    const bool negInf = !std::isfinite(half[a])
+      || (infMask & negBit[a]) != 0 || (flat && faceInf);
+    const bool posInf = !std::isfinite(half[a])
+      || (infMask & posBit[a]) != 0 || (flat && faceInf);
+    if (!negInf && !(local[a] >= -1.0f))
+      return false;
+    if (!posInf && !(local[a] <= 1.0f))
       return false;
   }
   return true;
+}
+
+float ZonePriority(const Scene& scene, NodeId zone, const SceneEnv& env)
+{
+  const auto it = scene.envVolumeForNode.find(zone);
+  if (it != scene.envVolumeForNode.end())
+    return it->second.priority;
+  return env.zonePriority;
 }
 
 NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
@@ -689,15 +726,22 @@ NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
   for (const auto& [node, env] : scene.envForNode) {
     if (!ZoneCovers(scene, node, p))
       continue;
-    // Bounded volume = the product of the finite half extents; any
-    // INFINITE axis = unbounded volume (loses ties against bounded
-    // zones — "innermost" wins among equal priorities).
+    // Bounded volume = the product of the finite half extents; a
+    // legacy-INFINITE scale or ANY inf-mask face on an axis = unbounded
+    // volume (loses ties against bounded zones — "innermost" wins
+    // among equal priorities).
     float half[3];
     ZoneHalfExtents(scene, node, half);
+    uint32_t infMask = 0u;
+    if (const auto vit = scene.envVolumeForNode.find(node);
+      vit != scene.envVolumeForNode.end())
+      infMask = vit->second.infMask;
+    const uint32_t faceBits[3] = { kEnvInfNegX | kEnvInfPosX,
+      kEnvInfNegY | kEnvInfPosY, kEnvInfNegZ | kEnvInfPosZ };
     double volume = 1.0;
     bool unbounded = false;
     for (int a = 0; a < 3; ++a) {
-      if (!std::isfinite(half[a])) {
+      if (!std::isfinite(half[a]) || (infMask & faceBits[a]) != 0) {
         unbounded = true;
         break;
       }
@@ -705,14 +749,15 @@ NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
     }
     if (unbounded)
       volume = std::numeric_limits<double>::infinity();
+    const float priority = ZonePriority(scene, node, env);
     const bool better = best == UINT32_MAX
-      || env.zonePriority > bestPriority
-      || (env.zonePriority == bestPriority && volume < bestVolume)
-      || (env.zonePriority == bestPriority && volume == bestVolume
+      || priority > bestPriority
+      || (priority == bestPriority && volume < bestVolume)
+      || (priority == bestPriority && volume == bestVolume
         && node < best); // deterministic last-resort tiebreak
     if (better) {
       best = node;
-      bestPriority = env.zonePriority;
+      bestPriority = priority;
       bestVolume = volume;
     }
   }
@@ -888,6 +933,8 @@ void mergeScenes(
     // values are inline structs (no pool indirection, no value offset).
     for (const auto& [node, env] : s->envForNode)
       scene.envForNode[node + offs] = env;
+    for (const auto& [node, vol] : s->envVolumeForNode)
+      scene.envVolumeForNode[node + offs] = vol;
     if (!envTaken && s->envAuthored) {
       scene.environment = s->environment;
       scene.envAuthored = true;

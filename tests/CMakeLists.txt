@@ -440,6 +440,20 @@ set_target_properties(TerrainBlocksTests PROPERTIES
 
 add_test(NAME terrain_blocks_tests COMMAND TerrainBlocksTests)
 
+# Unreal-style env volumes (coverage, priority, tour replay).
+add_executable(EnvVolumeTests test_env_volumes.cpp)
+
+target_link_libraries(EnvVolumeTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(EnvVolumeTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME env_volume_tests COMMAND EnvVolumeTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -467,3 +481,4 @@ vulkantoy_stage_sdl3(RendergraphContractTests)
 vulkantoy_stage_sdl3(TerrainPackTests)
 vulkantoy_stage_sdl3(TerrainHFieldTests)
 vulkantoy_stage_sdl3(TerrainBlocksTests)
+vulkantoy_stage_sdl3(EnvVolumeTests)

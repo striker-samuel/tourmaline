@@ -153,12 +153,77 @@ void EditorApp::DrawEnvPanel() {
 			0.0f, 100.0f, "%.0f");
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip(
-				"Zone overlap resolution: higher priority wins; ties go to\n"
-				"the innermost (smallest bounded volume; an INFINITE scale\n"
-				"axis is an unbounded slab and loses ties). Coverage:\n"
-				"node translate/rotation = placement, scale = half extents\n"
-				"(set an axis to INF for an infinite slab — the transform\n"
-				"gizmo + inspector scale rows author it).");
+				"Legacy zone priority (the look block's): applies while the\n"
+				"node has no volume entry below (the volume priority wins\n"
+				"when present). Overlap: higher wins; ties go innermost.");
+		// VOLUME settings (Unreal-style bounds + blending over the
+		// transform box; see EnvVolume). Created on first edit below
+		// (inheriting the look's priority, so legacy zones don't jump);
+		// absent = legacy zone behavior.
+		auto& scene = m_world->scene;
+		const auto vit =
+			scene.envVolumeForNode.find(m_envCurrent);
+		const bool hasEntry = vit != scene.envVolumeForNode.end();
+		EnvVolume tmp = hasEntry ? vit->second : EnvVolume{};
+		bool volChanged = false;
+		bool priEdited = false;
+		volChanged |= ImGui::Checkbox("Volume enabled##envvol",
+			&tmp.enabled);
+		// Per-face infinity: a set face pushes that box face to
+		// -/+infinity (half-spaces and slabs; all six = infinite
+		// everywhere, the Unreal unbound equivalent).
+		{
+			struct FaceBit { const char* label; uint32_t bit; };
+			const FaceBit faces[6] = { {"X-##envvol", kEnvInfNegX},
+				{"X+##envvol", kEnvInfPosX}, {"Y-##envvol", kEnvInfNegY},
+				{"Y+##envvol", kEnvInfPosY}, {"Z-##envvol", kEnvInfNegZ},
+				{"Z+##envvol", kEnvInfPosZ} };
+			ImGui::TextDisabled("Infinite faces (box face -> +/-inf):");
+			for (int i = 0; i < 6; ++i) {
+				if (i > 0)
+					ImGui::SameLine();
+				bool set = (tmp.infMask & faces[i].bit) != 0;
+				if (ImGui::Checkbox(faces[i].label, &set)) {
+					if (set)
+						tmp.infMask |= faces[i].bit;
+					else
+						tmp.infMask &= ~faces[i].bit;
+					volChanged = true;
+				}
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"Y- + box top at y=0 covers y <= 0 (underwater);\n"
+					"Y+ + box bottom at y=50 covers y >= 50 (high haze).\n"
+					"All six = infinite everywhere. Y-varying zones don't\n"
+					"bake into the XZ weight map (cook warns) — the exact\n"
+					"3D test still covers them.");
+		}
+		priEdited = ImGui::DragFloat("Volume priority##envvol",
+			&tmp.priority, 0.25f, 0.0f, 100.0f, "%.0f");
+		volChanged |= priEdited;
+		volChanged |= ImGui::DragFloat("Blend weight##envvol",
+			&tmp.blendWeight, 0.01f, 0.0f, 1.0f, "%.2f");
+		volChanged |= ImGui::DragFloat("Blend radius (m)##envvol",
+			&tmp.blendRadius, 0.1f, 0.0f, 64.0f, "%.1f");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"Unreal-style blending: weight scales the zone's map\n"
+				"contribution; radius softens the XZ footprint edge at\n"
+				"bake. Radius/weight on Y faces apply to the exact 3D\n"
+				"test only (map bake is XZ-projected).");
+		if (volChanged) {
+			if (!hasEntry && !priEdited) {
+				// Inherit the look's priority so creating the entry
+				// (e.g. to tick an infinite face) doesn't reorder it.
+				tmp.priority = e.zonePriority;
+			}
+			tmp.blendWeight =
+				std::clamp(tmp.blendWeight, 0.0f, 1.0f);
+			if (!(tmp.blendRadius >= 0.0f))
+				tmp.blendRadius = 0.0f;
+			scene.envVolumeForNode[m_envCurrent] = tmp;
+		}
 	}
 	// ---- sun: scene light (content — only when a directional node exists) ----
 	ImGui::Separator();
@@ -605,6 +670,28 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 			continue; // unmapped node: keep the file loadable
 		saveEnv("env.n", uint32_t(cn), m_world->scene.envForNode.at(n));
 	}
+	// Env-volume settings (envvol.n groups, one per node carrying an
+	// entry; see EnvVolume). Sorted + cluster-remapped like env.n above.
+	{
+		std::vector<uint32_t> vnodes;
+		if (m_world) {
+			for (const auto& [n, v] : m_world->scene.envVolumeForNode)
+				vnodes.push_back(n);
+		}
+		std::sort(vnodes.begin(), vnodes.end());
+		for (uint32_t n : vnodes) {
+			const int cn = WorldToCluster(n);
+			if (cn < 0)
+				continue; // unmapped node: keep the file loadable
+			const EnvVolume& v = m_world->scene.envVolumeForNode.at(n);
+			put("envvol.n.node", std::to_string(uint32_t(cn)));
+			put("envvol.n.mask", std::to_string(v.infMask & 63u));
+			put("envvol.n.priority", std::to_string(v.priority));
+			put("envvol.n.weight", std::to_string(v.blendWeight));
+			put("envvol.n.radius", std::to_string(v.blendRadius));
+			put("envvol.n.enabled", v.enabled ? "1" : "0");
+		}
+	}
 	// RENDER SETTINGS (the split postfx look — SceneRenderSettings):
 	// ONE scene-level block (render.* keys, never per-node). The look
 	// publishes with the env (ResolveSceneEnv resolves both).
@@ -673,6 +760,17 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 	EditorEnv cur{};
 	uint32_t currentCluster = UINT32_MAX;
 	bool haveCurrent = false;
+	// Env-volume settings (envvol.n groups, same grouping discipline
+	// as env.n above; applied after the look blocks so priority can
+	// default from them — mirrors the tour replay).
+	struct VolEntry {
+		uint32_t node = UINT32_MAX;
+		EnvVolume vol{};
+	};
+	std::vector<VolEntry> nodeVols;
+	bool inVol = false;
+	uint32_t volCluster = UINT32_MAX;
+	EnvVolume volCur{};
 
 	auto applyField = [](EditorEnv& e, const std::string& f,
 			const std::string& v) {
@@ -775,6 +873,30 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 			currentCluster = uint32_t(StrFloat(val, -1.0f));
 			haveCurrent = true;
 		}
+		else if (key.rfind("envvol.n.", 0) == 0) {
+			if (field == "node") {
+				if (inVol)
+					nodeVols.push_back({ volCluster, volCur });
+				inVol = true;
+				volCluster = uint32_t(StrFloat(val, -1.0f));
+				volCur = EnvVolume{};
+			}
+			else if (inVol) {
+				if (field == "mask") {
+					const int m = int(StrFloat(val, 0.0f));
+					volCur.infMask = uint32_t(m < 0 ? 0 : (m > 63 ? 63 : m));
+				}
+				else if (field == "priority")
+					volCur.priority = StrFloat(val, volCur.priority);
+				else if (field == "weight")
+					volCur.blendWeight = StrFloat(val, volCur.blendWeight);
+				else if (field == "radius")
+					volCur.blendRadius = StrFloat(val, volCur.blendRadius);
+				else if (field == "enabled")
+					volCur.enabled =
+						StrFloat(val, volCur.enabled ? 1.0f : 0.0f) != 0.0f;
+			}
+		}
 		else if (key.rfind("render.", 0) == 0) {
 			// Scene-level render settings (the postfx look).
 			haveRender = true;
@@ -783,6 +905,8 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 	}
 	if (inNode)
 		nodeEnvs.emplace_back(nodeCluster, cur);
+	if (inVol)
+		nodeVols.push_back({ volCluster, volCur });
 	scene.defaultEnvironment = def;
 	if (haveRender) {
 		scene.defaultRenderSettings = render;
@@ -792,6 +916,16 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		const uint32_t wn = ClusterToWorld(cn);
 		if (wn != UINT32_MAX && wn < scene.hierarchy.size())
 			scene.envForNode[wn] = env;
+	}
+	for (const auto& entry : nodeVols) {
+		const uint32_t wn = ClusterToWorld(entry.node);
+		if (wn == UINT32_MAX || wn >= scene.hierarchy.size())
+			continue; // dangling volume: drop (never fatal)
+		EnvVolume vol = entry.vol;
+		vol.blendWeight = std::clamp(vol.blendWeight, 0.0f, 1.0f);
+		if (!(vol.blendRadius >= 0.0f))
+			vol.blendRadius = 0.0f;
+		scene.envVolumeForNode[wn] = vol;
 	}
 	if (haveCurrent) {
 		const uint32_t wn = ClusterToWorld(currentCluster);

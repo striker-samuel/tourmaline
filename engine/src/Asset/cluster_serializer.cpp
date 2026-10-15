@@ -1162,6 +1162,28 @@ bool SerializeClusters(
 		{
 			PutU32(blob, scene.activeEnvironment);
 		}
+		// Env-volume settings (v13; v12 blobs end after the active
+		// environment): node-ordered (node, mask, priority, weight,
+		// radius, enabled-as-u32) rows. Always written (possibly empty)
+		// so the layout is uniform; old readers fail the trailing-bytes
+		// check on v13 blobs (the sanctioned break — no conversions).
+		{
+			std::vector<uint32_t> volNodes;
+			volNodes.reserve(scene.envVolumeForNode.size());
+			for (const auto& [node, vol] : scene.envVolumeForNode)
+				volNodes.push_back(node);
+			std::sort(volNodes.begin(), volNodes.end());
+			PutU32(blob, static_cast<uint32_t>(volNodes.size()));
+			for (const uint32_t node : volNodes) {
+				const EnvVolume& vol = scene.envVolumeForNode.at(node);
+				PutU32(blob, node);
+				PutU32(blob, vol.infMask);
+				PutF32(blob, vol.priority);
+				PutF32(blob, vol.blendWeight);
+				PutF32(blob, vol.blendRadius);
+				PutU32(blob, vol.enabled ? 1u : 0u);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1531,6 +1553,34 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				return fail("truncated scene active environment section");
 			if (scene.activeEnvironment >= nodeCount)
 				scene.activeEnvironment = UINT32_MAX;
+		}
+		// Env-volume settings (v13): u32 rowCount + (node, mask,
+		// priority, weight, radius, enabled-u32) rows. v12 blobs end
+		// after the active environment (no volumes).
+		if (c.off < c.img.size()) {
+			const uint32_t volCount = c.u32();
+			if (!c.ok || volCount > 1024 * 1024)
+				return fail("bad scene env-volume mapping");
+			for (uint32_t i = 0; i < volCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t mask = c.u32();
+				const float priority = c.f32();
+				const float weight = c.f32();
+				const float radius = c.f32();
+				const uint32_t enabled = c.u32();
+				if (!c.ok || node >= nodeCount)
+					return fail("bad scene env-volume mapping");
+				EnvVolume vol{};
+				vol.infMask = mask & 63u;
+				vol.priority = priority;
+				vol.blendWeight = std::clamp(weight, 0.0f, 1.0f);
+				vol.blendRadius =
+					(radius >= 0.0f && std::isfinite(radius)) ? radius : 0.0f;
+				vol.enabled = enabled != 0u;
+				scene.envVolumeForNode[node] = vol;
+			}
+			if (!c.ok)
+				return fail("truncated scene env-volume section");
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

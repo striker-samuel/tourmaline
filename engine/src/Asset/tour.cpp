@@ -2277,6 +2277,17 @@ struct TourEnvBlocks {
 	uint32_t currentCluster = UINT32_MAX;
 	bool haveCurrent = false;
 	bool hasBlocks = false;
+	// Env-volume settings (envvol.n.<i>.<field> keys, grouped by the
+	// node field like env.n entries): same node space as nodeEnvs. Parsed raw; replay validates node range like env
+	// blocks (dangling entries warn + drop). sawPriority tracks an
+	// explicit priority key so replay can default to the look block.
+	struct TourEnvVol {
+		uint32_t node = UINT32_MAX;
+		EnvVolume vol{};
+		bool sawPriority = false;
+	};
+	std::vector<TourEnvVol> nodeVols;
+	bool hasVols = false;
 	// Scene-level render settings (render.* keys — the postfx look,
 	// never per-node). haveRender gates the loader's apply.
 	SceneRenderSettings render{};
@@ -2333,6 +2344,19 @@ void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) 
 	else if (f == "zonePriority") e.zonePriority = TourEnvFloat(v, e.zonePriority);
 	else if (f == "skyboxUri") e.skyboxUri = v;
 }
+// Env-volume field (envvol.<node>.<field> keys — the Unreal-style shape
+// knobs; see EnvVolume). Missing keys keep volume defaults.
+void TourEnvVolApplyField(EnvVolume& vol, const std::string& f,
+	const std::string& v) {
+	if (f == "mask") {
+		const int m = int(TourEnvFloat(v, float(vol.infMask)));
+		vol.infMask = uint32_t(m < 0 ? 0 : (m > 63 ? 63 : m));
+	}
+	else if (f == "priority") vol.priority = TourEnvFloat(v, vol.priority);
+	else if (f == "weight") vol.blendWeight = TourEnvFloat(v, vol.blendWeight);
+	else if (f == "radius") vol.blendRadius = TourEnvFloat(v, vol.blendRadius);
+	else if (f == "enabled") vol.enabled = TourEnvFloat(v, vol.enabled ? 1.0f : 0.0f) != 0.0f;
+}
 // Render-settings block (render.* keys — scene-level, never per-node):
 // the postfx look. Missing keys keep struct defaults.
 void TourRenderApplyField(SceneRenderSettings& r, const std::string& f,
@@ -2370,6 +2394,10 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 	bool inNode = false;
 	uint32_t nodeCluster = UINT32_MAX;
 	SceneEnv cur{};
+	bool inVol = false;
+	uint32_t volCluster = UINT32_MAX;
+	EnvVolume volCur{};
+	bool volSawPriority = false;
 	for (const auto& [key, val] : doc.editorSettings) {
 		const size_t dot = key.find_last_of('.');
 		const std::string field =
@@ -2399,6 +2427,25 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 			eb.currentCluster = uint32_t(TourEnvFloat(val, -1.0f));
 			eb.haveCurrent = true;
 		}
+		// Env-volume settings (envvol.n.<i>.<field>, see EnvVolume):
+		// grouped by the node field like env.n entries above.
+		else if (key.rfind("envvol.n.", 0) == 0) {
+			if (field == "node") {
+				if (inVol)
+					eb.nodeVols.push_back({ volCluster, volCur,
+						volSawPriority });
+				inVol = true;
+				volCluster = uint32_t(TourEnvFloat(val, -1.0f));
+				volCur = EnvVolume{};
+				volSawPriority = false;
+			}
+			else if (inVol) {
+				eb.hasVols = true;
+				if (field == "priority")
+					volSawPriority = true;
+				TourEnvVolApplyField(volCur, field, val);
+			}
+		}
 		else if (key.rfind("render.", 0) == 0) {
 			// Scene-level render settings (the postfx look): render.*
 			// keys, never per-node.
@@ -2408,6 +2455,8 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 	}
 	if (inNode)
 		eb.nodeEnvs.emplace_back(nodeCluster, cur);
+	if (inVol)
+		eb.nodeVols.push_back({ volCluster, volCur, volSawPriority });
 	return eb;
 }
 } // namespace
@@ -3593,6 +3642,31 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.activeEnvironment = activeNode;
 			scene.defaultEnvironment = eb.def;
 			scene.envForNode = std::move(table);
+		}
+		// Env-volume settings (envvol.n entries): independent of the
+		// look blocks above (a volumes-only doc must not fake-author
+		// the look). Priority defaults to the node's look block unless
+		// the tour set one explicitly.
+		if (eb.hasVols) {
+			for (const auto& entry : eb.nodeVols) {
+				const uint32_t n = entry.node;
+				if (n >= scene.hierarchy.size()) {
+					warn("tour: envvol node block #" + std::to_string(n) +
+						" out of range (dropped)");
+					continue;
+				}
+				EnvVolume vol = entry.vol;
+				if (!entry.sawPriority) {
+					const auto lit = scene.envForNode.find(n);
+					if (lit != scene.envForNode.end())
+						vol.priority = lit->second.zonePriority;
+				}
+				vol.blendWeight =
+					std::clamp(vol.blendWeight, 0.0f, 1.0f);
+				if (!(vol.blendRadius >= 0.0f))
+					vol.blendRadius = 0.0f;
+				scene.envVolumeForNode[n] = vol;
+			}
 		}
 		// Render settings (render.* keys — the scene-level postfx look,
 		// see SceneRenderSettings). No blocks: one global record.

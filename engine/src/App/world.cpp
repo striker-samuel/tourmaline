@@ -547,6 +547,10 @@ namespace smvk {
 			// unauthored default never shadows another scene's authored look.
 			for (auto& [node, env] : cs.envForNode)
 				scene.envForNode[node + nodeOffset] = env;
+			// Volume settings ride the same remap (every block coexists;
+			// no first-wins — coverage/priority resolve at use).
+			for (auto& [node, vol] : cs.envVolumeForNode)
+				scene.envVolumeForNode[node + nodeOffset] = vol;
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;

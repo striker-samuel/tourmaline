@@ -6958,13 +6958,24 @@ namespace engine {
 			for (const auto& [node, env] : scene.envForNode) {
 				if (node >= scene.globalTransform.size())
 					continue;
+				// Disabled volumes sit out entirely (Unreal bEnabled).
+				const auto vit = scene.envVolumeForNode.find(node);
+				const bool hasVol = vit != scene.envVolumeForNode.end();
+				if (hasVol && !vit->second.enabled)
+					continue;
+				// Effective priority: the volume entry wins when present,
+				// else the look block (legacy zones).
+				const float effPriority =
+					hasVol ? vit->second.priority : env.zonePriority;
 				const glm::mat4& g = scene.globalTransform[node];
 				// Bounded volume = the product of the finite half
-				// extents; an INFINITE axis = unbounded (loses ties -
-				// "innermost" wins among equal priorities).
+				// extents; a legacy-INFINITE scale = unbounded (loses
+				// ties - "innermost" wins among equal priorities). Any
+				// inf-mask face makes its axis unbounded the same way.
+				const uint32_t infMask = hasVol ? vit->second.infMask : 0u;
 				double volume = 1.0;
-				bool unbounded = false;
-				for (int a = 0; a < 3; ++a) {
+				bool unbounded = (infMask & 63u) != 0;
+				for (int a = 0; a < 3 && !unbounded; ++a) {
 					const float h = glm::length(glm::vec3(g[a]));
 					if (!std::isfinite(h)) {
 						unbounded = true;
@@ -6974,11 +6985,11 @@ namespace engine {
 				}
 				if (unbounded)
 					volume = std::numeric_limits<double>::infinity();
-				cands.push_back({ node, env.zonePriority, volume });
+				cands.push_back({ node, effPriority, volume });
 				// Coverage identity: the zone set + each zone's placement
-				// (translation + extents) + priority (the top-3 channel
-				// selection). Look-only edits keep the hash -> the
-				// rasterize/upload tier skips (the defs recompute below).
+				// (translation + extents) + effective priority + volume
+				// settings (mask/weight/radius). Look-only edits keep the
+				// hash -> the defs recompute below without a rasterize.
 				auto mix = [&](float v) {
 					uint32_t bits;
 					std::memcpy(&bits, &v, 4);
@@ -6991,7 +7002,13 @@ namespace engine {
 				mix(glm::vec3(g[3]).z);
 				for (int a = 0; a < 3; ++a)
 					mix(glm::length(glm::vec3(g[a])));
-				mix(env.zonePriority);
+				mix(effPriority);
+				coverageHash = (coverageHash ^ infMask)
+					* 1099511628211ull;
+				if (hasVol) {
+					mix(vit->second.blendWeight);
+					mix(vit->second.blendRadius);
+				}
 			}
 			std::sort(cands.begin(), cands.end(),
 				[](const Cand& a, const Cand& b) {
@@ -7066,10 +7083,12 @@ namespace engine {
 		}
 
 		// Rasterize coverage into the CPU weight grid (hard inside/outside
-		// per texel; the map's bilinear sampling blends the borders).
-		// XZ projection: local y is ignored (the 2D map; the exact 3D test
-		// lives in ZoneAtPosition). INFINITE extents cover the whole map
-		// extent by construction (the loop is bounded).
+		// per texel, softened by blend radius; the map's bilinear sampling
+		// blends the borders). XZ projection: local y is ignored (the 2D
+		// map; the exact 3D test lives in ZoneAtPosition). INFINITE
+		// extents cover the whole map extent by construction (the loop is
+		// bounded). Y-face infinities cannot project: they warn below and
+		// the exact test still covers them.
 		if (m_world && !cands.empty() && m_envZones.dim > 0) {
 			const ::Scene& scene = m_world->scene;
 			const uint32_t dim = m_envZones.dim;
@@ -7081,21 +7100,61 @@ namespace engine {
 				const glm::mat4& g = scene.globalTransform[c.node];
 				const float hx = glm::length(glm::vec3(g[0]));
 				const float hz = glm::length(glm::vec3(g[2]));
-				const bool infX = !std::isfinite(hx);
-				const bool infZ = !std::isfinite(hz);
-				// Degenerate finite axis: an empty zone - skip it whole.
-				if ((std::isfinite(hx) && !(hx > 0.0f))
-					|| (std::isfinite(hz) && !(hz > 0.0f)))
-					continue;
-				// INF-safe frame (see ZoneCovers): unit columns for the
+				uint32_t infMask = 0u;
+				float blendWeight = 1.0f;
+				float blendRadius = 0.0f;
+				if (const auto vit =
+					scene.envVolumeForNode.find(c.node);
+					vit != scene.envVolumeForNode.end()) {
+					infMask = vit->second.infMask;
+					blendWeight = std::clamp(vit->second.blendWeight,
+						0.0f, 1.0f);
+					blendRadius = vit->second.blendRadius >= 0.0f
+						? vit->second.blendRadius : 0.0f;
+				}
+				if ((infMask
+					& (kEnvInfNegY | kEnvInfPosY)) != 0) {
+					std::cerr << "[Zones] zone " << c.node
+						<< " has infinite Y faces: the XZ bake projects "
+						"the full column (the exact 3D test still applies)\n";
+				}
+				// Per-face infinity: a set bit pushes that face out; a
+				// legacy-INFINITE scale unbounds the whole axis. A
+				// degenerate (zero) finite axis with either bit set
+				// unbounds the axis too (the face sits at the node
+				// origin); without bits it is an empty zone as before.
+				const bool negUnbX = !std::isfinite(hx)
+					|| (infMask & kEnvInfNegX) != 0
+					|| (!(hx > 0.0f)
+						&& (infMask & (kEnvInfNegX | kEnvInfPosX)) != 0);
+				const bool posUnbX = !std::isfinite(hx)
+					|| (infMask & kEnvInfPosX) != 0
+					|| (!(hx > 0.0f)
+						&& (infMask & (kEnvInfNegX | kEnvInfPosX)) != 0);
+				const bool negUnbZ = !std::isfinite(hz)
+					|| (infMask & kEnvInfNegZ) != 0
+					|| (!(hz > 0.0f)
+						&& (infMask & (kEnvInfNegZ | kEnvInfPosZ)) != 0);
+				const bool posUnbZ = !std::isfinite(hz)
+					|| (infMask & kEnvInfPosZ) != 0
+					|| (!(hz > 0.0f)
+						&& (infMask & (kEnvInfNegZ | kEnvInfPosZ)) != 0);
+				if ((std::isfinite(hx) && !(hx > 0.0f)
+					&& !negUnbX && !posUnbX)
+					|| (std::isfinite(hz) && !(hz > 0.0f)
+						&& !negUnbZ && !posUnbZ))
+					continue; // degenerate finite axis: an empty zone
+				// INF-safe frame (see ZoneCovers): unit columns for fully
 				// unbounded axes before inverting.
 				glm::mat4 frame = g;
-				if (infX)
+				if (negUnbX && posUnbX)
 					frame[0] = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
-				if (infZ)
+				if (negUnbZ && posUnbZ)
 					frame[2] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
 				const glm::mat4 inv = glm::inverse(frame);
 				const uint32_t channel = uint32_t(1 + i);
+				const uint32_t wByte = uint32_t(
+					255.0f * blendWeight + 0.5f);
 				for (uint32_t tz = 0; tz < dim; ++tz) {
 					const float wz = (float(tz) + 0.5f) / float(dim)
 						* ws - ws * 0.5f;
@@ -7104,16 +7163,38 @@ namespace engine {
 							* ws - ws * 0.5f;
 						const glm::vec3 local = glm::vec3(
 							inv * glm::vec4(wx, 0.0f, wz, 1.0f));
-						// UNIT-cube test (the transform carries the
-						// extents - see ZoneCovers); XZ projection of the
-						// OBB (the map is 2D, local y ignored).
-						const bool coverX = infX
-							|| std::abs(local.x) <= 1.0f;
-						const bool coverZ = infZ
-							|| std::abs(local.z) <= 1.0f;
-						if (coverX && coverZ)
-							m_envZones.weights[tz * dim + tx]
-							|= 0xFFu << (8 * channel);
+						// UNIT-cube test per face (the transform carries
+						// the extents - see ZoneCovers); XZ projection of
+						// the OBB (the map is 2D, local y ignored).
+						const bool coverX = (negUnbX || local.x >= -1.0f)
+							&& (posUnbX || local.x <= 1.0f);
+						const bool coverZ = (negUnbZ || local.z >= -1.0f)
+							&& (posUnbZ || local.z <= 1.0f);
+						if (!coverX || !coverZ)
+							continue;
+						uint32_t w = wByte;
+						// Blend radius: soften outside the footprint
+						// (world-space distance past the bounded faces;
+						// infinite faces contribute nothing).
+						if (blendRadius > 0.0f) {
+							const float ox =
+								(!negUnbX && !posUnbX && std::isfinite(hx))
+								? std::max(std::abs(local.x) - 1.0f, 0.0f)
+									* hx : 0.0f;
+							const float oz =
+								(!negUnbZ && !posUnbZ && std::isfinite(hz))
+								? std::max(std::abs(local.z) - 1.0f, 0.0f)
+									* hz : 0.0f;
+							const float dist = std::sqrt(ox * ox + oz * oz);
+							const float t = std::clamp(
+								dist / blendRadius, 0.0f, 1.0f);
+							const float s = t * t * (3.0f - 2.0f * t);
+							w = uint32_t(float(w) * (1.0f - s) + 0.5f);
+						}
+						if (w == 0)
+							continue;
+						m_envZones.weights[tz * dim + tx]
+							|= w << (8 * channel);
 					}
 				}
 			}
