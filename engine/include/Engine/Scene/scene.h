@@ -346,13 +346,14 @@ struct Scene {
 	// source (default block or selected node block) into `environment`
 	// on every change; the cook resolves the tour's active block into
 	// the cluster scene; world/pak assembly keeps the first authored
-	// one (see hasEnvironment). Consumers read this and NOTHING else.
+	// one (see envAuthored). Consumers read this and NOTHING else.
 	SceneEnv environment;
-	// True when `environment` was authored (tour block / editor publish /
-	// cook resolve) rather than default-constructed. Gates first-wins
+	// Provenance of `environment` (NOT content state): true when the
+	// active look was authored (tour block / editor publish / cook
+	// resolve) rather than default-constructed. Gates first-wins
 	// resolution across merged scenes: an unauthored default must never
-	// shadow another scene's authored look.
-	bool hasEnvironment = false;
+	// shadow another scene's authored look. Serialized as a u32 flag.
+	bool envAuthored = false;
 	// Authoring default block (the "Editor default" source). The tour
 	// persists it; the editor resolves it into `environment` when no
 	// node block is selected.
@@ -383,6 +384,15 @@ struct Scene {
 	// (generic framing stands). Not to be confused with the per-viewport
 	// editor look-through binding (view state, never persisted).
 	NodeId defaultCameraNode = UINT32_MAX;
+	// ACTIVE ENVIRONMENT (tour editorSettings env.current -> cook -> pak
+	// v12): the selected env block node. The UI edits the live world's
+	// resolved environment directly; scenes may carry MANY env blocks
+	// (envForNode) and this id says which one is active. Cluster-space in
+	// cooked paks, world-space in the live World scene (ResolveAndFixup
+	// remaps). UINT32_MAX = none (the default block renders). First valid
+	// id across merged scenes wins (first scene loaded into the world
+	// wins); the merged look resolves from it when present.
+	NodeId activeEnvironment = UINT32_MAX;
 	// Node -> file-stable identity (32-hex tour UUID). Assigned by the
 	// editor for nodes a Delete line addresses (persisted as `uuid`
 	// lines ahead of the deletes) and recorded back by replay and

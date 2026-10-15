@@ -297,6 +297,10 @@ namespace smvk {
 		// Default-camera first-wins (same contract): the first cluster
 		// scene with an authored default camera wins the world slot.
 		bool defaultCamTaken = false;
+		// Active-environment first-wins (same contract): the first
+		// cluster scene with a selected env block wins the world slot
+		// (first scene loaded into the world wins). Remapped below.
+		bool activeEnvTaken = false;
 
 		// World root node (parent = -1)
 		const int root = addNode(scene, -1, 0);
@@ -543,9 +547,9 @@ namespace smvk {
 			// unauthored default never shadows another scene's authored look.
 			for (auto& [node, env] : cs.envForNode)
 				scene.envForNode[node + nodeOffset] = env;
-			if (!envTaken && cs.hasEnvironment) {
+			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
-				scene.hasEnvironment = true;
+				scene.envAuthored = true;
 				scene.defaultEnvironment = cs.defaultEnvironment;
 				envTaken = true;
 			}
@@ -559,10 +563,34 @@ namespace smvk {
 					cs.defaultCameraNode + nodeOffset;
 				defaultCamTaken = true;
 			}
+			// Active environment (tour env.current / editor selection):
+			// same first-wins remap. The merged look resolves from the
+			// winning id after the loop (see below); UINT32_MAX = none.
+			if (!activeEnvTaken && cs.activeEnvironment != UINT32_MAX
+				&& cs.activeEnvironment < cs.hierarchy.size()) {
+				scene.activeEnvironment =
+					cs.activeEnvironment + nodeOffset;
+				activeEnvTaken = true;
+			}
 
 			if (!cs.hierarchy.empty())
 				markAsChanged(scene, clusterRootNode);
 			++clusterOrdinal;
+		}
+
+		// Active-environment pick: the winning id resolves the merged
+		// look from the merged block table (first scene loaded wins).
+		// Falls back to the first-wins authored/default copy above when
+		// no scene selected a block (or the target went stale).
+		if (scene.activeEnvironment != UINT32_MAX) {
+			const auto it =
+				scene.envForNode.find(scene.activeEnvironment);
+			if (it != scene.envForNode.end()) {
+				scene.environment = it->second;
+				scene.envAuthored = true;
+			}
+			else
+				scene.activeEnvironment = UINT32_MAX;
 		}
 
 		// Layered materials: remap cluster-local layer ids to world material

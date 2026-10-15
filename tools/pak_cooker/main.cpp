@@ -207,7 +207,7 @@ namespace {
 	};
 	BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
 		BakeEnv e{};
-		if (c.scene.hasEnvironment) {
+		if (c.scene.envAuthored) {
 			const SceneEnv& se = c.scene.environment;
 			e.sunAzimuth = se.sunAzimuth;
 			e.sunElevation = se.sunElevation;
@@ -1863,7 +1863,7 @@ int main(int argc, char** argv) {
 	// conversion). A synthesized WorldSun already carries the env's own
 	// values â€” the seed is a no-op there (float-exact round trip).
 	for (auto& sc : sceneClusters) {
-		if (!sc->scene.hasEnvironment)
+		if (!sc->scene.envAuthored)
 			continue; // runtime seeds from the light at load
 		const ::Scene& scene = sc->scene;
 		glm::vec3 toSun(0.0f);

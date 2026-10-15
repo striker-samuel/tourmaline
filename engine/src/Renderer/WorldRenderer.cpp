@@ -4893,7 +4893,7 @@ namespace engine {
 		// fog), else the scattering intensity; the vol* knobs load with
 		// it. The runtime degrade (volumetric -> analytic when the pass
 		// cannot run) lives at the frame-env build.
-		if (m_world->scene.hasEnvironment) {
+		if (m_world->scene.envAuthored) {
 			const SceneEnv& se = m_world->scene.environment;
 			PushVolumetricEnv(se);
 			// Postfx look seed (bloom/tonemap/exposure/AO/SSR/motion
@@ -5131,7 +5131,7 @@ namespace engine {
 		// retouches. Runs only when the scene carries no authored look
 		// (old content without env blocks); a tour/cooked env always wins.
 		if (seedEnvSun && sunTaken && m_world
-			&& !m_world->scene.hasEnvironment) {
+			&& !m_world->scene.envAuthored) {
 			const glm::vec3 t = glm::normalize(electedSunDir);
 			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
 			sceneEnv.sunElevation = glm::degrees(std::asin(
@@ -5140,7 +5140,7 @@ namespace engine {
 			sceneEnv.sunColor = electedSunColor;
 			sceneEnv.sunIntensity = electedSunIntensity;
 			m_world->scene.environment = sceneEnv;
-			m_world->scene.hasEnvironment = true;
+			m_world->scene.envAuthored = true;
 			std::cerr << "[Scene] resolved sun: az=" << sceneEnv.sunAzimuth
 				<< " el=" << sceneEnv.sunElevation
 				<< " I=" << sceneEnv.sunIntensity << "\n";
@@ -6953,7 +6953,7 @@ namespace engine {
 		uint64_t coverageHash = 1469598103934665603ull;
 		if (m_world) {
 			const ::Scene& scene = m_world->scene;
-			resolved = scene.hasEnvironment
+			resolved = scene.envAuthored
 				? &scene.environment : nullptr;
 			for (const auto& [node, env] : scene.envForNode) {
 				if (node >= scene.globalTransform.size())
@@ -11271,7 +11271,7 @@ namespace engine {
 							}
 							else {
 								SceneEnv& se = m_world->scene.environment;
-								auto authored = [&]() { m_world->scene.hasEnvironment = true; };
+								auto authored = [&]() { m_world->scene.envAuthored = true; };
 								ImGui::ColorEdit3("Sky color", &se.skyColor.x);
 								ImGui::DragFloat("Sky intensity (lux)", &se.skyIntensity,
 									5.0f, 0.0f, 10000.0f, "%.0f");
@@ -11452,7 +11452,7 @@ namespace engine {
 							}
 							else {
 								SceneEnv& se = m_world->scene.environment;
-								auto authored = [&]() { m_world->scene.hasEnvironment = true; };
+								auto authored = [&]() { m_world->scene.envAuthored = true; };
 								const char* tiers[3] = {
 									"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
 								};

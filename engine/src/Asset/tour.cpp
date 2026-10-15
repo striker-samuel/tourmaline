@@ -3576,17 +3576,21 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 						" out of range (dropped)");
 			}
 			SceneEnv active = eb.def;
+			uint32_t activeNode = UINT32_MAX;
 			if (eb.haveCurrent) {
 				auto it = table.find(eb.currentCluster);
-				if (it != table.end())
+				if (it != table.end()) {
 					active = it->second;
+					activeNode = eb.currentCluster;
+				}
 				else
 					warn("tour: env.current node #" +
 						std::to_string(eb.currentCluster) +
 						" missing (default renders)");
 			}
 			scene.environment = active;
-			scene.hasEnvironment = true;
+			scene.envAuthored = true;
+			scene.activeEnvironment = activeNode;
 			scene.defaultEnvironment = eb.def;
 			scene.envForNode = std::move(table);
 		}

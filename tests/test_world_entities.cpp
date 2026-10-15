@@ -354,6 +354,83 @@ void TestEnvZones() {
 	}
 }
 
+void TestActiveEnvironmentFirstWins() {
+	// Cluster carrying env blocks: root + numbered env nodes, one
+	// elevation per block (exact floats — resolve copies verbatim).
+	auto addEnvBlock = [](smvk::Cluster& cl, int parent, float sunEl) {
+		const int n = addNode(cl.scene, parent, 0);
+		SceneEnv e{};
+		e.sunElevation = sunEl;
+		cl.scene.envForNode[uint32_t(n)] = e;
+		return n;
+	};
+	// First scene loaded wins: A selects el 20, B selects el 30.
+	// A's stored look is deliberately stale (el 99) so only the pick —
+	// not the first-wins value copy — can produce el 20.
+	{
+		smvk::World w;
+		auto a = std::make_unique<smvk::Cluster>(nullptr);
+		const int aRoot = addNode(a->scene, -1, 0);
+		addEnvBlock(*a, aRoot, 10.0f);
+		const int aSel = addEnvBlock(*a, aRoot, 20.0f);
+		a->scene.activeEnvironment = uint32_t(aSel);
+		a->scene.environment.sunElevation = 99.0f;
+		a->scene.envAuthored = true;
+		w.RegisterCluster(std::move(a));
+		auto b = std::make_unique<smvk::Cluster>(nullptr);
+		const int bRoot = addNode(b->scene, -1, 0);
+		const int bSel = addEnvBlock(*b, bRoot, 30.0f);
+		b->scene.activeEnvironment = uint32_t(bSel);
+		b->scene.envAuthored = true;
+		w.RegisterCluster(std::move(b));
+		w.ResolveAndFixup_clusters();
+		Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.kept");
+		const auto it =
+			w.scene.envForNode.find(w.scene.activeEnvironment);
+		Check(it != w.scene.envForNode.end(), "actenv.in-table");
+		Check(it != w.scene.envForNode.end()
+			&& it->second.sunElevation == 20.0f, "actenv.first-wins");
+		Check(w.scene.environment.sunElevation == 20.0f,
+			"actenv.resolved-over-stale");
+		Check(w.scene.envAuthored, "actenv.authored");
+	}
+	// An unselected first scene defers: A selects nothing, B's pick wins.
+	{
+		smvk::World w;
+		auto a = std::make_unique<smvk::Cluster>(nullptr);
+		const int aRoot = addNode(a->scene, -1, 0);
+		addEnvBlock(*a, aRoot, 10.0f);
+		a->scene.activeEnvironment = UINT32_MAX;
+		w.RegisterCluster(std::move(a));
+		auto b = std::make_unique<smvk::Cluster>(nullptr);
+		const int bRoot = addNode(b->scene, -1, 0);
+		const int bSel = addEnvBlock(*b, bRoot, 30.0f);
+		b->scene.activeEnvironment = uint32_t(bSel);
+		w.RegisterCluster(std::move(b));
+		w.ResolveAndFixup_clusters();
+		Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.defer-kept");
+		Check(w.scene.environment.sunElevation == 30.0f,
+			"actenv.defer-resolved");
+	}
+	// Dangling selection (valid node, no block) clears to none and the
+	// look falls back to the default block.
+	{
+		smvk::World w;
+		auto a = std::make_unique<smvk::Cluster>(nullptr);
+		const int aRoot = addNode(a->scene, -1, 0);
+		addEnvBlock(*a, aRoot, 10.0f);
+		const int aDangle = addNode(a->scene, aRoot, 0);
+		a->scene.activeEnvironment = uint32_t(aDangle);
+		a->scene.envAuthored = true;
+		w.RegisterCluster(std::move(a));
+		w.ResolveAndFixup_clusters();
+		Check(w.scene.activeEnvironment == UINT32_MAX,
+			"actenv.dangling-cleared");
+		Check(w.scene.environment.sunElevation == 55.0f,
+			"actenv.dangling-fallback");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -361,6 +438,7 @@ int main() {
 	TestDecalEntities();
 	TestBakePayloadChannel();
 	TestEnvZones();
+	TestActiveEnvironmentFirstWins();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

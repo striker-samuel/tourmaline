@@ -1230,7 +1230,7 @@ int main(int argc, char** argv) {
 	// so the sky intensity is meaningful; emissive stays runtime-only.
 	if (!args.emissive)
 		std::cout << "  note: --emissive off (emissive is runtime-only)\n";
-	if (cluster->scene.hasEnvironment) {
+	if (cluster->scene.envAuthored) {
 		const SceneEnv& se = cluster->scene.environment;
 		buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
 		buildOpts.env.sunElevationDeg = se.sunElevation;

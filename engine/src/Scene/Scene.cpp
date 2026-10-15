@@ -445,7 +445,7 @@ void loadScene(const char* fileName, Scene& scene)
   // Authored environment section (v6): u32 authored flag + resolved-look
   // record + default-block record + per-node blocks (u32 count + (node,
   // record) pairs in node order). Absent on older files (EOF) — the
-  // struct defaults stand and hasEnvironment stays false.
+  // struct defaults stand and envAuthored stays false.
   {
     uint32_t envFlag = 0;
     if (fread(&envFlag, sizeof(envFlag), 1, f) == 1) {
@@ -465,7 +465,7 @@ void loadScene(const char* fileName, Scene& scene)
         }
         if (ok) {
           scene.environment = resolved;
-          scene.hasEnvironment = envFlag != 0;
+          scene.envAuthored = envFlag != 0;
           scene.defaultEnvironment = def;
           scene.envForNode = std::move(table);
         }
@@ -588,7 +588,7 @@ void saveScene(const char* fileName, const Scene& scene)
   // record) pairs). Always written; old loaders stop after the dither
   // section (trailing bytes ignored).
   {
-    const uint32_t envFlag = scene.hasEnvironment ? 1u : 0u;
+    const uint32_t envFlag = scene.envAuthored ? 1u : 0u;
     fwrite(&envFlag, sizeof(envFlag), 1, f);
     saveEnvFloats(f, scene.environment);
     saveEnvFloats(f, scene.defaultEnvironment);
@@ -888,9 +888,9 @@ void mergeScenes(
     // values are inline structs (no pool indirection, no value offset).
     for (const auto& [node, env] : s->envForNode)
       scene.envForNode[node + offs] = env;
-    if (!envTaken && s->hasEnvironment) {
+    if (!envTaken && s->envAuthored) {
       scene.environment = s->environment;
-      scene.hasEnvironment = true;
+      scene.envAuthored = true;
       scene.defaultEnvironment = s->defaultEnvironment;
       envTaken = true;
     }

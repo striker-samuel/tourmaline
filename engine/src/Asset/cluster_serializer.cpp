@@ -1103,7 +1103,7 @@ bool SerializeClusters(
 		// fail the trailing-bytes check on v9 blobs (same contract as
 		// the v6/v7/v8 additions).
 		{
-			PutU32(blob, scene.hasEnvironment ? 1u : 0u);
+			PutU32(blob, scene.envAuthored ? 1u : 0u);
 			PutSceneEnv(blob, scene.environment);
 			PutSceneEnv(blob, scene.defaultEnvironment);
 			std::vector<std::pair<uint32_t, SceneEnv>> envPairs(
@@ -1152,6 +1152,15 @@ bool SerializeClusters(
 				PutU32(blob, node);
 				PutU32(blob, it->second);
 			}
+		}
+		// Active environment (v12; v11 blobs end after the decal links):
+		// the selected env block node (see Scene::activeEnvironment). One
+		// u32 node id (UINT32_MAX = none, the default block renders).
+		// Always written so the layout is uniform; old readers fail the
+		// trailing-bytes check on v12 blobs (the sanctioned break — no
+		// conversions).
+		{
+			PutU32(blob, scene.activeEnvironment);
 		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
@@ -1442,7 +1451,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		// Authored environment (v9): u32 authored flag + resolved-look
 		// record + default-block record + per-node blocks (u32 count +
 		// (node, record) pairs). v8 blobs end after the cameras — the
-		// struct defaults stand and hasEnvironment stays false.
+		// struct defaults stand and envAuthored stays false.
 		if (c.off < c.img.size()) {
 			const uint32_t envFlag = c.u32();
 			SceneEnv resolved = c.sceneEnv();
@@ -1461,7 +1470,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			if (!c.ok)
 				return fail("truncated scene environment section");
 			scene.environment = resolved;
-			scene.hasEnvironment = envFlag != 0;
+			scene.envAuthored = envFlag != 0;
 			scene.defaultEnvironment = def;
 			scene.envForNode = std::move(table);
 		}
@@ -1512,6 +1521,16 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			}
 			if (!c.ok)
 				return fail("truncated scene decals section");
+		}
+		// Active environment (v12): the selected env block node (see the
+		// writer above). v11 blobs end after the decal links (none). A
+		// dangling target clears to none like defaultCameraNode.
+		if (c.off < c.img.size()) {
+			scene.activeEnvironment = c.u32();
+			if (!c.ok)
+				return fail("truncated scene active environment section");
+			if (scene.activeEnvironment >= nodeCount)
+				scene.activeEnvironment = UINT32_MAX;
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

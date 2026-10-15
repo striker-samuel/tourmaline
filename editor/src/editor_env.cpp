@@ -75,7 +75,11 @@ void EditorApp::ResolveSceneEnv() {
 			m_envCurrent = UINT32_MAX;
 	}
 	m_world->scene.environment = *src;
-	m_world->scene.hasEnvironment = true;
+	m_world->scene.envAuthored = true;
+	// Persist the selection (default block = none): cluster resolve
+	// merges it first-valid-wins like defaultCameraNode, so the pick
+	// survives pak round-trips instead of living only in editor state.
+	m_world->scene.activeEnvironment = m_envCurrent;
 	// Render settings resolve alongside (the split look is scene-global:
 	// no source selection — the default block IS the look).
 	m_world->scene.renderSettings = m_world->scene.defaultRenderSettings;
