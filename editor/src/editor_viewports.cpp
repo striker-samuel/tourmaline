@@ -1052,8 +1052,9 @@ void EditorApp::DrawPanelSplitters() {
 	// m_menuH = menu bar + tool topbar (the panels start below both).
 	const float menuH = m_menuH;
 	// Column splitters stop at the bottom dock (drag there resizes the
-	// side panel without fighting the dock's own handle).
-	const float colH = ds.y - menuH - m_bottomDockH;
+	// side panel without fighting the dock's own handle). Everything
+	// stops above the status strip.
+	const float colH = ds.y - menuH - m_bottomDockH - kEditorStatusH;
 	bool committed = false;
 	committed |= SplitterHandle("##splitL",
 		ImVec2(m_outlinerW - 3.0f, menuH),
@@ -1061,8 +1062,8 @@ void EditorApp::DrawPanelSplitters() {
 	committed |= SplitterHandle("##splitR",
 		ImVec2(ds.x - m_inspectorW - 3.0f, menuH),
 		ImVec2(6.0f, colH), false, &m_inspectorW, 200.0f, 720.0f, true);
-	committed |= SplitterHandle("##splitB",
-		ImVec2(0.0f, ds.y - m_bottomDockH - 3.0f),
+		committed |= SplitterHandle("##splitB",
+			ImVec2(0.0f, ds.y - m_bottomDockH - kEditorStatusH - 3.0f),
 		ImVec2(ds.x, 6.0f), true, &m_bottomDockH, 120.0f, 600.0f, true);
 	if (committed)
 		SavePrefs();

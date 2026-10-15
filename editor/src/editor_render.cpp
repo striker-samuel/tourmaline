@@ -678,7 +678,7 @@ namespace editor {
 		if (m_uiMode) {
 			area.x = m_outlinerW;
 			area.w = float(extent.width) - m_outlinerW - m_inspectorW;
-			area.h -= m_bottomDockH;
+			area.h -= m_bottomDockH + kEditorStatusH;
 		}
 		area.w = std::max(area.w, 1.0f);
 		area.h = std::max(area.h, 1.0f);

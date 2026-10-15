@@ -135,7 +135,7 @@ namespace editor {
 		// panel for a fullscreen viewport (the menu bar + overlay remain).
 		if (m_uiMode) {
 			ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, vh - menuH - m_bottomDockH),
+			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, vh - menuH - m_bottomDockH - kEditorStatusH),
 				ImGuiCond_Always);
 			if (ImGui::Begin("Outliner", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -147,7 +147,7 @@ namespace editor {
 			ImGui::SetNextWindowPos(
 				ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_inspectorW, menuH),
 				ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - m_bottomDockH),
+			ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - m_bottomDockH - kEditorStatusH),
 				ImGuiCond_Always);
 			if (ImGui::Begin("Inspector", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -179,8 +179,9 @@ namespace editor {
 			ImGui::End();
 
 			// Bottom dock (title-less, tabbed): the wide-override rule table
-			// lives next to the Console so both stay full-width.
-			ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomDockH), ImGuiCond_Always);
+			// lives next to the Console so both stay full-width. Sits
+			// above the status strip (see DrawStatusBar).
+			ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomDockH - kEditorStatusH), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(
 				ImVec2(float(ImGui::GetIO().DisplaySize.x), m_bottomDockH),
 				ImGuiCond_Always);
@@ -212,6 +213,7 @@ namespace editor {
 				}
 			}
 			ImGui::End();
+			DrawStatusBar();
 		} // m_uiMode
 
 		DrawPanelSplitters(); // resize handles between panels and viewport
@@ -229,6 +231,54 @@ namespace editor {
 		// while disabled: one flag check.
 		if (smvk::profiler::FrameHistogramEnabled())
 			smvk::profiler::DrawFrameHistogramUi();
+	}
+
+	// ---- Maya-like bottom status strip (process progress) --------------
+	// Always visible in UI mode: left = what is happening (task stage,
+	// sticky result, else Ready), right = determinate progress while a
+	// task reports fractions, else a reopen button for backgrounded
+	// tasks. Derived per frame from live state — no stored message.
+	void EditorApp::DrawStatusBar() {
+		const float vw = float(ImGui::GetIO().DisplaySize.x);
+		const float vh = float(ImGui::GetIO().DisplaySize.y);
+		ImGui::SetNextWindowPos(ImVec2(0, vh - kEditorStatusH),
+			ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(vw, kEditorStatusH),
+			ImGuiCond_Always);
+		if (!ImGui::Begin("##statusbar", nullptr,
+				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+				ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+				ImGuiWindowFlags_NoScrollbar))
+			return;
+		const bool running = m_cookRunning || m_bakeRunning;
+		if (running) {
+			ImGui::TextUnformatted(m_taskWindow.stage.c_str());
+			ImGui::SameLine(vw - 260.0f);
+			if (m_taskWindow.progress >= 0.0f) {
+				ImGui::ProgressBar(m_taskWindow.progress,
+					ImVec2(200.0f, 0.0f), "");
+			}
+			else {
+				ImGui::ProgressBar(-1.0f, ImVec2(200.0f, 0.0f),
+					"working...");
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Task")) {
+				ReopenTaskWindow();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Bring the task window back.");
+		}
+		else if (m_taskWindow.done) {
+			ImGui::TextColored(m_taskWindow.ok
+				? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
+				: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
+				"%s", m_taskWindow.result.c_str());
+		}
+		else {
+			ImGui::TextDisabled("Ready");
+		}
+		ImGui::End();
 	}
 
 	void EditorApp::DrawMenuBar() {

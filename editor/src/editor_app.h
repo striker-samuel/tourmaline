@@ -84,10 +84,12 @@ inline constexpr float kEditorFarClip = 2000.0f;
 // Panel layout constants shared by editor_ui.cpp / editor_render.cpp /
 // editor_gizmo.cpp: the 3D viewport is the CENTRAL rect between the
 // panels (panels are siblings in one layout — they never overlap the
-// rendered view). kEditorBottomH is the Overrides/Console dock height.
+// rendered view). kEditorBottomH is the Overrides/Console dock height;
+// kEditorStatusH is the Maya-like bottom status strip (process progress).
 inline constexpr float kEditorLeftW = 330.0f;
 inline constexpr float kEditorRightW = 370.0f;
 inline constexpr float kEditorBottomH = 230.0f;
+inline constexpr float kEditorStatusH = 24.0f;
 
 // Central viewport rect in window pixels (x/y = top-left offset).
 struct ViewportRect {
@@ -1144,6 +1146,7 @@ private:
 	void DrawCreateTerrainDialog();
 	void ShowCookPanel();
 	void DrawCookPanel();
+	void DrawStatusBar(); // Maya-like bottom strip (task progress)
 	// ---- heightfield painting ----
 	// When on, LMB in a 3D viewport paints the SELECTED terrain group
 	// (group or any tile selects it) instead of picking. One stamp per
