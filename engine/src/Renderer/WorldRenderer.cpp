@@ -524,6 +524,12 @@ namespace engine {
 		if (run.terrainPinned) {
 			m_passes.terrain = run.terrain;
 		}
+		// Heightfield shadows (terrain frag tail): 0 off | 1 receive |
+		// 2 receive + raymarched distant. Unset = receive-only; steps
+		// default 16 (4..64 validated at parse).
+		m_terrainHfShadow =
+			run.terrainHfShadow >= 0 ? run.terrainHfShadow : 1;
+		m_terrainHfSteps = run.terrainHfShadowSteps.value_or(16);
 		// Point the FPS camera at a generic default viewpoint (Camera keeps a
 		// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 		// Initialize re-poses this on the loaded world's bounds (generic
@@ -2066,18 +2072,24 @@ namespace engine {
 		if (!m_skydome.Ensure(*m_context)) {
 			std::cerr << "[WorldRenderer] Skydome program unavailable - running without sky\n";
 		}
-		// Tiled terrain heightfield (visual-only dressing; Rendergraph/
-		// terrain.h): a 4 km x 4 km field of 100 m tiles. Build is gated by
-		// m_passes.terrain (off by default); the field is only built when the
-		// pass is enabled. Failure is non-fatal (Main skips the field).
+		// Tiled terrain heightfield (baked G-blocks from the world's
+		// harvested TerrainSource; Rendergraph/terrain.h): built when the
+		// pass is enabled AND the loaded pak carried Terrain blobs.
+		// Failure is non-fatal (Main skips the field).
 		if (m_passes.terrain) {
-			smvk::terrain::TerrainDesc td{};
-			if (!m_terrain.Build(*m_context, td))
-				std::cerr << "[WorldRenderer] terrain build failed - running "
-				"without the default field\n";
-			// The vertex/index uploads must land before the first frame
-			// records the terrain draws (staging flush; the surrounding
-			// init flushed earlier uploads before this block).
+			if (m_world && m_world->terrainSource.hasTerrain) {
+				if (!m_terrain.BuildFromSource(*m_context,
+					m_world->terrainSource))
+					std::cerr << "[WorldRenderer] terrain build failed - running "
+					"without the field\n";
+			}
+			else {
+				std::cerr << "[WorldRenderer] terrain pass on but the pak "
+					"carries no Terrain blobs - running without the field\n";
+			}
+			// The vertex/index/H-texture uploads must land before the
+			// first frame records the terrain draws (staging flush; the
+			// surrounding init flushed earlier uploads before this block).
 			m_context->FlushUploads();
 		}
 		// Environment zone map (Rendergraph/envzones.h): DERIVED from the
@@ -9032,16 +9044,17 @@ namespace engine {
 				);
 				cmd.Draw(3, 1, 0, 0);
 			}
-			// ---- Terrain field (visual-only dressing): right after the sky,
-			// before the scene opaques - depth GreaterEqual against the
-			// prepass depth (1x) / the transient cleared depth (2x MSAA), so
-			// scene geometry occludes the field and the field composites over
-			// the sky background. NOT in the depth prepass / shadow passes by
-			// design: in 1x the Main depth is read-only, so post-Main depth
-			// consumers (SSR/volumetric marching) see the prepass depth over
-			// terrain pixels - accepted for the visual-only first cut.
+			// ---- Terrain field (baked G-blocks from the pak's Terrain
+			// blobs): right after the sky, before the scene opaques - depth
+			// GreaterEqual against the prepass depth (1x) / the transient
+			// cleared depth (2x MSAA), so scene geometry occludes the field
+			// and the field composites over the sky background. NOT in the
+			// depth prepass / shadow passes in T2 (receive + raymarched
+			// distant shadows land in T3): in 1x the Main depth is
+			// read-only, so post-Main depth consumers (SSR/volumetric
+			// marching) see the prepass depth over terrain pixels.
 			if (m_passes.terrain && m_terrainEnabled && m_terrain.valid) {
-				m_terrain.RecordDraws(
+				m_terrain.RecordBlocks(
 					cmd,
 					frameViewProj,
 					m_cameraPositioner.cameraPosition_,
@@ -9049,7 +9062,9 @@ namespace engine {
 					opaqueDepth,
 					noStencil,
 					smvk::BlendSettings::Opaque(),
-					msaaSettings
+					msaaSettings,
+					m_terrainHfShadow,
+					m_terrainHfSteps
 				);
 			}
 			cmd.BindRenderPipeline(
@@ -11187,10 +11202,9 @@ namespace engine {
 							ImGui::Checkbox("Terrain field", &m_terrainEnabled);
 							if (ImGui::IsItemHovered())
 								ImGui::SetTooltip(
-									"The default 4 km x 4 km tiled heightfield (100 m tiles,\n"
-									"visual-only dressing rendered after the sky). Near tiles\n"
-									"draw with the full terrain format (pos/normal/tangent/color),\n"
-									"far tiles with the low format (pos/color off the same buffer).");
+									"The pak-baked 4 km x 4 km tiled heightfield (256 m\n"
+									"G-blocks x 3 LODs, rendered after the sky). Baked\n"
+									"from the pak's Terrain blobs; absent without them.");
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
 							// ---- Environment zones (world/env separation; see

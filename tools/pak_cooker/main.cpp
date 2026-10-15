@@ -114,6 +114,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include "terrain_cook.h"
 #include <Engine/GI/bake.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
@@ -181,6 +182,11 @@ namespace {
 		// Scene pinpoint: with --dump-pak, restrict the scene print to these
 		// node ids (repeatable) and include their local translation.
 		std::vector<uint32_t> dumpNodes;
+		// Tiled terrain source dir (host path with terrain.json +
+		// h_XX_ZZ.png + m_XX_ZZ.png; see Rendergraph/terrain_meta.h).
+		// Terrain blobs ride the same pak (or a terrain-only pak with no
+		// artifacts/tour); empty = no terrain.
+		std::string terrainDir;
 		// Editor scratch-disk root (optional acceleration, NEVER a
 		// precondition): when set, the cook consults + feeds the artifact
 		// registry there â€” texture transcodes copy hash-validated payloads
@@ -490,6 +496,9 @@ namespace {
 				if (!need(v)) return false;
 				out.dumpNodes.push_back(static_cast<uint32_t>(std::stoul(v)));
 			}
+			else if (a == "--terrain") {
+				if (!need(out.terrainDir)) return false;
+			}
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -513,10 +522,11 @@ namespace {
 		out.inVfsList.assign(positional.begin() + 1, positional.end());
 		out.inVfs = out.inVfsList.front();
 	}
-	if (out.inVfsList.empty() && out.tour.empty()) {
+	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()) {
 		std::cerr << "Required: at least one artifact .geometry (or --tour"
-			" <scene.tour> - the editor-authored definition), and"
-			" --out-pak <host path>" << std::endl;
+		" <scene.tour> - the editor-authored definition), and"
+		" --out-pak <host path> (--terrain <dir> alone cooks a"
+		" terrain-only pak)" << std::endl;
 		return false;
 	}
 	if (out.outPak.empty()) {
@@ -547,7 +557,8 @@ namespace {
 			<< "           --sun-intensity 10000 --sky-intensity 6000\n"
 			<< "           --sun-color 1,0.95,0.9]\n"
 			<< "          [--gi-probe <name> ...] [--compress on|off]\n"
-			<< "          [--lz4-accel 1] [--scratch-dir <dir>]\n";
+			<< "          [--lz4-accel 1] [--scratch-dir <dir>]\n"
+			<< "          [--terrain <terrain_src dir>]\n";
 	}
 
 	// Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -1398,6 +1409,7 @@ int main(int argc, char** argv) {
 			<< " cameras=" << reader->BlobsOfKind(smvk::PakAssetKind::Camera).size()
 			<< " scenes=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< " gi=" << reader->BlobsOfKind(smvk::PakAssetKind::Gi).size()
+			<< " terrain=" << reader->BlobsOfKind(smvk::PakAssetKind::Terrain).size()
 			<< "\n";
 		{
 			std::string lerr;
@@ -1832,7 +1844,10 @@ int main(int argc, char** argv) {
 	// Single-scene alias for the tour/collapse/bake stages below (written
 	// against one cluster; multi-scene loops reuse them per scene). Both
 	// cluster-> and *cluster forms keep working through the pointer.
-	smvk::Cluster* cluster = sceneClusters.front().get();
+	// Null in terrain-only cooks (no clusters); every use below is
+	// guarded by a sceneClusters loop, so no null flows anywhere.
+	smvk::Cluster* cluster =
+		sceneClusters.empty() ? nullptr : sceneClusters.front().get();
 
 	// World sun per scene (App parity: first directional wins as the
 	// runtime sun). Authored directionals always survive; sunless scenes
@@ -2116,7 +2131,17 @@ int main(int argc, char** argv) {
 	std::vector<const smvk::Cluster*> cookPtrs;
 	for (auto& sc : sceneClusters)
 		cookPtrs.push_back(sc.get());
-	if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err)) {
+	if (cookPtrs.empty()) {
+		// Terrain-only pak (no clusters): valid, terrain blobs carry it.
+		// Anything else was rejected at ParseArgs (artifacts/tour empty
+		// without --terrain never reaches here).
+		if (args.terrainDir.empty()) {
+			std::cerr << "Serialize failed: no clusters to serialize"
+				<< std::endl;
+			return 1;
+		}
+	}
+	else if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err)) {
 		std::cerr << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
@@ -2158,6 +2183,17 @@ int main(int argc, char** argv) {
 		std::cout << "Embedded GI " << vfsPath
 			<< " (" << bytes.size() << " B)\n";
 	}
+	// Tiled terrain (optional, independent of clusters): terrain.json +
+	// H/S PNGs -> Terrain blobs. Runs for mixed and terrain-only paks;
+	// empty sceneClusters serialize to zero scene blobs (valid: the
+	// runtime loads terrain straight from the Terrain blobs).
+	if (!args.terrainDir.empty()) {
+		std::string terrErr;
+		if (!terraincook::CookTerrainBlobs(args.terrainDir, writer, terrErr)) {
+			std::cerr << "Terrain cook failed: " << terrErr << std::endl;
+			return 1;
+		}
+	}
 	std::vector<uint8_t> pak = writer.Finalize();
 
 	{
@@ -2176,7 +2212,7 @@ int main(int argc, char** argv) {
 	const auto t1 = std::chrono::steady_clock::now();
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
 
-	std::cout << "Cooked " << args.inVfs
+	std::cout << "Cooked " << (args.inVfs.empty() ? "(terrain-only)" : args.inVfs)
 		<< (args.inVfsList.size() > 1
 			? " +" + std::to_string(args.inVfsList.size() - 1)
 				+ " more artifact(s)"
@@ -2190,6 +2226,14 @@ int main(int argc, char** argv) {
 		<< " cameras=" << stats.cameras
 		<< " gi=" << stats.giBindings
 		<< " cubemaps=" << cubemapKtx.size()
+		<< " terrain=" << [&] {
+			size_t n = 0;
+			for (const auto& e : writer.Entries()) {
+				if (e.kind == smvk::PakAssetKind::Terrain)
+					++n;
+			}
+			return n;
+		}()
 		<< " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
 		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshes

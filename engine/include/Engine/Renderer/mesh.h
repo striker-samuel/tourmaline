@@ -273,8 +273,30 @@ namespace smvk {
 	static_assert(offsetof(TerrainVertex, tangent) == 20);
 	static_assert(offsetof(TerrainVertex, color) == 28);
 
+	// GPU TERRAIN FAR vertex (8 bytes, ONE interleaved binding — the
+	// article's Terrain IV R16G16B16A16_FLOAT layout): the far LOD's grid
+	// positions are NOT stored. p = half4(ix, iz, shade, flags) where
+	// (ix,iz) is the integer grid coordinate in the block (exact in
+	// half to 2048), shade is the baked mask/checker brightness, and
+	// flags is 0 (surface) or 1 (skirt — the VS drops y by skirtDepth).
+	// World XZ reconstructs as blockOrigin + grid * step (push tail);
+	// height samples the R16 height atlas in the VS.
+	struct TerrainFarVertex {
+		uint16_t p[4];
+	};
+	static_assert(sizeof(TerrainFarVertex) == 8);
+	static_assert(offsetof(TerrainFarVertex, p) == 0);
+
+	inline void PackTerrainFarVertex(float ix, float iz, float shade,
+		bool skirt, TerrainFarVertex& out) noexcept {
+		out.p[0] = glm::packHalf1x16(ix);
+		out.p[1] = glm::packHalf1x16(iz);
+		out.p[2] = glm::packHalf1x16(glm::clamp(shade, 0.0f, 1.0f));
+		out.p[3] = glm::packHalf1x16(skirt ? 1.0f : 0.0f);
+	}
+
 	// CPU-side terrain vertex authoring form (floats in, packed at build
-	// time): terrain.tile builders fill these and PackTerrainVertex
+	// time): terrain block builders fill these and PackTerrainVertex
 	// writes the GPU struct. colorAlpha rides the color.w channel (the
 	// layered-blend weight future path; 1 by default).
 	struct TerrainVertexSrc {
@@ -667,6 +689,27 @@ namespace smvk {
 	};
 
 
+	// Terrain FAR format: ONE interleaved binding, 8-byte stride, one
+	// RGBA16_FLOAT attribute (grid ix/iz/shade/skirt packed half4).
+	// VSIn location 0 = PackedGrid (the far terrain VS declares only this).
+	inline const VertexFormatDescription TerrainFarVertexFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(TerrainFarVertex),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGBA16_Float,
+						.offset = offsetof(TerrainFarVertex, p)
+					}
+				}
+			}
+		}
+	};
+
+
 	// -----------------------------------------------------------------------------
 	// Draw information
 	// -----------------------------------------------------------------------------
@@ -737,6 +780,7 @@ namespace smvk {
 		, DebugLine
 		, TerrainVertexFormat
 		, TerrainLowVertexFormat
+		, TerrainFarVertexFormat
 	};
 
 	// Returns the static description for the given format (no per-call

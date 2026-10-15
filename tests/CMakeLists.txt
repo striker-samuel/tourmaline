@@ -398,6 +398,48 @@ set_target_properties(RendergraphContractTests PROPERTIES
 
 add_test(NAME rendergraph_contract_tests COMMAND RendergraphContractTests)
 
+# Tiled-terrain RG16 packing contract (GPU-less, header-only).
+add_executable(TerrainPackTests test_terrain_pack.cpp)
+
+target_link_libraries(TerrainPackTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(TerrainPackTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME terrain_pack_tests COMMAND TerrainPackTests)
+
+# Tiled-terrain CPU height-field (sampling + meta JSON contract).
+add_executable(TerrainHFieldTests test_terrain_hfield.cpp)
+
+target_link_libraries(TerrainHFieldTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(TerrainHFieldTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME terrain_hfield_tests COMMAND TerrainHFieldTests)
+
+# G-block bake contract (counts, winding, skirts, AABB, mask color).
+add_executable(TerrainBlocksTests test_terrain_blocks.cpp)
+
+target_link_libraries(TerrainBlocksTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(TerrainBlocksTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME terrain_blocks_tests COMMAND TerrainBlocksTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -422,3 +464,6 @@ vulkantoy_stage_sdl3(MemoryTests)
 vulkantoy_stage_sdl3(PushConstantLayoutTests)
 vulkantoy_stage_sdl3(RunConfigTests)
 vulkantoy_stage_sdl3(RendergraphContractTests)
+vulkantoy_stage_sdl3(TerrainPackTests)
+vulkantoy_stage_sdl3(TerrainHFieldTests)
+vulkantoy_stage_sdl3(TerrainBlocksTests)

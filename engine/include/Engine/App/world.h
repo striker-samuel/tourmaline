@@ -9,6 +9,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/Scene/scene.h>
 
@@ -16,6 +17,19 @@ namespace smvk {
 
 	class PakReader;
 	class TextureStreamer;
+
+	// Tiled-terrain source payload (CPU side): harvested from a pak's
+	// Terrain blobs by LoadTerrainFromPak. The renderer bakes G-blocks
+	// from hfield (+ mask R into vertex color) at terrain build; masks
+	// are NOT kept resident past the bake in v1 (GPU mask textures land
+	// with the atlas in phase 4). Empty (hasTerrain=false) = no terrain.
+	struct TerrainSource {
+		terrain::TerrainHField hfield{};
+		// 256 S-tiles of 256x256 RGBA8, row-major (tz*16+tx) test masks.
+		// Present only between harvest and the terrain bake.
+		std::vector<std::vector<uint8_t>> masks{};
+		bool hasTerrain = false;
+	};
 
 	// Per-frame inputs for error-driven LOD selection (see World::
 	// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
@@ -81,6 +95,10 @@ namespace smvk {
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
 		std::vector<std::unique_ptr<Cluster>> clusters;
+
+		// Tiled-terrain source (see TerrainSource): empty unless a loaded
+		// pak carried Terrain blobs.
+		TerrainSource terrainSource;
 
 		// ---- Compact draw list (hot-path iterator) --------------------
 		// Built once per ResolveAndFixup_clusters() and kept in sync by
@@ -196,6 +214,11 @@ namespace smvk {
 			uint32_t sceneIndex = 0,
 			struct TextureStreamer* streamer = nullptr,
 			std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
+		// Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
+		// into terrainSource (byte copies; the reader may die after). Also
+		// called by LoadClusterFromPak (non-fatal: scene loads even when
+		// terrain is broken). False with err set on malformed terrain.
+		bool LoadTerrainFromPak(const class PakReader& reader, std::string& err);
 		// The world's DYNAMIC cluster (see Cluster::isDynamic): the
 		// dedicated home for runtime-created entities (editor-created
 		// lights/cameras, app demo content, later decals/particles).

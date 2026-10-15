@@ -167,6 +167,24 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	std::string lerr;
 	auto scenes = smvk::ListPakScenes(reader, &lerr);
 	if (scenes.empty()) {
+		// Terrain-only pak (no scenes, Terrain blobs present): an empty
+		// world carrying just the harvested terrain. The renderer bakes
+		// G-blocks from it; the camera needs explicit VULKANTOY_CAM_*
+		// pins (empty-scene framing has no bounds to fit).
+		if (!reader.BlobsOfKind(smvk::PakAssetKind::Terrain).empty()) {
+			std::cerr << "[App] no scenes: terrain-only pak, loading "
+				"terrain without a scene\n";
+			auto world = smvk::mem::MakeProcess<smvk::World>();
+			std::string terrErr;
+			if (!world->LoadTerrainFromPak(reader, terrErr)) {
+				std::cerr << "[App] terrain harvest failed: " << terrErr
+					<< "\n";
+				return nullptr;
+			}
+			world->ResolveAndFixup_clusters();
+			contentVfs.Mount(pre.backend, 10, pre.scenePak);
+			return world;
+		}
 		std::cerr << "[App] no loadable scenes: " << lerr << "\n";
 		return nullptr;
 	}

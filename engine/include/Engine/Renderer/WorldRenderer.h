@@ -2529,13 +2529,17 @@ public:
 	// m_passes.skydome stays the pipeline-shape switch.
 	bool m_skyEnabled = true;
 	smvk::Skydome m_skydome{};
-	// Tiled terrain heightfield (visual-only dressing; see Rendergraph/
-	// terrain.h): a 4 km x 4 km field of 100 m tiles rendered in
-	// the Main pass right after the sky. m_passes.terrain is the pipeline
+	// Tiled terrain heightfield (baked G-blocks from the world's TerrainSource;
+	// see Rendergraph/terrain.h): 256 m blocks x 4 LODs rendered in the
+	// Main pass right after the sky. m_passes.terrain is the pipeline
 	// shape switch; m_terrainEnabled is the debug visibility toggle (like
 	// the skydome's K). OFF by default (m_passes.terrain=false).
 	bool m_terrainEnabled = true;
 	smvk::terrain::TerrainField m_terrain{};
+	// Heightfield shadow mode/steps for the terrain frag tail (RunConfig
+	// snapshot at Configure: VULKANTOY_TERRAIN_HFSHADOW[_STEPS]).
+	int m_terrainHfShadow = 1;
+	int m_terrainHfSteps = 16;
 	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8
 	// weight texture (10 m per texel over the 4 km world) + up to 4 zone
 	// definitions (sky tint/ambient, fog, volumetrics), blended per zone

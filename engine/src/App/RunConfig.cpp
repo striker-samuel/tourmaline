@@ -116,6 +116,29 @@ RunConfig RunConfig::Parse() {
 		c.terrainPinned = true;
 		c.terrain = std::atoi(v) != 0;
 	}
+	// Tiled-terrain heightfield shadows (terrain_hfield/blocks + shadow).
+	// hfshadow: 0|off|1|near|2|full (unset = receive-only default at T2,
+	// full once the raymarcher lands at T3). Invalid warns, stays unset.
+	if ((v = Get("VULKANTOY_TERRAIN_HFSHADOW")) != nullptr) {
+		const std::string hs = Trimmed(v);
+		if (hs == "0" || StrCaseCmp(hs.c_str(), "off") == 0)
+			c.terrainHfShadow = 0;
+		else if (hs == "1" || StrCaseCmp(hs.c_str(), "near") == 0)
+			c.terrainHfShadow = 1;
+		else if (hs == "2" || StrCaseCmp(hs.c_str(), "full") == 0)
+			c.terrainHfShadow = 2;
+		else
+			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_TERRAIN_HFSHADOW "
+				"(want 0|off|1|near|2|full): %s\n", v);
+	}
+	if ((v = Get("VULKANTOY_TERRAIN_HFSHADOW_STEPS")) != nullptr) {
+		const int steps = std::atoi(v);
+		if (steps >= 4 && steps <= 64)
+			c.terrainHfShadowSteps = steps;
+		else
+			std::fprintf(stderr, "[RunConfig] VULKANTOY_TERRAIN_HFSHADOW_STEPS "
+				"out of range (4..64): %s\n", v);
+	}
 
 	// Postfx authored pins (validated once here with the raw value shown;
 	// invalid warns and leaves the authored scene winning).
@@ -394,6 +417,7 @@ void RunConfig::WarnUnknown() {
 	// TMP-DIAG names (warn would be noise; they stay out of Parse).
 	static const char* kKnown[] = {
 		"VULKANTOY_AA", "VULKANTOY_A2C", "VULKANTOY_TEXTURE_FILTER", "VULKANTOY_TERRAIN",
+		"VULKANTOY_TERRAIN_HFSHADOW", "VULKANTOY_TERRAIN_HFSHADOW_STEPS",
 		"VULKANTOY_CAM_FWD", "VULKANTOY_CAM_YAW", "VULKANTOY_CAM_POS",
 		"VULKANTOY_VOLUMETRIC", "VULKANTOY_VOLUMETRIC_STEPS", "VULKANTOY_VOLUMETRIC_DENSITY",
 		"VULKANTOY_VOLUMETRIC_CVOL", "VULKANTOY_SSR", "VULKANTOY_BLOOM_THRESHOLD",

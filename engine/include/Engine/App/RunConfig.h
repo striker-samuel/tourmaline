@@ -159,6 +159,13 @@ struct RunConfig {
 	std::optional<std::string> editorOpenAt;
 	std::optional<std::string> editorOpenAt2;
 
+	// ---- terrain (tiled heightfield; see Rendergraph/terrain_*.h) ----
+	// hfshadow: -1 unset | 0|off | 1|near (shadowmap receive only) |
+	//           2|full (receive + raymarched distant self-shadow)
+	int terrainHfShadow = -1;
+	// hfshadowSteps: 4..64 heightfield raymarch steps (unset = default 16)
+	std::optional<int> terrainHfShadowSteps;
+
 	// Parse the environment once. Never throws; bad values warn to stderr
 	// and fall back to defaults (same as the historical per-site behavior).
 	static RunConfig Parse();

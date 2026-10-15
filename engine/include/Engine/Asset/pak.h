@@ -30,11 +30,16 @@ namespace smvk {
 //                   (crc covers header+blobs+TOC)
 //
 // NO FORMAT VERSIONS: the magic IS the version. A breaking format change
-// bumps the trailing magic char (SMP4 -> SMP5, KPM4 -> KPM5) and the
+// bumps the trailing magic char (SMP5 -> SMP6, KPM5 -> KPM6) and the
 // reader fails closed on mismatch — content is recooked from zero, never
 // migrated. (The reserved header slots stay zero.)
 // SMP5 (the decal-entity break): PakAssetKind::Decal blobs + the scene
 // blob's v11 decal-link section.
+// SMP6 (the tiled-terrain break): PakAssetKind::Terrain blobs (H-tile
+// height/mask payloads + the terrain/meta blob). LEGACY HACK: PakReader
+// accepts SMP5 images that contain ZERO Terrain blobs (old bistro/sponza
+// paks keep loading, terrain simply empty); any SMP5 image carrying
+// Terrain blobs fails closed.
 //
 // TOC pathHash = FNV-1a64 over the normalized VFS path (textures: the
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
@@ -61,8 +66,11 @@ namespace smvk {
 // blobs (e.g. bakery-appended textures) keep the full-resident path.
 // A breaking change to any of this bumps the magic below (never a
 // version field); content recooks from zero.
-inline constexpr uint32_t kPakMagic = 0x35504D53; // "SMP5" LE
-inline constexpr uint32_t kPakFooterMagic = 0x354D504B; // "KPM5" LE
+inline constexpr uint32_t kPakMagic = 0x36504D53; // "SMP6" LE
+inline constexpr uint32_t kPakFooterMagic = 0x364D504B; // "KPM6" LE
+// Previous-epoch magics (the legacy-terrain-empty hack in PakReader::Open).
+inline constexpr uint32_t kPakMagicSmp5 = 0x35504D53; // "SMP5" LE
+inline constexpr uint32_t kPakFooterMagicKpm5 = 0x354D504B; // "KPM5" LE
 
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
@@ -89,6 +97,11 @@ enum class PakAssetKind : uint32_t {
 	// rides the node transform (scene-blob decal links), the blob carries
 	// the look (texture URIs + material knobs).
 	Decal = 8,
+	// Tiled terrain (SMP6): H-tile height/mask payloads + the single
+	// terrain/meta blob. Paths are terrain/h_XX_ZZ, terrain/m_XX_ZZ and
+	// terrain/meta (see Rendergraph/terrain_meta.h). Stored UNCOMPRESSED
+	// or LZ4 like any other blob (height RGBA8 deltas compress well).
+	Terrain = 9,
 };
 
 enum PakEntryFlags : uint32_t {

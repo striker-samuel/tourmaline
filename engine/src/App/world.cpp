@@ -14,6 +14,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 
@@ -50,7 +51,91 @@ namespace smvk {
 			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;
 		RegisterCluster(std::move(cluster));
+		// Terrain rides the pak independent of scenes: harvest non-fatally
+		// (a broken height tile must never fail the scene load).
+		std::string terrErr;
+		if (!LoadTerrainFromPak(reader, terrErr))
+			std::cerr << "[World] terrain harvest skipped: " << terrErr << "\n";
 		return ref;
+	}
+
+	bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
+		terrainSource = TerrainSource{};
+		auto blobs = reader.BlobsOfKind(PakAssetKind::Terrain);
+		if (blobs.empty())
+			return true; // no terrain: not an error (old paks, mesh paks)
+		const PakTocEntry* metaBlob = nullptr;
+		for (const PakTocEntry* e : blobs) {
+			if (e->path == terrain::kTerrainMetaBlobPath) {
+				metaBlob = e;
+				break;
+			}
+		}
+		if (!metaBlob) {
+			err = "Terrain blobs present but terrain/meta missing";
+			return false;
+		}
+		terrain::TerrainMeta meta;
+		float tileMinMax[16][2];
+		if (!terrain::ParseTerrainMetaBlob(reader.Payload(*metaBlob), meta,
+			tileMinMax)) {
+			err = "terrain/meta malformed";
+			return false;
+		}
+		const uint32_t nH = 4;  // v1 fixed grid (cook-enforced)
+		const uint32_t nS = 16; // worldSize/gBlock = 4096/256
+		if (blobs.size() != 1 + size_t(nH) * size_t(nH) + size_t(nS) * size_t(nS)) {
+			err = "Terrain blob count mismatch (want 1+16+256)";
+			return false;
+		}
+		terrain::TerrainHField hf;
+		hf.meta = meta;
+		hf.tiles.resize(size_t(nH) * size_t(nH));
+		for (uint32_t tz = 0; tz < nH; ++tz) {
+			for (uint32_t tx = 0; tx < nH; ++tx) {
+				const PakTocEntry* found = reader.Find(PakAssetKind::Terrain,
+					terrain::HTileBlobPath(tx, tz));
+				if (!found) {
+					err = "missing " + terrain::HTileBlobPath(tx, tz);
+					return false;
+				}
+				const auto bytes = reader.Payload(*found);
+				if (bytes.size() != size_t(meta.hRes) * size_t(meta.hRes) * 4) {
+					err = terrain::HTileBlobPath(tx, tz) + " bad size";
+					return false;
+				}
+				auto& dst = hf.tiles[size_t(tz) * size_t(nH) + size_t(tx)];
+				dst.assign(bytes.begin(), bytes.end());
+			}
+		}
+		if (!hf.valid()) {
+			err = "harvested H-field invalid";
+			return false;
+		}
+		std::vector<std::vector<uint8_t>> masks(size_t(nS) * size_t(nS));
+		for (uint32_t tz = 0; tz < nS; ++tz) {
+			for (uint32_t tx = 0; tx < nS; ++tx) {
+				const PakTocEntry* found = reader.Find(PakAssetKind::Terrain,
+					terrain::STileBlobPath(tx, tz));
+				if (!found) {
+					err = "missing " + terrain::STileBlobPath(tx, tz);
+					return false;
+				}
+				const auto bytes = reader.Payload(*found);
+				if (bytes.size()
+					!= size_t(terrain::kMaskTileRes) * size_t(terrain::kMaskTileRes) * 4) {
+					err = terrain::STileBlobPath(tx, tz) + " bad size";
+					return false;
+				}
+				masks[size_t(tz) * size_t(nS) + size_t(tx)].assign(
+					bytes.begin(), bytes.end());
+			}
+		}
+		terrainSource.hfield = std::move(hf);
+		terrainSource.masks = std::move(masks);
+		terrainSource.hasTerrain = true;
+		std::cerr << "[World] terrain harvested: 16 H + 256 S tiles\n";
+		return true;
 	}
 
 	Cluster& World::EnsureDynamicCluster(ResourceManager* ctx) {

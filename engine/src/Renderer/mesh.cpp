@@ -84,6 +84,8 @@ namespace smvk {
 			return TerrainVertexFormat;
 		case VertexFormat::TerrainLowVertexFormat:
 			return TerrainLowVertexFormat;
+		case VertexFormat::TerrainFarVertexFormat:
+			return TerrainFarVertexFormat;
 		}
 		static const VertexFormatDescription fallbackFormat{};
 		return fallbackFormat;

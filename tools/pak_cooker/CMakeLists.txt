@@ -1,6 +1,6 @@
 project(Pak)  # pak.exe: the PAK COOK - consumed artifacts only (raw glTF never cooks; import.exe / the MeshImporter produce the artifacts)
 
-add_executable(Pak main.cpp)
+add_executable(Pak main.cpp terrain_cook.cpp)
 
 target_compile_definitions(Pak PRIVATE ENGINE_VULKAN)
 
