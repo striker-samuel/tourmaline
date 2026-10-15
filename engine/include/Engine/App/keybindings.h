@@ -56,6 +56,8 @@ constexpr int CAPTURE = GLFW_KEY_F7;        // LUT export + screenshot
 
 // ---- Tool windows (pop up on demand, outside the debug panel) ----
 constexpr int TEXTURE_VIEWER_TOGGLE = GLFW_KEY_GRAVE_ACCENT; // ` texture inspector window
+// World Map (top-down XZ canvas: heightfield + volumes + probes).
+constexpr int WORLD_MAP_TOGGLE = GLFW_KEY_C;
 
 // ---- AA bank ----
 constexpr int AA_CYCLE = GLFW_KEY_Z;        // Off -> MSAA 2x -> SMAA 1x -> SMAA T2x

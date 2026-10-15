@@ -146,6 +146,9 @@ namespace engine {
 			if (!m_renderer.m_texDebugWindow)
 				m_renderer.DropTexDebugSelection();
 		}
+		if (m_input.isKeyPressed(keybind::WORLD_MAP_TOGGLE)) {
+			m_renderer.m_worldMapWindow = !m_renderer.m_worldMapWindow;
+		}
 		// Ctrl+M pops the VRAM usage viewer: the GPU memory heaps
 		// (sizes + VMA budgets/usage) as another floating tool window.
 		// The chord mirrors HUD_TOGGLE (Ctrl+T): bare M stays the

@@ -12630,7 +12630,7 @@ namespace engine {
 						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_inputUi->gamepadName(0).c_str());
 					else
 						ImGui::TextDisabled("[Gamepad] none connected");
-					ImGui::TextDisabled("Keys (toggles): M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors");
+					ImGui::TextDisabled("Keys (toggles): M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors  C map");
 					ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K sky  H shadows  T terrain");
 					ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
 					ImGui::TextDisabled("Keys (views): N ambient  R/F8 GI view  F1 lit  F2 unlit  F3 meshlets");
@@ -13787,6 +13787,12 @@ namespace engine {
 				ImGui::End();
 			}
 
+			// ---- World Map viewer (C) --------------------------------
+			// Floating top-down orthographic canvas (see DrawWorldMapWindow):
+			// heightfield background + volume/probe/light/camera layers.
+			if (m_worldMapWindow)
+				DrawWorldMapWindow();
+
 			// Forward+ light debug overlay: project the CPU light copy
 			// (m_debugLights, filled in UpdateForwardPlusLights) through the
 			// UNJITTERED viewProj into the ImGui foreground draw list. It
@@ -14778,6 +14784,401 @@ namespace engine {
 			clampCi.maxAnisotropy = maxAniso;
 			m_context->RecreateSampler(2, clampCi);
 		}
+	}
+
+	// ---------------------------------------------------------------------
+	// World Map viewer (C): floating top-down orthographic canvas.
+	// Background = the baked terrain's CPU heightfield downsampled to a
+	// 256px preview (built once per terrain), else an empty grid over
+	// the scene bounds (or +/-2048 m with no world). Overlays read live
+	// scene state every frame (cheap: markers only, capped counts).
+	// LATER layers slot in as one bool + one draw block each (shadow
+	// cascade boxes, terrain LOD heat, env zone weights).
+	void WorldRenderer::BuildWorldMapHeight() {
+		DropWorldMapHeight();
+		if (!m_terrain.valid || m_terrain.hfield.tiles.empty())
+			return;
+		const smvk::terrain::TerrainHField& hf = m_terrain.hfield;
+		constexpr int N = 256;
+		const float minX = m_terrain.boundsMin.x;
+		const float minZ = m_terrain.boundsMin.z;
+		const float sizeX = m_terrain.boundsMax.x - minX;
+		const float sizeZ = m_terrain.boundsMax.z - minZ;
+		if (!(sizeX > 0.0f) || !(sizeZ > 0.0f))
+			return;
+		std::vector<uint8_t> px(size_t(N) * size_t(N) * 4);
+		for (int j = 0; j < N; ++j) {
+			for (int i = 0; i < N; ++i) {
+				const float x = minX + (float(i) + 0.5f) / float(N) * sizeX;
+				const float z = minZ + (float(j) + 0.5f) / float(N) * sizeZ;
+				const float t = std::clamp(
+					smvk::terrain::SampleH01(hf, x, z), 0.0f, 1.0f);
+				// Hypsometric ramp (low green -> brown -> gray -> snow).
+				glm::vec3 c;
+				if (t < 0.4f)
+					c = glm::mix(glm::vec3(0.09f, 0.18f, 0.12f),
+						glm::vec3(0.35f, 0.43f, 0.24f), t / 0.4f);
+				else if (t < 0.7f)
+					c = glm::mix(glm::vec3(0.35f, 0.43f, 0.24f),
+						glm::vec3(0.55f, 0.47f, 0.35f), (t - 0.4f) / 0.3f);
+				else
+					c = glm::mix(glm::vec3(0.55f, 0.47f, 0.35f),
+						glm::vec3(0.92f, 0.92f, 0.94f), (t - 0.7f) / 0.3f);
+				uint8_t* o = px.data() + (size_t(j) * size_t(N) + size_t(i)) * 4;
+				o[0] = uint8_t(c.r * 255.0f);
+				o[1] = uint8_t(c.g * 255.0f);
+				o[2] = uint8_t(c.b * 255.0f);
+				o[3] = 255;
+			}
+		}
+		smvk::ImageCreateInfo ci;
+		ci.type = smvk::ImageType::Image2D;
+		ci.extent = smvk::Extent3D{ uint32_t(N), uint32_t(N), 1 };
+		ci.format = smvk::Format::RGBA8_UNorm;
+		ci.mipLevels = 1;
+		ci.name = "worldmap/height";
+		m_worldMapHeightTex = m_context->CreateTexture(ci, px.data());
+		if (m_worldMapHeightTex.empty()) {
+			smvk::OnResourceExhaustion("worldmap/height");
+			return;
+		}
+		if (m_worldMapSampler == UINT32_MAX) {
+			smvk::SamplerCreateInfo sci{};
+			sci.magFilter = smvk::Filter::Linear;
+			sci.minFilter = smvk::Filter::Linear;
+			sci.mipmapMode = smvk::MipmapMode::Nearest;
+			sci.addressU = smvk::AddressMode::ClampToEdge;
+			sci.addressV = smvk::AddressMode::ClampToEdge;
+			sci.addressW = smvk::AddressMode::ClampToEdge;
+			m_worldMapSampler = m_context->GetOrCreateSampler(sci);
+		}
+		m_worldMapHeightId =
+			m_imgui->AddUserTexture(m_worldMapHeightTex, m_worldMapSampler);
+	}
+
+	void WorldRenderer::DropWorldMapHeight() {
+		if (m_worldMapHeightId != 0 && m_imgui) {
+			m_imgui->RemoveUserTexture(m_worldMapHeightId);
+			m_worldMapHeightId = 0;
+		}
+		m_worldMapHeightTex = {};
+	}
+
+	void WorldRenderer::DrawWorldMapWindow() {
+		ImGui::SetNextWindowSize(ImVec2(640.0f, 580.0f), ImGuiCond_Appearing);
+		if (!ImGui::Begin("World Map (C)", &m_worldMapWindow)) {
+			ImGui::End();
+			return;
+		}
+		ImGui::Checkbox("Env volumes", &m_worldMapEnvVolumes);
+		ImGui::SameLine();
+		ImGui::Checkbox("Cvolumes", &m_worldMapCvolumes);
+		ImGui::SameLine();
+		ImGui::Checkbox("Probes", &m_worldMapProbes);
+		ImGui::SameLine();
+		ImGui::Checkbox("Lights", &m_worldMapLights);
+		ImGui::SameLine();
+		ImGui::Checkbox("Camera", &m_worldMapCamera);
+		ImGui::SameLine();
+		if (ImGui::Button("Fit"))
+			m_worldMapScale = 0.0f; // fit on next draw below
+		// World extent: terrain bounds, else scene bounds, else default.
+		float minX = -2048.0f, minZ = -2048.0f;
+		float sizeX = 4096.0f, sizeZ = 4096.0f;
+		const bool hasH = m_terrain.valid;
+		if (hasH) {
+			minX = m_terrain.boundsMin.x;
+			minZ = m_terrain.boundsMin.z;
+			sizeX = m_terrain.boundsMax.x - minX;
+			sizeZ = m_terrain.boundsMax.z - minZ;
+		}
+		else if (m_world) {
+			const ::Aabb b = m_world->ComputeSceneBounds();
+			if (b.mx.x >= b.mn.x && b.mx.y >= b.mn.y && b.mx.z >= b.mn.z
+				&& (b.mx.x > b.mn.x || b.mx.z > b.mn.z)) {
+				minX = b.mn.x;
+				minZ = b.mn.z;
+				sizeX = std::max(b.mx.x - b.mn.x, 1.0f);
+				sizeZ = std::max(b.mx.z - b.mn.z, 1.0f);
+			}
+		}
+		// Preview lifecycle: build once per terrain, drop without one.
+		if (hasH && m_worldMapHeightId == 0)
+			BuildWorldMapHeight();
+		if (!hasH && m_worldMapHeightId != 0)
+			DropWorldMapHeight();
+		ImVec2 avail = ImGui::GetContentRegionAvail();
+		const float cw = std::max(avail.x, 50.0f);
+		const float ch = std::max(avail.y - ImGui::GetTextLineHeightWithSpacing(), 50.0f);
+		if (m_worldMapScale <= 0.0f) {
+			m_worldMapScale =
+				std::min(cw, ch) / std::max(sizeX, sizeZ);
+			m_worldMapCenter = glm::vec2(
+				minX + sizeX * 0.5f, minZ + sizeZ * 0.5f);
+		}
+		m_worldMapScale = std::clamp(m_worldMapScale, 0.004f, 50.0f);
+		const float s = m_worldMapScale;
+		const float vx0 = m_worldMapCenter.x - cw / (2.0f * s);
+		const float vz0 = m_worldMapCenter.y - ch / (2.0f * s);
+		// Background: heightfield image (UV = view rect) or empty grid.
+		ImVec2 c0 = ImGui::GetCursorScreenPos();
+		if (hasH && m_worldMapHeightId != 0) {
+			const ImVec2 uv0((vx0 - minX) / sizeX, (vz0 - minZ) / sizeZ);
+			const ImVec2 uv1((vx0 + cw / s - minX) / sizeX,
+				(vz0 + ch / s - minZ) / sizeZ);
+			ImGui::Image(m_worldMapHeightId, ImVec2(cw, ch), uv0, uv1);
+		}
+		else {
+			ImDrawList* bg = ImGui::GetWindowDrawList();
+			bg->AddRectFilled(c0, ImVec2(c0.x + cw, c0.y + ch),
+				IM_COL32(12, 14, 18, 255));
+		}
+		ImGui::SetCursorScreenPos(c0);
+		ImGui::InvisibleButton("##worldmap_canvas", ImVec2(cw, ch));
+		const ImVec2 o = ImGui::GetItemRectMin();
+		// Navigate: drag pans (grab-world), wheel zooms cursor-anchored.
+		if (ImGui::IsItemActive()
+			&& ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+			const ImVec2 d =
+				ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+			m_worldMapCenter.x -= d.x / s;
+			m_worldMapCenter.y -= d.y / s;
+			ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+		}
+		if (ImGui::IsItemHovered()) {
+			const float wh = ImGui::GetIO().MouseWheel;
+			if (wh != 0.0f) {
+				const ImVec2 m = ImGui::GetIO().MousePos;
+				const float ns = std::clamp(s * std::pow(1.1f, wh),
+					0.004f, 50.0f);
+				// Keep the world point under the cursor fixed.
+				const float wx = vx0 + (m.x - o.x) / s;
+				const float wz = vz0 + (m.y - o.y) / s;
+				m_worldMapCenter.x = wx - (m.x - o.x - cw * 0.5f) / ns;
+				m_worldMapCenter.y = wz - (m.y - o.y - ch * 0.5f) / ns;
+				m_worldMapScale = ns;
+			}
+		}
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		dl->PushClipRect(o, ImVec2(o.x + cw, o.y + ch), true);
+		if (!hasH || m_worldMapHeightId == 0) {
+			// Empty grid: 100 m lines world-aligned + origin axes.
+			for (float gx = std::ceil(vx0 / 100.0f) * 100.0f;
+				gx < vx0 + cw / s; gx += 100.0f) {
+				const float mx = o.x + (gx - vx0) * s;
+				const bool axis = std::abs(gx) < 1e-3f;
+				dl->AddLine(ImVec2(mx, o.y), ImVec2(mx, o.y + ch),
+					axis ? IM_COL32(120, 140, 160, 255)
+						: IM_COL32(40, 46, 56, 255));
+			}
+			for (float gz = std::ceil(vz0 / 100.0f) * 100.0f;
+				gz < vz0 + ch / s; gz += 100.0f) {
+				const float mz = o.y + (gz - vz0) * s;
+				const bool axis = std::abs(gz) < 1e-3f;
+				dl->AddLine(ImVec2(o.x, mz), ImVec2(o.x + cw, mz),
+					axis ? IM_COL32(120, 140, 160, 255)
+						: IM_COL32(40, 46, 56, 255));
+			}
+			dl->AddText(ImVec2(o.x + 6.0f, o.y + 4.0f),
+				IM_COL32(140, 150, 165, 255), "grid (no terrain)");
+		}
+		const auto WX = [&](float x) { return o.x + (x - vx0) * s; };
+		const auto WZ = [&](float z) { return o.y + (z - vz0) * s; };
+		const auto toSrgb8 = [](float c) {
+			c = std::min(std::max(c, 0.0f), 1.0f);
+			return (int)std::lround(std::pow(c, 1.0f / 2.2f) * 255.0f);
+		};
+		uint32_t nZones = 0, nZonesOff = 0, nCvol = 0, nProbes = 0,
+			nLights = 0, nDecals = 0;
+		// ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
+		if (m_worldMapEnvVolumes && m_world) {
+			const ::Scene& scene = m_world->scene;
+			for (const auto& [node, env] : scene.envForNode) {
+				if (node >= scene.globalTransform.size())
+					continue;
+				++nZones;
+				const glm::mat4& g = scene.globalTransform[node];
+				const glm::vec2 c(g[3].x, g[3].z);
+				const glm::vec2 ax(g[0].x, g[0].z);
+				const glm::vec2 az(g[2].x, g[2].z);
+				uint32_t infMask = 0u;
+				bool volDisabled = false;
+				if (const auto vit = scene.envVolumeForNode.find(node);
+					vit != scene.envVolumeForNode.end()) {
+					infMask = vit->second.infMask;
+					volDisabled = !vit->second.enabled;
+				}
+				if (volDisabled)
+					++nZonesOff;
+				const float pri = ::ZonePriority(scene, node, env);
+				ImU32 col = pri < 1.0f ? IM_COL32(110, 190, 110, 230)
+					: pri < 10.0f ? IM_COL32(230, 210, 90, 230)
+					: IM_COL32(235, 130, 60, 230);
+				if (volDisabled)
+					col = IM_COL32(110, 110, 110, 140);
+				const bool isActive =
+					scene.activeEnvironment == node;
+				if (isActive)
+					col = IM_COL32(255, 255, 255, 255);
+				const ImVec2 p[4] = {
+					ImVec2(WX(c.x - ax.x - az.x), WZ(c.y - ax.y - az.y)),
+					ImVec2(WX(c.x + ax.x - az.x), WZ(c.y + ax.y - az.y)),
+					ImVec2(WX(c.x + ax.x + az.x), WZ(c.y + ax.y + az.y)),
+					ImVec2(WX(c.x - ax.x + az.x), WZ(c.y - ax.y + az.y)),
+				};
+				dl->AddQuad(p[0], p[1], p[2], p[3], col,
+					isActive ? 3.0f : 1.5f);
+				// Infinite X/Z faces: arrows from the edge midpoint
+				// outward (Y-only infinities show as a Y tag below).
+				const uint32_t faceBits[4] = { kEnvInfNegX,
+					kEnvInfPosX, kEnvInfNegZ, kEnvInfPosZ };
+				const glm::vec2 edgeMid[4] = { c - ax, c + ax,
+					c - az, c + az };
+				const glm::vec2 edgeDir[4] = { -ax, ax, -az, az };
+				for (int f = 0; f < 4; ++f) {
+					if ((infMask & faceBits[f]) == 0)
+						continue;
+					glm::vec2 d = edgeDir[f];
+					const float l = glm::length(d);
+					if (!(l > 1e-6f))
+						continue;
+					d /= l;
+					const ImVec2 m(WX(edgeMid[f].x), WZ(edgeMid[f].y));
+					const ImVec2 tip(m.x + d.x * 30.0f, m.y + d.y * 30.0f);
+					dl->AddLine(m, tip, col, 2.0f);
+					dl->AddLine(tip,
+						ImVec2(tip.x - d.x * 8.0f - d.y * 5.0f,
+							tip.y - d.y * 8.0f + d.x * 5.0f), col, 2.0f);
+					dl->AddLine(tip,
+						ImVec2(tip.x - d.x * 8.0f + d.y * 5.0f,
+							tip.y - d.y * 8.0f - d.x * 5.0f), col, 2.0f);
+				}
+				if (s > 0.8f) {
+					char label[24];
+					std::snprintf(label, sizeof(label), "%u%s", node,
+						(infMask & (kEnvInfNegY | kEnvInfPosY)) != 0
+						? " Yinf" : "");
+					dl->AddText(ImVec2(WX(c.x) + 4.0f, WZ(c.y) - 8.0f),
+						col, label);
+				}
+			}
+		}
+		// ---- Cvolumes -------------------------------------------------
+		if (m_worldMapCvolumes && m_world) {
+			const ::Scene& scene = m_world->scene;
+			for (const auto& [node, cv] : scene.cvolForNode) {
+				(void)cv;
+				if (node >= scene.globalTransform.size())
+					continue;
+				++nCvol;
+				const glm::mat4& g = scene.globalTransform[node];
+				const glm::vec2 c(g[3].x, g[3].z);
+				const glm::vec2 ax(g[0].x, g[0].z);
+				const glm::vec2 az(g[2].x, g[2].z);
+				dl->AddQuad(
+					ImVec2(WX(c.x - ax.x - az.x), WZ(c.y - ax.y - az.y)),
+					ImVec2(WX(c.x + ax.x - az.x), WZ(c.y + ax.y - az.y)),
+					ImVec2(WX(c.x + ax.x + az.x), WZ(c.y + ax.y + az.y)),
+					ImVec2(WX(c.x - ax.x + az.x), WZ(c.y - ax.y + az.y)),
+					IM_COL32(60, 200, 255, 230), 1.5f);
+				if (s > 0.8f) {
+					char label[16];
+					std::snprintf(label, sizeof(label), "%u", node);
+					dl->AddText(ImVec2(WX(c.x) + 4.0f, WZ(c.y) - 8.0f),
+						IM_COL32(60, 200, 255, 230), label);
+				}
+			}
+		}
+		// ---- Probes: GI lattice dots + cubemap influence rings --------
+		if (m_worldMapProbes) {
+			uint32_t drawn = 0;
+			for (const auto& p : m_giVolume.probes) {
+				if (!p.valid)
+					continue;
+				if (++drawn > 3000)
+					break;
+				++nProbes;
+				dl->AddCircleFilled(
+					ImVec2(WX(p.position.x), WZ(p.position.z)), 2.0f,
+					IM_COL32(90, 230, 90, 210));
+			}
+			for (const auto& pr : m_cubemapProbes) {
+				const glm::vec3 pp(
+					pr.posInfluence.x, pr.posInfluence.y,
+					pr.posInfluence.z);
+				++nProbes;
+				dl->AddCircleFilled(ImVec2(WX(pp.x), WZ(pp.z)), 3.0f,
+					IM_COL32(240, 220, 80, 230));
+				const float r = pr.posInfluence.w * s;
+				if (r > 4.0f && r < 4000.0f)
+					dl->AddCircle(ImVec2(WX(pp.x), WZ(pp.z)), r,
+						IM_COL32(240, 220, 80, 120));
+			}
+		}
+		// ---- Lights (diamonds = spots) + decals (squares) -------------
+		if (m_worldMapLights) {
+			uint32_t drawn = 0;
+			for (const auto& l : m_debugLights) {
+				if (++drawn > 512)
+					break;
+				++nLights;
+				const ImU32 col = IM_COL32(toSrgb8(l.color.r),
+					toSrgb8(l.color.g), toSrgb8(l.color.b), 220);
+				const ImVec2 pt(WX(l.position.x), WZ(l.position.z));
+				if (l.type == 1) // spot
+					dl->AddQuadFilled(ImVec2(pt.x, pt.y - 5.0f),
+						ImVec2(pt.x + 5.0f, pt.y), ImVec2(pt.x, pt.y + 5.0f),
+						ImVec2(pt.x - 5.0f, pt.y), col);
+				else
+					dl->AddCircleFilled(pt, 4.0f, col);
+			}
+			if (m_world) {
+				uint32_t dd = 0;
+				for (const auto& [node, worldIdx] : m_world->scene.decalForNode) {
+					if (++dd > 256)
+						break;
+					if (node >= m_world->scene.globalTransform.size())
+						continue;
+					++nDecals;
+					const glm::vec3 p(
+						m_world->scene.globalTransform[node][3]);
+					dl->AddRectFilled(
+						ImVec2(WX(p.x) - 3.0f, WZ(p.z) - 3.0f),
+						ImVec2(WX(p.x) + 3.0f, WZ(p.z) + 3.0f),
+						IM_COL32(230, 80, 220, 220));
+				}
+			}
+		}
+		// ---- Camera wedge ---------------------------------------------
+		if (m_worldMapCamera) {
+			const glm::vec3 cp = m_cameraPositioner.getPosition();
+			glm::vec3 fw = m_cameraPositioner.getForward();
+			glm::vec2 f2(fw.x, fw.z);
+			if (!(glm::length(f2) > 1e-6f))
+				f2 = glm::vec2(0.0f, -1.0f);
+			f2 = glm::normalize(f2);
+			const ImVec2 pp(WX(cp.x), WZ(cp.z));
+			const float len = 60.0f, spread = 0.35f;
+			const float cs = std::cos(spread), sn = std::sin(spread);
+			const glm::vec2 d1(f2.x * cs - f2.y * sn,
+				f2.x * sn + f2.y * cs);
+			const glm::vec2 d2(f2.x * cs + f2.y * sn,
+				-f2.x * sn + f2.y * cs);
+			dl->AddLine(pp,
+				ImVec2(pp.x + d1.x * len, pp.y + d1.y * len),
+				IM_COL32(255, 255, 255, 230), 2.0f);
+			dl->AddLine(pp,
+				ImVec2(pp.x + d2.x * len, pp.y + d2.y * len),
+				IM_COL32(255, 255, 255, 230), 2.0f);
+			dl->AddCircleFilled(pp, 4.0f, IM_COL32(255, 255, 255, 255));
+		}
+		dl->PopClipRect();
+		ImGui::TextDisabled(
+			"zones %u (%u off)  cvols %u  probes %u  lights %u  decals %u"
+			"  1px = %.1fm  drag pan | wheel zoom",
+			nZones, nZonesOff, nCvol, nProbes, nLights, nDecals,
+			1.0f / s);
+		ImGui::End();
 	}
 
 } // namespace engine

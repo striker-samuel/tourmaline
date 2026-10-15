@@ -2589,6 +2589,30 @@ public:
 	// RefreshGpuMemoryStats / GpuMemoryHeap). No owned GPU state; pure
 	// read of m_gpuMemHeaps.
 	bool m_vramWindow = false;               // Ctrl+M opens/closes
+	// World Map window (C): floating top-down orthographic canvas over
+	// the world XZ extent (north = -Z up). Background = the terrain
+	// heightfield downsampled to a 256px preview when a terrain field
+	// is loaded, else an empty grid. Overlays (each toggleable):
+	// env-volume OBB footprints (+/-inf face arrows, priority colors),
+	// cvolumes, GI + cubemap probes, lights/decals, camera wedge.
+	// LATER layers slot in as one bool + one draw block each (shadow
+	// cascade boxes, terrain LOD heat, env zone weights).
+	bool m_worldMapWindow = false;           // C opens/closes
+	bool m_worldMapEnvVolumes = true;
+	bool m_worldMapCvolumes = true;
+	bool m_worldMapProbes = true;
+	bool m_worldMapLights = true;
+	bool m_worldMapCamera = true;
+	glm::vec2 m_worldMapCenter{ 0.0f, 0.0f }; // world XZ, canvas center
+	float m_worldMapScale = 0.0f; // px per meter; <= 0 = fit on next draw
+	// Heightmap preview (built lazily from the baked terrain's CPU
+	// heightfield; destroyed when the terrain goes away).
+	smvk::Holder<smvk::TextureHandle> m_worldMapHeightTex{};
+	ImTextureID m_worldMapHeightId = 0;
+	uint32_t m_worldMapSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
+	void DrawWorldMapWindow();
+	void BuildWorldMapHeight();
+	void DropWorldMapHeight();
 	smvk::TextureHandle m_texDebugSelected{}; // empty = none selected
 	ImTextureID m_texDebugPreview = 0;       // 2D: the overlay's user-texture binding (0 = none)
 	// Cubemap selection: 6 per-face 2D views (Holder = auto-destroy on
