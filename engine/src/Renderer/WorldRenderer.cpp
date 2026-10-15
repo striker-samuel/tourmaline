@@ -4954,34 +4954,15 @@ namespace engine {
 					? " (volumetrics=0: analytic fallback)" : ""))
 				<< "\n";
 		}
-		RefreshSceneLights(true);
-		// Seed the SCENE's sun from the authored light so the sky disc, IBL
-		// tint and shadow-casting light stay in sync (sun fields only - the
-		// env block is lux-native, so the light's lux copy straight in,
-		// like the editor's synthesized-sun seed). Runs only when the scene
-		// carries no authored look (old content without env blocks); a
-		// tour/cooked env always wins. The user can still retouch the look
-		// afterwards (this runs once at load/rebind).
-		if (m_sceneLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
-			const glm::vec3 t = glm::normalize(m_sceneLights.sunDirToSun);
-			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
-			sceneEnv.sunElevation = glm::degrees(std::asin(
-				std::clamp(t.y, -1.0f, 1.0f)));
-			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
-			sceneEnv.sunColor = m_sceneLights.sunColor;
-			sceneEnv.sunIntensity = m_sceneLights.sunIntensity;
-			m_world->scene.environment = sceneEnv;
-			m_world->scene.hasEnvironment = true;
-			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
-				<< " el=" << sceneEnv.sunElevation
-				<< " I=" << sceneEnv.sunIntensity << "\n";
-		}
+		RefreshSceneLights(/*log=*/true, /*seedEnvSun=*/true);
 	}
 
-	// Light resolve shared by the bind-time ResolveSceneLights (log there)
-	// and the per-edit RefreshSceneLights (pack only - no env writes, no
-	// world mutation, no log). Reads the LIVE world, so edits apply.
-	void WorldRenderer::RefreshSceneLights(bool log) {
+	// Light resolve shared by the bind-time path (log + env-sun seeding)
+	// and silent per-edit refreshes (pack only - no env writes, no world
+	// mutation, no log). Reads the LIVE world, so edits apply. The elected
+	// sun writes straight into a sceneless env when seedEnvSun is set
+	// (bind time only); the values are never retained in m_sceneLights.
+	void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
 		m_sceneLights.clear();
 		const ::Scene& scene = m_world->scene;
 		const auto& lightLocs = m_world->lightLocations;
@@ -4998,6 +4979,11 @@ namespace engine {
 			nodes.push_back(node);
 		std::sort(nodes.begin(), nodes.end());
 		std::vector<smvk::ForwardPlusLight> spots, points;
+		// Elected-sun locals: seed a sceneless env below (bind time) and
+		// die on return - the env is the single source of sun values.
+		glm::vec3 electedSunDir{ 0.0f, 1.0f, 0.0f };
+		glm::vec3 electedSunColor{ 1.0f, 0.95f, 0.90f };
+		float electedSunIntensity = 10000.0f;
 		bool sunTaken = false;
 		uint32_t staticBakeOnly = 0;
 		// glTF aim axis after the coordFix basis change (cooked content
@@ -5037,10 +5023,9 @@ namespace engine {
 				if (glm::length(emis) < 1e-6f)
 					continue;
 				emis = glm::normalize(emis);
-				m_sceneLights.sunDirToSun = -emis;
-				m_sceneLights.sunColor = L.color;
-				m_sceneLights.sunIntensity = L.intensity;
-				m_sceneLights.hasSun = true;
+				electedSunDir = -emis;
+				electedSunColor = L.color;
+				electedSunIntensity = L.intensity;
 				sunTaken = true;
 			}
 			else if (L.type == ::SceneLight::Type::Point) {
@@ -5133,11 +5118,33 @@ namespace engine {
 		if (log)
 			std::cerr << "[Scene] resolved lights: spots=" << spots.size()
 			<< " points=" << points.size()
-			<< (m_sceneLights.hasSun ? " + sun" : " (no sun)")
+			<< (sunTaken ? " + sun" : " (env-default sun)")
 			<< (staticBakeOnly > 0
 				? " | static(bake-only)=" + std::to_string(staticBakeOnly)
 				: "")
 			<< "\n";
+		// Overwrite a sceneless env's default sun values with the election
+		// (sky disc, IBL tint and shadow-casting light stay in sync; sun
+		// fields only - the env block is lux-native, so the light's lux
+		// copy straight in, like the editor's synthesized-sun seed). Bind
+		// time only (seedEnvSun): the edit path must not stomp user
+		// retouches. Runs only when the scene carries no authored look
+		// (old content without env blocks); a tour/cooked env always wins.
+		if (seedEnvSun && sunTaken && m_world
+			&& !m_world->scene.hasEnvironment) {
+			const glm::vec3 t = glm::normalize(electedSunDir);
+			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+			sceneEnv.sunElevation = glm::degrees(std::asin(
+				std::clamp(t.y, -1.0f, 1.0f)));
+			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
+			sceneEnv.sunColor = electedSunColor;
+			sceneEnv.sunIntensity = electedSunIntensity;
+			m_world->scene.environment = sceneEnv;
+			m_world->scene.hasEnvironment = true;
+			std::cerr << "[Scene] resolved sun: az=" << sceneEnv.sunAzimuth
+				<< " el=" << sceneEnv.sunElevation
+				<< " I=" << sceneEnv.sunIntensity << "\n";
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -11510,10 +11517,15 @@ namespace engine {
 							// The scene's authored lights always render when
 							// present (no enable toggle): the Forward+ set is
 							// whatever the resolved KHR_lights_punctual pack
-							// carries, static placement.
-							ImGui::TextDisabled("%u point/spot%s",
+							// carries, static placement. The sun always
+							// exists: the env carries default values that a
+							// resolved directional overwrites at bind time.
+							const SceneEnv& sunEnv = m_world
+								? m_world->scene.environment
+								: SceneEnv{};
+							ImGui::TextDisabled("%u point/spot, sun az %.0f el %.0f",
 								(unsigned)m_sceneLights.forwardPlusLights.size(),
-								m_sceneLights.hasSun ? " + sun" : "");
+								sunEnv.sunAzimuth, sunEnv.sunElevation);
 						}
 						if (ImGui::CollapsingHeader("Directional Shadows (CSM)")) {
 							// Tile resolution (depth + EVSM moment atlases recreate once

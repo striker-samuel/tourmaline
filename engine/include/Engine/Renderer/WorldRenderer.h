@@ -354,22 +354,22 @@ enum class DsDebugViz : int {
 
 // Resolved scene lights (KHR_lights_punctual via the pak/glTF import,
 // snapshotted from the live world at load/edit time — NOT cooker output,
-// despite the old name). The sun seeds the environment/directional light
-// (the struct's sun fields are only read to seed a sceneless env; after
-// that the env owns the sun) and the points/spots upload directly as the
-// Forward+ set (static, no orbit/bob). Empty on scenes without authored
+// despite the old name). A resolved directional overwrites a sceneless
+// env's default sun values at bind time and is otherwise env-owned
+// (single source; nothing retained here). Points/spots upload directly as the Forward+ set
+// (static, no orbit/bob). Empty on scenes without authored
 // lights (e.g. Sponza) — the Forward+ set is then empty and only the
 // sun/ambient terms light the frame.
 struct ResolvedSceneLights {
-	bool hasSun = false;
-	glm::vec3 sunDirToSun{ 0.0f, 1.0f, 0.0f };
-	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
-	float sunIntensity = 10000.0f;
 	// World-space static lights, spots FIRST (per-tile lists keep only
-	// the first FP_MAX_PER_TILE passing lights â€” cone lights must not
+	// the first FP_MAX_PER_TILE passing lights — cone lights must not
 	// compete with the point crowd for those slots).
+	// No sun flag: the scene env ALWAYS carries sun values (SceneEnv
+	// defaults) and a resolved directional overwrites them at bind time —
+	// there is no authored-vs-default sun state to retain. The election
+	// lives in RefreshSceneLights locals and dies on return.
 	std::vector<smvk::ForwardPlusLight> forwardPlusLights;
-	void clear() { hasSun = false; forwardPlusLights.clear(); }
+	void clear() { forwardPlusLights.clear(); }
 	bool hasLights() const { return !forwardPlusLights.empty(); }
 };
 
@@ -1496,9 +1496,12 @@ public:
 	// If the scene carries ANY lights, they render â€” no enable toggle.
 	ResolvedSceneLights m_sceneLights{};
 	void ResolveSceneLights();
-	// Light pack shared by the bind-time build (log=true) and the
-	// per-edit refresh (log=false). Reads the LIVE world.
-	void RefreshSceneLights(bool log);
+	// Light resolve shared by the bind-time path (log + env-sun seeding)
+	// and silent per-edit refreshes (pack only - no env writes, no world
+	// mutation, no log). Reads the LIVE world, so edits apply.
+	// seedEnvSun: write the elected sun into a sceneless env (bind time
+	// only - the edit path must not stomp user retouches).
+	void RefreshSceneLights(bool log, bool seedEnvSun);
 	// Unresolved cookie URIs already warned about (warn-once-until-
 	// resolved, so a dangling cookie doesn't spam per refresh).
 	std::unordered_set<std::string> m_cookieWarnedUris;
