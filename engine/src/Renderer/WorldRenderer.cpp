@@ -11199,12 +11199,8 @@ namespace engine {
 					if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (ImGui::CollapsingHeader("Sky & Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
 							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
-							ImGui::Checkbox("Terrain field", &m_terrainEnabled);
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip(
-									"The pak-baked 4 km x 4 km tiled heightfield (256 m\n"
-									"G-blocks x 3 LODs, rendered after the sky). Baked\n"
-									"from the pak's Terrain blobs; absent without them.");
+							ImGui::TextDisabled("Terrain render: %s (T)",
+								m_terrainEnabled ? "on" : "off");
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
 							// ---- Environment zones (world/env separation; see
@@ -11833,13 +11829,8 @@ namespace engine {
 								m_gfxRenderer.config.cullFlags = b
 								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
 								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
-							if (ImGui::Checkbox("HZB occlusion (T4)", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbOcclusion
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbOcclusion;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbSkipMasked) != 0;
-							if (ImGui::Checkbox("Exclude MASK from HZB test", &b))
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbSkipMasked) != 0;
+						if (ImGui::Checkbox("Exclude MASK from HZB test", &b))
 								m_gfxRenderer.config.cullFlags = b
 								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
 								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
@@ -11978,7 +11969,7 @@ namespace engine {
 						ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
 					}
 					if (ImGui::CollapsingHeader("Culling freeze + dumps", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Checkbox("Freeze culling view (debug)", &m_freezeCullingView);
+						ImGui::Checkbox("Freeze culling view (Ctrl+F, debug)", &m_freezeCullingView);
 						ImGui::TextDisabled("Holds frustum/eye/HZB; render camera stays live.\n"
 							"Move the camera to inspect what the frozen view culled.");
 						if (ImGui::Button("Dump indirect audit (stderr, stalls)"))

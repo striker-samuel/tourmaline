@@ -38,6 +38,12 @@ constexpr int DEFERRED_SHADOWS_TOGGLE = GLFW_KEY_H;
 constexpr int GFX_FILTER_TOGGLE = GLFW_KEY_G;
 constexpr int SKY_TOGGLE = GLFW_KEY_K;
 constexpr int WIREFRAME_TOGGLE = GLFW_KEY_P;
+// Tiled-terrain render on/off (replaces the old Terrain field checkbox).
+constexpr int TERRAIN_TOGGLE = GLFW_KEY_T;
+// Culling freeze (m_freezeCullingView): Ctrl chord like VRAM_VIEWER_TOGGLE
+// below — bare F stays the particle toggle. Ctrl alone stays
+// camera-descend; the chord only fires the freeze.
+constexpr int CULLING_FREEZE_TOGGLE = GLFW_KEY_F;
 
 // ---- Ambient / GI ----
 constexpr int AMBIENT_CYCLE = GLFW_KEY_N;   // All -> Lightmaps -> Probes -> SkyIbl -> Off

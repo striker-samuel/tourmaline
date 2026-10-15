@@ -170,6 +170,17 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
 			m_renderer.m_skyEnabled = !m_renderer.m_skyEnabled;
 		}
+		if (m_input.isKeyPressed(keybind::TERRAIN_TOGGLE)) {
+			m_renderer.m_terrainEnabled = !m_renderer.m_terrainEnabled;
+		}
+		// Ctrl+F freezes culling (holds frustum/eye/HZB, camera stays
+		// live); bare F stays the particle toggle (Ctrl+M/Ctrl+T chord
+		// precedent — works in FPS and UI modes).
+		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+			&& m_input.isKeyPressed(keybind::CULLING_FREEZE_TOGGLE)) {
+			m_renderer.m_freezeCullingView = !m_renderer.m_freezeCullingView;
+		}
 		// Z cycles AA: Off -> MSAA 2x -> SMAA 1x -> SMAA T2x. 1..4 jump
 		// directly to a mode.
 		if (m_input.isKeyPressed(keybind::AA_CYCLE)) {
