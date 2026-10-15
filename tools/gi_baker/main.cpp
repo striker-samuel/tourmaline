@@ -1050,13 +1050,13 @@ int main(int argc, char** argv) {
 		<< (haveTour ? args.tour : inVfs)
 		<< " -> " << args.out << "\n";
 
-	// GPU-free cook-mode Cluster. --tour builds the DEFINITION (empty
+	// GPU-free offline-mode Cluster. --tour builds the DEFINITION (empty
 	// root + reference bind + command replay, host-path resolution —
 	// identical to the editor / PakCooker, so authored cvolume nodes
 	// land on the same deterministic ids); otherwise the legacy VFS
 	// glTF import.
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 	smvk::tour::Doc tour;
 	if (haveTour) {
 		std::string terr;

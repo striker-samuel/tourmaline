@@ -255,7 +255,7 @@ struct DeriveStats {
 	uint32_t dropped = 0;
 };
 
-// Runs the (deterministic, GPU-free cook-mode) import of the glTF + writes
+// Runs the (deterministic, GPU-free offline-mode) import of the glTF + writes
 // every derived asset + the manifest next to it (its directory). Identity is
 // DETERMINISTIC (see SourceAssetGuid/DerivedEntryGuid): a from-zero
 // re-import anywhere reproduces the same GUIDs (and byte-identical derived

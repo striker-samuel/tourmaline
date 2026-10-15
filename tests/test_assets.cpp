@@ -958,7 +958,7 @@ void TestLodChain() {
 	{
 		using namespace smvk;
 		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetCookMode(true);
+		cluster->SetOfflineMode(true);
 		auto q = MakeQuad();
 		const auto h = cluster->UploadStaticMesh(q);
 		const std::string uri = "models/q.gltf#mesh.9/prim.0";
@@ -1005,7 +1005,7 @@ void TestLodChain() {
 	{
 		using namespace smvk;
 		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetCookMode(true);
+		cluster->SetOfflineMode(true);
 		auto q = MakeQuad();
 		const auto h = cluster->UploadStaticMesh(q);
 		const std::string uri = "models/sponza/Sponza.gltf#mesh.0/prim.0";
@@ -1142,7 +1142,7 @@ void TestLodSelection() {
 	// cluster registered with a World, no GPU involved).
 	{
 		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetCookMode(true);
+		cluster->SetOfflineMode(true);
 		auto q = MakeQuad();
 		const auto mh = cluster->UploadStaticMesh(q);
 		const std::string uri = "models/q.gltf#mesh.4/prim.0";
@@ -1456,7 +1456,7 @@ void TestLodLightmapAudit() {
 void TestCookLodSiblingsLightmap() {
 	using namespace smvk;
 	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 	std::vector<uint32_t> chartOf;
 	auto grid = MakeTwoChartGrid(chartOf);
 	const auto mh = cluster->UploadStaticMesh(grid);
@@ -1576,11 +1576,11 @@ void TestCookLodSiblingsLightmap() {
 
 void TestLightmapChartTable() {
 	using namespace smvk;
-	// Scene-wide chart transform table (headless: cook cluster
+	// Scene-wide chart transform table (headless: offline cluster
 	// registered with a World, no GPU involved). Mesh A carries 2
 	// charts, mesh B 1 chart, mesh C is unbaked (contributes nothing).
 	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 	std::vector<uint32_t> chartOf;
 	auto gridA = MakeTwoChartGrid(chartOf);
 	const auto mhA = cluster->UploadStaticMesh(gridA);
@@ -1670,10 +1670,10 @@ void TestLightmapChartTable() {
 
 void TestClusterSerializeCook() {
 	using namespace smvk;
-	// GPU-free cook cluster: CPU geometry + minted texture ids only.
+	// GPU-free offline cluster: CPU geometry + minted texture ids only.
 	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetCookMode(true);
-	Check(cluster->IsCookMode(), "cook.mode.on");
+	cluster->SetOfflineMode(true);
+		Check(cluster->IsOfflineMode(), "offline.mode.on");
 
 	// Mesh (cook path retains uploads for serialization).
 	auto quad = MakeQuad();
@@ -1690,7 +1690,7 @@ void TestClusterSerializeCook() {
 	}
 
 	// Texture: minted handle (no RHI pool), validated payload stashed.
-	const TextureHandle th = TextureHandle::Mint(cluster->AllocCookTextureId());
+	const TextureHandle th = TextureHandle::Mint(cluster->AllocOfflineTextureId());
 	const std::string texUri = "textures/fake.ktx2";
 	Check(th.valid() && th.index() == 0, "cook.tex.mint");
 	Check(cluster->RegisterTextureUri(texUri, th), "cook.tex.uri");
@@ -2095,7 +2095,7 @@ void TestVertexPack() {
 void TestStaticCollapse() {
 	using namespace smvk;
 	auto cluster = std::make_unique<Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 
 	// Two quads sharing one material; second translated +1 on X.
 	auto q1 = MakeQuad();
@@ -2145,12 +2145,12 @@ void TestStaticCollapse() {
 
 void TestMultiSceneSerialize() {
 	using namespace smvk;
-	// Two cook clusters sharing one mesh URI: the shared blob must land
+	// Two offline clusters sharing one mesh URI: the shared blob must land
 	// once, both scenes reference it, discovery lists both in order.
 	auto makeScene = [](const char* meshUri, const char* matUri,
 			const char* nodeName) {
 		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetCookMode(true);
+		cluster->SetOfflineMode(true);
 		auto quad = MakeQuad();
 		const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
 		cluster->RegisterMeshUri(meshUri, mh);

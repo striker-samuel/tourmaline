@@ -58,7 +58,7 @@ namespace smvk {
 	};
 
 	struct Cluster {
-		// ctx may be nullptr for GPU-less cook clusters (see SetCookMode);
+		// ctx may be nullptr for GPU-less offline clusters (see SetOfflineMode);
 		// any GPU upload with a null context is a programming error.
 		explicit Cluster(ResourceManager* ctx);
 		~Cluster();
@@ -116,7 +116,7 @@ namespace smvk {
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
 		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 		// Pure value assembly (no texture resolution): shared core of
-		// CreateMaterial and the GPU-free cook path. textureIds use the
+		// CreateMaterial and the GPU-free offline path. textureIds use the
 		// same integer domain as MaterialValues (RHI indices at runtime,
 		// cook-table ids when cooking).
 		ClusterMaterialHandle CreateMaterialFromValues(
@@ -197,14 +197,14 @@ namespace smvk {
 		void SetRetainUploads(bool retain);
 		const StaticMeshUpload* GetRetainedUpload(ClusterStaticMeshHandle handle) const;
 
-		// GPU-free cook mode (pak cooker without a Vulkan device).
+		// GPU-free offline mode (pak cooker without a Vulkan device).
 		// UploadStaticMesh records CPU geometry + retained uploads only
 		// (no VMA/streamer touch); textures mint fake RHI handles whose
-		// indices are stable cook ids (see Handle::Mint). The cook cluster
+		// indices are stable offline ids (see Handle::Mint). The offline cluster
 		// is serializable and nothing else: never register it with a World
 		// or render from it. Implies SetRetainUploads(true).
-		void SetCookMode(bool cook);
-		bool IsCookMode() const { return cookMode_; }
+		void SetOfflineMode(bool offline);
+		bool IsOfflineMode() const { return offlineMode_; }
 		// DYNAMIC cluster (see World::EnsureDynamicCluster): the World's
 		// dedicated home for runtime-created entities (editor-created
 		// lights/cameras, app demo content, later decals/particles) —
@@ -215,7 +215,7 @@ namespace smvk {
 		bool isDynamic = false;
 		// Allocates the next cook texture id (valid Handle::Mint index for
 		// MaterialValues texture slots).
-		uint32_t AllocCookTextureId();
+		uint32_t AllocOfflineTextureId();
 
 		void DestroyMesh(ClusterStaticMeshHandle handle);
 		void DestroyMaterial(ClusterMaterialHandle handle);
@@ -347,8 +347,8 @@ namespace smvk {
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
 		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;
-		bool cookMode_ = false;
-		uint32_t cookNextTextureId_ = 0;
+		bool offlineMode_ = false;
+		uint32_t offlineNextTextureId_ = 0;
 	};
 
 template<typename HandleT>

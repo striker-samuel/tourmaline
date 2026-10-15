@@ -304,8 +304,8 @@ struct GiStaticLightCounts {
 GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
 	const glm::vec3& aimAxis = glm::vec3(0.0f, 0.0f, -1.0f));
 
-// Extracts world-space opaque triangles + materials from a cook-mode
-// Cluster (retained uploads; see Cluster::SetCookMode). Sun + static
+// Extracts world-space opaque triangles + materials from an offline-mode
+// Cluster (retained uploads; see Cluster::SetOfflineMode). Sun + static
 // spots + real materials + transmissive pass-through: see
 // GiTraceScene::TraceIncoming and GiSceneBuildOptions.
 // Non-const: global transforms are recalculated before the walk.

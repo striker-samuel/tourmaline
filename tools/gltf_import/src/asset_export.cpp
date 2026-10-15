@@ -1,7 +1,7 @@
 // glTF -> project asset derivation (see asset_export.h): the writers +
 // readers for .mesh / .material / .anim + the gltf.meta manifest.
 //
-// The derivation runs the SAME deterministic GPU-free cook-mode import the
+// The derivation runs the SAME deterministic GPU-free offline-mode import the
 // baker/cooker use (GltfToCluster on a null-RM Cluster), so node ids are
 // identical to a live import Ã¢â‚¬â€ scenes built from the assets address the
 // same nodes a .tour replay expects. The .mesh stores the RAW TRS (the
@@ -1089,7 +1089,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	smvk::MeshOptConfig meshOpt{};
 	meshOpt.enabled = config.lods;
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 	std::vector<int> gltfNodeMap;
 	{
 		GltfToSceneImporter importer{ *cluster, model, gltfPath };
@@ -1705,7 +1705,7 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
 
 // ---- shared material-asset import (editor + cook) ------------------------
 // Mirrors the editor's AssignMaterialAsset + AddTextureFromFile flow, with
-// the cook mode (cluster.IsCookMode(), ctx == nullptr) replacing the GPU
+// the offline mode (cluster.IsOfflineMode(), ctx == nullptr) replacing the GPU
 // load with a cook texture-id mint (the glTF importer's cook path). See
 // asset_export.h — the SINGLE import both sides run, so pool indices match
 // across the editor session and the cook replay.
@@ -1824,10 +1824,10 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(
 			payload = std::move(ktx);
 		}
 		smvk::TextureHandle h;
-		if (cluster.IsCookMode()) {
-			// Cook: mint the pool id (the glTF importer's cook path); no
+		if (cluster.IsOfflineMode()) {
+			// Offline: mint the pool id (the glTF importer's offline path); no
 			// GPU exists here — the serializer reads the SOURCE bytes.
-			h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+			h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 		}
 		else {
 			if (!ctx) {
@@ -1916,10 +1916,10 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
 	std::free(mem);
 #endif
 	smvk::TextureHandle h;
-	if (cluster.IsCookMode()) {
-		// Cook: pool id + stash only (the serializer embeds the pink
+	if (cluster.IsOfflineMode()) {
+		// Offline: pool id + stash only (the serializer embeds the pink
 		// payload; the runtime streams it like any GPU-ready texture).
-		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+		h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 	}
 	else {
 		if (!ctx)
@@ -1998,10 +1998,10 @@ smvk::TextureHandle ImportTextureAssetToCluster(
 		}
 	}
 	smvk::TextureHandle h;
-	if (cluster.IsCookMode()) {
-		// Cook: mint the pool id (the glTF importer's cook path); the
+	if (cluster.IsOfflineMode()) {
+		// Offline: mint the pool id (the glTF importer's offline path); the
 		// serializer reads the stashed payload below.
-		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+		h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 	}
 	else {
 		if (!ctx) {

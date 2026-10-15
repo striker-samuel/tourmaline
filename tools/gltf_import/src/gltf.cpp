@@ -766,7 +766,7 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 		std::string kerr;
 		if (!resolveKtxBytes(img.uri, std::move(*bytes), imageIndex, ktx,
 				kerr)) {
-			std::cerr << (cluster.IsCookMode() ? "Cook: " : "Texture: ")
+				std::cerr << (cluster.IsOfflineMode() ? "Offline: " : "Texture: ")
 				<< kerr << std::endl;
 			noteImage(imageIndex, "", false);
 			return {};
@@ -775,8 +775,8 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 	}
 
 	smvk::TextureHandle h;
-	if (cluster.IsCookMode()) {
-		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+	if (cluster.IsOfflineMode()) {
+		h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 	}
 	else {
 		if (!cluster.ctx_)
@@ -1299,18 +1299,18 @@ void GltfToSceneImporter::preloadTextures()
 	// promotes a fresh `.ktx2` sidecar or transcodes in-process; then mint
 	// stable ids, register uri/sampler/source, done. Everything here is
 	// CPU-only so no threads are needed.
-	if (cluster.IsCookMode()) {
+	if (cluster.IsOfflineMode()) {
 		for (Pending& p : pendings) {
 			std::vector<uint8_t> ktx;
 			std::string kerr;
 			if (!resolveKtxBytes(p.uri, std::move(p.bytes), p.imageIndex,
 					ktx, kerr)) {
-				std::cerr << "Cook: " << kerr << std::endl;
+				std::cerr << "Offline: " << kerr << std::endl;
 				continue;
 			}
 			p.bytes = std::move(ktx);
 			const smvk::TextureHandle h =
-				smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+				smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 			textureCache[p.imageIndex] = h;
 			if (!p.identity.empty()) {
 				cluster.RegisterTextureUri(p.identity, h);
@@ -2423,8 +2423,8 @@ size_t BuildFromMeshAsset(
 			}
 		}
 		smvk::TextureHandle h;
-		if (cluster.IsCookMode()) {
-			h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+		if (cluster.IsOfflineMode()) {
+			h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 		}
 		else if (!cluster.ctx_) {
 			return {};
@@ -2451,10 +2451,10 @@ size_t BuildFromMeshAsset(
 			cluster.textures.create(std::move(holder));
 		}
 		cluster.RegisterTextureUri(identity, h);
-		// Stash unconditionally (cook mode included): the pak serializer
-		// embeds these bytes, and the CLI-cook cluster is built fresh from
+		// Stash unconditionally (offline mode included): the pak serializer
+		// embeds these bytes, and the CLI offline cluster is built fresh from
 		// the artifact - nothing else stashes them (the editor path has
-		// them from its import session). Skipping the stash in cook mode
+		// them from its import session). Skipping the stash in offline mode
 		// made every CLI cook fail at serialize with "missing embedded
 		// .ktx2 source".
 		cluster.SetTextureSource(identity, std::move(ktx));

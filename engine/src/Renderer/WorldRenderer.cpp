@@ -11219,7 +11219,7 @@ namespace engine {
 							// the look from the env block; the map DERIVES from them
 							// (RebuildEnvZoneMap - load, rebind, editor refresh).
 							// No brush: zone shapes are authored, never painted.
-							if (ImGui::CollapsingHeader("Zones (entity world/env)")) {
+							if (ImGui::CollapsingHeader("Zones (scene entities)")) {
 								ImGui::Checkbox("Zones enabled", &m_envZonesEnabled);
 								if (!m_envZones.Valid()) {
 									ImGui::TextDisabled("Zone map not built - the plain env path renders.");
@@ -11324,10 +11324,10 @@ namespace engine {
 							ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
 							ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
 							ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
-							ImGui::Checkbox("Probe locations overlay", &m_cubemapShowProbes);
+								ImGui::Checkbox("Capture locations overlay", &m_cubemapShowProbes);
 							if (m_cubemapShowProbes)
 								ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
-							ImGui::Checkbox("Chrome balls (lit probe visual)", &m_cubemapShowBalls);
+							ImGui::Checkbox("Probe preview (mirror spheres)", &m_cubemapShowBalls);
 							if (ImGui::IsItemHovered())
 								ImGui::SetTooltip(
 									"One lit chrome sphere per loaded baked capture,\n"
@@ -11424,7 +11424,7 @@ namespace engine {
 								" rows/intensity/debug/LOD apply instantly.");
 						}
 						if (ImGui::CollapsingHeader("Screen-Space Reflections (SSR)")) {
-							ImGui::Checkbox("Reflections (SSGI composite)", &m_ssrEnabled);
+							ImGui::Checkbox("Screen-space reflections (SSR)", &m_ssrEnabled);
 							if (m_ssrEnabled) {
 								ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
 								ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
@@ -11976,7 +11976,7 @@ namespace engine {
 							ImGui::TextDisabled("Debug programs missing - views disabled");
 						ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
 							"Heat: red = degenerate cone (never culls), green = tight cone.");
-						ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
+						ImGui::TextDisabled("Bisect: disable flags top-down (degen/backface/frustum/small), then bypass.");
 					}
 					if (ImGui::CollapsingHeader("Culling freeze + dumps", ImGuiTreeNodeFlags_DefaultOpen)) {
 						ImGui::Checkbox("Freeze culling view (Ctrl+F, debug)", &m_freezeCullingView);
@@ -11999,8 +11999,8 @@ namespace engine {
 						else {
 							ImGui::TextDisabled("Motion vectors: target/shaders missing");
 						}
-						ImGui::Checkbox("Light points (overlay)", &m_showLightPoints);
-						ImGui::Checkbox("Light numbers (overlay)", &m_showLightNumbers);
+							ImGui::Checkbox("Light points overlay", &m_showLightPoints);
+							ImGui::Checkbox("Light numbers overlay", &m_showLightNumbers);
 						if (m_showLightPoints || m_showLightNumbers) {
 							ImGui::SliderFloat("Overlay point size (px)", &m_lightPointSize, 2.0f, 16.0f);
 							ImGui::SliderInt("Overlay max labels", &m_maxLightLabels, 0, 1024);
@@ -12012,9 +12012,9 @@ namespace engine {
 							ImGui::SliderFloat("Overlay radius (m)", &m_giProbePointMaxDist,
 								2.0f, 120.0f, "%.0f");
 							ImGui::TextDisabled("colors: L0 red -> L4 cyan -> L7 pink (coarse->fine)");
-							ImGui::Checkbox("Occlusion cull (pick BVH)", &m_giProbeOcclusionCull);
-							if (m_giProbeOcclusionCull)
-								ImGui::TextDisabled("hides probes behind geometry (one-time import hitch)");
+								ImGui::Checkbox("Occlusion cull (CPU picking BVH)", &m_giProbeOcclusionCull);
+								if (m_giProbeOcclusionCull)
+									ImGui::TextDisabled("hides probes behind geometry using the CPU picking BVH (one-time import hitch)");
 						}
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_giShowVolumeBounds) {
@@ -12549,16 +12549,16 @@ namespace engine {
 						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_inputUi->gamepadName(0).c_str());
 					else
 						ImGui::TextDisabled("[Gamepad] none connected");
-					ImGui::TextDisabled("Keys: M blur  O AO (No/SSAO/GTAO/SAO)  B bloom  X exposure  V vectors");
-					ImGui::TextDisabled("      L LODs  F particles  G filter  K sky");
+					ImGui::TextDisabled("Keys (toggles): M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors");
+					ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K sky  H shadows  T terrain");
 					ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
-					ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
-					ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors  F6 vertex colors");
+					ImGui::TextDisabled("Keys (views): N ambient  R/F8 GI view  F1 lit  F2 unlit  F3 meshlets");
+					ImGui::TextDisabled("      F4 cascades  F5 LOD colors  F6 vertex colors  F9 UV0  F10 cubemap  F11 POM");
 #if defined(DS_DEBUG_VIZ)
 					ImGui::TextDisabled("      Y DS visualizer (%s)",
 						m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
 #endif
-					ImGui::TextDisabled("      Z/1-4 AA  P wireframe  ` texture viewer  Ctrl+T stats HUD");
+					ImGui::TextDisabled("Keys (actions): Z/1-4 AA  P wireframe  F7 capture  ` texture viewer  Ctrl+T stats HUD");
 					ImGui::EndTabItem();
 				}
 				ImGui::EndTabBar();

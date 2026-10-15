@@ -1,6 +1,6 @@
 // cook.exe: offline ARTIFACT -> COOKED-ARTIFACT cooker that works
-// exclusively on the VFS and needs NO GPU (cook-mode Cluster, see
-// Cluster::SetCookMode). GI / cubemaps / LODs / meshlets / de-instance
+// exclusively on the VFS and needs NO GPU (offline-mode Cluster, see
+// Cluster::SetOfflineMode). GI / cubemaps / LODs / meshlets / de-instance
 // run here and write back into the artifacts (+ <stem>.cooked);
 // pak.exe assembles the .pak from the cooked artifacts (pure
 // serialization). Raw glTF never cooks (import.exe / the MeshImporter /
@@ -137,7 +137,7 @@ namespace {
 		std::vector<std::string> inVfsList;
 		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
-		// .tour replay (editor scene overlay): applied to the cook cluster
+		// .tour replay (editor scene overlay): applied to the offline cluster
 		// right after import, before collapse/LOD/bake/serialize. CLI flags
 		// win over tour cook defaults (tracked via explicitSet).
 		std::string tour;
@@ -3727,7 +3727,7 @@ int main(int argc, char** argv) {
 		// the editor's working directory).
 		{
 			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-			cluster->SetCookMode(true);
+			cluster->SetOfflineMode(true);
 			addNode(cluster->scene, -1, 0); // empty scene root
 			if (!tour.references.empty()) {
 				const std::string ownerBase =
@@ -3909,7 +3909,7 @@ int main(int argc, char** argv) {
 			// GPU-free: CPU geometry + retained uploads only, textures
 			// are minted cook ids.
 			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-			cluster->SetCookMode(true);
+			cluster->SetOfflineMode(true);
 			addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
 			const std::string baseDir = smvk::vfs::BaseDir(artPath);
 			auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);

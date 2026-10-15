@@ -52,7 +52,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene);
 
 // Bakes globals (caller should have fresh globalTransform) and merges every
 // static renderable node, grouped by material pool index. Requires retained
-// CPU uploads (cook clusters, or runtime clusters imported with
+// CPU uploads (offline clusters, or runtime clusters imported with
 // SetRetainUploads(true)); fails otherwise. New block nodes are added as
 // children of node 0 with identity local transforms (vertices are
 // world-baked) and marked static.

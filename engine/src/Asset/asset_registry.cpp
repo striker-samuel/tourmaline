@@ -350,14 +350,14 @@ void Cluster::SetRetainUploads(bool retain) {
 		retainedUploads_.clear();
 }
 
-void Cluster::SetCookMode(bool cook) {
-	cookMode_ = cook;
-	if (cook)
+void Cluster::SetOfflineMode(bool offline) {
+	offlineMode_ = offline;
+	if (offline)
 		SetRetainUploads(true);
 }
 
-uint32_t Cluster::AllocCookTextureId() {
-	return cookNextTextureId_++;
+uint32_t Cluster::AllocOfflineTextureId() {
+	return offlineNextTextureId_++;
 }
 
 const StaticMeshUpload* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handle) const {

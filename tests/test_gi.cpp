@@ -2093,7 +2093,7 @@ void TestLmChartTransfer() {
 // directional; unflagged lights are never baked.
 void TestStaticBakeLights() {
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	cluster->SetOfflineMode(true);
 	::Scene& scene = cluster->scene;
 	addNode(scene, -1, 0); // root
 
@@ -2194,7 +2194,7 @@ void TestStaticBakeLights() {
 	// Runtime + bake share the convention.
 	{
 		auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
-		cluster2->SetCookMode(true);
+		cluster2->SetOfflineMode(true);
 		::Scene& scene2 = cluster2->scene;
 		addNode(scene2, -1, 0); // root
 		glm::mat4 g = glm::mat4_cast(

@@ -32,9 +32,9 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	if (vertexCount == 0)
 		return {};
 
-	// GPU-free cook mode: CPU geometry only (no VMA/streamer). Mirrors the
+	// GPU-free offline mode: CPU geometry only (no VMA/streamer). Mirrors the
 	// runtime single-surface layout so the serializer sees the same shape.
-	if (cookMode_) {
+	if (offlineMode_) {
 		StaticMesh mesh{};
 		mesh.geometry.topology = PrimitiveTopology::TriangleList;
 		mesh.geometry.vertexCount = vertexCount;
@@ -274,9 +274,9 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	if (uploads.empty())
 		return handles;
 
-	// GPU-free cook mode: CPU geometry only — per-mesh single path (the
-	// batch win is GPU-side staging, which cook mode never touches).
-	if (cookMode_) {
+	// GPU-free offline mode: CPU geometry only — per-mesh single path (the
+	// batch win is GPU-side staging, which offline mode never touches).
+	if (offlineMode_) {
 		handles.reserve(uploads.size());
 		for (const StaticMeshUpload& data : uploads)
 			handles.push_back(UploadStaticMesh(data));
@@ -452,7 +452,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	std::vector<ClusterStaticMeshHandle> handles;
 	if (!content || sources.empty())
 		return handles;
-	assert(!cookMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
+	assert(!offlineMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
 
 	// =========================================================================
 	// 1. Allocate heap ranges (all-or-nothing — nothing staged on failure)
