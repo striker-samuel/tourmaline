@@ -203,6 +203,11 @@ namespace editor {
 						DrawAssetsPanel();
 						ImGui::EndTabItem();
 					}
+					if (ImGui::BeginTabItem("Cook")) {
+						m_bottomTab = 3;
+						DrawCookPanel();
+						ImGui::EndTabItem();
+					}
 					ImGui::EndTabBar();
 				}
 			}
@@ -271,7 +276,7 @@ namespace editor {
 			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
 				SaveTourIncremental();
 			if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
-				ShowCookDialog();
+				ShowCookPanel();
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Close"))
@@ -638,9 +643,6 @@ namespace editor {
 		// m_showTerrainDialog stays true while the modal is up (the dialog
 		// clears it on Create/Cancel); OpenPopup is idempotent.
 		DrawCreateTerrainDialog();
-		if (m_showCookDialog)
-			ImGui::OpenPopup("Cook to .pak");
-		DrawCookDialog();
 		// Blocking task window (cook / bake / publish progress): drawn last
 		// so its modal sits on top of every other popup.
 		DrawTaskWindow();
@@ -3343,7 +3345,7 @@ namespace editor {
 		ImGui::EndPopup();
 	}
 
-	void EditorApp::ShowCookDialog() {
+	void EditorApp::ShowCookPanel() {
 		if (!m_world) {
 			Log("Cook: no scene open.");
 			return;
@@ -3360,30 +3362,12 @@ namespace editor {
 			std::snprintf(m_cookContentDirBuf, sizeof(m_cookContentDirBuf),
 				"content");
 		}
-		m_showCookDialog = true;
-		ImGui::OpenPopup("Cook to .pak");
+		// Switch the bottom dock to the Cook tab (the panel lives
+		// there now, not in a modal).
+		m_bottomTab = 3;
 	}
 
-	void EditorApp::DrawCookDialog() {
-		if (!m_showCookDialog)
-			return;
-		// Fixed first-appearance width: the modal auto-fits height, but a
-		// stable wide frame keeps labels and fields from colliding when
-		// sections (lightmaps/cubemaps/GI) expand or collapse.
-		ImGui::SetNextWindowSize(ImVec2(600, 0), ImGuiCond_Appearing);
-		if (!ImGui::BeginPopupModal("Cook to .pak", &m_showCookDialog,
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
-			return;
-		// Cook finished while the dialog was up (progress state): close
-		// itself â€” the completion lands in the Console either way.
-		if (m_cookJustFinished) {
-			m_cookJustFinished = false;
-			m_showCookDialog = false;
-			ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-			return;
-		}
-
+	void EditorApp::DrawCookPanel() {
 		ImGui::Text("Export the current scene + tour edits to a cooked .pak.");
 		ImGui::Separator();
 
@@ -3742,28 +3726,21 @@ namespace editor {
 		if (m_cookRunning) {
 			ImGui::Text("Cooking... (detail in the task window)");
 			ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "Cooking..."); // indeterminate
-			if (ImGui::Button("Hide")) {
-				// The cook keeps running; the dialog closes and the
-				// result lands in the Console either way.
-				m_showCookDialog = false;
-				ImGui::CloseCurrentPopup();
-			}
 		}
 		else {
+			if (m_cookJustFinished) {
+				ImGui::TextColored(m_cookLastOk
+					? ImVec4(0.4f, 1.0f, 0.5f, 1.0f)
+					: ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
+					"%s", m_cookLastOk ? "Last cook finished OK."
+						: "Last cook FAILED (see Console).");
+			}
 			if (ImGui::Button("Cook")) {
 				m_cook.outPak = m_cookOutPakBuf;
 				m_cook.contentDir = m_cookContentDirBuf;
 				CookToPak();
-				// The dialog stays up for the progress bar; PollCookProcess
-				// closes it on finish via m_cookJustFinished.
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Close")) {
-				m_showCookDialog = false;
-				ImGui::CloseCurrentPopup();
 			}
 		}
-		ImGui::EndPopup();
 	}
 
 	// ---- Material editor (right-dock tab) ---------------------------------

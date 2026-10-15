@@ -195,8 +195,9 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		std::filesystem::path(cook.outPak).stem().string();
 	const bool wantWorld = m_cook.giWorld;
 	m_cookRunning = true;
-	// Fresh strip + progress: finished captures refill the face strip
-	// as they land (see PollCubeFaces/DrawCubeFaceStrip).
+	// A new cook clears the last result line (the panel shows it until
+	// then) and the face strip (captures refill it as they land).
+	m_cookJustFinished = false;
 	DropCubeFaces();
 	m_cubeTotal = -1;
 	m_cubeDone = 0;
@@ -467,6 +468,7 @@ void EditorApp::PollCookProcess() {
 	CookResult r = m_cookFuture.get();
 	m_cookRunning = false;
 	m_cubeRunActive = false;
+	m_cookLastOk = r.ok;
 	// Late lines that arrived between the drain above and completion.
 	drainFeed();
 	// Tail only (body was already streamed live).
@@ -486,8 +488,8 @@ void EditorApp::PollCookProcess() {
 	}
 	// The cook is the PRODUCT step (a pak for the game/App — Run in
 	// App loads it): it never touches the viewport.
-	// The cook dialog shows its own progress; close it on finish
-	// (DrawCookDialog consumes the flag inside the begin block).
+	// The cook panel shows its own progress + result line (no auto
+	// close: the tab stays put, the Console keeps the record).
 	m_cookJustFinished = true;
 }
 

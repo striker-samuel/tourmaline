@@ -773,7 +773,6 @@ private:
 	// Material editor page (m_materialFocus travel) + camera section.
 	void DrawMaterialFocusPage();
 	void DrawCameraSection(); // active viewport's editor camera settings
-	void DrawCookPanel();
 	void DrawLightmapPanel(); // .sglm atlas inspection (bake output)
 	// Diffuse (baseColor) texture thumbnail: CPU KTX2 decode of the
 	// material's textures.x slot, drawn as an ImDrawList mosaic over a
@@ -1125,14 +1124,14 @@ private:
 	// Create-terrain dialog state (File > Create > Terrain).
 	bool m_showTerrainDialog = false;
 	char m_terrainNameBuf[128] = "";
-	// Cook dialog (File > Cook...)
-	bool m_showCookDialog = false;
+	// Cook panel (File > Cook... switches to the BottomDock Cook tab).
 	char m_cookOutPakBuf[512] = "";
 	char m_cookContentDirBuf[512] = "content";
 	char m_cookCubemapNameBuf[128] = "";
 	// Set by PollCookProcess when the async cook completes; the cook
-	// dialog consumes it inside its begin block and closes itself.
+	// panel shows the result line until the next cook starts.
 	bool m_cookJustFinished = false;
+	bool m_cookLastOk = false;
 	float m_terrainOrigin[3] = { 0.0f, 0.0f, 0.0f };
 	float m_terrainSize = 64.0f;
 	int m_terrainRes = 64;
@@ -1143,8 +1142,8 @@ private:
 	int m_terrainTilesZ = 1;
 	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
-	void ShowCookDialog();
-	void DrawCookDialog();
+	void ShowCookPanel();
+	void DrawCookPanel();
 	// ---- heightfield painting ----
 	// When on, LMB in a 3D viewport paints the SELECTED terrain group
 	// (group or any tile selects it) instead of picking. One stamp per
@@ -2349,7 +2348,7 @@ private:
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Render | Material
-	int m_bottomTab = 0; // bottom dock: Overrides | Console
+	int m_bottomTab = 0; // bottom dock: Overrides | Console | Assets | Cook
 	void DrawSceneOutliner();
 	void DrawUvPanel();
 	// Content root for definition-source resolution ("models/..." style
