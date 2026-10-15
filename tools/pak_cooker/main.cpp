@@ -1872,7 +1872,7 @@ int main(int argc, char** argv) {
 		bool hasSun = false;
 		// Deterministic node order (hash-map iteration is not); the
 		// aim axis after the coordFix basis change (the same plain
-		// read as BuildCookedLightsFromWorld / CollectStaticBakeLights).
+		// read as ResolveSceneLights / CollectStaticBakeLights).
 		std::vector<uint32_t> nodes;
 		nodes.reserve(scene.lightForNode.size());
 		for (const auto& [node, lightIdx] : scene.lightForNode)

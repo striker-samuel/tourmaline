@@ -602,7 +602,7 @@ namespace engine {
 	// Headless volumetric pins (see the header): the Configure snapshot wins
 	// over the authored scene seed (the AGENTS.md "scene fog settings lose"
 	// contract). Called at startup Initialize AND after the per-scene
-	// PushVolumetricEnv seed in BuildCookedLightsFromWorld (scene
+	// PushVolumetricEnv seed in ResolveSceneLights (scene
 	// load/rebind would otherwise stomp a headless force-on).
 	void WorldRenderer::ApplyHeadlessVolumetricOverrides() {
 		// Validated snapshot (see RunConfig + m_headlessPins): invalid
@@ -635,7 +635,7 @@ namespace engine {
 	// Headless postfx pins (see the header): the Configure snapshot wins over
 	// the authored scene seed (the AGENTS.md "scene settings lose" contract).
 	// Called at startup Initialize AND after the per-scene PushPostfxEnv seed
-	// in BuildCookedLightsFromWorld (scene load/rebind would otherwise stomp
+	// in ResolveSceneLights (scene load/rebind would otherwise stomp
 	// a headless pin). Invalid values warned once at startup (RunConfig::Parse);
 	// the UI panel/keys stay live afterwards.
 	void WorldRenderer::ApplyHeadlessPostfxOverrides() {
@@ -1775,7 +1775,7 @@ namespace engine {
 			<< m_world->materialLocations.size() << std::endl;
 
 // Scene bounds log + default-camera framing (see below): the light set
-// is the cooked authored set - no procedural grid to fit.
+// is the resolved authored set - no procedural grid to fit.
 		{
 			const ::Aabb bounds = m_world->ComputeSceneBounds();
 			if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y && bounds.mx.z >= bounds.mn.z) {
@@ -1884,8 +1884,8 @@ namespace engine {
 		// Authored punctual lights (KHR_lights_punctual -> pak): when the
 		// scene carries them they replace the procedural demo set (sun
 		// drives the environment, points/spots upload as the Forward+
-		// set - see BuildCookedLightsFromWorld / UpdateForwardPlusLights).
-		BuildCookedLightsFromWorld();
+		// set - see ResolveSceneLights / UpdateForwardPlusLights).
+		ResolveSceneLights();
 
 		// Named GI sidecars (pak Gi registry; one per kind for now).
 		ResolveGiSidecars();
@@ -4882,8 +4882,8 @@ namespace engine {
 	// Forward+ set. Emission direction is the node's -Z axis (glTF
 	// punctual convention).
 	// ---------------------------------------------------------------------
-	void WorldRenderer::BuildCookedLightsFromWorld() {
-		m_cookedLights.clear();
+	void WorldRenderer::ResolveSceneLights() {
+		m_sceneLights.clear();
 		if (!m_world)
 			return;
 		// Volumetric fog state (the App panel's settings) seeds from the
@@ -4954,22 +4954,22 @@ namespace engine {
 					? " (volumetrics=0: analytic fallback)" : ""))
 				<< "\n";
 		}
-		PackCookedLightsFromWorld(true);
+		RefreshSceneLights(true);
 		// Seed the SCENE's sun from the authored light so the sky disc, IBL
 		// tint and shadow-casting light stay in sync (sun fields only - the
 		// env block is lux-native, so the light's lux copy straight in,
-		// like the editor's cooked-sun seed). Runs only when the scene
+		// like the editor's synthesized-sun seed). Runs only when the scene
 		// carries no authored look (old content without env blocks); a
 		// tour/cooked env always wins. The user can still retouch the look
 		// afterwards (this runs once at load/rebind).
-		if (m_cookedLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
-			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
+		if (m_sceneLights.hasSun && m_world && !m_world->scene.hasEnvironment) {
+			const glm::vec3 t = glm::normalize(m_sceneLights.sunDirToSun);
 			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
 			sceneEnv.sunElevation = glm::degrees(std::asin(
 				std::clamp(t.y, -1.0f, 1.0f)));
 			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
-			sceneEnv.sunColor = m_cookedLights.sunColor;
-			sceneEnv.sunIntensity = m_cookedLights.sunIntensity;
+			sceneEnv.sunColor = m_sceneLights.sunColor;
+			sceneEnv.sunIntensity = m_sceneLights.sunIntensity;
 			m_world->scene.environment = sceneEnv;
 			m_world->scene.hasEnvironment = true;
 			std::cerr << "[Scene] cooked sun: az=" << sceneEnv.sunAzimuth
@@ -4978,16 +4978,16 @@ namespace engine {
 		}
 	}
 
-	// Light pack shared by the bind-time build (log there) and the
-	// per-edit refresh (pack only - no env writes, no world mutation,
-	// no log). Reads the LIVE world, so edits apply.
-	void WorldRenderer::PackCookedLightsFromWorld(bool log) {
-		m_cookedLights.clear();
+	// Light resolve shared by the bind-time ResolveSceneLights (log there)
+	// and the per-edit RefreshSceneLights (pack only - no env writes, no
+	// world mutation, no log). Reads the LIVE world, so edits apply.
+	void WorldRenderer::RefreshSceneLights(bool log) {
+		m_sceneLights.clear();
 		const ::Scene& scene = m_world->scene;
 		const auto& lightLocs = m_world->lightLocations;
 		if (lightLocs.empty() || scene.lightForNode.empty()) {
 			if (log)
-				std::cerr << "[Scene] no cooked lights (Forward+ set empty)\n";
+				std::cerr << "[Scene] no resolved lights (Forward+ set empty)\n";
 			return;
 		}
 		// Deterministic node order (pak order is already sorted, but the
@@ -5037,10 +5037,10 @@ namespace engine {
 				if (glm::length(emis) < 1e-6f)
 					continue;
 				emis = glm::normalize(emis);
-				m_cookedLights.sunDirToSun = -emis;
-				m_cookedLights.sunColor = L.color;
-				m_cookedLights.sunIntensity = L.intensity;
-				m_cookedLights.hasSun = true;
+				m_sceneLights.sunDirToSun = -emis;
+				m_sceneLights.sunColor = L.color;
+				m_sceneLights.sunIntensity = L.intensity;
+				m_sceneLights.hasSun = true;
 				sunTaken = true;
 			}
 			else if (L.type == ::SceneLight::Type::Point) {
@@ -5119,21 +5119,21 @@ namespace engine {
 		// Spots first (per-tile slot priority): the tile lists keep only the
 		// first FP_MAX_PER_TILE passing lights, so cone lights must not
 		// compete with the point crowd for those slots.
-		m_cookedLights.pointSpots.reserve(spots.size() + points.size());
-		m_cookedLights.pointSpots.insert(
-			m_cookedLights.pointSpots.end(), spots.begin(), spots.end());
-		m_cookedLights.pointSpots.insert(
-			m_cookedLights.pointSpots.end(), points.begin(), points.end());
-		if (m_cookedLights.pointSpots.size() > FP_MAX_LIGHTS) {
+		m_sceneLights.forwardPlusLights.reserve(spots.size() + points.size());
+		m_sceneLights.forwardPlusLights.insert(
+			m_sceneLights.forwardPlusLights.end(), spots.begin(), spots.end());
+		m_sceneLights.forwardPlusLights.insert(
+			m_sceneLights.forwardPlusLights.end(), points.begin(), points.end());
+		if (m_sceneLights.forwardPlusLights.size() > FP_MAX_LIGHTS) {
 			if (log)
-				std::cerr << "[Scene] cooked lights clamped: "
-				<< m_cookedLights.pointSpots.size() << " -> " << FP_MAX_LIGHTS << "\n";
-			m_cookedLights.pointSpots.resize(FP_MAX_LIGHTS);
+				std::cerr << "[Scene] resolved lights clamped: "
+				<< m_sceneLights.forwardPlusLights.size() << " -> " << FP_MAX_LIGHTS << "\n";
+			m_sceneLights.forwardPlusLights.resize(FP_MAX_LIGHTS);
 		}
 		if (log)
-			std::cerr << "[Scene] cooked lights: spots=" << spots.size()
+			std::cerr << "[Scene] resolved lights: spots=" << spots.size()
 			<< " points=" << points.size()
-			<< (m_cookedLights.hasSun ? " + sun" : " (no sun)")
+			<< (m_sceneLights.hasSun ? " + sun" : " (no sun)")
 			<< (staticBakeOnly > 0
 				? " | static(bake-only)=" + std::to_string(staticBakeOnly)
 				: "")
@@ -5143,7 +5143,7 @@ namespace engine {
 	// ---------------------------------------------------------------------
 	// Forward+ light upload.
 	//
-	// The light set is the scene's cooked authored set (BuildCookedLights
+	// The light set is the scene's resolved authored set (ResolveSceneLights
 	// FromWorld): static placement, no orbit/bob - cookies + light
 	// functions ride the authored fields. A CPU copy is kept in
 	// m_debugLights for the ImGui light-point overlay. Spot-shadow
@@ -5160,7 +5160,7 @@ namespace engine {
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
 		m_debugLights.clear();
-		for (const auto& cl : m_cookedLights.pointSpots) {
+		for (const auto& cl : m_sceneLights.forwardPlusLights) {
 			if (lights.size() >= FP_MAX_BUILD_LIGHTS)
 				break;
 			lights.push_back(cl);
@@ -11199,8 +11199,6 @@ namespace engine {
 					if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (ImGui::CollapsingHeader("Sky & Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
 							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
-							ImGui::TextDisabled("Terrain render: %s (T)",
-								m_terrainEnabled ? "on" : "off");
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
 							// ---- Environment zones (world/env separation; see
@@ -11328,7 +11326,7 @@ namespace engine {
 									"One lit chrome sphere per loaded baked capture,\n"
 									"sampling ITS OWN cubemap in the reflection direction\n"
 									"(radius reads the influence at a glance). Render-pass\n"
-									"visual - no scene nodes, never picked, never cooked.");
+									"visual - no scene nodes, never picked, never cooked.n");
 							{
 								static const char* const kCubeDbgNames[3] = {
 									"Off", "Cubemap only (no Fresnel)", "Probe weight heat",
@@ -11511,11 +11509,11 @@ namespace engine {
 						if (ImGui::CollapsingHeader("Forward+ Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
 							// The scene's authored lights always render when
 							// present (no enable toggle): the Forward+ set is
-							// whatever the cooked KHR_lights_punctual pack
+							// whatever the resolved KHR_lights_punctual pack
 							// carries, static placement.
-							ImGui::TextDisabled("Cooked: %u point/spot%s",
-								(unsigned)m_cookedLights.pointSpots.size(),
-								m_cookedLights.hasSun ? " + sun" : "");
+							ImGui::TextDisabled("%u point/spot%s",
+								(unsigned)m_sceneLights.forwardPlusLights.size(),
+								m_sceneLights.hasSun ? " + sun" : "");
 						}
 						if (ImGui::CollapsingHeader("Directional Shadows (CSM)")) {
 							// Tile resolution (depth + EVSM moment atlases recreate once
@@ -12449,7 +12447,7 @@ namespace engine {
 						ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 							fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
 							FP_TILE_SIZE, FP_MAX_PER_TILE);
-						const int wantLights = (int)m_cookedLights.pointSpots.size();
+						const int wantLights = (int)m_sceneLights.forwardPlusLights.size();
 						ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
 							wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
 						ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",

@@ -21,7 +21,7 @@
 #      nodes (the lamp set: 96 KHR_lights_punctual points) so the GI
 #      bakes harvest them as NEE sources (CollectStaticBakeLights); the
 #      authored Sun directional stays runtime-only (it seeds the env,
-#      see GltfPunctualAimAxis/BuildCookedLightsFromWorld),
+#      see GltfPunctualAimAxis/ResolveSceneLights),
 #   6. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):

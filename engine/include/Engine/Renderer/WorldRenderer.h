@@ -352,12 +352,15 @@ enum class DsDebugViz : int {
 };
 #endif
 
-// Cooked scene lights (KHR_lights_punctual via the pak/glTF import).
-// The sun drives the environment/directional light and the points/spots
-// upload directly as the Forward+ set (static, no orbit/bob). Empty on
-// scenes without authored lights (e.g. Sponza) â€” the Forward+ set is
-// then empty and only the sun/ambient terms light the frame.
-struct CookedSceneLights {
+// Resolved scene lights (KHR_lights_punctual via the pak/glTF import,
+// snapshotted from the live world at load/edit time — NOT cooker output,
+// despite the old name). The sun seeds the environment/directional light
+// (the struct's sun fields are only read to seed a sceneless env; after
+// that the env owns the sun) and the points/spots upload directly as the
+// Forward+ set (static, no orbit/bob). Empty on scenes without authored
+// lights (e.g. Sponza) — the Forward+ set is then empty and only the
+// sun/ambient terms light the frame.
+struct ResolvedSceneLights {
 	bool hasSun = false;
 	glm::vec3 sunDirToSun{ 0.0f, 1.0f, 0.0f };
 	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
@@ -365,9 +368,9 @@ struct CookedSceneLights {
 	// World-space static lights, spots FIRST (per-tile lists keep only
 	// the first FP_MAX_PER_TILE passing lights â€” cone lights must not
 	// compete with the point crowd for those slots).
-	std::vector<smvk::ForwardPlusLight> pointSpots;
-	void clear() { hasSun = false; pointSpots.clear(); }
-	bool hasLights() const { return !pointSpots.empty(); }
+	std::vector<smvk::ForwardPlusLight> forwardPlusLights;
+	void clear() { hasSun = false; forwardPlusLights.clear(); }
+	bool hasLights() const { return !forwardPlusLights.empty(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -1111,7 +1114,7 @@ public:
 	// forces this off for --bench; X toggles it back live.
 	void SetAutoExposureEnabled(bool v) { m_autoExposureEnabled = v; }
 	// Seed-proof variant for --bench (see m_autoExposurePin): applied in
-	// BuildCookedLightsFromWorld after the seed + headless overrides; the
+	// ResolveSceneLights after the seed + headless overrides; the
 	// plain setter above does not survive the seed. X still toggles live
 	// afterwards.
 	void SetAutoExposurePinned(bool v) { m_autoExposurePin = v ? 1 : 0; }
@@ -1487,21 +1490,22 @@ public:
 	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
-	// Cooked KHR_lights_punctual set for the loaded scene (built once in
-	// BuildCookedLightsFromWorld after Resolve; see world_renderer.cpp).
+	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
+	// once in ResolveSceneLights after Resolve; refreshed silently by
+	// RefreshSceneLights on editor edits — see world_renderer.cpp).
 	// If the scene carries ANY lights, they render â€” no enable toggle.
-	CookedSceneLights m_cookedLights{};
-	void BuildCookedLightsFromWorld();
+	ResolvedSceneLights m_sceneLights{};
+	void ResolveSceneLights();
 	// Light pack shared by the bind-time build (log=true) and the
 	// per-edit refresh (log=false). Reads the LIVE world.
-	void PackCookedLightsFromWorld(bool log);
+	void RefreshSceneLights(bool log);
 	// Unresolved cookie URIs already warned about (warn-once-until-
 	// resolved, so a dangling cookie doesn't spam per refresh).
 	std::unordered_set<std::string> m_cookieWarnedUris;
-	bool CookedLightsActive() const {
-		return m_cookedLights.hasLights();
+	bool HasSceneLights() const {
+		return m_sceneLights.hasLights();
 	}
-	// Spot-shadow selection for the cooked spot lights: per-light opt-in
+	// Spot-shadow selection for the resolved spot lights: per-light opt-in
 	// comes from the authored cast-shadow flag; the frame selection below
 	// ranks requesters by the screenspace/distance heuristic and uploads
 	// the top-N atlas tiles (upper limit + hard camera-distance cutoff).
@@ -2416,7 +2420,7 @@ public:
 	// strength stays constant as exposure shifts.
 	bool m_autoExposureEnabled = true;
 	// Bench determinism pin (survives the scene seed — applied in
-	// BuildCookedLightsFromWorld): --bench pins fixed manual exposure,
+	// ResolveSceneLights): --bench pins fixed manual exposure,
 	// but the per-scene PushPostfxEnv seed re-seeds m_autoExposureEnabled
 	// from the authored env, silently re-enabling live eye adaptation
 	// mid-bench and breaking capture comparability (only

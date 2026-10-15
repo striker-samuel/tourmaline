@@ -421,8 +421,8 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 		// Aim: the glTF -Z axis (aimAxis) mapped to world by the node's
 		// global transform — raw locals (the coordFix basis rides the
 		// imported chain's top node), so the plain -Z read is exact.
-		// Same convention as the runtime cooked-light path
-		// (BuildCookedLightsFromWorld).
+		// Same convention as the runtime resolved-light path
+		// (ResolveSceneLights).
 		glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 		const glm::vec3 pos = glm::vec3(G[3]);
 

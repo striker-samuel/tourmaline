@@ -1199,8 +1199,8 @@ namespace editor {
 	float EditorApp::PreviewExposure() const {
 		// The preview's standing exposure: the authored MANUAL value. The
 		// App seeds its runtime adaptation from the same number
-		// (m_exposureAdapted starts at manual, see BuildCookedLights-
-		// FromWorld) and meters + adapts from there; the preview has no
+		// (m_exposureAdapted starts at manual, see ResolveSceneLights)
+		// and meters + adapts from there; the preview has no
 		// histogram pass to meter with, so the manual look is its best
 		// faithful standing approximation (the same "the App renders the
 		// rest" contract as the volumetric settings).
