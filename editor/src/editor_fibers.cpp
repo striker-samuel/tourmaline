@@ -1,16 +1,27 @@
 // Editor fibers backend implementation (see editor_fibers.h).
 //
-// Layout: the main thread + N worker threads each install the
-// work_stealing algorithm over the SHARED thread count. Post() spawns
-// the fiber on the MAIN thread's scheduler (main never yields, so the
-// fiber just sits ready); idle workers steal it and run it. The fiber
-// body wraps the job in try/catch, then parks the completion record in
-// a mutex-guarded deque (no fiber condvars anywhere: nobody blocks on
-// completions — the main thread polls via Pump()).
+// THE RULE (hard-won): the MAIN thread NEVER touches boost::fibers —
+// `use_scheduling_algorithm<work_stealing>` on the main thread HANGS
+// IN THIS PROCESS (SDL/Streamline/Vulkan-loaded editor: [FIB] Start
+// trace never returned; isolated processes are fine). Redesign:
+//   - Post() is PURE std on the main thread: push {job, name,
+//     onMain} into a mutex-guarded queue. Zero boost calls on main.
+//   - Each WORKER owns its scheduler (default round_robin — created
+//     lazily on the worker's first fiber op; no algorithm installs,
+//     no cross-thread registry). The worker's MAIN CONTEXT loop:
+//     drain the queue (non-blocking), spawn each job as a detached
+//     fiber, then park the main fiber in sleep_for(2ms) — while the
+//     main fiber sleeps, the worker's scheduler RUNS the ready job
+//     fibers; it wakes every 2ms to drain more.
+//   - Completions: the job fiber parks its record in a mutex-guarded
+//     deque; Pump() drains it on the main thread (plain std).
+// Concurrency = the OS pool (2 workers); fiber interleaving arrives
+// later if jobs adopt fiber-aware primitives ON the workers.
 
 #include "editor_fibers.h"
 
 #include <atomic>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -25,9 +36,18 @@ struct FiberBackend::Impl {
 	std::atomic<unsigned> inFlight{ 0 };
 	std::vector<std::thread> workers;
 
-	// Completions (fiber -> main). Plain mutex deque: pushes from
-	// worker fibers, pops on the main thread — no fiber semantics
-	// needed (nobody blocks on it).
+	// Submission queue (main -> workers). Plain std mutex deque: the
+	// main thread pushes (no boost), workers drain non-blocking.
+	struct Submission {
+		std::string name;
+		Job job;
+		OnComplete onMain;
+	};
+	std::mutex submitMx;
+	std::deque<Submission> submit;
+
+	// Completions (fiber -> main). Plain std mutex deque (nobody
+	// blocks on it: the main thread polls via Pump()).
 	struct Record {
 		std::string name;
 		bool ok = false;
@@ -37,23 +57,48 @@ struct FiberBackend::Impl {
 	std::mutex doneMx;
 	std::deque<Record> done;
 
-	// The main thread's scheduler installs this on Start so spawned
-	// fibers land in a steal-able ready queue (work_stealing shares
-	// ready fibers across the pool; the default per-thread algorithm
-	// does not).
-	void installAlgo(unsigned count) {
-		boost::fibers::use_scheduling_algorithm<
-			boost::fibers::algo::work_stealing>(count);
+	// Fiber body: run the job under try/catch, park the completion.
+	static void runJob(Impl* impl, Submission sub) {
+		Record rec;
+		rec.name = sub.name;
+		try {
+			sub.job();
+			rec.ok = true;
+		} catch (const std::exception& e) {
+			rec.ok = false;
+			rec.error = e.what();
+		} catch (...) {
+			rec.ok = false;
+			rec.error = "unknown job error";
+		}
+		rec.onMain = std::move(sub.onMain);
+		{
+			std::lock_guard<std::mutex> lk(impl->doneMx);
+			impl->done.push_back(std::move(rec));
+		}
+		impl->inFlight.fetch_sub(1);
 	}
 
-	void workerLoop(unsigned count) {
-		// The pool count must match on every participating thread.
-		installAlgo(count);
-		// Parking loop: sleeping lets the scheduler idle/steal; the
-		// loop also keeps the thread alive draining jobs until Stop.
+	// Worker main-context loop: drain + spawn + park. While the main
+	// fiber sleeps, this worker's scheduler runs the job fibers.
+	void workerLoop() {
 		while (running.load(std::memory_order_relaxed)
-			|| inFlight.load(std::memory_order_relaxed) != 0u)
+			|| inFlight.load(std::memory_order_relaxed) != 0u) {
+			std::deque<Submission> taken;
+			{
+				std::lock_guard<std::mutex> lk(submitMx);
+				taken.swap(submit);
+			}
+			while (!taken.empty()) {
+				Submission sub = std::move(taken.front());
+				taken.pop_front();
+				boost::fibers::fiber(&Impl::runJob, this,
+					std::move(sub)).detach();
+			}
+			// Park THIS fiber (fiber-aware): ready job fibers on this
+			// worker run while we sleep; wakes every 2ms to drain.
 			boost::this_fiber::sleep_for(std::chrono::milliseconds(2));
+		}
 	}
 };
 
@@ -69,22 +114,18 @@ bool FiberBackend::Start(unsigned workers) {
 		return true; // idempotent
 	if (workers == 0)
 		workers = 1;
-	// The MAIN scheduler joins the pool with the same count: fibers
-	// Post()ed here become steal-able by the workers.
-	impl_->installAlgo(workers + 1);
 	impl_->running.store(true);
 	for (unsigned i = 0; i < workers; ++i)
-		impl_->workers.emplace_back(
-			[this, workers]() { impl_->workerLoop(workers + 1); });
+		impl_->workers.emplace_back([this]() { impl_->workerLoop(); });
 	return true;
 }
 
 void FiberBackend::Stop() {
 	if (!impl_->running.exchange(false))
 		return;
-	// Workers exit once running==false AND in-flight jobs drained
-	// (the parking loop condition covers both). Completions still in
-	// the queue are dropped — call Pump() first if they matter.
+	// Workers exit once running==false AND in-flight jobs drained (the
+	// parking loop condition covers both). Completions still in the
+	// queue are dropped — call Pump() first if they matter.
 	for (std::thread& t : impl_->workers)
 		if (t.joinable())
 			t.join();
@@ -95,33 +136,14 @@ bool FiberBackend::Post(const std::string& name, Job job,
 	OnComplete onMain) {
 	if (!impl_->running.load() || !job)
 		return false;
+	// PURE std on the calling (main) thread — the no-boost-on-main
+	// rule (see the file header). The worker spawns the fiber.
 	impl_->inFlight.fetch_add(1);
-	// Spawned on the CALLING (main) thread's scheduler: ready
-	// immediately, stolen by an idle worker. Named local + detach
-	// (boost::fibers::fiber is RAII — detach hands the state to the
-	// scheduler before the local dies).
-	boost::fibers::fiber f([this, name, job = std::move(job),
-			onMain = std::move(onMain)]() mutable {
-		Impl::Record rec;
-		rec.name = name;
-		try {
-			job();
-			rec.ok = true;
-		} catch (const std::exception& e) {
-			rec.ok = false;
-			rec.error = e.what();
-		} catch (...) {
-			rec.ok = false;
-			rec.error = "unknown job error";
-		}
-		rec.onMain = std::move(onMain);
-		{
-			std::lock_guard<std::mutex> lk(impl_->doneMx);
-			impl_->done.push_back(std::move(rec));
-		}
-		impl_->inFlight.fetch_sub(1);
-	});
-	f.detach();
+	{
+		std::lock_guard<std::mutex> lk(impl_->submitMx);
+		impl_->submit.push_back(
+			Impl::Submission{ name, std::move(job), std::move(onMain) });
+	}
 	return true;
 }
 
