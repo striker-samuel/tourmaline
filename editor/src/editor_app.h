@@ -23,7 +23,6 @@
 // log is the interchange, PakCooker replays it onto a fresh import.
 
 #include <cstdint>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -41,6 +40,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
 #include "editor_asset_ops.h" // browser delete planning (pending plan member)
+#include "editor_fibers.h" // EDITOR-ONLY Boost.Fibers backend (see editor_fibers.cpp)
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
@@ -2262,8 +2262,12 @@ private:
 	bool m_cookRunning = false;
 	bool m_bakeRunning = false; // on-demand GiBaker worker (see above)
 	struct CookResult { bool ok = false; std::string log; };
-	std::future<CookResult> m_cookFuture{};
-	std::future<CookResult> m_bakeFuture{}; // Bake-GI worker (see above)
+	// EDITOR-ONLY fibers backend (see editor_fibers.h): the single lane
+	// for all off-main-thread sync work (the cook/bake workers below;
+	// started in Initialize, pumped per frame, stopped in Shutdown
+	// BEFORE any state a completion callback would touch). ONLY the
+	// editor links Boost.
+	editor::FiberBackend m_fibers{};
 	// Definition fingerprint the last Bake GI ran for (empty = never
 	// baked this session): a cook that moves past it leaves sidecars
 	// stale — the cook dialog's freshness readout says so (rebake to

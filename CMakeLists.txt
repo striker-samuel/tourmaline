@@ -192,6 +192,27 @@ if(NOT ktx_FOUND)
   )
 endif()
 
+# --- Boost hinting (the EDITOR-ONLY fibers backend) ----------------------------
+# Boost.Fibers needs compiled libs (context/fiber/thread/chrono/atomic),
+# staged at C:/boost/boost_1_89_0/stage (built with b2 toolset=msvc-14.3
+# address-model=64 link=static runtime-link=shared threading=multi
+# variant=release,debug -j 8 stage). Only the Editor links it — the engine,
+# the App and every tool stay Boost-free.
+#
+# Users can point CMake at it in several ways:
+#  1) -DBoost_DIR=/path/to/stage/lib/cmake/Boost-1.89.0
+#  2) -DBoost_ROOT=/path/to/boost_1_89_0
+#  3) Env var BOOST_ROOT=/path/to/boost_1_89_0  (translated below)
+
+if(NOT DEFINED Boost_ROOT AND DEFINED ENV{BOOST_ROOT})
+  set(Boost_ROOT "$ENV{BOOST_ROOT}")
+endif()
+
+if(DEFINED Boost_ROOT)
+  # Prepend the staged cmake config dir so it wins over any system install
+  list(PREPEND CMAKE_PREFIX_PATH "${Boost_ROOT}/stage/lib/cmake")
+endif()
+
 # nlohmann::json (required for tinygltf)
 add_subdirectory(external/json)
 add_subdirectory(external/volk)

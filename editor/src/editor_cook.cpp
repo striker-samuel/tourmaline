@@ -211,8 +211,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				? " (GI bake updated in place: world field + convex "
 					"volumes, then the pak)"
 				: " (GI bake updated in place: convex volumes, then the pak)")));
-	auto feed = std::make_shared<CookFeed>();
-	m_cookFeed = feed;
+ 	auto feed = std::make_shared<CookFeed>();
+ 	m_cookFeed = feed;
 	// Cache acceleration (opt-in, never required): when the project
 	// artifact cache is online, the cooker consults + feeds the same
 	// registry — hit = hash-validated copy, miss = transcode + stage.
@@ -220,8 +220,14 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// Captured by value (the worker lambda has no this).
 	const std::string scratchDir =
 		m_store ? m_store->Root() : std::string();
-	m_cookFuture = std::async(std::launch::async,
-		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+	// Fibers job (the editor's single off-main-thread lane — see
+	// editor_fibers.h): the old std::async worker verbatim, sharing a
+	// result slot with the completion callback that runs ON MAIN via
+	// m_fibers.Pump() (the old future.wait_for branch in
+	// PollCookProcess, which now only drains the feed).
+	auto result = std::make_shared<CookResult>();
+	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
+		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
 			CookResult r{};
 			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -345,91 +351,112 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// Cleanup temp tour file.
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
-			return r;
+			*result = r;
+		},
+		[this, result](const editor::FiberBackend::Completion& c) {
+			// Job threw (the tools normally catch their own; this is
+			// the fiber-level guard): fail the cook loud.
+			if (!c.ok) {
+				Log("cook: job error: " + c.error);
+				TaskWindowFinish(false,
+					"Cook FAILED (job error: " + c.error + ")");
+				m_cookRunning = false;
+				m_cubeRunActive = false;
+				m_cookLastOk = false;
+				m_cookJustFinished = true;
+				return;
+			}
+			CookResult r = *result;
+			m_cookRunning = false;
+			m_cubeRunActive = false;
+			m_cookLastOk = r.ok;
+			// Late lines that arrived after the last per-frame drain.
+			{
+				std::shared_ptr<CookFeed> feed = m_cookFeed;
+				if (feed) {
+					std::vector<std::string> ready;
+					{
+						std::lock_guard<std::mutex> lk(feed->mutex);
+						ready.swap(feed->lines);
+					}
+					for (auto& line : ready) {
+						Log(line);
+						TaskWindowPush(line);
+					}
+				}
+			}
+			// Tail only (body was already streamed live).
+			std::istringstream ss(r.log);
+			std::string line;
+			while (std::getline(ss, line)) {
+				if (!line.empty()) {
+					Log(line);
+					TaskWindowPush(line);
+				}
+			}
+			Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
+			TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
+				: "Cook FAILED (detail above; Console keeps the full log).");
+			if (r.ok) {
+				RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
+			}
+			// The cook is the PRODUCT step (a pak for the game/App — Run in
+			// App loads it): it never touches the viewport.
+			// The cook panel shows its own progress + result line (no auto
+			// close: the tab stays put, the Console keeps the record).
+			m_cookJustFinished = true;
 		});
 }
 
 void EditorApp::PollCookProcess() {
 	if (!m_cookRunning)
 		return;
-	// Drain the live pipe feed every frame: the Console keeps the
-	// persistent record AND the modal task window details live progress
+	// Live tool feed drain ONLY (the finish logic rides the fibers
+	// completion callback — see CookToPak). The Console keeps the
+	// persistent record AND the task window details live progress
 	// (stuck vs. working is visible in both). The pak-stage marker line
 	// flips the task stage from the GI half to the pak half.
-	auto drainFeed = [this]() {
-		std::shared_ptr<CookFeed> feed = m_cookFeed;
-		if (!feed)
-			return;
-		std::vector<std::string> ready;
-		{
-			std::lock_guard<std::mutex> lk(feed->mutex);
-			ready.swap(feed->lines);
-		}
-		for (auto& line : ready) {
-			Log(line);
-			TaskWindowPush(line);
-			// Full-cook stage markers ("cook: " = the bake half, "pak: " =
-			// the assembly half — NOT "cook-gi: ...", NOT the
-			// quick-bakes "update-bakes: " marker).
-			if (line.compare(0, 6, "cook: ") == 0)
-				TaskWindowStage("Cook stage 1/2: bakes...");
-			else if (line.compare(0, 5, "pak: ") == 0)
-				TaskWindowStage("Cook stage 2/2: pak...");
-			// Cubemap capture progress (Cook's [CUBE] lines carry two
-			// leading spaces): total first, then one "baked" per
-			// finished capture. Fraction bar + text stage.
-			else if (m_cubeRunActive
-				&& line.compare(0, 19, "  [CUBE] captures=") == 0) {
-				m_cubeTotal = std::atoi(line.c_str() + 19);
-				m_cubeDone = 0;
-				if (m_cubeTotal > 0) {
-					TaskWindowStage("Cubemap captures 0/"
-						+ std::to_string(m_cubeTotal), 0.0f);
-				}
-			}
-			else if (m_cubeRunActive && m_cubeTotal > 0
-				&& line.compare(0, 12, "  [CUBE] baked ") == 0) {
-				++m_cubeDone;
-				if (m_cubeDone > m_cubeTotal)
-					m_cubeDone = m_cubeTotal;
-				TaskWindowStage("Cubemap captures "
-					+ std::to_string(m_cubeDone) + "/"
-					+ std::to_string(m_cubeTotal),
-					float(m_cubeDone) / float(m_cubeTotal));
+	std::shared_ptr<CookFeed> feed = m_cookFeed;
+	if (!feed)
+		return;
+	std::vector<std::string> ready;
+	{
+		std::lock_guard<std::mutex> lk(feed->mutex);
+		ready.swap(feed->lines);
+	}
+	for (auto& line : ready) {
+		Log(line);
+		TaskWindowPush(line);
+		// Full-cook stage markers ("cook: " = the bake half, "pak: " =
+		// the assembly half — NOT "cook-gi: ...", NOT the
+		// quick-bakes "update-bakes: " marker).
+		if (line.compare(0, 6, "cook: ") == 0)
+			TaskWindowStage("Cook stage 1/2: bakes...");
+		else if (line.compare(0, 5, "pak: ") == 0)
+			TaskWindowStage("Cook stage 2/2: pak...");
+		// Cubemap capture progress (Cook's [CUBE] lines carry two
+		// leading spaces): total first, then one "baked" per
+		// finished capture. Fraction bar + text stage.
+		else if (m_cubeRunActive
+			&& line.compare(0, 19, "  [CUBE] captures=") == 0) {
+			m_cubeTotal = std::atoi(line.c_str() + 19);
+			m_cubeDone = 0;
+			if (m_cubeTotal > 0) {
+				TaskWindowStage("Cubemap captures 0/"
+					+ std::to_string(m_cubeTotal), 0.0f);
 			}
 		}
-	};
-	drainFeed();
-	if (!m_cookFuture.valid())
-		return;
-	if (m_cookFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-		return;
-	CookResult r = m_cookFuture.get();
-	m_cookRunning = false;
-	m_cubeRunActive = false;
-	m_cookLastOk = r.ok;
-	// Late lines that arrived between the drain above and completion.
-	drainFeed();
-	// Tail only (body was already streamed live).
-	std::istringstream ss(r.log);
-	std::string line;
-	while (std::getline(ss, line)) {
-		if (!line.empty()) {
-			Log(line);
-			TaskWindowPush(line);
+		else if (m_cubeRunActive && m_cubeTotal > 0
+			&& line.compare(0, 12, "  [CUBE] baked ") == 0) {
+			++m_cubeDone;
+			if (m_cubeDone > m_cubeTotal)
+				m_cubeDone = m_cubeTotal;
+			TaskWindowStage("Cubemap captures "
+				+ std::to_string(m_cubeDone) + "/"
+				+ std::to_string(m_cubeTotal),
+				float(m_cubeDone) / float(m_cubeTotal));
 		}
 	}
-	Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
-	TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
-		: "Cook FAILED (detail above; Console keeps the full log).");
-	if (r.ok) {
-		RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
-	}
-	// The cook is the PRODUCT step (a pak for the game/App — Run in
-	// App loads it): it never touches the viewport.
-	// The cook panel shows its own progress + result line (no auto
-	// close: the tab stays put, the Console keeps the record).
-	m_cookJustFinished = true;
 }
 
 // ---- Bake GI on demand (never part of the cook) --------------------
@@ -500,10 +527,15 @@ void EditorApp::BakeGI() {
 		+ std::string((wantWorld && wantCvols) ? " + " : "")
 		+ std::string(wantCvols ? "convex volumes" : "") + ") -> "
 		+ contentRoot + "/gi/" + pakStem + ".*");
-	auto feed = std::make_shared<CookFeed>();
-	m_bakeFeed = feed;
-	m_bakeFuture = std::async(std::launch::async,
-		[pakStem, contentRoot, wantWorld, feed, tempTourPath = std::move(tempTourPath)]() -> CookResult {
+ 	auto feed = std::make_shared<CookFeed>();
+ 	m_bakeFeed = feed;
+	// Fibers job (the editor's single off-main-thread lane): the old
+	// std::async worker verbatim, sharing a result slot with the
+	// completion callback that runs ON MAIN via m_fibers.Pump() (the
+	// old future.wait_for branch in PollBakeProcess).
+	auto result = std::make_shared<CookResult>();
+	m_fibers.Post("bake-gi",
+		[pakStem, contentRoot, wantWorld, feed, tempTourPath = std::move(tempTourPath), result]() {
 			CookResult r{};
 			auto push = [feed](const std::string& line) {
 				std::lock_guard<std::mutex> lk(feed->mutex);
@@ -561,58 +593,78 @@ void EditorApp::BakeGI() {
 			}
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
-			return r;
+			*result = r;
+		},
+		[this, result](const editor::FiberBackend::Completion& c) {
+			// Job threw (fiber-level guard; GiBaker normally returns
+			// codes): fail the bake loud.
+			if (!c.ok) {
+				Log("bake-gi: job error: " + c.error);
+				TaskWindowFinish(false,
+					"Bake GI FAILED (job error: " + c.error + ")");
+				m_bakeRunning = false;
+				m_giBakePendingHash.clear();
+				return;
+			}
+			CookResult r = *result;
+			m_bakeRunning = false;
+			// Late lines that arrived after the last per-frame drain.
+			{
+				std::shared_ptr<CookFeed> feed = m_bakeFeed;
+				if (feed) {
+					std::vector<std::string> ready;
+					{
+						std::lock_guard<std::mutex> lk(feed->mutex);
+						ready.swap(feed->lines);
+					}
+					for (auto& line : ready) {
+						Log(line);
+						TaskWindowPush(line);
+					}
+				}
+			}
+			std::istringstream ss(r.log);
+			std::string line;
+			while (std::getline(ss, line)) {
+				if (!line.empty()) {
+					Log(line);
+					TaskWindowPush(line);
+				}
+			}
+			if (r.ok) {
+				// The sidecars now match the baked definition: record it so a
+				// later cook can warn when they go stale.
+				m_giBakedHash = m_giBakePendingHash;
+				Log("Bake GI finished OK — sidecars at their stable paths.");
+				TaskWindowFinish(true, "Bake GI finished OK.");
+			}
+			else {
+				Log("Bake GI FAILED (see log above).");
+				TaskWindowFinish(false,
+					"Bake GI FAILED (detail above; Console keeps the full log).");
+			}
+			m_giBakePendingHash.clear();
 		});
 }
 
 void EditorApp::PollBakeProcess() {
-	if (m_bakeRunning)
+	if (!m_bakeRunning)
 		return;
-	// Drain the live pipe feed every frame (same pattern as the cook):
-	// Console record + modal task window detail.
-	auto drainFeed = [this]() {
-		std::shared_ptr<CookFeed> feed = m_bakeFeed;
-		if (!feed)
-			return;
-		std::vector<std::string> ready;
-		{
-			std::lock_guard<std::mutex> lk(feed->mutex);
-			ready.swap(feed->lines);
-		}
-		for (auto& line : ready) {
-			Log(line);
-			TaskWindowPush(line);
-		}
-	};
-	drainFeed();
-	if (!m_bakeFuture.valid())
+	// Live tool feed drain ONLY (the finish logic rides the fibers
+	// completion callback — see BakeGI). Console record + modal task
+	// window detail, same pattern as the cook.
+	std::shared_ptr<CookFeed> feed = m_bakeFeed;
+	if (!feed)
 		return;
-	if (m_bakeFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-		return;
-	CookResult r = m_bakeFuture.get();
-	m_bakeRunning = false;
-	drainFeed();
-	std::istringstream ss(r.log);
-	std::string line;
-	while (std::getline(ss, line)) {
-		if (!line.empty()) {
-			Log(line);
-			TaskWindowPush(line);
-		}
+	std::vector<std::string> ready;
+	{
+		std::lock_guard<std::mutex> lk(feed->mutex);
+		ready.swap(feed->lines);
 	}
-	if (r.ok) {
-		// The sidecars now match the baked definition: record it so a
-		// later cook can warn when they go stale.
-		m_giBakedHash = m_giBakePendingHash;
-		Log("Bake GI finished OK — sidecars at their stable paths.");
-		TaskWindowFinish(true, "Bake GI finished OK.");
+	for (auto& line : ready) {
+		Log(line);
+		TaskWindowPush(line);
 	}
-	else {
-		Log("Bake GI FAILED (see log above).");
-		TaskWindowFinish(false,
-			"Bake GI FAILED (detail above; Console keeps the full log).");
-	}
-	m_giBakePendingHash.clear();
 }
 
 } // namespace editor

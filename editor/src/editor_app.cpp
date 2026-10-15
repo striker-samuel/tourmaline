@@ -115,6 +115,10 @@ EditorApp::EditorApp()
 bool EditorApp::Initialize() {
 	if (!Super::Initialize())
 		return false;
+	// Fibers backend (the editor's ONLY off-main-thread lane — the
+	// cook/bake workers ride it; see editor_fibers.h). Before anything
+	// that can Post a job.
+	m_fibers.Start(2);
 	// Dev quad-layout switch (VULKANTOY_EDITOR_VP_QUAD=1): start in the
 	// four-viewport layout so headless smoke runs exercise the per-
 	// viewport editor passes. The V toggle keeps working after.
@@ -237,8 +241,14 @@ void EditorApp::Shutdown() {
 	SavePrefs(); // save editor prefs on close
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
-	PollCookProcess();
-	PollBakeProcess();
+	// Fibers shutdown: deliver any queued completions, wait for
+	// in-flight jobs (workers drain them), deliver the rest — all
+	// BEFORE the teardown below (completions touch task-window state;
+	// a cook's own data died with the tools). Polls are gone (the
+	// finish logic rides the completion callbacks now).
+	m_fibers.Pump();
+	m_fibers.Stop();
+	m_fibers.Pump();
 	m_imgui.reset();
 	m_depth = smvk::DepthTarget{};
 	// Preview HDR + tonemapper teardown (see m_sceneHdr in editor_app.h).
@@ -1720,6 +1730,9 @@ void EditorApp::DrawFrame() {
 	if (fb.imageIndex >= 0)
 		RenderFrame(fb);
 	m_swapchain->EndAndPresentFramebuffer(fb);
+	// Fibers pump (main thread): deliver job completions (cook/bake
+	// finish logic runs here, after the frame is presented).
+	m_fibers.Pump();
 	PollCookProcess();
 	PollBakeProcess();
 }

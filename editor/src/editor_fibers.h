@@ -1,0 +1,71 @@
+#pragma once
+// EDITOR-ONLY Boost.Fibers backend for the editor's synchronous work.
+//
+// One unified lane for every off-main-thread job the editor runs (the
+// cook/bake workers today; autosave/snapshot/volume loads later). Jobs
+// run as FIBERS on a small pool of OS worker threads (work_stealing
+// algorithm: fibers spawned on the main scheduler are stolen by idle
+// workers; the main thread never runs a job itself). Completions land
+// in a mutex-guarded queue drained by Pump() ON THE MAIN THREAD each
+// frame — callbacks (result logging, task-window finish, bake-asset
+// adoption) run where the UI lives, exactly like the old
+// future.wait_for branches.
+//
+// Why fibers over one more std::async: jobs are plain functions (same
+// capture shape), the pool is bounded and owned (no stray detached
+// threads at shutdown — Stop() drains in-flight jobs before joining),
+// and fiber-level sync primitives (fiber mutexes/channels) slot in
+// later when jobs want to interleave. ONLY the editor links Boost; the
+// engine, the App and the tools stay Boost-free.
+//
+// Not fiber-safe yet (v1): the tool line sink stays one-instance
+// (guards: m_cookRunning/m_bakeRunning) and CookFeed keeps std::mutex
+// (jobs block their whole worker thread — the pool, not the fiber,
+// provides the concurrency today).
+
+#include <functional>
+#include <memory>
+#include <string>
+
+namespace editor {
+
+class FiberBackend {
+public:
+	// One completed job (delivered on the main thread by Pump).
+	struct Completion {
+		std::string name;   // job label (console/status)
+		bool ok = false;
+		std::string error;   // exception text when the job threw
+	};
+	using Job = std::function<void()>;
+	// Runs ON THE MAIN THREAD inside Pump() when the job finishes.
+	using OnComplete = std::function<void(const Completion&)>;
+
+	FiberBackend();
+	~FiberBackend(); // Stop() (must be called on the main thread first)
+
+	// Spawns the worker pool (idempotent). Must run on the main thread.
+	bool Start(unsigned workers = 2);
+	// Marks shutdown, waits for in-flight jobs to finish, joins the
+	// workers. Completions still queued are dropped (shutdown order is
+	// the caller's business: stop BEFORE tearing anything a completion
+	// callback would touch). Must run on the main thread.
+	void Stop();
+	// Posts a job (runs on a worker fiber; exceptions are captured as
+	// Completion.error). Safe to call any thread; jobs should only be
+	// posted from the main thread (the completion must target live
+	// members). Returns false before Start/after Stop.
+	bool Post(const std::string& name, Job job,
+		OnComplete onMain = nullptr);
+	// Main-thread pump: drains completions, runs their callbacks HERE.
+	void Pump();
+	// Job counters (status readouts).
+	unsigned InFlight() const;
+	bool Busy() const { return InFlight() != 0; }
+
+private:
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
+};
+
+} // namespace editor
