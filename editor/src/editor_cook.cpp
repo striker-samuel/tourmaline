@@ -83,7 +83,18 @@ bool EditorApp::SnapshotTourForProcess(const char* tag,
 	return true;
 }
 
-void EditorApp::CookToPak(bool quickBakes) {
+void EditorApp::CookCubemapsNow() {
+	// On-demand cubemap refresh: cubemap-only quick bake (skips the
+	// minutes-long GiBaker stage). Session-adopts cubemap baking like
+	// the cook dialog checkbox (the completion adopter keys on it).
+	if (!m_cook.cubemap) {
+		m_cook.cubemap = true;
+		AutosaveTour();
+	}
+	CookToPak(true, true);
+}
+
+void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// Definition scenes only — with pak opens gone (paks run in the App),
 	// every open editor scene is definition-backed; the gate left is
 	// content (empty sourceless worlds have nothing to cook — the cooker
@@ -184,9 +195,17 @@ void EditorApp::CookToPak(bool quickBakes) {
 		std::filesystem::path(cook.outPak).stem().string();
 	const bool wantWorld = m_cook.giWorld;
 	m_cookRunning = true;
+	// Fresh strip + progress: finished captures refill the face strip
+	// as they land (see PollCubeFaces/DrawCubeFaceStrip).
+	DropCubeFaces();
+	m_cubeTotal = -1;
+	m_cubeDone = 0;
+	m_cubeRunActive = true;
 	// Blocking progress surface (modal task window): the stage flips to
 	// the pak half when the drain below sees the cooker stage start.
-	TaskWindowBegin("Cook to .pak", quickBakes
+	TaskWindowBegin("Cook to .pak", cubemapsOnly
+		? "Updating cubemaps (capture-only refresh, no pak write)..."
+		: quickBakes
 		? "Updating bakes (GI + captures, no pak write)..."
 		: "Cook stage 1/2: GI bake...");
 	// Label honesty: the cook UPDATES the scene's bake in place — GiBaker
@@ -198,7 +217,9 @@ void EditorApp::CookToPak(bool quickBakes) {
 	// is written).
 	Log(std::string(quickBakes ? "Update bakes started -> " : "Cook started -> ")
 		+ cook.outPak
-		+ (quickBakes
+		+ (cubemapsOnly
+			? std::string(" (cubemap captures refreshed, GiBaker skipped; no pak write)")
+			: quickBakes
 			? std::string(" (GI bake updated in place + cubemap captures "
 				"refreshed; no pak write)")
 			: std::string(wantWorld
@@ -215,7 +236,7 @@ void EditorApp::CookToPak(bool quickBakes) {
 	const std::string scratchDir =
 		m_store ? m_store->Root() : std::string();
 	m_cookFuture = std::async(std::launch::async,
-		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
+		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
 			// Live feed: each pipe line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -241,16 +262,18 @@ void EditorApp::CookToPak(bool quickBakes) {
 			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
 			(void)n;
 #endif
-			// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
-			// the world field when requested + the tour's authored convex
-			// volumes; the definition tour is the only input, nothing
-			// reused; the STABLE stem paths overwrite, and the completion
-			// handler deletes the superseded old bake when the stem
-			// changed). The fresh sidecars land under <contentDir>/gi/
-			// exactly where stage 2 (PakCooker) discovers + embeds them
-			// into the pak. A failed GI bake FAILS the cook (the pak would
-			// silently miss its GI otherwise — the exact bug this flow
-			// exists to prevent).
+		// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
+		// the world field when requested + the tour's authored convex
+		// volumes; the definition tour is the only input, nothing
+		// reused; the STABLE stem paths overwrite, and the completion
+		// handler deletes the superseded old bake when the stem
+		// changed). The fresh sidecars land under <contentDir>/gi/
+		// exactly where stage 2 (PakCooker) discovers + embeds them
+		// into the pak. A failed GI bake FAILS the cook (the pak would
+		// silently miss its GI otherwise — the exact bug this flow
+		// exists to prevent). SKIPPED for cubemap-only refreshes.
+		if (!cubemapsOnly)
+		{
 			{
 				std::filesystem::path baker =
 					std::filesystem::path(exePath).parent_path() /
@@ -315,6 +338,7 @@ void EditorApp::CookToPak(bool quickBakes) {
 					push("cook-gi: published '" + cookFinal + "'");
 				}
 			}
+		} // stage 1 skipped for cubemap-only refreshes
 		// ---- stage 2: Cook.exe then Pak.exe (the import/cook/pak split:
 		// cook runs the bakes + writes them back into the artifacts,
 		// pak assembles the .pak from the cooked artifacts + the GI
@@ -411,6 +435,28 @@ void EditorApp::PollCookProcess() {
 				TaskWindowStage("Cook stage 1/2: bakes...");
 			else if (line.compare(0, 5, "pak: ") == 0)
 				TaskWindowStage("Cook stage 2/2: pak...");
+			// Cubemap capture progress (Cook's [CUBE] lines carry two
+			// leading spaces): total first, then one "baked" per
+			// finished capture. Fraction bar + text stage.
+			else if (m_cubeRunActive
+				&& line.compare(0, 19, "  [CUBE] captures=") == 0) {
+				m_cubeTotal = std::atoi(line.c_str() + 19);
+				m_cubeDone = 0;
+				if (m_cubeTotal > 0) {
+					TaskWindowStage("Cubemap captures 0/"
+						+ std::to_string(m_cubeTotal), 0.0f);
+				}
+			}
+			else if (m_cubeRunActive && m_cubeTotal > 0
+				&& line.compare(0, 12, "  [CUBE] baked ") == 0) {
+				++m_cubeDone;
+				if (m_cubeDone > m_cubeTotal)
+					m_cubeDone = m_cubeTotal;
+				TaskWindowStage("Cubemap captures "
+					+ std::to_string(m_cubeDone) + "/"
+					+ std::to_string(m_cubeTotal),
+					float(m_cubeDone) / float(m_cubeTotal));
+			}
 		}
 	};
 	drainFeed();
@@ -420,6 +466,7 @@ void EditorApp::PollCookProcess() {
 		return;
 	CookResult r = m_cookFuture.get();
 	m_cookRunning = false;
+	m_cubeRunActive = false;
 	// Late lines that arrived between the drain above and completion.
 	drainFeed();
 	// Tail only (body was already streamed live).

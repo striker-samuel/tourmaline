@@ -1349,7 +1349,7 @@ private:
 	// the GI sidecars AND the capture set; the last pak stays untouched
 	// and the fresh loose sidecars override its blobs through the VFS
 	// overlay.
-	void CookToPak(bool quickBakes = false); // save tour + PakCooker --tour on a worker
+	void CookToPak(bool quickBakes = false, bool cubemapsOnly = false); // save tour + cooker on a worker (cubemapsOnly skips GiBaker)
 	void PollCookProcess();
 	// TEMP tour snapshot shared by the cooker/baker subprocesses (see
 	// editor_cook.cpp): outTempTour + definition fingerprint.
@@ -2317,6 +2317,35 @@ private:
 	void TaskWindowFinish(bool ok, const std::string& result);
 	void ReopenTaskWindow(); // background -> foreground (top-bar button)
 	void DrawTaskWindow();   // blocking modal popup (DrawMenuBar tail)
+	// ---- cubemap capture face strip (cook dialog) ----
+	// Live KTX2 face previews: while a cubemap cook runs, finished
+	// captures appear here as tonemapped face strips (parsed from the
+	// loose sidecars, never PNG); with no cook running the strip shows
+	// the last-baked set. Manifest-independent (single captures show).
+	struct CubeFaceView {
+		std::string name;    // capture name (<base>[_N])
+		std::string ktxPath; // host path of the loose sidecar
+		std::filesystem::file_time_type mtime{};
+		bool hasMtime = false;
+		smvk::Holder<smvk::TextureHandle> tex; // strip texture (6 faces)
+		ImTextureID imgui = 0; // backend binding; 0 = none
+		int faceSize = 0;    // face width px (strip is 6x wide)
+	};
+	std::vector<CubeFaceView> m_cubeFaces{};
+	uint32_t m_cubeFaceSampler = UINT32_MAX; // preview sampler (created once)
+	uint64_t m_cubeFacePollFrame = 0; // throttle: scan every N frames
+	// Cubemap progress (parsed from [CUBE] lines while a cubemap cook
+	// runs; -1 = unknown total). Drives TaskWindowStage fractions.
+	int m_cubeTotal = -1;
+	int m_cubeDone = 0;
+	bool m_cubeRunActive = false;
+	void PollCubeFaces(); // scan sidecars, load new/changed via libktx
+	void DropCubeFaces(); // release textures + bindings (new cook, shutdown)
+	void DrawCubeFaceStrip(); // cook dialog section (see editor_ui.cpp)
+	void CookCubemapsNow(); // cubemap-only quick bake (skips GiBaker)
+	// Sidecar roots + capture base for the strip scan (mirrors the
+	// manifest reader roots and the completion adopter base).
+	bool CubeWatchSpec(std::string& dirOut, std::string& baseOut) const;
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Render | Material

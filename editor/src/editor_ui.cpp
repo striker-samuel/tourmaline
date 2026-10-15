@@ -3714,6 +3714,27 @@ namespace editor {
 					ImGui::SameLine();
 			}
 		}
+		// On-demand cubemap refresh (capture-only quick bake, GiBaker
+		// skipped) + the live face strip below: finished captures
+		// appear as KTX-decoded face strips while the cook runs.
+		if (m_cookRunning && m_cubeRunActive && m_cubeTotal > 0) {
+			ImGui::Text("Cubemaps %d/%d captures...",
+				m_cubeDone, m_cubeTotal);
+			ImGui::ProgressBar(
+				float(m_cubeDone) / float(m_cubeTotal), ImVec2(-1, 0), "");
+		}
+		else if (!m_cookRunning && !m_bakeRunning) {
+			if (ImGui::Button("Update cubemaps now")) {
+				CookCubemapsNow();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"Cubemap-only quick bake (GiBaker skipped): re-traces\n"
+					"every capture in the set; faces land below as each\n"
+					"capture finishes. Loose sidecars override the pak\n"
+					"through the VFS overlay.");
+		}
+		DrawCubeFaceStrip();
 
 		ImGui::Separator();
 		ImGui::TextDisabled("Cook = PRODUCT step: a .pak for the game/App "

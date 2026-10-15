@@ -2973,6 +2973,11 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	std::vector<glm::vec3> pngMeans;
 	pngMeans.reserve(positions.size());
 
+	// Machine-readable total for progress clients (the editor's cook
+	// dialog parses it into TaskWindowStage fractions; per-capture
+	// "baked" lines below mark completion).
+	std::cerr << "  [CUBE] captures=" << positions.size() << "\n" << std::flush;
+
 	for (size_t cap = 0; cap < positions.size(); ++cap) {
 		const glm::vec3 origin = positions[cap];
 		const std::string captureName = positions.size() == 1
