@@ -395,14 +395,14 @@ static smvk::ParticlesDesc MakeParticlesDesc() {
 // at most m_spotShadowMax casters (upper limit + distance/screenspace
 // heuristic, see SelectSpotShadowCasters).
 // -----------------------------------------------------------------------------
-static constexpr uint32_t SPOT_SHADOW_RES = 1024;
+static constexpr uint32_t SPOT_SHADOW_RES = 1024; // ceiling (the member clamps below)
 static constexpr float SPOT_SHADOW_NEAR = 0.5f;
 static constexpr float SPOT_SHADOW_BIAS = 0.0005f; // NDC base for slope-scaled ODB (Sec. 4.2)
 
-static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
+static smvk::SpotShadowMapDesc MakeSpotShadowDesc(uint32_t resolution) {
 	smvk::SpotShadowMapDesc d{};
 	d.slotCount = smvk::kMaxSpotShadows;
-	d.resolution = SPOT_SHADOW_RES;
+	d.resolution = resolution;
 	d.format = smvk::Format::D32_Float;
 	d.nearPlane = SPOT_SHADOW_NEAR;
 	d.bias = SPOT_SHADOW_BIAS;
@@ -429,9 +429,10 @@ static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline, uint32_t 
 	return d;
 }
 
-static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
+static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline,
+	uint32_t tileResolution) {
 	smvk::EvsmDesc d{};
-	d.tileResolution = SPOT_SHADOW_RES;
+	d.tileResolution = tileResolution;
 	d.tileCount = smvk::kMaxSpotShadows;
 	d.momentsFormat = smvk::Format::RGBA32_Float;
 	d.depthFormat = smvk::Format::D32_Float;
@@ -2017,7 +2018,7 @@ namespace engine {
 		}
 		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
 		// Non-fatal: without it all spots simply run unshadowed.
-		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
+		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc(m_spotShadowResolution))) {
 			std::cerr << "[WorldRenderer] Spot shadow atlas unavailable - spots run unshadowed\n";
 		}
 		// EVSM moment atlases (RGBA32F 2xMSAA + async blur). Non-fatal: when
@@ -2035,7 +2036,7 @@ namespace engine {
 			if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
 				std::cerr << "[WorldRenderer] EVSM directional atlas unavailable - PCF fallback\n";
 			}
-			if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
+			if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, m_spotShadowResolution))) {
 				std::cerr << "[WorldRenderer] EVSM spot atlas unavailable - PCF fallback\n";
 			}
 		}
@@ -7285,7 +7286,7 @@ namespace engine {
 			// is a no-op in steady state; recreates once on slider change).
 			m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph,
 				MakeShadowDesc(m_cascadeResolution, m_cascadeLambda));
-			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
+			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc(m_spotShadowResolution));
 			// EVSM atlas lifecycle follows the FEATURE FLAG (lazy):
 			// Ensure only when the opt-in is on (also covers the
 			// pipeline-mode flip - a no-op in steady state, shaders
@@ -7296,7 +7297,7 @@ namespace engine {
 			// time they are gone.
 			if (m_evsmEnabled) {
 				m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution));
-				m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
+				m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, m_spotShadowResolution));
 			}
 			else {
 				if (m_viewportResources.evsmDir.Valid())
@@ -7494,7 +7495,7 @@ namespace engine {
 		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
 		for (const smvk::GpuCascadeDescription& tile : m_spotShadowTiles) {
 			const uint32_t view = m_renderViews.AllocateSpotShadowView(
-				tile, { static_cast<float>(SPOT_SHADOW_RES), static_cast<float>(SPOT_SHADOW_RES) });
+				tile, { static_cast<float>(m_spotShadowResolution), static_cast<float>(m_spotShadowResolution) });
 			if (spotViewBase == smvk::RenderViewSet::kInvalidIndex)
 				spotViewBase = view;
 		}
@@ -7699,7 +7700,7 @@ namespace engine {
 						*m_context, *m_rendergraph,
 						m_renderViews.Get(spotViewBase + si),
 						smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-						SPOT_SHADOW_RES, SPOT_SHADOW_RES,
+						m_spotShadowResolution, m_spotShadowResolution,
 						shadowContributionView);
 			// Cooperative per-view list builds: workers overlap the rest of
 			// the frame's pass recording; futures join before Execute.
@@ -11512,17 +11513,29 @@ namespace engine {
 							{
 								const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
 								const char* resNames[] = { "512", "1024", "2048", "4096" };
-								int resIdx = 2;
+								int resIdx = 1; // canon = 1024 (PS5-quality base)
 								for (int i = 0; i < 4; ++i)
 									if (resOptions[i] == m_cascadeResolution)
 										resIdx = i;
 								if (ImGui::Combo("Cascade resolution", &resIdx, resNames, 4))
 									m_cascadeResolution = resOptions[std::clamp(resIdx, 0, 3)];
 								const auto tile = CascadeTileExtent();
-								ImGui::TextDisabled("Live tile %ux%u (atlas %ux%u).",
+								ImGui::TextDisabled("Live tile %ux%u (atlas %ux%u). Canon = 1024 (PS5).",
 									tile.width, tile.height,
 									m_viewportResources.directionalShadows.atlasExtent.width,
 									m_viewportResources.directionalShadows.atlasExtent.height);
+							}
+							// Spot tile resolution (depth + EVSM spot atlases).
+							{
+								const uint32_t spotOptions[] = { 256, 512, 1024 };
+								const char* spotNames[] = { "256", "512 (PS5)", "1024" };
+								int spotIdx = 1; // canon = 512 (PS5-quality base)
+								for (int i = 0; i < 3; ++i)
+									if (spotOptions[i] == m_spotShadowResolution)
+										spotIdx = i;
+								if (ImGui::Combo("Spot tile resolution", &spotIdx, spotNames, 3))
+									m_spotShadowResolution = spotOptions[std::clamp(spotIdx, 0, 2)];
+								ImGui::TextDisabled("PCF + EVSM spot atlases recreate on change.");
 							}
 							ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
 							ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");

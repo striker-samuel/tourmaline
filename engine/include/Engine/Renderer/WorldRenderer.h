@@ -1666,7 +1666,8 @@ public:
 	// ---- Directional CSM tuning (UI, Quality tab) ----
 	// Tile resolution recreates the depth + EVSM moment atlases on change
 	// (one-time hitch via the idempotent per-frame Ensure).
-	uint32_t m_cascadeResolution = 2048; // per-cascade tile (512..4096)
+	uint32_t m_cascadeResolution = 1024; // per-cascade tile (512..4096; canon = PS5-quality 1024)
+	uint32_t m_spotShadowResolution = 512; // per-spot tile (256..1024; canon = PS5-quality 512)
 	// Split blend for ComputeCascadeSplits: 0 = linear, 1 = logarithmic.
 	float m_cascadeLambda = 0.8f;
 	// Shadow range cap (m). 0 = scene farClip; otherwise clamped to
