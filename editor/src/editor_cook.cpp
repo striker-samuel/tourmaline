@@ -13,36 +13,20 @@
 #include <iterator>
 #include <sstream>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 #include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Vfs/vfs.h>
 
+#include "gi_baker.h"
+#include "cook_tool.h"
+#include "pak_tool.h"
+#include <tool_log.h>
+
 #include <fstream>
 #include <optional>
 
 namespace editor {
-namespace {
-// cmd.exe (behind _popen) mangles commands that start with a quote:
-// a quoted exe path plus quoted args gets its quotes stripped and the
-// whole line is then read as the program name ("...' is not recognized").
-// Quote only args that actually contain whitespace/quotes.
-std::string QuoteArg(const std::string& s) {
-	if (s.find_first_of(" \t\"") == std::string::npos)
-		return s;
-	std::string o = "\"";
-	for (char c : s)
-		o += (c == '"') ? "\\\"" : std::string(1, c);
-	return o + "\"";
-}
-} // namespace
 
 
 // Shared snapshot for the cooker/baker subprocesses: a TEMP coalesced
@@ -239,7 +223,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	m_cookFuture = std::async(std::launch::async,
 		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs)]() -> CookResult {
 			CookResult r{};
-			// Live feed: each pipe line is pushed to the shared feed
+			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
 			// thread so the Console shows progress while the cook
 			// runs. r.log carries only the tail (exit codes) since
@@ -248,21 +232,6 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				std::lock_guard<std::mutex> lk(feed->mutex);
 				feed->lines.push_back(line);
 			};
-			auto pushPipe = [&push](FILE* pipe) {
-				std::array<char, 512> buf{};
-				while (std::fgets(buf.data(), int(buf.size()), pipe)) {
-					std::string line(buf.data());
-					while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-						line.pop_back();
-					push(line);
-				}
-			};
-			// GiBaker next to Editor.exe.
-			char exePath[1024] = {};
-#ifdef _WIN32
-			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
-			(void)n;
-#endif
 		// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
 		// the world field when requested + the tour's authored convex
 		// volumes; the definition tour is the only input, nothing
@@ -273,71 +242,55 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		// into the pak. A failed GI bake FAILS the cook (the pak would
 		// silently miss its GI otherwise — the exact bug this flow
 		// exists to prevent). SKIPPED for cubemap-only refreshes.
+		// Runs IN-PROCESS (GiBakerLib): the CLI stays a thin user
+		// interface over the same Run. Baker lines stream through the
+		// tool line sink into this feed (same lines the pipe carried).
 		if (!cubemapsOnly)
 		{
-			{
-				std::filesystem::path baker =
-					std::filesystem::path(exePath).parent_path() /
-					"GiBaker.exe";
-				if (!std::filesystem::exists(baker))
-					baker = "GiBaker.exe"; // PATH fallback
-				std::ostringstream gi;
-				gi << QuoteArg(baker.string())
-					<< " --content-dir " << QuoteArg(contentDir)
-					<< " --scene " << QuoteArg(pakStem)
-					<< " --tour " << QuoteArg(tempTourPath);
-				// Temp-file bake (same as BakeGI): publish atomically so
-				// a failed baker never corrupts the live world field.
-				std::string cookFinal, cookTemp;
-				if (wantWorld) {
-					cookFinal = (std::filesystem::path(contentDir) / "gi" /
-						(pakStem + ".sggi")).generic_string();
-					cookTemp = cookFinal + ".tmp";
-					gi << " --out " << QuoteArg(cookTemp);
-				}
-				gi << " 2>&1";
-				push("cook-gi: " + gi.str());
-#ifdef _WIN32
-				FILE* gpipe = _popen(gi.str().c_str(), "r");
-#else
-				FILE* gpipe = popen(gi.str().c_str(), "r");
-#endif
-				if (!gpipe) {
-					r.log = "cook-gi: failed to spawn GiBaker\n";
-					std::error_code ec;
-					std::filesystem::remove(tempTourPath, ec);
-					return r;
-				}
-				pushPipe(gpipe);
-#ifdef _WIN32
-				const int grc = _pclose(gpipe);
-#else
-				const int grc = pclose(gpipe);
-#endif
-				if (grc != 0) {
+			gibaker::Args gargs;
+			gargs.contentDir = contentDir;
+			gargs.scene = pakStem;
+			gargs.tour = tempTourPath;
+			std::string cookFinal, cookTemp;
+			if (wantWorld) {
+				cookFinal = (std::filesystem::path(contentDir) / "gi" /
+					(pakStem + ".sggi")).generic_string();
+				cookTemp = cookFinal + ".tmp";
+				gargs.out = cookTemp;
+			}
+			// Temp-file bake (same as BakeGI): publish atomically so
+			// a failed baker never corrupts the live world field.
+			push("cook-gi: GiBaker (in-process)"
+				" --scene " + pakStem
+				+ (wantWorld ? " --out <tmp>" : ""));
+			tool::SetLineSink([&push](const std::string& line, bool) {
+				push(line);
+			});
+			const int grc = gibaker::Run(gargs);
+			tool::SetLineSink(nullptr);
+			if (grc != 0) {
+				r.ok = false;
+				r.log = "cook-gi: GiBaker exit=" + std::to_string(grc)
+					+ " — pak cook SKIPPED (the GI bake failed; "
+					"previous sidecars, if any, are untouched)\n";
+				std::error_code ec;
+				std::filesystem::remove(tempTourPath, ec);
+				return r;
+			}
+			push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
+				"under " + contentDir + "/gi/)");
+			if (wantWorld && !cookTemp.empty()) {
+				std::error_code rec;
+				std::filesystem::rename(cookTemp, cookFinal, rec);
+				if (rec) {
 					r.ok = false;
-					r.log = "cook-gi: GiBaker exit=" + std::to_string(grc)
-						+ " — pak cook SKIPPED (the GI bake failed; "
-						"previous sidecars, if any, are untouched)\n";
+					r.log = "cook-gi: temp publish failed ("
+						+ rec.message() + ") — pak cook SKIPPED\n";
 					std::error_code ec;
 					std::filesystem::remove(tempTourPath, ec);
 					return r;
 				}
-				push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
-					"under " + contentDir + "/gi/)");
-				if (wantWorld && !cookTemp.empty()) {
-					std::error_code rec;
-					std::filesystem::rename(cookTemp, cookFinal, rec);
-					if (rec) {
-						r.ok = false;
-						r.log = "cook-gi: temp publish failed ("
-							+ rec.message() + ") — pak cook SKIPPED\n";
-						std::error_code ec;
-						std::filesystem::remove(tempTourPath, ec);
-						return r;
-					}
-					push("cook-gi: published '" + cookFinal + "'");
-				}
+				push("cook-gi: published '" + cookFinal + "'");
 			}
 		} // stage 1 skipped for cubemap-only refreshes
 		// ---- stage 2: Cook.exe then Pak.exe (the import/cook/pak split:
@@ -345,61 +298,47 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		// pak assembles the .pak from the cooked artifacts + the GI
 		// sidecar discovery/embed from stage 1). Quick bakes run the
 		// Cook capture stage ONLY, no pak write (the loose sidecars it
-		// writes are the output).
-		auto toolPath = [&](const char* exe) {
-			std::filesystem::path p =
-				std::filesystem::path(exePath).parent_path() / exe;
-			if (!std::filesystem::exists(p))
-				p = exe; // PATH fallback
-			return p;
-		};
-		// Positional tool CLI (tool.exe <contentDir> [--tour T | <artifact>]
-		// [...]). The tour carries the cook block; CLI wins when both.
-		auto baseArgs = [&]() {
-			std::ostringstream a;
-			a << QuoteArg(contentDir);
-			if (!tempTourPath.empty())
-				a << " --tour " << QuoteArg(tempTourPath);
-			else
-				a << " " << QuoteArg(inVfs);
-			if (!scratchDir.empty())
-				a << " --scratch-dir " << QuoteArg(scratchDir);
-			return a.str();
-		};
-		auto spawnTool = [&](const std::string& exe,
-			const std::string& args, const char* tag) -> int {
-			std::ostringstream cmd;
-			cmd << QuoteArg(exe) << " " << args << " 2>&1";
-			push(std::string(tag) + ": ");
-			push(cmd.str());
-#ifdef _WIN32
-			FILE* pipe = _popen(cmd.str().c_str(), "r");
-#else
-			FILE* pipe = popen(cmd.str().c_str(), "r");
-#endif
-			if (!pipe) {
-				r.log = std::string(tag) + ": failed to spawn "
-					+ exe + "\n";
-				return 1;
-			}
-			pushPipe(pipe);
-#ifdef _WIN32
-			const int rc = _pclose(pipe);
-#else
-			const int rc = pclose(pipe);
-#endif
-			return rc;
-		};
-		int rc = spawnTool(toolPath("Cook.exe").string(),
-			baseArgs() + (quickBakes ? " --quick-bakes on" : ""),
-			quickBakes ? "update-bakes" : "cook");
+		// writes are the output). Both run IN-PROCESS (CookLib/PakLib);
+		// the CLIs stay thin user interfaces over the same Runs.
+		cooktool::CookArgs cookArgs;
+		cookArgs.contentDir = contentDir;
+		if (!tempTourPath.empty())
+			cookArgs.tour = tempTourPath;
+		else {
+			cookArgs.inVfsList.push_back(inVfs);
+			cookArgs.inVfs = inVfs;
+		}
+		if (!scratchDir.empty())
+			cookArgs.scratchDir = scratchDir;
+		cookArgs.quickBakes = quickBakes;
+		push("cook: Cook (in-process)"
+			+ std::string(quickBakes ? " --quick-bakes" : ""));
+		tool::SetLineSink([&push](const std::string& line, bool) {
+			push(line);
+		});
+		int rc = cooktool::Run(cookArgs);
+		tool::SetLineSink(nullptr);
 		r.ok = (rc == 0);
 		r.log = std::string(quickBakes ? "update-bakes: " : "cook: ")
 			+ "Cook exit=" + std::to_string(rc) + "\n";
 		if (r.ok && !quickBakes) {
-			rc = spawnTool(toolPath("Pak.exe").string(),
-				baseArgs() + " --out-pak " + QuoteArg(cook.outPak),
-				"pak");
+			push("pak: Pak (in-process) --out-pak " + cook.outPak);
+			paktool::PakArgs pargs;
+			pargs.contentDir = contentDir;
+			if (!tempTourPath.empty())
+				pargs.tour = tempTourPath;
+			else {
+				pargs.inVfsList.push_back(inVfs);
+				pargs.inVfs = inVfs;
+			}
+			if (!scratchDir.empty())
+				pargs.scratchDir = scratchDir;
+			pargs.outPak = cook.outPak;
+			tool::SetLineSink([&push](const std::string& line, bool) {
+				push(line);
+			});
+			rc = paktool::Run(pargs);
+			tool::SetLineSink(nullptr);
 			r.ok = (rc == 0);
 			r.log += "pak: Pak exit=" + std::to_string(rc) + "\n";
 		}
@@ -570,31 +509,13 @@ void EditorApp::BakeGI() {
 				std::lock_guard<std::mutex> lk(feed->mutex);
 				feed->lines.push_back(line);
 			};
-			auto pushPipe = [&push](FILE* pipe) {
-				std::array<char, 512> buf{};
-				while (std::fgets(buf.data(), int(buf.size()), pipe)) {
-					std::string line(buf.data());
-					while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-						line.pop_back();
-					push(line);
-				}
-			};
-			// GiBaker next to Editor.exe.
-			char exePath[1024] = {};
-#ifdef _WIN32
-			DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
-			(void)n;
-#endif
-			std::filesystem::path baker =
-				std::filesystem::path(exePath).parent_path() /
-				"GiBaker.exe";
-			if (!std::filesystem::exists(baker))
-				baker = "GiBaker.exe"; // PATH fallback
-			std::ostringstream gi;
-			gi << QuoteArg(baker.string())
-				<< " --content-dir " << QuoteArg(contentRoot)
-				<< " --scene " << QuoteArg(pakStem)
-				<< " --tour " << QuoteArg(tempTourPath);
+			// GiBaker runs IN-PROCESS (GiBakerLib): the CLI stays a thin
+			// user interface over the same Run. Baker lines stream
+			// through the tool line sink into this feed.
+			gibaker::Args gargs;
+			gargs.contentDir = contentRoot;
+			gargs.scene = pakStem;
+			gargs.tour = tempTourPath;
 			// Temp-file bake: GiBaker writes gi/<stem>.sggi.tmp, the
 			// worker atomically renames to gi/<stem>.sggi on success —
 			// a failed bake never leaves a half-written world field.
@@ -603,25 +524,22 @@ void EditorApp::BakeGI() {
 				bakeFinal = (std::filesystem::path(contentRoot) / "gi" /
 					(pakStem + ".sggi")).generic_string();
 				bakeTemp = bakeFinal + ".tmp";
-				gi << " --out " << QuoteArg(bakeTemp);
+				gargs.out = bakeTemp;
 			}
-			gi << " 2>&1";
-			push("bake-gi: " + gi.str());
-#ifdef _WIN32
-			FILE* gpipe = _popen(gi.str().c_str(), "r");
-#else
-			FILE* gpipe = popen(gi.str().c_str(), "r");
-#endif
-			if (!gpipe) {
-				r.log = "bake-gi: failed to spawn GiBaker\n";
-				return r;
+			push("bake-gi: GiBaker (in-process)"
+				" --scene " + pakStem
+				+ (wantWorld ? " --out <tmp>" : ""));
+			tool::SetLineSink([&push](const std::string& line, bool) {
+				push(line);
+			});
+			const int grc = gibaker::Run(gargs);
+			tool::SetLineSink(nullptr);
+			// Temp tour snapshot cleanup (was deleted by the spawn
+			// path's early returns; single exit now).
+			{
+				std::error_code ec;
+				std::filesystem::remove(tempTourPath, ec);
 			}
-			pushPipe(gpipe);
-#ifdef _WIN32
-			const int grc = _pclose(gpipe);
-#else
-			const int grc = pclose(gpipe);
-#endif
 			r.ok = (grc == 0);
 			r.log = "bake-gi: GiBaker exit=" + std::to_string(grc) + "\n";
 			if (!r.ok)

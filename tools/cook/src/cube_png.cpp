@@ -10,8 +10,12 @@
 // (PakCooker, CubemapBaker). lm_png.cpp and all other users in those
 // binaries use the header declarations only — exactly one definition per
 // binary. (The engine carries its own in Utils/LutIo.cpp, the editor in
-// editor_branding.cpp.)
+// editor_branding.cpp.) The CookLib build linked into the editor skips
+// its own copy for the same reason (the editor's branding TU provides
+// it — one definition per binary still holds).
+#ifndef COOK_LIB_BUILD
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#endif
 #include <stb_image_write.h>
 
 namespace pakcook {

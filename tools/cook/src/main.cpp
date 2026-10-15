@@ -123,7 +123,10 @@
 #include "lm_png.h"
 #include "cube_png.h"
 
-namespace {
+#include "cook_tool.h"
+#include <tool_log.h>
+
+namespace cooktool {
 
 	struct Args {
 		std::string contentDir = "content";
@@ -440,7 +443,7 @@ namespace {
 			return;
 		cluster.RegisterLightUri("sun/world", h);
 		cluster.scene.lightForNode[uint32_t(node)] = h.index();
-		std::cout << "World sun synthesized (env block): az=" << be.sunAzimuth
+		tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
 			<< " el=" << be.sunElevation << " I=" << be.sunIntensity
 			<< " rgb=(" << be.sunColor.x << "," << be.sunColor.y
 			<< "," << be.sunColor.z << ")\n";
@@ -558,10 +561,10 @@ namespace {
 			std::string terr;
 			BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
 			if (!terr.empty()) {
-				std::cerr << "[CV] trace scene failed: " << terr << std::endl;
+				tool::err() << "[CV] trace scene failed: " << terr << std::endl;
 				return false;
 			}
-			std::cout << "  [CV] trace scene: "
+			tool::out() << "  [CV] trace scene: "
 				<< traceScene.Bvh().TriangleCount() << " tris ("
 				<< averaged << " averaged textures)\n" << std::flush;
 			// Deterministic node order (hash-map iteration is not).
@@ -596,7 +599,7 @@ namespace {
 				def.priority = cv.priority;
 				def.planes = CvBoxPlanesRotated(c, axes, half,
 					cv.insideFade, cv.outsideFade);
-				std::cout << "  [CV] volume '" << def.name << "': priority="
+				tool::out() << "  [CV] volume '" << def.name << "': priority="
 					<< def.priority << " spacing=" << cv.spacing
 					<< " planes=" << def.planes.size() << "\n" << std::flush;
 				// Engine defaults (1536 capture dirs, 3 bounces, auto
@@ -606,15 +609,15 @@ namespace {
 				CvVolume vol;
 				CvBakeStats stats;
 				if (!BakeCvVolume(traceScene, def, cv.spacing, cfg, vol,
-					stats, [](const char* line) { std::cout << line; })) {
-					std::cerr << "[CV] bake failed for '" << def.name
+					stats, [](const char* line) { tool::out() << line; })) {
+					tool::err() << "[CV] bake failed for '" << def.name
 						<< "'\n";
 					return false;
 				}
 				std::vector<uint8_t> bytes;
 				std::string werr;
 				if (!vol.WriteToMemory(bytes, werr)) {
-					std::cerr << "[CV] serialize failed for '" << def.name
+					tool::err() << "[CV] serialize failed for '" << def.name
 						<< "': " << werr << "\n";
 					return false;
 				}
@@ -622,7 +625,7 @@ namespace {
 					"gi/" + sceneId + "_" + def.name + ".cvol";
 				out.emplace_back(vfsPath, std::move(bytes));
 				manifestRows.push_back(vfsPath + "  # " + def.name);
-				std::cout << "  [CV] baked '" << def.name << "': dims="
+				tool::out() << "  [CV] baked '" << def.name << "': dims="
 					<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
 					<< " captures=" << stats.captures
 					<< " probes=" << stats.probes
@@ -653,10 +656,10 @@ namespace {
 				if (v > 0.0f && v < 1.0f)
 					out.push_back(v);
 				else
-					std::cerr << "Ignoring out-of-range lod ratio: " << tok << std::endl;
+					tool::err() << "Ignoring out-of-range lod ratio: " << tok << std::endl;
 			}
 			catch (...) {
-				std::cerr << "Ignoring bad lod ratio: " << tok << std::endl;
+				tool::err() << "Ignoring bad lod ratio: " << tok << std::endl;
 			}
 			if (comma == std::string::npos)
 				break;
@@ -682,7 +685,7 @@ namespace {
 			const std::string a = argv[i];
 			auto need = [&](std::string& dst) {
 				if (i + 1 >= argc) {
-					std::cerr << "Missing value for " << a << std::endl;
+					tool::err() << "Missing value for " << a << std::endl;
 					return false;
 				}
 				dst = argv[++i];
@@ -698,7 +701,7 @@ namespace {
 				continue;
 			}
 			else {
-				std::cerr << "Artifact '" << a << "' after flags: all"
+				tool::err() << "Artifact '" << a << "' after flags: all"
 					" artifacts come before the first --option"
 					<< std::endl;
 				return false;
@@ -893,7 +896,7 @@ namespace {
 				std::string v;
 				if (!need(v)) return false;
 				if (v != "builtin" && v != "embree") {
-					std::cerr << "--backend must be builtin|embree" << std::endl;
+					tool::err() << "--backend must be builtin|embree" << std::endl;
 					return false;
 				}
 				out.backend = v;
@@ -927,7 +930,7 @@ namespace {
 				if (in >> c.x >> c.y >> c.z)
 					out.sunColor = c;
 				else {
-					std::cerr << "Bad --sun-color (want r,g,b): " << v << std::endl;
+					tool::err() << "Bad --sun-color (want r,g,b): " << v << std::endl;
 					return false;
 				}
 				out.explicitSet.insert("sunColor");
@@ -1053,7 +1056,7 @@ namespace {
 				// Removed: captures store true radiance by design (the runtime
 				// scales with the cubemap panel intensity). Reject explicitly
 				// rather than silently ignoring a stale script flag.
-				std::cerr << "--cubemap-ibl-intensity was removed (captures are"
+				tool::err() << "--cubemap-ibl-intensity was removed (captures are"
 					" true radiance; use the runtime cubemap intensity)\n";
 				return false;
 			}
@@ -1069,7 +1072,7 @@ namespace {
 			return false;
 		}
 		else {
-			std::cerr << "Unknown arg: " << a << std::endl;
+			tool::err() << "Unknown arg: " << a << std::endl;
 			return false;
 		}
 	}
@@ -1077,7 +1080,7 @@ namespace {
 	if (!out.dumpPak.empty())
 		return true; // inspection mode needs no cook inputs
 	if (positional.empty()) {
-		std::cerr << "Required: cook.exe <vfs_path> <artifact...> [--options]"
+		tool::err() << "Required: cook.exe <vfs_path> <artifact...> [--options]"
 			" - the VFS content root + the processed .geometry list"
 			" (import raw glTF with import.exe / the editor first)"
 			<< std::endl;
@@ -1089,7 +1092,7 @@ namespace {
 		out.inVfs = out.inVfsList.front();
 	}
 	if (out.inVfsList.empty() && out.tour.empty()) {
-		std::cerr << "Required: at least one artifact .geometry (or --tour"
+		tool::err() << "Required: at least one artifact .geometry (or --tour"
 			" <scene.tour> - the editor-authored definition)" << std::endl;
 		return false;
 	}
@@ -1101,7 +1104,7 @@ namespace {
 }
 
 	void Usage() {
-	std::cout << "cook.exe <vfs_path> <artifact...> [--options]\n"
+	tool::out() << "cook.exe <vfs_path> <artifact...> [--options]\n"
 		<< "          cook.exe F:/content models/sponza/Sponza.geometry\n"
 		<< "              [--lods on|off] [...] (bakes write back in place;\n"
 		<< "              no --out-pak — pak.exe assembles the pak)\n"
@@ -1265,7 +1268,7 @@ namespace {
 	// from the in-memory Cluster, so the dump reflects the actual bytes).
 	void DumpManifestFromPak(const smvk::PakReader& reader,
 		const std::vector<uint32_t>& onlyNodes = {}) {
-		std::cout << "  manifest (pak-sourced):\n";
+		tool::out() << "  manifest (pak-sourced):\n";
 
 		// Meshes.
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Mesh)) {
@@ -1280,7 +1283,7 @@ namespace {
 			// uv-sweep audit walks garbage indices OOB and AVs instead of
 			// reporting the blob.
 			if (!c.ok || vc == 0 || vc > 16 * 1024 * 1024 || ic > 64 * 1024 * 1024 || sc > 4096) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			for (uint32_t s = 0; s < sc; ++s) { (void)c.u32(); (void)c.u32(); (void)c.i32(); }
@@ -1311,7 +1314,7 @@ namespace {
 				c.ok = false;
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			// ---- stream layout (packed-SoA; see cluster_serializer.cpp) ----
@@ -1330,7 +1333,7 @@ namespace {
 					|| (size_t)posOff + (size_t)vc * sizeof(smvk::VertexPos) > c.img.size()
 					|| (size_t)shadeOff + (size_t)vc * sizeof(smvk::VertexShading) > c.img.size()
 					|| (size_t)idxOff + (size_t)ic * 4 > c.img.size()) {
-					std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+					tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 					continue;
 				}
 				posBase = (size_t)posOff;
@@ -1534,7 +1537,7 @@ namespace {
 					c.ok = false;
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			// ---- meshlet-walk audit: localIndex -> window -> global ----
@@ -1675,11 +1678,11 @@ namespace {
 				}
 			}
 			if (mlTruncated) {
-				std::cout << "    [truncated meshlet trailer: " << e->path
+				tool::out() << "    [truncated meshlet trailer: " << e->path
 					<< "]\n";
 				continue;
 			}
-			std::cout << "    mesh " << uri
+			tool::out() << "    mesh " << uri
 				<< " verts=" << vc << " idx=" << ic
 				<< " lod{g=" << groupId << " i=" << lodIndex << " n=" << candidates
 				<< " tris=" << tris << " err=" << simplifyError
@@ -1687,7 +1690,7 @@ namespace {
 				<< " meshlets=" << meshlets
 				<< " lmChunk=" << (lmChunk == 0xFFFFFFFFu ? -1 : int(lmChunk));
 			if (lmChunk != 0xFFFFFFFFu)
-				std::cout << " charts=" << lmXforms
+				tool::out() << " charts=" << lmXforms
 				<< " uv2span=" << maxUv2Span
 				<< " bigtris=" << bigUv2Tris
 				<< " densmed=" << densMed
@@ -1701,11 +1704,11 @@ namespace {
 				<< " chartidmax=" << (haveChartId ? int(chartIdMax) : -1)
 				<< " oobslice=" << oobSlice;
 			if (meshlets > 0)
-				std::cout << " mlbigtris=" << mlBigTris
+				tool::out() << " mlbigtris=" << mlBigTris
 				<< " mlsetdiff=" << mlSetDiff
 				<< " mlbadlocal=" << mlBadLocal
 				<< " mloob=" << mlOob;
-			std::cout << "\n";
+			tool::out() << "\n";
 		}
 
 		// Materials (blob: str uri | 128B MaterialValues | u32 shading |
@@ -1716,7 +1719,7 @@ namespace {
 			DumpCursor c{ reader.Payload(*e), 0 };
 			const std::string uri = c.str();
 			if (c.off + 128 > c.img.size()) {
-				std::cout << "    mat  " << uri << " [truncated values]\n";
+				tool::out() << "    mat  " << uri << " [truncated values]\n";
 				continue;
 			}
 			// Decode the texture-slot indices baked into MaterialValues
@@ -1748,17 +1751,17 @@ namespace {
 				texUris[k] = c.str();
 			const uint32_t cs = c.u32();
 			if (!c.ok) {
-				std::cout << "    mat  " << uri << " [truncated blob]\n";
+				tool::out() << "    mat  " << uri << " [truncated blob]\n";
 				continue;
 			}
-			std::cout << "    mat  " << uri
+			tool::out() << "    mat  " << uri
 				<< " shading=" << shading << " alpha=" << alpha
 				<< " cutoff=" << cutoff << " ds=" << ds
 				<< " cast=" << cs
 				<< " metal=" << metal << " rough=" << rough << "\n";
 			static const char* kNames[5] = { "bc", "mr", "n", "occ", "e" };
 			for (int k = 0; k < 5; ++k) {
-				std::cout << "      " << kNames[k] << " slot=" << slots[k]
+				tool::out() << "      " << kNames[k] << " slot=" << slots[k]
 					<< " uri=" << (texUris[k].empty() ? "<none>" : texUris[k]) << "\n";
 			}
 		}
@@ -1768,11 +1771,11 @@ namespace {
 			std::vector<smvk::GiBinding> bindings;
 			std::string gerr;
 			if (!smvk::ParseGiRegistryBlob(reader.Payload(*e), bindings, gerr)) {
-				std::cout << "    [malformed gi registry blob: " << e->path << "]\n";
+				tool::out() << "    [malformed gi registry blob: " << e->path << "]\n";
 				continue;
 			}
 			for (const auto& b : bindings) {
-				std::cout << "    gi   "
+				tool::out() << "    gi   "
 					<< (b.kind == smvk::GiBinding::Kind::Lightmap ? "lightmap" : "probe")
 					<< " '" << b.name << "'\n";
 			}
@@ -1782,10 +1785,10 @@ namespace {
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
 			if (smvk::ParseTexturePayload(reader.Payload(*e), p)) {
-				std::cout << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
+				tool::out() << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
 			}
 			else {
-				std::cout << "    [malformed texture blob: " << e->path << "]\n";
+				tool::out() << "    [malformed texture blob: " << e->path << "]\n";
 			}
 		}
 
@@ -1800,16 +1803,16 @@ namespace {
 			const float inner = c.f32(), outer = c.f32();
 			const std::string name = c.str();
 			if (!c.ok) {
-				std::cout << "    [truncated light blob: " << e->path << "]\n";
+				tool::out() << "    [truncated light blob: " << e->path << "]\n";
 				continue;
 			}
 			const char* tname = type == 0 ? "dir" : (type == 2 ? "spot" : "point");
-			std::cout << "    light " << uri << " '" << name << "' " << tname
+			tool::out() << "    light " << uri << " '" << name << "' " << tname
 				<< " rgb=(" << r << "," << g << "," << b << ")"
 				<< " I=" << intensity << " range=" << range;
 			if (type == 2)
-				std::cout << " inner=" << inner << " outer=" << outer;
-			std::cout << "\n";
+				tool::out() << " inner=" << inner << " outer=" << outer;
+			tool::out() << "\n";
 		}
 
 		// Cameras (blob: str uri | u32 projection | f32 fovY | f32 orthoHalfH
@@ -1822,10 +1825,10 @@ namespace {
 			const float nearClip = c.f32(), farClip = c.f32();
 			const std::string name = c.str();
 			if (!c.ok || proj > 1) {
-				std::cout << "    [truncated camera blob: " << e->path << "]\n";
+				tool::out() << "    [truncated camera blob: " << e->path << "]\n";
 				continue;
 			}
-			std::cout << "    camera " << uri << " '" << name << "' "
+			tool::out() << "    camera " << uri << " '" << name << "' "
 				<< (proj == 1 ? "ortho" : "persp")
 				<< " fovY=" << fovY << " halfH=" << halfH
 				<< " near=" << nearClip << " far=" << farClip << "\n";
@@ -1851,7 +1854,7 @@ namespace {
 			DumpCursor c{ reader.Payload(*e), 0 };
 			const uint32_t nodeCount = c.u32();
 			if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024) {
-				std::cout << "    [bad scene blob]\n";
+				tool::out() << "    [bad scene blob]\n";
 				continue;
 			}
 			const auto infoIt = sceneInfo.find(e->path);
@@ -1860,7 +1863,7 @@ namespace {
 			const std::string dispName = infoIt != sceneInfo.end()
 				? infoIt->second.second : std::string{};
 			++sceneIdx;
-			std::cout << "    scene[" << dispIdx << "] '" << dispName
+			tool::out() << "    scene[" << dispIdx << "] '" << dispName
 				<< "' (" << e->path << "):\n";
 			std::vector<int32_t> parent(nodeCount, -1);
 			for (uint32_t i = 0; i < nodeCount; ++i) {
@@ -1973,10 +1976,10 @@ namespace {
 				}
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated scene blob]\n";
+				tool::out() << "    [truncated scene blob]\n";
 				continue;
 			}
-			std::cout << "    scene nodes=" << nodeCount
+			tool::out() << "    scene nodes=" << nodeCount
 				<< " lightLinks=" << lightMap.size()
 				<< " camLinks=" << camMap.size() << ":\n";
 			// Print mesh-bearing nodes + renamed/noLM/interesting ones. Full
@@ -2003,33 +2006,34 @@ namespace {
 				const bool hasCam = cit != camMap.end();
 				if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !hasCam && !ditherFlag)
 					continue;
-				std::cout << "      node " << i << " '" << nm << "' parent=" << parent[i];
+				tool::out() << "      node " << i << " '" << nm << "' parent=" << parent[i];
 				if (pinpoint)
-					std::cout << " t=(" << localT[i * 3 + 0] << ","
+					tool::out() << " t=(" << localT[i * 3 + 0] << ","
 					<< localT[i * 3 + 1] << "," << localT[i * 3 + 2] << ")";
 				if (hasMesh)
-					std::cout << " mesh=" << meshMap[i];
+					tool::out() << " mesh=" << meshMap[i];
 				auto mit = matMap.find(i);
 				if (mit != matMap.end())
-					std::cout << " mat=" << mit->second;
+					tool::out() << " mat=" << mit->second;
 				if (hasLight)
-					std::cout << " light=" << lit->second;
+					tool::out() << " light=" << lit->second;
 				if (hasCam)
-					std::cout << " cam=" << cit->second;
+					tool::out() << " cam=" << cit->second;
 				if (noLmFlag)
-					std::cout << " noLM=1";
+					tool::out() << " noLM=1";
 				if (ditherFlag)
-					std::cout << " dither=1";
-				std::cout << "\n";
+					tool::out() << " dither=1";
+				tool::out() << "\n";
 				if (!pinpoint && ++shown > 200) {
-					std::cout << "      ... (truncated)\n";
+					tool::out() << "      ... (truncated)\n";
 					break;
 				}
 			}
 		}
 	}
 
-} // namespace
+// (namespace cooktool stays open through Run below, so every helper
+// resolves Args unqualified.)
 
 // Lightmap exclusion by node ancestry: true when any name on the node's
 // parent chain matches one of the --lm-exclude keywords with word
@@ -2658,7 +2662,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			buildOpts.texelAvg[handle.index()] = *avg;
 			++averaged;
 		}
-		std::cerr << "  [CUBE] textures averaged: " << averaged << " / "
+		tool::err() << "  [CUBE] textures averaged: " << averaged << " / "
 			<< cluster.ListTextureUris().size() << "\n" << std::flush;
 	}
 	// Same import basis change as CubemapBaker/GiBaker: cook imports at
@@ -2679,7 +2683,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// STATIC-flagged cooked lights into traceScene.spots/sun here.
 	BuildTraceSceneFromCluster(cluster, buildOpts, traceScene, terr);
 	if (!terr.empty()) {
-		std::cerr << "[CUBE] trace scene failed: " << terr << std::endl;
+		tool::err() << "[CUBE] trace scene failed: " << terr << std::endl;
 		return false;
 	}
 	for (const std::string& spec : args.spots) {
@@ -2692,7 +2696,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			&spot.direction.x, &spot.direction.y, &spot.direction.z,
 			&innerDeg, &outerDeg, &spot.range,
 			&col.r, &col.g, &col.b, &candela) != 13) {
-			std::cerr << "Bad --spot (want px,py,pz,dx,dy,dz,innerDeg,"
+			tool::err() << "Bad --spot (want px,py,pz,dx,dy,dz,innerDeg,"
 				"outerDeg,range,r,g,b,candela): " << spec << "\n";
 			return false;
 		}
@@ -2701,7 +2705,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		spot.cosOuter = std::cos(glm::radians(std::max(innerDeg, outerDeg)));
 		traceScene.spots.push_back(spot);
 	}
-	std::cerr << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
+	tool::err() << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
 		<< " tris, " << traceScene.materials.size() << " materials, "
 		<< traceScene.spots.size() << " spots\n" << std::flush;
 	// Albedo audit: black captures almost always mean black trace albedo
@@ -2716,27 +2720,27 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			if (luma < 1e-4f)
 				++darkMats;
 			if (mi < 10) {
-				std::cerr << "  [CUBE] mat[" << mi << "] albedo=("
+				tool::err() << "  [CUBE] mat[" << mi << "] albedo=("
 					<< m.albedo.x << "," << m.albedo.y << "," << m.albedo.z
 					<< ") emissive=(" << m.emissive.x << "," << m.emissive.y
 					<< "," << m.emissive.z << ")\n";
 			}
 		}
-		std::cerr << "  [CUBE] materials dark(<1e-4): " << darkMats << "/"
+		tool::err() << "  [CUBE] materials dark(<1e-4): " << darkMats << "/"
 			<< traceScene.materials.size() << std::flush;
 		std::vector<std::pair<uint32_t, glm::vec3>> avgs(
 			buildOpts.texelAvg.begin(), buildOpts.texelAvg.end());
 		std::sort(avgs.begin(), avgs.end(),
 			[](const auto& a, const auto& b) { return a.first < b.first; });
-		std::cerr << " texelAvg=" << avgs.size() << "\n" << std::flush;
+		tool::err() << " texelAvg=" << avgs.size() << "\n" << std::flush;
 		for (size_t i = 0; i < std::min<size_t>(avgs.size(), 5); ++i) {
-			std::cerr << "  [CUBE] texelAvg[" << avgs[i].first << "]=("
+			tool::err() << "  [CUBE] texelAvg[" << avgs[i].first << "]=("
 				<< avgs[i].second.x << "," << avgs[i].second.y << ","
 				<< avgs[i].second.z << ")\n" << std::flush;
 		}
 	}
 	if (traceScene.Bvh().TriangleCount() == 0) {
-		std::cerr << "[CUBE] no trace geometry (empty scene)" << std::endl;
+		tool::err() << "[CUBE] no trace geometry (empty scene)" << std::endl;
 		return false;
 	}
 
@@ -2749,7 +2753,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	for (const std::string& spec : args.cubemapPos) {
 		glm::vec3 p{};
 		if (std::sscanf(spec.c_str(), "%f,%f,%f", &p.x, &p.y, &p.z) != 3) {
-			std::cerr << "Bad --cubemap-pos (want x,y,z): " << spec << "\n";
+			tool::err() << "Bad --cubemap-pos (want x,y,z): " << spec << "\n";
 			return false;
 		}
 		positions.push_back(p);
@@ -2783,7 +2787,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			std::vector<smvk::CubemapPlacedProbe> placed;
 			std::string olog;
 			smvk::BuildOctreeProbePositions(bmin, bmax, oo, occ, placed, olog);
-			std::cerr << olog << std::flush;
+			tool::err() << olog << std::flush;
 			positions.reserve(placed.size());
 			radii.reserve(placed.size());
 			for (const auto& p : placed) {
@@ -2800,7 +2804,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			int ny = std::max(1, int(std::ceil((bmax.y - bmin.y) / spacing)));
 			int nz = std::max(1, int(std::ceil((bmax.z - bmin.z) / spacing)));
 
-			std::cerr << "  [CUBE] generating " << nx << "x" << ny << "x" << nz
+			tool::err() << "  [CUBE] generating " << nx << "x" << ny << "x" << nz
 				<< " grid at " << spacing << "m spacing = " << (nx * ny * nz) << " probes\n";
 
 			for (int iz = 0; iz < nz; ++iz) {
@@ -2852,7 +2856,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 					}
 					if (embedded) {
 						++dropped;
-						std::cerr << "  [CUBE] dropping embedded grid probe ("
+						tool::err() << "  [CUBE] dropping embedded grid probe ("
 							<< p.x << "," << p.y << "," << p.z << ")\n";
 					}
 					else {
@@ -2862,7 +2866,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 				}
 				positions.swap(open);
 				radii.swap(openRadii);
-				std::cerr << "  [CUBE] grid occupancy: kept " << positions.size()
+				tool::err() << "  [CUBE] grid occupancy: kept " << positions.size()
 					<< ", dropped " << dropped << " embedded\n" << std::flush;
 			}
 		}
@@ -2870,7 +2874,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			// Single probe at bounds center (original behavior)
 			const glm::vec3 c = (bmin + bmax) * 0.5f;
 			positions.push_back(glm::vec3(c.x, bmin.y + args.cubemapHeight, c.z));
-			std::cerr << "  [CUBE] no --cubemap-pos: capturing at bounds center ("
+			tool::err() << "  [CUBE] no --cubemap-pos: capturing at bounds center ("
 				<< positions.back().x << "," << positions.back().y << ","
 				<< positions.back().z << ")\n" << std::flush;
 		}
@@ -2904,7 +2908,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		glm::vec3 p{};
 		if (std::sscanf(spec.c_str(), "%f,%f,%f",
 			&p.x, &p.y, &p.z) != 3) {
-			std::cerr << "Bad --cubemap-extra-pos (want x,y,z): "
+			tool::err() << "Bad --cubemap-extra-pos (want x,y,z): "
 				<< spec << "\n";
 			return false;
 		}
@@ -2914,7 +2918,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		radii.emplace_back(args.cubemapExtraRadius,
 			args.cubemapExtraRadius * 0.5f);
 		pinned.push_back(1);
-		std::cerr << "  [CUBE] pinned extra probe (" << p.x << "," << p.y
+		tool::err() << "  [CUBE] pinned extra probe (" << p.x << "," << p.y
 			<< "," << p.z << ") r=" << args.cubemapExtraRadius << "\n"
 			<< std::flush;
 	}
@@ -2935,7 +2939,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		positions.push_back(p);
 		radii.emplace_back(def.radius, def.radius * 0.5f);
 		pinned.push_back(1);
-		std::cerr << "  [CUBE] authored pinned probe ('"
+		tool::err() << "  [CUBE] authored pinned probe ('"
 			<< getNodeName(cluster.scene, int(node)) << "' @" << p.x
 			<< "," << p.y << "," << p.z << ") r=" << def.radius << "\n"
 			<< std::flush;
@@ -2946,12 +2950,12 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// incur bake time and approximately 2 MB of pak data each. Manifest
 	// truncation preserves pinned rows and drops excess unpinned rows.
 	if (positions.empty()) {
-		std::cerr << "  [CUBE] WARNING: no capture positions survived"
+		tool::err() << "  [CUBE] WARNING: no capture positions survived"
 			" (all grid points embedded?) - no cubemaps baked\n" << std::flush;
 		return true;
 	}
 	if (positions.size() > 32) {
-		std::cerr << "  [CUBE] WARNING: " << positions.size()
+		tool::err() << "  [CUBE] WARNING: " << positions.size()
 			<< " captures exceed the 32-probe runtime budget (manifest"
 			<< " truncation keeps pinned rows) - increase --cubemap-grid"
 			<< " spacing or --cubemap-octree-max to cover the scene with"
@@ -2976,7 +2980,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// Machine-readable total for progress clients (the editor's cook
 	// dialog parses it into TaskWindowStage fractions; per-capture
 	// "baked" lines below mark completion).
-	std::cerr << "  [CUBE] captures=" << positions.size() << "\n" << std::flush;
+	tool::err() << "  [CUBE] captures=" << positions.size() << "\n" << std::flush;
 
 	for (size_t cap = 0; cap < positions.size(); ++cap) {
 		const glm::vec3 origin = positions[cap];
@@ -3057,7 +3061,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		std::vector<uint8_t> ktx;
 		std::string werr;
 		if (!WriteCubemapKtx2ToMemory(chains, S, S, levels, ktx, werr)) {
-			std::cerr << "[CUBE] encode failed '" << captureName << "': "
+			tool::err() << "[CUBE] encode failed '" << captureName << "': "
 				<< werr << std::endl;
 			return false;
 		}
@@ -3067,7 +3071,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		// manifest would move it to the capture point, so singles stay
 		// out of the manifest), multi-capture sets use <base>_<N>.
 		const std::string vfsPath = smvk::CubemapVfsPath(captureName);
-		std::cerr << "  [CUBE] baked " << vfsPath << "  " << S << "x" << S
+		tool::err() << "  [CUBE] baked " << vfsPath << "  " << S << "x" << S
 			<< "x6 ggx-levels=" << levels << " rays=" << args.cubemapRays
 			<< " origin=(" << origin.x << "," << origin.y << "," << origin.z
 			<< ")  " << ktx.size() << " B\n" << std::flush;
@@ -3083,7 +3087,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			if (!lf
 				|| !lf.write(reinterpret_cast<const char*>(ktx.data()),
 					std::streamsize(ktx.size()))) {
-				std::cerr << "  [CUBE] loose payload write failed for "
+				tool::err() << "  [CUBE] loose payload write failed for "
 					<< vfsPath << " - continuing with the pak blob only\n"
 					<< std::flush;
 			}
@@ -3096,7 +3100,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		glm::vec3 capMean = pakcook::CubemapCaptureMean(chains, S);
 		pngMeans.push_back(capMean);
 		if (pakcook::CubemapMeanLuma(capMean) < 1e-6f) {
-			std::cerr << "  [CUBE] WARNING baked '" << captureName
+			tool::err() << "  [CUBE] WARNING baked '" << captureName
 				<< "' mean ~0 (origin embedded or fully occluded?) - check "
 				<< captureName << ".png\n" << std::flush;
 		}
@@ -3105,18 +3109,18 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			const std::string facesPath =
 				(cubePngDir / (captureName + ".png")).generic_string();
 			if (pakcook::WriteCubemapFacesPng(chains, S, pngDisplayExposure, facesPath, perr)) {
-				std::cerr << "  [CUBE] png " << facesPath
+				tool::err() << "  [CUBE] png " << facesPath
 					<< " (mean luma "
 					<< pakcook::CubemapMeanLuma(capMean) << ")\n" << std::flush;
 			}
 			else {
-				std::cerr << "  [CUBE] png write failed: " << perr << "\n" << std::flush;
+				tool::err() << "  [CUBE] png write failed: " << perr << "\n" << std::flush;
 			}
 			if (args.cubemapPngMips) {
 				const std::string mipsPath =
 					(cubePngDir / (captureName + "_mips.png")).generic_string();
 				if (!pakcook::WriteCubemapMipsPng(chains, S, pngDisplayExposure, mipsPath, perr)) {
-					std::cerr << "  [CUBE] mips png write failed: " << perr
+					tool::err() << "  [CUBE] mips png write failed: " << perr
 						<< "\n" << std::flush;
 				}
 			}
@@ -3167,13 +3171,13 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			std::ofstream mf(looseManifest,
 				std::ios::binary | std::ios::trunc);
 			if (!mf || !(mf << text)) {
-				std::cerr << "  [CUBE] loose manifest write failed for "
+				tool::err() << "  [CUBE] loose manifest write failed for "
 					<< manifestVfs
 					<< " - continuing with the pak blob only\n"
 					<< std::flush;
 			}
 		}
-		std::cerr << "  [CUBE] manifest " << manifestVfs << "  probes="
+		tool::err() << "  [CUBE] manifest " << manifestVfs << "  probes="
 			<< rows.size() << " pinned="
 			<< size_t(std::count(pinned.begin(), pinned.end(), 1))
 			<< "\n" << std::flush;
@@ -3205,17 +3209,17 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		std::string merr;
 		if (pakcook::WriteCubemapProbesPng(positions, pngMeans, influences,
 			mmin, mmax, mapPath, merr)) {
-			std::cerr << "  [CUBE] probes map " << mapPath << "\n" << std::flush;
+			tool::err() << "  [CUBE] probes map " << mapPath << "\n" << std::flush;
 		}
 		else {
-			std::cerr << "  [CUBE] probes map write failed: " << merr
+			tool::err() << "  [CUBE] probes map write failed: " << merr
 				<< "\n" << std::flush;
 		}
 	}
 
 	const double secs = std::chrono::duration<double>(
 		std::chrono::steady_clock::now() - t0).count();
-	std::cerr << "  [CUBE] preconvolved cubemaps: captures=" << positions.size()
+	tool::err() << "  [CUBE] preconvolved cubemaps: captures=" << positions.size()
 		<< " seconds=" << secs << "\n" << std::flush;
 	return true;
 }
@@ -3453,24 +3457,22 @@ bool WriteCookedArtifactsBack(const Args& args,
 			return false;
 		}
 		++st.artifacts;
-		std::cout << "Cooked '" << file << "' (blobs="
+		tool::out() << "Cooked '" << file << "' (blobs="
 			<< asset.geometry.size() << ")\n";
 	}
 	return true;
 }
 
-int main(int argc, char** argv) {
-	// Unbuffered pipe output: the editor tails this process through a
-	// _popen pipe and streams each line live to its Console. Without
-	// this, stdout stays block-buffered when piped and no progress
-	// appears until the cook finishes (looks stuck).
-	std::cout << std::unitbuf;
-	std::cerr << std::unitbuf;
+// Runs the cook; returns the process exit code (byte-identical to the
+// CLI run). See cook_tool.h.
+int Run(const CookArgs& c) {
 	Args args;
-	if (!ParseArgs(argc, argv, args)) {
-		Usage();
-		return 2;
-	}
+	args.contentDir = c.contentDir;
+	args.tour = c.tour;
+	args.inVfsList = c.inVfsList;
+	args.inVfs = c.inVfs;
+	args.scratchDir = c.scratchDir;
+	args.quickBakes = c.quickBakes;
 	// Quick-bakes mode (--quick-bakes on, the editor's "Update bakes now"
 	// button): the capture stage ONLY, then stop. The heavy stages are
 	// forced off (the cubemap stage needs just the imported trace scene);
@@ -3491,7 +3493,7 @@ int main(int argc, char** argv) {
 		// silently cancel the refresh).
 		for (const char* k : { "lightmap", "lods", "cubemap" })
 			args.explicitSet.insert(k);
-		std::cout << "quick-bakes: capture-only refresh (no pak write; "
+		tool::out() << "quick-bakes: capture-only refresh (no pak write; "
 			"loose cubemap sidecars under textures/cubemaps/)\n";
 	}
 
@@ -3504,24 +3506,24 @@ int main(int argc, char** argv) {
 	if (!args.dumpPak.empty()) {
 		std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
 		if (!rf) {
-			std::cerr << "Cannot open pak: " << args.dumpPak << std::endl;
+			tool::err() << "Cannot open pak: " << args.dumpPak << std::endl;
 			return 1;
 		}
 		const auto size = rf.tellg();
 		rf.seekg(0);
 		std::vector<uint8_t> image(static_cast<size_t>(size));
 		if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
-			std::cerr << "Read failed: " << args.dumpPak << std::endl;
+			tool::err() << "Read failed: " << args.dumpPak << std::endl;
 			return 1;
 		}
 		std::string verr;
 		auto reader = smvk::PakReader::Open(
 			std::span<const uint8_t>(image), verr);
 		if (!reader) {
-			std::cerr << "PakReader rejected: " << verr << std::endl;
+			tool::err() << "PakReader rejected: " << verr << std::endl;
 			return 1;
 		}
-		std::cout << "Pak " << args.dumpPak << ": entries=" << reader->EntryCount()
+		tool::out() << "Pak " << args.dumpPak << ": entries=" << reader->EntryCount()
 			<< " meshes=" << reader->BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
@@ -3534,9 +3536,9 @@ int main(int argc, char** argv) {
 			std::string lerr;
 			auto scenes = smvk::ListPakScenes(*reader, &lerr);
 			if (scenes.empty() && !lerr.empty())
-				std::cerr << "Scene list failed: " << lerr << std::endl;
+				tool::err() << "Scene list failed: " << lerr << std::endl;
 			for (size_t i = 0; i < scenes.size(); ++i)
-				std::cout << "  scene[" << i << "] '" << scenes[i].name
+				tool::out() << "  scene[" << i << "] '" << scenes[i].name
 				<< "' nodes=" << scenes[i].nodes << "\n";
 		}
 		DumpManifestFromPak(*reader, args.dumpNodes);
@@ -3605,16 +3607,16 @@ int main(int argc, char** argv) {
 				scratchAdapter =
 					std::make_unique<StoreArtifactCacheAdapter>(
 						*scratchStore);
-				std::cout << "Scratch cache: " << root << "\n";
+				tool::out() << "Scratch cache: " << root << "\n";
 			}
 			else {
-				std::cerr << "Scratch cache db open failed (" << dbErr
+				tool::err() << "Scratch cache db open failed (" << dbErr
 					<< ") â€” cooking without acceleration\n";
 				scratchDb.reset();
 			}
 		}
 		else {
-			std::cerr << "Scratch root unusable: " << args.scratchDir
+			tool::err() << "Scratch root unusable: " << args.scratchDir
 				<< " â€” cooking without acceleration\n";
 		}
 	}
@@ -3636,12 +3638,12 @@ int main(int argc, char** argv) {
 		std::string terr;
 		std::vector<std::string> twarn;
 		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
-			std::cerr << "Tour load failed: " << terr << std::endl;
+			tool::err() << "Tour load failed: " << terr << std::endl;
 			return 1;
 		}
 		haveTour = true;
 		for (auto& w : twarn)
-			std::cerr << "Tour warning: " << w << std::endl;
+			tool::err() << "Tour warning: " << w << std::endl;
 		// The tour's root reference doubles as the artifact identity when
 		// the positional list is empty (the "Cooked <identity> -> ..." log
 		// + SidecarStems: bake-asset logicals key on the SCENE stem, so
@@ -3654,7 +3656,7 @@ int main(int argc, char** argv) {
 			auto use = [&](const char* key, auto& dst, auto val) {
 				if (!args.explicitSet.contains(key)) {
 					dst = val;
-					std::cout << "Tour cook default: " << key << "\n";
+					tool::out() << "Tour cook default: " << key << "\n";
 				}
 			};
 			use("meshopt", args.meshopt, k.meshopt);
@@ -3693,7 +3695,7 @@ int main(int argc, char** argv) {
 				if (!args.lmExclude.empty())
 					args.lmExclude += ",";
 				args.lmExclude += k.lmExcludeKw;
-				std::cout << "Tour cook default: lmExclude\n";
+				tool::out() << "Tour cook default: lmExclude\n";
 			}
 		}
 		// Re-derive keyword list after the merge above.
@@ -3743,7 +3745,7 @@ int main(int argc, char** argv) {
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
 					artifactCache);
-				std::cout << "Definition: bound " << applied
+				tool::out() << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";
 			}
@@ -3766,7 +3768,7 @@ int main(int argc, char** argv) {
 				if (hp.empty() || !fs::exists(hp, ec))
 					hp = fs::path(ta.path);
 				if (!fs::exists(hp, ec)) {
-					std::cerr << "Tour textureAsset not found: '"
+					tool::err() << "Tour textureAsset not found: '"
 						<< ta.path << "' (under --content-dir '"
 						<< args.contentDir << "', then as-is)\n";
 					return 1;
@@ -3774,13 +3776,13 @@ int main(int argc, char** argv) {
 				std::string imErr;
 				if (smvk::assets::ImportTextureAssetToCluster(
 					*cluster, hp, nullptr, imErr).empty()) {
-					std::cerr << "Tour textureAsset import failed: '"
+					tool::err() << "Tour textureAsset import failed: '"
 						<< ta.path << "': " << imErr << "\n";
 					return 1;
 				}
 			}
 			if (!tour.textureAssets.empty())
-				std::cout << "Definition: imported "
+				tool::out() << "Definition: imported "
 				<< tour.textureAssets.size()
 				<< " texture asset(s)\n";
 			// Material-asset POOL imports (ordered; see the tour's
@@ -3810,7 +3812,7 @@ int main(int argc, char** argv) {
 				if (hp.empty() || !fs::exists(hp, ec))
 					hp = fs::path(ma.path);
 				if (!fs::exists(hp, ec)) {
-					std::cerr << "Tour materialAsset not found: '"
+					tool::err() << "Tour materialAsset not found: '"
 						<< ma.path << "' (under --content-dir '"
 						<< args.contentDir << "', then as-is)\n";
 					return 1;
@@ -3818,25 +3820,25 @@ int main(int argc, char** argv) {
 				std::string imErr;
 				if (smvk::assets::ImportMaterialAssetToCluster(
 					*cluster, hp, nullptr, imErr).empty()) {
-					std::cerr << "Tour materialAsset import failed: '"
+					tool::err() << "Tour materialAsset import failed: '"
 						<< ma.path << "': " << imErr << "\n";
 					return 1;
 				}
 			}
 			if (!tour.materialAssets.empty())
-				std::cout << "Definition: imported "
+				tool::out() << "Definition: imported "
 				<< tour.materialAssets.size()
 				<< " material asset(s)\n";
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
 				&rerr)) {
-				std::cerr << "Tour replay failed: " << rerr << std::endl;
+				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
 			for (auto& w : rwarn)
-				std::cerr << "Tour replay warning: " << w << std::endl;
-			std::cout << "Tour replayed: " << tour.commands.size()
+				tool::err() << "Tour replay warning: " << w << std::endl;
+			tool::out() << "Tour replayed: " << tour.commands.size()
 				<< " commands from " << args.tour << "\n";
 			sceneNames.push_back("scene");
 			sceneClusters.push_back(std::move(cluster));
@@ -3861,7 +3863,7 @@ int main(int argc, char** argv) {
 				artPath = inVfs; // host-style path (as-is)
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
-				std::cerr << "Artifact read failed: '" << inVfs
+				tool::err() << "Artifact read failed: '" << inVfs
 					<< "' not in VFS (want the derived .geometry â€” import "
 					"the source glTF first: import.exe / the editor's "
 					"MeshImporter)" << std::endl;
@@ -3871,7 +3873,7 @@ int main(int argc, char** argv) {
 			std::string aerr;
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 				artBytes->size(), meshAsset, aerr)) {
-				std::cerr << "Artifact parse failed: '" << inVfs
+				tool::err() << "Artifact parse failed: '" << inVfs
 					<< "': " << aerr << " (re-import the source glTF â€” "
 					"the MeshImporter overwrites the artifacts)"
 					<< std::endl;
@@ -3922,7 +3924,7 @@ int main(int argc, char** argv) {
 				meshAsset, meshManifest, artPath, 0, texSrc, args.autoKtx,
 				artifactCache, readSibling);
 			if (built == 0) {
-				std::cerr << "Artifact build failed: '" << inVfs
+				tool::err() << "Artifact build failed: '" << inVfs
 					<< "' built 0 nodes (degenerate/empty â€” re-import "
 					"the source glTF)" << std::endl;
 				return 1;
@@ -3938,13 +3940,13 @@ int main(int argc, char** argv) {
 					else if (l->type == SceneLight::Type::Spot) ++nSpot;
 					else ++nPoint;
 				});
-				std::cout << "Artifact built: " << built << " nodes, "
+				tool::out() << "Artifact built: " << built << " nodes, "
 					<< cluster->lights.numObjects() << " lights"
 					<< " (dir=" << nDir << " point=" << nPoint
 					<< " spot=" << nSpot << ", links="
 					<< cluster->scene.lightForNode.size() << ")\n";
 			}
-			std::cout << "Cooking artifact: '" << inVfs << "'\n";
+			tool::out() << "Cooking artifact: '" << inVfs << "'\n";
 			sceneNames.push_back("");
 			sceneClusters.push_back(std::move(cluster));
 		}
@@ -3956,10 +3958,10 @@ int main(int argc, char** argv) {
 		const size_t staged = scratchStore->StagedCount();
 		std::string flushErr;
 		if (scratchStore->Flush(flushErr))
-			std::cout << "Scratch cache: " << staged
+			tool::out() << "Scratch cache: " << staged
 			<< " texture artifact(s) flushed\n";
 		else
-			std::cerr << "Scratch flush failed: " << flushErr
+			tool::err() << "Scratch flush failed: " << flushErr
 			<< " (staged stands; the pak output is unaffected)\n";
 	}
 	// Single-scene alias for the tour/collapse/bake stages below (written
@@ -4030,7 +4032,7 @@ int main(int argc, char** argv) {
 			e.sunAzimuth += 360.0f;
 		e.sunColor = sunColor;
 		e.sunIntensity = sunLux; // lux-native env: straight in
-		std::cout << "Env sun resolved from the sun light: az="
+		tool::out() << "Env sun resolved from the sun light: az="
 			<< e.sunAzimuth << " el=" << e.sunElevation
 			<< " I=" << e.sunIntensity << " (lux)\n";
 	}
@@ -4069,7 +4071,7 @@ int main(int argc, char** argv) {
 			}
 		}
 		if (haveLooseManifest) {
-			std::cout << "cvolume manifest found (stable path)"
+			tool::out() << "cvolume manifest found (stable path)"
 				" â€” in-process bake skipped, the loose bake "
 				"embeds below\n";
 		}
@@ -4086,10 +4088,10 @@ int main(int argc, char** argv) {
 		smvk::StaticMergeOptions mopts;
 		smvk::StaticMergeResult mr = smvk::CollapseStaticSubtrees(*cluster, mopts);
 		if (!mr.ok) {
-			std::cerr << "CollapseStaticSubtrees failed: " << mr.err << std::endl;
+			tool::err() << "CollapseStaticSubtrees failed: " << mr.err << std::endl;
 			return 1;
 		}
-		std::cout << "Collapsed " << mr.srcNodesConsumed << " static nodes into "
+		tool::out() << "Collapsed " << mr.srcNodesConsumed << " static nodes into "
 			<< mr.blocks.size() << " block(s)\n";
 		// Merged blocks skip the importer meshlet path; cook them here so
 		// the single-block layout also feeds the indirect future. With
@@ -4110,11 +4112,11 @@ int main(int argc, char** argv) {
 					cluster->RegisterMeshMeshlets(b.uri, cooked);
 					if (smvk::StaticMesh* m = cluster->staticMeshes.get(h))
 						m->meshlets = std::move(cooked);
-					std::cout << "Meshlets " << b.uri << ": count " << st.meshletCount
+					tool::out() << "Meshlets " << b.uri << ": count " << st.meshletCount
 						<< " tris " << st.totalTriangles << std::endl;
 				}
 				else if (!merr.empty()) {
-					std::cout << "Meshlets " << b.uri << " skipped: " << merr << std::endl;
+					tool::out() << "Meshlets " << b.uri << " skipped: " << merr << std::endl;
 				}
 			}
 		}
@@ -4151,7 +4153,7 @@ int main(int argc, char** argv) {
 		// instance charts and bakes independently (see DeinstanceSharedMeshes).
 		{
 			const uint32_t n = DeinstanceSharedMeshes(*cluster);
-			std::cerr << "  [LM] de-instanced " << n << " shared meshes\n"
+			tool::err() << "  [LM] de-instanced " << n << " shared meshes\n"
 				<< std::flush;
 		}
 
@@ -4170,7 +4172,7 @@ int main(int argc, char** argv) {
 				buildOpts.texelAvg[handle.index()] = *avg;
 				++averaged;
 			}
-			std::cerr << "  [LM] textures averaged: " << averaged
+			tool::err() << "  [LM] textures averaged: " << averaged
 				<< " / " << cluster->ListTextureUris().size() << "\n" << std::flush;
 		}
 		// Sun/sky record from the scene's env block (EnvForBake â€” ONE
@@ -4194,7 +4196,7 @@ int main(int argc, char** argv) {
 				&spot.direction.x, &spot.direction.y, &spot.direction.z,
 				&innerDeg, &outerDeg, &spot.range,
 				&col.r, &col.g, &col.b, &candela) != 13) {
-				std::cerr << "Bad --spot (want px,py,pz,dx,dy,dz,innerDeg,"
+				tool::err() << "Bad --spot (want px,py,pz,dx,dy,dz,innerDeg,"
 					"outerDeg,range,r,g,b,candela): " << spec << "\n";
 				return 2;
 			}
@@ -4210,14 +4212,14 @@ int main(int argc, char** argv) {
 		// STATIC-flagged cooked lights into traceScene.spots/sun here.
 		BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, terr);
 		if (!terr.empty()) {
-			std::cerr << "[LM] trace scene failed: " << terr << std::endl;
+			tool::err() << "[LM] trace scene failed: " << terr << std::endl;
 			return 1;
 		}
 		// CLI --spot specs APPEND to the harvested static scene lights
 		// (assignment would wipe them â€” both sets bake together).
 		traceScene.spots.insert(
 			traceScene.spots.end(), spots.begin(), spots.end());
-		std::cerr << "  [LM] trace scene: " << traceScene.Bvh().TriangleCount()
+		tool::err() << "  [LM] trace scene: " << traceScene.Bvh().TriangleCount()
 			<< " tris, " << traceScene.materials.size() << " materials, "
 			<< traceScene.spots.size() << " spots ("
 			<< traceScene.spots.size() - spots.size() << " static scene lights)\n"
@@ -4275,7 +4277,7 @@ int main(int argc, char** argv) {
 		const float baseDensity = std::max(
 			1.0f / std::max(args.lmMetersPerTexel, 1e-4f), 2.0f);
 		if (!args.lmExcludeKeywords.empty() || args.lmExcludeSmall > 0.0f)
-			std::cerr << "  [LM] name exclusion: "
+			tool::err() << "  [LM] name exclusion: "
 			<< (args.lmExclude.empty() ? "-" : args.lmExclude)
 			<< " | small exclusion: "
 			<< (args.lmExcludeSmall > 0.0f
@@ -4385,7 +4387,7 @@ int main(int argc, char** argv) {
 			// world texelsPerUnit); nothing per mesh here beyond the
 			// eligibility filters above.
 			w.density = std::max(localBase * w.curveScale, floorD);
-			std::cerr << "  [LM] xatlas node " << node
+			tool::err() << "  [LM] xatlas node " << node
 				<< " (curve x" << w.curveScale << ")\n" << std::flush;
 			work.push_back(std::move(w));
 		}
@@ -4444,7 +4446,7 @@ int main(int argc, char** argv) {
 						soupIdx.push_back(base + ix);
 				}
 			}
-			std::cerr << "  [LM] proxy: merged soup verts="
+			tool::err() << "  [LM] proxy: merged soup verts="
 				<< (soupPos.size() / 3) << " tris="
 				<< (soupIdx.size() / 3) << " res=" << proxyRes
 				<< "\n" << std::flush;
@@ -4453,7 +4455,7 @@ int main(int argc, char** argv) {
 					soupIdx.data(), soupIdx.size(),
 					soupPos.data(), soupPos.size() / 3, 12,
 					proxyRes, meshopt_RemeshSolve);
-				std::cerr << "  [LM] proxy: remesh capacity=" << cap
+				tool::err() << "  [LM] proxy: remesh capacity=" << cap
 					<< "\n" << std::flush;
 				if (cap > 0 && cap <= 4000000) {
 					std::vector<float> triSoup(cap * 9, 0.0f);
@@ -4461,7 +4463,7 @@ int main(int argc, char** argv) {
 						cap, soupIdx.data(), soupIdx.size(),
 						soupPos.data(), soupPos.size() / 3, 12,
 						proxyRes, meshopt_RemeshSolve);
-					std::cerr << "  [LM] proxy: remeshed tris=" << ntri
+					tool::err() << "  [LM] proxy: remeshed tris=" << ntri
 						<< "\n" << std::flush;
 					if (ntri > 0) {
 						smvk::StaticMeshUpload proxyUp;
@@ -4502,7 +4504,7 @@ int main(int argc, char** argv) {
 								SgLightmapXatlasMeshInput> pins{ pin };
 							if (!GenerateLightmapChartsXatlas(pins,
 								pxopts, lv, xerr)) {
-								std::cerr << "  [LM] proxy xatlas "
+								tool::err() << "  [LM] proxy xatlas "
 									<< probeD << " texels/m failed: "
 									<< xerr << "\n" << std::flush;
 							}
@@ -4523,19 +4525,19 @@ int main(int argc, char** argv) {
 										fitD = probeD;
 										break;
 									}
-									std::cerr << "  [LM] proxy probe "
+									tool::err() << "  [LM] proxy probe "
 										<< probeD << " overflow: " << aerr
 										<< "\n" << std::flush;
 								}
 								else if (rs
 									== RepackStatus::InternalError) {
-									std::cerr << "[LM] proxy repack "
+									tool::err() << "[LM] proxy repack "
 										"internal error: " << rerr << "\n"
 										<< std::flush;
 									break;
 								}
 								else {
-									std::cerr << "  [LM] proxy repack "
+									tool::err() << "  [LM] proxy repack "
 										<< probeD << ": " << rerr << "\n"
 										<< std::flush;
 								}
@@ -4551,7 +4553,7 @@ int main(int argc, char** argv) {
 								SgLightmapXatlasMeshInput> pins{ pin };
 							if (!RasterizeLightmapPackTexels(pins,
 								bestLv, lmGutter, rerr)) {
-								std::cerr << "[LM] proxy rasterize "
+								tool::err() << "[LM] proxy rasterize "
 									"failed: " << rerr << "\n" << std::flush;
 							}
 							else {
@@ -4562,7 +4564,7 @@ int main(int argc, char** argv) {
 									bestLv, { 0u }, args.lmLobes,
 									atlasW, kMaxAtlasH, bases,
 									aerr)) {
-									std::cerr << "[LM] proxy atlas "
+									tool::err() << "[LM] proxy atlas "
 										"append regressed: " << aerr << "\n"
 										<< std::flush;
 								}
@@ -4572,7 +4574,7 @@ int main(int argc, char** argv) {
 										bestLv.meshes[0].chart);
 									proxyChunkBase = bases.empty()
 										? 0 : bases[0];
-									std::cerr << "  [LM] proxy charted: "
+									tool::err() << "  [LM] proxy charted: "
 										<< "density=" << fitD << " texels/m "
 										<< "charts="
 										<< proxyChart.charts.size()
@@ -4619,7 +4621,7 @@ int main(int argc, char** argv) {
 										SgLightmapChunkBatch>(
 											pBatches), pcfg, lstats,
 										[](const char* line) {
-										std::cout << line;
+										tool::out() << line;
 									})) {
 										if (args.lmStitch) {
 											uint64_t stitched = 0;
@@ -4629,12 +4631,12 @@ int main(int argc, char** argv) {
 												SgLightmapChunkBatch>(
 													pBatches), 0.5f,
 												&stitched, serr))
-												std::cerr << "[LM] proxy "
+												tool::err() << "[LM] proxy "
 												"stitch failed: "
 												<< serr << "\n"
 												<< std::flush;
 											else
-												std::cerr << "  [LM] proxy "
+												tool::err() << "  [LM] proxy "
 												"stitch: " << stitched
 												<< " blended\n"
 												<< std::flush;
@@ -4678,7 +4680,7 @@ int main(int argc, char** argv) {
 												proxyUp, proxyChart,
 												worldTgt, xfer, terr,
 												&tstat)) {
-												std::cerr << "  [LM] proxy "
+												tool::err() << "  [LM] proxy "
 													"xfer failed node "
 													<< w.node << ": "
 													<< terr << "\n"
@@ -4714,34 +4716,34 @@ int main(int argc, char** argv) {
 											++okMeshes;
 											++lmMeshes;
 										}
-										std::cerr << "  [LM] proxy "
+										tool::err() << "  [LM] proxy "
 											"transferred: " << okMeshes
 											<< "/" << work.size()
 											<< " meshes\n" << std::flush;
 										proxyBaked = okMeshes != 0;
 									}
 									else {
-										std::cerr << "[LM] proxy bake "
+										tool::err() << "[LM] proxy bake "
 											"failed\n" << std::flush;
 									}
 								}
 							}
 						}
 						else {
-							std::cerr << "[LM] proxy charting failed "
+							tool::err() << "[LM] proxy charting failed "
 								"(falling back to per-mesh path)\n"
 								<< std::flush;
 						}
 					}
 				}
 				else {
-					std::cerr << "[LM] proxy remesh produced no usable "
+					tool::err() << "[LM] proxy remesh produced no usable "
 						"triangles (falling back to per-mesh path)\n"
 						<< std::flush;
 				}
 			}
 			else {
-				std::cerr << "[LM] proxy soup empty (falling back to "
+				tool::err() << "[LM] proxy soup empty (falling back to "
 					"per-mesh path)\n" << std::flush;
 			}
 		}
@@ -4805,7 +4807,7 @@ int main(int argc, char** argv) {
 				if (!w.transfer.empty())
 					++frostChains;
 			}
-			std::cerr << "  [LM] frostbite: siblings cooked, LOD0 sources "
+			tool::err() << "  [LM] frostbite: siblings cooked, LOD0 sources "
 				<< frostChains << "/" << work.size()
 				<< " with transfers (bake once on LOD0, UV-transfer "
 				<< "siblings)\n" << std::flush;
@@ -4862,7 +4864,7 @@ int main(int argc, char** argv) {
 			auto xatlasDropUnchartable = [&](SgLightmapXatlasLevel& lv) {
 				for (size_t i = 0; i < lv.meshes.size();) {
 					if (!lv.meshes[i].ok) {
-						std::cerr << "  [LM] xatlas dropped node "
+						tool::err() << "  [LM] xatlas dropped node "
 							<< work[i].node << " (unchartable)\n"
 							<< std::flush;
 						work.erase(work.begin() + ptrdiff_t(i));
@@ -4905,7 +4907,7 @@ int main(int argc, char** argv) {
 				if (rs == RepackStatus::Ok)
 					return true;
 				if (rs == RepackStatus::InternalError) {
-					std::cerr << "[LM] repack internal error at " << where
+					tool::err() << "[LM] repack internal error at " << where
 						<< ": " << xerr
 						<< "\n[LM] this is a packer bug - please report;"
 						" aborting instead of converging around it\n"
@@ -4913,7 +4915,7 @@ int main(int argc, char** argv) {
 					repackBug = true;
 					return false;
 				}
-				std::cerr << "  [LM] " << where << ": " << xerr << "\n"
+				tool::err() << "  [LM] " << where << ": " << xerr << "\n"
 					<< std::flush;
 				return false;
 			};
@@ -4925,7 +4927,7 @@ int main(int argc, char** argv) {
 				std::string xerr;
 				if (!GenerateLightmapChartsXatlas(buildXinputs(), xopts,
 					lv, xerr)) {
-					std::cerr << "  [LM] xatlas probe " << worldDensity
+					tool::err() << "  [LM] xatlas probe " << worldDensity
 						<< " texels/m failed: " << xerr << "\n" << std::flush;
 					return false;
 				}
@@ -4950,7 +4952,7 @@ int main(int argc, char** argv) {
 				// probe so convergence lowers the density.
 				if (!repackOrAbort(lv, "xatlas probe")) {
 					if (repackBug)
-						std::cerr << "  [LM] xatlas probe " << worldDensity
+						tool::err() << "  [LM] xatlas probe " << worldDensity
 						<< " texels/m\n" << std::flush;
 					return false;
 				}
@@ -4968,7 +4970,7 @@ int main(int argc, char** argv) {
 				float probeD = baseDensity;
 				while (probeD > 1.0f) {
 					if (++round > 32) {
-						std::cerr << "[LM] atlas overflow\n";
+						tool::err() << "[LM] atlas overflow\n";
 						return 1;
 					}
 					probeD = std::max(probeD * 0.5f, 1.0f);
@@ -4985,7 +4987,7 @@ int main(int argc, char** argv) {
 					std::string xerr;
 					if (!GenerateLightmapChartsXatlas(buildXinputs(),
 						xopts, bestLevel, xerr)) {
-						std::cerr << "[LM] atlas overflow (" << xerr
+						tool::err() << "[LM] atlas overflow (" << xerr
 							<< "; raise --lm-meters-per-texel, --lm-atlas-width"
 							<< " or --lm-max-height)\n";
 						return 1;
@@ -4994,14 +4996,14 @@ int main(int argc, char** argv) {
 					if (!repackOrAbort(bestLevel, "floor pack")) {
 						if (repackBug)
 							return 1;
-						std::cerr << "[LM] atlas overflow (" << xerr
+						tool::err() << "[LM] atlas overflow (" << xerr
 							<< "; raise --lm-meters-per-texel, --lm-atlas-width"
 							<< " or --lm-max-height)\n";
 						return 1;
 					}
 					while (!xatlasProbeFits(bestLevel)) {
 						if (++round > 32 || work.empty()) {
-							std::cerr << "[LM] atlas overflow ("
+							tool::err() << "[LM] atlas overflow ("
 								<< work.size()
 								<< " meshes remain; raise --lm-meters-per-texel,"
 								" --lm-atlas-width or --lm-max-height)\n";
@@ -5017,7 +5019,7 @@ int main(int argc, char** argv) {
 								worst = i;
 							}
 						}
-						std::cerr << "  [LM] atlas round " << round
+						tool::err() << "  [LM] atlas round " << round
 							<< ": drop node " << work[worst].node
 							<< " (" << worstTexels << " texels)\n" << std::flush;
 						work.erase(work.begin() + ptrdiff_t(worst));
@@ -5026,7 +5028,7 @@ int main(int argc, char** argv) {
 						if (!repackOrAbort(bestLevel, "drop round repack")) {
 							if (repackBug)
 								return 1;
-							std::cerr << "[LM] atlas overflow ("
+							tool::err() << "[LM] atlas overflow ("
 								<< work.size()
 								<< " meshes remain; raise --lm-meters-per-texel,"
 								" --lm-atlas-width or --lm-max-height)\n";
@@ -5062,14 +5064,14 @@ int main(int argc, char** argv) {
 				std::string rerr;
 				if (!RasterizeLightmapPackTexels(buildXinputs(), bestLevel,
 					lmGutter, rerr)) {
-					std::cerr << "[LM] winning level rasterize failed: "
+					tool::err() << "[LM] winning level rasterize failed: "
 						<< rerr << "\n";
 					return 1;
 				}
 				std::string overlapErr;
 				if (!CheckXatlasLevelRectsForOverlap(bestLevel,
 					&overlapErr)) {
-					std::cerr << "[LM] winning level rect overlap: "
+					tool::err() << "[LM] winning level rect overlap: "
 						<< overlapErr << "\n";
 					return 1;
 				}
@@ -5082,12 +5084,12 @@ int main(int argc, char** argv) {
 				std::string aerr;
 				if (!AppendXatlasLevelToAtlas(atlas, bestLevel, keys,
 					args.lmLobes, atlasW, kMaxAtlasH, bases, aerr)) {
-					std::cerr << "[LM] atlas convergence regressed: "
+					tool::err() << "[LM] atlas convergence regressed: "
 						<< aerr << "\n";
 					return 1;
 				}
 				if (!CheckAtlasChunksForOverlap(atlas, &overlapErr)) {
-					std::cerr << "[LM] atlas chunk overlap after Append: "
+					tool::err() << "[LM] atlas chunk overlap after Append: "
 						<< overlapErr << "\n";
 					return 1;
 				}
@@ -5104,7 +5106,7 @@ int main(int argc, char** argv) {
 						* work[i].curveScale;
 				}
 			}
-			std::cerr << "  [LM] xatlas density converged at " << fitDensity
+			tool::err() << "  [LM] xatlas density converged at " << fitDensity
 				<< " texels/m world base (" << fitDensity * fitDensity
 				<< " texels/m^2, " << (1.0f / fitDensity) << " m/texel); meshes="
 				<< work.size()
@@ -5120,7 +5122,7 @@ int main(int argc, char** argv) {
 					maxScale = std::max(maxScale, w.curveScale);
 				}
 				if (boosted != 0)
-					std::cerr << "  [LM] curvature boost: " << boosted
+					tool::err() << "  [LM] curvature boost: " << boosted
 					<< "/" << work.size() << " meshes denser, max x"
 					<< maxScale << " (effective up to "
 					<< fitDensity * maxScale << " texels/m)\n"
@@ -5169,8 +5171,8 @@ int main(int argc, char** argv) {
 				}
 				if (!BakeSgLightmapChunks(traceScene, args.lmLobes,
 					std::span<const SgLightmapChunkBatch>(batches), lcfg,
-					lstats, [](const char* line) { std::cout << line; })) {
-					std::cerr << "[LM] bake failed\n";
+					lstats, [](const char* line) { tool::out() << line; })) {
+					tool::err() << "[LM] bake failed\n";
 					return 1;
 				}
 				// Seam stitch (post-bake, payloads at final lobe counts):
@@ -5183,12 +5185,12 @@ int main(int argc, char** argv) {
 					if (!StitchSgLightmapSeams(
 						std::span<const SgLightmapChunkBatch>(batches),
 						0.5f, &stitched, serr)) {
-						std::cerr << "[LM] seam stitch failed: " << serr
+						tool::err() << "[LM] seam stitch failed: " << serr
 							<< " (continuing on unstitched payloads)\n"
 							<< std::flush;
 					}
 					else {
-						std::cerr << "  [LM] seam stitch: " << stitched
+						tool::err() << "  [LM] seam stitch: " << stitched
 							<< " boundary texels blended\n" << std::flush;
 					}
 				}
@@ -5208,7 +5210,7 @@ int main(int argc, char** argv) {
 				const size_t srcTris =
 					srcUpload ? srcUpload->indices.size() / 3 : 0;
 				if (!srcUpload || w.chart.triChart.size() != srcTris) {
-					std::cerr << "[LM] triangle count mismatch for node "
+					tool::err() << "[LM] triangle count mismatch for node "
 						<< w.node << " - mesh skipped\n";
 					continue;
 				}
@@ -5221,7 +5223,7 @@ int main(int argc, char** argv) {
 					("src node " + std::to_string(w.node)).c_str(), false);
 				lmTexelStamped.insert(w.handle.index());
 				if (uncharted != 0)
-					std::cerr << "  [LM] stamp node " << w.node
+					tool::err() << "  [LM] stamp node " << w.node
 					<< ": uncharted=" << uncharted << "\n" << std::flush;
 				// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
 				// the bake for this MESH (read from any of its chunks â€”
@@ -5254,7 +5256,7 @@ int main(int argc, char** argv) {
 					SgLightmapTransferStats tstat;
 					if (!TransferLightmapCharts(*srcUpload, w.chart, *up,
 						xfer, terr, &tstat)) {
-						std::cerr << "  [LM] transfer failed node " << w.node
+						tool::err() << "  [LM] transfer failed node " << w.node
 							<< " pool " << th.index() << ": " << terr
 							<< " (inherited chart uvs)\n" << std::flush;
 						if (smvk::StaticMesh* m =
@@ -5262,7 +5264,7 @@ int main(int argc, char** argv) {
 							m->lmChunk = lobes;
 						continue;
 					}
-					std::cerr << "  [LM] transfer node " << w.node
+					tool::err() << "  [LM] transfer node " << w.node
 						<< " pool " << th.index() << ": tris " << tstat.trisTotal
 						<< " same " << tstat.trisSameChart
 						<< " vote " << tstat.trisVote
@@ -5280,7 +5282,7 @@ int main(int argc, char** argv) {
 							+ " pool " + std::to_string(th.index())).c_str(), true);
 					lmTexelStamped.insert(th.index());
 					if (unch != 0)
-						std::cerr << "  [LM] transfer stamp node " << w.node
+						tool::err() << "  [LM] transfer stamp node " << w.node
 						<< " pool " << th.index()
 						<< ": uncharted=" << unch << "\n" << std::flush;
 					if (smvk::StaticMesh* m = cluster->staticMeshes.get(th)) {
@@ -5327,7 +5329,7 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
-			std::cerr << "  [LM] texel-space transforms normalized: "
+			tool::err() << "  [LM] texel-space transforms normalized: "
 				<< order.size() << " meshes over " << atlas.width << "x"
 				<< atlas.height << "\n" << std::flush;
 		}
@@ -5356,7 +5358,7 @@ int main(int argc, char** argv) {
 				if (!atlas.CompressToBc6h(
 					args.lmCompress == SgLightmapCompression::Bc6HOpt,
 					werr)) {
-					std::cerr << "[LM] bc6h compression failed: " << werr
+					tool::err() << "[LM] bc6h compression failed: " << werr
 						<< std::endl;
 					return 1;
 				}
@@ -5364,7 +5366,7 @@ int main(int argc, char** argv) {
 					* kLightmapLayerCount * 8;
 				const double bcSecs = std::chrono::duration<double>(
 					std::chrono::steady_clock::now() - bcT0).count();
-				std::cerr << "  [LM] bc6h: " << atlas.bc6hLobes
+				tool::err() << "  [LM] bc6h: " << atlas.bc6hLobes
 					<< " lobe image(s), " << (atlas.GpuBytes() / (1024 * 1024))
 					<< " MiB gpu vs " << (rawBytes / (1024 * 1024))
 					<< " MiB raw ("
@@ -5373,10 +5375,10 @@ int main(int argc, char** argv) {
 					<< "s)\n" << std::flush;
 			}
 			if (!atlas.WriteFile(sglmPath.generic_string(), werr)) {
-				std::cerr << "[LM] atlas write failed: " << werr << std::endl;
+				tool::err() << "[LM] atlas write failed: " << werr << std::endl;
 				return 1;
 			}
-			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
+			tool::err() << "  [LM] atlas " << sglmPath.generic_string()
 				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
 			// Embed the .sglm payload into the pak (the atlas textures
 			// already ride as Texture blobs; the binding below names the
@@ -5389,7 +5391,7 @@ int main(int argc, char** argv) {
 				std::vector<uint8_t> bytes =
 					ReadSidecarFile(args.contentDir, vfsPath);
 				if (bytes.empty())
-					std::cerr << "[LM] sglm embed skipped ('" << vfsPath
+					tool::err() << "[LM] sglm embed skipped ('" << vfsPath
 					<< "' unreadable)\n" << std::flush;
 				else
 					giBlobs.emplace_back(vfsPath, std::move(bytes));
@@ -5406,12 +5408,12 @@ int main(int argc, char** argv) {
 				std::string perr;
 				if (pakcook::WriteLightmapAtlasPng(atlas,
 					pngPath.generic_string(), perr)) {
-					std::cerr << "  [LM] atlas png " << pngPath.generic_string()
+					tool::err() << "  [LM] atlas png " << pngPath.generic_string()
 						<< " (" << std::filesystem::file_size(pngPath)
 						<< " B)\n" << std::flush;
 				}
 				else {
-					std::cerr << "[LM] atlas png write failed: " << perr
+					tool::err() << "[LM] atlas png write failed: " << perr
 						<< "\n" << std::flush;
 				}
 			}
@@ -5426,12 +5428,12 @@ int main(int argc, char** argv) {
 				std::string perr;
 				if (pakcook::WriteLightmapChartsPng(atlas,
 					lmGutter, cPath.generic_string(), perr)) {
-					std::cerr << "  [LM] charts png " << cPath.generic_string()
+					tool::err() << "  [LM] charts png " << cPath.generic_string()
 						<< " (" << std::filesystem::file_size(cPath)
 						<< " B)\n" << std::flush;
 				}
 				else {
-					std::cerr << "[LM] charts png write failed: " << perr
+					tool::err() << "[LM] charts png write failed: " << perr
 						<< "\n" << std::flush;
 				}
 			}
@@ -5453,12 +5455,12 @@ int main(int argc, char** argv) {
 				std::string perr;
 				if (pakcook::WriteLightmapPinkPng(atlas,
 					bakedPoints, pinkPath.generic_string(), perr)) {
-					std::cerr << "  [LM] pink png " << pinkPath.generic_string()
+					tool::err() << "  [LM] pink png " << pinkPath.generic_string()
 						<< " (" << std::filesystem::file_size(pinkPath)
 						<< " B)\n" << std::flush;
 				}
 				else {
-					std::cerr << "[LM] pink png write failed: " << perr
+					tool::err() << "[LM] pink png write failed: " << perr
 						<< "\n" << std::flush;
 				}
 			}
@@ -5713,13 +5715,13 @@ int main(int argc, char** argv) {
 							<< (mn > 0.0 ? mx / mn : 0.0);
 						dbg << "\n";
 					}
-					std::cerr << "  [LM] chart rect audit: " << ringPairs
+					tool::err() << "  [LM] chart rect audit: " << ringPairs
 						<< " ring / " << contentPairs
 						<< " content overlapping pairs; transforms in "
 						<< dbgPath.generic_string() << "\n" << std::flush;
 				}
 				else {
-					std::cerr << "[LM] chart debug dump open failed: "
+					tool::err() << "[LM] chart debug dump open failed: "
 						<< dbgPath.generic_string() << "\n" << std::flush;
 				}
 			}
@@ -5737,13 +5739,13 @@ int main(int argc, char** argv) {
 		// probes (Monte-Carlo noise floor, diagnostics); deg = vs the
 		// preferred-count reconstruction (the selection criterion).
 		for (const auto& pick : lstats.lobePicks) {
-			std::cerr << "  [LM] lobe pick mesh " << pick.meshKey
+			tool::err() << "  [LM] lobe pick mesh " << pick.meshKey
 				<< " chosen=" << pick.chosen;
 			for (uint32_t s = 0; s < pick.candCount; ++s)
-				std::cerr << " " << pick.candCounts[s]
+				tool::err() << " " << pick.candCounts[s]
 				<< "(rel " << (pick.relErr[s] * 100.0) << "%"
 				<< ", deg " << (pick.degErr[s] * 100.0) << "%)";
-			std::cerr << "\n" << std::flush;
+			tool::err() << "\n" << std::flush;
 		}
 		// Lobe histogram: how many chunks the per-mesh selection kept at
 		// each count (flat-lit geometry drops to 5-6, contrast-heavy
@@ -5756,12 +5758,12 @@ int main(int argc, char** argv) {
 				else if (c.lobeCount == 9) ++lobes9;
 				else ++lobes12;
 			}
-			std::cerr << "  [LM] lobe chunks: 5=" << lobes5
+			tool::err() << "  [LM] lobe chunks: 5=" << lobes5
 				<< " 6=" << lobes6
 				<< " 9=" << lobes9
 				<< " 12=" << lobes12 << "\n" << std::flush;
 		}
-		std::cerr << "  [LM] lightmaps: meshes=" << lmMeshes
+		tool::err() << "  [LM] lightmaps: meshes=" << lmMeshes
 			<< " chunks=" << atlas.chunks.size()
 			<< " atlas=" << atlas.width << "x" << atlas.height
 			<< " texels=" << lstats.texelsBaked
@@ -5804,7 +5806,7 @@ int main(int argc, char** argv) {
 	// them keeps the last pak untouched (its blobs stay overridden by
 	// these fresh loose files through the runtime VFS overlay).
 	if (args.quickBakes) {
-		std::cout << "quick-bakes: cubemap captures updated (loose sidecars"
+		tool::out() << "quick-bakes: cubemap captures updated (loose sidecars"
 			" under textures/cubemaps/) - pak write skipped\n";
 		return 0;
 	}
@@ -5872,7 +5874,7 @@ int main(int argc, char** argv) {
 				if (!smvk::BuildMeshletsForUpload(*up, meshletCfg,
 					&cooked, &mst, &merr)) {
 					if (!merr.empty() && merr != "meshlets disabled")
-						std::cerr << "  [LM] meshlet build failed mesh "
+						tool::err() << "  [LM] meshlet build failed mesh "
 							<< meshIdx << ": " << merr
 							<< " (mesh ships without meshlets)\n" << std::flush;
 					continue;
@@ -5902,7 +5904,7 @@ int main(int argc, char** argv) {
 				if (!smvk::BuildMeshletsForUpload(*up, meshletCfg,
 					&cooked, &mst, &merr)) {
 					if (!merr.empty() && merr != "meshlets disabled")
-						std::cerr << "  [LM] meshlet build failed sibling "
+						tool::err() << "  [LM] meshlet build failed sibling "
 							<< uri.Str() << ": " << merr << "\n" << std::flush;
 					continue;
 				}
@@ -5911,7 +5913,7 @@ int main(int argc, char** argv) {
 				restoredMeshlets += mst.meshletCount;
 			}
 		}
-		std::cerr << "  [LM] meshlets restored: meshes=" << restoredMeshes
+		tool::err() << "  [LM] meshlets restored: meshes=" << restoredMeshes
 			<< " meshlets=" << restoredMeshlets
 			<< " (final topology; bases included)\n" << std::flush;
 	}
@@ -5945,11 +5947,11 @@ int main(int argc, char** argv) {
 	WriteBackStats wb;
 	std::string werr;
 	if (!WriteCookedArtifactsBack(args, sceneClusters, wb, werr)) {
-		std::cerr << "Write-back failed: " << werr << std::endl;
+		tool::err() << "Write-back failed: " << werr << std::endl;
 		return 1;
 	}
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
-	std::cout << "Cooked " << args.inVfs
+	tool::out() << "Cooked " << args.inVfs
 		<< (args.inVfsList.size() > 1
 			? " +" + std::to_string(args.inVfsList.size() - 1)
 				+ " more artifact(s)"
@@ -5959,8 +5961,37 @@ int main(int argc, char** argv) {
 		<< " artifacts=" << wb.artifacts
 		<< " blobs=" << wb.blobs
 		<< " siblings=" << wb.siblings
-		<< " meshleted=" << wb.meshleted << "/" << wb.blobs << " blobs"
-		<< " lmBound=" << wb.lmBound
-		<< " in " << secs << "s\n";
+		 << " meshleted=" << wb.meshleted << "/" << wb.blobs << " blobs"
+		 << " lmBound=" << wb.lmBound
+		 << " in " << secs << "s\n";
 	return 0;
 }
+
+} // namespace cooktool
+
+// The CLI stays a thin interface over the library (same argv, same
+// output, same exit codes). The lib build (COOK_LIB_BUILD, linked
+// into the editor) excludes main.
+#ifndef COOK_LIB_BUILD
+int main(int argc, char** argv) {
+	// Unbuffered pipe output: hosts tailing this process through a
+	// pipe stream each line live. Without this, stdout stays
+	// block-buffered when piped and no progress appears until the
+	// cook finishes (looks stuck).
+	std::cout << std::unitbuf;
+	std::cerr << std::unitbuf;
+	cooktool::Args args;
+	if (!cooktool::ParseArgs(argc, argv, args)) {
+		cooktool::Usage();
+		return 2;
+	}
+	cooktool::CookArgs c;
+	c.contentDir = args.contentDir;
+	c.tour = args.tour;
+	c.inVfsList = args.inVfsList;
+	c.inVfs = args.inVfs;
+	c.scratchDir = args.scratchDir;
+	c.quickBakes = args.quickBakes;
+	return cooktool::Run(c);
+}
+#endif

@@ -204,8 +204,10 @@ namespace editor {
 						DrawAssetsPanel();
 						ImGui::EndTabItem();
 					}
-					if (ImGui::BeginTabItem("Cook")) {
+					if (ImGui::BeginTabItem("Cook", nullptr,
+							m_wantCookTab ? ImGuiTabItemFlags_SetSelected : 0)) {
 						m_bottomTab = 3;
+						m_wantCookTab = false;
 						DrawCookPanel();
 						ImGui::EndTabItem();
 					}
@@ -325,7 +327,7 @@ namespace editor {
 			}
 			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
 				SaveTourIncremental();
-			if (ImGui::MenuItem("Cook...", "Ctrl+Shift+C", false, m_world != nullptr)) {
+			if (ImGui::MenuItem("Export...", "Ctrl+Shift+C", false, m_world != nullptr)) {
 				ShowCookPanel();
 			}
 			ImGui::Separator();
@@ -3415,6 +3417,7 @@ namespace editor {
 		// Switch the bottom dock to the Cook tab (the panel lives
 		// there now, not in a modal).
 		m_bottomTab = 3;
+		m_wantCookTab = true;
 	}
 
 	void EditorApp::DrawCookPanel() {
@@ -3790,6 +3793,17 @@ namespace editor {
 				m_cook.contentDir = m_cookContentDirBuf;
 				CookToPak();
 			}
+			ImGui::SameLine();
+			if (ImGui::Button("Update bakes (no pak)")) {
+				m_cook.outPak = m_cookOutPakBuf;
+				m_cook.contentDir = m_cookContentDirBuf;
+				CookToPak(true);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Quick refresh, no pak write: GiBaker\n"
+					"re-runs the GI sidecars in place, then Cook\n"
+					"--quick-bakes re-captures the cubemap set as\n"
+					"loose sidecars. The last pak stays untouched.");
 		}
 	}
 

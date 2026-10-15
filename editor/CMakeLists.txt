@@ -38,6 +38,11 @@ target_include_directories(Editor
         # rasterized SVG icons as ImGui user textures).
         ${CMAKE_SOURCE_DIR}/external/imgui
         ${CMAKE_SOURCE_DIR}/external/imgui/backends
+        # In-process baker libs (the editor links the tools; their CLIs
+        # stay thin user interfaces over the same Run entry points).
+        ${CMAKE_SOURCE_DIR}/tools/gi_baker
+        ${CMAKE_SOURCE_DIR}/tools/cook/src
+        ${CMAKE_SOURCE_DIR}/tools/common
 )
 
 target_link_libraries(Editor
@@ -45,6 +50,9 @@ target_link_libraries(Editor
         engine
         gltf_import
         artifact_cache
+        GiBakerLib
+        CookLib
+        PakLib
         KTX::ktx
         OptickCore
         # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>

@@ -7,6 +7,7 @@ add_library(gltf_import STATIC
     src/gltf.cpp
     src/tex_transcode.cpp
     src/asset_export.cpp
+    src/tour_world.cpp
 )
 
 target_include_directories(gltf_import
@@ -14,8 +15,10 @@ target_include_directories(gltf_import
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     # stb_image.h / stb_image_resize.h for the in-process KTX transcoder
     # (xatlas thirdparty; implementations compile once in tex_transcode).
+    # tools/common for tool_log.h (tour_world.cpp definition lines).
     PRIVATE
         ${CMAKE_SOURCE_DIR}/external/xatlas/source/thirdparty
+        ${CMAKE_SOURCE_DIR}/tools/common
 )
 
 # Engine types are the API (Cluster, VFS, GI bake options); tinygltf comes

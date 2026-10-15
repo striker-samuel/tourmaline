@@ -13,7 +13,12 @@
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Rendergraph/terrain_meta.h>
 
+// The standalone exe owns the stb_image implementation; the PakLib
+// build linked into the editor skips its own copy (editor_branding.cpp
+// provides it — one definition per binary still holds).
+#ifndef PAK_LIB_BUILD
 #define STB_IMAGE_IMPLEMENTATION
+#endif
 #include <stb_image.h>
 
 namespace terraincook {

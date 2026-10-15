@@ -63,79 +63,17 @@
 #include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
+#include "gi_baker.h"
+#include <tool_log.h>
 
-namespace {
+namespace gibaker {
 
-struct Args {
-	std::string contentDir = "content";
-	std::string scene;    // sponza | bistro | bistro-niagara
-	std::string inVfs;    // arbitrary model (overrides --scene input)
-	std::string tour;     // definition tour: root reference = the source,
-	                      // cvolume nodes = the convex bake inputs
-	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
-	uint32_t rays = 1024;
-	uint32_t bounces = 3;
-	uint32_t errorRays = 32;
-	float root = 8.0f;
-	float minBrick = 0.5f;
-	uint32_t maxProbes = 262144;
-	float tolerance = 0.12f;
-	float nearFactor = 1.0f;
-	uint32_t waves = 8;
-	uint32_t threads = 0; // 0 = hardware concurrency
-	uint32_t diffusion = 0; // placement jitter+repulsion (keep 0: post-bake
-	                      // moves invalidate baked radiance)
-	uint32_t smoothingPasses = 0; // Laplacian radiance passes (keep 0: smoothing
-	                              // without visibility leaks across walls)
-	float support = 1.0f; // support radius = factor * brickSize (1.0 =
-	                       // partition of unity + ~27 probes/cell; higher
-	                       // stuffs cells to the cap and drops probes)
-	float sunAzimuth = 30.0f;
-	float sunElevation = 55.0f;
-	float sunIntensity = 10000.0f;
-	float skyIntensity = 600.0f;
-	bool textures = true;
-	bool emissive = true;
-	bool verify = true;
-	// Ray-tracing backend for the bake transport: "embree" (vendored
-	// external/embree, packet/SIMD traversal — the fast default) or
-	// "builtin" (the deterministic binned-SAH BVH reference; same
-	// transport math, agrees within Monte-Carlo noise).
-	std::string backend = "embree";
-	uint32_t lmProbe = 0; // >0: lightmap-chain diagnostic on N meshes
-	std::string analyze; // .sggi host path: inspect instead of baking
-	// White-world albedo: default "0.7" (single known albedo everywhere).
-	// "off" restores the textured bake (per-material albedo from factors
-	// + KTX averages; known to print chromatic dots on contrasty scenes).
-	// "r,g,b" bakes a custom uniform tint instead of grey.
-	std::string uniformAlbedo = "0.7";
-	// Regular-lattice prototype (Ready-at-Dawn style, .sgrv alongside
-	// the adaptive .sggi): fixed OBB grid, diagonal projection, hardware
-	// trilinear at runtime. Empty regularOut = no regular bake.
-	std::string regularOut;
-	bool outExplicit = false;
-	std::string regMin, regMax;   // "x,y,z" world AABB (axis-aligned OBB)
-	std::string regDims = "32,16,32"; // "nx,ny,nz"
-	float regSpacing = 0.0f;      // voxel spacing override (m); 0 = use regDims
-	std::string regPreset;        // bistro-bar | bistro-street | scene
-	bool printBounds = false;     // print trace-scene AABB and exit
-	bool scanInterior = false;    // enclosure map + enclosed-component boxes
-	// Static spot lights for the bake (same spec as PakCooker --spot).
-	std::vector<std::string> spots;
-	// Convex GI volumes (the probes-only pivot's confined-space path):
-	// --cv-spec authoring file, baked by sparse radiance+depth captures
-	// + cubemap reprojection into dense probe grids (BO3 pipeline).
-	// Empty cvSpec = no convex bake.
-	std::string cvSpec;
-	uint32_t cvDirs = 1536;       // capture direction count (6*16^2)
-	float cvCaptureSpacing = 0.0f; // 0 = 3x probe spacing per volume
-	uint32_t cvSmoothing = 1;     // Laplacian volume-smoothing passes
-};
+// Args lives in gi_baker.h (embedders fill it directly).
 
 bool ParseArgs(int argc, char** argv, Args& out) {
 	auto need = [&](std::string& dst, int& i) {
 		if (i + 1 >= argc) {
-			std::cerr << "Missing value for " << argv[i] << std::endl;
+			tool::err() << "Missing value for " << argv[i] << std::endl;
 			return false;
 		}
 		dst = argv[++i];
@@ -196,7 +134,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v, i)) return false;
 			if (v != "builtin" && v != "embree") {
-				std::cerr << "--backend must be builtin|embree" << std::endl;
+				tool::err() << "--backend must be builtin|embree" << std::endl;
 				return false;
 			}
 			out.backend = v;
@@ -229,13 +167,13 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			return false;
 		}
 		else {
-			std::cerr << "Unknown arg: " << a << std::endl;
+			tool::err() << "Unknown arg: " << a << std::endl;
 			return false;
 		}
 	}
 	if (out.analyze.empty() && out.inVfs.empty() && out.scene.empty()
 		&& out.tour.empty()) {
-		std::cerr << "Required: --scene <id>, --in-vfs <model.gltf>,"
+		tool::err() << "Required: --scene <id>, --in-vfs <model.gltf>,"
 			<< " --tour <def.tour>, or --analyze <file.sggi>" << std::endl;
 		return false;
 	}
@@ -243,7 +181,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 }
 
 void Usage() {
-	std::cout << "GiBaker --content-dir content --scene sponza\n"
+	tool::out() << "GiBaker --content-dir content --scene sponza\n"
 		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.geometry]\n"
 		<< "         (bake outputs ride STABLE VFS paths like mesh blobs:\n"
 		<< "         gi/<scene>.sggi, gi/<scene>_<name>.cvol + the manifests\n"
@@ -302,14 +240,14 @@ int AnalyzeRegularVolume(const std::string& path) {
 	SgRegularVolume vol;
 	std::string err;
 	if (!SgRegularVolume::ReadFile(path, vol, err)) {
-		std::cerr << "Analyze: load failed: " << err << std::endl;
+		tool::err() << "Analyze: load failed: " << err << std::endl;
 		return 1;
 	}
 	auto lum = [](const glm::vec3& c) {
 		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 	};
 	const uint64_t n = vol.VoxelCount();
-	std::cout << "analyze-regular: " << path << "\n  voxels=" << n
+	tool::out() << "analyze-regular: " << path << "\n  voxels=" << n
 		<< " dims=" << vol.obb.dims[0] << "x" << vol.obb.dims[1] << "x" << vol.obb.dims[2]
 		<< " center=(" << vol.obb.center.x << "," << vol.obb.center.y << "," << vol.obb.center.z << ")"
 		<< " half=(" << vol.obb.halfExtents.x << "," << vol.obb.halfExtents.y << "," << vol.obb.halfExtents.z << ")"
@@ -333,7 +271,7 @@ int AnalyzeRegularVolume(const std::string& path) {
 		sumLum += vl;
 		maxLum = std::max(maxLum, vl);
 	}
-	std::cout << "  meanLum=" << (n ? sumLum / double(n) : 0.0)
+	tool::out() << "  meanLum=" << (n ? sumLum / double(n) : 0.0)
 		<< " maxLum=" << maxLum << " nonfiniteVoxels=" << nanVox << "\n";
 	// Center transect along X at mid-Y/Z: adjacent samples share 7/8 of
 	// their voxels, so cliffs here are bake faults, not interpolation.
@@ -364,7 +302,7 @@ int AnalyzeRegularVolume(const std::string& path) {
 		prevX = x;
 	}
 	(void)prevX;
-	std::cout << "  transect steps=" << steps << " uncovered=" << uncovered
+	tool::out() << "  transect steps=" << steps << " uncovered=" << uncovered
 		<< " maxAdjacentRelStep=" << maxStep << " at x=" << worstX
 		<< " (" << worstA << " -> " << worstB << ")"
 		<< " minLum=" << minLum << " maxLum=" << maxLumT << "\n";
@@ -380,13 +318,13 @@ int AnalyzeVolume(const std::string& path) {
 	SgGiVolume vol;
 	std::string err;
 	if (!SgGiVolume::ReadFile(path, vol, err)) {
-		std::cerr << "Analyze: load failed: " << err << std::endl;
+		tool::err() << "Analyze: load failed: " << err << std::endl;
 		return 1;
 	}
 	auto lum = [](const glm::vec3& c) {
 		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 	};
-	std::cout << "analyze: " << path << "\n  probes=" << vol.probes.size()
+	tool::out() << "analyze: " << path << "\n  probes=" << vol.probes.size()
 		<< " levels=" << vol.levelCount
 		<< " boundsMin=(" << vol.boundsMin.x << "," << vol.boundsMin.y << "," << vol.boundsMin.z << ")"
 		<< " boundsMax=(" << vol.boundsMax.x << "," << vol.boundsMax.y << "," << vol.boundsMax.z << ")\n";
@@ -425,19 +363,19 @@ int AnalyzeVolume(const std::string& path) {
 			extremes.push_back({ pl, p.level, p.position });
 		}
 	}
-	std::cout << "  meanLum=" << (vol.probes.empty() ? 0.0 : sumLum / vol.probes.size())
+	tool::out() << "  meanLum=" << (vol.probes.empty() ? 0.0 : sumLum / vol.probes.size())
 		<< " minLum=" << (minLum == std::numeric_limits<float>::max() ? -1.0 : minLum)
 		<< " maxLum=" << maxLum
 		<< " nanProbes=" << nanProbes << " infProbes=" << infProbes << "\n";
 	for (uint32_t l = 0; l < vol.levelCount; ++l)
-		std::cout << "  level " << l << ": n=" << levelCount[l]
+		tool::out() << "  level " << l << ": n=" << levelCount[l]
 			<< " mean=" << (levelCount[l] ? levelSum[l] / levelCount[l] : 0.0)
 			<< " max=" << levelMax[l] << "\n";
 	std::sort(extremes.begin(), extremes.end(),
 		[](const Extreme& a, const Extreme& b) { return a.l > b.l; });
-	std::cout << "  top extremes (lum, level, pos):\n";
+	tool::out() << "  top extremes (lum, level, pos):\n";
 	for (size_t i = 0; i < std::min<size_t>(extremes.size(), 10); ++i)
-		std::cout << "    " << extremes[i].l << " L" << extremes[i].level
+		tool::out() << "    " << extremes[i].l << " L" << extremes[i].level
 			<< " (" << extremes[i].pos.x << "," << extremes[i].pos.y << "," << extremes[i].pos.z << ")\n";
 	// Isolation census: for each probe, same-level neighbors within
 	// 1.5x its support radius. Fine probes with ~0 fine neighbors are
@@ -488,10 +426,10 @@ int AnalyzeVolume(const std::string& path) {
 					++fineIso;
 			}
 		}
-		std::cout << "  isolation histogram (same-level neighbors within 1.5R):\n";
+		tool::out() << "  isolation histogram (same-level neighbors within 1.5R):\n";
 		for (int n = 0; n < 8; ++n)
-			std::cout << "    n=" << n << ": " << isoHist[n] << "\n";
-		std::cout << "  fine-level isolated (0 same-level neighbors): "
+			tool::out() << "    n=" << n << ": " << isoHist[n] << "\n";
+		tool::out() << "  fine-level isolated (0 same-level neighbors): "
 			<< fineIso << "/" << fineTotal << "\n";
 	}
 	// Zero census: probes whose mean amplitude is exactly (or near) zero
@@ -501,7 +439,7 @@ int AnalyzeVolume(const std::string& path) {
 	// for dark patches. Dump positions to see where they live.
 	{
 		uint32_t zeroCount = 0;
-		std::cout << "  zero probes (meanLum < 1e-6), first 25 with level+pos:\n";
+		tool::out() << "  zero probes (meanLum < 1e-6), first 25 with level+pos:\n";
 		for (const SgProbe& p : vol.probes) {
 			glm::vec3 m(0.0f);
 			for (uint32_t i = 0; i < kSgLobeCount; ++i)
@@ -510,11 +448,11 @@ int AnalyzeVolume(const std::string& path) {
 			if (pl < 1e-6) {
 				++zeroCount;
 				if (zeroCount <= 25)
-					std::cout << "    L" << p.level << " (" << p.position.x << ","
+					tool::out() << "    L" << p.level << " (" << p.position.x << ","
 						<< p.position.y << "," << p.position.z << ") r=" << p.radius << "\n";
 			}
 		}
-		std::cout << "  zero probes total: " << zeroCount << "/" << vol.probes.size() << "\n";
+		tool::out() << "  zero probes total: " << zeroCount << "/" << vol.probes.size() << "\n";
 	}
 	// Hue census: per-probe mean-amplitude RGB, max/min channel ratio.
 	// A white-world bake must be ~sun-tinted everywhere (ratio ~= 1.1);
@@ -545,7 +483,7 @@ int AnalyzeVolume(const std::string& path) {
 				worstLevel = p.level;
 			}
 		}
-		std::cout << "  hue: ratio>2: " << over2 << " ratio>5: " << over5
+		tool::out() << "  hue: ratio>2: " << over2 << " ratio>5: " << over5
 			<< " worst=" << worstRatio << " mean=(" << worstMean.x << ","
 			<< worstMean.y << "," << worstMean.z << ") L" << worstLevel
 			<< " (" << worstPos.x << "," << worstPos.y << "," << worstPos.z << ")\n";
@@ -564,7 +502,7 @@ int AnalyzeVolume(const std::string& path) {
 	const glm::vec3 up(0, 1, 0);
 	size_t uncovered = 0, steps = 0;
 	double prevLum = -1.0, maxStep = 0.0;
-	std::cout << "  transect y=" << y << " z=" << z << " (x, r, g, b, covered):\n";
+	tool::out() << "  transect y=" << y << " z=" << z << " (x, r, g, b, covered):\n";
 	for (float x = lo.x; x <= hi.x; x += 0.25f) {
 		glm::vec3 amps[kSgLobeCount];
 		const bool ok = vol.Sample(glm::vec3(x, y, z), amps);
@@ -575,9 +513,9 @@ int AnalyzeVolume(const std::string& path) {
 		if (prevLum >= 0.0)
 			maxStep = std::max(maxStep, std::abs(l - prevLum) / std::max(prevLum, 1e-3));
 		prevLum = l;
-		std::cout << "    " << x << " " << e.r << " " << e.g << " " << e.b << " 1\n";
+		tool::out() << "    " << x << " " << e.r << " " << e.g << " " << e.b << " 1\n";
 	}
-	std::cout << "  transect steps=" << steps << " uncovered=" << uncovered
+	tool::out() << "  transect steps=" << steps << " uncovered=" << uncovered
 		<< " maxAdjacentRelStep=" << maxStep << "\n";
 
 	// Per-level weight census at the transect points: for each point,
@@ -621,7 +559,7 @@ int AnalyzeVolume(const std::string& path) {
 			}
 			return w;
 		};
-		std::cout << "  level census (point, then wv share % per level L1..L5, dominant):\n";
+		tool::out() << "  level census (point, then wv share % per level L1..L5, dominant):\n";
 		uint32_t coarseDominant = 0, fineDominant = 0, censusPts = 0, leakPts = 0;
 		// 3D sweep: heights through the arches + z rows through the
 		// recesses (the transect-only census can miss leak pockets).
@@ -666,21 +604,21 @@ int AnalyzeVolume(const std::string& path) {
 			// hold a real share too (they were spent on this region!).
 			if (dom <= 2 && fineShare > 0.15f) {
 				++leakPts;
-				std::cout << "    (" << x << "," << yA << "," << zA
+				tool::out() << "    (" << x << "," << yA << "," << zA
 					<< ") LEAK? dom=L" << dom << " shares:";
 			} else if (dom <= 2) {
-				std::cout << "    (" << x << "," << yA << "," << zA
+				tool::out() << "    (" << x << "," << yA << "," << zA
 					<< ") coarse-only dom=L" << dom << " shares:";
 			} else
 				continue;
 			for (uint32_t l = 1; l < std::min<uint32_t>(vol.levelCount, 6u); ++l)
-				std::cout << " L" << l << "="
+				tool::out() << " L" << l << "="
 					<< int(100.0f * wByLevel[l] / (total + 1e-6f)) << "%";
-			std::cout << "\n";
+			tool::out() << "\n";
 				}
 			}
 		}
-		std::cout << "  census: " << censusPts << " pts, coarse-dominant "
+		tool::out() << "  census: " << censusPts << " pts, coarse-dominant "
 			<< coarseDominant << ", fine-dominant " << fineDominant
 			<< ", leak-signature " << leakPts << "\n";
 	}
@@ -751,7 +689,7 @@ int AnalyzeVolume(const std::string& path) {
 			const auto q = [&](double f) {
 				return devs[size_t(f * double(devs.size() - 1))];
 			};
-			std::cout << "  speckle census (|self-nbMean|/nbMean, finest levels): n="
+			tool::out() << "  speckle census (|self-nbMean|/nbMean, finest levels): n="
 				<< devs.size() << " median=" << q(0.5)
 				<< " p75=" << q(0.75) << " p90=" << q(0.9)
 				<< " p99=" << q(0.99) << "\n";
@@ -988,19 +926,12 @@ std::vector<std::string> MergeManifestRows(
 	return merged;
 }
 
-} // namespace
+} // (helpers above; the namespace stays open through Run below)
 
-int main(int argc, char** argv) {
-	// Same live-pipe contract as PakCooker (see its main): the editor
-	// streams this output line-by-line while the bake runs.
-	std::cout << std::unitbuf;
-	std::cerr << std::unitbuf;
-	Args args;
-	if (!ParseArgs(argc, argv, args)) {
-		Usage();
-		return 2;
-	}
-
+namespace gibaker {
+// Runs the bake; returns the process exit code (byte-identical to the
+// CLI run). See gi_baker.h.
+int Run(Args& args) {
 	if (!args.analyze.empty()) {
 		if (args.analyze.size() >= 5
 			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)
@@ -1032,7 +963,7 @@ int main(int argc, char** argv) {
 	} else if (inVfs.empty()) {
 		auto mapped = SceneGltf(sceneId);
 		if (!mapped) {
-			std::cerr << "Unknown --scene '" << sceneId
+			tool::err() << "Unknown --scene '" << sceneId
 				<< "' (sponza | bistro | bistro-niagara) or use --in-vfs"
 				<< " or --tour" << std::endl;
 			return 2;
@@ -1046,7 +977,7 @@ int main(int argc, char** argv) {
 			/ (sceneId + ".sggi")).generic_string();
 	}
 
-	std::cout << "GiBaker: scene '" << sceneId << "' from "
+	tool::out() << "GiBaker: scene '" << sceneId << "' from "
 		<< (haveTour ? args.tour : inVfs)
 		<< " -> " << args.out << "\n";
 
@@ -1062,11 +993,11 @@ int main(int argc, char** argv) {
 		std::string terr;
 		std::vector<std::string> twarn;
 		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
-			std::cerr << "Tour load failed: " << terr << std::endl;
+			tool::err() << "Tour load failed: " << terr << std::endl;
 			return 1;
 		}
 		for (const std::string& w : twarn)
-			std::cerr << "Tour warning: " << w << std::endl;
+			tool::err() << "Tour warning: " << w << std::endl;
 		try {
 			addNode(cluster->scene, -1, 0); // empty scene root
 			if (!tour.references.empty())
@@ -1080,15 +1011,15 @@ int main(int argc, char** argv) {
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
 					&rerr)) {
-				std::cerr << "Tour replay failed: " << rerr << std::endl;
+				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
 			for (const std::string& w : rwarn)
-				std::cerr << "Tour replay warning: " << w << std::endl;
-			std::cout << "Tour replayed: " << tour.commands.size()
+				tool::err() << "Tour replay warning: " << w << std::endl;
+			tool::out() << "Tour replayed: " << tour.commands.size()
 				<< " commands\n";
 		} catch (const std::exception& e) {
-			std::cerr << "Definition build failed: " << e.what()
+			tool::err() << "Definition build failed: " << e.what()
 				<< std::endl;
 			return 1;
 		}
@@ -1104,7 +1035,7 @@ int main(int argc, char** argv) {
 				artPath = inVfs; // host-style path (as-is)
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
-				std::cerr << "Artifact read failed: '" << inVfs
+				tool::err() << "Artifact read failed: '" << inVfs
 					<< "' not in VFS (want the derived .geometry — import "
 					"the source glTF first)" << std::endl;
 				return 1;
@@ -1113,7 +1044,7 @@ int main(int argc, char** argv) {
 			std::string aerr;
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 					artBytes->size(), meshAsset, aerr)) {
-				std::cerr << "Artifact parse failed: '" << inVfs
+				tool::err() << "Artifact parse failed: '" << inVfs
 					<< "': " << aerr << " (re-import the source glTF)"
 					<< std::endl;
 				return 1;
@@ -1153,14 +1084,14 @@ int main(int argc, char** argv) {
 				meshAsset, meshManifest, artPath, 0, texSrc, true,
 				nullptr, readSibling);
 			if (built == 0) {
-				std::cerr << "Artifact build failed: '" << inVfs
+				tool::err() << "Artifact build failed: '" << inVfs
 					<< "' built 0 nodes (re-import the source glTF)"
 					<< std::endl;
 				return 1;
 			}
-			std::cout << "Artifact built: " << built << " nodes\n";
+			tool::out() << "Artifact built: " << built << " nodes\n";
 		} catch (const std::exception& e) {
-			std::cerr << "Artifact build failed: " << e.what() << std::endl;
+			tool::err() << "Artifact build failed: " << e.what() << std::endl;
 			return 1;
 		}
 	}
@@ -1198,7 +1129,7 @@ int main(int argc, char** argv) {
 		tourCvols.push_back(std::move(v));
 	}
 	if (!tourCvols.empty())
-		std::cout << "  authored cvolumes: " << tourCvols.size()
+		tool::out() << "  authored cvolumes: " << tourCvols.size()
 			<< " (tour nodes)\n";
 
 	// Optional texture averaging (role-agnostic per-texture average:
@@ -1218,7 +1149,7 @@ int main(int argc, char** argv) {
 			buildOpts.texelAvg[handle.index()] = *avg;
 			++averaged;
 		}
-		std::cout << "  textures: averaged " << averaged << " ("
+		tool::out() << "  textures: averaged " << averaged << " ("
 			<< cluster->ListTextureUris().size() << " uris)\n";
 	}
 
@@ -1229,14 +1160,14 @@ int main(int argc, char** argv) {
 	// fallback. The analytic sky is baked on open-sky rays (TraceIncoming),
 	// so the sky intensity is meaningful; emissive stays runtime-only.
 	if (!args.emissive)
-		std::cout << "  note: --emissive off (emissive is runtime-only)\n";
+		tool::out() << "  note: --emissive off (emissive is runtime-only)\n";
 	if (cluster->scene.envAuthored) {
 		const SceneEnv& se = cluster->scene.environment;
 		buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
 		buildOpts.env.sunElevationDeg = se.sunElevation;
 		buildOpts.env.sunIntensity = se.sunIntensity;
 		buildOpts.env.skyIntensity = se.skyIntensity;
-		std::cout << "  env block (tour): az=" << se.sunAzimuth
+		tool::out() << "  env block (tour): az=" << se.sunAzimuth
 			<< " el=" << se.sunElevation << " I=" << se.sunIntensity
 			<< " lux sky=" << se.skyIntensity << "\n";
 	}
@@ -1245,7 +1176,7 @@ int main(int argc, char** argv) {
 		buildOpts.env.sunElevationDeg = args.sunElevation;
 		buildOpts.env.sunIntensity = args.sunIntensity;
 		buildOpts.env.skyIntensity = args.skyIntensity;
-		std::cout << "  env defaults (no tour block): az=" << args.sunAzimuth
+		tool::out() << "  env defaults (no tour block): az=" << args.sunAzimuth
 			<< " el=" << args.sunElevation << " I=" << args.sunIntensity
 			<< " lux sky=" << args.skyIntensity << "\n";
 	}
@@ -1260,17 +1191,17 @@ int main(int argc, char** argv) {
 			uv = glm::vec3(std::stof(args.uniformAlbedo));
 		buildOpts.uniformAlbedo = true;
 		buildOpts.uniformAlbedoValue = uv;
-		std::cout << "  uniform albedo: (" << uv.x << "," << uv.y << "," << uv.z << ")\n";
+		tool::out() << "  uniform albedo: (" << uv.x << "," << uv.y << "," << uv.z << ")\n";
 	}
 
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
 	buildOpts.traceBackendEmbree = (args.backend == "embree");
-	std::cout << "  trace backend: "
+	tool::out() << "  trace backend: "
 		<< (buildOpts.traceBackendEmbree ? "embree" : "builtin") << "\n";
 	smvk::gi::BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, err);
 	if (!err.empty()) {
-		std::cerr << "Scene build failed: " << err << std::endl;
+		tool::err() << "Scene build failed: " << err << std::endl;
 		return 1;
 	}
 	// CLI --spot specs APPEND to the scene's STATIC-flagged lights already
@@ -1286,7 +1217,7 @@ int main(int argc, char** argv) {
 				&spot.direction.x, &spot.direction.y, &spot.direction.z,
 				&innerDeg, &outerDeg, &spot.range,
 				&col.r, &col.g, &col.b, &candela) != 13) {
-			std::cerr << "Bad --spot spec: " << spec << "\n";
+			tool::err() << "Bad --spot spec: " << spec << "\n";
 			return 2;
 		}
 		spot.color = col * candela;
@@ -1294,7 +1225,7 @@ int main(int argc, char** argv) {
 		spot.cosOuter = std::cos(glm::radians(std::max(innerDeg, outerDeg)));
 		traceScene.spots.push_back(spot);
 	}
-	std::cout << "  trace scene: " << traceScene.Bvh().TriangleCount()
+	tool::out() << "  trace scene: " << traceScene.Bvh().TriangleCount()
 		<< " tris, " << traceScene.materials.size() << " materials, "
 		<< traceScene.spots.size() << " spots\n";
 
@@ -1304,7 +1235,7 @@ int main(int argc, char** argv) {
 		sceneMin = glm::min(sceneMin, v);
 		sceneMax = glm::max(sceneMax, v);
 	}
-	std::cout << "  scene bounds: (" << sceneMin.x << "," << sceneMin.y << "," << sceneMin.z
+	tool::out() << "  scene bounds: (" << sceneMin.x << "," << sceneMin.y << "," << sceneMin.z
 		<< ")..(" << sceneMax.x << "," << sceneMax.y << "," << sceneMax.z << ")\n";
 	if (args.printBounds)
 		return 0;
@@ -1344,7 +1275,7 @@ int main(int argc, char** argv) {
 				cls[size_t(iz) * nx + ix] = c;
 			}
 		}
-		std::cout << "  interior scan y=" << yEye << " step=" << step
+		tool::out() << "  interior scan y=" << yEye << " step=" << step
 			<< " ('#' solid, '.' open, 's' canyon, 'I' enclosed):\n";
 		for (int iz = nz - 1; iz >= 0; --iz) {
 			std::string row;
@@ -1353,7 +1284,7 @@ int main(int argc, char** argv) {
 				const int c = cls[size_t(iz) * nx + ix];
 				row.push_back(c < 0 ? '#' : (c == 0 ? '.' : (c == 1 ? 's' : 'I')));
 			}
-			std::cout << "    z=" << (sceneMin.z + (iz + 0.5f) * step) << " " << row << "\n";
+			tool::out() << "    z=" << (sceneMin.z + (iz + 0.5f) * step) << " " << row << "\n";
 		}
 		// Connected enclosed components (4-neighbourhood).
 		std::vector<int> comp(size_t(nx) * size_t(nz), -1);
@@ -1382,7 +1313,7 @@ int main(int argc, char** argv) {
 				}
 				++nComp;
 			}
-		std::cout << "  enclosed components: " << nComp << "\n";
+		tool::out() << "  enclosed components: " << nComp << "\n";
 		for (int c = 0; c < nComp; ++c) {
 			int x0 = nx, x1 = -1, z0 = nz, z1 = -1, count = 0;
 			for (int iz = 0; iz < nz; ++iz)
@@ -1396,7 +1327,7 @@ int main(int argc, char** argv) {
 				continue; // closet, skip
 			const float ax0 = sceneMin.x + x0 * step, ax1 = sceneMin.x + (x1 + 1) * step;
 			const float az0 = sceneMin.z + z0 * step, az1 = sceneMin.z + (z1 + 1) * step;
-			std::cout << "    comp " << c << " cells=" << count
+			tool::out() << "    comp " << c << " cells=" << count
 				<< " x=[" << ax0 << "," << ax1 << "] z=[" << az0 << "," << az1 << "]"
 				<< "  suggest: --reg-min " << ax0 << "," << sceneMin.y << "," << az0
 				<< " --reg-max " << ax1 << "," << (yEye + 3.0f) << "," << az1 << "\n";
@@ -1440,19 +1371,19 @@ int main(int argc, char** argv) {
 				regMax = glm::vec3(28.4f, 5.5f, 18.6f);
 				haveBox = true;
 			} else {
-				std::cerr << "Unknown --reg-preset '" << args.regPreset
+				tool::err() << "Unknown --reg-preset '" << args.regPreset
 					<< "' (bistro-bar | bistro-street | scene)\n";
 				return 2;
 			}
 		}
 		if (!haveBox) {
-			std::cerr << "Regular bake needs --reg-min/--reg-max or --reg-preset\n";
+			tool::err() << "Regular bake needs --reg-min/--reg-max or --reg-preset\n";
 			return 2;
 		}
 		obb.center = (regMin + regMax) * 0.5f;
 		obb.halfExtents = (regMax - regMin) * 0.5f;
 		if (!parseDims(args.regDims, obb.dims)) {
-			std::cerr << "Bad --reg-dims (want nx,ny,nz)\n";
+			tool::err() << "Bad --reg-dims (want nx,ny,nz)\n";
 			return 2;
 		}
 		if (args.regSpacing > 0.0f) {
@@ -1460,7 +1391,7 @@ int main(int argc, char** argv) {
 			for (int a = 0; a < 3; ++a)
 				obb.dims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / args.regSpacing)));
 		}
-		std::cout << "  regular OBB: center=(" << obb.center.x << "," << obb.center.y
+		tool::out() << "  regular OBB: center=(" << obb.center.x << "," << obb.center.y
 			<< "," << obb.center.z << ") half=(" << obb.halfExtents.x << ","
 			<< obb.halfExtents.y << "," << obb.halfExtents.z << ") dims="
 			<< obb.dims[0] << "x" << obb.dims[1] << "x" << obb.dims[2] << "\n";
@@ -1472,8 +1403,8 @@ int main(int argc, char** argv) {
 		smvk::gi::SgRegularVolume rvol;
 		smvk::gi::SgRegularBakeStats rstats;
 		if (!smvk::gi::BakeSgRegularVolume(traceScene, obb, rcfg, rvol, rstats,
-				[](const char* line) { std::cout << line; })) {
-			std::cerr << "Regular bake failed\n";
+				[](const char* line) { tool::out() << line; })) {
+			tool::err() << "Regular bake failed\n";
 			return 1;
 		}
 		{
@@ -1483,19 +1414,19 @@ int main(int argc, char** argv) {
 		}
 		std::string rerr;
 		if (!rvol.WriteFile(args.regularOut, rerr)) {
-			std::cerr << "Regular write failed: " << rerr << std::endl;
+			tool::err() << "Regular write failed: " << rerr << std::endl;
 			return 1;
 		}
-		std::cout << "Wrote " << args.regularOut << " ("
+		tool::out() << "Wrote " << args.regularOut << " ("
 			<< std::filesystem::file_size(args.regularOut) << " B on disk)\n";
 		if (args.verify) {
 			smvk::gi::SgRegularVolume reloaded;
 			std::string verr;
 			if (!smvk::gi::SgRegularVolume::ReadFile(args.regularOut, reloaded, verr)) {
-				std::cerr << "Regular verify: reload failed: " << verr << std::endl;
+				tool::err() << "Regular verify: reload failed: " << verr << std::endl;
 				return 1;
 			}
-			std::cout << "  verify: " << reloaded.VoxelCount() << " voxels reloaded OK\n";
+			tool::out() << "  verify: " << reloaded.VoxelCount() << " voxels reloaded OK\n";
 			if (reloaded.VoxelCount() != rvol.VoxelCount())
 				return 1;
 		}
@@ -1511,7 +1442,7 @@ int main(int argc, char** argv) {
 			const std::string rowVfs = VfsRelPath(args.contentDir,
 				args.regularOut);
 			if (rowVfs.compare(0, 3, "gi/") != 0)
-				std::cout << "Regular manifest row '" << rowVfs
+				tool::out() << "Regular manifest row '" << rowVfs
 					<< "' is outside the content tree - the runtime can "
 					"only resolve content-relative rows\n";
 			const std::string row = rowVfs;
@@ -1524,7 +1455,7 @@ int main(int argc, char** argv) {
 				std::ofstream out(manifestPath,
 					std::ios::binary | std::ios::trunc);
 				if (!out) {
-					std::cerr << "Regular manifest write failed: "
+					tool::err() << "Regular manifest write failed: "
 						<< manifestPath.generic_string() << std::endl;
 					return 1;
 				}
@@ -1533,7 +1464,7 @@ int main(int argc, char** argv) {
 				for (const std::string& l : merged)
 					out << l << "\n";
 			}
-			std::cout << "Manifest " << manifestPath.generic_string()
+			tool::out() << "Manifest " << manifestPath.generic_string()
 				<< ": " << merged.size() << " volume(s)\n";
 		}
 		// Fall through only when another stage was requested explicitly
@@ -1541,7 +1472,7 @@ int main(int argc, char** argv) {
 		// or authored tour cvolumes). A regular-only run passes no --out.
 		if (!args.outExplicit && args.cvSpec.empty() && tourCvols.empty()) {
 			const auto t1 = std::chrono::steady_clock::now();
-			std::cout << "GiBaker total: "
+			tool::out() << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
 			return 0;
 		}
@@ -1560,7 +1491,7 @@ int main(int argc, char** argv) {
 		std::string specErr;
 		if (!args.cvSpec.empty()
 			&& !ParseCvSpec(args.cvSpec, specVols, specErr)) {
-			std::cerr << "Bad --cv-spec: " << specErr << std::endl;
+			tool::err() << "Bad --cv-spec: " << specErr << std::endl;
 			return 2;
 		}
 		// Authored tour volumes lead (the definition is the source of
@@ -1568,7 +1499,7 @@ int main(int argc, char** argv) {
 		specVols.insert(specVols.begin(),
 			tourCvols.begin(), tourCvols.end());
 		if (specVols.size() > 8) {
-			std::cerr << "convex bake lists " << specVols.size()
+			tool::err() << "convex bake lists " << specVols.size()
 				<< " volumes; the runtime manifest caps at 8\n";
 			return 2;
 		}
@@ -1583,15 +1514,15 @@ int main(int argc, char** argv) {
 				? args.cvCaptureSpacing : spec.captureSpacing;
 			cfg.smoothingPasses = args.cvSmoothing;
 			cfg.threadCount = args.threads;
-			std::cout << "  [CV] volume '" << spec.def.name << "': priority="
+			tool::out() << "  [CV] volume '" << spec.def.name << "': priority="
 				<< spec.def.priority << " spacing=" << spec.spacing
 				<< " planes=" << spec.def.planes.size() << "\n";
 			smvk::gi::CvVolume vol;
 			smvk::gi::CvBakeStats stats;
 			if (!smvk::gi::BakeCvVolume(traceScene, spec.def, spec.spacing,
 					cfg, vol, stats,
-					[](const char* line) { std::cout << line; })) {
-				std::cerr << "Convex bake failed for '" << spec.def.name
+					[](const char* line) { tool::out() << line; })) {
+				tool::err() << "Convex bake failed for '" << spec.def.name
 					<< "'\n";
 				return 1;
 			}
@@ -1608,20 +1539,20 @@ int main(int argc, char** argv) {
 			}
 			std::string werr;
 			if (!vol.WriteFile(outPath, werr)) {
-				std::cerr << "Convex write failed: " << werr << std::endl;
+				tool::err() << "Convex write failed: " << werr << std::endl;
 				return 1;
 			}
-			std::cout << "Wrote " << outPath << " ("
+			tool::out() << "Wrote " << outPath << " ("
 				<< std::filesystem::file_size(outPath) << " B on disk)\n";
 			if (args.verify) {
 				smvk::gi::CvVolume reloaded;
 				std::string verr;
 				if (!smvk::gi::CvVolume::ReadFile(outPath, reloaded, verr)) {
-					std::cerr << "Convex verify: reload failed: " << verr
+					tool::err() << "Convex verify: reload failed: " << verr
 						<< std::endl;
 					return 1;
 				}
-				std::cout << "  verify: " << reloaded.VoxelCount()
+				tool::out() << "  verify: " << reloaded.VoxelCount()
 					<< " voxels, " << reloaded.def.planes.size()
 					<< " planes reloaded OK\n";
 				if (reloaded.VoxelCount() != vol.VoxelCount())
@@ -1693,7 +1624,7 @@ int main(int argc, char** argv) {
 				std::ofstream out(manifestPath,
 					std::ios::binary | std::ios::trunc);
 				if (!out) {
-					std::cerr << "Convex manifest write failed: "
+					tool::err() << "Convex manifest write failed: "
 						<< manifestPath.generic_string() << std::endl;
 					return 1;
 				}
@@ -1702,14 +1633,14 @@ int main(int argc, char** argv) {
 				for (const std::string& l : oldRows)
 					out << l << "\n";
 			}
-			std::cout << "Manifest " << manifestPath.generic_string()
+			tool::out() << "Manifest " << manifestPath.generic_string()
 				<< ": " << oldRows.size() << " volume(s)\n";
 		}
 		// A cvol-only run (no --out) is done; --out falls through to the
 		// adaptive world-field bake (the .sggi and .cvol files pair up).
 		if (!args.outExplicit) {
 			const auto t1 = std::chrono::steady_clock::now();
-			std::cout << "GiBaker total: "
+			tool::out() << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
 			return 0;
 		}
@@ -1768,11 +1699,11 @@ int main(int argc, char** argv) {
 			keys.push_back(node);
 			++count;
 		}
-		std::cout << "  [lm-probe] charting " << works.size() << " meshes\n";
+		tool::out() << "  [lm-probe] charting " << works.size() << " meshes\n";
 		SgLightmapXatlasLevel lvl;
 		std::string xerr;
 		if (!GenerateLightmapChartsXatlas(xins, xopts, lvl, xerr)) {
-			std::cout << "  [lm-probe] xatlas chart failed: " << xerr << "\n";
+			tool::out() << "  [lm-probe] xatlas chart failed: " << xerr << "\n";
 			return 1;
 		}
 		// Post-shrink AABBs can overlap (concave charts); repack
@@ -1781,7 +1712,7 @@ int main(int argc, char** argv) {
 		// instead of a generic overflow.
 		if (RepackXatlasLevel(lvl, 4096, 4096, xerr)
 			== RepackStatus::InternalError) {
-			std::cout << "  [lm-probe] repack INTERNAL ERROR (packer "
+			tool::out() << "  [lm-probe] repack INTERNAL ERROR (packer "
 				"bug, please report): " << xerr << "\n";
 			return 1;
 		}
@@ -1789,16 +1720,16 @@ int main(int argc, char** argv) {
 			&& lvl.atlasWidth == 0) {
 			// Infeasible at these caps: report and stop (no density
 			// convergence in the probe tool).
-			std::cout << "  [lm-probe] repack failed: " << xerr << "\n";
+			tool::out() << "  [lm-probe] repack failed: " << xerr << "\n";
 			return 1;
 		}
 		std::vector<uint32_t> bases;
 		if (!AppendXatlasLevelToAtlas(atlas, lvl, keys, 12u,
 				4096, 4096, bases, xerr)) {
-			std::cout << "  [lm-probe] atlas append failed: " << xerr << "\n";
+			tool::out() << "  [lm-probe] atlas append failed: " << xerr << "\n";
 			return 1;
 		}
-		std::cout << "  [lm-probe] charted " << works.size() << " meshes (atlas "
+		tool::out() << "  [lm-probe] charted " << works.size() << " meshes (atlas "
 			<< atlas.width << "x" << atlas.height << ")\n";
 		// Bake every mesh's FIRST chunk; print stats.
 		std::vector<std::vector<SgLightmapTexel>> texels(works.size());
@@ -1806,7 +1737,7 @@ int main(int argc, char** argv) {
 		bool anyBatch = false;
 		for (size_t wi = 0; wi < works.size(); ++wi) {
 			if (!lvl.meshes[wi].ok || lvl.meshes[wi].chart.charts.empty()) {
-				std::cout << "  [lm-probe] '" << works[wi].name
+				tool::out() << "  [lm-probe] '" << works[wi].name
 					<< "': unchartable\n";
 				continue;
 			}
@@ -1836,7 +1767,7 @@ int main(int argc, char** argv) {
 					live.push_back(b);
 			if (!BakeSgLightmapChunks(traceScene, 12u,
 					std::span<const SgLightmapChunkBatch>(live), lcfg, ls, nullptr)) {
-				std::cout << "  [lm-probe] bake failed\n";
+				tool::out() << "  [lm-probe] bake failed\n";
 				return 1;
 			}
 		}
@@ -1864,7 +1795,7 @@ int main(int argc, char** argv) {
 				? glm::vec3(0.0f)
 				: ch0.texels.front().position;
 			const glm::vec3 wpos = glm::vec3(w.g * glm::vec4(firstPos, 1.0f));
-			std::cout << "  [lm-probe] '" << w.name << "' chunk "
+			tool::out() << "  [lm-probe] '" << w.name << "' chunk "
 				<< p.width << "x" << p.height
 				<< " baked=" << ch0.texels.size()
 				<< " nz=" << nz
@@ -1892,7 +1823,7 @@ int main(int argc, char** argv) {
 					if (!traceScene.Bvh().Raycast(origin, d, 1e9f, h))
 						++misses;
 				}
-				std::cout << "    first texel: 64-ray mean lum="
+				tool::out() << "    first texel: 64-ray mean lum="
 					<< ((0.2126 * acc.x + 0.7152 * acc.y + 0.0722 * acc.z) / 64.0)
 					<< " open-sky rays=" << misses << "/64\n";
 			}
@@ -1918,8 +1849,8 @@ int main(int argc, char** argv) {
 	smvk::gi::SgGiVolume volume;
 	smvk::gi::SgGiBakeStats stats;
 	if (!smvk::gi::BakeSgGiVolume(traceScene, cfg, volume, stats,
-			[](const char* line) { std::cout << line; })) {
-		std::cerr << "Bake failed" << std::endl;
+			[](const char* line) { tool::out() << line; })) {
+		tool::err() << "Bake failed" << std::endl;
 		return 1;
 	}
 
@@ -1930,7 +1861,7 @@ int main(int argc, char** argv) {
 	// intermediates, no repeated allocations at load; the exact baked
 	// result is deterministic).
 	if (!volume.BakeDenseLayers()) {
-		std::cerr << "Dense layer bake failed (no usable levels)" << std::endl;
+		tool::err() << "Dense layer bake failed (no usable levels)" << std::endl;
 		return 1;
 	}
 	{
@@ -1941,11 +1872,11 @@ int main(int argc, char** argv) {
 				++denseLvls;
 				denseBytes += dl.Bytes();
 			}
-		std::cout << "Dense layers: " << denseLvls << " levels ("
+		tool::out() << "Dense layers: " << denseLvls << " levels ("
 			<< (denseBytes / 1024) << " KiB BC6H+R16F)\n";
 		for (uint32_t lvl = 0; lvl < volume.denseLevels.size(); ++lvl)
 			if (volume.denseLevels[lvl].present)
-				std::cout << "  dense level " << lvl << ": "
+				tool::out() << "  dense level " << lvl << ": "
 					<< volume.denseLevels[lvl].dims[0] << "x"
 					<< volume.denseLevels[lvl].dims[1] << "x"
 					<< volume.denseLevels[lvl].dims[2] << " voxels\n";
@@ -1958,31 +1889,31 @@ int main(int argc, char** argv) {
 	}
 	std::string writeErr;
 	if (!volume.WriteFile(args.out, writeErr)) {
-		std::cerr << "Write failed: " << writeErr << std::endl;
+		tool::err() << "Write failed: " << writeErr << std::endl;
 		return 1;
 	}
 
-	std::cout << "Wrote " << args.out << " ("
+	tool::out() << "Wrote " << args.out << " ("
 		<< std::filesystem::file_size(args.out) << " B on disk)\n";
-	std::cout << "  probes=" << stats.probeCount
+	tool::out() << "  probes=" << stats.probeCount
 		<< " waves=" << stats.refineWaves
 		<< " paths=" << stats.pathsTraced
 		<< " seconds=" << stats.seconds << "\n";
 	for (uint32_t lvl = 0; lvl < smvk::gi::kSgGiMaxLevels; ++lvl)
 		if (stats.probesPerLevel[lvl])
-			std::cout << "  level " << lvl << ": " << stats.probesPerLevel[lvl] << " probes\n";
+			tool::out() << "  level " << lvl << ": " << stats.probesPerLevel[lvl] << " probes\n";
 
 	// Self-check: reload through the production reader and spot-check.
 	if (args.verify) {
 		smvk::gi::SgGiVolume reloaded;
 		std::string verr;
 		if (!smvk::gi::SgGiVolume::ReadFile(args.out, reloaded, verr)) {
-			std::cerr << "Verify: reload failed: " << verr << std::endl;
+			tool::err() << "Verify: reload failed: " << verr << std::endl;
 			return 1;
 		}
 		if (reloaded.probes.size() != volume.probes.size()
 			|| reloaded.levelCount != volume.levelCount) {
-			std::cerr << "Verify: round-trip mismatch\n";
+			tool::err() << "Verify: round-trip mismatch\n";
 			return 1;
 		}
 		size_t mismatches = 0;
@@ -1994,7 +1925,7 @@ int main(int argc, char** argv) {
 				|| a.level != b.level)
 				++mismatches;
 		}
-		std::cout << "  verify: " << reloaded.probes.size()
+		tool::out() << "  verify: " << reloaded.probes.size()
 			<< " probes reloaded, " << mismatches << " mismatches"
 			<< (mismatches ? " BAD!" : " OK") << "\n";
 		// Dense round-trip: the cooked payloads must survive byte-exact
@@ -2026,7 +1957,7 @@ int main(int argc, char** argv) {
 					++denseMismatch;
 			}
 		}
-		std::cout << "  verify: dense levels byte-exact, "
+		tool::out() << "  verify: dense levels byte-exact, "
 			<< denseMismatch << " mismatches"
 			<< (denseMismatch ? " BAD!" : " OK") << "\n";
 		if (mismatches || denseMismatch)
@@ -2034,8 +1965,27 @@ int main(int argc, char** argv) {
 	}
 
 	const auto t1 = std::chrono::steady_clock::now();
-	std::cout << "GiBaker total: "
+	tool::out() << "GiBaker total: "
 		<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
 	return 0;
 }
-// (set include)
+
+} // namespace gibaker
+
+// The CLI stays a thin interface over the library (same argv, same
+// output, same exit codes). The lib build (GIBAKER_LIB_BUILD, linked
+// into the editor) excludes main.
+#ifndef GIBAKER_LIB_BUILD
+int main(int argc, char** argv) {
+	// Same live-pipe contract as before: editors that still spawn the
+	// CLI stream this output line-by-line while the bake runs.
+	std::cout << std::unitbuf;
+	std::cerr << std::unitbuf;
+	gibaker::Args args;
+	if (!gibaker::ParseArgs(argc, argv, args)) {
+		gibaker::Usage();
+		return 2;
+	}
+	return gibaker::Run(args);
+}
+#endif

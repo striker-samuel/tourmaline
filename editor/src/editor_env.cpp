@@ -102,31 +102,9 @@ void EditorApp::DrawEnvPanel() {
 		"Scene-attached look — every view renders it straight from the "
 		"scene. The sun/sky rows are LUX-NATIVE and drive everything: "
 		"the viewport, every bake, the pak directional and the App.");
-	// Cook now: the full cook flow from the section that owns its inputs
-	// (the GI bake re-run in place, then PakCooker — the pak, the bake
-	// assets and this tour's bake references update; see CookToPak).
-	if (ImGui::Button("Cook to .pak now##env"))
-		CookToPak();
-	ImGui::SameLine();
-	ImGui::TextDisabled("(full cook: bake update in place + pak)");
-	// Update bakes now: the QUICK refresh of exactly what this panel
-	// drives — the GI sidecars (GiBaker in place) + the cubemap capture
-	// set (PakCooker --quick-bakes: loose sidecars under
-	// textures/cubemaps/, no pak write). One click re-captures the pins
-	// after a sun/sky edit without the minutes-long product cook; the
-	// last pak stays and the fresh loose sidecars override its blobs
-	// through the VFS overlay.
-	if (ImGui::Button("Update bakes now##env"))
-		CookToPak(true);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Quick refresh, no pak write: GiBaker re-runs\n"
-			"the GI sidecars in place, then PakCooker --quick-bakes\n"
-			"re-captures the cubemap set (authored pins + placement)\n"
-			"as loose sidecars under textures/cubemaps/. The last pak\n"
-			"stays untouched; its blobs are overridden by the fresh\n"
-			"loose files through the VFS overlay.");
-	ImGui::SameLine();
-	ImGui::TextDisabled("(quick: GI + captures, no pak)");
+	// Cook flows live in the BottomDock Cook tab (File > Export...),
+	// not here: this panel owns the look inputs, the tab owns the
+	// product step (full cook + quick bakes + cubemap refresh).
 	if (!m_world) {
 		ImGui::TextDisabled("No scene — open a scene to author the look.");
 		return;

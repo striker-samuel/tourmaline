@@ -1,9 +1,29 @@
 project(Cook)  # cook.exe: the COOK - artifacts + tour in, cooked artifacts out (GI/cubemaps/LODs/meshlets/de-instance). No pak write; pak.exe assembles.
+# Cook as a library (the editor links it and calls cooktool::Run
+# directly; the CLI stays a thin user interface over the same code).
+# The lib build excludes main() via COOK_LIB_BUILD.
+add_library(CookLib STATIC src/main.cpp src/lm_denoise.cpp src/lm_png.cpp src/cube_png.cpp)
+target_compile_definitions(CookLib PRIVATE ENGINE_VULKAN COOK_LIB_BUILD)
+target_include_directories(CookLib
+PRIVATE
+${CMAKE_SOURCE_DIR}/external/stb
+${CMAKE_SOURCE_DIR}/tools/common
+PUBLIC
+${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(CookLib
+PRIVATE
+engine
+gltf_import
+artifact_cache
+volk
+OptickCore
+)
 add_executable(Cook src/main.cpp src/lm_denoise.cpp src/lm_png.cpp src/cube_png.cpp)
 target_compile_definitions(Cook PRIVATE ENGINE_VULKAN)
 # stb_image_write (cook-time atlas debug PNG, see lm_png.cpp; the same
 # vendored header the editor uses for its PNG export).
-target_include_directories(Cook PRIVATE ${CMAKE_SOURCE_DIR}/external/stb)
+target_include_directories(Cook PRIVATE ${CMAKE_SOURCE_DIR}/external/stb ${CMAKE_SOURCE_DIR}/tools/common)
 target_link_libraries(Cook
 PRIVATE
 engine
@@ -24,6 +44,9 @@ set(OIDN_PREBUILT_ROOT ${CMAKE_SOURCE_DIR}/external/oidn)
 if(VULKANTOY_OIDN_COOK AND EXISTS ${OIDN_PREBUILT_ROOT}/lib/OpenImageDenoise.lib
 AND EXISTS ${OIDN_PREBUILT_ROOT}/include/OpenImageDenoise/oidn.h)
 message(STATUS "Cook: OIDN lightmap denoising enabled (prebuilt external/oidn)")
+target_compile_definitions(CookLib PRIVATE VULKANTOY_OIDN=1)
+target_include_directories(CookLib PRIVATE ${OIDN_PREBUILT_ROOT}/include)
+target_link_libraries(CookLib PRIVATE ${OIDN_PREBUILT_ROOT}/lib/OpenImageDenoise.lib)
 target_compile_definitions(Cook PRIVATE VULKANTOY_OIDN=1)
 target_include_directories(Cook PRIVATE ${OIDN_PREBUILT_ROOT}/include)
 target_link_libraries(Cook PRIVATE ${OIDN_PREBUILT_ROOT}/lib/OpenImageDenoise.lib)

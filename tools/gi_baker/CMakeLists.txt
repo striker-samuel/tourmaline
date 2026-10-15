@@ -1,8 +1,39 @@
 project(GiBaker)
 
+# GiBaker as a library (the editor links it and calls gibaker::Run
+# directly; the CLI below stays a thin argv interface over the same
+# code). The lib build excludes main() via GIBAKER_LIB_BUILD.
+add_library(GiBakerLib STATIC main.cpp)
+
+target_compile_definitions(GiBakerLib PRIVATE ENGINE_VULKAN GIBAKER_LIB_BUILD)
+
+target_include_directories(GiBakerLib
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/tools/common
+)
+
+target_link_libraries(GiBakerLib
+    PUBLIC
+        engine
+        gltf_import
+        volk
+        KTX::ktx
+)
+
 add_executable(GiBaker main.cpp)
 
 target_compile_definitions(GiBaker PRIVATE ENGINE_VULKAN)
+
+target_include_directories(GiBaker
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/tools/common
+)
+
+target_include_directories(GiBaker
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/tools/common
+)
 
 target_link_libraries(GiBaker
     PRIVATE

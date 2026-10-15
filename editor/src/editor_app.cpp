@@ -28,6 +28,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/Profile/profile.h>
@@ -1030,8 +1031,10 @@ bool EditorApp::TryLoadCvolumes() {
 		}
 	if (manifestPath.empty())
 		return false;
-	// One .cvol vfs path per line ('#' comments skipped). Lines are
-	// relative to the CONTENT ROOT (the manifest's parent's parent).
+	// One .cvol vfs path per line (inline '#' comments + legacy guid
+	// columns handled by the shared parser, like every other manifest
+	// reader). Relative lines resolve against the CONTENT ROOT (the
+	// manifest's parent's parent); absolute host paths pass through.
 	std::ifstream in(manifestPath);
 	if (!in)
 		return false;
@@ -1039,11 +1042,10 @@ bool EditorApp::TryLoadCvolumes() {
 	std::string line;
 	int loaded = 0;
 	while (std::getline(in, line)) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
-			line.pop_back();
-		if (line.empty() || line[0] == '#')
+		const std::string row = smvk::bake::SplitManifestRow(line);
+		if (row.empty())
 			continue;
-		fs::path volPath = fs::path(line);
+		fs::path volPath = fs::path(row);
 		if (volPath.is_relative())
 			volPath = (contentRoot / volPath).lexically_normal();
 		smvk::gi::CvVolume vol;

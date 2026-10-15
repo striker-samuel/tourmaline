@@ -2352,6 +2352,10 @@ private:
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Render | Material
 	int m_bottomTab = 0; // bottom dock: Overrides | Console | Assets | Cook
+	// File > Export... requests the Cook tab: consumed once by the
+	// BottomDock tab bar (ImGuiTabItemFlags_SetSelected) — setting
+	// m_bottomTab alone does NOT switch tabs (ImGui owns selection).
+	bool m_wantCookTab = false;
 	void DrawSceneOutliner();
 	void DrawUvPanel();
 	// Content root for definition-source resolution ("models/..." style

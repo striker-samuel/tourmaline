@@ -115,6 +115,8 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include "terrain_cook.h"
+#include "pak_tool.h"
+#include <tool_log.h>
 #include <Engine/GI/bake.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
@@ -130,7 +132,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <meshoptimizer.h>
 
-namespace {
+namespace paktool {
 
 	struct Args {
 		std::string contentDir = "content";
@@ -283,7 +285,7 @@ namespace {
 			return;
 		cluster.RegisterLightUri("sun/world", h);
 		cluster.scene.lightForNode[uint32_t(node)] = h.index();
-		std::cout << "World sun synthesized (env block): az=" << be.sunAzimuth
+		tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
 			<< " el=" << be.sunElevation << " I=" << be.sunIntensity
 			<< " rgb=(" << be.sunColor.x << "," << be.sunColor.y
 			<< "," << be.sunColor.z << ")\n";
@@ -368,7 +370,7 @@ namespace {
 			const std::string a = argv[i];
 			auto need = [&](std::string& dst) {
 				if (i + 1 >= argc) {
-					std::cerr << "Missing value for " << a << std::endl;
+					tool::err() << "Missing value for " << a << std::endl;
 					return false;
 				}
 				dst = argv[++i];
@@ -384,7 +386,7 @@ namespace {
 				continue;
 			}
 			else {
-				std::cerr << "Artifact '" << a << "' after flags: all"
+				tool::err() << "Artifact '" << a << "' after flags: all"
 					" artifacts come before the first --option"
 					<< std::endl;
 				return false;
@@ -478,7 +480,7 @@ namespace {
 				if (in >> c.x >> c.y >> c.z)
 					out.sunColor = c;
 				else {
-					std::cerr << "Bad --sun-color (want r,g,b): " << v << std::endl;
+					tool::err() << "Bad --sun-color (want r,g,b): " << v << std::endl;
 					return false;
 				}
 				out.explicitSet.insert("sunColor");
@@ -503,7 +505,7 @@ namespace {
 			return false;
 		}
 		else {
-			std::cerr << "Unknown arg: " << a << std::endl;
+			tool::err() << "Unknown arg: " << a << std::endl;
 			return false;
 		}
 	}
@@ -511,7 +513,7 @@ namespace {
 	if (!out.dumpPak.empty())
 		return true; // inspection mode needs no cook inputs
 	if (positional.empty()) {
-		std::cerr << "Required: pak.exe <vfs_path> <artifact...> [--options]"
+		tool::err() << "Required: pak.exe <vfs_path> <artifact...> [--options]"
 			" - the VFS content root + the processed .geometry list"
 			" (import raw glTF with import.exe / the editor first)"
 			<< std::endl;
@@ -523,14 +525,14 @@ namespace {
 		out.inVfs = out.inVfsList.front();
 	}
 	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()) {
-		std::cerr << "Required: at least one artifact .geometry (or --tour"
+		tool::err() << "Required: at least one artifact .geometry (or --tour"
 		" <scene.tour> - the editor-authored definition), and"
 		" --out-pak <host path> (--terrain <dir> alone cooks a"
 		" terrain-only pak)" << std::endl;
 		return false;
 	}
 	if (out.outPak.empty()) {
-		std::cerr << "Required: --out-pak <host path>" << std::endl;
+		tool::err() << "Required: --out-pak <host path>" << std::endl;
 		return false;
 	}
 	// --tour is the DEFINITION (self-contained: the source glTF rides
@@ -539,7 +541,7 @@ namespace {
 }
 
 	void Usage() {
-		std::cout << "pak.exe <vfs_path> <artifact...> [--options]\n"
+		tool::out() << "pak.exe <vfs_path> <artifact...> [--options]\n"
 			<< "          pak.exe F:/content models/sponza/Sponza.geometry\n"
 			<< "              --out-pak F:/content/paks/sponza.pak [...]\n"
 			<< "          (ASSEMBLY ONLY: cooked artifacts + loose bake\n"
@@ -600,7 +602,7 @@ namespace {
 	// from the in-memory Cluster, so the dump reflects the actual bytes).
 	void DumpManifestFromPak(const smvk::PakReader& reader,
 		const std::vector<uint32_t>& onlyNodes = {}) {
-		std::cout << "  manifest (pak-sourced):\n";
+		tool::out() << "  manifest (pak-sourced):\n";
 
 		// Meshes.
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Mesh)) {
@@ -615,7 +617,7 @@ namespace {
 			// uv-sweep audit walks garbage indices OOB and AVs instead of
 			// reporting the blob.
 			if (!c.ok || vc == 0 || vc > 16 * 1024 * 1024 || ic > 64 * 1024 * 1024 || sc > 4096) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			for (uint32_t s = 0; s < sc; ++s) { (void)c.u32(); (void)c.u32(); (void)c.i32(); }
@@ -646,7 +648,7 @@ namespace {
 				c.ok = false;
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			// ---- stream layout (packed-SoA; see cluster_serializer.cpp) ----
@@ -665,7 +667,7 @@ namespace {
 					|| (size_t)posOff + (size_t)vc * sizeof(smvk::VertexPos) > c.img.size()
 					|| (size_t)shadeOff + (size_t)vc * sizeof(smvk::VertexShading) > c.img.size()
 					|| (size_t)idxOff + (size_t)ic * 4 > c.img.size()) {
-					std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+					tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 					continue;
 				}
 				posBase = (size_t)posOff;
@@ -869,7 +871,7 @@ namespace {
 					c.ok = false;
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+				tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 				continue;
 			}
 			// ---- meshlet-walk audit: localIndex -> window -> global ----
@@ -1010,11 +1012,11 @@ namespace {
 				}
 			}
 			if (mlTruncated) {
-				std::cout << "    [truncated meshlet trailer: " << e->path
+				tool::out() << "    [truncated meshlet trailer: " << e->path
 					<< "]\n";
 				continue;
 			}
-			std::cout << "    mesh " << uri
+			tool::out() << "    mesh " << uri
 				<< " verts=" << vc << " idx=" << ic
 				<< " lod{g=" << groupId << " i=" << lodIndex << " n=" << candidates
 				<< " tris=" << tris << " err=" << simplifyError
@@ -1022,7 +1024,7 @@ namespace {
 				<< " meshlets=" << meshlets
 				<< " lmChunk=" << (lmChunk == 0xFFFFFFFFu ? -1 : int(lmChunk));
 			if (lmChunk != 0xFFFFFFFFu)
-				std::cout << " charts=" << lmXforms
+				tool::out() << " charts=" << lmXforms
 				<< " uv2span=" << maxUv2Span
 				<< " bigtris=" << bigUv2Tris
 				<< " densmed=" << densMed
@@ -1036,11 +1038,11 @@ namespace {
 				<< " chartidmax=" << (haveChartId ? int(chartIdMax) : -1)
 				<< " oobslice=" << oobSlice;
 			if (meshlets > 0)
-				std::cout << " mlbigtris=" << mlBigTris
+				tool::out() << " mlbigtris=" << mlBigTris
 				<< " mlsetdiff=" << mlSetDiff
 				<< " mlbadlocal=" << mlBadLocal
 				<< " mloob=" << mlOob;
-			std::cout << "\n";
+			tool::out() << "\n";
 		}
 
 		// Materials (blob: str uri | 128B MaterialValues | u32 shading |
@@ -1051,7 +1053,7 @@ namespace {
 			DumpCursor c{ reader.Payload(*e), 0 };
 			const std::string uri = c.str();
 			if (c.off + 128 > c.img.size()) {
-				std::cout << "    mat  " << uri << " [truncated values]\n";
+				tool::out() << "    mat  " << uri << " [truncated values]\n";
 				continue;
 			}
 			// Decode the texture-slot indices baked into MaterialValues
@@ -1083,17 +1085,17 @@ namespace {
 				texUris[k] = c.str();
 			const uint32_t cs = c.u32();
 			if (!c.ok) {
-				std::cout << "    mat  " << uri << " [truncated blob]\n";
+				tool::out() << "    mat  " << uri << " [truncated blob]\n";
 				continue;
 			}
-			std::cout << "    mat  " << uri
+			tool::out() << "    mat  " << uri
 				<< " shading=" << shading << " alpha=" << alpha
 				<< " cutoff=" << cutoff << " ds=" << ds
 				<< " cast=" << cs
 				<< " metal=" << metal << " rough=" << rough << "\n";
 			static const char* kNames[5] = { "bc", "mr", "n", "occ", "e" };
 			for (int k = 0; k < 5; ++k) {
-				std::cout << "      " << kNames[k] << " slot=" << slots[k]
+				tool::out() << "      " << kNames[k] << " slot=" << slots[k]
 					<< " uri=" << (texUris[k].empty() ? "<none>" : texUris[k]) << "\n";
 			}
 		}
@@ -1103,11 +1105,11 @@ namespace {
 			std::vector<smvk::GiBinding> bindings;
 			std::string gerr;
 			if (!smvk::ParseGiRegistryBlob(reader.Payload(*e), bindings, gerr)) {
-				std::cout << "    [malformed gi registry blob: " << e->path << "]\n";
+				tool::out() << "    [malformed gi registry blob: " << e->path << "]\n";
 				continue;
 			}
 			for (const auto& b : bindings) {
-				std::cout << "    gi   "
+				tool::out() << "    gi   "
 					<< (b.kind == smvk::GiBinding::Kind::Lightmap ? "lightmap" : "probe")
 					<< " '" << b.name << "'\n";
 			}
@@ -1117,10 +1119,10 @@ namespace {
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
 			if (smvk::ParseTexturePayload(reader.Payload(*e), p)) {
-				std::cout << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
+				tool::out() << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
 			}
 			else {
-				std::cout << "    [malformed texture blob: " << e->path << "]\n";
+				tool::out() << "    [malformed texture blob: " << e->path << "]\n";
 			}
 		}
 
@@ -1135,16 +1137,16 @@ namespace {
 			const float inner = c.f32(), outer = c.f32();
 			const std::string name = c.str();
 			if (!c.ok) {
-				std::cout << "    [truncated light blob: " << e->path << "]\n";
+				tool::out() << "    [truncated light blob: " << e->path << "]\n";
 				continue;
 			}
 			const char* tname = type == 0 ? "dir" : (type == 2 ? "spot" : "point");
-			std::cout << "    light " << uri << " '" << name << "' " << tname
+			tool::out() << "    light " << uri << " '" << name << "' " << tname
 				<< " rgb=(" << r << "," << g << "," << b << ")"
 				<< " I=" << intensity << " range=" << range;
 			if (type == 2)
-				std::cout << " inner=" << inner << " outer=" << outer;
-			std::cout << "\n";
+				tool::out() << " inner=" << inner << " outer=" << outer;
+			tool::out() << "\n";
 		}
 
 		// Cameras (blob: str uri | u32 projection | f32 fovY | f32 orthoHalfH
@@ -1157,10 +1159,10 @@ namespace {
 			const float nearClip = c.f32(), farClip = c.f32();
 			const std::string name = c.str();
 			if (!c.ok || proj > 1) {
-				std::cout << "    [truncated camera blob: " << e->path << "]\n";
+				tool::out() << "    [truncated camera blob: " << e->path << "]\n";
 				continue;
 			}
-			std::cout << "    camera " << uri << " '" << name << "' "
+			tool::out() << "    camera " << uri << " '" << name << "' "
 				<< (proj == 1 ? "ortho" : "persp")
 				<< " fovY=" << fovY << " halfH=" << halfH
 				<< " near=" << nearClip << " far=" << farClip << "\n";
@@ -1186,7 +1188,7 @@ namespace {
 			DumpCursor c{ reader.Payload(*e), 0 };
 			const uint32_t nodeCount = c.u32();
 			if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024) {
-				std::cout << "    [bad scene blob]\n";
+				tool::out() << "    [bad scene blob]\n";
 				continue;
 			}
 			const auto infoIt = sceneInfo.find(e->path);
@@ -1195,7 +1197,7 @@ namespace {
 			const std::string dispName = infoIt != sceneInfo.end()
 				? infoIt->second.second : std::string{};
 			++sceneIdx;
-			std::cout << "    scene[" << dispIdx << "] '" << dispName
+			tool::out() << "    scene[" << dispIdx << "] '" << dispName
 				<< "' (" << e->path << "):\n";
 			std::vector<int32_t> parent(nodeCount, -1);
 			for (uint32_t i = 0; i < nodeCount; ++i) {
@@ -1308,10 +1310,10 @@ namespace {
 				}
 			}
 			if (!c.ok) {
-				std::cout << "    [truncated scene blob]\n";
+				tool::out() << "    [truncated scene blob]\n";
 				continue;
 			}
-			std::cout << "    scene nodes=" << nodeCount
+			tool::out() << "    scene nodes=" << nodeCount
 				<< " lightLinks=" << lightMap.size()
 				<< " camLinks=" << camMap.size() << ":\n";
 			// Print mesh-bearing nodes + renamed/noLM/interesting ones. Full
@@ -1338,70 +1340,68 @@ namespace {
 				const bool hasCam = cit != camMap.end();
 				if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !hasCam && !ditherFlag)
 					continue;
-				std::cout << "      node " << i << " '" << nm << "' parent=" << parent[i];
+				tool::out() << "      node " << i << " '" << nm << "' parent=" << parent[i];
 				if (pinpoint)
-					std::cout << " t=(" << localT[i * 3 + 0] << ","
+					tool::out() << " t=(" << localT[i * 3 + 0] << ","
 					<< localT[i * 3 + 1] << "," << localT[i * 3 + 2] << ")";
 				if (hasMesh)
-					std::cout << " mesh=" << meshMap[i];
+					tool::out() << " mesh=" << meshMap[i];
 				auto mit = matMap.find(i);
 				if (mit != matMap.end())
-					std::cout << " mat=" << mit->second;
+					tool::out() << " mat=" << mit->second;
 				if (hasLight)
-					std::cout << " light=" << lit->second;
+					tool::out() << " light=" << lit->second;
 				if (hasCam)
-					std::cout << " cam=" << cit->second;
+					tool::out() << " cam=" << cit->second;
 				if (noLmFlag)
-					std::cout << " noLM=1";
+					tool::out() << " noLM=1";
 				if (ditherFlag)
-					std::cout << " dither=1";
-				std::cout << "\n";
+					tool::out() << " dither=1";
+				tool::out() << "\n";
 				if (!pinpoint && ++shown > 200) {
-					std::cout << "      ... (truncated)\n";
+					tool::out() << "      ... (truncated)\n";
 					break;
 				}
 			}
 		}
 	}
 
-} // namespace
+// (namespace paktool stays open through Run below; the helpers above
+// and Run share it, so Args resolves unqualified.)
 
-
-int main(int argc, char** argv) {
-	// Unbuffered pipe output: the editor tails this process through a
-	// _popen pipe and streams each line live to its Console. Without
-	// this, stdout stays block-buffered when piped and no progress
-	// appears until the cook finishes (looks stuck).
-	std::cout << std::unitbuf;
-	std::cerr << std::unitbuf;
+// Runs the pak assembly; returns the process exit code (byte-identical
+// to the CLI run). See pak_tool.h.
+int Run(const PakArgs& c) {
 	Args args;
-	if (!ParseArgs(argc, argv, args)) {
-		Usage();
-		return 2;
-	}
+	args.contentDir = c.contentDir;
+	args.inVfsList = c.inVfsList;
+	args.inVfs = c.inVfs;
+	args.tour = c.tour;
+	args.scratchDir = c.scratchDir;
+	args.outPak = c.outPak;
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
 		std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
 		if (!rf) {
-			std::cerr << "Cannot open pak: " << args.dumpPak << std::endl;
+			tool::err() << "Cannot open pak: " << args.dumpPak << std::endl;
 			return 1;
 		}
 		const auto size = rf.tellg();
 		rf.seekg(0);
 		std::vector<uint8_t> image(static_cast<size_t>(size));
 		if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
-			std::cerr << "Read failed: " << args.dumpPak << std::endl;
+			tool::err() << "Read failed: " << args.dumpPak << std::endl;
 			return 1;
 		}
 		std::string verr;
 		auto reader = smvk::PakReader::Open(
 			std::span<const uint8_t>(image), verr);
 		if (!reader) {
-			std::cerr << "PakReader rejected: " << verr << std::endl;
+			tool::err() << "PakReader rejected: " << verr << std::endl;
 			return 1;
 		}
-		std::cout << "Pak " << args.dumpPak << ": entries=" << reader->EntryCount()
+		tool::out() << "Pak " << args.dumpPak << ": entries=" << reader->EntryCount()
 			<< " meshes=" << reader->BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
@@ -1415,9 +1415,9 @@ int main(int argc, char** argv) {
 			std::string lerr;
 			auto scenes = smvk::ListPakScenes(*reader, &lerr);
 			if (scenes.empty() && !lerr.empty())
-				std::cerr << "Scene list failed: " << lerr << std::endl;
+				tool::err() << "Scene list failed: " << lerr << std::endl;
 			for (size_t i = 0; i < scenes.size(); ++i)
-				std::cout << "  scene[" << i << "] '" << scenes[i].name
+				tool::out() << "  scene[" << i << "] '" << scenes[i].name
 				<< "' nodes=" << scenes[i].nodes << "\n";
 		}
 		DumpManifestFromPak(*reader, args.dumpNodes);
@@ -1460,16 +1460,16 @@ int main(int argc, char** argv) {
 				scratchAdapter =
 					std::make_unique<StoreArtifactCacheAdapter>(
 						*scratchStore);
-				std::cout << "Scratch cache: " << root << "\n";
+				tool::out() << "Scratch cache: " << root << "\n";
 			}
 			else {
-				std::cerr << "Scratch cache db open failed (" << dbErr
+				tool::err() << "Scratch cache db open failed (" << dbErr
 					<< ") â€” cooking without acceleration\n";
 				scratchDb.reset();
 			}
 		}
 		else {
-			std::cerr << "Scratch root unusable: " << args.scratchDir
+			tool::err() << "Scratch root unusable: " << args.scratchDir
 				<< " â€” cooking without acceleration\n";
 		}
 	}
@@ -1491,12 +1491,12 @@ int main(int argc, char** argv) {
 		std::string terr;
 		std::vector<std::string> twarn;
 		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
-			std::cerr << "Tour load failed: " << terr << std::endl;
+			tool::err() << "Tour load failed: " << terr << std::endl;
 			return 1;
 		}
 		haveTour = true;
 		for (auto& w : twarn)
-			std::cerr << "Tour warning: " << w << std::endl;
+			tool::err() << "Tour warning: " << w << std::endl;
 		// The tour's root reference doubles as the artifact identity when
 		// the positional list is empty (the "Cooked <identity> -> ..." log
 		// + SidecarStems: bake-asset logicals key on the SCENE stem, so
@@ -1509,7 +1509,7 @@ int main(int argc, char** argv) {
 			auto use = [&](const char* key, auto& dst, auto val) {
 				if (!args.explicitSet.contains(key)) {
 					dst = val;
-					std::cout << "Tour cook default: " << key << "\n";
+					tool::out() << "Tour cook default: " << key << "\n";
 				}
 			};
 			use("meshopt", args.meshopt, k.meshopt);
@@ -1540,7 +1540,7 @@ int main(int argc, char** argv) {
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
 					artifactCache);
-				std::cout << "Definition: bound " << applied
+				tool::out() << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";
 			}
@@ -1563,7 +1563,7 @@ int main(int argc, char** argv) {
 				if (hp.empty() || !fs::exists(hp, ec))
 					hp = fs::path(ta.path);
 				if (!fs::exists(hp, ec)) {
-					std::cerr << "Tour textureAsset not found: '"
+					tool::err() << "Tour textureAsset not found: '"
 						<< ta.path << "' (under --content-dir '"
 						<< args.contentDir << "', then as-is)\n";
 					return 1;
@@ -1571,13 +1571,13 @@ int main(int argc, char** argv) {
 				std::string imErr;
 				if (smvk::assets::ImportTextureAssetToCluster(
 					*cluster, hp, nullptr, imErr).empty()) {
-					std::cerr << "Tour textureAsset import failed: '"
+					tool::err() << "Tour textureAsset import failed: '"
 						<< ta.path << "': " << imErr << "\n";
 					return 1;
 				}
 			}
 			if (!tour.textureAssets.empty())
-				std::cout << "Definition: imported "
+				tool::out() << "Definition: imported "
 				<< tour.textureAssets.size()
 				<< " texture asset(s)\n";
 			// Material-asset POOL imports (ordered; see the tour's
@@ -1607,7 +1607,7 @@ int main(int argc, char** argv) {
 				if (hp.empty() || !fs::exists(hp, ec))
 					hp = fs::path(ma.path);
 				if (!fs::exists(hp, ec)) {
-					std::cerr << "Tour materialAsset not found: '"
+					tool::err() << "Tour materialAsset not found: '"
 						<< ma.path << "' (under --content-dir '"
 						<< args.contentDir << "', then as-is)\n";
 					return 1;
@@ -1615,25 +1615,25 @@ int main(int argc, char** argv) {
 				std::string imErr;
 				if (smvk::assets::ImportMaterialAssetToCluster(
 					*cluster, hp, nullptr, imErr).empty()) {
-					std::cerr << "Tour materialAsset import failed: '"
+					tool::err() << "Tour materialAsset import failed: '"
 						<< ma.path << "': " << imErr << "\n";
 					return 1;
 				}
 			}
 			if (!tour.materialAssets.empty())
-				std::cout << "Definition: imported "
+				tool::out() << "Definition: imported "
 				<< tour.materialAssets.size()
 				<< " material asset(s)\n";
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
 				&rerr)) {
-				std::cerr << "Tour replay failed: " << rerr << std::endl;
+				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
 			for (auto& w : rwarn)
-				std::cerr << "Tour replay warning: " << w << std::endl;
-			std::cout << "Tour replayed: " << tour.commands.size()
+				tool::err() << "Tour replay warning: " << w << std::endl;
+			tool::out() << "Tour replayed: " << tour.commands.size()
 				<< " commands from " << args.tour << "\n";
 			sceneNames.push_back("scene");
 			sceneClusters.push_back(std::move(cluster));
@@ -1658,7 +1658,7 @@ int main(int argc, char** argv) {
 				artPath = inVfs; // host-style path (as-is)
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
-				std::cerr << "Artifact read failed: '" << inVfs
+				tool::err() << "Artifact read failed: '" << inVfs
 					<< "' not in VFS (want the derived .geometry â€” import "
 					"the source glTF first: import.exe / the editor's "
 					"MeshImporter)" << std::endl;
@@ -1668,7 +1668,7 @@ int main(int argc, char** argv) {
 			std::string aerr;
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 				artBytes->size(), meshAsset, aerr)) {
-				std::cerr << "Artifact parse failed: '" << inVfs
+				tool::err() << "Artifact parse failed: '" << inVfs
 					<< "': " << aerr << " (re-import the source glTF — "
 					"the MeshImporter overwrites the artifacts)"
 					<< std::endl;
@@ -1692,7 +1692,7 @@ int main(int argc, char** argv) {
 					smvk::vfs::BaseDir(artPath), stem + ".cooked");
 				if (auto manBytes = vfs.TryRead(manRel);
 					!manBytes || manBytes->empty()) {
-					std::cerr << "Artifact not cooked: '" << inVfs
+					tool::err() << "Artifact not cooked: '" << inVfs
 						<< "' has no '" << manRel << "' (run cook.exe "
 						"on the artifact first — pak.exe assembles "
 						"cooked artifacts only)" << std::endl;
@@ -1704,7 +1704,7 @@ int main(int argc, char** argv) {
 				const auto manTime = std::filesystem::last_write_time(
 					std::filesystem::path(args.contentDir) / manRel, ec2);
 				if (!ec1 && !ec2 && artTime > manTime) {
-					std::cerr << "Artifact stale: '" << inVfs
+					tool::err() << "Artifact stale: '" << inVfs
 						<< "' is newer than its '" << manRel
 						<< "' (re-derived after the cook — rerun cook.exe)"
 						<< std::endl;
@@ -1756,7 +1756,7 @@ int main(int argc, char** argv) {
 				meshAsset, meshManifest, artPath, 0, texSrc, args.autoKtx,
 				artifactCache, readSibling);
 			if (built == 0) {
-				std::cerr << "Artifact build failed: '" << inVfs
+				tool::err() << "Artifact build failed: '" << inVfs
 					<< "' built 0 nodes (degenerate/empty â€” re-import "
 					"the source glTF)" << std::endl;
 				return 1;
@@ -1772,13 +1772,13 @@ int main(int argc, char** argv) {
 					else if (l->type == SceneLight::Type::Spot) ++nSpot;
 					else ++nPoint;
 				});
-				std::cout << "Artifact built: " << built << " nodes, "
+				tool::out() << "Artifact built: " << built << " nodes, "
 					<< cluster->lights.numObjects() << " lights"
 					<< " (dir=" << nDir << " point=" << nPoint
 					<< " spot=" << nSpot << ", links="
 					<< cluster->scene.lightForNode.size() << ")\n";
 			}
-			std::cout << "Cooking artifact: '" << inVfs << "'\n";
+			tool::out() << "Cooking artifact: '" << inVfs << "'\n";
 			sceneNames.push_back("");
 			sceneClusters.push_back(std::move(cluster));
 		}
@@ -1808,7 +1808,7 @@ int main(int argc, char** argv) {
 				smvk::vfs::BaseDir(file), stem + ".cooked");
 			if (auto manBytes = vfs.TryRead(manRel);
 				!manBytes || manBytes->empty()) {
-				std::cerr << "Tour source not cooked: '" << file
+				tool::err() << "Tour source not cooked: '" << file
 					<< "' has no '" << manRel << "' (run cook.exe "
 					"--tour first — pak.exe assembles cooked "
 					"artifacts only)" << std::endl;
@@ -1820,7 +1820,7 @@ int main(int argc, char** argv) {
 			const auto manTime = std::filesystem::last_write_time(
 				std::filesystem::path(args.contentDir) / manRel, ec2);
 			if (!ec1 && !ec2 && artTime > manTime) {
-				std::cerr << "Tour source stale: '" << file
+				tool::err() << "Tour source stale: '" << file
 					<< "' is newer than its '" << manRel
 					<< "' (re-derived after the cook — rerun cook.exe "
 					"--tour)" << std::endl;
@@ -1835,10 +1835,10 @@ int main(int argc, char** argv) {
 		const size_t staged = scratchStore->StagedCount();
 		std::string flushErr;
 		if (scratchStore->Flush(flushErr))
-			std::cout << "Scratch cache: " << staged
+			tool::out() << "Scratch cache: " << staged
 			<< " texture artifact(s) flushed\n";
 		else
-			std::cerr << "Scratch flush failed: " << flushErr
+			tool::err() << "Scratch flush failed: " << flushErr
 			<< " (staged stands; the pak output is unaffected)\n";
 	}
 	// Single-scene alias for the tour/collapse/bake stages below (written
@@ -1912,7 +1912,7 @@ int main(int argc, char** argv) {
 			e.sunAzimuth += 360.0f;
 		e.sunColor = sunColor;
 		e.sunIntensity = sunLux; // lux-native env: straight in
-		std::cout << "Env sun resolved from the sun light: az="
+		tool::out() << "Env sun resolved from the sun light: az="
 			<< e.sunAzimuth << " el=" << e.sunElevation
 			<< " I=" << e.sunIntensity << " (lux)\n";
 	}
@@ -1945,7 +1945,7 @@ int main(int argc, char** argv) {
 	for (const std::string& probe : args.giProbes) {
 		for (auto& sc : sceneClusters)
 			sc->RegisterGiBinding(smvk::GiBinding::Kind::Probe, probe);
-		std::cout << "Registered probe GI '" << probe << "'\n";
+		tool::out() << "Registered probe GI '" << probe << "'\n";
 	}
 	// Cubemap manifest (the stage above minted it when the set baked
 	// > 1 capture): registered by its stable base name â€” the runtime
@@ -1954,7 +1954,7 @@ int main(int argc, char** argv) {
 		for (auto& sc : sceneClusters)
 			sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
 				cubemapManifestBase);
-		std::cout << "Registered cubemap manifest GI '"
+		tool::out() << "Registered cubemap manifest GI '"
 			<< cubemapManifestBase << "'\n";
 	}
 	// LOOSE cubemap bakes (an earlier --cubemap run / the editor's
@@ -1977,7 +1977,7 @@ int main(int argc, char** argv) {
 				reinterpret_cast<const char*>(manifest.data()),
 				manifest.size());
 			if (!smvk::CubemapManifestParse(text, rows, mErr)) {
-				std::cerr << "loose cubemap manifest '" << mrel
+				tool::err() << "loose cubemap manifest '" << mrel
 					<< "' rejected: " << mErr << " â€” not embedded\n";
 				continue;
 			}
@@ -1986,7 +1986,7 @@ int main(int argc, char** argv) {
 				std::vector<uint8_t> ktx =
 					ReadSidecarFile(args.contentDir, row.vfsPath);
 				if (ktx.empty()) {
-					std::cerr << "loose cubemap row '" << row.vfsPath
+					tool::err() << "loose cubemap row '" << row.vfsPath
 						<< "' unreadable â€” not embedded\n";
 					continue;
 				}
@@ -1995,7 +1995,7 @@ int main(int argc, char** argv) {
 			for (auto& sc : sceneClusters)
 				sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
 					stem);
-			std::cout << "Registered + embedded loose cubemap manifest '"
+			tool::out() << "Registered + embedded loose cubemap manifest '"
 				<< stem << "' (" << rows.size() << " captures)\n";
 			break;
 		}
@@ -2033,7 +2033,7 @@ int main(int argc, char** argv) {
 				std::vector<uint8_t> bytes =
 					ReadSidecarFile(args.contentDir, vfsPath);
 				if (bytes.empty()) {
-					std::cerr << "probe bake '" << vfsPath
+					tool::err() << "probe bake '" << vfsPath
 						<< "' unreadable â€” not embedded\n";
 				}
 				else {
@@ -2041,7 +2041,7 @@ int main(int argc, char** argv) {
 					for (auto& sc : sceneClusters)
 						sc->RegisterGiBinding(
 							smvk::GiBinding::Kind::Probe, stem);
-					std::cout << "Registered + embedded probe GI '"
+					tool::out() << "Registered + embedded probe GI '"
 						<< stem << "' (scene '" << pakStem << "')\n";
 				}
 			}
@@ -2071,7 +2071,7 @@ int main(int argc, char** argv) {
 					&& !giBlobs.empty()) {
 					for (auto& sc : sceneClusters)
 						sc->RegisterGiBinding(kind, pakStem);
-					std::cout << "Registered embedded cvolmanifest GI '"
+					tool::out() << "Registered embedded cvolmanifest GI '"
 						<< pakStem << "' (cooked into this pak)\n";
 				}
 				continue;
@@ -2081,7 +2081,7 @@ int main(int argc, char** argv) {
 			std::vector<uint8_t> manifest =
 				ReadSidecarFile(args.contentDir, manifestVfs);
 			if (manifest.empty()) {
-				std::cerr << "volume manifest '" << manifestVfs
+				tool::err() << "volume manifest '" << manifestVfs
 					<< "' unreadable â€” binding kept, not embedded\n";
 			}
 			else {
@@ -2108,7 +2108,7 @@ int main(int argc, char** argv) {
 					std::vector<uint8_t> bytes =
 						ReadSidecarFile(args.contentDir, row);
 					if (bytes.empty()) {
-						std::cerr << "sidecar volume '" << row
+						tool::err() << "sidecar volume '" << row
 							<< "' unreadable â€” not embedded\n";
 						continue;
 					}
@@ -2117,7 +2117,7 @@ int main(int argc, char** argv) {
 			}
 			for (auto& sc : sceneClusters)
 				sc->RegisterGiBinding(kind, stem);
-			std::cout << "Registered " << ext << " GI '" << stem
+			tool::out() << "Registered " << ext << " GI '" << stem
 				<< "' (scene '" << pakStem << "')\n";
 		}
 	}
@@ -2136,13 +2136,13 @@ int main(int argc, char** argv) {
 		// Anything else was rejected at ParseArgs (artifacts/tour empty
 		// without --terrain never reaches here).
 		if (args.terrainDir.empty()) {
-			std::cerr << "Serialize failed: no clusters to serialize"
+			tool::err() << "Serialize failed: no clusters to serialize"
 				<< std::endl;
 			return 1;
 		}
 	}
 	else if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err)) {
-		std::cerr << "Serialize failed: " << err << std::endl;
+		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
 	// Preconvolved cubemaps ride as Texture blobs under their VFS paths
@@ -2156,12 +2156,12 @@ int main(int argc, char** argv) {
 			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(ktx));
 		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
 			std::move(payload))) {
-			std::cerr << "Cubemap AddBlob failed: " << vfsPath << std::endl;
+			tool::err() << "Cubemap AddBlob failed: " << vfsPath << std::endl;
 			return 1;
 		}
 		const bool isManifest = vfsPath.size() >= 13
 			&& vfsPath.compare(vfsPath.size() - 13, 13, ".cubemanifest") == 0;
-		std::cout << (isManifest ? "Embedded cubemap manifest " : "Embedded cubemap ")
+		tool::out() << (isManifest ? "Embedded cubemap manifest " : "Embedded cubemap ")
 			<< vfsPath << " (" << ktx.size() << " B"
 			<< (isManifest ? " text" : " ktx2") << ")\n";
 	}
@@ -2177,10 +2177,10 @@ int main(int argc, char** argv) {
 			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(bytes));
 		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
 			std::move(payload))) {
-			std::cerr << "GI AddBlob failed: " << vfsPath << std::endl;
+			tool::err() << "GI AddBlob failed: " << vfsPath << std::endl;
 			return 1;
 		}
-		std::cout << "Embedded GI " << vfsPath
+		tool::out() << "Embedded GI " << vfsPath
 			<< " (" << bytes.size() << " B)\n";
 	}
 	// Tiled terrain (optional, independent of clusters): terrain.json +
@@ -2190,7 +2190,7 @@ int main(int argc, char** argv) {
 	if (!args.terrainDir.empty()) {
 		std::string terrErr;
 		if (!terraincook::CookTerrainBlobs(args.terrainDir, writer, terrErr)) {
-			std::cerr << "Terrain cook failed: " << terrErr << std::endl;
+			tool::err() << "Terrain cook failed: " << terrErr << std::endl;
 			return 1;
 		}
 	}
@@ -2202,7 +2202,7 @@ int main(int argc, char** argv) {
 		std::filesystem::create_directories(out.parent_path(), ec);
 		FILE* f = std::fopen(out.string().c_str(), "wb");
 		if (!f) {
-			std::cerr << "Cannot open output: " << args.outPak << std::endl;
+			tool::err() << "Cannot open output: " << args.outPak << std::endl;
 			return 1;
 		}
 		fwrite(pak.data(), 1, pak.size(), f);
@@ -2212,7 +2212,7 @@ int main(int argc, char** argv) {
 	const auto t1 = std::chrono::steady_clock::now();
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
 
-	std::cout << "Cooked " << (args.inVfs.empty() ? "(terrain-only)" : args.inVfs)
+	tool::out() << "Cooked " << (args.inVfs.empty() ? "(terrain-only)" : args.inVfs)
 		<< (args.inVfsList.size() > 1
 			? " +" + std::to_string(args.inVfsList.size() - 1)
 				+ " more artifact(s)"
@@ -2248,14 +2248,14 @@ int main(int argc, char** argv) {
 	if (args.verify || args.dumpManifest) {
 		std::ifstream rf(args.outPak, std::ios::binary | std::ios::ate);
 		if (!rf) {
-			std::cerr << "Verify: cannot re-open " << args.outPak << std::endl;
+			tool::err() << "Verify: cannot re-open " << args.outPak << std::endl;
 			return 1;
 		}
 		const auto size = rf.tellg();
 		rf.seekg(0);
 		std::vector<uint8_t> image(static_cast<size_t>(size));
 		if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
-			std::cerr << "Verify: read failed" << std::endl;
+			tool::err() << "Verify: read failed" << std::endl;
 			return 1;
 		}
 		std::string verr;
@@ -2264,7 +2264,7 @@ int main(int argc, char** argv) {
 		auto reader = smvk::PakReader::Open(
 			std::span<const uint8_t>(keepAlive), verr);
 		if (!reader) {
-			std::cerr << "Verify: PakReader rejected: " << verr << std::endl;
+			tool::err() << "Verify: PakReader rejected: " << verr << std::endl;
 			return 1;
 		}
 		verifyReader = std::move(reader);
@@ -2288,7 +2288,7 @@ int main(int argc, char** argv) {
 			else if (!smvk::ParseTexturePayload(reader.Payload(*e), p))
 				++badPayloads;
 		}
-		std::cout << "  verify: entries=" << reader.EntryCount()
+		tool::out() << "  verify: entries=" << reader.EntryCount()
 			<< " meshes=" << reader.BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader.BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader.BlobsOfKind(smvk::PakAssetKind::Texture).size()
@@ -2297,7 +2297,7 @@ int main(int argc, char** argv) {
 			<< " scene=" << reader.BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< (badPayloads ? " BAD PAYLOADS!" : " OK") << "\n";
 		if (badPayloads) {
-			std::cerr << "Verify: " << badPayloads << " malformed texture payload(s)\n";
+			tool::err() << "Verify: " << badPayloads << " malformed texture payload(s)\n";
 			return 1;
 		}
 	}
@@ -2309,3 +2309,32 @@ int main(int argc, char** argv) {
 
 	return 0;
 }
+
+} // namespace paktool
+
+// The CLI stays a thin interface over the library (same argv, same
+// output, same exit codes). The lib build (PAK_LIB_BUILD, linked
+// into the editor) excludes main.
+#ifndef PAK_LIB_BUILD
+int main(int argc, char** argv) {
+	// Unbuffered pipe output: hosts tailing this process through a
+	// pipe stream each line live. Without this, stdout stays
+	// block-buffered when piped and no progress appears until the
+	// cook finishes (looks stuck).
+	std::cout << std::unitbuf;
+	std::cerr << std::unitbuf;
+	paktool::Args args;
+	if (!paktool::ParseArgs(argc, argv, args)) {
+		paktool::Usage();
+		return 2;
+	}
+	paktool::PakArgs c;
+	c.contentDir = args.contentDir;
+	c.inVfsList = args.inVfsList;
+	c.inVfs = args.inVfs;
+	c.tour = args.tour;
+	c.scratchDir = args.scratchDir;
+	c.outPak = args.outPak;
+	return paktool::Run(c);
+}
+#endif
