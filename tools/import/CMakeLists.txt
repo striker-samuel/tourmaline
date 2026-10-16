@@ -18,3 +18,10 @@ PRIVATE
 gltf_import
 engine
 )
+# Live at the build root like Cook/Pak (RUNTIME_OUTPUT_DIRECTORY), where
+# the App's POST_BUILD staging already drops SDL3.dll: import.exe links
+# the engine (SDL3), so it needs that DLL next to it to run from its own
+# directory.
+set_target_properties(Import PROPERTIES
+RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
