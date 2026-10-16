@@ -26,7 +26,7 @@
 // CPU path-tracer capture as tools/cubemap_baker, GGX importance-sampled
 // mip chains via Engine/Renderer/cubemap_prefilter.h â€” roughness = mip /
 // (levels-1)) and embeds them as Texture blobs at
-// textures/cubemaps/<name>[_N].ktx2 (PakBackend serves them by VFS path,
+// gi/cubemaps/<name>[_N].ktx2 (PakBackend serves them by VFS path,
 // so CubemapLibrary::Load finds them with no code change). Probes and
 // lightmaps carry all diffuse + low-frequency specular; these cubes own
 // the high-frequency specular path only.
@@ -114,6 +114,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/level.h>
 #include "terrain_cook.h"
 #include "pak_tool.h"
 #include <tool_log.h>
@@ -189,6 +190,12 @@ namespace paktool {
 		// Terrain blobs ride the same pak (or a terrain-only pak with no
 		// artifacts/tour); empty = no terrain.
 		std::string terrainDir;
+		// LEVEL blob (the exploration spike; see Engine/Asset/level.h):
+		// when set, ONE composite levels/<name>.level blob packs the
+		// scene payload + the baked data blobs this pak carries (the
+		// cubemap set manifest + KTX2 rows, the GI payloads). The LEVEL
+		// — not the scene stem — owns the data. Empty = no level blob.
+		std::string levelName;
 		// Editor scratch-disk root (optional acceleration, NEVER a
 		// precondition): when set, the cook consults + feeds the artifact
 		// registry there â€” texture transcodes copy hash-validated payloads
@@ -500,6 +507,9 @@ namespace paktool {
 			}
 			else if (a == "--terrain") {
 				if (!need(out.terrainDir)) return false;
+			}
+			else if (a == "--level") {
+				if (!need(out.levelName)) return false;
 			}
 		else if (a == "--help" || a == "-h") {
 			return false;
@@ -1370,7 +1380,8 @@ namespace paktool {
 // and Run share it, so Args resolves unqualified.)
 
 // Runs the pak assembly; returns the process exit code (byte-identical
-// to the CLI run). See pak_tool.h.
+// to the CLI run). See pak_tool.h — PakArgs mirrors the full CLI
+// surface (the original lossy 6-field map is what this replaces).
 int Run(const PakArgs& c) {
 	Args args;
 	args.contentDir = c.contentDir;
@@ -1379,6 +1390,23 @@ int Run(const PakArgs& c) {
 	args.tour = c.tour;
 	args.scratchDir = c.scratchDir;
 	args.outPak = c.outPak;
+	args.dumpPak = c.dumpPak;
+	args.dumpNodes = c.dumpNodes;
+	args.dumpManifest = c.dumpManifest;
+	args.verify = c.verify;
+	args.compress = c.compress;
+	args.lz4Accel = c.lz4Accel;
+	args.meshopt = c.meshopt;
+	args.overdraw = c.overdraw;
+	args.autoKtx = c.autoKtx;
+	args.levelName = c.levelName;
+	args.terrainDir = c.terrainDir;
+	args.sunAzimuth = c.sunAzimuth;
+	args.sunElevation = c.sunElevation;
+	args.sunIntensity = c.sunIntensity;
+	args.skyIntensity = c.skyIntensity;
+	args.sunColor = c.sunColor;
+	args.giProbes = c.giProbes;
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
@@ -1410,6 +1438,7 @@ int Run(const PakArgs& c) {
 			<< " scenes=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< " gi=" << reader->BlobsOfKind(smvk::PakAssetKind::Gi).size()
 			<< " terrain=" << reader->BlobsOfKind(smvk::PakAssetKind::Terrain).size()
+			<< " levels=" << smvk::ListPakLevels(*reader).size()
 			<< "\n";
 		{
 			std::string lerr;
@@ -1419,6 +1448,24 @@ int Run(const PakArgs& c) {
 			for (size_t i = 0; i < scenes.size(); ++i)
 				tool::out() << "  scene[" << i << "] '" << scenes[i].name
 				<< "' nodes=" << scenes[i].nodes << "\n";
+		}
+		// Level detail: every level blob's name, scene key + sub-blob
+		// list (kind + key + bytes) — the playable units this pak packs.
+		for (const smvk::PakTocEntry* e : smvk::ListPakLevels(*reader)) {
+			smvk::LevelBlob lv;
+			if (!smvk::ParseLevelBlob(reader->Payload(*e), lv)) {
+				tool::err() << "  level '" << e->path
+					<< "' malformed\n";
+				continue;
+			}
+			tool::out() << "  level '" << lv.name << "' ("
+				<< e->path << ", " << lv.subs.size()
+				<< " sub-blob(s), scene='"
+				<< (lv.sceneKey.empty() ? "-" : lv.sceneKey)
+				<< "'):\n";
+			for (const smvk::LevelSubBlob& s : lv.subs)
+				tool::out() << "    " << uint32_t(s.kind) << " "
+					<< s.key << " (" << s.size << " B)\n";
 		}
 		DumpManifestFromPak(*reader, args.dumpNodes);
 		return 0;
@@ -1928,9 +1975,11 @@ int Run(const PakArgs& c) {
 
 	// ---------------------------------------------------------------------------
 	// Preconvolved specular cubemaps: the COOK baked + wrote them loose
-	// (textures/cubemaps/<base>[_N].ktx2 + the .cubemanifest); the loose
+	// (gi/cubemaps/<base>[_N].ktx2 + the .cubemanifest, via
+	// CubemapVfsPath/CubemapManifestVfsPath — the ID-keyed capture-set
+	// paths under the canonical gi/ bake-asset home); the loose
 	// discovery below embeds them as Texture blobs after SerializeClusters
-	// (PakBackend serves by path). Pak never captures â€” bake flags are
+	// (PakBackend serves by path). Pak never captures — bake flags are
 	// rejected above (run cook.exe).
 	// ---------------------------------------------------------------------------
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> cubemapKtx;
@@ -1948,8 +1997,8 @@ int Run(const PakArgs& c) {
 		tool::out() << "Registered probe GI '" << probe << "'\n";
 	}
 	// Cubemap manifest (the stage above minted it when the set baked
-	// > 1 capture): registered by its stable base name â€” the runtime
-	// loads textures/cubemaps/<base>.cubemanifest by path.
+	// > 1 capture): registered by its stable base name — the runtime
+	// loads gi/cubemaps/<base>.cubemanifest by path.
 	if (!cubemapManifestBase.empty()) {
 		for (auto& sc : sceneClusters)
 			sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
@@ -1959,14 +2008,16 @@ int Run(const PakArgs& c) {
 	}
 	// LOOSE cubemap bakes (an earlier --cubemap run / the editor's
 	// quick-bake left them at their stable paths): when the bake stage
-	// did not run, discover textures/cubemaps/<stem>.cubemanifest by the
-	// same stable stems and EMBED it + every row's KTX â€” no re-bake, the
+	// did not run, discover gi/cubemaps/<stem>.cubemanifest by the
+	// same stable stems and EMBED it + every row's KTX — no re-bake, the
 	// payloads ARE the bake output. Registered by its base like above;
 	// the embed loop below carries the cubemapKtx rows into the pak.
+	// Old-path (textures/cubemaps/) manifests are NOT discovered: the
+	// capture-set paths moved to gi/cubemaps/ (sanctioned break — recook).
 	if (cubemapManifestBase.empty()) {
 		for (const std::string& stem : SidecarStems(args)) {
 			const std::string mrel =
-				"textures/cubemaps/" + stem + ".cubemanifest";
+				"gi/cubemaps/" + stem + ".cubemanifest";
 			std::vector<uint8_t> manifest =
 				ReadSidecarFile(args.contentDir, mrel);
 			if (manifest.empty())
@@ -2194,6 +2245,26 @@ int Run(const PakArgs& c) {
 			return 1;
 		}
 	}
+	// ---- LEVEL blob (the exploration spike; see Engine/Asset/level.h) ----
+	// ONE composite levels/<name>.level blob packing the playable unit:
+	// the scene payload + the baked data this pak carries (the cubemap
+	// set manifest + KTX2 rows from cubemapKtx + the GI payloads from
+	// giBlobs). Sub-blobs are addressed by their canonical keys (the
+	// vfs paths the standalone blobs ride), so loaders consume the
+	// unpacked bytes unchanged — the LEVEL owns the data; the
+	// scene-stem sidecar association dies at the pak level.
+	// ORDERING: this runs AFTER the pak file write + AppendPakBlobs —
+	// the scene sub-blob comes straight out of the WRITTEN pak (the
+	// index-0 "#scene" entry), never a second serialize (the cluster
+	// was consumed by the main SerializeClusters; serializing again
+	// double-registers URIs — the access violation the first cut hit).
+	std::vector<smvk::LevelSubInput> levelSubs;
+	for (auto& [vfsPath, ktx] : cubemapKtx)
+		levelSubs.push_back({ smvk::PakAssetKind::Texture, vfsPath,
+			std::span<const uint8_t>(ktx) });
+	for (auto& [vfsPath, bytes] : giBlobs)
+		levelSubs.push_back({ smvk::PakAssetKind::Texture, vfsPath,
+			std::span<const uint8_t>(bytes) });
 	std::vector<uint8_t> pak = writer.Finalize();
 
 	{
@@ -2207,6 +2278,75 @@ int Run(const PakArgs& c) {
 		}
 		fwrite(pak.data(), 1, pak.size(), f);
 		fclose(f);
+	}
+
+	// Level append: read the scene blob back from the JUST-WRITTEN pak
+	// (the exact bytes the standalone scene blob rides), pack it + the
+	// data sub-blobs above, append the level blob to the pak file
+	// (AppendPakBlobs keeps the image valid at every step).
+	if (!args.levelName.empty()) {
+		// Read the written pak (borrowed spans must outlive the image).
+		std::vector<uint8_t> pakImage;
+		{
+			std::ifstream pf(args.outPak, std::ios::binary
+				| std::ios::ate);
+			if (!pf) {
+				tool::err() << "Level read-back failed: " << args.outPak
+					<< std::endl;
+				return 1;
+			}
+			const auto sz = pf.tellg();
+			pf.seekg(0);
+			pakImage.resize(size_t(sz));
+			if (!pf.read(reinterpret_cast<char*>(pakImage.data()), sz)) {
+				tool::err() << "Level read-back failed: " << args.outPak
+					<< std::endl;
+				return 1;
+			}
+		}
+		std::string lOpenErr;
+		auto pakReader = smvk::PakReader::Open(
+			std::span<const uint8_t>(pakImage), lOpenErr);
+		const smvk::PakTocEntry* sceneEntry = nullptr;
+		if (pakReader)
+			for (const smvk::PakTocEntry* e :
+				pakReader->BlobsOfKind(smvk::PakAssetKind::Scene))
+				if (!sceneEntry || e->path < sceneEntry->path)
+					sceneEntry = e; // "#scene" sorts first
+		std::vector<smvk::LevelSubInput> subs;
+		if (sceneEntry)
+			subs.push_back({ smvk::PakAssetKind::Scene, "scene",
+				pakReader->Payload(*sceneEntry) });
+		else
+			tool::err() << "Level: no scene blob in the pak - packing"
+				" a data-only level\n";
+		for (const smvk::LevelSubInput& s : levelSubs)
+			subs.push_back(s);
+		std::vector<uint8_t> levelBlob;
+		if (!smvk::BuildLevelBlob(args.levelName, "scene", subs,
+				levelBlob)) {
+			tool::err() << "Level blob build failed" << std::endl;
+			return 1;
+		}
+		const std::string levelPath =
+			"levels/" + args.levelName + ".level";
+		std::vector<std::pair<std::string,
+			std::span<const uint8_t>>> append;
+		append.emplace_back(levelPath,
+			std::span<const uint8_t>(levelBlob));
+		std::vector<smvk::PakAppendInfo> appendInfo;
+		std::string appendErr;
+		if (!smvk::AppendPakBlobs(args.outPak,
+				smvk::PakAssetKind::Level, append, appendInfo, appendErr)) {
+			tool::err() << "Level append failed: " << levelPath
+				<< (appendErr.empty() ? "" : ": " + appendErr)
+				<< std::endl;
+			return 1;
+		}
+		tool::out() << "Level '" << args.levelName << "' packed: "
+			<< subs.size() << " sub-blob(s) (" << (sceneEntry ? 1 : 0)
+			<< " scene, " << cubemapKtx.size() << " cubemap row(s), "
+			<< giBlobs.size() << " GI) -> " << levelPath << "\n";
 	}
 
 	const auto t1 = std::chrono::steady_clock::now();
@@ -2335,6 +2475,23 @@ int main(int argc, char** argv) {
 	c.tour = args.tour;
 	c.scratchDir = args.scratchDir;
 	c.outPak = args.outPak;
+	c.dumpPak = args.dumpPak;
+	c.dumpNodes = args.dumpNodes;
+	c.dumpManifest = args.dumpManifest;
+	c.verify = args.verify;
+	c.compress = args.compress;
+	c.lz4Accel = args.lz4Accel;
+	c.meshopt = args.meshopt;
+	c.overdraw = args.overdraw;
+	c.autoKtx = args.autoKtx;
+	c.levelName = args.levelName;
+	c.terrainDir = args.terrainDir;
+	c.sunAzimuth = args.sunAzimuth;
+	c.sunElevation = args.sunElevation;
+	c.sunIntensity = args.sunIntensity;
+	c.skyIntensity = args.skyIntensity;
+	c.sunColor = args.sunColor;
+	c.giProbes = args.giProbes;
 	return paktool::Run(c);
 }
 #endif

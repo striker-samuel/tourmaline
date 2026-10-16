@@ -340,6 +340,12 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			if (!scratchDir.empty())
 				pargs.scratchDir = scratchDir;
 			pargs.outPak = cook.outPak;
+			// Level blob (the playable unit; see Engine/Asset/level.h):
+			// every editor cook packs one, keyed by the pak stem — the
+			// LEVEL owns the scene + baked data, the scene-stem sidecar
+			// association dies at the pak level.
+			if (pargs.levelName.empty())
+				pargs.levelName = pakStem;
 			tool::SetLineSink([&push](const std::string& line, bool) {
 				push(line);
 			});

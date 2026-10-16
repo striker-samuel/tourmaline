@@ -46,11 +46,11 @@ std::vector<uint8_t> GenerateCubemapFacePixels(CubemapFace face, uint32_t size) 
 }
 
 std::string CubemapVfsPath(const std::string& name) {
-	return "textures/cubemaps/" + name + ".ktx2";
+	return "gi/cubemaps/" + name + ".ktx2";
 }
 
 std::string CubemapManifestVfsPath(const std::string& name) {
-	return "textures/cubemaps/" + name + ".cubemanifest";
+	return "gi/cubemaps/" + name + ".cubemanifest";
 }
 
 std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries) {

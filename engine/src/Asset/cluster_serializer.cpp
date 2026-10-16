@@ -1701,15 +1701,16 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	// those payloads stay pinned on the cluster below.
 	const auto texEntries = reader.BlobsOfKind(PakAssetKind::Texture);
 	// --- Bake payloads (GI/cubemap content riding as Texture blobs) ------
-	// sggi/sgrv/cvol/manifests/sglm under gi/ + cubemap manifests/KTX2s
-	// under textures/cubemaps/: CLUSTER-OWNED payload bytes (the entity
-	// home — see Cluster::bakePayloads / World::ReadBakeBytes), never RHI
-	// textures. Excluded from the texture passes below (the KTX decoder
-	// would fail the non-KTX ones anyway; the CubemapLibrary decodes the
-	// cubemap KTX2s itself, so the old double-decode dies too).
+	// sggi/sgrv/cvol/manifests/sglm + cubemap manifests/KTX2s ALL under
+	// gi/ (the canonical bake-asset home — cubemaps at gi/cubemaps/<id>.*,
+	// the id-keyed capture-set paths): CLUSTER-OWNED payload bytes (the
+	// entity home — see Cluster::bakePayloads / World::ReadBakeBytes),
+	// never RHI textures. Excluded from the texture passes below (the
+	// KTX decoder would fail the non-KTX ones anyway; the
+	// CubemapLibrary decodes the cubemap KTX2s itself, so the old
+	// double-decode dies too).
 	const auto isBakePath = [](const std::string& p) {
-		return p.rfind("gi/", 0) == 0
-			|| p.rfind("textures/cubemaps/", 0) == 0;
+		return p.rfind("gi/", 0) == 0;
 	};
 	bool bakeBorrowedAny = false;
 	for (const PakTocEntry* e : texEntries) {

@@ -102,6 +102,14 @@ enum class PakAssetKind : uint32_t {
 	// terrain/meta (see Rendergraph/terrain_meta.h). Stored UNCOMPRESSED
 	// or LZ4 like any other blob (height RGBA8 deltas compress well).
 	Terrain = 9,
+	// LEVEL (the exploration spike): ONE composite blob per pak packing
+	// a playable unit — the scene payload + its baked data blobs
+	// (cubemap set manifest + KTX2 rows, GI payloads, terrain meta...)
+	// as inline sub-blobs addressed by their canonical keys
+	// (gi/cubemaps/<id>.* etc.). The LEVEL owns the data (ID-keyed:
+	// levels/<name>.level); the scene-stem sidecar association dies at
+	// the pak level. See Asset/level.h for the blob format + accessors.
+	Level = 10,
 };
 
 enum PakEntryFlags : uint32_t {

@@ -440,6 +440,20 @@ set_target_properties(TerrainBlocksTests PROPERTIES
 
 add_test(NAME terrain_blocks_tests COMMAND TerrainBlocksTests)
 
+# Level blob contract (PakAssetKind::Level composite: build/parse/pak carry).
+add_executable(LevelTests test_level.cpp)
+
+target_link_libraries(LevelTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(LevelTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME level_tests COMMAND LevelTests)
+
 # Unreal-style env volumes (coverage, priority, tour replay).
 add_executable(EnvVolumeTests test_env_volumes.cpp)
 
@@ -481,4 +495,5 @@ vulkantoy_stage_sdl3(RendergraphContractTests)
 vulkantoy_stage_sdl3(TerrainPackTests)
 vulkantoy_stage_sdl3(TerrainHFieldTests)
 vulkantoy_stage_sdl3(TerrainBlocksTests)
+vulkantoy_stage_sdl3(LevelTests)
 vulkantoy_stage_sdl3(EnvVolumeTests)
