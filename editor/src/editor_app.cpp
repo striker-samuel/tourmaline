@@ -1724,6 +1724,27 @@ void EditorApp::DrawFrame() {
 			std::fflush(stderr);
 		}
 	}
+	// Dev crash-repro vehicle #3 (VULKANTOY_EDITOR_AUTO_QUICKBAKE=<frame>):
+	// fires CookCubemapsNow() (the cubemap-only quick bake, GiBaker
+	// skipped) MID-LOOP at the given frame — the exact
+	// "Update cubemaps now" button timing for headless repros (pairs
+	// with OPEN_AT/OPEN_AT2 to have a scene loaded first).
+	{
+		static int sFrame = []() {
+			const char* e = std::getenv("VULKANTOY_EDITOR_AUTO_QUICKBAKE");
+			return (e && *e) ? std::atoi(e) : -1;
+		}();
+		static bool sDone = false;
+		if (!sDone && sFrame >= 0 && int(m_frameCounter) == sFrame) {
+			sDone = true;
+			std::cerr << "[AUTO_QUICKBAKE] frame " << sFrame
+				<< ": cooking cubemaps\n";
+			std::fflush(stderr);
+			CookCubemapsNow();
+			std::cerr << "[AUTO_QUICKBAKE] posted\n";
+			std::fflush(stderr);
+		}
+	}
 	// ---- frame sync: acquire -> editor passes -> present (the host pump
 	// shape, driven editor-side for the custom frame flow). ----
 	auto fb = m_swapchain->AcquireFramebuffer();

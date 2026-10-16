@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -79,6 +80,35 @@ struct FiberBackend::Impl {
 		impl->inFlight.fetch_sub(1);
 	}
 
+	// Job fiber stack: the default fiber stack is SMALL and boost's
+	// fixedsize_stack carries NO guard page — a deep job (the cook's
+	// tour build: ApplySceneReferences -> glTF import -> tinygltf
+	// parser) silently overruns into ADJACENT HEAP (the user crash:
+	// corrupted std::strings in the job lambda's captures freed at the
+	// job epilogue, AV read at 0xFFFFFFFFFFFFFFFF in
+	// std::string::_Tidy_deallocate). The old std::async workers ran
+	// on full OS-thread stacks and never saw this. 8 MiB virtual
+	// reservation, committed on use; the PROTECTED variant adds a
+	// guard page so a future overflow faults LOUD at the guard
+	// instead of corrupting the heap.
+	// VULKANTOY_FIBER_JOB_STACK=<bytes> overrides (floor 64 KiB).
+	// The bisect that found this bug cooked powers of two: 64 KiB
+	// crashed, 128 KiB ran clean — the 8 MiB default has ~64x headroom.
+	static std::size_t jobFiberStack() {
+		static const std::size_t v = []() {
+			const char* e = std::getenv("VULKANTOY_FIBER_JOB_STACK");
+			const std::size_t def = 8u * 1024u * 1024u;
+			if (e && *e) {
+				const unsigned long long n =
+					std::strtoull(e, nullptr, 0);
+				if (n >= 64u * 1024u)
+					return std::size_t(n);
+			}
+			return def;
+		}();
+		return v;
+	}
+
 	// Worker main-context loop: drain + spawn + park. While the main
 	// fiber sleeps, this worker's scheduler runs the job fibers.
 	void workerLoop() {
@@ -92,8 +122,10 @@ struct FiberBackend::Impl {
 			while (!taken.empty()) {
 				Submission sub = std::move(taken.front());
 				taken.pop_front();
-				boost::fibers::fiber(&Impl::runJob, this,
-					std::move(sub)).detach();
+				boost::fibers::fiber(std::allocator_arg,
+					boost::fibers::protected_fixedsize_stack(
+						jobFiberStack()),
+					&Impl::runJob, this, std::move(sub)).detach();
 			}
 			// Park THIS fiber (fiber-aware): ready job fibers on this
 			// worker run while we sleep; wakes every 2ms to drain.
