@@ -39,7 +39,7 @@ namespace engine {
 	}
 
 	void WorldRendererElement::onUpdate(float dt) {
-		// Capture readback FIRST (VULKANTOY_CAPTURE / F7): the previous
+		// Capture readback FIRST (TOURMALINE_CAPTURE / F7): the previous
 		// frame's submit has landed by now (its present waited), so the
 		// stall is free; the export lands one frame after the capture
 		// frame.
@@ -58,7 +58,7 @@ namespace engine {
 
 	void WorldRendererElement::Update(float dt) {
 		HandleShortcuts();
-		// Headless crosshair splat (VULKANTOY_DECAL_AUTOSPLAT=<frame>):
+		// Headless crosshair splat (TOURMALINE_DECAL_AUTOSPLAT=<frame>):
 		// same path as the J key, fired once past the frame index so
 		// capture/A-B runs exercise the pick-BVH + raycast glue.
 		if (m_renderer.m_decalAutoSplatAtFrame >= 0
@@ -231,7 +231,7 @@ namespace engine {
 		// F10 (reused from the lightmap-UV view): the cubemap-only IBL
 		// view - the filtered lit path with the frame's cubemapDebug
 		// pinned to 1 (raw probe radiance). Uv1 lost its key here; it
-		// stays reachable via the Debug combo + VULKANTOY_DEBUGVIEW=uv1.
+		// stays reachable via the Debug combo + TOURMALINE_DEBUGVIEW=uv1.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CUBEMAP)) {
 			m_renderer.m_debugView = ViewMode::Cubemap;
 		}

@@ -1,5 +1,5 @@
 #pragma once
-// .tour — VulkanToy editor scene overlay (ASCII, Maya .ma flavor).
+// .tour — Tourmaline editor scene overlay (ASCII, Maya .ma flavor).
 //
 // A .tour file is a human-readable list of CRUD commands applied ON TOP
 // of a source glTF (never a blob store: meshes/textures stay in the
@@ -11,8 +11,8 @@
 //   //Last modified: Fri, Sep 26, 2026 09:12:04 AM
 //   source -p "content/models/Bistro/bistro.gltf" -fingerprint "9f3a...";
 //   reference -n 0 -source "props/chair.gltf" -name "chair";  # refs FIRST
-//   fileInfo -k "application" -v "vulkantoy-tour";            # constants
-//   fileInfo -k "product" -v "VulkanToy";
+//   fileInfo -k "application" -v "tourmaline-tour";            # constants
+//   fileInfo -k "product" -v "Tourmaline";
 //   fileInfo -k "version" -v "1";
 //   rename -n 45 "Shop_Wall";                       # update (name)
 //   setAttr -n 45 -at translate -type "double3" -t 1.2 3.4 5.6;

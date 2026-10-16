@@ -1,5 +1,5 @@
 ﻿#pragma once
-// Central Optick integration for VulkanToy.
+// Central Optick integration for Tourmaline.
 //
 // Usage (CPU):
 //   void Foo() { SMVK_PROFILE_FUNCTION(); ... }                       // auto name, default color

@@ -217,7 +217,7 @@ struct VolumetricFog {
 		ImageCreateInfo ci{};
 		ci.extent = { out.width, out.height, 1 };
 		ci.format = d.format;
-		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) — armed dumps
+		// TransferSrc: debug stage dumps (TOURMALINE_SSR_DUMP) — armed dumps
 		// only (DownloadDataFromImage needs it on the source image).
 		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
 		if (DebugImageDumpArmed())

@@ -336,11 +336,11 @@ bool TextureStreamer::retarget(Entry& e, uint32_t newBase, uint32_t frameIndex)
 	SMVK_PROFILE_TAG("payloadKB", e.payloadSize / 1024);
 	SMVK_PROFILE_TAG("oldBase", e.residentBase);
 	SMVK_PROFILE_TAG("newBase", newBase);
-	// Hitch-path tracing (VULKANTOY_TEXSTREAM_TRACE): retargets are the
+	// Hitch-path tracing (TOURMALINE_TEXSTREAM_TRACE): retargets are the
 	// steady-state hitch source (hitch frames correlate 1:1 with upgrade
 	// counts) — one line per retarget splits KTX decode vs GPU upload so
 	// the culprit names itself without opening the Optick capture.
-	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const bool texTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 	const auto traceT0 = std::chrono::steady_clock::now();
 
 	ktxTexture2* ktxTex = nullptr;

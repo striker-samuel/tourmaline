@@ -1,5 +1,5 @@
 #pragma once
-// .tourAnim — VulkanToy skeletal animation clips (ASCII, Maya .ma flavor).
+// .tourAnim — Tourmaline skeletal animation clips (ASCII, Maya .ma flavor).
 //
 // A .tourAnim file is a human-readable, versioned list of named animation
 // clips: per-joint SPLINE TRACKS of (timestep, value) keys applied on top

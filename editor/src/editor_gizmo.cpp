@@ -529,13 +529,13 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		const glm::mat4 invFrame = glm::inverse(frame);
 		bool has = false;
 		glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
-		// [SELBOX] dev trace (VULKANTOY_SELBOX_TRACE=1): the box-vs-mesh
+		// [SELBOX] dev trace (TOURMALINE_SELBOX_TRACE=1): the box-vs-mesh
 		// rotation diagnostic — prints the OBB's world corner extents +
 		// the frame basis next to the subtree cloud's RAW world AABB.
 		// A 90-degree disagreement (box X extent == cloud Z extent with
 		// the other axes crossed) = the frame/AABB basis bug class.
 		static const bool selboxTrace =
-			std::getenv("VULKANTOY_SELBOX_TRACE") != nullptr;
+			std::getenv("TOURMALINE_SELBOX_TRACE") != nullptr;
 		static int selboxPrints = 0;
 		glm::vec3 wMn(FLT_MAX), wMx(-FLT_MAX);
 		std::vector<uint32_t> stack{ m_selected };

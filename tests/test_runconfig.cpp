@@ -1,4 +1,4 @@
-// RunConfigTests: central VULKANTOY_* parsing contract.
+// RunConfigTests: central TOURMALINE_* parsing contract.
 // Verifies defaults (clean env), typed parsing, and helper semantics.
 // Does not depend on GPU. Each case saves/restores the vars it touches so
 // ctest stays hermetic when run in one process list.
@@ -49,8 +49,8 @@ int main() {
 	Check(!engine::ParseVec3("bogus", x, y, z), "runconfig.helper-vec3-reject");
 
 	// Defaults with a clean slate for the touched vars.
-	const char* kTouched[] = {"VULKANTOY_AA", "VULKANTOY_MESH", "VULKANTOY_CAPTURE",
-		"VULKANTOY_CAM_YAW", "VULKANTOY_TERRAIN"};
+	const char* kTouched[] = {"TOURMALINE_AA", "TOURMALINE_MESH", "TOURMALINE_CAPTURE",
+		"TOURMALINE_CAM_YAW", "TOURMALINE_TERRAIN"};
 	for (const char* n : kTouched)
 		UnsetVar(n);
 	{
@@ -62,18 +62,18 @@ int main() {
 	}
 
 	// Validated pin parsing (authored scene wins invalid values).
-	SetVar("VULKANTOY_AA", "msaa2x");
-	SetVar("VULKANTOY_MESH", "0");
-	SetVar("VULKANTOY_CAPTURE", "48");
-	SetVar("VULKANTOY_CAM_YAW", "90.0");
-	SetVar("VULKANTOY_TERRAIN", "1");
-	SetVar("VULKANTOY_SSR", "off");
-	SetVar("VULKANTOY_AO", "ssao");
-	SetVar("VULKANTOY_VOLUMETRIC", "1");
-	SetVar("VULKANTOY_VOLUMETRIC_STEPS", "64");
-	SetVar("VULKANTOY_BLOOM_THRESHOLD", "400");
-	SetVar("VULKANTOY_AUTO_EXPOSURE", "0");
-	SetVar("VULKANTOY_CUBEMAP", "0");
+	SetVar("TOURMALINE_AA", "msaa2x");
+	SetVar("TOURMALINE_MESH", "0");
+	SetVar("TOURMALINE_CAPTURE", "48");
+	SetVar("TOURMALINE_CAM_YAW", "90.0");
+	SetVar("TOURMALINE_TERRAIN", "1");
+	SetVar("TOURMALINE_SSR", "off");
+	SetVar("TOURMALINE_AO", "ssao");
+	SetVar("TOURMALINE_VOLUMETRIC", "1");
+	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "64");
+	SetVar("TOURMALINE_BLOOM_THRESHOLD", "400");
+	SetVar("TOURMALINE_AUTO_EXPOSURE", "0");
+	SetVar("TOURMALINE_CUBEMAP", "0");
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2x,
@@ -99,19 +99,19 @@ int main() {
 	}
 	for (const char* n : kTouched)
 		UnsetVar(n);
-	UnsetVar("VULKANTOY_SSR");
-	UnsetVar("VULKANTOY_AO");
-	UnsetVar("VULKANTOY_VOLUMETRIC");
-	UnsetVar("VULKANTOY_VOLUMETRIC_STEPS");
-	UnsetVar("VULKANTOY_BLOOM_THRESHOLD");
-	UnsetVar("VULKANTOY_AUTO_EXPOSURE");
-	UnsetVar("VULKANTOY_CUBEMAP");
+	UnsetVar("TOURMALINE_SSR");
+	UnsetVar("TOURMALINE_AO");
+	UnsetVar("TOURMALINE_VOLUMETRIC");
+	UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
+	UnsetVar("TOURMALINE_BLOOM_THRESHOLD");
+	UnsetVar("TOURMALINE_AUTO_EXPOSURE");
+	UnsetVar("TOURMALINE_CUBEMAP");
 
 	// Invalid pins warn (stderr) and leave the authored scene winning.
-	SetVar("VULKANTOY_AA", "bogus");
-	SetVar("VULKANTOY_SSR", "maybe");
-	SetVar("VULKANTOY_AO", "xx");
-	SetVar("VULKANTOY_VOLUMETRIC_STEPS", "7"); // below range... valid? 7 in 4..128!
+	SetVar("TOURMALINE_AA", "bogus");
+	SetVar("TOURMALINE_SSR", "maybe");
+	SetVar("TOURMALINE_AO", "xx");
+	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "7"); // below range... valid? 7 in 4..128!
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(!c.aa.has_value(), "runconfig.invalid-aa-unset");
@@ -120,26 +120,26 @@ int main() {
 		Check(c.volumetricSteps.has_value() && *c.volumetricSteps == 7,
 			"runconfig.inrange-steps-set");
 	}
-	UnsetVar("VULKANTOY_AA");
-	UnsetVar("VULKANTOY_SSR");
-	UnsetVar("VULKANTOY_AO");
-	SetVar("VULKANTOY_VOLUMETRIC_STEPS", "2"); // below 4: rejected
-	SetVar("VULKANTOY_BLOOM_INTENSITY", "99"); // above 4: rejected
+	UnsetVar("TOURMALINE_AA");
+	UnsetVar("TOURMALINE_SSR");
+	UnsetVar("TOURMALINE_AO");
+	SetVar("TOURMALINE_VOLUMETRIC_STEPS", "2"); // below 4: rejected
+	SetVar("TOURMALINE_BLOOM_INTENSITY", "99"); // above 4: rejected
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(!c.volumetricSteps.has_value(), "runconfig.oorange-steps-unset");
 		Check(!c.bloomIntensity.has_value(), "runconfig.oorange-bloom-unset");
 	}
-	UnsetVar("VULKANTOY_VOLUMETRIC_STEPS");
-	UnsetVar("VULKANTOY_BLOOM_INTENSITY");
+	UnsetVar("TOURMALINE_VOLUMETRIC_STEPS");
+	UnsetVar("TOURMALINE_BLOOM_INTENSITY");
 	// Legacy AA spellings still accepted (both call sites unified).
-	SetVar("VULKANTOY_AA", "t2x");
+	SetVar("TOURMALINE_AA", "t2x");
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(c.aa.has_value() && *c.aa == engine::AaPin::SmaaT2x,
 			"runconfig.parse-aa-legacy-t2x");
 	}
-	UnsetVar("VULKANTOY_AA");
+	UnsetVar("TOURMALINE_AA");
 
 	// Log + unknown-var warn never crash (output goes to stderr).
 	{

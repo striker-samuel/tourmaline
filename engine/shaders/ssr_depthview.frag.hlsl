@@ -1,7 +1,7 @@
 #define SSR_PASS
 #include "common.hlsli"
 
-// Ground-truth depth view (VULKANTOY_SSR_DUMP): samples the depth image
+// Ground-truth depth view (TOURMALINE_SSR_DUMP): samples the depth image
 // EXACTLY the way the SSR trace does — same bindless textures[] slot,
 // same .Load — and writes it to a dumpable target. This bypasses the
 // copy-based readback entirely: if this output is clean [0,1] reverse-Z,

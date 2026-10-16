@@ -7,7 +7,7 @@
 #include <Engine/App/RunConfig.h>
 
 int main(int argc, const char* argv[]) {
-	// Central run config: parse ALL VULKANTOY_* once, log one line, warn
+	// Central run config: parse ALL TOURMALINE_* once, log one line, warn
 	// on unknown names (typos silently no-op'd before). Subsystems read
 	// their slab from here; legacy getenv sites migrate incrementally.
 	const engine::RunConfig runCfg = engine::RunConfig::Parse();

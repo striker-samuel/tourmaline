@@ -280,7 +280,7 @@ struct SceneEnv {
 // Authored once per scene (Scene::defaultRenderSettings), resolved into
 // Scene::renderSettings, saved forward tour (render.* keys) -> pak ->
 // App (the renderer seeds its pass state from it once per scene load;
-// panels/keys stay live afterwards). Headless VULKANTOY_* pins win over
+// panels/keys stay live afterwards). Headless TOURMALINE_* pins win over
 // the seed (see ApplyHeadlessPostfxOverrides).
 struct SceneRenderSettings {
 	// Bloom (complete: enable + add scale + pre-exposure threshold; the

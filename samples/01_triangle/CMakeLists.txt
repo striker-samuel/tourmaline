@@ -49,4 +49,4 @@ add_custom_command(TARGET 01_triangle POST_BUILD
         "$<TARGET_FILE_DIR:01_triangle>"
 )
 
-vulkantoy_stage_sdl3(01_triangle)
+tourmaline_stage_sdl3(01_triangle)

@@ -1,6 +1,6 @@
 ﻿project(App)
 
-set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
+set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/tourmaline/app
 
 message(STATUS "APP_DIR = ${APP_DIR}")
 
@@ -42,21 +42,21 @@ set_target_properties(App PROPERTIES
 
 # Runtime content layout next to App.exe is always:
 #   content/models, content/paks, content/gi, content/fonts, content/textures, content/luts
-# Large binaries (models/, paks/, gi/) live OUTSIDE git in VULKANTOY_CONTENT_DIR
-# (default F:/content, overridable via -DVULKANTOY_CONTENT_DIR or the env var).
+# Large binaries (models/, paks/, gi/) live OUTSIDE git in TOURMALINE_CONTENT_DIR
+# (default F:/content, overridable via -DTOURMALINE_CONTENT_DIR or the env var).
 # Small tracked dirs (fonts/, ...) fall back to the legacy app/content tree.
-if(DEFINED ENV{VULKANTOY_CONTENT_DIR})
-    set(_VULKANTOY_CONTENT_DEFAULT "$ENV{VULKANTOY_CONTENT_DIR}")
+if(DEFINED ENV{TOURMALINE_CONTENT_DIR})
+    set(_TOURMALINE_CONTENT_DEFAULT "$ENV{TOURMALINE_CONTENT_DIR}")
 else()
-    set(_VULKANTOY_CONTENT_DEFAULT "F:/content")
+    set(_TOURMALINE_CONTENT_DEFAULT "F:/content")
 endif()
-set(VULKANTOY_CONTENT_DIR "${_VULKANTOY_CONTENT_DEFAULT}" CACHE PATH
+set(TOURMALINE_CONTENT_DIR "${_TOURMALINE_CONTENT_DEFAULT}" CACHE PATH
     "External binary content root (models/, paks/, ...). Not stored in git; synced next to App.exe at build time.")
-message(STATUS "VULKANTOY_CONTENT_DIR = ${VULKANTOY_CONTENT_DIR}")
+message(STATUS "TOURMALINE_CONTENT_DIR = ${TOURMALINE_CONTENT_DIR}")
 
-function(_vulkantoy_resolve_content_dir NAME OUT_VAR)
-    if(EXISTS "${VULKANTOY_CONTENT_DIR}/${NAME}")
-        set(${OUT_VAR} "${VULKANTOY_CONTENT_DIR}/${NAME}" PARENT_SCOPE)
+function(_tourmaline_resolve_content_dir NAME OUT_VAR)
+    if(EXISTS "${TOURMALINE_CONTENT_DIR}/${NAME}")
+        set(${OUT_VAR} "${TOURMALINE_CONTENT_DIR}/${NAME}" PARENT_SCOPE)
     elseif(EXISTS "${APP_DIR}/content/${NAME}")
         set(${OUT_VAR} "${APP_DIR}/content/${NAME}" PARENT_SCOPE)
     else()
@@ -75,7 +75,7 @@ add_custom_command(TARGET App POST_BUILD
 # legacy in-repo tree (fallback). copy_directory creates the destination,
 # so a missing source simply skips that subdir.
 foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
-    _vulkantoy_resolve_content_dir(${_CONTENT_SUB} _CONTENT_SRC)
+    _tourmaline_resolve_content_dir(${_CONTENT_SUB} _CONTENT_SRC)
     if(_CONTENT_SRC)
         message(STATUS "Content '${_CONTENT_SUB}' <- ${_CONTENT_SRC}")
         add_custom_command(TARGET App POST_BUILD
@@ -84,12 +84,12 @@ foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
                     "$<TARGET_FILE_DIR:App>/content/${_CONTENT_SUB}"
         )
     elseif(_CONTENT_SUB STREQUAL "models" OR _CONTENT_SUB STREQUAL "paks")
-        message(WARNING "Content '${_CONTENT_SUB}' not found in ${VULKANTOY_CONTENT_DIR} nor ${APP_DIR}/content - scenes needing it will fail at runtime.")
+        message(WARNING "Content '${_CONTENT_SUB}' not found in ${TOURMALINE_CONTENT_DIR} nor ${APP_DIR}/content - scenes needing it will fail at runtime.")
     endif()
 endforeach()
 
 # Deferred-shadow debug visualizers (paper 5.3/5.4): resolved by the root
-# CMakeLists (auto = Debug trees; VULKANTOY_DS_VIZ=ON forces them into
+# CMakeLists (auto = Debug trees; TOURMALINE_DS_VIZ=ON forces them into
 # optimized builds — see the x64-Release-DSViz CMakeSettings preset). The
 # same define is passed to DXC (CompileShaders.cmake); clean release trees
 # compile the visualizer UI, uniform fields and shader paths out entirely.
@@ -115,11 +115,11 @@ add_custom_command(TARGET App POST_BUILD
 )
 
 # SDL3 is SHARED (vendored prebuilt): stage its DLL next to App.exe
-vulkantoy_stage_sdl3(App)
+tourmaline_stage_sdl3(App)
 
 # NVIDIA Streamline runtime (DLSS-SR): staged from external/streamline.
 # Optional at runtime - missing DLLs just disable the DLSS feature.
-vulkantoy_stage_streamline(App)
+tourmaline_stage_streamline(App)
 
 
 # Scene shaders (engine/shaders -> content/shaders) are compiled by the

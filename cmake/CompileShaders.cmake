@@ -93,15 +93,15 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   if (NOT DEFINED HLSL_FORCE_O3_FILES)
     set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl")
   endif()
-  # Unpin escape hatch for driver re-tests: -DVULKANTOY_SHADER_OD_RETRY=ON
+  # Unpin escape hatch for driver re-tests: -DTOURMALINE_SHADER_OD_RETRY=ON
   # clears the -O3 pin so CI (tools/shader_od_retry.py) can retry the -Od
   # codegen that AVs nvgpucomp64.dll. Do NOT set this for normal builds —
   # a successful -Od pipeline compile still crashes affected drivers.
   # When the retry goes green on the pinned driver/DXC pair, delete the
   # file from HLSL_FORCE_O3_FILES (keep the comment trail).
-  if (VULKANTOY_SHADER_OD_RETRY)
+  if (TOURMALINE_SHADER_OD_RETRY)
     set(HLSL_FORCE_O3_FILES "")
-    message(STATUS "[Shaders] VULKANTOY_SHADER_OD_RETRY=ON: -O3 pin cleared, retrying -Od codegen")
+    message(STATUS "[Shaders] TOURMALINE_SHADER_OD_RETRY=ON: -O3 pin cleared, retrying -Od codegen")
   endif()
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
@@ -196,7 +196,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 endif()
             elseif (SHADER_DEBUG_ON)
                 # Release + shader debug (x64-Release-ShaderDebug preset,
-                # VULKANTOY_SHADER_DEBUG=ON): release -O3 shader codegen
+                # TOURMALINE_SHADER_DEBUG=ON): release -O3 shader codegen
                 # with SPIR-V debug info instead of the stripped lean
                 # modules — names/lines/source paths survive for RenderDoc
                 # & friends. Same proven -Zi + -fspv-debug=vulkan pairing
@@ -209,7 +209,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
 
             # Deferred-shadow debug visualizers (paper 5.3/5.4): per-pixel
             # diagnostic paths, resolved by the root CMakeLists (auto = Debug
-            # trees only; VULKANTOY_DS_VIZ=ON forces them into optimized
+            # trees only; TOURMALINE_DS_VIZ=ON forces them into optimized
             # builds, e.g. the x64-Release-DSViz preset). Release presets
             # without the flag never see the code — zero shader cost.
             if (DS_VIZ_ON)

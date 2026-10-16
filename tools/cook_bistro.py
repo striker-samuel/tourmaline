@@ -24,7 +24,7 @@
 #      see GltfPunctualAimAxis/ResolveSceneLights),
 #   6. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
 #
-# Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
+# Usage (PowerShell, from repo root F:/REPOS/tourmaline):
 #   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
 #       [--app-content F:/content] [--mode uastc] [--workers 8]
 #       [--skip-convert] [--skip-pak]

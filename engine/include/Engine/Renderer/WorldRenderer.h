@@ -198,7 +198,7 @@ inline float TextureFilteringAnisotropy(TextureFiltering m) {
 	}
 	return 1.0f;
 }
-// Parses VULKANTOY_TEXTURE_FILTER / UI strings: trilinear | 2x | 4x | 8x |
+// Parses TOURMALINE_TEXTURE_FILTER / UI strings: trilinear | 2x | 4x | 8x |
 // 16x (also accepts "anisoNx"/"anisotropicNx"/bare "N"). Legacy "bilinear"
 // maps to Trilinear. Returns true on success.
 inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out) {
@@ -927,7 +927,7 @@ public:
 	CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
-	// The RunConfig overload applies the central VULKANTOY_* environment
+	// The RunConfig overload applies the central TOURMALINE_* environment
 	// (parsed once by main); the bare overload parses it locally for
 	// hosts that have not migrated yet (editor). Prefer the two-arg form.
 	void Configure(WorldRendererConfig passes);
@@ -991,7 +991,7 @@ public:
 	// GfxRenderer::FilteredLitProgram selection logic.
 	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
 
-	// One-shot capture readback (VULKANTOY_CAPTURE): the last rendered
+	// One-shot capture readback (TOURMALINE_CAPTURE): the last rendered
 	// frame's TonemapCapture wrote m_captureImage and the submit landed
 	// — onUpdate polls this at the next frame's top (before the host's
 	// acquire); it stalls (device idle) and exports the PNG only on the
@@ -1030,7 +1030,7 @@ public:
 	// bloom (complete) + tonemap + exposure + AO + SSR + motion blur +
 	// DOF + AA + cubemap IBL. Runs once per scene load/rebind from the
 	// resolved env; the panels/keys stay live afterwards (the volumetric
-	// contract). Headless VULKANTOY_* pins win over the seed (see
+	// contract). Headless TOURMALINE_* pins win over the seed (see
 	// ApplyHeadlessPostfxOverrides).
 	// Postfx seed from the RENDER SETTINGS (the split look — see
 	// SceneRenderSettings). The env block still contributes its
@@ -1128,7 +1128,7 @@ public:
 	// interposer out of the Vulkan call chain for RenderDoc captures.
 	void SetDlssMode(smvk::DlssMode mode) { m_dlssMode = mode; }
 	// Cubemap debug view (same modes as the App panel combo + the
-	// VULKANTOY_CUBEMAP_DEBUG headless switch): 0 off, 1 raw cubemap
+	// TOURMALINE_CUBEMAP_DEBUG headless switch): 0 off, 1 raw cubemap
 	// (no Fresnel/roughness — which probe serves each pixel), 2 probe
 	// blend weight as heat. The frame reads it through FrameUniforms.
 	void SetCubemapDebug(int mode) {
@@ -1308,11 +1308,11 @@ public:
 	// once (one-time glTF re-import hitch, noted on console); true when
 	// the BVH is ready for raycasts.
 	bool EnsurePickScene();
-	// Headless J (VULKANTOY_DECAL_AUTOSPLAT=<frame>): auto-runs the
+	// Headless J (TOURMALINE_DECAL_AUTOSPLAT=<frame>): auto-runs the
 	// crosshair spawn at the given frame so capture/A-B runs verify the
 	// pick path without window focus. -1 = off.
 	int m_decalAutoSplatAtFrame = -1;
-	// Decal visibility (UI checkbox + VULKANTOY_DECALS env): a render
+	// Decal visibility (UI checkbox + TOURMALINE_DECALS env): a render
 	// toggle over whatever entities the world carries, never content.
 	bool m_decalsEnabled = true;
 	// Unresolved decal texture URIs already warned about (warn-once-until-
@@ -1397,13 +1397,13 @@ public:
 	float m_lodBudgetApplied = -1.0f;  // budget at last InvalidateLodCache
 	// LOD refresh cadence: true (default) = every node recomputes every
 	// frame; false = the World's halfrate parity split (perf A/B; also
-	// VULKANTOY_LODFULL=0 at startup).
+	// TOURMALINE_LODFULL=0 at startup).
 	bool m_lodFullRate = true;
-	// Debug: VULKANTOY_SPLIT=0 forces the legacy depth assembly (full
+	// Debug: TOURMALINE_SPLIT=0 forces the legacy depth assembly (full
 	// prepass before the HZB + remainder pass) even when the seed primed
 	// depth bisects regressions between the split and the rest.
 	bool m_splitDisabled = false;
-	// Debug: one-shot [GfxAudit] dump at this frame (VULKANTOY_AUDIT=N;
+	// Debug: one-shot [GfxAudit] dump at this frame (TOURMALINE_AUDIT=N;
 	// same stderr dump as the UI button; stalls the GPU).
 	int m_auditAtFrame = -1;
 	// (Per-frame LOD draws/switched counters removed: they only fired on
@@ -1416,7 +1416,7 @@ public:
 	// The farthest level of a cooked chain shades with the vertex-lit
 	// program instead of full PBR when the material allows it (same
 	// coarsest geometry — see World::UseVertexLitShaderAt). Toggle =
-	// pure fallback: off/A/B (UI checkbox or VULKANTOY_SHADERLOD=0)
+	// pure fallback: off/A/B (UI checkbox or TOURMALINE_SHADERLOD=0)
 	// keeps every level full-lit.
 	bool m_lodShaderEnabled = false;
 	uint64_t m_lodShaderDraws = 0; // Main far-shading draws this frame (vertex-lit + specialized)
@@ -1476,7 +1476,7 @@ public:
 	std::string m_sceneId;
 	// Scene far clip (shadow splits, LOD distances, DLSS depth scale),
 	// fitted to the framed bounds at load (generic framing parks the
-	// camera radius*2.2 away unless VULKANTOY_CAM_POS/FWD pin it).
+	// camera radius*2.2 away unless TOURMALINE_CAM_POS/FWD pin it).
 	float m_sceneFarClip = 2000.0f;
 	// Scene lens (default-camera framing only â€” see the World settings'
 	// camera.default typed field): when the scene carries an authored
@@ -1647,7 +1647,7 @@ public:
 	// density.
 	bool m_spotLightLiSPSM = true;
 	// ---- EVSM (Exponential Variance Shadow Maps, prefiltered async) ----
-	// Opt-IN (default OFF; the ImGui checkbox or VULKANTOY_EVSM=1). When
+	// Opt-IN (default OFF; the ImGui checkbox or TOURMALINE_EVSM=1). When
 	// enabled (and the device supports RG32F 2xMSAA moments), the
 	// main view's cascade/spot depth passes are replaced by EVSM moment
 	// passes (RG32F 2xMSAA + resolve) followed by separable Gaussian blur
@@ -1761,7 +1761,7 @@ public:
 	static_assert(sizeof(SdsmGroupStats) == kSdsmGroupBytes,
 		"SDSM group stats must mirror the HLSL SdsmGroupStats (264 bytes)");
 	// Raw measured range (from the last completed stats readback).
-	bool m_sdsmEnabled = true;   // VULKANTOY_SDSM=0/1 override at init; UI toggle
+	bool m_sdsmEnabled = true;   // TOURMALINE_SDSM=0/1 override at init; UI toggle
 	bool m_sdsmStatsValid = false; // a completed readback exists
 	float m_sdsmMin = 0.0f;      // measured true min/max view depth
 	float m_sdsmMax = 0.0f;
@@ -1866,7 +1866,7 @@ public:
 	// the HZB pyramid are a FIXED COST of the renderer - the fill is the
 	// pyramid's only source, hizDepth is not used for anything else. The
 	// lever for HZB CULLING is the filter's occlusion cull flag
-	// (CullFlagBit_HzbOcclusion - VULKANTOY_HIZ=0, VULKANTOY_CULLFLAGS,
+	// (CullFlagBit_HzbOcclusion - TOURMALINE_HIZ=0, TOURMALINE_CULLFLAGS,
 	// or the UI checkbox), never the fill/build.)
 	float m_hizOccluderMinPixels = 24.0f; // projected bound-diameter threshold (px)
 	float m_hizOccluderMinRadius = 0.5f;  // world-space bound-radius threshold (m)
@@ -1893,26 +1893,26 @@ public:
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
-	// Opt-in EVSM atlas debug dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
+	// Opt-in EVSM atlas debug dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
 	// after Execute â€” per-stage stats (moments/temp/blurred) + a log-encoded
 	// PNG of the cascade-0 tile in exports/ (edge-band width = prefilter
-	// width). Same pattern as VULKANTOY_DS_DUMP (stalls; debug only).
+	// width). Same pattern as TOURMALINE_DS_DUMP (stalls; debug only).
 	int m_evsmDumpAtFrame = -1;
 	void EvsmDumpAtlas(uint32_t frameIndex);
-	// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): the
+	// Opt-in SSR/volumetric stage dump (TOURMALINE_SSR_DUMP=<frame>): the
 	// HDR chain inputs + every SSR/volumetric intermediate at frame N and
 	// N+1, with NaN/Inf/garbage stats on stderr and tone-mapped PNGs
 	// (NaN/Inf hot-pink) in exports/. Pinpoints WHICH stage turns wrong.
 	int m_ssrDumpAtFrame = -1;
 	void DumpSsrStages(uint32_t frameIndex);
-	// Ground-truth depth-view pass (runs when VULKANTOY_SSR_DUMP is armed):
+	// Ground-truth depth-view pass (runs when TOURMALINE_SSR_DUMP is armed):
 	// samples the depth through the SSR trace's exact bindless path and
 	// writes it to the (post-blur dead) raw target for the dump.
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewVs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewPs;
 	smvk::ShaderProgram m_ssrDepthViewProgram{};
-	// Ground-truth stencil-view twin (VULKANTOY_SSR_DUMP +
-	// VULKANTOY_SSR_STENCILVIEW): loads the receiver-material stencil
+	// Ground-truth stencil-view twin (TOURMALINE_SSR_DUMP +
+	// TOURMALINE_SSR_STENCILVIEW): loads the receiver-material stencil
 	// through the trace's exact uintTextures[] path and writes it (raw
 	// byte in R, decoded STENCIL_SSR / STENCIL_SSR_METAL flags in G/B)
 	// to the (post-composite dead) blurred target for the dump.
@@ -1939,10 +1939,10 @@ public:
 	smvk::ShaderProgram m_ssrHzbProgram{};
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
-	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
+	int m_dumpAtFrame = -1;                // opt-in (TOURMALINE_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
 	void DumpDeferredShadows(uint32_t frameIndex); // post-Execute one-shot (stalls)
 	// Headless A/B helpers: auto-capture at a fixed frame (env
-	// VULKANTOY_CAPTURE=<n>; -1 = off) keyed on the render-frame counter.
+	// TOURMALINE_CAPTURE=<n>; -1 = off) keyed on the render-frame counter.
 	int m_captureAtFrame = -1;
 	uint64_t m_frameCounter = 0;
 	// ---- Debug culling freeze: hold the filter's (view, eye) + HZB while
@@ -1994,7 +1994,7 @@ public:
 	// lmChartXforms, StaticMesh::lmChunk riding the draw ring) — no
 	// chunk buffer exists at runtime. Default OFF (m_lmEnabled): the
 	// lit shader ignores loaded lightmaps until opted in here or via
-	// VULKANTOY_LIGHTMAP=1. Missing file = not baked yet (non-fatal).
+	// TOURMALINE_LIGHTMAP=1. Missing file = not baked yet (non-fatal).
 	bool m_lmLoaded = false;
 	bool m_lmEnabled = false;
 	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
@@ -2289,7 +2289,7 @@ public:
 	// Fog-GI quality switch: convex volumes stack into the fog ambient
 	// (default, matches the lit path). Off = octree/sky only â€” the fog
 	// bypasses the per-refresh volume walk entirely (A/B knob for heavy
-	// fog configs; UI checkbox + VULKANTOY_VOLUMETRIC_CVOL=0 headless).
+	// fog configs; UI checkbox + TOURMALINE_VOLUMETRIC_CVOL=0 headless).
 	bool m_volumetricUseCvolGi = true;
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
@@ -2332,7 +2332,7 @@ public:
 	// call after sampler creation and whenever the UI changes the mode.
 	void ApplyTextureFiltering();
 	// Opt-in alpha-to-coverage for Masked cutout in MSAA 2x Main
-	// (VULKANTOY_A2C=1, default off). Bench data (bistro foliage view,
+	// (TOURMALINE_A2C=1, default off). Bench data (bistro foliage view,
 	// RTX 5070 Ti): A2C moves the masked coverage/depth test after the FS
 	// (coverage needs the output alpha), so overlapping foliage layers
 	// can no longer early-reject â€” +6ms vs the demote-discard path. Keep
@@ -2458,7 +2458,7 @@ public:
 	// but the per-scene PushPostfxEnv seed re-seeds m_autoExposureEnabled
 	// from the authored env, silently re-enabling live eye adaptation
 	// mid-bench and breaking capture comparability (only
-	// VULKANTOY_AUTO_EXPOSURE re-pinned before). The pin re-applies after
+	// TOURMALINE_AUTO_EXPOSURE re-pinned before). The pin re-applies after
 	// every seed; -1 = no pin. The X key / UI checkbox stay live
 	// afterwards (the pin applies only at load/rebind; a bench never
 	// rebinds, so "X toggles it back live" keeps working).
@@ -2575,7 +2575,7 @@ public:
 	bool m_terrainEnabled = true;
 	smvk::terrain::TerrainField m_terrain{};
 	// Heightfield shadow mode/steps for the terrain frag tail (RunConfig
-	// snapshot at Configure: VULKANTOY_TERRAIN_HFSHADOW[_STEPS]).
+	// snapshot at Configure: TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
 	int m_terrainHfShadow = 1;
 	int m_terrainHfSteps = 16;
 	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8
@@ -2719,7 +2719,7 @@ public:
 	uint32_t m_pendingGfxKept = 0;
 	uint32_t m_gfxKeptBatches = 0;
 	bool m_gfxKeptValid = false;
-	// TMP-DIAG (VULKANTOY_FILTERAUDIT=<frame>): one-shot async readback of
+	// TMP-DIAG (TOURMALINE_FILTERAUDIT=<frame>): one-shot async readback of
 	// the gfx filter chain's per-frame state — the draw-cull verdict words
 	// (cullState), the batch-cull kept bits (both parity regions' live
 	// slot span), the filter's indirect commands and the batch headers —

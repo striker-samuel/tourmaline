@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document tracks all allocations in the vulkantoy codebase, classifies them by lifetime, and proposes a phased migration to linear allocators with reserved virtual memory and static allocation at startup.
+This document tracks all allocations in the tourmaline codebase, classifies them by lifetime, and proposes a phased migration to linear allocators with reserved virtual memory and static allocation at startup.
 
 ---
 
@@ -366,7 +366,7 @@ GPU Virtual Address Space (VMA managed - unchanged):
 ---
 
 *Generated: 2026-09-30*
-*Codebase: vulkantoy (engine + app + editor)*
+*Codebase: tourmaline (engine + app + editor)*
 
 ---
 

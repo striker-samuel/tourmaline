@@ -58,4 +58,4 @@ add_custom_command(TARGET GiBaker POST_BUILD
         "$<TARGET_FILE_DIR:GiBaker>"
 )
 
-vulkantoy_stage_sdl3(GiBaker)
+tourmaline_stage_sdl3(GiBaker)

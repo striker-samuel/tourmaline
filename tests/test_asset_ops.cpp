@@ -38,7 +38,7 @@ std::string Root() {
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	fs::path dir = fs::temp_directory_path(ec)
-		/ "vulkantoy_assetops";
+		/ "tourmaline_assetops";
 	fs::remove_all(dir, ec);
 	fs::create_directories(dir / "content" / "models", ec);
 	fs::create_directories(dir / "content" / "scenes", ec);

@@ -55,11 +55,11 @@ endif()
 # Precompiled Header for the engine (moved with the world renderer from
 # appcore). CMake's built-in target_precompile_headers works with both
 # MSBuild and Ninja (+ MSVC cl.exe). No manual #include "pch.h" needed:
-# CMake injects /Yu + /FI. Disable with -DVULKANTOY_PCH=OFF if the PCH
+# CMake injects /Yu + /FI. Disable with -DTOURMALINE_PCH=OFF if the PCH
 # ever masks a header bug.
 # ---------------------------------------------------------------------------
-option(VULKANTOY_PCH "Use precompiled headers for engine" ON)
-if(VULKANTOY_PCH)
+option(TOURMALINE_PCH "Use precompiled headers for engine" ON)
+if(TOURMALINE_PCH)
     target_precompile_headers(engine PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
     )
@@ -76,14 +76,14 @@ endif()
 
 # Nsight Aftermath shader debug tables (crash symbolication): when this
 # tree's SPIR-V carries DXC -Zi debug info (root CMakeLists resolves
-# SHADER_DEBUG_INFO_ON: Debug trees / VULKANTOY_SHADER_DEBUG=ON preset),
+# SHADER_DEBUG_INFO_ON: Debug trees / TOURMALINE_SHADER_DEBUG=ON preset),
 # the engine's device init additionally probes + enables
 # VK_NV_device_diagnostics_config with the shader-debug-info bit chained
 # into VkDeviceCreateInfo — the NVIDIA-driver half that maps GPU machine
 # code back to SPIR-V so Aftermath crash dumps resolve to HLSL source
-# lines. Runtime kill switch: VULKANTOY_AFTERMATH=0.
+# lines. Runtime kill switch: TOURMALINE_AFTERMATH=0.
 if(SHADER_DEBUG_INFO_ON)
-    target_compile_definitions(engine PRIVATE VULKANTOY_SHADER_DEBUG_INFO=1)
+    target_compile_definitions(engine PRIVATE TOURMALINE_SHADER_DEBUG_INFO=1)
 endif()
 
 target_link_libraries(engine

@@ -91,12 +91,12 @@ struct FiberBackend::Impl {
 	// reservation, committed on use; the PROTECTED variant adds a
 	// guard page so a future overflow faults LOUD at the guard
 	// instead of corrupting the heap.
-	// VULKANTOY_FIBER_JOB_STACK=<bytes> overrides (floor 64 KiB).
+	// TOURMALINE_FIBER_JOB_STACK=<bytes> overrides (floor 64 KiB).
 	// The bisect that found this bug cooked powers of two: 64 KiB
 	// crashed, 128 KiB ran clean — the 8 MiB default has ~64x headroom.
 	static std::size_t jobFiberStack() {
 		static const std::size_t v = []() {
-			const char* e = std::getenv("VULKANTOY_FIBER_JOB_STACK");
+			const char* e = std::getenv("TOURMALINE_FIBER_JOB_STACK");
 			const std::size_t def = 8u * 1024u * 1024u;
 			if (e && *e) {
 				const unsigned long long n =

@@ -1,5 +1,5 @@
 #pragma once
-// Central run configuration: ALL VULKANTOY_* env vars, parsed once.
+// Central run configuration: ALL TOURMALINE_* env vars, parsed once.
 //
 // Layering (environments are authored content):
 //   1. Scene seed (base): PushVolumetricEnv/PushPostfxEnv copy the authored
@@ -12,12 +12,12 @@
 //      Exposing settings in the demo App is fine — the values remain
 //      authored content (session overrides, never written back).
 //
-// Problem this fixes: ~60 VULKANTOY_* knobs were read via scattered
+// Problem this fixes: ~60 TOURMALINE_* knobs were read via scattered
 // std::getenv with no types, no ranges, no startup log — typos silently
 // no-op'd, A/B runs were not reproducible, and re-reads after a seed could
 // disagree mid-run. This header is the single declaration of every knob;
 // Parse() reads the environment once, validates, logs one line, and warns
-// on unknown VULKANTOY_* names.
+// on unknown TOURMALINE_* names.
 //
 // Migration discipline (god objects stay intact):
 //   - New code takes `const RunConfig&` (or the nested slab it needs).
@@ -170,9 +170,9 @@ struct RunConfig {
 	// and fall back to defaults (same as the historical per-site behavior).
 	static RunConfig Parse();
 	// One startup log line (selected non-defaults) + full dump when
-	// VULKANTOY_TRACE-equivalent verbosity is wanted. Call once from main.
+	// TOURMALINE_TRACE-equivalent verbosity is wanted. Call once from main.
 	void Log() const;
-	// Warn for any VULKANTOY_* in the environment this struct does not know.
+	// Warn for any TOURMALINE_* in the environment this struct does not know.
 	// Call once from main after Parse.
 	static void WarnUnknown();
 };

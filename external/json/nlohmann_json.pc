@@ -1,4 +1,4 @@
-prefix=C:/Program Files (x86)/VulkanToy
+prefix=C:/Program Files (x86)/Tourmaline
 includedir=${prefix}/include
 
 Name: nlohmann_json

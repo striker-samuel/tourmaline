@@ -56,4 +56,4 @@ add_custom_command(TARGET Pak POST_BUILD
         "$<TARGET_FILE_DIR:Pak>"
 )
 
-vulkantoy_stage_sdl3(Pak)
+tourmaline_stage_sdl3(Pak)

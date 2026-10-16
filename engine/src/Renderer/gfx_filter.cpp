@@ -1828,7 +1828,7 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 
 #if 0 // TMP-DIAG scanlands hunt (disabled): validate batch->cluster references. Remove later.	{
 		static bool kOnce = false;
-		if (!kOnce && std::getenv("VULKANTOY_DUMPBATCH")) {
+		if (!kOnce && std::getenv("TOURMALINE_DUMPBATCH")) {
 			kOnce = true;
 			size_t bad = 0;
 			for (size_t bi = 0; bi < v.batches.size(); ++bi) {

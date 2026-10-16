@@ -1,4 +1,4 @@
-// Central VULKANTOY_* parser (see App/RunConfig.h). Semantics replicate the
+// Central TOURMALINE_* parser (see App/RunConfig.h). Semantics replicate the
 // historical per-site getenv blocks exactly; each entry notes its origin so
 // future migrations can delete the old site with confidence.
 
@@ -84,17 +84,17 @@ RunConfig RunConfig::Parse() {
 	const char* v = nullptr;
 
 	// Camera (WorldRenderer.cpp:530,545,556).
-	if ((v = Get("VULKANTOY_CAM_FWD")) != nullptr)
+	if ((v = Get("TOURMALINE_CAM_FWD")) != nullptr)
 		c.camFwd = v;
-	if ((v = Get("VULKANTOY_CAM_POS")) != nullptr)
+	if ((v = Get("TOURMALINE_CAM_POS")) != nullptr)
 		c.camPos = v;
-	if ((v = Get("VULKANTOY_CAM_YAW")) != nullptr)
+	if ((v = Get("TOURMALINE_CAM_YAW")) != nullptr)
 		c.camYawDeg = static_cast<float>(std::strtod(v, nullptr));
 
 	// AA pin (validated once here; the snapshot re-applies after every
 	// scene seed). Accepts both historical spellings (msaa2x|msaa,
 	// smaat2x|t2x); invalid warns and leaves the authored aaMode winning.
-	if ((v = Get("VULKANTOY_AA")) != nullptr) {
+	if ((v = Get("TOURMALINE_AA")) != nullptr) {
 		const std::string aa = Trimmed(v);
 		if (StrCaseCmp(aa.c_str(), "off") == 0)
 			c.aa = AaPin::Off;
@@ -105,21 +105,21 @@ RunConfig RunConfig::Parse() {
 		else if (StrCaseCmp(aa.c_str(), "smaat2x") == 0 || StrCaseCmp(aa.c_str(), "t2x") == 0)
 			c.aa = AaPin::SmaaT2x;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_AA (want "
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_AA (want "
 				"off|msaa2x|smaa1x|smaat2x): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_A2C")) != nullptr)
+	if ((v = Get("TOURMALINE_A2C")) != nullptr)
 		c.a2c = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_TEXTURE_FILTER")) != nullptr)
+	if ((v = Get("TOURMALINE_TEXTURE_FILTER")) != nullptr)
 		c.textureFilter = v;
-	if ((v = Get("VULKANTOY_TERRAIN")) != nullptr) {
+	if ((v = Get("TOURMALINE_TERRAIN")) != nullptr) {
 		c.terrainPinned = true;
 		c.terrain = std::atoi(v) != 0;
 	}
 	// Tiled-terrain heightfield shadows (terrain_hfield/blocks + shadow).
 	// hfshadow: 0|off|1|near|2|full (unset = receive-only default at T2,
 	// full once the raymarcher lands at T3). Invalid warns, stays unset.
-	if ((v = Get("VULKANTOY_TERRAIN_HFSHADOW")) != nullptr) {
+	if ((v = Get("TOURMALINE_TERRAIN_HFSHADOW")) != nullptr) {
 		const std::string hs = Trimmed(v);
 		if (hs == "0" || StrCaseCmp(hs.c_str(), "off") == 0)
 			c.terrainHfShadow = 0;
@@ -128,44 +128,44 @@ RunConfig RunConfig::Parse() {
 		else if (hs == "2" || StrCaseCmp(hs.c_str(), "full") == 0)
 			c.terrainHfShadow = 2;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_TERRAIN_HFSHADOW "
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_TERRAIN_HFSHADOW "
 				"(want 0|off|1|near|2|full): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_TERRAIN_HFSHADOW_STEPS")) != nullptr) {
+	if ((v = Get("TOURMALINE_TERRAIN_HFSHADOW_STEPS")) != nullptr) {
 		const int steps = std::atoi(v);
 		if (steps >= 4 && steps <= 64)
 			c.terrainHfShadowSteps = steps;
 		else
-			std::fprintf(stderr, "[RunConfig] VULKANTOY_TERRAIN_HFSHADOW_STEPS "
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_TERRAIN_HFSHADOW_STEPS "
 				"out of range (4..64): %s\n", v);
 	}
 
 	// Postfx authored pins (validated once here with the raw value shown;
 	// invalid warns and leaves the authored scene winning).
-	if ((v = Get("VULKANTOY_SSR")) != nullptr) {
+	if ((v = Get("TOURMALINE_SSR")) != nullptr) {
 		bool on = true;
 		if (IsOnOff(Trimmed(v), on))
 			c.ssr = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_SSR (want 1|on|0|off): %s\n", v);
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_SSR (want 1|on|0|off): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_BLOOM_THRESHOLD")) != nullptr) {
+	if ((v = Get("TOURMALINE_BLOOM_THRESHOLD")) != nullptr) {
 		const float bt = static_cast<float>(std::strtod(v, nullptr));
 		if (bt >= 0.0f && bt <= 16000.0f)
 			c.bloomThreshold = bt;
 		else
-			std::fprintf(stderr, "[RunConfig] VULKANTOY_BLOOM_THRESHOLD out of range "
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_BLOOM_THRESHOLD out of range "
 				"(0..16000): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_BLOOM_INTENSITY")) != nullptr) {
+	if ((v = Get("TOURMALINE_BLOOM_INTENSITY")) != nullptr) {
 		const float bi = static_cast<float>(std::strtod(v, nullptr));
 		if (bi >= 0.0f && bi <= 4.0f)
 			c.bloomIntensity = bi;
 		else
-			std::fprintf(stderr, "[RunConfig] VULKANTOY_BLOOM_INTENSITY out of range "
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_BLOOM_INTENSITY out of range "
 				"(0..4): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_AO")) != nullptr) {
+	if ((v = Get("TOURMALINE_AO")) != nullptr) {
 		const std::string ao = Trimmed(v);
 		if (ao == "0" || StrCaseCmp(ao.c_str(), "off") == 0 || StrCaseCmp(ao.c_str(), "none") == 0)
 			c.ao = AoPin::None;
@@ -174,70 +174,70 @@ RunConfig RunConfig::Parse() {
 		else if (StrCaseCmp(ao.c_str(), "sao") == 0)
 			c.ao = AoPin::Sao;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_AO (want off|ssao|sao): %s\n", v);
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_AO (want off|ssao|sao): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_AUTO_EXPOSURE")) != nullptr)
+	if ((v = Get("TOURMALINE_AUTO_EXPOSURE")) != nullptr)
 		c.autoExposure = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_CUBEMAP")) != nullptr)
+	if ((v = Get("TOURMALINE_CUBEMAP")) != nullptr)
 		c.cubemap = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_DLSS")) != nullptr)
+	if ((v = Get("TOURMALINE_DLSS")) != nullptr)
 		c.dlss = v;
-	if ((v = Get("VULKANTOY_RENDER_SCALE")) != nullptr)
+	if ((v = Get("TOURMALINE_RENDER_SCALE")) != nullptr)
 		c.renderScale = ToFloat(v, 0.0f);
-	if ((v = Get("VULKANTOY_SPD")) != nullptr) {
+	if ((v = Get("TOURMALINE_SPD")) != nullptr) {
 		c.spdSet = true;
 		c.spd = std::atoi(v) != 0;
 	}
 
 	// Volumetric authored pins (validated once; "scene fog settings lose").
-	if ((v = Get("VULKANTOY_VOLUMETRIC")) != nullptr) {
+	if ((v = Get("TOURMALINE_VOLUMETRIC")) != nullptr) {
 		bool on = true;
 		if (IsOnOff(Trimmed(v), on))
 			c.volumetric = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_VOLUMETRIC (want 1|on|0|off): %s\n", v);
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_VOLUMETRIC (want 1|on|0|off): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_VOLUMETRIC_STEPS")) != nullptr) {
+	if ((v = Get("TOURMALINE_VOLUMETRIC_STEPS")) != nullptr) {
 		const int vs = std::atoi(v);
 		if (vs >= 4 && vs <= 128)
 			c.volumetricSteps = vs;
 		else
-			std::fprintf(stderr, "[RunConfig] VULKANTOY_VOLUMETRIC_STEPS out of range "
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_STEPS out of range "
 				"(4..128): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_VOLUMETRIC_DENSITY")) != nullptr) {
+	if ((v = Get("TOURMALINE_VOLUMETRIC_DENSITY")) != nullptr) {
 		const float vd = static_cast<float>(std::strtod(v, nullptr));
 		if (vd >= 0.0f && vd <= 2.0f)
 			c.volumetricDensity = vd;
 		else
-			std::fprintf(stderr, "[RunConfig] VULKANTOY_VOLUMETRIC_DENSITY out of range "
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_DENSITY out of range "
 				"(0..2): %s\n", v);
 	}
-	if ((v = Get("VULKANTOY_VOLUMETRIC_CVOL")) != nullptr) {
+	if ((v = Get("TOURMALINE_VOLUMETRIC_CVOL")) != nullptr) {
 		bool on = true;
 		if (IsOnOff(Trimmed(v), on))
 			c.volumetricCvol = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad VULKANTOY_VOLUMETRIC_CVOL "
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_VOLUMETRIC_CVOL "
 				"(want 1|on|0|off): %s\n", v);
 	}
 
 	// Shadows / capture (WorldRenderer.cpp:925..1000).
-	if ((v = Get("VULKANTOY_DS")) != nullptr)
+	if ((v = Get("TOURMALINE_DS")) != nullptr)
 		c.ds = v;
-	c.dsDump = ToInt(Get("VULKANTOY_DS_DUMP"), -1);
-	c.dsViz = ToInt(Get("VULKANTOY_DS_VIZ"), -1);
-	if ((v = Get("VULKANTOY_EVSM")) != nullptr) {
+	c.dsDump = ToInt(Get("TOURMALINE_DS_DUMP"), -1);
+	c.dsViz = ToInt(Get("TOURMALINE_DS_VIZ"), -1);
+	if ((v = Get("TOURMALINE_EVSM")) != nullptr) {
 		c.evsmSet = true;
 		c.evsm = std::atoi(v) != 0;
 	}
-	if ((v = Get("VULKANTOY_EVSM_SOFT")) != nullptr)
+	if ((v = Get("TOURMALINE_EVSM_SOFT")) != nullptr)
 		c.evsmSoft = ToFloat(v, -1.0f);
-	if ((v = Get("VULKANTOY_SDSM")) != nullptr)
+	if ((v = Get("TOURMALINE_SDSM")) != nullptr)
 		c.sdsm = std::atoi(v) != 0;
-	c.evsmDump = ToInt(Get("VULKANTOY_EVSM_DUMP"), -1);
-	c.capture = ToInt(Get("VULKANTOY_CAPTURE"), -1);
-	if ((v = Get("VULKANTOY_DECALS")) != nullptr) {
+	c.evsmDump = ToInt(Get("TOURMALINE_EVSM_DUMP"), -1);
+	c.capture = ToInt(Get("TOURMALINE_CAPTURE"), -1);
+	if ((v = Get("TOURMALINE_DECALS")) != nullptr) {
 		// Renderer visibility (:962): 1|on|0|off. App creation (:217 in
 		// PakApp.cpp) uses "0"|"off" kill — both spellings converge here;
 		// creation sites treat off/false as kill (see Log/WarnUnknown).
@@ -248,107 +248,107 @@ RunConfig RunConfig::Parse() {
 #endif
 		);
 	}
-	c.decalAutosplat = ToInt(Get("VULKANTOY_DECAL_AUTOSPLAT"), -1);
+	c.decalAutosplat = ToInt(Get("TOURMALINE_DECAL_AUTOSPLAT"), -1);
 
 	// GI / ambient (WorldRenderer.cpp:1004..1083, :3170).
-	if ((v = Get("VULKANTOY_AMBIENT")) != nullptr)
+	if ((v = Get("TOURMALINE_AMBIENT")) != nullptr)
 		c.ambient = v;
-	if ((v = Get("VULKANTOY_GI")) != nullptr)
+	if ((v = Get("TOURMALINE_GI")) != nullptr)
 		c.gi = v;
-	c.giDebug = ToInt(Get("VULKANTOY_GI_DEBUG"), -1);
-	c.giDebugLevel = ToInt(Get("VULKANTOY_GI_DEBUG_LEVEL"), -1);
-	if ((v = Get("VULKANTOY_GI_POINTS")) != nullptr)
+	c.giDebug = ToInt(Get("TOURMALINE_GI_DEBUG"), -1);
+	c.giDebugLevel = ToInt(Get("TOURMALINE_GI_DEBUG_LEVEL"), -1);
+	if ((v = Get("TOURMALINE_GI_POINTS")) != nullptr)
 		c.giPoints = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_GI_OCCLUDE")) != nullptr)
+	if ((v = Get("TOURMALINE_GI_OCCLUDE")) != nullptr)
 		c.giOcclude = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_CVOL")) != nullptr)
+	if ((v = Get("TOURMALINE_CVOL")) != nullptr)
 		c.cvolKilled = std::atoi(v) == 0;
-	c.cubemapDebug = ToInt(Get("VULKANTOY_CUBEMAP_DEBUG"), -1);
-	if ((v = Get("VULKANTOY_IBL")) != nullptr)
+	c.cubemapDebug = ToInt(Get("TOURMALINE_CUBEMAP_DEBUG"), -1);
+	if ((v = Get("TOURMALINE_IBL")) != nullptr)
 		c.iblKilled = std::atoi(v) == 0;
 
 	// Geometry / culling (WorldRenderer.cpp:800..848, :909; gfx_filter.cpp:230).
-	if ((v = Get("VULKANTOY_HIZ")) != nullptr)
+	if ((v = Get("TOURMALINE_HIZ")) != nullptr)
 		c.hizKilled = std::atoi(v) == 0;
-	if ((v = Get("VULKANTOY_LOD")) != nullptr)
+	if ((v = Get("TOURMALINE_LOD")) != nullptr)
 		c.lodKilled = std::atoi(v) == 0;
-	if ((v = Get("VULKANTOY_LODFULL")) != nullptr)
+	if ((v = Get("TOURMALINE_LODFULL")) != nullptr)
 		c.lodFullKilled = std::atoi(v) == 0;
-	if ((v = Get("VULKANTOY_SHADERLOD")) != nullptr)
+	if ((v = Get("TOURMALINE_SHADERLOD")) != nullptr)
 		c.shaderLodKilled = std::atoi(v) == 0;
-	if ((v = Get("VULKANTOY_SPLIT")) != nullptr)
+	if ((v = Get("TOURMALINE_SPLIT")) != nullptr)
 		c.splitKilled = std::atoi(v) == 0;
-	if ((v = Get("VULKANTOY_WIREFRAME")) != nullptr)
+	if ((v = Get("TOURMALINE_WIREFRAME")) != nullptr)
 		c.wireframe = std::atoi(v) == 1;
-	if ((v = Get("VULKANTOY_CULLFLAGS")) != nullptr) {
+	if ((v = Get("TOURMALINE_CULLFLAGS")) != nullptr) {
 		c.cullFlagsSet = true;
 		c.cullFlags = std::strtoull(v, nullptr, 0);
 	}
-	if ((v = Get("VULKANTOY_FREEZE_CULL")) != nullptr)
+	if ((v = Get("TOURMALINE_FREEZE_CULL")) != nullptr)
 		c.freezeCull = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_MESH")) != nullptr) {
+	if ((v = Get("TOURMALINE_MESH")) != nullptr) {
 		c.meshSet = true;
 		c.mesh = std::atoi(v) != 0;
 	}
-	if ((v = Get("VULKANTOY_STREAMING")) != nullptr)
+	if ((v = Get("TOURMALINE_STREAMING")) != nullptr)
 		c.streamingKilled = std::atoi(v) == 0;
 
 	// Capture / audit (WorldRenderer.cpp:853..8817, :11045).
-	c.audit = ToInt(Get("VULKANTOY_AUDIT"), -1);
-	if ((v = Get("VULKANTOY_DEBUGVIEW")) != nullptr)
+	c.audit = ToInt(Get("TOURMALINE_AUDIT"), -1);
+	if ((v = Get("TOURMALINE_DEBUGVIEW")) != nullptr)
 		c.debugView = v;
-	if ((v = Get("VULKANTOY_HITCH_LOG")) != nullptr)
+	if ((v = Get("TOURMALINE_HITCH_LOG")) != nullptr)
 		c.hitchLogMs = ToFloat(v, 0.0f);
-	c.materialCensus = Present("VULKANTOY_MATERIAL_CENSUS");
-	if ((v = Get("VULKANTOY_SSR_STENCILVIEW")) != nullptr)
+	c.materialCensus = Present("TOURMALINE_MATERIAL_CENSUS");
+	if ((v = Get("TOURMALINE_SSR_STENCILVIEW")) != nullptr)
 		c.ssrStencilView = std::atoi(v);
-	c.ssrDump = ToInt(Get("VULKANTOY_SSR_DUMP"), -1);
+	c.ssrDump = ToInt(Get("TOURMALINE_SSR_DUMP"), -1);
 
 	// Device / backend (impl.cpp:1598..8127).
-	if ((v = Get("VULKANTOY_HOST_COPY")) != nullptr)
+	if ((v = Get("TOURMALINE_HOST_COPY")) != nullptr)
 		c.hostCopyKilled = std::strcmp(v, "0") == 0;
 	// Backend device kill (impl.cpp:1610) is exact "0" like the renderer
 	// pin above; both converge into mesh=false when either fires. The
 	// exact-"0" device gate is stricter than atoi — "off" does NOT kill
 	// at the device level (historical). Preserve that here.
-	if ((v = Get("VULKANTOY_MESH")) != nullptr) {
+	if ((v = Get("TOURMALINE_MESH")) != nullptr) {
 		if (std::strcmp(v, "0") == 0) {
 			c.meshSet = true;
 			c.mesh = false;
 			c.meshDeviceKilled = true;
 		}
 	}
-	if ((v = Get("VULKANTOY_AFTERMATH")) != nullptr)
+	if ((v = Get("TOURMALINE_AFTERMATH")) != nullptr)
 		c.aftermathKilled = std::strcmp(v, "0") == 0;
-	if ((v = Get("VULKANTOY_SERIALIZE")) != nullptr)
+	if ((v = Get("TOURMALINE_SERIALIZE")) != nullptr)
 		c.serialize = v;
-	if ((v = Get("VULKANTOY_BARRIER_TRACE")) != nullptr)
+	if ((v = Get("TOURMALINE_BARRIER_TRACE")) != nullptr)
 		c.barrierTrace = v;
-	if ((v = Get("VULKANTOY_ASYNC_COMPUTE")) != nullptr)
+	if ((v = Get("TOURMALINE_ASYNC_COMPUTE")) != nullptr)
 		c.asyncComputeKilled = std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0;
-	if ((v = Get("VULKANTOY_PIPELINE_CACHE")) != nullptr)
+	if ((v = Get("TOURMALINE_PIPELINE_CACHE")) != nullptr)
 		c.pipelineCache = v;
-	if ((v = Get("VULKANTOY_NO_VALIDATION")) != nullptr)
+	if ((v = Get("TOURMALINE_NO_VALIDATION")) != nullptr)
 		c.noValidation = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_TRACE_WAITS")) != nullptr)
+	if ((v = Get("TOURMALINE_TRACE_WAITS")) != nullptr)
 		c.traceWaits = std::atoi(v) != 0;
 
 	// Trace (resource_manager.cpp:21, texture_streamer.cpp:343,
 	// WorldRenderer.cpp:7339, impl.cpp presence sites).
-	c.texstreamTrace = Present("VULKANTOY_TEXSTREAM_TRACE");
+	c.texstreamTrace = Present("TOURMALINE_TEXSTREAM_TRACE");
 
 	// Editor (editor_app.cpp, editor_project.cpp, main.cpp default-write).
-	if ((v = Get("VULKANTOY_EDITOR_VP_QUAD")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_VP_QUAD")) != nullptr)
 		c.editorVpQuad = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_EDITOR_MESHLETS")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_MESHLETS")) != nullptr)
 		c.editorMeshlets = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_EDITOR_LODS")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_LODS")) != nullptr)
 		c.editorLods = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_EDITOR_SHADERLODS")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_SHADERLODS")) != nullptr)
 		c.editorShaderLods = std::atoi(v) != 0;
-	if ((v = Get("VULKANTOY_EDITOR_OPEN_AT")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_OPEN_AT")) != nullptr)
 		c.editorOpenAt = v;
-	if ((v = Get("VULKANTOY_EDITOR_OPEN_AT2")) != nullptr)
+	if ((v = Get("TOURMALINE_EDITOR_OPEN_AT2")) != nullptr)
 		c.editorOpenAt2 = v;
 
 	return c;
@@ -416,44 +416,44 @@ void RunConfig::WarnUnknown() {
 	// names that are legitimately unset at runtime, plus the dead #if 0
 	// TMP-DIAG names (warn would be noise; they stay out of Parse).
 	static const char* kKnown[] = {
-		"VULKANTOY_AA", "VULKANTOY_A2C", "VULKANTOY_TEXTURE_FILTER", "VULKANTOY_TERRAIN",
-		"VULKANTOY_TERRAIN_HFSHADOW", "VULKANTOY_TERRAIN_HFSHADOW_STEPS",
-		"VULKANTOY_CAM_FWD", "VULKANTOY_CAM_YAW", "VULKANTOY_CAM_POS",
-		"VULKANTOY_VOLUMETRIC", "VULKANTOY_VOLUMETRIC_STEPS", "VULKANTOY_VOLUMETRIC_DENSITY",
-		"VULKANTOY_VOLUMETRIC_CVOL", "VULKANTOY_SSR", "VULKANTOY_BLOOM_THRESHOLD",
-		"VULKANTOY_BLOOM_INTENSITY", "VULKANTOY_AO", "VULKANTOY_AUTO_EXPOSURE",
-		"VULKANTOY_CUBEMAP", "VULKANTOY_HIZ", "VULKANTOY_LOD", "VULKANTOY_LODFULL",
-		"VULKANTOY_SHADERLOD", "VULKANTOY_SPLIT", "VULKANTOY_WIREFRAME",
-		"VULKANTOY_CULLFLAGS", "VULKANTOY_FREEZE_CULL", "VULKANTOY_AUDIT",
-		"VULKANTOY_DEBUGVIEW", "VULKANTOY_DLSS", "VULKANTOY_MESH",
-		"VULKANTOY_RENDER_SCALE", "VULKANTOY_DS", "VULKANTOY_DS_DUMP",
-		"VULKANTOY_DS_VIZ", "VULKANTOY_CAPTURE", "VULKANTOY_DECALS",
-		"VULKANTOY_DECAL_AUTOSPLAT", "VULKANTOY_EVSM", "VULKANTOY_EVSM_SOFT",
-		"VULKANTOY_SDSM", "VULKANTOY_EVSM_DUMP", "VULKANTOY_SSR_DUMP",
-		"VULKANTOY_IBL", "VULKANTOY_CUBEMAP_DEBUG", "VULKANTOY_AMBIENT",
-		"VULKANTOY_GI", "VULKANTOY_GI_DEBUG", "VULKANTOY_GI_DEBUG_LEVEL",
-		"VULKANTOY_GI_POINTS", "VULKANTOY_GI_OCCLUDE", "VULKANTOY_STREAMING",
-		"VULKANTOY_LIGHTMAP", "VULKANTOY_CVOL", "VULKANTOY_HITCH_LOG",
-		"VULKANTOY_MATERIAL_CENSUS", "VULKANTOY_SSR_STENCILVIEW",
-		"VULKANTOY_HOST_COPY", "VULKANTOY_AFTERMATH",
-		"VULKANTOY_SERIALIZE", "VULKANTOY_BARRIER_TRACE", "VULKANTOY_ASYNC_COMPUTE",
-		"VULKANTOY_PIPELINE_CACHE", "VULKANTOY_NO_VALIDATION",
-		"VULKANTOY_TEXSTREAM_TRACE", "VULKANTOY_TRACE_WAITS",
+		"TOURMALINE_AA", "TOURMALINE_A2C", "TOURMALINE_TEXTURE_FILTER", "TOURMALINE_TERRAIN",
+		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
+		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
+		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
+		"TOURMALINE_VOLUMETRIC_CVOL", "TOURMALINE_SSR", "TOURMALINE_BLOOM_THRESHOLD",
+		"TOURMALINE_BLOOM_INTENSITY", "TOURMALINE_AO", "TOURMALINE_AUTO_EXPOSURE",
+		"TOURMALINE_CUBEMAP", "TOURMALINE_HIZ", "TOURMALINE_LOD", "TOURMALINE_LODFULL",
+		"TOURMALINE_SHADERLOD", "TOURMALINE_SPLIT", "TOURMALINE_WIREFRAME",
+		"TOURMALINE_CULLFLAGS", "TOURMALINE_FREEZE_CULL", "TOURMALINE_AUDIT",
+		"TOURMALINE_DEBUGVIEW", "TOURMALINE_DLSS", "TOURMALINE_MESH",
+		"TOURMALINE_RENDER_SCALE", "TOURMALINE_DS", "TOURMALINE_DS_DUMP",
+		"TOURMALINE_DS_VIZ", "TOURMALINE_CAPTURE", "TOURMALINE_DECALS",
+		"TOURMALINE_DECAL_AUTOSPLAT", "TOURMALINE_EVSM", "TOURMALINE_EVSM_SOFT",
+		"TOURMALINE_SDSM", "TOURMALINE_EVSM_DUMP", "TOURMALINE_SSR_DUMP",
+		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_AMBIENT",
+		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
+		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",
+		"TOURMALINE_LIGHTMAP", "TOURMALINE_CVOL", "TOURMALINE_HITCH_LOG",
+		"TOURMALINE_MATERIAL_CENSUS", "TOURMALINE_SSR_STENCILVIEW",
+		"TOURMALINE_HOST_COPY", "TOURMALINE_AFTERMATH",
+		"TOURMALINE_SERIALIZE", "TOURMALINE_BARRIER_TRACE", "TOURMALINE_ASYNC_COMPUTE",
+		"TOURMALINE_PIPELINE_CACHE", "TOURMALINE_NO_VALIDATION",
+		"TOURMALINE_TEXSTREAM_TRACE", "TOURMALINE_TRACE_WAITS",
 		// One-shot debug dumps (TMP-DIAG family): the filter-chain audit,
 		// the allocation-ledger dump, the gfx registration dumps.
-		"VULKANTOY_FILTERAUDIT", "VULKANTOY_MEMDUMP",
-		"VULKANTOY_DUMPGFX", "VULKANTOY_DUMPBATCH", "VULKANTOY_DUMPMAP",
-		"VULKANTOY_DUMPMAT", "VULKANTOY_HIDEGROUP", "VULKANTOY_SHOWGROUP",
-		"VULKANTOY_STRICT",
-		"VULKANTOY_SPD", "VULKANTOY_EDITOR_VP_QUAD", "VULKANTOY_EDITOR_MESHLETS",
-		"VULKANTOY_EDITOR_LODS", "VULKANTOY_EDITOR_SHADERLODS",
-		"VULKANTOY_EDITOR_OPEN_AT",
-		"VULKANTOY_EDITOR_OPEN_AT2",
+		"TOURMALINE_FILTERAUDIT", "TOURMALINE_MEMDUMP",
+		"TOURMALINE_DUMPGFX", "TOURMALINE_DUMPBATCH", "TOURMALINE_DUMPMAP",
+		"TOURMALINE_DUMPMAT", "TOURMALINE_HIDEGROUP", "TOURMALINE_SHOWGROUP",
+		"TOURMALINE_STRICT",
+		"TOURMALINE_SPD", "TOURMALINE_EDITOR_VP_QUAD", "TOURMALINE_EDITOR_MESHLETS",
+		"TOURMALINE_EDITOR_LODS", "TOURMALINE_EDITOR_SHADERLODS",
+		"TOURMALINE_EDITOR_OPEN_AT",
+		"TOURMALINE_EDITOR_OPEN_AT2",
 		// Build-time / CMake-only (legit in env, not runtime knobs):
-		"VULKANTOY_CONTENT_DIR", "VULKANTOY_PCH",
-		"VULKANTOY_DS_VIZ", "VULKANTOY_SHADER_DEBUG", "VULKANTOY_SHADER_OD_RETRY",
+		"TOURMALINE_CONTENT_DIR", "TOURMALINE_PCH",
+		"TOURMALINE_DS_VIZ", "TOURMALINE_SHADER_DEBUG", "TOURMALINE_SHADER_OD_RETRY",
 		// Stale doc-only (AGENTS.md): warn to guide migration, not error.
-		"VULKANTOY_TRANSPARENCY",
+		"TOURMALINE_TRANSPARENCY",
 	};
 	auto known = [&](const char* n) {
 		for (const char* k : kKnown)
@@ -469,8 +469,8 @@ void RunConfig::WarnUnknown() {
 		// (*e, eq) would mix char*/const char* and fail ctor deduction —
 		// count form is unambiguous.
 		std::string name(*e, static_cast<size_t>(eq - *e));
-		if (name.rfind("VULKANTOY_", 0) == 0 && !known(name.c_str()))
-			std::fprintf(stderr, "[RunConfig] unknown VULKANTOY_* var (typo?): %s\n", name.c_str());
+		if (name.rfind("TOURMALINE_", 0) == 0 && !known(name.c_str()))
+			std::fprintf(stderr, "[RunConfig] unknown TOURMALINE_* var (typo?): %s\n", name.c_str());
 	}
 #else
 	extern char** environ;
@@ -479,8 +479,8 @@ void RunConfig::WarnUnknown() {
 		if (!eq)
 			continue;
 		std::string name(*e, static_cast<size_t>(eq - *e));
-		if (name.rfind("VULKANTOY_", 0) == 0 && !known(name.c_str()))
-			std::fprintf(stderr, "[RunConfig] unknown VULKANTOY_* var (typo?): %s\n", name.c_str());
+		if (name.rfind("TOURMALINE_", 0) == 0 && !known(name.c_str()))
+			std::fprintf(stderr, "[RunConfig] unknown TOURMALINE_* var (typo?): %s\n", name.c_str());
 	}
 #endif
 	std::fflush(stderr);

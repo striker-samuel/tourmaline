@@ -23,7 +23,7 @@
 // from-zero re-import reproduces byte-identical artifacts.
 //
 // The DERIVE settings mirror the editor's env pins
-// (VULKANTOY_EDITOR_MESHLETS/LODS/SHADERLODS - see DeriveConfig).
+// (TOURMALINE_EDITOR_MESHLETS/LODS/SHADERLODS - see DeriveConfig).
 // Default: derive-if-stale (MeshArtifactStale: missing artifacts or a
 // changed source SET re-derives — .gltf + .bin + referenced images,
 // not just the .gltf; a fresh import is a no-op when current).

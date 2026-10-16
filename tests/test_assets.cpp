@@ -328,7 +328,7 @@ void TestPakTextureDigest() {
 
 void TestPakAppend() {
 	namespace fs = std::filesystem;
-	const auto dir = fs::temp_directory_path() / "vulkantoy_pak_append";
+	const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
 	std::error_code ec;
 	fs::remove_all(dir, ec);
 	fs::create_directories(dir, ec);

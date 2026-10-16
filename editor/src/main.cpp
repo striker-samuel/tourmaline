@@ -23,7 +23,7 @@
 // ---------------------------------------------------------------------------
 // Crash stack writer (Windows): a vectored exception handler that dumps the
 // native call stack of fatal exceptions (AV etc.) to stderr AND
-// vulkantoy_fatal.log in the working directory. The editor is a GUI app with
+// tourmaline_fatal.log in the working directory. The editor is a GUI app with
 // no console — without this, a first-chance access violation's stack is only
 // visible under an attached VS debugger (dev crash-chasing sessions kept
 // losing it: the observed device-death crashes surface as CPU-side AVs at
@@ -43,7 +43,7 @@ FILE* g_crashLog = nullptr;
 
 void CrashLogOpen() {
 	if (!g_crashLog)
-		g_crashLog = std::fopen("vulkantoy_fatal.log", "a");
+		g_crashLog = std::fopen("tourmaline_fatal.log", "a");
 }
 
 void CrashLogPrintf(const char* fmt, ...) {
@@ -236,7 +236,7 @@ namespace {
 			<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
 			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
 			<< "  diagnostic instead of degrading silently (dev/diagnosis;\n"
-			<< "  same as VULKANTOY_STRICT=1 — see AGENTS.md).\n";
+			<< "  same as TOURMALINE_STRICT=1 — see AGENTS.md).\n";
 	}
 
 } // namespace
@@ -253,7 +253,7 @@ namespace {
 	// fault/warning lines stay unconditional here too.
 	smvk::SetTraceEnabled(false);
 	// Disk pipeline cache OFF in the editor (see impl.cpp's
-	// VULKANTOY_PIPELINE_CACHE contract — "off" = no disk seed or save;
+	// TOURMALINE_PIPELINE_CACHE contract — "off" = no disk seed or save;
 	// the in-process pipeline-object dedup still runs): compute-pipeline
 	// creation against a driver-seeded cache still crashes the driver on
 	// some configurations (the blob validates — same driver/GPU — but
@@ -261,11 +261,11 @@ namespace {
 	// keeps the cache (startup speed + bench determinism). An explicit
 	// user setting wins — this only defaults when unset, so the cache
 	// can be re-enabled for A/B runs without a rebuild.
-	if (!std::getenv("VULKANTOY_PIPELINE_CACHE")) {
+	if (!std::getenv("TOURMALINE_PIPELINE_CACHE")) {
 #ifdef _WIN32
-		_putenv("VULKANTOY_PIPELINE_CACHE=off");
+		_putenv("TOURMALINE_PIPELINE_CACHE=off");
 #else
-		setenv("VULKANTOY_PIPELINE_CACHE", "off", 0);
+		setenv("TOURMALINE_PIPELINE_CACHE", "off", 0);
 #endif
 	}
 #ifdef _WIN32

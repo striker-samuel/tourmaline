@@ -41,7 +41,7 @@ void Check(bool cond, const char* name) {
 
 std::string TempDir() {
 	const auto dir = std::filesystem::temp_directory_path() /
-		"vulkantoy_cache_test";
+		"tourmaline_cache_test";
 	std::error_code ec;
 	std::filesystem::remove_all(dir, ec);
 	std::filesystem::create_directories(dir, ec);

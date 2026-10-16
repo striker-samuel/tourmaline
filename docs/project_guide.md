@@ -1,4 +1,4 @@
-# VulkanToy — Project Guide for Future Agents
+# Tourmaline — Project Guide for Future Agents
 
 Source of truth alongside `AGENTS.md` (build/run), `docs/editor_tour_and_context.md`
 (tour v1 spec), `ALLOCATION_ANALYSIS.md` (allocator migration). `README.md` is
@@ -38,10 +38,10 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   -fvk-use-dx-layout`) -> `out/build/<cfg>/content/shaders/*.spv`, synced next
   to `App.exe`. Rebuild `App` on edit. Debug is `-Od` except
   `HLSL_FORCE_O3_FILES` (driver AV pin; retry via
-  `python tools/shader_od_retry.py` + `-DVULKANTOY_SHADER_OD_RETRY=ON`).
+  `python tools/shader_od_retry.py` + `-DTOURMALINE_SHADER_OD_RETRY=ON`).
 - Run CWD = `out/build/<cfg>`; `--bench N` = 10 warmup + N measured then exit.
-  `VULKANTOY_CAPTURE` must land INSIDE the bench budget.
-- Headless matrix: `VULKANTOY_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
+  `TOURMALINE_CAPTURE` must land INSIDE the bench budget.
+- Headless matrix: `TOURMALINE_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
   `AO=off|ssao|sao`, `EVSM`, `VOLUMETRIC[_STEPS][_CVOL]`, `MESH=0`,
   `GFX_GPU_CULL=0`, `ASYNC_COMPUTE=0`, `NO_VALIDATION=1` — all declared in
   `engine/include/Engine/App/RunConfig.h`.
@@ -60,7 +60,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 | Cook/pak | `engine/Asset/pak.h`, `tools/pak_cooker/main.cpp` | `SMP5/KPM5` magic-bump only, no version field; `PakBackend` serves textures |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
-| GPU-driven filter | `engine/Renderer/gfx_filter.h` | DEFAULT ON (`m_useGfxMesh/m_useGfxFilter`, `GpuCullEnabled`); kills: `VULKANTOY_MESH=0`, `VULKANTOY_GFX_GPU_CULL=0`; `MeshDrawEligible` truth table in contract tests |
+| GPU-driven filter | `engine/Renderer/gfx_filter.h` | DEFAULT ON (`m_useGfxMesh/m_useGfxFilter`, `GpuCullEnabled`); kills: `TOURMALINE_MESH=0`, `TOURMALINE_GFX_GPU_CULL=0`; `MeshDrawEligible` truth table in contract tests |
 | Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, CI fails on mismatch (per-GPU baselines) |
 
 Data flow per frame: `DrawFrame` fills `AppFrameContext` -> `GfxRenderer`
@@ -89,13 +89,13 @@ AA/UI -> swapchain.
 - Push structs: C++ and HLSL mirrors stay layout-identical — run
   `codegen.py --check`, keep `static_assert`s, never add sub-192 fields
   (FS-only extras go in `FrameUniforms::frameHot`).
-- New `VULKANTOY_*`: declare in `RunConfig.h` + parse in `RunConfig.cpp` +
+- New `TOURMALINE_*`: declare in `RunConfig.h` + parse in `RunConfig.cpp` +
   extend `WarnUnknown` + cover in `test_runconfig.cpp`. Never scatter `getenv`.
 - New scratch vectors: `FrameVector` (dies in scope) vs
   `UploadInFlightVector` (spans frames) — wrong choice is UAF or leak.
 - New shaders: include `push_constants.hlsli` directly when possible
   (fine-grained deps); `common.hlsli` umbrella still works.
-- New tests: plain-exe + `add_test` + `vulkantoy_stage_sdl3`, hand-rolled
+- New tests: plain-exe + `add_test` + `tourmaline_stage_sdl3`, hand-rolled
   `Check()` runner, `checks=/failures=` summary, exit nonzero on failure.
 - Don't use F12; don't bump format versions / add compat shims (magic-bump
   to break old files is OK).

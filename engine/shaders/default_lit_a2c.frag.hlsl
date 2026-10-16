@@ -1,5 +1,5 @@
 // Main forward lighting FS, alpha-to-coverage variant for Masked (cutout)
-// materials in 2x MSAA Main. Opt-in (VULKANTOY_A2C=1): cutout comes from the
+// materials in 2x MSAA Main. Opt-in (TOURMALINE_A2C=1): cutout comes from the
 // coverage remap of the output alpha instead of a discard, so foliage
 // silhouettes resolve AA'd — but coverage needs the FS output, which moves
 // the per-sample depth test after the shader (overlapping layers lose

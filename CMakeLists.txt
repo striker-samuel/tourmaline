@@ -13,7 +13,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   message(FATAL_ERROR "The Visual Studio generator is unsupported: use Ninja "
     "(-G Ninja). See AGENTS.md.")
 endif()
-project(VulkanToy LANGUAGES C CXX)
+project(Tourmaline LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,7 +82,7 @@ find_package(SDL3 CONFIG REQUIRED)
 
 # Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
 # consumer exe carries the import; Windows loads the DLL from the exe dir).
-function(vulkantoy_stage_sdl3 TARGET)
+function(tourmaline_stage_sdl3 TARGET)
     add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:SDL3::SDL3>"
@@ -95,7 +95,7 @@ endfunction()
 # sl.interposer.dll is loaded dynamically from the exe dir (dlss.cpp);
 # a missing set simply leaves DLSS unavailable - no hard dependency.
 # Source of the binaries: external/streamline (Streamline SDK 2.14.1).
-function(vulkantoy_stage_streamline TARGET)
+function(tourmaline_stage_streamline TARGET)
     set(_SL_BIN_DIR "${CMAKE_SOURCE_DIR}/external/streamline/bin/x64")
     foreach(_SL_DLL IN ITEMS
             sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
@@ -224,42 +224,42 @@ add_subdirectory(external/volk)
 # App target (app/CMakeLists.txt) and for DXC (CompileShaders.cmake).
 #   unset/-D...="" -> auto: ON in Debug trees, OFF everywhere else
 #                     (x64-Release stays clean, zero cost)
-#   -DVULKANTOY_DS_VIZ=ON  -> force ON at any optimization level
+#   -DTOURMALINE_DS_VIZ=ON  -> force ON at any optimization level
 #                     (the x64-Release-DSViz CMakeSettings preset: release
 #                      -O2 C++ / -O3 shaders WITH visualizers)
-#   -DVULKANTOY_DS_VIZ=OFF -> force OFF even in Debug trees
-set(VULKANTOY_DS_VIZ "" CACHE BOOL
+#   -DTOURMALINE_DS_VIZ=OFF -> force OFF even in Debug trees
+set(TOURMALINE_DS_VIZ "" CACHE BOOL
     "Deferred-shadow debug visualizers (empty = auto: Debug builds only)")
-if(VULKANTOY_DS_VIZ)
+if(TOURMALINE_DS_VIZ)
   set(DS_VIZ_ON ON)
-elseif(VULKANTOY_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
+elseif(TOURMALINE_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
   set(DS_VIZ_ON ON)
 else()
   set(DS_VIZ_ON OFF)
 endif()
 message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
-  " (VULKANTOY_DS_VIZ='${VULKANTOY_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
+  " (TOURMALINE_DS_VIZ='${TOURMALINE_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
 
 # --- Shader debug information (-Zi) ---------------------------------------------
 # Release tree whose shaders carry SPIR-V debug info (names/lines/source
 # paths via NonSemantic.Shader.DebugInfo.100 — RenderDoc & friends) instead
 # of the lean -Qstrip_debug modules. C++ codegen stays Release (-O2).
-#   unset/-DVULKANTOY_SHADER_DEBUG=OFF -> OFF (Release keeps -O3 + strip)
+#   unset/-DTOURMALINE_SHADER_DEBUG=OFF -> OFF (Release keeps -O3 + strip)
 #   Debug trees already carry debug info via their own CompileShaders branch
-#   -DVULKANTOY_SHADER_DEBUG=ON -> shaders compile -O3 -Zi -fspv-debug=vulkan
+#   -DTOURMALINE_SHADER_DEBUG=ON -> shaders compile -O3 -Zi -fspv-debug=vulkan
 #     in a Release tree (the x64-Release-ShaderDebug CMakeSettings preset).
 # NOTE: DXC's -Zi and -Zs are mutually exclusive ("Cannot specify both");
 # -Zi is the flag that embeds debug info in the SPIR-V itself, so that is
 # what this flavor uses.
-set(VULKANTOY_SHADER_DEBUG OFF CACHE BOOL
+set(TOURMALINE_SHADER_DEBUG OFF CACHE BOOL
     "Compile shaders with -Zi SPIR-V debug info in Release trees")
-if(VULKANTOY_SHADER_DEBUG AND NOT CMAKE_BUILD_TYPE MATCHES "Debug")
+if(TOURMALINE_SHADER_DEBUG AND NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   set(SHADER_DEBUG_ON ON)
 else()
   set(SHADER_DEBUG_ON OFF)
 endif()
 message(STATUS "Shader debug info (-Zi): ${SHADER_DEBUG_ON}"
-  " (VULKANTOY_SHADER_DEBUG='${VULKANTOY_SHADER_DEBUG}', build type '${CMAKE_BUILD_TYPE}')")
+  " (TOURMALINE_SHADER_DEBUG='${TOURMALINE_SHADER_DEBUG}', build type '${CMAKE_BUILD_TYPE}')")
 # True when the SPIR-V this tree ships actually CARRIES that debug info:
 # Debug trees do via their own CompileShaders branch (-Od -Zi
 # -fspv-debug=vulkan), Release only via SHADER_DEBUG_ON above. Gates the
@@ -267,7 +267,7 @@ message(STATUS "Shader debug info (-Zi): ${SHADER_DEBUG_ON}"
 # info present, the engine asks the NVIDIA driver to generate the
 # GPU-machine-code -> SPIR-V line tables at device creation
 # (VK_NV_device_diagnostics_config + shader debug info bit, see
-# engine/src/Vulkan/impl.cpp device init + VULKANTOY_AFTERMATH=0 kill
+# engine/src/Vulkan/impl.cpp device init + TOURMALINE_AFTERMATH=0 kill
 # switch). Lean Release trees stay off — driver tables over stripped
 # SPIR-V map nothing and only cost pipeline-compile time/memory.
 if(SHADER_DEBUG_ON OR CMAKE_BUILD_TYPE MATCHES "Debug")

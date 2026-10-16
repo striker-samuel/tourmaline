@@ -4,7 +4,7 @@
 // layered-material path blends with (see default_lit.frag.hlsl).
 //   layered (layerMaterials.w > 1): normalized per-layer weights as a
 //     false-color mix — R/G/B/Y per layer 0..3, using the same palette
-//     as VULKANTOY_LAYERS_FLAT so flat-factor and blended views compare
+//     as TOURMALINE_LAYERS_FLAT so flat-factor and blended views compare
 //     directly. Corners isolate single layers, edges blend pairs.
 //   legacy (w == 0): raw vertex-color RGB (plain albedo tint path).
 // Pairs with default.vert.hlsl (same PSIn as default_lit). Alpha cutout
@@ -113,7 +113,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 color;
     if (layered)
     {
-        // Layer palette mirrors the VULKANTOY_LAYERS_FLAT validation
+        // Layer palette mirrors the TOURMALINE_LAYERS_FLAT validation
         // colors (see BuildLayersCubeScene): layer 0 red, 1 green,
         // 2 blue, 3 yellow.
         color = layerW.x * float3(1.00f, 0.15f, 0.15f)

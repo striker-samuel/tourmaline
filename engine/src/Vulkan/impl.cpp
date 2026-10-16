@@ -56,7 +56,7 @@
 // Debug-object-name setter (null-guarded): vkSetDebugUtilsObjectNameEXT
 // is a volk-resolved function pointer that stays NULL when the
 // VK_EXT_debug_utils instance extension is not enabled — which happens on
-// VULKANTOY_NO_VALIDATION=1 runs (the extension rides the validation
+// TOURMALINE_NO_VALIDATION=1 runs (the extension rides the validation
 // layer's instance chain). Calling it unguarded crashed with a call
 // through null (pc=0). A missing debug name is cosmetic — skip instead.
 static inline void SetDebugObjectName(
@@ -1506,26 +1506,26 @@ static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 }
 static VkAccessFlags2 ToVkAccessLocal(smvk::AccessFlags access) { return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access)); }
 
-// VULKANTOY_HOST_COPY=0: kill switch for VK_EXT_host_image_copy — the
+// TOURMALINE_HOST_COPY=0: kill switch for VK_EXT_host_image_copy — the
 // extension is never enabled on the device AND the upload streamer is kept
 // off the host-copy path. RenderDoc's support for the extension is
 // incomplete and can crash captures; set this in RenderDoc launch configs.
 static bool HostCopyKilledByEnv()
 {
 	static const bool killed = [] {
-		const char* e = std::getenv("VULKANTOY_HOST_COPY");
+		const char* e = std::getenv("TOURMALINE_HOST_COPY");
 		return e && *e && std::string_view{ e } == "0";
 	}();
 	return killed;
 }
 
-// VULKANTOY_MESH=0: kill switch for VK_EXT_mesh_shader — the extension
+// TOURMALINE_MESH=0: kill switch for VK_EXT_mesh_shader — the extension
 // is never enabled on the device and the mesh-shader gfx filter path
 // stays off (compute+indexed CPU fallback). Mirrors HostCopyKilledByEnv.
 static bool MeshKilledByEnv()
 {
 	static const bool killed = [] {
-		const char* e = std::getenv("VULKANTOY_MESH");
+		const char* e = std::getenv("TOURMALINE_MESH");
 		return e && *e && std::string_view{ e } == "0";
 	}();
 	return killed;
@@ -1538,9 +1538,9 @@ static bool MeshKilledByEnv()
 // NVIDIA-driver-generated mapping from GPU machine code back to that SPIR-V
 // (the .nvdbg line tables). The device-init code below requests exactly
 // that when this build's SPIR-V itself carries debug info
-// (VULKANTOY_SHADER_DEBUG_INFO: Debug trees + the x64-Release-ShaderDebug
+// (TOURMALINE_SHADER_DEBUG_INFO: Debug trees + the x64-Release-ShaderDebug
 // preset) and the driver exposes the extension.
-//   VULKANTOY_AFTERMATH=0  kill switch — skip the driver-side tables (they
+//   TOURMALINE_AFTERMATH=0  kill switch — skip the driver-side tables (they
 //                          cost pipeline-compile time + memory), e.g. when
 //                          bisecting a hang that never reaches Aftermath
 //   unset                 default: on iff the SPIR-V carries debug info
@@ -1551,12 +1551,12 @@ static bool MeshKilledByEnv()
 static bool AftermathShaderDebugTablesEnabled()
 {
 	static const bool enabled = [] {
-#if defined(VULKANTOY_SHADER_DEBUG_INFO)
+#if defined(TOURMALINE_SHADER_DEBUG_INFO)
 		const bool def = true;
 #else
 		const bool def = false;
 #endif
-		const char* e = std::getenv("VULKANTOY_AFTERMATH");
+		const char* e = std::getenv("TOURMALINE_AFTERMATH");
 		if (e && *e && std::string_view{ e } == "0")
 			return false;
 		return def;
@@ -1565,18 +1565,18 @@ static bool AftermathShaderDebugTablesEnabled()
 }
 
 // ---------------------------------------------------------------------------
-// VULKANTOY_SERIALIZE — submission-level serialization bisect knob
+// TOURMALINE_SERIALIZE — submission-level serialization bisect knob
 // ---------------------------------------------------------------------------
 // Nsight Graphics' "serialize context" forces every GPU workload to
 // complete before the next begins; bugs that only reproduce WITHOUT it
 // live in submission-level ordering that validation layers cannot model.
 // This knob reproduces the same serialization in-process so it can be
 // bisected per submission class (vkQueueWaitIdle after each gated submit):
-//   VULKANTOY_SERIALIZE=all      every submission class below (Nsight-like)
-//   VULKANTOY_SERIALIZE=split    after the G1 and C submits (async split)
-//   VULKANTOY_SERIALIZE=main     after the G2/main frame submit
-//   VULKANTOY_SERIALIZE=frame    alias for main
-//   VULKANTOY_SERIALIZE=uploads  after every Submitter submit (upload
+//   TOURMALINE_SERIALIZE=all      every submission class below (Nsight-like)
+//   TOURMALINE_SERIALIZE=split    after the G1 and C submits (async split)
+//   TOURMALINE_SERIALIZE=main     after the G2/main frame submit
+//   TOURMALINE_SERIALIZE=frame    alias for main
+//   TOURMALINE_SERIALIZE=uploads  after every Submitter submit (upload
 //                                batches, acquire barriers, readback
 //                                copies, misc engine submits)
 //   unset / 0 / off              no serialization (default)
@@ -1590,7 +1590,7 @@ static const SerializeMode& RgSerializeMode()
 {
 	static const SerializeMode m = [] {
 		SerializeMode s;
-		const char* e = std::getenv("VULKANTOY_SERIALIZE");
+		const char* e = std::getenv("TOURMALINE_SERIALIZE");
 		if (!e || !*e)
 			return s;
 		const std::string_view v{ e };
@@ -1630,18 +1630,18 @@ static void RgSerializeGate(bool on, VkQueue queue, std::mutex& queueMutex)
 	static std::atomic<bool> s_noticed{ false };
 	if (!s_noticed.exchange(true))
 		std::fprintf(stderr,
-			"[Serialize] VULKANTOY_SERIALIZE active: queue idle after gated submits\n");
+			"[Serialize] TOURMALINE_SERIALIZE active: queue idle after gated submits\n");
 	std::lock_guard<std::mutex> lock(queueMutex);
 	vkQueueWaitIdle(queue);
 }
 
 // ---------------------------------------------------------------------------
-// RenderGraph barrier debug tracing (VULKANTOY_BARRIER_TRACE)
+// RenderGraph barrier debug tracing (TOURMALINE_BARRIER_TRACE)
 // ---------------------------------------------------------------------------
 // Env knob, evaluated once per process:
-//   VULKANTOY_BARRIER_TRACE=0      off (also the default when unset)
-//   VULKANTOY_BARRIER_TRACE=on     trace every frame (any non-numeric value)
-//   VULKANTOY_BARRIER_TRACE=N      trace only the frame with frameIndex == N
+//   TOURMALINE_BARRIER_TRACE=0      off (also the default when unset)
+//   TOURMALINE_BARRIER_TRACE=on     trace every frame (any non-numeric value)
+//   TOURMALINE_BARRIER_TRACE=N      trace only the frame with frameIndex == N
 // When enabled, RenderGraph::Execute prints, per pass in SORTED order:
 //   - the pass name, its sorted position vs insertion index (exposes
 //     topological reordering: "MOVED" marks a pass the sort displaced),
@@ -1698,7 +1698,7 @@ static const char* RgTracePassName(const char* n)
 static bool RgTraceEnabled(uint32_t frameIndex)
 {
 	static const int64_t filter = []() -> int64_t {
-		const char* e = std::getenv("VULKANTOY_BARRIER_TRACE");
+		const char* e = std::getenv("TOURMALINE_BARRIER_TRACE");
 		if (!e || !*e || (*e == '0' && !e[1]))
 			return -1;
 		bool digits = true;
@@ -1712,16 +1712,16 @@ static bool RgTraceEnabled(uint32_t frameIndex)
 	return filter >= 0 &&
 		(filter == 0 || static_cast<uint64_t>(filter) == frameIndex);
 }
-// VULKANTOY_ASYNC_COMPUTE=0 (or "off"): process-wide kill switch for the
+// TOURMALINE_ASYNC_COMPUTE=0 (or "off"): process-wide kill switch for the
 // true-async G1/C/G2 split. EVSM itself stays on — the blur passes simply
 // record inline on the main graphics command buffer (emulated async, one
 // submission per frame, same-queue in-order execution). A/B tool for
 // isolating split-only breakage without changing the shadow algorithm
-// (unlike VULKANTOY_EVSM=0, which falls back to PCF).
+// (unlike TOURMALINE_EVSM=0, which falls back to PCF).
 static bool RgAsyncSplitKilled()
 {
 	static const bool killed = [] {
-		const char* e = std::getenv("VULKANTOY_ASYNC_COMPUTE");
+		const char* e = std::getenv("TOURMALINE_ASYNC_COMPUTE");
 		if (!e || !*e)
 			return false;
 		const std::string_view v{ e };
@@ -1809,7 +1809,7 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 //     the blob is unchanged (size + hash), triggered by every
 //     >=64 compiles (abrupt-exit safety) and forced at device
 //     teardown.
-// VULKANTOY_PIPELINE_CACHE: unset = "pipeline_cache.bin" in the
+// TOURMALINE_PIPELINE_CACHE: unset = "pipeline_cache.bin" in the
 // working dir; a path = custom location; "off" = no disk seed
 // or save (the in-process cache still runs — it dedupes
 // compiles across pipeline objects even without a file).
@@ -1842,7 +1842,7 @@ const char* PipelineCacheFilePath()
 {
 	static const char* sPath = []() -> const char* {
 		static std::string storage;
-		const char* env = std::getenv("VULKANTOY_PIPELINE_CACHE");
+		const char* env = std::getenv("TOURMALINE_PIPELINE_CACHE");
 		if (!env || !*env)
 			return "pipeline_cache.bin";
 		if (std::strcmp(env, "off") == 0 || std::strcmp(env, "0") == 0)
@@ -2101,15 +2101,15 @@ void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSa
 int smvk::VulkanCore::CreateInstance() {
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
-		// Diagnostic escape hatch (VULKANTOY_NO_VALIDATION=1): the ASan
+		// Diagnostic escape hatch (TOURMALINE_NO_VALIDATION=1): the ASan
 		// watchpoint build runs with the validation layer disabled (the
 		// uninstrumented layer DLL's intercepted-memcpy interop with the
 		// instrumented debug-messenger callback is a false-positive source
 		// that drowns the real report) — proceed without the layer instead
 		// of refusing to boot.
-		const char* noVal = std::getenv("VULKANTOY_NO_VALIDATION");
+		const char* noVal = std::getenv("TOURMALINE_NO_VALIDATION");
 		if (noVal && std::atoi(noVal) != 0) {
-			std::fprintf(stderr, "[Vulkan] validation layer unavailable — continuing WITHOUT it (VULKANTOY_NO_VALIDATION)\n");
+			std::fprintf(stderr, "[Vulkan] validation layer unavailable — continuing WITHOUT it (TOURMALINE_NO_VALIDATION)\n");
 			enableValidationLayers = false;
 		} else {
 			throw std::runtime_error(
@@ -2274,7 +2274,7 @@ bool smvk::VulkanCore::Init() {
 				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data());
 				for (auto& e : exts) if (strcmp(e.extensionName, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME) == 0) { hostImageCopyAvailable = true; break; }
 			}
-			// VULKANTOY_HOST_COPY=0: keep the extension off the device
+			// TOURMALINE_HOST_COPY=0: keep the extension off the device
 			// entirely (uploads fall back to the transfer ring). RenderDoc's
 			// support for VK_EXT_host_image_copy is incomplete and can
 			// crash captures — set this in RenderDoc launch configs.
@@ -2290,7 +2290,7 @@ bool smvk::VulkanCore::Init() {
 				if (queryHostCopy.hostImageCopy == VK_TRUE) enableHostCopy = true;
 			}
 			if (hostImageCopyAvailable && hostCopyKilled)
-				printf("[UploadStreamer] VK_EXT_host_image_copy disabled (VULKANTOY_HOST_COPY=0)\n");
+				printf("[UploadStreamer] VK_EXT_host_image_copy disabled (TOURMALINE_HOST_COPY=0)\n");
 
 		// VK_EXT_mesh_shader (task/mesh pipelines for the mesh-shader gfx
 		// filter path): strictly optional. When present + the taskShader
@@ -2330,7 +2330,7 @@ bool smvk::VulkanCore::Init() {
 			}
 		}
 		if (meshExtPresent && meshKilled)
-			printf("[Vulkan] VK_EXT_mesh_shader disabled (VULKANTOY_MESH=0)\n");
+			printf("[Vulkan] VK_EXT_mesh_shader disabled (TOURMALINE_MESH=0)\n");
 
 		VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
@@ -2590,7 +2590,7 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				? "supported - enabling (Aftermath shader debug tables: GPU code -> SPIR-V -> HLSL lines)"
 				: AftermathShaderDebugTablesEnabled()
 					? "not supported - Aftermath crash dumps stay without shader line maps (non-NVIDIA driver?)"
-					: "off (VULKANTOY_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
+					: "off (TOURMALINE_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
 
 		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
@@ -2623,7 +2623,7 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 	g_meshShaderSupported = enableMeshShader;
 	std::fprintf(stderr, "[Vulkan] VK_EXT_mesh_shader %s\n",
 		enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
-			: meshKilled ? "off (VULKANTOY_MESH=0, compute+indexed CPU fallback)"
+			: meshKilled ? "off (TOURMALINE_MESH=0, compute+indexed CPU fallback)"
 			: "not supported - compute+indexed CPU fallback");
 		if (!g_multiDrawIndirect) {
 			fprintf(stderr,
@@ -2794,7 +2794,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		VkPhysicalDeviceFeatures2 feats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hostFeat };
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
 		// Reflect the device's ACTUAL enabled state, not the physical
-		// device's capability: with VULKANTOY_HOST_COPY=0 the extension is
+		// device's capability: with TOURMALINE_HOST_COPY=0 the extension is
 		// absent from the device, and the streamer must not call it.
 		m_hostImageCopySupported =
 			hostFeat.hostImageCopy == VK_TRUE && !HostCopyKilledByEnv();
@@ -3316,7 +3316,7 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 		SMVK_PROFILE_STREAM("UploadRing_InFlightSync");
 		SMVK_PROFILE_TAG("ranges", ust.pendingRanges.size());
 		SMVK_PROFILE_TAG("stagingKB", (size + 1023) / 1024);
-		const bool ringTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+		const bool ringTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 		const auto ringT0 = std::chrono::steady_clock::now();
 		double waitMs = 0.0;
 		// FrameScratch: scope-local filter temp (dies before return —
@@ -4009,10 +4009,10 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		}
 	}
 	// Fallback to staging ring
-	// Hitch-path tracing (VULKANTOY_TEXSTREAM_TRACE): splits the upload
+	// Hitch-path tracing (TOURMALINE_TEXSTREAM_TRACE): splits the upload
 	// cost — ring alloc (possible GPU wait on an overlapping in-flight
 	// batch) vs mapped write+flush vs command record/submit.
-	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const bool texTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 	const auto texT0 = std::chrono::steady_clock::now();
 	ThreadUploadState& ust = states_[CurrentPoolShard()];
 	UploadShardActiveGuard shardGuard{ ust.active };
@@ -5239,13 +5239,13 @@ void smvk::VulkanResourceManager::BindHeapImage(ImageHandle handle,
 // ---- Target heap (design-A interval-aliased target memory) ----
 // The master gate's single storage (see smvk.h's
 // TargetHeapAliasingEnabled contract): default OFF -
-// VULKANTOY_ALIASING=1 opts in. The gate forces every window to the
+// TOURMALINE_ALIASING=1 opts in. The gate forces every window to the
 // full frame so no range ever shares (disjoint-range placement only,
 // always sound).
 namespace {
 	bool& TargetHeapAliasingGate() {
 		static bool value = [] {
-			const char* e = std::getenv("VULKANTOY_ALIASING");
+			const char* e = std::getenv("TOURMALINE_ALIASING");
 			return e != nullptr && std::atoi(e) == 1;
 		}();
 		return value;
@@ -5576,7 +5576,7 @@ void smvk::VulkanResourceManager::ReleaseTargetHeapClaim(
 	return range;
 }
 // ---------------------------------------------------------------------------
-// STRICT RESOURCES (see smvk.h): --strict / VULKANTOY_STRICT=1. Default is
+// STRICT RESOURCES (see smvk.h): --strict / TOURMALINE_STRICT=1. Default is
 // the graceful degradation (editor sessions survive budget pressure);
 // strict turns exhaustion into a LOUD abort — silent skips hide leaks.
 // Device-level knob: getenv at first use (the RunConfig.h migration
@@ -5595,7 +5595,7 @@ static bool g_strictResources = false;
 void SetStrictResources(bool on) { g_strictResources = on; }
 bool StrictResources() {
 	static const bool envOn = [] {
-		const char* e = std::getenv("VULKANTOY_STRICT");
+		const char* e = std::getenv("TOURMALINE_STRICT");
 		return e && *e && std::strcmp(e, "0") != 0;
 	}();
 	return g_strictResources || envOn;
@@ -6964,7 +6964,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 	VkImage newImage = VK_NULL_HANDLE;
 	VmaAllocation newAlloc = VK_NULL_HANDLE;
 
-	const bool texTrace = std::getenv("VULKANTOY_TEXSTREAM_TRACE") != nullptr;
+	const bool texTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 	const auto texT0 = std::chrono::steady_clock::now();
 	// Allocation ledger: the retarget swaps the backing - capture the NEW
 	// allocation's exact bytes for the entry update below.
@@ -8789,12 +8789,12 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	assert(value != 0);
 	assert(m_timelineSemaphore != VK_NULL_HANDLE);
 
-	// Host timeline-wait trace (VULKANTOY_TRACE_WAITS=1): the documented
+	// Host timeline-wait trace (TOURMALINE_TRACE_WAITS=1): the documented
 	// driver poison recipe is a HOST wait on a presented-signaled timeline
 	// (see AcquireFramebuffer) — every wait goes through here, so this
 	// names the offender when a later counter query reads UINT64_MAX.
 	static const bool sTrace = []() {
-		const char* e = std::getenv("VULKANTOY_TRACE_WAITS");
+		const char* e = std::getenv("TOURMALINE_TRACE_WAITS");
 		return e && std::atoi(e) != 0;
 	}();
 	if (sTrace) {
@@ -8981,7 +8981,7 @@ smvk::TimelinePoint smvk::Submitter::submit(
 	m_lastTimelineValue = signalValue;
 	m_lastSubmit = handle;
 
-	// VULKANTOY_SERIALIZE=uploads (see RgSerializeGate): every engine-side
+	// TOURMALINE_SERIALIZE=uploads (see RgSerializeGate): every engine-side
 	// submit funnels through here — upload batches, acquire barriers,
 	// readback copies, one-off dumps.
 	RgSerializeGate(RgSerializeMode().uploads, m_queue, GetQueueMutex(m_queue));
@@ -9048,7 +9048,7 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 namespace { void DumpDeviceFaultInfo(); }
 // Fatal-path mirror: GUI/editor runs often have no visible console, so the
 // deliberate aborts below write to stderr AND append to
-// vulkantoy_fatal.log in the working directory. FatalPrintf behaves exactly
+// tourmaline_fatal.log in the working directory. FatalPrintf behaves exactly
 // like fprintf(stderr, ...) until FatalMirrorOpen() runs (fatal paths
 // only — never hot). The mirror is fclose()d before abort() because abort
 // does not flush stdio buffers (an unflushed file would stay empty).
@@ -9056,7 +9056,7 @@ namespace {
 static FILE* g_fatalMirror = nullptr;
 void FatalMirrorOpen() {
 	if (!g_fatalMirror)
-		g_fatalMirror = std::fopen("vulkantoy_fatal.log", "a");
+		g_fatalMirror = std::fopen("tourmaline_fatal.log", "a");
 }
 void FatalMirrorClose() {
 	if (g_fatalMirror) {
@@ -9850,7 +9850,7 @@ const char* DeviceFaultAddressTypeName(VkDeviceFaultAddressTypeEXT type) {
 // Dumps VK_EXT_device_fault info for a lost device. Must run before the
 // device is destroyed (fault state dies with it); safe to call when the
 // extension is absent (no-op). Called from the acquire-loss path below.
-// FatalPrintf routes every line to stderr AND the vulkantoy_fatal.log
+// FatalPrintf routes every line to stderr AND the tourmaline_fatal.log
 // mirror (GUI runs have no visible console — stderr alone is blind).
 void DumpDeviceFaultInfo() {
 	FatalPrintf("[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
@@ -10237,7 +10237,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// this same mutex (swapchain depth copy) — holding it across
 			// the call deadlocks with EDEADLK on present-driven recreates.
 			lockG.unlock();
-			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
+			// TOURMALINE_SERIALIZE=main (see RgSerializeGate): the whole
 			// frame's tail waits queue idle before present.
 			RgSerializeGate(RgSerializeMode().main, graphicsQueue_, mg);
 			VkPresentInfoKHR presentInfo{};
@@ -10288,7 +10288,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				imageTimelineValues_[currentImageIndex_] = signalValue;
 				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			}
-			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
+			// TOURMALINE_SERIALIZE=main (see RgSerializeGate): the whole
 			// frame's tail waits queue idle before present (gate holds the
 			// graphics queue mutex; the present below locks mp).
 			RgSerializeGate(RgSerializeMode().main, graphicsQueue_, mg);
@@ -12443,7 +12443,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		static bool s_killNoticed = false;
 		if (!s_killNoticed) {
 			s_killNoticed = true;
-			std::fprintf(stderr, "[AsyncCompute] split disabled (VULKANTOY_ASYNC_COMPUTE=0): async passes record inline on the graphics queue\n");
+			std::fprintf(stderr, "[AsyncCompute] split disabled (TOURMALINE_ASYNC_COMPUTE=0): async passes record inline on the graphics queue\n");
 		}
 	}
 	else if (hasDedicatedCompute && anyAsync && fb.swapchain)
@@ -12516,7 +12516,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		vkSwap = nullptr;
 		useAsyncCompute = false;
 	}
-	// ---- Barrier debug tracing (VULKANTOY_BARRIER_TRACE, see helpers) ----
+	// ---- Barrier debug tracing (TOURMALINE_BARRIER_TRACE, see helpers) ----
 	const bool traceRg = RgTraceEnabled(fb.frameIndex);
 	if (traceRg) {
 		std::fprintf(stderr, "[RG] Execute frame=%u flight=%u passes=%zu asyncSplit=%s",

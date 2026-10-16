@@ -48,7 +48,7 @@ std::string TempDir() {
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	fs::path dir = fs::temp_directory_path(ec)
-		/ "vulkantoy_bakeassets";
+		/ "tourmaline_bakeassets";
 	fs::create_directories(dir, ec);
 	return dir.generic_string();
 }

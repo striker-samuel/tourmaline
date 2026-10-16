@@ -585,10 +585,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		}
 		if (!hasApp)
 			f << "fileInfo -k " << Quote("application")
-				<< " -v " << Quote("vulkantoy-tour") << ";\n";
+				<< " -v " << Quote("tourmaline-tour") << ";\n";
 		if (!hasProduct)
 			f << "fileInfo -k " << Quote("product")
-				<< " -v " << Quote("VulkanToy") << ";\n";
+				<< " -v " << Quote("Tourmaline") << ";\n";
 		if (!hasVersion)
 			f << "fileInfo -k " << Quote("version")
 				<< " -v " << Quote(std::to_string(kTourVersion)) << ";\n";

@@ -169,7 +169,7 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	if (scenes.empty()) {
 		// Terrain-only pak (no scenes, Terrain blobs present): an empty
 		// world carrying just the harvested terrain. The renderer bakes
-		// G-blocks from it; the camera needs explicit VULKANTOY_CAM_*
+		// G-blocks from it; the camera needs explicit TOURMALINE_CAM_*
 		// pins (empty-scene framing has no bounds to fit).
 		if (!reader.BlobsOfKind(smvk::PakAssetKind::Terrain).empty()) {
 			std::cerr << "[App] no scenes: terrain-only pak, loading "
@@ -228,7 +228,7 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	world->ResolveAndFixup_clusters();
 	// (Demo decal seeding — the procedural blood textures + sponza hero
 	// splats — is gone with DecalAssets.cpp: decals resolve from world
-	// content only now. The renderer's own VULKANTOY_DECALS visibility
+	// content only now. The renderer's own TOURMALINE_DECALS visibility
 	// toggle is untouched.)
 	// Serve pak-embedded textures through the renderer's content
 	// overlay (below loose content/, so dev overrides win).
@@ -269,7 +269,7 @@ void ApplyPassCsv(engine::WorldRendererConfig& passCfg, const char* csv, bool en
 		// maps to the global gate directly. --without memory_aliasing
 		// (default state) keeps every packed range disjoint; --with
 		// memory_aliasing honors the declared windows. Composes with the
-		// env pin (VULKANTOY_ALIASING): the CLI token applies here, at
+		// env pin (TOURMALINE_ALIASING): the CLI token applies here, at
 		// attach time, BEFORE any target claims - so it wins.
 		else if (tok == "memory_aliasing" || tok == "aliasing")
 			smvk::SetTargetHeapAliasing(enable);

@@ -20,8 +20,8 @@ namespace smvk {
 // the env gate is the only switch.
 bool DebugImageDumpArmed() {
     static const bool armed = [] {
-        const char* ssr = std::getenv("VULKANTOY_SSR_DUMP");
-        const char* evsm = std::getenv("VULKANTOY_EVSM_DUMP");
+        const char* ssr = std::getenv("TOURMALINE_SSR_DUMP");
+        const char* evsm = std::getenv("TOURMALINE_EVSM_DUMP");
         return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0);
     }();
     return armed;

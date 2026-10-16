@@ -44,4 +44,4 @@ add_custom_command(TARGET 02_blur POST_BUILD
         "$<TARGET_FILE_DIR:02_blur>"
 )
 
-vulkantoy_stage_sdl3(02_blur)
+tourmaline_stage_sdl3(02_blur)

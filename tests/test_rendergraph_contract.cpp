@@ -16,7 +16,7 @@
 //
 // Heavier coverage (barrier emission, cull-builder differentials) follows
 // the test_gfxfilter.cpp pattern; headless goldens via
-// tools/golden_capture.py (VULKANTOY_CAPTURE + --bench + PNG hash).
+// tools/golden_capture.py (TOURMALINE_CAPTURE + --bench + PNG hash).
 
 #include <cstddef>
 #include <cstdint>
@@ -81,11 +81,11 @@ int main() {
 	Check(!smvk::gfx::MeshDrawEligible(0, 0), "contract.mesh-empty-set-excluded");
 
 	// 3. GPU-driven culling is the only path (no kill switch, no legacy
-	// CPU regime — the chain always runs; VULKANTOY_GFX_GPU_CULL is an
+	// CPU regime — the chain always runs; TOURMALINE_GFX_GPU_CULL is an
 	// unknown var now).
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
-		const char* mesh = std::getenv("VULKANTOY_MESH");
+		const char* mesh = std::getenv("TOURMALINE_MESH");
 		const bool expectMesh = !(mesh && std::string(mesh) == "0");
 		Check((!c.meshSet && c.mesh) || (c.mesh == expectMesh),
 			"contract.runconfig-mesh-default-on");

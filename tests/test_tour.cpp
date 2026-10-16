@@ -39,7 +39,7 @@ void Check(bool cond, const char* name) {
 }
 
 std::string TempTour() {
-	return (std::filesystem::temp_directory_path() / "vulkantoy_test.tour").string();
+	return (std::filesystem::temp_directory_path() / "tourmaline_test.tour").string();
 }
 
 void TestRoundTrip() {
@@ -487,7 +487,7 @@ void TestReplay() {
 // recursive inlining (wheel -> gear chain) and the cycle guard.
 void TestReferences() {
 	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refs";
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_refs";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
 	// One-triangle glTF (the .geometry artifact build needs real
@@ -632,7 +632,7 @@ void TestReferences() {
 // `reference -root -source "..."`.
 void TestRootReference() {
 	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "vulkantoy_rootref";
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_rootref";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
 	const fs::path gltf = dir / "scene.gltf";
@@ -824,7 +824,7 @@ void TestTourReferences() {
 	// tour commands replay with id offsets (rename/transform/createLight
 	// + setLightAttr -ref). Disabled references stay unbound.
 	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "vulkantoy_tourrefs";
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_tourrefs";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
 	auto writeGltf = [&](const char* file, const char* nodeName) {
@@ -2090,7 +2090,7 @@ void TestCamera() {
 // Put), and a corrupt cached payload reprocesses (never trusted).
 void TestTextureCacheConsult() {
 	namespace fs = std::filesystem;
-	const auto dir = fs::temp_directory_path() / "vulkantoy_texcachetest";
+	const auto dir = fs::temp_directory_path() / "tourmaline_texcachetest";
 	std::error_code ec;
 	fs::remove_all(dir, ec);
 	fs::create_directories(dir, ec);
@@ -2216,7 +2216,7 @@ void TestTextureCacheConsult() {
 // stale; a miss falls back to the recorded path exactly as before).
 void TestReferenceGuid() {
 	namespace fs = std::filesystem;
-	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refguid";
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_refguid";
 	std::error_code ec;
 	fs::create_directories(dir, ec);
 	// The referenced asset lives at a NEW path; the tour still records
@@ -2434,7 +2434,7 @@ void TestTextureAssets() {
 	{
 		const std::filesystem::path p =
 			std::filesystem::temp_directory_path()
-			/ "vulkantoy_test.texture";
+			/ "tourmaline_test.texture";
 		Check(smvk::assets::SaveTextureAsset(p, t, err),
 			"textureasset save");
 		smvk::assets::TextureAsset f{};
@@ -2741,7 +2741,7 @@ void TestTourFuzz() {
 	int nestParsed = 0, nestRejected = 0, nestBinds = 0;
 	{
 		namespace fs = std::filesystem;
-		const fs::path dir = fs::temp_directory_path() / "vulkantoy_fuzznest";
+		const fs::path dir = fs::temp_directory_path() / "tourmaline_fuzznest";
 		std::error_code ec;
 		fs::create_directories(dir, ec);
 		auto writeGltf = [&](const char* file, const char* nodeName) {

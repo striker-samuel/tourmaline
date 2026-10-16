@@ -119,10 +119,10 @@ bool EditorApp::Initialize() {
 	// cook/bake workers ride it; see editor_fibers.h). Before anything
 	// that can Post a job.
 	m_fibers.Start(2);
-	// Dev quad-layout switch (VULKANTOY_EDITOR_VP_QUAD=1): start in the
+	// Dev quad-layout switch (TOURMALINE_EDITOR_VP_QUAD=1): start in the
 	// four-viewport layout so headless smoke runs exercise the per-
 	// viewport editor passes. The V toggle keeps working after.
-	if (const char* quad = std::getenv("VULKANTOY_EDITOR_VP_QUAD")) {
+	if (const char* quad = std::getenv("TOURMALINE_EDITOR_VP_QUAD")) {
 		if (std::atoi(quad) != 0) {
 			m_vpLayout = 1;
 			std::cerr << "[Editor] quad viewport layout (dev env)\n";
@@ -649,16 +649,16 @@ void EditorApp::CloseScene() {
 			// and LOD ratios 60/30/12%) and ride
 			// into every nested reference (ApplySceneReferences forwards
 			// them). Kill-switches for giant imports
-			// (VULKANTOY_EDITOR_MESHLETS=0 / VULKANTOY_EDITOR_LODS=0).
+			// (TOURMALINE_EDITOR_MESHLETS=0 / TOURMALINE_EDITOR_LODS=0).
 			smvk::MeshOptConfig importMeshOpt{}; // weld/cache/overdraw/fetch on
 			importMeshOpt.generateLods = true;   // sibling blobs <base>/lodN
 			smvk::MeshletConfig importMeshlets{};
 			importMeshlets.enabled = true;
-			if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS")) {
+			if (const char* e = std::getenv("TOURMALINE_EDITOR_MESHLETS")) {
 				if (std::atoi(e) == 0)
 					importMeshlets.enabled = false;
 			}
-			if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS")) {
+			if (const char* e = std::getenv("TOURMALINE_EDITOR_LODS")) {
 				if (std::atoi(e) == 0)
 					importMeshOpt.generateLods = false;
 			}
@@ -1596,7 +1596,7 @@ void EditorApp::DrawFrame() {
 	// disabled): the single record per editor frame.
 	smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
 	Update();
-	// Dev crash-repro vehicle (VULKANTOY_EDITOR_OPEN_AT=
+	// Dev crash-repro vehicle (TOURMALINE_EDITOR_OPEN_AT=
 	// "<frame>:<file>[;<frame>:<file>...]"): opens scene files MID-LOOP at
 	// the given frame indices — the exact open-DIALOG timing (the open
 	// completes during a frame). Multiple entries
@@ -1612,7 +1612,7 @@ void EditorApp::DrawFrame() {
 		};
 		static std::vector<OpenAt> sOpens = []() {
 			std::vector<OpenAt> out;
-			const char* e = std::getenv("VULKANTOY_EDITOR_OPEN_AT");
+			const char* e = std::getenv("TOURMALINE_EDITOR_OPEN_AT");
 			if (!e || !*e)
 				return out;
 			std::string spec(e);
@@ -1645,13 +1645,13 @@ void EditorApp::DrawFrame() {
 			std::fflush(stderr);
 		}
 	}
-	// Dev selection pin (VULKANTOY_EDITOR_SELECT=<node>|list, one-shot at
+	// Dev selection pin (TOURMALINE_EDITOR_SELECT=<node>|list, one-shot at
 	// the first frame a world exists): headless box-vs-mesh diagnostics
 	// (see the [SELBOX] trace in RecordGizmoPass) need a selection
 	// without input. "list" prints every draw item's node + global
 	// basis (the rotated-frame hunt). Absent = off.
 	{
-		static const char* selRaw = std::getenv("VULKANTOY_EDITOR_SELECT");
+		static const char* selRaw = std::getenv("TOURMALINE_EDITOR_SELECT");
 		static const bool selList = selRaw
 			&& std::strcmp(selRaw, "list") == 0;
 		static const int selNode = selRaw ? std::atoi(selRaw) : -1;
@@ -1685,7 +1685,7 @@ void EditorApp::DrawFrame() {
 			}
 		}
 	}
-	// Dev crash-repro vehicle #2 (VULKANTOY_EDITOR_OPEN_AT2="<frame>:
+	// Dev crash-repro vehicle #2 (TOURMALINE_EDITOR_OPEN_AT2="<frame>:
 	// <file>"): same as OPEN_AT but fires AFTER the deferred block, so
 	// the pending live-view launch consumes one frame LATER — the exact
 	// dialog shape from the user's crash log (one editor frame renders
@@ -1698,7 +1698,7 @@ void EditorApp::DrawFrame() {
 		};
 		static std::vector<OpenAt2> sOpens = []() {
 			std::vector<OpenAt2> out;
-			const char* e = std::getenv("VULKANTOY_EDITOR_OPEN_AT2");
+			const char* e = std::getenv("TOURMALINE_EDITOR_OPEN_AT2");
 			if (!e || !*e)
 				return out;
 			const std::string spec(e);
@@ -1724,14 +1724,14 @@ void EditorApp::DrawFrame() {
 			std::fflush(stderr);
 		}
 	}
-	// Dev crash-repro vehicle #3 (VULKANTOY_EDITOR_AUTO_QUICKBAKE=<frame>):
+	// Dev crash-repro vehicle #3 (TOURMALINE_EDITOR_AUTO_QUICKBAKE=<frame>):
 	// fires CookCubemapsNow() (the cubemap-only quick bake, GiBaker
 	// skipped) MID-LOOP at the given frame — the exact
 	// "Update cubemaps now" button timing for headless repros (pairs
 	// with OPEN_AT/OPEN_AT2 to have a scene loaded first).
 	{
 		static int sFrame = []() {
-			const char* e = std::getenv("VULKANTOY_EDITOR_AUTO_QUICKBAKE");
+			const char* e = std::getenv("TOURMALINE_EDITOR_AUTO_QUICKBAKE");
 			return (e && *e) ? std::atoi(e) : -1;
 		}();
 		static bool sDone = false;

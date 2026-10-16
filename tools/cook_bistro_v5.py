@@ -27,7 +27,7 @@
 #   4. Stage F:/content/models/Bistro/<gltf,bin,ktx2> with rewritten image
 #      URIs, then run PakCooker --meshlets on -> F:/content/paks/bistro.pak.
 #
-# Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
+# Usage (PowerShell, from repo root F:/REPOS/tourmaline):
 #   py tools/cook_bistro_v5.py --src-dir C:/Users/samuel/AppData/Local/Temp/opencode/bistro_blender
 #
 # The Blender export step (one-time, ~2-3 min):

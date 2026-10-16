@@ -107,9 +107,9 @@ static smvk::BloomDesc MakeBloomDesc() {
 	d.intensity = BLOOM_INTENSITY;
 	d.upsampleRadius = BLOOM_UPSAMPLE_RADIUS;
 	d.name = "bloom";
-	// Headless SPD override (VULKANTOY_SPD=0 forces the raster 13-tap
+	// Headless SPD override (TOURMALINE_SPD=0 forces the raster 13-tap
 	// downsample for A/B captures; =1 forces the single-pass compute path).
-	if (const char* spdEnv = std::getenv("VULKANTOY_SPD")) {
+	if (const char* spdEnv = std::getenv("TOURMALINE_SPD")) {
 		d.useSpd = std::atoi(spdEnv) != 0;
 	}
 	return d;
@@ -448,7 +448,7 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline,
 // Pass-set config + the camera's generic default pose. The world itself
 // arrives through the host's loader (SetWorldSource) - nothing about the
 // scene is known here. The load-time framing (onAttach) re-poses the
-// camera on the world bounds unless VULKANTOY_CAM_* pins it for benches.
+// camera on the world bounds unless TOURMALINE_CAM_* pins it for benches.
 // ---------------------------------------------------------------------------
 namespace engine {
 
@@ -515,11 +515,11 @@ namespace engine {
 			if (TextureFilteringFromString(run.textureFilter->c_str(), parsed))
 				m_textureFiltering = parsed;
 			else
-				std::cerr << "[WorldRenderer] bad VULKANTOY_TEXTURE_FILTER (want "
+				std::cerr << "[WorldRenderer] bad TOURMALINE_TEXTURE_FILTER (want "
 				"trilinear|2x|4x|8x|16x): " << *run.textureFilter << "\n";
 		}
-		// Headless terrain override (same discipline as VULKANTOY_VOLUMETRIC
-		// / VULKANTOY_SSR): VULKANTOY_TERRAIN=0/1 pins the terrain pass
+		// Headless terrain override (same discipline as TOURMALINE_VOLUMETRIC
+		// / TOURMALINE_SSR): TOURMALINE_TERRAIN=0/1 pins the terrain pass
 		// for headless A/B runs (the UI checkbox / combo stays live).
 		if (run.terrainPinned) {
 			m_passes.terrain = run.terrain;
@@ -552,7 +552,7 @@ namespace engine {
 				dirOverridden = true;
 			}
 			else {
-				std::cerr << "[WorldRenderer] bad VULKANTOY_CAM_FWD (want x,y,z): "
+				std::cerr << "[WorldRenderer] bad TOURMALINE_CAM_FWD (want x,y,z): "
 					<< fwdEnv << "\n";
 			}
 		}
@@ -566,7 +566,7 @@ namespace engine {
 		}
 		// Debug: override the spawn position ("x,y,z"); composes with the
 		// yaw env (the view keeps looking along the yaw-rotated default
-		// direction) or with the absolute VULKANTOY_CAM_FWD.
+		// direction) or with the absolute TOURMALINE_CAM_FWD.
 		if (run.camPos.has_value()) {
 			glm::vec3 pos(camPos);
 			const std::string& posEnv = *run.camPos;
@@ -574,7 +574,7 @@ namespace engine {
 				m_cameraPositioner.lookAt(pos, pos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 				return;
 			}
-			std::cerr << "[WorldRenderer] bad VULKANTOY_CAM_POS (want x,y,z): "
+			std::cerr << "[WorldRenderer] bad TOURMALINE_CAM_POS (want x,y,z): "
 				<< posEnv << "\n";
 		}
 		m_cameraPositioner.lookAt(camPos, camPos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -720,53 +720,53 @@ namespace engine {
 			return v;
 		};
 
-		// Headless HZB-cull kill (VULKANTOY_HIZ=0): clears the filter's
+		// Headless HZB-cull kill (TOURMALINE_HIZ=0): clears the filter's
 		// occlusion-cull flag - the occluder-depth fill + the pyramid are a
 		// FIXED COST (always built over hizDepth; see the fc.hizDepthView
-		// note). VULKANTOY_CULLFLAGS stays the full-flags override.
-		if (const char* hizEnv = std::getenv("VULKANTOY_HIZ")) {
+		// note). TOURMALINE_CULLFLAGS stays the full-flags override.
+		if (const char* hizEnv = std::getenv("TOURMALINE_HIZ")) {
 			if (std::atoi(hizEnv) == 0)
 				m_gfxRenderer.config.cullFlags =
 					static_cast<smvk::gfx::CullFlags>(
 						static_cast<uint32_t>(m_gfxRenderer.config.cullFlags)
 						& ~uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion));
 		}
-		// Headless LOD kill (VULKANTOY_LOD=0 forces LOD0).
-		if (const char* lodEnv = std::getenv("VULKANTOY_LOD")) {
+		// Headless LOD kill (TOURMALINE_LOD=0 forces LOD0).
+		if (const char* lodEnv = std::getenv("TOURMALINE_LOD")) {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
-		// Headless pixel-budget pin (VULKANTOY_LODBUDGET=<px>): forces
+		// Headless pixel-budget pin (TOURMALINE_LODBUDGET=<px>): forces
 		// far-level selection for geometry/shader-LOD A/B runs without
 		// the UI slider (a huge budget pushes everything to its coarsest
 		// sibling). Clamped to a sane range; the UI slider stays live.
-		if (const char* lodBudgetEnv = std::getenv("VULKANTOY_LODBUDGET")) {
+		if (const char* lodBudgetEnv = std::getenv("TOURMALINE_LODBUDGET")) {
 			const float b = float(std::atof(trimEnv(lodBudgetEnv).data()));
 			if (b >= 0.05f && b <= 256.0f)
 				m_lodPixelBudget = b;
 		}
-		// Headless LOD cadence kill (VULKANTOY_LODFULL=0 restores the old
+		// Headless LOD cadence kill (TOURMALINE_LODFULL=0 restores the old
 		// halfrate refresh: parity-split, 1-frame-stale decisions).
-		if (const char* lodFullEnv = std::getenv("VULKANTOY_LODFULL")) {
+		if (const char* lodFullEnv = std::getenv("TOURMALINE_LODFULL")) {
 			if (std::atoi(lodFullEnv) == 0)
 				m_lodFullRate = false;
 		}
-		// Headless shader-LOD pin (VULKANTOY_SHADERLOD=0 keeps the
+		// Headless shader-LOD pin (TOURMALINE_SHADERLOD=0 keeps the
 		// farthest level full-lit, =1 forces the subsystem on) for A/B
 		// shading-cost runs without the UI checkbox.
-		if (const char* lodShEnv = std::getenv("VULKANTOY_SHADERLOD")) {
+		if (const char* lodShEnv = std::getenv("TOURMALINE_SHADERLOD")) {
 			m_lodShaderEnabled = std::atoi(lodShEnv) != 0;
 		}
-		// Debug: kill the Northlight depth split (VULKANTOY_SPLIT=0 falls
+		// Debug: kill the Northlight depth split (TOURMALINE_SPLIT=0 falls
 		// back to the legacy flow: full prepass before the HZB, remainder
 		// pass after the filter). A/B which assembly owns a regression.
-		if (const char* splitEnv = std::getenv("VULKANTOY_SPLIT")) {
+		if (const char* splitEnv = std::getenv("TOURMALINE_SPLIT")) {
 			if (std::atoi(splitEnv) == 0)
 				m_splitDisabled = true;
 		}
-		// Headless wireframe opt-in (VULKANTOY_WIREFRAME=1) for capture/A-B
+		// Headless wireframe opt-in (TOURMALINE_WIREFRAME=1) for capture/A-B
 		// runs without UI interaction; the P toggle stays live after.
-		if (const char* wfEnv = std::getenv("VULKANTOY_WIREFRAME")) {
+		if (const char* wfEnv = std::getenv("TOURMALINE_WIREFRAME")) {
 			if (std::atoi(wfEnv) == 1)
 				m_wireframe = true;
 		}
@@ -774,7 +774,7 @@ namespace engine {
 		// GPU filter stages without UI interaction. Bits mirror
 		// smvk::gfx::CullFlagBits (e.g. 0xb = degenerate|backface|frustum,
 		// 0x4b adds HZB occlusion, 0x24b the default + MASK exclusion).
-		if (const char* cullEnv = std::getenv("VULKANTOY_CULLFLAGS")) {
+		if (const char* cullEnv = std::getenv("TOURMALINE_CULLFLAGS")) {
 			const unsigned long long flags =
 				std::strtoull(cullEnv, nullptr, 0);
 			m_gfxRenderer.config.cullFlags =
@@ -784,18 +784,18 @@ namespace engine {
 		// expansion + the filter CS hold the frozen (view, eye) while the
 		// camera keeps moving - pairs with --bench_move to reproduce/verify
 		// frozen-cull rendering headlessly).
-		if (const char* fzEnv = std::getenv("VULKANTOY_FREEZE_CULL")) {
+		if (const char* fzEnv = std::getenv("TOURMALINE_FREEZE_CULL")) {
 			m_freezeCullingView = std::atoi(fzEnv) != 0;
 		}
 		// Debug: one-shot [GfxAudit] indirect dump at frame N (stderr,
 		// stalls; per-batch GPU kill reasons for bisecting the filter).
-		if (const char* audEnv = std::getenv("VULKANTOY_AUDIT")) {
+		if (const char* audEnv = std::getenv("TOURMALINE_AUDIT")) {
 			const int auditFrame = std::atoi(audEnv);
 			if (auditFrame >= 0)
 				m_auditAtFrame = auditFrame;
 		}
 		// Headless debug-view select (lit|unlit|meshlets|cascades|lods|vertexcolors).
-		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
+		if (const char* dvEnv = std::getenv("TOURMALINE_DEBUGVIEW")) {
 			const std::string_view dv = trimEnv(dvEnv);
 			if (dv == "lit") m_debugView = ViewMode::Lit;
 			else if (dv == "unlit") m_debugView = ViewMode::Unlit;
@@ -809,24 +809,24 @@ namespace engine {
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = ViewMode::Pom;
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
 		// ApplyHeadlessPostfxOverrides (re-applied after the scene seed).
 		// Texture filtering override for A/B runs without UI interaction
 		// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after.
-		if (const char* filtEnv = std::getenv("VULKANTOY_TEXTURE_FILTER")) {
+		if (const char* filtEnv = std::getenv("TOURMALINE_TEXTURE_FILTER")) {
 			const std::string_view f = trimEnv(filtEnv);
 			TextureFiltering parsed{};
 			if (TextureFilteringFromString(f, parsed))
 				m_textureFiltering = parsed;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_TEXTURE_FILTER value: " << f << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_TEXTURE_FILTER value: " << f << "\n";
 		}
 
 		// DLSS quality-mode override for A/B runs (off | ultraperf | perf |
 		// balanced | quality | ultraquality | dlaa). DLSS takes over the
 		// internal resolution + upscaling and bypasses the AA modes.
-		if (const char* dlssEnv = std::getenv("VULKANTOY_DLSS")) {
+		if (const char* dlssEnv = std::getenv("TOURMALINE_DLSS")) {
 			const std::string_view dlss = trimEnv(dlssEnv);
 			if (dlss == "off") m_dlssMode = smvk::DlssMode::Off;
 			else if (dlss == "ultraperf" || dlss == "ultraperformance")
@@ -837,113 +837,113 @@ namespace engine {
 			else if (dlss == "quality") m_dlssMode = smvk::DlssMode::MaxQuality;
 			else if (dlss == "ultraquality") m_dlssMode = smvk::DlssMode::UltraQuality;
 			else if (dlss == "dlaa") m_dlssMode = smvk::DlssMode::DLAA;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DLSS value: " << dlss << "\n";
 		}
 		// Volumetric fog toggle for headless A/B + capture runs (the
 		// ImGui checkbox stays live after); volumetric defaults off.
 		// (SSR/bloom/AO/exposure/cubemap pins: ApplyHeadlessPostfxOverrides.)
 		ApplyHeadlessVolumetricOverrides();
 		ApplyHeadlessPostfxOverrides();
-		// Mesh-shader main leg (VULKANTOY_MESH=0 forces the indexed
+		// Mesh-shader main leg (TOURMALINE_MESH=0 forces the indexed
 		// multi-draws; =1 forces the mesh dispatch when the device
 		// supports it; unset = on). Setup-time: read once here, no live
 		// toggle (the UI shows the resolved state only).
-		if (const char* meshEnv = std::getenv("VULKANTOY_MESH")) {
+		if (const char* meshEnv = std::getenv("TOURMALINE_MESH")) {
 			m_useGfxMesh = std::atoi(meshEnv) != 0;
 		}
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
-		if (const char* rsEnv = std::getenv("VULKANTOY_RENDER_SCALE")) {
+		if (const char* rsEnv = std::getenv("TOURMALINE_RENDER_SCALE")) {
 			const float rs = std::strtof(rsEnv, nullptr);
 			if (rs >= 0.25f && rs <= 2.0f)
 				m_renderScale = rs;
 			else
-				std::cerr << "[WorldRenderer] VULKANTOY_RENDER_SCALE out of range "
+				std::cerr << "[WorldRenderer] TOURMALINE_RENDER_SCALE out of range "
 				<< "(0.25..2.0): " << rsEnv << "\n";
 		}
 
 		// Deferred shadows override for A/B runs without UI interaction
 		// (1 | 0). Runtime H toggle + the ImGui checkbox stay live after.
-		if (const char* dsEnv = std::getenv("VULKANTOY_DS")) {
+		if (const char* dsEnv = std::getenv("TOURMALINE_DS")) {
 			const std::string_view ds = trimEnv(dsEnv);
 			if (ds == "1" || ds == "on") m_dsEnabled = true;
 			else if (ds == "0" || ds == "off") m_dsEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DS value: " << ds << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DS value: " << ds << "\n";
 		}
 		// One-shot deferred-shadow buffer dump after frame <n> Execute
 		// (stalls like the HZB dump; see DumpDeferredShadows). Frame 0 is
 		// warmup (seed/targets), so steady-state frames are the useful ones.
-		if (const char* dumpEnv = std::getenv("VULKANTOY_DS_DUMP")) {
+		if (const char* dumpEnv = std::getenv("TOURMALINE_DS_DUMP")) {
 			const int dumpFrame = std::atoi(dumpEnv);
 			if (dumpFrame >= 0)
 				m_dumpAtFrame = dumpFrame;
 		}
 #if defined(DS_DEBUG_VIZ)
 		// Deferred-shadow visualizer mode for headless runs (0..7, see
-		// DsDebugViz): pairs with VULKANTOY_CAPTURE to bisect the pipeline
+		// DsDebugViz): pairs with TOURMALINE_CAPTURE to bisect the pipeline
 		// without UI interaction. Debug builds only (release compiles the
 		// visualizers out; the env var reads as off there).
-		if (const char* vizEnv = std::getenv("VULKANTOY_DS_VIZ")) {
+		if (const char* vizEnv = std::getenv("TOURMALINE_DS_VIZ")) {
 			const int viz = std::atoi(vizEnv);
 			if (viz >= 0 && viz <= static_cast<int>(DsDebugViz::LightVis))
 				m_dsDebugMode = static_cast<DsDebugViz>(viz);
 			else
-				std::cerr << "[WorldRenderer] unknown VULKANTOY_DS_VIZ value: "
+				std::cerr << "[WorldRenderer] unknown TOURMALINE_DS_VIZ value: "
 				<< viz << " (0..7)\n";
 		}
 #endif
 		// Screenshot capture at a fixed frame number (no F7 needed for
 		// headless A/B runs; same PNG export path as the UI capture).
-		if (const char* capEnv = std::getenv("VULKANTOY_CAPTURE")) {
+		if (const char* capEnv = std::getenv("TOURMALINE_CAPTURE")) {
 			m_captureAtFrame = std::atoi(capEnv);
 		}
 		// Forward+ decals (tiled projected splats) VISIBILITY toggle
 		// (1 | 0): the world carries the entities (app presets, J
 		// spawns); this only hides/shows them. The app host additionally
 		// skips creating its preset entities when 0.
-		if (const char* decEnv = std::getenv("VULKANTOY_DECALS")) {
+		if (const char* decEnv = std::getenv("TOURMALINE_DECALS")) {
 			const std::string_view dec = trimEnv(decEnv);
 			if (dec == "1" || dec == "on") m_decalsEnabled = true;
 			else if (dec == "0" || dec == "off") m_decalsEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_DECALS value: " << dec << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DECALS value: " << dec << "\n";
 		}
 		// Headless crosshair splat at a fixed frame (see m_decalAutoSplatAtFrame):
 		// fires the J path once so capture runs verify the pick BVH.
-		if (const char* autoEnv = std::getenv("VULKANTOY_DECAL_AUTOSPLAT")) {
+		if (const char* autoEnv = std::getenv("TOURMALINE_DECAL_AUTOSPLAT")) {
 			m_decalAutoSplatAtFrame = std::atoi(autoEnv);
 		}
-		// EVSM opt-in (default OFF; VULKANTOY_EVSM=1 forces on; =0 forces
+		// EVSM opt-in (default OFF; TOURMALINE_EVSM=1 forces on; =0 forces
 		// the PCF depth atlases off). Main-view feature - the secondary
 		// multiviews keep PCF depth atlases either way.
-		if (const char* evsmEnv = std::getenv("VULKANTOY_EVSM")) {
+		if (const char* evsmEnv = std::getenv("TOURMALINE_EVSM")) {
 			if (std::atoi(evsmEnv) == 0)
 				m_evsmEnabled = false;
 			else
 				m_evsmEnabled = true;
 		}
-		// EVSM softness override for A/B captures (VULKANTOY_EVSM_SOFT=x).
-		if (const char* softEnv = std::getenv("VULKANTOY_EVSM_SOFT")) {
+		// EVSM softness override for A/B captures (TOURMALINE_EVSM_SOFT=x).
+		if (const char* softEnv = std::getenv("TOURMALINE_EVSM_SOFT")) {
 			m_evsmSoftness = std::max(0.0f, (float)std::atof(softEnv));
 		}
 		// SDSM (sample-distribution cascade fitting) override for A/B
-		// captures (VULKANTOY_SDSM=0 forces the fixed split range).
-		if (const char* sdsmEnv = std::getenv("VULKANTOY_SDSM")) {
+		// captures (TOURMALINE_SDSM=0 forces the fixed split range).
+		if (const char* sdsmEnv = std::getenv("TOURMALINE_SDSM")) {
 			if (std::atoi(sdsmEnv) == 0)
 				m_sdsmEnabled = false;
 			else
 				m_sdsmEnabled = true;
 		}
-		// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): see header.
-		if (const char* dumpEnv = std::getenv("VULKANTOY_EVSM_DUMP")) {
+		// Opt-in EVSM atlas dump (TOURMALINE_EVSM_DUMP=<frame>): see header.
+		if (const char* dumpEnv = std::getenv("TOURMALINE_EVSM_DUMP")) {
 			m_evsmDumpAtFrame = std::atoi(dumpEnv);
 		}
-		// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): see
+		// Opt-in SSR/volumetric stage dump (TOURMALINE_SSR_DUMP=<frame>): see
 		// header - fires at N and N+1 (one-frame-lag discrimination).
-		if (const char* ssrDumpEnv = std::getenv("VULKANTOY_SSR_DUMP")) {
+		if (const char* ssrDumpEnv = std::getenv("TOURMALINE_SSR_DUMP")) {
 			m_ssrDumpAtFrame = std::atoi(ssrDumpEnv);
 		}
 
-		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
+		if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
 			// Mute the analytic sky ambient (any ambient mode -> off;
 			// All carries sky + baked, so muting kills all ambient).
 			if (std::atoi(iblEnv) == 0 && m_ambientMode != AmbientMode::Off)
@@ -951,7 +951,7 @@ namespace engine {
 		}
 		// Baked-cubemap kill switch for headless runs (same state as the
 		// panel's "Cubemap specular IBL" checkbox; off falls back to the
-		// analytic sky, never to black): VULKANTOY_CUBEMAP=0 disables,
+		// analytic sky, never to black): TOURMALINE_CUBEMAP=0 disables,
 		// 1 (or unset) keeps the baked specular path. (Lives in
 		// ApplyHeadlessPostfxOverrides - the scene postfx seed must not
 		// stomp the pin.)
@@ -959,31 +959,31 @@ namespace engine {
 		// combo; see the cubemapDebug field): 0 off, 1 raw cubemap
 		// (no Fresnel/roughness - shows which probe serves each pixel),
 		// 2 probe blend weight as heat.
-		if (const char* cubeDbgEnv = std::getenv("VULKANTOY_CUBEMAP_DEBUG")) {
+		if (const char* cubeDbgEnv = std::getenv("TOURMALINE_CUBEMAP_DEBUG")) {
 			const int mode = std::atoi(cubeDbgEnv);
 			if (mode >= 0 && mode <= 2)
 				m_cubemapDebug = mode;
 			else
-				std::cerr << "[WorldRenderer] VULKANTOY_CUBEMAP_DEBUG wants 0..2\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_CUBEMAP_DEBUG wants 0..2\n";
 		}
 		// Ambient / GI source override for headless runs (same states the
 		// N key cycles; the runtime cycle stays live after):
-		//   VULKANTOY_AMBIENT=all|lightmaps|probes|skyibl|off
-		if (const char* amb = std::getenv("VULKANTOY_AMBIENT")) {
+		//   TOURMALINE_AMBIENT=all|lightmaps|probes|skyibl|off
+		if (const char* amb = std::getenv("TOURMALINE_AMBIENT")) {
 			const std::string_view a = trimEnv(amb);
 			if (a == "all") m_ambientMode = AmbientMode::All;
 			else if (a == "lightmaps" || a == "lm") m_ambientMode = AmbientMode::Lightmaps;
 			else if (a == "probes") m_ambientMode = AmbientMode::Probes;
 			else if (a == "skyibl" || a == "ibl") m_ambientMode = AmbientMode::SkyIbl;
 			else if (a == "off" || a == "none") m_ambientMode = AmbientMode::Off;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_AMBIENT value: "
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_AMBIENT value: "
 				<< a << " (all|lightmaps|probes|skyibl|off)\n";
 			std::cerr << "[WorldRenderer] ambient source: "
 				<< AmbientModeName(m_ambientMode) << "\n";
 		}
 		// Legacy GI override (pre-ambient-modes runs): 1/on -> All,
 		// 0/off -> out of the baked modes into SkyIbl.
-		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
+		if (const char* giEnv = std::getenv("TOURMALINE_GI")) {
 			const std::string_view gi = trimEnv(giEnv);
 			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::All;
 			else if (gi == "0" || gi == "off") {
@@ -991,47 +991,47 @@ namespace engine {
 					|| m_ambientMode == AmbientMode::Probes)
 					m_ambientMode = AmbientMode::SkyIbl;
 			}
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_GI value: " << gi << "\n";
 		}
 		// Lightmap branch opt-in for headless runs (same as the panel
 		// checkbox; default off). Takes effect when an atlas is loaded;
 		// LmActive() still gates on the ambient mode.
-		if (const char* lmEnv = std::getenv("VULKANTOY_LIGHTMAP")) {
+		if (const char* lmEnv = std::getenv("TOURMALINE_LIGHTMAP")) {
 			const std::string_view lm = trimEnv(lmEnv);
 			if (lm == "1" || lm == "on") m_lmEnabled = true;
 			else if (lm == "0" || lm == "off") m_lmEnabled = false;
-			else std::cerr << "[WorldRenderer] unknown VULKANTOY_LIGHTMAP value: " << lm << " (0|1)\n";
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_LIGHTMAP value: " << lm << " (0|1)\n";
 		}
 		// GI debug view for headless runs (same modes the R key cycles;
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
 		// 2 source palette, 3 isolated level (the level byte selects
-		// it - VULKANTOY_GI_DEBUG_LEVEL), 4 dominant level.
-		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
+		// it - TOURMALINE_GI_DEBUG_LEVEL), 4 dominant level.
+		if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
 			if (mode >= 0 && mode <= 4)
 				m_giDebug = mode;
 			else
-				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG wants 0..4\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
 		}
 		// Isolated-level selector for GI debug mode 3 (headless twin of
 		// the panel slider).
-		if (const char* giLvlEnv = std::getenv("VULKANTOY_GI_DEBUG_LEVEL")) {
+		if (const char* giLvlEnv = std::getenv("TOURMALINE_GI_DEBUG_LEVEL")) {
 			const int lvl = std::atoi(giLvlEnv);
 			if (lvl >= 0 && lvl <= 7)
 				m_giDebugLevel = lvl;
 			else
-				std::cerr << "[WorldRenderer] VULKANTOY_GI_DEBUG_LEVEL wants 0..7\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG_LEVEL wants 0..7\n";
 		}
 		// Probe-point overlay for headless runs (same as the panel
 		// checkbox; draws the probe lattice colored by octree level).
-		if (const char* giPtsEnv = std::getenv("VULKANTOY_GI_POINTS")) {
+		if (const char* giPtsEnv = std::getenv("TOURMALINE_GI_POINTS")) {
 			if (std::atoi(giPtsEnv) != 0)
 				m_giShowProbes = true;
 		}
 		// Occlusion cull for the probe overlay (same as the panel
 		// checkbox; hides probes behind scene geometry via the CPU pick
 		// BVH so captures show only probes that can affect the view).
-		if (const char* giOccEnv = std::getenv("VULKANTOY_GI_OCCLUDE")) {
+		if (const char* giOccEnv = std::getenv("TOURMALINE_GI_OCCLUDE")) {
 			if (std::atoi(giOccEnv) != 0)
 				m_giProbeOcclusionCull = true;
 		}
@@ -1739,9 +1739,9 @@ namespace engine {
 			// outlive it (they do: world owns both). Conservative defaults:
 			// <=1K textures load full, 2K/4K load capped and upgrade on
 			// demand within a few frames.
-			// Kill switch for A/B (VULKANTOY_STREAMING=0): full-resident
+			// Kill switch for A/B (TOURMALINE_STREAMING=0): full-resident
 			// legacy loads, no streamer, no feedback.
-		if (const char* streamEnv = std::getenv("VULKANTOY_STREAMING")) {
+		if (const char* streamEnv = std::getenv("TOURMALINE_STREAMING")) {
 			if (std::atoi(streamEnv) == 0)
 				m_textureStreamingEnabled = false;
 		}
@@ -1798,15 +1798,15 @@ namespace engine {
 				// bounds center and fit the far clip to the framed view
 				// (the 2000 m default stretches the cascade splits over
 				// empty space; cascade 0 covers ~100 m -> blurry EVSM/PCF
-				// at the mesh). Explicit VULKANTOY_CAM_POS/FWD/YAW pins
+				// at the mesh). Explicit TOURMALINE_CAM_POS/FWD/YAW pins
 				// win over BOTH (bench determinism). YAW included: the
 				// Configure-time yaw override is one of the documented
 				// pins - without it here a yaw-only bench would silently
 				// re-frame onto the generic orbit pose (observed: four
 				// yaw A/B runs rendered bit-identical).
-				if (!std::getenv("VULKANTOY_CAM_POS") &&
-					!std::getenv("VULKANTOY_CAM_FWD") &&
-					!std::getenv("VULKANTOY_CAM_YAW")) {
+				if (!std::getenv("TOURMALINE_CAM_POS") &&
+					!std::getenv("TOURMALINE_CAM_FWD") &&
+					!std::getenv("TOURMALINE_CAM_YAW")) {
 					const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 					const float radius =
 						glm::length(bounds.mx - bounds.mn) * 0.5f;
@@ -2565,7 +2565,7 @@ namespace engine {
 		m_giLoaded = true;
 
 		// CPU-side sanity: the volume must cover the scene interior.
-		if (const char* giDbg = std::getenv("VULKANTOY_GI_DEBUG")) {
+		if (const char* giDbg = std::getenv("TOURMALINE_GI_DEBUG")) {
 			(void)giDbg;
 			// World mesh AABB from the RESOLVED runtime scene vs the volume
 			// bounds: any transform/axis mismatch between the bake source
@@ -2901,11 +2901,11 @@ namespace engine {
 	void WorldRenderer::UpdateCubemapStreaming(const glm::vec3& eye) {
 		if (m_cubemapRows.empty() || !m_world || !m_cubemapEnabled)
 			return;
-		// Headless budget pin (VULKANTOY_CUBEMAP_BUDGET=N): bench A/B over
+		// Headless budget pin (TOURMALINE_CUBEMAP_BUDGET=N): bench A/B over
 		// the resident set + eviction verification without the UI slider.
 		// The UI slider stays live afterwards (this wins while set).
 		uint32_t budget = m_cubemapStreamBudget;
-		if (const char* e = std::getenv("VULKANTOY_CUBEMAP_BUDGET")) {
+		if (const char* e = std::getenv("TOURMALINE_CUBEMAP_BUDGET")) {
 			const long v = std::atol(e);
 			if (v >= 0 && v <= 64)
 				budget = uint32_t(v);
@@ -3412,10 +3412,10 @@ namespace engine {
 
 		m_cvolLoaded = true;
 		m_cvolEnabled = true; // on by default when baked; UI can toggle
-		// Headless A/B (same state as the panel checkbox): VULKANTOY_CVOL=0
+		// Headless A/B (same state as the panel checkbox): TOURMALINE_CVOL=0
 		// drops the FULL variant to Octree for the run (isolates whether a
 		// dark interior comes from the convex volumes or the octree field).
-		if (const char* cvolEnv = std::getenv("VULKANTOY_CVOL")) {
+		if (const char* cvolEnv = std::getenv("TOURMALINE_CVOL")) {
 			if (std::atoi(cvolEnv) == 0)
 				m_cvolEnabled = false;
 		}
@@ -3587,7 +3587,7 @@ namespace engine {
 		data.cubemapIntensity = m_cubemapEnabled ? m_cubemapIntensity : 0.0f;
 		// The Cubemap debug view (F10) pins the raw-radiance mode while
 		// active - the cubemaps panel's "Cubemap only (no Fresnel)" - so
-		// the panel's own selection (and the VULKANTOY_CUBEMAP_DEBUG pin)
+		// the panel's own selection (and the TOURMALINE_CUBEMAP_DEBUG pin)
 		// resumes the moment the view is left. View wins while active.
 		data.cubemapDebug = (m_debugView == ViewMode::Cubemap)
 			? 1u
@@ -4605,14 +4605,14 @@ namespace engine {
 				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
 		}
 
-		// TMP-DIAG (VULKANTOY_MEMDUMP=<frame>): one-shot stderr dump of the
+		// TMP-DIAG (TOURMALINE_MEMDUMP=<frame>): one-shot stderr dump of the
 		// allocation ledger — every image/buffer row (name, category,
 		// geometry, exact bytes) + the per-category sums + the VMA heap
 		// rows. The headless audit companion to the VRAM viewer (Ctrl+M):
 		// rank the rows, name the memory. Remove later.
 		{
 			static const int memDumpFrame = [] {
-				const char* e = std::getenv("VULKANTOY_MEMDUMP");
+				const char* e = std::getenv("TOURMALINE_MEMDUMP");
 				return e ? std::atoi(e) : -1;
 			}();
 			static bool memDumpDone = false;
@@ -4684,7 +4684,7 @@ namespace engine {
 				std::fflush(stderr);
 			}
 		}
-		// TMP-DIAG (VULKANTOY_FILTERAUDIT=<frame>): one-shot async download
+		// TMP-DIAG (TOURMALINE_FILTERAUDIT=<frame>): one-shot async download
 		// of the filter chain's per-frame state (draw verdicts + kept bits +
 		// indirect commands + batch headers of the retired flight slice —
 		// same retirement rule as the demand ring above), printed at poll
@@ -4697,7 +4697,7 @@ namespace engine {
 		// commands (the filter's compaction/ring cap). Remove later.
 		{
 			static const int filterAuditFrame = [] {
-				const char* e = std::getenv("VULKANTOY_FILTERAUDIT");
+				const char* e = std::getenv("TOURMALINE_FILTERAUDIT");
 				return e ? std::atoi(e) : -1;
 			}();
 			if (filterAuditFrame >= 0 && smvk::gfx::Valid(gfx)
@@ -5062,7 +5062,7 @@ namespace engine {
 			// above re-seeds m_autoExposureEnabled from the authored env
 			// (default ON), silently re-enabling live eye adaptation
 			// mid-bench; the pin re-applies here, after the seed AND the
-			// headless overrides (a VULKANTOY_AUTO_EXPOSURE snapshot pin
+			// headless overrides (a TOURMALINE_AUTO_EXPOSURE snapshot pin
 			// stays the more deliberate headless choice and wins). Lives
 			// here - not in ApplyHeadlessPostfxOverrides - so the bench
 			// contract doesn't entangle with the headless-pin migration
@@ -5093,7 +5093,7 @@ namespace engine {
 				<< " aa=" << int(m_aaMode) << "\n";
 			// Headless overrides win over the scene seed (AGENTS.md:
 			// "scene fog settings lose") - without this a headless
-			// VULKANTOY_VOLUMETRIC=1 force-on dies here on any
+			// TOURMALINE_VOLUMETRIC=1 force-on dies here on any
 			// non-volumetric scene (the seed writes enabled=false).
 			ApplyHeadlessVolumetricOverrides();
 			const bool volOn = se.fogQuality == 2 && se.volumetrics > 0.0f;
@@ -5747,7 +5747,7 @@ namespace engine {
 
 	void WorldRenderer::SpawnDecalAtCrosshair() {
 		if (!DecalsActive()) {
-			std::cerr << "[Decals] disabled (UI checkbox or VULKANTOY_DECALS=1)\n";
+			std::cerr << "[Decals] disabled (UI checkbox or TOURMALINE_DECALS=1)\n";
 			return;
 		}
 
@@ -5921,7 +5921,7 @@ namespace engine {
 	}
 
 	// ---------------------------------------------------------------------
-	// Deferred shadows debug dump (VULKANTOY_DS_DUMP=1; post-Execute one
+	// Deferred shadows debug dump (TOURMALINE_DS_DUMP=1; post-Execute one
 	// shot, stalls). Prints per-phase results so headless runs can bisect
 	// the pipeline: phase 2's TileGroup masks (groups with lights, set
 	// bits, group-mask consistency) and phase 3/4's per-tile state (tiles
@@ -6474,7 +6474,7 @@ namespace engine {
 			return;
 		ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
 		ImGui::SetNextWindowBgAlpha(0.55f);
-		if (!ImGui::Begin("##vulkantoy_hud", nullptr,
+		if (!ImGui::Begin("##tourmaline_hud", nullptr,
 				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
 				| ImGuiWindowFlags_NoSavedSettings
 				| ImGuiWindowFlags_NoFocusOnAppearing
@@ -7676,13 +7676,13 @@ namespace engine {
 		const auto rfT0 = bench_clk::now();
 		bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
 		bench_clk::time_point rfPA, rfPB; // preMain split: fw+/filter | cull/late
-		// Hitch logger (VULKANTOY_HITCH_LOG=<ms>): one line per frame that
+		// Hitch logger (TOURMALINE_HITCH_LOG=<ms>): one line per frame that
 		// exceeds the budget - traversal hitches vs shader-compile warm-up
 		// (a hitch that also mints pipelines is compilation; a hitch with a
 		// stable pipeline count is genuine traversal/alloc cost). Logged at
 		// the frame end below.
 		static const double sHitchBudgetMs = [] {
-			const char* e = std::getenv("VULKANTOY_HITCH_LOG");
+			const char* e = std::getenv("TOURMALINE_HITCH_LOG");
 			return e ? std::atof(e) : 0.0;
 		}();
 		static size_t sHitchLastPipelines = 0;
@@ -8363,14 +8363,14 @@ namespace engine {
 		fc.gbufferView = fc.ssrGbufferWanted
 			? m_viewportResources.ssr.gbuffer.logical
 			: smvk::LogicalImageViewHandle{};
-		// One-shot material census (VULKANTOY_MATERIAL_CENSUS): dumps
+		// One-shot material census (TOURMALINE_MATERIAL_CENSUS): dumps
 		// every material's factors (incl. layers) + the resulting
 		// G-buffer roughness/metal to stderr - the per-material ground
 		// truth for the G-buffer's continuous values.
 		static bool sMaterialCensusDone = false;
 		if (!sMaterialCensusDone && m_world) {
 			sMaterialCensusDone = true;
-			if (std::getenv("VULKANTOY_MATERIAL_CENSUS")) {
+			if (std::getenv("TOURMALINE_MATERIAL_CENSUS")) {
 				// Layer combine: MIN roughness wins (strongest reflector),
 				// metal ORs - the same combine the G-buffer represents.
 				auto classify = [&](const smvk::Material* mat) -> const char* {
@@ -8443,8 +8443,8 @@ namespace engine {
 		// left the filter culling against a never-built pyramid - the
 		// "hzb cull broken + foliage opaque" regression). The lever for
 		// turning HZB CULLING off is the filter's occlusion cull flag
-		// (CullFlagBit_HzbOcclusion: VULKANTOY_CULLFLAGS without 0x40, or
-		// VULKANTOY_HIZ=0 / the UI checkbox) - never the fill. Skipped
+		// (CullFlagBit_HzbOcclusion: TOURMALINE_CULLFLAGS without 0x40, or
+		// TOURMALINE_HIZ=0 / the UI checkbox) - never the fill. Skipped
 		// only while the culling view is frozen (the held pyramid must
 		// not be rebuilt).
 		if (!cullingFrozen)
@@ -9226,7 +9226,7 @@ namespace engine {
 				maskedCutout =
 					mat->shadingModel == smvk::ShadingModel::Masked;
 			}
-			// TMP-DIAG (VULKANTOY_NOCULL=1): force CullMode::None on every
+			// TMP-DIAG (TOURMALINE_NOCULL=1): force CullMode::None on every
 			// bindForMaterial bind — the facing proof for the distant-
 			// sibling draw-drop (the commands are written with real counts
 			// at CULLFLAGS=0x0 yet the pixels stay black; if the band
@@ -9234,13 +9234,13 @@ namespace engine {
 			// vs the direct legs). Remove later.
 			{
 				static const bool noCull = [] {
-					const char* e = std::getenv("VULKANTOY_NOCULL");
+					const char* e = std::getenv("TOURMALINE_NOCULL");
 					return e && std::strcmp(e, "1") == 0;
 				}();
 				if (noCull)
 					raster.cullMode = smvk::CullMode::None;
 			}
-				// Masked cutout in 2x MSAA + A2C opt-in (VULKANTOY_A2C):
+				// Masked cutout in 2x MSAA + A2C opt-in (TOURMALINE_A2C):
 				// alpha-to-coverage program (coverage remap in the FS, zero
 				// discard) + A2C multisample state - foliage silhouettes
 				// resolve AA'd. Opt-in because A2C moves the per-sample depth
@@ -9669,7 +9669,7 @@ namespace engine {
 				{
 					if (item.material == smvk::World::kInvalidIndex)
 						return;
-#if 0 // TMP-DIAG scanlands hunt (disabled): VULKANTOY_SHOWGROUP="n"
+#if 0 // TMP-DIAG scanlands hunt (disabled): TOURMALINE_SHOWGROUP="n"
 					// shows ONLY LOD group n (mirrors the FilterMainView hack).
 					// Remove later.
 					{
@@ -9677,7 +9677,7 @@ namespace engine {
 						static bool kInit = false;
 						if (!kInit) {
 							kInit = true;
-							if (const char* r = std::getenv("VULKANTOY_SHOWGROUP")) {
+							if (const char* r = std::getenv("TOURMALINE_SHOWGROUP")) {
 								int n = INT_MAX;
 								if (std::sscanf(r, "%d", &n) == 1)
 									kShow = n;
@@ -9829,7 +9829,7 @@ namespace engine {
 					noStencil,
 					smvk::BlendSettings::Opaque(),
 					msaaSettings,
-					// TMP-DIAG (VULKANTOY_LODVIEW_CULLBACK=1): bind Back instead
+					// TMP-DIAG (TOURMALINE_LODVIEW_CULLBACK=1): bind Back instead
 					// of None in the LODs flat view — the winding-flip proof
 					// for the distant-sibling draw-drop (every winding-
 					// sensitive stage kills them; the winding-agnostic views
@@ -9837,9 +9837,9 @@ namespace engine {
 					// decimated triangles are inverted vanish here too while
 					// LOD0 stays. Remove later.
 					wireframeRaster(smvk::RasterSettings{
-						.cullMode = (std::getenv("VULKANTOY_LODVIEW_CULLBACK")
+						.cullMode = (std::getenv("TOURMALINE_LODVIEW_CULLBACK")
 							&& std::strcmp(
-								std::getenv("VULKANTOY_LODVIEW_CULLBACK"), "1") == 0)
+								std::getenv("TOURMALINE_LODVIEW_CULLBACK"), "1") == 0)
 							? smvk::CullMode::Back : smvk::CullMode::None })
 				);
 				cmd.BindStaticVertexFmt();
@@ -10661,7 +10661,7 @@ namespace engine {
 					sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
 					ssrEmitted = true;
 
-					// Ground-truth depth view (VULKANTOY_SSR_DUMP armed): sample the
+					// Ground-truth depth view (TOURMALINE_SSR_DUMP armed): sample the
 					// depth through the trace's exact bindless path and write it to
 					// the raw target. Raw is dead after SSRBlur (its only reader),
 					// so this pass owns raw's final content for the dump frames -
@@ -10725,8 +10725,8 @@ namespace engine {
 							std::fprintf(stderr,
 								"[SSR-dump] depth-view pass armed: ssr_raw will hold the sampled depth\n");
 						}
-						// Ground-truth stencil view (VULKANTOY_SSR_DUMP armed +
-						// VULKANTOY_SSR_STENCILVIEW): Loads the receiver-material stencil
+						// Ground-truth stencil view (TOURMALINE_SSR_DUMP armed +
+						// TOURMALINE_SSR_STENCILVIEW): Loads the receiver-material stencil
 						// through the exact uintTextures[] path used by the trace shader
 						// and writes it into the blurred target (no longer used after
 						// composite).
@@ -10739,10 +10739,10 @@ namespace engine {
 						// sees it, without relying on the layout-fragile raw depth/stencil
 						// readback path.
 						static const bool sSsrStencilView =
-							std::getenv("VULKANTOY_SSR_STENCILVIEW") != nullptr;
+							std::getenv("TOURMALINE_SSR_STENCILVIEW") != nullptr;
 						static const int sSsrStencilViewSrc =
-							std::getenv("VULKANTOY_SSR_STENCILVIEW") != nullptr
-							? std::atoi(std::getenv("VULKANTOY_SSR_STENCILVIEW")) : 1;
+							std::getenv("TOURMALINE_SSR_STENCILVIEW") != nullptr
+							? std::atoi(std::getenv("TOURMALINE_SSR_STENCILVIEW")) : 1;
 						if (m_ssrDumpAtFrame >= 0 && sSsrStencilView && gbufferLayerOn) {
 							if (m_ssrStencilViewProgram.shaderCount == 0) {
 								try {
@@ -11183,7 +11183,7 @@ namespace engine {
 			// multi-attachment pass would leave the capture at its clear value).
 			// Scene-only on purpose - the capture is a grading reference.
 			bool captureThisFrame = false;
-			// Env-requested capture (VULKANTOY_CAPTURE=<frame>): F7-less A/B.
+			// Env-requested capture (TOURMALINE_CAPTURE=<frame>): F7-less A/B.
 			if (m_captureAtFrame >= 0 && m_frameCounter == (uint64_t)m_captureAtFrame)
 				m_captureQueued = true;
 			if (m_captureQueued) {
@@ -11318,7 +11318,7 @@ namespace engine {
 				ImGui::SetNextWindowPos(ImVec2(disp.x - sideW - pad, pad), ImGuiCond_Always);
 				ImGui::SetNextWindowSize(ImVec2(sideW, disp.y - pad * 2.0f), ImGuiCond_Always);
 			}
-			ImGui::Begin("VulkanToy - Debug", nullptr,
+			ImGui::Begin("Tourmaline - Debug", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 			{
 				// Live FPS/CPU/GPU readouts live in the text HUD (Ctrl+T)
@@ -11326,7 +11326,7 @@ namespace engine {
 				if (ImGui::Button(m_showHud ? "Hide stats HUD (Ctrl+T)" : "Show stats HUD (Ctrl+T)"))
 					m_showHud = !m_showHud;
 			}
-			if (ImGui::BeginTabBar("VulkanToyTabs")) {
+			if (ImGui::BeginTabBar("TourmalineTabs")) {
 				// ---------------------------------------------------------
 				// Quality: every setting that changes the image. No readback
 				// here besides the control itself (numbers live in Stats).
@@ -11712,13 +11712,13 @@ namespace engine {
 
 								// Fog mode is the single source of truth for the active path.
 								volumetricSelected = se.fogQuality == 2;
-								// Headless override wins (VULKANTOY_VOLUMETRIC): the
+								// Headless override wins (TOURMALINE_VOLUMETRIC): the
 								// AGENTS.md contract is "scene fog settings lose" -
 								// without this the env force-on/off dies here on
 								// every frame (tier mismatch with the override).
 								// Cached: the env cannot change mid-process.
 								static const bool sVolumetricEnvPinned =
-									std::getenv("VULKANTOY_VOLUMETRIC") != nullptr;
+									std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
 								if (!sVolumetricEnvPinned)
 									m_volumetricEnabled = volumetricSelected;
 
@@ -12054,13 +12054,13 @@ namespace engine {
 							ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 							// Task-less mesh-shader main leg: SETUP-TIME only
-							// (VULKANTOY_MESH=0/1 at startup + device support;
+							// (TOURMALINE_MESH=0/1 at startup + device support;
 							// no live toggle — the leg is canonical, not an
 							// A/B switch). Opaque single-sided base FS; without
 							// device mesh shaders the indexed multi-draws stay.
 							ImGui::TextDisabled(smvk::SupportsMeshShaders()
 								? (m_useGfxMesh ? "mesh-shader main leg: on (setup)"
-									: "mesh-shader main leg: off (VULKANTOY_MESH=0)")
+									: "mesh-shader main leg: off (TOURMALINE_MESH=0)")
 								: "mesh-shader main leg: unavailable (no device mesh shaders)");
 							// Cull-flag toggles write straight into the renderer config
 							// (takes effect next frame). FlipWinding default-off is
@@ -12098,8 +12098,8 @@ namespace engine {
 							// HZB occlusion CULL toggle: the occluder-depth
 						// fill + the pyramid are a FIXED COST (always
 						// built over hizDepth); the flag only gates the
-						// filter's occlusion TEST. VULKANTOY_HIZ=0 / the
-						// VULKANTOY_CULLFLAGS override are the headless
+						// filter's occlusion TEST. TOURMALINE_HIZ=0 / the
+						// TOURMALINE_CULLFLAGS override are the headless
 						// forms.
 						{
 							bool occ = (m_gfxRenderer.config.cullFlags
@@ -12112,7 +12112,7 @@ namespace engine {
 										& ~smvk::gfx::CullFlagBit_HzbOcclusion);
 						}
 						// Memory-aliasing master gate (default off; env
-						// VULKANTOY_ALIASING=1 pins on). Affects FUTURE
+						// TOURMALINE_ALIASING=1 pins on). Affects FUTURE
 						// claims: existing packed ranges stand until
 						// their targets rebuild (extent changes).
 						static bool s_aliasingOn = smvk::TargetHeapAliasingEnabled();
@@ -12783,7 +12783,7 @@ namespace engine {
 							"(2*tan(fov/2)*dist) <= budget), hysteretic around the budget. "
 							"Every level registers its own gfx mesh: the selected LOD draws "
 							"through the HZB-culled indirect ranges.");
-						ImGui::TextDisabled("Refresh: %s (VULKANTOY_LODFULL=0 restores halfrate).",
+						ImGui::TextDisabled("Refresh: %s (TOURMALINE_LODFULL=0 restores halfrate).",
 							m_lodFullRate ? "full-rate, every node per frame"
 							: "halfrate parity split");
 						ImGui::TextDisabled("Shader LODs: farthest level shades vertex-lit (F5: white).");
@@ -12802,7 +12802,7 @@ namespace engine {
 						ImGui::TextDisabled("[Gamepad] none connected");
 					ImGui::TextDisabled("Keys (toggles): M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors  C map");
 					ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K sky  H shadows  T terrain");
-					ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
+					ImGui::TextDisabled("      J blood splat at crosshair  TOURMALINE_DECALS=0/1");
 					ImGui::TextDisabled("Keys (views): N ambient  R/F8 GI view  F1 lit  F2 unlit  F3 meshlets");
 					ImGui::TextDisabled("      F4 cascades  F5 LOD colors  F6 vertex colors  F9 UV0  F10 cubemap  F11 POM");
 #if defined(DS_DEBUG_VIZ)
@@ -14414,7 +14414,7 @@ namespace engine {
 
 		// One-shot indirect audit (debug): downloads this frame's filter
 		// commands + HZB after Execute so the GPU results are final. Stalls
-		// (device-idle wait); button-pressed or VULKANTOY_AUDIT=<frame>.
+		// (device-idle wait); button-pressed or TOURMALINE_AUDIT=<frame>.
 		if (m_auditAtFrame >= 0 && m_frameCounter == (uint64_t)m_auditAtFrame) {
 			m_auditAtFrame = -1;
 			m_dumpIndirectAudit = true;
@@ -14440,7 +14440,7 @@ namespace engine {
 			m_host.WaitForDeviceIdle();
 			m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
 		}
-		// Opt-in deferred-shadow dump (VULKANTOY_DS_DUMP=<frame>): one
+		// Opt-in deferred-shadow dump (TOURMALINE_DS_DUMP=<frame>): one
 		// shot after Execute with the phase results final. Stalls
 		// (device-idle wait), so it stays off unless explicitly enabled.
 		if (m_dumpAtFrame >= 0 && m_frameCounter == (uint64_t)m_dumpAtFrame) {
@@ -14450,7 +14450,7 @@ namespace engine {
 				DumpDeferredShadows(fb.frameIndex);
 			}
 		}
-		// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
+		// Opt-in EVSM atlas dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
 		// after Execute (the blur completed in this frame's submit - the
 		// dump waits for device idle first).
 		if (m_evsmDumpAtFrame >= 0 && m_frameCounter == (uint64_t)m_evsmDumpAtFrame) {
@@ -14460,7 +14460,7 @@ namespace engine {
 				EvsmDumpAtlas(fb.frameIndex);
 			}
 		}
-		// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>):
+		// Opt-in SSR/volumetric stage dump (TOURMALINE_SSR_DUMP=<frame>):
 		// fires at N AND N+1 (the counter is not cleared on the first hit),
 		// stalls once per shot via device-idle.
 		if (m_ssrDumpAtFrame >= 0
@@ -14504,7 +14504,7 @@ namespace engine {
 		m_dlssLastRenderExtent = renderExtent;
 		m_dlssLastSwapExtent = outExtent;
 		// Hitch logger (see the rfT0 site): frames over the
-		// VULKANTOY_HITCH_LOG budget, with the pipeline-cache delta -
+		// TOURMALINE_HITCH_LOG budget, with the pipeline-cache delta -
 		// mints>0 = shader-compile warm-up, mints=0 = traversal cost.
 		// Hitch frames also dump the per-phase split (the rfT* locals
 		// are all assigned by this point on the straight-line path) plus
@@ -14565,7 +14565,7 @@ namespace engine {
 namespace engine {
 
 	void WorldRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
-		// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
+		// Opt-in debug (TOURMALINE_EVSM_DUMP=<frame>): per-stage stats over the
 		// cascade-0 tile of the moments/temp/blurred images - channels are
 		// (M1+ = E[exp(+c d)], M2+ = E[exp(+2c d)], M1- = E[exp(-c d)],
 		// M2- = E[exp(-2c d)]) - plus a log-encoded M1- PNG per stage in
@@ -14671,7 +14671,7 @@ namespace engine {
 		}
 	}
 
-	// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): stats on
+	// Opt-in SSR/volumetric stage dump (TOURMALINE_SSR_DUMP=<frame>): stats on
 	// stderr (non-finite count is the garbage detector) + tone-mapped PNGs in
 	// exports/ - NaN/Inf paint HOT PINK so a broken stage is unmistakable.
 	// Stage order is the frame's HDR chain: Main's hdr -> ssrRaw (half) ->

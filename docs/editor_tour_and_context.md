@@ -105,8 +105,8 @@ never aborts the whole scene.
 ### 3.3 `fileInfo` — format constants (Maya `fileInfo` block)
 
 ```
-fileInfo -k "application" -v "vulkantoy-tour";
-fileInfo -k "product" -v "VulkanToy";
+fileInfo -k "application" -v "tourmaline-tour";
+fileInfo -k "product" -v "Tourmaline";
 fileInfo -k "version" -v "1";
 ```
 
@@ -497,8 +497,8 @@ never overlap the rendered view; splitters resize (`m_outlinerW/inspectorW/botto
  //Name: bistro.tour
  //Last modified: Fri, Sep 26, 2026 09:12:04 AM
  reference -root -n 0 -source "content/models/Bistro/bistro.gltf";
- fileInfo -k "application" -v "vulkantoy-tour";
- fileInfo -k "product" -v "VulkanToy";
+ fileInfo -k "application" -v "tourmaline-tour";
+ fileInfo -k "product" -v "Tourmaline";
  fileInfo -k "version" -v "1";
  rename -n 45 "Shop_Wall"; // Shop_Wall
  setAttr -n 45 -at translate -type "double3" -t 1.2 3.4 5.6; // Shop_Wall

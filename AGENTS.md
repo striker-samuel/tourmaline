@@ -48,24 +48,24 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Buil
 Headless-ish deterministic capture (auto-exits after the bench budget):
 
 ```powershell
-$env:VULKANTOY_SSR='1'; $env:VULKANTOY_AA='off'; $env:VULKANTOY_AUTO_EXPOSURE='0'
-$env:VULKANTOY_CAM_POS='24.26,1.82,-9.52'; $env:VULKANTOY_CAM_FWD='-0.947,-0.022,-0.321'
-$env:VULKANTOY_CAPTURE='48'
+$env:TOURMALINE_SSR='1'; $env:TOURMALINE_AA='off'; $env:TOURMALINE_AUTO_EXPOSURE='0'
+$env:TOURMALINE_CAM_POS='24.26,1.82,-9.52'; $env:TOURMALINE_CAM_FWD='-0.947,-0.022,-0.321'
+$env:TOURMALINE_CAPTURE='48'
 & .\App.exe --pak content/paks/bistro.pak --disable_control --bench 64
 ```
 
-- `VULKANTOY_CAPTURE=<frame>` exports `exports/screenshot_*.png` — the frame
+- `TOURMALINE_CAPTURE=<frame>` exports `exports/screenshot_*.png` — the frame
   number must land INSIDE the bench budget (capture < bench; e.g. capture 12
   with bench 32), otherwise the auto-exit happens before the export
-- `VULKANTOY_SSR_DUMP=<frame>` dumps SSR stage stats + PNGs to `exports/`
-- `VULKANTOY_AO=off|ssao|sao` pins the AO mode headless (default sao; the O
-  key / UI combo stay live); combined with `VULKANTOY_SSR`,
-  `VULKANTOY_EVSM`, `VULKANTOY_TRANSPARENCY` this spans the full A/B matrix
-- `VULKANTOY_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
-  (scene fog settings lose); `VULKANTOY_VOLUMETRIC_STEPS=<4..128>` pins the
-  march steps for heavy fog benches; `VULKANTOY_VOLUMETRIC_CVOL=0` is the
+- `TOURMALINE_SSR_DUMP=<frame>` dumps SSR stage stats + PNGs to `exports/`
+- `TOURMALINE_AO=off|ssao|sao` pins the AO mode headless (default sao; the O
+  key / UI combo stay live); combined with `TOURMALINE_SSR`,
+  `TOURMALINE_EVSM`, `TOURMALINE_TRANSPARENCY` this spans the full A/B matrix
+- `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
+  (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>` pins the
+  march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_CVOL=0` is the
   fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
-  refresh) — pairs with `VULKANTOY_VOLUMETRIC` for pure-octree fog cost A/B
+  refresh) — pairs with `TOURMALINE_VOLUMETRIC` for pure-octree fog cost A/B
 - `--bench <n>` runs 10 warmup + n measured frames, then exits
 
 ## Tests
@@ -88,7 +88,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
 
-## Strict resources (`--strict` / `VULKANTOY_STRICT=1`) + the RHI error contract
+## Strict resources (`--strict` / `TOURMALINE_STRICT=1`) + the RHI error contract
 
 **Intention**: resource-pool exhaustion (bindless descriptor budget, image/view
 pools) must never hide — but the RHI never decides policy. **The Vulkan RHI
@@ -99,13 +99,13 @@ call site so silent skips cannot hide leaks or budget-size bugs. Asserts
 INSIDE the RHI are for invariants only (programmer errors) — never for
 operational conditions like pool exhaustion.
 
-- `Editor --strict` (editor/src/main.cpp) and `VULKANTOY_STRICT=1` (any host,
+- `Editor --strict` (editor/src/main.cpp) and `TOURMALINE_STRICT=1` (any host,
   any build) gate `smvk::StrictResources()` (engine/include/Engine/smvk.h,
   implemented in engine/src/Vulkan/impl.cpp).
 - **Call-site pattern** (the RHI has no abort paths):
   `if (handle.empty()) { smvk::OnResourceExhaustion("site"); return; }` —
   OnResourceExhaustion is a no-op unless strict, in which case it aborts with
-  the diagnostic (`vulkantoy_fatal.log` + stderr). Debug builds also keep the
+  the diagnostic (`tourmaline_fatal.log` + stderr). Debug builds also keep the
   pools' own `assert`s — strict is the RELEASE-visible form.
 - **Work is NOT yet done across the whole project**: the gate currently lives
   at the element churn sites in WorldRenderer (the demonstrated exhaustion

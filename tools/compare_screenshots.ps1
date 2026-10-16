@@ -1,8 +1,8 @@
 # Screenshot A/B comparison (PowerShell, System.Drawing only — no external
-# deps). Built for the VULKANTOY_CAPTURE=<frame> bench flow:
+# deps). Built for the TOURMALINE_CAPTURE=<frame> bench flow:
 #
-#   1. run A/B  (e.g. VULKANTOY_SHADERLOD=0 vs 1, camera frozen with
-#      --disable_control, VULKANTOY_AA=off so T2x jitter cannot shift
+#   1. run A/B  (e.g. TOURMALINE_SHADERLOD=0 vs 1, camera frozen with
+#      --disable_control, TOURMALINE_AA=off so T2x jitter cannot shift
 #      pixels), let each run export exports/screenshot_*.png,
 #   2. diff the pair with this script.
 #

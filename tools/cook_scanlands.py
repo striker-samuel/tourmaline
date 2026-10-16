@@ -18,7 +18,7 @@
 #   GiBaker --content-dir F:/content --in-vfs models/Scanlands/scanlands.gltf
 #           --out F:/content/gi/scanlands.sggi
 #
-# Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
+# Usage (PowerShell, from repo root F:/REPOS/tourmaline):
 #   py tools/cook_scanlands.py [--glb F:/content/models/scanlands.glb]
 #       [--app-content F:/content] [--workers 8] [--skip-convert] [--skip-pak]
 #

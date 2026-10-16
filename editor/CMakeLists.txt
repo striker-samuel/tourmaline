@@ -99,7 +99,7 @@ add_custom_command(TARGET Editor POST_BUILD
     COMMENT "Syncing SVG icons next to Editor.exe"
 )
 
-vulkantoy_stage_sdl3(Editor)
+tourmaline_stage_sdl3(Editor)
 
 # The editor renders with the same compiled shaders as App
 # (default.vert / default_unlit / default_lit / shadow.vert / ...).

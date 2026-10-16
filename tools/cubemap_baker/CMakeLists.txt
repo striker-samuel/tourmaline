@@ -32,4 +32,4 @@ add_custom_command(TARGET CubemapBaker POST_BUILD
         "$<TARGET_FILE_DIR:CubemapBaker>"
 )
 
-vulkantoy_stage_sdl3(CubemapBaker)
+tourmaline_stage_sdl3(CubemapBaker)

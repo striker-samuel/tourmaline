@@ -39,7 +39,7 @@ static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 
 namespace smvk {
 
-// STRICT RESOURCES (--strict / VULKANTOY_STRICT=1) + the RHI ERROR
+// STRICT RESOURCES (--strict / TOURMALINE_STRICT=1) + the RHI ERROR
 // CONTRACT. The RHI stays PURE: resource creators return EMPTY handles
 // on failure (the error signal) — never abort, never crash; asserts
 // inside the RHI are for INVARIANTS only (programmer errors), never
@@ -1501,7 +1501,7 @@ struct ImageCreateInfo
 	// cross-frame HISTORY read (the previous frame's depth through the
 	// shared range) that races the previous frame's late writes under
 	// submit overlap - the cascades jumped frame to frame. The env pin
-	// (VULKANTOY_ALIASING=1) parses once at first use; the setter is the
+	// (TOURMALINE_ALIASING=1) parses once at first use; the setter is the
 	// UI's live toggle (affects FUTURE claims - existing ranges stand
 	// until their targets rebuild).
 	[[nodiscard]] bool TargetHeapAliasingEnabled();

@@ -1,7 +1,7 @@
 #include "common.hlsli"
 #include "environment.hlsli"
 
-// SSR receiver-mask debug view (UI combo + VULKANTOY_DEBUGVIEW=ssrmask;
+// SSR receiver-mask debug view (UI combo + TOURMALINE_DEBUGVIEW=ssrmask;
 // no F-key: F-keys are exhausted): which surfaces the SSR trace will
 // reflect on, per material. Pairs with default.vert.hlsl (same PSIn as
 // default_lit). Alpha cutout + dithered Blend discard match the lit path

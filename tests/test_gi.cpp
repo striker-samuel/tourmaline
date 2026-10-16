@@ -730,7 +730,7 @@ void TestProbeVolumeRoundtrip() {
 	// baked dense layers (WriteFile refuses without them).
 	Check(vol.BakeDenseLayers(), "sggi dense bake (roundtrip precondition)");
 	const auto tmp = std::filesystem::temp_directory_path()
-		/ "vulkantoy_gi_test.sggi";
+		/ "tourmaline_gi_test.sggi";
 	std::string err;
 	Check(vol.WriteFile(tmp.string(), err), "sggi write");
 	SgGiVolume reloaded;
@@ -895,7 +895,7 @@ void TestRegularVolume() {
 
 	// File round-trip through the production reader.
 	const auto tmp = std::filesystem::temp_directory_path()
-		/ "vulkantoy_gi_regular_test.sgrv";
+		/ "tourmaline_gi_regular_test.sgrv";
 	std::string err;
 	Check(strip.WriteFile(tmp.string(), err), "sgrv write");
 	SgRegularVolume reloaded;
@@ -1144,7 +1144,7 @@ void TestCvVolume() {
 
 		// File round trip (priority + planes + coeffs preserved).
 		const auto tmp = std::filesystem::temp_directory_path()
-			/ "vulkantoy_gi_cvol_test.cvol";
+			/ "tourmaline_gi_cvol_test.cvol";
 		std::string err;
 		Check(strip.WriteFile(tmp.string(), err), "cvol write");
 		CvVolume reloaded;
@@ -2375,7 +2375,7 @@ void TestLightmapAtlasRoundtrip() {
 	};
 
 	const auto tmp = std::filesystem::temp_directory_path()
-		/ "vulkantoy_gi_test.sglm";
+		/ "tourmaline_gi_test.sglm";
 	std::string err;
 	Check(a.WriteFile(tmp.string(), err), "sglm write");
 	SgLightmapAtlas b;

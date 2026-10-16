@@ -9,7 +9,7 @@ with the Debug -Od flags and reports whether the driver bug still bites:
   python tools/shader_od_retry.py [--dxc path/to/dxc.exe]
 
 Exit 0 = all pinned shaders compiled with -Od (re-test the pipeline
-compile too: configure with -DVULKANTOY_SHADER_OD_RETRY=ON and run the
+compile too: configure with -DTOURMALINE_SHADER_OD_RETRY=ON and run the
 affected benches). Exit 1 = DXC itself failed. The driver AV happens later
 at vkCreateComputePipelines, so a DXC exit-0 here is necessary but not
 sufficient to unpin — read the header comment before deleting the pin.
@@ -71,7 +71,7 @@ def main() -> int:
         print(f"RESULT: {failures} shader(s) failed -Od compile; keep the -O3 pin.")
         return 1
     print("RESULT: all pinned shaders compiled with -Od. "
-          "Next: configure -DVULKANTOY_SHADER_OD_RETRY=ON and run benches "
+          "Next: configure -DTOURMALINE_SHADER_OD_RETRY=ON and run benches "
           "to confirm vkCreateComputePipelines no longer AVs before unpinning.")
     return 0
 

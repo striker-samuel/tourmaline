@@ -983,7 +983,7 @@ namespace engine {
 			}
 		if (gfxMesh == UINT32_MAX)
 			skippedTris += mesh->geometry.indexCount / 3;
-		// TMP-DIAG (VULKANTOY_DUMPGFX, the LOD-sibling draw-drop hunt): the
+		// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt): the
 		// runtime vertex window vs the cooked-meshlet lifted-id coverage per
 		// registered gfx mesh. The CPU/GPU cull chains and the filter CS all
 		// consume the lifted global ids (RegisterMeshFromCooked lifts
@@ -994,7 +994,7 @@ namespace engine {
 		// nowhere near the object (the distant-sibling black band). The
 		// window-id audit catches it at the source: cooked.vertices[] must
 		// stay under the MESH's vertexCount. Remove later.
-		if (gfxMesh != UINT32_MAX && std::getenv("VULKANTOY_DUMPGFX")) {
+		if (gfxMesh != UINT32_MAX && std::getenv("TOURMALINE_DUMPGFX")) {
 			std::string uri = loc.cluster
 				? loc.cluster->GetMeshUri(loc.handle).Str() : std::string{};
 			const uint32_t vcount = mesh->geometry.vertexCount;
@@ -1050,10 +1050,10 @@ namespace engine {
 		// Every LOD sibling gets its own gfx mesh so FilterMainView can push
 		// the selected LOD into the HZB-culled indirect ranges (previously
 		// only LOD0 was registered and LOD>0 drew direct, unculled).
-		// TMP-DIAG (VULKANTOY_DUMPGFX): chain length + per-level world
+		// TMP-DIAG (TOURMALINE_DUMPGFX): chain length + per-level world
 		// error for the first meshes (the LOD-selection inputs: zero
 		// errors pin everything at LOD0 regardless of budget). Remove later.
-		if (std::getenv("VULKANTOY_DUMPGFX")) {
+		if (std::getenv("TOURMALINE_DUMPGFX")) {
 			for (size_t i = 0; i < world.meshLocations.size() && i < 8; ++i) {
 				const uint32_t cl = world.LodChainLength((uint32_t)i);
 				std::string es;
@@ -1116,7 +1116,7 @@ namespace engine {
 #if 0 // TMP-DIAG scanlands hunt (disabled): dump worldMesh->group(pool)->URI map once. Remove later.
 		{
 			static bool kMapDone = false;
-			if (!kMapDone && std::getenv("VULKANTOY_DUMPMAP")) {
+			if (!kMapDone && std::getenv("TOURMALINE_DUMPMAP")) {
 				kMapDone = true;
 				for (size_t i = 0; i < world.meshLocations.size(); ++i) {
 					const auto& loc = world.meshLocations[i];
@@ -1145,14 +1145,14 @@ namespace engine {
 		EnsureChartXforms(world, ctx);
 
 		SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
-		// TMP-DIAG (VULKANTOY_DUMPGFX): per-gate push counters, first frame
+		// TMP-DIAG (TOURMALINE_DUMPGFX): per-gate push counters, first frame
 		// only. Remove later (folds into the draw dump above).
 		struct PushGates { uint64_t items = 0, badMat = 0, unknownMesh = 0;
 			uint64_t ditherHidden = 0, shaderLod = 0, unreg = 0, preculled = 0,
 				pushed = 0; uint32_t lodHist[8] = {}; };
 		static PushGates s_gates{};
 		static bool s_gatesDone = false;
-		const bool dumpGates = std::getenv("VULKANTOY_DUMPGFX") != nullptr
+		const bool dumpGates = std::getenv("TOURMALINE_DUMPGFX") != nullptr
 			&& !s_gatesDone;
 		world.forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable
@@ -1166,21 +1166,21 @@ namespace engine {
 			}
 			const uint32_t worldMesh = item.mesh;
 #if 0 // TMP-DIAG scanlands hunt (disabled): mesh hide/show + model-matrix dump. Remove later.
-			// Hide glTF mesh groupIds in VULKANTOY_HIDEGROUP="lo-hi".
-			// VULKANTOY_SHOWGROUP="n" shows ONLY group n.
-			// VULKANTOY_DUMPMAT dumps the model matrix for group-53 pushes.
+			// Hide glTF mesh groupIds in TOURMALINE_HIDEGROUP="lo-hi".
+			// TOURMALINE_SHOWGROUP="n" shows ONLY group n.
+			// TOURMALINE_DUMPMAT dumps the model matrix for group-53 pushes.
 			static int kHideLo = INT_MAX, kHideHi = INT_MIN;
 			static int kShowOnly = INT_MAX;
 			static bool kHideInit = false;
 			if (!kHideInit) {
 				kHideInit = true;
-				if (const char* r = std::getenv("VULKANTOY_HIDEGROUP")) {
+				if (const char* r = std::getenv("TOURMALINE_HIDEGROUP")) {
 					int lo = INT_MAX, hi = INT_MIN;
 					if (std::sscanf(r, "%d-%d", &lo, &hi) == 2) {
 						kHideLo = lo; kHideHi = hi;
 					}
 				}
-				if (const char* r = std::getenv("VULKANTOY_SHOWGROUP")) {
+				if (const char* r = std::getenv("TOURMALINE_SHOWGROUP")) {
 					int n = INT_MAX;
 					if (std::sscanf(r, "%d", &n) == 1) {
 						kHideLo = INT_MIN; kHideHi = INT_MAX;
@@ -1199,7 +1199,7 @@ namespace engine {
 				return;
 			{
 				static bool kOnce = false;
-				if (!kOnce && std::getenv("VULKANTOY_DUMPMAT")
+				if (!kOnce && std::getenv("TOURMALINE_DUMPMAT")
 					&& worldMesh < world.meshLodInfos.size()
 					&& (int)world.meshLodInfos[worldMesh].groupId == 53) {
 					kOnce = true;
@@ -1351,12 +1351,12 @@ namespace engine {
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				item.material, drawFlags, drawSet, lmChunk, chartOffset);
 			if (dumpGates) ++s_gates.pushed;
-			// TMP-DIAG (VULKANTOY_DUMPGFX, the LOD-sibling draw-drop hunt):
+			// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
 			// the pushed draw list, once per process (the camera is static
 			// in the headless repro, so the first frame is the repro frame).
 			// Maps the pushed (worldMesh -> selected LOD -> gfx mesh) chain
 			// to the registration dump above. Remove later.
-			if (std::getenv("VULKANTOY_DUMPGFX")) {
+			if (std::getenv("TOURMALINE_DUMPGFX")) {
 				static bool s_dumpedDraws = false;
 				if (!s_dumpedDraws) {
 					s_dumpedDraws = true;

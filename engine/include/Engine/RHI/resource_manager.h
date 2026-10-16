@@ -14,8 +14,8 @@ struct ktxTexture2;
 
 namespace smvk {
 
-// True when an opt-in debug image dump is armed via env: VULKANTOY_SSR_DUMP
-// or VULKANTOY_EVSM_DUMP present with a frame number >= 0 (the same arm
+// True when an opt-in debug image dump is armed via env: TOURMALINE_SSR_DUMP
+// or TOURMALINE_EVSM_DUMP present with a frame number >= 0 (the same arm
 // condition the SceneRenderer one-shot dumps use). Dump readback goes
 // through ResourceManager::DownloadDataFromImage, which needs TransferSrc
 // on the source image; render targets add that usage flag only when this
@@ -25,7 +25,7 @@ bool DebugImageDumpArmed();
 // True when the device was created with VK_EXT_mesh_shader enabled
 // (taskShader + meshShader features, probed, never required). Gates the
 // mesh-shader gfx filter path; the compute+indexed CPU fallback stays
-// otherwise. Also settable off at device level via VULKANTOY_MESH=0.
+// otherwise. Also settable off at device level via TOURMALINE_MESH=0.
 bool SupportsMeshShaders();
 
 class ResourceManager {

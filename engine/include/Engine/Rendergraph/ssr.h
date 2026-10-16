@@ -540,7 +540,7 @@ struct ScreenSpaceReflections {
 		ImageCreateInfo ci{};
 		ci.extent = { ext.width, ext.height, 1 };
 		ci.format = format;
-		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) copy the
+		// TransferSrc: debug stage dumps (TOURMALINE_SSR_DUMP) copy the
 		// targets back through DownloadDataFromImage — armed dumps only.
 		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
 		if (DebugImageDumpArmed())
@@ -630,7 +630,7 @@ struct ScreenSpaceReflections {
 		ImageCreateInfo ci{};
 		ci.extent = { targetExtent.width, targetExtent.height, 1 };
 		ci.format = d.format;
-		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) — armed dumps
+		// TransferSrc: debug stage dumps (TOURMALINE_SSR_DUMP) — armed dumps
 		// only (DownloadDataFromImage needs it on the source image).
 		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
 		if (DebugImageDumpArmed())

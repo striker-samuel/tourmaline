@@ -1,14 +1,14 @@
 #define SSR_PASS
 #include "common.hlsli"
 
-// Ground-truth stencil view (VULKANTOY_SSR_DUMP +
-// VULKANTOY_SSR_STENCILVIEW=<src>): debug probe for the receiver-material
+// Ground-truth stencil view (TOURMALINE_SSR_DUMP +
+// TOURMALINE_SSR_STENCILVIEW=<src>): debug probe for the receiver-material
 // stencil read path. The selected source value is written into ALL FOUR
 // channels so the dump's stderr stats line reports its exact min/mean/max
 // (flattened over (v,v,v,v) == v itself) — no reliance on the PNG encoder
 // or the layout-fragile raw depth/stencil readback.
 //
-// Sources (VULKANTOY_SSR_STENCILVIEW value):
+// Sources (TOURMALINE_SSR_STENCILVIEW value):
 //   stencil      (1, default): uintTextures[stencilIdx].Load().r — the
 //                trace's exact receiver-material read (the suspect).
 //   depth        (2): uintTextures[depthIdx].Load().r — a uint-typed load

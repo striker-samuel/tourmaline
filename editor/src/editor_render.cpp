@@ -353,7 +353,7 @@ namespace editor {
 
 			m_viewports[vp].frame = frame;
 			m_viewports[vp].viewProj = viewProj;
-			// Basis trace (VULKANTOY_BASIS_TRACE=1): one line per viewport
+			// Basis trace (TOURMALINE_BASIS_TRACE=1): one line per viewport
 			// every 60 frames — eye + the screen basis (view-matrix rows:
 			// row 0 = right, row 1 = screen-up) + the rect. Compare against
 			//\ wr\ twin\ gone;\ kept\ for\ the\ editor's\ own
@@ -361,7 +361,7 @@ namespace editor {
 			// pixels) shows up as different right/up rows for the same eye.
 			if ((m_frameCounter % 60) == 0) {
 				static const bool basisTrace =
-					std::getenv("VULKANTOY_BASIS_TRACE") != nullptr;
+					std::getenv("TOURMALINE_BASIS_TRACE") != nullptr;
 				if (basisTrace) {
 					const glm::vec3 bRight(view[0][0], view[1][0], view[2][0]);
 					const glm::vec3 bUp(view[0][1], view[1][1], view[2][1]);

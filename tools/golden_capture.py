@@ -27,11 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 HASH_FILE = Path(__file__).with_name("golden_hashes.txt")
 
 DEFAULT_ENV = {
-    "VULKANTOY_SSR": "1",
-    "VULKANTOY_AA": "off",
-    "VULKANTOY_AUTO_EXPOSURE": "0",
-    "VULKANTOY_CAM_POS": "24.26,1.82,-9.52",
-    "VULKANTOY_CAM_FWD": "-0.947,-0.022,-0.321",
+    "TOURMALINE_SSR": "1",
+    "TOURMALINE_AA": "off",
+    "TOURMALINE_AUTO_EXPOSURE": "0",
+    "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+    "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
 }
 
 
@@ -67,7 +67,7 @@ def main() -> int:
 
     env = dict(os.environ)
     env.update(DEFAULT_ENV)
-    env["VULKANTOY_CAPTURE"] = str(args.capture)
+    env["TOURMALINE_CAPTURE"] = str(args.capture)
     cmd = [str(exe), "--pak", args.pak, "--disable_control", "--bench",
            str(args.bench)]
     print(f"$ {' '.join(cmd)} (cwd={bindir})")

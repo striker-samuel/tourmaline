@@ -616,13 +616,13 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 		return geometry.generic_string();
 	}
 	smvk::assets::DeriveConfig cfg{};
-	if (const char* e = std::getenv("VULKANTOY_EDITOR_MESHLETS"))
+	if (const char* e = std::getenv("TOURMALINE_EDITOR_MESHLETS"))
 		cfg.meshlets = std::atoi(e) != 0;
-	if (const char* e = std::getenv("VULKANTOY_EDITOR_LODS"))
+	if (const char* e = std::getenv("TOURMALINE_EDITOR_LODS"))
 		cfg.lods = std::atoi(e) != 0;
 	// Far-shading derivation (default OFF — see DeriveConfig::shaderLods):
 	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
-	if (const char* e = std::getenv("VULKANTOY_EDITOR_SHADERLODS"))
+	if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
 		cfg.shaderLods = std::atoi(e) != 0;
 	// NO project guid: the derivation derives the asset identity from the
 	// SOURCE FILE CONTENT (SourceAssetGuid — see asset_export.h), so an

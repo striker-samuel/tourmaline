@@ -370,8 +370,8 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# --- VulkanToy binary content (external store) ---
-# Large scene binaries live in F:/content (VULKANTOY_CONTENT_DIR), not in git.
+# --- Tourmaline binary content (external store) ---
+# Large scene binaries live in F:/content (TOURMALINE_CONTENT_DIR), not in git.
 # The build syncs them next to App.exe. Never commit these paths.
 /app/content/models/
 /app/content/paks/
@@ -419,10 +419,10 @@ meshoptimizerConfigVersion.cmake
 /external/FidelityFX-SDK-v1.1.4
 /build-asan
 
-# --- VulkanToy runtime products (never commit) ---
+# --- Tourmaline runtime products (never commit) ---
 # pipeline_cache.bin: Vulkan pipeline-cache blob written next to the CWD
-# (VULKANTOY_PIPELINE_CACHE default path). Local perf artifact, not source.
-# exports/screenshot_*.png + dumps: headless VULKANTOY_CAPTURE / SSR / EVSM
+# (TOURMALINE_PIPELINE_CACHE default path). Local perf artifact, not source.
+# exports/screenshot_*.png + dumps: headless TOURMALINE_CAPTURE / SSR / EVSM
 # / WYSIWYG dumps (capture frame must land inside --bench). The tracked
 # exports/lut_neutral.png stays tracked — gitignore never untracks it.
 # Redirect bench/cook *.log output to out/logs/ (out/ is ignored wholesale).

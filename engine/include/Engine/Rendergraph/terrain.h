@@ -22,7 +22,7 @@
 // Shadows (T3): shadowmap RECEIVE (lights[0] sun convention, PCF/EVSM like
 // default_pom) times... minned with the heightfield RAYMARCHED distant
 // self-shadow (terrain_shadow.hlsli, HZD-style). Mode/steps ride the frag
-// push tail from the RunConfig snapshot (VULKANTOY_TERRAIN_HFSHADOW[_STEPS]).
+// push tail from the RunConfig snapshot (TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
 //
 // Draw recording (RecordBlocks): CPU frustum-cull per block (AABB vs the 6
 // viewProj planes) + distance LOD, then grouped binds (3x near full-format

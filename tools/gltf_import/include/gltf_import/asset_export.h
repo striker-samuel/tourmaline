@@ -235,9 +235,9 @@ struct MeshAsset {
 // tour/material authoring (farVertexLit/farSpecular/farNormalMap) is
 // unaffected — this gate only controls what the importer DERIVES.
 struct DeriveConfig {
-	bool meshlets = true;   // VULKANTOY_EDITOR_MESHLETS parity
-	bool lods = true;       // VULKANTOY_EDITOR_LODS parity
-	bool shaderLods = false; // VULKANTOY_EDITOR_SHADERLODS parity (opt-in)
+	bool meshlets = true;   // TOURMALINE_EDITOR_MESHLETS parity
+	bool lods = true;       // TOURMALINE_EDITOR_LODS parity
+	bool shaderLods = false; // TOURMALINE_EDITOR_SHADERLODS parity (opt-in)
 };
 
 struct DeriveStats {
