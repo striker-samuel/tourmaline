@@ -32,6 +32,8 @@ namespace editor {
 				return attr == OverrideAttr::Material;
 			case editor::EditVerb::SetNoLightmap:
 				return attr == OverrideAttr::NoLightmap;
+			case editor::EditVerb::SetLightmap:
+				return attr == OverrideAttr::Lightmap;
 			case editor::EditVerb::SetDitherCloseup:
 				return attr == OverrideAttr::DitherCloseup;
 			default:
@@ -206,6 +208,20 @@ namespace editor {
 				++touched;
 				break;
 			}
+			case smvk::tour::OverrideAttr::Lightmap: {
+				if (scene.lightmap.size() != scene.hierarchy.size())
+					scene.lightmap.assign(scene.hierarchy.size(), 0);
+				a.beforeFlag = scene.lightmap[n] != 0;
+				if (a.beforeFlag == r.flag)
+					break;
+				if (r.flag)
+					MarkLightmap(scene, int(n));
+				else
+					ClearLightmap(scene, int(n));
+				r.applied.push_back(a);
+				++touched;
+				break;
+			}
 			case smvk::tour::OverrideAttr::DitherCloseup: {
 				if (scene.ditherCloseup.size() != scene.hierarchy.size())
 					scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
@@ -274,6 +290,17 @@ namespace editor {
 					MarkNoLightmap(scene, int(n));
 				else
 					ClearNoLightmap(scene, int(n));
+				break;
+			}
+			case smvk::tour::OverrideAttr::Lightmap: {
+				if (scene.lightmap.size() != scene.hierarchy.size())
+					continue;
+				if ((scene.lightmap[n] != 0) != r.flag)
+					continue;
+				if (it->beforeFlag)
+					MarkLightmap(scene, int(n));
+				else
+					ClearLightmap(scene, int(n));
 				break;
 			}
 			case smvk::tour::OverrideAttr::DitherCloseup: {
@@ -588,6 +615,19 @@ namespace editor {
 					MarkNoLightmap(scene, int(node));
 				else
 					ClearNoLightmap(scene, int(node));
+				r.applied.push_back(a);
+				break;
+			}
+			case smvk::tour::OverrideAttr::Lightmap: {
+				if (scene.lightmap.size() != scene.hierarchy.size())
+					scene.lightmap.assign(scene.hierarchy.size(), 0);
+				a.beforeFlag = scene.lightmap[node] != 0;
+				if (a.beforeFlag == r.flag)
+					break;
+				if (r.flag)
+					MarkLightmap(scene, int(node));
+				else
+					ClearLightmap(scene, int(node));
 				r.applied.push_back(a);
 				break;
 			}

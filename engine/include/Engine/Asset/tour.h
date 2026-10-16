@@ -18,7 +18,8 @@
 //   setAttr -n 45 -at translate -type "double3" -t 1.2 3.4 5.6;
 //   assignMaterial -n 46 -m 12;                     # update (material link)
 //   setMatAttr -m 12 -at baseColor -type "float4" -t 1 0.5 0.2 1;
-//   setNoLightmap -n 45 -type "bool" -v 1;          # update (bake flag)
+//   setNoLightmap -n 45 -type "bool" -v 1;          # update (bake flag, legacy opt-out)
+//   setLightmap -n 45 -type "bool" -v 1;            # update (bake flag, opt-in)
 //   setVisibility -n 45 -type "bool" -v 1;          # update (hidden flag)
 //   parent -n 45 -p 12;                             # update (topology)
 //   delete -uuid 9f3a... -n 45 -name "Shop_Wall";   # remove (uuid/name/id)
@@ -190,6 +191,7 @@ enum class Verb : uint8_t {
 	AssignMaterial, // material = cluster material POOL index
 	SetMatAttr,     // text = attr name; vec/vec4/number by attr
 	SetNoLightmap,  // flag
+	SetLightmap,    // flag (bake opt-in; default off, see Scene::lightmap)
 	SetDitherCloseup, // flag (subtree dither on camera closeup)
 	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
 	SetStatic,      // flag: static-subtree ROOT mark (Scene::staticRoot —
@@ -320,13 +322,14 @@ enum class OverrideAttr : uint8_t {
 	Visibility,   // flag = hidden (1 hides the subtree root)
 	Material,     // material = cluster material pool index
 	NoLightmap,   // flag
+	Lightmap,     // flag (bake opt-in)
 	DitherCloseup, // flag
 };
 
 struct OverrideRule {
 	OverrideAttr attr = OverrideAttr::Visibility;
 	std::string pattern; // ECMAScript regex over node names
-	bool flag = false;   // Visibility/NoLightmap/Dither value
+	bool flag = false;   // Visibility/NoLightmap/Lightmap/Dither value
 	uint32_t material = 0; // Material: cluster material pool index
 	bool enabled = true;
 };
@@ -396,7 +399,8 @@ struct Command {
 	                        // innerConeDeg); SetLightAttr "color": rgb
 	double number = 0.0;   // mat scalar attr value; CreateLight:
 	                       // outerConeDeg; SetLightAttr scalar value
-	bool flag = false;     // SetNoLightmap / SetDitherCloseup value;
+	bool flag = false;     // SetNoLightmap / SetLightmap /
+	                       // SetDitherCloseup value;
 	                       // CreateLight: static bake-only;
 	                       // SetLightAttr static/shadow value
 	std::string name;      // recorded node name (verify-only);

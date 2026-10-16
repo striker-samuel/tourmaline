@@ -3068,6 +3068,60 @@ void TestDitherCloseup() {
 	}
 }
 
+void TestLightmapOptIn() {
+	Scene scene;
+	const int root = addNode(scene, -1, 0);
+	const int grp = addNode(scene, root, 1);
+	const int mesh = addNode(scene, grp, 2);
+	const int far = addNode(scene, root, 2);
+	// Empty flag table: everything skipped (default off).
+	Check(!IsLightmapNode(scene, mesh), "lm empty table skips");
+	Check(!IsLightmapNode(scene, root), "lm root skipped");
+	// Author the flag on the GROUP (subtree inheritance below it).
+	MarkLightmap(scene, grp);
+	Check(IsLightmapNode(scene, mesh), "lm subtree inherited");
+	Check(!IsLightmapNode(scene, far), "lm sibling unaffected");
+	Check(!IsLightmapNode(scene, root), "lm root unaffected");
+	ClearLightmap(scene, grp);
+	Check(!IsLightmapNode(scene, mesh), "lm clear skips");
+	// Legacy opt-out still force-skips (both flags honored).
+	MarkLightmap(scene, grp);
+	MarkNoLightmap(scene, grp);
+	Check(IsLightmapNode(scene, mesh), "lm opt-in reads");
+	Check(IsNoLightmapNode(scene, mesh), "lm opt-out reads");
+	ClearNoLightmap(scene, grp);
+	ClearLightmap(scene, grp);
+	// Tour verb round-trip: setLightmap replays onto the scene.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "setLightmap -n " << grp << " -type \"bool\" -v 1;\n";
+		f.close();
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
+			"lm verb parse");
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetOfflineMode(true);
+		addNode(cluster->scene, -1, 0);
+		const int cGrp = addNode(cluster->scene, 0, 1);
+		const int cMesh = addNode(cluster->scene, cGrp, 2);
+		(void)cGrp;
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+			"lm verb replay ok");
+		Check(IsLightmapNode(cluster->scene, cMesh),
+			"lm verb replay flag");
+		std::error_code ec;
+		std::filesystem::remove(TempTour(), ec);
+	}
+	// Override attr name round-trips.
+	Check(std::string(smvk::tour::OverrideAttrName(
+		smvk::tour::OverrideAttr::Lightmap)) == "lightmap",
+		"lm override attr name");
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -3094,6 +3148,7 @@ int main() {
 	TestTextureAssets();
 	TestTourFuzz();
 	TestDitherCloseup();
+	TestLightmapOptIn();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

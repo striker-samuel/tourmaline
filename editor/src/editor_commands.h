@@ -25,6 +25,7 @@ enum class EditVerb : uint8_t {
 	AssignMaterial, // world material index
 	SetMatAttr,     // shared material value
 	SetNoLightmap,
+	SetLightmap, // bake opt-in (default off; meshes opt in deliberately)
 	SetDitherCloseup, // subtree dither on camera closeup
 	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
 	SetStatic,      // static-subtree ROOT mark (frozen transforms,

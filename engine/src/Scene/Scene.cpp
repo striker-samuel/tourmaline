@@ -22,11 +22,12 @@ int addNode(Scene& scene, int parent, int level)
     // TODO: resize aux arrays (local/global etc.)
     scene.localTransform.push_back(glm::mat4(1.0f));
     scene.globalTransform.push_back(glm::mat4(1.0f));
-    scene.staticRoot.push_back(0);
-    scene.staticNode.push_back(0);
-    scene.noLightmap.push_back(0);
-    scene.ditherCloseup.push_back(0);
-    scene.hidden.push_back(0);
+  scene.staticRoot.push_back(0);
+  scene.staticNode.push_back(0);
+  scene.noLightmap.push_back(0);
+  scene.lightmap.push_back(0);
+  scene.ditherCloseup.push_back(0);
+  scene.hidden.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   if (parent > -1) {
@@ -367,6 +368,7 @@ void loadScene(const char* fileName, Scene& scene)
   scene.staticRoot.assign(sz, 0);
   scene.staticNode.assign(sz, 0);
   scene.noLightmap.assign(sz, 0);
+  scene.lightmap.assign(sz, 0);
   scene.hidden.assign(sz, 0);
   scene.ditherCloseup.assign(sz, 0);
   scene.lightForNode.clear();
@@ -869,6 +871,7 @@ void mergeScenes(
   scene.staticRoot.push_back(0);
   scene.staticNode.push_back(0);
   scene.noLightmap.push_back(0);
+  scene.lightmap.push_back(0);
   scene.ditherCloseup.push_back(0);
   scene.hidden.push_back(0);
   // Cooked punctual lights are Cluster pool assets: their node links
@@ -907,6 +910,11 @@ void mergeScenes(
       mergeVectors(scene.noLightmap, s->noLightmap);
     else
       scene.noLightmap.insert(scene.noLightmap.end(), s->hierarchy.size(), 0);
+
+    if (s->lightmap.size() == s->hierarchy.size())
+      mergeVectors(scene.lightmap, s->lightmap);
+    else
+      scene.lightmap.insert(scene.lightmap.end(), s->hierarchy.size(), 0);
 
     if (s->hidden.size() == s->hierarchy.size())
       mergeVectors(scene.hidden, s->hidden);
@@ -1127,6 +1135,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
     eraseSelected(scene.noLightmap, indicesToDelete);
   else
     scene.noLightmap.assign(scene.hierarchy.size(), 0);
+  if (scene.lightmap.size() == oldSize)
+    eraseSelected(scene.lightmap, indicesToDelete);
+  else
+    scene.lightmap.assign(scene.hierarchy.size(), 0);
   if (scene.hidden.size() == oldSize)
     eraseSelected(scene.hidden, indicesToDelete);
   else

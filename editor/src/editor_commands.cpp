@@ -261,6 +261,14 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ClearNoLightmap(scene, int(c.node));
 		break;
 	}
+	case EditVerb::SetLightmap: {
+		const bool v = forward ? c.afterFlag : c.beforeFlag;
+		if (v)
+			MarkLightmap(scene, int(c.node));
+		else
+			ClearLightmap(scene, int(c.node));
+		break;
+	}
 	case EditVerb::SetDitherCloseup: {
 		const bool v = forward ? c.afterFlag : c.beforeFlag;
 		if (v)
@@ -959,6 +967,8 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 			scene.staticNode.pop_back();
 		if (scene.noLightmap.size() == n + 1)
 			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
 		if (scene.ditherCloseup.size() == n + 1)
 			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
@@ -1101,6 +1111,8 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 			scene.staticNode.pop_back();
 		if (scene.noLightmap.size() == n + 1)
 			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
 		if (scene.ditherCloseup.size() == n + 1)
 			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
@@ -1243,6 +1255,8 @@ void EditorApp::ExecUncreateCvolume(EditCmd& c) {
 			scene.staticNode.pop_back();
 		if (scene.noLightmap.size() == n + 1)
 			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
 		if (scene.ditherCloseup.size() == n + 1)
 			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
@@ -1373,6 +1387,8 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 			scene.staticNode.pop_back();
 		if (scene.noLightmap.size() == n + 1)
 			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
 		if (scene.ditherCloseup.size() == n + 1)
 			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
@@ -1942,6 +1958,8 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 			scene.staticNode.pop_back();
 		if (scene.noLightmap.size() == n + 1)
 			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
 		if (scene.ditherCloseup.size() == n + 1)
 			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
@@ -2352,6 +2370,8 @@ void EditorApp::Do(EditCmd c) {
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
 	else if (c.verb == EditVerb::SetNoLightmap)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
 	else if (c.verb == EditVerb::SetDitherCloseup)
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
@@ -2373,6 +2393,8 @@ void EditorApp::PushDone(EditCmd c) {
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
 	else if (c.verb == EditVerb::SetNoLightmap)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
 	else if (c.verb == EditVerb::SetDitherCloseup)
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
@@ -2407,6 +2429,8 @@ bool EditorApp::Redo() {
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
 	else if (c.verb == EditVerb::SetNoLightmap)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
 	else if (c.verb == EditVerb::SetDitherCloseup)
 		NoteLocalOverrideWritten(c.node,
 			smvk::tour::OverrideAttr::DitherCloseup);
@@ -2440,6 +2464,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
 	case EditVerb::SetNoLightmap:
+	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
@@ -2477,6 +2502,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
 	case EditVerb::SetNoLightmap:
+	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
@@ -2531,7 +2557,8 @@ size_t EditorApp::CoalesceHistory() {
 	// Key classes:
 	//   (verb, node)              Rename/Translate/Rotate/Scale/Parent/
 	//                              SetVisibility/SetNoLightmap/
-	//                              SetDitherCloseup/AssignMaterial
+	//                              SetLightmap/SetDitherCloseup/
+	//                              AssignMaterial
 	//   (SetMatAttr, mat, attr)    shared material value edits
 	//   (SetLightAttr, node, attr) light property edits
 	//   (SetCvolAttr, node, attr)  convex-volume property edits
@@ -2548,6 +2575,7 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
 	case EditVerb::SetNoLightmap:
+	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
@@ -2586,6 +2614,7 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::Parent:
 		case EditVerb::SetVisibility:
 	case EditVerb::SetNoLightmap:
+	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
@@ -2641,7 +2670,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::Scale: return "scale";
 	case editor::EditVerb::AssignMaterial: return "assign material";
 	case editor::EditVerb::SetMatAttr: return "material edit";
-	case editor::EditVerb::SetNoLightmap: return "lightmap flag";
+	case editor::EditVerb::SetNoLightmap: return "lightmap flag (legacy opt-out)";
+	case editor::EditVerb::SetLightmap: return "lightmap flag (opt-in)";
 	case editor::EditVerb::SetDitherCloseup: return "dither flag";
 	case editor::EditVerb::SetStatic: return "static mark";
 	case editor::EditVerb::SetVisibility: return "visibility";
@@ -2874,6 +2904,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetNoLightmap;
+		out.flag = c.afterFlag;
+		return true;
+	case EditVerb::SetLightmap:
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::SetLightmap;
 		out.flag = c.afterFlag;
 		return true;
 	case EditVerb::SetDitherCloseup:
@@ -3959,6 +3995,14 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterFlag = tc.flag;
 		out.beforeFlag = node < app.m_world->scene.noLightmap.size() &&
 			app.m_world->scene.noLightmap[node] != 0;
+		return true;
+	case smvk::tour::Verb::SetLightmap:
+		if (!needNode())
+			return false;
+		out.verb = EditVerb::SetLightmap;
+		out.afterFlag = tc.flag;
+		out.beforeFlag = node < app.m_world->scene.lightmap.size() &&
+			app.m_world->scene.lightmap[node] != 0;
 		return true;
 	case smvk::tour::Verb::SetDitherCloseup:
 		if (!needNode())

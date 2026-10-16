@@ -149,6 +149,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << "setNoLightmap -n " << c.node << " -type \"bool\" -v "
 			<< FlagVal(c.flag);
 		break;
+	case Verb::SetLightmap:
+		f << "setLightmap -n " << c.node << " -type \"bool\" -v "
+			<< FlagVal(c.flag);
+		break;
 	case Verb::SetDitherCloseup:
 		f << "setDitherCloseup -n " << c.node << " -type \"bool\" -v "
 			<< FlagVal(c.flag);
@@ -452,6 +456,10 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
 		out = OverrideAttr::NoLightmap;
 		return true;
 	}
+	if (s == "lightmap") {
+		out = OverrideAttr::Lightmap;
+		return true;
+	}
 	if (s == "ditherCloseup" || s == "dither" || s == "dither_closeup") {
 		out = OverrideAttr::DitherCloseup;
 		return true;
@@ -464,6 +472,7 @@ const char* OverrideAttrName(OverrideAttr a) {
 	case OverrideAttr::Visibility: return "visibility";
 	case OverrideAttr::Material: return "material";
 	case OverrideAttr::NoLightmap: return "noLightmap";
+	case OverrideAttr::Lightmap: return "lightmap";
 	case OverrideAttr::DitherCloseup: return "ditherCloseup";
 	}
 	return "?";
@@ -1541,6 +1550,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		}
 		else if (effVerb == "setNoLightmap" && fl.hasN && fl.hasV) {
 			c.verb = Verb::SetNoLightmap;
+			c.node = fl.n;
+			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
+		else if (effVerb == "setLightmap" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetLightmap;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
@@ -2641,6 +2655,18 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.noLightmap[target] = c.flag ? 1 : 0;
 			break;
 		}
+		case Verb::SetLightmap: {
+			uint32_t target = 0;
+			if (!resolveNode(c.node, c, target)) {
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			if (scene.lightmap.size() != scene.hierarchy.size())
+				scene.lightmap.assign(scene.hierarchy.size(), 0);
+			scene.lightmap[target] = c.flag ? 1 : 0;
+			break;
+		}
 	case Verb::SetDitherCloseup: {
 		uint32_t target = 0;
 		if (!resolveNode(c.node, c, target)) {
@@ -3534,12 +3560,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// wins. Per-node local commands are MORE specific and win over any
 	// wide rule touching the same node+attr (local wins).
 	if (!doc.overrides.empty()) {
-		std::unordered_set<uint32_t> localVis, localMat, localNoLM, localDither;
+		std::unordered_set<uint32_t> localVis, localMat, localNoLM, localLM, localDither;
 		for (const Command& c : doc.commands) {
 			switch (c.verb) {
 			case Verb::SetVisibility: localVis.insert(c.node); break;
 			case Verb::AssignMaterial: localMat.insert(c.node); break;
 			case Verb::SetNoLightmap: localNoLM.insert(c.node); break;
+			case Verb::SetLightmap: localLM.insert(c.node); break;
 			case Verb::SetDitherCloseup: localDither.insert(c.node); break;
 			default: break;
 			}
@@ -3591,6 +3618,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					if (scene.noLightmap.size() != scene.hierarchy.size())
 						scene.noLightmap.assign(scene.hierarchy.size(), 0);
 					scene.noLightmap[n] = r.flag ? 1 : 0;
+					break;
+				case OverrideAttr::Lightmap:
+					if (localLM.contains(n))
+						continue;
+					if (scene.lightmap.size() != scene.hierarchy.size())
+						scene.lightmap.assign(scene.hierarchy.size(), 0);
+					scene.lightmap[n] = r.flag ? 1 : 0;
 					break;
 				case OverrideAttr::DitherCloseup:
 					if (localDither.contains(n))
@@ -3765,6 +3799,10 @@ std::string Describe(const Command& c) {
 	case Verb::SetNoLightmap:
 		target(c.node, tgt);
 		std::snprintf(buf, sizeof(buf), "noLightmap %s = %d", tgt, c.flag ? 1 : 0);
+		break;
+	case Verb::SetLightmap:
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "lightmap %s = %d", tgt, c.flag ? 1 : 0);
 		break;
 	case Verb::SetDitherCloseup:
 		target(c.node, tgt);

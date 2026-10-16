@@ -1357,6 +1357,7 @@ namespace editor {
 			scene.cubemapForNode.contains(node) ? " [cube]" : "",
 			scene.cameraForNode.contains(node) ? " [camera]" : "",
 			IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
+			IsLightmapNode(scene, int(node)) ? " [LM]" : "",
 			IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 			IsStaticSubtreeRoot(scene, int(node)) ? " [static]" : "",
 			IsEnvNode(node) ? " [env]" : "",
@@ -2752,7 +2753,23 @@ namespace editor {
 				inherited ? "static" : "dynamic");
 		}
 
-		// Lightmap participation.
+		// Lightmap participation: opt-IN (default off) + legacy opt-out.
+		// A mesh charts only when opted in here AND not excluded below.
+		{
+			ImGui::Separator();
+			const bool optedIn = IsLightmapNode(scene, int(node));
+			bool self = node < scene.lightmap.size() && scene.lightmap[node] != 0;
+			if (ImGui::Checkbox("Bake lightmaps (subtree, opt-in)", &self)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetLightmap;
+				c.node = node;
+				c.afterFlag = self;
+				c.beforeFlag = !self;
+				Do(c);
+			}
+			ImGui::TextDisabled("effective: %s (cook --lightmap charts it)",
+				optedIn ? "opted in" : "skipped");
+		}
 		{
 			ImGui::Separator();
 			const bool inherited = IsNoLightmapNode(scene, int(node));
@@ -2765,8 +2782,8 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("effective: %s (cook --lightmap skips it)",
-				inherited ? "excluded" : "baked");
+			ImGui::TextDisabled("effective: %s (legacy opt-out; opt-in above still required)",
+				inherited ? "excluded" : "not excluded");
 		}
 
 		// Dither on camera closeup (subtree flag; the GPU fade is LIVE — per

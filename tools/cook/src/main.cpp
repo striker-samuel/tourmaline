@@ -4455,10 +4455,19 @@ int Run(const CookArgs& c) {
 				++skipExcluded;
 				continue;
 			}
-			// Authored exclusion (Scene::noLightmap, subtree-scoped): the
-			// editor's per-object "bake lightmap" toggle, stamped from
-			// glTF "smvk.noLightmap" node extras (or the NOLM_ prefix).
-			// Same treatment as name exclusion: trace/cast, probe-lit.
+			// Authored opt-in (Scene::lightmap, subtree-scoped, default
+			// OFF): the editor's per-object "bake lightmap" toggle,
+			// stamped from glTF "smvk.lightmap" node extras (or the LM_
+			// prefix). Only opted-in meshes chart; everything else keeps
+			// its analytic/probe lighting and stays in the trace scene
+			// (still occludes/casts).
+			if (!IsLightmapNode(cluster->scene, int(node))) {
+				++skipNoLm;
+				continue;
+			}
+			// Legacy opt-out (Scene::noLightmap, subtree-scoped): force
+			// skip even when opted in above. Same treatment: trace/cast,
+			// probe-lit.
 			if (IsNoLightmapNode(cluster->scene, int(node))) {
 				++skipNoLm;
 				continue;

@@ -452,6 +452,18 @@ struct Scene {
 	// trace scene. Empty or size-mismatched == no exclusions. Carried through
 	// merge/serialize paths alongside staticRoot.
 	std::vector<uint8_t> noLightmap;
+	// Lightmap opt-IN (editor + cook): lightmap[node] == 1 includes the
+	// node's subtree in lightmap charting/baking (see cook --lightmap).
+	// Default OFF (empty or size-mismatched == skip everything): unlike
+	// the opt-out above, bake lightmaps are pay-per-mesh (atlas texels,
+	// bake minutes, GPU bytes), so meshes opt in deliberately — typically
+	// large static receivers, never foliage/props. A mesh needs BOTH
+	// opt-in here AND no opt-out above to chart. NOTE: intentionally NOT
+	// serialized (no scene-blob/file section): the flag is authoring-time
+	// cook input only — the runtime keys on lmChunk, and tours are the
+	// source of truth (replayed every cook). Carried through
+	// merge/resize paths alongside noLightmap.
+	std::vector<uint8_t> lightmap;
 	// Dither on camera closeup (editor + cook): ditherCloseup[node] == 1
 	// marks the node's subtree for a dithered fade when the camera gets
 	// close (LOD-pop hiding for impostors/foliage). Subtree-inherited like
@@ -509,6 +521,18 @@ void MarkAllRootsChanged(Scene& scene);
 inline bool IsStaticNode(const Scene& scene, int node)
 {
 	return node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0;
+}
+
+// Lightmap opt-in for a node or any ancestor (subtree inclusion).
+// Empty or size-mismatched == skip (default off).
+inline bool IsLightmapNode(const Scene& scene, int node)
+{
+	for (int n = node; n >= 0 && n < int(scene.hierarchy.size()); ) {
+		if ((size_t)n < scene.lightmap.size() && scene.lightmap[(size_t)n] != 0)
+			return true;
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	return false;
 }
 
 // Lightmap opt-out for a node or any ancestor (subtree exclusion).
@@ -685,6 +709,24 @@ inline void ClearNoLightmap(Scene& scene, int node)
 	if (scene.noLightmap.size() != scene.hierarchy.size())
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
 	scene.noLightmap[(size_t)node] = 0;
+}
+
+// Marks node as lightmap-opted-in (subtree). Grows the array if needed.
+inline void MarkLightmap(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.lightmap.size() != scene.hierarchy.size())
+		scene.lightmap.assign(scene.hierarchy.size(), 0);
+	scene.lightmap[(size_t)node] = 1;
+}
+inline void ClearLightmap(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.lightmap.size() != scene.hierarchy.size())
+		scene.lightmap.assign(scene.hierarchy.size(), 0);
+	scene.lightmap[(size_t)node] = 0;
 }
 
 inline bool IsStaticSubtreeRoot(const Scene& scene, int node)

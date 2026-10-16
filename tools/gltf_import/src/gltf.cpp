@@ -639,11 +639,14 @@ bool GltfExtrasStaticLight(const tinygltf::Value& extras) {
 // A glTF node opts OUT of lightmap charting/baking via authoring extras or
 // naming convention (checked in importNodeRecursive):
 //   extras: { "smvk.noLightmap": true }
-//     (also "smvk.no_lightmap", "smvk.no-lightmap", { "smvk": { "noLightmap": true } })
+//     (also "smvk.no_lightmap", "smvk.no-lightmap", bare "noLightmap",
+//      { "smvk": { "noLightmap"/"no_lightmap": true } })
 //   -or- name starts with "NOLM_".
 // The flag stamps Scene::noLightmap on the group node; exclusion is subtree
 // scoped (see IsNoLightmapNode). The editor writes these extras into its
 // cook-time patched glTF; PakCooker skips flagged subtrees in the chart loop.
+// NOTE: engine lightmap opt-in lives in the EDITOR (tour setLightmap),
+// never in glTF extras — sources stay engine-flag-free.
 bool GltfExtrasNoLightmap(const tinygltf::Value& extras) {
 	if (!extras.IsObject())
 		return false;

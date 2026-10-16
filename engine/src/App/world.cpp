@@ -309,6 +309,7 @@ namespace smvk {
 		scene.staticRoot.assign(scene.hierarchy.size(), 0);
 		scene.staticNode.assign(scene.hierarchy.size(), 0);
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
+		scene.lightmap.assign(scene.hierarchy.size(), 0);
 		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 		scene.hidden.assign(scene.hierarchy.size(), 0);
 
@@ -365,6 +366,18 @@ namespace smvk {
 			else {
 				scene.noLightmap.insert(
 					scene.noLightmap.end(), nodeCount, 0);
+			}
+			// Carry the lightmap opt-in flags (missing == skip everything).
+			if (cs.lightmap.size() == cs.hierarchy.size()) {
+				scene.lightmap.insert(
+					scene.lightmap.end(),
+					cs.lightmap.begin(),
+					cs.lightmap.end()
+				);
+			}
+			else {
+				scene.lightmap.insert(
+					scene.lightmap.end(), nodeCount, 0);
 			}
 			// Carry the dither-on-closeup flags (missing == off).
 			if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
