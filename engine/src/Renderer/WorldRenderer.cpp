@@ -536,9 +536,11 @@ namespace engine {
 		// Point the FPS camera at a generic default viewpoint (Camera keeps a
 		// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 		// Initialize re-poses this on the loaded world's bounds (generic
-		// framing) unless the env vars below pin it for benches.
-		const glm::vec3 camPos(4.0f, 3.0f, 6.0f);
-		const glm::vec3 camTarget(0.0f, 1.0f, 0.0f);
+		// framing) unless the env vars below pin it for benches. The old
+		// (4,3,6)->(0,1,0) spawn sat INSIDE sponza's side wall (the default
+		// pak); the atrium-center pose below matches the framing fallback.
+		const glm::vec3 camPos(0.0f, 2.2f, 0.0f);
+		const glm::vec3 camTarget(0.0f, 1.7f, -10.0f);
 		m_cameraPositioner.lookAt(camPos, camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
 		// Debug: rotate the default view around world up (degrees) - A/B runs
 		// without mouse input.
@@ -1871,23 +1873,63 @@ namespace engine {
 						}
 					}
 					if (!framed) {
-						const float dist = std::max(radius * 2.2f, 1.0f);
-						const float yaw = glm::radians(35.0f);
-						const float pitch = glm::radians(-18.0f);
-						const glm::vec3 eye = center + dist * glm::vec3(
-							std::cos(pitch) * std::sin(yaw),
-							-std::sin(pitch),
-							std::cos(pitch) * std::cos(yaw));
-						m_cameraPositioner.lookAt(eye, center,
-							glm::vec3(0.0f, 1.0f, 0.0f));
-						// Far clip covers the orbit distance plus the scene
-						// diameter, clamped sane.
-						{
-							const float fitted = dist + radius * 2.0f;
-							m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+						// No authored camera. SMALL scenes keep the fit-view
+						// orbit (radius*2.2 parks the whole scene in view -
+						// the original purpose: tiny test scenes). LARGE
+						// scenes get an INTERIOR pose: the orbit parks the
+						// camera far OUTSIDE the structure staring through
+						// the roofline at exterior walls (observed: sponza,
+						// 40 m out) while the interesting space is the
+						// corridor inside. Interior heuristic: horizontal
+						// bounds center, eye height above the floor, looking
+						// down the horizontal axis with the SMALLER extent -
+						// hall scenes carry their corridor there (sponza:
+						// the atrium runs Z; the wider X span is the
+						// flanking side naves). Imperfect by nature: an
+						// authored default camera (editor -> cook -> pak,
+						// above) always wins and stays the right way to
+						// frame a specific scene.
+						if (radius <= 12.0f) {
+							const float dist = std::max(radius * 2.2f, 1.0f);
+							const float yaw = glm::radians(35.0f);
+							const float pitch = glm::radians(-18.0f);
+							const glm::vec3 eye = center + dist * glm::vec3(
+								std::cos(pitch) * std::sin(yaw),
+								-std::sin(pitch),
+								std::cos(pitch) * std::cos(yaw));
+							m_cameraPositioner.lookAt(eye, center,
+								glm::vec3(0.0f, 1.0f, 0.0f));
+							// Far clip covers the orbit distance plus the scene
+							// diameter, clamped sane.
+							{
+								const float fitted = dist + radius * 2.0f;
+								m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+							}
+							std::cerr << "[Scene] camera framed: dist=" << dist
+								<< " farClip=" << m_sceneFarClip << "\n";
 						}
-						std::cerr << "[Scene] camera framed: dist=" << dist
-							<< " farClip=" << m_sceneFarClip << "\n";
+						else {
+							const glm::vec3 extent = bounds.mx - bounds.mn;
+							const bool alongZ = extent.z <= extent.x;
+							const float eyeY = bounds.mn.y
+								+ std::clamp(extent.y * 0.25f, 2.2f, 3.2f);
+							const glm::vec3 eye(center.x, eyeY, center.z);
+							const glm::vec3 fwd = glm::normalize(glm::vec3(
+								alongZ ? 0.0f : 1.0f, -0.05f,
+								alongZ ? -1.0f : 0.0f));
+							m_cameraPositioner.lookAt(eye, eye + fwd * 10.0f,
+								glm::vec3(0.0f, 1.0f, 0.0f));
+							// Far clip: cover the interior diagonal (the
+							// orbit fit no longer applies from inside).
+							{
+								const float fitted = radius * 4.0f;
+								m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+							}
+							std::cerr << "[Scene] camera framed: interior eye=("
+								<< eye.x << "," << eye.y << "," << eye.z
+								<< ") looking " << (alongZ ? "-Z" : "+X")
+								<< " farClip=" << m_sceneFarClip << "\n";
+						}
 					}
 				}
 			}
