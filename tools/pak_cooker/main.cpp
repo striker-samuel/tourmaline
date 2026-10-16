@@ -7,71 +7,32 @@
 // tools/import, ONE place).
 //
 //   pak.exe <vfs_path> <artifact...> [--options]
-//             pak.exe F:/content models/sponza/Sponza.geometry
-//                 --out-pak F:/content/paks/sponza.pak [--meshopt on|off]
-//                 [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
-//                 [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
-//                 [--compress on|off] [--lz4-accel 1]
-//                 [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
-//                  --lm-atlas-width 1024 --lm-gutter 1
-//                  --lm-rays 1024
-//                  --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
-//                  --lm-lod-lock attr|hard
-//                  --lm-denoise on|off (DEPRECATED, off by default)
-//                  --lm-denoise-quality high|balanced (DEPRECATED)
-//                  --lm-curve-target 7.0 --lm-curve-max 2.5
-//                  --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
+// pak.exe — the PACK step (pure assemble: serialize + embed + verify).
+// Bakes live in cook.exe (artifact transforms, lightmaps, cubemaps,
+// convex volumes) and GiBaker.exe (world octree, tuning bakes); pak
+// runs NONE of them. Positional grammar:
 //
-// --cubemap on bakes preconvolved SPECULAR cubemaps DURING the cook (same
-// CPU path-tracer capture as tools/cubemap_baker, GGX importance-sampled
-// mip chains via Engine/Renderer/cubemap_prefilter.h â€” roughness = mip /
-// (levels-1)) and embeds them as Texture blobs at
-// gi/cubemaps/<name>[_N].ktx2 (PakBackend serves them by VFS path,
-// so CubemapLibrary::Load finds them with no code change). Probes and
-// lightmaps carry all diffuse + low-frequency specular; these cubes own
-// the high-frequency specular path only.
+//   pak.exe <vfs_path> <artifact...> --out-pak <host path>
+//       [--tour <scene.tour>] [--verify on|off] [--dump-pak <pak path>]
+//       [--dump-manifest on|off] [--dump-node <id> ...]
+//       [--meshopt on|off] [--overdraw 1.05] [--auto-ktx on|off]
+//       [--compress on|off] [--lz4-accel 1]
+//       [--sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
+//        --sky-intensity 600 --sun-color 1,0.95,0.9]
+//       [--gi-probe <name> ...] [--terrain <dir>] [--level <name>]
 //
-// --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
-// NEE + analytic sky on open-sky rays, real materials, transmissive
-// pass-through â€” see Engine/GI/bake.h). It stamps chart-local UVs and
-// chart IDs into the meshes, records per-chart atlas transforms for the
-// shader, and stores each mesh's atlas chunk ID in the pak. The cooker
-// writes a loose atlas at <contentDir>/gi/<scene>.sglm and also embeds
-// its payload in the pak. Debug PNGs are written beside the loose atlas:
-// <scene>_atlas.png shows the payload with the editor's flat-view display
-// mapping; <scene>_charts.png shows chart IDs (see lm_png.h).
-// No bake work remains at runtime. Covered pixels use ONLY the lightmap;
-// analytic sky IBL is a fallback for uncovered pixels, not additional
-// ambient lighting on covered pixels.
+// Inputs: ALREADY-PROCESSED .geometry artifacts (import.exe derives
+// them; cook.exe bakes + stamps <stem>.cooked — pak refuses
+// uncooked/stale inputs) + the LOOSE bake sidecars the cookers wrote
+// (gi/*.sggi + *.cvol, gi/cubemaps/<base>[_N].ktx2 + .cubemanifest),
+// discovered by stable stem and embedded as Texture blobs. The tour,
+// when given, replays read-only for serialization (no synthesis —
+// WorldSun/env seeding moved to the cook); --level packs the scene +
+// baked data into one levels/<name>.level blob.
 //
-// LOD + lightmap interaction: with --lm-proxy-res > 0, the cooker
-// attempts to chart and bake a voxel-remeshed scene proxy ONCE
-// (meshopt_remesh solid). Real meshes inherit its layout through
-// TransferLightmapCharts (closest-point projection onto the proxy).
-// When that proxy bake succeeds, LOD siblings cook AFTER baking from
-// the stamped uploads. If the proxy is disabled (--lm-proxy-res 0) or
-// fails, the legacy per-mesh LOD0 path is used: siblings cook BEFORE
-// baking and receive the LOD0 atlas layout through UV transfer. In
-// either path, LOD levels share atlas rects and do not need new bakes.
+// For bake-transport details see tools/cook (cubemap/lightmap/cvol
+// stages) and tools/gi_baker (world octree).
 //
-// Denoising (DEPRECATED, off by default): with --lm-denoise on, the
-// fitted per-lobe amplitude layers are denoised with Intel Open Image
-// Denoise's RTLightmap filter (prebuilt release in external/oidn, linked
-// into PakCooker only â€” engine and App never see OIDN). Denoised
-// payloads are written into the .sglm; the runtime path is unchanged.
-// --lm-rays stays independent: denoising recovers low-sample bakes, so
-// try e.g. --lm-rays 128 for a ~8x faster trace.
-//
-// Curvature-weighted density (default on): --lm-meters-per-texel is the
-// BASE request; smoothly bending meshes chart at up to --lm-curve-max
-// times the base density so their normal-turn per texel stays under
-// --lm-curve-target degrees (creases over 45 deg do not count â€” density
-// cannot fix an authored edge). The atlas width is FIXED and the height
-// grows with content (only a --lm-max-height overflow lowers the
-// density), so curvature spends height, not a texel budget: same
-// layout, spent where normals turn fast. Uniform density reads as
-// faceted/hard-normal shading on curved geometry (columns/arches at
-// ~18 deg per texel).
 //
 // In artifact mode, reads a derived .geometry file and its dependencies
 // through an OverlayVfs with a LooseBackend over --content-dir (the same
@@ -196,12 +157,12 @@ namespace paktool {
 		// cubemap set manifest + KTX2 rows, the GI payloads). The LEVEL
 		// — not the scene stem — owns the data. Empty = no level blob.
 		std::string levelName;
-		// Editor scratch-disk root (optional acceleration, NEVER a
-		// precondition): when set, the cook consults + feeds the artifact
-		// registry there â€” texture transcodes copy hash-validated payloads
-		// from scratch on hit and stage fresh ones on miss. Absent/broken
-		// scratch = plain processing, unchanged output.
-		std::string scratchDir;
+		// Editor registry root (optional acceleration, NEVER a
+		// precondition): when set, the pack consults + feeds the artifact
+		// registry there — texture transcodes copy hash-validated payloads
+		// from the registry on hit and stage fresh ones on miss.
+		// Absent/broken registry = plain processing, unchanged output.
+		std::string registryDir;
 	};
 
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
@@ -413,12 +374,6 @@ namespace paktool {
 				out.meshopt = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("meshopt");
 			}
-			else if (a == "--meshopt") {
-				std::string v;
-				if (!need(v)) return false;
-				out.meshopt = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("meshopt");
-			}
 			else if (a == "--overdraw") {
 				std::string v;
 				if (!need(v)) return false;
@@ -441,9 +396,14 @@ namespace paktool {
 				out.explicitSet.insert("autoKtx");
 			}
 			else if (a == "--scratch-dir") {
-				std::string v;
-				if (!need(v)) return false;
-				out.scratchDir = v;
+				// Removed: the project cache joins by convention now
+				// (<contentDir>/.tourmaline when it carries a cache.db),
+				// never by flag. Reject explicitly rather than silently
+				// ignoring a stale script flag.
+				tool::err() << "--scratch-dir was removed (project cache"
+					" joins by content-root convention; the editor still"
+					" passes its store programmatically)\n";
+				return false;
 			}
 			else if (a == "--compress") {
 				std::string v;
@@ -572,7 +532,7 @@ namespace paktool {
 			<< "           --sun-intensity 10000 --sky-intensity 6000\n"
 			<< "           --sun-color 1,0.95,0.9]\n"
 			<< "          [--gi-probe <name> ...] [--compress on|off]\n"
-			<< "          [--lz4-accel 1] [--scratch-dir <dir>]\n"
+			<< "          [--lz4-accel 1]\n"
 			<< "          [--terrain <terrain_src dir>]\n";
 	}
 
@@ -1391,7 +1351,7 @@ int Run(const PakArgs& c) {
 	args.inVfsList = c.inVfsList;
 	args.inVfs = c.inVfs;
 	args.tour = c.tour;
-	args.scratchDir = c.scratchDir;
+	args.registryDir = c.registryDir;
 	args.outPak = c.outPak;
 	args.dumpPak = c.dumpPak;
 	args.dumpNodes = c.dumpNodes;
@@ -1488,43 +1448,57 @@ int Run(const PakArgs& c) {
 	// = disabled inline builds = the engine canon (64v/64t per meshlet).
 	smvk::MeshletConfig importMeshletCfg;
 
-	// Scratch cache (--scratch-dir, optional acceleration, NEVER a
-	// precondition): open the editor's artifact registry so texture
-	// transcodes serve hash-validated payloads from the scratch on hit
-	// and stage fresh ones on miss. A missing/locked/broken scratch
+	// Project cache (convention, no flag): explicit programmatic roots
+	// (the editor's store) arrive via args.registryDir; bare CLI packs
+	// join <contentDir>/.tourmaline when it already carries a cache.db
+	// (never created here). Either way the registry accelerates texture
+	// transcodes: hash-validated payloads serve from the registry on hit
+	// and stage fresh ones on miss. A missing/locked/broken registry
 	// degrades to plain processing â€” the pak output is byte-identical.
-	std::unique_ptr<smvk::cache::CacheDb> scratchDb;
-	std::unique_ptr<smvk::cache::ArtifactStore> scratchStore;
-	std::unique_ptr<StoreArtifactCacheAdapter> scratchAdapter;
-	if (!args.scratchDir.empty()) {
+	std::unique_ptr<smvk::cache::CacheDb> registryDb;
+	std::unique_ptr<smvk::cache::ArtifactStore> registryStore;
+	std::unique_ptr<StoreArtifactCacheAdapter> registryAdapter;
+	std::string registryRoot = args.registryDir; // explicit (editor/lib)
+	bool registryDerived = false;
+	if (registryRoot.empty()) {
+		registryRoot = smvk::cache::ExistingRegistryRootFor(
+			args.contentDir);
+		registryDerived = !registryRoot.empty();
+	}
+	if (!registryRoot.empty()) {
 		const std::string root =
-			smvk::cache::EnsureScratchRoot(args.scratchDir);
+			smvk::cache::EnsureRegistryRoot(registryRoot);
 		if (!root.empty()) {
-			scratchDb = std::make_unique<smvk::cache::CacheDb>();
+			registryDb = std::make_unique<smvk::cache::CacheDb>();
 			std::string dbErr;
-			if (scratchDb->Open((std::filesystem::path(root) / "cache.db")
+			if (registryDb->Open((std::filesystem::path(root) / "cache.db")
 				.generic_string(), dbErr)) {
-				scratchStore =
+				registryStore =
 					std::make_unique<smvk::cache::ArtifactStore>(
-						root, *scratchDb);
-				scratchAdapter =
+						root, *registryDb);
+				registryAdapter =
 					std::make_unique<StoreArtifactCacheAdapter>(
-						*scratchStore);
-				tool::out() << "Scratch cache: " << root << "\n";
+						*registryStore);
+				tool::out() << "Asset registry: " << root
+					<< (registryDerived ? " (derived)" : "") << "\n";
 			}
 			else {
-				tool::err() << "Scratch cache db open failed (" << dbErr
+				tool::err() << "Registry db open failed (" << dbErr
 					<< ") â€” cooking without acceleration\n";
-				scratchDb.reset();
+				registryDb.reset();
 			}
 		}
 		else {
-			tool::err() << "Scratch root unusable: " << args.scratchDir
-				<< " â€” cooking without acceleration\n";
+			tool::err() << "Registry root unusable: " << registryRoot
+				<< " — cooking without acceleration\n";
 		}
 	}
+	else {
+		tool::out() << "No project cache under " << args.contentDir
+			<< "/.tourmaline — plain pack (no acceleration)\n";
+	}
 	GltfArtifactCache* artifactCache =
-		scratchAdapter ? scratchAdapter.get() : nullptr;
+		registryAdapter ? registryAdapter.get() : nullptr;
 
 	// Tour path: the doc IS the definition (root reference #0 = the
 	// source glTF, inlined under the scene root exactly like the
@@ -1878,17 +1852,17 @@ int Run(const PakArgs& c) {
 			}
 		}
 	}
-	// Import phase finished: commit any staged scratch artifacts (one
+	// Import phase finished: commit any staged registry artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
-	// only â€” staged bytes were already used in the import.
-	if (scratchStore && scratchStore->StagedCount() > 0) {
-		const size_t staged = scratchStore->StagedCount();
+	// only — staged bytes were already used in the import.
+	if (registryStore && registryStore->StagedCount() > 0) {
+		const size_t staged = registryStore->StagedCount();
 		std::string flushErr;
-		if (scratchStore->Flush(flushErr))
-			tool::out() << "Scratch cache: " << staged
+		if (registryStore->Flush(flushErr))
+			tool::out() << "Asset registry: " << staged
 			<< " texture artifact(s) flushed\n";
 		else
-			tool::err() << "Scratch flush failed: " << flushErr
+			tool::err() << "Registry flush failed: " << flushErr
 			<< " (staged stands; the pak output is unaffected)\n";
 	}
 	// Single-scene alias for the tour/collapse/bake stages below (written
@@ -2465,7 +2439,7 @@ int main(int argc, char** argv) {
 	c.inVfsList = args.inVfsList;
 	c.inVfs = args.inVfs;
 	c.tour = args.tour;
-	c.scratchDir = args.scratchDir;
+	c.registryDir = args.registryDir;
 	c.outPak = args.outPak;
 	c.dumpPak = args.dumpPak;
 	c.dumpNodes = args.dumpNodes;

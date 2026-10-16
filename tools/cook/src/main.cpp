@@ -272,10 +272,8 @@ namespace cooktool {
 		// deterministic binned-SAH BVH reference; agrees within
 		// Monte-Carlo noise).
 		std::string backend = "embree";
-		// Probe-volume sidecars this pak's scenes sample (repeatable):
-		// registers gi/<name>.sggi names into the clusters (bake the matching
-		// volumes with GiBaker --out). Runtime resolves by name.
-		std::vector<std::string> giProbes;
+		// NOTE: no giProbes here (pak owns probe registration; a --gi-probe
+		// CLI flag never took effect in cook and was removed).
 		// ---- Preconvolved specular cubemaps (--cubemap on) ----
 		// Captures the scene with the CPU path tracer at one or more points
 		// (same transport as CubemapBaker), GGX-prefilters each capture for
@@ -349,12 +347,12 @@ namespace cooktool {
 		// Scene pinpoint: with --dump-pak, restrict the scene print to these
 		// node ids (repeatable) and include their local translation.
 		std::vector<uint32_t> dumpNodes;
-		// Editor scratch-disk root (optional acceleration, NEVER a
+		// Editor registry root (optional acceleration, NEVER a
 		// precondition): when set, the cook consults + feeds the artifact
-		// registry there â€” texture transcodes copy hash-validated payloads
-		// from scratch on hit and stage fresh ones on miss. Absent/broken
-		// scratch = plain processing, unchanged output.
-		std::string scratchDir;
+		// registry there — texture transcodes copy hash-validated payloads
+		// from the registry on hit and stage fresh ones on miss.
+		// Absent/broken registry = plain processing, unchanged output.
+		std::string registryDir;
 	};
 
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
@@ -734,12 +732,6 @@ namespace cooktool {
 				out.meshopt = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("meshopt");
 			}
-			else if (a == "--meshopt") {
-				std::string v;
-				if (!need(v)) return false;
-				out.meshopt = (v == "on" || v == "1" || v == "true");
-				out.explicitSet.insert("meshopt");
-			}
 			else if (a == "--overdraw") {
 				std::string v;
 				if (!need(v)) return false;
@@ -779,9 +771,14 @@ namespace cooktool {
 				out.explicitSet.insert("autoKtx");
 			}
 			else if (a == "--scratch-dir") {
-				std::string v;
-				if (!need(v)) return false;
-				out.scratchDir = v;
+				// Removed: the project cache joins by convention now
+				// (<contentDir>/.tourmaline when it carries a cache.db),
+				// never by flag. Reject explicitly rather than silently
+				// ignoring a stale script flag.
+				tool::err() << "--scratch-dir was removed (project cache"
+					" joins by content-root convention; the editor still"
+					" passes its store programmatically)\n";
+				return false;
 			}
 			else if (a == "--lightmap") {
 				std::string v;
@@ -960,9 +957,13 @@ namespace cooktool {
 				out.spots.push_back(v);
 			}
 			else if (a == "--gi-probe") {
-				std::string v;
-				if (!need(v)) return false;
-				out.giProbes.push_back(v);
+				// Removed: never honored here (parsed but unread — pak
+				// owns probe registration). Reject explicitly rather
+				// than silently ignoring a stale script flag.
+				tool::err() << "--gi-probe was removed from cook (it never"
+					" took effect here; register probes with pak --gi-probe"
+					" instead)\n";
+				return false;
 			}
 			else if (a == "--cvolume") {
 				std::string v;
@@ -1139,8 +1140,6 @@ namespace cooktool {
 			<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
 		<< "          [--meshlets on|off] (setup-time; fixed 64v/64t canon)\n"
 		<< "          [--auto-ktx on|off]\n"
-		<< "          [--scratch-dir <dir>]  (editor cache; acceleration only,\n"
-		<< "                                  never required)\n"
 			<< "          [--collapse-static on|off]\n"
 			<< "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
 			<< "           --lm-atlas-width 1024 --lm-max-height 8192\n"
@@ -3494,7 +3493,7 @@ bool WriteCookedArtifactsBack(const Args& args,
 // where uuid = content hash (deterministic bakes: identity ==
 // content; the uri is already the canonical VFS path). Registration
 // NEVER fails the cook (cache contract): false + one log line on any
-// error. Null db (no --scratch-dir) skips silently — bare CLI cooks
+// error. Null db (no registry root) skips silently — bare CLI cooks
 // stay funnel-invisible.
 bool RegisterByproduct(smvk::cache::CacheDb* db,
 	const std::string& vfsPath, const uint8_t* bytes, size_t size,
@@ -3558,7 +3557,6 @@ int Run(const CookArgs& c) {
 	args.skyIntensity = c.skyIntensity;
 	args.spots = c.spots;
 	args.backend = c.backend;
-	args.giProbes = c.giProbes;
 	args.cubemap = c.cubemap;
 	args.cubemapName = c.cubemapName;
 	args.cubemapSize = c.cubemapSize;
@@ -3580,7 +3578,7 @@ int Run(const CookArgs& c) {
 	args.quickBakes = c.quickBakes;
 	args.dumpPak = c.dumpPak;
 	args.dumpNodes = c.dumpNodes;
-	args.scratchDir = c.scratchDir;
+	args.registryDir = c.registryDir;
 	// Quick-bakes mode (--quick-bakes on, the editor's "Update bakes now"
 	// button): the capture stage ONLY, then stop. The heavy stages are
 	// forced off (the cubemap stage needs just the imported trace scene);
@@ -3693,43 +3691,57 @@ int Run(const CookArgs& c) {
 	if (args.lightmap)
 		importMeshletCfg.enabled = false;
 
-	// Scratch cache (--scratch-dir, optional acceleration, NEVER a
-	// precondition): open the editor's artifact registry so texture
-	// transcodes serve hash-validated payloads from the scratch on hit
-	// and stage fresh ones on miss. A missing/locked/broken scratch
+	// Project cache (convention, no flag): explicit programmatic roots
+	// (the editor's store) arrive via args.registryDir; bare CLI cooks
+	// join <contentDir>/.tourmaline when it already carries a cache.db
+	// (never created here). Either way the registry accelerates texture
+	// transcodes: hash-validated payloads serve from the registry on hit
+	// and stage fresh ones on miss. A missing/locked/broken registry
 	// degrades to plain processing â€” the pak output is byte-identical.
-	std::unique_ptr<smvk::cache::CacheDb> scratchDb;
-	std::unique_ptr<smvk::cache::ArtifactStore> scratchStore;
-	std::unique_ptr<StoreArtifactCacheAdapter> scratchAdapter;
-	if (!args.scratchDir.empty()) {
+	std::unique_ptr<smvk::cache::CacheDb> registryDb;
+	std::unique_ptr<smvk::cache::ArtifactStore> registryStore;
+	std::unique_ptr<StoreArtifactCacheAdapter> registryAdapter;
+	std::string registryRoot = args.registryDir; // explicit (editor/lib)
+	bool registryDerived = false;
+	if (registryRoot.empty()) {
+		registryRoot = smvk::cache::ExistingRegistryRootFor(
+			args.contentDir);
+		registryDerived = !registryRoot.empty();
+	}
+	if (!registryRoot.empty()) {
 		const std::string root =
-			smvk::cache::EnsureScratchRoot(args.scratchDir);
+			smvk::cache::EnsureRegistryRoot(registryRoot);
 		if (!root.empty()) {
-			scratchDb = std::make_unique<smvk::cache::CacheDb>();
+			registryDb = std::make_unique<smvk::cache::CacheDb>();
 			std::string dbErr;
-			if (scratchDb->Open((std::filesystem::path(root) / "cache.db")
+			if (registryDb->Open((std::filesystem::path(root) / "cache.db")
 				.generic_string(), dbErr)) {
-				scratchStore =
+				registryStore =
 					std::make_unique<smvk::cache::ArtifactStore>(
-						root, *scratchDb);
-				scratchAdapter =
+						root, *registryDb);
+				registryAdapter =
 					std::make_unique<StoreArtifactCacheAdapter>(
-						*scratchStore);
-				tool::out() << "Scratch cache: " << root << "\n";
+						*registryStore);
+				tool::out() << "Asset registry: " << root
+					<< (registryDerived ? " (derived)" : "") << "\n";
 			}
 			else {
-				tool::err() << "Scratch cache db open failed (" << dbErr
+				tool::err() << "Registry db open failed (" << dbErr
 					<< ") â€” cooking without acceleration\n";
-				scratchDb.reset();
+				registryDb.reset();
 			}
 		}
 		else {
-			tool::err() << "Scratch root unusable: " << args.scratchDir
-				<< " â€” cooking without acceleration\n";
+			tool::err() << "Registry root unusable: " << registryRoot
+				<< " — cooking without acceleration\n";
 		}
 	}
+	else {
+		tool::out() << "No project cache under " << args.contentDir
+			<< "/.tourmaline — plain cook (no acceleration, no funnel)\n";
+	}
 	GltfArtifactCache* artifactCache =
-		scratchAdapter ? scratchAdapter.get() : nullptr;
+		registryAdapter ? registryAdapter.get() : nullptr;
 
 	// Tour path: the doc IS the definition (root reference #0 = the
 	// source glTF, inlined under the scene root exactly like the
@@ -4059,17 +4071,17 @@ int Run(const CookArgs& c) {
 			sceneClusters.push_back(std::move(cluster));
 		}
 	} // close else block for the artifact path
-	// Import phase finished: commit any staged scratch artifacts (one
+	// Import phase finished: commit any staged registry artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
 	// only â€” staged bytes were already used in the import.
-	if (scratchStore && scratchStore->StagedCount() > 0) {
-		const size_t staged = scratchStore->StagedCount();
+	if (registryStore && registryStore->StagedCount() > 0) {
+		const size_t staged = registryStore->StagedCount();
 		std::string flushErr;
-		if (scratchStore->Flush(flushErr))
-			tool::out() << "Scratch cache: " << staged
+		if (registryStore->Flush(flushErr))
+			tool::out() << "Asset registry: " << staged
 			<< " texture artifact(s) flushed\n";
 		else
-			tool::err() << "Scratch flush failed: " << flushErr
+			tool::err() << "Registry flush failed: " << flushErr
 			<< " (staged stands; the pak output is unaffected)\n";
 	}
 	// Single-scene alias for the tour/collapse/bake stages below (written
@@ -5908,12 +5920,12 @@ int Run(const CookArgs& c) {
 			return 1;
 	}
 	// Funnel: the loose sidecars above (KTX2s + manifest, written
-	// inside the bake) register their identity rows when a scratch DB
+	// inside the bake) register their identity rows when a registry DB
 	// is open. Covers quick-bakes too (the early return below).
-	if (scratchDb && !cubemapKtx.empty()) {
+	if (registryDb && !cubemapKtx.empty()) {
 		size_t regged = 0;
 		for (auto& [vfsPath, bytes] : cubemapKtx)
-			if (RegisterByproduct(scratchDb.get(), vfsPath,
+			if (RegisterByproduct(registryDb.get(), vfsPath,
 					bytes.data(), bytes.size(), "cook:cubemap"))
 				++regged;
 		tool::out() << "Funnel: " << regged << "/" << cubemapKtx.size()
@@ -6062,7 +6074,7 @@ int Run(const CookArgs& c) {
 	// verdict): the in-process cvolumes + re-read sglm collected above
 	// have no other outlet (cook writes no pak) — without this they
 	// vanish. Every entry lands loose at its canonical gi/... path
-	// (fresh bake wins) and registers its identity row when a scratch
+	// (fresh bake wins) and registers its identity row when a registry
 	// DB is open. The cvolume fallback only fires with no loose
 	// manifest present, so nothing hand-tuned is clobbered.
 	if (!giBlobs.empty()) {
@@ -6080,7 +6092,7 @@ int Run(const CookArgs& c) {
 					reinterpret_cast<const char*>(bytes.data()),
 					std::streamsize(bytes.size()))) {
 				++wrote;
-				if (scratchDb && RegisterByproduct(scratchDb.get(),
+				if (registryDb && RegisterByproduct(registryDb.get(),
 						vfsPath, bytes.data(), bytes.size(),
 						"cook:gi"))
 					++regged;
@@ -6093,7 +6105,7 @@ int Run(const CookArgs& c) {
 		tool::out() << "GI sidecars: " << wrote << "/"
 			<< giBlobs.size() << " written loose, " << regged
 			<< " registered"
-			<< (scratchDb ? "" : " (no scratch db — skipped)")
+			<< (registryDb ? "" : " (no registry db — skipped)")
 			<< "\n";
 	}
 
@@ -6186,7 +6198,6 @@ int main(int argc, char** argv) {
 	c.skyIntensity = args.skyIntensity;
 	c.spots = args.spots;
 	c.backend = args.backend;
-	c.giProbes = args.giProbes;
 	c.cubemap = args.cubemap;
 	c.cubemapName = args.cubemapName;
 	c.cubemapSize = args.cubemapSize;
@@ -6208,7 +6219,7 @@ int main(int argc, char** argv) {
 	c.quickBakes = args.quickBakes;
 	c.dumpPak = args.dumpPak;
 	c.dumpNodes = args.dumpNodes;
-	c.scratchDir = args.scratchDir;
+	c.registryDir = args.registryDir;
 	return cooktool::Run(c);
 }
 #endif

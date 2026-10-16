@@ -1638,7 +1638,7 @@ private:
 	// A project folder owns the whole body of work: content/ sources,
 	// paks/ cook outputs, gi/ bake sidecars, and its OWN .tourmaline/
 	// cache (the Unity Library/ equivalent: cache.db + assets.db GUID
-	// directory + pak/ per-class paks — no scratch disk, without a project
+	// directory + pak/ per-class paks — no global disk, without a project
 	// the cache is off). Opening a project repoints the artifact
 	// cache and the cook defaults at it;
 	// importing copies an asset in with a UUID (.meta sidecar). Scenes and
@@ -1866,10 +1866,10 @@ private:
 	void PrimeProjectCookDefaults();
 	static bool IsProjectDir(const std::string& dir);
 	static std::string ReadProjectName(const std::string& dir);
-	// ---- project artifact cache (no scratch disk) ----
+	// ---- project artifact cache (no global disk) ----
 	// The project OWNS its artifact cache (<root>/.tourmaline/: cache.db
 	// SQLite registry + pak/ per-class paks + assets.db GUID
-	// directory). There is no global/user scratch: without a project
+	// directory). There is no global/user registry: without a project
 	// the cache is off (cooks/imports still work — the cache only
 	// accelerates processing, never gates it).
 	smvk::cache::CacheDb m_cacheDb;
@@ -1895,12 +1895,12 @@ private:
 	// cache.db. False when no project is open (cache stays off); the
 	// editor runs fine without a db.
 	bool OpenCacheDb();
-	// Editor VFS: the overlay the scratch class paks mount into.
-	// ONLY scratch ever mounts here — NEVER the release content tree:
+	// Editor VFS: the overlay the registry class paks mount into.
+	// ONLY registry ever mounts here — NEVER the release content tree:
 	// editor -> release is one-way (forwards). The release pak
 	// (content/paks) is a pure output; reading it back would feed
 	// stale cooked content into authoring. The artifact store's
-	// per-class paks mount as "scratch-<class>" @20.
+	// per-class paks mount as "registry-<class>" @20.
 	smvk::OverlayVfs m_editorVfs;
 	// Cook definition fingerprint (the scene artifact's cache "source"
 	// key): the temp tour bytes with the volatile "//Last modified:"

@@ -159,7 +159,7 @@ bool EditorApp::Initialize() {
 
 	// Project: reopen the last project when kept (it owns the artifact
 	// cache: OpenProject opens cache.db + the asset directory there).
-	// Without a project the cache is OFF (no scratch disk — cooks and
+	// Without a project the cache is OFF (no global disk — cooks and
 	// imports still work, the cache only accelerates processing).
 	{
 		const std::string last = m_projectRoot;
@@ -388,7 +388,7 @@ bool EditorApp::OpenCacheDb() {
 		return false;
 	}
 	std::string root = ProjectArtifactDir();
-	root = smvk::cache::EnsureScratchRoot(root);
+	root = smvk::cache::EnsureRegistryRoot(root);
 	if (root.empty()) {
 		Log("Artifact cache unavailable (cannot create '"
 			+ ProjectArtifactDir() + "') — cache disabled for this "
@@ -411,8 +411,8 @@ bool EditorApp::OpenCacheDb() {
 	Log("Artifact cache: " + root + " (cache.db ready, "
 		+ std::to_string(count) + " artifact(s) registered)"
 		+ " [project '" + m_projectName + "']");
-	// Editor VFS: register the scratch class paks (the cooked-resource
-	// overlay the display path resolves through). ONLY tour + scratch
+	// Editor VFS: register the registry class paks (the cooked-resource
+	// overlay the display path resolves through). ONLY tour + registry
 	// mount here — never the release content tree (editor -> release
 	// is one-way; reading content/paks back would feed stale cooked
 	// content into authoring). The scene class is consumed by the
@@ -428,10 +428,10 @@ bool EditorApp::OpenCacheDb() {
 			std::move(img));
 		std::string berr;
 		auto backend = smvk::PakBackend::Open(image,
-			std::string("scratch-") + klass, berr);
+			std::string("registry-") + klass, berr);
 		if (!backend)
 			continue; // stale/corrupt class pak: cache, disposable
-		const std::string name = std::string("scratch-") + klass;
+		const std::string name = std::string("registry-") + klass;
 		m_editorVfs.Unmount(name);
 		m_editorVfs.Mount(backend, 20, name);
 		Log("Editor VFS: '" + name + "' registered (cooked "

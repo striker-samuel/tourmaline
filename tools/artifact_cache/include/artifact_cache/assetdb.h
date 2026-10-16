@@ -94,9 +94,9 @@ public:
 	AssetDatabase(const AssetDatabase&) = delete;
 	AssetDatabase& operator=(const AssetDatabase&) = delete;
 
-	// Opens (creating when missing) <scratchRoot>/assets.db for the
+	// Opens (creating when missing) <registryRoot>/assets.db for the
 	// project at <projectRoot>. False + err on failure.
-	bool Open(const std::string& scratchRoot,
+	bool Open(const std::string& registryRoot,
 		const std::string& projectRoot, std::string& err);
 	void Close();
 	bool IsOpen() const { return m_impl != nullptr; }

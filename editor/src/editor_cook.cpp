@@ -218,7 +218,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// registry — hit = hash-validated copy, miss = transcode + stage.
 	// The EFFECTIVE store root (project-owned; empty = cache off).
 	// Captured by value (the worker lambda has no this).
-	const std::string scratchDir =
+	const std::string registryDir =
 		m_store ? m_store->Root() : std::string();
 	// Fibers job (the editor's single off-main-thread lane — see
 	// editor_fibers.h): the old std::async worker verbatim, sharing a
@@ -227,7 +227,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// PollCookProcess, which now only drains the feed).
 	auto result = std::make_shared<CookResult>();
 	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
-		[cook, feed, scratchDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
+		[cook, feed, registryDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
 			CookResult r{};
 			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -314,8 +314,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			cookArgs.inVfsList.push_back(inVfs);
 			cookArgs.inVfs = inVfs;
 		}
-		if (!scratchDir.empty())
-			cookArgs.scratchDir = scratchDir;
+		if (!registryDir.empty())
+			cookArgs.registryDir = registryDir;
 		cookArgs.quickBakes = quickBakes;
 		push("cook: Cook (in-process)"
 			+ std::string(quickBakes ? " --quick-bakes" : ""));
@@ -337,8 +337,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				pargs.inVfsList.push_back(inVfs);
 				pargs.inVfs = inVfs;
 			}
-			if (!scratchDir.empty())
-				pargs.scratchDir = scratchDir;
+			if (!registryDir.empty())
+				pargs.registryDir = registryDir;
 			pargs.outPak = cook.outPak;
 			// Level blob (the playable unit; see Engine/Asset/level.h):
 			// every editor cook packs one, keyed by the pak stem — the

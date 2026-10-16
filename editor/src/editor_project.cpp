@@ -8,7 +8,7 @@
 //   <root>/.tourmaline/        OWNED artifact cache (the Unity Library/
 //                             equivalent: cache.db + assets.db +
 //                             pak/<klass>.pak, hidden on Windows).
-//                             No scratch disk: without a
+//                             No global disk: without a
 //                             project the cache is off.
 // Opening a project repoints the artifact cache, the cook defaults and
 // the artifact cache at it. Importing an asset copies it into the
@@ -220,7 +220,7 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 	if (IsProjectDir(root))
 		return OpenProject(root); // already a project: just open it
 	// Scaffold the Unity-style tree (.tourmaline/ itself is created by
-	// EnsureScratchRoot when the cache opens).
+	// EnsureRegistryRoot when the cache opens).
 	fs::create_directories(fs::path(root) / "content" / "models", ec);
 	fs::create_directories(fs::path(root) / "content" / "scenes", ec);
 	fs::create_directories(fs::path(root) / "paks", ec);

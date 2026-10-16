@@ -1,4 +1,4 @@
-﻿// test_cache: artifact-cache library tests (scratch root handling +
+﻿// test_cache: artifact-cache library tests (registry root handling +
 // SQLite registry round-trips). No GPU, no editor. Run via CTest.
 
 #include <cstdio>
@@ -50,20 +50,19 @@ std::string TempDir() {
 
 } // namespace
 
-void TestScratchAndRegistry() {
+void TestRegistryRootAndRegistry() {
 	using namespace smvk::cache;
 
-	// ---- scratch root ----------------------------------------------------
-	Check(!DefaultScratchRoot().empty(), "default root non-empty");
+	// ---- registry root ----------------------------------------------------
 	{
-		const std::string root = EnsureScratchRoot(
-			TempDir() + "/scratch");
+		const std::string root = EnsureRegistryRoot(
+			TempDir() + "/registry");
 		Check(!root.empty(), "ensure root");
 		Check(std::filesystem::is_directory(root + "/pak"),
 			"ensure pak subdir");
-		Check(EnsureScratchRoot("").empty(), "empty root rejected");
+		Check(EnsureRegistryRoot("").empty(), "empty root rejected");
 #ifdef _WIN32
-		// Invisible scratch: the root carries the hidden attribute.
+		// Invisible registry: the root carries the hidden attribute.
 		const DWORD attrs = GetFileAttributesA(root.c_str());
 		Check(attrs != INVALID_FILE_ATTRIBUTES
 			&& (attrs & FILE_ATTRIBUTE_HIDDEN) != 0,
@@ -259,7 +258,7 @@ void TestKindsAndIdentity() {
 void TestStoreAdapter() {
 	using namespace smvk::cache;
 	const std::string dir = TempDir() + "/adapter";
-	const std::string root = EnsureScratchRoot(dir + "/scratch");
+	const std::string root = EnsureRegistryRoot(dir + "/registry");
 	if (root.empty()) {
 		std::cout << "FAIL adapter root\n";
 		return;
@@ -313,10 +312,10 @@ void TestAssetDatabase() {
 	namespace fs = std::filesystem;
 	const std::string dir = TempDir() + "/assetdb";
 	const std::string proj = dir + "/proj";
-	const std::string scratch = dir + "/scratch";
+	const std::string registry = dir + "/registry";
 	std::error_code ec;
 	fs::create_directories(proj + "/content/models", ec);
-	fs::create_directories(scratch, ec);
+	fs::create_directories(registry, ec);
 	const fs::path asset = fs::path(proj)
 		/ "content/models/hero.gltf";
 	{
@@ -337,7 +336,7 @@ void TestAssetDatabase() {
 		"assetdb.guid.valid");
 	// Directory: adopt + lookups both ways.
 	AssetDatabase adb;
-	Check(adb.Open(scratch, proj, err), "assetdb.open");
+	Check(adb.Open(registry, proj, err), "assetdb.open");
 	Check(adb.AdoptFile(asset.generic_string(), guid, "model", err),
 		"assetdb.adopt");
 	Check(adb.GuidForPath(asset.generic_string(), gotGuid)
@@ -364,9 +363,9 @@ void TestAssetDatabase() {
 	// models keep separate rows (Has gates on the hash).
 	{
 		CacheDb db;
-		Check(db.Open((fs::path(scratch) / "cache.db").string(), err),
+		Check(db.Open((fs::path(registry) / "cache.db").string(), err),
 			"assetdb.store.open");
-		ArtifactStore store(scratch, db);
+		ArtifactStore store(registry, db);
 		StoreArtifactCacheAdapter adapter(store);
 		const std::string srcA = "AAAA";
 		const std::string srcB = "BBBB";
@@ -420,11 +419,11 @@ void TestBakeAssetDatabase() {
 	namespace fs = std::filesystem;
 	const std::string dir = TempDir() + "/bakeassets";
 	const std::string proj = dir + "/proj";
-	const std::string scratch = dir + "/scratch";
+	const std::string registry = dir + "/registry";
 	std::error_code ec;
 	fs::create_directories(proj + "/content/gi", ec);
 	fs::create_directories(proj + "/content/textures/cubemaps", ec);
-	fs::create_directories(scratch, ec);
+	fs::create_directories(registry, ec);
 	const std::string sglmGuid = "0123456789abcdef0123456789abcdef";
 	const std::string ktxGuid = "fedcba9876543210fedcba9876543210";
 	const std::string sglm = proj + "/content/gi/" + sglmGuid + ".sglm";
@@ -450,7 +449,7 @@ void TestBakeAssetDatabase() {
 	}
 	AssetDatabase adb;
 	std::string err;
-	Check(adb.Open(scratch, proj, err), "bakeassets.open");
+	Check(adb.Open(registry, proj, err), "bakeassets.open");
 	RescanStats stats;
 	Check(adb.RescanProject(stats, err) && stats.adopted == 2,
 		"bakeassets.rescan.adopted");
@@ -484,7 +483,7 @@ void TestBakeAssetDatabase() {
 }
 
 int main() {
-	TestScratchAndRegistry();
+	TestRegistryRootAndRegistry();
 	TestKindsAndIdentity();
 	TestStore();
 	TestStoreAdapter();
@@ -498,7 +497,7 @@ int main() {
 void TestStore() {
 	using namespace smvk::cache;
 	const std::string dir = TempDir() + "/store";
-	const std::string root = EnsureScratchRoot(dir + "/scratch");
+	const std::string root = EnsureRegistryRoot(dir + "/registry");
 	if (root.empty()) {
 		std::cout << "FAIL store root\n";
 		return;
@@ -571,10 +570,10 @@ void TestStore() {
 		}
 		smvk::OverlayVfs vfs;
 		std::string berr;
-		auto backend = smvk::PakBackend::Open(image, "scratch", berr);
+		auto backend = smvk::PakBackend::Open(image, "registry", berr);
 		Check(backend != nullptr, "store.backend.open");
 		if (backend) {
-			vfs.Mount(backend, 50, "scratch");
+			vfs.Mount(backend, 50, "registry");
 			auto served = vfs.TryRead("models/x/tex.png");
 			// PakBackend serves the TEXTURE PAYLOAD'S ktx bytes (the
 			// cooked-artifact contract, exactly like a final pak).

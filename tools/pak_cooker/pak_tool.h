@@ -19,7 +19,9 @@ struct PakArgs {
 	std::vector<std::string> inVfsList; // processed .geometry artifacts
 	std::string inVfs; // primary identity (first artifact / tour ref)
 	std::string tour; // definition tour (editor scene overlay)
-	std::string scratchDir; // artifact-cache root (empty = off)
+	std::string registryDir; // explicit programmatic registry root
+	                         // (editor store); bare CLI packs derive it
+	                         // from the content root
 	std::string outPak;
 	// Read-only inspection (--dump-pak): print the pak manifest, no
 	// cooking, no writes. dumpNodes pins the scene node print.

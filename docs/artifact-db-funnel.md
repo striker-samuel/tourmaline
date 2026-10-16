@@ -106,8 +106,9 @@ No staging folder. The artifact DB **is** the staging area:
 
 - **Done**: spec commit one (kinds, layout, uuid schema, derive-path
   registration, 122/122 CacheTests + 32/32 ctest).
-- **P0**: byproduct registration (cook loose outputs + GiBaker via
-  `--scratch-dir`) + DB-backed VFS backend. Zero behavior change.
+- **P0**: byproduct registration (cook loose outputs + GiBaker, both
+  joining the project cache by content-root convention — no flags)
+  + DB-backed VFS backend. Zero behavior change.
 - **P1**: pack-from-VFS (ListDir discovery; stage manifest falls out as
   the pack receipt) + WorldSun/env move to cook.
 - **P2**: registration into remaining derive paths; CLI coverage.

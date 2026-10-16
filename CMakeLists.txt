@@ -125,7 +125,7 @@ endfunction()
 add_subdirectory(external/glm)
 
 # --- SQLite (vendored SQLiteCpp + sqlite3 amalgamation) ----------------------
-# Backs the editor's artifact cache (scratch-disk registry). Plain static
+# Backs the editor's artifact cache (registry). Plain static
 # libs: sqlite3.c compiled once, the SQLiteCpp RAII wrapper on top. No
 # shell/CLI pieces from the upstream project are built.
 add_library(sqlite3_amalgamation STATIC external/SQLiteCpp/sqlite3/sqlite3.c)

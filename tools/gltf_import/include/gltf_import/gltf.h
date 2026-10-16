@@ -11,7 +11,7 @@
 #include <tiny_gltf.h>
 
 // ---------------------------------------------------------------------------
-// Artifact-cache hook (optional): the scratch-disk store adapter the
+// Artifact-cache hook (optional): the registry store adapter the
 // editor and PakCooker inject. Consulted BEFORE a texture transcode,
 // fed AFTER — a hit serves exactly the payload a fresh transcode of
 // the same source would produce; a miss (or no hook at all) simply
@@ -260,7 +260,7 @@ private:
 	// go through TextureStreamer::StreamTexture (tail-resident) instead of
 	// the full-res LoadKtxTexture* path. Owned by the caller (app/world).
 	smvk::TextureStreamer* textureStreamer_ = nullptr;
-	// Optional artifact cache (scratch-disk store adapter): texture
+	// Optional artifact cache (registry store adapter): texture
 	// transcode acceleration. Not owned.
 	GltfArtifactCache* artifactCache_ = nullptr;
 
@@ -449,7 +449,7 @@ size_t BuildFromMeshAsset(
 	// sources (default on); fileNodes carries cooked file-node records
 	// for conversion intent (null = usage inference only). Appended last
 	// so existing positional callers keep compiling. artifactCache: the
-	// scratch-disk store hook (null = no acceleration).
+	// registry store hook (null = no acceleration).
 	bool autoKtx = true,
 	const std::vector<smvk::tour::FileNode>* fileNodes = nullptr,
 	GltfArtifactCache* artifactCache = nullptr,

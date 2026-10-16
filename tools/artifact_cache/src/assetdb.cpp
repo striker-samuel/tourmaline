@@ -429,15 +429,15 @@ AssetDatabase::~AssetDatabase() {
 	Close();
 }
 
-bool AssetDatabase::Open(const std::string& scratchRoot,
+bool AssetDatabase::Open(const std::string& registryRoot,
 	const std::string& projectRoot, std::string& err) {
 	Close();
-	if (scratchRoot.empty() || projectRoot.empty()) {
-		err = "asset db needs a scratch root and a project root";
+	if (registryRoot.empty() || projectRoot.empty()) {
+		err = "asset db needs a registry root and a project root";
 		return false;
 	}
 	const std::string dbPath =
-		(fs::path(scratchRoot) / "assets.db").generic_string();
+		(fs::path(registryRoot) / "assets.db").generic_string();
 	std::error_code ec;
 	fs::create_directories(fs::path(dbPath).parent_path(), ec);
 	try {

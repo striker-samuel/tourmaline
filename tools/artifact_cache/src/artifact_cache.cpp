@@ -1,4 +1,4 @@
-// Editor artifact cache implementation: scratch-root handling + the
+// Editor artifact cache implementation: registry-root handling + the
 // SQLite registry (SQLiteCpp RAII over the vendored sqlite3
 // amalgamation). See artifact_cache.h for the cache contract.
 
@@ -27,31 +27,21 @@ namespace fs = std::filesystem;
 namespace smvk::cache {
 
 // ---------------------------------------------------------------------------
-// Scratch root
+// Registry root
 // ---------------------------------------------------------------------------
 
-std::string DefaultScratchRoot() {
-	// Preferred default: F:\ (keep C: from burning). Falls back to the
-	// per-user app-data cache when the machine has no writable F:.
-	{
-		std::error_code ec;
-		const fs::path probe = fs::path("F:\\.tourmalineCache");
-		if (fs::exists("F:\\", ec))
-			return probe.generic_string();
-	}
-#ifdef _WIN32
-	if (const char* appData = std::getenv("LOCALAPPDATA")) {
-		return (fs::path(appData) / "Tourmaline" / "cache")
-			.generic_string();
-	}
-#endif
-	if (const char* home = std::getenv("HOME")) {
-		return (fs::path(home) / ".tourmalineCache").generic_string();
-	}
-	return ".tourmalineCache";
+std::string ExistingRegistryRootFor(const std::string& contentDir) {
+	if (contentDir.empty())
+		return {};
+	std::error_code ec;
+	const fs::path root =
+		(fs::path(contentDir) / ".tourmaline").lexically_normal();
+	if (!fs::is_regular_file(root / "cache.db", ec) || ec)
+		return {};
+	return root.generic_string();
 }
 
-std::string EnsureScratchRoot(const std::string& root) {
+std::string EnsureRegistryRoot(const std::string& root) {
 	if (root.empty())
 		return {};
 	std::error_code ec;
@@ -62,7 +52,7 @@ std::string EnsureScratchRoot(const std::string& root) {
 	// Per-class pak store lands here (phase 2).
 	fs::create_directories(p / "pak", ec);
 #ifdef _WIN32
-	// Invisible scratch: hidden attribute on the root (children inherit
+	// Invisible registry: hidden attribute on the root (children inherit
 	// nothing — only the root needs to vanish from casual browsing).
 	SetFileAttributesW(p.wstring().c_str(), FILE_ATTRIBUTE_HIDDEN);
 #endif
@@ -187,7 +177,7 @@ bool CacheDb::Open(const std::string& path, std::string& err) {
 	try {
 		m_impl = new Impl();
 		// CREATE opens rw + creates when missing; busy timeout guards
-		// a second editor instance touching the same scratch.
+		// a second editor instance touching the same registry.
 		m_impl->db = std::make_unique<SQLite::Database>(path,
 			SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE, 3000);
 		if (!InitSchema(*m_impl->db, err)) {
@@ -447,8 +437,8 @@ namespace {
 
 } // namespace
 
-ArtifactStore::ArtifactStore(std::string scratchRoot, CacheDb& db)
-	: m_root(std::move(scratchRoot))
+ArtifactStore::ArtifactStore(std::string registryRoot, CacheDb& db)
+	: m_root(std::move(registryRoot))
 	, m_db(db) {
 }
 

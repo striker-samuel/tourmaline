@@ -66,8 +66,8 @@ struct CookArgs {
 	float skyIntensity = 600.0f;
 	std::vector<std::string> spots;
 	std::string backend = "embree";
-	// Probe-volume sidecars this pak's scenes sample (repeatable).
-	std::vector<std::string> giProbes;
+	// NOTE: no giProbes here (pak owns probe registration; a --gi-probe
+	// CLI flag never took effect in cook and was removed).
 	// Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak
 	// embeds the loose sidecars at the canonical gi/cubemaps/ paths).
 	bool cubemap = false;
@@ -93,9 +93,10 @@ struct CookArgs {
 	// Read-only inspection (--dump-pak): no cooking, no writes.
 	std::string dumpPak;
 	std::vector<uint32_t> dumpNodes;
-	// Editor scratch-disk root (optional acceleration, NEVER a
-	// precondition).
-	std::string scratchDir; // artifact-cache root (empty = off)
+	// Explicit programmatic registry root (editor store; bare CLI
+	// cooks derive it from the content root). Optional acceleration,
+	// NEVER a precondition.
+	std::string registryDir;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

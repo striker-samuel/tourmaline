@@ -1,15 +1,19 @@
 #pragma once
 // Editor artifact cache (project-owned artifact registry).
 //
-// Each project owns its artifact dir (<root>/artifacts/): a SQLite
-// registry (cache.db) plus per-class pak files (textures.pak,
-// meshes.pak, ...) written next to it. It is a CACHE, never a source
-// of truth: .tour -> final pak cooks must always succeed from the
-// authored inputs alone — cache hits only accelerate processing.
-// There is no global/user scratch disk: without a project the cache
-// is off. DefaultScratchRoot/EnsureScratchRoot remain for explicit-dir
-// users (the cooker --scratch-dir path); the editor only ever passes
-// its project-owned dir.
+// Each project owns its artifact dir (<root>/.tourmaline/, hidden):
+// a SQLite registry (cache.db) plus per-class pak files (pak/*.pak)
+// written next to it. It is a CACHE, never a source of truth:
+// .tour -> final pak cooks must always succeed from the authored
+// inputs alone — cache hits only accelerate processing. There is no
+// global/user registry disk: without a project cache the tools run
+// plain (content roots join their <contentDir>/.tourmaline by
+// convention when one carries a cache.db — never by flag).
+// Early-match is two-tier: mtime decides stale (MeshArtifactStale —
+// missing artifacts, digest mismatch, or artifact-predates-source),
+// then content hash confirms the hit (Has exact-hash probe) before
+// any staged bytes serve. Either tier missing degrades to reprocess,
+// never to a wrong result.
 
 #include <cstdint>
 #include <span>
@@ -18,30 +22,33 @@
 
 namespace smvk::cache {
 
-// Default scratch root: F:/.tourmalineCache when F:\ is writable,
-// else %LOCALAPPDATA%/Tourmaline/cache (machines without an F: drive).
-// The editor prefs override always wins over this default.
-std::string DefaultScratchRoot();
-
 // Creates the root (and parents) when missing, applies the Windows
 // hidden attribute, and returns the normalized path. Empty on
-// failure. The artifacts/ subdirectory for the per-class paks is
+// failure. The pak/ subdirectory for the per-class paks is
 // ensured too (phase 2 store layout).
-std::string EnsureScratchRoot(const std::string& root);
+std::string EnsureRegistryRoot(const std::string& root);
+
+// Convention (no flag): the project cache for a content root lives at
+// <contentDir>/.tourmaline and participates only when its cache.db
+// already exists — never created here, so bare trees stay clean.
+// Returns the normalized root, or "" when absent. Cook/pak resolve
+// their registry + funnel DB through this; explicit programmatic
+// roots (the editor's store) bypass it.
+std::string ExistingRegistryRootFor(const std::string& contentDir);
 
 // 64-bit FNV-1a content hash (hex, 16 chars) + length mix. Local-cache
 // grade: collisions would need ~2^32 distinct artifacts; the cost of a
 // miss is a reprocess, never a wrong result (paks re-validate).
 std::string HashBytes(const void* data, size_t size);
 
-// One registry entry: where a processed artifact lives in the scratch.
+// One registry entry: where a processed artifact lives in the registry.
 struct ArtifactRecord {
 	std::string hash;    // content hash of the SOURCE input (HashBytes)
 	std::string klass;   // canonical kind (see artifact_kind.h)
 	std::string uuid;    // artifact identity (manifest GUID for derived
 	                     // family members; "" when unregistered)
 	std::string uri;     // asset URI the artifact is registered under
-	std::string pak;     // pak file name, relative to the scratch root
+	std::string pak;     // pak file name, relative to the registry root
 	uint64_t offset = 0; // byte offset of the payload inside the pak
 	uint64_t size = 0;   // payload size in bytes
 	std::string meta;    // kind-specific metadata (opaque to the db)
@@ -102,7 +109,7 @@ private:
 // ---------------------------------------------------------------------------
 // Artifact store: the per-class pak files + registry glue.
 //
-// Layout under the scratch root (the folders-for-schema):
+// Layout under the registry root (the folders-for-schema):
 //   pak/texture.pak, pak/mesh.pak, ... (see artifact_kind.h — file
 //     names are singular-by-construction: pak/<klass>.pak)
 //     One pak per canonical kind, grown in place (engine AppendPakBlobs keeps
@@ -121,8 +128,8 @@ private:
 // ---------------------------------------------------------------------------
 class ArtifactStore {
 public:
-	// scratchRoot: the EnsureScratchRoot()-ed cache root.
-	ArtifactStore(std::string scratchRoot, CacheDb& db);
+	// registryRoot: the EnsureRegistryRoot()-ed cache root.
+	ArtifactStore(std::string registryRoot, CacheDb& db);
 	~ArtifactStore();
 	ArtifactStore(const ArtifactStore&) = delete;
 	ArtifactStore& operator=(const ArtifactStore&) = delete;

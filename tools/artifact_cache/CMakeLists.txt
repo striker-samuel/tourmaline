@@ -1,6 +1,6 @@
 project(ArtifactCache)
 
-# Editor artifact cache (scratch-disk registry + per-class pak store):
+# Editor artifact cache (registry + per-class pak store):
 # shared by the Editor (registry/store) and, later, PakCooker (cook
 # acceleration lookups). Never linked into App/engine — the runtime
 # never sees the cache.
@@ -17,7 +17,7 @@ target_include_directories(artifact_cache
 target_link_libraries(artifact_cache
     PUBLIC
         SQLiteCpp
-    # AppendPakBlobs + pak constants (scratch paks are real paks: the
+    # AppendPakBlobs + pak constants (registry paks are real paks: the
     # editor VFS mounts them through PakBackend in the render phase).
     PRIVATE
         engine

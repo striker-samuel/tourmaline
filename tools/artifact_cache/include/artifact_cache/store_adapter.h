@@ -1,8 +1,8 @@
 #pragma once
-// StoreAdapter: gltf_import's GltfArtifactCache over the scratch-disk
+// StoreAdapter: gltf_import's GltfArtifactCache over the registry's
 // ArtifactStore. The editor and PakCooker inject this into their import
-// paths so texture transcodes accelerate through the scratch registry
-// (hash-validated copy on hit; stage-into-scratch on miss). The store
+// paths so texture transcodes accelerate through the registry
+// (hash-validated copy on hit; stage-into-registry on miss). The store
 // stays the single owner of staging/flushing; the adapter only maps
 // the interface.
 //
