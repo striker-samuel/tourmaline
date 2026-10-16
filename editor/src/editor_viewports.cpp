@@ -540,6 +540,7 @@ void EditorApp::DrawViewportChrome() {
 	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
 	DrawCvolPreviewOverlay();
 	DrawCaptureBallOverlay();
+	DrawBakeDensityOverlay();
 	DrawOctreePreviewOverlay();
 	DrawPlacementOverlay();
 }

@@ -625,10 +625,35 @@ namespace editor {
 			if (ImGui::MenuItem("Probe locations overlay", nullptr,
 				m_showProbeOverlay))
 				m_showProbeOverlay = !m_showProbeOverlay;
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Loaded baked probes per viewport (dot +\n"
-					"C<idx> + influence/fade rings, camera-distance\n"
-					"colored) — the App's probe overlay, LIGHTING only.");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Loaded baked probes per viewport (dot +\n"
+				"C<idx> + influence/fade rings, camera-distance\n"
+				"colored) — the App's probe overlay, LIGHTING only.");
+		// Bake-DENSITY overlays (no baker run): the cubemap probe set
+		// the current cook settings would place (predicted, depth
+		// red->pink) and the baked .sggi lattice (level red->pink).
+		// Answers "do the density settings fit the scene" in situ.
+		if (ImGui::MenuItem("Cubemap density preview", nullptr,
+			m_cubemapDensityOn)) {
+			m_cubemapDensityOn = !m_cubemapDensityOn;
+			if (m_cubemapDensityOn && m_cubemapDensity.empty())
+				RefreshCubemapDensity();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Predicted cubemap placement from the cook\n"
+				"dialog's octree knobs (8 m grid mirror when the octree\n"
+				"is off) vs the baked manifest rows — LIGHTING only.\n"
+				"Refresh in the GI panel after changing settings.");
+		if (ImGui::MenuItem("GI octree density", nullptr,
+			m_sggiDensityOn)) {
+			m_sggiDensityOn = !m_sggiDensityOn;
+			if (m_sggiDensityOn && m_sggiDensity.probes.empty())
+				RefreshSggiDensity();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Baked .sggi probe lattice as level-colored\n"
+				"dots + level histogram and effective cell sizes —\n"
+				"LIGHTING only. Refresh in the GI panel after baking.");
 			if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 				m_showCameraGizmos = !m_showCameraGizmos;
@@ -3754,6 +3779,42 @@ namespace editor {
 		// On-demand cubemap refresh (capture-only quick bake, GiBaker
 		// skipped) + the live face strip below: finished captures
 		// appear as KTX-decoded face strips while the cook runs.
+		ImGui::Separator();
+		ImGui::Text("Bake density (predictive overlays, no baker run)");
+		if (ImGui::Checkbox("Cubemap density preview",
+				&m_cubemapDensityOn)
+			&& m_cubemapDensityOn && m_cubemapDensity.empty())
+			RefreshCubemapDensity();
+		ImGui::SameLine();
+		if (ImGui::Button("Refresh prediction")) {
+			RefreshCubemapDensity();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Rebuild the BVH + rerun placement from the\n"
+				"cook dialog's cubemap octree knobs (8 m grid mirror\n"
+				"when the octree is off). Manual like 'Update precook'.");
+		ImGui::TextDisabled("octree max %.1f / min %.1f / depth %u%s",
+			m_cook.cubemapOctreeMax, m_cook.cubemapOctreeMin,
+			m_cook.cubemapOctreeDepth,
+			m_cook.cubemapOctree ? "" : " (octree OFF: 8 m grid mirror)");
+		ImGui::TextDisabled("%s", m_cubemapDensityInfo.empty()
+			? "no prediction yet"
+			: m_cubemapDensityInfo.c_str());
+		if (ImGui::Checkbox("GI octree density", &m_sggiDensityOn)
+			&& m_sggiDensityOn && m_sggiDensity.probes.empty())
+			RefreshSggiDensity();
+		ImGui::SameLine();
+		if (ImGui::Button("Reload .sggi")) {
+			RefreshSggiDensity();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Reload gi/<stem>.sggi (binding stem, then\n"
+				"scene stem) after baking. Manual like 'Update precook'.");
+		ImGui::TextDisabled("%s", m_sggiDensityInfo.empty()
+			? "no volume loaded"
+			: m_sggiDensityInfo.c_str());
+		if (!m_sggiDensityPath.empty())
+			ImGui::TextDisabled("%s", m_sggiDensityPath.c_str());
 		if (m_cookRunning && m_cubeRunActive && m_cubeTotal > 0) {
 			ImGui::Text("Cubemaps %d/%d captures...",
 				m_cubeDone, m_cubeTotal);

@@ -49,6 +49,9 @@
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/lightmap.h>
+#include <Engine/GI/probe_volume.h>
+#include <Engine/GI/triangle_bvh.h>
+#include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
@@ -1997,7 +2000,7 @@ private:
 		float fade = 0.0f;      // fade extent past influence (m)
 	};
 	// Loaded probe rows parsed straight from the scene's cubemap manifest
-	// sidecar (textures/cubemaps/<stem>.cubemanifest - the same file the
+	// sidecar (gi/cubemaps/<stem>.cubemanifest - the same file the
 	// renderer loads at runtime), read under the project root first, then
 	// the bundled content tree. Empty (no manifest / no scene) = no
 	// loaded probes: the census reads all pins unbaked and the overlay
@@ -2031,6 +2034,36 @@ private:
 	void UpdateOctreePreview(); // recompute tiles from the live scene
 	void DrawOctreePreviewOverlay(); // wire tiles + world bounds
 	void MarkOctreeDirty(); // scene edit -> all tiles dirty
+	// ---- bake-DENSITY visualization (LIGHTING GI authoring overlays) ----
+	// Two density views answering "do the bake density settings fit the
+	// scene" WITHOUT baking: the cubemap probe set the current cook
+	// settings would place (octree placement, or the 8 m grid mirror
+	// when the octree is off — same code + same BVH occlusion as the
+	// cooker), and the baked .sggi world-field probe lattice (per-level
+	// density + effective cell sizes). Both draw in the ImGui foreground
+	// per viewport (no depth test, like the App's probe overlays).
+	// Refresh is MANUAL (GI panel buttons, same contract as "Update
+	// precook") plus auto-refresh when a mode is toggled on with an
+	// empty cache.
+	bool m_cubemapDensityOn = false;
+	struct CubemapDensityProbe {
+		glm::vec3 center{ 0.0f };
+		float influence = 10.0f; // full-weight radius (m)
+		float fade = 0.0f;       // fade extent past influence (m)
+		uint32_t depth = 0;      // octree emitting depth (grid = 0)
+	};
+	std::vector<CubemapDensityProbe> m_cubemapDensity; // prediction cache
+	smvk::gi::TriangleBvh m_cubemapDensityBvh; // occlusion source (empty = no cull)
+	std::string m_cubemapDensityInfo;  // one-line status for the GI panel
+	std::string m_cubemapDensityScene; // scene stem the cache was built for
+	void RefreshCubemapDensity(); // rebuild BVH + placement from m_cook
+	bool m_sggiDensityOn = false;
+	smvk::gi::SgGiVolume m_sggiDensity; // last loaded .sggi (CPU only)
+	std::string m_sggiDensityInfo;      // probes/levels/cells readout
+	std::string m_sggiDensityPath;      // loaded file (staleness witness)
+	float m_sggiDensityMaxDist = 80.0f; // overlay distance cutoff (m)
+	void RefreshSggiDensity(); // (re)load gi/<stem>.sggi by binding/stem
+	void DrawBakeDensityOverlay(); // ImGui foreground markers + captions
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
 	// ---- panel sizes (drag the splitters to resize; constants above
