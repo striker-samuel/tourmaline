@@ -37,6 +37,7 @@ struct PakAppConfig {
 	int benchFrames = 0;
 	float benchMoveSpeed = 0.0f;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
+	bool presentSet = false; // --present given explicitly (wins over the --bench vsync-off force)
 	bool disableControl = false;
 	bool useOptick = false;
 	bool useOptickGpu = false;

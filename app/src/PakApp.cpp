@@ -388,6 +388,17 @@ int RunPakApp(PakAppConfig cfg) {
 	int benchFrames = cfg.benchFrames;
 	if (benchFrames > 0) {
 		app.SetFrameBudget(benchFrames);
+		// Bench forces vsync off (uncapped immediate present): FIFO paces
+		// every frame to the display interval, so the measured "avg frame"
+		// reports the vsync period (16.7 ms @60) instead of the frame's
+		// real cost — the [perf] numbers below are honest only uncapped.
+		// An explicit --present is the more deliberate choice and wins
+		// (same override philosophy as the RunConfig env pins).
+		if (!cfg.presentSet) {
+			app.SetPresentMode(smvk::PresentMode::Immediate);
+			std::cout << "bench: vsync off (uncapped immediate present; "
+				"--present <mode> overrides)\n";
+		}
 		// Bench captures must be pixel-comparable across runs: drop eye
 		// adaptation and pin the fixed manual exposure (X re-enables live).
 		// PINNED, not just set: the per-scene PushPostfxEnv seed inside
@@ -405,6 +416,12 @@ int RunPakApp(PakAppConfig cfg) {
 		if (benchFrames <= 0) {
 			benchFrames = 300;
 			app.SetFrameBudget(benchFrames);
+			if (!cfg.presentSet) {
+				// Same vsync-off force as --bench above: uncapped timings.
+				app.SetPresentMode(smvk::PresentMode::Immediate);
+				std::cout << "bench: vsync off (uncapped immediate present; "
+					"--present <mode> overrides)\n";
+			}
 			renderer.SetAutoExposurePinned(false);
 			renderer.SetAutoExposureEnabled(false);
 			std::cout << "bench: auto-exposure off (fixed manual exposure)\n";

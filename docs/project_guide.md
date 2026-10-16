@@ -43,7 +43,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   `TOURMALINE_CAPTURE` must land INSIDE the bench budget.
 - Headless matrix: `TOURMALINE_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
   `AO=off|ssao|sao`, `EVSM`, `VOLUMETRIC[_STEPS][_CVOL]`, `MESH=0`,
-  `GFX_GPU_CULL=0`, `ASYNC_COMPUTE=0`, `NO_VALIDATION=1` — all declared in
+  `CULLFLAGS=0`, `ASYNC_COMPUTE=0`, `NO_VALIDATION=1` — all declared in
   `engine/include/Engine/App/RunConfig.h`.
 - Redirect `*.log` output to `out/logs/` (root is for sources, not logs).
 
@@ -60,7 +60,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 | Cook/pak | `engine/Asset/pak.h`, `tools/pak_cooker/main.cpp` | `SMP5/KPM5` magic-bump only, no version field; `PakBackend` serves textures |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
-| GPU-driven filter | `engine/Renderer/gfx_filter.h` | DEFAULT ON (`m_useGfxMesh/m_useGfxFilter`, `GpuCullEnabled`); kills: `TOURMALINE_MESH=0`, `TOURMALINE_GFX_GPU_CULL=0`; `MeshDrawEligible` truth table in contract tests |
+| GPU-driven filter | `engine/Renderer/gfx_filter.h` | DEFAULT ON (`m_useGfxMesh/m_useGfxFilter`, `GpuCullEnabled`); kills: `TOURMALINE_MESH=0` (whole pipeline), `TOURMALINE_CULLFLAGS=0` (cull bits); `MeshDrawEligible` truth table in contract tests |
 | Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, CI fails on mismatch (per-GPU baselines) |
 
 Data flow per frame: `DrawFrame` fills `AppFrameContext` -> `GfxRenderer`

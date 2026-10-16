@@ -132,10 +132,11 @@ $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must
 & .\App.exe --pak content/paks/bistro.pak --disable_control --bench 64
 ```
 
-- `--bench <n>` runs 10 warmup + n measured frames, then exits.
+- `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
+  forced off — uncapped immediate present; `--present <mode>` wins).
 - `TOURMALINE_AO=off|ssao|sao`, `TOURMALINE_EVSM`, `TOURMALINE_SSR`,
   `TOURMALINE_TRANSPARENCY`, `TOURMALINE_VOLUMETRIC[_STEPS|_CVOL]`,
-  `TOURMALINE_MESH`, `TOURMALINE_GFX_GPU_CULL`, `TOURMALINE_ASYNC_COMPUTE`
+  `TOURMALINE_MESH`, `TOURMALINE_CULLFLAGS`, `TOURMALINE_ASYNC_COMPUTE`
   pin features headless for A/B benches.
 
 ### Content pipeline

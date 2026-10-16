@@ -74,7 +74,9 @@ $env:TOURMALINE_CAPTURE='48'
   march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_CVOL=0` is the
   fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
   refresh) — pairs with `TOURMALINE_VOLUMETRIC` for pure-octree fog cost A/B
-- `--bench <n>` runs 10 warmup + n measured frames, then exits
+- `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
+  forced off - uncapped immediate present; an explicit `--present <mode>`
+  wins)
 
 ## Tests
 

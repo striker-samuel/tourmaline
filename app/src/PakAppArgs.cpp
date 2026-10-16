@@ -27,6 +27,7 @@ void PrintUsage(const char* prog) {
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
+		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
@@ -110,9 +111,11 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
 			cfg.presentMode = argv[++i];
+			cfg.presentSet = true;
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
 			cfg.presentMode = a + 10;
+			cfg.presentSet = true;
 		}
 		else if (std::strcmp(a, "--disable_control") == 0 || std::strcmp(a, "--disable-control") == 0) {
 			cfg.disableControl = true;
