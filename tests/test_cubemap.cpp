@@ -103,9 +103,11 @@ void TestProceduralFaces() {
 }
 
 void TestVfsPath() {
-	Check(smvk::CubemapVfsPath("sky") == "textures/cubemaps/sky.ktx2",
+	// Canonical bake-asset home (gi/cubemaps/<id>.* — the textures/
+	// prefix died with the ID-keyed path seam; old sidecars recook).
+	Check(smvk::CubemapVfsPath("sky") == "gi/cubemaps/sky.ktx2",
 		"cubemap.vfspath");
-	Check(smvk::CubemapManifestVfsPath("sponza") == "textures/cubemaps/sponza.cubemanifest",
+	Check(smvk::CubemapManifestVfsPath("sponza") == "gi/cubemaps/sponza.cubemanifest",
 		"cubemap.manifest-vfspath");
 }
 
