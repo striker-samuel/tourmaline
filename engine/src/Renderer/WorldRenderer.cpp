@@ -7207,6 +7207,16 @@ namespace engine {
 			<< "\n";
 	}
 	void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
+		// --no-vfs: mute the loose discovery mounts entirely. The host's
+		// pak backend (mounted separately at lower precedence) becomes
+		// the ONLY scene-content source, so a run proves the pak is
+		// self-contained. Engine resources (shaders/fonts/LUTs) load
+		// exe-relative and never consult these mounts.
+		if (m_noVfs) {
+			std::cerr << "[VFS] --no-vfs: loose discovery mounts muted "
+				"(no project root, no content/) - pak backend only\n";
+			return;
+		}
 		// The shipped layout: the project root (when the scene lives in
 		// one - project files win on collisions) over loose content/ at
 		// the bottom, so project-side cook/bake sidecars resolve exactly
@@ -7215,6 +7225,8 @@ namespace engine {
 			vfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),
 				-10, "project");
 		vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+		std::cerr << "[VFS] loose mounts: content/ (0)"
+			<< (m_projectRoot.empty() ? "" : " + project root (-10)") << "\n";
 	}
 	void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		SMVK_PROFILE_FUNCTION();

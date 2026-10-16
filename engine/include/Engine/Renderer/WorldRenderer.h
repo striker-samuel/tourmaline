@@ -1095,6 +1095,10 @@ public:
 	// (gi/<stem>.*, cubemaps, …) resolve exactly where the cooker wrote
 	// them. Empty = no project mount.
 	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
+	// --no-vfs: mute the loose VFS discovery mounts (MountContentVfs
+	// skips project root + content/), leaving the pak backend mounted
+	// by the host as the only scene-content source.
+	void SetNoVfs(bool v) { m_noVfs = v; }
 	// Present-mode request: the HOST owns the swapchain — this forwards
 	// to it (the pump applies it at the next frame's rebuild check; see
 	// App::SetPresentMode / RequestSwapchainRebuild).
@@ -1482,6 +1486,9 @@ public:
 	float m_sceneNearClip = default_near_clip;
 	// Project root for the content VFS (see SetProjectRoot).
 	std::string m_projectRoot;
+	// --no-vfs (host opt-in, see SetNoVfs): mute the loose VFS discovery
+	// mounts so the pak backend is the only scene-content source.
+	bool m_noVfs = false;
 	// (Camera-control freeze + bench-flight speed moved to
 	// WorldRendererElement with the camera drive.)
 	// Host demo-content opt-in (see SetDemoContentEnabled). Default OFF.

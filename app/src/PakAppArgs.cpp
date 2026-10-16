@@ -16,7 +16,7 @@ void PrintUsage(const char* prog) {
 		<< " [--pak <path.pak>] [--scene-index N]\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
-		<< "  [--use_optick] [--use_optick_gpu]\n"
+		<< "  [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs a cooked pak (default content/paks/sponza.pak);\n"
 		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
 		<< "  --scene-index picks another. The App loads OUR format only:\n"
@@ -27,7 +27,9 @@ void PrintUsage(const char* prog) {
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
-		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
+		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n"
+		<< "  --no-vfs mutes the loose VFS discovery mounts: only the pak\n"
+		<< "  backend serves scene content (proves the pak is self-contained)\n";
 }
 
 } // namespace
@@ -121,6 +123,9 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 		}
 		else if (std::strcmp(a, "--no-dlss") == 0 || std::strcmp(a, "--no_dlss") == 0) {
 			cfg.noDlss = true;
+		}
+		else if (std::strcmp(a, "--no-vfs") == 0 || std::strcmp(a, "--no_vfs") == 0) {
+			cfg.noVfs = true;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);

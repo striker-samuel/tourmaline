@@ -315,6 +315,14 @@ int RunPakApp(PakAppConfig cfg) {
 	auto element = std::make_shared<engine::WorldRendererElement>(app);
 	engine::WorldRenderer& renderer = element->Renderer();
 	renderer.SetSceneId(sceneId);
+	// --no-vfs: mute the loose VFS discovery mounts (project root +
+	// content/) so the pak backend mounted at load is the only
+	// scene-content source (proves the pak is self-contained).
+	if (cfg.noVfs) {
+		renderer.SetNoVfs(true);
+		std::cerr << "[Scene] --no-vfs: only pak '" << cfg.pakPath
+			<< "' serves scene content\n";
+	}
 	// The HOST owns scene loading: the renderer calls this once during
 	// onAttach, after the host's context exists (nothing can upload
 	// before that), and renders the returned world by handles. By then

@@ -7,7 +7,7 @@
 // and the demo-content seeding all live here.
 //
 // Usage:
-//   App [--pak <path.pak>] [--scene-index N]
+//   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
 //   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
 //   [--disable_control] [--no-dlss] [--use_optick] [--use_optick_gpu]
@@ -38,6 +38,13 @@ struct PakAppConfig {
 	bool useOptick = false;
 	bool useOptickGpu = false;
 	bool noDlss = false;
+	// --no-vfs: mute the loose VFS discovery mounts (project root +
+	// content/) so the pak backend is the ONLY scene-content source.
+	// Proves the pak is self-contained: anything the pak lacks falls
+	// back loudly (procedural cubemaps, missing GI) instead of being
+	// silently covered by loose sidecars. Engine resources (shaders,
+	// fonts, LUTs) load exe-relative, never through the VFS.
+	bool noVfs = false;
 	// Scene id (GI sidecar stem + check-scene gating). Empty = pak stem.
 	std::string sceneId;
 	// Central run config (parsed once in main; Log/WarnUnknown there).
