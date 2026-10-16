@@ -450,7 +450,7 @@ void RunConfig::WarnUnknown() {
 		"VULKANTOY_EDITOR_OPEN_AT",
 		"VULKANTOY_EDITOR_OPEN_AT2",
 		// Build-time / CMake-only (legit in env, not runtime knobs):
-		"VULKANTOY_CONTENT_DIR", "VULKANTOY_PCH", "VULKANTOY_OIDN",
+		"VULKANTOY_CONTENT_DIR", "VULKANTOY_PCH",
 		"VULKANTOY_DS_VIZ", "VULKANTOY_SHADER_DEBUG", "VULKANTOY_SHADER_OD_RETRY",
 		// Stale doc-only (AGENTS.md): warn to guide migration, not error.
 		"VULKANTOY_TRANSPARENCY",

@@ -1447,9 +1447,8 @@ RepackStatus RepackXatlasLevel(SgLightmapXatlasLevel& level,
 	// tall ones instead of stranding row height. Chart-local uvs are
 	// placement-independent, so only rect.min/max move; sizes are
 	// preserved exactly. Integer coords; each placement is inflated by
-	// the 2-texel separator (same separator as the vertical LOD
-	// stacking, and the gutter context the OIDN denoise pass expects)
-	// so packed rects never touch.
+		// the 2-texel separator (same separator as the vertical LOD
+		// stacking) so packed rects never touch.
 	const float sep = float(kXatlasStackSep);
 	struct Free {
 		float x, y, w, h;

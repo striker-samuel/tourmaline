@@ -120,7 +120,6 @@
 #include <Engine/Vfs/vfs.h>
 #include <meshoptimizer.h>
 
-#include "lm_denoise.h"
 #include "lm_png.h"
 #include "cube_png.h"
 
@@ -5317,8 +5316,8 @@ int Run(const CookArgs& c) {
 				}
 			}
 
-			// NOTE: the OIDN denoise pass lives AFTER the stamp + transfer
-			// loop, so it covers the baked payload exactly once (see below).
+			// (no denoise pass: embree path tracing at full spp carries
+			// the bake; see below).
 			for (LmWork& w : work) {
 				// Source stamp: the charted parameterization (always the
 				// mesh's own upload = LOD0) stamps itself directly â€”
