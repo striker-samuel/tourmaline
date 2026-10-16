@@ -28,6 +28,14 @@ MSVC environment: `cl.exe` needs `vcvarsall` when building from a plain shell:
 cmd /c "`"C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && cmake --build out/build/x64-Release --target App"
 ```
 
+## Submodules
+
+Unmodified upstream deps are pinned git submodules under `external/`
+(nanosvg, volk, SPIRV-Reflect, glm, meshoptimizer, DirectXTex, json). After
+cloning or pulling: `git submodule update --init --recursive` (or clone with
+`--recursive`). The rest of `external/` is vendored content (trimmed/patched
+trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
+
 ## Shaders
 
 - Source: `engine/shaders/` (HLSL, compiled by DXC via `cmake/CompileShaders.cmake`)

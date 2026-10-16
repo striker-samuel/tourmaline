@@ -1,39 +1,55 @@
 # Third-Party Notices
 
 This project (Tourmaline) is released under the MIT license (see `LICENSE`).
-It vendors a number of third-party libraries and SDKs under `external/`.
-Each vendored component keeps its own license file in-tree (linked below);
-those licenses apply to the respective subdirectories.
+
+Third-party code under `external/` comes in two forms:
+
+- **Unmodified upstream libraries are pinned git submodules** (see
+  `.gitmodules`) — each carries its own upstream license in its checkout.
+  Every pin was verified byte-exact (EOL-normalized for nlohmann/json)
+  against the previously vendored content before the conversion.
+- **Locally trimmed/patched trees, unpinnable snapshots, binary packages and
+  single-header vendors are vendored** (plain files in this repo); each keeps
+  its license file in-tree (linked below), and those licenses apply to the
+  respective subdirectories.
 
 All of them are permissive (MIT / Apache-2.0 / BSD / zlib / public domain)
 and are compatible with this project's MIT release. No copyleft (GPL/LGPL)
-code is linked or vendored.
+code is linked, vendored or submoduled.
+
+## Git submodules (unmodified upstream, pinned)
+
+| Component | Path | License | Pinned commit | Notes |
+|---|---|---|---|---|
+| [GLM](https://github.com/g-truc/glm) | `external/glm` | [Happy Bunny (MIT-like)](external/glm/copying.txt) | `2d4c4b4d` | Math |
+| [nlohmann/json](https://github.com/nlohmann/json) | `external/json` | [MIT](external/json/LICENSE.MIT) | `96c1b52f` | JSON (also required by tinygltf) |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | `external/meshoptimizer` | [MIT](external/meshoptimizer/LICENSE.md) | `4a6532b7` | Mesh optimization |
+| [DirectXTex](https://github.com/microsoft/DirectXTex) | `external/DirectXTex` | [MIT](external/DirectXTex/LICENSE) | `868198cb` | Only the BC block codec TUs compile (BC6H/BC7 payload) |
+| [volk](https://github.com/zeux/volk) | `external/volk` | [MIT](external/volk/LICENSE.md) | `eaa61418` | Vulkan loader |
+| [SPIRV-Reflect](https://github.com/KhronosGroup/SPIRV-Reflect) | `external/SPIRV-Reflect` | [Apache-2.0](external/SPIRV-Reflect/LICENSE) | `e489e162` | CPU reflection for push/spec readback |
+| [nanosvg](https://github.com/memononen/nanosvg) | `external/nanosvg` | [zlib](external/nanosvg/LICENSE.txt) | `239e102e` | Editor SVG icons |
 
 ## Vendored libraries (compiled into the build)
 
+Kept in-tree rather than submoduled because they are locally modified, carry
+a hand-written integration, or are an unpinnable snapshot:
+
 | Component | Path | License | Notes |
 |---|---|---|---|
-| [Embree](https://github.com/embree/embree) 4.4.1 | `external/embree` | [Apache-2.0](external/embree/LICENSE.txt) | Ray-tracing backend for GI/lightmap bakes (trimmed build: static lib, internal tasking, triangle-only) |
-| [GLFW](https://www.glfw.org) | `external/glfw` | [zlib](external/glfw/LICENSE.md) | Legacy windowing; kept for the samples (engine uses SDL3) |
-| [GLM](https://github.com/g-truc/glm) | `external/glm` | [Happy Bunny (MIT-like)](external/glm/copying.txt) | Math |
-| [Dear ImGui](https://github.com/ocornut/imgui) | `external/imgui` | [MIT](external/imgui/LICENSE.txt) | Editor/UI |
-| [nlohmann/json](https://github.com/nlohmann/json) | `external/json` | [MIT](external/json/LICENSE.MIT) | JSON (also required by tinygltf) |
-| [LZ4](https://github.com/lz4/lz4) | `external/lz4` | BSD-2-Clause (license text in the [`lz4.h`](external/lz4/lz4.h) header block) | Block codec for cooked pak blobs |
-| [meshoptimizer](https://github.com/zeux/meshoptimizer) | `external/meshoptimizer` | [MIT](external/meshoptimizer/LICENSE.md) | Mesh optimization |
-| [Optick](https://github.com/bombomkov/optick) | `external/optick` | [MIT](external/optick/LICENSE) | CPU/GPU profiler (optional, `ENABLE_OPTICK`) |
-| [SDL3](https://github.com/libsdl-org/SDL) 3.4.16 | `external/SDL3-3.4.16` | [zlib](external/SDL3-3.4.16/LICENSE.txt) | Windowing/input/audio (vendored prebuilt dev package) |
-| [SPIRV-Reflect](https://github.com/KhronosGroup/SPIRV-Reflect) | `external/SPIRV-Reflect` | [Apache-2.0](external/SPIRV-Reflect/LICENSE) | CPU reflection for push/spec readback |
-| [SQLiteCpp](https://github.com/SRombauts/SQLiteCpp) | `external/SQLiteCpp` | [MIT](external/SQLiteCpp/LICENSE.txt) | RAII wrapper over sqlite3 (editor artifact DB) |
+| [Embree](https://github.com/embree/embree) | `external/embree` | [Apache-2.0](external/embree/LICENSE.txt) | Ray-tracing backend for GI/lightmap bakes. Locally trimmed from upstream master (2026-10-01 era, still versioned 4.4.1): docs/tutorials/tests/superbuild removed, `ADD_SUBDIRECTORY(tests)` + `INCLUDE(CPack)` cut from the root CMakeLists; the ARM NEON SIMD headers stay in-tree. Build forces static lib, internal tasking, triangle-only |
+| [GLFW](https://www.glfw.org) | `external/glfw` | [zlib](external/glfw/LICENSE.md) | Legacy windowing for the samples (engine uses SDL3). Unpinnable mixed snapshot of the 3.5.0-era master (no single upstream commit matches exactly) |
+| [Dear ImGui](https://github.com/ocornut/imgui) | `external/imgui` | [MIT](external/imgui/LICENSE.txt) | Editor/UI; hand-written CMakeLists.txt (upstream ships none) |
+| [LZ4](https://github.com/lz4/lz4) | `external/lz4` | BSD-2-Clause (license text in the [`lz4.h`](external/lz4/lz4.h) header block) | Block codec for cooked pak blobs; hand-written minimal CMakeLists.txt (`lz4.{h,c}` only) |
+| [Optick](https://github.com/bombomby/optick) | `external/optick` | [MIT](external/optick/LICENSE) | CPU/GPU profiler (optional, `ENABLE_OPTICK`). Locally patched: `src/optick_gpu.vulkan.cpp` (query-pool resolve/submit order fix — recording into a submitted command buffer trips validation) + a cmake_minimum_required bump |
+| [SDL3](https://github.com/libsdl-org/SDL) 3.4.16 | `external/SDL3-3.4.16` | [zlib](external/SDL3-3.4.16/LICENSE.txt) | Windowing/input/audio (vendored prebuilt dev package: include/ + lib/ + cmake/) |
+| [SQLiteCpp](https://github.com/SRombauts/SQLiteCpp) | `external/SQLiteCpp` | [MIT](external/SQLiteCpp/LICENSE.txt) | RAII wrapper over sqlite3 (editor artifact DB). Unpinnable mixed snapshot (content-identical on 25/26 files; LICENSE/README and a few headers at older states) |
 | SQLite3 (amalgamation) | `external/SQLiteCpp/sqlite3` | Public Domain | `sqlite3.{h,c}` |
-| [Box3D](https://github.com/erincatto/box3d) | `external/box3d` | [MIT](external/box3d/LICENSE) | Vendored for upcoming physics work (not yet wired into targets) |
-| [xatlas](https://github.com/jpcy/xatlas) | `external/xatlas` | [MIT](external/xatlas/LICENSE) | Lightmap UV2 chart+pack (includes bundled OpenFBX, license in-tree) |
-| [DirectXTex](https://github.com/microsoft/DirectXTex) | `external/DirectXTex` | [MIT](external/DirectXTex/LICENSE) | Only the BC block codec TUs compile (BC6H/BC7 payload) |
-| [zlib](https://zlib.net) | `external/zlib` | [zlib](external/zlib/LICENSE) | CRC/reference only |
-| [volk](https://github.com/zeux/volk) | `external/volk` | [MIT](external/volk/LICENSE.md) | Vulkan loader |
+| [Box3D](https://github.com/erincatto/box3d) | `external/box3d` | [MIT](external/box3d/LICENSE) | Vendored for upcoming physics work (not yet wired into targets; unpinnable snapshot) |
+| [xatlas](https://github.com/jpcy/xatlas) | `external/xatlas` | [MIT](external/xatlas/LICENSE) | Lightmap UV2 chart+pack; hand-written CMakeLists.txt builds only the self-contained core (bundled OpenFBX license in-tree) |
+| [zlib](https://zlib.net) | `external/zlib` | [zlib](external/zlib/LICENSE) | CRC/reference only (not wired into the build); unpinnable develop-branch snapshot |
 | [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | `external/VulkanMemoryAllocator` | MIT (see header notice) | `vk_mem_alloc.h` |
 | [tinygltf](https://github.com/syoyo/tinygltf) | `external/tinygltf` | MIT (see header notice) | `tiny_gltf.h` (gltf_import tool) |
 | [stb](https://github.com/nothings/stb) | `external/stb` | Public Domain / MIT (see header notices) | `stb_image.h`, `stb_image_write.h` |
-| [nanosvg](https://github.com/memononen/nanosvg) | `external/nanosvg` | [zlib](external/nanosvg/LICENSE.txt) | Editor SVG icons |
 
 ## Prebuilt binaries vendored for the build/run
 

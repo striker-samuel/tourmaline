@@ -56,13 +56,19 @@ magic-bumped instead of carrying compat shims, by design.
   staged automatically next to the exe; if absent, DLSS simply reports
   unavailable (no hard dependency)
 
-Most third-party dependencies (Embree, SDL3, ImGui, GLM, meshoptimizer,
-SQLiteCpp, xatlas, DirectXTex codecs, volk, VMA, ...) are **vendored under
-`external/`** and built from source — see `THIRD_PARTY_NOTICES.md`.
+Third-party code under `external/` comes in two forms: **unmodified upstream
+libraries are pinned git submodules** (GLM, nlohmann/json, meshoptimizer,
+DirectXTex, volk, SPIRV-Reflect, nanosvg — clone with `--recursive`), while
+**locally trimmed/patched trees and binary packages** (Embree, SDL3, ImGui,
+Optick, SQLiteCpp, xatlas, lz4, Streamline, VMA, ...) are vendored and built
+from source — see `THIRD_PARTY_NOTICES.md` for the full audit.
 
 ## Build
 
 ```powershell
+# 0. Submodules (skip if you cloned with --recursive):
+git submodule update --init --recursive
+
 # 1. Enter the MSVC environment (plain PowerShell):
 cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 && powershell"
 
@@ -96,9 +102,10 @@ Debug builds: same with `-DCMAKE_BUILD_TYPE=Debug` in `out/build/x64-Debug`.
   synced next to the executables. Debug compiles `-Od` (a few files pinned
   `-O3` — see `HLSL_FORCE_O3_FILES`); Release compiles `-O3` and strips
   debug info. Rebuild the `App` target after editing any shader.
-- **Vendored sources build from source.** `external/` carries trimmed
-  upstream trees; the root `CMakeLists.txt` configures each (e.g. Embree:
-  static lib, internal tasking, triangle geometry only) and links them.
+- **Third-party deps build from source.** `external/` mixes pinned git
+  submodules (unmodified upstream) with vendored trees (locally trimmed —
+  e.g. Embree: static lib, internal tasking, triangle geometry only, tests
+  and CPack cut); the root `CMakeLists.txt` configures each and links them.
 - **Push-constant contract.** C++ structs (`engine/include/Engine/Rendergraph/`)
   and their HLSL mirrors stay layout-identical, guarded by
   `static_assert(sizeof(...))` and contract tests.
@@ -155,7 +162,8 @@ tools/       gltf_import, cook, pak_cooker, gi_baker, cubemap_baker,
              artifact_cache, python helpers (bench/cook/golden capture)
 samples/     minimal Vulkan samples (01_triangle, 02_blur)
 tests/       27 plain-exe test executables (ctest)
-external/    vendored third-party sources (see THIRD_PARTY_NOTICES.md)
+external/    third-party sources: pinned git submodules + vendored trees
+             (see THIRD_PARTY_NOTICES.md)
 docs/        project guide + editor tour documentation
 ```
 

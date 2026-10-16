@@ -40,7 +40,8 @@ target_include_directories(Editor
         # (Was app/include + app/vendor before the renderer moved to engine;
         # stb headers now live in external/stb.)
         ${CMAKE_SOURCE_DIR}/external/stb
-        # nanosvg (editor/icons/*.svg rasterization for the asset browser).
+        # nanosvg (pinned git submodule; editor/icons/*.svg rasterization
+        # for the asset browser).
         ${CMAKE_SOURCE_DIR}/external/nanosvg/src
         # ImGui Vulkan backend header (ImGui_ImplVulkan_AddTexture for the
         # rasterized SVG icons as ImGui user textures).

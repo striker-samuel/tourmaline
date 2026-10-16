@@ -29,13 +29,13 @@ find_package(Vulkan REQUIRED)
 
 include(FetchContent)
 
-# MeshOptimizer
+# MeshOptimizer (pinned git submodule)
 add_subdirectory(external/meshoptimizer)
 
 # xatlas (vendored chart + pack core for lightmap UV2 atlases)
 add_subdirectory(external/xatlas)
 
-# DirectXTex BC codecs (vendored external/DirectXTex; only the block
+# DirectXTex BC codecs (pinned git submodule; only the block
 # codec translation units compile — the sglm BC6H payload uses
 # D3DXEncodeBC6HU/D3DXDecodeBC6HU, cook + load-side only)
 add_library(directxtex_bc STATIC
@@ -45,7 +45,7 @@ add_library(directxtex_bc STATIC
 )
 target_include_directories(directxtex_bc PUBLIC external/DirectXTex)
 target_compile_features(directxtex_bc PRIVATE cxx_std_20)
-# Third-party TU: silence everything (the vendored source is upstream).
+# Third-party TU: silence everything (the upstream source is unmodified).
 if(MSVC)
 	target_compile_options(directxtex_bc PRIVATE /W0)
 else()
@@ -56,7 +56,8 @@ endif()
 add_subdirectory(external/lz4)
 
 # Embree ray-tracing backend for the bake transport (vendored
-# external/embree source, 4.4.1 — trimmed: no docs/tutorials/tests/superbuild).
+# external/embree source — upstream master snapshot, 2026-10-01 era
+# (still versioned 4.4.1), trimmed: no docs/tutorials/tests/superbuild).
 # REQUIRED (not optional): the engine links it unconditionally and gates the
 # Embree traversal path on SMVK_GI_EMBREE. Static lib, no tutorials,
 # internal tasking (no TBB), triangle geometry (the bake only traces
@@ -124,7 +125,7 @@ function(tourmaline_stage_streamline TARGET)
     endif()
 endfunction()
 
-# GLM (header-only)
+# GLM (header-only, pinned git submodule)
 add_subdirectory(external/glm)
 
 # --- SQLite (vendored SQLiteCpp + sqlite3 amalgamation) ----------------------
@@ -216,9 +217,9 @@ if(DEFINED Boost_ROOT)
   list(PREPEND CMAKE_PREFIX_PATH "${Boost_ROOT}/stage/lib/cmake")
 endif()
 
-# nlohmann::json (required for tinygltf)
+# nlohmann::json (pinned git submodule; required for tinygltf)
 add_subdirectory(external/json)
-add_subdirectory(external/volk)
+add_subdirectory(external/volk)  # Vulkan loader (pinned git submodule)
 
 # --- Deferred-shadow debug visualizers (paper 5.3/5.4) -------------------------
 # Per-pixel pipeline diagnostics: light culling steps, light-list membership,
@@ -315,7 +316,7 @@ elseif (MSVC)
   endif()
 endif()
 
-# SPIRV-Reflect (vendored, CPU-only reflection for push/spec readback)
+# SPIRV-Reflect (pinned git submodule, CPU-only reflection for push/spec readback)
 add_library(spirv_reflect STATIC external/SPIRV-Reflect/spirv_reflect.c)
 target_include_directories(spirv_reflect PUBLIC
     ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
