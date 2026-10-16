@@ -29,11 +29,14 @@
 // not just the .gltf; a fresh import is a no-op when current).
 // --force always re-derives.
 //
-// The SECOND half of the content pipeline is pak.exe (tools/pak):
-// it consumes the ALREADY-PROCESSED artifacts + a VFS root and cooks
-// the pak (cubemap bake, LOD/meshlet cook, serializer). Raw sources
-// NEVER cook - this is the clean split: ONE raw-import place (this
-// tool / the editor's MeshImporter), ONE artifact-consumer place.
+// The SECOND half of the content pipeline is cook.exe (tools/cook):
+// it consumes the ALREADY-PROCESSED artifacts + a VFS root and runs
+// the artifact transforms (LOD/meshlet cook) + the transport bakes
+// (cubemaps, lightmaps, convex volumes), writing back beside the
+// sources. pak.exe (tools/pak_cooker) assembles the .pak from those
+// (pure serialization + embed + verify). Raw sources NEVER cook -
+// this is the clean split: ONE raw-import place (this tool / the
+// editor's MeshImporter), ONE artifact-consumer place.
 
 #include <cctype>
 #include <cstring>
@@ -61,8 +64,8 @@ bool ParseOnOff(const std::string& v) {
 			<< "   .png/.jpg/.jpeg/.tga/.bmp/.ktx2 writes <stem>.texture\n"
 			<< "   beside the source (editor parity; never overwrites -\n"
 			<< "   --force recreates and resets its settings).\n"
-			<< "   Default derive-if-stale; --force always re-derives. Cook\n"
-			<< "   the artifacts into a pak with pak.exe.)\n";
+		<< "   Default derive-if-stale; --force always re-derives. Bake\n"
+		<< "   the artifacts with cook.exe, assemble with pak.exe.)\n";
 	}
 
 } // namespace

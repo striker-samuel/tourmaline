@@ -1967,12 +1967,12 @@ int Run(const PakArgs& c) {
 			<< " I=" << e.sunIntensity << " (lux)\n";
 	}
 
-	// GI blobs embedded into the pak (see the cvolume stage + the loose-
-	// sidecar discovery below): one list â€” in-process-baked cvolumes (the
-	// no-sidecar fallback), the discovered GiBaker sidecars (probe octree,
-	// regular/convex manifests + rows) and the lightmap .sglm. Every
-	// entry is (vfsPath, bytes) â€” Texture blobs at gi/... paths embedded
-	// after Serialize below (PakBackend serves by path).
+	// GI blobs embedded into the pak (discovery only — pak bakes
+	// nothing; cook + GiBaker own every bake): the discovered GiBaker
+	// sidecars (probe octree, regular/convex manifests + rows) and the
+	// lightmap .sglm. Every entry is (vfsPath, bytes) — Texture blobs
+	// at gi/... paths embedded after Serialize below (PakBackend serves
+	// by path).
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
 
 
@@ -2114,22 +2114,11 @@ int Run(const PakArgs& c) {
 		};
 		for (const auto& [kind, ext] : manifestKinds) {
 			const std::string stem = findStemWith(ext);
-			if (stem.empty()) {
-				// No loose manifest: cvolumes cooked INTO this pak (the
-				// --cvolume stage above) bind by the pak stem â€” the
-				// runtime resolves gi/<pakStem>.cvmanifest straight
-				// out of the pak (PakBackend serves the gi/... Texture
-				// blobs by path). Loose stem-named files override by
-				// the same path through the overlay (dev override).
-				if (kind == smvk::GiBinding::Kind::CvolManifest
-					&& !giBlobs.empty()) {
-					for (auto& sc : sceneClusters)
-						sc->RegisterGiBinding(kind, pakStem);
-					tool::out() << "Registered embedded cvolmanifest GI '"
-						<< pakStem << "' (cooked into this pak)\n";
-				}
-				continue;
-			}
+			if (stem.empty())
+				continue; // no loose manifest: nothing to bind (pak
+				// bakes nothing — run GiBaker or cook --cvolume to
+				// mint one; an unbound kind falls back to the scene
+				// id at runtime, which is equally absent here).
 			const std::string manifestVfs =
 				"gi/" + stem + "." + ext;
 			std::vector<uint8_t> manifest =
@@ -2219,9 +2208,9 @@ int Run(const PakArgs& c) {
 			<< vfsPath << " (" << ktx.size() << " B"
 			<< (isManifest ? " text" : " ktx2") << ")\n";
 	}
-	// GI payloads embedded into the pak (the in-process cvolume bake
-	// above + the loose GiBaker sidecars + the lightmap .sglm): Texture
-	// blobs at their gi/... paths â€” PakBackend serves by path, so the
+	// GI payloads embedded into the pak (the discovered GiBaker
+	// sidecars + the lightmap .sglm — pak bakes nothing): Texture
+	// blobs at their gi/... paths — PakBackend serves by path, so the
 	// runtime's binding-first loaders read everything straight out of
 	// this pak (no loose sidecars needed; loose files still override
 	// through the overlay by the same paths). Same path-embed pattern

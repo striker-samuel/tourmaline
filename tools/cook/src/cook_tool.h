@@ -23,7 +23,9 @@ struct CookArgs {
 	std::string tour; // definition tour (preferred; else inVfsList/inVfs)
 	std::vector<std::string> inVfsList; // processed .geometry artifacts
 	std::string inVfs; // primary identity (first artifact)
-	std::string outPak; // legacy stem source (cubemap base fallback)
+	std::string outPak; // destination pak (stem source for bake sidecar
+	                    // names: cvol manifest/volumes, cubemap base fallback).
+	                    // No pak is written — pak.exe assembles it.
 	std::unordered_set<std::string> explicitSet; // CLI-wins tour-merge keys
 	bool meshopt = true;
 	float overdraw = 1.05f;
