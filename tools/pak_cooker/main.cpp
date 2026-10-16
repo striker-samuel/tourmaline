@@ -238,10 +238,12 @@ namespace paktool {
 	// seeds its env from it, first-wins). Clusters that already carry one
 	// (imported KHR punctual or tour-created/edited) are untouched; sunless
 	// scenes get a "WorldSun" node synthesized from the ENV BLOCK (see
-	// EnvForBake â€” one authored sun everywhere) so the editor's environment
-	// settings travel pak -> App. Non-static by design: the bake harvests
-	// static lights only, so the runtime sun never double-counts into
-	// lightmaps.
+	// EnvForBake — one authored sun everywhere) so the editor's environment
+	// settings travel pak -> App. STATIC by design: the bake harvest
+	// (CollectStaticBakeLights) picks up static lights only, so the
+	// bake-time sun rides the in-pak bakes (convex volumes); the runtime
+	// still renders it as the analytic/CSM sun (static directionals are
+	// exempt from the bake-only rule), so nothing double-counts.
 	void EnsureWorldSun(smvk::Cluster& cluster, const BakeEnv& be) {
 		bool hasDir = false;
 		cluster.lights.forEachHandle([&](smvk::ClusterLightHandle h) {
@@ -287,6 +289,7 @@ namespace paktool {
 		sun.color = be.sunColor;
 		sun.intensity = be.sunIntensity;
 		sun.name = "WorldSun";
+		sun.flags |= SceneLight::kSceneLightFlag_Static;
 		const auto h = cluster.CreateLight(std::move(sun));
 		if (!h.valid())
 			return;
