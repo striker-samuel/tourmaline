@@ -113,6 +113,7 @@ bool PlanAssetDelete(const std::string& absPath,
 		return false;
 	}
 	if (rel == "artifacts" || rel.compare(0, 10, "artifacts/") == 0
+		|| rel == ".tourmaline" || rel.compare(0, 12, ".tourmaline/") == 0
 		|| rel == "scratch" || rel.compare(0, 8, "scratch/") == 0) {
 		err = "refusing to delete the owned artifact cache";
 		return false;

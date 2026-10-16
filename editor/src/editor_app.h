@@ -1636,9 +1636,9 @@ private:
 	std::string SceneIdForHost() const;
 	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
 	// A project folder owns the whole body of work: content/ sources,
-	// paks/ cook outputs, gi/ bake sidecars, and its OWN artifacts/
+	// paks/ cook outputs, gi/ bake sidecars, and its OWN .tourmaline/
 	// cache (the Unity Library/ equivalent: cache.db + assets.db GUID
-	// directory + per-class paks — no scratch disk, without a project
+	// directory + pak/ per-class paks — no scratch disk, without a project
 	// the cache is off). Opening a project repoints the artifact
 	// cache and the cook defaults at it;
 	// importing copies an asset in with a UUID (.meta sidecar). Scenes and
@@ -1832,7 +1832,7 @@ private:
 	void RecordBakeAssetsFromCook();
 	// Artifact cache root (empty when no project is open). The project
 	// owns its artifact cache: cache.db (processed-import registry)
-	// + assets.db (GUID directory) + artifacts/ (per-class paks).
+	// + assets.db (GUID directory) + pak/ (per-class paks).
 	std::string ProjectArtifactDir() const;
 	// True when the absolute path lives inside the open project (false
 	// without a project). References and scene saves require it.
@@ -1867,8 +1867,8 @@ private:
 	static bool IsProjectDir(const std::string& dir);
 	static std::string ReadProjectName(const std::string& dir);
 	// ---- project artifact cache (no scratch disk) ----
-	// The project OWNS its artifact cache (<root>/artifacts/: cache.db
-	// SQLite registry + artifacts/ per-class paks + assets.db GUID
+	// The project OWNS its artifact cache (<root>/.tourmaline/: cache.db
+	// SQLite registry + pak/ per-class paks + assets.db GUID
 	// directory). There is no global/user scratch: without a project
 	// the cache is off (cooks/imports still work — the cache only
 	// accelerates processing, never gates it).

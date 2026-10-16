@@ -286,7 +286,7 @@ namespace editor {
 	void EditorApp::DrawMenuBar() {
 		if (ImGui::BeginMenu("File")) {
 			// Project first (Unity/Unreal style): a project folder owns
-			// content/, paks/, gi/ and its own artifacts/ cache. Imports
+			// content/, paks/, gi/ and its own .tourmaline/ cache. Imports
 			// land in it and the editor shows them
 			// pipeline â€” no manual staging.
 			if (ImGui::MenuItem("New / Open Project...")) {

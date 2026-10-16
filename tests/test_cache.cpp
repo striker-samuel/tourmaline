@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/artifact_kind.h>
 #include <artifact_cache/assetdb.h>
 #include <artifact_cache/store_adapter.h>
 
@@ -58,8 +59,8 @@ void TestScratchAndRegistry() {
 		const std::string root = EnsureScratchRoot(
 			TempDir() + "/scratch");
 		Check(!root.empty(), "ensure root");
-		Check(std::filesystem::is_directory(root + "/artifacts"),
-			"ensure artifacts subdir");
+		Check(std::filesystem::is_directory(root + "/pak"),
+			"ensure pak subdir");
 		Check(EnsureScratchRoot("").empty(), "empty root rejected");
 #ifdef _WIN32
 		// Invisible scratch: the root carries the hidden attribute.
@@ -166,6 +167,90 @@ void TestScratchAndRegistry() {
 }
 
 void TestStore();
+
+// Canonical kinds (artifact_kind.h: frozen vocabulary, fail-closed
+// validation) + identity registration (the funnel: manifest UUIDs in
+// the db, payloads in the hidden per-class paks).
+void TestKindsAndIdentity() {
+	using namespace smvk::cache;
+	Check(IsValidArtifactKind("texture")
+		&& IsValidArtifactKind("mesh")
+		&& IsValidArtifactKind("material")
+		&& IsValidArtifactKind("animation")
+		&& IsValidArtifactKind("light")
+		&& IsValidArtifactKind("camera")
+		&& IsValidArtifactKind("scene")
+		&& IsValidArtifactKind("gi"), "kinds.frozen8");
+	Check(!IsValidArtifactKind("") && !IsValidArtifactKind("bogus")
+		&& !IsValidArtifactKind("Texture")
+		&& !IsValidArtifactKind("textures/"), "kinds.reject");
+	Check(ArtifactPakFileName("texture") == "pak/texture.pak"
+		&& ArtifactPakFileName("gi") == "pak/gi.pak",
+		"kinds.pakfile");
+	smvk::PakAssetKind k{};
+	Check(ArtifactKindToPakKind("gi", k)
+		&& k == smvk::PakAssetKind::Texture, "kinds.gi.serves");
+	Check(!ArtifactKindToPakKind("bogus", k), "kinds.map.reject");
+
+	const std::string dir = TempDir() + "/identity";
+	const std::string dbPath = dir + "/cache.db";
+	std::string err;
+	CacheDb db;
+	Check(db.Open(dbPath, err), "identity.open");
+	// Validation: unknown kinds fail closed at every write gate.
+	ArtifactRecord bad;
+	bad.hash = HashBytes("x", 1);
+	bad.klass = "bogus";
+	bad.uri = "models/x/a";
+	Check(!db.Put(bad, err), "identity.put.reject-kind");
+	Check(!db.Register("bogus", "guid", "uri", "hash", "", err),
+		"identity.register.reject-kind");
+	Check(!db.Register("mesh", "", "uri", "hash", "", err),
+		"identity.register.needs-uuid");
+	// Identity row (no payload): derivation lives loose, addressed
+	// through the db. FindByUuid reads it; Get reports no-payload
+	// instead of serving garbage.
+	const std::string uuid = "0123456789abcdef0123456789abcdef";
+	Check(db.Register("mesh", uuid, "content/models/x/m.geometry",
+		"deadbeefdeadbeef", "{\"src\":\"x\"}", err), "identity.register");
+	ArtifactRecord found;
+	Check(db.FindByUuid("mesh", uuid, found, err)
+		&& found.uri == "content/models/x/m.geometry"
+		&& found.hash == "deadbeefdeadbeef"
+		&& found.pak.empty() && found.size == 0,
+		"identity.find");
+	Check(!db.FindByUuid("mesh", "nope", found, err),
+		"identity.find.miss");
+	Check(!db.FindByUuid("texture", uuid, found, err),
+		"identity.find.class-miss");
+	// A payload Flush after a Register keeps the uuid (the upsert
+	// never clobbers identity with an empty stamp).
+	ArtifactStore store(dir, db);
+	const std::vector<uint8_t> payload = { 9, 9, 9 };
+	Check(store.Put("mesh", "content/models/x/m.geometry", payload,
+		"deadbeefdeadbeef", "{}", err), "identity.stage");
+	Check(store.Flush(err), "identity.flush");
+	// The payload write keeps the registered identity (upsert never
+	// clobbers uuid with an empty stamp) and records the canonical
+	// pak/ path. (Stored size is the padded TOC size, not the raw
+	// payload length — assert presence + path + identity, not bytes.
+	// File names are singular-by-construction: pak/<klass>.pak.)
+	Check(db.FindByUuid("mesh", uuid, found, err)
+		&& found.size > 0 && found.pak == "pak/mesh.pak"
+		&& found.uuid == uuid, "identity.survives.flush");
+	std::vector<uint8_t> got;
+	Check(store.Get("mesh", "content/models/x/m.geometry", got, err)
+		&& got == payload, "identity.payload.served");
+	// Identity-only row (registered, never staged): Get fails with a
+	// no-payload diagnostic instead of a missing-pak error.
+	Check(db.Register("material", uuid, "content/models/x.m.material",
+		"feedfacefeedface", "", err), "identity.register.material");
+	Check(!store.Get("material", "content/models/x.m.material", got,
+		err) && !err.empty(), "identity.get.no-payload");
+
+	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
+}
 
 // StoreArtifactCacheAdapter: gltf_import's GltfArtifactCache over the
 // real store — the adapter is what the editor/PakCooker inject, so its
@@ -400,6 +485,7 @@ void TestBakeAssetDatabase() {
 
 int main() {
 	TestScratchAndRegistry();
+	TestKindsAndIdentity();
 	TestStore();
 	TestStoreAdapter();
 	TestAssetDatabase();

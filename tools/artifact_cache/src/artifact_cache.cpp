@@ -3,6 +3,7 @@
 // amalgamation). See artifact_cache.h for the cache contract.
 
 #include <artifact_cache/artifact_cache.h>
+#include <artifact_cache/artifact_kind.h>
 
 #include <algorithm>
 #include <chrono>
@@ -59,7 +60,7 @@ std::string EnsureScratchRoot(const std::string& root) {
 	if (ec || !fs::is_directory(p, ec))
 		return {};
 	// Per-class pak store lands here (phase 2).
-	fs::create_directories(p / "artifacts", ec);
+	fs::create_directories(p / "pak", ec);
 #ifdef _WIN32
 	// Invisible scratch: hidden attribute on the root (children inherit
 	// nothing — only the root needs to vanish from casual browsing).
@@ -112,9 +113,18 @@ bool InitSchema(SQLite::Database& db, std::string& err) {
 		SQLite::Statement pragma2(db, "PRAGMA synchronous=NORMAL");
 		pragma2.executeStep();
 		// Schema migrations keyed on user_version: bump + ALTER for
-		// future changes; v1 is the plain create.
-		const int version = db.exec("PRAGMA user_version");
-		if (version < 1) {
+		// future changes; v1 is the plain create, v2 adds the identity
+		// uuid (the funnel: manifest-registered derivations). NOTE:
+		// Database::exec returns the sqlite status (always 0 here), NOT
+		// the pragma value — read the version through a SELECT or every
+		// ALTER re-runs on every open (v1 survived that via IF NOT
+		// EXISTS; ALTER does not).
+		auto userVersion = [&]() {
+			SQLite::Statement q(db, "PRAGMA user_version");
+			q.executeStep();
+			return q.getColumn(0).getInt();
+		};
+		if (userVersion() < 1) {
 			db.exec(
 				"CREATE TABLE IF NOT EXISTS artifacts ("
 				"  hash TEXT NOT NULL,"
@@ -131,6 +141,13 @@ bool InitSchema(SQLite::Database& db, std::string& err) {
 				"ON artifacts (hash)");
 			db.exec("PRAGMA user_version = 1");
 		}
+		if (userVersion() < 2) {
+			db.exec("ALTER TABLE artifacts ADD COLUMN "
+				"uuid TEXT NOT NULL DEFAULT ''");
+			db.exec("CREATE INDEX IF NOT EXISTS idx_artifacts_uuid "
+				"ON artifacts (klass, uuid)");
+			db.exec("PRAGMA user_version = 2");
+		}
 		return true;
 	}
 	catch (const SQLite::Exception& e) {
@@ -142,12 +159,13 @@ bool InitSchema(SQLite::Database& db, std::string& err) {
 void ReadRow(SQLite::Statement& q, ArtifactRecord& out) {
 	out.hash = q.getColumn(0).getString();
 	out.klass = q.getColumn(1).getString();
-	out.uri = q.getColumn(2).getString();
-	out.pak = q.getColumn(3).getString();
-	out.offset = static_cast<uint64_t>(q.getColumn(4).getInt64());
-	out.size = static_cast<uint64_t>(q.getColumn(5).getInt64());
-	out.meta = q.getColumn(6).getString();
-	out.created = q.getColumn(7).getInt64();
+	out.uuid = q.getColumn(2).getString();
+	out.uri = q.getColumn(3).getString();
+	out.pak = q.getColumn(4).getString();
+	out.offset = static_cast<uint64_t>(q.getColumn(5).getInt64());
+	out.size = static_cast<uint64_t>(q.getColumn(6).getInt64());
+	out.meta = q.getColumn(7).getString();
+	out.created = q.getColumn(8).getInt64();
 }
 
 } // namespace
@@ -201,26 +219,36 @@ bool CacheDb::Put(const ArtifactRecord& rec, std::string& err) {
 		err = "record needs klass, uri and hash";
 		return false;
 	}
+	if (!IsValidArtifactKind(rec.klass)) {
+		err = "unknown artifact class: " + rec.klass
+			+ " (see artifact_kind.h)";
+		return false;
+	}
 	const int64_t createdTs = (rec.created != 0) ? rec.created
 		: std::chrono::duration_cast<std::chrono::seconds>(
 			std::chrono::system_clock::now().time_since_epoch()).count();
 	try {
 		SQLite::Statement q(*m_impl->db,
 			"INSERT INTO artifacts "
-			"(hash, klass, uri, pak, offset, size, meta, created) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+			"(hash, klass, uuid, uri, pak, offset, size, meta, created) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
 			"ON CONFLICT (klass, uri) DO UPDATE SET "
 			"  hash = excluded.hash, pak = excluded.pak, "
 			"  offset = excluded.offset, size = excluded.size, "
-			"  meta = excluded.meta, created = excluded.created");
+			"  meta = excluded.meta, created = excluded.created, "
+			// A payload write without identity must not clobber a
+			// registered uuid (Flush after Register keeps it).
+			"  uuid = CASE WHEN excluded.uuid <> '' "
+			"    THEN excluded.uuid ELSE artifacts.uuid END");
 		q.bind(1, rec.hash);
 		q.bind(2, rec.klass);
-		q.bind(3, rec.uri);
-		q.bind(4, rec.pak);
-		q.bind(5, static_cast<int64_t>(rec.offset));
-		q.bind(6, static_cast<int64_t>(rec.size));
-		q.bind(7, rec.meta);
-		q.bind(8, createdTs);
+		q.bind(3, rec.uuid);
+		q.bind(4, rec.uri);
+		q.bind(5, rec.pak);
+		q.bind(6, static_cast<int64_t>(rec.offset));
+		q.bind(7, static_cast<int64_t>(rec.size));
+		q.bind(8, rec.meta);
+		q.bind(9, createdTs);
 		q.exec();
 		return true;
 	}
@@ -238,7 +266,7 @@ bool CacheDb::Get(const std::string& klass, const std::string& uri,
 	}
 	try {
 		SQLite::Statement q(*m_impl->db,
-			"SELECT hash, klass, uri, pak, offset, size, meta, created "
+			"SELECT hash, klass, uuid, uri, pak, offset, size, meta, created "
 			"FROM artifacts WHERE klass = ? AND uri = ?");
 		q.bind(1, klass);
 		q.bind(2, uri);
@@ -262,7 +290,7 @@ bool CacheDb::GetByHash(const std::string& hash, ArtifactRecord& out,
 	}
 	try {
 		SQLite::Statement q(*m_impl->db,
-			"SELECT hash, klass, uri, pak, offset, size, meta, created "
+			"SELECT hash, klass, uuid, uri, pak, offset, size, meta, created "
 			"FROM artifacts WHERE hash = ? LIMIT 1");
 		q.bind(1, hash);
 		if (q.executeStep()) {
@@ -270,6 +298,80 @@ bool CacheDb::GetByHash(const std::string& hash, ArtifactRecord& out,
 			return true;
 		}
 		return false;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
+}
+
+bool CacheDb::FindByUuid(const std::string& klass, const std::string& uuid,
+	ArtifactRecord& out, std::string& err) {
+	if (!m_impl || !m_impl->db) {
+		err = "db not open";
+		return false;
+	}
+	if (klass.empty() || uuid.empty()) {
+		err = "identity lookup needs klass and uuid";
+		return false;
+	}
+	try {
+		SQLite::Statement q(*m_impl->db,
+			"SELECT hash, klass, uuid, uri, pak, offset, size, meta, created "
+			"FROM artifacts WHERE klass = ? AND uuid = ? LIMIT 1");
+		q.bind(1, klass);
+		q.bind(2, uuid);
+		if (q.executeStep()) {
+			ReadRow(q, out);
+			return true;
+		}
+		return false;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
+}
+
+bool CacheDb::Register(const std::string& klass, const std::string& uuid,
+	const std::string& uri, const std::string& hash, const std::string& meta,
+	std::string& err) {
+	if (!m_impl || !m_impl->db) {
+		err = "db not open";
+		return false;
+	}
+	if (klass.empty() || uuid.empty() || uri.empty() || hash.empty()) {
+		err = "registration needs klass, uuid, uri and hash";
+		return false;
+	}
+	if (!IsValidArtifactKind(klass)) {
+		err = "unknown artifact class: " + klass
+			+ " (see artifact_kind.h)";
+		return false;
+	}
+	const int64_t createdTs =
+		std::chrono::duration_cast<std::chrono::seconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
+	try {
+		// Identity upsert: hash/uuid/meta refresh, but a staged
+		// payload's location columns are NEVER clobbered (a Register
+		// after a Flush must not orphan bytes). Fresh rows carry an
+		// empty location (identity-only until a payload stages).
+		SQLite::Statement q(*m_impl->db,
+			"INSERT INTO artifacts "
+			"(hash, klass, uuid, uri, pak, offset, size, meta, created) "
+			"VALUES (?, ?, ?, ?, '', 0, 0, ?, ?) "
+			"ON CONFLICT (klass, uri) DO UPDATE SET "
+			"  hash = excluded.hash, uuid = excluded.uuid, "
+			"  meta = excluded.meta, created = excluded.created");
+		q.bind(1, hash);
+		q.bind(2, klass);
+		q.bind(3, uuid);
+		q.bind(4, uri);
+		q.bind(5, meta);
+		q.bind(6, createdTs);
+		q.exec();
+		return true;
 	}
 	catch (const SQLite::Exception& e) {
 		err = e.what();
@@ -305,7 +407,7 @@ std::vector<ArtifactRecord> CacheDb::All(std::string& err) {
 	}
 	try {
 		SQLite::Statement q(*m_impl->db,
-			"SELECT hash, klass, uri, pak, offset, size, meta, created "
+			"SELECT hash, klass, uuid, uri, pak, offset, size, meta, created "
 			"FROM artifacts ORDER BY klass, uri");
 		while (q.executeStep()) {
 			ArtifactRecord r;
@@ -343,18 +445,6 @@ uint64_t CacheDb::Count(std::string& err) {
 
 namespace {
 
-// klass -> the pak's asset kind (the TOC kind decides what PakBackend
-// serves; textures must be Texture to ride the existing VFS path).
-bool KlassToKind(const std::string& klass, smvk::PakAssetKind& out) {
-	if (klass == "texture") { out = smvk::PakAssetKind::Texture; return true; }
-	if (klass == "mesh") { out = smvk::PakAssetKind::Mesh; return true; }
-	if (klass == "material") { out = smvk::PakAssetKind::Material; return true; }
-	if (klass == "light") { out = smvk::PakAssetKind::Light; return true; }
-	if (klass == "camera") { out = smvk::PakAssetKind::Camera; return true; }
-	if (klass == "scene") { out = smvk::PakAssetKind::Scene; return true; }
-	return false;
-}
-
 } // namespace
 
 ArtifactStore::ArtifactStore(std::string scratchRoot, CacheDb& db)
@@ -365,16 +455,16 @@ ArtifactStore::ArtifactStore(std::string scratchRoot, CacheDb& db)
 ArtifactStore::~ArtifactStore() = default;
 
 std::string ArtifactStore::PakPath(const std::string& klass) const {
-	return (fs::path(m_root) / "artifacts" / (klass + ".pak"))
-		.generic_string();
+	return (fs::path(m_root) / ArtifactPakFileName(klass)).generic_string();
 }
 
 bool ArtifactStore::Put(const std::string& klass, const std::string& uri,
 	std::span<const uint8_t> payload, const std::string& sourceHash,
-	const std::string& meta, std::string& err) {
+	const std::string& meta, std::string& err, const std::string& uuid) {
 	smvk::PakAssetKind kind = smvk::PakAssetKind::Texture;
-	if (!KlassToKind(klass, kind)) {
-		err = "unknown artifact class: " + klass;
+	if (!ArtifactKindToPakKind(klass, kind)) {
+		err = "unknown artifact class: " + klass
+			+ " (see artifact_kind.h)";
 		return false;
 	}
 	(void)kind; // kind matters at Flush (per-class pak), not at stage
@@ -389,6 +479,8 @@ bool ArtifactStore::Put(const std::string& klass, const std::string& uri,
 			s.payload.assign(payload.begin(), payload.end());
 			s.sourceHash = sourceHash;
 			s.meta = meta;
+			if (!uuid.empty())
+				s.uuid = uuid;
 			return true;
 		}
 	}
@@ -398,6 +490,7 @@ bool ArtifactStore::Put(const std::string& klass, const std::string& uri,
 	s.payload.assign(payload.begin(), payload.end());
 	s.sourceHash = sourceHash;
 	s.meta = meta;
+	s.uuid = uuid;
 	m_staged.push_back(std::move(s));
 	return true;
 }
@@ -421,6 +514,11 @@ bool ArtifactStore::GetFromDisk(const std::string& klass,
 	std::string gerr;
 	if (!m_db.Get(klass, uri, rec, gerr)) {
 		err = "no artifact '" + uri + "' (class " + klass + ")";
+		return false;
+	}
+	if (rec.size == 0 || rec.pak.empty()) {
+		err = "no payload for '" + uri + "' (identity-only row: "
+			"the derivation lives loose, nothing staged)";
 		return false;
 	}
 	std::ifstream f(PakPath(klass), std::ios::binary);
@@ -462,8 +560,9 @@ bool ArtifactStore::Flush(std::string& err) {
 			classes.push_back(s.klass);
 	for (const std::string& klass : classes) {
 		smvk::PakAssetKind kind{};
-		if (!KlassToKind(klass, kind)) {
-			err = "unknown artifact class: " + klass;
+		if (!ArtifactKindToPakKind(klass, kind)) {
+			err = "unknown artifact class: " + klass
+				+ " (see artifact_kind.h)";
 			return false;
 		}
 		std::vector<std::pair<std::string, std::span<const uint8_t>>>
@@ -486,8 +585,9 @@ bool ArtifactStore::Flush(std::string& err) {
 			ArtifactRecord rec;
 			rec.hash = batch[i]->sourceHash;
 			rec.klass = klass;
+			rec.uuid = batch[i]->uuid;
 			rec.uri = batch[i]->uri;
-			rec.pak = "artifacts/" + klass + ".pak";
+			rec.pak = ArtifactPakFileName(klass);
 			rec.offset = infos[i].offset;
 			rec.size = infos[i].size;
 			rec.meta = batch[i]->meta;
@@ -513,8 +613,9 @@ bool ArtifactStore::Remove(const std::string& klass, const std::string& uri,
 
 bool ArtifactStore::ResetClass(const std::string& klass, std::string& err) {
 	smvk::PakAssetKind kind{};
-	if (!KlassToKind(klass, kind)) {
-		err = "unknown artifact class: " + klass;
+	if (!ArtifactKindToPakKind(klass, kind)) {
+		err = "unknown artifact class: " + klass
+			+ " (see artifact_kind.h)";
 		return false;
 	}
 	m_staged.erase(std::remove_if(m_staged.begin(), m_staged.end(),

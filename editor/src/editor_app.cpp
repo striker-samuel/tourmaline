@@ -379,7 +379,7 @@ bool EditorApp::OpenCacheDb() {
 	m_store.reset();
 	m_texCacheAdapter.reset();
 	// Project-only: the artifact cache lives in the project's
-	// artifacts/ dir (cache.db + assets.db + per-class paks). Without
+	// .tourmaline/ dir (cache.db + assets.db + pak/ per-class paks). Without
 	// a project the cache stays off — imports/cooks still work (the
 	// cache only accelerates processing, never gates it).
 	if (m_projectRoot.empty()) {

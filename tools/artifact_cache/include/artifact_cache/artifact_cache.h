@@ -37,7 +37,9 @@ std::string HashBytes(const void* data, size_t size);
 // One registry entry: where a processed artifact lives in the scratch.
 struct ArtifactRecord {
 	std::string hash;    // content hash of the SOURCE input (HashBytes)
-	std::string klass;   // "texture" | "mesh" | "material" | ...
+	std::string klass;   // canonical kind (see artifact_kind.h)
+	std::string uuid;    // artifact identity (manifest GUID for derived
+	                     // family members; "" when unregistered)
 	std::string uri;     // asset URI the artifact is registered under
 	std::string pak;     // pak file name, relative to the scratch root
 	uint64_t offset = 0; // byte offset of the payload inside the pak
@@ -71,6 +73,20 @@ public:
 	// First record matching the content hash (any class).
 	bool GetByHash(const std::string& hash, ArtifactRecord& out,
 		std::string& err);
+	// First record with this (klass, uuid) — the identity lookup for
+	// manifest-registered derived artifacts. False when none.
+	bool FindByUuid(const std::string& klass, const std::string& uuid,
+		ArtifactRecord& out, std::string& err);
+	// Identity registration (the derive path): upserts the identity
+	// columns (hash, uuid, meta) for (klass, uri) WITHOUT touching a
+	// staged payload's location columns — a Flush after a Register
+	// must not clobber, and a Register after a Flush must not orphan
+	// bytes. Rows may carry no payload yet (pak empty + size 0):
+	// identity-only rows address loose-backed derivations until a
+	// payload stages. Kind must be canonical (see artifact_kind.h).
+	bool Register(const std::string& klass, const std::string& uuid,
+		const std::string& uri, const std::string& hash,
+		const std::string& meta, std::string& err);
 	bool Remove(const std::string& klass, const std::string& uri,
 		std::string& err);
 	// Full listing (cache GC / inspection tooling).
@@ -86,9 +102,10 @@ private:
 // ---------------------------------------------------------------------------
 // Artifact store: the per-class pak files + registry glue.
 //
-// Layout under the scratch root:
-//   artifacts/textures.pak, meshes.pak, materials.pak, ...
-//     One pak per class, grown in place (engine AppendPakBlobs keeps
+// Layout under the scratch root (the folders-for-schema):
+//   pak/texture.pak, pak/mesh.pak, ... (see artifact_kind.h — file
+//     names are singular-by-construction: pak/<klass>.pak)
+//     One pak per canonical kind, grown in place (engine AppendPakBlobs keeps
 //     the image valid for PakReader::Open at all times; entries are
 //     uncompressed so registry (offset, size) reads are direct).
 //   cache.db
@@ -110,14 +127,16 @@ public:
 	ArtifactStore(const ArtifactStore&) = delete;
 	ArtifactStore& operator=(const ArtifactStore&) = delete;
 
-	// Stage one cooked artifact. klass: "texture" | "mesh" |
-	// "material" | "light" | "camera" | "scene". sourceHash: content
-	// hash of the INPUT the artifact was processed from (the
-	// "already cooked?" key); payload: the cooked bytes; meta:
-	// kind-specific metadata (opaque to the store).
+	// Stage one cooked artifact. klass: canonical kind (see
+	// artifact_kind.h — unknown kinds fail closed); uri: asset URI;
+	// sourceHash: content hash of the INPUT the artifact was processed
+	// from (the "already cooked?" key); payload: the cooked bytes; meta:
+	// kind-specific metadata (opaque to the store); uuid: artifact
+	// identity for manifest-registered derivations ("" = unregistered).
 	bool Put(const std::string& klass, const std::string& uri,
 		std::span<const uint8_t> payload, const std::string& sourceHash,
-		const std::string& meta, std::string& err);
+		const std::string& meta, std::string& err,
+		const std::string& uuid = "");
 	// Direct read: staged map first, then the class pak at the
 	// registry's (offset, size). False when unknown.
 	bool Get(const std::string& klass, const std::string& uri,
@@ -151,6 +170,7 @@ private:
 		std::vector<uint8_t> payload;
 		std::string sourceHash;
 		std::string meta;
+		std::string uuid; // manifest identity ("" = unregistered)
 	};
 	std::string PakPath(const std::string& klass) const;
 	bool GetFromDisk(const std::string& klass, const std::string& uri,

@@ -5,9 +5,10 @@
 //   <root>/paks/               cooked outputs (<stem>.pak)
 //   <root>/gi/                 baker sidecars (written by the cooker next
 //                             to the out pak; resolved by the loaders)
-//   <root>/artifacts/          OWNED artifact cache (the Unity Library/
+//   <root>/.tourmaline/        OWNED artifact cache (the Unity Library/
 //                             equivalent: cache.db + assets.db +
-//                             artifacts/). No scratch disk: without a
+//                             pak/<klass>.pak, hidden on Windows).
+//                             No scratch disk: without a
 //                             project the cache is off.
 // Opening a project repoints the artifact cache, the cook defaults and
 // the artifact cache at it. Importing an asset copies it into the
@@ -15,6 +16,8 @@
 // render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
+
+#include <artifact_cache/artifact_kind.h>
 
 #include <cctype>
 #include <filesystem>
@@ -52,7 +55,7 @@ bool HasModelExtension(const std::string& path) {
 
 std::string EditorApp::ProjectArtifactDir() const {	if (m_projectRoot.empty())
 		return {};
-	return (std::filesystem::path(m_projectRoot) / "artifacts")
+	return (std::filesystem::path(m_projectRoot) / ".tourmaline")
 		.generic_string();
 }
 
@@ -216,7 +219,7 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 	std::error_code ec;
 	if (IsProjectDir(root))
 		return OpenProject(root); // already a project: just open it
-	// Scaffold the Unity-style tree (artifacts/ itself is created by
+	// Scaffold the Unity-style tree (.tourmaline/ itself is created by
 	// EnsureScratchRoot when the cache opens).
 	fs::create_directories(fs::path(root) / "content" / "models", ec);
 	fs::create_directories(fs::path(root) / "content" / "scenes", ec);
@@ -649,6 +652,55 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 			+ " new GUID(s)" : "")
 		+ (stats.keptGuids ? ", " + std::to_string(stats.keptGuids)
 			+ " kept GUID(s)" : "") + ").");
+	// Funnel registration (the artifact DB is the pipeline entry
+	// point): every manifest entry becomes a (klass, uuid) identity
+	// row — no payload yet (derivations live loose beside the source;
+	// payloads stage on cook). Skipped when the cache is off (project-
+	// less sessions); identity still resolves through the manifest.
+	if (m_cacheDb.IsOpen() && !m_projectRoot.empty()) {
+		const auto kindOf =
+			[](smvk::assets::AssetKind k) -> const char* {
+			switch (k) {
+			case smvk::assets::AssetKind::Geometry:
+				return smvk::cache::kKindMesh;
+			case smvk::assets::AssetKind::Material:
+				return smvk::cache::kKindMaterial;
+			case smvk::assets::AssetKind::Anim:
+				return smvk::cache::kKindAnimation;
+			}
+			return "";
+		};
+		const fs::path gltfDir = fs::path(gltfPath).parent_path();
+		const std::string root = fs::path(m_projectRoot)
+			.lexically_normal().generic_string();
+		size_t registered = 0;
+		for (const smvk::assets::AssetEntry& e : manifest.entries) {
+			const char* klass = kindOf(e.kind);
+			if (!klass || !*klass || e.guid.empty() || e.file.empty())
+				continue;
+			std::error_code ec2;
+			std::string uri = fs::absolute(gltfDir / e.file, ec2)
+				.lexically_normal().generic_string();
+			if (!ec2 && uri.size() > root.size()
+				&& uri.compare(0, root.size(), root) == 0
+				&& uri[root.size()] == '/')
+				uri = uri.substr(root.size() + 1);
+			// Staleness key: the manifest's source digest when the
+			// derivation carries one, else the entry GUID (stable
+			// across reimports either way — equality is all Has
+			// needs).
+			const std::string hash = manifest.sourceDigest.empty()
+				? e.guid : manifest.sourceDigest;
+			std::string rerr;
+			if (m_cacheDb.Register(klass, e.guid, uri, hash, "", rerr))
+				++registered;
+			else
+				Log("Import: artifact registration skipped for '"
+					+ e.file + "': " + rerr);
+		}
+		Log("Import: registered " + std::to_string(registered)
+			+ " derived artifact(s) in the artifact DB.");
+	}
 	return geometry.generic_string();
 }
 

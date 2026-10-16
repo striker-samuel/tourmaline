@@ -599,11 +599,13 @@ bool AssetDatabase::RescanProject(RescanStats& stats, std::string& err) {
 		// .meta sidecars there (see Engine/Asset/bake_asset.h) and adopt
 		// like any other sidecar-carrying file — files WITHOUT sidecars
 		// never reach adoption (see below), so debug PNGs/charts stay out.
-		// (scratch/ tolerated: pre-rename projects.)
+		// (scratch/ + artifacts/ tolerated: pre-schema-rename projects,
+		// ignored in place — caches rebuild under .tourmaline/.)
 		const std::string rel = ToStoredPath(m_projectRoot,
 			Normalized(p.generic_string()));
 		if (rel.compare(0, 8, "scratch/") == 0
 			|| rel.compare(0, 9, "artifacts/") == 0
+			|| rel.compare(0, 12, ".tourmaline/") == 0
 			|| rel.compare(0, 5, "paks/") == 0)
 			continue;
 		std::string guid, merr;
