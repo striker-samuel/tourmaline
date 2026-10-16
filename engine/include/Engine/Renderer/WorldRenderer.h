@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 // WorldRenderer: whole-frame renderer over a WORLD. The host (App's
 // main.cpp, the editor's live view) owns all content loading â€” scenes
 // arrive as a resolved smvk::World whose clusters/resources are already

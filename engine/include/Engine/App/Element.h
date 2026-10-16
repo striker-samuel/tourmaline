@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 // Render-layer / element system (nvpro_core2 nvapp-style).
 //
 // The swapchain (acquire / present / resize / present-mode) is owned by the

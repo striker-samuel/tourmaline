@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_hf_tile.cs.hlsl — GPU tile evaluation, heightfield domain.
 // Mirrors CPU EvaluateTile() for heightfield layers: uniform XZ pick +
 // bilinear height + central-difference normal, density field, quantized

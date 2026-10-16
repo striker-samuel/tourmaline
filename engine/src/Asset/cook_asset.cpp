@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Cook-asset manifest IO (see Engine/Asset/cook_asset.h).
 
 #include <Engine/Asset/cook_asset.h>

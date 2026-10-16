@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Procedural terrain: analytic heightfield shared by the placement Terrain
 // domain, the editor Create > Terrain flow, and the cooker (all three

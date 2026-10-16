@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Bake-density visualization (see editor_app.h: the LIGHTING-mode GI
 // authoring overlays). Two views answering "do the bake density settings
 // fit the scene" WITHOUT baking:

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // TerrainHFieldTests: CPU height-field sampling + meta JSON contract.
 // GPU-less, header-only (terrain_hfield.h, terrain_meta.h).
 

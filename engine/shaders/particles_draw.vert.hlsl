@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Particle billboards: camera-facing quads expanded entirely in the vertex
 // shader from SV_VertexID + SV_InstanceID — no vertex buffer, no CPU-side
 // alive list (the app issues a fixed Draw(6, maxParticles)). Dead slots

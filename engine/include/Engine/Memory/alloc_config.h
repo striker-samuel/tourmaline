@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Centralized default allocation-chunk sizes (Phase 0 infrastructure).
 //

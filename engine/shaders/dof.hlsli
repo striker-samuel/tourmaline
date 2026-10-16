@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Shared depth-of-field helpers (low single-pass + HQ CoC/bokeh).
 //

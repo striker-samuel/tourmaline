@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Filtered-path motion-vector vertex shader: draws the per-view compacted
 // index list produced by gfxfilter.cs.hlsl via DrawIndexedIndirect, so the
 // motion pass reuses the GPU HZB cull (occluded clusters were zeroed to

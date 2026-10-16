@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Flat UV coordinate export: the mesh unwrapped by its atlas UV
 // (chart-local TEXCOORD1 + chart id, unpacked in the VS via the per-mesh
 // chart tail) with the PARAMETERIZATION ITSELF as content — no atlas

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // THE MESH IMPORTER: glTF -> the engine-native MESH ARTIFACT family
 // (Unity-style preprocessed assets). This is the ONLY glTF-aware import

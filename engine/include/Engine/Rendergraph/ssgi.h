@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SSGI: the post-Main screen-space subsystem (see the writeup in
 // ssao_compose.frag.hlsl + world_renderer.cpp's frame block).

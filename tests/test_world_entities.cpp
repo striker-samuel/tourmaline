@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // world_entity_tests: cluster unload + dynamic-cluster contracts.
 // GPU-less: clusters are built as pure value worlds (scene nodes + light
 // pools — no uploads, ctx nullptr); resolve/unload never touch the GPU.

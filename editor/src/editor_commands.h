@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Editor CRUD command stack (Maya-style): every scene edit is a command
 // with an exact inverse, giving unlimited undo/redo. The stack IS the

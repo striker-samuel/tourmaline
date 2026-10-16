@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Chrome-ball visualization of the loaded cubemap probes (see
 // Rendergraph/probeball.h): a DEDICATED pass — no scene pc, its own push
 // block (ProbeBallPush, mirrored by the C++ struct in probeball.h).

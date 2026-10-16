@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Hierarchical-Z (occlusion) shared structs (Vulkan port).
 // C++ mirrors: Engine/Renderer/gfx_filter.h (HzbPush, 48 bytes).
 //

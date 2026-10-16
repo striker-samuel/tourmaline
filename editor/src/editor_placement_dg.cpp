@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // editor_placement_dg.cpp — the placement graph ON the Maya-style DG
 // core (editor_dg.h). Every NodeKind registers a TYPE here (the
 // initialize()/addAttribute() pattern): pin attributes (connectable,

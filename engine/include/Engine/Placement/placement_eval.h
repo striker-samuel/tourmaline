@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // CPU reference evaluator for PlacementProgram + acceptance + transforms.
 // This is the oracle: GPU kernels and baked caches must agree with it on

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/RHI/resource_manager.h>

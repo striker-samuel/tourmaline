@@ -1,3 +1,6 @@
+@rem Copyright (c) 2026 Samuel Martin
+@rem SPDX-License-Identifier: MIT
+
 @echo off
 rem Recook bistro.pak with the current engine structs (64-byte StaticVertex,
 rem 128-byte MaterialValues) and sync it into the build content dirs the App

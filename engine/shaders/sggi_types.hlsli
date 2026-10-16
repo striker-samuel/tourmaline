@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SG-GI probe volume GPU types. Mirrors C++ smvk::gi (Engine/GI/sg.h +
 // Engine/GI/probe_volume.h, layout static_asserted there):

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Meshlet debug view fragment: flat push color, no lighting/textures.
 // C++ mirror: app::MeshDebugPush (144 bytes).
 struct MeshDebugPush

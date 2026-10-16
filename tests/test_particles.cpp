@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // particles_tests: CPU-side tests for the GPU particle system builder
 // (Engine/Rendergraph/particles.h). No GPU required: the struct ABI mirrors
 // (C++ <-> particles.hlsli, sizes asserted on the C++ side), the free-list

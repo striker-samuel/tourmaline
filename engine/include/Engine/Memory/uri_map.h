@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // UriMap: open-addressing (FNV-1a, linear probe) hash map for the Cluster
 // URI registries, replacing std::unordered_map<std::string, ...>.

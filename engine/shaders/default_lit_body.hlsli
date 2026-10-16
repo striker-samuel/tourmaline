@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Main forward lighting fragment body, shared by:
 //   default_lit.frag.hlsl       (classic alpha-test discard)
 //   default_lit_a2c.frag.hlsl   (ALPHA_TO_COVERAGE: coverage from output

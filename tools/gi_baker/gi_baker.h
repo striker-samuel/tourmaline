@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // GiBaker as a library (the editor links it; the CLI stays a thin
 // interface over the same Run). Args mirror the --help flags 1:1;

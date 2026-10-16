@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // EVSM prefilter, VERTICAL leg (temp -> blurred). Separate entry point
 // from evsm_blur_h.cs.hlsl so the blur axis never survives as a runtime
 // branch — the shared kernel body + the cost budget live in

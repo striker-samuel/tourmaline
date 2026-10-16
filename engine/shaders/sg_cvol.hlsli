@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Convex GI volumes (Engine/GI/cubemap_volume.h): shaped local probe
 // grids cooked by sparse cubemap-reprojection bakes, blended over the

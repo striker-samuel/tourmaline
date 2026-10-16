@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_con_elect.cs.hlsl — constraint pass 2/3: cell pre-election.
 // One thread per accepted instance: walk my cell's linked list; I win iff
 // no list member beats me under (priority, tie -> smaller candidateIndex).

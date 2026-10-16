@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Flat UV (lightmap) fragment: sample lobe 0 of the baked lightmap
 // atlas at the unwrapped atlas uv — the "chart layout over baked
 // content" view. Same Reinhard + gamma display mapping as the F8 baked

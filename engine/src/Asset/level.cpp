@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // LEVEL blob writer/reader (see Asset/level.h). Little-endian,
 // magic-is-version, fail-closed — the pak discipline.
 

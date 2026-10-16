@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Packed vertex-stream unpack (CPU mirror: Engine/Renderer/vertex_pack.h —
 // keep the two in sync: same fold, same sign(0)=+1, same rounding).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // CLI parsing for the pak-viewer host (the APP's own host layer; fills
 // PakAppConfig from argv — see Host.h).
 

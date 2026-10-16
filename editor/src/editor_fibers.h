@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // EDITOR-ONLY Boost.Fibers backend for the editor's synchronous work.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // light_tests: CPU-side regression tests for the directional-light ortho
 // fit + texel snap (Engine/Renderer/light.cpp). No GPU required: the snap
 // is pure matrix math.

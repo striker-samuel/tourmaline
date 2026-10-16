@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Screen-space reflections: half-res raymarch + depth-aware bilateral
 // blur + depth-aware full-res composite.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tourmaline Editor branding: window title, window icon
 // (tourmaline_logo.png — generated here on first run when absent) and
 // the menu-bar gem mark (vector-drawn, no texture interop needed).

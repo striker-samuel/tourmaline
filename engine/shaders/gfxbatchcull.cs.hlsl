@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GfxBatchCull (GPU cull chain): the meshlet-level cull that used to be
 // BuildBatches' CPU loop, moved wholesale to the GPU — one 128-thread
 // workgroup per material-sorted draw, threads striding the draw's mesh

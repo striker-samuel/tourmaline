@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(Engine)
 
 set(ENGINE_BACKEND "Vulkan")

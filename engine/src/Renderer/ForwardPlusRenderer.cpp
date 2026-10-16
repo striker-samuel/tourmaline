@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Renderer/Renderer.h>

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(ArtifactCache)
 
 # Editor artifact cache (registry + per-class pak store):

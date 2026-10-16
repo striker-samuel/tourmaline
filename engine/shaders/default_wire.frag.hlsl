@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include "common.hlsli"
 
 // Wireframe (P) flat line color for PolygonMode::Line draws. Pairs with the

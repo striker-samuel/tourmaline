@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Tiled environment-zone separation: the world/env look (sky tint, ambient
 // intensity, fog, volumetrics) varies per world region and blends across

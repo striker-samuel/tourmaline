@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Deferred Shadows — Phase 2: Find Lights Approximate (paper listing 2).
 //
 // One work unit = one TileGroup (8x8 Shadow Tiles = 64x64 px); each thread

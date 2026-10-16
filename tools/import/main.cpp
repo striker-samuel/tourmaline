@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // import.exe - THE raw-source -> engine-format converter (the asset
 // creation). POSITIONAL grammar:
 //

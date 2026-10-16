@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // UV debug view body, shared by default_uv0_debug.frag.hlsl (base UV,
 // TEXCOORD0) and default_uv1_debug.frag.hlsl (lightmap atlas UV: chart
 // uv + chart id, unpacked in the VS). UVDBG_CHANNEL must be defined by

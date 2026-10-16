@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Pak-viewer host: the APP's own host layer. Takes a cooked pak (+ optional
 // scene index), loads it into a World and runs it through the engine's

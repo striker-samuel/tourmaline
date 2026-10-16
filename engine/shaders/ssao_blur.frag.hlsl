@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #define SSAO_PASS
 #include "common.hlsli"
 #include "ao.hlsli"

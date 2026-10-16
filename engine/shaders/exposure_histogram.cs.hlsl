@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Auto-exposure histogram builder (log2 luminance, 64 bins).
 //
 // One dispatch per frame over the scene HDR (pre-exposure, so the metered

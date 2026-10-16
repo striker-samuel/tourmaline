@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Alpha-tested shadow/depth FS body for cutout (MASK) materials, shared by
 // shadow.frag.hlsl and shadow_rev.frag.hlsl.
 //

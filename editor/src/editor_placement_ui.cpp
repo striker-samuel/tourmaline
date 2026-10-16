@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // PlacementGraph editor UI: node canvas, inspector panels, viewport overlay.
 // Model/compiler/persistence live in editor_placement.cpp; this file is
 // presentation only (ImGui). All functions are EditorApp methods.

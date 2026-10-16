@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_tests: Phase-0 foundation for PlacementGraph.
 // Hand-rolled runner (repo convention): PASS/FAIL lines, nonzero exit on failure.
 // Covers: stable-ID determinism, channel independence, prototype selection,

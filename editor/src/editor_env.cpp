@@ -1,4 +1,7 @@
-﻿// Editor environment (IBL) settings: viewport lighting lives in the
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Editor environment (IBL) settings: viewport lighting lives in the
 // SCENE (smvk::SceneEnv blocks — the scene default, plus per-node
 // ENVIRONMENT NODES; skybox + EV/volumetrics authoring; position = node
 // translate, size = node scale; convex-volume rendering comes later).

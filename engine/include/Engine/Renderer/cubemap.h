@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Scene cubemaps (skybox / IBL environment captures): baked asset files +
 // runtime loader.

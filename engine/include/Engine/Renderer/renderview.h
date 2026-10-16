@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 // RenderView – a virtual camera + its associated render target.
 //
 // A RenderView is the single unit of "something that can render":

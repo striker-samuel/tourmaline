@@ -1,4 +1,7 @@
-﻿// Editor CRUD command stack: execute/do/undo/redo + .tour persistence.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Editor CRUD command stack: execute/do/undo/redo + .tour persistence.
 //
 // Live commands use WORLD-space ids; the .tour file uses CLUSTER-space ids
 // (import-deterministic). Translation happens only at the save/load

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // cubemap_tests: CPU-side regression tests for cubemap support.
 // No GPU required:
 //  - FaceUvToDirection face layout (Engine/Renderer/cubemap.h, shared with

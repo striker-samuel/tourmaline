@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 """CI helper: retry the HLSL_FORCE_O3-pinned shaders with -Od codegen.
 
 The -Od SPIR-V of gfxfilter/batchcull/drawcull AVs nvgpucomp64.dll inside

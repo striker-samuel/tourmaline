@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Pak-viewer host run: renderer setup + world source + main loop. This is
 // the APP's host layer (moved out of the engine — the engine renders
 // worlds, the app owns pak loading, check-scene extras and demo content).

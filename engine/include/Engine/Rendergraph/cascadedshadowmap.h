@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Cascaded shadow-map atlas builder.
 // Ports the working directional CSM path that previously lived inline in

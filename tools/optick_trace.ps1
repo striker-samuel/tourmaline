@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # Optick .opt trace analyzer (PowerShell, no external deps).
 #
 # Parses the binary capture format written by Optick's save callback (the

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // TerrainPackTests: RG16 height packing + baseY/range mapping + normals.
 // GPU-less, header-only (terrain_pack.h). Follows test_runconfig.cpp style.
 

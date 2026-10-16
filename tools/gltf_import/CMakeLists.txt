@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(GltfImport)
 
 # glTF import pipeline (moved out of the engine: the runtime works on

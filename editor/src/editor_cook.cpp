@@ -1,4 +1,7 @@
-﻿// Cook flow: save the .tour command log, then run PakCooker --tour on a
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Cook flow: save the .tour command log, then run PakCooker --tour on a
 // worker thread (full bake support; the cooker replays the tour onto a
 // fresh import — deterministic source + tour in, pak out).
 

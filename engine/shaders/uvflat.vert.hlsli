@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Flat UV view vertex shader: the mesh is projected INTO UV space —
 // the clip position comes straight from the selected UV channel, so the
 // rasterized result is the unwrapped shell seen straight-on with its

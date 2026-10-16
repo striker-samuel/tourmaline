@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // PlacementGraph editor: EditorApp integration (persistence, mesh
 // extraction, live preview). Model/compiler live in editor_placement.cpp.
 

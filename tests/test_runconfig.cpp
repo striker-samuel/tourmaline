@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // RunConfigTests: central TOURMALINE_* parsing contract.
 // Verifies defaults (clean env), typed parsing, and helper semantics.
 // Does not depend on GPU. Each case saves/restores the vars it touches so

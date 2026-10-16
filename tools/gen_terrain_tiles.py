@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 """Synthetic tiled-terrain source generator (T0 test data).
 
 Writes, with stdlib only (no PIL):

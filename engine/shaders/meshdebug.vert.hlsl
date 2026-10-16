@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Meshlet debug view: flat per-cluster color (see GfxRenderer debug UI).
 // Standalone push (shares the global [0,256) range): model + viewProj +
 // color. C++ mirror: app::MeshDebugPush (144 bytes).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tiled-terrain heightfield shadows (see Rendergraph/terrain.h).
 //
 // The R16 height atlas (one 4096 slot, h01 in .r, linear clamp sampler 2)

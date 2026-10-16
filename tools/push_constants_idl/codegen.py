@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 """Verify the C++/HLSL push-constant mirror against push_constants.yaml.
 
 Usage:

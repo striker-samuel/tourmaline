@@ -1,4 +1,7 @@
-﻿// Live world-scene surgery: reparent / rename / material-flag refresh.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Live world-scene surgery: reparent / rename / material-flag refresh.
 //
 // All edits preserve node indices (no add/delete), so the world's drawItems,
 // selection, overrides and pick map stay valid without a Resolve pass.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PhysicsView: answers "what procedural mesh lives here" WITHOUT Scene
 // nodes and WITHOUT mirroring the forest as CPU entities.

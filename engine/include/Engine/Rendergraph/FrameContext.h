@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // App-side frame context: engine FrameContext plus the per-frame addresses
 // and handles frame renderers need (filled by main per frame, read by

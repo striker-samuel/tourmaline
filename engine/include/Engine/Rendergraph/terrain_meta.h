@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Tiled-terrain metadata (cook-boundary schema, no JSON dependency).
 //

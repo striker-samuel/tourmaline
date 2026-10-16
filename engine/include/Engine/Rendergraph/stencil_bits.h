@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Shared stencil-VALUE layout of the scene depth target's stencil aspect.
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 """Pack browser (PyQt6) for .pak files.
 
 Reads the pak manifest/header (no engine build needed) to inspect pack

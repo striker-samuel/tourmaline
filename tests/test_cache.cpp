@@ -1,4 +1,7 @@
-﻿// test_cache: artifact-cache library tests (registry root handling +
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// test_cache: artifact-cache library tests (registry root handling +
 // SQLite registry round-trips). No GPU, no editor. Run via CTest.
 
 #include <cstdio>

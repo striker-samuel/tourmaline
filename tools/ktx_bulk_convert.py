@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # ktx_bulk_convert.py
 # Usage:
 #   python ktx_bulk_convert.py <tools_dir> <input_dir> <output_dir> [--mode etc1s|uastc] [--threads N] [--no-mips]

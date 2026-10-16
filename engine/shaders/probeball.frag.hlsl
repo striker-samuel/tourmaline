@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Chrome-ball visualization of the loaded cubemap probes (see
 // Rendergraph/probeball.h): a DEDICATED pass whose fragment paints THE
 // PROBE'S OWN baked cubemap onto the sphere surface — reflect(-V, N) into

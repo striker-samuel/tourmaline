@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // spirv reflection tests: headless (no GPU/device required).
 // Covers specialization payload semantics, push-constant merge/validate,
 // ReflectSpirv error paths, and – when DXC is available – end-to-end

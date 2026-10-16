@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Global linear allocators, one per lifetime (Phase 0 infrastructure).
 //

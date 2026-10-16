@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Triangle-level BVH for the GI baker: raycasting (primary/shadow rays) and
 // closest-point distance queries (probe placement / relocation / brick

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Filtered-path vertex shader: draws the per-view compacted index list
 // produced by gfxfilter.cs.hlsl via DrawIndexedIndirect.
 //

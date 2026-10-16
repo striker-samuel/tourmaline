@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // asset_tests: headless unit tests for VFS + pak container + asset URIs +
 // the meshopt cook pass. No GPU required (nothing here constructs a
 // ResourceManager); run via CTest.

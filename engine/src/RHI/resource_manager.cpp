@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/RHI/resource_manager.h>
 #include <array>
 #include <Engine/smvk.h>

@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 // GltfEditor: inspect + cook glTF scenes with a .tour overlay.
 //
 // Loads a glTF straight into a GPU World (same importer as App/PakCooker),

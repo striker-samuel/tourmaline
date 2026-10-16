@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Central TOURMALINE_* parser (see App/RunConfig.h). Semantics replicate the
 // historical per-site getenv blocks exactly; each entry notes its origin so
 // future migrations can delete the old site with confidence.

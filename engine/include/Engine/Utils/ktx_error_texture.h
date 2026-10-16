@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Solid-pink error texture (255, 0, 255, 255): the visual flag for

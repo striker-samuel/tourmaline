@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Motion blur tile reduction, phase A (per-tile max velocity).
 //
 // One 16x16 group per screen tile: every thread Loads its pixel's motion

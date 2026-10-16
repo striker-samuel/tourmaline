@@ -1,4 +1,7 @@
-﻿// EditorApp: init / frame loop / scene loading / frame-data upload.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// EditorApp: init / frame loop / scene loading / frame-data upload.
 // Rendering passes live in editor_render.cpp, UI in editor_ui.cpp.
 
 // Editor app implementation. NOMINMAX must precede EVERY include: the

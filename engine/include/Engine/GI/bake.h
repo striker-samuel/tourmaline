@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // GI bake pipeline: adaptive probe placement + CPU path tracing + fixed-basis
 // SG fitting (see GI/sg.h for the representation).

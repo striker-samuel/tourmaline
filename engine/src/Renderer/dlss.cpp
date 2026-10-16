@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // NVIDIA Streamline (DLSS-SR) backend - see Engine/Rendergraph/dlss.h.
 //
 // Everything Streamline-related lives behind the Dlss* free functions so

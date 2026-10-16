@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Alpha-tested cutout depth/FS for NORMAL-Z passes: directional shadow
 // cascades, spot-shadow atlases and their temporal seeds (clear 1.0,
 // LessEqual). Conservative depth: SV_DepthGreaterEqual (never farther) so

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # Screenshot A/B comparison (PowerShell, System.Drawing only — no external
 # deps). Built for the TOURMALINE_CAPTURE=<frame> bench flow:
 #

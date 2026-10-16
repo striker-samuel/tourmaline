@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Flat UV (diffuse) fragment: sample the material's baseColor texture
 // at the unwrapped uv, tinted by the baseColor factor — the "what does
 // the diffuse layout look like over its texture" view. Alpha cutout +

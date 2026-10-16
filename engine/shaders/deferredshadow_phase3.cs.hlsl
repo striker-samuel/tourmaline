@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Deferred Shadows — Phase 3: Find Lights Accurate (paper listing 3).
 //
 // One work unit = ONE Shadow Tile (8x8 px); each thread evaluates one

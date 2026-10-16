@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // RendergraphContractTests: CPU-testable frame-renderer contracts.
 // The 14k-line WorldRenderer + 11k-line Vulkan impl have no GPU unit tests;
 // these pin the parts that are pure logic so refactors fail fast:

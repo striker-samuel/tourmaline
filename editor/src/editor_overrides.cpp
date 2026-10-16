@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Editor Clarisse-style overrides: wide regex rules over node names.
 //
 // Layering (documented in the Overrides tab + .tour):

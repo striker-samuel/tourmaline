@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // PlacementGraph editor: document model, compiler, persistence, undo.
 // EditorApp integration (preview/mesh-extract/save-load) lives in
 // editor_placement_app.cpp; canvas/panels/overlay in

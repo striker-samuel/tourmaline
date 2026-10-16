@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Forward+ tile light culling (point/spot/probe; directional stays on CSM
 // path) + decal culling (projected splats share the light tiling) + convex
 // GI-volume culling (per-tile bitmask; sg_cvol.hlsli consumes it).

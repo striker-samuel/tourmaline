@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // .tour ASCII scene overlay: writer/parser + cook-cluster replay.
 // See Engine/Asset/tour.h for the format contract.
 

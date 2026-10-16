@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // GPU tile-evaluation backend (HZD-style runtime path).
 // C++ mirror of engine/shaders/placement_tile.cs.hlsl push constants.

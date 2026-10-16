@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // SSR contribution debug view (F12): shows the SSR contribution isolated
 // (SSR layer only, without the base HDR). The SSR thin G-buffer (oct normal +
 // roughness + metal) is written by the Forward+ depth prepass; the trace

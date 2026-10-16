@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Particle shading: soft radial sprite + emissive base + Forward+ tiled
 // light accumulation — the same per-tile fetch as default_lit_body.hlsli
 // (tile index from SV_Position, min(count, perTile) entries, emitter-index

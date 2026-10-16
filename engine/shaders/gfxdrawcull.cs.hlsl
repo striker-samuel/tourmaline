@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GfxDrawCull (GPU cull chain): Northlight-style mesh-bound fast discard
 // for the filter legs — one thread per draw. Runs after GfxHiz, before the
 // filter dispatch (the filter reads the verdicts to skip whole groups).

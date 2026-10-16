@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tiled environment-zone map (see Rendergraph/envzones.h): CPU grid
 // build/rasterize/sample + the GPU texture/bindless registration.
 

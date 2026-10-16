@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include "common.hlsli"
 
 // Motion vector FS: per-pixel UV delta (prevUV - currUV) into an RG16F

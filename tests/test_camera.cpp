@@ -1,4 +1,7 @@
-﻿// camera_tests: CPU-side regression tests for the finite reversed-Z main
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// camera_tests: CPU-side regression tests for the finite reversed-Z main
 // view projection + the shared degenerate-lookAt resolution
 // (Engine/Camera/camera.h). No GPU required: pure matrix math.
 //

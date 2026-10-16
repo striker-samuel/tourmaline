@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Terrain push block: DXC allows a SINGLE push_constant block per entry, so
 // terrain shaders that need the per-draw tail declare ONE block here.

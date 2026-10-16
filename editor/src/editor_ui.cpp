@@ -1,4 +1,7 @@
-﻿// Editor UI: menu bar, outliner (hierarchy), inspector (transform /
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Editor UI: menu bar, outliner (hierarchy), inspector (transform /
 // material / flags), cook panel, console, viewport overlay.
 //
 // Every edit goes through the CRUD command stack (Do/Undo/Redo); drags

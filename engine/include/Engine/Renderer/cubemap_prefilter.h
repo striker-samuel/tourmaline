@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // GGX specular prefilter for baked cubemaps (high-frequency specular IBL).
 //

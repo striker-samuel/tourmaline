@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // SDSM depth statistics (compute): decimated min/max VIEW-depth + a coarse
 // log-space depth HISTOGRAM over the main render depth — the measured
 // split range input for the cascades (Lauritzen & McCool 2011,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // bake-asset tests: the bake-identity layer (Engine/Asset/bake_asset.h)
 // that makes GI bakes + cubemap captures first-class assets — per-file
 // .meta sidecars (fresh GUID at first bake, stable across rebakes),

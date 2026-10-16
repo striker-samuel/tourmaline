@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Pak as a library (the editor links it; the CLI stays a thin user
 // interface over the same Run). PakArgs mirrors the FULL CLI surface:

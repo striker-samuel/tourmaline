@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Shared GeometryFX-filter structs (Vulkan port, per-cluster).
 // Included by gfxfilter.cs.hlsl (compute) and gfxfiltered.vert.hlsl.
 // C++ mirrors: Engine/Renderer/gfx_filter.h (static_asserted sizes).

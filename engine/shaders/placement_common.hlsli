@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_common.hlsli — GPU mirror of placement_ids.h + placement_point.h.
 // Bit-identical 32-bit integer hashing (plain uint math, no Int64 — the
 // engine avoids Capability Int64, cf. gfx_filter.h FilterPush comments).

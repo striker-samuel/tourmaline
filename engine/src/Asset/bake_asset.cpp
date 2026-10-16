@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Bake-asset leftovers (see Engine/Asset/bake_asset.h): the 32-hex test
 // that recognizes legacy guid columns in volume-manifest rows. The
 // sidecar identity machinery is gone — bakes ride stable VFS paths.

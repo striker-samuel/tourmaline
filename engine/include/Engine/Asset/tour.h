@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // .tour — Tourmaline editor scene overlay (ASCII, Maya .ma flavor).
 //

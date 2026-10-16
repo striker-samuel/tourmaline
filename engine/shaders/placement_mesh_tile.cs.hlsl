@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_mesh_tile.cs.hlsl — GPU tile evaluation, mesh-surface domain.
 // Mirrors CPU EvaluateTile() for mesh layers: alias-table triangle pick +
 // barycentric sample, density field, quantized accept, weighted prototype,

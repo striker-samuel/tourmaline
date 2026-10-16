@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_con_build.cs.hlsl — constraint pass 1/3: spatial grid build.
 // One thread per accepted instance (slot < count): compute the volume cell
 // and push the slot onto that cell's linked list (classic lock-free

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // App host entry: CLI parse -> pak-viewer run. The pak loading (preload,
 // world source, sponza check-scene extras, demo-content seeding) lives in
 // this target — PakApp.cpp/PakPreload.cpp/Host.h — NOT in the engine; the

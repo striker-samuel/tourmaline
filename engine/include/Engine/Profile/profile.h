@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 // Central Optick integration for Tourmaline.
 //
 // Usage (CPU):

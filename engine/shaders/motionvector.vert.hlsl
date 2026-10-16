@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include "common.hlsli"
 
 // Motion vector VS: outputs the current clip position (SV_Position) and the

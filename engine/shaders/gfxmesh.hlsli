@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Shared mesh-shader gfx filter structs (task-less mesh path).
 // Included by gfxfilter.mesh.hlsl. C++ mirrors: Engine/Renderer/gfx_filter.h
 // (GfxMeshParams, static_asserted sizes).

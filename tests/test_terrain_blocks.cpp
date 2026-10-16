@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // TerrainBlocksTests: G-block bake (counts, winding, skirts, AABB, color).
 // GPU-less, header-only (terrain_blocks.h).
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // --terrain cook (see terrain_cook.h): stb_image PNG loads + strict
 // validation + raw-RGBA8 Terrain blobs + meta blob with per-tile min/max.
 

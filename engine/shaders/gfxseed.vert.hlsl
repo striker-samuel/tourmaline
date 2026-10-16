@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Seed-depth VS, opaque phase (VS-only pipeline, back-culled like the
 // prepass). See gfxseed.hlsli for the shared prologue.
 #define GFXSEED_PASS

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementGraph domains: Grid + MeshSurface + Heightfield (MVP set).
 // Each domain exposes deterministic sampling from (StableID, candidateIndex).

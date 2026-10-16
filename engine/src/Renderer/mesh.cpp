@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
 #include "../Vulkan/detail/vulkan_impl.h"

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Chrome-ball visualization of the loaded cubemap probes — see
 // Rendergraph/probeball.h for the design. Sphere build + the standalone
 // pass (own push block, no scene pc).

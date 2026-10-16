@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SG lightmap GPU types (included from common.hlsli before FrameUniforms).
 // The 2D SG lightmap atlas: two GPU layouts selected by FrameUniforms.

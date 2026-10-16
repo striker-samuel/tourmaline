@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // cook.exe: offline ARTIFACT -> COOKED-ARTIFACT cooker that works
 // exclusively on the VFS and needs NO GPU (offline-mode Cluster, see
 // Cluster::SetOfflineMode). GI / cubemaps / LODs / meshlets / de-instance

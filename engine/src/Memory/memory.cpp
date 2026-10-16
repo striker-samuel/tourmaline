@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Global linear allocator instances (see memory.h).
 
 #include <Engine/Memory/memory.h>

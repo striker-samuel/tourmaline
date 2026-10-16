@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Definition-tour -> frozen World (single offline cluster, unresolved).
 // Factors the identical tour bootstrap in GiBaker / Cook / PakCooker:

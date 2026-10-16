@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // lm_png: cook-time raw lightmap atlas debug dump — the baked atlas
 // TEXELS as a PNG, written next to the .sglm (<scene>_atlas.png). This

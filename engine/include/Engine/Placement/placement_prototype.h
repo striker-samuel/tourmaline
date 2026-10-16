@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Prototype table: instances reference entries, never duplicate geometry.
 // Selection happens AFTER accept/reject so editing asset weights never

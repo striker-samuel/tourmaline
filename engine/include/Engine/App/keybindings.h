@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Centralized App keybindings: every global shortcut owns ONE semantic
 // name here, mapped to its physical key. Edit keys in this file — never

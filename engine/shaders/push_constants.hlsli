@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Scene push-constant mirror. SINGLE SOURCE OF TRUTH for field order:
 //   tools/push_constants_idl/push_constants.yaml

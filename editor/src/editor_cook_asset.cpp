@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Cook-asset creation (see EditorApp::CreateCookAsset): fresh UNBAKED
 // .gicook/.lmcook manifests in the project, adopted into the assetdb.
 

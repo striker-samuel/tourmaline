@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GeometryFX-style per-view triangle filter (Vulkan port, per-cluster).
 //
 // One workgroup (128 threads) per surviving cluster; one thread per

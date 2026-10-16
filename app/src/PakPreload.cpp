@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Background pak preload: file read + whole-image CRC + per-entry LZ4
 // decompression, kicked BEFORE the renderer starts Vulkan so it overlaps
 // instance/device/swapchain init and shader loading. App-host logic.

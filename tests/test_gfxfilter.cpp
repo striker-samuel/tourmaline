@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // gfxfilter_tests: CPU-side tests for the GeometryFX-style per-view
 // filter (Engine/Renderer/gfx_filter.h). No GPU required: registration,
 // batching and the CPU pre-cull are pure CPU code paths, and the winding

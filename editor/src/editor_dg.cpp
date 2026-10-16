@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // editor_dg.cpp — Maya-style dependency-graph core (see editor_dg.h
 // for the architecture notes). Schema registry, plug semantics,
 // connection validation, dirty propagation. Editor-only: no engine

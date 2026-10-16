@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // In-process LDR image -> KTX2 (stb decode, stbir mips, libktx write).
 //
 // Cook/editor texture promotion: source PNG/JPG/TGA/BMP bytes become a

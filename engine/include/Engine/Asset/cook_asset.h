@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Cook-asset definitions: GI cooks + lightmap cooks as first-class project
 // assets (Unity Lighting-Settings style).

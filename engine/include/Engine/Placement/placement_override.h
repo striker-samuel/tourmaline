@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // OverrideLayer: nondestructive art direction on top of procedural results.
 // Artists NEVER edit generated points; overrides key on StableID so forest

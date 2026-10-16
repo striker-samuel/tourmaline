@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Cook-time BC6H-U (unsigned half-float) block codec for the SG lightmap
 // atlas. The runtime samples BC6H_UFloat natively (the atlas uploads as

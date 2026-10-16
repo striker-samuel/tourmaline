@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(GiBaker)
 
 # GiBaker as a library (the editor links it and calls gibaker::Run

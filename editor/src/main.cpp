@@ -1,4 +1,7 @@
-﻿// GltfEditor entry point: inspect + cook glTF scenes.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// GltfEditor entry point: inspect + cook glTF scenes.
 //
 // Usage:
 //   Editor [--gltf <path>] [--out-pak <path>]

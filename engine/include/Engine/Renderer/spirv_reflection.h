@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SPIR-V reflection readback: push-constant ranges + specialization constants.
 //

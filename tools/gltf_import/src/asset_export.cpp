@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // glTF -> project asset derivation (see asset_export.h): the writers +
 // readers for .mesh / .material / .anim + the gltf.meta manifest.
 //

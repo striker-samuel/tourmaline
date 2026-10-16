@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 //--------------------------------------------------------------------------------------------------
 // SMAA passes share one push layout (every pass binds the same block, each

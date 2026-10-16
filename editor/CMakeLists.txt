@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(Editor)
 
 # EDITOR-ONLY fibers backend: Boost.Fibers needs compiled libs. The

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementCache: versioned binary snapshot of baked tiles.
 // Modes: FullyProcedural (no cache) → BakedBase+RuntimeModifiers

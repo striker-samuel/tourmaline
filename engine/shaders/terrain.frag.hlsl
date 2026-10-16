@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tiled terrain fragment shader (near tiles + far L3).
 //
 // Lambert sun + EvaluateIrradiance sky ambient + env fog — the SAME env

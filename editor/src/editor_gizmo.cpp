@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Selection gizmo: screen-space axis handles drawn as debug lines +
 // mouse interaction (translate/rotate/scale). Rotate/scale work in the
 // node's LOCAL frame, translate in WORLD axes (noted in the overlay).

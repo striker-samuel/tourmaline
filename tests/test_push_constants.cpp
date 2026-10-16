@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // PushConstantLayoutTests: pins the IRenderer::PushConstants mirror.
 // The C++ struct (Engine/Renderer/Renderer.h) and the HLSL struct
 // (engine/shaders/push_constants.hlsli) must stay layout-identical or the

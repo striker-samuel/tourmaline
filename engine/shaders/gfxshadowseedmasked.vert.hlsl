@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Shadow-atlas seed VS, MASK cutout phase (pairs with shadow.frag
 // alpha-test). Same VSOut subset as shadow.vert so it links with
 // shadow.frag; z clamp parity with shadow.vert / gfxshadowseed.vert.

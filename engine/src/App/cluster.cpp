@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/core.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Renderer/vertex_pack.h>

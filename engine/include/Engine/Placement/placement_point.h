@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementGraph point storage: structure-of-arrays on CPU, SoA GPU mirror.
 // A point is cheap: placement references prototype geometry, never duplicates it.

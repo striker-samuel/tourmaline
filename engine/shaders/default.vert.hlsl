@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Direct-path VS: declares its own push block (DEFAULT_DIRECT_PASS
 // excludes the scene pc from this stage — see common.hlsli). Bytes
 // 0..192 mirror the scene PushConstants exactly (same field order as

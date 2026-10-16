@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Native Windows file-open dialog (IFileOpenDialog): the single "Open
 // file" entry point for scenes (.gltf/.glb), cooked paks (.pak) and
 // tours (.tour). Starts in C:/ with an extension filter; the picked

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Sparse adaptive-octree reflection-probe placement for cubemap captures.
 //

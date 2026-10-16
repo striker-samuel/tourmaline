@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Maya-style dependency-graph core for the EDITOR runtime + tour format.
 //

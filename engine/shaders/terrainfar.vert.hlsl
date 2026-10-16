@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tiled terrain FAR vertex shader (L3 blocks, TerrainFarVertexFormat).
 //
 // VSIn location 0 = packed half4 grid (ix, iz, shade, skirtFlag) — the

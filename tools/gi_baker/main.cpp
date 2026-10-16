@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GiBaker: offline SG-GI probe-volume baker (GPU-free). Bakes a scene's
 // indirect lighting into an adaptive spherical-Gaussian probe volume
 // (Engine/GI: path tracer + adaptive brick placement + error-driven

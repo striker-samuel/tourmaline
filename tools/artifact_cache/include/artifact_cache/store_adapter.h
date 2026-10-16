@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // StoreAdapter: gltf_import's GltfArtifactCache over the registry's
 // ArtifactStore. The editor and PakCooker inject this into their import

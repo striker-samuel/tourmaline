@@ -1,4 +1,7 @@
-﻿#pragma once
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
 //
 // SDL3 application host (nvapp::Application-style): window, event pump
 // (feeds Input), audio engine, graphics members (context/swapchain/

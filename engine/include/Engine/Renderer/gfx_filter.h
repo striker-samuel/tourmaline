@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // GeometryFX-style per-view triangle filter (Vulkan port), procedural API.
 //

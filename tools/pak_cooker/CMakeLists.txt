@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(Pak)  # pak.exe: the PAK COOK - consumed artifacts only (raw glTF never cooks; import.exe / the MeshImporter produce the artifacts)
 
 # Pak as a library (the editor links it and calls paktool::Run

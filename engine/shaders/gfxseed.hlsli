@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Seed-depth vertex shader shared code (Alan Wake 2 style temporal, T3).
 // Included by gfxseed.vert.hlsl (opaque, position-only) and
 // gfxseedmasked.vert.hlsl (+ color/uv for the shadow.frag alpha test).

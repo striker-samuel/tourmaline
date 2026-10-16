@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // test_tour: headless unit tests for the .tour ASCII scene overlay
 // (parse/serialize round-trip, reparent, cook-cluster replay). No GPU
 // required. Run via CTest.

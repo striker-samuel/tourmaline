@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // motionblur_tests: CPU-side contract test for the tile-dilated velocity
 // gather + interleaved gradient noise tap jitter
 // (engine/shaders/motionblur.frag.hlsl + the two compute prepasses

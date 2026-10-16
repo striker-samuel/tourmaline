@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_tile.cs.hlsl — GPU tile evaluation, grid-domain MVP.
 // One thread per candidate (any order — no atomics except the final
 // append). Mirrors CPU EvaluateTile() for: constant+noise density,

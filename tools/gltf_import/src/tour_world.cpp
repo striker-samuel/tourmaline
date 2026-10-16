@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Definition-tour -> frozen World (see tour_world.h): the shared
 // GiBaker / Cook / PakCooker tour bootstrap (empty root + reference
 // bind + texture/material asset imports + command replay, HOST-path

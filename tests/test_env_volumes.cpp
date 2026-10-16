@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // test_env_volumes: Unreal-style env volumes (EnvVolume over the
 // transform box). GPU-less: exact 3D coverage (ZoneCovers), priority
 // resolution (ZoneAtPosition/ZonePriority), and tour replay of the

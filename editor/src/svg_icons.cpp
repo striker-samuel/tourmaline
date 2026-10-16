@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // SVG icon set (editor/icons/*.svg): nanosvg rasterization + ImGui
 // user-texture registration, plus the single-TU nanosvg build (the
 // IMPLEMENTATION defines live in exactly one TU — this one).

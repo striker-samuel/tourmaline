@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Shadow-atlas seed VS, opaque phase (VS-only pipeline).
 // Same cluster-heap indirect path as gfxseed.vert, but resolves the view
 // from the shadow tile's RenderView (cascade/spot slab index) and clamps

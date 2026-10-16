@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(blur_sample)
 
 set(SAMPLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // 2D SG lightmaps for STATIC geometry (companion to the dynamic-object path).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_domains.hlsli — GPU domain sampling for the scatter kernels.
 // Mirrors placement_domain.h exactly (alias walk, barycentric reflect,
 // bilinear height + central-difference normal). Positions/normals arrive

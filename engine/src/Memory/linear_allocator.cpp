@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // LinearAllocator implementation: reserved-VA bump allocator.
 //
 // Windows: VirtualAlloc MEM_RESERVE the full range at init (address space

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // --terrain cook: terrain_src dir (terrain.json + h_XX_ZZ.png + m_XX_ZZ.png)
 // -> PakAssetKind::Terrain blobs (16x height RGBA8 raw, 256x mask RGBA8 raw,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GPU simulation pass: one thread per pool slot ([64,1,1], dispatch
 // ceil(maxParticles / 64) — see smvk::Particles::SimGroupsFor).
 //

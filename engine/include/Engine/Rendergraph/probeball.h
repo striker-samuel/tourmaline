@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Chrome-ball visualization of the loaded reflection cubemap probes — a
 // DEDICATED rendergraph pass (NOT part of the lit Main pass): a small

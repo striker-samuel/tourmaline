@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // cube_png: cook-time cubemap debug dumps — the baked captures as PNGs,
 // written loose next to the outputs (<name>_N.png etc., never into the

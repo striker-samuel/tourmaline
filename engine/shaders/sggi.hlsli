@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SG-GI probe volume sampling + evaluation. Included after common.hlsli
 // (FrameUniforms carries the volume pointers; types in sggi_types.hlsli).

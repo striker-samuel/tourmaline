@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Mesh-path twin of default_lit.frag.hlsl (classic alpha-test cutout).
 //
 // Same body (default_lit_body.hlsli), but the material comes from a flat

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // 2D SG lightmap sampling + evaluation (static geometry). CPU mirror:
 // Engine/GI/lightmap.h/.cpp. Included after common.hlsli.

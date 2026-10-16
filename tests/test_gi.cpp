@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // gi_tests: CPU-side regression tests for the baked SG-GI probe system
 // (Engine/GI): fixed-basis SG math (evaluation, closed-form product
 // integrals, non-negative fitting), the triangle BVH used by the baker,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // EVSM separable Gaussian prefilter — shared H/V kernel body.
 //

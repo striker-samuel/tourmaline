@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // SPD (Single Pass Downsampler) for the bloom chain.
 //
 // Replaces the five fullscreen-triangle 13-tap Karis downsample passes

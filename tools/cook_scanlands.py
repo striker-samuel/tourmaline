@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # cook_scanlands.py — stage + cook the Scanlands GLB scene (no GI bake).
 #
 # The source is a binary .glb (F:/content/models/scanlands.glb) with all

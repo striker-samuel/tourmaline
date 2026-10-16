@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 """Headless golden capture: deterministic screenshot + content hash.
 
 Runs App.exe headless (fixed camera, fixed bench budget) and hashes the

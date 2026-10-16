@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Renderer/light.h>
 

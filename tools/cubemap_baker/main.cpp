@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // CubemapBaker: offline scene-capture cubemap baker (GPU-free).
 //
 //   CubemapBaker --content-dir F:/content --scene sponza

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Editor-side nested scene references (Clarisse-style) + the Maya-style
 // Reference Editor panel: the master scene's reference list is scene
 // DEFINITION — bound at import by gltf_import's ApplySceneReferences

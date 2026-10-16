@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementProgram IR: minimal field-expression SSA for the MVP.
 // Editor graphs compile DOWN to this; CPU and GPU both evaluate it.

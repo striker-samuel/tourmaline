@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 #include <Engine/smvk.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay

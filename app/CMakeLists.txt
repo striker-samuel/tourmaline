@@ -1,4 +1,7 @@
-﻿project(App)
+﻿# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
+project(App)
 
 set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/tourmaline/app
 

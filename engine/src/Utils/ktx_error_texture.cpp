@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Solid-pink error texture mint (see ktx_error_texture.h). Mirrors a
 // refused/stale texture's STRUCTURE and fills every texel with
 // (255, 0, 255, 255) RGBA8 — an unmistakable "recook the pak" flag that

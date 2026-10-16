@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // memory_tests: CPU-side tests for the Phase 0 linear-allocator
 // infrastructure (Engine/Memory/linear_allocator.h, linear_vector.h,
 // alloc_config.h). No GPU required.

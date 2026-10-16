@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/GI/lightmap.h>
 
 // NOTE: pool.h must precede Rendergraph/environment.h (bake.h pulls it).

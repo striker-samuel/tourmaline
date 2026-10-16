@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Forward+ frame renderer: depth prepass (fills depth for tile min/max)
 // + tile light cull, moved out of main.cpp behind IFrameRenderer.

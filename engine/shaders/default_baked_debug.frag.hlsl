@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Baked-irradiance debug view (editor F8): lobe-0 amplitude of the SG
 // lightmap atlas at the interpolated atlas uv. Lobe 0 exists in every
 // chunk (5/6/9/12 lobes all carry it) and holds the bulk of the baked

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // streaming_tests: CPU-side tests for texture streaming (no GPU required).
 //
 // Covers the device-free policy math shared by the streamer and its

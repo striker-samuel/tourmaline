@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Profile/profile.h>

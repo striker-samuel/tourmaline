@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Cubemap capture face strip (cook dialog): live KTX2 face previews.
 // While a cubemap cook runs, finished captures appear here as tonemapped
 // face strips parsed from the loose sidecars (never PNG); with no cook

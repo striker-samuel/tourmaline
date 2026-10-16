@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SgRegularVolume sampling: Ready-at-Dawn-style regular SG lattice.
 //

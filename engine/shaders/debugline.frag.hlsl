@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Cone-axis debug line fragment: flat push color.
 // C++ mirror: app::LineDebugPush (80 bytes).
 struct LineDebugPush

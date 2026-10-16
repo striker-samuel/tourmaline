@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Source-asset identity database implementation: GUID sidecars +
 // the assets.db directory (SQLiteCpp RAII, same pimpl/WAL pattern as
 // CacheDb). See assetdb.h for the layering contract.

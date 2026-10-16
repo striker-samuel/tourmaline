@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GPU particle system shared types (free-standing: no common.hlsli here so
 // the compute stages compile without the scene PushConstants in scope).
 // Must match the C++ mirrors in Engine/Rendergraph/particles.h (sizes are

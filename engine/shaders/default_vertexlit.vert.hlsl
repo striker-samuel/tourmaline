@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include "light.hlsli"
 #include "common.hlsli"
 #include "vertex_pack.hlsli"

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SMAA - Enhanced Subpixel Morphological Antialiasing (SMAA 1x + SMAA T2x).
 //

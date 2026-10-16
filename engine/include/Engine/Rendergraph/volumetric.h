@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Raymarched volumetric fog lit by the baked SG-GI probe volume.
 //

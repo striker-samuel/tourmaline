@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Tiled terrain FULL-detail vertex shader (near tiles).
 //
 // VSIn locations follow TerrainVertexFormat's attribute order exactly

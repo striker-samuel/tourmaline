@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // EVSM per-sample MSAA resolve (compute): 2x MSAA D32 -> single-sample
 // RGBA32F moments.
 //

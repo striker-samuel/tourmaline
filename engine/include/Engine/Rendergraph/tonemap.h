@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // HDR -> LDR tonemapper (fullscreen triangle, ACES / Reinhard / Uncharted2 / GT7).
 //

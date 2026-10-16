@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Private (app-host-internal, NOT public API): background pak file read +
 // parse + decompress, kicked before renderer init so it overlaps Vulkan

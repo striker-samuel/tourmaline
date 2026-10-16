@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Central modal key registry: EVERY editor key binding lives in
 // kModalBindings exactly once, with the modes it belongs to. Dispatch

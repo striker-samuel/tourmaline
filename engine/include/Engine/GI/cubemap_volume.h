@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Convex GI volumes: shaped local probe grids cooked by cubemap
 // reprojection (Black Ops 3 style), blended over the world field.

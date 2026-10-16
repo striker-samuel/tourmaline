@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SSR compute-chain shared types + the FidelityFX SSSR math ports (see
 // FidelityFX-SDK-v1.1.4

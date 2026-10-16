@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Central run configuration: ALL TOURMALINE_* env vars, parsed once.
 //

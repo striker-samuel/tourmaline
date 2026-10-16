@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // LEVEL blob (PakAssetKind::Level): ONE composite pak blob per playable
 // unit, packing the scene payload + its baked data blobs inline. The

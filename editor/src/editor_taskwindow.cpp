@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Blocking modal task window: the single progress surface for the long
 // subprocesses (CookToPak, BakeGI). Workers push one
 // line per output line into their mutex-guarded feed; the Poll* pumps

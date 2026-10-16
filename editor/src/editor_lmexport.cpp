@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Lightmap flat-view PNG export: renders the WHOLE scene unwrapped by
 // its atlas uv2 over the baked lightmap content into an offscreen
 // target (atlas resolution), with an optional UV wireframe overlay,

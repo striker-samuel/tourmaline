@@ -1,4 +1,7 @@
-﻿// Tiled terrain heightfield, baked from authored H-tiles — see
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Tiled terrain heightfield, baked from authored H-tiles — see
 // Rendergraph/terrain.h. CPU bake: per-block LOD grids from the H-field
 // (terrain_blocks.h) into one vertex buffer + one shared index buffer per
 // LOD. Draw: 6-plane frustum cull + distance LOD, grouped into three

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // DLSS Super Resolution via NVIDIA Streamline (external/streamline, v2.14.1).
 //

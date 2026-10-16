@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Static-subtree collapse: bakes world transforms of frozen nodes and merges

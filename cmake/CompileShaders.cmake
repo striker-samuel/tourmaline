@@ -1,4 +1,7 @@
-﻿if(DEFINED ENV{VULKAN_SDK})
+﻿# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
+if(DEFINED ENV{VULKAN_SDK})
   set(GLSLC "$ENV{VULKAN_SDK}/Bin/glslc.exe")
   set(DXC   "$ENV{VULKAN_SDK}/Bin/dxc.exe")
 else()

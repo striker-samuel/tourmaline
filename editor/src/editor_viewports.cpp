@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Editor viewports: multisection state + rubber-band box select +
 // viewport chrome (borders, camera combos, box rectangle) drawn with
 // ImGui over the rendered viewports.

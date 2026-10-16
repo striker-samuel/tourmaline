@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Tool stdout/stderr routing: lets host processes (the editor) capture
 // tool output line-by-line instead of scraping subprocess pipes.

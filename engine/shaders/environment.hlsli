@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Shared skydome IBL + fog evaluation. Included after common.hlsli so
 // FrameUniforms / EnvironmentFrameData are visible. All colors are linear;

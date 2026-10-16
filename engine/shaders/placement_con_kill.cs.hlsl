@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_con_kill.cs.hlsl — constraint pass 3/3: neighbourhood kill.
 // One thread per accepted instance: when I am an elected winner, walk the
 // 27 neighbouring cells; I die iff some OTHER winner conflicts

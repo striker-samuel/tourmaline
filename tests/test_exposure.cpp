@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // exposure_tests: headless unit tests for the auto-exposure CPU math
 // (histogram percentile + damped eye adaptation, see
 // Engine/Rendergraph/exposure.h). No GPU required: pure math functions

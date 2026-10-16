@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_editor_tests: headless tests for the placement graph editor
 // model (editor/src/editor_placement.cpp — engine-only TU, no ImGui).
 // Covers: scaffold validity, compile, serialize round-trip, link rules,

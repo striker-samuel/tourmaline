@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementGraph stable IDs + deterministic channels (CPU mirror).
 // Contract: integer hashing only (32-bit lanes — GPU-safe, no Int64).

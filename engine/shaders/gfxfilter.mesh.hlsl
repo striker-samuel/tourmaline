@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Task-less mesh-shader gfx filter (main-view opaque path).
 //
 // ONE mesh workgroup per cluster HALF of a CPU-partitioned batch list:

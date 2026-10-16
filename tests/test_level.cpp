@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Level blob contract (PakAssetKind::Level): build/parse round-trip,
 // pak carry, sub-blob addressing by canonical keys, fail-closed parses.
 // GPU-less. The wire format lives in Engine/Asset/level.h.

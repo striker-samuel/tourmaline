@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # cook_bistro.py — stage + cook the Niagara/Lumberyard Bistro scene.
 #
 # The upstream bistro.gltf references .png images (which don't exist on disk;

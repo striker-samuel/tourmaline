@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // profile_tests: CPU-side tests for the frame-time histogram state
 // machine (Engine/Profile/profile.h — RecordFrameTime /
 // GetFrameHistogramData / SetFrameHistogramEnabled). No GPU, no ImGui

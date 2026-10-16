@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // STL adapter over mem::LinearAllocator (Phase 0 infrastructure).
 //

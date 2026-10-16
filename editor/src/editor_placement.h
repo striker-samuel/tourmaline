@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementGraph editor: Clarisse-style graph authoring for the engine's
 // procedural placement system (CPU oracle + GPU runtime).

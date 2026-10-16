@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Hierarchical-Z build (occlusion culling input, Alan Wake 2 style).
 //
 // One dispatch per mip level (caller loops; rendergraph barriers come from

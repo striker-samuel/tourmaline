@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Shared SSGI-chain AO helpers (raw pass, blur pass, compose pass — see
 // Engine/Rendergraph/ssgi.h).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Texture streaming (Granite-lite): mip-tail residency with Skull & Bones

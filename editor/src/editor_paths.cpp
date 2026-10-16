@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Path editor: consolidated view over every file/path the scene depends
 // on (File > Path editor). Solves missing paths and easy repaths —
 // notably broken/missing texture links when bringing a glTF whose image

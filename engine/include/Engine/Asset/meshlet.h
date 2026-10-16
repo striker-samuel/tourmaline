@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Cook-time meshlet path (meshoptimizer). Cooked once in the pak cooker from

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # cook_bistro_v5.py — stage + cook the raw Lumberyard Bistro v5.2 FBX source.
 #
 # Pipeline:

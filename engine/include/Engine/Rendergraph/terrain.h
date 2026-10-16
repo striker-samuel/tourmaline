@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Tiled terrain heightfield — baked from authored H-tiles (no procedural
 // fallback; see Rendergraph/terrain_pack.h + terrain_hfield.h).

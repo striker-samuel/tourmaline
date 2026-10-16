@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Editor artifact cache implementation: registry-root handling + the
 // SQLite registry (SQLiteCpp RAII over the vendored sqlite3
 // amalgamation). See artifact_cache.h for the cache contract.

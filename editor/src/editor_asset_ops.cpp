@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Asset-browser delete planning/execution (see editor_asset_ops.h).
 
 #include "editor_asset_ops.h"

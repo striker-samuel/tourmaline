@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 # stage_niagara_gltf.py — stage the known-good Niagara bistro.gltf for a
 # direct (no-pak) geometry A/B against the v5.2 Blender conversion.
 #

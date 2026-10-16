@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Linear (bump-pointer) allocator over reserved virtual memory
 // (Phase 0 infrastructure, see ALLOCATION_ANALYSIS.md §3.1).

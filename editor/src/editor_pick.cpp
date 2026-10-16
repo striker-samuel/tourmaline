@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // CPU ray picking: mouse -> world ray -> closest mesh node.
 //
 // Mouse/extent are VIEWPORT-LOCAL (the central rect between the panels;

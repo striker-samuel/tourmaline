@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // WorldRendererElement: the control layer over WorldRenderer (see the
 // header for the split). Everything here moved from WorldRenderer â€” the
 // frame builder no longer polls input, owns keybinds, or drives modes.

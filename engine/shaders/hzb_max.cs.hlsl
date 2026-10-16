@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Hierarchical-Z build, MAX-reduce variant for the SSR trace (SSSR-style
 // Hi-Z input — see ssr.h + ssr.frag.hlsl).
 //

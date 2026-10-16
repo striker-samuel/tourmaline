@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // SgGiVolume: the baked SG-GI probe volume — data model, serialization
 // (.sggi) and runtime lookup structures.

@@ -1,4 +1,7 @@
-﻿// EditorApp viewport renderer: Unlit / Lit forward passes.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// EditorApp viewport renderer: Unlit / Lit forward passes.
 //
 // Reuses App's compiled shaders (default.vert + default_unlit/default_lit/
 // default_wire + shadow.vert/masked) and App's ABI-checked FrameUniforms +

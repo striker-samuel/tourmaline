@@ -1,3 +1,6 @@
+@rem Copyright (c) 2026 Samuel Martin
+@rem SPDX-License-Identifier: MIT
+
 @echo off
 rem Test-quality sponza cook: slower than cook_sponza_fast.bat but
 rem still low quality — a middle ground for iterating on bake/atlas

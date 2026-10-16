@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Memory/arena.h>
 
 #include <Engine/Memory/memory.h>

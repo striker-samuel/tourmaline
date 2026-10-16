@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // pak.exe: offline ARTIFACT -> .pak cooker that works exclusively on the
 // VFS and needs NO GPU (offline-mode Cluster, see Cluster::SetOfflineMode).
 // The COOK-SPLIT (the clean separation): the cook inputs are the

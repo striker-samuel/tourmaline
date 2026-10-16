@@ -1,4 +1,7 @@
-﻿// Project abstraction (Unity/Unreal style): a project folder owns
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// Project abstraction (Unity/Unreal style): a project folder owns
 // everything the editor needs for one body of work —
 //   <root>/project.tourproj   marker (name + version)
 //   <root>/content/            sources (models/<stem>/*.gltf, scenes/*.tour)

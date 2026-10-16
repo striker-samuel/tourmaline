@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Placement instanced-path vertex shader: draws GPU-resident placement
 // instances via DrawIndexedIndirect, one command per (tile, prototype) run.
 //

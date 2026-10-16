@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // App-side filtered renderer: owns one gfx::State (plain data) plus the
 // filtered VS program, and concentrates all GeometryFX wiring that would

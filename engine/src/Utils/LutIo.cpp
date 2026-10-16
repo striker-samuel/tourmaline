@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // STATIC stb linkage: the symbols are internal to this TU so the engine
 // (linked into App.exe and the Editor) never collides with consumers
 // that compile their own stb_image implementation (the editor's

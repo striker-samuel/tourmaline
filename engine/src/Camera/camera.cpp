@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Camera/camera.h>
 
 #include <glm/gtc/matrix_transform.hpp>

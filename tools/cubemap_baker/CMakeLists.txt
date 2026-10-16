@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(CubemapBaker)
 
 # cube_png.cpp is shared with Cook (same debug-PNG module, same stb

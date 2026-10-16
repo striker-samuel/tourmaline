@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/debug_log.h>
 #include <Engine/Asset/meshlet.h>

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_constraint.hlsli — shared code for the min-distance passes.
 // Mirrors ApplyMinDistance's snapshot rule: elect cell argmax on
 // (priority, tie -> smaller candidateIndex), then kill vs the winner

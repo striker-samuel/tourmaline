@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // GPU emitter pass: one [1,1,1] thread group per emitter (same
 // one-thread-per-thing shape as the Forward+ tile cull).
 //

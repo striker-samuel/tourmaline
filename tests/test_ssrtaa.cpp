@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // ssrtaa_tests: CPU-side contract test for the SSR temporal (TAA) state
 // machine (SsrTaaBeginFrame / SsrTaaEndFrame / SsrTaaInvalidateHistory in
 // engine/include/Engine/Rendergraph/ssr.h).

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // Motion blur tile dilation, phase B (5x5 neighborhood max).
 //
 // One thread per tile: Loads the raw per-tile max velocities (phase A,

@@ -1,4 +1,7 @@
-﻿// vi-style modal input: the ACTIVE mode's keymap interprets keys.
+﻿// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// vi-style modal input: the ACTIVE mode's keymap interprets keys.
 //
 // Architecture (see modal_bindings.h — the single registry):
 //   - EVERY binding lives in kModalBindings exactly once, with the

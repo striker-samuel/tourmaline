@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // EVSM (Exponential Variance Shadow Maps) atlas with async-compute prefilter.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Tiled-terrain height field (CPU side): the source of truth for sampling,
 // G-block baking, and collision/raycast queries.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // placement_field.hlsli — GPU mirror of placement_ir.h + placement_eval.h.
 // Per-op building blocks + value noise so compiler-generated straight-line
 // field code stays tiny. 32-bit integer math only. DXC-2018 compatible.

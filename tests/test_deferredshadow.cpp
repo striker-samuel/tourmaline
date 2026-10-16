@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // deferredshadow_tests: CPU-side differential regression tests for the
 // phase-1 builders (Engine/Rendergraph/deferredshadow.h). No GPU
 // required: zBins/masks/sort are pure math.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // smaajitter_tests: CPU-side contract test for the SMAA T2x subpixel jitter
 // math (SceneRenderer::UpdateFrameUniforms + the resolve reprojection).
 //

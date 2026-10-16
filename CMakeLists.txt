@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.17)
 # Build hygiene (see docs/project_guide.md): this repo is Ninja-only and
 # out-of-source. In-source configures pollute the tree (CMakeCache.txt,

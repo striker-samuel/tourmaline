@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Samuel Martin
+# SPDX-License-Identifier: MIT
+
 project(Cook)  # cook.exe: the COOK - artifacts + tour in, cooked artifacts out (GI/cubemaps/LODs/meshlets/de-instance). No pak write; pak.exe assembles.
 # Cook as a library (the editor links it and calls cooktool::Run
 # directly; the CLI stays a thin user interface over the same code).

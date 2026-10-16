@@ -1,3 +1,6 @@
+@rem Copyright (c) 2026 Samuel Martin
+@rem SPDX-License-Identifier: MIT
+
 @echo off
 rem Fast low-quality sponza iteration cook: coarse density, minimum
 rem rays, 5 pinned lobes, UNCOMPRESSED payload (no BC6H encode pass —

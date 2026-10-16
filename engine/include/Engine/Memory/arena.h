@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Linear (bump) allocators for URI/string scratch (see Memory/string_view.h).
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 //
 // Audio subsystem (SDL3): clip loading + voice mixing on a dedicated,

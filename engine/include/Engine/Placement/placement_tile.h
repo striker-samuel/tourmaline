@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // PlacementSystem tile runtime (CPU side).
 // Scene holds ONE PlacementRef node per layer (params only). All instances

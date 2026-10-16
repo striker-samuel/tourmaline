@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // test_dg: the Maya-style DG core (editor_dg.h) + the placement graph
 // ON it (schemas, plug semantics, dirty propagation, named-attribute
 // serialization with legacy positional fallback). Headless, no ImGui.

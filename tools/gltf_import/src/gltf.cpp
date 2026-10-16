@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #define TINYGLTF_IMPLEMENTATION
 
 #include <gltf_import/gltf.h>

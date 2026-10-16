@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 // asset-ops tests: the asset browser's delete planning/execution
 // (editor/editor_asset_ops.h) — pure filesystem logic, no ImGui.
 //

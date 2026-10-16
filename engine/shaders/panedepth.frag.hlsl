@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #include "common.hlsli"
 
 // Pane-depth writer (SSR pane reflections — see the app's PaneMask pass +

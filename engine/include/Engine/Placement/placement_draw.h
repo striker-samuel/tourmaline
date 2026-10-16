@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
 #pragma once
 // Instanced draw feed: turns resident tiles into per-(tile, prototype)
 // runs for DrawIndexedIndirect, with zero per-instance CPU work per frame.
