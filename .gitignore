@@ -25,6 +25,10 @@ x64/
 x86/
 [Ww][Ii][Nn]32/
 [Aa][Rr][Mm]/
+# Embree's ARM NEON SIMD headers live in a dir literally named "arm/" —
+# the VS-template ARM pattern above swallowed them (silent build break in
+# fresh clones). Negate for the vendored Embree tree.
+!external/embree/common/simd/arm/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
