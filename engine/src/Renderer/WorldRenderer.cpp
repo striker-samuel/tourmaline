@@ -993,6 +993,15 @@ namespace engine {
 			}
 			else std::cerr << "[WorldRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
+		// Lightmap branch opt-in for headless runs (same as the panel
+		// checkbox; default off). Takes effect when an atlas is loaded;
+		// LmActive() still gates on the ambient mode.
+		if (const char* lmEnv = std::getenv("VULKANTOY_LIGHTMAP")) {
+			const std::string_view lm = trimEnv(lmEnv);
+			if (lm == "1" || lm == "on") m_lmEnabled = true;
+			else if (lm == "0" || lm == "off") m_lmEnabled = false;
+			else std::cerr << "[WorldRenderer] unknown VULKANTOY_LIGHTMAP value: " << lm << " (0|1)\n";
+		}
 		// GI debug view for headless runs (same modes the R key cycles;
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
 		// 2 source palette, 3 isolated level (the level byte selects
@@ -1990,6 +1999,10 @@ namespace engine {
 		// replaces the analytic sky specular with captured environment.
 		// Missing file is non-fatal (falls back to analytic sky).
 		LoadCubemaps();
+		// SG 2D lightmaps (STATIC geometry, cook --lightmap output):
+		// the atlas textures for the per-pixel lightmap branch. Missing
+		// file is the normal state (not baked / not opted in) - non-fatal.
+		LoadGiLightmaps();
 		// Single-source isolation modes degrade when their source did not
 		// load (All/SkyIbl need nothing): keeps them from being silently
 		// empty - the UI/env selector keeps working after.
@@ -2270,6 +2283,111 @@ namespace engine {
 	// (FrameUniforms.gi*). A missing payload is the normal "not baked
 	// yet" state - the renderer keeps the analytic sky IBL.
 	// ---------------------------------------------------------------------------
+	void WorldRenderer::LoadGiLightmaps() {
+		// Cook-owned lightmaps: the pak carries the per-vertex chart uvs
+		// + chart ids (texCoord2/chartId), each mesh's chart transforms
+		// (scene table, unpacked in the VS) + lobe count (riding the
+		// draw ring); this loader only uploads the atlas textures. NO
+		// geometry work, NO buffers beyond the textures happen here.
+		m_lmLoaded = false;
+		m_lmLayerKind = 0;
+		m_lmAtlas = smvk::gi::SgLightmapAtlas{};
+		for (auto& layer : m_lmLayers)
+			layer = {};
+		for (uint32_t& slot : m_lmLayerSlots)
+			slot = UINT32_MAX;
+
+		const std::string stem = m_giLightmapName.empty()
+			? m_sceneId : m_giLightmapName;
+		const std::string vfsPath = std::string("gi/") + stem + ".sglm";
+		const std::span<const uint8_t> bytes = ReadBakeBytes(vfsPath);
+		if (bytes.empty()) {
+			std::cerr << "[LM] no lightmap '" << vfsPath
+				<< "' (bake: cook --lightmap on, mesh opt-in)\n";
+			return;
+		}
+		std::string err;
+		if (!m_lmAtlas.ReadFromMemory(bytes, err)) {
+			std::cerr << "[LM] atlas rejected: " << err << "\n";
+			return;
+		}
+		if (m_lmAtlas.chunks.empty()) {
+			std::cerr << "[LM] atlas has no chunks - ignored\n";
+			return;
+		}
+		if (m_lmAtlas.width == 0 || m_lmAtlas.height == 0
+			|| m_lmAtlas.width > 8192 || m_lmAtlas.height > 8192) {
+			std::cerr << "[LM] atlas dims rejected: " << m_lmAtlas.width
+				<< "x" << m_lmAtlas.height << "\n";
+			return;
+		}
+
+		// ---- Atlas textures ----
+		// Uncompressed: 9 RGBA16F stream layers, kind 0.
+		// BC6H: the cooked blocks upload verbatim as one BC6H_UFloat
+		// texture per lobe (kind 1; slots past the scene's lobe count
+		// stay invalid). Hardware filtering is identical in both.
+		const bool bc6h = m_lmAtlas.compression
+			!= smvk::gi::SgLightmapCompression::Uncompressed;
+		uint32_t lmLayerKind = 0;
+		if (bc6h) {
+			const size_t blockBytes = size_t(m_lmAtlas.width / 4)
+				* (m_lmAtlas.height / 4) * 16;
+			for (uint32_t l = 0; l < m_lmAtlas.bc6hLobes; ++l) {
+				smvk::ImageCreateInfo ci{};
+				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
+				ci.format = smvk::Format::BC6H_UFloat;
+				ci.usage = smvk::ImageUsage::Sampled
+					| smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "sglm atlas bc6h lobe";
+				auto tex = m_context->CreateTexture(ci,
+					m_lmAtlas.bc6hBlocks.data() + size_t(l) * blockBytes);
+				if (tex.empty()) {
+					std::cerr << "[LM] bc6h lobe texture " << l
+						<< " creation failed\n";
+					for (uint32_t& slot : m_lmLayerSlots)
+						slot = UINT32_MAX;
+					return;
+				}
+				m_lmLayers[l] = std::move(tex);
+				m_lmLayerSlots[l] =
+					m_context->GetTextureBindlessIndex(m_lmLayers[l]);
+			}
+			lmLayerKind = 1;
+		} else {
+			std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
+			m_lmAtlas.PackGpuLayers(layers);
+			for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
+				smvk::ImageCreateInfo ci{};
+				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
+				ci.format = smvk::Format::RGBA16_Float;
+				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "sglm atlas layer";
+				auto tex = m_context->CreateTexture(ci, layers[t].data());
+				if (tex.empty()) {
+					std::cerr << "[LM] atlas layer " << t
+						<< " creation failed\n";
+					for (uint32_t& slot : m_lmLayerSlots)
+						slot = UINT32_MAX;
+					return;
+				}
+				m_lmLayers[t] = std::move(tex);
+				m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+			}
+		}
+		m_lmLayerKind = lmLayerKind;
+		m_lmLoaded = true;
+		std::cerr << "[LM] loaded '" << vfsPath << "': chunks="
+			<< m_lmAtlas.chunks.size() << " atlas=" << m_lmAtlas.width << "x"
+			<< m_lmAtlas.height
+			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB ("
+			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
+	}
+
 	void WorldRenderer::LoadGiVolume() {
 		m_giLoaded = false;
 		m_giVolume = smvk::gi::SgGiVolume{};
@@ -3314,7 +3432,23 @@ namespace engine {
 		}
 	}
 
-	void WorldRenderer::DegradeAmbientForMissingSources() {}
+	void WorldRenderer::DegradeAmbientForMissingSources() {
+	// Single-source isolation modes whose source did not load fall
+	// back to another baked source (or the sky IBL) instead of being
+	// silently empty. All/SkyIbl/Off never need this.
+	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
+		m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
+			? AmbientMode::Probes : AmbientMode::SkyIbl;
+		std::cerr << "[Scene] no lightmaps - ambient degraded to "
+			<< AmbientModeName(m_ambientMode) << "\n";
+	} else if (m_ambientMode == AmbientMode::Probes
+		&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
+		m_ambientMode = m_lmLoaded
+			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
+		std::cerr << "[Scene] no probes - ambient degraded to "
+			<< AmbientModeName(m_ambientMode) << "\n";
+	}
+}
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
 
@@ -3578,6 +3712,23 @@ namespace engine {
 			for (uint32_t& slot : data.giLevelLayers)
 				slot = UINT32_MAX;
 		}
+		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
+		// count ride the pak's vertex data / draw ring). Static/dynamic
+		// separation: lm/reg ride the same giIntensity scale as the probe
+		// volume so the N ambient-mode UI stays meaningful.
+		if (LmActive()) {
+			for (uint32_t t = 0; t < 12; ++t)
+				data.lmLayers[t] = m_lmLayerSlots[t];
+			data.lmLayerKind = m_lmLayerKind;
+			data.lmEnabled = 1u;
+		} else {
+			for (uint32_t t = 0; t < 12; ++t)
+				data.lmLayers[t] = UINT32_MAX;
+			data.lmLayerKind = 0u;
+			data.lmEnabled = 0u;
+		}
+		data.lmPad_[0] = 0;
+		data.lmPad_[1] = 0;
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
 		// RegActive() gates the upload (loaded + UI toggle); the ambient
 		// mode additionally gates the enable flag (All/Probes only).
@@ -11387,6 +11538,13 @@ namespace engine {
 							if (!m_giLoaded && !m_regLoaded)
 								ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
 									m_sceneId.empty() ? "?" : m_sceneId.c_str());
+							// Lightmaps: proxy-baked .sglm atlas content (cook
+							// --lightmap: one voxel-remesh proxy bake,
+							// UV-transferred to the real meshes). Off until
+							// opted in per view (default off).
+							if (m_lmLoaded) {
+								ImGui::Checkbox("Lightmaps", &m_lmEnabled);
+							}
 
 							ImGui::Separator();
 							ImGui::Text("Screen-space ambient occlusion / SSGI chain");

@@ -14,7 +14,7 @@
 #include "common.hlsli"
 #include "environment.hlsli"
 #include "sggi.hlsli"
-// #include "sg_lightmap.hlsli" // Lightmaps deprecated
+#include "sg_lightmap.hlsli"
 #include "sg_regular.hlsli"
 #include "sg_cvol.hlsli"
 

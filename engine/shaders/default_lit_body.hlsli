@@ -1075,6 +1075,64 @@ float envVis = 1.0f;
     uint dbgBestLvl = 0xFFFFFFFFu;
 
     // ---------------------------------------------------------------
+    // Static lightmaps (highest-priority static source): draws carrying
+    // a cooked lobe count (IN.lmChunk 5..12) sample the atlas at the
+    // cooked chart uv. Skipped in the GI_NONE permutation (no baked GI
+    // by contract) — every other variant resolves lightmapped pixels
+    // here, and the permutation chain below only ever sees pixels no
+    // baked source covered (its sky fallback keys on giSource == 0u).
+    // ---------------------------------------------------------------
+#if !defined(GI_NONE)
+    // IN.lmChunk = cooked lobe count (5/6/9/12; 0xFFFFFFFF = none).
+    // Transmissive (AlphaMode::Blend) materials sample no baked DIFFUSE
+    // (same rule as every source): glass has no diffuse lobe, and shading
+    // one as if opaque makes every probe-lit pane glow. The source is
+    // still resolved (giSource/bakedE drive the debug views) and its
+    // SPECULAR below still applies; only the diffuse add is skipped.
+    if (frame.lmEnabled != 0u && IN.lmChunk >= 5u && IN.lmChunk <= 12u)
+    {
+        float3 lmAmps[SG_LM_MAX_LOBES];
+        if (SgLmSampleAtlas(frame, IN.lmChunk, IN.lightmapUv, lmAmps))
+        {
+            const uint lmLobes = IN.lmChunk;
+            const float lmScale = max(frame.giIntensity, 0.0f);
+            // Lightmap evaluation uses the GEOMETRIC normal (geomN),
+            // never the normal-mapped N: the amplitudes were fit
+            // per-texel for the surface's own orientation, and the SG
+            // reconstruction is only constrained around that
+            // hemisphere — per-pixel normal-map tilts read it in
+            // poorly-constrained directions and present flat surfaces
+            // as curved/domed. Normal maps stay in force for the
+            // direct sun/spot terms and the env specular below.
+            const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, geomN) * lmScale;
+            giSource = 1u;
+            bakedE = lmE;
+            // Spec occlusion from the baked field (same normal the
+            // lightmap was fit for): gold trim under roofs must not
+            // mirror the sunlit courtyard it cannot see.
+            envVis = SpecularOcclusionFromGI(lmE, lmScale, geomN, frame.env);
+            ambientSpec = envSpec * envVis;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (lmE / PI) * occlusion;
+            const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            if (lmRoughW > 0.0f)
+            {
+                // Reflection-SG specular (SgGiSpecular's model): anchored
+                // to the GEOMETRIC normal like the diffuse above (the SG
+                // reconstruction is only constrained around the surface
+                // orientation the amplitudes were fit for), Fresnel
+                // applied once here instead of per-lobe. The roughness
+                // early-out keeps smooth surfaces on the env cubemap.
+                const float3 Rlm = reflect(-V, geomN);
+                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, Rlm,
+                    shadingRoughness) * lmScale * Fenv * occlusion;
+                ambientSpec = lerp(ambientSpec, lmSpec, lmRoughW);
+            }
+        }
+    }
+#endif
+
+    // ---------------------------------------------------------------
     // GI permutations (set via SPEC_GI_VARIANT specialization constant):
     //   GI_NONE   (0): No baked GI, sky IBL fallback only
     //   GI_OCTREE (1): Sparse octree world field (SgGiSample)

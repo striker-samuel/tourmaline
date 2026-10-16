@@ -515,23 +515,8 @@ struct FrameUniforms
 	uint64_t decalTileIndices = 0;  // 768 builder decal list indices
 	uint32_t decalCount = 0;        // 776 live decals this frame
 	uint32_t decalMaxPerTile = 0;   // 780 list stride (matches allocation)
-#if 0 // Lightmaps deprecated - SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h).
-	// atlas layers ride the bindless texture slots. lmLayerKind selects
-	// the layout: 0 = the classic 9 RGBA16F stream layers (half h =
-	// lobe*3 + channel -> layer h/4), 1 = BC6H one-texture-per-lobe
-	// (12 slots, texture l = lobe l, .rgb = the amplitude; slots past
-	// the scene's lobe count stay UINT32_MAX). The chart uvs + chart ids
-	// are COOKED into the pak's vertex payloads (texCoord2/chartId),
-	// the per-chart atlas transforms into the scene table (unpacked in
-	// the VS via the draw's chart offset), and the lobe count rides the
-	// draw ring â€” NO chunk buffer exists at runtime. Static/dynamic
-	// separation: draws carrying a lobe count sample the atlas; dynamic
-	// objects sample the regular grids below. ----
-	uint32_t lmLayers[12] = {};      // 784 atlas bindless slots
-	uint32_t lmEnabled = 0;         // 832 1 = lightmap branch active
-	uint32_t lmLayerKind = 0;        // 836 0 = RGBA16F stream, 1 = BC6H
-	uint32_t lmPad_ = 0;            // 840 16-align tail
-#endif
+	// (Historical slot of the SG 2D lightmap fields: restored at the
+	// APPEND-ONLY tail instead, so every offset below stayed put.)
 	// ---- SG regular OBBs (dynamic geometry, Engine/GI/lightmap.h): the
 	// per-object OBB array lives in a uniform buffer. regCount is the
 	// active OBB count; the shader's loop bound is min(regCount, MAX_REG).
@@ -619,6 +604,17 @@ struct FrameUniforms
 	glm::vec4 envZoneSky[4] = {};         // 1688 rgb skyTint, a ambientI (per zone)
 	glm::vec4 envZoneFog[4] = {};         // 1752 rgb fogColor, a fogDensity
 	glm::vec4 envZoneVol[4] = {};         // 1816 x volumetrics, y volumetricDensity
+	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
+	// atlas layers ride the bindless texture slots. lmLayerKind selects
+	// the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
+	// one-texture-per-lobe (12 slots, texture l = lobe l; slots past
+	// the scene's lobe count stay UINT32_MAX). APPEND-ONLY tail (after
+	// envZoneVol): every pinned offset above stays put. ----
+	uint32_t lmPad0_[2] = {};          // 1880 (16-align to lmLayers@1888)
+	uint32_t lmLayers[12] = {};        // 1888 atlas bindless slots
+	uint32_t lmEnabled = 0;            // 1936 1 = lightmap branch active
+	uint32_t lmLayerKind = 0;          // 1940 0 = RGBA16F stream, 1 = BC6H
+	uint32_t lmPad_[2] = {};           // 1944 (16-align tail; struct ends 1952)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset â€” any drift desyncs the GPU reads.
@@ -653,7 +649,11 @@ static_assert(offsetof(FrameUniforms, envZoneMapIndex) == 1672, "envZoneMapIndex
 static_assert(offsetof(FrameUniforms, envZoneSky) == 1688, "envZoneSky offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, envZoneFog) == 1752, "envZoneFog offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, envZoneVol) == 1816, "envZoneVol offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1888, "FrameUniforms size: HLSL mirror");
+// SG 2D lightmap tail (append-only; see the block above envZoneVol).
+static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, lmEnabled) == 1936, "lmEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1952, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot â€” tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -1986,6 +1986,30 @@ public:
 	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);
 	bool m_giLoaded = false;      // volume + dense layers live
 	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (probe overlay + stats)
+	// ---- SG 2D lightmaps (STATIC geometry, cook --lightmap output).
+	// Loaded once at scene init from the CLUSTER bake-payload channel
+	// (ReadBakeBytes: gi/<scene>.sglm): uploads ONLY the atlas textures
+	// (bindless). Chart uvs + chart ids + per-chart atlas transforms +
+	// per-mesh lobe counts are COOKED into the pak (texCoord2/chartId,
+	// lmChartXforms, StaticMesh::lmChunk riding the draw ring) — no
+	// chunk buffer exists at runtime. Default OFF (m_lmEnabled): the
+	// lit shader ignores loaded lightmaps until opted in here or via
+	// VULKANTOY_LIGHTMAP=1. Missing file = not baked yet (non-fatal).
+	bool m_lmLoaded = false;
+	bool m_lmEnabled = false;
+	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
+	// Atlas texture mirrors: 12 slots — the uncompressed path fills 9
+	// (kLightmapLayerCount RGBA16F stream layers, kind 0), the BC6H
+	// path fills scene-lobe-count one-per-lobe textures (kind 1).
+	smvk::Holder<smvk::TextureHandle> m_lmLayers[12];
+	uint32_t m_lmLayerSlots[12] = {}; // bindless slots (FrameUniforms.lmLayers)
+	uint32_t m_lmLayerKind = 0;       // FrameUniforms.lmLayerKind mirror
+	bool LmActive() const {
+		return m_lmLoaded && m_lmEnabled && LmWanted();
+	}
+	// Bake-channel load (ReadBakeBytes: pak-embedded or editor-injected;
+	// no VFS needed — the channel already resolved it).
+	void LoadGiLightmaps();
 	// Grid header only (the shader reads each level's volumeMin/cellSize/
 	// dims from frame.giGrid). The probe/cell/index storage buffers are
 	// GONE â€” the dense BC6H layers replaced the probe-list walk, so the

@@ -643,6 +643,15 @@ uint decalCount;                                         // 776 0 = decals off
     float4 envZoneSky[4];                                         // 1688 rgb skyTint, a ambientI (per zone)
     float4 envZoneFog[4];                                         // 1752 rgb fogColor, a fogDensity
     float4 envZoneVol[4];                                         // 1816 x volumetrics, y volumetricDensity
+    // ---- SG 2D lightmaps (STATIC geometry): atlas layers ride the
+    // bindless texture slots (mirror of the C++ APPEND-ONLY tail — every
+    // pinned offset above stays put). lmLayerKind: 0 = 9 RGBA16F stream
+    // layers, 1 = BC6H one-texture-per-lobe (texture l = lobe l).
+    uint2 lmPad0_;                                                // 1880 (16-align to lmLayers@1888)
+    uint lmLayers[12];                                            // 1888 atlas bindless slots
+    uint lmEnabled;                                               // 1936 1 = lightmap branch active
+    uint lmLayerKind;                                             // 1940 0 = RGBA16F stream, 1 = BC6H
+    uint2 lmPad_;                                                 // 1944 (16-align tail; struct ends 1952)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
