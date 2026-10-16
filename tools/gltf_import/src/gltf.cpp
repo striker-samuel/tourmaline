@@ -2607,6 +2607,13 @@ size_t BuildFromMeshAsset(
 			scene.localTransform[size_t(n)] = asset.locals[i];
 		if (i < asset.names.size() && !asset.names[i].empty())
 			setNodeName(scene, n, asset.names[i]);
+		// Global resolution is lazy (changedAtThisFrame): mark EVERY
+		// mapped node, not just the instanced ones below. Unmarked
+		// ancestors keep identity globals, so no-tour bakes read the
+		// raw (e.g. centimeter) geometry as meters and the bake
+		// octree explodes (the tour replay marks via its own edits,
+		// which is why tour bakes never saw this).
+		markAsChanged(scene, n);
 	}
 	for (size_t i = 1; i < asset.nodes.size(); ++i) {
 		if (i < asset.staticRoot.size() && asset.staticRoot[i])
