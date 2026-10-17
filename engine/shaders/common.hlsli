@@ -661,7 +661,21 @@ uint decalCount;                                         // 776 0 = decals off
     uint lmLayers[12];                                            // 1888 atlas bindless slots
     uint lmEnabled;                                               // 1936 1 = lightmap branch active
     uint lmLayerKind;                                             // 1940 0 = RGBA16F stream, 1 = BC6H
-    uint2 lmPad_;                                                 // 1944 (16-align tail; struct ends 1952)
+    uint2 lmPad_;                                                 // 1944 (16-align; struct was 1952)
+    // ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+    // architecture, GPU-only selection - mirror of the C++ append-only
+    // tail). probePremixIndex = the BLENDED cubemap's bindless index
+    // (0xffffffff = off: the per-pixel walk owns the specular env
+    // unchanged). probePremixMips = the blended chain's mip count (the
+    // roughness LOD clamp). probePremixSel = the weights pass's
+    // selection buffer BDA - the single-fetch branch reads the DOMINANT
+    // probe's packed parallax box straight from it (no CPU readback, no
+    // staging, no classification anywhere; GPU-owned selection written
+    // by the weights pass each frame it runs). ----
+    uint probePremixIndex;                                         // 1952 blended cubemap (off = 0xffffffff)
+    uint probePremixMips;                                          // 1956 blended chain mip count
+    uint64_t probePremixSel;                                       // 1960 selection BDA (weights pass output)
+    uint2 probePremixPad_;                                         // 1968 (16-align tail; struct ends 1984)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
@@ -692,7 +706,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_LIT_SPECULAR)]] const uint litSpecular = 1;   // 0=Lambert-only far shading, 1=full GGX specular
 [[vk::constant_id(SPEC_LIT_NORMALMAP)]] const uint litNormalMap = 1; // 0=geometric normal, 1=tangent-space normal fetch
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(TERRAIN_NOPC)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(TERRAIN_NOPC) && !defined(PROBEPREMIX_WEIGHTS_PASS) && !defined(PROBEPREMIX_MIX_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
 // constants. Passes with their own push layout (FORWARDPLUS/HZB/DS/...)
 // leave it undefined so headers can guard pc-dependent helpers (see

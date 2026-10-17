@@ -1007,6 +1007,22 @@ namespace engine {
 				std::cerr << "[WorldRenderer] TOURMALINE_LIGHT_CROWD wants 0..96\n";
 			}
 		}
+		// GPU probe pre-mix A/B (docs/probe_premix_plan.md): 1 (default)
+		// = the weights pass selects the top-K captures around the camera
+		// (GPU-side, off the Forward+ light-buffer probe tail) and the mix
+		// pass blends them into ONE cubemap every lit pixel samples with
+		// a single fetch; 0 = the per-pixel probe walk owns the specular
+		// env unchanged (the comparison path, the zero-regression
+		// contract). The UI stays live after.
+		if (const char* premixEnv = std::getenv("TOURMALINE_PROBE_PREMIX")) {
+			const std::string_view v = trimEnv(premixEnv);
+			if (v == "0" || v == "off")
+				m_probePremixEnabled = false;
+			else if (v == "1" || v == "on")
+				m_probePremixEnabled = true;
+			else
+				std::cerr << "[WorldRenderer] TOURMALINE_PROBE_PREMIX wants 0|1\n";
+		}
 		// Ambient / GI source override for headless runs (same states the
 		// N key cycles; the runtime cycle stays live after):
 		//   TOURMALINE_AMBIENT=all|lightmaps|probes|skyibl|off
@@ -2381,6 +2397,9 @@ namespace engine {
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
 		m_viewportResources.ui.Destroy(*m_rendergraph);
 		m_viewportResources.uiComposite.DestroyShaders();
+		// Probe pre-mix module (frees its graph logical views + resources;
+		// safe when never ensured - Destroy is total on an empty state).
+		m_probePremix.Destroy(*m_rendergraph);
 		if (!m_captureLogical.empty()) {
 			m_rendergraph->FreeImageView(m_captureLogical);
 			m_captureLogical = {};
@@ -3732,6 +3751,25 @@ namespace engine {
 					break;
 				}
 			}
+		}
+
+		// GPU probe pre-mix (docs/probe_premix_plan.md). All CPU-known
+		// constants (the module's own bindless index + chain depth) + the
+		// GPU-owned selection's BDA: the material's single-fetch branch
+		// reads the DOMINANT probe's parallax box straight from the
+		// selection buffer - no staging, no readback, no classification
+		// anywhere. The weights pass overwrites the selection every frame
+		// the pre-mix runs; the frame-uniform fill below only needs the
+		// ADDRESS, so no CPU/GPU value race exists by construction.
+		data.probePremixIndex = UINT32_MAX;
+		data.probePremixMips = 0;
+		data.probePremixSel = 0;
+		data.probePremixPad_[0] = 0;
+		data.probePremixPad_[1] = 0;
+		if (m_probePremixEnabled && m_probePremix.valid) {
+			data.probePremixIndex = m_probePremix.cubeBindlessIndex;
+			data.probePremixMips = m_probePremix.mipCount;
+			data.probePremixSel = m_probePremix.selectionBda;
 		}
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
@@ -8124,6 +8162,42 @@ namespace engine {
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
 		};
 		// (size checked by static_assert in Engine/Renderer/Renderer.h)
+
+		// ---- GPU probe pre-mix (docs/probe_premix_plan.md) ------------
+		// Remember Me architecture, GPU-only selection: the weights pass
+		// reads the RESIDENT probe tail straight off THIS frame's
+		// fpLights flight slice (the tail this frame's upload just wrote -
+		// the same buffer the lit walk reads; NO CPU classification
+		// anywhere), selects the top-K captures around the point of
+		// interest (the camera), and the mix pass blends them into ONE
+		// cubemap (mip-to-mip, the Remember Me rule). The material's
+		// single-fetch branch (environment.hlsli) samples the blend with
+		// the dominant probe's box parallax (read straight from the
+		// GPU-owned selection buffer via the FrameUniforms BDA). Runs
+		// before every lit pass; the per-pixel walk stays the fallback
+		// (pin off / zero candidates - the zero-regression contract).
+		// Ensure is idempotent (128 face texels + the capture chain
+		// depth; the shared sampler is the lit path's own).
+		if (m_probePremixEnabled) {
+			// The capture chain depth: the resident captures' mip count
+			// (all bakes share the chain depth - the manifest rows all
+			// came from the same cook; read it off the first entry).
+			uint32_t captureMips = 8;
+			for (const auto& [name, entry] : m_cubemaps.entries) {
+				if (entry.bindless >= 0 && entry.baked) {
+					captureMips = std::max(entry.mipLevels, 1u);
+					break;
+				}
+			}
+			if (m_probePremix.Ensure(*m_context, *m_rendergraph,
+					smvk::probepremix::kDefaultBlendSize, captureMips)
+				&& fpLightCount > 0
+				&& ProbeEntryCount() > 0) {
+				m_probePremix.AppendPasses(*m_rendergraph,
+					fpLightsAddress, fpLightCount, ProbeEntryCount(),
+					m_cameraPositioner.cameraPosition_, m_cubemapSampler);
+			}
+		}
 
 		// ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load ops) ----
 		// Pass-config gate: no shadow sampling without tiles (the main

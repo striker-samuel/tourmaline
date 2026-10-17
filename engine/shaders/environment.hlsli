@@ -193,6 +193,23 @@ float3 ProbeSampleDir(float3 worldPos, float3 R, float3 center,
 // The baked chains are GGX-preconvolved (roughness = mip/(mips-1)), so
 // sampling selects the LOD from the material roughness (+ the UI LOD
 // bias); the clamp sampler avoids cube-seam wrap bleeding.
+// Blend selection written by the probe pre-mix weights pass (must mirror
+// smvk::probepremix::BlendSelectionGpu, probepremix.h + the weights/mix
+// shaders). GPU-owned: the material reads the DOMINANT probe's packed
+// parallax box straight from it via the FrameUniforms BDA - no CPU
+// readback, no staging, no classification anywhere.
+struct ProbePremixSelection
+{
+    uint count;          // 0
+    uint indices[4];     // 4  cubemap bindless indices
+    float weights[4];     // 20 normalized (sum = 1 over the set)
+    float pos[3];          // 36 dominant probe's capture position
+    float boxMinus[3];    // 48 dominant minus-plane distances
+    float boxPlus[3];     // 60 dominant plus-plane distances
+    uint pad0;            // 72
+    uint pad1;            // 76
+};
+
 float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
     float3 worldPos, FrameUniforms frame, uint tileIdx,
     uint fpLightCount, uint fpMaxPerTile,
@@ -218,8 +235,61 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     bool useBaked = frame.cubemapIntensity > 0.0f;
     uint cubeDbg = frame.cubemapDebug;
 
-    SamplerState cubeSampler = samplers[NonUniformResourceIndex(frame.cubemapSampler)];
-    float lodBias = frame.cubemapLodBias;
+    // ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+    // architecture, GPU-only selection): the weights pass already
+    // selected the top-K captures around the point of interest (the
+    // camera) off the Forward+ light-buffer probe tail - the GPU system
+    // we already have, NO CPU classification - and the mix pass blended
+    // them into ONE cubemap (mip-to-mip). This branch is a SINGLE
+    // cubemap fetch of the blend with the DOMINANT probe's box parallax
+    // (the selection's slot-0 winner, read straight from the GPU-owned
+    // selection buffer via the FrameUniforms BDA): no per-pixel probe
+    // set, no tile-slot walk, no candidate blending - nothing can
+    // switch per pixel, which is the point (the blockiness class came
+    // from per-pixel set switching). Zero-candidate selection (or the
+    // pin off: index = 0xffffffff) falls through to the per-pixel walk
+    // unchanged - the zero-regression contract.
+    if (useBaked && frame.probePremixIndex != 0xffffffffu) {
+        const ProbePremixSelection sel =
+            vk::BufferPointer<ProbePremixSelection>(frame.probePremixSel).Get();
+        if (sel.count > 0u) {
+            TextureCube blend =
+                cubemaps[NonUniformResourceIndex(frame.probePremixIndex)];
+            const SamplerState cubeSampler =
+                samplers[NonUniformResourceIndex(frame.cubemapSampler)];
+            // Roughness LOD against the blended chain (mip-to-mip mix
+            // preserves the baked prefilter), the same clamp the walk
+            // uses (the blended chain depth rides probePremixMips).
+            const float lod = clamp(
+                roughness * (float(frame.probePremixMips) - 1.0f)
+                    + frame.cubemapLodBias,
+                0.0f, float(frame.probePremixMips) - 1.0f);
+            // Dominant box parallax: unpack the packed plane distances
+            // (pos - minus, pos + plus - the same packing the walk reads
+            // off the light tail) and re-aim R at the fitted box, faded
+            // to full weight inside (the blend represents the whole
+            // neighborhood - the parallax is the dominant probe's).
+            const float3 c = float3(sel.pos[0], sel.pos[1], sel.pos[2]);
+            const float3 bMin = c - float3(sel.boxMinus[0], sel.boxMinus[1], sel.boxMinus[2]);
+            const float3 bMax = c + float3(sel.boxPlus[0], sel.boxPlus[1], sel.boxPlus[2]);
+            const float3 Rs = ProbeSampleDir(worldPos, R, c, bMin, bMax, 1.0f);
+            float3 envCol2 = blend.SampleLevel(cubeSampler, Rs, lod).rgb
+                * max(frame.cubemapIntensity, 0.0f);
+            if (cubeDbg == 1u) return envCol2; // raw blend (no Fresnel)
+            if (cubeDbg == 2u) return float3(1.0f, 0.25f, 0.0f); // pre-mix heat
+            const float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
+            return envCol2 * F * (gloss * gloss * 0.9f + 0.1f);
+        }
+        // Selection empty this frame (the weights pass found no
+        // candidates): fall through to the per-pixel walk below - it
+        // owns the same fallbacks (global cubemap, then analytic sky).
+    }
+
+    // Walk-scope sampler + LOD bias (the pre-mix block above declares
+    // its own local copies inside its branch scope).
+    const SamplerState cubeSampler =
+        samplers[NonUniformResourceIndex(frame.cubemapSampler)];
+    const float lodBias = frame.cubemapLodBias;
 
     float3 envCol = float3(0.0f, 0.0f, 0.0f);
     bool foundProbe = false;

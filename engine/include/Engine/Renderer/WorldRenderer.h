@@ -66,6 +66,7 @@
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Rendergraph/probeball.h>
+#include <Engine/Rendergraph/probepremix.h>
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -617,7 +618,24 @@ struct FrameUniforms
 	uint32_t lmLayers[12] = {};        // 1888 atlas bindless slots
 	uint32_t lmEnabled = 0;            // 1936 1 = lightmap branch active
 	uint32_t lmLayerKind = 0;          // 1940 0 = RGBA16F stream, 1 = BC6H
-	uint32_t lmPad_[2] = {};           // 1944 (16-align tail; struct ends 1952)
+	uint32_t lmPad_[2] = {};           // 1944 (16-align tail; struct was 1952)
+	// ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+	// architecture, GPU-only selection). probePremixIndex = the BLENDED
+	// cubemap's bindless index (UINT32_MAX = off: the per-pixel walk owns
+	// the specular env unchanged). probePremixMips = the blended chain's
+	// mip count (the roughness LOD clamp). probePremixSel = the weights
+	// pass's selection buffer BDA - the material's single-fetch branch
+	// reads the DOMINANT probe's packed depth-fitted parallax box
+	// (boxMinus/boxPlus plane distances, the same packing the lit walk
+	// reads off the light tail) straight from it: no CPU readback, no
+	// staging, no classification anywhere. The selection is GPU-owned
+	// (written by the weights pass each frame it runs). APPEND-ONLY tail
+	// (after lmPad_): every pinned offset above stays put when this
+	// grows. ----
+	uint32_t probePremixIndex = UINT32_MAX; // 1952 blended cubemap (off = max)
+	uint32_t probePremixMips = 0;           // 1956 blended chain mip count
+	uint64_t probePremixSel = 0;            // 1960 selection BDA (weights pass output)
+	uint32_t probePremixPad_[2] = {};      // 1968 (16-align tail; struct ends 1984)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset â€” any drift desyncs the GPU reads.
@@ -655,8 +673,14 @@ static_assert(offsetof(FrameUniforms, envZoneVol) == 1816, "envZoneVol offset: H
 // SG 2D lightmap tail (append-only; see the block above envZoneVol).
 static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, lmEnabled) == 1936, "lmEnabled offset: HLSL mirror");
+// Probe pre-mix block (the append-only tail): pinned like every other
+// HLSL-mirrored member (the material's single-fetch branch reads these
+// by absolute offset).
+static_assert(offsetof(FrameUniforms, probePremixIndex) == 1952, "probePremixIndex offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, probePremixMips) == 1956, "probePremixMips offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, probePremixSel) == 1960, "probePremixSel offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1952, "FrameUniforms size: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 1984, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot â€” tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -1605,6 +1629,20 @@ public:
 	// toggled from the App's panel (off by default: the clean look).
 	bool m_cubemapShowBalls = false;
 	smvk::probeball::ProbeBallVisual m_probeBalls{};
+
+	// ---- GPU probe pre-mix (docs/probe_premix_plan.md) ----------------
+	// The Remember Me architecture, GPU-only selection: the weights pass
+	// reads the RESIDENT probe tail (the Forward+ light buffer - the GPU
+	// system we already have; NO CPU classification anywhere) and blends
+	// the top-K captures into ONE cubemap at the point of interest; the
+	// material's single-fetch branch samples the blend with the dominant
+	// probe's box parallax (read straight from the GPU-owned selection
+	// buffer via the FrameUniforms BDA). The per-pixel walk stays as the
+	// A/B comparison path (TOURMALINE_PROBE_PREMIX=0|1; the material
+	// falls back to it whenever the pre-mix is off or the selection is
+	// empty - the fallback is the zero-regression contract).
+	bool m_probePremixEnabled = true;
+	smvk::probepremix::ProbePremix m_probePremix{};
 	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
 	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
 	struct CubemapProbeGpu {
