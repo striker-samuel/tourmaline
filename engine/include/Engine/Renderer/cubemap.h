@@ -165,6 +165,12 @@ struct CubemapManifestEntry {
 // Serializes entries to the manifest text format (one row per line).
 std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries);
 
+// Manifest row cap: the RESIDENT/upload budget (kForwardPlusMaxProbes, the
+// streaming decides residency within it - the bake may emit more rows, the
+// parse truncates here, pinned first). Per-pixel shading cost never scales
+// with this (the tile lists bucket at most MAX_FP_PROBE_TILE_SLOTS = 4).
+inline constexpr uint32_t kCubemapMaxManifestRows = 96;
+
 // Parses manifest text; returns false + err on any malformed line.
 bool CubemapManifestParse(std::string_view text,
 	std::vector<CubemapManifestEntry>& out, std::string& err);

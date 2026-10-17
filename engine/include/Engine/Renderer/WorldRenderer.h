@@ -1646,7 +1646,7 @@ public:
 		bool failed = false;    // payload missing/undecodable: skip forever
 	};
 	std::vector<CubemapRow> m_cubemapRows; // manifest metadata (all rows)
-	uint32_t m_cubemapStreamBudget = 24;   // resident non-pinned rows (UI)
+	uint32_t m_cubemapStreamBudget = 48;   // resident non-pinned rows (UI)
 	uint32_t m_cubemapStreamLoadsPerUpdate = 2;
 	float m_cubemapStreamEvictRankSlack = 8.0f;
 	float m_cubemapStreamEvictRangeMargin = 4.0f; // meters past fade

@@ -159,6 +159,17 @@ public:
 	// cubemap baker also uses it for primary misses directly).
 	glm::vec3 SkyRadiance(const glm::vec3& dir) const;
 
+	// Hemisphere-averaged sky radiance (the AMBIENT term - the same
+	// average the runtime's analytic sky IBL ambient gives uncovered
+	// pixels). Fixed 16-direction average, computed once per scene:
+	// deterministic across bakes. The cubemap baker adds it to HIT
+	// directions as the ambient closure (see TraceIncoming's outFirst
+	// albedo + the bake's "complete ambient" contract: interior probes
+	// whose paths never escape would otherwise bake ~black while the
+	// runtime look is sky-ambient lit - the probe-vs-fallback
+	// discontinuity).
+	glm::vec3 SkyAmbient() const;
+
 	// Incoming BAKED radiance arriving at `origin` along `dir` (probe
 	// primary ray): sun + static spot NEE at every diffuse vertex
 	// (including the primary hit), analytic sky on miss, transmissive
@@ -170,8 +181,12 @@ public:
 	// sky leaves the caller's value untouched, so pre-fill a sentinel).
 	// The cubemap-reprojection captures (cubemap_volume.cpp) record it
 	// as the capture depth for the parallax-shift reprojection.
+	// Optional outFirstAlbedo: the first NON-transmissive hit's diffuse
+	// albedo (the ambient-closure blend needs it; sky / transmissive-only
+	// paths leave the caller's value untouched).
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
-		Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist = nullptr) const;
+		Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist = nullptr,
+		glm::vec3* outFirstAlbedo = nullptr) const;
 
 	// Monte-Carlo cosine-hemisphere irradiance estimate at a point
 	// (reference for the error-driven refinement; same sources as

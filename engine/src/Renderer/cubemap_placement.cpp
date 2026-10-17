@@ -14,6 +14,7 @@ struct Cell {
 	glm::vec3 mn{ 0.0f };
 	glm::vec3 mx{ 0.0f };
 	uint32_t depth = 0;
+	bool nearSurface = false; // surface proximity, computed at push time
 };
 
 glm::vec3 CellCenter(const Cell& c) { return (c.mn + c.mx) * 0.5f; }
@@ -96,49 +97,74 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 	}
 
 	size_t droppedEmbedded = 0;
+	size_t droppedNonViable = 0;
 	size_t subdivided = 0;
 	size_t depthHist[16] = {};
 
-	// Breadth-first growth: coarse coverage decides before detail, so
-	// budget pressure truncates detail, never coverage. emitted[] stays in
-	// emission (coarse-first) order.
+	// PRIORITY growth: SURFACE cells split first (density where the
+	// pixels are - reflection detail), OPEN-AIR cells wait and emit
+	// coarse when the budget runs out (coverage only). The old uniform
+	// breadth-first spent the whole budget on the first level (observed:
+	// 64 leaves ALL at depth 2 on sponza - every root child was
+	// tooCoarse, so 36 wall-straddling cells baked black and the
+	// near-surface cells never refined). Two queues, FIFO within each:
+	// surfaceQ drains before airQ is touched. emitted[] keeps every
+	// cell either way - a complete partition of the root, coverage
+	// holes never happen; budget pressure truncates AIR detail, never
+	// surface detail.
 	std::vector<Cell> emitted;
 	emitted.reserve(budget + 8);
-	std::deque<Cell> queue;
-	queue.push_back(Cell{ bmin, bmax, 0 });
+	std::deque<Cell> surfaceQ;
+	std::deque<Cell> airQ;
 
-	while (!queue.empty()) {
-		Cell c = queue.front();
-		queue.pop_front();
+	// Surface proximity on CREATION (push time): any of the 6 center
+	// axial rays hitting within reach means the cell touches or
+	// neighbors geometry (detail candidate). Computed once per cell
+	// instead of per pop.
+	const auto cellNearSurface = [&](const Cell& c) {
+		if (!occluded)
+			return false;
 		const glm::vec3 center = CellCenter(c);
-		const glm::vec3 half = CellHalf(c);
-		const float halfDiag = glm::length(half);
+		const float reach = glm::length(CellHalf(c)) * 1.25f + 1e-4f;
+		for (const glm::vec3& a : kAxes)
+			if (occluded(center, a, reach))
+				return true;
+		return false;
+	};
+	const auto pushCell = [&](Cell c) {
+		c.nearSurface = cellNearSurface(c);
+		if (c.nearSurface)
+			surfaceQ.push_back(c);
+		else
+			airQ.push_back(c);
+	};
+	pushCell(Cell{ bmin, bmax, 0, false });
+
+	while (!surfaceQ.empty() || !airQ.empty()) {
+		// Surface cells first (FIFO within each class).
+		Cell c = !surfaceQ.empty() ? surfaceQ.front() : airQ.front();
+		if (!surfaceQ.empty())
+			surfaceQ.pop_front();
+		else
+			airQ.pop_front();
+		const glm::vec3 center = CellCenter(c);
+		const float halfDiag = glm::length(CellHalf(c));
 		const float size = CellSize(c);
 
 		const bool atFloor = size <= minCell || c.depth >= opts.maxDepth;
-		// Surface proximity: any center ray hitting within reach means the
-		// cell touches or neighbors geometry (detail candidate).
-		uint32_t surfHits = 0;
-		if (occluded) {
-			const float reach = halfDiag * 1.25f + 1e-4f;
-			for (const glm::vec3& a : kAxes) {
-				if (occluded(center, a, reach))
-					++surfHits;
-			}
-		}
-		const bool nearSurface = surfHits > 0;
-		const bool tooCoarse = !nearSurface && size > maxCell;
-		const bool wantSplit = !atFloor && (nearSurface || tooCoarse);
+		const bool tooCoarse = !c.nearSurface && size > maxCell;
+		const bool wantSplit = !atFloor && (c.nearSurface || tooCoarse);
 
 		// Splitting one decided leaf into 8 children nets +7 leaves:
 		// emitted[] + queue[] (each queued cell yields >= 1 leaf) + 8 new
-		// must fit the budget, otherwise emit coarse (coverage over detail).
-		// This conservatism is load-bearing: emitted[] is a COMPLETE
-		// partition of the root (disjoint cells, union = bounds), and the
-		// emission below keeps every cell — truncating the tail would punch
-		// coverage holes (dropped cells have no ancestor left to cover
-		// them). A few budget slots may go unused; holes never happen.
-		const size_t liveLeaves = emitted.size() + queue.size();
+		// must fit the budget, otherwise emit coarse (coverage over
+		// detail). This conservatism is load-bearing: emitted[] is a
+		// COMPLETE partition of the root (disjoint cells, union =
+		// bounds), and the emission below keeps every cell -
+		// truncating the tail would punch coverage holes (dropped
+		// cells have no ancestor left to cover them). A few budget slots
+		// may go unused; holes never happen.
+		const size_t liveLeaves = emitted.size() + surfaceQ.size() + airQ.size();
 		if (wantSplit && liveLeaves + 8 <= budget) {
 			++subdivided;
 			for (int iz = 0; iz < 2; ++iz)
@@ -152,7 +178,7 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 							iy ? c.mx.y : center.y,
 							iz ? c.mx.z : center.z };
 						ch.depth = c.depth + 1;
-						queue.push_back(ch);
+						pushCell(ch);
 					}
 		} else {
 			emitted.push_back(c);
@@ -220,6 +246,28 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 			++droppedEmbedded;
 			continue;
 		}
+		// VIABILITY gate: a capture needs to SEE something. Count the 14
+		// openness rays escaping at least 1 m; fewer than 3 escaping
+		// means the point sits in a wall slit (a corridor doorway or a
+		// roof seam): the capture bakes ~black, darkens whatever tile
+		// lists it lands in, and wastes a bake + ~2 MB of pak data.
+		// The cell leans on its neighbors (their influence + fade reach
+		// in) - skip the probe entirely. IsEmbedded above only drops
+		// all-6-axial-blocked points; a slit point passes it and still
+		// bakes black (observed: 36 of 64 cells on sponza).
+		if (occluded) {
+			glm::vec3 dirs[14];
+			OpennessDirs(dirs);
+			uint32_t escaping = 0;
+			for (const glm::vec3& d : dirs) {
+				if (!occluded(best, d, 1.0f))
+					++escaping;
+			}
+			if (escaping < 3) {
+				++droppedNonViable;
+				continue;
+			}
+		}
 		const glm::vec3 p = best;
 		const float halfDiag = glm::length(CellHalf(c));
 		CubemapPlacedProbe pr{};
@@ -235,8 +283,8 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 	}
 
 	std::snprintf(buf, sizeof(buf),
-		"[octree] cells subdivided=%zu emitted=%zu kept=%zu droppedEmbedded=%zu relocated=%zu (maxCell=%.2g minCell=%.2g depth<=%u budget=%u)\n",
-		subdivided, emitted.size(), out.size(), droppedEmbedded, relocated,
+		"[octree] cells subdivided=%zu emitted=%zu kept=%zu droppedEmbedded=%zu droppedNonViable=%zu relocated=%zu (maxCell=%.2g minCell=%.2g depth<=%u budget=%u)\n",
+		subdivided, emitted.size(), out.size(), droppedEmbedded, droppedNonViable, relocated,
 		(double)maxCell, (double)minCell, opts.maxDepth, budget);
 	log += buf;
 	for (uint32_t d = 0; d < 16; ++d) {

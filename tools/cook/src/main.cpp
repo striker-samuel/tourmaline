@@ -2798,7 +2798,16 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			oo.minCellSize = args.cubemapOctreeMin;
 			oo.maxDepth = args.cubemapOctreeDepth;
 			oo.embedDist = 0.3f;
-			oo.maxProbes = 32;
+			// 128 CELLS: the partition budget (the +7-per-split leaf
+			// math needs headroom past uniform depth 2 to afford depth-3
+			// refinement). VIABILITY gating at emission skips wall-slit
+			// cells (black captures), so the probe count that survives
+			// is well under the cell count. Per-pixel shading cost is
+			// NOT this number - the tile lists bucket at most 4 probes
+			// per tile (MAX_FP_PROBE_TILE_SLOTS) and the specular walk
+			// blends the top 2. Density here only buys coverage/parallax
+			// fit. The manifest/runtime resident caps do the rest.
+			oo.maxProbes = 128;
 			auto& bvh = traceScene.Bvh();
 			smvk::CubemapOcclusionRay occ =
 				[&](const glm::vec3& o, const glm::vec3& d, float m) {
@@ -2974,18 +2983,22 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			<< std::flush;
 	}
 
-	// Runtime budget: the lit shader visits at most 32 probe entries per
-	// pixel (tile lists; see environment.hlsli). Captures beyond 32 still
-	// incur bake time and approximately 2 MB of pak data each. Manifest
-	// truncation preserves pinned rows and drops excess unpinned rows.
+	// Runtime budget: the tile lists bucket at most MAX_FP_PROBE_TILE_SLOTS
+	// (4) probes per tile and the specular walk blends the top 2 - the
+	// PER-PIXEL shading cost never scales with the capture count. The
+	// 64-row cap below is the RESIDENT/upload budget (kForwardPlusMaxProbes
+	// + the manifest cap; the runtime streams the nearest rows within it).
+	// Captures beyond the cap still incur bake time and ~2 MB of pak data
+	// each; manifest truncation preserves pinned rows and drops excess
+	// unpinned rows.
 	if (positions.empty()) {
 		tool::err() << "  [CUBE] WARNING: no capture positions survived"
 			" (all grid points embedded?) - no cubemaps baked\n" << std::flush;
 		return true;
 	}
-	if (positions.size() > 32) {
+	if (positions.size() > 64) {
 		tool::err() << "  [CUBE] WARNING: " << positions.size()
-			<< " captures exceed the 32-probe runtime budget (manifest"
+			<< " captures exceed the 64-probe resident budget (manifest"
 			<< " truncation keeps pinned rows) - increase --cubemap-grid"
 			<< " spacing or --cubemap-octree-max to cover the scene with"
 			<< " fewer, wider probes\n" << std::flush;
@@ -3010,6 +3023,9 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// Depth-fitted parallax boxes, parallel to positions (see the fit
 	// pass inside the loop): written into the manifest rows below.
 	std::vector<std::pair<glm::vec3, glm::vec3>> fitBoxes;
+	// Parallel to positions: 1 = dark capture (all fit planes < 0.8 m -
+	// wall slit; the bake was skipped, the manifest row is dropped).
+	std::vector<char> captureDead;
 	fitBoxes.reserve(positions.size());
 
 	// Machine-readable total for progress clients (the editor's cook
@@ -3094,14 +3110,50 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 				<< planeDist[4] << "," << planeDist[5]
 				<< ") influence=" << (radii.size() == positions.size()
 					? radii[cap].x : 0.0f) << "\n" << std::flush;
+
+			// DARK-capture gate (EXACT - the bake-side twin of the
+			// placement viability test): every face's median plane under
+			// 0.8 m means the point sees NOTHING beyond a wall slit in
+			// any axis direction - the capture bakes ~black. Skip the
+			// whole bake for this row (the expensive GGX prefilter +
+			// encode + loose write + pak blob all die here) and mark it
+			// dead for the manifest writer. Neighbors cover the cell
+			// (their influence + fade reach in). Observed on sponza:
+			// 81 of 126 cells landed in wall slits (thin walls pass the
+			// ray gates - rays escape ALONG the wall plane).
+			const float maxPlane = std::max(std::max(
+				std::max(planeDist[0], planeDist[1]),
+				std::max(planeDist[2], planeDist[3])),
+				std::max(planeDist[4], planeDist[5]));
+			if (maxPlane < 0.8f) {
+				tool::err() << "  [CUBE] skip dark capture '" << captureName
+					<< "' (all planes < 0.8 m - wall slit)\n" << std::flush;
+				captureDead.push_back(1);
+				fitBoxes.emplace_back(fitMin, fitMax);
+				pngMeans.push_back(glm::vec3(0.0f));
+				continue;
+			}
 		}
+		captureDead.push_back(0);
 		fitBoxes.emplace_back(fitMin, fitMax);
 
 		// Trace 6 HDR base faces. Per texel: --cubemap-spp transport paths,
-		// averaged â€” the NEE sun/spot term is analytic (clean at 1 spp), but
+		// averaged — the NEE sun/spot term is analytic (clean at 1 spp), but
 		// the bounce field is a Monte-Carlo estimate and 1 spp reads as
 		// speckle instead of the GI the lightmapped scene shows. Per-texel
 		// seeds stay deterministic (spp continues the same rng stream).
+		//
+		// AMBIENT CLOSURE (the "complete ambient" contract): hit directions
+		// add SkyAmbient * firstHitAlbedo on top of the traced radiance.
+		// The runtime NEVER adds the analytic sky ambient over probe-
+		// covered pixels (the bake IS their ambient) - but interior probes
+		// whose paths never escape bake ~black (the albedo decay kills the
+		// bounce tail; observed: sponza interiors at HDR ~0.003 while the
+		// runtime look is sky-ambient lit) and the probe-vs-fallback
+		// discontinuity reads as broken cubemaps. The closure is exactly
+		// what the runtime ambient produces for a wall: ambient * albedo.
+		// Open-sky directions keep the pure sky (already complete).
+		const glm::vec3 skyAmb = traceScene.SkyAmbient();
 		smvk::CubemapBaseFaces faces;
 		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
 			faces[f].assign(size_t(S) * S * 4, 0.0f);
@@ -3123,12 +3175,18 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 						glm::vec3 L(0.0f);
 						for (uint32_t s = 0; s < args.cubemapSpp; ++s) {
 							smvk::gi::TriangleBvh::Hit h;
+							glm::vec3 firstAlbedo(-1.0f);
 							if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
 								L += traceScene.SkyRadiance(dir);
 							}
 							else {
 								L += traceScene.TraceIncoming(origin, dir, rng,
-									args.cubemapBounces);
+									args.cubemapBounces, nullptr, &firstAlbedo);
+								// Ambient closure: the visible surface's
+								// one-bounce ambient (albedo < 0 = sky /
+								// transmissive-only path: no closure).
+								if (firstAlbedo.x >= 0.0f)
+									L += skyAmb * firstAlbedo;
 							}
 						}
 						L *= cubemapScale / float(args.cubemapSpp);
@@ -3246,7 +3304,23 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		// placement chose.
 		std::vector<smvk::CubemapManifestEntry> rows;
 		rows.reserve(positions.size());
+		size_t droppedBlack = 0;
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
+			// Drop DARK captures from the manifest: rows whose bake was
+			// skipped (the fit's all-planes-<0.8 m wall-slit gate - the
+			// capture never ran) or whose baked mean is ~0. Such a row
+			// serves nothing its pocket doesn't, wastes a resident slot
+			// + ~2 MB of pak data, and darkens whatever tile lists it
+			// lands in. The bake + loose sidecar stay (inspection), only
+			// the row goes. Pinned rows are NEVER dropped (artist intent).
+			const bool isPinned = cap < pinned.size() && pinned[cap] != 0;
+			const bool dead = cap < captureDead.size() && captureDead[cap] != 0;
+			const bool blackMean = cap < pngMeans.size()
+				&& pakcook::CubemapMeanLuma(pngMeans[cap]) < 1e-6f;
+			if (!isPinned && (dead || blackMean)) {
+				++droppedBlack;
+				continue;
+			}
 			smvk::CubemapManifestEntry e{};
 			e.vfsPath = smvk::CubemapVfsPath(
 				base + "_" + std::to_string(cap));
@@ -3261,9 +3335,13 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			} else {
 				e.DeriveSymmetricBox();
 			}
-			e.pinned = cap < pinned.size() && pinned[cap] != 0;
+			e.pinned = isPinned;
 			rows.push_back(std::move(e));
 		}
+		if (droppedBlack > 0)
+			tool::err() << "  [CUBE] manifest dropped " << droppedBlack
+				<< " black capture(s) (embedded emission points)\n"
+				<< std::flush;
 		const std::string text = smvk::CubemapManifestSerialize(rows);
 		const std::string manifestVfs = smvk::CubemapManifestVfsPath(base);
 		outManifestBase = base;

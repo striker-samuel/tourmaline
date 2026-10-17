@@ -178,8 +178,9 @@ void TestManifestPin() {
 	Check(!smvk::CubemapManifestParse(
 		"textures/cubemaps/a.ktx2 1 2 3 4 5 banana\n", badTok, err)
 		&& badTok.empty(), "cubemap.manifest-pin-reject-tag");
-	// Truncation keeps pinned rows even when they are LAST in the file.
-	std::vector<smvk::CubemapManifestEntry> many(33);
+	// Truncation keeps pinned rows even when they are LAST in the file
+	// (the row cap is the resident budget kCubemapMaxManifestRows).
+	std::vector<smvk::CubemapManifestEntry> many(smvk::kCubemapMaxManifestRows + 1);
 	for (size_t i = 0; i < many.size(); ++i) {
 		many[i].vfsPath = "textures/cubemaps/m_" + std::to_string(i) + ".ktx2";
 		many[i].position = glm::vec3(float(i), 0.0f, 0.0f);
@@ -190,7 +191,7 @@ void TestManifestPin() {
 	const std::string manyText = smvk::CubemapManifestSerialize(many);
 	std::vector<smvk::CubemapManifestEntry> trunc;
 	Check(smvk::CubemapManifestParse(manyText, trunc, err)
-		&& trunc.size() == 32 && trunc[0].pinned
+		&& trunc.size() == smvk::kCubemapMaxManifestRows && trunc[0].pinned
 		&& trunc[0].vfsPath == many.back().vfsPath,
 		"cubemap.manifest-pin-survives-truncation");
 }

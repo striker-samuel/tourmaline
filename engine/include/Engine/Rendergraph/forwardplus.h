@@ -114,8 +114,12 @@ static constexpr uint32_t kForwardPlusSpot = 1;
 static constexpr int32_t kForwardPlusProbe = 2;
 // Reserve of the 1024 light-buffer slots for probe entries (see
 // FP_PROBE_RESERVE in the app): lights are capped early so appended
-// probes can never truncate a selected shadow spot.
-static constexpr uint32_t kForwardPlusMaxProbes = 32;
+// probes can never truncate a selected shadow spot. Per-PIXEL cost is
+// NOT this number: the tile lists bucket at most MAX_FP_PROBE_TILE_SLOTS
+// (4) probes per tile (common.hlsli) and the specular walk blends the
+// top 2 of those - 64 resident probes is a density/streaming budget,
+// not a shading cost.
+static constexpr uint32_t kForwardPlusMaxProbes = 64;
 // Dedicated per-tile probe slots in the tile index buffer (shader
 // MAX_FP_PROBE_TILE_SLOTS): stride per tile is maxLightsPerTile + this,
 // lights pack [0..maxLightsPerTile), probes the tail slots — light

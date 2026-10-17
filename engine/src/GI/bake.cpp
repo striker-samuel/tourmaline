@@ -261,8 +261,29 @@ glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 	return sum * m.albedo * (1.0f / kPi);
 }
 
+glm::vec3 GiTraceScene::SkyAmbient() const {
+	// Fixed 16 upper-hemisphere directions (deterministic; the runtime's
+	// analytic sky IBL ambient covers the same average). Cosine-weighted
+	// mean: irradiance / pi == radiance mean for the Lambertian ambient.
+	static const glm::vec3 kDirs[16] = {
+		{ 0.38268, 0.92388, 0.0f }, { -0.38268, 0.92388, 0.0f },
+		{ 0.0f, 0.92388, 0.38268 }, { 0.0f, 0.92388, -0.38268 },
+		{ 0.59501, 0.70711, 0.38268 }, { -0.59501, 0.70711, 0.38268 },
+		{ 0.59501, 0.70711, -0.38268 }, { -0.59501, 0.70711, -0.38268 },
+		{ 0.92388, 0.38268, 0.0f }, { -0.92388, 0.38268, 0.0f },
+		{ 0.0f, 0.38268, 0.92388 }, { 0.0f, 0.38268, -0.92388 },
+		{ 0.77448, 0.44783, 0.44783 }, { -0.77448, 0.44783, 0.44783 },
+		{ 0.77448, 0.44783, -0.44783 }, { -0.77448, 0.44783, -0.44783 },
+	};
+	glm::vec3 sum(0.0f);
+	for (const glm::vec3& d : kDirs)
+		sum += SkyRadiance(glm::normalize(d));
+	return sum * (1.0f / 16.0f);
+}
+
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
-	Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist) const {
+	Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist,
+	glm::vec3* outFirstAlbedo) const {
 	// Baked field: sun + static spot NEE at every diffuse vertex
 	// (including the primary hit — the light a lit surface reflects toward
 	// the probe IS indirect at the probe), plus the analytic sky on miss
@@ -296,6 +317,12 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		glm::vec3 tn = bvh_.TriangleNormal(h.tri);
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
+		// First non-transmissive hit's albedo: the ambient-closure blend
+		// (the cubemap baker) keys on the visible surface's bounce.
+		if (outFirstAlbedo && m.transmission.x + m.transmission.y + m.transmission.z <= 1e-4f) {
+			*outFirstAlbedo = m.albedo;
+			outFirstAlbedo = nullptr; // only the first
+		}
 
 		// Transmissive (glass): pass through, tinted. No diffuse bounce at
 		// this vertex; the throughput picks up the transmission color.

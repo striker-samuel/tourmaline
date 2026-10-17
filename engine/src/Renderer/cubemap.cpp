@@ -205,13 +205,19 @@ bool CubemapManifestParse(std::string_view text,
 		err = "manifest has no probe rows";
 		return false;
 	}
-	if (out.size() > 32) {
-		err = "manifest lists " + std::to_string(out.size()) + " probes (runtime consumes 32)";
-		// Not fatal: pinned rows survive truncation (artist-placed probes
-		// must not lose to bulk order), the rest clamp to 32.
+	// Row cap: the RESIDENT/upload budget (kForwardPlusMaxProbes; the
+	// runtime streams the nearest rows within it - the manifest may
+	// carry more than the budget, the streaming decides residency).
+	// Per-PIXEL shading cost never scales with this: the tile lists
+	// bucket at most MAX_FP_PROBE_TILE_SLOTS (4) per tile. Pinned rows
+	// survive truncation (artist-placed probes must not lose to bulk
+	// order).
+	if (out.size() > kCubemapMaxManifestRows) {
+		err = "manifest lists " + std::to_string(out.size())
+			+ " probes (row cap " + std::to_string(kCubemapMaxManifestRows) + ")";
 		std::stable_partition(out.begin(), out.end(),
 			[](const CubemapManifestEntry& e) { return e.pinned; });
-		out.resize(32);
+		out.resize(kCubemapMaxManifestRows);
 	}
 	return true;
 }
