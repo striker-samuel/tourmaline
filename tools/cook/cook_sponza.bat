@@ -55,6 +55,12 @@ rem once; cook.exe runs the bakes + writes them back into the artifacts
 rem (+ Sponza.cooked); pak.exe assembles the .pak from the cooked
 rem artifacts (pure serialization - bake flags are rejected there).
 rem SUN flags ride BOTH steps (cook bakes with that sun, pak serializes it).
+rem AMBIENT CLOSURE OFF (the default): sponza's pak carries the GI stack
+rem (GiBaker below), so the runtime ambient comes from the .sggi octree +
+rem cvols - baking the closure into the captures would DOUBLE-COUNT it
+rem (mirror-like surfaces - the chrome probe ball, gold trim - reflect
+rem ~traced-bounce + closure ~= 2x the ambient-lit field). Stack-less
+rem cooks (bistro) opt in with --cubemap-ambient-closure on.
 rem GI VOLUMES (both layers of the probes-only pivot): GiBaker runs
 rem BETWEEN cook + pak - F:/content/models/sponza/Sponza.tour authors
 rem the convex GI volumes (the per-space layer: dense local probe grids

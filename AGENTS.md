@@ -108,6 +108,18 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   chroma — verified on Sponza). Sponza GI flow: `tools/cook/cook_sponza.bat`
   runs Cook → GiBaker (the convex volumes + the global octree from
   `F:/content/models/sponza/Sponza.tour`) → Pak
+- Ambient closure (`--cubemap-ambient-closure`, default OFF): captures + the
+  GI stack both carrying the ambient double-counts every mirror-like surface
+  (the chrome probe ball, gold trim reflect ~2x). ON only for stack-less
+  cooks (bistro's bat) where the runtime ambient is the analytic sky fallback.
+  Dead captures (mean luma ≤ 20 — embedded/occluded origins, or bounce-tail
+  death in deep interiors) drop from the manifest: the closure used to mask
+  them; their zones fall to the live neighbors + the GI-occluded sky fallback
+- LOD sibling errors stay MESH-LOCAL in the artifact (scale-free) — the
+  renderer applies the instance's world scale at pick time
+  (`World::SelectLodIndex`). Never bake a scene transform into the serialized
+  error (the removed cook-time finalize compounded per re-cook: Sponza's
+  0.008 root = 125x/run)
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
 

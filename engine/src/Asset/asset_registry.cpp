@@ -401,31 +401,6 @@ std::vector<std::pair<StringViewT, LodInfo>> Cluster::ListMeshLods() const {
 	return out;
 }
 
-float Cluster::GetLodFinalizedScale(StringViewT uri) const {
-	const StringViewT n = NormalizeAssetUri(uri);
-	if (n.empty())
-		return 1.0f;
-	const auto it = lodFinalizedScale_.find(std::string(n.data(), n.size()));
-	if (it == lodFinalizedScale_.end())
-		return 1.0f;
-	return (it->second > 0.0f && std::isfinite(it->second)) ? it->second : 1.0f;
-}
-
-void Cluster::SetLodFinalizedScale(StringViewT uri, float scale) {
-	const StringViewT n = NormalizeAssetUri(uri);
-	if (n.empty())
-		return;
-	if (!(scale > 0.0f) || !std::isfinite(scale)) {
-		lodFinalizedScale_.erase(std::string(n.data(), n.size()));
-		return;
-	}
-	lodFinalizedScale_[std::string(n.data(), n.size())] = scale;
-}
-
-void Cluster::ClearLodFinalizedScales() {
-	lodFinalizedScale_.clear();
-}
-
 void Cluster::RegisterMeshMeshlets(StringViewT uri, const CookedMeshlets& meshlets) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || meshlets.empty())

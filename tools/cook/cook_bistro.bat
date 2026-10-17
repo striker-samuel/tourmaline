@@ -38,9 +38,17 @@ rem footprint than RGBA16F; --lm-compress uncompressed opts out).
 rem --cubemap on bakes GGX-preconvolved specular cubemaps INTO the pak
 rem (textures/cubemaps/bistro.ktx2, high-frequency specular only;
 rem probes/lightmaps own diffuse + low-freq specular).
+rem --cubemap-ambient-closure on: bistro is a STACK-LESS cook (no
+rem GiBaker step - no .sggi octree + no cvols in the pak), so the
+rem covered pixels' diffuse ambient comes from the analytic sky
+rem fallback at runtime. The closure baked into the captures matches
+rem that fallback (interior captures would otherwise bake ~black with
+rem a probe-vs-fallback seam). With GI volumes in the pak the closure
+rem would DOUBLE-COUNT the stack ambient (the chrome ball + gold trim
+rem reflect ~2x) - sponza's pipeline keeps the default OFF.
 rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
-out\build\x64-Release\Cook.exe F:\content models/Bistro/bistro.geometry --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
+out\build\x64-Release\Cook.exe F:\content models/Bistro/bistro.geometry --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128 --cubemap-ambient-closure on
 if errorlevel 1 goto fail
 out\build\x64-Release\Pak.exe F:\content models/Bistro/bistro.geometry --out-pak F:\content\paks\bistro.pak --verify on
 if errorlevel 1 goto fail

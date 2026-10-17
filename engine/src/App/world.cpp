@@ -921,10 +921,16 @@ namespace smvk {
 			if (refreshDue || !hasOld) {
 				// Hysteresis anchors on the node's live level: the stale
 				// cached value is the current state the band makes sticky.
+				// The instance's own world scale turns the MESH-LOCAL
+				// sibling errors into world errors at the pick (the
+				// serialized errors are scale-free by design).
+				const float instanceScale =
+					(n < scene.globalTransform.size())
+					? MaxScaleOfMatrix(scene.globalTransform[n]) : 1.0f;
 				nodeLod_[n] = static_cast<uint8_t>(SelectLodIndex(worldMesh,
 					LodDistanceForNode(node, worldMesh, lodInputs_.eye),
 					lodInputs_.viewportHeight, lodInputs_.fovY,
-					lodInputs_.pixelBudget, nodeLod_[n]));
+					lodInputs_.pixelBudget, nodeLod_[n], instanceScale));
 				nodeLodStamp_[n] = inputs.frameId;
 			}
 		}
@@ -1041,7 +1047,7 @@ namespace smvk {
 
 	uint32_t World::SelectLodIndex(uint32_t meshIndex, float distance,
 		float viewportHeightPx, float fovYRadians, float maxPixelError,
-		uint32_t currentLod) const {
+		uint32_t currentLod, float instanceWorldScale) const {
 		if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
 			return 0;
 		EnsureLodChainsCached(*this);
@@ -1052,11 +1058,18 @@ namespace smvk {
 			return 0;
 		// SelectLodIndexForDistance walks a plain error array; the levels
 		// are SoA-flavored (mesh/error/shader), so stage the errors on the
-		// stack (chains are capped at 16 levels by RebuildLodChains).
+		// stack (chains are capped at 16 levels by RebuildLodChains). The
+		// serialized errors are MESH-LOCAL (scale-free), so scale by the
+		// INSTANCE's world scale here - per-instance exact, and immune to
+		// the cross-run compounding a cook-time scaling pass had (a 0.008
+		// root shrank the error 125x per re-cook and the picker served the
+		// coarsest LOD centimeters from the camera).
+		const float scale = (instanceWorldScale > 0.0f
+			&& std::isfinite(instanceWorldScale)) ? instanceWorldScale : 1.0f;
 		float errors[16];
 		const uint32_t n = (uint32_t)std::min<size_t>(chain.levels.size(), 16);
 		for (uint32_t i = 0; i < n; ++i)
-			errors[i] = chain.levels[i].error;
+			errors[i] = chain.levels[i].error * scale;
 		return SelectLodIndexForDistance(errors, n, distance,
 			viewportHeightPx, fovYRadians, maxPixelError, currentLod,
 			kLodSelectHysteresis);

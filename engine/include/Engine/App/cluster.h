@@ -274,20 +274,16 @@ namespace smvk {
 		StringViewT GetDecalUri(ClusterDecalHandle handle) const;
 
 		// Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
-		// MeshBlobs; the renderer does not branch on it.
+		// MeshBlobs; the renderer does not branch on it. simplifyError is
+		// MESH-LOCAL (scale-free) - the renderer applies the instance's
+		// world scale at pick time (World::LodIndexForNode), so no
+		// cook-time world-scaling pass exists (the removed
+		// FinalizeLodWorldErrors compounded the scale per re-cook; see
+		// the removal note in mesh_optimizer.cpp).
 		void RegisterMeshLod(StringViewT uri, const LodInfo& lod);
 		std::optional<LodInfo> GetMeshLod(StringViewT uri) const;
-		// All LOD markers for cook post-passes (see FinalizeLodWorldErrors).
+		// All LOD markers for cook post-passes.
 		std::vector<std::pair<StringViewT, LodInfo>> ListMeshLods() const;
-		// World scale already baked into a "/lodN" sibling's simplifyError
-		// by FinalizeLodWorldErrors (cook-time only, never serialized).
-		// Lets the finalize pass divide out a previous application before
-		// scaling, so repeated runs (e.g. the frostbite pre-bake sibling
-		// cook plus the post-bake sibling pass) stay single-scaled instead
-		// of compounding. Returns 1.0 when the uri was never finalized.
-		float GetLodFinalizedScale(StringViewT uri) const;
-		void SetLodFinalizedScale(StringViewT uri, float scale);
-		void ClearLodFinalizedScales();
 
 		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
 		// importer when meshlet cooking is enabled, persisted in MeshBlobs,
@@ -335,10 +331,6 @@ namespace smvk {
 		UriMap<std::vector<uint8_t>> textureSources_;
 		UriMap<LodInfo> meshLods_;
 		UriMap<CookedMeshlets> meshMeshlets_;
-		// Cook-time only (never serialized): world scale baked into each
-		// sibling LOD's simplifyError by the last FinalizeLodWorldErrors
-		// run, keyed by normalized uri string. See GetLodFinalizedScale.
-		std::unordered_map<std::string, float> lodFinalizedScale_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Pak-image pin for borrowed texture payloads (see PinPakImage).

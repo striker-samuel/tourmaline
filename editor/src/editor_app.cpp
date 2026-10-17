@@ -702,13 +702,12 @@ void EditorApp::CloseScene() {
 	m_context->FlushUploads();
 	Log("Resolving world...");
 	m_world->ResolveAndFixup_clusters();
-	// LOD world-error finalize over the MERGED world: per-reference
-	// imports finalize with partial globals (later references add more
-	// instances), so re-run here where globals are final. Idempotent
-	// (un-bakes the previous scale first) and a no-op without LOD
-	// siblings — without it multi-reference LOD switch distances are
-	// wrong (single-reference worlds are already exact from import).
-	smvk::FinalizeLodWorldErrors(cluster);
+	// (No LOD world-error finalize here anymore: sibling simplifyError
+	// stays MESH-LOCAL (scale-free) in the cluster + the artifact, and the
+	// renderer applies each INSTANCE's own world scale at pick time -
+	// per-instance exact everywhere, including multi-reference worlds,
+	// and immune to the cross-run compounding the cook-time scaling
+	// pass had.)
 	// Import geometry summary: meshlets + LOD chains feed the GPU filter
 	// (F3 meshlets view, HZB culling) and the LOD selection (F5 view) on
 	// live worlds, matching cooked paks.

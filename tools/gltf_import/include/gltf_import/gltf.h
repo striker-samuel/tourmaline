@@ -535,8 +535,14 @@ inline void GltfToCluster(
 	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
-	// Bake node world scale into cooked LOD errors (max over instances).
-	smvk::FinalizeLodWorldErrors(out);
+	// (No LOD world-error finalize at import time: cooked sibling errors
+	// stay MESH-LOCAL (scale-free) in the artifact - the renderer applies
+	// each instance's own world scale at pick time (World::SelectLodIndex).
+	// Baking the scene scale in here compounded per re-cook: CookLodSiblings
+	// skips meshes that already carry siblings, so the loaded world-scaled
+	// errors flowed through the finalize again each run and shrank by the
+	// node scale per pass - Sponza's 0.008 root = 125x/run, and the picker
+	// served the coarsest LOD centimeters from the camera.)
 	// Flush batched uploads (256MB threshold, or manual at end of whole scene)
 	if (out.ctx_)
 		out.ctx_->FlushUploads();

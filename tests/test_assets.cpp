@@ -957,104 +957,36 @@ void TestLodChain() {
 		Check(smvk::MaxScaleOfMatrix(m) == 4.0f, "lod.scale.maxaxis");
 	}
 
-	// World-error finalize: local error * max node scale over instances.
+	// LOD error storage contract (the FinalizeLodWorldErrors removal):
+	// the serialized simplifyError is MESH-LOCAL (scale-free); the pick
+	// composes the instance scale at runtime - local error * the
+	// instance's MaxScaleOfMatrix * the projection. Baking a scene
+	// transform into the artifact compounded per re-cook (CookLodSiblings
+	// skips meshes that already carry siblings, so a cook-time scaling
+	// pass re-applied the node scale to already-scaled errors every run:
+	// Sponza's 0.008 root shrank them 125x per re-cook and the picker
+	// served the coarsest LOD centimeters from the camera).
 	{
 		using namespace smvk;
-		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		auto q = MakeQuad();
-		const auto h = cluster->UploadStaticMesh(q);
-		const std::string uri = "models/q.gltf#mesh.9/prim.0";
-		cluster->RegisterMeshUri(uri, h);
-		LodInfo lod0;
-		lod0.groupId = 9;
-		lod0.lodIndex = 0;
-		lod0.candidateCount = 2;
-		lod0.triCount = 2;
-		cluster->RegisterMeshLod(uri, lod0);
-		// Fake LOD1 upload (same quad) with local error 0.5.
-		const auto h1 = cluster->UploadStaticMesh(q);
-		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
-		cluster->RegisterMeshUri(uri1, h1);
-		LodInfo lod1;
-		lod1.groupId = 9;
-		lod1.lodIndex = 1;
-		lod1.candidateCount = 2;
-		lod1.simplifyError = 0.5f;
-		lod1.triCount = 1;
-		cluster->RegisterMeshLod(uri1, lod1);
-
-		const int root = addNode(cluster->scene, -1, 0);
-		const int n1 = addNode(cluster->scene, root, 1);
-		const int n2 = addNode(cluster->scene, root, 1);
-		cluster->scene.meshForNode[n1] = h.index();
-		cluster->scene.meshForNode[n2] = h.index();
-		cluster->scene.localTransform[n1] = glm::mat4(1.0f);
-		cluster->scene.localTransform[n2] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
-		markAsChanged(cluster->scene, root);
-		recalculateGlobalTransforms(cluster->scene);
-		FinalizeLodWorldErrors(*cluster);
-		auto got = cluster->GetMeshLod(uri1);
-		Check(got && fabsf(got->simplifyError - 1.5f) < 1e-4f, "lod.finalize.maxscale");
-		auto got0 = cluster->GetMeshLod(uri);
-		Check(got0 && got0->simplifyError == 0.0f, "lod.finalize.lod0.zero");
-	}
-
-	// Finalize idempotence (Sponza regression): the frostbite pipeline
-	// finalizes twice (pre-bake sibling cook + post-bake sibling pass).
-	// A second run must keep single-scaled errors — compounding the node
-	// scale shrinks Sponza's 0.008-root errors 125x per extra run and the
-	// renderer drops to the coarsest LOD centimeters from the camera.
-	{
-		using namespace smvk;
-		auto cluster = std::make_unique<Cluster>(nullptr);
-		cluster->SetOfflineMode(true);
-		auto q = MakeQuad();
-		const auto h = cluster->UploadStaticMesh(q);
-		const std::string uri = "models/sponza/Sponza.gltf#mesh.0/prim.0";
-		cluster->RegisterMeshUri(uri, h);
-		LodInfo lod0;
-		lod0.groupId = 0;
-		lod0.lodIndex = 0;
-		lod0.candidateCount = 2;
-		lod0.triCount = 2;
-		cluster->RegisterMeshLod(uri, lod0);
-		const auto h1 = cluster->UploadStaticMesh(q);
-		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
-		cluster->RegisterMeshUri(uri1, h1);
-		LodInfo lod1;
-		lod1.groupId = 0;
-		lod1.lodIndex = 1;
-		lod1.candidateCount = 2;
-		lod1.simplifyError = 2.5f; // local units; world = 2.5 * 0.008
-		lod1.triCount = 1;
-		cluster->RegisterMeshLod(uri1, lod1);
-
-		const int root = addNode(cluster->scene, -1, 0);
-		const int n1 = addNode(cluster->scene, root, 1);
-		cluster->scene.meshForNode[n1] = h.index();
-		cluster->scene.localTransform[n1] =
-			glm::scale(glm::mat4(1.0f), glm::vec3(0.008f));
-		markAsChanged(cluster->scene, root);
-		recalculateGlobalTransforms(cluster->scene);
-		FinalizeLodWorldErrors(*cluster);
-		auto once = cluster->GetMeshLod(uri1);
-		Check(once && fabsf(once->simplifyError - 0.02f) < 1e-6f,
-			"lod.finalize.once");
-		// Second run (post-bake pass): must not compound the scale.
-		FinalizeLodWorldErrors(*cluster);
-		auto twice = cluster->GetMeshLod(uri1);
-		Check(twice && fabsf(twice->simplifyError - 0.02f) < 1e-6f,
-			"lod.finalize.idempotent");
-		// Changed transforms still re-scale from the local error.
-		cluster->scene.localTransform[n1] =
-			glm::scale(glm::mat4(1.0f), glm::vec3(0.016f));
-		markAsChanged(cluster->scene, root);
-		recalculateGlobalTransforms(cluster->scene);
-		FinalizeLodWorldErrors(*cluster);
-		auto rescaled = cluster->GetMeshLod(uri1);
-		Check(rescaled && fabsf(rescaled->simplifyError - 0.04f) < 1e-6f,
-			"lod.finalize.rescale");
+		glm::mat4 root(1.0f);
+		root = glm::scale(root, glm::vec3(0.008f));
+		const float localErr = 30.0f; // local units (relErr * extent ~3000)
+		const float worldErr = localErr * MaxScaleOfMatrix(root);
+		Check(fabsf(worldErr - 0.24f) < 1e-4f, "lod.error.instance-scale");
+		// Sponza close-up sanity: 0.24m world error at 2 m, 1080p/45deg
+		// projects ~112 px - far over any sane budget, so LOD0 stays
+		// near the camera (the compounded 0.008^2 error projected ~1 px
+		// and picked the coarsest sibling there).
+		const float px = LodProjectedPixelError(worldErr, 2.0f, 1080.0f,
+			0.7853982f);
+		Check(px > 100.0f, "lod.error.closeup-lod0");
+		// The compounded error (local * 0.008 * 0.008 - one extra
+		// finalize against a loaded world-scaled error) fits the budget
+		// at the same distance: the regression this contract forbids.
+		const float compounded = localErr * 0.008f * 0.008f;
+		const float pxBad = LodProjectedPixelError(compounded, 2.0f,
+			1080.0f, 0.7853982f);
+		Check(pxBad < 1.5f, "lod.error.compounded-fits");
 	}
 }
 
@@ -1163,7 +1095,7 @@ void TestLodSelection() {
 		lod1.groupId = 4;
 		lod1.lodIndex = 1;
 		lod1.candidateCount = 2;
-		lod1.simplifyError = 0.5f; // local; finalize scales by node scale
+		lod1.simplifyError = 0.5f; // MESH-LOCAL (scale-free by contract)
 		lod1.triCount = 1;
 		cluster->RegisterMeshLod(uri1, lod1);
 		const int root = addNode(cluster->scene, -1, 0);
@@ -1179,7 +1111,11 @@ void TestLodSelection() {
 		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
 		markAsChanged(cluster->scene, root);
 		recalculateGlobalTransforms(cluster->scene);
-		FinalizeLodWorldErrors(*cluster); // sibling world error = 1.5
+		// (No finalize: the sibling error stays MESH-LOCAL. The node's
+		// world scale (3x) turns it into the 1.5 world error AT THE PICK -
+		// SelectLodIndex's instanceWorldScale, exactly like
+		// World::LodIndexForNode composes MaxScaleOfMatrix(globalTransform)
+		// per node.)
 
 		World world;
 		world.RegisterCluster(std::move(cluster));
@@ -1189,11 +1125,19 @@ void TestLodSelection() {
 		Check(world.ResolveLodMesh(0, 0).has_value(), "lod.world.lod0");
 		Check(world.ResolveLodMesh(0, 1).has_value(), "lod.world.lod1");
 		Check(!world.ResolveLodMesh(0, 2).has_value(), "lod.world.lod2.miss");
-		Check(fabsf(world.LodErrorAt(0, 1) - 1.5f) < 1e-4f, "lod.world.error");
-		// err 1.5 projects ~19.5px at 100m (over budget -> LOD0),
-		// ~0.39px at 5000m (in budget -> LOD1).
-		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f) == 0, "lod.world.near");
-		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far");
+		// The serialized error is MESH-LOCAL (the instance scale applies
+		// at the pick, below).
+		Check(fabsf(world.LodErrorAt(0, 1) - 0.5f) < 1e-4f, "lod.world.error");
+		// Instance scale 3x -> world error 1.5: err 1.5 projects ~19.5px
+		// at 100m (over budget -> LOD0), ~0.39px at 5000m (in budget ->
+		// LOD1).
+		const float sc = 3.0f;
+		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f, 0, sc) == 0, "lod.world.near");
+		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f, 0, sc) == 1, "lod.world.far");
+		// The unscaled pick treats 0.5 as world meters: LOD1 fits at
+		// ~5000m/3 - the per-instance scale is what makes near views stay
+		// on LOD0 for a 3x-scaled instance.
+		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far.unscaled");
 		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
 		// Hysteresis through the World (sibling world error 1.5): 1.1 px is
 		// inside the loose side of the band but over the plain bar — the
@@ -1201,11 +1145,11 @@ void TestLodSelection() {
 		{
 			const float dW11 = LodSwitchDistance(1.5f, h, fov, 1.1f);
 			const float dW13 = LodSwitchDistance(1.5f, h, fov, 1.3f);
-			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f) == 0,
+			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 0, sc) == 0,
 				"lod.world.hyst.stateless");
-			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1) == 1,
+			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1, sc) == 1,
 				"lod.world.hyst.sticky");
-			Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1) == 0,
+			Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1, sc) == 0,
 				"lod.world.hyst.refine");
 		}
 

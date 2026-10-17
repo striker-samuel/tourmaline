@@ -117,9 +117,17 @@ struct MeshOptStats {
 //
 // LOD0 is the full (optimized) mesh referenced by the scene; LOD1+ are
 // cooked siblings "<baseUri>/lodN" sharing the base groupId. simplifyError
-// is the WORLD-space absolute geometric error in the same units as vertex
-// positions (local meshoptimizer error scaled by meshopt_simplifyScale and
-// by the max node world scale of all instances — see FinalizeLodWorldErrors).
+// is the MESH-LOCAL absolute geometric error (relativeError *
+// meshopt_simplifyScale - the same units as the mesh's own vertex
+// positions). It is deliberately SCALE-FREE: the renderer multiplies by
+// the INSTANCE's world scale when projecting (World::LodIndexForNode ->
+// SelectLodIndex -> LodProjectedPixelError). Never bake a scene
+// transform into the serialized error - CookLodSiblings skips meshes
+// that already carry siblings, so a cook-time world-scaling pass
+// compounds the scale per re-cook (Sponza's 0.008 root shrinks the
+// error 125x per run and the renderer drops to the coarsest LOD
+// centimeters from the camera - the removed FinalizeLodWorldErrors
+// design; see the removal note in mesh_optimizer.cpp).
 // The renderer selects a LOD per instance from simplifyError via
 // LodProjectedPixelError() below (screen-space error budget); lodIndex /
 // screenThreshold stay as informational markers (screenThreshold reserved).
@@ -129,7 +137,7 @@ struct LodInfo {
 	uint32_t groupId = 0;        // source mesh index (LOD grouping key)
 	uint32_t lodIndex = 0;       // 0 = full mesh, N >= 1 = cooked siblings
 	uint32_t candidateCount = 0; // kept chain size incl. LOD0 (siblings agree)
-	float simplifyError = 0.0f;  // world-space absolute error (0 for LOD0)
+	float simplifyError = 0.0f;  // mesh-LOCAL absolute error (0 for LOD0)
 	float screenThreshold = -1.0f; // reserved selection hook, renderer ignores
 	uint32_t triCount = 0;
 	float acmr = 0.0f;
@@ -337,16 +345,11 @@ inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t cou
 	return currentLod; // inside the hysteresis band (or no move): sticky
 }
 
-// Cook-time post-pass: after the scene's global transforms are final,
-// scales every LOD sibling's locally-recorded simplifyError by the max
-// world scale over all nodes instancing its base mesh (meshes shared by
-// several nodes use the max — conservative, mirrors gltfpack quality).
-// LOD0 entries keep simplifyError == 0. Also stamps candidateCount on the
-// whole chain (kept size incl. LOD0). No-op when no LODs were cooked.
-// Idempotent: re-running divides out the previously applied scale first
-// (tracked per sibling on the Cluster, cook-time only), so pipelines that
-// finalize more than once keep single-scaled errors.
-void FinalizeLodWorldErrors(Cluster& cluster);
+// (FinalizeLodWorldErrors is REMOVED - see the removal note in
+// mesh_optimizer.cpp. The serialized simplifyError stays MESH-LOCAL
+// (scale-free); the renderer applies the instance's own world scale at
+// pick time, so no cook-time scaling pass exists and nothing can
+// compound across runs.)
 
 // ---------------------------------------------------------------------------
 // Post-bake LOD sibling cooking (PakCooker path; never on the runtime
@@ -384,10 +387,11 @@ struct CookLodSiblingsOptions {
 // Generates + registers the cooked LOD siblings ("<base>/lodN") for every
 // node-referenced base mesh with a retained upload (mirrors the
 // importer's sibling registration so World::RebuildLodChains resolves
-// them identically), then FinalizeLodWorldErrors. Idempotent: meshes that
-// already carry siblings are skipped. Returns false only on invalid
-// input arguments (individual mesh failures are skipped with a log).
-// Prints per-mesh chain lines + per-level audit lines to stdout.
+// them identically). Idempotent: meshes that already carry siblings are
+// skipped. Sibling simplifyError stays MESH-LOCAL (the renderer applies
+// the instance's world scale at pick time). Returns false only on
+// invalid input arguments (individual mesh failures are skipped with a
+// log). Prints per-mesh chain lines + per-level audit lines to stdout.
 bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 	const MeshletConfig& meshletConfig,
 	const CookLodSiblingsOptions& options = {});

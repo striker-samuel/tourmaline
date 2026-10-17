@@ -615,78 +615,19 @@ StringViewT BaseMeshUriForLod(StringViewT uri) {
 	return digits ? uri.substr(0, slash) : uri;
 }
 
-void FinalizeLodWorldErrors(Cluster& cluster) {
-	const auto lodEntries = cluster.ListMeshLods();
-	if (lodEntries.empty())
-		return;
-	bool anyLod = false;
-	for (const auto& [uri, lod] : lodEntries) {
-		if (lod.lodIndex > 0) { anyLod = true; break; }
-	}
-	if (!anyLod)
-		return;
-
-	Scene& scene = cluster.scene;
-	if (scene.globalTransform.size() != scene.hierarchy.size() || scene.hierarchy.empty())
-		return;
-	// Current globals are load-bearing here (the max world scale below):
-	// cook pipelines that skip the lightmap block (which recalculates as
-	// a side effect) otherwise finalize against stale (identity-scale)
-	// transforms, leaving LOCAL-unit errors — 125x too big for Sponza's
-	// 0.008 root — and the runtime LOD selection pins at LOD0 at any
-	// sane budget. Marking roots covers the whole scene; the recalculate
-	// is incremental (a no-op when current).
-	for (size_t n = 0; n < scene.hierarchy.size(); ++n)
-		if (scene.hierarchy[n].parent < 0)
-			::markAsChanged(scene, (int)n);
-	::recalculateGlobalTransforms(scene);
-
-	// Max world scale per base-mesh pool index over all instancing nodes.
-	std::unordered_map<uint32_t, float> maxScaleByMesh;
-	for (const auto& [node, meshIdx] : scene.meshForNode) {
-		if (node >= scene.globalTransform.size())
-			continue;
-		const float s = MaxScaleOfMatrix(scene.globalTransform[node]);
-		auto it = maxScaleByMesh.find(meshIdx);
-		if (it == maxScaleByMesh.end() || s > it->second)
-			maxScaleByMesh[meshIdx] = s;
-	}
-	// Base URI -> pool index (LOD0 handle) for scale lookup. Keys are
-	// cluster-arena views (GetMeshUri) — stable for the cluster lifetime,
-	// so the UriMap stores them directly.
-	UriMap<uint32_t> poolByBaseUri;
-	for (const auto& [node, meshIdx] : scene.meshForNode) {
-		ClusterStaticMeshHandle h = cluster.staticMeshes.getHandle(meshIdx);
-		if (!h.valid())
-			continue;
-		const StringViewT baseUri = BaseMeshUriForLod(cluster.GetMeshUri(h));
-		if (!baseUri.empty())
-			poolByBaseUri.Insert(baseUri, meshIdx);
-	}
-
-	for (const auto& [uri, lod] : lodEntries) {
-		if (lod.lodIndex == 0)
-			continue;
-		const StringViewT baseUri = BaseMeshUriForLod(uri);
-		const uint32_t* poolIdx = poolByBaseUri.Find(baseUri);
-		if (!poolIdx)
-			continue;
-		auto sit = maxScaleByMesh.find(*poolIdx);
-		const float nodeScale = (sit != maxScaleByMesh.end()) ? sit->second : 1.0f;
-		// Idempotent re-scale: sibling errors are stored world-scaled, so
-		// divide out the scale a previous run baked in before applying
-		// the current one. Without this, cook pipelines that finalize
-		// twice (frostbite pre-bake sibling cook + post-bake sibling pass)
-		// compound the node scale — for Sponza's 0.008 root that shrinks
-		// every error 125x per extra run and the renderer drops to the
-		// coarsest LOD centimeters from the camera.
-		const float prevScale = cluster.GetLodFinalizedScale(uri);
-		LodInfo scaled = lod;
-		scaled.simplifyError = lod.simplifyError / prevScale * nodeScale;
-		cluster.RegisterMeshLod(uri, scaled);
-		cluster.SetLodFinalizedScale(uri, nodeScale);
-	}
-}
+// (FinalizeLodWorldErrors is REMOVED. The old design baked the node world
+// scale into the serialized simplifyError at cook time, with a cook-time
+// idempotence map that never persisted: CookLodSiblings SKIPS meshes that
+// already carry siblings, so on every re-cook the previously world-scaled
+// errors flowed through the finalize again with an empty map and shrank
+// by the node scale per run - for Sponza's 0.008 root that is 125x per
+// re-cook, and the runtime (treating the error as world meters) then
+// dropped to the coarsest LOD centimeters from the camera. The artifact
+// now stores MESH-LOCAL errors (scale-free, exactly what the import and
+// the sibling cook record); the renderer multiplies by the INSTANCE's
+// own world scale when projecting (World::LodIndexForNode ->
+// SelectLodIndex). No path anywhere can compound: the serialized value
+// never depends on the scene transform.)
 
 // ---------------------------------------------------------------------------
 // Lightmap-safety audit (see mesh_optimizer.h).
@@ -1004,7 +945,13 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 			llod.groupId = lod0.groupId;
 			llod.lodIndex = uint32_t(li + 1);
 			llod.candidateCount = uint32_t(1 + chain.size());
-			llod.simplifyError = kept.localError; // scaled to world below
+			// MESH-LOCAL units (relativeError * meshopt_simplifyScale):
+			// the serialized error must be scale-free - the renderer
+			// multiplies by the instance's own world scale when
+			// projecting (World::SelectLodIndex). Never bake a scene
+			// transform into it: cross-run compounding shrinks the
+			// error per re-cook (Sponza's 0.008 root = 125x/run).
+			llod.simplifyError = kept.localError;
 			llod.screenThreshold = -1.0f;
 			llod.triCount = kept.triCount;
 			llod.acmr = 0.0f;
@@ -1029,7 +976,9 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 		std::cout << "LOD " << uri.Str() << ": " << registered
 			<< " sibling(es)" << (charts ? " (lightmapped)" : "") << "\n";
 	}
-	FinalizeLodWorldErrors(cluster);
+	// No world-scale finalize here (see the removal note above
+	// FinalizeLodWorldErrors): simplifyError stays MESH-LOCAL, and the
+	// renderer applies the instance's world scale at pick time.
 	return true;
 }
 

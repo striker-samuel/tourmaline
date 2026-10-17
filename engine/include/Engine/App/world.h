@@ -317,15 +317,21 @@ namespace smvk {
 		FarShading FarShadingAt(uint32_t meshIndex, uint32_t lodIndex,
 			uint32_t materialIndex) const;
 		// Error-driven selection: coarsest LOD whose projected screen error
-		// (LodProjectedPixelError over each entry's simplifyError) stays
-		// within maxPixelError at `distance`. Returns 0 (full mesh) when no
-		// chain was cooked or nothing coarser is in budget. currentLod
-		// anchors the hysteresis band (kLodSelectHysteresis): levels within
-		// the band of the current one are sticky, so switch distances don't
-		// flip siblings frame to frame.
+		// (LodProjectedPixelError over each entry's simplifyError scaled by
+		// the INSTANCE's world scale) stays within maxPixelError at
+		// `distance`. The serialized simplifyError is MESH-LOCAL (scale-free
+		// by design - never bake a scene transform into the artifact: the
+		// removed cook-time world-scaling pass compounded per re-cook), so
+		// the pick multiplies by the node's own world scale here -
+		// per-instance exact, including multi-instance meshes. Returns 0
+		// (full mesh) when no chain was cooked or nothing coarser is in
+		// budget. currentLod anchors the hysteresis band
+		// (kLodSelectHysteresis): levels within the band of the current one
+		// are sticky, so switch distances don't flip siblings frame to
+		// frame.
 		uint32_t SelectLodIndex(uint32_t meshIndex, float distance,
 			float viewportHeightPx, float fovYRadians, float maxPixelError,
-			uint32_t currentLod = 0) const;
+			uint32_t currentLod = 0, float instanceWorldScale = 1.0f) const;
 
 		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
 		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can

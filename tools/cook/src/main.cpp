@@ -320,11 +320,24 @@ namespace cooktool {
 		// out of influence immediately); explicit --cubemap-extra-radius
 		// still overrides per cook.
 		float cubemapExtraRadius = 5.5f;
-		// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
-		// per-capture face strips (+ mip sheets) + a top-down probe map.
-		// Loose files under <contentDir>/gi/cubemaps/, never in the pak.
-		bool cubemapPng = true;
-		bool cubemapPngMips = true;
+	// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
+	// per-capture face strips (+ mip sheets) + a top-down probe map.
+	// Loose files under <contentDir>/gi/cubemaps/, never in the pak.
+	bool cubemapPng = true;
+	bool cubemapPngMips = true;
+	// Ambient closure (OFF by default): hit directions in the captures add
+	// SkyAmbient * firstHitAlbedo on top of the traced radiance. That hack
+	// matches the RUNTIME SKY-AMBIENT FALLBACK - the right compensation
+	// for scenes WITHOUT GI volume data (the covered pixels' diffuse
+	// ambient comes from the analytic sky there, and interior captures
+	// would otherwise bake ~black with a probe-vs-fallback seam). With GI
+	// volumes in the pak (the .sggi octree + cvols - the standard
+	// pipeline: cook -> GiBaker -> pak) the runtime ambient comes from
+	// the GI STACK, and the closure baked into the captures DOUBLE-COUNTS
+	// it: every mirror-like surface (the chrome probe ball, gold trim)
+	// reflects ~traced-bounce + closure ~= 2x the ambient-lit field. So
+	// the closure is an explicit opt-in for stack-less cooks.
+	bool cubemapAmbientClosure = false;
 		// NOTE: captures store TRUE radiance (physical units); the runtime's
 		// baked path scales by the cubemap panel intensity only, matching the
 		// direct sun view. No bake-time intensity knob by design.
@@ -1081,6 +1094,12 @@ namespace cooktool {
 				if (!need(v)) return false;
 				out.cubemapPngMips = (v == "on" || v == "1" || v == "true");
 			}
+			else if (a == "--cubemap-ambient-closure") {
+				std::string v;
+				if (!need(v)) return false;
+				out.cubemapAmbientClosure = (v == "on" || v == "1" || v == "true");
+				out.explicitSet.insert("cubemapAmbientClosure");
+			}
 			else if (a == "--cubemap-ibl-intensity") {
 				// Removed: captures store true radiance by design (the runtime
 				// scales with the cubemap panel intensity). Reject explicitly
@@ -1190,6 +1209,10 @@ namespace cooktool {
 			<< "           --cubemap-extra-pos x,y,z (repeatable, pinned)\n"
 			<< "           --cubemap-extra-radius 1.5\n"
 			<< "           --cubemap-spp 8\n"
+			<< "           --cubemap-ambient-closure on|off (default OFF: the\n"
+			<< "            GI stack (.sggi + cvols) owns the ambient; ON only\n"
+			<< "            for stack-less cooks - it matches the runtime sky\n"
+			<< "            fallback ambient, but double-counts with the stack)\n"
 			<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
 			<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 			<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
@@ -3163,17 +3186,21 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		// speckle instead of the GI the lightmapped scene shows. Per-texel
 		// seeds stay deterministic (spp continues the same rng stream).
 		//
-		// AMBIENT CLOSURE (the "complete ambient" contract): hit directions
-		// add SkyAmbient * firstHitAlbedo on top of the traced radiance.
-		// The runtime NEVER adds the analytic sky ambient over probe-
-		// covered pixels (the bake IS their ambient) - but interior probes
-		// whose paths never escape bake ~black (the albedo decay kills the
-		// bounce tail; observed: sponza interiors at HDR ~0.003 while the
-		// runtime look is sky-ambient lit) and the probe-vs-fallback
-		// discontinuity reads as broken cubemaps. The closure is exactly
-		// what the runtime ambient produces for a wall: ambient * albedo.
-		// Open-sky directions keep the pure sky (already complete).
-		const glm::vec3 skyAmb = traceScene.SkyAmbient();
+		// AMBIENT CLOSURE (--cubemap-ambient-closure, default OFF): hit
+		// directions add SkyAmbient * firstHitAlbedo on top of the traced
+		// radiance. That matches the RUNTIME SKY-AMBIENT FALLBACK - the
+		// right compensation for scenes WITHOUT GI volume data (interior
+		// probes whose paths never escape bake ~black, the probe-vs-
+		// fallback seam reads as broken cubemaps; observed at sponza
+		// interiors ~0.003 HDR). With GI volumes in the pak (the standard
+		// cook -> GiBaker -> pak pipeline) the runtime ambient comes from
+		// the GI STACK, and the closure baked into the captures
+		// DOUBLE-COUNTS it: mirror-like surfaces (the chrome probe ball,
+		// gold trim) reflect ~traced-bounce + closure ~= 2x the
+		// ambient-lit field. Stack-less cooks opt in explicitly.
+		const bool closure = args.cubemapAmbientClosure;
+		const glm::vec3 skyAmb = closure ? traceScene.SkyAmbient()
+			: glm::vec3(0.0f);
 		smvk::CubemapBaseFaces faces;
 		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
 			faces[f].assign(size_t(S) * S * 4, 0.0f);
@@ -3192,23 +3219,24 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 							^ (uint64_t(f) << 40)
 							^ (uint64_t(y) * 4099ull + uint64_t(x) * 130963ull + 1ull);
 						smvk::gi::Pcg32 rng(seed);
-						glm::vec3 L(0.0f);
-						for (uint32_t s = 0; s < args.cubemapSpp; ++s) {
-							smvk::gi::TriangleBvh::Hit h;
-							glm::vec3 firstAlbedo(-1.0f);
-							if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
-								L += traceScene.SkyRadiance(dir);
+							glm::vec3 L(0.0f);
+							for (uint32_t s = 0; s < args.cubemapSpp; ++s) {
+								smvk::gi::TriangleBvh::Hit h;
+								glm::vec3 firstAlbedo(-1.0f);
+								if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
+									L += traceScene.SkyRadiance(dir);
+								}
+								else {
+									L += traceScene.TraceIncoming(origin, dir, rng,
+										args.cubemapBounces, nullptr, &firstAlbedo);
+									// Ambient closure (opt-in, see the block
+									// comment above): the visible surface's
+									// one-bounce ambient (albedo < 0 = sky /
+									// transmissive-only path: no closure).
+									if (closure && firstAlbedo.x >= 0.0f)
+										L += skyAmb * firstAlbedo;
+								}
 							}
-							else {
-								L += traceScene.TraceIncoming(origin, dir, rng,
-									args.cubemapBounces, nullptr, &firstAlbedo);
-								// Ambient closure: the visible surface's
-								// one-bounce ambient (albedo < 0 = sky /
-								// transmissive-only path: no closure).
-								if (firstAlbedo.x >= 0.0f)
-									L += skyAmb * firstAlbedo;
-							}
-						}
 						L *= cubemapScale / float(args.cubemapSpp);
 						float* px = &faces[f][(size_t(y) * S + x) * 4];
 						px[0] = L.x;
@@ -3328,15 +3356,23 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
 			// Drop DARK captures from the manifest: rows whose bake was
 			// skipped (the fit's all-planes-<0.8 m wall-slit gate - the
-			// capture never ran) or whose baked mean is ~0. Such a row
+			// capture never ran) or whose baked mean is dead (luma <=
+			// kCubemapDeadLuma: embedded/fully-occluded origins, or deep
+			// interiors whose bounce tail died - the trace carries no
+			// signal there; the old ambient closure MASKED these with fake
+			// sky ambient, which double-counts with the GI stack - the
+			// closure is opt-in now, so the dead ones must go). Such a row
 			// serves nothing its pocket doesn't, wastes a resident slot
 			// + ~2 MB of pak data, and darkens whatever tile lists it
 			// lands in. The bake + loose sidecar stay (inspection), only
-			// the row goes. Pinned rows are NEVER dropped (artist intent).
+			// the row goes - the zone falls to the live neighbors + the
+			// (GI-occluded) sky fallback. Pinned rows are NEVER dropped
+			// (artist intent).
+			constexpr float kCubemapDeadLuma = 20.0f;
 			const bool isPinned = cap < pinned.size() && pinned[cap] != 0;
 			const bool dead = cap < captureDead.size() && captureDead[cap] != 0;
 			const bool blackMean = cap < pngMeans.size()
-				&& pakcook::CubemapMeanLuma(pngMeans[cap]) < 1e-6f;
+				&& pakcook::CubemapMeanLuma(pngMeans[cap]) <= kCubemapDeadLuma;
 			if (!isPinned && (dead || blackMean)) {
 				++droppedBlack;
 				continue;
