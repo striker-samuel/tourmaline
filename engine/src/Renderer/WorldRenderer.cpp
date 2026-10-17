@@ -11201,15 +11201,16 @@ namespace engine {
 				row.mipLevels = p.fadeCubemap.z;
 				ballRows.push_back(row);
 			}
-			(void)m_probeBalls.AppendPass(*m_rendergraph,
-				sceneHdrView,
-				m_viewportResources.renderDepth.logicalView,
-				renderExtent,
-				frameData.viewProj,
-				m_cameraPositioner.cameraPosition_,
-				ballRows.data(), uint32_t(ballRows.size()),
-				m_cubemapIntensity,
-				m_cubemapSampler);
+		(void)m_probeBalls.AppendPass(*m_rendergraph,
+			sceneHdrView,
+			m_viewportResources.renderDepth.logicalView,
+			renderExtent,
+			frameData.viewProj,
+			m_cameraPositioner.cameraPosition_,
+			ballRows.data(), uint32_t(ballRows.size()),
+			m_cubemapIntensity,
+			m_cubemapSampler,
+			frameUniformsAddress);
 		}
 
 		// ---------------------------------------------------------------------

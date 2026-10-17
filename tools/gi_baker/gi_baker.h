@@ -75,6 +75,12 @@ struct Args {
 	uint32_t cvDirs = 1536;       // capture direction count (6*16^2)
 	float cvCaptureSpacing = 0.0f; // 0 = 3x probe spacing per volume
 	uint32_t cvSmoothing = 1;     // Laplacian volume-smoothing passes
+	// Weave transmission for MASK (cutout cloth) materials: the cloth
+	// keeps its lit albedo AND passes light tinted per texel (the GI
+	// field behind the banners sees the tinted pools; the tint stays
+	// REAL in the white-world bake - GiSceneBuildOptions::
+	// maskTransmissive). Default OFF (MASK = the opaque occluder).
+	bool maskTransmission = false;
 };
 
 // Byte-identical to the CLI run (same return codes): parses argv in

@@ -338,6 +338,14 @@ namespace cooktool {
 	// reflects ~traced-bounce + closure ~= 2x the ambient-lit field. So
 	// the closure is an explicit opt-in for stack-less cooks.
 	bool cubemapAmbientClosure = false;
+	// Weave transmission for MASK (cutout cloth) materials: the cloth
+	// keeps its full lit albedo AND passes light through the weave,
+	// tinted per texel by its baseColor texture (cutout holes pass
+	// unobstructed; the tint stays real in white-world GI bakes - see
+	// GiSceneBuildOptions::maskTransmissive + kMaskWeaveTransmittance).
+	// Default OFF: MASK stays the opaque occluder (bistro foliage
+	// approximates volume by its occlusion).
+	bool maskTransmission = false;
 		// NOTE: captures store TRUE radiance (physical units); the runtime's
 		// baked path scales by the cubemap panel intensity only, matching the
 		// direct sun view. No bake-time intensity knob by design.
@@ -591,6 +599,9 @@ namespace cooktool {
 			buildOpts.env.sunIntensity = be.sunIntensity;
 			buildOpts.env.skyIntensity = be.skyIntensity;
 			buildOpts.traceBackendEmbree = (args.backend == "embree");
+			// Weave-transmissive cloth (--mask-transmission): the volume
+			// bakes see the tinted light pools behind the banners.
+			buildOpts.maskTransmissive = args.maskTransmission;
 			GiTraceScene traceScene;
 			std::string terr;
 			BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
@@ -1099,6 +1110,12 @@ namespace cooktool {
 				if (!need(v)) return false;
 				out.cubemapAmbientClosure = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("cubemapAmbientClosure");
+			}
+			else if (a == "--mask-transmission") {
+				std::string v;
+				if (!need(v)) return false;
+				out.maskTransmission = (v == "on" || v == "1" || v == "true");
+				out.explicitSet.insert("maskTransmission");
 			}
 			else if (a == "--cubemap-ibl-intensity") {
 				// Removed: captures store true radiance by design (the runtime
@@ -2739,7 +2756,15 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	buildOpts.env.sunElevationDeg = be.sunElevation;
 	buildOpts.env.sunIntensity = be.sunIntensity;
 	buildOpts.env.skyIntensity = be.skyIntensity;
-	// uniformAlbedo stays off: captures show real materials.
+	// uniformAlbedo stays off: captures show real materials. The backend
+	// honors --backend like every other bake stage (the old gap: the
+	// capture stage silently ran the builtin reference BVH while CV/LM
+	// ran the CLI choice - same transport math, but the packet/SIMD
+	// Embree traversal is the fast default everywhere else).
+	buildOpts.traceBackendEmbree = (args.backend == "embree");
+	// Weave-transmissive cloth (--mask-transmission): the captures see
+	// the banners' lit look AND the tinted light pools behind them.
+	buildOpts.maskTransmissive = args.maskTransmission;
 
 	GiTraceScene traceScene;
 	std::string terr;

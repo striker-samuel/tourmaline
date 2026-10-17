@@ -2598,6 +2598,106 @@ void TestBc6hCodec() {
 	}
 }
 
+void TestGiWeaveTransmission() {
+	// The weave-transmissive cloth (GiSceneBuildOptions::maskTransmissive
+	// paths - the MASK cutout cloth): a quad at z=0 carrying a weave
+	// material (albedo 0.5 + the textured transmission) over a 2x2
+	// baseColor texture - red fabric at texel (0,1), a cutout HOLE (alpha
+	// 0) at texel (1,0). Rays through the FABRIC pass tinted per channel
+	// by texel * transTexMul; rays through the HOLE pass unobstructed.
+	// The sun stays off (sunIntensity 0) so the expected values are
+	// exactly the sky terms.
+	GiTraceScene scene;
+	// Quad corners (x,y in [-1,1], z=0), uv corners (0..1): the hit at
+	// (x,y) samples uv = ((x+1)/2, (y+1)/2). Texel-center samples:
+	// (0.5,-0.5) -> uv (0.75,0.25) = texel (1,0) [inside tri 0];
+	// (-0.5,0.5) -> uv (0.25,0.75) = texel (0,1) [inside tri 1].
+	scene.positions = {
+		{ -1, -1, 0 }, { 1, -1, 0 }, { 1, 1, 0 }, { -1, 1, 0 },
+	};
+	scene.indices = { 0, 1, 2, 0, 2, 3 };
+	scene.uvs = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+	GiTraceMaterial cloth{};
+	cloth.albedo = glm::vec3(0.5f);
+	// The intern shape (MASK + maskTransmissive): the flat transmission
+	// = diffuse * kMaskWeaveTransmittance; the textured slots carry the
+	// SAME texture id with transTexMul = diffuse * k (the texel replaces
+	// the average). The test sets them directly (the intern itself is the
+	// cook path; this pins the TRACE semantics).
+	cloth.transmission = glm::vec3(kMaskWeaveTransmittance);
+	cloth.transTexId = 0;
+	cloth.transTexMul = glm::vec3(kMaskWeaveTransmittance);
+	cloth.transAlphaCutoff = 0.5f;
+	scene.materials = { cloth };
+	scene.triMaterial = { 0, 0 };
+	GiTraceTexelData tex;
+	tex.width = 2;
+	tex.height = 2;
+	tex.texels = {
+		glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), // (0,0): green fabric
+		glm::vec4(0.0f, 0.0f, 0.0f, 0.0f), // (1,0): cutout HOLE
+		glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), // (0,1): red fabric
+		glm::vec4(0.0f, 0.0f, 1.0f, 1.0f), // (1,1): blue fabric
+	};
+	scene.textures.emplace(0, std::move(tex));
+	scene.sunIntensity = 0.0f; // no sun: the expectations are pure sky
+	scene.skyIntensity = 6000.0f;
+	scene.Finalize();
+
+	Pcg32 rng(11);
+	// maxDepth 1: the pass-through consumes the first depth slot (it IS a
+	// vertex interaction), the sky miss needs one more iteration.
+	// Through the RED fabric (hit (-0.5,0.5) -> uv (0.25,0.75)): the sky
+	// tints per channel by texel(1,0,0) * k - only red survives.
+	{
+		const glm::vec3 dir(0, 0, -1);
+		const glm::vec3 L = scene.TraceIncoming(
+			glm::vec3(-0.5f, 0.5f, 1.0f), dir, rng, 1);
+		const glm::vec3 expect = scene.SkyRadiance(dir)
+			* glm::vec3(kMaskWeaveTransmittance, 0.0f, 0.0f);
+		Check(glm::length(L - expect)
+			/ std::max(glm::length(expect), 1e-5f) < 1e-4f,
+			"gi weave fabric tints sky per channel");
+	}
+	// Through the HOLE (hit (0.5,-0.5) -> uv (0.75,0.25), alpha 0 <
+	// cutoff 0.5): the ray passes UNOBSTRUCTED - the exact sky radiance.
+	{
+		const glm::vec3 dir(0, 0, -1);
+		const glm::vec3 L = scene.TraceIncoming(
+			glm::vec3(0.5f, -0.5f, 1.0f), dir, rng, 1);
+		const glm::vec3 expect = scene.SkyRadiance(dir);
+		Check(glm::length(L - expect)
+			/ std::max(glm::length(expect), 1e-5f) < 1e-4f,
+			"gi weave hole passes unobstructed");
+	}
+	// TransmissionAt directly. Tri 0 = corners (0,1,2): the point
+	// (0.5,-0.5) has barycentric (v=0.5, w=0.25) -> uv (0.75,0.25) (the
+	// hole). Tri 1 = corners (0,2,3): the point (-0.5,0.5) has (v=0.25,
+	// w=0.5) -> uv (0.25,0.75) (the red fabric).
+	{
+		const glm::vec3 hole = scene.TransmissionAt(cloth, 0, glm::vec2(0.5f, 0.25f));
+		Check(glm::length(hole - glm::vec3(1.0f)) < 1e-4f,
+			"gi weave TransmissionAt hole texel");
+	}
+	{
+		const glm::vec3 fab = scene.TransmissionAt(cloth, 1, glm::vec2(0.25f, 0.5f));
+		Check(glm::length(fab
+			- glm::vec3(kMaskWeaveTransmittance, 0.0f, 0.0f)) < 1e-4f,
+			"gi weave TransmissionAt fabric texel");
+	}
+	// The glass convention stays: a flat-transmission material (no
+	// transTexId) multiplies by the flat averaged transmission, and its
+	// albedo 0 means NO vertex shading - the pure pass-through.
+	{
+		GiTraceMaterial glass{};
+		glass.transmission = glm::vec3(0.4f, 0.5f, 0.6f);
+		glass.albedo = glm::vec3(0.0f);
+		const glm::vec3 t = scene.TransmissionAt(glass, 0, glm::vec2(0.5f, 0.25f));
+		Check(glm::length(t - glass.transmission) < 1e-6f,
+			"gi glass flat transmission unchanged");
+	}
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -2608,6 +2708,7 @@ int main() {
 	smvk::gi::TestGiEmptyScene();
 	smvk::gi::TestGiPrimarySunIncluded();
 	smvk::gi::TestGiEnergyBound();
+	smvk::gi::TestGiWeaveTransmission();
 	smvk::gi::TestSgDiffuseAgainstMonteCarlo();
 	smvk::gi::TestLmSelectorDomain();
 	smvk::gi::TestSgSpecular();

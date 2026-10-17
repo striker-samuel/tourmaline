@@ -56,14 +56,18 @@ struct ProbeBallRow {
 // probe.x carries the cubemap bindless index AS FLOAT (the lit path's
 // convention: `uint cubemapIdx = (uint)L.direction.y;` — a plain cast);
 // probe.w carries the bindless SAMPLER slot the FS casts the same way.
+// frame carries the scene FrameUniforms buffer address so the FS can
+// read the frame's env (the sun disc parity term — see below); 0 = no
+// sun term (headless/test callers).
 struct alignas(16) ProbeBallPush {
 	glm::mat4 viewProj; // 0  the rendering view's VP (reversed-Z, Y-flipped)
 	glm::vec4 eye;      // 64 xyz camera, w unused
 	glm::vec4 xform;    // 80 xyz ball center, w radius
 	glm::vec4 probe;    // 96 x cubemap index (float, cast in FS), y mips,
 	                    //    z intensity, w sampler slot
+	uint64_t frame = 0; // 112 FrameUniforms BDA (the env sun fields)
 };
-static_assert(sizeof(ProbeBallPush) == 112);
+static_assert(sizeof(ProbeBallPush) == 128); // 120 + alignas(16) tail pad
 
 struct ProbeBallVisual {
 	Holder<BufferHandle> sphereVB;   // TerrainVertex unit sphere
@@ -90,13 +94,21 @@ struct ProbeBallVisual {
 	// Appends the dedicated probe-ball pass to the rendergraph: the HDR
 	// color (load/store) + the scene depth (load, TEST-ONLY) at `extent`,
 	// one cubemap-painting draw per probe row (rows COPIED into the
-	// recording — the caller's table may mutate after the call). Returns
+	// recording — the caller's table may mutate after the call).
+	// frameUniformsAddress carries the scene FrameUniforms BDA so the FS
+	// can add the analytic sun's image to the mirror (the captures exclude
+	// the sun disc by design — the lit path's analytic direct owns the sun
+	// ON surfaces — and the overlay has no lit-path direct term, so without
+	// it a chrome ball's mirror of the open sky showed a sunless band
+	// while the direct sky bloomed the disc; the FS mirrors
+	// EvaluateSkyColor's disc+rim math from the frame env, so the ball's
+	// sky matches the runtime sky by construction). Returns
 	// false when nothing can draw (no geometry/shaders/valid rows).
 	bool AppendPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 		Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,
 		const ProbeBallRow* rows, uint32_t rowCount, float intensity,
-		uint32_t samplerIndex);
+		uint32_t samplerIndex, uint64_t frameUniformsAddress = 0);
 };
 
 } // namespace smvk::probeball

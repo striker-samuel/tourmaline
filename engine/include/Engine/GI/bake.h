@@ -94,10 +94,24 @@ namespace smvk::gi {
 struct GiTraceTexelData {
 	uint32_t width = 0;
 	uint32_t height = 0;
-	std::vector<glm::vec3> texels; // linear-space RGB, row-major, w * h
+	// Linear RGBA, row-major, w * h. The alpha rides along RAW (0..1, no
+	// transfer conversion) for the MASK-cutout transmission test
+	// (weave-transmissive cloth: holes below the cutoff pass
+	// unobstructed); RGB-only sources decode alpha 1.
+	std::vector<glm::vec4> texels;
 };
 
 inline constexpr uint32_t kGiBakeTexelMaxDim = 512;
+
+// Weave transmittance for MASK (cutout cloth) materials when
+// GiSceneBuildOptions::maskTransmissive is on: the fabric keeps its full
+// lit albedo (the banners' captured look) AND passes light tinted by
+// texel * this fraction (the light through the weave; holes pass
+// unobstructed). An energy APPROXIMATION by design: albedo + transmission
+// may exceed the incoming slightly - the conservative split (dimming the
+// albedo by the transmittance) costs the banners' lit look, which is the
+// visible half of the contract; the through-light is the other half.
+inline constexpr float kMaskWeaveTransmittance = 0.35f;
 
 struct GiTraceMaterial {
 	glm::vec3 albedo{ 0.8f };   // baseColor * (1 - metallic): Lambertian bounce color
@@ -111,6 +125,15 @@ struct GiTraceMaterial {
 	// textured path - the average IS the flat path).
 	uint32_t baseTexId = 0xFFFFFFFFu;
 	glm::vec3 baseTexMul{ 1.0f };
+	// Textured TRANSMISSION (the Embree-side material representation
+	// upgrade for the weave-transmissive cloth): the pass-through tints
+	// by transTexMul * texel(u,v) instead of the flat averaged
+	// transmission; MASK-cutout texels (alpha < transAlphaCutoff) pass
+	// UNOBSTRUCTED (open air). 0xFFFFFFFF = the flat transmission above
+	// (Blend glass keeps the flat pass-through; the pre-cloth behavior).
+	uint32_t transTexId = 0xFFFFFFFFu;
+	glm::vec3 transTexMul{ 1.0f };
+	float transAlphaCutoff = 0.5f;
 };
 
 // Static spot light for the bake (NEE at every bounce vertex). Angles in
@@ -262,6 +285,18 @@ public:
 	glm::vec3 AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
 		const glm::vec2& baryUV) const;
 
+	// The VERTEX transmission tint (the pass-through factor): the textured
+	// path samples the material's baseColor texture at the interpolated
+	// hit UV (transTexMul * texel.rgb) — the weave-transmissive cloth's
+	// light tints by the actual fabric texel the ray passes; MASK-cutout
+	// texels (alpha < transAlphaCutoff — the holes between the cloth
+	// shapes) pass UNOBSTRUCTED. Falls back to the flat averaged
+	// transmission (the Blend glass convention) when the material has no
+	// decoded texture. TraceIncoming's transmissive branches multiply the
+	// path throughput by this at every transmissive hit.
+	glm::vec3 TransmissionAt(const GiTraceMaterial& m, uint32_t tri,
+		const glm::vec2& baryUV) const;
+
 	// Ray-tracing backend for the bake transport (see TriangleBvh): the
 	// builtin BVH by default (deterministic reference); Embree (the
 	// vendored production backend) when requested. Set BEFORE Finalize
@@ -290,6 +325,15 @@ private:
 		const GiTraceMaterial& m, Pcg32& rng) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
+
+	// Shared per-hit texture plumbing (AlbedoAt/TransmissionAt): resolve
+	// the material's decoded texture + interpolate the hit UV (the same
+	// baryUV contract as TriangleBvh::Hit), then bilinear REPEAT sample.
+	bool ResolveTexelAndUv(uint32_t texId, uint32_t tri,
+		const glm::vec2& baryUV, const GiTraceTexelData*& outData,
+		glm::vec2& outUv) const;
+	glm::vec4 SampleTexelBilinear(const GiTraceTexelData& t,
+		glm::vec2 uv) const;
 };
 
 struct GiSceneBuildOptions {
@@ -309,6 +353,16 @@ struct GiSceneBuildOptions {
 	// this alongside texelAvg from the cluster's texture URIs (decode
 	// via GiDecodeKtxTexelData); sparse/empty = the flat averaged path.
 	std::unordered_map<uint32_t, GiTraceTexelData> texelData;
+	// Weave transmission for MASK (cutout cloth) materials: the cloth
+	// rides BOTH paths — its full lit albedo (the banners' captured look
+	// stays) AND a partial pass-through tinted by the baseColor texture
+	// per texel (the light through the weave; cutout holes pass
+	// unobstructed). The tint stays REAL in white-world bakes too (the
+	// GI field's diffuse albedo is what white-world whitens — the tint
+	// through the cloth is the visible effect). Default false: MASK
+	// stays the opaque occluder (bistro foliage approximates volume by
+	// its occlusion; sponza's bat opts in). See kMaskWeaveTransmittance.
+	bool maskTransmissive = false;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
 	// Decal overlay quads (cook-stamped Material.castsShadows == false on
 	// non-MASK materials: SMVK_materials_shadows, see tools/cook_bistro_v5.py)

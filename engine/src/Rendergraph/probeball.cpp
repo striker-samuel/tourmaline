@@ -156,7 +156,7 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
 	LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 	Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,
 	const ProbeBallRow* rows, uint32_t rowCount, float intensity,
-	uint32_t samplerIndex) {
+	uint32_t samplerIndex, uint64_t frameUniformsAddress) {
 	if (!geometryValid || !ShadersValid() || !rows || rowCount == 0
 		|| hdrView.empty() || depthView.empty())
 		return false;
@@ -194,6 +194,7 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
 	// which outlives every frame's Execute) — Holders are single-owner, so
 	// the buffers are read through the module at record time, never copied.
 	pass.SetRecordingFunc([this, viewProj, eye, intensity, samplerIndex,
+			frameUniformsAddress,
 			drawRows = std::move(drawRows)](CommandBuffer& cmd) mutable {
 		// TEST-ONLY depth (GreaterEqual reversed-Z): the balls occlude
 		// against the scene depth but never write it.
@@ -224,6 +225,7 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
 			push.xform = glm::vec4(r.center, radius);
 			push.probe = glm::vec4(float(r.cubemapIndex), r.mipLevels,
 				intensity, float(samplerIndex));
+			push.frame = frameUniformsAddress;
 			cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
 			cmd.DrawIndexed(indexCount, 1, 0, 0, 0);
 		}

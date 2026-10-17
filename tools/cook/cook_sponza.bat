@@ -61,6 +61,13 @@ rem cvols - baking the closure into the captures would DOUBLE-COUNT it
 rem (mirror-like surfaces - the chrome probe ball, gold trim - reflect
 rem ~traced-bounce + closure ~= 2x the ambient-lit field). Stack-less
 rem cooks (bistro) opt in with --cubemap-ambient-closure on.
+rem --mask-transmission on: the MASK cutout CLOTH (the banners) rides
+rem BOTH paths in every bake - its full lit albedo (the banners' captured
+rem look stays) AND a partial pass-through tinted per texel by the
+rem baseColor texture (the light through the weave; cutout holes pass
+rem unobstructed; the tint stays real in the white-world GI bake - the
+rem tinted light pools behind the banners ARE the point). Bistro keeps
+rem it OFF (foliage approximates volume by its occlusion).
 rem GI VOLUMES (both layers of the probes-only pivot): GiBaker runs
 rem BETWEEN cook + pak - F:/content/models/sponza/Sponza.tour authors
 rem the convex GI volumes (the per-space layer: dense local probe grids
@@ -73,9 +80,9 @@ rem them out of the pak. White-world GI fields (uniform albedo 0.7 - the
 rem established convention: per-material albedo prints chromatic dots
 rem the 9-lobe fit cannot represent, verified on Sponza); the cubemap
 rem captures bake TEXTURED (per-hit baseColor sampling - see bake.h).
-out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5 --mask-transmission on
 if errorlevel 1 goto fail
-out\build\x64-Release\GiBaker.exe --content-dir F:/content --tour F:/content/models/sponza/Sponza.tour --out F:/content/gi/Sponza.sggi --backend embree --max-probes 131072
+out\build\x64-Release\GiBaker.exe --content-dir F:/content --tour F:/content/models/sponza/Sponza.tour --out F:/content/gi/Sponza.sggi --backend embree --max-probes 131072 --mask-transmission on
 if errorlevel 1 goto fail
 out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000
 if errorlevel 1 goto fail

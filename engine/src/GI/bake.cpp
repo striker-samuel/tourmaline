@@ -279,26 +279,61 @@ glm::vec3 GiTraceScene::AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
 	// same scene can mix both when only some textures decoded).
 	if (m.baseTexId == 0xFFFFFFFFu)
 		return m.albedo;
-	auto it = textures.find(m.baseTexId);
-	if (it == textures.end())
+	const GiTraceTexelData* data = nullptr;
+	glm::vec2 uv(0.0f);
+	if (!ResolveTexelAndUv(m.baseTexId, tri, baryUV, data, uv))
 		return m.albedo;
+	const glm::vec4 t = SampleTexelBilinear(*data, uv);
+	return m.baseTexMul * glm::vec3(t);
+}
+
+glm::vec3 GiTraceScene::TransmissionAt(const GiTraceMaterial& m, uint32_t tri,
+	const glm::vec2& baryUV) const {
+	// Textured path (the weave-transmissive cloth): the pass-through tints
+	// by the fabric texel the ray passes. MASK-cutout texels (the holes
+	// between the cloth shapes) pass UNOBSTRUCTED (open air — the alpha
+	// below the cutoff means the geometry is not there at all).
+	if (m.transTexId == 0xFFFFFFFFu)
+		return m.transmission;
+	const GiTraceTexelData* data = nullptr;
+	glm::vec2 uv(0.0f);
+	if (!ResolveTexelAndUv(m.transTexId, tri, baryUV, data, uv))
+		return m.transmission;
+	const glm::vec4 t = SampleTexelBilinear(*data, uv);
+	if (t.w < m.transAlphaCutoff)
+		return glm::vec3(1.0f);
+	return m.transTexMul * glm::vec3(t);
+}
+
+bool GiTraceScene::ResolveTexelAndUv(uint32_t texId, uint32_t tri,
+	const glm::vec2& baryUV, const GiTraceTexelData*& outData,
+	glm::vec2& outUv) const {
+	auto it = textures.find(texId);
+	if (it == textures.end())
+		return false;
 	const GiTraceTexelData& t = it->second;
 	if (t.width == 0 || t.height == 0
 		|| t.texels.size() < size_t(t.width) * size_t(t.height))
-		return m.albedo;
+		return false;
 	if (uvs.size() < positions.size() || indices.size() < size_t(tri) * 3 + 3)
-		return m.albedo;
+		return false;
 	const uint32_t i0 = indices[tri * 3 + 0];
 	const uint32_t i1 = indices[tri * 3 + 1];
 	const uint32_t i2 = indices[tri * 3 + 2];
 	// Hit barycentrics: baryUV = (v, w); u = 1 - v - w (TriangleBvh::Hit).
 	const float u = 1.0f - baryUV.x - baryUV.y;
-	const glm::vec2 uv =
-		uvs[i0] * u + uvs[i1] * baryUV.x + uvs[i2] * baryUV.y;
+	outUv = uvs[i0] * u + uvs[i1] * baryUV.x + uvs[i2] * baryUV.y;
+	outData = &t;
+	return true;
+}
+
+glm::vec4 GiTraceScene::SampleTexelBilinear(const GiTraceTexelData& t,
+	glm::vec2 uv) const {
 	// Bilinear, REPEAT wrap (glTF baseColor default; tiling walls are the
 	// norm). A clamp-authored atlas tiles in the bake: known bake-side
 	// approximation (the runtime's own repeat-defaulted sampling makes
-	// the same choice for unconverted samplers).
+	// the same choice for unconverted samplers). The caller resolved a
+	// VALIDATED store (ResolveTexelAndUv checked dims + capacity).
 	const float fx = uv.x * float(t.width) - 0.5f;
 	const float fy = uv.y * float(t.height) - 0.5f;
 	const int32_t x0 = int32_t(std::floor(fx));
@@ -314,13 +349,13 @@ glm::vec3 GiTraceScene::AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
 	const uint32_t w = t.width, h = t.height;
 	const uint32_t xa = wrap(x0, w), xb = wrap(x0 + 1, w);
 	const uint32_t ya = wrap(y0, h), yb = wrap(y0 + 1, h);
-	const glm::vec3& t00 = t.texels[size_t(ya) * w + xa];
-	const glm::vec3& t10 = t.texels[size_t(ya) * w + xb];
-	const glm::vec3& t01 = t.texels[size_t(yb) * w + xa];
-	const glm::vec3& t11 = t.texels[size_t(yb) * w + xb];
-	const glm::vec3 a = glm::mix(t00, t10, tx);
-	const glm::vec3 b = glm::mix(t01, t11, tx);
-	return m.baseTexMul * glm::mix(a, b, ty);
+	const glm::vec4& t00 = t.texels[size_t(ya) * w + xa];
+	const glm::vec4& t10 = t.texels[size_t(ya) * w + xb];
+	const glm::vec4& t01 = t.texels[size_t(yb) * w + xa];
+	const glm::vec4& t11 = t.texels[size_t(yb) * w + xb];
+	const glm::vec4 a = glm::mix(t00, t10, tx);
+	const glm::vec4 b = glm::mix(t01, t11, tx);
+	return glm::mix(a, b, ty);
 }
 
 glm::vec3 GiTraceScene::SkyAmbient() const {
@@ -392,11 +427,32 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 			outFirstAlbedo = nullptr; // only the first
 		}
 
-		// Transmissive (glass): pass through, tinted. No diffuse bounce at
-		// this vertex; the throughput picks up the transmission color.
-		// Rays never refract (straight-through) — bake-side approximation.
+		// Transmissive surfaces: rays continue THROUGH the surface. Two
+		// flavors share one branch (the "embree material representation"
+		// upgrade):
+		//  - GLASS (Blend, albedo ~0): the pure pass-through attenuator —
+		//    rays continue, tinted by the flat averaged baseColor; no
+		//    diffuse bounce at this vertex (bake-side only; runtime cost
+		//    unchanged). Rays never refract (straight-through).
+		//  - WEAVE CLOTH (MASK + GiSceneBuildOptions::maskTransmissive,
+		//    albedo live): the vertex SHADES like an opaque one (the sun/
+		//    spot NEE at its textured albedo — the banners' lit look in
+		//    captures stays) AND the ray passes on, tinted per texel by
+		//    the fabric it passes (TransmissionAt; cutout holes below the
+		//    alpha cutoff pass unobstructed — open air). The fabric's own
+		//    bounce vertex is skipped (second-order next to its NEE look;
+		//    the albedo+transmission split is a documented approximation,
+		//    kMaskWeaveTransmittance).
 		if (m.transmission.x + m.transmission.y + m.transmission.z > 1e-4f) {
-			throughput *= m.transmission;
+			const bool weaveCloth =
+				Luminance(m.albedo) > 1e-4f;
+			if (weaveCloth) {
+				L += throughput * (SampleSun(pos, n, m, vertexAlbedo)
+					+ SampleSpots(pos, n, m, vertexAlbedo));
+				throughput *= TransmissionAt(m, h.tri, h.baryUV);
+			} else {
+				throughput *= m.transmission;
+			}
 			if (Luminance(throughput) < 1e-4f)
 				break;
 			p = pos + d * kSurfEps;
@@ -550,7 +606,11 @@ std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
 						: std::pow((v + 0.055f) / 1.055f, 2.4f))
 					: v;
 			};
-			out.texels[k] = glm::vec3(chan(0), chan(1), chan(2));
+			// RGB linear-converted; alpha RAW (0..1, no transfer) — the
+			// MASK-cutout transmission test (weave cloth holes). RGB-only
+			// sources decode alpha 1 (fully covered).
+			out.texels[k] = glm::vec4(chan(0), chan(1), chan(2),
+				components >= 4 ? float(px[3]) / 255.0f : 1.0f);
 		}
 	}
 	return out;
@@ -648,68 +708,107 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	// Node-material pairs first so materials vector indices are stable.
 	auto internMaterial = [&](const Material& mat) -> uint32_t {
 		GiTraceMaterial gm{};
-		if (opts.uniformAlbedo) {
-			// White-world mode: one known albedo everywhere, no emissive,
-			// no transmission. Analytically checkable transport (debug).
-			gm.albedo = opts.uniformAlbedoValue;
+		// metallic = factor * MR-texture B (the runtime shader
+		// convention: glTF metallicFactor defaults to 1 with the real
+		// value in the metallicRoughness texture's blue channel).
+		float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
+		if (mat.values.textures.y >= 0) {
+			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
+				it != opts.texelAvg.end())
+				metallic *= it->second.b;
+		}
+		metallic = std::clamp(metallic, 0.0f, 1.0f);
+		glm::vec3 base = glm::vec3(mat.values.diffuse);
+		if (mat.values.textures.x >= 0) {
+			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.x));
+				it != opts.texelAvg.end())
+				base *= it->second;
+		}
+		// The decodable baseColor texture id + the per-hit sampling slots
+		// (shared by the albedo + the transmission paths below). The
+		// textured ALBEDO slots only live outside white-world (the
+		// uniform albedo is white-world's whole point); the textured
+		// TRANSMISSION slots live in BOTH (the tint through the cloth
+		// stays real in the GI bake - see GiSceneBuildOptions::
+		// maskTransmissive).
+		const uint32_t baseTexId = (mat.values.textures.x >= 0
+			&& opts.texelData.find(uint32_t(mat.values.textures.x))
+				!= opts.texelData.end())
+			? uint32_t(mat.values.textures.x) : 0xFFFFFFFFu;
+		const bool blendGlass = (mat.alphaMode == AlphaMode::Blend);
+		const bool weaveCloth = opts.maskTransmissive
+			&& (mat.alphaMode == AlphaMode::Mask);
+		if (blendGlass) {
+			// Transmissive (glass): the trace scene carries it as a
+			// pass-through attenuator — rays continue through the
+			// surface, tinted by baseColor (bake-side only; runtime
+			// cost unchanged). No diffuse bounce for these.
+			gm.transmission = base;
+			gm.albedo = glm::vec3(0.0f);
 			gm.emissive = glm::vec3(0.0f);
 		} else {
-			// metallic = factor * MR-texture B (the runtime shader
-			// convention: glTF metallicFactor defaults to 1 with the real
-			// value in the metallicRoughness texture's blue channel).
-			float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
-			if (mat.values.textures.y >= 0) {
-				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
+			gm.albedo = base * (1.0f - metallic);
+			gm.emissive = opts.includeEmissive
+				? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
+				: glm::vec3(0.0f);
+			if (opts.includeEmissive && mat.values.textures2.x >= 0) {
+				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
 					it != opts.texelAvg.end())
-					metallic *= it->second.b;
+					gm.emissive *= it->second;
 			}
-			metallic = std::clamp(metallic, 0.0f, 1.0f);
-			glm::vec3 base = glm::vec3(mat.values.diffuse);
-			if (mat.values.textures.x >= 0) {
-				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.x));
-					it != opts.texelAvg.end())
-					base *= it->second;
+			// Textured path: a decodable baseColor texture with
+			// decoded texel data switches the trace to per-hit
+			// sampling (AlbedoAt interpolates the hit UV + samples
+			// bilinearly). baseTexMul = baseColor * (1 - metallic)
+			// WITHOUT the average (the average only tints the flat
+			// fallback albedo).
+			if (!opts.uniformAlbedo && baseTexId != 0xFFFFFFFFu) {
+				gm.baseTexId = baseTexId;
+				gm.baseTexMul = glm::vec3(mat.values.diffuse)
+					* (1.0f - metallic);
 			}
-			if (mat.alphaMode == AlphaMode::Blend) {
-				// Transmissive (glass): the trace scene carries it as a
-				// pass-through attenuator — rays continue through the
-				// surface, tinted by baseColor (bake-side only; runtime
-				// cost unchanged). No diffuse bounce for these.
-				gm.transmission = base;
-				gm.albedo = glm::vec3(0.0f);
-				gm.emissive = glm::vec3(0.0f);
-			} else {
-				gm.albedo = base * (1.0f - metallic);
-				gm.emissive = opts.includeEmissive
-					? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
-					: glm::vec3(0.0f);
-				if (opts.includeEmissive && mat.values.textures2.x >= 0) {
-					if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
-						it != opts.texelAvg.end())
-						gm.emissive *= it->second;
-				}
-				// Textured path: a decodable baseColor texture with
-				// decoded texel data switches the trace to per-hit
-				// sampling (AlbedoAt interpolates the hit UV + samples
-				// bilinearly). baseTexMul = baseColor * (1 - metallic)
-				// WITHOUT the average (the average only tints the flat
-				// fallback albedo); the transmission path ignores it.
-				if (mat.values.textures.x >= 0
-					&& opts.texelData.find(uint32_t(mat.values.textures.x))
-						!= opts.texelData.end()) {
-					gm.baseTexId = uint32_t(mat.values.textures.x);
-					gm.baseTexMul = glm::vec3(mat.values.diffuse)
-						* (1.0f - metallic);
+			if (weaveCloth) {
+				// Weave-transmissive cloth (MASK + maskTransmissive): the
+				// fabric keeps its FULL lit albedo above (the banners'
+				// captured look) and passes light through the weave,
+				// tinted per texel (kMaskWeaveTransmittance is the
+				// documented energy approximation). The cutout holes
+				// (alpha < the material cutoff) pass unobstructed.
+				gm.transmission = base * kMaskWeaveTransmittance;
+				gm.transAlphaCutoff = mat.alphaCutoff;
+				if (baseTexId != 0xFFFFFFFFu) {
+					gm.transTexId = baseTexId;
+					gm.transTexMul = glm::vec3(mat.values.diffuse)
+						* kMaskWeaveTransmittance;
 				}
 			}
 		}
+		if (opts.uniformAlbedo) {
+			// White-world mode: one known diffuse albedo everywhere, no
+			// emissive. Analytically checkable transport (debug) — but
+			// the TRANSMISSION tint stays REAL (the glass's tint, the
+			// cloth's weave tint: the tint through a surface is the
+			// visible effect the bake wants, not its diffuse albedo;
+			// whitening it would grey the tinted light pools).
+			if (!blendGlass) {
+				gm.albedo = opts.uniformAlbedoValue;
+				gm.emissive = glm::vec3(0.0f);
+			}
+		}
 		// Deduplicate identical materials (cheap win: scenes reuse them).
+		// The textured slots compare ids AND muls/cutoff — two materials
+		// sharing a texture id with different diffuse factors (or cutoffs)
+		// are NOT the same material.
 		for (uint32_t i = 0; i < out.materials.size(); ++i) {
 			const GiTraceMaterial& o = out.materials[i];
 			if (glm::all(glm::equal(o.albedo, gm.albedo))
 				&& glm::all(glm::equal(o.emissive, gm.emissive))
 				&& glm::all(glm::equal(o.transmission, gm.transmission))
-				&& o.baseTexId == gm.baseTexId)
+				&& o.baseTexId == gm.baseTexId
+				&& glm::all(glm::equal(o.baseTexMul, gm.baseTexMul))
+				&& o.transTexId == gm.transTexId
+				&& glm::all(glm::equal(o.transTexMul, gm.transTexMul))
+				&& o.transAlphaCutoff == gm.transAlphaCutoff)
 				return i;
 		}
 		out.materials.push_back(gm);
@@ -782,12 +881,14 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	// metallic slots and materials dropped from the soup — never copy).
 	bool anyTextured = false;
 	for (const GiTraceMaterial& m : out.materials) {
-		if (m.baseTexId == 0xFFFFFFFFu)
-			continue;
-		anyTextured = true;
-		if (auto it = opts.texelData.find(m.baseTexId);
-			it != opts.texelData.end())
-			out.textures.emplace(m.baseTexId, it->second);
+		const uint32_t ids[2] = { m.baseTexId, m.transTexId };
+		for (uint32_t id : ids) {
+			if (id == 0xFFFFFFFFu)
+				continue;
+			anyTextured = true;
+			if (auto it = opts.texelData.find(id); it != opts.texelData.end())
+				out.textures.emplace(id, it->second);
+		}
 	}
 	if (anyTextured)
 		out.uvs.reserve(size_t(triCount) * 3);

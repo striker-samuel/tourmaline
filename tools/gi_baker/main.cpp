@@ -160,6 +160,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--cv-spec") { if (!need(out.cvSpec, i)) return false; }
 		else if (a == "--cv-dirs") { if (!needU(out.cvDirs, i)) return false; }
 		else if (a == "--cv-smoothing") { if (!needU(out.cvSmoothing, i)) return false; }
+		else if (a == "--mask-transmission") {
+			std::string v;
+			if (!need(v, i)) return false;
+			out.maskTransmission = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--cv-capture-spacing") {
 			std::string v;
 			if (!need(v, i)) return false;
@@ -1212,6 +1217,11 @@ int Run(Args& args) {
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
 	buildOpts.traceBackendEmbree = (args.backend == "embree");
+	// Weave-transmissive cloth (--mask-transmission): the GI field sees
+	// the tinted light pools behind the banners; the tint stays REAL in
+	// the white-world bake (the tint through the cloth is not its diffuse
+	// albedo - see GiSceneBuildOptions::maskTransmissive).
+	buildOpts.maskTransmissive = args.maskTransmission;
 	tool::out() << "  trace backend: "
 		<< (buildOpts.traceBackendEmbree ? "embree" : "builtin") << "\n";
 	smvk::gi::BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, err);

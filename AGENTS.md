@@ -120,6 +120,11 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   (`World::SelectLodIndex`). Never bake a scene transform into the serialized
   error (the removed cook-time finalize compounded per re-cook: Sponza's
   0.008 root = 125x/run)
+- Weave cloth transmission (`--mask-transmission on`, Cook + GiBaker —
+  sponza's bat): MASK cutout cloth keeps its full lit albedo AND passes light
+  tinted per texel by its baseColor texture (`GiTraceScene::TransmissionAt`;
+  cutout holes pass unobstructed; the tint stays REAL in white-world GI
+  bakes). Default OFF — MASK stays the opaque occluder (bistro foliage)
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
 
