@@ -2765,6 +2765,32 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// Weave-transmissive cloth (--mask-transmission): the captures see
 	// the banners' lit look AND the tinted light pools behind them.
 	buildOpts.maskTransmissive = args.maskTransmission;
+	{
+		// Diagnostic: the alphaMode histogram over the NODE-REFERENCED
+		// cluster materials (what the trace soup can intern at all).
+		uint32_t nOpaque = 0, nMask = 0, nBlend = 0, nNodes = 0;
+		for (const auto& [node, matIdx] : cluster.scene.materialForNode) {
+			const smvk::ClusterMaterialHandle mh =
+				cluster.materials.getHandle(matIdx);
+			if (!mh.valid())
+				continue;
+			const smvk::Material* mat = cluster.materials.get(mh);
+			if (!mat)
+				continue;
+			++nNodes;
+			if (mat->alphaMode == smvk::AlphaMode::Mask)
+				++nMask;
+			else if (mat->alphaMode == smvk::AlphaMode::Blend)
+				++nBlend;
+			else
+				++nOpaque;
+		}
+		tool::err() << "  [CUBE] cluster materials: " << nNodes
+			<< " node-materials (" << nOpaque << " opaque, " << nMask
+			<< " mask, " << nBlend << " blend; maskTransmissive="
+			<< (buildOpts.maskTransmissive ? "on" : "off") << ")\n"
+			<< std::flush;
+	}
 
 	GiTraceScene traceScene;
 	std::string terr;
@@ -2794,9 +2820,28 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		spot.cosOuter = std::cos(glm::radians(std::max(innerDeg, outerDeg)));
 		traceScene.spots.push_back(spot);
 	}
-	tool::err() << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
-		<< " tris, " << traceScene.materials.size() << " materials, "
-		<< traceScene.spots.size() << " spots\n" << std::flush;
+	{
+		uint32_t weaveMats = 0, weaveTris = 0;
+		for (size_t t = 0; t < traceScene.triMaterial.size(); ++t) {
+			if (traceScene.materials[traceScene.triMaterial[t]].weave) {
+				++weaveTris;
+				if (weaveTris == 1)
+					++weaveMats; // crude: at least one (per-tri count is the signal)
+			}
+		}
+		uint32_t weaveUnique = 0;
+		for (const auto& m : traceScene.materials)
+			if (m.weave)
+				++weaveUnique;
+		tool::err() << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
+			<< " tris, " << traceScene.materials.size() << " materials, "
+			<< traceScene.spots.size() << " spots"
+			<< (weaveUnique > 0
+				? (" (weave: " + std::to_string(weaveUnique)
+					+ " mats / " + std::to_string(weaveTris) + " tris)")
+				: std::string(" (NO WEAVE - check --mask-transmission)"))
+			<< "\n" << std::flush;
+	}
 	// Albedo audit: black captures almost always mean black trace albedo
 	// (every bounce dies on arrival). Print the first materials + the dark
 	// count so a broken average/import shows up here, not in the PNGs.
@@ -2876,7 +2921,53 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			// blends the top 2. Density here only buys coverage/parallax
 			// fit. The manifest/runtime resident caps do the rest.
 			oo.maxProbes = 128;
-			auto& bvh = traceScene.Bvh();
+			// The PLACEMENT geometry: the trace scene MINUS the weave
+			// cloth. The cloth is a thin HANGING layer (the banners), not
+			// structure - refining near it and accepting embedDist
+			// clearances against it placed captures "almost colliding"
+			// with the banners (the preview balls clipping them, the
+			// parallax fits hugging the cloth). Only the PLACEMENT
+			// ignores the cloth; the capture BAKE below still sees it
+			// (and passes light through it - maskTransmissive).
+			// Cloth marker: the EXPLICIT weave flag (the intern sets it
+			// from the alpha mode; an albedo inference breaks exactly on
+			// the metallic-1 cloth, whose albedo is 0). Blend glass
+			// stays structure for the placement.
+			auto isCloth = [&](uint32_t tri) {
+				return traceScene.materials[
+					traceScene.triMaterial[tri]].weave;
+			};
+			smvk::gi::TriangleBvh placementBvh;
+			uint32_t clothTris = 0;
+			{
+				const auto& tbvh = traceScene.Bvh();
+				bool anyCloth = false;
+				for (uint32_t t = 0; t < tbvh.TriangleCount(); ++t)
+					if (isCloth(t)) { anyCloth = true; break; }
+				if (anyCloth) {
+					std::vector<uint32_t> kept;
+					kept.reserve(traceScene.indices.size());
+					for (uint32_t t = 0; t < tbvh.TriangleCount(); ++t) {
+						if (isCloth(t)) {
+							++clothTris;
+							continue;
+						}
+						kept.push_back(traceScene.indices[t * 3 + 0]);
+						kept.push_back(traceScene.indices[t * 3 + 1]);
+						kept.push_back(traceScene.indices[t * 3 + 2]);
+					}
+					placementBvh.Build(traceScene.positions, kept,
+						traceScene.GetTraceBackend());
+				}
+				if (clothTris > 0)
+					tool::err() << "  [CUBE] placement excludes " << clothTris
+						<< " cloth tris (captures place against the"
+						" structure; the bake still sees + passes the"
+						" cloth)\n" << std::flush;
+			}
+			smvk::gi::TriangleBvh& bvh = (clothTris > 0)
+				? placementBvh : const_cast<smvk::gi::TriangleBvh&>(
+					traceScene.Bvh());
 			smvk::CubemapOcclusionRay occ =
 				[&](const glm::vec3& o, const glm::vec3& d, float m) {
 				smvk::gi::TriangleBvh::Hit h{};
@@ -2891,6 +2982,53 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			for (const auto& p : placed) {
 				positions.push_back(p.position);
 				radii.emplace_back(p.influenceRadius, p.fadeRadius);
+			}
+			// CLOTH CLEARANCE: the exclusion above only stops the placement
+			// from REFINING against the cloth - the emitted cell centers
+			// still land next to the banners (the cells span across them),
+			// and a capture a few decimeters from a hanging banner bakes it
+			// at point-blank, the preview ball clips it and the parallax
+			// fit hugs it ("almost collide with the cloths"). Push every
+			// capture that sits closer than kClothClearance to the nearest
+			// cloth triangle out along the away direction (a relocation,
+			// not a drop: the coverage cell keeps its capture; the pushed
+			// positions land in the open corridor next to the banner).
+			if (clothTris > 0) {
+				smvk::gi::TriangleBvh clothBvh;
+				{
+					std::vector<uint32_t> clothIdx;
+					clothIdx.reserve(size_t(clothTris) * 3);
+					for (uint32_t t = 0;
+						t < traceScene.Bvh().TriangleCount(); ++t) {
+						if (!isCloth(t))
+							continue;
+						clothIdx.push_back(traceScene.indices[t * 3 + 0]);
+						clothIdx.push_back(traceScene.indices[t * 3 + 1]);
+						clothIdx.push_back(traceScene.indices[t * 3 + 2]);
+					}
+					clothBvh.Build(traceScene.positions, clothIdx,
+						traceScene.GetTraceBackend());
+				}
+				constexpr float kClothClearance = 1.0f;
+				uint32_t pushedCount = 0;
+				for (glm::vec3& pos : positions) {
+					glm::vec3 cp;
+					const float d = clothBvh.ClosestDistance(pos, &cp);
+					if (!(d < kClothClearance) || !(d >= 0.0f))
+						continue;
+					glm::vec3 away = pos - cp;
+					const float len = glm::length(away);
+					if (len < 1e-4f)
+						continue; // inside the cloth plane: leave it (the
+						          // dead-drop filter below catches it)
+					away /= len;
+					pos += away * (kClothClearance - d);
+					++pushedCount;
+				}
+				if (pushedCount > 0)
+					tool::err() << "  [CUBE] cloth clearance: pushed "
+						<< pushedCount << " capture(s) to " << kClothClearance
+						<< "m from the banners\n" << std::flush;
 			}
 		}
 		else if (args.cubemapGrid > 0.0f) {
@@ -3818,6 +3956,13 @@ int Run(const CookArgs& c) {
 	args.cubemapExtraRadius = c.cubemapExtraRadius;
 	args.cubemapPng = c.cubemapPng;
 	args.cubemapPngMips = c.cubemapPngMips;
+	// (Both flags were MISSING here when they were added - the Run(c)
+	// rebuild copies Args field-by-field from CookArgs, so a new flag
+	// that only exists in the parse + the stages silently stays at its
+	// default: the weave cloth never fired in the cook's stages, and
+	// bistro's --cubemap-ambient-closure on never reached the captures.)
+	args.cubemapAmbientClosure = c.cubemapAmbientClosure;
+	args.maskTransmission = c.maskTransmission;
 	args.cvolume = c.cvolume;
 	args.quickBakes = c.quickBakes;
 	args.dumpPak = c.dumpPak;
@@ -6476,6 +6621,8 @@ int main(int argc, char** argv) {
 	c.cubemapExtraRadius = args.cubemapExtraRadius;
 	c.cubemapPng = args.cubemapPng;
 	c.cubemapPngMips = args.cubemapPngMips;
+	c.cubemapAmbientClosure = args.cubemapAmbientClosure;
+	c.maskTransmission = args.maskTransmission;
 	c.cvolume = args.cvolume;
 	c.quickBakes = args.quickBakes;
 	c.dumpPak = args.dumpPak;

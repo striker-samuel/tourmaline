@@ -2619,6 +2619,8 @@ void TestGiWeaveTransmission() {
 	scene.uvs = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	GiTraceMaterial cloth{};
 	cloth.albedo = glm::vec3(0.5f);
+	cloth.weave = true; // the EXPLICIT marker (an albedo inference breaks
+	                    // on the metallic-1 sponza cloth: albedo exactly 0)
 	// The intern shape (MASK + maskTransmissive): the flat transmission
 	// = diffuse * kMaskWeaveTransmittance; the textured slots carry the
 	// SAME texture id with transTexMul = diffuse * k (the texel replaces

@@ -118,6 +118,16 @@ struct GiTraceMaterial {
 	glm::vec3 emissive{ 0.0f }; // HDR radiance (emissiveFactor * strength * texture)
 	glm::vec3 transmission{ 0.0f }; // > 0: transmissive (glass): rays pass
 	                                // THROUGH the surface, tinted per pass
+	// The WEAVE-CLOTH marker (set by the intern from the ALPHA MODE - MASK
+	// + GiSceneBuildOptions::maskTransmissive; the Blend glass stays
+	// false): the hit shades like an opaque one (whatever albedo the
+	// metallic leaves - the sponza banners' metallic clamps to 1.0, so
+	// their albedo is 0 and they contribute pure tinted pass-through, no
+	// lit look - physically consistent with the metallic fabric) AND the
+	// ray passes on, tinted per texel. The marker is EXPLICIT because the
+	// albedo cannot carry it: an albedo-inference test (albedo > 0) breaks
+	// exactly on the metallic-1 cloth.
+	bool weave = false;
 	// Textured-albedo path: baseTexId = the cluster cook texture id of
 	// the baseColor map (0xFFFFFFFF = none; the flat albedo above shades
 	// every hit), baseTexMul = baseColor * (1 - metallic) so the textured

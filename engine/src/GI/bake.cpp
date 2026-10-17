@@ -429,24 +429,25 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 
 		// Transmissive surfaces: rays continue THROUGH the surface. Two
 		// flavors share one branch (the "embree material representation"
-		// upgrade):
-		//  - GLASS (Blend, albedo ~0): the pure pass-through attenuator —
-		//    rays continue, tinted by the flat averaged baseColor; no
-		//    diffuse bounce at this vertex (bake-side only; runtime cost
-		//    unchanged). Rays never refract (straight-through).
-		//  - WEAVE CLOTH (MASK + GiSceneBuildOptions::maskTransmissive,
-		//    albedo live): the vertex SHADES like an opaque one (the sun/
-		//    spot NEE at its textured albedo — the banners' lit look in
-		//    captures stays) AND the ray passes on, tinted per texel by
-		//    the fabric it passes (TransmissionAt; cutout holes below the
-		//    alpha cutoff pass unobstructed — open air). The fabric's own
-		//    bounce vertex is skipped (second-order next to its NEE look;
-		//    the albedo+transmission split is a documented approximation,
-		//    kMaskWeaveTransmittance).
+		// upgrade), split by the EXPLICIT weave marker (an albedo
+		// inference breaks exactly on the metallic-1 cloth: base x
+		// (1-metallic) collapses to 0):
+		//  - GLASS (Blend, weave false, albedo ~0): the pure pass-through
+		//    attenuator — rays continue, tinted by the flat averaged
+		//    baseColor; no diffuse bounce at this vertex (bake-side only;
+		//    runtime cost unchanged). Rays never refract.
+		//  - WEAVE CLOTH (MASK + maskTransmissive, weave true, albedo
+		//    whatever the metallic leaves): the vertex SHADES like an
+		//    opaque one (the sun/spot NEE at its textured albedo — 0 for
+		//    the metallic-1 sponza banners: pure tinted pass-through, the
+		//    metallic fabric's look) AND the ray passes on, tinted per
+		//    texel by the fabric it passes (TransmissionAt; cutout holes
+		//    below the alpha cutoff pass unobstructed — open air). The
+		//    fabric's own bounce vertex is skipped (second-order next to
+		//    its NEE look; the albedo+transmission split is a documented
+		//    approximation, kMaskWeaveTransmittance).
 		if (m.transmission.x + m.transmission.y + m.transmission.z > 1e-4f) {
-			const bool weaveCloth =
-				Luminance(m.albedo) > 1e-4f;
-			if (weaveCloth) {
+			if (m.weave) {
 				L += throughput * (SampleSun(pos, n, m, vertexAlbedo)
 					+ SampleSpots(pos, n, m, vertexAlbedo));
 				throughput *= TransmissionAt(m, h.tri, h.baryUV);
@@ -769,11 +770,15 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 			}
 			if (weaveCloth) {
 				// Weave-transmissive cloth (MASK + maskTransmissive): the
-				// fabric keeps its FULL lit albedo above (the banners'
-				// captured look) and passes light through the weave,
-				// tinted per texel (kMaskWeaveTransmittance is the
-				// documented energy approximation). The cutout holes
-				// (alpha < the material cutoff) pass unobstructed.
+				// fabric keeps its albedo above (WHATEVER the metallic
+				// leaves - the sponza banners' MR-B averages 1.0, so
+				// their albedo is 0: pure tinted pass-through, the
+				// metallic fabric's look; the marker carries the
+				// weave-ness, never the albedo) and passes light through
+				// the weave, tinted per texel (kMaskWeaveTransmittance
+				// is the documented energy approximation). The cutout
+				// holes (alpha < the material cutoff) pass unobstructed.
+				gm.weave = true;
 				gm.transmission = base * kMaskWeaveTransmittance;
 				gm.transAlphaCutoff = mat.alphaCutoff;
 				if (baseTexId != 0xFFFFFFFFu) {
@@ -804,6 +809,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 			if (glm::all(glm::equal(o.albedo, gm.albedo))
 				&& glm::all(glm::equal(o.emissive, gm.emissive))
 				&& glm::all(glm::equal(o.transmission, gm.transmission))
+				&& o.weave == gm.weave
 				&& o.baseTexId == gm.baseTexId
 				&& glm::all(glm::equal(o.baseTexMul, gm.baseTexMul))
 				&& o.transTexId == gm.transTexId
