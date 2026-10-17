@@ -317,8 +317,15 @@ struct SpotShadowBuffer
 // tiles can never pop their probes (a chrome ball flipping to the global
 // fallback cubemap just because a light grid came on). Probe overflow
 // beyond the slots pops instead (first-come = upload order, pinned
-// probes first).
-#define MAX_FP_PROBE_TILE_SLOTS 4
+// probes first). 8 slots: dense fitted-pocket placement (influence
+// ~2.6-5 m + ~1.5 m fade on a ~3.75 m cell grid) puts MORE than 4
+// covering probes on one 16 px tile near geometry; the 4-slot
+// first-come overflow dropped a 5th probe in one tile but kept it in
+// the neighbor (a wider probe missed that tile's frustum), changing
+// the blend weight set across the tile boundary - the seam read as
+// 16 px TILES in the raw-cubemap debug view. 8 keeps the overflow to
+// extreme stacks only.
+#define MAX_FP_PROBE_TILE_SLOTS 8
 
 struct ForwardPlusLightBuffer
 {

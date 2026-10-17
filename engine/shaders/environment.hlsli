@@ -177,30 +177,6 @@ float3 ProbeSampleDir(float3 worldPos, float3 R, float3 center,
     return normalize(lerp(R, Rcorr, clamp(weight, 0.0f, 1.0f)));
 }
 
-// One probe candidate from the tile walk (the top-2 blend state of
-// EvaluateSpecularEnv). cubemapIdx 0xffffffff = empty slot.
-struct SpecularProbePick {
-    float weight;
-    uint cubemapIdx;
-    float mips;
-    float3 center;
-    float3 boxMin;
-    float3 boxMax;
-};
-
-SpecularProbePick MakeProbePick(float weight, uint cubemapIdx, float mips,
-    float3 center, float3 boxMin, float3 boxMax)
-{
-    SpecularProbePick p;
-    p.weight = weight;
-    p.cubemapIdx = cubemapIdx;
-    p.mips = mips;
-    p.center = center;
-    p.boxMin = boxMin;
-    p.boxMax = boxMax;
-    return p;
-}
-
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
 // F0-weighted reflections, rougher surfaces fade out.
 // Probe selection walks the caller's Forward+ tile list and filters
@@ -254,24 +230,25 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     // tile miss implies a global miss: when the lists are fresh and the
     // tile holds no contributing probe, the pixel takes the analytic sky
     // (then the global cubemap below) with no fallback scan.
-    // TOP-2 BLEND: the walk keeps the two highest-weight candidates and
-    // the sample below blends them by weight. The old winner-takes-all
-    // pick flipped hard across influence overlaps (two probes both at
-    // weight 1.0 -> first upload slot wins; the seam showed as tiles on
-    // edge discontinuities, each side sampling a different capture +
-    // parallax box). Blending the top two makes the handoff continuous;
-    // the cost is one extra cubemap fetch only when a second candidate
-    // exists. The tile probe slots are few (MAX_FP_PROBE_TILE_SLOTS), so
-    // the full walk is cheap - no early break.
+    // FULL WEIGHTED BLEND: every candidate probe in the tile list (at
+    // most MAX_FP_PROBE_TILE_SLOTS = 4) contributes w * sample, and the
+    // sum normalizes by the summed weight: envCol = sum(w * S_i) / sum(w).
+    // This is continuous BY CONSTRUCTION - each probe's contribution fades
+    // in and out with its own weight (0 at the influence+fade boundary), so
+    // there is no discrete candidate set to swap. The earlier top-2 blend
+    // still stepped hard: dense fitted pockets put MANY probes at weight
+    // 1.0 in one tile, and swapping the second candidate between two
+    // weight-1.0 captures flipped (A+B)/2 to (A+C)/2 at the crossing -
+    // visible as tiles in the raw-cubemap debug view. Winner-takes-all
+    // (before that) flipped even harder. Cost ceiling: 4 cubemap fetches
+    // per lit pixel (the tile slot cap) instead of 2.
     // Index space: lights [0, fpLightCount), probes [fpLightCount,
     // fpLightCount + frame.probeEntries). The bound MUST include the
     // probe tail — a lights-only bound skips every probe entry and the
     // walk silently degrades to the global fallback cubemap. Scenes with
     // zero lights (sponza) still walk: entryTotal > 0 via the tail.
-    SpecularProbePick pick1 = MakeProbePick(
-        0.0f, 0xffffffffu, 1.0f, float3(0.0f, 0.0f, 0.0f),
-        float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f));
-    SpecularProbePick pick2 = pick1;
+    float3 probeSum = float3(0.0f, 0.0f, 0.0f);
+    float probeWeightSum = 0.0f;
     const uint entryTotal = fpLightCount + frame.probeEntries;
     bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
         && frame.probeTileFresh != 0u && entryTotal > 0u;
@@ -321,40 +298,21 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
                 pMax = L.position + h;
             }
             const float mips = max(L.direction.z, 1.0f);
-            if (weight > pick1.weight) {
-                pick2 = pick1; // demote the previous best to second
-                pick1 = MakeProbePick(weight, cubemapIdx, mips,
-                    L.position, pMin, pMax);
-            } else if (weight > pick2.weight) {
-                pick2 = MakeProbePick(weight, cubemapIdx, mips,
-                    L.position, pMin, pMax);
-            }
+            const float lod = clamp(roughness * (mips - 1.0f) + lodBias,
+                0.0f, mips - 1.0f);
+            TextureCube cube = cubemaps[NonUniformResourceIndex(cubemapIdx)];
+            // Box parallax per candidate: re-aim R at the probe's fitted
+            // box, faded by its own weight (see ProbeSampleDir).
+            float3 Rs = ProbeSampleDir(worldPos, R, L.position,
+                pMin, pMax, weight);
+            probeSum += weight * cube.SampleLevel(cubeSampler, Rs, lod).rgb;
+            probeWeightSum += weight;
+            if (weight > bestWeight)
+                bestWeight = weight;
         }
-        if (pick1.weight > 0.0f && pick1.cubemapIdx != 0xffffffffu) {
-            float lod1 = clamp(roughness * (pick1.mips - 1.0f) + lodBias,
-                0.0f, pick1.mips - 1.0f);
-            TextureCube cube1 = cubemaps[NonUniformResourceIndex(pick1.cubemapIdx)];
-            // Box parallax per pick: re-aim R at the probe's fitted box,
-            // faded by its weight (see ProbeSampleDir).
-            float3 Rs1 = ProbeSampleDir(worldPos, R, pick1.center,
-                pick1.boxMin, pick1.boxMax, pick1.weight);
-            float3 s1 = cube1.SampleLevel(cubeSampler, Rs1, lod1).rgb;
-            if (pick2.weight > 0.0f && pick2.cubemapIdx != 0xffffffffu) {
-                float lod2 = clamp(roughness * (pick2.mips - 1.0f) + lodBias,
-                    0.0f, pick2.mips - 1.0f);
-                TextureCube cube2 = cubemaps[NonUniformResourceIndex(pick2.cubemapIdx)];
-                float3 Rs2 = ProbeSampleDir(worldPos, R, pick2.center,
-                    pick2.boxMin, pick2.boxMax, pick2.weight);
-                float3 s2 = cube2.SampleLevel(cubeSampler, Rs2, lod2).rgb;
-                // Weight-normalized blend: continuous across influence
-                // handoffs (the old winner-flip seam).
-                envCol = lerp(s1, s2,
-                    pick2.weight / max(pick1.weight + pick2.weight, 1e-4f));
-            } else {
-                envCol = s1;
-            }
+        if (probeWeightSum > 0.0f) {
+            envCol = probeSum / probeWeightSum;
             foundProbe = true;
-            bestWeight = pick1.weight;
         }
     }
 

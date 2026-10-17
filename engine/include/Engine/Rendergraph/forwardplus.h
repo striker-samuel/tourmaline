@@ -123,9 +123,12 @@ static constexpr uint32_t kForwardPlusMaxProbes = 64;
 // Dedicated per-tile probe slots in the tile index buffer (shader
 // MAX_FP_PROBE_TILE_SLOTS): stride per tile is maxLightsPerTile + this,
 // lights pack [0..maxLightsPerTile), probes the tail slots — light
-// saturation can never pop probes from a tile. Must stay in sync with
-// common.hlsli.
-static constexpr uint32_t kForwardPlusProbeTileSlots = 4;
+// saturation can never pop probes from a tile. 8 (was 4): dense
+// fitted-pocket placement puts >4 covering probes on one 16 px tile near
+// geometry, and the first-come overflow changed the blend weight set
+// across tile boundaries (16 px tiles in the raw-cubemap debug view).
+// Must stay in sync with common.hlsli.
+static constexpr uint32_t kForwardPlusProbeTileSlots = 8;
 
 // Builds a probe entry for the upload tail (upload order stays
 // widest-influence-first so tile overflow keeps the widest probes).
