@@ -230,18 +230,33 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     // tile miss implies a global miss: when the lists are fresh and the
     // tile holds no contributing probe, the pixel takes the analytic sky
     // (then the global cubemap below) with no fallback scan.
-    // FULL WEIGHTED BLEND: every candidate probe in the tile list (at
-    // most MAX_FP_PROBE_TILE_SLOTS = 4) contributes w * sample, and the
-    // sum normalizes by the summed weight: envCol = sum(w * S_i) / sum(w).
-    // This is continuous BY CONSTRUCTION - each probe's contribution fades
-    // in and out with its own weight (0 at the influence+fade boundary), so
-    // there is no discrete candidate set to swap. The earlier top-2 blend
-    // still stepped hard: dense fitted pockets put MANY probes at weight
-    // 1.0 in one tile, and swapping the second candidate between two
-    // weight-1.0 captures flipped (A+B)/2 to (A+C)/2 at the crossing -
-    // visible as tiles in the raw-cubemap debug view. Winner-takes-all
-    // (before that) flipped even harder. Cost ceiling: 4 cubemap fetches
-    // per lit pixel (the tile slot cap) instead of 2.
+    // CUBIC FADE x INFLUENCE-WIDTH BLEND: every candidate probe in the
+    // tile list (at most MAX_FP_PROBE_TILE_SLOTS = 8) contributes
+    // (w^3 * influence^2) * sample, normalized by the summed blend
+    // weight: envCol = sum(wEff * S_i) / sum(wEff),
+    // wEff = fadeWeight^3 * influenceRadius^2.
+    //  - CONTINUITY: each probe's contribution rises/falls with its own
+    //    fade weight (0 at the influence+fade boundary) - there is no
+    //    discrete candidate set, so no swap steps anywhere
+    //    (winner-takes-all flipped whole captures at boundaries; the
+    //    top-2 blend still stepped hard swapping the second candidate
+    //    between two weight-1.0 captures in dense pockets - visible as
+    //    tiles).
+    //  - CONTENT: the influence^2 breaks the weight-1.0 ties of the
+    //    dense overlapping pockets toward the WIDEST capture - the
+    //    room-average reflection (the user-validated top-2 look, whose
+    //    tie-break was widest-first upload order). Tight pockets near
+    //    occluders (a banner filling a capture face at close range)
+    //    lose ~3.7:1 to the wide probe's cleaner room reflection. The
+    //    w^3 keeps far fade-ring captures from tinting the result.
+    //    (A nearest/distance tie-break was tried and rejected: the
+    //    nearest captures in dense pockets are exactly the
+    //    occluder-adjacent tight ones - the red banner reflection
+    //    got STRONGER and more blocky.)
+    //  - TILE-SLOT overflow (a 9th probe dropped in one tile but kept
+    //    in the neighbor) perturbs only its own small blend share - the
+    //    seam drops below visibility instead of changing the pair set.
+    // Cost ceiling: one cubemap fetch per tile-slot candidate (8).
     // Index space: lights [0, fpLightCount), probes [fpLightCount,
     // fpLightCount + frame.probeEntries). The bound MUST include the
     // probe tail — a lights-only bound skips every probe entry and the
@@ -305,8 +320,22 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
             // box, faded by its own weight (see ProbeSampleDir).
             float3 Rs = ProbeSampleDir(worldPos, R, L.position,
                 pMin, pMax, weight);
-            probeSum += weight * cube.SampleLevel(cubeSampler, Rs, lod).rgb;
-            probeWeightSum += weight;
+            // Blend weight: fade weight^3 (the influence/fade ring) over
+            // the INFLUENCE RADIUS SQUARED. The radius^2 breaks the
+            // weight-1.0 TIES among the dense overlapping pockets toward
+            // the WIDEST capture - the room-average look (the old top-2
+            // tie-break, widest-first upload order, the user-validated
+            // look). The tight pockets near occluders (a capture with a
+            // banner filling a face at close range, e.g.) are exactly the
+            // ones the tight fit produces - the wide probe's cleaner
+            // room reflection outweighs them ~ (5/2.6)^2 = 3.7:1, without
+            // losing continuity: every term varies smoothly (fade^3 hits
+            // 0 at the coverage boundary; the radius is per-probe
+            // constant), so no discrete candidate set exists anywhere.
+            const float w3 = weight * weight * weight;
+            const float wideW = w3 * influenceRadius * influenceRadius;
+            probeSum += wideW * cube.SampleLevel(cubeSampler, Rs, lod).rgb;
+            probeWeightSum += wideW;
             if (weight > bestWeight)
                 bestWeight = weight;
         }
