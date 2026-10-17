@@ -136,7 +136,10 @@ $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must
   forced off — uncapped immediate present; `--present <mode>` wins).
 - `TOURMALINE_AO=off|ssao|sao`, `TOURMALINE_EVSM`, `TOURMALINE_SSR`,
   `TOURMALINE_TRANSPARENCY`, `TOURMALINE_VOLUMETRIC[_STEPS|_CVOL]`,
-  `TOURMALINE_MESH`, `TOURMALINE_CULLFLAGS`, `TOURMALINE_ASYNC_COMPUTE`
+  `TOURMALINE_MESH`, `TOURMALINE_CULLFLAGS`, `TOURMALINE_ASYNC_COMPUTE`,
+  `TOURMALINE_PROBE_PREMIX=0|1` (the Remember Me probe pre-mix — one
+  blended-cubemap fetch + dominant-box parallax vs the per-pixel walk;
+  see `docs/probe_premix_plan.md`)
   pin features headless for A/B benches.
 
 ### Content pipeline

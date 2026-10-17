@@ -74,6 +74,12 @@ $env:TOURMALINE_CAPTURE='48'
   march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_CVOL=0` is the
   fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
   refresh) — pairs with `TOURMALINE_VOLUMETRIC` for pure-octree fog cost A/B
+- `TOURMALINE_PROBE_PREMIX=0|1` pins the Remember Me probe pre-mix
+  (docs/probe_premix_plan.md; default on): `1` = the per-frame GPU weights
+  + mix passes (a blended cubemap + a GPU-owned selection; the material
+  does ONE fetch + dominant-box parallax), `0` = the per-pixel walk
+  fallback (≤8 fetches + per-pixel box parallax). `0.00%` differing pixels
+  is the A/B contract between the two
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
   forced off - uncapped immediate present; an explicit `--present <mode>`
   wins)

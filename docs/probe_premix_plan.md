@@ -94,6 +94,28 @@ over wide ones - the opposite of our validated wide-first. Copying the
 NDF alone without keeping our influence-width tie-break could re-aggrav
 the banner-red. Phase 2 explicitly A/Bs both tie-breaks.
 
+## Status (2026-10-17)
+
+- Phase 1 DONE (commit 202d2643): mechanism A/B'd - 0.00% differing
+  pixels ON vs OFF (max delta 0.3), bench 4.72ms ON vs 5.02ms OFF
+  (256 frames), raw-blend debug view uniform (no tiles by construction).
+- Phase 2 DONE (commit 2439faba): the NDF weights + the CPU mirror
+  (`ComputeNdfWeights` in probepremix.h, pinned by 6 unit tests incl.
+  the published two-probe 85.7%/14.3% example) + the two-phase GPU
+  weights pass (gather-64, then dominant/one/zero cases, then a*b +
+  top-4). Same A/B contract: 0.00% differing pixels, bench 5.08ms ON vs
+  5.25ms OFF. The inner-hit tie-break stays WIDE-first (the validated
+  policy; the NDF's small-volume preference would re-aggrav the
+  banner-red). The current Sponza POI sits inside one influence volume,
+  so the NDF degenerates to the dominant probe there and matches the
+  walk's blend - the formula's spatial variation shows up only in
+  overlap-transition regions (fade rings between volumes).
+- Phase 3 (the dominant-box lerp is NOT done - the material uses slot
+  0's box as packed): FrameUniforms tail DONE, environment.hlsli branch
+  DONE, the pin + AGENTS.md/README.md notes DONE, the unit tests DONE;
+  the Debug HUD readout of the selected indices/weights remains open
+  (the weights pass writes them - display only).
+
 ## Phase 3 - plumbing, observability, bench
 
 - FrameUniforms: `blendedCubemapIndex`, the dominant parallax box

@@ -11973,6 +11973,94 @@ namespace engine {
 									" filter them out of the same tile walk the lights use."
 									" Stale lists fall back to the global cubemap.");
 							}
+							{
+								// The pre-mix selection readout (the plan's Phase 3
+								// observability item). Recomputed on the CPU via
+								// ComputeNdfWeights - the SAME math the weights pass
+								// runs (probepremix_weights.cs.hlsl) over the SAME
+								// inputs (the m_cubemapProbes tail source + the
+								// camera POI). Display only: the render path stays
+								// GPU-owned end to end (no readback, no CPU
+								// classification feeding rendering).
+								ImGui::Text("Pre-mix: %s (NDF weights, K=4)",
+									m_probePremixEnabled ? "on" : "off (per-pixel walk)");
+								if (m_probePremixEnabled) {
+									constexpr uint32_t kTailCap =
+										smvk::kForwardPlusMaxProbes;
+									const uint32_t n =
+										std::min(ProbeEntryCount(), kTailCap);
+									smvk::probepremix::NdfCandidate cands[kTailCap];
+									const glm::vec3 poi =
+										m_cameraPositioner.cameraPosition_;
+									uint32_t m = 0;
+									for (uint32_t i = 0; i < n; ++i) {
+										const CubemapProbeGpu& pr = m_cubemapProbes[i];
+										const float influence =
+											std::max(pr.posInfluence.w, 0.0f);
+										const float fade =
+											std::max(pr.fadeCubemap.x, 0.0f);
+										const float dist = glm::distance(poi,
+											glm::vec3(pr.posInfluence));
+										float ndf = 1.0f;
+										if (dist <= influence)
+											ndf = 0.0f;
+										else if (fade > 0.0f
+											&& dist <= influence + fade)
+											ndf = (dist - influence) / fade;
+										if (ndf >= 1.0f)
+											continue;
+										cands[m].cubemap =
+											static_cast<uint32_t>(pr.fadeCubemap.y);
+										cands[m].ndf = ndf;
+										cands[m].influence = influence;
+										++m;
+									}
+									float w[kTailCap];
+									smvk::probepremix::ComputeNdfWeights(cands, m, w,
+										kTailCap);
+									// The readout mirrors the GPU selection's slot
+									// order (weight desc, ties: influence, index).
+									struct SlotReadout {
+										float w; uint32_t cube, i;
+									} slots[kTailCap];
+									for (uint32_t i = 0; i < m; ++i)
+										slots[i] = { w[i], cands[i].cubemap, i };
+									std::sort(slots, slots + m,
+										[&](const SlotReadout& a, const SlotReadout& b) {
+											if (a.w != b.w)
+												return a.w > b.w;
+											if (cands[a.i].influence
+												!= cands[b.i].influence)
+												return cands[a.i].influence
+													> cands[b.i].influence;
+											return a.cube < b.cube;
+										});
+									if (m == 0) {
+										ImGui::TextDisabled(
+											"selection: 0 candidates (material falls"
+											" back to the per-pixel walk)");
+									}
+									// The GPU selection re-normalizes over the
+									// TOP-K set (K=4) - the readout matches it
+									// (ComputeNdfWeights normalizes over all n).
+									const uint32_t k = std::min(m, 4u);
+									float sumK = 0.0f;
+									for (uint32_t s = 0; s < k; ++s)
+										sumK += slots[s].w;
+									const float invK = sumK > 1e-6f
+										? 1.0f / sumK : 0.0f;
+									for (uint32_t s = 0; s < k && invK > 0.0f; ++s) {
+										const bool inner =
+											cands[slots[s].i].ndf <= 0.0f;
+										ImGui::BulletText(
+											"slot %u: cubemap %u  w=%.3f  d=%.2f%s",
+											(unsigned)s, (unsigned)slots[s].cube,
+											slots[s].w * invK,
+											cands[slots[s].i].ndf,
+											inner ? "  (INNER - exclusive)" : "");
+									}
+								}
+							}
 							for (const auto& [name, entry] : m_cubemaps.entries) {
 								ImGui::BulletText("%s: %upx mips=%u bindless=%d %s",
 									name.c_str(), entry.size, entry.mipLevels, entry.bindless,
