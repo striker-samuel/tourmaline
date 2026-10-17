@@ -77,8 +77,8 @@ struct TourCook {
 	bool lods = false;
 	// LOD chain detail (PakCooker --lod-ratios/--lod-error): the
 	// comma-separated ratio list and the simplification target error.
-	std::string lodRatios = "0.6,0.3,0.12";
-	float lodError = 0.02f;
+	std::string lodRatios = "0.75,0.5,0.3,0.15";
+	float lodError = 0.01f;
 	bool lightmap = false;
 	// Chart density request, METERS PER TEXEL (0.25 = one texel per
 	// 25 cm). Legacy -lmDensity lines (texels/m) convert on load.

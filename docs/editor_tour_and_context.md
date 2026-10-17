@@ -139,7 +139,7 @@ path remaps, viewport prefs. Editor IBL must never leak into paks.
 ### 3.6 `cook` — cook-settings interchange (0..1 line)
 
 ```
-cook -outPak "" -meshopt on -lods off -lodRatios "0.6,0.3,0.12" -lodError 0.02
+cook -outPak "" -meshopt on -lods off -lodRatios "0.75,0.5,0.3,0.15" -lodError 0.01
   -lightmap off -lmMetersPerTexel 0.25 -lmLobes 12 -lmAtlasWidth 1024 -lmRays 256
   -lmProxyRes 256 -lmExcludeSmall 0 -lmExcludeKw "" -sunAzimuth 30 -sunElevation 55
   -sunIntensity 10000 -skyIntensity 600 -cubemap off -cubemapName "" -cubemapSize 128

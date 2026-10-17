@@ -83,11 +83,34 @@ namespace smvk::gi {
 // Trace scene
 // ---------------------------------------------------------------------------
 
+// Per-texture decoded texel data for per-hit baseColor sampling in the
+// bakes (bake.h's answer to "captures see textured albedo": the trace
+// interpolates the hit UV and samples the texture bilinearly instead of
+// shading every surface with its texture's average color). Capped at
+// kGiBakeTexelMaxDim so a cook never materializes multi-GB texel stores:
+// bakes sample surfaces at capture/probe densities far below 512
+// texels across a wall, so a 512-mip of a 2K baseColor map carries all
+// the detail any bake can represent.
+struct GiTraceTexelData {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	std::vector<glm::vec3> texels; // linear-space RGB, row-major, w * h
+};
+
+inline constexpr uint32_t kGiBakeTexelMaxDim = 512;
+
 struct GiTraceMaterial {
 	glm::vec3 albedo{ 0.8f };   // baseColor * (1 - metallic): Lambertian bounce color
 	glm::vec3 emissive{ 0.0f }; // HDR radiance (emissiveFactor * strength * texture)
 	glm::vec3 transmission{ 0.0f }; // > 0: transmissive (glass): rays pass
 	                                // THROUGH the surface, tinted per pass
+	// Textured-albedo path: baseTexId = the cluster cook texture id of
+	// the baseColor map (0xFFFFFFFF = none; the flat albedo above shades
+	// every hit), baseTexMul = baseColor * (1 - metallic) so the textured
+	// albedo is baseTexMul * texel(u,v) (the average NEVER enters the
+	// textured path - the average IS the flat path).
+	uint32_t baseTexId = 0xFFFFFFFFu;
+	glm::vec3 baseTexMul{ 1.0f };
 };
 
 // Static spot light for the bake (NEE at every bounce vertex). Angles in
@@ -135,6 +158,16 @@ public:
 	std::vector<uint32_t> indices;    // 3 per triangle
 	std::vector<GiTraceMaterial> materials;
 	std::vector<uint32_t> triMaterial; // per triangle
+	// Per-vertex baseColor UVs, PARALLEL to positions (same indexing as
+	// positions/indices; the BVH's Hit.tri indexes this soup). Empty =
+	// no UVs: every hit shades with the flat averaged albedo (the
+	// pre-textured behavior).
+	std::vector<glm::vec2> uvs;
+	// Decoded baseColor textures keyed by the cluster cook texture id
+	// (GiTraceMaterial::baseTexId). Sparse: only the ids the build found
+	// decodable texel data for; a material whose id is missing shades
+	// with its flat averaged albedo.
+	std::unordered_map<uint32_t, GiTraceTexelData> textures;
 
 	// Environment (mirrors the runtime EnvironmentSettings semantics).
 	glm::vec3 sunDirection{ 0.0f, 1.0f, 0.0f }; // TO sun (normalized)
@@ -203,9 +236,31 @@ public:
 	// tested — mirrors EvaluateForwardPlusLight so bakes match the
 	// runtime direct lighting). Public for the unit tests: the
 	// static-light harvest (CollectStaticBakeLights) is validated
-	// against the analytic point/spot terms through it.
+	// against the analytic point/spot terms through it. The albedo
+	// overloads take the VERTEX albedo (AlbedoAt: textured or flat) —
+	// the material-only forms keep the flat averaged albedo (tests +
+	// back-compat).
 	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
+	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
+		const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const;
+	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
+		const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const;
+
+	// The VERTEX albedo: the textured path interpolates the hit UV from
+	// the triangle's vertices (baryUV matches TriangleBvh::Hit) and
+	// samples the material's baseColor texture bilinearly (REPEAT wrap —
+	// the glTF default; tiling walls are the norm, a clamp-authored
+	// decal atlas would tile in the bake: known bake-side approximation,
+	// the same one the runtime would show if it sampled it tiled);
+	// baseTexMul * texel. Falls back to the flat averaged albedo when
+	// the material has no decoded texture (or the soup carries no UVs —
+	// pre-textured callers). The bakes call this at EVERY diffuse vertex
+	// (the primary hit + bounces + the NEE terms), so captures bake the
+	// texture detail of the visible surfaces, not per-material flat
+	// colors.
+	glm::vec3 AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
+		const glm::vec2& baryUV) const;
 
 	// Ray-tracing backend for the bake transport (see TriangleBvh): the
 	// builtin BVH by default (deterministic reference); Embree (the
@@ -248,6 +303,12 @@ struct GiSceneBuildOptions {
 	// slots supply the effective metallic (B channel) the way the
 	// runtime shader combines factor * texture.
 	std::unordered_map<uint32_t, glm::vec3> texelAvg;
+	// Full decoded texel data keyed the same (GiTraceTexelData): fills
+	// the trace scene's per-hit textured-albedo path (uvs + textures +
+	// GiTraceMaterial::baseTexId — see AlbedoAt). The cook/tools fill
+	// this alongside texelAvg from the cluster's texture URIs (decode
+	// via GiDecodeKtxTexelData); sparse/empty = the flat averaged path.
+	std::unordered_map<uint32_t, GiTraceTexelData> texelData;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
 	// Decal overlay quads (cook-stamped Material.castsShadows == false on
 	// non-MASK materials: SMVK_materials_shadows, see tools/cook_bistro_v5.py)
@@ -335,6 +396,17 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 // albedo/emissive/metallic include texture content. nullopt on decode
 // failure (the caller keeps the material factor alone).
 std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes);
+
+// Decode a KTX2 to full (capped) texel data for the per-hit textured
+// path: mip 0, or the smallest mip whose width fits maxDim (a 4K
+// baseColor map decodes at maxDim=512 -> all the detail a bake samples
+// at capture/probe densities; the cap keeps the texel store bounded on
+// texture-heavy scenes). LDR RGB -> LINEAR floats (sRGB transfer
+// converted per texel). nullopt on decode failure / < 3 components
+// (same acceptance rules as GiAverageKtxTexel — the flat averaged path
+// stays for those).
+std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
+	std::span<const uint8_t> ktxBytes, uint32_t maxDim);
 
 // ---------------------------------------------------------------------------
 // Bake

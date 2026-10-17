@@ -67,12 +67,18 @@ struct MeshOptConfig {
 	// base groupId; the scene keeps referencing LOD0. The renderer selects
 	// siblings at draw time from LodInfo::simplifyError (see below).
 	bool generateLods = false;
-	// Triangle-count ratios vs LOD0, coarsest-last. Default 60/30/12%.
-	std::vector<float> lodRatios{ 0.6f, 0.3f, 0.12f };
+	// Triangle-count ratios vs LOD0, coarsest-last. Default
+	// 75/50/30/15%: gentle steps + one extra level (the runtime pick is
+	// ERROR-driven per pixel budget, so the chain wants many fine
+	// siblings, not a few coarse jumps — the old 60/30/12 steps lost
+	// visible ornament detail one full level early).
+	std::vector<float> lodRatios{ 0.75f, 0.5f, 0.3f, 0.15f };
 	// Relative error budget per meshopt_simplify call (fraction of extents,
-	// [0..1]). Generous on purpose: the ratio is the binding constraint,
-	// the *result* error is recorded and used to filter/select.
-	float lodTargetError = 0.02f;
+	// [0..1]). 1%: the recorded sibling error feeds the runtime's projected
+	// pixel-error pick, so a 2% budget let siblings drift two pixels of
+	// shape before the picker ever got a say — tightened to 1% (the ratio
+	// chain stays the binding constraint for reduction).
+	float lodTargetError = 0.01f;
 	// Bitmask of meshopt_SimplifyX options (0 = safe default).
 	unsigned lodSimplifyOptions = 0;
 	// Error-driven filter ("drop tiny + broken"): a candidate is kept only

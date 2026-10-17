@@ -1141,6 +1141,7 @@ int Run(Args& args) {
 	smvk::gi::GiSceneBuildOptions buildOpts{};
 	if (args.textures) {
 		uint32_t averaged = 0;
+		uint32_t textured = 0;
 		for (const auto& [uri, handle] : cluster->ListTextureUris()) {
 			const std::vector<uint8_t>* src = cluster->GetTextureSource(uri);
 			if (!src || src->empty())
@@ -1151,9 +1152,20 @@ int Run(Args& args) {
 				continue;
 			buildOpts.texelAvg[handle.index()] = *avg;
 			++averaged;
+			// Full decoded texel data: the trace samples the baseColor
+			// texture at the interpolated hit UV (AlbedoAt). Irrelevant
+			// in white-world .sggi bakes (uniformAlbedo overrides it),
+			// live for the textured path + the cvol bakes.
+			if (auto data = smvk::gi::GiDecodeKtxTexelData(
+					std::span<const uint8_t>(*src),
+					smvk::gi::kGiBakeTexelMaxDim)) {
+				buildOpts.texelData[handle.index()] = std::move(*data);
+				++textured;
+			}
 		}
 		tool::out() << "  textures: averaged " << averaged << " ("
-			<< cluster->ListTextureUris().size() << " uris)\n";
+			<< cluster->ListTextureUris().size() << " uris, decoded "
+			<< textured << ")\n";
 	}
 
 	// Environment: the TOUR'S ENV BLOCK when one replayed (the editor

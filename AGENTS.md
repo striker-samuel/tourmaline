@@ -101,6 +101,13 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Frame renderer plumbing: `engine::AppFrameContext` (engine/include/Engine/Rendergraph/FrameContext.h)
   carries per-frame handles; renderers snapshot what they need at Append time
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
+- Bake albedo: the CUBEMAP captures bake TEXTURED (per-hit baseColor sampling —
+  `GiTraceScene::AlbedoAt`, bilinear REPEAT over decoded texel data capped at
+  `kGiBakeTexelMaxDim` 512); the GI fields (.sggi octree + cvols) bake
+  white-world 0.7 by convention (the 9-lobe SG fit cannot represent per-material
+  chroma — verified on Sponza). Sponza GI flow: `tools/cook/cook_sponza.bat`
+  runs Cook → GiBaker (the convex volumes + the global octree from
+  `F:/content/models/sponza/Sponza.tour`) → Pak
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
 

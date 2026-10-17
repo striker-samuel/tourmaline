@@ -293,8 +293,8 @@ struct CookSettings {
 	std::string inVfs; // VFS path for --in-vfs when no tour
 	bool meshopt = true;
 	bool lods = false;
-	std::string lodRatios = "0.6,0.3,0.12"; // LOD chain ratios (csv)
-	float lodError = 0.02f;                  // simplification target error
+	std::string lodRatios = "0.75,0.5,0.3,0.15"; // LOD chain ratios (csv)
+	float lodError = 0.01f;                  // simplification target error
 	bool lightmap = false;
 	float lmMetersPerTexel = 0.25f; // chart density (m/texel)
 	uint32_t lmLobes = 12;

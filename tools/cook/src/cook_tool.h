@@ -34,8 +34,8 @@ struct CookArgs {
 	float overdraw = 1.05f;
 	// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
 	bool lods = false;
-	std::string lodRatios = "0.6,0.3,0.12";
-	float lodError = 0.02f;
+	std::string lodRatios = "0.75,0.5,0.3,0.15";
+	float lodError = 0.01f;
 	bool meshlets = false;
 	bool autoKtx = true;
 	bool collapseStatic = false;

@@ -13,7 +13,7 @@
 //             cook.exe F:/content models/sponza/Sponza.geometry
 //                 [--meshopt on|off]
 //                 [--overdraw 1.05]
-//                 [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
+//                 [--lods on|off] [--lod-ratios 0.75,0.5,0.3,0.15] [--lod-error 0.01]
 //                 [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12
 //                  --lm-atlas-width 1024 --lm-gutter 1
 //                  --lm-rays 1024
@@ -152,8 +152,8 @@ namespace cooktool {
 		float overdraw = 1.05f;
 		// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
 		bool lods = false;
-		std::string lodRatios = "0.6,0.3,0.12";
-		float lodError = 0.02f; // relative error budget per simplify call
+		std::string lodRatios = "0.75,0.5,0.3,0.15";
+		float lodError = 0.01f; // relative error budget per simplify call
 		// Meshlet cook path (SETUP-TIME on/off only): the engine canon is
 		// fixed at 64 verts / 64 tris per meshlet (kMeshletMaxVertices /
 		// kMeshletMaxTriangles - one mesh-shader workgroup covers a whole
@@ -552,6 +552,7 @@ namespace cooktool {
 			const BakeEnv be = EnvForBake(*sc, args);
 			GiSceneBuildOptions buildOpts{};
 			uint32_t averaged = 0;
+			uint32_t textured = 0;
 			for (const auto& [uri, handle] : sc->ListTextureUris()) {
 				const std::vector<uint8_t>* src = sc->GetTextureSource(uri);
 				if (!src || src->empty())
@@ -562,6 +563,14 @@ namespace cooktool {
 					continue;
 				buildOpts.texelAvg[handle.index()] = *avg;
 				++averaged;
+				// Full decoded texel data: the trace samples the baseColor
+				// texture at the interpolated hit UV (AlbedoAt) — volume
+				// bakes carry the texture detail, not flat averages.
+				if (auto data = GiDecodeKtxTexelData(
+						std::span<const uint8_t>(*src), kGiBakeTexelMaxDim)) {
+					buildOpts.texelData[handle.index()] = std::move(*data);
+					++textured;
+				}
 			}
 			buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
 			buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
@@ -578,7 +587,8 @@ namespace cooktool {
 			}
 			tool::out() << "  [CV] trace scene: "
 				<< traceScene.Bvh().TriangleCount() << " tris ("
-				<< averaged << " averaged textures)\n" << std::flush;
+				<< averaged << " averaged, " << textured
+				<< " decoded textures)\n" << std::flush;
 			// Deterministic node order (hash-map iteration is not).
 			std::vector<uint32_t> nodes;
 			nodes.reserve(sc->scene.cvolForNode.size());
@@ -1136,7 +1146,7 @@ namespace cooktool {
 			<< "          MeshImporter derives the artifacts); the artifacts\n"
 			<< "          carry the scenes; the pak cooks ALL of them.)\n"
 			<< "          [--tour <scene.tour>] [--overdraw 1.05]\n"
-			<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
+			<< "          [--lods on|off] [--lod-ratios 0.75,0.5,0.3,0.15] [--lod-error 0.01]\n"
 		<< "          [--meshlets on|off] (setup-time; fixed 64v/64t canon)\n"
 		<< "          [--auto-ktx on|off]\n"
 			<< "          [--collapse-static on|off]\n"
@@ -2672,6 +2682,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	GiSceneBuildOptions buildOpts{};
 	{
 		uint32_t averaged = 0;
+		uint32_t textured = 0;
 		for (const auto& [uri, handle] : cluster.ListTextureUris()) {
 			const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
 			if (!src || src->empty())
@@ -2682,9 +2693,18 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 				continue;
 			buildOpts.texelAvg[handle.index()] = *avg;
 			++averaged;
+			// Full decoded texel data: the trace samples the baseColor
+			// texture at the interpolated hit UV (AlbedoAt) — bakes
+			// carry the texture detail, not flat averages.
+			if (auto data = GiDecodeKtxTexelData(
+					std::span<const uint8_t>(*src), kGiBakeTexelMaxDim)) {
+				buildOpts.texelData[handle.index()] = std::move(*data);
+				++textured;
+			}
 		}
 		tool::err() << "  [CUBE] textures averaged: " << averaged << " / "
-			<< cluster.ListTextureUris().size() << "\n" << std::flush;
+			<< cluster.ListTextureUris().size() << " (decoded " << textured
+			<< ")\n" << std::flush;
 	}
 	// Same import basis change as CubemapBaker/GiBaker: cook imports at
 	// coordFix 0 read punctual aims with the conjugated -Z axis. The
@@ -4444,6 +4464,7 @@ int Run(const CookArgs& c) {
 		GiSceneBuildOptions buildOpts{};
 		{
 			uint32_t averaged = 0;
+			uint32_t textured = 0;
 			for (const auto& [uri, handle] : cluster->ListTextureUris()) {
 				const std::vector<uint8_t>* src = cluster->GetTextureSource(uri);
 				if (!src || src->empty())
@@ -4454,9 +4475,18 @@ int Run(const CookArgs& c) {
 					continue;
 				buildOpts.texelAvg[handle.index()] = *avg;
 				++averaged;
+				// Full decoded texel data: the trace samples the baseColor
+				// texture at the interpolated hit UV (AlbedoAt) — bakes
+				// carry the texture detail, not flat averages.
+				if (auto data = GiDecodeKtxTexelData(
+						std::span<const uint8_t>(*src), kGiBakeTexelMaxDim)) {
+					buildOpts.texelData[handle.index()] = std::move(*data);
+					++textured;
+				}
 			}
 			tool::err() << "  [LM] textures averaged: " << averaged
-				<< " / " << cluster->ListTextureUris().size() << "\n" << std::flush;
+				<< " / " << cluster->ListTextureUris().size()
+				<< " (decoded " << textured << ")\n" << std::flush;
 		}
 		// Sun/sky record from the scene's env block (EnvForBake â€” ONE
 		// authored sun/sky everywhere, matching every other bake stage).

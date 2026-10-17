@@ -55,7 +55,21 @@ rem once; cook.exe runs the bakes + writes them back into the artifacts
 rem (+ Sponza.cooked); pak.exe assembles the .pak from the cooked
 rem artifacts (pure serialization - bake flags are rejected there).
 rem SUN flags ride BOTH steps (cook bakes with that sun, pak serializes it).
+rem GI VOLUMES (both layers of the probes-only pivot): GiBaker runs
+rem BETWEEN cook + pak - F:/content/models/sponza/Sponza.tour authors
+rem the convex GI volumes (the per-space layer: dense local probe grids
+rem over the nave/atrium/galleries + the SEALED side aisles the coarse
+rem global octree underserves) and its --out writes the GLOBAL layer
+rem (gi/Sponza.sggi, the sparse adaptive octree - "the .sggi and .cvol
+rem files pair up"). Pak.exe embeds both (gi/<stem>.sggi + the cvmanifest
+rem + every .cvol row) + registers the bindings; the runtime resolves
+rem them out of the pak. White-world GI fields (uniform albedo 0.7 - the
+rem established convention: per-material albedo prints chromatic dots
+rem the 9-lobe fit cannot represent, verified on Sponza); the cubemap
+rem captures bake TEXTURED (per-hit baseColor sampling - see bake.h).
 out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+if errorlevel 1 goto fail
+out\build\x64-Release\GiBaker.exe --content-dir F:/content --tour F:/content/models/sponza/Sponza.tour --out F:/content/gi/Sponza.sggi --backend embree --max-probes 131072
 if errorlevel 1 goto fail
 out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000
 if errorlevel 1 goto fail

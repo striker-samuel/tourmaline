@@ -212,16 +212,26 @@ glm::vec3 GiTraceScene::SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
 
 glm::vec3 GiTraceScene::SampleSun(const glm::vec3& pos, const glm::vec3& n,
 	const GiTraceMaterial& m) const {
+	return SampleSun(pos, n, m, m.albedo);
+}
+
+glm::vec3 GiTraceScene::SampleSun(const glm::vec3& pos, const glm::vec3& n,
+	const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const {
 	const float ndl = glm::dot(n, sunDirection);
 	if (ndl <= 0.0f)
 		return glm::vec3(0.0f);
 	if (bvh_.AnyHit(pos + n * kSurfEps, sunDirection, kMaxRayDist))
 		return glm::vec3(0.0f);
-	return sunColor * (sunIntensity * ndl) * m.albedo * (1.0f / kPi);
+	return sunColor * (sunIntensity * ndl) * vertexAlbedo * (1.0f / kPi);
 }
 
 glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 	const GiTraceMaterial& m) const {
+	return SampleSpots(pos, n, m, m.albedo);
+}
+
+glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
+	const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const {
 	// Mirrors EvaluateForwardPlusLight (default_lit_body.hlsli): Frostbite
 	// windowed inverse-square falloff, candela convention, cone
 	// smoothstep — so baked spots match the runtime direct path. Returns
@@ -258,7 +268,59 @@ glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 			continue;
 		sum += s.color * (ndl * atten * ang);
 	}
-	return sum * m.albedo * (1.0f / kPi);
+	return sum * vertexAlbedo * (1.0f / kPi);
+}
+
+glm::vec3 GiTraceScene::AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
+	const glm::vec2& baryUV) const {
+	// Textured path: the material carries a decoded baseColor texture AND
+	// the soup carries UVs parallel to positions. Anything missing falls
+	// back to the flat averaged albedo (the pre-textured behavior — the
+	// same scene can mix both when only some textures decoded).
+	if (m.baseTexId == 0xFFFFFFFFu)
+		return m.albedo;
+	auto it = textures.find(m.baseTexId);
+	if (it == textures.end())
+		return m.albedo;
+	const GiTraceTexelData& t = it->second;
+	if (t.width == 0 || t.height == 0
+		|| t.texels.size() < size_t(t.width) * size_t(t.height))
+		return m.albedo;
+	if (uvs.size() < positions.size() || indices.size() < size_t(tri) * 3 + 3)
+		return m.albedo;
+	const uint32_t i0 = indices[tri * 3 + 0];
+	const uint32_t i1 = indices[tri * 3 + 1];
+	const uint32_t i2 = indices[tri * 3 + 2];
+	// Hit barycentrics: baryUV = (v, w); u = 1 - v - w (TriangleBvh::Hit).
+	const float u = 1.0f - baryUV.x - baryUV.y;
+	const glm::vec2 uv =
+		uvs[i0] * u + uvs[i1] * baryUV.x + uvs[i2] * baryUV.y;
+	// Bilinear, REPEAT wrap (glTF baseColor default; tiling walls are the
+	// norm). A clamp-authored atlas tiles in the bake: known bake-side
+	// approximation (the runtime's own repeat-defaulted sampling makes
+	// the same choice for unconverted samplers).
+	const float fx = uv.x * float(t.width) - 0.5f;
+	const float fy = uv.y * float(t.height) - 0.5f;
+	const int32_t x0 = int32_t(std::floor(fx));
+	const int32_t y0 = int32_t(std::floor(fy));
+	const float tx = fx - float(x0);
+	const float ty = fy - float(y0);
+	auto wrap = [&](int32_t v, uint32_t mod) {
+		int32_t r = v % int32_t(mod);
+		if (r < 0)
+			r += int32_t(mod);
+		return uint32_t(r);
+	};
+	const uint32_t w = t.width, h = t.height;
+	const uint32_t xa = wrap(x0, w), xb = wrap(x0 + 1, w);
+	const uint32_t ya = wrap(y0, h), yb = wrap(y0 + 1, h);
+	const glm::vec3& t00 = t.texels[size_t(ya) * w + xa];
+	const glm::vec3& t10 = t.texels[size_t(ya) * w + xb];
+	const glm::vec3& t01 = t.texels[size_t(yb) * w + xa];
+	const glm::vec3& t11 = t.texels[size_t(yb) * w + xb];
+	const glm::vec3 a = glm::mix(t00, t10, tx);
+	const glm::vec3 b = glm::mix(t01, t11, tx);
+	return m.baseTexMul * glm::mix(a, b, ty);
 }
 
 glm::vec3 GiTraceScene::SkyAmbient() const {
@@ -317,10 +379,16 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		glm::vec3 tn = bvh_.TriangleNormal(h.tri);
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
+		// The VERTEX albedo (textured at the interpolated hit UV, or the
+		// flat averaged color): every term below (the NEE direct, the
+		// bounce throughput, the ambient-closure outFirstAlbedo) shades
+		// the actual surface texel, not the material's average — the
+		// "captures see textured albedo" contract.
+		const glm::vec3 vertexAlbedo = AlbedoAt(m, h.tri, h.baryUV);
 		// First non-transmissive hit's albedo: the ambient-closure blend
 		// (the cubemap baker) keys on the visible surface's bounce.
 		if (outFirstAlbedo && m.transmission.x + m.transmission.y + m.transmission.z <= 1e-4f) {
-			*outFirstAlbedo = m.albedo;
+			*outFirstAlbedo = vertexAlbedo;
 			outFirstAlbedo = nullptr; // only the first
 		}
 
@@ -338,9 +406,10 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		// Diffuse vertex: sun + spot NEE (both carry the vertex albedo
 		// and the Lambertian 1/pi; the runtime shader re-applies its local
 		// albedo for the lightmap diffuse, matching the probe path).
-		L += throughput * (SampleSun(pos, n, m) + SampleSpots(pos, n, m));
+		L += throughput * (SampleSun(pos, n, m, vertexAlbedo)
+			+ SampleSpots(pos, n, m, vertexAlbedo));
 
-		throughput *= m.albedo;
+		throughput *= vertexAlbedo;
 		if (Luminance(throughput) < 1e-4f)
 			break;
 		d = CosineHemisphere(rng, n);
@@ -420,6 +489,71 @@ std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
 	if (count == 0)
 		return std::nullopt;
 	return glm::vec3(sum / double(count));
+}
+
+std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
+	std::span<const uint8_t> ktxBytes, uint32_t maxDim) {
+	// Same decode + acceptance rules as GiAverageKtxTexel (libktx CPU
+	// decode; Basis transcoded to RGBA32), but keeps the full capped-res
+	// texels (linear floats) instead of averaging them: the trace
+	// scene's per-hit textured-albedo path (AlbedoAt) samples these at
+	// the interpolated hit UV.
+	if (ktxBytes.empty() || maxDim == 0)
+		return std::nullopt;
+	ktxTexture2* raw = nullptr;
+	if (ktxTexture2_CreateFromMemory(
+			reinterpret_cast<const ktx_uint8_t*>(ktxBytes.data()),
+			static_cast<ktx_size_t>(ktxBytes.size()),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw) != KTX_SUCCESS)
+		return std::nullopt;
+	struct Guard {
+		ktxTexture2* t;
+		~Guard() { if (t) ktxTexture2_Destroy(t); }
+	} guard{ raw };
+	if (ktxTexture2_NeedsTranscoding(raw)) {
+		if (ktxTexture2_TranscodeBasis(raw, KTX_TTF_RGBA32, 0) != KTX_SUCCESS)
+			return std::nullopt;
+	}
+	const ktx_uint32_t baseWidth = raw->baseWidth;
+	const ktx_uint32_t baseHeight = std::max<ktx_uint32_t>(raw->baseHeight, 1);
+	const ktx_uint32_t levels = std::max<ktx_uint32_t>(raw->numLevels, 1);
+	// The smallest mip that fits maxDim (mip 0 when the base fits —
+	// never UPSCALE a small texture).
+	ktx_uint32_t level = 0;
+	while (level + 1 < levels && (baseWidth >> (level + 1)) > maxDim)
+		++level;
+	const ktx_uint32_t w = std::max<ktx_uint32_t>(baseWidth >> level, 1);
+	const ktx_uint32_t h = std::max<ktx_uint32_t>(baseHeight >> level, 1);
+	ktx_size_t offset = 0;
+	if (ktxTexture2_GetImageOffset(raw, level, 0, 0, &offset) != KTX_SUCCESS)
+		return std::nullopt;
+	const ktx_size_t rowPitch = ktxTexture_GetRowPitch(
+		reinterpret_cast<ktxTexture*>(raw), level);
+	const ktx_uint32_t components = ktxTexture2_GetNumComponents(raw);
+	if (components < 3 || rowPitch < ktx_size_t(w) * components)
+		return std::nullopt;
+	const bool srgb = ktxTexture2_GetTransferFunction_e(raw) == KHR_DF_TRANSFER_SRGB;
+	const uint8_t* base = reinterpret_cast<const uint8_t*>(raw->pData) + offset;
+	GiTraceTexelData out;
+	out.width = w;
+	out.height = h;
+	out.texels.resize(size_t(w) * size_t(h));
+	size_t k = 0;
+	for (ktx_uint32_t y = 0; y < h; ++y) {
+		const uint8_t* row = base + y * rowPitch;
+		for (ktx_uint32_t x = 0; x < w; ++x, ++k) {
+			const uint8_t* px = row + x * components;
+			auto chan = [&](uint32_t c) {
+				const float v = float(px[c]) / 255.0f;
+				return srgb
+					? ((v <= 0.04045f) ? v / 12.92f
+						: std::pow((v + 0.055f) / 1.055f, 2.4f))
+					: v;
+			};
+			out.texels[k] = glm::vec3(chan(0), chan(1), chan(2));
+		}
+	}
+	return out;
 }
 
 GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
@@ -554,6 +688,19 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 						it != opts.texelAvg.end())
 						gm.emissive *= it->second;
 				}
+				// Textured path: a decodable baseColor texture with
+				// decoded texel data switches the trace to per-hit
+				// sampling (AlbedoAt interpolates the hit UV + samples
+				// bilinearly). baseTexMul = baseColor * (1 - metallic)
+				// WITHOUT the average (the average only tints the flat
+				// fallback albedo); the transmission path ignores it.
+				if (mat.values.textures.x >= 0
+					&& opts.texelData.find(uint32_t(mat.values.textures.x))
+						!= opts.texelData.end()) {
+					gm.baseTexId = uint32_t(mat.values.textures.x);
+					gm.baseTexMul = glm::vec3(mat.values.diffuse)
+						* (1.0f - metallic);
+				}
 			}
 		}
 		// Deduplicate identical materials (cheap win: scenes reuse them).
@@ -561,7 +708,8 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 			const GiTraceMaterial& o = out.materials[i];
 			if (glm::all(glm::equal(o.albedo, gm.albedo))
 				&& glm::all(glm::equal(o.emissive, gm.emissive))
-				&& glm::all(glm::equal(o.transmission, gm.transmission)))
+				&& glm::all(glm::equal(o.transmission, gm.transmission))
+				&& o.baseTexId == gm.baseTexId)
 				return i;
 		}
 		out.materials.push_back(gm);
@@ -627,11 +775,30 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	out.indices.reserve(size_t(triCount) * 3);
 	out.triMaterial.reserve(triCount);
 
+	// The textured-albedo data rides along: per-vertex UVs (only when at
+	// least one interned material actually samples a texture — a no-texture
+	// bake keeps the soup lean) + the decoded texel store for the USED
+	// baseColor ids only (opts is const; the unused decodes — emissive/
+	// metallic slots and materials dropped from the soup — never copy).
+	bool anyTextured = false;
+	for (const GiTraceMaterial& m : out.materials) {
+		if (m.baseTexId == 0xFFFFFFFFu)
+			continue;
+		anyTextured = true;
+		if (auto it = opts.texelData.find(m.baseTexId);
+			it != opts.texelData.end())
+			out.textures.emplace(m.baseTexId, it->second);
+	}
+	if (anyTextured)
+		out.uvs.reserve(size_t(triCount) * 3);
+
 	for (const NodeGeo& g : geos) {
 		const uint32_t base = uint32_t(out.positions.size());
 		for (const StaticVertex& v : g.upload->vertices) {
 			const glm::vec4 wp = g.global * glm::vec4(v.pos, 1.0f);
 			out.positions.push_back(glm::vec3(wp));
+			if (anyTextured)
+				out.uvs.push_back(v.texCoord);
 		}
 		for (uint32_t k = 0; k < g.upload->indices.size(); ++k)
 			out.indices.push_back(base + g.upload->indices[k]);

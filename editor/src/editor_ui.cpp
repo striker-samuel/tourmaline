@@ -3509,7 +3509,7 @@ namespace editor {
 			ImGui::SetTooltip("Build mesh LOD chains via meshoptimizer.");
 		if (m_cook.lods) {
 			ImGui::Indent();
-			ImGui::Text("LOD ratios (csv, e.g. \"0.6,0.3,0.12\"):");
+			ImGui::Text("LOD ratios (csv, e.g. \"0.75,0.5,0.3,0.15\"):");
 			char ratios[64];
 			std::snprintf(ratios, sizeof(ratios), "%s",
 				m_cook.lodRatios.c_str());
