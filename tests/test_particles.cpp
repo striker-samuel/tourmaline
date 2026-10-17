@@ -53,7 +53,9 @@ void TestStructAbi() {
 
 	// Push layouts (must match particles_emit/sim/draw.hlsl mirrors).
 	Check(sizeof(smvk::ParticlesEmitPush) == 48, "pt.abi.emit-push-size");
-	Check(sizeof(smvk::ParticlesSimPush) == 48, "pt.abi.sim-push-size");
+	Check(sizeof(smvk::ParticlesSimPush) == 64, "pt.abi.sim-push-size");
+	Check(offsetof(smvk::ParticlesSimPush, cameraX) == 48,
+		"pt.abi.sim-push-camera");
 	Check(sizeof(smvk::ParticlesDrawPush) == 80, "pt.abi.draw-push-size");
 	Check(offsetof(smvk::ParticlesDrawPush, fpTileCountX) == 48,
 		"pt.abi.draw-push-tilecountx");
