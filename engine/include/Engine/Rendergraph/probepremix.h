@@ -68,11 +68,13 @@ struct alignas(16) BlendSelectionGpu {
 	uint32_t count = 0;                                     // 0
 	uint32_t indices[kMaxBlendProbes] = {};                 // 4  cubemap bindless
 	float weights[kMaxBlendProbes] = {};                    // 20 normalized
-	// The DOMINANT probe (slot 0 - the highest blend weight): the
-	// material's single-fetch branch keeps the depth-fitted box parallax
-	// from it. pos = the capture position; boxMinus/boxPlus = the packed
-	// parallax box's plane distances (the same packing the lit walk reads
-	// off the light tail - MakeProbeLightEntry).
+	// The parallax box: WEIGHT-LERPED across the selected set (lerping
+	// the capture positions + the plane distances by the mix weights is
+	// exactly lerping the AABB corners - one smooth box that tracks the
+	// blend, no popping when the dominant slot swaps while moving). The
+	// same packing the lit walk reads off the light tail
+	// (MakeProbeLightEntry); pos = the lerped capture position,
+	// boxMinus/boxPlus = the lerped plane distances.
 	float pos[3] = {};                                       // 36
 	float boxMinus[3] = {};                                 // 48
 	float boxPlus[3] = {};                                  // 60

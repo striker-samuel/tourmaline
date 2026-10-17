@@ -11,11 +11,13 @@
 //   indices[4] = the CUBEMAP bindless indices (the mix pass samples
 //                cubemaps[indices[s]] directly);
 //   weights[4] = the normalized blend weights (sum = 1 over the set);
-//   pos/boxMinus/boxPlus = the DOMINANT (slot 0) probe's capture position
-//                + packed parallax box (the same packing the lit walk's
-//                MakeProbeLightEntry uses), mirrored through the
-//                FrameUniforms selection BDA so the material's
-//                single-fetch branch keeps the depth-fitted box parallax.
+//   pos/boxMinus/boxPlus = the WEIGHT-LERPED parallax box across the
+//                selected set (the same packing the lit walk's
+//                MakeProbeLightEntry uses; lerping positions + plane
+//                distances = lerping the AABB corners), mirrored through
+//                the FrameUniforms selection BDA so the material's
+//                single-fetch branch keeps the depth-fitted box parallax
+//                WITHOUT popping when the dominant slot swaps.
 //
 // The NDF weighting (Lagarde, GPU Pro 4 - the CPU mirror ComputeNdfWeights
 // in probepremix.h, pinned by test_cubemap.cpp):
@@ -49,9 +51,9 @@ struct BlendSelectionGpu
     uint count;          // 0
     uint indices[4];     // 4  cubemap bindless indices (the mix samples these)
     float weights[4];     // 20 normalized (sum = 1 over the set)
-    float pos[3];          // 36 dominant probe's capture position
-    float boxMinus[3];    // 48 dominant minus-plane distances
-    float boxPlus[3];     // 60 dominant plus-plane distances
+    float pos[3];          // 36 weight-lerped capture position
+    float boxMinus[3];    // 48 weight-lerped minus-plane distances
+    float boxPlus[3];     // 60 weight-lerped plus-plane distances
     uint pad0;            // 72
     uint pad1;            // 76
 };
@@ -306,23 +308,35 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
     sumW = max(sumW, 1e-6f);
 
     sel.count = k;
+    // The parallax box: WEIGHT-LERPED across the selected set (the plan's
+    // Phase 3) - lerping the capture positions AND the plane distances by
+    // the same renormalized weights the mix blends radiance with is
+    // EXACTLY lerping the AABB corners (pos -/+ distance is linear in
+    // both), so the single box the material's one-fetch branch uses
+    // tracks the blend smoothly - no popping when the dominant slot
+    // swaps while moving (the temporal property; static captures can't
+    // show it - the slot-0 box alone pops at slot swaps).
+    float3 lerpedPos = float3(0.0f, 0.0f, 0.0f);
+    float3 lerpedMinus = float3(0.0f, 0.0f, 0.0f);
+    float3 lerpedPlus = float3(0.0f, 0.0f, 0.0f);
     [unroll]
     for (uint s = 0; s < 4; ++s) {
         sel.indices[s] = bestCube[s];
-        sel.weights[s] = bestW[s] / sumW;
-        // Dominant probe: slot 0 (the highest key) mirrors its capture
-        // position + packed parallax box for the material's single-fetch
-        // branch (environment.hlsli reads them via the selection BDA).
-        if (s == 0u) {
-            sel.pos[0] = bestPos[s].x;
-            sel.pos[1] = bestPos[s].y;
-            sel.pos[2] = bestPos[s].z;
-            [unroll]
-            for (uint a = 0; a < 3; ++a) {
-                sel.boxMinus[a] = bestBoxMinus[s][a];
-                sel.boxPlus[a] = bestBoxPlus[s][a];
-            }
-        }
+        // Slots beyond count carry weight 0 (their indices stay
+        // 0xffffffff - the mix pass iterates [0, count) only).
+        const float w = (s < k) ? bestW[s] / sumW : 0.0f;
+        sel.weights[s] = w;
+        lerpedPos += w * bestPos[s];
+        lerpedMinus += w * bestBoxMinus[s];
+        lerpedPlus += w * bestBoxPlus[s];
+    }
+    sel.pos[0] = lerpedPos.x;
+    sel.pos[1] = lerpedPos.y;
+    sel.pos[2] = lerpedPos.z;
+    [unroll]
+    for (uint a = 0; a < 3; ++a) {
+        sel.boxMinus[a] = lerpedMinus[a];
+        sel.boxPlus[a] = lerpedPlus[a];
     }
     pc.selection.Get() = sel;
 }

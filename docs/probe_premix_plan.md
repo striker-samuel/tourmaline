@@ -110,11 +110,25 @@ the banner-red. Phase 2 explicitly A/Bs both tie-breaks.
   so the NDF degenerates to the dominant probe there and matches the
   walk's blend - the formula's spatial variation shows up only in
   overlap-transition regions (fade rings between volumes).
-- Phase 3 (the dominant-box lerp is NOT done - the material uses slot
-  0's box as packed): FrameUniforms tail DONE, environment.hlsli branch
-  DONE, the pin + AGENTS.md/README.md notes DONE, the unit tests DONE;
-  the Debug HUD readout of the selected indices/weights remains open
-  (the weights pass writes them - display only).
+- Phase 3 DONE: the dominant parallax box is now WEIGHT-LERPED across
+  the selected set (lerping capture positions + plane distances by the
+  mix weights = lerping the AABB corners - one smooth box, no popping
+  when the dominant slot swaps while moving; static captures cannot show
+  the temporal property, the lerp is free there: 0.00% vs slot-0 and vs
+  the walk, max delta 0.7 - sub-quantization; the Sponza specular is
+  rough enough that box deltas wash out at high LODs). The full Phase-3
+  list: FrameUniforms tail, environment.hlsli branch, the pin + docs,
+  the unit tests, the HUD readout (the cubemaps panel recomputes the
+  selection via ComputeNdfWeights for display only - the render path
+  stays GPU-owned), the weight-lerped box.
+- The remaining known delta vs the plan text: none. The plan is
+  executed. Verification matrix: default POI (inner-exclusive) lerped
+  vs slot-0 bit-identical; transition POI (9 candidates at (1.00, 3.00,
+  -1.00) - two big probes at NDF 0.207 + corridor captures) lerped vs
+  slot-0 vs the walk all 0.00% (max 0.7); bench ON/OFF within run noise
+  (5.19 vs 5.16ms this pair; 4.72/5.02 and 5.08/5.25 in the Phase 1/2
+  pairs - the two tiny compute passes trade against the per-pixel walk
+  savings).
 
 ## Phase 3 - plumbing, observability, bench
 

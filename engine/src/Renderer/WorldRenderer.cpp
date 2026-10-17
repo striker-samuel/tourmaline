@@ -11984,6 +11984,9 @@ namespace engine {
 								// classification feeding rendering).
 								ImGui::Text("Pre-mix: %s (NDF weights, K=4)",
 									m_probePremixEnabled ? "on" : "off (per-pixel walk)");
+								ImGui::TextDisabled(
+									"box: weight-lerped across the selected set (corner lerp -"
+									" no pop when the dominant slot swaps)");
 								if (m_probePremixEnabled) {
 									constexpr uint32_t kTailCap =
 										smvk::kForwardPlusMaxProbes;
