@@ -116,31 +116,30 @@ float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)
 }
 
 // Box parallax correction for a probe capture (classic box projection):
-// the capture is treated as if it lived on the faces of an AABB around
-// the probe center, so a reflection off a surface AWAY from the center
+// the capture is treated as if it lived on the faces of the probe's
+// DEPTH-FITTED AABB — the baker analyzes each cube face's primary-ray
+// depths and stores the six plane distances (one wall scalar per plane,
+// manifest "box" group; forwardplus.h packs them into the probe light
+// entry) — so a reflection off a surface AWAY from the capture point
 // samples the capture in the direction the surface would actually see.
 // Without it every pixel samples along the raw reflect vector R, as if
 // the capture surrounded the PIXEL — interior surfaces then read dark
 // capture regions (floor/ceiling texels) instead of the bright geometry
 // across the room (the Sponza-atrium gold-cloth streaks).
 //
-// The box is derived from the probe entry itself (center = L.position,
-// half-extent = influence radius): the influence sphere is the cooker's
-// estimate of the probe's valid region (roughly the room), tighter than
-// the cull outer sphere (influence + fade, which reaches into walls and
-// neighbor rooms). Every full-weight pixel (dist <= influence) lies
-// INSIDE the cube (radial dist <= half-extent implies all coords <=
-// half-extent), and fade-ring pixels use the same far-plane exit
-// projection — continuous across the box faces by construction (near and
-// far planes coincide there), additionally faded by the probe weight at
-// the call site. Returns R unchanged when the box is degenerate or the
-// ray misses (keeps the helper total).
-float3 BoxParallaxCorrect(float3 worldPos, float3 R, float3 center, float halfExtent)
+// The box is asymmetric by design (walls sit at different distances per
+// plane); probeCenter is the CAPTURE point and may sit off the box
+// midpoint. Callers without a fitted box pass the legacy symmetric
+// center +- influence cube. Every full-weight pixel (dist <= influence)
+// lies inside the influence volume, and fade-ring pixels use the same
+// far-plane exit projection — continuous across the box faces by
+// construction, additionally faded by the probe weight at the call
+// site. Returns R unchanged when the box is degenerate or the ray
+// misses (keeps the helper total).
+float3 BoxParallaxCorrect(float3 worldPos, float3 R, float3 boxMin, float3 boxMax, float3 probeCenter)
 {
-    if (halfExtent <= 1e-3f)
+    if (!all(boxMax - boxMin > float3(1e-3f, 1e-3f, 1e-3f)))
         return R;
-    float3 boxMin = center - halfExtent;
-    float3 boxMax = center + halfExtent;
     // Safe per-axis reciprocal (R is normalized but can sit ~0 on an axis;
     // IEEE inf would still work in the slab test, but the clamp keeps it
     // total on drivers with imprecise inf handling).
@@ -158,12 +157,48 @@ float3 BoxParallaxCorrect(float3 worldPos, float3 R, float3 center, float halfEx
     if (tFar < max(tNear, 0.0f))
         return R;
     float3 hit = worldPos + R * tFar;
-    float3 corr = hit - center;
+    float3 corr = hit - probeCenter;
     // Degenerate (pixel at the probe center looking outward: hit == center
     // only when tFar == 0 with worldPos == center — length ~0): keep R.
     if (dot(corr, corr) < 1e-12f)
         return R;
     return normalize(corr);
+}
+
+// Corrected sample direction for one probe, faded by its weight (full
+// inside the influence, raw R at the fade edge) so probe handoffs stay
+// pop-free.
+float3 ProbeSampleDir(float3 worldPos, float3 R, float3 center,
+    float3 boxMin, float3 boxMax, float weight)
+{
+    if (weight <= 1e-4f)
+        return R;
+    float3 Rcorr = BoxParallaxCorrect(worldPos, R, boxMin, boxMax, center);
+    return normalize(lerp(R, Rcorr, clamp(weight, 0.0f, 1.0f)));
+}
+
+// One probe candidate from the tile walk (the top-2 blend state of
+// EvaluateSpecularEnv). cubemapIdx 0xffffffff = empty slot.
+struct SpecularProbePick {
+    float weight;
+    uint cubemapIdx;
+    float mips;
+    float3 center;
+    float3 boxMin;
+    float3 boxMax;
+};
+
+SpecularProbePick MakeProbePick(float weight, uint cubemapIdx, float mips,
+    float3 center, float3 boxMin, float3 boxMax)
+{
+    SpecularProbePick p;
+    p.weight = weight;
+    p.cubemapIdx = cubemapIdx;
+    p.mips = mips;
+    p.center = center;
+    p.boxMin = boxMin;
+    p.boxMax = boxMax;
+    return p;
 }
 
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
@@ -212,30 +247,31 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
 
     float3 envCol = float3(0.0f, 0.0f, 0.0f);
     bool foundProbe = false;
-    float bestWeight = 0.0f;
-    uint bestCubemapIdx = 0xffffffffu;
-    float bestMips = 1.0f;
-    // Box-parallax source for the winning probe (center + half-extent of
-    // its influence cube — see BoxParallaxCorrect). Captured alongside
-    // the best-weight pick so the sample below corrects R before the LOD
-    // fetch; the correction lerps by bestWeight (full inside, raw R at
-    // the fade edge), so probe boundaries stay pop-free.
-    float3 bestCenter = float3(0.0f, 0.0f, 0.0f);
-    float bestHalf = 0.0f;
+    float bestWeight = 0.0f; // debug views (probe-weight heat) only
 
     // Tile-bucketed probe scan. The cull's outer-sphere test is
     // conservative (influence + fade vs tile frustum + depth range), so a
     // tile miss implies a global miss: when the lists are fresh and the
     // tile holds no contributing probe, the pixel takes the analytic sky
-    // (then the global cubemap below) with no fallback scan. Upload order
-    // is widest-influence first and nothing beats weight 1.0 (ties keep
-    // the first entry), so break on full weight — exact, and usually the
-    // first tile entry.
+    // (then the global cubemap below) with no fallback scan.
+    // TOP-2 BLEND: the walk keeps the two highest-weight candidates and
+    // the sample below blends them by weight. The old winner-takes-all
+    // pick flipped hard across influence overlaps (two probes both at
+    // weight 1.0 -> first upload slot wins; the seam showed as tiles on
+    // edge discontinuities, each side sampling a different capture +
+    // parallax box). Blending the top two makes the handoff continuous;
+    // the cost is one extra cubemap fetch only when a second candidate
+    // exists. The tile probe slots are few (MAX_FP_PROBE_TILE_SLOTS), so
+    // the full walk is cheap - no early break.
     // Index space: lights [0, fpLightCount), probes [fpLightCount,
     // fpLightCount + frame.probeEntries). The bound MUST include the
     // probe tail — a lights-only bound skips every probe entry and the
     // walk silently degrades to the global fallback cubemap. Scenes with
     // zero lights (sponza) still walk: entryTotal > 0 via the tail.
+    SpecularProbePick pick1 = MakeProbePick(
+        0.0f, 0xffffffffu, 1.0f, float3(0.0f, 0.0f, 0.0f),
+        float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f));
+    SpecularProbePick pick2 = pick1;
     const uint entryTotal = fpLightCount + frame.probeEntries;
     bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
         && frame.probeTileFresh != 0u && entryTotal > 0u;
@@ -268,30 +304,57 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
             } else if (fadeRadius > 0.0f && dist <= influenceRadius + fadeRadius) {
                 weight = 1.0f - (dist - influenceRadius) / fadeRadius;
             }
-            if (weight > bestWeight) {
-                bestWeight = weight;
-                bestCubemapIdx = cubemapIdx;
-                bestMips = max(L.direction.z, 1.0f);
-                bestCenter = L.position;
-                // Influence (not the cull outer range): the room-scale box.
-                // L.range = influence + fade; L.direction.x = fade.
-                bestHalf = max(L.range - L.direction.x, 0.0f);
-                if (bestWeight >= 1.0f)
-                    break;
+            if (weight <= 0.0f)
+                continue;
+            // Depth-fitted parallax box: the baker's per-plane wall
+            // scalars, packed as color.rgb = minus-plane distances and
+            // (intensity, innerAngle, outerAngle) = plus-plane distances
+            // (see forwardplus.h). All-zero = legacy row without a fit:
+            // fall back to the symmetric influence cube.
+            float3 dNeg = L.color.rgb;
+            float3 dPos = float3(L.intensity, L.innerAngle, L.outerAngle);
+            float3 pMin = L.position - dNeg;
+            float3 pMax = L.position + dPos;
+            if (dot(dNeg, dNeg) + dot(dPos, dPos) <= 1e-10f) {
+                const float h = max(influenceRadius, 0.05f);
+                pMin = L.position - h;
+                pMax = L.position + h;
+            }
+            const float mips = max(L.direction.z, 1.0f);
+            if (weight > pick1.weight) {
+                pick2 = pick1; // demote the previous best to second
+                pick1 = MakeProbePick(weight, cubemapIdx, mips,
+                    L.position, pMin, pMax);
+            } else if (weight > pick2.weight) {
+                pick2 = MakeProbePick(weight, cubemapIdx, mips,
+                    L.position, pMin, pMax);
             }
         }
-        if (bestWeight > 0.0f && bestCubemapIdx != 0xffffffffu) {
-            float lod = clamp(roughness * (bestMips - 1.0f) + lodBias, 0.0f, bestMips - 1.0f);
-            TextureCube cubemap = cubemaps[NonUniformResourceIndex(bestCubemapIdx)];
-            // Box parallax: re-aim R at the probe box before sampling, faded
-            // by the probe weight so fade-ring pixels blend back to raw R.
-            float3 Rs = R;
-            if (bestHalf > 1e-3f && bestWeight > 1e-4f) {
-                float3 Rcorr = BoxParallaxCorrect(worldPos, R, bestCenter, bestHalf);
-                Rs = normalize(lerp(R, Rcorr, clamp(bestWeight, 0.0f, 1.0f)));
+        if (pick1.weight > 0.0f && pick1.cubemapIdx != 0xffffffffu) {
+            float lod1 = clamp(roughness * (pick1.mips - 1.0f) + lodBias,
+                0.0f, pick1.mips - 1.0f);
+            TextureCube cube1 = cubemaps[NonUniformResourceIndex(pick1.cubemapIdx)];
+            // Box parallax per pick: re-aim R at the probe's fitted box,
+            // faded by its weight (see ProbeSampleDir).
+            float3 Rs1 = ProbeSampleDir(worldPos, R, pick1.center,
+                pick1.boxMin, pick1.boxMax, pick1.weight);
+            float3 s1 = cube1.SampleLevel(cubeSampler, Rs1, lod1).rgb;
+            if (pick2.weight > 0.0f && pick2.cubemapIdx != 0xffffffffu) {
+                float lod2 = clamp(roughness * (pick2.mips - 1.0f) + lodBias,
+                    0.0f, pick2.mips - 1.0f);
+                TextureCube cube2 = cubemaps[NonUniformResourceIndex(pick2.cubemapIdx)];
+                float3 Rs2 = ProbeSampleDir(worldPos, R, pick2.center,
+                    pick2.boxMin, pick2.boxMax, pick2.weight);
+                float3 s2 = cube2.SampleLevel(cubeSampler, Rs2, lod2).rgb;
+                // Weight-normalized blend: continuous across influence
+                // handoffs (the old winner-flip seam).
+                envCol = lerp(s1, s2,
+                    pick2.weight / max(pick1.weight + pick2.weight, 1e-4f));
+            } else {
+                envCol = s1;
             }
-            envCol = cubemap.SampleLevel(cubeSampler, Rs, lod).rgb;
             foundProbe = true;
+            bestWeight = pick1.weight;
         }
     }
 

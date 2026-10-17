@@ -460,17 +460,33 @@ void TestProbeLightPacking() {
 	// Probes ride the FP light buffer tail as type-2 entries: packing must
 	// be exact (bindless/mips bit-exact in float) and the layout frozen.
 	Check(sizeof(smvk::ForwardPlusLight) == 96, "cubemap.probe-pack.size");
+	// Fitted box: center=(1,2,3), box [0..4, 1..5, 2..7] -> minus-plane
+	// distances (1,1,1), plus-plane distances (3,3,4).
 	const auto L = smvk::MakeProbeLightEntry(
-		glm::vec3(1, 2, 3), 6.0f, 2.0f, 500, 8);
+		glm::vec3(1, 2, 3), 6.0f, 2.0f, 500, 8,
+		glm::vec3(0, 1, 2), glm::vec3(4, 5, 7));
 	Check(L.type == smvk::kForwardPlusProbe, "cubemap.probe-pack.type");
 	Check(L.range == 8.0f, "cubemap.probe-pack.range");
 	bool ok = L.direction.x == 2.0f
 		&& static_cast<uint32_t>(L.direction.y) == 500u
 		&& static_cast<uint32_t>(L.direction.z) == 8u;
 	Check(ok, "cubemap.probe-pack.direction");
-	Check(L.intensity == 0.0f && L.shadowTile == -1
+	ok = L.color.x == 1.0f && L.color.y == 1.0f && L.color.z == 1.0f
+		&& L.intensity == 3.0f && L.innerAngle == 3.0f
+		&& L.outerAngle == 4.0f;
+	Check(ok, "cubemap.probe-pack.box-planes");
+	Check(L.shadowTile == -1
 		&& L.shadowMapIndex == -1 && L.cookieIndex == -1,
 		"cubemap.probe-pack.inert");
+	// Degenerate (min == max == center) packs the all-zero "no fitted
+	// box" sentinel the shader detects.
+	const auto L0 = smvk::MakeProbeLightEntry(
+		glm::vec3(1, 2, 3), 6.0f, 2.0f, 500, 8,
+		glm::vec3(1, 2, 3), glm::vec3(1, 2, 3));
+	ok = L0.color.x == 0.0f && L0.color.y == 0.0f && L0.color.z == 0.0f
+		&& L0.intensity == 0.0f && L0.innerAngle == 0.0f
+		&& L0.outerAngle == 0.0f;
+	Check(ok, "cubemap.probe-pack.no-box-sentinel");
 }
 
 void TestRhiHelpers() {

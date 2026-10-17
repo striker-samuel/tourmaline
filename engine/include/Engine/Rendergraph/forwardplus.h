@@ -97,9 +97,16 @@ static constexpr uint32_t kForwardPlusSpot = 1;
 //                        (bindless < 2^24, mips small).
 //   range              — influenceRadius + fadeRadius (the tile cull's
 //                        conservative outer sphere, tested generically).
-//   type               — kForwardPlusProbe. intensity 0, angles 0, no
-//                        shadow/cookie/function (all -1/0), so a misread
-//                        contributes nothing.
+//   color.rgb          — the DEPTH-FITTED box's MINUS-plane distances
+//                        (center - boxMin, per axis): one scalar per cube
+//                        wall. The intensity/innerAngle/outerAngle float
+//                        triple carries the PLUS-plane distances
+//                        (boxMax - center). Zero (a probe packed without
+//                        a box) means "no fitted box" — the shader falls
+//                        back to the symmetric influence sphere.
+//   type               — kForwardPlusProbe. angles/intensity are
+//                        reinterpreted above, no shadow/cookie/function
+//                        (all -1/0), so a misread contributes nothing.
 // Probes sort LAST in the upload (lights keep their slots AND their
 // indices: spot selection, DS lists, debug UI and every `li >= nlights`
 // guard keep working untouched with nlights = lights-only). The cull
@@ -118,14 +125,26 @@ static constexpr uint32_t kForwardPlusProbeTileSlots = 4;
 
 // Builds a probe entry for the upload tail (upload order stays
 // widest-influence-first so tile overflow keeps the widest probes).
+// boxMin/boxMax = the depth-fitted proxy volume (manifest "box" group);
+// pass equal vectors to pack "no fitted box" (the shader then uses the
+// symmetric influence sphere).
 inline ForwardPlusLight MakeProbeLightEntry(const glm::vec3& center,
 	float influenceRadius, float fadeRadius, uint32_t cubemapBindless,
-	uint32_t mipLevels) {
+	uint32_t mipLevels, const glm::vec3& boxMin, const glm::vec3& boxMax) {
 	ForwardPlusLight L{};
 	L.position = center;
 	L.range = influenceRadius + fadeRadius;
 	L.direction = glm::vec3(fadeRadius,
 		static_cast<float>(cubemapBindless), static_cast<float>(mipLevels));
+	// Per-plane wall scalars (center-relative): color.rgb = the minus
+	// walls, the intensity/inner/outer triple = the plus walls. The
+	// all-zero packing means "no box" (legacy symmetric fallback).
+	const glm::vec3 dNeg = glm::max(center - boxMin, 0.0f);
+	const glm::vec3 dPos = glm::max(boxMax - center, 0.0f);
+	L.color = glm::vec4(dNeg, 1.0f);
+	L.intensity = dPos.x;
+	L.innerAngle = dPos.y;
+	L.outerAngle = dPos.z;
 	L.type = kForwardPlusProbe;
 	L.shadowTile = -1;
 	L.shadowMapIndex = -1;

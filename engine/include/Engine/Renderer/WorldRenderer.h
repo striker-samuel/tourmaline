@@ -1558,6 +1558,35 @@ public:
 	uint32_t UpdateParticles(uint32_t currentFrame);
 	// Demo default emitters (embers + drifting motes at the scene origin).
 	void SeedParticleEmitters();
+
+	// ---- Forward+ light crowd (the light-spawner stress tool) ----
+	// Procedural point lights appended to the frame's light list in
+	// UpdateForwardPlusLights (after the scene lights, before the probe
+	// tail): no scene nodes, no editor entities - the GPU-side twin of
+	// the particle demo. Purpose: STRESS the Forward+ tile lists (a
+	// dense crowd in a small disc saturates every tile's light budget
+	// and the per-tile cap; the fallback brute-force loop lights the
+	// rest). Deterministic: a fixed golden-angle spiral seeds the
+	// placement, and the optional animation advances with the frame time
+	// (fixed dt headless - byte-identical captures, like the particles).
+	// TOURMALINE_LIGHT_CROWD=<n> pins the crowd headless for benches.
+	struct LightDemo {
+		bool enabled = false;      // off by default (stress tool, not content)
+		int count = 32;            // lights in the crowd (capped on upload)
+		float radius = 10.0f;      // spawn spiral radius around `center`
+		float height = 2.5f;       // base height above `center`
+		float bob = 1.2f;          // animated height oscillation (m)
+		float intensity = 24.0f;   // candela per light
+		float range = 6.0f;        // per-light cutoff radius (m)
+		float speed = 0.35f;       // orbit rad/s (0 = frozen crowd)
+		float hueSpread = 0.55f;   // per-light hue spread around baseHue
+		float baseHue = 0.08f;     // base hue (0.08 = warm ember)
+		glm::vec3 center{ 0.0f, 0.0f, 0.0f }; // crowd center (world)
+	};
+	LightDemo m_lightDemo{};
+	// Crowd lights actually appended this frame (stats readout; the count
+	// caps at FP_MAX_BUILD_LIGHTS minus the scene lights).
+	uint32_t m_lightCrowdCount = 0;
 	smvk::CubemapLibrary m_cubemaps{}; // reflection cubemaps for IBL
 	// ---- Reflection cubemap UI + cached probe rows ----
 	// Probe data rides the Forward+ light buffer as type-2 entries
@@ -1581,8 +1610,10 @@ public:
 	struct CubemapProbeGpu {
 		glm::vec4 posInfluence{ 0.0f }; // xyz = center (world), w = influence radius
 		glm::vec4 fadeCubemap{ 0.0f };  // x = fade, y = cubemap idx bits, z = mipLevels, w = pad
+		glm::vec4 boxMinPad{ 0.0f };    // xyz = depth-fitted box min (world), w = pad
+		glm::vec4 boxMaxPad{ 0.0f };    // xyz = depth-fitted box max (world), w = pad
 	};
-	static_assert(sizeof(CubemapProbeGpu) == 32);
+	static_assert(sizeof(CubemapProbeGpu) == 64);
 	std::vector<CubemapProbeGpu> m_cubemapProbes; // cached probe rows (<= 32 appended)
 	void LoadCubemaps();
 	// ---- Cubemap probe streaming (distance residency) -----------------
@@ -1606,6 +1637,11 @@ public:
 		glm::vec3 position{ 0.0f };
 		float influenceRadius = 10.0f;
 		float fadeRadius = 5.0f;
+		// Depth-fitted proxy box (manifest "box" group; symmetric
+		// position+-influence for legacy rows). Rides the probe entry
+		// into the lit shader's box-parallax correction.
+		glm::vec3 boxMin{ 0.0f };
+		glm::vec3 boxMax{ 0.0f };
 		bool pinned = false;
 		bool failed = false;    // payload missing/undecodable: skip forever
 	};

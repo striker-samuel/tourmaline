@@ -132,6 +132,16 @@ static smvk::TonemapDesc MakeTonemapDesc() {
 	return d;
 }
 
+// HSV -> RGB (h in 0..1 wraps, s/v in 0..1) - the C++ twin of the shader's
+// HsvToRgb (tonemap.frag.hlsl). Used by the Forward+ light crowd for its
+// hue-ladder colors.
+static glm::vec3 HsvToRgbCpp(float h, float s, float v) {
+	h = h - std::floor(h);
+	const glm::vec3 k(1.0f, 2.0f / 3.0f, 1.0f / 3.0f);
+	const glm::vec3 p = glm::abs(glm::fract(glm::vec3(h) + k) * 6.0f - glm::vec3(k.y));
+	return v * glm::mix(glm::vec3(k.x), glm::clamp(p - glm::vec3(k.x), 0.0f, 1.0f), s);
+}
+
 // -----------------------------------------------------------------------------
 // Auto-exposure config (histogram meter + CPU eye adaptation, see
 // Engine/Rendergraph/exposure.h). The HDR buffer is pre-exposure, so the
@@ -533,14 +543,16 @@ namespace engine {
 		m_terrainHfShadow =
 			run.terrainHfShadow >= 0 ? run.terrainHfShadow : 1;
 		m_terrainHfSteps = run.terrainHfShadowSteps.value_or(16);
-		// Point the FPS camera at a generic default viewpoint (Camera keeps a
-		// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
-		// Initialize re-poses this on the loaded world's bounds (generic
-		// framing) unless the env vars below pin it for benches. The old
-		// (4,3,6)->(0,1,0) spawn sat INSIDE sponza's side wall (the default
-		// pak); the atrium-center pose below matches the framing fallback.
-		const glm::vec3 camPos(0.0f, 2.2f, 0.0f);
-		const glm::vec3 camTarget(0.0f, 1.7f, -10.0f);
+		// Point the FPS camera at the curated default spawn (Camera keeps
+		// a stable pointer to m_cameraPositioner, so lookAt is
+		// assignment-safe). Initialize keeps it when the loaded world's
+		// bounds CONTAIN the pose (see the framing block: the authored
+		// atrium view stands for the default pak); scenes that don't
+		// contain it re-frame generically. The old (4,3,6)->(0,1,0) spawn
+		// sat INSIDE sponza's side wall.
+		const glm::vec3 camPos(7.24f, 4.03f, 0.04f);
+		const glm::vec3 camFwd(-0.949f, -0.312f, -0.045f);
+		const glm::vec3 camTarget = camPos + camFwd * 10.0f;
 		m_cameraPositioner.lookAt(camPos, camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
 		// Debug: rotate the default view around world up (degrees) - A/B runs
 		// without mouse input.
@@ -971,6 +983,30 @@ namespace engine {
 			else
 				std::cerr << "[WorldRenderer] TOURMALINE_CUBEMAP_DEBUG wants 0..2\n";
 		}
+		// Probe-ball preview (the panel's "Probe preview (mirror
+		// spheres)") for headless runs: TOURMALINE_CUBEMAP_BALLS=1 shows
+		// the balls, =0 hides them. The UI checkbox stays live after.
+		if (const char* ballsEnv = std::getenv("TOURMALINE_CUBEMAP_BALLS")) {
+			const int on = std::atoi(ballsEnv);
+			if (on == 0 || on == 1)
+				m_cubemapShowBalls = (on != 0);
+			else
+				std::cerr << "[WorldRenderer] TOURMALINE_CUBEMAP_BALLS wants 0|1\n";
+		}
+		// Forward+ light crowd (the Debug panel's "Light Crowd" spawner)
+		// for headless benches: TOURMALINE_LIGHT_CROWD=<n> spawns n
+		// procedural point lights (see LightDemo; the UI stays live
+		// after). 0 disables.
+		if (const char* crowdEnv = std::getenv("TOURMALINE_LIGHT_CROWD")) {
+			const int n = std::atoi(crowdEnv);
+			if (n >= 0 && n <= 96) {
+				m_lightDemo.enabled = (n > 0);
+				m_lightDemo.count = n;
+			}
+			else {
+				std::cerr << "[WorldRenderer] TOURMALINE_LIGHT_CROWD wants 0..96\n";
+			}
+		}
 		// Ambient / GI source override for headless runs (same states the
 		// N key cycles; the runtime cycle stays live after):
 		//   TOURMALINE_AMBIENT=all|lightmaps|probes|skyibl|off
@@ -1133,6 +1169,24 @@ namespace engine {
 		// clean (SetDemoContentEnabled).
 		if (m_demoContent)
 			SeedParticleEmitters();
+		// Ambient particle presets for headless runs (the Particles panel's
+		// toggles drive the same rows): TOURMALINE_DUST=1 / TOURMALINE_RAIN=1
+		// arm the camera-box dust / rain emitters (the rate swap is the
+		// whole toggle); =0 mutes them. Values other than 0|1 warn.
+		{
+			auto armPreset = [this](const char* name, size_t idx, float rate) {
+				if (const char* e = std::getenv(name)) {
+					const int on = std::atoi(e);
+					if ((on == 0 || on == 1) && idx < m_particleDemo.emitters.size())
+						m_particleDemo.emitters[idx].life.z = on ? rate : 0.0f;
+					else if (on != 0 && on != 1)
+						std::cerr << "[WorldRenderer] " << name
+							<< " wants 0|1\n";
+				}
+			};
+			armPreset("TOURMALINE_DUST", 2, 120.0f);
+			armPreset("TOURMALINE_RAIN", 3, 900.0f);
+		}
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
 		// underneath (loose files win on collisions). Shader reads below
@@ -1873,23 +1927,44 @@ namespace engine {
 						}
 					}
 					if (!framed) {
-						// No authored camera. SMALL scenes keep the fit-view
-						// orbit (radius*2.2 parks the whole scene in view -
-						// the original purpose: tiny test scenes). LARGE
-						// scenes get an INTERIOR pose: the orbit parks the
-						// camera far OUTSIDE the structure staring through
-						// the roofline at exterior walls (observed: sponza,
-						// 40 m out) while the interesting space is the
-						// corridor inside. Interior heuristic: horizontal
-						// bounds center, eye height above the floor, looking
-						// down the horizontal axis with the SMALLER extent -
-						// hall scenes carry their corridor there (sponza:
-						// the atrium runs Z; the wider X span is the
-						// flanking side naves). Imperfect by nature: an
+						// CURATED DEFAULT SPAWN: when the scene's bounds
+						// contain the Configure-time default pose, that
+						// pose stands (the authored sponza atrium view -
+						// the default pak's shot). Only the far clip is
+						// fitted. Scenes that do NOT contain the point (a
+						// different pak's bounds) fall through to the
+						// generic framing below. A rebind does NOT
+						// re-pose here either: the user's live camera
+						// stays where they flew it.
+						const glm::vec3 kDefaultSpawn(7.24f, 4.03f, 0.04f);
+						const bool containsDefault =
+							glm::all(glm::greaterThanEqual(kDefaultSpawn, bounds.mn))
+							&& glm::all(glm::lessThanEqual(kDefaultSpawn, bounds.mx));
+						if (containsDefault) {
+							{
+								const float fitted = radius * 4.0f;
+								m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+							}
+							std::cerr << "[Scene] camera default spawn"
+								<< " (contained in bounds) farClip="
+								<< m_sceneFarClip << "\n";
+						}
+						// No authored camera, default spawn outside the
+						// scene: generic framing. SMALL scenes keep the
+						// fit-view orbit (radius*2.2 parks the whole
+						// scene in view - the original purpose: tiny test
+						// scenes). LARGE scenes get an INTERIOR pose: the
+						// orbit parks the camera far OUTSIDE the
+						// structure staring through the roofline at
+						// exterior walls. Interior heuristic: horizontal
+						// bounds center, eye height above the floor,
+						// looking down the horizontal axis with the
+						// SMALLER extent - hall scenes carry their
+						// corridor there. Imperfect by nature: an
 						// authored default camera (editor -> cook -> pak,
 						// above) always wins and stays the right way to
 						// frame a specific scene.
-						if (radius <= 12.0f) {
+						else if (radius <= 12.0f) {
 							const float dist = std::max(radius * 2.2f, 1.0f);
 							const float yaw = glm::radians(35.0f);
 							const float pitch = glm::radians(-18.0f);
@@ -2741,6 +2816,8 @@ namespace engine {
 					crow.position = row.position;
 					crow.influenceRadius = row.influenceRadius;
 					crow.fadeRadius = row.fadeRadius;
+					crow.boxMin = row.boxMin;
+					crow.boxMax = row.boxMax;
 					crow.pinned = row.pinned;
 					if (!row.pinned) {
 						m_cubemapRows.push_back(std::move(crow));
@@ -2879,6 +2956,9 @@ namespace engine {
 				p.fadeCubemap = glm::vec4(radius * 0.5f,
 					static_cast<float>(entry.bindless),
 					static_cast<float>(entry.mipLevels), 0.0f);
+				// No manifest = no fitted box: symmetric around the center.
+				p.boxMinPad = glm::vec4(center - glm::vec3(radius * 2.0f), 0.0f);
+				p.boxMaxPad = glm::vec4(center + glm::vec3(radius * 2.0f), 0.0f);
 				m_cubemapProbes.push_back(p);
 				std::cerr << "[Cubemap] global probe '" << name
 					<< "' at (" << center.x << "," << center.y << "," << center.z
@@ -2917,6 +2997,8 @@ namespace engine {
 			p.fadeCubemap = glm::vec4(row.fadeRadius,
 				static_cast<float>(entry->bindless),
 				static_cast<float>(entry->mipLevels), 0.0f);
+			p.boxMinPad = glm::vec4(row.boxMin, 0.0f);
+			p.boxMaxPad = glm::vec4(row.boxMax, 0.0f);
 			m_cubemapProbes.push_back(p);
 			if (row.pinned)
 				++pinnedResident;
@@ -5370,6 +5452,51 @@ namespace engine {
 			m_debugLights.push_back({ glm::vec3(cl.position),
 				glm::vec3(cl.color), (int)cl.type });
 		}
+		// ---- Light crowd (the Forward+ stress tool; see LightDemo) ----
+		// Appended after the scene lights: every crowd light rides the
+		// tile lists like an authored one. Deterministic spiral + time:
+		// golden-angle placement (i * 2.399963) so any count spreads
+		// evenly, the animation advances with frame.time (fixed dt
+		// headless -> byte-identical captures).
+		m_lightCrowdCount = 0;
+		if (m_lightDemo.enabled && m_lightDemo.count > 0) {
+			const float t = frame.time;
+			const float invN = 1.0f / (float)m_lightDemo.count;
+			for (int i = 0; i < m_lightDemo.count; ++i) {
+				if (lights.size() >= FP_MAX_BUILD_LIGHTS)
+					break;
+				// Sunflower spiral: r grows sqrt-linearly, the golden
+				// angle rotates - even coverage at any count, no clumps.
+				const float fi = (float)i + 0.5f;
+				const float r = m_lightDemo.radius * std::sqrt(fi * invN);
+				const float a = fi * 2.39996323f + t * m_lightDemo.speed;
+				const float y = m_lightDemo.center.y + m_lightDemo.height
+					+ m_lightDemo.bob * std::sin(t * m_lightDemo.speed * 2.0f
+						+ fi * 0.7f);
+				smvk::ForwardPlusLight L{};
+				L.type = smvk::kForwardPlusPoint;
+				L.position = glm::vec3(
+					m_lightDemo.center.x + r * std::cos(a),
+					y,
+					m_lightDemo.center.z + r * std::sin(a));
+				L.range = m_lightDemo.range;
+				// Hue ladder around the base (0..1 wraps): warm-to-cool
+				// spread so tile saturation + spill is visible in the
+				// image, not just in the perf lines.
+				const float hue = std::fmod(m_lightDemo.baseHue
+					+ m_lightDemo.hueSpread * (fi * invN - 0.5f) + 1.0f, 1.0f);
+				glm::vec3 rgb = HsvToRgbCpp(hue, 0.85f, 1.0f);
+				L.color = glm::vec4(rgb, 0.0f);
+				L.intensity = m_lightDemo.intensity;
+				L.shadowTile = -1;
+				L.shadowMapIndex = -1;
+				L.cookieIndex = -1;
+				lights.push_back(L);
+				m_debugLights.push_back({ glm::vec3(L.position),
+					glm::vec3(L.color), (int)L.type });
+				++m_lightCrowdCount;
+			}
+		}
 
 		// ---- Spot-shadow caster selection (upper limit + heuristic) ----
 		m_spotShadowCount = 0;
@@ -5508,7 +5635,8 @@ namespace engine {
 						glm::vec3(pr.posInfluence.x, pr.posInfluence.y, pr.posInfluence.z),
 						pr.posInfluence.w, pr.fadeCubemap.x,
 						static_cast<uint32_t>(pr.fadeCubemap.y),
-						static_cast<uint32_t>(pr.fadeCubemap.z)));
+						static_cast<uint32_t>(pr.fadeCubemap.z),
+						glm::vec3(pr.boxMinPad), glm::vec3(pr.boxMaxPad)));
 				}
 				m_context->UploadDataToBuffer(
 					m_resources.fpLightsBuffer,
@@ -5730,6 +5858,42 @@ namespace engine {
 			motes.fade = glm::vec4(0.15f, 0.30f, 0.20f, 0.0f);
 			m_particleDemo.emitters.push_back(motes);
 		}
+		// AMBIENT camera dust (fade.w = 6: a 12 m toroidal box around the
+		// CAMERA - emitter-less world/camera space): slow motes drifting
+		// everywhere the camera goes, lit by whatever lights the crowd
+		// around (tiny emissive; the tiled-light response is the look).
+		// Sizes are tuned for visibility at scene scale (sub-0.01 m quads
+		// rasterize to nothing past a few meters). rate 0 = OFF by default
+		// (the UI "Camera dust" toggle / TOURMALINE_DUST=1 arm the preset
+		// rate below).
+		{
+			smvk::ParticleEmitterGpu dust{};
+			dust.position = glm::vec4(0.0f, 2.0f, 0.0f, 6.0f);
+			dust.direction = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+			dust.color = glm::vec4(0.85f, 0.87f, 0.95f, 0.15f);
+			dust.velocity = glm::vec4(0.02f, 0.06f, 0.0f, 0.0f);
+			dust.size = glm::vec4(0.010f, 0.024f, 0.3f, 811u);
+			dust.life = glm::vec4(5.0f, 10.0f, 0.0f /*preset 120/s*/,
+				(float)smvk::kParticleShape_Sphere);
+			dust.fade = glm::vec4(0.2f, 0.35f, 0.10f, 6.0f);
+			m_particleDemo.emitters.push_back(dust);
+		}
+		// AMBIENT world rain (fade.w = 10: a 20 m box around the camera -
+		// falls out the bottom, re-enters at the top): fast streak dots
+		// under gravity. rate 0 = OFF by default (the UI "World rain"
+		// toggle / TOURMALINE_RAIN=1 arm the preset rate).
+		{
+			smvk::ParticleEmitterGpu rain{};
+			rain.position = glm::vec4(0.0f, 10.0f, 0.0f, 10.0f);
+			rain.direction = glm::vec4(0.0f, -1.0f, 0.0f, 0.02f);
+			rain.color = glm::vec4(0.62f, 0.72f, 0.85f, 0.10f);
+			rain.velocity = glm::vec4(8.5f, 9.5f, 0.0f, 1.0f);
+			rain.size = glm::vec4(0.020f, 0.020f, 0.0f, 911u);
+			rain.life = glm::vec4(2.2f, 2.6f, 0.0f /*preset 900/s*/,
+				(float)smvk::kParticleShape_Sphere);
+			rain.fade = glm::vec4(0.05f, 0.10f, 0.05f, 10.0f);
+			m_particleDemo.emitters.push_back(rain);
+		}
 		m_particleDemo.selected = 0;
 	}
 
@@ -5741,9 +5905,32 @@ namespace engine {
 		// immediately and every flight slice stays fresh. The GPU's own
 		// fractional-rate carry lives in the separate emitterState buffer,
 		// so this upload can never clobber spawn scheduling.
+		//
+		// AMBIENT (camera-box) emitters (fade.w > 0) recenter on the
+		// camera HERE, per frame, on a SCRATCH copy: the authored rows
+		// keep their authored center (the UI sliders stay meaningful as
+		// the volume's home position) while the spawn volume follows the
+		// camera - the emitter-less dust/rain model (no fixed world
+		// anchor, no respawn lag when flying: the sim wraps the live
+		// particles toroidally, the emitter keeps the volume stocked
+		// wherever the camera is).
+		const glm::vec3& cam = m_cameraPositioner.cameraPosition_;
+		std::vector<smvk::ParticleEmitterGpu> rows;
+		bool ambient = false;
+		for (const auto& e : m_particleDemo.emitters)
+			ambient = ambient || e.fade.w > 0.0f;
+		if (ambient) {
+			rows = m_particleDemo.emitters;
+			for (auto& e : rows) {
+				if (e.fade.w > 0.0f)
+					e.position = glm::vec4(cam, e.position.w);
+			}
+		} else {
+			rows = m_particleDemo.emitters;
+		}
 		return ps.UpdateEmitters(*m_context, currentFrame,
-			m_particleDemo.emitters.data(),
-			(uint32_t)m_particleDemo.emitters.size());
+			rows.data(),
+			(uint32_t)rows.size());
 	}
 
 	bool WorldRenderer::EnsurePickScene() {
@@ -8670,6 +8857,14 @@ namespace engine {
 			simPush.gravityZ = 0.0f;
 			simPush.dt = particleDt;
 			simPush.maxParticles = PARTICLE_MAX;
+			// Ambient wrap center (harmless when no camera-box emitters
+			// are live; the sim gates on fade.w per particle).
+			{
+				const glm::vec3& cam = m_cameraPositioner.cameraPosition_;
+				simPush.cameraX = cam.x;
+				simPush.cameraY = cam.y;
+				simPush.cameraZ = cam.z;
+			}
 			auto& simPass = ps.AddSimPass(*m_rendergraph);
 			simPass.SetRecordingFunc([this, simPush](smvk::CommandBuffer& cmd) {
 				cmd.BindComputePipeline(m_viewportResources.particles.simProgram);
@@ -10278,44 +10473,6 @@ namespace engine {
 		}
 
 		// ---------------------------------------------------------------------
-		// Chrome-ball cubemap probe visual (Rendergraph/probeball.h): a
-		// DEDICATED pass after Main + particles - one sphere per loaded baked
-		// capture, the FS paints the probe's OWN baked cubemap onto the
-		// surface (reflect(-V,N) -> TextureCube LOD 0). HDR load/store (the
-		// balls composite over the scene; bloom/tonemap see them) + the
-		// prepass depth TEST-ONLY (the particles' rationale: 1x in both MSAA
-		// modes, occluded balls hide behind the opaque scene, the debug visual
-		// never writes depth). Zero scene footprint (the editor's old chrome
-		// balls were scene nodes - outliner leaks + the sky-drift bug); the
-		// rows come straight from the loaded probe table.
-		// Gate: the cubemap path (NOT the terrain dressing pass - the old
-		// m_passes.terrain gate kept baked probes invisible whenever the
-		// heightfield was off, which is the default).
-		if (m_cubemapEnabled && m_cubemapShowBalls
-			&& !m_cubemapProbes.empty()) {
-			std::vector<smvk::probeball::ProbeBallRow> ballRows;
-			ballRows.reserve(m_cubemapProbes.size());
-			for (const CubemapProbeGpu& p : m_cubemapProbes) {
-				smvk::probeball::ProbeBallRow row{};
-				row.center = glm::vec3(p.posInfluence);
-				row.influenceRadius = p.posInfluence.w;
-				row.fadeRadius = p.fadeCubemap.x;
-				row.cubemapIndex = int32_t(p.fadeCubemap.y);
-				row.mipLevels = p.fadeCubemap.z;
-				ballRows.push_back(row);
-			}
-			(void)m_probeBalls.AppendPass(*m_rendergraph,
-				m_viewportResources.hdr.logicalView,
-				m_viewportResources.renderDepth.logicalView,
-				renderExtent,
-				frameData.viewProj,
-				m_cameraPositioner.cameraPosition_,
-				ballRows.data(), uint32_t(ballRows.size()),
-				m_cubemapIntensity,
-				m_cubemapSampler);
-		}
-
-		// ---------------------------------------------------------------------
 		// SSGI
 		// Engine/Rendergraph/ssgi.h
 		//
@@ -10926,10 +11083,59 @@ namespace engine {
 						m_viewportResources.forwardPlus.tileCountsLogical,
 						m_viewportResources.forwardPlus.tileIndicesLogical);
 				}
-				sceneHdrView = m_viewportResources.volumetric.OutputView();
-				sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
-				volumetricEmitted = true;
+			sceneHdrView = m_viewportResources.volumetric.OutputView();
+			sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
+			volumetricEmitted = true;
+		}
+		}
+
+		// ---------------------------------------------------------------------
+		// Chrome-ball cubemap probe visual (Rendergraph/probeball.h): a
+		// DEDICATED pass at the HDR TAIL - AFTER the last scene effect
+		// (volumetrics) and BEFORE the post chain (exposure/bloom/tonemap).
+		// One sphere per loaded baked capture; the FS paints the probe's
+		// OWN baked cubemap onto the surface (reflect(-V,N) ->
+		// TextureCube LOD 0). The tail slot is the whole point: the balls
+		// composite ON TOP of the final scene image (Drawn over the
+		// finished HDR - after SSGI/MotionBlur/DOF/SSR/volumetrics, none
+		// of which can smear or trace the preview anymore) while the
+		// remaining post chain still grades them like scene content
+		// (bloom picks up the bright captures, the exposure histogram
+		// measures them, the tonemap maps them - a chrome ball in the
+		// scene WOULD bloom, and the preview reading as a final image is
+		// the point of the overlay). The UI pass then draws over the
+		// balls. HDR load/store over sceneHdrView (the volumetric output
+		// or the base HDR) + the prepass depth TEST-ONLY (the particles'
+		// rationale: 1x in both MSAA modes, occluded balls hide behind
+		// the opaque scene, the debug visual never writes depth). Zero
+		// scene footprint (the editor's old chrome balls were scene
+		// nodes - outliner leaks + the sky-drift bug); the rows come
+		// straight from the loaded probe table.
+		// Gate: the cubemap path (NOT the terrain dressing pass - the old
+		// m_passes.terrain gate kept baked probes invisible whenever the
+		// heightfield was off, which is the default).
+		if (m_cubemapEnabled && m_cubemapShowBalls
+			&& !m_cubemapProbes.empty()) {
+			std::vector<smvk::probeball::ProbeBallRow> ballRows;
+			ballRows.reserve(m_cubemapProbes.size());
+			for (const CubemapProbeGpu& p : m_cubemapProbes) {
+				smvk::probeball::ProbeBallRow row{};
+				row.center = glm::vec3(p.posInfluence);
+				row.influenceRadius = p.posInfluence.w;
+				row.fadeRadius = p.fadeCubemap.x;
+				row.cubemapIndex = int32_t(p.fadeCubemap.y);
+				row.mipLevels = p.fadeCubemap.z;
+				ballRows.push_back(row);
 			}
+			(void)m_probeBalls.AppendPass(*m_rendergraph,
+				sceneHdrView,
+				m_viewportResources.renderDepth.logicalView,
+				renderExtent,
+				frameData.viewProj,
+				m_cameraPositioner.cameraPosition_,
+				ballRows.data(), uint32_t(ballRows.size()),
+				m_cubemapIntensity,
+				m_cubemapSampler);
 		}
 
 		// ---------------------------------------------------------------------
@@ -12038,6 +12244,11 @@ namespace engine {
 								ImGui::SliderFloat("Fade in", &e.fade.x, 0.0f, 0.5f);
 								ImGui::SliderFloat("Fade out", &e.fade.y, 0.0f, 0.9f);
 								ImGui::SliderFloat("Color jitter", &e.fade.z, 0.0f, 1.0f);
+								ImGui::SliderFloat("Camera-box wrap (m)", &e.fade.w, 0.0f, 20.0f,
+									"%.1f  (0 = world emitter)");
+								ImGui::TextDisabled("wrap > 0: AMBIENT - the spawn volume follows the "
+									"camera and the sim wraps particles toroidally into the box "
+									"(dust/rain); the Position slider above is the volume's home.");
 								const char* shapes[] = { "Cone", "Sphere", "Point" };
 								int shape = (int)e.life.w;
 								if (ImGui::Combo("Shape", &shape, shapes, 3))
@@ -12051,14 +12262,58 @@ namespace engine {
 								m_particleDemo.selected = (int)m_particleDemo.emitters.size() - 1;
 							}
 							ImGui::SameLine();
-							if (ImGui::Button("Remove") && !m_particleDemo.emitters.empty()) {
-								m_particleDemo.emitters.erase(
-									m_particleDemo.emitters.begin() + m_particleDemo.selected);
-								m_particleDemo.selected = std::max(0, m_particleDemo.selected - 1);
-							}
-							ImGui::TextDisabled("Pool %u particles, emit+sim+draw all compute/GPU "
-								"resident (dead slots collapse in the VS).",
-								(unsigned)PARTICLE_MAX);
+						if (ImGui::Button("Remove") && !m_particleDemo.emitters.empty()) {
+							m_particleDemo.emitters.erase(
+								m_particleDemo.emitters.begin() + m_particleDemo.selected);
+							m_particleDemo.selected = std::max(0, m_particleDemo.selected - 1);
+						}
+						// Ambient presets (camera-box emitters, see SeedParticleEmitters):
+						// the toggle swaps the emitter's rate 0 <-> preset.
+						// TOURMALINE_DUST / TOURMALINE_RAIN do the same headless.
+						{
+							auto presetToggle = [this](const char* label, size_t idx, float rate) {
+								if (idx >= m_particleDemo.emitters.size())
+									return;
+								auto& e = m_particleDemo.emitters[idx];
+								bool on = e.life.z > 0.0f;
+								if (ImGui::Checkbox(label, &on))
+									e.life.z = on ? rate : 0.0f;
+								ImGui::SameLine();
+								ImGui::TextDisabled(on ? "(on)" : "(off)");
+							};
+							presetToggle("Camera dust", 2, 120.0f);
+							presetToggle("World rain", 3, 900.0f);
+						}
+						ImGui::TextDisabled("Pool %u particles, emit+sim+draw all compute/GPU "
+							"resident (dead slots collapse in the VS).",
+							(unsigned)PARTICLE_MAX);
+						}
+						if (ImGui::CollapsingHeader("Light Crowd (Forward+ stress)")) {
+							// The light spawner: the Forward+ tile-list stress
+							// tool (see LightDemo). A dense spiral of point
+							// lights saturates the per-tile light budget and
+							// the fallback brute-force loop - watch the
+							// perf lines while sliding the count.
+							ImGui::Checkbox("Enable crowd", &m_lightDemo.enabled);
+							ImGui::SameLine();
+							ImGui::TextDisabled("crowd %u + scene %u = %u / build cap",
+								m_lightCrowdCount,
+								(unsigned)m_sceneLights.forwardPlusLights.size(),
+								m_lightCrowdCount
+									+ (unsigned)m_sceneLights.forwardPlusLights.size());
+							ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
+							ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
+							ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
+							ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
+							ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
+							ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
+							ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200.0f);
+							ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
+							ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
+							ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
+							ImGui::TextDisabled("TOURMALINE_LIGHT_CROWD=<n> pins the crowd "
+								"headless (the UI stays live). Deterministic spiral; "
+								"the animation rides the fixed-dt frame time.");
 						}
 						if (ImGui::CollapsingHeader("Decals (Splats)", ImGuiTreeNodeFlags_DefaultOpen)) {
 							// Forward+ tiled decals: per-tile lists refreshed by the
