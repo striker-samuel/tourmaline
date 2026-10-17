@@ -281,11 +281,12 @@ namespace cooktool {
 		// (same transport as CubemapBaker), GGX-prefilters each capture for
 		// the HIGH-frequency specular path (probes/lightmaps already carry
 		// all diffuse + low-frequency specular), and embeds the KTX2 cubes
-		// as Texture blobs at gi/cubemaps/<name>.ktx2 â€” served by
+		// as Texture blobs at gi/cubemaps/<stem>.ktx2 — served by
 		// PakBackend through the VFS, so CubemapLibrary::Load finds them
-		// with no code change. Empty cubemapName defaults to "sky".
-		bool cubemap = false;
-		std::string cubemapName;
+		// with no code change. The capture-set base is NAMELESS: derived
+		// from the input artifact stem so pak.exe's side-car-stem
+		// discovery (gi/cubemaps/<stem>.cubemanifest) always matches.
+	bool cubemap = false;
 		uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
 		uint32_t cubemapRays = 128;   // GGX importance samples per output texel
 		uint32_t cubemapBounces = 5;  // diffuse path depth after the first hit
@@ -983,10 +984,6 @@ namespace cooktool {
 				out.cubemap = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("cubemap");
 			}
-			else if (a == "--cubemap-name") {
-				if (!need(out.cubemapName)) return false;
-				out.explicitSet.insert("cubemapName");
-			}
 			else if (a == "--cubemap-size") {
 				std::string v;
 				if (!need(v)) return false;
@@ -1174,7 +1171,7 @@ namespace cooktool {
 			<< "          gi/<pak-stem>.cvmanifest) â€” the pak is self-contained\n"
 			<< "          GI for the App; loose GiBaker sidecars still override\n"
 			<< "          through the overlay when present.\n"
-			<< "          [--cubemap on|off --cubemap-name <name>\n"
+			<< "          [--cubemap on|off\n"
 			<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 5\n"
 			<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
 			<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
@@ -1206,10 +1203,11 @@ namespace cooktool {
 			<< "          averages N transport paths per texel so the bounce\n"
 			<< "          field is coherent GI (1 spp = speckle), matching the\n"
 			<< "          multi-ray lightmap look. Multi captures write\n"
-			<< "          gi/cubemaps/<name>.cubemanifest (positions +\n"
+			<< "          gi/cubemaps/<stem>.cubemanifest (positions +\n"
 			<< "          radii) next to the KTX blobs; embedded as Texture\n"
-			<< "          blobs at gi/cubemaps/<name>[_N].ktx2 (name\n"
-			<< "          defaults to --cubemap-name, else \"sky\"). Debug PNGs\n"
+			<< "          blobs at gi/cubemaps/<stem>[_N].ktx2 (the base is\n"
+			<< "          NAMELESS: the input artifact's stem - pak.exe\n"
+			<< "          discovers + embeds by that stem). Debug PNGs\n"
 			<< "          (<name>_N.png faces, <name>_N_mips.png prefilter stack,\n"
 			<< "          <name>_probes.png top-down placement map) land loose\n"
 			<< "          in <contentDir>/gi/cubemaps/. Needs exactly\n"
@@ -1240,8 +1238,8 @@ namespace cooktool {
 			<< "the loose gi/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
 			<< "sidecars ARE the output (they override the last pak's blobs\n"
 			<< "through the runtime VFS overlay). No pak is written; the\n"
-			<< "lightmap/LOD/collapse/cvolume stages are forced off (the\n"
-			<< "--cubemap-name, else \"sky\", stem names the capture set).\n"
+			<< "lightmap/LOD/collapse/cvolume stages are forced off. The\n"
+			<< "capture set is NAMELESS - the artifact stem names it.\n"
 			<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
 			<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
 			<< "onto the built cluster before cooking. Tour cook settings\n"
@@ -2903,9 +2901,17 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 	}
 
-	std::string base = args.cubemapName;
-	if (base.empty())
-		base = std::filesystem::path(args.outPak).stem().generic_string();
+	// NAMELESS capture-set base: the FIRST input artifact's stem
+	// (Sponza.geometry -> "Sponza"). pak.exe discovers + embeds the
+	// manifest by side-car stem (gi/cubemaps/<stem>.cubemanifest), so the
+	// bake MUST land on that stem or the pak silently ships without GI
+	// (observed: the old "sky" default baked fine but never embedded,
+	// gi=0/cubemaps=0, no specular IBL at runtime). The runtime accepts
+	// whatever base the pak registers, so no name exists anywhere else.
+	std::string base;
+	if (!args.inVfsList.empty())
+		base = std::filesystem::path(args.inVfsList.front())
+			.stem().generic_string();
 	if (base.empty())
 		base = "sky";
 
@@ -3001,6 +3007,10 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	}
 	std::vector<glm::vec3> pngMeans;
 	pngMeans.reserve(positions.size());
+	// Depth-fitted parallax boxes, parallel to positions (see the fit
+	// pass inside the loop): written into the manifest rows below.
+	std::vector<std::pair<glm::vec3, glm::vec3>> fitBoxes;
+	fitBoxes.reserve(positions.size());
 
 	// Machine-readable total for progress clients (the editor's cook
 	// dialog parses it into TaskWindowStage fractions; per-capture
@@ -3020,6 +3030,72 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		const float cubemapScale = 1.0f;
 		const float pngDisplayExposure =
 			1.0f / std::max(be.skyIntensity, 1e-4f);
+
+		// DEPTH-FITTED PARALLAX BOX: analyze each cube face's primary-ray
+		// depths (a coarse 16x16 grid per face) and keep the per-plane
+		// MEDIAN hit distance (misses count at the analysis reach - the
+		// median tracks the DOMINANT surface the face sees, not the
+		// nearest speck or the one window). The six plane distances are
+		// the probe's "wall scalars": the world AABB the runtime's box
+		// parallax re-aims reflections against, replacing the symmetric
+		// influence-sphere guess. The box's half-diagonal ALSO clamps the
+		// placement influence (auto-fit coverage): a probe whose emission
+		// relocated to the open sky just above a roof fits a thin
+		// downward box and stops reaching THROUGH the roof into the room
+		// below - the old cell-half-diagonal influence put full-white sky
+		// captures over every interior pixel at weight 1.0 (the lit walk
+		// could never reach the interior probes).
+		glm::vec3 fitMin(0.0f), fitMax(0.0f);
+		{
+			constexpr uint32_t kFitGrid = 16;
+			constexpr float kFitReach = 60.0f;
+			float planeDist[smvk::kCubemapFaceCount] = {};
+			for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+				std::vector<float> ds;
+				ds.reserve(kFitGrid * kFitGrid);
+				for (uint32_t y = 0; y < kFitGrid; ++y) {
+					for (uint32_t x = 0; x < kFitGrid; ++x) {
+						const float u = (float(x) + 0.5f) / float(kFitGrid);
+						const float v = (float(y) + 0.5f) / float(kFitGrid);
+						const smvk::CubemapDir d = smvk::FaceUvToDirection(
+							smvk::CubemapFace(f), u, v);
+						glm::vec3 dir(d.x, d.y, d.z);
+						dir = glm::normalize(dir);
+						smvk::gi::TriangleBvh::Hit h;
+						ds.push_back(
+							traceScene.Bvh().Raycast(origin, dir, kFitReach, h)
+								? h.t : kFitReach);
+					}
+				}
+				std::sort(ds.begin(), ds.end());
+				planeDist[f] = ds[ds.size() / 2];
+			}
+			// CubemapFace order = Px, Nx, Py, Ny, Pz, Nz -> the six
+			// world-axis planes around the capture point.
+			fitMin = origin - glm::vec3(planeDist[1], planeDist[3], planeDist[5]);
+			fitMax = origin + glm::vec3(planeDist[0], planeDist[2], planeDist[4]);
+			// Floor every plane at 0.25m so a capture hugging a wall still
+			// describes a thin-but-valid pocket (a zero plane would
+			// degenerate the slab test at runtime).
+			fitMin = glm::min(fitMin, origin - glm::vec3(0.25f));
+			fitMax = glm::max(fitMax, origin + glm::vec3(0.25f));
+			// Auto-fit the influence: the placement/cell radius clamped by
+			// the fitted pocket's half-diagonal (floor 0.5m). The fade
+			// stays cell-based so coverage keeps transitioning to the
+			// neighbors.
+			const float boxHalf = glm::length((fitMax - fitMin) * 0.5f);
+			if (radii.size() == positions.size()) {
+				radii[cap].x = std::max(
+					std::min(radii[cap].x, boxHalf), 0.5f);
+			}
+			tool::err() << "  [CUBE] fit '" << captureName
+				<< "' planes=(" << planeDist[0] << "," << planeDist[1]
+				<< "," << planeDist[2] << "," << planeDist[3] << ","
+				<< planeDist[4] << "," << planeDist[5]
+				<< ") influence=" << (radii.size() == positions.size()
+					? radii[cap].x : 0.0f) << "\n" << std::flush;
+		}
+		fitBoxes.emplace_back(fitMin, fitMax);
 
 		// Trace 6 HDR base faces. Per texel: --cubemap-spp transport paths,
 		// averaged â€” the NEE sun/spot term is analytic (clean at 1 spp), but
@@ -3177,6 +3253,14 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			e.position = positions[cap];
 			e.influenceRadius = radii.size() == positions.size() ? radii[cap].x : 10.0f;
 			e.fadeRadius = radii.size() == positions.size() ? radii[cap].y : 5.0f;
+			// Depth-fitted parallax box (the fit pass above; the
+			// influence already carries the clamped half-diagonal).
+			if (cap < fitBoxes.size()) {
+				e.boxMin = fitBoxes[cap].first;
+				e.boxMax = fitBoxes[cap].second;
+			} else {
+				e.DeriveSymmetricBox();
+			}
 			e.pinned = cap < pinned.size() && pinned[cap] != 0;
 			rows.push_back(std::move(e));
 		}
@@ -3559,9 +3643,8 @@ int Run(const CookArgs& c) {
 	args.skyIntensity = c.skyIntensity;
 	args.spots = c.spots;
 	args.backend = c.backend;
-	args.cubemap = c.cubemap;
-	args.cubemapName = c.cubemapName;
-	args.cubemapSize = c.cubemapSize;
+			args.cubemap = c.cubemap;
+			args.cubemapSize = c.cubemapSize;
 	args.cubemapRays = c.cubemapRays;
 	args.cubemapBounces = c.cubemapBounces;
 	args.cubemapSpp = c.cubemapSpp;
@@ -3796,7 +3879,6 @@ int Run(const CookArgs& c) {
 			// stage (see EnvForBake). Legacy tour cook lines carrying the
 			// old keys ignore them (the tour-side parse skips them).
 			use("cubemap", args.cubemap, k.cubemap);
-			use("cubemapName", args.cubemapName, k.cubemapName);
 			use("cubemapSize", args.cubemapSize, k.cubemapSize);
 			use("cubemapRays", args.cubemapRays, k.cubemapRays);
 			// Placement density (the octree knobs — the editor's cubemap
@@ -6210,7 +6292,6 @@ int main(int argc, char** argv) {
 	c.spots = args.spots;
 	c.backend = args.backend;
 	c.cubemap = args.cubemap;
-	c.cubemapName = args.cubemapName;
 	c.cubemapSize = args.cubemapSize;
 	c.cubemapRays = args.cubemapRays;
 	c.cubemapBounces = args.cubemapBounces;

@@ -98,11 +98,11 @@ struct TourCook {
 	// synthesizes the pak directional and seeds everything from the
 	// resolved env block; legacy cook lines carrying -sun*/-sky* keys
 	// ignore them (the env block in the same tour wins).
-	// Preconvolved specular cubemaps (PakCooker --cubemap stage: GGX
-	// mip chains embedded as textures/cubemaps/<name>.ktx2; empty name
-	// defaults to the out-pak stem).
+	// Preconvolved specular cubemaps (the cook --cubemap stage: GGX mip
+	// chains at gi/cubemaps/<stem>.ktx2, NAMELESS - the capture set keys
+	// on the scene stem; legacy cook lines carrying -cubemapName ignore
+	// the key).
 	bool cubemap = false;
-	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	// Placement DENSITY (the octree knobs, editor-authored — the same

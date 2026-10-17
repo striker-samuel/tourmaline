@@ -308,9 +308,9 @@ struct CookSettings {
 	// sky (lux-native). Every bake stage and the synthesized pak
 	// directional read the resolved env block (see the cooker's
 	// EnvForBake); the World page edits them once, in one place.
-	// Cubemap captures
+	// Cubemap captures (the capture set is NAMELESS - keyed on the
+	// scene stem; no name field anywhere).
 	bool cubemap = false;
-	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	uint32_t cubemapBounces = 5;
@@ -1135,7 +1135,6 @@ private:
 	// Cook panel (File > Cook... switches to the BottomDock Cook tab).
 	char m_cookOutPakBuf[512] = "";
 	char m_cookContentDirBuf[512] = "content";
-	char m_cookCubemapNameBuf[128] = "";
 	// Set by PollCookProcess when the async cook completes; the cook
 	// panel shows the result line until the next cook starts.
 	bool m_cookJustFinished = false;

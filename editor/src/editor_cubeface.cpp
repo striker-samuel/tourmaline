@@ -49,12 +49,13 @@ void EditorApp::DropCubeFaces() {
 
 // Sidecar roots + capture base, mirroring the manifest reader
 // (CubemapProbeRowsFromFile) and the completion adopter
-// (RecordBakeAssetsFromCook: cubemapName else outPak stem).
+// (RecordBakeAssetsFromCook: the out-pak stem - the legacy naming rule;
+// capture sets are NAMELESS now).
 bool EditorApp::CubeWatchSpec(std::string& dirOut,
 	std::string& baseOut) const {
 	namespace fs = std::filesystem;
-	std::string base = m_cook.cubemapName;
-	if (base.empty() && !m_cook.outPak.empty()) {
+	std::string base;
+	if (!m_cook.outPak.empty()) {
 		base = fs::path(m_cook.outPak).stem().generic_string();
 	}
 	if (base.empty())

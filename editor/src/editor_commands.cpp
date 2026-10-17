@@ -3864,7 +3864,6 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// NOTE: no sun/sky in the cook block — the env blocks (SaveEnvToDoc,
 	// env.default.* / env.n.*) own the sun/sky (lux-native).
 	doc.cook.cubemap = m_cook.cubemap;
-	doc.cook.cubemapName = m_cook.cubemapName;
 	doc.cook.cubemapSize = m_cook.cubemapSize;
 	doc.cook.cubemapRays = m_cook.cubemapRays;
 	doc.cook.cubemapOctree = m_cook.cubemapOctree;
@@ -4506,7 +4505,6 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		// NOTE: no sun/sky in the cook block — the env blocks
 		// (LoadEnvFromDoc) own the sun/sky (lux-native).
 		m_cook.cubemap = doc.cook.cubemap;
-		m_cook.cubemapName = doc.cook.cubemapName;
 		m_cook.cubemapSize = doc.cook.cubemapSize;
 		m_cook.cubemapRays = doc.cook.cubemapRays;
 		m_cook.cubemapOctree = doc.cook.cubemapOctree;

@@ -751,7 +751,6 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -lmExcludeSmall " << k.lmExcludeSmall
 			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
 			<< " -cubemap " << (k.cubemap ? "on" : "off")
-			<< " -cubemapName " << Quote(k.cubemapName)
 			<< " -cubemapSize " << k.cubemapSize
 			<< " -cubemapRays " << k.cubemapRays
 			<< " -cubemapOctree " << (k.cubemapOctree ? "on" : "off")
@@ -1397,8 +1396,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				}
 				else if (get("-cubemap", v))
 					k.cubemap = (v == "on" || v == "1");
-				else if (get("-cubemapName", v))
-					k.cubemapName = v;
+				else if (get("-cubemapName", v)) {
+					// Legacy key (capture sets are NAMELESS now - the
+					// manifest keys on the scene stem): parse + ignore so
+					// old tours keep loading.
+				}
 				else if (get("-cubemapSize", v))
 					k.cubemapSize = std::max<uint32_t>(
 						uint32_t(std::stoul(v)), 4);

@@ -73,8 +73,9 @@ struct CookArgs {
 	// CLI flag never took effect in cook and was removed).
 	// Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak
 	// embeds the loose sidecars at the canonical gi/cubemaps/ paths).
+	// Capture sets are NAMELESS: the base is the scene stem (pak.exe
+	// discovers + embeds by gi/cubemaps/<stem>.cubemanifest).
 	bool cubemap = false;
-	std::string cubemapName;
 	uint32_t cubemapSize = 128;
 	uint32_t cubemapRays = 128;
 	uint32_t cubemapBounces = 5;

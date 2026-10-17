@@ -3639,11 +3639,8 @@ namespace editor {
 			AutosaveTour();
 		if (m_cook.cubemap) {
 			ImGui::Indent();
-			ImGui::Text("Name (blank = pak stem):");
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			ImGui::InputText("##cubemapName", m_cookCubemapNameBuf, sizeof(m_cookCubemapNameBuf));
-			if (ImGui::IsItemDeactivatedAfterEdit())
-				m_cook.cubemapName = m_cookCubemapNameBuf;
+			// No name field: capture sets are NAMELESS (the manifest keys
+			// on the scene stem; see the cook's base derivation).
 			ImGui::Text("Size:");
 			int size = m_cook.cubemapSize;
 			ImGui::SetNextItemWidth(-FLT_MIN);

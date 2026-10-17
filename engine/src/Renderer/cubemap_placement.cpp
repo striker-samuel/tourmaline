@@ -160,31 +160,61 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 	}
 
 	// Emit coarse-first, dropping embedded centers. Each leaf emits at
-	// its most open interior point (center + 6 face centers by openness):
-	// cell coverage only tells you the probe OWNS a volume, the point
-	// decides what it SEES. Radii scale with the emitting cell so coarse
-	// air cells cover volumes and fine surface cells stay tight.
+	// its most open interior point (center + 6 face centers by openness)
+	// - cell coverage only tells you the probe OWNS a volume, the point
+	// decides what it SEES. BUT the light-seeking relocation is GATED:
+	// only a center with NO horizontal escape (every sideways axial ray
+	// blocked - a chimney/pipe whose capture would be a sky slit) moves
+	// to its best face. Ungated seeking drained whole scenes to the
+	// outside (observed: sponza's atrium kept 4 interior probes of 29 -
+	// a boundary cell's outward face center always scores fully-open
+	// sky, so every straddling cell emitted OUTSIDE the wall with a
+	// cell-scale influence sphere reaching back through it). A center
+	// that sees ANY horizontal direction captures the space its cell
+	// owns - it keeps the center. (Roof-straddling centers that stay
+	// sky-side are handled downstream: the bake's depth fit clamps
+	// their influence to the fitted pocket.) Radii scale with the
+	// emitting cell so coarse air cells cover volumes and fine surface
+	// cells stay tight.
 	const float openDist = glm::length(bmax - bmin);
 	size_t relocated = 0;
 	for (const Cell& c : emitted) {
 		const glm::vec3 ctr = CellCenter(c);
 		glm::vec3 best = ctr;
 		if (occluded) {
-			float bestScore = Openness(ctr, openDist, occluded);
-			glm::vec3 cand[6] = {
-				{ c.mn.x, ctr.y, ctr.z }, { c.mx.x, ctr.y, ctr.z },
-				{ ctr.x, c.mn.y, ctr.z }, { ctr.x, c.mx.y, ctr.z },
-				{ ctr.x, ctr.y, c.mn.z }, { ctr.x, ctr.y, c.mx.z },
-			};
-			for (const glm::vec3& q : cand) {
-				const float s = Openness(q, openDist, occluded);
-				if (s > bestScore) {
-					bestScore = s;
-					best = q;
+			// kAxes order: +X, -X, +Y, -Y, +Z, -Z -> horizontals 0,1,4,5.
+			// The escape reach is the CELL's per-axis half-extent (the ray
+			// only has to clear the cell the probe owns, not the whole
+			// scene: a 17 m hall never lets a horizontal ray reach the
+			// full-bounds openDist, so a scene-scale reach misreads every
+			// corridor as a chimney and drains the interior).
+			const glm::vec3 half = CellHalf(c) + glm::vec3(1e-3f);
+			const float axisReach[6] = {
+				half.x, half.x, half.y, half.y, half.z, half.z };
+			bool anyHorizontal = false;
+			for (uint32_t a : { 0u, 1u, 4u, 5u }) {
+				if (!occluded(ctr, kAxes[a], axisReach[a])) {
+					anyHorizontal = true;
+					break;
 				}
 			}
-			if (glm::dot(best - ctr, best - ctr) > 1e-6f)
-				++relocated;
+			if (!anyHorizontal) {
+				float bestScore = Openness(ctr, openDist, occluded);
+				glm::vec3 cand[6] = {
+					{ c.mn.x, ctr.y, ctr.z }, { c.mx.x, ctr.y, ctr.z },
+					{ ctr.x, c.mn.y, ctr.z }, { ctr.x, c.mx.y, ctr.z },
+					{ ctr.x, ctr.y, c.mn.z }, { ctr.x, ctr.y, c.mx.z },
+				};
+				for (const glm::vec3& q : cand) {
+					const float s = Openness(q, openDist, occluded);
+					if (s > bestScore) {
+						bestScore = s;
+						best = q;
+					}
+				}
+				if (glm::dot(best - ctr, best - ctr) > 1e-6f)
+					++relocated;
+			}
 		}
 		if (IsEmbedded(best, opts.embedDist, occluded)) {
 			++droppedEmbedded;

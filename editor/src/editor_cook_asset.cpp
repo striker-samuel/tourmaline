@@ -155,7 +155,7 @@ std::string EditorApp::CreateCubemapAsset(const std::string& dir) {
 	a.guid = smvk::tour::GenerateUuid();
 	a.size = m_cook.cubemapSize;
 	a.rays = m_cook.cubemapRays;
-	a.capture = m_cook.cubemapName.empty() ? scene : m_cook.cubemapName;
+	a.capture = scene; // capture sets are NAMELESS (scene stem)
 	std::string werr;
 	if (!smvk::cook::SaveCubemapAsset(path.generic_string(), a, werr)) {
 		Log("New cubemap asset: cannot write '" + path.generic_string()
@@ -408,9 +408,10 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// present (migration) so old cooks keep resolving.
 	m_bakeCubemapGuid.clear();
 	if (m_cook.cubemap) {
-		const std::string base = m_cook.cubemapName.empty()
-			? fs::path(m_cook.outPak).stem().generic_string()
-			: m_cook.cubemapName;
+		// Legacy-manifest migration base: the old naming rule was the
+		// out-pak stem (capture sets are NAMELESS now - scene stem).
+		const std::string base =
+			fs::path(m_cook.outPak).stem().generic_string();
 		// Migrate/read the legacy loose manifest when the cooker wrote one.
 		const std::string legacyCubesDir =
 			(fs::path(contentRoot) / "textures" / "cubemaps")

@@ -28,13 +28,13 @@ rem carries lmChunk=-1 everywhere (the FS gates on lmChunk none and never
 rem samples it) and no sglm sidecar is written. The --lm-* tuning below is
 rem inert without the trigger (kept as the last-good bake config).
 rem --cubemap on bakes GGX-preconvolved specular cubemaps loose under the
-rem VFS root (gi/cubemaps/<name>[_N].ktx2 + <name>.cubemanifest, high-frequency
-rem specular only; probes/lightmaps own diffuse + low-freq specular);
-rem --cubemap-name sponza is REQUIRED: pak.exe discovers + embeds the
-rem manifest by SIDE-CAR STEM (gi/cubemaps/<stem>.cubemanifest), so the
-rem default base "sky" bakes fine but never lands in the pak (gi=0,
-rem cubemaps=0) and the App renders without specular IBL. The stem must
-rem match sponza.pak / Sponza.geometry.
+rem VFS root (gi/cubemaps/<stem>[_N].ktx2 + <stem>.cubemanifest,
+rem high-frequency specular only; probes/lightmaps own diffuse + low-freq
+rem specular). The capture set is NAMELESS: the base is the input
+rem artifact's stem (Sponza.geometry -> "Sponza"), which is exactly what
+rem pak.exe's side-car-stem discovery embeds (gi/cubemaps/<stem>).
+rem The old --cubemap-name flag is gone (the "sky" default baked fine
+rem but never landed in the pak: gi=0, cubemaps=0, no specular IBL).
 rem --cubemap-octree on = sparse adaptive placement (open volumes coarse,
 rem near-surface cells refine, 32-probe budget); --cubemap-png on writes
 rem face/mip/probe-map debug PNGs loose next to the pak inputs.
@@ -55,7 +55,7 @@ rem once; cook.exe runs the bakes + writes them back into the artifacts
 rem (+ Sponza.cooked); pak.exe assembles the .pak from the cooked
 rem artifacts (pure serialization - bake flags are rejected there).
 rem SUN flags ride BOTH steps (cook bakes with that sun, pak serializes it).
-out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-name sponza --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
+out\build\x64-Release\Cook.exe F:\content models/sponza/Sponza.geometry --cubemap on --cubemap-png on --meshlets on --lods on --lightmap off --lm-meters-per-texel 0.1 --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000 --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4 --cubemap-extra-pos 0,0.25,0 --cubemap-extra-radius 1.5
 if errorlevel 1 goto fail
 out\build\x64-Release\Pak.exe F:\content models/sponza/Sponza.geometry --out-pak F:\content\paks\sponza.pak --verify on --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000 --sky-intensity 6000
 if errorlevel 1 goto fail

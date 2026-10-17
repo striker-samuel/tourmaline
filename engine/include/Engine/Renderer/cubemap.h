@@ -132,13 +132,34 @@ std::string CubemapManifestVfsPath(const std::string& name);
 // Engine/Asset/bake_asset.h); the runtime ignores it (it loads by path),
 // but rebakes match rows by position to reuse it. Rows without one parse
 // with an empty guid.
+//
+// The optional "box <minx y z> <maxx y z>" token group (written after
+// the 5 base floats, before pin/guid) carries the DEPTH-FITTED local
+// proxy volume: the baker analyzes each cube face's primary-ray depths
+// and stores the six plane distances as a world-space AABB around the
+// probe. The runtime uses it for box-parallax correction (a real room
+// fit instead of the symmetric influence sphere) and the bake derives
+// the influence from its half-diagonal, so a probe straddling a wall
+// (e.g. emission relocated to the open sky just above a roof) cannot
+// reach through the roof into the room below. Rows without a box fall
+// back to the legacy symmetric box = position +- influence.
 struct CubemapManifestEntry {
 	std::string vfsPath;
 	glm::vec3 position{ 0.0f };
 	float influenceRadius = 10.0f;
 	float fadeRadius = 5.0f;
+	// Depth-fitted proxy box (world AABB). Defaults construct the legacy
+	// symmetric box at parse time when the row carries none.
+	glm::vec3 boxMin{ 0.0f };
+	glm::vec3 boxMax{ 0.0f };
 	bool pinned = false;
 	std::string guid; // bake-asset GUID of the capture ("" = legacy row)
+
+	// Legacy symmetric box around the probe (old rows / single captures).
+	void DeriveSymmetricBox() {
+		boxMin = position - glm::vec3(influenceRadius);
+		boxMax = position + glm::vec3(influenceRadius);
+	}
 };
 
 // Serializes entries to the manifest text format (one row per line).

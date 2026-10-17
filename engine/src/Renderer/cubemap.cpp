@@ -58,12 +58,15 @@ std::string CubemapManifestVfsPath(const std::string& name) {
 
 std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& entries) {
 	std::string out;
-	char buf[320];
+	char buf[512];
 	for (const auto& e : entries) {
-		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g%s%s%s\n",
+		std::snprintf(buf, sizeof(buf),
+			"%s %.6g %.6g %.6g %.6g %.6g box %.6g %.6g %.6g %.6g %.6g %.6g%s%s%s\n",
 			e.vfsPath.c_str(),
 			(double)e.position.x, (double)e.position.y, (double)e.position.z,
 			(double)e.influenceRadius, (double)e.fadeRadius,
+			(double)e.boxMin.x, (double)e.boxMin.y, (double)e.boxMin.z,
+			(double)e.boxMax.x, (double)e.boxMax.y, (double)e.boxMax.z,
 			e.pinned ? " pin" : "",
 			!e.guid.empty() ? " guid " : "",
 			!e.guid.empty() ? e.guid.c_str() : "");
@@ -137,6 +140,33 @@ bool CubemapManifestParse(std::string_view text,
 			return false;
 		}
 		size_t i = 6;
+		// Optional "box <minx> <miny> <minz> <maxx> <maxy> <maxz>": the
+		// depth-fitted proxy volume (see CubemapManifestEntry). Old rows
+		// carry none and derive the legacy symmetric box below.
+		bool hasBox = false;
+		if (i < toks.size() && toks[i] == "box") {
+			if (toks.size() < i + 7) {
+				err = "line " + std::to_string(lineNo)
+					+ ": 'box' wants 6 floats (min xyz + max xyz)";
+				out.clear();
+				return false;
+			}
+			if (!parseFloat(toks[i + 1], e.boxMin.x)
+				|| !parseFloat(toks[i + 2], e.boxMin.y)
+				|| !parseFloat(toks[i + 3], e.boxMin.z)
+				|| !parseFloat(toks[i + 4], e.boxMax.x)
+				|| !parseFloat(toks[i + 5], e.boxMax.y)
+				|| !parseFloat(toks[i + 6], e.boxMax.z)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": 'box' wants 6 numeric floats";
+				out.clear();
+				return false;
+			}
+			hasBox = true;
+			i += 7;
+		}
+		if (!hasBox)
+			e.DeriveSymmetricBox();
 		if (i < toks.size() && toks[i] == "pin") {
 			e.pinned = true;
 			++i;
