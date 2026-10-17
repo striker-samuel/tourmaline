@@ -51,6 +51,7 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -79,6 +80,104 @@ struct alignas(16) BlendSelectionGpu {
 	uint32_t pad1 = 0;                                      // 76
 };
 static_assert(sizeof(BlendSelectionGpu) == 80);
+
+// ---------------------------------------------------------------------------
+// NDF blend weights (the Remember Me transition-region formula; the CPU
+// mirror of the weights pass - the unit tests drive THIS, the HLSL pass
+// implements the same math). Inputs are per-candidate NDF values:
+//   d_i = (dist - influence) / fade   (<=0 inner, (0,1) transition, >=1 out)
+// The published weighting (Lagarde, GPU Pro 4):
+//   a_i = (1 - d_i / S_d) / (N - 1),  b_i = (1 - d_i) / S_r,
+//   W_i = a_i * b_i / sum(a_j * b_j),  S_d = sum(d_j), S_r = sum(1 - d_j).
+// Special cases (in evaluation order):
+//   - no candidates: all weights 0.
+//   - an INNER hit (d <= 0): the designated dominant gets EXCLUSIVE weight
+//     (ties: the widest influence wins, then the lowest index - the
+//     validated wide-first policy; the documented Remember Me limitation
+//     at inner-region exits applies).
+//   - one candidate: weight 1 (the a-term divides by N-1 = 0 - the
+//     formula degenerates; the exclusive weight is the published fix).
+//   - candidates with d >= 1 (outside the outer boundary) drop out first.
+// The transition formula makes the blend spatially varying even where two
+// influence volumes overlap fully (both at d in (0,1)): the probe nearer
+// its inner region outweighs the outer one - the original's point.
+// ---------------------------------------------------------------------------
+struct NdfCandidate {
+	uint32_t cubemap = UINT32_MAX; // the candidate's cubemap bindless index
+	float ndf = 1.0f;               // clamped: 0 = inner, [0,1), 1 = out
+	float influence = 0.0f;         // tie-break (wide wins)
+};
+
+inline void ComputeNdfWeights(const NdfCandidate* candidates, uint32_t n,
+	float* outWeights, uint32_t maxOut = kMaxBlendProbes) {
+	for (uint32_t i = 0; i < maxOut; ++i)
+		outWeights[i] = 0.0f;
+	if (n == 0 || n > maxOut)
+		return;
+	// The designated dominant inner hit (if any): widest influence wins,
+	// then the lowest cubemap index.
+	int32_t dominant = -1;
+	for (uint32_t i = 0; i < n; ++i) {
+		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
+			continue; // out of influence entirely
+		if (candidates[i].ndf <= 0.0f) {
+			if (dominant < 0
+				|| candidates[i].influence > candidates[dominant].influence
+				|| (candidates[i].influence == candidates[dominant].influence
+					&& candidates[i].cubemap < candidates[dominant].cubemap))
+				dominant = int32_t(i);
+		}
+	}
+	if (dominant >= 0) {
+		// Inner-region hit: the designated dominant probe EXCLUSIVE
+		// (everyone else 0 - including other inner hits).
+		for (uint32_t i = 0; i < n; ++i)
+			outWeights[i] = 0.0f;
+		outWeights[dominant] = 1.0f;
+		return;
+	}
+	// Transition region only. One candidate: the a-term degenerates
+	// (N-1 = 0) - the exclusive weight 1.
+	uint32_t count = 0;
+	for (uint32_t i = 0; i < n; ++i)
+		if (candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f)
+			++count;
+	if (count == 0)
+		return;
+	if (count == 1) {
+		for (uint32_t i = 0; i < n; ++i)
+			outWeights[i] =
+				(candidates[i].cubemap != UINT32_MAX && candidates[i].ndf < 1.0f)
+				? 1.0f : 0.0f;
+		return;
+	}
+	// The published a*b weighting over the in-influence candidates.
+	float sumD = 0.0f, sumR = 0.0f;
+	for (uint32_t i = 0; i < n; ++i) {
+		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f)
+			continue;
+		sumD += candidates[i].ndf;
+		sumR += (1.0f - candidates[i].ndf);
+	}
+	sumD = std::max(sumD, 1e-6f);
+	sumR = std::max(sumR, 1e-6f);
+	float sumW = 0.0f;
+	for (uint32_t i = 0; i < n; ++i) {
+		if (candidates[i].cubemap == UINT32_MAX || candidates[i].ndf >= 1.0f) {
+			outWeights[i] = 0.0f;
+			continue;
+		}
+		const float d = candidates[i].ndf;
+		const float a = (1.0f - d / sumD) / float(count - 1);
+		const float b = (1.0f - d) / sumR;
+		outWeights[i] = std::max(a, 0.0f) * std::max(b, 0.0f);
+		sumW += outWeights[i];
+	}
+	if (sumW <= 1e-6f)
+		return;
+	for (uint32_t i = 0; i < n; ++i)
+		outWeights[i] /= sumW;
+}
 
 // Weights-pass push (must mirror probepremix_weights.cs.hlsl).
 struct alignas(16) WeightsPush {

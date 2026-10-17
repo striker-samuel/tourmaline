@@ -18,6 +18,7 @@
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/probepremix.h>
 #include <Engine/GI/triangle_bvh.h>
 
 namespace {
@@ -508,6 +509,74 @@ void TestRhiHelpers() {
 		"cubemap.rhi.sampler-clamp");
 }
 
+// ---------------------------------------------------------------------------
+// Probe pre-mix: NDF blend weights (the Remember Me transition-region
+// formula, CPU mirror in probepremix.h; the GPU weights pass implements
+// the same math - these tests pin the shared semantics).
+// ---------------------------------------------------------------------------
+void TestProbePremixNdfWeights() {
+	using smvk::probepremix::NdfCandidate;
+	using smvk::probepremix::kMaxBlendProbes;
+
+	// Zero candidates: all zero.
+	{
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(nullptr, 0, w);
+		bool ok = true;
+		for (float f : w) ok = ok && f == 0.0f;
+		Check(ok, "cubemap.ndf.zero-candidates");
+	}
+	// One candidate: exclusive weight 1 (the a-term divides by N-1 = 0 -
+	// the formula degenerates; the published fix).
+	{
+		NdfCandidate cands[] = { { 7, 0.4f, 3.0f } };
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(cands, 1, w);
+		Check(w[0] == 1.0f, "cubemap.ndf.one-candidate");
+	}
+	// One candidate plus out-of-influence ones: still exclusive 1.
+	{
+		NdfCandidate cands[] = { { 7, 0.4f, 3.0f }, { 9, 1.0f, 5.0f } };
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(cands, 2, w);
+		Check(w[0] == 1.0f && w[1] == 0.0f,
+			"cubemap.ndf.one-candidate-plus-out");
+	}
+	// An INNER hit (d <= 0): the designated dominant EXCLUSIVE. Two inner
+	// hits: the widest influence wins (the validated wide-first policy).
+	{
+		NdfCandidate cands[] = { { 7, 0.4f, 3.0f }, { 9, 0.0f, 3.0f }, { 11, 0.0f, 6.0f } };
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(cands, 3, w);
+		Check(w[0] == 0.0f && w[1] == 0.0f && w[2] == 1.0f,
+			"cubemap.ndf.inner-hit-widest-wins");
+	}
+	// The published two-probe example (the article's table): d_A = 0.2,
+	// d_B = 0.6 -> 85.7% / 14.3%.
+	{
+		NdfCandidate cands[] = { { 7, 0.2f, 4.0f }, { 9, 0.6f, 4.0f } };
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(cands, 2, w);
+		Check(std::abs(w[0] - 6.0f / 7.0f) < 1e-4f
+			&& std::abs(w[1] - 1.0f / 7.0f) < 1e-4f,
+			"cubemap.ndf.published-two-probe-example");
+	}
+	// The transition formula normalizes over the in-influence set (sum 1)
+	// and never emits negative weights (a clamps at d = S_d).
+	{
+		NdfCandidate cands[] = {
+			{ 3, 0.05f, 2.0f }, { 5, 0.5f, 3.0f },
+			{ 8, 0.95f, 4.0f }, { 13, 0.3f, 2.5f } };
+		float w[kMaxBlendProbes] = {};
+		smvk::probepremix::ComputeNdfWeights(cands, 4, w);
+		float sum = 0.0f;
+		bool nonneg = true;
+		for (float f : w) { sum += f; nonneg = nonneg && f >= 0.0f; }
+		Check(nonneg && std::abs(sum - 1.0f) < 1e-4f && w[0] >= w[1],
+			"cubemap.ndf.normalized-nonneg-nearer-wins");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -527,6 +596,7 @@ int main() {
 	TestDirectionRoundtrip();
 	TestPrefilterUniform();
 	TestPrefilterDeterminism();
+	TestProbePremixNdfWeights();
 	TestRhiHelpers();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
