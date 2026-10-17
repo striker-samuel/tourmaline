@@ -113,6 +113,11 @@ protected:
 #pragma region ===[ App / Core State ]===
 	float delta_time_s = .0f;
 	float time_since_start_s = .0f;
+	// REAL wall delta (pre-bench-pin): the perf accounting averages THIS
+	// (a true wall-time metric) while delta_time_s is pinned to a fixed
+	// 60 Hz step during --bench for capture determinism (spawn quotas,
+	// animation clocks). Measuring the pin would report 16.67 ms forever.
+	double real_delta_time_s = 0.0;
 #pragma endregion
 
 #pragma region ===[ Graphics State ]===

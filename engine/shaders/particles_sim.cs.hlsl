@@ -63,6 +63,21 @@ void mainCS(uint3 dispatchId : SV_DispatchThreadID)
     vel *= damp;
 
     p.posLife.xyz += vel * pcSim.dt;
+    // AMBIENT (camera-box) emitters (fade.w = wrap half-extent > 0):
+    // toroidally wrap the world position into the box around the camera.
+    // What leaves through one side re-enters through the opposite side, so
+    // the volume stays permanently populated with ZERO dependence on
+    // respawn catching up with camera movement - rain falls out the
+    // bottom and re-enters at the top, dust drifts forever. frac() keeps
+    // the wrap total for negative deltas (fmod would mirror them).
+    if (em.fade.w > 0.0)
+    {
+        const float h = max(em.fade.w, 0.25);
+        const float span = 2.0 * h;
+        float3 d = p.posLife.xyz - float3(pcSim.cameraX, pcSim.cameraY, pcSim.cameraZ);
+        d = frac((d + h) / span) * span - h;
+        p.posLife.xyz = float3(pcSim.cameraX, pcSim.cameraY, pcSim.cameraZ) + d;
+    }
     p.velSize.xyz = vel;
     p.colorRot.w += p.params.z * pcSim.dt;
     pcSim.particles.Get().particles[i] = p;

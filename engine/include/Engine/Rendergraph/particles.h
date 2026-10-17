@@ -112,7 +112,13 @@ static constexpr uint32_t kParticleShape_Point = 2;  // center point, velocity c
 //            (kParticleShape_*).
 // fade:      x fadeIn (fraction of life), y fadeOut (from the end),
 //            z colorJitter (per-channel spawn tint variation 0..1),
-//            w unused.
+//            w AMBIENT wrap half-extent (m): 0 = a plain world emitter;
+//            > 0 = camera-box mode - the CPU recenters the spawn volume
+//            on the camera every frame and the sim wraps each particle
+//            toroidally into the box (a permanently populated volume for
+//            floating dust / rain: what leaves through one side re-enters
+//            through the opposite - rain falls out the bottom and
+//            re-enters at the top, dust drifts forever).
 // tail:      x = GPU-OWNED fractional spawn carry. Uploaded rows must leave
 //            it 0; the emit compute owns it via the separate emitterState
 //            buffer (kept in the struct only for layout symmetry with HLSL).
@@ -163,8 +169,15 @@ struct ParticlesSimPush {
 	float dt = 0.0f;          // 36
 	uint32_t maxParticles = 0; // 40
 	uint32_t pad0 = 0;        // 44
+	// Ambient (camera-box) wrapping: particles of an emitter with
+	// fade.w > 0 toroidally wrap into this box around the camera (see
+	// particles_sim.cs.hlsl). Always pushed (harmless for world emitters).
+	float cameraX = 0.0f;     // 48 camera world pos (ambient wrap center)
+	float cameraY = 0.0f;     // 52
+	float cameraZ = 0.0f;     // 56
+	uint32_t pad1 = 0;       // 60
 };
-static_assert(sizeof(ParticlesSimPush) == 48);
+static_assert(sizeof(ParticlesSimPush) == 64);
 
 // Must match particles_draw.vert/frag.hlsl ParticlesDrawPush (80 bytes).
 // fpTileCountX == 0 tells the fragment shader the tile lists are NOT fresh

@@ -90,6 +90,20 @@ void smvk::App::UpdateDeltaTime() {
 		currentTime - lastFrameTime).count();
 
 	lastFrameTime = currentTime;
+
+	// Bench determinism: pin the element dt to a fixed 60 Hz step while
+	// measuring. The real dt varies run to run (vsync jitter, uncapped
+	// frame pacing) and EVERYTHING animated rides it - particle spawn
+	// quotas + integration, the light-crowd orbit clock, bench_move
+	// flight, scene anims on the element clock - so captures were
+	// run-dependent whenever anything moved (observed: dust/rain benches
+	// differed byte-wise between identical runs). Fixed dt makes the
+	// measured frames pixel-comparable again. The bench WALL-time
+	// accounting below is untouched (it accumulates the real wall delta
+	// captured here - measuring the pin would report 16.67 ms forever).
+	real_delta_time_s = static_cast<double>(delta_time_s);
+	if (frameBudget_ > 0)
+		delta_time_s = 1.0f / 60.0f;
 }
 
 void smvk::App::SetRelativeMouseMode(bool enabled) {
@@ -231,7 +245,10 @@ void smvk::App::MainLoop() {
 						OPTICK_START_CAPTURE();
 				}
 			} else {
-				benchAccum_ += delta_time_s;
+				// WALL delta (real_delta_time_s): the perf metric must
+				// report true frame cost; delta_time_s is the pinned sim
+				// step during benches (see UpdateDeltaTime).
+				benchAccum_ += real_delta_time_s;
 				if (++benchFrames_ >= frameBudget_) {
 					const double avgMs = benchAccum_ / benchFrames_ * 1000.0;
 					std::printf("[perf] avg frame %.4f ms over %d frames\n",

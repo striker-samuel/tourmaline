@@ -37,7 +37,7 @@ struct ParticleEmitterGpu
     float4 velocity;  // 48  x speedMin, y speedMax, z drag (1/s), w gravityScale
     float4 size;      // 64  x sizeStart, y sizeEnd (m), z rotSpeed (rad/s), w seed
     float4 life;      // 80  x lifeMin, y lifeMax (s), z rate (per s), w shape
-    float4 fade;      // 96  x fadeIn, y fadeOut (life fractions), z colorJitter, w unused
+    float4 fade;      // 96  x fadeIn, y fadeOut, z colorJitter, w ambient wrap half-extent (m; 0 = world emitter)
     float4 tail;      // 112 x carry (GPU-owned), yzw pads
 };
 
@@ -82,9 +82,9 @@ struct ParticlesEmitPush
     uint frameSeed;                                         // 44
 };
 
-// particles_sim.cs.hlsl (48 bytes). Gravity arrives as scalars: a float3
-// after three 8-byte pointers would straddle a 16-byte row and HLSL packs
-// it away from the C++ offsets.
+// particles_sim.cs.hlsl (64 bytes). Gravity + the ambient wrap camera
+// box arrive as scalars: a float3 after three 8-byte pointers would
+// straddle a 16-byte row and HLSL packs it away from the C++ offsets.
 struct ParticlesSimPush
 {
     vk::BufferPointer<ParticlesBuffer> particles; // 0
@@ -96,6 +96,10 @@ struct ParticlesSimPush
     float dt;                                     // 36
     uint maxParticles;                            // 40
     uint pad0;                                    // 44
+    float cameraX;                                // 48 ambient wrap center
+    float cameraY;                                // 52
+    float cameraZ;                                // 56
+    uint pad1;                                    // 60
 };
 
 // particles_draw.vert/frag.hlsl (80 bytes). fpTileCountX == 0 tells the
