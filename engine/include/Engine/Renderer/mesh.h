@@ -743,6 +743,11 @@ namespace smvk {
 
 	struct StaticMesh {
 		Geometry geometry;
+		// Skinned marker (the import post pass / the deserializer sets
+		// it from a non-empty VertexSkin stream): tooling + the draw
+		// path's format pick gate on this + the retained stream, never
+		// on a heuristic.
+		bool skinned = false;
 		// Cook-time meshlet data for the future indirect/mesh-shader path.
 		// Empty when the mesh was cooked without meshlets. Never consulted
 		// by the current direct-draw renderer.
@@ -771,6 +776,13 @@ namespace smvk {
 		std::vector<Surface> surfaces;
 		glm::vec3 aabbMin{};
 		glm::vec3 aabbMax{};
+		// glTF skin stream (binding 2), parallel to `vertices` when
+		// non-empty: the packed VertexSkin per vertex (top-4 influences,
+		// renormalized, RGBA8). Joint ids index the CLUSTER's Skeleton
+		// joint table (touranim.h; the glTF JOINTS_0 order). Empty = a
+		// static mesh (the formats/paths gate on the empty stream, never
+		// on a separate flag).
+		std::vector<VertexSkin> skin;
 	};
 
 	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);

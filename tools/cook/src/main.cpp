@@ -3783,6 +3783,15 @@ bool WriteCookedArtifactsBack(const Args& args,
 			geo.surfaces = up->surfaces;
 			geo.aabbMin = up->aabbMin;
 			geo.aabbMax = up->aabbMax;
+			// The skin stream (the Northlight data path): the cook's
+			// write-back rebuilds every blob from the final upload - the
+			// stream must ride it or the cooked .geometry silently drops
+			// the skin (the skeleton fields on the asset survive, only
+			// the per-blob streams were lost). The BASE blob carries it;
+			// decimated LOD siblings stay static (the runtime skinning
+			// slice owns per-LOD skin propagation).
+			if (sibN < 1)
+				geo.skin = up->skin;
 			geo.uriFragment = asset.geometry[bit->second].uriFragment;
 			if (auto ml = c.GetMeshMeshlets(uri); ml.has_value())
 				geo.meshlets = *ml;

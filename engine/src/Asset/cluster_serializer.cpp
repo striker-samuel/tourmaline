@@ -518,6 +518,9 @@ bool SerializeClusters(
 	};
 	if (clusters.empty())
 		return fail("no clusters to serialize");
+	// The trailing skin-section writer's static fallback (a null retained
+	// upload writes count 0).
+	static const std::vector<VertexSkin> kEmptySkinStream{};
 	for (size_t ci = 0; ci < clusters.size(); ++ci)
 		if (!clusters[ci])
 			return fail("null cluster #" + std::to_string(ci));
@@ -688,6 +691,24 @@ bool SerializeClusters(
 				stats->meshesWithMeshlets++;
 				stats->meshletCount += static_cast<uint32_t>(cooked.meshlets.size());
 			}
+		}
+		// Trailing skin-stream section (the Northlight data path): u32
+		// count + count * 8 raw VertexSkin bytes (mesh.h binding 2: RGBA8
+		// joint ids + RGBA8 weights, top-4 normalized). ALWAYS written
+		// (possibly count 0) so the layout is uniform; the LOAD side
+		// accepts an absent section (pre-skin paks) as a static mesh.
+		// The stream rides the retained upload (the import post pass
+		// fills it - GltfToSceneImporter::BuildSkinData).
+		{
+			const StaticMeshUpload* up = cluster.GetRetainedUpload(h);
+			const std::vector<VertexSkin>& skin =
+				up ? up->skin : kEmptySkinStream;
+			PutU32(blob, static_cast<uint32_t>(skin.size()));
+			if (!skin.empty())
+				blob.insert(blob.end(),
+					reinterpret_cast<const uint8_t*>(skin.data()),
+					reinterpret_cast<const uint8_t*>(skin.data())
+						+ skin.size() * sizeof(VertexSkin));
 		}
 
 		// v4 fast-load layout: packed-SoA mesh streams stored uncompressed
@@ -1169,7 +1190,7 @@ bool SerializeClusters(
 		// environment): node-ordered (node, mask, priority, weight,
 		// radius, enabled-as-u32) rows. Always written (possibly empty)
 		// so the layout is uniform; old readers fail the trailing-bytes
-		// check on v13 blobs (the sanctioned break — no conversions).
+		// check on v13 blobs (the sanctioned break - no conversions).
 		{
 			std::vector<uint32_t> volNodes;
 			volNodes.reserve(scene.envVolumeForNode.size());
@@ -1185,6 +1206,29 @@ bool SerializeClusters(
 				PutF32(blob, vol.blendWeight);
 				PutF32(blob, vol.blendRadius);
 				PutU32(blob, vol.enabled ? 1u : 0u);
+			}
+		}
+		// Cluster skeleton (v14; v13 blobs end after the env-volume
+		// settings): u32 hasSkeleton + (u32 jointCount + cluster node id
+		// per joint + 16 floats per inverseBind + u32 root). Always
+		// written (possibly hasSkeleton 0) so the layout is uniform; the
+		// LOAD side accepts an absent section (pre-skin paks) as no
+		// skeleton. The Skeleton's joint table is what the per-mesh
+		// VertexSkin streams (the mesh blob's trailing skin section)
+		// index.
+		{
+			PutU32(blob, cluster.hasSkeleton ? 1u : 0u);
+			if (cluster.hasSkeleton) {
+				const smvk::touranim::Skeleton& sk = cluster.skeleton;
+				PutU32(blob, static_cast<uint32_t>(sk.joints.size()));
+				for (uint32_t j : sk.joints)
+					PutU32(blob, j);
+				for (const glm::mat4& m : sk.inverseBind) {
+					for (int c = 0; c < 4; ++c)
+						for (int r = 0; r < 4; ++r)
+							PutF32(blob, m[c][r]);
+				}
+				PutU32(blob, sk.root);
 			}
 		}
 
@@ -1269,8 +1313,15 @@ struct SceneLinkMaps {
 // writer): hierarchy + transforms + node links + names + static/noLM/
 // lights sections + v5 name. With maps, links resolve to fresh pool
 // handles; without (ListPakScenes), only structure + names come out.
+// skeletonOut/hasSkeletonOut (v14, appended last so existing callers keep
+// compiling): the trailing CLUSTER-SKELETON section (the joint table the
+// per-mesh VertexSkin streams index; the writer always writes it). Null =
+// skip (structure-only callers). An ABSENT section (a pre-skin pak) leaves
+// *hasSkeletonOut false.
 bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
-	std::string& nameOut, const SceneLinkMaps* maps, std::string& err) {
+	std::string& nameOut, const SceneLinkMaps* maps, std::string& err,
+	smvk::touranim::Skeleton* skeletonOut = nullptr,
+	bool* hasSkeletonOut = nullptr) {
 	auto fail = [&](const std::string& msg) {
 		err = msg;
 		return false;
@@ -1585,6 +1636,70 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			if (!c.ok)
 				return fail("truncated scene env-volume section");
 		}
+		// Cluster skeleton (v14; v13 blobs end after the env-volume
+		// settings): u32 hasSkeleton + (u32 jointCount + cluster node id
+		// per joint + 16 floats per inverseBind + u32 root). ABSENT =
+		// a pre-skin pak (no skeleton); present must end the blob
+		// exactly (the shared trailing-bytes check below).
+		if (c.off < c.img.size()) {
+			const uint32_t has = c.u32();
+			if (!c.ok)
+				return fail("truncated scene skeleton section");
+			if (has != 0u) {
+				if (!skeletonOut || !hasSkeletonOut) {
+					// Structure-only caller (ListPakScenes): validate the
+					// section + skip (the real load - DeserializeCluster -
+					// parses it with the out-params). Hard-failing here
+					// made every pak listing reject skinned paks.
+					smvk::touranim::Skeleton skip{};
+					const uint32_t jointCount = c.u32();
+					if (!c.ok || jointCount > 4096)
+						return fail("bad scene skeleton joint count");
+					for (uint32_t i = 0; i < jointCount; ++i)
+						if (c.u32() >= nodeCount)
+							return fail("bad scene skeleton joint id");
+					for (uint32_t i = 0; i < jointCount; ++i)
+						for (int k = 0; k < 16; ++k)
+							(void)c.f32();
+					if (!c.ok)
+						return fail("truncated scene skeleton skip");
+					(void)c.u32(); // root
+					if (!c.ok)
+						return fail("truncated scene skeleton skip");
+				}
+				else {
+					smvk::touranim::Skeleton& sk = *skeletonOut;
+					const uint32_t jointCount = c.u32();
+					if (!c.ok || jointCount > 4096)
+						return fail("bad scene skeleton joint count");
+					sk.joints.clear();
+					sk.inverseBind.clear();
+					sk.joints.reserve(jointCount);
+					sk.inverseBind.resize(jointCount, glm::mat4(1.0f));
+					for (uint32_t i = 0; i < jointCount; ++i) {
+						const uint32_t j = c.u32();
+						if (!c.ok || j >= nodeCount)
+							return fail("bad scene skeleton joint id");
+						sk.joints.push_back(j);
+					}
+					for (uint32_t i = 0; i < jointCount; ++i) {
+						glm::mat4 m(1.0f);
+						for (int col = 0; col < 4; ++col)
+							for (int row = 0; row < 4; ++row)
+								m[col][row] = c.f32();
+						if (!c.ok)
+							return fail("truncated scene skeleton IBM");
+						sk.inverseBind[i] = m;
+					}
+					sk.root = c.u32();
+					if (!c.ok)
+						return fail("truncated scene skeleton root");
+					if (sk.root >= nodeCount)
+						sk.root = 0u;
+					*hasSkeletonOut = true;
+				}
+			}
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
@@ -1654,7 +1769,14 @@ std::vector<PakSceneInfo> ListPakScenes(
 	for (const PakTocEntry* e : OrderedSceneEntries(reader)) {
 		Scene tmp;
 		std::string name, perr;
-		if (!ParseSceneBlob(reader.Payload(*e), tmp, name, nullptr, perr)) {
+		// Structure-only listing: the skeleton out-params stay null, so a
+		// v14 scene blob with a skeleton must not hard-fail here - the
+		// listing only wants names + node counts (the real load happens
+		// in DeserializeCluster WITH the skeleton params). ParseSceneBlob
+		// tolerates skeletonOut == nullptr by VALIDATING-AND-SKIPPING the
+		// section (the same absent-section semantics).
+		if (!ParseSceneBlob(reader.Payload(*e), tmp, name, nullptr, perr,
+				nullptr, nullptr)) {
 			if (err)
 				*err = e->path + ": " + perr;
 			return {};
@@ -1956,6 +2078,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		std::vector<glm::vec4> lmXforms;
 		LodInfo lod;
 		CookedMeshlets meshlets;
+		std::vector<VertexSkin> skin;
 	};
 	std::vector<Cluster::StaticMeshDirectSource> directs;
 	std::vector<MeshMeta> meshMetas;
@@ -2088,10 +2211,11 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				cooked.vertices.push_back(c.u32());
 			const uint32_t triBytes = c.u32();
 			if (!c.ok || triBytes > 256 * 1024 * 1024
-				|| c.off + triBytes != c.img.size())
+				|| c.off + triBytes > c.img.size())
 				return fail("corrupt meshlet trailer: " + e->path);
 			cooked.triangles.assign(
 				c.img.data() + c.off, c.img.data() + c.off + triBytes);
+			c.off += triBytes;
 			// Cross-check windows against the payload sizes.
 			for (const Meshlet& ml : cooked.meshlets) {
 				if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||
@@ -2100,8 +2224,29 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				}
 			}
 		}
+		// Trailing skin-stream section (the Northlight data path; the
+		// writer ALWAYS writes it after the meshlet trailer): u32 count +
+		// count * 8 raw VertexSkin bytes. An ABSENT section (a pre-skin
+		// pak, blob ends right after the meshlets) = a static mesh; a
+		// present section must end the blob exactly.
+		std::vector<VertexSkin> skin;
+		if (c.off < c.img.size()) {
+			const uint32_t skinCount = c.u32();
+			if (!c.ok || skinCount > 16 * 1024 * 1024
+				|| c.off + uint64_t(skinCount) * sizeof(VertexSkin)
+					> c.img.size())
+				return fail("corrupt mesh skin section: " + e->path);
+			skin.assign(
+				reinterpret_cast<const VertexSkin*>(c.img.data() + c.off),
+				reinterpret_cast<const VertexSkin*>(c.img.data() + c.off)
+					+ skinCount);
+			c.off += size_t(skinCount) * sizeof(VertexSkin);
+			if (c.off != c.img.size())
+				return fail("mesh skin section does not end the blob: "
+					+ e->path);
+		}
 		meshMetas.push_back(MeshMeta{ std::move(uri), sphere, lmChunk,
-			std::move(lmXforms), lod, std::move(cooked) });
+			std::move(lmXforms), lod, std::move(cooked), std::move(skin) });
 	}
 	{
 		std::vector<ClusterStaticMeshHandle> handles =
@@ -2122,6 +2267,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				m->lmChartXforms = std::move(meta.lmXforms);
 				if (!meta.meshlets.empty())
 					m->meshlets = std::move(meta.meshlets);
+				m->skinned = !meta.skin.empty();
 			}
 			cluster->RegisterMeshUri(meta.uri, h);
 			cluster->RegisterMeshLod(meta.uri, meta.lod);
@@ -2129,6 +2275,12 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				if (m->meshlets && !m->meshlets->empty())
 					cluster->RegisterMeshMeshlets(meta.uri, *m->meshlets);
 			}
+			// The skin stream (the Northlight data path): stored
+			// runtime-side (the draw path's source until the binding-2
+			// GPU allocation lands; the cluster skeleton loads from the
+			// scene blob below).
+			if (!meta.skin.empty())
+				cluster->SetMeshSkinStream(h, std::move(meta.skin));
 			meshByPakId.push_back(h);
 		}
 	}
@@ -2303,11 +2455,20 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			&camByPakId, &decalByPakId };
 		std::string sceneName, perr;
 		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
-				cluster->scene, sceneName, &maps, perr))
+				cluster->scene, sceneName, &maps, perr,
+				&cluster->skeleton, &cluster->hasSkeleton))
 			return fail(perr);
 		if (!sceneName.empty())
 			std::cerr << "DeserializeCluster: scene[" << sceneIndex
 				<< "] '" << sceneName << "'\n";
+		// The skeleton (the knight's joint table + inverse binds) landed
+		// on the cluster - the per-mesh VertexSkin streams (the mesh
+		// blobs' trailing sections, loaded above into
+		// SetMeshSkinStream) index it. The palette build
+		// (touranim::BuildSkinPalette) evaluates it per frame.
+		if (cluster->hasSkeleton)
+			std::cerr << "DeserializeCluster: cluster skeleton: "
+				<< cluster->skeleton.Count() << " joints\n";
 	}
 	return cluster;
 }

@@ -873,6 +873,34 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 			PutF32(b, s.acmr);
 		}
 	}
+	// --- Trailing SKIN section (the Northlight data path; files above
+	// end after the registry and load as static - the reader tolerates
+	// the absence). The cluster skeleton (the joint table in ASSET node
+	// space) + the per-BASE-blob VertexSkin streams (mesh.h binding 2).
+	// LOD siblings stay static (the runtime skinning slice owns per-LOD
+	// skin propagation).
+	{
+		PutU32(b, m.hasSkeleton ? 1u : 0u);
+		if (m.hasSkeleton) {
+			const smvk::touranim::Skeleton& sk = m.skeleton;
+			PutU32(b, uint32_t(sk.joints.size()));
+			for (uint32_t j : sk.joints)
+				PutU32(b, j);
+			for (const glm::mat4& ibm : sk.inverseBind) {
+				for (int c = 0; c < 4; ++c)
+					for (int r = 0; r < 4; ++r)
+						PutF32(b, ibm[c][r]);
+			}
+			PutU32(b, sk.root);
+		}
+		PutU32(b, uint32_t(m.geometry.size()));
+		for (const MeshAsset::Geometry& g : m.geometry) {
+			PutU32(b, uint32_t(g.skin.size()));
+			if (!g.skin.empty())
+				PutBytes(b, g.skin.data(),
+					g.skin.size() * sizeof(smvk::VertexSkin));
+		}
+	}
 	if (!WriteFileBytes(path, b, err))
 		return;
 }
@@ -1095,6 +1123,74 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 			return false;
 		}
 	}
+	// --- Trailing SKIN section (the Northlight data path; ABSENT = a
+	// pre-skin file, loads as static): the cluster skeleton (the joint
+	// table in ASSET node space) + the per-BASE-blob VertexSkin streams.
+	// LOD siblings stay static (the runtime skinning slice owns per-LOD
+	// skin propagation).
+	if (r.off < r.n) {
+		const uint32_t has = r.U32();
+		if (!r.ok)
+			return true; // truncated marker: treat as absent
+		if (has != 0u) {
+			out.hasSkeleton = true;
+			smvk::touranim::Skeleton& sk = out.skeleton;
+			const uint32_t jointCount = r.U32();
+			if (!r.ok || jointCount > 4096) {
+				err = "corrupt .mesh skin section (joint count)";
+				return false;
+			}
+			sk.joints.clear();
+			sk.inverseBind.clear();
+			sk.joints.resize(jointCount);
+			sk.inverseBind.resize(jointCount, glm::mat4(1.0f));
+			for (uint32_t i = 0; i < jointCount; ++i) {
+				sk.joints[i] = r.U32();
+				if (!r.ok || sk.joints[i] >= out.nodes.size()) {
+					err = "corrupt .mesh skin section (joint id)";
+					return false;
+				}
+			}
+			for (uint32_t i = 0; i < jointCount; ++i) {
+				glm::mat4 m(1.0f);
+				for (int c = 0; c < 4; ++c)
+					for (int rr = 0; rr < 4; ++rr)
+						m[c][rr] = r.F32();
+				if (!r.ok) {
+					err = "corrupt .mesh skin section (IBM)";
+					return false;
+				}
+				sk.inverseBind[i] = m;
+			}
+			sk.root = r.U32();
+			if (!r.ok || sk.root >= out.nodes.size())
+				sk.root = 0u;
+		}
+		const uint32_t skinBlobCount = r.U32();
+		if (!r.ok)
+			return true; // truncated: treat as absent
+		if (skinBlobCount > out.geometry.size()) {
+			err = "corrupt .mesh skin section (blob count)";
+			return false;
+		}
+		for (uint32_t gi = 0; gi < skinBlobCount; ++gi) {
+			const uint32_t skinCount = r.U32();
+			if (!r.ok || skinCount > 16 * 1024 * 1024) {
+				err = "corrupt .mesh skin section (stream count)";
+				return false;
+			}
+			MeshAsset::Geometry& g = out.geometry[gi];
+			g.skin.resize(skinCount);
+			if (const void* p = r.Skip(size_t(skinCount)
+					* sizeof(smvk::VertexSkin)))
+				std::memcpy(g.skin.data(), p,
+					size_t(skinCount) * sizeof(smvk::VertexSkin));
+			else if (skinCount > 0) {
+				err = "corrupt .mesh skin section (stream bytes)";
+				return false;
+			}
+		}
+	}
 	return true;
 }
 
@@ -1160,6 +1256,11 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	 importer.preloadTextures();
 		for (int gltfNode : gltfRoots)
 			importer.import(gltfNode);
+		// SKIN post pass (the Northlight data path): build the cluster
+		// Skeleton + patch the recorded (mesh, skin) pairs' VertexSkin
+		// streams (the gltfNodeMap is fully populated now - the same
+		// post-pass contract as GltfToCluster's inline flow).
+		importer.BuildSkinData();
 		RebuildStaticCache(cluster->scene);
 		recalculateGlobalTransforms(cluster->scene);
 		gltfNodeMap = importer.gltfNodeMap();
@@ -1280,6 +1381,13 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		mesh.locals = scene.localTransform;
 		mesh.staticRoot = scene.staticRoot;
 		mesh.noLightmap = scene.noLightmap;
+		// The cluster skeleton (the Northlight data path; the import
+		// post pass built it): the joint ids are CLUSTER scene node ids,
+		// and this node list is a 1:1 copy of that scene - so the ids
+		// ARE the asset node indices. BuildFromMeshAsset remaps them
+		// through its node mapping on restore.
+		mesh.skeleton = cluster->skeleton;
+		mesh.hasSkeleton = cluster->hasSkeleton;
 		// Geometry blobs: unique meshes in first-use order over the
 		// node-sorted instance list (deterministic; the load order
 		// matches the live import's pool order closely enough for the
@@ -1312,18 +1420,23 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 					? u.substr(hash + 1) : std::string();
 				if (auto ml = cluster->GetMeshMeshlets(uri))
 					g.meshlets = std::move(*ml);
-				if (const smvk::StaticMeshUpload* up =
-						cluster->GetRetainedUpload(h)) {
-					g.positions.resize(up->vertices.size());
-					g.shading.resize(up->vertices.size());
-					for (size_t v = 0; v < up->vertices.size(); ++v)
-						smvk::PackStaticVertex(up->vertices[v],
-							g.positions[v], g.shading[v]);
-					g.indices = up->indices;
-					g.surfaces = up->surfaces;
-					g.aabbMin = up->aabbMin;
-					g.aabbMax = up->aabbMax;
-				}
+					if (const smvk::StaticMeshUpload* up =
+							cluster->GetRetainedUpload(h)) {
+						g.positions.resize(up->vertices.size());
+						g.shading.resize(up->vertices.size());
+						for (size_t v = 0; v < up->vertices.size(); ++v)
+							smvk::PackStaticVertex(up->vertices[v],
+								g.positions[v], g.shading[v]);
+						g.indices = up->indices;
+						g.surfaces = up->surfaces;
+						g.aabbMin = up->aabbMin;
+						g.aabbMax = up->aabbMax;
+						// The skin stream (the Northlight data path): the
+						// import post pass (BuildSkinData) filled the
+						// retained upload; the .geometry carries it so
+						// cooks/paks/bakes see the same skin.
+						g.skin = up->skin;
+					}
 				// LOD chain: the registered siblings ("<fragment>/lodK")
 				// with their own streams + meshlets + LodInfo.
 				if (auto base = cluster->GetMeshLod(uri)) {

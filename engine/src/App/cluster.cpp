@@ -6,6 +6,8 @@
 #include <Engine/Renderer/vertex_pack.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
+#include <cstdio>
+
 
 smvk::Cluster::~Cluster() {
 
@@ -267,6 +269,55 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 		retainedUploads_[handle.index()] = data;
 
 	return handle;
+}
+
+void smvk::Cluster::PatchRetainedSkinStream(
+	ClusterStaticMeshHandle handle, std::vector<VertexSkin>&& stream)
+{
+	if (handle.empty() || stream.empty())
+		return;
+	// The skin stream ALWAYS lands the runtime-side map (the draw path's
+	// source until the binding-2 GPU allocation), and - when uploads are
+	// retained - the retained upload (the serializer's source).
+	skinStreams_[handle.index()] = stream;
+	auto it = retainedUploads_.find(handle.index());
+	if (it == retainedUploads_.end())
+		std::fprintf(stderr,
+			"[Cluster] PatchRetainedSkinStream: mesh slot %u has no"
+			" retained upload (the cook path loses the stream; the"
+			" runtime map keeps it)\n", handle.index());
+	else
+		it->second.skin = stream;
+	StaticMesh* mesh = staticMeshes.get(handle);
+	if (mesh)
+		mesh->skinned = true;
+}
+
+void smvk::Cluster::SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned)
+{
+	if (handle.empty())
+		return;
+	if (StaticMesh* mesh = staticMeshes.get(handle))
+		mesh->skinned = skinned;
+}
+
+const std::vector<smvk::VertexSkin>* smvk::Cluster::GetMeshSkinStream(
+	ClusterStaticMeshHandle handle) const
+{
+	if (handle.empty())
+		return nullptr;
+	auto it = skinStreams_.find(handle.index());
+	return it == skinStreams_.end() ? nullptr : &it->second;
+}
+
+void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
+	std::vector<smvk::VertexSkin>&& stream)
+{
+	if (handle.empty() || stream.empty())
+		return;
+	skinStreams_[handle.index()] = std::move(stream);
+	if (StaticMesh* mesh = staticMeshes.get(handle))
+		mesh->skinned = true;
 }
 
 

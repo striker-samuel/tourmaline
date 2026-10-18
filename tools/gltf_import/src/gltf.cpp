@@ -8,6 +8,7 @@
 #include <ktx.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/texture_streamer.h>
+#include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -2132,6 +2133,8 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 	// Unroll primitives into separate meshes (your current approach).
 	if (gltfNode.mesh >= 0) {
 		const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
+		const bool hasSkin = gltfNode.skin >= 0
+			&& (size_t)gltfNode.skin < model.skins.size();
 
 		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
 			const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
@@ -2139,16 +2142,27 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 			const int primNode = addNode(cluster.scene, groupNode, level + 1);
 			cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
 			cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
-			cluster.scene.meshForNode[primNode] =
+			const smvk::ClusterStaticMeshHandle primMesh =
 				getOrCreateMesh(
 					gltfNode.mesh,
 					primIndex
-				).index();
+				);
+			cluster.scene.meshForNode[primNode] = primMesh.index();
 			cluster.scene.materialForNode[primNode] =
 				getOrCreateMaterial(
 					primitive.material
 				).index();
 			markAsChanged(cluster.scene, primNode);
+			// SKIN RECORD (the Northlight data path): node.skin indexes
+			// the top-level skins array; the JOINTS_0/WEIGHTS_0 streams +
+			// the Skeleton build in the POST pass (BuildSkinData - the
+			// gltfNodeMap must be fully populated first; joint nodes may
+			// import after this one). Recording here keeps the primitive's
+			// own attributes available (the post pass re-reads them from
+			// the recorded indices).
+			if (hasSkin && primMesh.valid())
+				skinRefs_.push_back(SkinRef{ primMesh,
+					gltfNode.skin, gltfNode.mesh, primIndex });
 		}
 	}
 
@@ -2158,6 +2172,192 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 	for (int child : gltfNode.children) {
 		importNodeRecursive(child, groupNode, level + 1, false);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SKIN post pass (the Northlight data path). The node walk recorded every
+// (mesh, node.skin) pair; this builds the cluster Skeleton (joints via the
+// FULLY-POPULATED gltfNodeMap - joint nodes may import after the meshes
+// that reference them, which is why this is a post pass) and patches every
+// recorded mesh's retained upload with the packed VertexSkin stream
+// (mesh.h, binding 2: RGBA8_UInt joint ids + RGBA8_UNorm weights, top-4
+// influences renormalized). The stream rides the upload through the
+// serializer (the mesh blob's trailing skin section); the skeleton lands in
+// the scene blob's trailing section. Both load back at pak load.
+//
+// The cluster carries ONE Skeleton (the FIRST skin wins - the knight has
+// exactly one; a per-mesh table is the multi-skin generalization,
+// deliberately deferred). A joint node outside the scene graph (never
+// imported) aborts the whole pass loudly: a half-skinned skeleton renders
+// wrong in ways nothing downstream can detect.
+// ---------------------------------------------------------------------------
+int GltfToSceneImporter::BuildSkinData() {
+	if (skinRefs_.empty())
+		return 0;
+	if (model.skins.empty()) {
+		std::cerr << "[Skin] node.skin references exist but the glTF"
+			" carries no skins (skinned as static)" << std::endl;
+		skinRefs_.clear();
+		return 0;
+	}
+	// The cluster Skeleton: the FIRST skin wins (documented above).
+	if (!cluster.hasSkeleton) {
+		const tinygltf::Skin& skin =
+			model.skins[size_t(skinRefs_[0].skinIndex)];
+		smvk::touranim::Skeleton& sk = cluster.skeleton;
+		sk.joints.clear();
+		sk.inverseBind.clear();
+		sk.joints.reserve(skin.joints.size());
+		sk.inverseBind.resize(skin.joints.size(), glm::mat4(1.0f));
+		for (size_t i = 0; i < skin.joints.size(); ++i) {
+			const int j = skin.joints[i];
+			const int clusterNode = (j >= 0
+				&& (size_t)j < gltfNodeMap_.size())
+				? gltfNodeMap_[size_t(j)] : -1;
+			if (clusterNode < 0) {
+				std::cerr << "[Skin] joint node " << j << " ("
+					<< (j >= 0 && (size_t)j < model.nodes.size()
+						? model.nodes[size_t(j)].name : "?")
+					<< ") was never imported - the joint hierarchy must"
+					" be part of the scene graph (skin pass aborted,"
+					" meshes render static)" << std::endl;
+				skinRefs_.clear();
+				return 0;
+			}
+			sk.joints.push_back(uint32_t(clusterNode));
+		}
+		// inverseBindMatrices: FLOAT MAT4 accessor (column-major 16
+		// floats == glm's layout); identity when the skin omits it.
+		if (skin.inverseBindMatrices >= 0
+			&& (size_t)skin.inverseBindMatrices < model.accessors.size()) {
+			const tinygltf::Accessor& acc =
+				model.accessors[size_t(skin.inverseBindMatrices)];
+			for (size_t i = 0; i < sk.joints.size()
+				&& i < size_t(acc.count); ++i) {
+				const uint8_t* raw = gltfPtr(model, acc, i);
+				if (!raw)
+					break;
+				const float* p = reinterpret_cast<const float*>(raw);
+				glm::mat4 m(1.0f);
+				for (int c = 0; c < 4; ++c)
+					for (int r = 0; r < 4; ++r)
+						m[c][r] = p[c * 4 + r];
+				sk.inverseBind[i] = m;
+			}
+		}
+		sk.root = (skin.skeleton >= 0
+			&& (size_t)skin.skeleton < gltfNodeMap_.size()
+			&& gltfNodeMap_[size_t(skin.skeleton)] >= 0)
+			? uint32_t(gltfNodeMap_[size_t(skin.skeleton)]) : 0u;
+		cluster.hasSkeleton = true;
+	}
+	// Per-recorded-mesh skin streams: JOINTS_0/WEIGHTS_0 -> packed
+	// VertexSkin (top-4 renormalized RGBA8).
+	int patched = 0;
+	for (const SkinRef& r : skinRefs_) {
+		if (r.skinIndex < 0 || (size_t)r.skinIndex >= model.skins.size()
+			|| r.gltfMeshIndex < 0
+			|| (size_t)r.gltfMeshIndex >= model.meshes.size())
+			continue;
+		const tinygltf::Mesh& gm = model.meshes[size_t(r.gltfMeshIndex)];
+		if (r.primitiveIndex < 0
+			|| (size_t)r.primitiveIndex >= gm.primitives.size())
+			continue;
+		const tinygltf::Primitive& prim =
+			gm.primitives[size_t(r.primitiveIndex)];
+		auto jt = prim.attributes.find("JOINTS_0");
+		auto wt = prim.attributes.find("WEIGHTS_0");
+		if (jt == prim.attributes.end() || wt == prim.attributes.end()
+			|| jt->second < 0
+			|| (size_t)jt->second >= model.accessors.size()
+			|| wt->second < 0
+			|| (size_t)wt->second >= model.accessors.size()) {
+			std::cerr << "[Skin] mesh '" << gm.name
+				<< "' has node.skin but no JOINTS_0/WEIGHTS_0"
+				" (skinned as static)" << std::endl;
+			continue;
+		}
+		const tinygltf::Accessor& jAcc =
+			model.accessors[size_t(jt->second)];
+		const tinygltf::Accessor& wAcc =
+			model.accessors[size_t(wt->second)];
+		const size_t verts = size_t(jAcc.count);
+		if (verts == 0 || size_t(wAcc.count) < verts) {
+			std::cerr << "[Skin] mesh '" << gm.name
+				<< "' accessor counts disagree (skinned as static)"
+				<< std::endl;
+			continue;
+		}
+		std::vector<smvk::VertexSkin> stream(verts);
+		for (size_t v = 0; v < verts; ++v) {
+			uint32_t j[4] = { 0u, 0u, 0u, 0u };
+			float w[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+			{
+				const uint8_t* p = gltfPtr(model, jAcc, v);
+				if (p) {
+					for (int k = 0; k < 4; ++k) {
+						if (jAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+							j[k] = p[k];
+						else if (jAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+							const uint16_t* s16 =
+								reinterpret_cast<const uint16_t*>(p);
+							j[k] = s16[k];
+						}
+						else if (jAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+							const uint32_t* s32 =
+								reinterpret_cast<const uint32_t*>(p);
+							j[k] = s32[k];
+						}
+					}
+				}
+			}
+			{
+				const uint8_t* p = gltfPtr(model, wAcc, v);
+				if (p) {
+					for (int k = 0; k < 4; ++k) {
+						if (wAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_FLOAT)
+							w[k] = reinterpret_cast<const float*>(p)[k];
+						else if (wAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+							w[k] = float(p[k]) * (1.0f / 255.0f);
+						else if (wAcc.componentType
+							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+							w[k] = float(reinterpret_cast<const uint16_t*>(
+								p)[k]) * (1.0f / 65535.0f);
+					}
+				}
+			}
+			// The accessors are vec4 (<=4 influences already); renormalize
+			// and pack. Degenerate zero weights fall back to joint 0 at
+			// full weight (never a NaN normal in the shader).
+			float sum = w[0] + w[1] + w[2] + w[3];
+			if (!(sum > 1e-6f)) {
+				j[0] = j[1] = j[2] = j[3] = 0u;
+				w[0] = 1.0f;
+				w[1] = w[2] = w[3] = 0.0f;
+				sum = 1.0f;
+			}
+			stream[v].joints =
+				((j[0] & 0xFFu))
+				| ((j[1] & 0xFFu) << 8)
+				| ((j[2] & 0xFFu) << 16)
+				| ((j[3] & 0xFFu) << 24);
+			stream[v].weights = glm::packUnorm4x8(glm::vec4(
+				w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum));
+		}
+		cluster.PatchRetainedSkinStream(r.mesh, std::move(stream));
+		++patched;
+	}
+	skinRefs_.clear();
+	if (patched > 0)
+		std::cout << "[Skin] skinned " << patched << " mesh(es); the"
+			" cluster skeleton has " << cluster.skeleton.Count()
+			<< " joints" << std::endl;
+	return patched;
 }
 
 HostTextureSource::HostTextureSource(std::filesystem::path baseDir)
@@ -2373,6 +2573,10 @@ size_t BuildFromMeshAsset(
 		up.indices = g.indices;
 		up.aabbMin = g.aabbMin;
 		up.aabbMax = g.aabbMax;
+		// The skin stream (the Northlight data path): the BASE blobs
+		// carry it (the .geometry's trailing skin section); the upload
+		// rides it to the retained upload (the pak serializer's source).
+		up.skin = g.skin;
 		return up;
 	};
 	std::vector<smvk::StaticMeshUpload> uploads;
@@ -2626,6 +2830,47 @@ size_t BuildFromMeshAsset(
 			MarkSubtreeStatic(scene, mapped[i]);
 		if (i < asset.noLightmap.size() && asset.noLightmap[i])
 			MarkNoLightmap(scene, mapped[i]);
+	}
+	// 5b) SKIN restore (the Northlight data path): the skeleton's joint
+	// ids are in the ASSET node space (the node list is a 1:1 copy of the
+	// import cluster's scene) - remap them through `mapped`. The joint-0
+	// placeholder (the asset root) is invalid for a joint: any joint id 0
+	// aborts the skeleton loudly (a half-mapped skeleton renders wrong in
+	// ways nothing downstream can detect). The per-BASE-blob skin streams
+	// already rode the uploads (makeUpload); stamp the runtime-side map +
+	// the skinned flags for the draw path.
+	if (asset.hasSkeleton) {
+		smvk::touranim::Skeleton& sk = cluster.skeleton;
+		sk = asset.skeleton;
+		bool badJoint = false;
+		for (uint32_t& j : sk.joints) {
+			if (j == 0u || j >= mapped.size() || mapped[j] < 0) {
+				badJoint = true;
+				break;
+			}
+			j = uint32_t(mapped[j]);
+		}
+		if (sk.root < mapped.size() && mapped[sk.root] >= 0)
+			sk.root = uint32_t(mapped[sk.root]);
+		else
+			badJoint = true;
+		if (badJoint) {
+			cluster.skeleton = smvk::touranim::Skeleton{};
+			cluster.hasSkeleton = false;
+			std::fprintf(stderr,
+				"[Skin] .geometry skeleton joint maps outside the"
+				" node range (dropped; meshes render static)\n");
+		}
+		else {
+			cluster.hasSkeleton = true;
+			for (size_t gi = 0; gi < asset.geometry.size()
+				&& gi < baseHandles.size(); ++gi) {
+				if (!asset.geometry[gi].skin.empty())
+					cluster.SetMeshSkinStream(baseHandles[gi],
+						std::vector<smvk::VertexSkin>(
+							asset.geometry[gi].skin));
+			}
+		}
 	}
 	// 6) Bindings: instances (geometry + material), lights, cameras.
 	for (const auto& inst : asset.instances) {

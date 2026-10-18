@@ -21,6 +21,7 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/touranim.h>
 
 namespace smvk {
 
@@ -200,6 +201,48 @@ namespace smvk {
 		void SetRetainUploads(bool retain);
 		const StaticMeshUpload* GetRetainedUpload(ClusterStaticMeshHandle handle) const;
 
+		// ------------------------------------------------------------------
+		// Skeletal skin (the Northlight data path, touranim.h + mesh.h).
+		//
+		// The cluster carries ONE Skeleton (the first imported glTF skin
+		// wins - the knight has exactly one; multi-skin clusters would
+		// need a table keyed by mesh, deliberately deferred). The
+		// per-mesh VertexSkin streams (mesh.h, binding 2) index the
+		// Skeleton's joint table; the palette build
+		// (touranim::BuildSkinPalette) evaluates it per frame.
+		//
+		// The importer records (mesh, glTF skin) pairs during the node
+		// walk, then patches the retained uploads' skin streams in a POST
+		// pass (the Skeleton needs the gltf node map fully populated -
+		// joint nodes may import after the meshes that reference them);
+		// see GltfToSceneImporter::BuildSkinData. The serializer persists
+		// both (the mesh blob's trailing skin-stream section + the scene
+		// blob's trailing skeleton section).
+		// ------------------------------------------------------------------
+		smvk::touranim::Skeleton skeleton;
+		bool hasSkeleton = false;
+		// Patches a retained upload's VertexSkin stream (the import post
+		// pass; also the deserializer on load). No-op when uploads are
+		// not retained (the caller logs); the stream rides the upload
+		// through serialize/deserialize like any other stream.
+		void PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
+			std::vector<VertexSkin>&& stream);
+		// Marks a mesh pool entry skinned (the deserializer + the import
+		// post pass; the runtime draw path gates on the retained stream,
+		// this is the pool-level marker for tooling).
+		void SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned);
+		// The runtime-side per-mesh skin streams (binding-2 data), keyed
+		// by mesh pool index. Filled by the import post pass (retained OR
+		// runtime clusters - PatchRetainedSkinStream always stores here)
+		// and the deserializer (the mesh blob's trailing skin section).
+		// The GPU binding-2 allocation comes with the skinning pipeline
+		// (slice 2); until then this is the draw path's source. Null =
+		// static mesh.
+		[[nodiscard]] const std::vector<VertexSkin>* GetMeshSkinStream(
+			ClusterStaticMeshHandle handle) const;
+		void SetMeshSkinStream(ClusterStaticMeshHandle handle,
+			std::vector<VertexSkin>&& stream);
+
 		// GPU-free offline mode (pak cooker without a Vulkan device).
 		// UploadStaticMesh records CPU geometry + retained uploads only
 		// (no VMA/streamer touch); textures mint fake RHI handles whose
@@ -342,6 +385,11 @@ namespace smvk {
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
 		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;
+		// Per-mesh skin streams (binding-2 data), keyed by mesh pool
+		// index: the import post pass + the deserializer fill these (see
+		// GetMeshSkinStream); the GPU allocation comes with the skinning
+		// pipeline.
+		std::unordered_map<uint32_t, std::vector<VertexSkin>> skinStreams_;
 		bool offlineMode_ = false;
 		uint32_t offlineNextTextureId_ = 0;
 	};

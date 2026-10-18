@@ -1828,8 +1828,12 @@ void TestClusterSerializeCook() {
 		Check(posOff == ((header + 28 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
 		Check(shadeOff == posOff + posBytes && idxOff == shadeOff + shadeBytes,
 			"cook.pak.mesh.v4.streamoffs");
-		Check(posOff + posBytes + shadeBytes + idxBytes + 12 == pay.size(),
+		Check(posOff + posBytes + shadeBytes + idxBytes + 12 + 4 == pay.size(),
 			"cook.pak.mesh.v4.exactend");
+		// The trailing skin-stream section (the Northlight data path):
+		// the meshlet trailer (12 bytes, count 0) + the skin count (4
+		// bytes, count 0 here - the quad is static). A present skin
+		// section must end the blob exactly (see the loader).
 		// Stream content: the shared pack helper's output for the quad's
 		// vertices + the raw index buffer.
 		bool streamsOk = true;

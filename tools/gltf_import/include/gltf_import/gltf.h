@@ -216,6 +216,17 @@ struct GltfToSceneImporter
 	// retarget glTF animation targets + material bindings onto the
 	// deterministic cluster ids (the same order the .mesh asset stores).
 	const std::vector<int>& gltfNodeMap() const { return gltfNodeMap_; }
+	// SKIN post pass (the Northlight data path): builds the cluster
+	// Skeleton from the glTF skins (joints via the fully-populated node
+	// map + inverseBindMatrices) and patches every recorded
+	// (mesh, skin) pair's retained upload with the packed VertexSkin
+	// stream (JOINTS_0/WEIGHTS_0 -> top-4 normalized RGBA8). Called by
+	// the import flow's owner AFTER the node walk finishes (the joint
+	// nodes may import after the meshes that reference them). The
+	// stream rides the retained uploads through the serializer; the
+	// cluster's skeleton lands in the scene blob's trailing section.
+	// Returns the number of skinned meshes patched.
+	int BuildSkinData();
 private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
@@ -259,6 +270,16 @@ private:
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
 	std::vector<smvk::ClusterLightHandle> lightCache; // gltf light index -> handle
 	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
+	// glTF skin references recorded during the node walk: (mesh handle,
+	// glTF skin index, glTF mesh index, primitive index) per primitive
+	// of a node carrying node.skin. BuildSkinData consumes them.
+	struct SkinRef {
+		smvk::ClusterStaticMeshHandle mesh;
+		int skinIndex = -1;
+		int gltfMeshIndex = -1;
+		int primitiveIndex = -1;
+	};
+	std::vector<SkinRef> skinRefs_;
 	// Optional texture-streaming sink: when set (and not cooking), uploads
 	// go through TextureStreamer::StreamTexture (tail-resident) instead of
 	// the full-res LoadKtxTexture* path. Owned by the caller (app/world).
@@ -529,6 +550,14 @@ inline void GltfToCluster(
 	for (int gltfNode : gltfRoots)
 		importer.import(gltfNode);
 		//importer.importNodeRecursive(gltfNode, root, 1);
+
+	// SKIN post pass (the Northlight data path): the node walk recorded
+	// every (mesh, node.skin) pair - build the cluster Skeleton (the
+	// gltfNodeMap is fully populated now; the joint nodes may import
+	// after the meshes that reference them) + patch the retained
+	// uploads' VertexSkin streams. Before this, skinned glTFs silently
+	// imported as static geometry.
+	importer.BuildSkinData();
 
 	importer.applyPreTransform(out.scene, root);
 

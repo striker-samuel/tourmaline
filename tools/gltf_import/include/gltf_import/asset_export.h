@@ -57,6 +57,7 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Asset/touranim.h>
 
 namespace tinygltf { class Model; }
 
@@ -213,8 +214,23 @@ struct MeshAsset {
 		// StaticMesh so pak assembly needs no bake.
 		uint32_t lmChunk = 0xFFFFFFFFu;
 		std::vector<glm::vec4> lmChartXforms;
+		// glTF skin stream (the Northlight data path), parallel to
+		// positions/shading: the packed VertexSkin per vertex (mesh.h
+		// binding 2). The BASE blobs carry it (the import post pass
+		// filled the retained upload); LOD siblings stay static for now
+		// (the runtime skinning slice owns per-LOD skin propagation).
+		// Empty = a static mesh.
+		std::vector<smvk::VertexSkin> skin;
 	};
 	std::vector<Geometry> geometry;
+	// The cluster's skeletal skin (the FIRST glTF skin won; the import
+	// post pass filled it). The joint table is in the ASSET node space
+	// (the node list below is a 1:1 copy of the import cluster's scene,
+	// so the joint ids ARE asset node indices); BuildFromMeshAsset
+	// remaps them through its node mapping on restore. hasSkeleton
+	// false = no skinned blobs.
+	smvk::touranim::Skeleton skeleton;
+	bool hasSkeleton = false;
 	// LOD chains, PARALLEL to geometry (per base blob): the derived
 	// sibling blobs ("<fragment>/lodK"). Loaded as cluster meshes (not
 	// node-attached) + RegisterMeshLod entries — F5 + distance LODs
