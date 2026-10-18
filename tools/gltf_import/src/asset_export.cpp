@@ -230,6 +230,12 @@ std::string AnimFileName(const std::string& stem, int index,
 // read; animation samplers are float-or-double scalars/vec3s/vec4s —
 // glTF animation accessors are componentType FLOAT by spec, but be
 // tolerant of doubles).
+// THE COMPONENT TYPE IS LOAD-BEARING: reading a FLOAT (4-byte) accessor
+// through a double* reinterprets two adjacent floats as one double -
+// the knight's tracks came out as 2.67e+13 translates and 4e-10 key
+// times from exactly that (the accessors Blender writes are FLOAT).
+// AnimReadValue below is the reader that handles both; the raw pointer
+// form stays for DOUBLE accessors only.
 template <typename T>
 const T* AnimAccessorPtr(const tinygltf::Model& m,
 	const tinygltf::Accessor& a, size_t i) {
@@ -248,6 +254,31 @@ const T* AnimAccessorPtr(const tinygltf::Model& m,
 	if (off + sizeof(T) > buf.data.size())
 		return nullptr;
 	return reinterpret_cast<const T*>(buf.data.data() + off);
+}
+
+// Component-type-aware key reader: reads `n` values of accessor element
+// `i` into `dst` as doubles. FLOAT (5126) reads float + widens; DOUBLE
+// (5125) reads doubles raw. Returns false on a mismatched component
+// type or an out-of-range read.
+inline bool AnimReadValue(const tinygltf::Model& m,
+	const tinygltf::Accessor& a, size_t i, double* dst, size_t n) {
+	if (a.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+		const double* v = AnimAccessorPtr<double>(m, a, i);
+		if (!v)
+			return false;
+		for (size_t c = 0; c < n; ++c)
+			dst[c] = v[c];
+		return true;
+	}
+	if (a.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+		const float* v = AnimAccessorPtr<float>(m, a, i);
+		if (!v)
+			return false;
+		for (size_t c = 0; c < n; ++c)
+			dst[c] = double(v[c]);
+		return true;
+	}
+	return false;
 }
 
 // .anim writer (the .tourAnim ASCII grammar — see touranim.h; the
@@ -1451,25 +1482,24 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 				: smvk::touranim::Spline::Linear;
 			for (size_t k = 0; k < keys; ++k) {
 				smvk::touranim::Key key{};
-				const double* tin = reinterpret_cast<const double*>(
-					AnimAccessorPtr<double>(model, in, k));
-				if (!tin)
+				// Component-type-aware reads (AnimReadValue): the raw
+				// AnimAccessorPtr<double> reinterpreted FLOAT accessor
+				// data as doubles - the knight's tracks came out as
+				// 2.67e+13 translates and 4e-10 key times.
+				if (!AnimReadValue(model, in, k, &key.t, 1))
 					break;
-				key.t = *tin;
 				lastT = std::max(lastT, key.t);
 				if (t.channel == smvk::touranim::Channel::Rotate) {
-					const double* q = reinterpret_cast<const double*>(
-						AnimAccessorPtr<double>(model, out, k));
-					if (!q)
+					double q[4] = {};
+					if (!AnimReadValue(model, out, k, q, 4))
 						break;
 					// glTF quat (x,y,z,w) -> glm (w,x,y,z).
 					key.v = glm::vec4(float(q[3]), float(q[0]),
 						float(q[1]), float(q[2]));
 				}
 				else {
-					const double* v3 = reinterpret_cast<const double*>(
-						AnimAccessorPtr<double>(model, out, k));
-					if (!v3)
+					double v3[3] = {};
+					if (!AnimReadValue(model, out, k, v3, 3))
 						break;
 					key.v = glm::vec4(float(v3[0]), float(v3[1]),
 						float(v3[2]), 1.0f);
