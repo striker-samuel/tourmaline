@@ -213,7 +213,7 @@ void PublishDrawDemand(uint drawIdx)
     }
 }
 
-bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoSided)
+bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2)
 {
     uint flags = pcF.cullFlags;
     bool cull = false;
@@ -229,9 +229,7 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoS
     // well-defined pre-clip for fully-in-front triangles, and the
     // determinant on unclipped coords can disagree with the rasterizer's
     // post-clip result. Straddlers are rare; the rasterizer resolves them.
-    // Skipped for two-sided draws (double-sided materials bind with
-    // Cull None, so the rasterizer keeps both facings).
-    if ((flags & GFX_CULL_BACKFACE) != 0 && !twoSided)
+    if ((flags & GFX_CULL_BACKFACE) != 0)
     {
         if (clip0.w > 0.0f && clip1.w > 0.0f && clip2.w > 0.0f)
         {
@@ -405,9 +403,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
                 asfloat(pcF.positions.Get().words[wbase + 2]));
             clip[k] = mul(pcF.viewProj, mul(model, float4(p, 1.0f)));
         }
-        bool twoSided =
-            (pcF.draws.Get().draws[header.y].misc.y & GFX_DRAW_TWOSIDED) != 0;
-        cull = CullTriangle(tri, clip[0], clip[1], clip[2], twoSided)
+        cull = CullTriangle(tri, clip[0], clip[1], clip[2])
             || (gClusterCull != 0);
         if (!cull)
             InterlockedAdd(gLocalCount, 3, slot);

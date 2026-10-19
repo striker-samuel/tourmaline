@@ -83,7 +83,6 @@ struct GfxSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
 struct GfxBatches { uint4 batch[GFX_MAX_BATCH_SLOTS]; };
 #define GFX_BATCH_DEMAND 0x1 // batch.w bit 0
 
-#define GFX_DRAW_TWOSIDED 0x1 // misc.y: double-sided, skip backface cull
 // misc.y bit 1: Scene::ditherCloseup fade band this frame (C++ mirror
 // DrawFlagBit_DitherCloseup): the filtered VS / mesh MS forward it flat
 // (VS location 8) to the lit FS family + the masked seed FSs so they

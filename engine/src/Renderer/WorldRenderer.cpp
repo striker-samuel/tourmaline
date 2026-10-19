@@ -6480,12 +6480,8 @@ namespace engine {
 			d.material = item.material;
 			d.model = m_world->scene.globalTransform[item.node];
 			// Draw-set bucketing mirrors FilterMainView: MASK materials
-			// draw through the alpha-tested phase, double-sided ones
-			// keep both facings (cone culling is off for shadow views
-			// anyway, the flag is carried for parity/debugging).
+			// draw through the alpha-tested phase.
 			if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
-				if (mat->isDoubleSided())
-					d.flags |= smvk::gfx::DrawFlagBit_TwoSided;
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					d.drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
@@ -6511,8 +6507,9 @@ namespace engine {
 		const smvk::MSAASettings& msaa) {
 		// Phase 2 masked pipeline: cull follows the material raster so
 		// the shadow depth contains exactly the faces the main view draws
-		// (single-sided cutout has no backface shadow depth). Rebinds
-		// only on cull changes (CommandBuffer dedupes identical states).
+		// (cutout has no backface shadow depth — always back-face cull
+		// now). Rebinds only on cull changes (CommandBuffer dedupes
+		// identical states).
 		smvk::CullMode boundShadowMaskedCull = smvk::CullMode::FrontAndBack;
 		auto ensureShadowMaskedPipeline = [&](smvk::CullMode cull) {
 			if (cull == boundShadowMaskedCull)
@@ -6624,7 +6621,7 @@ namespace engine {
 		// the back face of a solid occluder sits behind its lit face by
 		// the surface thickness, so receiver self-shadow acne falls off
 		// the depth test without slope-scaled bias. Masked (cutout) phase
-		// 2 below keeps material-following cull (single-sided foliage
+		// 2 below keeps material-following cull (foliage
 		// has no back face to render).
 		cmd.BindRenderPipeline(
 			opaqueProgram,
@@ -9093,7 +9090,7 @@ namespace engine {
 		// prepass depth (reversed-Z GreaterEqual, no writes) - identical in
 		// MSAA / non-MSAA modes, Main's transient 2x depth is never touched.
 		// MASK cutouts share the program: the FS alpha-tests only when
-		// shadingModel == Masked (Cull None phase, like the prepass).
+		// shadingModel == Masked (Cull Back phase, like the prepass).
 		// ---------------------------------------------------------------------
 		if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
 			IRenderer::PushConstants motionPC = pc;
@@ -9147,8 +9144,8 @@ namespace engine {
 					.depthTestEnable = true,
 				};
 				// Phase 2 masked pipeline: cull follows the material raster so
-				// motion coverage matches Main (single-sided cutout culls
-				// back; double-sided keeps Cull None). Rebinds only on cull
+				// motion coverage matches Main (always back-face cull now —
+				// cutout culls back). Rebinds only on cull
 				// changes (the CommandBuffer dedupes identical states).
 				smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
 				auto ensureMotionMaskedPipeline = [&](smvk::CullMode cull) {
@@ -9286,13 +9283,13 @@ namespace engine {
 					| smvk::IteratorFlagBit_StaticVertexFmt
 					, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
 				// Phase 3: dithered transparent (screen-door, opaque state).
-				// The FS dithers with the same pattern as the main view.
-				// Culling follows the material so motion exists exactly for
+				// The FS dithers with the same pattern as the main view, and
+				// culling follows the material so motion exists exactly for
 				// the pixels the color pass kept. Skipped in blend mode
 				// (transparent has no motion vectors there, as before).
 				if (m_transparentMode == smvk::TransparentMode::Dithered
 					&& !m_hideTransparent) {
-					auto drawDitheredMotion = [&](bool doubleSidedPhase) {
+					auto drawDitheredMotion = [&]() {
 						m_world->forEachRenderItem(
 							smvk::IteratorFlagBit_Renderable
 							| smvk::IteratorFlagBit_Transparent
@@ -9300,13 +9297,6 @@ namespace engine {
 							, [&](const smvk::World::RenderItem& item) {
 							if (item.material == smvk::World::kInvalidIndex)
 								return;
-							if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
-								if (mat->isDoubleSided() != doubleSidedPhase)
-									return;
-							}
-							else if (doubleSidedPhase) {
-								return;
-							}
 							// Frustum cull: transparent never enters the gfx
 							// filter, so test the conservative LOD union here
 							// (keep when either sibling intersects, matching
@@ -9343,18 +9333,7 @@ namespace engine {
 						smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
 					);
 					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-					drawDitheredMotion(false);
-					cmd.BindRenderPipeline(
-						m_viewportResources.motionVectors.program,
-						smvk::VertexFormat::StaticVertexFormat,
-						motionDepth,
-						smvk::StencilSettings{},
-						smvk::BlendSettings::Opaque(),
-						smvk::MSAASettings::Count1(),
-						smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
-					);
-					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-					drawDitheredMotion(true);
+					drawDitheredMotion();
 				}
 			});
 			// Filtered-path consume hints (same barriers as Main): the
@@ -9458,7 +9437,7 @@ namespace engine {
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
 		// Task-less mesh leg (build-time gate): device support + enabled +
 		// programs + opaque state (no wireframe). Execute-time eligibility
-		// is per range (RangeMeshEligible: opaque, single-sided, variant
+		// is per range (RangeMeshEligible: opaque, variant
 		// twin exists); the indexed loop skips exactly those ranges.
 		const bool meshActiveForFrame = m_passes.gfxMesh && m_useGfxMesh
 			&& smvk::SupportsMeshShaders()
@@ -9598,8 +9577,8 @@ namespace engine {
 				smvk::ShaderProgram& progA2c,
 				const smvk::DepthSettings& depth,
 				bool writeStencilClass = true) -> smvk::ShaderProgram& {
-				// Per-material raster (doubleSided -> Cull None) + blend
-				// (Opaque vs AlphaBlend). Depth writes follow the caller: opaque
+				// Per-material blend (Opaque vs AlphaBlend); the raster is
+				// always back-face cull. Depth writes follow the caller: opaque
 				// writes in 2x MSAA mode, transparent never writes.
 				// writeStencilClass: kept for call-shape stability - the SSR
 				// receiver-material stencil classification is GONE (the thin
@@ -12597,8 +12576,8 @@ namespace engine {
 							// Task-less mesh-shader main leg: SETUP-TIME only
 							// (TOURMALINE_MESH=0/1 at startup + device support;
 							// no live toggle — the leg is canonical, not an
-							// A/B switch). Opaque single-sided base FS; without
-							// device mesh shaders the indexed multi-draws stay.
+						// A/B switch). Opaque base FS; without
+						// device mesh shaders the indexed multi-draws stay.
 							ImGui::TextDisabled(smvk::SupportsMeshShaders()
 								? (m_useGfxMesh ? "mesh-shader main leg: on (setup)"
 									: "mesh-shader main leg: off (TOURMALINE_MESH=0)")

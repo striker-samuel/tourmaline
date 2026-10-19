@@ -17,18 +17,18 @@ namespace smvk {
 
 	MaterialPipelineState MakePipelineStateForMaterial(
 		AlphaMode alphaMode,
-		bool doubleSided,
 		ShadingModel shadingModel)
 	{
 		MaterialPipelineState out{};
 
-		// Raster: double-sided disables culling; otherwise back-face cull.
+		// Raster: always back-face cull (two-sided geometry is no longer
+		// supported — the cooked Material::doubleSided flag is ignored).
 		// NOTE: main view uses reversed infinite-Z with Y-flipped proj (proj[1][1] *= -1).
 		// Position conversion (-x,-z) preserves winding (+1), Y-flip inverts it (-1).
 		// Net winding inversion would suggest Clockwise, but glTF import + Vulkan viewport
 		// handling keeps NDC winding as CounterClockwise for front faces in this engine
 		// (verified: Clockwise caused global N inversion). Keep CounterClockwise per user report.
-		out.raster.cullMode = doubleSided ? CullMode::None : CullMode::Back;
+		out.raster.cullMode = CullMode::Back;
 		out.raster.polygonMode = PolygonMode::Fill;
 		out.raster.frontFace = FrontFace::CounterClockwise;
 

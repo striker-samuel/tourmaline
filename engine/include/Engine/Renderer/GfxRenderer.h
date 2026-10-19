@@ -51,9 +51,10 @@ struct GfxConfig {
 // resolver reads the live World): masked depth phases must rasterize
 // exactly the faces the shaded pass draws (alpha test + material cull),
 // else depth contains fragments Main never draws (over-occlusion behind
-// single-sided cutout cards).
+// cutout cards). Two-sided support is gone: the pipeline is always
+// back-face culled, so the default/fallback is Cull Back.
 struct MaterialDepthState {
-	smvk::CullMode cullMode = smvk::CullMode::None;
+	smvk::CullMode cullMode = smvk::CullMode::Back;
 	bool alphaTested = false;
 };
 
@@ -274,7 +275,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// the range-based depth recorders (seed/remainder/shadow ranges):
 	// those walks only carry a material id, and the material table
 	// lives in the app's World. Lazily invoked at record time; unset
-	// resolver keeps the legacy blanket (Cull None, treated alpha-tested).
+	// resolver keeps the blanket fallback (Cull Back, treated alpha-tested).
 	void ConfigureMaterialDepth(
 		std::function<MaterialDepthState(uint32_t)> resolve) {
 		materialDepth_ = std::move(resolve);
@@ -283,7 +284,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] MaterialDepthState MaterialDepth(uint32_t materialId) const {
 		if (materialDepth_)
 			return materialDepth_(materialId);
-		return { smvk::CullMode::None, true };
+		return { smvk::CullMode::Back, true };
 	}
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
@@ -366,7 +367,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] smvk::ShaderProgram* MeshProgramFor(bool giActive,
 		uint32_t giVariant, uint32_t lobeCount, bool layered);
 	// CPU side of the mesh eligibility contract: a mesh twin exists for
-	// the range's variant and every batch's draw is opaque + single-sided.
+	// the range's variant and every batch's draw is opaque.
 	// The indexed loop skips exactly these ranges; the record partitions
 	// their batches per variant program.
 	[[nodiscard]] bool RangeMeshEligible(uint32_t slot, uint32_t rangeIdx,

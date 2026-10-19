@@ -157,12 +157,12 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			// Phase 2 masked pipeline: cull follows the material raster
-			// (single-sided cutout must not write backface depth the
-			// shaded pass never draws; double-sided keeps Cull None).
+			// (always back-face cull now — cutout must not write
+			// backface depth the shaded pass never draws).
 			// boundMaskedCull starts at a never-bound sentinel; rebinds
 			// only on cull changes and the CommandBuffer dedupes identical
-			// pipeline states, so the common all-double-sided scene pays
-			// one bind. G-buffer on: the masked pair switches to
+			// pipeline states, so an all-masked scene pays one bind.
+			// G-buffer on: the masked pair switches to
 			// gbufferMaskedProgram (same alpha test + the G-buffer
 			// output).
 			smvk::CullMode boundMaskedCull = smvk::CullMode::FrontAndBack;

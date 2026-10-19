@@ -158,7 +158,6 @@ namespace smvk {
 
 	MaterialPipelineState MakePipelineStateForMaterial(
 		AlphaMode alphaMode,
-		bool doubleSided,
 		ShadingModel shadingModel = ShadingModel::DefaultLit);
 
 	struct Material {
@@ -166,6 +165,9 @@ namespace smvk {
 		ShadingModel shadingModel = ShadingModel::DefaultLit;
 		AlphaMode alphaMode = AlphaMode::Opaque;
 		float alphaCutoff = 0.5f;
+		// Legacy: two-sided rendering is no longer supported (the pipeline
+		// is always back-face culled). The cooked flag is still parsed so
+		// existing paks load, but it has no effect (see MakePipelineStateForMaterial).
 		bool doubleSided = false;
 		bool castsShadows = true;
 		ShaderLodPolicy shaderLod{};
@@ -177,9 +179,8 @@ namespace smvk {
 
 		bool isTransparent() const noexcept { return alphaMode == AlphaMode::Blend; }
 		bool isCutout() const noexcept { return alphaMode == AlphaMode::Mask; }
-		bool isDoubleSided() const noexcept { return doubleSided; }
 
-		void rebuildPipeline() { pipeline = MakePipelineStateForMaterial(alphaMode, doubleSided, shadingModel); }
+		void rebuildPipeline() { pipeline = MakePipelineStateForMaterial(alphaMode, shadingModel); }
 	};
 
 

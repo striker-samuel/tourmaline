@@ -75,7 +75,7 @@ typedef enum CullFlagBits {
 	CullFlagBit_Frustum = 0x8,
 	CullFlagBit_SmallPrim = 0x20,
 	// HZB occlusion (T4): per-cluster sphere test against the MIN-reduced
-	// depth pyramid. Facing-agnostic: applies to two-sided draws too.
+	// depth pyramid. Facing-agnostic: applies to every draw alike.
 	CullFlagBit_HzbOcclusion = 0x40,
 	// Exclude MASK (alpha-tested) draws from the HZB occlusion test.
 	// The MIN-reduced pyramid stores the NEAREST sub-texel per coarse
@@ -97,11 +97,6 @@ typedef enum CullFlagBits {
 typedef uint32_t CullFlags;
 
 // Per-draw flags (stored in Draw::flags / HLSL GfxDraw misc.y).
-// TwoSided (double-sided material, raster Cull None): backface and
-// normal-cone culling are disabled for the draw (both would otherwise
-// delete geometry the rasterizer is supposed to keep). Frustum,
-// degenerate and small-prim tests still apply.
-inline constexpr uint32_t DrawFlagBit_TwoSided = 0x1;
 // Scene::ditherCloseup fade band this frame (DitherCloseupStateFor ==
 // Fade at PushDraw time; see DrawSetBit_Masked - Fade draws also route
 // into the masked bucket so the alpha-tested depth/shadow legs can
@@ -122,7 +117,7 @@ inline constexpr uint32_t DrawFlagBit_Skinned = 0x4;
 typedef uint32_t DrawFlags;
 // Draw-set buckets: geometry grouped by properties that affect
 // rasterization (Alan Wake 2 style). The seed depth pass (T3) issues one
-// PSO per bucket (opaque single-sided vs. alpha-tested double-sided);
+// PSO per bucket (opaque vs. alpha-tested);
 // views accept a mask of buckets (main view: all, shadows later).
 inline constexpr uint32_t DrawSetBit_Opaque = 0x1;
 inline constexpr uint32_t DrawSetBit_Masked = 0x2;
@@ -186,7 +181,7 @@ static_assert(sizeof(LmChartXform) == 16);
 struct alignas(16) Draw {
 	glm::mat4 model{};
 	uint32_t mesh = 0;
-	uint32_t flags = 0; // DrawFlags (bit 0 = two-sided: skip backface/cone cull)
+	uint32_t flags = 0; // DrawFlags (bit 2 = skinned, bit 1 = dither-closeup)
 	uint32_t drawSet = DrawSetBit_Opaque; // DrawSetBits bucket (seed PSO select)
 	// Lightmap chunk (HLSL GfxDraw.misc.w; 0xFFFFFFFF = none). Cooked per
 	// mesh with --lightmap; the filtered VS passes it flat to the lit
@@ -381,8 +376,6 @@ static_assert(sizeof(DrawCullPush) == 136);
 // and the chart atlas transforms ride the lmXforms buffer (indexed by
 // GfxDraw.misc2.x + the vertex chart id).
 static constexpr uint32_t kFilteredVsPushOffset = 192;
-// TEMP bisect: push the pre-skinning 32B tail at every record site.
-static constexpr uint32_t kFilteredVsPushBaseSize = 32;
 struct FilteredVsPush {
 	uint64_t draws = 0;
 	uint64_t renderViews = 0;
@@ -426,8 +419,8 @@ static_assert(sizeof(FilteredVsPush) == 48);
 // pre-culled (BuildBatches); the mesh shader runs the per-triangle
 // CullTriangle tests and compacts via wave prefix sums. Eligibility lives
 // on the CPU (RecordMeshMain partitions eligible batches per variant —
-// opaque, single-sided, variant twin exists; the indexed loop skips
-// exactly those ranges). Masked/two-sided/motion/seed/shadow stay indexed.
+// opaque, variant twin exists; the indexed loop skips
+// exactly those ranges). Masked/motion/seed/shadow stay indexed.
 inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hlsl.spv";
 inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
 
@@ -471,7 +464,9 @@ struct GfxMeshParams {
 static_assert(sizeof(GfxMeshParams) == 232);
 
 // Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
-// the record pushes this after the 32B FilteredVsPush tail at 192).
+// deliberately OVERLAYS the FilteredVsPush tail's VS-skin fields — the mesh
+// legs never execute a VS, and the mesh shader reads its deformed pair from
+// the GfxMeshParams blob, so the shared bytes are mutually exclusive).
 // paramsAddress is identical for every span of the frame (one params
 // upload — per-span uploads to the same buffer race transfer writes
 // against graphics reads); listBase/listCount slice this dispatch.
@@ -484,12 +479,11 @@ struct MeshTailPush {
 static_assert(sizeof(MeshTailPush) == 16);
 
 // Draw-side mesh eligibility (the variant/program side is resolved by the
-// caller via MeshProgramFor): opaque draw-set, single-sided. Exact with
+// caller via MeshProgramFor): opaque draw-set. Exact with
 // nothing on the shader side — the shader trusts its CPU-partitioned list.
 inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
+	(void)drawFlags;
 	if (drawSet != DrawSetBit_Opaque)
-		return false;
-	if ((drawFlags & DrawFlagBit_TwoSided) != 0)
 		return false;
 	return true;
 }
@@ -1137,13 +1131,12 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	uint32_t lmChunk = 0xFFFFFFFFu, uint32_t lmChartOffset = 0);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
-// twoSided skips the normal-cone (backface) part; the sphere-vs-frustum
-// part always runs. The cone test runs in world space (apex via model,
-// axis via inverse-transpose) so mirrored / non-uniform instances cull
-// the same side the rasterizer keeps.
+// The normal-cone (backface) and sphere-vs-frustum parts always run. The
+// cone test runs in world space (apex via model, axis via inverse-transpose)
+// so mirrored / non-uniform instances cull the same side the rasterizer keeps.
 bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
-	const RenderView& renderView, bool twoSided = false);
+	const RenderView& renderView);
 // Pure-CPU batch expansion: sorts draws by material, expands every
 // (draw x cluster) candidate (no pre-cull — gfxbatchcull owns verdicts),
 // fills batches/drawConstants/materialRanges/stats. No GPU upload (called

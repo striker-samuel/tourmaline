@@ -14,9 +14,9 @@
 // port from gfxfilter.cs.hlsl) and compacts via wave prefix sums.
 //
 // Eligibility lives on the CPU (RecordMeshMain partitions eligible
-// batches per FS variant — opaque, single-sided, variant twin exists;
+// batches per FS variant — opaque, variant twin exists;
 // the indexed loop skips exactly those ranges). The shader trusts its
-// list and only bounds-checks. Masked/two-sided/motion/seed/shadow draws
+// list and only bounds-checks. Masked/motion/seed/shadow draws
 // stay indexed.
 //
 // Varyings match gfxfiltered.vert.hlsl VSOut EXACTLY (locations 0..6 +
@@ -82,7 +82,7 @@ struct MeshVert
 // Per-triangle cull: verbatim port of CullTriangle (gfxfilter.cs.hlsl),
 // reading limits from the params blob instead of the filter push.
 bool MeshCullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2,
-    bool twoSided, uint cullFlags, uint width, uint height)
+    uint cullFlags, uint width, uint height)
 {
     bool cull = false;
 
@@ -92,7 +92,7 @@ bool MeshCullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2,
             cull = true;
     }
 
-    if ((cullFlags & GFX_CULL_BACKFACE) != 0 && !twoSided)
+    if ((cullFlags & GFX_CULL_BACKFACE) != 0)
     {
         if (clip0.w > 0.0f && clip1.w > 0.0f && clip2.w > 0.0f)
         {
@@ -226,14 +226,6 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
     bool survive[GFX_MESH_TRIS_PER_LANE];
     uint3 tri[GFX_MESH_TRIS_PER_LANE];
     float4 clip[GFX_MESH_TRIS_PER_LANE][3];
-    bool twoSided = (draw.misc.y & GFX_DRAW_TWOSIDED) != 0;
-    // SKINNED draws (the Northlight compute path): the DEFORMED heap
-    // holds this frame's animated pos (the skinning pass wrote it);
-    // the cull runs against the DEFORMED positions - the animated pose,
-    // not the bind pose (the Northlight order: the skinning pass feeds
-    // the culling). Static draws fetch the bind-pose heaps. (No null-BDA
-    // check: the MMU-fault rule - the CPU sets GFX_DRAW_SKINNED only
-    // when the params carry a valid deformed buffer.)
     // SKINNED draws (the Northlight compute path): the DEFORMED heap
     // holds this frame's animated pos (the skinning pass wrote it);
     // the cull runs against the DEFORMED positions - the animated pose,
@@ -276,7 +268,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                 clip[r][k] = mul(P.viewProj, mul(draw.model, float4(p, 1.0f)));
             }
             survive[r] = !MeshCullTriangle(tri[r], clip[r][0], clip[r][1], clip[r][2],
-                twoSided, P.cullFlags, P.width, P.height);
+                P.cullFlags, P.width, P.height);
         }
     }
 

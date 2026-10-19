@@ -649,20 +649,20 @@ void TestPreCull() {
 }
 
 // ---------------------------------------------------------------------------
-// T5: two-sided draws skip backface (cone) culling; mirrored instances
-// agree with the rasterizer (world-space cone test). The build emits
-// every candidate in both cases (verdicts are the GPU's); the cone
-// behavior below is pinned against CullCluster directly.
+// T5: cone-cull contracts — the CPU builder emits every candidate
+// regardless of facing (cone verdicts are the GPU's); the cone math
+// (world-space, mirror-aware) is pinned against CullCluster directly.
+// (Two-sided draws are gone: every pipeline is back-face culled now.)
 // ---------------------------------------------------------------------------
 
-void TestTwoSided() {
+void TestConeCull() {
 	using namespace smvk::gfx;
 	State s{};
 	const auto up = MakeSphere(24, 36, 1.0f);
 	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
-	Check(m == 0, "gfx.twosided.mesh-id");
+	Check(m == 0, "gfx.cone.mesh-id");
 	const uint32_t clusterTotal = (uint32_t)s.clusters.size();
-	Check(clusterTotal > 10, "gfx.twosided.has-clusters");
+	Check(clusterTotal > 10, "gfx.cone.has-clusters");
 
 	smvk::RenderViewSet views;
 	views.NewFrame();
@@ -672,11 +672,9 @@ void TestTwoSided() {
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
-	// Single- and two-sided draws alike emit every candidate here
-	// (cone verdicts are the GPU's; the whole sphere is inside the
-	// frustum from here) — the behavioral difference rides the draw
-	// flags below, the cone math is pinned against CullCluster after.
-	uint32_t singleKept = 0;
+	// A draw facing the sphere emits every candidate here (the whole
+	// sphere is inside the frustum from this eye) — BuildBatches does no
+	// cone pre-cull; the verdicts are the GPU's.
 	{
 		s.views.clear();
 		s.viewCount = 0;
@@ -690,9 +688,10 @@ void TestTwoSided() {
 		s.viewCount = 1;
 		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
 		BuildBatches(s, 0);
-		singleKept = s.views[0].batchCount;
+		Check(s.views[0].batchCount == clusterTotal, "gfx.cone.no-cpu-cull");
 	}
-	// ...and a two-sided draw of the same mesh emits the same set.
+	// Draw flags survive into draw constants (the GPU reads misc.y from
+	// these; skinned is the example flag — two-sided no longer exists).
 	{
 		s.views.clear();
 		s.viewCount = 0;
@@ -704,20 +703,12 @@ void TestTwoSided() {
 		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
 		s.views.push_back(std::move(v));
 		s.viewCount = 1;
-		PushDraw(s, 0, m, glm::mat4(1.0f), 0, DrawFlagBit_TwoSided);
+		PushDraw(s, 0, m, glm::mat4(1.0f), 0, DrawFlagBit_Skinned);
 		BuildBatches(s, 0);
 		const View& out = s.views[0];
-#ifndef NDEBUG
-		std::cout << "[gfx.twosided] single=" << singleKept
-			<< " double=" << out.batchCount << " total=" << clusterTotal << "\n";
-#endif
-		Check(singleKept == clusterTotal, "gfx.twosided.single-keeps-all");
-		Check(out.batchCount == clusterTotal, "gfx.twosided.double-keeps-all");
-		Check(out.batchCount == singleKept, "gfx.twosided.no-cpu-cull");
-		// Flags survive into draw constants (the GPU reads misc.y from these).
-		Check(out.drawConstants.size() == 1, "gfx.twosided.one-drawconst");
-		Check((out.drawConstants[0].flags & DrawFlagBit_TwoSided) != 0,
-			"gfx.twosided.flag-in-drawconst");
+		Check(out.drawConstants.size() == 1, "gfx.cone.one-drawconst");
+		Check((out.drawConstants[0].flags & DrawFlagBit_Skinned) != 0,
+			"gfx.cone.flag-in-drawconst");
 	}
 
 	// Mirrored instance: a z-mirror flips the cone axis to face the eye,
@@ -739,11 +730,9 @@ void TestTwoSided() {
 	const glm::mat4 ident(1.0f);
 	const glm::mat4 mirror = glm::scale(ident, glm::vec3(1.0f, 1.0f, -1.0f));
 	Check(CullCluster(c, ident, glm::inverse(ident), eye2, renderView2),
-		"gfx.twosided.mirror-away-culls");
+		"gfx.cone.mirror-away-culls");
 	Check(!CullCluster(c, mirror, glm::inverse(mirror), eye2, renderView2),
-		"gfx.twosided.mirror-keeps");
-	Check(!CullCluster(c, ident, glm::inverse(ident), eye2, renderView2, true),
-		"gfx.twosided.flag-skips-cone");
+		"gfx.cone.mirror-keeps");
 }
 
 // ---------------------------------------------------------------------------
@@ -909,7 +898,7 @@ void TestSeedCommands() {
 	// Mixed buckets, shuffled materials: opaque must come first.
 	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
 	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
-	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, DrawFlagBit_TwoSided, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, DrawFlagBit_Skinned, DrawSetBit_Opaque);
 	BuildBatches(s, 0);
 	Check(s.views[0].batchCount == 3, "gfx.seed.three-batches");
 	SnapshotVisible(s, 0);
@@ -2060,7 +2049,7 @@ int main() {
 	TestLobeGrouping();
 	TestDemandPlumbing();
 	TestPreCull();
-	TestTwoSided();
+	TestConeCull();
 	TestTemporalSnapshot();
 	TestHizLayout();
 	TestSeedCommands();

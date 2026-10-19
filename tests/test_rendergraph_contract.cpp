@@ -6,10 +6,12 @@
 // these pin the parts that are pure logic so refactors fail fast:
 //
 //   1. Overlay-scratch discipline: every VS tail push lives in bytes
-//      192..256 of IRenderer::PushConstants and fits (filtered 32B at 192,
-//      mesh tail 16B at 224, uvflat 16B at 192, placement 32B at 192).
-//   2. Mesh eligibility: MeshDrawEligible truth table (opaque-only,
-//      single-sided) — the CPU partition feeds DrawMeshTasks exactly the
+//      192..256 of IRenderer::PushConstants and fits (filtered 48B at 192
+//      — 32B base + the 16B VS-skin tail at 224, whose bytes the mesh tail
+//      re-pushes: mutually exclusive legs — mesh tail 16B at 224, uvflat
+//      16B at 192, placement 32B at 192).
+//   2. Mesh eligibility: MeshDrawEligible truth table (opaque-only) —
+//      the CPU partition feeds DrawMeshTasks exactly the
 //      ranges the indexed loop skips (exactly-once).
 //   3. GPU-driven culling is the only path (no kill switch, no legacy
 //      CPU regime); RunConfig mesh default ON.
@@ -53,7 +55,7 @@ int main() {
 
 	// 1. Overlay-scratch discipline.
 	Check(smvk::gfx::kFilteredVsPushOffset == kScratchStart, "contract.filtered-offset-192");
-	Check(sizeof(smvk::gfx::FilteredVsPush) == 32, "contract.filtered-size-32");
+	Check(sizeof(smvk::gfx::FilteredVsPush) == 48, "contract.filtered-size-48");
 	Check(smvk::gfx::kFilteredVsPushOffset + sizeof(smvk::gfx::FilteredVsPush) <= kScratchEnd,
 		"contract.filtered-fits-scratch");
 	Check(smvk::gfx::kMeshTailPushOffset == 224, "contract.meshtail-offset-224");
@@ -67,18 +69,19 @@ int main() {
 	Check(sizeof(smvk::placement::PlacementVsPush) == 32, "contract.placement-size-32");
 	Check(smvk::placement::kPlacementVsPushOffset + sizeof(smvk::placement::PlacementVsPush) <= kScratchEnd,
 		"contract.placement-fits-scratch");
-	// Mesh tail stacks after the filtered tail (192+32=224).
+	// The mesh tail OVERLAYS the filtered tail's trailing 16B (the VS-skin
+	// fields): the mesh legs never execute a VS (their deformed pair rides
+	// the GfxMeshParams blob), so the shared bytes are mutually exclusive
+	// legs — pin the exact overlay (same start, same end).
 	Check(smvk::gfx::kMeshTailPushOffset
-		== smvk::gfx::kFilteredVsPushOffset + sizeof(smvk::gfx::FilteredVsPush),
-		"contract.meshtail-stacks-after-filtered");
-	Check(sizeof(smvk::gfx::GfxMeshParams) == 224, "contract.meshparams-224");
+		== smvk::gfx::kFilteredVsPushOffset + sizeof(smvk::gfx::FilteredVsPush)
+			- sizeof(smvk::gfx::MeshTailPush),
+		"contract.meshtail-overlays-filtered-skin-tail");
+	Check(sizeof(smvk::gfx::GfxMeshParams) == 232, "contract.meshparams-232");
 
 	// 2. Mesh eligibility truth table.
 	Check(smvk::gfx::MeshDrawEligible(smvk::gfx::DrawSetBit_Opaque, 0),
-		"contract.mesh-opaque-singlesided");
-	Check(!smvk::gfx::MeshDrawEligible(smvk::gfx::DrawSetBit_Opaque,
-		smvk::gfx::DrawFlagBit_TwoSided),
-		"contract.mesh-twosided-excluded");
+		"contract.mesh-opaque");
 	Check(!smvk::gfx::MeshDrawEligible(smvk::gfx::DrawSetBit_Masked, 0),
 		"contract.mesh-masked-excluded");
 	Check(!smvk::gfx::MeshDrawEligible(0, 0), "contract.mesh-empty-set-excluded");

@@ -13,7 +13,7 @@
 // zero outputs (SetMeshOutputCounts(0, 0)).
 //
 // Eligibility contract (EXACT on both sides, or draws double/drop):
-// a batch is mesh-drawn iff draw.drawSet == OPAQUE && !twoSided &&
+// a batch is mesh-drawn iff draw.drawSet == OPAQUE &&
 // !giActive && !(lobe in {5,6,9,12} with the sg twin built). The CPU
 // skips exactly those material ranges in the indexed loop; the mesh
 // shader gates each batch on the same predicate from the same inputs

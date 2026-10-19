@@ -13,7 +13,7 @@
 //      of its candidate slots (no stale kept bits, no stale commands).
 //   2. per-cluster sphere vs the same planes + world-space normal-cone
 //      rejection (GfxConeCulled — the C++ CullCluster port; skipped for
-//      two-sided draws and degenerate cones).
+//      degenerate cones).
 //   3. temporal verdicts, all GPU-resident (zero CPU readbacks): the
 //      kept-bit parity ring holds the previous frame chain's verdicts
 //      (written MAX_FRAMES_IN_FLIGHT frames ago — flight-fenced complete).
@@ -97,7 +97,6 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     }
     GroupMemoryBarrierWithGroupSync();
 
-    const bool twoSided = (d.misc.y & GFX_DRAW_TWOSIDED) != 0;
     // Skinned draws cull against the DEFORMED bounds (GfxSkinBounds wrote
     // one GfxClusterData per candidate slot earlier this frame), not the
     // static bind-pose sphere: a pose that swings a cluster out of its
@@ -129,7 +128,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
             float3 worldC = mul(d.model, float4(c.b.xyz, 1.0f)).xyz;
             kept = GfxSphereInPlanes(gsPlanes, worldC, c.b.w * gsBasis);
         }
-        if (kept && !twoSided)
+        if (kept)
             kept = !GfxConeCulled(c, d.model, pcB.eye);
         if (kept)
             InterlockedMin(gsFirstKept, ci);

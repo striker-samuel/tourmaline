@@ -353,7 +353,7 @@ namespace engine {
 		if (MeshProgramFor(giActive, giVariant, r.lobeCount,
 				MaterialLayered(r.material)) == nullptr)
 			return false;
-		// Every batch's draw opaque + single-sided (a mixed range stays
+		// Every batch's draw opaque (a mixed range stays
 		// fully indexed, never split — the record partitions exactly the
 		// batches of eligible ranges).
 		const smvk::gfx::View& v = gfx.views[slot];
@@ -508,8 +508,8 @@ namespace engine {
 			cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 		}
 		// Phase 2: MASK cutout (alpha-tested FS). Cull follows the material
-		// raster: single-sided cutout must not write backface depth the
-		// shaded pass never draws; double-sided keeps Cull None.
+		// raster (always back-face cull now): cutout must not write
+		// backface depth the shaded pass never draws.
 		for (size_t ri = 0; ri < ranges.size(); ++ri) {
 			const smvk::gfx::SeedRange& r = ranges[ri];
 			if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
@@ -757,7 +757,7 @@ namespace engine {
 		}
 		// Phase 2: MASK cutout casters (alpha-tested FS — masked cutout casts
 		// leaf-shaped shadows). Cull follows the material raster, matching
-		// the main view (single-sided cutout has no backface depth anywhere).
+		// the main view (cutout has no backface depth anywhere).
 		for (const smvk::gfx::SeedRange& r : ranges) {
 			if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
 				continue;
@@ -1338,16 +1338,12 @@ namespace engine {
 					}
 				}
 			}
-			// Double-sided materials bind with Cull None (see
-			// bindForMaterial): the filter must not backface/cone-cull
-			// them or foliage/cutout backs vanish. The draw-set bucket
-			// (opaque vs. alpha-tested) selects the seed depth PSO in T3.
+			// The draw-set bucket (opaque vs. alpha-tested) selects the
+			// seed depth PSO in T3.
 			smvk::gfx::DrawFlags drawFlags = 0;
 			smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
 			uint32_t lmChunk = 0xFFFFFFFFu;
 			if (const smvk::Material* mat = world.GetMaterial(item.material)) {
-				if (mat->isDoubleSided())
-					drawFlags |= smvk::gfx::DrawFlagBit_TwoSided;
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
@@ -1509,7 +1505,8 @@ namespace engine {
 		tail.renderViews = renderViewsAddr;
 		tail.renderViewIndex = renderViewIndex;
 		tail.lmXforms = lmXformsAddr_;
-		// The VS-skin tail fields (bytes 224..256): the SKINNED fetch
+		// The VS-skin tail fields (bytes 224..240, the tail's trailing 16B):
+		// the SKINNED fetch
 		// swap's inputs, carried DIRECTLY (never through a
 		// GfxMeshParamsData pointer - the chain wedges the NV pipeline
 		// compiler; see FilteredVsPush's comment).
@@ -1560,7 +1557,8 @@ namespace engine {
 		tail.draws = drawsAddr;
 		tail.renderViews = renderViewsAddr;
 		tail.renderViewIndex = renderViewIndex;
-		// The VS-skin tail fields (bytes 224..256), shared with the lit
+		// The VS-skin tail fields (bytes 224..240, the tail's trailing 16B),
+		// shared with the lit
 		// leg (gfxseed.hlsli's SeedVsMainPush mirrors the layout): the
 		// SKINNED depth/shadow fetch swap reads the deformed pos through
 		// them. The fields are view-independent (the eternal heaps + the

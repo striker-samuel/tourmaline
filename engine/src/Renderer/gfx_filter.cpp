@@ -1577,13 +1577,11 @@ static float MaxBasisScale(const glm::mat4& m) {
 // answer under negative-determinant transforms).
 bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
-	const RenderView& renderView, bool twoSided) {
+	const RenderView& renderView) {
 	const glm::vec3 worldCenter = glm::vec3(model * glm::vec4(c.boundCenter, 1.0f));
 	const float worldRadius = c.boundRadius * MaxBasisScale(model);
 	if (!RenderViewIntersectsSphere(renderView, worldCenter, worldRadius))
 		return true;
-	if (twoSided)
-		return false; // double-sided raster keeps both facings: no cone cull
 	const glm::vec3 worldApex = glm::vec3(model * glm::vec4(c.coneApex, 1.0f));
 	// Normal transform (inverse-transpose, direction only, renormalized).
 	const glm::vec3 axisW =
@@ -2650,8 +2648,8 @@ void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	const uint32_t f = v.frameIndex;
 	uint64_t drawsBDA = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
 
-	// Opaque single-sided state (mirrors bindForMaterial for standard
-	// opaque materials: Cull Back + Opaque blend; masked/two-sided draws
+	// Opaque state (mirrors bindForMaterial for standard
+	// opaque materials: Cull Back + Opaque blend; masked draws
 	// never reach this dispatch — see MeshDrawEligible).
 	cmd.BindRenderPipeline(
 		meshProg,
@@ -2666,10 +2664,11 @@ void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
 	tail.lmXforms = lmXformsAddr;
-	// The VS-skin tail fields (bytes 224..256): the MeshTailPush below
-	// re-pushes 224..240 (paramsAddress + listBase/listCount - the mesh
-	// legs never execute a VS, so the overlap is harmless) and 240..256
-	// survives (vsDeformed + base).
+	// The VS-skin tail fields (bytes 224..240, the tail's trailing 16B): the
+	// MeshTailPush below re-pushes the SAME bytes (paramsAddress +
+	// listBase/listCount) - the mesh legs never execute a VS, and the mesh
+	// shader reads its deformed pair from the GfxMeshParams blob, so the
+	// overlay is harmless (mutually exclusive legs).
 	FillVsSkinTail(tail, s);
 	cmd.PushConstants(kFilteredVsPushOffset, sizeof(tail), &tail, ShaderStage::All);
 	MeshTailPush ext{};

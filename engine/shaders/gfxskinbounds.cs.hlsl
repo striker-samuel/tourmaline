@@ -23,8 +23,8 @@
 // The normal cone is NOT rebuilt: the animated normals could yield a
 // different cone, but the cone test is a pure fast-reject (a wrong cone can
 // only drop visible geometry), so the conservative choice is a DEGENERATE
-// cone (axis 0 -> GfxConeCulled's len2 < 1e-12 keep). Two-sided draws were
-// already cone-exempt; single-sided skinned draws just lose the free reject.
+// cone (axis 0 -> GfxConeCulled's len2 < 1e-12 keep). Skinned draws just
+// lose the free reject.
 //
 // C++ mirror: Engine/Renderer/gfx_filter.h (GfxSkinBoundsPush).
 

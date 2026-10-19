@@ -1920,7 +1920,7 @@ public:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	engine::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
-	// Task-less mesh-shader main leg (opaque single-sided ranges, mesh
+	// Task-less mesh-shader main leg (opaque ranges, mesh
 	// FS twins for base/sg/gi variants). False or unsupported device =
 	// indexed multi-draws (CPU fallback).
 	bool m_useGfxMesh = true;
