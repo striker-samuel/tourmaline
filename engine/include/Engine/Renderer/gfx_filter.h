@@ -977,6 +977,16 @@ struct State {
 	// (GFX_DRAW_SKINNED never sets, every fetch stays static).
 	uint64_t skinDeformedBda = 0;
 	uint32_t skinDeformedBase = UINT32_MAX;
+	// The PREV parity half (last frame's cur half of the SAME deformed
+	// double buffer - the driver flips a per-frame parity and captures
+	// the old cur here before overwriting). skinPrevValid gates it: 1
+	// only while consecutive frames ran the skinning on the same heap
+	// (same buffer + same span base); the FIRST animated frame, a heap
+	// rebuild or a skinning gap leaves 0 and the motion leg falls back
+	// to zero mesh motion (cur == prev). Read by the motion vector tail
+	// only (FillMotionPrevTail) - every render fetch stays cur-only.
+	uint64_t skinDeformedPrevBda = 0;
+	uint32_t skinPrevValid = 0;
 	// GfxSkinBounds: recomputes each SKINNED cluster's object-space sphere
 	// from the frame's deformed heap (the static clusters[] stays bind-pose)
 	// BEFORE the batch cull reads it - so the cull sees the ANIMATED
@@ -1368,6 +1378,28 @@ inline void FillVsSkinTail(FilteredVsPush& tail, const State& s) {
 	tail.vsDeformedBase = s.skinDeformedBase;
 	tail.paramsValid = (s.skinDeformedBda != 0
 		&& s.skinDeformedBase != UINT32_MAX) ? 1u : 0u;
+}
+
+// Motion-leg PREV tail (gfxfilteredmotion.vert.hlsl bytes 240..256, the
+// free prevModel scratch's last 16B — the cur pair at 192..240 arrives for
+// free via PushViewConstants inside PushMotionViewConstants: the motion VS
+// re-declares the FilteredVsPush fields it reads instead of padding over
+// them). Mirrors the HLSL FilteredMotionPush's prev fields exactly.
+static constexpr uint32_t kFilteredMotionPrevTailOffset = 240;
+struct FilteredMotionPrevTail {
+	uint64_t vsPrevDeformed = 0; // the PREV parity half (last frame's pose)
+	uint32_t vsPrevValid = 0;     // 1 = the prev half holds last frame's pose
+	uint32_t pad = 0;
+};
+static_assert(sizeof(FilteredMotionPrevTail) == 16);
+
+// Fills the motion leg's PREV tail from the State (the cur pair rides the
+// FilteredVsPush via FillVsSkinTail). prevValid: consecutive skinning runs
+// on the same heap — the first animated frame / a rebuild / a gap falls
+// back to zero mesh motion in the VS (prevPos == curPos).
+inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
+	tail.vsPrevDeformed = s.skinDeformedPrevBda;
+	tail.vsPrevValid = s.skinPrevValid;
 }
 
 [[nodiscard]] inline BufferHandle DrawBuffer(const State& s, uint32_t view) {

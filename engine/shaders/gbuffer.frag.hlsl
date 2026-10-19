@@ -34,6 +34,14 @@ struct PSIn
     // the VS outputs).
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
+    // The lit family's double-sided flip (default_lit_body.hlsli): the
+    // masked phases bind material-following cull (None for cutout cloth),
+    // so back-facing fragments reach here carrying away-pointing
+    // interpolated normals. The G-buffer MUST flip like the lit FS or the
+    // stored oct normal is inside-out for those faces and every
+    // G-buffer consumer (the SSR/SSGI traces) marches reflections off
+    // inverted normals — "broken cloth normals, one side of the scene".
+    bool isFrontFace : SV_IsFrontFace;
 };
 
 struct PSOut
@@ -74,6 +82,8 @@ PSOut mainPS(PSIn IN)
     }
     const float metalFlag = (saturate(metallic) >= 0.50f) ? 1.0f : 0.0f;
     float3 n = normalize(IN.normal);
+    if (!IN.isFrontFace)
+        n = -n; // the lit family's back-face flip (see PSIn)
     OUT.gbuffer = float4(OctEncodeNormal(n),
         clamp(roughness, 0.04f, 1.0f), metalFlag);
     return OUT;

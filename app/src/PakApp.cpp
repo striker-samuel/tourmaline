@@ -376,6 +376,35 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 			MarkSubtreeStatic(clusterPtr->scene, 0);
 	}
 	world->ResolveAndFixup_clusters();
+	// SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
+	// check scene is the target): every opaque lit material's roughness
+	// -> 0.04 (the shader-side clamp floor - a dielectric mirror). The
+	// sponza floor's cooked roughness leaves a legitimate but FAINT
+	// dielectric reflection lobe (grazing F0 ~0.04) that is easy to
+	// misread as "SSR contributes nothing"; the wax makes every
+	// receiver - the floor especially, its grazing-angle pillar
+	// reflections - a mirror so the trace's hit/miss + the compose are
+	// plainly visible (the chrome ball stays the calibrated reference).
+	// AFTER ResolveAndFixup (the material location table is the resolve's
+	// product); the mutations flow to the GPU per frame through
+	// UpdateMaterials' world reads.
+	if (const char* waxEnv = std::getenv("TOURMALINE_SSR_WAX");
+		waxEnv && *waxEnv && *waxEnv != '0') {
+		uint32_t waxed = 0, total = 0;
+		for (uint32_t mi = 0;; ++mi) {
+			smvk::Material* m = world->GetMaterial(mi);
+			if (!m)
+				break;
+			++total;
+			if (m->shadingModel != smvk::ShadingModel::DefaultLit
+				|| m->alphaMode != smvk::AlphaMode::Opaque)
+				continue;
+			m->values.params.z = 0.04f; // roughness -> the clamp floor
+			++waxed;
+		}
+		std::cerr << "[Scene] SSR wax: " << waxed << "/" << total
+			<< " opaque lit materials -> roughness 0.04 (mirror)\n";
+	}
 	if (std::getenv("TOURMALINE_KD")) {
 		int n = 0;
 		for (auto& [node, meshIdx] : world->scene.meshForNode) {
@@ -524,16 +553,38 @@ int RunPakApp(PakAppConfig cfg) {
 	// entity-system phase, then this call seeds them through the world
 	// instead.
 	renderer.SetDemoContentEnabled(true);
-	// --no-dlss: suppress the Streamline load BEFORE the app runs
-	// (App::Initialize consults the flag before DlssStartup /
-	// pointing volk at the interposer — after that the decision is locked
-	// in) and force the mode off so no feature evaluation happens either.
-	// This is the RenderDoc-safe configuration.
-	if (cfg.noDlss) {
+	// --no-dlss / --capture (the latter implies the former): suppress the
+	// Streamline load BEFORE the app runs (App::Initialize consults the
+	// flag before DlssStartup / pointing volk at the interposer — after
+	// that the decision is locked in) and force the mode off so no feature
+	// evaluation happens either. This is the RenderDoc-safe configuration.
+	// Low latency (NVIDIA Reflex / PCL) needs no separate switch here:
+	// VK_NV_low_latency2 is enabled only while Streamline is loaded
+	// (VulkanCore gates it on DlssAvailable()) and the PCL marker entry
+	// points are silent no-ops without the interposer — no interposer,
+	// no low-latency queue state, no markers.
+	if (cfg.noDlss || cfg.capture) {
 		smvk::DlssSetStartupEnabled(false);
 		renderer.SetDlssMode(smvk::DlssMode::Off);
-		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
+		std::cerr << "[DLSS] disabled (" << (cfg.capture ? "--capture implies it" : "--no-dlss")
+			<< "): Streamline interposer not loaded\n";
 	}
+	// --capture: the one flag for the full RenderDoc launch configuration.
+	// What breaks captures, and where each piece goes down:
+	//   - DLSS / Streamline: the interposer sits in the Vulkan call chain
+	//     and NGX evaluates from cubins RenderDoc cannot replay — crashes
+	//     on capture (the gate above, implied from --no-dlss).
+	//   - Low latency (Reflex / PCL): rides the same gate (see above) —
+	//     not a separately switchable path.
+	//   - Optick: forced off below, where the profiler gates are set
+	//     before Run() (the GPU profiler's fence-based flip interleaves
+	//     its own command-buffer submits with the frame — captures break
+	//     with them in the mix).
+	// Present mode is left alone (RenderDoc hooks any present mode); the
+	// TOURMALINE_CAPTURE env pin (PNG screenshot export) is unrelated.
+	if (cfg.capture)
+		std::cerr << "[Capture] RenderDoc config: DLSS/Streamline off,"
+			" low latency (Reflex/PCL) off with it, Optick forced off\n";
 	if (cfg.disableControl) {
 		element->SetDisableControl(true);
 		std::cerr << "[Scene] camera control disabled (--disable_control)\n";
@@ -604,10 +655,20 @@ int RunPakApp(PakAppConfig cfg) {
 	element.reset();
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the
-	// warmup frames. --use_optick_gpu implies --use_optick.
-	smvk::profiler::SetEnabled(cfg.useOptick);
-	if (cfg.useOptickGpu)
-		smvk::profiler::SetGpuEnabled(true);
+	// warmup frames. --use_optick_gpu implies --use_optick. --capture
+	// force-disables both (the per-flip GPU submits break RenderDoc
+	// captures) and wins over --use_optick[_gpu] if both are given.
+	if (cfg.capture) {
+		smvk::profiler::SetEnabled(false);
+		smvk::profiler::SetGpuEnabled(false);
+		std::cerr << "[Capture] Optick off (CPU + GPU): per-flip submits"
+			" would break the capture\n";
+	}
+	else {
+		smvk::profiler::SetEnabled(cfg.useOptick);
+		if (cfg.useOptickGpu)
+			smvk::profiler::SetGpuEnabled(true);
+	}
 	try {
 		app.Run();
 	}

@@ -263,6 +263,18 @@ namespace smvk {
 		// skinned draws (a per-draw flag + the cluster's heap-base
 		// offset - one fetch swap, no per-vertex skin math in the draw
 		// shaders).
+		//
+		// The deformed buffer is a PARITY DOUBLE BUFFER (two halves of
+		// span bytes): the driver's per-frame parity flip makes the
+		// skinning pass write one half while every render fetch reads
+		// the cur half through the SAME BDA+offset arithmetic (the
+		// driver points skinDeformedBda at the cur half - no consumer
+		// changes), and the MOTION vector leg reads cur + PREV halves
+		// (this frame's + last frame's animated pose - skinned motion
+		// vectors, the SMAA T2x resolve / DLSS / motion blur history
+		// inputs). The prev half is only valid while consecutive frames
+		// ran the skinning on the same heap (the driver's validity
+		// tracking).
 		// ------------------------------------------------------------------
 		struct SkinnedMeshRange {
 			ClusterStaticMeshHandle mesh;
@@ -286,6 +298,13 @@ namespace smvk {
 		// deformed buffer). UINT32_MAX when nothing is skinned.
 		[[nodiscard]] uint32_t GetSkinnedDeformedVertexBase() const
 		{ return skinnedDeformedBase_; }
+		// ONE PARITY HALF of the deformed buffer, in bytes (the buffer
+		// holds two halves; the driver's parity flip picks cur, the
+		// motion leg reads cur + prev). The driver's BDA arithmetic:
+		// cur = buffer BDA + (parity ? span : 0). 0 when nothing is
+		// skinned.
+		[[nodiscard]] uint64_t GetSkinnedDeformedSpanBytes() const
+		{ return skinnedDeformedSpanBytes_; }
 		// The ranges table BDA (the compute pass's per-range
 		// (heapBase, count, skinBase) rows - static, uploaded at
 		// Ensure). 0 when nothing is skinned.
@@ -464,13 +483,15 @@ namespace smvk {
 		std::unordered_map<uint32_t, std::vector<VertexSkin>> skinStreams_;
 		// The Northlight compute-skinning GPU state (EnsureSkinnedGpuData):
 		// the per-mesh ranges + the skinned-stream buffer (static) + the
-		// deformed buffer (the per-frame output the draw paths fetch) +
-		// the deformed span's heap-id base + the ranges table buffer.
+		// deformed buffer (the per-frame output the draw paths fetch -
+		// TWO parity halves of span bytes) + the deformed span's heap-id
+		// base + the span bytes + the ranges table buffer.
 		std::vector<SkinnedMeshRange> skinnedRanges_;
 		Holder<BufferHandle> skinnedStream_;
 		Holder<BufferHandle> skinnedDeformed_;
 		Holder<BufferHandle> skinnedRangesBuf_;
 		uint32_t skinnedDeformedBase_ = UINT32_MAX;
+		uint64_t skinnedDeformedSpanBytes_ = 0;
 		bool skinnedGpuValid_ = false;
 		// The animation driver state: the attached clip + the time
 		// cursor (seconds, looping the clip duration).

@@ -423,13 +423,22 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 	const uint32_t span = maxEnd - minBase;
 
 	// 5 words per vertex: pos (3 uint words, reinterpreted floats) +
-	// normal + tangent (the packed oct words). The skinning pass writes
+	// normal and tangent (the packed oct words). The skinning pass writes
 	// them; the draw fetches map vi - skinnedDeformedBase_ into the span.
 	const size_t skinBytes = streamData.size() * sizeof(smvk::VertexSkin);
 	skinnedStream_ = ctx_->CreateBuffer(
 		skinBytes > 0 ? skinBytes : 4, BufferType_Storage, "skinned stream");
+	// The deformed buffer is a PARITY DOUBLE BUFFER (two halves of the
+	// span): the driver flips a per-frame parity and points the pass's
+	// deformed BDA at the cur half (every render fetch follows the BDA -
+	// no consumer arithmetic changes), while the motion vector leg reads
+	// cur + PREV halves for the skinned motion vectors (this frame's +
+	// last frame's animated pose - the SMAA T2x resolve / DLSS / motion
+	// blur histories need TRUE mesh motion; static-heap vectors ghosted
+	// every animated mesh through those temporal consumers).
 	const size_t deformBytes = size_t(span) * 5 * sizeof(uint32_t);
-	skinnedDeformed_ = ctx_->CreateBuffer(deformBytes, BufferType_Storage,
+	skinnedDeformedSpanBytes_ = deformBytes;
+	skinnedDeformed_ = ctx_->CreateBuffer(deformBytes * 2, BufferType_Storage,
 		"skinned deformed");
 	// The ranges table: (heapBase, count, skinBase) rows (the compute
 	// pass's per-range dispatch inputs; one workgroup per range).

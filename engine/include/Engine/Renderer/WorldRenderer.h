@@ -1704,6 +1704,16 @@ public:
 	// (the skinning block near the probe pre-mix append) runs per frame
 	// over the world's skinned clusters.
 	smvk::skinning::SkinVisual m_skinning{};
+	// The deformed heap's PARITY bookkeeping (the double-buffered
+	// deformed heap - see Cluster::EnsureSkinnedGpuData): the flip picks
+	// the half the skinning pass writes (every render fetch follows the
+	// cur BDA), and the last-run heap identity gates the PREV half's
+	// validity for the motion vector leg (consecutive runs on the same
+	// heap - a rebuild or a swap leaves the prev stale and the motion
+	// leg falls back to zero mesh motion).
+	uint32_t m_skinHeapParity = 0;
+	uint64_t m_skinLastHeapBda = 0;
+	uint32_t m_skinLastDeformedBase = UINT32_MAX;
 	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
 	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
 	struct CubemapProbeGpu {

@@ -13,7 +13,7 @@
 //   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
 //   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
-//   [--disable_control] [--no-dlss] [--use_optick] [--use_optick_gpu]
+//   [--disable_control] [--no-dlss] [--capture] [--use_optick] [--use_optick_gpu]
 
 #include <string>
 
@@ -42,6 +42,16 @@ struct PakAppConfig {
 	bool useOptick = false;
 	bool useOptickGpu = false;
 	bool noDlss = false;
+	// --capture: the one-flag RenderDoc launch configuration. Implies
+	// --no-dlss (Streamline out of the Vulkan call chain — low latency /
+	// Reflex / PCL ride that gate: VK_NV_low_latency2 is enabled only
+	// while Streamline is loaded, and the PCL markers are no-ops without
+	// the interposer) and force-disables Optick (CPU + GPU — the GPU
+	// profiler's fence-based flip interleaves its own command-buffer
+	// submits with the frame, which breaks captures). Wins over
+	// --use_optick[_gpu] if both are given. Unrelated to the
+	// TOURMALINE_CAPTURE env pin (PNG screenshot export at a frame).
+	bool capture = false;
 	// --no-vfs: mute the loose VFS discovery mounts (project root +
 	// content/) so the pak backend is the ONLY scene-content source.
 	// Proves the pak is self-contained: anything the pak lacks falls

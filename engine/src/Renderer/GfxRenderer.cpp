@@ -1622,6 +1622,17 @@ namespace engine {
 		PushViewConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex);
 		cmd.PushConstants(kFilteredMotionFrameUniformsOffset, sizeof(frameUniformsAddr),
 			&frameUniformsAddr, smvk::ShaderStage::All);
+		// The motion leg's PREV tail (bytes 240..256, past the
+		// FilteredVsPush tail the call above pushed at 192..240 — the
+		// motion VS reads the cur pair from THERE and its own prev pair
+		// from here): last frame's deformed half for the skinned motion
+		// vectors. Nothing else claims 240..256 in the motion pass (the
+		// direct motion legs push model/materialId/prevModel only, and
+		// the mesh legs never run a VS here).
+		smvk::gfx::FilteredMotionPrevTail prevTail{};
+		smvk::gfx::FillMotionPrevTail(prevTail, gfx);
+		cmd.PushConstants(smvk::gfx::kFilteredMotionPrevTailOffset,
+			sizeof(prevTail), &prevTail, smvk::ShaderStage::All);
 	}
 
 	void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,

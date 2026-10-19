@@ -6,26 +6,40 @@
 // motion pass reuses the GPU HZB cull (occluded clusters were zeroed to
 // indexCount 0 by the filter CS and are skipped by the indirect draw).
 //
-// Coarse whole-mesh strategy (option b): static geometry only. prevWorld is
-// assumed to equal the current model matrix, which is exact for static nodes
-// (the dominant case: camera moves, geometry doesn't) and matches the
-// direct path's prev==curr fallback on the first frame / scene rebuild.
-// Nodes whose model matrix moved since last frame are drawn by the direct
-// fallback in main.cpp (correct prevModel push) and skipped here by the
-// caller — dynamic objects never rely on this shader.
+// Static geometry: prevWorld == world (node transforms do not move; camera
+// motion falls out of prevViewProj - see the per-draw SKINNED swap below
+// for the one exception). Nodes whose model matrix moved since last frame
+// are drawn by the direct fallback (correct prevModel push) and skipped
+// here by the caller - dynamic transforms never rely on this shader.
+//
+// SKINNED draws (the Northlight compute path; misc.y bit 2 =
+// GFX_DRAW_SKINNED): cur + PREV positions from the parity DOUBLE-buffered
+// deformed heap - the true per-vertex mesh motion the temporal consumers
+// (SMAA T2x resolve history blending, DLSS, motion blur) need. The old
+// static-heap contract (prevPos == pos for everything) ghosted every
+// animated mesh through those consumers: the T2x resolve reprojected the
+// previous pose onto the current one at full history weight (a dimmed
+// ghost copy next to the sharp one). vsPrevValid gates the prev half (the
+// first animated frame / a heap rebuild / a skinning gap falls back to
+// zero mesh motion - prevPos == curPos, the old behavior for one frame).
 //
 // Push layout: bytes 0..192 are the scene push (preserved as pads, intact
 // for the motion fragment shader which reads materialId/frameUniforms from
-// offset 0 in its own module); bytes 192..216 are the 24B filtered VS tail
-// (draws + renderViews + renderViewIndex, see
-// smvk::gfx::kFilteredVsPushOffset, pushed by PushViewConstants); bytes
-// 216..224 carry the FrameUniforms BDA (pushed by PushMotionViewConstants
-// into the free prevModel scratch area). The FS never reads prevModel, so
-// overwriting it is safe. viewProj resolves through the render-view slab
-// (same as gfxfiltered.vert.hlsl); prevViewProj comes from FrameUniforms.
+// offset 0 in its own module); bytes 192..240 are the FilteredVsPush tail
+// (PushViewConstants - the SAME tail every filtered VS reads: this VS
+// re-declares the fields it consumes instead of padding over them,
+// including paramsValid at 212 and the VS-skin cur pair at 224..236);
+// bytes 216..224 carry the FrameUniforms BDA (overwriting the FilteredVsPush
+// lmXforms slot the motion VS never reads); bytes 240..256 are the
+// motion-only PREV tail (FilteredMotionPrevTail, pushed by
+// PushMotionViewConstants; nothing else claims 240..256 in the motion
+// pass). viewProj resolves through the render-view slab (same as
+// gfxfiltered.vert.hlsl); prevViewProj comes from FrameUniforms (the jitter
+// rides both sides - the resolve's exact reprojection).
 #define GFXFILTERED_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gfxmesh.hlsli"
 
 struct FilteredMotionPush
 {
@@ -35,16 +49,29 @@ struct FilteredMotionPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
+    // --- FilteredVsPush prefix (192..216, PushViewConstants) ---
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<RenderViewBuffer> renderViews;
     uint renderViewIndex;
-    uint pad;
-    // Extra: FrameUniforms BDA pushed at byte offset 216 (free prevModel
-    // scratch; the motion FS never reads prevModel).
+    // paramsValid (FilteredVsPush byte 212): 1 = the vsDeformed BDA below
+    // is live (the filler sets it with the BDA; the skinned fetch gates on
+    // it - a plain pointer compare is illegal on vk::BufferPointer).
+    uint paramsValid;
+    // Extra: FrameUniforms BDA pushed at byte offset 216 (the FilteredVsPush
+    // lmXforms slot - the motion FS never reads prevModel, overwriting it
+    // is safe).
     vk::BufferPointer<FrameUniforms> frameUniforms;
-    // Remaining 224..256 unused.
-    float4 _pad3;
-    float4 _pad4;
+    // --- FilteredVsPush VS-skin tail (224..240, PushViewConstants) ---
+    // The frame's cur deformed half (5 words per vertex at
+    // (vertexID - vsDeformedBase) * 5).
+    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed;
+    uint vsDeformedBase;
+    uint vsPad;
+    // --- Motion-only PREV tail (240..256, FilteredMotionPrevTail -
+    // PushMotionViewConstants; C++ mirror gfx_filter.h) ---
+    vk::BufferPointer<GfxSkinDeformedHeap> vsPrevDeformed;
+    uint vsPrevValid; // 1 = the prev half holds last frame's pose
+    uint vsPad2;
 };
 
 [[vk::push_constant]]
@@ -56,6 +83,9 @@ struct VSIn
     [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     uint instanceID : SV_InstanceID;
+    // Global heap vertex id (the index buffer carries GLOBAL ids - the
+    // skinned fetch's deformed-heap index; see gfxfiltered.vert.hlsl).
+    uint vertexID : SV_VertexID;
 };
 struct VSOut
 {
@@ -69,17 +99,41 @@ VSOut mainVS(VSIn IN)
     VSOut OUT;
     // firstInstance == drawIndex (filter writes it per indirect command),
     // so instanceID indexes the draws ring directly.
-    float4x4 model = pcFM.draws.Get().draws[IN.instanceID].model;
+    GfxDraw draw = pcFM.draws.Get().draws[IN.instanceID];
+    float4x4 model = draw.model;
 
-    float4 world = mul(model, float4(IN.position, 1.0));
+    // Static default: prev == curr (camera-only motion). SKINNED draws
+    // swap BOTH positions to the deformed halves (one storage fetch pair,
+    // indexed IN PLACE - never bind the whole 256MB heap struct to a
+    // local; see gfxfiltered.vert.hlsl's wedge note).
+    float3 position = IN.position;
+    float3 prevPosition = IN.position;
+    const bool skinned = (draw.misc.y & GFX_DRAW_SKINNED) != 0;
+    if (skinned && pcFM.paramsValid != 0u) {
+        const uint d = (IN.vertexID - pcFM.vsDeformedBase) * 5;
+        position = float3(asfloat(pcFM.vsDeformed.Get().word[d + 0]),
+            asfloat(pcFM.vsDeformed.Get().word[d + 1]),
+            asfloat(pcFM.vsDeformed.Get().word[d + 2]));
+        if (pcFM.vsPrevValid != 0u) {
+            prevPosition = float3(asfloat(pcFM.vsPrevDeformed.Get().word[d + 0]),
+                asfloat(pcFM.vsPrevDeformed.Get().word[d + 1]),
+                asfloat(pcFM.vsPrevDeformed.Get().word[d + 2]));
+        } else {
+            prevPosition = position; // no prev pose yet: zero mesh motion
+        }
+    }
+
+    float4 world = mul(model, float4(position, 1.0));
     float4x4 viewProj =
         pcFM.renderViews.Get().views[pcFM.renderViewIndex].m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, world);
 
-    // Static assumption: prevWorld == world. Camera-only motion falls out
-    // of prevViewProj; moved nodes are drawn direct by the caller.
+    // The same (node-static) model on both sides - moved nodes draw
+    // direct. Camera motion (incl. the previous frame's jitter) falls out
+    // of prevViewProj; skinned mesh motion out of the prev half above.
     FrameUniforms frame = pcFM.frameUniforms.Get();
-    OUT.prevClip = mul(frame.prevViewProj, world);
+    float4 prevWorld = mul(model, float4(prevPosition, 1.0));
+    OUT.prevClip = mul(frame.prevViewProj, prevWorld);
 
     OUT.uv = IN.uv;
     return OUT;

@@ -8140,8 +8140,21 @@ namespace engine {
 		// it at 60Hz - deterministic playback).
 		if (m_world) {
 			smvk::gfx::State& gfx = m_gfxRenderer.State();
+			// PREV-half capture (BEFORE the reset consumes the old cur):
+			// the deformed buffer is a parity DOUBLE buffer — last
+			// frame's cur half IS this frame's prev (the motion vector
+			// leg reads cur + prev for the skinned motion vectors —
+			// static-heap vectors ghosted every animated mesh through
+			// the SMAA T2x resolve's history blending). The validity
+			// refinement (same-heap consecutive runs) happens at the
+			// ok-write below.
+			gfx.skinDeformedPrevBda = gfx.skinDeformedBda;
+			gfx.skinPrevValid = (gfx.skinDeformedBda != 0
+				&& gfx.skinDeformedBase != UINT32_MAX) ? 1u : 0u;
 			gfx.skinDeformedBda = 0;
 			gfx.skinDeformedBase = UINT32_MAX;
+			const uint64_t lastSkinHeapBda = m_skinLastHeapBda;
+			const uint32_t lastSkinDeformedBase = m_skinLastDeformedBase;
 			for (const auto& clusterPtr : m_world->clusters) {
 				smvk::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
@@ -8161,8 +8174,17 @@ namespace engine {
 					c->GetSkinnedStreamBuffer());
 				push.ranges = m_context->GetBufferDeviceAddress(
 					c->GetSkinnedRangesBuffer());
-				push.deformed = m_context->GetBufferDeviceAddress(
+				// Parity flip: the pass writes the cur HALF of the
+				// double-buffered deformed heap (the BDA points there;
+				// every render fetch follows the BDA — no consumer
+				// arithmetic changes), while the other half keeps last
+				// frame's pose for the motion vector leg's prev fetch.
+				const uint64_t skinHeapBda = m_context->GetBufferDeviceAddress(
 					c->GetSkinnedDeformedBuffer());
+				const uint64_t skinSpanBytes = c->GetSkinnedDeformedSpanBytes();
+				m_skinHeapParity = m_skinHeapParity ? 0u : 1u;
+				push.deformed = skinHeapBda
+					+ (m_skinHeapParity ? skinSpanBytes : 0);
 				push.deformedBase = c->GetSkinnedDeformedVertexBase();
 				push.paletteCount =
 					std::min(uint32_t(palette.size()),
@@ -8175,13 +8197,24 @@ namespace engine {
 				if (std::getenv("TOURMALINE_KD")) {
 					static uint32_t s_c = 0;
 					if (s_c++ < 6)
-						std::fprintf(stderr, "[KD] skin driver cluster=%p ok=%d ranges=%u pal=%u defBase=%u\n",
+						std::fprintf(stderr, "[KD] skin driver cluster=%p ok=%d ranges=%u pal=%u defBase=%u parity=%u prevValid=%u\n",
 							(void*)c, (int)ok, push.rangeCount,
-							push.paletteCount, push.deformedBase);
+							push.paletteCount, push.deformedBase,
+							m_skinHeapParity, gfx.skinPrevValid);
 				}
 				if (ok) {
 					gfx.skinDeformedBda = push.deformed;
 					gfx.skinDeformedBase = push.deformedBase;
+					// The prev half is valid only while consecutive runs
+					// wrote the SAME heap + span layout (a rebuild or a
+					// cluster swap leaves a stale/foreign prev - the
+					// motion leg falls back to zero mesh motion).
+					gfx.skinPrevValid = (gfx.skinDeformedPrevBda != 0
+						&& lastSkinHeapBda == skinHeapBda
+						&& lastSkinDeformedBase == push.deformedBase)
+						? 1u : 0u;
+					m_skinLastHeapBda = skinHeapBda;
+					m_skinLastDeformedBase = push.deformedBase;
 				}
 			}
 		}
