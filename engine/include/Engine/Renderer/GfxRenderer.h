@@ -483,6 +483,20 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] bool FilteredWireValid() const {
 		return filteredWireProgram.shaderCount == 2;
 	}
+	// Pairs the FILTERED VS (the GPU-driven leg's VS — the same module
+	// every lit filtered program rides) with an arbitrary fragment
+	// module: the shading debug-view FSs' twin (see WorldRenderer's
+	// AppResources::debugPrograms). The FS keeps the scene push + the
+	// VSOut interface it already has against default.vert —
+	// gfxfiltered.vert.hlsl declares the IDENTICAL outputs, so any FS
+	// written for the direct leg binds here unchanged. Best-effort: a
+	// failed filtered-VS load or an empty frag leaves shaderCount 0 and
+	// the caller falls back (the views fall back to Lit). Loads the
+	// filtered VS module on demand (the lit path may not have needed it
+	// yet when the app builds its debug pairs).
+	[[nodiscard]] smvk::ShaderProgram FilteredProgramWith(
+		smvk::ResourceManager& ctx,
+		const smvk::Holder<smvk::ShaderModuleHandle>& frag);
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
 	// Consume-side barriers for the Main pass (filtered ranges + meshlet
 	// debug view): filtered index list (IndexRead), GPU-written indirect

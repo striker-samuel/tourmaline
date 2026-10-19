@@ -303,11 +303,13 @@ enum class GIVariant : uint32_t {
 
 // ---------------------------------------------------------------------------
 // Main-view debug visualization (F1..F6, F9/F10). Lit is the full PBR path;
-// the rest replace the opaque leg with a flat debug program so
+// the rest replace the opaque leg's fragment shader with a flat debug FS so
 // lighting/culling/LOD artifacts bisect out in one keypress. Meshlets/Lods
-// reuse the flat meshDebugProgram (per-cluster / per-LOD colors);
-// Unlit/Cascades/VertexColors/UV have their own fragment shaders pairing
-// with default.vert.hlsl.
+// reuse the flat meshDebugProgram (per-cluster / per-LOD colors, drawn
+// direct BY DESIGN — culled content stays visible); the shading views (see
+// DebugFs below) pair their FS with BOTH vertex paths — default.vert on the
+// direct fallback leg, gfxfiltered.vert on the GPU-driven leg — so they draw
+// exactly what Lit draws with the FS swapped.
 // ---------------------------------------------------------------------------
 enum class ViewMode : int {
 	Lit = 0,      // F1: full PBR (default_lit)
@@ -327,6 +329,12 @@ enum class ViewMode : int {
 	              // dimmed Blend (never writes the G-buffer the trace
 	              // reads). Mirrors the G-buffer writer + the trace's
 	              // 0.94 matte gate exactly: what you see is what marches.
+	Normals = 12, // combo/env only (no free F-key: F7/F8 are taken - see
+	              // keybindings.h): world-space geometric normals as
+	              // false color (default_normals_debug, n*0.5+0.5 ->
+	              // RGB). The interpolated vertex normal only - no
+	              // normal-map perturbation (the POM view owns mapped
+	              // normals).
 	Cubemap = 11, // F10 (reused from the lightmap-UV view, which is now
 	              // combo/env-only): cubemap-only IBL - the frame's
 	              // cubemapDebug pinned to 1 while active (raw probe
@@ -336,6 +344,45 @@ enum class ViewMode : int {
 	              // stays on the filtered lit path - only the env
 	              // specular term changes.
 };
+
+// ---------------------------------------------------------------------------
+// Flat shading debug-view FS slots (one FS per view; ViewMode above): the
+// program PAIRS key on this — the direct twin (default.vert + FS) rides the
+// direct fallback leg (filter off / unfilterable / shader-LOD-far
+// instances), the filtered twin (gfxfiltered.vert + FS, built via
+// GfxRenderer::FilteredProgramWith) rides the GPU-driven leg exactly like
+// Lit: same cull chain, same LOD selection, same skinned fetch. SsrContribution
+// is NOT here on purpose: its FS declares its own 64B push layout (not the
+// scene pc the FS family shares), so it keeps its legacy no-opaque-leg
+// behavior until a shader-side rework.
+// ---------------------------------------------------------------------------
+enum class DebugFs : int {
+	Unlit = 0,    // default_unlit (F2)
+	Cascade,      // default_cascade_debug (F4)
+	VertexColor,  // default_vertexcolor_debug (F6)
+	Uv0,          // default_uv0_debug (F9)
+	Uv1,          // default_uv1_debug (F10)
+	Pom,          // default_pom (F11)
+	SsrMask,      // default_ssrmask_debug
+	Normals,      // default_normals_debug (combo/env only)
+	Count
+};
+
+// Maps a shading debug view onto its FS slot; nullopt for everything else
+// (Lit, the flat meshDebug views, Cubemap, SsrContribution).
+[[nodiscard]] inline std::optional<DebugFs> DebugFsForView(ViewMode v) {
+	switch (v) {
+	case ViewMode::Unlit: return DebugFs::Unlit;
+	case ViewMode::Cascades: return DebugFs::Cascade;
+	case ViewMode::VertexColors: return DebugFs::VertexColor;
+	case ViewMode::Uv0: return DebugFs::Uv0;
+	case ViewMode::Uv1: return DebugFs::Uv1;
+	case ViewMode::Pom: return DebugFs::Pom;
+	case ViewMode::SsrMask: return DebugFs::SsrMask;
+	case ViewMode::Normals: return DebugFs::Normals;
+	default: return std::nullopt;
+	}
+}
 
 #if defined(DS_DEBUG_VIZ)
 // ---------------------------------------------------------------------------
@@ -777,28 +824,34 @@ struct AppResources {
 	// same VS + per-permutation GI path. Missing modules leave the base
 	// mainProgram as fallback. See SPEC_GI_VARIANT in common.hlsli.
 	smvk::Holder<smvk::ShaderModuleHandle> fragLitGiModules[4];
-	// Debug-view fragment programs (F2/F4/F6): same default.vert VS, flat FS.
-	// Loaded alongside main; missing modules leave the program at
-	// shaderCount 0 and the view falls back to Lit.
+	// Shading debug-view program PAIRS (F2/F4/F6/F9/F10/F11 + SsrMask):
+	// one entry per DebugFs slot — direct (default.vert + FS) for the
+	// direct fallback leg, filtered (gfxfiltered.vert + FS, via
+	// GfxRenderer::FilteredProgramWith) for the GPU-driven leg (see
+	// DebugFs above). Missing modules leave the pair's shaderCount 0 and
+	// the view falls back to Lit at record time.
+	struct DebugProgramPair {
+		smvk::ShaderProgram direct;
+		smvk::ShaderProgram filtered;
+	};
+	DebugProgramPair debugPrograms[size_t(DebugFs::Count)]{};
 	smvk::Holder<smvk::ShaderModuleHandle> fragUnlitShader;   // default_unlit (F2)
 	smvk::Holder<smvk::ShaderModuleHandle> fragCascadeShader; // default_cascade_debug (F4)
-	smvk::ShaderProgram unlitProgram;
-	smvk::ShaderProgram cascadeProgram;
 	smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
-	smvk::ShaderProgram vertexColorProgram;
 	// UV debug views (F9 base UV / F10 lightmap uv2): checker + gradient
 	// FS pairs, channel selected per compiled module.
 	smvk::Holder<smvk::ShaderModuleHandle> fragUv0DebugShader; // default_uv0_debug (F9)
 	smvk::Holder<smvk::ShaderModuleHandle> fragUv1DebugShader; // default_uv1_debug (F10)
-	smvk::ShaderProgram uv0DebugProgram;
-	smvk::ShaderProgram uv1DebugProgram;
 	// Parallax occlusion mapping view (F11): occlusion-map heightfield
 	// march + sun self-shadow, sun/sky shading sampled at the displaced
 	// uv (see default_pom.frag.hlsl). Missing module leaves shaderCount 0
 	// and the view falls back to Lit.
 	smvk::Holder<smvk::ShaderModuleHandle> fragPomShader; // default_pom (F11)
-	smvk::ShaderProgram pomProgram;
-	// SSR contribution debug view (env/UI only): isolated SSR layer (ssr_contribution_debug.frag.hlsl)
+	// SSR contribution debug view (env/UI only): isolated SSR layer
+	// (ssr_contribution_debug.frag.hlsl). NOT part of debugPrograms: the
+	// FS declares its own push layout (SsrContributionDebugPush), so it
+	// cannot ride the scene-push FS family; the view keeps its legacy
+	// no-opaque-leg behavior.
 	smvk::Holder<smvk::ShaderModuleHandle> fragSsrContributionDebugShader; // ssr_contribution_debug
 	smvk::ShaderProgram ssrContributionDebugProgram;
 	// SSR receiver-mask debug view (env/UI only): per-material classification
@@ -806,7 +859,9 @@ struct AppResources {
 	// (default_ssrmask_debug.frag.hlsl). Missing module keeps shaderCount 0
 	// and the view falls back to Lit at record time (same as unlit/etc.).
 	smvk::Holder<smvk::ShaderModuleHandle> fragSsrMaskDebugShader;
-	smvk::ShaderProgram ssrMaskDebugProgram;
+	// World-space normals debug view (combo/env only): the interpolated
+	// geometric normal as false color (default_normals_debug.frag.hlsl).
+	smvk::Holder<smvk::ShaderModuleHandle> fragNormalsDebugShader;
 	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.

@@ -210,6 +210,31 @@ namespace engine {
 		return true;
 	}
 
+	smvk::ShaderProgram GfxRenderer::FilteredProgramWith(
+		smvk::ResourceManager& ctx,
+		const smvk::Holder<smvk::ShaderModuleHandle>& frag) {
+		smvk::ShaderProgram p{};
+		if (frag.empty())
+			return p;
+		// On-demand VS load (best-effort, cached — the lit path may not
+		// have needed the module yet): a failure leaves shaderCount 0 and
+		// the caller falls back.
+		if (filteredVsModule.empty()) {
+			try {
+				filteredVsModule = ctx.CreateShaderModule(
+					readFile(smvk::gfx::kGfxFilteredVsPath), "gfxFilteredVS");
+			}
+			catch (...) {
+				return p;
+			}
+		}
+		if (filteredVsModule.empty())
+			return p;
+		smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		smvk::Shader fs{ .module = frag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		return { .shaders = { vs, fs }, .shaderCount = 2 };
+	}
+
 	void GfxRenderer::EnsureMeshPrograms(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 		if (meshProgram.shaderCount == 0) {
 			try {

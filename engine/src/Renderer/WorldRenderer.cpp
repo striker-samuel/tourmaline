@@ -826,6 +826,7 @@ namespace engine {
 			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = ViewMode::Pom;
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
+			else if (dv == "normals" || dv == "normal" || dv == "n") m_debugView = ViewMode::Normals;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -1374,58 +1375,6 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_vertexcolor_debug unavailable - F6 falls back to Lit\n";
 		}
-		if (!m_resources.fragUnlitShader.empty()) {
-			m_resources.unlitProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragUnlitShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
-			};
-		}
-		if (!m_resources.fragCascadeShader.empty()) {
-			m_resources.cascadeProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragCascadeShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
-			};
-		}
-		if (!m_resources.fragVertexColorShader.empty()) {
-			m_resources.vertexColorProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragVertexColorShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
-			};
-		}
-
 		// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
 		// Created if the corresponding fragment module loaded successfully.
 		// The app selects the matching program at draw time based on loaded GI assets.
@@ -1477,102 +1426,69 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_ssrmask_debug unavailable - SSR mask view falls back to Lit\n";
 		}
-		if (!m_resources.fragUv0DebugShader.empty()) {
-			m_resources.uv0DebugProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragUv0DebugShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-.shaderCount = 2
-			};
+		try {
+			auto normalsCode = readFile("content/shaders/default_normals_debug.frag.hlsl.spv");
+			m_resources.fragNormalsDebugShader = m_context->CreateShaderModule(normalsCode, "fragNormalsDebug");
 		}
-		if (!m_resources.fragUv1DebugShader.empty()) {
-			m_resources.uv1DebugProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragUv1DebugShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
-			};
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_normals_debug unavailable - Normals view falls back to Lit\n";
 		}
-
-		// SSR contribution debug view (F12): shows the SSR contribution isolated
-		// (SSR layer only, without the base HDR). The SSR thin G-buffer (oct normal +
-		// roughness + metal) is written by the Forward+ depth prepass; the trace
-		// uses real normals (no wireframe artifact) and continuous roughness.
-		// Mirror the UV debug pattern: vert from default.vert, frag from
-		// ssr_contribution_debug.frag.hlsl.
-		if (!m_resources.fragSsrContributionDebugShader.empty()) {
-			m_resources.ssrContributionDebugProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragSsrContributionDebugShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
+		// Shading debug-view program pairs: ONE pairing rule for every
+		// flat FS — the direct twin (default.vert + FS) rides the direct
+		// fallback leg, the filtered twin (gfxfiltered.vert + FS, via
+		// GfxRenderer::FilteredProgramWith) rides the GPU-driven leg
+		// exactly like Lit (the views used to bypass the filter with
+		// direct-only draws, which rendered skinned meshes in the bind
+		// pose; gfxfiltered.vert declares default.vert's IDENTICAL VSOut,
+		// so the FSs bind unchanged). Missing modules leave the pair's
+		// shaderCount 0 and the view falls back to Lit at record time.
+		{
+			auto pairVsFs = [](
+				const smvk::Holder<smvk::ShaderModuleHandle>& vs,
+				const smvk::Holder<smvk::ShaderModuleHandle>& frag) {
+				smvk::ShaderProgram p{};
+				if (!vs.empty() && !frag.empty()) {
+					p = {
+						.shaders = {
+							smvk::Shader{
+								.module = vs,
+								.entryPoint = "mainVS",
+								.stage = smvk::ShaderStage::Vertex
+							},
+							smvk::Shader{
+								.module = frag,
+								.entryPoint = "mainPS",
+								.stage = smvk::ShaderStage::Fragment
+							}
+						},
+						.shaderCount = 2
+					};
+				}
+				return p;
 			};
-		}
-		// SSR receiver-mask debug view (env/UI only): per-material
-		// classification mirroring the thin G-buffer writer + the trace
-		// matte gate (default_ssrmask_debug.frag.hlsl). Same VS as main.
-		// Failure is non-fatal (program stays at shaderCount 0 and the
-		// view falls back to Lit at record time, like unlit/etc.).
-		if (!m_resources.fragSsrMaskDebugShader.empty()) {
-			m_resources.ssrMaskDebugProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragSsrMaskDebugShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
+			const std::pair<DebugFs,
+				const smvk::Holder<smvk::ShaderModuleHandle>&> slots[] = {
+				{ DebugFs::Unlit, m_resources.fragUnlitShader },
+				{ DebugFs::Cascade, m_resources.fragCascadeShader },
+				{ DebugFs::VertexColor, m_resources.fragVertexColorShader },
+				{ DebugFs::Uv0, m_resources.fragUv0DebugShader },
+				{ DebugFs::Uv1, m_resources.fragUv1DebugShader },
+				{ DebugFs::Pom, m_resources.fragPomShader },
+				{ DebugFs::SsrMask, m_resources.fragSsrMaskDebugShader },
+				{ DebugFs::Normals, m_resources.fragNormalsDebugShader },
 			};
-		}
-		if (!m_resources.fragPomShader.empty()) {
-			m_resources.pomProgram = {
-				.shaders = {
-					smvk::Shader{
-						.module = m_resources.vertShader,
-						.entryPoint = "mainVS",
-						.stage = smvk::ShaderStage::Vertex
-					},
-					smvk::Shader{
-						.module = m_resources.fragPomShader,
-						.entryPoint = "mainPS",
-						.stage = smvk::ShaderStage::Fragment
-					}
-				},
-				.shaderCount = 2
-			};
+			for (const auto& [slot, frag] : slots) {
+				auto& pair = m_resources.debugPrograms[size_t(slot)];
+				pair.direct = pairVsFs(m_resources.vertShader, frag);
+				pair.filtered = m_gfxRenderer.FilteredProgramWith(*m_context, frag);
+			}
+			// SSR contribution debug view (env/UI only): NOT part of the
+			// pairs — its FS declares its own 64B push
+			// (SsrContributionDebugPush, not the scene pc the FS family
+			// shares), so it keeps the classic direct pairing and the
+			// view keeps its legacy no-opaque-leg behavior (see DebugFs).
+			m_resources.ssrContributionDebugProgram = pairVsFs(
+				m_resources.vertShader, m_resources.fragSsrContributionDebugShader);
 		}
 
 		// Shader-LOD program (farthest level, see World::
@@ -9708,51 +9624,55 @@ namespace engine {
 			// SV_InstanceID; materialId is pushed per range for the frag).
 			// Meshes the filter skipped (no clusters) still draw direct.
 			const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
-		// Debug views (F1..F6) replace the shaded opaque leg. Meshlet mode
-		// draws EVERY registered cluster direct with a stable per-meshlet
-		// color, so HZB-culled meshlets stay visible here. Compare with
-		// the shaded view to see exactly what the GPU filter dropped.
-		// Unlit / cascade / LOD / vertex-color views likewise bypass the
-		// filter with direct draws (no filtered-VS variant exists for them).
-		// The Cubemap view is the EXCEPTION: no fragment swap - it stays on
-		// the filtered lit path and only pins the frame's cubemapDebug to 1
-		// (the env specular term returns raw radiance; see the publish site).
+		// Debug views replace the shaded opaque leg:
+		//   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
+		//     the GPU chain and draw EVERY instance direct — HZB-culled
+		//     clusters stay visible here to judge exactly what the filter
+		//     dropped (per-meshlet / per-LOD colors; the bind pose for
+		//     skinned meshes — they judge culling, not the animation).
+		//   - The SHADING views (Unlit F2 / Cascades F4 / VertexColors F6 /
+		//     UV F9/F10 / POM F11 / SsrMask) are ONE flat FS swapped over
+		//     the SAME vertex path: they ride the GPU-driven leg exactly
+		//     like Lit — same cull chain, same LOD selection, same skinned
+		//     fetch (they used to bypass with direct-only draws, which
+		//     rendered skinned meshes in the bind pose). The direct twin
+		//     binds only in the fallback leg (filter off / unfilterable /
+		//     shader-LOD-far instances).
+		//   - Cubemap: no FS swap — the filtered lit path stays, only the
+		//     frame's cubemapDebug pins to 1 (the env specular term
+		//     returns raw radiance; see the publish site).
+		//   - SsrContribution: stays a bypass view with NO opaque leg (its
+		//     FS declares its own push layout — see the program build).
 		// Missing programs fall back to Lit so a bad cook never blanks
 		// the frame.
 			ViewMode effView = m_debugView;
 			if ((effView == ViewMode::Meshlets || effView == ViewMode::Lods)
 				&& !m_gfxRenderer.DebugProgramsValid())
 				effView = ViewMode::Lit;
-			if (effView == ViewMode::Unlit && m_resources.unlitProgram.shaderCount != 2)
+			if (effView == ViewMode::SsrContribution
+				&& m_resources.ssrContributionDebugProgram.shaderCount != 2)
 				effView = ViewMode::Lit;
-			if (effView == ViewMode::Cascades && m_resources.cascadeProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::VertexColors && m_resources.vertexColorProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::Uv0 && m_resources.uv0DebugProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::Uv1 && m_resources.uv1DebugProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::Pom && m_resources.pomProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::SsrContribution && m_resources.ssrContributionDebugProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
-			if (effView == ViewMode::SsrMask && m_resources.ssrMaskDebugProgram.shaderCount != 2)
-				effView = ViewMode::Lit;
+			// Shading views: one program PAIR per DebugFs slot; either
+			// twin missing -> Lit.
+			std::optional<DebugFs> shadingDbgFs = DebugFsForView(effView);
+			if (shadingDbgFs) {
+				const auto& pair = m_resources.debugPrograms[size_t(*shadingDbgFs)];
+				if (pair.direct.shaderCount != 2
+					|| pair.filtered.shaderCount != 2) {
+					shadingDbgFs.reset();
+					effView = ViewMode::Lit;
+				}
+			}
 			const bool meshletDbg = (effView == ViewMode::Meshlets);
 			const bool lodDbg = (effView == ViewMode::Lods);
 			const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
-			const bool unlitDbg = (effView == ViewMode::Unlit);
-			const bool cascadeDbg = (effView == ViewMode::Cascades);
-			const bool vertexColorDbg = (effView == ViewMode::VertexColors);
-			const bool uvDbg = (effView == ViewMode::Uv0 || effView == ViewMode::Uv1);
-			const bool pomDbg = (effView == ViewMode::Pom);
-			const bool ssrMaskDbg = (effView == ViewMode::SsrMask);
-		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg || ssrMaskDbg; // default.vert + debug FS
-		// Cubemap keeps the filtered lit leg (no bypass): only its frame
-		// knob differs, so the GPU cull chain runs exactly as in Lit.
-		const bool bypassFilter = (effView != ViewMode::Lit
-			&& effView != ViewMode::Cubemap);
+			const bool shadingDbg = shadingDbgFs.has_value();
+			// Direct-only opaque: ONLY the flat views (culled content
+			// stays visible by design) + SsrContribution (no opaque leg,
+			// see above). The shading views keep the chain exactly like
+			// Lit; Cubemap never bypassed.
+			const bool bypassFilter = flatDbg
+				|| effView == ViewMode::SsrContribution;
 			// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 			// so they survive the HDR -> tonemap path).
 			static const float kLodPalette[8][3] = {
@@ -9937,62 +9857,16 @@ namespace engine {
 				}
 				);
 			}
-			// Unlit (F2) / cascade (F4) / vertex-color (F6) / UV (F9/F10) /
-			// POM (F11) views: every opaque instance direct with the debug
-			// fragment program. Full push per draw (model + materialId over the
-			// captured frame addresses): the flat debug pushes above clobber
-			// the shared push range, so delta pushes alone would read garbage
-			// frame addresses here.
-			if (directDbg) {
-				smvk::ShaderProgram& dbgProg =
-					unlitDbg ? m_resources.unlitProgram
-					: cascadeDbg ? m_resources.cascadeProgram
-					: vertexColorDbg ? m_resources.vertexColorProgram
-					: pomDbg ? m_resources.pomProgram
-					: effView == ViewMode::Uv1 ? m_resources.uv1DebugProgram
-					: effView == ViewMode::SsrContribution ? m_resources.ssrContributionDebugProgram
-					: ssrMaskDbg ? m_resources.ssrMaskDebugProgram
-					: m_resources.uv0DebugProgram;
-				uint32_t boundMaterial = UINT32_MAX;
-				m_world->forEachRenderItem(
-					smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt
-					,
-					[&](const smvk::World::RenderItem& item)
-				{
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					const uint32_t materialId = item.material;
-					if (materialId != boundMaterial) {
-						bindForMaterial(materialId, dbgProg, noA2CProgram, opaqueDepth);
-						boundMaterial = materialId;
-					}
-					auto& model = m_world->scene.globalTransform[item.node];
-					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-					if (!meshDesc)
-						return;
-					IRenderer::PushConstants objPC = pc;
-					objPC.materialId = materialId;
-					std::copy_n(glm::value_ptr(model), 16, objPC.model);
-					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(
-							draw_set.indexCount,
-							1,
-							draw_set.firstIndex,
-							draw_set.baseVertex
-						);
-					}
-				}
-				);
-			}
 			if (gfxActive && !bypassFilter) {
 				// Mesh leg first (one DrawMeshTasks per eligible range); the
 				// indexed loop below skips exactly those ranges
 				// (RangeMeshEligible), so nothing draws twice and
-				// nothing drops. Debug views bypass (direct draws above).
+				// nothing drops. The flat debug views bypass (direct draws
+				// above); the shading debug views skip the MESH leg (the
+				// mesh FS twins are lit-only) — the indexed loop below
+				// covers those ranges with the debug FS instead.
 				const bool meshActive = meshActiveForFrame && !bypassFilter
+					&& !shadingDbg
 					&& !std::getenv("TOURMALINE_KD_NOMESH");
 				if (meshActive) {
 					const engine::GIVariant meshGiVar = GetActiveGIVariant();
@@ -10024,16 +9898,22 @@ namespace engine {
 					if (meshActive && m_gfxRenderer.RangeMeshEligible(gfxSlot, ri,
 						giVar != engine::GIVariant::None, uint32_t(giVar)))
 						continue;
-					const uint32_t materialId = gfxRanges[ri].material;
-					// Std twin pick per range (non-layered materials bind the
-					// MAT_STANDARD FS - the layered machinery compiled out;
-					// layered keep the monolith).
-					const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
-					smvk::ShaderProgram& litProg = giVar != engine::GIVariant::None
-						? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar), rangeLayered)
-						: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount, rangeLayered);
-					bindForMaterial(materialId, litProg,
-						m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
+				const uint32_t materialId = gfxRanges[ri].material;
+				// Std twin pick per range (non-layered materials bind the
+				// MAT_STANDARD FS - the layered machinery compiled out;
+				// layered keep the monolith). Shading debug views bind
+				// the view's ONE flat FS for every range (no lobe/GI/std
+				// refinement — the debug FS doesn't vary) and keep the
+				// direct-style no-A2C pick (no debug A2C twins exist).
+				const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
+				smvk::ShaderProgram& litProg = shadingDbg
+					? m_resources.debugPrograms[size_t(*shadingDbgFs)].filtered
+					: giVar != engine::GIVariant::None
+					? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar), rangeLayered)
+					: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount, rangeLayered);
+				bindForMaterial(materialId, litProg,
+					shadingDbg ? noA2CProgram : m_gfxRenderer.FilteredProgramA2C(),
+					opaqueDepth);
 					IRenderer::PushConstants matPC{};
 					matPC.materialId = materialId;
 					cmd.PushConstants(
@@ -10051,8 +9931,9 @@ namespace engine {
 				// UINT32_MAX forces a bind check on the first node; an
 				// identical state is deduped by the CommandBuffer's
 				// current-pipeline check, so this costs nothing.
-				// (Skipped in debug views: those drew everything direct above,
-				// filter bypassed so culled data stays visible.)
+				// (The flat debug views skip this leg: they drew
+				// everything direct above, filter bypassed so culled
+				// data stays visible.)
 				// Shader LODs: the vertex-lit program is tracked alongside the
 				// material because the same material can shade lit (near level)
 				// and vertex-lit (farthest level) in one material-sorted walk.
@@ -10115,32 +9996,38 @@ namespace engine {
 					FarSpecPrograms* farSpec =
 						(!vertexLitLevel && !farShading.isDefault())
 						? FarSpecProgramsFor(farShading.quality) : nullptr;
-					// Filtered instances already drew above via indirect
-					// ranges (FilterMainView pushes the selected LOD sibling).
-					// Only LODs whose registration failed fall through to the
-					// direct LOD draw, so each instance rasterizes once.
-					if (gfxActive && !vertexLitLevel && m_gfxRenderer.GfxMeshForLod(item.mesh,
-						LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
-						return;
-					smvk::ShaderProgram& prog = vertexLitLevel
-						? m_resources.vertexLitProgram
-						: (farSpec && farSpec->main.shaderCount == 2)
-						? farSpec->main : m_resources.mainProgram;
-					smvk::ShaderProgram& progA2c = vertexLitLevel
-						? noA2CProgram
-						: (farSpec && farSpec->a2c.shaderCount == 2)
-						? farSpec->a2c : m_resources.mainProgramA2C;
-					const uint32_t materialId = item.material;
-					if (materialId != boundMaterial
-						|| (&prog != boundProgram && &progA2c != boundProgram)) {
-						smvk::ShaderProgram& bound =
-							bindForMaterial(materialId, prog, progA2c, opaqueDepth);
-						boundMaterial = materialId;
-						boundProgram = &bound;
-					}
-					if (vertexLitLevel)
-						++m_lodShaderDraws;
-					drawNode(item.node, item.mesh, materialId);
+				// Filtered instances already drew above via indirect
+				// ranges (FilterMainView pushes the selected LOD sibling).
+				// Only LODs whose registration failed fall through to the
+				// direct LOD draw, so each instance rasterizes once.
+				if (gfxActive && !vertexLitLevel && m_gfxRenderer.GfxMeshForLod(item.mesh,
+					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
+					return;
+				// Shading debug views bind the view's direct twin here
+				// (the same flat FS the GPU-driven ranges shade with); the
+				// shader-LOD substitution is Lit-only, so far-level
+				// instances keep drawing direct — just debug-shaded.
+				smvk::ShaderProgram& prog = shadingDbg
+					? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
+					: vertexLitLevel
+					? m_resources.vertexLitProgram
+					: (farSpec && farSpec->main.shaderCount == 2)
+					? farSpec->main : m_resources.mainProgram;
+				smvk::ShaderProgram& progA2c = (shadingDbg || vertexLitLevel)
+					? noA2CProgram
+					: (farSpec && farSpec->a2c.shaderCount == 2)
+					? farSpec->a2c : m_resources.mainProgramA2C;
+				const uint32_t materialId = item.material;
+				if (materialId != boundMaterial
+					|| (&prog != boundProgram && &progA2c != boundProgram)) {
+					smvk::ShaderProgram& bound =
+						bindForMaterial(materialId, prog, progA2c, opaqueDepth);
+					boundMaterial = materialId;
+					boundProgram = &bound;
+				}
+				if (vertexLitLevel && !shadingDbg)
+					++m_lodShaderDraws;
+				drawNode(item.node, item.mesh, materialId);
 				}
 				);
 			}
@@ -10164,20 +10051,23 @@ namespace engine {
 					CollectTransparentDraws(transparentCullView, !ditheredTransp);
 				const bool lodDbg = (effView == ViewMode::Lods);
 
-				// Transparent follows the opaque debug view (Unlit/Cascades shade
-				// it with the same debug FS via full pushes; LODs draws it flat
-				// in the instance LOD color). Meshlets keeps the legacy look
-				// (transparent stays lit).
+				// Transparent follows the opaque debug view: the shading
+				// views bind the view's direct twin (the same flat FS the
+				// opaque legs shade with; via drawNode's delta pushes —
+				// the legs above left a valid push range exactly like the
+				// Lit view, so no full pushes are needed); LODs draws it
+				// flat in the instance LOD color. The flat views keep the
+				// legacy look (transparent stays lit).
 				smvk::ShaderProgram* transProg = &m_resources.mainProgram;
-				if (unlitDbg) transProg = &m_resources.unlitProgram;
-				else if (cascadeDbg) transProg = &m_resources.cascadeProgram;
+				if (shadingDbg)
+					transProg = &m_resources.debugPrograms[size_t(*shadingDbgFs)].direct;
 				// Lit-view program: the SAME std/gi twin selection as every
 				// other lit leg (MainLitProgramFor) - this leg used to hardcode
 				// the monolith mainProgram, making it the ONLY lit leg still
 				// binding the full layered-machinery FS for non-layered
 				// materials (parity gap; the App path picked the std twin).
 				auto litTransProg = [&](uint32_t materialId) -> smvk::ShaderProgram& {
-					return (unlitDbg || cascadeDbg)
+					return shadingDbg
 						? *transProg
 						: MainLitProgramFor(materialId);
 				};
@@ -10197,8 +10087,8 @@ namespace engine {
 				// viewProj/color float bits, while drawNode below re-pushes only
 				// model (bytes 0..63) + materialId. Meshlets is the ONLY debug
 				// view whose transparent leg still delta-pushes a shaded program
-				// over that garbage (directDbg views full-push per draw below;
-				// LODs pushes its flat MeshDebugPush per draw), so the FS
+				// over that garbage (LODs pushes its flat MeshDebugPush per
+				// draw), so the FS
 				// dereferences garbage BDAs - pc.bLights.Get().lights[0] is the
 				// lit FS's first read - and the device dies on the first
 				// transparent draw (headless repro: VK_ERROR_DEVICE_LOST +
@@ -10206,8 +10096,10 @@ namespace engine {
 				// instantly, no TDR). The Meshlets debug view hits the same\r
 				// leg (its flat MeshDebugPush per draw is self-contained).
 				// the same clobbered BDAs). Restore the frame push once, before
-				// the loop; the Lit view needs nothing (the filtered/direct
-				// legs left a valid range in it).
+				// the loop; every other view needs nothing (the filtered/direct
+				// legs left a valid range in it — the shading views ride the
+				// SAME legs as Lit, so their drawNode delta pushes below read
+				// live frame fields, no full pushes needed).
 				if (effView == ViewMode::Meshlets)
 					cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc,
 						smvk::ShaderStage::All);
@@ -10415,28 +10307,6 @@ namespace engine {
 						}
 						boundMaterial = d.materialId;
 						boundProgram = prog;
-					}
-					if (directDbg) {
-						// Full push: the flat debug pushes above clobbered the
-						// shared push range, so delta pushes would read garbage
-						// frame addresses here.
-						auto& model = m_world->scene.globalTransform[d.node];
-						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
-						if (!meshDesc)
-							continue;
-						IRenderer::PushConstants objPC = pc;
-						objPC.materialId = d.materialId;
-						std::copy_n(glm::value_ptr(model), 16, objPC.model);
-						cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
-						for (auto& draw_set : meshDesc->geometry.surfaces) {
-							cmd.DrawIndexed(
-								draw_set.indexCount,
-								1,
-								draw_set.firstIndex,
-								draw_set.baseVertex
-							);
-						}
-						continue;
 					}
 					drawNode(d.node, d.meshId, d.materialId);
 				}
@@ -10785,9 +10655,17 @@ namespace engine {
 			blurDesc.maxRadiusPx = m_motionBlurMaxRadius;
 			blurDesc.velocityScale = m_motionBlurStrength;
 			blurDesc.tileDilation = m_motionBlurTileDilation;
+			// Disabled during any debug visualization (DebugVisualizationActive)
+			// — the same discipline as SSR/fog/bloom: the velocity gather smears
+			// the flat readout. An animated skinned mesh is the worst case —
+			// its motion vectors come from the STATIC bind-pose heap (see
+			// gfxfilteredmotion.vert.hlsl), so the gather bleeds the readout
+			// along wrong vectors: a dimmed ghost copy of the moving mesh
+			// next to the sharp one.
 			const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
 				&& m_viewportResources.motionBlur.Valid()
-				&& m_viewportResources.motionVectors.Valid();
+				&& m_viewportResources.motionVectors.Valid()
+				&& !DebugVisualizationActive();
 			if (blurOn) {
 				m_viewportResources.motionBlur.AddMotionBlurPass(
 					*m_rendergraph,
@@ -10824,10 +10702,14 @@ namespace engine {
 			dofDesc.bokehMaxRadiusPx = m_dofBokehMaxRadius;
 			dofDesc.highlightBoost = m_dofHighlightBoost;
 			dofDesc.highlightThreshold = m_dofHighlightThreshold;
+			// Disabled during any debug visualization (DebugVisualizationActive)
+			// — the same readout-contamination discipline as motion blur above:
+			// a defocused readout is not a readout.
 			const bool dofOn = m_passes.dof && m_dofEnabled
 				&& m_viewportResources.dof.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
-				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+				&& !DebugVisualizationActive();
 			if (dofOn) {
 				m_viewportResources.dof.AddDofPasses(
 					*m_rendergraph,
@@ -11474,9 +11356,13 @@ namespace engine {
 				dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.dof.output.view);
 			}
 			else {
+				// Mirrors the main blurOn gate (incl. the debug-view
+				// discipline) so DLSS's color input tracks the pass that
+				// actually ran — a stale blur output would feed it.
 				const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
 					&& m_viewportResources.motionBlur.Valid()
-					&& m_viewportResources.motionVectors.Valid();
+					&& m_viewportResources.motionVectors.Valid()
+					&& !DebugVisualizationActive();
 				if (blurOn) {
 					dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.motionBlur.image);
 					dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.motionBlur.view);
@@ -12729,12 +12615,15 @@ namespace engine {
 								"F10 Cubemap (IBL raw)",
 								"F11 POM (parallax occlusion)",
 								"SSR mask (receivers)",
+								"Normals (world-space)",
 							};
 							// Combo index <-> ViewMode mapping (SsrContribution has
 							// no combo entry: it stays env-only; the combo
 							// jumps over it so indices never alias views). UV1
-							// (lightmap atlas) has no F-key anymore - F10 was
-							// reassigned to the Cubemap view.
+							// (lightmap atlas) and Normals have no F-key either -
+							// F10 was reassigned to the Cubemap view, F7/F8 are
+							// taken (capture / GI-debug) - both stay combo/env
+							// only.
 							static const ViewMode kComboViews[] = {
 								ViewMode::Lit, ViewMode::Unlit,
 								ViewMode::Meshlets, ViewMode::Cascades,
@@ -12742,17 +12631,22 @@ namespace engine {
 								ViewMode::Uv0, ViewMode::Uv1,
 								ViewMode::Cubemap,
 								ViewMode::Pom, ViewMode::SsrMask,
+								ViewMode::Normals,
 							};
 							int view = 0;
-							for (int i = 0; i < 11; ++i)
+							for (int i = 0; i < 12; ++i)
 								if (kComboViews[i] == m_debugView)
 									view = i;
-							if (ImGui::Combo("Debug view", &view, viewNames, 11))
+							if (ImGui::Combo("Debug view", &view, viewNames, 12))
 								m_debugView = kComboViews[view];
 						}
 						ImGui::TextDisabled("SSR mask: per-material receiver class mirroring the thin G-buffer writer +\n"
 							"the trace matte gate (roughness < 0.94 marches): green smooth dielectric, blue smooth\n"
 							"metal, black matte (skipped), dimmed Blend (never writes the G-buffer the trace reads).");
+						ImGui::TextDisabled("Normals (combo/env only): the interpolated world-space geometric normal as false\n"
+							"color, (n*0.5+0.5) -> RGB (+X red, +Y green, +Z blue). Geometry readout only - no\n"
+							"normal-map perturbation (the POM view owns mapped normals); rides the GPU-driven\n"
+							"path like every shading view (same culls, same skinned fetch).");
 						ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 							"legacy materials show the raw vertex tint.");
 						ImGui::TextDisabled("F9 + UV1 checkers (UV1: combo/env only - F10 moved to the cubemap view):\n"
