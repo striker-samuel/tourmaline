@@ -1843,7 +1843,92 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	return data;
 
 }
-smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex, int primitiveIndex)
+
+// Packs a primitive's JOINTS_0/WEIGHTS_0 into the VertexSkin stream
+// (top-4 renormalized RGBA8; joint ids in the glTF JOINTS_0 order = the
+// cluster Skeleton joint table). Built in the POSITION-accessor order,
+// parallel to the mesh upload's vertices, so OptimizeStaticMeshUpload can
+// keep it in lockstep through the vertex remap. Returns false for an
+// unskinned primitive (missing/invalid attributes or empty).
+static bool PackVertexSkinStream(const tinygltf::Model& model,
+	const tinygltf::Primitive& prim,
+	std::vector<smvk::VertexSkin>& out)
+{
+	auto jt = prim.attributes.find("JOINTS_0");
+	auto wt = prim.attributes.find("WEIGHTS_0");
+	if (jt == prim.attributes.end() || wt == prim.attributes.end()
+		|| jt->second < 0 || (size_t)jt->second >= model.accessors.size()
+		|| wt->second < 0 || (size_t)wt->second >= model.accessors.size())
+		return false;
+	const tinygltf::Accessor& jAcc = model.accessors[size_t(jt->second)];
+	const tinygltf::Accessor& wAcc = model.accessors[size_t(wt->second)];
+	const size_t verts = size_t(jAcc.count);
+	if (verts == 0 || size_t(wAcc.count) < verts)
+		return false;
+	out.resize(verts);
+	for (size_t v = 0; v < verts; ++v) {
+		uint32_t j[4] = { 0u, 0u, 0u, 0u };
+		float w[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+		{
+			const uint8_t* p = gltfPtr(model, jAcc, v);
+			if (p) {
+				for (int k = 0; k < 4; ++k) {
+					if (jAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+						j[k] = p[k];
+					else if (jAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+						const uint16_t* s16 =
+							reinterpret_cast<const uint16_t*>(p);
+						j[k] = s16[k];
+					}
+					else if (jAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+						const uint32_t* s32 =
+							reinterpret_cast<const uint32_t*>(p);
+						j[k] = s32[k];
+					}
+				}
+			}
+		}
+		{
+			const uint8_t* p = gltfPtr(model, wAcc, v);
+			if (p) {
+				for (int k = 0; k < 4; ++k) {
+					if (wAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_FLOAT)
+						w[k] = reinterpret_cast<const float*>(p)[k];
+					else if (wAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+						w[k] = float(p[k]) * (1.0f / 255.0f);
+					else if (wAcc.componentType
+						== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+						w[k] = float(reinterpret_cast<const uint16_t*>(
+							p)[k]) * (1.0f / 65535.0f);
+				}
+			}
+		}
+		// Degenerate zero weights fall back to joint 0 at full weight
+		// (never a NaN normal in the shader).
+		float sum = w[0] + w[1] + w[2] + w[3];
+		if (!(sum > 1e-6f)) {
+			j[0] = j[1] = j[2] = j[3] = 0u;
+			w[0] = 1.0f;
+			w[1] = w[2] = w[3] = 0.0f;
+			sum = 1.0f;
+		}
+		out[v].joints =
+			((j[0] & 0xFFu))
+			| ((j[1] & 0xFFu) << 8)
+			| ((j[2] & 0xFFu) << 16)
+			| ((j[3] & 0xFFu) << 24);
+		out[v].weights = glm::packUnorm4x8(glm::vec4(
+			w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum));
+	}
+	return true;
+}
+
+smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex, int primitiveIndex, bool skinned)
 {
 	assert(gltfMeshIndex >= 0);
 	assert(
@@ -1876,6 +1961,15 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 			primitive,
 			coordFix_
 		);
+
+	// Attach the skin stream BEFORE the meshopt pass so the weld +
+	// vertex-fetch remaps carry it in lockstep with `data.vertices`
+	// (OptimizeStaticMeshUpload remaps `skin` alongside). A stream
+	// attached after optimization would be in ACCESSOR order while the
+	// vertices are reordered - bind-pose masks it (all joints = bind) but
+	// animation scatters the weights into spikes.
+	if (skinned)
+		PackVertexSkinStream(model, primitive, data.skin);
 
 	// Cook-time meshoptimizer pass (off by default; the cooker enables it
 	// via setMeshOptConfig). Overdraw optimization is gated off for
@@ -2145,7 +2239,8 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 			const smvk::ClusterStaticMeshHandle primMesh =
 				getOrCreateMesh(
 					gltfNode.mesh,
-					primIndex
+					primIndex,
+					hasSkin
 				);
 			cluster.scene.meshForNode[primNode] = primMesh.index();
 			cluster.scene.materialForNode[primNode] =
@@ -2265,89 +2360,21 @@ int GltfToSceneImporter::BuildSkinData() {
 			continue;
 		const tinygltf::Primitive& prim =
 			gm.primitives[size_t(r.primitiveIndex)];
-		auto jt = prim.attributes.find("JOINTS_0");
-		auto wt = prim.attributes.find("WEIGHTS_0");
-		if (jt == prim.attributes.end() || wt == prim.attributes.end()
-			|| jt->second < 0
-			|| (size_t)jt->second >= model.accessors.size()
-			|| wt->second < 0
-			|| (size_t)wt->second >= model.accessors.size()) {
+		// The stream attached in getOrCreateMesh (BEFORE the meshopt pass)
+		// already rode OptimizeStaticMeshUpload's vertex remap, so it is in
+		// FINAL vertex order - prefer it. The accessor-order pack is the
+		// fallback for an unoptimized mesh (no reorder => the orders agree).
+		std::vector<smvk::VertexSkin> stream;
+		if (const std::vector<smvk::VertexSkin>* existing =
+				cluster.GetRetainedSkinStream(r.mesh);
+			existing && !existing->empty()) {
+			stream = *existing;
+		}
+		else if (!PackVertexSkinStream(model, prim, stream)) {
 			std::cerr << "[Skin] mesh '" << gm.name
 				<< "' has node.skin but no JOINTS_0/WEIGHTS_0"
 				" (skinned as static)" << std::endl;
 			continue;
-		}
-		const tinygltf::Accessor& jAcc =
-			model.accessors[size_t(jt->second)];
-		const tinygltf::Accessor& wAcc =
-			model.accessors[size_t(wt->second)];
-		const size_t verts = size_t(jAcc.count);
-		if (verts == 0 || size_t(wAcc.count) < verts) {
-			std::cerr << "[Skin] mesh '" << gm.name
-				<< "' accessor counts disagree (skinned as static)"
-				<< std::endl;
-			continue;
-		}
-		std::vector<smvk::VertexSkin> stream(verts);
-		for (size_t v = 0; v < verts; ++v) {
-			uint32_t j[4] = { 0u, 0u, 0u, 0u };
-			float w[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
-			{
-				const uint8_t* p = gltfPtr(model, jAcc, v);
-				if (p) {
-					for (int k = 0; k < 4; ++k) {
-						if (jAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-							j[k] = p[k];
-						else if (jAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-							const uint16_t* s16 =
-								reinterpret_cast<const uint16_t*>(p);
-							j[k] = s16[k];
-						}
-						else if (jAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-							const uint32_t* s32 =
-								reinterpret_cast<const uint32_t*>(p);
-							j[k] = s32[k];
-						}
-					}
-				}
-			}
-			{
-				const uint8_t* p = gltfPtr(model, wAcc, v);
-				if (p) {
-					for (int k = 0; k < 4; ++k) {
-						if (wAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_FLOAT)
-							w[k] = reinterpret_cast<const float*>(p)[k];
-						else if (wAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-							w[k] = float(p[k]) * (1.0f / 255.0f);
-						else if (wAcc.componentType
-							== TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
-							w[k] = float(reinterpret_cast<const uint16_t*>(
-								p)[k]) * (1.0f / 65535.0f);
-					}
-				}
-			}
-			// The accessors are vec4 (<=4 influences already); renormalize
-			// and pack. Degenerate zero weights fall back to joint 0 at
-			// full weight (never a NaN normal in the shader).
-			float sum = w[0] + w[1] + w[2] + w[3];
-			if (!(sum > 1e-6f)) {
-				j[0] = j[1] = j[2] = j[3] = 0u;
-				w[0] = 1.0f;
-				w[1] = w[2] = w[3] = 0.0f;
-				sum = 1.0f;
-			}
-			stream[v].joints =
-				((j[0] & 0xFFu))
-				| ((j[1] & 0xFFu) << 8)
-				| ((j[2] & 0xFFu) << 16)
-				| ((j[3] & 0xFFu) << 24);
-			stream[v].weights = glm::packUnorm4x8(glm::vec4(
-				w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum));
 		}
 		cluster.PatchRetainedSkinStream(r.mesh, std::move(stream));
 		++patched;

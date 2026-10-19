@@ -120,6 +120,11 @@ struct AnimDoc {
 bool SaveTourAnim(const std::string& path, const AnimDoc& doc, std::string& err);
 bool LoadTourAnim(const std::string& path, AnimDoc& doc, std::string& err,
 	std::vector<std::string>* warnings = nullptr);
+// Text-form loader (the same grammar from an in-memory string - the
+// editor/tests read payloads they already hold; the file loader wraps
+// this). Same warn-and-skip forward compatibility as .tour.
+bool LoadTourAnimText(const std::string& text, AnimDoc& doc, std::string& err,
+	std::vector<std::string>* warnings = nullptr);
 
 // ---------------------------------------------------------------------------
 // Runtime skeletal model

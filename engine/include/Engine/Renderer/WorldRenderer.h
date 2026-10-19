@@ -67,6 +67,7 @@
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Rendergraph/probeball.h>
 #include <Engine/Rendergraph/probepremix.h>
+#include <Engine/Rendergraph/skinning.h>
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -1643,6 +1644,11 @@ public:
 	// empty - the fallback is the zero-regression contract).
 	bool m_probePremixEnabled = true;
 	smvk::probepremix::ProbePremix m_probePremix{};
+	// GPU SKINNING (the Northlight compute box; Rendergraph/skinning.h):
+	// the compute shader + the per-flight palette buffers. The driver
+	// (the skinning block near the probe pre-mix append) runs per frame
+	// over the world's skinned clusters.
+	smvk::skinning::SkinVisual m_skinning{};
 	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
 	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
 	struct CubemapProbeGpu {

@@ -1606,9 +1606,16 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 					double q[4] = {};
 					if (!AnimReadValue(model, out, k, q, 4))
 						break;
-					// glTF quat (x,y,z,w) -> glm (w,x,y,z).
-					key.v = glm::vec4(float(q[3]), float(q[0]),
-						float(q[1]), float(q[2]));
+					// glTF stores rotate keys as unit quats (x, y, z,
+					// w) - EXACTLY the .tourAnim contract (touranim.h:
+					// "4 for rotate (UNIT QUATERNION xyzw)"). No glm
+					// quat-ctor-order (w,x,y,z) swizzle here: key.v is a
+					// plain vec4 the runtime reads componentwise as
+					// xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
+					// ctor); the earlier w-first swizzle permuted every
+					// channel of every rotate key into garbage poses.
+					key.v = glm::vec4(float(q[0]), float(q[1]),
+						float(q[2]), float(q[3]));
 				}
 				else {
 					double v3[3] = {};

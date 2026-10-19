@@ -578,28 +578,36 @@ namespace smvk {
 			},
 			{
 				.binding = 1,
-				.stride = sizeof(VertexSkinnedShading),
+				// The SAME 24-byte heap shading stream as
+				// StaticVertexFormat (VertexShading) - ONE heap serves
+				// both formats (the terrain full/low precedent): the
+				// chart tail (chartUv + chart, bytes 16..23) stays
+				// UNBOUND (skinned meshes are dynamic and never
+				// lightmapped). The old 16-byte VertexSkinnedShading
+				// stride misaligned every vertex past the first against
+				// the heap stream.
+				.stride = sizeof(VertexShading),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexSkinnedShading, color)
+						.offset = offsetof(VertexShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
 						.format = Format::RG16_Float,
-						.offset = offsetof(VertexSkinnedShading, uv)
+						.offset = offsetof(VertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexSkinnedShading, normal)
+						.offset = offsetof(VertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexSkinnedShading, tangent)
+						.offset = offsetof(VertexShading, tangent)
 					}
 				}
 			},

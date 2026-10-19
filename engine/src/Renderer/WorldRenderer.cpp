@@ -8199,6 +8199,61 @@ namespace engine {
 			}
 		}
 
+		// ---- GPU SKINNING (the Northlight compute box) ------------------
+		// The frame's skinned clusters: Ensure the static GPU data (the
+		// skinned-stream + deformed buffers + the ranges table - once),
+		// run the CPU bone-eval box (SampleAnimation: the track samples ->
+		// joint locals -> the global walk -> the palette; NO clip = the
+		// bind-pose palette - the pass still runs, nothing moves), then
+		// append the skinning compute pass EARLY (the pass-order contract
+		// the probe pre-mix uses): the gfx filter's culling + the
+		// mesh-shader draws read the DEFORMED heap this pass writes.
+		// ONE skinned cluster per frame for now (the knight demo has
+		// exactly one; the per-draw palette table is the multi-cluster
+		// generalization - deferred with the bounds/cone recompute slice).
+		// The App loads the clip (TOURMALINE_ANIM - PakApp) via
+		// Cluster::SetAnimClip. m_deltaTime = the sim dt (the bench pins
+		// it at 60Hz - deterministic playback).
+		if (m_world) {
+			smvk::gfx::State& gfx = m_gfxRenderer.State();
+			gfx.skinDeformedBda = 0;
+			gfx.skinDeformedBase = UINT32_MAX;
+			for (const auto& clusterPtr : m_world->clusters) {
+				smvk::Cluster* c = clusterPtr.get();
+				if (!c || !c->hasSkeleton)
+					continue;
+				if (!c->EnsureSkinnedGpuData(*m_context))
+					continue;
+				std::vector<glm::mat4> palette;
+				if (!c->SampleAnimation(m_deltaTime, palette)) {
+					// No clip attached: the bind-pose palette (the loaded
+					// globals ARE the bind pose) - the deformed heap
+					// exists, the fetch swap works, nothing moves.
+					smvk::touranim::BuildSkinPalette(
+						c->scene, c->skeleton, palette);
+				}
+				smvk::skinning::SkinPush push{};
+				push.skin = m_context->GetBufferDeviceAddress(
+					c->GetSkinnedStreamBuffer());
+				push.ranges = m_context->GetBufferDeviceAddress(
+					c->GetSkinnedRangesBuffer());
+				push.deformed = m_context->GetBufferDeviceAddress(
+					c->GetSkinnedDeformedBuffer());
+				push.deformedBase = c->GetSkinnedDeformedVertexBase();
+				push.paletteCount =
+					std::min(uint32_t(palette.size()),
+						smvk::skinning::kSkinPaletteMax);
+				push.rangeCount =
+					uint32_t(c->GetSkinnedRanges().size());
+				if (m_skinning.Ensure(*m_context)
+					&& m_skinning.AppendPass(*m_context,
+						*m_rendergraph, fb.frameIndex, push, palette)) {
+					gfx.skinDeformedBda = push.deformed;
+					gfx.skinDeformedBase = push.deformedBase;
+				}
+			}
+		}
+
 		// ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load ops) ----
 		// Pass-config gate: no shadow sampling without tiles (the main
 		// shader reads cascadeBuffer regardless; tiles just stay cleared).

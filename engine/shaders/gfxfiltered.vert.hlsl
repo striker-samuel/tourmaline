@@ -16,6 +16,7 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
+#include "gfxmesh.hlsli"
 
 struct FilteredVsMainPush
 {
@@ -31,8 +32,24 @@ struct FilteredVsMainPush
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<RenderViewBuffer> renderViews;
     uint renderViewIndex;
-    uint pad;
+    // paramsValid (byte 212, the old pad): 1 = the vsDeformed BDA below is
+    // live (the filler sets it with the BDA; the skinned fetch gates on it
+    // - a plain pointer compare is illegal on vk::BufferPointer; 0 = static
+    // fetches, a frame with no skinned cluster). MUST sit here (byte 212),
+    // BEFORE lmXforms - the C++ FilteredVsPush mirror orders
+    // draws/renderViews/renderViewIndex/paramsValid/lmXforms/vsDeformed/...
+    // Putting this word after lmXforms shifted the whole skinned tail by 8
+    // and read vsDeformed as vsDeformedBase|vsPad = 0x00000000FFFFFFFF,
+    // a wild BDA the skinned draw fetched from -> GPU fault.
+    uint paramsValid;
     vk::BufferPointer<GfxChartXforms> lmXforms;
+    // VS-skin input (bytes 224..240), carried DIRECTLY (one modest
+    // pointer - see the C++ FilteredVsPush comment for the wedge
+    // history): the frame's deformed heap at (vertexID - vsDeformedBase)
+    // * 5.
+    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed;
+    uint vsDeformedBase;
+    uint vsPad;
 };
 
 [[vk::push_constant]]
@@ -51,6 +68,10 @@ struct VSIn
     // keeps the option; the MESH leg (gfxfilter.mesh.hlsl) still reads the
     // chart words straight from the shading heap, untouched.
     uint instanceID : SV_InstanceID;
+    // Global heap vertex id (the index buffer carries GLOBAL ids, so the
+    // fixed-function vertex fetch AND the storage fetch below address the
+    // same vertex): the SKINNED swap's deformed-heap index.
+    uint vertexID : SV_VertexID;
 };
 struct VSOut
 {
@@ -85,7 +106,39 @@ VSOut mainVS(VSIn IN)
     GfxDraw draw = pcFV.draws.Get().draws[IN.instanceID];
     float4x4 model = draw.model;
 
-    float4 world = mul(model, float4(IN.position, 1.0));
+    // SKINNED draws (the Northlight compute path; misc.y bit 2 =
+    // GFX_DRAW_SKINNED): the DEFORMED heap holds this frame's animated
+    // pos (the skinning pass wrote it; 5 words per vertex at
+    // (vertexID - vsDeformedBase) * 5). ONE storage fetch swap - no
+    // per-vertex skin math here, the same contract as the mesh-shader leg
+    // (gfxfilter.mesh.hlsl). Static draws keep the fixed-function inputs
+    // (the StaticVertexFormat fetch of the bind-pose heaps); the stale
+    // IN.position/normalPacked/tangentPacked of a skinned draw are
+    // simply ignored (the fixed-function fetch still happens - the
+    // bandwidth waste is the documented slice-2 trade; emptying the
+    // vertex format per-draw is impossible with one indirect range).
+    // paramsValid is the CPU-side null check (the flag itself only sets
+    // when the frame's deformed buffer exists - the MMU-fault rule).
+    const bool skinned = (draw.misc.y & GFX_DRAW_SKINNED) != 0;
+    float3 position = IN.position;
+    uint normalPacked = IN.normalPacked;
+    uint tangentPacked = IN.tangentPacked;
+    if (skinned && pcFV.paramsValid != 0u) {
+        // Index the BDA IN PLACE - never bind the whole GfxSkinDeformedHeap
+        // to a local: that struct is a 256MB uint array, so a by-value
+        // `const GfxSkinDeformedHeap def = ...Get();` forces the compiler to
+        // materialize a 256MB local and the NVIDIA pipeline compiler wedges
+        // (never returns) creating the vertex stage. The mesh leg already
+        // indexes .Get().word[] directly; mirror it.
+        const uint d = (IN.vertexID - pcFV.vsDeformedBase) * 5;
+        position = float3(asfloat(pcFV.vsDeformed.Get().word[d + 0]),
+            asfloat(pcFV.vsDeformed.Get().word[d + 1]),
+            asfloat(pcFV.vsDeformed.Get().word[d + 2]));
+        normalPacked = pcFV.vsDeformed.Get().word[d + 3];
+        tangentPacked = pcFV.vsDeformed.Get().word[d + 4];
+    }
+
+    float4 world = mul(model, float4(position, 1.0));
     OUT.worldPos = world.xyz;
     float4x4 viewProj =
         pcFV.renderViews.Get().views[pcFV.renderViewIndex].m_viewProjectionMatrix;
@@ -108,9 +161,11 @@ VSOut mainVS(VSIn IN)
     // MASKED bucket routing for the depth legs).
     OUT.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
 
-    // Packed shading stream: normal/tangent ride as R32_UInt oct words.
-    float3 normal = OctDecodeNormal(IN.normalPacked);
-    float4 tangent = OctDecodeTangent(IN.tangentPacked);
+    // Packed shading stream: normal/tangent ride as R32_UInt oct words
+    // (the skinned swap above replaces the packed words with the deformed
+    // heap's - the SAME encoding, so one decode path serves both).
+    float3 normal = OctDecodeNormal(normalPacked);
+    float4 tangent = OctDecodeTangent(tangentPacked);
 
     float3x3 M3 = (float3x3) model;
     float det = M3[0][0] * (M3[1][1] * M3[2][2] - M3[1][2] * M3[2][1])

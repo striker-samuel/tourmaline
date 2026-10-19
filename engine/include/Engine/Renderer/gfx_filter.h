@@ -103,12 +103,21 @@ typedef uint32_t CullFlags;
 // degenerate and small-prim tests still apply.
 inline constexpr uint32_t DrawFlagBit_TwoSided = 0x1;
 // Scene::ditherCloseup fade band this frame (DitherCloseupStateFor ==
-// Fade at PushDraw time; see DrawSetBit_Masked — Fade draws also route
+// Fade at PushDraw time; see DrawSetBit_Masked - Fade draws also route
 // into the masked bucket so the alpha-tested depth/shadow legs can
 // screen-door with them). HLSL mirror: GFX_DRAW_DITHER_CLOSEUP
 // (gfxfilter.hlsli), read by gfxfiltered.vert / gfxfilter.mesh and
 // forwarded flat (VS location 8) to the lit FS family.
 inline constexpr uint32_t DrawFlagBit_DitherCloseup = 0x2;
+// The draw's mesh is SKINNED (the Northlight compute path): the
+// mesh-shader leg fetches the deformed pos/normal/tangent from the
+// per-frame DEFORMED buffer (GfxMeshParams.deformed, indexed
+// vi - deformedBase) instead of the bind-pose heaps. Set at
+// PushDraw time ONLY when the frame carries a valid deformed buffer
+// (the renderer's skinning driver - a skinned mesh without animation
+// data keeps the static bind-pose fetches). HLSL mirror:
+// GFX_DRAW_SKINNED (gfxfilter.hlsli misc.y bit 2).
+inline constexpr uint32_t DrawFlagBit_Skinned = 0x4;
 
 typedef uint32_t DrawFlags;
 // Draw-set buckets: geometry grouped by properties that affect
@@ -336,27 +345,52 @@ struct DrawCullPush {
 };
 static_assert(sizeof(DrawCullPush) == 136);
 
-// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 32 bytes).
-// Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
-// bytes 192..224) so the full 256B scene push stays intact for the fragment
-// shader. The VS resolves viewProj through the render-view slab; the
-// per-draw lightmap chunk rides GfxDraw.misc.w, and the chart atlas
-// transforms ride the lmXforms buffer (indexed by GfxDraw.misc2.x +
-// the vertex chart id).
+// Filtered-path VS tail push (gfxfiltered.vert.hlsl + the shared seed
+// prologue, 40 bytes). Pushed at kFilteredVsPushOffset (the main pass'
+// unused prevModel scratch, bytes 192..232) so the full 256B scene push
+// stays intact for the fragment shader. The VS resolves viewProj through
+// the render-view slab; the per-draw lightmap chunk rides GfxDraw.misc.w,
+// and the chart atlas transforms ride the lmXforms buffer (indexed by
+// GfxDraw.misc2.x + the vertex chart id).
 static constexpr uint32_t kFilteredVsPushOffset = 192;
+// TEMP bisect: push the pre-skinning 32B tail at every record site.
+static constexpr uint32_t kFilteredVsPushBaseSize = 32;
 struct FilteredVsPush {
 	uint64_t draws = 0;
 	uint64_t renderViews = 0;
 	uint32_t renderViewIndex = 0;
-	uint32_t pad = 0;
+	// paramsValid (byte 212): 1 = the params BDA below is live (the
+	// filler sets it with the BDA; the HLSL gates the skinned fetch on
+	// it - a plain "params != 0" compare is illegal on a
+	// vk::BufferPointer, so the flag word carries the null check).
+	uint32_t paramsValid = 0;
 	// BDA of the chart transform buffer (0 = none). Trailing so the
 	// 24B prefix stays byte-identical to the motion VS tail
 	// (FilteredMotionPush reads draws/renderViews/renderViewIndex from
 	// 192..216 and its own FrameUniforms BDA at 216, which simply
 	// overwrites this field the motion VS never declares).
 	uint64_t lmXforms = 0;
+	// VS-leg SKIN input, carried DIRECTLY (bytes 224..240 - the free
+	// scratch; the mesh dispatch's MeshTailPush re-pushes 224..240 with
+	// its own paramsAddress/list fields, harmless because the mesh legs
+	// never execute a VS). The ONE pointer the VS legs' SKINNED fetch
+	// swap needs beyond their fixed-function inputs (the Northlight
+	// contract: one storage fetch swap in the draw shader, NO per-vertex
+	// skin math): the frame's deformed heap (skinned draws fetch pos +
+	// the deformed normal/tangent words at (VertexIndex - deformedBase)
+	// * 5; the static fetch stays the fixed-function vertex-input path,
+	// so the bind-pose heaps ride no pointer at all). Deliberately NOT a
+	// GfxMeshParamsData pointer and not the pos/shading heap pointers:
+	// observed wedges (the NVIDIA pipeline compiler never returns from
+	// the vertex-stage creation) for BOTH a TEN-pointer chain and three
+	// flat 256-512MB-array pointers; the ORIGINAL tail's one
+	// 393KB-array pointer (draws) compiles instantly, so ONE modest
+	// pointer is the proven-safe shape.
+	uint64_t vsDeformed = 0;
+	uint32_t vsDeformedBase = 0xFFFFFFFFu;
+	uint32_t vsPad = 0;
 };
-static_assert(sizeof(FilteredVsPush) == 32);
+static_assert(sizeof(FilteredVsPush) == 48);
 
 // ---- Task-less mesh path (gfxfilter.mesh.hlsl + gfxmesh_lit FS twins) ----
 // One mesh workgroup per cluster HALF of a CPU-partitioned batch list
@@ -398,10 +432,15 @@ struct GfxMeshParams {
 	uint32_t width = 0;
 	uint32_t height = 0;
 	uint32_t listCount = 0;
+	// The per-frame DEFORMED buffer (the Northlight compute-skinning
+	// output): skinned draws (GFX_DRAW_SKINNED) fetch pos/normal/tangent
+	// words from it (indexed vi - deformedBase), everything else from the
+	// bind-pose heaps. 0 = no skinned cluster this frame (static fetches).
+	uint64_t deformed = 0;
+	uint32_t deformedBase = 0xFFFFFFFFu; // the skinned span's heap-id base
 	uint32_t pad0 = 0;
-	uint32_t pad1 = 0;
 };
-static_assert(sizeof(GfxMeshParams) == 224);
+static_assert(sizeof(GfxMeshParams) == 232);
 
 // Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
 // the record pushes this after the 32B FilteredVsPush tail at 192).
@@ -909,6 +948,19 @@ struct State {
 	Holder<BufferHandle> demandBuffers[MAX_FRAMES_IN_FLIGHT];
 	uint64_t demandMaterialsBda = 0; // this frame's slice (SetDemandInputs)
 	float demandMipBias = 0.0f;
+	// The per-frame DEFORMED heap (the Northlight compute-skinning
+	// output; the renderer's skinning driver sets these once per frame -
+	// the skinned cluster's deformed buffer BDA + the skinned span's
+	// heap-id base). 0/UINT32_MAX = no skinned cluster this frame
+	// (GFX_DRAW_SKINNED never sets, every fetch stays static).
+	uint64_t skinDeformedBda = 0;
+	uint32_t skinDeformedBase = UINT32_MAX;
+	// The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
+	// every draw path reads - the RHI globals from vulkan_impl.h, stashed
+	// once at EnsureMeshParams so the record sites' fills never reach for
+	// the globals themselves). 0 = not stashed yet (static fetches).
+	uint64_t vsPosHeapBda = 0;
+	uint64_t vsShadeHeapBda = 0;
 	Holder<ShaderModuleHandle> filterModule;
 	ShaderProgram filterProgram{};
 	Holder<ShaderModuleHandle> hizModule;
@@ -1258,6 +1310,20 @@ void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
 	assert(view < s.views.size());
 	return s.views[view].batchBuffers[s.views[view].frameIndex];
 }
+// Fills the FilteredVsPush tail's VS-skin fields (the skinned fetch
+// swap's inputs) from the State. paramsValid gates the whole swap in
+// the HLSL (a plain pointer compare is illegal on vk::BufferPointer):
+// 1 = the frame carries a live deformed heap (the driver set
+// skinDeformedBda). The bind-pose heap BDAs are eternal (stashed once
+// at EnsureMeshParams); the deformed pair is per-frame (the renderer's
+// skinning driver).
+inline void FillVsSkinTail(FilteredVsPush& tail, const State& s) {
+	tail.vsDeformed = s.skinDeformedBda;
+	tail.vsDeformedBase = s.skinDeformedBase;
+	tail.paramsValid = (s.skinDeformedBda != 0
+		&& s.skinDeformedBase != UINT32_MAX) ? 1u : 0u;
+}
+
 [[nodiscard]] inline BufferHandle DrawBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].drawBuffers[s.views[view].frameIndex];

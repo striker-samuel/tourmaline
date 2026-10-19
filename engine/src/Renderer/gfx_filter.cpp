@@ -2428,6 +2428,13 @@ uint32_t CullOpaqueCommands(const State& s, uint32_t view) {
 }
 
 bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
+	// The VS legs' skinned-fetch inputs (the bind-pose heap BDAs - the
+	// eternal static heaps; stashed here where the RHI globals are
+	// visible so the record sites' fills never reach for them).
+	s.vsPosHeapBda = ctx.GetBufferDeviceAddress(
+		staticVertexFmtHeap.m_staticVertexPosBuffer);
+	s.vsShadeHeapBda = ctx.GetBufferDeviceAddress(
+		staticVertexFmtHeap.m_staticVertexShadingBuffer);
 	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 		if (s.meshParamsBuffers[f].empty()) {
 			s.meshParamsBuffers[f] = ctx.CreateBuffer(
@@ -2488,6 +2495,11 @@ uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
 	p.width = v.width;
 	p.height = v.height;
 	p.listCount = 0; // unused (slicing rides the tail push)
+	// The DEFORMED heap (the skinning driver set s.skinDeformedBda this
+	// frame; skinned draws - GFX_DRAW_SKINNED - fetch from it, indexed
+	// vi - skinDeformedBase).
+	p.deformed = s.skinDeformedBda;
+	p.deformedBase = s.skinDeformedBase;
 	// Same MMU-fault rule as PushAndDispatch: never publish a null BDA
 	// (the indexed loop draws the frame instead; its commands and the
 	// seed/remainder depth are intact).
@@ -2535,6 +2547,11 @@ void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
 	tail.lmXforms = lmXformsAddr;
+	// The VS-skin tail fields (bytes 224..256): the MeshTailPush below
+	// re-pushes 224..240 (paramsAddress + listBase/listCount - the mesh
+	// legs never execute a VS, so the overlap is harmless) and 240..256
+	// survives (vsDeformed + base).
+	FillVsSkinTail(tail, s);
 	cmd.PushConstants(kFilteredVsPushOffset, sizeof(tail), &tail, ShaderStage::All);
 	MeshTailPush ext{};
 	ext.paramsAddress = paramsBDA;

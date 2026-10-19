@@ -240,8 +240,80 @@ namespace smvk {
 		// static mesh.
 		[[nodiscard]] const std::vector<VertexSkin>* GetMeshSkinStream(
 			ClusterStaticMeshHandle handle) const;
+		// The RETAINED upload's skin stream (or null). The import post pass
+		// reads it back: the stream attached before OptimizeStaticMeshUpload
+		// rode the vertex remap, so it is already in final vertex order.
+		// Null when uploads are not retained or the mesh carries no skin.
+		[[nodiscard]] const std::vector<VertexSkin>* GetRetainedSkinStream(
+			ClusterStaticMeshHandle handle) const;
 		void SetMeshSkinStream(ClusterStaticMeshHandle handle,
 			std::vector<VertexSkin>&& stream);
+
+		// ------------------------------------------------------------------
+		// SKINNED-MESH GPU data (the Northlight compute-skinning path).
+		//
+		// The heaps stay the BIND POSE (the skinning pass's input - the
+		// v4 fast-load streams untouched). The pass reads: the palette
+		// (per frame, the World/animation driver), the SKINNED STREAM
+		// buffer (VertexSkin per vertex - the joint ids + weights), + the
+		// bind-pose pos/normal/tangent words from the heaps; and writes
+		// the DEFORMED buffer ([pos3, normalW, tangentW] per vertex, 20B
+		// - the Northlight "GPU skinning produce animated positions and
+		// normals" box). The draw paths fetch the deformed buffer for
+		// skinned draws (a per-draw flag + the cluster's heap-base
+		// offset - one fetch swap, no per-vertex skin math in the draw
+		// shaders).
+		// ------------------------------------------------------------------
+		struct SkinnedMeshRange {
+			ClusterStaticMeshHandle mesh;
+			uint32_t vertexCount = 0;
+			uint32_t heapVertexBase = 0; // the bind-pose heap range base (vertex units)
+			uint32_t skinBase = 0;       // offset into the skinned stream buffer (vertex units)
+		};
+		// Builds + uploads the skinned-stream buffer (concatenated per
+		// mesh, static data - once) + allocates the deformed buffer
+		// covering the skinned meshes' heap span. Idempotent; false when
+		// the cluster carries no skin streams or the context is null.
+		bool EnsureSkinnedGpuData(ResourceManager& ctx);
+		[[nodiscard]] const std::vector<SkinnedMeshRange>&
+			GetSkinnedRanges() const { return skinnedRanges_; }
+		[[nodiscard]] BufferHandle GetSkinnedStreamBuffer() const
+		{ return skinnedStream_; }
+		[[nodiscard]] BufferHandle GetSkinnedDeformedBuffer() const
+		{ return skinnedDeformed_; }
+		// The DEFORMED buffer's heap-id base (the skinned span's first
+		// heap vertex id; the draw fetch maps vi - base into the
+		// deformed buffer). UINT32_MAX when nothing is skinned.
+		[[nodiscard]] uint32_t GetSkinnedDeformedVertexBase() const
+		{ return skinnedDeformedBase_; }
+		// The ranges table BDA (the compute pass's per-range
+		// (heapBase, count, skinBase) rows - static, uploaded at
+		// Ensure). 0 when nothing is skinned.
+		[[nodiscard]] BufferHandle GetSkinnedRangesBuffer() const
+		{ return skinnedRangesBuf_; }
+
+		// ------------------------------------------------------------------
+		// The ANIMATION driver (the "GPU bone animation" box's CPU side -
+		// the palette build; the joint-local writes + the global walk +
+		// BuildSkinPalette run per frame on the CPU (85 joints x 300
+		// keys: microseconds - the trivial box), the palette uploads +
+		// the skinning pass run on the GPU).
+		//
+		// SetAnimClip attaches a loaded .tourAnim clip (the App loads it
+		// - TOURMALINE_ANIM or a stem probe). SampleAnimation advances
+		// the time cursor (looping the clip duration), samples every
+		// track (SampleTrack), writes the joint locals into the
+		// CLUSTER's own scene (the skeleton's joint ids + the .tourAnim
+		// track ids are cluster-local by construction - the 1:1 node
+		// map), marks the joint chains changed, recomputes globals,
+		// builds the skin palette (BuildSkinPalette).
+		// Untracked joints/channels keep the loaded (bind-pose) locals.
+		// Returns false (no palette) when no clip or no skeleton.
+		// ------------------------------------------------------------------
+		void SetAnimClip(touranim::Clip clip);
+		[[nodiscard]] bool HasAnimClip() const
+		{ return animClip_.has_value(); }
+		bool SampleAnimation(float dt, std::vector<glm::mat4>& outPalette);
 
 		// GPU-free offline mode (pak cooker without a Vulkan device).
 		// UploadStaticMesh records CPU geometry + retained uploads only
@@ -390,6 +462,20 @@ namespace smvk {
 		// GetMeshSkinStream); the GPU allocation comes with the skinning
 		// pipeline.
 		std::unordered_map<uint32_t, std::vector<VertexSkin>> skinStreams_;
+		// The Northlight compute-skinning GPU state (EnsureSkinnedGpuData):
+		// the per-mesh ranges + the skinned-stream buffer (static) + the
+		// deformed buffer (the per-frame output the draw paths fetch) +
+		// the deformed span's heap-id base + the ranges table buffer.
+		std::vector<SkinnedMeshRange> skinnedRanges_;
+		Holder<BufferHandle> skinnedStream_;
+		Holder<BufferHandle> skinnedDeformed_;
+		Holder<BufferHandle> skinnedRangesBuf_;
+		uint32_t skinnedDeformedBase_ = UINT32_MAX;
+		bool skinnedGpuValid_ = false;
+		// The animation driver state: the attached clip + the time
+		// cursor (seconds, looping the clip duration).
+		std::optional<touranim::Clip> animClip_;
+		double animTime_ = 0.0;
 		bool offlineMode_ = false;
 		uint32_t offlineNextTextureId_ = 0;
 	};

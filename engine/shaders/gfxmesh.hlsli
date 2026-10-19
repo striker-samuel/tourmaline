@@ -39,6 +39,13 @@
 struct GfxShadingHeap { uint words[GFX_MAX_VERTICES * 6]; };
 // Compacted eligible batch indices for one variant dispatch.
 struct GfxMeshBatchList { uint batch[GFX_MAX_BATCHES * 2]; };
+// DEFORMED vertex heap (the Northlight compute-skinning output; the
+// skinning pass - gfxskinning.cs.hlsl - wrote it this frame): 5 words
+// per vertex [pos3 asuint, packed normal, packed tangent]. Skinned
+// draws (GFX_DRAW_SKINNED) fetch at (vi - params.deformedBase) * 5,
+// everything else at the bind-pose heap word strides. Generous
+// declared capacity (the BDA-pointer pattern - loads stay in bounds).
+struct GfxSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
 
 // Per-frame mesh params (one small device buffer, BDA in the 224 tail,
 // uploaded ONCE per RecordMeshMain — never per span: per-span uploads to
@@ -82,6 +89,12 @@ struct GfxMeshParamsData
     uint width;
     uint height;
     uint listCount;
+    // The per-frame DEFORMED buffer (the Northlight compute-skinning
+    // output; C++ mirror GfxMeshParams - gfx_filter.h): skinned draws
+    // (GFX_DRAW_SKINNED) fetch pos/normal/tangent words from it (indexed
+    // vi - deformedBase), everything else from the bind-pose heaps.
+    // 0 = static fetches (no skinned cluster this frame).
+    vk::BufferPointer<GfxSkinDeformedHeap> deformed;
+    uint deformedBase; // 0xFFFFFFFF = no skinned cluster
     uint pad0;
-    uint pad1;
 };

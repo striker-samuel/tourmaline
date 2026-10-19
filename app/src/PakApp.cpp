@@ -214,6 +214,61 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 		return nullptr;
 	}
 	std::cerr << "[App] pak cluster loaded\n";
+	// THE SKINNING CLIP (the Northlight bone-eval box's input): a loaded
+	// .tourAnim clip attaches to the first cluster carrying a skeleton (the
+	// knight pak's cluster). Sources, first match wins:
+	//   1. TOURMALINE_ANIM=<vfs path> (the explicit headless pin),
+	//   2. <scene pak stem>.anim* beside the pak (content/demo-style
+	//      layouts where the .anim0_* asset sits next to the scene).
+	// No clip = the bind-pose palette (the pass still runs, nothing
+	// moves - the deformed heap exists, the fetch swap works).
+	for (auto& clusterPtr : world->clusters) {
+		smvk::Cluster* c = clusterPtr.get();
+		if (!c || !c->hasSkeleton)
+			continue;
+		std::vector<std::string> candidates;
+		if (const char* env = std::getenv("TOURMALINE_ANIM"))
+			candidates.push_back(env);
+		{
+			// The importer names clips
+			// '<stem>.anim<idx>_<sanitized glTF animation name>.anim',
+			// so enumerate the demo dir for '<stem>.anim*' rather than
+			// guessing a label. ListDir is sorted, so this is stable.
+			const std::string stem = StemOf(pre.scenePak);
+			const std::string prefix = "demo/" + stem + ".anim";
+			for (const smvk::VfsPath& e : contentVfs.ListDir("demo")) {
+				if (e.size() >= prefix.size() + 5
+					&& e.compare(0, prefix.size(), prefix) == 0
+					&& e.compare(e.size() - 5, 5, ".anim") == 0)
+					candidates.push_back(e);
+			}
+		}
+		for (const std::string& path : candidates) {
+			const std::string norm = smvk::NormalizeAssetUri(path).Str();
+			auto bytes = contentVfs.TryRead(norm.empty() ? path : norm);
+			if (!bytes || bytes->empty())
+				continue;
+			smvk::touranim::AnimDoc doc;
+			std::string aerr;
+			if (!smvk::touranim::LoadTourAnimText(
+					std::string(bytes->begin(), bytes->end()), doc, aerr)) {
+				std::cerr << "[App] anim load failed: " << aerr
+					<< " (bind-pose palette)\n";
+				break;
+			}
+			if (doc.clips.empty())
+				break;
+			// Print BEFORE the move (the log would otherwise report the
+			// moved-from clip: '' + 0 tracks).
+			std::cerr << "[App] skinning clip attached: '"
+				<< doc.clips.front().name << "' ("
+				<< doc.clips.front().tracks.size() << " tracks, "
+				<< doc.clips.front().duration << " s)\n";
+			c->SetAnimClip(std::move(doc.clips.front()));
+			break;
+		}
+		break; // ONE cluster with a skeleton for now (the driver's cap)
+	}
 	// Check-scene extras (sponza chrome ball) inject BEFORE resolve so
 	// they join culling/shadows/AO/reflections like any imported node.
 	if (StemOf(pre.scenePak) == "sponza")

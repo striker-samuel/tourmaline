@@ -233,17 +233,44 @@ bool OptimizeStaticMeshUpload(
 	std::vector<uint32_t> indices = upload.indices; // working copy
 
 	// 1. Weld: dedup binary-identical vertices.
+	//
+	// The skin stream (binding 2, when present) is PARALLEL to `vertices`:
+	// every vertex reorder below remaps it in lockstep or the retained
+	// stream desynchronizes from the geometry (bind-pose hides it - every
+	// joint equals bind - but animation scatters the weights and spikes).
 	if (config.weld) {
 		std::vector<unsigned int> remap(vcount);
-		const size_t uniqueCount = meshopt_generateVertexRemap(
-			remap.data(),
-			indices.data(), icount,
-			upload.vertices.data(), vcount, sizeof(StaticVertex));
+		// Skin-aware identity: welding must never merge two vertices that
+		// carry different joints/weights (a skinning seam), so the
+		// VertexSkin row rides the hash too.
+		const bool hasSkin = !upload.skin.empty()
+			&& upload.skin.size() == vcount;
+		size_t uniqueCount = 0;
+		if (hasSkin) {
+			const meshopt_Stream streams[2] = {
+				{ upload.vertices.data(), sizeof(StaticVertex), sizeof(StaticVertex) },
+				{ upload.skin.data(), sizeof(VertexSkin), sizeof(VertexSkin) },
+			};
+			uniqueCount = meshopt_generateVertexRemapMulti(
+				remap.data(), indices.data(), icount, vcount, streams, 2);
+		}
+		else {
+			uniqueCount = meshopt_generateVertexRemap(
+				remap.data(),
+				indices.data(), icount,
+				upload.vertices.data(), vcount, sizeof(StaticVertex));
+		}
 		if (uniqueCount > 0 && uniqueCount < vcount) {
 			std::vector<StaticVertex> welded(uniqueCount);
 			meshopt_remapVertexBuffer(
 				welded.data(), upload.vertices.data(), vcount, sizeof(StaticVertex), remap.data());
 			upload.vertices = std::move(welded);
+			if (hasSkin) {
+				std::vector<VertexSkin> weldedSkin(uniqueCount);
+				meshopt_remapVertexBuffer(
+					weldedSkin.data(), upload.skin.data(), vcount, sizeof(VertexSkin), remap.data());
+				upload.skin = std::move(weldedSkin);
+			}
 		}
 		std::vector<uint32_t> remapped(icount);
 		meshopt_remapIndexBuffer(
@@ -284,6 +311,13 @@ bool OptimizeStaticMeshUpload(
 		std::vector<StaticVertex> reordered(nvcount);
 		meshopt_remapVertexBuffer(
 			reordered.data(), upload.vertices.data(), nvcount, sizeof(StaticVertex), remap.data());
+		const bool hasSkin = !upload.skin.empty() && upload.skin.size() == nvcount;
+		std::vector<VertexSkin> reorderedSkin;
+		if (hasSkin) {
+			reorderedSkin.resize(nvcount);
+			meshopt_remapVertexBuffer(
+				reorderedSkin.data(), upload.skin.data(), nvcount, sizeof(VertexSkin), remap.data());
+		}
 		std::vector<uint32_t> reorderedIdx(icount);
 		meshopt_remapIndexBuffer(
 			reinterpret_cast<unsigned int*>(reorderedIdx.data()),
@@ -294,6 +328,10 @@ bool OptimizeStaticMeshUpload(
 			usedVerts = (static_cast<size_t>(idx) + 1 > usedVerts) ? static_cast<size_t>(idx) + 1 : usedVerts;
 		reordered.resize(usedVerts);
 		upload.vertices = std::move(reordered);
+		if (hasSkin) {
+			reorderedSkin.resize(usedVerts);
+			upload.skin = std::move(reorderedSkin);
+		}
 		indices = std::move(reorderedIdx);
 	}
 

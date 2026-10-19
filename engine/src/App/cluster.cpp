@@ -4,6 +4,7 @@
 #include <Engine/core.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Renderer/vertex_pack.h>
+#include <Engine/Scene/scene.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
 #include <cstdio>
@@ -226,8 +227,8 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	mesh.geometry.vertexCount = vertexCount;
 	mesh.geometry.indexCount = indexCount;
 
-	mesh.geometry.aabbMin = data.aabbMin;
-	mesh.geometry.aabbMax = data.aabbMax;
+		mesh.geometry.aabbMin = data.aabbMin;
+		mesh.geometry.aabbMax = data.aabbMax;
 
 
 	Surface surface{};
@@ -259,6 +260,9 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 			alloc.vertexAllocation);
 		return {};
 	}
+
+	alloc.vertexBase = vertexBase;
+	alloc.indexByteOffset = indexByteOffset;
 
 	auto [it, inserted] = meshAllocations_.emplace(
 		handle.index(),
@@ -310,6 +314,17 @@ const std::vector<smvk::VertexSkin>* smvk::Cluster::GetMeshSkinStream(
 	return it == skinStreams_.end() ? nullptr : &it->second;
 }
 
+const std::vector<smvk::VertexSkin>* smvk::Cluster::GetRetainedSkinStream(
+	ClusterStaticMeshHandle handle) const
+{
+	if (handle.empty())
+		return nullptr;
+	auto it = retainedUploads_.find(handle.index());
+	if (it == retainedUploads_.end() || it->second.skin.empty())
+		return nullptr;
+	return &it->second.skin;
+}
+
 void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
 	std::vector<smvk::VertexSkin>&& stream)
 {
@@ -318,7 +333,178 @@ void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
 	skinStreams_[handle.index()] = std::move(stream);
 	if (StaticMesh* mesh = staticMeshes.get(handle))
 		mesh->skinned = true;
+	skinnedGpuValid_ = false; // re-Ensure picks up the new stream
 }
+
+// ---------------------------------------------------------------------------
+// SKINNED-MESH GPU data (the Northlight compute-skinning path). Built
+// once per cluster (idempotent): the skinned-stream buffer (the
+// concatenated VertexSkin rows, static) + the DEFORMED buffer (the
+// skinning pass's per-frame output: [pos3, normalW, tangentW] per vertex,
+// 20B) + the ranges table ((heapBase, count, skinBase) per range, static).
+// The heaps stay the BIND POSE (the pass's input).
+// ---------------------------------------------------------------------------
+bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
+	if (skinnedGpuValid_)
+		return !skinnedRanges_.empty();
+	if (skinStreams_.empty() || !ctx_) {
+		skinnedGpuValid_ = true;
+		skinnedRanges_.clear();
+		return false;
+	}
+	skinnedGpuValid_ = true; // one shot (a rebuild re-Ensures via SetMeshSkinStream)
+
+	// Gather the per-mesh ranges: the stream (skinStreams_) + the heap
+	// base (meshAllocations_, recorded by every upload path). The vertex
+	// count comes from the mesh's geometry (the stream must parallel it;
+	// a mismatched stream clamps to the geometry count).
+	skinnedRanges_.clear();
+	skinnedRanges_.reserve(skinStreams_.size());
+	std::vector<smvk::VertexSkin> streamData;
+	uint32_t minBase = UINT32_MAX;
+	uint32_t maxEnd = 0;
+	for (auto& [poolIdx, stream] : skinStreams_) {
+		auto it = meshAllocations_.find(poolIdx);
+		if (it == meshAllocations_.end() || !it->second)
+			continue; // no heap range (offline clusters call this never)
+		const StaticMesh* m = staticMeshes.get(
+			ClusterStaticMeshHandle::Mint(poolIdx));
+		if (!m)
+			continue;
+		SkinnedMeshRange r{};
+		r.mesh = ClusterStaticMeshHandle::Mint(poolIdx);
+		r.vertexCount = std::min(uint32_t(stream.size()),
+			m->geometry.vertexCount);
+		r.heapVertexBase = uint32_t(it->second->vertexBase);
+		r.skinBase = uint32_t(streamData.size());
+		if (r.vertexCount == 0)
+			continue;
+		streamData.insert(streamData.end(),
+			stream.begin(), stream.begin() + r.vertexCount);
+		skinnedRanges_.push_back(r);
+		minBase = std::min(minBase, r.heapVertexBase);
+		maxEnd = std::max(maxEnd, r.heapVertexBase + r.vertexCount);
+	}
+	if (skinnedRanges_.empty())
+		return false;
+
+	// The deformed buffer covers the skinned SPAN [minBase, maxEnd) of
+	// the heap id space (a non-skinned interleave wastes 20B/id - the
+	// demo's clusters are all-skinned, and the offset math stays one
+	// subtract for every fetch).
+	skinnedDeformedBase_ = minBase;
+	const uint32_t span = maxEnd - minBase;
+
+	// 5 words per vertex: pos (3 uint words, reinterpreted floats) +
+	// normal + tangent (the packed oct words). The skinning pass writes
+	// them; the draw fetches map vi - skinnedDeformedBase_ into the span.
+	const size_t skinBytes = streamData.size() * sizeof(smvk::VertexSkin);
+	skinnedStream_ = ctx_->CreateBuffer(
+		skinBytes > 0 ? skinBytes : 4, BufferType_Storage, "skinned stream");
+	const size_t deformBytes = size_t(span) * 5 * sizeof(uint32_t);
+	skinnedDeformed_ = ctx_->CreateBuffer(deformBytes, BufferType_Storage,
+		"skinned deformed");
+	// The ranges table: (heapBase, count, skinBase) rows (the compute
+	// pass's per-range dispatch inputs; one workgroup per range).
+	struct SkinnedRangeGpu {
+		uint32_t heapBase;
+		uint32_t count;
+		uint32_t skinBase;
+		uint32_t pad;
+	};
+	std::vector<SkinnedRangeGpu> table;
+	table.reserve(skinnedRanges_.size());
+	for (const SkinnedMeshRange& r : skinnedRanges_)
+		table.push_back({ r.heapVertexBase, r.vertexCount, r.skinBase, 0 });
+	skinnedRangesBuf_ = ctx_->CreateBuffer(
+		table.size() * sizeof(SkinnedRangeGpu), BufferType_Storage,
+		"skinned ranges");
+	if (skinnedStream_.empty() || skinnedDeformed_.empty()
+		|| skinnedRangesBuf_.empty()) {
+		skinnedRanges_.clear();
+		skinnedDeformedBase_ = UINT32_MAX;
+		return false;
+	}
+	ctx_->UploadDataToBuffer(skinnedStream_, streamData.data(), skinBytes,
+		PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+	ctx_->UploadDataToBuffer(skinnedRangesBuf_, table.data(),
+		table.size() * sizeof(SkinnedRangeGpu),
+		PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The animation driver (CPU; the palette build). The track writes compose
+// T * R * S from the current local's decomposition (the loaded locals ARE
+// the bind pose; a track REPLACES its whole channel, untracked channels
+// keep the loaded value - the repeated-sample round trip is exact for
+// glTF TRS-authored locals).
+// ---------------------------------------------------------------------------
+void smvk::Cluster::SetAnimClip(touranim::Clip clip) {
+	animClip_ = std::move(clip);
+	animTime_ = 0.0;
+}
+
+bool smvk::Cluster::SampleAnimation(float dt,
+	std::vector<glm::mat4>& outPalette) {
+	if (!hasSkeleton || !animClip_ || skeleton.Count() == 0)
+		return false;
+	const touranim::Clip& clip = *animClip_;
+	if (clip.duration > 1e-6) {
+		animTime_ += double(dt);
+		while (animTime_ > clip.duration)
+			animTime_ -= clip.duration;
+	}
+	for (const touranim::Track& t : clip.tracks) {
+		if (t.joint >= scene.localTransform.size())
+			continue;
+		const glm::vec4 v = touranim::SampleTrack(t, animTime_);
+		glm::mat4 local = scene.localTransform[t.joint];
+		// Decompose the current local (the bind channels for untracked
+		// axes; exact round trip for TRS-authored locals).
+		const glm::vec3 T(local[3]);
+		const glm::mat3 R3(local);
+		glm::vec3 S(
+			glm::length(glm::vec3(R3[0])),
+			glm::length(glm::vec3(R3[1])),
+			glm::length(glm::vec3(R3[2])));
+		glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
+		{
+			glm::mat3 Rn(1.0f);
+			for (int c = 0; c < 3; ++c) {
+				if (S[c] > 1e-8f)
+					Rn[c] = R3[c] / S[c];
+			}
+			q = glm::quat_cast(Rn);
+		}
+		// The track REPLACES its whole channel (the .tourAnim rule).
+		switch (t.channel) {
+		case touranim::Channel::Translate:
+			local = glm::translate(glm::mat4(1.0f),
+					glm::vec3(v.x, v.y, v.z))
+				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
+			break;
+		case touranim::Channel::Rotate:
+			q = glm::quat(v.w, v.x, v.y, v.z); // xyzw keys -> wxyz ctor
+			local = glm::translate(glm::mat4(1.0f), T)
+				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
+			break;
+		case touranim::Channel::Scale:
+			S = glm::vec3(v.x, v.y, v.z);
+			local = glm::translate(glm::mat4(1.0f), T)
+				* glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), S);
+			break;
+		}
+		scene.localTransform[t.joint] = local;
+		// The joint's DESCENDANTS follow (markAsChanged covers the
+		// subtree; the child joints + skinned mesh nodes recalc).
+		markAsChanged(scene, int(t.joint));
+	}
+	recalculateGlobalTransforms(scene);
+	touranim::BuildSkinPalette(scene, skeleton, outPalette);
+	return true;
+}
+
 
 
 std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
@@ -386,7 +572,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	handles.resize(uploads.size());
 	for (size_t i = 0; i < uploads.size(); ++i) {
 		const StaticMeshUpload& data = uploads[i];
-		const MeshRange& r = ranges[i];
+		MeshRange& r = ranges[i];
 		const uint32_t vertexCount =
 			static_cast<uint32_t>(data.vertices.size());
 		const uint32_t indexCount =
@@ -417,6 +603,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 				r.alloc.vertexAllocation);
 			return {};
 		}
+		r.alloc.vertexBase = r.vertexBase;
+		r.alloc.indexByteOffset = r.indexByteOffset;
 		auto [it, inserted] = meshAllocations_.emplace(
 			handles[i].index(),
 			new StaticMeshAllocation(std::move(r.alloc)));
@@ -448,7 +636,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	size_t srcIdx = 0;
 	for (size_t i = 0; i < uploads.size(); ++i) {
 		const StaticMeshUpload& data = uploads[i];
-		const MeshRange& r = ranges[i];
+		MeshRange& r = ranges[i];
 		const uint32_t vertexCount =
 			static_cast<uint32_t>(data.vertices.size());
 		const uint32_t indexCount =
@@ -549,7 +737,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	handles.resize(sources.size());
 	for (size_t i = 0; i < sources.size(); ++i) {
 		const StaticMeshDirectSource& src = sources[i];
-		const MeshRange& r = ranges[i];
+		MeshRange& r = ranges[i];
 		StaticMesh mesh{};
 		mesh.geometry.topology = PrimitiveTopology::TriangleList;
 		mesh.geometry.vertexCount = src.vertexCount;
@@ -574,6 +762,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 				r.alloc.vertexAllocation);
 			return {};
 		}
+		r.alloc.vertexBase = r.vertexBase;
+		r.alloc.indexByteOffset = r.indexByteOffset;
 		auto [it, inserted] = meshAllocations_.emplace(
 			handles[i].index(),
 			new StaticMeshAllocation(std::move(r.alloc)));
@@ -594,7 +784,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	idxCopies.reserve(sources.size());
 	for (size_t i = 0; i < sources.size(); ++i) {
 		const StaticMeshDirectSource& src = sources[i];
-		const MeshRange& r = ranges[i];
+		MeshRange& r = ranges[i];
 		posCopies.push_back(BufferBulkCopy{
 			size_t(src.posSrc),
 			size_t(r.vertexBase) * sizeof(VertexPos),

@@ -231,10 +231,16 @@ private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
 
+	// `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
+	// VertexSkin stream BEFORE the meshopt pass, so it rides the vertex
+	// remap in lockstep with the geometry (BuildSkinData then only builds
+	// the Skeleton + publishes the stream; a stream attached after
+	// optimization would desync from the reordered vertices and spike).
 	smvk::ClusterStaticMeshHandle
 		getOrCreateMesh(
 			int gltfMeshIndex,
-			int primitiveIndex
+			int primitiveIndex,
+			bool skinned = false
 		);
 
 	smvk::ClusterLightHandle

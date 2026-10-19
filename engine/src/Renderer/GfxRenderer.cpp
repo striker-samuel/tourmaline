@@ -1338,6 +1338,17 @@ namespace engine {
 				drawFlags |= smvk::gfx::DrawFlagBit_DitherCloseup;
 				drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
+			// SKINNED draws (the Northlight compute path): the flag is
+			// set ONLY when the frame carries a valid deformed buffer (the
+			// renderer's skinning driver filled gfx.skinDeformedBda - the
+			// deformed heap exists + the skinning pass ran); a skinned
+			// mesh WITHOUT animation data keeps the static bind-pose
+			// fetches (no deformed heap, no swap).
+			if ((gfx.skinDeformedBda != 0)
+				&& world.GetMesh(worldMesh)
+				&& world.GetMesh(worldMesh)->skinned) {
+				drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
+			}
 			// Lightmap chunk rides the draw: resolved from the SELECTED LOD
 			// sibling, whose own texCoord2 addresses its own atlas rects.
 			// The frostbite cook transfers LOD0's parameterization to every
@@ -1457,6 +1468,11 @@ namespace engine {
 		tail.renderViews = renderViewsAddr;
 		tail.renderViewIndex = renderViewIndex;
 		tail.lmXforms = lmXformsAddr_;
+		// The VS-skin tail fields (bytes 224..256): the SKINNED fetch
+		// swap's inputs, carried DIRECTLY (never through a
+		// GfxMeshParamsData pointer - the chain wedges the NV pipeline
+		// compiler; see FilteredVsPush's comment).
+		smvk::gfx::FillVsSkinTail(tail, gfx);
 		cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 			smvk::ShaderStage::All);
 	}
@@ -1494,12 +1510,22 @@ namespace engine {
 	void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
 		uint64_t drawsAddr) {
+		(void)slot; // the caller's view slot (main or SHADOW view): the
+		// VS-skin fields below are view-independent STATE data (the
+		// eternal heaps + the frame's deformed pair), so the shadow
+		// views need no ring-slot resolution.
 		(void)ctx;
-		(void)slot;
 		smvk::gfx::FilteredVsPush tail{};
 		tail.draws = drawsAddr;
 		tail.renderViews = renderViewsAddr;
 		tail.renderViewIndex = renderViewIndex;
+		// The VS-skin tail fields (bytes 224..256), shared with the lit
+		// leg (gfxseed.hlsli's SeedVsMainPush mirrors the layout): the
+		// SKINNED depth/shadow fetch swap reads the deformed pos through
+		// them. The fields are view-independent (the eternal heaps + the
+		// frame's deformed pair), so the shadow views resolve them through
+		// the STATE, not any view's ring slot.
+		smvk::gfx::FillVsSkinTail(tail, gfx);
 		cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 			smvk::ShaderStage::All);
 	}

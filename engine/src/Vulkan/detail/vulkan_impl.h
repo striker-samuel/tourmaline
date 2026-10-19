@@ -99,6 +99,12 @@ namespace smvk {
 	//	std::vector<VmaVirtualAllocation> allocs;
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
 		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
+		// The heap range (the skinned-stream compute pass writes the
+		// deformed positions/normals back into these ranges in place -
+		// the Northlight data flow: the skinning pass deforms, every
+		// draw/cull pass reads the deformed heap).
+		VkDeviceSize vertexBase = 0;      // VERTEX units into the pos/shading heaps
+		VkDeviceSize indexByteOffset = 0; // byte offset into the index monoblock
 	};
 
 	inline struct StaticVertexFmtHeap {

@@ -16,6 +16,20 @@ set_target_properties(AssetTests PROPERTIES
 
 add_test(NAME asset_tests COMMAND AssetTests)
 
+# .tourAnim loader/sampler + the Cluster pose driver (headless).
+add_executable(TourAnimTests test_touranim.cpp)
+
+target_link_libraries(TourAnimTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(TourAnimTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME touranim_tests COMMAND TourAnimTests)
+
 # Placement editor model (engine-only TU: no ImGui, no EditorApp).
 add_executable(PlacementEditorTests test_placement_editor.cpp
     ../editor/src/editor_dg.cpp

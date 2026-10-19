@@ -227,6 +227,21 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
     uint3 tri[GFX_MESH_TRIS_PER_LANE];
     float4 clip[GFX_MESH_TRIS_PER_LANE][3];
     bool twoSided = (draw.misc.y & GFX_DRAW_TWOSIDED) != 0;
+    // SKINNED draws (the Northlight compute path): the DEFORMED heap
+    // holds this frame's animated pos (the skinning pass wrote it);
+    // the cull runs against the DEFORMED positions - the animated pose,
+    // not the bind pose (the Northlight order: the skinning pass feeds
+    // the culling). Static draws fetch the bind-pose heaps. (No null-BDA
+    // check: the MMU-fault rule - the CPU sets GFX_DRAW_SKINNED only
+    // when the params carry a valid deformed buffer.)
+    // SKINNED draws (the Northlight compute path): the DEFORMED heap
+    // holds this frame's animated pos (the skinning pass wrote it);
+    // the cull runs against the DEFORMED positions - the animated pose,
+    // not the bind pose (the Northlight order: the skinning pass feeds
+    // the culling). Static draws fetch the bind-pose heaps. (No null-BDA
+    // check: the MMU-fault rule - the CPU sets GFX_DRAW_SKINNED only
+    // when the params carry a valid deformed buffer.)
+    const bool skinned = (draw.misc.y & GFX_DRAW_SKINNED) != 0;
     [unroll]
     for (int r = 0; r < GFX_MESH_TRIS_PER_LANE; ++r)
     {
@@ -246,10 +261,18 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             {
                 uint vi = (k == 0) ? tri[r].x : ((k == 1) ? tri[r].y : tri[r].z);
                 uint wbase = vi * 3;
-                float3 p = float3(
-                    asfloat(P.positions.Get().words[wbase + 0]),
-                    asfloat(P.positions.Get().words[wbase + 1]),
-                    asfloat(P.positions.Get().words[wbase + 2]));
+                float3 p = skinned
+                    ? float3(
+                        asfloat(P.deformed.Get().word[
+                            (vi - P.deformedBase) * 5 + 0]),
+                        asfloat(P.deformed.Get().word[
+                            (vi - P.deformedBase) * 5 + 1]),
+                        asfloat(P.deformed.Get().word[
+                            (vi - P.deformedBase) * 5 + 2]))
+                    : float3(
+                        asfloat(P.positions.Get().words[wbase + 0]),
+                        asfloat(P.positions.Get().words[wbase + 1]),
+                        asfloat(P.positions.Get().words[wbase + 2]));
                 clip[r][k] = mul(P.viewProj, mul(draw.model, float4(p, 1.0f)));
             }
             survive[r] = !MeshCullTriangle(tri[r], clip[r][0], clip[r][1], clip[r][2],
@@ -281,17 +304,38 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
         {
             uint vi = (k == 0) ? triR.x : ((k == 1) ? triR.y : triR.z);
             uint wbase = vi * 3;
-            float3 p = float3(
-                asfloat(P.positions.Get().words[wbase + 0]),
-                asfloat(P.positions.Get().words[wbase + 1]),
-                asfloat(P.positions.Get().words[wbase + 2]));
+            // SKINNED draws fetch pos + the deformed normal/tangent
+            // words from the DEFORMED heap (5 words/vertex at
+            // (vi - deformedBase) * 5; the skinning pass's output);
+            // the color/uv/chart words stay on the bind-pose shading
+            // heap (skinning never touches them).
             uint sbase = vi * 6;
-            uint cW = P.shading.Get().words[sbase + 0];
-            uint uvW = P.shading.Get().words[sbase + 1];
-            uint chUW = P.shading.Get().words[sbase + 2];
-            uint nW = P.shading.Get().words[sbase + 3];
-            uint tW = P.shading.Get().words[sbase + 4];
-            uint chW = P.shading.Get().words[sbase + 5];
+            uint cW, uvW, chUW, nW, tW, chW;
+            float3 p;
+            if (skinned) {
+                uint d = (vi - P.deformedBase) * 5;
+                p = float3(
+                    asfloat(P.deformed.Get().word[d + 0]),
+                    asfloat(P.deformed.Get().word[d + 1]),
+                    asfloat(P.deformed.Get().word[d + 2]));
+                cW = P.shading.Get().words[sbase + 0];
+                uvW = P.shading.Get().words[sbase + 1];
+                chUW = P.shading.Get().words[sbase + 2];
+                nW = P.deformed.Get().word[d + 3];
+                tW = P.deformed.Get().word[d + 4];
+                chW = P.shading.Get().words[sbase + 5];
+            } else {
+                p = float3(
+                    asfloat(P.positions.Get().words[wbase + 0]),
+                    asfloat(P.positions.Get().words[wbase + 1]),
+                    asfloat(P.positions.Get().words[wbase + 2]));
+                cW = P.shading.Get().words[sbase + 0];
+                uvW = P.shading.Get().words[sbase + 1];
+                chUW = P.shading.Get().words[sbase + 2];
+                nW = P.shading.Get().words[sbase + 3];
+                tW = P.shading.Get().words[sbase + 4];
+                chW = P.shading.Get().words[sbase + 5];
+            }
 
             MeshVert v;
             float4 world = mul(draw.model, float4(p, 1.0f));

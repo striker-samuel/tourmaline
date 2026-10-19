@@ -80,6 +80,12 @@ struct GfxBatches { uint4 batch[GFX_MAX_BATCH_SLOTS]; };
 // screen-door with CloseupDitherKeep (common.hlsli). Set at PushDraw time
 // together with the MASKED bucket routing (the alpha-tested depth legs).
 #define GFX_DRAW_DITHER_CLOSEUP 0x2
+// misc.y bit 2 (C++ mirror DrawFlagBit_Skinned): this draw's mesh is
+// SKINNED (the Northlight compute path): the mesh-shader leg fetches the
+// deformed pos/normal/tangent words from the per-frame DEFORMED buffer
+// (params.deformed, indexed vi - params.deformedBase) instead of the
+// bind-pose heaps. The flag is only set when params.deformed != 0.
+#define GFX_DRAW_SKINNED 0x4
 
 // Draw-set buckets (T1; mirrors C++ DrawSetBit_*). The seed depth pass
 // issues one PSO per bucket; views mask which buckets they accept.

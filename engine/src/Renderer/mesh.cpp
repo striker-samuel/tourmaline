@@ -106,14 +106,13 @@ namespace smvk {
 			&& staticVertexFmtHeap.m_staticIndexBuffer.valid()) {
 			return;
 		}
-		staticVertexFmtHeap.m_staticVertexPosBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
-		staticVertexFmtHeap.m_staticVertexShadingBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
-		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Storage, "static index").release();
 		const VkDeviceSize maxVertices = std::min(
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexPos),
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexShading)
 		);
-
+		staticVertexFmtHeap.m_staticVertexPosBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
+		staticVertexFmtHeap.m_staticVertexShadingBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
+		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Storage, "static index").release();
 		{
 			VmaVirtualBlockCreateInfo info{};
 			info.size = maxVertices;
