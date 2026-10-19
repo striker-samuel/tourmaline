@@ -203,6 +203,20 @@ bool BuildMeshletsForUpload(
 	}();
 	size_t dumpLeft = 32;
 
+	// A facing-pure split fragment awaiting the re-pack (the merge pass
+	// below): the split emits fragments instead of finished meshlets so
+	// same-facing neighbors can fill ONE meshlet later.
+	struct Fragment {
+		unsigned int verts[kMeshletMaxVertices];
+		unsigned int vertCount = 0;
+		unsigned char tris[kMeshletMaxTriangles * 3];
+		unsigned int triCount = 0; // triangles
+		glm::vec3 boundCenter{};
+		glm::vec3 coneAxis{ 0.0f, 0.0f, 0.0f };
+		uint64_t morton = 0;
+	};
+	std::vector<Fragment> fragments;
+
 	// Emits one finished Meshlet (its window is already pushed into
 	// cooked) and accumulates the shape stats + the TMP-DIAG dump line.
 	auto emitMeshlet = [&](Meshlet& ml, bool split) {
@@ -227,12 +241,15 @@ bool BuildMeshletsForUpload(
 		cooked.meshlets.push_back(ml);
 	};
 
-	// Recursive emit: bounds + radius repair, then either emit as-is or
-	// (degenerate cone, a usable partition axis, depth budget left) cut
-	// into facing halves and recurse. The halves are subsets so the
-	// 64v/64t caps hold at every level; crumpled cloth needs both levels
-	// (a hemisphere cut still spans ~178deg pairwise, a quarter cut
-	// lands under meshopt's ~168deg degeneracy line).
+	// Recursive emit: bounds + radius repair, then either emit as-is
+	// (depth 0: meshopt's own full meshlets — untouched) / collect as a
+	// fragment (depth > 0: the split's children, facing-pure but small —
+	// the re-pack below merges them back into full meshlets) / (degenerate
+	// cone, a usable partition axis, depth budget left) cut into facing
+	// halves and recurse. The halves are subsets so the 64v/64t caps hold
+	// at every level; crumpled cloth needs both levels (a hemisphere cut
+	// still spans ~178deg pairwise, a quarter cut lands under meshopt's
+	// ~168deg degeneracy line).
 	std::function<void(const unsigned int*, unsigned int,
 		const unsigned char*, unsigned int, unsigned int, bool)>
 		emitWindow = [&](const unsigned int* winVerts, unsigned int winVertCount,
@@ -251,7 +268,7 @@ bool BuildMeshletsForUpload(
 		// Facing-split repair (see the block comment): a degenerate cone
 		// with a usable partition axis and depth budget splits; everything
 		// else — including halves that STILL wrap (genuinely round
-		// patches, not layer mixing) — emits with its conservative
+		// patches, not layer mixing) — keeps its conservative
 		// keep-cone (degenerate cones never cull wrong, they just fail to
 		// cull). Face normals first; a zero-length normal (slivers) dots
 		// to 0 with everything so slivers never make the worst pair (they
@@ -294,8 +311,23 @@ bool BuildMeshletsForUpload(
 		}
 
 		if (!canSplit) {
-			// Emit as built (not poisoned / no partition axis / out of
-			// depth).
+			if (fromSplit && depth > 0) {
+				// A split child: facing-pure (or a leftover) but small —
+				// collect for the re-pack instead of emitting a speck.
+				Fragment f{};
+				std::memcpy(f.verts, winVerts,
+					sizeof(unsigned int) * winVertCount);
+				f.vertCount = winVertCount;
+				std::memcpy(f.tris, winTris, (size_t)triCount * 3);
+				f.triCount = triCount;
+				f.boundCenter = glm::vec3(b.center[0], b.center[1], b.center[2]);
+				f.coneAxis = glm::vec3(
+					b.cone_axis[0], b.cone_axis[1], b.cone_axis[2]);
+				fragments.push_back(std::move(f));
+				return;
+			}
+			// Emit as built (meshopt's own full meshlet, not poisoned /
+			// no partition axis / out of depth at the top level).
 			for (unsigned int k = 0; k < winVertCount; ++k)
 				cooked.vertices.push_back(winVerts[k]);
 			for (unsigned int k = 0; k < triCount * 3; ++k)
@@ -311,7 +343,7 @@ bool BuildMeshletsForUpload(
 			ml.coneApex = glm::vec3(b.cone_apex[0], b.cone_apex[1], b.cone_apex[2]);
 			ml.coneAxis = glm::vec3(b.cone_axis[0], b.cone_axis[1], b.cone_axis[2]);
 			ml.coneCutoff = b.cone_cutoff;
-			emitMeshlet(ml, fromSplit);
+			emitMeshlet(ml, false);
 			return;
 		}
 
@@ -364,6 +396,158 @@ bool BuildMeshletsForUpload(
 		const meshopt_Meshlet& m = raw[i];
 		emitWindow(&rawVerts[m.vertex_offset], m.vertex_count,
 			&rawTris[m.triangle_offset], m.triangle_count, 0, false);
+	}
+
+	// ---- Facing-fragment re-pack (the "speckle" fix) -------------------
+	// The split leaves facing-pure but TINY fragments (the crumpled cloth
+	// quarters nearly everything — observed knight mesh.0: 4.2x the
+	// meshlets at ~23 tris each; the debug view reads that as speckle,
+	// and the per-cluster cull/indirect overhead scales with the count).
+	// The re-pack merges same-facing spatial neighbors back into FULL
+	// meshlets: fragments sorted (facing octant, Morton center) so
+	// neighbors stream adjacent, a small open-accumulator set greedily
+	// absorbs — the 64v/64t caps hold, and the MERGED CONE MUST STAY
+	// LIVE (checked per absorb, rollback on rejection), so the merge
+	// never builds what the cone test cannot use — the split's culling
+	// wins survive the packing. Opposing facings sit in different octants
+	// and never meet. Unmergeable leftovers emit solo (their conservative
+	// keep-cone just fails to cull, same as before).
+	if (!fragments.empty())
+	{
+		auto octantOf = [](const glm::vec3& a) -> unsigned {
+			return (a.x >= 0.0f ? 1u : 0u) | (a.y >= 0.0f ? 2u : 0u)
+				| (a.z >= 0.0f ? 4u : 0u);
+		};
+		glm::vec3 fmn(1e30f), fmx(-1e30f);
+		for (const Fragment& f : fragments) {
+			fmn = glm::min(fmn, f.boundCenter);
+			fmx = glm::max(fmx, f.boundCenter);
+		}
+		const float fscale = 65535.0f
+			/ glm::max(glm::max(fmx.x - fmn.x, fmx.y - fmn.y),
+				glm::max(fmx.z - fmn.z, 1e-9f));
+		auto morton = [](unsigned x, unsigned y, unsigned z) -> uint64_t {
+			uint64_t m = 0;
+			for (int i = 0; i < 16; ++i)
+				m |= ((uint64_t)((x >> i) & 1) << (3 * i))
+					| ((uint64_t)((y >> i) & 1) << (3 * i + 1))
+					| ((uint64_t)((z >> i) & 1) << (3 * i + 2));
+			return m;
+		};
+		for (Fragment& f : fragments)
+			f.morton = morton(
+				(unsigned)glm::clamp((f.boundCenter.x - fmn.x) * fscale,
+					0.0f, 65535.0f),
+				(unsigned)glm::clamp((f.boundCenter.y - fmn.y) * fscale,
+					0.0f, 65535.0f),
+				(unsigned)glm::clamp((f.boundCenter.z - fmn.z) * fscale,
+					0.0f, 65535.0f));
+		std::stable_sort(fragments.begin(), fragments.end(),
+			[&](const Fragment& a, const Fragment& b) {
+			const unsigned oa = octantOf(a.coneAxis);
+			const unsigned ob = octantOf(b.coneAxis);
+			if (oa != ob)
+				return oa < ob;
+			return a.morton < b.morton;
+		});
+
+		struct Acc {
+			unsigned int verts[kMeshletMaxVertices];
+			unsigned int vertCount = 0;
+			unsigned char tris[kMeshletMaxTriangles * 3];
+			unsigned int triCount = 0;
+		};
+		// Absorb with rollback: any rejection (caps, dead merged cone)
+		// truncates the accumulator back to its saved counts.
+		auto tryAbsorb = [&](Acc& a, const Fragment& f) -> bool {
+			const unsigned savedVerts = a.vertCount;
+			const unsigned savedTris = a.triCount;
+			auto reject = [&]() {
+				a.vertCount = savedVerts;
+				a.triCount = savedTris;
+				return false;
+			};
+			if (a.triCount + f.triCount > kMeshletMaxTriangles)
+				return reject();
+			unsigned char map[kMeshletMaxVertices];
+			for (unsigned i = 0; i < f.vertCount; ++i) {
+				unsigned char hit = 0xFF;
+				for (unsigned j = 0; j < savedVerts; ++j)
+					if (a.verts[j] == f.verts[i]) {
+						hit = (unsigned char)j;
+						break;
+					}
+				if (hit == 0xFF) {
+					if (a.vertCount >= kMeshletMaxVertices)
+						return reject();
+					hit = (unsigned char)a.vertCount;
+					a.verts[a.vertCount++] = f.verts[i];
+				}
+				map[i] = hit;
+			}
+			for (unsigned t = 0; t < f.triCount; ++t)
+				for (unsigned k = 0; k < 3; ++k)
+					a.tris[(a.triCount + t) * 3 + k] =
+						map[f.tris[t * 3 + k]];
+			a.triCount += f.triCount;
+			meshopt_Bounds mb = meshopt_computeMeshletBounds(
+				a.verts, a.tris, a.triCount, positions, vcount,
+				sizeof(StaticVertex));
+			if ((mb.cone_axis[0] * mb.cone_axis[0]
+				+ mb.cone_axis[1] * mb.cone_axis[1]
+				+ mb.cone_axis[2] * mb.cone_axis[2]) < 1e-12f)
+				return reject();
+			return true;
+		};
+		auto emitAcc = [&](Acc& a) {
+			meshopt_optimizeMeshlet(a.verts, a.tris, a.triCount, a.vertCount);
+			meshopt_Bounds mb = meshopt_computeMeshletBounds(
+				a.verts, a.tris, a.triCount, positions, vcount,
+				sizeof(StaticVertex));
+			RepairBoundRadius(mb, a.verts, a.tris, a.triCount, upload);
+			for (unsigned k = 0; k < a.vertCount; ++k)
+				cooked.vertices.push_back(a.verts[k]);
+			for (unsigned k = 0; k < a.triCount * 3; ++k)
+				cooked.triangles.push_back(a.tris[k]);
+			Meshlet ml;
+			ml.vertexOffset = (uint32_t)cooked.vertices.size() - a.vertCount;
+			ml.vertexCount = a.vertCount;
+			ml.triangleOffset = (uint32_t)cooked.triangles.size()
+				- (size_t)a.triCount * 3;
+			ml.triangleCount = a.triCount;
+			ml.boundCenter = glm::vec3(mb.center[0], mb.center[1], mb.center[2]);
+			ml.boundRadius = mb.radius;
+			ml.coneApex = glm::vec3(mb.cone_apex[0], mb.cone_apex[1], mb.cone_apex[2]);
+			ml.coneAxis = glm::vec3(mb.cone_axis[0], mb.cone_axis[1], mb.cone_axis[2]);
+			ml.coneCutoff = mb.cone_cutoff;
+			emitMeshlet(ml, true);
+		};
+		constexpr unsigned kMaxOpenAccs = 16;
+		std::vector<Acc> open;
+		open.reserve(kMaxOpenAccs + 1);
+		for (const Fragment& f : fragments) {
+			bool absorbed = false;
+			for (Acc& a : open)
+				if (tryAbsorb(a, f)) {
+					absorbed = true;
+					break;
+				}
+			if (absorbed)
+				continue;
+			if (open.size() >= kMaxOpenAccs) {
+				// FIFO: the oldest left the locality window.
+				emitAcc(open.front());
+				open.erase(open.begin());
+			}
+			Acc a{};
+			std::memcpy(a.verts, f.verts, sizeof(unsigned int) * f.vertCount);
+			a.vertCount = f.vertCount;
+			std::memcpy(a.tris, f.tris, (size_t)f.triCount * 3);
+			a.triCount = f.triCount;
+			open.push_back(std::move(a));
+		}
+		for (Acc& a : open)
+			emitAcc(a);
 	}
 
 	stats.meanRadius = stats.meshletCount > 0

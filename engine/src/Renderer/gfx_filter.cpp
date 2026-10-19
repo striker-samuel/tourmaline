@@ -1845,6 +1845,11 @@ BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview) {
 	return s.shadowViews[sview].indirectBuffers[s.shadowViews[sview].frameIndex];
 }
 
+const std::vector<Draw>& ShadowDrawConstants(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].drawConstants;
+}
+
 LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview) {
 	assert(sview < s.shadowViews.size());
 	return s.shadowViews[sview].drawLogicals[s.shadowViews[sview].frameIndex];

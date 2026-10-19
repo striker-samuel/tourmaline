@@ -11,11 +11,13 @@
 // PASS/FAIL, the process exits nonzero on any failure.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -28,6 +30,7 @@
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
+#include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Camera/camera.h>
@@ -740,6 +743,131 @@ void TestConeCull() {
 // SnapshotVisible copies this frame's surviving set into the sidecar
 // (overwrites = rotation); InvalidateHistory disarms without freeing.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Meshlet integrity (the facing-split repair contract): the built set must
+// contain EXACTLY the input triangles (as vertex-id triples, order-free),
+// every local id in range, every meshlet under the 64v/64t engine caps.
+// The split may re-partition faces; it may never drop, duplicate or garble
+// them. Double-layer cloth (front + back skins ~2mm apart with opposite
+// facings) is the split's target shape — without the repair nearly every
+// one of its meshlets degenerates its cone (the skins' normals cancel).
+// ---------------------------------------------------------------------------
+
+void TestMeshletIntegrity() {
+	struct TriSet {
+		std::map<std::array<uint32_t, 3>, uint32_t> counts;
+		void Add(uint32_t a, uint32_t b, uint32_t c) {
+			std::array<uint32_t, 3> k{ a, b, c };
+			std::sort(k.begin(), k.end());
+			++counts[k];
+		}
+	};
+	auto checkUpload = [&](const smvk::StaticMeshUpload& up,
+		const char* name) {
+		smvk::MeshletConfig cfg{};
+		cfg.enabled = true;
+		smvk::CookedMeshlets cooked;
+		smvk::MeshletStats stats;
+		std::string merr;
+		Check(smvk::BuildMeshletsForUpload(up, cfg, &cooked, &stats, &merr),
+			(std::string("gfx.mli.build-") + name).c_str());
+
+		TriSet in, out;
+		for (size_t i = 0; i + 2 < up.indices.size(); i += 3)
+			in.Add(up.indices[i], up.indices[i + 1], up.indices[i + 2]);
+
+		uint32_t badLocal = 0;
+		uint32_t capViolations = 0;
+		for (const smvk::Meshlet& m : cooked.meshlets) {
+			if (m.vertexCount > smvk::kMeshletMaxVertices
+				|| m.triangleCount > smvk::kMeshletMaxTriangles)
+				++capViolations;
+			if (m.vertexOffset + m.vertexCount
+				> (uint32_t)cooked.vertices.size()
+				|| m.triangleOffset + m.triangleCount * 3
+				> (uint32_t)cooked.triangles.size()) {
+				++badLocal;
+				continue;
+			}
+			for (uint32_t t = 0; t < m.triangleCount; ++t) {
+				uint32_t g[3] = { 0, 0, 0 };
+				bool ok = true;
+				for (uint32_t k = 0; k < 3; ++k) {
+					const uint32_t local =
+						cooked.triangles[m.triangleOffset + t * 3 + k];
+					if (local >= m.vertexCount) {
+						ok = false;
+						break;
+					}
+					g[k] = cooked.vertices[m.vertexOffset + local];
+				}
+				if (!ok) {
+					++badLocal;
+					continue;
+				}
+				out.Add(g[0], g[1], g[2]);
+			}
+		}
+		Check(capViolations == 0,
+			(std::string("gfx.mli.caps-") + name).c_str());
+		Check(badLocal == 0,
+			(std::string("gfx.mli.locals-") + name).c_str());
+		Check(in.counts == out.counts,
+			(std::string("gfx.mli.exact-triangles-") + name).c_str());
+		std::cout << "[gfx.mli] " << name << ": meshlets="
+			<< stats.meshletCount << " split=" << stats.splitMeshlets
+			<< " degenerate=" << stats.degenerateCones
+			<< " meanCutoff=" << stats.meanCutoff << "\n";
+		return stats;
+	};
+
+	// Single-skin sphere: the no-split common case.
+	checkUpload(MakeSphere(24, 36, 1.0f), "sphere");
+
+	// Double-layer cloth: a wavy sheet emitted twice — the back skin 2mm
+	// under the front, opposite winding (the facing-split's target).
+	{
+		smvk::StaticMeshUpload cloth{};
+		auto addSkin = [&](float yOff, bool flip) {
+			const uint32_t base = (uint32_t)cloth.vertices.size();
+			const int nu = 48, nv = 48;
+			for (int j = 0; j <= nv; ++j)
+				for (int i = 0; i <= nu; ++i) {
+					smvk::StaticVertex v{};
+					const float x = (float)i / nu;
+					const float z = (float)j / nv;
+					v.pos = glm::vec3(x,
+						0.06f * std::sin(x * 9.0f) * std::cos(z * 7.0f) + yOff,
+						z);
+					v.normal = glm::vec3(0, 1, 0);
+					cloth.vertices.push_back(v);
+				}
+			const uint32_t stride = nu + 1;
+			for (int j = 0; j < nv; ++j)
+				for (int i = 0; i < nu; ++i) {
+					const uint32_t a = base + (uint32_t)(j * stride + i);
+					const uint32_t b = a + 1;
+					const uint32_t c = a + stride;
+					const uint32_t d = c + 1;
+					if (flip)
+						cloth.indices.insert(cloth.indices.end(),
+							{ a, c, b, b, c, d });
+					else
+						cloth.indices.insert(cloth.indices.end(),
+							{ a, b, c, b, d, c });
+				}
+		};
+		addSkin(+0.001f, false);
+		addSkin(-0.001f, true);
+		const smvk::MeshletStats st = checkUpload(cloth, "cloth");
+		// The split must leave only a small degenerate minority (the
+		// un-split cloth degenerates nearly every cone).
+		Check(st.degenerateCones * 4 < st.meshletCount,
+			"gfx.mli.cloth-degenerate-minority");
+		Check(st.splitMeshlets > 0, "gfx.mli.cloth-split-ran");
+	}
+}
 
 void TestTemporalSnapshot() {
 	using namespace smvk::gfx;
@@ -2050,6 +2178,7 @@ int main() {
 	TestDemandPlumbing();
 	TestPreCull();
 	TestConeCull();
+	TestMeshletIntegrity();
 	TestTemporalSnapshot();
 	TestHizLayout();
 	TestSeedCommands();

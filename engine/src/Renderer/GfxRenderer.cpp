@@ -726,6 +726,31 @@ namespace engine {
 			smvk::gfx::ShadowIndirectBuffer(gfx, sview);
 		const uint64_t drawsAddr =
 			ctx.GetBufferDeviceAddress(smvk::gfx::ShadowDrawBuffer(gfx, sview));
+		// TMP-DIAG (TOURMALINE_KD, once): what the shadow seed actually
+		// records — the skin tail state + the skinned-flagged draws in the
+		// shadow view's ring (bind-pose shadows hunt). Remove later.
+		{
+			static bool noted = false;
+			const char* kdEnv = std::getenv("TOURMALINE_KD");
+			if (!noted && kdEnv && *kdEnv && *kdEnv != '0') {
+				noted = true;
+				uint32_t skinnedDraws = 0, drawTotal = 0;
+				const std::vector<smvk::gfx::Draw>& sdc =
+					smvk::gfx::ShadowDrawConstants(gfx, sview);
+				for (const smvk::gfx::Draw& d : sdc) {
+					++drawTotal;
+					if (d.flags & smvk::gfx::DrawFlagBit_Skinned)
+						++skinnedDraws;
+				}
+				std::fprintf(stderr,
+					"[KD] shadowSeed sview=%u ranges=%zu opaque=%u draws=%u skinnedDraws=%u "
+					"vsDeformed=%llu base=%u flagsValid=%d\n",
+					sview, ranges.size(), opaqueCount, drawTotal, skinnedDraws,
+					(unsigned long long)gfx.skinDeformedBda, gfx.skinDeformedBase,
+					(gfx.skinDeformedBda != 0
+						&& gfx.skinDeformedBase != UINT32_MAX) ? 1 : 0);
+			}
+		}
 		cmd.BindStaticVertexFmt();
 		// Shadow atlas is normal-Z (clear 1.0, LessEqual) — unlike the seed
 		// path's reversed-Z GreaterEqual. No index bind: commands address the
@@ -1069,6 +1094,35 @@ namespace engine {
 				mesh->geometry.aabbMin.x, mesh->geometry.aabbMin.y,
 				mesh->geometry.aabbMin.z, mesh->geometry.aabbMax.x,
 				mesh->geometry.aabbMax.y, mesh->geometry.aabbMax.z);
+			// TMP-DIAG (extends DUMPGFX): per-cluster shape summary for
+			// skinned meshes (the knight) — the RUNTIME cluster table's
+			// radii vs the cook's dashboard (a scrambled round-trip shows
+			// maxR/meanR ~ the whole mesh; tiny split fragments show small
+			// radii with many clusters). Remove later.
+			if (mesh->skinned) {
+				float rMin = 1e30f, rMax = 0.0f;
+				double rSum = 0.0;
+				uint32_t rN = 0, tMin = 4096, tMax = 0;
+				double tSum = 0.0;
+				for (uint32_t ci = 0; ci < me.clusterCount; ++ci) {
+					const smvk::gfx::Cluster& c =
+						gfx.clusters[me.clusterStart + ci];
+					rMin = std::min(rMin, c.boundRadius);
+					rMax = std::max(rMax, c.boundRadius);
+					rSum += (double)c.boundRadius;
+					++rN;
+					tMin = std::min(tMin, c.triCount);
+					tMax = std::max(tMax, c.triCount);
+					tSum += (double)c.triCount;
+				}
+				if (rN > 0)
+					std::fprintf(stderr,
+						"[TMP-DIAG] gfx=%u runtimeClusters=%u "
+						"R[min=%.3f mean=%.3f max=%.3f] "
+						"tris[min=%u mean=%.1f max=%u]\n",
+						gfxMesh, rN, rMin, rSum / (double)rN, rMax,
+						tMin, tSum / (double)rN, tMax);
+			}
 		}
 		done.emplace(key, gfxMesh);
 		return gfxMesh;

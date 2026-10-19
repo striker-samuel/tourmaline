@@ -1250,6 +1250,10 @@ void UploadShadowList(State& s, ResourceManager& ctx,
 [[nodiscard]] BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview);
 [[nodiscard]] LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview);
 [[nodiscard]] LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview);
+// CPU-side draw-constants mirror (diagnostics; the GPU reads the uploaded
+// ring slice).
+[[nodiscard]] const std::vector<Draw>& ShadowDrawConstants(
+	const State& s, uint32_t sview);
 
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, ResourceManager& ctx,
