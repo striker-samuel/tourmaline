@@ -39,6 +39,12 @@ struct MeshletConfig {
 	bool enabled = false; // off by default; cooker opts in via CLI
 	uint32_t maxVertices = kMeshletMaxVertices;
 	uint32_t maxTriangles = kMeshletMaxTriangles;
+	// Normal-cone pressure for meshopt's partition scoring. 0 (meshopt's
+	// default, the canon): the facing-split repair (BuildMeshletsForUpload)
+	// owns cone quality — the cone weight proved unable to stop meshopt's
+	// layer mixing (its vertex-budget priority outranks the cone score,
+	// and the kd-tree fallback ignores facing entirely; the knight stayed
+	// ~97% degenerate at 0 / 0.5 / 1.0).
 	float coneWeight = 0.0f;
 };
 
@@ -47,6 +53,20 @@ struct MeshletStats {
 	uint32_t totalTriangles = 0;
 	uint32_t maxVertsUsed = 0;
 	uint32_t maxTrisUsed = 0;
+	// Shape-quality dashboard (the "are these meshlets well-formed" print):
+	// radius is MESH-LOCAL model units; the cone cutoff is meshopt's
+	// cos(half-angle) — 1 = razor-tight planar cone (best culling),
+	// <=0 = hemisphere-or-worse (the cone test never fires), and a
+	// degenerate cone (zero axis) keeps unconditionally (GfxConeCulled's
+	// len2 < 1e-12). Ill-formed sets: big mean/max radius + mean cutoff
+	// near 0 (meshlets straddling disjoint body parts). splitMeshlets =
+	// how many were facing-split (the degenerate-cone repair; see
+	// BuildMeshletsForUpload's block comment).
+	float maxRadius = 0.0f;
+	float meanRadius = 0.0f;
+	float meanCutoff = 0.0f;
+	uint32_t degenerateCones = 0;
+	uint32_t splitMeshlets = 0;
 };
 
 struct Meshlet {

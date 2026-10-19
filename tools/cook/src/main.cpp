@@ -4070,7 +4070,7 @@ int Run(const CookArgs& c) {
 
 	smvk::MeshletConfig meshletCfg;
 	meshletCfg.enabled = args.meshlets;
-	// (canon sizes ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
+	// (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
 	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
 	// re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex
 	// duplication + index remap), so meshlets must NOT be built before
@@ -4238,7 +4238,7 @@ int Run(const CookArgs& c) {
 		opt.lodRatios = ParseLodRatios(args.lodRatios);
 		opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
 	meshletCfg.enabled = args.meshlets;
-	// (canon sizes ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
+	// (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
 	importMeshletCfg = meshletCfg;
 		if (args.lightmap)
 			importMeshletCfg.enabled = false;
@@ -4630,8 +4630,16 @@ int Run(const CookArgs& c) {
 					cluster->RegisterMeshMeshlets(b.uri, cooked);
 					if (smvk::StaticMesh* m = cluster->staticMeshes.get(h))
 						m->meshlets = std::move(cooked);
-					tool::out() << "Meshlets " << b.uri << ": count " << st.meshletCount
-						<< " tris " << st.totalTriangles << std::endl;
+				tool::out() << "Meshlets " << b.uri << ": count " << st.meshletCount
+					<< " tris " << st.totalTriangles
+					<< " split " << st.splitMeshlets
+					<< " maxR " << st.maxRadius
+					<< " meanR " << st.meanRadius
+					<< " meanCutoff " << st.meanCutoff
+					<< (st.degenerateCones
+						? " DEGENERATE-CONES " + std::to_string(st.degenerateCones)
+						: "")
+					<< std::endl;
 				}
 				else if (!merr.empty()) {
 					tool::out() << "Meshlets " << b.uri << " skipped: " << merr << std::endl;
@@ -6400,6 +6408,14 @@ int Run(const CookArgs& c) {
 	if (meshletCfg.enabled) {
 		uint32_t restoredMeshes = 0;
 		uint32_t restoredMeshlets = 0;
+		// Shape-quality aggregates over the restored sets (the dashboard:
+		// maxR/meanR in mesh-local model units, meanCutoff = meshopt's
+		// cos(half-angle), split = facing-split repairs; see MeshletStats).
+		float maxR = 0.0f;
+		double radiusSum = 0.0;
+		double cutoffSum = 0.0;
+		uint32_t degenerate = 0;
+		uint32_t splitsSum = 0;
 		for (auto& sc : sceneClusters) {
 			smvk::Cluster& c = *sc;
 			std::unordered_set<uint32_t> seen;
@@ -6432,6 +6448,11 @@ int Run(const CookArgs& c) {
 					c.RegisterMeshMeshlets(uri, cooked);
 				++restoredMeshes;
 				restoredMeshlets += mst.meshletCount;
+				maxR = std::max(maxR, mst.maxRadius);
+				radiusSum += (double)mst.meanRadius * mst.meshletCount;
+				cutoffSum += (double)mst.meanCutoff * mst.meshletCount;
+				degenerate += mst.degenerateCones;
+				splitsSum += mst.splitMeshlets;
 			}
 			// Sibling pass (LOD markers, lodIndex >= 1): meshes without a
 			// set get one from their FINAL stamped upload. Skips siblings
@@ -6460,11 +6481,25 @@ int Run(const CookArgs& c) {
 				c.RegisterMeshMeshlets(uri, cooked);
 				++restoredMeshes;
 				restoredMeshlets += mst.meshletCount;
+				maxR = std::max(maxR, mst.maxRadius);
+				radiusSum += (double)mst.meanRadius * mst.meshletCount;
+				cutoffSum += (double)mst.meanCutoff * mst.meshletCount;
+				degenerate += mst.degenerateCones;
+				splitsSum += mst.splitMeshlets;
 			}
 		}
 		tool::err() << "  [LM] meshlets restored: meshes=" << restoredMeshes
 			<< " meshlets=" << restoredMeshlets
-			<< " (final topology; bases included)\n" << std::flush;
+			<< " (final topology; bases included)"
+			<< " split=" << splitsSum
+			<< " maxR=" << maxR
+			<< " meanR=" << (restoredMeshlets
+				? radiusSum / (double)restoredMeshlets : 0.0)
+			<< " meanCutoff=" << (restoredMeshlets
+				? cutoffSum / (double)restoredMeshlets : 0.0)
+			<< (degenerate ? " DEGENERATE-CONES " : "")
+			<< (degenerate ? std::to_string(degenerate) : "")
+			<< "\n" << std::flush;
 	}
 
 	// ---------------------------------------------------------------------------

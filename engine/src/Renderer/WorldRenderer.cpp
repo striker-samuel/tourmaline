@@ -9775,6 +9775,32 @@ namespace engine {
 			// the flat colors are deterministic across runs/scenes.
 			const float flatExposure = FrameExposure();
 			const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
+			// Flat-debug SKIN tail (meshdebug.vert.hlsl, bytes 192..208):
+			// SKINNED meshes pose to the frame's DEFORMED heap in the
+			// Meshlets/Lods views so the meshlet shapes are judged ON the
+			// animated character (the same Northlight swap the lit/depth
+			// legs run — the debug views used to show the bind pose, hiding
+			// exactly the deformation the debugging needs to see).
+			// TOURMALINE_KD_NOSKIN=1 pins the bind pose for A/B.
+			auto pushMeshDebugSkinTail = [&](uint32_t meshId) {
+				MeshDebugSkinTail tail{};
+				static const bool noskin = [] {
+					const char* e = std::getenv("TOURMALINE_KD_NOSKIN");
+					return e && std::strcmp(e, "1") == 0;
+				}();
+				const smvk::gfx::State& st = m_gfxRenderer.State();
+				if (!noskin && st.skinDeformedBda != 0
+					&& st.skinDeformedBase != UINT32_MAX) {
+					if (const smvk::StaticMesh* m = m_world->GetMesh(meshId);
+						m && m->skinned) {
+						tail.deformed = st.skinDeformedBda;
+						tail.deformedBase = st.skinDeformedBase;
+						tail.skinned = 1;
+					}
+				}
+				cmd.PushConstants(kMeshDebugSkinTailOffset, sizeof(tail), &tail,
+					smvk::ShaderStage::All);
+			};
 			if (meshletDbg) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.MeshDebugProgram(),
@@ -9806,11 +9832,14 @@ namespace engine {
 					,
 					[&](const smvk::World::RenderItem& item)
 				{
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					const uint32_t worldMesh = item.mesh;
-					const glm::mat4& model = m_world->scene.globalTransform[item.node];
-					std::copy_n(glm::value_ptr(model), 16, dp.model);
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				const uint32_t worldMesh = item.mesh;
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
+				std::copy_n(glm::value_ptr(model), 16, dp.model);
+				// Per-item skin tail: the animated pose for SKINNED items
+				// (covers the filterable + white-fallback branches below).
+				pushMeshDebugSkinTail(worldMesh);
 					// Debug the SELECTED sibling: every registered LOD has its
 					// own gfx mesh (see RegisterWorldMeshes), so the overlay
 					// shows what the filter actually culled for this instance.
@@ -9874,11 +9903,14 @@ namespace engine {
 					,
 					[&](const smvk::World::RenderItem& item)
 				{
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					const glm::mat4& model = m_world->scene.globalTransform[item.node];
-					std::copy_n(glm::value_ptr(model), 16, lp2.model);
-					uint32_t lod = 0;
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
+				std::copy_n(glm::value_ptr(model), 16, lp2.model);
+				// Per-item skin tail (the LODs view shares the meshdebug
+				// VS: skinned items pose to the deformed heap too).
+				pushMeshDebugSkinTail(item.mesh);
+				uint32_t lod = 0;
 					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh, &lod);
 					if (!meshDesc)
 						return;
@@ -10221,11 +10253,14 @@ namespace engine {
 								d.materialId).isDefault();
 						const float* pal = vlitLevelTrans
 							? kLodVertexLitTrans : kLodPalette[lod < 8 ? lod : 4];
-						transLp.color[0] = pal[0] * flatGain;
-						transLp.color[1] = pal[1] * flatGain;
-						transLp.color[2] = pal[2] * flatGain;
-						transLp.color[3] = 1.0f;
-						cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
+					transLp.color[0] = pal[0] * flatGain;
+					transLp.color[1] = pal[1] * flatGain;
+					transLp.color[2] = pal[2] * flatGain;
+					transLp.color[3] = 1.0f;
+					cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
+					// Per-draw skin tail (the meshdebug VS shared with the
+					// opaque LODs view: skinned transparents pose too).
+					pushMeshDebugSkinTail(d.meshId);
 						for (auto& draw_set : meshDesc->geometry.surfaces) {
 							cmd.DrawIndexed(draw_set.indexCount, 1,
 								draw_set.firstIndex, draw_set.baseVertex);

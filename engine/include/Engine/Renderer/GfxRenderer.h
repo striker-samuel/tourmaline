@@ -29,6 +29,20 @@ struct alignas(16) MeshDebugPush {
 };
 static_assert(sizeof(MeshDebugPush) == 144, "MeshDebugPush must be 144 bytes");
 
+// Meshlets/Lods debug-view SKIN tail (the 16 free bytes at 192..208 of the
+// shared push range; mirrors meshdebug.vert.hlsl's trailing push fields).
+// Pushed per draw: SKINNED meshes show their ANIMATED pose in the flat
+// debug views (the deformed-heap fetch swap; TOURMALINE_KD_NOSKIN=1 pins
+// the bind pose for A/B), everything else keeps the bind-pose fetch.
+// skinned is only set when the frame's deformed heap is live (MMU-fault).
+static constexpr uint32_t kMeshDebugSkinTailOffset = 192;
+struct alignas(16) MeshDebugSkinTail {
+	uint64_t deformed = 0;   // gfx State::skinDeformedBda (0 = static fetch)
+	uint32_t deformedBase = 0xFFFFFFFFu; // gfx State::skinDeformedBase
+	uint32_t skinned = 0;    // 1 = fetch the deformed pose
+};
+static_assert(sizeof(MeshDebugSkinTail) == 16, "MeshDebugSkinTail must be 16 bytes");
+
 struct alignas(16) LineDebugPush {
 	float viewProj[16];
 	float color[4];
