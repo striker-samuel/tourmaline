@@ -13,8 +13,9 @@ ConstantBuffer<SeedVsMainPush> pcSeed;
 SeedVSOut mainVS(SeedVSIn IN)
 {
     SeedVSOut OUT;
-    OUT.pos = SeedClipPos(IN.position, IN.instanceID,
-        pcSeed.draws, pcSeed.renderViews, pcSeed.renderViewIndex);
+    OUT.pos = SeedClipPos(IN.position, IN.instanceID, IN.vertexID,
+        pcSeed.draws, pcSeed.renderViews, pcSeed.renderViewIndex,
+        pcSeed.vsDeformed, pcSeed.vsDeformedBase, pcSeed.paramsValid);
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = float2(0.0f, 0.0f);
     // No FS in this pipeline (opaque seed, depth-only): the dither-closeup

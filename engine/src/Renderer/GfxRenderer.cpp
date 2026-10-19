@@ -202,6 +202,11 @@ namespace engine {
 		// Task-less mesh twin (mesh mainMS + mesh FS twin): best-effort —
 		// failure only disables the mesh record, the indexed path stays.
 		EnsureMeshPrograms(ctx, rg);
+		// Deformed cluster bounds (skinned cull fix): the per-flight
+		// skinBounds ring + the GfxSkinBounds compute program. Best-effort —
+		// a missing .spv only disables the pass, and the batch cull then
+		// reads the static (bind-pose) table as before.
+		(void)smvk::gfx::EnsureSkinBounds(gfx, ctx, rg);
 		return true;
 	}
 
@@ -603,6 +608,23 @@ namespace engine {
 				fc.extent.width, fc.extent.height);
 		}
 		// ---- Temporal seed (T3) + remainder (T5) source ----
+		// Deformed cluster bounds (skinned cull fix): only when this frame's
+		// skinning pass wrote a deformed heap. Rebuilds each skinned
+		// cluster's sphere from the animated pose into the skinBounds table
+		// the batch cull below reads. Runs AFTER the skinning pass (added
+		// earlier this frame by the skinning driver; its trailing
+		// ALL_COMMANDS barrier orders this compute read) and BEFORE
+		// GfxBatchCull (the skinBounds write -> read hint pair orders them).
+		if (gfx.skinDeformedBda != 0 && gfx.skinBoundsReady) {
+			smvk::RenderPass& boundsPass =
+				smvk::gfx::AddSkinBoundsPass(gfx, *fc.rg, slot);
+			GfxRenderer* self = this;
+			smvk::ResourceManager* ctx = fc.ctx;
+			boundsPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
+			{
+				smvk::gfx::PushAndDispatchSkinBounds(self->gfx, cmd, *ctx, slot);
+			});
+		}
 		// Cull chain: GfxBatchCull FIRST — its outputs gate the seed
 		// pass (the seed commands + the draws the seed VS resolves are
 		// written here, GPU-side; the rendergraph orders this before the
@@ -626,7 +648,8 @@ namespace engine {
 			// CPU rotation exists. firstInstance = CURRENT draw index (the
 			// batch cull writes it against this frame's draws).
 			if (seedOpaqueProgram.shaderCount != 0
-				&& seedMaskedProgram.shaderCount != 0) {
+				&& seedMaskedProgram.shaderCount != 0
+				&& !std::getenv("TOURMALINE_KD_NOSEED")) {
 				const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
 				if (!ranges.empty()) {
 					smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(
@@ -1346,8 +1369,26 @@ namespace engine {
 			// fetches (no deformed heap, no swap).
 			if ((gfx.skinDeformedBda != 0)
 				&& world.GetMesh(worldMesh)
-				&& world.GetMesh(worldMesh)->skinned) {
+				&& world.GetMesh(worldMesh)->skinned
+				&& !std::getenv("TOURMALINE_KD_NOSKIN")) {
 				drawFlags |= smvk::gfx::DrawFlagBit_Skinned;
+				if (std::getenv("TOURMALINE_KD")) {
+					static uint32_t s_c = 0;
+					if (s_c++ < 6)
+						std::fprintf(stderr, "[KD] skinned draw pushed node=%u worldMesh=%u gfxMesh=%u flags=0x%x drawSet=0x%x meshElig=%d\n",
+							(unsigned)item.node, worldMesh, gfxMesh,
+							(unsigned)drawFlags, (unsigned)drawSet,
+							(int)smvk::gfx::MeshDrawEligible(drawSet, drawFlags));
+				}
+			} else if (std::getenv("TOURMALINE_KD")
+				&& world.GetMesh(worldMesh)
+				&& world.GetMesh(worldMesh)->skinned) {
+				static uint32_t s_c2 = 0;
+				if (s_c2++ < 6)
+					std::fprintf(stderr, "[KD] skinned mesh NOT flagged node=%u worldMesh=%u bda=%llu skinned=%d\n",
+						(unsigned)item.node, worldMesh,
+						(unsigned long long)gfx.skinDeformedBda,
+						(int)world.GetMesh(worldMesh)->skinned);
 			}
 			// Lightmap chunk rides the draw: resolved from the SELECTED LOD
 			// sibling, whose own texCoord2 addresses its own atlas rects.

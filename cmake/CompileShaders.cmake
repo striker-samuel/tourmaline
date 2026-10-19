@@ -94,7 +94,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   #     also shares gfxfilter.hlsli's big struct bounds), pinned
   #     preemptively.
   if (NOT DEFINED HLSL_FORCE_O3_FILES)
-    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl")
+    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl;gfxskinbounds.cs.hlsl")
   endif()
   # Unpin escape hatch for driver re-tests: -DTOURMALINE_SHADER_OD_RETRY=ON
   # clears the -O3 pin so CI (tools/shader_od_retry.py) can retry the -Od

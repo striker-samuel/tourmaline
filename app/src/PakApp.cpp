@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -35,6 +36,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/trigonometric.hpp>
 
 namespace app {
 namespace {
@@ -115,7 +117,9 @@ void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
 	(void)ctx;
 	if (world.clusters.empty())
 		return;
-	smvk::Cluster& sponzaCluster = *world.clusters.back();
+	// The scene pak's own cluster is registered FIRST (before any
+	// companion injection below), so it is clusters.front().
+	smvk::Cluster& sponzaCluster = *world.clusters.front();
 	const float ballRadius = 0.25f;
 	const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
 	smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
@@ -145,6 +149,72 @@ void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
 		<< "m at (" << ballCenter.x << "," << ballCenter.y << "," << ballCenter.z << "), "
 		<< ballUpload.vertices.size() << " verts, "
 		<< ballUpload.indices.size() / 3 << " tris\n";
+}
+
+// Knight companion (sponza check scene): the demo knight loads as a
+// SECOND cluster from the sibling knight.pak (same directory as the
+// scene pak) and stands in the atrium, scaled to life size and playing
+// its clip on loop (the frame's animation driver picks it up - the
+// sponza cluster carries no skeleton, so the knight is the frame's one
+// skinned cluster).
+//
+// Placement is applied to the MESH nodes' locals ONLY. The skin palette
+// is the DELTA from bind (palette = globalJoint * inverseBind = identity
+// at bind, the deformed heap then holds the bind-pose model-space
+// vertices) and the draw applies the mesh node's world matrix as the
+// model: the placement therefore belongs on the model and must NOT also
+// touch any joint's ancestor (that would double-apply it). A mesh node
+// is never an ancestor of a joint, so premultiplying each mesh node's
+// world transform is exact. The local is rewritten through the parent
+// frame so the merge's from-locals global recompute reproduces it.
+smvk::Cluster* InjectSponzaKnight(smvk::World& world,
+	smvk::ResourceManager& ctx, smvk::TextureStreamer* streamer,
+	const std::string& sponzaPakOpenPath,
+	std::shared_ptr<smvk::PakBackend>& outBackend,
+	std::string& outMountName) {
+	if (sponzaPakOpenPath.empty())
+		return nullptr;
+	const std::filesystem::path knightPak =
+		std::filesystem::path(sponzaPakOpenPath).parent_path() / "knight.pak";
+	std::error_code ec;
+	if (!std::filesystem::exists(knightPak, ec)) {
+		std::cerr << "[Scene] knight companion skipped: no '"
+			<< knightPak.string() << "'\n";
+		return nullptr;
+	}
+	PakPreload kpre = KickPakPreload(knightPak.string()).get();
+	if (!kpre.backend) {
+		std::cerr << "[Scene] knight companion load failed: " << kpre.error
+			<< "\n";
+		return nullptr;
+	}
+	smvk::Cluster& knight = world.LoadClusterFromPak(ctx,
+		kpre.backend->Reader(), 0, streamer, kpre.image);
+
+	// Life-size placement in the atrium (the chrome ball's origin is the
+	// atrium centre): stand a few metres down the corridor against the
+	// sunlit floor, facing back toward the spawn.
+	const glm::vec3 spot(2.5f, 0.0f, 0.0f);
+	const glm::mat4 placement =
+		glm::translate(glm::mat4(1.0f), spot)
+		* glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f))
+		* glm::scale(glm::mat4(1.0f), glm::vec3(100.0f));
+	for (auto& [node, meshIdx] : knight.scene.meshForNode) {
+		const int n = int(node);
+		const int p = knight.scene.hierarchy[n].parent;
+		const glm::mat4 parentGlobal = (p >= 0)
+			? knight.scene.globalTransform[p] : glm::mat4(1.0f);
+		knight.scene.localTransform[n] = glm::inverse(parentGlobal) * placement
+			* parentGlobal * knight.scene.localTransform[n];
+		knight.scene.globalTransform[n] =
+			placement * knight.scene.globalTransform[n];
+	}
+	outBackend = kpre.backend;
+	outMountName = knightPak.string();
+	std::cerr << "[Scene] knight companion: standing at ("
+		<< spot.x << "," << spot.y << "," << spot.z << "), "
+		<< knight.scene.meshForNode.size() << " mesh nodes\n";
+	return &knight;
 }
 
 // The HOST's pak loader (the renderer's world source): consumes the
@@ -222,10 +292,10 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 	//      layouts where the .anim0_* asset sits next to the scene).
 	// No clip = the bind-pose palette (the pass still runs, nothing
 	// moves - the deformed heap exists, the fetch swap works).
-	for (auto& clusterPtr : world->clusters) {
-		smvk::Cluster* c = clusterPtr.get();
-		if (!c || !c->hasSkeleton)
-			continue;
+	// Attaches the first loadable '<stem>.anim*' clip to a skinned cluster.
+	auto attachClip = [&](smvk::Cluster& c, const std::string& stem) {
+		if (c.HasAnimClip())
+			return;
 		std::vector<std::string> candidates;
 		if (const char* env = std::getenv("TOURMALINE_ANIM"))
 			candidates.push_back(env);
@@ -234,7 +304,6 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 			// '<stem>.anim<idx>_<sanitized glTF animation name>.anim',
 			// so enumerate the demo dir for '<stem>.anim*' rather than
 			// guessing a label. ListDir is sorted, so this is stable.
-			const std::string stem = StemOf(pre.scenePak);
 			const std::string prefix = "demo/" + stem + ".anim";
 			for (const smvk::VfsPath& e : contentVfs.ListDir("demo")) {
 				if (e.size() >= prefix.size() + 5
@@ -254,36 +323,77 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(PakPreload pre,
 					std::string(bytes->begin(), bytes->end()), doc, aerr)) {
 				std::cerr << "[App] anim load failed: " << aerr
 					<< " (bind-pose palette)\n";
-				break;
+				return;
 			}
 			if (doc.clips.empty())
-				break;
+				return;
 			// Print BEFORE the move (the log would otherwise report the
 			// moved-from clip: '' + 0 tracks).
 			std::cerr << "[App] skinning clip attached: '"
 				<< doc.clips.front().name << "' ("
 				<< doc.clips.front().tracks.size() << " tracks, "
 				<< doc.clips.front().duration << " s)\n";
-			c->SetAnimClip(std::move(doc.clips.front()));
-			break;
+			c.SetAnimClip(std::move(doc.clips.front()));
+			return;
 		}
+	};
+	// The clip stem: the scene pak's own stem, unless the sponza
+	// companion knight (loaded below) supplies the frame's skinned
+	// cluster - then it is the knight's.
+	std::string clipStem = StemOf(pre.scenePak);
+	// Check-scene extras (sponza chrome ball + knight companion) inject
+	// BEFORE resolve so they join culling/shadows/AO/reflections like any
+	// imported node.
+	if (StemOf(pre.scenePak) == "sponza") {
+		InjectSponzaChromeBall(*world, ctx);
+		std::shared_ptr<smvk::PakBackend> knightBackend;
+		std::string knightMountName;
+		if (InjectSponzaKnight(*world, ctx, sceneStreamer, pre.openPath,
+				knightBackend, knightMountName)) {
+			clipStem = "knight";
+			if (knightBackend)
+				contentVfs.Mount(knightBackend, 10, knightMountName);
+		}
+	}
+	for (auto& clusterPtr : world->clusters) {
+		smvk::Cluster* c = clusterPtr.get();
+		if (!c || !c->hasSkeleton)
+			continue;
+		attachClip(*c, clipStem);
 		break; // ONE cluster with a skeleton for now (the driver's cap)
 	}
-	// Check-scene extras (sponza chrome ball) inject BEFORE resolve so
-	// they join culling/shadows/AO/reflections like any imported node.
-	if (StemOf(pre.scenePak) == "sponza")
-		InjectSponzaChromeBall(*world, ctx);
 	// Freeze everything static (no recook needed): the exporters stamp
 	// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
 	// smvk::World's static BVH would stay empty. These scenes never animate,
 	// so mark each cluster root static here; Resolve carries the spec
-	// into the world scene and RebuildStaticBvh picks it up. Future
-	// dynamic nodes must ClearSubtreeStatic() before Resolve to opt out.
+	// into the world scene and RebuildStaticBvh picks it up. Skinned
+	// clusters are the exception: their mesh nodes carry a live placement
+	// and the joint chains move every frame, so they stay dynamic (the
+	// animation driver owns their transforms).
 	for (auto& clusterPtr : world->clusters) {
-		if (clusterPtr && !clusterPtr->scene.hierarchy.empty())
+		if (clusterPtr && !clusterPtr->hasSkeleton
+			&& !clusterPtr->scene.hierarchy.empty())
 			MarkSubtreeStatic(clusterPtr->scene, 0);
 	}
 	world->ResolveAndFixup_clusters();
+	if (std::getenv("TOURMALINE_KD")) {
+		int n = 0;
+		for (auto& [node, meshIdx] : world->scene.meshForNode) {
+			if (meshIdx >= world->meshLocations.size())
+				continue;
+			smvk::Cluster* cl = world->meshLocations[meshIdx].cluster;
+			if (!cl || !cl->hasSkeleton)
+				continue;
+			const glm::mat4& g = world->scene.globalTransform[node];
+			std::cerr << "[KD] merged meshNode=" << node
+				<< " t=(" << g[3].x << "," << g[3].y << "," << g[3].z
+				<< ") sc=(" << glm::length(glm::vec3(g[0])) << ","
+				<< glm::length(glm::vec3(g[1])) << ","
+				<< glm::length(glm::vec3(g[2])) << ")\n";
+			if (++n > 8) break;
+		}
+		std::cerr << "[KD] skinned draw nodes: " << n << "\n";
+	}
 	// (Demo decal seeding — the procedural blood textures + sponza hero
 	// splats — is gone with DecalAssets.cpp: decals resolve from world
 	// content only now. The renderer's own TOURMALINE_DECALS visibility

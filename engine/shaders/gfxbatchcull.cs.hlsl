@@ -98,6 +98,14 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     GroupMemoryBarrierWithGroupSync();
 
     const bool twoSided = (d.misc.y & GFX_DRAW_TWOSIDED) != 0;
+    // Skinned draws cull against the DEFORMED bounds (GfxSkinBounds wrote
+    // one GfxClusterData per candidate slot earlier this frame), not the
+    // static bind-pose sphere: a pose that swings a cluster out of its
+    // bind sphere would otherwise drop the cluster and punch a hole the
+    // seed depth never covered (sky leak + bloom). skinBoundsValid = 0
+    // (no skinned cluster this frame) leaves every draw on the static table.
+    const bool skinned = (d.misc.y & GFX_DRAW_SKINNED) != 0;
+    const bool useSkinBounds = skinned && pcB.skinBoundsValid != 0u;
     const uint keptOff = pcB.keptParity * GFX_MAX_BATCH_SLOTS;
     const uint prevOff = (1u - pcB.keptParity) * GFX_MAX_BATCH_SLOTS;
     const uint maskOk = (d.misc.z & pcB.drawSetMask) != 0u ? 1u : 0u;
@@ -108,7 +116,11 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         if (base == 0xFFFFFFFFu || slot >= GFX_MAX_BATCH_SLOTS)
             continue; // dropped draw / candidate cap: no slot to write
 
-        GfxClusterData c = pcB.clusters.Get().cluster[me.clusterStart + ci];
+        GfxClusterData c;
+        if (useSkinBounds)
+            c = pcB.skinBounds.Get().cluster[slot];
+        else
+            c = pcB.clusters.Get().cluster[me.clusterStart + ci];
 
         // Sphere + world-space cone (the C++ CullCluster port, LIVE view).
         bool kept = gsDrawVisible;

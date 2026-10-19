@@ -6489,6 +6489,17 @@ namespace engine {
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					d.drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
+			// Skinned casters (the Northlight compute path): mirror the
+			// flag FilterMainView sets on the lit draw, so the shadow depth
+			// legs (gfxshadowseed) fetch the DEFORMED position instead of
+			// the bind pose. Gated on this frame's deformed heap exactly
+			// like the main path (no heap -> keep the static fetch).
+			if (m_gfxRenderer.State().skinDeformedBda != 0
+				&& !std::getenv("TOURMALINE_KD_NOSKIN")) {
+				const smvk::StaticMesh* smesh = m_world->GetMesh(item.mesh);
+				if (smesh != nullptr && smesh->skinned)
+					d.flags |= smvk::gfx::DrawFlagBit_Skinned;
+			}
 			m_shadowCandidates.push_back(d);
 		});
 		SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
@@ -8245,9 +8256,17 @@ namespace engine {
 						smvk::skinning::kSkinPaletteMax);
 				push.rangeCount =
 					uint32_t(c->GetSkinnedRanges().size());
-				if (m_skinning.Ensure(*m_context)
+				const bool ok = m_skinning.Ensure(*m_context)
 					&& m_skinning.AppendPass(*m_context,
-						*m_rendergraph, fb.frameIndex, push, palette)) {
+						*m_rendergraph, fb.frameIndex, push, palette);
+				if (std::getenv("TOURMALINE_KD")) {
+					static uint32_t s_c = 0;
+					if (s_c++ < 6)
+						std::fprintf(stderr, "[KD] skin driver cluster=%p ok=%d ranges=%u pal=%u defBase=%u\n",
+							(void*)c, (int)ok, push.rangeCount,
+							push.paletteCount, push.deformedBase);
+				}
+				if (ok) {
 					gfx.skinDeformedBda = push.deformed;
 					gfx.skinDeformedBase = push.deformedBase;
 				}
@@ -9962,7 +9981,8 @@ namespace engine {
 				// indexed loop below skips exactly those ranges
 				// (RangeMeshEligible), so nothing draws twice and
 				// nothing drops. Debug views bypass (direct draws above).
-				const bool meshActive = meshActiveForFrame && !bypassFilter;
+				const bool meshActive = meshActiveForFrame && !bypassFilter
+					&& !std::getenv("TOURMALINE_KD_NOMESH");
 				if (meshActive) {
 					const engine::GIVariant meshGiVar = GetActiveGIVariant();
 					const bool giActive = meshGiVar != engine::GIVariant::None;

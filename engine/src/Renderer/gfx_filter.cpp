@@ -72,6 +72,10 @@ static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand)
 // filtered-offset counter).
 static constexpr size_t kKeptBytes = kMaxBatchSlots * 2 * sizeof(uint32_t);
 static constexpr size_t kCullStateBytes = kCullStateWords * sizeof(uint32_t);
+// Deformed cluster bounds (GfxSkinBounds output): one GfxClusterData per
+// candidate slot, indexed exactly like the batch cull's candidate slots so
+// multi-instance skinned draws stay independent.
+static constexpr size_t kSkinBoundsBytes = kMaxBatchSlots * sizeof(ClusterConstants);
 
 static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
 	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
@@ -265,6 +269,42 @@ bool EnsureDrawCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
 		return false;
 	Shader cs{ .module = s.drawCullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 	s.drawCullProgram = { .shaders = { cs }, .shaderCount = 1 };
+	return true;
+}
+
+bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
+	if (s.skinBoundsReady)
+		return true;
+	if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty()) {
+		try {
+			if (s.skinBoundsModule.empty())
+				s.skinBoundsModule = ctx.CreateShaderModule(
+					readFile(kGfxSkinBoundsCsPath), "gfxSkinBoundsCS");
+		}
+		catch (...) {
+			return false;
+		}
+		if (s.skinBoundsModule.empty())
+			return false;
+		Shader cs{ .module = s.skinBoundsModule, .entryPoint = "mainCS",
+			.stage = ShaderStage::Compute };
+		s.skinBoundsProgram = { .shaders = { cs }, .shaderCount = 1 };
+	}
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		if (s.skinBoundsBuffers[f].empty()) {
+			s.skinBoundsBuffers[f] = ctx.CreateBuffer(
+				kSkinBoundsBytes, BufferType_Storage, "gfx skinBounds");
+			if (s.skinBoundsBuffers[f].empty())
+				return false;
+		}
+		if (s.skinBoundsLogicals[f].empty()) {
+			s.skinBoundsLogicals[f] = rg.AddExternalBuffer(
+				s.skinBoundsBuffers[f], "gfx skinBounds");
+			if (s.skinBoundsLogicals[f].empty())
+				return false;
+		}
+	}
+	s.skinBoundsReady = true;
 	return true;
 }
 
@@ -2237,6 +2277,70 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 // GPU cull chain (GfxBatchCull + GfxDrawCull)
 // ---------------------------------------------------------------------------
 
+RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view) {
+	assert(view < s.viewCount);
+	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
+	RenderPass& pass = rg.AddComputePass("GfxSkinBounds");
+	BufferSyncRequest computeRead{};
+	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+	pass.AddBufferHint(v.drawLogicals[f], computeRead);
+	if (!s.meshesLogical.empty())
+		pass.AddBufferHint(s.meshesLogical, computeRead);
+	pass.AddBufferHint(s.clusterLogical, computeRead);
+	// The cluster-ordered index stream (region of the static monoblock).
+	if (!s.indexHeapLogical.empty())
+		pass.AddBufferHint(s.indexHeapLogical, computeRead);
+	// The output table: written here, read by GfxBatchCull below (the hint
+	// pair is the cross-pass ordering edge). The DEFORMED heap is BDA-only
+	// (no graph handle): the skinning pass's trailing ALL_COMMANDS barrier
+	// orders that read, exactly like the draw passes' deformed fetches.
+	BufferSyncRequest computeRW{};
+	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+	pass.AddBufferHint(s.skinBoundsLogicals[f], computeRW);
+	return pass;
+}
+
+void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view) {
+	if (!s.skinBoundsReady)
+		return;
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty())
+		return;
+	const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+	if (drawCount == 0 || drawCount > kMaxDraws)
+		return;
+	const uint32_t f = v.frameIndex;
+	SkinBoundsPush push{};
+	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+	push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+	const uint64_t indexHeapAddr = ctx.GetBufferDeviceAddress(
+		staticVertexFmtHeap.m_staticIndexBuffer);
+	push.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
+	push.deformed = s.skinDeformedBda;
+	push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+	push.deformedBase = s.skinDeformedBase;
+	push.drawCount = drawCount;
+	// MMU-fault rule: never dispatch on a null BDA (no fallback; the batch
+	// cull reads the static table for a slot the pass never wrote ... which
+	// is exactly the bind-pose hole this pass exists to fix, so skip loudly).
+	if (push.draws == 0 || push.meshes == 0 || push.clusters == 0
+		|| push.indices == 0 || push.deformed == 0 || push.skinBounds == 0) {
+		static uint64_t s_nullBdaWarns = 0;
+		if ((s_nullBdaWarns++ % 300) == 0)
+			std::fprintf(stderr, "[GfxSkinBounds] refusing dispatch: null BDA\n");
+		return;
+	}
+	cmd.BindComputePipeline(s.skinBoundsProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	cmd.Dispatch(drawCount, 1, 1);
+}
+
 RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
 	assert(view < s.viewCount);
 	View& v = s.views[view];
@@ -2253,6 +2357,11 @@ RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
 		pass.AddBufferHint(s.meshesLogical, computeRead);
 	if (!s.meshBoundsLogical.empty())
 		pass.AddBufferHint(s.meshBoundsLogical, computeRead);
+	// Deformed cluster bounds (GfxSkinBounds output, written just before
+	// this pass): skinned draws read this instead of the static table. The
+	// hint pair is the cross-pass ordering edge.
+	if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+		pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
 	BufferSyncRequest computeRW{};
 	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
@@ -2336,6 +2445,16 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
 	push.keptParity = KeptParity(s);
 	push.width = v.width;
 	push.height = v.height;
+	// Deformed bounds for the skinned draws (GfxSkinBounds output). Only
+	// live when this frame ran the skinning pass AND the bounds pass
+	// exists - otherwise every draw stays on the static bind-pose table.
+	if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+		const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+		if (bda != 0) {
+			push.skinBounds = bda;
+			push.skinBoundsValid = 1;
+		}
+	}
 	cmd.BindComputePipeline(s.batchCullProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	// One 128-thread workgroup per material-sorted draw.

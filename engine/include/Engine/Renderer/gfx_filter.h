@@ -321,9 +321,37 @@ struct BatchCullPush {
 	uint32_t keptParity = 0;               // 0/1 (prev = 1-parity)
 	uint32_t width = 0;                     // guard-band extent (LIVE view)
 	uint32_t height = 0;
-	uint32_t pad2[2] = {};
+	// Deformed per-cluster bounds (GfxSkinBounds output, one GfxClusterData
+	// per candidate slot). Skinned draws (GFX_DRAW_SKINNED) cull against
+	// THIS table instead of the static bind-pose clusters[] - the pose can
+	// move a cluster clean out of its bind-pose sphere and the static test
+	// would drop it, punching an animated silhouette hole the seed depth
+	// fills with sky. skinBoundsValid = 0 (no skinned cluster this frame)
+	// leaves every draw on the static table.
+	uint64_t skinBounds = 0;
+	uint32_t skinBoundsValid = 0;
+	uint32_t pad2 = 0;
+	uint32_t pad3[2] = {};
 };
-static_assert(sizeof(BatchCullPush) == 192);
+static_assert(sizeof(BatchCullPush) == 208);
+
+// GfxSkinBounds push (runs between the skinning pass and GfxBatchCull).
+// Must match HLSL GfxSkinBoundsPush in gfxfilter.hlsli (64 bytes). One
+// 128-thread workgroup per draw; threads stride the draw's clusters and
+// rebuild each SKINNED cluster's object-space sphere from the deformed heap.
+struct SkinBoundsPush {
+	uint64_t draws = 0;      // this frame (misc2.z = slot base)
+	uint64_t meshes = 0;     // static per-mesh cluster ranges
+	uint64_t clusters = 0;   // static (bind-pose a/b/c/d)
+	uint64_t indices = 0;    // cluster-ordered global ids (clusterIndexBase baked in)
+	uint64_t deformed = 0;   // this frame's deformed heap
+	uint64_t skinBounds = 0; // out (per candidate slot)
+	uint32_t deformedBase = UINT32_MAX;
+	uint32_t drawCount = 0;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+};
+static_assert(sizeof(SkinBoundsPush) == 64);
 
 // GfxDrawCull push (after GfxHiz, before the filter). Must match HLSL
 // GfxDrawCullPush in gfxfilter.hlsli (136 bytes). One thread per draw;
@@ -955,6 +983,16 @@ struct State {
 	// (GFX_DRAW_SKINNED never sets, every fetch stays static).
 	uint64_t skinDeformedBda = 0;
 	uint32_t skinDeformedBase = UINT32_MAX;
+	// GfxSkinBounds: recomputes each SKINNED cluster's object-space sphere
+	// from the frame's deformed heap (the static clusters[] stays bind-pose)
+	// BEFORE the batch cull reads it - so the cull sees the ANIMATED
+	// silhouette. One GfxClusterData per candidate slot, ringed per flight.
+	// Lazily created on the first frame a deformed buffer exists.
+	Holder<ShaderModuleHandle> skinBoundsModule;
+	ShaderProgram skinBoundsProgram{};
+	Holder<BufferHandle> skinBoundsBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle skinBoundsLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	bool skinBoundsReady = false;
 	// The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
 	// every draw path reads - the RHI globals from vulkan_impl.h, stashed
 	// once at EnsureMeshParams so the record sites' fills never reach for
@@ -995,6 +1033,7 @@ inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gfxfiltered.v
 inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 inline constexpr const char* kGfxBatchCullCsPath = "content/shaders/gfxbatchcull.cs.hlsl.spv";
 inline constexpr const char* kGfxDrawCullCsPath = "content/shaders/gfxdrawcull.cs.hlsl.spv";
+inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
 
 // Mesh-bound fast-discard gate for shadow lists (pure CPU, testable):
 // true = discard the whole draw before the per-cluster meshlet loop.
@@ -1006,6 +1045,16 @@ bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
 	const RenderView& shadowView, const RenderView* contributionView);
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
+// Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
+// One 128-thread workgroup per draw; threads stride the draw's clusters and
+// write an object-space bounding sphere (cone degenerated) per candidate
+// slot from the frame's deformed heap. No-op when no skinned cluster exists
+// (the caller gates on State::skinDeformedBda).
+RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view);
+void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view);
+// Creates the per-flight skinBounds ring + module lazily (idempotent).
+bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg);
 // First compute pass of the frame (before the seed pass): one workgroup
 // per draw; sphere + cone verdicts, temporal seed/remainder commands,
 // batch array + filter indirect statics, kept bits.

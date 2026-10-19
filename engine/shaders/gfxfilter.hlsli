@@ -57,6 +57,16 @@ struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global
 // C++ CullCluster mirrors the same math as the tested CPU reference).
 struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
 struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
+// DEFORMED vertex heap (the Northlight compute-skinning output; the
+// skinning pass - gfxskinning.cs.hlsl - wrote it this frame): 5 words per
+// vertex [pos3 asuint, packed normal, packed tangent]. Skinned draws
+// (GFX_DRAW_SKINNED) and the cull chain's GfxSkinBounds pass fetch at
+// (vi - deformedBase) * 5; everything else reads the bind-pose heaps.
+// Declared here (not gfxmesh.hlsli, which already includes this header) so
+// both the VS legs and the cull-chain push mirror can reference it.
+// Generous declared capacity (the BDA-pointer pattern - loads stay in
+// bounds).
+struct GfxSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
 
 // One uint4 per batch: (clusterIndex, drawIndex, outputOffset, flags).
 // Written by gfxbatchcull (outputOffset stays 0 — the filter allocates
@@ -680,9 +690,35 @@ struct GfxBatchCullPush
     uint keptParity;    // 0/1: the region this frame writes (prev = 1-parity)
     uint width;         // guard-band extent (LIVE view)
     uint height;
-    uint2 pad2;
+    // Deformed per-cluster bounds (GfxSkinBounds output, one GfxClusterData
+    // per candidate slot): skinned draws cull against THIS instead of the
+    // static clusters[]. skinBoundsValid = 0 leaves every draw static.
+    vk::BufferPointer<GfxClusters> skinBounds;
+    uint skinBoundsValid;
+    uint pad2;
+    uint2 pad3;
 };
-//static_assert(sizeof(GfxBatchCullPush) == 192);
+//static_assert(sizeof(GfxBatchCullPush) == 208);
+
+// GfxSkinBounds: one 128-thread workgroup per draw (the GfxBatchCull dispatch
+// shape); threads stride the draw's clusters and rebuild each SKINNED
+// cluster's object-space bounding sphere from the frame's deformed heap, so
+// the batch cull sees the ANIMATED silhouette (the static clusters[] stays
+// bind-pose). Writes into skinBounds (indexed by candidate slot). C++ mirror:
+// gfx_filter.h State::skinBounds* / gfx_filter.cpp PushAndDispatchSkinBounds.
+struct GfxSkinBoundsPush
+{
+    vk::BufferPointer<GfxDraws> draws;      // this frame (misc2.z = slot base)
+    vk::BufferPointer<GfxMeshes> meshes;    // static per-mesh cluster ranges
+    vk::BufferPointer<GfxClusters> clusters; // static (bind-pose a/b/c/d)
+    vk::BufferPointer<GfxIndices> indices;  // cluster-ordered global ids (clusterIndexBase baked in)
+    vk::BufferPointer<GfxSkinDeformedHeap> deformed; // this frame's deformed heap
+    vk::BufferPointer<GfxClusters> skinBounds; // out (per candidate slot)
+    uint deformedBase;  // 0xFFFFFFFF = none
+    uint drawCount;
+    uint pad0;
+    uint pad1;
+};
 
 // GfxDrawCull: one thread per draw; the Northlight-style mesh-bound fast
 // discard against the FROZEN cull view (the gfx view record matrix — held

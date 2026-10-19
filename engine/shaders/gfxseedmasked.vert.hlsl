@@ -14,13 +14,16 @@ ConstantBuffer<SeedVsMainPush> pcSeed;
 SeedVSOut mainVS(SeedVSIn IN)
 {
     SeedVSOut OUT;
-    OUT.pos = SeedClipPos(IN.position, IN.instanceID,
-        pcSeed.draws, pcSeed.renderViews, pcSeed.renderViewIndex);
+    OUT.pos = SeedClipPos(IN.position, IN.instanceID, IN.vertexID,
+        pcSeed.draws, pcSeed.renderViews, pcSeed.renderViewIndex,
+        pcSeed.vsDeformed, pcSeed.vsDeformedBase, pcSeed.paramsValid);
     OUT.color = IN.color.rgb;
     OUT.uv = IN.uv;
     // Dither-on-closeup inputs for shadow.frag's screen-door (the
     // closeup-fade draws ride the MASKED seed bucket — see gfxseed.hlsli).
-    OUT.worldPos = SeedWorldPos(IN.position, IN.instanceID, pcSeed.draws);
+    OUT.worldPos = SeedWorldPos(IN.position, IN.instanceID, IN.vertexID,
+        pcSeed.draws, pcSeed.vsDeformed, pcSeed.vsDeformedBase,
+        pcSeed.paramsValid);
     OUT.ditherCloseup = SeedDitherCloseup(IN.instanceID, pcSeed.draws);
     return OUT;
 }

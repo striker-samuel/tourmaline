@@ -388,6 +388,33 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 	if (skinnedRanges_.empty())
 		return false;
 
+	if (std::getenv("TOURMALINE_KD")) {
+		for (const SkinnedMeshRange& r : skinnedRanges_) {
+			double wsum = 0.0;
+			uint32_t zeroW = 0, maxJoint = 0;
+			for (uint32_t v = 0; v < r.vertexCount; ++v) {
+				const smvk::VertexSkin& sk = streamData[r.skinBase + v];
+				const float s = float(sk.weights & 0xFF)
+					+ float((sk.weights >> 8) & 0xFF)
+					+ float((sk.weights >> 16) & 0xFF)
+					+ float((sk.weights >> 24) & 0xFF);
+				if (s <= 1e-3f)
+					++zeroW;
+				wsum += s;
+				maxJoint = (std::max)(maxJoint,
+					(std::max)({(sk.joints) & 0xFFu,
+						(sk.joints >> 8) & 0xFFu,
+						(sk.joints >> 16) & 0xFFu,
+						(sk.joints >> 24) & 0xFFu}));
+			}
+			std::fprintf(stderr,
+				"[KD] skinRange heapBase=%u count=%u skinBase=%u"
+				" meanW=%.1f zeroW=%u maxJoint=%u\n",
+				r.heapVertexBase, r.vertexCount, r.skinBase,
+				wsum / (std::max)(1u, r.vertexCount), zeroW, maxJoint);
+		}
+	}
+
 	// The deformed buffer covers the skinned SPAN [minBase, maxEnd) of
 	// the heap id space (a non-skinned interleave wastes 20B/id - the
 	// demo's clusters are all-skinned, and the offset math stays one
