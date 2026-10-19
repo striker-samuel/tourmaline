@@ -147,7 +147,7 @@ struct RunConfig {
 	std::optional<std::string> serialize; // csv of all|split|main|uploads
 	std::optional<std::string> barrierTrace; // frame N or all
 	bool asyncComputeKilled = false; // "0"|"off"
-	std::optional<std::string> pipelineCache; // unset=default path, off|0=null
+	std::optional<std::string> pipelineCacheDir; // unset=F:/pipelinecache, <dir>=custom, off|0=off
 	bool noValidation = false;
 	bool traceWaits = false;
 

@@ -256,19 +256,20 @@ namespace {
 	// fault/warning lines stay unconditional here too.
 	smvk::SetTraceEnabled(false);
 	// Disk pipeline cache OFF in the editor (see impl.cpp's
-	// TOURMALINE_PIPELINE_CACHE contract — "off" = no disk seed or save;
-	// the in-process pipeline-object dedup still runs): compute-pipeline
+	// TOURMALINE_PIPELINE_CACHE_DIR contract — "off" = no disk seed or
+	// save; the in-process pipeline-object dedup still runs): compute-pipeline
 	// creation against a driver-seeded cache still crashes the driver on
 	// some configurations (the blob validates — same driver/GPU — but
 	// the driver faults on its own cached data anyway). The shipped App
-	// keeps the cache (startup speed + bench determinism). An explicit
-	// user setting wins — this only defaults when unset, so the cache
-	// can be re-enabled for A/B runs without a rebuild.
-	if (!std::getenv("TOURMALINE_PIPELINE_CACHE")) {
+	// keeps the cache (startup speed + bench determinism) on the
+	// F:/pipelinecache scratch disk. An explicit user setting wins —
+	// this only defaults when unset, so the cache can be re-enabled
+	// for A/B runs without a rebuild.
+	if (!std::getenv("TOURMALINE_PIPELINE_CACHE_DIR")) {
 #ifdef _WIN32
-		_putenv("TOURMALINE_PIPELINE_CACHE=off");
+		_putenv("TOURMALINE_PIPELINE_CACHE_DIR=off");
 #else
-		setenv("TOURMALINE_PIPELINE_CACHE", "off", 0);
+		setenv("TOURMALINE_PIPELINE_CACHE_DIR", "off", 0);
 #endif
 	}
 #ifdef _WIN32

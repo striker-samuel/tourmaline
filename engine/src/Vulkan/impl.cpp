@@ -1812,10 +1812,16 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 //     the blob is unchanged (size + hash), triggered by every
 //     >=64 compiles (abrupt-exit safety) and forced at device
 //     teardown.
-// TOURMALINE_PIPELINE_CACHE: unset = "pipeline_cache.bin" in the
-// working dir; a path = custom location; "off" = no disk seed
-// or save (the in-process cache still runs — it dedupes
-// compiles across pipeline objects even without a file).
+// TOURMALINE_PIPELINE_CACHE_DIR (replaces the retired TOURMALINE_
+// PIPELINE_CACHE file-path contract — that one's unset default
+// littered a pipeline_cache.bin into EVERY working dir the hosts
+// ran from): unset = F:/pipelinecache (the dedicated scratch disk,
+// created when missing); a path = that dir; "off"/"0" = no disk
+// seed or save (the in-process cache still runs — it dedupes
+// compiles across pipeline objects even without a file). The blob
+// itself is always <dir>/pipeline_cache.bin, never the working dir.
+// One shared file is safe across GPUs/drivers: the identity header
+// above seeds empty on any mismatch, never a wrong blob.
 // ============================================================
 namespace {
 
@@ -1841,16 +1847,33 @@ size_t g_diskPipelineCacheLastSavedSize = 0;
 uint64_t g_diskPipelineCacheLastSavedHash = 0;
 size_t g_diskPipelineCacheCompilesSinceSave = 0;
 
+// The disk home: always <scratchDir>/pipeline_cache.bin (the dir is
+// created when missing — an unusable dir degrades to cache-off with
+// a log line, never a crash; the load/save sites keep their own
+// torn-file tolerance on top). Resolved once at first use.
 const char* PipelineCacheFilePath()
 {
 	static const char* sPath = []() -> const char* {
 		static std::string storage;
-		const char* env = std::getenv("TOURMALINE_PIPELINE_CACHE");
-		if (!env || !*env)
-			return "pipeline_cache.bin";
-		if (std::strcmp(env, "off") == 0 || std::strcmp(env, "0") == 0)
+		const char* env = std::getenv("TOURMALINE_PIPELINE_CACHE_DIR");
+		if (env && (std::strcmp(env, "off") == 0
+				|| std::strcmp(env, "0") == 0))
 			return nullptr;
-		storage = env;
+		const std::string dir = (env && *env)
+			? std::string(env) : std::string("F:/pipelinecache");
+		std::error_code mk;
+		std::filesystem::create_directories(dir, mk);
+		std::error_code probe;
+		if (!std::filesystem::is_directory(dir, probe)) {
+			fprintf(stderr,
+				"[PipelineCache] scratch dir '%s' unusable (%s) — "
+				"running without the disk cache\n",
+				dir.c_str(),
+				mk ? mk.message().c_str() : "not a directory");
+			return nullptr;
+		}
+		storage = (std::filesystem::path(dir) / "pipeline_cache.bin")
+			.generic_string();
 		return storage.c_str();
 	}();
 	return sPath;

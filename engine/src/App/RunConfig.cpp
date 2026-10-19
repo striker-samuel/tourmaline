@@ -329,8 +329,8 @@ RunConfig RunConfig::Parse() {
 		c.barrierTrace = v;
 	if ((v = Get("TOURMALINE_ASYNC_COMPUTE")) != nullptr)
 		c.asyncComputeKilled = std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0;
-	if ((v = Get("TOURMALINE_PIPELINE_CACHE")) != nullptr)
-		c.pipelineCache = v;
+	if ((v = Get("TOURMALINE_PIPELINE_CACHE_DIR")) != nullptr)
+		c.pipelineCacheDir = v;
 	if ((v = Get("TOURMALINE_NO_VALIDATION")) != nullptr)
 		c.noValidation = std::atoi(v) != 0;
 	if ((v = Get("TOURMALINE_TRACE_WAITS")) != nullptr)
@@ -441,7 +441,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_MATERIAL_CENSUS", "TOURMALINE_SSR_STENCILVIEW",
 		"TOURMALINE_HOST_COPY", "TOURMALINE_AFTERMATH",
 		"TOURMALINE_SERIALIZE", "TOURMALINE_BARRIER_TRACE", "TOURMALINE_ASYNC_COMPUTE",
-		"TOURMALINE_PIPELINE_CACHE", "TOURMALINE_NO_VALIDATION",
+		"TOURMALINE_PIPELINE_CACHE_DIR", "TOURMALINE_NO_VALIDATION",
 		"TOURMALINE_TEXSTREAM_TRACE", "TOURMALINE_TRACE_WAITS",
 		// One-shot debug dumps (TMP-DIAG family): the filter-chain audit,
 		// the allocation-ledger dump, the gfx registration dumps.

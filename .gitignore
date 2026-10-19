@@ -424,8 +424,10 @@ meshoptimizerConfigVersion.cmake
 /build-asan
 
 # --- Tourmaline runtime products (never commit) ---
-# pipeline_cache.bin: Vulkan pipeline-cache blob written next to the CWD
-# (TOURMALINE_PIPELINE_CACHE default path). Local perf artifact, not source.
+# pipeline_cache.bin: Vulkan pipeline-cache blob. Lives OUTSIDE the repo on
+# the dedicated scratch disk (TOURMALINE_PIPELINE_CACHE_DIR, default
+# F:/pipelinecache) — these ignores stay as belt-and-suspenders for stale
+# working-dir leftovers and custom dirs pinned into the tree.
 # exports/screenshot_*.png + dumps: headless TOURMALINE_CAPTURE / SSR / EVSM
 # / WYSIWYG dumps (capture frame must land inside --bench). The tracked
 # exports/lut_neutral.png stays tracked — gitignore never untracks it.
