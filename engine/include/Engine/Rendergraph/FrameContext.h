@@ -68,6 +68,13 @@ struct AppFrameContext : public smvk::FrameContext {
 	// joint bilateral (center normal) — either being on wants it.
 	bool ssrGbufferWanted = false;
 	smvk::LogicalImageViewHandle gbufferView{};
+	// The F0-CHROMA layer 2 (gbuffer.frag.hlsl's SV_Target1: RGB = the
+	// metal F0 tint (baseColorFactor x texel), A = materialId/255 — the
+	// RGBA8 route of the material-id discussion): rides the SAME
+	// ssrGbufferWanted gate (the layer is only meaningful where the
+	// G-buffer writer pair binds). Empty = not attached (the trace's
+	// flat-F0 fallback). Filled by the WorldRenderer beside gbufferView.
+	smvk::LogicalImageViewHandle gbuffer2View{};
 	// Northlight depth split (filter on + seed primed depth): when set,
 	// the prepass runs FALLBACK-ONLY — items whose selected LOD the gfx
 	// filter owns are skipped, because the filter's temporal depth set

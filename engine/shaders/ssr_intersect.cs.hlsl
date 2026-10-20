@@ -63,7 +63,7 @@ struct SsrIntersectPush
     uint maxIntersections; // traversal loop cap
     uint minOccupancy;     // wave early-out (non-mirror only)
     uint ssrHzbMipCount;
-    uint pad0;
+    uint gbuffer2TextureIndex; // F0-chroma layer 2; 0xffffffff = flat F0
     uint pad1;
 };
 
@@ -421,11 +421,36 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     // anyway); the reflection reads mip 0 explicitly.
     float3 reflected = hdrTex.SampleLevel(smp, hit.xy, 0.0f).rgb;
     reflected = min(max(reflected, float3(0.0f, 0.0f, 0.0f)), float3(65504.0f, 65504.0f, 65504.0f));
-    // Fresnel (Schlick): flat-F0 metals rise to ~1 (colored F0
-    // approximated flat — the mask carries scalars only).
-    float f0 = lerp(sp.f0, 1.0f, gbuf.metal);
+    // Fresnel (Schlick, PER-CHANNEL F0 — the F0-chroma layer 2): the
+    // receiver metal tints its reflection by its OWN baseColor chroma
+    // (the gold brocade's reflections come out gold, not the
+    // white-mirror flat F0=1 the scalar mask forced). f0c = the layer
+    // 2's RGB (baseColorFactor x texel) for metals, the dielectric
+    // scalar for dielectrics; the Schlick runs per channel (each
+    // channel's specular rise stays its own color — colored metals
+    // keep colored reflections at grazing angles too).
+    // 0xffffffff (the layer absent — no G-buffer leg / the optional
+    // target unbound) = the flat fallback, today's behavior. The
+    // texture declares INSIDE the branch (HLSL cannot ternary-assign
+    // a Texture2D — the normalTex pattern).
     float ndv = saturate(dot(N, V));
-    float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    float3 fres;
+    const bool gbuffer2On = sp.gbuffer2TextureIndex != 0xffffffffu;
+    if (gbuffer2On)
+    {
+        Texture2D gb2Tex = textures[NonUniformResourceIndex(sp.gbuffer2TextureIndex)];
+        // The RECEIVER's chroma at the SAME full-res pixel the
+        // receiver G-buffer tap chose (fullPxC — the 2x2 block's
+        // nearest valid tap; never a fabricated center).
+        float3 chroma = gb2Tex.Load(int3(fullPxC, 0)).rgb;
+        float3 f0c = lerp(float3(sp.f0, sp.f0, sp.f0), chroma, gbuf.metal);
+        fres = f0c + (1.0f - f0c) * pow(1.0f - ndv, 5.0f);
+    }
+    else
+    {
+        float f0 = lerp(sp.f0, 1.0f, gbuf.metal);
+        fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    }
     // Metal-aware fade (parity with ssr.frag.hlsl and
     // environment.hlsli's EnvSpecFade): the dielectric (1-r)^2
     // exists because ONE VNDF-sampled ray + the blur pass cannot
@@ -441,7 +466,6 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     const float specFade = lerp(dielectricFade, 1.0f, gbuf.metal);
     reflected = min(reflected * (fres * specFade * sp.intensity),
         float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
-
     float4 outSample = float4(reflected, confidence);
     uint flatIdx = coords.y * sp.halfW + coords.x;
     sp.radiance.Get().v[flatIdx] = outSample;
@@ -464,4 +488,4 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         sp.radiance.Get().v[copyTarget.y * sp.halfW + copyTarget.x] = outSample;
     }
 }
-                                      
+

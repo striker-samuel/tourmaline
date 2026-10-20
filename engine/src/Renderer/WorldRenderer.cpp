@@ -8720,6 +8720,13 @@ namespace engine {
 		fc.gbufferView = fc.ssrGbufferWanted
 			? m_viewportResources.ssr.gbuffer.logical
 			: smvk::LogicalImageViewHandle{};
+		// The F0-chroma layer 2 (gbuffer.frag.hlsl's SV_Target1 — the
+		// RGBA8 route): rides the SAME gate (the prepass attaches it
+		// beside the G-buffer leg; the trace's tinted Fresnel reads
+		// it, the flat-F0 fallback when absent).
+		fc.gbuffer2View = fc.ssrGbufferWanted
+			? m_viewportResources.ssr.gbuffer2.logical
+			: smvk::LogicalImageViewHandle{};
 		// One-shot material census (TOURMALINE_MATERIAL_CENSUS): dumps
 		// every material's factors (incl. layers) + the resulting
 		// G-buffer roughness/metal to stderr - the per-material ground
@@ -10842,7 +10849,10 @@ namespace engine {
 				// (oct normal + roughness + metal) is written by the Forward+
 				// depth prepass when fc.ssrGbufferWanted (see
 				// gbuffer.frag.hlsl); when absent the trace falls back to the
-				// legacy uniform-F0 mirror behavior.
+				// legacy uniform-F0 mirror behavior. The F0-CHROMA layer 2
+				// (SV_Target1: RGB = the metal F0 tint, A = materialId/255)
+				// rides the same leg — the trace's tinted Fresnel reads it
+				// (the flat-F0 fallback when absent; see the call below).
 				const bool gbufferLayerOn = fc.ssrGbufferWanted
 					&& m_viewportResources.ssr.gbuffer.Valid();
 				// SSSR trace Hi-Z: Uses the shared SSGI pyramid, built above in the
@@ -10912,16 +10922,22 @@ namespace engine {
 					// consecutive traces so the temporal pass converges speckle
 					// to its mean (static dither would just park the pattern).
 					const uint32_t ssrDitherEpoch = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
-					m_viewportResources.ssr.AddSsrTemporalPasses(
-						*m_rendergraph,
-						sceneHdrView,
-						sceneHdrBindless,
-						m_viewportResources.renderDepth.logicalView,
-						m_viewportResources.renderDepth.bindlessIndex,
-						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
-						: smvk::LogicalImageViewHandle{},
-						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
-						: UINT32_MAX,
+				m_viewportResources.ssr.AddSsrTemporalPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
+					: smvk::LogicalImageViewHandle{},
+					gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
+					: UINT32_MAX,
+					// The F0-chroma layer 2 (the same prepass leg — the
+					// tinted Fresnel's source): rides gbufferLayerOn.
+					gbufferLayerOn ? m_viewportResources.ssr.gbuffer2.logical
+					: smvk::LogicalImageViewHandle{},
+					gbufferLayerOn ? m_viewportResources.ssr.gbuffer2.bindlessIndex
+					: UINT32_MAX,
 						// The env-spec export chain twin (the replacement-
 						// composite contract, see the sceneEnvSpec tracking):
 						// the exact IBL slice the confident hit replaces.
@@ -10955,34 +10971,40 @@ namespace engine {
 				}
 				else {
 					m_viewportResources.ssr.AddSsrPasses(
-							*m_rendergraph,
-							sceneHdrView,
-							sceneHdrBindless,
-							m_viewportResources.renderDepth.logicalView,
-							m_viewportResources.renderDepth.bindlessIndex,
-							gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
-							: smvk::LogicalImageViewHandle{},
-							gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
-							: UINT32_MAX,
-							// The env-spec export chain twin (the same
-							// replacement contract, the spatial variant).
-							sceneEnvSpecView,
-							sceneEnvSpecBindless,
-							rayListAddr,
-							rayCounterAddr,
-							radianceAddr,
-							indirectArgsAddr,
-							ssrHzbAddr,
-							ssrHzbMips,
-							ssrHzbLogical,
-							ssrHzbMip1Offset,
-							ssrHzbMip1Stride,
-							frameUniformsAddress,
-							linearSampler,
-							ssrDesc,
-							"SSR",
-							"SSRBlur",
-							"SSRComposite");
+						*m_rendergraph,
+						sceneHdrView,
+						sceneHdrBindless,
+						m_viewportResources.renderDepth.logicalView,
+						m_viewportResources.renderDepth.bindlessIndex,
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
+						: smvk::LogicalImageViewHandle{},
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
+						: UINT32_MAX,
+						// The F0-chroma layer 2 (the same prepass leg —
+						// the tinted Fresnel's source): rides gbufferLayerOn.
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer2.logical
+						: smvk::LogicalImageViewHandle{},
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer2.bindlessIndex
+						: UINT32_MAX,
+						// The env-spec export chain twin (the same
+						// replacement contract, the spatial variant).
+						sceneEnvSpecView,
+						sceneEnvSpecBindless,
+						rayListAddr,
+						rayCounterAddr,
+						radianceAddr,
+						indirectArgsAddr,
+						ssrHzbAddr,
+						ssrHzbMips,
+						ssrHzbLogical,
+						ssrHzbMip1Offset,
+						ssrHzbMip1Stride,
+						frameUniformsAddress,
+						linearSampler,
+						ssrDesc,
+						"SSR",
+						"SSRBlur",
+						"SSRComposite");
 						m_ssrFrameRanTemporal = false;
 					}
 					sceneHdrView = m_viewportResources.ssr.OutputView();
@@ -15360,6 +15382,9 @@ namespace engine {
 			{ "ssr_raw",    &ssr.raw.image,       hw, hh, false, false },
 			{ "ssr_blur",   &ssr.blurred.image,   hw, hh, false, false },
 			{ "ssr_gbuffer", &ssr.gbuffer.image,  fw, fh, false, true },
+			// The F0-chroma layer 2 (RGB = the metal F0 tint, A =
+			// materialId/255) — the tinted-Fresnel source dump.
+			{ "ssr_gbuffer2", &ssr.gbuffer2.image, fw, fh, false, true },
 			{ "ssr_hist0",  &ssr.history[0].image, hw, hh, false, false },
 			{ "ssr_hist1",  &ssr.history[1].image, hw, hh, false, false },
 			{ "ssr_comp",   &ssr.image,           fw, fh, false, false },

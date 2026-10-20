@@ -17,6 +17,15 @@
 //   B   = material roughness (continuous — drives the trace's
 //         (1-r)^2 gloss fade + the r^2 cone jitter)
 //   A   = metallic flag (Fresnel F0 rise to ~1)
+// Layer 2 (SV_Target1, the F0-CHROMA layer — the RGBA8 route of the
+// material-id discussion): RGB = the metal F0 tint (baseColorFactor x
+// the baseColor texel — the gold brocade's reflections come out GOLD,
+// not the white-mirror approximation the trace's flat F0=1 tinted
+// everything; the banner gold is PER-TEXEL, in the baseColor texture,
+// so the texel tap is the payload that tints correctly), A =
+// materialId/255 (the palette door — future per-material LUT lookups;
+// clamped, 255 = overflow = the flat-F0 fallback). Clear (1,1,1,0) =
+// white chroma + material 0 = exactly today's flat behavior.
 //
 // Bound in the Forward+ depth prepass Phase 1 (solid) so the G-buffer
 // costs only a trivial FS + 4 bytes/px of ROP on a pass that already
@@ -47,6 +56,8 @@ struct PSIn
 struct PSOut
 {
     float4 gbuffer : SV_Target0; // RGBA8: (oct.xy, roughness, metal)
+    // Layer 2 (see the header): the F0 chroma + the material id.
+    float4 gbuffer2 : SV_Target1;
 };
 
 // Octahedral encode (the inverse of vertex_pack.hlsli OctDecodeNormal;
@@ -86,5 +97,22 @@ PSOut mainPS(PSIn IN)
         n = -n; // the lit family's back-face flip (see PSIn)
     OUT.gbuffer = float4(OctEncodeNormal(n),
         clamp(roughness, 0.04f, 1.0f), metalFlag);
+    // Layer 2 (the F0 chroma — see the header): baseColorFactor x the
+    // baseColor texel (the SAME tap the lit path's base color does —
+    // the banner's gold is per-texel; the factor alone is a flat gray
+    // that would gray the reflections), A = materialId/255 (clamped —
+    // 255 = overflow = the flat-F0 fallback). No baseColor texture =
+    // the factor alone (the flat material color).
+    float3 f0Chroma = saturate(mat.diffuse.rgb);
+    const int baseColorIdx = mat.tex.x;
+    if (baseColorIdx >= 0)
+    {
+        Texture2D baseTex =
+            textures[NonUniformResourceIndex((uint)baseColorIdx)];
+        float3 baseTexel = baseTex.Sample(samplers[0], IN.uv).rgb;
+        f0Chroma = saturate(f0Chroma * baseTexel);
+    }
+    OUT.gbuffer2 = float4(f0Chroma,
+        saturate(float(pc.materialId) / 255.0f));
     return OUT;
 }

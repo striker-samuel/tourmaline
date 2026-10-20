@@ -35,6 +35,11 @@ struct PSIn
 struct PSOut
 {
     float4 gbuffer : SV_Target0; // RGBA8: (oct.xy, roughness, metal)
+    // Layer 2 (the F0-chroma layer — see gbuffer.frag.hlsl's header):
+    // the metal F0 tint + the material id. The masked twin writes it
+    // AFTER the discard gates (holes keep the pass's clear/loaded
+    // value exactly like the G-buffer leg above).
+    float4 gbuffer2 : SV_Target1;
 };
 
 float2 OctEncodeNormal(float3 n)
@@ -105,5 +110,19 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         n = -n; // the lit family's back-face flip (see PSIn)
     OUT.gbuffer = float4(OctEncodeNormal(n),
         clamp(roughness, 0.04f, 1.0f), metalFlag);
+    // Layer 2 (the F0 chroma — see gbuffer.frag.hlsl): baseColorFactor x
+    // the baseColor texel (a fresh tap — the alpha fetch above is scoped
+    // to the discard gate), A = materialId/255.
+    float3 f0Chroma = saturate(mat.diffuse.rgb);
+    const int baseColorIdx2 = mat.tex.x;
+    if (baseColorIdx2 >= 0)
+    {
+        uint slot2 = (uint)baseColorIdx2;
+        Texture2D baseTex2 = textures[NonUniformResourceIndex(slot2)];
+        float3 baseTexel2 = baseTex2.Sample(samplers[0], IN.uv).rgb;
+        f0Chroma = saturate(f0Chroma * baseTexel2);
+    }
+    OUT.gbuffer2 = float4(f0Chroma,
+        saturate(float(pc.materialId) / 255.0f));
     return OUT;
 }

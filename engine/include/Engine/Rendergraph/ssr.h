@@ -219,7 +219,10 @@ struct SsrIntersectPush {
 	uint32_t maxIntersections = 24; // traversal loop cap
 	uint32_t minOccupancy = 4; // wave early-out (non-mirror only)
 	uint32_t ssrHzbMipCount = 0;
-	uint32_t pad0 = 0;
+	// The F0-chroma layer 2 (gbuffer2, the RGBA8 route): the trace's
+	// tinted-Fresnel source. UINT32_MAX = the flat-F0 fallback (the
+	// layer absent / the G-buffer leg off) — today's behavior.
+	uint32_t gbuffer2TextureIndex = UINT32_MAX;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsrIntersectPush) == 120);
@@ -255,7 +258,12 @@ struct SsrTracePush {
 	uint32_t refineSteps = 4;
 	uint32_t frameIndex = 0;
 	uint32_t gbufferTextureIndex = UINT32_MAX;
-	uint32_t pad0 = 0;
+	// The F0-chroma layer 2 (see SsrIntersectPush's twin): the legacy
+	// FS trace's tinted-Fresnel source. UINT32_MAX = the flat-F0
+	// fallback. Unfilled — the legacy FS pass is unrecorded (the
+	// compute chain owns the trace); the field keeps the mirrors
+	// layout-identical.
+	uint32_t gbuffer2TextureIndex = UINT32_MAX;
 	uint64_t ssrHzb = 0;
 	uint32_t ssrHzbMipCount = 0;
 	uint32_t pad1 = 0;
@@ -425,8 +433,8 @@ struct ScreenSpaceReflections {
 	Target blurred; // half-res bilateral blur of raw
 	// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): full-res RGBA8
 	// (RG = octahedral world normal, B = roughness, A = metal), written
-	// by the APP's Forward+ depth prepass (the G-buffer FS pair rides
-	// a pass that already rasterizes every opaque surface — Main is
+	// by the APP's Forward+ depth prepass (the G-buffer FS pair rides a
+	// pass that already rasterizes every opaque surface — Main is
 	// untouched). The trace reads REAL interpolated normals (no
 	// depth-derived receiver normals — the piecewise-planar wireframe
 	// source is gone by construction) + continuous roughness + metal.
@@ -434,6 +442,16 @@ struct ScreenSpaceReflections {
 	// (a safe non-reflector); temporal-split frames Load last frame's
 	// values (static normals never change).
 	Target gbuffer;
+	// The F0-CHROMA layer 2 (gbuffer.frag.hlsl's SV_Target1): full-res
+	// RGBA8 (RGB = the metal F0 tint — baseColorFactor x the baseColor
+	// texel, so the gold brocade's reflections come out GOLD, not the
+	// white-mirror flat F0=1; A = materialId/255, the palette door for
+	// future per-material LUT lookups). Rides the SAME prepass leg
+	// (always 1x, even under MSAA — no MSAA twin). OPTIONAL (not in
+	// TargetsValid): the trace falls back to the flat F0=1 (today's
+	// behavior) when unbound. Clear (1,1,1,0) = white chroma +
+	// material 0 = the flat behavior.
+	Target gbuffer2;
 	// Half-res temporal history ping-pong (TAA of the reflection layer).
 	// history[parity] is written by the temporal pass each temporal
 	// record; the composite samples the just-written slot. historyValid
@@ -486,7 +504,10 @@ struct ScreenSpaceReflections {
 	SsrDesc desc{};
 
 	[[nodiscard]] bool TargetsValid() const {
+		// gbuffer2 rides the gbuffer family's lifecycle (created beside it
+		// in Create, cascade-destroyed together) - no separate optionality.
 		return raw.Valid() && blurred.Valid() && gbuffer.Valid() &&
+			gbuffer2.Valid() &&
 			history[0].Valid() && history[1].Valid() &&
 			rayList.Valid() && rayCounter.Valid() && indirectArgs.Valid() &&
 			radiance.Valid() &&
@@ -784,7 +805,7 @@ struct ScreenSpaceReflections {
 		DestroyTargets(rg);
 		DestroyBuffers(rg);
 		const Extent2D half = HalfExtentFor(full);
-		Target newRaw, newBlur, newGbuffer, newHist0, newHist1;
+		Target newRaw, newBlur, newGbuffer, newGbuffer2, newHist0, newHist1;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrRaw", newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrBlur", newBlur)) {
@@ -799,16 +820,30 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newBlur);
 			return false;
 		}
+		// The F0-CHROMA layer 2 (the target block's comment): RGBA8,
+		// full-res, created beside the gbuffer (OPTIONAL at consume —
+		// the trace's flat-F0 fallback when the pass plumbing passes it
+		// unbound; the target itself is cheap and rides the gbuffer
+		// family's lifecycle).
+		if (!CreateTarget(ctx, rg, full, Format::RGBA8_UNorm,
+				"ssrGbuffer2", newGbuffer2)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			return false;
+		}
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrHist0", newHist0)) {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			return false;
 		}
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrHist1", newHist1)) {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			return false;
 		}
@@ -816,6 +851,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			return false;
@@ -829,6 +865,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
@@ -847,6 +884,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
@@ -858,6 +896,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
@@ -870,6 +909,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
@@ -883,6 +923,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
@@ -895,6 +936,7 @@ struct ScreenSpaceReflections {
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		gbuffer = std::move(newGbuffer);
+		gbuffer2 = std::move(newGbuffer2);
 		history[0] = std::move(newHist0);
 		history[1] = std::move(newHist1);
 		contrib = std::move(newContrib);
@@ -913,6 +955,7 @@ struct ScreenSpaceReflections {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
 		DestroyTarget(rg, gbuffer);
+		DestroyTarget(rg, gbuffer2);
 		DestroyTarget(rg, history[0]);
 		DestroyTarget(rg, history[1]);
 		DestroyTarget(rg);
@@ -978,6 +1021,13 @@ void AddSsrPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView = LogicalImageViewHandle{},
 	uint32_t gbufferBindlessIndex = UINT32_MAX,
+	// The F0-chroma layer 2 (gbuffer2 — gbuffer.frag.hlsl's
+	// SV_Target1: RGB = the metal F0 tint, A = materialId/255): the
+	// trace's tinted-Fresnel source (the gold brocade's reflections
+	// come out gold). Rides the SAME prepass leg as the gbuffer pair
+	// above. Empty/MAX = the flat-F0 fallback (today's behavior).
+	LogicalImageViewHandle gbuffer2View = LogicalImageViewHandle{},
+	uint32_t gbuffer2BindlessIndex = UINT32_MAX,
 	// The env-specular export (the replacement-composite contract, see
 	// SsrComposePush::envSpecTextureIndex): the AO-compose-scaled env-spec
 	// slice — the EXACT IBL the confident hit replaces. Empty/MAX = the
@@ -1007,11 +1057,13 @@ void AddSsrPasses(RenderGraph& rg,
 	assert(extent.width != 0 && extent.height != 0);
 	assert(halfExtent.width != 0 && halfExtent.height != 0);
 
-	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
-	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
-		&& hzbMip1Stride != 0;
-	if (!hzbOn) {
-		// HZB unavailable (disabled or not built): skip the entire SSR chain.
+ 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
+	const bool gbuffer2On = !gbuffer2View.empty()
+		&& gbuffer2BindlessIndex != UINT32_MAX;
+ 	const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
+ 		&& hzbMip1Stride != 0;
+ 	if (!hzbOn) {
+ 		// HZB unavailable (disabled or not built): skip the entire SSR chain.
 		// The app should gate this via m_passes.ssr = false when HZB is unavailable.
 		return;
 	}
@@ -1103,8 +1155,9 @@ ShaderProgram progCopy = indirectProgram;
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
-		push.samplerIndex = linearSamplerIndex;
-		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+ 		push.samplerIndex = linearSamplerIndex;
+ 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.gbuffer2TextureIndex = gbuffer2On ? gbuffer2BindlessIndex : UINT32_MAX;
 		push.halfW = halfExtent.width;
 		push.halfH = halfExtent.height;
 		push.glossThreshold = 0.94f;
@@ -1144,6 +1197,8 @@ ShaderProgram progCopy = indirectProgram;
 		std::vector<LogicalImageViewHandle> intersectInputs = { hdrView, depthView };
 		if (gbufferOn)
 			intersectInputs.push_back(gbufferView);
+		if (gbuffer2On)
+			intersectInputs.push_back(gbuffer2View);
 		pass.SetInputImages(intersectInputs);
 ShaderProgram progCopy = intersectProgram;
 		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
@@ -1321,6 +1376,10 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView,
 	uint32_t gbufferBindlessIndex,
+	// The F0-chroma layer 2 (see AddSsrPasses' pair): the tinted-
+	// Fresnel source. Empty/MAX = the flat-F0 fallback.
+	LogicalImageViewHandle gbuffer2View,
+	uint32_t gbuffer2BindlessIndex,
 	// The env-specular export (the replacement-composite contract, see
 	// SsrComposePush::envSpecTextureIndex + AddSsrPasses' pair): the
 	// AO-compose-scaled env-spec slice the confident hit replaces.
@@ -1360,11 +1419,13 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	assert(halfExtent.width != 0 && halfExtent.height != 0);
 	assert(parity < 2);
 
-	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
-const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
-		&& hzbMip1Stride != 0;
-	if (!hzbOn) {
-		// HZB unavailable: skip temporal SSR path as well.
+ 	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
+	const bool gbuffer2On = !gbuffer2View.empty()
+		&& gbuffer2BindlessIndex != UINT32_MAX;
+ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
+ 		&& hzbMip1Stride != 0;
+ 	if (!hzbOn) {
+ 		// HZB unavailable: skip temporal SSR path as well.
 		return;
 	}
 	const float fullW = static_cast<float>(std::max(1u, extent.width));
@@ -1467,8 +1528,9 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
-		push.samplerIndex = linearSamplerIndex;
-		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+ 		push.samplerIndex = linearSamplerIndex;
+ 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.gbuffer2TextureIndex = gbuffer2On ? gbuffer2BindlessIndex : UINT32_MAX;
 		push.halfW = halfExtent.width;
 		push.halfH = halfExtent.height;
 		push.glossThreshold = 0.94f;
@@ -1508,6 +1570,8 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 		std::vector<LogicalImageViewHandle> intersectInputs = { hdrView, depthView };
 		if (gbufferOn)
 			intersectInputs.push_back(gbufferView);
+		if (gbuffer2On)
+			intersectInputs.push_back(gbuffer2View);
 		pass.SetInputImages(intersectInputs);
 		ShaderProgram progCopy = intersectProgram;
 		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
@@ -1720,6 +1784,10 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t depthBindlessIndex,
 		LogicalImageViewHandle gbufferView,
 		uint32_t gbufferBindlessIndex,
+		// The F0-chroma layer 2 (see AddSsrPasses' pair): the tinted-
+		// Fresnel source. Empty/MAX = the flat-F0 fallback.
+		LogicalImageViewHandle gbuffer2View,
+		uint32_t gbuffer2BindlessIndex,
 		LogicalImageViewHandle envSpecView,
 		uint32_t envSpecBindlessIndex,
 		uint64_t rayListAddr,
@@ -1747,6 +1815,7 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
 			gbufferView, gbufferBindlessIndex,
+			gbuffer2View, gbuffer2BindlessIndex,
 			envSpecView, envSpecBindlessIndex,
 			rayListAddr, rayCounterAddr, radianceAddr, indirectArgsAddr,
 			hzbAddr, hzbMips, hzbLogical, hzbMip1Offset, hzbMip1Stride,

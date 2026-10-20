@@ -60,7 +60,7 @@ struct SsrTracePush
                      // ray-origin dither so the TAA pass converges speckle
                      // to its mean instead of parking a static pattern)
     uint gbufferTextureIndex; // thin G-buffer (RGBA8), 0xffffffff = legacy mirror
-    uint pad0;
+    uint gbuffer2TextureIndex; // F0-chroma layer 2, 0xffffffff = flat F0 (see ssr_intersect.cs.hlsl)
     vk::BufferPointer<HzbBuffer> ssrHzb; // MAX-reduce trace Hi-Z (nearest-surface), null = linear march
     uint ssrHzbMipCount;                 // mips in the pyramid, 0 = linear march
     uint pad1;
@@ -278,12 +278,27 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     const float dielectricFade = gloss * gloss; // (1-r)^2: continuous, mirrors at 1
     const float glossFade = lerp(dielectricFade, 1.0f, matMetal);
 
-    // Fresnel (Schlick): F0 rises to ~1 for metals (their colored F0
-    // approximated flat — the mask carries scalars only); dielectrics
-    // keep the uniform sp.f0.
-    float f0 = lerp(sp.f0, 1.0f, matMetal);
+    // Fresnel (Schlick, PER-CHANNEL F0 — the F0-chroma layer 2; see
+    // ssr_intersect.cs.hlsl's twin for the full journey note): the
+    // receiver metal tints its reflection by its baseColor chroma.
+    // 0xffffffff (the layer absent) = the flat fallback (F0 rises to
+    // ~1 for metals — colored F0 approximated flat); dielectrics keep
+    // the uniform sp.f0. The texture declares INSIDE the branch (HLSL
+    // cannot ternary-assign a Texture2D).
     float ndv = saturate(dot(N, V));
-    float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    float3 fres; // per-channel (the tinted branch); the flat branch splats
+    if (sp.gbuffer2TextureIndex != 0xffffffffu)
+    {
+        Texture2D gb2Tex = textures[NonUniformResourceIndex(sp.gbuffer2TextureIndex)];
+        float3 chroma = gb2Tex.Load(int3(fullPxC, 0)).rgb;
+        float3 f0c = lerp(float3(sp.f0, sp.f0, sp.f0), chroma, matMetal);
+        fres = f0c + (1.0f - f0c) * pow(1.0f - ndv, 5.0f);
+    }
+    else
+    {
+        float3 f0 = lerp(sp.f0.xxx, float3(1.0f, 1.0f, 1.0f), matMetal);
+        fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    }
 
     float3 R = reflect(-V, N);
     // Roughness cone jitter: perturb the reflection direction within a

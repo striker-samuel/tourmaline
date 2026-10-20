@@ -553,19 +553,26 @@ struct ForwardPlus {
 	// ---- Pass shells (caller sets the recording func) ----
 	// Depth prepass: depth (Clear|Load)->Store over the full extent, plus
 	// the optional SSSR-style thin G-buffer color attachment (oct normal
-	// + roughness + metal, RGBA8 — see gbuffer.frag.hlsl). Load when the
-	// GfxRenderer seeded depth first (T3 temporal seed); Clear otherwise.
-	// gbufferLoad: on temporal-split frames (fallbackOnly prepass) Load
-	// keeps last frame's values for the seed-drawn majority (static
-	// normals never change); Clear on full-prepass frames (fresh
-	// coverage). Empty gbufferLogical = no color attachment (legacy
-	// VS-only prepass — the G-buffer off).
+	// + roughness + metal, RGBA8 — see gbuffer.frag.hlsl) and the F0-
+	// chroma layer 2 (RGB = the metal F0 tint, A = materialId/255 — the
+	// same writer's SV_Target1). Load when the GfxRenderer seeded depth
+	// first (T3 temporal seed); Clear otherwise. gbufferLoad: on
+	// temporal-split frames (fallbackOnly prepass) Load keeps last
+	// frame's values for the seed-drawn majority (static normals never
+	// change); Clear on full-prepass frames (fresh coverage). Empty
+	// gbufferLogical = no color attachment (legacy VS-only prepass —
+	// the G-buffer off). gbuffer2Logical rides the SAME gate (empty =
+	// not attached): the layer 2 is only meaningful where the G-buffer
+	// leg writes; its clear (1,1,1,0) = white chroma + material 0 (the
+	// flat-F0 fallback the trace takes when the layer is absent).
 	RenderPass& AddDepthPrepass(RenderGraph& rg,
 		LogicalImageViewHandle depthLogical, Extent2D swapExtent,
 		const char* name = "ForwardPlusDepth",
 		AttachmentLoadOp depthLoad = AttachmentLoadOp::Clear,
 		LogicalImageViewHandle gbufferLogical = LogicalImageViewHandle{},
-		AttachmentLoadOp gbufferLoad = AttachmentLoadOp::Clear) const {
+		AttachmentLoadOp gbufferLoad = AttachmentLoadOp::Clear,
+		LogicalImageViewHandle gbuffer2Logical = LogicalImageViewHandle{},
+		AttachmentLoadOp gbuffer2Load = AttachmentLoadOp::Clear) const {
 		assert(Valid());
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(0, 0)
@@ -581,6 +588,25 @@ struct ForwardPlus {
 				gbufferLoad,
 				AttachmentStoreOp::Store,
 				ClearColor(0.5f, 0.5f, 1.0f, 0.0f));
+		}
+		if (!gbuffer2Logical.empty() && !gbufferLogical.empty()) {
+			// The layer 2 rides the G-buffer leg (it is only meaningful
+			// where the writer FS pair binds): both attachments attach
+			// together — SetColor REPLACES the list, so this re-binds
+			// the layer 1 WITH the layer 2 in one MRT pair (never call
+			// SetColor twice — the second call would drop the first).
+			// The layer 2's clear (1,1,1,0): white chroma + material 0
+			// — the "no data" decode is the flat-F0 behavior.
+			pass.SetColorAttachments({
+				{ gbufferLogical,
+					gbufferLoad,
+					AttachmentStoreOp::Store,
+					ClearColor(0.5f, 0.5f, 1.0f, 0.0f) },
+				{ gbuffer2Logical,
+					gbuffer2Load,
+					AttachmentStoreOp::Store,
+					ClearColor(1.0f, 1.0f, 1.0f, 0.0f) },
+			});
 		}
 		return pass;
 	}

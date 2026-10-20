@@ -150,7 +150,9 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear,
-			gbufferView, gbufferLoad);
+			gbufferView, gbufferLoad,
+			gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
+			gbufferLoad);
 		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
 			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable,
 			gbufferOn, ditherEye](smvk::CommandBuffer& cmd)
