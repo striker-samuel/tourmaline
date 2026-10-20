@@ -1294,6 +1294,10 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView,
 	uint32_t gbufferBindlessIndex,
+	uint64_t rayListAddr,
+	uint64_t rayCounterAddr,
+	uint64_t radianceAddr,
+	uint64_t indirectArgsAddr,
 	uint64_t hzbAddr,
 	uint32_t hzbMips,
 	LogicalBufferHandle hzbLogical,
@@ -1335,7 +1339,185 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 	const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-	// The raw target is populated by the compute chain (classify -> indirect -> intersect -> copy).
+	// ---- THE COMPUTE CHAIN (classify -> indirect -> intersect -> copy)
+	// ---- SELF-CONTAINED (the temporal-path repair): the temporal
+	// variant used to ASSUME "the raw target is populated by the compute
+	// chain" — but the caller's either/or record never ran it alongside
+	// (AddSsrPasses owns the chain; taking the temporal branch left raw
+	// empty), so the temporal composite blended blur(zeros) into the
+	// history and the reflections read ZERO (the re-enable hunt: the
+	// on/off captures bit-identical, the ssrdump's raw/blur/hist all
+	// 0.0). That empty-raw wiring was almost certainly the original
+	// "smear" the path got parked for, too — reprojected nothing blended
+	// with nothing. The chain below is the AddSsrPasses one verbatim
+	// (classify/indirect/intersect/copy); the ONE behavioral difference:
+	// the intersect's frameIndex is the caller's dither EPOCH (the
+	// record counter), not the spatial path's static pattern — the
+	// animated ray-origin dither decorrelates consecutive traces so the
+	// temporal pass converges the per-frame speckle to the lobe mean
+	// (a static dither would park the pattern instead).
+	{
+		SsrClassifyPush push{};
+		push.frameUniforms = frameUniformsAddr;
+		push.rayListAddr = rayListAddr;
+		push.rayCounterAddr = rayCounterAddr;
+		push.radianceAddr = radianceAddr;
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.depthTextureIndex = depthBindlessIndex;
+		push.glossThreshold = overrideDesc.glossThreshold;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		RenderPass& pass = rg.AddComputePass("SSRClassify");
+		{
+			BufferSyncRequest rw{};
+			rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayList.logical, rw);
+			pass.AddBufferHint(rayCounter.logical, rw);
+			pass.AddBufferHint(radiance.logical, rw);
+		}
+		{
+			ImageSyncRequest depthReq{};
+			depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+			depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+			pass.AddImageHint(depthView, depthReq);
+		}
+		if (gbufferOn) {
+			ImageSyncRequest gbReq{};
+			gbReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			gbReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+			gbReq.layout = ImageLayout::ShaderReadOnlyOptimal;
+			pass.AddImageHint(gbufferView, gbReq);
+		}
+		ShaderProgram progCopy = classifyProgram; // copyable (handles only)
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrClassifyPush), &push, ShaderStage::Compute);
+			cmd.Dispatch((this->halfExtent.width + 7) / 8, (this->halfExtent.height + 7) / 8, 1);
+		});
+	}
+
+	// ---- Indirect args: 1 thread builds the intersect's
+	// VkDispatchIndirectCommand from the ray count (see
+	// ssr_prepare_indirect.cs.hlsl), then resets the counter.
+	{
+		SsrIndirectPush push{};
+		push.rayCounterAddr = rayCounterAddr;
+		push.indirectArgsAddr = indirectArgsAddr;
+		RenderPass& pass = rg.AddComputePass("SSRIndirectArgs");
+		{
+			BufferSyncRequest rw{};
+			rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayCounter.logical, rw);
+			pass.AddBufferHint(indirectArgs.logical, rw);
+		}
+		ShaderProgram progCopy = indirectProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrIndirectPush), &push, ShaderStage::Compute);
+			cmd.Dispatch(1, 1, 1);
+		});
+	}
+
+	// ---- Intersect: indirect compute dispatch (see
+	// ssr_intersect.cs.hlsl) — GGX VNDF + the classic Hi-Z traversal,
+	// only for the compacted rays. The empty ray count dispatches a
+	// zero-group indirect (a no-op record).
+	{
+		SsrIntersectPush push{};
+		push.frameUniforms = frameUniformsAddr;
+		push.rayListAddr = rayListAddr;
+		push.rayCounterAddr = rayCounterAddr;
+		push.radianceAddr = radianceAddr;
+		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
+		push.hdrTextureIndex = hdrBindlessIndex;
+		push.depthTextureIndex = depthBindlessIndex;
+		push.samplerIndex = linearSamplerIndex;
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		push.glossThreshold = 0.94f;
+		push.invDepthW = 1.0f / fullW;
+		push.invDepthH = 1.0f / fullH;
+		push.maxDistance = (std::max)(0.1f, overrideDesc.maxDistance);
+		push.thickness = (std::max)(0.01f, overrideDesc.thickness);
+		push.intensity = (std::max)(0.0f, overrideDesc.intensity);
+		push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
+		push.frameIndex = frameIndex; // the dither EPOCH (see the note above)
+		push.mostDetailedMip = 1;
+		push.maxIntersections = std::clamp(overrideDesc.maxIntersections, 4u, 64u);
+		push.minOccupancy = 4;
+		push.ssrHzbMipCount = hzbOn ? hzbMips : 0u;
+		RenderPass& pass = rg.AddComputePass(traceName ? traceName : "SSRIntersect");
+		{
+			BufferSyncRequest r{};
+			r.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			r.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(rayList.logical, r);
+			pass.AddBufferHint(rayCounter.logical, r);
+			BufferSyncRequest w{};
+			w.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+			w.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(radiance.logical, w);
+			BufferSyncRequest indirect{};
+			indirect.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+			indirect.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+			pass.AddBufferHint(indirectArgs.logical, indirect);
+			if (hzbOn) {
+				BufferSyncRequest hzbRead{};
+				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+				hzbRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+				pass.AddBufferHint(hzbLogical, hzbRead);
+			}
+		}
+		std::vector<LogicalImageViewHandle> intersectInputs = { hdrView, depthView };
+		if (gbufferOn)
+			intersectInputs.push_back(gbufferView);
+		pass.SetInputImages(intersectInputs);
+		ShaderProgram progCopy = intersectProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(progCopy);
+			cmd.PushConstants(0, sizeof(SsrIntersectPush), &push, ShaderStage::Compute);
+			cmd.DispatchIndirect(this->indirectArgs.buffer, 0);
+		});
+	}
+
+	// ---- Copy: the radiance buffer -> the raw reflection image (the
+	// bilateral blur reads it bilinearly, so it stays an image).
+	{
+		SsrCopyPush push{};
+		push.radianceAddr = radianceAddr;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		RenderPass& pass = rg.AddPass("SSRCopy");
+		pass.SetOffset(0, 0)
+			.SetExtent(halfExtent);
+		{
+			BufferSyncRequest radRead{};
+			radRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			radRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(radiance.logical, radRead);
+		}
+		pass.SetColor({ raw.logical },
+				AttachmentLoadOp::DontCare,
+				AttachmentStoreOp::Store);
+		ShaderProgram progCopy = copyProgram;
+		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindRenderPipeline(
+				progCopy,
+				VertexFormat::Empty,
+				DepthSettings::Disabled(),
+				StencilSettings::DefaultDisabled(),
+				BlendSettings::Opaque(),
+				MSAASettings::Count1(),
+				RasterSettings{ .cullMode = CullMode::None });
+			cmd.PushConstants(0, sizeof(SsrCopyPush), &push, ShaderStage::All);
+			cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+		});
+	}
+
 	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1) ----
 	{
 			SsrBlurPush push{};
@@ -1497,6 +1679,10 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t depthBindlessIndex,
 		LogicalImageViewHandle gbufferView,
 		uint32_t gbufferBindlessIndex,
+		uint64_t rayListAddr,
+		uint64_t rayCounterAddr,
+		uint64_t radianceAddr,
+		uint64_t indirectArgsAddr,
 		uint64_t hzbAddr,
 		uint32_t hzbMips,
 		LogicalBufferHandle hzbLogical,
@@ -1518,6 +1704,7 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
 			gbufferView, gbufferBindlessIndex,
+			rayListAddr, rayCounterAddr, radianceAddr, indirectArgsAddr,
 			hzbAddr, hzbMips, hzbLogical, hzbMip1Offset, hzbMip1Stride,
 			motionView, motionBindlessIndex,
 			frameUniformsAddr, linearSamplerIndex, desc,

@@ -10861,67 +10861,85 @@ namespace engine {
 					// Temporal path needs the motion-vector target (reprojection
 					// source); without it the record takes the spatial-only path
 					// and the TAA history invalidates at the end of the frame.
-						// TEMPORARY: the temporal (TAA) accumulation path is COMMENTED
-						// OUT (spatial-only while the smear diagnosis is open): the
-						// record always takes AddSsrPasses below. The history state
-						// machine (m_ssrTaa) keeps warming up/invalidating through the
-						// spatial records, so re-enabling = flip this back to true
-						// (the temporal program, history targets and BlendSettings
-						// are untouched).
-					const bool taaUsable = false; // SsrTaaRequested()
-					// && m_passes.motionVectors && m_viewportResources.motionVectors.Valid()
-					// && !m_viewportResources.motionVectors.target.logicalView.empty()
-					// && m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
-					if (taaUsable) {
-						const smvk::SsrTaaFrameParams taaParams =
-							smvk::SsrTaaBeginFrame(m_ssrTaa, true);
-						// Animated ray-origin dither: the record counter decorrelates
-						// consecutive traces so the temporal pass converges speckle
-						// to its mean (static dither would just park the pattern).
-						const uint32_t ssrDitherEpoch = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
-						m_viewportResources.ssr.AddSsrTemporalPasses(
-							*m_rendergraph,
-							sceneHdrView,
-							sceneHdrBindless,
-							m_viewportResources.renderDepth.logicalView,
-							m_viewportResources.renderDepth.bindlessIndex,
-							gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
-							: smvk::LogicalImageViewHandle{},
-							gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
-							: UINT32_MAX,
-							ssrHzbAddr,
-							ssrHzbMips,
-							ssrHzbLogical,
-							ssrHzbMip1Offset,
-							ssrHzbMip1Stride,
-							m_viewportResources.motionVectors.target.logicalView,
-							m_viewportResources.motionVectors.target.bindlessIndex,
-							frameUniformsAddress,
-							linearSampler,
-							ssrDesc,
-							m_jitterDeltaUV.x,
-							m_jitterDeltaUV.y,
-							m_ssrTaaBlend,
-							taaParams.historyValid,
-							taaParams.parity,
-							"SSR",
-							"SSRBlur",
-							"SSRTemporal",
-							"SSRComposite",
-							ssrDitherEpoch);
-						m_ssrFrameRanTemporal = true;
-					}
-					else {
-						const uint64_t rayListAddr = m_viewportResources.ssr.rayList.buffer.empty() ? 0 :
-							m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayList.buffer);
-						const uint64_t rayCounterAddr = m_viewportResources.ssr.rayCounter.buffer.empty() ? 0 :
-							m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayCounter.buffer);
-						const uint64_t radianceAddr = m_viewportResources.ssr.radiance.buffer.empty() ? 0 :
-							m_context->GetBufferDeviceAddress(m_viewportResources.ssr.radiance.buffer);
-						const uint64_t indirectArgsAddr = m_viewportResources.ssr.indirectArgs.buffer.empty() ? 0 :
-							m_context->GetBufferDeviceAddress(m_viewportResources.ssr.indirectArgs.buffer);
-
-						m_viewportResources.ssr.AddSsrPasses(
+					// RE-ENABLED (the noise fix, after d2604c7e): the temporal
+					// accumulation is the layer's designed denoiser - one VNDF
+					// sample per pixel per frame reads as speckle without it
+					// (the user-visible "really noisy" complaint the moment the
+					// sampler started producing real directions). It had been
+					// parked "while the smear diagnosis is open" - the smear
+					// era predates the VNDF fix, and the reprojected garbage it
+					// accumulated is the most plausible smear source: every
+					// frame's directions were random junk (the D_GGX-eval fake
+					// normal), so the history blended noise-on-noise. With the
+					// sampler correct, the history blends the SAME lobe's
+					// samples toward its mean (the per-frame IGN epoch
+					// decorrelates the sample - the convergence the dither was
+					// built for). Revert condition: a NEW smear with the
+					// correct sampler, not the old one.
+				const bool taaUsable = SsrTaaRequested()
+					&& m_passes.motionVectors && m_viewportResources.motionVectors.Valid()
+					&& !m_viewportResources.motionVectors.target.logicalView.empty()
+					&& m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
+				// Compute-chain handoff buffer addresses (hoisted above the
+				// branch): BOTH paths need them now — the temporal variant owns
+				// the FULL chain since the self-contained repair (it used to
+				// assume the caller ran classify->intersect separately, which
+				// the either/or record never did — the temporal branch left raw
+				// empty and the reflections read zero; see AddSsrTemporalPasses'
+				// compute-chain note).
+				const uint64_t rayListAddr = m_viewportResources.ssr.rayList.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayList.buffer);
+				const uint64_t rayCounterAddr = m_viewportResources.ssr.rayCounter.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.rayCounter.buffer);
+				const uint64_t radianceAddr = m_viewportResources.ssr.radiance.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.radiance.buffer);
+				const uint64_t indirectArgsAddr = m_viewportResources.ssr.indirectArgs.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.indirectArgs.buffer);
+				if (taaUsable) {
+					const smvk::SsrTaaFrameParams taaParams =
+						smvk::SsrTaaBeginFrame(m_ssrTaa, true);
+					// Animated ray-origin dither: the record counter decorrelates
+					// consecutive traces so the temporal pass converges speckle
+					// to its mean (static dither would just park the pattern).
+					const uint32_t ssrDitherEpoch = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
+					m_viewportResources.ssr.AddSsrTemporalPasses(
+						*m_rendergraph,
+						sceneHdrView,
+						sceneHdrBindless,
+						m_viewportResources.renderDepth.logicalView,
+						m_viewportResources.renderDepth.bindlessIndex,
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.logical
+						: smvk::LogicalImageViewHandle{},
+						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
+						: UINT32_MAX,
+						rayListAddr,
+						rayCounterAddr,
+						radianceAddr,
+						indirectArgsAddr,
+						ssrHzbAddr,
+						ssrHzbMips,
+						ssrHzbLogical,
+						ssrHzbMip1Offset,
+						ssrHzbMip1Stride,
+						m_viewportResources.motionVectors.target.logicalView,
+						m_viewportResources.motionVectors.target.bindlessIndex,
+						frameUniformsAddress,
+						linearSampler,
+						ssrDesc,
+						m_jitterDeltaUV.x,
+						m_jitterDeltaUV.y,
+						m_ssrTaaBlend,
+						taaParams.historyValid,
+						taaParams.parity,
+						"SSR",
+						"SSRBlur",
+						"SSRTemporal",
+						"SSRComposite",
+						ssrDitherEpoch);
+					m_ssrFrameRanTemporal = true;
+				}
+				else {
+					m_viewportResources.ssr.AddSsrPasses(
 							*m_rendergraph,
 							sceneHdrView,
 							sceneHdrBindless,
