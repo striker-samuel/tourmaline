@@ -57,10 +57,17 @@
 //              vignette on the target pixel fades the added reflection
 //              over the outer 15% of the NDC range (screen-edge
 //              contributions are the smear band).
-// Placement: after Main + MotionBlur + DOF, before Exposure/Bloom/Tonemap.
-// Input is the scene HDR (post-DOF), output is the same-extent HDR with
-// reflections composited additively. Downstream passes sample the SSR
-// output when the pass ran, else the input directly (no copy disabled).
+// Placement (the pass-order fix): after Main + SSGI/AO, BEFORE
+// MotionBlur/DOF, before Exposure/Bloom/Tonemap. The trace reads the
+// SHARP post-AO scene color (the old after-MotionBlur+DOF placement
+// sampled the blurred/bokeh'd HDR as its radiance source), and the
+// composited reflections then pass through MotionBlur and DOF with the
+// rest of the scene - reflections blur and defocus consistently with
+// their surroundings instead of sitting as sharp stickers over a
+// defocused scene. Input is the post-AO scene HDR, output is the
+// same-extent HDR with reflections composited additively. Downstream
+// passes sample the SSR output when the pass ran, else the input
+// directly (no copy disabled).
 //
 // Receiver-material layer: the SSSR-style THIN G-BUFFER (full-res
 // RGBA8: RG = octahedral world normal, B = roughness, A = metal — see
