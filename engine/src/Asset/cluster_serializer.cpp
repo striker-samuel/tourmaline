@@ -69,6 +69,11 @@ struct TexCookJob {
 	std::string filePart;
 	TextureSamplerDesc samp;
 	const std::vector<uint8_t>* src = nullptr;
+	// A material's normal slot is DATA, never color: the cook forces the
+	// linear transfer even when the source KTX2 claims sRGB (a toktx run
+	// without --normal_mode defaults to sRGB; sRGB-decoded normal XY
+	// warps the shading). See CookTexturePayload.
+	bool forceLinear = false;
 };
 struct TexCookResult {
 	std::string uri;
@@ -192,9 +197,27 @@ ktx_transcode_fmt_e CookBcnTarget(const std::vector<uint8_t>& src,
 		// payloads pass through untouched).
 		if (ktxTexture2_NeedsTranscoding(ktxTex)) {
 			const uint32_t comps = ktxTexture2_GetNumComponents(ktxTex);
-			const bool srgb =
+			bool srgb =
 				ktxTexture2_GetTransferFunction_e(ktxTex) == KHR_DF_TRANSFER_SRGB;
-			const ktx_transcode_fmt_e target = CookBcnTarget(src, comps, srgb);
+			if (job.forceLinear && srgb) {
+				// Normal maps are data (X/Y are directions, not color).
+				// An sRGB DFD here is an authoring slip (toktx without
+				// --normal_mode); re-stamp linear so the BCn target and
+				// the runtime view both stop gamma-decoding it.
+				std::fprintf(stderr,
+					"[cook] texture '%s': normal map source is sRGB — forcing linear (use toktx --normal_mode)\n",
+					job.uri.c_str());
+				ktxTexture2_SetOETF(ktxTex, KHR_DF_TRANSFER_LINEAR);
+				srgb = false;
+			}
+			ktx_transcode_fmt_e target = CookBcnTarget(src, comps, srgb);
+			// Do NOT force BC5 for 3-component normal KTX2s. These files are
+			// plain UASTC RGB (DFD channelType RRRG is only written for the
+			// 2-component X+Y --normal_mode layout); KTX-Software's BC5
+			// transcode of a plain RGB UASTC writes the R axis but leaves the
+			// green block constant 255, which rotates every mapped normal and
+			// visibly darkens the surface. BC1 keeps both axes (5:6:5) and is
+			// the correct target until the sources are re-encoded as X+Y.
 			if (ktxTexture2_TranscodeBasis(ktxTex, target, 0) != KTX_SUCCESS) {
 				std::fprintf(stderr,
 					"[cook] texture '%s': BCn transcode failed (%u comps%s, vkFormat %u) — embedding the pink error texture (recook with a fixed source)\n",
@@ -725,6 +748,11 @@ bool SerializeClusters(
 	std::vector<std::string> matUris;
 	matUris.reserve(matHandles.size());
 
+	// Normal-slot texture URIs (see TexCookJob::forceLinear): collected
+	// while the material blobs are written below, consumed by the texture
+	// cook so a foreign sRGB normal KTX2 still lands on a linear BCn target.
+	std::unordered_set<std::string> normalTexUris;
+
 	// RHI texture index -> asset uri (materials store session-local RHI
 	// indices; paks store VFS paths).
 	std::unordered_map<uint32_t, std::string> rhiIndexToUri;
@@ -771,6 +799,12 @@ bool SerializeClusters(
 		PutStr(blob, texUriForRhi(mat->values.textures[2])); // normal
 		PutStr(blob, texUriForRhi(mat->values.textures[3])); // occlusion
 		PutStr(blob, texUriForRhi(mat->values.textures2[0])); // emissive
+		{
+			const std::string normalUri =
+				texUriForRhi(mat->values.textures[2]);
+			if (!normalUri.empty())
+				normalTexUris.insert(normalUri);
+		}
 		// Trailing field (appended after the texture URIs so older
 		// readers stop cleanly before it; pre-flag paks read as casting).
 		PutU32(blob, mat->castsShadows ? 1u : 0u);
@@ -809,7 +843,8 @@ bool SerializeClusters(
 		const std::string filePart = AssetFilePart(uri);
 		if (filePart.empty())
 			return fail("texture uri has no VFS file part: " + uri.Str());
-		texCooks.push_back(TexCookJob{ uri.Str(), filePart, samp, src });
+		texCooks.push_back(TexCookJob{ uri.Str(), filePart, samp, src,
+			normalTexUris.count(uri.Str()) != 0 });
 	}
 	{
 		ThreadPool texPool;

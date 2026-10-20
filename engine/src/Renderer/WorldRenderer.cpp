@@ -1062,6 +1062,15 @@ namespace engine {
 			}
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_GI value: " << gi << "\n";
 		}
+		// GI intensity (the panel slider's headless twin): scales the
+		// baked-GI ambient AND the sky-IBL fallback in the lit shader
+		// (default_lit_body.hlsli giScale). 0 kills ambient (direct sun
+		// stays), 1 is authored, 2 doubles it.
+		if (const char* giIntEnv = std::getenv("TOURMALINE_GI_INTENSITY")) {
+			const float v = std::atof(giIntEnv);
+			m_giIntensity = std::clamp(v, 0.0f, 2.0f);
+			std::cerr << "[WorldRenderer] GI intensity: " << m_giIntensity << "\n";
+		}
 		// Lightmap branch opt-in for headless runs (same as the panel
 		// checkbox; default off). Takes effect when an atlas is loaded;
 		// LmActive() still gates on the ambient mode.

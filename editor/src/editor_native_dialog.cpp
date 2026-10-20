@@ -82,8 +82,8 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 
 // Native Windows file-SAVE dialog (IFileSaveDialog): for choosing an
 // output path (e.g., cook output .pak). Starts in content/paks/ with
-// a .pak extension filter.
-bool NativeSaveFile(std::string& outPath) {
+// a .pak extension filter and a caller-supplied suggested filename.
+bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
 	const HRESULT coInit = CoInitializeEx(nullptr,
 		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 	const bool coOwns = SUCCEEDED(coInit);
@@ -110,8 +110,20 @@ bool NativeSaveFile(std::string& outPath) {
 			dlg->SetFolder(startDir);
 			startDir->Release();
 		}
-		// Suggest a default name
-		dlg->SetFileName(L"scene.pak");
+		// Suggest the caller's filename (UTF-8 -> wide), defaulting to
+		// the historic "scene.pak".
+		std::wstring suggest = L"scene.pak";
+		if (!suggestedName.empty()) {
+			const int wn = MultiByteToWideChar(CP_UTF8, 0,
+				suggestedName.c_str(), -1, nullptr, 0);
+			if (wn > 1) {
+				suggest.resize(size_t(wn));
+				MultiByteToWideChar(CP_UTF8, 0, suggestedName.c_str(), -1,
+					suggest.data(), wn);
+				suggest.pop_back(); // drop the terminator WideCharToMultiByte wrote
+			}
+		}
+		dlg->SetFileName(suggest.c_str());
 		if (SUCCEEDED(dlg->Show(nullptr))) {
 			IShellItem* item = nullptr;
 			if (SUCCEEDED(dlg->GetResult(&item))) {

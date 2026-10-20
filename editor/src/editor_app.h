@@ -1094,9 +1094,9 @@ private:
 	// Create-terrain dialog state (File > Create > Terrain).
 	bool m_showTerrainDialog = false;
 	char m_terrainNameBuf[128] = "";
-	// Cook panel (File > Cook... switches to the BottomDock Cook tab).
+	// Export/cook tools (File > Export .pak... picks the destination in
+	// the native save dialog; View > Cook & bake window hosts the tools).
 	char m_cookOutPakBuf[512] = "";
-	char m_cookContentDirBuf[512] = "content";
 	// Set by PollCookProcess when the async cook completes; the cook
 	// panel shows the result line until the next cook starts.
 	bool m_cookJustFinished = false;
@@ -1111,7 +1111,13 @@ private:
 	int m_terrainTilesZ = 1;
 	uint32_t m_terrainMat = UINT32_MAX; // world material index
 	void DrawCreateTerrainDialog();
-	void ShowCookPanel();
+	// File > Export .pak: the destination comes from the native Windows
+	// save dialog, then the cook runs with that path.
+	void ExportPak();
+	// Floating cook/bake tools window (View menu). NOT in the bottom
+	// dock: the export knobs live on the scene's exportSettings node,
+	// this window only hosts the tools + progress.
+	void DrawCookWindow();
 	void DrawCookPanel();
 	void DrawStatusBar(); // Maya-like bottom strip (task progress)
 	// ---- heightfield painting ----
@@ -2388,11 +2394,9 @@ private:
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Render | Material
-	int m_bottomTab = 0; // bottom dock: Overrides | Console | Assets | Cook
-	// File > Export... requests the Cook tab: consumed once by the
-	// BottomDock tab bar (ImGuiTabItemFlags_SetSelected) — setting
-	// m_bottomTab alone does NOT switch tabs (ImGui owns selection).
-	bool m_wantCookTab = false;
+	// Floating cook/bake tools (View menu). Export itself opens the
+	// native save dialog and starts the cook immediately.
+	bool m_showCookWindow = false;
 	void DrawSceneOutliner();
 	void DrawUvPanel();
 	// Content root for definition-source resolution ("models/..." style
@@ -2406,7 +2410,8 @@ private:
 // points for scenes (.gltf/.glb/.tour), outputs (.pak) and
 // project folders. False on cancel/failure.
 	bool NativeOpenFile(std::string& outPath, bool images = false);
-	bool NativeSaveFile(std::string& outPath);
+	bool NativeSaveFile(std::string& outPath,
+		const std::string& suggestedName = {});
 	bool NativePickFolder(std::string& outPath);
 
 } // namespace editor

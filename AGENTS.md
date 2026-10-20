@@ -69,6 +69,9 @@ $env:TOURMALINE_CAPTURE='48'
 - `TOURMALINE_AO=off|ssao|sao` pins the AO mode headless (default sao; the O
   key / UI combo stay live); combined with `TOURMALINE_SSR`,
   `TOURMALINE_EVSM`, `TOURMALINE_TRANSPARENCY` this spans the full A/B matrix
+- `TOURMALINE_GI_INTENSITY=<0..2>` pins the GI intensity slider headless
+  (scales the baked-GI ambient and the Sky IBL fallback; 0 leaves direct
+  sun only, 1 is authored, 2 doubles it)
 - `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
   (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>` pins the
   march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_CVOL=0` is the

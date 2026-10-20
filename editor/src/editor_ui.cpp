@@ -193,25 +193,15 @@ namespace editor {
 				ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
 				if (ImGui::BeginTabBar("##bottomTabs")) {
 					if (ImGui::BeginTabItem("Overrides")) {
-						m_bottomTab = 0;
 						DrawOverridesPanel();
 						ImGui::EndTabItem();
 					}
 					if (ImGui::BeginTabItem("Console")) {
-						m_bottomTab = 1;
 						DrawConsolePanel();
 						ImGui::EndTabItem();
 					}
 					if (ImGui::BeginTabItem("Assets")) {
-						m_bottomTab = 2;
 						DrawAssetsPanel();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Cook", nullptr,
-							m_wantCookTab ? ImGuiTabItemFlags_SetSelected : 0)) {
-						m_bottomTab = 3;
-						m_wantCookTab = false;
-						DrawCookPanel();
 						ImGui::EndTabItem();
 					}
 					ImGui::EndTabBar();
@@ -225,6 +215,7 @@ namespace editor {
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
 		DrawUvEditorWindow(); // floating UV editor (View menu; canvas via GPU)
+		DrawCookWindow(); // floating cook/bake tools (View menu)
 		DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 		DrawReferencesPanel(); // Maya-style reference list (View menu)
 		DrawPathsPanel(); // consolidated file/path view (File menu)
@@ -330,8 +321,9 @@ namespace editor {
 			}
 			if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
 				SaveTourIncremental();
-			if (ImGui::MenuItem("Export...", "Ctrl+Shift+C", false, m_world != nullptr)) {
-				ShowCookPanel();
+			if (ImGui::MenuItem("Export .pak...", "Ctrl+Shift+C", false,
+					m_world != nullptr)) {
+				ExportPak();
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Close"))
@@ -676,6 +668,9 @@ namespace editor {
 				m_uiMode = !m_uiMode;
 			if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
 				m_showUvEditor = !m_showUvEditor;
+			if (ImGui::MenuItem("Cook & bake window", nullptr,
+					m_showCookWindow))
+				m_showCookWindow = !m_showCookWindow;
 			ImGui::EndMenu();
 		}
 
@@ -3609,27 +3604,39 @@ namespace editor {
 		ImGui::EndPopup();
 	}
 
-	void EditorApp::ShowCookPanel() {
+	void EditorApp::ExportPak() {
 		if (!m_world) {
-			Log("Cook: no scene open.");
+			Log("Export: no scene open.");
 			return;
 		}
-		if (m_cookOutPakBuf[0] == '\0') {
-			std::filesystem::path p(m_gltfPath);
-			std::string def = ProjectCookOutPak(p.stem().string());
-			if (def.empty())
-				def = ("content/paks/" + p.stem().string() + ".pak");
-			std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf),
-				"%s", def.c_str());
+		if (m_cookRunning || m_bakeRunning) {
+			Log("Export: a cook/bake is already running.");
+			return;
 		}
-		if (m_cookContentDirBuf[0] == '\0') {
-			std::snprintf(m_cookContentDirBuf, sizeof(m_cookContentDirBuf),
-				"content");
-		}
-		// Switch the bottom dock to the Cook tab (the panel lives
-		// there now, not in a modal).
-		m_bottomTab = 3;
-		m_wantCookTab = true;
+		// The destination is chosen up front in the native Windows save
+		// dialog (suggesting <scene>.pak in content/paks). The bake/export
+		// knobs are NOT here: they live on the scene's exportSettings node
+		// and the cook replays the tour to read them.
+		std::string suggested =
+			std::filesystem::path(m_gltfPath).stem().string();
+		if (!suggested.empty())
+			suggested += ".pak";
+		std::string picked;
+		if (!NativeSaveFile(picked, suggested) || picked.empty())
+			return;
+		m_cook.outPak = picked;
+		std::snprintf(m_cookOutPakBuf, sizeof(m_cookOutPakBuf), "%s",
+			picked.c_str());
+		CookToPak();
+	}
+
+	void EditorApp::DrawCookWindow() {
+		if (!m_showCookWindow)
+			return;
+		ImGui::SetNextWindowSize(ImVec2(470, 620), ImGuiCond_FirstUseEver);
+		if (ImGui::Begin("Cook & bake", &m_showCookWindow))
+			DrawCookPanel();
+		ImGui::End();
 	}
 
 	void EditorApp::DrawCookPanel() {
@@ -3637,7 +3644,7 @@ namespace editor {
 		ImGui::Separator();
 
 		// Labels ride their OWN lines and fields take the full width â€”
-		// shared label/widget lines collide in narrow modals.
+		// shared label/widget lines collide in narrow windows.
 		ImGui::Text("Output .pak path (relative to content/ or absolute):");
 		{
 			const float browseW = 90.0f;
@@ -3655,11 +3662,6 @@ namespace editor {
 			}
 		}
 
-		ImGui::Text("Content root (for VFS resolution):");
-		ImGui::SetNextItemWidth(-FLT_MIN);
-		ImGui::InputText("##contentDir", m_cookContentDirBuf,
-			sizeof(m_cookContentDirBuf));
-
 		// Bake/export knobs live on the scene's exportSettings NODE now
 		// (authored in the Inspector — select it below; persisted as
 		// createNode -at exportSettings + setExportAttr tour lines and
@@ -3673,7 +3675,7 @@ namespace editor {
 					esNode);
 				if (ImGui::Button("Select ExportSettings node")) {
 					SetSelection(esNode);
-					m_bottomTab = 0;
+					m_rightTab = 0;
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("Quality/GI knobs (meshopt, LODs,\n"
@@ -3848,13 +3850,11 @@ namespace editor {
 			}
 			if (ImGui::Button("Cook")) {
 				m_cook.outPak = m_cookOutPakBuf;
-				m_cook.contentDir = m_cookContentDirBuf;
 				CookToPak();
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Update bakes (no pak)")) {
 				m_cook.outPak = m_cookOutPakBuf;
-				m_cook.contentDir = m_cookContentDirBuf;
 				CookToPak(true);
 			}
 			if (ImGui::IsItemHovered())

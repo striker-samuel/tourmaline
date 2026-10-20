@@ -165,7 +165,6 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	// default so the next open/import re-derives into project paks/.
 	m_cook.outPak.clear();
 	m_cookOutPakBuf[0] = '\0';
-	m_cookContentDirBuf[0] = '\0';
 	// The project OWNS its artifact cache: reopen cache.db + the
 	// asset directory there (a missing or unwritable dir degrades to
 	// cache-off — the cache only accelerates processing).

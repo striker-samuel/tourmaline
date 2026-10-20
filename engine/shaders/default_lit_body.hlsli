@@ -1085,6 +1085,12 @@ float envVis = 1.0f;
     uint giSource = 0u;
     float3 bakedE = float3(0.0f, 0.0f, 0.0f);
     uint giDbgMode = 0u;
+    // The "GI intensity" slider is the AMBIENT scale: it must move the
+    // sky-IBL fallback too, not only the baked sources. Uncovered
+    // pixels used to ignore it entirely (the fallback composed after
+    // the scaled branches), so the slider looked dead on unbaked
+    // scenes / uncovered geometry.
+    const float giScale = max(frame.giIntensity, 0.0f);
     // The octree walk's dominant level (its argmax over per-level weight
     // sums) for the mode-4 debug view; 0xFFFFFFFFu = no walk ran this
     // pixel (full-volume fast path / regular grids) — the mode-4 branch
@@ -1160,7 +1166,7 @@ float envVis = 1.0f;
     // No baked GI - pure sky IBL fallback
     if (!isBlendMat)
     {
-        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn) * giScale;
     }
     // giSource, bakedE, giDbgMode already initialized to 0
     // envVis, ambientSpec already set to defaults above
@@ -1168,7 +1174,6 @@ float envVis = 1.0f;
 #elif defined(GI_OCTREE)
     // Sparse octree world field only
     giDbgMode = frame.giDebug & 0xffu;
-    const float giScale = max(frame.giIntensity, 0.0f);
 
     if (frame.giEnabled != 0u)
     {
@@ -1200,7 +1205,6 @@ float envVis = 1.0f;
 #elif defined(GI_REGULAR)
     // Regular 3D probe grids (artist OBBs)
     giDbgMode = frame.giDebug & 0xffu;
-    const float giScale = max(frame.giIntensity, 0.0f);
 
     if (frame.regEnabled != 0u)
     {
@@ -1233,7 +1237,6 @@ float envVis = 1.0f;
     // the octree/sky gather below never runs — the deep-inside pixel
     // pays its 7 texture taps and nothing else.
     giDbgMode = frame.giDebug & 0xffu;
-    const float giScale = max(frame.giIntensity, 0.0f);
     float3 E;
     float3 specAmps[SG_GI_LOBES];
     bool covered = false;
@@ -1315,7 +1318,7 @@ float envVis = 1.0f;
     // ---------------------------------------------------------------
     if (giSource == 0u && !isBlendMat)
     {
-        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn) * giScale;
     }
 
     // ---------------------------------------------------------------
