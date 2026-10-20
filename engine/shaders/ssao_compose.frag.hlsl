@@ -26,6 +26,22 @@
 // the identical equation its HDR contribution uses, so the invariant
 // holds through the transparent leg of Main.
 //
+// PAIRED ENV-SPEC SCALING (the SSR replacement-composite contract, the
+// second MRT output below): Main ALSO exports the env-specular term on
+// target2 (outEnvSpec = ambientSpec * occ — the exact slice aoTerm
+// holds it at). The hdr's env-spec slice after this pass = ambientSpec
+// * occ * aoEff, so the export must carry the SAME aoEff for the SSR
+// composite to subtract exactly what its base holds:
+//     envSpec' = envSpec * aoEff   (outEnvSpec, target2)
+// Sky passthrough: the export holds Main's value (envSpec carries no
+// AO-sensitive... no — the aoEff applies to target2 ONLY on non-sky
+// pixels; the sky early-out passes the export through UNCHANGED (the
+// lit never ran there — the export is the 0 clear; aoEff on 0 is 0,
+// but the passthrough keeps the contract total and branch-free).
+// A 0xffffffff envSpecTextureIndex (the SSR feature off / the target
+// absent) passes the input through — the compose stays usable for the
+// plain AO chain without the export.
+//
 // Loads per full-res pixel (7, + the HDR read the pass exists to modify —
 // the old chain spent 9 with a corner-texel depth guess per tap):
 //   1 center depth   (HZB mip0 — the exact 1:1 depth copy, BDA scalar)
@@ -45,10 +61,17 @@ struct PSIn
 struct PSOut
 {
     float4 outColor : SV_Target0; // RGBA16F: HDR - aoTerm*(1-aoEff)
+    // Paired env-spec export (the SSR replacement contract, see the
+    // header note): envSpec * aoEff — the export at the exact depth
+    // the hdr's env-spec slice holds post-AO. The pass-through variant
+    // (no envSpec bound) leaves this unwritten — bound ONLY when the
+    // second attachment is attached (see ssgi.h's compose wiring).
+    float4 outEnvSpec : SV_Target1;
 };
 
-// Must match Engine/Rendergraph/ssgi.h SsgiAoComposePush (64 bytes).
-// uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
+// Must match Engine/Rendergraph/ssgi.h SsgiAoComposePush (64 bytes):
+// the envSpec field consumed the old pad0. uint64 BDAs lead (see
+// SsrClassifyPush's note); scalars after.
 struct SsgiAoComposePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane (center dist)
@@ -57,6 +80,7 @@ struct SsgiAoComposePush
     uint normalTextureIndex; // shared full-res oct normal (0xffffffff = depth-only)
     uint aoTermTextureIndex; // Main MRT export (pre-AO ambient term)
     uint hdrTextureIndex; // full-res HDR (the image this pass rewrites)
+    uint envSpecTextureIndex; // Main MRT env-spec export (0xffffffff = pass-through)
     uint fullW; // full-res width (HZB mip0 row stride)
     uint fullH;
     uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
@@ -64,7 +88,6 @@ struct SsgiAoComposePush
     float sharpness; // depth edge weight
     float intensity; // aoEff = lerp(1, ao, intensity) (the old hot.aoIntensity)
     float maxDistance; // rep-dist decode (matches raw/blur)
-    uint pad0;
 };
 
 [[vk::push_constant]]
@@ -78,6 +101,11 @@ PSOut mainPS(PSIn IN)
     Texture2D aoTex = textures[NonUniformResourceIndex(cp.aoTextureIndex)];
     Texture2D aoTermTex = textures[NonUniformResourceIndex(cp.aoTermTextureIndex)];
     Texture2D hdrTex = textures[NonUniformResourceIndex(cp.hdrTextureIndex)];
+    // Paired env-spec export (see the header note): read Main's export,
+    // write it back at the aoEff depth the hdr's env-spec slice holds.
+    // 0xffffffff = the pass-through variant (no second attachment
+    // bound): the output stays unwritten (the attachment is absent).
+    const bool envSpecOn = cp.envSpecTextureIndex != 0xffffffffu;
 
     int2 fullPx = int2(IN.pos.xy);
     // Center depth from HZB mip0 (the exact 1:1 depth copy the build pass
@@ -86,10 +114,16 @@ PSOut mainPS(PSIn IN)
         (uint) fullPx.y * cp.fullW + (uint) fullPx.x];
 
     // Sky center: Main's lit FS never ran there, so nothing AO-attenuable
-    // was exported (target1 holds the black clear) — straight passthrough.
+    // was exported (target1 holds the black clear) — straight passthrough
+    // (the env-spec export too: the 0 clear passes through unchanged).
     if (AoIsBackground(d))
     {
         OUT.outColor = float4(hdrTex.Load(int3(fullPx, 0)).rgb, 1.0f);
+        if (envSpecOn) {
+            Texture2D envSpecTex =
+                textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
+            OUT.outEnvSpec = envSpecTex.Load(int3(fullPx, 0));
+        }
         return OUT;
     }
     float centerDist = AoViewDist(d, nearPlane);
@@ -145,5 +179,15 @@ PSOut mainPS(PSIn IN)
     // fp noise on static scenes) could push a dark tap minutely negative.
     float3 outC = hdr - term * (1.0f - aoEff);
     OUT.outColor = float4(SanitizeHdr(outC), 1.0f);
+    // Paired env-spec scaling (the SSR replacement contract, see the header
+    // note): the hdr's env-spec slice now holds envSpec * aoEff, so the
+    // export writes the SAME aoEff — the SSR composite then subtracts
+    // exactly what its base holds.
+    if (envSpecOn) {
+        Texture2D envSpecTex =
+            textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
+        OUT.outEnvSpec = float4(
+            envSpecTex.Load(int3(fullPx, 0)).rgb * aoEff, 1.0f);
+    }
     return OUT;
 }

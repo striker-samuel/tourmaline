@@ -106,8 +106,8 @@ struct SsgiAoBlurPush {
 };
 static_assert(sizeof(SsgiAoBlurPush) == 32);
 
-// Must match ssao_compose.frag.hlsl SsgiAoComposePush (64 bytes).
-// uint64 BDAs lead; scalars after (see SsrClassifyPush's note).
+// Must match ssao_compose.frag.hlsl SsgiAoComposePush (64 bytes): the
+// envSpec field consumed the old pad0. uint64 BDAs lead; scalars after.
 struct SsgiAoComposePush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-HZB (mip0 center depth, mip1 reps)
@@ -115,6 +115,11 @@ struct SsgiAoComposePush {
 	uint32_t normalTextureIndex = UINT32_MAX; // shared full-res oct normal (UINT32_MAX = depth-only)
 	uint32_t aoTermTextureIndex = UINT32_MAX; // Main MRT export (pre-AO ambient)
 	uint32_t hdrTextureIndex = UINT32_MAX; // full-res HDR (the image to rewrite)
+	// Paired env-spec export (the SSR replacement-composite contract, see
+	// ssao_compose.frag.hlsl's header): Main's target2 export, scaled by
+	// the same aoEff the hdr's env-spec slice holds post-compose.
+	// UINT32_MAX = pass-through variant (no second attachment bound).
+	uint32_t envSpecTextureIndex = UINT32_MAX;
 	uint32_t fullW = 0; // full-res width (HZB mip0 row stride)
 	uint32_t fullH = 0;
 	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
@@ -122,7 +127,6 @@ struct SsgiAoComposePush {
 	float sharpness = 8.0f; // depth edge weight
 	float intensity = 1.0f; // aoEff = lerp(1, ao, intensity) (the old hot.aoIntensity)
 	float maxDistance = 25.0f; // rep-dist decode (matches raw/blur)
-	uint32_t pad0 = 0;
 };
 static_assert(sizeof(SsgiAoComposePush) == 64);
 
@@ -145,6 +149,13 @@ struct SsgiDesc {
 	const char* aoTermName = "ssgiAoTerm";
 	const char* aoTermMsaaName = "ssgiAoTermMsaa";
 	const char* composedName = "ssgiAoHdr";
+	// Env-spec export family (the SSR replacement-composite contract, see
+	// ssao_compose.frag.hlsl's header): Main's third MRT (the env-specular
+	// slice, target2) + the compose's aoEff-scaled paired output + the
+	// lazy MSAA twin (the aoTerm pattern each).
+	const char* envSpecName = "ssgiEnvSpec";
+	const char* envSpecMsaaName = "ssgiEnvSpecMsaa";
+	const char* envSpecComposedName = "ssgiEnvSpecComposed";
 };
 
 // Raw-pass selector (the app's AoMode minus None/Gtao).
@@ -340,9 +351,21 @@ struct Ssgi {
 	Target aoTerm;   // FULL-res RGBA16F: Main's MRT export (pre-AO ambient)
 	Target aoTermMsaa; // FULL-res 2x RGBA16F: Main's MSAA twin (resolve -> aoTerm). LAZY (see EnsureMsaaTerm).
 	Target composed; // FULL-res RGBA16F: the AO-applied scene HDR (compose output)
+	// Env-spec export family (the SSR replacement contract, see the desc
+	// names above + ssao_compose.frag.hlsl): Main's THIRD MRT (the
+	// env-specular slice as it sits in aoTerm) + the compose's aoEff-
+	// scaled paired output (the exact depth the base's env-spec slice
+	// holds post-AO) + the lazy MSAA twin. OPTIONAL: created alongside
+	// the aoTerm family; the SSR composite falls back to the additive
+	// composite when the export is absent (envSpecTextureIndex =
+	// UINT32_MAX everywhere).
+	Target envSpec;        // FULL-res RGBA16F: Main's MRT export (the env-spec slice)
+	Target envSpecMsaa;    // FULL-res 2x RGBA16F: lazy MSAA twin (resolve -> envSpec)
+	Target envSpecComposed; // FULL-res RGBA16F: the compose's aoEff-scaled output
 	Extent2D fullExtent{ 0, 0 };
 	Extent2D halfExtent{ 0, 0 };
 	Extent2D aoTermMsaaExtent{ 0, 0 }; // the lazy twin's create key
+	Extent2D envSpecMsaaExtent{ 0, 0 }; // the lazy env-spec twin's create key
 	Format aoFormat = Format::RGBA16_UNorm;
 	Format hdrFormat = Format::RGBA16_Float;
 	SsgiDesc desc{};
@@ -550,6 +573,7 @@ struct Ssgi {
 		DestroyTargets(rg);
 		const Extent2D half = HalfExtentFor(full);
 		Target newRaw, newBlur, newTerm, newComposed;
+		Target newEnvSpec, newEnvSpecComposed;
 		if (!CreateTarget(ctx, rg, half, d.aoFormat, d.aoRawName, newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.aoFormat, d.aoBlurName, newBlur)) {
@@ -570,10 +594,32 @@ struct Ssgi {
 			DestroyTarget(rg, newTerm);
 			return false;
 		}
+		// Env-spec export family (the SSR replacement contract, see the
+		// target block above): Main's third MRT + the compose's aoEff-
+		// scaled paired output. envSpecMsaa is the LAZY twin (the
+		// EnsureMsaaEnvSpec pattern, the aoTermMsaa one).
+		if (!CreateTarget(ctx, rg, full, d.hdrFormat, d.envSpecName, newEnvSpec)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newTerm);
+			DestroyTarget(rg, newComposed);
+			return false;
+		}
+		if (!CreateTarget(ctx, rg, full, d.hdrFormat,
+				d.envSpecComposedName, newEnvSpecComposed)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newTerm);
+			DestroyTarget(rg, newComposed);
+			DestroyTarget(rg, newEnvSpec);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		aoTerm = std::move(newTerm);
 		composed = std::move(newComposed);
+		envSpec = std::move(newEnvSpec);
+		envSpecComposed = std::move(newEnvSpecComposed);
 		fullExtent = full;
 		halfExtent = half;
 		aoFormat = d.aoFormat;
@@ -588,11 +634,14 @@ struct Ssgi {
 		DestroyTarget(rg, aoTerm);
 		DestroyMsaaTerm(rg);
 		DestroyTarget(rg, composed);
+		DestroyTarget(rg, envSpec);
+		DestroyMsaaEnvSpec(rg);
+		DestroyTarget(rg, envSpecComposed);
 		fullExtent = { 0, 0 };
 		halfExtent = { 0, 0 };
 	}
 
-	// ---- the LAZY MSAA twin -------------------------------------------
+	// ---- the LAZY MSAA twins ------------------------------------------
 	// aoTermMsaa rides the Main MSAA resolve leg ONLY (SetColorWithResolve
 	// pairs it with the msaa color target). In every non-MSAA mode
 	// (Off / SMAA / DLSS) it is dead weight (~34 MiB at 1080p, 2x
@@ -600,6 +649,8 @@ struct Ssgi {
 	// effective mode turns on and Destroys it when it leaves; the
 	// useMsaa gate requires MsaaTermValid so a failed create degrades
 	// to the plain 1x resolve instead of binding an empty logical.
+	// envSpecMsaa follows the identical pattern (the env-spec export's
+	// resolve twin — same leg, same lifecycle).
 	[[nodiscard]] bool MsaaTermValid() const {
 		return aoTermMsaa.Valid();
 	}
@@ -619,6 +670,27 @@ struct Ssgi {
 	void DestroyMsaaTerm(RenderGraph& rg) {
 		DestroyTarget(rg, aoTermMsaa);
 		aoTermMsaaExtent = { 0, 0 };
+	}
+	// The env-spec resolve twin (the envSpec export's MSAA leg).
+	[[nodiscard]] bool MsaaEnvSpecValid() const {
+		return envSpecMsaa.Valid();
+	}
+	bool EnsureMsaaEnvSpec(ResourceManager& ctx, RenderGraph& rg,
+		Extent2D full, const char* name) {
+		if (envSpecMsaa.Valid()
+			&& envSpecMsaaExtent.width == full.width
+			&& envSpecMsaaExtent.height == full.height)
+			return true;
+		DestroyMsaaEnvSpec(rg);
+		if (!CreateMsaaTarget(ctx, rg, full, hdrFormat, name,
+				envSpecMsaa))
+			return false;
+		envSpecMsaaExtent = full;
+		return true;
+	}
+	void DestroyMsaaEnvSpec(RenderGraph& rg) {
+		DestroyTarget(rg, envSpecMsaa);
+		envSpecMsaaExtent = { 0, 0 };
 	}
 
 	// Recreate only when extent/format drift. Live-updates desc (radius /
@@ -670,7 +742,10 @@ struct Ssgi {
 		const SsgiDesc& overrideDesc,
 		const char* rawName = "SsgiAo",
 		const char* blurName = "SsgiAoBlur",
-		const char* composeName = "SsgiAoCompose") const {
+		const char* composeName = "SsgiAoCompose",
+		LogicalImageViewHandle envSpecView = LogicalImageViewHandle{},
+		uint32_t envSpecBindlessIndex = UINT32_MAX,
+		LogicalImageViewHandle envSpecOutView = LogicalImageViewHandle{}) const {
 		assert(Valid());
 		assert(mode == SsgiAoMode::Ssao || mode == SsgiAoMode::Sao);
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
@@ -796,6 +871,15 @@ struct Ssgi {
 			push.normalTextureIndex = normalOn ? normalBindlessIndex : UINT32_MAX;
 			push.aoTermTextureIndex = aoTerm.bindlessIndex;
 			push.hdrTextureIndex = hdrBindlessIndex;
+			// Paired env-spec scaling (the SSR replacement contract, see
+			// ssao_compose.frag.hlsl): Main's third MRT export, written back
+			// at the aoEff depth on the SECOND color attachment below.
+			// Empty envSpecView = the pass-through variant (the additive-
+			// composite fallback — no second attachment bound).
+			const bool envSpecOn = !envSpecView.empty()
+				&& envSpecBindlessIndex != UINT32_MAX && envSpec.Valid();
+			push.envSpecTextureIndex =
+				envSpecOn ? envSpecBindlessIndex : UINT32_MAX;
 			push.fullW = fullExtent.width;
 			push.fullH = fullExtent.height;
 			push.hzbMip1Offset = hzbMip1Offset;
@@ -803,17 +887,22 @@ struct Ssgi {
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
 			push.intensity = (std::max)(0.0f, overrideDesc.intensity);
 			push.maxDistance = (std::max)(1.0f, overrideDesc.maxDistance);
-			push.pad0 = 0;
 
 			std::vector<LogicalImageViewHandle> composeInputs =
 				{ blurred.logical, hdrView, aoTerm.logical };
 			if (normalOn)
 				composeInputs.push_back(normalView);
+			if (envSpecOn)
+				composeInputs.push_back(envSpecView);
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SsgiAoCompose");
 			pass.SetOffset(0, 0)
 				.SetExtent(fullExtent)
 				.SetInputImages(composeInputs)
-				.SetColor({ composed.logical },
+				.SetColor(envSpecOn
+					? std::vector<LogicalImageViewHandle>{ composed.logical,
+						envSpecOutView.empty() ? envSpecComposed.logical
+							: envSpecOutView }
+					: std::vector<LogicalImageViewHandle>{ composed.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
 			{

@@ -55,6 +55,11 @@ struct SsrComposePush
     uint blurTextureIndex;  // half-res blurred reflection (rgb, confidence)
     uint hdrTextureIndex;   // full-res base HDR
     uint samplerIndex;      // linear clamp (HDR + reflection taps)
+    // The env-specular export (Main's third MRT, the AO-compose-scaled
+    // version): the EXACT IBL slice the base holds that the hit REPLACES
+    // (the energy-conserving swap — see the formula at the bottom).
+    // 0xffffffff = the additive fallback (no replacement).
+    uint envSpecTextureIndex;
     float invDepthW; // 1 / full-res depth extent (NDC math + vignette)
     float invDepthH;
     float sharpness; // upsample edge weight
@@ -63,8 +68,6 @@ struct SsrComposePush
     uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
     uint hzbMip1Stride; // mip1 row stride (floats)
     float vignetteWidth; // NDC edge fade width (outer % of NDC range)
-    uint pad0;
-    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -144,9 +147,33 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             wSum += w;
         }
     }
+    // The reflection term AND the environment term it replaces:
+    //     result = base + conf * (layer - envSpec)
+    // The layer (the blurred radiance x its confidence alpha, BRDF-
+    // weighted by the trace's Fresnel x fade) REPLACES the env-specular
+    // slice the base already holds (Main's IBL, the same Fresnel
+    // domain — like-for-like). conf=0 keeps the base's IBL untouched;
+    // conf=1 swaps the IBL for the true screen-space reflection — the
+    // energy-conserving replacement (the old additive composite stacked
+    // the true reflection ON TOP of the IBL approximation of the same
+    // integral — a mirror read cubemap-IBL + screen-trace stacked).
+    // envSpecTextureIndex = 0xffffffff = the additive fallback (the
+    // export absent — the old behavior).
+    const bool envSpecOn = cp.envSpecTextureIndex != 0xffffffffu;
+    float3 envSpec = float3(0.0f, 0.0f, 0.0f);
+    if (envSpecOn) {
+        Texture2D envSpecTex =
+            textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
+        envSpec = envSpecTex.Load(int3(fullPx, 0)).rgb;
+    }
     float3 outColor = base;
-    if (wSum > 1e-4f)
-        outColor += (accRgb / wSum) * (accA / wSum);
+    if (wSum > 1e-4f) {
+        const float3 layer = (accRgb / wSum);
+        const float conf = (accA / wSum);
+        outColor += envSpecOn
+            ? conf * (layer - envSpec)
+            : layer * conf; // the additive fallback (no export bound)
+    }
     // NDC vignette: fade reflections near screen edges using the target
     // pixel's NDC coordinates. max(|ndc|) ramps from 0 (center) to 1
     // (border); linear ramp over the outer vignetteWidth of the NDC range.

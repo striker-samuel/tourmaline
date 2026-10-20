@@ -61,6 +61,19 @@ struct PSOut
     // (ssao_compose.frag.hlsl). Every early return below writes 0:
     // unwritten MRT attachment content is undefined.
     float4 outAoTerm : SV_Target1;
+    // SSR ENV-SPECULAR EXPORT (target2): the environment/probe specular
+    // term as it sits in outColor — the exact slice the SSR composite
+    // REPLACES on a hit (the energy-conserving swap: base + conf *
+    // (ssrLayer - envSpec) instead of stacking the true reflection on
+    // top of the IBL approximation of the same integral). Exports the
+    // FINAL ambientSpec (post envVis / GI-specular crossovers / far-LOD
+    // gates) x occlusion — the same depth it holds in the aoTerm above,
+    // so the AO compose's aoEff scaling (the paired second attachment
+    // on the compose pass) keeps it tracking the base exactly. RGB =
+    // the term, A unused (0). Every early return writes 0 (the flat
+    // debug views leave it at the clear; SSR is gated off under debug
+    // views anyway).
+    float4 outEnvSpec : SV_Target2;
 };
 
 // Must be defined after common.hlsli symbols
@@ -837,11 +850,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         // Clamp to finite half range: the RGBA16F target rounds anything
         // above 65504 to +inf (specular x lux-scale intensity overflows),
         // and inf texels NaN the bloom/tonemap chain.
-        // MRT contract (see PSOut): every early return writes BOTH outputs
+        // MRT contract (see PSOut): every early return writes ALL outputs
         // — unwritten attachment content is undefined, and the SSGI compose
         // pass reconstructs hdr - aoTerm*(1-aoEff) from it (garbage aoTerm
         // poisons unlit pixels the moment AO is on).
         OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);
@@ -1328,6 +1342,7 @@ float envVis = 1.0f;
     {
         // Debug flat colors carry no AO-sensitive lighting: export 0.
         OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
         if (giSource == 0u)
         {
             OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
@@ -1424,7 +1439,7 @@ float envVis = 1.0f;
     // Handle alpha blending output
     // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending.
     // Dithered Blend outputs opaque alpha (the discard above did the work).
-    // SanitizeHdr: Cook-Torrance x lux-scale lightColor can exceed the half-
+    // SanitizeHdr: Cook-Torrace x lux-scale lightColor can exceed the half-
     // float max of the RGBA16F target (65504); unclamped it stores as +inf
     // and NaNs the tonemap (inf/inf) / bloom chain.
     // SSGI AO export: written on every non-debug path (target1's content
@@ -1432,6 +1447,14 @@ float envVis = 1.0f;
     // undefined). Alpha carries nothing (target1 has no alpha consumer;
     // the transparent blend on target1 mirrors the RGB factors).
     OUT.outAoTerm = float4(aoTerm, 0.0f);
+    // SSR env-specular export (target2, see PSOut): the final ambientSpec x
+    // occlusion — the EXACT slice aoTerm holds it at (the same variables at
+    // the same point), so the AO compose's paired aoEff scaling keeps this
+    // export tracking the base's env-spec slice through the AO apply. Alpha
+    // unused (0). Sanitize like the color (the probe content x Fenv can
+    // exceed the half max).
+    OUT.outEnvSpec = float4(
+        SanitizeHdr(ambientSpec * occlusion), 0.0f);
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);

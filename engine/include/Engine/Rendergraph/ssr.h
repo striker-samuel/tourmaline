@@ -298,6 +298,13 @@ struct SsrComposePush {
 	uint32_t blurTextureIndex = UINT32_MAX; // half-res blurred reflection
 	uint32_t hdrTextureIndex = UINT32_MAX; // full-res base HDR
 	uint32_t samplerIndex = 0; // linear clamp (HDR + reflection taps)
+	// The env-specular export (Main's third MRT, the AO-compose-scaled
+	// version — ssgi's envSpec/envSpecComposed family): the EXACT IBL
+	// slice the base holds that a confident hit REPLACES (the composite
+	// formula base + conf*(layer - envSpec), the energy-conserving swap).
+	// UINT32_MAX = the additive fallback (the export absent — the old
+	// stacking composite).
+	uint32_t envSpecTextureIndex = UINT32_MAX;
 	float invDepthW = 0.0f; // 1 / full-res depth extent (NDC + vignette)
 	float invDepthH = 0.0f;
 	float sharpness = 10.0f; // upsample edge weight
@@ -306,7 +313,6 @@ struct SsrComposePush {
 	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	float vignetteWidth = 0.15f; // NDC edge fade width (outer % of NDC range)
-	uint32_t pad0 = 0;
 };
 static_assert(sizeof(SsrComposePush) == 64);
 
@@ -972,6 +978,12 @@ void AddSsrPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView = LogicalImageViewHandle{},
 	uint32_t gbufferBindlessIndex = UINT32_MAX,
+	// The env-specular export (the replacement-composite contract, see
+	// SsrComposePush::envSpecTextureIndex): the AO-compose-scaled env-spec
+	// slice — the EXACT IBL the confident hit replaces. Empty/MAX = the
+	// additive fallback (the old stacking composite).
+	LogicalImageViewHandle envSpecView = LogicalImageViewHandle{},
+	uint32_t envSpecBindlessIndex = UINT32_MAX,
 	uint64_t rayListAddr = 0,
 	uint64_t rayCounterAddr = 0,
 	uint64_t radianceAddr = 0,
@@ -1234,6 +1246,13 @@ ShaderProgram progCopy = copyProgram;
 		push.blurTextureIndex = blurred.bindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
+		// The env-specular export (the replacement-composite contract, see
+		// the push comment + ssao_compose.frag.hlsl): the exact IBL slice
+		// a confident hit REPLACES. Absent (empty view / UINT32_MAX) = the
+		// additive fallback.
+		push.envSpecTextureIndex =
+			(envSpecView.empty() || envSpecBindlessIndex == UINT32_MAX)
+			? UINT32_MAX : envSpecBindlessIndex;
 		push.invDepthW = 1.0f / fullW;
 		push.invDepthH = 1.0f / fullH;
 		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
@@ -1242,9 +1261,10 @@ ShaderProgram progCopy = copyProgram;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
 		push.vignetteWidth = overrideDesc.vignetteWidth;
-		push.pad0 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
+		if (!envSpecView.empty() && envSpecBindlessIndex != UINT32_MAX)
+			composeInputs.push_back(envSpecView);
 		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
 		// composite writes its exact ADD term to SV_Target1) + the ssrContrib
 		// target as the second color attachment. Falls back to the normal
@@ -1301,6 +1321,12 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	uint32_t depthBindlessIndex,
 	LogicalImageViewHandle gbufferView,
 	uint32_t gbufferBindlessIndex,
+	// The env-specular export (the replacement-composite contract, see
+	// SsrComposePush::envSpecTextureIndex + AddSsrPasses' pair): the
+	// AO-compose-scaled env-spec slice the confident hit replaces.
+	// Empty/MAX = the additive fallback.
+	LogicalImageViewHandle envSpecView,
+	uint32_t envSpecBindlessIndex,
 	uint64_t rayListAddr,
 	uint64_t rayCounterAddr,
 	uint64_t radianceAddr,
@@ -1630,6 +1656,13 @@ push.frameUniforms = frameUniformsAddr;
 		push.blurTextureIndex = histCurr.bindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
+		// The env-specular export (the replacement-composite contract —
+		// see the spatial variant's compose + the push comment): the exact
+		// IBL slice a confident hit REPLACES. Absent = the additive
+		// fallback.
+		push.envSpecTextureIndex =
+			(envSpecView.empty() || envSpecBindlessIndex == UINT32_MAX)
+			? UINT32_MAX : envSpecBindlessIndex;
 		push.invDepthW = 1.0f / fullW;
 		push.invDepthH = 1.0f / fullH;
 		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
@@ -1637,9 +1670,10 @@ push.frameUniforms = frameUniformsAddr;
 		push.fullH = extent.height;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
-		push.pad0 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
+		if (!envSpecView.empty() && envSpecBindlessIndex != UINT32_MAX)
+			composeInputs.push_back(envSpecView);
 		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
 		// composite writes its exact ADD term to SV_Target1) + the ssrContrib
 		// target as the second color attachment. Falls back to the normal
@@ -1686,6 +1720,8 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t depthBindlessIndex,
 		LogicalImageViewHandle gbufferView,
 		uint32_t gbufferBindlessIndex,
+		LogicalImageViewHandle envSpecView,
+		uint32_t envSpecBindlessIndex,
 		uint64_t rayListAddr,
 		uint64_t rayCounterAddr,
 		uint64_t radianceAddr,
@@ -1711,6 +1747,7 @@ push.frameUniforms = frameUniformsAddr;
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
 			gbufferView, gbufferBindlessIndex,
+			envSpecView, envSpecBindlessIndex,
 			rayListAddr, rayCounterAddr, radianceAddr, indirectArgsAddr,
 			hzbAddr, hzbMips, hzbLogical, hzbMip1Offset, hzbMip1Stride,
 			motionView, motionBindlessIndex,

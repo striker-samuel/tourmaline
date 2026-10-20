@@ -7744,11 +7744,18 @@ namespace engine {
 					*m_rendergraph, renderExtent, frameMsaaDesc);
 				m_viewportResources.ssgi.EnsureMsaaTerm(*m_context,
 					*m_rendergraph, renderExtent, "ssgiAoTermMsaa");
+				// The envSpec export's resolve twin (the SSR replacement
+				// contract, the aoTermMsaa pattern; only meaningful when
+				// the envSpec export exists).
+				if (m_viewportResources.ssgi.envSpec.Valid())
+					m_viewportResources.ssgi.EnsureMsaaEnvSpec(*m_context,
+						*m_rendergraph, renderExtent, "ssgiEnvSpecMsaa");
 			}
 			else {
 				if (m_viewportResources.msaa.Valid())
 					m_viewportResources.msaa.Destroy(*m_rendergraph);
 				m_viewportResources.ssgi.DestroyMsaaTerm(*m_rendergraph);
+				m_viewportResources.ssgi.DestroyMsaaEnvSpec(*m_rendergraph);
 			}
 			// Directional cascade atlas follows the UI tile resolution (Ensure
 			// is a no-op in steady state; recreates once on slider change).
@@ -8023,10 +8030,17 @@ namespace engine {
 		// SSGI targets exist; Main's lit FS family writes both, the debug
 		// views' flat FSs leave target1 at its black clear (the SSGI chain
 		// is gated off under debug viz, so the unwritten export is a no-op).
+		// The envSpec MRT third (target2, the SSR replacement export — see
+		// default_lit_body.hlsli outEnvSpec) rides the same: the lit family
+		// writes it (the env-spec slice the SSR composite replaces on a
+		// hit); the flat debug views leave it at the clear (SSR is gated
+		// off under debug viz anyway).
 		std::vector<smvk::LogicalImageViewHandle> hdrColors;
 		hdrColors.push_back(m_viewportResources.hdr.logicalView);
 		if (m_viewportResources.ssgi.aoTerm.Valid())
 			hdrColors.push_back(m_viewportResources.ssgi.aoTerm.logical);
+		if (m_viewportResources.ssgi.envSpec.Valid())
+			hdrColors.push_back(m_viewportResources.ssgi.envSpec.logical);
 
 		uint64_t frameUniformsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
@@ -8680,7 +8694,13 @@ namespace engine {
 			// The SSGI MSAA twin rides the SAME resolve (SetColorWithResolve
 			// pairs it with the msaa color); a failed lazy create degrades
 			// to the plain 1x resolve instead of binding an empty logical.
-			&& m_viewportResources.ssgi.MsaaTermValid();
+			&& m_viewportResources.ssgi.MsaaTermValid()
+			// The envSpec export's lazy twin follows the same pattern: a
+			// failed create degrades the leg to the plain 1x resolve (the
+			// envSpecValid branch of the resolve lists stays unbound). Only
+			// required when the export itself exists.
+			&& (!m_viewportResources.ssgi.envSpec.Valid()
+				|| m_viewportResources.ssgi.MsaaEnvSpecValid());
 		// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): the Forward+
 		// depth prepass writes it (RGBA8 oct normal + roughness + metal -
 		// the prepass already rasterizes every opaque surface; Main is
@@ -9353,12 +9373,33 @@ namespace engine {
 			// 2x MSAA color resolves into the 1x HDR intermediate; the
 			// aoTerm MRT twin rides the SAME resolve (AVERAGE) so the
 			// SSGI subtraction stays exact through it (averaging commutes
-			// with the linear hdr - term*(1-ao) reconstruction).
+			// with the linear hdr - term*(1-ao) reconstruction). The
+			// envSpec third MRT rides the same AVERAGE resolve (the
+			// composite's linear replacement commutes with averaging the
+			// same way — the same commutation argument, one more target).
+			// The envSpec twin pair binds ONLY when the export exists +
+			// the lazy twin created (the gate's degraded path drops to the
+			// plain 1x resolve, the aoTermMsaa pattern).
+			const bool envSpecMsaaOn =
+				m_viewportResources.ssgi.envSpec.Valid()
+				&& m_viewportResources.ssgi.MsaaEnvSpecValid();
+			std::vector<smvk::LogicalImageViewHandle> msaaViews = {
+				m_viewportResources.msaa.colorLogical,
+				m_viewportResources.ssgi.aoTermMsaa.logical,
+			};
+			std::vector<smvk::LogicalImageViewHandle> resolveViews = {
+				m_viewportResources.hdr.logicalView,
+				m_viewportResources.ssgi.aoTerm.logical,
+			};
+			if (envSpecMsaaOn) {
+				msaaViews.push_back(
+					m_viewportResources.ssgi.envSpecMsaa.logical);
+				resolveViews.push_back(
+					m_viewportResources.ssgi.envSpec.logical);
+			}
 			mainPass.SetColorWithResolve(
-				{ m_viewportResources.msaa.colorLogical,
-				  m_viewportResources.ssgi.aoTermMsaa.logical },
-				{ m_viewportResources.hdr.logicalView,
-				  m_viewportResources.ssgi.aoTerm.logical },
+				msaaViews,
+				resolveViews,
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::DontCare,
 				smvk::ClearColor(0, 0, 0, 1)
@@ -10639,6 +10680,14 @@ namespace engine {
 				// depth-only edge weights.
 				const bool ssgiNormalOn = fc.ssrGbufferWanted
 					&& m_viewportResources.ssr.gbuffer.Valid();
+				// The envSpec pair (the SSR replacement-composite contract,
+				// see ssao_compose.frag.hlsl): Main's third-MRT export ->
+				// the compose's aoEff-scaled paired output. Bound only when
+				// the export target exists (the ssgi family owns it); the
+				// compose falls back to the pass-through variant without
+				// it.
+				const bool ssgiEnvSpecOn =
+					m_viewportResources.ssgi.envSpec.Valid();
 				ssgi.AddAoPasses(
 					*m_rendergraph,
 					*m_context,
@@ -10657,7 +10706,14 @@ namespace engine {
 					ssgiDesc,
 					"SsgiAo",
 					"SsgiAoBlur",
-					"SsgiAoCompose");
+					"SsgiAoCompose",
+					ssgiEnvSpecOn ? m_viewportResources.ssgi.envSpec.logical
+					: smvk::LogicalImageViewHandle{},
+					ssgiEnvSpecOn ? m_viewportResources.ssgi.envSpec.bindlessIndex
+					: UINT32_MAX,
+					ssgiEnvSpecOn
+					? m_viewportResources.ssgi.envSpecComposed.logical
+					: smvk::LogicalImageViewHandle{});
 				ssgiAoEmitted = true;
 			}
 		}
@@ -10692,6 +10748,27 @@ namespace engine {
 		uint32_t sceneHdrBindless = ssgiAoEmitted
 			? m_viewportResources.ssgi.OutputBindless()
 			: m_viewportResources.hdr.bindlessIndex;
+		// The env-specular export's chain twin (the SSR replacement-composite
+		// contract): the compose-scaled export when the AO compose ran (the
+		// export then sits at the exact aoEff depth the base's env-spec
+		// slice holds), Main's raw export otherwise (the unscaled depth the
+		// base holds when the AO is off). Absent export = the empty handle:
+		// the SSR composite takes the additive fallback.
+		smvk::LogicalImageViewHandle sceneEnvSpecView;
+		uint32_t sceneEnvSpecBindless = UINT32_MAX;
+		if (m_viewportResources.ssgi.envSpec.Valid()) {
+			if (ssgiAoEmitted) {
+				sceneEnvSpecView =
+					m_viewportResources.ssgi.envSpecComposed.logical;
+				sceneEnvSpecBindless =
+					m_viewportResources.ssgi.envSpecComposed.bindlessIndex;
+			} else {
+				sceneEnvSpecView =
+					m_viewportResources.ssgi.envSpec.logical;
+				sceneEnvSpecBindless =
+					m_viewportResources.ssgi.envSpec.bindlessIndex;
+			}
+		}
 
 		// ---------------------------------------------------------------------
 		// Transparency handling:
@@ -10845,6 +10922,11 @@ namespace engine {
 						: smvk::LogicalImageViewHandle{},
 						gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
 						: UINT32_MAX,
+						// The env-spec export chain twin (the replacement-
+						// composite contract, see the sceneEnvSpec tracking):
+						// the exact IBL slice the confident hit replaces.
+						sceneEnvSpecView,
+						sceneEnvSpecBindless,
 						rayListAddr,
 						rayCounterAddr,
 						radianceAddr,
@@ -10882,6 +10964,10 @@ namespace engine {
 							: smvk::LogicalImageViewHandle{},
 							gbufferLayerOn ? m_viewportResources.ssr.gbuffer.bindlessIndex
 							: UINT32_MAX,
+							// The env-spec export chain twin (the same
+							// replacement contract, the spatial variant).
+							sceneEnvSpecView,
+							sceneEnvSpecBindless,
 							rayListAddr,
 							rayCounterAddr,
 							radianceAddr,
