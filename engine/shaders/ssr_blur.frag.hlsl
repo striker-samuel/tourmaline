@@ -6,8 +6,13 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 
-// SSR blur: depth-aware bilateral 5x5 blur of the half-res reflection
-// layer (rgb = reflected x fresnel x intensity, a = confidence).
+// SSR blur: depth-aware bilateral blur of the half-res reflection
+// layer (rgb = reflected x fresnel x intensity, a = confidence), with
+// the kernel radius SCALED BY THE RECEIVER ROUGHNESS for METALS ONLY
+// (2/3/4 rings = 5x5/7x7/9x9) — the per-material spread the old fixed
+// 5x5 "could not do" that the trace's dielectric (1-r)^2 energy fade
+// substituted for (metals now keep full trace energy; this blur owns
+// their spread; dielectrics keep fade + 5x5, bit-identical).
 //
 // SSGI shared-HZB rework: every depth read comes from the final-depth
 // MAX-HZB (hzb_max.cs.hlsl, mip1 = nearest-of-2x2 under reversed-Z) via
@@ -49,7 +54,9 @@ struct SsrBlurPush
     uint hzbMip1Stride; // mip1 row stride (floats)
     uint halfW;    // half-res extent (BDA tap clamp domain)
     uint halfH;
-    uint pad0;
+    uint gbufferTextureIndex; // thin G-buffer (RGBA8: receiver roughness
+                              // -> radius bucket); 0xffffffff = legacy
+                              // mirror (no G-buffer -> radius 2)
 };
 
 [[vk::push_constant]]
@@ -62,6 +69,19 @@ float SsrEdgeWeight(float tapDist, float centerDist, float sharpness)
 {
     float depthDiff = abs(tapDist - centerDist) / max(centerDist, 1e-3f);
     return exp(-depthDiff * max(sharpness, 0.0f));
+}
+
+// Axis weight: the 5x5's {6,4,1} table kept EXACT for radius 2 (the
+// validated smooth look, bit-identical); wider radii continue the
+// falloff (halving per ring past 2 — the tail spreads the rough lobe,
+// the bilateral depth weights still own the seams).
+float SsrAxisWeight(int k)
+{
+    const int a = abs(k);
+    if (a == 0) return 6.0f;
+    if (a == 1) return 4.0f;
+    if (a == 2) return 1.0f;
+    return exp2(-(float)(a - 2)); // |k| 3 -> 0.5, 4 -> 0.25
 }
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
@@ -90,17 +110,45 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // center — a sub-texel NDC placement difference only).
     float centerDist = nearPlane / max(dCenter, 1e-6f);
 
-    // 5x5 gaussian-ish blur, depth-rejected across discontinuities.
-    // rgb and confidence share the same bilateral weights so the layer
-    // stays premultiplied-consistent.
+    // Receiver roughness + metal -> kernel radius bucket: the per-material
+    // lobe spread the old fixed 5x5 could not do — the trace's dielectric
+    // (1-r)^2 energy fade substituted for it. The metal-aware trace now
+    // keeps METALS at full energy, so the spread has to live HERE — for
+    // metals only: dielectrics keep BOTH the fade and the 5x5
+    // (bit-identical, the validated look, and the blur taps stay off the
+    // whole-screen budget — the measured cost of a roughness-only gate
+    // was +2..3.5 ms for zero visible dielectric gain). The radius is a
+    // coarse per-material knob: the receiver block's top-left full-res
+    // texel stands in for the receiver (a material-edge block borrows a
+    // neighbor's bucket — the depth bilateral weights already guard
+    // those seams). No G-buffer = the legacy mirror path: radius 2, the
+    // old behavior exactly.
+    float roughness = 0.0f;
+    bool metal = false;
+    if (bp.gbufferTextureIndex != 0xffffffffu)
+    {
+        Texture2D gbTex = textures[NonUniformResourceIndex(bp.gbufferTextureIndex)];
+        float4 gb = gbTex.Load(int3(halfPx * 2, 0));
+        roughness = saturate(gb.b);
+        metal = gb.a >= 0.5f;
+    }
+    const int radius = (metal && roughness >= 0.35f)
+        ? (roughness < 0.7f ? 3 : 4)
+        : 2;
+
+    // Gaussian-ish bilateral blur (radius-scaled), depth-rejected
+    // across discontinuities. rgb and confidence share the same
+    // bilateral weights so the layer stays premultiplied-consistent.
     float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);
     float wSum = 0.0f;
-    for (int y = -2; y <= 2; ++y)
+    [loop]
+    for (int y = -radius; y <= radius; ++y)
     {
-        for (int x = -2; x <= 2; ++x)
+        [loop]
+        for (int x = -radius; x <= radius; ++x)
         {
             float2 tapUv = IN.uv + float2(float(x) * bp.texelX,
-                                          float(y) * bp.texelY);
+                                           float(y) * bp.texelY);
             float4 tap = reflTex.Sample(smp, tapUv);
 
             // Tap rep depth: mip1 at the tap's half-res coords. The
@@ -119,9 +167,8 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                 ? 1e5 // sky sentinel (matches dof.hlsli scale)
                 : nearPlane / max(tapD, 1e-6f);
 
-            float wx = (x == 0) ? 6.0f : ((abs(x) == 1) ? 4.0f : 1.0f);
-            float wy = (y == 0) ? 6.0f : ((abs(y) == 1) ? 4.0f : 1.0f);
-            float w = wx * wy * SsrEdgeWeight(tapDist, centerDist, bp.sharpness);
+            float w = SsrAxisWeight(x) * SsrAxisWeight(y)
+                * SsrEdgeWeight(tapDist, centerDist, bp.sharpness);
             acc += tap * w;
             wSum += w;
         }

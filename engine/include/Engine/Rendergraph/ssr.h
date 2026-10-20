@@ -34,9 +34,18 @@
 //              carries the analytic sky specular IBL, so isolated mirrors
 //              (chrome probe balls, open atriums) keep their chrome read
 //              without double-counting the sky.
-//   blur:      5x5 bilateral blur of (rgb, a) at half res, depth-weighted
+//   blur:      bilateral blur of (rgb, a) at half res, depth-weighted
 //              with exact view distances (flip / finite-far agnostic via
-//              invProj, same discipline as dof.hlsli) so edges don't bleed.
+//              invProj, same discipline as dof.hlsli) so edges don't
+//              bleed. Kernel radius scales with the receiver roughness
+//              (2/3/4 rings = 5x5/7x7/9x9 from the thin G-buffer) for
+//              METALS only: the per-material lobe spread the old fixed
+//              5x5 could not do (the trace's dielectric (1-r)^2 energy
+//              fade substituted for it; metals keep full trace energy
+//              now, the blur owns their spread — dielectrics keep fade +
+//              5x5, bit-identical, and the blur taps stay off the
+//              whole-screen budget: a roughness-only gate measured
+//              +2..3.5 ms for zero visible dielectric gain).
 //   temporal:  (optional TAA) motion-vector-reprojected accumulation of
 //              the blurred layer at half res, scoped to SSR only — the
 //              base HDR is never filtered. History lives in two ping-pong
@@ -105,6 +114,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace smvk {
@@ -112,7 +122,16 @@ namespace smvk {
 struct SsrDesc {
 	Format format = Format::RGBA16_Float; // must match the HDR target
 	uint32_t steps = 32;                 // raymarch steps, 1..128
-	uint32_t maxIntersections = 24;      // Hi-Z traversal loop cap, 4..128
+	// Hi-Z traversal loop cap, 4..128. 64 since the validHit fix (the
+	// intersect's traversal exit): the old (i <= travIters) let budget-
+	// exhausted rays validate a MID-FLIGHT position as a hit (the loose
+	// reflections: anything within the 0.3 m thickness band of a real
+	// surface along the ray). The fix makes budget exhaustion an honest
+	// miss, so the cap must be high enough that the rays that USED to
+	// loose-hit now refine to the true crossing - 24 cut them off
+	// mid-flight (the measured floor-knight patch dropped 10x with the
+	// fix at 24); 64 restores the coverage with CORRECT positions.
+	uint32_t maxIntersections = 64;
 	uint32_t refineSteps = 4;            // binary refine iterations, 0..8
 	float maxDistance = 50.0f;           // ray length (m)
 	float thickness = 0.3f;              // depth acceptance band (m, view units)
@@ -122,6 +141,15 @@ struct SsrDesc {
 	float glossThreshold = 0.94f;        // classify: rays wanted for roughness < this (mirrors < 0.0001 always shoot)
 	float vignetteWidth = 0.15f;         // composite: NDC edge fade width (outer % of NDC range)
 	float temporalBlend = 0.9f;          // TAA history weight, 0..0.98 (before attenuation)
+	// SSR contribution debug attachment (the compose .dbg variant +
+	// ssrContrib target): the composite writes its EXACT add term to a
+	// second attachment so the contribution is directly visible (the
+	// ssrdump ssr_contrib stage exports it) instead of differenced
+	// against the base HDR where sub-0.1% coverage vanishes in the
+	// tone map. Wasteful by design (a second full-res RGBA16F target +
+	// write), debug-only. The Ensure recreates the chain on flips of
+	// this flag (the target exists only while on).
+	bool debugContrib = false;
 	const char* name = "ssr";
 	const char* viewName = "ssrView";
 	const char* logicalName = "ssrLogical";
@@ -245,7 +273,10 @@ struct SsrBlurPush {
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	uint32_t halfW = 0; // half-res extent (BDA tap clamp domain)
 	uint32_t halfH = 0;
-	uint32_t pad0 = 0;
+	// Thin G-buffer (RGBA8): the receiver roughness picks the kernel
+	// radius bucket (2/3/4 rings). UINT32_MAX = no G-buffer (legacy
+	// mirror path): radius 2, the old 5x5 exactly.
+	uint32_t gbufferTextureIndex = UINT32_MAX;
 };
 static_assert(sizeof(SsrBlurPush) == 56);
 
@@ -347,6 +378,12 @@ inline constexpr const char* kSsrVsPath = "content/shaders/tonemap.vert.hlsl.spv
 inline constexpr const char* kSsrBlurPsPath = "content/shaders/ssr_blur.frag.hlsl.spv";
 inline constexpr const char* kSsrTemporalPsPath = "content/shaders/ssr_temporal.frag.hlsl.spv";
 inline constexpr const char* kSsrComposePsPath = "content/shaders/ssr_compose.frag.hlsl.spv";
+// Debug twin of the compose PS (SSR_DEBUG_CONTRIB): writes the exact add
+// term to SV_Target1. Loaded tolerantly (a missing .dbg.spv leaves the
+// debug output unavailable - the chain keeps the normal program; the
+// composite falls back to the single attachment when unarmed).
+inline constexpr const char* kSsrComposeDbgPsPath =
+	"content/shaders/ssr_compose.frag.hlsl.dbg.spv";
 inline constexpr const char* kSsrClassifyCsPath = "content/shaders/ssr_classify.cs.hlsl.spv";
 inline constexpr const char* kSsrIndirectCsPath = "content/shaders/ssr_prepare_indirect.cs.hlsl.spv";
 inline constexpr const char* kSsrIntersectCsPath = "content/shaders/ssr_intersect.cs.hlsl.spv";
@@ -409,11 +446,18 @@ struct ScreenSpaceReflections {
 	Extent2D extent{ 0, 0 }; // full-res composite extent (= depth/HDR extent)
 	Extent2D halfExtent{ 0, 0 }; // max(1, full / 2) per axis
 	Format format = Format::RGBA16_Float;
+	// Debug contribution attachment (desc.debugContrib, the .dbg compose
+	// variant): full-res RGBA16F, carries the composite's exact ADD term
+	// (ssr_compose.frag.hlsl's outContrib). Created in Create() only while
+	// the flag is on; OPTIONAL everywhere (TargetsValid excludes it - the
+	// chain stays valid without it).
+	Target contrib;
 
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> blurFragModule;
 	Holder<ShaderModuleHandle> temporalFragModule;
 	Holder<ShaderModuleHandle> composeFragModule;
+	Holder<ShaderModuleHandle> composeDbgFragModule; // the .dbg twin (optional)
 	Holder<ShaderModuleHandle> classifyModule;
 	Holder<ShaderModuleHandle> indirectModule;
 	Holder<ShaderModuleHandle> intersectModule;
@@ -421,6 +465,7 @@ struct ScreenSpaceReflections {
 	ShaderProgram blurProgram{};
 	ShaderProgram temporalProgram{};
 	ShaderProgram composeProgram{};
+	ShaderProgram composeDbgProgram{}; // optional (missing .dbg.spv -> empty)
 	ShaderProgram classifyProgram{}; // compute, 8x8 groups
 	ShaderProgram indirectProgram{}; // compute, 1x1x1
 	ShaderProgram intersectProgram{}; // compute, indirect 8x8 groups
@@ -443,6 +488,9 @@ struct ScreenSpaceReflections {
 			!intersectModule.empty() && !copyFragModule.empty() &&
 			!blurFragModule.empty() &&
 			!temporalFragModule.empty() && !composeFragModule.empty();
+		// (composeDbgProgram deliberately excluded: it is the OPTIONAL
+		// debug twin - a missing .dbg.spv must not kill the chain; the
+		// composite pass checks it before binding.)
 	}
 	[[nodiscard]] bool Valid() const { return TargetsValid() && ShadersValid(); }
 
@@ -484,6 +532,20 @@ struct ScreenSpaceReflections {
 				temporalFragModule = ctx.CreateShaderModule(readFile(temporal), "ssrTemporalFrag");
 			if (composeFragModule.empty())
 				composeFragModule = ctx.CreateShaderModule(readFile(compose), "ssrComposeFrag");
+			// Debug twin (optional, tolerant): a missing/stale .dbg.spv must
+			// NOT kill the chain - ShadersValid excludes it and the composite
+			// pass falls back to the single attachment when it is empty.
+			if (composeDbgFragModule.empty()) {
+				try {
+					composeDbgFragModule =
+						ctx.CreateShaderModule(readFile(kSsrComposeDbgPsPath), "ssrComposeDbgFrag");
+				} catch (...) {
+					std::fprintf(stderr,
+						"[SSR] compose .dbg twin unavailable (missing %s) "
+						"- the contribution debug attachment stays off\n",
+						kSsrComposeDbgPsPath);
+				}
+			}
 			if (classifyModule.empty())
 				classifyModule = ctx.CreateShaderModule(readFile(classify), "ssrClassifyCS");
 			if (indirectModule.empty())
@@ -511,6 +573,10 @@ struct ScreenSpaceReflections {
 		blurProgram = { .shaders = { vs, blurPS }, .shaderCount = 2 };
 		temporalProgram = { .shaders = { vs, temporalPS }, .shaderCount = 2 };
 		composeProgram = { .shaders = { vs, composePS }, .shaderCount = 2 };
+		if (!composeDbgFragModule.empty()) {
+			Shader composeDbgPS{ .module = composeDbgFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+			composeDbgProgram = { .shaders = { vs, composeDbgPS }, .shaderCount = 2 };
+		}
 		classifyProgram = { .shaders = { classifyCS }, .shaderCount = 1 };
 		indirectProgram = { .shaders = { indirectCS }, .shaderCount = 1 };
 		intersectProgram = { .shaders = { intersectCS }, .shaderCount = 1 };
@@ -522,6 +588,7 @@ struct ScreenSpaceReflections {
 		blurProgram = ShaderProgram{};
 		temporalProgram = ShaderProgram{};
 		composeProgram = ShaderProgram{};
+		composeDbgProgram = ShaderProgram{};
 		classifyProgram = ShaderProgram{};
 		indirectProgram = ShaderProgram{};
 		intersectProgram = ShaderProgram{};
@@ -530,6 +597,7 @@ struct ScreenSpaceReflections {
 		blurFragModule = {};
 		temporalFragModule = {};
 		composeFragModule = {};
+		composeDbgFragModule = {};
 		classifyModule = {};
 		indirectModule = {};
 		intersectModule = {};
@@ -739,6 +807,20 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist1);
 			return false;
 		}
+		// Debug contribution attachment (desc.debugContrib): full-res,
+		// same format as the composite. Optional - only while the flag is
+		// on (the Ensure guard recreates the chain on flips).
+		Target newContrib;
+		if (d.debugContrib &&
+				!CreateTarget(ctx, rg, full, d.format, "ssrContrib", newContrib)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			return false;
+		}
 		// Compute-chain handoff buffers (the classify->args->intersect
 		// chain): rayList (packed uint per ray, worst case = every
 		// half-res pixel shoots), rayCounter ([0] live / [1] frozen),
@@ -755,6 +837,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
 			return false;
 		}
 		if (!CreateBuffer(ctx, rg, 2u * sizeof(uint32_t),
@@ -765,6 +848,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
 			DestroyBuffer(rg, newRayList);
 			return false;
 		}
@@ -776,6 +860,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
 			DestroyBuffer(rg, newRayList);
 			DestroyBuffer(rg, newRayCounter);
 			return false;
@@ -788,6 +873,7 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
 			DestroyBuffer(rg, newRayList);
 			DestroyBuffer(rg, newRayCounter);
 			DestroyBuffer(rg, newIndirectArgs);
@@ -798,6 +884,7 @@ struct ScreenSpaceReflections {
 		gbuffer = std::move(newGbuffer);
 		history[0] = std::move(newHist0);
 		history[1] = std::move(newHist1);
+		contrib = std::move(newContrib);
 		rayList = std::move(newRayList);
 		rayCounter = std::move(newRayCounter);
 		indirectArgs = std::move(newIndirectArgs);
@@ -816,11 +903,16 @@ struct ScreenSpaceReflections {
 		DestroyTarget(rg, history[0]);
 		DestroyTarget(rg, history[1]);
 		DestroyTarget(rg);
+		DestroyTarget(rg, contrib);
 		halfExtent = { 0, 0 };
 	}
 
 	// Recreate only when full extent / format drift. Live-updates desc
 	// (steps / distance / intensity need no realloc). Returns true when ready.
+	// A debugContrib FLIP also recreates (the ssrContrib target exists only
+	// while the flag is on - an 8 MB full-res RGBA16F is not worth keeping
+	// around unarmed, and the composite binds the 2-attachment dbg variant
+	// only while it is).
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent,
 		const SsrDesc& d,
 		const char* vsPath = kSsrVsPath,
@@ -833,7 +925,8 @@ struct ScreenSpaceReflections {
 		const char* copyPath = kSsrCopyPsPath) {
 		if (TargetsValid() &&
 				extent.width == targetExtent.width && extent.height == targetExtent.height &&
-				format == d.format) {
+				format == d.format &&
+				d.debugContrib == desc.debugContrib) {
 			desc = d;
 			return EnsureShaders(ctx, vsPath, blurPath, temporalPath, composePath,
 				classifyPath, indirectPath, intersectPath, copyPath);
@@ -1089,12 +1182,15 @@ ShaderProgram progCopy = copyProgram;
 		push.hzbMip1Stride = hzbMip1Stride;
 		push.halfW = halfExtent.width;
 		push.halfH = halfExtent.height;
-		push.pad0 = 0;
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 
 		RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
+		std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
+		if (gbufferOn)
+			blurInputs.push_back(gbufferView); // receiver roughness -> radius
 		pass.SetOffset(0, 0)
 			.SetExtent(halfExtent)
-			.SetInputImages({ raw.logical })
+			.SetInputImages(blurInputs)
 			.SetColor({ blurred.logical },
 				AttachmentLoadOp::DontCare,
 				AttachmentStoreOp::Store);
@@ -1142,11 +1238,19 @@ ShaderProgram progCopy = copyProgram;
 		push.pad0 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
+		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
+		// composite writes its exact ADD term to SV_Target1) + the ssrContrib
+		// target as the second color attachment. Falls back to the normal
+		// single-attachment program when the twin or the target is missing.
+		const bool contribDbgOn = overrideDesc.debugContrib &&
+			composeDbgProgram.shaderCount != 0 && contrib.Valid();
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
 				.SetInputImages(composeInputs)
-				.SetColor({ logicalView },
+				.SetColor(contribDbgOn
+					? std::vector<LogicalImageViewHandle>{ logicalView, contrib.logical }
+					: std::vector<LogicalImageViewHandle>{ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
 		{
@@ -1157,7 +1261,7 @@ ShaderProgram progCopy = copyProgram;
 			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 			pass.AddBufferHint(hzbLogical, hzbRead);
 		}
-		ShaderProgram progCopy = composeProgram; // copyable (handles only)
+		ShaderProgram progCopy = contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
@@ -1246,12 +1350,15 @@ const bool hzbOn = hzbAddr != 0 && hzbMips != 0 && !hzbLogical.empty()
 			push.hzbMip1Stride = hzbMip1Stride;
 			push.halfW = halfExtent.width;
 			push.halfH = halfExtent.height;
-			push.pad0 = 0;
+			push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 
 			RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
+			std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
+			if (gbufferOn)
+				blurInputs.push_back(gbufferView); // receiver roughness -> radius
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ raw.logical })
+				.SetInputImages(blurInputs)
 				.SetColor({ blurred.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -1344,11 +1451,19 @@ push.frameUniforms = frameUniformsAddr;
 		push.pad0 = 0;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
+		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
+		// composite writes its exact ADD term to SV_Target1) + the ssrContrib
+		// target as the second color attachment. Falls back to the normal
+		// single-attachment program when the twin or the target is missing.
+		const bool contribDbgOn = overrideDesc.debugContrib &&
+			composeDbgProgram.shaderCount != 0 && contrib.Valid();
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
 				.SetInputImages(composeInputs)
-				.SetColor({ logicalView },
+				.SetColor(contribDbgOn
+					? std::vector<LogicalImageViewHandle>{ logicalView, contrib.logical }
+					: std::vector<LogicalImageViewHandle>{ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
 		{
@@ -1358,7 +1473,7 @@ push.frameUniforms = frameUniformsAddr;
 			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 			pass.AddBufferHint(hzbLogical, hzbRead);
 		}
-		ShaderProgram progCopy = composeProgram; // copyable (handles only)
+		ShaderProgram progCopy = contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,

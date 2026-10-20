@@ -106,35 +106,70 @@ float2 SsrFullNdc(int2 fullPx)
                   (float(fullPx.y) + 0.5f) * sp.invDepthH * 2.0f - 1.0f);
 }
 
-// Initial ray advance (the SDK's FFX_SSSR_InitialAdvanceRay, verbatim):
-// intersect the ray with the half-box pointing away from the origin so
-// the march never self-intersects the receiver's own cell.
-void SsrInitialAdvanceRay(float3 origin, float3 direction, float3 inv_direction,
+// Per-axis boundary crossing parameter t = (boundary - origin) /
+// direction, NaN-SAFE for axis-aligned rays: a ZERO direction axis is
+// parallel to the plane and never crosses (+MAX). The old
+// boundary * inv - origin * inv form divided a zero axis into Inf and
+// then Inf - Inf'd into NaN whenever the boundary equaled the origin on
+// that axis - exactly the axis-aligned reflections (the vertical
+// walls' horizontal mirror rays, the floors' vertical columns).
+float2 SsrBoundaryT2(float2 boundary, float2 origin, float2 direction)
+{
+    float2 t;
+    t.x = direction.x != 0.0f ? (boundary.x - origin.x) / direction.x : SSR_FLOAT_MAX;
+    t.y = direction.y != 0.0f ? (boundary.y - origin.y) / direction.y : SSR_FLOAT_MAX;
+    return t;
+}
+
+float3 SsrBoundaryT(float3 boundary, float3 origin, float3 direction)
+{
+    float3 t;
+    t.x = direction.x != 0.0f ? (boundary.x - origin.x) / direction.x : SSR_FLOAT_MAX;
+    t.y = direction.y != 0.0f ? (boundary.y - origin.y) / direction.y : SSR_FLOAT_MAX;
+    t.z = direction.z != 0.0f ? (boundary.z - origin.z) / direction.z : SSR_FLOAT_MAX;
+    return t;
+}
+
+// Initial ray advance (the SDK's FFX_SSSR_InitialAdvanceRay, adapted to
+// the NaN-safe boundary form): intersect the ray with the half-box
+// pointing away from the origin so the march never self-intersects the
+// receiver's own cell.
+void SsrInitialAdvanceRay(float3 origin, float3 direction,
     float2 mipRes, float2 mipResInv, float2 floorOff, float2 uvOff,
     out float3 position, out float t)
 {
     float2 mipPos = mipRes * origin.xy;
     float2 xyPlane = floor(mipPos) + floorOff;
     xyPlane = xyPlane * mipResInv + uvOff;
-    float2 tt = xyPlane * inv_direction.xy - origin.xy * inv_direction.xy;
+    float2 tt = SsrBoundaryT2(xyPlane, origin.xy, direction.xy);
     t = min(tt.x, tt.y);
     position = origin + t * direction;
 }
 
-// One traversal step (the SDK's FFX_SSSR_AdvanceRay, verbatim):
-// intersect the ray with the current cell's exit planes (xy cell edge
-// + the block's depth plane); the z plane is live only when shooting
-// away (reversed-Z: direction.z < 0). Returns whether the tile was
-// skipped (crossed without dipping below the block's surface — mip up)
-// or stopped at the surface (mip down to refine).
-bool SsrAdvanceRay(float3 origin, float3 direction, float3 inv_direction,
+// One traversal step (the SDK's FFX_SSSR_AdvanceRay, adapted to the
+// NaN-safe boundary form): intersect the ray with the current cell's
+// exit planes (xy cell edge + the block's depth plane); the z plane is
+// live only when shooting away (reversed-Z: direction.z < 0). Returns
+// whether the tile was skipped (crossed without dipping below the
+// block's surface - mip up) or stopped at the surface (mip down to
+// refine).
+// NOTE (the approach-fix revert): arming the z plane for APPROACHING
+// rays (direction.z > 0, a receiver's front reflecting the camera-side
+// scene) with mirrored untraveled/skip semantics was tried and
+// REVERTED: it marched those rays past the surfaces instead of the
+// stuck-refine exit, and the stuck position + the thickness validation
+// is exactly how the near-side reflections (the floor mirroring the
+// knight's nearer parts) were found - the mirrored branch collapsed
+// the measured reflections (22.9-luma delta shrunk to 3.0). The
+// one-sided z plane stays: approaching rays ride the xy skipping + the
+// below-surface stuck-refine, which works.
+bool SsrAdvanceRay(float3 origin, float3 direction,
     float2 mipPos, float2 mipResInv, float2 floorOff, float2 uvOff,
     float surface_z, inout float3 position, inout float t)
 {
     float2 xyPlane = floor(mipPos) + floorOff;
     xyPlane = xyPlane * mipResInv + uvOff;
-    float3 boundary = float3(xyPlane, surface_z);
-    float3 tt = boundary * inv_direction - origin * inv_direction;
+    float3 tt = SsrBoundaryT(float3(xyPlane, surface_z), origin, direction);
     tt.z = direction.z < 0.0f ? tt.z : SSR_FLOAT_MAX;
     float tMin = min(min(tt.x, tt.y), tt.z);
     // Reversed-Z: larger z = nearer. The ray is above (in front of) the
@@ -187,14 +222,26 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
     SsrGb gbuf = SsrGbTap(fullPxC);
     float roughness = gbuf.roughness;
-    if (roughness >= sp.glossThreshold)
-        return; // stale ray (matte — the classify owns silence)
+    // Matte re-check (the classify owns the gate — this guards stale
+    // rays): matte DIELECTRICS die (the dielectric fade would be
+    // sub-quantization anyway). Metals keep marching at any roughness —
+    // their screen-space reflection is their only LOCAL light (see the
+    // fade at the sample below); the no-data sentinel decodes metal 0
+    // so it still dies here.
+    if (roughness >= sp.glossThreshold && gbuf.metal < 0.5f)
+        return;
     bool is_mirror = SsrIsMirrorReflection(roughness);
 
     float2 uv = (float2(coords) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
     float3 viewPos = SsrUnprojectView(SsrFullNdc(fullPxC), dBest, frame.invProj);
     float3 V = -viewPos / max(length(viewPos), 1e-6f);
-    float3 N = gbuf.normal;
+    // SPACE FIX: the G-buffer oct normal is WORLD space (gbuffer.frag
+    // encodes the VS's world normal), but V/viewPos/Rview/the screen
+    // projection below are VIEW space — reflecting V against the world
+    // normal rotated every ray by the view rotation: reflections fired
+    // at a fixed wrong angle (the ~45-deg right-biased streaks). Rotate
+    // the decoded normal into view space first (frame.view = world->view).
+    float3 N = normalize(mul((float3x3)frame.view, gbuf.normal));
     if (dot(N, V) < 0.0f)
         N = -N;
 
@@ -233,18 +280,19 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         }
     }
 
-    float3 invDir;
-    if (any(screenDir != float3(0.0f, 0.0f, 0.0f)))
-    {
-        invDir = float3(1.0f, 1.0f, 1.0f) / screenDir;
-    }
-    else
-    {
-        invDir = float3(SSR_FLOAT_MAX, SSR_FLOAT_MAX, SSR_FLOAT_MAX);
-    }
-    int curMip = is_mirror ? 0 : int(min(sp.mostDetailedMip, uint(max(mipCount - 1, 0))));
+    // Per-ray finest mip (MIRROR FIX): the old init started mirror rays
+    // (roughness < 0.0001) at mip 0 while the loop condition demanded
+    // curMip >= sp.mostDetailedMip (1) - mirrors NEVER entered the
+    // traversal, fell straight through with pos = the origin, and the
+    // validation's 2px self-reject killed them. The SDK's intent: the
+    // mirror's finest mip IS 0. One definition, used by the init, the
+    // loop condition, and the validHit test below.
+    const int finestMip = is_mirror
+        ? 0
+        : int(min(sp.mostDetailedMip, uint(max(mipCount - 1, 0))));
+    int curMip = finestMip;
     float2 mipRes = float2(hzbW[curMip], hzbH[curMip]);
-    float2 mipResInv = float2(1.0f, 1.0f) / max(mipRes, float2(1e-6f, 1e-6f));
+    float2 mipResInv = 1.0f / max(mipRes, float2(1e-6f, 1e-6f));
     float2 uvOff = 0.005f * exp2(float(int(sp.mostDetailedMip))) / fullExtent;
     uvOff.x = screenDir.x < 0.0f ? -uvOff.x : uvOff.x;
     uvOff.y = screenDir.y < 0.0f ? -uvOff.y : uvOff.y;
@@ -254,89 +302,136 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
     float curT;
     float3 pos;
-    SsrInitialAdvanceRay(screenOrigin, screenDir, invDir,
+    SsrInitialAdvanceRay(screenOrigin, screenDir,
         mipRes, mipResInv, floorOff, uvOff, pos, curT);
 
     bool exitLowOcc = false;
     int travIters = int(min(sp.maxIntersections, 128u));
     int i = 0;
     [loop]
-    while (i < travIters && curMip >= int(min(sp.mostDetailedMip, uint(max(mipCount - 1, 0)))) && !exitLowOcc)
+    while (i < travIters && curMip >= finestMip && !exitLowOcc)
     {
         float2 mipPos = mipRes * pos.xy;
         int2 tp = int2(clamp(floor(mipPos), float2(0.0f, 0.0f), mipRes - 1.0f));
         float surfaceZ = sp.ssrHzb.Get().texels[hzbOff[curMip] + tp.y * hzbW[curMip] + tp.x];
         exitLowOcc = !is_mirror && (WaveActiveCountBits(true) <= sp.minOccupancy);
-        bool skipped = SsrAdvanceRay(screenOrigin, screenDir, invDir,
+        bool skipped = SsrAdvanceRay(screenOrigin, screenDir,
             mipPos, mipResInv, floorOff, uvOff, surfaceZ, pos, curT);
         bool outOfRange = skipped && (curMip >= mipCount - 1);
         if (!outOfRange)
         {
             curMip += skipped ? 1 : -1;
-            float f = skipped ? 0.5f : 2.0f;
-            mipRes *= f;
-            mipResInv *= skipped ? 2.0f : 0.5f;
+            // EXACT per-mip resolution (the old *0.5/2.0 drift): the HZB
+            // halves with ceiling ((w+1)>>1 - a 15-wide mip becomes 8,
+            // not 7.5), so the traversal's hand-scaled mipRes silently
+            // disagreed with the packed pyramid at every odd dimension
+            // and the walk read the wrong cells at coarse mips. Read
+            // the table instead.
+            mipRes = float2(hzbW[curMip], hzbH[curMip]);
+            mipResInv = 1.0f / max(mipRes, float2(1e-6f, 1e-6f));
         }
         ++i;
     }
-    bool validHit = (i <= travIters);
+    // validHit (the budget-exhaustion fix): the loop exits three ways -
+    // refined past the finest mip (a crossing candidate: the ONLY hit
+    // exit), the iteration budget out, or the wave-occupancy early-out.
+    // The old (i <= travIters) was TRUE in all three (a budget-exhausted
+    // ray validated a mid-flight position as a "hit"); the SDK has the
+    // same defect. Only the refined exit is a hit; the occupancy exit's
+    // position is mid-flight by construction.
+    bool validHit = (curMip < finestMip) && !exitLowOcc;
     float3 hit = pos;
 
     // ---- Validation (the SDK's FFX_SSSR_ValidateHit, adapted): frustum,
     // self (2px manhattan), background (reverse-Z 0 == sky), the hit
-    // backface via the HIT G-buffer normal, the thickness confidence,
-    // the border vignette.
-    float confidence = 0.0f;
-    if (validHit)
-    {
-        if (hit.x >= 0.0f && hit.y >= 0.0f && hit.x <= 1.0f && hit.y <= 1.0f)
-        {
-            float2 manhattan = abs(hit.xy - uv);
-            if (!(manhattan.x < (2.0f / fullExtent.x) && manhattan.y < (2.0f / fullExtent.y)))
-            {
-                int2 hitPx = int2(clamp(hit.xy * fullExtent,
-                    float2(0.0f, 0.0f), fullExtent - 1.0f));
-                float surfZ = depthTex.Load(int3(hitPx, 0)).r;
-                if (!DofIsBackgroundOrGarbage(surfZ))
-                {
-                    SsrGb hg = SsrGbTap(hitPx);
-                    // Backface: the ray struck the camera-hidden side.
-                    float3 hitViewN = mul((float3x3)frame.view, hg.normal);
-                    if (dot(hitViewN, Rview) <= 0.0f)
-                    {
-                        float3 hitViewPos = SsrUnprojectView(
-                            hit.xy * 2.0f - 1.0f, surfZ, frame.invProj);
-                        float3 surfViewPos = SsrUnprojectView(
-                            hit.xy * 2.0f - 1.0f, hit.z, frame.invProj);
-                        float dist = length(surfViewPos - hitViewPos);
-                        float conf = 1.0f - saturate(dist / max(sp.thickness, 1e-3f));
-                        conf *= conf;
-                        float2 fov = 0.05f * float2(fullExtent.y / fullExtent.x, 1.0f);
-                        float2 border = smoothstep(float2(0.0f, 0.0f), fov, hit.xy)
-                            * (1.0f - smoothstep(float2(1.0f, 1.0f) - fov, float2(1.0f, 1.0f), hit.xy));
-                        confidence = conf * border.x * border.y;
-                    }
-                }
-            }
-        }
-    }
+    // backface via the HIT G-buffer normal, the ray-length budget, the
+    // thickness confidence, the border vignette - early-returns, one
+    // REJECT write per level.
+    // SLOT OWNERSHIP (the stale-radiance fix): the classify zeroes only
+    // NON-ray pixels; a ray's own slot (and its quad-copy siblings) is
+    // the intersect's to write. The old fall-through form always wrote
+    // the final sample (radiance or (0,0,0,0)) - the early-return
+    // restructure initially skipped the write on rejects and the slots
+    // parked LAST FRAME's radiance (temporal ghosts). Every reject path
+    // writes the miss (slot + copies) before returning.
+    const uint missIdx = coords.y * sp.halfW + coords.x;
+    const uint missHoriz = (coords.y * sp.halfW) + (coords.x ^ 1u);
+    const uint missVert = ((coords.y ^ 1u) * sp.halfW) + coords.x;
+    const uint missDiag = ((coords.y ^ 1u) * sp.halfW) + (coords.x ^ 1u);
+#define SSR_MISS() { \
+        float4 miss_ = float4(0.0f, 0.0f, 0.0f, 0.0f); \
+        sp.radiance.Get().v[missIdx] = miss_; \
+        if (copyH) sp.radiance.Get().v[missHoriz] = miss_; \
+        if (copyV) sp.radiance.Get().v[missVert] = miss_; \
+        if (copyD) sp.radiance.Get().v[missDiag] = miss_; \
+        return; }
+    if (!validHit)
+        SSR_MISS()
+    if (!(hit.x >= 0.0f && hit.y >= 0.0f && hit.x <= 1.0f && hit.y <= 1.0f))
+        SSR_MISS()
+    float2 manhattan = abs(hit.xy - uv);
+    if (manhattan.x < (2.0f / fullExtent.x) && manhattan.y < (2.0f / fullExtent.y))
+        SSR_MISS()
+    int2 hitPx = int2(clamp(hit.xy * fullExtent,
+        float2(0.0f, 0.0f), fullExtent - 1.0f));
+    float surfZ = depthTex.Load(int3(hitPx, 0)).r;
+    if (DofIsBackgroundOrGarbage(surfZ))
+        SSR_MISS()
+    SsrGb hg = SsrGbTap(hitPx);
+    // Backface: the ray struck the camera-hidden side.
+    float3 hitViewN = mul((float3x3)frame.view, hg.normal);
+    if (dot(hitViewN, Rview) > 0.0f)
+        SSR_MISS()
+    float3 hitViewPos = SsrUnprojectView(
+        hit.xy * 2.0f - 1.0f, surfZ, frame.invProj);
+    // Ray-length budget: the screen-space walk has no world-length
+    // notion - sp.maxDistance was declared and never read. Reject
+    // crossings whose view-space travel (the ray is straight in view
+    // space, so the chord equals the path) exceeds the budget.
+    if (length(hitViewPos - viewPos) > max(sp.maxDistance, 0.1f))
+        SSR_MISS()
+    float3 surfViewPos = SsrUnprojectView(
+        hit.xy * 2.0f - 1.0f, hit.z, frame.invProj);
+    float dist = length(surfViewPos - hitViewPos);
+    float conf = 1.0f - saturate(dist / max(sp.thickness, 1e-3f));
+    conf *= conf;
+    float2 fov = 0.05f * float2(fullExtent.y / fullExtent.x, 1.0f);
+    float2 border = smoothstep(float2(0.0f, 0.0f), fov, hit.xy)
+        * (1.0f - smoothstep(float2(1.0f, 1.0f) - fov, float2(1.0f, 1.0f), hit.xy));
+    float confidence = conf * border.x * border.y;
+    if (confidence <= 0.0f)
+        SSR_MISS()
 
-    float3 reflected = float3(0.0f, 0.0f, 0.0f);
-    if (confidence > 0.0f)
-    {
-        Texture2D hdrTex = textures[NonUniformResourceIndex(sp.hdrTextureIndex)];
-        SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
-        reflected = hdrTex.Sample(smp, hit.xy).rgb;
-        reflected = min(max(reflected, float3(0.0f, 0.0f, 0.0f)), float3(65504.0f, 65504.0f, 65504.0f));
-        // Fresnel (Schlick): flat-F0 metals rise to ~1 (colored F0
-        // approximated flat — the mask carries scalars only).
-        float f0 = lerp(sp.f0, 1.0f, gbuf.metal);
-        float ndv = saturate(dot(N, V));
-        float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
-        float gloss = 1.0f - roughness;
-        reflected = min(reflected * (fres * (gloss * gloss) * sp.intensity),
-            float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
-    }
+    // All rejects early-returned above: confidence > 0 is guaranteed
+    // here (the old confidence-0 fallthrough branch is gone with the
+    // restructure).
+    Texture2D hdrTex = textures[NonUniformResourceIndex(sp.hdrTextureIndex)];
+    SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
+    // SampleLevel, not Sample: implicit-LOD derivatives are invalid in a
+    // compute shader (divergent ray dispatches make them meaningless
+    // anyway); the reflection reads mip 0 explicitly.
+    float3 reflected = hdrTex.SampleLevel(smp, hit.xy, 0.0f).rgb;
+    reflected = min(max(reflected, float3(0.0f, 0.0f, 0.0f)), float3(65504.0f, 65504.0f, 65504.0f));
+    // Fresnel (Schlick): flat-F0 metals rise to ~1 (colored F0
+    // approximated flat — the mask carries scalars only).
+    float f0 = lerp(sp.f0, 1.0f, gbuf.metal);
+    float ndv = saturate(dot(N, V));
+    float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    // Metal-aware fade (parity with ssr.frag.hlsl and
+    // environment.hlsli's EnvSpecFade): the dielectric (1-r)^2
+    // exists because ONE VNDF-sampled ray + the blur pass cannot
+    // integrate a wide GGX lobe — the fade substitutes for the
+    // missing spread and dims the speckle. Metals keep full energy:
+    // the screen-space reflection is their only LOCAL light (the
+    // probe's parallax box cannot see the room around them — the
+    // banner gold, r~0.5, kept 25% of the knight/floor reflection
+    // next to it). The roughness-scaled blur radius + the VNDF cone
+    // + temporal convergence own the spread.
+    float gloss = 1.0f - roughness;
+    const float dielectricFade = gloss * gloss;
+    const float specFade = lerp(dielectricFade, 1.0f, gbuf.metal);
+    reflected = min(reflected * (fres * specFade * sp.intensity),
+        float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
 
     float4 outSample = float4(reflected, confidence);
     uint flatIdx = coords.y * sp.halfW + coords.x;
@@ -360,3 +455,4 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         sp.radiance.Get().v[copyTarget.y * sp.halfW + copyTarget.x] = outSample;
     }
 }
+                                      

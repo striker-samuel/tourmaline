@@ -210,12 +210,29 @@ struct ProbePremixSelection
     uint pad1;            // 76
 };
 
+// Rough-specular fade, metal-aware. The dielectric fade (gloss^2 with a
+// 0.1 floor) exists because a rough F0=0.04 lobe reads as surface noise,
+// not light - cheap and right for dielectrics. Metals must NOT ride it:
+// the GGX-preconvolved mip chain already blurred their lobe (energy kept
+// per mip, roughness = mip/(mips-1)), and the tinted reflection IS the
+// surface's entire ambient light (kD = 1 - metallic -> 0: no diffuse, no
+// GI ambient term). The old uniform fade kept a rough-0.5 gold brocade
+// (the sponza banners: metallic ~1, roughness ~0.5) at 32% of its ONLY
+// ambient light - "dark gold even when getting proper contribution from
+// cubemaps" (the probe content was verified proper; the fade crushed it
+// on the way out). Pure metals keep full energy, blended scale between.
+float EnvSpecFade(float gloss, float metallic)
+{
+    const float dielectricFade = gloss * gloss * 0.9f + 0.1f;
+    return lerp(dielectricFade, 1.0f, saturate(metallic));
+}
+
 float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
     float3 worldPos, FrameUniforms frame, uint tileIdx,
     uint fpLightCount, uint fpMaxPerTile,
     vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts,
     vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices,
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights)
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLights, float metallic)
 {
     // Intensity split: iblIntensity (ground.w) is the ANALYTIC fallback's
     // intensity only. Baked samples are TRUE radiance (physical units,
@@ -278,7 +295,7 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
             if (cubeDbg == 1u) return envCol2; // raw blend (no Fresnel)
             if (cubeDbg == 2u) return float3(1.0f, 0.25f, 0.0f); // pre-mix heat
             const float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
-            return envCol2 * F * (gloss * gloss * 0.9f + 0.1f);
+            return envCol2 * F * EnvSpecFade(gloss, metallic);
         }
         // Selection empty this frame (the weights pass found no
         // candidates): fall through to the per-pixel walk below - it
@@ -462,8 +479,8 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
 
     float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
     if (foundProbe)
-        return envCol * F * (gloss * gloss * 0.9f + 0.1f);
-    return envCol * ibl * F * (gloss * gloss * 0.9f + 0.1f);
+        return envCol * F * EnvSpecFade(gloss, metallic);
+    return envCol * ibl * F * EnvSpecFade(gloss, metallic);
 }
 
 // Specular-visibility proxy from the baked GI (Lagarde-style occlusion):
@@ -474,8 +491,23 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
 // geometry they cannot see through. giScale normalizes the UI GI-intensity
 // multiplier back out of the baked term. Surfaces with no baked source
 // keep 1 (callers decide).
+//
+// The ratio's ZERO is a fit artifact, not enclosure: the 9-lobe
+// white-world SG fit at a brick under-represents the horizontal band a
+// vertical open-air surface sees (the sponza banner gold — metallic ~1,
+// rough ~0.5, hanging in the open nave, probes covering it with proper
+// bright captures — evaluates e(N) ~ 0 against a sky-dominated refL),
+// and envVis 0 zeroes the cubemap env spec, a metal's ONLY ambient
+// light (kD = 1 - metallic -> 0): "dark gold even when getting proper
+// contribution from cubemaps". Floor the factor, TAPERED BY ROUGHNESS:
+// a broad lobe smears across occlusion gaps (the hemispherical ratio
+// overestimates enclosure for it — Lagarde's exponent makes the same
+// argument from the other side), while a sharp lobe needs real
+// visibility (the under-roof "crazy luminous" gold trim stays
+// data-driven at smooth — the floor dies below rough 0, exactly where
+// the mirror-flash artifact lived). Linear taper to 0.35 at rough 0.5.
 float SpecularOcclusionFromGI(float3 bakedE, float giScale, float3 N,
-    EnvironmentFrameData env)
+    EnvironmentFrameData env, float roughness)
 {
     const float3 kLum = float3(0.2126, 0.7152, 0.0722);
     const float3 e = bakedE * (1.0 / max(giScale, 1e-4));
@@ -488,7 +520,9 @@ float SpecularOcclusionFromGI(float3 bakedE, float giScale, float3 N,
     float3 skyMean = (env.skyZenith.rgb + env.skyHorizon.rgb + env.ground.rgb) / 3.0;
     float3 skyE = skyMean * max(env.skyZenith.w, 0.0) * 0.5;
     const float refL = max(dot(sunE + skyE, kLum), 1e-3);
-    return saturate(dot(e, kLum) / refL);
+    const float occ = saturate(dot(e, kLum) / refL);
+    const float roughFloor = saturate(roughness / 0.5f) * 0.35f;
+    return saturate(max(occ, roughFloor));
 }
 
 // Distance fog factor in 0..1 from view depth (linear eye depth, metres),

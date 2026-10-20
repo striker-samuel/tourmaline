@@ -83,17 +83,24 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
     }
     bool valid = inRange && !DofIsBackgroundOrGarbage(dBest);
 
-    // Roughness from the thin G-buffer at the receiver pixel.
+    // Roughness + metal from the thin G-buffer at the receiver pixel.
     float roughness = 1.0f;
+    float metal = 0.0f;
     if (valid)
     {
         Texture2D gbTex = textures[NonUniformResourceIndex(sp.gbufferTextureIndex)];
-        roughness = gbTex.Load(int3(fullPxC, 0)).b;
+        float4 gb = gbTex.Load(int3(fullPxC, 0));
+        roughness = gb.b;
+        metal = (gb.a >= 0.5f) ? 1.0f : 0.0f;
     }
 
     bool isMirror = valid && IsMirrorReflection(roughness);
-    bool isGlossy = valid && (roughness < sp.glossThreshold);
-    // Offscreen/background/matte pixels never shoot; mirrors always do.
+    // Metals always shoot: the trace's fade keeps their energy (the
+    // screen-space reflection is a metal's only LOCAL light — the
+    // probe's parallax box cannot see the room around it), so the
+    // roughness gate is a DIELECTRIC noise guard only. Offscreen /
+    // background / matte-dielectric pixels never shoot; mirrors do.
+    bool isGlossy = valid && (roughness < sp.glossThreshold || metal != 0.0f);
     bool needs_ray = isGlossy;
 
     // The samples-per-quad reduction is compiled in as the copy scheme

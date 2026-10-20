@@ -1062,7 +1062,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 specTileIdx = sty * pc.fpTileCountX + stx;
         }
         envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion;
+            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic) * occlusion;
     }
 float envVis = 1.0f;
     float3 ambientSpec = envSpec;
@@ -1113,7 +1113,7 @@ float envVis = 1.0f;
             // Spec occlusion from the baked field (same normal the
             // lightmap was fit for): gold trim under roofs must not
             // mirror the sunlit courtyard it cannot see.
-            envVis = SpecularOcclusionFromGI(lmE, lmScale, geomN, frame.env);
+            envVis = SpecularOcclusionFromGI(lmE, lmScale, geomN, frame.env, shadingRoughness);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (lmE / PI) * occlusion;
@@ -1167,7 +1167,7 @@ float envVis = 1.0f;
             const float3 E = SgGiDiffuseIrradiance(octAmps, N) * giScale;
             giSource = 3u;
             bakedE = E;
-            envVis = SpecularOcclusionFromGI(E, giScale, N, frame.env);
+            envVis = SpecularOcclusionFromGI(E, giScale, N, frame.env, shadingRoughness);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (E / PI) * occlusion;
@@ -1196,7 +1196,7 @@ float envVis = 1.0f;
             const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * giScale;
             giSource = 2u;
             bakedE = regE;
-            envVis = SpecularOcclusionFromGI(regE, giScale, N, frame.env);
+            envVis = SpecularOcclusionFromGI(regE, giScale, N, frame.env, shadingRoughness);
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (regE / PI) * occlusion;
@@ -1276,7 +1276,7 @@ float envVis = 1.0f;
         const float3 giE = E * giScale;
         giSource = (volHits > 0u) ? 4u : 3u;
         bakedE = giE;
-        envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
+        envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
         ambientSpec = envSpec * envVis;
         if (!isBlendMat)
             ambient += kD * baseColor * (giE / PI) * occlusion;

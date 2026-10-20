@@ -2053,6 +2053,13 @@ public:
 	// (NaN/Inf hot-pink) in exports/. Pinpoints WHICH stage turns wrong.
 	int m_ssrDumpAtFrame = -1;
 	void DumpSsrStages(uint32_t frameIndex);
+	// SSR contribution debug attachment (TOURMALINE_SSR_DEBUG=1): arms
+	// SsrDesc.debugContrib - the composite binds its .dbg twin and
+	// writes the EXACT add term (what the reflections contribute to the
+	// final HDR) to the ssrContrib second attachment; the ssrdump's
+	// ssr_contrib stage exports it. Wasteful by design (a full-res
+	// RGBA16F target + write), debug only.
+	bool m_debugSsr = false;
 	// Ground-truth depth-view pass (runs when TOURMALINE_SSR_DUMP is armed):
 	// samples the depth through the SSR trace's exact bindless path and
 	// writes it to the (post-blur dead) raw target for the dump.

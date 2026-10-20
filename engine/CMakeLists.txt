@@ -204,4 +204,11 @@ compile_shaders(
         "gfxmesh_lit.frag.hlsl|.gi1std|GI_OCTREE=1|MAT_STANDARD=1"
         "gfxmesh_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
         "gfxmesh_lit.frag.hlsl|.gi3std|GI_FULL=1|MAT_STANDARD=1"
+        # SSR compose debug twin (SSR_DEBUG_CONTRIB): the composite's
+        # EXACT add term on a second attachment (SV_Target1) - bound only
+        # when TOURMALINE_SSR_DEBUG=1 arms m_debugSsr (the WorldRenderer
+        # creates the ssrContrib target + binds this program; the
+        # ssrdump's ssr_contrib stage exports it). Wasteful by design
+        # (a second full-res RGBA16F write), debug only.
+        "ssr_compose.frag.hlsl|.dbg|SSR_DEBUG_CONTRIB=1"
 )

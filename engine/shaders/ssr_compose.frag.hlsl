@@ -24,10 +24,27 @@ struct PSIn
     float2 uv : TEXCOORD0;
 };
 
+// SSR_DEBUG_CONTRIB (the .dbg variant, TOURMALINE_SSR_DEBUG): a SECOND
+// attachment (SV_Target1) carrying the composite's EXACT add term -
+// what the reflections actually contribute to the final HDR (the
+// vignette-scaled (blurTex bilinear x confidence) add, = outColor -
+// base after the vignette lerp). Wasteful by design (a second
+// full-res RGBA16F write, armed only from the debug flag): lets the
+// SSR contribution be SEEN directly (the ssrdump's ssr_contrib stage
+// exports this target) instead of differenced against the base HDR,
+// where the sub-0.1% coverage vanishes in the tone map.
+#ifdef SSR_DEBUG_CONTRIB
+struct PSOut
+{
+    float4 outColor : SV_Target0;   // RGBA16F HDR + reflections
+    float4 outContrib : SV_Target1; // the added reflection term (debug)
+};
+#else
 struct PSOut
 {
     float4 outColor : SV_Target0; // RGBA16F HDR + reflections
 };
+#endif
 
 // Must match Engine/Rendergraph/ssr.h SsrComposePush (64 bytes).
 // uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
@@ -78,6 +95,9 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     {
         // Sky: nothing to reflect off — keep the base color.
         OUT.outColor = float4(base, 1.0f);
+#ifdef SSR_DEBUG_CONTRIB
+        OUT.outContrib = float4(0.0f, 0.0f, 0.0f, 1.0f);
+#endif
         return OUT;
     }
     float2 ndcC = float2((float(fullPx.x) + 0.5f) * cp.invDepthW * 2.0f - 1.0f,
@@ -134,5 +154,11 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     float vignette = saturate((1.0f - edge) / max(cp.vignetteWidth, 0.01f));
     outColor = lerp(base, outColor, vignette);
     OUT.outColor = float4(SanitizeHdr(outColor), 1.0f);
+#ifdef SSR_DEBUG_CONTRIB
+    // The exact add term: post-vignette outColor - base = the reflection
+    // contribution actually landing in the HDR (0 at the vignette edge,
+    // 0 on a miss by construction - the add only ever raised outColor).
+    OUT.outContrib = float4(SanitizeHdr(outColor - base), 1.0f);
+#endif
     return OUT;
 }

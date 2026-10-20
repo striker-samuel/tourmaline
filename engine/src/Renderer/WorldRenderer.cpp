@@ -47,9 +47,11 @@
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Renderer/spirv_reflection.h> // PackPushFloat3x4 (prevModel blob)
+
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Utils/LutIo.h>
+
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Renderer/Renderer.h>
 
@@ -221,7 +223,7 @@ static constexpr float SSR_INTENSITY = 1.0f;
 static constexpr float SSR_F0 = 0.04f; // dielectric glass
 static constexpr float SSR_BLUR_SHARPNESS = 10.0f; // bilateral depth edge weight
 
-static smvk::SsrDesc MakeSsrDesc() {
+static smvk::SsrDesc MakeSsrDesc(bool debugContrib) {
 	smvk::SsrDesc d{};
 	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
 	d.steps = SSR_STEPS;
@@ -231,6 +233,7 @@ static smvk::SsrDesc MakeSsrDesc() {
 	d.intensity = SSR_INTENSITY;
 	d.f0 = SSR_F0;
 	d.blurSharpness = SSR_BLUR_SHARPNESS;
+	d.debugContrib = debugContrib; // m_debugSsr (TOURMALINE_SSR_DEBUG)
 	d.name = "ssr";
 	return d;
 }
@@ -959,6 +962,14 @@ namespace engine {
 		// header - fires at N and N+1 (one-frame-lag discrimination).
 		if (const char* ssrDumpEnv = std::getenv("TOURMALINE_SSR_DUMP")) {
 			m_ssrDumpAtFrame = std::atoi(ssrDumpEnv);
+		}
+		// SSR contribution debug attachment (TOURMALINE_SSR_DEBUG=1): see
+		// header - the composite's exact add term on the ssrContrib second
+		// attachment (the ssrdump's ssr_contrib stage exports it). Read at
+		// startup: the Ensure recreates the chain when it flips, so a
+		// mid-run flip would churn targets every frame.
+		if (const char* ssrDbgEnv = std::getenv("TOURMALINE_SSR_DEBUG")) {
+			m_debugSsr = std::atoi(ssrDbgEnv) != 0;
 		}
 
 		if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
@@ -2244,7 +2255,7 @@ namespace engine {
 						<< renderExtent.width << "x" << renderExtent.height << ")\n";
 				}
 			}
-			if (!m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc())) {
+			if (!m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc(m_debugSsr))) {
 				std::cerr << "[WorldRenderer] SSR target unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
@@ -6855,7 +6866,7 @@ namespace engine {
 			rebuildDofDesc.hqBokeh = m_dofHqBokeh;
 			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDofDesc);
 		}
-		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
+		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc(m_debugSsr));
 		{
 			smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
 			rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
@@ -7689,7 +7700,7 @@ namespace engine {
 				|| m_viewportResources.ssr.extent.width != renderExtent.width
 				|| m_viewportResources.ssr.extent.height != renderExtent.height)
 				smvk::SsrTaaInvalidateHistory(m_ssrTaa);
-			m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
+			m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc(m_debugSsr));
 			{
 				smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
 				rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
@@ -10802,7 +10813,7 @@ namespace engine {
 		bool ssrEmitted = false;
 		{
 			SMVK_PROFILE_CATEGORY("SSR", Optick::Category::Rendering);
-			smvk::SsrDesc ssrDesc = MakeSsrDesc();
+			smvk::SsrDesc ssrDesc = MakeSsrDesc(m_debugSsr);
 			ssrDesc.steps = (uint32_t)std::clamp(m_ssrSteps, 1, 128);
 			ssrDesc.refineSteps = (uint32_t)std::clamp(m_ssrRefineSteps, 0, 8);
 			ssrDesc.maxDistance = m_ssrMaxDistance;
@@ -10947,7 +10958,17 @@ namespace engine {
 					// so this pass owns raw's final content for the dump frames -
 					// the ssr_raw dump slot then shows DEPTH-AS-SSR-SEES-IT, not
 					// the (copy-based, layout-fragile) staging readback.
+					// FIRE-FRAMES GATE (the old arm-early bug): the arm
+					// (m_ssrDumpAtFrame >= 0) is true from frame 0, so the armed
+					// replacement pass used to run EVERY frame up to the dump -
+					// poisoning ssr_raw before every armed frame's blur, which
+					// left the dump's blur/comp slots showing a blurred DEPTH
+					// (garbage) and also altered the armed frames' composited
+					// output. Gated to the fire frames (N and N+1) the chain runs
+					// clean until the dump moment.
 					if (m_ssrDumpAtFrame >= 0
+						&& (m_frameCounter == (uint64_t)m_ssrDumpAtFrame
+							|| m_frameCounter == (uint64_t)m_ssrDumpAtFrame + 1)
 						&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {
 						if (m_ssrDepthViewProgram.shaderCount == 0) {
 							try {
@@ -11023,7 +11044,12 @@ namespace engine {
 						static const int sSsrStencilViewSrc =
 							std::getenv("TOURMALINE_SSR_STENCILVIEW") != nullptr
 							? std::atoi(std::getenv("TOURMALINE_SSR_STENCILVIEW")) : 1;
-						if (m_ssrDumpAtFrame >= 0 && sSsrStencilView && gbufferLayerOn) {
+						// (FIRE-FRAMES GATE: same arm-early fix as the depth-view
+						// pass above - the stencil replacement used to poison
+						// ssr_blur every armed frame before the dump moment.)
+						if (m_ssrDumpAtFrame >= 0 && sSsrStencilView && gbufferLayerOn
+							&& (m_frameCounter == (uint64_t)m_ssrDumpAtFrame
+								|| m_frameCounter == (uint64_t)m_ssrDumpAtFrame + 1)) {
 							if (m_ssrStencilViewProgram.shaderCount == 0) {
 								try {
 									auto vs = m_context->CreateShaderModule(
@@ -15219,6 +15245,10 @@ namespace engine {
 			{ "ssr_hist0",  &ssr.history[0].image, hw, hh, false, false },
 			{ "ssr_hist1",  &ssr.history[1].image, hw, hh, false, false },
 			{ "ssr_comp",   &ssr.image,           fw, fh, false, false },
+			// Contribution debug attachment (TOURMALINE_SSR_DEBUG): the
+			// composite's exact ADD term; target exists only while the flag
+			// is on (the stage skips as "target invalid" unarmed).
+			{ "ssr_contrib", &ssr.contrib.image,  fw, fh, false, false },
 			{ "volumetric", &vol.image,           fw, fh, false, false },
 			{ "depth",      &depthRes.image,      fw, fh, true,  false },
 		};

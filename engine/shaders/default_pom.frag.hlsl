@@ -411,7 +411,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights)
+        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic)
         * occlusion;
 
     float3 color = direct + ambient + ambientSpec;

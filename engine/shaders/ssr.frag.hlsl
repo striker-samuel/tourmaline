@@ -233,12 +233,17 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // vertex-interpolated surface normal — the wireframe source is
     // gone by construction (no ±3 central-difference spans needed).
     SsrGbuffer gbuf = SsrGbufferTap(fullPxC);
-    // Matte early-out: roughness >= ~0.94 means glossFade (1-r)^2 < 1/255
-    // — the output would be sub-quantization black. Skips the march for
-    // matte surfaces AND the "no data" clear sentinel (temporal-split
-    // frames where the seed pass drew without a G-buffer leg): wasted
-    // march work eliminated, exactly like the old binary gate's silence.
-    if (gbuf.roughness >= 0.94f)
+    // Matte early-out: roughness >= ~0.94 means the DIELECTRIC fade
+    // (1-r)^2 < 1/255 — sub-quantization black. Skips the march for
+    // matte dielectrics AND the "no data" clear sentinel (temporal-split
+    // frames where the seed pass drew without a G-buffer leg — the
+    // sentinel decodes metal 0): wasted march work eliminated, exactly
+    // like the old binary gate's silence. Metals keep marching: the
+    // fade keeps their energy (see glossFade below) and a near-matte
+    // metal's screen-space reflection is its only LOCAL light (the
+    // probe's parallax box cannot see the room around it; the SG GI
+    // crossover carries no local/dynamic geometry).
+    if (gbuf.roughness >= 0.94f && gbuf.metal < 0.5f)
     {
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
@@ -260,7 +265,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     const float roughness = gbuf.roughness;
     const float matMetal = gbuf.metal;
     const float gloss = 1.0f - roughness;
-    const float glossFade = gloss * gloss; // (1-r)^2: continuous fade, mirrors at 1
+    // Metal-aware fade (parity with EnvSpecFade, environment.hlsli): the
+    // dielectric (1-r)^2 exists because ONE jittered tap + the blur pass
+    // cannot integrate a wide GGX lobe — the fade substitutes for the
+    // missing spread and dims the speckle. Metals must NOT ride it: the
+    // screen-space reflection is their only LOCAL light (the probe's
+    // parallax box cannot see the room around them — the sponza banner
+    // gold, r~0.5, kept 25% of the knight/floor reflection next to it).
+    // Metals keep full energy; the cone jitter + temporal convergence +
+    // the roughness-scaled blur radius own the spread. Dielectrics keep
+    // the noise discount until the blur carries it alone.
+    const float dielectricFade = gloss * gloss; // (1-r)^2: continuous, mirrors at 1
+    const float glossFade = lerp(dielectricFade, 1.0f, matMetal);
 
     // Fresnel (Schlick): F0 rises to ~1 for metals (their colored F0
     // approximated flat — the mask carries scalars only); dielectrics
@@ -591,10 +607,13 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         return OUT;
     }
     float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
-    // Gloss fade: continuous (1-r)^2 from the receiver roughness buffer.
-    // Mirrors (r=0) = 1; rough surfaces fade toward 0. The fixed 5x5
-    // blur cannot spread the lobe per material, so the continuous fade
-    // is the honest gate. Unbound roughness buffer = legacy mirror (1).
+    // Gloss fade (metal-aware, see the receiver block above): dielectrics
+    // ride the continuous (1-r)^2 — one jittered tap + the blur cannot
+    // integrate a wide lobe, the fade is the honest gate for them. Metals
+    // keep full energy — their screen-space reflection is the only LOCAL
+    // light they get; the roughness-scaled blur radius + the cone jitter
+    // + temporal convergence own the spread. Unbound roughness buffer =
+    // legacy mirror (1).
     // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
     // normal + dithered origin striking the sun disc would otherwise
     // inject up to 4x sun lux next to ~100s neighbors — the spike bloom
