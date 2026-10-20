@@ -54,6 +54,18 @@ against, but expect gaps, visual artifacts, stale bakes and API churn.
 
 Treat those three as preview-quality, not production features.
 
+## Screenshots
+
+GPU meshlet clusters, false-colored per cluster over the Sponza interior, with
+the debug HUD and View menu open:
+
+![GPU meshlet clusters](docs/images/meshlets_showing.png)
+
+Debug tooling: the texture viewer (including the BC5 normal maps), the VRAM
+usage breakdown and the Tourmaline Debug panel:
+
+![Debug menus and VRAM usage](docs/images/debug_menus.png)
+
 ## Requirements
 
 - **Windows 10/11 x64**
