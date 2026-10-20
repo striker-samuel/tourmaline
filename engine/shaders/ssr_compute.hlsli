@@ -11,8 +11,16 @@
 //     in single/fixed-cap structs)
 //   - Pack/UnpackRayCoords: the SDK's packed ray format (x 15b, y 14b,
 //     three 2x2-quad copy flags in the top bits)
-//   - SampleGGXVNDF: Heitz's VNDF sampler, verbatim (jcgt 0007/04/01) —
-//     the stochastic lobe the old fixed cone jitter approximates
+//   - SsrSampleGGXVNDF / SsrSampleReflectionVector: Heitz's VNDF
+//     sampling (jcgt 0007/04/01), the listing the SDK carries - the
+//     stochastic lobe the old fixed cone jitter approximated. PORT
+//     HISTORY: the original "verbatim port" of the sampler was the
+//     D_GGX evaluation (a scalar - see the sampler's port-history
+//     note) and the caller passed the wrong view hemisphere; both were
+//     the root cause of the reflections-read-NADA era (every
+//     reflection direction garbage, ~0.05% visible coverage), found
+//     via the deterministic-mirror bypass + the contribution debug
+//     attachment (d8491e1d's WIP note -> the fix).
 //   - SsrOctDecode: the G-buffer oct normal decode (shared by the
 //     classify's validity path and the intersect's receiver/hit reads)
 //
@@ -89,23 +97,52 @@ static const float SSR_PI = 3.14159265358979f;
 static const float SSR_FLOAT_MAX = 3.402823466e+38f;
 static const float SSR_MAX_REFLECTED = 8192.0f; // firefly cap (same as the old trace)
 
-// Heitz VNDF sampler (verbatim port of the SDK's SampleGGXVNDF):
-// Input Ve: view direction (TBN space, +Z = the surface normal)
-// Input alpha_x, alpha_y: roughness parameters
-// Input U1, U2: uniform random numbers (our IGN epochs)
-// Output Ne: normal sampled with PDF D_Ve(Ne)
+// Heitz's VNDF sampler (jcgt "Sampling the GGX Distribution of Visible
+// Normals", the listing the SDK's SampleGGXVNDF carries):
+//   Ve: view direction, TBN space (+Z = the surface normal), from the
+//       surface TOWARD the eye, unit length.
+//   alpha_x/alpha_y: GGX roughness parameters (isotropic callers pass
+//       roughness twice).
+//   U1, U2: uniform randoms (our IGN epochs).
+// Returns the sampled microfacet normal Ne (PDF D_Ve(Ne)), TBN space,
+// upper hemisphere - the distribution WEIGHTED BY VISIBILITY, so
+// grazing receivers sample the far side of the lobe densely (the
+// classic uniform-normal sampler wastes those samples).
+//
+// PORT HISTORY (the reflections-read-NADA hunt, d8491e1d's WIP note):
+// the "verbatim port" this replaced was not a sampler at all - its
+// body was the D_GGX EVALUATION returning the scalar a2/denom (HLSL
+// silently splats a scalar to the float3 signature), so the intersect
+// reflected around the fake "normal" (d,d,d) with d = a2/denom ~
+// 1/(pi*alpha^2) (4e6 at the chrome ball's r=0.13): every reflection
+// direction was garbage, 96-99% left the frustum (the rejection
+// census), and the few accidental knight-area landings were the whole
+// visible output (0.05% of pixels). Bypassing the sampler with the
+// deterministic mirror (Rview = reflect(normalize(viewPos), N)) jumped
+// the measured contribution ~50x (ssr_contrib mean 0.26 -> 14, max
+// 126 -> 1156) - proof the marcher and the hit validation were right
+// all along and the sampler body was the defect.
 float3 SsrSampleGGXVNDF(float3 Ve, float alpha_x, float alpha_y, float U1, float U2)
 {
-    // Section 3.2: transforming the view direction to the hemisphere configuration
+    // Section 3.2: transform the view direction to the hemisphere
+    // configuration (stretch by alpha so the anisotropic distribution
+    // becomes spherical in this space).
     float3 Vh = normalize(float3(alpha_x * Ve.x, alpha_y * Ve.y, Ve.z));
-    float a = Vh.x * Vh.x;
-    float a2 = a * a;
-    float3 H = normalize(float3(Ve.x, Ve.y, 1.0f)); // Half-vector approximation for VNDF
-    float NdotH = max(dot(Vh, H), 0.0f);
-    float NdotH2 = NdotH * NdotH;
-    float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
-    denom = SSR_PI * denom * denom;
-    return a2 / max(denom, 1e-7f);
+    // Section 4.1: orthonormal basis about Vh (degenerate guard near +Z).
+    float3 T1 = (Vh.z < 0.99999f)
+        ? normalize(cross(Vh, float3(0.0f, 0.0f, 1.0f)))
+        : float3(1.0f, 0.0f, 0.0f);
+    float3 T2 = cross(T1, Vh);
+    // Section 2.3: warp the uniform (U1, U2) onto the spherical cap.
+    float r = sqrt(U1);
+    float phi = 2.0f * SSR_PI * U2;
+    float3 P = float3(r * cos(phi), r * sin(phi), sqrt(max(0.0f, 1.0f - U1)));
+    // Section 4.3: sphere point to hemisphere (reorient toward Ve's
+    // hemisphere - the visible-normal domain).
+    float3 Nne = P.x * T1 + P.y * T2 + P.z * Vh;
+    // Section 3.3: transform the normal back to the ellipsoid
+    // configuration (the inverse of the Section 3.2 stretch).
+    return normalize(float3(alpha_x * Nne.x, alpha_y * Nne.y, max(0.0f, Nne.z)));
 }
 
 float GeometrySchlickGGX(float NdotV, float roughness)
@@ -134,6 +171,21 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
 // SampleReflectionVector, verbatim): builds the TBN around the G-buffer
 // normal, maps the view direction into it, VNDF-samples the microfacet
 // normal, reflects, maps back to view space.
+//
+// INPUT CONTRACT (the SDK convention - the internal negation):
+// view_direction = the CAMERA-TO-SURFACE incident ray (the normalize of
+// the view-space surface position). The function negates it internally
+// (TBN dot -view_direction) into the surface-toward-eye direction
+// Ve that the Heitz sampler expects, then reflects -Ve back around the
+// sampled normal for the outgoing (surface-to-scene) direction. The
+// marcher's z plane is armed for exactly that outgoing sense.
+// SIGN HISTORY (the same NADA hunt as the sampler body above): the old
+// caller passed V (surface-to-camera) - the opposite of this contract -
+// so the sampler sampled the OPPOSITE hemisphere and the outgoing
+// direction came out pointing TOWARD the camera (approaching: the dead
+// z-plane side of the marcher) instead of into the scene. The caller
+// now passes normalize(viewPos); V stays surface-to-camera for the
+// Fresnel term only.
 float3 SsrSampleReflectionVector(float3 view_direction, float3 normal, float roughness, float U1, float U2)
 {
     float3 U;

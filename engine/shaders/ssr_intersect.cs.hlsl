@@ -250,7 +250,16 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     float2 rnd = float2(
         SsrIGN(float2(coords) + float2(11.7f, 5.3f), sp.frameIndex),
         SsrIGN(float2(coords) + float2(7.9f, 19.1f), sp.frameIndex));
-    float3 Rview = SsrSampleReflectionVector(V, N, roughness, rnd.x, rnd.y);
+    // SIGN (the NADA hunt's second half, with the sampler-body fix in
+    // ssr_compute.hlsli - both notes tell the full journey): the
+    // sampler takes the CAMERA-TO-SURFACE incident ray (it negates
+    // internally into the Heitz Ve; see SsrSampleReflectionVector's
+    // contract). The old call passed V (surface-to-camera) - the
+    // opposite hemisphere, the outgoing direction mirrored toward the
+    // camera where the marcher's z plane is dead. V stays
+    // surface-to-camera below (the Fresnel ndv).
+    float3 Rview = SsrSampleReflectionVector(
+        normalize(viewPos), N, roughness, rnd.x, rnd.y);
     float3 screenOrigin = float3(uv, dBest);
     float3 screenDir = SsrProjectDirection(viewPos, Rview, screenOrigin, frame.proj);
     // Behind-camera rays never hit (the SDK relies on the frustum
