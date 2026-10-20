@@ -166,8 +166,11 @@ loose glTF / KTX2 assets
   -> tools/cook            (asset cooking: geometry, textures, manifests)
   -> tools/gi_baker / tools/cubemap_baker / lightmaps   (Embree ray tracing)
   -> tools/pak_cooker      (*.pak archives: LZ4, magic-versioned)
-   -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
+  -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
 ```
+
+`tools/cook_bistro.py` and friends show a full end-to-end example against
+the Bistro test scene (scripts reference local asset locations).
 
 ## Repository layout
 

@@ -1,8 +1,8 @@
 # Tourmaline — Project Guide for Future Agents
 
 Source of truth alongside `AGENTS.md` (build/run), `README.md` (project
-front page) and `docs/editor_tour_and_context.md` (tour v1 spec);
-`notes/` is gitignored.
+front page), `docs/editor_tour_and_context.md` (tour v1 spec) and
+`ALLOCATION_ANALYSIS.md` (allocator migration); `notes/` is gitignored.
 
 ## 1. What this is
 
@@ -37,8 +37,8 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   `cmake/CompileShaders.cmake` (DXC `-spirv -fspv-target-env=vulkan1.3
   -fvk-use-dx-layout`) -> `out/build/<cfg>/content/shaders/*.spv`, synced next
   to `App.exe`. Rebuild `App` on edit. Debug is `-Od` except
-  `HLSL_FORCE_O3_FILES` (driver AV pin; the `-DTOURMALINE_SHADER_OD_RETRY=ON`
-  escape hatch clears the pin for driver re-tests).
+  `HLSL_FORCE_O3_FILES` (driver AV pin; retry via
+  `python tools/shader_od_retry.py` + `-DTOURMALINE_SHADER_OD_RETRY=ON`).
 - Run CWD = `out/build/<cfg>`; `--bench N` = 10 warmup + N measured then exit.
   `TOURMALINE_CAPTURE` must land INSIDE the bench budget.
 - Headless matrix: `TOURMALINE_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
