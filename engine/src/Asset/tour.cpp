@@ -234,8 +234,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 					<< c.vec4.y << " " << c.vec4.z << " " << c.vec4.w
 					<< " " << c.number;
 			}
-			// System types (material/file/image) carry no payload:
-			// the line above is the whole record.
+			// System types (material/file/image) carry no payload, and
+			// exportSettings too (its settings ride setExportAttr lines
+			// tabulated under the create): the line above is the whole
+			// record.
 			break;
 		}
 		case Verb::CreateTransform: {
@@ -438,6 +440,30 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << " -v " << c.number;
 		break;
 	}
+	case Verb::SetExportAttr: {
+		// Same addressing shape as the other typed attr verbs (-ref k
+		// of the k-th exportSettings create, else -n cluster id).
+		// Bools ride -type "bool" -v on|off; strings ride -type
+		// "string" -v quoted; scalars ride -v (the field set is
+		// SceneExportSettings — the WorldSettings-style export config).
+		f << "setExportAttr ";
+		if ((c.node & kCreateExportRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateExportRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "lodRatios" || c.text == "lmExcludeKw")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "meshopt" || c.text == "lods"
+			|| c.text == "lightmap" || c.text == "cubemap"
+			|| c.text == "cubemapOctree" || c.text == "meshlets"
+			|| c.text == "giCvol" || c.text == "giWorld"
+			|| c.text == "autoKtx" || c.text == "ignoreVfs")
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
+		break;
+	}
 	}
 	if (!c.name.empty())
 		f << " // " << c.name;
@@ -470,6 +496,133 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
 	return false;
 }
 
+bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
+	std::string* warnOut) {
+	// The ONE attr -> field mapping (the replay's SetExportAttr case, the
+	// editor live path, and ExportSettingsFromDoc's doc walk all run
+	// this — identical results by construction). Value rides flag
+	// (bools), name (strings) or number (scalars); unknown attrs
+	// warn-and-skip through warnOut (never fatal).
+	const std::string& a = c.text;
+	if (a == "meshopt")
+		es.meshopt = c.flag;
+	else if (a == "lods")
+		es.lods = c.flag;
+	else if (a == "lodRatios")
+		es.lodRatios = c.name;
+	else if (a == "lodError")
+		es.lodError = std::max(float(c.number), 0.0f);
+	else if (a == "lightmap")
+		es.lightmap = c.flag;
+	else if (a == "lmMetersPerTexel")
+		es.lmMetersPerTexel = std::max(float(c.number), 1e-4f);
+	else if (a == "lmLobes")
+		es.lmLobes = std::clamp(uint32_t(std::max(c.number, 0.0)), 1u, 32u);
+	else if (a == "lmAtlasWidth")
+		es.lmAtlasWidth = std::max(uint32_t(std::max(c.number, 0.0)), 16u);
+	else if (a == "lmRays")
+		es.lmRays = std::max(uint32_t(std::max(c.number, 0.0)), 1u);
+	else if (a == "lmProxyRes")
+		es.lmProxyRes = std::clamp(int(c.number), 0, 256);
+	else if (a == "lmExcludeSmall")
+		es.lmExcludeSmall = std::max(float(c.number), 0.0f);
+	else if (a == "lmExcludeKw")
+		es.lmExcludeKw = c.name;
+	else if (a == "cubemap")
+		es.cubemap = c.flag;
+	else if (a == "cubemapSize")
+		es.cubemapSize = std::max(uint32_t(std::max(c.number, 0.0)), 4u);
+	else if (a == "cubemapRays")
+		es.cubemapRays = std::max(uint32_t(std::max(c.number, 0.0)), 1u);
+	else if (a == "cubemapOctree")
+		es.cubemapOctree = c.flag;
+	else if (a == "cubemapOctreeMax")
+		es.cubemapOctreeMax = std::max(float(c.number), 0.25f);
+	else if (a == "cubemapOctreeMin")
+		es.cubemapOctreeMin = std::clamp(float(c.number),
+			0.125f, es.cubemapOctreeMax);
+	else if (a == "cubemapOctreeDepth")
+		es.cubemapOctreeDepth = std::min(uint32_t(
+			std::max(c.number, 0.0)), 8u);
+	else if (a == "cubemapExtraRadius")
+		es.cubemapExtraRadius = std::max(float(c.number), 0.5f);
+	else if (a == "meshlets")
+		es.meshlets = c.flag;
+	else if (a == "meshletMaxVerts")
+		es.meshletMaxVerts = std::clamp(uint32_t(
+			std::max(c.number, 0.0)), 3u, 255u);
+	else if (a == "meshletMaxTris")
+		es.meshletMaxTris = std::clamp(uint32_t(
+			std::max(c.number, 0.0)), 1u, 512u);
+	else if (a == "meshletConeWeight")
+		es.meshletConeWeight = std::clamp(float(c.number), 0.0f, 1.0f);
+	else if (a == "giCvol")
+		es.giCvol = c.flag;
+	else if (a == "giWorld")
+		es.giWorld = c.flag;
+	else if (a == "autoKtx")
+		es.autoKtx = c.flag;
+	else if (a == "ignoreVfs")
+		es.ignoreVfs = c.flag;
+	else {
+		if (warnOut)
+			*warnOut = "unknown exportSettings attr '" + a + "' (skipped)";
+		return false;
+	}
+	return true;
+}
+
+bool ExportSettingsFromDoc(const Doc& doc, SceneExportSettings& out,
+	std::string* warnOut) {
+	// Pre-replay read of the scene's exportSettings node (Cook.exe/
+	// Pak.exe merge the tour defaults BEFORE the definition build
+	// consumes the meshopt/LOD/meshlet configs — the replayed scene
+	// does not exist yet at their merge points). The singleton rule:
+	// the FIRST createNode -at exportSettings wins; only its -ref-
+	// addressed attr lines apply (-n forms address replay-minted ids,
+	// which do not exist here — the replay reports them if they were
+	// ever valid). The replay consumes the SAME lines through the SAME
+	// ApplyExportAttr mapping, so the results agree by construction.
+	uint32_t createCount = 0;
+	const Command* create = nullptr;
+	bool have = false;
+	for (const Command& c : doc.commands) {
+		if (c.verb == Verb::CreateNode && c.nodeType == "exportSettings") {
+			if (!have) {
+				have = true;
+				create = &c; // FIRST wins (the singleton rule)
+			}
+			++createCount;
+		}
+		else if (c.verb == Verb::SetExportAttr) {
+			if ((c.node & kCreateExportRefBase) != 0
+				&& (c.node & ~kCreateExportRefBase) == 0) {
+				std::string w;
+				if (!ApplyExportAttr(out, c, &w) && warnOut) {
+					if (!warnOut->empty())
+						*warnOut += "\n";
+					*warnOut += w;
+				}
+			}
+			else if (warnOut) {
+				if (!warnOut->empty())
+					*warnOut += "\n";
+				*warnOut += "setExportAttr -n '" + c.text
+					+ "' left to the replay (pre-replay ids do not "
+					"exist)";
+			}
+		}
+	}
+	if (have && createCount > 1 && warnOut) {
+		if (!warnOut->empty())
+			*warnOut += "\n";
+		*warnOut += std::to_string(createCount)
+			+ " exportSettings nodes - the FIRST wins (remove the "
+			"duplicates)";
+	}
+	return have;
+}
+
 const char* OverrideAttrName(OverrideAttr a) {
 	switch (a) {
 	case OverrideAttr::Visibility: return "visibility";
@@ -494,8 +647,7 @@ bool OverridePatternMatches(const std::string& pattern,
 	}
 }
 
-std::string DescribeOverride(const OverrideRule& r) {
-	char buf[512];
+std::string DescribeOverride(const OverrideRule& r) {	char buf[512];
 	if (r.attr == OverrideAttr::Material)
 		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> mat.%u%s",
 			r.pattern.c_str(), OverrideAttrName(r.attr), r.material,
@@ -647,8 +799,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
-	// create), TerrainPaint (-ref k of the k-th terrain-family create)
-	// and setCvolAttr (-ref k of the k-th cvolume-family create) ride
+	// create), TerrainPaint (-ref k of the k-th terrain-family create),
+	// setCvolAttr (-ref k of the k-th cvolume-family create) and
+	// setExportAttr (-ref k of the k-th exportSettings create) ride
 	// directly under their create, tab-indented.
 	// Families span both spellings (legacy createLight/createTerrain/
 	// createCvolume AND unified createNode pointLight/spotLight/
@@ -676,6 +829,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 3;
 			if (c.nodeType == "camera")
 				return 4;
+			if (c.nodeType == "exportSettings")
+				return 5;
 		}
 		return -1;
 	};
@@ -710,9 +865,12 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				|| (family == 3 && d.verb == Verb::SetCubemapAttr
 					&& (d.node & kCreateCubemapRefBase) != 0
 					&& (d.node & ~kCreateCubemapRefBase) == k)
-				|| (family == 4 && d.verb == Verb::SetCamAttr
-					&& (d.node & kCreateCameraRefBase) != 0
-					&& (d.node & ~kCreateCameraRefBase) == k);
+			|| (family == 4 && d.verb == Verb::SetCamAttr
+				&& (d.node & kCreateCameraRefBase) != 0
+				&& (d.node & ~kCreateCameraRefBase) == k)
+			|| (family == 5 && d.verb == Verb::SetExportAttr
+				&& (d.node & kCreateExportRefBase) != 0
+				&& (d.node & ~kCreateExportRefBase) == k);
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -733,40 +891,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
 	for (const auto& [k, v] : doc.editorSettings)
 		f << "editorSet -k " << Quote(k) << " -v " << Quote(v) << ";\n";
-	// (Scene references write up front, right after the source line —
-	// Maya file-block order.)
-	if (doc.hasCook) {
-		const TourCook& k = doc.cook;
-		f << "cook -outPak " << Quote(k.outPak)
-			<< " -meshopt " << (k.meshopt ? "on" : "off")
-			<< " -lods " << (k.lods ? "on" : "off")
-			<< " -lodRatios " << Quote(k.lodRatios)
-			<< " -lodError " << k.lodError
-			<< " -lightmap " << (k.lightmap ? "on" : "off")
-			<< " -lmMetersPerTexel " << k.lmMetersPerTexel
-			<< " -lmLobes " << k.lmLobes
-			<< " -lmAtlasWidth " << k.lmAtlasWidth
-			<< " -lmRays " << k.lmRays
-			<< " -lmProxyRes " << k.lmProxyRes
-			<< " -lmExcludeSmall " << k.lmExcludeSmall
-			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
-			<< " -cubemap " << (k.cubemap ? "on" : "off")
-			<< " -cubemapSize " << k.cubemapSize
-			<< " -cubemapRays " << k.cubemapRays
-			<< " -cubemapOctree " << (k.cubemapOctree ? "on" : "off")
-			<< " -cubemapOctreeMax " << k.cubemapOctreeMax
-			<< " -cubemapOctreeMin " << k.cubemapOctreeMin
-			<< " -cubemapOctreeDepth " << k.cubemapOctreeDepth
-			<< " -cubemapExtraRadius " << k.cubemapExtraRadius
-			<< " -meshlets " << (k.meshlets ? "on" : "off")
-			<< " -meshletVerts " << k.meshletMaxVerts
-			<< " -meshletTris " << k.meshletMaxTris
-			<< " -meshletConeWeight " << k.meshletConeWeight
-			<< " -giCvol " << (k.giCvol ? "on" : "off")
-			<< " -giWorld " << (k.giWorld ? "on" : "off")
-			<< " -autoKtx " << (k.autoKtx ? "on" : "off")
-			<< ";\n";
-	}
+	// (The cook block is GONE: the export settings are the scene's
+	// exportSettings NODE — createNode -at exportSettings + setExportAttr
+	// commands above carry them.)
 	if (!f.good()) {
 		err = "write failed: " + path;
 		return false;
@@ -1033,6 +1160,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "cvolume", CreateNodeKind::Dag },
 	{ "cubemap", CreateNodeKind::Dag },
 	{ "camera", CreateNodeKind::Dag },
+	{ "exportSettings", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
 	{ "image", CreateNodeKind::System },
@@ -1337,105 +1465,15 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		continue;
 	}
 		if (verb == "cook") {
-			doc.hasCook = true;			TourCook& k = doc.cook;
-			for (size_t i = 1; i < toks.size(); ++i) {
-				auto get = [&](const char* key, std::string& out) {
-					if (toks[i] == key && i + 1 < toks.size()) {
-						out = toks[i + 1];
-						if (!out.empty() && out.back() == ';')
-							out.pop_back();
-						++i;
-						return true;
-					}
-					return false;
-				};
-			std::string v;
-			if (get("-outPak", v))
-				k.outPak = v;
-			else if (get("-meshopt", v))
-				k.meshopt = (v == "on" || v == "1");
-			else if (get("-lods", v))
-				k.lods = (v == "on" || v == "1");
-			else if (get("-lodRatios", v))
-				k.lodRatios = v;
-			else if (get("-lodError", v))
-				k.lodError = std::max(std::stof(v), 0.0f);
-		else if (get("-lightmap", v))
-			k.lightmap = (v == "on" || v == "1");
-			else if (get("-lmMetersPerTexel", v))
-				k.lmMetersPerTexel = std::max(std::stof(v), 1e-4f);
-			else if (get("-lmDensity", v)) {
-				// Legacy: texels/meter -> meters/texel.
-				const float tpm = std::max(std::stof(v), 2.0f);
-				k.lmMetersPerTexel = 1.0f / tpm;
-			}
-			else if (get("-lmLobes", v))
-				k.lmLobes = uint32_t(std::stoul(v));
-			else if (get("-lmAtlasWidth", v))
-				k.lmAtlasWidth = uint32_t(std::stoul(v));
-			else if (get("-lmBudget", v)) {
-				// Legacy (removed with --lm-budget): ignored — the atlas
-				// width is fixed and the height grows with content now.
-			}
-			else if (get("-lmRays", v))
-					k.lmRays = uint32_t(std::stoul(v));
-				else if (get("-lmProxyRes", v))
-					k.lmProxyRes = std::clamp(std::stoi(v), 0, 256);
-				else if (get("-lmExcludeSmall", v))
-					k.lmExcludeSmall = std::stof(v);
-				else if (get("-lmExcludeKw", v))
-					k.lmExcludeKw = v;
-				else if (get("-sunAzimuth", v) || get("-sunElevation", v)
-					|| get("-sunIntensity", v) || get("-skyIntensity", v)
-					|| get("-sunColor", v)) {
-				// Legacy (moved to the env blocks): ignored — the sun and
-				// sky live in the tour's env.default.* / env.n.* blocks
-				// (SceneEnv, lux-native) and resolve in ApplyTourToCluster;
-				// old tours always carry env blocks alongside, so these
-				// keys are dead weight.
-				}
-				else if (get("-cubemap", v))
-					k.cubemap = (v == "on" || v == "1");
-				else if (get("-cubemapName", v)) {
-					// Legacy key (capture sets are NAMELESS now - the
-					// manifest keys on the scene stem): parse + ignore so
-					// old tours keep loading.
-				}
-				else if (get("-cubemapSize", v))
-					k.cubemapSize = std::max<uint32_t>(
-						uint32_t(std::stoul(v)), 4);
-			else if (get("-cubemapRays", v))
-				k.cubemapRays = std::max<uint32_t>(
-					uint32_t(std::stoul(v)), 1);
-			else if (get("-cubemapOctree", v))
-				k.cubemapOctree = (v == "on" || v == "1");
-			else if (get("-cubemapOctreeMax", v))
-				k.cubemapOctreeMax = std::max(std::stof(v), 0.25f);
-			else if (get("-cubemapOctreeMin", v))
-				k.cubemapOctreeMin = std::clamp(std::stof(v),
-					0.125f, k.cubemapOctreeMax);
-			else if (get("-cubemapOctreeDepth", v))
-				k.cubemapOctreeDepth = std::min<uint32_t>(
-					uint32_t(std::stoul(v)), 8);
-			else if (get("-cubemapExtraRadius", v))
-				k.cubemapExtraRadius = std::max(std::stof(v), 0.5f);
-			else if (get("-meshlets", v))
-				k.meshlets = (v == "on" || v == "1");
-			else if (get("-meshletVerts", v))
-				k.meshletMaxVerts = std::clamp<uint32_t>(
-					uint32_t(std::stoul(v)), 3, 255);
-			else if (get("-meshletTris", v))
-				k.meshletMaxTris = std::clamp<uint32_t>(
-					uint32_t(std::stoul(v)), 1, 512);
-			else if (get("-meshletConeWeight", v))
-				k.meshletConeWeight = std::clamp(std::stof(v), 0.0f, 1.0f);
-			else if (get("-giCvol", v))
-				k.giCvol = (v == "on" || v == "1");
-			else if (get("-giWorld", v))
-				k.giWorld = (v == "on" || v == "1");
-			else if (get("-autoKtx", v))
-				k.autoKtx = (v == "on" || v == "1");
-			}
+			// REMOVED verb: the cook block is gone — the export settings
+			// are the scene's exportSettings NODE now (createNode -at
+			// exportSettings + setExportAttr; payload in
+			// Scene::exportForNode). Old tours: warn + skip (the settings
+			// default until re-authored on the node; the sanctioned
+			// no-conversions break).
+			warn("tour:" + std::to_string(lineNo)
+				+ ": cook block removed - export settings are the "
+				"exportSettings scene node now (skipped)");
 			continue;
 		}
 		Command c{};
@@ -1470,6 +1508,24 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				if (fl.hasPStr)
 					c.parentRef = fl.pStr;
 				c.text = fl.name;
+				doc.commands.push_back(std::move(c));
+				continue;
+			}
+			if (fl.at == "exportSettings") {
+				// The WorldSettings-style export config singleton: a DAG
+				// node with NO payload on the create line — the settings
+				// ride setExportAttr lines tabulated under the create
+				// (the createLight + setLightAttr pattern). -name is
+				// optional (the scaffold node defaults its name; the
+				// editor always writes "ExportSettings"). Stays
+				// CreateNode downstream (no legacy verb to lower to —
+				// the replay + the editor both special-case the type).
+				c.verb = Verb::CreateNode;
+				c.nodeType = "exportSettings";
+				c.node = fl.hasP ? fl.p : 0;
+				if (fl.hasPStr)
+					c.parentRef = fl.pStr;
+				c.text = fl.hasName ? fl.name : "ExportSettings";
 				doc.commands.push_back(std::move(c));
 				continue;
 			}
@@ -2122,6 +2178,61 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
+	else if (effVerb == "setExportAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		// The exportSettings node's payload lines (one per field —
+		// SceneExportSettings). Addressing: -ref k of the k-th
+		// createNode -at exportSettings, or -n cluster id. Bools ride
+		// -type "bool" -v on|off; strings ride -type "string" -v
+		// quoted; scalars ride -v.
+		static const char* kAttrs[] = { "meshopt", "lods",
+			"lodRatios", "lodError", "lightmap", "lmMetersPerTexel",
+			"lmLobes", "lmAtlasWidth", "lmRays", "lmProxyRes",
+			"lmExcludeSmall", "lmExcludeKw", "cubemap", "cubemapSize",
+			"cubemapRays", "cubemapOctree", "cubemapOctreeMax",
+			"cubemapOctreeMin", "cubemapOctreeDepth",
+			"cubemapExtraRadius", "meshlets", "meshletMaxVerts",
+			"meshletMaxTris", "meshletConeWeight", "giCvol",
+			"giWorld", "autoKtx", "ignoreVfs" };
+		static const char* kBoolAttrs[] = { "meshopt", "lods",
+			"lightmap", "cubemap", "cubemapOctree", "meshlets",
+			"giCvol", "giWorld", "autoKtx", "ignoreVfs" };
+		static const char* kStrAttrs[] = { "lodRatios",
+			"lmExcludeKw" };
+		auto inSet = [](const char* const* set, size_t n,
+				const std::string& s) {
+			for (size_t i = 0; i < n; ++i)
+				if (s == set[i])
+					return true;
+			return false;
+		};
+		if (!inSet(kAttrs, sizeof(kAttrs) / sizeof(kAttrs[0]), fl.at)) {
+			err = "line " + std::to_string(lineNo)
+				+ ": bad exportSettings attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetExportAttr;
+		c.node = fl.hasRef ? (kCreateExportRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (inSet(kBoolAttrs, sizeof(kBoolAttrs) / sizeof(kBoolAttrs[0]), fl.at)) {
+			bool on = false;
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseFlagWord(w, on)) {
+				err = "line " + std::to_string(lineNo) + ": bad flag '" + w + "'";
+				return false;
+			}
+			c.flag = on;
+		}
+		else if (inSet(kStrAttrs, sizeof(kStrAttrs) / sizeof(kStrAttrs[0]), fl.at)) {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+		}
+	}
 	else {
 			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
 				verb + "' (skipped)");
@@ -2524,6 +2635,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created cameras (kCreateCameraRefBase | k),
 	// resolved by SetCamAttr below.
 	std::vector<uint32_t> createdCameras;
+	// Same scheme for the created exportSettings node
+	// (kCreateExportRefBase | k), resolved by SetExportAttr below. The
+	// singleton semantic is authoring-side: the FIRST create wins the
+	// consumers (Cook.exe/editor read the first in node id order);
+	// a hand-authored duplicate warns + still replays (its attrs apply
+	// to ITS node).
+	std::vector<uint32_t> createdExports;
 	// Same scheme for created terrain (kCreateTerrainRefBase | k),
 	// resolved for the generic verbs below (Rename/SetTranslate/...
 	// /Parent) so post-creation edits replay onto the rebuilt node.
@@ -2749,6 +2867,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.lightForNode.erase(target);
 			scene.cvolForNode.erase(target);
 			scene.cubemapForNode.erase(target);
+			scene.exportForNode.erase(target);
 			break;
 		}
 		case Verb::SetUuid: {
@@ -3441,11 +3560,87 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		break;
 	}
+	case Verb::SetExportAttr: {
+		// The exportSettings node's payload (SceneExportSettings — the
+		// cook block REPLACEMENT). One attr line per field; the singleton
+		// semantic is authoring-side (the first create wins consumers),
+		// so attrs apply to whichever node they address.
+		uint32_t target = c.node;
+		if ((target & kCreateExportRefBase) != 0) {
+			const uint32_t k = target & ~kCreateExportRefBase;
+			if (k >= createdExports.size()) {
+				if (err)
+					*err = "tour: setExportAttr ref out of range: " +
+						std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdExports[k];
+		}
+		else if (!checkNode(target, c)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		auto eit = scene.exportForNode.find(target);
+		if (eit == scene.exportForNode.end()) {
+			if (err)
+				*err = "tour: setExportAttr on non-exportSettings node "
+					+ std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		SceneExportSettings& es = eit->second;
+		if (!ApplyExportAttr(es, c, nullptr)) {
+			warn("tour: unknown exportSettings attr '" + c.text
+				+ "' (skipped)");
+		}
+		break;
+	}
 		case Verb::CreateNode: {
 			// System node types (material/file/image): parsed +
 			// validated up front; replay defers to the editor — reported
 			// here, never silently dropped. (DAG types lower to their
-			// legacy verbs at parse time and never reach this case.)
+			// legacy verbs at parse time and never reach this case —
+			// EXCEPT exportSettings, which has no legacy verb: the
+			// WorldSettings-style export config singleton creates like
+			// the cvolume/camera family, payload via SetExportAttr.)
+			if (c.nodeType == "exportSettings") {
+				uint32_t parent = 0;
+				if (!resolveParent(c, "createNode exportSettings", c.node,
+						parent)) {
+					if (!failCmd(c))
+						return false;
+					break;
+				}
+				const int level = scene.hierarchy[parent].level + 1;
+				const int newId = addNode(scene, int(parent), level);
+				if (newId < 0) {
+					if (err)
+						*err = "tour: createNode exportSettings failed "
+							"under parent " + std::to_string(parent);
+					if (!failCmd(c))
+						return false;
+					break;
+				}
+				scene.localTransform[size_t(newId)] = glm::mat4(1.0f);
+				// Identity transform (a config node — no shape), default
+				// payload (attrs below override field by field).
+				scene.exportForNode[uint32_t(newId)] = SceneExportSettings{};
+				const uint32_t nameId = uint32_t(scene.nodeNames.size());
+				scene.nodeNames.push_back(
+					c.text.empty() ? "ExportSettings" : c.text);
+				scene.nameForNode[uint32_t(newId)] = nameId;
+				createdExports.push_back(uint32_t(newId));
+				if (createdExports.size() > 1)
+					warn("tour: duplicate exportSettings node '"
+						+ getNodeName(scene, int(newId))
+						+ "' (the FIRST one wins the cook; remove the "
+						"duplicates)");
+				break;
+			}
 			warn("tour: system node type '" + c.nodeType
 				+ "' skipped at cook ('" + c.text + "' — editor-managed)");
 			break;
@@ -3866,6 +4061,15 @@ std::string Describe(const Command& c) {
 		else
 			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
 		std::snprintf(buf, sizeof(buf), "cube.%s.%s", tgt, c.text.c_str());
+		break;
+	}
+	case Verb::SetExportAttr: {
+		char tgt[32];
+		if ((c.node & kCreateExportRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateExportRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "export.%s.%s", tgt, c.text.c_str());
 		break;
 	}
 	case Verb::SetCvolAttr: {

@@ -348,8 +348,8 @@ enum class ViewMode : int {
 // ---------------------------------------------------------------------------
 // Flat shading debug-view FS slots (one FS per view; ViewMode above): the
 // program PAIRS key on this — the direct twin (default.vert + FS) rides the
-// direct fallback leg (filter off / unfilterable / shader-LOD-far
-// instances), the filtered twin (gfxfiltered.vert + FS, built via
+// direct fallback leg (unfilterable / shader-LOD-far instances; the whole leg
+// only when the pass config kills the filter or setup latched it off), the filtered twin (gfxfiltered.vert + FS, built via
 // GfxRenderer::FilteredProgramWith) rides the GPU-driven leg exactly like
 // Lit: same cull chain, same LOD selection, same skinned fetch. SsrContribution
 // is NOT here on purpose: its FS declares its own 64B push layout (not the
@@ -1984,7 +1984,12 @@ public:
 	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	engine::GfxRenderer m_gfxRenderer{};
-	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	// The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
+	// legacy direct draws) is gone. This latch is setup-time availability
+	// ONLY (onAttach): Ensure failure or an empty cluster heap drops the
+	// filter leg for the session (gfxSlot stays invalid; everything draws
+	// direct - graceful skip, never fatal). Never user-toggled.
+	bool m_gfxFilterAvailable = true;
 	// Task-less mesh-shader main leg (opaque ranges, mesh
 	// FS twins for base/sg/gi variants). False or unsupported device =
 	// indexed multi-draws (CPU fallback).

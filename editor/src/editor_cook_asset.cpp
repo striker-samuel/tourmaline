@@ -62,8 +62,8 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 			smvk::cook::DefaultGiCookAsset(
 				path.stem().string(), scene);
 		a.guid = guid;
-		a.cvol = m_cook.giCvol;
-		a.world = m_cook.giWorld;
+		a.cvol = ExportCfg().giCvol;
+		a.world = ExportCfg().giWorld;
 		ok = smvk::cook::SaveGiCookAsset(path.generic_string(), a,
 			werr);
 	}
@@ -72,13 +72,13 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 			smvk::cook::DefaultLightmapCookAsset(
 				path.stem().string(), scene);
 		a.guid = guid;
-		a.lmMetersPerTexel = m_cook.lmMetersPerTexel;
-		a.lmLobes = m_cook.lmLobes;
-		a.lmAtlasWidth = m_cook.lmAtlasWidth;
-		a.lmRays = m_cook.lmRays;
-		a.lmProxyRes = m_cook.lmProxyRes;
-		a.lmExcludeSmall = m_cook.lmExcludeSmall;
-		a.lmExcludeKw = m_cook.lmExcludeKw;
+		a.lmMetersPerTexel = ExportCfg().lmMetersPerTexel;
+		a.lmLobes = ExportCfg().lmLobes;
+		a.lmAtlasWidth = ExportCfg().lmAtlasWidth;
+		a.lmRays = ExportCfg().lmRays;
+		a.lmProxyRes = ExportCfg().lmProxyRes;
+		a.lmExcludeSmall = ExportCfg().lmExcludeSmall;
+		a.lmExcludeKw = ExportCfg().lmExcludeKw;
 		// Sun/sky snapshot from the ENV BLOCK (lux-native, one authored
 		// sun — m_cook no longer carries them; the bake reads the same
 		// env through the cooker's EnvForBake).
@@ -153,8 +153,8 @@ std::string EditorApp::CreateCubemapAsset(const std::string& dir) {
 	smvk::cook::CubemapAsset a =
 		smvk::cook::DefaultCubemapAsset(path.stem().string(), scene);
 	a.guid = smvk::tour::GenerateUuid();
-	a.size = m_cook.cubemapSize;
-	a.rays = m_cook.cubemapRays;
+	a.size = ExportCfg().cubemapSize;
+	a.rays = ExportCfg().cubemapRays;
 	a.capture = scene; // capture sets are NAMELESS (scene stem)
 	std::string werr;
 	if (!smvk::cook::SaveCubemapAsset(path.generic_string(), a, werr)) {
@@ -338,8 +338,8 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// result rides the STABLE path (blobGuid now carries the bake stem
 	// — the "has a result" identity inside gi/ — not a minted guid).
 	a.scene = scene;
-	a.cvol = m_cook.giCvol;
-	a.world = m_cook.giWorld;
+	a.cvol = ExportCfg().giCvol;
+	a.world = ExportCfg().giWorld;
 	// The SUPERSEDED result identity (a different bake stem — the out
 	// pak was renamed): captured before the overwrite below; its files
 	// die with this update (nothing references the old stem after the
@@ -407,7 +407,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// (textures/cubemaps/<base>.cubemanifest) is still adopted when
 	// present (migration) so old cooks keep resolving.
 	m_bakeCubemapGuid.clear();
-	if (m_cook.cubemap) {
+	if (ExportCfg().cubemap) {
 		// Legacy-manifest migration base: the old naming rule was the
 		// out-pak stem (capture sets are NAMELESS now - scene stem).
 		const std::string base =
@@ -444,8 +444,8 @@ void EditorApp::RecordBakeAssetsFromCook() {
 			}
 		}
 		cm.scene = scene;
-		cm.size = m_cook.cubemapSize;
-		cm.rays = m_cook.cubemapRays;
+		cm.size = ExportCfg().cubemapSize;
+		cm.rays = ExportCfg().cubemapRays;
 		cm.capture = base;
 		// Payload pointer: the baked set for this scene (registry-owned
 		// path under gi/; the loose ktx2 rows stay readable via VFS).

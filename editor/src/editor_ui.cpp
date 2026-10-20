@@ -1278,13 +1278,14 @@ namespace editor {
 				ImGui::PushID(int(n));
 				const bool sel = IsSelected(n);
 				char label[300];
-				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s", n,
+				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s%s", n,
 					name.empty() ? "(unnamed)" : name.c_str(),
 					m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
 					m_world->scene.cvolForNode.contains(n) ? " [cvol]" : "",
 					m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
 					m_world->scene.cameraForNode.contains(n) ? " [camera]" : "",
+					m_world->scene.exportForNode.contains(n) ? " [export]" : "",
 					IsEnvNode(n) ? " [env]" : "",
 					IsRefPlaceholder(n) ? " [ref]" : "",
 					!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
@@ -1353,12 +1354,13 @@ namespace editor {
 				nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 		}
 		char label[300];
-		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s",
+		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
 			hasMesh ? " [mesh]" : "", lightTag,
 			scene.cvolForNode.contains(node) ? " [cvol]" : "",
 			scene.cubemapForNode.contains(node) ? " [cube]" : "",
 			scene.cameraForNode.contains(node) ? " [camera]" : "",
+			scene.exportForNode.contains(node) ? " [export]" : "",
 			IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 			IsLightmapNode(scene, int(node)) ? " [LM]" : "",
 			IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
@@ -1999,6 +2001,169 @@ namespace editor {
 		endCvolDrag("outside");
 		ImGui::TextDisabled("bake: a future gi_baker --tour pass harvests "
 			"these (priority/spacing/fades) + the box");
+	}
+
+	void EditorApp::DrawExportSettingsSection(uint32_t node) {
+		// The scene's exportSettings node: the WorldSettings-style EXPORT
+		// CONFIG page (cook knobs). Every edit is an undoable SetExportAttr
+		// command persisted as a setExportAttr tour line; Cook.exe/Pak.exe
+		// read the replayed scene (CLI flags still win). outPak/contentDir
+		// stay session-only in the Cook panel (never scene state).
+		if (!m_world || node >= m_world->scene.hierarchy.size())
+			return;
+		Scene& scene = m_world->scene;
+		auto it = scene.exportForNode.find(node);
+		if (it == scene.exportForNode.end())
+			return;
+		ImGui::Separator();
+		ImGui::Text("Export settings: '%s'",
+			getNodeName(scene, int(node)).c_str());
+		ImGui::TextDisabled("cook/export knobs (createNode -at "
+			"exportSettings + setExportAttr; CLI flags still win)");
+
+		auto beginDrag = [&](const char* attr) {
+			if (m_pending.active
+				&& (m_pending.cmd.verb != EditVerb::SetExportAttr
+					|| m_pending.cmd.node != node
+					|| m_pending.cmd.exportAttr != attr))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetExportAttr;
+				m_pending.cmd.node = node;
+				m_pending.cmd.exportAttr = attr;
+				ReadNodeExportAttr(node, attr, m_pending.cmd.beforeNum,
+					m_pending.cmd.beforeFlag, m_pending.cmd.beforeText);
+			}
+		};
+		auto endDrag = [&](const char* attr) {
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active
+				&& m_pending.cmd.verb == EditVerb::SetExportAttr
+				&& m_pending.cmd.node == node
+				&& m_pending.cmd.exportAttr == attr)
+				FinishDrag();
+		};
+		auto setBool = [&](const char* label, const char* attr, bool v,
+			const char* tip) {
+			bool val = v;
+			if (ImGui::Checkbox(label, &val))
+				PushExportAttr(node, attr, 0.0, val, "");
+			if (tip && ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", tip);
+		};
+		auto dragInt = [&](const char* label, const char* attr, int v,
+			float speed, int lo, int hi) {
+			int val = v;
+			if (ImGui::DragInt(label, &val, speed, lo, hi)) {
+				val = std::clamp(val, lo, hi);
+				beginDrag(attr);
+				WriteNodeExportAttr(node, attr, double(val), false, {});
+				m_pending.cmd.number = double(val);
+			}
+			endDrag(attr);
+		};
+		auto dragFloat = [&](const char* label, const char* attr, float v,
+			float speed, float lo, float hi, const char* fmt) {
+			float val = v;
+			if (ImGui::DragFloat(label, &val, speed, lo, hi, fmt)) {
+				val = std::clamp(val, lo, hi);
+				beginDrag(attr);
+				WriteNodeExportAttr(node, attr, double(val), false, {});
+				m_pending.cmd.number = double(val);
+			}
+			endDrag(attr);
+		};
+
+		const SceneExportSettings& es = it->second;
+		setBool("MeshOpt (meshoptimizer)", "meshopt", es.meshopt,
+			"Reorder vertices/indices for GPU cache efficiency.");
+		setBool("Generate LODs", "lods", es.lods,
+			"Build mesh LOD chains via meshoptimizer.");
+		if (es.lods) {
+			ImGui::Indent();
+			char ratios[64];
+			std::snprintf(ratios, sizeof(ratios), "%s",
+				es.lodRatios.c_str());
+			ImGui::Text("LOD ratios (csv):");
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::InputText("##lodRatios", ratios, sizeof(ratios),
+				ImGuiInputTextFlags_EnterReturnsTrue))
+				PushExportAttr(node, "lodRatios", 0.0, false, ratios);
+			dragFloat("LOD error", "lodError", es.lodError, 0.001f,
+				0.0f, 1.0f, "%.3f");
+			ImGui::Unindent();
+		}
+		setBool("Meshlets", "meshlets", es.meshlets,
+			"Per-meshlet build over the cooked topology.");
+		if (es.meshlets) {
+			ImGui::Indent();
+			dragInt("Max verts", "meshletMaxVerts",
+				int(es.meshletMaxVerts), 1.0f, 3, 255);
+			dragInt("Max tris", "meshletMaxTris",
+				int(es.meshletMaxTris), 1.0f, 1, 512);
+			dragFloat("Cone weight", "meshletConeWeight",
+				es.meshletConeWeight, 0.01f, 0.0f, 1.0f, "%.2f");
+			ImGui::Unindent();
+		}
+		setBool("Auto-convert textures (KTX2)", "autoKtx", es.autoKtx,
+			"Non-KTX sources transcode in-process at cook.");
+		setBool("Skip loose VFS sidecars (ignoreVfs)", "ignoreVfs",
+			es.ignoreVfs,
+			"Embed ONLY what the scene itself carries: no loose\n"
+			"gi/<stem>.sggi, no cvmanifest/.cvol rows, no cubemap\n"
+			"manifest/KTX rows at pak assembly (minimal variant pak).");
+
+		setBool("Lightmaps (bake)", "lightmap", es.lightmap,
+			"On-demand lightmap bake (Bake GI).");
+		if (es.lightmap) {
+			ImGui::Indent();
+			dragInt("Voxel proxy resolution", "lmProxyRes",
+				es.lmProxyRes, 1.0f, 0, 256);
+			dragFloat("Meters per texel", "lmMetersPerTexel",
+				es.lmMetersPerTexel, 0.01f, 0.01f, 1.0f, "%.3f");
+			dragInt("Max SG lobes", "lmLobes", int(es.lmLobes), 1.0f, 5, 12);
+			dragInt("Atlas width (px)", "lmAtlasWidth",
+				int(es.lmAtlasWidth), 64.0f, 256, 8192);
+			dragInt("Rays per texel", "lmRays", int(es.lmRays), 8.0f,
+				64, 8192);
+			ImGui::Unindent();
+		}
+
+		setBool("Cubemap captures", "cubemap", es.cubemap,
+			"On-demand preconvolved specular capture set (Update cubemaps).");
+		if (es.cubemap) {
+			ImGui::Indent();
+			dragInt("Size", "cubemapSize", int(es.cubemapSize), 32.0f,
+				64, 2048);
+			dragInt("Rays per texel", "cubemapRays",
+				int(es.cubemapRays), 8.0f, 1, 4096);
+			setBool("Octree placement (adaptive)", "cubemapOctree",
+				es.cubemapOctree,
+				"Sparse adaptive placement; growth stops at the\n"
+				"32-probe runtime budget.");
+			if (es.cubemapOctree) {
+				ImGui::Indent();
+				dragFloat("Max cell (m)", "cubemapOctreeMax",
+					es.cubemapOctreeMax, 0.25f, 0.5f, 64.0f, "%.1f");
+				dragFloat("Min cell (m)", "cubemapOctreeMin",
+					es.cubemapOctreeMin, 0.1f, 0.125f,
+					std::max(es.cubemapOctreeMax, 0.25f), "%.2f");
+				dragInt("Depth cap", "cubemapOctreeDepth",
+					int(es.cubemapOctreeDepth), 1.0f, 0, 8);
+				dragFloat("Pinned influence (m)", "cubemapExtraRadius",
+					es.cubemapExtraRadius, 0.25f, 0.5f, 50.0f, "%.1f");
+				ImGui::Unindent();
+			}
+			ImGui::Unindent();
+		}
+
+		ImGui::Separator();
+		ImGui::Text("GI bakes (on demand — Bake GI in the Cook panel)");
+		setBool("Convex volumes (bake authored)", "giCvol", es.giCvol,
+			"Bake the authored cvolume nodes (gi/<stem>_*.cvol).");
+		setBool("World field (adaptive octree)", "giWorld", es.giWorld,
+			"Bake gi/<stem>.sggi (slow; unbaked scenes render sky IBL).");
 	}
 
 	void EditorApp::DrawCubemapSection(uint32_t node) {
@@ -2733,6 +2898,8 @@ namespace editor {
 		DrawCubemapSection(node);
 		// Authored camera on this node (lens inspector).
 		DrawCamSection(node);
+		// The scene's export config node (cook/export knobs).
+		DrawExportSettingsSection(node);
 
 		// Static subtree (transform freeze): the root mark affects the WHOLE
 		// tree (Scene::staticRoot) — frozen transforms after the initial
@@ -3493,226 +3660,39 @@ namespace editor {
 		ImGui::InputText("##contentDir", m_cookContentDirBuf,
 			sizeof(m_cookContentDirBuf));
 
+		// Bake/export knobs live on the scene's exportSettings NODE now
+		// (authored in the Inspector — select it below; persisted as
+		// createNode -at exportSettings + setExportAttr tour lines and
+		// read by Cook.exe/Pak.exe off the replayed scene).
 		ImGui::Separator();
-		ImGui::Text("Quality settings (CLI overrides tour defaults):");
-
-		if (ImGui::Checkbox("MeshOpt (meshoptimizer)", &m_cook.meshopt))
-			AutosaveTour();
-		ImGui::SameLine();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Reorder vertices/indices for GPU cache efficiency.");
-
-		if (ImGui::Checkbox("Generate LODs", &m_cook.lods))
-			AutosaveTour();
-		ImGui::SameLine();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Build mesh LOD chains via meshoptimizer.");
-		if (m_cook.lods) {
-			ImGui::Indent();
-			ImGui::Text("LOD ratios (csv, e.g. \"0.75,0.5,0.3,0.15\"):");
-			char ratios[64];
-			std::snprintf(ratios, sizeof(ratios), "%s",
-				m_cook.lodRatios.c_str());
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::InputText("##lodRatios", ratios,
-				sizeof(ratios),
-				ImGuiInputTextFlags_EnterReturnsTrue)) {
-				m_cook.lodRatios = ratios;
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Screen-size retention per level.");
-			ImGui::Text("LOD error:");
-			float lerr = m_cook.lodError;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragFloat("##lodError", &lerr, 0.001f, 0.0f,
-				1.0f, "%.3f")) {
-				m_cook.lodError = lerr;
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Simplification target error (relative).");
-			ImGui::Unindent();
-		}
-
-		if (ImGui::Checkbox("Meshlets", &m_cook.meshlets))
-			AutosaveTour();
-		ImGui::SameLine();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Per-meshlet build over the cooked topology "
-				"(GPU mesh-shader friendly clusters).");
-		if (m_cook.meshlets) {
-			ImGui::Indent();
-			ImGui::Text("Max verts:");
-			int mv = int(m_cook.meshletMaxVerts);
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##meshletVerts", &mv, 1.0f, 3, 255)) {
-				m_cook.meshletMaxVerts = uint32_t(std::clamp(mv, 3, 255));
-				AutosaveTour();
-			}
-			ImGui::Text("Max tris:");
-			int mt = int(m_cook.meshletMaxTris);
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##meshletTris", &mt, 1.0f, 1, 512)) {
-				m_cook.meshletMaxTris = uint32_t(std::clamp(mt, 1, 512));
-				AutosaveTour();
-			}
-			ImGui::Text("Cone weight:");
-			float cw = m_cook.meshletConeWeight;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::SliderFloat("##meshletCone", &cw, 0.0f, 1.0f)) {
-				m_cook.meshletConeWeight = cw;
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Partitioning bias toward tighter cone "
-					"bounds (0 = cluster shape only).");
-			ImGui::Unindent();
-		}
-
-		if (ImGui::Checkbox("Auto-convert textures (KTX2)", &m_cook.autoKtx))
-			AutosaveTour();
-		ImGui::SameLine();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Non-KTX sources transcode in-process at cook "
-				"(file-node colorspace honored, `.ktx2` sidecar cached next "
-				"to the source). Off restores warn-and-skip.");
-
-		if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
-			AutosaveTour();
-		if (m_cook.lightmap) {
-			ImGui::Indent();
-			ImGui::Text("Voxel proxy resolution:");
-			int pres = m_cook.lmProxyRes;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##lmProxyRes", &pres, 1.0f, 0, 256)) {
-				m_cook.lmProxyRes = pres;
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Voxel-remesh scene proxy grid (0 = legacy per-mesh path).");
-
-			ImGui::Text("Meters per texel:");
-			float mpt = m_cook.lmMetersPerTexel;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragFloat("##lmMpt", &mpt, 0.01f, 0.01f, 1.0f, "%.3f")) {
-				m_cook.lmMetersPerTexel = mpt;
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("World-space lightmap texel density (m/texel).");
-
-			ImGui::Text("Max SG lobes:");
-			int lobes = m_cook.lmLobes;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##lmLobes", &lobes, 1.0f, 5, 12)) {
-				m_cook.lmLobes = std::clamp(lobes, 5, 12);
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Preferred max SG bases per texel (5-12).");
-
-			ImGui::Text("Atlas width (px):");
-			int atlasW = m_cook.lmAtlasWidth;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##lmAtlasW", &atlasW, 64.0f, 256, 8192)) {
-				m_cook.lmAtlasWidth = std::clamp(atlasW, 256, 8192);
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Lightmap atlas width; height grows with content.");
-
-			ImGui::Text("Rays per texel:");
-			int rays = m_cook.lmRays;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##lmRays", &rays, 8.0f, 64, 8192)) {
-				m_cook.lmRays = std::clamp(rays, 64, 8192);
-				AutosaveTour();
-			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Path-traced rays per lightmap texel (quality).");
-
-			ImGui::Unindent();
-		}
-
-		if (ImGui::Checkbox("Cubemap captures", &m_cook.cubemap))
-			AutosaveTour();
-		if (m_cook.cubemap) {
-			ImGui::Indent();
-			// No name field: capture sets are NAMELESS (the manifest keys
-			// on the scene stem; see the cook's base derivation).
-			ImGui::Text("Size:");
-			int size = m_cook.cubemapSize;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##cubemapSize", &size, 32.0f, 64, 2048)) {
-				m_cook.cubemapSize = std::clamp(size, 64, 2048);
-				AutosaveTour();
-			}
-			ImGui::Text("Rays per texel:");
-			int rays = m_cook.cubemapRays;
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::DragInt("##cubemapRays", &rays, 8.0f, 1, 4096)) {
-				m_cook.cubemapRays = std::clamp(rays, 1, 4096);
-				AutosaveTour();
-			}
-			// Placement density (the octree knobs — Cook.exe's
-			// --cubemap-octree* set): adaptive placement instead of the
-			// uniform lattice. Open cells over the max subdivide for
-			// coverage; the min is the detail floor; the depth caps the
-			// tree; growth stops at the 32-probe runtime budget.
-			if (ImGui::Checkbox("Octree placement (adaptive)", &m_cook.cubemapOctree))
-				AutosaveTour();
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Sparse adaptive placement: open volumes stay coarse,\nnear-surface cells refine to the detail floor, embedded centers\ndrop, growth stops at the 32-probe runtime budget.");
-			if (m_cook.cubemapOctree) {
-				ImGui::Indent();
-				if (ImGui::DragFloat("Max cell (m)##cubeoct",
-						&m_cook.cubemapOctreeMax, 0.25f, 0.5f, 64.0f, "%.1f"))
-					AutosaveTour();
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Open cells larger than this subdivide (coverage).");
-				if (ImGui::DragFloat("Min cell (m)##cubeoct",
-						&m_cook.cubemapOctreeMin, 0.1f, 0.125f,
-						std::max(m_cook.cubemapOctreeMax, 0.25f), "%.2f"))
-					AutosaveTour();
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Detail floor: never subdivide below this (probe DENSITY).");
-				{
-					int depth = int(m_cook.cubemapOctreeDepth);
-					ImGui::SetNextItemWidth(-FLT_MIN);
-					if (ImGui::DragInt("Depth cap##cubeoct", &depth, 0.25f, 0, 8)) {
-						m_cook.cubemapOctreeDepth = uint32_t(std::clamp(depth, 0, 8));
-						AutosaveTour();
-					}
+		{
+			const uint32_t esNode = FindExportSettingsNode();
+			if (esNode != UINT32_MAX) {
+				ImGui::Text("Export settings: node '%s' (#%u)",
+					getNodeName(m_world->scene, int(esNode)).c_str(),
+					esNode);
+				if (ImGui::Button("Select ExportSettings node")) {
+					SetSelection(esNode);
+					m_bottomTab = 0;
 				}
-				if (ImGui::DragFloat("Pinned influence (m)##cubeoct",
-						&m_cook.cubemapExtraRadius, 0.25f, 0.5f, 50.0f, "%.1f"))
-					AutosaveTour();
 				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Influence radius of pinned extra probes (fade = half).\nMatches the SceneCubemap authoring default.");
-				ImGui::Unindent();
+					ImGui::SetTooltip("Quality/GI knobs (meshopt, LODs,\n"
+						"lightmaps, cubemaps, meshlets, ignoreVfs...) are\n"
+						"edited on that node's Inspector page.");
 			}
-			ImGui::Unindent();
+			else {
+				ImGui::TextDisabled("No exportSettings node in this scene.");
+				if (ImGui::Button("Create ExportSettings node"))
+					EnsureExportSettingsNode();
+			}
 		}
 
 		ImGui::Separator();
-		ImGui::Text("GI (probes) â€” baked ON DEMAND, never with the cook");
+		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
 		ImGui::TextDisabled("%u cvolume node(s) authored in this scene",
 			m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
-		if (ImGui::Checkbox("Convex volumes (bake authored)", &m_cook.giCvol))
-			AutosaveTour();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Cvolume nodes bake via Bake GI below (GiBaker):\n"
-				"gi/<pak-stem>_*.cvol + .cvmanifest sidecars.\n"
-				"Skipped when the definition has no cvolumes.");
-		if (ImGui::Checkbox("World field (adaptive octree)", &m_cook.giWorld))
-			AutosaveTour();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("gi/<pak-stem>.sggi: the global fallback the\n"
-				"runtime samples outside any convex volume.\n"
-				"This is the slow stage (minutes on real scenes) â€” it\n"
-				"runs only via Bake GI below. Unbaked scenes render\n"
-				"sky IBL instead.");
+		ImGui::TextDisabled("bake selectors (giCvol/giWorld) live on the "
+			"ExportSettings node");
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
@@ -3811,9 +3791,9 @@ namespace editor {
 				"cook dialog's cubemap octree knobs (8 m grid mirror\n"
 				"when the octree is off). Manual like 'Update precook'.");
 		ImGui::TextDisabled("octree max %.1f / min %.1f / depth %u%s",
-			m_cook.cubemapOctreeMax, m_cook.cubemapOctreeMin,
-			m_cook.cubemapOctreeDepth,
-			m_cook.cubemapOctree ? "" : " (octree OFF: 8 m grid mirror)");
+			ExportCfg().cubemapOctreeMax, ExportCfg().cubemapOctreeMin,
+			ExportCfg().cubemapOctreeDepth,
+			ExportCfg().cubemapOctree ? "" : " (octree OFF: 8 m grid mirror)");
 		ImGui::TextDisabled("%s", m_cubemapDensityInfo.empty()
 			? "no prediction yet"
 			: m_cubemapDensityInfo.c_str());

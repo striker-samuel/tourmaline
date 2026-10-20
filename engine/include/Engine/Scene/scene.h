@@ -177,6 +177,77 @@ struct SceneCvol {
 	float outsideFade = 0.1f;// blend width outside each face (m)
 };
 
+// EXPORT SETTINGS (the cook/export configuration node — the scene's
+// WorldSettings): the bake knobs the cook runs with, authored on ONE
+// singleton DAG node (createNode -at exportSettings, auto-seeded by the
+// editor; edited in the inspector; persisted as setExportAttr tour
+// verbs). This REPLACED the tour `cook` block + the export-window
+// session state: the settings travel with the SCENE, and Cook.exe
+// consumes them off the replayed scene (CLI flags still win — the same
+// explicit-override contract the cook block had). NOT serialized into
+// paks (bake-time only — the runtime never reads them; like SceneCvol,
+// the payload is tour/editor/cook state). Node-local like SceneCvol;
+// the FIRST exportSettings node in scene id order is THE one (the
+// editor seeds exactly one; hand-authored duplicates warn + first
+// wins). Field set mirrors the cook CLI flags one-for-one.
+struct SceneExportSettings {
+	bool meshopt = true;
+	bool lods = false;
+	std::string lodRatios = "0.75,0.5,0.3,0.15"; // LOD chain ratios (csv)
+	float lodError = 0.01f;                  // simplification target error
+	bool lightmap = false;
+	// Chart density request, METERS PER TEXEL (0.25 = one texel per 25 cm).
+	float lmMetersPerTexel = 0.25f;
+	uint32_t lmLobes = 12;
+	uint32_t lmAtlasWidth = 1024; // FIXED atlas width; height grows
+	uint32_t lmRays = 256;
+	// Voxel-remesh scene proxy resolution (0 = legacy per-mesh path).
+	int lmProxyRes = 256;
+	float lmExcludeSmall = 0.0f;
+	std::string lmExcludeKw; // extra --lm-exclude keywords (csv)
+	// NOTE: no sun/sky fields here — the ENVIRONMENT BLOCKS (SceneEnv,
+	// env.default.* editorSet keys) own the sun and sky (lux-native);
+	// every bake stage reads the resolved env block (EnvForBake).
+	// Preconvolved specular cubemaps (the cook --cubemap stage; the
+	// capture set is NAMELESS — keyed on the scene stem).
+	bool cubemap = false;
+	uint32_t cubemapSize = 128;
+	uint32_t cubemapRays = 128;
+	// Placement DENSITY (the octree knobs — Cook.exe's --cubemap-octree*
+	// set): sparse adaptive placement instead of a uniform lattice.
+	bool cubemapOctree = false;
+	float cubemapOctreeMax = 8.0f;
+	float cubemapOctreeMin = 2.0f;
+	uint32_t cubemapOctreeDepth = 4;
+	float cubemapExtraRadius = 5.5f;
+	// Meshlet cook (per-meshlet build over the cooked topology). The
+	// size limits are the ENGINE's kMeshletMaxVertices/Triangles.
+	bool meshlets = false;
+	uint32_t meshletMaxVerts = 64;
+	uint32_t meshletMaxTris = 64;
+	float meshletConeWeight = 0.0f;
+	// GI bakes (on-demand Bake GI only — cooks never bake GI): authored
+	// convex volumes (the cvolume nodes) + the adaptive world field.
+	bool giCvol = true;
+	bool giWorld = true;
+	// Auto-convert non-KTX textures to KTX2 at cook time.
+	bool autoKtx = true;
+	// SKIP the loose VFS sidecar discovery at pak assembly: when on,
+	// Pak embeds ONLY what the scene itself carries (meshes, materials,
+	// textures — everything cooks straight into the pak, blobs by path)
+	// and resolves NOTHING loose: no gi/cubemaps/<stem>.cubemanifest +
+	// KTX rows, no gi/<stem>.sggi, no gi/<stem>.cvmanifest + .cvol
+	// rows, no bindings for them (the scene renders probe-less + sky
+	// IBL ambient; bakes re-embed by turning this off). The canonical
+	// use: a MINIMAL variant pak (the same scene, no baked-GI payloads)
+	// without moving the loose sidecars aside — the discovery keys on
+	// the SCENE stem, so renaming the out pak does not dodge it. The
+	// App-side --no-vfs flag is the runtime mirror (proves the pak is
+	// self-contained); this is the cook-side "do not even resolve it"
+	// switch. In-process cooks (the editor) honor it the same way.
+	bool ignoreVfs = false;
+};
+
 // Env-volume inf-mask bits (per-face infinity over the node's transform
 // box, which stays the shape): a set bit pushes that face to -/+infinity.
 // Both bits on one axis = the whole axis unbounded (the legacy INF-scale
@@ -372,6 +443,15 @@ struct Scene {
 	// editor cubemap node): pinned specular probe positions harvested
 	// by the cook's --cubemap stage. Position = node translate.
 	std::unordered_map<NodeId, SceneCubemap> cubemapForNode;
+	// Node -> the scene's EXPORT SETTINGS (tour createNode -at
+	// exportSettings / the editor's auto-seeded WorldSettings node;
+	// see SceneExportSettings). Node-local like cvolForNode; the
+	// singleton semantic is authoring-side (the editor seeds exactly
+	// one; consumers take the FIRST in node id order and warn on
+	// duplicates). Recorded by tour replay; consumed by Cook.exe (the
+	// CLI-losing defaults, the old `cook` block's contract) + the
+	// editor's bakes. NOT serialized into paks (bake-time only).
+	std::unordered_map<NodeId, SceneExportSettings> exportForNode;
 	// Authored environment (see SceneEnv): the resolved ACTIVE look
 	// (authoring units) — what renders. The editor resolves its current
 	// source (default block or selected node block) into `environment`

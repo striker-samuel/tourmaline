@@ -1966,9 +1966,12 @@ namespace engine {
 		// meshes from cooked meshlets (pak path) or retained uploads
 		// (procedural path), then bake the cluster-ordered index heap.
 		// Non-fatal: unregistered meshes keep rendering via direct draws.
-		// The pass config gates the whole filter (sample-level); the member
-		// toggle stays as the runtime A/B switch.
-		if (m_passes.gfxFilter && m_useGfxFilter) {
+		// The pass config gates the whole filter (sample-level); the
+		// filtered main view itself is always on - the runtime A/B toggle
+		// and its legacy direct-draws off path are gone. The availability
+		// latch below only drops the leg when the filter cannot run at
+		// all (Ensure failure / empty cluster heap).
+		if (m_passes.gfxFilter) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
 			for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
 				m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
@@ -2023,7 +2026,7 @@ namespace engine {
 				m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
 				std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
-				m_useGfxFilter = false;
+				m_gfxFilterAvailable = false;
 			}
 			else {
 				m_gfxRenderer.RegisterWorldMeshes(*m_world);
@@ -2032,7 +2035,7 @@ namespace engine {
 					<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
 				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
 					std::cerr << "[WorldRenderer] GfxFilter: no clusters - direct draws\n";
-					m_useGfxFilter = false;
+					m_gfxFilterAvailable = false;
 				}
 			}
 		}
@@ -8269,7 +8272,7 @@ namespace engine {
 		const bool evsmSpotOn = EvsmActive() && spotPassesOn;
 		const bool shadowIndirect = !evsmDirOn && !evsmSpotOn
 			&& (m_passes.directionalShadows || spotSlotCount > 0)
-			&& m_passes.gfxFilter && m_useGfxFilter
+			&& m_passes.gfxFilter && m_gfxFilterAvailable
 			&& m_gfxRenderer.EnsureShadowSeeds(*m_context);
 		const bool cascadeViewsValid =
 			m_passes.directionalShadows
@@ -8645,10 +8648,11 @@ namespace engine {
 		// realloc while held and the filter would read an unbuilt pyramid.
 		bool cullingFrozen = false;
 		uint32_t frozenViewIdx = smvk::RenderViewSet::kInvalidIndex;
-		// Pass-config gate for the whole GPU-driven filter leg (seed +
-		// HZB + dispatch + remainder). When off, gfxSlot stays invalid and
+		// Pass-config + setup-latch gate for the whole GPU-driven filter leg
+		// (seed + HZB + dispatch + remainder). The filtered main view has no
+		// runtime off switch anymore. When off, gfxSlot stays invalid and
 		// every consumer falls back to direct draws.
-		const bool gfxFilterOn = m_passes.gfxFilter && m_useGfxFilter;
+		const bool gfxFilterOn = m_passes.gfxFilter && m_gfxFilterAvailable;
 		if (gfxFilterOn) {
 			if (m_freezeCullingView && !m_frozenViewValid) {
 				m_frozenViewProj = frameData.viewProj;
@@ -9026,7 +9030,7 @@ namespace engine {
 		// barrier, same pattern as the frame-uniform uploads.
 		// ---------------------------------------------------------------------
 		uint32_t coneLineVerts = 0;
-		if (m_debugCones && m_useGfxFilter && gfxSlot != UINT32_MAX &&
+		if (m_debugCones && gfxSlot != UINT32_MAX &&
 			m_gfxRenderer.DebugProgramsValid() &&
 			gfxSlot < m_gfxRenderer.State().views.size()) {
 			const smvk::gfx::State& st = m_gfxRenderer.State();
@@ -9087,13 +9091,12 @@ namespace engine {
 			// nodes + non-filtered meshes use the direct fallback below.
 			const bool motionFilteredActive = m_passes.gfxFilter
 				&& m_passes.filteredMotion
-				&& m_useGfxFilter
 				&& m_useFilteredMotion
 				&& gfxSlot != UINT32_MAX
 				&& m_gfxRenderer.EnsureFilteredMotion(*m_context,
 					m_viewportResources.motionVectors.fragModule);
 			// One-shot diagnostic: tells which gate keeps the filtered
-			// motion path off (filter toggle, motion toggle, no slot,
+			// motion path off (pass config, motion toggle, no slot,
 			// program/SPV failure, or an empty material-range list).
 			{
 				static bool motionFilterLogged = false;
@@ -9105,9 +9108,9 @@ namespace engine {
 						rangeCount = m_gfxRenderer.MaterialRanges(gfxSlot).size();
 #ifndef NDEBUG
 					std::fprintf(stderr,
-						"[Motion] filtered=%d (filter=%d motion=%d slot=%u prog=%d ranges=%zu)\n",
+						"[Motion] filtered=%d (filterPass=%d motion=%d slot=%u prog=%d ranges=%zu)\n",
 						motionFilteredActive ? 1 : 0,
-						m_useGfxFilter ? 1 : 0, m_useFilteredMotion ? 1 : 0,
+						m_passes.gfxFilter ? 1 : 0, m_useFilteredMotion ? 1 : 0,
 						gfxSlot, m_gfxRenderer.FilteredMotionValid() ? 1 : 0,
 						rangeCount);
 #else
@@ -9451,7 +9454,7 @@ namespace engine {
 			&& smvk::SupportsMeshShaders()
 			&& m_gfxRenderer.MeshProgramsValid()
 			&& !m_wireframe
-			&& m_useGfxFilter && gfxSlot != UINT32_MAX;
+			&& gfxSlot != UINT32_MAX;
 		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, meshActiveForFrame](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
@@ -9715,7 +9718,10 @@ namespace engine {
 			// index list (model matrices come from the draws buffer via
 			// SV_InstanceID; materialId is pushed per range for the frag).
 			// Meshes the filter skipped (no clusters) still draw direct.
-			const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
+			// gfxSlot validity IS the filter gate (invalid = the pass config
+			// killed it, setup latched it off, or the frame's filter failed -
+			// the runtime A/B toggle is gone).
+			const bool gfxActive = gfxSlot != UINT32_MAX;
 		// Debug views replace the shaded opaque leg:
 		//   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
 		//     the GPU chain and draw EVERY instance direct Ã¢â‚¬â€ HZB-culled
@@ -9728,7 +9734,7 @@ namespace engine {
 		//     like Lit Ã¢â‚¬â€ same cull chain, same LOD selection, same skinned
 		//     fetch (they used to bypass with direct-only draws, which
 		//     rendered skinned meshes in the bind pose). The direct twin
-		//     binds only in the fallback leg (filter off / unfilterable /
+		//     binds only in the fallback leg (unfilterable /
 		//     shader-LOD-far instances).
 		//   - Cubemap: no FS swap Ã¢â‚¬â€ the filtered lit path stays, only the
 		//     frame's cubemapDebug pins to 1 (the env specular term
@@ -10443,7 +10449,7 @@ namespace engine {
 		// vanishes "randomly" whenever workload/timing shifts (MSAA mode,
 		// light toggles). Covers the meshlet debug view too (cluster-ordered
 		// heap bind).
-		if (m_useGfxFilter && gfxSlot != UINT32_MAX)
+		if (gfxSlot != UINT32_MAX)
 			m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
 		// Mesh-shader consume barriers (batches/clusters/params/draws for
 		// the DrawMeshTasks in the record above).
@@ -12691,7 +12697,12 @@ namespace engine {
 								: "shading inline forward+ (deferred phases skipped)");
 						}
 						if (ImGui::CollapsingHeader("GPU Culling / GfxFilter")) {
-							ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
+							// The filtered main view is always on (the old
+							// runtime A/B toggle + its legacy direct-draws off
+							// path are gone); only the pass config
+							// (--without gfxFilter / Minimal) or a setup
+							// failure can drop the leg.
+							ImGui::TextDisabled("filtered main view: always on");
 							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 							// Task-less mesh-shader main leg: SETUP-TIME only
 							// (TOURMALINE_MESH=0/1 at startup + device support;
@@ -15069,21 +15080,21 @@ namespace engine {
 		}
 		if (m_dumpIndirectAudit) {
 			m_dumpIndirectAudit = false;
-			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
+			if (gfxSlot != UINT32_MAX) {
 				m_host.WaitForDeviceIdle();
 				m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
 			}
 		}
 		if (m_debugDumpHzb) {
 			m_debugDumpHzb = false;
-			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
+			if (gfxSlot != UINT32_MAX) {
 				m_host.WaitForDeviceIdle();
 				m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
 			}
 		}
 		// Opt-in first-frame HZB dump (debug): stalls the GPU (device-idle
 		// wait), so it stays off unless explicitly enabled.
-		if (m_dumpFirstFrameHzb && m_useGfxFilter && gfxSlot != UINT32_MAX) {
+		if (m_dumpFirstFrameHzb && gfxSlot != UINT32_MAX) {
 			m_dumpFirstFrameHzb = false;
 			m_host.WaitForDeviceIdle();
 			m_gfxRenderer.DumpHzb(*m_context, gfxSlot);

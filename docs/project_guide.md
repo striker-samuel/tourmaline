@@ -1,8 +1,8 @@
 # Tourmaline — Project Guide for Future Agents
 
-Source of truth alongside `AGENTS.md` (build/run), `docs/editor_tour_and_context.md`
-(tour v1 spec), `ALLOCATION_ANALYSIS.md` (allocator migration). `README.md` is
-empty; `notes/` is gitignored.
+Source of truth alongside `AGENTS.md` (build/run), `README.md` (project
+front page) and `docs/editor_tour_and_context.md` (tour v1 spec);
+`notes/` is gitignored.
 
 ## 1. What this is
 
@@ -37,8 +37,8 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   `cmake/CompileShaders.cmake` (DXC `-spirv -fspv-target-env=vulkan1.3
   -fvk-use-dx-layout`) -> `out/build/<cfg>/content/shaders/*.spv`, synced next
   to `App.exe`. Rebuild `App` on edit. Debug is `-Od` except
-  `HLSL_FORCE_O3_FILES` (driver AV pin; retry via
-  `python tools/shader_od_retry.py` + `-DTOURMALINE_SHADER_OD_RETRY=ON`).
+  `HLSL_FORCE_O3_FILES` (driver AV pin; the `-DTOURMALINE_SHADER_OD_RETRY=ON`
+  escape hatch clears the pin for driver re-tests).
 - Run CWD = `out/build/<cfg>`; `--bench N` = 10 warmup + N measured then exit.
   `TOURMALINE_CAPTURE` must land INSIDE the bench budget.
 - Headless matrix: `TOURMALINE_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
@@ -60,7 +60,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 | Cook/pak | `engine/Asset/pak.h`, `tools/pak_cooker/main.cpp` | `SMP5/KPM5` magic-bump only, no version field; `PakBackend` serves textures |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
-| GPU-driven filter | `engine/Renderer/gfx_filter.h` | DEFAULT ON (`m_useGfxMesh/m_useGfxFilter`, `GpuCullEnabled`); kills: `TOURMALINE_MESH=0` (whole pipeline), `TOURMALINE_CULLFLAGS=0` (cull bits); `MeshDrawEligible` truth table in contract tests |
+| GPU-driven filter | `engine/Renderer/gfx_filter.h` | filtered main view ALWAYS ON (no runtime off; the legacy direct-draws A/B path is gone - the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh`/`GpuCullEnabled` stay setup-time; kills: `TOURMALINE_MESH=0` (whole pipeline), `TOURMALINE_CULLFLAGS=0` (cull bits); `MeshDrawEligible` truth table in contract tests |
 | Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, CI fails on mismatch (per-GPU baselines) |
 
 Data flow per frame: `DrawFrame` fills `AppFrameContext` -> `GfxRenderer`

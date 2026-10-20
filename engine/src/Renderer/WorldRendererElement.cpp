@@ -137,9 +137,6 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::DEFERRED_SHADOWS_TOGGLE)) {
 			m_renderer.m_dsEnabled = !m_renderer.m_dsEnabled;
 		}
-		if (m_input.isKeyPressed(keybind::GFX_FILTER_TOGGLE)) {
-			m_renderer.m_useGfxFilter = !m_renderer.m_useGfxFilter;
-		}
 		// Backtick pops the texture inspector OUT of the debug panel: a
 		// separate floating window (see the draw site after the panel End).
 		// Closing drops the preview binding + selection (no dead-view

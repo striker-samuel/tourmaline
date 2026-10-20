@@ -829,6 +829,9 @@ void EditorApp::CloseScene() {
 	}
 	else {
 		LoadTour(); // replays <stem>.tour into the undo stack when present
+		// Auto-seed the exportSettings singleton (idempotent; a replayed
+		// tour that already carries the node is untouched).
+		EnsureExportSettingsNode();
 		// A newer (or orphan) autosave never loads silently: offer recovery
 		// as an explicit choice instead (recovery dialog).
 		CheckAutosaveOffer();

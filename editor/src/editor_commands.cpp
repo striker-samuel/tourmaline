@@ -399,6 +399,23 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				c.beforeNum, c.beforeText);
 		break;
 	}
+	case EditVerb::CreateExportSettings: {
+		if (forward)
+			ExecCreateExportSettings(c);
+		else
+			ExecUncreateExportSettings(c);
+		break;
+	}
+	case EditVerb::SetExportAttr: {
+		const std::string& attr = c.exportAttr;
+		if (forward)
+			WriteNodeExportAttr(c.node, attr, c.number, c.afterFlag,
+				c.afterText);
+		else
+			WriteNodeExportAttr(c.node, attr, c.beforeNum, c.beforeFlag,
+				c.beforeText);
+		break;
+	}
 	}
 }
 
@@ -683,6 +700,11 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 			return false; // detached (tombstoned)
 		break;
 	}
+	case EditVerb::CreateExportSettings: {
+		if (!scene.exportForNode.contains(created))
+			return false; // detached (tombstoned)
+		break;
+	}
 	case EditVerb::CreateTransform:
 		// No links to detach: alive == not deleted (checked above).
 		break;
@@ -728,7 +750,8 @@ bool EditorApp::IsCreatedChild(const EditorApp& app,
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
 			|| h.verb == EditVerb::CreateTransform
-			|| h.verb == EditVerb::CreateTerrain)
+			|| h.verb == EditVerb::CreateTerrain
+			|| h.verb == EditVerb::CreateExportSettings)
 			return true;
 	}
 	return false;
@@ -772,7 +795,8 @@ bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) 
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
 			|| h.verb == EditVerb::CreateTransform
-			|| h.verb == EditVerb::CreateTerrain)
+			|| h.verb == EditVerb::CreateTerrain
+			|| h.verb == EditVerb::CreateExportSettings)
 			return CreateCmdEmitsInTour(app, h);
 	}
 	return false; // not cluster-backed, not a create: unaddressable
@@ -1276,6 +1300,267 @@ void EditorApp::ExecUncreateCvolume(EditCmd& c) {
 		Log("Undid cvolume creation (#" + std::to_string(n) +
 			"): hidden, ids kept stable (def retained in the command).");
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The exportSettings node (the scene's WorldSettings-style export config).
+//
+// A created node is a WORLD transform node (identity; a config node, no
+// shape) plus a node-local SceneExportSettings payload in
+// scene.exportForNode — the inspector, the outliner, the tour (createNode
+// -at exportSettings + setExportAttr) and the cooks all pick it up with
+// no special cases. The AUTO-SEED singleton: EnsureExportSettingsNode
+// plants one on every scene open (undoable like any create; the next
+// open re-seeds). Undo removes the node when it is still the childless
+// tail (ids stay stable); otherwise the node is tombstoned (hidden +
+// payload detached).
+// ---------------------------------------------------------------------------
+uint32_t EditorApp::FindExportSettingsNode() const {
+	if (!m_world)
+		return UINT32_MAX;
+	const Scene& scene = m_world->scene;
+	// The FIRST in node id order = THE one (the singleton rule; the
+	// auto-seed keeps it at exactly one — duplicates only via hand
+	// edits or referenced scenes, first wins like every consumer).
+	uint32_t best = UINT32_MAX;
+	for (const auto& [n, def] : scene.exportForNode) {
+		(void)def;
+		if (n < scene.hierarchy.size() && n < best)
+			best = n;
+	}
+	return best;
+}
+
+const SceneExportSettings& EditorApp::ExportCfg() const {
+	// The live export settings: the node's payload, or the defaults when
+	// the scene carries none (transient — the auto-seed fires on every
+	// scene open; "none" means a mid-session undo removed the node).
+	static const SceneExportSettings kDefaults{};
+	if (!m_world)
+		return kDefaults;
+	const Scene& scene = m_world->scene;
+	const uint32_t n = FindExportSettingsNode();
+	if (n == UINT32_MAX)
+		return kDefaults;
+	auto it = scene.exportForNode.find(n);
+	return it != scene.exportForNode.end() ? it->second : kDefaults;
+}
+
+void EditorApp::EnsureExportSettingsNode() {
+	// WorldSettings scaffold: every open scene carries exactly one
+	// exportSettings node. Joined as a plain (undoable) create so the
+	// save emits it like any created node; the singleton rule guards
+	// duplicates.
+	if (!m_world)
+		return;
+	if (FindExportSettingsNode() != UINT32_MAX)
+		return;
+	DraftCreateExportSettings();
+}
+
+void EditorApp::DraftCreateExportSettings() {
+	if (!m_world) {
+		Log("Create exportSettings: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateExportSettings;
+	c.node = UINT32_MAX; // assigned at forward execution
+	c.node2 = DefaultCreateParent();
+	c.afterText = "ExportSettings";
+	Do(c);
+}
+
+void EditorApp::ExecCreateExportSettings(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	scene.localTransform[size_t(created)] = glm::mat4(1.0f);
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(
+		c.afterText.empty() ? "ExportSettings" : c.afterText);
+	scene.nameForNode[uint32_t(created)] = nameId;
+	scene.exportForNode[uint32_t(created)] = SceneExportSettings{};
+	if (m_replayingTour)
+		m_tourCreatedExportNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created exportSettings '%s' (#%u)",
+		c.afterText.c_str(), uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	if (tail && childless) {
+		// Physical removal (the ExecUncreateCvolume pattern: pop every
+		// vector addNode grew, unlink from the parent's child list).
+		scene.exportForNode.erase(n);
+		scene.nameForNode.erase(n);
+		const int p = scene.hierarchy[n].parent;
+		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
+			auto& hp = scene.hierarchy[size_t(p)];
+			if (hp.firstChild == int(n)) {
+				hp.firstChild = scene.hierarchy[n].nextSibling;
+			} else {
+				int prev = hp.firstChild;
+				while (prev >= 0
+					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
+					prev = scene.hierarchy[size_t(prev)].nextSibling;
+				if (prev >= 0)
+					scene.hierarchy[size_t(prev)].nextSibling =
+						scene.hierarchy[n].nextSibling;
+			}
+			int tailId = -1;
+			for (int s = hp.firstChild; s >= 0;
+				s = scene.hierarchy[size_t(s)].nextSibling)
+				tailId = s;
+			if (hp.firstChild >= 0)
+				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+		}
+		scene.localTransform.pop_back();
+		scene.globalTransform.pop_back();
+		scene.hierarchy.pop_back();
+		if (scene.staticRoot.size() == n + 1)
+			scene.staticRoot.pop_back();
+		if (scene.staticNode.size() == n + 1)
+			scene.staticNode.pop_back();
+		if (scene.noLightmap.size() == n + 1)
+			scene.noLightmap.pop_back();
+		if (scene.lightmap.size() == n + 1)
+			scene.lightmap.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
+		if (scene.hidden.size() == n + 1)
+			scene.hidden.pop_back();
+		recalculateGlobalTransforms(scene);
+		if (m_selected == n)
+			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
+		Log("Undid exportSettings creation (#" + std::to_string(n) + ").");
+	} else {
+		// Non-tail (or parented) node: keep ids stable — hide the node
+		// and detach the payload instead of shifting the world.
+		MarkHidden(scene, int(n));
+		scene.exportForNode.erase(n);
+		Log("Undid exportSettings creation (#" + std::to_string(n) +
+			"): hidden, ids kept stable (payload retained in the command).");
+	}
+}
+
+bool EditorApp::ReadNodeExportAttr(uint32_t node, const std::string& attr,
+	double& num, bool& flag, std::string& text) const {
+	num = 0.0;
+	flag = false;
+	text.clear();
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	const Scene& scene = m_world->scene;
+	auto it = scene.exportForNode.find(node);
+	if (it == scene.exportForNode.end())
+		return false;
+	const SceneExportSettings& es = it->second;
+	if (attr == "meshopt") flag = es.meshopt;
+	else if (attr == "lods") flag = es.lods;
+	else if (attr == "lodRatios") text = es.lodRatios;
+	else if (attr == "lodError") num = double(es.lodError);
+	else if (attr == "lightmap") flag = es.lightmap;
+	else if (attr == "lmMetersPerTexel") num = double(es.lmMetersPerTexel);
+	else if (attr == "lmLobes") num = double(es.lmLobes);
+	else if (attr == "lmAtlasWidth") num = double(es.lmAtlasWidth);
+	else if (attr == "lmRays") num = double(es.lmRays);
+	else if (attr == "lmProxyRes") num = double(es.lmProxyRes);
+	else if (attr == "lmExcludeSmall") num = double(es.lmExcludeSmall);
+	else if (attr == "lmExcludeKw") text = es.lmExcludeKw;
+	else if (attr == "cubemap") flag = es.cubemap;
+	else if (attr == "cubemapSize") num = double(es.cubemapSize);
+	else if (attr == "cubemapRays") num = double(es.cubemapRays);
+	else if (attr == "cubemapOctree") flag = es.cubemapOctree;
+	else if (attr == "cubemapOctreeMax") num = double(es.cubemapOctreeMax);
+	else if (attr == "cubemapOctreeMin") num = double(es.cubemapOctreeMin);
+	else if (attr == "cubemapOctreeDepth") num = double(es.cubemapOctreeDepth);
+	else if (attr == "cubemapExtraRadius") num = double(es.cubemapExtraRadius);
+	else if (attr == "meshlets") flag = es.meshlets;
+	else if (attr == "meshletMaxVerts") num = double(es.meshletMaxVerts);
+	else if (attr == "meshletMaxTris") num = double(es.meshletMaxTris);
+	else if (attr == "meshletConeWeight") num = double(es.meshletConeWeight);
+	else if (attr == "giCvol") flag = es.giCvol;
+	else if (attr == "giWorld") flag = es.giWorld;
+	else if (attr == "autoKtx") flag = es.autoKtx;
+	else if (attr == "ignoreVfs") flag = es.ignoreVfs;
+	else return false;
+	return true;
+}
+
+bool EditorApp::WriteNodeExportAttr(uint32_t node, const std::string& attr,
+	double num, bool flag, const std::string& text) {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	Scene& scene = m_world->scene;
+	auto it = scene.exportForNode.find(node);
+	if (it == scene.exportForNode.end())
+		return false;
+	// The ONE mapping runs through the shared ApplyExportAttr (the same
+	// code the tour replay + Cook.exe run — no drift by construction).
+	smvk::tour::Command tc{};
+	tc.verb = smvk::tour::Verb::SetExportAttr;
+	tc.text = attr;
+	tc.number = num;
+	tc.flag = flag;
+	tc.name = text;
+	(void)smvk::tour::ApplyExportAttr(it->second, tc, nullptr);
+	return true;
+}
+
+void EditorApp::PushExportAttr(uint32_t node, const std::string& attr,
+	double num, bool flag, const std::string& text) {
+	EditCmd c{};
+	c.verb = EditVerb::SetExportAttr;
+	c.node = node;
+	c.exportAttr = attr;
+	c.number = num;
+	c.afterFlag = flag;
+	c.afterText = text;
+	ReadNodeExportAttr(node, attr, c.beforeNum, c.beforeFlag, c.beforeText);
+	Do(c);
+}
+
+int EditorApp::CreatedExportIndex(uint32_t worldNode) const {
+	// Same contract as CreatedCvolIndex, for the exportSettings family:
+	// alive + emitting creates only.
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateExportSettings)
+			continue;
+		if (!m_world || !m_world->scene.exportForNode.contains(h.node))
+			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2691,6 +2976,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetCubemapAttr: return "cubemap edit";
 	case editor::EditVerb::CreateCamera: return "create camera";
 	case editor::EditVerb::SetCamAttr: return "camera edit";
+	case editor::EditVerb::CreateExportSettings: return "create exportSettings";
+	case editor::EditVerb::SetExportAttr: return "export setting";
 	}
 	return "?";
 }
@@ -3304,6 +3591,65 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::CreateExportSettings: {
+		// The scene's export config node: a plain createNode -at
+		// exportSettings line (parent + name; identity transform). The
+		// attr payload rides the following SetExportAttr commands
+		// (live-state emission there, like the cvolume family).
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!app.m_world->scene.exportForNode.contains(created))
+			return false; // detached (tombstoned): nothing to persist
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		// Parent = the LIVE parent (see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = createParentClusterId(liveParent);
+		if (pp < 0 && liveParent != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the node silently.
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateNode;
+		out.nodeType = "exportSettings";
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(liveParent);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		return true;
+	}
+	case EditVerb::SetExportAttr: {
+		const int k = app.CreatedExportIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateExportRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetExportAttr;
+		out.text = c.exportAttr;
+		if (c.exportAttr == "meshopt" || c.exportAttr == "lods"
+			|| c.exportAttr == "lightmap" || c.exportAttr == "cubemap"
+			|| c.exportAttr == "cubemapOctree"
+			|| c.exportAttr == "meshlets" || c.exportAttr == "giCvol"
+			|| c.exportAttr == "giWorld" || c.exportAttr == "autoKtx"
+			|| c.exportAttr == "ignoreVfs") {
+			out.flag = c.afterFlag; // bool attrs ride the flag slot
+		} else if (c.exportAttr == "lodRatios"
+			|| c.exportAttr == "lmExcludeKw") {
+			out.name = c.afterText; // string attrs ride the name slot
+		} else {
+			out.number = c.number; // scalars ride the number slot
+		}
+		return true;
+	}
 	case EditVerb::Delete: {
 		// Cluster-backed nodes persist as a first-class Maya delete.
 		// Addressing: uuid (file-stable identity, assigned for every
@@ -3843,41 +4189,10 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// session's cookie/.texture pool imports, replayed by reload/cook
 	// BEFORE the material records so refs resolve identically.
 	doc.textureAssets = m_textureAssets;
-	doc.hasCook = true;
-	// Cook SETTINGS persist; the DESTINATION does not: outPak is
-	// machine/session state (entered per cook in the Cook panel),
-	// never scene state — a checked-in .tour must not pin a local
-	// output path.
-	doc.cook.outPak.clear();
-	doc.cook.meshopt = m_cook.meshopt;
-	doc.cook.lods = m_cook.lods;
-	doc.cook.lodRatios = m_cook.lodRatios;
-	doc.cook.lodError = m_cook.lodError;
-	doc.cook.lightmap = m_cook.lightmap;
-	doc.cook.lmMetersPerTexel = m_cook.lmMetersPerTexel;
-	doc.cook.lmLobes = m_cook.lmLobes;
-	doc.cook.lmAtlasWidth = m_cook.lmAtlasWidth;
-	doc.cook.lmRays = m_cook.lmRays;
-	doc.cook.lmProxyRes = m_cook.lmProxyRes;
-	doc.cook.lmExcludeSmall = m_cook.lmExcludeSmall;
-	doc.cook.lmExcludeKw = m_cook.lmExcludeKw;
-	// NOTE: no sun/sky in the cook block — the env blocks (SaveEnvToDoc,
-	// env.default.* / env.n.*) own the sun/sky (lux-native).
-	doc.cook.cubemap = m_cook.cubemap;
-	doc.cook.cubemapSize = m_cook.cubemapSize;
-	doc.cook.cubemapRays = m_cook.cubemapRays;
-	doc.cook.cubemapOctree = m_cook.cubemapOctree;
-	doc.cook.cubemapOctreeMax = m_cook.cubemapOctreeMax;
-	doc.cook.cubemapOctreeMin = m_cook.cubemapOctreeMin;
-	doc.cook.cubemapOctreeDepth = m_cook.cubemapOctreeDepth;
-	doc.cook.cubemapExtraRadius = m_cook.cubemapExtraRadius;
-	doc.cook.meshlets = m_cook.meshlets;
-	doc.cook.meshletMaxVerts = m_cook.meshletMaxVerts;
-	doc.cook.meshletMaxTris = m_cook.meshletMaxTris;
-	doc.cook.meshletConeWeight = m_cook.meshletConeWeight;
-	doc.cook.giCvol = m_cook.giCvol;
-	doc.cook.giWorld = m_cook.giWorld;
-	doc.cook.autoKtx = m_cook.autoKtx;
+	// Cook/export knobs ride the scene's exportSettings NODE (emitted by
+	// the history replay above as createNode -at exportSettings +
+	// setExportAttr lines); outPak/contentDir stay session-only — a
+	// checked-in .tour must not pin a local output path.
 	std::string err;
 	if (!smvk::tour::SaveTour(tp, doc, err)) {
 		Log("tour save failed: " + err);
@@ -4139,6 +4454,13 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			out.camNear = tc.vec4.z;
 			out.camFar = tc.vec4.w;
 			out.camOrthoHalfH = float(tc.number);
+			return true;
+		}
+		if (tn == "exportSettings") {
+			out.verb = EditVerb::CreateExportSettings;
+			out.node = UINT32_MAX; // assigned at forward execution
+			out.node2 = wp;        // parent (world)
+			out.afterText = tc.text;
 			return true;
 		}
 		if (tn == "terrain") {
@@ -4448,7 +4770,42 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			return false;
 		if (tc.text == "position" || tc.text == "rotation") {
 			out.vec4 = tc.vec4;
-		} else if (tc.text == "name") {
+		} else 		if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
+	case smvk::tour::Verb::SetExportAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateExportRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateExportRefBase;
+			if (k >= app.m_tourCreatedExportNodes.size())
+				return false;
+			target = app.m_tourCreatedExportNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!app.m_world->scene.exportForNode.contains(target))
+			return false; // not the exportSettings node: orphan
+		out.verb = EditVerb::SetExportAttr;
+		out.node = target;
+		out.exportAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeExportAttr(target, tc.text, out.beforeNum,
+				out.beforeFlag, out.beforeText))
+			return false;
+		if (tc.text == "meshopt" || tc.text == "lods"
+			|| tc.text == "lightmap" || tc.text == "cubemap"
+			|| tc.text == "cubemapOctree" || tc.text == "meshlets"
+			|| tc.text == "giCvol" || tc.text == "giWorld"
+			|| tc.text == "autoKtx" || tc.text == "ignoreVfs") {
+			out.afterFlag = tc.flag;
+		} else if (tc.text == "lodRatios" || tc.text == "lmExcludeKw") {
 			out.afterText = tc.name;
 		} else {
 			out.number = tc.number;
@@ -4487,39 +4844,10 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		if (!now.empty() && now != doc.fingerprint)
 			Log("tour: source changed since save (ids may have shifted)");
 	}
-	// Cook block restores the panel.
-	if (doc.hasCook) {
-		m_cook.outPak = doc.cook.outPak;
-		m_cook.meshopt = doc.cook.meshopt;
-		m_cook.lods = doc.cook.lods;
-		m_cook.lodRatios = doc.cook.lodRatios;
-		m_cook.lodError = doc.cook.lodError;
-		m_cook.lightmap = doc.cook.lightmap;
-		m_cook.lmMetersPerTexel = doc.cook.lmMetersPerTexel;
-		m_cook.lmLobes = doc.cook.lmLobes;
-		m_cook.lmAtlasWidth = doc.cook.lmAtlasWidth;
-		m_cook.lmRays = doc.cook.lmRays;
-		m_cook.lmProxyRes = doc.cook.lmProxyRes;
-		m_cook.lmExcludeSmall = doc.cook.lmExcludeSmall;
-		m_cook.lmExcludeKw = doc.cook.lmExcludeKw;
-		// NOTE: no sun/sky in the cook block — the env blocks
-		// (LoadEnvFromDoc) own the sun/sky (lux-native).
-		m_cook.cubemap = doc.cook.cubemap;
-		m_cook.cubemapSize = doc.cook.cubemapSize;
-		m_cook.cubemapRays = doc.cook.cubemapRays;
-		m_cook.cubemapOctree = doc.cook.cubemapOctree;
-		m_cook.cubemapOctreeMax = doc.cook.cubemapOctreeMax;
-		m_cook.cubemapOctreeMin = doc.cook.cubemapOctreeMin;
-		m_cook.cubemapOctreeDepth = doc.cook.cubemapOctreeDepth;
-		m_cook.cubemapExtraRadius = doc.cook.cubemapExtraRadius;
-		m_cook.meshlets = doc.cook.meshlets;
-		m_cook.meshletMaxVerts = doc.cook.meshletMaxVerts;
-		m_cook.meshletMaxTris = doc.cook.meshletMaxTris;
-		m_cook.meshletConeWeight = doc.cook.meshletConeWeight;
-		m_cook.giCvol = doc.cook.giCvol;
-		m_cook.giWorld = doc.cook.giWorld;
-		m_cook.autoKtx = doc.cook.autoKtx;
-	}
+	// The scene's exportSettings NODE restores the cook knobs — the
+	// tour carries it as createNode -at exportSettings + setExportAttr
+	// lines (replayed below like any create). outPak/contentDir stay
+	// session-only (never persisted).
 	// Replay into the stack (fresh import underneath, so before-states are
 	// exact and the whole tour stays undoable). Wide rules load AFTER the
 	// direct commands so locals win over matching regex (more specific
@@ -4619,6 +4947,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	m_tourCreatedCvolNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
+	m_tourCreatedExportNodes.clear();
 	// (m_replayingTour armed above, before the materialAsset replay.)
 	ClearHistory();
 	m_overrideRules.clear();
@@ -4680,6 +5009,10 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// editor state matches the parsed doc exactly.
 	if (!doc.references.empty())
 		m_references = doc.references;
+	// Auto-seed the exportSettings singleton: every open scene carries
+	// exactly one (WorldSettings scaffold). Idempotent — a doc that
+	// already created it (createNode -at exportSettings) is untouched.
+	EnsureExportSettingsNode();
 	// The replay rebuilt the world in place (same object).
 	return true;
 }

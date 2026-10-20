@@ -285,63 +285,17 @@ inline constexpr uint8_t kModalShift = 2;
 inline constexpr uint8_t kModalAlt = 4;
 
 // ---------------------------------------------------------------------------
-// Cook settings (mirrors the PakCooker flags the editor drives).
+// Cook settings — SESSION-ONLY (machine-local paths; the bake knobs live
+// on the scene's exportSettings NODE now: SceneExportSettings, authored
+// in the inspector, persisted as createNode -at exportSettings +
+// setExportAttr tour verbs, consumed by Cook.exe off the replayed scene
+// and by the editor bakes through ExportCfg()). outPak/contentDir never
+// persist (the old tour cook block's "destination NOT persisted" rule).
 // ---------------------------------------------------------------------------
 struct CookSettings {
 	std::string outPak = "content/paks/edited.pak";
 	std::string contentDir = "content";
 	std::string inVfs; // VFS path for --in-vfs when no tour
-	bool meshopt = true;
-	bool lods = false;
-	std::string lodRatios = "0.75,0.5,0.3,0.15"; // LOD chain ratios (csv)
-	float lodError = 0.01f;                  // simplification target error
-	bool lightmap = false;
-	float lmMetersPerTexel = 0.25f; // chart density (m/texel)
-	uint32_t lmLobes = 12;
-	uint32_t lmAtlasWidth = 1024;   // FIXED atlas width; height grows
-	uint32_t lmRays = 256;
-	int lmProxyRes = 256; // voxel-remesh scene proxy (0 = legacy per-mesh)
-	float lmExcludeSmall = 0.0f;
-	std::string lmExcludeKw; // extra --lm-exclude keywords (comma separated)
-	// NOTE: no sun/sky fields here anymore — the ENVIRONMENT BLOCK
-	// (SceneEnv, the World page's Environment section) owns the sun and
-	// sky (lux-native). Every bake stage and the synthesized pak
-	// directional read the resolved env block (see the cooker's
-	// EnvForBake); the World page edits them once, in one place.
-	// Cubemap captures (the capture set is NAMELESS - keyed on the
-	// scene stem; no name field anywhere).
-	bool cubemap = false;
-	uint32_t cubemapSize = 128;
-	uint32_t cubemapRays = 128;
-	uint32_t cubemapBounces = 5;
-	// Placement DENSITY (the octree knobs — Cook.exe's --cubemap-octree*
-	// set, authored here): adaptive placement instead of a grid; the
-	// max/min cell sizes + depth cap drive how dense the probe set
-	// grows before the 32-probe runtime budget stops it.
-	bool cubemapOctree = false;
-	float cubemapOctreeMax = 8.0f;
-	float cubemapOctreeMin = 2.0f;
-	uint32_t cubemapOctreeDepth = 4;
-	float cubemapExtraRadius = 5.5f;
-	// GI bake selectors (ON-DEMAND Bake GI only — cooks never bake;
-	// see BakeGI): authored convex volumes (cvol nodes) via GiBaker —
-	// sidecars gi/<pak-stem>_* keyed to the pak stem. No-op when the
-	// definition carries no cvolumes.
-	bool giCvol = true;
-	// World-field bake (on demand): the adaptive probe octree (.sggi).
-	// This is the global fallback the runtime samples outside any
-	// convex volume; it is the slow stage (minutes on real scenes), so
-	// it never rides the cook. Unbaked scenes render sky IBL instead.
-	bool giWorld = true;
-	// Meshlet cook: per-meshlet build over the cooked topology.
-	bool meshlets = false;
-	uint32_t meshletMaxVerts = 64;
-	uint32_t meshletMaxTris = 124;
-	float meshletConeWeight = 0.0f;
-	// KTX auto-convert: non-KTX sources transcode in-process at cook
-	// (`.ktx2` sidecar cached next to the source, file-node intent
-	// honored). Off restores warn-and-skip for non-KTX payloads.
-	bool autoKtx = true;
 };
 
 class EditorApp : public smvk::App {
@@ -866,6 +820,11 @@ private:
 	// order): setCamAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedCameraNodes;
+	// Same scheme for history-created exportSettings nodes (tour
+	// createNode -at exportSettings file order): setExportAttr -ref
+	// addressing. Rebuilt on every replay alongside m_tourCreatedNodes
+	// (the singleton semantic keeps it at 0 or 1 entries).
+	std::vector<uint32_t> m_tourCreatedExportNodes;
 	// Reference binding issues from the last scene load
 	// (ApplySceneReferences collects them: unresolved sources, tour
 	// parse failures, skipped commands inside a referenced .tour,
@@ -931,6 +890,9 @@ private:
 	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created camera, same contract.
 	int CreatedCameraIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created exportSettings node, same
+	// contract (the singleton semantic keeps it at 0 or -1).
+	int CreatedExportIndex(uint32_t worldNode) const;
 	// True when this history create's CmdToTour emission survives (it
 	// lands in the FILE's create set): alive per family AND its recorded
 	// parent slot resolves in the file (see ParentResolvesInTour). The
@@ -1222,6 +1184,42 @@ private:
 		glm::vec4& v4, double& num, std::string& text) const;
 	bool WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, const std::string& text);
+	// Export-settings property channels — the SceneExportSettings
+	// field names (see EditCmd::exportAttr) — the inspector's
+	// before-state + live-write path for SetExportAttr. False when the
+	// node is not the exportSettings node.
+	bool ReadNodeExportAttr(uint32_t node, const std::string& attr,
+		double& num, bool& flag, std::string& text) const;
+	bool WriteNodeExportAttr(uint32_t node, const std::string& attr,
+		double num, bool flag, const std::string& text);
+	// Undoable one-field exportSettings edit (reads the before-state,
+	// then Do()s a SetExportAttr): the inspector + programmatic toggles
+	// (CookCubemapsNow) go through here.
+	void PushExportAttr(uint32_t node, const std::string& attr,
+		double num, bool flag, const std::string& text);
+	// The scene's exportSettings node (the FIRST in node id order —
+	// the singleton rule), or UINT32_MAX when the scene carries none.
+	uint32_t FindExportSettingsNode() const;
+	// The live export settings (the node's payload; the DEFAULTS when
+	// the scene carries none — transient: EnsureExportSettingsNode
+	// auto-seeds on every scene open). Every bake knob consumer reads
+	// this, never session state.
+	const SceneExportSettings& ExportCfg() const;
+	// The AUTO-SEED (WorldSettings scaffold): every open scene carries
+	// exactly one exportSettings node. Plain Do() (joins history, so
+	// the save emits it like any create; undo removes it — the next
+	// scene open re-seeds). No-op when one exists.
+	void EnsureExportSettingsNode();
+	// Inspector "Export settings" section for the exportSettings node
+	// (every field via undoable SetExportAttr).
+	void DrawExportSettingsSection(uint32_t node);
+	// Created-exportSettings execution (ExecCmd cases): append/remove
+	// the world node + the node-local SceneExportSettings payload.
+	// ExecCreateExportSettings records the assigned id back into the
+	// command (c.node).
+	void DraftCreateExportSettings();
+	void ExecCreateExportSettings(EditCmd& c);
+	void ExecUncreateExportSettings(EditCmd& c);
 	// Inspector "Camera" section for camera nodes (lens via undoable
 	// SetCamAttr; pose via the transform + look-through).
 	void DrawCamSection(uint32_t node);

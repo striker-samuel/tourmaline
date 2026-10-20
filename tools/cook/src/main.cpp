@@ -4168,50 +4168,69 @@ int Run(const CookArgs& c) {
 		// scene-keyed sidecar bakes survive differently-named out paks).
 		if (args.inVfs.empty() && !tour.references.empty())
 			args.inVfs = tour.references[0].source;
-		// Apply tour cook defaults (CLI wins)
-		if (tour.hasCook) {
-			const auto& k = tour.cook;
+		// Export settings (the cook-block REPLACEMENT): authored on the
+		// scene's exportSettings NODE (createNode -at exportSettings +
+		// setExportAttr lines). The merge must land BEFORE the definition
+		// build below (the reference bind consumes the meshopt/LOD/
+		// meshlet configs), so read them straight off the doc's command
+		// list (ExportSettingsFromDoc) — the replay consumes the SAME
+		// lines through the SAME mapping, so the results agree by
+		// construction. CLI flags still win (the explicitSet rule).
+		SceneExportSettings es{};
+		bool haveExportSettings = false;		{
+			std::string esWarn;
+			haveExportSettings = smvk::tour::ExportSettingsFromDoc(
+				tour, es, &esWarn);
+			if (!esWarn.empty())
+				tool::err() << "Tour exportSettings: " << esWarn
+					<< std::endl;
+		}
+		if (haveExportSettings)
+			tool::out() << "Tour exportSettings node as CLI-losing "
+				"defaults\n";
+		// Apply tour export defaults (CLI wins)
+		{
 			auto use = [&](const char* key, auto& dst, auto val) {
 				if (!args.explicitSet.contains(key)) {
 					dst = val;
 					tool::out() << "Tour cook default: " << key << "\n";
 				}
 			};
-			use("meshopt", args.meshopt, k.meshopt);
-			use("lods", args.lods, k.lods);
-			use("lightmap", args.lightmap, k.lightmap);
-			use("lmMetersPerTexel", args.lmMetersPerTexel, k.lmMetersPerTexel);
-			use("lmLobes", args.lmLobes, k.lmLobes);
-			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
-			use("lmRays", args.lmRays, k.lmRays);
-			use("lmProxyRes", args.lmProxyRes, k.lmProxyRes);
-			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
-			// NOTE: no sun/sky keys here â€” TourCook dropped them; the env
-			// blocks (env.default.* / env.n.*, applied by ApplyTourToCluster
-			// into the cluster scene) are the sun/sky of record for every
-			// stage (see EnvForBake). Legacy tour cook lines carrying the
-			// old keys ignore them (the tour-side parse skips them).
-			use("cubemap", args.cubemap, k.cubemap);
-			use("cubemapSize", args.cubemapSize, k.cubemapSize);
-			use("cubemapRays", args.cubemapRays, k.cubemapRays);
-			// Placement density (the octree knobs — the editor's cubemap
-			// section authors them; CLI flags win when explicitly given).
-			use("cubemapOctree", args.cubemapOctree, k.cubemapOctree);
-			use("cubemapOctreeMax", args.cubemapOctreeMax, k.cubemapOctreeMax);
-			use("cubemapOctreeMin", args.cubemapOctreeMin, k.cubemapOctreeMin);
-			use("cubemapOctreeDepth", args.cubemapOctreeDepth, k.cubemapOctreeDepth);
-			use("cubemapExtraRadius", args.cubemapExtraRadius, k.cubemapExtraRadius);
-			// LOD detail + meshlet settings ride the tour cook block
+			use("meshopt", args.meshopt, es.meshopt);
+			use("lods", args.lods, es.lods);
+			use("lightmap", args.lightmap, es.lightmap);
+			use("lmMetersPerTexel", args.lmMetersPerTexel, es.lmMetersPerTexel);
+			use("lmLobes", args.lmLobes, es.lmLobes);
+			use("lmAtlasWidth", args.lmAtlasWidth, es.lmAtlasWidth);
+			use("lmRays", args.lmRays, es.lmRays);
+			use("lmProxyRes", args.lmProxyRes, es.lmProxyRes);
+			use("lmExcludeSmall", args.lmExcludeSmall, es.lmExcludeSmall);
+			// NOTE: no sun/sky keys here — the env blocks (env.default.* /
+			// env.n.*, applied by ApplyTourToCluster into the cluster
+			// scene) are the sun/sky of record for every stage (see
+			// EnvForBake).
+			use("cubemap", args.cubemap, es.cubemap);
+			use("cubemapSize", args.cubemapSize, es.cubemapSize);
+			use("cubemapRays", args.cubemapRays, es.cubemapRays);
+			// Placement density (the octree knobs — the inspector's
+			// exportSettings section authors them; CLI flags win when
+			// explicitly given).
+			use("cubemapOctree", args.cubemapOctree, es.cubemapOctree);
+			use("cubemapOctreeMax", args.cubemapOctreeMax, es.cubemapOctreeMax);
+			use("cubemapOctreeMin", args.cubemapOctreeMin, es.cubemapOctreeMin);
+			use("cubemapOctreeDepth", args.cubemapOctreeDepth, es.cubemapOctreeDepth);
+			use("cubemapExtraRadius", args.cubemapExtraRadius, es.cubemapExtraRadius);
+			// LOD detail + meshlet settings ride the exportSettings node
 			// the same way (CLI flags win when explicitly given).
-			use("lodRatios", args.lodRatios, k.lodRatios);
-			use("lodError", args.lodError, k.lodError);
-			use("meshlets", args.meshlets, k.meshlets);
-			use("autoKtx", args.autoKtx, k.autoKtx);
-			if (!k.lmExcludeKw.empty() &&
+			use("lodRatios", args.lodRatios, es.lodRatios);
+			use("lodError", args.lodError, es.lodError);
+			use("meshlets", args.meshlets, es.meshlets);
+			use("autoKtx", args.autoKtx, es.autoKtx);
+			if (!es.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
 				if (!args.lmExclude.empty())
 					args.lmExclude += ",";
-				args.lmExclude += k.lmExcludeKw;
+				args.lmExclude += es.lmExcludeKw;
 				tool::out() << "Tour cook default: lmExclude\n";
 			}
 		}

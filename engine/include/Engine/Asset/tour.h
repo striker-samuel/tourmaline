@@ -32,7 +32,10 @@
 //                                                   # their create
 //   override -pattern "Building_.*" -at visibility -v 1 -enabled on;   # wide
 //   override -pattern "Tree.*" -at material -m 3 -enabled on;          # wide
-//   cook -outPak "" ...;   # cook settings (destination NOT persisted)
+//   createNode -at exportSettings -p 0 -name "ExportSettings"; # the WorldSettings
+//       setExportAttr -ref 0 -at cubemap -type "bool" -v on;  # tabulated: -ref
+//                                                   # props ride under
+//                                                   # their create
 //
 // Non-scalar setAttr values carry an explicit -type (double3/float4/
 // string/bool); plain scalars stay bare. Unknown verbs and unknown
@@ -56,7 +59,8 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/Asset/meshlet.h> // kMeshletMaxVertices/Triangles (the cook defaults below)
+#include <Engine/Asset/meshlet.h> // kMeshletMaxVertices/Triangles (the engine meshlet canon)
+#include <Engine/Scene/scene.h> // SceneExportSettings (the export-settings node payload)
 
 namespace smvk {
 struct Cluster;
@@ -68,79 +72,12 @@ namespace smvk::tour {
 
 inline constexpr int kTourVersion = 1;
 
-// Cook settings interchange (mirrors PakCooker's bake flags; the editor
-// edits them in the cook panel, PakCooker consumes them as defaults under
-// --tour unless its own CLI flags override — CLI wins).
-struct TourCook {
-	std::string outPak;
-	bool meshopt = true;
-	bool lods = false;
-	// LOD chain detail (PakCooker --lod-ratios/--lod-error): the
-	// comma-separated ratio list and the simplification target error.
-	std::string lodRatios = "0.75,0.5,0.3,0.15";
-	float lodError = 0.01f;
-	bool lightmap = false;
-	// Chart density request, METERS PER TEXEL (0.25 = one texel per
-	// 25 cm). Legacy -lmDensity lines (texels/m) convert on load.
-	float lmMetersPerTexel = 0.25f;
-	uint32_t lmLobes = 12;
-	// FIXED atlas width; the atlas height grows with the content.
-	uint32_t lmAtlasWidth = 1024;
-	uint32_t lmRays = 256;
-	// Voxel-remesh scene proxy resolution (meshopt_remesh grid [4..256];
-	// 0 = legacy per-mesh LOD0 path, kept for A/B only).
-	int lmProxyRes = 256;
-	float lmExcludeSmall = 0.0f;
-	std::string lmExcludeKw;
-	// NOTE: no sun/sky fields here anymore — the ENVIRONMENT BLOCKS
-	// (env.default.* / env.n.* editorSet keys, SceneEnv) own the sun and
-	// sky (lux-native: sun 10000 / sky 600 defaults). The cook bakes,
-	// synthesizes the pak directional and seeds everything from the
-	// resolved env block; legacy cook lines carrying -sun*/-sky* keys
-	// ignore them (the env block in the same tour wins).
-	// Preconvolved specular cubemaps (the cook --cubemap stage: GGX mip
-	// chains at gi/cubemaps/<stem>.ktx2, NAMELESS - the capture set keys
-	// on the scene stem; legacy cook lines carrying -cubemapName ignore
-	// the key).
-	bool cubemap = false;
-	uint32_t cubemapSize = 128;
-	uint32_t cubemapRays = 128;
-	// Placement DENSITY (the octree knobs, editor-authored — the same
-	// set Cook.exe's --cubemap-octree* flags drive): sparse adaptive
-	// placement instead of a uniform --cubemap-grid lattice. Open cells
-	// larger than cubemapOctreeMax (m) subdivide for coverage; the
-	// detail floor cubemapOctreeMin (m) never subdivides below; the
-	// depth cap bounds the tree (root = 0); embedded centers drop,
-	// growth stops at the 32-probe runtime budget. Pinned extras
-	// (manifest 'pin' rows) add after placement with the
-	// cubemapExtraRadius influence (fade = half).
-	bool cubemapOctree = false;
-	float cubemapOctreeMax = 8.0f;
-	float cubemapOctreeMin = 2.0f;
-	uint32_t cubemapOctreeDepth = 4;
-	float cubemapExtraRadius = 5.5f;
-	// Meshlet cook (PakCooker --meshlets stage): per-meshlet build
-	// over the cooked topology (max verts/tris per meshlet + the
-	// cone-weight partitioning bias, 0..1). The size limits are the
-	// ENGINE's kMeshletMaxVertices/Triangles (64v/64t: one mesh-shader
-	// workgroup covers a whole meshlet — see meshlet.h); the old 124-tris
-	// default was a stale pre-workgroup number (BuildMeshletsForUpload
-	// now clamps over-limit authored cooks to the engine max anyway).
-	bool meshlets = false;
-	uint32_t meshletMaxVerts = kMeshletMaxVertices;
-	uint32_t meshletMaxTris = kMeshletMaxTriangles;
-	float meshletConeWeight = 0.0f;
-	// GI bakes (cook dialog, editor-driven): authored convex volumes
-	// (GiBaker cvol stage, gi/<pak-stem>_* sidecars) and the adaptive
-	// probe octree (GiBaker --out, gi/<pak-stem>.sggi — the runtime's
-	// global fallback outside any convex volume).
-	bool giCvol = true;
-	bool giWorld = true;
-	// Auto-convert non-KTX textures to KTX2 at cook time (in-process
-	// stb decode + libktx write, `.ktx2` sidecar cached next to the
-	// source). Off restores the old warn-and-skip for non-KTX payloads.
-	bool autoKtx = true;
-};
+// Cook settings interchange is GONE: the export settings are a SCENE
+// NODE now (createNode -at exportSettings + setExportAttr verbs, the
+// payload in Scene::exportForNode / SceneExportSettings — the WorldSettings
+// pattern). The old `cook` block + TourCook struct died with it: Cook.exe
+// reads the settings off the replayed scene (CLI flags still win); the
+// editor authors them on the auto-seeded singleton node.
 
 // Maya file node (the editor's image definition, promoted to a cooked
 // record): a texture source OUTSIDE the DAG with its sampling intent.
@@ -249,19 +186,22 @@ enum class Verb : uint8_t {
  	                // (9 values, rotation in DEGREES, editor convention).
  	                // (Legacy verb — new files write the unified
  	                // createNode form below.)
-  	CreateNode,     // THE node verb (Maya createNode): -at names the
-  	                // node TYPE, the rest is per-type payload:
-  	                //   DAG types (hierarchy nodes — transform +
-  	                //   parentable): transform, pointLight, spotLight,
-  	                //   terrain, cvolume, cubemap, camera. Replayed by
-  	                //   cook + editor with full create semantics (-ref
-  	                //   bookkeeping included).
-  	                //   System types (no DAG presence — editor-managed
-  	                //   data): material, file, image. Parsed +
-  	                //   validated, skipped at replay with a log.
-  	                // New files write ONLY this form; the legacy
-  	                // createLight/createTerrain/createTransform/
-  	                // createCvolume verbs still parse (backward compat).
+   	CreateNode,     // THE node verb (Maya createNode): -at names the
+   	                // node TYPE, the rest is per-type payload:
+   	                //   DAG types (hierarchy nodes — transform +
+   	                //   parentable): transform, pointLight, spotLight,
+   	                //   terrain, cvolume, cubemap, camera,
+   	                //   exportSettings (the WorldSettings-style export
+   	                //   config singleton; payload via setExportAttr,
+   	                //   NOT on the create line). Replayed by
+   	                //   cook + editor with full create semantics (-ref
+   	                //   bookkeeping included).
+   	                //   System types (no DAG presence — editor-managed
+   	                //   data): material, file, image. Parsed +
+   	                //   validated, skipped at replay with a log.
+   	                // New files write ONLY this form; the legacy
+   	                // createLight/createTerrain/createTransform/
+   	                // createCvolume verbs still parse (backward compat).
  	CreateCVolume,  // node = PARENT cluster id; text = volume name;
 	                // vec = local position (box center); svec = local
 	                // size (full extents, m); vec4 = (priority,
@@ -280,10 +220,27 @@ enum class Verb : uint8_t {
   	               // the cook's --cubemap stage bakes it as a 'pin' row
   	               // (wins weight ties at load).
   	SetCubemapAttr, // node = target cluster id, or a created-capture ref
-  	               // (kCreateCubemapRefBase | k — see below); text =
-  	               // attr ("position","radius","name"); number =
-  	               // scalar (radius); vec4 = triple (position); name =
-  	               // new name (attr "name").
+  	               // (kCreateCubemapRefBase | k — see below); text = attr
+  	               // ("position","radius","name"); number = scalar
+  	               // (radius); vec4 = triple (position); name = new name
+  	               // (attr "name").
+  	SetExportAttr,  // node = target cluster id, or the created
+  	               // exportSettings node ref (kCreateExportRefBase | k);
+  	               // text = attr — a SceneExportSettings field name
+  	               // ("meshopt","lods","lodRatios","lodError",
+  	               // "lightmap","lmMetersPerTexel","lmLobes",
+  	               // "lmAtlasWidth","lmRays","lmProxyRes",
+  	               // "lmExcludeSmall","lmExcludeKw","cubemap",
+  	               // "cubemapSize","cubemapRays","cubemapOctree",
+  	               // "cubemapOctreeMax","cubemapOctreeMin",
+  	               // "cubemapOctreeDepth","cubemapExtraRadius",
+  	               // "meshlets","meshletMaxVerts","meshletMaxTris",
+  	               // "meshletConeWeight","giCvol","giWorld","autoKtx",
+  	               // "ignoreVfs"); number = scalar value; flag = bool
+  	               // value (-type bool); name = string value (-type
+  	               // string). The scene's WorldSettings-style export
+  	               // config node (the cook block REPLACEMENT — see
+  	               // SceneExportSettings).
   	CreateCamera, // node = PARENT cluster id; text = camera name;
   	              // vec = local position; svec = local rotation in
   	              // DEGREES (editor TRS convention); vec4 =
@@ -412,9 +369,10 @@ struct Command {
 	std::string uuid;      // SetUuid: the recorded 32-hex identity;
 	                       // Delete: its PRIMARY addressing key
  	std::string nodeType;  // createNode -at type ("transform",
- 	                       // "pointLight", "spotLight", "terrain",
- 	                       // "cvolume", "material", "file", "image",
- 	                       // "camera")
+  	                       // "pointLight", "spotLight", "terrain",
+  	                       // "cvolume", "cubemap", "camera",
+  	                       // "exportSettings", "material", "file",
+  	                       // "image")
 };
 
 // SetLightAttr addressing for lights created by an earlier CreateLight
@@ -448,6 +406,13 @@ inline constexpr uint32_t kCreateCubemapRefBase = 0x10000000u;
 // CreateCamera in file order). Disjoint from all bases above.
 inline constexpr uint32_t kCreateCameraRefBase = 0x08000000u;
 
+// Same scheme for the exportSettings node created by an earlier
+// createNode -at exportSettings: SetExportAttr addresses it via
+// kCreateExportRefBase | k (k-th exportSettings create in file order —
+// the singleton semantic keeps that at 0 or 1; hand-authored duplicates
+// warn + first wins). Disjoint from all bases above.
+inline constexpr uint32_t kCreateExportRefBase = 0x04000000u;
+
 // All create-family ref bases OR'd together: a create-family ref
 // carries EXACTLY ONE base bit plus a small k (< 0x08000000 — the
 // create counts are bounded far below the lowest base). A value with
@@ -458,7 +423,8 @@ inline constexpr uint32_t kCreateCameraRefBase = 0x08000000u;
 // as "terrain ref out of range" instead of the honest node error).
 inline constexpr uint32_t kCreateRefFamilyMask =
 	kCreateLightRefBase | kCreateTerrainRefBase | kCreateCvolRefBase
-	| kCreateCubemapRefBase | kCreateCameraRefBase;
+	| kCreateCubemapRefBase | kCreateCameraRefBase
+	| kCreateExportRefBase;
 
 struct Doc {
 	int version = kTourVersion;
@@ -510,8 +476,11 @@ struct Doc {
 	// blocks) and at editor replay (the live world node id). Future
 	// typed fields (light.default, ...) reuse this grammar.
 	std::vector<std::pair<std::string, std::string>> editorSettings;
-	TourCook cook;
-	bool hasCook = false;
+	// NOTE: no cook block anymore — the export settings are a SCENE NODE
+	// (createNode -at exportSettings + setExportAttr, payload in
+	// Scene::exportForNode); see SceneExportSettings. The old `cook`
+	// verb + TourCook struct are gone (old files: the verb warns + skips;
+	// settings default until re-authored on the node).
 };
 
 // Best-effort source fingerprint ("<size>:<mtime>" hex); empty when the
@@ -604,5 +573,26 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out);
 const char* OverrideAttrName(OverrideAttr a);
 bool OverridePatternMatches(const std::string& pattern,
 	const std::string& nodeName);
+
+// Apply one SetExportAttr command onto a SceneExportSettings payload
+// (field-name keyed; value rides flag/name/number per the attr's type).
+// The ONE mapping for the replay (ApplyTourToCluster), the editor live
+// path, and the doc walk below (the same lines, so the results agree
+// by construction). Unknown attrs warn-and-skip through warnOut (never
+// fatal); returns false only then.
+bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
+	std::string* warnOut = nullptr);
+
+// Reads the scene's export settings straight off a Doc's command list:
+// the FIRST createNode -at exportSettings (the singleton rule) + its
+// -ref-addressed SetExportAttr lines, defaulted fields otherwise.
+// Pre-replay consumers (Cook.exe/Pak.exe must merge BEFORE the
+// definition build consumes the meshopt/LOD/meshlet configs): the replay
+// consumes the SAME lines through the SAME mapping, so the results
+// agree by construction. Returns true when the doc carries a node;
+// false when not (out stays untouched). warnOut collects non-fatal
+// notes (duplicates, unknown attrs, -n forms left to the replay).
+bool ExportSettingsFromDoc(const Doc& doc, SceneExportSettings& out,
+	std::string* warnOut = nullptr);
 
 } // namespace smvk::tour

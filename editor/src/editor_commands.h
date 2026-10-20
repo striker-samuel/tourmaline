@@ -108,6 +108,20 @@ enum class EditVerb : uint8_t {
   	              // camNear, camFar, camOrthoHalfH = lens.
   	SetCamAttr, // camera property edit; c.node = camera node (world),
   	              // camAttr selects the channel (see below).
+  	CreateExportSettings, // append the scene's WorldSettings-style
+  	              // EXPORT CONFIG node (world): a DAG transform node
+  	              // (identity; no shape) + a node-local
+  	              // SceneExportSettings payload in
+  	              // scene.exportForNode. The AUTO-SEED singleton (one
+  	              // per scene; not on the Create menu). c.node =
+  	              // CREATED world id once forward-executed
+  	              // (UINT32_MAX before); c.node2 = parent world id;
+  	              // afterText = name.
+  	SetExportAttr, // exportSettings payload edit; c.node = the
+  	              // exportSettings node (world), exportAttr selects
+  	              // the SceneExportSettings field (see below); value
+  	              // rides number (scalars) / afterFlag (bools) /
+  	              // afterText (strings).
 };
 
 struct EditCmd {
@@ -186,6 +200,18 @@ struct EditCmd {
 	// rotation) / afterText (name); before-state rides beforeNum /
 	// beforeVec4 / beforeText.
 	std::string camAttr;
+	// SetExportAttr channel — a SceneExportSettings field name
+	// ("meshopt","lods","lodRatios","lodError","lightmap",
+	// "lmMetersPerTexel","lmLobes","lmAtlasWidth","lmRays",
+	// "lmProxyRes","lmExcludeSmall","lmExcludeKw","cubemap",
+	// "cubemapSize","cubemapRays","cubemapOctree","cubemapOctreeMax",
+	// "cubemapOctreeMin","cubemapOctreeDepth","cubemapExtraRadius",
+	// "meshlets","meshletMaxVerts","meshletMaxTris",
+	// "meshletConeWeight","giCvol","giWorld","autoKtx","ignoreVfs").
+	// Value rides number (scalars) / afterFlag (bools) / afterText
+	// (strings); before-state rides beforeNum / beforeFlag /
+	// beforeText.
+	std::string exportAttr;
 	// TerrainPaint payload: op name above; before-patch = the pre-stamp
 	// sample box (row-major, x-major within rows), captured at first
 	// forward execution and reused by undo. Box coords are inclusive

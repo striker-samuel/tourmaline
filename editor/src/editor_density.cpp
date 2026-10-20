@@ -120,11 +120,11 @@ void EditorApp::RefreshCubemapDensity() {
 		};
 	}
 	char info[256];
-	if (m_cook.cubemapOctree) {
+	if (ExportCfg().cubemapOctree) {
 		smvk::CubemapOctreeOptions oo{};
-		oo.maxCellSize = m_cook.cubemapOctreeMax;
-		oo.minCellSize = m_cook.cubemapOctreeMin;
-		oo.maxDepth = m_cook.cubemapOctreeDepth;
+		oo.maxCellSize = ExportCfg().cubemapOctreeMax;
+		oo.minCellSize = ExportCfg().cubemapOctreeMin;
+		oo.maxDepth = ExportCfg().cubemapOctreeDepth;
 		oo.embedDist = kDensityEmbedDist;
 		oo.maxProbes = kDensityMaxProbes;
 		std::vector<smvk::CubemapPlacedProbe> placed;
@@ -143,7 +143,7 @@ void EditorApp::RefreshCubemapDensity() {
 			"octree max%.1f/min%.1f/d%u -> %zu probes (%zu BVH tris%s)%s",
 			oo.maxCellSize, oo.minCellSize, oo.maxDepth,
 			placed.size(), soupTris, occ ? "" : "; NO OCCLUSION CULL",
-			m_cook.cubemap ? "" : " [cubemap bake OFF: hypothetical]");
+			ExportCfg().cubemap ? "" : " [cubemap bake OFF: hypothetical]");
 	}
 	else {
 		// Grid mirror (Cook.exe --cubemap-grid path, same occupancy
@@ -193,7 +193,7 @@ void EditorApp::RefreshCubemapDensity() {
 			"grid %dx%dx%d @%.0fm -> %zu probes (%zu dropped, %zu BVH tris%s)%s",
 			nx, ny, nz, spacing, m_cubemapDensity.size(), dropped,
 			soupTris, occ ? "" : "; NO OCCLUSION CULL",
-			m_cook.cubemap ? "" : " [cubemap bake OFF: hypothetical]");
+			ExportCfg().cubemap ? "" : " [cubemap bake OFF: hypothetical]");
 	}
 	m_cubemapDensityInfo = info;
 	Log(std::string("Cubemap density (") + m_cubemapDensityScene + "): "

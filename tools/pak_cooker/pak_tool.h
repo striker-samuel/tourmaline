@@ -39,6 +39,14 @@ struct PakArgs {
 	bool meshopt = true;
 	float overdraw = 1.05f;
 	bool autoKtx = true;
+	// SKIP the loose VFS sidecar discovery at assembly (-1 = the tour's
+	// exportSettings node decides — the SceneExportSettings::ignoreVfs
+	// default; 0/1 = CLI-pinned, e.g. the editor passes the node's value
+	// through here). On = the pak embeds ONLY the scene's own content
+	// (meshes/materials/textures, blobs by path): no gi/ cubemap
+	// manifests + KTX rows, no .sggi, no .cvmanifest + .cvol rows, no
+	// bindings for them (see SceneExportSettings::ignoreVfs).
+	int ignoreVfs = -1;
 	// Level blob (see Engine/Asset/level.h): pack the scene + the baked
 	// data into ONE levels/<name>.level blob. Empty = no level blob.
 	// (No cubemap knobs here: PAK never bakes captures — cook.exe does;

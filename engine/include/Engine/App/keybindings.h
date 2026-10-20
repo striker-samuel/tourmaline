@@ -38,7 +38,8 @@ constexpr int MOTION_DEBUG_TOGGLE = GLFW_KEY_V;
 constexpr int LOD_TOGGLE = GLFW_KEY_L;
 constexpr int PARTICLES_TOGGLE = GLFW_KEY_F;// GPU particle system on/off
 constexpr int DEFERRED_SHADOWS_TOGGLE = GLFW_KEY_H;
-constexpr int GFX_FILTER_TOGGLE = GLFW_KEY_G;
+// No G binding: the filtered main view is always on (the old runtime A/B
+// toggle died with the legacy direct-draws off path; the G key is free).
 constexpr int SKY_TOGGLE = GLFW_KEY_K;
 constexpr int WIREFRAME_TOGGLE = GLFW_KEY_P;
 // Tiled-terrain render on/off (replaces the old Terrain field checkbox).

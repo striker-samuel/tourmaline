@@ -120,6 +120,12 @@ namespace paktool {
 		float overdraw = 1.05f;
 		bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 		bool verify = true; // re-open the written pak with PakReader (self-check)
+		// SKIP the loose VFS sidecar discovery (-1 = the tour's
+		// exportSettings node decides; 0/1 = CLI-pinned). On = the pak
+		// embeds ONLY the scene's own content (meshes/materials/textures,
+		// blobs by path) — no gi/ cubemap manifests + KTX rows, no .sggi,
+		// no .cvmanifest + .cvol rows, no bindings (see SceneExportSettings).
+		int ignoreVfs = -1;
 		// KTX auto-convert (on by default): non-KTX sources transcode
 		// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
 		// to the source). Off restores warn-and-skip for non-KTX payloads.
@@ -398,6 +404,14 @@ namespace paktool {
 				out.autoKtx = (v == "on" || v == "1" || v == "true");
 				out.explicitSet.insert("autoKtx");
 			}
+			else if (a == "--ignore-vfs") {
+				std::string v;
+				if (!need(v)) return false;
+				// CLI pin (wins over the exportSettings node's ignoreVfs):
+				// skip the loose VFS sidecar discovery — everything else
+				// embeds straight from the scene.
+				out.ignoreVfs = (v == "on" || v == "1" || v == "true") ? 1 : 0;
+			}
 			else if (a == "--scratch-dir") {
 				// Removed: the project cache joins by convention now
 				// (<contentDir>/.tourmaline when it carries a cache.db),
@@ -530,6 +544,9 @@ namespace paktool {
 			<< "          [--verify on|off] [--dump-pak <pak path>]\n"
 			<< "          [--dump-manifest on|off] [--dump-node <id> ...]\n"
 			<< "          [--meshopt on|off] [--overdraw 1.05]\n"
+			<< "          [--ignore-vfs on|off] (skip the loose gi/ sidecar\n"
+			<< "           discovery - the scene's own content only; the\n"
+			<< "           tour's exportSettings node defaults it)\n"
 			<< "          [--auto-ktx on|off]\n"
 			<< "          [--sun-azimuth 30 --sun-elevation 55\n"
 			<< "           --sun-intensity 10000 --sky-intensity 6000\n"
@@ -1365,6 +1382,7 @@ int Run(const PakArgs& c) {
 	args.meshopt = c.meshopt;
 	args.overdraw = c.overdraw;
 	args.autoKtx = c.autoKtx;
+	args.ignoreVfs = c.ignoreVfs;
 	args.levelName = c.levelName;
 	args.terrainDir = c.terrainDir;
 	args.sunAzimuth = c.sunAzimuth;
@@ -1530,22 +1548,39 @@ int Run(const PakArgs& c) {
 		// scene-keyed sidecar bakes survive differently-named out paks).
 		if (args.inVfs.empty() && !tour.references.empty())
 			args.inVfs = tour.references[0].source;
-		// Apply tour cook defaults (CLI wins)
-		if (tour.hasCook) {
-			const auto& k = tour.cook;
-			auto use = [&](const char* key, auto& dst, auto val) {
-				if (!args.explicitSet.contains(key)) {
-					dst = val;
-					tool::out() << "Tour cook default: " << key << "\n";
-				}
-			};
-			use("meshopt", args.meshopt, k.meshopt);
-			// NOTE: no sun/sky keys here â€” TourCook dropped them; the env
-			// blocks (env.default.* / env.n.*, applied by ApplyTourToCluster
-			// into the cluster scene) are the sun/sky of record for every
-			// stage (see EnvForBake). Legacy tour cook lines carrying the
-			// old keys ignore them (the tour-side parse skips them).
-			use("autoKtx", args.autoKtx, k.autoKtx);
+		// Export settings (the cook-block REPLACEMENT): the scene's
+		// exportSettings NODE. Read straight off the doc's command list
+		// (ExportSettingsFromDoc) — the merge must land before the
+		// definition build below; the replay consumes the SAME lines, so
+		// the results agree by construction. Only the pak-relevant
+		// fields merge here (meshopt/autoKtx); CLI flags win.
+		{
+			SceneExportSettings es{};
+			std::string esWarn;
+			const bool haveEs =
+				smvk::tour::ExportSettingsFromDoc(tour, es, &esWarn);
+			if (haveEs) {
+				auto use = [&](const char* key, auto& dst, auto val) {
+					if (!args.explicitSet.contains(key)) {
+						dst = val;
+						tool::out() << "Tour cook default: " << key << "\n";
+					}
+				};
+				use("meshopt", args.meshopt, es.meshopt);
+				use("autoKtx", args.autoKtx, es.autoKtx);
+			}
+			if (!esWarn.empty())
+				tool::err() << "Tour exportSettings: " << esWarn
+					<< std::endl;
+			// ignoreVfs: CLI pin wins; else the node's default (-1 unset).
+			// On = the loose VFS sidecar discovery below stays OFF (the
+			// minimal-pak switch — everything else embeds by path).
+			if (args.ignoreVfs < 0)
+				args.ignoreVfs = es.ignoreVfs ? 1 : 0;
+			// NOTE: no sun/sky keys — the env blocks (env.default.* /
+			// env.n.*, applied by ApplyTourToCluster into the cluster
+			// scene) are the sun/sky of record for every stage (see
+			// EnvForBake).
 		}
 		// DEFINITION BUILD â€” identical to the editor: empty scene root,
 		// then the reference bind (root reference #0 imports the source
@@ -1994,7 +2029,10 @@ int Run(const PakArgs& c) {
 	// the embed loop below carries the cubemapKtx rows into the pak.
 	// Old-path (textures/cubemaps/) manifests are NOT discovered: the
 	// capture-set paths moved to gi/cubemaps/ (sanctioned break — recook).
-	if (cubemapManifestBase.empty()) {
+	// ignoreVfs (the exportSettings node / --ignore-vfs): the whole
+	// loose discovery stays OFF — the pak embeds ONLY the scene's own
+	// content, no resolved loose bakes (the minimal-pak switch).
+	if (cubemapManifestBase.empty() && args.ignoreVfs <= 0) {
 		for (const std::string& stem : SidecarStems(args)) {
 			const std::string mrel =
 				"gi/cubemaps/" + stem + ".cubemanifest";
@@ -2039,8 +2077,11 @@ int Run(const PakArgs& c) {
 	// so the runtime's binding-first loaders resolve straight out of the
 	// pak; loose files still override through the overlay by the same
 	// paths). Missing = unbaked (the runtime falls back to the scene-id
-	// stem, then to "not baked yet").
-	{
+	// stem, then to "not baked yet"). ignoreVfs (the exportSettings node
+	// / --ignore-vfs): the whole loose discovery stays OFF — the pak
+	// embeds ONLY the scene's own content, no resolved loose bakes (the
+	// minimal-pak switch).
+	if (args.ignoreVfs <= 0) {
 		std::filesystem::path pakPath(args.outPak);
 		const std::string pakStem = pakPath.stem().generic_string();
 		const std::vector<std::string> stems = SidecarStems(args);
@@ -2140,6 +2181,11 @@ int Run(const PakArgs& c) {
 			tool::out() << "Registered " << ext << " GI '" << stem
 				<< "' (scene '" << pakStem << "')\n";
 		}
+	}
+	else {
+		tool::out() << "ignoreVfs: loose sidecar discovery skipped - "
+			"the pak carries the scene's own content only (no gi/ "
+			"bake payloads, no bindings)\n";
 	}
 
 	smvk::PakWriter writer;
@@ -2453,6 +2499,7 @@ int main(int argc, char** argv) {
 	c.meshopt = args.meshopt;
 	c.overdraw = args.overdraw;
 	c.autoKtx = args.autoKtx;
+	c.ignoreVfs = args.ignoreVfs;
 	c.levelName = args.levelName;
 	c.terrainDir = args.terrainDir;
 	c.sunAzimuth = args.sunAzimuth;

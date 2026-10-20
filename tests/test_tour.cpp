@@ -121,21 +121,40 @@ void TestRoundTrip() {
 	r.flag = true;
 	r.enabled = false;
 	doc.overrides.push_back(r);
-	doc.hasCook = true;
-	doc.cook.outPak = "content/paks/x.pak";
-	doc.cook.lightmap = true;
-	doc.cook.lmMetersPerTexel = 0.125f;
-	doc.cook.lmExcludeKw = "tree,glass";
-	// Meshlet + LOD detail settings ride the cook block too.
-	doc.cook.lods = true;
-	doc.cook.lodRatios = "0.5,0.25,0.1";
-	doc.cook.lodError = 0.05f;
-	doc.cook.meshlets = true;
-	doc.cook.meshletMaxVerts = 100;
-	doc.cook.meshletMaxTris = 200;
-	doc.cook.meshletConeWeight = 0.5f;
+	// Cook/export knobs ride the scene's exportSettings NODE: a createNode
+	// -at exportSettings line + setExportAttr lines (the singleton is the
+	// first create; attrs address it via kCreateExportRefBase | 0).
+	{
+		smvk::tour::Command ec{};
+		ec.verb = smvk::tour::Verb::CreateNode;
+		ec.nodeType = "exportSettings";
+		ec.node = 0; // parent = cluster root
+		ec.text = "ExportSettings";
+		doc.commands.push_back(ec);
+		auto ea = [&](const char* attr, double num, bool flag,
+			const char* str) {
+			smvk::tour::Command a{};
+			a.verb = smvk::tour::Verb::SetExportAttr;
+			a.node = smvk::tour::kCreateExportRefBase | 0u;
+			a.text = attr;
+			a.number = num;
+			a.flag = flag;
+			a.name = str;
+			doc.commands.push_back(a);
+		};
+		ea("lightmap", 0.0, true, "");
+		ea("lmMetersPerTexel", 0.125, false, "");
+		ea("lmExcludeKw", 0.0, false, "tree,glass");
+		ea("lods", 0.0, true, "");
+		ea("lodRatios", 0.0, false, "0.5,0.25,0.1");
+		ea("lodError", 0.05, false, "");
+		ea("meshlets", 0.0, true, "");
+		ea("meshletMaxVerts", 100.0, false, "");
+		ea("meshletMaxTris", 200.0, false, "");
+		ea("meshletConeWeight", 0.5, false, "");
+	}
 	// The sun/sky ride the ENV BLOCKS (env.default.* editorSet keys —
-	// SceneEnv, lux-native); TourCook carries no sun/sky fields anymore.
+	// SceneEnv, lux-native); the exportSettings node carries no sun/sky.
 	doc.editorSettings.emplace_back("env.default.sunAzimuth", "120");
 	doc.editorSettings.emplace_back("env.default.sunElevation", "42");
 	doc.editorSettings.emplace_back("env.default.sunIntensity", "4242");
@@ -152,17 +171,25 @@ void TestRoundTrip() {
 	Check(back.source == doc.source, "tour source");
 	Check(back.fingerprint == doc.fingerprint, "tour fingerprint");
 	Check(back.commands.size() == doc.commands.size(), "tour command count");
-	Check(back.hasCook && back.cook.outPak == doc.cook.outPak, "tour cook outPak");
-	Check(back.cook.lightmap && back.cook.lmMetersPerTexel == 0.125f,
-		"tour cook bake");
-	Check(back.cook.lmExcludeKw == "tree,glass", "tour cook exclude");
-	Check(back.cook.lods && back.cook.lodRatios == "0.5,0.25,0.1"
-		&& std::abs(back.cook.lodError - 0.05f) < 1e-6f,
-		"tour cook lod detail");
-	Check(back.cook.meshlets && back.cook.meshletMaxVerts == 100
-		&& back.cook.meshletMaxTris == 200
-		&& std::abs(back.cook.meshletConeWeight - 0.5f) < 1e-6f,
-		"tour cook meshlet settings");
+	// The exportSettings node + its attr lines round-trip, and the ONE
+	// shared mapping (ExportSettingsFromDoc — the same ApplyExportAttr
+	// the replay and Cook.exe run) reads them back exactly.
+	{
+		SceneExportSettings es{};
+		std::string esWarn;
+		Check(smvk::tour::ExportSettingsFromDoc(back, es, &esWarn),
+			"tour exportSettings present");
+		Check(es.lightmap && std::abs(es.lmMetersPerTexel - 0.125f) < 1e-6f,
+			"tour exportSettings bake");
+		Check(es.lmExcludeKw == "tree,glass", "tour exportSettings exclude");
+		Check(es.lods && es.lodRatios == "0.5,0.25,0.1"
+			&& std::abs(es.lodError - 0.05f) < 1e-6f,
+			"tour exportSettings lod detail");
+		Check(es.meshlets && es.meshletMaxVerts == 100
+			&& es.meshletMaxTris == 200
+			&& std::abs(es.meshletConeWeight - 0.5f) < 1e-6f,
+			"tour exportSettings meshlet settings");
+	}
 	// The env-block sun round-trips through the editorSet section (the
 	// opaque key/value pairs the editor + the cooker's env resolution
 	// parse; the cook block itself no longer carries a sun). NOTE: the
@@ -1417,7 +1444,7 @@ void TestCubemapVerbs() {
 void TestCreateNode() {
 	// Type table: DAG vs system knowledge lives on the type.
 	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 10,
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 11,
 		"createnode table size");
 	const smvk::tour::CreateNodeType* t =
 		smvk::tour::FindCreateNodeType("spotLight");
@@ -1944,8 +1971,21 @@ void TestFileNodes() {
 	fn.wrap = 2;
 	fn.filter = 0;
 	doc.fileNodes.push_back(fn);
-	doc.hasCook = true;
-	doc.cook.autoKtx = false;
+	{
+		// autoKtx off rides the exportSettings node (the singleton).
+		smvk::tour::Command ec{};
+		ec.verb = smvk::tour::Verb::CreateNode;
+		ec.nodeType = "exportSettings";
+		ec.node = 0;
+		ec.text = "ExportSettings";
+		doc.commands.push_back(ec);
+		smvk::tour::Command a{};
+		a.verb = smvk::tour::Verb::SetExportAttr;
+		a.node = smvk::tour::kCreateExportRefBase | 0u;
+		a.text = "autoKtx";
+		a.flag = false;
+		doc.commands.push_back(a);
+	}
 	std::string err;
 	Check(smvk::tour::SaveTour(TempTour(), doc, err), "filenode save");
 	smvk::tour::Doc back;
@@ -1964,7 +2004,11 @@ void TestFileNodes() {
 			&& back.fileNodes[1].wrap == 2
 			&& back.fileNodes[1].filter == 0, "filenode linear mirrored linear");
 	}
-	Check(back.hasCook && back.cook.autoKtx == false, "filenode cook autoktx");
+	{
+		SceneExportSettings es{};
+		Check(smvk::tour::ExportSettingsFromDoc(back, es, nullptr)
+			&& es.autoKtx == false, "filenode exportSettings autoktx");
+	}
 	// Numeric tolerance + missing-path skip via hand-written lines.
 	{
 		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);

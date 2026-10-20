@@ -38,6 +38,22 @@ Personal learning project ("toy" is the operative word) — APIs and data
 formats are not stable and will break without notice. Format versions are
 magic-bumped instead of carrying compat shims, by design.
 
+**Work in progress, and pretty broken.** The following subsystems are active
+experiments: they compile and run for the scenes they were developed
+against, but expect gaps, visual artifacts, stale bakes and API churn.
+
+- **GPU skinning** — skeletal animation, joint palettes and the GPU skinning
+  path are incomplete; expect incorrect or missing deformation on animated
+  content.
+- **Terrain** — procedural tiles, height painting and LOD stitching are
+  unfinished; seams, missing tiles and unstable edits are known.
+- **GI (global illumination)** — probe cubemaps, convex volumes, the
+  world-field octree and lightmap baking are preview-quality; bakes may be
+  stale, incomplete or visibly wrong outside the scenes they were authored
+  for.
+
+Treat those three as preview-quality, not production features.
+
 ## Requirements
 
 - **Windows 10/11 x64**
@@ -150,11 +166,8 @@ loose glTF / KTX2 assets
   -> tools/cook            (asset cooking: geometry, textures, manifests)
   -> tools/gi_baker / tools/cubemap_baker / lightmaps   (Embree ray tracing)
   -> tools/pak_cooker      (*.pak archives: LZ4, magic-versioned)
-  -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
+   -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
 ```
-
-`tools/cook_bistro.py` and friends show a full end-to-end example against
-the Bistro test scene (scripts reference local asset locations).
 
 ## Repository layout
 
