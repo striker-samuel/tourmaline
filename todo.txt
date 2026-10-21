@@ -1,13 +1,29 @@
 TODO
 ====
 
+(Engine, resolved-verdict) Skinned-mesh self-shadowing on thin double-skin
+meshes (the knight's shield): the shadow chain is the standard robust one
+(receiver-side normal bias ~1.25 texels world + slope-scaled oriented depth
+bias ~0.5 texels/depthRange, per-cascade texel-scaled, UI scales in the
+Debug panel) and it detaches self-overlap up to ~a few mm. The residual is
+geometric, not a bias bug: shadow depth renders with Cull Front (back-face
+depth — the classic closed-mesh anti-acne choice), so on a THIN OPEN shell
+(~2mm skins) the stored back skin sits 2mm behind the receiver skin instead
+of a closed mesh's thickness, and at grazing sun angles the required
+detachment grows unbounded while the baked bias is fixed (any bias big
+enough to clear it would peter-pan real contact shadows globally). RIDE
+WITH IT. Content-side fixes: close the shell rim (a solid edge strip makes
+it a closed volume — the back-face trick then works as designed) or widen
+the skin gap beyond the bias budget (~>1 cm). Engine-side answer for thin
+shells if it ever matters: EVSM (variance maps leak light through tiny
+overlaps naturally — the toggle exists, default PCF).
+
 (Editor, future) The editor's meshlet debug (F4 "Cone-cutoff heat" +
 per-meshlet cone data) reads its own cooked STATIC meshlets — bind-pose
 cones, no deformed source. The engine's gfx cull chain now rebuilds
-deformed cones on GPU (GfxSkinBounds) and its runtime overlays consume
-them via the async readback cache (WorldRenderer m_debugSkinCone*); the
+deformed cones on GPU (GfxSkinBounds) and its runtime axis overlay consumes
+them GPU-side (GfxConeDebug, TOURMALINE_CONE_DEBUG=1 arms it headless); the
 editor preview is the remaining place a skinned mesh shows bind-pose cone
-data. Revisit if the editor ever runs the skinning preview / the gfx
-filter chain (it would then get the same GfxSkinBounds table + the same
-readback path; until then the editor overlay is honest only for static
-meshes).
+data. Revisit if the editor ever runs the skinning preview / the gfx filter
+chain (it would then get the same GfxSkinBounds table; until then the
+editor overlay is honest only for static meshes).

@@ -149,8 +149,12 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 
             // Cone fit on the same deformed corners (meshopt's
             // meshopt_computeMeshletBounds convention — see the header).
+            // coneEnabled = 0 (TOURMALINE_SKIN_CONE=0, the A/B lever) keeps
+            // the degenerate keep-cone — the pre-rebuild behavior, so a
+            // suspect cone can be isolated from the sphere rebuild in one
+            // headless run.
             const float nlen2 = dot(nsum, nsum);
-            if (nlen2 > 1e-12f)
+            if (pcS.coneEnabled != 0u && nlen2 > 1e-12f)
             {
                 const float3 axis = nsum * (1.0f / sqrt(nlen2));
                 // Walk 2: min dot(axis, unit face normal). Also skips

@@ -362,10 +362,35 @@ struct SkinBoundsPush {
 	uint64_t skinBounds = 0; // out (candidate slots + drawBound tail)
 	uint32_t deformedBase = UINT32_MAX;
 	uint32_t drawCount = 0;
-	uint32_t pad0 = 0;
+	// 0 = degenerate keep-cones (TOURMALINE_SKIN_CONE=0, the A/B lever that
+	// isolates the cone rebuild from the sphere rebuild in one headless
+	// run) — the pre-rebuild behavior.
+	uint32_t coneEnabled = 1;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SkinBoundsPush) == 64);
+
+// GfxConeDebug push (the cone-axis overlay's GPU leg; runs after
+// GfxSkinBounds, before Main's overlay draw). Must match HLSL
+// GfxConeDebugPush in gfxfilter.hlsli (56 bytes). One 128-thread workgroup
+// per draw; threads stride the draw's clusters and write two packed
+// DebugLineVertex float3s per candidate slot (apex -> tip), the ACTUAL
+// cull cones: baked bind-pose for static draws, this frame's deformed
+// cones (the skinBounds table) for skinned draws — zero latency,
+// GPU-driven end to end (the retired CPU readback path corrupted the host
+// heap: its download destinations dangled through vector reallocation
+// between submit and poll, and the cache never landed).
+struct ConeDebugPush {
+	uint64_t draws = 0;        // this frame (misc2.z = slot base)
+	uint64_t meshes = 0;       // static per-mesh cluster ranges
+	uint64_t clusters = 0;     // static (baked bind-pose cones)
+	uint64_t skinBounds = 0;   // deformed (this frame's table)
+	uint64_t lines = 0;        // out (2 packed verts per candidate slot)
+	uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
+	uint32_t drawCount = 0;
+	uint32_t pad2[2] = {};
+};
+static_assert(sizeof(ConeDebugPush) == 56);
 
 // GfxDrawCull push (after GfxHiz, before the filter). Must match HLSL
 // GfxDrawCullPush in gfxfilter.hlsli (144 bytes). One thread per draw;
@@ -1025,6 +1050,19 @@ struct State {
 	Holder<BufferHandle> skinBoundsBuffers[MAX_FRAMES_IN_FLIGHT];
 	LogicalBufferHandle skinBoundsLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	bool skinBoundsReady = false;
+	// GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
+	// DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
+	// (baked bind-pose for static draws, this frame's deformed cones for
+	// skinned draws) — GPU-driven end to end (the retired CPU readback path
+	// corrupted the host heap and never landed). Lazily armed by the
+	// overlay's UI toggle (SetConeDebug); one shared line buffer (the
+	// candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
+	// exactly the written range).
+	Holder<ShaderModuleHandle> coneDebugModule;
+	ShaderProgram coneDebugProgram{};
+	Holder<BufferHandle> coneDebugLines;
+	LogicalBufferHandle coneDebugLinesLogical{};
+	bool coneDebug = false; // the UI toggle's armed state
 	// The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
 	// every draw path reads - the RHI globals from vulkan_impl.h, stashed
 	// once at EnsureMeshParams so the record sites' fills never reach for
@@ -1066,6 +1104,7 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 inline constexpr const char* kGfxBatchCullCsPath = "content/shaders/gfxbatchcull.cs.hlsl.spv";
 inline constexpr const char* kGfxDrawCullCsPath = "content/shaders/gfxdrawcull.cs.hlsl.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
+inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debug.cs.hlsl.spv";
 
 // Mesh-bound fast-discard gate for shadow lists (pure CPU, testable):
 // true = discard the whole draw before the per-cluster meshlet loop.
@@ -1087,6 +1126,31 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
 	uint32_t view);
 // Creates the per-flight skinBounds ring + module lazily (idempotent).
 bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg);
+// Cone-axis overlay's GPU leg: runs after GfxSkinBounds, before Main's
+// overlay draw. One 128-thread workgroup per draw; threads stride the
+// draw's clusters and write TWO packed DebugLineVertex float3s per
+// candidate slot (apex -> tip) — the ACTUAL cull cones (baked bind-pose
+// for static draws, this frame's deformed cones for skinned draws). The
+// candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
+// exactly the written range; Main Draws that count over the line buffer.
+RenderPass& AddConeDebugPass(State& s, RenderGraph& rg, uint32_t view);
+void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view);
+// Arms/disarms the overlay (the UI toggle's handler): on enable, lazily
+// creates the module/program + the shared line buffer + logical; on
+// disable, only the flag flips (the buffer stays — re-arm is free). The
+// per-frame pass is recorded only while ConeDebugReady(s).
+void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable);
+[[nodiscard]] inline bool ConeDebugReady(const State& s) {
+	return s.coneDebug && s.coneDebugProgram.shaderCount != 0
+		&& !s.coneDebugLines.empty() && !s.coneDebugLinesLogical.empty();
+}
+[[nodiscard]] inline LogicalBufferHandle ConeDebugLinesLogical(const State& s) {
+	return s.coneDebugLinesLogical;
+}
+[[nodiscard]] inline BufferHandle ConeDebugLinesBuffer(const State& s) {
+	return s.coneDebugLines; // Holder's implicit handle conversion
+}
 // First compute pass of the frame (before the seed pass): one workgroup
 // per draw; sphere + cone verdicts, temporal seed/remainder commands,
 // batch array + filter indirect statics, kept bits.

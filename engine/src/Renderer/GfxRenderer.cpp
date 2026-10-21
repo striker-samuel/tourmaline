@@ -652,6 +652,22 @@ namespace engine {
 				smvk::gfx::PushAndDispatchSkinBounds(self->gfx, cmd, *ctx, slot);
 			});
 		}
+		// Cone-axis overlay lines (the debug toggle armed the buffer —
+		// SetConeDebug): writes the DebugLineVertex pairs Main's overlay
+		// Draws — the ACTUAL cull cones, baked bind-pose for static draws +
+		// this frame's deformed cones for skinned ones (GPU-driven end to
+		// end; the retired CPU readback path corrupted the host heap).
+		// Ordered after GfxSkinBounds by the skinBounds read-hint pair.
+		if (smvk::gfx::ConeDebugReady(gfx)) {
+			smvk::RenderPass& coneDbgPass =
+				smvk::gfx::AddConeDebugPass(gfx, *fc.rg, slot);
+			GfxRenderer* self = this;
+			smvk::ResourceManager* ctx = fc.ctx;
+			coneDbgPass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
+			{
+				smvk::gfx::PushAndDispatchConeDebug(self->gfx, cmd, *ctx, slot);
+			});
+		}
 		// Cull chain: GfxBatchCull FIRST — its outputs gate the seed
 		// pass (the seed commands + the draws the seed VS resolves are
 		// written here, GPU-side; the rendergraph orders this before the

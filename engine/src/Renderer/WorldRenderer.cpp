@@ -9070,193 +9070,53 @@ namespace engine {
 		const smvk::RenderView liveMainCullView = m_renderViews.Get(mainRenderView);
 
 		// ---------------------------------------------------------------------
-		// Skinned-mesh cone debug source (the DEFORMED cones from the GPU
-		// skinBounds table): poll the in-flight readback, then (debug-gated)
-		// submit a fresh one for the skinned draws' candidate slot ranges.
-		// Ordering rides the demand ring's exact argument: the submit runs
-		// at record time BEFORE this frame's graph submission, so the copy
-		// waits only retired graphics work (its retirement wait) and this
-		// frame's own GfxSkinBounds write waits the copy (the transfer
-		// chain — chainExternalPoint joins it into the frame's waits) — the
-		// copy reads the flight's table content from MAX_FRAMES_IN_FLIGHT
-		// frames ago, never mid-write.
-		// ---------------------------------------------------------------------
-		if (gfxSlot != UINT32_MAX && gfxSlot < m_gfxRenderer.State().views.size()) {
-			smvk::gfx::State& gfxDbg = m_gfxRenderer.State();
-			smvk::gfx::View& dbgView = gfxDbg.views[gfxSlot];
-			const uint32_t dbgFlight = dbgView.frameIndex;
-			const bool skinTableLive = gfxDbg.skinBoundsReady
-				&& dbgFlight < ::MAX_FRAMES_IN_FLIGHT
-				&& !gfxDbg.skinBoundsBuffers[dbgFlight].empty();
-			// 1) Poll (whenever a ticket is in flight — even after the debug
-			//    toggles switched off, so the single async slot frees).
-			if (m_debugSkinConeTicket != 0) {
-				if (m_context->PollAsyncDownloadDataFromBuffers(
-					m_debugSkinConeTicket,
-					std::span<const smvk::BufferDownload>(
-						m_debugSkinConeDownloads.data(),
-						m_debugSkinConeDownloads.size()))) {
-					m_debugSkinConeTicket = 0;
-					// Cache rebuild: the keys were snapshotted at submit
-					// time (MakeVisKey(model, cluster) — the (model,
-					// cluster) identity is the stable address; draw
-					// indices churn per frame). One landing replaces the
-					// whole cache (bounded, no eviction bookkeeping).
-					m_debugSkinConeCache.clear();
-					const size_t n = std::min(
-						m_debugSkinConeKeys.size(), m_debugSkinConeTable.size());
-					for (size_t i = 0; i < n; ++i)
-						m_debugSkinConeCache[m_debugSkinConeKeys[i]] =
-							m_debugSkinConeTable[i];
-					m_debugSkinConeKeys.clear();
-					m_debugSkinConeTable.clear();
-					m_debugSkinConeDownloads.clear();
-				}
-			}
-			// 2) Submit (debug-gated: the line overlay, or the heat mode's
-			//    cutoff leg). Yields while ANY async readback is in flight
-			//    (the exposure/demand ticket owns the slot on its cadence;
-			//    this retries next frame) and while the skinning/skinBounds
-			//    chain is off (nothing skinned to read back).
-			else if ((m_debugCones || m_debugMeshletMode == 1)
-				&& skinTableLive && !m_context->HasAsyncDownloadInFlight()) {
-				uint64_t totalBytes = 0;
-				for (uint32_t di = 0; di < dbgView.drawConstants.size(); ++di) {
-					const smvk::gfx::Draw& d = dbgView.drawConstants[di];
-					if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
-						continue;
-					if (d.candidateBase == UINT32_MAX
-						|| d.mesh >= gfxDbg.meshes.size())
-						continue;
-					const smvk::gfx::Mesh& gm = gfxDbg.meshes[d.mesh];
-					if (gm.clusterCount == 0)
-						continue;
-					if ((uint64_t)d.candidateBase + gm.clusterCount
-						> smvk::gfx::kMaxBatchSlots)
-						continue; // corrupt slot layout: skip the draw's leg
-					const size_t first = m_debugSkinConeTable.size();
-					m_debugSkinConeTable.resize(first + gm.clusterCount);
-					for (uint32_t ci = 0; ci < gm.clusterCount; ++ci)
-						m_debugSkinConeKeys.push_back(smvk::gfx::detail::MakeVisKey(
-							d.model, gm.clusterStart + ci));
-					// The out pointers must stay put submit->poll: these
-					// vectors are only rebuilt at ticket == 0 (landed +
-					// cleared), and clear() keeps the heap buffers alive.
-					m_debugSkinConeDownloads.push_back(smvk::BufferDownload{
-						gfxDbg.skinBoundsBuffers[dbgFlight],
-						m_debugSkinConeTable.data() + first,
-						(size_t)gm.clusterCount * sizeof(smvk::gfx::ClusterConstants),
-						(size_t)d.candidateBase * sizeof(smvk::gfx::ClusterConstants) });
-					totalBytes += (uint64_t)gm.clusterCount
-						* sizeof(smvk::gfx::ClusterConstants);
-				}
-				// Debug-traffic cap (staging growth + copies): a skinned
-				// crowd beyond this keeps the stale cache (warn once).
-				constexpr uint64_t kDebugSkinConeMaxBytes = 8ull << 20;
-				static bool s_skinConeCapWarned = false;
-				if (!m_debugSkinConeDownloads.empty()
-					&& totalBytes <= kDebugSkinConeMaxBytes) {
-					m_debugSkinConeTicket = m_context->SubmitAsyncDownloadDataFromBuffers(
-						std::span<const smvk::BufferDownload>(
-							m_debugSkinConeDownloads.data(),
-							m_debugSkinConeDownloads.size()));
-				}
-				else if (!m_debugSkinConeDownloads.empty() && !s_skinConeCapWarned) {
-					s_skinConeCapWarned = true;
-					std::fprintf(stderr,
-						"[DebugSkinCone] skinned slot readback %.1f MB exceeds the "
-						"%.1f MB debug cap: cones stay stale.\n",
-						double(totalBytes) / (1024.0 * 1024.0),
-						double(kDebugSkinConeMaxBytes) / (1024.0 * 1024.0));
-				}
-				if (m_debugSkinConeTicket == 0) {
-					// Busy slot / cap: drop the pending shape (retry builds
-					// it fresh next frame).
-					m_debugSkinConeKeys.clear();
-					m_debugSkinConeTable.clear();
-					m_debugSkinConeDownloads.clear();
-				}
-			}
-		}
-
-		// ---------------------------------------------------------------------
-		// Cone-axis debug lines (CPU candidate batches -> apex/tip verts).
-		// Built + uploaded here (before Main records); the Main lambda only
-		// binds the buffer and draws. No rendergraph hints needed: content
-		// is pure CPU (batches/drawConstants/clusters vectors) + the upload
-		// barrier, same pattern as the frame-uniform uploads.
-		// Static draws read the baked bind-pose cones (the actual cull
-		// input for them); SKINNED draws read the read-back DEFORMED cones
-		// (the skinBounds table — see the tick above) and draw NOTHING
-		// while the cache is cold: the static cone is bind-pose and drawing
-		// it would be the exact lie this overlay exists to expose.
+		// Cone-axis debug lines (the overlay's GPU leg): the toggle armed the
+		// GfxConeDebug pass (SetConeDebug — the UI handler), which writes two
+		// packed DebugLineVertex float3s per candidate slot from the cull
+		// chain's ACTUAL cones — baked bind-pose cones for static draws, THIS
+		// frame's deformed cones for skinned ones — GPU-driven end to end:
+		// zero latency, no readback (the retired CPU readback path corrupted
+		// the host heap — its download destinations dangled through vector
+		// reallocation between submit and poll — and the cache never landed,
+		// leaving the overlay dark on exactly the skinned meshes it existed
+		// to inspect).
+		// The candidate slot space is a DENSE prefix over the pushed draws'
+		// clusters (misc2.z is the build's prefix sum), so the pass writes
+		// exactly [0, candidateTotal) slots and Main Draws 2*candidateTotal
+		// verts over the line buffer — the count mirrors the pass's slot
+		// loop (the CPU batch list is not the source of truth here).
 		// ---------------------------------------------------------------------
 		uint32_t coneLineVerts = 0;
-		if (m_debugCones && gfxSlot != UINT32_MAX &&
-			m_gfxRenderer.DebugProgramsValid() &&
-			gfxSlot < m_gfxRenderer.State().views.size()) {
+		{
+			// Headless pin (TOURMALINE_CONE_DEBUG=1): arm the overlay for
+			// capture/A-B runs without the UI (the Debug-panel checkbox
+			// toggles the same state interactively; the env arms it once).
+			static const bool s_coneDebugEnv = [] {
+				const char* e = std::getenv("TOURMALINE_CONE_DEBUG");
+				return e && *e && *e != '0';
+			}();
+			if (s_coneDebugEnv && !m_debugCones) {
+				m_debugCones = true;
+				smvk::gfx::SetConeDebug(m_gfxRenderer.State(),
+					*m_context, *m_rendergraph, true);
+			}
+		}
+		if (m_debugCones && gfxSlot != UINT32_MAX
+			&& gfxSlot < m_gfxRenderer.State().views.size()
+			&& smvk::gfx::ConeDebugReady(m_gfxRenderer.State())) {
 			const smvk::gfx::State& st = m_gfxRenderer.State();
 			const smvk::gfx::View& v = st.views[gfxSlot];
-			std::vector<smvk::DebugLineVertex> lines;
-			lines.reserve(v.batches.size() * 2);
-			for (const smvk::gfx::Batch& b : v.batches) {
-				if (b.draw >= v.drawConstants.size() || b.cluster >= st.clusters.size())
+			uint64_t candidateTotal = 0;
+			for (const smvk::gfx::Draw& d : v.drawConstants) {
+				if (d.candidateBase == UINT32_MAX || d.mesh >= st.meshes.size())
 					continue;
-				const smvk::gfx::Draw& dc = v.drawConstants[b.draw];
-				// The cull's ACTUAL cone for this candidate: the baked
-				// static cone, or the deformed cone for skinned draws (the
-				// skinBounds table — a few frames stale in pose, object
-				// space under the live model, never the bind-pose axis).
-				glm::vec3 coneApex, coneAxis;
-				float boundRadius = 0.0f;
-				const bool drawSkinned =
-					(dc.flags & smvk::gfx::DrawFlagBit_Skinned) != 0;
-				if (drawSkinned) {
-					const auto it = m_debugSkinConeCache.find(
-						smvk::gfx::detail::MakeVisKey(dc.model, b.cluster));
-					if (it == m_debugSkinConeCache.end())
-						continue; // cache cold for this (model, cluster): no line
-					coneApex = it->second.coneApex;
-					coneAxis = it->second.coneAxis;
-					boundRadius = it->second.boundRadius;
-				}
-				else {
-					const smvk::gfx::Cluster& c = st.clusters[b.cluster];
-					coneApex = c.coneApex;
-					coneAxis = c.coneAxis;
-					boundRadius = c.boundRadius;
-				}
-				if (!(boundRadius > 0.0f))
-					continue;
-				const glm::vec3 apex = glm::vec3(dc.model * glm::vec4(coneApex, 1.0f));
-				glm::vec3 ax = glm::vec3(dc.model * glm::vec4(coneAxis, 0.0f));
-				const float alen = glm::length(ax);
-				if (!(alen > 1e-9f))
-					continue; // degenerate cone (the keep-cone): no axis to draw
-				ax /= alen;
-				const float bs = std::max({
-					glm::length(glm::vec3(dc.model[0])),
-					glm::length(glm::vec3(dc.model[1])),
-					glm::length(glm::vec3(dc.model[2])) });
-				if (!(bs > 0.0f))
-					continue;
-				lines.push_back(smvk::DebugLineVertex{ apex });
-				lines.push_back(smvk::DebugLineVertex{ apex + ax * (boundRadius * bs) });
+				const uint64_t count = st.meshes[d.mesh].clusterCount;
+				if (d.candidateBase + count > smvk::gfx::kMaxBatchSlots)
+					continue; // corrupt slot layout: the pass skips it too
+				candidateTotal += count;
 			}
-			if (!lines.empty()) {
-				const size_t bytes = lines.size() * sizeof(smvk::DebugLineVertex);
-				if (m_debugLines.empty() || m_debugLinesCap < (uint32_t)lines.size()) {
-					m_debugLines = m_context->CreateBuffer(bytes,
-						smvk::BufferType_Vertex, "debug cone lines");
-					m_debugLinesCap = (uint32_t)lines.size();
-				}
-				if (!m_debugLines.empty()) {
-					m_context->UploadDataToBuffer(m_debugLines, lines.data(), bytes,
-						smvk::PipelineStageBit_Vertex,
-						smvk::AccessFlags::VertexAttributeRead);
-					coneLineVerts = (uint32_t)lines.size();
-				}
-			}
+			coneLineVerts = (uint32_t)std::min<uint64_t>(
+				candidateTotal * 2, (uint64_t)smvk::gfx::kMaxBatchSlots * 2);
 		}
 
 		// ---------------------------------------------------------------------
@@ -9582,6 +9442,20 @@ namespace engine {
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
 			.SetExtent(renderExtent);
+		// The GPU-written cone debug lines (vertex-attribute read by the
+		// overlay draw below): the vertex-stage read pairs with
+		// GfxConeDebug's compute write — the rendergraph's cross-stage
+		// ordering edge (the same pattern the filtered index monoblock's
+		// compute write + index read use).
+		if (coneLineVerts > 0) {
+			smvk::BufferSyncRequest coneLinesRead{};
+			coneLinesRead.barrierMasks.accessMask =
+				smvk::AccessFlags::VertexAttributeRead;
+			coneLinesRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+			mainPass.AddBufferHint(
+				smvk::gfx::ConeDebugLinesLogical(m_gfxRenderer.State()),
+				coneLinesRead);
+		}
 		if (useMsaa) {
 			// 2x MSAA color resolves into the 1x HDR intermediate; the
 			// aoTerm MRT twin rides the SAME resolve (AVERAGE) so the
@@ -10080,21 +9954,21 @@ namespace engine {
 				// Per-item skin tail: the animated pose for SKINNED items
 				// (covers the filterable + white-fallback branches below).
 				pushMeshDebugSkinTail(worldMesh);
-					// Heat-mode cone source: SKINNED items color by the
-					// read-back DEFORMED cone cutoffs (the skinBounds
-					// table — the tick + cache at the frame's record step),
-					// never the bind-pose baked cutoff (the exact lie the
-					// heat mode exists to expose; see the cone-line overlay
-					// note above). Cache-cold entries draw the sentinel
-					// deep-blue "no deformed data yet". Items without
-					// animation this frame (no deformed heap) keep the
-					// static cutoff — the static cone IS their actual cull
-					// input then.
-					const smvk::gfx::State& stHeat = m_gfxRenderer.State();
-					const smvk::StaticMesh* heatMeshDesc = m_world->GetMesh(worldMesh);
-					const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned
-						&& stHeat.skinDeformedBda != 0
-						&& stHeat.skinDeformedBase != UINT32_MAX;
+					// Heat-mode cone source: SKINNED items have no CPU-visible
+				// deformed cutoffs (the skinBounds table is GPU-resident —
+				// the axis overlay reads it GPU-side via GfxConeDebug, but
+				// this per-cluster CPU-recorded color loop cannot without
+				// a readback, which the overlay's retired path proved too
+				// fragile to keep). They draw the sentinel deep-blue "no
+				// deformed data" instead of the bind-pose cutoff — the
+				// exact lie the heat mode exists to expose. Static items
+				// keep the baked cutoffs — their actual cull input.
+				// (Skinned-heat-from-GPU: the F4 todo.)
+				const smvk::gfx::State& stHeat = m_gfxRenderer.State();
+				const smvk::StaticMesh* heatMeshDesc = m_world->GetMesh(worldMesh);
+				const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned
+					&& stHeat.skinDeformedBda != 0
+					&& stHeat.skinDeformedBase != UINT32_MAX;
 					// Debug the SELECTED sibling: every registered LOD has its
 					// own gfx mesh (see RegisterWorldMeshes), so the overlay
 					// shows what the filter actually culled for this instance.
@@ -10121,14 +9995,9 @@ namespace engine {
 						const smvk::gfx::Cluster& cl = dbgState.clusters[gc];
 						if (cl.triCount == 0)
 							continue;
-						float coneCutoff = cl.coneCutoff;
-						if (heatSkinned) {
-							const auto it = m_debugSkinConeCache.find(
-								smvk::gfx::detail::MakeVisKey(model, gc));
-							coneCutoff = (it != m_debugSkinConeCache.end())
-								? it->second.coneCutoff
-								: -2.0f; // cache cold: "no deformed data" blue
-						}
+					float coneCutoff = cl.coneCutoff;
+					if (heatSkinned)
+						coneCutoff = -2.0f; // "no deformed data" blue (see above)
 						float rgba[4];
 						GfxRenderer::DebugClusterColor(
 							gc, coneCutoff, m_debugMeshletMode, rgba);
@@ -10655,16 +10524,19 @@ namespace engine {
 				}
 			}
 
-			// ---- Cone-axis debug overlay (LineList over the CPU batches) ----
+			// ---- Cone-axis debug overlay (LineList over the GPU-written
+			// candidate lines) ----
 			// Shows the normal cone of every candidate (draw x cluster) the
-			// filter saw: apex -> apex + axis * worldRadius (yellow). Missing
-			// meshlets in the shaded view but present cones here = GPU HZB
-			// cull; missing cones = CPU pre-cull (frustum/cone) — or a
-			// SKINNED draw whose deformed-cone readback cache is still cold
-			// (the skinned cones come from the skinBounds table via the
-			// async debug readback, never the bind-pose static cones).
-			if (m_debugCones && coneLineVerts > 0 && !m_debugLines.empty() &&
-				m_gfxRenderer.DebugProgramsValid()) {
+			// filter saw: apex -> apex + axis * worldRadius (yellow), from
+			// the GfxConeDebug pass's line buffer — the cull chain's ACTUAL
+			// cones (baked bind-pose for static draws, this frame's deformed
+			// cones for skinned ones; GPU-driven end to end, zero latency).
+			// Missing meshlets in the shaded view but present cones here =
+			// GPU HZB cull; missing lines = the keep-cone (degenerate, no
+			// axis to draw).
+			if (m_debugCones && coneLineVerts > 0
+				&& smvk::gfx::ConeDebugReady(m_gfxRenderer.State())
+				&& m_gfxRenderer.DebugProgramsValid()) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.LineProgram(),
 					smvk::VertexFormat::DebugLine,
@@ -10675,7 +10547,8 @@ namespace engine {
 					smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
 					smvk::PrimitiveTopology::LineList
 				);
-				cmd.BindVertexBuffer(m_debugLines, 0, 0);
+				cmd.BindVertexBuffer(
+					smvk::gfx::ConeDebugLinesBuffer(m_gfxRenderer.State()), 0, 0);
 				LineDebugPush lp{};
 				std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
 				// Same HDR/exposure path as the meshlet colors above: pre-scale
@@ -13138,7 +13011,13 @@ namespace engine {
 							"Both work in every ambient mode.");
 						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
-						ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
+						if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
+							// Arm/disarm the GPU leg (SetConeDebug lazily
+							// creates the module + the shared line buffer
+							// on the first arm; re-arm is free).
+							smvk::gfx::SetConeDebug(m_gfxRenderer.State(),
+								*m_context, *m_rendergraph, m_debugCones);
+						}
 						ImGui::Checkbox("Wireframe (P, Line polygon mode)", &m_wireframe);
 						ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
 						if (!m_gfxRenderer.DebugProgramsValid())

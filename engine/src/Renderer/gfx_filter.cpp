@@ -78,6 +78,11 @@ static constexpr size_t kCullStateBytes = kCullStateWords * sizeof(uint32_t);
 // slots so multi-instance skinned draws stay independent.
 static constexpr size_t kSkinBoundsBytes =
 	kMaxBatchSlots * sizeof(ClusterConstants) + kMaxDraws * sizeof(glm::vec4);
+// Cone-axis debug lines (GfxConeDebug output): two packed DebugLineVertex
+// float3s (12B) per candidate slot — the dense candidate-space prefix, so
+// [0, 2*candidateTotal) is exactly the written range. Lazily allocated
+// once (the overlay's UI toggle arms it) and reused every debug frame.
+static constexpr size_t kConeDebugLinesBytes = kMaxBatchSlots * 2 * 12;
 
 static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
 	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
@@ -423,6 +428,13 @@ void Destroy(State& s, RenderGraph& rg) {
 		s.skinBoundsBuffers[f] = {};
 	}
 	s.skinBoundsReady = false;
+	// The cone-debug line buffer's logical (same Holder/logical split; the
+	// buffer retires via its Holder).
+	if (!s.coneDebugLinesLogical.empty())
+		rg.FreeBuffer(s.coneDebugLinesLogical);
+	s.coneDebugLinesLogical = {};
+	s.coneDebugLines = {};
+	s.coneDebug = false;
 	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 		if (!s.meshParamsLogicals[f].empty()) rg.FreeBuffer(s.meshParamsLogicals[f]);
 		if (!s.meshBatchListLogicals[f].empty()) rg.FreeBuffer(s.meshBatchListLogicals[f]);
@@ -2421,6 +2433,14 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
 	push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
 	push.deformedBase = s.skinDeformedBase;
 	push.drawCount = drawCount;
+	// Cone-rebuild A/B lever (TOURMALINE_SKIN_CONE=0): degenerate keep-cones
+	// — the pre-rebuild behavior — so a suspect cone isolates from the
+	// sphere rebuild in one headless run (capture diff A/B).
+	static const bool s_coneEnabled = [] {
+		const char* e = std::getenv("TOURMALINE_SKIN_CONE");
+		return !(e && std::strcmp(e, "0") == 0);
+	}();
+	push.coneEnabled = s_coneEnabled ? 1u : 0u;
 	// MMU-fault rule: never dispatch on a null BDA (no fallback; the batch
 	// cull reads the static table for a slot the pass never wrote ... which
 	// is exactly the bind-pose hole this pass exists to fix, so skip loudly).
@@ -2433,6 +2453,117 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
 	}
 	cmd.BindComputePipeline(s.skinBoundsProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	cmd.Dispatch(drawCount, 1, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Cone-axis debug lines (the overlay's GPU leg)
+// ---------------------------------------------------------------------------
+
+void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable) {
+	if (enable == s.coneDebug && !enable)
+		return; // already off
+	if (enable) {
+		// Lazily create the module/program + the shared line buffer (the
+		// candidate-space prefix, pre-sized to the cap — one allocation for
+		// the State's lifetime; the per-frame pass writes exactly the used
+		// slots [0, candidateTotal)).
+		if (s.coneDebugProgram.shaderCount == 0 || s.coneDebugModule.empty()) {
+			try {
+				if (s.coneDebugModule.empty())
+					s.coneDebugModule = ctx.CreateShaderModule(
+						readFile(kGfxConeDebugCsPath), "gfxConeDebugCS");
+			}
+			catch (...) {
+				return; // broken install: the overlay stays dark
+			}
+			if (s.coneDebugModule.empty())
+				return;
+			Shader cs{ .module = s.coneDebugModule, .entryPoint = "mainCS",
+				.stage = ShaderStage::Compute };
+			s.coneDebugProgram = { .shaders = { cs }, .shaderCount = 1 };
+		}
+		if (s.coneDebugLines.empty()) {
+			s.coneDebugLines = ctx.CreateBuffer(
+				kConeDebugLinesBytes, BufferType_Storage, "gfx coneDebug lines");
+			if (s.coneDebugLines.empty())
+				return;
+		}
+		if (s.coneDebugLinesLogical.empty()) {
+			s.coneDebugLinesLogical = rg.AddExternalBuffer(
+				s.coneDebugLines, "gfx coneDebug lines");
+			if (s.coneDebugLinesLogical.empty()) {
+				s.coneDebugLines = {};
+				return;
+			}
+		}
+	}
+	s.coneDebug = enable;
+}
+
+RenderPass& AddConeDebugPass(State& s, RenderGraph& rg, uint32_t view) {
+	assert(view < s.viewCount);
+	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
+	RenderPass& pass = rg.AddComputePass("GfxConeDebug");
+	BufferSyncRequest computeRead{};
+	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
+	pass.AddBufferHint(v.drawLogicals[f], computeRead);
+	if (!s.meshesLogical.empty())
+		pass.AddBufferHint(s.meshesLogical, computeRead);
+	pass.AddBufferHint(s.clusterLogical, computeRead);
+	// The deformed cones (GfxSkinBounds' output, written earlier this frame):
+	// the hint pair is the cross-pass ordering edge.
+	if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+		pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
+	// The line output: compute-write here, vertex-attribute-read by Main's
+	// overlay draw (the stage pair carries the cross-stage transition, the
+	// same pattern AddFilterPass uses for the filtered index monoblock).
+	BufferSyncRequest linesRW{};
+	linesRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+	linesRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
+	pass.AddBufferHint(s.coneDebugLinesLogical, linesRW);
+	return pass;
+}
+
+void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view) {
+	if (!ConeDebugReady(s))
+		return;
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	const uint32_t drawCount = (uint32_t)v.drawConstants.size();
+	if (drawCount == 0 || drawCount > kMaxDraws)
+		return;
+	const uint32_t f = v.frameIndex;
+	ConeDebugPush push{};
+	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
+	push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
+	push.lines = ctx.GetBufferDeviceAddress(s.coneDebugLines);
+	// The deformed cones (GfxSkinBounds output, written just before this
+	// pass) — the same gate as the batch cull's.
+	if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+		const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+		if (bda != 0) {
+			push.skinBounds = bda;
+			push.skinBoundsValid = 1;
+		}
+	}
+	// MMU-fault rule: never dispatch on a null BDA (skip loudly; the
+	// overlay draws nothing rather than faulting the device).
+	if (push.draws == 0 || push.meshes == 0 || push.clusters == 0
+		|| push.lines == 0) {
+		static uint64_t s_nullBdaWarns = 0;
+		if ((s_nullBdaWarns++ % 300) == 0)
+			std::fprintf(stderr, "[GfxConeDebug] refusing dispatch: null BDA\n");
+		return;
+	}
+	push.drawCount = drawCount;
+	cmd.BindComputePipeline(s.coneDebugProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	// One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
 	cmd.Dispatch(drawCount, 1, 1);
 }
 

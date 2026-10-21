@@ -2046,28 +2046,9 @@ public:
 	// lines keep hidden-line removal against the prepass depth.
 	bool m_wireframe = false;
 	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Blended;
-	bool m_debugCones = false;    // cone-axis line overlay (see m_debugSkinCone*)
-	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
-	uint32_t m_debugLinesCap = 0; // verts allocated
-	// ---- Skinned-mesh cone debug source (the DEFORMED cones) ----
-	// The actual cull input for skinned draws is the GPU-resident skinBounds
-	// table (GfxSkinBounds output — deformed spheres + cones + the per-draw
-	// union tail); the static clusters[] cones are BIND-POSE, so the cone
-	// overlays must never draw those for skinned draws (they used to — the
-	// axes followed the instance transform but never the animation, and
-	// never what the cull consumed). Debug-gated async readback of the
-	// skinned draws' candidate slot ranges (own ticket; the submit yields
-	// to the exposure/demand ticket's single async slot and retries next
-	// frame). Landed entries are a few frames old — fine for an inspection
-	// overlay: the cone is OBJECT-space data re-transformed by the live
-	// model, only the POSE is stale. Keyed by (model, cluster) identity
-	// (MakeVisKey — draw indices churn per frame); cache-cold entries draw
-	// nothing (lines) / a "no data" blue (heat), never the bind-pose lie.
-	uint64_t m_debugSkinConeTicket = 0; // 0 = no readback in flight
-	std::vector<smvk::gfx::ClusterConstants> m_debugSkinConeTable; // download dest (entries concatenated)
-	std::vector<smvk::BufferDownload> m_debugSkinConeDownloads; // fixed submit/poll span shape
-	std::vector<uint64_t> m_debugSkinConeKeys; // MakeVisKey per entry (the poll's cache rebuild)
-	std::unordered_map<uint64_t, smvk::gfx::ClusterConstants> m_debugSkinConeCache;
+	bool m_debugCones = false;    // cone-axis line overlay (the GPU leg:
+	                               // SetConeDebug arms GfxConeDebug, Main
+	                               // Draws the GPU-written candidate lines)
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	// Opt-in EVSM atlas debug dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
 	// after Execute â€” per-stage stats (moments/temp/blurred) + a log-encoded

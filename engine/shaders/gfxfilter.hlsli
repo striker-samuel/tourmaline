@@ -73,6 +73,16 @@ struct GfxSkinBoundsTable
     GfxClusterData cluster[GFX_MAX_BATCH_SLOTS];
     float4 drawBound[GFX_MAX_DRAWS];
 };
+// Cone-axis debug line output (gfxcone_debug.cs.hlsl): packed
+// DebugLineVertex float3s (3 uint words per vertex, the GfxPositions
+// packed-stride pattern — a float3 member array cannot express the 12B
+// stride under block layout rules). TWO verts per candidate slot (apex +
+// tip); the candidate slot space is a DENSE prefix over the pushed draws'
+// clusters, so verts [0, 2*candidateTotal) is exactly the written range —
+// no compaction, no ordinals. Lazily created when the overlay's UI toggle
+// arms it (SetConeDebug); degenerate cones (the keep-cone) write
+// zero-length lines (degenerate primitives — discarded).
+struct GfxConeDebugLines { uint word[GFX_MAX_BATCH_SLOTS * 6]; };
 // DEFORMED vertex heap (the Northlight compute-skinning output; the
 // skinning pass - gfxskinning.cs.hlsl - wrote it this frame): 5 words per
 // vertex [pos3 asuint, packed normal, packed tangent]. Skinned draws
@@ -750,9 +760,33 @@ struct GfxSkinBoundsPush
     vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // out (slots + drawBound tail)
     uint deformedBase;  // 0xFFFFFFFF = none
     uint drawCount;
-    uint pad0;
+    uint coneEnabled;   // 0 = degenerate cones (TOURMALINE_SKIN_CONE=0 A/B)
     uint pad1;
 };
+
+// GfxConeDebug (the cone-axis overlay's GPU leg): one 128-thread workgroup
+// per draw, threads stride the draw's clusters; writes TWO packed
+// DebugLineVertex float3s per candidate slot — apex -> apex + axis *
+// radius * maxBasis, the same tip the retired CPU builder drew. The cones
+// are the cull chain's ACTUAL inputs: the baked bind-pose cones for static
+// draws, THIS frame's deformed cones from the GfxSkinBounds table for
+// skinned draws (GPU-driven: zero latency, no readback — the retired CPU
+// readback path corrupted the host heap, its download destinations dangled
+// through vector reallocation between submit and poll). Runs after
+// GfxSkinBounds, before Main's overlay draw. C++ mirror: gfx_filter.h
+// (ConeDebugPush).
+struct GfxConeDebugPush
+{
+    vk::BufferPointer<GfxDraws> draws;        // this frame (misc2.z = slot base)
+    vk::BufferPointer<GfxMeshes> meshes;      // static per-mesh cluster ranges
+    vk::BufferPointer<GfxClusters> clusters; // static (baked bind-pose cones)
+    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // deformed (this frame)
+    vk::BufferPointer<GfxConeDebugLines> lines; // out (2 verts per slot)
+    uint skinBoundsValid; // 0: every draw reads the static table
+    uint drawCount;
+    uint2 pad;
+};
+//static_assert(sizeof(GfxConeDebugPush) == 56);
 
 // GfxDrawCull: one thread per draw; the Northlight-style mesh-bound fast
 // discard against the FROZEN cull view (the gfx view record matrix — held
