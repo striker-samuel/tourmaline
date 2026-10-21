@@ -13,6 +13,15 @@
 // brute-force loop over the light buffer so particles stay lit in both
 // pipeline states.
 //
+// The sun is the env block's directional, evaluated unconditionally
+// (outside the F+ gating: sun-only scenes with fpLightCount == 0 light
+// too). UpdateLights builds the PBR/CSM bLights[0] straight from the same
+// frameEnv that fills FrameUniforms.env, so the env copy here IS the
+// scene sun (sunDirection.xyz = dir TO sun, sunColor.rgb * sunColor.w =
+// lux) — same wrap-around NdotL, same no-shadow policy as the F+ terms
+// (particles shade above that detail level), so interiors keep lit
+// particles even where surfaces sit in CSM shadow.
+//
 // Output is additive HDR (BlendSettings::Add in the app): premultiplied by
 // the sprite falloff alpha, sanitized to half-float range like every other
 // HDR writer.
@@ -142,6 +151,17 @@ float4 mainPS(ParticleVsOut IN) : SV_Target
                     pcDraw.fpLights.Get().lights[li], IN.worldPos, N);
         }
     }
+
+    // ---- Sun directional (env block: the sun's single source of truth) ----
+    // Unconditional on purpose: a sun-only scene (fpLightCount == 0) must
+    // still light particles, so this stays outside the nlights gate above.
+    // The +1e-9 normalize guard follows environment.hlsli's sun eval: a
+    // zero sunIntensity (lux 0) must zero the term, not NaN it through
+    // normalize(0).
+    float3 sunDir = normalize(frame.env.sunDirection.xyz + 1e-9);
+    float sunNdotL = saturate(dot(N, sunDir) * 0.5 + 0.5);
+    lit += frame.env.sunColor.rgb
+        * (max(frame.env.sunColor.w, 0.0) * sunNdotL);
 
     // Emissive base (self-lit embers) + lit response, premultiplied by the
     // sprite falloff + life fades; additive blend composites over Main.

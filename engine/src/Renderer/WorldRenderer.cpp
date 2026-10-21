@@ -8283,6 +8283,13 @@ namespace engine {
 					m_skinLastDeformedBase = push.deformedBase;
 				}
 			}
+			// Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
+			// the prepass/occluder legs push it per skinned draw so the
+			// direct VS fetches the ANIMATED pose instead of the bind pose.
+			fc.skinDeformedBda = gfx.skinDeformedBda;
+			fc.skinDeformedBase = gfx.skinDeformedBase;
+			fc.skinDeformedValid = (gfx.skinDeformedBda != 0
+				&& gfx.skinDeformedBase != UINT32_MAX);
 		}
 
 		// ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load ops) ----
@@ -9493,7 +9500,13 @@ namespace engine {
 			&& m_gfxRenderer.MeshProgramsValid()
 			&& !m_wireframe
 			&& gfxSlot != UINT32_MAX;
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, meshActiveForFrame](smvk::CommandBuffer& cmd)
+		// Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
+		// the direct Main leg pushes it per skinned draw so the direct VS
+		// fetches the ANIMATED pose instead of the bind pose.
+		const uint64_t mainSkinBda = fc.skinDeformedBda;
+		const uint32_t mainSkinBase = fc.skinDeformedBase;
+		const bool mainSkinValid = fc.skinDeformedValid;
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
 			// 2x: transient depth is cleared above, main writes it
@@ -9575,6 +9588,19 @@ namespace engine {
 				smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 				if (!meshDesc)
 					return;
+				// Direct-path skin tail (default.vert.hlsl's 208..240
+				// overlay): a skinned draw swaps the bind-pose vertex
+				// inputs for the frame's deformed words. Always pushed
+				// (zeroed on non-skinned draws) so a stale tail never
+				// leaks into the next draw.
+				DepthSkinTail skinTail{};
+				if (meshDesc->skinned && mainSkinValid) {
+					skinTail.skinned = 1u;
+					skinTail.deformedBase = mainSkinBase;
+					skinTail.vsDeformed = mainSkinBda;
+				}
+				cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
+					&skinTail, smvk::ShaderStage::All);
 				// Dither-on-closeup (Scene::ditherCloseup; per frame, per
 				// draw): Hidden draws never reach here (the leg loops skip
 				// them below); Fade draws carry the per-draw flag

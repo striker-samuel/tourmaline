@@ -153,9 +153,16 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 			gbufferView, gbufferLoad,
 			gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
 			gbufferLoad);
-		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
-			staticMask, mainView, hasMainView, fallbackOnly, lodFilterable,
-			gbufferOn, ditherEye](smvk::CommandBuffer& cmd)
+	// Direct-path skin tail (default.vert.hlsl's 208..240 overlay): the
+	// prepass/occluder legs push it per skinned draw so the direct VS
+	// fetches the ANIMATED pose instead of the bind pose.
+	const uint64_t skinBda = fc.skinDeformedBda;
+	const uint32_t skinBase = fc.skinDeformedBase;
+	const bool skinValid = fc.skinDeformedValid;
+	prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs,
+		staticMask, mainView, hasMainView, fallbackOnly, lodFilterable,
+		gbufferOn, ditherEye, skinBda, skinBase, skinValid](smvk::CommandBuffer& cmd)
+
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			// Phase 2 masked pipeline: cull follows the material raster
@@ -291,6 +298,18 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					meshDesc = world->GetMesh(item.mesh);
 				}
 			if (!meshDesc) return;
+			// Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
+			// a skinned draw swaps the bind-pose vertex inputs for the
+			// frame's deformed words. Always pushed (zeroed on non-skinned
+			// draws) so a stale tail never leaks into the next draw.
+			DepthSkinTail skinTail{};
+			if (meshDesc->skinned && skinValid) {
+				skinTail.skinned = 1u;
+				skinTail.deformedBase = skinBase;
+				skinTail.vsDeformed = skinBda;
+			}
+			cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
+				&skinTail, smvk::ShaderStage::All);
 			IRenderer::PushConstants objectPC{};
 			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 			if (maskedPhase) {
@@ -397,6 +416,12 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 	const float viewportHeight = fc.lodInputs.viewportHeight > 0.0f
 		? fc.lodInputs.viewportHeight : (float)fc.extent.height;
 	const float tanHalfFov = std::tan(std::max(fc.lodInputs.fovY, 1e-3f) * 0.5f);
+	// Direct-path skin tail (default.vert.hlsl's 208..240 overlay): the
+	// occluder leg pushes it per skinned draw so the direct VS fetches
+	// the ANIMATED pose instead of the bind pose.
+	const uint64_t skinBda = fc.skinDeformedBda;
+	const uint32_t skinBase = fc.skinDeformedBase;
+	const bool skinValid = fc.skinDeformedValid;
 
 	// CPU frustum culling mirrors the full prepass (conservative static
 	// mask + dynamic LOD-union sphere test): skipping a true occluder
@@ -426,7 +451,8 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "OccluderDepth",
 			smvk::AttachmentLoadOp::Clear);
 		occluder.SetRecordingFunc([this, depthPC, world, staticMask, mainView, hasMainView,
-			minPixels, minRadius, eye, lodEnabled, lodInputs, viewportHeight, tanHalfFov](smvk::CommandBuffer& cmd)
+			minPixels, minRadius, eye, lodEnabled, lodInputs, viewportHeight, tanHalfFov,
+			skinBda, skinBase, skinValid](smvk::CommandBuffer& cmd)
 		{
 			auto drawOccluderNode = [&](const smvk::World::RenderItem& item) {
 				// Solid opaque only: skip MASK cutout (holes) entirely.
@@ -479,9 +505,22 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 					if (smvk::StaticMesh* sel = world->GetLodMesh(item.mesh, lod))
 						meshDesc = sel;
 				}
-				if (!meshDesc)
-					return;
-				IRenderer::PushConstants objectPC{};
+			if (!meshDesc)
+				return;
+			// Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
+			// a skinned occluder rasterizes the ANIMATED pose, not the
+			// bind pose. Always pushed (zeroed on non-skinned draws) so a
+			// stale tail never leaks into the next draw.
+			DepthSkinTail skinTail{};
+			if (meshDesc->skinned && skinValid) {
+				skinTail.skinned = 1u;
+				skinTail.deformedBase = skinBase;
+				skinTail.vsDeformed = skinBda;
+			}
+			cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
+				&skinTail, smvk::ShaderStage::All);
+			IRenderer::PushConstants objectPC{};
+
 				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 				cmd.PushConstants(offsetof(IRenderer::PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
 				for (auto& draw_set : meshDesc->geometry.surfaces) {

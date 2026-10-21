@@ -54,7 +54,14 @@ struct DefaultVsPush
     // legs push it per draw, 0/1). Forwarded flat at location 8 so the FS
     // family reads ONE channel on both paths (the filtered legs deliver
     // the ring's GFX_DRAW_DITHER_CLOSEUP at the same location).
-    float4 _padTail[2]; // 208..240: unused prevModel scratch tail
+    // 208..240: the direct-path SKIN tail (zeroed = static fetch). The
+    // prepass/occluder legs push it per skinned draw so this VS can fetch
+    // the frame's deformed words instead of the bind-pose vertex inputs.
+    // Mirrors C++ DepthSkinTail (32 bytes, byte-exact).
+    uint skinned;      // 208: 1 = fetch from the deformed heap
+    uint deformedBase; // 212: the skinned span's heap-id base
+    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed; // 216: the frame's deformed heap
+    uint4 _padSkin;    // 224..240: layout filler
     uint ditherCloseup; // 240
 };
 
@@ -76,6 +83,8 @@ struct VSIn
     // lightmapUv output below is a constant zero and lmChunk stays the
     // unlightmapped sentinel, so the FS lightmap paths gate off.
     uint instanceID : SV_InstanceID;
+    // The global heap vertex id (the SKINNED swap's deformed-heap index).
+    uint vertexID : SV_VertexID;
 };
 struct VSOut
 {
@@ -106,8 +115,26 @@ VSOut mainVS(VSIn IN)
     VSOut OUT;
     FrameUniforms frame = pcDB.frameUniforms.Get();
 
+    // Optional skin fetch (direct-path prepass/occluder legs): a skinned
+    // draw swaps the bind-pose vertex inputs for the frame's deformed words
+    // (5 words/vertex at (vertexID - deformedBase) * 5). The tail is zeroed
+    // on every non-skinned direct draw, so the static fetch stays the
+    // default.
+    float3 position = IN.position;
+    uint normalPacked = IN.normalPacked;
+    uint tangentPacked = IN.tangentPacked;
+    if (pcDB.skinned != 0u)
+    {
+        const uint d = (IN.vertexID - pcDB.deformedBase) * 5;
+        position = float3(asfloat(pcDB.vsDeformed.Get().word[d + 0]),
+            asfloat(pcDB.vsDeformed.Get().word[d + 1]),
+            asfloat(pcDB.vsDeformed.Get().word[d + 2]));
+        normalPacked = pcDB.vsDeformed.Get().word[d + 3];
+        tangentPacked = pcDB.vsDeformed.Get().word[d + 4];
+    }
+
     // World position
-    float4 world = mul(pcDB.model, float4(IN.position, 1.0));
+    float4 world = mul(pcDB.model, float4(position, 1.0));
     OUT.worldPos = world.xyz;
 
     // View / projection: the main camera's RenderView is the authoritative
@@ -147,8 +174,8 @@ VSOut mainVS(VSIn IN)
     // - Main view uses a Y-flipped proj (proj[1][1]*=-1); front-face winding is
     //   defined by the pipeline RasterSettings (FrontFace::CounterClockwise).
     // Packed shading stream: normal/tangent ride as R32_UInt oct words.
-    float3 normal = OctDecodeNormal(IN.normalPacked);
-    float4 tangent = OctDecodeTangent(IN.tangentPacked);
+    float3 normal = OctDecodeNormal(normalPacked);
+    float4 tangent = OctDecodeTangent(tangentPacked);
 
     float3x3 M3 = (float3x3) pcDB.model;
 

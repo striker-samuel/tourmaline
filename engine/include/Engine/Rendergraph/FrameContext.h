@@ -88,6 +88,15 @@ struct AppFrameContext : public smvk::FrameContext {
 	// program is per-material data (see ShaderLodPolicy).
 	// Cleared (null) for full-prepass frames.
 	std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)> gfxLodFilterable{};
+	// Direct-path skin tail (default.vert.hlsl's 208..240 overlay): the
+	// frame's deformed heap (0 = no skinned cluster this frame). The
+	// Forward+ prepass and the occluder prepass push it per skinned draw
+	// so the direct VS fetches the ANIMATED pose instead of the bind
+	// pose (the full-prepass frames the seed/remainder split cannot own).
+	uint64_t skinDeformedBda = 0;
+	uint32_t skinDeformedBase = 0xFFFFFFFFu;
+	bool skinDeformedValid = false;
+
 };
 
 } // namespace engine

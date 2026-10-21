@@ -23,6 +23,20 @@
 namespace engine {
 struct AppFrameContext;
 
+// Direct-path skin tail (default.vert.hlsl's 208..240 overlay scratch):
+// the prepass/occluder legs push it per draw so the direct VS can fetch
+// the frame's deformed words instead of the bind-pose vertex inputs.
+// The layout mirrors DefaultVsPush's skin tail byte-for-byte.
+struct alignas(8) DepthSkinTail {
+	uint32_t skinned = 0;           // 208: 1 = fetch from the deformed heap
+	uint32_t deformedBase = 0xFFFFFFFFu; // 212: the skinned span's heap-id base
+	uint64_t vsDeformed = 0;         // 216: the frame's deformed heap BDA
+	uint32_t pad[4] = {};            // 224..240: layout filler
+};
+static_assert(sizeof(DepthSkinTail) == 32,
+	"DepthSkinTail must be 32 bytes (default.vert.hlsl's 208..240 overlay)");
+inline constexpr uint32_t kDepthSkinTailOffset = 208;
+
 struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	smvk::ForwardPlus* fp = nullptr; // owned by ViewportResources
 	smvk::ForwardPlusDesc desc{};

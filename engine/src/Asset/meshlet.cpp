@@ -25,37 +25,39 @@ size_t CookedMeshlets::byteSize() const
 
 namespace {
 
-// Facing-split depth: 2 = up to 4 sub-meshlets per poisoned parent. One
-// hemisphere cut still spans ~178deg pairwise on crumpled cloth (the
-// halves each hold a nearly-full hemisphere of normals); the second cut
-// lands the quarters under meshopt's ~168deg degeneracy line.
-inline constexpr unsigned int kSplitDepth = 2;
+// Degenerate-cone split depth: 6 (the knight plateau: 44 -> 10 zero-axis
+// cones at 1999 -> 2000 meshlets; depth 5 leaves 12, depth 7 is identical).
+// Each split produces subsets of the parent, so the 64v/64t caps hold.
+inline constexpr unsigned int kSplitDepth = 6;
 
-// Facing-split repair for degenerate normal cones (the double-layer-cloth
-// meshlet fix). meshopt's growth mixes opposing skins into ONE meshlet two
-// ways: getNeighborTriangle's vertex-budget priority always prefers an
-// extra==0 triangle (an opposite-skin triangle through a shared rim vertex)
-// over a same-skin triangle that would add vertices — the cone score only
-// breaks ties WITHIN a priority class, so cone_weight cannot stop the
-// crossing — and the kd-tree fallback (adjacency ran dry mid-meshlet) takes
-// the spatially CLOSEST triangle irrespective of facing, which on
-// double-layer cloth (front + back skins ~1mm apart) is the other skin.
-// The skins' normals then cancel, meshopt_computeMeshletBounds degenerates
-// the cone (axis 0, trivial accept), and the GPU backface/cone cull goes
-// dead for the whole region (observed on the knight: 1867/1913 meshlets
-// carried zero-axis cones; the radii were fine — the meshlets were
-// spatially tight but facing-mixed; cone_weight 0 / 0.5 / 1.0 all left
-// ~97% degenerate, and an edge-component pre-split either shattered
-// corrugated cloth into micro-components (cut at 90deg) or kept the layer
-// welds alive (cut at 134deg)).
-// The repair is a bounded POST-split: every degenerate meshlet is cut into
-// facing-pure halves (the sign of dot(normal, firstFaceNormal)), each half
-// re-bounded on its own compacted window. The halves are skin-pure so their
-// cones stay live; both halves stay under the 64v/64t engine caps (they
-// are subsets), and the meshlet count at most doubles — only where the
-// poison was. One split level: a half that still degenerates (a genuinely
-// wrap-around patch, not layer mixing) keeps its conservative keep-cone —
-// degenerate cones never cull wrong, they just fail to cull.
+// Degenerate-cone repair for meshlets whose normal cones cancel (the
+// double-layer-cloth fix, extended to round patches). meshopt's growth mixes
+// opposing skins into ONE meshlet two ways: getNeighborTriangle's
+// vertex-budget priority always prefers an extra==0 triangle (an
+// opposite-skin triangle through a shared rim vertex) over a same-skin
+// triangle that would add vertices - the cone score only breaks ties WITHIN
+// a priority class, so cone_weight cannot stop the crossing - and the kd-tree
+// fallback (adjacency ran dry mid-meshlet) takes the spatially CLOSEST
+// triangle irrespective of facing, which on double-layer cloth (front + back
+// skins ~1mm apart) is the other skin. The skins' normals then cancel,
+// meshopt_computeMeshletBounds degenerates the cone (axis 0, trivial accept),
+// and the GPU backface/cone cull goes dead for the whole region (observed on
+// the knight: 1867/1913 meshlets carried zero-axis cones; the radii were fine
+// - the meshlets were spatially tight but facing-mixed; cone_weight 0 / 0.5 /
+// 1.0 all left ~97% degenerate, and an edge-component pre-split either
+// shattered corrugated cloth into micro-components (cut at 90deg) or kept the
+// layer welds alive (cut at 134deg)).
+// The repair is a bounded POST-split with two partition modes:
+//   - an opposing face-normal pair exists -> cut by the sign of
+//     dot(faceNormal, endpointNormal) (separates the two skins);
+//   - no opposing pair (the cone wraps because the patch itself is round: a
+//     ring, a crumpled fold) -> cut by POSITION at the centroid median along
+//     the widest covariance axis (a ring becomes arcs, an arc smaller arcs).
+// Children re-bound on their own compacted windows; both stay under the
+// 64v/64t engine caps (they are subsets). A child that still degenerates at
+// the depth cap (a genuinely wrap-around or zero-normal patch) keeps its
+// conservative keep-cone - degenerate cones never cull wrong, they just fail
+// to cull.
 
 // Radius containment repair (conservative direction): the HZB occlusion +
 // cone tests treat (boundCenter, boundRadius) as CONTAINING all meshlet
@@ -129,10 +131,10 @@ bool BuildMeshletsForUpload(
 	if (vcount == 0 || icount < 3 || (icount % 3) != 0)
 		return fail("degenerate mesh");
 
-	// ENGINE limits first (kMeshletMaxVertices/Triangles — 64v/64t: one
+	// ENGINE limits first (kMeshletMaxVertices/Triangles â€” 64v/64t: one
 	// mesh-shader workgroup covers a whole meshlet, the invariant the mesh
 	// path and the cluster HZB cull assume): over-limit configs (stale
-	// authored cooks carrying e.g. meshletTris 124) clamp down — a meshlet
+	// authored cooks carrying e.g. meshletTris 124) clamp down â€” a meshlet
 	// bigger than the workgroup can draw would drop geometry. The absolute
 	// meshoptimizer bounds (3..255v / 1..512t) stay as the outer defense,
 	// unreachable for engine callers since the engine clamp is tighter.
@@ -152,6 +154,8 @@ bool BuildMeshletsForUpload(
 	uint32_t maxVerts = std::clamp(config.maxVertices, 3u, kMeshletMaxVertices);
 	uint32_t maxTris = std::clamp(config.maxTriangles, 1u, kMeshletMaxTriangles);
 
+	const float* positions = vcount > 0 ? &upload.vertices[0].pos.x : nullptr;
+
 	const size_t bound = meshopt_buildMeshletsBound(icount, maxVerts, maxTris);
 	if (bound == 0)
 		return fail("meshopt_buildMeshletsBound returned 0");
@@ -159,8 +163,6 @@ bool BuildMeshletsForUpload(
 	std::vector<meshopt_Meshlet> raw(bound);
 	std::vector<unsigned int> rawVerts(bound * maxVerts);
 	std::vector<unsigned char> rawTris(bound * maxTris * 3);
-
-	const float* positions = vcount > 0 ? &upload.vertices[0].pos.x : nullptr;
 
 	const size_t count = meshopt_buildMeshlets(
 		raw.data(), rawVerts.data(), rawTris.data(),
@@ -242,14 +244,12 @@ bool BuildMeshletsForUpload(
 	};
 
 	// Recursive emit: bounds + radius repair, then either emit as-is
-	// (depth 0: meshopt's own full meshlets — untouched) / collect as a
-	// fragment (depth > 0: the split's children, facing-pure but small —
-	// the re-pack below merges them back into full meshlets) / (degenerate
-	// cone, a usable partition axis, depth budget left) cut into facing
-	// halves and recurse. The halves are subsets so the 64v/64t caps hold
-	// at every level; crumpled cloth needs both levels (a hemisphere cut
-	// still spans ~178deg pairwise, a quarter cut lands under meshopt's
-	// ~168deg degeneracy line).
+	// (depth 0: meshopt's own full meshlets - untouched) / collect as a
+	// fragment (depth > 0: the split's children, facing-pure but small - the
+	// re-pack below merges them back into full meshlets) / (degenerate cone,
+	// a usable partition axis, depth budget left) cut and recurse. Children
+	// are subsets so the 64v/64t caps hold at every level; the two partition
+	// modes are described in the block comment at kSplitDepth.
 	std::function<void(const unsigned int*, unsigned int,
 		const unsigned char*, unsigned int, unsigned int, bool)>
 		emitWindow = [&](const unsigned int* winVerts, unsigned int winVertCount,
@@ -265,19 +265,23 @@ bool BuildMeshletsForUpload(
 			(b.cone_axis[0] * b.cone_axis[0] + b.cone_axis[1] * b.cone_axis[1]
 				+ b.cone_axis[2] * b.cone_axis[2]) < 1e-12f;
 
-		// Facing-split repair (see the block comment): a degenerate cone
+		// Degenerate-cone split (see the block comment): a degenerate cone
 		// with a usable partition axis and depth budget splits; everything
-		// else — including halves that STILL wrap (genuinely round
-		// patches, not layer mixing) — keeps its conservative
-		// keep-cone (degenerate cones never cull wrong, they just fail to
-		// cull). Face normals first; a zero-length normal (slivers) dots
-		// to 0 with everything so slivers never make the worst pair (they
-		// ride side 0). The partition axis is one endpoint of the WORST
-		// pairwise normal pair — the most-antiparallel faces — so the cut
-		// separates the actual pathology (the two skins / the fold crest);
-		// a first-face axis can lie IN the spread plane and split nothing.
+		// else - including children that STILL wrap at the cap (genuinely
+		// round or zero-normal patches) - keeps its conservative keep-cone
+		// (degenerate cones never cull wrong, they just fail to cull).
+		// Face normals first; a zero-length normal (slivers) dots to 0 with
+		// everything so slivers never make the worst pair (they ride side 0).
+		// The normal partition axis is one endpoint of the WORST pairwise
+		// normal pair - the most-antiparallel faces - so the cut separates the
+		// actual pathology (the two skins / the fold crest); a first-face axis
+		// can lie IN the spread plane and split nothing. With no opposing pair
+		// the patch is round, so the position axis takes over (see below).
 		glm::vec3 fn[kMeshletMaxTriangles] = {};
-		glm::vec3 axisNormal(0.0f);
+		glm::vec3 centers[kMeshletMaxTriangles] = {};
+		glm::vec3 splitAxis(0.0f);
+		float splitThreshold = 0.0f;
+		bool positionSplit = false;
 		bool canSplit = false;
 		if (degenerateCone && triCount >= 2 && depth < kSplitDepth) {
 			for (unsigned int t = 0; t < triCount; ++t) {
@@ -288,6 +292,7 @@ bool BuildMeshletsForUpload(
 						? upload.vertices[winVerts[local]].pos
 						: glm::vec3(0.0f);
 				}
+				centers[t] = (pv[0] + pv[1] + pv[2]) / 3.0f;
 				fn[t] = glm::cross(pv[1] - pv[0], pv[2] - pv[0]);
 			}
 			float worstDot = 0.0f; // need a strictly-opposing pair at all
@@ -306,13 +311,83 @@ bool BuildMeshletsForUpload(
 					}
 				}
 			}
-			if (canSplit)
-				axisNormal = glm::normalize(fn[worstI]);
+			if (canSplit) {
+				splitAxis = glm::normalize(fn[worstI]);
+			} else {
+				// No opposing pair: the cone wraps because the patch
+				// itself is round (a chainmail ring, a crumpled fold).
+				// Facing planes cannot resolve it; cut the patch by
+				// POSITION along its widest spatial axis (the largest
+				// covariance eigenvector) at the centroid median. A ring
+				// becomes arcs, an arc becomes smaller arcs, and each
+				// piece's normals span less of the circle.
+				glm::vec3 mean(0.0f);
+				for (unsigned int t = 0; t < triCount; ++t)
+					mean += centers[t];
+				mean /= (float)triCount;
+				glm::vec3 covX(0.0f), covY(0.0f), covZ(0.0f);
+				for (unsigned int t = 0; t < triCount; ++t) {
+					const glm::vec3 d = centers[t] - mean;
+					covX += d * d.x;
+					covY += d * d.y;
+					covZ += d * d.z;
+				}
+				glm::vec3 axis(0.0f);
+				float bestRayleigh = -1.0f;
+				const glm::vec3 seeds[3] = {
+					glm::vec3(1.0f, 0.0f, 0.0f),
+					glm::vec3(0.0f, 1.0f, 0.0f),
+					glm::vec3(0.0f, 0.0f, 1.0f)
+				};
+				for (const glm::vec3& seed : seeds) {
+					glm::vec3 v = seed;
+					for (int it = 0; it < 12; ++it) {
+						const glm::vec3 next =
+							covX * v.x + covY * v.y + covZ * v.z;
+						const float len2 = glm::dot(next, next);
+						if (len2 < 1e-18f) {
+							v = glm::vec3(0.0f);
+							break;
+						}
+						v = next / std::sqrt(len2);
+					}
+					if (glm::dot(v, v) < 1e-12f)
+						continue;
+					// Rayleigh quotient picks the true dominant seed:
+					// a fixed seed can be orthogonal to the widest axis
+					// (symmetric point sets), which stalls power iteration.
+					const glm::vec3 covV =
+						covX * v.x + covY * v.y + covZ * v.z;
+					const float rayleigh = glm::dot(v, covV);
+					if (rayleigh > bestRayleigh) {
+						bestRayleigh = rayleigh;
+						axis = v;
+					}
+				}
+				if (glm::dot(axis, axis) > 1e-12f) {
+					float proj[kMeshletMaxTriangles];
+					for (unsigned int t = 0; t < triCount; ++t)
+						proj[t] = glm::dot(centers[t], axis);
+					float sorted[kMeshletMaxTriangles];
+					std::memcpy(sorted, proj, sizeof(float) * triCount);
+					std::sort(sorted, sorted + triCount);
+					splitThreshold = sorted[triCount / 2];
+					unsigned int below = 0;
+					for (unsigned int t = 0; t < triCount; ++t)
+						if (proj[t] <= splitThreshold)
+							++below;
+					if (below > 0 && below < triCount) {
+						splitAxis = axis;
+						positionSplit = true;
+						canSplit = true;
+					}
+				}
+			}
 		}
 
 		if (!canSplit) {
 			if (fromSplit && depth > 0) {
-				// A split child: facing-pure (or a leftover) but small —
+				// A split child: facing-pure (or a leftover) but small â€”
 				// collect for the re-pack instead of emitting a speck.
 				Fragment f{};
 				std::memcpy(f.verts, winVerts,
@@ -347,8 +422,11 @@ bool BuildMeshletsForUpload(
 			return;
 		}
 
-		// The split: partition the faces by the sign of dot(normal,
-		// axisNormal) — the two skins of the mix land on opposite sides.
+		// The split: normal mode partitions by the sign of
+		// dot(faceNormal, splitAxis) - the two skins of a mix land on
+		// opposite sides. Position mode splits at the centroid median along
+		// the widest spatial axis. Both sides compact to fresh local
+		// windows; an empty side is skipped.
 		++splitMeshlets;
 		for (int side = 0; side < 2; ++side)
 		{
@@ -360,12 +438,15 @@ bool BuildMeshletsForUpload(
 			unsigned char halfTris[kMeshletMaxTriangles * 3];
 			unsigned int halfTriBytes = 0;
 			for (unsigned int t = 0; t < triCount; ++t) {
-				const bool thisSide =
-					(glm::dot(fn[t], axisNormal) >= 0.0f) == (side == 0);
+				const bool thisSide = positionSplit
+					? ((glm::dot(centers[t], splitAxis) <= splitThreshold)
+						== (side == 0))
+					: ((glm::dot(fn[t], splitAxis) >= 0.0f)
+						== (side == 0));
 				if (!thisSide)
 					continue;
 				// Corrupt locals (local >= vertexCount) drop the whole
-				// triangle — a partial window push would shift every
+				// triangle â€” a partial window push would shift every
 				// later byte (the pack audit owns the loud report).
 				bool triOk = true;
 				for (unsigned int k = 0; k < 3; ++k)
@@ -400,15 +481,15 @@ bool BuildMeshletsForUpload(
 
 	// ---- Facing-fragment re-pack (the "speckle" fix) -------------------
 	// The split leaves facing-pure but TINY fragments (the crumpled cloth
-	// quarters nearly everything — observed knight mesh.0: 4.2x the
+	// quarters nearly everything â€” observed knight mesh.0: 4.2x the
 	// meshlets at ~23 tris each; the debug view reads that as speckle,
 	// and the per-cluster cull/indirect overhead scales with the count).
 	// The re-pack merges same-facing spatial neighbors back into FULL
 	// meshlets: fragments sorted (facing octant, Morton center) so
 	// neighbors stream adjacent, a small open-accumulator set greedily
-	// absorbs — the 64v/64t caps hold, and the MERGED CONE MUST STAY
+	// absorbs â€” the 64v/64t caps hold, and the MERGED CONE MUST STAY
 	// LIVE (checked per absorb, rollback on rejection), so the merge
-	// never builds what the cone test cannot use — the split's culling
+	// never builds what the cone test cannot use â€” the split's culling
 	// wins survive the packing. Opposing facings sit in different octants
 	// and never meet. Unmergeable leftovers emit solo (their conservative
 	// keep-cone just fails to cull, same as before).

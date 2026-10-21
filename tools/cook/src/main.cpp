@@ -6472,6 +6472,16 @@ int Run(const CookArgs& c) {
 				cutoffSum += (double)mst.meanCutoff * mst.meshletCount;
 				degenerate += mst.degenerateCones;
 				splitsSum += mst.splitMeshlets;
+				if (mst.degenerateCones > 0 || mst.meanCutoff < 0.5f)
+					tool::err() << "  [LM] meshlet quality mesh " << meshIdx
+						<< " uri=" << uri.Str()
+						<< (up->skin.empty() ? "" : " skinned")
+						<< " meshlets=" << mst.meshletCount
+						<< " tris=" << mst.totalTriangles
+						<< " cutoff=" << mst.meanCutoff
+						<< " R=" << mst.meanRadius << "/" << mst.maxRadius
+						<< " degenerate=" << mst.degenerateCones
+						<< " split=" << mst.splitMeshlets << "\n" << std::flush;
 			}
 			// Sibling pass (LOD markers, lodIndex >= 1): meshes without a
 			// set get one from their FINAL stamped upload. Skips siblings
@@ -6505,6 +6515,15 @@ int Run(const CookArgs& c) {
 				cutoffSum += (double)mst.meanCutoff * mst.meshletCount;
 				degenerate += mst.degenerateCones;
 				splitsSum += mst.splitMeshlets;
+				if (mst.degenerateCones > 0 || mst.meanCutoff < 0.5f)
+					tool::err() << "  [LM] meshlet quality sibling " << uri.Str()
+						<< (up->skin.empty() ? "" : " skinned")
+						<< " meshlets=" << mst.meshletCount
+						<< " tris=" << mst.totalTriangles
+						<< " cutoff=" << mst.meanCutoff
+						<< " R=" << mst.meanRadius << "/" << mst.maxRadius
+						<< " degenerate=" << mst.degenerateCones
+						<< " split=" << mst.splitMeshlets << "\n" << std::flush;
 			}
 		}
 		tool::err() << "  [LM] meshlets restored: meshes=" << restoredMeshes
