@@ -4040,6 +4040,35 @@ namespace engine {
 
 	smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(uint32_t currentFrame, const smvk::EnvironmentSettings& env)
 	{
+		// TMP-DIAG (TOURMALINE_SDSM_TOGGLE=f1[,f2...]): flip m_sdsmEnabled at
+		// each listed frame counter — the deterministic headless repro of the
+		// UI checkbox's off->on cycle for the brightness investigation (the
+		// checkbox is ImGui-only; this rides the bench's pinned dt so every
+		// run replays the same toggle sequence). Remove with the investigation.
+		{
+			static const std::vector<uint32_t> toggleFrames = [] {
+				std::vector<uint32_t> out;
+				if (const char* e = std::getenv("TOURMALINE_SDSM_TOGGLE")) {
+					for (const char* p = e; *p;) {
+						char* end = nullptr;
+						const unsigned long v = std::strtoul(p, &end, 10);
+						if (end == p)
+							break;
+						out.push_back((uint32_t)v);
+						p = (*end == ',') ? end + 1 : end;
+					}
+				}
+				return out;
+			}();
+			static size_t toggleIdx = 0;
+			while (toggleIdx < toggleFrames.size()
+				&& m_frameCounter >= toggleFrames[toggleIdx]) {
+				m_sdsmEnabled = !m_sdsmEnabled;
+				++toggleIdx;
+				std::fprintf(stderr, "[SDSMtrace] f=%u TOGGLE -> %d\n",
+					m_frameCounter, m_sdsmEnabled ? 1 : 0);
+			}
+		}
 		// Directional sun driven by the frame environment (single source
 		// of truth for the sky sun disc, IBL sun tint, and
 		// shadow-casting light - built from the world's scene env by
@@ -4184,6 +4213,38 @@ namespace engine {
 			m_sdsmAppliedValid = false; // stats cold / SDSM off: fixed heuristic
 		}
 		auto splits = smvk::ComputeCascadeSplits(splitNear, splitFar, m_cascadeLambda, NUM_CASCADES);
+		// TMP-DIAG (TOURMALINE_SDSM_TRACE=1): one stderr line per frame —
+		// the split-fit latches + the shared readback ticket + the exposure
+		// adaptation state, so one off->on toggle cycle shows exactly which
+		// latch sticks: splits recover but expAdapt stays pinned => the
+		// exposure adapt path; splits stuck => the applied latch; a ticket
+		// that never clears => the single readback slot. Remove with the
+		// investigation.
+		{
+			static const bool trace = [] {
+				const char* e = std::getenv("TOURMALINE_SDSM_TRACE");
+				return e && *e && *e != '0';
+			}();
+			if (trace) {
+				const uint64_t statsAge = m_sdsmStatsValid
+					? (m_frameCounter - m_sdsmMeasureFrame) : 0u;
+				std::fprintf(stderr,
+					"[SDSMtrace] f=%u on=%d armed=%d tkt=%llu valid=%d age=%u "
+					"applied=%d near=%.2f far=%.2f splits=%.2f..%.2f | "
+					"shared=%llu expAct=%d expAdapt=%.5f clamp=[%.5f..%.5f]\n",
+					m_frameCounter, m_sdsmEnabled ? 1 : 0,
+					m_sdsmStatsArmed ? 1 : 0,
+					(unsigned long long)m_sdsmReadbackTicket,
+					m_sdsmStatsValid ? 1 : 0, (unsigned)statsAge,
+					m_sdsmAppliedValid ? 1 : 0,
+					(double)m_sdsmAppliedMin, (double)m_sdsmAppliedMax,
+					(double)splitNear, (double)splitFar,
+					(unsigned long long)m_asyncReadbackTicket,
+					ExposureMeteringActive() ? 1 : 0,
+					(double)m_exposureAdapted,
+					(double)m_exposureMin, (double)m_exposureMax);
+			}
+		}
 
 		smvk::GpuDirectionalLightDescription dir =
 			m_viewportResources.directionalShadows.BuildDirectionalLight(
@@ -4704,6 +4765,85 @@ namespace engine {
 			}
 		}
 
+		// 1b) SDSM stats poll: OWN async ticket, EVERY frame - polled HERE,
+		// BEFORE the shared submit below, ON PURPOSE: the SDSM submit at the
+		// bottom re-takes the single readback slot the moment this poll
+		// frees it, so polling AFTER the shared submit (the old order)
+		// starved the shared every-4th ticket for as long as SDSM ran - the
+		// slot was always still occupied by yesterday's SDSM ticket at the
+		// shared submit's moment, and the SDSM re-took it right after this
+		// poll. The starved legs: the exposure histogram (the meter NEVER
+		// adapted while SDSM was on; an SDSM-off window woke it - adapting
+		// to the heuristic-split artifact luminance - and re-enabling then
+		// froze it at that wrong value; TOURMALINE_SDSM_TRACE pinned the
+		// whole cycle), the texture-demand ring, the DS counters and the
+		// kept-counter word. With the poll FIRST, a tick frame's shared
+		// submit takes the slot this poll frees, and the SDSM submit below
+		// self-yields for that frame (its own ticket gate + the busy slot).
+		if (m_sdsmReadbackTicket != 0) {
+			const smvk::BufferDownload sdsmDl{
+				m_sdsmStatsBuffers[m_sdsmReadbackSlot % 2],
+				m_pendingSdsmStats.data(), kSdsmStatsBytes, 0 };
+			if (m_context->PollAsyncDownloadDataFromBuffers(
+				m_sdsmReadbackTicket,
+				std::span<const smvk::BufferDownload>(&sdsmDl, 1))) {
+				m_sdsmReadbackTicket = 0;
+				// Merge the 256 partial histograms + the true min/max, then
+				// the 1%/99% percentile range (the histogram point: one tiny
+				// distant object must not dictate the whole split range).
+				float mn = 1e30f, mx = 0.0f;
+				uint32_t bins[kSdsmBins] = {};
+				uint64_t total = 0;
+				const auto* groups = reinterpret_cast<const SdsmGroupStats*>(
+					m_pendingSdsmStats.data());
+				for (uint32_t g = 0; g < kSdsmGroups; ++g) {
+					mn = std::min(mn, groups[g].minV);
+					mx = std::max(mx, groups[g].maxV);
+					for (uint32_t b = 0; b < kSdsmBins; ++b) {
+						bins[b] += groups[g].bins[b];
+						total += groups[g].bins[b];
+					}
+				}
+				if (total > 0 && mx > mn) {
+					// Percentile walk from both ends over the merged histogram.
+					// Bin edges mirror the shader: log2(viewZ) over
+					// [log2(zNear), log2(zFar)] -> 64 bins; the depth at the
+					// bin that crosses the tail threshold is the bound.
+					const float zNear = default_near_clip;
+					const float zFar = std::max(CascadeFar(), zNear * 2.0f);
+					const float logLo = std::log2(zNear);
+					const float logHi = std::log2(zFar);
+					const uint64_t tail = std::max<uint64_t>(1, total / 100);
+					auto depthAtBin = [&](uint32_t b) {
+						return std::pow(2.0f,
+							logLo + (float(b) + 0.5f) / float(kSdsmBins) * (logHi - logLo));
+					};
+					uint64_t acc = 0;
+					float pctMin = mn;
+					for (uint32_t b = 0; b < kSdsmBins; ++b) {
+						acc += bins[b];
+						if (acc >= tail) { pctMin = depthAtBin(b); break; }
+					}
+					acc = 0;
+					float pctMax = mx;
+					for (uint32_t b = kSdsmBins; b-- > 0;) {
+						acc += bins[b];
+						if (acc >= tail) { pctMax = depthAtBin(b); break; }
+					}
+					if (pctMax > pctMin) {
+						m_sdsmMin = mn;
+						m_sdsmMax = mx;
+						m_sdsmPctMin = pctMin;
+						m_sdsmPctMax = pctMax;
+						m_sdsmStatsValid = true;
+						// The stats measured the frame that ran the stats
+						// pass - one frame back at this cadence.
+						m_sdsmMeasureFrame = m_frameCounter - 1;
+					}
+				}
+			}
+		}
+
 		// 2) Submit this tick's download of the retired slice: no wait, the
 		// ticket is polled on later frames. Skipped while a ticket is
 		// pending (single slot) or on submit failure (retry next tick).
@@ -5007,76 +5147,18 @@ namespace engine {
 		if (gfxDemandActive)
 			smvk::gfx::ClearDemand(gfx, *m_context, frameSlot);
 
-		// 3) SDSM stats: OWN async ticket, submitted EVERY frame - not the
-		// shared every-4th batch above: the split fit must track the camera
-		// with ONE frame of latency (current-frame measurement, next-frame
-		// fit). Poll first (non-blocking), then submit this frame's armed
-		// stats. 1-in-flight + the 2-slot per-flight ring keep the pending
-		// copy of slot N's buffer ahead of slot N+2's rewrite (the exposure
-		// ring's guarantee).
-		if (m_sdsmReadbackTicket != 0) {
-			const smvk::BufferDownload sdsmDl{
-				m_sdsmStatsBuffers[m_sdsmReadbackSlot % 2],
-				m_pendingSdsmStats.data(), kSdsmStatsBytes, 0 };
-			if (m_context->PollAsyncDownloadDataFromBuffers(
-				m_sdsmReadbackTicket,
-				std::span<const smvk::BufferDownload>(&sdsmDl, 1))) {
-				m_sdsmReadbackTicket = 0;
-				// Merge the 256 partial histograms + the true min/max, then
-				// the 1%/99% percentile range (the histogram point: one tiny
-				// distant object must not dictate the whole split range).
-				float mn = 1e30f, mx = 0.0f;
-				uint32_t bins[kSdsmBins] = {};
-				uint64_t total = 0;
-				const auto* groups = reinterpret_cast<const SdsmGroupStats*>(
-					m_pendingSdsmStats.data());
-				for (uint32_t g = 0; g < kSdsmGroups; ++g) {
-					mn = std::min(mn, groups[g].minV);
-					mx = std::max(mx, groups[g].maxV);
-					for (uint32_t b = 0; b < kSdsmBins; ++b) {
-						bins[b] += groups[g].bins[b];
-						total += groups[g].bins[b];
-					}
-				}
-				if (total > 0 && mx > mn) {
-					// Percentile walk from both ends over the merged histogram.
-					// Bin edges mirror the shader: log2(viewZ) over
-					// [log2(zNear), log2(zFar)] -> 64 bins; the depth at the
-					// bin that crosses the tail threshold is the bound.
-					const float zNear = default_near_clip;
-					const float zFar = std::max(CascadeFar(), zNear * 2.0f);
-					const float logLo = std::log2(zNear);
-					const float logHi = std::log2(zFar);
-					const uint64_t tail = std::max<uint64_t>(1, total / 100);
-					auto depthAtBin = [&](uint32_t b) {
-						return std::pow(2.0f,
-							logLo + (float(b) + 0.5f) / float(kSdsmBins) * (logHi - logLo));
-					};
-					uint64_t acc = 0;
-					float pctMin = mn;
-					for (uint32_t b = 0; b < kSdsmBins; ++b) {
-						acc += bins[b];
-						if (acc >= tail) { pctMin = depthAtBin(b); break; }
-					}
-					acc = 0;
-					float pctMax = mx;
-					for (uint32_t b = kSdsmBins; b-- > 0;) {
-						acc += bins[b];
-						if (acc >= tail) { pctMax = depthAtBin(b); break; }
-					}
-					if (pctMax > pctMin) {
-						m_sdsmMin = mn;
-						m_sdsmMax = mx;
-						m_sdsmPctMin = pctMin;
-						m_sdsmPctMax = pctMax;
-						m_sdsmStatsValid = true;
-						// The stats measured the frame that ran the stats
-						// pass - one frame back at this cadence.
-						m_sdsmMeasureFrame = m_frameCounter - 1;
-					}
-				}
-			}
-		}
+		// 3) SDSM stats submit: OWN async ticket, submitted EVERY frame -
+		// not the shared every-4th batch: the split fit must track the
+		// camera with ONE frame of latency (current-frame measurement,
+		// next-frame fit). The poll ran ABOVE, before the shared submit -
+		// the single-slot starvation fix (see 1b's comment: this submit
+		// re-takes the slot the poll frees, so the poll MUST precede the
+		// shared submit or the shared ticket starves). Yields for one frame
+		// when the shared tick holds the slot (the submit returns 0; the
+		// own-ticket gate retries next frame - the stats age stays within
+		// the applied fit's snap tolerance). 1-in-flight + the 2-slot
+		// per-flight ring keep the pending copy of slot N's buffer ahead of
+		// slot N+2's rewrite (the exposure ring's guarantee).
 		if (m_sdsmStatsArmed && m_sdsmReadbackTicket == 0
 			&& !m_sdsmStatsBuffers[frameSlot % 2].empty()) {
 			const smvk::BufferDownload sdsmDl{
