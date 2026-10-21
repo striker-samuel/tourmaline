@@ -9,6 +9,70 @@
 
 #include <cstdio>
 
+namespace smvk {
+// -----------------------------------------------------------------------------
+// Mesh heap-range retirement (the deferred-destruction contract - see
+// VulkanResourceManager::DeferDestroy): the vertex/index virtual-block ranges
+// free RETIREMENT-ORDERED with the last published graphics timeline point,
+// never in place. An in-flight frame can still be DRAWING a destroyed mesh's
+// ranges - an immediate vmaVirtualFree hands the range to the next upload, and
+// the old frame's draws then read the NEW mesh's vertices/indices through the
+// old draw args (garbage rendering, the classic suballoc-vs-frames-in-flight
+// hazard). The deferred task keys on the same point every other range free in
+// the engine keys on (ReleaseTargetHeapClaim / ReleaseTransientPlacement),
+// so the free lands strictly after every submitted frame that can still
+// reference the range, and a reuse-allocated new mesh's uploads land strictly
+// after that.
+//
+// Contract (the DeferDestroy API rule): only call from the render thread
+// between frames - the published point then covers every in-flight producer.
+// The virtual blocks themselves die at ~VulkanResourceManager only AFTER its
+// FlushDeferredTasks drained every queued free, so capturing the global
+// block handles by value here stays valid through the retirement window.
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// In-place variant (see the retirement contract above): ONLY safe for ranges
+// that were never staged to the GPU and never referenced by any pending
+// streamer batch (the batch allocation loops' all-or-nothing rollbacks, whose
+// bulk uploads happen only after every range is carved + every pool entry
+// created). Everything a draw could have touched must use the deferred form.
+// -----------------------------------------------------------------------------
+void FreeStaticMeshRangesNow(
+	VmaVirtualAllocation vertexAllocation,
+	VmaVirtualAllocation indexAllocation)
+{
+	if (vertexAllocation)
+		vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
+			vertexAllocation);
+	if (indexAllocation)
+		vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
+			indexAllocation);
+}
+
+void DeferFreeStaticMeshRanges(
+	VulkanResourceManager* vctx,
+	VmaVirtualAllocation vertexAllocation,
+	VmaVirtualAllocation indexAllocation)
+{
+	if (!vctx) {
+		// Defensive (allocations imply a live ctx_): nothing was ever
+		// staged through this path, free in place.
+		FreeStaticMeshRangesNow(vertexAllocation, indexAllocation);
+		return;
+	}
+	const VmaVirtualBlock vertexBlock =
+		staticVertexFmtHeap.m_staticVertexBlock;
+	const VmaVirtualBlock indexBlock =
+		staticVertexFmtHeap.m_staticIndexBlock;
+	vctx->DeferDestroy(std::packaged_task<void()>(
+		[vertexBlock, vertexAllocation, indexBlock, indexAllocation] {
+			if (vertexAllocation)
+				vmaVirtualFree(vertexBlock, vertexAllocation);
+			if (indexAllocation)
+				vmaVirtualFree(indexBlock, indexAllocation);
+		}));
+}
+} // namespace smvk
 
 smvk::Cluster::~Cluster() {
 
@@ -250,14 +314,12 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 		staticMeshes.create(std::move(result));
 
 	if (handle.empty()) {
-		if (alloc.indexAllocation) {
-			vmaVirtualFree(
-				staticVertexFmtHeap.m_staticIndexBlock,
-				alloc.indexAllocation);
-		}
-		vmaVirtualFree(
-			staticVertexFmtHeap.m_staticVertexBlock,
-			alloc.vertexAllocation);
+		// The three UploadDataToBuffer calls above were already staged into
+		// these ranges (vertex/shading/index), so the frees must retire with
+		// that GPU work - never in place (see DeferFreeStaticMeshRanges).
+		DeferFreeStaticMeshRanges(
+			static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque()),
+			alloc.vertexAllocation, alloc.indexAllocation);
 		return {};
 	}
 
@@ -570,14 +632,30 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 		StaticMeshAllocation alloc{};
 	};
 	std::vector<MeshRange> ranges(uploads.size());
+	// All-or-nothing rollback for the carve loop below: a degenerate or
+	// heap-failing entry must free every range the loop already carved
+	// (entries [0, i) + entry i's PARTIAL carve - a vertex alloc that
+	// succeeded before its index alloc failed). The old bare `return {}`
+	// LEAKED all of them (the ranges stayed allocated in the virtual
+	// blocks forever - nothing tracked them without pool handles). IN
+	// PLACE is safe here: nothing of this batch was staged to the GPU
+	// yet (the bulk uploads run only after every range is carved + every
+	// pool entry created), so an immediate retry sees the full capacity.
+	auto failCarved = [&ranges](size_t upto) {
+		for (size_t j = 0; j < upto; ++j)
+			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
+				ranges[j].alloc.indexAllocation);
+	};
 	for (size_t i = 0; i < uploads.size(); ++i) {
 		const StaticMeshUpload& data = uploads[i];
 		const uint32_t vertexCount =
 			static_cast<uint32_t>(data.vertices.size());
 		const uint32_t indexCount =
 			static_cast<uint32_t>(data.indices.size());
-		if (vertexCount == 0)
-			return {}; // degenerate entry fails the whole batch
+		if (vertexCount == 0) {
+			failCarved(i); // degenerate entry fails the whole batch
+			return {};
+		}
 		MeshRange& r = ranges[i];
 		{
 			VmaVirtualAllocationCreateInfo allocInfo{};
@@ -585,8 +663,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 			allocInfo.alignment = 1;
 			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
 					&allocInfo, &r.alloc.vertexAllocation,
-					&r.vertexBase) != VK_SUCCESS)
+					&r.vertexBase) != VK_SUCCESS) {
+				failCarved(i);
 				return {};
+			}
 		}
 		if (indexCount > 0) {
 			VmaVirtualAllocationCreateInfo allocInfo{};
@@ -595,8 +675,12 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 			allocInfo.alignment = alignof(uint32_t);
 			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
 					&allocInfo, &r.alloc.indexAllocation,
-					&r.indexByteOffset) != VK_SUCCESS)
+					&r.indexByteOffset) != VK_SUCCESS) {
+				// Entry i's own vertex carve rolls back too (it succeeded
+				// above and nothing references it yet).
+				failCarved(i + 1);
 				return {};
+			}
 		}
 	}
 
@@ -629,14 +713,21 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 		if (handles[i].empty()) {
 			// Roll the created entries back (frees their heap ranges via
 			// meshAllocations_), then the failed entry's own fresh ranges.
+			// The rolled-back DestroyMesh frees are now RETIREMENT-ORDERED
+			// (deferred - see DeferFreeStaticMeshRanges): conservative by a
+			// frame or two, never wrong (nothing of this batch was staged
+			// yet). The failed entry's OWN fresh ranges free IN PLACE:
+			// never staged, never referenced by any GPU work (the bulk
+			// uploads happen only after every pool entry succeeds), so an
+			// immediate retry of the batch still sees the full capacity.
 			for (size_t j = 0; j < i; ++j)
 				DestroyMesh(handles[j]);
-			if (r.alloc.indexAllocation) {
-				vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
-					r.alloc.indexAllocation);
-			}
-			vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
-				r.alloc.vertexAllocation);
+			// The failed entry's OWN fresh ranges free in place: never
+			// staged, never referenced by any GPU work (the bulk uploads
+			// happen only after every pool entry succeeds), so an
+			// immediate retry of the batch still sees the full capacity.
+			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
+				r.alloc.indexAllocation);
 			return {};
 		}
 		r.alloc.vertexBase = r.vertexBase;
@@ -741,10 +832,21 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 		StaticMeshAllocation alloc{};
 	};
 	std::vector<MeshRange> ranges(sources.size());
+	// Same all-or-nothing rollback as UploadStaticMeshes' carve loop (the
+	// old bare `return {}` leaked every carved range; in place is safe -
+	// nothing is staged before every range is carved + every pool entry
+	// created).
+	auto failCarved = [&ranges](size_t upto) {
+		for (size_t j = 0; j < upto; ++j)
+			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
+				ranges[j].alloc.indexAllocation);
+	};
 	for (size_t i = 0; i < sources.size(); ++i) {
 		const StaticMeshDirectSource& src = sources[i];
-		if (src.vertexCount == 0)
-			return {}; // degenerate entry fails the whole batch
+		if (src.vertexCount == 0) {
+			failCarved(i); // degenerate entry fails the whole batch
+			return {};
+		}
 		MeshRange& r = ranges[i];
 		{
 			VmaVirtualAllocationCreateInfo allocInfo{};
@@ -752,8 +854,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 			allocInfo.alignment = 1;
 			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
 					&allocInfo, &r.alloc.vertexAllocation,
-					&r.vertexBase) != VK_SUCCESS)
+					&r.vertexBase) != VK_SUCCESS) {
+				failCarved(i);
 				return {};
+			}
 		}
 		if (src.indexCount > 0) {
 			VmaVirtualAllocationCreateInfo allocInfo{};
@@ -762,8 +866,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 			allocInfo.alignment = alignof(uint32_t);
 			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
 					&allocInfo, &r.alloc.indexAllocation,
-					&r.indexByteOffset) != VK_SUCCESS)
+					&r.indexByteOffset) != VK_SUCCESS) {
+				failCarved(i + 1);
 				return {};
+			}
 		}
 	}
 
@@ -788,14 +894,18 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 		mesh.geometry.surfaces.push_back(surface);
 		handles[i] = staticMeshes.create(std::move(mesh));
 		if (handles[i].empty()) {
+			// Same rollback contract as UploadStaticMeshes: the rolled-back
+			// DestroyMesh frees are retirement-ordered (deferred, never
+			// staged); the failed entry's OWN fresh ranges free in place
+			// (nothing was staged - the bulk copies happen only after every
+			// pool entry succeeds).
 			for (size_t j = 0; j < i; ++j)
 				DestroyMesh(handles[j]);
-			if (r.alloc.indexAllocation) {
-				vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
-					r.alloc.indexAllocation);
-			}
-			vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
-				r.alloc.vertexAllocation);
+			// Same as UploadStaticMeshes: the failed entry's own fresh
+			// ranges free in place (nothing was staged - the bulk copies
+			// happen only after every pool entry succeeds).
+			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
+				r.alloc.indexAllocation);
 			return {};
 		}
 		r.alloc.vertexBase = r.vertexBase;
@@ -874,24 +984,24 @@ void smvk::Cluster::DestroyMesh(
 
 		StaticMeshAllocation* allocation = it->second;
 
-		if (allocation->vertexAllocation) {
-
-			vmaVirtualFree(
-				staticVertexFmtHeap.m_staticVertexBlock,
-				allocation->vertexAllocation
-			);
-		}
-
-		if (allocation->indexAllocation) {
-
-			vmaVirtualFree(
-				staticVertexFmtHeap.m_staticIndexBlock,
-				allocation->indexAllocation
-			);
-		}
+		// Detach the range ids FIRST: the CPU bookkeeping dies now, the
+		// physical heap ranges retire below. An in-flight frame can still
+		// be DRAWING these ranges - the frees must land behind the last
+		// published graphics point (DeferFreeStaticMeshRanges), or the
+		// virtual block hands the range to a new mesh while the old
+		// frame's draws read the new mesh's data through the old draw
+		// args (garbage).
+		const VmaVirtualAllocation vertexAllocation =
+			allocation->vertexAllocation;
+		const VmaVirtualAllocation indexAllocation =
+			allocation->indexAllocation;
 
 		delete allocation;
 		meshAllocations_.erase(it);
+
+		DeferFreeStaticMeshRanges(
+			static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque()),
+			vertexAllocation, indexAllocation);
 	}
 
 	staticMeshes.destroy(handle);

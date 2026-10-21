@@ -8200,7 +8200,9 @@ namespace engine {
 		// mesh-shader draws read the DEFORMED heap this pass writes.
 		// ONE skinned cluster per frame for now (the knight demo has
 		// exactly one; the per-draw palette table is the multi-cluster
-		// generalization - deferred with the bounds/cone recompute slice).
+		// generalization - still deferred). The deformed-bounds slice
+		// GfxSkinBounds rebuilds (spheres + cones + the per-draw union
+		// tail) is NOT deferred anymore - it runs every frame below.
 		// The App loads the clip (TOURMALINE_ANIM - PakApp) via
 		// Cluster::SetAnimClip. m_deltaTime = the sim dt (the bench pins
 		// it at 60Hz - deterministic playback).
@@ -9068,11 +9070,126 @@ namespace engine {
 		const smvk::RenderView liveMainCullView = m_renderViews.Get(mainRenderView);
 
 		// ---------------------------------------------------------------------
+		// Skinned-mesh cone debug source (the DEFORMED cones from the GPU
+		// skinBounds table): poll the in-flight readback, then (debug-gated)
+		// submit a fresh one for the skinned draws' candidate slot ranges.
+		// Ordering rides the demand ring's exact argument: the submit runs
+		// at record time BEFORE this frame's graph submission, so the copy
+		// waits only retired graphics work (its retirement wait) and this
+		// frame's own GfxSkinBounds write waits the copy (the transfer
+		// chain — chainExternalPoint joins it into the frame's waits) — the
+		// copy reads the flight's table content from MAX_FRAMES_IN_FLIGHT
+		// frames ago, never mid-write.
+		// ---------------------------------------------------------------------
+		if (gfxSlot != UINT32_MAX && gfxSlot < m_gfxRenderer.State().views.size()) {
+			smvk::gfx::State& gfxDbg = m_gfxRenderer.State();
+			smvk::gfx::View& dbgView = gfxDbg.views[gfxSlot];
+			const uint32_t dbgFlight = dbgView.frameIndex;
+			const bool skinTableLive = gfxDbg.skinBoundsReady
+				&& dbgFlight < ::MAX_FRAMES_IN_FLIGHT
+				&& !gfxDbg.skinBoundsBuffers[dbgFlight].empty();
+			// 1) Poll (whenever a ticket is in flight — even after the debug
+			//    toggles switched off, so the single async slot frees).
+			if (m_debugSkinConeTicket != 0) {
+				if (m_context->PollAsyncDownloadDataFromBuffers(
+					m_debugSkinConeTicket,
+					std::span<const smvk::BufferDownload>(
+						m_debugSkinConeDownloads.data(),
+						m_debugSkinConeDownloads.size()))) {
+					m_debugSkinConeTicket = 0;
+					// Cache rebuild: the keys were snapshotted at submit
+					// time (MakeVisKey(model, cluster) — the (model,
+					// cluster) identity is the stable address; draw
+					// indices churn per frame). One landing replaces the
+					// whole cache (bounded, no eviction bookkeeping).
+					m_debugSkinConeCache.clear();
+					const size_t n = std::min(
+						m_debugSkinConeKeys.size(), m_debugSkinConeTable.size());
+					for (size_t i = 0; i < n; ++i)
+						m_debugSkinConeCache[m_debugSkinConeKeys[i]] =
+							m_debugSkinConeTable[i];
+					m_debugSkinConeKeys.clear();
+					m_debugSkinConeTable.clear();
+					m_debugSkinConeDownloads.clear();
+				}
+			}
+			// 2) Submit (debug-gated: the line overlay, or the heat mode's
+			//    cutoff leg). Yields while ANY async readback is in flight
+			//    (the exposure/demand ticket owns the slot on its cadence;
+			//    this retries next frame) and while the skinning/skinBounds
+			//    chain is off (nothing skinned to read back).
+			else if ((m_debugCones || m_debugMeshletMode == 1)
+				&& skinTableLive && !m_context->HasAsyncDownloadInFlight()) {
+				uint64_t totalBytes = 0;
+				for (uint32_t di = 0; di < dbgView.drawConstants.size(); ++di) {
+					const smvk::gfx::Draw& d = dbgView.drawConstants[di];
+					if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
+						continue;
+					if (d.candidateBase == UINT32_MAX
+						|| d.mesh >= gfxDbg.meshes.size())
+						continue;
+					const smvk::gfx::Mesh& gm = gfxDbg.meshes[d.mesh];
+					if (gm.clusterCount == 0)
+						continue;
+					if ((uint64_t)d.candidateBase + gm.clusterCount
+						> smvk::gfx::kMaxBatchSlots)
+						continue; // corrupt slot layout: skip the draw's leg
+					const size_t first = m_debugSkinConeTable.size();
+					m_debugSkinConeTable.resize(first + gm.clusterCount);
+					for (uint32_t ci = 0; ci < gm.clusterCount; ++ci)
+						m_debugSkinConeKeys.push_back(smvk::gfx::detail::MakeVisKey(
+							d.model, gm.clusterStart + ci));
+					// The out pointers must stay put submit->poll: these
+					// vectors are only rebuilt at ticket == 0 (landed +
+					// cleared), and clear() keeps the heap buffers alive.
+					m_debugSkinConeDownloads.push_back(smvk::BufferDownload{
+						gfxDbg.skinBoundsBuffers[dbgFlight],
+						m_debugSkinConeTable.data() + first,
+						(size_t)gm.clusterCount * sizeof(smvk::gfx::ClusterConstants),
+						(size_t)d.candidateBase * sizeof(smvk::gfx::ClusterConstants) });
+					totalBytes += (uint64_t)gm.clusterCount
+						* sizeof(smvk::gfx::ClusterConstants);
+				}
+				// Debug-traffic cap (staging growth + copies): a skinned
+				// crowd beyond this keeps the stale cache (warn once).
+				constexpr uint64_t kDebugSkinConeMaxBytes = 8ull << 20;
+				static bool s_skinConeCapWarned = false;
+				if (!m_debugSkinConeDownloads.empty()
+					&& totalBytes <= kDebugSkinConeMaxBytes) {
+					m_debugSkinConeTicket = m_context->SubmitAsyncDownloadDataFromBuffers(
+						std::span<const smvk::BufferDownload>(
+							m_debugSkinConeDownloads.data(),
+							m_debugSkinConeDownloads.size()));
+				}
+				else if (!m_debugSkinConeDownloads.empty() && !s_skinConeCapWarned) {
+					s_skinConeCapWarned = true;
+					std::fprintf(stderr,
+						"[DebugSkinCone] skinned slot readback %.1f MB exceeds the "
+						"%.1f MB debug cap: cones stay stale.\n",
+						double(totalBytes) / (1024.0 * 1024.0),
+						double(kDebugSkinConeMaxBytes) / (1024.0 * 1024.0));
+				}
+				if (m_debugSkinConeTicket == 0) {
+					// Busy slot / cap: drop the pending shape (retry builds
+					// it fresh next frame).
+					m_debugSkinConeKeys.clear();
+					m_debugSkinConeTable.clear();
+					m_debugSkinConeDownloads.clear();
+				}
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Cone-axis debug lines (CPU candidate batches -> apex/tip verts).
 		// Built + uploaded here (before Main records); the Main lambda only
 		// binds the buffer and draws. No rendergraph hints needed: content
 		// is pure CPU (batches/drawConstants/clusters vectors) + the upload
 		// barrier, same pattern as the frame-uniform uploads.
+		// Static draws read the baked bind-pose cones (the actual cull
+		// input for them); SKINNED draws read the read-back DEFORMED cones
+		// (the skinBounds table — see the tick above) and draw NOTHING
+		// while the cache is cold: the static cone is bind-pose and drawing
+		// it would be the exact lie this overlay exists to expose.
 		// ---------------------------------------------------------------------
 		uint32_t coneLineVerts = 0;
 		if (m_debugCones && gfxSlot != UINT32_MAX &&
@@ -9086,14 +9203,36 @@ namespace engine {
 				if (b.draw >= v.drawConstants.size() || b.cluster >= st.clusters.size())
 					continue;
 				const smvk::gfx::Draw& dc = v.drawConstants[b.draw];
-				const smvk::gfx::Cluster& c = st.clusters[b.cluster];
-				if (!(c.boundRadius > 0.0f))
+				// The cull's ACTUAL cone for this candidate: the baked
+				// static cone, or the deformed cone for skinned draws (the
+				// skinBounds table — a few frames stale in pose, object
+				// space under the live model, never the bind-pose axis).
+				glm::vec3 coneApex, coneAxis;
+				float boundRadius = 0.0f;
+				const bool drawSkinned =
+					(dc.flags & smvk::gfx::DrawFlagBit_Skinned) != 0;
+				if (drawSkinned) {
+					const auto it = m_debugSkinConeCache.find(
+						smvk::gfx::detail::MakeVisKey(dc.model, b.cluster));
+					if (it == m_debugSkinConeCache.end())
+						continue; // cache cold for this (model, cluster): no line
+					coneApex = it->second.coneApex;
+					coneAxis = it->second.coneAxis;
+					boundRadius = it->second.boundRadius;
+				}
+				else {
+					const smvk::gfx::Cluster& c = st.clusters[b.cluster];
+					coneApex = c.coneApex;
+					coneAxis = c.coneAxis;
+					boundRadius = c.boundRadius;
+				}
+				if (!(boundRadius > 0.0f))
 					continue;
-				const glm::vec3 apex = glm::vec3(dc.model * glm::vec4(c.coneApex, 1.0f));
-				glm::vec3 ax = glm::vec3(dc.model * glm::vec4(c.coneAxis, 0.0f));
+				const glm::vec3 apex = glm::vec3(dc.model * glm::vec4(coneApex, 1.0f));
+				glm::vec3 ax = glm::vec3(dc.model * glm::vec4(coneAxis, 0.0f));
 				const float alen = glm::length(ax);
 				if (!(alen > 1e-9f))
-					continue;
+					continue; // degenerate cone (the keep-cone): no axis to draw
 				ax /= alen;
 				const float bs = std::max({
 					glm::length(glm::vec3(dc.model[0])),
@@ -9102,7 +9241,7 @@ namespace engine {
 				if (!(bs > 0.0f))
 					continue;
 				lines.push_back(smvk::DebugLineVertex{ apex });
-				lines.push_back(smvk::DebugLineVertex{ apex + ax * (c.boundRadius * bs) });
+				lines.push_back(smvk::DebugLineVertex{ apex + ax * (boundRadius * bs) });
 			}
 			if (!lines.empty()) {
 				const size_t bytes = lines.size() * sizeof(smvk::DebugLineVertex);
@@ -9236,8 +9375,27 @@ namespace engine {
 					}
 					auto& model = m_world->scene.globalTransform[item.node];
 					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-					if (!meshDesc) return;
-					IRenderer::PushConstants objectPC{};
+			if (!meshDesc) return;
+			// Direct-path skin tail (shadow.vert's 208..240 overlay): a
+			// skinned caster fetches the ANIMATED position from the frame's
+			// deformed heap instead of the bind-pose vertex input. Always
+			// pushed (zeroed on static draws) so a stale tail never leaks
+			// into the next caster.
+			DepthSkinTail skinTail{};
+			if (meshDesc->skinned
+				&& m_gfxRenderer.State().skinDeformedBda != 0
+				&& m_gfxRenderer.State().skinDeformedBase != UINT32_MAX
+				&& !std::getenv("TOURMALINE_KD_NOSKIN")) {
+				skinTail.skinned = 1u;
+				skinTail.deformedBase =
+					m_gfxRenderer.State().skinDeformedBase;
+				skinTail.vsDeformed =
+					m_gfxRenderer.State().skinDeformedBda;
+			}
+			cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
+				&skinTail, smvk::ShaderStage::All);
+			IRenderer::PushConstants objectPC{};
+
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 					// Previous frame's transform: zero motion on the first
 					// frame or after the node count changed (scene rebuild).
@@ -9922,6 +10080,21 @@ namespace engine {
 				// Per-item skin tail: the animated pose for SKINNED items
 				// (covers the filterable + white-fallback branches below).
 				pushMeshDebugSkinTail(worldMesh);
+					// Heat-mode cone source: SKINNED items color by the
+					// read-back DEFORMED cone cutoffs (the skinBounds
+					// table — the tick + cache at the frame's record step),
+					// never the bind-pose baked cutoff (the exact lie the
+					// heat mode exists to expose; see the cone-line overlay
+					// note above). Cache-cold entries draw the sentinel
+					// deep-blue "no deformed data yet". Items without
+					// animation this frame (no deformed heap) keep the
+					// static cutoff — the static cone IS their actual cull
+					// input then.
+					const smvk::gfx::State& stHeat = m_gfxRenderer.State();
+					const smvk::StaticMesh* heatMeshDesc = m_world->GetMesh(worldMesh);
+					const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned
+						&& stHeat.skinDeformedBda != 0
+						&& stHeat.skinDeformedBase != UINT32_MAX;
 					// Debug the SELECTED sibling: every registered LOD has its
 					// own gfx mesh (see RegisterWorldMeshes), so the overlay
 					// shows what the filter actually culled for this instance.
@@ -9948,9 +10121,17 @@ namespace engine {
 						const smvk::gfx::Cluster& cl = dbgState.clusters[gc];
 						if (cl.triCount == 0)
 							continue;
+						float coneCutoff = cl.coneCutoff;
+						if (heatSkinned) {
+							const auto it = m_debugSkinConeCache.find(
+								smvk::gfx::detail::MakeVisKey(model, gc));
+							coneCutoff = (it != m_debugSkinConeCache.end())
+								? it->second.coneCutoff
+								: -2.0f; // cache cold: "no deformed data" blue
+						}
 						float rgba[4];
 						GfxRenderer::DebugClusterColor(
-							gc, cl.coneCutoff, m_debugMeshletMode, rgba);
+							gc, coneCutoff, m_debugMeshletMode, rgba);
 						dp.color[0] = rgba[0] * dbgGain; dp.color[1] = rgba[1] * dbgGain;
 						dp.color[2] = rgba[2] * dbgGain; dp.color[3] = rgba[3];
 						cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
@@ -10478,7 +10659,10 @@ namespace engine {
 			// Shows the normal cone of every candidate (draw x cluster) the
 			// filter saw: apex -> apex + axis * worldRadius (yellow). Missing
 			// meshlets in the shaded view but present cones here = GPU HZB
-			// cull; missing cones = CPU pre-cull (frustum/cone).
+			// cull; missing cones = CPU pre-cull (frustum/cone) — or a
+			// SKINNED draw whose deformed-cone readback cache is still cold
+			// (the skinned cones come from the skinBounds table via the
+			// async debug readback, never the bind-pose static cones).
 			if (m_debugCones && coneLineVerts > 0 && !m_debugLines.empty() &&
 				m_gfxRenderer.DebugProgramsValid()) {
 				cmd.BindRenderPipeline(

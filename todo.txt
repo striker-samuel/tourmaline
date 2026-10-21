@@ -1,0 +1,13 @@
+TODO
+====
+
+(Editor, future) The editor's meshlet debug (F4 "Cone-cutoff heat" +
+per-meshlet cone data) reads its own cooked STATIC meshlets — bind-pose
+cones, no deformed source. The engine's gfx cull chain now rebuilds
+deformed cones on GPU (GfxSkinBounds) and its runtime overlays consume
+them via the async readback cache (WorldRenderer m_debugSkinCone*); the
+editor preview is the remaining place a skinned mesh shows bind-pose cone
+data. Revisit if the editor ever runs the skinning preview / the gfx
+filter chain (it would then get the same GfxSkinBounds table + the same
+readback path; until then the editor overlay is honest only for static
+meshes).

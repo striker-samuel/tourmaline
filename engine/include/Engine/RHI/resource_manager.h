@@ -33,7 +33,11 @@ bool SupportsMeshShaders();
 
 class ResourceManager {
 public:
-    // Creates Vulkan core + allocator. window may be nullptr for headless.
+    // Creates Vulkan core + allocator. window is currently REQUIRED (the
+    // core's device pick + queue selection are surface-based - see
+    // CreateVulkanCoreWithWindow, which asserts it). Offscreen hosts pass a
+    // HIDDEN window (the retirement fuzzer does); true headless would need
+    // the core surgery in findQueueFamilies/isDeviceSuitable.
     explicit ResourceManager(SDL_Window* window = nullptr);
     ~ResourceManager();
 

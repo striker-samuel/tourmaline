@@ -72,10 +72,12 @@ static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand)
 // filtered-offset counter).
 static constexpr size_t kKeptBytes = kMaxBatchSlots * 2 * sizeof(uint32_t);
 static constexpr size_t kCullStateBytes = kCullStateWords * sizeof(uint32_t);
-// Deformed cluster bounds (GfxSkinBounds output): one GfxClusterData per
-// candidate slot, indexed exactly like the batch cull's candidate slots so
-// multi-instance skinned draws stay independent.
-static constexpr size_t kSkinBoundsBytes = kMaxBatchSlots * sizeof(ClusterConstants);
+// Deformed cluster bounds (GfxSkinBounds output, the GfxSkinBoundsTable): one
+// GfxClusterData per candidate slot + the per-draw deformed union-bound tail
+// (one vec4 per draw index), indexed exactly like the batch cull's candidate
+// slots so multi-instance skinned draws stay independent.
+static constexpr size_t kSkinBoundsBytes =
+	kMaxBatchSlots * sizeof(ClusterConstants) + kMaxDraws * sizeof(glm::vec4);
 
 static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
 	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
@@ -411,6 +413,16 @@ void Destroy(State& s, RenderGraph& rg) {
 	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	if (!s.meshBoundsLogical.empty()) rg.FreeBuffer(s.meshBoundsLogical);
+	// The GfxSkinBounds table logicals (the buffers themselves retire via
+	// their Holders; the rendergraph logicals need the explicit free, the
+	// same as every other per-flight external buffer above).
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		if (!s.skinBoundsLogicals[f].empty())
+			rg.FreeBuffer(s.skinBoundsLogicals[f]);
+		s.skinBoundsLogicals[f] = {};
+		s.skinBoundsBuffers[f] = {};
+	}
+	s.skinBoundsReady = false;
 	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 		if (!s.meshParamsLogicals[f].empty()) rg.FreeBuffer(s.meshParamsLogicals[f]);
 		if (!s.meshBatchListLogicals[f].empty()) rg.FreeBuffer(s.meshBatchListLogicals[f]);
@@ -1599,6 +1611,73 @@ bool CullCluster(const Cluster& c, const glm::mat4& model,
 	return false;
 }
 
+// CPU reference of GfxSkinBounds' cone rebuild (gfxskinbounds.cs.hlsl):
+// the exact math the shader's three per-cluster walks run, on caller-supplied
+// (deformed) triangle corners — meshopt_computeMeshletBounds' cone convention
+// (meshletutils.cpp), the same one the baked static cones follow, so
+// GfxConeCulled consumes either without knowing which fit made it:
+//   axis  = normalize(sum of raw cross products) — area-weighted (any axis
+//           + min-dot cutoff is conservative; only tightness varies)
+//   mindp = min dot(axis, unit face normal) over non-degenerate triangles
+//   degenerate guards: triCount == 0 / axis ~0 / mindp <= 0.1 (cone wider
+//           than ~168 degrees — meshopt's own "isn't useful" cutoff)
+//   maxt  = max(0, dot(center - p0, n) / dot(axis, n)) — the apex lands
+//           behind every face plane by construction (denominator >= mindp
+//           > 0.1 once the guards pass)
+//   cutoff = sqrt(1 - mindp^2) — the 90-degrees-both-sides widening the
+//           perspective camera test requires
+// Exported for the unit tests (test_gfxfilter pins the fit's verdicts
+// against the every-face-plane-negative ground truth).
+DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
+	uint32_t triCount, const glm::vec3& sphereCenter)
+{
+	DeformedConeFit out{}; // degenerate defaults: the keep-cone
+	if (triCorners == nullptr || triCount == 0)
+		return out;
+	glm::vec3 nsum(0.0f);
+	for (uint32_t t = 0; t < triCount; ++t) {
+		const glm::vec3& p0 = triCorners[t * 3 + 0];
+		const glm::vec3& p1 = triCorners[t * 3 + 1];
+		const glm::vec3& p2 = triCorners[t * 3 + 2];
+		nsum += glm::cross(p1 - p0, p2 - p0);
+	}
+	const float nlen2 = glm::dot(nsum, nsum);
+	if (nlen2 < 1e-12f)
+		return out;
+	const glm::vec3 axis = nsum / std::sqrt(nlen2);
+	float mindp = 1.0f;
+	for (uint32_t t = 0; t < triCount; ++t) {
+		const glm::vec3 n = glm::cross(
+			triCorners[t * 3 + 1] - triCorners[t * 3 + 0],
+			triCorners[t * 3 + 2] - triCorners[t * 3 + 0]);
+		const float l2 = glm::dot(n, n);
+		if (l2 < 1e-24f)
+			continue; // zero-area sliver: shades nothing
+		mindp = std::min(mindp, glm::dot(axis, n / std::sqrt(l2)));
+	}
+	if (mindp <= 0.1f)
+		return out;
+	float maxt = 0.0f;
+	for (uint32_t t = 0; t < triCount; ++t) {
+		const glm::vec3 nRaw = glm::cross(
+			triCorners[t * 3 + 1] - triCorners[t * 3 + 0],
+			triCorners[t * 3 + 2] - triCorners[t * 3 + 0]);
+		const float l2 = glm::dot(nRaw, nRaw);
+		if (l2 < 1e-24f)
+			continue;
+		const glm::vec3 n = nRaw / std::sqrt(l2);
+		const float dn = glm::dot(axis, n);
+		const float dc = glm::dot(sphereCenter - triCorners[t * 3 + 0], n);
+		maxt = std::max(maxt, dc / dn);
+	}
+	const float m = std::min(mindp, 1.0f);
+	out.coneApex = sphereCenter - axis * maxt;
+	out.coneAxis = axis;
+	out.coneCutoff = std::sqrt(1.0f - m * m);
+	out.degenerate = false;
+	return out;
+}
+
 // Mesh-bound fast-discard gate for shadow lists (pure CPU, headless-
 // testable; the CPU twin of the main view's GPU draw cull): true = the
 // whole draw leaves before the per-cluster meshlet loop. The bound is
@@ -2223,6 +2302,17 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 			push.minContribution = 0.0f;
 		}
 	}
+	// Deformed per-cluster bounds (GfxSkinBounds output): skinned draws
+	// cull against THIS table instead of the static bind-pose clusters[]
+	// (the same animated-silhouette fix the batch cull already uses).
+	if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+		const uint64_t skinBoundsBda =
+			ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+		if (skinBoundsBda != 0) {
+			push.skinBounds = skinBoundsBda;
+			push.skinBoundsValid = 1;
+		}
+	}
 
 	// Draw-level texture-demand inputs (designated-publisher groups;
 	// PublishDrawDemand gates on textureMetaCount). Belt and braces: any
@@ -2295,10 +2385,12 @@ RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view) {
 	// The cluster-ordered index stream (region of the static monoblock).
 	if (!s.indexHeapLogical.empty())
 		pass.AddBufferHint(s.indexHeapLogical, computeRead);
-	// The output table: written here, read by GfxBatchCull below (the hint
-	// pair is the cross-pass ordering edge). The DEFORMED heap is BDA-only
-	// (no graph handle): the skinning pass's trailing ALL_COMMANDS barrier
-	// orders that read, exactly like the draw passes' deformed fetches.
+	// The output table (GfxSkinBoundsTable: the per-candidate-slot cluster
+	// entries + the per-draw drawBound tail — ONE buffer): written here,
+	// read by GfxBatchCull + GfxDrawCull below (the hint pairs are the
+	// cross-pass ordering edges). The DEFORMED heap is BDA-only (no graph
+	// handle): the skinning pass's trailing ALL_COMMANDS barrier orders
+	// that read, exactly like the draw passes' deformed fetches.
 	BufferSyncRequest computeRW{};
 	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
@@ -2480,6 +2572,11 @@ RenderPass& AddDrawCullPass(State& s, RenderGraph& rg, uint32_t view) {
 	if (view < s.temporals.size()
 		&& !s.temporals[view].hiz[v.frameIndex].logical.empty())
 		pass.AddBufferHint(s.temporals[view].hiz[v.frameIndex].logical, computeRead);
+	// Deformed per-draw union bounds (GfxSkinBounds' drawBound tail, written
+	// earlier this frame): skinned draws test this instead of the static
+	// mesh unions. The hint pair is the cross-pass ordering edge.
+	if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
+		pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
 	BufferSyncRequest computeRW{};
 	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
@@ -2533,6 +2630,17 @@ void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 		// can never slip through to a dereference (device-lost class).
 		if (push.hzb == 0)
 			push.hizMips = 0;
+	}
+	// Deformed per-draw union bounds (GfxSkinBounds' drawBound tail, written
+	// earlier this frame — the same gate as the batch cull's per-slot table).
+	// Without it skinned draws keep the blanket skip (the shader gates on
+	// skinBoundsValid), never the static bind-pose union.
+	if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
+		const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
+		if (bda != 0) {
+			push.skinBounds = bda;
+			push.skinBoundsValid = 1;
+		}
 	}
 	cmd.BindComputePipeline(s.drawCullProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);

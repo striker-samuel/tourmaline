@@ -65,7 +65,7 @@ GfxHzbCtx FilterHzbCtx()
 // math — the derivations live on those two now). Every failure path
 // keeps the cluster ("visible"): a too-large bound merely misses culling;
 // a too-small bound could make visible geometry disappear.
-bool ClusterOccluded(uint clusterIdx, uint drawIdx)
+bool ClusterOccluded(uint clusterIdx, uint drawIdx, uint slotIdx)
 {
     uint flags = pcF.cullFlags;
     bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
@@ -93,8 +93,22 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
 
     GfxHzbCtx ctx = FilterHzbCtx();
 
+    // SKINNED draws cull against the DEFORMED bounds (GfxSkinBounds wrote
+    // one GfxClusterData per candidate slot earlier this frame), not the
+    // static bind-pose sphere: a pose that swings a cluster out of its
+    // bind sphere would otherwise drop the cluster and punch a hole the
+    // seed depth never covered (sky leak + bloom). skinBoundsValid = 0
+    // (no skinned cluster this frame) leaves every draw on the static
+    // table.
+    const bool skinned =
+        (pcF.draws.Get().draws[drawIdx].misc.y & GFX_DRAW_SKINNED) != 0;
+    const bool useSkinBounds = skinned && pcF.skinBoundsValid != 0;
+    const float4 bound = useSkinBounds
+        ? pcF.skinBounds.Get().cluster[slotIdx].b
+        : pcF.clusters.Get().cluster[clusterIdx].b;
+
     BoundProjection p = ProjectBound(
-        pcF.clusters.Get().cluster[clusterIdx].b, // xyz center, w radius
+        bound, // xyz center, w radius
         pcF.draws.Get().draws[drawIdx].model, ctx);
 
     if (!p.testable)
@@ -160,11 +174,23 @@ void PublishDrawDemand(uint drawIdx)
     // on-target; the untestable default below yields mip 0 (sharpest) —
     // the over-request direction.
     float coveragePx = 1e9f; // "sharper than any texture"
-    if (pcF.hizWidth != 0u && pcF.hizHeight != 0u)
+    // SKINNED draws project the DEFORMED union bound (GfxSkinBounds'
+    // drawBound tail): the static bind-pose mesh union can swing an
+    // animated mesh clean outside itself, and a draw bound that MISSES the
+    // deformed clusters breaks the containment argument — a hidden/off-
+    // target verdict could then skip demand for clusters still visible
+    // (an under-request: the one direction the demand side must never
+    // take). Without the table (skinBoundsValid = 0) skinned draws keep
+    // the sharpest-request default (the old blanket skip — over-request).
+    const bool skinned = (d.misc.y & GFX_DRAW_SKINNED) != 0;
+    const bool useSkinBounds = skinned && pcF.skinBoundsValid != 0u;
+    if ((!skinned || useSkinBounds) && pcF.hizWidth != 0u && pcF.hizHeight != 0u)
     {
         GfxHzbCtx ctx = FilterHzbCtx();
         const BoundProjection p = ProjectBound(
-            pcF.meshBounds.Get().centerRadius[d.misc.x], d.model, ctx);
+            useSkinBounds ? pcF.skinBounds.Get().drawBound[drawIdx]
+                          : pcF.meshBounds.Get().centerRadius[d.misc.x],
+            d.model, ctx);
         if (p.testable)
         {
             if (!p.onTarget)
@@ -368,7 +394,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     // argument in PublishDrawDemand covers the draw-bound verdict too).
     if (gid < pcF.batchCount && tid == 0 && slotKept && drawOk)
     {
-        if (ClusterOccluded(header.x, header.y))
+        if (ClusterOccluded(header.x, header.y, gid))
             gClusterCull = 1;
     }
 

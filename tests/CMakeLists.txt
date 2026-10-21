@@ -485,6 +485,32 @@ set_target_properties(EnvVolumeTests PROPERTIES
 
 add_test(NAME env_volume_tests COMMAND EnvVolumeTests)
 
+# Randomized soak for the deferred-destruction retirement system (mesh heap
+# ranges, bindless slots, the deferred-task drain) on a REAL headless Vulkan
+# context - the fuzzer plays the swapchain's role in the retirement contract
+# with its own timeline semaphore (see the file header). Needs engine/src +
+# VMA includes for the impl detail header, volk + KTX (PRIVATE on engine).
+add_executable(RetirementFuzzTests test_retirement_fuzz.cpp)
+
+target_include_directories(RetirementFuzzTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/src
+        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
+)
+
+target_link_libraries(RetirementFuzzTests
+    PRIVATE
+        engine
+        volk
+        KTX::ktx
+)
+
+set_target_properties(RetirementFuzzTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME retirement_fuzz_tests COMMAND RetirementFuzzTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)
@@ -514,3 +540,4 @@ tourmaline_stage_sdl3(TerrainHFieldTests)
 tourmaline_stage_sdl3(TerrainBlocksTests)
 tourmaline_stage_sdl3(LevelTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
+tourmaline_stage_sdl3(RetirementFuzzTests)

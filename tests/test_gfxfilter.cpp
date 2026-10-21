@@ -739,6 +739,267 @@ void TestConeCull() {
 }
 
 // ---------------------------------------------------------------------------
+// Deformed-cone fit (GfxSkinBounds' rebuild; FitDeformedCone is the tested
+// CPU reference of the gfxskinbounds.cs.hlsl walks). The contract: the fit
+// may only cull viewpoints EVERY non-degenerate face plane still sees from
+// behind (the all-planes-negative ground truth — the cone is a backface
+// test, not an occlusion test, so ANY front-facing plane forbids culling
+// no matter how occluded that face is). Degenerate guards: no triangles /
+// cancelled normals (double-sided cloth) / spread wider than ~168 degrees
+// (meshopt's 0.1 cutoff) / zero-area slivers ignored. The baked meshopt
+// cones (the nsphere-axis fit) and this sum-axis refit are both pinned
+// against the SAME ground truth — tightness differs, the contract is
+// identical (GfxConeCulled consumes either without knowing the fitter).
+// ---------------------------------------------------------------------------
+
+void TestDeformedConeFit() {
+	using namespace smvk::gfx;
+
+	// Deterministic LCG (no <random> dependency; the engine's frameSeed
+	// pattern). Unit() in [-1,1), Dir() a uniform-ish unit vector (retries
+	// around the degenerate pole).
+	struct Lcg {
+		uint32_t s = 0x1234567u;
+		uint32_t Next() { return s = 1664525u * s + 1013904223u; }
+		float Unit() {
+			return float((int32_t)((Next() >> 9) & 0xFFFFu) - 32768)
+				* (1.0f / 32768.0f);
+		}
+		glm::vec3 Dir() {
+			for (;;) {
+				const glm::vec3 v(Unit(), Unit(), Unit());
+				const float l2 = glm::dot(v, v);
+				if (l2 > 1e-4f && l2 < 1.0f)
+					return v / std::sqrt(l2);
+			}
+		}
+	};
+
+	// The fit's verdict math — the GfxConeCulled/CullCluster object-space
+	// core verbatim (identity model): degenerate fits never cull.
+	const auto fitCulls = [](const DeformedConeFit& f, const glm::vec3& eye) {
+		if (f.degenerate)
+			return false;
+		const glm::vec3 d = f.coneApex - eye;
+		const float len2 = glm::dot(d, d);
+		if (len2 < 1e-12f)
+			return false;
+		return glm::dot(d / std::sqrt(len2), f.coneAxis) >= f.coneCutoff;
+	};
+	// The ground truth: cull-legal iff every non-degenerate face plane puts
+	// the eye on its negative (back) side. A tiny positive tolerance keeps
+	// float-borderline planes from failing exact cone ties.
+	const auto groundInvisible = [](const glm::vec3* corners,
+		uint32_t triCount, const glm::vec3& eye) {
+		for (uint32_t t = 0; t < triCount; ++t) {
+			const glm::vec3 n = glm::cross(
+				corners[t * 3 + 1] - corners[t * 3 + 0],
+				corners[t * 3 + 2] - corners[t * 3 + 0]);
+			if (glm::dot(n, n) < 1e-24f)
+				continue; // sliver: shades nothing, cannot forbid a cull
+			if (glm::dot(eye - corners[t * 3 + 0], n / std::sqrt(glm::dot(n, n)))
+				> 1e-6f)
+				return false; // this face is front-facing from the eye
+		}
+		return true;
+	};
+	// The pass's conservative sphere anchor: AABB center over the corners.
+	const auto aabbCenter = [](const glm::vec3* corners, uint32_t triCount) {
+		glm::vec3 mn(std::numeric_limits<float>::infinity());
+		glm::vec3 mx(-std::numeric_limits<float>::infinity());
+		for (uint32_t i = 0; i < triCount * 3; ++i) {
+			mn = glm::min(mn, corners[i]);
+			mx = glm::max(mx, corners[i]);
+		}
+		return (mn + mx) * 0.5f;
+	};
+
+	// ---- Guards -------------------------------------------------------------
+	{
+		Check(FitDeformedCone(nullptr, 4, glm::vec3(0.0f)).degenerate,
+			"gfx.conefit.null-degenerate");
+		const glm::vec3 none[1]{};
+		Check(FitDeformedCone(none, 0, glm::vec3(0.0f)).degenerate,
+			"gfx.conefit.empty-degenerate");
+
+		// A coherent +Z quad at z=0: valid, axis ~+Z, sane cutoff.
+		const glm::vec3 quad[6] = {
+			glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec3(1.0f, -1.0f, 0.0f),
+			glm::vec3(1.0f, 1.0f, 0.0f),
+			glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec3(1.0f, 1.0f, 0.0f),
+			glm::vec3(-1.0f, 1.0f, 0.0f),
+		};
+		const DeformedConeFit quadFit =
+			FitDeformedCone(quad, 2, glm::vec3(0.0f));
+		Check(!quadFit.degenerate, "gfx.conefit.quad-valid");
+		Check(glm::dot(quadFit.coneAxis, glm::vec3(0, 0, 1)) > 0.999f,
+			"gfx.conefit.quad-axis");
+		Check(quadFit.coneCutoff >= 0.0f && quadFit.coneCutoff <= 1.0f,
+			"gfx.conefit.quad-cutoff-range");
+		// The apex lands ON or behind every face plane by construction —
+		// for this flat quad through the center the maxt crossing is
+		// exact (t = 0), so the apex sits on the plane (dot <= 0).
+		Check(quadFit.coneApex.z <= 0.0f, "gfx.conefit.quad-apex-behind");
+		// Front eye keeps, back eye (far behind, on-axis) culls: the fit
+		// actually rejects (a never-culling fit trivially passes every
+		// conservativeness check).
+		Check(!fitCulls(quadFit, glm::vec3(0, 0, 5.0f)), "gfx.conefit.quad-front-keeps");
+		Check(fitCulls(quadFit, glm::vec3(0, 0, -50.0f)), "gfx.conefit.quad-back-culls");
+
+		// Double-sided (exactly opposite facings — the cloth case): the
+		// raw cross sum cancels -> degenerate keep-cone.
+		const glm::vec3 cloth[6] = {
+			quad[0], quad[1], quad[2],
+			quad[2], quad[1], quad[0], // same triangle, flipped winding
+		};
+		Check(FitDeformedCone(cloth, 2, glm::vec3(0.0f)).degenerate,
+			"gfx.conefit.double-sided-degenerate");
+
+		// A sliver appended to the coherent quad: ignored, the quad's cone
+		// survives (the sliver shades nothing).
+		glm::vec3 withSliver[9];
+		std::memcpy(withSliver, quad, sizeof(quad));
+		withSliver[6] = withSliver[7] = glm::vec3(0.5f, 0.5f, 0.1f);
+		withSliver[8] = glm::vec3(0.5f, 0.5001f, 0.1f);
+		const DeformedConeFit sliverFit =
+			FitDeformedCone(withSliver, 3, glm::vec3(0.0f));
+		Check(!sliverFit.degenerate, "gfx.conefit.sliver-ignored");
+		Check(glm::dot(sliverFit.coneAxis, quadFit.coneAxis) > 0.999f,
+			"gfx.conefit.sliver-same-axis");
+	}
+
+	// ---- Randomized conservativeness sweep ----------------------------------
+	{
+		Lcg rng;
+		uint32_t sweeps = 0, culls = 0, degen = 0;
+		bool allConservative = true;
+		for (uint32_t iter = 0; iter < 96; ++iter) {
+			// One random cluster-like patch: a rough facing axis, a spread
+			// strength sweeping coherent -> wider-than-hemisphere, a few
+			// triangle pairs (plus occasional slivers).
+			const glm::vec3 facing = rng.Dir();
+			const float strength = 0.15f + 4.0f * std::fabs(rng.Unit());
+			const uint32_t triCount = 2u + (rng.Next() % 10u);
+			std::vector<glm::vec3> corners(triCount * 3);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				// Intended normal: facing jittered by the spread strength.
+				glm::vec3 n = facing + strength * rng.Dir();
+				const float nl2 = glm::dot(n, n);
+				n = nl2 > 1e-12f ? n / std::sqrt(nl2) : facing;
+				// A small in-plane triangle at a random offset, wound so its
+				// raw cross points along n.
+				glm::vec3 t1 = std::fabs(n.z) < 0.9f
+					? glm::cross(n, glm::vec3(0, 0, 1)) : glm::cross(n, glm::vec3(1, 0, 0));
+				t1 = glm::normalize(t1);
+				const glm::vec3 t2 = glm::cross(n, t1);
+				const glm::vec3 p = rng.Dir() * (0.5f + std::fabs(rng.Unit()));
+				glm::vec3 c[3] = {
+					p - 0.3f * t1 - 0.2f * t2,
+					p + 0.35f * t1 - 0.1f * t2 + 0.05f * n,
+					p + 0.05f * t1 + 0.3f * t2,
+				};
+				if (glm::dot(glm::cross(c[1] - c[0], c[2] - c[0]), n) < 0.0f)
+					std::swap(c[1], c[2]);
+				// Occasional sliver (zero-area): the fit must skip it.
+				if ((rng.Next() & 7u) == 0u) {
+					c[1] = c[0] + 1e-5f * t1;
+					c[2] = c[0] + 2e-5f * t2;
+				}
+				corners[t * 3 + 0] = c[0];
+				corners[t * 3 + 1] = c[1];
+				corners[t * 3 + 2] = c[2];
+			}
+			const glm::vec3 center = aabbCenter(corners.data(), triCount);
+			const DeformedConeFit fit =
+				FitDeformedCone(corners.data(), triCount, center);
+			if (fit.degenerate) {
+				++degen;
+				continue;
+			}
+			// Viewpoints on a shell around the patch (outside the AABB
+			// sphere, near to far).
+			glm::vec3 mn(std::numeric_limits<float>::infinity());
+			glm::vec3 mx(-std::numeric_limits<float>::infinity());
+			for (const glm::vec3& c : corners) {
+				mn = glm::min(mn, c);
+				mx = glm::max(mx, c);
+			}
+			const float radius = glm::length((mx - mn) * 0.5f);
+			for (uint32_t k = 0; k < 24; ++k) {
+				const float dist = radius * (1.05f + 9.0f * std::fabs(rng.Unit()));
+				const glm::vec3 eye = center + rng.Dir() * dist;
+				++sweeps;
+				if (fitCulls(fit, eye)) {
+					++culls;
+					if (!groundInvisible(corners.data(), triCount, eye)) {
+						allConservative = false;
+						std::cout << "FAIL detail: cone culled a front-facing "
+							"viewpoint (iter " << iter << ")\n";
+					}
+				}
+			}
+		}
+		Check(degen > 0, "gfx.conefit.sweep-has-degenerate"); // the guard paths exercised
+		Check(culls > 0, "gfx.conefit.sweep-culls-something"); // non-trivial fit
+		Check(allConservative, "gfx.conefit.sweep-conservative");
+	}
+
+	// ---- Baked-parity (the sphere mesh): both fitters conservative ---------
+	{
+		State s{};
+		const auto up = MakeSphere(24, 36, 1.0f);
+		Check(RegisterMeshFromUpload(s, up, 0) == 0, "gfx.conefit.parity-mesh");
+		bool bakedConservative = true, refitConservative = true;
+		uint32_t refitValid = 0, refitCulls = 0;
+		Lcg rng;
+		for (uint32_t ci = 0; ci < s.clusters.size(); ++ci) {
+			const Cluster& cl = s.clusters[ci];
+			if (cl.triCount == 0 || cl.triCount > kMaxClusterTris)
+				continue;
+			std::vector<glm::vec3> corners(cl.triCount * 3);
+			bool ok = true;
+			for (uint32_t t = 0; t < cl.triCount && ok; ++t)
+				for (uint32_t k = 0; k < 3; ++k) {
+					const uint32_t vi = s.filterIndices[cl.indexOffset + t * 3 + k];
+					if (vi >= up.vertices.size()) { ok = false; break; }
+					corners[t * 3 + k] = up.vertices[vi].pos;
+				}
+			if (!ok)
+				continue;
+			const DeformedConeFit refit =
+				FitDeformedCone(corners.data(), cl.triCount, cl.boundCenter);
+			if (!refit.degenerate)
+				++refitValid;
+			// Baked + refit verdicts vs the shared ground truth over shell
+			// viewpoints.
+			for (uint32_t k = 0; k < 16; ++k) {
+				const float dist = cl.boundRadius * (1.05f + 9.0f * std::fabs(rng.Unit()));
+				const glm::vec3 eye = cl.boundCenter + rng.Dir() * dist;
+				// Baked cone verdict (the CullCluster object-space core).
+				const glm::vec3 bd = cl.coneApex - eye;
+				const float bLen2 = glm::dot(bd, bd);
+				const float bAxis2 = glm::dot(cl.coneAxis, cl.coneAxis);
+				const bool bakedCull = bLen2 > 1e-12f && bAxis2 > 1e-12f
+					&& glm::dot(bd / std::sqrt(bLen2),
+						cl.coneAxis / std::sqrt(bAxis2)) >= cl.coneCutoff;
+				if (bakedCull && !groundInvisible(corners.data(), cl.triCount, eye))
+					bakedConservative = false;
+				if (fitCulls(refit, eye)) {
+					++refitCulls;
+					if (!groundInvisible(corners.data(), cl.triCount, eye))
+						refitConservative = false;
+				}
+			}
+		}
+		Check(bakedConservative, "gfx.conefit.baked-conservative");
+		Check(refitConservative, "gfx.conefit.refit-conservative");
+		Check(refitValid > s.clusters.size() / 2,
+			"gfx.conefit.refit-mostly-valid"); // facing-pure post-split sphere
+		Check(refitCulls > 0, "gfx.conefit.refit-culls-something");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // T5 (T1 state): temporal snapshot semantics — pure CPU, headless.
 // SnapshotVisible copies this frame's surviving set into the sidecar
 // (overwrites = rotation); InvalidateHistory disarms without freeing.
@@ -2178,6 +2439,7 @@ int main() {
 	TestDemandPlumbing();
 	TestPreCull();
 	TestConeCull();
+	TestDeformedConeFit();
 	TestMeshletIntegrity();
 	TestTemporalSnapshot();
 	TestHizLayout();

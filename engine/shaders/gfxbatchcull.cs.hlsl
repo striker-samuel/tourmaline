@@ -84,8 +84,19 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
                 GFX_CULL_GUARD_PX * 2.0f / max((float) pcB.height, 1.0f),
                 gsPlanes);
             gsBasis = GfxMaxBasisScale(d.model);
-            // Draw-level fast discard: mesh union bound vs the LIVE view.
-            float4 mb = pcB.meshBounds.Get().centerRadius[d.misc.x];
+            // Draw-level fast discard vs the LIVE view. SKINNED draws test
+            // the DEFORMED union bound (GfxSkinBounds' drawBound tail —
+            // the union over the deformed cluster spheres this pass's
+            // per-cluster test below runs on): the static bind-pose mesh
+            // union can swing a whole animated mesh clean outside itself,
+            // dropping every slot of the draw (the same class of animated
+            // hole the per-cluster skinBounds table closes). Falls back to
+            // the static union when the bounds pass didn't run
+            // (skinBoundsValid = 0 — no skinned cluster existed that frame).
+            const bool skinned0 = (d.misc.y & GFX_DRAW_SKINNED) != 0;
+            float4 mb = (skinned0 && pcB.skinBoundsValid != 0u)
+                ? pcB.skinBounds.Get().drawBound[drawIdx]
+                : pcB.meshBounds.Get().centerRadius[d.misc.x];
             float3 worldC = mul(d.model, float4(mb.xyz, 1.0f)).xyz;
             gsDrawVisible = GfxSphereInPlanes(gsPlanes, worldC, mb.w * gsBasis);
         }

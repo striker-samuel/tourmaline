@@ -635,11 +635,13 @@ namespace engine {
 		// ---- Temporal seed (T3) + remainder (T5) source ----
 		// Deformed cluster bounds (skinned cull fix): only when this frame's
 		// skinning pass wrote a deformed heap. Rebuilds each skinned
-		// cluster's sphere from the animated pose into the skinBounds table
-		// the batch cull below reads. Runs AFTER the skinning pass (added
-		// earlier this frame by the skinning driver; its trailing
-		// ALL_COMMANDS barrier orders this compute read) and BEFORE
-		// GfxBatchCull (the skinBounds write -> read hint pair orders them).
+		// cluster's sphere + normal cone (the meshopt convention, on the
+		// deformed FACE normals) and the per-draw deformed union bound
+		// into the skinBounds table the batch cull / draw cull below read.
+		// Runs AFTER the skinning pass (added earlier this frame by the
+		// skinning driver; its trailing ALL_COMMANDS barrier orders this
+		// compute read) and BEFORE GfxBatchCull (the skinBounds write ->
+		// read hint pair orders them).
 		if (gfx.skinDeformedBda != 0 && gfx.skinBoundsReady) {
 			smvk::RenderPass& boundsPass =
 				smvk::gfx::AddSkinBoundsPass(gfx, *fc.rg, slot);

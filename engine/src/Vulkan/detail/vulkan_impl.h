@@ -702,6 +702,12 @@ namespace smvk {
 		// in-flight command buffer still references the object. Must be called
 		// after every successful graphics submit (see EndAndPresentFramebuffer).
 		void NotifyGraphicsSubmit(VkSemaphore timelineSemaphore, uint64_t timelineValue);
+		// Raw device handle (test support): headless integration tests create
+		// their OWN timeline semaphores to drive NotifyGraphicsSubmit /
+		// ProcessDeferrredTasks like a swapchain would (see
+		// tests/test_retirement_fuzz.cpp). The device itself stays internal
+		// (file-static in impl.cpp) - no production code needs it here.
+		VkDevice VkDeviceHandle() const;
 		// Queues task until all graphics work submitted so far has retired.
 		// Runs it immediately if no graphics submit has ever been recorded
 		// (GPU is idle by definition). Render thread only, like AddDeferredTask.
@@ -871,16 +877,21 @@ namespace smvk {
 	// freed slot would otherwise keep a descriptor write pointing at the
 	// VkImageView being destroyed — any stale slot reference (material
 	// texture slots, editor live-view relaunch churn, one-frame-late
-	// pushes) sampled a destroyed view and took the device down. No-op
-	// before init / during teardown (m_nullImageView is the guard: it dies
-	// with the nil texture at ~VulkanResourceManager, whose own frees then
-	// skip the write).
+	// pushes) sampled a destroyed view and took the device down. Runs at
+	// RETIREMENT (deferred with the slot release — see the destroy site):
+	// the slot keeps the still-alive old view for in-flight frames until
+	// the retire point, then the nil write lands BEFORE the companion
+	// view destroy in the same FIFO drain. No-op before init / during
+	// teardown (m_nullImageView is the guard: it dies with the nil texture
+	// at ~VulkanResourceManager, whose own frees then skip the write).
 	void NullBindlessSlotWrites(uint32_t slot);
 
 		// Engine globals (set 0 / kBinding_EngineGlobals): time / deltaTime /
 		// frameIndex / fps, computed engine-side from the acquire rhythm and
-		// uploaded once per frame. Called by the swapchain right after the
-		// in-flight slot retires (AcquireFramebuffer). No app plumbing.
+		// uploaded once per frame into the flight's slice (the flight's set
+		// permanently points at that slice - written once at init, never
+		// rewritten). Called by the swapchain right after the in-flight slot
+		// retires (AcquireFramebuffer). No app plumbing.
 		void FlushEngineGlobals(uint32_t frameIndex);
 
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
@@ -948,6 +959,13 @@ namespace smvk {
 
 		VkDescriptorSetLayout defaultSetLayout{};
 		VkPipelineLayout defaultPipeLayout{};
+		// Bindless table sets, ONE PER FLIGHT: each set's kBinding_EngineGlobals
+		// permanently points at its OWN EngineGlobals slice (baked once at init),
+		// and CommandBuffer binds the recording flight's set (see
+		// RenderGraph::flightSlot_). UpdateDescriptors / NullBindlessSlotWrites
+		// keep every flight's set in sync; the engine-globals binding itself is
+		// never rewritten after init, so in-flight siblings never see each
+		// other's slices.
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT]{};
 
 		// Resources – one local shard per thread, no pool locks (see pool.h).
@@ -1033,7 +1051,8 @@ namespace smvk {
 		// Engine globals: storage buffer (one slice per frame in flight) +
 		// engine-side timing state. time/deltaTime derive from the acquire
 		// rhythm (steady clock), frameIndex counts acquires, fps is an EMA.
-		// Flushed every frame into kBinding_EngineGlobals.
+		// Flushed every frame into the flight's slice (the flight's set
+		// permanently points at it - never rewritten after init).
 		BufferHandle m_engineGlobalsBuffer{};
 		std::chrono::steady_clock::time_point m_globalsStartTime{};
 		std::chrono::steady_clock::time_point m_globalsLastAcquireTime{};

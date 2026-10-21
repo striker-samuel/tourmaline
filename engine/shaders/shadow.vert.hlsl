@@ -1,13 +1,65 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
+#define SHADOW_DIRECT_PASS
 #include "common.hlsli"
+#include "gfxfilter.hlsli"
+
+// Direct shadow VS: mirrors PushConstants bytes 0..192 field-for-field,
+// then overlays the unused prevModel scratch (192..240) with the direct
+// skin tail (208..240) - the same layout default.vert uses. The fragment
+// stage keeps the scene pc (shadow_body reads frameUniforms/bMats/
+// materialId/pad_pc, never prevModel), so the overlay is safe.
+struct ShadowVsPush
+{
+    float4x4 model;
+    vk::BufferPointer<FrameUniforms> frameUniforms;
+    vk::BufferPointer<LightBuffer> bLights;
+    vk::BufferPointer<MaterialsBuffer> bMats;
+    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer;
+    uint materialId;
+    uint comparisonSamplerId;
+    uint numCascades;
+    uint cascadeIndex;
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
+    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;
+    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices;
+    uint fpTileCountX;
+    uint fpLightCount;
+    uint fpTileSize;
+    uint fpMaxPerTile;
+    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    uint spotShadowMapIndex;
+    uint spotShadowCount;
+    uint spotIndex;
+    uint pad_pc;
+    vk::BufferPointer<RenderViewBuffer> renderViews;
+    uint mainRenderView;
+    uint renderViewIndex;
+    // 192..208: unused prevModel scratch (shadow.vert never reads it).
+    float4 _padChart;
+    // 208..240: the direct-path skin tail. A skinned draw fetches its
+    // position from the frame's deformed heap instead of the bind-pose
+    // vertex input (the Northlight one-fetch swap - the shadow leg needs
+    // position only, never normals/tangents).
+    uint skinned;      // 208: 1 = fetch from the deformed heap
+    uint deformedBase; // 212: the skinned span's heap-id base
+    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed; // 216
+    uint4 _padSkin;    // 224..240: layout filler
+    // 240..256: the per-draw dither-on-closeup flag lives in .x; y..w
+    // stay scratch.
+    uint4 padEnd;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<ShadowVsPush> pcS;
 
 struct VSIn
 {
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
+    uint vertexID : SV_VertexID;
 };
 
 struct VSOut
@@ -38,36 +90,49 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    float4 world = mul(pc.model, float4(IN.position, 1.0f));
+    // Optional skin fetch: a skinned draw swaps the bind-pose position for
+    // the frame's deformed word (5 words/vertex at
+    // (vertexID - deformedBase) * 5; the tail is zeroed on static draws).
+    float3 position = IN.position;
+    if (pcS.skinned != 0u)
+    {
+        const uint d = (IN.vertexID - pcS.deformedBase) * 5;
+        position = float3(
+            asfloat(pcS.vsDeformed.Get().word[d + 0]),
+            asfloat(pcS.vsDeformed.Get().word[d + 1]),
+            asfloat(pcS.vsDeformed.Get().word[d + 2]));
+    }
+
+    float4 world = mul(pcS.model, float4(position, 1.0f));
 
     OUT.color = IN.color;
     OUT.uv = IN.uv;
     OUT.worldPos = world.xyz;
     // Byte 240 of the scene pc (padEnd_.x — the per-draw overlay scratch's
     // last word): the direct legs' per-draw dither-on-closeup flag.
-    OUT.ditherCloseup = pc.padEnd.x;
+    OUT.ditherCloseup = pcS.padEnd.x;
 
     // RenderView path: every shadow pass owns an allocated view (one per
     // directional cascade / spot tile); its VP is the single source of
     // truth. The legacy descriptor paths below stay as fallbacks for
     // pipelines driven without the RenderView system.
     float4x4 lightVP;
-    if (pc.renderViewIndex < MAX_RENDER_VIEWS)
+    if (pcS.renderViewIndex < MAX_RENDER_VIEWS)
     {
-        lightVP = pc.renderViews.Get().views[pc.renderViewIndex].m_viewProjectionMatrix;
+        lightVP = pcS.renderViews.Get().views[pcS.renderViewIndex].m_viewProjectionMatrix;
     }
-    else if (pc.spotIndex != 0xFFFFFFFFu && pc.spotShadowCount > 0u && pc.spotIndex < pc.spotShadowCount)
+    else if (pcS.spotIndex != 0xFFFFFFFFu && pcS.spotShadowCount > 0u && pcS.spotIndex < pcS.spotShadowCount)
     {
-        lightVP = pc.spotShadowBuffer.Get().tiles[pc.spotIndex].lightVP;
+        lightVP = pcS.spotShadowBuffer.Get().tiles[pcS.spotIndex].lightVP;
     }
-    else if (pc.numCascades > 0 && pc.cascadeIndex < (uint)pc.numCascades)
+    else if (pcS.numCascades > 0 && pcS.cascadeIndex < (uint)pcS.numCascades)
     {
-        GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
-        lightVP = dir.cascades[pc.cascadeIndex].lightVP;
+        GpuDirectionalLightDescription dir = pcS.cascadeBuffer.Get().dir;
+        lightVP = dir.cascades[pcS.cascadeIndex].lightVP;
     }
     else
     {
-        Light light = pc.bLights.Get().lights[0];
+        Light light = pcS.bLights.Get().lights[0];
         lightVP = light.lightVP;
     }
 

@@ -916,6 +916,17 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		// Sync – sorting & barrier generation (local bookkeeping)
 		// --------------------------------------------------------
 	private:
+		friend struct CommandBuffer;
+
+		// The flight slot (fb.frameIndex % MAX_FRAMES_IN_FLIGHT) Execute is
+		// recording for: the bindless descriptor sets are REPLICATED PER FRAME
+		// (one set per flight - see VulkanResourceManager's set allocation),
+		// each set's kBinding_EngineGlobals permanently pointing at its own
+		// EngineGlobals slice. Every CommandBuffer of this graph binds THIS
+		// flight's set (BindRenderPipeline / BindComputePipeline read this), so
+		// sibling in-flight flights never see each other's descriptor rewrites.
+		uint32_t flightSlot_ = 0;
+
 		// Collect per-pass physical image/buffer usage with derived layout/access.
 		struct PassUsage {
 			std::vector<std::pair<ImageHandle, ImageSyncRequest>> images; // resolved physical

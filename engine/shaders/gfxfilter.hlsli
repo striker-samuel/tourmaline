@@ -57,6 +57,22 @@ struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global
 // C++ CullCluster mirrors the same math as the tested CPU reference).
 struct GfxClusterData { uint4 a; float4 b; float4 c; float4 d; };
 struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
+// GfxSkinBounds output table (gfxskinbounds.cs.hlsl): the per-candidate-slot
+// deformed cluster entries (region 1 — one GfxClusterData per (draw x
+// cluster) slot, exactly the batch cull's candidate-space indexing) + the
+// per-draw deformed union-bound tail (region 2 — one float4
+// (center.xyz, radius) per draw index, OBJECT space; the deformed twin of
+// GfxMeshBounds' static unions, written DEFINITIVELY for every skinned draw
+// index each frame the pass runs — dropped/capped draws get a keep-sphere
+// radius 1e30). One buffer, one pointer: the consumers (gfxbatchcull /
+// gfxdrawcull / gfxfilter's ClusterOccluded + PublishDrawDemand) index the
+// region they need. Generous declared capacity (the BDA-pointer pattern —
+// loads stay in bounds of the real buffer sized by the C++ kSkinBoundsBytes).
+struct GfxSkinBoundsTable
+{
+    GfxClusterData cluster[GFX_MAX_BATCH_SLOTS];
+    float4 drawBound[GFX_MAX_DRAWS];
+};
 // DEFORMED vertex heap (the Northlight compute-skinning output; the
 // skinning pass - gfxskinning.cs.hlsl - wrote it this frame): 5 words per
 // vertex [pos3 asuint, packed normal, packed tangent]. Skinned draws
@@ -611,7 +627,16 @@ struct GfxFilterPush
     vk::BufferPointer<GfxDraws>      draws;
     vk::BufferPointer<GfxFiltered>   filtered;
     vk::BufferPointer<GfxIndirect>   indirect;
-    uint2 pad0; // 8 bytes: keeps viewProj 16B-aligned (raw uint64 would emit Capability Int64)
+    // Deformed per-cluster bounds + per-draw deformed union tail
+    // (GfxSkinBounds output, one GfxSkinBoundsTable per flight). Skinned
+    // draws cull against THIS table's cluster[] region instead of the
+    // static bind-pose clusters[] - the pose can move a cluster clean out
+    // of its bind-pose sphere and the static test would drop it; the
+    // draw-level fast rejects + the demand publisher read drawBound[]
+    // instead of the static meshBounds unions (the same containment, on
+    // the deformed pose). skinBoundsValid = 0 (no skinned cluster this
+    // frame) leaves every draw on the static tables.
+    vk::BufferPointer<GfxSkinBoundsTable> skinBounds;
     float4x4 viewProj;
     float3 eye;
     float pad1;
@@ -622,7 +647,7 @@ struct GfxFilterPush
     // Cull chain: kept-bit parity (0/1) for this frame's kept region
     // lookup.
     uint keptParity;
-    uint pad2;
+    uint skinBoundsValid;
     // T4 occlusion/contribution inputs (0/empty disables the tests).
     vk::BufferPointer<HzbBuffer> hzb;
     uint hizWidth;
@@ -689,10 +714,16 @@ struct GfxBatchCullPush
     uint keptParity;    // 0/1: the region this frame writes (prev = 1-parity)
     uint width;         // guard-band extent (LIVE view)
     uint height;
-    // Deformed per-cluster bounds (GfxSkinBounds output, one GfxClusterData
-    // per candidate slot): skinned draws cull against THIS instead of the
-    // static clusters[]. skinBoundsValid = 0 leaves every draw static.
-    vk::BufferPointer<GfxClusters> skinBounds;
+    // Deformed per-cluster bounds + per-draw deformed union tail
+    // (GfxSkinBounds output, one GfxSkinBoundsTable per flight): skinned
+    // draws cull against THIS table's cluster[] region instead of the
+    // static clusters[] — the pose can move a cluster clean out of its
+    // bind-pose sphere and the static test would drop it — and the
+    // draw-level fast discard reads drawBound[] instead of the static
+    // mesh union (a whole-mesh pose swing outside the bind-pose union
+    // would otherwise drop every slot of the draw). skinBoundsValid = 0
+    // leaves every draw on the static tables.
+    vk::BufferPointer<GfxSkinBoundsTable> skinBounds;
     uint skinBoundsValid;
     uint pad2;
     uint2 pad3;
@@ -701,10 +732,14 @@ struct GfxBatchCullPush
 
 // GfxSkinBounds: one 128-thread workgroup per draw (the GfxBatchCull dispatch
 // shape); threads stride the draw's clusters and rebuild each SKINNED
-// cluster's object-space bounding sphere from the frame's deformed heap, so
-// the batch cull sees the ANIMATED silhouette (the static clusters[] stays
-// bind-pose). Writes into skinBounds (indexed by candidate slot). C++ mirror:
-// gfx_filter.h State::skinBounds* / gfx_filter.cpp PushAndDispatchSkinBounds.
+// cluster's object-space bounding sphere + normal cone from the frame's
+// deformed heap (the meshopt cone convention — the baked static cones' exact
+// math, on the animated face normals), so the batch cull sees the ANIMATED
+// silhouette (the static clusters[] stays bind-pose). Writes the
+// GfxSkinBoundsTable: cluster[per candidate slot] + the per-draw deformed
+// union-bound tail drawBound[drawIdx]. C++ mirror: gfx_filter.h
+// State::skinBounds* / FitDeformedCone (the tested CPU reference of the cone
+// fit) / gfx_filter.cpp PushAndDispatchSkinBounds.
 struct GfxSkinBoundsPush
 {
     vk::BufferPointer<GfxDraws> draws;      // this frame (misc2.z = slot base)
@@ -712,7 +747,7 @@ struct GfxSkinBoundsPush
     vk::BufferPointer<GfxClusters> clusters; // static (bind-pose a/b/c/d)
     vk::BufferPointer<GfxIndices> indices;  // cluster-ordered global ids (clusterIndexBase baked in)
     vk::BufferPointer<GfxSkinDeformedHeap> deformed; // this frame's deformed heap
-    vk::BufferPointer<GfxClusters> skinBounds; // out (per candidate slot)
+    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // out (slots + drawBound tail)
     uint deformedBase;  // 0xFFFFFFFF = none
     uint drawCount;
     uint pad0;
@@ -725,6 +760,12 @@ struct GfxSkinBoundsPush
 // (the same ProjectBound/BoundHzbOccluded math the demand publisher uses on
 // mesh bounds; containment makes the verdict a strict fast-reject: a draw
 // that fails here has every cluster failing the filter's per-cluster tests).
+// SKINNED draws test the DEFORMED union bound (GfxSkinBounds' drawBound tail
+// — the union over the deformed cluster spheres the filter tests, so the
+// containment argument holds on the animated pose); without the table
+// (skinBoundsValid = 0 — the pass skipped / null BDA) the whole fast-reject
+// stays SKIPPED for skinned draws: the static bind-pose union can swing a
+// whole animated mesh outside itself, and skipping only loses the reject.
 // Runs after GfxHiz, before the filter dispatch.
 struct GfxDrawCullPush
 {
@@ -732,6 +773,7 @@ struct GfxDrawCullPush
     vk::BufferPointer<GfxMeshBounds> meshBounds; // static (object-space union bounds)
     vk::BufferPointer<GfxCullState> cullState;   // out: verdict words [0, drawCount)
     vk::BufferPointer<HzbBuffer> hzb;
+    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // deformed unions (skinned draws)
     float4x4 viewProj;  // FROZEN view (the gfx view record matrix)
     float3 eye;
     float pad1;
@@ -740,6 +782,6 @@ struct GfxDrawCullPush
     uint width;         // guard-band extent (== HZB target)
     uint height;
     uint hizMips;
-    uint pad2;
+    uint skinBoundsValid; // 0: skinned draws keep the blanket skip
 };
-//static_assert(sizeof(GfxDrawCullPush) == 136);
+//static_assert(sizeof(GfxDrawCullPush) == 144);

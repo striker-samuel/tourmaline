@@ -1132,7 +1132,7 @@ constexpr VkFormat              smvk::toVkFormat(smvk::Format format)
 	case smvk::Format::D24_UNorm_S8_UInt:   return VK_FORMAT_D24_UNORM_S8_UINT;
 	case smvk::Format::D32_Float:           return VK_FORMAT_D32_SFLOAT;
 	case smvk::Format::D32_Float_S8_UInt:   return VK_FORMAT_D32_SFLOAT_S8_UINT;
-	// Stencil-only view of a combined depth/stencil image.
+		// Stencil-only view of a combined depth/stencil image.
 	case smvk::Format::S8_UInt:             return VK_FORMAT_S8_UINT;
 
 		// compressed
@@ -1322,9 +1322,9 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	case VK_FORMAT_D32_SFLOAT_S8_UINT:       return smvk::Format::D32_Float_S8_UInt;
 	case VK_FORMAT_S8_UINT:                  return smvk::Format::S8_UInt;
 
-	// BC1_RGB is what libktx's KTX_TTF_BC1_RGB transcode emits (opaque-only);
-	// BC1_RGBA is the 1-bit punchthrough-alpha variant. Distinct VkFormats
-	// require distinct image/view formats, so keep them distinct here too.
+		// BC1_RGB is what libktx's KTX_TTF_BC1_RGB transcode emits (opaque-only);
+		// BC1_RGBA is the 1-bit punchthrough-alpha variant. Distinct VkFormats
+		// require distinct image/view formats, so keep them distinct here too.
 	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:        return smvk::Format::BC1_RGB_UNorm;
 	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:         return smvk::Format::BC1_RGB_SRGB;
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:      return smvk::Format::BC1_RGBA_UNorm;
@@ -1825,238 +1825,240 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 // ============================================================
 namespace {
 
-struct PipelineCachePrefixHeader {
-	uint32_t magic;        // kPipelineCacheFileMagic
-	uint32_t dataSize;     // == the vkGetPipelineCacheData size
-	uint64_t dataHash;     // FNV-1a 64 over the data blob
-	uint32_t vendorID;     // VkPhysicalDeviceProperties::vendorID
-	uint32_t deviceID;     // VkPhysicalDeviceProperties::deviceID
-	uint32_t driverVersion; // VkPhysicalDeviceProperties::driverVersion
-	uint32_t driverABI;    // sizeof(void*)
-	uint8_t uuid[VK_UUID_SIZE]; // pipelineCacheUUID
-};
-static_assert(sizeof(PipelineCachePrefixHeader) == 48);
-constexpr uint32_t kPipelineCacheFileMagic = 0x43504D53; // "SMPC" LE
-constexpr uint32_t kPipelineCacheHeaderVersion = 1;
-constexpr size_t kPipelineCacheSaveBatch = 16;
+	struct PipelineCachePrefixHeader {
+		uint32_t magic;        // kPipelineCacheFileMagic
+		uint32_t dataSize;     // == the vkGetPipelineCacheData size
+		uint64_t dataHash;     // FNV-1a 64 over the data blob
+		uint32_t vendorID;     // VkPhysicalDeviceProperties::vendorID
+		uint32_t deviceID;     // VkPhysicalDeviceProperties::deviceID
+		uint32_t driverVersion; // VkPhysicalDeviceProperties::driverVersion
+		uint32_t driverABI;    // sizeof(void*)
+		uint8_t uuid[VK_UUID_SIZE]; // pipelineCacheUUID
+	};
+	static_assert(sizeof(PipelineCachePrefixHeader) == 48);
+	constexpr uint32_t kPipelineCacheFileMagic = 0x43504D53; // "SMPC" LE
+	constexpr uint32_t kPipelineCacheHeaderVersion = 1;
+	constexpr size_t kPipelineCacheSaveBatch = 16;
 
-VkPipelineCache g_diskPipelineCache = VK_NULL_HANDLE;
-std::mutex g_diskPipelineCacheMutex;
-bool g_diskPipelineCacheDiskEnabled = true;
-size_t g_diskPipelineCacheLastSavedSize = 0;
-uint64_t g_diskPipelineCacheLastSavedHash = 0;
-size_t g_diskPipelineCacheCompilesSinceSave = 0;
+	VkPipelineCache g_diskPipelineCache = VK_NULL_HANDLE;
+	std::mutex g_diskPipelineCacheMutex;
+	bool g_diskPipelineCacheDiskEnabled = true;
+	size_t g_diskPipelineCacheLastSavedSize = 0;
+	uint64_t g_diskPipelineCacheLastSavedHash = 0;
+	size_t g_diskPipelineCacheCompilesSinceSave = 0;
 
-// The disk home: always <scratchDir>/pipeline_cache.bin (the dir is
-// created when missing — an unusable dir degrades to cache-off with
-// a log line, never a crash; the load/save sites keep their own
-// torn-file tolerance on top). Resolved once at first use.
-const char* PipelineCacheFilePath()
-{
-	static const char* sPath = []() -> const char* {
-		static std::string storage;
-		const char* env = std::getenv("TOURMALINE_PIPELINE_CACHE_DIR");
-		if (env && (std::strcmp(env, "off") == 0
+	// The disk home: always <scratchDir>/pipeline_cache.bin (the dir is
+	// created when missing — an unusable dir degrades to cache-off with
+	// a log line, never a crash; the load/save sites keep their own
+	// torn-file tolerance on top). Resolved once at first use.
+	const char* PipelineCacheFilePath()
+	{
+		static const char* sPath = []() -> const char* {
+			static std::string storage;
+			const char* env = std::getenv("TOURMALINE_PIPELINE_CACHE_DIR");
+			if (env && (std::strcmp(env, "off") == 0
 				|| std::strcmp(env, "0") == 0))
-			return nullptr;
-		const std::string dir = (env && *env)
-			? std::string(env) : std::string("F:/pipelinecache");
-		std::error_code mk;
-		std::filesystem::create_directories(dir, mk);
-		std::error_code probe;
-		if (!std::filesystem::is_directory(dir, probe)) {
-			fprintf(stderr,
-				"[PipelineCache] scratch dir '%s' unusable (%s) — "
-				"running without the disk cache\n",
-				dir.c_str(),
-				mk ? mk.message().c_str() : "not a directory");
-			return nullptr;
-		}
-		storage = (std::filesystem::path(dir) / "pipeline_cache.bin")
-			.generic_string();
-		return storage.c_str();
-	}();
-	return sPath;
-}
-
-uint64_t PipelineCacheFnv1a64(const uint8_t* data, size_t size)
-{
-	uint64_t hash = 1469598103934665603ull;
-	for (size_t i = 0; i < size; ++i) {
-		hash ^= data[i];
-		hash *= 1099511628211ull;
+				return nullptr;
+			const std::string dir = (env && *env)
+				? std::string(env) : std::string("F:/pipelinecache");
+			std::error_code mk;
+			std::filesystem::create_directories(dir, mk);
+			std::error_code probe;
+			if (!std::filesystem::is_directory(dir, probe)) {
+				fprintf(stderr,
+					"[PipelineCache] scratch dir '%s' unusable (%s) — "
+					"running without the disk cache\n",
+					dir.c_str(),
+					mk ? mk.message().c_str() : "not a directory");
+				return nullptr;
+			}
+			storage = (std::filesystem::path(dir) / "pipeline_cache.bin")
+				.generic_string();
+			return storage.c_str();
+		}();
+		return sPath;
 	}
-	return hash;
-}
 
-// Device-init hook: create the VkPipelineCache, seeded from the
-// validated disk file when possible.
-void CreateDiskPipelineCache()
-{
-	const char* path = PipelineCacheFilePath();
-	g_diskPipelineCacheDiskEnabled = (path != nullptr);
+	uint64_t PipelineCacheFnv1a64(const uint8_t* data, size_t size)
+	{
+		uint64_t hash = 1469598103934665603ull;
+		for (size_t i = 0; i < size; ++i) {
+			hash ^= data[i];
+			hash *= 1099511628211ull;
+		}
+		return hash;
+	}
 
-	VkPhysicalDeviceProperties props{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+	// Device-init hook: create the VkPipelineCache, seeded from the
+	// validated disk file when possible.
+	void CreateDiskPipelineCache()
+	{
+		const char* path = PipelineCacheFilePath();
+		g_diskPipelineCacheDiskEnabled = (path != nullptr);
 
-	VkPipelineCacheCreateInfo ci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
-	std::vector<uint8_t> blob;
-	if (g_diskPipelineCacheDiskEnabled && path) {
-		// Load + validate (header, size, hash, device identity). Any
-		// mismatch (driver update, GPU swap, ABI flip, torn write)
-		// falls through to an empty cache — the driver never sees a
-		// blob it did not itself produce for this exact configuration.
-		std::FILE* f = std::fopen(path, "rb");
-		if (f) {
-			PipelineCachePrefixHeader header{};
-			bool ok = std::fread(&header, sizeof(header), 1, f) == 1
-				&& header.magic == kPipelineCacheFileMagic
-				&& header.dataSize > 0
-				&& header.dataSize <= (256u << 20);
-			if (ok) {
-				blob.resize(header.dataSize);
-				ok = std::fread(blob.data(), header.dataSize, 1, f) == 1;
-				if (ok)
-					ok = PipelineCacheFnv1a64(blob.data(), blob.size()) == header.dataHash;
-				if (ok)
-					ok = header.vendorID == props.vendorID
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+
+		VkPipelineCacheCreateInfo ci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+		std::vector<uint8_t> blob;
+		if (g_diskPipelineCacheDiskEnabled && path) {
+			// Load + validate (header, size, hash, device identity). Any
+			// mismatch (driver update, GPU swap, ABI flip, torn write)
+			// falls through to an empty cache — the driver never sees a
+			// blob it did not itself produce for this exact configuration.
+			std::FILE* f = std::fopen(path, "rb");
+			if (f) {
+				PipelineCachePrefixHeader header{};
+				bool ok = std::fread(&header, sizeof(header), 1, f) == 1
+					&& header.magic == kPipelineCacheFileMagic
+					&& header.dataSize > 0
+					&& header.dataSize <= (256u << 20);
+				if (ok) {
+					blob.resize(header.dataSize);
+					ok = std::fread(blob.data(), header.dataSize, 1, f) == 1;
+					if (ok)
+						ok = PipelineCacheFnv1a64(blob.data(), blob.size()) == header.dataHash;
+					if (ok)
+						ok = header.vendorID == props.vendorID
 						&& header.deviceID == props.deviceID
 						&& header.driverVersion == props.driverVersion
 						&& header.driverABI == sizeof(void*)
 						&& std::memcmp(header.uuid, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
-			}
-			std::fclose(f);
-			if (ok) {
-				ci.initialDataSize = blob.size();
-				ci.pInitialData = blob.data();
-				// Seed the skip state so the first growth-triggered save of a
-				// fully-cached run writes nothing (nothing new compiled).
-				g_diskPipelineCacheLastSavedSize = blob.size();
-				g_diskPipelineCacheLastSavedHash =
-					PipelineCacheFnv1a64(blob.data(), blob.size());
-				fprintf(stderr,
-					"[PipelineCache] loaded %zu bytes from %s\n",
-					blob.size(), path);
-			} else {
-				blob.clear();
-				fprintf(stderr,
-					"[PipelineCache] %s stale or corrupt, starting empty\n", path);
+				}
+				std::fclose(f);
+				if (ok) {
+					ci.initialDataSize = blob.size();
+					ci.pInitialData = blob.data();
+					// Seed the skip state so the first growth-triggered save of a
+					// fully-cached run writes nothing (nothing new compiled).
+					g_diskPipelineCacheLastSavedSize = blob.size();
+					g_diskPipelineCacheLastSavedHash =
+						PipelineCacheFnv1a64(blob.data(), blob.size());
+					fprintf(stderr,
+						"[PipelineCache] loaded %zu bytes from %s\n",
+						blob.size(), path);
+				}
+				else {
+					blob.clear();
+					fprintf(stderr,
+						"[PipelineCache] %s stale or corrupt, starting empty\n", path);
+				}
 			}
 		}
+		if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS
+			&& ci.pInitialData != nullptr) {
+			// The driver rejected data our validation liked (it implements
+			// checks the spec does not describe): retry with no initial
+			// data — never run without the cache, never crash.
+			ci.initialDataSize = 0;
+			ci.pInitialData = nullptr;
+			if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS) {
+				fprintf(stderr, "[PipelineCache] creation failed, running without\n");
+				g_diskPipelineCache = VK_NULL_HANDLE;
+				return;
+			}
+			fprintf(stderr, "[PipelineCache] driver rejected initial data, started empty\n");
+		}
 	}
-	if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS
-		&& ci.pInitialData != nullptr) {
-		// The driver rejected data our validation liked (it implements
-		// checks the spec does not describe): retry with no initial
-		// data — never run without the cache, never crash.
-		ci.initialDataSize = 0;
-		ci.pInitialData = nullptr;
-		if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS) {
-			fprintf(stderr, "[PipelineCache] creation failed, running without\n");
-			g_diskPipelineCache = VK_NULL_HANDLE;
+
+	// Fetch the current blob; skip the write when unchanged (size +
+	// hash); temp file + rename so a crash mid-write can never tear
+	// the stored file.
+	void SaveDiskPipelineCache(bool force)
+	{
+		if (g_diskPipelineCache == VK_NULL_HANDLE)
+			return;
+		const char* path = PipelineCacheFilePath();
+		if (!path)
+			return;
+
+		size_t size = 0;
+		if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, nullptr) != VK_SUCCESS || size == 0)
+			return;
+		std::vector<uint8_t> data(size);
+		if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, data.data()) != VK_SUCCESS || size == 0)
+			return;
+
+		const uint64_t hash = PipelineCacheFnv1a64(data.data(), data.size());
+		if (!force && size == g_diskPipelineCacheLastSavedSize && hash == g_diskPipelineCacheLastSavedHash)
+			return; // nothing new compiled since the last save
+
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+		PipelineCachePrefixHeader header{};
+		header.magic = kPipelineCacheFileMagic;
+		header.dataSize = static_cast<uint32_t>(size);
+		header.dataHash = hash;
+		header.vendorID = props.vendorID;
+		header.deviceID = props.deviceID;
+		header.driverVersion = props.driverVersion;
+		header.driverABI = static_cast<uint32_t>(sizeof(void*));
+		std::memcpy(header.uuid, props.pipelineCacheUUID, VK_UUID_SIZE);
+
+		std::filesystem::path fsPath(path);
+		std::filesystem::path tmpPath = fsPath;
+		tmpPath += ".tmp";
+		bool ok = false;
+		if (std::FILE* f = std::fopen(tmpPath.string().c_str(), "wb")) {
+			ok = std::fwrite(&header, sizeof(header), 1, f) == 1
+				&& std::fwrite(data.data(), data.size(), 1, f) == 1;
+			ok = (std::fflush(f) == 0) && ok;
+			std::fclose(f);
+		}
+		else {
+			fprintf(stderr, "[PipelineCache] cannot open %s for writing\n",
+				tmpPath.string().c_str());
 			return;
 		}
-		fprintf(stderr, "[PipelineCache] driver rejected initial data, started empty\n");
-	}
-}
-
-// Fetch the current blob; skip the write when unchanged (size +
-// hash); temp file + rename so a crash mid-write can never tear
-// the stored file.
-void SaveDiskPipelineCache(bool force)
-{
-	if (g_diskPipelineCache == VK_NULL_HANDLE)
-		return;
-	const char* path = PipelineCacheFilePath();
-	if (!path)
-		return;
-
-	size_t size = 0;
-	if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, nullptr) != VK_SUCCESS || size == 0)
-		return;
-	std::vector<uint8_t> data(size);
-	if (vkGetPipelineCacheData(device_, g_diskPipelineCache, &size, data.data()) != VK_SUCCESS || size == 0)
-		return;
-
-	const uint64_t hash = PipelineCacheFnv1a64(data.data(), data.size());
-	if (!force && size == g_diskPipelineCacheLastSavedSize && hash == g_diskPipelineCacheLastSavedHash)
-		return; // nothing new compiled since the last save
-
-	VkPhysicalDeviceProperties props{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
-	PipelineCachePrefixHeader header{};
-	header.magic = kPipelineCacheFileMagic;
-	header.dataSize = static_cast<uint32_t>(size);
-	header.dataHash = hash;
-	header.vendorID = props.vendorID;
-	header.deviceID = props.deviceID;
-	header.driverVersion = props.driverVersion;
-	header.driverABI = static_cast<uint32_t>(sizeof(void*));
-	std::memcpy(header.uuid, props.pipelineCacheUUID, VK_UUID_SIZE);
-
-	std::filesystem::path fsPath(path);
-	std::filesystem::path tmpPath = fsPath;
-	tmpPath += ".tmp";
-	bool ok = false;
-	if (std::FILE* f = std::fopen(tmpPath.string().c_str(), "wb")) {
-		ok = std::fwrite(&header, sizeof(header), 1, f) == 1
-			&& std::fwrite(data.data(), data.size(), 1, f) == 1;
-		ok = (std::fflush(f) == 0) && ok;
-		std::fclose(f);
-	} else {
-		fprintf(stderr, "[PipelineCache] cannot open %s for writing\n",
-			tmpPath.string().c_str());
-		return;
-	}
-	if (!ok) {
-		fprintf(stderr, "[PipelineCache] write to %s failed\n",
-			tmpPath.string().c_str());
+		if (!ok) {
+			fprintf(stderr, "[PipelineCache] write to %s failed\n",
+				tmpPath.string().c_str());
+			std::error_code ec;
+			std::filesystem::remove(tmpPath, ec);
+			return;
+		}
 		std::error_code ec;
-		std::filesystem::remove(tmpPath, ec);
-		return;
+		std::filesystem::rename(tmpPath, fsPath, ec);
+		if (ec) {
+			fprintf(stderr, "[PipelineCache] rename to %s failed (%s)\n",
+				path, ec.message().c_str());
+			std::filesystem::remove(tmpPath, ec);
+			return;
+		}
+		g_diskPipelineCacheLastSavedSize = size;
+		g_diskPipelineCacheLastSavedHash = hash;
+		fprintf(stderr, "[PipelineCache] saved %zu bytes to %s\n", size, path);
 	}
-	std::error_code ec;
-	std::filesystem::rename(tmpPath, fsPath, ec);
-	if (ec) {
-		fprintf(stderr, "[PipelineCache] rename to %s failed (%s)\n",
-			path, ec.message().c_str());
-		std::filesystem::remove(tmpPath, ec);
-		return;
-	}
-	g_diskPipelineCacheLastSavedSize = size;
-	g_diskPipelineCacheLastSavedHash = hash;
-	fprintf(stderr, "[PipelineCache] saved %zu bytes to %s\n", size, path);
-}
 
-// Teardown hook: final forced save, then destroy the cache object
-// (before vkDestroyDevice).
-void DestroyDiskPipelineCache()
-{
-	if (g_diskPipelineCache == VK_NULL_HANDLE)
-		return;
+	// Teardown hook: final forced save, then destroy the cache object
+	// (before vkDestroyDevice).
+	void DestroyDiskPipelineCache()
 	{
-		std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
-		SaveDiskPipelineCache(/*force=*/true);
+		if (g_diskPipelineCache == VK_NULL_HANDLE)
+			return;
+		{
+			std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
+			SaveDiskPipelineCache(/*force=*/true);
+		}
+		vkDestroyPipelineCache(device_, g_diskPipelineCache, nullptr);
+		g_diskPipelineCache = VK_NULL_HANDLE;
 	}
-	vkDestroyPipelineCache(device_, g_diskPipelineCache, nullptr);
-	g_diskPipelineCache = VK_NULL_HANDLE;
-}
 
-// Compile counter (called on every cache-miss pipeline build):
-// batches of >= kPipelineCacheSaveBatch compiles trigger a save, so
-// an abrupt exit loses at most the last batch, and a traversal
-// hitch frame that mints a batch of pipelines persists them for
-// the next run immediately.
-void NotePipelineCompiled()
-{
-	if (g_diskPipelineCache == VK_NULL_HANDLE)
-		return;
-	std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
-	if (++g_diskPipelineCacheCompilesSinceSave >= kPipelineCacheSaveBatch) {
-		g_diskPipelineCacheCompilesSinceSave = 0;
-		SaveDiskPipelineCache(/*force=*/false);
+	// Compile counter (called on every cache-miss pipeline build):
+	// batches of >= kPipelineCacheSaveBatch compiles trigger a save, so
+	// an abrupt exit loses at most the last batch, and a traversal
+	// hitch frame that mints a batch of pipelines persists them for
+	// the next run immediately.
+	void NotePipelineCompiled()
+	{
+		if (g_diskPipelineCache == VK_NULL_HANDLE)
+			return;
+		std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
+		if (++g_diskPipelineCacheCompilesSinceSave >= kPipelineCacheSaveBatch) {
+			g_diskPipelineCacheCompilesSinceSave = 0;
+			SaveDiskPipelineCache(/*force=*/false);
+		}
 	}
-}
 
 } // namespace
 
@@ -2137,7 +2139,8 @@ int smvk::VulkanCore::CreateInstance() {
 		if (noVal && std::atoi(noVal) != 0) {
 			std::fprintf(stderr, "[Vulkan] validation layer unavailable — continuing WITHOUT it (TOURMALINE_NO_VALIDATION)\n");
 			enableValidationLayers = false;
-		} else {
+		}
+		else {
 			throw std::runtime_error(
 				"validation layers requested, but not available!");
 		}
@@ -2318,68 +2321,71 @@ bool smvk::VulkanCore::Init() {
 			if (hostImageCopyAvailable && hostCopyKilled)
 				printf("[UploadStreamer] VK_EXT_host_image_copy disabled (TOURMALINE_HOST_COPY=0)\n");
 
-		// VK_EXT_mesh_shader (task/mesh pipelines for the mesh-shader gfx
-		// filter path): strictly optional. When present + the taskShader
-		// and meshShader features are supported, the extension is enabled
-		// and the features chained below; otherwise the engine keeps the
-		// compute+indexed CPU-fallback path.
-		bool meshExtPresent = false;
-		{
-			uint32_t extCount = 0;
-			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
-				&& extCount != 0) {
-				std::vector<VkExtensionProperties> exts(extCount);
-				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
-					for (const auto& e : exts) {
-						if (std::strcmp(e.extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
-							meshExtPresent = true;
-							break;
+			// VK_EXT_mesh_shader (task/mesh pipelines for the mesh-shader gfx
+			// filter path): strictly optional. When present + the taskShader
+			// and meshShader features are supported, the extension is enabled
+			// and the features chained below; otherwise the engine keeps the
+			// compute+indexed CPU-fallback path.
+			bool meshExtPresent = false;
+			{
+				uint32_t extCount = 0;
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+					&& extCount != 0) {
+					std::vector<VkExtensionProperties> exts(extCount);
+					if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+						for (const auto& e : exts) {
+							if (std::strcmp(e.extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
+								meshExtPresent = true;
+								break;
+							}
 						}
 					}
 				}
 			}
-		}
-		const bool meshKilled = MeshKilledByEnv();
-		bool enableMeshShader = false;
-		VkPhysicalDeviceMeshShaderFeaturesEXT deviceMeshFeatures{};
-		deviceMeshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
-		if (meshExtPresent && !meshKilled) {
-			VkPhysicalDeviceMeshShaderFeaturesEXT supportedMesh{
-				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT, nullptr };
-			VkPhysicalDeviceFeatures2 supported2{
-				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedMesh };
-			vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
-			if (supportedMesh.taskShader == VK_TRUE && supportedMesh.meshShader == VK_TRUE) {
-				enableMeshShader = true;
-				deviceMeshFeatures.taskShader = VK_TRUE;
-				deviceMeshFeatures.meshShader = VK_TRUE;
+			const bool meshKilled = MeshKilledByEnv();
+			bool enableMeshShader = false;
+			VkPhysicalDeviceMeshShaderFeaturesEXT deviceMeshFeatures{};
+			deviceMeshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+			if (meshExtPresent && !meshKilled) {
+				VkPhysicalDeviceMeshShaderFeaturesEXT supportedMesh{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT, nullptr };
+				VkPhysicalDeviceFeatures2 supported2{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedMesh };
+				vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+				if (supportedMesh.taskShader == VK_TRUE && supportedMesh.meshShader == VK_TRUE) {
+					enableMeshShader = true;
+					deviceMeshFeatures.taskShader = VK_TRUE;
+					deviceMeshFeatures.meshShader = VK_TRUE;
+				}
 			}
-		}
-		if (meshExtPresent && meshKilled)
-			printf("[Vulkan] VK_EXT_mesh_shader disabled (TOURMALINE_MESH=0)\n");
+			if (meshExtPresent && meshKilled)
+				printf("[Vulkan] VK_EXT_mesh_shader disabled (TOURMALINE_MESH=0)\n");
 
-		VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
-			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
-			enableMeshShader ? (void*)&deviceMeshFeatures : nullptr,
-			enableHostCopy ? VK_TRUE : VK_FALSE
-		};
+			VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
+				enableMeshShader ? (void*)&deviceMeshFeatures : nullptr,
+				enableHostCopy ? VK_TRUE : VK_FALSE
+			};
 
-		VkPhysicalDeviceVulkan11Features deviceFeatures11
-		{
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-			.pNext = enableHostCopy ? (void*)&deviceHostCopyFeatures : (enableMeshShader ? (void*)&deviceMeshFeatures : nullptr),
-			.storageBuffer16BitAccess = VK_TRUE,
-			.uniformAndStorageBuffer16BitAccess = VK_TRUE,
-		};
-VkPhysicalDeviceVulkan12Features deviceFeatures12{};
+			VkPhysicalDeviceVulkan11Features deviceFeatures11
+			{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+				.pNext = enableHostCopy ? (void*)&deviceHostCopyFeatures : (enableMeshShader ? (void*)&deviceMeshFeatures : nullptr),
+				.storageBuffer16BitAccess = VK_TRUE,
+				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
+			};
+			VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 			deviceFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 			deviceFeatures12.pNext = &deviceFeatures11;
 			deviceFeatures12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 			deviceFeatures12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 			deviceFeatures12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-			// engine globals binding (kBinding_EngineGlobals): the single
-			// storage-buffer descriptor is rewritten every frame while
-			// previous frames are still executing (update-after-bind).
+			// engine globals binding (kBinding_EngineGlobals): the
+			// storage-buffer descriptors are written once at init (per
+			// flight set) and never touched again, but the layout's
+			// UPDATE_AFTER_BIND bindings (and every deferred null-write /
+			// bindless refresh on the UAB pool's sets) need the feature
+			// enabled at device creation.
 			deviceFeatures12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
 			deviceFeatures12.descriptorBindingPartiallyBound = VK_TRUE;
 			deviceFeatures12.descriptorBindingVariableDescriptorCount = VK_TRUE;
@@ -2410,220 +2416,220 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
 			computeDerivativesFeatures.computeDerivativeGroupQuads = VK_TRUE;
 
-	VkPhysicalDeviceFeatures2 feats2{
-		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		// Only structs NOT promoted into the 1.2/1.3 feature structs
-		// chain here (computeDerivatives is a KHR extension struct);
-		// every promoted feature rides its version struct or the
-		// validation flags the duplication (see the privateData note
-		// above).
-		.pNext = &computeDerivativesFeatures,
-		.features = {
-			.samplerAnisotropy = VK_TRUE,
-			.textureCompressionBC = VK_TRUE,
-		},
-	};
-		computeDerivativesFeatures.pNext = &deviceFeatures13;
+			VkPhysicalDeviceFeatures2 feats2{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+				// Only structs NOT promoted into the 1.2/1.3 feature structs
+				// chain here (computeDerivatives is a KHR extension struct);
+				// every promoted feature rides its version struct or the
+				// validation flags the duplication (see the privateData note
+				// above).
+				.pNext = &computeDerivativesFeatures,
+				.features = {
+					.samplerAnisotropy = VK_TRUE,
+					.textureCompressionBC = VK_TRUE,
+				},
+			};
+			computeDerivativesFeatures.pNext = &deviceFeatures13;
 
-		// Indirect multi-draw (per-view filter emits one command per
-		// surviving cluster, drawn with a single call per material range).
-		// Core since 1.0 but still optional: enable when present, emulate
-		// one-by-one with a startup warning when absent.
-		{
-			VkPhysicalDeviceFeatures supported{};
-			vkGetPhysicalDeviceFeatures(physicalDevice_, &supported);
-			g_multiDrawIndirect = (supported.multiDrawIndirect == VK_TRUE);
-			feats2.features.multiDrawIndirect =
-				g_multiDrawIndirect ? VK_TRUE : VK_FALSE;
-			// Fragment-stage storage writes (texture-streaming feedback
-			// atomics in the materials, set 0 binding 4): core-optional
-			// since 1.0, universal on desktop. No emulation exists, so a
-			// device without it cannot run the materials — fail loudly.
-			feats2.features.fragmentStoresAndAtomics = VK_TRUE;
-			if (supported.fragmentStoresAndAtomics != VK_TRUE) {
-				throw std::runtime_error(
-					"device lacks fragmentStoresAndAtomics (required for "
-					"texture-streaming GPU feedback)");
-			}
-			// 64-bit integer arithmetic (the BDA push-constant shaders —
-			// vk::BufferPointer lowers to uint64 math, so the modules
-			// declare the Int64 capability; validation fails the module
-			// create without the feature even where desktop drivers
-			// tolerate it — a validation-Debug run surfaced the spam).
-			feats2.features.shaderInt64 = VK_TRUE;
-			if (supported.shaderInt64 != VK_TRUE) {
-				throw std::runtime_error(
-					"device lacks shaderInt64 (required for the buffer-"
-					"device-address push-constant shaders)");
-			}
-			// Non-solid fill modes (PolygonMode::Line, the wireframe debug
-			// view). Core-optional since 1.0, universal on desktop; when
-			// absent BuildGraphicsPipeline clamps pipelines back to Fill so
-			// the app never rasterizes with an unsupported mode.
-			g_fillModeNonSolid = (supported.fillModeNonSolid == VK_TRUE);
-			feats2.features.fillModeNonSolid =
-				g_fillModeNonSolid ? VK_TRUE : VK_FALSE;
-			// The gfx filter packs a cluster id into firstInstance of every
-			// indirect draw — that needs the core-optional
-			// drawIndirectFirstInstance, or validation (and possibly the
-			// driver) rejects the non-zero values the filter emits.
-			g_multiDrawIndirectFirstInstance =
-				(supported.drawIndirectFirstInstance == VK_TRUE);
-			feats2.features.drawIndirectFirstInstance =
-				g_multiDrawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
-			// shaderDemoteToHelperInvocation (clip/discard in the MASK
-			// alpha-test shaders compiles to OpDemoteToHelperInvocation):
-			// without the feature, the modules fail validation and pipeline
-			// execution is undefined. Core since 1.3, universal on desktop.
+			// Indirect multi-draw (per-view filter emits one command per
+			// surviving cluster, drawn with a single call per material range).
+			// Core since 1.0 but still optional: enable when present, emulate
+			// one-by-one with a startup warning when absent.
 			{
-				VkPhysicalDeviceVulkan13Features supported13{
-					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, nullptr };
-				VkPhysicalDeviceFeatures2 supported2{
-					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supported13 };
-				vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
-				g_shaderDemoteToHelperInvocation =
-					(supported13.shaderDemoteToHelperInvocation == VK_TRUE);
-				deviceFeatures13.shaderDemoteToHelperInvocation =
-					g_shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
+				VkPhysicalDeviceFeatures supported{};
+				vkGetPhysicalDeviceFeatures(physicalDevice_, &supported);
+				g_multiDrawIndirect = (supported.multiDrawIndirect == VK_TRUE);
+				feats2.features.multiDrawIndirect =
+					g_multiDrawIndirect ? VK_TRUE : VK_FALSE;
+				// Fragment-stage storage writes (texture-streaming feedback
+				// atomics in the materials, set 0 binding 4): core-optional
+				// since 1.0, universal on desktop. No emulation exists, so a
+				// device without it cannot run the materials — fail loudly.
+				feats2.features.fragmentStoresAndAtomics = VK_TRUE;
+				if (supported.fragmentStoresAndAtomics != VK_TRUE) {
+					throw std::runtime_error(
+						"device lacks fragmentStoresAndAtomics (required for "
+						"texture-streaming GPU feedback)");
+				}
+				// 64-bit integer arithmetic (the BDA push-constant shaders —
+				// vk::BufferPointer lowers to uint64 math, so the modules
+				// declare the Int64 capability; validation fails the module
+				// create without the feature even where desktop drivers
+				// tolerate it — a validation-Debug run surfaced the spam).
+				feats2.features.shaderInt64 = VK_TRUE;
+				if (supported.shaderInt64 != VK_TRUE) {
+					throw std::runtime_error(
+						"device lacks shaderInt64 (required for the buffer-"
+						"device-address push-constant shaders)");
+				}
+				// Non-solid fill modes (PolygonMode::Line, the wireframe debug
+				// view). Core-optional since 1.0, universal on desktop; when
+				// absent BuildGraphicsPipeline clamps pipelines back to Fill so
+				// the app never rasterizes with an unsupported mode.
+				g_fillModeNonSolid = (supported.fillModeNonSolid == VK_TRUE);
+				feats2.features.fillModeNonSolid =
+					g_fillModeNonSolid ? VK_TRUE : VK_FALSE;
+				// The gfx filter packs a cluster id into firstInstance of every
+				// indirect draw — that needs the core-optional
+				// drawIndirectFirstInstance, or validation (and possibly the
+				// driver) rejects the non-zero values the filter emits.
+				g_multiDrawIndirectFirstInstance =
+					(supported.drawIndirectFirstInstance == VK_TRUE);
+				feats2.features.drawIndirectFirstInstance =
+					g_multiDrawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
+				// shaderDemoteToHelperInvocation (clip/discard in the MASK
+				// alpha-test shaders compiles to OpDemoteToHelperInvocation):
+				// without the feature, the modules fail validation and pipeline
+				// execution is undefined. Core since 1.3, universal on desktop.
+				{
+					VkPhysicalDeviceVulkan13Features supported13{
+						VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, nullptr };
+					VkPhysicalDeviceFeatures2 supported2{
+						VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supported13 };
+					vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+					g_shaderDemoteToHelperInvocation =
+						(supported13.shaderDemoteToHelperInvocation == VK_TRUE);
+					deviceFeatures13.shaderDemoteToHelperInvocation =
+						g_shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
+				}
 			}
-		}
 
-		// VK_NV_low_latency2 (NVIDIA Reflex / Streamline PCL latency path):
-		// strictly optional — enables sl.common's VkNvLowLatency2 init
-		// ("Failed to init VkNvLowLatency2: 2" when absent) and the PCL
-		// marker timings. Probed, never required: non-NVIDIA devices
-		// simply skip it (isDeviceSuitable above only gates the required
-		// config_.deviceExtensions list). No feature struct exists for
-		// this extension — the name alone switches it on.
-		// GATED on the Streamline integration actually running: the
-		// extension exists ONLY for the Reflex/PCL path, so enabling it
-		// without sl.common driving it (the editor never loads
-		// Streamline — see Editor's main.cpp) leaves the device's
-		// low-latency queue state initialized-but-undrained. An editor
-		// editor's first heavy frame wedged the GPU past the Windows TDR
-		// window in exactly that state (bistro glass, VK_ERROR_DEVICE_LOST
-		// + nvlddmkm 4101 reset); with the extension gated off the same
-		// frame runs in tens of ms.
-		bool enableLowLatency2 = false;
-		{
-			uint32_t extCount = 0;
-			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
-				&& extCount != 0) {
-				std::vector<VkExtensionProperties> exts(extCount);
-				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
-					for (const auto& e : exts) {
-						if (std::strcmp(e.extensionName, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0) {
-							enableLowLatency2 = true;
-							break;
+			// VK_NV_low_latency2 (NVIDIA Reflex / Streamline PCL latency path):
+			// strictly optional — enables sl.common's VkNvLowLatency2 init
+			// ("Failed to init VkNvLowLatency2: 2" when absent) and the PCL
+			// marker timings. Probed, never required: non-NVIDIA devices
+			// simply skip it (isDeviceSuitable above only gates the required
+			// config_.deviceExtensions list). No feature struct exists for
+			// this extension — the name alone switches it on.
+			// GATED on the Streamline integration actually running: the
+			// extension exists ONLY for the Reflex/PCL path, so enabling it
+			// without sl.common driving it (the editor never loads
+			// Streamline — see Editor's main.cpp) leaves the device's
+			// low-latency queue state initialized-but-undrained. An editor
+			// editor's first heavy frame wedged the GPU past the Windows TDR
+			// window in exactly that state (bistro glass, VK_ERROR_DEVICE_LOST
+			// + nvlddmkm 4101 reset); with the extension gated off the same
+			// frame runs in tens of ms.
+			bool enableLowLatency2 = false;
+			{
+				uint32_t extCount = 0;
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+					&& extCount != 0) {
+					std::vector<VkExtensionProperties> exts(extCount);
+					if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+						for (const auto& e : exts) {
+							if (std::strcmp(e.extensionName, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0) {
+								enableLowLatency2 = true;
+								break;
+							}
+						}
+					}
+				}
+				// DlssStartup() ran before any Vulkan object exists (the
+				// interposer bootstrap above), so its result is authoritative
+				// here: no Streamline -> no low-latency extension either.
+				if (enableLowLatency2 && !DlssAvailable()) {
+					enableLowLatency2 = false;
+					std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 supported"
+						" - NOT enabling (Streamline not loaded; Reflex/PCL"
+						" has no driver here)\n");
+				}
+				else {
+					std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 %s\n",
+						enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
+				}
+			}
+
+			// VK_EXT_device_fault (post-mortem GPU fault reports): strictly
+			// optional. When present + the deviceFault feature is supported,
+			// the extension is enabled and the feature chained so a device
+			// loss can be diagnosed (faulting address/stage) instead of
+			// surfacing as a bare vkWaitSemaphores/device-lost failure.
+			bool enableDeviceFault = false;
+			VkPhysicalDeviceFaultFeaturesEXT faultFeatures{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr, VK_FALSE };
+			{
+				bool extPresent = false;
+				uint32_t extCount = 0;
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+					&& extCount != 0) {
+					std::vector<VkExtensionProperties> exts(extCount);
+					if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+						for (const auto& e : exts) {
+							if (std::strcmp(e.extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0) {
+								extPresent = true;
+								break;
+							}
+						}
+					}
+				}
+				if (extPresent) {
+					VkPhysicalDeviceFaultFeaturesEXT supportedFault{
+						VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr };
+					VkPhysicalDeviceFeatures2 supported2{
+						VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedFault };
+					vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+					if (supportedFault.deviceFault == VK_TRUE) {
+						enableDeviceFault = true;
+						faultFeatures.deviceFault = VK_TRUE;
+						faultFeatures.pNext = feats2.pNext;
+						feats2.pNext = &faultFeatures;
+					}
+				}
+				g_deviceFaultSupported = enableDeviceFault;
+				std::fprintf(stderr, "[Vulkan] VK_EXT_device_fault %s\n",
+					enableDeviceFault ? "supported - enabling (loss diagnostics)" : "not supported - loss will be opaque");
+			}
+
+			// VK_NV_device_diagnostics_config (NVIDIA Nsight Aftermath shader
+			// debug tables): the driver-side half of crash symbolication. DXC's
+			// -Zi only puts the HLSL -> SPIR-V line info into the modules this
+			// tree ships; Aftermath crash dumps ALSO need the
+			// driver-generated mapping from GPU machine code back to that
+			// SPIR-V (the .nvdbg line tables). Chaining this struct with the
+			// shader-debug-info bit makes the NVIDIA driver generate those
+			// tables at pipeline compile time — the Vulkan equivalent of D3D's
+			// GFSDK_Aftermath_FeatureFlags_GenerateShaderDebugInfo. Only
+			// meaningful when the loaded SPIR-V itself carries debug info
+			// (AftermathShaderDebugTablesEnabled above: Debug trees + the
+			// x64-Release-ShaderDebug preset), and only present on NVIDIA —
+			// probed, never required (same pattern as low_latency2 /
+			// device_fault above). The Aftermath Monitor writes the matching
+			// .nvdbg files on crash; nothing here calls
+			// GFSDK_Aftermath_EnableGpuCrashDumps, so the Monitor's settings
+			// stay authoritative for dump writing.
+			bool enableDiagnosticsConfig = false;
+			VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfigInfo{
+				VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, nullptr,
+				VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV };
+			if (AftermathShaderDebugTablesEnabled()) {
+				uint32_t extCount = 0;
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+					&& extCount != 0) {
+					std::vector<VkExtensionProperties> exts(extCount);
+					if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+						for (const auto& e : exts) {
+							if (std::strcmp(e.extensionName, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) == 0) {
+								enableDiagnosticsConfig = true;
+								break;
+							}
 						}
 					}
 				}
 			}
-			// DlssStartup() ran before any Vulkan object exists (the
-			// interposer bootstrap above), so its result is authoritative
-			// here: no Streamline -> no low-latency extension either.
-			if (enableLowLatency2 && !DlssAvailable()) {
-				enableLowLatency2 = false;
-				std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 supported"
-					" - NOT enabling (Streamline not loaded; Reflex/PCL"
-					" has no driver here)\n");
-			}
-			else {
-				std::fprintf(stderr, "[Vulkan] VK_NV_low_latency2 %s\n",
-					enableLowLatency2 ? "supported - enabling (Reflex/PCL latency path)" : "not supported - PCL timings off");
-			}
-		}
-
-		// VK_EXT_device_fault (post-mortem GPU fault reports): strictly
-		// optional. When present + the deviceFault feature is supported,
-		// the extension is enabled and the feature chained so a device
-		// loss can be diagnosed (faulting address/stage) instead of
-		// surfacing as a bare vkWaitSemaphores/device-lost failure.
-		bool enableDeviceFault = false;
-		VkPhysicalDeviceFaultFeaturesEXT faultFeatures{
-			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr, VK_FALSE };
-		{
-			bool extPresent = false;
-			uint32_t extCount = 0;
-			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
-				&& extCount != 0) {
-				std::vector<VkExtensionProperties> exts(extCount);
-				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
-					for (const auto& e : exts) {
-						if (std::strcmp(e.extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0) {
-							extPresent = true;
-							break;
-						}
-					}
-				}
-			}
-			if (extPresent) {
-				VkPhysicalDeviceFaultFeaturesEXT supportedFault{
-					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, nullptr };
-				VkPhysicalDeviceFeatures2 supported2{
-					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supportedFault };
-				vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
-				if (supportedFault.deviceFault == VK_TRUE) {
-					enableDeviceFault = true;
-					faultFeatures.deviceFault = VK_TRUE;
-					faultFeatures.pNext = feats2.pNext;
-					feats2.pNext = &faultFeatures;
-				}
-			}
-			g_deviceFaultSupported = enableDeviceFault;
-			std::fprintf(stderr, "[Vulkan] VK_EXT_device_fault %s\n",
-				enableDeviceFault ? "supported - enabling (loss diagnostics)" : "not supported - loss will be opaque");
-		}
-
-		// VK_NV_device_diagnostics_config (NVIDIA Nsight Aftermath shader
-		// debug tables): the driver-side half of crash symbolication. DXC's
-		// -Zi only puts the HLSL -> SPIR-V line info into the modules this
-		// tree ships; Aftermath crash dumps ALSO need the
-		// driver-generated mapping from GPU machine code back to that
-		// SPIR-V (the .nvdbg line tables). Chaining this struct with the
-		// shader-debug-info bit makes the NVIDIA driver generate those
-		// tables at pipeline compile time — the Vulkan equivalent of D3D's
-		// GFSDK_Aftermath_FeatureFlags_GenerateShaderDebugInfo. Only
-		// meaningful when the loaded SPIR-V itself carries debug info
-		// (AftermathShaderDebugTablesEnabled above: Debug trees + the
-		// x64-Release-ShaderDebug preset), and only present on NVIDIA —
-		// probed, never required (same pattern as low_latency2 /
-		// device_fault above). The Aftermath Monitor writes the matching
-		// .nvdbg files on crash; nothing here calls
-		// GFSDK_Aftermath_EnableGpuCrashDumps, so the Monitor's settings
-		// stay authoritative for dump writing.
-		bool enableDiagnosticsConfig = false;
-		VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfigInfo{
-			VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, nullptr,
-			VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV };
-		if (AftermathShaderDebugTablesEnabled()) {
-			uint32_t extCount = 0;
-			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
-				&& extCount != 0) {
-				std::vector<VkExtensionProperties> exts(extCount);
-				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
-					for (const auto& e : exts) {
-						if (std::strcmp(e.extensionName, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) == 0) {
-							enableDiagnosticsConfig = true;
-							break;
-						}
-					}
-				}
-			}
-		}
-		std::fprintf(stderr, "[Vulkan] VK_NV_device_diagnostics_config %s\n",
-			enableDiagnosticsConfig
+			std::fprintf(stderr, "[Vulkan] VK_NV_device_diagnostics_config %s\n",
+				enableDiagnosticsConfig
 				? "supported - enabling (Aftermath shader debug tables: GPU code -> SPIR-V -> HLSL lines)"
 				: AftermathShaderDebugTablesEnabled()
-					? "not supported - Aftermath crash dumps stay without shader line maps (non-NVIDIA driver?)"
-					: "off (TOURMALINE_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
+				? "not supported - Aftermath crash dumps stay without shader line maps (non-NVIDIA driver?)"
+				: "off (TOURMALINE_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
 
-		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
-		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
-		if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
-		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
-		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
-		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
+			if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+			if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+			if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+			if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+			if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -2643,30 +2649,30 @@ VkPhysicalDeviceVulkan12Features deviceFeatures12{};
 				createInfo.pNext = &diagnosticsConfigInfo;
 			}
 
-	if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create logical device!");
-	}
-	g_meshShaderSupported = enableMeshShader;
-	std::fprintf(stderr, "[Vulkan] VK_EXT_mesh_shader %s\n",
-		enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
-			: meshKilled ? "off (TOURMALINE_MESH=0, compute+indexed CPU fallback)"
-			: "not supported - compute+indexed CPU fallback");
-		if (!g_multiDrawIndirect) {
-			fprintf(stderr,
-				"[Vulkan Warning] multiDrawIndirect not supported by this device; "
-				"vkCmdDrawIndexedIndirect with drawCount > 1 will be emulated "
-				"one draw at a time (slow path, expect lower throughput)\n");
-		}
-		if (!g_fillModeNonSolid) {
-			fprintf(stderr,
-				"[Vulkan Warning] fillModeNonSolid not supported by this device; "
-				"wireframe (PolygonMode::Line) pipelines clamp to Fill\n");
-		}
-		volkLoadDevice(device_);
-		// Disk pipeline cache (see the CreateDiskPipelineCache block):
-		// created right after the device so every pipeline below compiles
-		// through it.
-		CreateDiskPipelineCache();
+			if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create logical device!");
+			}
+			g_meshShaderSupported = enableMeshShader;
+			std::fprintf(stderr, "[Vulkan] VK_EXT_mesh_shader %s\n",
+				enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
+				: meshKilled ? "off (TOURMALINE_MESH=0, compute+indexed CPU fallback)"
+				: "not supported - compute+indexed CPU fallback");
+			if (!g_multiDrawIndirect) {
+				fprintf(stderr,
+					"[Vulkan Warning] multiDrawIndirect not supported by this device; "
+					"vkCmdDrawIndexedIndirect with drawCount > 1 will be emulated "
+					"one draw at a time (slow path, expect lower throughput)\n");
+			}
+			if (!g_fillModeNonSolid) {
+				fprintf(stderr,
+					"[Vulkan Warning] fillModeNonSolid not supported by this device; "
+					"wireframe (PolygonMode::Line) pipelines clamp to Fill\n");
+			}
+			volkLoadDevice(device_);
+			// Disk pipeline cache (see the CreateDiskPipelineCache block):
+			// created right after the device so every pipeline below compiles
+			// through it.
+			CreateDiskPipelineCache();
 
 		}
 
@@ -2884,7 +2890,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	m_nilTexture = CreateTexture(
 		ImageCreateInfo
 		{
-			.extent = {1,1,1},
+			.extent = { 1,1,1 },
 			.format = smvk::Format::RGBA8_SRGB,
 			.name = "nilTexture"
 		},
@@ -2899,9 +2905,11 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	assert(m_nullImageView != VK_NULL_HANDLE && "nilTexture view missing");
 
 	// Engine globals buffer: one EngineGlobals slice per frame in flight,
-	// read by every shader through set 0 / kBinding_EngineGlobals.
-	// Values (time / deltaTime / frameIndex / fps) are computed engine-side
-	// from the acquire rhythm and flushed by VulkanSwapchain::AcquireFramebuffer
+	// read by every shader through set 0 / kBinding_EngineGlobals. Each
+	// flight's descriptor set permanently points at its OWN slice (baked
+	// once at init - see the set allocation below). Values (time /
+	// deltaTime / frameIndex / fps) are computed engine-side from the
+	// acquire rhythm and flushed by VulkanSwapchain::AcquireFramebuffer
 	// after the in-flight slot retires. No app-side plumbing.
 	m_engineGlobalsBuffer = CreateBuffer(
 		sizeof(smvk::EngineGlobals) * MAX_FRAMES_IN_FLIGHT,
@@ -2924,8 +2932,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
 		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
 		// Engine globals: single read-only storage buffer, one slice per frame
-		// in flight. The descriptor is rewritten every frame (update-after-bind)
-		// to point at the current frame's slice; see FlushEngineGlobals.
+		// in flight. Each flight's OWN set (see the set allocation below)
+		// points at its own slice, written ONCE at init; FlushEngineGlobals
+		// only uploads values - never rewrites the descriptor.
 		getDSLBinding(kBinding_EngineGlobals, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 		// 3D volume textures (SG probe grids): same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors 3D views here.
@@ -2998,18 +3007,20 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	// partially-bound bindings do not shrink the allocation charge). The
 	// layout carries FOUR sampled-image arrays (Textures, VolumeTextures,
 	// Cubemaps, MsaaTextures): 3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES
-	// sampled slots. The old MAX_TEXTURES + MAX_VOLUME_TEXTURES reservation
-	// was HALF the requirement - this driver's allocation happened to
-	// succeed anyway, but the spec lets it fail (OUT_OF_POOL_MEMORY), and
-	// the unchecked call below would have kept NULL sets silently (every
-	// frame skips its descriptor updates - UpdateDescriptors skips null
-	// sets - and draws bind garbage).
+	// sampled slots PER SET, and the bindless table is REPLICATED PER FRAME
+	// (one set per flight - see the allocation below), so every entry
+	// scales by MAX_FRAMES_IN_FLIGHT. The old MAX_TEXTURES +
+	// MAX_VOLUME_TEXTURES reservation was HALF the single-set requirement -
+	// this driver's allocation happened to succeed anyway, but the spec
+	// lets it fail (OUT_OF_POOL_MEMORY), and the unchecked call below would
+	// have kept NULL sets silently (every frame skips its descriptor
+	// updates - UpdateDescriptors skips null sets - and draws bind garbage).
 	std::vector<VkDescriptorPoolSize> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES },
-		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    (3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES) * MAX_FRAMES_IN_FLIGHT },
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS * MAX_FRAMES_IN_FLIGHT },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES * MAX_FRAMES_IN_FLIGHT },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices, per set
 	  }
 	};
 	// Device limits for update-after-bind sets: the plain per-set limits
@@ -3033,23 +3044,46 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 				std::to_string(MAX_TEXTURES) + ", samplers " +
 				std::to_string(MAX_SAMPLERS) + ")");
 		}
+		// Pool AGGREGATE: a UAB pool charges every allocated set's layout
+		// maxima up front, and the per-set limits above say nothing about
+		// the pool total - maxUpdateAfterBindDescriptorsInAllPools is the
+		// device-wide budget the replicated table now has to fit.
+		const uint64_t needPoolTotal =
+			uint64_t(needSampled) + MAX_TEXTURES + MAX_SAMPLERS
+			+ 2 * MAX_FRAMES_IN_FLIGHT;
+		if (indexingProps.maxUpdateAfterBindDescriptorsInAllPools
+			< needPoolTotal * MAX_FRAMES_IN_FLIGHT) {
+			throw std::runtime_error(
+				"device maxUpdateAfterBindDescriptorsInAllPools (" +
+				std::to_string(indexingProps.maxUpdateAfterBindDescriptorsInAllPools)
+				+ ") is below the replicated bindless pool requirement ("
+				+ std::to_string(needPoolTotal * MAX_FRAMES_IN_FLIGHT) + ")");
+		}
 	}
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
 
 	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
-	// ONE set, shared by every frame: the bindless table is frame-invariant
-	// except EngineGlobals, which is REWRITTEN in place each frame
-	// (update-after-bind) to point at the current frame's slice - see
-	// FlushEngineGlobals and the UpdateDescriptors null-set skip.
-	VkDescriptorSetLayout layout = defaultSetLayout;
+	// ONE set PER FLIGHT: the bindless table is frame-invariant, and each
+	// set's kBinding_EngineGlobals permanently points at ITS OWN slice of
+	// m_engineGlobalsBuffer (written once below). The old single shared
+	// set REWROTE the binding every frame - but UPDATE_AFTER_BIND makes
+	// post-submit descriptor writes visible to ALREADY-SUBMITTED command
+	// buffers, so every in-flight frame ended up reading the NEWEST
+	// frame's globals (time / deltaTime / frameIndex) instead of its own
+	// slice. Per-flight sets make the binding write-once: a flight's
+	// slice address is baked into the set its command buffers bind, and
+	// no sibling flight can rewrite it mid-flight.
+	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+		layouts[f] = defaultSetLayout;
 
 	VkDescriptorSetAllocateInfo info
 	{
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.descriptorPool = pool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &layout
+		.descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+		.pSetLayouts = layouts,
 	};
 	VkResult allocResult = vkAllocateDescriptorSets(
 		device_,
@@ -3060,6 +3094,32 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		fprintf(stderr, "[Vulkan Error] bindless descriptor set allocation failed: %s\n",
 			vkResultToString(allocResult));
 		throw std::runtime_error("bindless descriptor set allocation failed");
+	}
+
+	// Bake each flight's kBinding_EngineGlobals to its own slice, ONCE.
+	// FlushEngineGlobals afterwards only uploads fresh values into the
+	// (retired) slice - the descriptor side never changes again, so
+	// sibling flights still executing keep reading their own slices.
+	{
+		const Buffer* globalsBuffer = buffers_.get(m_engineGlobalsBuffer);
+		assert(globalsBuffer && globalsBuffer->vkBuffer != VK_NULL_HANDLE);
+		VkDescriptorBufferInfo bufferInfos[MAX_FRAMES_IN_FLIGHT];
+		VkWriteDescriptorSet writes[MAX_FRAMES_IN_FLIGHT];
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			bufferInfos[f].buffer = globalsBuffer->vkBuffer;
+			bufferInfos[f].offset = f * sizeof(smvk::EngineGlobals);
+			bufferInfos[f].range = sizeof(smvk::EngineGlobals);
+			VkWriteDescriptorSet& write = writes[f];
+			write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			write.pNext = nullptr;
+			write.dstSet = defaultDescriptorSets_[f];
+			write.dstBinding = smvk::Bindings::kBinding_EngineGlobals;
+			write.dstArrayElement = 0;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			write.descriptorCount = 1;
+			write.pBufferInfo = &bufferInfos[f];
+		}
+		vkUpdateDescriptorSets(device_, MAX_FRAMES_IN_FLIGHT, writes, 0, nullptr);
 	}
 
 	// ============================================================================
@@ -3362,7 +3422,7 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 				live.push_back(r);
 		}
 		if (ringTrace && (std::chrono::duration<double, std::milli>(
-				std::chrono::steady_clock::now() - ringT0).count() > 0.5)) {
+			std::chrono::steady_clock::now() - ringT0).count() > 0.5)) {
 			std::fprintf(stderr,
 				"[TexStream]   ringSync %zu ranges, staged %.1f KB: sync %.2f ms (GPU wait %.2f ms)\n",
 				ust.pendingRanges.size(), size / 1024.0,
@@ -3442,7 +3502,8 @@ smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) 
 		uint64_t observed = m_lastTransferValue.load(std::memory_order_relaxed);
 		while (tp.value > observed
 			&& !m_lastTransferValue.compare_exchange_weak(
-				observed, tp.value, std::memory_order_release)) {}
+				observed, tp.value, std::memory_order_release)) {
+		}
 	}
 	return tp;
 }
@@ -3914,7 +3975,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	if (img->mipLevels == 1 && img->arrayLayers == 1) {
 		// extent.depth serves 3D uploads (SG probe volumes); 2D images
 		// carry depth == 1 so this is the same copy as before for them.
-		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, img->extent.depth} };
+		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0,{ VK_IMAGE_ASPECT_COLOR_BIT,0,0,1 },{ 0,0,0 },{ img->extent.width, img->extent.height, img->extent.depth } };
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r };
 		vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
 	}
@@ -3929,7 +3990,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 			uint32_t blocksY = (h + fmt.blockHeight - 1) / fmt.blockHeight;
 			VkDeviceSize layerSize = (VkDeviceSize)blocksX * blocksY * fmt.bytesPerBlock;
 			for (uint32_t layer = 0; layer < img->arrayLayers; ++layer) {
-				VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, off, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1}, {0,0,0}, {w,h,1} };
+				VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, off, 0,0,{ VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1 },{ 0,0,0 },{ w,h,1 } };
 				regs.push_back(r);
 				off += layerSize;
 			}
@@ -4084,7 +4145,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	std::vector<VkBufferImageCopy2> regs2;
 	regs2.reserve(regions.size());
 	for (auto& r : regions) {
-		VkBufferImageCopy2 r2{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff + r.bufferOffset, 0,0, {r.imageSubresource.aspectMask, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount}, r.imageOffset, r.imageExtent };
+		VkBufferImageCopy2 r2{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff + r.bufferOffset, 0,0,{ r.imageSubresource.aspectMask, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount }, r.imageOffset, r.imageExtent };
 		regs2.push_back(r2);
 	}
 	VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs2.size(), regs2.data() };
@@ -4151,12 +4212,14 @@ void smvk::UploadStreamer::flush() {
 	assert(!bulk_.active.load(std::memory_order_acquire)
 		&& "flush() during an active bulk upload recording");
 	if (bulk_.hasPending) submitState(bulk_, true);
-	for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
+	for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge();
+}
 void smvk::UploadStreamer::flushLocal() {
 	SMVK_PROFILE_STREAM("UploadFlushLocal");
 	// Same-thread shard only: the producer's own sequential drain (the
 	// caller IS the shard's owner - no quiescence needed).
-	ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
+	ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge();
+}
 smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	// Drains all shards (quiescent: call after workers joined). Returns the
 	// last timeline point for callers that need to chain. Same flush
@@ -4198,7 +4261,8 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 }
 void smvk::UploadStreamer::waitAll() {
 	SMVK_PROFILE_STREAM("UploadWaitAll");
-	flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
+	flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll();
+}
 
 bool smvk::VulkanResourceManager::BulkCopyBuffer(BufferHandle dst, const void* content,
 	std::span<const BufferBulkCopy> copies, VkPipelineStageFlags2 dstStages,
@@ -5372,7 +5436,7 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 	VmaVirtualAllocation alloc = VK_NULL_HANDLE;
 	for (uint32_t bi = 0; bi < m_targetHeap.blocks.size(); ++bi) {
 		if (!((reqs.memoryTypeBits
-				>> m_targetHeap.blocks[bi].memoryTypeIndex) & 1u))
+			>> m_targetHeap.blocks[bi].memoryTypeIndex) & 1u))
 			continue;
 		VmaVirtualAllocationCreateInfo vi{};
 		vi.size = need;
@@ -5380,7 +5444,7 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 		VkDeviceSize off = 0;
 		VmaVirtualAllocation a = VK_NULL_HANDLE;
 		if (vmaVirtualAllocate(m_targetHeap.blocks[bi].virtualBlock,
-				&vi, &a, &off) == VK_SUCCESS) {
+			&vi, &a, &off) == VK_SUCCESS) {
 			block = bi;
 			offset = off;
 			alloc = a;
@@ -5398,7 +5462,7 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 				if (!((reqs.memoryTypeBits >> t) & 1u))
 					continue;
 				if (!(memProps.memoryTypes[t].propertyFlags
-						& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+					& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
 					continue;
 				typeIndex = t;
 				break;
@@ -5445,7 +5509,7 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 		offset = off;
 	}
 	m_targetHeap.slots.push_back({ shape, block, alloc, offset,
-		need, 1, { { first, last } } });
+		need, 1,{ { first, last } } });
 	m_targetHeap.rangeBytes += need;
 	++m_targetHeap.claimCount;
 	BindHeapImage(image, m_targetHeap.blocks[block].memory, offset);
@@ -5611,35 +5675,35 @@ void smvk::VulkanResourceManager::ReleaseTargetHeapClaim(
 // Fatal-diagnostics helpers (defined further down, next to the device-fault
 // post-mortem): forward-declared here so the strict gate can use them.
 namespace {
-void FatalMirrorOpen();
-void FatalPrintf(const char* fmt, ...);
-void FatalFlush();
-void FatalMirrorClose();
+	void FatalMirrorOpen();
+	void FatalPrintf(const char* fmt, ...);
+	void FatalFlush();
+	void FatalMirrorClose();
 }
 namespace smvk {
-static bool g_strictResources = false;
-void SetStrictResources(bool on) { g_strictResources = on; }
-bool StrictResources() {
-	static const bool envOn = [] {
-		const char* e = std::getenv("TOURMALINE_STRICT");
-		return e && *e && std::strcmp(e, "0") != 0;
-	}();
-	return g_strictResources || envOn;
-}
-// CALL-SITE exhaustion gate (the RHI stays PURE — see smvk.h). No-op
-// unless strict; aborts with the fatal diagnostic when it is.
-void OnResourceExhaustion(const char* site) {
-	if (!StrictResources())
-		return;
-	FatalMirrorOpen();
-	FatalPrintf("[STRICT] resource exhaustion at '%s' — a pool/budget "
-		"refused a creation. Raise the budget, fix the leak, or rerun "
-		"without --strict to degrade gracefully.\n",
-		site ? site : "?");
-	FatalFlush();
-	FatalMirrorClose();
-	std::abort();
-}
+	static bool g_strictResources = false;
+	void SetStrictResources(bool on) { g_strictResources = on; }
+	bool StrictResources() {
+		static const bool envOn = [] {
+			const char* e = std::getenv("TOURMALINE_STRICT");
+			return e && *e && std::strcmp(e, "0") != 0;
+		}();
+		return g_strictResources || envOn;
+	}
+	// CALL-SITE exhaustion gate (the RHI stays PURE — see smvk.h). No-op
+	// unless strict; aborts with the fatal diagnostic when it is.
+	void OnResourceExhaustion(const char* site) {
+		if (!StrictResources())
+			return;
+		FatalMirrorOpen();
+		FatalPrintf("[STRICT] resource exhaustion at '%s' — a pool/budget "
+			"refused a creation. Raise the budget, fix the leak, or rerun "
+			"without --strict to degrade gracefully.\n",
+			site ? site : "?");
+		FatalFlush();
+		FatalMirrorClose();
+		std::abort();
+	}
 } // namespace smvk
 
 [[nodiscard]] smvk::Holder<smvk::BindlessImageHandle> smvk::VulkanResourceManager::CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout)
@@ -5783,11 +5847,11 @@ void OnResourceExhaustion(const char* site) {
 		.bindless = bindless.release()
 	};
 
- 	return Holder<TextureHandle>{
- 		this,
- 			textures_.create(std::move(texture))
- 	};
- }
+	return Holder<TextureHandle>{
+		this,
+			textures_.create(std::move(texture))
+	};
+}
 static VkFormat toSRGBVkFormat(VkFormat format)
 {
 	// Returns the sRGB variant of a UNORM color format (so sampling auto-linearizes),
@@ -6535,280 +6599,280 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 }
 
 namespace {
-// -------------------------------------------------------------------------
-// Texture-streaming helpers: KTX2 mip-subrange upload plan.
-//
-// A streamed texture keeps the full mip chain conceptually but only the
-// contiguous tail [firstMip, firstMip + residentMips) is backed by VRAM.
-// The VkImage is allocated at the subrange resolution (base extent >>
-// firstMip) with residentMips levels; copy regions address full-chain mips
-// but are remapped (mipLevel = globalMip - firstMip) so level 0 of the
-// image is full-chain mip firstMip. Normalized-UV sampling is unaffected.
-// -------------------------------------------------------------------------
-struct KtxStreamPlan {
-	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
-	smvk::Format format = smvk::Format::Undefined;
-	smvk::ImageUsage usage =
-		smvk::ImageUsage::Sampled |
-		smvk::ImageUsage::TransferDst;
-	uint32_t width = 1;
-	uint32_t height = 1;
-	uint32_t depth = 1;
-	uint32_t firstMip = 0;
-	uint32_t residentMips = 1;
-	uint32_t fullMips = 1;
-	uint32_t arrayLayers = 1;
-	uint32_t ktxLayers = 1;
-	uint32_t faces = 1;
-	bool is1D = false;
-	bool is2D = true;
-	bool is3D = false;
-	bool isCubemap = false;
-	ktx_uint8_t* data = nullptr;
-	ktx_size_t dataSize = 0;
-	std::vector<VkBufferImageCopy> regions;
-};
+	// -------------------------------------------------------------------------
+	// Texture-streaming helpers: KTX2 mip-subrange upload plan.
+	//
+	// A streamed texture keeps the full mip chain conceptually but only the
+	// contiguous tail [firstMip, firstMip + residentMips) is backed by VRAM.
+	// The VkImage is allocated at the subrange resolution (base extent >>
+	// firstMip) with residentMips levels; copy regions address full-chain mips
+	// but are remapped (mipLevel = globalMip - firstMip) so level 0 of the
+	// image is full-chain mip firstMip. Normalized-UV sampling is unaffected.
+	// -------------------------------------------------------------------------
+	struct KtxStreamPlan {
+		VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+		smvk::Format format = smvk::Format::Undefined;
+		smvk::ImageUsage usage =
+			smvk::ImageUsage::Sampled |
+			smvk::ImageUsage::TransferDst;
+		uint32_t width = 1;
+		uint32_t height = 1;
+		uint32_t depth = 1;
+		uint32_t firstMip = 0;
+		uint32_t residentMips = 1;
+		uint32_t fullMips = 1;
+		uint32_t arrayLayers = 1;
+		uint32_t ktxLayers = 1;
+		uint32_t faces = 1;
+		bool is1D = false;
+		bool is2D = true;
+		bool is3D = false;
+		bool isCubemap = false;
+		ktx_uint8_t* data = nullptr;
+		ktx_size_t dataSize = 0;
+		std::vector<VkBufferImageCopy> regions;
+	};
 
-// Transcodes (Basis -> BC7 when needed) and builds the copy regions for
-// [firstMip, firstMip + mipCount). Throws std::runtime_error on bad input.
-// Mirrors the validation/transcode/format path of CreateTexture(ktx...).
-KtxStreamPlan PrepareKtxStreamPlan(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount)
-{
-	KtxStreamPlan plan{};
-
-	const khr_df_transfer_e transferFunction =
-		ktxTexture2_GetTransferFunction_e(&texture);
-	const bool useSRGB =
-		transferFunction == KHR_DF_TRANSFER_SRGB;
-
-	if (texture.numDimensions < 1 ||
-		texture.numDimensions > 3)
+	// Transcodes (Basis -> BC7 when needed) and builds the copy regions for
+	// [firstMip, firstMip + mipCount). Throws std::runtime_error on bad input.
+	// Mirrors the validation/transcode/format path of CreateTexture(ktx...).
+	KtxStreamPlan PrepareKtxStreamPlan(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount)
 	{
-		throw std::runtime_error(
-			"KTX texture has invalid dimensionality."
-		);
-	}
+		KtxStreamPlan plan{};
 
-	plan.is1D = texture.numDimensions == 1;
-	plan.is2D = texture.numDimensions == 2;
-	plan.is3D = texture.numDimensions == 3;
-	plan.isCubemap = texture.isCubemap == KTX_TRUE;
+		const khr_df_transfer_e transferFunction =
+			ktxTexture2_GetTransferFunction_e(&texture);
+		const bool useSRGB =
+			transferFunction == KHR_DF_TRANSFER_SRGB;
 
-	if (plan.isCubemap && !plan.is2D)
-	{
-		throw std::runtime_error(
-			"KTX cubemap must be a 2D texture."
-		);
-	}
-
-	if (ktxTexture2_NeedsTranscoding(&texture))
-	{
-		const KTX_error_code result =
-			ktxTexture2_TranscodeBasis(
-				&texture,
-				KTX_TTF_BC7_RGBA,
-				0
-			);
-
-		if (result != KTX_SUCCESS)
+		if (texture.numDimensions < 1 ||
+			texture.numDimensions > 3)
 		{
 			throw std::runtime_error(
-				ktxErrorString(result)
+				"KTX texture has invalid dimensionality."
 			);
 		}
-	}
 
-	texture.generateMipmaps = KTX_FALSE;
+		plan.is1D = texture.numDimensions == 1;
+		plan.is2D = texture.numDimensions == 2;
+		plan.is3D = texture.numDimensions == 3;
+		plan.isCubemap = texture.isCubemap == KTX_TRUE;
 
-	const VkFormat sourceVkFormat =
-		ktxTexture2_GetVkFormat(&texture);
-
-	if (sourceVkFormat == VK_FORMAT_UNDEFINED)
-	{
-		throw std::runtime_error(
-			"KTX texture has undefined VkFormat after transcoding."
-		);
-	}
-
-	VkFormat imageVkFormat = sourceVkFormat;
-
-	if (useSRGB)
-	{
-		imageVkFormat = toSRGBVkFormat(sourceVkFormat);
-
-		if (imageVkFormat == VK_FORMAT_UNDEFINED)
+		if (plan.isCubemap && !plan.is2D)
 		{
 			throw std::runtime_error(
-				"KTX texture requires sRGB sampling, "
-				"but its Vulkan format has no supported sRGB variant."
+				"KTX cubemap must be a 2D texture."
 			);
 		}
-	}
 
-	const smvk::Format format = fromVkFormat(imageVkFormat);
-
-	if (format == smvk::Format::Undefined)
-	{
-		throw std::runtime_error(
-			"KTX texture uses a format unsupported by smvk::Format."
-		);
-	}
-
-	const uint32_t fullMips =
-		std::max(1u, texture.numLevels);
-
-	if (firstMip >= fullMips)
-	{
-		throw std::runtime_error(
-			"Streaming firstMip is past the end of the KTX mip chain."
-		);
-	}
-
-	uint32_t residentMips = mipCount == 0
-		? 1u
-		: std::min(mipCount, fullMips - firstMip);
-
-	if (residentMips == 0)
-	{
-		throw std::runtime_error(
-			"Streaming mip subrange is empty."
-		);
-	}
-
-	const uint32_t baseWidth = std::max(1u, texture.baseWidth);
-	const uint32_t baseHeight = plan.is1D
-		? 1u
-		: std::max(1u, texture.baseHeight);
-	const uint32_t baseDepth = plan.is3D
-		? std::max(1u, texture.baseDepth)
-		: 1u;
-
-	plan.vkFormat = imageVkFormat;
-	plan.format = format;
-	plan.width = std::max(1u, baseWidth >> firstMip);
-	plan.height = plan.is1D ? 1u : std::max(1u, baseHeight >> firstMip);
-	plan.depth = plan.is3D ? std::max(1u, baseDepth >> firstMip) : 1u;
-	plan.firstMip = firstMip;
-	plan.residentMips = residentMips;
-	plan.fullMips = fullMips;
-
-	plan.ktxLayers = std::max(1u, texture.numLayers);
-	plan.faces = std::max(1u, texture.numFaces);
-	plan.arrayLayers = plan.is3D ? 1u : plan.ktxLayers * plan.faces;
-
-	auto* base = reinterpret_cast<ktxTexture*>(&texture);
-
-	plan.dataSize = ktxTexture_GetDataSizeUncompressed(base);
-	plan.data = ktxTexture_GetData(base);
-
-	if (!plan.data || plan.dataSize == 0)
-	{
-		throw std::runtime_error(
-			"KTX texture contains no image data."
-		);
-	}
-
-	plan.regions.reserve(
-		(size_t)residentMips *
-		plan.ktxLayers *
-		plan.faces
-	);
-
-	for (uint32_t r = 0; r < residentMips; ++r)
-	{
-		const uint32_t mip = firstMip + r;
-
-		const uint32_t mipWidth = std::max(1u, baseWidth >> mip);
-		const uint32_t mipHeight = plan.is1D
-			? 1u
-			: std::max(1u, baseHeight >> mip);
-		const uint32_t mipDepth = plan.is3D
-			? std::max(1u, baseDepth >> mip)
-			: 1u;
-
-		for (uint32_t layer = 0; layer < plan.ktxLayers; ++layer)
+		if (ktxTexture2_NeedsTranscoding(&texture))
 		{
-			for (uint32_t face = 0; face < plan.faces; ++face)
+			const KTX_error_code result =
+				ktxTexture2_TranscodeBasis(
+					&texture,
+					KTX_TTF_BC7_RGBA,
+					0
+				);
+
+			if (result != KTX_SUCCESS)
 			{
-				ktx_size_t offset = 0;
-
-				const KTX_error_code result =
-					ktxTexture2_GetImageOffset(
-						&texture,
-						mip,
-						layer,
-						face,
-						&offset
-					);
-
-				if (result != KTX_SUCCESS)
-				{
-					throw std::runtime_error(
-						"ktxTexture2_GetImageOffset failed."
-					);
-				}
-
-				VkBufferImageCopy region{};
-				region.bufferOffset = static_cast<VkDeviceSize>(offset);
-				region.bufferRowLength = 0;
-				region.bufferImageHeight = 0;
-				region.imageSubresource.aspectMask =
-					VK_IMAGE_ASPECT_COLOR_BIT;
-				// Remap: image level 0 == full-chain mip firstMip.
-				region.imageSubresource.mipLevel = r;
-				region.imageSubresource.baseArrayLayer =
-					plan.is3D ? 0 : layer * plan.faces + face;
-				region.imageSubresource.layerCount = 1;
-				region.imageOffset = { 0, 0, 0 };
-				region.imageExtent = { mipWidth, mipHeight, mipDepth };
-
-				plan.regions.push_back(region);
+				throw std::runtime_error(
+					ktxErrorString(result)
+				);
 			}
 		}
+
+		texture.generateMipmaps = KTX_FALSE;
+
+		const VkFormat sourceVkFormat =
+			ktxTexture2_GetVkFormat(&texture);
+
+		if (sourceVkFormat == VK_FORMAT_UNDEFINED)
+		{
+			throw std::runtime_error(
+				"KTX texture has undefined VkFormat after transcoding."
+			);
+		}
+
+		VkFormat imageVkFormat = sourceVkFormat;
+
+		if (useSRGB)
+		{
+			imageVkFormat = toSRGBVkFormat(sourceVkFormat);
+
+			if (imageVkFormat == VK_FORMAT_UNDEFINED)
+			{
+				throw std::runtime_error(
+					"KTX texture requires sRGB sampling, "
+					"but its Vulkan format has no supported sRGB variant."
+				);
+			}
+		}
+
+		const smvk::Format format = fromVkFormat(imageVkFormat);
+
+		if (format == smvk::Format::Undefined)
+		{
+			throw std::runtime_error(
+				"KTX texture uses a format unsupported by smvk::Format."
+			);
+		}
+
+		const uint32_t fullMips =
+			std::max(1u, texture.numLevels);
+
+		if (firstMip >= fullMips)
+		{
+			throw std::runtime_error(
+				"Streaming firstMip is past the end of the KTX mip chain."
+			);
+		}
+
+		uint32_t residentMips = mipCount == 0
+			? 1u
+			: std::min(mipCount, fullMips - firstMip);
+
+		if (residentMips == 0)
+		{
+			throw std::runtime_error(
+				"Streaming mip subrange is empty."
+			);
+		}
+
+		const uint32_t baseWidth = std::max(1u, texture.baseWidth);
+		const uint32_t baseHeight = plan.is1D
+			? 1u
+			: std::max(1u, texture.baseHeight);
+		const uint32_t baseDepth = plan.is3D
+			? std::max(1u, texture.baseDepth)
+			: 1u;
+
+		plan.vkFormat = imageVkFormat;
+		plan.format = format;
+		plan.width = std::max(1u, baseWidth >> firstMip);
+		plan.height = plan.is1D ? 1u : std::max(1u, baseHeight >> firstMip);
+		plan.depth = plan.is3D ? std::max(1u, baseDepth >> firstMip) : 1u;
+		plan.firstMip = firstMip;
+		plan.residentMips = residentMips;
+		plan.fullMips = fullMips;
+
+		plan.ktxLayers = std::max(1u, texture.numLayers);
+		plan.faces = std::max(1u, texture.numFaces);
+		plan.arrayLayers = plan.is3D ? 1u : plan.ktxLayers * plan.faces;
+
+		auto* base = reinterpret_cast<ktxTexture*>(&texture);
+
+		plan.dataSize = ktxTexture_GetDataSizeUncompressed(base);
+		plan.data = ktxTexture_GetData(base);
+
+		if (!plan.data || plan.dataSize == 0)
+		{
+			throw std::runtime_error(
+				"KTX texture contains no image data."
+			);
+		}
+
+		plan.regions.reserve(
+			(size_t)residentMips *
+			plan.ktxLayers *
+			plan.faces
+		);
+
+		for (uint32_t r = 0; r < residentMips; ++r)
+		{
+			const uint32_t mip = firstMip + r;
+
+			const uint32_t mipWidth = std::max(1u, baseWidth >> mip);
+			const uint32_t mipHeight = plan.is1D
+				? 1u
+				: std::max(1u, baseHeight >> mip);
+			const uint32_t mipDepth = plan.is3D
+				? std::max(1u, baseDepth >> mip)
+				: 1u;
+
+			for (uint32_t layer = 0; layer < plan.ktxLayers; ++layer)
+			{
+				for (uint32_t face = 0; face < plan.faces; ++face)
+				{
+					ktx_size_t offset = 0;
+
+					const KTX_error_code result =
+						ktxTexture2_GetImageOffset(
+							&texture,
+							mip,
+							layer,
+							face,
+							&offset
+						);
+
+					if (result != KTX_SUCCESS)
+					{
+						throw std::runtime_error(
+							"ktxTexture2_GetImageOffset failed."
+						);
+					}
+
+					VkBufferImageCopy region{};
+					region.bufferOffset = static_cast<VkDeviceSize>(offset);
+					region.bufferRowLength = 0;
+					region.bufferImageHeight = 0;
+					region.imageSubresource.aspectMask =
+						VK_IMAGE_ASPECT_COLOR_BIT;
+					// Remap: image level 0 == full-chain mip firstMip.
+					region.imageSubresource.mipLevel = r;
+					region.imageSubresource.baseArrayLayer =
+						plan.is3D ? 0 : layer * plan.faces + face;
+					region.imageSubresource.layerCount = 1;
+					region.imageOffset = { 0, 0, 0 };
+					region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+					plan.regions.push_back(region);
+				}
+			}
+		}
+
+		return plan;
 	}
 
-	return plan;
-}
-
-// VkImageCreateInfo shared by the streaming create + retarget paths.
-// Matches the fixed-function choices of CreateTexture(ktx...).
-VkImageCreateInfo KtxStreamVkImageCI(const KtxStreamPlan& plan, bool hostTransfer)
-{
-	VkImageCreateInfo imageCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-
-	imageCI.flags = plan.isCubemap
-		? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
-		: 0;
-
-	// Note: cubemaps are 2D images (cube-compatible), like the
-	// non-streamed CreateTexture(ktx...) path above.
-	imageCI.imageType = plan.is1D
-		? VK_IMAGE_TYPE_1D
-		: (plan.is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D);
-
-	imageCI.format = plan.vkFormat;
-	imageCI.extent = { plan.width, plan.height, plan.depth };
-	imageCI.mipLevels = plan.residentMips;
-	imageCI.arrayLayers = plan.arrayLayers;
-	imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
-	imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imageCI.usage = toVkImageUsageFlags(plan.usage);
-	if (hostTransfer)
+	// VkImageCreateInfo shared by the streaming create + retarget paths.
+	// Matches the fixed-function choices of CreateTexture(ktx...).
+	VkImageCreateInfo KtxStreamVkImageCI(const KtxStreamPlan& plan, bool hostTransfer)
 	{
-		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+		VkImageCreateInfo imageCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+
+		imageCI.flags = plan.isCubemap
+			? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+			: 0;
+
+		// Note: cubemaps are 2D images (cube-compatible), like the
+		// non-streamed CreateTexture(ktx...) path above.
+		imageCI.imageType = plan.is1D
+			? VK_IMAGE_TYPE_1D
+			: (plan.is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D);
+
+		imageCI.format = plan.vkFormat;
+		imageCI.extent = { plan.width, plan.height, plan.depth };
+		imageCI.mipLevels = plan.residentMips;
+		imageCI.arrayLayers = plan.arrayLayers;
+		imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageCI.usage = toVkImageUsageFlags(plan.usage);
+		if (hostTransfer)
+		{
+			imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+		}
+		imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		return imageCI;
 	}
-	imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	return imageCI;
-}
-
-smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
-{
-	if (plan.is1D) return smvk::ImageType::Image1D;
-	if (plan.is3D) return smvk::ImageType::Image3D;
-	return smvk::ImageType::Image2D;
-}
+	smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
+	{
+		if (plan.is1D) return smvk::ImageType::Image1D;
+		if (plan.is3D) return smvk::ImageType::Image3D;
+		return smvk::ImageType::Image2D;
+	}
 
 
 } // namespace
@@ -7476,7 +7540,7 @@ smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderMod
 }
 [[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::VulkanResourceManager::CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName)
 {
-	VkDescriptorPoolCreateInfo poolInfo{ };
+	VkDescriptorPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = 1000;
 	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; // required
@@ -7518,99 +7582,99 @@ smvk::StringViewT smvk::VulkanResourceManager::CopyResourceName(const char* name
 // hooks. Render thread only (the ListTextureInfos forEach contract).
 // ---------------------------------------------------------------------------
 namespace smvk {
-static MemoryCategory ImageLedgerCategory(const ImageUsage& usage) {
-	// Attachment-usage images are TARGETS (rendergraph color/depth, the
-	// thin G-buffer Storage images); everything else (sampled content,
-	// transfer-only) is CONTENT. TransferSrc/Dst never implies a target
-	// (content images keep their upload flags after staging).
-	const bool target = (usage & (ImageUsage::ColorAttachment
-		| ImageUsage::DepthStencilAttachment
-		| ImageUsage::Storage
-		| ImageUsage::InputAttachment)) != ImageUsage::None;
-	return target ? MemoryCategory::ImageTarget : MemoryCategory::ImageContent;
-}
+	static MemoryCategory ImageLedgerCategory(const ImageUsage& usage) {
+		// Attachment-usage images are TARGETS (rendergraph color/depth, the
+		// thin G-buffer Storage images); everything else (sampled content,
+		// transfer-only) is CONTENT. TransferSrc/Dst never implies a target
+		// (content images keep their upload flags after staging).
+		const bool target = (usage & (ImageUsage::ColorAttachment
+			| ImageUsage::DepthStencilAttachment
+			| ImageUsage::Storage
+			| ImageUsage::InputAttachment)) != ImageUsage::None;
+		return target ? MemoryCategory::ImageTarget : MemoryCategory::ImageContent;
+	}
 
-std::array<uint64_t, kMemoryCategoryCount>
-VulkanResourceManager::GetMemoryLedger() {
-	std::array<uint64_t, kMemoryCategoryCount> out{};
-	out.fill(0);
-	images_.forEachHandle([&](ImageHandle handle) {
-		const Image* image = images_.get(handle);
-		if (!image || image->allocBytes == 0)
-			return; // untracked (heap-placed/external) - the remainder row
-		out[size_t(ImageLedgerCategory(image->usage))]
-			+= image->allocBytes;
-	});
-	buffers_.forEachHandle([&](BufferHandle handle) {
-		const Buffer* buffer = buffers_.get(handle);
-		if (!buffer || buffer->allocBytes == 0)
-			return;
-		// BufferType maps 1:1 onto the ledger categories (the enum orders
-		// match: Index, Vertex, Uniform, Storage, Indirect, Transfer*,
-		// Staging -> Staging).
-		size_t cat = size_t(MemoryCategory::Staging);
-		switch (buffer->type) {
-		case BufferType_Index: cat = size_t(MemoryCategory::Index); break;
-		case BufferType_Vertex: cat = size_t(MemoryCategory::Vertex); break;
-		case BufferType_Uniform: cat = size_t(MemoryCategory::Uniform); break;
-		case BufferType_Storage: cat = size_t(MemoryCategory::Storage); break;
-		case BufferType_Indirect: cat = size_t(MemoryCategory::Indirect); break;
-		default: break; // TransferSrc/Dst/Staging
-		}
-		out[cat] += buffer->allocBytes;
-	});
-	return out;
-}
+	std::array<uint64_t, kMemoryCategoryCount>
+		VulkanResourceManager::GetMemoryLedger() {
+		std::array<uint64_t, kMemoryCategoryCount> out{};
+		out.fill(0);
+		images_.forEachHandle([&](ImageHandle handle) {
+			const Image* image = images_.get(handle);
+			if (!image || image->allocBytes == 0)
+				return; // untracked (heap-placed/external) - the remainder row
+			out[size_t(ImageLedgerCategory(image->usage))]
+				+= image->allocBytes;
+		});
+		buffers_.forEachHandle([&](BufferHandle handle) {
+			const Buffer* buffer = buffers_.get(handle);
+			if (!buffer || buffer->allocBytes == 0)
+				return;
+			// BufferType maps 1:1 onto the ledger categories (the enum orders
+			// match: Index, Vertex, Uniform, Storage, Indirect, Transfer*,
+			// Staging -> Staging).
+			size_t cat = size_t(MemoryCategory::Staging);
+			switch (buffer->type) {
+			case BufferType_Index: cat = size_t(MemoryCategory::Index); break;
+			case BufferType_Vertex: cat = size_t(MemoryCategory::Vertex); break;
+			case BufferType_Uniform: cat = size_t(MemoryCategory::Uniform); break;
+			case BufferType_Storage: cat = size_t(MemoryCategory::Storage); break;
+			case BufferType_Indirect: cat = size_t(MemoryCategory::Indirect); break;
+			default: break; // TransferSrc/Dst/Staging
+			}
+			out[cat] += buffer->allocBytes;
+		});
+		return out;
+	}
 
-std::vector<MemoryAllocInfo> VulkanResourceManager::GetMemoryAllocInfos() {
-	std::vector<MemoryAllocInfo> out;
-	// ALL images, tracked or not: bytes == 0 marks an untracked backing
-	// (heap-placed design-B target / external) — the display computes an
-	// estimate from the geometry. The LEDGER sums (GetMemoryLedger)
-	// count tracked bytes only; this list is the complete MAP.
-	images_.forEachHandle([&](ImageHandle handle) {
-		const Image* image = images_.get(handle);
-		if (!image)
-			return;
-		MemoryAllocInfo info{};
-		info.name = image->name;
-		info.category = ImageLedgerCategory(image->usage);
-		info.bytes = image->allocBytes;
-		info.isImage = true;
-		info.extent = image->extent;
-		info.format = image->format;
-		info.samples = image->samples;
-		info.mipLevels = image->mipLevels;
-		info.arrayLayers = image->arrayLayers;
-		out.push_back(info);
-	});
-	buffers_.forEachHandle([&](BufferHandle handle) {
-		const Buffer* buffer = buffers_.get(handle);
-		if (!buffer || buffer->allocBytes == 0)
-			return;
-		MemoryAllocInfo info{};
-		info.name = buffer->name;
-		info.bytes = buffer->allocBytes;
-		info.isImage = false;
-		// Category: same mapping as GetMemoryLedger.
-		switch (buffer->type) {
-		case BufferType_Index:
-			info.category = MemoryCategory::Index; break;
-		case BufferType_Vertex:
-			info.category = MemoryCategory::Vertex; break;
-		case BufferType_Uniform:
-			info.category = MemoryCategory::Uniform; break;
-		case BufferType_Storage:
-			info.category = MemoryCategory::Storage; break;
-		case BufferType_Indirect:
-			info.category = MemoryCategory::Indirect; break;
-		default:
-			info.category = MemoryCategory::Staging; break;
-		}
-		out.push_back(info);
-	});
-	return out;
-}
+	std::vector<MemoryAllocInfo> VulkanResourceManager::GetMemoryAllocInfos() {
+		std::vector<MemoryAllocInfo> out;
+		// ALL images, tracked or not: bytes == 0 marks an untracked backing
+		// (heap-placed design-B target / external) — the display computes an
+		// estimate from the geometry. The LEDGER sums (GetMemoryLedger)
+		// count tracked bytes only; this list is the complete MAP.
+		images_.forEachHandle([&](ImageHandle handle) {
+			const Image* image = images_.get(handle);
+			if (!image)
+				return;
+			MemoryAllocInfo info{};
+			info.name = image->name;
+			info.category = ImageLedgerCategory(image->usage);
+			info.bytes = image->allocBytes;
+			info.isImage = true;
+			info.extent = image->extent;
+			info.format = image->format;
+			info.samples = image->samples;
+			info.mipLevels = image->mipLevels;
+			info.arrayLayers = image->arrayLayers;
+			out.push_back(info);
+		});
+		buffers_.forEachHandle([&](BufferHandle handle) {
+			const Buffer* buffer = buffers_.get(handle);
+			if (!buffer || buffer->allocBytes == 0)
+				return;
+			MemoryAllocInfo info{};
+			info.name = buffer->name;
+			info.bytes = buffer->allocBytes;
+			info.isImage = false;
+			// Category: same mapping as GetMemoryLedger.
+			switch (buffer->type) {
+			case BufferType_Index:
+				info.category = MemoryCategory::Index; break;
+			case BufferType_Vertex:
+				info.category = MemoryCategory::Vertex; break;
+			case BufferType_Uniform:
+				info.category = MemoryCategory::Uniform; break;
+			case BufferType_Storage:
+				info.category = MemoryCategory::Storage; break;
+			case BufferType_Indirect:
+				info.category = MemoryCategory::Indirect; break;
+			default:
+				info.category = MemoryCategory::Staging; break;
+			}
+			out.push_back(info);
+		});
+		return out;
+	}
 } // namespace smvk
 
 [[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(BufferHandle  handle) {
@@ -7722,12 +7786,34 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 	std::vector<DeferredTask> ready;
 	{
 		std::lock_guard<std::mutex> lock(m_deferredMutex);
-		auto it = m_deferredTasks.begin();
-		while (it != m_deferredTasks.end() && it->isReady())
-			++it;
-		ready.assign(std::make_move_iterator(m_deferredTasks.begin()),
-			std::make_move_iterator(it));
-		m_deferredTasks.erase(m_deferredTasks.begin(), it);
+		// Drain EVERY ready task, not just the ready PREFIX: tasks key on
+		// different timelines (the graphics point, per-submitter command
+		// handles), so an unready EARLIER task must not hold back ready
+		// LATER ones (the old prefix drain retained memory behind a
+		// stalled head for no reason). Relative order is PRESERVED among
+		// the drained tasks: a same-timeline pair queued as destroy-then-
+		// free (the FIFO pairing the range frees rely on — see
+		// ReleaseTargetHeapClaim / ReleaseTransientPlacement / the mesh
+		// heap frees in Cluster::DestroyMesh) can never invert, because
+		// the retire values are monotonic (the free's point being ready
+		// implies the earlier destroy's point was ready too) and the
+		// partition below is stable.
+		ready.reserve(m_deferredTasks.size());
+		auto keep = m_deferredTasks.begin();
+		for (auto it = m_deferredTasks.begin(); it != m_deferredTasks.end(); ++it) {
+			if (it->isReady()) {
+				ready.push_back(std::move(*it));
+			} else {
+				// keep != it guard: a self move-assign of the move-only
+				// packaged_task is not guaranteed valid for self-move, and
+				// the prefix of survivors before the first ready task
+				// would do exactly that (keep == it there).
+				if (keep != it)
+					*keep = std::move(*it);
+				++keep;
+			}
+		}
+		m_deferredTasks.erase(keep, m_deferredTasks.end());
 	}
 	// Run ready tasks OUTSIDE the lock: tasks may enqueue more deferred
 	// work (destroy -> DeferDestroy -> AddDeferredTask), which previously
@@ -7764,45 +7850,42 @@ void smvk::VulkanResourceManager::NotifyGraphicsSubmit(VkSemaphore semaphore, ui
 	m_lastGraphicsSemaphore = semaphore;
 	m_lastGraphicsValue = value;
 }
+VkDevice smvk::VulkanResourceManager::VkDeviceHandle() const
+{
+	// Test support only (see the header contract): the device handle itself
+	// stays file-internal; the retirement fuzzer is the sole consumer.
+	return device_;
+}
 void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task)
 {
 	// ---------------------------------------------------------------------------
-	// KNOWN DESIGN RISK (review finding 2.3 - documented, deliberately NOT
-	// fixed yet): the retire point below is the last published GRAPHICS
-	// timeline point, which does not model EVERY queue that can still
-	// reference the destroyed resource:
+	// RETIRE MARGIN: the retire point below is the last published GRAPHICS
+	// timeline point + MAX_FRAMES_IN_FLIGHT. The swapchain's timeline signals
+	// exactly once per completed frame, so the margin is literally "this many
+	// frames later" - and that span structurally covers every producer that
+	// can still reference the destroyed resource, WITHOUT the exact per-queue
+	// join or the destroy-timing API contract the old exact-point key needed:
 	//
-	//   (a) ASYNC COMPUTE submits issued after the published point: the C
-	//       chain is covered only indirectly - its C2G signal is waited by
-	//       the NEXT main submit, which then publishes a LATER point. A
-	//       deferred destroy keyed on point P can retire while a C submit
-	//       that started before P's publish but signals C2G after it is
-	//       still running.
+	//   (a) ASYNC COMPUTE legs issued around the published point: a C chain's
+	//       C2G signal is waited by the NEXT main submit, so every C work item
+	//       that could reference the resource completes strictly before the
+	//       NEXT frame's timeline point - well inside the margin.
 	//   (b) TRANSFER batches flushed after the published point: the swapchain
-	//       waits the NEWEST transfer point before G1/G2/main of the next
-	//       frame, but THIS retire point predates that wait - a worker
-	//       flush (or the acquire-barrier graphics submit the streamer
-	//       makes from a non-render thread) landing between the point's
-	//       publish and the destroy is not ordered behind the retire.
-	//   (c) Command buffers still RECORDING on another thread: a recording
-	//       has no timeline point yet. The waitAll() drain below covers the
-	//       STREAMER's recordings only - the RMI's own submitters (readback
-	//       copies, one-off dumps) and any future external Submitter use
-	//       are not drained and not represented by any point.
+	//       waits the NEWEST transfer point before the next frame's
+	//       G1/G2/main - again inside the margin. (The streamer drain below
+	//       covers the already-pending batches synchronously regardless.)
+	//   (c) Command buffers still RECORDING at destroy time: a recording
+	//       submits at the next point and completes inside the margin, so
+	//       even a MID-FRAME destroy (previously forbidden by the
+	//       "destroy only between frames" API contract) stays safe.
 	//
-	// Why this is a risk on paper but not a proven use-after-free today:
-	// every current destroy site runs on the render thread between frames
-	// (after the frame's submits + flushes), so the published point does
-	// cover the producers that exist in practice. The gap only opens for
-	// cross-thread or mid-frame destroys, which the current callers never
-	// issue. Treat that as the API contract until the fix lands: DO NOT
-	// destroy from worker threads or mid-frame from new call sites.
-	//
-	// THE FIX, when taken: key the retirement on the JOIN of per-queue
-	// last-use points - max over {graphics, compute, transfer} points at
-	// defer time, with per-submitter drain for still-recording buffers -
-	// or track per-resource last-use points at every submit site. Do not
-	// bolt more single-queue special cases onto this path.
+	// The margin buys this by holding every deferred resource (buffers,
+	// images/views, mesh heap ranges, bindless slots) up to MAX_FRAMES_IN_FLIGHT
+	// extra frames - bounded, and negligible against the 512 MiB mesh heaps.
+	// The alternative (the exact join: max over per-queue last-use points plus
+	// a per-submitter drain of still-recording buffers) frees sooner but
+	// needs per-queue tracking at every submit site; take it only if the
+	// retention ever shows up as a real cost.
 	// ---------------------------------------------------------------------------
 	// Unflushed streamer batches still RECORD (transfer cmd) or hold
 	// pending acquire barriers referencing the resource being destroyed.
@@ -7819,9 +7902,12 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 		task();
 		return;
 	}
-	// Retire values are monotonic, so FIFO prefix-drain in
-	// ProcessDeferrredTasks stays correct.
-	AddDeferredTask(std::move(task), TimelinePoint{ m_lastGraphicsSemaphore, m_lastGraphicsValue });
+	// Retire values are monotonic, so the FIFO pairing (destroy-then-free
+	// at the same keyed point - see ReleaseTargetHeapClaim /
+	// ReleaseTransientPlacement / the mesh heap frees) stays correct.
+	AddDeferredTask(std::move(task), TimelinePoint{
+		m_lastGraphicsSemaphore,
+		m_lastGraphicsValue + MAX_FRAMES_IN_FLIGHT });
 }
 void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
@@ -7884,7 +7970,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		if (!view->image.empty()) {
 			if (const Image* img = images_.get(view->image))
 				pending.isMultisample =
-					img->samples != SampleCount::Count1;
+				img->samples != SampleCount::Count1;
 		}
 
 		// STORAGE descriptors require STORAGE usage on the image
@@ -7893,7 +7979,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		if (!view->image.empty()) {
 			if (const Image* img = images_.get(view->image))
 				pending.storageCapable =
-					(img->usage & ImageUsage::Storage) != ImageUsage::None;
+				(img->usage & ImageUsage::Storage) != ImageUsage::None;
 		}
 
 		imageWrites.push_back(pending);
@@ -8143,13 +8229,16 @@ void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
 	}
 }
 
-// Compute this frame's EngineGlobals from the acquire rhythm, upload them
-// into the frame's slice and point the engine-globals descriptor at it.
-// Called by the swapchain after the in-flight slot retires (timeline wait),
-// before any pass records, so:
-//   - the slice is safe to overwrite (previous use completed), and
-//   - the update-after-bind descriptor rewrite is visible to every command
-//     recorded this frame, while already-recorded frames keep their slice.
+// Compute this frame's EngineGlobals from the acquire rhythm and upload them
+// into the frame's slice. Called by the swapchain after the in-flight slot
+// retires (timeline wait), before any pass records, so the slice is safe to
+// overwrite (previous use completed). The DESCRIPTOR side never changes: this
+// flight's set's kBinding_EngineGlobals permanently points at this slice
+// (baked once at init - see the set allocation), so sibling flights still
+// executing keep reading THEIR OWN slices - no update-after-bind rewrite
+// mid-flight. (The old shared-set rewrite was visible to already-submitted
+// command buffers, so every in-flight frame read the newest frame's globals
+// instead of its own.)
 void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
 {
 	assert(!m_engineGlobalsBuffer.empty());
@@ -8189,23 +8278,6 @@ void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
 		0,
 		sliceOffset
 	);
-
-	const Buffer* buffer = buffers_.get(m_engineGlobalsBuffer);
-	assert(buffer && buffer->vkBuffer != VK_NULL_HANDLE);
-
-	VkDescriptorBufferInfo info{};
-	info.buffer = buffer->vkBuffer;
-	info.offset = sliceOffset;
-	info.range = sizeof(smvk::EngineGlobals);
-
-	VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	write.dstSet = defaultDescriptorSets_[0]; // single global bindless set instance
-	write.dstBinding = smvk::Bindings::kBinding_EngineGlobals;
-	write.dstArrayElement = 0;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write.descriptorCount = 1;
-	write.pBufferInfo = &info;
-	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 }
 
 [[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const
@@ -8499,18 +8571,38 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle h
 	const uint32_t slot =
 		bindless->descriptorIndex;
 
-	ctx->bindlessImages_.destroy(handle);
-	// Retire the descriptor write with the nil image (see the method
-	// comment): UpdateDescriptors only rewrites slots with LIVE entries,
-	// so without this the freed slot kept pointing at the view being
-	// destroyed below — any stale slot reference (material texture slots,
-	// editor live-view relaunch churn, one-frame-late pushes) sampled a
-	// destroyed VkImageView and took the device down (the [MATSLOT]-class
-	// device death; the editor's relaunch path frees ~dozens of slots per
-	// boot, so the window grew with every resize until it fired).
-	ctx->NullBindlessSlotWrites(slot);
-	// If descriptors are replicated per-frame.
-	ctx->m_needToUpdateTextures = true;
+	// RETIRE the whole slot release — the pool entry (the slot HOLD), the
+	// nil-image null write and the update flag — on the graphics timeline,
+	// not in place. An in-flight frame can still be sampling this slot:
+	// until the retire point completes, the entry stays LIVE so
+	// UpdateDescriptors keeps the slot pointing at the STILL-ALIVE old
+	// view (the view's own destroy queues right behind this task in the
+	// same FIFO batch — see destroy(TextureHandle)), and every in-flight
+	// frame keeps sampling the texture it was recorded with. The old
+	// immediate release let the next CreateBindlessImage claim the slot
+	// while old frames were still reading it (an in-flight frame sampled
+	// the NEW texture or the nil image for a frame - the bindless-slot
+	// ABA hazard, a one-frame flicker under churn).
+	//
+	// The null write itself (see the method comment on
+	// NullBindlessSlotWrites): UpdateDescriptors only rewrites slots with
+	// LIVE entries, so without it the freed slot would keep pointing at
+	// the view being destroyed by the task queued right after this one —
+	// any stale slot reference (material texture slots, editor live-view
+	// relaunch churn, one-frame-late pushes) sampled a destroyed
+	// VkImageView and took the device down (the [MATSLOT]-class device
+	// death; the editor's relaunch path frees ~dozens of slots per boot,
+	// so the window grew with every resize until it fired). Retiring the
+	// write (not just the entry) keeps that ordering: the nil write lands
+	// BEFORE the companion view destroy runs in the same FIFO drain, so
+	// no window ever exposes a dying VkImageView through the table.
+	std::packaged_task<void()> task([ctx, handle, slot] {
+		ctx->bindlessImages_.destroy(handle);
+		ctx->NullBindlessSlotWrites(slot);
+		// If descriptors are replicated per-frame.
+		ctx->m_needToUpdateTextures = true;
+	});
+	ctx->DeferDestroy(std::move(task));
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 {
@@ -8533,14 +8625,16 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 
 	ctx->textures_.destroy(handle);
 }
-namespace smvk { namespace {
-void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
-	Buffer db = *ctx->buffers_.get(handle);
-	ctx->RemoveBufferSyncState(handle);
-	vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
-	ctx->buffers_.destroy(handle);
-}
-} } // namespace smvk::<anonymous>
+namespace smvk {
+	namespace {
+		void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
+			Buffer db = *ctx->buffers_.get(handle);
+			ctx->RemoveBufferSyncState(handle);
+			vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
+			ctx->buffers_.destroy(handle);
+		}
+	}
+} // namespace smvk::<anonymous>
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
 	if (handle.empty()) { return; };
 	// Buffers are referenced by in-flight draws/indirect args; retire on the
@@ -8566,72 +8660,74 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle ha
 	vkDestroyShaderModule(device_, sm->module, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-namespace smvk { namespace {
-void DestroyImageNow(VulkanResourceManager* ctx, ImageHandle handle)
-{
-	ctx->RemoveImageSyncState(handle);
-	auto* image = ctx->images_.get(handle);
-	assert(image);
+namespace smvk {
+	namespace {
+		void DestroyImageNow(VulkanResourceManager* ctx, ImageHandle handle)
+		{
+			ctx->RemoveImageSyncState(handle);
+			auto* image = ctx->images_.get(handle);
+			assert(image);
 
-	// ImageViews must be destroyed first. Holds because view teardown is
-	// always queued before image teardown with the same retire point and the
-	// queue drains FIFO (see destroy(TextureHandle), FreeBlurTarget, etc.).
-	assert(
-		image->liveViewCount == 0 &&
-		"Destroying Image while ImageViews still reference it"
-	);
-
-	if (image->ownership == ResourceOwnership::Owned &&
-		image->vkImage != VK_NULL_HANDLE)
-	{
-		if (image->transientHeap) {
-			// Heap-placed (rendergraph design B): no VmaAllocation - the
-			// packed-range memory is the graph's heap block (frees
-			// wholesale with the graph). Plain vkDestroyImage only.
-			assert(image->allocation == VK_NULL_HANDLE);
-			vkDestroyImage(device_, image->vkImage, nullptr);
-		}
-		else {
-			vmaDestroyImage(
-				ctx->m_allocator,
-				image->vkImage,
-				image->allocation
+			// ImageViews must be destroyed first. Holds because view teardown is
+			// always queued before image teardown with the same retire point and the
+			// queue drains FIFO (see destroy(TextureHandle), FreeBlurTarget, etc.).
+			assert(
+				image->liveViewCount == 0 &&
+				"Destroying Image while ImageViews still reference it"
 			);
+
+			if (image->ownership == ResourceOwnership::Owned &&
+				image->vkImage != VK_NULL_HANDLE)
+			{
+				if (image->transientHeap) {
+					// Heap-placed (rendergraph design B): no VmaAllocation - the
+					// packed-range memory is the graph's heap block (frees
+					// wholesale with the graph). Plain vkDestroyImage only.
+					assert(image->allocation == VK_NULL_HANDLE);
+					vkDestroyImage(device_, image->vkImage, nullptr);
+				}
+				else {
+					vmaDestroyImage(
+						ctx->m_allocator,
+						image->vkImage,
+						image->allocation
+					);
+				}
+			}
+
+			ctx->images_.destroy(handle);
+		}
+		void DestroyImageViewNow(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
+		{
+			auto* view = ctx->imageViews_.get(handle);
+			assert(view);
+
+			if (view->vkView != VK_NULL_HANDLE &&
+				view->ownership != ResourceOwnership::External)
+			{
+				vkDestroyImageView(
+					device_,
+					view->vkView,
+					nullptr
+				);
+			}
+
+			// Maintain parent dependency count.
+			if (!view->image.empty())
+			{
+				auto* image =
+					ctx->images_.get(view->image);
+
+				assert(image);
+				assert(image->liveViewCount > 0);
+
+				--image->liveViewCount;
+			}
+
+			ctx->imageViews_.destroy(handle);
 		}
 	}
-
-	ctx->images_.destroy(handle);
-}
-void DestroyImageViewNow(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
-{
-	auto* view = ctx->imageViews_.get(handle);
-	assert(view);
-
-	if (view->vkView != VK_NULL_HANDLE &&
-		view->ownership != ResourceOwnership::External)
-	{
-		vkDestroyImageView(
-			device_,
-			view->vkView,
-			nullptr
-		);
-	}
-
-	// Maintain parent dependency count.
-	if (!view->image.empty())
-	{
-		auto* image =
-			ctx->images_.get(view->image);
-
-		assert(image);
-		assert(image->liveViewCount > 0);
-
-		--image->liveViewCount;
-	}
-
-	ctx->imageViews_.destroy(handle);
-}
-} } // namespace smvk::<anonymous>
+} // namespace smvk::<anonymous>
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
 {
 	if (handle.empty())
@@ -8759,9 +8855,9 @@ inline void ImageBarrier(
 
 // Submitter – now uses thread-local CommandBufferPool
 namespace {
-// Device-loss post-mortem (VK_EXT_device_fault) — defined below, called
-// from the acquire-loss path and the loud aborts in Submitter::purge.
-void DumpDeviceFaultInfo();
+	// Device-loss post-mortem (VK_EXT_device_fault) — defined below, called
+	// from the acquire-loss path and the loud aborts in Submitter::purge.
+	void DumpDeviceFaultInfo();
 }
 inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 	: core_(core), m_queueFamilyIndex(queueFamilyIndex)
@@ -9079,32 +9175,32 @@ namespace { void DumpDeviceFaultInfo(); }
 // only — never hot). The mirror is fclose()d before abort() because abort
 // does not flush stdio buffers (an unflushed file would stay empty).
 namespace {
-static FILE* g_fatalMirror = nullptr;
-void FatalMirrorOpen() {
-	if (!g_fatalMirror)
-		g_fatalMirror = std::fopen("tourmaline_fatal.log", "a");
-}
-void FatalMirrorClose() {
-	if (g_fatalMirror) {
-		std::fclose(g_fatalMirror);
-		g_fatalMirror = nullptr;
+	static FILE* g_fatalMirror = nullptr;
+	void FatalMirrorOpen() {
+		if (!g_fatalMirror)
+			g_fatalMirror = std::fopen("tourmaline_fatal.log", "a");
 	}
-}
-void FatalPrintf(const char* fmt, ...) {
-	va_list a1, a2;
-	va_start(a1, fmt);
-	va_copy(a2, a1);
-	std::vfprintf(stderr, fmt, a1);
-	if (g_fatalMirror)
-		std::vfprintf(g_fatalMirror, fmt, a2);
-	va_end(a1);
-	va_end(a2);
-}
-void FatalFlush() {
-	std::fflush(stderr);
-	if (g_fatalMirror)
-		std::fflush(g_fatalMirror);
-}
+	void FatalMirrorClose() {
+		if (g_fatalMirror) {
+			std::fclose(g_fatalMirror);
+			g_fatalMirror = nullptr;
+		}
+	}
+	void FatalPrintf(const char* fmt, ...) {
+		va_list a1, a2;
+		va_start(a1, fmt);
+		va_copy(a2, a1);
+		std::vfprintf(stderr, fmt, a1);
+		if (g_fatalMirror)
+			std::vfprintf(g_fatalMirror, fmt, a2);
+		va_end(a1);
+		va_end(a2);
+	}
+	void FatalFlush() {
+		std::fflush(stderr);
+		if (g_fatalMirror)
+			std::fflush(g_fatalMirror);
+	}
 }
 void smvk::Submitter::purge()
 {
@@ -9184,8 +9280,8 @@ void smvk::Submitter::purge()
 			vkResultToString(r),
 			vkResultToString(idleResult),
 			idleResult == VK_ERROR_DEVICE_LOST
-				? "device already lost before first use"
-				: "driver query path poisoned on a live device");
+			? "device already lost before first use"
+			: "driver query path poisoned on a live device");
 		FatalFlush();
 		DumpDeviceFaultInfo();
 		FatalMirrorClose();
@@ -9469,7 +9565,7 @@ void smvk::VulkanSwapchain::Recreate() {
 		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 		for (size_t i = 0; i < images_.size(); ++i) {
 			if (vkCreateSemaphore(device_, &info, nullptr,
-					&renderFinishedSemaphores_[i]) != VK_SUCCESS) {
+				&renderFinishedSemaphores_[i]) != VK_SUCCESS) {
 				throw std::runtime_error("Failed to recreate render-finished semaphore.");
 			}
 		}
@@ -9501,7 +9597,7 @@ void smvk::VulkanSwapchain::Recreate() {
 		inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
 		for (size_t i = 0; i < framesInFlight_; ++i) {
 			if (vkCreateSemaphore(device_, &sinfo, nullptr,
-					&imageAvailableSemaphores_[i]) != VK_SUCCESS
+				&imageAvailableSemaphores_[i]) != VK_SUCCESS
 				|| vkCreateFence(device_, &finfo, nullptr,
 					&inFlightFences_[i]) != VK_SUCCESS) {
 				throw std::runtime_error("Failed to recreate per-frame sync objects.");
@@ -9861,92 +9957,92 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 	}
 }
 namespace {
-const char* DeviceFaultAddressTypeName(VkDeviceFaultAddressTypeEXT type) {
-	switch (type) {
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "NONE";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "READ_INVALID";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "WRITE_INVALID";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "EXECUTE_INVALID";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "IP_UNKNOWN";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "IP_INVALID";
-	case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "IP_FAULT";
-	default: return "???";
+	const char* DeviceFaultAddressTypeName(VkDeviceFaultAddressTypeEXT type) {
+		switch (type) {
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "NONE";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "READ_INVALID";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "WRITE_INVALID";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "EXECUTE_INVALID";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "IP_UNKNOWN";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "IP_INVALID";
+		case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "IP_FAULT";
+		default: return "???";
+		}
 	}
-}
-// Dumps VK_EXT_device_fault info for a lost device. Must run before the
-// device is destroyed (fault state dies with it); safe to call when the
-// extension is absent (no-op). Called from the acquire-loss path below.
-// FatalPrintf routes every line to stderr AND the tourmaline_fatal.log
-// mirror (GUI runs have no visible console — stderr alone is blind).
-void DumpDeviceFaultInfo() {
-	FatalPrintf("[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
-		g_deviceFaultSupported ? 1 : 0, (void*)device_,
+	// Dumps VK_EXT_device_fault info for a lost device. Must run before the
+	// device is destroyed (fault state dies with it); safe to call when the
+	// extension is absent (no-op). Called from the acquire-loss path below.
+	// FatalPrintf routes every line to stderr AND the tourmaline_fatal.log
+	// mirror (GUI runs have no visible console — stderr alone is blind).
+	void DumpDeviceFaultInfo() {
+		FatalPrintf("[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
+			g_deviceFaultSupported ? 1 : 0, (void*)device_,
 #ifdef VK_EXT_device_fault
-		(void*)vkGetDeviceFaultInfoEXT);
+			(void*)vkGetDeviceFaultInfoEXT);
 #else
-		(void*)nullptr);
+			(void*)nullptr);
 #endif
-	FatalFlush();
-	if (!g_deviceFaultSupported || device_ == VK_NULL_HANDLE)
-		return;
-#ifdef VK_EXT_device_fault
-	if (!vkGetDeviceFaultInfoEXT)
-		return;
-	// Single-shot query sized by maxDeviceFaultCount (physical-device
-	// property, safe on a lost device): avoids the counts-only call with
-	// pFaultInfo=null, which AVs on this driver.
-	VkPhysicalDeviceFaultPropertiesKHR faultProps{
-		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_PROPERTIES_KHR, nullptr };
-	{
-		VkPhysicalDeviceProperties2 props2{
-			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &faultProps };
-		vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
-	}
-	const uint32_t maxInfos = faultProps.maxDeviceFaultCount != 0
-		? faultProps.maxDeviceFaultCount : 8u;
-	FatalPrintf("[DeviceFault] maxDeviceFaultCount=%u\n", maxInfos);
-	FatalFlush();
-	VkDeviceFaultCountsEXT counts{
-		VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT, nullptr };
-	std::vector<VkDeviceFaultAddressInfoEXT> addrInfos(maxInfos);
-	std::vector<VkDeviceFaultVendorInfoEXT> vendorInfos(maxInfos);
-	VkDeviceFaultInfoEXT info{
-		VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, nullptr };
-	info.pAddressInfos = addrInfos.data();
-	info.pVendorInfos = vendorInfos.data();
-	info.pVendorBinaryData = nullptr; // opaque driver blob, not fetched
-	VkResult r = vkGetDeviceFaultInfoEXT(device_, &counts, &info);
-	// VK_INCOMPLETE (positive) is expected: pVendorBinaryData is null, so
-	// the vendor binary portion is "too small" — the description + address
-	// + vendor infos are still filled. Only negative results are failures.
-	if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
-		FatalPrintf("[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
 		FatalFlush();
-		return;
-	}
-	const uint32_t nAddr = counts.addressInfoCount < maxInfos
-		? counts.addressInfoCount : maxInfos;
-	const uint32_t nVendor = counts.vendorInfoCount < maxInfos
-		? counts.vendorInfoCount : maxInfos;
-	FatalPrintf("[DeviceFault] desc='%s' %u address infos, %u vendor infos:",
-		info.description, nAddr, nVendor);
-	for (uint32_t i = 0; i < nAddr; ++i) {
-		FatalPrintf("[DeviceFault]   addr[%u] type=%s reported=0x%llx precision=0x%llx\n",
-			i, DeviceFaultAddressTypeName(addrInfos[i].addressType),
-			(unsigned long long)addrInfos[i].reportedAddress,
-			(unsigned long long)addrInfos[i].addressPrecision);
-	}
-	for (uint32_t i = 0; i < nVendor; ++i) {
-		FatalPrintf("[DeviceFault]   vendor[%u] desc='%s' faultCode=0x%llx faultData=0x%llx\n",
-			i, vendorInfos[i].description,
-			(unsigned long long)vendorInfos[i].vendorFaultCode,
-			(unsigned long long)vendorInfos[i].vendorFaultData);
-	}
-	FatalFlush();
+		if (!g_deviceFaultSupported || device_ == VK_NULL_HANDLE)
+			return;
+#ifdef VK_EXT_device_fault
+		if (!vkGetDeviceFaultInfoEXT)
+			return;
+		// Single-shot query sized by maxDeviceFaultCount (physical-device
+		// property, safe on a lost device): avoids the counts-only call with
+		// pFaultInfo=null, which AVs on this driver.
+		VkPhysicalDeviceFaultPropertiesKHR faultProps{
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_PROPERTIES_KHR, nullptr };
+		{
+			VkPhysicalDeviceProperties2 props2{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &faultProps };
+			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+		}
+		const uint32_t maxInfos = faultProps.maxDeviceFaultCount != 0
+			? faultProps.maxDeviceFaultCount : 8u;
+		FatalPrintf("[DeviceFault] maxDeviceFaultCount=%u\n", maxInfos);
+		FatalFlush();
+		VkDeviceFaultCountsEXT counts{
+			VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT, nullptr };
+		std::vector<VkDeviceFaultAddressInfoEXT> addrInfos(maxInfos);
+		std::vector<VkDeviceFaultVendorInfoEXT> vendorInfos(maxInfos);
+		VkDeviceFaultInfoEXT info{
+			VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, nullptr };
+		info.pAddressInfos = addrInfos.data();
+		info.pVendorInfos = vendorInfos.data();
+		info.pVendorBinaryData = nullptr; // opaque driver blob, not fetched
+		VkResult r = vkGetDeviceFaultInfoEXT(device_, &counts, &info);
+		// VK_INCOMPLETE (positive) is expected: pVendorBinaryData is null, so
+		// the vendor binary portion is "too small" — the description + address
+		// + vendor infos are still filled. Only negative results are failures.
+		if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+			FatalPrintf("[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
+			FatalFlush();
+			return;
+		}
+		const uint32_t nAddr = counts.addressInfoCount < maxInfos
+			? counts.addressInfoCount : maxInfos;
+		const uint32_t nVendor = counts.vendorInfoCount < maxInfos
+			? counts.vendorInfoCount : maxInfos;
+		FatalPrintf("[DeviceFault] desc='%s' %u address infos, %u vendor infos:",
+			info.description, nAddr, nVendor);
+		for (uint32_t i = 0; i < nAddr; ++i) {
+			FatalPrintf("[DeviceFault]   addr[%u] type=%s reported=0x%llx precision=0x%llx\n",
+				i, DeviceFaultAddressTypeName(addrInfos[i].addressType),
+				(unsigned long long)addrInfos[i].reportedAddress,
+				(unsigned long long)addrInfos[i].addressPrecision);
+		}
+		for (uint32_t i = 0; i < nVendor; ++i) {
+			FatalPrintf("[DeviceFault]   vendor[%u] desc='%s' faultCode=0x%llx faultData=0x%llx\n",
+				i, vendorInfos[i].description,
+				(unsigned long long)vendorInfos[i].vendorFaultCode,
+				(unsigned long long)vendorInfos[i].vendorFaultData);
+		}
+		FatalFlush();
 #else
-	(void)0;
+		(void)0;
 #endif
-}
+	}
 } // namespace
 smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
@@ -10170,7 +10266,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// that timeline (values on one Submitter timeline are monotonic).
 	const TimelinePoint uploadTp =
 		ctx_.GetStreamer() ? ctx_.GetStreamer()->lastTransferPoint()
-			: TimelinePoint{};
+		: TimelinePoint{};
 
 	// Split frames: G2 waits the compute blur (C -> G2 timeline), G1's own
 	// signal (G1 -> G2: the acquire wait + swapchain layout barrier live
@@ -10298,15 +10394,15 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			else if (result != VK_SUCCESS) {
 				throw std::runtime_error("failed to present swap chain image!");
 			}
-		DlssPclMarker(PclMarker::PresentEnd);
-		AdvanceFrame();
-		DlssEndFrame();
-		return;
-	}
-	else {
-		{
-			std::lock_guard<std::mutex> lock(mg);
-			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
+			DlssPclMarker(PclMarker::PresentEnd);
+			AdvanceFrame();
+			DlssEndFrame();
+			return;
+		}
+		else {
+			{
+				std::lock_guard<std::mutex> lock(mg);
+				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, inFlightFences_[currentFrame_]));
 				DlssPclMarker(PclMarker::RenderSubmitEnd);
 				DlssPclMarker(PclMarker::PresentStart);
 				// Same publish-on-success as the single-mutex path above.
@@ -10328,11 +10424,11 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				presentInfo.swapchainCount = 1;
 				presentInfo.pSwapchains = swapChains;
 				presentInfo.pImageIndices = &currentImageIndex_;
-			const auto presentStart = std::chrono::steady_clock::now();
-		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-			lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
-				std::chrono::steady_clock::now() - presentStart).count();
-			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+				const auto presentStart = std::chrono::steady_clock::now();
+				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+				lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - presentStart).count();
+				if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 					framebufferResized) {
 					framebufferResized = false;
 					Recreate();
@@ -10460,7 +10556,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 					.constantID = e.constantID,
 					.offset = e.offset,
 					.size = static_cast<size_t>(e.size),
-				});
+					});
 			}
 			ss.info.mapEntryCount = static_cast<uint32_t>(ss.entries.size());
 			ss.info.pMapEntries = ss.entries.data();
@@ -10510,12 +10606,12 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 			if (refl.valid) {
 				std::erase_if(attributeDescriptions,
 					[&refl](const VkVertexInputAttributeDescription& a) {
-						for (const SpirvStageInput& in
-								: refl.stageInputs)
-							if (in.location == a.location)
-								return false;
-						return true;
-					});
+					for (const SpirvStageInput& in
+						: refl.stageInputs)
+						if (in.location == a.location)
+							return false;
+					return true;
+				});
 			}
 		}
 	}
@@ -10585,36 +10681,36 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 			key.raster.rasterizerDiscardEnable,
 
 		.polygonMode =
-			// Line/Point need the fillModeNonSolid feature at device
-			// creation; clamp to Fill when it is unavailable instead of
-			// rasterizing with an unsupported mode.
-			(key.raster.polygonMode != PolygonMode::Fill && !g_fillModeNonSolid)
-			? VK_POLYGON_MODE_FILL
-			: toVkPolygonMode(
-				key.raster.polygonMode),
+		// Line/Point need the fillModeNonSolid feature at device
+		// creation; clamp to Fill when it is unavailable instead of
+		// rasterizing with an unsupported mode.
+		(key.raster.polygonMode != PolygonMode::Fill && !g_fillModeNonSolid)
+		? VK_POLYGON_MODE_FILL
+		: toVkPolygonMode(
+			key.raster.polygonMode),
 
-		.cullMode =
-			toVkCullMode(
-				key.raster.cullMode),
+	.cullMode =
+		toVkCullMode(
+			key.raster.cullMode),
 
-		.frontFace =
-			toVkFrontFace(
-				key.raster.frontFace),
+	.frontFace =
+		toVkFrontFace(
+			key.raster.frontFace),
 
-		.depthBiasEnable =
-			key.depth.depthBiasEnable,
+	.depthBiasEnable =
+		key.depth.depthBiasEnable,
 
-		.depthBiasConstantFactor =
-			key.depth.depthBiasConstantFactor,
+	.depthBiasConstantFactor =
+		key.depth.depthBiasConstantFactor,
 
-		.depthBiasClamp =
-			key.depth.depthBiasClamp,
+	.depthBiasClamp =
+		key.depth.depthBiasClamp,
 
-		.depthBiasSlopeFactor =
-			key.depth.depthBiasSlopeFactor,
+	.depthBiasSlopeFactor =
+		key.depth.depthBiasSlopeFactor,
 
-		.lineWidth =
-			key.raster.lineWidth,
+	.lineWidth =
+		key.raster.lineWidth,
 	};
 
 
@@ -11039,7 +11135,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
 				.constantID = e.constantID,
 				.offset = e.offset,
 				.size = static_cast<size_t>(e.size),
-			});
+				});
 		}
 		specInfo.mapEntryCount = static_cast<uint32_t>(specEntries.size());
 		specInfo.pMapEntries = specEntries.data();
@@ -11429,9 +11525,9 @@ smvk::RenderGraph::~RenderGraph() {
 				continue;
 			vctx.DeferDestroy(std::packaged_task<void()>(
 				[dev = device_, memory, vb] {
-					vmaDestroyVirtualBlock(vb);
-					vkFreeMemory(dev, memory, nullptr);
-				}));
+				vmaDestroyVirtualBlock(vb);
+				vkFreeMemory(dev, memory, nullptr);
+			}));
 		}
 		transientHeapOpaque_->blocks.clear();
 	}
@@ -11840,8 +11936,8 @@ bool smvk::RenderGraph::CompileTransientHeap(
 		std::vector<uint32_t>& members = bucketMembers[b];
 		std::sort(members.begin(), members.end(),
 			[&](uint32_t a, uint32_t c) {
-				return infos[a].firstUse < infos[c].firstUse;
-			});
+			return infos[a].firstUse < infos[c].firstUse;
+		});
 		struct Slot {
 			uint32_t lastUse = 0;
 			uint32_t block = ~0u;
@@ -11889,7 +11985,7 @@ bool smvk::RenderGraph::CompileTransientHeap(
 				for (uint32_t bi = 0; bi < heap.blocks.size() && !placed;
 					++bi) {
 					if (!((reqs.memoryTypeBits
-							>> heap.blocks[bi].memoryTypeIndex) & 1u))
+						>> heap.blocks[bi].memoryTypeIndex) & 1u))
 						continue;
 					VmaVirtualAllocationCreateInfo vi{};
 					vi.size = need;
@@ -11897,7 +11993,7 @@ bool smvk::RenderGraph::CompileTransientHeap(
 					VkDeviceSize off = 0;
 					VmaVirtualAllocation a = VK_NULL_HANDLE;
 					if (vmaVirtualAllocate(heap.blocks[bi].virtualBlock,
-							&vi, &a, &off) == VK_SUCCESS) {
+						&vi, &a, &off) == VK_SUCCESS) {
 						block = bi;
 						offset = off;
 						alloc = a;
@@ -11916,7 +12012,7 @@ bool smvk::RenderGraph::CompileTransientHeap(
 							if (!((reqs.memoryTypeBits >> t) & 1u))
 								continue;
 							if (!(memProps.memoryTypes[t].propertyFlags
-									& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+								& VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
 								continue;
 							typeIndex = t;
 							break;
@@ -11939,7 +12035,7 @@ bool smvk::RenderGraph::CompileTransientHeap(
 							VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr,
 							allocSize, typeIndex };
 						if (vkAllocateMemory(device_, &ai, nullptr,
-								&memory) == VK_SUCCESS)
+							&memory) == VK_SUCCESS)
 							break;
 						if (size <= need) {
 							std::fprintf(stderr,
@@ -12395,6 +12491,13 @@ struct StageTimerCtx {
 };
 void smvk::RenderGraph::Execute(Framebuffer& fb)
 {
+	// The flight this Execute records for: every pass's CommandBuffer binds
+	// defaultDescriptorSets_[flightSlot_] (see BindRenderPipeline /
+	// BindComputePipeline - the bindless sets are replicated per frame, each
+	// permanently pointing at its own EngineGlobals slice).
+	const uint32_t flight = fb.frameIndex % MAX_FRAMES_IN_FLIGHT;
+	flightSlot_ = flight;
+
 	ResolveImages();
 	ResolveImageViews();
 	ResolveBuffers();
@@ -12449,7 +12552,6 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	const uint32_t graphicsFam = vctx.core_->indices.graphicsFamily.value_or(0);
 	const uint32_t computeFam = vctx.core_->indices.computeFamily.value_or(graphicsFam);
 	const bool hasDedicatedCompute = (computeFam != graphicsFam);
-	const uint32_t flight = fb.frameIndex % MAX_FRAMES_IN_FLIGHT;
 	size_t firstAsyncPos = SIZE_MAX, lastAsyncPos = 0;
 	bool anyAsync = false;
 	uint32_t asyncPassCount = 0;
@@ -12665,7 +12767,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// Upload batches (frame uniforms, zero fills, seeds) -> G1.
 			const TimelinePoint g1Uploads =
 				vctx.GetStreamer() ? vctx.GetStreamer()->lastTransferPoint()
-					: TimelinePoint{};
+				: TimelinePoint{};
 			if (g1Uploads.valid()) {
 				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 				g1wait[g1WaitCount].semaphore = g1Uploads.semaphore;
@@ -12725,15 +12827,15 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					passes_[sIdx].IsCompute() ? " compute" : "",
 					pos != sIdx ? " MOVED" : "");
 			}
-		const auto& pu = usages[sIdx];
-		auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
-		auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
-		auto imgBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
-		auto bufBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
-		imgBarriers.reserve(4);
-		bufBarriers.reserve(4);
-		imgBarrierSrcQ.reserve(4);
-		bufBarrierSrcQ.reserve(4);
+			const auto& pu = usages[sIdx];
+			auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
+			auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
+			auto imgBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+			auto bufBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+			imgBarriers.reserve(4);
+			bufBarriers.reserve(4);
+			imgBarrierSrcQ.reserve(4);
+			bufBarrierSrcQ.reserve(4);
 			auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 			for (auto& pr : pu.images) {
 				ImageHandle h = pr.first;
@@ -12770,8 +12872,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					auto* img = vctx.images_.get(h);
 					if (!img || img->vkImage == VK_NULL_HANDLE) {
 						if (traceRg)
-						std::fprintf(stderr, "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
-							(img && img->name.valid()) ? img->name.data() : "<anon>");
+							std::fprintf(stderr, "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
+								(img && img->name.valid()) ? img->name.data() : "<anon>");
 						continue;
 					}
 					VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
@@ -13018,7 +13120,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// Unresolvable extents keep the pass-area render + implicit clear
 			// (correct, only potentially slow on tile passes).
 		}
-		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
+		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = { .offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
 		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
 		renderInfo.pStencilAttachment = hasStencil ? &depthInfo : nullptr;
 		if (pass.IsCompute()) {
@@ -13067,7 +13169,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				if (lastAsync) {
 					pSig.semaphore = vkSwap->asyncC2G_[flight];
 					pSig.value = c2gVal;
-				} else {
+				}
+				else {
 					pSig.semaphore = vkSwap->asyncG2C_[flight];
 					pSig.value = g2cVal + asyncChainIdx + 1;
 				}
@@ -13327,13 +13430,18 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		bundle.pipeline
 	);
 
+	// THIS flight's set (see RenderGraph::flightSlot_): the bindless sets are
+	// replicated per frame, each permanently pointing at its own
+	// EngineGlobals slice - binding by flight keeps in-flight siblings from
+	// seeing each other's slice (the old shared set let every in-flight
+	// frame read the newest rewrite).
 	vkCmdBindDescriptorSets(
 		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
 		vulkanCtx.defaultPipeLayout,
 		0,
 		1,
-		vulkanCtx.defaultDescriptorSets_,
+		&vulkanCtx.defaultDescriptorSets_[graph_->flightSlot_],
 		0,
 		nullptr);
 }
@@ -13518,13 +13626,16 @@ void smvk::CommandBuffer::BindComputePipeline(
 		bundle.pipeline
 	);
 
+	// THIS flight's set (see BindRenderPipeline + RenderGraph::flightSlot_):
+	// per-flight bindless sets, each permanently pointing at its own
+	// EngineGlobals slice.
 	vkCmdBindDescriptorSets(
 		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		VK_PIPELINE_BIND_POINT_COMPUTE,
 		vulkanCtx.defaultPipeLayout,
 		0,
 		1,
-		vulkanCtx.defaultDescriptorSets_,
+		&vulkanCtx.defaultDescriptorSets_[graph_->flightSlot_],
 		0,
 		nullptr);
 }

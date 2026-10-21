@@ -249,7 +249,17 @@ struct FilterPush {
 	uint64_t draws = 0;
 	uint64_t filtered = 0;
 	uint64_t indirect = 0;
-	uint32_t pad0[2] = {}; // HLSL uint2 (raw uint64 would emit Capability Int64)
+	// Deformed per-cluster bounds + per-draw deformed union tail
+	// (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
+	// kMaxBatchSlots cluster entries + the kMaxDraws drawBound tail in ONE
+	// buffer, so the one BDA addresses both regions). Skinned draws cull
+	// against THIS table instead of the static bind-pose clusters[] - the
+	// pose can move a cluster clean out of its bind-pose sphere and the
+	// static test would drop it; the draw-level fast rejects + the demand
+	// publisher read the drawBound tail instead of the static mesh unions.
+	// skinBoundsValid = 0 (no skinned cluster this frame) leaves every draw
+	// on the static tables.
+	uint64_t skinBounds = 0;
 	glm::mat4 viewProj{};
 	glm::vec3 eye{ 0.0f };
 	float pad1 = 0.0f;
@@ -259,7 +269,7 @@ struct FilterPush {
 	uint32_t batchCount = 0;
 	// GPU cull chain: kept-bit parity (0/1) for the kept-region lookup.
 	uint32_t keptParity = 0;
-	uint32_t pad2 = 0;
+	uint32_t skinBoundsValid = 0;
 	// T4 occlusion/contribution inputs (0/empty disables the tests).
 	uint64_t hzb = 0; // BDA of the MIN-reduced HZB float buffer
 	uint32_t hizWidth = 0;
@@ -294,7 +304,7 @@ struct FilterPush {
 static_assert(sizeof(FilterPush) == 256);
 
 // GfxBatchCull push (first compute pass of the frame). Must match HLSL
-// GfxBatchCullPush in gfxfilter.hlsli (192 bytes). One 128-thread
+// GfxBatchCullPush in gfxfilter.hlsli (208 bytes). One 128-thread
 // workgroup per material-sorted draw; LIVE view (seed/remainder semantics).
 struct BatchCullPush {
 	uint64_t draws = 0;        // this frame's draws (misc2.z = slot base)
@@ -316,13 +326,19 @@ struct BatchCullPush {
 	uint32_t keptParity = 0;               // 0/1 (prev = 1-parity)
 	uint32_t width = 0;                     // guard-band extent (LIVE view)
 	uint32_t height = 0;
-	// Deformed per-cluster bounds (GfxSkinBounds output, one GfxClusterData
-	// per candidate slot). Skinned draws (GFX_DRAW_SKINNED) cull against
-	// THIS table instead of the static bind-pose clusters[] - the pose can
-	// move a cluster clean out of its bind-pose sphere and the static test
-	// would drop it, punching an animated silhouette hole the seed depth
-	// fills with sky. skinBoundsValid = 0 (no skinned cluster this frame)
-	// leaves every draw on the static table.
+	// Deformed per-cluster bounds + per-draw deformed union tail
+	// (GfxSkinBounds output, one GfxSkinBoundsTable per flight — the
+	// kMaxBatchSlots cluster entries + the kMaxDraws drawBound tail in ONE
+	// buffer, so the one BDA addresses both regions). Skinned draws
+	// (GFX_DRAW_SKINNED) cull against THIS table instead of the static
+	// bind-pose clusters[] - the pose can move a cluster clean out of its
+	// bind-pose sphere and the static test would drop it, punching an
+	// animated silhouette hole the seed depth fills with sky; the
+	// draw-level fast discard reads the drawBound tail instead of the
+	// static mesh union (a whole-mesh pose swing outside the bind-pose
+	// union would otherwise drop every slot of the draw). skinBoundsValid =
+	// 0 (no skinned cluster this frame) leaves every draw on the static
+	// tables.
 	uint64_t skinBounds = 0;
 	uint32_t skinBoundsValid = 0;
 	uint32_t pad2 = 0;
@@ -333,14 +349,17 @@ static_assert(sizeof(BatchCullPush) == 208);
 // GfxSkinBounds push (runs between the skinning pass and GfxBatchCull).
 // Must match HLSL GfxSkinBoundsPush in gfxfilter.hlsli (64 bytes). One
 // 128-thread workgroup per draw; threads stride the draw's clusters and
-// rebuild each SKINNED cluster's object-space sphere from the deformed heap.
+// rebuild each SKINNED cluster's object-space sphere + normal cone from the
+// deformed heap, then fold the per-draw deformed union bound. Both output
+// regions share the one skinBounds BDA (the table's cluster slots + its
+// drawBound tail).
 struct SkinBoundsPush {
 	uint64_t draws = 0;      // this frame (misc2.z = slot base)
 	uint64_t meshes = 0;     // static per-mesh cluster ranges
 	uint64_t clusters = 0;   // static (bind-pose a/b/c/d)
 	uint64_t indices = 0;    // cluster-ordered global ids (clusterIndexBase baked in)
 	uint64_t deformed = 0;   // this frame's deformed heap
-	uint64_t skinBounds = 0; // out (per candidate slot)
+	uint64_t skinBounds = 0; // out (candidate slots + drawBound tail)
 	uint32_t deformedBase = UINT32_MAX;
 	uint32_t drawCount = 0;
 	uint32_t pad0 = 0;
@@ -349,13 +368,18 @@ struct SkinBoundsPush {
 static_assert(sizeof(SkinBoundsPush) == 64);
 
 // GfxDrawCull push (after GfxHiz, before the filter). Must match HLSL
-// GfxDrawCullPush in gfxfilter.hlsli (136 bytes). One thread per draw;
+// GfxDrawCullPush in gfxfilter.hlsli (144 bytes). One thread per draw;
 // FROZEN view (the gfx view record matrix — the debug culling freeze).
+// Skinned draws test the DEFORMED union bound (skinBounds' drawBound tail)
+// instead of the static mesh union; skinBoundsValid = 0 keeps the blanket
+// skip for skinned draws (the static bind-pose union can swing a whole
+// animated mesh outside itself — skipping only loses the fast reject).
 struct DrawCullPush {
 	uint64_t draws = 0;
 	uint64_t meshBounds = 0;   // static (object-space union bounds)
 	uint64_t cullState = 0;    // out: verdict words [0, drawCount)
 	uint64_t hzb = 0;
+	uint64_t skinBounds = 0;   // deformed unions (skinned draws; the table tail)
 	glm::mat4 viewProj{};      // FROZEN view
 	glm::vec3 eye{ 0.0f };
 	float pad1 = 0.0f;
@@ -364,9 +388,9 @@ struct DrawCullPush {
 	uint32_t width = 0;         // guard-band extent (== HZB target)
 	uint32_t height = 0;
 	uint32_t hizMips = 0;
-	uint32_t pad2 = 0;
+	uint32_t skinBoundsValid = 0; // 0: skinned draws keep the blanket skip
 };
-static_assert(sizeof(DrawCullPush) == 136);
+static_assert(sizeof(DrawCullPush) == 144);
 
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl + the shared seed
 // prologue, 40 bytes). Pushed at kFilteredVsPushOffset (the main pass'
@@ -988,10 +1012,14 @@ struct State {
 	uint64_t skinDeformedPrevBda = 0;
 	uint32_t skinPrevValid = 0;
 	// GfxSkinBounds: recomputes each SKINNED cluster's object-space sphere
+	// + normal cone (the meshopt cone convention, on the deformed FACE
+	// normals — see FitDeformedCone) and the per-draw deformed union bound
 	// from the frame's deformed heap (the static clusters[] stays bind-pose)
 	// BEFORE the batch cull reads it - so the cull sees the ANIMATED
-	// silhouette. One GfxClusterData per candidate slot, ringed per flight.
-	// Lazily created on the first frame a deformed buffer exists.
+	// silhouette. One GfxSkinBoundsTable per flight: the kMaxBatchSlots
+	// GfxClusterData candidate slots + the kMaxDraws drawBound tail (one
+	// buffer, one BDA). Lazily created on the first frame a deformed buffer
+	// exists.
 	Holder<ShaderModuleHandle> skinBoundsModule;
 	ShaderProgram skinBoundsProgram{};
 	Holder<BufferHandle> skinBoundsBuffers[MAX_FRAMES_IN_FLIGHT];
@@ -1147,6 +1175,26 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
 	const RenderView& renderView);
+// Cone fit result (the object-space fields feed Cluster's cone tail exactly):
+// degenerate = true keeps the keep-cone (axis 0 -> GfxConeCulled's len2 <
+// 1e-12 keep; the value the cluster fields must hold in that case).
+struct DeformedConeFit {
+	glm::vec3 coneApex{ 0.0f };
+	glm::vec3 coneAxis{ 0.0f }; // 0 = degenerate (the keep-cone)
+	float coneCutoff = 1.0f;
+	bool degenerate = true;
+};
+// Pure-CPU reference of GfxSkinBounds' cone rebuild (gfxskinbounds.cs.hlsl):
+// the meshopt_computeMeshletBounds cone convention, on caller-supplied
+// (deformed) triangle corners — the exact math the HLSL walks, guarded and
+// thresholded identically, exported so unit tests pin the GPU fit (the HLSL
+// is the convention-checked twin; a verdict that culls a viewpoint ANY face
+// plane still sees is a fit bug). triCorners = 3*triCount positions;
+// sphereCenter = the caller's conservative sphere center (the pass's AABB
+// center — any anchor works: validity only needs the apex behind every
+// face plane, which the maxt construction guarantees).
+DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
+	uint32_t triCount, const glm::vec3& sphereCenter);
 // Pure-CPU batch expansion: sorts draws by material, expands every
 // (draw x cluster) candidate (no pre-cull — gfxbatchcull owns verdicts),
 // fills batches/drawConstants/materialRanges/stats. No GPU upload (called
