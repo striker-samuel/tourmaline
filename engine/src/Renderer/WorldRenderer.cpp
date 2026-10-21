@@ -3535,6 +3535,35 @@ namespace engine {
 	}
 }
 
+	// One env-zone look derived from a scene env block. The map stores the
+	// sky as RELATIVE values over the resolved look (the shader tints the
+	// env colors built from the resolved block and scales them by
+	// ambientI), so an env equal to the base is the identity. Fog color,
+	// fog density and volumetric extinction are absolute. Volumetric
+	// scattering is NOT: the shader computes base * zoneFactor, so the
+	// authored absolute scattering converts to a ratio of the resolved
+	// base (1 = the same intensity as the global pass, 0 = off).
+	static smvk::envzones::EnvZone EnvZoneFromSceneEnv(const SceneEnv& e,
+		const SceneEnv& base)
+	{
+		smvk::envzones::EnvZone z{};
+		for (int c = 0; c < 3; ++c) {
+			const float d = base.skyColor[c];
+			z.skyTint[c] = d > 1e-5f ? e.skyColor[c] / d : 1.0f;
+		}
+		// MapSceneEnv feeds skyIntensity straight into iblIntensity, which
+		// is the plain path's ambient scale - so the authored sky
+		// intensity IS the zone's ambient intensity.
+		z.ambientI = e.skyIntensity;
+		z.fogColor = e.fogColor;
+		z.fogDensity = e.fogDensity;
+		z.volumetrics = base.volumetrics > 1e-5f
+			? std::max(e.volumetrics, 0.0f) / base.volumetrics
+			: 1.0f;
+		z.volumetricDensity = e.volumetricDensity;
+		return z;
+	}
+
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
 
 		const int width_ = renderExtent.width;
@@ -3903,8 +3932,13 @@ namespace engine {
 		// painted state - re-uploaded on paint cadence via UpdateTexture).
 		{
 			for (uint32_t z = 0; z < smvk::envzones::kEnvZoneMax; ++z) {
-				const smvk::envzones::EnvZone& zd =
-					m_envZones.desc.zones[z];
+				// Channel 0 is always the live resolved env, even when the
+				// scene's zones were never rebuilt after a live env edit
+				// (the panel mutates scene.environment in place).
+				const smvk::envzones::EnvZone zd = (z == 0 && m_world)
+					? EnvZoneFromSceneEnv(m_world->scene.environment,
+						m_world->scene.environment)
+					: m_envZones.desc.zones[z];
 				data.envZoneSky[z] = glm::vec4(zd.skyTint, zd.ambientI);
 				data.envZoneFog[z] = glm::vec4(zd.fogColor, zd.fogDensity);
 				data.envZoneVol[z] = glm::vec4(zd.volumetrics,
@@ -7306,10 +7340,6 @@ namespace engine {
 	// the texel borders. Failure is non-fatal (the plain env path).
 	void WorldRenderer::RebuildEnvZoneMap() {
 		smvk::envzones::EnvZoneDesc zd{};
-		// Channel 0: the resolved look (identity tint, the neutral
-		// ambient) - weight 1 outside every zone renders the authored
-		// environment exactly.
-		zd.zones[0] = smvk::envzones::EnvZone{};
 
 		struct Cand {
 			NodeId node;
@@ -7321,8 +7351,11 @@ namespace engine {
 		uint64_t coverageHash = 1469598103934665603ull;
 		if (m_world) {
 			const ::Scene& scene = m_world->scene;
-			resolved = scene.envAuthored
-				? &scene.environment : nullptr;
+			// MapSceneEnv ALWAYS builds the frame env from
+			// scene.environment (the defaults are a valid look even when
+			// the scene is not marked authored), so the zone identity
+			// must mirror that same block.
+			resolved = &scene.environment;
 			for (const auto& [node, env] : scene.envForNode) {
 				if (node >= scene.globalTransform.size())
 					continue;
@@ -7390,30 +7423,26 @@ namespace engine {
 				cands.resize(3); // the map's weight channels cap the set
 		}
 
-		// Zone definitions from the authored blocks. The GPU zone look is
-		// RELATIVE for the sky (the tint multiplies the env colors built
-		// from the resolved block, the ambient scales them): the zone's
-		// authored skyColor/skyIntensity map to multipliers of the
-		// resolved look (guarded division; the neutral ambient mirrors
-		// the identity zone's ambientI = 20). Fog + volumetrics are
-		// absolute HDR values.
+		// Zone definitions from the authored blocks (see
+		// EnvZoneFromSceneEnv for the relative/absolute split).
 		auto zoneFromEnv = [&](const SceneEnv& e) {
-			smvk::envzones::EnvZone z{};
 			const SceneEnv neutral{};
-			const SceneEnv& base = resolved ? *resolved : neutral;
-			for (int c = 0; c < 3; ++c) {
-				const float d = base.skyColor[c];
-				z.skyTint[c] = d > 1e-5f ? e.skyColor[c] / d : 1.0f;
-			}
-			z.ambientI = base.skyIntensity > 1e-5f
-				? 20.0f * (e.skyIntensity / base.skyIntensity)
-				: 20.0f;
-			z.fogColor = e.fogColor;
-			z.fogDensity = e.fogDensity;
-			z.volumetrics = e.volumetrics;
-			z.volumetricDensity = e.volumetricDensity;
-			return z;
+			return EnvZoneFromSceneEnv(e, resolved ? *resolved : neutral);
 		};
+		// Channel 0 is the fallback wherever no zone covers (and everywhere
+		// when there are no zone entities at all): it MUST mirror the
+		// RESOLVED env, never the EnvZone defaults. The map's default fill
+		// is zone 0, so a zeroed/default zone 0 silently replaced the
+		// authored fog with EnvZone{}(fogDensity 0.01) and zeroed the
+		// volumetric multiplier - enabling zones with no zones read as
+		// "fog gone" (volumetric march intensity = base * 0 =>
+		// pass-through). zoneFromEnv(resolved) is the identity: tint 1,
+		// ambient = the resolved sky intensity, fog = resolved, and the
+		// volumetric multiplier = base / base = 1.
+		zd.zones[0] = resolved ? zoneFromEnv(*resolved)
+			: smvk::envzones::EnvZone{};
+		if (!resolved)
+			zd.zones[0].volumetrics = 1.0f;
 		for (size_t i = 0; i < cands.size(); ++i) {
 			const auto it = m_world->scene.envForNode.find(cands[i].node);
 			if (it == m_world->scene.envForNode.end())
@@ -12023,6 +12052,10 @@ namespace engine {
 										" channel 0 = the resolved env). Scale = half"
 										" extents; an INFINITE axis = an unbounded slab.",
 										(unsigned)zoneCount);
+									if (zoneCount == 0)
+										ImGui::TextDisabled("No zone entities: channel 0 mirrors"
+											" the resolved env, so enabling zones is a no-op"
+											" (fog/volumetrics unchanged).");
 								}
 							}
 							if (!m_world) {
@@ -12662,7 +12695,14 @@ namespace engine {
 							ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
 							ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
 							ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
-							ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200.0f);
+							// Candela is physical: a 24 cd bulb next to a
+							// 10000 lux sun is ~1e-5 of the direct term and
+							// reads as "no lights spawned". The range
+							// reaches sunlit-scene visibility.
+							ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200000.0f, "%.0f");
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Sunlit scenes (sun = 10000 lux) need ~20000+ cd to read "
+									"against the direct term; night scenes need far less.");
 							ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
 							ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
 							ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);

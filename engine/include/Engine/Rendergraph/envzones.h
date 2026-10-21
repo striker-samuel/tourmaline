@@ -54,8 +54,9 @@ struct EnvZone {
 	// Fog (blended into the analytic fog color/density).
 	glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
 	float fogDensity = 0.01f;
-	// Volumetric fog (the raymarched pass: scattering intensity (0 =
-	// off) + extinction density, blended at the ray start).
+	// Volumetric fog (the raymarched pass: scattering scale over the
+	// pass base (0 = off, 1 = the global intensity) + extinction
+	// density, blended at the ray start).
 	float volumetrics = 0.0f;
 	float volumetricDensity = 0.015f;
 	float pad[2]{};

@@ -1656,7 +1656,11 @@ public:
 		float radius = 10.0f;      // spawn spiral radius around `center`
 		float height = 2.5f;       // base height above `center`
 		float bob = 1.2f;          // animated height oscillation (m)
-		float intensity = 24.0f;   // candela per light
+		// Candela per light. Physically-scaled: the default sun is 10000
+		// lux, so a tens-of-cd bulb is invisible outdoors (the original 24
+		// read as "the crowd does not spawn"). 20k cd reads clearly in
+		// sunlit scenes and is still sane in a night scene.
+		float intensity = 20000.0f;
 		float range = 6.0f;        // per-light cutoff radius (m)
 		float speed = 0.35f;       // orbit rad/s (0 = frozen crowd)
 		float hueSpread = 0.55f;   // per-light hue spread around baseHue
@@ -2748,7 +2752,7 @@ public:
 	// priority/innermost). m_envZonesEnabled is the master (off = every
 	// consumer takes the plain env path; the FrameUniforms envZone* block
 	// carries the UINT32_MAX sentinel index).
-	bool m_envZonesEnabled = true;
+	bool m_envZonesEnabled = false;
 	smvk::envzones::EnvZoneMap m_envZones{};
 	// Zone-entity map rebuild (Initialize + world loads). Two-tier: the
 	// zone DEFINITIONS (desc.zones -> FrameUniforms every frame) recompute
