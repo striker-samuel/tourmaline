@@ -13733,6 +13733,53 @@ namespace engine {
 			// the focused row previews IMMEDIATELY (no Enter - the nav
 			// branch below treats focus as selection). Click still works;
 			// Enter still activates (both funnel into the same select).
+			// TMP-DIAG (TOURMALINE_TEXVIEW_REPRO=<frame>): the deterministic
+			// headless replay of the texture-viewer X-close device-lost crash —
+			// open at N, select the first previewable live texture at N+2, then
+			// at N+8 drop the selection RIGHT AFTER the body rendered the
+			// preview (the exact X-close sequence: the close-click frame's
+			// body still renders once — Begin flips the flag mid-frame — so
+			// the frame's own draw data still binds the freed descriptor set
+			// when the ImGui pass renders it). Pre-fix this faulted the device
+			// (vkWaitForFences -4, tourmaline_fatal.log); post-fix (the
+			// deferred RetireUserTexture) the run must survive to the bench
+			// exit. The drop stage lives at the X-close check below (after the
+			// body). Remove with the investigation.
+			{
+				static const int reproFrame = [] {
+					const char* e = std::getenv("TOURMALINE_TEXVIEW_REPRO");
+					return e ? std::atoi(e) : -1;
+				}();
+				static int reproStage = 0;
+				if (reproFrame >= 0) {
+					if (reproStage == 0 && (int)m_frameCounter >= reproFrame) {
+						m_texDebugWindow = true;
+						reproStage = 1;
+					}
+					else if (reproStage == 1
+						&& (int)m_frameCounter >= reproFrame + 2) {
+						for (const smvk::TextureInfo& t :
+							m_context->ListTextureInfos()) {
+							const bool plain2d =
+								t.type == smvk::ImageType::Image2D
+								&& !t.isCubemap && t.arrayLayers == 1;
+							const bool cube = t.isCubemap
+								&& smvk::IsCubemapLayerCount(t.arrayLayers);
+							if (plain2d || cube) {
+								SelectTexDebugTexture(t);
+								break;
+							}
+						}
+						reproStage = 2;
+					}
+					else if (reproStage == 2
+						&& (int)m_frameCounter >= reproFrame + 8) {
+						// The X-close drop, AFTER this frame's body rendered the
+						// preview (see above): the stage-3 call lives at the
+						// close-check site below.
+					}
+				}
+			}
 			if (m_texDebugWindow) {
 				ImGui::SetNextWindowSize(ImVec2(560.0f, 760.0f), ImGuiCond_Appearing);
 				ImGui::Begin("Texture Viewer", &m_texDebugWindow);
@@ -14031,6 +14078,24 @@ namespace engine {
 			if (!m_texDebugWindow
 				&& (m_texDebugPreview != 0 || !m_texDebugSelected.empty()))
 				DropTexDebugSelection();
+			// TMP-DIAG (TOURMALINE_TEXVIEW_REPRO): the replay's drop stage —
+			// the exact X-close position: AFTER this frame's body rendered the
+			// preview, BEFORE the ImGui pass renders the frame's draw data (the
+			// window stays open in the replay; only the drop matters — the
+			// freed set + the frame's own referencing draw data). Remove with
+			// the investigation.
+			{
+				static const int reproFrame = [] {
+					const char* e = std::getenv("TOURMALINE_TEXVIEW_REPRO");
+					return e ? std::atoi(e) : -1;
+				}();
+				static int reproStage = 0;
+				if (reproFrame >= 0 && reproStage == 2
+					&& (int)m_frameCounter >= reproFrame + 8) {
+					DropTexDebugSelection();
+					reproStage = 3;
+				}
+			}
 
 			// ---- VRAM usage viewer (Ctrl+M) --------------------------
 			// Floating tool window like the texture inspector (never part
@@ -16188,7 +16253,11 @@ namespace engine {
 
 	void WorldRenderer::DropWorldMapHeight() {
 		if (m_worldMapHeightId != 0 && m_imgui) {
-			m_imgui->RemoveUserTexture(m_worldMapHeightId);
+			// Deferred retire (see the overlay contract): the binding's
+			// descriptor set is referenced by the draw data of the frame
+			// that last drew the map background (+ in-flight submissions) —
+			// the immediate free bound a freed set (device lost).
+			m_imgui->RetireUserTexture(m_worldMapHeightId);
 			m_worldMapHeightId = 0;
 		}
 		m_worldMapHeightTex = {};

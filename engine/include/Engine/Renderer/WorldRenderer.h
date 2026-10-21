@@ -2825,18 +2825,22 @@ public:
 	std::array<ImTextureID, 6> m_texDebugCubePreview{};
 	uint32_t m_texDebugSampler = UINT32_MAX; // preview sampler (clamp/linear, created once)
 	// Drops the preview binding(s) + selection (window closed / toggle
-	// off): the overlay owns one descriptor per Add — every removal pairs
-	// with the Add that minted it; the face views' Holders reset (their
-	// VkImageViews retire through the RMI destroy) so a dropped selection
-	// never samples a dead view.
+	// off): the overlay's retire is DEFERRED (RetireUserTexture — the
+	// binding's descriptor set is referenced by the frame's ImGui draw
+	// data + up to MAX_FRAMES_IN_FLIGHT in-flight submissions; the old
+	// immediate free bound a freed set and faulted the device on the
+	// X-close — the close-click frame's body still rendered the preview
+	// before the drop); the face views' Holders reset (their VkImageViews
+	// retire through the RMI destroy) so a dropped selection never
+	// samples a dead view.
 	void DropTexDebugSelection() {
 		if (m_texDebugPreview != 0) {
-			m_imgui->RemoveUserTexture(m_texDebugPreview);
+			m_imgui->RetireUserTexture(m_texDebugPreview);
 			m_texDebugPreview = 0;
 		}
 		for (ImTextureID& id : m_texDebugCubePreview) {
 			if (id != 0) {
-				m_imgui->RemoveUserTexture(id);
+				m_imgui->RetireUserTexture(id);
 				id = 0;
 			}
 		}

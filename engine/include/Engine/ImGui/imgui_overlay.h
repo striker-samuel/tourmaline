@@ -6,6 +6,9 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
+#include <utility>
+#include <vector>
+
 // ImTextureID (the UI texture identifier the binding below returns; the
 // overlay owns the UI side of the engine, so the ImGui type lives here).
 #include <imgui.h>
@@ -89,7 +92,7 @@ public:
     // ---- User-texture binding (in-UI image display, e.g. debug previews) ----
     // Binds a LIVE texture's sampled view + a bindless sampler slot through
     // the backend's user-texture descriptor registration; the returned
-    // identifier is valid for ImGui::Image until RemoveUserTexture. The
+    // identifier is valid for ImGui::Image until RetireUserTexture. The
     // backend owns one descriptor per Add (leaks are descriptor-pool
     // slots) — always pair them. Staleness is built in: a dead handle
     // (its pool generation bumped — destroyed, or UpdateTexture's
@@ -102,7 +105,23 @@ public:
     // cannot be sampled as the 2D the ImGui shader expects). Same
     // liveness contract (dead view -> null id) and pairing rule.
     ImTextureID AddUserTextureView(ImageViewHandle view, uint32_t samplerIndex);
-    void RemoveUserTexture(ImTextureID id);
+    // DEFERRED free of a binding minted above — never immediate: the
+    // binding's descriptor set is referenced by the ImGui draw data of
+    // the frame that last drew it (and by up to MAX_FRAMES_IN_FLIGHT
+    // prior in-flight submissions), so freeing it under them
+    // (ImGui_ImplVulkan_RemoveTexture -> vkFreeDescriptorSets, immediate)
+    // binds a freed set and faults the device — the texture-viewer
+    // X-close crash: the close-click frame's body still rendered the
+    // preview, then the close drop freed the set BEFORE the ImGui pass
+    // rendered that very draw data (vkWaitForFences VkResult=-4, device
+    // lost, empty fault info; reselection only survived because the
+    // pool's LIFO free-list hands the SAME set right back to the re-Add,
+    // keeping its contents live). The retire queue holds ids until
+    // kUserTextureRetireRenders ImGui renders pass after the retire
+    // (each render = a frame boundary; a flight slot's fence is complete
+    // before its MAX+1'th successor builds), then frees through the
+    // backend. Render-thread only, like the Adds.
+    void RetireUserTexture(ImTextureID id);
 
     // ---- DPI control ----
     // Monitor content scale of the window (1.0 on standard displays).
@@ -124,6 +143,12 @@ private:
     Swapchain* swapchain_ = nullptr;
     ImGuiOverlayDesc desc_{};
     float appliedDpiScale_ = 0.0f;
+    // Deferred user-texture retirement (see RetireUserTexture): one render
+    // tick per Render() call; entries free once
+    // (renderTicks_ - stamp) > kUserTextureRetireRenders.
+    static constexpr uint64_t kUserTextureRetireRenders = 4; // MAX_FRAMES_IN_FLIGHT (2-3) + 1 margin
+    std::vector<std::pair<uint64_t, uint64_t>> userTextureRetireQueue_{}; // (id, render stamp)
+    uint64_t renderTicks_ = 0;
 };
 
 } // namespace smvk

@@ -1,0 +1,44 @@
+KNOWN BUGS
+==========
+
+(Texture Viewer close: DEVICE LOST — open, elusive)
+Closing the Texture Viewer (title-bar X; the backtick toggle likely the
+same) took the device down in an interactive session: vkWaitForFences
+failed VkResult=-4 (VK_ERROR_DEVICE_LOST), the DeviceFault EXT returned
+no address/vendor info (tourmaline_fatal.log).
+
+Mechanism (analysis; the fix addresses it even though the crash itself
+was never reproduced headless): the close-drop freed the ImGui
+user-texture descriptor set IMMEDIATELY (ImGui_ImplVulkan_RemoveTexture
+-> vkFreeDescriptorSets) while the descriptor was still referenced by
+draw data — the X-close frame's own body still renders the preview once
+(ImGui::Begin flips the flag mid-frame, the body runs to End), and up to
+MAX_FRAMES_IN_FLIGHT prior submissions bind it in flight. Binding a
+freed set / sampling behind it is UB and can fault the device.
+Reselection survived the same immediate free because ImGui's pool
+free-list is LIFO — the re-Add hands the SAME set back and rewrites it
+live; the CLOSE case leaves the set freed with referencing draw data in
+flight. A cubemap selection adds the per-face view destruction race on
+top (the freed sets point at views retiring through DeferDestroy).
+
+Fix kept (correctness, independent of the repro): the overlay's
+RetireUserTexture — a DEFERRED free (queue; entries free once
+MAX_FRAMES_IN_FLIGHT+1 ImGui renders pass, by which every referencing
+submission is fence-complete). Spec-clean now; all user-texture sites
+(the viewer drop + the world-map height preview) go through it. Verify
+interactively: open the viewer, select (2D + a cubemap if the scene has
+one), close via X — no device lost, tourmaline_fatal.log untouched.
+
+Elusive: the deterministic headless replay pin (TOURMALINE_TEXVIEW_REPRO=
+<frame>: open at N, select the first previewable live texture at N+2,
+drop at N+8 right after the body rendered — the exact X-close ordering)
+did NOT fault the PRE-fix build in the knight-scene bench: the in-flight
+free alone survived on this driver, so the faulting variant likely needs
+the same-frame X-close draw (the body renders once more with the set
+getting freed before the ImGui pass renders that very draw data) and
+possibly a cubemap selection / the scene's live-texture churn /
+driver-timing. If it recurs: reproduce in the crashing scene with
+TOURMALINE_TEXVIEW_REPRO set, keep the validation layers on, capture
+tourmaline_fatal.log — and re-examine the retire fix's window
+(kUserTextureRetireRenders = 4) and the pool's reuse behavior
+(ImGui_ImplVulkan_AddTexture's reallocation of freed sets).

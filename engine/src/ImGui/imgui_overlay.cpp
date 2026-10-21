@@ -259,6 +259,27 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
     // Nothing to draw?
     if (drawData->CmdListsCount == 0) return;
 
+    // Deferred user-texture retirement drain (see RetireUserTexture): one
+    // tick per render (each render = a frame boundary). Entries older than
+    // kUserTextureRetireRenders frames free — by then every submission that
+    // bound them has hit its flight-slot fence (MAX_FRAMES_IN_FLIGHT + 1
+    // margin), so the backend free (vkFreeDescriptorSets) is clean. Drained
+    // here (inside the render, after this frame's ImGui::Render()) so a
+    // queued id can never outlive the queue's own frame cadence.
+    ++renderTicks_;
+    if (!userTextureRetireQueue_.empty()) {
+        size_t keep = 0;
+        for (size_t i = 0; i < userTextureRetireQueue_.size(); ++i) {
+            const auto [id, stamp] = userTextureRetireQueue_[i];
+            if (renderTicks_ - stamp > kUserTextureRetireRenders) {
+                ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(id));
+            } else {
+                userTextureRetireQueue_[keep++] = userTextureRetireQueue_[i];
+            }
+        }
+        userTextureRetireQueue_.resize(keep);
+    }
+
     VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(cmd.GetNativeHandle());
     ImGui_ImplVulkan_RenderDrawData(drawData, vkCmd);
 }
@@ -356,11 +377,18 @@ ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
     return ImTextureID(reinterpret_cast<uint64_t>(ds));
 }
 
-void ImGuiOverlay::RemoveUserTexture(ImTextureID id) {
+void ImGuiOverlay::RetireUserTexture(ImTextureID id) {
+    // Deferred free (see the header contract): the binding's descriptor set
+    // is referenced by the draw data of the frame that last drew it (and by
+    // up to MAX_FRAMES_IN_FLIGHT prior in-flight submissions) — freeing it
+    // here (ImGui_ImplVulkan_RemoveTexture -> vkFreeDescriptorSets,
+    // immediate) binds a freed set and faults the device (the
+    // texture-viewer X-close crash). Queue it; Render() drains aged
+    // entries once the referencing submissions are fence-complete.
     if (!initialized_ || id == ImTextureID(0))
         return;
-    ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(
-        static_cast<uint64_t>(id)));
+    userTextureRetireQueue_.emplace_back(
+        static_cast<uint64_t>(id), renderTicks_);
 }
 
 float ImGuiOverlay::GetWindowDpiScale() const {
