@@ -8272,18 +8272,23 @@ namespace engine {
 				}
 				if (ok) {
 					gfx.skinDeformedBda = push.deformed;
-					gfx.skinDeformedBase = push.deformedBase;
-					// The prev half is valid only while consecutive runs
-					// wrote the SAME heap + span layout (a rebuild or a
-					// cluster swap leaves a stale/foreign prev - the
-					// motion leg falls back to zero mesh motion).
-					gfx.skinPrevValid = (gfx.skinDeformedPrevBda != 0
-						&& lastSkinHeapBda == skinHeapBda
-						&& lastSkinDeformedBase == push.deformedBase)
-						? 1u : 0u;
-					m_skinLastHeapBda = skinHeapBda;
-					m_skinLastDeformedBase = push.deformedBase;
-				}
+				gfx.skinDeformedBase = push.deformedBase;
+				// The prev half is valid only while consecutive runs
+				// wrote the SAME heap + span layout (a rebuild or a
+				// cluster swap leaves a stale/foreign prev - the
+				// motion leg falls back to zero mesh motion).
+				gfx.skinPrevValid = (gfx.skinDeformedPrevBda != 0
+					&& lastSkinHeapBda == skinHeapBda
+					&& lastSkinDeformedBase == push.deformedBase)
+					? 1u : 0u;
+				m_skinLastHeapBda = skinHeapBda;
+				m_skinLastDeformedBase = push.deformedBase;
+				// TMP-DIAG (TOURMALINE_SKINBOUNDS_DUMP): the just-written
+				// cur half for the post-Execute sanity dump.
+				m_skinDumpBuf = c->GetSkinnedDeformedBuffer();
+				m_skinDumpOff = m_skinHeapParity ? skinSpanBytes : 0;
+				m_skinDumpBytes = skinSpanBytes;
+			}
 			}
 			// Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
 			// the prepass/occluder legs push it per skinned draw so the
@@ -15179,6 +15184,275 @@ namespace engine {
 		// visible to everything recorded below.
 		m_context->UpdateDescriptors();
 		m_rendergraph->Execute(fb);
+		// TMP-DIAG (TOURMALINE_SKINBOUNDS_DUMP=<frame>): one-shot post-Execute
+		// sanity dump of (a) the frame's deformed heap half and (b) the
+		// skinBounds cone table (the skinned draws' slot ranges + the
+		// drawBound tail) — settles garbage-vs-legit for the far-out cone
+		// axes the overlay shows (wide-cone apexes are legitimately distant)
+		// and for the knight's missing chunks (they show in the UNLIT view
+		// too -> shared legs, not the gfx cull chain). Sync downloads stall
+		// (debug only). Remove when the investigation closes.
+		{
+			static const int skinDumpFrame = [] {
+				const char* e = std::getenv("TOURMALINE_SKINBOUNDS_DUMP");
+				return e ? std::atoi(e) : -1;
+			}();
+			static bool skinDumpDone = false;
+			if (skinDumpFrame >= 0 && !skinDumpDone
+				&& (int)m_frameCounter >= skinDumpFrame
+				&& gfxSlot != UINT32_MAX
+				&& gfxSlot < m_gfxRenderer.State().views.size()) {
+				skinDumpDone = true;
+				const smvk::gfx::State& st = m_gfxRenderer.State();
+				const smvk::gfx::View& v = st.views[gfxSlot];
+				// The deformed heap download (shared by the stats + the
+				// CPU-reference cross-check below).
+				std::vector<uint8_t> heap;
+				bool heapOk = false;
+				// ---- (a) deformed heap half: NaN/Inf/huge + the extent ----
+				if (!m_skinDumpBuf.empty() && m_skinDumpBytes > 0
+					&& m_skinDumpBytes < (64ull << 20)) {
+					heap.resize((size_t)m_skinDumpBytes);
+					heapOk = m_context->DownloadDataFromBuffer(m_skinDumpBuf,
+						heap.data(), heap.size(), (size_t)m_skinDumpOff);
+					if (heapOk) {
+						const uint32_t recs =
+							(uint32_t)(m_skinDumpBytes / 20); // 5 words/vertex
+						uint32_t nanC = 0, infC = 0, hugeC = 0;
+						float mn[3] = { 1e30f, 1e30f, 1e30f };
+						float mx[3] = { -1e30f, -1e30f, -1e30f };
+						for (uint32_t r = 0; r < recs; ++r) {
+							const float* p =
+								reinterpret_cast<const float*>(heap.data() + (size_t)r * 20);
+							for (int k = 0; k < 3; ++k) {
+								if (std::isnan(p[k])) { ++nanC; continue; }
+								if (std::isinf(p[k])) { ++infC; continue; }
+								if (std::fabs(p[k]) > 1e4f) { ++hugeC; continue; }
+								mn[k] = std::min(mn[k], p[k]);
+								mx[k] = std::max(mx[k], p[k]);
+							}
+						}
+						std::fprintf(stderr,
+							"[SkinDump] deformed: %u recs nan=%u inf=%u |p|>1e4=%u "
+							"extent=[%.2f..%.2f %.2f..%.2f %.2f..%.2f]\n",
+							recs, nanC, infC, hugeC,
+							mn[0], mx[0], mn[1], mx[1], mn[2], mx[2]);
+					}
+					else
+						std::fprintf(stderr, "[SkinDump] deformed download FAILED\n");
+				}
+				// ---- (b) skinBounds cone table (this flight) ----
+				if (st.skinBoundsReady && fb.frameIndex < ::MAX_FRAMES_IN_FLIGHT
+					&& !st.skinBoundsBuffers[fb.frameIndex].empty()) {
+					// The skinned draws' slot ranges (the pass wrote exactly
+					// these): one covering span download.
+					uint64_t minBase = UINT64_MAX, maxEnd = 0, slots = 0;
+					for (const smvk::gfx::Draw& d : v.drawConstants) {
+						if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
+							continue;
+						if (d.candidateBase == UINT32_MAX
+							|| d.mesh >= st.meshes.size())
+							continue;
+						const uint64_t count = st.meshes[d.mesh].clusterCount;
+						if (d.candidateBase + count > smvk::gfx::kMaxBatchSlots)
+							continue;
+						minBase = std::min<uint64_t>(minBase, d.candidateBase);
+						maxEnd = std::max<uint64_t>(maxEnd, d.candidateBase + count);
+						slots += count;
+					}
+					if (maxEnd > minBase) {
+						std::vector<smvk::gfx::ClusterConstants> table(
+							(size_t)(maxEnd - minBase));
+						if (m_context->DownloadDataFromBuffer(
+							st.skinBoundsBuffers[fb.frameIndex],
+							table.data(),
+							table.size() * sizeof(smvk::gfx::ClusterConstants),
+							(size_t)minBase * sizeof(smvk::gfx::ClusterConstants))) {
+							uint32_t nanC = 0, degenC = 0, hugeR = 0, farApex = 0;
+							uint32_t worst = 0;
+							float worstRatio = 0.0f;
+							float rMin = 1e30f, rMax = 0.0f, cutoffMin = 1.0f;
+							for (size_t i = 0; i < table.size(); ++i) {
+								const smvk::gfx::ClusterConstants& cc = table[i];
+								const bool nan = std::isnan(cc.boundRadius)
+									|| std::isnan(cc.coneCutoff)
+									|| std::isnan(cc.coneApex.x)
+									|| std::isnan(cc.coneApex.y)
+									|| std::isnan(cc.coneApex.z)
+									|| std::isnan(cc.coneAxis.x)
+									|| std::isnan(cc.coneAxis.y)
+									|| std::isnan(cc.coneAxis.z);
+								if (nan) { ++nanC; continue; }
+								const float axis2 = glm::dot(cc.coneAxis, cc.coneAxis);
+								if (axis2 < 1e-12f) { ++degenC; continue; }
+								if (cc.boundRadius > 10.0f) { ++hugeR; continue; }
+								rMin = std::min(rMin, cc.boundRadius);
+								rMax = std::max(rMax, cc.boundRadius);
+								cutoffMin = std::min(cutoffMin, cc.coneCutoff);
+								// The apex distance from the sphere center, in
+								// radii: wide cones (cutoff near 1) legitimately
+								// reach ~sqrt(1/cutoff^2-1)-ish radii behind.
+								const float apexDist = glm::length(
+									cc.coneApex - cc.boundCenter);
+								const float ratio =
+									apexDist / std::max(cc.boundRadius, 1e-6f);
+								if (ratio > 20.0f)
+									++farApex;
+								if (ratio > worstRatio) {
+									worstRatio = ratio;
+									worst = (uint32_t)i;
+								}
+							}
+							std::fprintf(stderr,
+								"[SkinDump] skinBounds: %zu slots (span %llu..%llu) "
+								"degen=%u nan=%u hugeR=%u farApex(>20R)=%u "
+								"R=[%.3f..%.3f] cutoffMin=%.3f worstApexDist=%.1fR "
+								"(slot+%u)\n",
+								(size_t)slots, (unsigned long long)minBase,
+								(unsigned long long)maxEnd,
+								degenC, nanC, hugeR, farApex,
+								rMin < 1e30f ? rMin : 0.0f, rMax, cutoffMin,
+								worstRatio, worst);
+						// The worst offender's full record: the raw truth.
+						if (worstRatio > 0.0f) {
+							const smvk::gfx::ClusterConstants& cc = table[worst];
+							std::fprintf(stderr,
+								"  worst: triCount=%u R=%.4f cutoff=%.4f axis=(%.3f,%.3f,%.3f) "
+								"apex=(%.3f,%.3f,%.3f) center=(%.3f,%.3f,%.3f)\n",
+								cc.triCount, cc.boundRadius, cc.coneCutoff,
+								cc.coneAxis.x, cc.coneAxis.y, cc.coneAxis.z,
+								cc.coneApex.x, cc.coneApex.y, cc.coneApex.z,
+								cc.boundCenter.x, cc.boundCenter.y, cc.boundCenter.z);
+						}
+						// ---- (c) CPU-reference cross-check: refit every skinned
+						// slot's cone on the DOWNLOADED deformed heap + the CPU
+						// filterIndices (the exact input the pass claims to read)
+						// and compare against the GPU table. Agreement => the
+						// fit is honest (the degenerates are real input
+						// spreads); disagreement => the pass's fetch/indexing
+						// is buggy — and the SPHERE entries (the same fetch!)
+						// that feed the frustum/HZB tests are suspect too.
+						if (heapOk && st.skinDeformedBase != UINT32_MAX) {
+							const uint32_t defBase = st.skinDeformedBase;
+							const size_t heapRecs = heap.size() / 20;
+							uint32_t cpuDegen = 0, gpuDegen = 0, agreeC = 0,
+								mismatchC = 0, oor = 0, fieldBad = 0, printed = 0;
+							for (const smvk::gfx::Draw& d : v.drawConstants) {
+								if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
+									continue;
+								if (d.candidateBase == UINT32_MAX
+									|| d.mesh >= st.meshes.size())
+									continue;
+								const smvk::gfx::Mesh& m = st.meshes[d.mesh];
+								for (uint32_t ci = 0; ci < m.clusterCount; ++ci) {
+									const uint64_t slot =
+										(uint64_t)d.candidateBase + ci;
+									if (slot < minBase || slot >= maxEnd)
+										continue;
+									const smvk::gfx::Cluster& cl =
+										st.clusters[m.clusterStart + ci];
+									const smvk::gfx::ClusterConstants& gpu =
+										table[(size_t)(slot - minBase)];
+									if (gpu.indexOffset != cl.indexOffset
+										|| gpu.triCount != cl.triCount)
+										++fieldBad;
+									if (cl.triCount == 0
+										|| cl.triCount > smvk::gfx::kMaxClusterTris)
+										continue;
+									std::vector<glm::vec3> corners(
+										(size_t)cl.triCount * 3);
+									bool ok = true;
+									glm::vec3 mn(1e30f), mx(-1e30f);
+									for (uint32_t t = 0; t < cl.triCount && ok; ++t)
+										for (uint32_t k = 0; k < 3; ++k) {
+											if (cl.indexOffset + t * 3 + k
+												>= st.filterIndices.size()) {
+												ok = false;
+												break;
+											}
+											const uint32_t vi =
+												st.filterIndices[cl.indexOffset + t * 3 + k];
+											if (vi < defBase
+												|| (size_t)(vi - defBase) >= heapRecs) {
+												ok = false;
+												break;
+											}
+											const float* p =
+												reinterpret_cast<const float*>(
+													heap.data() + (size_t)(vi - defBase) * 20);
+											const glm::vec3 c(p[0], p[1], p[2]);
+											corners[(size_t)t * 3 + k] = c;
+											mn = glm::min(mn, c);
+											mx = glm::max(mx, c);
+										}
+									if (!ok) {
+										++oor;
+										continue;
+									}
+									const smvk::gfx::DeformedConeFit fit =
+										smvk::gfx::FitDeformedCone(corners.data(),
+											cl.triCount, (mn + mx) * 0.5f);
+									const bool gpuIsDegen =
+										glm::dot(gpu.coneAxis, gpu.coneAxis) < 1e-12f;
+									if (fit.degenerate)
+										++cpuDegen;
+									if (gpuIsDegen)
+										++gpuDegen;
+									const bool disagree = fit.degenerate != gpuIsDegen
+										|| (!fit.degenerate && !gpuIsDegen
+											&& (std::fabs(fit.coneCutoff - gpu.coneCutoff) > 0.02f
+												|| glm::dot(fit.coneAxis, gpu.coneAxis) < 0.98f));
+									if (disagree) {
+										++mismatchC;
+										if (printed < 8) {
+											++printed;
+											std::fprintf(stderr,
+												"  [SkinDump] MISMATCH slot %llu tri=%u: "
+												"cpu cut=%.3f axis=(%.2f,%.2f,%.2f)%s | "
+												"gpu cut=%.3f axis=(%.2f,%.2f,%.2f)\n",
+												(unsigned long long)slot, cl.triCount,
+												fit.coneCutoff, fit.coneAxis.x, fit.coneAxis.y,
+												fit.coneAxis.z,
+												fit.degenerate ? " DEGEN" : "",
+												gpu.coneCutoff, gpu.coneAxis.x,
+												gpu.coneAxis.y, gpu.coneAxis.z);
+										}
+									}
+									else
+										++agreeC;
+								}
+							}
+							std::fprintf(stderr,
+								"[SkinDump] crosscheck: agree=%u mismatch=%u "
+								"cpuDegen=%u gpuDegen=%u oor=%u fieldBad=%u\n",
+								agreeC, mismatchC, cpuDegen, gpuDegen, oor, fieldBad);
+						}
+						}
+						else
+							std::fprintf(stderr, "[SkinDump] skinBounds download FAILED\n");
+					}
+					// The drawBound tail: the per-draw deformed unions.
+					std::vector<glm::vec4> tail(smvk::gfx::kMaxDraws);
+					if (m_context->DownloadDataFromBuffer(
+						st.skinBoundsBuffers[fb.frameIndex], tail.data(),
+						tail.size() * sizeof(glm::vec4),
+						(size_t)smvk::gfx::kMaxBatchSlots
+						* sizeof(smvk::gfx::ClusterConstants))) {
+						for (uint32_t di = 0; di < v.drawConstants.size()
+							&& di < smvk::gfx::kMaxDraws; ++di) {
+							const smvk::gfx::Draw& d = v.drawConstants[di];
+							if ((d.flags & smvk::gfx::DrawFlagBit_Skinned) == 0)
+								continue;
+							const glm::vec4& b = tail[di];
+							std::fprintf(stderr,
+								"[SkinDump] drawBound[%u]: center=(%.2f,%.2f,%.2f) R=%.2f%s\n",
+								di, b.x, b.y, b.z, b.w,
+								(std::isnan(b.w) || b.w > 1e10f) ? " (KEEP-SPHERE/slot never written)" : "");
+						}
+					}
+				}
+			}
+		}
 		const auto rfT5 = bench_clk::now();
 		if (benchPhase) {
 			using msd = std::chrono::duration<double, std::milli>;

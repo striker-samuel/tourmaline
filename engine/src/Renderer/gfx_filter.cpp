@@ -2433,14 +2433,11 @@ void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ct
 	push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
 	push.deformedBase = s.skinDeformedBase;
 	push.drawCount = drawCount;
-	// Cone-rebuild A/B lever (TOURMALINE_SKIN_CONE=0): degenerate keep-cones
-	// — the pre-rebuild behavior — so a suspect cone isolates from the
-	// sphere rebuild in one headless run (capture diff A/B).
-	static const bool s_coneEnabled = [] {
-		const char* e = std::getenv("TOURMALINE_SKIN_CONE");
-		return !(e && std::strcmp(e, "0") == 0);
-	}();
-	push.coneEnabled = s_coneEnabled ? 1u : 0u;
+	// The cone rebuild ALWAYS runs (the honest cones feed the cone-axis
+	// overlay + the SkinDump cross-check + the TOURMALINE_SKIN_CONE=1
+	// consumer lever in gfxbatchcull; the conservative default lives on
+	// the CONSUMER side where the cull behavior actually is).
+	push.coneEnabled = 1u;
 	// MMU-fault rule: never dispatch on a null BDA (no fallback; the batch
 	// cull reads the static table for a slot the pass never wrote ... which
 	// is exactly the bind-pose hole this pass exists to fix, so skip loudly).
@@ -2681,6 +2678,16 @@ void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx
 			push.skinBoundsValid = 1;
 		}
 	}
+	// Skinned-cone A/B lever (TOURMALINE_SKIN_CONE=1): default 0 — skinned
+	// clusters cull CONSERVATIVE (sphere + frustum only), Remedy's own
+	// shipped call; 1 restores the cone test for skinned clusters (the
+	// rebuild itself always runs — the overlay + the SkinDump cross-check
+	// read the honest cones either way).
+	static const bool s_skinConeOn = [] {
+		const char* e = std::getenv("TOURMALINE_SKIN_CONE");
+		return e && std::strcmp(e, "1") == 0;
+	}();
+	push.skinConeEnabled = s_skinConeOn ? 1u : 0u;
 	cmd.BindComputePipeline(s.batchCullProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	// One 128-thread workgroup per material-sorted draw.

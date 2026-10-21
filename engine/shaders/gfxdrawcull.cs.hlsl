@@ -15,10 +15,15 @@
 //            here would fail the filter's per-cluster tests anyway — the
 //            verdict is a strict fast-reject, never a new hole)
 //   SKINNED draws test the DEFORMED union bound (GfxSkinBounds' drawBound
-//            tail) in both tests instead of the static bind-pose unions
-//            (containment holds — the tail is the union over the deformed
-//            cluster spheres the filter tests); without the table the whole
-//            fast-reject stays skipped for them (the conservative keep)
+//            tail — the union over the deformed cluster spheres the filter's
+//            per-cluster tests run on, so the containment argument holds on
+//            the animated pose; SkinDump cross-checked the table) in the
+//            FRUSTUM test; their HZB OCCLUSION test is skipped (conservative:
+//            the occluder-depth pyramid is built by the skinned occluder
+//            leg, and the fog evidence — depth silhouette complete while
+//            Main misses meshlets — pinned the visible drops on the lossy
+//            filter stages). Without the table the whole fast-reject stays
+//            skipped for them (the conservative keep)
 //   MASK draws can be excluded from the occlusion test (the MIN-reduced
 //            pyramid poisons cutout texels; the filter's per-cluster test
 //            takes the same skip via GFX_CULL_HZBSKIPMASKED)
@@ -73,7 +78,15 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
 
         // ---- HZB occlusion (draw bound; the filter's own per-cluster test
         //      stays in gfxfilter.cs.hlsl for exact mesh/indexed parity) ----
+        // CONSERVATIVE for skinned draws: the occlusion test is SKIPPED
+        // (the frustum fast-reject above stays — the deformed union is
+        // cross-checked sound). The occluder-depth HZB is built by the
+        // skinned occluder leg, and the fog evidence (a complete depth
+        // silhouette while Main misses meshlets) pinned the visible-chunk
+        // drops on the lossy filter stages — skinned geometry stays off the
+        // occlusion verdict until the residual dropper is isolated.
         if (verdict != 0u
+            && !skinned
             && (pcD.cullFlags & GFX_CULL_OCCLUSION) != 0
             && pcD.hizMips != 0u)
         {

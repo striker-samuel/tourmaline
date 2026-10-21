@@ -341,7 +341,12 @@ struct BatchCullPush {
 	// tables.
 	uint64_t skinBounds = 0;
 	uint32_t skinBoundsValid = 0;
-	uint32_t pad2 = 0;
+	// 1 = the cone test runs for SKINNED clusters too (TOURMALINE_SKIN_CONE=1
+	// — default 0: skinned clusters cull conservative, sphere+frustum only —
+	// Remedy's own shipped call for Alan Wake 2: cone updates built +
+	// measured but SHIPPED DISABLED, their HZB covered the win; this engine's
+	// HZB covers the static geometry the same way).
+	uint32_t skinConeEnabled = 0;
 	uint32_t pad3[2] = {};
 };
 static_assert(sizeof(BatchCullPush) == 208);
@@ -396,9 +401,12 @@ static_assert(sizeof(ConeDebugPush) == 56);
 // GfxDrawCullPush in gfxfilter.hlsli (144 bytes). One thread per draw;
 // FROZEN view (the gfx view record matrix — the debug culling freeze).
 // Skinned draws test the DEFORMED union bound (skinBounds' drawBound tail)
-// instead of the static mesh union; skinBoundsValid = 0 keeps the blanket
-// skip for skinned draws (the static bind-pose union can swing a whole
-// animated mesh outside itself — skipping only loses the fast reject).
+// in the frustum fast-reject and SKIP the HZB occlusion test (conservative
+// posture — the fog evidence pinned the visible drops on the lossy filter
+// stages; the occluder-depth HZB is built by the skinned occluder leg);
+// skinBoundsValid = 0 keeps the whole fast-reject skipped for them (the
+// static bind-pose union can swing a whole animated mesh outside itself —
+// skipping only loses the reject).
 struct DrawCullPush {
 	uint64_t draws = 0;
 	uint64_t meshBounds = 0;   // static (object-space union bounds)

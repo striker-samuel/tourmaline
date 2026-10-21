@@ -1718,6 +1718,14 @@ public:
 	uint32_t m_skinHeapParity = 0;
 	uint64_t m_skinLastHeapBda = 0;
 	uint32_t m_skinLastDeformedBase = UINT32_MAX;
+	// TMP-DIAG (TOURMALINE_SKINBOUNDS_DUMP=<frame>): the last ok skin push's
+	// deformed half (handle + parity offset + bytes) for the post-Execute
+	// sanity dump in DrawFrame — settles garbage-vs-legit for the far-out
+	// cone axes + the knight's missing chunks (in the unlit view too ->
+	// shared legs). Remove when the investigation closes.
+	smvk::BufferHandle m_skinDumpBuf{};
+	uint64_t m_skinDumpOff = 0;
+	uint64_t m_skinDumpBytes = 0;
 	float m_cubemapOverlayMaxDist = 80.0f; // overlay distance cutoff, meters (UI)
 	uint32_t m_cubemapSampler = 0;  // clamp sampler for TextureCube (created once)
 	struct CubemapProbeGpu {

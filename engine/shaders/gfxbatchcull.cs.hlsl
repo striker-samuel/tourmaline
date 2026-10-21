@@ -133,13 +133,25 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
             c = pcB.clusters.Get().cluster[me.clusterStart + ci];
 
         // Sphere + world-space cone (the C++ CullCluster port, LIVE view).
+        // CONSERVATIVE for skinned clusters: the cone test is SKIPPED
+        // unless skinConeEnabled (TOURMALINE_SKIN_CONE=1). The fit itself is
+        // verified honest (the SkinDump CPU-reference cross-check agrees
+        // 2000/2000), but the knight's posed clusters are ~42% degenerate
+        // (the spread is real) so the reject wins little — and the fog
+        // evidence (depth-complete silhouette, Main-missing meshlets)
+        // pinned the visible-chunk drops on the lossy filter stages, so
+        // skinned geometry runs conservative until the residual dropper
+        // is isolated. This mirrors Remedy's own shipped call: Alan Wake
+        // 2 rebuilt cones (~0.1 ms) but SHIPPED with meshlet cone culling
+        // disabled — their HZB occlusion covered it (as this engine's
+        // does for static geometry).
         bool kept = gsDrawVisible;
         if (kept)
         {
             float3 worldC = mul(d.model, float4(c.b.xyz, 1.0f)).xyz;
             kept = GfxSphereInPlanes(gsPlanes, worldC, c.b.w * gsBasis);
         }
-        if (kept)
+        if (kept && (!skinned || pcB.skinConeEnabled != 0u))
             kept = !GfxConeCulled(c, d.model, pcB.eye);
         if (kept)
             InterlockedMin(gsFirstKept, ci);

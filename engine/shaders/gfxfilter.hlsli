@@ -735,7 +735,10 @@ struct GfxBatchCullPush
     // leaves every draw on the static tables.
     vk::BufferPointer<GfxSkinBoundsTable> skinBounds;
     uint skinBoundsValid;
-    uint pad2;
+    // 1 = the cone test runs for SKINNED clusters too (TOURMALINE_SKIN_CONE=1
+    // — default 0: skinned clusters cull conservative, sphere+frustum only;
+    // Remedy's own shipped call, their HZB covered the cones' win).
+    uint skinConeEnabled;
     uint2 pad3;
 };
 //static_assert(sizeof(GfxBatchCullPush) == 208);

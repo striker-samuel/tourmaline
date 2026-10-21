@@ -97,12 +97,22 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx, uint slotIdx)
     // one GfxClusterData per candidate slot earlier this frame), not the
     // static bind-pose sphere: a pose that swings a cluster out of its
     // bind sphere would otherwise drop the cluster and punch a hole the
-    // seed depth never covered (sky leak + bloom). skinBoundsValid = 0
+    // seed depth never covers (sky leak + bloom). skinBoundsValid = 0
     // (no skinned cluster this frame) leaves every draw on the static
     // table.
     const bool skinned =
         (pcF.draws.Get().draws[drawIdx].misc.y & GFX_DRAW_SKINNED) != 0;
-    const bool useSkinBounds = skinned && pcF.skinBoundsValid != 0;
+    const bool useSkinBounds = skinned && pcF.skinBoundsValid != 0u;
+    // CONSERVATIVE occlusion for skinned clusters: skip the HZB test
+    // entirely (sphere + frustum + contribution only). The occluder-depth
+    // HZB this test reads is built by the skinned occluder leg — the fog
+    // evidence (a complete depth silhouette while Main misses meshlets)
+    // pinned the visible-chunk drops on the lossy filter stages, so
+    // skinned geometry stays off the occlusion verdict until the residual
+    // dropper is isolated (the static geometry keeps the test — its HZB
+    // source is the same conservative chain, empirically clean).
+    if (wantOcc && skinned)
+        wantOcc = false;
     const float4 bound = useSkinBounds
         ? pcF.skinBounds.Get().cluster[slotIdx].b
         : pcF.clusters.Get().cluster[clusterIdx].b;

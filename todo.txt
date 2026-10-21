@@ -1,6 +1,24 @@
 TODO
 ====
 
+(Engine, decision) Skinned-mesh culling runs CONSERVATIVE by default: the
+cone test and the HZB occlusion test are SKIPPED for skinned draws/clusters
+(sphere + frustum + contribution only; the deformed spheres/unions are
+SkinDump cross-checked sound). Evidence trail: the fit itself is verified
+honest (TOURMALINE_SKINBOUNDS_DUMP's CPU-reference cross-check agreed
+2000/2000, zero field mismatches) and ~42% of the knight's posed clusters
+degenerate their cones anyway (the spread is real geometry) — but the fog
+evidence (a complete depth silhouette while Main misses meshlets) pinned
+the visible-chunk drops on the lossy filter stages, so skinned geometry
+stays off both until the residual dropper is isolated. This mirrors
+Remedy's own shipped call: Alan Wake 2 rebuilt cones (~0.1 ms) but SHIPPED
+with meshlet cone culling disabled — their HZB occlusion covered the win.
+TOURMALINE_SKIN_CONE=1 restores the skinned cone test (A/B lever); the
+rebuild + the cone-axis overlay always run (honest data either way). The
+HZB skip for skinned has no lever yet — add one if the occluder leg is
+ever exonerated. The SkinDump diagnostic stays until the investigation
+fully closes (remove in the squash).
+
 (Engine, resolved-verdict) Skinned-mesh self-shadowing on thin double-skin
 meshes (the knight's shield): the shadow chain is the standard robust one
 (receiver-side normal bias ~1.25 texels world + slope-scaled oriented depth
@@ -27,3 +45,4 @@ editor preview is the remaining place a skinned mesh shows bind-pose cone
 data. Revisit if the editor ever runs the skinning preview / the gfx filter
 chain (it would then get the same GfxSkinBounds table; until then the
 editor overlay is honest only for static meshes).
+
