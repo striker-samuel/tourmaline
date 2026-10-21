@@ -37,6 +37,11 @@ bld/
 # Streamline runtime DLLs are vendored (no LFS - plain binary blobs).
 !external/streamline/bin/
 !external/streamline/bin/x64/
+# nvngx_dlss.dll (the ~56 MB NGX DLSS snippet) is NOT vendored - git never
+# carries it. Fetch it from the NVIDIA Streamline/DLSS SDK into this dir
+# (see external/streamline/bin/x64/README.md); missing it just disables
+# DLSS-SR - the engine renders at native extent (verified headless).
+/external/streamline/bin/x64/nvngx_dlss.dll
 [Oo]bj/
 [Oo]ut/
 [Ll]og/

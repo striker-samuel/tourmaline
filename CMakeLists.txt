@@ -99,6 +99,8 @@ endfunction()
 # sl.interposer.dll is loaded dynamically from the exe dir (dlss.cpp);
 # a missing set simply leaves DLSS unavailable - no hard dependency.
 # Source of the binaries: external/streamline (Streamline SDK 2.14.1).
+# nvngx_dlss.dll is fetched separately (never in git) - see the README in
+# external/streamline/bin/x64; the per-DLL EXISTS guard below warns + skips.
 function(tourmaline_stage_streamline TARGET)
     set(_SL_BIN_DIR "${CMAKE_SOURCE_DIR}/external/streamline/bin/x64")
     foreach(_SL_DLL IN ITEMS
