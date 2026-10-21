@@ -19,6 +19,8 @@
 //      framing, and the positioner's quat path agrees with the mat4 one.
 //   5. Mouse-look framerate independence: deltas are displacements, so
 //      the same cursor travel yields the same orientation at any dt.
+//   6. reset() anchors: the LAST lookAt pose is the spawn (not the ctor
+//      default), the glide dies, and the resolved up carries through.
 
 #include <algorithm>
 #include <cmath>
@@ -210,6 +212,49 @@ void TestMouseLookFramerateIndependent() {
 		"camera.mouselook.turns");
 }
 
+void TestResetAnchorsAtLookAt() {
+	// The camera reset (App keybind::CAMERA_RESET -> positioner.reset())
+	// returns to the LAST lookAt pose — every framing site (Configure
+	// defaults, authored scene cameras, the generic fit) re-anchors the
+	// snapshot through lookAt — and the glide dies (moveSpeed_ zeroed, or
+	// the damping decay keeps drifting the camera off the restored pose).
+	CameraPositioner_FirstPerson p;
+	const glm::vec3 eye(7.24f, 4.03f, 0.04f);
+	const glm::vec3 fwd(-0.949f, -0.312f, -0.045f);
+	p.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
+
+	// Fly away on held forward (builds to maxSpeed, ~10m over 5s).
+	p.movement_.forward_ = true;
+	for (int i = 0; i < 300; ++i)
+		p.update(1.0 / 60.0, glm::vec2(0.0f), false);
+	p.movement_.forward_ = false;
+	Check(glm::distance(p.getPosition(), eye) > 1.0f,
+		"camera.reset.flew-away");
+
+	p.reset();
+	Check(glm::distance(p.getPosition(), eye) < 1e-6f,
+		"camera.reset.position-restored");
+	Check(glm::distance(p.getForward(), glm::normalize(fwd)) < 1e-4f,
+		"camera.reset.orientation-restored");
+	Check(glm::length(p.moveSpeed_) == 0.0f,
+		"camera.reset.glide-killed");
+
+	// A second spawn re-anchors: reset goes to the NEWEST lookAt pose,
+	// never the ctor default. Straight-down exercises the resolved
+	// horizontal up (0,0,-1) — the snapshot must carry it (up_ restored,
+	// first mouselook keeps the basis instead of NaN-ing).
+	const glm::vec3 eye2(0.0f, 25.0f, 0.0f);
+	const glm::vec3 tgt2(0.0f);
+	p.lookAt(eye2, tgt2, ResolveLookAtUp(eye2, tgt2));
+	p.reset();
+	Check(glm::distance(p.getPosition(), eye2) < 1e-6f,
+		"camera.reset.reanchor-latest");
+	Check(glm::distance(p.getForward(), glm::vec3(0.0f, -1.0f, 0.0f))
+			< 1e-4f, "camera.reset.straight-down-forward");
+	Check(glm::distance(p.up_, glm::vec3(0.0f, 0.0f, -1.0f)) < 1e-6f,
+		"camera.reset.resolved-up-carried");
+}
+
 } // namespace
 
 int main() {
@@ -217,6 +262,7 @@ int main() {
 	TestMatchesInfiniteInRange();
 	TestSafeLookAt();
 	TestMouseLookFramerateIndependent();
+	TestResetAnchorsAtLookAt();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

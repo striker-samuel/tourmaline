@@ -38,10 +38,16 @@ constexpr int MOTION_DEBUG_TOGGLE = GLFW_KEY_V;
 constexpr int LOD_TOGGLE = GLFW_KEY_L;
 constexpr int PARTICLES_TOGGLE = GLFW_KEY_F;// GPU particle system on/off
 constexpr int DEFERRED_SHADOWS_TOGGLE = GLFW_KEY_H;
-// No G binding: the filtered main view is always on (the old runtime A/B
-// toggle died with the legacy direct-draws off path; the G key is free).
+// G was free (the old filtered-view A/B toggle died with the legacy
+// direct-draws off path); it is now the camera reset (CAMERA_RESET above).
 constexpr int SKY_TOGGLE = GLFW_KEY_K;
 constexpr int WIREFRAME_TOGGLE = GLFW_KEY_P;
+// Camera reset: G snaps the FPS camera back to the scene spawn pose
+// (positioner.reset() — the LAST lookAt framing: Configure defaults /
+// authored scene camera / generic fit; the glide dies too). G was the
+// documented free letter (the old filtered-view toggle died with the
+// legacy path).
+constexpr int CAMERA_RESET = GLFW_KEY_G;
 // Tiled-terrain render on/off (replaces the old Terrain field checkbox).
 constexpr int TERRAIN_TOGGLE = GLFW_KEY_T;
 // Culling freeze (m_freezeCullingView): Ctrl chord like VRAM_VIEWER_TOGGLE

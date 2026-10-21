@@ -157,6 +157,17 @@ void CameraPositioner_FirstPerson::setUpVector(const glm::vec3& up)
 void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) {
 	cameraPosition_ = pos;
 	cameraOrientation_ = glm::lookAt(pos, target, up);
+	up_ = up;
+	// Every explicit framing is a SPAWN (Configure defaults + env pins,
+	// authored scene cameras, the generic fit) — re-anchor the reset()
+	// snapshot to the LAST pose set this way so the camera reset returns
+	// to the actual scene spawn, not the ctor's stale default. up_ is
+	// assigned too: the degenerate framings resolve a horizontal up
+	// (ResolveLookAtUp), and leaving the (0,1,0) default there would
+	// cross NaNs in setUpVector on the first mouselook after the spawn.
+	starting_pos = cameraPosition_;
+	starting_cameraOrientation = cameraOrientation_;
+	starting_up = up_;
 }
 glm::vec3 CameraPositioner_FirstPerson::getForward() const {
 	const glm::mat4 rot = glm::mat4_cast(cameraOrientation_);
@@ -172,4 +183,8 @@ void CameraPositioner_FirstPerson::reset() {
 	cameraOrientation_ = starting_cameraOrientation;
 	cameraPosition_ = starting_pos;
 	up_ = starting_up;
+	// Kill the glide as well: velocity at the spawn is zero by
+	// definition, and the damping decay would otherwise keep the camera
+	// drifting away from the just-restored pose.
+	moveSpeed_ = glm::vec3(0.0f);
 }

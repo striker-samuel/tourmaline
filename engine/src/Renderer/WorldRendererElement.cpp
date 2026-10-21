@@ -130,9 +130,17 @@ namespace engine {
 		}
 		// J spawns a blood splat on whatever the camera crosshair hits
 		// (CPU raycast over the scene triangle soup; the pick BVH builds
-		// lazily on first use â€” see SpawnDecalAtCrosshair).
+		// lazily on first use — see SpawnDecalAtCrosshair).
 		if (m_input.isKeyPressed(keybind::DECAL_SPLAT)) {
 			m_renderer.SpawnDecalAtCrosshair();
+		}
+		// G snaps the camera back to the scene spawn: positioner.reset()
+		// restores the LAST lookAt-anchored pose (Configure default /
+		// authored scene camera / generic framing) and kills the glide.
+		// Works in both modes like the rest — resetting from UI mode is
+		// the fastest way back after flying off in the panel.
+		if (m_input.isKeyPressed(keybind::CAMERA_RESET)) {
+			m_renderer.CameraPositioner().reset();
 		}
 		if (m_input.isKeyPressed(keybind::DEFERRED_SHADOWS_TOGGLE)) {
 			m_renderer.m_dsEnabled = !m_renderer.m_dsEnabled;

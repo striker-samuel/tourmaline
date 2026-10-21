@@ -108,11 +108,16 @@ public:
 	void setSpeed(const glm::vec3& speed);
 	void resetMousePosition(const glm::vec2& p);
 	void setUpVector(const glm::vec3& up);
+	// Explicit framing (pos/target/up). Also the reset() ANCHOR: every
+	// lookAt re-snapshots the starting pose (the spawn IS the last
+	// explicit framing — see the .cpp) and adopts the passed up.
 	void lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up);
 	glm::vec3 getForward() const;
 	glm::quat getOrientation() const;
 	// x = pitch, y = yaw, z = roll, in degrees (glm eulerAngles convention).
 	glm::vec3 getEulerDegrees() const;
+	// Back to the last lookAt-anchored spawn pose (position + orientation
+	// + up; the glide dies with the moveSpeed_ zero — see the .cpp).
 	void reset();
 
 public:
