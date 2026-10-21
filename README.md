@@ -16,6 +16,13 @@ sources compile to SPIR-V at build time and load next to the executable.
 - **GPU-driven rendering** — HZB occlusion culling + GPU mesh filter with
   LOD chains, clustered Forward+ lighting, indexed draws skipping eligible
   mesh ranges (exactly-once discipline).
+- **GPU skinning** — glTF skeletal animation: `.anim` clips with the
+  root-bone basis fix, joint-palette skinning in the mesh pipeline,
+  animated-pose prepass/shadows/occluders sharing the deformed pose, and
+  deformed meshlet cones + per-draw union bounds (GfxSkinBounds) keeping
+  skinned culling conservative by default (`TOURMALINE_SKIN_CONE` A/B
+  lever); pinned end-to-end by the knight companion scene
+  (knight_anim_tests).
 - **Shadows** — cascaded sun + per-spot shadow atlases, EVSM soft shadows,
   deferred shadow maps (DPS) with debug visualizers.
 - **Lighting & GI** — analytic lights, SSR, raymarched volumetric fog with
@@ -42,9 +49,6 @@ magic-bumped instead of carrying compat shims, by design.
 experiments: they compile and run for the scenes they were developed
 against, but expect gaps, visual artifacts, stale bakes and API churn.
 
-- **GPU skinning** — skeletal animation, joint palettes and the GPU skinning
-  path are incomplete; expect incorrect or missing deformation on animated
-  content.
 - **Terrain** — procedural tiles, height painting and LOD stitching are
   unfinished; seams, missing tiles and unstable edits are known.
 - **GI (global illumination)** — probe cubemaps, convex volumes, the
@@ -52,7 +56,7 @@ against, but expect gaps, visual artifacts, stale bakes and API churn.
   stale, incomplete or visibly wrong outside the scenes they were authored
   for.
 
-Treat those three as preview-quality, not production features.
+Treat both as preview-quality, not production features.
 
 ## Screenshots
 
@@ -202,6 +206,14 @@ docs/        project guide + editor tour documentation
 - `AGENTS.md` — build/run/test quick reference for humans and agents.
 - `docs/project_guide.md` — systems, seams, and where to extend things.
 - `THIRD_PARTY_NOTICES.md` — full third-party license audit.
+
+## AI disclosure
+
+Development of Tourmaline was assisted by AI coding agents: **Muse Spark
+1.3** and **GLM 5.3** (Z.ai, driven through the opencode CLI). They
+contributed to implementation, debugging, testing and documentation
+across the codebase; the architecture, review and final decisions are the
+author's.
 
 ## License
 
