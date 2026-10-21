@@ -193,12 +193,18 @@ smvk::Cluster* InjectSponzaKnight(smvk::World& world,
 
 	// Life-size placement in the atrium (the chrome ball's origin is the
 	// atrium centre): stand a few metres down the corridor against the
-	// sunlit floor, facing back toward the spawn.
+	// sunlit floor, facing back toward the spawn. SIZE: the current
+	// knight import nets the mesh globals to scale 1 (root 0.01 x the
+	// x100 mesh-group nodes; the mesh data itself is meters), so
+	// life-size needs NO compensation - the old hardcoded scale(100)
+	// was for the previous convention (cm mesh data under the root's
+	// 0.01). Hardcode up/down here if the content convention flips
+	// again.
 	const glm::vec3 spot(2.5f, 0.0f, 0.0f);
 	const glm::mat4 placement =
 		glm::translate(glm::mat4(1.0f), spot)
 		* glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f))
-		* glm::scale(glm::mat4(1.0f), glm::vec3(100.0f));
+		* glm::scale(glm::mat4(1.0f), glm::vec3(1.0f));
 	for (auto& [node, meshIdx] : knight.scene.meshForNode) {
 		const int n = int(node);
 		const int p = knight.scene.hierarchy[n].parent;

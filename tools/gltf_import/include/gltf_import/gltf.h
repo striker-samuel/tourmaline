@@ -328,6 +328,13 @@ bool LoadModelFromAsciiFile(
 // resolve world aims as globalTransform * (0,0,-1) in every mode.
 glm::vec3 GltfPunctualAimAxis(int coordFix);
 
+// The node's RAW local as authored (matrix verbatim, else T*R*S from
+// the TRS fields). The coordFix basis NEVER lands here - it rides the
+// imported chain top's local instead (see importUnder). The anim
+// exporter derives the per-node conjugation basis from this (see
+// asset_export.cpp's .anim writer).
+glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n);
+
 // Host-file texture source (default importer behavior): reads
 // baseDir/imageUri from the host filesystem; identity is the normalized
 // host-relative path so asset URIs match the VFS layout 1:1.

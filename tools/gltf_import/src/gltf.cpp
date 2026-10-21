@@ -27,6 +27,7 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <vector>
 #include <string>
@@ -2340,10 +2341,47 @@ int GltfToSceneImporter::BuildSkinData() {
 				sk.inverseBind[i] = m;
 			}
 		}
-		sk.root = (skin.skeleton >= 0
+		// Skeleton root: the skin's authored `skeleton` node when
+		// present; otherwise the glTF spec fallback - the joint
+		// hierarchy's own root (the joint whose parent is not itself a
+		// joint; the knight's skin omits `skeleton`). The old hardcoded
+		// 0u fallback pointed at the cluster-root placeholder - wrong
+		// data for every skin-authored-without-skeleton source.
+		if (skin.skeleton >= 0
 			&& (size_t)skin.skeleton < gltfNodeMap_.size()
-			&& gltfNodeMap_[size_t(skin.skeleton)] >= 0)
-			? uint32_t(gltfNodeMap_[size_t(skin.skeleton)]) : 0u;
+			&& gltfNodeMap_[size_t(skin.skeleton)] >= 0) {
+			sk.root = uint32_t(gltfNodeMap_[size_t(skin.skeleton)]);
+		}
+		else {
+			// glTF nodes carry no parent field - derive it from the
+			// children lists, then take the first joint (skin order)
+			// whose parent is missing or not a joint.
+			std::unordered_set<int> jointSet(skin.joints.begin(),
+				skin.joints.end());
+			std::unordered_map<int, int> parentOf;
+			for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
+				for (int child : model.nodes[ni].children)
+					parentOf[child] = int(ni);
+			}
+			int rootGltf = -1;
+			for (int j : skin.joints) {
+				const auto pit = parentOf.find(j);
+				if (pit == parentOf.end() || !jointSet.count(pit->second)) {
+					rootGltf = j;
+					break;
+				}
+			}
+			sk.root = (rootGltf >= 0
+				&& (size_t)rootGltf < gltfNodeMap_.size()
+				&& gltfNodeMap_[size_t(rootGltf)] >= 0)
+				? uint32_t(gltfNodeMap_[size_t(rootGltf)]) : 0u;
+			std::cerr << "[Skin] skeleton root derived from the joint"
+				" hierarchy: node " << sk.root << " ("
+				<< (sk.root < cluster.scene.hierarchy.size()
+					? getNodeName(cluster.scene, int(sk.root))
+					: std::string("?"))
+				<< ") - the skin omits 'skeleton'\n";
+		}
 		cluster.hasSkeleton = true;
 	}
 	// Per-recorded-mesh skin streams: JOINTS_0/WEIGHTS_0 -> packed

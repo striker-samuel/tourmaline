@@ -1200,16 +1200,20 @@ namespace paktool {
 				(void)c.i32();
 				(void)c.i32();
 			}
-			// Local translations (pinpoint checks print them).
-			std::vector<float> localT(nodeCount * 3, 0.0f);
-			for (uint32_t i = 0; i < nodeCount; ++i) {
-				float m[16];
-				for (int k = 0; k < 16; ++k)
-					m[k] = c.f32();
-				localT[i * 3 + 0] = m[12];
-				localT[i * 3 + 1] = m[13];
-				localT[i * 3 + 2] = m[14];
-			}
+		// Local transforms (pinpoint checks print them; the full mat4
+		// kept so the pinpoint can dump rotation/scale columns too).
+		std::vector<float> localT(nodeCount * 3, 0.0f);
+		std::vector<float> localM(nodeCount * 16, 0.0f);
+		for (uint32_t i = 0; i < nodeCount; ++i) {
+			float m[16];
+			for (int k = 0; k < 16; ++k)
+				m[k] = c.f32();
+			localT[i * 3 + 0] = m[12];
+			localT[i * 3 + 1] = m[13];
+			localT[i * 3 + 2] = m[14];
+			for (int k = 0; k < 16; ++k)
+				localM[i * 16 + k] = m[k];
+		}
 			std::unordered_map<uint32_t, uint32_t> meshMap, matMap, nameMap;
 			const uint32_t meshPairs = c.u32();
 			for (uint32_t i = 0; i < meshPairs; ++i) {
@@ -1334,9 +1338,17 @@ namespace paktool {
 				if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !hasCam && !ditherFlag)
 					continue;
 				tool::out() << "      node " << i << " '" << nm << "' parent=" << parent[i];
-				if (pinpoint)
+				if (pinpoint) {
 					tool::out() << " t=(" << localT[i * 3 + 0] << ","
 					<< localT[i * 3 + 1] << "," << localT[i * 3 + 2] << ")";
+					// Column magnitudes (scale) + the first column pair
+					// (rotation read): enough to spot a lost/identity
+					// root local without a full matrix print.
+					const float* m = &localM[i * 16];
+					tool::out() << " cols=(" << m[0] << "," << m[1] << ","
+						<< m[2] << "|" << m[4] << "," << m[5] << "," << m[6]
+						<< "|" << m[8] << "," << m[9] << "," << m[10] << ")";
+				}
 				if (hasMesh)
 					tool::out() << " mesh=" << meshMap[i];
 				auto mit = matMap.find(i);

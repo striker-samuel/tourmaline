@@ -1588,6 +1588,60 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 				: (ch.target_path == "scale")
 				? smvk::touranim::Channel::Scale
 				: smvk::touranim::Channel::Translate;
+			// RUNTIME-convention keys: the track REPLACES the node's
+			// whole channel in the RUNTIME's local space, and the
+			// import conjugates each CHAIN TOP node's local by the
+			// coordFix basis (clusterLocal = C * rawLocal; descendants
+			// keep rawLocal verbatim). The raw glTF sampler keys match
+			// only the DESCENDANTS - writing them raw for a top node
+			// SNAPS the whole chain by the basis at the first sample
+			// (the knight: the root's raw -15.3deg yaw key replaced the
+			// C-conjugated +164.7deg bind, and every palette entry
+			// inherited a conjugated -180deg - the deformed body flipped
+			// front-to-back while the draw frame stayed put). Derive the
+			// per-node basis C = clusterLocal * rawLocal^-1 (identity
+			// for descendants, the coordFix basis for tops) and
+			// conjugate the keys through it.
+			glm::mat4 basis(1.0f);
+			glm::vec3 basisScale(1.0f);
+			{
+				const glm::mat4 rawLocal =
+					GetNodeLocalTransform(model.nodes[size_t(target)]);
+				if (joint < int(cluster->scene.localTransform.size())) {
+					basis = cluster->scene.localTransform[size_t(joint)]
+						* glm::inverse(rawLocal);
+					basisScale = glm::vec3(
+						glm::length(glm::vec3(basis[0])),
+						glm::length(glm::vec3(basis[1])),
+						glm::length(glm::vec3(basis[2])));
+					// The conjugation below decomposes C*T*R*S into
+					// T'*R'*S' exactly only while C is a similarity
+					// (uniform scale, no shear). The coordFix bases
+					// (identity / rotY(180) / Y-mirror, no scale) and
+					// uniform preTransforms qualify; anything else warns
+					// (the keys still go out conjugated - better than
+					// the raw snap - but the TRS decomposition is lossy).
+					const float eps = 1e-3f;
+					if (glm::abs(basisScale.x - basisScale.y) > eps
+						|| glm::abs(basisScale.y - basisScale.z) > eps) {
+						std::cerr << "[Anim] node '" << t.name
+							<< "' basis is non-uniform ("
+							<< basisScale.x << "/" << basisScale.y
+							<< "/" << basisScale.z << ") - key"
+							" conjugation is approximate\n";
+					}
+				}
+			}
+			const bool identityBasis =
+				glm::abs(basis[0].x - 1.0f) < 1e-6f
+				&& glm::abs(basis[1].y - 1.0f) < 1e-6f
+				&& glm::abs(basis[2].z - 1.0f) < 1e-6f
+				&& glm::abs(basis[3].x) < 1e-6f
+				&& glm::abs(basis[3].y) < 1e-6f
+				&& glm::abs(basis[3].z) < 1e-6f
+				&& glm::abs(basis[0].y) + glm::abs(basis[0].z)
+					+ glm::abs(basis[1].x) + glm::abs(basis[1].z)
+					+ glm::abs(basis[2].x) + glm::abs(basis[2].y) < 1e-6f;
 			t.spline = (s.interpolation == "STEP")
 				? smvk::touranim::Spline::Step
 				: (s.interpolation == "CUBICSPLINE")
@@ -1614,15 +1668,44 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 					// xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
 					// ctor); the earlier w-first swizzle permuted every
 					// channel of every rotate key into garbage poses.
-					key.v = glm::vec4(float(q[0]), float(q[1]),
-						float(q[2]), float(q[3]));
+					glm::quat rot{float(q[3]), float(q[0]), float(q[1]),
+						float(q[2])};
+					if (!identityBasis) {
+						// The runtime composes the local as T * R * S
+						// and the true animated top local is
+						// C * T * R * S = T' * (C_rot * R) * (|C| * S):
+						// the rotate key is the LEFT-COMPOSED rotation
+						// (q_C * q), NOT the conjugate (C*R*C^-1 - a
+						// yaw under the knight's rotY(180) fix commutes
+						// with it and the conjugate silently kept the
+						// raw key, snapping the root by the full basis).
+						// Strip |C| first so quat_cast sees a rotation.
+						const float meanScale =
+							(basisScale.x + basisScale.y + basisScale.z)
+							/ 3.0f;
+						const glm::mat3 c3 = glm::mat3(basis)
+							/ (std::abs(meanScale) > 1e-9f
+								? meanScale : 1.0f);
+						rot = glm::quat_cast(c3) * rot;
+					}
+					key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
 				}
 				else {
 					double v3[3] = {};
 					if (!AnimReadValue(model, out, k, v3, 3))
 						break;
-					key.v = glm::vec4(float(v3[0]), float(v3[1]),
-						float(v3[2]), 1.0f);
+					glm::vec3 val{float(v3[0]), float(v3[1]),
+						float(v3[2])};
+					if (!identityBasis) {
+						if (t.channel == smvk::touranim::Channel::Translate)
+							// C * T * R * S keeps the translation column
+							// C3*t + C's own translation (the full
+							// affine; coordFix bases carry none).
+							val = glm::vec3(basis * glm::vec4(val, 1.0f));
+						else // Scale: |C| per axis * S.
+							val *= basisScale;
+					}
+					key.v = glm::vec4(val, 1.0f);
 				}
 				t.keys.push_back(key);
 			}

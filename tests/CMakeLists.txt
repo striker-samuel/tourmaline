@@ -30,6 +30,23 @@ set_target_properties(TourAnimTests PROPERTIES
 
 add_test(NAME touranim_tests COMMAND TourAnimTests)
 
+# Knight walk-clip end-to-end on the REAL derived assets (guarded: SKIPs
+# when F:/content/demo/knight_only is absent): .geometry rebuild + clip
+# attach + the follow diagnostic (the hip chain must ride the pelvis).
+add_executable(KnightAnimTests test_knight_anim.cpp)
+
+target_link_libraries(KnightAnimTests
+    PRIVATE
+        engine
+        gltf_import
+)
+
+set_target_properties(KnightAnimTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME knight_anim_tests COMMAND KnightAnimTests)
+
 # Placement editor model (engine-only TU: no ImGui, no EditorApp).
 add_executable(PlacementEditorTests test_placement_editor.cpp
     ../editor/src/editor_dg.cpp
@@ -527,6 +544,7 @@ tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)
 tourmaline_stage_sdl3(TourTests)
+tourmaline_stage_sdl3(KnightAnimTests)
 tourmaline_stage_sdl3(AssetOpsTests)
 tourmaline_stage_sdl3(WorldEntityTests)
 tourmaline_stage_sdl3(PlacementTests)
