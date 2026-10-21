@@ -1,6 +1,24 @@
 TODO
 ====
 
+(Engine, future) Two-sided materials (CullMode::None): the importer asserts
+on doubleSided under --strict while the runtime IGNORES the cooked flag
+(mesh.h: "two-sided rendering is no longer supported (the pipeline is
+always back-face culled)" — MakePipelineStateForMaterial pins Cull Back).
+Content wants it: glass panes already stamp doubleSided=true (gltf.cpp's
+stale "pipeline cull None via doubleSided" comment), and thin double-skin
+shells (the knight's cloth/shield) suffer under Cull Back (see-through at
+open edges/folds/grazing angles) + under the Cull Front shadow depth (the
+thin-shell self-shadow acne — see the resolved verdict below). Support
+shape: un-ignore Material::doubleSided -> MakePipelineStateForMaterial
+gains a CullMode::None raster variant for those materials across every
+pipeline family (lit/depth/prepass/motion/seed + the direct and indirect
+legs), plus a shadow-depth policy for two-sided casters (Cull None + the
+existing receiver-side bias, or keep Cull Front and accept the acne), and
+the importer's --strict assert drops once the flag is real. The meshlet
+cones stay safe either way (facing-mixed -> degenerate -> keep); the
+per-triangle homogeneous backface filter flag needs no change.
+
 (Engine, decision) Skinned-mesh culling runs CONSERVATIVE by default: the
 cone test and the HZB occlusion test are SKIPPED for skinned draws/clusters
 (sphere + frustum + contribution only; the deformed spheres/unions are
