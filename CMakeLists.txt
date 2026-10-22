@@ -98,6 +98,11 @@ add_subdirectory(external/glfw)
 list(PREPEND CMAKE_PREFIX_PATH "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16")
 set(SDL3_DIR "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
 find_package(SDL3 CONFIG REQUIRED)
+# IMPORTED_GLOBAL: the host-staging genexes ($<TARGET_FILE:SDL3::SDL3>)
+# evaluate in GAME-HOST scopes (this tree add_subdirectory'd as a
+# submodule) — imported targets are otherwise directory-scoped and
+# invisible outside this tree.
+set_target_properties(SDL3::SDL3 PROPERTIES IMPORTED_GLOBAL TRUE)
 # (The SDL3.dll / Streamline runtime STAGING functions moved to
 # cmake/HostSetup.cmake so game hosts can include them from their
 # submodule copy of this tree — see the include below.)
@@ -158,6 +163,9 @@ endif()
 
 # Now try to locate the config package
 find_package(ktx CONFIG REQUIRED)
+# IMPORTED_GLOBAL for the same reason as SDL3 above (the host-staging
+# genexes evaluate in game-host scopes).
+set_target_properties(KTX::ktx PROPERTIES IMPORTED_GLOBAL TRUE)
 
 if(NOT ktx_FOUND)
   message(FATAL_ERROR
