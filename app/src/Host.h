@@ -15,6 +15,8 @@
 //   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
 //   [--disable_control] [--no-dlss] [--capture] [--use_optick] [--use_optick_gpu]
 
+#include <functional>
+#include <memory>
 #include <string>
 
 #include <Engine/App/RunConfig.h>
@@ -22,6 +24,12 @@
 namespace smvk {
 	class ResourceManager;
 	struct World;
+	class App;
+}
+
+namespace engine {
+	class IAppElement;
+	class WorldRenderer;
 }
 
 namespace app {
@@ -59,6 +67,22 @@ struct PakAppConfig {
 	// silently covered by loose sidecars. Engine resources (shaders,
 	// fonts, LUTs) load exe-relative, never through the VFS.
 	bool noVfs = false;
+	// ---- Host extension element (the game-host hook) ----
+	// A host (Asteroids.exe — asteroids/src/main.cpp) installs a factory
+	// that RunPakApp stacks OVER the renderer element (after its onAttach
+	// loaded the world): the game layer owns whatever it wants (the
+	// sponza invaders element drives the camera + ball entities through
+	// the merged scene). Returning null from the factory skips stacking
+	// (the env kill switch lives there). Bench runs never stack it
+	// (capture determinism — RunPakApp gates). The plain App host leaves
+	// it unset: the clean viewer.
+	std::function<std::shared_ptr<engine::IAppElement>(
+		smvk::App& host,
+		engine::WorldRenderer& renderer,
+		std::shared_ptr<smvk::World*> worldHandle)> extraElement;
+	// True when the extra element owns the camera (RunPakApp then parks
+	// the renderer element's FPS camera drive for the whole run).
+	bool extraOwnsCamera = false;
 	// Scene id (GI sidecar stem + check-scene gating). Empty = pak stem.
 	std::string sceneId;
 	// Central run config (parsed once in main; Log/WarnUnknown there).

@@ -52,188 +52,17 @@ namespace app {
 				? file : file.substr(0, dot);
 		}
 
-		// UV sphere (lat-long) centered on the origin — the sponza check
-		// scene's chrome probe ball. Triangles follow the (a,b,c),(a,c,d)
-		// pattern with b one step in +theta (longitude) and d one step in
-		// +phi (pole to pole): dTheta x dPhi points outward, so the winding
-		// matches the engine's CCW front faces.
-		smvk::StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
-			smvk::StaticMeshUpload data;
-			data.aabbMin = glm::vec3(-radius);
-			data.aabbMax = glm::vec3(radius);
-			const float pi = glm::pi<float>();
-			const int nSlices = std::max(8, slices);
-			const int nStacks = std::max(4, stacks);
-			for (int j = 0; j <= nStacks; ++j) {
-				const float phi = pi * static_cast<float>(j) / static_cast<float>(nStacks);
-				const float sinPhi = std::sin(phi);
-				const float cosPhi = std::cos(phi);
-				for (int i = 0; i <= nSlices; ++i) {
-					const float theta = 2.0f * pi * static_cast<float>(i) / static_cast<float>(nSlices);
-					const float sinT = std::sin(theta);
-					const float cosT = std::cos(theta);
-					const glm::vec3 n(sinPhi * cosT, cosPhi, sinPhi * sinT);
-					smvk::StaticVertex v{};
-					v.pos = n * radius;
-					v.color = glm::vec4(1.0f);
-					v.texCoord = glm::vec2(
-						static_cast<float>(i) / static_cast<float>(nSlices),
-						static_cast<float>(j) / static_cast<float>(nStacks));
-					v.normal = n;
-					glm::vec3 t(-sinT, 0.0f, cosT);
-					if (glm::dot(t, t) < 1e-12f)
-						t = glm::vec3(1.0f, 0.0f, 0.0f); // poles: theta tangent degenerates
-					v.tangent = glm::vec4(glm::normalize(t), 1.0f);
-					data.vertices.push_back(v);
-				}
-			}
-			const uint32_t row = static_cast<uint32_t>(nSlices) + 1u;
-			for (int j = 0; j < nStacks; ++j) {
-				for (int i = 0; i < nSlices; ++i) {
-					const uint32_t a = static_cast<uint32_t>(j) * row + static_cast<uint32_t>(i);
-					const uint32_t b = a + 1u;
-					const uint32_t c = a + row + 1u;
-					const uint32_t d = a + row;
-					data.indices.push_back(a);
-					data.indices.push_back(b);
-					data.indices.push_back(c);
-					data.indices.push_back(a);
-					data.indices.push_back(c);
-					data.indices.push_back(d);
-				}
-			}
-			return data;
-		}
-
-		// Chrome probe ball (sponza check scene only): procedural UV sphere,
-		// 0.5 m in diameter, at the atrium center resting on the floor (y=0).
-		// White metal (metallic 1, roughness 0; the lit shader clamps
-		// roughness to 0.04 so there are no GGX singularities). Injected into
-		// the loaded cluster BEFORE Resolve so it joins culling, shadows, AO
-		// and reflections like any imported node. Independent root (own
-		// identity-parent transform), so scene root transforms can't move it
-		// and the static-freeze loop below simply leaves it dynamic.
-		void InjectSponzaChromeBall(smvk::World& world, smvk::ResourceManager& ctx) {
-			(void)ctx;
-			if (world.clusters.empty())
-				return;
-			// The scene pak's own cluster is registered FIRST (before any
-			// companion injection below), so it is clusters.front().
-			smvk::Cluster& sponzaCluster = *world.clusters.front();
-			const float ballRadius = 0.25f;
-			const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
-			smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
-			smvk::ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
-			smvk::MaterialCreateInfo chromeCi{};
-			chromeCi.baseColorFactor = glm::vec4(1.0f);
-			chromeCi.metallicFactor = 1.0f;
-			chromeCi.roughnessFactor = .13f;
-			chromeCi.emissiveFactor = glm::vec3(0.0f);
-			chromeCi.alphaMode = smvk::AlphaMode::Opaque;
-			chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
-			smvk::ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
-			if (ballMesh.empty() || chromeMat.empty()) {
-				std::cerr << "[Scene] chrome ball inject failed (mesh/material)\n";
-				return;
-			}
-			const int ballNode = addNode(sponzaCluster.scene, -1, 0);
-			sponzaCluster.scene.localTransform[ballNode] =
-				glm::translate(glm::mat4(1.0f), ballCenter);
-			sponzaCluster.scene.globalTransform[ballNode] =
-				glm::translate(glm::mat4(1.0f), ballCenter);
-			sponzaCluster.scene.meshForNode[ballNode] = ballMesh.index();
-			sponzaCluster.scene.materialForNode[ballNode] = chromeMat.index();
-			setNodeName(sponzaCluster.scene, ballNode, "chrome_ball");
-			markAsChanged(sponzaCluster.scene, ballNode);
-			std::cerr << "[Scene] chrome ball: r=" << ballRadius
-				<< "m at (" << ballCenter.x << "," << ballCenter.y << "," << ballCenter.z << "), "
-				<< ballUpload.vertices.size() << " verts, "
-				<< ballUpload.indices.size() / 3 << " tris\n";
-		}
-
-		// Knight companion (sponza check scene): the demo knight loads as a
-		// SECOND cluster from the sibling knight.pak (same directory as the
-		// scene pak) and stands in the atrium, scaled to life size and playing
-		// its clip on loop (the frame's animation driver picks it up - the
-		// sponza cluster carries no skeleton, so the knight is the frame's one
-		// skinned cluster).
-		//
-		// Placement is applied to the MESH nodes' locals ONLY. The skin palette
-		// is the DELTA from bind (palette = globalJoint * inverseBind = identity
-		// at bind, the deformed heap then holds the bind-pose model-space
-		// vertices) and the draw applies the mesh node's world matrix as the
-		// model: the placement therefore belongs on the model and must NOT also
-		// touch any joint's ancestor (that would double-apply it). A mesh node
-		// is never an ancestor of a joint, so premultiplying each mesh node's
-		// world transform is exact. The local is rewritten through the parent
-		// frame so the merge's from-locals global recompute reproduces it.
-		smvk::Cluster* InjectSponzaKnight(
-			smvk::World& world,
-			smvk::ResourceManager& ctx, smvk::TextureStreamer* streamer,
-			const std::string& sponzaPakOpenPath,
-			std::shared_ptr<smvk::PakBackend>& outBackend,
-			std::string& outMountName
-		) {
-			if (sponzaPakOpenPath.empty())
-				return nullptr;
-			const std::filesystem::path knightPak =
-				std::filesystem::path(sponzaPakOpenPath).parent_path() / "knight.pak";
-			std::error_code ec;
-			if (!std::filesystem::exists(knightPak, ec)) {
-				std::cerr << "[Scene] knight companion skipped: no '"
-					<< knightPak.string() << "'\n";
-				return nullptr;
-			}
-			PakPreload kpre = KickPakPreload(knightPak.string()).get();
-			if (!kpre.backend) {
-				std::cerr << "[Scene] knight companion load failed: " << kpre.error
-					<< "\n";
-				return nullptr;
-			}
-			smvk::Cluster& knight = world.LoadClusterFromPak(ctx,
-				kpre.backend->Reader(), 0, streamer, kpre.image);
-
-			// Life-size placement in the atrium (the chrome ball's origin is the
-			// atrium centre): stand a few metres down the corridor against the
-			// sunlit floor, facing back toward the spawn. SIZE: the current
-			// knight import nets the mesh globals to scale 1 (root 0.01 x the
-			// x100 mesh-group nodes; the mesh data itself is meters), so
-			// life-size needs NO compensation - the old hardcoded scale(100)
-			// was for the previous convention (cm mesh data under the root's
-			// 0.01). Hardcode up/down here if the content convention flips
-			// again.
-			const glm::vec3 spot(2.5f, 0.0f, 0.0f);
-			const glm::mat4 placement =
-				glm::translate(glm::mat4(1.0f), spot)
-				* glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f))
-				* glm::scale(glm::mat4(1.0f), glm::vec3(1.0f));
-			for (auto& [node, meshIdx] : knight.scene.meshForNode) {
-				const int n = int(node);
-				const int p = knight.scene.hierarchy[n].parent;
-				const glm::mat4 parentGlobal = (p >= 0)
-					? knight.scene.globalTransform[p] : glm::mat4(1.0f);
-				knight.scene.localTransform[n] = glm::inverse(parentGlobal) * placement
-					* parentGlobal * knight.scene.localTransform[n];
-				knight.scene.globalTransform[n] =
-					placement * knight.scene.globalTransform[n];
-			}
-			outBackend = kpre.backend;
-			outMountName = knightPak.string();
-			std::cerr << "[Scene] knight companion: standing at ("
-				<< spot.x << "," << spot.y << "," << spot.z << "), "
-				<< knight.scene.meshForNode.size() << " mesh nodes\n";
-			return &knight;
-		}
+		// (The sponza CHECK-SCENE EXTRAS were REMOVED — the chrome probe
+		// ball and the knight companion + its ground quad: the Asteroids
+		// game owns the atrium now and the plain pak content is the whole
+		// scene. The ball recipe (procedural UV sphere + PBR material)
+		// lives on in asteroids/src/InvadersGame.cpp.)
 
 		// The HOST's pak loader (the renderer's world source): consumes the
 		// preloaded backend (read + parse + decompress already overlapped with
-		// renderer init), loads the selected scene into a smvk::World (uploads issued
-		// to the context — everything renders by handles), injects the
-		// check-scene extras, freezes the cooked roots static and resolves.
-		// The pak's embedded textures mount into the renderer's content
-		// overlay (below loose content/, so dev overrides win) for init-time
-		// reads (cubemaps baked into the pak, ...). Returns nullptr on any
-		// failure (the renderer fails loudly).
+		// renderer init), loads the selected scene into a smvk::World (uploads
+		// issued to the context — everything renders by handles), freezes the
+		// cooked roots static and resolves.
 		smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
 			PakPreload pre,
 			int sceneIndex,
@@ -349,29 +178,13 @@ namespace app {
 					return;
 				}
 			};
-			// The clip stem: the scene pak's own stem, unless the sponza
-			// companion knight (loaded below) supplies the frame's skinned
-			// cluster - then it is the knight's.
-			std::string clipStem = StemOf(pre.scenePak);
-			// Check-scene extras (sponza chrome ball + knight companion) inject
-			// BEFORE resolve so they join culling/shadows/AO/reflections like any
-			// imported node.
-			if (StemOf(pre.scenePak) == "sponza") {
-				InjectSponzaChromeBall(*world, ctx);
-				std::shared_ptr<smvk::PakBackend> knightBackend;
-				std::string knightMountName;
-				if (InjectSponzaKnight(*world, ctx, sceneStreamer, pre.openPath,
-					knightBackend, knightMountName)) {
-					clipStem = "knight";
-					if (knightBackend)
-						contentVfs.Mount(knightBackend, 10, knightMountName);
-				}
-			}
+			// (No check-scene extras anymore — the loaded pak content is the
+			// whole scene; see the removal note above.)
 			for (auto& clusterPtr : world->clusters) {
 				smvk::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
 					continue;
-				attachClip(*c, clipStem);
+				attachClip(*c, StemOf(pre.scenePak));
 				break; // ONE cluster with a skeleton for now (the driver's cap)
 			}
 			// Freeze everything static (no recook needed): the exporters stamp
@@ -396,7 +209,8 @@ namespace app {
 			// misread as "SSR contributes nothing"; the wax makes every
 			// receiver - the floor especially, its grazing-angle pillar
 			// reflections - a mirror so the trace's hit/miss + the compose are
-			// plainly visible (the chrome ball stays the calibrated reference).
+			// plainly visible (the removed chrome probe ball used to be the
+			// calibrated reference; the waxed floor carries that role now).
 			// AFTER ResolveAndFixup (the material location table is the resolve's
 			// product); the mutations flow to the GPU per frame through
 			// UpdateMaterials' world reads.
@@ -545,18 +359,28 @@ namespace app {
 		// self-cycle.
 		const int sceneIndex = cfg.sceneIndex;
 		engine::WorldRenderer* rendererRaw = &renderer;
+		// World handoff for the invaders element (app/src/InvadersGame):
+		// the lambda stashes the raw world pointer as it returns the
+		// LinearPtr to the renderer. The renderer owns the lifetime; the
+		// raw pointer stays valid for the game element's whole run (the
+		// element stack detaches in reverse order, so the game drops the
+		// hook + stops touching the world before the renderer tears it
+		// down).
+		auto worldHandle = std::make_shared<smvk::World*>();
 		renderer.SetWorldSource(
-			[preloadFuture, sceneIndex, rendererRaw]
+			[preloadFuture, sceneIndex, rendererRaw, worldHandle]
 			(
 				smvk::ResourceManager& ctx,
 				smvk::OverlayVfs& contentVfs
 				) -> smvk::mem::LinearPtr<smvk::World> {
-			return LoadPakWorld(preloadFuture->get(),
+			auto world = LoadPakWorld(preloadFuture->get(),
 				sceneIndex,
 				ctx,
 				contentVfs,
 				rendererRaw->GetTextureStreamer()
 				);
+			*worldHandle = world.get();
+			return world;
 		});
 		engine::WorldRendererConfig passCfg = engine::WorldRendererConfig::All();
 		if (cfg.filterOnly)
@@ -566,12 +390,11 @@ namespace app {
 		ApplyPassCsv(passCfg, cfg.withCsv.c_str(), true);
 		ApplyPassCsv(passCfg, cfg.withoutCsv.c_str(), false);
 		renderer.Configure(passCfg, cfg.run);
-		// Demo content (embers at the origin, sponza decal presets): an APP
-		// host opt-in — the renderer never seeds content on its own.
-		// Transitional: presets/emitters become world entities in the
-		// entity-system phase, then this call seeds them through the world
-		// instead.
-		renderer.SetDemoContentEnabled(true);
+		// (Demo content seeding — embers at the origin + decal presets —
+		// REMOVED: the hosts run the plain pak scene now. The renderer never
+		// seeds content on its own; its particle system stays fully live for
+		// panel-authored emitters and the Asteroids game's bursts
+		// (WorldRenderer::SpawnParticleBurst).)
 		// --no-dlss / --capture (the latter implies the former): suppress the
 		// Streamline load BEFORE the app runs (App::Initialize consults the
 		// flag before DlssStartup / pointing volk at the interposer — after
@@ -665,6 +488,15 @@ namespace app {
 			std::cout << "bench: constant-velocity flight " << cfg.benchMoveSpeed
 				<< " m/s forward from the spawn pose (past warmup)\n";
 		}
+		// Host extension element (the game-host hook, see Host.h): stacked
+		// AFTER the renderer element — attach order guarantees the world is
+		// loaded (the renderer's onAttach ran the world source) before the
+		// extension looks for it. Bench runs never stack it (the extension
+		// animates every frame — capture determinism).
+		const bool extraOn = static_cast<bool>(cfg.extraElement)
+			&& cfg.benchFrames <= 0 && cfg.benchMoveSpeed <= 0.0f;
+		if (extraOn && cfg.extraOwnsCamera)
+			element->SetDisableControl(true); // the extension owns the camera
 		// Attach the element to the host's stack and DROP the host-side
 		// reference: the App owns the element now (Shutdown's detach pass
 		// destroys it INSIDE the shutdown window, Holders releasing while
@@ -672,6 +504,15 @@ namespace app {
 		// element destruction to after ~App and leak the GPU handles).
 		app.AddElement(element);
 		element.reset();
+		if (extraOn) {
+			if (auto extra = cfg.extraElement(app, renderer, worldHandle)) {
+				// Reverse detach order: the extension drops off the stack
+				// (and out of the world) before the renderer tears down.
+				app.AddElement(extra);
+				std::cerr << "[Scene] host element '" << extra->ElementName()
+					<< "' stacked over the renderer\n";
+			}
+		}
 		// Optick gates must be set before Run(): the engine initializes the GPU
 		// profiler during VulkanCore init, and the bench session starts after the
 		// warmup frames. --use_optick_gpu implies --use_optick. --capture

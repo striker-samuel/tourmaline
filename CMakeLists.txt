@@ -306,6 +306,11 @@ file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
 # Shader compilation rule (loaded from custom cmake file)
 include(cmake/CompileShaders.cmake)
 
+# Shared HOST-EXE setup (runtime dir, DLL staging, content sync, engine
+# link, shader dependency — used by app/ and asteroids/; see the function
+# header in the file).
+include(cmake/HostSetup.cmake)
+
 option(TRACE_INCLUDES "Print header include tree while compiling" OFF)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -338,6 +343,7 @@ add_subdirectory(tools/import)
 add_subdirectory(tools/artifact_cache)
 add_subdirectory(tools/cook)
 add_subdirectory(app)
+add_subdirectory(asteroids)   # the sponza invaders GAME host (Asteroids.exe)
 add_subdirectory(tools/pak_cooker)
 add_subdirectory(editor)
 add_subdirectory(tools/gi_baker)

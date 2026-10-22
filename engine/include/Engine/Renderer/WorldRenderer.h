@@ -1294,9 +1294,19 @@ protected:
 	// readouts + deadzone sliders) — the renderer never polls input for
 	// control; the element installs this at attach.
 	Input* m_inputUi = nullptr;
+	// Installed extra-UI hook (see SetExtraUi): app-owned overlay draw,
+	// invoked inside the ImGui frame build.
+	std::function<void()> m_extraUi;
 public:
 	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
 	void SetInputForUi(Input* in) { m_inputUi = in; }
+	// Host-installed extra UI hook (app-owned overlays): drawn inside
+	// the frame's ImGui build, after the debug panel + floating tools,
+	// right before the UI pass records. Lets app hosts draw through the
+	// renderer's ImGui pass (the sponza invaders HUD) without a
+	// renderer subclass. No-op unless installed; runs only when the UI
+	// pass runs (m_passes.ui + a live overlay).
+	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
 protected:
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
@@ -1386,6 +1396,18 @@ public:
 	// center ray; on hit spawns a blood-splat ENTITY (World::
 	// CreateDecalAt into the dynamic cluster).
 	void SpawnDecalAtCrosshair();
+	// One-shot particle burst at a world position (the Asteroids game
+	// host's death/hit pops): `count` particles spawn over a short fixed
+	// window as a TRANSIENT emitter row (sphere volume, outward
+	// velocity, gravity + drag, additive emissive tint), then the row
+	// removes itself. Framerate-independent — the rate spreads the count
+	// over the window and the GPU's fractional carry lands the remainder
+	// exactly. Bursts stack with the demo emitters up to the emitter
+	// cap; overflow drops the oldest burst. No-op when the particle pass
+	// cannot run (ParticlesActive gates the upload; queued bursts age
+	// out on the next active frame).
+	void SpawnParticleBurst(const glm::vec3& pos, const glm::vec3& color,
+		float speed, float size, float life, uint32_t count);
 	// Lazy CPU pick scene (same triangle soup the GI baker sees): shared
 	// by crosshair picking and the probe-overlay occlusion cull. Builds
 	// once (one-time glTF re-import hitch, noted on console); true when
@@ -1628,6 +1650,16 @@ public:
 	// loop when the tile lists are not fresh (deferred shadows own them).
 	bool m_particlesEnabled = true;
 	ParticleDemo m_particleDemo{};
+	// Transient one-shot burst emitters (SpawnParticleBurst): full rows
+	// with a TTL. UpdateParticles appends them after the demo rows,
+	// ages the TTL (drops expired) and trims overflow (oldest first) so
+	// demo + bursts never exceed PARTICLE_MAX_EMITTERS.
+	struct ParticleBurst {
+		smvk::ParticleEmitterGpu row;
+		float ttl = 0.0f;
+	};
+	std::vector<ParticleBurst> m_particleBursts;
+	uint32_t m_particleBurstSeed = 1; // per-burst RNG stream salt
 	bool ParticlesActive() const {
 		return m_passes.particles && m_particlesEnabled
 			&& m_viewportResources.particles.Valid()
@@ -2041,10 +2073,16 @@ public:
 	// bypasses the GPU filter with direct draws so culled data stays visible.
 	ViewMode m_debugView = ViewMode::Lit;
 	// Text-only stats HUD (top-left overlay, Ctrl+T): framerate, GPU,
-	// camera, filter culls, LODs, exposure, streaming. Defaults on: it
-	// carries the live numbers removed from the panel header + Stats tab
-	// (which keep controls, explanations and detail breakdowns).
-	bool m_showHud = true;
+	// camera, filter culls, LODs, exposure, streaming. Defaults OFF (a
+	// clean frame; the toggle is the light way back). It carries the live
+	// numbers removed from the panel header + Stats tab (which keep
+	// controls, explanations and detail breakdowns).
+	bool m_showHud = false;
+	// The debug PANEL (the right-hand "Tourmaline - Debug" sidebar): TAB
+	// toggles it (keybind::DEBUG_PANEL_TOGGLE; the window's close X flips
+	// the same flag). Defaults OFF — hosts render a clean scene by
+	// default; the stats HUD above is the light readout when wanted.
+	bool m_debugPanelOpen = false;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the

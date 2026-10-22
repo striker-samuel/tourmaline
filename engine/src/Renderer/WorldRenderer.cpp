@@ -5990,9 +5990,38 @@ namespace engine {
 		m_particleDemo.selected = 0;
 	}
 
+	void WorldRenderer::SpawnParticleBurst(const glm::vec3& pos,
+		const glm::vec3& color, float speed, float size, float life,
+		uint32_t count) {
+		if (count == 0)
+			return;
+		// A burst is a short-lived emitter row: rate = count / window so
+		// the spawn quota is framerate-independent (the GPU carry lands
+		// fractional remainders exactly), sphere shape for a uniform
+		// spawn ball + outward velocities. The row rides the per-frame
+		// emitter upload while its TTL lasts (see UpdateParticles).
+		constexpr float kWindow = 0.12f;
+		ParticleBurst burst;
+		burst.ttl = kWindow;
+		smvk::ParticleEmitterGpu& row = burst.row;
+		row.position = glm::vec4(pos, std::max(size * 2.0f, 0.05f));
+		row.direction = glm::vec4(0.0f, 1.0f, 0.0f, 1.6f); // unused by the sphere shape
+		row.color = glm::vec4(color, 6.0f);
+		row.velocity = glm::vec4(speed * 0.35f, speed, 1.6f, 1.0f);
+		row.size = glm::vec4(size, size * 0.35f, 3.0f,
+			static_cast<float>(m_particleBurstSeed++));
+		row.life = glm::vec4(life * 0.6f, life,
+			static_cast<float>(count) / kWindow,
+			static_cast<float>(smvk::kParticleShape_Sphere));
+		row.fade = glm::vec4(0.05f, 0.45f, 0.30f, 0.0f);
+		m_particleBursts.push_back(std::move(burst));
+	}
+
 	uint32_t WorldRenderer::UpdateParticles(uint32_t currentFrame) {
 		smvk::Particles& ps = m_viewportResources.particles;
-		if (!ParticlesActive() || m_particleDemo.emitters.empty())
+		if (!ParticlesActive())
+			return 0;
+		if (m_particleDemo.emitters.empty() && m_particleBursts.empty())
 			return 0;
 		// Every frame, like the decal ring: sliders retouch live emitters
 		// immediately and every flight slice stays fresh. The GPU's own
@@ -6020,6 +6049,30 @@ namespace engine {
 			}
 		} else {
 			rows = m_particleDemo.emitters;
+		}
+		// Transient one-shot bursts (SpawnParticleBurst): age + drop
+		// expired rows, append the survivors after the demo rows, then
+		// trim to the emitter cap by dropping the OLDEST bursts (they
+		// are the nearest-spent) so demo sliders never lose their rows.
+		if (!m_particleBursts.empty()) {
+			for (auto it = m_particleBursts.begin(); it != m_particleBursts.end(); ) {
+				it->ttl -= m_deltaTime;
+				if (it->ttl <= 0.0f)
+					it = m_particleBursts.erase(it);
+				else
+					++it;
+			}
+			const size_t demoCount = rows.size();
+			for (const ParticleBurst& b : m_particleBursts)
+				rows.push_back(b.row);
+			if (rows.size() > PARTICLE_MAX_EMITTERS) {
+				const size_t over = rows.size() - PARTICLE_MAX_EMITTERS;
+				const size_t dropBursts = std::min(over, m_particleBursts.size());
+				rows.erase(rows.begin() + ptrdiff_t(demoCount),
+					rows.begin() + ptrdiff_t(demoCount + dropBursts));
+				m_particleBursts.erase(m_particleBursts.begin(),
+					m_particleBursts.begin() + ptrdiff_t(dropBursts));
+			}
 		}
 		return ps.UpdateEmitters(*m_context, currentFrame,
 			rows.data(),
@@ -12020,11 +12073,15 @@ namespace engine {
 			// Fixed debug panel: full-height side bar on the Right (fixed
 			// side - dock cycling removed; the top-left corner stays free
 			// for the text stats HUD).
-			// Position + size enforced every frame (NoMove/NoResize/NoCollapse):
-			// never floating, never lost behind the scene. Content is classified
+			// HIDDEN BY DEFAULT (a clean frame; TAB pops it in/out — see
+			// keybind::DEBUG_PANEL_TOGGLE, and the close X below does the
+			// same). Position + size enforced every frame
+			// (NoMove/NoResize/NoCollapse): never floating, never lost
+			// behind the scene. Content is classified
 			// into Quality (settings) / Debug (views + overlays) / Stats (readback)
-			// tabs; live numbers live in the text HUD (Ctrl+T) Ã¢â‚¬â€ the panel
+			// tabs; live numbers live in the text HUD (Ctrl+T) — the panel
 			// keeps controls, explanations and detail breakdowns.
+			if (m_debugPanelOpen) {
 			{
 				const ImVec2 disp = ImGui::GetIO().DisplaySize;
 				const float pad = 8.0f;
@@ -12032,7 +12089,7 @@ namespace engine {
 				ImGui::SetNextWindowPos(ImVec2(disp.x - sideW - pad, pad), ImGuiCond_Always);
 				ImGui::SetNextWindowSize(ImVec2(sideW, disp.y - pad * 2.0f), ImGuiCond_Always);
 			}
-			ImGui::Begin("Tourmaline - Debug", nullptr,
+			ImGui::Begin("Tourmaline - Debug", &m_debugPanelOpen,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 			{
 				// Live FPS/CPU/GPU readouts live in the text HUD (Ctrl+T)
@@ -13684,7 +13741,7 @@ namespace engine {
 						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_inputUi->gamepadName(0).c_str());
 					else
 						ImGui::TextDisabled("[Gamepad] none connected");
-					ImGui::TextDisabled("Keys (toggles): M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors  C map");
+					ImGui::TextDisabled("Keys (toggles): TAB debug panel  M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors  C map");
 					ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K sky  H shadows  T terrain");
 					ImGui::TextDisabled("      J blood splat at crosshair  TOURMALINE_DECALS=0/1");
 					ImGui::TextDisabled("Keys (views): N ambient  R/F8 GI view  F1 lit  F2 unlit  F3 meshlets");
@@ -13699,6 +13756,7 @@ namespace engine {
 				ImGui::EndTabBar();
 			}
 			ImGui::End();
+			} // !m_debugPanelOpen (the TAB toggle / close X above)
 
 			// Text-only stats HUD (top-left overlay, Ctrl+T): drawn after
 			// the panel; the panel is a fixed Right side bar, so the two
@@ -15268,6 +15326,13 @@ namespace engine {
 			}
 #endif
 
+
+			// Host-installed extra UI (SetExtraUi): app-owned overlays
+			// (the sponza invaders HUD) draw between the panel/tool
+			// windows and the pass recording, inside the same ImGui
+			// frame — same target, same composite.
+			if (m_extraUi)
+				m_extraUi();
 
 			// Separated UI pass: ImGui renders into its own offscreen target
 			// (transparent clear, ui scale resolution), then UiComposite

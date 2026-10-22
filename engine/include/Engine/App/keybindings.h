@@ -22,6 +22,12 @@ namespace keybind {
 
 // ---- Mode / UI ----
 constexpr int UI_TOGGLE = GLFW_KEY_I;       // FPS <-> UI panel mode
+// The debug PANEL (the right-hand "Tourmaline - Debug" sidebar): TAB pops
+// it in/out (the window's close X flips the same flag). The panel starts
+// HIDDEN — hosts render a clean scene by default; the stats HUD below is
+// the light on-screen readout when wanted. TAB is otherwise unbound
+// (UiConfirm is RETURN in the Input action bindings, not TAB).
+constexpr int DEBUG_PANEL_TOGGLE = GLFW_KEY_TAB;
 // VRAM usage viewer (Ctrl+M, the HUD_TOGGLE chord pattern): a floating
 // tool window listing the GPU memory heaps (sizes + VMA budgets/usage).
 // The CHORD avoids the bare-M motion-blur toggle; Ctrl alone stays

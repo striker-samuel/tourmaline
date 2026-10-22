@@ -96,6 +96,14 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
 			SetUIMode(!m_uiMode);
 		}
+		// TAB: the debug panel (the right-hand sidebar) — hidden by
+		// default for a clean frame; the window's close X flips the same
+		// flag. Works in FPS and UI modes like the rest.
+		if (m_input.isKeyPressed(keybind::DEBUG_PANEL_TOGGLE)) {
+			m_renderer.m_debugPanelOpen = !m_renderer.m_debugPanelOpen;
+			std::fprintf(stderr, "[ui] debug panel %s\n",
+				m_renderer.m_debugPanelOpen ? "on" : "off");
+		}
 		// Gamepad Start mirrors UI toggle so controller-only users
 		// can reach the debug panel.
 		if (m_input.hasGamepad() &&

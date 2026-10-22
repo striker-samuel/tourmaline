@@ -451,6 +451,9 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_DUMPMAT", "TOURMALINE_HIDEGROUP", "TOURMALINE_SHOWGROUP",
 		"TOURMALINE_STRICT",
 		"TOURMALINE_SSR_WAX",
+		// Asteroids game host (asteroids/src/InvadersGame.cpp): 0 mutes
+		// the sponza invaders layer; any other value (or unset) keeps it.
+		"TOURMALINE_INVADERS",
 		"TOURMALINE_SPD", "TOURMALINE_EDITOR_VP_QUAD", "TOURMALINE_EDITOR_MESHLETS",
 		"TOURMALINE_EDITOR_LODS", "TOURMALINE_EDITOR_SHADERLODS",
 		"TOURMALINE_EDITOR_OPEN_AT",
