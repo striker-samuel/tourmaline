@@ -1,37 +1,48 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Editor fibers backend implementation (see editor_fibers.h).
+// Editor job backend implementation (see editor_fibers.h).
 //
-// THE RULE (hard-won): the MAIN thread NEVER touches boost::fibers —
-// `use_scheduling_algorithm<work_stealing>` on the main thread HANGS
-// IN THIS PROCESS (SDL/Streamline/Vulkan-loaded editor: [FIB] Start
-// trace never returned; isolated processes are fine). Redesign:
-//   - Post() is PURE std on the main thread: push {job, name,
-//     onMain} into a mutex-guarded queue. Zero boost calls on main.
-//   - Each WORKER owns its scheduler (default round_robin — created
-//     lazily on the worker's first fiber op; no algorithm installs,
-//     no cross-thread registry). The worker's MAIN CONTEXT loop:
-//     drain the queue (non-blocking), spawn each job as a detached
-//     fiber, then park the main fiber in sleep_for(2ms) — while the
-//     main fiber sleeps, the worker's scheduler RUNS the ready job
-//     fibers; it wakes every 2ms to drain more.
-//   - Completions: the job fiber parks its record in a mutex-guarded
-//     deque; Pump() drains it on the main thread (plain std).
-// Concurrency = the OS pool (2 workers); fiber interleaving arrives
-// later if jobs adopt fiber-aware primitives ON the workers.
+// HISTORY (why plain worker threads): this was a Boost.Fibers backend —
+// each worker owned a round_robin scheduler, spawned every job as a
+// detached fiber on a custom 8 MiB protected_fixedsize_stack and parked
+// its main fiber in this_fiber::sleep_for(2ms) while the job fibers ran.
+// Two hard-won lessons drove it back to OS threads:
+//   1. Installing work_stealing on the MAIN thread hung the process
+//      (SDL/Streamline/Vulkan-loaded editor; isolated processes were
+//      fine) — the redesign had already quarantined every boost call
+//      onto the workers, which left the fiber layer with ZERO concurrent
+//      benefit: jobs are plain functions using std::mutex, so they never
+//      yield anyway — the pool provided the concurrency all along (the
+//      v1 header's own admission: "the pool, not the fiber, provides the
+//      concurrency today").
+//   2. The default fiber stack is SMALL and boost's fixedsize_stack
+//      carries no guard page: a deep job (the cook's tour build ->
+//      glTF import -> tinygltf parser) silently overran into ADJACENT
+//      HEAP (corrupted std::string captures freed at the job epilogue,
+//      AV read at 0xFFFFFFFFFFFFFFFF in std::string::_Tidy_deallocate).
+//      The 8 MiB PROTECTED stack was the workaround; an OS-thread stack
+//      has both (full size + a real guard page) by construction.
+// So: each worker drains the submission queue and runs jobs DIRECTLY on
+// its own thread stack, parking in std::this_thread::sleep_for(2ms)
+// when idle. The public API (Post/Pump/Stop/InFlight) is unchanged — the
+// editor call sites never knew about the fibers (the class keeps its
+// historical FiberBackend name).
+//
+// THE RULE survives from the fiber era (now trivially true): the MAIN
+// thread only ever touches plain std — Post() pushes {job, name, onMain}
+// into a mutex-guarded queue; Pump() drains the completion deque and
+// runs the callbacks ON the main thread.
 
 #include "editor_fibers.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
-
-#include <boost/fiber/all.hpp>
 
 namespace editor {
 
@@ -40,8 +51,8 @@ struct FiberBackend::Impl {
 	std::atomic<unsigned> inFlight{ 0 };
 	std::vector<std::thread> workers;
 
-	// Submission queue (main -> workers). Plain std mutex deque: the
-	// main thread pushes (no boost), workers drain non-blocking.
+	// Submission queue (main -> workers). Mutex deque: the main thread
+	// pushes, workers drain non-blocking.
 	struct Submission {
 		std::string name;
 		Job job;
@@ -50,8 +61,8 @@ struct FiberBackend::Impl {
 	std::mutex submitMx;
 	std::deque<Submission> submit;
 
-	// Completions (fiber -> main). Plain std mutex deque (nobody
-	// blocks on it: the main thread polls via Pump()).
+	// Completions (worker -> main). Mutex deque (nobody blocks on it:
+	// the main thread polls via Pump()).
 	struct Record {
 		std::string name;
 		bool ok = false;
@@ -61,7 +72,9 @@ struct FiberBackend::Impl {
 	std::mutex doneMx;
 	std::deque<Record> done;
 
-	// Fiber body: run the job under try/catch, park the completion.
+	// Job body — runs on the worker's own OS-thread stack (full size +
+	// guard page; the fiber-era stack-overflow saga in the file header):
+	// run the job under try/catch, park the completion record.
 	static void runJob(Impl* impl, Submission sub) {
 		Record rec;
 		rec.name = sub.name;
@@ -83,37 +96,10 @@ struct FiberBackend::Impl {
 		impl->inFlight.fetch_sub(1);
 	}
 
-	// Job fiber stack: the default fiber stack is SMALL and boost's
-	// fixedsize_stack carries NO guard page — a deep job (the cook's
-	// tour build: ApplySceneReferences -> glTF import -> tinygltf
-	// parser) silently overruns into ADJACENT HEAP (the user crash:
-	// corrupted std::strings in the job lambda's captures freed at the
-	// job epilogue, AV read at 0xFFFFFFFFFFFFFFFF in
-	// std::string::_Tidy_deallocate). The old std::async workers ran
-	// on full OS-thread stacks and never saw this. 8 MiB virtual
-	// reservation, committed on use; the PROTECTED variant adds a
-	// guard page so a future overflow faults LOUD at the guard
-	// instead of corrupting the heap.
-	// TOURMALINE_FIBER_JOB_STACK=<bytes> overrides (floor 64 KiB).
-	// The bisect that found this bug cooked powers of two: 64 KiB
-	// crashed, 128 KiB ran clean — the 8 MiB default has ~64x headroom.
-	static std::size_t jobFiberStack() {
-		static const std::size_t v = []() {
-			const char* e = std::getenv("TOURMALINE_FIBER_JOB_STACK");
-			const std::size_t def = 8u * 1024u * 1024u;
-			if (e && *e) {
-				const unsigned long long n =
-					std::strtoull(e, nullptr, 0);
-				if (n >= 64u * 1024u)
-					return std::size_t(n);
-			}
-			return def;
-		}();
-		return v;
-	}
-
-	// Worker main-context loop: drain + spawn + park. While the main
-	// fiber sleeps, this worker's scheduler runs the job fibers.
+	// Worker loop: drain the queue, run each job directly on this
+	// thread, then park briefly before draining again. The 2 ms park is
+	// a poll interval, not a scheduling yield — nothing else shares the
+	// thread.
 	void workerLoop() {
 		while (running.load(std::memory_order_relaxed)
 			|| inFlight.load(std::memory_order_relaxed) != 0u) {
@@ -125,14 +111,9 @@ struct FiberBackend::Impl {
 			while (!taken.empty()) {
 				Submission sub = std::move(taken.front());
 				taken.pop_front();
-				boost::fibers::fiber(std::allocator_arg,
-					boost::fibers::protected_fixedsize_stack(
-						jobFiberStack()),
-					&Impl::runJob, this, std::move(sub)).detach();
+				runJob(this, std::move(sub));
 			}
-			// Park THIS fiber (fiber-aware): ready job fibers on this
-			// worker run while we sleep; wakes every 2ms to drain.
-			boost::this_fiber::sleep_for(std::chrono::milliseconds(2));
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 		}
 	}
 };
@@ -159,8 +140,8 @@ void FiberBackend::Stop() {
 	if (!impl_->running.exchange(false))
 		return;
 	// Workers exit once running==false AND in-flight jobs drained (the
-	// parking loop condition covers both). Completions still in the
-	// queue are dropped — call Pump() first if they matter.
+	// loop condition covers both). Completions still in the queue are
+	// dropped — call Pump() first if they matter.
 	for (std::thread& t : impl_->workers)
 		if (t.joinable())
 			t.join();
@@ -171,8 +152,8 @@ bool FiberBackend::Post(const std::string& name, Job job,
 	OnComplete onMain) {
 	if (!impl_->running.load() || !job)
 		return false;
-	// PURE std on the calling (main) thread — the no-boost-on-main
-	// rule (see the file header). The worker spawns the fiber.
+	// PURE std on the calling (main) thread — the no-backend-calls-on-
+	// main rule (see the file header).
 	impl_->inFlight.fetch_add(1);
 	{
 		std::lock_guard<std::mutex> lk(impl_->submitMx);

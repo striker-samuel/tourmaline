@@ -81,9 +81,6 @@ usage breakdown and the Tourmaline Debug panel:
   `VULKAN_SDK` env var must be set)
 - **KTX-Software** (KTX/KTX2 texture container) — set `KTX_ROOT` to its
   install prefix, or pass `-Dktx_DIR=<prefix>/lib/cmake/ktx`
-- Optional, **editor only**: **Boost 1.89** static libs (context/fiber)
-  staged via `BOOST_ROOT` for the fiber job backend — the engine, app and
-  tools never link Boost
 - Optional: **NVIDIA Streamline 2.x runtime** — vendored binaries are
   staged automatically next to the exe; if absent, DLSS simply reports
   unavailable (no hard dependency)
@@ -192,7 +189,7 @@ the Bistro test scene (scripts reference local asset locations).
 
 ```
 engine/      engine static lib (RHI, render graph, renderers, assets, shaders)
-editor/      the ImGui-based editor (Boost.Fibers job backend optional)
+editor/      the ImGui-based editor (std::thread job pool — no Boost)
 app/         App.exe — pak-viewer host shell
 tools/       gltf_import, cook, pak_cooker, gi_baker, cubemap_baker,
              artifact_cache, python helpers (bench/cook/golden capture)

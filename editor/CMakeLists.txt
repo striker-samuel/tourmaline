@@ -3,10 +3,11 @@
 
 project(Editor)
 
-# EDITOR-ONLY fibers backend: Boost.Fibers needs compiled libs. The
-# root CMakeLists BOOST_ROOT hint (env/-D) points CMake at the machine
-# stage (C:/boost/boost_1_89_0). Nothing else in the tree links Boost.
-find_package(Boost 1.89 REQUIRED COMPONENTS fiber context thread chrono atomic)
+# (The Boost.Fibers job backend was REFACTORED OUT: editor_fibers.cpp is
+# a plain std::thread worker pool now — jobs never yielded, so the fiber
+# layer carried zero concurrent benefit while its custom stacks caused
+# the deep-job heap overruns; see the HISTORY note there. NOTHING in the
+# tree links Boost anymore.)
 
 file(GLOB_RECURSE EDITOR_SOURCES CONFIGURE_DEPENDS
     src/*.cpp
@@ -62,15 +63,6 @@ target_link_libraries(Editor
         GiBakerLib
         CookLib
         PakLib
-        # EDITOR-ONLY fibers backend (see editor_fibers.h): Boost.Fibers
-        # from the machine-level stage at C:/boost (root CMakeLists
-        # BOOST_ROOT hint). The engine, the App and the tools stay
-        # Boost-free.
-        Boost::fiber
-        Boost::context
-        Boost::thread
-        Boost::chrono
-        Boost::atomic
         KTX::ktx
         OptickCore
         # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>

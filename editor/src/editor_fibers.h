@@ -2,29 +2,28 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// EDITOR-ONLY Boost.Fibers backend for the editor's synchronous work.
+// EDITOR-ONLY job backend for the editor's synchronous work (the class
+// keeps its historical FiberBackend name from the Boost.Fibers era —
+// see editor_fibers.cpp's HISTORY note for why the fibers were refactored
+// out to plain OS worker threads: the jobs never yielded, and the fiber
+// stacks were the stack-overflow crash).
 //
 // One unified lane for every off-main-thread job the editor runs (the
 // cook/bake workers today; autosave/snapshot/volume loads later). Jobs
-// run as FIBERS on a small pool of OS worker threads (work_stealing
-// algorithm: fibers spawned on the main scheduler are stolen by idle
-// workers; the main thread never runs a job itself). Completions land
-// in a mutex-guarded queue drained by Pump() ON THE MAIN THREAD each
-// frame — callbacks (result logging, task-window finish, bake-asset
-// adoption) run where the UI lives, exactly like the old
-// future.wait_for branches.
+// run as plain functions on a small pool of OS worker threads (a bounded,
+// owned pool — no stray detached threads at shutdown: Stop() drains
+// in-flight jobs before joining). Completions land in a mutex-guarded
+// queue drained by Pump() ON THE MAIN THREAD each frame — callbacks
+// (result logging, task-window finish, bake-asset adoption) run where the
+// UI lives, exactly like the old future.wait_for branches.
 //
-// Why fibers over one more std::async: jobs are plain functions (same
-// capture shape), the pool is bounded and owned (no stray detached
-// threads at shutdown — Stop() drains in-flight jobs before joining),
-// and fiber-level sync primitives (fiber mutexes/channels) slot in
-// later when jobs want to interleave. ONLY the editor links Boost; the
-// engine, the App and the tools stay Boost-free.
+// The main thread only ever touches plain std (Post pushes into a mutex
+// queue, Pump drains a mutex deque) — the fibers-era "no backend calls on
+// main" rule, now trivially true with nothing but std left.
 //
-// Not fiber-safe yet (v1): the tool line sink stays one-instance
-// (guards: m_cookRunning/m_bakeRunning) and CookFeed keeps std::mutex
-// (jobs block their whole worker thread — the pool, not the fiber,
-// provides the concurrency today).
+// Not job-reentrant yet: the tool line sink stays one-instance (guards:
+// m_cookRunning/m_bakeRunning) and CookFeed keeps std::mutex (jobs block
+// their whole worker thread).
 
 #include <functional>
 #include <memory>
