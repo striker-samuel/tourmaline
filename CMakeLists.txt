@@ -101,8 +101,10 @@ find_package(SDL3 CONFIG REQUIRED)
 # IMPORTED_GLOBAL: the host-staging genexes ($<TARGET_FILE:SDL3::SDL3>)
 # evaluate in GAME-HOST scopes (this tree add_subdirectory'd as a
 # submodule) — imported targets are otherwise directory-scoped and
-# invisible outside this tree.
-set_target_properties(SDL3::SDL3 PROPERTIES IMPORTED_GLOBAL TRUE)
+# invisible outside this tree. SDL3::SDL3 is the config's ALIAS; the
+# GLOBAL property goes on the underlying imported target (the alias
+# resolves through it).
+set_target_properties(SDL3::SDL3-shared PROPERTIES IMPORTED_GLOBAL TRUE)
 # (The SDL3.dll / Streamline runtime STAGING functions moved to
 # cmake/HostSetup.cmake so game hosts can include them from their
 # submodule copy of this tree — see the include below.)
