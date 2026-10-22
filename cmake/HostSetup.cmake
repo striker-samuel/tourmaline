@@ -1,11 +1,65 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-# Shared HOST-EXE plumbing (App.exe, Asteroids.exe): runtime output dir,
-# DLL staging (KTX, OptickCore, SDL3, Streamline), the content-dir sync,
-# the engine link + the scene-shader dependency. Defined at root scope so
-# every host package (app/, asteroids/) can call it; per-host concerns
-# (sources, compile definitions) stay in the package's own CMakeLists.
+# Shared HOST-EXE plumbing (App.exe in this repo + the game hosts that pin
+# this tree as a git submodule): runtime DLL staging (SDL3, Streamline),
+# the content-dir sync, the engine link + the scene-shader dependency.
+#
+# DUAL-INCLUDE CONTRACT: tourmaline's root includes this file once (all
+# three functions land in the root scope, visible to app/); a GAME repo
+# (F:/REPOS/asteroids) includes it from its submodule copy —
+#   set(TOURMALINE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tourmaline)
+#   add_subdirectory(${TOURMALINE_SOURCE_DIR} tourmaline)
+#   include(${TOURMALINE_SOURCE_DIR}/cmake/HostSetup.cmake)
+# — so the SAME definitions serve both (the functions resolve every path
+# through TOURMALINE_SOURCE_DIR at CALL time in the caller's scope).
+
+# Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
+# consumer exe carries the import; Windows loads the DLL from the exe dir).
+function(tourmaline_stage_sdl3 TARGET)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL3::SDL3>"
+            "$<TARGET_FILE_DIR:${TARGET}>"
+        COMMENT "Staging SDL3.dll next to ${TARGET}"
+    )
+endfunction()
+
+# Stage the NVIDIA Streamline runtime next to an executable (DLSS-SR).
+# sl.interposer.dll is loaded dynamically from the exe dir (dlss.cpp);
+# a missing set simply leaves DLSS unavailable - no hard dependency.
+# Source of the binaries: external/streamline (Streamline SDK 2.14.1).
+# nvngx_dlss.dll is fetched separately (never in git) - see the README in
+# external/streamline/bin/x64; the per-DLL EXISTS guard below warns + skips.
+function(tourmaline_stage_streamline TARGET)
+    set(_SL_BIN_DIR "${TOURMALINE_SOURCE_DIR}/external/streamline/bin/x64")
+    foreach(_SL_DLL IN ITEMS
+            sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
+            NvLowLatencyVk.dll)
+        if(EXISTS "${_SL_BIN_DIR}/${_SL_DLL}")
+            add_custom_command(TARGET ${TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_SL_BIN_DIR}/${_SL_DLL}"
+                    "$<TARGET_FILE_DIR:${TARGET}>/${_SL_DLL}"
+                COMMENT "Staging ${_SL_DLL} next to ${TARGET}"
+            )
+        else()
+            message(WARNING "Streamline binary '${_SL_DLL}' not found in ${_SL_BIN_DIR} - DLSS will be unavailable at runtime")
+        endif()
+    endforeach()
+    if(EXISTS "${_SL_BIN_DIR}/nvngx_dlss.license.txt")
+        add_custom_command(TARGET ${TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_SL_BIN_DIR}/nvngx_dlss.license.txt"
+                "$<TARGET_FILE_DIR:${TARGET}>/nvngx_dlss.license.txt"
+            COMMENT "Staging nvngx_dlss.license.txt next to ${TARGET}"
+        )
+    endif()
+endfunction()
+
+# The host-exe setup itself: runtime output dir, the staged DLLs above, the
+# content-dir sync, compile defines, the engine link + the shader
+# dependency. Per-host concerns (sources) stay in the caller's CMakeLists.
 function(tourmaline_host_setup TGT)
     set_target_properties(${TGT} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
@@ -49,8 +103,8 @@ function(tourmaline_host_setup TGT)
     foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
         if(EXISTS "${TOURMALINE_CONTENT_DIR}/${_CONTENT_SUB}")
             set(_CONTENT_SRC "${TOURMALINE_CONTENT_DIR}/${_CONTENT_SUB}")
-        elseif(EXISTS "${CMAKE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
-            set(_CONTENT_SRC "${CMAKE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
+        elseif(EXISTS "${TOURMALINE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
+            set(_CONTENT_SRC "${TOURMALINE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
         else()
             set(_CONTENT_SRC "")
             if(_CONTENT_SUB STREQUAL "models" OR _CONTENT_SUB STREQUAL "paks")

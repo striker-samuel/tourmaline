@@ -18,6 +18,21 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
 endif()
 project(Tourmaline LANGUAGES C CXX)
 
+# SUBPROJECT-SAFE self-references: game hosts (F:/REPOS/asteroids,
+# spybotics_tourmaline) add_subdirectory() this tree through a pinned git
+# submodule — CMAKE_SOURCE_DIR/CMAKE_BINARY_DIR are THEIR roots there, so
+# every in-tree path keys off these instead. TOURMALINE_IS_TOP_LEVEL gates
+# the repo-only extras (the viewer app, editor, cook tools, tests,
+# samples): a game host builds the engine + gltf_import + the shader
+# target + nothing else.
+set(TOURMALINE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+set(TOURMALINE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(TOURMALINE_IS_TOP_LEVEL ON)
+else()
+  set(TOURMALINE_IS_TOP_LEVEL OFF)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -80,52 +95,12 @@ add_subdirectory(external/glfw)
 
 # SDL3 (vendored prebuilt dev package: include/ + lib/<arch>/ + cmake/)
 # Provides windowing, input (keyboard/mouse/gamepad) and audio.
-list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/external/SDL3-3.4.16")
-set(SDL3_DIR "${CMAKE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
+list(PREPEND CMAKE_PREFIX_PATH "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16")
+set(SDL3_DIR "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
 find_package(SDL3 CONFIG REQUIRED)
-
-# Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
-# consumer exe carries the import; Windows loads the DLL from the exe dir).
-function(tourmaline_stage_sdl3 TARGET)
-    add_custom_command(TARGET ${TARGET} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:SDL3::SDL3>"
-            "$<TARGET_FILE_DIR:${TARGET}>"
-        COMMENT "Staging SDL3.dll next to ${TARGET}"
-    )
-endfunction()
-
-# Stage the NVIDIA Streamline runtime next to an executable (DLSS-SR).
-# sl.interposer.dll is loaded dynamically from the exe dir (dlss.cpp);
-# a missing set simply leaves DLSS unavailable - no hard dependency.
-# Source of the binaries: external/streamline (Streamline SDK 2.14.1).
-# nvngx_dlss.dll is fetched separately (never in git) - see the README in
-# external/streamline/bin/x64; the per-DLL EXISTS guard below warns + skips.
-function(tourmaline_stage_streamline TARGET)
-    set(_SL_BIN_DIR "${CMAKE_SOURCE_DIR}/external/streamline/bin/x64")
-    foreach(_SL_DLL IN ITEMS
-            sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
-            NvLowLatencyVk.dll)
-        if(EXISTS "${_SL_BIN_DIR}/${_SL_DLL}")
-            add_custom_command(TARGET ${TARGET} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${_SL_BIN_DIR}/${_SL_DLL}"
-                    "$<TARGET_FILE_DIR:${TARGET}>/${_SL_DLL}"
-                COMMENT "Staging ${_SL_DLL} next to ${TARGET}"
-            )
-        else()
-            message(WARNING "Streamline binary '${_SL_DLL}' not found in ${_SL_BIN_DIR} - DLSS will be unavailable at runtime")
-        endif()
-    endforeach()
-    if(EXISTS "${_SL_BIN_DIR}/nvngx_dlss.license.txt")
-        add_custom_command(TARGET ${TARGET} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_SL_BIN_DIR}/nvngx_dlss.license.txt"
-                "$<TARGET_FILE_DIR:${TARGET}>/nvngx_dlss.license.txt"
-            COMMENT "Staging nvngx_dlss.license.txt next to ${TARGET}"
-        )
-    endif()
-endfunction()
+# (The SDL3.dll / Streamline runtime STAGING functions moved to
+# cmake/HostSetup.cmake so game hosts can include them from their
+# submodule copy of this tree — see the include below.)
 
 # GLM (header-only, pinned git submodule)
 add_subdirectory(external/glm)
@@ -156,7 +131,7 @@ add_library(SQLiteCpp STATIC
 )
 target_include_directories(SQLiteCpp
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/external/SQLiteCpp/include
+        ${TOURMALINE_SOURCE_DIR}/external/SQLiteCpp/include
 )
 target_link_libraries(SQLiteCpp PUBLIC sqlite3_amalgamation)
 if(MSVC)
@@ -299,7 +274,7 @@ endif()
 add_subdirectory(external/optick)
 
 # Shader compile support
-set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)
+set(SHADER_SOURCE_DIR ${TOURMALINE_SOURCE_DIR}/shaders)
 set(SHADER_BINARY_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
 
@@ -326,8 +301,8 @@ endif()
 # SPIRV-Reflect (pinned git submodule, CPU-only reflection for push/spec readback)
 add_library(spirv_reflect STATIC external/SPIRV-Reflect/spirv_reflect.c)
 target_include_directories(spirv_reflect PUBLIC
-    ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
-    ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/include
+    ${TOURMALINE_SOURCE_DIR}/external/SPIRV-Reflect
+    ${TOURMALINE_SOURCE_DIR}/external/SPIRV-Reflect/include
 )
 set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
@@ -339,22 +314,31 @@ add_subdirectory(engine)
 # ClosestDistance path).
 target_link_libraries(engine PRIVATE embree)
 add_subdirectory(tools/gltf_import)
-add_subdirectory(tools/import)
-add_subdirectory(tools/artifact_cache)
-add_subdirectory(tools/cook)
-add_subdirectory(app)
-add_subdirectory(asteroids)   # the sponza invaders GAME host (Asteroids.exe)
-add_subdirectory(tools/pak_cooker)
-add_subdirectory(editor)
-add_subdirectory(tools/gi_baker)
-add_subdirectory(tools/cubemap_baker)
-add_subdirectory(samples/01_triangle)
-add_subdirectory(samples/02_blur)
-
-include(CTest)
-if(BUILD_TESTING)
-  add_subdirectory(tests)
+# gltf_import is the ONLY tool every host builds (the viewer app + the
+# game hosts link it for the glTF import helpers). Everything below is
+# REPO-ONLY: subproject hosts (the game repos pinning this tree as a
+# submodule) skip the cook/bake tooling, the editor, the tests and the
+# samples — they want the engine + shaders + their own target.
+if(TOURMALINE_IS_TOP_LEVEL)
+  add_subdirectory(tools/import)
+  add_subdirectory(tools/artifact_cache)
+  add_subdirectory(tools/cook)
+  add_subdirectory(app)               # App.exe: the plain pak-viewer host
+  add_subdirectory(tools/pak_cooker)
+  add_subdirectory(editor)
+  add_subdirectory(tools/gi_baker)
+  add_subdirectory(tools/cubemap_baker)
+  add_subdirectory(samples/01_triangle)
+  add_subdirectory(samples/02_blur)
+  include(CTest)
+  if(BUILD_TESTING)
+    add_subdirectory(tests)
+  endif()
 endif()
+# (The GAME HOSTS moved OUT of this repo into their own repos at F:/REPOS —
+# asteroids (this tree as a pinned git submodule; the sponza invaders game)
+# and spybotics_tourmaline (the standalone C++ battle-sim). This repo keeps
+# the engine + the plain App viewer.)
 
 set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
     "Vulkan"

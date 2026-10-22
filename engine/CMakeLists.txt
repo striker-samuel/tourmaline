@@ -17,25 +17,25 @@ add_library(engine STATIC ${ENGINE_SRC})
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
-        ${CMAKE_SOURCE_DIR}/external/tinygltf
+        ${TOURMALINE_SOURCE_DIR}/external/tiny_obj_loader
+        ${TOURMALINE_SOURCE_DIR}/external/tinygltf
         ${nlohmann_json_SOURCE_DIR}/single_include
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
-        ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
-        ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/include
+        ${TOURMALINE_SOURCE_DIR}/external/SPIRV-Reflect
+        ${TOURMALINE_SOURCE_DIR}/external/SPIRV-Reflect/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/detail
         ${CMAKE_CURRENT_SOURCE_DIR}/src/RHI/detail
-        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
-        ${CMAKE_SOURCE_DIR}/external/streamline/include
+        ${TOURMALINE_SOURCE_DIR}/external/VulkanMemoryAllocator
+        ${TOURMALINE_SOURCE_DIR}/external/streamline/include
         # stb_image/stb_image_write (LutIo PNG readback).
-        ${CMAKE_SOURCE_DIR}/external/stb
+        ${TOURMALINE_SOURCE_DIR}/external/stb
         # gltf_import helper used by the world renderer
         # (GltfPunctualAimAxis): headers only — the lib itself stays with
         # the executables (gltf_import PUBLIC-links engine, so linking it
         # here would be a dependency cycle).
-        ${CMAKE_SOURCE_DIR}/tools/gltf_import/include
+        ${TOURMALINE_SOURCE_DIR}/tools/gltf_import/include
 )
 
 
@@ -112,7 +112,7 @@ target_link_libraries(engine
 )
 
 # DXC -- shader compiling HLSL->SPIRV
-set(DXC_DIR "${CMAKE_SOURCE_DIR}/external/dxc")
+set(DXC_DIR "${TOURMALINE_SOURCE_DIR}/external/dxc")
 
 target_include_directories(engine PRIVATE
     "${DXC_DIR}/include"
