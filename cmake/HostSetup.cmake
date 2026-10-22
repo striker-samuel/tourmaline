@@ -16,10 +16,14 @@
 
 # Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
 # consumer exe carries the import; Windows loads the DLL from the exe dir).
+# The genex names the REAL imported target (SDL3::SDL3-shared), not the
+# config's SDL3::SDL3 ALIAS: aliases stay directory-scoped forever, and this
+# staging runs in GAME-HOST scopes too (this file's dual-include contract)
+# where only the promoted IMPORTED_GLOBAL target is visible.
 function(tourmaline_stage_sdl3 TARGET)
     add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:SDL3::SDL3>"
+            "$<TARGET_FILE:SDL3::SDL3-shared>"
             "$<TARGET_FILE_DIR:${TARGET}>"
         COMMENT "Staging SDL3.dll next to ${TARGET}"
     )
