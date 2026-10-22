@@ -6,9 +6,9 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_events.h>
-#include <SDL3/SDL_mouse.h>
-#include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_video.h>
+
+#include <Engine/App/input_sdl3.h>
 
 #include <Engine/core.h>
 #include <Engine/App/app.h>
@@ -122,19 +122,22 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
 		if (imguiEventHook_)
 			imguiEventHook_(&e);
-		// Raw event tap (the editor's OS drag-and-drop rides it).
-		OnSDLEvent(e);
 		if ((e.type == SDL_EVENT_WINDOW_RESIZED ||
 				e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
 			window && e.window.windowID == SDL_GetWindowID(window)) {
 			OnFramebufferResized(e.window.data1, e.window.data2);
 		}
-		if (m_input.onSDLEvent(e))
-			windowShouldClose_ = true;
+		// Normalize at the bridge: hosts + Input see only input::Event.
+		input::Event inputEvent;
+		if (m_sdlInput && m_sdlInput->Translate(e, inputEvent)) {
+			OnInputEvent(inputEvent);
+			if (m_input.onEvent(inputEvent))
+				windowShouldClose_ = true;
+		}
 	}
 	if (m_input.isQuitRequested())
 		windowShouldClose_ = true;
-	if (m_input.isKeyHeld(SDL_SCANCODE_ESCAPE))
+	if (m_input.isKeyHeld(input::Key::Escape))
 		windowShouldClose_ = true;
 	return !windowShouldClose_;
 }

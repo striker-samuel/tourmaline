@@ -13353,10 +13353,10 @@ namespace engine {
 						if (m_inputUi && m_inputUi->hasGamepad()) {
 							ImGui::Text("Gamepad: %s", m_inputUi->gamepadName(0).c_str());
 							ImGui::TextDisabled("LX %+.2f LY %+.2f  RX %+.2f RY %+.2f",
-								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTX),
-								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTY),
-								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTX),
-								m_inputUi->gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTY));
+								m_inputUi->gamepadAxis(0, input::GamepadAxis::LeftX),
+								m_inputUi->gamepadAxis(0, input::GamepadAxis::LeftY),
+								m_inputUi->gamepadAxis(0, input::GamepadAxis::RightX),
+								m_inputUi->gamepadAxis(0, input::GamepadAxis::RightY));
 							ImGui::TextDisabled("Left stick move, right stick look, LT/RT down/up, RB sprint, Start UI");
 						}
 						else {

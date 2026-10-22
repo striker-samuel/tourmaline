@@ -31,11 +31,16 @@ namespace smvk
 	class World;
 	class RenderGraph;
 
+class SdlInputBackend;
+
 class App {
 public:
 	Input m_input{};
+	// Platform input bridge (SDL3 translation + gamepad handle lifetime).
+	// Owned here so handles close while SDL is alive; hosts never see it.
+	std::unique_ptr<SdlInputBackend> m_sdlInput;
 	audio::AudioEngine m_audio{};
-	App() = default;
+	App();
 	// The pasted-pattern contract: Shutdown detaches + destroys the
 	// element stack while the graphics members are alive — an assert
 	// here (debug builds) catches a forgotten Shutdown.
@@ -160,8 +165,10 @@ protected:
 	int benchFrames_ = 0;   // measured frames (post warmup)
 	int benchWarmup_ = 0;   // warmup frames skipped from stats
 	double benchAccum_ = 0.0;
-	// Drains the SDL queue into m_input; returns false when quit requested.
-	// Also forwards events to the ImGui SDL3 backend when hooked.
+	// Drains the SDL queue through the input bridge into m_input; returns
+	// false when quit requested. Also forwards raw events to the ImGui SDL3
+	// backend when hooked (that hook stays SDL-typed: it IS the ImGui
+	// backend boundary).
 	bool PollEvents();
 	ImGuiEventFn imguiEventHook_ = nullptr;
 #pragma endregion
@@ -171,12 +178,11 @@ protected:
 	virtual void Update() {}
 	virtual void LateUpdate() {}
 	virtual void OnFramebufferResized(int width, int height);
-	// RAW SDL event tap (every event PollEvents pumps, after the
-	// ImGui hook, before the Input consume). Hosts that need non-
-	// input events — e.g. the editor's OS drag-and-drop
-	// (SDL_EVENT_DROP_FILE) — override this instead of duplicating
-	// the pump. Default: no-op.
-	virtual void OnSDLEvent(const SDL_Event&) {}
+	// Backend-neutral input event tap (every event PollEvents pumps, after
+	// the ImGui hook, before the Input consume). Hosts that need non-input
+	// events — e.g. the editor's OS drag-and-drop (input::EventType::FileDrop)
+	// — override this instead of duplicating the pump. Default: no-op.
+	virtual void OnInputEvent(const input::Event&) {}
 #pragma endregion
 	};
 };

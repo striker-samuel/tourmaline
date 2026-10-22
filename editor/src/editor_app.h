@@ -1816,14 +1816,14 @@ private:
 	// ({} + log on failure).
 	std::string CreateTextureAsset(const std::string& srcPath,
 		const std::string& dir);
-	// OS DRAG-AND-DROP (Windows Explorer -> the asset browser): the SDL
-	// hook (App::OnSDLEvent override, below) collects SDL_EVENT_DROP_FILE
-	// batches + the drop point (window coords); DrawAssetsPanel routes
-	// them against its rect (the only drop target) into
-	// HandleDroppedFiles — images become .texture assets in the browsed
-	// dir, .gltf/.glb run the full import.
+	// OS DRAG-AND-DROP (Windows Explorer -> the asset browser): the
+	// backend-neutral hook (App::OnInputEvent override, below) collects
+	// input::EventType::FileDrop batches + the drop point (window coords);
+	// DrawAssetsPanel routes them against its rect (the only drop target)
+	// into HandleDroppedFiles — images become .texture assets in the
+	// browsed dir, .gltf/.glb run the full import.
 	void HandleDroppedFiles(const std::vector<std::string>& files);
-	void OnSDLEvent(const SDL_Event& e) override;
+	void OnInputEvent(const input::Event& e) override;
 	std::vector<std::string> m_pendingDropFiles;
 	float m_pendingDropX = -1.0f; // < 0 = no pending drop
 	float m_pendingDropY = -1.0f;

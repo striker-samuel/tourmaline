@@ -547,17 +547,17 @@ std::string EditorApp::CreateTextureAsset(const std::string& srcPath,
 	return texPath.generic_string();
 }
 
-void EditorApp::OnSDLEvent(const SDL_Event& e) {
+void EditorApp::OnInputEvent(const input::Event& e) {
 	// OS drag-and-drop (Windows Explorer -> the asset browser): collect
-	// the SDL_EVENT_DROP_FILE batch + the drop point (window coords; the
-	// LAST file's point is the release point). The data string is
-	// SDL-owned — copy NOW (the event memory does not outlive the pump).
-	// DrawAssetsPanel routes the batch next frame against its rect (the
-	// only drop target — see HandleDroppedFiles).
-	if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
-		m_pendingDropX = e.drop.x;
-		m_pendingDropY = e.drop.y;
-		m_pendingDropFiles.emplace_back(e.drop.data);
+	// the FileDrop batch + the drop point (window coords; the LAST file's
+	// point is the release point). The normalized event owns its path
+	// string (the bridge copies it out of the native event); keep the copy
+	// anyway — DrawAssetsPanel routes the batch next frame against its
+	// rect (the only drop target — see HandleDroppedFiles).
+	if (e.type == input::EventType::FileDrop && !e.text.empty()) {
+		m_pendingDropX = e.x;
+		m_pendingDropY = e.y;
+		m_pendingDropFiles.push_back(e.text);
 	}
 }
 

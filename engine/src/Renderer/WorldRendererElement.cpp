@@ -90,7 +90,7 @@ namespace engine {
 	// in the renderer's panel for the full list). WASDQE/Space/Shift/Ctrl
 	// are reserved for camera movement and are never used here. Keys live
 	// in Engine/App/keybindings.h â€” this handler consumes semantic names,
-	// never raw GLFW_KEY_* reads. Render settings flip through the friend
+	// never raw TOUR_KEY_* reads. Render settings flip through the friend
 	// access (the same members the panel's widgets touch).
 	void WorldRendererElement::HandleShortcuts() {
 		if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
@@ -107,7 +107,7 @@ namespace engine {
 		// Gamepad Start mirrors UI toggle so controller-only users
 		// can reach the debug panel.
 		if (m_input.hasGamepad() &&
-			m_input.gamepadButtonPressed(0, SDL_GAMEPAD_BUTTON_START)) {
+			m_input.gamepadButtonPressed(0, input::GamepadButton::Start)) {
 			SetUIMode(!m_uiMode);
 		}
 		if (m_input.isKeyPressed(keybind::MOTION_BLUR_TOGGLE)) {
@@ -169,8 +169,8 @@ namespace engine {
 		// (sizes + VMA budgets/usage) as another floating tool window.
 		// The chord mirrors HUD_TOGGLE (Ctrl+T): bare M stays the
 		// motion-blur toggle, bare Ctrl stays camera-descend.
-		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
-				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+		if ((m_input.isKeyHeld(TOUR_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(TOUR_KEY_RIGHT_CONTROL))
 			&& m_input.isKeyPressed(keybind::VRAM_VIEWER_TOGGLE)) {
 			m_renderer.m_vramWindow = !m_renderer.m_vramWindow;
 		}
@@ -195,8 +195,8 @@ namespace engine {
 		// Ctrl+F freezes culling (holds frustum/eye/HZB, camera stays
 		// live); bare F stays the particle toggle (Ctrl+M/Ctrl+T chord
 		// precedent — works in FPS and UI modes).
-		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
-				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+		if ((m_input.isKeyHeld(TOUR_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(TOUR_KEY_RIGHT_CONTROL))
 			&& m_input.isKeyPressed(keybind::CULLING_FREEZE_TOGGLE)) {
 			m_renderer.m_freezeCullingView = !m_renderer.m_freezeCullingView;
 		}
@@ -263,8 +263,8 @@ namespace engine {
 		// Ctrl+T toggles the text-only stats HUD (top-left overlay). The
 		// chord (either Ctrl) avoids every bare-key binding; T alone does
 		// nothing. Works in FPS and UI modes like the other toggles.
-		if ((m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL)
-				|| m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL))
+		if ((m_input.isKeyHeld(TOUR_KEY_LEFT_CONTROL)
+				|| m_input.isKeyHeld(TOUR_KEY_RIGHT_CONTROL))
 			&& m_input.isKeyPressed(keybind::HUD_TOGGLE)) {
 			m_renderer.m_showHud = !m_renderer.m_showHud;
 			std::fprintf(stderr, "[ui] stats HUD %s\n",
@@ -308,18 +308,18 @@ namespace engine {
 		// N ambient cycles - duplicating them here double-fired in FPS
 		// mode). The editor drives its own keys - its viewport
 		// instance never sees key events, so this stays App-only.
-		movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
-		movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
-		movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
-		movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
+		movement.forward_ = m_input.isKeyHeld(TOUR_KEY_W);
+		movement.backward_ = m_input.isKeyHeld(TOUR_KEY_S);
+		movement.left_ = m_input.isKeyHeld(TOUR_KEY_A);
+		movement.right_ = m_input.isKeyHeld(TOUR_KEY_D);
 
 		// Up and down in camera orientation, not world space.
-		movement.up_ = m_input.isKeyHeld(GLFW_KEY_E) || m_input.isKeyHeld(GLFW_KEY_SPACE);
-		movement.down_ = m_input.isKeyHeld(GLFW_KEY_Q) || m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
+		movement.up_ = m_input.isKeyHeld(TOUR_KEY_E) || m_input.isKeyHeld(TOUR_KEY_SPACE);
+		movement.down_ = m_input.isKeyHeld(TOUR_KEY_Q) || m_input.isKeyHeld(TOUR_KEY_LEFT_CONTROL);
 
 		movement.fastSpeed_ =
-			m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+			m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
+			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 
 		// Gamepad camera: left stick moves (camera-relative), right stick
 		// looks, triggers rise/sink, right shoulder sprints. Mouse/keyboard
@@ -334,10 +334,10 @@ namespace engine {
 			movement.stickLook_.x = rx;
 			movement.stickLook_.y = -ry;
 			movement.vertical_ =
-				m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) -
-				m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-			movement.fastSpeed_ = movement.fastSpeed_ ||
-				m_input.gamepadButtonHeld(0, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+				m_input.gamepadTrigger(0, input::GamepadAxis::RightTrigger) -
+				m_input.gamepadTrigger(0, input::GamepadAxis::LeftTrigger);
+			const bool sprintPad =
+				m_input.gamepadButtonHeld(0, input::GamepadButton::RightShoulder);
 		}
 		else {
 			movement.stickMove_ = glm::vec2(0.0f);
@@ -368,7 +368,7 @@ namespace engine {
 		}
 		const glm::vec2 mousePos = m_virtualMouse;
 
-		if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
+		if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_RIGHT))
 		{
 			// Zero the pending delta so a click never yanks the camera.
 			positioner.resetMousePosition(mousePos);

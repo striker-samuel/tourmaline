@@ -30,7 +30,7 @@ inline constexpr uint8_t kScopeTest = 1u << 3;
 inline constexpr uint8_t kScopeProfile = 1u << 4;
 
 struct ModalBindingDef {
-	int key = 0;                  // GLFW_KEY_* (SDL scancode, see input.h)
+	int key = 0;                  // TOUR_KEY_* / input::Key (see input.h)
 	uint8_t mods = 0;             // kModal{Ctrl,Shift,Alt} bits
 	uint8_t scopes = 0;           // kScope* bits
 	void (EditorApp::*run)() = nullptr;

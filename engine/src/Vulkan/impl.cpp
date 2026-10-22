@@ -48,6 +48,7 @@
 
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/App/app.h>
+#include <Engine/App/input_sdl3.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -11333,6 +11334,10 @@ bool smvk::App::Initialize() {
 		return false;
 	}
 
+	// Input bridge: converts SDL events to engine events and owns the
+	// opened gamepad handles (destroyed before SDL_Quit).
+	m_sdlInput = std::make_unique<smvk::SdlInputBackend>();
+
 	int width_ = DEFAULT_WIDTH;
 	int height_ = DEFAULT_HEIGHT;
 	window = SDL_CreateWindow("Vulkan", width_, height_,
@@ -11407,12 +11412,19 @@ void smvk::App::Shutdown() {
 	// We do not reset m_* here to allow TestApp::Shutdown to still use
 	// m_context if needed; actual destruction happens in ~App via\r
 	// member order (derived members -> App members -> window).
+	// Close gamepads while SDL is still initialized (the backend owns the
+	// SDL_Gamepad handles; SDL_Quit happens in ~App).
+	m_sdlInput.reset();
 	// Streamline teardown: slShutdown must run before the VkInstance /
 	// VkDevice are destroyed (~App tears down m_context). The interposer
 	// DLL itself stays mapped until ~VulkanCore unloads it (DlssRelease)
 	// because volk/VMA still call through its proxies during teardown.
 	DlssShutdown();
 }
+
+// Out-of-line: the unique_ptr<SdlInputBackend> member needs the complete
+// backend type for its deleter (the header only forward-declares it).
+smvk::App::App() = default;
 
 smvk::App::~App()
 {
@@ -11425,6 +11437,8 @@ smvk::App::~App()
 	m_audio.Shutdown();
 	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
 	// (App holds them directly; window is last member so destroyed after Vulkan).
+	// The input bridge must also outlive Input but die before SDL_Quit.
+	m_sdlInput.reset();
 	if (window) {
 		SDL_DestroyWindow(window);
 		window = nullptr;

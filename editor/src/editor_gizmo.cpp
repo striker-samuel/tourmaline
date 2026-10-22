@@ -847,8 +847,8 @@ bool EditorApp::GizmoHandleInput() {
 	const glm::mat4 viewProj = m_viewports[m_activeVp].viewProj;
 	const float mx = float(m_input.getMouseX()) - vp.x;
 	const float my = float(m_input.getMouseY()) - vp.y;
-	const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+	const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
+		m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 	// Gizmo origin = the PIVOT (Q quick menu): the node origin (as
 	// before) or the selection's bounds center. LIVE while idle (the
 	// drawn gizmo); the drag-start snapshot below anchors the drag.
@@ -1087,7 +1087,7 @@ bool EditorApp::GizmoHandleInput() {
 	}
 
 	// Continue drag (or finish on release).
-	if (!m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+	if (!m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
 		m_gizmoDragging = false;
 		// One undoable command for the whole gesture.
 		EditCmd c{};

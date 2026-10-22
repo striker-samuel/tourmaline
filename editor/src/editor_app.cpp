@@ -1388,17 +1388,17 @@ void EditorApp::UpdateCamera(float dt) {
 	const glm::vec3 fwd = glm::normalize(
 		EditorCamEye(cam) - cam.target);
 	const bool imguiEats = m_imgui && m_imgui->WantsCaptureMouse();
-	const bool alt = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
-		m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
+	const bool alt = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
+		m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {
 		if (alt) {
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) &&
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) &&
 				!isOrtho) {
 				cam.yaw -= float(m_input.getMouseDeltaX()) * 0.005f;
 				cam.pitch -= float(m_input.getMouseDeltaY()) * 0.005f;
 				cam.pitch = std::clamp(cam.pitch, -1.55f, 1.55f);
 			}
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_MIDDLE)) {
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_MIDDLE)) {
 				glm::vec3 right = glm::cross(fwd, glm::vec3(0, 1, 0));
 				if (glm::length(right) < 1e-6f)
 					right = glm::vec3(1, 0, 0);
@@ -1414,7 +1414,7 @@ void EditorApp::UpdateCamera(float dt) {
 				cam.target += right * float(m_input.getMouseDeltaX()) * k;
 				cam.target += camUp * float(m_input.getMouseDeltaY()) * k;
 			}
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT)) {
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_RIGHT)) {
 				const float dy = float(m_input.getMouseDeltaY());
 				if (isOrtho)
 					cam.orthoHalfH = std::clamp(
@@ -1426,8 +1426,8 @@ void EditorApp::UpdateCamera(float dt) {
 		}
 		else {
 			const bool orbitBtn =
-				m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT) ||
-				(m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) &&
+				m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_RIGHT) ||
+				(m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) &&
 					m_selected == UINT32_MAX && !m_vpBoxDragging);
 			if (orbitBtn && !isOrtho) {
 				cam.yaw -= float(m_input.getMouseDeltaX()) * 0.005f;

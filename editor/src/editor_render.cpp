@@ -1852,11 +1852,11 @@ namespace editor {
 		const float lmx = float(m_input.getMouseX()) - vp.x;
 		const float lmy = float(m_input.getMouseY()) - vp.y;
 		const bool inVp = lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
-		const bool altNav = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
+		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
+			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
-		const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-			m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+		const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
+			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 		uint32_t insetXAbs = 0;
 		const bool insetActive = SecondViewActive() && m_vpLayout == 0 &&
 			InsetStrip(m_viewports[0].rect, insetXAbs).width != 0;
@@ -1874,9 +1874,9 @@ namespace editor {
 		if (painting) {
 			// Fresh press always stamps (drag spacing applies within one
 			// stroke only).
-			if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT))
+			if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
 				m_paintLast = glm::vec2(-1e9f, -1e9f);
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
 				const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
 				glm::vec3 rayOrigin;
 				const glm::vec3 rayDir = MouseRay(lmx, lmy, vpExt,
@@ -1907,7 +1907,7 @@ namespace editor {
 		// Box select stays Mesh-mode (face/vertex use click picking).
 		else if (m_world && !m_gizmoDragging && !altNav &&
 			!inInset && inVp &&
-			m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !uiEats) {
+			m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT) && !uiEats) {
 			if (m_selMode == SelMode::Mesh) {
 				if (!GizmoHandleInput()) {
 					m_vpBoxDragging = true;
@@ -1931,7 +1931,7 @@ namespace editor {
 			}
 		}
 		if (m_vpBoxDragging) {
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
+			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
 				m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
 					0.0f, vp.w);
 				m_vpBoxY1 = std::clamp(float(m_input.getMouseY()) - vp.y,
@@ -1982,7 +1982,7 @@ namespace editor {
 			}
 		}
 		else if (m_gizmoDragging || (inVp && !altNav &&
-			m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats)) {
+			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats)) {
 			GizmoHandleInput();
 		}
 

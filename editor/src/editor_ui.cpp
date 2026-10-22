@@ -4682,7 +4682,7 @@ namespace editor {
 		}
 
 		// ---- OS drag-and-drop target (Windows Explorer -> browser) -------
-		// The SDL hook (OnSDLEvent) collects SDL_EVENT_DROP_FILE batches;
+		// The input hook (OnInputEvent) collects FileDrop batches;
 		// route them HERE by the drop point against this panel's rect (the
 		// only drop target in the editor): images become .texture assets in
 		// the browsed dir, .gltf/.glb run the full import. A drop outside
