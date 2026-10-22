@@ -8,8 +8,6 @@
 
 #include <Engine/Rendergraph/rendergraph.h>
 
-#include "../Vulkan/detail/vulkan_impl.h"
-
 #include <cstdio>
 #include <fstream>
 
@@ -105,21 +103,12 @@ bool SkinVisual::AppendPass(ResourceManager& ctx, RenderGraph& rg,
 		cmd.Dispatch(dispatchX, 1, 1);
 		// The deformed heap is BDA-only (the graph has no handle to hint
 		// on), so it will not order this dispatch before the draw passes'
-		// deformed fetches. Emit the compute->graphics dependency here;
-		// once the deformed span is declared as a graph buffer resource
-		// this can fold back into the per-resource barrier machinery.
-		VkCommandBuffer vkCmd =
-			static_cast<VkCommandBuffer>(cmd.GetNativeHandle());
-		VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-		mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-		mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT
-			| VK_ACCESS_2_MEMORY_WRITE_BIT;
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-		dep.memoryBarrierCount = 1;
-		dep.pMemoryBarriers = &mb;
-		vkCmdPipelineBarrier2(vkCmd, &dep);
+		// deformed fetches. Emit the compute->graphics dependency through
+		// the RHI seam (per-backend: an all-commands barrier on Vulkan, a
+		// global UAV barrier on D3D12); once the deformed span is
+		// declared as a graph buffer resource this folds back into the
+		// per-resource barrier machinery.
+		cmd.EmitGlobalMemoryBarrier();
 	});
 	return true;
 }

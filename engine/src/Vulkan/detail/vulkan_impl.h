@@ -15,6 +15,11 @@
 #include <source_location>
 #include <ktx.h>
 #include <ktxVulkan.h>
+// StaticVertexFmtHeap + StaticMeshAllocation live in the shared
+// Engine/Renderer/static_vertex_heap.h (the RHI handles + a CPU arena
+// replacing the VmaVirtualBlocks ΓÇö the whole load stack now compiles
+// against both backends).
+#include <Engine/Renderer/static_vertex_heap.h>
 
 #include <span>
 #include <string_view>
@@ -90,30 +95,10 @@ namespace smvk {
  		VkPipelineLayout layout{};
  	};
 
- 	struct PipelineBundle {
- 		VkPipeline pipeline = VK_NULL_HANDLE;
- 		VkPipelineLayout layout = VK_NULL_HANDLE;
- 	};
-
- 	struct StaticMeshAllocation {
-	//	std::vector<VmaVirtualAllocation> allocs;
-		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
-		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
-		// The heap range (the skinned-stream compute pass writes the
-		// deformed positions/normals back into these ranges in place -
-		// the Northlight data flow: the skinning pass deforms, every
-		// draw/cull pass reads the deformed heap).
-		VkDeviceSize vertexBase = 0;      // VERTEX units into the pos/shading heaps
-		VkDeviceSize indexByteOffset = 0; // byte offset into the index monoblock
+	struct PipelineBundle {
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
-
-	inline struct StaticVertexFmtHeap {
-		BufferHandle m_staticVertexPosBuffer{};
-		BufferHandle m_staticVertexShadingBuffer{};
-		BufferHandle m_staticIndexBuffer{};
-		VmaVirtualBlock m_staticVertexBlock = VK_NULL_HANDLE;
-		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
-	} staticVertexFmtHeap;
 
 	struct Image
 	{

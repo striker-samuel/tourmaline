@@ -1,19 +1,17 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#ifndef VK_NO_PROTOTYPES
-#define VK_NO_PROTOTYPES
-#endif
-#include "volk.h"
+// Backend-neutral: every graphics-backend call goes through the ui:: seam
+// (imgui_overlay.h). The SDL3 PLATFORM backend (events/windowing) is
+// graphics-API-neutral and stays here; its graphics pairing is set up by
+// ui::InitBackend.
 
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/platform.h>
 #include <Engine/Profile/profile.h>
-#include "../Vulkan/detail/vulkan_impl.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_sdl3.h>
-#include <backends/imgui_impl_vulkan.h>
 
 #include <SDL3/SDL_video.h>
 
@@ -36,7 +34,6 @@ ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
         initialized_ = o.initialized_;
         window_ = o.window_;
         imguiCtx_ = o.imguiCtx_;
-        descriptorPoolOpaque_ = o.descriptorPoolOpaque_;
         ctx_ = o.ctx_;
         swapchain_ = o.swapchain_;
         desc_ = o.desc_;
@@ -44,7 +41,6 @@ ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
         o.initialized_ = false;
         o.window_ = nullptr;
         o.imguiCtx_ = nullptr;
-        o.descriptorPoolOpaque_ = nullptr;
         o.ctx_ = nullptr;
         o.swapchain_ = nullptr;
         o.appliedDpiScale_ = 0.0f;
@@ -82,92 +78,27 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
-    // ---- Init SDL3 backend ----
-    // App::PollEvents forwards every SDL event to ImGui via ProcessEvent
-    // (see imguiEventHook_), so no install-callbacks step is needed.
-    if (!ImGui_ImplSDL3_InitForVulkan(window)) {
-        fprintf(stderr, "[ImGuiOverlay] ImGui_ImplSDL3_InitForVulkan failed\n");
-        return false;
-    }
-
-    // ---- Create descriptor pool for ImGui ----
-    // ImGui needs a fairly large pool. Use Vulkan directly.
-    VkDescriptorPoolSize poolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_SAMPLER, 100 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 100 },
-        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 100 },
-    };
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 100;
-    poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes)/sizeof(poolSizes[0]));
-    poolInfo.pPoolSizes = poolSizes;
-
-    VkDevice device = GetVkDevice();
-    if (device == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ImGuiOverlay] GetVkDevice returned null\n");
-        return false;
-    }
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-        fprintf(stderr, "[ImGuiOverlay] vkCreateDescriptorPool failed\n");
-        return false;
-    }
-    descriptorPoolOpaque_ = reinterpret_cast<void*>(pool);
-
-    // ---- Init Vulkan backend (dynamic rendering) ----
-    VkInstance instance = GetVkInstance();
-    VkPhysicalDevice physicalDevice = GetVkPhysicalDevice();
-    VkQueue graphicsQueue = GetVkGraphicsQueue();
-
-    // The backend pipeline's rendering format must match the target ImGui
-    // actually draws into: the separated UI target (desc.colorFormat) or,
-    // when unset, the swapchain itself (direct-to-swapchain draws).
-    const Format uiColorFormat = desc_.colorFormat != Format::Undefined
+    // ---- Init the backend seam ----
+    // The paired graphics + SDL3 platform init lives behind ui::InitBackend
+    // (the overlay never touches a backend API directly). App::PollEvents
+    // forwards every SDL event to ImGui via ProcessEvent (see
+    // imguiEventHook_), so no install-callbacks step is needed.
+    ui::UiBackendDesc backendDesc{};
+    backendDesc.colorFormat = desc_.colorFormat != Format::Undefined
         ? desc_.colorFormat
         : swapchain.GetSurfaceFormat();
-    VkFormat colorFormat = toVkFormat(uiColorFormat);
-    VkFormat depthFormat = VK_FORMAT_UNDEFINED; // UI pass has no depth; could use swap depthFormat if we ever depth-test UI.
-
-    VkPipelineRenderingCreateInfo renderingCreateInfo{};
-    renderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingCreateInfo.colorAttachmentCount = 1;
-    renderingCreateInfo.pColorAttachmentFormats = &colorFormat;
-    renderingCreateInfo.depthAttachmentFormat = depthFormat;
-    renderingCreateInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-
-    ImGui_ImplVulkan_InitInfo vulkanInit{};
-    vulkanInit.Instance = instance;
-    vulkanInit.PhysicalDevice = physicalDevice;
-    vulkanInit.Device = device;
-    vulkanInit.QueueFamily = GetVkGraphicsQueueFamily();
-    vulkanInit.Queue = graphicsQueue;
-    vulkanInit.DescriptorPool = pool;
-    vulkanInit.MinImageCount = swapchain.GetMinImageCount();
-    vulkanInit.ImageCount = swapchain.GetImageCount();
-    vulkanInit.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    vulkanInit.UseDynamicRendering = true;
-    vulkanInit.PipelineRenderingCreateInfo = renderingCreateInfo;
-
-    // ImGui_ImplVulkan_Init with dynamic rendering requires ApiVersion >= 1.3 when using volk.
-    // volk loads 1.3 entry points; we pass VK_API_VERSION_1_3.
-    vulkanInit.ApiVersion = VK_API_VERSION_1_3;
-
-    if (!ImGui_ImplVulkan_Init(&vulkanInit)) {
-        fprintf(stderr, "[ImGuiOverlay] ImGui_ImplVulkan_Init failed\n");
-        vkDestroyDescriptorPool(device, pool, nullptr);
-        descriptorPoolOpaque_ = nullptr;
+    backendDesc.minImageCount = swapchain.GetMinImageCount();
+    backendDesc.imageCount = swapchain.GetImageCount();
+    if (!ui::InitBackend(ctx, swapchain, backendDesc)) {
+        fprintf(stderr, "[ImGuiOverlay] ui::InitBackend failed (unsupported "
+                        "or misconfigured backend)\n");
         return false;
     }
+
+    // (The descriptor pool + the graphics backend init + the paired SDL3
+    // platform init all live in ui::InitBackend — the seam owns every
+    // backend-native step, including the format the overlay resolved
+    // into backendDesc above.)
 
     initialized_ = true;
 
@@ -194,21 +125,11 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
 
 void ImGuiOverlay::Shutdown() {
     if (!initialized_) return;
-    // Ensure GPU idle before tearing down ImGui pipelines/descriptor pool.
-    VkDevice device = GetVkDevice();
-    if (device != VK_NULL_HANDLE)
-        vkDeviceWaitIdle(device);
-
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
-    ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
+    // The backend seam owns the wait-idle + the graphics backend shutdown
+    // + its pool/heap teardown + the paired SDL3 platform shutdown.
+    ui::ShutdownBackend(*ctx_);
     ImGui::DestroyContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
-
-    if (descriptorPoolOpaque_) {
-        VkDescriptorPool pool = reinterpret_cast<VkDescriptorPool>(descriptorPoolOpaque_);
-        vkDestroyDescriptorPool(device, pool, nullptr);
-        descriptorPoolOpaque_ = nullptr;
-    }
 
     imguiCtx_ = nullptr;
     initialized_ = false;
@@ -220,7 +141,7 @@ void ImGuiOverlay::Shutdown() {
 void ImGuiOverlay::NewFrame(Extent2D targetExtent) {
     if (!initialized_) return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
-    ImGui_ImplVulkan_NewFrame();
+    ui::NewFrameBackend();
     ImGui_ImplSDL3_NewFrame();
     // Map ImGui screen-space draw data onto the actual render target size
     // (separated UI pass target != window size when ui scale != 1 or on
@@ -263,16 +184,16 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
     // tick per render (each render = a frame boundary). Entries older than
     // kUserTextureRetireRenders frames free — by then every submission that
     // bound them has hit its flight-slot fence (MAX_FRAMES_IN_FLIGHT + 1
-    // margin), so the backend free (vkFreeDescriptorSets) is clean. Drained
-    // here (inside the render, after this frame's ImGui::Render()) so a
-    // queued id can never outlive the queue's own frame cadence.
+    // margin), so the backend free (the seam's RemoveTexture) is clean.
+    // Drained here (inside the render, after this frame's ImGui::Render())
+    // so a queued id can never outlive the queue's own frame cadence.
     ++renderTicks_;
     if (!userTextureRetireQueue_.empty()) {
         size_t keep = 0;
         for (size_t i = 0; i < userTextureRetireQueue_.size(); ++i) {
             const auto [id, stamp] = userTextureRetireQueue_[i];
             if (renderTicks_ - stamp > kUserTextureRetireRenders) {
-                ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(id));
+                ui::RemoveTexture(id);
             } else {
                 userTextureRetireQueue_[keep++] = userTextureRetireQueue_[i];
             }
@@ -280,8 +201,7 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
         userTextureRetireQueue_.resize(keep);
     }
 
-    VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(cmd.GetNativeHandle());
-    ImGui_ImplVulkan_RenderDrawData(drawData, vkCmd);
+    ui::RenderDrawData(cmd.GetNativeHandle(), drawData);
 }
 
 void ImGuiOverlay::AddPass(RenderGraph& rg,
@@ -344,21 +264,16 @@ ImTextureID ImGuiOverlay::AddUserTexture(TextureHandle texture,
         }
     if (!live)
         return ImTextureID(0);
-    const void* view = ctx_->GetTextureVkImageView(texture);
-    const void* sampler = ctx_->GetVkSamplerOpaque(samplerIndex);
-    if (!view || !sampler)
-        return ImTextureID(0);
-    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
-        reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
-        reinterpret_cast<VkImageView>(const_cast<void*>(view)),
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    return ImTextureID(reinterpret_cast<uint64_t>(ds));
+    // The seam turns the RHI texture + sampler into the backend-native
+    // binding id (the Vulkan form: a descriptor set over the texture's
+    // view + the cached sampler; the D3D12 form: the bindless slot).
+    return ui::AddTexture(*ctx_, texture, samplerIndex);
 }
 
 ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
     uint32_t samplerIndex) {
     // View variant of AddUserTexture (see the header contract): same
-    // descriptor registration, but over a STANDALONE caller-created view
+    // binding registration, but over a STANDALONE caller-created view
     // (e.g. a per-face View2D of a cubemap) instead of the texture's own
     // default view. Liveness here is the opaque getter: the pool get
     // returns null once the view's generation bumped (destroyed), so a
@@ -366,25 +281,17 @@ ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
     // scans the LIVE texture listing instead; views have no listing.)
     if (!initialized_ || !ctx_ || view.empty())
         return ImTextureID(0);
-    const void* vkView = ctx_->GetImageViewVkImageView(view);
-    const void* sampler = ctx_->GetVkSamplerOpaque(samplerIndex);
-    if (!vkView || !sampler)
-        return ImTextureID(0);
-    VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(
-        reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
-        reinterpret_cast<VkImageView>(const_cast<void*>(vkView)),
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    return ImTextureID(reinterpret_cast<uint64_t>(ds));
+    return ui::AddTextureView(*ctx_, view, samplerIndex);
 }
 
 void ImGuiOverlay::RetireUserTexture(ImTextureID id) {
-    // Deferred free (see the header contract): the binding's descriptor set
-    // is referenced by the draw data of the frame that last drew it (and by
-    // up to MAX_FRAMES_IN_FLIGHT prior in-flight submissions) — freeing it
-    // here (ImGui_ImplVulkan_RemoveTexture -> vkFreeDescriptorSets,
-    // immediate) binds a freed set and faults the device (the
-    // texture-viewer X-close crash). Queue it; Render() drains aged
-    // entries once the referencing submissions are fence-complete.
+    // Deferred free (see the header contract): the binding is referenced
+    // by the draw data of the frame that last drew it (and by up to
+    // MAX_FRAMES_IN_FLIGHT prior in-flight submissions) — freeing it
+    // here (the seam's RemoveTexture is an immediate backend free)
+    // binds a freed set and faults the device (the texture-viewer
+    // X-close crash). Queue it; Render() drains aged entries once the
+    // referencing submissions are fence-complete.
     if (!initialized_ || id == ImTextureID(0))
         return;
     userTextureRetireQueue_.emplace_back(

@@ -1,34 +1,34 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <Engine/core.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Renderer/vertex_pack.h>
+#include <Engine/Renderer/static_vertex_heap.h>
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Scene/scene.h>
-#include "../Vulkan/detail/vulkan_impl.h"
 
 #include <cstdio>
 
 namespace smvk {
 // -----------------------------------------------------------------------------
-// Mesh heap-range retirement (the deferred-destruction contract - see
-// VulkanResourceManager::DeferDestroy): the vertex/index virtual-block ranges
-// free RETIREMENT-ORDERED with the last published graphics timeline point,
-// never in place. An in-flight frame can still be DRAWING a destroyed mesh's
-// ranges - an immediate vmaVirtualFree hands the range to the next upload, and
-// the old frame's draws then read the NEW mesh's vertices/indices through the
-// old draw args (garbage rendering, the classic suballoc-vs-frames-in-flight
-// hazard). The deferred task keys on the same point every other range free in
-// the engine keys on (ReleaseTargetHeapClaim / ReleaseTransientPlacement),
-// so the free lands strictly after every submitted frame that can still
-// reference the range, and a reuse-allocated new mesh's uploads land strictly
-// after that.
+// Mesh heap-range retirement (the deferred-destruction contract — the
+// facade's DeferDestroyTask, the Vulkan VulkanResourceManager::DeferDestroy
+// key): the vertex/index arena ranges free RETIREMENT-ORDERED with the last published graphics timeline
+// point, never in place. An in-flight frame can still be DRAWING a destroyed
+// mesh's ranges — an immediate arena free hands the range to the next upload,
+// and the old frame's draws then read the NEW mesh's vertices/indices through
+// the old draw args (garbage rendering, the classic suballoc-vs-frames-in-
+// flight hazard). The deferred task keys on the same point every other range
+// free in the engine keys on (ReleaseTargetHeapClaim /
+// ReleaseTransientPlacement), so the free lands strictly after every
+// submitted frame that can still reference the range, and a reuse-allocated
+// new mesh's uploads land strictly after that.
 //
 // Contract (the DeferDestroy API rule): only call from the render thread
-// between frames - the published point then covers every in-flight producer.
-// The virtual blocks themselves die at ~VulkanResourceManager only AFTER its
-// FlushDeferredTasks drained every queued free, so capturing the global
-// block handles by value here stays valid through the retirement window.
+// between frames — the published point then covers every in-flight producer.
+// The arenas live in the lifetime-global staticVertexFmtHeap (inline storage
+// — outlives every retirement), so capturing them by pointer here stays
+// valid through the retirement window.
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // In-place variant (see the retirement contract above): ONLY safe for ranges
@@ -38,38 +38,34 @@ namespace smvk {
 // created). Everything a draw could have touched must use the deferred form.
 // -----------------------------------------------------------------------------
 void FreeStaticMeshRangesNow(
-	VmaVirtualAllocation vertexAllocation,
-	VmaVirtualAllocation indexAllocation)
+	StaticHeapArena::AllocId vertexAllocation,
+	StaticHeapArena::AllocId indexAllocation)
 {
 	if (vertexAllocation)
-		vmaVirtualFree(staticVertexFmtHeap.m_staticVertexBlock,
-			vertexAllocation);
+		staticVertexFmtHeap.m_staticVertexBlock.Free(vertexAllocation);
 	if (indexAllocation)
-		vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock,
-			indexAllocation);
+		staticVertexFmtHeap.m_staticIndexBlock.Free(indexAllocation);
 }
 
 void DeferFreeStaticMeshRanges(
-	VulkanResourceManager* vctx,
-	VmaVirtualAllocation vertexAllocation,
-	VmaVirtualAllocation indexAllocation)
+	ResourceManager* ctx,
+	StaticHeapArena::AllocId vertexAllocation,
+	StaticHeapArena::AllocId indexAllocation)
 {
-	if (!vctx) {
+	if (!ctx) {
 		// Defensive (allocations imply a live ctx_): nothing was ever
 		// staged through this path, free in place.
 		FreeStaticMeshRangesNow(vertexAllocation, indexAllocation);
 		return;
 	}
-	const VmaVirtualBlock vertexBlock =
-		staticVertexFmtHeap.m_staticVertexBlock;
-	const VmaVirtualBlock indexBlock =
-		staticVertexFmtHeap.m_staticIndexBlock;
-	vctx->DeferDestroy(std::packaged_task<void()>(
+	StaticHeapArena* vertexBlock = &staticVertexFmtHeap.m_staticVertexBlock;
+	StaticHeapArena* indexBlock = &staticVertexFmtHeap.m_staticIndexBlock;
+	ctx->DeferDestroyTask(std::packaged_task<void()>(
 		[vertexBlock, vertexAllocation, indexBlock, indexAllocation] {
 			if (vertexAllocation)
-				vmaVirtualFree(vertexBlock, vertexAllocation);
+				vertexBlock->Free(vertexAllocation);
 			if (indexAllocation)
-				vmaVirtualFree(indexBlock, indexAllocation);
+				indexBlock->Free(indexAllocation);
 		}));
 }
 } // namespace smvk
@@ -135,21 +131,14 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// vertexBase is in VERTEX UNITS, not bytes.
 	// =========================================================================
 
-	VkDeviceSize vertexBase = 0;
+	uint64_t vertexBase = 0;
 
 	{
-		VmaVirtualAllocationCreateInfo allocInfo{};
-		allocInfo.size = vertexCount;
-		allocInfo.alignment = 1;
+		alloc.vertexAllocation =
+			staticVertexFmtHeap.m_staticVertexBlock.Allocate(
+				vertexCount, 1, vertexBase);
 
-		const VkResult res = vmaVirtualAllocate(
-			staticVertexFmtHeap.m_staticVertexBlock,
-			&allocInfo,
-			&alloc.vertexAllocation,
-			&vertexBase
-		);
-
-		if (res != VK_SUCCESS) {
+		if (alloc.vertexAllocation == 0) {
 			return {};
 		}
 	}
@@ -159,31 +148,22 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// 2. Allocate index range
 	// =========================================================================
 
-	const VkDeviceSize indexBytes =
+	const uint64_t indexBytes =
 		sizeof(uint32_t) *
-		static_cast<VkDeviceSize>(indexCount);
+		static_cast<uint64_t>(indexCount);
 
-	VkDeviceSize indexByteOffset = 0;
+	uint64_t indexByteOffset = 0;
 
 	if (indexCount > 0) {
 
-		VmaVirtualAllocationCreateInfo allocInfo{};
-		allocInfo.size = indexBytes;
-		allocInfo.alignment = alignof(uint32_t);
+		alloc.indexAllocation =
+			staticVertexFmtHeap.m_staticIndexBlock.Allocate(
+				indexBytes, alignof(uint32_t), indexByteOffset);
 
-		const VkResult res = vmaVirtualAllocate(
-			staticVertexFmtHeap.m_staticIndexBlock,
-			&allocInfo,
-			&alloc.indexAllocation,
-			&indexByteOffset
-		);
+		if (alloc.indexAllocation == 0) {
 
-		if (res != VK_SUCCESS) {
-
-			vmaVirtualFree(
-				staticVertexFmtHeap.m_staticVertexBlock,
-				alloc.vertexAllocation
-			);
+			staticVertexFmtHeap.m_staticVertexBlock.Free(
+				alloc.vertexAllocation);
 
 			return {};
 		}
@@ -217,19 +197,19 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// 4. Upload position stream
 	// =========================================================================
 
-	const VkDeviceSize positionOffset =
+	const uint64_t positionOffset =
 		vertexBase * sizeof(VertexPos);
 
-	const VkDeviceSize positionBytes =
+	const uint64_t positionBytes =
 		vertexCount * sizeof(VertexPos);
 
-	static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
+	ctx_->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexPosBuffer,
 		positions.data(),
 		positionBytes,
 
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead,
 
 		0,
 		positionOffset
@@ -240,19 +220,19 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// 5. Upload shading stream
 	// =========================================================================
 
-	const VkDeviceSize shadingOffset =
+	const uint64_t shadingOffset =
 		vertexBase * sizeof(VertexShading);
 
-	const VkDeviceSize shadingBytes =
+	const uint64_t shadingBytes =
 		vertexCount * sizeof(VertexShading);
 
-	static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
+	ctx_->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexShadingBuffer,
 		shading.data(),
 		shadingBytes,
 
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead,
 
 		0,
 		shadingOffset
@@ -265,13 +245,13 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 	if (indexCount > 0) {
 
-		static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
+		ctx_->UploadDataToBuffer(
 			staticVertexFmtHeap.m_staticIndexBuffer,
 			data.indices.data(),
 			indexBytes,
 
-			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-			VK_ACCESS_2_INDEX_READ_BIT,
+			PipelineStageBit_Vertex,
+			AccessFlags::IndexRead,
 
 			0,
 			indexByteOffset
@@ -318,7 +298,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 		// these ranges (vertex/shading/index), so the frees must retire with
 		// that GPU work - never in place (see DeferFreeStaticMeshRanges).
 		DeferFreeStaticMeshRanges(
-			static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque()),
+			ctx_,
 			alloc.vertexAllocation, alloc.indexAllocation);
 		return {};
 	}
@@ -627,8 +607,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	// =========================================================================
 
 	struct MeshRange {
-		VkDeviceSize vertexBase = 0; // VERTEX UNITS, not bytes
-		VkDeviceSize indexByteOffset = 0;
+		uint64_t vertexBase = 0; // VERTEX UNITS, not bytes
+		uint64_t indexByteOffset = 0;
 		StaticMeshAllocation alloc{};
 	};
 	std::vector<MeshRange> ranges(uploads.size());
@@ -658,24 +638,21 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 		}
 		MeshRange& r = ranges[i];
 		{
-			VmaVirtualAllocationCreateInfo allocInfo{};
-			allocInfo.size = vertexCount;
-			allocInfo.alignment = 1;
-			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
-					&allocInfo, &r.alloc.vertexAllocation,
-					&r.vertexBase) != VK_SUCCESS) {
+			r.alloc.vertexAllocation =
+				staticVertexFmtHeap.m_staticVertexBlock.Allocate(
+					vertexCount, 1, r.vertexBase);
+			if (r.alloc.vertexAllocation == 0) {
 				failCarved(i);
 				return {};
 			}
 		}
 		if (indexCount > 0) {
-			VmaVirtualAllocationCreateInfo allocInfo{};
-			allocInfo.size = sizeof(uint32_t)
-				* static_cast<VkDeviceSize>(indexCount);
-			allocInfo.alignment = alignof(uint32_t);
-			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
-					&allocInfo, &r.alloc.indexAllocation,
-					&r.indexByteOffset) != VK_SUCCESS) {
+			const uint64_t indexBytes = sizeof(uint32_t)
+				* static_cast<uint64_t>(indexCount);
+			r.alloc.indexAllocation =
+				staticVertexFmtHeap.m_staticIndexBlock.Allocate(
+					indexBytes, alignof(uint32_t), r.indexByteOffset);
+			if (r.alloc.indexAllocation == 0) {
 				// Entry i's own vertex carve rolls back too (it succeeded
 				// above and nothing references it yet).
 				failCarved(i + 1);
@@ -797,20 +774,19 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	//    blobs — one memcpy pass + one submit + one barrier set per blob)
 	// =========================================================================
 
-	auto* vctx = static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque());
-	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
 		positions.data(), posCopies,
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead);
+	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
 		shading.data(), shadeCopies,
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead);
 	if (!idxCopies.empty()) {
-		vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 			indices.data(), idxCopies,
-			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-			VK_ACCESS_2_INDEX_READ_BIT);
+			PipelineStageBit_Vertex,
+			AccessFlags::IndexRead);
 	}
 	return handles;
 }
@@ -827,8 +803,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	// 1. Allocate heap ranges (all-or-nothing — nothing staged on failure)
 	// =========================================================================
 	struct MeshRange {
-		VkDeviceSize vertexBase = 0; // VERTEX UNITS
-		VkDeviceSize indexByteOffset = 0;
+		uint64_t vertexBase = 0; // VERTEX UNITS
+		uint64_t indexByteOffset = 0;
 		StaticMeshAllocation alloc{};
 	};
 	std::vector<MeshRange> ranges(sources.size());
@@ -849,24 +825,21 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 		}
 		MeshRange& r = ranges[i];
 		{
-			VmaVirtualAllocationCreateInfo allocInfo{};
-			allocInfo.size = src.vertexCount;
-			allocInfo.alignment = 1;
-			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticVertexBlock,
-					&allocInfo, &r.alloc.vertexAllocation,
-					&r.vertexBase) != VK_SUCCESS) {
+			r.alloc.vertexAllocation =
+				staticVertexFmtHeap.m_staticVertexBlock.Allocate(
+					src.vertexCount, 1, r.vertexBase);
+			if (r.alloc.vertexAllocation == 0) {
 				failCarved(i);
 				return {};
 			}
 		}
 		if (src.indexCount > 0) {
-			VmaVirtualAllocationCreateInfo allocInfo{};
-			allocInfo.size = sizeof(uint32_t)
-				* static_cast<VkDeviceSize>(src.indexCount);
-			allocInfo.alignment = alignof(uint32_t);
-			if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock,
-					&allocInfo, &r.alloc.indexAllocation,
-					&r.indexByteOffset) != VK_SUCCESS) {
+			const uint64_t indexBytes = sizeof(uint32_t)
+				* static_cast<uint64_t>(src.indexCount);
+			r.alloc.indexAllocation =
+				staticVertexFmtHeap.m_staticIndexBlock.Allocate(
+					indexBytes, alignof(uint32_t), r.indexByteOffset);
+			if (r.alloc.indexAllocation == 0) {
 				failCarved(i + 1);
 				return {};
 			}
@@ -946,20 +919,19 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 				size_t(src.indexCount) * sizeof(uint32_t) });
 		}
 	}
-	auto* vctx = static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque());
-	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
+	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
 		content, posCopies,
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-	vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead);
+	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
 		content, shadeCopies,
-		VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-		VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+		PipelineStageBit_Vertex,
+		AccessFlags::VertexAttributeRead);
 	if (!idxCopies.empty()) {
-		vctx->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
+		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 			content, idxCopies,
-			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-			VK_ACCESS_2_INDEX_READ_BIT);
+			PipelineStageBit_Vertex,
+			AccessFlags::IndexRead);
 	}
 	return handles;
 }
@@ -991,16 +963,16 @@ void smvk::Cluster::DestroyMesh(
 		// virtual block hands the range to a new mesh while the old
 		// frame's draws read the new mesh's data through the old draw
 		// args (garbage).
-		const VmaVirtualAllocation vertexAllocation =
+		const StaticHeapArena::AllocId vertexAllocation =
 			allocation->vertexAllocation;
-		const VmaVirtualAllocation indexAllocation =
+		const StaticHeapArena::AllocId indexAllocation =
 			allocation->indexAllocation;
 
 		delete allocation;
 		meshAllocations_.erase(it);
 
 		DeferFreeStaticMeshRanges(
-			static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque()),
+			ctx_,
 			vertexAllocation, indexAllocation);
 	}
 

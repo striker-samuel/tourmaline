@@ -29,7 +29,27 @@
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
 
-[[vk::binding(0, 0)]]
+#ifdef TOURMALINE_DXIL
+// ---------------------------------------------------------------------------
+// The D3D12 backend's bounded-table form (the five 8192-wide regions - see
+// dx12_rli.h's kBindlessCapacity comment): the SAME bindless slot space as
+// the Vulkan arrays below, but explicit registers + BOUNDED sizes (the root
+// signature's SRV table covers t0..t32767 - an unbounded array would claim
+// the whole heap). The type aliases (uintTextures / comparisonSamplers) keep
+// the compile-time-fiction trick working: same register, different fetch
+// type. The DXIL build passes -DTOURMALINE_DXIL=1 (CompileShaders.cmake).
+// NOTE: this shim only covers the RESOURCE arrays. vk::BufferPointer
+// (SPIR-V-only, 52 files) is the remaining DXIL rework - see the porting
+// notes' shader-milestone plan.
+// ---------------------------------------------------------------------------
+Texture2D textures[8192] : register(t0);
+Texture2D<uint4> uintTextures[8192] : register(t0); // alias, same slots
+Texture3D volumeTextures[8192] : register(t8192);
+TextureCube cubemaps[8192] : register(t16384);
+Texture2DMS<float4> texturesMS[8192] : register(t24576);
+SamplerState samplers[8] : register(s0);
+SamplerComparisonState comparisonSamplers[8] : register(s0); // alias
+#else[[vk::binding(0, 0)]]
 //[[vk::binding(kBinding_Textures, 0)]]
 Texture2D textures[];
 [[vk::binding(1, 0)]]
@@ -60,6 +80,9 @@ Texture3D volumeTextures[];
 // 2x MSAA depth — see evsm_resolve.cs.hlsl). .Load(pos, sample) only.
 [[vk::binding(6, 0)]]
 Texture2DMS<float4> texturesMS[];
+#endif // TOURMALINE_DXIL
+// End of the DXIL/Vulkan binding-block split - the remaining shared
+// code (transfer functions, material values, light tables) is identical.
 
 // Exact sRGB transfer functions shared by the LDR-out passes: the swapchain
 // is an _SRGB format (hardware encodes on store), while the SMAA/UI LDR

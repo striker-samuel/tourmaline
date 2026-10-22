@@ -18,6 +18,52 @@ struct SDL_Window;
 
 namespace smvk {
 
+// ---------------------------------------------------------------------------
+// The UI overlay's backend seam (RHI-only contract)
+//
+// The overlay is backend-neutral: the graphics-backend pairing (the
+// ImGui_Impl<Graphics> init/render/texture machinery + the matching
+// ImGui_ImplSDL3_InitFor<Graphics> platform init) lives behind these
+// hooks, implemented by the LINKED engine backend (impl.cpp on Vulkan;
+// dx12_rhi_globals.cpp on D3D12 — a documented "not wired yet" stub
+// until the imgui_impl_dx12 port lands). The overlay calls ONLY these.
+// ---------------------------------------------------------------------------
+namespace ui {
+
+struct UiBackendDesc {
+    // The color attachment format ImGui draws into (the overlay resolves
+    // Undefined to the swapchain surface format before calling).
+    Format colorFormat = Format::Undefined;
+    uint32_t minImageCount = 2;
+    uint32_t imageCount = 2;
+};
+
+// Brings up the graphics backend (device/queue/format + its descriptor
+// pool or heap machinery) AND the paired ImGui_ImplSDL3 platform init.
+// Returns false (with a stderr note) when the backend is unsupported.
+bool InitBackend(ResourceManager& ctx, Swapchain& swapchain,
+                 const UiBackendDesc& desc);
+// The graphics backend's per-frame housekeeping (ImGui_ImplVulkan_NewFrame
+// on Vulkan). The SDL3 platform NewFrame is backend-neutral and stays in
+// the overlay.
+void NewFrameBackend();
+// The record: draw data -> the frame's native command buffer.
+void RenderDrawData(void* nativeCmd, ImDrawData* drawData);
+// User-texture bindings: the backend-native descriptor (the Vulkan form
+// returns a descriptor set over the texture's view + cached sampler; the
+// D3D12 form will return the bindless slot imgui_impl_dx12 consumes).
+// 0 = binding failed.
+ImTextureID AddTexture(ResourceManager& ctx, TextureHandle texture,
+                       uint32_t samplerIndex);
+ImTextureID AddTextureView(ResourceManager& ctx, ImageViewHandle view,
+                           uint32_t samplerIndex);
+void RemoveTexture(ImTextureID id);
+// Graphics backend + platform shutdown (waits the device where the
+// backend requires it before tearing pipelines/pools down).
+void ShutdownBackend(ResourceManager& ctx);
+
+} // namespace ui
+
 // Init-time configuration: UI font + DPI handling.
 struct ImGuiOverlayDesc {
     // Optional TTF (readable filesystem path, e.g. "content/fonts/...").
@@ -138,7 +184,6 @@ private:
     bool initialized_ = false;
     SDL_Window* window_ = nullptr;
     void* imguiCtx_ = nullptr;
-    void* descriptorPoolOpaque_ = nullptr; // VkDescriptorPool
     ResourceManager* ctx_ = nullptr;
     Swapchain* swapchain_ = nullptr;
     ImGuiOverlayDesc desc_{};

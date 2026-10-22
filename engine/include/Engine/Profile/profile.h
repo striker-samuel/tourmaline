@@ -80,9 +80,18 @@
 
 namespace smvk::profiler {
 
-// One-shot GPU init after VkDevice + queues exist (volk must be loaded).
-// Safe to call once; subsequent calls are ignored. No-op when USE_OPTICK==0.
-void InitVulkanGPU();
+// One-shot GPU timeline init after the device + queues exist. Backend
+// seam: implemented by the LINKED engine backend (the Vulkan facade
+// brings up Optick's Vulkan GPU event machinery; the D3D12 facade's
+// variant or no-op). Safe to call once; subsequent calls are ignored.
+// No-op when USE_OPTICK==0.
+void InitBackendGpuTimelines();
+// The backend-native implementation (declared here, DEFINED by the
+// linked backend facade TU: impl.cpp on Vulkan, dx12_rhi_globals.cpp
+// on D3D12). profile.cpp's gate wrapper calls it.
+void InitBackendGpuTimelinesImpl();
+// Legacy Vulkan alias (the impl.cpp call site).
+inline void InitVulkanGPU() { InitBackendGpuTimelines(); }
 
 // Tear down Optick state (call after vkDeviceWaitIdle, before vkDestroyDevice).
 void Shutdown();

@@ -12,6 +12,9 @@
 #include <Engine/smvk.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/vertex_pack.h>
+// The static vertex/index monoblock heap (the shared, backend-neutral
+// allocation layer AllocateStaticVertexFmt creates + the draw paths bind).
+#include <Engine/Renderer/static_vertex_heap.h>
 
 namespace smvk {
 

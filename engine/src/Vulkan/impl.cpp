@@ -2689,7 +2689,7 @@ bool smvk::VulkanCore::Init() {
 		}
 
 		// Optick GPU timelines need the device + graphics queue + volk dispatch.
-		smvk::profiler::InitVulkanGPU();
+		smvk::profiler::InitBackendGpuTimelinesImpl();
 	};
 
 	return true;
@@ -3162,14 +3162,10 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticIndexBuffer);
-	if (staticVertexFmtHeap.m_staticVertexBlock) {
-		vmaDestroyVirtualBlock(staticVertexFmtHeap.m_staticVertexBlock);
-		staticVertexFmtHeap.m_staticVertexBlock = VK_NULL_HANDLE;
-	}
-	if (staticVertexFmtHeap.m_staticIndexBlock) {
-		vmaDestroyVirtualBlock(staticVertexFmtHeap.m_staticIndexBlock);
-		staticVertexFmtHeap.m_staticIndexBlock = VK_NULL_HANDLE;
-	}
+	// The arenas (the VmaVirtualBlock replacement) are lifetime-global CPU
+	// state: drop the bookkeeping, nothing device-side remains.
+	staticVertexFmtHeap.m_staticVertexBlock.Initialize(0);
+	staticVertexFmtHeap.m_staticIndexBlock.Initialize(0);
 	//
 	if (m_streamer) { m_streamer->waitAll(); m_streamer->destroy(); m_streamer.reset(); }
 	// Unconditional drain: resources freed during Shutdown (after the last
@@ -13582,6 +13578,23 @@ void smvk::CommandBuffer::DispatchIndirect(BufferHandle buffer, uint64_t offset)
 		static_cast<VkDeviceSize>(offset)
 	);
 }
+void smvk::CommandBuffer::EmitGlobalMemoryBarrier()
+{
+	// The engine-side seam for resources the graph's per-resource sync
+	// cannot see (BDA-only heaps). Vulkan: one all-commands barrier ├óΓé¼ΓÇ¥
+	// every prior write visible to every later access.
+	VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+	VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+	mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+	mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT
+		| VK_ACCESS_2_MEMORY_WRITE_BIT;
+	VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dep.memoryBarrierCount = 1;
+	dep.pMemoryBarriers = &mb;
+	vkCmdPipelineBarrier2(cmd, &dep);
+}
 void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer, uint64_t offset,
 	uint32_t drawCount, uint32_t stride)
 {
@@ -13763,3 +13776,221 @@ bool smvk::HasDedicatedComputeQueue() {
 	return false;
 }
 
+// The profiler backend seam (profile.h): the Vulkan GPU timeline
+// machinery ├óΓé¼ΓÇ¥ device/queue getters + Optick's Vulkan dispatch table +
+// OPTICK_GPU_INIT_VULKAN. The gates (GpuEnabled, one-shot) live in the
+// neutral profile.cpp wrapper.
+void smvk::profiler::InitBackendGpuTimelinesImpl() {
+#if USE_OPTICK
+	if (!GpuEnabled())
+		return;
+	static bool initialized = false;
+	if (initialized)
+		return;
+
+	VkDevice device = smvk::GetVkDevice();
+	VkPhysicalDevice physicalDevice = smvk::GetVkPhysicalDevice();
+	VkQueue queue = smvk::GetVkGraphicsQueue();
+	if (device == VK_NULL_HANDLE || physicalDevice == VK_NULL_HANDLE || queue == VK_NULL_HANDLE)
+		return;
+	uint32_t family = smvk::GetVkGraphicsQueueFamily();
+
+	// Fill Optick's dispatch table from volk-loaded entry points.
+	Optick::VulkanFunctions functions{};
+	functions.vkGetPhysicalDeviceProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties_>(vkGetPhysicalDeviceProperties);
+	functions.vkCreateQueryPool = reinterpret_cast<PFN_vkCreateQueryPool_>(vkCreateQueryPool);
+	functions.vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool_>(vkCreateCommandPool);
+	functions.vkAllocateCommandBuffers = reinterpret_cast<PFN_vkAllocateCommandBuffers_>(vkAllocateCommandBuffers);
+	functions.vkCreateFence = reinterpret_cast<PFN_vkCreateFence_>(vkCreateFence);
+	functions.vkCmdResetQueryPool = reinterpret_cast<PFN_vkCmdResetQueryPool_>(vkCmdResetQueryPool);
+	functions.vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit_>(vkQueueSubmit);
+	functions.vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences_>(vkWaitForFences);
+	functions.vkResetCommandBuffer = reinterpret_cast<PFN_vkResetCommandBuffer_>(vkResetCommandBuffer);
+	functions.vkCmdWriteTimestamp = reinterpret_cast<PFN_vkCmdWriteTimestamp_>(vkCmdWriteTimestamp);
+	functions.vkGetQueryPoolResults = reinterpret_cast<PFN_vkGetQueryPoolResults_>(vkGetQueryPoolResults);
+	functions.vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer_>(vkBeginCommandBuffer);
+	functions.vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer_>(vkEndCommandBuffer);
+	functions.vkResetFences = reinterpret_cast<PFN_vkResetFences_>(vkResetFences);
+	functions.vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool_>(vkDestroyCommandPool);
+	functions.vkDestroyQueryPool = reinterpret_cast<PFN_vkDestroyQueryPool_>(vkDestroyQueryPool);
+	functions.vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence_>(vkDestroyFence);
+	functions.vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers_>(vkFreeCommandBuffers);
+
+	OPTICK_GPU_INIT_VULKAN(&device, &physicalDevice, &queue, &family, 1, &functions);
+	initialized = true;
+#else
+	(void)0;
+#endif
+}
+
+
+
+// ---------------------------------------------------------------------------
+// The UI overlay's backend seam (imgui_overlay.h): the Vulkan side.
+// Everything ImGui-overlay graphics-specific lives HERE ΓÇö the descriptor
+// pool, the ImGui_ImplVulkan init (dynamic rendering, the resolved color
+// format), the paired ImGui_ImplSDL3_InitForVulkan, the record, the
+// user-texture descriptor sets, and the wait-idle teardown ΓÇö so the
+// overlay TU stays backend-neutral (the D3D12 form slots into the same
+// seam when the imgui_impl_dx12 port lands).
+// ---------------------------------------------------------------------------
+
+#include <imgui.h>
+#include <backends/imgui_impl_sdl3.h>
+#include <backends/imgui_impl_vulkan.h>
+
+namespace smvk::ui {
+
+namespace {
+
+// The overlay's descriptor pool (owned here, the seam's private state).
+VkDescriptorPool g_imguiDescriptorPool = VK_NULL_HANDLE;
+
+} // namespace
+
+bool InitBackend(ResourceManager& ctx, Swapchain& swapchain,
+                 const UiBackendDesc& desc)
+{
+	(void)ctx; // the device/queue getters are process-globals here
+	VkDevice device = GetVkDevice();
+	if (device == VK_NULL_HANDLE)
+	{
+		std::fprintf(stderr, "[ui] InitBackend: no Vulkan device\n");
+		return false;
+	}
+
+	// The paired SDL3 platform init (sets ImGui's backend API hint).
+	if (!ImGui_ImplSDL3_InitForVulkan(nullptr))
+	{
+		std::fprintf(stderr, "[ui] ImGui_ImplSDL3_InitForVulkan failed\n");
+		return false;
+	}
+
+	VkDescriptorPoolSize poolSizes[] = {
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 100 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 100 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 100 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 100 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 100 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 100 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 100 },
+	};
+	VkDescriptorPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	poolInfo.maxSets = 100;
+	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes)/sizeof(poolSizes[0]));
+	poolInfo.pPoolSizes = poolSizes;
+	VkDescriptorPool pool = VK_NULL_HANDLE;
+	if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
+	{
+		std::fprintf(stderr, "[ui] vkCreateDescriptorPool failed\n");
+		return false;
+	}
+	g_imguiDescriptorPool = pool;
+
+	VkFormat colorFormat = toVkFormat(desc.colorFormat);
+	VkPipelineRenderingCreateInfo renderingCreateInfo{};
+	renderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingCreateInfo.colorAttachmentCount = 1;
+	renderingCreateInfo.pColorAttachmentFormats = &colorFormat;
+	renderingCreateInfo.depthAttachmentFormat = VK_FORMAT_UNDEFINED; // UI has no depth
+	renderingCreateInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+	ImGui_ImplVulkan_InitInfo vulkanInit{};
+	vulkanInit.Instance = GetVkInstance();
+	vulkanInit.PhysicalDevice = GetVkPhysicalDevice();
+	vulkanInit.Device = device;
+	vulkanInit.QueueFamily = GetVkGraphicsQueueFamily();
+	vulkanInit.Queue = GetVkGraphicsQueue();
+	vulkanInit.DescriptorPool = pool;
+	vulkanInit.MinImageCount = desc.minImageCount;
+	vulkanInit.ImageCount = desc.imageCount;
+	vulkanInit.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	vulkanInit.UseDynamicRendering = true;
+	vulkanInit.PipelineRenderingCreateInfo = renderingCreateInfo;
+	// Dynamic rendering requires ApiVersion >= 1.3 (volk-loaded entry points).
+	vulkanInit.ApiVersion = VK_API_VERSION_1_3;
+
+	if (!ImGui_ImplVulkan_Init(&vulkanInit))
+	{
+		std::fprintf(stderr, "[ui] ImGui_ImplVulkan_Init failed\n");
+		vkDestroyDescriptorPool(device, pool, nullptr);
+		g_imguiDescriptorPool = VK_NULL_HANDLE;
+		return false;
+	}
+	return true;
+}
+
+void NewFrameBackend()
+{
+	ImGui_ImplVulkan_NewFrame();
+}
+
+void RenderDrawData(void* nativeCmd, ImDrawData* drawData)
+{
+	ImGui_ImplVulkan_RenderDrawData(drawData,
+		reinterpret_cast<VkCommandBuffer>(nativeCmd));
+}
+
+ImTextureID AddTexture(ResourceManager& ctx, TextureHandle texture,
+                       uint32_t samplerIndex)
+{
+	// The overlay's liveness check (the LIVE texture listing) already ran;
+	// the view + cached sampler come from the Vulkan facade's backend-
+	// specific getters.
+	const void* view = ctx.GetTextureVkImageView(texture);
+	const void* sampler = ctx.GetVkSamplerOpaque(samplerIndex);
+	if (!view || !sampler)
+		return ImTextureID(0);
+	VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+		reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
+		reinterpret_cast<VkImageView>(const_cast<void*>(view)),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	return ImTextureID(reinterpret_cast<uint64_t>(set));
+}
+
+ImTextureID AddTextureView(ResourceManager& ctx, ImageViewHandle viewHandle,
+                           uint32_t samplerIndex)
+{
+	const void* vkView = ctx.GetImageViewVkImageView(viewHandle);
+	const void* sampler = ctx.GetVkSamplerOpaque(samplerIndex);
+	if (!vkView || !sampler)
+		return ImTextureID(0);
+	VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+		reinterpret_cast<VkSampler>(const_cast<void*>(sampler)),
+		reinterpret_cast<VkImageView>(const_cast<void*>(vkView)),
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	return ImTextureID(reinterpret_cast<uint64_t>(set));
+}
+
+void RemoveTexture(ImTextureID id)
+{
+	if (id == ImTextureID(0))
+		return;
+	ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(id));
+}
+
+void ShutdownBackend(ResourceManager& ctx)
+{
+	(void)ctx;
+	VkDevice device = GetVkDevice();
+	// The graphics backend first (its pipelines reference the pool), then
+	// the paired SDL3 platform shutdown, then the pool itself ∩┐╜ and the
+	// GPU must be idle before any of the teardown.
+	if (device != VK_NULL_HANDLE)
+		vkDeviceWaitIdle(device);
+	ImGui_ImplVulkan_Shutdown();
+	ImGui_ImplSDL3_Shutdown();
+	if (device != VK_NULL_HANDLE && g_imguiDescriptorPool != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(device, g_imguiDescriptorPool, nullptr);
+		g_imguiDescriptorPool = VK_NULL_HANDLE;
+	}
+}
+
+} // namespace smvk::ui

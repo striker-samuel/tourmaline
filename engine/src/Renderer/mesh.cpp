@@ -3,15 +3,12 @@
 
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
-#include "../Vulkan/detail/vulkan_impl.h"
+#include <Engine/Renderer/static_vertex_heap.h>
 
 #include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
 
-namespace {
-	constexpr size_t defaultStaticVertexHeapSize = 512ull * 1024ull * 1024ull;
-	constexpr size_t defaultStaticIndexHeapSize = 512ull * 1024ull * 1024ull;
-} // anonymous namespace
+#include <algorithm>
 
 namespace smvk {
 
@@ -64,84 +61,61 @@ namespace smvk {
 		return out;
 	}
 
-	const VertexFormatDescription& GetVertexFormatDescription(VertexFormat format) {
-		switch (format)
-		{
-		case VertexFormat::Empty:
-		{
-			static const VertexFormatDescription emptyFormat{};
-			return emptyFormat;
-		}
-		case VertexFormat::StaticVertexFormat:
-			return StaticVertexFormat;
-		case VertexFormat::LightmappedStaticVertexFormat:
-			// Gated-off lightmap option (see mesh.h): nothing binds it
-			// while lightmaps stay deprecated; the case keeps the format
-			// reachable the moment the chart-unpack VSs return.
-			return LightmappedStaticVertexFormat;
-		case VertexFormat::SkinnedVertexFormat:
-			return SkinnedVertexFormat;
-		case VertexFormat::DebugLine:
-			return DebugLineFormat;
-		case VertexFormat::TerrainVertexFormat:
-			return TerrainVertexFormat;
-		case VertexFormat::TerrainLowVertexFormat:
-			return TerrainLowVertexFormat;
-		case VertexFormat::TerrainFarVertexFormat:
-			return TerrainFarVertexFormat;
-		}
-		static const VertexFormatDescription fallbackFormat{};
-		return fallbackFormat;
+// GetVertexFormatDescription lives in vertex_format.cpp and this file's
+// static-heap allocation is pure facade: BOTH compile into the Vulkan
+// engine AND engine_d3d12 (the whole mesh/static-heap layer is
+// backend-neutral; the CommandBuffer-side bind lives per-backend).
+
+namespace {
+
+// The static-heap budgets (512 MB each — the pre-branch sizing). The
+// branch-internal form read these through mem::config::Runtime(); the
+// runtime-config migration (in flight separately) will move these lines
+// onto it with the rest of the tree.
+constexpr uint64_t kDefaultStaticVertexHeapBytes = 512ull * 1024ull * 1024ull;
+constexpr uint64_t kDefaultStaticIndexHeapBytes = 512ull * 1024ull * 1024ull;
+
+} // namespace
+
+void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
+{
+	// Idempotent: App and Editor both need the heap; a second call
+	// must not leak buffers/blocks (editor previously crashed in
+	// vmaVirtualAllocate on a null block because it never called this).
+	if (staticVertexFmtHeap.m_staticVertexBlock.Valid()
+		&& staticVertexFmtHeap.m_staticIndexBlock.Valid()
+		&& staticVertexFmtHeap.m_staticVertexPosBuffer.valid()
+		&& staticVertexFmtHeap.m_staticVertexShadingBuffer.valid()
+		&& staticVertexFmtHeap.m_staticIndexBuffer.valid()) {
+		return;
 	}
-	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
-	{
-		auto* vctx = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
-		// Idempotent: App and Editor both need the heap; a second call
-		// must not leak buffers/blocks (editor previously crashed in
-		// vmaVirtualAllocate on a null block because it never called this).
-		if (staticVertexFmtHeap.m_staticVertexBlock != VK_NULL_HANDLE
-			&& staticVertexFmtHeap.m_staticIndexBlock != VK_NULL_HANDLE
-			&& staticVertexFmtHeap.m_staticVertexPosBuffer.valid()
-			&& staticVertexFmtHeap.m_staticVertexShadingBuffer.valid()
-			&& staticVertexFmtHeap.m_staticIndexBuffer.valid()) {
-			return;
-		}
-		const VkDeviceSize maxVertices = std::min(
-			defaultStaticVertexHeapSize / sizeof(smvk::VertexPos),
-			defaultStaticVertexHeapSize / sizeof(smvk::VertexShading)
-		);
-		staticVertexFmtHeap.m_staticVertexPosBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
-		staticVertexFmtHeap.m_staticVertexShadingBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
-		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Storage, "static index").release();
-		{
-			VmaVirtualBlockCreateInfo info{};
-			info.size = maxVertices;
+	const uint64_t maxVertices = std::min(
+		kDefaultStaticVertexHeapBytes / sizeof(smvk::VertexPos),
+		kDefaultStaticVertexHeapBytes / sizeof(smvk::VertexShading)
+	);
+	staticVertexFmtHeap.m_staticVertexPosBuffer =
+		ctx.CreateBuffer(kDefaultStaticVertexHeapBytes,
+		                 smvk::BufferType_Vertex, "static vertex pos")
+			.release();
+	staticVertexFmtHeap.m_staticVertexShadingBuffer =
+		ctx.CreateBuffer(kDefaultStaticVertexHeapBytes,
+		                 smvk::BufferType_Vertex, "static vertex shading")
+			.release();
+	staticVertexFmtHeap.m_staticIndexBuffer =
+		ctx.CreateBuffer(kDefaultStaticIndexHeapBytes,
+		                 smvk::BufferType_Storage, "static index")
+			.release();
 
-			VK_CHECK(
-				vmaCreateVirtualBlock(
-					&info,
-					&staticVertexFmtHeap.m_staticVertexBlock
-				)
-			);
-		}
+	// ---------------------------------------------------------------------
+	// Vertex virtual allocator — VERTEX units (both streams allocate the
+	// same vertex count at the same vertexBase).
+	// ---------------------------------------------------------------------
+	staticVertexFmtHeap.m_staticVertexBlock.Initialize(maxVertices);
 
-
-		// -------------------------------------------------------------------------
-		// Index virtual allocator
-		//
-		// This one IS measured in bytes.
-		// -------------------------------------------------------------------------
-
-		{
-			VmaVirtualBlockCreateInfo info{};
-			info.size = defaultStaticIndexHeapSize;
-
-			VK_CHECK(
-				vmaCreateVirtualBlock(
-					&info,
-					&staticVertexFmtHeap.m_staticIndexBlock
-				)
-			);
-		}
-	}
+	// ---------------------------------------------------------------------
+	// Index virtual allocator — BYTES.
+	// ---------------------------------------------------------------------
+	staticVertexFmtHeap.m_staticIndexBlock.Initialize(
+		kDefaultStaticIndexHeapBytes);
+}
 };

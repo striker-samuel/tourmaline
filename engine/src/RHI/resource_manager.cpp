@@ -340,6 +340,13 @@ uint32_t ResourceManager::GetComputeQueueFamily() {
 uint32_t ResourceManager::GetGraphicsQueueFamily() {
     return smvk::GetVkGraphicsQueueFamily();
 }
+bool ResourceManager::NeedsProjectionYFlip() const {
+    // Vulkan's NDC Y axis points DOWN the framebuffer (top-left origin,
+    // +Y down); the engine's proj[1][1] *= -1 compensates the
+    // GL-convention projection math. Y-up backends (D3D12) must NOT apply
+    // it — the mirror inverts both the image and the screen-space winding.
+    return true;
+}
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
 void ResourceManager::WaitForUploads() { impl_->vulkan.WaitForUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
@@ -352,6 +359,11 @@ void ResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, uint32_
     impl_->vulkan.AddDeferredTask(std::move(task), h);
 }
 void ResourceManager::ProcessDeferredTasks() { impl_->vulkan.ProcessDeferrredTasks(); }
+void ResourceManager::DeferDestroyTask(std::packaged_task<void()>&& task) {
+    // The retire-ordered key (all graphics work so far) — see the header
+    // contract; the static-heap range frees ride it (cluster.cpp).
+    impl_->vulkan.DeferDestroy(std::move(task));
+}
 
 void ResourceManager::DestroyImage(ImageHandle h) { destroy(&impl_->vulkan, h); }
 void ResourceManager::DestroyImageView(ImageViewHandle h) { destroy(&impl_->vulkan, h); }

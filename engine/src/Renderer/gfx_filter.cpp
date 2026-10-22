@@ -6,7 +6,6 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Profile/profile.h>
-#include "../Vulkan/detail/vulkan_impl.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,8 +83,8 @@ static constexpr size_t kSkinBoundsBytes =
 // once (the overlay's UI toggle arms it) and reused every debug frame.
 static constexpr size_t kConeDebugLinesBytes = kMaxBatchSlots * 2 * 12;
 
-static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
-	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
+static_assert(sizeof(smvk::StaticHeapArena::AllocId) == sizeof(uint64_t),
+	"the arena token must fit the opaque uint64_t region fields in gfx_filter.h");
 
 // Suballocates indexCount uint32 indices from the static index monoblock
 // (one index VkBuffer for mesh + cluster-ordered + filtered regions, so
@@ -96,12 +95,15 @@ static bool AllocIndexRegion(uint32_t indexCount, uint32_t& outBaseIndices, uint
 	outAllocBits = 0;
 	if (indexCount == 0)
 		return true;
-	VmaVirtualAllocationCreateInfo info{};
-	info.size = (VkDeviceSize)indexCount * sizeof(uint32_t);
-	info.alignment = alignof(uint32_t);
-	VmaVirtualAllocation alloc = VK_NULL_HANDLE;
-	VkDeviceSize byteOffset = 0;
-	if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock, &info, &alloc, &byteOffset) != VK_SUCCESS)
+	// The static index monoblock's arena (the VmaVirtualBlock replacement —
+	// see static_vertex_heap.h): the token stays an opaque uint64, so the
+	// per-flight allocBits packing keeps working verbatim.
+	StaticHeapArena& block = staticVertexFmtHeap.m_staticIndexBlock;
+	uint64_t byteOffset = 0;
+	const StaticHeapArena::AllocId alloc =
+		block.Allocate(uint64_t(indexCount) * sizeof(uint32_t),
+		               alignof(uint32_t), byteOffset);
+	if (alloc == 0)
 		return false;
 	outBaseIndices = (uint32_t)(byteOffset / sizeof(uint32_t));
 	outAllocBits = (uint64_t)alloc;
@@ -111,7 +113,8 @@ static bool AllocIndexRegion(uint32_t indexCount, uint32_t& outBaseIndices, uint
 static void FreeIndexRegion(uint64_t& allocBits) {
 	if (allocBits == 0)
 		return;
-	vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock, (VmaVirtualAllocation)allocBits);
+	staticVertexFmtHeap.m_staticIndexBlock.Free(
+		(StaticHeapArena::AllocId)allocBits);
 	allocBits = 0;
 }
 
@@ -2949,7 +2952,7 @@ void SetDemandInputs(State& s, ResourceManager& ctx,
 		s_init.assign(MAX_TEXTURES, kDemandNoReport);
 	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 		s.demandBuffers[f] = ctx.CreateBuffer(
-			static_cast<VkDeviceSize>(MAX_TEXTURES) * sizeof(uint32_t),
+			static_cast<uint64_t>(MAX_TEXTURES) * sizeof(uint32_t),
 			BufferType_Storage, "gfx texture demand");
 		if (s.demandBuffers[f].empty())
 			return; // partial ring is safe: empty handles gate the dispatch
@@ -2973,7 +2976,7 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 		return true; // unchanged (register/unregister only — slots are
 	// stable across retargets, so retargets never re-upload)
 	s.textureMetaBuffer = ctx.CreateBuffer(
-		static_cast<VkDeviceSize>(count) * sizeof(TextureMeta),
+		static_cast<uint64_t>(count) * sizeof(TextureMeta),
 		BufferType_Storage, "gfx texture meta");
 	if (s.textureMetaBuffer.empty())
 		return false; // retry next frame (epoch stays stale)

@@ -124,6 +124,18 @@ namespace smvk
 			BufferHandle buffer,
 			uint64_t offset);
 
+		// Global compute -> graphics memory dependency: every write from
+		// any prior stage becomes visible to every subsequent read/write.
+		// The escape hatch for resources the graph's per-resource sync
+		// machinery cannot see (BDA-only heaps - raw device addresses
+		// with no ImageHandle/BufferHandle to hint on; the GPU skinning
+		// deformed heap is the engine's case). Backend mapping: Vulkan
+		// emits a vkCmdPipelineBarrier2 all-commands barrier; D3D12 emits
+		// a null-resource UAV barrier (all prior UAV work completes
+		// before any later UAV work). No-op inside a graphics-only
+		// sequence is guaranteed safe (over-synchronization only).
+		void EmitGlobalMemoryBarrier();
+
 		void BindStaticVertexFmt();
 
 		// Binds an arbitrary RHI buffer as vertex binding N (pos-only debug

@@ -234,13 +234,54 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
 
             add_custom_command(
                 OUTPUT "${OUTPUT_FILE}"
-                COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ DXC: ${FILE_NAME} [${_PROFILE}]"
+                COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "? DXC: ${FILE_NAME} [${_PROFILE}]"
                 COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} -Fo "${OUTPUT_FILE}" "${SHADER}"
-                COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ DXC OK: ${FILE_NAME}"
+                COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "? DXC OK: ${FILE_NAME}"
                 DEPENDS "${SHADER}" ${SHADER_HEADERS}
-                COMMENT "Compiling HLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
+                COMMENT "Compiling HLSL ${FILE_NAME}  SPIR-V (Vulkan 1.3)"
                 VERBATIM
             )
+            if (TOURMALINE_DX12)
+                # --- The DXIL twin (the same DXC, no -spirv flags) ---
+                # The D3D12 backend consumes .dxil from the SAME content dir
+                # (content/shaders). SM 6_5: the dev box caps
+                # HighestShaderModel at 6.5 (Win10 22H2 runtime — see the
+                # porting notes), so pin the profiles down from the SPIR-V
+                # 6_7 targets. -DTOURMALINE_DXIL=1 flips common.hlsli's
+                # binding block to the bounded-register form.
+                # ALLOWLIST: only the shaders whose push blocks carry NO
+                # vk::BufferPointer compile today (that attribute is
+                # SPIR-V-only; 108/111 fail on it — measured 2026-10; the
+                # DXIL BDA rework is the remaining shader-milestone, see
+                # docs/dx12_porting_notes.md). Everything NOT on the list
+                # skips the DXIL twin quietly; the .spv contract is never
+                # gated by a DXIL failure.
+                if (NOT DEFINED HLSL_DXIL_OK_FILES)
+                    set(HLSL_DXIL_OK_FILES
+                        "debugline.vert.hlsl;debugline.frag.hlsl;meshdebug.frag.hlsl")
+                endif()
+                if (FILE_NAME IN_LIST HLSL_DXIL_OK_FILES)
+                string(REPLACE "_6_7" "_6_5" _DXIL_PROFILE "${_PROFILE}")
+                set(_DXIL_FILE "${BINARY_DIR}/${FILE_NAME}.dxil")
+                set(_DXIL_INC "")
+                if (CS_INCLUDE_DIRS)
+                    foreach(INC ${CS_INCLUDE_DIRS})
+                        list(APPEND _DXIL_INC -I "${INC}")
+                    endforeach()
+                endif()
+                add_custom_command(
+                    OUTPUT "${_DXIL_FILE}"
+                    COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "? DXC-DXIL: ${FILE_NAME} [${_DXIL_PROFILE}]"
+                    COMMAND "${DXC}" -T "${_DXIL_PROFILE}" ${_ENTRY_FLAGS} ${_DXIL_INC}
+                            -DTOURMALINE_DXIL=1 -Fo "${_DXIL_FILE}" "${SHADER}"
+                    COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "? DXC-DXIL OK: ${FILE_NAME}"
+                    DEPENDS "${SHADER}" ${SHADER_HEADERS}
+                    COMMENT "Compiling HLSL ${FILE_NAME}  DXIL (SM 6.5)"
+                    VERBATIM
+                )
+                list(APPEND COMPILED_SHADERS "${_DXIL_FILE}")
+                endif() # DXIL allowlist
+            endif() # TOURMALINE_DX12
             # Fixed-count shader permutations (e.g. SG_LM_LOBE_COUNT):
             # CS_VARIANTS entries are "<basename>|<output suffix>|
             # DEFINE[=v][|...]", e.g.

@@ -148,11 +148,9 @@ uint64_t g_seed = 0;
 void CheckBlocks(uint32_t iter, const char* op)
 {
 	FuzzModel& m = g_model;
-	VmaStatistics vs{}, is{};
-	vmaGetVirtualBlockStatistics(
-		smvk::staticVertexFmtHeap.m_staticVertexBlock, &vs);
-	vmaGetVirtualBlockStatistics(
-		smvk::staticVertexFmtHeap.m_staticIndexBlock, &is);
+	smvk::StaticHeapArena::Statistics vs{}, is{};
+	vs = smvk::staticVertexFmtHeap.m_staticVertexBlock.Stats();
+	is = smvk::staticVertexFmtHeap.m_staticIndexBlock.Stats();
 
 	uint32_t wantVertexCount = 0, wantIndexCount = 0;
 	uint64_t wantVertexBytes = 0, wantIndexBytes = 0;
@@ -613,11 +611,9 @@ int main()
 	}
 	CheckBlocks(iters, op);
 
-	VmaStatistics vs{}, is{};
-	vmaGetVirtualBlockStatistics(
-		smvk::staticVertexFmtHeap.m_staticVertexBlock, &vs);
-	vmaGetVirtualBlockStatistics(
-		smvk::staticVertexFmtHeap.m_staticIndexBlock, &is);
+	smvk::StaticHeapArena::Statistics vs{}, is{};
+	vs = smvk::staticVertexFmtHeap.m_staticVertexBlock.Stats();
+	is = smvk::staticVertexFmtHeap.m_staticIndexBlock.Stats();
 	if (vs.allocationCount != 0 || vs.allocationBytes != 0
 		|| is.allocationCount != 0 || is.allocationBytes != 0) {
 		char d[160];

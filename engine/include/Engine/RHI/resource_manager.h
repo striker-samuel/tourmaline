@@ -242,6 +242,15 @@ public:
     // graphics when no dedicated family exists).
     uint32_t GetComputeQueueFamily();
     uint32_t GetGraphicsQueueFamily();
+    // NDC orientation: TRUE when the backend's normalized device Y axis
+    // points DOWN the framebuffer (Vulkan), FALSE when it points UP
+    // (D3D12, the GL convention). The engine's frame-uniform build uses
+    // this to decide the projection Y-flip (proj[1][1] *= -1 — the
+    // UpdateFrameUniforms compensation): apply it ONLY when this returns
+    // true. Applying the Vulkan flip under a Y-up backend renders the
+    // scene upside down (hit on the D3D12 port; the winding flips with it
+    // too — the mirror inverts screen-space triangle orientation).
+    bool NeedsProjectionYFlip() const;
     // GPU memory snapshot: one entry per Vk memory heap (VMA budgets +
     // heap sizes). Cheap (VMA throttles OS queries internally); safe to
     // call once per frame for the debug UI / console stats.
@@ -265,6 +274,15 @@ public:
     void AddDeferredTask(std::packaged_task<void()>&& task, uint32_t handleIndex = 0, uint32_t handleGen = 0);
     void ProcessDeferredTasks();
     void ProcessDeferrredTasks() { ProcessDeferredTasks(); }
+
+    // Retire-ordered destruction: queues the task until ALL graphics work
+    // submitted so far has retired (backend-defined — the Vulkan timeline
+    // point key; a frame-wait fence on D3D12), running it at the next
+    // ProcessDeferredTasks after that point. Runs immediately when no
+    // graphics submit was ever recorded (GPU idle by definition). Render
+    // thread only, between frames — the suballocator range-free discipline
+    // (see Cluster's heap ranges / the static vertex heap).
+    void DeferDestroyTask(std::packaged_task<void()>&& task);
 
     // For Holder destroy – expose internal pools via Impl
     void DestroyImage(ImageHandle h);
