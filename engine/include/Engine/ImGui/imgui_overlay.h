@@ -36,6 +36,15 @@ struct UiBackendDesc {
     Format colorFormat = Format::Undefined;
     uint32_t minImageCount = 2;
     uint32_t imageCount = 2;
+    // The host window: ImGui_ImplSDL3_InitFor<Graphics>(window) stores it,
+    // and ImGui_ImplSDL3_NewFrame reads it EVERY frame for
+    // io.DisplaySize/DisplayFramebufferScale. Passing null here left
+    // io.DisplaySize reading UNINITIALIZED stack ints (SDL_GetWindowSize
+    // fails on a null window without writing its out-params) — the whole
+    // UI then laid out for a garbage display size: panels off-window,
+    // "gray screen with a black square" (the 2a752b60 replay dropped
+    // the window the pre-seam code passed through).
+    SDL_Window* window = nullptr;
 };
 
 // Brings up the graphics backend (device/queue/format + its descriptor

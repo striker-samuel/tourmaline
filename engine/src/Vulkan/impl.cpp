@@ -13859,8 +13859,12 @@ bool InitBackend(ResourceManager& ctx, Swapchain& swapchain,
 		return false;
 	}
 
-	// The paired SDL3 platform init (sets ImGui's backend API hint).
-	if (!ImGui_ImplSDL3_InitForVulkan(nullptr))
+	// The paired SDL3 platform init. The window MUST flow through here:
+	// ImGui_ImplSDL3_NewFrame derives io.DisplaySize from it every frame
+	// (SDL_GetWindowSize on a null window fails without writing the
+	// out-params — DisplaySize would read uninitialized stack ints; see
+	// UiBackendDesc::window).
+	if (!ImGui_ImplSDL3_InitForVulkan(desc.window))
 	{
 		std::fprintf(stderr, "[ui] ImGui_ImplSDL3_InitForVulkan failed\n");
 		return false;

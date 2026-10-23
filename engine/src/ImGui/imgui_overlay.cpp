@@ -89,6 +89,9 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* 
         : swapchain.GetSurfaceFormat();
     backendDesc.minImageCount = swapchain.GetMinImageCount();
     backendDesc.imageCount = swapchain.GetImageCount();
+    // The window is not optional: the SDL3 platform backend owns
+    // io.DisplaySize from it every frame (see the UiBackendDesc comment).
+    backendDesc.window = window;
     if (!ui::InitBackend(ctx, swapchain, backendDesc)) {
         fprintf(stderr, "[ImGuiOverlay] ui::InitBackend failed (unsupported "
                         "or misconfigured backend)\n");
