@@ -12509,7 +12509,6 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	flightSlot_ = flight;
 
 	ResolveImages();
-	ResolveImageViews();
 	ResolveBuffers();
 
 	// Design B compile (see the transient-heap contract on the class):
@@ -12525,6 +12524,19 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		sortedPtr = &TopologicalSort(usages);
 	}
 	const std::vector<size_t>& sorted = *sortedPtr;
+
+	// Views resolve AFTER the transient pack (the 03_fuzz DEVICE_LOST
+	// fix): CompileTransientHeap BINDS the heap images to their packed
+	// ranges here, and the depth-target contract (depth.h, the working
+	// heap path since the memory rework) creates every view only AFTER
+	// the bind. The old order resolved views over UNBOUND heap images
+	// during the first pack (ResolveImageViews above) — a render pass
+	// then touched the pre-bind view and the device lost on the first
+	// submit (deterministic, 03_fuzz FUZZ_MODE=graph). CollectPassUsages
+	// only reads the logical views' backing IMAGES (never the resolved
+	// view handles), so the usages+sort above do not need views; the
+	// recording below does — and now gets post-bind views only.
+	ResolveImageViews();
 
 	VkCommandBuffer cmd =
 		reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
