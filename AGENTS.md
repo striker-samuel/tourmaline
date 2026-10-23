@@ -103,6 +103,12 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   and the HLSL comment when editing either side
 - Frame renderer plumbing: `engine::AppFrameContext` (engine/include/Engine/Rendergraph/FrameContext.h)
   carries per-frame handles; renderers snapshot what they need at Append time
+- Target-heap packing (designs A + B — the packed render-target memory):
+  `docs/target_heap_packing.md` is the system reference (the bind-before-view
+  contract, the retirement FIFO pairing, how to read the
+  `[TargetHeap]`/`[TransientHeap]` stderr offsets, and `03_fuzz` — the
+  regression host). Heap image work must follow the bind-before-view contract
+  and the Holder declaration orders documented there
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Bake albedo: the CUBEMAP captures bake TEXTURED (per-hit baseColor sampling —
   `GiTraceScene::AlbedoAt`, bilinear REPEAT over decoded texel data capped at

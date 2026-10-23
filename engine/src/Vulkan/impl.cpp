@@ -5323,7 +5323,8 @@ void smvk::VulkanResourceManager::BindHeapImage(ImageHandle handle,
 	VK_CHECK(vkBindImageMemory2(device_, 1, &bind));
 }
 
-// ---- Target heap (design-A interval-aliased target memory) ----
+// ---- Target heap (design-A interval-aliased target memory; the system
+// reference is docs/target_heap_packing.md) ----
 // The master gate's single storage (see smvk.h's
 // TargetHeapAliasingEnabled contract): default OFF -
 // TOURMALINE_ALIASING=1 opts in. The gate forces every window to the
@@ -11787,7 +11788,10 @@ void smvk::RenderGraph::ReleaseTransientPlacement(LogicalImageHandle handle)
 }
 
 // Design B compile step (see the header contract): interval-packed memory
-// aliasing for the graph's transients.
+// aliasing for the graph's transients. The system reference — candidates,
+// intervals, shape buckets, the epoch fingerprint, detonation/repack,
+// the bind-before-view contract, the retirement FIFO — is
+// docs/target_heap_packing.md (§4 design B).
 bool smvk::RenderGraph::CompileTransientHeap(
 	const std::vector<PassUsage>& usages,
 	const std::vector<size_t>& sorted)
