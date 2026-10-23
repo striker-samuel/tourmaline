@@ -78,6 +78,25 @@ void TestConfig() {
 		&& kReadbackStagingMin <= kReadbackStagingMax,
 		"memory.config.readback-range-sane");
 	Check(kDefaultAlign >= alignof(void*), "memory.config.align-sane");
+	// Runtime sizes (program-entry TOURMALINE_MEM_* overrides): always sane,
+	// whatever the ambient environment says.
+	const RuntimeConfig& rt = Runtime();
+	Check(rt.processReserve > 0 && rt.frameReserve > 0 && rt.transientReserve > 0,
+		"memory.config.runtime-reserves-nonzero");
+	Check(rt.commitQuantum >= 4096
+		&& (rt.commitQuantum & (rt.commitQuantum - 1)) == 0,
+		"memory.config.runtime-quantum-power-of-two");
+	Check(rt.stagingRingPerThread > 0
+		&& rt.streamerTotalBudget >= rt.stagingRingPerThread
+		&& rt.uploadFlushThreshold <= rt.bulkRingCapacity,
+		"memory.config.runtime-staging-ordered");
+	Check(rt.readbackStagingMin > 0
+		&& rt.readbackStagingMin <= rt.readbackStagingMax,
+		"memory.config.runtime-readback-ordered");
+	Check(rt.threadPoolQueueSlots > 0
+		&& rt.staticVertexHeap > 0 && rt.staticIndexHeap > 0
+		&& rt.targetHeapBlock > 0,
+		"memory.config.runtime-heaps-nonzero");
 }
 
 void TestBump() {
@@ -130,11 +149,11 @@ void TestGlobals() {
 	Check(ProcessAllocator().IsInitialized(), "memory.globals.process-initialized");
 	Check(FrameAllocator().IsInitialized(), "memory.globals.frame-initialized");
 	Check(TransientAllocator().IsInitialized(), "memory.globals.transient-initialized");
-	Check(ProcessAllocator().Reserved() == config::kProcessReserve,
+	Check(ProcessAllocator().Reserved() == config::Runtime().processReserve,
 		"memory.globals.process-reserve-from-config");
-	Check(FrameAllocator().Reserved() == config::kFrameReserve,
+	Check(FrameAllocator().Reserved() == config::Runtime().frameReserve,
 		"memory.globals.frame-reserve-from-config");
-	Check(TransientAllocator().Reserved() == config::kTransientReserve,
+	Check(TransientAllocator().Reserved() == config::Runtime().transientReserve,
 		"memory.globals.transient-reserve-from-config");
 	InitMemory(); // second call must be a no-op, never crash
 	Check(ProcessAllocator().IsInitialized(), "memory.globals.init-idempotent");

@@ -1170,6 +1170,17 @@ namespace engine {
 		);
 		m_resources.decalsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.decalsBuffer, "forwardplus decals");
+		// Analytic env-zone ring (one EnvZoneGpu[kEnvZoneMaxZones] slice
+		// per flight frame; re-packed from the world every frame - see
+		// UpdateEnvZones). Uploaded through UploadDataToBuffer like the
+		// decal ring; the FS reaches it through FrameUniforms::envZones.
+		m_resources.envZonesBuffer = m_context->CreateBuffer(
+			sizeof(smvk::envzones::EnvZoneGpu)
+				* smvk::envzones::kEnvZoneMaxZones
+				* m_swapchain->framesInFlight(),
+			smvk::BufferType_Storage,
+			"env zones buffer"
+		);
 		m_resources.spotShadowBuffer = m_context->CreateBuffer(
 			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
@@ -2180,12 +2191,10 @@ namespace engine {
 			// surrounding init flushed earlier uploads before this block).
 			m_context->FlushUploads();
 		}
-		// Environment zone map (Rendergraph/envzones.h): DERIVED from the
-		// world's zone entities (scene.envForNode + node transforms - see
-		// RebuildEnvZoneMap). Runs after the world source (the zones ride
-		// the loaded scene). Failure is non-fatal: every consumer takes
-		// the plain env path (UINT32_MAX index).
-		RebuildEnvZoneMap();
+		// Analytic env zones (Rendergraph/envzones.h) need no init-time
+		// bake: UpdateEnvZones re-packs the world's zone entities into the
+		// per-frame GPU ring right before UpdateFrameUniforms, so live
+		// authoring (and scene loads) are always current.
 		// Chrome-ball probe visual (Rendergraph/probeball.h): the shared
 		// sphere + programs; draws gate on ShadersValid (a missing .spv
 		// only skips the balls).
@@ -3923,31 +3932,29 @@ namespace engine {
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
-		// ---- Environment zone map (see Rendergraph/envzones.h): publish
-		// whenever built (the shader flag and GPU contents can never
-		// disagree); m_envZonesEnabled only gates the index (off = the
-		// UINT32_MAX sentinel -> every consumer takes the plain env path).
-		// The zone definitions ride the FrameUniforms tail every frame (the
-		// panel's sliders mutate the desc live; the map's WEIGHTS are the
-		// painted state - re-uploaded on paint cadence via UpdateTexture).
-		{
-			for (uint32_t z = 0; z < smvk::envzones::kEnvZoneMax; ++z) {
-				// Channel 0 is always the live resolved env, even when the
-				// scene's zones were never rebuilt after a live env edit
-				// (the panel mutates scene.environment in place).
-				const smvk::envzones::EnvZone zd = (z == 0 && m_world)
-					? EnvZoneFromSceneEnv(m_world->scene.environment,
-						m_world->scene.environment)
-					: m_envZones.desc.zones[z];
-				data.envZoneSky[z] = glm::vec4(zd.skyTint, zd.ambientI);
-				data.envZoneFog[z] = glm::vec4(zd.fogColor, zd.fogDensity);
-				data.envZoneVol[z] = glm::vec4(zd.volumetrics,
-					zd.volumetricDensity, 0.0f, 0.0f);
-			}
-			data.envZoneWorldSize = m_envZones.desc.worldSize;
-			data.envZoneMapIndex = (m_envZones.Valid() && m_envZonesEnabled)
-				? m_envZones.bindlessIndex : UINT32_MAX;
-			data.envZoneSampler = 0; // bindless slot 0: linear
+		// ---- Analytic environment zones (see Rendergraph/envzones.h):
+		// envZoneCount > 0 publishes this frame's packed slice BDA. The
+		// records were built by UpdateEnvZones (called just before this
+		// function); count and contents are always in sync. Off / no
+		// zones / failed buffer = count 0 -> every consumer takes the
+		// plain resolved env path.
+		if (m_envZonesEnabled && m_world
+			&& m_world->scene.envZonesEnabled && m_envZoneFrameCount > 0
+			&& !m_resources.envZonesBuffer.empty()) {
+			constexpr size_t ENV_ZONE_FRAME_STRIDE =
+				sizeof(smvk::envzones::EnvZoneGpu)
+				* smvk::envzones::kEnvZoneMaxZones;
+			data.envZones =
+				m_context->GetBufferDeviceAddress(m_resources.envZonesBuffer)
+				+ size_t(currentFrame) * ENV_ZONE_FRAME_STRIDE;
+			data.envZoneCount = std::min(m_envZoneFrameCount,
+				smvk::envzones::kEnvZoneMaxZones);
+			data.envZoneFlags = 1u;
+		}
+		else {
+			data.envZones = 0;
+			data.envZoneCount = 0;
+			data.envZoneFlags = 0;
 		}
 
 		// ---- Forward+ decals (tiled projected splats) ----
@@ -7461,282 +7468,109 @@ namespace engine {
 		return env;
 	}
 
-	// Env-zone map rebuild (Initialize):
-	// the map DERIVES from the world's zone entities - scene.envForNode
-	// nodes whose transforms define coverage (translation/rotation =
-	// placement, scale = half extents per local axis, an INFINITE
-	// component = an unbounded slab). Channel 0 = the resolved
-	// environment (the default look, identity tint + the neutral
-	// ambient); channels 1..3 = the top-3 zones (priority descending,
-	// then innermost - the same order ZoneAtPosition resolves by, capped
-	// by the map's 4 weight channels). Coverage rasterizes into the XZ
-	// weight grid as the OBB's XZ projection (the map is 2D; the exact
-	// 3D test lives in ZoneAtPosition); bilinear map sampling softens
-	// the texel borders. Failure is non-fatal (the plain env path).
-	void WorldRenderer::RebuildEnvZoneMap() {
-		smvk::envzones::EnvZoneDesc zd{};
+	// Analytic env-zone packing (per frame, see Rendergraph/envzones.h):
+	// DERIVES the GPU records from the world's zone entities - scene.envForNode
+	// nodes whose transforms define coverage (translation/rotation = placement,
+	// column lengths = half extents, an INFINITE column or an EnvVolume
+	// inf-mask face = an unbounded slab/half-space). Unlike the removed map
+	// there is no world extent, texel grid or 4-zone cap: the OBB is exact 3D,
+	// rotation-aware and EnvVolume's blendWeight/blendRadius ride the record.
+	// Records are sorted priority desc -> innermost (bounded volume) -> node id,
+	// so the shader's first influencing record wins. Failure/overflow is
+	// non-fatal (count 0 = the plain resolved env path).
+	void WorldRenderer::UpdateEnvZones(uint32_t currentFrame) {
+		m_envZoneFrameCount = 0;
+		if (!m_world || !m_envZonesEnabled
+			|| !m_world->scene.envZonesEnabled
+			|| m_resources.envZonesBuffer.empty())
+			return;
+		const ::Scene& scene = m_world->scene;
+		const SceneEnv& resolved = scene.environment;
 
 		struct Cand {
 			NodeId node;
 			float priority;
 			double volume;
+			smvk::envzones::EnvZoneGpu gpu;
 		};
 		std::vector<Cand> cands;
-		const SceneEnv* resolved = nullptr;
-		uint64_t coverageHash = 1469598103934665603ull;
-		if (m_world) {
-			const ::Scene& scene = m_world->scene;
-			// MapSceneEnv ALWAYS builds the frame env from
-			// scene.environment (the defaults are a valid look even when
-			// the scene is not marked authored), so the zone identity
-			// must mirror that same block.
-			resolved = &scene.environment;
-			for (const auto& [node, env] : scene.envForNode) {
-				if (node >= scene.globalTransform.size())
-					continue;
-				// Disabled volumes sit out entirely (Unreal bEnabled).
-				const auto vit = scene.envVolumeForNode.find(node);
-				const bool hasVol = vit != scene.envVolumeForNode.end();
-				if (hasVol && !vit->second.enabled)
-					continue;
-				// Effective priority: the volume entry wins when present,
-				// else the look block (legacy zones).
-				const float effPriority =
-					hasVol ? vit->second.priority : env.zonePriority;
-				const glm::mat4& g = scene.globalTransform[node];
-				// Bounded volume = the product of the finite half
-				// extents; a legacy-INFINITE scale = unbounded (loses
-				// ties - "innermost" wins among equal priorities). Any
-				// inf-mask face makes its axis unbounded the same way.
-				const uint32_t infMask = hasVol ? vit->second.infMask : 0u;
-				double volume = 1.0;
-				bool unbounded = (infMask & 63u) != 0;
-				for (int a = 0; a < 3 && !unbounded; ++a) {
-					const float h = glm::length(glm::vec3(g[a]));
-					if (!std::isfinite(h)) {
-						unbounded = true;
-						break;
-					}
+		cands.reserve(scene.envForNode.size());
+		for (const auto& [node, env] : scene.envForNode) {
+			if (node >= scene.globalTransform.size())
+				continue;
+			const auto vit = scene.envVolumeForNode.find(node);
+			const bool hasVol = vit != scene.envVolumeForNode.end();
+			if (hasVol && !vit->second.enabled)
+				continue; // Unreal bEnabled
+			const float weight = hasVol
+				? std::clamp(vit->second.blendWeight, 0.0f, 1.0f) : 1.0f;
+			if (!(weight > 0.0f))
+				continue;
+			const uint32_t infMask = hasVol
+				? (vit->second.infMask & 63u) : 0u;
+			const float radius = hasVol
+				? std::max(vit->second.blendRadius, 0.0f) : 0.0f;
+			const float priority = hasVol
+				? vit->second.priority : env.zonePriority;
+			smvk::envzones::EnvZoneGpu gpu;
+			if (!smvk::envzones::MakeEnvZoneGpu(scene.globalTransform[node],
+				infMask, EnvZoneFromSceneEnv(env, resolved), priority,
+				weight, radius, gpu))
+				continue; // empty zone (flat axis without an inf face)
+			// Bounded volume = product of finite half extents; any inf
+			// face / legacy INFINITE column = unbounded (loses ties to
+			// bounded zones - "innermost" wins).
+			const glm::mat4& g = scene.globalTransform[node];
+			double volume = 1.0;
+			bool unbounded = (infMask & 63u) != 0u;
+			for (int a = 0; a < 3 && !unbounded; ++a) {
+				const float h = glm::length(glm::vec3(g[a]));
+				if (!std::isfinite(h))
+					unbounded = true;
+				else
 					volume *= double(h);
-				}
-				if (unbounded)
-					volume = std::numeric_limits<double>::infinity();
-				cands.push_back({ node, effPriority, volume });
-				// Coverage identity: the zone set + each zone's placement
-				// (translation + extents) + effective priority + volume
-				// settings (mask/weight/radius). Look-only edits keep the
-				// hash -> the defs recompute below without a rasterize.
-				auto mix = [&](float v) {
-					uint32_t bits;
-					std::memcpy(&bits, &v, 4);
-					coverageHash = (coverageHash ^ bits)
-						* 1099511628211ull;
-				};
-				coverageHash = (coverageHash ^ node)
-					* 1099511628211ull;
-				mix(glm::vec3(g[3]).x); mix(glm::vec3(g[3]).y);
-				mix(glm::vec3(g[3]).z);
-				for (int a = 0; a < 3; ++a)
-					mix(glm::length(glm::vec3(g[a])));
-				mix(effPriority);
-				coverageHash = (coverageHash ^ infMask)
-					* 1099511628211ull;
-				if (hasVol) {
-					mix(vit->second.blendWeight);
-					mix(vit->second.blendRadius);
-				}
 			}
-			std::sort(cands.begin(), cands.end(),
-				[](const Cand& a, const Cand& b) {
+			if (unbounded)
+				volume = std::numeric_limits<double>::infinity();
+			cands.push_back({ node, priority, volume, gpu });
+		}
+		std::sort(cands.begin(), cands.end(),
+			[](const Cand& a, const Cand& b) {
 				if (a.priority != b.priority)
 					return a.priority > b.priority;
 				if (a.volume != b.volume)
 					return a.volume < b.volume;
 				return a.node < b.node;
 			});
-			if (cands.size() > 3)
-				cands.resize(3); // the map's weight channels cap the set
-		}
-
-		// Zone definitions from the authored blocks (see
-		// EnvZoneFromSceneEnv for the relative/absolute split).
-		auto zoneFromEnv = [&](const SceneEnv& e) {
-			const SceneEnv neutral{};
-			return EnvZoneFromSceneEnv(e, resolved ? *resolved : neutral);
-		};
-		// Channel 0 is the fallback wherever no zone covers (and everywhere
-		// when there are no zone entities at all): it MUST mirror the
-		// RESOLVED env, never the EnvZone defaults. The map's default fill
-		// is zone 0, so a zeroed/default zone 0 silently replaced the
-		// authored fog with EnvZone{}(fogDensity 0.01) and zeroed the
-		// volumetric multiplier - enabling zones with no zones read as
-		// "fog gone" (volumetric march intensity = base * 0 =>
-		// pass-through). zoneFromEnv(resolved) is the identity: tint 1,
-		// ambient = the resolved sky intensity, fog = resolved, and the
-		// volumetric multiplier = base / base = 1.
-		zd.zones[0] = resolved ? zoneFromEnv(*resolved)
-			: smvk::envzones::EnvZone{};
-		if (!resolved)
-			zd.zones[0].volumetrics = 1.0f;
-		for (size_t i = 0; i < cands.size(); ++i) {
-			const auto it = m_world->scene.envForNode.find(cands[i].node);
-			if (it == m_world->scene.envForNode.end())
-				continue;
-			zd.zones[1 + i] = zoneFromEnv(it->second);
-		}
-
-		// DEFS tier: always. The FrameUniforms fill reads desc.zones per
-		// frame, so look-only edits land with no map work at all.
-		if (m_envZones.Valid()) {
-			std::copy(std::begin(zd.zones), std::end(zd.zones),
-				std::begin(m_envZones.desc.zones));
-			// COVERAGE tier: only when the zone set/placements/priorities
-			// changed (or the map went invalid below).
-			if (coverageHash == m_envZoneCoverageHash)
-				return;
-		}
-		m_envZoneCoverageHash = coverageHash;
-
-		if (!m_envZones.Valid() || m_envZones.desc.worldSize != zd.worldSize
-			|| m_envZones.desc.texelSize != zd.texelSize) {
-			if (!m_envZones.Build(*m_context, zd)) {
-				std::cerr << "[WorldRenderer] env zone map build failed - "
-					"consumers take the plain env path\n";
-				return;
+		if (cands.size() > smvk::envzones::kEnvZoneMaxZones) {
+			if (cands.size() != m_envZoneLastCount) {
+				std::cerr << "[Zones] " << cands.size()
+					<< " zone entities, only the top "
+					<< smvk::envzones::kEnvZoneMaxZones
+					<< " by priority/volume are uploaded\n";
+				m_envZoneLastCount = uint32_t(cands.size());
 			}
+			cands.resize(smvk::envzones::kEnvZoneMaxZones);
 		}
 		else {
-			std::copy(std::begin(zd.zones), std::end(zd.zones),
-				std::begin(m_envZones.desc.zones));
-			// In-place reset to the zone-0 fill (wipes the previous
-			// raster; the map texture + bindless slot persist).
-			std::fill(m_envZones.weights.begin(),
-				m_envZones.weights.end(), 0xFFFFFFFFu);
+			m_envZoneLastCount = uint32_t(cands.size());
 		}
 
-		// Rasterize coverage into the CPU weight grid (hard inside/outside
-		// per texel, softened by blend radius; the map's bilinear sampling
-		// blends the borders). XZ projection: local y is ignored (the 2D
-		// map; the exact 3D test lives in ZoneAtPosition). INFINITE
-		// extents cover the whole map extent by construction (the loop is
-		// bounded). Y-face infinities cannot project: they warn below and
-		// the exact test still covers them.
-		if (m_world && !cands.empty() && m_envZones.dim > 0) {
-			const ::Scene& scene = m_world->scene;
-			const uint32_t dim = m_envZones.dim;
-			const float ws = m_envZones.desc.worldSize;
-			for (size_t i = 0; i < cands.size(); ++i) {
-				const Cand& c = cands[i];
-				if (c.node >= scene.globalTransform.size())
-					continue;
-				const glm::mat4& g = scene.globalTransform[c.node];
-				const float hx = glm::length(glm::vec3(g[0]));
-				const float hz = glm::length(glm::vec3(g[2]));
-				uint32_t infMask = 0u;
-				float blendWeight = 1.0f;
-				float blendRadius = 0.0f;
-				if (const auto vit =
-					scene.envVolumeForNode.find(c.node);
-					vit != scene.envVolumeForNode.end()) {
-					infMask = vit->second.infMask;
-					blendWeight = std::clamp(vit->second.blendWeight,
-						0.0f, 1.0f);
-					blendRadius = vit->second.blendRadius >= 0.0f
-						? vit->second.blendRadius : 0.0f;
-				}
-				if ((infMask
-					& (kEnvInfNegY | kEnvInfPosY)) != 0) {
-					std::cerr << "[Zones] zone " << c.node
-						<< " has infinite Y faces: the XZ bake projects "
-						"the full column (the exact 3D test still applies)\n";
-				}
-				// Per-face infinity: a set bit pushes that face out; a
-				// legacy-INFINITE scale unbounds the whole axis. A
-				// degenerate (zero) finite axis with either bit set
-				// unbounds the axis too (the face sits at the node
-				// origin); without bits it is an empty zone as before.
-				const bool negUnbX = !std::isfinite(hx)
-					|| (infMask & kEnvInfNegX) != 0
-					|| (!(hx > 0.0f)
-						&& (infMask & (kEnvInfNegX | kEnvInfPosX)) != 0);
-				const bool posUnbX = !std::isfinite(hx)
-					|| (infMask & kEnvInfPosX) != 0
-					|| (!(hx > 0.0f)
-						&& (infMask & (kEnvInfNegX | kEnvInfPosX)) != 0);
-				const bool negUnbZ = !std::isfinite(hz)
-					|| (infMask & kEnvInfNegZ) != 0
-					|| (!(hz > 0.0f)
-						&& (infMask & (kEnvInfNegZ | kEnvInfPosZ)) != 0);
-				const bool posUnbZ = !std::isfinite(hz)
-					|| (infMask & kEnvInfPosZ) != 0
-					|| (!(hz > 0.0f)
-						&& (infMask & (kEnvInfNegZ | kEnvInfPosZ)) != 0);
-				if ((std::isfinite(hx) && !(hx > 0.0f)
-					&& !negUnbX && !posUnbX)
-					|| (std::isfinite(hz) && !(hz > 0.0f)
-						&& !negUnbZ && !posUnbZ))
-					continue; // degenerate finite axis: an empty zone
-				// INF-safe frame (see ZoneCovers): unit columns for fully
-				// unbounded axes before inverting.
-				glm::mat4 frame = g;
-				if (negUnbX && posUnbX)
-					frame[0] = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
-				if (negUnbZ && posUnbZ)
-					frame[2] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
-				const glm::mat4 inv = glm::inverse(frame);
-				const uint32_t channel = uint32_t(1 + i);
-				const uint32_t wByte = uint32_t(
-					255.0f * blendWeight + 0.5f);
-				for (uint32_t tz = 0; tz < dim; ++tz) {
-					const float wz = (float(tz) + 0.5f) / float(dim)
-						* ws - ws * 0.5f;
-					for (uint32_t tx = 0; tx < dim; ++tx) {
-						const float wx = (float(tx) + 0.5f) / float(dim)
-							* ws - ws * 0.5f;
-						const glm::vec3 local = glm::vec3(
-							inv * glm::vec4(wx, 0.0f, wz, 1.0f));
-						// UNIT-cube test per face (the transform carries
-						// the extents - see ZoneCovers); XZ projection of
-						// the OBB (the map is 2D, local y ignored).
-						const bool coverX = (negUnbX || local.x >= -1.0f)
-							&& (posUnbX || local.x <= 1.0f);
-						const bool coverZ = (negUnbZ || local.z >= -1.0f)
-							&& (posUnbZ || local.z <= 1.0f);
-						if (!coverX || !coverZ)
-							continue;
-						uint32_t w = wByte;
-						// Blend radius: soften outside the footprint
-						// (world-space distance past the bounded faces;
-						// infinite faces contribute nothing).
-						if (blendRadius > 0.0f) {
-							const float ox =
-								(!negUnbX && !posUnbX && std::isfinite(hx))
-								? std::max(std::abs(local.x) - 1.0f, 0.0f)
-									* hx : 0.0f;
-							const float oz =
-								(!negUnbZ && !posUnbZ && std::isfinite(hz))
-								? std::max(std::abs(local.z) - 1.0f, 0.0f)
-									* hz : 0.0f;
-							const float dist = std::sqrt(ox * ox + oz * oz);
-							const float t = std::clamp(
-								dist / blendRadius, 0.0f, 1.0f);
-							const float s = t * t * (3.0f - 2.0f * t);
-							w = uint32_t(float(w) * (1.0f - s) + 0.5f);
-						}
-						if (w == 0)
-							continue;
-						m_envZones.weights[tz * dim + tx]
-							|= w << (8 * channel);
-					}
-				}
-			}
-			m_envZones.Upload(*m_context);
-		}
-		std::cerr << "[Zones] map rebuilt: " << cands.size()
-			<< " zone entities (channels 1.." << cands.size()
-			<< "), channel 0 = resolved env"
-			<< (cands.empty() ? " (identity - no zones authored)" : "")
-			<< "\n";
+		// One upload per frame slice: zero the unused tail (the shader
+		// loops only envZoneCount records, but zeroing keeps a stale
+		// larger count from a previous frame from ever reading garbage).
+		std::vector<smvk::envzones::EnvZoneGpu> records(
+			smvk::envzones::kEnvZoneMaxZones);
+		for (size_t i = 0; i < cands.size(); ++i)
+			records[i] = cands[i].gpu;
+		const size_t stride = sizeof(smvk::envzones::EnvZoneGpu)
+			* smvk::envzones::kEnvZoneMaxZones;
+		m_context->UploadDataToBuffer(m_resources.envZonesBuffer,
+			records.data(), records.size() * sizeof(records[0]),
+			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+			smvk::AccessFlags::ShaderRead, 0,
+			size_t(currentFrame) * stride);
+		m_envZoneFrameCount = uint32_t(cands.size());
 	}
 	void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 		// --no-vfs: mute the loose discovery mounts entirely. The host's
@@ -8074,9 +7908,10 @@ namespace engine {
 			return e ? std::atof(e) : 0.0;
 		}();
 		static size_t sHitchLastPipelines = 0;
-		// Decal ring upload BEFORE UpdateFrameUniforms: it reads the live
-		// count (m_decalFrameCount) into FrameUniforms.
+		// Decal + env-zone ring uploads BEFORE UpdateFrameUniforms: it
+		// reads their live counts/addresses into FrameUniforms.
 		(void)UpdateDecals(fb.frameIndex);
+		UpdateEnvZones(fb.frameIndex);
 		// The renderer owns no environment: the frame's look is built
 		// from the WORLD's scene env here, once per frame (the main
 		// view, the shadow fits and every secondary view take it as a
@@ -12223,66 +12058,42 @@ namespace engine {
 							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
-							// ---- Environment zones (world/env separation; see
-							// Rendergraph/envzones.h): the RGBA8 weight map (10 m per
-							// texel over the 4 km world, R/G/B/A = zones 0..3) blends
-							// each zone's sky tint/ambient, fog and volumetrics across
-							// the terrain + the volumetric fog. ZONES ARE ENTITIES
-							// (scene.envForNode nodes): coverage from the node
-							// transform (position/rotation placement, scale = half
-							// extents, an INFINITE component = an unbounded slab),
-							// the look from the env block; the map DERIVES from them
-							// (RebuildEnvZoneMap - load, rebind, editor refresh).
-							// No brush: zone shapes are authored, never painted.
+							// ---- Analytic environment zones (world/env
+							// separation; see Rendergraph/envzones.h): zone
+							// ENTITIES (scene.envForNode) are packed into a GPU
+							// buffer every frame and the terrain/volumetric
+							// shaders resolve the exact OBB coverage + blend
+							// radius per pixel. No map, no world-size/texel or
+							// 4-zone cap. The authored master switch persists
+							// through the tour/pak (Scene::envZonesEnabled);
+							// the checkbox below is the runtime override.
 							if (ImGui::CollapsingHeader("Zones (scene entities)")) {
-								ImGui::Checkbox("Zones enabled", &m_envZonesEnabled);
-								if (!m_envZones.Valid()) {
-									ImGui::TextDisabled("Zone map not built - the plain env path renders.");
+								ImGui::Checkbox("Zones enabled (runtime)",
+									&m_envZonesEnabled);
+								ImGui::TextDisabled("Authored: %s (editor Environment panel)",
+									m_world && m_world->scene.envZonesEnabled
+										? "on" : "off");
+								if (m_envZoneFrameCount == 0) {
+									ImGui::TextDisabled("No active zone records this frame - "
+										"the plain env path renders.");
 								}
 								else {
+									ImGui::TextDisabled("Uploaded %u zone record(s) "
+										"(priority desc, then innermost; blend radius "
+										"softens outside the box).",
+										(unsigned)m_envZoneFrameCount);
+								}
+								if (m_world) {
 									size_t zoneCount = 0;
-									if (m_world) {
-										for (const auto& [node, env]
-											: m_world->scene.envForNode) {
-											++zoneCount;
-											const glm::mat4* g =
-												node < m_world->scene
-												.globalTransform.size()
-												? &m_world->scene
-												.globalTransform[node]
-												: nullptr;
-											ImGui::BulletText("zone %u: '%s' prio=%.0f"
-												" half=(%s, %s, %s)",
-												node,
-												getNodeName(m_world->scene,
-													int(node)).c_str(),
-												env.zonePriority,
-												g && std::isfinite(glm::length(
-													glm::vec3((*g)[0])))
-												? std::to_string(glm::length(
-													glm::vec3((*g)[0])))
-												.c_str() : "INF",
-												g && std::isfinite(glm::length(
-													glm::vec3((*g)[1])))
-												? std::to_string(glm::length(
-													glm::vec3((*g)[1])))
-												.c_str() : "INF",
-												g && std::isfinite(glm::length(
-													glm::vec3((*g)[2])))
-												? std::to_string(glm::length(
-													glm::vec3((*g)[2])))
-												.c_str() : "INF");
-										}
+									for (const auto& [node, env]
+										: m_world->scene.envForNode) {
+										(void)node;
+										(void)env;
+										++zoneCount;
 									}
-									ImGui::TextDisabled("Zone entities: %u (top 3 by priority,"
-										" then innermost, feed the map's channels 1..3;"
-										" channel 0 = the resolved env). Scale = half"
-										" extents; an INFINITE axis = an unbounded slab.",
+									ImGui::TextDisabled("Zone entities: %u (scale = half "
+										"extents; an INFINITE axis = an unbounded slab).",
 										(unsigned)zoneCount);
-									if (zoneCount == 0)
-										ImGui::TextDisabled("No zone entities: channel 0 mirrors"
-											" the resolved env, so enabling zones is a no-op"
-											" (fog/volumetrics unchanged).");
 								}
 							}
 							if (!m_world) {

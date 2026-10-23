@@ -106,12 +106,12 @@ void Arena::Reset() {
 }
 
 Arena& AppArena() {
-	static Arena arena(mem::config::kAppArenaBlock, &mem::ProcessAllocator());
+	static Arena arena(mem::config::Runtime().appArenaBlock, &mem::ProcessAllocator());
 	return arena;
 }
 
 Arena& FrameArena() {
-	static Arena arena(mem::config::kFrameArenaBlock, &mem::FrameAllocator());
+	static Arena arena(mem::config::Runtime().frameArenaBlock, &mem::FrameAllocator());
 	return arena;
 }
 

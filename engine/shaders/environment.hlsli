@@ -557,78 +557,142 @@ float ComputeFogFactor(float viewDepth, float worldY, EnvironmentFrameData env)
 }
 
 // ---------------------------------------------------------------------------
-// Environment zones (tiled world/env separation; see Rendergraph/envzones.h
-// + the FrameUniforms envZone* tail). The map is one RGBA8 weight texture
-// (R/G/B/A = zone definitions 0..3); the weights normalize at sample so a
-// texel blends up to four zones, and the texture's bilinear filtering
-// blends BETWEEN texels. Zones own the sky tint + ambient intensity, the
-// fog color/density and the volumetric scattering/extinction — the sun
-// stays global. All helpers fall back to the plain env path when
-// envZoneMapIndex is off (weight 1 on zone 0 == the authored env look when
-// zone 0 mirrors it).
+// Analytic environment zones (see Rendergraph/envzones.h): the renderer
+// uploads an EnvZoneGpu slice per frame (envZones BDA + envZoneCount); the
+// terrain/volumetric shaders resolve the covering OBB + the EnvVolume
+// blendWeight/blendRadius per pixel. No baked map, no world-size/texel or
+// 4-zone limits; the sun stays global. All helpers fall back to the plain
+// env path when envZoneCount is 0.
 // ---------------------------------------------------------------------------
 
-// Normalized zone weights at world XZ (zone 0 when the map is off/empty).
-float4 EnvZoneWeights(float2 worldXZ, FrameUniforms frame)
+struct EnvZoneLook
 {
-    if (frame.envZoneMapIndex == 0xffffffffu)
-        return float4(1.0, 0.0, 0.0, 0.0);
-    Texture2D map = textures[frame.envZoneMapIndex];
-    SamplerState smp = samplers[frame.envZoneSampler];
-    float2 uv = worldXZ / max(frame.envZoneWorldSize, 1e-3) + 0.5;
-    float4 w = map.Sample(smp, saturate(uv));
-    float s = dot(w, float4(1.0, 1.0, 1.0, 1.0));
-    return (s > 1e-4) ? w / s : float4(1.0, 0.0, 0.0, 0.0);
+    float3 skyTint;
+    float ambientI;
+    float3 fogColor;
+    float fogDensity;
+    float volumetrics;        // ratio over the pass base (0 = off, 1 = base)
+    float volumetricDensity;  // absolute extinction (1/m)
+};
+
+// Soft falloff in 0..1 at p: 1 inside the OBB, fading to 0 at blendRadius
+// metres outside the bounded faces (Euclidean distance; infinite faces
+// contribute nothing). Mirrors envzones::EnvZoneFalloff.
+float EnvZoneFalloff(EnvZoneGpu z, float3 p)
+{
+    const float3 half = asfloat(z.halfAndMask.xyz);
+    const uint infMask = z.halfAndMask.w & 63u;
+    const float4 p4 = float4(p, 1.0);
+    // worldToLocal holds ROWS (see common.hlsli) - dot products keep this
+    // independent of matrix-convention flags.
+    const float3 local = float3(
+        dot(z.worldToLocal[0], p4),
+        dot(z.worldToLocal[1], p4),
+        dot(z.worldToLocal[2], p4));
+    float dist2 = 0.0;
+    [unroll]
+    for (uint a = 0; a < 3; ++a)
+    {
+        const float h = half[a];
+        const bool flat = isfinite(h) && !(h > 0.0);
+        const uint negBit = 1u << (2u * a);
+        const uint posBit = 2u << (2u * a);
+        const bool faceInf = (infMask & (negBit | posBit)) != 0u;
+        if (flat && !faceInf)
+            return 0.0; // empty zone
+        const bool negInf = !isfinite(h) || (infMask & negBit) != 0u
+            || (flat && faceInf);
+        const bool posInf = !isfinite(h) || (infMask & posBit) != 0u
+            || (flat && faceInf);
+        const float scale = (isfinite(h) && h > 0.0) ? h : 1.0;
+        if (!negInf && local[a] < -1.0)
+        {
+            const float d = (-1.0 - local[a]) * scale;
+            dist2 += d * d;
+        }
+        if (!posInf && local[a] > 1.0)
+        {
+            const float d = (local[a] - 1.0) * scale;
+            dist2 += d * d;
+        }
+    }
+    if (!(dist2 > 0.0))
+        return 1.0;
+    const float radius = max(z.shape.z, 0.0);
+    if (!(radius > 0.0))
+        return 0.0;
+    const float t = saturate(sqrt(dist2) / radius);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+// Resolves the first influencing zone (the renderer uploads records
+// priority desc -> innermost -> node id, so the first hit is the winner).
+// weight = blendWeight * falloff; the look is the zone's authored subset.
+// Returns false when no zone influences p (the caller keeps the plain look).
+bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
+    out EnvZoneLook z)
+{
+    weight = 0.0;
+    z.skyTint = float3(1.0, 1.0, 1.0);
+    z.ambientI = 0.0;
+    z.fogColor = float3(0.0, 0.0, 0.0);
+    z.fogDensity = 0.0;
+    z.volumetrics = 1.0;
+    z.volumetricDensity = 0.0;
+    const uint n = min(frame.envZoneCount, (uint)ENV_ZONE_MAX);
+    if (n == 0u)
+        return false;
+    [loop]
+    for (uint i = 0; i < n; ++i)
+    {
+        const EnvZoneGpu g = frame.envZones.Get().zones[i];
+        const float w = saturate(g.shape.y) * EnvZoneFalloff(g, p);
+        if (!(w > 0.0))
+            continue;
+        weight = w;
+        z.skyTint = g.sky.rgb;
+        z.ambientI = g.sky.a;
+        z.fogColor = g.fog.rgb;
+        z.fogDensity = g.fog.a;
+        z.volumetrics = g.vol.x;
+        z.volumetricDensity = g.vol.y;
+        return true;
+    }
+    return false;
 }
 
 // Zone-tinted + zone-intensity ambient irradiance for N (the
-// EvaluateIrradiance shape with each zone's skyTint applied to the env
-// colors and its ambientI scaling the result). w = EnvZoneWeights.
-float3 EnvZoneIrradiance(float3 N, float4 w, EnvironmentFrameData env,
-    FrameUniforms frame)
+// EvaluateIrradiance shape with the zone's skyTint applied to the env
+// colors and its ambientI scaling the result). Honors the IBL flag like
+// the plain path. The caller lerps with the base EvaluateIrradiance by
+// EnvZoneAt's weight.
+float3 EnvZoneIrradiance(EnvZoneLook z, float3 N, EnvironmentFrameData env)
 {
-    // Blend the tints + intensities (weights already normalized).
-    float3 tint = w.x * frame.envZoneSky[0].rgb
-        + w.y * frame.envZoneSky[1].rgb
-        + w.z * frame.envZoneSky[2].rgb
-        + w.w * frame.envZoneSky[3].rgb;
-    float ambI = w.x * frame.envZoneSky[0].a
-        + w.y * frame.envZoneSky[1].a
-        + w.z * frame.envZoneSky[2].a
-        + w.w * frame.envZoneSky[3].a;
-    if (ambI <= 0.0f)
+    const float ibl = max(z.ambientI, 0.0) * env.fogEndAndFlags.w;
+    if (ibl <= 0.0)
         return float3(0.0, 0.0, 0.0);
-    // Tinted hemisphere: the EvaluateIrradiance shape over tinted colors.
-    float exponent = max(env.skyHorizon.w, 0.01f);
-    float up = saturate(N.y);
-    float dn = saturate(-N.y);
-    float3 zenith = env.skyZenith.rgb * tint;
-    float3 horizon = env.skyHorizon.rgb * tint;
-    float3 groundCol = env.ground.rgb * tint;
-    float3 skyPart = lerp(horizon, zenith, pow(up, exponent));
-    float3 gndPart = lerp(horizon, groundCol, saturate(dn * 1.5f));
-    float3 hemi = lerp(gndPart, skyPart, saturate(N.y * 0.5f + 0.5f));
-    return hemi * ambI;
+    const float exponent = max(env.skyHorizon.w, 0.01);
+    const float up = saturate(N.y);
+    const float dn = saturate(-N.y);
+    const float3 zenith = env.skyZenith.rgb * z.skyTint;
+    const float3 horizon = env.skyHorizon.rgb * z.skyTint;
+    const float3 groundCol = env.ground.rgb * z.skyTint;
+    const float3 skyPart = lerp(horizon, zenith, pow(up, exponent));
+    const float3 gndPart = lerp(horizon, groundCol, saturate(dn * 1.5));
+    const float3 hemi = lerp(gndPart, skyPart, saturate(N.y * 0.5 + 0.5));
+    return hemi * ibl;
 }
 
-// Zone-blended fog color (HDR) + density for the analytic fog term. The
-// fog INTENSITY stays global (fogColor.w); zones own color + density.
-void EnvZoneFog(float4 w, FrameUniforms frame,
+// Zone fog color (HDR) + density; the fog INTENSITY stays global
+// (env.fogColor.w). The caller lerps with the base by the zone weight.
+void EnvZoneFog(EnvZoneLook z, FrameUniforms frame,
     out float3 fogHdr, out float fogDensity)
 {
-    float3 c = w.x * frame.envZoneFog[0].rgb
-        + w.y * frame.envZoneFog[1].rgb
-        + w.z * frame.envZoneFog[2].rgb
-        + w.w * frame.envZoneFog[3].rgb;
-    float d = w.x * frame.envZoneFog[0].a
-        + w.y * frame.envZoneFog[1].a
-        + w.z * frame.envZoneFog[2].a
-        + w.w * frame.envZoneFog[3].a;
-    fogHdr = c * frame.env.fogColor.w;
-    fogDensity = max(d, 0.0);
+    fogHdr = z.fogColor * frame.env.fogColor.w;
+    fogDensity = max(z.fogDensity, 0.0);
 }
 
-// Exp2 fog factor with an EXPLICIT density (the zone-blended density —
+// Exp2 fog factor with an EXPLICIT density (the zone-blended density -
 // ComputeFogFactor reads the env's). Same mode/height logic.
 float ComputeFogFactorDensity(float viewDepth, float worldY,
     EnvironmentFrameData env, float density)
@@ -659,21 +723,16 @@ float ComputeFogFactorDensity(float viewDepth, float worldY,
     return saturate(f);
 }
 
-// Zone-blended volumetric params (scattering intensity + extinction
-// density) — the volumetric pass blends its march constants at the ray
-// start. Both return the plain-env pass values when the map is off.
-void EnvZoneVolumetrics(float4 w, FrameUniforms frame,
+// Zone-blended volumetric params (scattering ratio + extinction density).
+// The zone's volumetrics is a RATIO over the pass base (1 = the global
+// intensity, 0 = off). The caller passes the base values and the zone
+// weight; output is already lerped toward the zone.
+void EnvZoneVolumetrics(EnvZoneLook z, float weight,
     float baseIntensity, float baseDensity,
     out float intensity, out float density)
 {
-    float vi = w.x * frame.envZoneVol[0].x
-        + w.y * frame.envZoneVol[1].x
-        + w.z * frame.envZoneVol[2].x
-        + w.w * frame.envZoneVol[3].x;
-    float vd = w.x * frame.envZoneVol[0].y
-        + w.y * frame.envZoneVol[1].y
-        + w.z * frame.envZoneVol[2].y
-        + w.w * frame.envZoneVol[3].y;
-    intensity = max(baseIntensity, 0.0) * max(vi, 0.0);
-    density = max(vd, 0.0);
+    intensity = max(baseIntensity, 0.0)
+        * lerp(1.0, max(z.volumetrics, 0.0), saturate(weight));
+    density = lerp(max(baseDensity, 0.0), max(z.volumetricDensity, 0.0),
+        saturate(weight));
 }

@@ -591,3 +591,263 @@ verify, no lightmap bake) and benched 300 frames, camera frozen
 - Shutdown footprint (both runs): process ~1.9 MB / frame 0.0 MB /
   transient ~1.1 MB used; 16 MB committed per allocator.
 - NGX/DLSS errors in the logs are benign (no NVIDIA adapter here).
+
+---
+
+## 11. Program-entry memory size configuration (2026-10-22)
+
+The static sizes are no longer rebuild-only. `mem::config::Runtime()`
+(`Engine/Memory/alloc_config.h`, implemented in `Memory/memory.cpp`) parses
+`TOURMALINE_MEM_*` **once at program entry**, validates the values, logs each
+accepted override, and falls back to the constexpr defaults in
+`alloc_config.h` on bad input. `App` and `Editor` both call
+`smvk::mem::InitMemory()` before Vulkan, worker threads, or asset loading, so
+every allocator / static heap / staging ring is sized before its first use.
+Changing the environment after startup does nothing (the lifetime is fixed
+for the process).
+
+| Env var | Field | Default | Sizes |
+|---------|-------|---------|-------|
+| `TOURMALINE_MEM_PROCESS_MB` | `processReserve` | 4096 MiB | process-lifetime VA reservation |
+| `TOURMALINE_MEM_FRAME_MB` | `frameReserve` | 256 MiB | per-frame VA reservation |
+| `TOURMALINE_MEM_TRANSIENT_MB` | `transientReserve` | 1024 MiB | UploadInFlight VA reservation |
+| `TOURMALINE_MEM_APP_ARENA_MB` | `appArenaBlock` | 1 MiB | `AppArena` block size |
+| `TOURMALINE_MEM_FRAME_ARENA_MB` | `frameArenaBlock` | 1 MiB | `FrameArena` block size |
+| `TOURMALINE_MEM_COMMIT_MB` | `commitQuantum` | 16 MiB | page-commit quantum (power of two) |
+| `TOURMALINE_MEM_STREAMER_MB` | `streamerTotalBudget` | 256 MiB | UploadStreamer total budget |
+| `TOURMALINE_MEM_STAGING_RING_MB` | `stagingRingPerThread` | 32 MiB | per-thread staging ring |
+| `TOURMALINE_MEM_BULK_RING_MB` | `bulkRingCapacity` | 512 MiB | load-time bulk upload ring |
+| `TOURMALINE_MEM_FLUSH_MB` | `uploadFlushThreshold` | 256 MiB | batch-submit threshold |
+| `TOURMALINE_MEM_READBACK_MIN_KB` | `readbackStagingMin` | 256 KiB | readback staging floor |
+| `TOURMALINE_MEM_READBACK_MAX_MB` | `readbackStagingMax` | 256 MiB | readback staging cap |
+| `TOURMALINE_MEM_THREAD_SLOTS` | `threadPoolQueueSlots` | 4096 | bounded task-ring slots |
+| `TOURMALINE_MEM_STATIC_VERTEX_MB` | `staticVertexHeap` | 512 MiB | EACH of the two vertex heaps |
+| `TOURMALINE_MEM_STATIC_INDEX_MB` | `staticIndexHeap` | 512 MiB | static index monoblock |
+| `TOURMALINE_MEM_TARGET_BLOCK_MB` | `targetHeapBlock` | 64 MiB | rendergraph target-heap block (halves on failure) |
+
+Examples:
+
+```powershell
+# Shrink the three eternal GPU static heaps (default 1.5 GiB) to 1.0 GiB total.
+$env:TOURMALINE_MEM_STATIC_VERTEX_MB='512'
+$env:TOURMALINE_MEM_STATIC_INDEX_MB='512'
+
+# Same textures/heaps, smaller CPU-side VA reservations.
+$env:TOURMALINE_MEM_PROCESS_MB='1024'
+$env:TOURMALINE_MEM_TRANSIENT_MB='256'
+```
+
+Semantics pinned by `MemoryTests`:
+- values are positive integers in the unit named (MB/KB/slots); bad values
+  warn and keep the constexpr default;
+- `commitQuantum` must be a power-of-two multiple of 4 KiB (the commit
+  alignment uses a mask);
+- cross-field ordering is enforced: `READBACK_MIN <= READBACK_MAX`,
+  `STREAMER >= STAGING_RING`, `FLUSH <= BULK_RING`.
+
+Still compile-time **by necessity** (array bounds / static_asserts):
+`kNumPoolShards`, `kShardCapacity`, `kShardedMaxSize`, `kDefaultAlign`.
+
+---
+
+## 12. GPU-side allocations in a typical run to 1st frame (2026-10-22)
+
+Snapshot method (reproducible):
+
+```powershell
+$env:TOURMALINE_MEMDUMP='1'          # one-shot ledger dump at frame 1
+$env:TOURMALINE_AUTO_EXPOSURE='0'
+& .\App.exe --pak content/paks/sponza.pak --disable_control --bench 4
+```
+
+The ledger is the **exact VMA committed bytes** captured per resource at
+create (`VmaAllocationInfo::size`); rows below are the complete first-frame
+set, aggregated by resource name. `TOURMALINE_MEMDUMP` also prints any row
+that is untracked (`bytes == 0`) and the VMA heap budgets, so the per-item
+snapshot is regenerable at any frame.
+
+### 12.1 First-frame totals (Sponza, 1920x1080, default settings)
+
+| Ledger category | MiB | Composition |
+|-----------------|-----|-------------|
+| Vertex | 1024.0 | the two static vertex heaps (pos + shading) |
+| Storage | 712.4 | static index monoblock (512) + gfx/DS/SSR/GI/particles rings (~200) |
+| ImageTarget | 316.6 | render-graph attachments: main HDR chain, SSR/SSGI, SMAA, shadows, depth |
+| ImageContent | 79.8 | 69 pak textures (45.4) + baked GI cubemaps (28) + cvol/PI volumes |
+| Uniform | ~0.0 | frame uniforms / frame-hot (a few KiB, rounds to 0.0) |
+| Index | ~0.0 | probe-ball index buffer (tiny) |
+| **Tracked total** | **2132.8** | |
+
+VMA heap snapshot from the same frame:
+
+```
+heap0 VRAM size=15995 budget=15227 usage=2326 committed=2133 blocks=2169 MiB
+heap1 HOST size=15947 budget=15179 usage=1055 committed=992 blocks=992 MiB
+```
+
+The HOST row is the CPU-visible GPU allocations: 512 MiB bulk ring +
+per-thread 32 MiB staging rings + readback staging + driver/HOST heap
+allocations. The VRAM `usage` exceeds `committed` because VMA counts the
+untracked raw blocks (target heap, external/swapchain) in usage.
+
+### 12.2 Per-resource first-frame rows (aggregated; all rows)
+
+| Resource | Kind | Ledger category | Count | Total MiB |
+|----------|------|-----------------|------:|----------:|
+| static vertex shading | buffer | Vertex | 1 | 512 |
+| static vertex pos | buffer | Vertex | 1 | 512 |
+| static index | buffer | Storage | 1 | 512 |
+| scene content textures (pak) | image | ImageContent | 69 | 45.4 |
+| gfx skinBounds | buffer | Storage | 2 | 32.2 |
+| ds visibility | buffer | Storage | 2 | 32 |
+| ds lightList | buffer | Storage | 2 | 32 |
+| baked GI cubemaps | image | ImageContent | 14 | 28 |
+| ssgiEnvSpec | image | ImageTarget | 1 | 16.9 |
+| hdr | image | ImageTarget | 1 | 16.9 |
+| ssgiAoHdr | image | ImageTarget | 1 | 16.9 |
+| volumetric | image | ImageTarget | 1 | 16.9 |
+| dof | image | ImageTarget | 1 | 16.9 |
+| ssgiAoTerm | image | ImageTarget | 1 | 16.9 |
+| motionBlur | image | ImageTarget | 1 | 16.9 |
+| dlssOutput | image | ImageTarget | 1 | 16.9 |
+| ssr | image | ImageTarget | 1 | 16.9 |
+| ssgiEnvSpecComposed | image | ImageTarget | 1 | 16.9 |
+| shadowMapAtlas | image | ImageTarget | 1 | 16 |
+| gfx hiz | buffer | Storage | 1 | 10.5 |
+| ssgi hzb max | buffer | Storage | 1 | 10.5 |
+| swapchain depth image | image | ImageTarget | 1 | 10.5 |
+| gfx indirect | buffer | Storage | 2 | 10 |
+| gfx remainderIndirect | buffer | Storage | 2 | 10 |
+| gfx seedIndirect | buffer | Storage | 2 | 10 |
+| gfx shadow indirect | buffer | Storage | 8 | 9.6 |
+| spotShadowAtlas | image | ImageTarget | 1 | 9 |
+| ssrGbuffer2 | image | ImageTarget | 1 | 8.4 |
+| motion | image | ImageTarget | 1 | 8.4 |
+| smaaEdges | image | ImageTarget | 1 | 8.4 |
+| smaaWeights | image | ImageTarget | 1 | 8.4 |
+| smaaHistory0 | image | ImageTarget | 1 | 8.4 |
+| smaaHistory1 | image | ImageTarget | 1 | 8.4 |
+| smaaLdr | image | ImageTarget | 1 | 8.4 |
+| ssrGbuffer | image | ImageTarget | 1 | 8.4 |
+| ui | image | ImageTarget | 1 | 8.4 |
+| gfx batches | buffer | Storage | 2 | 8 |
+| ssrRadiance | buffer | Storage | 1 | 7.9 |
+| bloom | image | ImageTarget | 5 | 6.7 |
+| gi dense lobe volumes | image | ImageContent | 18 | 5.4 |
+| ssrHist0 | image | ImageTarget | 1 | 4.7 |
+| ssgiAoRaw | image | ImageTarget | 1 | 4.7 |
+| ssrHist1 | image | ImageTarget | 1 | 4.7 |
+| ssgiAoBlur | image | ImageTarget | 1 | 4.7 |
+| ssrRaw | image | ImageTarget | 1 | 4.7 |
+| ssrBlur | image | ImageTarget | 1 | 4.7 |
+| particles pool | buffer | Storage | 1 | 4 |
+| ds tileState | buffer | Storage | 2 | 4 |
+| gfx keptBits | buffer | Storage | 2 | 4 |
+| gfx shadow draws | buffer | Storage | 8 | 3.2 |
+| ssrRayList | buffer | Storage | 1 | 2 |
+| gfx mesh batch list | buffer | Storage | 2 | 2 |
+| ds tileGroupMasks | buffer | Storage | 2 | 1 |
+| ds tileMasks | buffer | Storage | 2 | 1 |
+| gi dense weight volumes | image | ImageContent | 2 | 1 |
+| materials buffer | buffer | Storage | 1 | 1 |
+| premix blended cubemap | image | ImageTarget | 1 | 1 |
+| gfx visibleClusters | buffer | Storage | 2 | 1 |
+| gfx visibleDraws | buffer | Storage | 2 | 0.8 |
+| gfx draws | buffer | Storage | 2 | 0.8 |
+| gfx clusters | buffer | Storage | 1 | 0.7 |
+| forwardplus tileIndices | buffer | Storage | 1 | 0.5 |
+| forwardplus decalTileIndices | buffer | Storage | 1 | 0.5 |
+| particles freeList | buffer | Storage | 1 | 0.3 |
+| forwardplus lights buffer | buffer | Storage | 1 | 0.2 |
+| smaaAreaTex | image | ImageContent | 1 | 0.2 |
+| motionBlurTileVel | image | ImageTarget | 1 | 0.2 |
+| motionBlurTileMax | image | ImageTarget | 1 | 0.2 |
+| sdsm stats | buffer | Storage | 2 | 0.2 |
+| gfx texture meta | buffer | Storage | 1 | 0.1 |
+| forwardplus decals buffer | buffer | Storage | 1 | 0.1 |
+| spot shadow tiles buffer | buffer | Storage | 1 | ~0 |
+| gfx mesh params | buffer | Storage | 2 | ~0 |
+| render views | buffer | Storage | 1 | ~0 |
+| forwardplus decalTileCounts | buffer | Storage | 1 | ~0 |
+| ssrIndirectArgs | buffer | Storage | 1 | ~0 |
+| directional cascade buffer | buffer | Storage | 1 | ~0 |
+| sggi grid | buffer | Storage | 1 | ~0 |
+| hizDepth | image | ImageTarget | 1 | ~0 (heap-placed) |
+| forwardplus volumeTileMasks | buffer | Storage | 1 | ~0 |
+| lm chart xforms | buffer | Storage | 1 | ~0 |
+| ds zbins | buffer | Storage | 2 | ~0 |
+| lights buffer | buffer | Storage | 1 | ~0 |
+| premix selection | buffer | Storage | 1 | ~0 |
+| nilTexture | image | ImageContent | 1 | ~0 |
+| gfx mesh bounds | buffer | Storage | 1 | ~0 |
+| probe ball indices | buffer | Index | 1 | ~0 |
+| cvol layer volumes | image | ImageContent | 42 | ~0 |
+| gfx cullState | buffer | Storage | 2 | ~0 |
+| env zones buffer | buffer | Storage | 1 | ~0 |
+| exposure histogram | buffer | Storage | 2 | ~0 |
+| cvol mean volumes | image | ImageContent | 6 | ~0 |
+| frame hot uniforms | buffer | Uniform | 1 | ~0 |
+| dlssExposure | image | ImageTarget | 1 | ~0 |
+| ssrRayCounter | buffer | Storage | 1 | ~0 |
+| smaaSearchTex | image | ImageContent | 1 | ~0 |
+| gfx texture demand | buffer | Storage | 2 | ~0 |
+| ds viz params | buffer | Storage | 1 | ~0 |
+| renderDepth | image | ImageTarget | 1 | ~0 (heap-placed) |
+| frame uniforms | buffer | Uniform | 1 | ~0 |
+| gfx mesh ranges | buffer | Storage | 1 | ~0 |
+| forwardplus tileCounts | buffer | Storage | 1 | ~0 |
+| probe ball sphere | buffer | Vertex | 1 | ~0 |
+| cvol volumes | buffer | Storage | 1 | ~0 |
+| engine globals | buffer | Storage | 1 | ~0 |
+| particles emitterState | buffer | Storage | 1 | ~0 |
+| particles emitters ring | buffer | Storage | 1 | ~0 |
+| ds counters | buffer | Storage | 2 | ~0 |
+
+Rows marked "~0" are exact-but-tiny (bytes printed as 0.0 MiB) or untracked
+backings; they are still real allocations. The `renderDepth` / `hizDepth`
+rows are the two design-B heap claims below, not VMA allocations.
+
+### 12.3 Untracked GPU allocations (not in the ledger)
+
+These are real device allocations that the VMA ledger deliberately excludes
+(the viewer's "untracked remainder"; see `smvk.h`):
+
+| Allocation | Who / when | Size |
+|------------|------------|------|
+| Rendergraph target heap | `VulkanResourceManager::AllocateTargetHeapRange` at first graph target creation (`impl.cpp:5479`) | one raw `vkAllocateMemory` block, default 64 MiB; this run claimed 2 slots x 10.5 MiB (depth targets) |
+| Swapchain images + views | `VulkanSwapchain::Create` | driver-owned; 2 images by default (`DESIRED_SWAPCHAIN_IMAGE_COUNT`), format-dependent (~8 MiB each at 1080p BGRA8) |
+| UploadStreamer shard ring | `UploadStreamer::ensureShardRing`, first upload on each thread | `stagingRingPerThread` (32 MiB default); shard 0 created at init |
+| UploadStreamer bulk ring | `ensureBulkRing`, first `uploadBufferBulk` (pak cluster deserialize) | `bulkRingCapacity` (512 MiB default, HOST_VISIBLE) |
+| Readback staging | `EnsureReadbackStaging`, first async download (exposure/Gfx demand) | grows by doubling from 256 KiB, capped at 256 MiB |
+| Descriptor pools | `CreateDescriptorPool` (bindless default + others) | driver-sized: bindless pool reserves 3*MAX_TEXTURES+MAX_VOLUME_TEXTURES sampled images and MAX_SAMPLERS samplers per flight |
+| Command pools / buffers | `CommandBufferPool::init` (graphics/transfer/compute, per thread) + per-flight split/async pools | driver-sized; `kMax` buffers per pool |
+| Semaphores / fences / timeline / query pools | `VulkanSwapchain::CreateSyncObjects`, `CreateTimestampPools` | driver-sized |
+| Shader modules | `CreateShaderModule` (all main/shadow/post modules + permutations) | SPIR-V bytes retained on the CPU side too |
+| Pipelines / pipeline layouts | pipeline builders | driver memory, plus the on-disk `pipeline_cache.bin` compile cache |
+| Samplers | `VulkanSamplerCache::GetOrCreate` | driver-sized, up to MAX_SAMPLERS distinct |
+
+### 12.4 Where the tracked rows come from (allocation sites)
+
+- Static heaps: `engine/src/Renderer/mesh.cpp:109-111` (`AllocateStaticVertexFmt`),
+  sized by `TOURMALINE_MEM_STATIC_*_MB`, carved with `VmaVirtualBlock`.
+- Frame-resource rings: `WorldRenderer::onAttach` (`WorldRenderer.cpp:1134+`)
+  — frame uniforms/hot, lights, materials, directional cascades, Forward+
+  lights/decals, env zones, spot tiles, DS viz params, render views.
+- Gfx/visibility filter rings: `engine/src/Renderer/gfx_filter.cpp`
+  (indirect/seed/remainder, batches, draws, clusters, visible sets, skin
+  bounds, HZB, keptBits, shadow indirect/draws, texture meta/demand).
+- Render-graph attachments: the per-subsystem headers (`hdr.h`, `ssr.h`,
+  `ssgi.h`, `smaa.h`, `motionblur.h`, `dof.h`, `volumetric.h`,
+  `cascadedshadowmap.h`, `spotshadow.h`, `exposure.h`, `forwardplus.h`,
+  `particles.h`, `mipchain.h`, `dlss.h`, `probepremix.cpp`).
+- GI content: cubemaps/cvol/`gi dense` images loaded by the world/GI path;
+  `sggi grid`/`cvol volumes` buffers in `WorldRenderer.cpp`.
+- Scene content: one `CreateImage` per pak texture through the texture
+  upload path; `nilTexture`/SMAA LUTs are engine-owned.
+- Probe ball: `engine/src/Rendergraph/probeball.cpp:90-93`.
+
+The dominant first-frame cost is the **static geometry heaps: 1.5 GiB of the
+2.13 GiB tracked total (70%)**, before any scene content. That is why they
+are the first runtime-size knobs above. The rest of VRAM is resolution-
+scaled render targets (~317 MiB at 1080p) plus ~200 MiB of GPU-driven
+filter/DS/SSR/GI rings, and only ~80 MiB of actual texture content.

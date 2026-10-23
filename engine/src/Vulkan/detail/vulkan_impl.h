@@ -17,7 +17,7 @@
 #include <ktxVulkan.h>
 // StaticVertexFmtHeap + StaticMeshAllocation live in the shared
 // Engine/Renderer/static_vertex_heap.h (the RHI handles + a CPU arena
-// replacing the VmaVirtualBlocks ΓÇö the whole load stack now compiles
+// replacing the VmaVirtualBlocks — the whole load stack now compiles
 // against both backends).
 #include <Engine/Renderer/static_vertex_heap.h>
 
@@ -499,7 +499,7 @@ namespace smvk {
 		UploadStreamer(const UploadStreamer&) = delete;
 		UploadStreamer& operator=(const UploadStreamer&) = delete;
 
-		bool init(VkDeviceSize ringCapacity = mem::config::kStreamerTotalBudget);
+		bool init(VkDeviceSize ringCapacity = mem::config::Runtime().streamerTotalBudget);
 		void destroy();
 		void uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
@@ -614,17 +614,17 @@ namespace smvk {
 				mem::LinearAllocatorSTL<InFlightRingRange>{&mem::TransientAllocator()}};
 		};
 		ThreadUploadState states_[kNumPoolShards];
-		VkDeviceSize ringCapacityPerThread_ = mem::config::kStagingRingPerThread;
+		VkDeviceSize ringCapacityPerThread_ = mem::config::Runtime().stagingRingPerThread;
 		// Dedicated bulk context (512 MB ring, lazily created on the first
 		// uploadBufferBulk call so non-bulk users never pay the host
 		// memory): the shard rings stay 32 MB for steady-state frame
 		// uploads. Render-thread only — bulk uploads are load-time and
 		// single-threaded by construction (pak cluster deserialize).
 		ThreadUploadState bulk_;
-		static constexpr VkDeviceSize kBulkRingCapacity = mem::config::kBulkRingCapacity;
+		const VkDeviceSize bulkRingCapacity_ = mem::config::Runtime().bulkRingCapacity;
 		bool ensureRing(ThreadUploadState& st, VkDeviceSize capacity, const char* debugName);
 		bool ensureBulkRing() {
-			return ensureRing(bulk_, kBulkRingCapacity, "UploadStreamer Ring (bulk)");
+			return ensureRing(bulk_, bulkRingCapacity_, "UploadStreamer Ring (bulk)");
 		}
 		bool ensureShardRing(ThreadUploadState& st);
 		VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
@@ -649,7 +649,7 @@ namespace smvk {
 		VkSemaphore m_lastTransferSemaphore = VK_NULL_HANDLE;
 		std::atomic<uint64_t> m_lastTransferValue{ 0 };
 
-		static constexpr VkDeviceSize kFlushThreshold = mem::config::kUploadFlushThreshold;
+		const VkDeviceSize flushThreshold_ = mem::config::Runtime().uploadFlushThreshold;
 	};
 
 	struct DeferredTask {

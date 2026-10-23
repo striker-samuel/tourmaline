@@ -31,16 +31,17 @@
 
 #ifdef TOURMALINE_DXIL
 // ---------------------------------------------------------------------------
-// The D3D12 backend's bounded-table form (the five 8192-wide regions - see
-// dx12_rli.h's kBindlessCapacity comment): the SAME bindless slot space as
-// the Vulkan arrays below, but explicit registers + BOUNDED sizes (the root
-// signature's SRV table covers t0..t32767 - an unbounded array would claim
-// the whole heap). The type aliases (uintTextures / comparisonSamplers) keep
-// the compile-time-fiction trick working: same register, different fetch
-// type. The DXIL build passes -DTOURMALINE_DXIL=1 (CompileShaders.cmake).
+// The D3D12 backend's bounded-table form (the five 8192-wide regions —
+// see dx12_rhi.h's kBindlessCapacity comment): the SAME bindless slot
+// space as the Vulkan arrays below, but explicit registers + BOUNDED
+// sizes (the root signature's SRV table covers t0..t32767 — an
+// unbounded array would claim the whole heap). The type aliases
+// (uintTextures / comparisonSamplers) keep the compile-time-fiction
+// trick working: same register, different fetch type.
+// The DXIL build passes -DTOURMALINE_DXIL=1 (CompileShaders.cmake).
 // NOTE: this shim only covers the RESOURCE arrays. vk::BufferPointer
-// (SPIR-V-only, 52 files) is the remaining DXIL rework - see the porting
-// notes' shader-milestone plan.
+// (SPIR-V-only, 52 files) is the remaining DXIL rework — see the
+// porting notes' shader-milestone plan.
 // ---------------------------------------------------------------------------
 Texture2D textures[8192] : register(t0);
 Texture2D<uint4> uintTextures[8192] : register(t0); // alias, same slots
@@ -49,7 +50,8 @@ TextureCube cubemaps[8192] : register(t16384);
 Texture2DMS<float4> texturesMS[8192] : register(t24576);
 SamplerState samplers[8] : register(s0);
 SamplerComparisonState comparisonSamplers[8] : register(s0); // alias
-#else[[vk::binding(0, 0)]]
+#else
+[[vk::binding(0, 0)]]
 //[[vk::binding(kBinding_Textures, 0)]]
 Texture2D textures[];
 [[vk::binding(1, 0)]]
@@ -57,11 +59,6 @@ Texture2D textures[];
 SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
-// Uint-typed alias of the SAME bindless texture array (set 0 binding 0):
-// stencil-aspect views (S8_UINT — the SSR receiver-material layer, see
-// stencil_bits.h) ride the same slots. .Load only (stencil is
-// unfilterable); the type is a compile-time fiction over the shared
-// descriptor array, same trick as the sampler/comparisonSamplers alias.
 [[vk::binding(0, 0)]]
 Texture2D<uint4> uintTextures[];
 
@@ -81,7 +78,7 @@ Texture3D volumeTextures[];
 [[vk::binding(6, 0)]]
 Texture2DMS<float4> texturesMS[];
 #endif // TOURMALINE_DXIL
-// End of the DXIL/Vulkan binding-block split - the remaining shared
+// End of the DXIL/Vulkan binding-block split — the remaining shared
 // code (transfer functions, material values, light tables) is identical.
 
 // Exact sRGB transfer functions shared by the LDR-out passes: the swapchain
@@ -470,6 +467,26 @@ struct DsVizParams
 // BDA chase. Scalar-constructor spelling (no integer-suffix reliance).
 #define DS_FLAG_VIZ (uint64_t(1))
 
+// Analytic env-zone record (see Rendergraph/envzones.h + the C++ mirror).
+// 144 B, DX-layout safe (all 16-byte chunks). worldToLocal holds the ROWS
+// of the sanitized inverse frame, so the resolver uses dot products and
+// never depends on matrix-convention flags. halfAndMask.xyz = asuint(half
+// extents), .w = the EnvVolume inf-mask bits.
+#define ENV_ZONE_MAX 64
+struct EnvZoneGpu
+{
+    float4 worldToLocal[4]; // rows of the sanitized inverse frame
+    uint4 halfAndMask;      // xyz asuint(half), w infMask
+    float4 shape;           // x priority, y blendWeight, z blendRadius, w reserved
+    float4 sky;             // rgb skyTint, a ambientI
+    float4 fog;             // rgb fogColor, a fogDensity
+    float4 vol;             // x volumetrics, y volumetricDensity, zw reserved
+};
+struct EnvZonesBuffer
+{
+    EnvZoneGpu zones[ENV_ZONE_MAX];
+};
+
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
 // there): env at 512, cubemap block at 640, specular knobs at 656,
 // deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
@@ -661,21 +678,16 @@ uint decalCount;                                         // 776 0 = decals off
     // slots, UINT32_MAX =
     // none. APPEND-ONLY tail: every pinned offset above stays put. ----
     uint cvolMeanLayers[8];                                       // 1640 8 volumes x 1 mean slot
-    // ---- Environment zone map (tiled world/env separation, see
-    // Rendergraph/envzones.h + the C++ mirror's envZone* block): the RGBA8
-    // weight texture (R/G/B/A = the weights of zone definitions 0..3,
-    // normalized at sample) + the four zone definitions (blendable env
-    // subset: sky tint + ambient intensity, fog color + density,
-    // volumetric scattering + extinction). envZoneMapIndex = 0xffffffff
-    // = off (consumers take the plain env path). Sun stays global.
+    // ---- Analytic env zones (see Rendergraph/envzones.h): envZones is
+    // the BDA of this frame's EnvZoneGpu slice; envZoneCount = live
+    // records (0 = every consumer takes the plain env path). No baked
+    // map, no world-size/texel/4-zone limits. envZoneReserved keeps the
+    // 192-byte block so the lightmap/probe tail offsets stay pinned.
     // APPEND-ONLY tail: every pinned offset above stays put. ----
-    uint envZoneMapIndex;                                         // 1672 bindless Texture2D (off = max)
-    uint envZoneSampler;                                          // 1676 bindless sampler (0 = linear)
-    float envZoneWorldSize;                                       // 1680 the map's world extent (m)
-    uint envZonePad_;                                             // 1684 (16-align to envZoneSky)
-    float4 envZoneSky[4];                                         // 1688 rgb skyTint, a ambientI (per zone)
-    float4 envZoneFog[4];                                         // 1752 rgb fogColor, a fogDensity
-    float4 envZoneVol[4];                                         // 1816 x volumetrics, y volumetricDensity
+    vk::BufferPointer<EnvZonesBuffer> envZones;                   // 1672 EnvZoneGpu slice BDA
+    uint envZoneCount;                                            // 1680 live zone records
+    uint envZoneFlags;                                            // 1684 reserved
+    uint envZoneReserved[48];                                     // 1688 keeps the tail pinned
     // ---- SG 2D lightmaps (STATIC geometry): atlas layers ride the
     // bindless texture slots (mirror of the C++ APPEND-ONLY tail — every
     // pinned offset above stays put). lmLayerKind: 0 = 9 RGBA16F stream

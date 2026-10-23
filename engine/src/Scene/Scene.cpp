@@ -490,6 +490,12 @@ void loadScene(const char* fileName, Scene& scene)
       }
     }
   }
+  // Env-zone master switch (appended; absent = the default ON stands).
+  {
+    uint32_t zonesOn = 0;
+    if (fread(&zonesOn, sizeof(zonesOn), 1, f) == 1)
+      scene.envZonesEnabled = zonesOn != 0;
+  }
   // Cooked punctual lights are NOT carried in this legacy format: they
   // are Cluster pool assets (see Scene::lightForNode) and round-trip
   // through paks only.
@@ -608,12 +614,17 @@ void saveScene(const char* fileName, const Scene& scene)
       saveEnvFloats(f, env);
     }
   }
-  // Render-settings section (last; old loaders stop after the env
-  // section — trailing bytes ignored): u32 authored flag + the record.
+  // Render-settings section (old loaders stop after the env section —
+  // trailing bytes ignored): u32 authored flag + the record.
   {
     const uint32_t renderFlag = scene.hasRenderSettings ? 1u : 0u;
     fwrite(&renderFlag, sizeof(renderFlag), 1, f);
     saveRenderFloats(f, scene.renderSettings);
+  }
+  // Env-zone master switch (appended; old loaders ignore the tail).
+  {
+    const uint32_t zonesOn = scene.envZonesEnabled ? 1u : 0u;
+    fwrite(&zonesOn, sizeof(zonesOn), 1, f);
   }
   fclose(f);
 }

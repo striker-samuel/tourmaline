@@ -2,37 +2,30 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// Tiled environment-zone separation: the world/env look (sky tint, ambient
+// Analytic environment zones: the world/env look (sky tint, ambient
 // intensity, fog, volumetrics) varies per world region and blends across
 // region borders.
 //
-// The map: ONE RGBA8_UNORM texture over the world extent, each texel
-// covering `texelSize` meters (default 10 m -> 400x400 over the default
-// 4 km terrain). The R/G/B/A channels are the WEIGHTS of zone definitions
-// 0..3 at that texel — normalized at sample time, so a texel can blend up
-// to four zones; bilinear filtering blends between texels at runtime.
+// A zone is an env ENTITY (scene.envForNode) whose transform defines an
+// OBB: translation + rotation = placement, column lengths = half extents,
+// an INFINITE column or an EnvVolume inf-mask face = an unbounded slab /
+// half-space (the exact contract lives in ZoneCovers). The look rides the
+// node's SceneEnv block. There is NO baked map anymore: the renderer
+// packs the zones into a small GPU buffer every frame and the shaders
+// resolve the covering zone per pixel (EnvZoneAt - the exact CPU
+// ZoneCovers test, with EnvVolume's blendWeight/blendRadius applied).
 //
-// The zones are ENTITIES (scene.envForNode nodes — see WorldRenderer::
-// RebuildEnvZoneMap): coverage from the node TRANSFORM (translation +
-// rotation = placement, scale = half extents per local axis, an INFINITE
-// component = an unbounded slab), the look from the node's SceneEnv
-// block. Channel 0 = the resolved environment (weight 1 outside every
-// zone); channels 1..3 = the top-3 zones (priority descending, then
-// innermost — the same order ZoneAtPosition resolves by). The sun stays
-// global (one sun). Zone definitions ride FrameUniforms (the envZone*
-// tail; see WorldRenderer.h), the map rides the bindless Texture2D
-// array — every shader that includes common.hlsli can blend them via
-// EnvZoneWeights (environment.hlsli).
+// Why: the old 2D XZ RGBA8 map clamped the world to 4 km / 10 m texels,
+// capped the scene at 3 zones (one alpha channel was the fallback), could
+// not represent rotated boxes or Y-varying coverage, and ignored
+// EnvVolume's blend radius. The buffer is cheap (64 x 144 B per frame),
+// has no world-size limit, no texel quantization and no hard zone cap
+// beyond the GPU loop bound.
 //
-// Consumers today: the terrain field (its ambient + fog blend per zone)
-// and the volumetric fog (its march density/scatter blend per zone at
-// the ray start). CPU-side SampleAt mirrors the GPU blend for
-// tooling/tests.
-
-#include <Engine/Memory/pool.h>
-#include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/RHI/resource_manager.h>
-#include <Engine/platform.h>
+// Consumers: the terrain field (its ambient + fog blend per zone) and the
+// volumetric fog (its march density/scatter blend per zone at the ray
+// midpoint). The sun stays global (one sun everywhere). CPU helpers
+// (EnvZoneFalloff/EnvZoneAt) mirror the shader resolver for tests/tooling.
 
 #include <glm/glm.hpp>
 
@@ -41,13 +34,15 @@
 
 namespace smvk::envzones {
 
-inline constexpr uint32_t kEnvZoneMax = 4; // R/G/B/A weight channels
+// GPU loop bound (the buffer is sized for this many records). Zones past
+// it are dropped after the priority sort (the renderer logs once).
+inline constexpr uint32_t kEnvZoneMaxZones = 64;
 
 // One zone's blendable look (the env subset zones own; the sun stays
-// global — one sun everywhere).
+// global - one sun everywhere). Matches the shader-side EnvZoneLook.
 struct EnvZone {
 	// Sky tint (linear 0..1, multiplies the env zenith/horizon/ground
-	// colors) + the zone's ambient intensity (the iblIntensity analog —
+	// colors) + the zone's ambient intensity (the iblIntensity analog -
 	// pre-exposure HDR radiance scale for the analytic ambient).
 	glm::vec3 skyTint{ 1.0f, 1.0f, 1.0f };
 	float ambientI = 20.0f;
@@ -56,59 +51,49 @@ struct EnvZone {
 	float fogDensity = 0.01f;
 	// Volumetric fog (the raymarched pass: scattering scale over the
 	// pass base (0 = off, 1 = the global intensity) + extinction
-	// density, blended at the ray start).
+	// density, blended at the ray midpoint).
 	float volumetrics = 0.0f;
 	float volumetricDensity = 0.015f;
 	float pad[2]{};
 };
 
-struct EnvZoneDesc {
-	// Map extent (meters, square, centered at the origin — matches the
-	// default terrain field).
-	float worldSize = 4000.0f;
-	// Meters per texel (the paint/blend granularity).
-	float texelSize = 10.0f;
-	// The up-to-4 zone definitions (channel i's weights blend zones[i]).
-	EnvZone zones[kEnvZoneMax];
+// GPU zone record (BDA storage buffer, 144 B; HLSL mirror in
+// common.hlsli). worldToLocal holds the ROWS of the sanitized inverse
+// frame (four float4, so the shader uses dot products and never depends
+// on HLSL/GLM matrix conventions). halfAndMask.xyz = asuint(half
+// extents), .w = the EnvVolume inf-mask bits. shape = (priority,
+// blendWeight, blendRadius, reserved). sky/fog/vol mirror EnvZone.
+struct EnvZoneGpu {
+	glm::vec4 worldToLocal[4]{};
+	glm::uvec4 halfAndMask{};
+	glm::vec4 shape{};
+	glm::vec4 sky{};
+	glm::vec4 fog{};
+	glm::vec4 vol{};
 };
+static_assert(sizeof(EnvZoneGpu) == 144, "EnvZoneGpu: HLSL mirror");
 
-struct EnvZoneMap {
-	EnvZoneDesc desc{};
+// Packs one authored zone. Returns false for an EMPTY zone (a flat finite
+// axis without an inf face - the same rule as ZoneCovers). The frame is
+// sanitized exactly like ZoneCovers: fully unbounded axes get unit columns
+// before the inverse (INF entries would poison it). Called by the
+// renderer's per-frame zone upload; also the unit-testable core.
+bool MakeEnvZoneGpu(const glm::mat4& transform, uint32_t infMask,
+	const EnvZone& look, float priority, float blendWeight,
+	float blendRadius, EnvZoneGpu& out);
 
-	// CPU weight grid (RGBA8 packed as u32 per texel, row-major, x-major:
-	// texel (x, z) at z * dim + x). 0xFFFFFFFF default = zone 0 fill.
-	std::vector<uint32_t> weights;
-	uint32_t dim = 0; // texels per side (worldSize / texelSize)
+// Soft falloff in 0..1 at world position p: 1 inside the OBB, fading to
+// 0 at blendRadius metres outside the bounded faces (Euclidean distance;
+// infinite faces contribute nothing). Mirrors the shader helper.
+float EnvZoneFalloff(const EnvZoneGpu& zone, const glm::vec3& p);
 
-	// GPU map (bindless Texture2D; UINT32_MAX index = not registered).
-	Holder<TextureHandle> texture;
-	uint32_t bindlessIndex = UINT32_MAX;
-	bool valid = false;
-
-	[[nodiscard]] bool Valid() const {
-		return valid && dim > 0 && weights.size() == size_t(dim) * dim
-			&& !texture.empty() && bindlessIndex != UINT32_MAX;
-	}
-
-	// Builds the map (default zone-0 fill), the GPU texture + the
-	// bindless registration. Returns false on a degenerate desc or a GPU
-	// failure (the map stays invalid; consumers take the plain env path).
-	bool Build(ResourceManager& ctx, const EnvZoneDesc& d);
-	void Destroy();
-
-	// Re-uploads the CPU weight grid after Paint (staging flush by the
-	// caller's cadence). No-op when invalid.
-	void Upload(ResourceManager& ctx);
-
-	// World XZ -> texel center coordinates (continuous; bilinear taps).
-	void WorldToTexel(float wx, float wz, float& outX, float& outZ) const;
-	// Texel-space weight fetch (clamped, nearest).
-	glm::vec4 WeightsAtTexel(float x, float z) const;
-
-	// CPU blend at world XZ (bilinear over the grid, then the weighted
-	// zone mix) — mirrors the GPU blend (EnvZoneWeights + the envZone*
-	// FrameUniforms block) for tooling/tests.
-	EnvZone SampleAt(float wx, float wz) const;
-};
+// Resolves the FIRST influencing zone in `zones` (the renderer uploads
+// them sorted priority desc, then innermost, then node id - so the first
+// hit is the winner) and blends its look with the weight
+// blendWeight * falloff. Returns false when no zone influences p (the
+// caller keeps the plain resolved env look). Mirrors the shader
+// EnvZoneAt; used by tooling/tests.
+bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
+	float& weight, EnvZone& look);
 
 } // namespace smvk::envzones

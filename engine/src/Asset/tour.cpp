@@ -2407,6 +2407,10 @@ struct TourEnvBlocks {
 	uint32_t currentCluster = UINT32_MAX;
 	bool haveCurrent = false;
 	bool hasBlocks = false;
+	// Analytic env-zone master switch (env.zonesEnabled, scene-level).
+	// Absent = the Scene default ON (zones auto-activate with env nodes).
+	bool zonesEnabled = true;
+	bool hasZonesEnabled = false;
 	// Env-volume settings (envvol.n.<i>.<field> keys, grouped by the
 	// node field like env.n entries): same node space as nodeEnvs. Parsed raw; replay validates node range like env
 	// blocks (dangling entries warn + drop). sawPriority tracks an
@@ -2556,6 +2560,10 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 		else if (key == "env.current") {
 			eb.currentCluster = uint32_t(TourEnvFloat(val, -1.0f));
 			eb.haveCurrent = true;
+		}
+		else if (key == "env.zonesEnabled") {
+			eb.zonesEnabled = TourEnvFloat(val, 1.0f) != 0.0f;
+			eb.hasZonesEnabled = true;
 		}
 		// Env-volume settings (envvol.n.<i>.<field>, see EnvVolume):
 		// grouped by the node field like env.n entries above.
@@ -3849,6 +3857,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// below is the second exception).
 	{
 		TourEnvBlocks eb = ParseTourEnvBlocks(doc);
+		if (eb.hasZonesEnabled)
+			scene.envZonesEnabled = eb.zonesEnabled;
 		if (eb.hasBlocks) {
 			std::unordered_map<uint32_t, SceneEnv> table;
 			for (const auto& [n, e] : eb.nodeEnvs) {

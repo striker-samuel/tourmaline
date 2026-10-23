@@ -126,6 +126,15 @@ void EditorApp::DrawEnvPanel() {
 		}
 		ImGui::EndCombo();
 	}
+	// Scene-level master switch for analytic zones (auto-on; persisted as
+	// env.zonesEnabled -> pak v15). Node sources are the zones.
+	ImGui::Checkbox("Enable environment zones##envzones",
+		&m_world->scene.envZonesEnabled);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"Analytic per-pixel zones (terrain + volumetric fog).\n"
+			"On by default: any Environment node becomes a zone.\n"
+			"Saves through the tour and the pak.");
 	// ZONE controls (node sources only — the node IS the zone: coverage
 	// from its transform, see ZoneCovers; the default block has no zone).
 	if (m_envCurrent != UINT32_MAX) {
@@ -176,9 +185,8 @@ void EditorApp::DrawEnvPanel() {
 				ImGui::SetTooltip(
 					"Y- + box top at y=0 covers y <= 0 (underwater);\n"
 					"Y+ + box bottom at y=50 covers y >= 50 (high haze).\n"
-					"All six = infinite everywhere. Y-varying zones don't\n"
-					"bake into the XZ weight map (cook warns) — the exact\n"
-					"3D test still covers them.");
+					"All six = infinite everywhere. Coverage is analytic\n"
+					"3D, so Y-varying zones work exactly.");
 		}
 		priEdited = ImGui::DragFloat("Volume priority##envvol",
 			&tmp.priority, 0.25f, 0.0f, 100.0f, "%.0f");
@@ -189,10 +197,9 @@ void EditorApp::DrawEnvPanel() {
 			&tmp.blendRadius, 0.1f, 0.0f, 64.0f, "%.1f");
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip(
-				"Unreal-style blending: weight scales the zone's map\n"
-				"contribution; radius softens the XZ footprint edge at\n"
-				"bake. Radius/weight on Y faces apply to the exact 3D\n"
-				"test only (map bake is XZ-projected).");
+				"Unreal-style blending: weight scales the whole zone;\n"
+				"radius softens the edge OUTSIDE the box (3D distance).\n"
+				"Both apply per pixel in the terrain + volumetric fog.");
 		if (volChanged) {
 			if (!hasEntry && !priEdited) {
 				// Inherit the look's priority so creating the entry
@@ -707,6 +714,10 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 		put("render.cubemapEnabled", r.cubemapEnabled ? "1" : "0");
 		put("render.cubemapIntensity", std::to_string(r.cubemapIntensity));
 	}
+	// Analytic env-zone master switch (scene-level; see
+	// Rendergraph/envzones.h). Absent = the Scene default ON.
+	put("env.zonesEnabled",
+		(m_world && m_world->scene.envZonesEnabled) ? "1" : "0");
 	if (m_envCurrent != UINT32_MAX) {
 		const int cn = WorldToCluster(m_envCurrent);
 		if (cn >= 0)
@@ -732,6 +743,7 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		return;
 	auto& scene = m_world->scene;
 	scene.envForNode.clear();
+	scene.envZonesEnabled = true; // absent key = auto-on (Scene default)
 	m_envCurrent = UINT32_MAX;
 	EditorEnv def = scene.defaultEnvironment;
 	std::vector<std::pair<uint32_t, EditorEnv>> nodeEnvs;
@@ -852,6 +864,10 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
 		else if (key == "env.current") {
 			currentCluster = uint32_t(StrFloat(val, -1.0f));
 			haveCurrent = true;
+		}
+		else if (key == "env.zonesEnabled") {
+			scene.envZonesEnabled =
+				StrFloat(val, scene.envZonesEnabled ? 1.0f : 0.0f) != 0.0f;
 		}
 		else if (key.rfind("envvol.n.", 0) == 0) {
 			if (field == "node") {

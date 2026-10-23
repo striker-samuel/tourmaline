@@ -62,8 +62,8 @@ public:
 		// default-constructed (empty std::function: no allocation) and
 		// torn down explicitly; the storage itself is never freed.
 		slots_ = static_cast<std::function<void()>*>(mem::ProcessAllocator().Allocate(
-			kCapacity * sizeof(std::function<void()>), alignof(std::function<void()>)));
-		for (size_t i = 0; i < kCapacity; ++i)
+			capacity_ * sizeof(std::function<void()>), alignof(std::function<void()>)));
+		for (size_t i = 0; i < capacity_; ++i)
 			new (&slots_[i]) std::function<void()>();
 		workers_.reserve(threadCount);
 		for (size_t i = 0; i < threadCount; ++i) {
@@ -81,7 +81,7 @@ public:
 						if (stop_ && count_ == 0) return;
 						task = std::move(slots_[head_]);
 						slots_[head_] = nullptr;
-						head_ = (head_ + 1) % kCapacity;
+						head_ = (head_ + 1) % capacity_;
 						--count_;
 					}
 					cvFull_.notify_one();
@@ -99,7 +99,7 @@ public:
 		cvEmpty_.notify_all();
 		cvFull_.notify_all();
 		for (auto& t : workers_) if (t.joinable()) t.join();
-		for (size_t i = 0; i < kCapacity; ++i)
+		for (size_t i = 0; i < capacity_; ++i)
 			slots_[i].~function();
 		// Linear-owned storage: destructors run, memory never freed.
 	}
@@ -118,10 +118,10 @@ public:
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			if (stop_) throw std::runtime_error("ThreadPool is stopped");
-			cvFull_.wait(lock, [this] { return stop_ || count_ < kCapacity; });
+			cvFull_.wait(lock, [this] { return stop_ || count_ < capacity_; });
 			if (stop_) throw std::runtime_error("ThreadPool is stopped");
 			slots_[tail_] = std::move(fn);
-			tail_ = (tail_ + 1) % kCapacity;
+			tail_ = (tail_ + 1) % capacity_;
 			++count_;
 		}
 		cvEmpty_.notify_one();
@@ -129,7 +129,7 @@ public:
 	}
 
 private:
-	static constexpr size_t kCapacity = mem::config::kThreadPoolQueueSlots;
+	const size_t capacity_ = mem::config::Runtime().threadPoolQueueSlots;
 	std::vector<std::thread> workers_;
 	std::function<void()>* slots_ = nullptr;
 	size_t head_ = 0;  // next slot to consume (guarded by mutex_)

@@ -1266,6 +1266,14 @@ bool SerializeClusters(
 				PutU32(blob, sk.root);
 			}
 		}
+		// Analytic env-zone master switch (v15; v14 blobs end after the
+		// skeleton): one u32 (1 = zones evaluate). Always written so the
+		// layout is uniform; old readers fail the trailing-bytes check on
+		// v15 blobs (the sanctioned break - no conversions). The LOAD
+		// side treats an absent section as the default ON.
+		{
+			PutU32(blob, scene.envZonesEnabled ? 1u : 0u);
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1734,6 +1742,16 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 					*hasSkeletonOut = true;
 				}
 			}
+		}
+		// Analytic env-zone master switch (v15): one u32. Absent = the
+		// default ON (v14 and older blobs). Present must end the blob
+		// exactly (the shared trailing-bytes check below).
+		scene.envZonesEnabled = true;
+		if (c.off < c.img.size()) {
+			const uint32_t zonesOn = c.u32();
+			if (!c.ok)
+				return fail("truncated scene env-zone flag");
+			scene.envZonesEnabled = zonesOn != 0u;
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

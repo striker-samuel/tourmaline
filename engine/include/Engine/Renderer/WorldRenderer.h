@@ -639,29 +639,28 @@ struct FrameUniforms
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint32_t cvolMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
-	// ---- Environment zone map (tiled world/env separation, see
-	// Rendergraph/envzones.h): the RGBA8 weight texture (texelSize meters
-	// per texel over envZoneWorldSize; R/G/B/A = the weights of zone
-	// definitions 0..3, normalized at sample) + the four zone definitions
-	// (the blendable env subset: sky tint + ambient intensity, fog color +
-	// density, volumetric scattering + extinction). envZoneMapIndex =
-	// UINT32_MAX = off (every consumer takes the plain env path). The sun
-	// stays global â€” one sun everywhere; zones own sky/fog/volumetrics.
+	// ---- Analytic environment zones (see Rendergraph/envzones.h):
+	// envZones is the BDA of this frame's EnvZoneGpu slice (the renderer
+	// packs the world's zone entities every frame), envZoneCount = the
+	// live record count (0 = every consumer takes the plain env path).
+	// No baked map, no world-size/texel/4-zone limits: shaders resolve
+	// the exact OBB coverage + EnvVolume blendWeight/blendRadius per
+	// pixel. The sun stays global (one sun everywhere); zones own
+	// sky/fog/volumetrics. envZoneReserved keeps the 192-byte block size
+	// so the lightmap/probe tail offsets stay pinned (available for a
+	// future per-zone payload).
 	// APPEND-ONLY tail (after cvolMeanLayers): every pinned offset above
 	// stays put when this grows. ----
-	uint32_t envZoneMapIndex = UINT32_MAX; // 1672 bindless Texture2D (off = max)
-	uint32_t envZoneSampler = 0;          // 1676 bindless sampler (0 = linear)
-	float envZoneWorldSize = 4000.0f;     // 1680 the map's world extent (m)
-	uint32_t envZonePad_ = 0;             // 1684 (16-align to envZoneSky)
-	glm::vec4 envZoneSky[4] = {};         // 1688 rgb skyTint, a ambientI (per zone)
-	glm::vec4 envZoneFog[4] = {};         // 1752 rgb fogColor, a fogDensity
-	glm::vec4 envZoneVol[4] = {};         // 1816 x volumetrics, y volumetricDensity
+	uint64_t envZones = 0;                  // 1672 EnvZoneGpu slice BDA
+	uint32_t envZoneCount = 0;              // 1680 live zone records
+	uint32_t envZoneFlags = 0;              // 1684 reserved (0 today)
+	uint32_t envZoneReserved[48] = {};      // 1688 keeps the tail offsets pinned
 	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
 	// atlas layers ride the bindless texture slots. lmLayerKind selects
 	// the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
 	// one-texture-per-lobe (12 slots, texture l = lobe l; slots past
 	// the scene's lobe count stay UINT32_MAX). APPEND-ONLY tail (after
-	// envZoneVol): every pinned offset above stays put. ----
+	// envZoneReserved): every pinned offset above stays put. ----
 	uint32_t lmPad0_[2] = {};          // 1880 (16-align to lmLayers@1888)
 	uint32_t lmLayers[12] = {};        // 1888 atlas bindless slots
 	uint32_t lmEnabled = 0;            // 1936 1 = lightmap branch active
@@ -712,13 +711,15 @@ static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mir
 static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, cvolMeanLayers) == 1640, "cvolMeanLayers offset: HLSL mirror");
-// Env-zone block (the append-only tail): the map binding + the 4 zone
-// definition arrays, pinned like every other HLSL-mirrored member.
-static_assert(offsetof(FrameUniforms, envZoneMapIndex) == 1672, "envZoneMapIndex offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, envZoneSky) == 1688, "envZoneSky offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, envZoneFog) == 1752, "envZoneFog offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, envZoneVol) == 1816, "envZoneVol offset: HLSL mirror");
-// SG 2D lightmap tail (append-only; see the block above envZoneVol).
+// Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
+// BDA + count + reserved words, pinned like every other HLSL-mirrored
+// member. The reserved array keeps the old 208-byte block size so the
+// lightmap/probe tail offsets below do not move.
+static_assert(offsetof(FrameUniforms, envZones) == 1672, "envZones offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneCount) == 1680, "envZoneCount offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneFlags) == 1684, "envZoneFlags offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envZoneReserved) == 1688, "envZoneReserved offset: HLSL mirror");
+// SG 2D lightmap tail (append-only; see the block above envZoneReserved).
 static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, lmEnabled) == 1936, "lmEnabled offset: HLSL mirror");
 // Probe pre-mix block (the append-only tail): pinned like every other
@@ -788,6 +789,11 @@ struct AppResources {
 	// (see UpdateDecals â€” per-frame re-derivation, live edits included).
 	smvk::Holder<smvk::BufferHandle> decalsBuffer;
 	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
+	// Analytic env-zone ring (EnvZoneGpu * kEnvZoneMaxZones per flight
+	// frame): re-packed + uploaded every frame from the WORLD's zone
+	// entities (see UpdateEnvZones). No rendergraph alias: reached through
+	// FrameUniforms::envZones (BDA) by the terrain/volumetric FS.
+	smvk::Holder<smvk::BufferHandle> envZonesBuffer;
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	// DS visualizer params ring (DsVizParams per flight + one zero slice
@@ -2788,25 +2794,21 @@ public:
 	// snapshot at Configure: TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
 	int m_terrainHfShadow = 1;
 	int m_terrainHfSteps = 16;
-	// Tiled environment-zone map (see Rendergraph/envzones.h): the RGBA8
-	// weight texture (10 m per texel over the 4 km world) + up to 4 zone
-	// definitions (sky tint/ambient, fog, volumetrics), blended per zone
-	// by the terrain + the volumetric fog. The CONTENT is derived from
-	// the world's ZONE ENTITIES (scene.envForNode nodes — coverage from
-	// the node transform rasterized into the XZ weight grid; channel 0 =
-	// the resolved environment, channels 1..3 = the top-3 zones by
-	// priority/innermost). m_envZonesEnabled is the master (off = every
-	// consumer takes the plain env path; the FrameUniforms envZone* block
-	// carries the UINT32_MAX sentinel index).
-	bool m_envZonesEnabled = false;
-	smvk::envzones::EnvZoneMap m_envZones{};
-	// Zone-entity map rebuild (Initialize + world loads). Two-tier: the
-	// zone DEFINITIONS (desc.zones -> FrameUniforms every frame) recompute
-	// on every call; the weight-grid RASTERIZE (+ upload) only when the
-	// zone coverage changed (the zone set, their transforms or priorities
-	// — hashed). Failure is non-fatal (plain env path).
-	void RebuildEnvZoneMap();
-	uint64_t m_envZoneCoverageHash = ~0ull;
+	// Analytic environment zones (see Rendergraph/envzones.h): the
+	// renderer packs the world's zone entities into a per-flight GPU
+	// buffer every frame (UpdateEnvZones) and the terrain/volumetric
+	// shaders resolve the covering OBB per pixel. m_envZonesEnabled is
+	// the runtime master toggle (the debug panel checkbox); the AUTHORED
+	// switch is Scene::envZonesEnabled (tour/pak). Either off = every
+	// consumer takes the plain env path (envZoneCount 0).
+	bool m_envZonesEnabled = true;
+	// Per-frame zone count for this flight slice (filled by
+	// UpdateEnvZones right before UpdateFrameUniforms).
+	uint32_t m_envZoneFrameCount = 0;
+	uint32_t m_envZoneLastCount = UINT32_MAX; // overflow warning dedupe
+	// Packs + uploads the zone records (priority desc, innermost, node
+	// id). Failure/overflow is non-fatal (plain env path).
+	void UpdateEnvZones(uint32_t currentFrame);
 	// ---- Texture inspector (aux-texture debug view) ----
 	// A SEPARATE floating ImGui window (not part of the debug panel — it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),

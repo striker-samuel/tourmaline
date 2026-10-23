@@ -59,10 +59,10 @@
 
 // Debug-object-name setter (null-guarded): vkSetDebugUtilsObjectNameEXT
 // is a volk-resolved function pointer that stays NULL when the
-// VK_EXT_debug_utils instance extension is not enabled — which happens on
+// VK_EXT_debug_utils instance extension is not enabled â€” which happens on
 // TOURMALINE_NO_VALIDATION=1 runs (the extension rides the validation
 // layer's instance chain). Calling it unguarded crashed with a call
-// through null (pc=0). A missing debug name is cosmetic — skip instead.
+// through null (pc=0). A missing debug name is cosmetic â€” skip instead.
 static inline void SetDebugObjectName(
 	VkDevice device, const VkDebugUtilsObjectNameInfoEXT* info)
 {
@@ -99,7 +99,7 @@ static VkQueue computeQueue_ = VK_NULL_HANDLE;
 static bool g_multiDrawIndirect = false;
 // True when the device supports non-zero firstInstance in indirect draws
 // (the gfx filter packs cluster ids there). Without it the filter's
-// commands are invalid — see the feature gate in VulkanCore init.
+// commands are invalid â€” see the feature gate in VulkanCore init.
 static bool g_multiDrawIndirectFirstInstance = false;
 // True when the device supports shaderDemoteToHelperInvocation (the MASK
 // alpha-test shaders compile clip/discard to OpDemoteToHelperInvocation).
@@ -172,7 +172,7 @@ namespace {
 
 	// Frame-scoped scratch vectors: allocate from the frame linear allocator
 	// (rewound wholesale at the next DrawFrame via ResetFrameArena). The
-	// vectors die at scope end — never live across the frame boundary —
+	// vectors die at scope end â€” never live across the frame boundary â€”
 	// so the rewind is always safe (see mem::memory.h reset discipline).
 	template<typename T>
 	smvk::mem::FrameVector<T> MakeFrameScratchVec() {
@@ -658,7 +658,7 @@ constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
 	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Index (addressable: GPU-driven filter/index reads via BDA)
 	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Vertex (addressable: filter CS reads the static pos heap via BDA; null BDA = MMU fault + device lost)
 	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists + compute-written debug line streams — VERTEX so those bind as vertex buffers)
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists + compute-written debug line streams â€” VERTEX so those bind as vertex buffers)
 	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
 	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
@@ -1429,7 +1429,7 @@ static constexpr VkDescriptorSetLayoutBinding       getDSLBinding(uint32_t bindi
 
 
 // ---------------------------------------------------------------------------
-// Sync helpers – Vk <-> RHI conversions (kept internal for threading safety)
+// Sync helpers â€“ Vk <-> RHI conversions (kept internal for threading safety)
 // ---------------------------------------------------------------------------
 static smvk::ImageLayout FromVkImageLayout(VkImageLayout l) {
 	switch (l) {
@@ -1510,7 +1510,7 @@ static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 }
 static VkAccessFlags2 ToVkAccessLocal(smvk::AccessFlags access) { return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access)); }
 
-// TOURMALINE_HOST_COPY=0: kill switch for VK_EXT_host_image_copy — the
+// TOURMALINE_HOST_COPY=0: kill switch for VK_EXT_host_image_copy â€” the
 // extension is never enabled on the device AND the upload streamer is kept
 // off the host-copy path. RenderDoc's support for the extension is
 // incomplete and can crash captures; set this in RenderDoc launch configs.
@@ -1523,7 +1523,7 @@ static bool HostCopyKilledByEnv()
 	return killed;
 }
 
-// TOURMALINE_MESH=0: kill switch for VK_EXT_mesh_shader — the extension
+// TOURMALINE_MESH=0: kill switch for VK_EXT_mesh_shader â€” the extension
 // is never enabled on the device and the mesh-shader gfx filter path
 // stays off (compute+indexed CPU fallback). Mirrors HostCopyKilledByEnv.
 static bool MeshKilledByEnv()
@@ -1544,7 +1544,7 @@ static bool MeshKilledByEnv()
 // that when this build's SPIR-V itself carries debug info
 // (TOURMALINE_SHADER_DEBUG_INFO: Debug trees + the x64-Release-ShaderDebug
 // preset) and the driver exposes the extension.
-//   TOURMALINE_AFTERMATH=0  kill switch — skip the driver-side tables (they
+//   TOURMALINE_AFTERMATH=0  kill switch â€” skip the driver-side tables (they
 //                          cost pipeline-compile time + memory), e.g. when
 //                          bisecting a hang that never reaches Aftermath
 //   unset                 default: on iff the SPIR-V carries debug info
@@ -1569,7 +1569,7 @@ static bool AftermathShaderDebugTablesEnabled()
 }
 
 // ---------------------------------------------------------------------------
-// TOURMALINE_SERIALIZE — submission-level serialization bisect knob
+// TOURMALINE_SERIALIZE â€” submission-level serialization bisect knob
 // ---------------------------------------------------------------------------
 // Nsight Graphics' "serialize context" forces every GPU workload to
 // complete before the next begins; bugs that only reproduce WITHOUT it
@@ -1652,15 +1652,15 @@ static void RgSerializeGate(bool on, VkQueue queue, std::mutex& queueMutex)
 //   - the command-buffer stream it records into (G1/C/G2 when the
 //     async-compute split is active, MAIN otherwise),
 //   - per hinted image/buffer: the tracked src sync state -> the pass's
-//     request and the needBarrier verdict (need=0 lines included — a
+//     request and the needBarrier verdict (need=0 lines included â€” a
 //     read whose src layout is still COLOR_ATTACHMENT / DEPTH_ATTACHMENT
 //     means no barrier covered the producer's write),
 //   - the emitted VkImageMemoryBarrier2 / VkBufferMemoryBarrier2
 //     contents, plus the cross-queue rewrite markers on async passes.
 // The two loudest bug signatures to grep for:
-//   "SKIPPED-BARRIER"  — a hint that resolved to no backing image, so a
+//   "SKIPPED-BARRIER"  â€” a hint that resolved to no backing image, so a
 //                        needed barrier was silently dropped,
-//   "need=0" on a line whose src layout differs from dst — impossible by
+//   "need=0" on a line whose src layout differs from dst â€” impossible by
 //                        construction, so seeing one means state corruption.
 static const char* RgTraceImageLayoutName(smvk::ImageLayout l)
 {
@@ -1717,7 +1717,7 @@ static bool RgTraceEnabled(uint32_t frameIndex)
 		(filter == 0 || static_cast<uint64_t>(filter) == frameIndex);
 }
 // TOURMALINE_ASYNC_COMPUTE=0 (or "off"): process-wide kill switch for the
-// true-async G1/C/G2 split. EVSM itself stays on — the blur passes simply
+// true-async G1/C/G2 split. EVSM itself stays on â€” the blur passes simply
 // record inline on the main graphics command buffer (emulated async, one
 // submission per frame, same-queue in-order execution). A/B tool for
 // isolating split-only breakage without changing the shadow algorithm
@@ -1791,7 +1791,7 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 // seeded from a validated file and saved via temp-file + rename.
 //
 // The engine's in-process VulkanPipelineCache dedupes pipeline
-// OBJECTS; the driver's VkPipelineCache dedupes the COMPILES —
+// OBJECTS; the driver's VkPipelineCache dedupes the COMPILES â€”
 // both are needed (the object cache alone meant every process
 // paid the full shader-microcode compiles, which hitch the
 // first traversal of a scene hard: each unseen material/LOD
@@ -1799,11 +1799,11 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 // Bistro). With the disk seed, only genuinely new pipelines
 // compile.
 //
-// Robustness (all of it application-side — drivers accept
+// Robustness (all of it application-side â€” drivers accept
 // arbitrary blobs badly):
 //   - Prefix header: magic, dataSize, dataHash (FNV-1a 64 over
 //     the blob), vendorID, deviceID, driverVersion, driverABI
-//     (sizeof(void*) — 32/64-bit driver builds share UUIDs),
+//     (sizeof(void*) â€” 32/64-bit driver builds share UUIDs),
 //     pipelineCacheUUID. Anything stale/corrupt -> empty cache.
 //   - vkCreatePipelineCache failing on valid-looking initial
 //     data (drivers add checks the spec doesn't) -> retried
@@ -1814,11 +1814,11 @@ inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& 
 //     >=64 compiles (abrupt-exit safety) and forced at device
 //     teardown.
 // TOURMALINE_PIPELINE_CACHE_DIR (replaces the retired TOURMALINE_
-// PIPELINE_CACHE file-path contract — that one's unset default
+// PIPELINE_CACHE file-path contract â€” that one's unset default
 // littered a pipeline_cache.bin into EVERY working dir the hosts
 // ran from): unset = F:/pipelinecache (the dedicated scratch disk,
 // created when missing); a path = that dir; "off"/"0" = no disk
-// seed or save (the in-process cache still runs — it dedupes
+// seed or save (the in-process cache still runs â€” it dedupes
 // compiles across pipeline objects even without a file). The blob
 // itself is always <dir>/pipeline_cache.bin, never the working dir.
 // One shared file is safe across GPUs/drivers: the identity header
@@ -1849,7 +1849,7 @@ namespace {
 	size_t g_diskPipelineCacheCompilesSinceSave = 0;
 
 	// The disk home: always <scratchDir>/pipeline_cache.bin (the dir is
-	// created when missing — an unusable dir degrades to cache-off with
+	// created when missing â€” an unusable dir degrades to cache-off with
 	// a log line, never a crash; the load/save sites keep their own
 	// torn-file tolerance on top). Resolved once at first use.
 	const char* PipelineCacheFilePath()
@@ -1867,7 +1867,7 @@ namespace {
 			std::error_code probe;
 			if (!std::filesystem::is_directory(dir, probe)) {
 				fprintf(stderr,
-					"[PipelineCache] scratch dir '%s' unusable (%s) — "
+					"[PipelineCache] scratch dir '%s' unusable (%s) â€” "
 					"running without the disk cache\n",
 					dir.c_str(),
 					mk ? mk.message().c_str() : "not a directory");
@@ -1905,7 +1905,7 @@ namespace {
 		if (g_diskPipelineCacheDiskEnabled && path) {
 			// Load + validate (header, size, hash, device identity). Any
 			// mismatch (driver update, GPU swap, ABI flip, torn write)
-			// falls through to an empty cache — the driver never sees a
+			// falls through to an empty cache â€” the driver never sees a
 			// blob it did not itself produce for this exact configuration.
 			std::FILE* f = std::fopen(path, "rb");
 			if (f) {
@@ -1950,7 +1950,7 @@ namespace {
 			&& ci.pInitialData != nullptr) {
 			// The driver rejected data our validation liked (it implements
 			// checks the spec does not describe): retry with no initial
-			// data — never run without the cache, never crash.
+			// data â€” never run without the cache, never crash.
 			ci.initialDataSize = 0;
 			ci.pInitialData = nullptr;
 			if (vkCreatePipelineCache(device_, &ci, nullptr, &g_diskPipelineCache) != VK_SUCCESS) {
@@ -2134,11 +2134,11 @@ int smvk::VulkanCore::CreateInstance() {
 		// watchpoint build runs with the validation layer disabled (the
 		// uninstrumented layer DLL's intercepted-memcpy interop with the
 		// instrumented debug-messenger callback is a false-positive source
-		// that drowns the real report) — proceed without the layer instead
+		// that drowns the real report) â€” proceed without the layer instead
 		// of refusing to boot.
 		const char* noVal = std::getenv("TOURMALINE_NO_VALIDATION");
 		if (noVal && std::atoi(noVal) != 0) {
-			std::fprintf(stderr, "[Vulkan] validation layer unavailable — continuing WITHOUT it (TOURMALINE_NO_VALIDATION)\n");
+			std::fprintf(stderr, "[Vulkan] validation layer unavailable â€” continuing WITHOUT it (TOURMALINE_NO_VALIDATION)\n");
 			enableValidationLayers = false;
 		}
 		else {
@@ -2244,7 +2244,7 @@ bool smvk::VulkanCore::Init() {
 
 		// Prefer DISCRETE GPUs over integrated ones (hybrid laptops put
 		// the desktop on the iGPU, and enumeration order often lists it
-		// first — "first suitable" would then render on the weak GPU and
+		// first â€” "first suitable" would then render on the weak GPU and
 		// locks out vendor features like Streamline/NGX that need the
 		// dGPU). Ties keep the loader's order.
 		{
@@ -2307,7 +2307,7 @@ bool smvk::VulkanCore::Init() {
 			// TOURMALINE_HOST_COPY=0: keep the extension off the device
 			// entirely (uploads fall back to the transfer ring). RenderDoc's
 			// support for VK_EXT_host_image_copy is incomplete and can
-			// crash captures — set this in RenderDoc launch configs.
+			// crash captures â€” set this in RenderDoc launch configs.
 			// Mirrored by the VulkanResourceManager feature check (see
 			// HostCopyKilledByEnv) so the streamer never calls into an
 			// extension that is not enabled on the device.
@@ -2400,7 +2400,7 @@ bool smvk::VulkanCore::Init() {
 			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 				.pNext = &deviceFeatures12,
-				// privateData rides the 13 struct — the old individually
+				// privateData rides the 13 struct â€” the old individually
 				// chained VkPhysicalDevicePrivateDataFeatures beside it
 				// was a pNext duplication violation
 				// (VUID-VkDeviceCreateInfo-pNext-06532). Member order:
@@ -2445,18 +2445,18 @@ bool smvk::VulkanCore::Init() {
 				// Fragment-stage storage writes (texture-streaming feedback
 				// atomics in the materials, set 0 binding 4): core-optional
 				// since 1.0, universal on desktop. No emulation exists, so a
-				// device without it cannot run the materials — fail loudly.
+				// device without it cannot run the materials â€” fail loudly.
 				feats2.features.fragmentStoresAndAtomics = VK_TRUE;
 				if (supported.fragmentStoresAndAtomics != VK_TRUE) {
 					throw std::runtime_error(
 						"device lacks fragmentStoresAndAtomics (required for "
 						"texture-streaming GPU feedback)");
 				}
-				// 64-bit integer arithmetic (the BDA push-constant shaders —
+				// 64-bit integer arithmetic (the BDA push-constant shaders â€”
 				// vk::BufferPointer lowers to uint64 math, so the modules
 				// declare the Int64 capability; validation fails the module
 				// create without the feature even where desktop drivers
-				// tolerate it — a validation-Debug run surfaced the spam).
+				// tolerate it â€” a validation-Debug run surfaced the spam).
 				feats2.features.shaderInt64 = VK_TRUE;
 				if (supported.shaderInt64 != VK_TRUE) {
 					throw std::runtime_error(
@@ -2471,7 +2471,7 @@ bool smvk::VulkanCore::Init() {
 				feats2.features.fillModeNonSolid =
 					g_fillModeNonSolid ? VK_TRUE : VK_FALSE;
 				// The gfx filter packs a cluster id into firstInstance of every
-				// indirect draw — that needs the core-optional
+				// indirect draw â€” that needs the core-optional
 				// drawIndirectFirstInstance, or validation (and possibly the
 				// driver) rejects the non-zero values the filter emits.
 				g_multiDrawIndirectFirstInstance =
@@ -2496,16 +2496,16 @@ bool smvk::VulkanCore::Init() {
 			}
 
 			// VK_NV_low_latency2 (NVIDIA Reflex / Streamline PCL latency path):
-			// strictly optional — enables sl.common's VkNvLowLatency2 init
+			// strictly optional â€” enables sl.common's VkNvLowLatency2 init
 			// ("Failed to init VkNvLowLatency2: 2" when absent) and the PCL
 			// marker timings. Probed, never required: non-NVIDIA devices
 			// simply skip it (isDeviceSuitable above only gates the required
 			// config_.deviceExtensions list). No feature struct exists for
-			// this extension — the name alone switches it on.
+			// this extension â€” the name alone switches it on.
 			// GATED on the Streamline integration actually running: the
 			// extension exists ONLY for the Reflex/PCL path, so enabling it
 			// without sl.common driving it (the editor never loads
-			// Streamline — see Editor's main.cpp) leaves the device's
+			// Streamline â€” see Editor's main.cpp) leaves the device's
 			// low-latency queue state initialized-but-undrained. An editor
 			// editor's first heavy frame wedged the GPU past the Windows TDR
 			// window in exactly that state (bistro glass, VK_ERROR_DEVICE_LOST
@@ -2589,11 +2589,11 @@ bool smvk::VulkanCore::Init() {
 			// driver-generated mapping from GPU machine code back to that
 			// SPIR-V (the .nvdbg line tables). Chaining this struct with the
 			// shader-debug-info bit makes the NVIDIA driver generate those
-			// tables at pipeline compile time — the Vulkan equivalent of D3D's
+			// tables at pipeline compile time â€” the Vulkan equivalent of D3D's
 			// GFSDK_Aftermath_FeatureFlags_GenerateShaderDebugInfo. Only
 			// meaningful when the loaded SPIR-V itself carries debug info
 			// (AftermathShaderDebugTablesEnabled above: Debug trees + the
-			// x64-Release-ShaderDebug preset), and only present on NVIDIA —
+			// x64-Release-ShaderDebug preset), and only present on NVIDIA â€”
 			// probed, never required (same pattern as low_latency2 /
 			// device_fault above). The Aftermath Monitor writes the matching
 			// .nvdbg files on crash; nothing here calls
@@ -2642,7 +2642,7 @@ bool smvk::VulkanCore::Init() {
 			createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 			createInfo.enabledLayerCount = 0;
 			// Aftermath head-splice: chain the diagnostics config in front
-			// of the feats2 -> faultFeatures feature chain below it — this
+			// of the feats2 -> faultFeatures feature chain below it â€” this
 			// struct is not a feature, it rides pNext directly under
 			// VkDeviceCreateInfo, and the driver walks the full chain.
 			if (enableDiagnosticsConfig) {
@@ -2752,7 +2752,7 @@ smvk::mem::LinearPtr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::Vu
 	auto core = unique.get();
 
 	core->CreateInstance();
-	// Win32 surface created through the volk-resolved function pointer —
+	// Win32 surface created through the volk-resolved function pointer â€”
 	// the Streamline proxy when DLSS is active, SDL's equivalent native
 	// call otherwise (SDL_Vulkan_CreateSurface would resolve its own
 	// vkCreateWin32SurfaceKHR from vulkan-1.dll and bypass the hook).
@@ -2834,7 +2834,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		if (m_hostImageCopySupported) {
 			// Two-stage query: first obtain counts, then allocate and retrieve layouts.
 			// pCopySrcLayouts / pCopyDstLayouts are not universally containing
-			// SHADER_READ_ONLY_OPTIMAL – only GENERAL is guaranteed.
+			// SHADER_READ_ONLY_OPTIMAL â€“ only GENERAL is guaranteed.
 			VkPhysicalDeviceHostImageCopyPropertiesEXT props{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT, nullptr };
 			VkPhysicalDeviceProperties2 props2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &props };
 			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
@@ -2859,12 +2859,12 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	//m_hostImageCopySupported = false;
 #endif
 	m_streamer = smvk::mem::MakeProcess<UploadStreamer>(this, m_transferSubmitter, m_submitter);
-	m_streamer->init(smvk::mem::config::kStreamerTotalBudget);
+	m_streamer->init(smvk::mem::config::Runtime().streamerTotalBudget);
 
 	//this->m_hostImageCopySupported = false;
 
-	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
-	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
+	// SamplerCache â€“ owns up to MAX_SAMPLERS deduplicated VkSamplers.
+	// Like VulkanPipelineCache, key (SamplerCreateInfo) â†’ stable index.
 	samplerCache_ = smvk::mem::MakeProcess<VulkanSamplerCache>(this);
 	// Populate default slots: 0 = regular, 1 = shadow comparison,
 	// 2 = linear clamp-to-edge (lightmap atlases + 3D probe volumes:
@@ -3142,7 +3142,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 	// The nil VIEW died with the nil texture above (its ImageView destroy
-	// runs inline here — DeferDestroy has no semaphore left to key on;
+	// runs inline here â€” DeferDestroy has no semaphore left to key on;
 	// the nil entry's own free inside destroy() above still wrote with the
 	// then-live view, which is harmless: the sets die with the pool
 	// below). Clear the cache so all LATER teardown-time frees (leaked
@@ -3263,7 +3263,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
-	// Samplers are owned by samplerCache – clear it and avoid double-free
+	// Samplers are owned by samplerCache â€“ clear it and avoid double-free
 	if (samplerCache_) {
 		samplerCache_->Clear();
 		samplerCache_.reset();
@@ -3293,8 +3293,8 @@ bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
 	// Total budget split across shards; each thread lazily creates its own
 	// ring on first upload so unused shards cost nothing.
 	ringCapacityPerThread_ = ringCapacity / 8;
-	if (ringCapacityPerThread_ < smvk::mem::config::kStagingRingPerThread)
-		ringCapacityPerThread_ = smvk::mem::config::kStagingRingPerThread;
+	if (ringCapacityPerThread_ < smvk::mem::config::Runtime().stagingRingPerThread)
+		ringCapacityPerThread_ = smvk::mem::config::Runtime().stagingRingPerThread;
 	return ensureShardRing(states_[0]);
 }
 bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capacity, const char* debugName) {
@@ -3309,12 +3309,12 @@ bool smvk::UploadStreamer::ensureRing(ThreadUploadState& ust, VkDeviceSize capac
 	aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	VmaAllocationInfo info{};
 	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &ust.ring.buffer, &ust.ring.allocation, &info);
-	// OOM policy: VMA staging failure crashes with a diagnostic — no silent
+	// OOM policy: VMA staging failure crashes with a diagnostic â€” no silent
 	// fallback (a "successful" upload path with no ring would corrupt data).
 	if (r != VK_SUCCESS) {
 		std::fprintf(stderr,
 			"[OOM] VMA staging ring '%s' (%llu MB) creation failed (VkResult %d). "
-			"No recovery — aborting.\n",
+			"No recovery â€” aborting.\n",
 			debugName, (unsigned long long)(capacity / (1024 * 1024)), (int)r);
 		std::fflush(stderr);
 		std::abort();
@@ -3374,7 +3374,7 @@ void smvk::UploadStreamer::destroy() {
 	}
 }
 VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDeviceSize size, VkDeviceSize alignment) {
-	// st is owned by the calling thread – no lock needed.
+	// st is owned by the calling thread â€“ no lock needed.
 	if (!ensureShardRing(ust)) return VK_WHOLE_SIZE;
 	VkDeviceSize aligned = (ust.ring.offset + alignment - 1) & ~(alignment - 1);
 	if (aligned + size > ust.ring.capacity) {
@@ -3388,7 +3388,7 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 	// Precise region sync (was: m_transfer->waitAll() at every wrap).
 	// The CPU memcpy below overwrites [aligned, aligned+size) of the
 	// host-mapped ring, so exactly the in-flight batches READING that
-	// range must have executed first. Retired batches (the common case —
+	// range must have executed first. Retired batches (the common case â€”
 	// ranges cover recent ring bytes and retire ~one frame after submit)
 	// drop out via isReady; the batch just flushed at a wrap reads the
 	// ring TAIL, which only overlaps when the rewound region reaches it.
@@ -3402,7 +3402,7 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 		const bool ringTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 		const auto ringT0 = std::chrono::steady_clock::now();
 		double waitMs = 0.0;
-		// FrameScratch: scope-local filter temp (dies before return —
+		// FrameScratch: scope-local filter temp (dies before return â€”
 		// safe under the DrawFrame rewind; must NOT be UploadInFlight).
 		auto live = MakeFrameScratchVec<InFlightRingRange>();
 		live.reserve(ust.pendingRanges.size());
@@ -3438,10 +3438,10 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 	return aligned;
 }
 void smvk::UploadStreamer::ensureCmd(ThreadUploadState& ust) {
-	// st is owned by the calling thread – no lock needed.
+	// st is owned by the calling thread â€“ no lock needed.
 	if (ust.curCmd != VK_NULL_HANDLE) return;
 	// purge already done in acquire; acquire uses the thread-local command
-	// pool (GetThreadLocalPool) so concurrent acquires are lock-free – only
+	// pool (GetThreadLocalPool) so concurrent acquires are lock-free â€“ only
 	// the Submitter timeline counter takes a brief lock inside.
 	ust.curHandle = m_transfer->acquire();
 	ust.curCmd = m_transfer->GetCommandBuffer(ust.curHandle);
@@ -3463,7 +3463,7 @@ smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) 
 	// Serial chain: wait every earlier submission on this Submitter's
 	// timeline (upload batches + chained external points such as the
 	// async readback copy). Same-queue submissions only respect
-	// submission (begin) order per spec and may overlap — without this,
+	// submission (begin) order per spec and may overlap â€” without this,
 	// a zero-fill batch can overwrite a histogram/ds-counter/feedback
 	// slice while an earlier-submitted readback copy is still reading it
 	// (the WRITE_AFTER_READ / WRITE_AFTER_WRITE hazards sync validation
@@ -3491,7 +3491,7 @@ smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) 
 	else {
 		tp = m_transfer->submit(h);
 	}
-	// Publish the newest transfer point for lastTransferPoint() — the
+	// Publish the newest transfer point for lastTransferPoint() â€” the
 	// swapchain's G1/G2/main submits wait it so uploaded data is a
 	// semaphore-ordered dependency (same-queue submissions may overlap).
 	if (tp.valid()) {
@@ -3505,7 +3505,7 @@ smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) 
 	return tp;
 }
 void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIfFull) {
-	// st is owned by the calling thread – no streamer lock. The Submitter
+	// st is owned by the calling thread â€“ no streamer lock. The Submitter
 	// and queue take their own brief locks internally. Cross-queue safety:
 	// see submitTransfer (the batch waits for every submitted graphics
 	// frame to retire before overwriting upload targets).
@@ -3631,7 +3631,7 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
 		ust.stagedBytesSinceFlush += size;
-		if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+		if (ust.stagedBytesSinceFlush >= flushThreshold_) {
 			submitState(ust, false);
 		}
 		return;
@@ -3664,10 +3664,10 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 	ust.hasPending = true;
 	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
 	ust.stagedBytesSinceFlush += size;
-	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+	if (ust.stagedBytesSinceFlush >= flushThreshold_) {
 		submitState(ust, false);
 	}
-	// if we are batching many small uploads, don't submit yet – caller will flush
+	// if we are batching many small uploads, don't submit yet â€“ caller will flush
 }
 void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst, const void* content,
 	std::span<const BufferBulkCopy> copies, VkPipelineStageFlags2 dstStages,
@@ -3699,7 +3699,7 @@ void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst, const void* conten
 		const bool haveChunk = chunkDstMin != std::numeric_limits<VkDeviceSize>::max()
 			&& chunkDstMax > chunkDstMin;
 		// ONE barrier set per blob: a single release barrier covering the
-		// chunk's whole dst span (gaps included — legal, and one barrier
+		// chunk's whole dst span (gaps included â€” legal, and one barrier
 		// instead of one per entry) recorded in the transfer batch, plus
 		// the matching acquire queued for the graphics follow-up submit.
 		if (haveChunk) {
@@ -3740,20 +3740,20 @@ void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst, const void* conten
 	for (const BufferBulkCopy& c : copies) {
 		if (c.size == 0) continue;
 		// Blob boundary: when the chunk is full (512 MB) or the next entry
-		// would not fit the remaining ring space, close it FIRST — the
+		// would not fit the remaining ring space, close it FIRST â€” the
 		// barrier must be recorded before whatever submits this batch, and
 		// closing here keeps chunk boundary == submit boundary (allocFromRing's
 		// wrap then finds hasPending == false and only rewinds).
 		const VkDeviceSize aligned = (ust.ring.offset + 15) & ~VkDeviceSize(15);
 		if (ust.hasPending
-			&& (chunkBytes >= kBulkRingCapacity
+			&& (chunkBytes >= bulkRingCapacity_
 				|| aligned + c.size > ust.ring.capacity))
 			closeChunk();
 		const VkDeviceSize ringOff = allocFromRing(ust, c.size, 16);
 		if (ringOff == VK_WHOLE_SIZE) {
 			// Entry bigger than the whole ring: per-entry temp staging
 			// (self-contained barrier + deferred destroy; mirrors
-			// uploadBuffer's fallback). Rare — a single mesh payload over
+			// uploadBuffer's fallback). Rare â€” a single mesh payload over
 			// 512 MB.
 			VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 			ci.size = c.size;
@@ -3937,23 +3937,23 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	memcpy(dstPtr, data, dataSize);
 	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : ust.ring.allocation, srcOff, dataSize);
 	ensureCmd(ust);
-	// barriers and copy – we need to handle full mip chain; caller provided dataSize covering all mips, but we need regions
+	// barriers and copy â€“ we need to handle full mip chain; caller provided dataSize covering all mips, but we need regions
 	// Recompute regions similarly to UploadDataToImage2D
 	VkFormat vkFmt = toVkFormat(img->format);
-	// Use helper getFormatInfo (local to impl.cpp) – we forward declare via lambda? For now compute via switch minimal
-	// We'll call a helper function defined in impl.cpp: getFormatInfo – need to expose or recompute inline
+	// Use helper getFormatInfo (local to impl.cpp) â€“ we forward declare via lambda? For now compute via switch minimal
+	// We'll call a helper function defined in impl.cpp: getFormatInfo â€“ need to expose or recompute inline
 	// Instead reuse logic: for simplicity, assume tightly packed and use bufferRowLength=0; create one region per mip/layer if needed
 	// For generic upload, we will use the same logic as original UploadDataToImage2D but with our ring buffer
 	// To avoid duplication, we will record a single barrier UNDEFINED->TRANSFER_DST, then vkCmdCopyBufferToImage2 for all mips, then TRANSFER_DST->SHADER_READ_ONLY
 	// Build regions on the fly
-	// We need fmt info – replicate getFormatInfo minimal for uncompressed; fallback to 4 bytes
+	// We need fmt info â€“ replicate getFormatInfo minimal for uncompressed; fallback to 4 bytes
 	// toVkFormat forward
-	// We'll approximate: assume format is 4 bytes per pixel for most, but we have correct calculation via dataSize – just push one region per mip/layer with computed offsets? Simpler: if mipLevels==1 && arrayLayers==1, one region
+	// We'll approximate: assume format is 4 bytes per pixel for most, but we have correct calculation via dataSize â€“ just push one region per mip/layer with computed offsets? Simpler: if mipLevels==1 && arrayLayers==1, one region
 	std::vector<VkBufferImageCopy2> regions2;
 	// if we have detailed mip info, we should loop; for now if image is 2D and we have dataSize, we can create one region covering base mip
-	// We'll treat data as tightly packed for all mips sequentially – need offsets. We'll reuse same logic as original but with srcOff base
-	// For correctness, handle multi-mip by computing layer sizes using FormatInfo – we need FormatInfo helper. We'll define a local lambda that mimics getFormatInfo via vkGetPhysicalDeviceFormatProperties? Simpler: compute bytesPerPixel approximation 4 – but compressed formats will be wrong. Alternative: call original UploadDataToImage2D path for multi-mip? Instead we will delegate multi-mip to the legacy path.
-	// For streamer, we support single-mip images (most textures are single) – multi-mip KTX already handled separately.
+	// We'll treat data as tightly packed for all mips sequentially â€“ need offsets. We'll reuse same logic as original but with srcOff base
+	// For correctness, handle multi-mip by computing layer sizes using FormatInfo â€“ we need FormatInfo helper. We'll define a local lambda that mimics getFormatInfo via vkGetPhysicalDeviceFormatProperties? Simpler: compute bytesPerPixel approximation 4 â€“ but compressed formats will be wrong. Alternative: call original UploadDataToImage2D path for multi-mip? Instead we will delegate multi-mip to the legacy path.
+	// For streamer, we support single-mip images (most textures are single) â€“ multi-mip KTX already handled separately.
 	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
 	extern void ImageBarrier(VkCommandBuffer, VkImage, VkImageLayout, VkImageLayout, VkImageSubresourceRange, VkPipelineStageFlags2, VkAccessFlags2, VkPipelineStageFlags2, VkAccessFlags2, uint32_t, uint32_t);
 	uint32_t srcF = m_transfer->queueFamilyIndex();
@@ -4030,7 +4030,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	ust.stagedBytesSinceFlush += dataSize;
-	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+	if (ust.stagedBytesSinceFlush >= flushThreshold_) {
 		submitState(ust, false);
 	}
 	// update global sync
@@ -4094,7 +4094,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	}
 	// Fallback to staging ring
 	// Hitch-path tracing (TOURMALINE_TEXSTREAM_TRACE): splits the upload
-	// cost — ring alloc (possible GPU wait on an overlapping in-flight
+	// cost â€” ring alloc (possible GPU wait on an overlapping in-flight
 	// batch) vs mapped write+flush vs command record/submit.
 	const bool texTrace = std::getenv("TOURMALINE_TEXSTREAM_TRACE") != nullptr;
 	const auto texT0 = std::chrono::steady_clock::now();
@@ -4181,7 +4181,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	ust.stagedBytesSinceFlush += dataSize;
-	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+	if (ust.stagedBytesSinceFlush >= flushThreshold_) {
 		submitState(ust, false);
 	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
@@ -4454,7 +4454,7 @@ uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
 	// in-flight main frames on the graphics timeline (polls complete a
 	// frame or two earlier). The wait on the latest graphics retirement
 	// point orders the copy after every submitted frame that wrote the
-	// sources (retired slices only) – the cross-queue acquire the old
+	// sources (retired slices only) â€“ the cross-queue acquire the old
 	// same-queue FIFO used to provide for free.
 	Submitter* queue = (m_transferSubmitter && m_transferSubmitter != m_submitter)
 		? m_transferSubmitter : m_submitter;
@@ -4488,7 +4488,7 @@ uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
 	// copy happens-after all submitted frames that wrote the sources.
 	// AND join the transfer-queue serial chain: the copy must be ordered
 	// after every earlier upload batch (they may still be executing) and
-	// — via chainExternalPoint — every LATER batch (the per-frame
+	// â€” via chainExternalPoint â€” every LATER batch (the per-frame
 	// zero-fill of the same slices) is ordered after the copy. The old
 	// "shares FIFO with the streamer's upload batches" reasoning was a
 	// same-queue-ordering assumption the spec does not make (submissions
@@ -4520,7 +4520,7 @@ uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
 		return 0;
 	}
 	// Same timeline as the upload chain (queue IS the streamer's
-	// Submitter — dedicated transfer or the shared graphics fallback), so
+	// Submitter â€” dedicated transfer or the shared graphics fallback), so
 	// merge: the next zero-fill batch waits this copy.
 	if (m_streamer)
 		m_streamer->chainExternalPoint(tp);
@@ -4599,11 +4599,11 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 	if (!srcImg || srcImg->vkImage == VK_NULL_HANDLE)
 		return false;
 	// vkCmdCopyImageToBuffer needs TRANSFER_SRC usage on the image: without
-	// it the copy is invalid (UB — the staging keeps garbage) and there is
+	// it the copy is invalid (UB â€” the staging keeps garbage) and there is
 	// no fallback here, so fail loudly instead of returning junk.
 	if ((srcImg->usage & ImageUsage::TransferSrc) == ImageUsage::None) {
 		std::fprintf(stderr,
-			"[DownloadDataFromImage] image '%s' lacks TransferSrc usage — cannot copy\n",
+			"[DownloadDataFromImage] image '%s' lacks TransferSrc usage â€” cannot copy\n",
 			srcImg->name.valid() ? srcImg->name.data() : "<anon>");
 		return false;
 	}
@@ -4620,7 +4620,7 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 	// transition out of the caller-declared ACTUAL layout for the copy and
 	// back afterwards. Never pass Undefined here - that discards contents.
 	const VkImageLayout tracked = ToVkImageLayout(currentLayout);
-	// Depth/stencil images copy through their own aspect — a COLOR-aspect
+	// Depth/stencil images copy through their own aspect â€” a COLOR-aspect
 	// copy from a D32F image is invalid and yields garbage.
 	const VkFormat srcFmt = toVkFormat(srcImg->format);
 	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -4678,20 +4678,20 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 
 bool smvk::VulkanResourceManager::EnsureReadbackStaging(VkDeviceSize size) {
 	// Sizes centralized in mem::config (single place to resize). Growth
-	// failures crash per the OOM policy — a download that silently returns
+	// failures crash per the OOM policy â€” a download that silently returns
 	// false would hand uninitialized pixels to the caller.
-	if (size > smvk::mem::config::kReadbackStagingMax) {
+	if (size > smvk::mem::config::Runtime().readbackStagingMax) {
 		std::fprintf(stderr,
 			"[OOM] readback staging request %llu bytes exceeds cap %llu bytes. "
-			"No recovery — aborting.\n",
+			"No recovery â€” aborting.\n",
 			(unsigned long long)size,
-			(unsigned long long)smvk::mem::config::kReadbackStagingMax);
+			(unsigned long long)smvk::mem::config::Runtime().readbackStagingMax);
 		std::fflush(stderr);
 		std::abort();
 	}
 	if (!m_readbackStaging.empty() && m_readbackStagingSize >= size)
 		return true;
-	VkDeviceSize want = smvk::mem::config::kReadbackStagingMin;
+	VkDeviceSize want = smvk::mem::config::Runtime().readbackStagingMin;
 	while (want < size)
 		want *= 2;
 	// HOST_ACCESS_RANDOM: the CPU READS this buffer (copy results), so
@@ -4701,7 +4701,7 @@ bool smvk::VulkanResourceManager::EnsureReadbackStaging(VkDeviceSize size) {
 	if (grown.empty()) {
 		std::fprintf(stderr,
 			"[OOM] readback staging VMA allocation of %llu bytes failed. "
-			"No recovery — aborting.\n",
+			"No recovery â€” aborting.\n",
 			(unsigned long long)want);
 		std::fflush(stderr);
 		std::abort();
@@ -4734,7 +4734,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		// per blockWidth x blockHeight block, NOT per texel. The old
 		// w*h*d*bytesPerBlock math was right for the uncompressed SG
 		// volumes (1x1 blocks) but read 16x past the real data for the
-		// BC6H dense-GI layers (4x4 blocks) — an OOB memcpy in the
+		// BC6H dense-GI layers (4x4 blocks) â€” an OOB memcpy in the
 		// streamer ring.
 		const uint32_t blocksX =
 			(image.extent.width + fmt3.blockWidth - 1) / fmt3.blockWidth;
@@ -5472,7 +5472,7 @@ smvk::VulkanResourceManager::ClaimTargetHeapRange(
 				std::abort();
 			}
 		}
-		VkDeviceSize size = 64ull << 20; // ladder: 64 MiB down
+		VkDeviceSize size = smvk::mem::config::Runtime().targetHeapBlock; // ladder: halves down to the request
 		VkDeviceSize allocSize = 0;
 		VkDeviceMemory memory = VK_NULL_HANDLE;
 		while (true) {
@@ -5665,7 +5665,7 @@ void smvk::VulkanResourceManager::ReleaseTargetHeapClaim(
 // ---------------------------------------------------------------------------
 // STRICT RESOURCES (see smvk.h): --strict / TOURMALINE_STRICT=1. Default is
 // the graceful degradation (editor sessions survive budget pressure);
-// strict turns exhaustion into a LOUD abort — silent skips hide leaks.
+// strict turns exhaustion into a LOUD abort â€” silent skips hide leaks.
 // Device-level knob: getenv at first use (the RunConfig.h migration
 // discipline for device/debug knobs).
 // ---------------------------------------------------------------------------
@@ -5687,13 +5687,13 @@ namespace smvk {
 		}();
 		return g_strictResources || envOn;
 	}
-	// CALL-SITE exhaustion gate (the RHI stays PURE — see smvk.h). No-op
+	// CALL-SITE exhaustion gate (the RHI stays PURE â€” see smvk.h). No-op
 	// unless strict; aborts with the fatal diagnostic when it is.
 	void OnResourceExhaustion(const char* site) {
 		if (!StrictResources())
 			return;
 		FatalMirrorOpen();
-		FatalPrintf("[STRICT] resource exhaustion at '%s' — a pool/budget "
+		FatalPrintf("[STRICT] resource exhaustion at '%s' â€” a pool/budget "
 			"refused a creation. Raise the budget, fix the leak, or rerun "
 			"without --strict to degrade gracefully.\n",
 			site ? site : "?");
@@ -5715,9 +5715,9 @@ namespace smvk {
 	BindlessImageHandle handle =
 		bindlessImages_.create(std::move(bindless));
 
-	// Pool-full (or any create failure) returns an EMPTY handle — the
+	// Pool-full (or any create failure) returns an EMPTY handle â€” the
 	// RHI's error signal. The RHI itself stays PURE: no aborts here, no
-	// strict checks — handling is the CALLER's responsibility (see
+	// strict checks â€” handling is the CALLER's responsibility (see
 	// smvk.h + AGENTS.md: call sites gate with OnResourceExhaustion;
 	// asserts inside the RHI are for invariants only).
 	if (handle.empty())
@@ -5730,11 +5730,11 @@ namespace smvk {
 	// The bindless pool is intentionally also our descriptor-slot allocator.
 	// NOTE (sharded pools): handle.index() is the global sharded index
 	// (shard * kShardCapacity + local). It doubles as the descriptor-array
-	// slot, so it must stay below MAX_TEXTURES – guaranteed by the
+	// slot, so it must stay below MAX_TEXTURES â€“ guaranteed by the
 	// static_assert in Memory/pool.h (MAX_TEXTURES >= kShardedMaxSize);
 	// this runtime check stays as a loud failure instead of corrupting writes.
 	resource->descriptorIndex = handle.index();
-	assert(resource->descriptorIndex < MAX_TEXTURES && "bindless descriptor budget exhausted (sharded indices are sparse – raise MAX_TEXTURES or pack slots)");
+	assert(resource->descriptorIndex < MAX_TEXTURES && "bindless descriptor budget exhausted (sharded indices are sparse â€“ raise MAX_TEXTURES or pack slots)");
 
 	m_needToUpdateTextures = true;
 
@@ -7003,14 +7003,14 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 {
 	// Retarget is a RENDER-THREAD hot path (streaming demand upgrades +
 	// budget downgrades, per frame). A Basis-family payload here pays a
-	// full synchronous transcode (tens to ~150 ms for 2-4K textures) —
+	// full synchronous transcode (tens to ~150 ms for 2-4K textures) â€”
 	// the exact hitch this pipeline is built to never have, so the v4
 	// cook contract guarantees GPU-ready BCn payloads in SHIPPED paks
 	// (see CookTexturePayload: per-semantic BCn pre-transcode at cook,
 	// pink error texture on failure). The TextureStreamer ENFORCES the
 	// policy (see its config): cooked runs refuse Basis payloads up
 	// front (pink error texture + pinned entry), authoring hosts (the
-	// editor — clusters stash SOURCE bytes by design) allow the
+	// editor â€” clusters stash SOURCE bytes by design) allow the
 	// in-place transcode below and get the real content. Reaching here
 	// with Basis means either the authoring path (transcoded by
 	// PrepareKtxStreamPlan, like the first load) or a direct caller
@@ -7110,7 +7110,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 
 	// Rebuild the sampled view in place (same handle, same bindless slot):
 	// keep the original view type (cube/array/3D), span the new range. The
-	// previous VkImageView retires through the deferred queue – in-flight
+	// previous VkImageView retires through the deferred queue â€“ in-flight
 	// frames may still reference it through their descriptors (which pick
 	// up the new view on the next UpdateDescriptors, one frame later; that
 	// stale frame keeps sampling the OLD, still-valid image).
@@ -7626,7 +7626,7 @@ namespace smvk {
 	std::vector<MemoryAllocInfo> VulkanResourceManager::GetMemoryAllocInfos() {
 		std::vector<MemoryAllocInfo> out;
 		// ALL images, tracked or not: bytes == 0 marks an untracked backing
-		// (heap-placed design-B target / external) — the display computes an
+		// (heap-placed design-B target / external) â€” the display computes an
 		// estimate from the geometry. The LEDGER sums (GetMemoryLedger)
 		// count tracked bytes only; this list is the complete MAP.
 		images_.forEachHandle([&](ImageHandle handle) {
@@ -7749,7 +7749,7 @@ bool smvk::DeferredTask::isReady() const {
 		return submitter_->isReady(handle_);
 	}
 	if (!handle_.empty()) {
-		// Legacy handle without submitter – check via global VulkanResourceManager submitters if possible
+		// Legacy handle without submitter â€“ check via global VulkanResourceManager submitters if possible
 		// For now, treat as ready to avoid leak, but proper code should use TimelinePoint
 		return true;
 	}
@@ -7789,7 +7789,7 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 		// LATER ones (the old prefix drain retained memory behind a
 		// stalled head for no reason). Relative order is PRESERVED among
 		// the drained tasks: a same-timeline pair queued as destroy-then-
-		// free (the FIFO pairing the range frees rely on — see
+		// free (the FIFO pairing the range frees rely on â€” see
 		// ReleaseTargetHeapClaim / ReleaseTransientPlacement / the mesh
 		// heap frees in Cluster::DestroyMesh) can never invert, because
 		// the retire values are monotonic (the free's point being ready
@@ -7983,10 +7983,10 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	}
 	);
 
-	// Sampler descriptor array – driven by VulkanSamplerCache.
+	// Sampler descriptor array â€“ driven by VulkanSamplerCache.
 	// Index 0 = default (Linear Repeat), 1 = shadow comparison, etc.
 	// Cache guarantees stable indices; like PipelineCache, same
-	// SamplerCreateInfo → same descriptor slot.
+	// SamplerCreateInfo â†’ same descriptor slot.
 	std::vector<VkDescriptorImageInfo> samplerInfos;
 	if (samplerCache_) {
 		samplerInfos.reserve(samplerCache_->size());
@@ -8079,7 +8079,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		}
 
 		// 3D volume textures (SG probe grids): same slot, binding 5. See
-		// kBinding_VolumeTextures — Texture3D-typed consumers read these.
+		// kBinding_VolumeTextures â€” Texture3D-typed consumers read these.
 		for (const auto& pending : imageWrites) {
 			if (!pending.isVolume)
 				continue;
@@ -8096,7 +8096,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		}
 
 		// Reflection cubemaps for specular IBL: same slot, binding 6. See
-		// kBinding_Cubemaps — TextureCube-typed consumers read these.
+		// kBinding_Cubemaps â€” TextureCube-typed consumers read these.
 		for (const auto& pending : imageWrites) {
 			if (!pending.isCubemap)
 				continue;
@@ -8113,7 +8113,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		}
 
 		// Multisampled 2D textures (EVSM per-sample depth resolve): same
-		// slot, kBinding_MsaaTextures — Texture2DMS-typed consumers
+		// slot, kBinding_MsaaTextures â€” Texture2DMS-typed consumers
 		// (evsm_resolve.cs.hlsl) read these.
 		for (const auto& pending : imageWrites) {
 			if (!pending.isMultisample)
@@ -8208,11 +8208,11 @@ void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
 		};
 		pushWrite(smvk::Bindings::kBinding_Textures);
 		// Mirror bindings keep the same slot-space reads live: 3D views
-		// (SG/dense-GI layers — freed on EVERY live-view relaunch), cube
+		// (SG/dense-GI layers â€” freed on EVERY live-view relaunch), cube
 		// views and MSAA views all had their old writes retired here too.
 		// The 2D nil view in a typed (3D/cube) array slot is only
 		// view-type-mismatched IF a stale index ever reaches a typed read
-		// — still strictly safer than a use-after-free of a destroyed
+		// â€” still strictly safer than a use-after-free of a destroyed
 		// view. VolumeTextures declares only MAX_VOLUME_TEXTURES entries.
 		if (slot < MAX_VOLUME_TEXTURES)
 			pushWrite(smvk::Bindings::kBinding_VolumeTextures);
@@ -8308,7 +8308,7 @@ bool smvk::VulkanResourceManager::IsCubemapTexture(TextureHandle handle) const
 
 // Live-texture listing (see the header contract): pool order, one row per
 // live texture. Render thread only (the ShardedPool walk is
-// unsynchronized — the documented forEach contract).
+// unsynchronized â€” the documented forEach contract).
 std::vector<smvk::TextureInfo> smvk::VulkanResourceManager::ListTextureInfos()
 {
 	std::vector<smvk::TextureInfo> out;
@@ -8412,7 +8412,7 @@ bool smvk::VulkanResourceManager::RecreateSampler(uint32_t index, const SamplerC
 	return samplerCache_->Recreate(index, ci);
 }
 // ============================================================================
-// Sync bookkeeping – per-thread shards, lock-free hot path.
+// Sync bookkeeping â€“ per-thread shards, lock-free hot path.
 // Shard is decoded from the handle index so each thread only touches its
 // own map. Snapshot/Commit merge all shards and run quiescent (render
 // thread after worker join / rendergraph setup).
@@ -8526,7 +8526,7 @@ bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
 	return true;
 }
 // Grows the per-flight async-pass CB pool to at least `count` (one CB per
-// async pass per frame — timeline-chained per-pass submits in Execute).
+// async pass per frame â€” timeline-chained per-pass submits in Execute).
 // Handles persist across frames; the per-flight pool reset in Acquire
 // returns them to recordable state alongside the split CBs.
 bool smvk::VulkanSwapchain::EnsureAsyncPassBuffers(uint32_t flight, uint32_t count) {
@@ -8568,13 +8568,13 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle h
 	const uint32_t slot =
 		bindless->descriptorIndex;
 
-	// RETIRE the whole slot release — the pool entry (the slot HOLD), the
-	// nil-image null write and the update flag — on the graphics timeline,
+	// RETIRE the whole slot release â€” the pool entry (the slot HOLD), the
+	// nil-image null write and the update flag â€” on the graphics timeline,
 	// not in place. An in-flight frame can still be sampling this slot:
 	// until the retire point completes, the entry stays LIVE so
 	// UpdateDescriptors keeps the slot pointing at the STILL-ALIVE old
 	// view (the view's own destroy queues right behind this task in the
-	// same FIFO batch — see destroy(TextureHandle)), and every in-flight
+	// same FIFO batch â€” see destroy(TextureHandle)), and every in-flight
 	// frame keeps sampling the texture it was recorded with. The old
 	// immediate release let the next CreateBindlessImage claim the slot
 	// while old frames were still reading it (an in-flight frame sampled
@@ -8584,7 +8584,7 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle h
 	// The null write itself (see the method comment on
 	// NullBindlessSlotWrites): UpdateDescriptors only rewrites slots with
 	// LIVE entries, so without it the freed slot would keep pointing at
-	// the view being destroyed by the task queued right after this one —
+	// the view being destroyed by the task queued right after this one â€”
 	// any stale slot reference (material texture slots, editor live-view
 	// relaunch churn, one-frame-late pushes) sampled a destroyed
 	// VkImageView and took the device down (the [MATSLOT]-class device
@@ -8850,9 +8850,9 @@ inline void ImageBarrier(
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 }
 
-// Submitter – now uses thread-local CommandBufferPool
+// Submitter â€“ now uses thread-local CommandBufferPool
 namespace {
-	// Device-loss post-mortem (VK_EXT_device_fault) — defined below, called
+	// Device-loss post-mortem (VK_EXT_device_fault) â€” defined below, called
 	// from the acquire-loss path and the loud aborts in Submitter::purge.
 	void DumpDeviceFaultInfo();
 }
@@ -8874,7 +8874,7 @@ inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 			m_queue = graphicsQueue_;
 	}
 	if (m_queue == VK_NULL_HANDLE) m_queue = graphicsQueue_;
-	// Command pool is now thread-local – no pool creation here
+	// Command pool is now thread-local â€“ no pool creation here
 	CreateTimelineSemaphore(0, m_timelineSemaphore);
 	assert(m_timelineSemaphore != VK_NULL_HANDLE);
 	m_timelineValue = 1;
@@ -8910,7 +8910,7 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 
 	// Host timeline-wait trace (TOURMALINE_TRACE_WAITS=1): the documented
 	// driver poison recipe is a HOST wait on a presented-signaled timeline
-	// (see AcquireFramebuffer) — every wait goes through here, so this
+	// (see AcquireFramebuffer) â€” every wait goes through here, so this
 	// names the offender when a later counter query reads UINT64_MAX.
 	static const bool sTrace = []() {
 		const char* e = std::getenv("TOURMALINE_TRACE_WAITS");
@@ -9101,7 +9101,7 @@ smvk::TimelinePoint smvk::Submitter::submit(
 	m_lastSubmit = handle;
 
 	// TOURMALINE_SERIALIZE=uploads (see RgSerializeGate): every engine-side
-	// submit funnels through here — upload batches, acquire barriers,
+	// submit funnels through here â€” upload batches, acquire barriers,
 	// readback copies, one-off dumps.
 	RgSerializeGate(RgSerializeMode().uploads, m_queue, GetQueueMutex(m_queue));
 
@@ -9169,7 +9169,7 @@ namespace { void DumpDeviceFaultInfo(); }
 // deliberate aborts below write to stderr AND append to
 // tourmaline_fatal.log in the working directory. FatalPrintf behaves exactly
 // like fprintf(stderr, ...) until FatalMirrorOpen() runs (fatal paths
-// only — never hot). The mirror is fclose()d before abort() because abort
+// only â€” never hot). The mirror is fclose()d before abort() because abort
 // does not flush stdio buffers (an unflushed file would stay empty).
 namespace {
 	static FILE* g_fatalMirror = nullptr;
@@ -9257,7 +9257,7 @@ void smvk::Submitter::purge()
 		// surfacing as a bare 0xC0000409 ucrtbase fastfail) hid the frame-1
 		// bench death for weeks. A UINT64_MAX counter means the driver's
 		// semaphore-query path is poisoned (historically triggered by the
-		// host timeline-wait in AcquireFramebuffer — now fence-based; see
+		// host timeline-wait in AcquireFramebuffer â€” now fence-based; see
 		// the comment there). Dump the device-fault post-mortem while the
 		// device still exists, then die loudly.
 		// Probe whether the device is already lost: some drivers answer
@@ -9270,7 +9270,7 @@ void smvk::Submitter::purge()
 		FatalMirrorOpen();
 		FatalPrintf(
 			"[Vulkan FATAL] timeline semaphore counter reads UINT64_MAX "
-			"(qfi=%u next=%llu sem=%p queryResult=%s deviceIdle=%s) — %s; aborting\n",
+			"(qfi=%u next=%llu sem=%p queryResult=%s deviceIdle=%s) â€” %s; aborting\n",
 			m_queueFamilyIndex,
 			(unsigned long long)m_timelineValue,
 			(void*)m_timelineSemaphore,
@@ -9291,7 +9291,7 @@ void smvk::Submitter::purge()
 		FatalMirrorOpen();
 		FatalPrintf(
 			"[Vulkan FATAL] timeline ahead of Submitter: "
-			"completed=%llu next=%llu (qfi=%u) — aborting\n",
+			"completed=%llu next=%llu (qfi=%u) â€” aborting\n",
 			(unsigned long long)completedValue,
 			(unsigned long long)m_timelineValue,
 			m_queueFamilyIndex);
@@ -9331,7 +9331,7 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 	WrapperSlot& slot = pool->slots[handle.index_];
 	// Already recycled: the batch this handle refers to has completed (a slot
 	// only recycles once its retire value has been reached), so there is
-	// nothing to wait for. This also closes the isReady()->wait() window —
+	// nothing to wait for. This also closes the isReady()->wait() window â€”
 	// purge() recycles retired slots from ANY thread, so the slot can be
 	// recycled out from under this caller between its isReady() check and
 	// this lock; without the generation early-out that races into the
@@ -9970,7 +9970,7 @@ namespace {
 	// device is destroyed (fault state dies with it); safe to call when the
 	// extension is absent (no-op). Called from the acquire-loss path below.
 	// FatalPrintf routes every line to stderr AND the tourmaline_fatal.log
-	// mirror (GUI runs have no visible console — stderr alone is blind).
+	// mirror (GUI runs have no visible console â€” stderr alone is blind).
 	void DumpDeviceFaultInfo() {
 		FatalPrintf("[DeviceFault] enter (supported=%d device=%p fn=%p)\n",
 			g_deviceFaultSupported ? 1 : 0, (void*)device_,
@@ -10010,7 +10010,7 @@ namespace {
 		info.pVendorBinaryData = nullptr; // opaque driver blob, not fetched
 		VkResult r = vkGetDeviceFaultInfoEXT(device_, &counts, &info);
 		// VK_INCOMPLETE (positive) is expected: pVendorBinaryData is null, so
-		// the vendor binary portion is "too small" — the description + address
+		// the vendor binary portion is "too small" â€” the description + address
 		// + vendor infos are still filled. Only negative results are failures.
 		if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
 			FatalPrintf("[DeviceFault] detail query failed (VkResult %d)\n", (int)r);
@@ -10050,7 +10050,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	// value). On this driver that FIRST host wait after a present poisons
 	// the device: every subsequent vkGetSemaphoreCounterValue returns
 	// SUCCESS with UINT64_MAX (then VK_ERROR_INITIALIZATION_FAILED, and
-	// vkGetDeviceFaultInfoEXT returns garbage error codes) — the silent
+	// vkGetDeviceFaultInfoEXT returns garbage error codes) â€” the silent
 	// abort in Submitter::purge() that killed every headless bench at
 	// frame 1 for weeks (0xC0000409 in ucrtbase, misdiagnosed as a crash:
 	// it was our own abort on the poisoned counter read). Fresh-semaphore
@@ -10059,7 +10059,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	// classic fence pattern sidesteps the host timeline-wait entirely:
 	// the tail submit signals inFlightFences_[currentFrame_] (see the
 	// three vkQueueSubmit2 call sites in EndAndPresentFramebuffer), this
-	// wait retires exactly that submit — which already waited the async
+	// wait retires exactly that submit â€” which already waited the async
 	// split (C2G) and the upload chain, so G1/C/G2 + uploads all retire
 	// with it. The swapchain timeline stays for DEVICE-side waits only
 	// (upload-batch chaining, deferred-destroy retirement via submits);
@@ -10085,7 +10085,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 		// acquire-OUT_OF_DATE path below recurses into AcquireFramebuffer
 		// after Recreate(); if this pass had reset the fence BEFORE the
 		// acquire, the retry would vkWaitForFences(UINT64_MAX) on the very
-		// fence this call just unsignaled — no submit can re-signal it (the
+		// fence this call just unsignaled â€” no submit can re-signal it (the
 		// frame that would is stuck in this wait) and the app wedges
 		// forever ("hangs, does not respond on deminimize": any acquire
 		// OUT_OF_DATE - minimize landing between frames, some resizes -
@@ -10106,7 +10106,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 			gpuTimingValid_ = true;
 		}
 		// Stage pairs (shadow-path instrumentation, see GpuStageTimer):
-		// per-pair pulls — a stage that never ran this frame leaves its
+		// per-pair pulls â€” a stage that never ran this frame leaves its
 		// pair unwritten (reset but never written = NOT_READY), and the
 		// previous frame's value survives. The async-stream pair was
 		// written on the COMPUTE queue; the present submit's C2G wait
@@ -10160,7 +10160,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
 	// Async-split pools retire with the slot (the fence wait above covers
-	// the tail submit, which waited the compute timeline — so C is done).
+	// the tail submit, which waited the compute timeline â€” so C is done).
 	if (asyncSplitReady_[currentFrame_]) {
 		if (splitPools[currentFrame_] != VK_NULL_HANDLE)
 			vkResetCommandPool(device_, splitPools[currentFrame_], 0);
@@ -10252,7 +10252,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// longer flushes per call, so this is the one submit per frame that
 	// kicks the batch.
 	// (Split frames flushed ahead of G1 inside Execute; this covers
-	// anything recorded after — e.g. the ImGui overlay — and is a no-op
+	// anything recorded after â€” e.g. the ImGui overlay â€” and is a no-op
 	// when nothing is pending.)
 	ctx_.FlushUploads();
 	// Uploaded data -> this submit must be a semaphore-ordered memory
@@ -10267,7 +10267,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 
 	// Split frames: G2 waits the compute blur (C -> G2 timeline), G1's own
 	// signal (G1 -> G2: the acquire wait + swapchain layout barrier live
-	// in G1's CB, and G2 must be ordered after them explicitly — same
+	// in G1's CB, and G2 must be ordered after them explicitly â€” same
 	// queue submissions may overlap, so "transitively through submission
 	// order" is not a spec guarantee), and the upload batch. G1 already
 	// waited the previous frame's timeline (cross-frame image reuse),
@@ -10353,7 +10353,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			// Drop the queue lock before present/Recreate: Recreate starts
 			// with vkDeviceWaitIdle plus preservation submits that re-lock
-			// this same mutex (swapchain depth copy) — holding it across
+			// this same mutex (swapchain depth copy) â€” holding it across
 			// the call deadlocks with EDEADLK on present-driven recreates.
 			lockG.unlock();
 			// TOURMALINE_SERIALIZE=main (see RgSerializeGate): the whole
@@ -10371,7 +10371,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// vkQueuePresentKHR is not internally synchronized, and
 			// Submitter::submit() (the upload streamer's acquire-barrier
 			// submits) runs on other threads against this same queue.
-			// Released immediately after the call, BEFORE Recreate — the
+			// Released immediately after the call, BEFORE Recreate â€” the
 			// present-vs-Recreate unlock note above still applies.
 			VkResult result;
 			{
@@ -10586,7 +10586,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	// vertex shader" validation spam) and can waste fetch bandwidth.
 	// Filter to the VS's reflected locations; a failed/missing
 	// reflection keeps the full set (fail-open, the old behavior). A VS
-	// with no real inputs (fullscreen triangles) filters everything —
+	// with no real inputs (fullscreen triangles) filters everything â€”
 	// correct: nothing is consumed; the binding descriptions stay (a
 	// stride-only binding is legal).
 	if (!attributeDescriptions.empty()) {
@@ -10908,7 +10908,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 
 	// Stencil reference is dynamic everywhere so the reference value
 	// NEVER enters the pipeline cache key (per-material references
-	// would otherwise mint a pipeline per distinct ref — see the SSR
+	// would otherwise mint a pipeline per distinct ref â€” see the SSR
 	// receiver-material stencil writers). The static pipeline state
 	// below carries 0; recorders override via CommandBuffer::
 	// SetStencilReference, which records into the command stream.
@@ -11060,7 +11060,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 			std::move(key),
 			bundle);
 
-	// Disk pipeline cache: a fresh compile happened — count it toward
+	// Disk pipeline cache: a fresh compile happened â€” count it toward
 	// the next batched save (see NotePipelineCompiled).
 	NotePipelineCompiled();
 
@@ -11151,7 +11151,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
 	PipelineBundle bundle{};
 	// Crash diagnostic: vkCreateComputePipelines enters the driver shader
 	// compiler (AVs inside nvgpucomp64.dll have been observed there), so
-	// log the module identity BEFORE the call (flushed) — the last such
+	// log the module identity BEFORE the call (flushed) â€” the last such
 	// line in stderr names the crashing shader.
 	{
 		const auto& code = shaderModule->code;
@@ -11180,7 +11180,7 @@ uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
 	auto it = map_.find(ci);
 	if (it != map_.end()) return it->second;
 	if (samplers_.size() >= MAX_SAMPLERS) {
-		fprintf(stderr, "[VulkanSamplerCache] MAX_SAMPLERS (%u) exceeded – cannot create new sampler\n", (unsigned)MAX_SAMPLERS);
+		fprintf(stderr, "[VulkanSamplerCache] MAX_SAMPLERS (%u) exceeded â€“ cannot create new sampler\n", (unsigned)MAX_SAMPLERS);
 		assert(false && "MAX_SAMPLERS exceeded");
 		return 0;
 	}
@@ -11215,7 +11215,7 @@ bool smvk::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo&
 	// mapping for it: many passes call GetOrCreateSampler(defaultCI) every
 	// frame and must keep deduping to this stable slot (no new slots, no
 	// MAX_SAMPLERS leak across toggles). The slot holds "the current mode"
-	// — every CI ever installed here resolves to it, so postfx taps follow
+	// â€” every CI ever installed here resolves to it, so postfx taps follow
 	// the toggle exactly like the hardcoded samplers[0]/[2] material paths.
 	infos_[index] = ci;
 	map_[ci] = index;
@@ -11292,7 +11292,7 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 }
 
 bool smvk::App::Initialize() {
-	// NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
+	// NVIDIA Streamline (DLSS) â€” regular (non-manual) integration: slInit
 	// runs before any Vulkan call and volk is pointed at the interposer's
 	// vkGetInstanceProcAddr, so instance/device/swapchain/acquire/present
 	// resolve to SL proxies (native passthrough for everything else). When
@@ -11427,7 +11427,7 @@ smvk::App::~App()
 	// The pasted-pattern contract: Shutdown detached + destroyed the
 	// element stack while the graphics members were alive. Anything
 	// left here missed Shutdown (its Holders would release against a
-	// dead context) — the debug assert catches the forgotten call.
+	// dead context) â€” the debug assert catches the forgotten call.
 	assert(m_elements.empty());
 	WaitForDeviceIdle();
 	m_audio.Shutdown();
@@ -11732,7 +11732,7 @@ void smvk::RenderGraph::FreeBuffer(
 	if (handle.empty())
 		return;
 	// External buffers are owned by the caller (ForwardPlus tile buffers,
-	// app light buffers) – just drop the logical alias, never the physical.
+	// app light buffers) â€“ just drop the logical alias, never the physical.
 	buffers_.destroy(handle);
 }
 void smvk::RenderGraph::ResolveImages() {
@@ -12036,7 +12036,7 @@ bool smvk::RenderGraph::CompileTransientHeap(
 							std::abort();
 						}
 					}
-					VkDeviceSize size = 64ull << 20; // ladder: 64 MiB down
+					VkDeviceSize size = smvk::mem::config::Runtime().targetHeapBlock; // ladder: halves down to the request
 					VkDeviceSize allocSize = 0;
 					VkDeviceMemory memory = VK_NULL_HANDLE;
 					while (true) {
@@ -12121,7 +12121,7 @@ void smvk::RenderGraph::ResolveBuffers()
 	//	);
 }
 // ============================================================================
-// Sync helpers – collect usages, topological sort, barrier emission
+// Sync helpers â€“ collect usages, topological sort, barrier emission
 // ============================================================================
 std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages() const
 {
@@ -12156,7 +12156,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 	};
 	for (const auto& pass : passes_) {
 		PassUsage pu;
-		// Color attachments – writes
+		// Color attachments â€“ writes
 		for (auto& att : pass.colorAttachments_) {
 			const ImageHandle phys = resolveViewImage(att.view);
 			if (phys.empty()) continue;
@@ -12167,7 +12167,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			req.barrierMasks.stageMask = PipelineStageBit_Fragment; // mapped to COLOR_ATTACHMENT_OUTPUT
 			req.layout = ImageLayout::ColorAttachmentOptimal;
 			pu.images.emplace_back(phys, req);
-			// MSAA resolve destination – also a color-attachment write.
+			// MSAA resolve destination â€“ also a color-attachment write.
 			if (!att.resolveView.empty()) {
 				const ImageHandle rphys = resolveViewImage(att.resolveView);
 				if (!rphys.empty() && rphys != phys) {
@@ -12224,7 +12224,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			if (!lb) continue;
 			BufferHandle phys = lb->resolvedBufferHandle;
 			if (phys.empty()) {
-				// External buffer – use resolved directly
+				// External buffer â€“ use resolved directly
 				phys = lb->resolvedBufferHandle;
 				// If external and empty, skip (not resolved)
 				if (phys.empty()) continue;
@@ -12323,7 +12323,7 @@ const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<
 	}
 	// Kahn over a min-heap (stable: prefer lower original index). The
 	// old code kept the ready set in a vector and re-sorted ALL of it
-	// after every release — O(n^2 log n) per Execute.
+	// after every release â€” O(n^2 log n) per Execute.
 	auto& zero = topoHeap_;
 	zero.clear();
 	topoSorted_.reserve(n);
@@ -12341,7 +12341,7 @@ const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<
 		}
 	}
 	if (topoSorted_.size() != n) {
-		// Cycle – fall back to insertion order and assert
+		// Cycle â€“ fall back to insertion order and assert
 		assert(false && "RenderGraph cycle detected in pass dependencies");
 		topoSorted_.clear();
 		for (size_t i = 0; i < n; ++i) topoSorted_.push_back(i);
@@ -12354,10 +12354,10 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	if (sortedOrder.empty() || usages.empty()) return;
 	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque);
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
-	// Snapshot global states under shared lock – local bookkeeping starts from these
+	// Snapshot global states under shared lock â€“ local bookkeeping starts from these
 	auto globalImageStates = vctx.SnapshotImageSyncStates();
 	auto globalBufferStates = vctx.SnapshotBufferSyncStates();
-	// Local states – seeded from global, with transient default Undefined/None if missing
+	// Local states â€“ seeded from global, with transient default Undefined/None if missing
 	std::unordered_map<uint64_t, VulkanResourceManager::ImageGlobalSyncState> localImage = globalImageStates;
 	std::unordered_map<uint64_t, VulkanResourceManager::BufferGlobalSyncState> localBuffer = globalBufferStates;
 
@@ -12412,7 +12412,7 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				b.image = img->vkImage;
-				// Use full subresource range – derive aspect from format
+				// Use full subresource range â€“ derive aspect from format
 				VkFormat fmt = toVkFormat(img->format);
 				VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 				// For depth formats, choose depth (and stencil if needed)
@@ -12451,7 +12451,7 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			else if (srcIsWrite && dstIsWrite) {
 				needBarrier = true;
 			}
-			// First use from None with no access – still may need barrier if dst is read after write globally, but local None -> need barrier if dst is read? For buffer from Undefined, we still need barrier if dst access != None
+			// First use from None with no access â€“ still may need barrier if dst is read after write globally, but local None -> need barrier if dst is read? For buffer from Undefined, we still need barrier if dst access != None
 			if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
 
 			if (needBarrier) {
@@ -12487,7 +12487,7 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	vctx.CommitBufferSyncStates(localBuffer);
 }
 // ---------------------------------------------------------------------------
-// RenderGraph barrier debug tracing — see the helpers next to ToVkStage.
+// RenderGraph barrier debug tracing â€” see the helpers next to ToVkStage.
 // ---------------------------------------------------------------------------
 // GPU stage-timer context (see GpuStageTimer in smvk.h): built per frame
 // from the swapchain's frame-timer pools (the stage pairs ride queries
@@ -12554,10 +12554,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// moment passes) -> C (compute blur) -> G2 (graphics, lighting onward),
 	// chained with per-flight timeline semaphores (submission order makes
 	// every wait signal-before-wait legal). Shared images are CONCURRENT
-	// (see concurrentCompute), so no ownership transfers — plain barriers
+	// (see concurrentCompute), so no ownership transfers â€” plain barriers
 	// on each CB plus semaphore stages order the queues.
 	// Fallback (single queue, no async passes, or interleaved graphics
-	// writes — see the guard below) keeps today's exact behavior: one
+	// writes â€” see the guard below) keeps today's exact behavior: one
 	// graphics submit with async passes inline (emulated).
 	const uint32_t graphicsFam = vctx.core_->indices.graphicsFamily.value_or(0);
 	const uint32_t computeFam = vctx.core_->indices.computeFamily.value_or(graphicsFam);
@@ -12594,11 +12594,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		// Guard: a graphics pass strictly inside the async window must not
 		// WRITE a resource the async passes touch (it would record into G2
 		// but execute... G2 executes after C, while the async reader may
-		// need the pre-write contents — unrepresentable in 3 submits).
+		// need the pre-write contents â€” unrepresentable in 3 submits).
 		// Reads are safe (topo sorts readers after all writers). Images AND
 		// buffers: the async pass set may read either kind, and a same-frame
 		// graphics writer inside the window would be ordered after C by
-		// submission but before it by the sort — a contradiction, so the
+		// submission but before it by the sort â€” a contradiction, so the
 		// split is refused. EVSM satisfies this (blur window touches
 		// moments/temp/blurred images and no buffers).
 		auto keyForGuard = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
@@ -12645,7 +12645,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		if (!useAsyncCompute)
 			vkSwap = nullptr;
 	}
-	// Per-pass C command buffers (timeline-chained submits — see the
+	// Per-pass C command buffers (timeline-chained submits â€” see the
 	// compute-pass arm below): grow the per-flight pool to this frame's
 	// async pass count. Growth failure degrades this frame to the emulated
 	// single-queue path (correct, just not overlapped).
@@ -12681,7 +12681,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		splitCB = vkSwap->splitBuffers[flight];
 		assert(splitCB != VK_NULL_HANDLE);
 		// The C stream is one CB + submit PER ASYNC PASS, begun in the walk
-		// below and timeline-chained (see the compute-pass arm) — no single
+		// below and timeline-chained (see the compute-pass arm) â€” no single
 		// whole-C CB anymore. The LAST async pass carries the C2G handoff,
 		// so hoist its value here.
 		c2gVal = ++vkSwap->asyncC2GValue_[flight];
@@ -12690,7 +12690,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		VK_CHECK(vkBeginCommandBuffer(splitCB, &beginCI));
 		// NOTE: the Optick GPU context is rebound per pass inside the walk
 		// (SMVK_PROFILE_GPU_CONTEXT(dstCmd)) so pass scopes timestamp the
-		// CB they record into — without it, C/G2 scopes would WriteTimestamp
+		// CB they record into â€” without it, C/G2 scopes would WriteTimestamp
 		// into the already-submitted G1 CB.
 	}
 
@@ -12698,7 +12698,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		const size_t sIdx = sorted[pos];
 		// Split routing (computed before the profiler scope: Optick GPU
 		// events emit WriteTimestamp into the thread-local context CB, so
-		// the context must follow the recording CB — after G1 is ended +
+		// the context must follow the recording CB â€” after G1 is ended +
 		// submitted, scopes for C/G2 passes would otherwise timestamp the
 		// dead G1 CB).
 		const bool passIsAsync = useAsyncCompute && passes_[sIdx].IsAsyncCompute();
@@ -12716,7 +12716,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 				VK_CHECK(vkBeginCommandBuffer(dstCmd, &beginCI));
 				// GPU stage timer, async-stream stage (GpuStageTimer): begin
-				// at the FIRST C-stream CB's start — the whole chained blur
+				// at the FIRST C-stream CB's start â€” the whole chained blur
 				// stream is one stage (the timeline chain serializes the
 				// passes, so first-CB-start..last-CB-end IS its GPU cost).
 				if (asyncChainIdx == 0 && stageTimerCtxPtr != nullptr)
@@ -12731,7 +12731,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		// names may be null (default ctor); Optick hashes the name and a
 		// null pointer crashes the profiler, so substitute a stable literal.
 		// The Optick Vulkan backend timestamps GPU events with
-		// ALL_GRAPHICS stage, which is illegal on the compute queue —
+		// ALL_GRAPHICS stage, which is illegal on the compute queue â€”
 		// async passes get a CPU-only scope (record time still profiled).
 #if USE_OPTICK
 		const char* passScopeName =
@@ -12755,7 +12755,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		// the Acquire layout barrier) and the upload-batch timeline wait:
 		// per spec, submissions to one queue only respect submission (begin)
 		// order and may overlap, so both dependencies must be explicit
-		// semaphore waits — G1's passes must not read upload targets or the
+		// semaphore waits â€” G1's passes must not read upload targets or the
 		// swapchain image while an earlier submission is still in flight.
 		// G2 waits G1's G2C signal explicitly (splitWaitSemaphore2, set
 		// below) for the same reason; EndAndPresent must NOT wait on the
@@ -12794,7 +12794,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// construction. GPU frames serialize; CPU-side recording and
 			// submission still pipeline (MAX_FRAMES_IN_FLIGHT keeps its CPU
 			// overlap value). timelineValue_ here still holds the previous
-			// EndAndPresent's signal — this frame has not incremented it.
+			// EndAndPresent's signal â€” this frame has not incremented it.
 			if (vkSwap->timelineValue_ != 0) {
 				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 				g1wait[g1WaitCount].semaphore = vkSwap->timelineSemaphore_;
@@ -12827,7 +12827,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					(unsigned long long)g2cVal);
 			RgSerializeGate(RgSerializeMode().split, graphicsQueue_, GetQueueMutex(graphicsQueue_));
 		}
-		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
+		// Per-pass barriers (fix #1) â€“ update imageStates/bufferStates as we go
 		{
 			if (traceRg) {
 				const char* streamName = !useAsyncCompute ? "MAIN"
@@ -13011,7 +13011,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// from the async family) in the reader's command buffer.
 				// Those stage bits may be unsupported by the reading queue's
 				// family, and the writer's commands are not in this CB
-				// anyway — the cross-queue semaphore wait already ordered
+				// anyway â€” the cross-queue semaphore wait already ordered
 				// execution and made the writes available, so such barriers
 				// degrade to availability-free acquires: srcStage=
 				// ALL_COMMANDS, srcAccess=NONE, dst = consumer scope.
@@ -13145,12 +13145,12 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// Simple hard dependency for chained compute tasks (the
 				// EVSM blur's H -> temp -> V chain): EVERY async pass
 				// ends + submits its own CB, linked on the asyncG2C_
-				// timeline — pass k waits g2cVal+k (G1's signal for k=0,
+				// timeline â€” pass k waits g2cVal+k (G1's signal for k=0,
 				// pass k-1's chain value after) and signals g2cVal+k+1
 				// for pass k+1. The sync2 chain (signal ALL_COMMANDS ->
 				// wait COMPUTE_SHADER) is a full execution+availability+
 				// visibility dependency, so pass k's storage writes are
-				// complete and visible before pass k+1's fetches — the
+				// complete and visible before pass k+1's fetches â€” the
 				// dispatch-adjacent RAW hazard the intra-CB hint
 				// barriers could leave uncovered (a V leg racing its H
 				// leg's temp stores read stale moments). NOT a
@@ -13159,7 +13159,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// this chain just makes adjacent async passes strictly
 				// sequential, which is all these task chains need. The
 				// LAST pass signals the C2G handoff instead of a chain
-				// value — identical C2G semantics to the old
+				// value â€” identical C2G semantics to the old
 				// single-whole-C-C submit, so G2/retirement ordering is
 				// unchanged. Submission order (G1, then each C pass in
 				// sorted order, same thread) keeps every wait
@@ -13238,14 +13238,14 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 
 	// C-stream bookkeeping: the per-pass submits already happened in the
 	// walk above (each async pass's CB ends + submits timeline-chained
-	// there; the LAST pass carries the C2G signal G2 waits — identical
+	// there; the LAST pass carries the C2G signal G2 waits â€” identical
 	// C2G semantics to the old single whole-C submit). Roll the G2C value
 	// counter forward to the highest chain value this frame so next
 	// frame's G1 signal stays strictly monotonic, then hand G2 its split
-	// CB + wait values. G2 (splitCB) stays open — EndAndPresent ends +
+	// CB + wait values. G2 (splitCB) stays open â€” EndAndPresent ends +
 	// submits it (waiting both C2G and G1's G2C). Retirement is
 	// structural: G2's submit signals the slot's frame-retirement timeline
-	// only after C (waited — transitively the whole chain) and G1
+	// only after C (waited â€” transitively the whole chain) and G1
 	// (waited) complete, so the Acquire-side timeline wait retires G1, C
 	// and G2 together and no host waits are needed here.
 	if (useAsyncCompute) {
@@ -13261,7 +13261,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		// G2 also waits G1's own signal: submissions to one queue may
 		// overlap per spec, so G2 (Tonemap writing the swapchain image)
 		// must be ordered after G1's acquire wait + layout barrier
-		// explicitly. Timeline waits don't consume — C waits the same
+		// explicitly. Timeline waits don't consume â€” C waits the same
 		// semaphore at its own value, which is legal.
 		fb.splitWaitSemaphore2Opaque = reinterpret_cast<void*>(vkSwap->asyncG2C_[flight]);
 		fb.splitWaitValue2 = g2cVal;
@@ -13270,7 +13270,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	vctx.CommitImageSyncStates(imageStates);
 	vctx.CommitBufferSyncStates(bufferStates);
 }
-// CommandBuffer – opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
+// CommandBuffer â€“ opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
 smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass,
 	void* stageTimerOpaque)
 	: cmdOpaque_(cmdOpaque)
@@ -13286,7 +13286,7 @@ void smvk::CommandBuffer::WriteStageTimestamp(uint32_t stageTimer, bool begin)
 	if (!ctx || !ctx->supported || ctx->pool == VK_NULL_HANDLE)
 		return;
 	// BOTTOM for both: begin fires after prior commands (the stage's
-	// start), end after the stage's work — the delta is the stage's GPU
+	// start), end after the stage's work â€” the delta is the stage's GPU
 	// cost on a serialized frame.
 	vkCmdWriteTimestamp(
 		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
@@ -13581,7 +13581,7 @@ void smvk::CommandBuffer::DispatchIndirect(BufferHandle buffer, uint64_t offset)
 void smvk::CommandBuffer::EmitGlobalMemoryBarrier()
 {
 	// The engine-side seam for resources the graph's per-resource sync
-	// cannot see (BDA-only heaps). Vulkan: one all-commands barrier ├óΓé¼ΓÇ¥
+	// cannot see (BDA-only heaps). Vulkan: one all-commands barrier â€”
 	// every prior write visible to every later access.
 	VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
 	VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -13777,7 +13777,7 @@ bool smvk::HasDedicatedComputeQueue() {
 }
 
 // The profiler backend seam (profile.h): the Vulkan GPU timeline
-// machinery ├óΓé¼ΓÇ¥ device/queue getters + Optick's Vulkan dispatch table +
+// machinery â€” device/queue getters + Optick's Vulkan dispatch table +
 // OPTICK_GPU_INIT_VULKAN. The gates (GpuEnabled, one-shot) live in the
 // neutral profile.cpp wrapper.
 void smvk::profiler::InitBackendGpuTimelinesImpl() {
@@ -13827,10 +13827,10 @@ void smvk::profiler::InitBackendGpuTimelinesImpl() {
 
 // ---------------------------------------------------------------------------
 // The UI overlay's backend seam (imgui_overlay.h): the Vulkan side.
-// Everything ImGui-overlay graphics-specific lives HERE ΓÇö the descriptor
+// Everything ImGui-overlay graphics-specific lives HERE — the descriptor
 // pool, the ImGui_ImplVulkan init (dynamic rendering, the resolved color
 // format), the paired ImGui_ImplSDL3_InitForVulkan, the record, the
-// user-texture descriptor sets, and the wait-idle teardown ΓÇö so the
+// user-texture descriptor sets, and the wait-idle teardown — so the
 // overlay TU stays backend-neutral (the D3D12 form slots into the same
 // seam when the imgui_impl_dx12 port lands).
 // ---------------------------------------------------------------------------
@@ -13980,7 +13980,7 @@ void ShutdownBackend(ResourceManager& ctx)
 	(void)ctx;
 	VkDevice device = GetVkDevice();
 	// The graphics backend first (its pipelines reference the pool), then
-	// the paired SDL3 platform shutdown, then the pool itself ∩┐╜ and the
+	// the paired SDL3 platform shutdown, then the pool itself � and the
 	// GPU must be idle before any of the teardown.
 	if (device != VK_NULL_HANDLE)
 		vkDeviceWaitIdle(device);

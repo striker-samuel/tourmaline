@@ -245,23 +245,26 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
 
-    // ---- Environment zones (see environment.hlsli EnvZone*): the march
-    // constants (scattering intensity + extinction density) blend per zone
-    // at the ray's MIDPOINT XZ — ONE map fetch per pixel. The near-weighted
-    // segment distribution concentrates samples in the first meters, so
-    // the midpoint's zone reads as the pixel's fog; a zone with
-    // volumetrics 0 drives the blend to 0 and the march degenerates to
-    // pass-through (the composite returns base). ----
-    if (frame.envZoneMapIndex != 0xffffffffu)
+    // ---- Analytic env zones (see environment.hlsli EnvZone*): the march
+    // constants (scattering ratio + extinction density) resolve at the
+    // ray's MIDPOINT in 3D and lerp with the pass base by blendWeight *
+    // falloff. The near-weighted segment distribution concentrates samples
+    // in the first meters, so the midpoint reads as the pixel's fog; a
+    // zone with volumetrics 0 drives the blend to 0 and the march
+    // degenerates to pass-through (the composite returns base). ----
     {
-        float4 zw = EnvZoneWeights(
-            camPos.xz + rayDir.xz * (rayLen * 0.5), frame);
-        float zIntensity = intensity;
-        float zDensity = density;
-        EnvZoneVolumetrics(zw, frame, intensity, density,
-            zIntensity, zDensity);
-        intensity = zIntensity;
-        density = zDensity;
+        float zoneWeight = 0.0;
+        EnvZoneLook zoneLook;
+        if (EnvZoneAt(camPos + rayDir * (rayLen * 0.5), frame,
+            zoneWeight, zoneLook))
+        {
+            float zIntensity = intensity;
+            float zDensity = density;
+            EnvZoneVolumetrics(zoneLook, zoneWeight, intensity, density,
+                zIntensity, zDensity);
+            intensity = zIntensity;
+            density = zDensity;
+        }
     }
 
     uint nSteps = clamp(vp.steps, 4, 128);

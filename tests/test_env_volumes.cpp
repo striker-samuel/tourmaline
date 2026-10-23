@@ -18,6 +18,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
 
 namespace {
@@ -170,6 +171,104 @@ int main() {
 			&& it->second.priority == 7.0f,
 			"envvol.volsonly-explicit-priority");
 		Check(!cluster->scene.envAuthored, "envvol.volsonly-no-fake-author");
+	}
+
+	// Scene master switch applies even when there are no env blocks (the
+	// key is scene-level; absent = the default ON).
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetOfflineMode(true);
+		addNode(cluster->scene, -1, 0);
+		smvk::tour::Doc doc;
+		doc.editorSettings.emplace_back("env.zonesEnabled", "0");
+		std::vector<std::string> warns;
+		std::string err;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"envzone.tour-ok");
+		Check(!cluster->scene.envZonesEnabled,
+			"envzone.tour-disable-no-blocks");
+	}
+
+	// Analytic zone packer + resolver: exact OBB coverage, rotation,
+	// inf-mask slabs, blend falloff and weight-0 skip. Mirrors the shader.
+	{
+		smvk::envzones::EnvZone look;
+		look.skyTint = glm::vec3(1.0f, 0.5f, 0.25f);
+		look.ambientI = 7.0f;
+		look.fogColor = glm::vec3(0.1f, 0.2f, 0.3f);
+		look.fogDensity = 0.02f;
+		look.volumetrics = 0.6f;
+		look.volumetricDensity = 0.03f;
+		smvk::envzones::EnvZoneGpu z;
+		Check(smvk::envzones::MakeEnvZoneGpu(
+			glm::scale(glm::mat4(1.0f), glm::vec3(10, 2, 10)),
+			0u, look, 5.0f, 0.8f, 4.0f, z), "envzone.pack");
+		Check(std::abs(smvk::envzones::EnvZoneFalloff(z, glm::vec3(0))
+			- 1.0f) < 1e-6f, "envzone.inside");
+		Check(std::abs(smvk::envzones::EnvZoneFalloff(z,
+			glm::vec3(0, 4, 0)) - 0.5f) < 1e-5f, "envzone.radius-mid");
+		Check(smvk::envzones::EnvZoneFalloff(z,
+			glm::vec3(0, 6, 0)) == 0.0f, "envzone.radius-out");
+		std::vector<smvk::envzones::EnvZoneGpu> zones{ z };
+		float w = 0.0f;
+		smvk::envzones::EnvZone got;
+		Check(smvk::envzones::EnvZoneAt(zones, glm::vec3(0, 4, 0), w, got),
+			"envzone.at-hit");
+		Check(std::abs(w - 0.4f) < 1e-5f, "envzone.at-weight");
+		Check(got.skyTint == glm::vec3(1.0f, 0.5f, 0.25f)
+			&& std::abs(got.ambientI - 7.0f) < 1e-6f,
+			"envzone.at-look");
+		Check(!smvk::envzones::EnvZoneAt(zones, glm::vec3(0, 6, 0), w, got)
+			&& w == 0.0f, "envzone.at-outside");
+	}
+
+	// Rotated OBB: the long X box turns along Z; inf-mask half-space and
+	// a flat finite axis (empty) are handled like ZoneCovers.
+	{
+		smvk::envzones::EnvZone look;
+		smvk::envzones::EnvZoneGpu z;
+		const glm::mat4 rot = glm::rotate(glm::mat4(1.0f),
+			glm::radians(90.0f), glm::vec3(0, 1, 0));
+		Check(smvk::envzones::MakeEnvZoneGpu(rot
+			* glm::scale(glm::mat4(1.0f), glm::vec3(10, 1, 1)),
+			0u, look, 0.0f, 1.0f, 0.0f, z), "envzone.rot-pack");
+		Check(smvk::envzones::EnvZoneFalloff(z, glm::vec3(0, 0, 9))
+			== 1.0f, "envzone.rot-inside");
+		Check(smvk::envzones::EnvZoneFalloff(z, glm::vec3(9, 0, 0))
+			== 0.0f, "envzone.rot-outside");
+
+		Check(smvk::envzones::MakeEnvZoneGpu(
+			glm::scale(glm::mat4(1.0f), glm::vec3(10, 10, 10)),
+			kEnvInfNegY, look, 0.0f, 1.0f, 0.0f, z),
+			"envzone.infmask-pack");
+		Check(smvk::envzones::EnvZoneFalloff(z, glm::vec3(0, -1e6f, 0))
+			== 1.0f, "envzone.infmask-below");
+		Check(smvk::envzones::EnvZoneFalloff(z, glm::vec3(0, 1e6f, 0))
+			== 0.0f, "envzone.infmask-above");
+
+		Check(!smvk::envzones::MakeEnvZoneGpu(
+			glm::scale(glm::mat4(1.0f), glm::vec3(10, 0, 10)),
+			0u, look, 0.0f, 1.0f, 0.0f, z), "envzone.flat-empty");
+		Check(smvk::envzones::MakeEnvZoneGpu(
+			glm::scale(glm::mat4(1.0f), glm::vec3(10, 0, 10)),
+			kEnvInfNegY | kEnvInfPosY, look, 0.0f, 1.0f, 0.0f, z),
+			"envzone.flat-inf");
+		Check(smvk::envzones::EnvZoneFalloff(z, glm::vec3(0, 1e6f, 0))
+			== 1.0f, "envzone.flat-inf-covers");
+	}
+
+	// Zero blend weight is skipped (the resolver keeps the plain look).
+	{
+		smvk::envzones::EnvZone look;
+		smvk::envzones::EnvZoneGpu z;
+		Check(smvk::envzones::MakeEnvZoneGpu(
+			glm::scale(glm::mat4(1.0f), glm::vec3(10, 10, 10)),
+			0u, look, 0.0f, 0.0f, 0.0f, z), "envzone.zero-pack");
+		std::vector<smvk::envzones::EnvZoneGpu> zones{ z };
+		float w = 1.0f;
+		smvk::envzones::EnvZone got;
+		Check(!smvk::envzones::EnvZoneAt(zones, glm::vec3(0), w, got)
+			&& w == 0.0f, "envzone.zero-skip");
 	}
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";

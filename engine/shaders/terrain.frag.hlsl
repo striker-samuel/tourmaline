@@ -81,26 +81,34 @@ float4 mainPS(VSOut IN) : SV_Target0
     }
     sunE *= shadow;
 
-    // Sky ambient (hemisphere blend of zenith/horizon/ground). The
-    // environment ZONES own the sky where the map is on: the tint +
-    // intensity blend per texel (EnvZoneIrradiance), so painting zones
-    // paints the terrain's ambient.
-    float4 zw = EnvZoneWeights(IN.worldPos.xz, frame);
-    float3 skyE = EnvZoneIrradiance(N, zw, env, frame);
+    // Sky ambient (hemisphere blend of zenith/horizon/ground). Analytic
+    // env zones override it per pixel: the covering OBB's tint +
+    // intensity blend with the plain look by blendWeight * falloff.
+    float3 skyE = EvaluateIrradiance(N, env);
+    float zoneWeight = 0.0;
+    EnvZoneLook zoneLook;
+    if (EnvZoneAt(IN.worldPos, frame, zoneWeight, zoneLook))
+        skyE = lerp(skyE, EnvZoneIrradiance(zoneLook, N, env), zoneWeight);
 
     float3 color = albedo * (sunE / PI + skyE);
 
     // Env fog (same factor/mode the scene pixels blend with). Zones own
-    // the fog color + density: the zone blend replaces the env's.
+    // the fog color + density: the zone look lerps with the plain env by
+    // the same weight.
     float viewDepth = length(IN.worldPos - frame.cameraPos.xyz);
-    float fogHdrIntensity = env.fogColor.w;
-    float3 zoneFogHdr = env.fogColor.rgb * fogHdrIntensity;
-    float zoneFogDensity = env.fogDensityHeight.x;
-    if (frame.envZoneMapIndex != 0xffffffffu)
-        EnvZoneFog(zw, frame, zoneFogHdr, zoneFogDensity);
+    float3 fogHdr = env.fogColor.rgb * env.fogColor.w;
+    float fogDensity = env.fogDensityHeight.x;
+    if (zoneWeight > 0.0)
+    {
+        float3 zoneFogHdr;
+        float zoneFogDensity;
+        EnvZoneFog(zoneLook, frame, zoneFogHdr, zoneFogDensity);
+        fogHdr = lerp(fogHdr, zoneFogHdr, zoneWeight);
+        fogDensity = lerp(fogDensity, zoneFogDensity, zoneWeight);
+    }
     float fog = ComputeFogFactorDensity(viewDepth, IN.worldPos.y, env,
-        zoneFogDensity);
-    color = lerp(color, zoneFogHdr, fog);
+        fogDensity);
+    color = lerp(color, fogHdr, fog);
 
     return float4(color, 1.0);
 }

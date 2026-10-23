@@ -479,6 +479,12 @@ struct Scene {
 	// like envForNode (no first-wins — every block coexists). Absent =
 	// legacy zone behavior.
 	std::unordered_map<NodeId, EnvVolume> envVolumeForNode;
+	// Scene-level master switch for analytic environment zones (see
+	// Rendergraph/envzones.h). Default ON: zones activate automatically
+	// whenever envForNode has entries; authors can turn the whole system
+	// off (tour env.zonesEnabled -> pak v15 -> runtime). The renderer's
+	// debug-panel toggle is a separate, non-persisted override.
+	bool envZonesEnabled = true;
 	// RENDER SETTINGS (see SceneRenderSettings): the resolved GLOBAL
 	// look — what the renderer seeds from. Like `environment`, consumers
 	// read `renderSettings` and nothing else; the editor resolves the

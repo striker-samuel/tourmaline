@@ -1,164 +1,149 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Tiled environment-zone map (see Rendergraph/envzones.h): CPU grid
-// build/rasterize/sample + the GPU texture/bindless registration.
+// Analytic environment zones (see Rendergraph/envzones.h): the CPU packer
+// (authored OBB + look -> GPU record) and the CPU mirror of the shader
+// resolver (falloff + first-zone selection) for tooling/tests.
 
 #include <Engine/Rendergraph/envzones.h>
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <cstring>
 
 namespace smvk::envzones {
 
 namespace {
 
-inline uint32_t PackR8(float w) {
-	const float c = std::clamp(w, 0.0f, 1.0f);
-	return uint32_t(std::lround(c * 255.0f));
-}
-
-} // namespace
-
-bool EnvZoneMap::Build(ResourceManager& ctx, const EnvZoneDesc& d) {
-	Destroy();
-	if (!(d.worldSize > 0.0f) || !(d.texelSize > 0.0f))
-		return false;
-	const float dimF = d.worldSize / d.texelSize;
-	const uint32_t n = uint32_t(std::lround(dimF));
-	if (n < 2 || n > 4096 || std::fabs(float(n) - dimF) > 1e-3f)
-		return false;
-
-	desc = d;
-	dim = n;
-	// Default fill: zone 0 everywhere (R = 255, G/B/A = 0) Ã¢â‚¬â€ the plain
-	// env look until a zone entity covers the texel.
-	weights.assign(size_t(n) * n, 0xFF000000u);
-
-	// GPU texture: RGBA8_UNORM, sampled, one mip; uploaded from the grid
-	// (row-major u32 == RGBA8 bytes little-endian R-first).
-	smvk::ImageCreateInfo ci{};
-	ci.type = smvk::ImageType::Image2D;
-	ci.extent = { n, n, 1 };
-	ci.format = smvk::Format::RGBA8_UNorm;
-	ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-	ci.mipLevels = 1;
-	ci.arrayLayers = 1;
-	ci.name = "env zone map";
-	texture = ctx.CreateTexture(ci, weights.data());
-	if (texture.empty()) {
-		std::fprintf(stderr, "[envzones] texture creation failed\n");
-		Destroy();
-		return false;
-	}
-	bindlessIndex = ctx.GetTextureBindlessIndex(texture);
-	if (bindlessIndex == UINT32_MAX) {
-		std::fprintf(stderr, "[envzones] bindless registration failed\n");
-		Destroy();
-		return false;
-	}
-	valid = true;
-	std::fprintf(stderr, "[envzones] built: %ux%u texels of %.0fm "
-		"(%.0fm world, bindless slot %u)\n",
-		n, n, d.texelSize, d.worldSize, bindlessIndex);
+inline bool Mat4Finite(const glm::mat4& m) {
+	for (int c = 0; c < 4; ++c)
+		for (int r = 0; r < 4; ++r)
+			if (!std::isfinite(m[c][r]))
+				return false;
 	return true;
 }
 
-void EnvZoneMap::Destroy() {
-	texture = {};
-	bindlessIndex = UINT32_MAX;
-	valid = false;
-	weights.clear();
-	dim = 0;
-}
+inline uint32_t NegBit(int axis) { return 1u << (2 * axis); }
+inline uint32_t PosBit(int axis) { return 2u << (2 * axis); }
 
-void EnvZoneMap::Upload(ResourceManager& ctx) {
-	// Content refresh through the RHI's recreate-based UpdateTexture: the
-	// old texture's pool generation BUMPS (stale holders/captured bindless
-	// indices are detectably dead) and a fresh texture reseats `texture`
-	// under a fresh bindless index Ã¢â‚¬â€ the frame-uniforms fill re-reads the
-	// member every frame, so consumers follow the new slot for free.
-// 400x400 RGBA8 = 640 KB per rebuild cadence - cheap.
-	if (!valid || dim == 0 || weights.empty())
-		return;
-	smvk::ImageCreateInfo ci{};
-	ci.type = smvk::ImageType::Image2D;
-	ci.extent = { dim, dim, 1 };
-	ci.format = smvk::Format::RGBA8_UNorm;
-	ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-	ci.mipLevels = 1;
-	ci.arrayLayers = 1;
-	ci.name = "env zone map";
-	const uint32_t slot = ctx.UpdateTexture(texture, ci, weights.data());
-	if (slot == UINT32_MAX)
-		return;
-	bindlessIndex = slot;
-}
+} // namespace
 
-void EnvZoneMap::WorldToTexel(float wx, float wz,
-	float& outX, float& outZ) const {
-	// World (min corner at -worldSize/2) -> continuous texel coords
-	// (texel centers at i + 0.5).
-	outX = (wx + desc.worldSize * 0.5f) / desc.texelSize - 0.5f;
-	outZ = (wz + desc.worldSize * 0.5f) / desc.texelSize - 0.5f;
-}
+bool MakeEnvZoneGpu(const glm::mat4& transform, uint32_t infMask,
+	const EnvZone& look, float priority, float blendWeight,
+	float blendRadius, EnvZoneGpu& out) {
+	const glm::mat4& g = transform;
+	float half[3] = {
+		glm::length(glm::vec3(g[0])),
+		glm::length(glm::vec3(g[1])),
+		glm::length(glm::vec3(g[2]))
+	};
+	infMask &= 63u;
 
-glm::vec4 EnvZoneMap::WeightsAtTexel(float x, float z) const {
-	const int32_t xi = int32_t(std::floor(std::clamp(x, 0.0f, float(dim) - 1.0f)));
-	const int32_t zi = int32_t(std::floor(std::clamp(z, 0.0f, float(dim) - 1.0f)));
-	const uint32_t w = weights[size_t(zi) * dim + size_t(xi)];
-	return glm::vec4(
-		float((w >> 0) & 0xFFu) / 255.0f,
-		float((w >> 8) & 0xFFu) / 255.0f,
-		float((w >> 16) & 0xFFu) / 255.0f,
-		float((w >> 24) & 0xFFu) / 255.0f);
-}
-
-EnvZone EnvZoneMap::SampleAt(float wx, float wz) const {
-	EnvZone out = desc.zones[0];
-	if (!valid)
-		return out;
-	// Bilinear over the grid (the GPU's linear filter), then the
-	// normalized channel-weighted zone mix Ã¢â‚¬â€ the CPU mirror of the
-	// shader blend (EnvZoneWeights + the envZone* FrameUniforms block).
-	float x, z;
-	WorldToTexel(wx, wz, x, z);
-	x = std::clamp(x, 0.0f, float(dim) - 1.0f);
-	z = std::clamp(z, 0.0f, float(dim) - 1.0f);
-	const int32_t xi = int32_t(std::floor(x));
-	const int32_t zi = int32_t(std::floor(z));
-	const int32_t xj = std::min(xi + 1, int32_t(dim) - 1);
-	const int32_t zj = std::min(zi + 1, int32_t(dim) - 1);
-	const float fx = x - float(xi);
-	const float fz = z - float(zi);
-	const glm::vec4 w = WeightsAtTexel(float(xi), float(zi)) * (1.0f - fx) * (1.0f - fz)
-		+ WeightsAtTexel(float(xj), float(zi)) * fx * (1.0f - fz)
-		+ WeightsAtTexel(float(xi), float(zj)) * (1.0f - fx) * fz
-		+ WeightsAtTexel(float(xj), float(zj)) * fx * fz;
-	float s = w.x + w.y + w.z + w.w;
-	if (s < 1e-4f)
-		return out;
-	const glm::vec4 wn = w / s;
-	glm::vec4 sky(0.0f);
-	glm::vec4 fog(0.0f);
-	glm::vec4 vol(0.0f);
-	for (uint32_t i = 0; i < kEnvZoneMax; ++i) {
-		const EnvZone& zdef = desc.zones[i];
-		const float wi = wn[i];
-		sky += glm::vec4(zdef.skyTint, zdef.ambientI) * wi;
-		fog += glm::vec4(zdef.fogColor, zdef.fogDensity) * wi;
-		vol += glm::vec4(zdef.volumetrics, zdef.volumetricDensity,
-			0.0f, 0.0f) * wi;
+	// Empty zone: a flat finite axis without any inf face (ZoneCovers).
+	for (int a = 0; a < 3; ++a) {
+		const bool flat = std::isfinite(half[a]) && !(half[a] > 0.0f);
+		const bool faceInf = (infMask & (NegBit(a) | PosBit(a))) != 0;
+		if (flat && !faceInf)
+			return false;
 	}
-	out.skyTint = glm::vec3(sky);
-	out.ambientI = sky.w;
-	out.fogColor = glm::vec3(fog);
-	out.fogDensity = fog.w;
-	out.volumetrics = vol.x;
-	out.volumetricDensity = vol.y;
-	return out;
+
+	// Sanitize the frame before inverting: fully unbounded (or flat with
+	// an inf face) axes get unit columns - those axes are skipped by the
+	// coverage test anyway.
+	glm::mat4 frame = g;
+	for (int a = 0; a < 3; ++a) {
+		const bool flat = std::isfinite(half[a]) && !(half[a] > 0.0f);
+		const bool faceInf = (infMask & (NegBit(a) | PosBit(a))) != 0;
+		if (!std::isfinite(half[a]) || (flat && faceInf))
+			frame[a] = glm::vec4(a == 0, a == 1, a == 2, 0.0f);
+	}
+	const float det = glm::determinant(frame);
+	if (!std::isfinite(det) || std::abs(det) < 1e-12f)
+		return false;
+	const glm::mat4 inv = glm::inverse(frame);
+	if (!Mat4Finite(inv))
+		return false;
+
+	// Store ROWS (not GLM's columns): the shader uses dot(row, p4) so a
+	// DX/GL matrix-convention mismatch can never corrupt the test.
+	for (int r = 0; r < 4; ++r)
+		out.worldToLocal[r] = glm::vec4(
+			inv[0][r], inv[1][r], inv[2][r], inv[3][r]);
+	out.halfAndMask = glm::uvec4(
+		glm::floatBitsToUint(half[0]),
+		glm::floatBitsToUint(half[1]),
+		glm::floatBitsToUint(half[2]),
+		infMask);
+	out.shape = glm::vec4(priority, std::clamp(blendWeight, 0.0f, 1.0f),
+		std::max(blendRadius, 0.0f), 0.0f);
+	out.sky = glm::vec4(look.skyTint, look.ambientI);
+	out.fog = glm::vec4(look.fogColor, look.fogDensity);
+	out.vol = glm::vec4(look.volumetrics, look.volumetricDensity, 0.0f, 0.0f);
+	return true;
+}
+
+float EnvZoneFalloff(const EnvZoneGpu& zone, const glm::vec3& p) {
+	const glm::vec3 half(
+		glm::uintBitsToFloat(zone.halfAndMask.x),
+		glm::uintBitsToFloat(zone.halfAndMask.y),
+		glm::uintBitsToFloat(zone.halfAndMask.z));
+	const uint32_t infMask = zone.halfAndMask.w & 63u;
+	const glm::vec4 p4(p, 1.0f);
+	const glm::vec3 local(
+		glm::dot(zone.worldToLocal[0], p4),
+		glm::dot(zone.worldToLocal[1], p4),
+		glm::dot(zone.worldToLocal[2], p4));
+
+	float dist2 = 0.0f;
+	for (int a = 0; a < 3; ++a) {
+		const float h = half[a];
+		const bool flat = std::isfinite(h) && !(h > 0.0f);
+		const bool faceInf = (infMask & (NegBit(a) | PosBit(a))) != 0;
+		if (flat && !faceInf)
+			return 0.0f; // empty zone
+		const bool negInf = !std::isfinite(h)
+			|| (infMask & NegBit(a)) != 0 || (flat && faceInf);
+		const bool posInf = !std::isfinite(h)
+			|| (infMask & PosBit(a)) != 0 || (flat && faceInf);
+		const float scale = (std::isfinite(h) && h > 0.0f) ? h : 1.0f;
+		if (!negInf && local[a] < -1.0f) {
+			const float d = (-1.0f - local[a]) * scale;
+			dist2 += d * d;
+		}
+		if (!posInf && local[a] > 1.0f) {
+			const float d = (local[a] - 1.0f) * scale;
+			dist2 += d * d;
+		}
+	}
+	if (!(dist2 > 0.0f))
+		return 1.0f;
+	const float radius = std::max(zone.shape.z, 0.0f);
+	if (!(radius > 0.0f))
+		return 0.0f;
+	const float t = std::clamp(std::sqrt(dist2) / radius, 0.0f, 1.0f);
+	return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
+bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
+	float& weight, EnvZone& look) {
+	weight = 0.0f;
+	look = EnvZone{};
+	const size_t n = std::min<size_t>(zones.size(), kEnvZoneMaxZones);
+	for (size_t i = 0; i < n; ++i) {
+		const EnvZoneGpu& z = zones[i];
+		const float w = std::clamp(z.shape.y, 0.0f, 1.0f)
+			* EnvZoneFalloff(z, p);
+		if (!(w > 0.0f))
+			continue;
+		weight = w;
+		look.skyTint = glm::vec3(z.sky);
+		look.ambientI = z.sky.w;
+		look.fogColor = glm::vec3(z.fog);
+		look.fogDensity = z.fog.w;
+		look.volumetrics = z.vol.x;
+		look.volumetricDensity = z.vol.y;
+		return true;
+	}
+	return false;
 }
 
 } // namespace smvk::envzones
