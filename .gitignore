@@ -449,3 +449,5 @@ pipeline_cache*.bin
 # clones stay untracked; the build consumes them in place.
 /external/FidelityFX-SDK/
 /external/df_game_data/
+
+/portfolio/
