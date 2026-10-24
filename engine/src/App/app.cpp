@@ -137,7 +137,10 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 	}
 	if (m_input.isQuitRequested())
 		windowShouldClose_ = true;
-	if (m_input.isKeyHeld(input::Key::Escape))
+	// Held-Escape quit: the base host's game flow. The EDITOR overrides
+	// AllowEscQuit to false — Esc must never kill an editing session
+	// outright (it dismisses modals/popups via ImGui instead).
+	if (AllowEscQuit() && m_input.isKeyHeld(input::Key::Escape))
 		windowShouldClose_ = true;
 	return !windowShouldClose_;
 }

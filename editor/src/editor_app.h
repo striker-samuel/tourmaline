@@ -142,10 +142,12 @@ inline constexpr float kEditorFarClip = 2000.0f;
 // panels (panels are siblings in one layout — they never overlap the
 // rendered view). kEditorBottomH is the Overrides/Console dock height;
 // kEditorStatusH is the Maya-like bottom status strip (process progress).
+// 28 = one text line + the bar's (6,3) padding + a spare pixel (24 clipped
+// the text into the window's bottom edge — the collision report).
 inline constexpr float kEditorLeftW = 330.0f;
 inline constexpr float kEditorRightW = 370.0f;
 inline constexpr float kEditorBottomH = 230.0f;
-inline constexpr float kEditorStatusH = 24.0f;
+inline constexpr float kEditorStatusH = 28.0f;
 
 // Central viewport rect in window pixels (x/y = top-left offset).
 struct ViewportRect {
@@ -1189,6 +1191,19 @@ private:
 	// as the URI) and assigned to material slots. Layer slots ride the
 	// existing "layers" shared attr.
 	uint32_t m_matEditorSel = UINT32_MAX; // world material index
+	// The AUTO-FOLLOW tracker: the selection's material the tab last
+	// followed (UINT32_MAX = none/none-seen). The follow fires only on
+	// a CHANGE — a manual combo pick between selections sticks.
+	uint32_t m_matEditorSelFromSel = UINT32_MAX;
+	// THE SHARED MATERIAL BODY (one surface, three hosts): slots (the
+	// registry picker + thumbnails) + the scalar look (base/metal/rough/
+	// emissive, the shared-drag command path) + the attribute flags +
+	// alpha + the vertex-color layers + the diffuse/ball previews +
+	// the layer travel. The hosts own only their headers:
+	//   - the node page's block: the assignment combo + the travel
+	//   - the Inspector's focus page: the breadcrumb + trail
+	//   - the right column's Material tab: the picker (auto-follow)
+	void DrawMaterialBody(uint32_t mat);
 	char m_matTexPathBuf[512] = "";
 	void DrawMaterialEditor();
 	// Loads a KTX2 file into the primary cluster's texture pool with
@@ -1367,12 +1382,18 @@ private:
 	// LIT view mode: LiveViewActive() below. No menu entry, no badge, no
 	// special gates — Lit is a panel like the others, its content just
 	// comes from the engine's whole pipeline.)
-	// True while the ACTIVE viewport renders the WYSIWYG live view —
-	// i.e. its view mode is Lit (F1, the viewports' default). Every other
-	// mode + the non-active viewports render the editor's own passes.
+	// PANEL 0 IS PRIVILEGED: the live view hosts ONLY in viewport 0 (the
+	// quad layout's perspective slot) — it never follows the selection
+	// ("goes from selected to selected panel" was the old, confusing
+	// behavior: hovering another quad moved the game frame there mid-
+	// gesture). The camera, the capture rect + the composite all key on
+	// viewport 0; every other viewport (and vp0 in any NON-Lit mode)
+	// renders the editor's own passes, whichever is active.
 	bool LiveViewActive() const {
-		return m_viewports[m_activeVp].viewMode == ViewMode::Lit;
+		return m_viewports[0].viewMode == ViewMode::Lit;
 	}
+	// The live view's VIEWPORT (the camera + rect source): always 0.
+	static constexpr int kLiveViewVp = 0;
 	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
 	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
@@ -1883,7 +1904,13 @@ private:
 	// empty/invalid/out-of-project -> <root>/content at the next draw)
 	// and the selected entry (absolute, "" = none).
 	std::string m_assetsDir;
+	// The selection: the PRIMARY (the last clicked — the single-flow
+	// consumers: drag payloads, the header buttons) + the SET (the
+	// multi-selection: plain click replaces it, ctrl toggles an entry,
+	// shift adds the anchor..entry range over the display order).
 	std::string m_assetsSel;
+	std::vector<std::string> m_assetsSelSet;
+	std::string m_assetsAnchor; // the shift-range anchor
 	// Collection filter (0 = all/files, 1 = meshes, 2 = materials,
 	// 3 = animations, 4 = GI bakes, 5 = cubemaps, 6 = GI cooks,
 	// 7 = lightmap cooks): non-zero lists every asset of that kind
@@ -2046,14 +2073,33 @@ private:
 	// callers store it alongside the path (tour reference -guid) and
 	// keep working path-only when empty.
 	std::string ProjectAssetGuid(const std::string& assetPath);
-	// Asset-browser delete: validates the selection (project
-	// containment, not the open scene, planable) and opens the confirm
-	// modal (the plan rides m_assetsDeletePending). The modal itself
+	// Asset-browser delete: validates the targets (project containment,
+	// not the open scene, planable) and opens the confirm modal. ONE
+	// method, targets* + targetCount — the single delete is count 1;
+	// the multi passes the selection set. The plans ride
+	// m_assetsDeletePending (a vector; empty = no modal). The modal
 	// draws + executes in DrawAssetDeleteModal (end of DrawAssetsPanel).
-	void RequestAssetDelete(const std::string& absPath);
+	void RequestAssetDelete(const std::string* targets, size_t targetCount);
 	void DrawAssetDeleteModal();
-	// Pending confirmed-delete plan ("" target = no modal).
-	AssetDeletePlan m_assetsDeletePending;
+	// Pending confirmed-delete plans (empty = no modal).
+	std::vector<AssetDeletePlan> m_assetsDeletePending;
+	// THE GENERIC DIALOG (the ONE modal mechanism — every confirm/prompt
+	// rides it; the delete confirm is the first consumer): a plain
+	// centered window + a dim overlay, gated on a bool — NO popup stack
+	// (the popup-matching subtleties burned the delete hunt). One
+	// dialog at a time (the modal contract).
+	bool m_dialogUp = false;
+	void DialogOpen();               // raise (idempotent)
+	void DialogClose();              // drop (DialogBegin returns false after)
+	bool DialogUp() const { return m_dialogUp; } // the modal cache feeds this
+	// Draws the dim + the centered dialog window. True while up (call
+	// DialogEnd after the content; Cancel/confirm call DialogClose).
+	bool DialogBegin(const char* title, const ImVec2& size);
+	void DialogEnd();
+	// The DEFERRED popup open: RequestAssetDelete records the plans from
+	// deeper id stacks (the tile menu / the Delete key); the open fires
+	// at the ##assets_root scope next to the modal's BeginPopupModal.
+	bool m_assetsDeletePopupWanted = false;
 	// <root>/paks/<stem>.pak (empty without a project/stem).
 	std::string ProjectCookOutPak(const std::string& sceneStem) const;
 	// Points the per-scene cook outputs (direct + dialog) at the
@@ -2599,6 +2645,21 @@ private:
 	bool CubeWatchSpec(std::string& dirOut, std::string& baseOut) const;
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
+	// THE MODAL CACHE: true while a BeginPopupModal dialog is up this
+	// frame — queried at the END of DrawUI (the imgui frame alive); the
+	// live view's compose pass (recorded AFTER the imgui pass) reads
+	// the cache — a direct query there tears down the frame (the boot
+	// AV crash).
+	bool m_imguiModalOpen = false;
+	// THE VERB TOAST (the command feedback over the view panels): Do()
+	// records the verb's friendly label + a timestamp; DrawUI paints a
+	// small fading chip centered over the ACTIVE viewport's rect (~1.6s,
+	// the last 0.4 fades). Minimal by design — the action's name, not a
+	// dialog.
+	std::string m_verbToast;
+	float m_verbToastAge = -1.0f; // -1 = none; seconds since the verb
+	void ShowVerbToast(const EditCmd& c);
+	void DrawVerbToast();
 	int m_rightTab = 0; // Inspector | Render | Material (the UV tab is retired)
 	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
 	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------

@@ -295,7 +295,7 @@ void EditorApp::Shutdown() {
 	// CloseScene, so closing the editor never loses edits.
 	if (m_world && !TourTarget().empty())
 		SaveTour();
-	SavePrefs(); // save editor prefs on close
+	SavePrefs(); // save editor pr on close
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
 	// Fibers shutdown: deliver any queued completions, wait for

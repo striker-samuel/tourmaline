@@ -9,6 +9,7 @@
 
 #include "editor_app.h"
 #include "modal_bindings.h"
+#include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 
 #include <cstring>
 #include <algorithm>
@@ -232,6 +233,7 @@ namespace editor {
 		// Left-column tabs took the authoring panels, the world render
 		// took the stage).
 		DrawLiveViewStage();
+		DrawVerbToast();
 		// UV editor window retired (the Live view window replaced the
 		// canvas era; solid backgrounds everywhere now — no transparent
 		// content regions). See editor_viewports.cpp's DrawUvEditorWindow.
@@ -251,6 +253,17 @@ namespace editor {
 		// while disabled: one flag check.
 		if (smvk::profiler::FrameHistogramEnabled())
 			smvk::profiler::DrawFrameHistogramUi();
+		// THE MODAL CACHE (queried HERE — the imgui frame is ALIVE; the
+		// live view's compose pass (recorded AFTER the imgui pass) reads
+		// the cache — a direct query there tears down the frame (the boot
+		// AV crash). Includes the GENERIC DIALOG (the manual modal isn't
+		// a popup — IsPopupOpen can't see it; DialogUp() covers it).
+		m_imguiModalOpen = DialogUp()
+			|| ImGui::IsPopupOpen("Save tour as")
+			|| ImGui::IsPopupOpen("Recover autosave")
+			|| ImGui::IsPopupOpen("Create Terrain")
+			|| ImGui::IsPopupOpen("Delete asset?")
+			|| ImGui::IsPopupOpen("TaskProgress");
 	}
 
 	// ---- Maya-like bottom status strip (process progress) --------------
@@ -258,9 +271,70 @@ namespace editor {
 	// sticky result, else Ready), right = determinate progress while a
 	// task reports fractions, else a reopen button for backgrounded
 	// tasks. Derived per frame from live state — no stored message.
+	// ---- THE VERB TOAST (the command feedback over the view panels' rect)
+	// The verb's friendly name — minimal (the action's word, not a dialog).
+	void EditorApp::ShowVerbToast(const EditCmd& c) {
+		const char* v = "?";
+		switch (c.verb) {
+		case EditVerb::Translate: v = "move"; break;
+		case EditVerb::Rotate: v = "rotate"; break;
+		case EditVerb::Scale: v = "scale"; break;
+		case EditVerb::Rename: v = "rename"; break;
+		case EditVerb::Parent: v = "reparent"; break;
+		case EditVerb::CreateLight: v = "create light"; break;
+		case EditVerb::CreateTerrain: v = "create terrain"; break;
+		case EditVerb::Delete: v = "delete"; break;
+		case EditVerb::AssignMaterial: v = "assign material"; break;
+		case EditVerb::SetMatAttr: v = c.attr.empty() ? "material"
+				: c.attr.c_str(); break;
+		case EditVerb::SetVisibility: v = "visibility"; break;
+		case EditVerb::SetLightAttr: v = c.lightAttr.empty() ? "light attr"
+				: c.lightAttr.c_str(); break;
+		default: break;
+		}
+		m_verbToast = v;
+		m_verbToastAge = 0.0f;
+	}
+
+	void EditorApp::DrawVerbToast() {
+		if (m_verbToastAge < 0.0f)
+			return;
+		// ~1.6s lifetime, the last 0.4s fades out.
+		constexpr float kToastLife = 1.6f;
+		m_verbToastAge += ImGui::GetIO().DeltaTime;
+		if (m_verbToastAge >= kToastLife) {
+			m_verbToastAge = -1.0f;
+			return;
+		}
+		const float alpha = m_verbToastAge < kToastLife - 0.4f
+			? 1.0f
+			: (kToastLife - m_verbToastAge) / 0.4f;
+		// The chip: centered over the ACTIVE viewport's rect, near the top
+		// (above the content, below the chrome).
+		const ViewportRect& vp = m_viewports[m_activeVp].rect;
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+		const ImVec2 ts = ImGui::CalcTextSize(m_verbToast.c_str());
+		const ImVec2 c(vp.x + vp.w * 0.5f, vp.y + 26.0f);
+		const ImVec2 bmin(c.x - ts.x * 0.5f - 10.0f, c.y - 4.0f);
+		const ImVec2 bmax(c.x + ts.x * 0.5f + 10.0f, c.y + ts.y + 4.0f);
+		dl->AddRectFilled(bmin, bmax,
+			IM_COL32(18, 22, 30, int(200 * alpha)), 5.0f);
+		dl->AddRect(bmin, bmax,
+			IM_COL32(120, 200, 255, int(120 * alpha)), 5.0f);
+		dl->AddText(ImVec2(bmin.x + 10.0f, bmin.y + 3.0f),
+			IM_COL32(220, 235, 255, int(235 * alpha)),
+			m_verbToast.c_str());
+	}
+
 	void EditorApp::DrawStatusBar() {
 		const float vw = float(ImGui::GetIO().DisplaySize.x);
 		const float vh = float(ImGui::GetIO().DisplaySize.y);
+		// The bar's own padding: the theme's 10px WindowPadding plus a
+		// 24px strip clipped the text into the window's bottom edge (the
+		// "collides with the bottom" report) — a tight (6,3) padding and
+		// one line of breathing room (kEditorStatusH 28) keeps the text
+		// off the edges.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 3.0f));
 		ImGui::SetNextWindowPos(ImVec2(0, vh - kEditorStatusH),
 			ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(vw, kEditorStatusH),
@@ -268,9 +342,36 @@ namespace editor {
 		if (!ImGui::Begin("##statusbar", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
 				ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
-				ImGuiWindowFlags_NoScrollbar))
+				ImGuiWindowFlags_NoScrollbar)) {
+			ImGui::End();
+			ImGui::PopStyleVar();
 			return;
+		}
 		const bool running = m_cookRunning || m_bakeRunning;
+		// THE MODE LEGEND (color-coded, always visible): which editor
+		// mode is live + the F-keys that switch — the bottom bar's
+		// persistent orientation row (the toolbar's number chips show
+		// it too; this is the at-a-glance color code).
+		{
+			static const char* kModeNames[4] = { "1 LAYOUT", "2 LIGHTING",
+				"3 TEST", "4 PROFILE" };
+			// The mode color code: layout blue, lighting amber, test
+			// green, profile violet (the chips + the legend agree).
+			static const ImVec4 kModeColors[4] = {
+				ImVec4(0.45f, 0.65f, 1.00f, 1.0f),
+				ImVec4(1.00f, 0.75f, 0.30f, 1.0f),
+				ImVec4(0.45f, 0.95f, 0.55f, 1.0f),
+				ImVec4(0.80f, 0.60f, 1.00f, 1.0f)
+			};
+			const int mode = std::clamp(int(m_mode), 0, 3);
+			ImGui::TextColored(kModeColors[mode], "%s",
+				kModeNames[mode]);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Editor mode (keys 1-4 anywhere).\n"
+					"Layout: build. Lighting: the look + GI authoring.\n"
+					"Test: the run preview. Profile: capture + stats.");
+			ImGui::SameLine(0.0f, 12.0f);
+		}
 		if (running) {
 			ImGui::TextUnformatted(m_taskWindow.stage.c_str());
 			ImGui::SameLine(vw - 260.0f);
@@ -299,6 +400,7 @@ namespace editor {
 			ImGui::TextDisabled("Ready");
 		}
 		ImGui::End();
+		ImGui::PopStyleVar();
 	}
 
 	void EditorApp::DrawMenuBar() {
@@ -817,110 +919,93 @@ namespace editor {
 		}
 		ImGui::PopID();
 		vsep();
-		// ---- TRANSFORM: W move / E rotate / R scale (the hotkeys ARE
-		// the letters — Maya's convention, the legend's anchor row) ------
-		ImGui::PushID("secXform");
-		{
-			static const char* kLetters[3] = { "W", "E", "R" };
-			static const char* kTips[3] = { "MOVE (W)",
-				"ROTATE (E)", "SCALE (R)" };
-			for (int i = 0; i < 3; ++i) {
-				if (i > 0)
-					ImGui::SameLine();
-				if (letterTool(kLetters[i], int(m_gizmoMode) == i, kTips[i])
-						&& int(m_gizmoMode) != i)
-					m_gizmoMode = GizmoMode(i);
-			}
-			ImGui::SameLine();
-			ImGui::TextDisabled("click gizmo axes to drag | sel: %s",
-				(m_world && m_selected != UINT32_MAX)
-				? getNodeName(m_world->scene, int(m_selected)).c_str()
-				: "-");
-		}
-		ImGui::PopID();
-		vsep();
-		// ---- MODES: 1-4 (Layout/Lighting/Test/Profile; the numbers ARE
-		// the anywhere-hotkeys, the bar shows which one is live) ---------
-		ImGui::PushID("secModes");
-		{
-			static const char* kLetters[4] = { "1", "2", "3", "4" };
-			static const char* kTips[4] = { "LAYOUT mode (1)",
-				"LIGHTING mode (2)", "TEST mode (3)", "PROFILE mode (4)" };
-			for (int i = 0; i < 4; ++i) {
-				if (i > 0)
-					ImGui::SameLine();
-				if (letterTool(kLetters[i], int(m_mode) == i, kTips[i])
-						&& int(m_mode) != i)
-					SetMode(EditorMode(i));
-			}
-		}
-		ImGui::PopID();
-		vsep();
-		// ---- TERRAIN: the paint cluster (the brush controls live while
-		// a terrain group is selected; CREATION lives in the Create menu
-		// — the bar's job is the live tool state, not spawning) ---------
-		ImGui::PushID("secTerrain");
-		{
-			const bool hasWorld = m_world != nullptr;
-			const uint32_t group = hasWorld
-				? TerrainGroupOf(m_selected) : UINT32_MAX;
-			if (!hasWorld || group == UINT32_MAX)
-				ImGui::TextDisabled("(select a terrain)");
-			else {
-				ImGui::SameLine();
-				if (letterTool("P", m_paintTerrain,
-						"Paint the selected terrain group (LMB in a 3D "
-						"viewport)"))
-					m_paintTerrain = !m_paintTerrain;
-				static const char* kOps[4] = { "R", "L", "F", "S" };
-				static const char* kOpTips[4] = { "RAISE brush", "LOWER brush",
-					"FLATTEN brush", "SMOOTH brush" };
-				for (int k = 0; k < 4; ++k) {
-					ImGui::SameLine();
-					if (letterTool(kOps[k], m_paintOp == k, kOpTips[k]))
-						m_paintOp = k;
-				}
-				ImGui::SameLine();
-				ImGui::SetNextItemWidth(90.0f);
-				ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f,
-					256.0f, "%.1f m");
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Brush radius (m)");
-				ImGui::SameLine();
-				ImGui::SetNextItemWidth(90.0f);
-				ImGui::DragFloat("S##terr", &m_paintStrength, 0.01f, 0.01f,
-					64.0f, "%.2f");
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Brush strength");
-			}
-		}
-		ImGui::PopID();
-		vsep();
-		// ---- PLACEMENT: the live overlay toggles + refresh (CREATION —
-		// the old "New graph" button — lives in the Create menu) --------
-		ImGui::PushID("secPlace");
-		{
-			if (letterTool("G", m_placement.showGraph,
-					"Show the placement GRAPH window"))
-				m_placement.showGraph = !m_placement.showGraph;
-			ImGui::SameLine();
-			if (letterTool("O", m_placement.showOverlay,
-					"Show the placement OVERLAY (the authored dots)"))
-				m_placement.showOverlay = !m_placement.showOverlay;
-			ImGui::SameLine();
-			if (letterTool("X", m_placement.showRejected,
-					"Show the REJECTED placements (why they bounced)"))
-				m_placement.showRejected = !m_placement.showRejected;
-			ImGui::SameLine();
-			if (ImGui::Button("Refresh##tool", ImVec2(0.0f, btnH)))
-				MarkPlacementDirty();
-			ImGui::SameLine();
-			ImGui::TextDisabled("%s",
-				m_placement.preview.ok ? "compiled OK"
-				: m_placement.preview.error.empty()
-				? "no graph" : m_placement.preview.error.c_str());
-		}
-		ImGui::PopID();
+		//// ---- TRANSFORM: W move / E rotate / R scale (the hotkeys ARE
+		//// the letters — Maya's convention, the legend's anchor row) ------
+		//ImGui::PushID("secXform");
+		//{
+		//	static const char* kLetters[3] = { "W", "E", "R" };
+		//	static const char* kTips[3] = { "MOVE (W)",
+		//		"ROTATE (E)", "SCALE (R)" };
+		//	for (int i = 0; i < 3; ++i) {
+		//		if (i > 0)
+		//			ImGui::SameLine();
+		//		if (letterTool(kLetters[i], int(m_gizmoMode) == i, kTips[i])
+		//				&& int(m_gizmoMode) != i)
+		//			m_gizmoMode = GizmoMode(i);
+		//	}
+		//	ImGui::SameLine();
+		//	ImGui::TextDisabled("click gizmo axes to drag | sel: %s",
+		//		(m_world && m_selected != UINT32_MAX)
+		//		? getNodeName(m_world->scene, int(m_selected)).c_str()
+		//		: "-");
+		//}
+		//ImGui::PopID();
+		//vsep();
+		//// ---- MODES: 1-4 (Layout/Lighting/Test/Profile; the numbers ARE
+		//// the anywhere-hotkeys, the bar shows which one is live) ---------
+		//ImGui::PushID("secModes");
+		//{
+		//	static const char* kLetters[4] = { "1", "2", "3", "4" };
+		//	static const char* kTips[4] = { "LAYOUT mode (1)",
+		//		"LIGHTING mode (2)", "TEST mode (3)", "PROFILE mode (4)" };
+		//	for (int i = 0; i < 4; ++i) {
+		//		if (i > 0)
+		//			ImGui::SameLine();
+		//		if (letterTool(kLetters[i], int(m_mode) == i, kTips[i])
+		//				&& int(m_mode) != i)
+		//			SetMode(EditorMode(i));
+		//	}
+		//}
+		//ImGui::PopID();
+		//vsep();
+		//// ---- TERRAIN: the paint cluster (the brush controls live while
+		//// a terrain group is selected; CREATION lives in the Create menu
+		//// — the bar's job is the live tool state, not spawning) ---------
+		//ImGui::PushID("secTerrain");
+		//{
+		//	const bool hasWorld = m_world != nullptr;
+		//	const uint32_t group = hasWorld
+		//		? TerrainGroupOf(m_selected) : UINT32_MAX;
+		//	if (!hasWorld || group == UINT32_MAX)
+		//		ImGui::TextDisabled("(select a terrain)");
+		//	else {
+		//		ImGui::SameLine();
+		//		if (letterTool("P", m_paintTerrain,
+		//				"Paint the selected terrain group (LMB in a 3D "
+		//				"viewport)"))
+		//			m_paintTerrain = !m_paintTerrain;
+		//		static const char* kOps[4] = { "R", "L", "F", "S" };
+		//		static const char* kOpTips[4] = { "RAISE brush", "LOWER brush",
+		//			"FLATTEN brush", "SMOOTH brush" };
+		//		for (int k = 0; k < 4; ++k) {
+		//			ImGui::SameLine();
+		//			if (letterTool(kOps[k], m_paintOp == k, kOpTips[k]))
+		//				m_paintOp = k;
+		//		}
+		//		ImGui::SameLine();
+		//		ImGui::SetNextItemWidth(90.0f);
+		//		ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f,
+		//			256.0f, "%.1f m");
+		//		if (ImGui::IsItemHovered())
+		//			ImGui::SetTooltip("Brush radius (m)");
+		//		ImGui::SameLine();
+		//		ImGui::SetNextItemWidth(90.0f);
+		//		ImGui::DragFloat("S##terr", &m_paintStrength, 0.01f, 0.01f,
+		//			64.0f, "%.2f");
+		//		if (ImGui::IsItemHovered())
+		//			ImGui::SetTooltip("Brush strength");
+		//	}
+		//}
+		//ImGui::PopID();
+		//// (The PLACEMENT section is out of the bar: its toggles + refresh
+		//// live in the placement graph window's own controls - the bar
+		//// carries the authoring tools, not every subsystem's panel state.
+		//// Creation was already in the Create menu.)
+		//// ---- THE LEGEND (Maya-style): the letter/hotkey map under the
+		//// buttons - everything the bar can do, one dim line.
+		//ImGui::TextDisabled(
+		//	"Q select | W move  E rotate  R scale | F frame | 1-4 modes"
+		//	" | M/F/V mesh-face-vertex | P paint  R/L/F/S brush");
 		ImGui::End();
 		return h;
 	}
@@ -1703,12 +1788,7 @@ namespace editor {
 			return;
 		}
 		const uint32_t mat = m_materialFocus;
-		smvk::Material* m = m_world->GetMaterial(mat);
-		if (!m) {
-			m_materialFocus = UINT32_MAX;
-			return;
-		}
-		// Breadcrumb: Back to node | trail of visited materials.
+		// Breadcrumb: Back to node | the trail of visited materials.
 		if (ImGui::Button("< Back to node")) {
 			m_materialFocus = UINT32_MAX;
 			if (!m_materialTrail.empty()) {
@@ -1728,220 +1808,10 @@ namespace editor {
 			}
 			ImGui::Text("");
 		}
-		// Preview.
-		ImGui::Separator();
-		ImGui::Text("Preview (diffuse)");
-		DrawDiffusePreview(mat, m->values.diffuse);
-		// Attributes (shared: affects every node using this material).
-		ImGui::Separator();
-		ImGui::TextDisabled("Shared material: affects all users of mat.%u", mat);
-		{
-			glm::vec4 bc = m->values.diffuse;
-			if (ImGui::ColorEdit4("Base color", glm::value_ptr(bc))) {
-				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "baseColor"))
-					FinalizePending();
-				if (!m_pending.active) {
-					m_pending.active = true;
-					m_pending.cmd = EditCmd{};
-					m_pending.cmd.verb = EditVerb::SetMatAttr;
-					m_pending.cmd.matWorld = mat;
-					m_pending.cmd.attr = "baseColor";
-					ReadSharedMatAttr(mat, "baseColor",
-						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-				}
-				WriteSharedMatAttr(mat, "baseColor", bc, 0.0);
-				m_pending.cmd.vec4 = bc;
-			}
-			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.attr == "baseColor") {
-				FinishDrag();
-			}
-			float metallic = m->values.params.y;
-			if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
-				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "metallic"))
-					FinalizePending();
-				if (!m_pending.active) {
-					m_pending.active = true;
-					m_pending.cmd = EditCmd{};
-					m_pending.cmd.verb = EditVerb::SetMatAttr;
-					m_pending.cmd.matWorld = mat;
-					m_pending.cmd.attr = "metallic";
-					ReadSharedMatAttr(mat, "metallic",
-						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-				}
-				WriteSharedMatAttr(mat, "metallic", glm::vec4(0), metallic);
-				m_pending.cmd.number = metallic;
-			}
-			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.attr == "metallic") {
-				FinishDrag();
-			}
-			float rough = m->values.params.z;
-			if (ImGui::SliderFloat("Roughness", &rough, 0.04f, 1.0f)) {
-				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "roughness"))
-					FinalizePending();
-				if (!m_pending.active) {
-					m_pending.active = true;
-					m_pending.cmd = EditCmd{};
-					m_pending.cmd.verb = EditVerb::SetMatAttr;
-					m_pending.cmd.matWorld = mat;
-					m_pending.cmd.attr = "roughness";
-					ReadSharedMatAttr(mat, "roughness",
-						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-				}
-				WriteSharedMatAttr(mat, "roughness", glm::vec4(0), rough);
-				m_pending.cmd.number = rough;
-			}
-			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.attr == "roughness") {
-				FinishDrag();
-			}
-			glm::vec4 em(m->values.emissiveFactor.x, m->values.emissiveFactor.y,
-				m->values.emissiveFactor.z, m->values.params2.z);
-			if (ImGui::ColorEdit4("Emissive (w=strength)", glm::value_ptr(em))) {
-				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "emissive"))
-					FinalizePending();
-				if (!m_pending.active) {
-					m_pending.active = true;
-					m_pending.cmd = EditCmd{};
-					m_pending.cmd.verb = EditVerb::SetMatAttr;
-					m_pending.cmd.matWorld = mat;
-					m_pending.cmd.attr = "emissive";
-					ReadSharedMatAttr(mat, "emissive",
-						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-				}
-				WriteSharedMatAttr(mat, "emissive", em, 0.0);
-				m_pending.cmd.vec4 = em;
-			}
-			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.attr == "emissive") {
-				FinishDrag();
-			}
-		}
-		// Layers (vertex-color blended): slots 1..3 + active count.
-		ImGui::Separator();
-		ImGui::Text("Layers (vertex-color blending)");
-		ImGui::TextDisabled(
-			"Layer 0 is this material; RGBA vertex weights blend 1..3. "
-			"Count 0 = legacy tint.");
-		{
-			glm::ivec4 lm = m->values.layerMaterials;
-			const uint32_t count = uint32_t(m_world->materialLocations.size());
-			for (int slot = 0; slot < 3; ++slot) {
-				ImGui::PushID(slot);
-				int cur = lm[slot];
-				std::string preview = (cur >= 0 && uint32_t(cur) < count)
-					? ("mat." + std::to_string(cur)) : std::string("(none)");
-				char comboLabel[32];
-				std::snprintf(comboLabel, sizeof(comboLabel), "Layer %d", slot + 1);
-				if (ImGui::BeginCombo(comboLabel, preview.c_str())) {
-					if (ImGui::Selectable("(none)", cur < 0))
-						cur = -1;
-					for (uint32_t i = 0; i < count; ++i) {
-						if (i == mat)
-							continue; // this material is layer 0
-						const auto& loc = m_world->materialLocations[i];
-						std::string uri = loc.cluster
-							? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
-							: "";
-						char item[320];
-						std::snprintf(item, sizeof(item), "%u: %s", i,
-							uri.empty() ? "(unnamed)" : uri.c_str());
-						if (ImGui::Selectable(item, cur == int(i)))
-							cur = int(i);
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::PopID();
-				if (cur != lm[slot]) {
-					glm::ivec4 nl = lm;
-					nl[slot] = cur;
-					EditCmd c{};
-					c.verb = EditVerb::SetMatAttr;
-					c.matWorld = mat;
-					c.attr = "layers";
-					glm::vec4 v4;
-					double num = 0.0;
-					ReadSharedMatAttr(mat, "layers", v4, num);
-					c.beforeVec4 = v4;
-					c.beforeNum = num;
-					c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
-						float(nl.w));
-					c.number = double(nl.w);
-					Do(c);
-				}
-			}
-			int layerCount = lm.w;
-			if (ImGui::SliderInt("Active layers", &layerCount, 0, 4)) {
-				glm::ivec4 nl = lm;
-				nl.w = layerCount;
-				EditCmd c{};
-				c.verb = EditVerb::SetMatAttr;
-				c.matWorld = mat;
-				c.attr = "layers";
-				glm::vec4 v4;
-				double num = 0.0;
-				ReadSharedMatAttr(mat, "layers", v4, num);
-				c.beforeVec4 = v4;
-				c.beforeNum = num;
-				c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
-					float(nl.w));
-				c.number = double(nl.w);
-				Do(c);
-			}
-			// Travel: jump to a layer material (trail keeps the way back).
-			for (int slot = 0; slot < 3; ++slot) {
-				const int target = m->values.layerMaterials[slot];
-				if (target < 0 || uint32_t(target) >=
-					m_world->materialLocations.size())
-					continue;
-				ImGui::PushID(100 + slot);
-				if (ImGui::SmallButton("Go to layer material >>")) {
-					m_materialTrail.push_back(m_materialFocus);
-					m_materialFocus = uint32_t(target);
-				}
-				ImGui::PopID();
-			}
-		}
-		// Alpha / flags (same shared-edit path as the node page).
-		ImGui::Separator();
-		{
-			bool ds = m->doubleSided;
-			if (ImGui::Checkbox("Double sided", &ds)) {
-				EditCmd c{};
-				c.verb = EditVerb::SetMatAttr;
-				c.matWorld = mat;
-				c.attr = "doubleSided";
-				c.number = ds ? 1.0 : 0.0;
-				ReadSharedMatAttr(mat, "doubleSided", c.beforeVec4, c.beforeNum);
-				Do(c);
-			}
-			bool cs = m->castsShadows;
-			if (ImGui::Checkbox("Casts shadows", &cs)) {
-				EditCmd c{};
-				c.verb = EditVerb::SetMatAttr;
-				c.matWorld = mat;
-				c.attr = "castsShadows";
-				c.number = cs ? 1.0 : 0.0;
-				ReadSharedMatAttr(mat, "castsShadows", c.beforeVec4, c.beforeNum);
-				Do(c);
-			}
-			int alpha = int(m->alphaMode);
-			if (ImGui::Combo("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0")) {
-				EditCmd c{};
-				c.verb = EditVerb::SetMatAttr;
-				c.matWorld = mat;
-				c.attr = "alphaMode";
-				c.number = double(alpha);
-				ReadSharedMatAttr(mat, "alphaMode", c.beforeVec4, c.beforeNum);
-				Do(c);
-			}
-			ImGui::TextDisabled("alpha: %s", AlphaModeName(m->alphaMode));
-		}
+		// THE SHARED BODY: the same material surface the Material tab and
+		// the node page render (the consolidation — this page used to
+		// carry its own old-presentation copy).
+		DrawMaterialBody(mat);
 	}
 
 	void EditorApp::DrawCvolSection(uint32_t node) {
@@ -2508,187 +2378,13 @@ namespace editor {
 							m_sglmPath.c_str(), m_sglm.width, m_sglm.height);
 					else
 						ImGui::TextDisabled("atlas: not loaded (see panel below)");
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("UV1 (F10) shows baked texCoord2;\n"
+							"F8 shows baked irradiance in place.");
 				}
-				ImGui::TextDisabled("UV1 view (F10) shows baked texCoord2");
-				if (m_lmGpu)
-					ImGui::TextDisabled("F8 shows baked irradiance in place");
 			}
 		}
 
-		// Material reassignment.
-		if (scene.materialForNode.contains(node)) {
-			ImGui::Separator();
-			ImGui::Text("Material");
-			const uint32_t curMat = scene.materialForNode[node];
-			std::string preview = "mat." + std::to_string(curMat);
-			if (ImGui::BeginCombo("##mat", preview.c_str())) {
-				const uint32_t count = uint32_t(m_world->materialLocations.size());
-				for (uint32_t i = 0; i < count; ++i) {
-					const auto& loc = m_world->materialLocations[i];
-					std::string uri = loc.cluster
-						? std::string(loc.cluster->GetMaterialUri(loc.handle).Str()) : "";
-					char item[320];
-					std::snprintf(item, sizeof(item), "%u: %s", i,
-						uri.empty() ? "(unnamed)" : uri.c_str());
-					const bool sel = (i == curMat);
-					if (ImGui::Selectable(item, sel) && i != curMat) {
-						EditCmd c{};
-						c.verb = EditVerb::AssignMaterial;
-						c.node = node;
-						c.material = i;
-						c.beforeMaterial = curMat;
-						Do(c);
-						Log("Node " + std::to_string(node) + " -> material " +
-							std::to_string(i));
-					}
-					if (sel)
-						ImGui::SetItemDefaultFocus();
-				}
-				ImGui::EndCombo();
-			}
-			// Travel: open this material in the material editor page.
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Edit material >>")) {
-				m_materialTrail.clear();
-				m_materialFocus = curMat;
-			}
-			// 2D material preview: diffuse-map thumbnail (CPU KTX2 decode,
-			// tinted by the baseColor factor) with an unlit swatch fallback
-			// when the material carries no diffuse texture.
-			if (smvk::Material* prevMat = m_world->GetMaterial(curMat)) {
-				ImGui::Separator();
-				ImGui::Text("Preview (diffuse)");
-				const glm::vec4& bc = prevMat->values.diffuse;
-				DrawDiffusePreview(curMat, bc);
-				ImGui::SameLine();
-				ImGui::BeginGroup();
-				{
-					const TexPreview& pv = ResolveDiffusePreview(curMat);
-					if (pv.ok)
-						ImGui::TextWrapped("map: %s", pv.uri.c_str());
-					else
-						ImGui::TextDisabled("map: %s", pv.status.c_str());
-				}
-				ImGui::Text("base %.2f %.2f %.2f a %.2f", bc.x, bc.y, bc.z, bc.w);
-				ImGui::Text("metal %.2f  rough %.2f",
-					prevMat->values.params.y, prevMat->values.params.z);
-				ImGui::Text("emis %.2f %.2f %.2f x %.2f",
-					prevMat->values.emissiveFactor.x,
-					prevMat->values.emissiveFactor.y,
-					prevMat->values.emissiveFactor.z,
-					prevMat->values.params2.z);
-				const glm::ivec4& t0 = prevMat->values.textures;
-				const glm::ivec4& t1 = prevMat->values.textures2;
-				ImGui::Text("tex base:%d mr:%d n:%d occ:%d e:%d",
-					t0.x, t0.y, t0.z, t0.w, t1.x);
-				ImGui::TextDisabled("alpha: %s cut %.2f%s%s",
-					AlphaModeName(prevMat->alphaMode), prevMat->alphaCutoff,
-					prevMat->doubleSided ? " DS" : "",
-					prevMat->castsShadows ? "" : " noShadow");
-				ImGui::EndGroup();
-			}
-			// Shared material quick edit (affects every node using it).
-			if (smvk::Material* mat = m_world->GetMaterial(curMat)) {
-				ImGui::TextDisabled("Shared edit: affects all users of mat.%u", curMat);
-				glm::vec4 bc = mat->values.diffuse;
-				if (ImGui::ColorEdit4("Base color", glm::value_ptr(bc))) {
-					if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-						m_pending.cmd.matWorld != curMat || m_pending.cmd.attr != "baseColor"))
-						FinalizePending();
-					if (!m_pending.active) {
-						m_pending.active = true;
-						m_pending.cmd = EditCmd{};
-						m_pending.cmd.verb = EditVerb::SetMatAttr;
-						m_pending.cmd.matWorld = curMat;
-						m_pending.cmd.attr = "baseColor";
-						ReadSharedMatAttr(curMat, "baseColor",
-							m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-					}
-					WriteSharedMatAttr(curMat, "baseColor", bc, 0.0);
-					m_pending.cmd.vec4 = bc;
-				}
-				if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-					m_pending.cmd.attr == "baseColor") {
-					FinishDrag();
-				}
-				float metallic = mat->values.params.y;
-				if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
-					if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-						m_pending.cmd.matWorld != curMat || m_pending.cmd.attr != "metallic"))
-						FinalizePending();
-					if (!m_pending.active) {
-						m_pending.active = true;
-						m_pending.cmd = EditCmd{};
-						m_pending.cmd.verb = EditVerb::SetMatAttr;
-						m_pending.cmd.matWorld = curMat;
-						m_pending.cmd.attr = "metallic";
-						ReadSharedMatAttr(curMat, "metallic",
-							m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-					}
-					WriteSharedMatAttr(curMat, "metallic", glm::vec4(0), metallic);
-					m_pending.cmd.number = metallic;
-				}
-				if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-					m_pending.cmd.attr == "metallic") {
-					FinishDrag();
-				}
-				float rough = mat->values.params.z;
-				if (ImGui::SliderFloat("Roughness", &rough, 0.04f, 1.0f)) {
-					if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
-						m_pending.cmd.matWorld != curMat || m_pending.cmd.attr != "roughness"))
-						FinalizePending();
-					if (!m_pending.active) {
-						m_pending.active = true;
-						m_pending.cmd = EditCmd{};
-						m_pending.cmd.verb = EditVerb::SetMatAttr;
-						m_pending.cmd.matWorld = curMat;
-						m_pending.cmd.attr = "roughness";
-						ReadSharedMatAttr(curMat, "roughness",
-							m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
-					}
-					WriteSharedMatAttr(curMat, "roughness", glm::vec4(0), rough);
-					m_pending.cmd.number = rough;
-				}
-				if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-					m_pending.cmd.attr == "roughness") {
-					FinishDrag();
-				}
-				bool ds = mat->doubleSided;
-				if (ImGui::Checkbox("Double sided", &ds)) {
-					EditCmd c{};
-					c.verb = EditVerb::SetMatAttr;
-					c.matWorld = curMat;
-					c.attr = "doubleSided";
-					c.number = ds ? 1.0 : 0.0;
-					ReadSharedMatAttr(curMat, "doubleSided",
-						c.beforeVec4, c.beforeNum);
-					Do(c);
-				}
-				bool cs = mat->castsShadows;
-				if (ImGui::Checkbox("Casts shadows", &cs)) {
-					EditCmd c{};
-					c.verb = EditVerb::SetMatAttr;
-					c.matWorld = curMat;
-					c.attr = "castsShadows";
-					c.number = cs ? 1.0 : 0.0;
-					ReadSharedMatAttr(curMat, "castsShadows",
-						c.beforeVec4, c.beforeNum);
-					Do(c);
-				}
-				int alpha = int(mat->alphaMode);
-				if (ImGui::Combo("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0")) {
-					EditCmd c{};
-					c.verb = EditVerb::SetMatAttr;
-					c.matWorld = curMat;
-					c.attr = "alphaMode";
-					c.number = double(alpha);
-					ReadSharedMatAttr(curMat, "alphaMode",
-						c.beforeVec4, c.beforeNum);
-					Do(c);
-				}
-				ImGui::TextDisabled("alpha: %s", AlphaModeName(mat->alphaMode));
-			}
-		}
 
 		// Cooked light on this node (KHR punctual, import or pak).
 		if (glm::vec3 aimWs(0.0f);
@@ -2698,32 +2394,17 @@ namespace editor {
 				? "Directional (sun)"
 				: li->type == ::SceneLight::Type::Spot ? "Spot" : "Point";
 			ImGui::Text("Light: %s '%s'", tname, li->name.c_str());
-			ImGui::Text("color %.2f %.2f %.2f  I %.1f%s", li->color.x,
-				li->color.y, li->color.z, li->intensity,
-				li->type == ::SceneLight::Type::Directional ? " lux" : " cd");
-			if (li->type == ::SceneLight::Type::Directional)
-				ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
-					-aimWs.y, -aimWs.z,
-					m_hasCookedSun && m_cookedSunName == li->name
-					? " â€” seeds the editor IBL default" : "");
-			else {
-				const glm::vec3 p = node < scene.globalTransform.size()
-					? glm::vec3(scene.globalTransform[node][3]) : glm::vec3(0.0f);
-				ImGui::TextDisabled("pos=(%.2f,%.2f,%.2f) range=%.1f%s", p.x,
-					p.y, p.z, li->range,
-					li->range <= 0.0f ? " (infinite)" : "");
-				if (li->type == ::SceneLight::Type::Spot)
-					ImGui::TextDisabled("axis=(%.2f,%.2f,%.2f) inner=%.0fdeg outer=%.0fdeg",
-						aimWs.x, aimWs.y, aimWs.z,
-						glm::degrees(li->innerConeAngle),
-						glm::degrees(li->outerConeAngle));
-			}
-			if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
-				ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+			// (The readouts — the live color/intensity, the aim axis, the
+			// world position, the cone angles — ride the ATTRIBUTE rows'
+			// hover hints now; the info text rows below the attrs are the
+			// killed presentation.)
+			if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0
+				&& ImGui::IsItemHovered())
+				ImGui::SetTooltip("STATIC: bake-only (excluded from runtime)");
 			// ---- editable light properties (point/spot): SetLightAttr,
 			// undoable, persisted as setLightAttr tour verbs so cooks replay
 			// them. Sliders coalesce one command per drag (mattr pattern);
-			// checkboxes commit immediately. ----
+			// chips commit immediately. Every row rides the attr stubs. ----
 			if (li->type != ::SceneLight::Type::Directional) {
 				const bool isSpot = li->type == ::SceneLight::Type::Spot;
 				auto beginLightDrag = [&](const char* attr) {
@@ -2749,21 +2430,32 @@ namespace editor {
 						FinishDrag();
 				};
 				glm::vec3 lcol = li->color;
-				if (ImGui::ColorEdit3("Light color", &lcol.x)) {
-					beginLightDrag("color");
-					WriteNodeLightAttr(node, "color", glm::vec4(lcol, 1.0f), 0, false, {});
-					m_pending.cmd.vec4 = glm::vec4(lcol, 1.0f);
+				{
+					float col4[4] = { lcol.x, lcol.y, lcol.z, 1.0f };
+					char hint[160];
+					std::snprintf(hint, sizeof(hint),
+						"Light color (live %.2f %.2f %.2f)", lcol.x, lcol.y, lcol.z);
+					if (attr::Color("Color", col4, hint)) {
+						beginLightDrag("color");
+						WriteNodeLightAttr(node, "color",
+							glm::vec4(col4[0], col4[1], col4[2], 1.0f), 0, false, {});
+						m_pending.cmd.vec4 =
+							glm::vec4(col4[0], col4[1], col4[2], 1.0f);
+					}
+					endLightDrag("color");
 				}
-				endLightDrag("color");
 				float lint = li->intensity;
-				if (ImGui::DragFloat("Intensity (cd)", &lint, 1.0f, 0.0f, 1e7f, "%.1f")) {
+				if (attr::Float("Intensity", &lint, 1.0f, 0.0f, 1e7f, "%.1f",
+						isSpot ? "Spot intensity (cd), attenuated by range"
+						: "Point intensity (cd), attenuated by range")) {
 					beginLightDrag("intensity");
 					WriteNodeLightAttr(node, "intensity", glm::vec4(0), lint, false, {});
 					m_pending.cmd.number = lint;
 				}
 				endLightDrag("intensity");
 				float lrange = li->range;
-				if (ImGui::DragFloat("Range (m, 0 = inf)", &lrange, 0.1f, 0.0f, 500.0f, "%.1f")) {
+				if (attr::Float("Range", &lrange, 0.1f, 0.0f, 500.0f, "%.1f",
+						"Attenuation range in m (0 = infinite)")) {
 					beginLightDrag("range");
 					WriteNodeLightAttr(node, "range", glm::vec4(0), lrange, false, {});
 					m_pending.cmd.number = lrange;
@@ -2771,14 +2463,16 @@ namespace editor {
 				endLightDrag("range");
 				if (isSpot) {
 					float inner = glm::degrees(li->innerConeAngle);
-					if (ImGui::SliderFloat("Inner cone (deg)", &inner, 0.0f, 89.0f, "%.1f")) {
+					if (attr::Slider("Inner cone", &inner, 0.0f, 89.0f, "%.1f",
+							"Inner cone angle (deg) — full intensity inside")) {
 						beginLightDrag("inner");
 						WriteNodeLightAttr(node, "inner", glm::vec4(0), inner, false, {});
 						m_pending.cmd.number = inner;
 					}
 					endLightDrag("inner");
 					float outer = glm::degrees(li->outerConeAngle);
-					if (ImGui::SliderFloat("Outer cone (deg)", &outer, 0.0f, 89.0f, "%.1f")) {
+					if (attr::Slider("Outer cone", &outer, 0.0f, 89.0f, "%.1f",
+							"Outer cone angle (deg) — the falloff edge")) {
 						beginLightDrag("outer");
 						WriteNodeLightAttr(node, "outer", glm::vec4(0), outer, false, {});
 						m_pending.cmd.number = outer;
@@ -2786,24 +2480,27 @@ namespace editor {
 					endLightDrag("outer");
 				}
 				bool lstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
-				if (ImGui::Checkbox("Static (bake-only)", &lstatic)) {
+				if (attr::Bool("Static", lstatic,
+						"STATIC — bake-only (excluded from the runtime "
+						"Forward+ set)")) {
 					EditCmd c{};
 					c.verb = EditVerb::SetLightAttr;
 					c.node = node;
 					c.lightAttr = "static";
-					c.afterFlag = lstatic;
+					c.afterFlag = lstatic ? 0 : 1;
 					ReadNodeLightAttr(node, "static", c.beforeVec4, c.beforeNum,
 						c.beforeFlag, c.beforeText);
 					Do(c);
 				}
 				if (isSpot) {
 					bool lshadow = (li->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
-					if (ImGui::Checkbox("Cast shadows", &lshadow)) {
+					if (attr::Bool("Shadows", lshadow,
+							"Spot shadow map participation")) {
 						EditCmd c{};
 						c.verb = EditVerb::SetLightAttr;
 						c.node = node;
 						c.lightAttr = "shadow";
-						c.afterFlag = lshadow;
+						c.afterFlag = lshadow ? 0 : 1;
 						ReadNodeLightAttr(node, "shadow", c.beforeVec4, c.beforeNum,
 							c.beforeFlag, c.beforeText);
 						Do(c);
@@ -3063,6 +2760,49 @@ namespace editor {
 
 		// Scene reference block (placeholder nodes).
 		DrawReferenceSection(node);
+		// Material reassignment.
+		if (scene.materialForNode.contains(node)) {
+			ImGui::Separator();
+			ImGui::Text("Material");
+			const uint32_t curMat = scene.materialForNode[node];
+			std::string preview = "mat." + std::to_string(curMat);
+			if (ImGui::BeginCombo("##mat", preview.c_str())) {
+				const uint32_t count = uint32_t(m_world->materialLocations.size());
+				for (uint32_t i = 0; i < count; ++i) {
+					const auto& loc = m_world->materialLocations[i];
+					std::string uri = loc.cluster
+						? std::string(loc.cluster->GetMaterialUri(loc.handle).Str()) : "";
+					char item[320];
+					std::snprintf(item, sizeof(item), "%u: %s", i,
+						uri.empty() ? "(unnamed)" : uri.c_str());
+					const bool sel = (i == curMat);
+					if (ImGui::Selectable(item, sel) && i != curMat) {
+						EditCmd c{};
+						c.verb = EditVerb::AssignMaterial;
+						c.node = node;
+						c.material = i;
+						c.beforeMaterial = curMat;
+						Do(c);
+						Log("Node " + std::to_string(node) + " -> material " +
+							std::to_string(i));
+					}
+					if (sel)
+						ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+			// Travel: open this material in the material editor page.
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Edit material >>")) {
+				m_materialTrail.clear();
+				m_materialFocus = curMat;
+			}
+			// 2D material preview + THE SHARED BODY (the consolidation:
+			// this block used to carry its own preview + scalar/flags
+			// copy — the same surface the Material tab and the focus
+			// page render, from ONE function).
+			DrawMaterialBody(curMat);
+		}
 		// NOTE: the active-viewport orbit camera used to live here; it moved
 		// to the World panel ("Viewport camera"). Node pages show authored
 		// state only â€” camera nodes get the lens section above instead.
@@ -3571,14 +3311,21 @@ namespace editor {
 	void EditorApp::DrawLiveViewStage() {
 		if (!LiveViewActive())
 			return;
-		const ViewportRect& stage = m_viewports[m_activeVp].rect;
+		const ViewportRect& stage = m_viewports[kLiveViewVp].rect;
 		if (stage.w < 8.0f || stage.h < 8.0f)
 			return;
-		// The capture: the rect inset by the chrome border (2px) + 1, so
-		// the composite never paints over the border stroke.
-		m_wysiwygLiveRectMin = ImVec2(stage.x + 3.0f, stage.y + 3.0f);
+		// The capture: THE FULL stage rect — NO INSET. The first cut
+		// inset 3px to preserve the chrome border stroke, but the inline
+		// target then rendered at (w-6)/(h-6) while the editor preview
+		// renders w/h — a wider aspect at the same fovY, slightly more
+		// horizontal world: "lit almost matches but is not identical to
+		// unlit". The live view's extent and the preview's rect are now
+		// THE SAME pixels → the same aspect → the identical camera. (The
+		// chrome border's stroke straddles the rect edge; the composite
+		// covers its inner half — the outer half still reads.)
+		m_wysiwygLiveRectMin = ImVec2(stage.x, stage.y);
 		m_wysiwygLiveRectMax =
-			ImVec2(stage.x + stage.w - 3.0f, stage.y + stage.h - 3.0f);
+			ImVec2(stage.x + stage.w, stage.y + stage.h);
 		m_wysiwygLiveRectFresh = true;
 		// The placeholder hint only reads while the renderer is
 		// unavailable (attach failed / no scene): the composite paints
@@ -4070,98 +3817,87 @@ namespace editor {
 		return m_assetThumbs.back().imgui;
 	}
 
-	void EditorApp::DrawMaterialEditor() {
-		if (!m_world || m_world->materialLocations.empty()) {
-			ImGui::TextDisabled("No materials (open a scene).");
-			return;
-		}
-		smvk::Cluster* cl = m_world->clusters.empty()
-			? nullptr : m_world->clusters[0].get();
-		// Material picker.
-		if (m_matEditorSel == UINT32_MAX
-			|| m_matEditorSel >= m_world->materialLocations.size())
-			m_matEditorSel = m_defaultMatWorld != UINT32_MAX
-			? m_defaultMatWorld : 0;
-		{
-			const auto& loc = m_world->materialLocations[m_matEditorSel];
-			std::string preview = "mat." + std::to_string(m_matEditorSel);
-			if (loc.cluster) {
-				const std::string uri =
-					std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
-				if (!uri.empty())
-					preview += " " + uri;
-			}
-			if (ImGui::BeginCombo("Material", preview.c_str())) {
-				for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
-					const auto& l2 = m_world->materialLocations[i];
-					std::string uri = l2.cluster
-						? std::string(l2.cluster->GetMaterialUri(l2.handle).Str())
-						: "";
-					char item[320];
-					std::snprintf(item, sizeof(item), "%u: %s", i,
-						uri.empty() ? "(unnamed)" : uri.c_str());
-					if (ImGui::Selectable(item, m_matEditorSel == i))
-						m_matEditorSel = i;
-				}
-				ImGui::EndCombo();
-			}
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Focus >>")) {
-			m_materialTrail.push_back(m_materialFocus);
-			m_materialFocus = m_matEditorSel;
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Opens the full material page in the "
-				"Inspector (emissive, alpha, flags, layer travel).");
-		// The BALL PREVIEW sidecar: renders the material on a sphere under
-		// the fixed default sky (matball.vert/frag.hlsl) into a 256x256
-		// PNG written next to the material's SOURCE .material asset
-		// (the sidecar: <file>.material.png — the asset browser's tile
-		// image). Queue-only: the render lands at the next frame's export
-		// position (editor_matball.cpp).
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Ball preview")) {
-			const auto& loc = m_world->materialLocations[m_matEditorSel];
-			std::string uri = loc.cluster
-				? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
-				: "";
-			std::string sidecar;
-			if (!uri.empty()) {
-				namespace fs = std::filesystem;
-				fs::path host = fs::path(ResolveVfsRoot()) / uri;
-				if (uri.size() > 9
-					&& host.extension().generic_string() == ".material")
-					sidecar = host.generic_string() + ".png";
-			}
-			if (sidecar.empty())
-				sidecar = "exports/matball_"
-					+ std::to_string(m_matEditorSel) + ".png";
-			QueueMaterialBallPreview(m_matEditorSel, sidecar);
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Renders this material on a sphere under "
-				"the default sky and writes the preview PNG next to "
-				"the source .material asset (the browser's tile).");
-		}
-		const uint32_t mat = m_matEditorSel;
-		smvk::Material* m = m_world->GetMaterial(mat);
+	// ---- THE SHARED MATERIAL BODY (one surface, three hosts) ---------
+	// Everything a material can author, in ONE function: the texture
+	// slots (the project registry picker + thumbnails), the scalar
+	// look (base/metal/rough/emissive, the shared-drag command path),
+	// the attribute flags (chips) + alpha, the vertex-color layers, the
+	// diffuse preview + the ball-preview sidecar button + the layer
+	// travel. The hosts own ONLY their headers:
+	//   - the Inspector's node block: the assignment combo + travel
+	//   - the Inspector's focus page: the breadcrumb + trail
+	//   - the right column's Material tab: the picker (auto-follow)
+	// (Before the consolidation the three each carried a subset — the
+	// tab had slots+layers but no scalars, the node page had scalars+
+	// flags but no slots, the focus page had scalars+layers in the old
+	// pre-revamp presentation. Now one body, the attr stubs everywhere.)
+	void EditorApp::DrawMaterialBody(uint32_t mat) {
+		smvk::Material* m = m_world ? m_world->GetMaterial(mat) : nullptr;
 		if (!m) {
 			ImGui::TextDisabled("Material resolve failed.");
 			return;
 		}
-		// ---- PBR texture slots -------------------------------------------
-		// Slot attrs are pool-index scalars (-1 = none). The PICKER is the
-		// PROJECT TEXTURE REGISTRY (assets.db rows of kind "texture" — the
-		// same set the asset browser badges green): picking an asset
-		// imports it into the cluster pool (AddTextureFromFile — KTX2
-		// passthrough / PNG-JPG transcode) and binds the slot to the
-		// pool index. The old combo listed the CLUSTER's registered pool
-		// entries ("tex.N" + URIs) — an implementation detail, not an
-		// authoring list (retired in the material-page revamp).
+		smvk::Cluster* cl = m_world->clusters.empty()
+			? nullptr : m_world->clusters[0].get();
+
+		// ---- Preview + the ball sidecar --------------------------------
+		ImGui::Separator();
+		DrawDiffusePreview(mat, m->values.diffuse);
+		ImGui::SameLine();
+		ImGui::BeginGroup();
+		{
+			const TexPreview& pv = ResolveDiffusePreview(mat);
+			if (pv.ok)
+				ImGui::TextWrapped("map: %s", pv.uri.c_str());
+			else
+				ImGui::TextDisabled("map: %s", pv.status.c_str());
+			if (ImGui::IsItemHovered()) {
+				const glm::ivec4& t0 = m->values.textures;
+				const glm::ivec4& t1 = m->values.textures2;
+				ImGui::SetTooltip("slots: base %d | mr %d | normal %d "
+					"| occ %d | emis %d\nbase %.2f %.2f %.2f a %.2f | "
+					"metal %.2f rough %.2f | emis x %.2f",
+					t0.x, t0.y, t0.z, t0.w, t1.x,
+					m->values.diffuse.x, m->values.diffuse.y,
+					m->values.diffuse.z, m->values.diffuse.w,
+					m->values.params.y, m->values.params.z,
+					m->values.params2.z);
+			}
+		}
+		ImGui::EndGroup();
+		ImGui::SameLine();
+		{
+			// The BALL PREVIEW sidecar: renders the material on a sphere
+			// under the fixed default sky into a 256x256 PNG next to the
+			// source .material asset (editor_matball.cpp).
+			if (ImGui::SmallButton("Ball preview##body")) {
+				const auto& loc = m_world->materialLocations[mat];
+				std::string uri = loc.cluster
+					? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+					: "";
+				std::string sidecar;
+				if (!uri.empty()) {
+					namespace fs = std::filesystem;
+					fs::path host = fs::path(ResolveVfsRoot()) / uri;
+					if (uri.size() > 9
+						&& host.extension().generic_string() == ".material")
+						sidecar = host.generic_string() + ".png";
+				}
+				if (sidecar.empty())
+					sidecar = "exports/matball_"
+						+ std::to_string(mat) + ".png";
+				QueueMaterialBallPreview(mat, sidecar);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Renders this material on a sphere "
+					"under the default sky; the PNG lands next to the "
+					"source .material asset (the browser's tile).");
+		}
+
+		// ---- PBR texture slots (the registry picker + thumbnails) -----
 		ImGui::Separator();
 		ImGui::Text("Texture slots");
 		struct SlotDef { const char* label; const char* attr; int* slot; };
-		// Pointer copies read live values per frame (post-Do refresh).
 		int tBC = m->values.textures.x, tMR = m->values.textures.y;
 		int tN = m->values.textures.z, tO = m->values.textures.w;
 		int tE = m->values.textures2.x;
@@ -4172,13 +3908,9 @@ namespace editor {
 			{ "Occlusion", "occlusionTex", &tO },
 			{ "Emissive", "emissiveTex", &tE },
 		};
-		// The pool's registered URIs (internal: the slot's current-value
-		// label + thumbnail handle + the picked-asset dedup — a file
-		// already in the pool reuses its index instead of re-importing).
 		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
 		if (cl)
 			texList = cl->ListTextureUris();
-		// The PROJECT TEXTURE REGISTRY rows (name + abs path + guid).
 		struct TexAsset { std::string name; std::string abs; std::string guid; };
 		std::vector<TexAsset> texAssets;
 		if (m_assetDb.IsOpen()) {
@@ -4207,10 +3939,8 @@ namespace editor {
 		}
 		for (const SlotDef& s : slots) {
 			ImGui::PushID(s.attr);
-			// The CURRENT value's friendly label: the bound texture's
-			// registered URI's FILE NAME (not the pool index — the revamp's
-			// point); the handle rides the same walk for the thumbnail.
-			std::string preview = "(none)";
+			std::string preview = *s.slot >= 0
+				? ("tex." + std::to_string(*s.slot)) : std::string("(none)");
 			smvk::TextureHandle slotTex{};
 			if (*s.slot >= 0)
 				for (const auto& [uri, th] : texList)
@@ -4220,10 +3950,6 @@ namespace editor {
 							.filename().generic_string();
 						break;
 					}
-			// The PREVIEW thumbnail: the bound texture at a glance (48px,
-			// uniform tiles — the aspect stretches; a grid look beats
-			// mixed heights). Empty slots skip (the combo's "(none)"
-			// already says it).
 			if (!slotTex.empty()) {
 				const ImTextureID tid = TextureThumb(slotTex);
 				if (tid != 0) {
@@ -4247,8 +3973,6 @@ namespace editor {
 				for (const TexAsset& ta : texAssets) {
 					if (ImGui::Selectable(ta.name.c_str(),
 							preview == ta.name)) {
-						// Dedup: a file already in the pool reuses its index
-						// (AddTextureFromFile re-imports unconditionally).
 						int poolIdx = -1;
 						for (const auto& [uri, th] : texList)
 							if (uri.Str() == ta.abs) {
@@ -4258,7 +3982,7 @@ namespace editor {
 						if (poolIdx < 0)
 							poolIdx = AddTextureFromFile(ta.abs);
 						if (poolIdx < 0)
-							continue; // import failed (logged): no edit
+							continue;
 						EditCmd c{};
 						c.verb = EditVerb::SetMatAttr;
 						c.matWorld = mat;
@@ -4276,11 +4000,152 @@ namespace editor {
 			}
 			ImGui::PopID();
 		}
-		// ---- Layers ------------------------------------------------------
+
+		// ---- The scalar look (shared edit, the drag command path) ----
+		ImGui::Separator();
+		{
+			glm::vec4 bc = m->values.diffuse;
+			if (attr::Color("Base color", &bc.x,
+					("Shared edit — affects every node using mat."
+						+ std::to_string(mat)).c_str())) {
+				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "baseColor"))
+					FinalizePending();
+				if (!m_pending.active) {
+					m_pending.active = true;
+					m_pending.cmd = EditCmd{};
+					m_pending.cmd.verb = EditVerb::SetMatAttr;
+					m_pending.cmd.matWorld = mat;
+					m_pending.cmd.attr = "baseColor";
+					ReadSharedMatAttr(mat, "baseColor",
+						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+				}
+				WriteSharedMatAttr(mat, "baseColor", bc, 0.0);
+				m_pending.cmd.vec4 = bc;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.attr == "baseColor")
+				FinishDrag();
+			float metallic = m->values.params.y;
+			if (attr::Slider("Metallic", &metallic, 0.0f, 1.0f, "%.2f",
+					"Metallic factor (0 dielectric .. 1 metal)")) {
+				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "metallic"))
+					FinalizePending();
+				if (!m_pending.active) {
+					m_pending.active = true;
+					m_pending.cmd = EditCmd{};
+					m_pending.cmd.verb = EditVerb::SetMatAttr;
+					m_pending.cmd.matWorld = mat;
+					m_pending.cmd.attr = "metallic";
+					ReadSharedMatAttr(mat, "metallic",
+						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+				}
+				WriteSharedMatAttr(mat, "metallic", glm::vec4(0), metallic);
+				m_pending.cmd.number = metallic;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.attr == "metallic")
+				FinishDrag();
+			float rough = m->values.params.z;
+			if (attr::Slider("Roughness", &rough, 0.04f, 1.0f, "%.2f",
+					"Perceptual roughness (0.04 mirror .. 1 diffuse)")) {
+				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "roughness"))
+					FinalizePending();
+				if (!m_pending.active) {
+					m_pending.active = true;
+					m_pending.cmd = EditCmd{};
+					m_pending.cmd.verb = EditVerb::SetMatAttr;
+					m_pending.cmd.matWorld = mat;
+					m_pending.cmd.attr = "roughness";
+					ReadSharedMatAttr(mat, "roughness",
+						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+				}
+				WriteSharedMatAttr(mat, "roughness", glm::vec4(0), rough);
+				m_pending.cmd.number = rough;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.attr == "roughness")
+				FinishDrag();
+			glm::vec4 em(m->values.emissiveFactor.x,
+				m->values.emissiveFactor.y, m->values.emissiveFactor.z,
+				m->values.params2.z);
+			if (attr::Color("Emissive", &em.x,
+					"RGB color; the A slider carries the strength "
+					"multiplier")) {
+				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "emissive"))
+					FinalizePending();
+				if (!m_pending.active) {
+					m_pending.active = true;
+					m_pending.cmd = EditCmd{};
+					m_pending.cmd.verb = EditVerb::SetMatAttr;
+					m_pending.cmd.matWorld = mat;
+					m_pending.cmd.attr = "emissive";
+					ReadSharedMatAttr(mat, "emissive",
+						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+				}
+				WriteSharedMatAttr(mat, "emissive", em, 0.0);
+				m_pending.cmd.vec4 = em;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+				m_pending.cmd.attr == "emissive")
+				FinishDrag();
+		}
+
+		// ---- Attribute flags + alpha ------------------------------------
+		ImGui::Separator();
+		{
+			ImGui::TextDisabled("flags");
+			ImGui::SameLine();
+			auto flagChip = [&](const char* label, bool on, const char* tip) {
+				return attr::Bool(label, on, tip);
+			};
+			(void)flagChip;
+			if (attr::Bool("DS", m->doubleSided,
+					"DOUBLE SIDED — both faces shade")) {
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = "doubleSided";
+				c.number = m->doubleSided ? 0.0 : 1.0;
+				ReadSharedMatAttr(mat, "doubleSided",
+					c.beforeVec4, c.beforeNum);
+				Do(c);
+			}
+			ImGui::SameLine();
+			if (attr::Bool("Shadow", m->castsShadows,
+					"CASTS SHADOWS — off excludes it from the shadow "
+					"passes (decal-style)")) {
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = "castsShadows";
+				c.number = m->castsShadows ? 0.0 : 1.0;
+				ReadSharedMatAttr(mat, "castsShadows",
+					c.beforeVec4, c.beforeNum);
+				Do(c);
+			}
+			ImGui::SameLine();
+			int alpha = int(m->alphaMode);
+			if (attr::Enum("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0",
+					"Alpha: the blend/cutout mode (the cut value reads "
+					"here once the Mask editor lands)")) {
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = "alphaMode";
+				c.number = double(alpha);
+				ReadSharedMatAttr(mat, "alphaMode",
+					c.beforeVec4, c.beforeNum);
+				Do(c);
+			}
+		}
+
+		// ---- Layers (vertex-color blending) + the travel ---------------
 		ImGui::Separator();
 		ImGui::Text("Layers (vertex-color blending)");
-		ImGui::TextDisabled("RGBA weights blend layers 1..3 over this "
-			"material (layer 0).");
 		{
 			glm::ivec4 lm = m->values.layerMaterials;
 			const uint32_t count = uint32_t(m_world->materialLocations.size());
@@ -4323,14 +4188,16 @@ namespace editor {
 					ReadSharedMatAttr(mat, "layers", v4, num);
 					c.beforeVec4 = v4;
 					c.beforeNum = num;
-					c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
-						float(nl.w));
+					c.vec4 = glm::vec4(float(nl.x), float(nl.y),
+						float(nl.z), float(nl.w));
 					c.number = double(nl.w);
 					Do(c);
 				}
 			}
 			int layerCount = lm.w;
-			if (ImGui::SliderInt("Active layers", &layerCount, 0, 4)) {
+			if (attr::Int("Active layers", &layerCount, 0, 4,
+					"RGBA vertex weights blend layers 1..3 over this "
+					"material (layer 0); count 0 = the legacy plain tint")) {
 				glm::ivec4 nl = lm;
 				nl.w = layerCount;
 				EditCmd c{};
@@ -4342,36 +4209,92 @@ namespace editor {
 				ReadSharedMatAttr(mat, "layers", v4, num);
 				c.beforeVec4 = v4;
 				c.beforeNum = num;
-				c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
-					float(nl.w));
+				c.vec4 = glm::vec4(float(nl.x), float(nl.y),
+					float(nl.z), float(nl.w));
 				c.number = double(nl.w);
 				Do(c);
 			}
-		}
-		// ---- Texture registry (file path refs) ----------------------------
-		ImGui::Separator();
-		ImGui::Text("Textures (%zu)", texList.size());
-		for (const auto& [uri, th] : texList) {
-			ImGui::BulletText("%u  %s", uint32_t(th.index()), uri.Str().c_str());
-		}
-		ImGui::SetNextItemWidth(-90.0f);
-		ImGui::InputTextWithHint("##matTexPath", "Texture file path...",
-			m_matTexPathBuf, sizeof(m_matTexPathBuf));
-		ImGui::SameLine();
-		if (ImGui::Button("Add...##tex")) {
-			if (m_matTexPathBuf[0] != '\0') {
-				// Native file dialog would be nicer; the path field is the
-				// direct ref (also exactly what the URI becomes).
-				if (AddTextureFromFile(m_matTexPathBuf) >= 0)
-					m_matTexPathBuf[0] = '\0';
+			// Travel: jump to a layer material (the trail keeps the way
+			// back; the jump raises the Inspector's focus page).
+			for (int slot = 0; slot < 3; ++slot) {
+				const int target = m->values.layerMaterials[slot];
+				if (target < 0 || uint32_t(target) >=
+					m_world->materialLocations.size())
+					continue;
+				ImGui::PushID(100 + slot);
+				if (ImGui::SmallButton("Go to layer material >>")) {
+					m_materialTrail.push_back(m_materialFocus);
+					m_materialFocus = uint32_t(target);
+				}
+				ImGui::PopID();
 			}
 		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Loads the texture into the texture pool with "
-				"the file path as its URI (a filepath ref). KTX2 loads "
-				"directly; PNG/JPG/... transcode to KTX2 (sRGB) on the way. "
-				"Source bytes are stashed so cooks re-embed them.");
-		ImGui::TextDisabled("Slots store pool indices; -1 clears a slot.");
+	}
+
+	void EditorApp::DrawMaterialEditor() {
+		if (!m_world || m_world->materialLocations.empty()) {
+			ImGui::TextDisabled("No materials (open a scene).");
+			return;
+		}
+		// AUTO-FOLLOW THE SELECTION: the tab positions itself on the
+		// CURRENT SELECTION's material — picking a node in the viewport
+		// (or the outliner) lands its material here (the manual combo
+		// still works between selections: the follow only fires when the
+		// SELECTION's material CHANGED, not on every frame).
+		{
+			uint32_t selMat = UINT32_MAX;
+			if (m_selected != UINT32_MAX) {
+				auto mit = m_world->scene.materialForNode.find(m_selected);
+				if (mit != m_world->scene.materialForNode.end())
+					selMat = mit->second;
+			}
+			if (selMat != m_matEditorSelFromSel) {
+				m_matEditorSelFromSel = selMat;
+				if (selMat != UINT32_MAX
+					&& selMat < m_world->materialLocations.size())
+					m_matEditorSel = selMat;
+			}
+		}
+		// Material picker.
+		if (m_matEditorSel == UINT32_MAX
+			|| m_matEditorSel >= m_world->materialLocations.size())
+			m_matEditorSel = m_defaultMatWorld != UINT32_MAX
+			? m_defaultMatWorld : 0;
+		{
+			const auto& loc = m_world->materialLocations[m_matEditorSel];
+			std::string preview = "mat." + std::to_string(m_matEditorSel);
+			if (loc.cluster) {
+				const std::string uri =
+					std::string(loc.cluster->GetMaterialUri(loc.handle).Str());
+				if (!uri.empty())
+					preview += " " + uri;
+			}
+			if (ImGui::BeginCombo("Material", preview.c_str())) {
+				for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
+					const auto& l2 = m_world->materialLocations[i];
+					std::string uri = l2.cluster
+						? std::string(l2.cluster->GetMaterialUri(l2.handle).Str())
+						: "";
+					char item[320];
+					std::snprintf(item, sizeof(item), "%u: %s", i,
+						uri.empty() ? "(unnamed)" : uri.c_str());
+					if (ImGui::Selectable(item, m_matEditorSel == i))
+						m_matEditorSel = i;
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Focus >>")) {
+				m_materialTrail.push_back(m_materialFocus);
+				m_materialFocus = m_matEditorSel;
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Opens the full material page in the "
+					"Inspector (emissive, alpha, flags, layer travel).");
+		}
+		// THE SHARED BODY: slots + scalars + flags + layers + previews —
+		// the same surface the node page and the focus page render.
+		DrawMaterialBody(m_matEditorSel);
 	}
 
 	void EditorApp::RevealInExplorer(const std::string& absPath) {
@@ -5173,10 +5096,18 @@ namespace editor {
 			}
 			// Delete (selection action): plans + confirms through the modal
 			// (refusals — open scene, derived assets, cache — log + no-op).
+			// MULTI: the set deletes as one request when >1.
 			SameLineIfFits("Delete");
 			ImGui::BeginDisabled(m_assetsSel.empty());
-			if (ImGui::SmallButton("Delete##sel"))
-				RequestAssetDelete(m_assetsSel);
+			if (ImGui::SmallButton(
+					m_assetsSelSet.size() > 1
+						? "Delete (N)##sel" : "Delete##sel")) {
+				if (m_assetsSelSet.size() > 1)
+					RequestAssetDelete(m_assetsSelSet.data(),
+						m_assetsSelSet.size());
+				else
+					RequestAssetDelete(&m_assetsSel, 1);
+			}
 			ImGui::EndDisabled();
 			// Selected file is informational and has its OWN line. Never
 			// put a potentially long filename/UUID beside the action buttons.
@@ -5205,6 +5136,7 @@ namespace editor {
 		// Defer tile-context deletes until after the grid child has ended:
 		// OpenPopup() and BeginPopupModal() must run at the same popup depth.
 		std::string tileDeleteRequested;
+		bool tileDeleteMulti = false; // the multi-set delete request
 		ImGui::Separator();
 		// The grid alone fills the remaining height, so toolbar rows never
 		// compete with tiles. IMPORTANT: obtain dl after BeginChild; using
@@ -5276,9 +5208,19 @@ namespace editor {
 		};
 		// Entries: directories first, then files, both by name (skip
 		// .meta sidecars + dotfiles).
+		// FRAME-ARENA STRINGS (the App's pattern — Memory/arena.h): the
+		// per-frame entry storage rides smvk::FrameArena() (AllocateString
+		// copies in, NUL-terminated, zero heap churn; the arena resets at
+		// the frame boundary — MainLoop's ResetFrameArena). The views are
+		// FRAME-SCOPED: everything that OUTLIVES the frame (the selection,
+		// the expand state, the drag payload SINKS) copies out via Str().
+		auto& fArena = smvk::FrameArena();
+		auto put = [&](const std::string& s) {
+			return fArena.AllocateString(smvk::StringViewT(s));
+		};
 		struct Entry {
-			std::string name;
-			std::string abs;
+			smvk::StringViewT name;
+			smvk::StringViewT abs;
 			bool dir = false;
 			IconType icon{};
 			bool gltf = false;  // .gltf with a manifest: presents as folder
@@ -5315,8 +5257,8 @@ namespace editor {
 					&& int(e.kind) != kindFilter)
 					continue;
 				Entry t{};
-				t.name = e.name.empty() ? e.file : e.name;
-				t.abs = (fs::path(base) / e.file).generic_string();
+				t.name = put(e.name.empty() ? e.file : e.name);
+				t.abs = put((fs::path(base) / e.file).generic_string());
 				t.icon = iconForAsset(e.kind);
 				t.dragMesh = (e.kind == smvk::assets::AssetKind::Geometry);
 				t.dragMaterial =
@@ -5387,8 +5329,8 @@ namespace editor {
 						|| !fs::is_regular_file(abs, fec) || fec)
 						continue;
 					Entry t{};
-					t.name = fs::path(abs).filename().generic_string();
-					t.abs = abs;
+					t.name = put(fs::path(abs).filename().generic_string());
+					t.abs = put(abs);
 					t.icon = (m_assetsFilter == 5)
 						? IconType::Env : IconType::GI;
 					files.push_back(std::move(t));
@@ -5400,15 +5342,15 @@ namespace editor {
 			// folder view; the glTF itself stays listed as the source).
 			Entry back{};
 			back.name = "..";
-			back.abs = expandGltf;
+			back.abs = put(expandGltf);
 			back.dir = true; // plain-directory styling
 			back.back = true; // double-click = leave the folder
 			back.icon = IconType::Folder;
 			dirs.push_back(back);
 			manifestChildren(expandGltf, -1, files);
 			Entry src{};
-			src.name = fs::path(expandGltf).filename().string();
-			src.abs = expandGltf;
+			src.name = put(fs::path(expandGltf).filename().string());
+			src.abs = put(expandGltf);
 			src.icon = IconType::Model;
 			src.gltf = false; // inside the folder, double-click opens the source
 			files.push_back(src);
@@ -5422,7 +5364,7 @@ namespace editor {
 			// browser, nested inside its own folder view).
 			Entry back{};
 			back.name = "..";
-			back.abs = expandTour;
+			back.abs = put(expandTour);
 			back.dir = true;
 			back.back = true;
 			back.icon = IconType::Folder;
@@ -5437,10 +5379,10 @@ namespace editor {
 				if (!fs::is_regular_file(git->second, fec) || fec)
 					continue;
 				Entry t{};
-				t.name = fs::path(git->second).filename().generic_string();
-				t.abs = git->second;
+				t.name = put(fs::path(git->second).filename().generic_string());
+				t.abs = put(git->second);
 				t.icon = (t.name.size() > 13
-					&& t.name.compare(t.name.size() - 13, 13,
+					&& t.name.Str().compare(t.name.size() - 13, 13,
 						".cubemanifest") == 0)
 					? IconType::Env : IconType::GI;
 				files.push_back(std::move(t));
@@ -5448,9 +5390,9 @@ namespace editor {
 			// The source itself: a plain openable .tour tile (double-click
 			// opens the scene — see the tile handler's isOpenable branch).
 			Entry src{};
-			src.name = fs::path(expandTour).filename().string();
-			src.abs = expandTour;
-			src.icon = IconTypeFor(src.name, false);
+			src.name = put(fs::path(expandTour).filename().string());
+			src.abs = put(expandTour);
+			src.icon = IconTypeFor(src.name.Str(), false);
 			files.push_back(src);
 		}
 		else {
@@ -5506,8 +5448,8 @@ namespace editor {
 						dragMaterial = true;
 				}
 				(isDir ? dirs : files).push_back({
-					name,
-					p.generic_string(),
+					put(name),
+					put(p.generic_string()),
 					isDir,
 					icon,
 					isGltf,
@@ -5519,7 +5461,7 @@ namespace editor {
 			}
 		}
 		const auto byName = [](const Entry& a, const Entry& b) {
-			std::string la = a.name, lb = b.name;
+			std::string la = a.name.Str(), lb = b.name.Str();
 			for (char& c : la)
 				c = char(std::tolower((unsigned char)c));
 			for (char& c : lb)
@@ -5534,9 +5476,19 @@ namespace editor {
 			int(ImGui::GetContentRegionAvail().x / tileW));
 		int col = 0;
 		auto tile = [&](const Entry& e) {
-			ImGui::PushID(e.abs.c_str());
+			ImGui::PushID(e.abs.data());
 			ImGui::PushID(e.back ? 1 : 0);
-			const bool sel = (m_assetsSel == e.abs);
+			// The SET highlight (the multi-selection); the primary
+			// (m_assetsSel) is redundant inside the set on plain clicks.
+			// NAVIGATION CHROME NEVER HIGHLIGHTS: the ".." back tile
+			// carries the SAME abs as the expanded view's SOURCE tile
+			// (both = the glTF path) — selecting the source lit the
+			// ".." too ("the .. up directory gets highlighted").
+			const bool sel = !e.back
+				&& (std::find(m_assetsSelSet.begin(),
+					m_assetsSelSet.end(), e.abs.Str())
+					!= m_assetsSelSet.end()
+					|| m_assetsSel == e.abs.Str());
 			const ImVec2 tileSz(tileW - 8.0f, tileH);
 			(void)ImGui::InvisibleButton("##tile", tileSz);
 			const bool hovered = ImGui::IsItemHovered();
@@ -5566,8 +5518,8 @@ namespace editor {
 			// button regenerates on demand).
 			ImTextureID sidecar = 0;
 			if (!e.dir && e.name.size() > 9
-				&& e.name.compare(e.name.size() - 9, 9, ".material") == 0)
-				sidecar = AssetSidecarThumb(e.abs + ".png");
+				&& e.name.Str().compare(e.name.size() - 9, 9, ".material") == 0)
+				sidecar = AssetSidecarThumb(e.abs.Str() + ".png");
 			if (sidecar != 0) {
 				dl->AddImage(sidecar, ico,
 					ImVec2(ico.x + iconS, ico.y + iconS));
@@ -5583,7 +5535,7 @@ namespace editor {
 				}
 			}
 			// Registered-asset badge (green dot, bottom-right of icon).
-			if (!e.dir && guidByAbs.contains(e.abs)) {
+			if (!e.dir && guidByAbs.contains(e.abs.Str())) {
 				dl->AddCircleFilled(
 					ImVec2(ico.x + iconS - 3.0f, ico.y + iconS - 3.0f),
 					3.5f, IM_COL32(90, 220, 120, 255), 10);
@@ -5596,7 +5548,7 @@ namespace editor {
 				auto textW = [&](const char* s) {
 					return font->CalcTextSizeA(fsize, 10000.0f, 0.0f, s).x;
 				};
-				std::string l1 = e.name, l2;
+				std::string l1 = e.name.Str(), l2;
 				if (textW(l1.c_str()) > maxW) {
 					// Longest fitting prefix, preferring a separator.
 					std::string growing;
@@ -5614,8 +5566,8 @@ namespace editor {
 							cut = i;
 							break;
 						}
-					l1 = e.name.substr(0, cut);
-					l2 = e.name.substr(cut);
+					l1 = e.name.Str().substr(0, cut);
+					l2 = e.name.Str().substr(cut);
 					if (textW(l2.c_str()) > maxW) {
 						while (!l2.empty()
 							&& textW((l2 + "...").c_str()) > maxW)
@@ -5643,10 +5595,70 @@ namespace editor {
 				}
 				dl->PopClipRect();
 			}
-			if (clicked)
-				m_assetsSel = e.abs;
+			// ---- SELECTION: single / ctrl-toggle / shift-range ----------
+			// The SET is the browser's selection (m_assetsSel stays the
+			// PRIMARY for the single-flow consumers: drags, the header
+			// buttons). A plain click replaces the set; ctrl toggles the
+			// entry; shift selects the anchor..entry RANGE over the
+			// display order (dirs then files — the vectors in scope).
+			// NAVIGATION TILES NEVER JOIN: the virtual-folder chrome (the
+			// ".." back tile, the expanded view's SOURCE tile) is a move,
+			// not an asset — the back tile entering the set (the
+			// "virtual folders have problems with multiselection" report)
+			// made ranges span chrome + the delete target the folder's
+			// PARENT.
+			if (clicked) {
+				const bool ctrl = ImGui::GetIO().KeyCtrl;
+				const bool shift = ImGui::GetIO().KeyShift;
+				m_assetsSel = e.abs.Str();
+				if (e.back) {
+					// Navigation-only: the primary follows (the legacy
+					// single-selection behavior), the SET never grows.
+				}
+				else if (ctrl) {
+					// Toggle; the anchor moves (the next shift ranges
+					// from HERE).
+				auto it = std::find(m_assetsSelSet.begin(),
+					m_assetsSelSet.end(), e.abs.Str());
+				if (it != m_assetsSelSet.end())
+						m_assetsSelSet.erase(it);
+					else
+						m_assetsSelSet.push_back(e.abs.Str());
+					m_assetsAnchor = e.abs.Str();
+				}
+				else if (shift && !m_assetsAnchor.empty()) {
+					// The anchor..entry range over the display order.
+					const auto span = [&](const Entry& en) {
+						return en.abs.Str() == e.abs.Str() || en.abs.Str() == m_assetsAnchor;
+					};
+					auto collectRange = [&](const std::vector<Entry>& v) {
+						auto first = std::find_if(v.begin(), v.end(), span);
+						if (first == v.end())
+							return;
+						auto last = std::find_if(v.rbegin(), v.rend(),
+							span).base();
+						for (auto it = first; it != last; ++it)
+							if (!it->back // chrome never ranges in
+								&& std::find(m_assetsSelSet.begin(),
+										m_assetsSelSet.end(), it->abs.Str())
+									== m_assetsSelSet.end())
+								m_assetsSelSet.push_back(it->abs.Str());
+					};
+					// Clear the non-range picks? Shift-select ADDS the
+					// range to the set (the ctrl-picks survive — the
+					// standard additive model).
+					collectRange(dirs);
+					collectRange(files);
+				}
+				else {
+					m_assetsSelSet = { e.abs.Str() };
+					m_assetsAnchor = e.abs.Str();
+				}
+			}
 			if (dbl) {
-				m_assetsSel = e.abs;
+				m_assetsSel = e.abs.Str();
+				m_assetsSelSet = { e.abs.Str() };
+				m_assetsAnchor = e.abs.Str();
 				if (e.back) {
 					// Leave the expanded glTF/tour folder.
 					m_assetsExpandGltf.clear();
@@ -5657,7 +5669,7 @@ namespace editor {
 					// A glTF with a manifest: open the FOLDER (the derived
 					// assets) — never the scene (the .tour references the
 					// .mesh asset; the glTF is the container/source).
-					m_assetsExpandGltf = e.abs;
+					m_assetsExpandGltf = e.abs.Str();
 					m_assetsSel.clear();
 				}
 				else if (e.tour) {
@@ -5665,16 +5677,16 @@ namespace editor {
 					// assets). The tour itself stays openable INSIDE (the
 					// source tile's isOpenable branch below) and via the
 					// header Open button.
-					m_assetsExpandTour = e.abs;
+					m_assetsExpandTour = e.abs.Str();
 					m_assetsSel.clear();
 				}
 				else if (e.dir) {
-					m_assetsDir = e.abs;
+					m_assetsDir = e.abs.Str();
 					m_assetsSel.clear();
 				}
-				else if (isOpenable(e.abs)) {
+				else if (isOpenable(e.abs.Str())) {
 					if (!m_cookRunning)
-						OpenAnySceneFile(e.abs);
+						OpenAnySceneFile(e.abs.Str());
 					else
 						Log("Assets: a cook is running - wait for it "
 							"to finish.");
@@ -5689,12 +5701,12 @@ namespace editor {
 
 					ImGui::SetDragDropPayload(
 						payloadType,
-						e.abs.c_str(),
+						e.abs.data(),
 						e.abs.size() + 1,
 						ImGuiCond_Once
 					);
 
-					ImGui::TextUnformatted(e.name.c_str());
+					ImGui::TextUnformatted(e.name.data());
 					ImGui::Separator();
 
 					ImGui::TextDisabled(
@@ -5707,18 +5719,29 @@ namespace editor {
 				}
 			}
 			if (hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-				const auto git = guidByAbs.find(e.abs);
+				const auto git = guidByAbs.find(e.abs.Str());
 				ImGui::SetTooltip("%s\n%s\n%s",
-					e.name.c_str(), e.abs.c_str(),
+					e.name.data(), e.abs.data(),
 					(git != guidByAbs.end() && !git->second.empty())
 					? git->second.c_str() : "(no asset uuid)");
 			}
 			// Per-tile menu (right-click): delete through the same confirm
 			// modal as the header button (selection is pinned first).
 			if (ImGui::BeginPopupContextItem("##assettile_ctx")) {
-				if (ImGui::MenuItem("Delete")) {
-					m_assetsSel = e.abs;
-					tileDeleteRequested = e.abs;
+				// MULTI-AWARE: deleting a tile that sits in a multi-
+				// selection (>1) requests the WHOLE set (one confirm,
+				// every plan executes); a single/unselected tile keeps
+				// the single flow.
+				const bool inSet = std::find(m_assetsSelSet.begin(),
+					m_assetsSelSet.end(), e.abs.Str())
+					!= m_assetsSelSet.end();
+				if (ImGui::MenuItem(m_assetsSelSet.size() > 1 && inSet
+						? "Delete (selection)" : "Delete")) {
+					m_assetsSel = e.abs.Str();
+					if (inSet && m_assetsSelSet.size() > 1)
+						tileDeleteMulti = true;
+					else
+						tileDeleteRequested = e.abs.Str();
 				}
 				ImGui::EndPopup();
 			}
@@ -5742,25 +5765,59 @@ namespace editor {
 		if (dirs.empty() && files.empty())
 			ImGui::TextDisabled("(empty folder)");
 		ImGui::EndChild(); // ##assetgrid
-		if (!tileDeleteRequested.empty())
-			RequestAssetDelete(tileDeleteRequested);
-		// The delete confirm modal (opened by RequestAssetDelete from the
-		// header button or a tile menu).
+		// MULTIDELETE on the Delete KEY while the grid holds the focus
+		// (the key + the context menu are the two delete gestures).
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)
+			&& ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+			if (m_assetsSelSet.size() > 1)
+				tileDeleteMulti = true;
+			else if (!m_assetsSel.empty())
+				tileDeleteRequested = m_assetsSel;
+		}
+		// THE DEFERRED OPEN: the request records the plans + the flag
+		// from the tile-menu / key paths (deeper or mid-close scopes);
+		// the OPEN itself lives INSIDE DrawAssetDeleteModal, on the line
+		// directly above the BeginPopupModal — the same function, the
+		// same id stack BY CONSTRUCTION (no intervening statement can
+		// ever shift the stack again).
+		if (tileDeleteMulti && !m_assetsSelSet.empty())
+			RequestAssetDelete(m_assetsSelSet.data(), m_assetsSelSet.size());
+		else if (!tileDeleteRequested.empty())
+			RequestAssetDelete(&tileDeleteRequested, 1);
 		DrawAssetDeleteModal();
 		ImGui::EndChild(); // ##assets_root (non-scrolling header)
 	}
 
-	void EditorApp::RequestAssetDelete(const std::string& absPath) {
-		m_assetsDeletePending = AssetDeletePlan{};
+	// THE delete request — ONE method, targets* + targetCount: the
+	// single delete is count 1; the multi passes the selection set. Each
+	// target validates (project containment, not the open scene,
+	// planable); the plans ride m_assetsDeletePending (a vector; a
+	// refused target logs + drops, the rest proceed) + the ONE confirm
+	// modal opens.
+	void EditorApp::RequestAssetDelete(const std::string* targets,
+		size_t targetCount) {
+		// TMP-DIAG: the request trace (the delete-flow hunt — which
+		// gesture reached here, with what). Remove when stable.
+		{
+			std::string list;
+			for (size_t i = 0; targets && i < targetCount && i < 6; ++i)
+				list += (i ? ", '" : "'") + targets[i] + "'";
+			if (targetCount > 6)
+				list += " ...";
+			Log("Delete request: " + std::to_string(targetCount)
+				+ " target(s)" + (list.empty() ? "" : ": " + list));
+		}
+		m_assetsDeletePending.clear();
 		if (m_projectRoot.empty()) {
 			Log("Delete: open a project first.");
 			return;
 		}
-		if (absPath.empty())
+		if (!targets || targetCount == 0)
 			return;
-		// Refuse the live scene's files (deleting the open scene from under
-		// the editor desyncs the tour autosave).
-		{
+		// The live-scene set (refused targets): deleting the open scene
+		// from under the editor desyncs the tour autosave — refuse those
+		// per-target, keep the rest.
+		auto isLiveScene = [&](const std::string& absPath) {
 			namespace fs = std::filesystem;
 			std::error_code ec;
 			const std::string abs =
@@ -5774,52 +5831,159 @@ namespace editor {
 				const std::string norm =
 					fs::absolute(fs::path(live), lec)
 					.lexically_normal().generic_string();
-				if (!lec && abs == norm) {
-					Log("Delete: '" + absPath
-						+ "' is open — close the scene first.");
-					return;
-				}
+				if (!lec && abs == norm)
+					return true;
 			}
+			return false;
+		};
+		size_t refused = 0;
+		for (size_t i = 0; i < targetCount; ++i) {
+			const std::string& absPath = targets[i];
+			if (absPath.empty())
+				continue;
+			if (isLiveScene(absPath)) {
+				Log("Delete: '" + absPath + "' is open — close the "
+					"scene first.");
+				++refused;
+				continue;
+			}
+			AssetDeletePlan plan;
+			std::string err;
+			if (!PlanAssetDelete(absPath, m_projectRoot, plan, err)) {
+				Log("Delete: " + err + ".");
+				++refused;
+				continue;
+			}
+			m_assetsDeletePending.push_back(std::move(plan));
 		}
-		AssetDeletePlan plan;
-		std::string err;
-		if (!PlanAssetDelete(absPath, m_projectRoot, plan, err)) {
-			Log("Delete: " + err + ".");
-			return;
+		// TMP-DIAG (the outcome half of the request trace): ONE line
+		// that tells the story — the refusals print their reasons above,
+		// this makes the tally unmissable.
+		Log("Delete request outcome: "
+			+ std::to_string(m_assetsDeletePending.size()) + " planned, "
+			+ std::to_string(refused) + " refused"
+			+ (m_assetsDeletePending.empty()
+				? " — nothing to confirm (see the refusal reasons above)"
+				: " — confirm in the dialog"));
+		if (!m_assetsDeletePending.empty()) {
+			m_assetsDeletePopupWanted = true;
 		}
-		m_assetsDeletePending = std::move(plan);
-		ImGui::OpenPopup("Delete asset?");
+	}
+
+	// ---- THE GENERIC DIALOG (the ONE modal mechanism — see the header
+	// block): a plain centered window + a dim overlay, gated on a bool —
+	// no popup stack anywhere in the flow. One dialog at a time.
+	void EditorApp::DialogOpen() {
+		m_dialogUp = true;
+	}
+	void EditorApp::DialogClose() {
+		m_dialogUp = false;
+	}
+	bool EditorApp::DialogBegin(const char* title, const ImVec2& size) {
+		if (!m_dialogUp)
+			return false;
+		// The dim behind (a full-viewport transparent window): the modal
+		// read + it swallows clicks (the borderless frame's
+		// InvisibleButton covers the screen).
+		{
+			const ImVec2 vp = ImGui::GetMainViewport()->WorkSize;
+			ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(vp, ImGuiCond_Always);
+			ImGui::PushStyleColor(ImGuiCol_WindowBg,
+				ImVec4(0.0f, 0.0f, 0.0f, 0.45f));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+			ImGui::Begin("##genericdialogdim", nullptr,
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+				ImGuiWindowFlags_NoSavedSettings |
+				ImGuiWindowFlags_NoBringToFrontOnFocus);
+			ImGui::InvisibleButton("##block", vp);
+			ImGui::End();
+			ImGui::PopStyleVar();
+			ImGui::PopStyleColor();
+		}
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing,
+			ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
+		if (!ImGui::Begin(title, nullptr,
+				ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+				ImGuiWindowFlags_NoSavedSettings |
+				ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::End();
+			return false;
+		}
+		return true;
+	}
+	void EditorApp::DialogEnd() {
+		ImGui::End();
 	}
 
 	void EditorApp::DrawAssetDeleteModal() {
-		if (m_assetsDeletePending.target.empty())
+		// Stale dialog without plans: drop it.
+		if (m_assetsDeletePending.empty()) {
+			if (DialogUp())
+				DialogClose();
 			return;
-		if (!ImGui::BeginPopupModal("Delete asset?", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize))
+		}
+		// The request sets the flag one frame (the menu-close frame);
+		// this raises the GENERIC DIALOG (the one modal mechanism).
+		if (m_assetsDeletePopupWanted) {
+			m_assetsDeletePopupWanted = false;
+			DialogOpen();
+		}
+		if (!DialogBegin("Delete asset?", ImVec2(460, 0)))
 			return;
-		const AssetDeletePlan& plan = m_assetsDeletePending;
-		const std::string rel = ProjectRelativePath(plan.target);
-		ImGui::Text("Delete '%s'?",
-			(rel.empty() ? plan.target.c_str() : rel.c_str()));
-		if (plan.isDir) {
-			ImGui::TextDisabled("a folder with %zu entr%s (recursive)",
-				plan.entryCount, plan.entryCount == 1 ? "y" : "ies");
+		// Count-aware display: ONE plan reads exactly like the old
+		// single; N plans list the names (capped, the count carries the
+		// rest) with each plan's also/notes folded into its row.
+		const size_t count = m_assetsDeletePending.size();
+		if (count == 1) {
+			const AssetDeletePlan& plan = m_assetsDeletePending[0];
+			const std::string rel = ProjectRelativePath(plan.target);
+			ImGui::Text("Delete '%s'?",
+				(rel.empty() ? plan.target.c_str() : rel.c_str()));
+			if (plan.isDir) {
+				ImGui::TextDisabled("a folder with %zu entr%s (recursive)",
+					plan.entryCount, plan.entryCount == 1 ? "y" : "ies");
+			}
+			if (!plan.also.empty()) {
+				ImGui::TextDisabled("+ %zu more file(s) (sidecar/derived)",
+					plan.also.size());
+			}
+			for (const std::string& note : plan.notes)
+				ImGui::TextDisabled("%s", note.c_str());
 		}
-		if (!plan.also.empty()) {
-			ImGui::TextDisabled("+ %zu more file(s) (sidecar/derived)",
-				plan.also.size());
+		else {
+			ImGui::Text("Delete %zu assets?", count);
+			size_t shown = 0;
+			for (const AssetDeletePlan& plan : m_assetsDeletePending) {
+				if (shown++ >= 8) {
+					ImGui::TextDisabled("  ... (%zu more)",
+						count - 8);
+					break;
+				}
+				const std::string rel = ProjectRelativePath(plan.target);
+				ImGui::BulletText("%s%s",
+					(rel.empty() ? plan.target.c_str() : rel.c_str()),
+					plan.isDir ? " (folder, recursive)" : "");
+				if (!plan.also.empty())
+					ImGui::TextDisabled("    + %zu sidecar/derived",
+						plan.also.size());
+			}
 		}
-		for (const std::string& note : plan.notes)
-			ImGui::TextDisabled("%s", note.c_str());
 		ImGui::TextDisabled("The GUID row stays missing so references "
 			"report cleanly.");
 		ImGui::Separator();
 		if (ImGui::Button("Delete", ImVec2(120, 0))) {
-			std::string err;
-			if (ExecuteAssetDelete(plan, err)) {
-				size_t n = plan.also.size() + 1;
-				Log("Deleted '" + plan.target + "' (" + std::to_string(n)
-					+ " file(s)).");
+			size_t okCount = 0, fileCount = 0;
+			for (const AssetDeletePlan& plan : m_assetsDeletePending) {
+				std::string err;
+				if (!ExecuteAssetDelete(plan, err)) {
+					Log("Delete failed ('" + plan.target + "'): " + err);
+					continue;
+				}
+				++okCount;
+				fileCount += plan.also.size() + 1;
 				// Heal the browser state (the deleted paths are gone).
 				namespace fs = std::filesystem;
 				auto norm = [](const std::string& p) {
@@ -5835,35 +5999,45 @@ namespace editor {
 								plan.target) == 0
 							&& n[plan.target.size()] == '/');
 				};
-				if (!m_assetsSel.empty() && under(m_assetsSel)) {
+				if (!m_assetsSel.empty() && under(m_assetsSel))
 					m_assetsSel.clear();
-				}
-				if (!m_assetsDir.empty() && under(m_assetsDir)) {
+				if (!m_assetsDir.empty() && under(m_assetsDir))
 					m_assetsDir.clear(); // healed to content/ next draw
-				}
 				if (!m_assetsExpandGltf.empty()
 					&& under(m_assetsExpandGltf)) {
 					m_assetsExpandGltf.clear();
 					m_assetsSel.clear();
 				}
-				m_assetInspectPath.clear();
-				m_assetInspectMat.reset();
-				m_assetInspectMesh.reset();
-				m_assetInspectGiCook.reset();
-				m_assetInspectLmCook.reset();
 			}
-			else {
-				Log("Delete failed: " + err);
-			}
-			m_assetsDeletePending = AssetDeletePlan{};
-			ImGui::CloseCurrentPopup();
+			// The set heals wholesale: drop every entry under any target.
+			m_assetsSelSet.erase(std::remove_if(m_assetsSelSet.begin(),
+				m_assetsSelSet.end(), [&](const std::string& p) {
+					for (const AssetDeletePlan& plan
+						: m_assetsDeletePending) {
+						if (p == plan.target)
+							return true;
+					}
+					return false;
+				}), m_assetsSelSet.end());
+			m_assetInspectPath.clear();
+			m_assetInspectMat.reset();
+			m_assetInspectMesh.reset();
+			m_assetInspectGiCook.reset();
+			m_assetInspectLmCook.reset();
+			if (okCount)
+				Log("Deleted " + std::to_string(okCount) + " asset(s) ("
+					+ std::to_string(fileCount) + " file(s)).");
+		m_assetsDeletePending.clear();
+		DialogClose();
+		DialogEnd();
+		return; // the confirm pass ends here (no Cancel row this frame)
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-			m_assetsDeletePending = AssetDeletePlan{};
-			ImGui::CloseCurrentPopup();
+			m_assetsDeletePending.clear();
+			DialogClose();
 		}
-		ImGui::EndPopup();
+		DialogEnd();
 	}
 	// Fallback icon art (drawn vector shapes): used when an SVG icon failed
 	// to rasterize/register (imgui == 0). Color-tinted per browser kind.

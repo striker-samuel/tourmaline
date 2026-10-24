@@ -2653,6 +2653,11 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
+	// THE VERB TOAST: a minimal popup message over the view panels'
+	// rect — the command's action, at a glance (the "did that register"
+	// feedback the gesture-driven UI owes; the status bar is a look-
+	// away surface, the stage is where the eyes are).
+	ShowVerbToast(c);
 	if (c.verb == EditVerb::SetVisibility)
 		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
 	else if (c.verb == EditVerb::AssignMaterial)

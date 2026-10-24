@@ -7597,16 +7597,6 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		uint32_t families[2] = {};
 		families[0] = m_submitter->queueFamilyIndex();
 		families[1] = m_transferSubmitter->queueFamilyIndex();
-		// TMP-DIAG (the 04626 hunt): the family pair at every
-		// CONCURRENT buffer creation — the validation layer reports
-		// garbage/duplicate families here (VUID-01419 at boot +
-		// VUID-04626 DEVICE_LOST at submit).
-		std::fprintf(stderr,
-			"[BUF-DIAG] CONCURRENT buffer '%s' size=%llu families=[%u, %u] "
-			"(submitter=%p transfer=%p)\n",
-			debugName ? debugName : "?",
-			(unsigned long long)size, families[0], families[1],
-			(void*)m_submitter, (void*)m_transferSubmitter);
 		ci.queueFamilyIndexCount = 2;
 		ci.pQueueFamilyIndices = families;
 	}

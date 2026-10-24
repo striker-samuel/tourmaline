@@ -187,10 +187,7 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 					n.i[1] = int(group);
 					MarkPlacementDirty();
 				}
-				else {
-					Log("placement: select a terrain group (or one of its "
-						"tiles) first.");
-				}
+				else {}
 			}
 		}
 		break;

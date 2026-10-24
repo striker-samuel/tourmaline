@@ -62,6 +62,10 @@ public:
 	SDL_Window* GetWindow() const { return window; }
 	bool ShouldClose() const { return windowShouldClose_; }
 	void RequestClose() { windowShouldClose_ = true; }
+	// ESC-held policy: the BASE host quits on a held Escape (the App's
+	// game flow); hosts that must NOT die on Esc (the EDITOR — Esc
+	// belongs to modal/popup dismissal there) override to false.
+	virtual bool AllowEscQuit() const { return true; }
 	void SetRelativeMouseMode(bool enabled);
 	bool GetRelativeMouseMode() const { return relativeMouseMode_; }
 	// Benchmark: auto-quit after N frames and report average frame time

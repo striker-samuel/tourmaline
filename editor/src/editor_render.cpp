@@ -2108,11 +2108,14 @@ namespace editor {
 		// would be authoring chrome over WYSIWYG output).
 		m_rendergraph->NewFrame();
 		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-			if (LiveViewActive() && vpIdx == m_activeVp)
-				continue; // this rect shows the live view's composite
+			if (LiveViewActive() && vpIdx == kLiveViewVp)
+				continue; // panel 0's rect shows the live view's composite
 			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
 		}
-		if (!LiveViewActive()) {
+		// The gizmo + inset ride the ACTIVE viewport — they skip only
+		// while the ACTIVE one IS the live host (panel 0 in Lit): their
+		// depth comes from the scene pass that no longer ran there.
+		if (!(LiveViewActive() && m_activeVp == kLiveViewVp)) {
 			RecordInsetPass(m_swapViews[fb.imageIndex], flight);
 			RecordGizmoPass(m_swapViews[fb.imageIndex]);
 		}
@@ -2237,36 +2240,49 @@ namespace editor {
 	//     the record only.
 	void EditorApp::UpdateWysiwygBoundary(float dt) {
 		m_wysiwygLayerRenderable = false;
-		// Launch/stop housekeeping, lazy per frame: launch while a world
-		// + the LIT MODE (the active viewport's) are on; relaunch when the
-		// world OBJECT or the scene stem swaps (open/close/load) or right
-		// after a bake completes (the renderer's GI/cubemap loaders ran at
-		// attach — assets that landed later need a fresh attach to be
-		// seen). Lit is the viewports' DEFAULT mode, so the WYSIWYG render
-		// runs out of the box; F2/F3.. park it.
+		// Launch housekeeping, lazy per frame: launch while a world + the
+		// LIT MODE (panel 0's) are on; relaunch when the world OBJECT or
+		// the scene stem swaps (open/close/load) or right after a bake
+		// completes (the renderer's GI/cubemap loaders ran at attach —
+		// assets that landed later need a fresh attach to be seen). Lit
+		// is the viewports' DEFAULT mode, so the WYSIWYG render runs out
+		// of the box.
+		//
+		// PARK, NOT STOP (the F1->F2->F1 fix): leaving Lit does NOT tear
+		// the renderer down — the old STOP re-launched on return and the
+		// fresh attach RE-SEEDED the look (the exposure adaptation
+		// restarted from the manual seed) so a round-trip looked
+		// different than the loaded state ("loads with X settings, then
+		// cycles look different"). A parked renderer keeps every piece of
+		// live state — the converged exposure, the temporal history — so
+		// returning to Lit resumes the EXACT look. The stop path stays
+		// for the REAL teardowns: the scene/world swap + the bake
+		// completion relaunch (the witnesses) + CloseScene.
 		const bool wantLive = LiveViewActive() && m_world;
 		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
 				|| m_wysiwygSceneId != SceneIdForHost()))
 			LaunchWysiwyg();
-		if (!wantLive && m_wysiwyg)
-			StopWysiwyg();
 		if (m_wysiwygBakeWasRunning && !m_bakeRunning && m_wysiwyg)
 			LaunchWysiwyg(); // bake completion: relaunch to bind the fresh GI
 		m_wysiwygBakeWasRunning = m_bakeRunning;
+		if (!wantLive)
+			return; // PARK: skip the tick/record; keep the renderer + its state
 		if (!m_wysiwyg || !m_wysiwygValid)
 			return;
-		// Camera: the ACTIVE viewport's framing — the same view the
-		// editor preview renders (locked look-through or the orbit
-		// camera), fed to the renderer's positioner. Ortho cameras PARK
-		// the layer this frame (glm ortho carries proj[3][3] = 1; the
-		// renderer's lens is perspective-only) — the window keeps its
-		// last content rather than showing a mis-framed stretch.
+		// Camera: THE LIVE VIEW'S viewport's framing — PANEL 0 (the
+		// privileged host: the live view never follows the selection —
+		// the same view the editor preview renders at vp0 (locked
+		// look-through or the orbit camera), fed to the renderer's
+		// positioner. Ortho cameras PARK the layer this frame (glm ortho
+		// carries proj[3][3] = 1; the renderer's lens is perspective-only)
+		// — the window keeps its last content rather than showing a
+		// mis-framed stretch.
 		glm::mat4 view, proj;
 		glm::vec3 eye;
 		float nearClip, farClip;
-		if (!BoundCameraView(m_activeVp, view, proj, eye, nearClip, farClip)) {
+		if (!BoundCameraView(kLiveViewVp, view, proj, eye, nearClip, farClip)) {
 			const EditorCam& cam =
-				m_editorCams[m_viewports[m_activeVp].camIdx];
+				m_editorCams[m_viewports[kLiveViewVp].camIdx];
 			view = EditorCamView(cam);
 			proj = EditorCamProj(cam, 1.0f);
 			eye = EditorCamEye(cam);
@@ -2589,6 +2605,20 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		smvk::LogicalImageViewHandle swapView) {
 		if (!m_wysiwyg || !m_wysiwygValid
 			|| m_wysiwyg->InlineTargetView().empty())
+			return;
+		// MODALS WIN THE FRAME — but ONLY modals: the composite records
+		// AFTER the imgui pass — it would PAINT OVER any modal dialog
+		// sitting inside the live rect (the delete-confirm over the stage
+		// was "obscured by the live view"). While a BeginPopupModal is
+		// open the composite skips: the modal owns the frame's top layer.
+		// NON-modal popups (the Q radial, every combo dropdown) do NOT
+		// skip it — the first cut keyed on ANY popup and blanked the
+		// stage gray behind every dropdown (the editor scene pass is also
+		// skipped at the live rect, so a skipped composite exposes the
+		// raw frame clear — the "gray live view on Q / render settings"
+		// report). The state rides the DrawUI-tail CACHE (m_imguiModalOpen
+		// — no ImGui queries here: the frame is torn down by now).
+		if (m_imguiModalOpen)
 			return;
 		// The tab's captured rect, clamped into the framebuffer (the
 		// dock can hang past the window edge while a splitter drags).

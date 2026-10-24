@@ -145,15 +145,26 @@ bool PlanAssetDelete(const std::string& absPath,
 	out.entryCount = 1;
 	// Derived assets refuse standalone deletion (the manifest would
 	// desync — delete the source .gltf, which takes the set with it).
-	if (const std::string owner = OwningGltf(abs); !owner.empty()) {
-		err = "derived asset of '" + RelOf(Normalized(owner), root)
-			+ "' — delete the source instead";
-		return false;
+	// The REGENERABLE BAKE CLASSES are carved out: .gicook/.lmcook are
+	// bake CONSEQUENCES (the next bake regenerates them — stale-bake
+	// litter cleanup is a legitimate delete; the manifest-desync
+	// argument only holds for .geometry/.material/.anim).
+	const std::string nameForBake = fs::path(abs).filename()
+		.generic_string();
+	const bool isBakeAsset = HasSuffixLower(nameForBake, ".gicook")
+		|| HasSuffixLower(nameForBake, ".lmcook");
+	if (!isBakeAsset) {
+		if (const std::string owner = OwningGltf(abs); !owner.empty()) {
+			err = "derived asset of '" + RelOf(Normalized(owner), root)
+				+ "' — delete the source instead";
+			return false;
+		}
 	}
 	// The identity sidecar rides along (no orphan GUIDs; the assetdb row
 	// stays as a missing retarget for reference diagnostics).
 	if (fs::is_regular_file(fs::path(abs + ".meta"), ec) && !ec)
 		out.also.push_back(abs + ".meta");
+	// (the .gicook/.lmcook bake classes passed the derived check above)
 	const std::string name = fs::path(abs).filename().generic_string();
 	if (HasSuffixLower(name, ".gltf") || HasSuffixLower(name, ".glb")) {
 		// A manifested source takes its derived set with it.

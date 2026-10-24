@@ -177,7 +177,11 @@ void EditorApp::UpdateModalInput() {
 			"gizmo: scale", "R" },
 		{ TOUR_KEY_G, 0, kScopeLayout, &EditorApp::ModalGizmoCycle,
 			"gizmo: cycle", "G" },
-		{ TOUR_KEY_Q, 0, kScopeLayout, &EditorApp::ModalSelRadial,
+		// THE SELECT RADIAL (Q): GLOBAL — every mode selects (the old
+	// Layout-only binding left Q dead in Lighting/Test/Profile: "the
+	// quick menu doesn't show on key" in any non-Layout mode, which the
+	// Sponza GI workflow (LIGHTING) hit by default).
+	{ TOUR_KEY_Q, 0, kScopeGlobal, &EditorApp::ModalSelRadial,
 			"select: radial (Mesh/Face/Vertex)", "Q" },
 		{ TOUR_KEY_Z, 0, kScopeLayout, &EditorApp::ModalWireframeToggle,
 			"view: wireframe all", "Z" },

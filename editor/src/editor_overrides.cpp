@@ -710,28 +710,49 @@ namespace editor {
 		ImGui::Separator();
 		ImGui::Text("Overrides (Clarisse-style)");
 		ImGui::TextDisabled("source < wide regex < local (more specific wins)");
-		// ---- visibility (the only override attr without a legacy control) ----
+		// ---- VISIBILITY: the attribute is VISIBILITY with two states
+		// (on = visible, off = hidden) — a FLAG CHIP like the material's
+		// DS/Shadow row, never a negation-named checkbox ("Hidden" named
+		// the negation of the attribute; on/off reads cleaner). The
+		// effective state + the provenance ride the text below; the
+		// semantics (hierarchical effective visibility) on hover.
 		{
 			const bool local =
 				HasLocalOverride(node, OverrideAttr::Visibility);
 			const OverrideRule* wide =
 				LastWideRuleFor(OverrideAttr::Visibility, nm);
-			bool self = IsHiddenNode(scene, int(node));
-			if (ImGui::Checkbox("Hidden (override this node)", &self)) {
-				EditCmd c{};
-				c.verb = EditVerb::SetVisibility;
-				c.node = node;
-				c.afterFlag = self;
-				c.beforeFlag = !self;
-				Do(c);
+			const bool visible = !IsHiddenNode(scene, int(node));
+			{
+				if (visible) {
+					ImGui::PushStyleColor(ImGuiCol_Button,
+						ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+					ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+						ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+					ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+						ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+				}
+				const bool clicked =
+					ImGui::Button("Visibility", ImVec2(0.0f, 0.0f));
+				if (visible)
+					ImGui::PopStyleColor(3);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip(
+						"VISIBILITY — on: this node renders; off: hidden.\n"
+						"Effective visibility is hierarchical: a hidden\n"
+						"ancestor hides this node too. Overrides stack:\n"
+						"local beats wide (regex) beats inherited.");
+				if (clicked) {
+					// The command's flag is the HIDDEN state (the verb's
+					// legacy semantics) — the chip is visibility, so the
+					// write inverts: toggling OFF (hide) sets the flag.
+					EditCmd c{};
+					c.verb = EditVerb::SetVisibility;
+					c.node = node;
+					c.afterFlag = visible ? 1 : 0; // was hidden?
+					c.beforeFlag = visible ? 0 : 1;
+					Do(c);
+				}
 			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(
-					"Self hidden flag. Effective visibility is hierarchical: "
-					"a hidden ancestor hides this node too.");
-			const bool eff = IsVisibleNode(scene, int(node));
-			ImGui::TextDisabled("effective: %s%s", eff ? "visible" : "HIDDEN",
-				!eff && !IsHiddenNode(scene, int(node)) ? " (ancestor hidden)" : "");
 			ImGui::SameLine();
 			if (local)
 				ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "[local]");
@@ -748,6 +769,12 @@ namespace editor {
 					ImGui::SetTooltip(
 						"Drop the local visibility override (revert to inherited).");
 			}
+			// The effective state as the TEXT BELOW the attribute.
+			const bool eff = IsVisibleNode(scene, int(node));
+			ImGui::TextDisabled("effective: %s%s",
+				eff ? "on (visible)" : "off (hidden)",
+				!eff && !IsHiddenNode(scene, int(node))
+					? " — ancestor hidden" : "");
 		}
 		// ---- per-attr status rows (edits live in their legacy controls and
 		// in the Overrides tab; this section explains the evaluated value) ----
@@ -865,10 +892,24 @@ namespace editor {
 			}
 		}
 		else {
-			const char* flagLabel = m_overrideAttrSel == 0 ? "Hide"
-				: m_overrideAttrSel == 2 ? "No LM" : "Dither";
+			// The bool value as the attribute's OWN two states ("on/off"
+			// — never a negation-named flag: visibility rules read
+			// "on = visible", stored inverted (the rule flag is the
+			// legacy hidden bit) at the Add below.
+			const char* flagLabel = "On";
 			ImGui::SameLine();
 			ImGui::Checkbox(flagLabel, &m_overrideFlagVal);
+			if (ImGui::IsItemHovered()) {
+				if (m_overrideAttrSel == 0)
+					ImGui::SetTooltip("VISIBILITY on: matched nodes "
+						"render. Off: matched nodes hide.");
+				else if (m_overrideAttrSel == 2)
+					ImGui::SetTooltip("NoLightmap on: matched nodes "
+						"bake probe/sky-lit (excluded from the atlas).");
+				else
+					ImGui::SetTooltip("DitherCloseup on: matched nodes "
+						"use the closeup dither path.");
+			}
 		}
 		ImGui::SameLine();
 		{
@@ -886,8 +927,12 @@ namespace editor {
 			const OverrideAttr attr = OverrideAttr(m_overrideAttrSel);
 			const uint32_t mat =
 				(m_overrideAttrSel == 1) ? uint32_t(m_overrideMatSel) : UINT32_MAX;
-			if (AddOverrideRule(attr, m_overridePatternBuf, m_overrideFlagVal,
-				mat))
+			// VISIBILITY inverts here: the form's checkbox is the
+			// attribute's OWN state ("On" = visible), the stored rule
+			// flag is the legacy hidden bit.
+			const bool flag = m_overrideAttrSel == 0
+				? !m_overrideFlagVal : m_overrideFlagVal;
+			if (AddOverrideRule(attr, m_overridePatternBuf, flag, mat))
 				m_overridePatternBuf[0] = '\0';
 		}
 		ImGui::PopID();
@@ -978,17 +1023,20 @@ namespace editor {
 					}
 				}
 				else {
-					const char* lbl =
-						r.attr == OverrideAttr::Visibility
-						? (r.flag ? "hide" : "show")
-						: r.attr == OverrideAttr::NoLightmap
-						? (r.flag ? "exclude" : "bake")
-						: (r.flag ? "on" : "off");
+					// The rule's VALUE cell: the attribute's own two
+					// states ("on"/"off"), never the negation-named
+					// pair — a visibility rule reads "on = visible"
+					// (the stored flag is the legacy hidden bit, the
+					// display inverts).
+					const char* lbl = r.flag ? "off" : "on";
 					if (ImGui::SmallButton(lbl))
 						SetOverrideFlag(r.id, !r.flag);
 					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("Click to flip the rule's %s value.",
-							smvk::tour::OverrideAttrName(r.attr));
+						ImGui::SetTooltip("Click to flip the rule's %s "
+							"value (on = %s).",
+							smvk::tour::OverrideAttrName(r.attr),
+							r.attr == OverrideAttr::Visibility
+							? "visible" : "active");
 				}
 				// Matched / wrote.
 				ImGui::TableNextColumn();
