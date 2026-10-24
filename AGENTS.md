@@ -147,6 +147,14 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   Nsight-Aftermath line tables)
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
+- The editor/launcher split: `Editor.exe` REQUIRES `--project <dir>` (no
+  project, no launch — the artifact cache/asset registry/import pipeline are
+  all project-bound). `EditorLauncher.exe` (editor/launcher/, console v1)
+  owns project SELECTION — the shared editor.prefs recents + a typed path
+  (scaffolding when the `project.tourproj` marker is missing) — and spawns
+  the editor with its pick. The old in-editor blocking project modal is
+  retired with the split; smoke/editor runs pass `--project F:/projects/game`
+  (see the temp scripts)
 
 ## Strict resources (`--strict` / `TOURMALINE_STRICT=1`) + the RHI error contract
 

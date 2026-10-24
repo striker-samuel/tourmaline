@@ -1,16 +1,6 @@
 ﻿// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// GltfEditor entry point: inspect + cook glTF scenes.
-//
-// Usage:
-//   Editor [--gltf <path>] [--out-pak <path>]
-//
-// With no --gltf the editor opens empty (File > Open glTF...).
-// Camera: orbit-only (Alt+LMB tumble, Alt+MMB track, Alt+RMB dolly,
-// wheel zoom, F / Shift+F framing).
-// Selection: left-click a mesh, or pick it in the outliner.
-
 #include "editor_app.h"
 
 #include <Engine/Memory/memory.h>
@@ -234,7 +224,11 @@ namespace {
 
 	void PrintUsage(const char* prog) {
 		std::cout << "Usage: " << (prog ? prog : "Editor")
-			<< " [--gltf <path.gltf>] [--out-pak <path.pak>] [--strict]\n"
+			<< " --project <dir> [--gltf <path.gltf>] [--out-pak <path.pak>]"
+			" [--strict]\n"
+			<< "  --project is REQUIRED: the editor never picks a project\n"
+			<< "  itself — EditorLauncher.exe owns selection (recents +\n"
+			<< "  New/Browse) and spawns this exe with --project.\n"
 			<< "  Source scenes only: cooked paks run in the App (the editor\n"
 			<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
 			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
@@ -254,7 +248,13 @@ namespace {
 	// status lines are noise there. The App / bench flows keep them
 	// (they are the only per-run visibility into the live pipeline);
 	// fault/warning lines stay unconditional here too.
-	smvk::SetTraceEnabled(false);
+	// TOURMALINE_TRACE=1 keeps them ON in the editor too — the live-view
+	// hunt's window into the exposure/download machinery.
+	if (!([] {
+		const char* e = std::getenv("TOURMALINE_TRACE");
+		return e && std::atoi(e) != 0;
+	}()))
+		smvk::SetTraceEnabled(false);
 	// Disk pipeline cache OFF in the editor (see impl.cpp's
 	// TOURMALINE_PIPELINE_CACHE_DIR contract — "off" = no disk seed or
 	// save; the in-process pipeline-object dedup still runs): compute-pipeline
@@ -296,6 +296,7 @@ namespace {
 #endif
 	const char* scenePath = nullptr;
 	const char* outPak = nullptr;
+	const char* projectDir = nullptr;
 	bool strict = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
@@ -304,6 +305,12 @@ namespace {
 		}
 		else if (std::strncmp(a, "--gltf=", 7) == 0) {
 			scenePath = a + 7;
+		}
+		else if (std::strcmp(a, "--project") == 0 && i + 1 < argc) {
+			projectDir = argv[++i];
+		}
+		else if (std::strncmp(a, "--project=", 10) == 0) {
+			projectDir = a + 10;
 		}
 		else if (std::strcmp(a, "--out-pak") == 0 && i + 1 < argc) {
 			outPak = argv[++i];
@@ -328,6 +335,16 @@ namespace {
 			return EXIT_FAILURE;
 		}
 	}
+	// THE PROJECT ARG IS REQUIRED (the editor/launcher split): the editor
+	// never picks a project itself — the launcher (EditorLauncher.exe)
+	// owns selection (recents + New/Browse) and spawns this exe with
+	// --project. The old in-editor blocking modal is gone with the flow.
+	if (!projectDir) {
+		std::cerr << "Editor: no project (--project <dir> required; the "
+			"EditorLauncher picks one)\n";
+		PrintUsage(argv[0]);
+		return EXIT_FAILURE;
+	}
 	if (strict) {
 		smvk::SetStrictResources(true);
 		std::cerr << "[STRICT] resources: pool exhaustion will abort "
@@ -344,6 +361,9 @@ namespace {
 	smvk::DlssSetStartupEnabled(false);
 
 	editor::EditorApp app;
+	// The REQUIRED project (checked above): the launcher's pick. Opens at
+	// Initialize (replacing the old prefs auto-reopen + the modal).
+	app.SetBootProject(projectDir);
 	if (scenePath) {
 		// Same dispatch as the open dialog (OpenAnySceneFile): .tour
 		// files replay through the tour-open path instead of failing the

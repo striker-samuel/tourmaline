@@ -25,6 +25,8 @@
 #include <Engine/Profile/profile.h>
 
 #include <imgui.h>
+#include <imgui_impl_vulkan.h> // ImGui_ImplVulkan_AddTexture (TextureThumb)
+#include <stb_image.h>         // stbi_load (AssetSidecarThumb; impl in editor_branding)
 
 #include <ktx.h>
 
@@ -206,11 +208,9 @@ namespace editor {
 						DrawRenderSettingsPanel();
 						ImGui::EndTabItem();
 					}
-					if (ImGui::BeginTabItem("UV")) {
-						m_rightTab = 1;
-						DrawUvPanel();
-						ImGui::EndTabItem();
-					}
+					// (The UV tab is retired: the atlas/lightmap readouts
+					// live in the Inspector's material page, the view-mode
+					// toggles ride the F5/F8/F9/F10 shortcuts.)
 					if (ImGui::BeginTabItem("Material")) {
 						m_rightTab = 5;
 						DrawMaterialEditor();
@@ -380,6 +380,14 @@ namespace editor {
 					UniqueTerrainName().c_str());
 				m_terrainMat = UINT32_MAX;
 				m_showTerrainDialog = true;
+			}
+			if (ImGui::MenuItem("Placement graph", nullptr, false,
+					canCreate)) {
+				// (The toolbar's old "New graph" button — creation belongs
+				// here, the bar keeps the live overlays/actions.)
+				m_placement.pushUndo();
+				m_placement.addGraph("");
+				MarkPlacementDirty();
 			}
 			if (ImGui::MenuItem("Image...", nullptr, false, canCreate)) {
 				// Maya file node: an image definition (path + sampling
@@ -644,17 +652,10 @@ namespace editor {
 				"octahedra markers, rings, labels, density previews,\n"
 				"sizes/distances, and the probe counts (in level /\n"
 				"in view / per octree level) — LIGHTING only.");
-			// The WYSIWYG live view: the App's whole frame pipeline in
-			// the bottom dock's Live view tab, camera-following the
-			// active viewport.
-			if (ImGui::MenuItem("Live view (WYSIWYG)...", nullptr,
-				m_showWysiwyg))
-				m_showWysiwyg = !m_showWysiwyg;
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("The full renderer - shadows, AO, SSR,\n"
-					"volumetrics, GI + the authored postfx grade - in\n"
-					"the bottom dock's Live view tab, following the\n"
-					"active viewport's camera.");
+		// (The WYSIWYG live view needs NO toggle anymore: it IS the Lit
+		// view mode (F1) — the active viewport in Lit renders through the
+		// engine's full pipeline. Every other mode (F2 Unlit, F3..) is
+		// the editor's own approximation pass, exactly as before.)
 		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
 			m_showCameraGizmos = !m_showCameraGizmos;
@@ -728,13 +729,9 @@ namespace editor {
 		// Blocking task window (cook / bake / publish progress): drawn last
 		// so its modal sits on top of every other popup.
 		DrawTaskWindow();
-		// Forced startup project selection (pending flag from Initialize,
-		// cleared on the first frame; the dialog is a blocking modal).
-		if (m_projectDialogPending) {
-			ImGui::OpenPopup("Select project");
-			m_projectDialogPending = false;
-		}
-		DrawProjectDialog();
+		// (The startup project dialog is RETIRED with the editor/launcher
+		// split: EditorLauncher owns project selection; the editor boots
+		// straight into the --project pick.)
 	}
 
 	// ---- tool topbar --------------------------------------------------------
@@ -743,163 +740,187 @@ namespace editor {
 	// chrome: NoMove/NoBringToFront, fixed under the menu bar, hidden with
 	// the panels (m_uiMode) so fullscreen viewports keep only the menu bar.
 	float EditorApp::DrawToolTabs(float top) {
-		const float frame = ImGui::GetFrameHeight();
-		const float stripH = ImGui::GetFrameHeightWithSpacing();
-		const float rowH = frame + 8.0f;
-		const float h = stripH + rowH;
+		// THE TOP TOOLBAR (the rework): ONE bar — every tool section
+		// (Select / Transform / Modes / Terrain / Placement) is a GROUP of
+		// letter buttons separated by verticals, no tabs. The letters are
+		// PLACEHOLDER icons (the asset browser's SVG machinery will host
+		// the real set later) — and they double as the hotkeys the legend
+		// documents: the MAYA-STYLE dim strip under the buttons maps them
+		// at a glance. MODES PERSIST: the section states save + restore
+		// across sessions ([tools] prefs — sel/gizmo/mode).
+		const float btnH = 26.0f;
+		const float legendH = ImGui::GetTextLineHeightWithSpacing() + 5.0f;
+		const float h = btnH + 10.0f + legendH;
 		ImGui::SetNextWindowPos(ImVec2(0.0f, top), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(
 			ImVec2(float(ImGui::GetIO().DisplaySize.x), h), ImGuiCond_Always);
-		if (!ImGui::Begin("##toptabs", nullptr,
+		if (!ImGui::Begin("##toptoolbar", nullptr,
 			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
 			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
 			ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav)) {
 			ImGui::End();
 			return 0.0f;
 		}
-		// Radio helper: enum-class values over an int temp.
-		auto radioEnum = [](const char* label, int* v, int id) {
-			return ImGui::RadioButton(label, v, id);
+		// The letter button: square, ACTIVE reads as the theme's selected
+		// accent (the TabSelected blues) so the current tool group state
+		// is the bar's loudest signal. Tooltip carries the words + the
+		// hotkey the letter doubles as.
+		auto letterTool = [&](const char* letter, bool active,
+				const char* tip) {
+			if (active) {
+				ImGui::PushStyleColor(ImGuiCol_Button,
+					ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+					ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
+				ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+					ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+			}
+			const bool clicked = ImGui::Button(letter, ImVec2(0.0f, btnH));
+			if (active)
+				ImGui::PopStyleColor(3);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", tip);
+			return clicked;
 		};
-		if (ImGui::BeginTabBar("##toolTabs",
-			ImGuiTabBarFlags_FittingPolicyScroll)) {
-			// ---- Select ----------------------------------------------------
-			if (ImGui::BeginTabItem("Select")) {
-				m_toolTab = 0;
-				int sel = int(m_selMode);
-				if (radioEnum("Mesh", &sel, 0)) {}
-				ImGui::SameLine();
-				if (radioEnum("Face", &sel, 1)) {}
-				ImGui::SameLine();
-				if (radioEnum("Vertex", &sel, 2)) {}
-				if (sel != int(m_selMode)) {
-					m_selMode = SelMode(sel);
+		// The vertical between groups (Maya's group dividers). (A dim
+		// text pipe: SeparatorEx is not exposed by this ImGui build.)
+		auto vsep = [&]() {
+			ImGui::SameLine();
+			ImGui::TextDisabled("|");
+			ImGui::SameLine();
+		};
+
+		// ---- SELECT: M mesh / F face / V vertex + frame + clear -------
+		ImGui::PushID("secSelect");
+		{
+			static const char* kLetters[3] = { "M", "F", "V" };
+			static const char* kTips[3] = {
+				"Select MESH (Q: the radial wheel)",
+				"Select FACE (Q: the radial wheel)",
+				"Select VERTEX (Q: the radial wheel)" };
+			for (int i = 0; i < 3; ++i) {
+				if (i > 0)
+					ImGui::SameLine();
+				if (letterTool(kLetters[i], int(m_selMode) == i, kTips[i])
+						&& int(m_selMode) != i) {
+					m_selMode = SelMode(i);
 					ClearSubSelection();
 				}
-				ImGui::SameLine();
-				ImGui::TextDisabled("Q radial |");
-				ImGui::SameLine();
-				if (ImGui::Button("Frame (F)"))
-					FrameSelection();
-				ImGui::SameLine();
-				if (ImGui::Button("Clear##sel"))
-					ClearSelection();
-				ImGui::EndTabItem();
 			}
-			// ---- Transform -------------------------------------------------
-			if (ImGui::BeginTabItem("Transform")) {
-				m_toolTab = 1;
-				int g = int(m_gizmoMode);
-				if (radioEnum("Move", &g, 0)) m_gizmoMode = GizmoMode::Translate;
-				ImGui::SameLine();
-				if (radioEnum("Rotate", &g, 1)) m_gizmoMode = GizmoMode::Rotate;
-				ImGui::SameLine();
-				if (radioEnum("Scale", &g, 2)) m_gizmoMode = GizmoMode::Scale;
-				ImGui::SameLine();
-				ImGui::TextDisabled("click gizmo axes to drag |");
-				ImGui::SameLine();
-				ImGui::TextDisabled("sel: %s",
-					(m_world && m_selected != UINT32_MAX)
-					? getNodeName(m_world->scene, int(m_selected)).c_str()
-					: "-");
-				ImGui::EndTabItem();
+			ImGui::SameLine();
+			if (letterTool("Frm", false, "Frame the selection (F)"))
+				FrameSelection();
+			ImGui::SameLine();
+			if (letterTool("Clr", false, "Clear the selection"))
+				ClearSelection();
+		}
+		ImGui::PopID();
+		vsep();
+		// ---- TRANSFORM: W move / E rotate / R scale (the hotkeys ARE
+		// the letters — Maya's convention, the legend's anchor row) ------
+		ImGui::PushID("secXform");
+		{
+			static const char* kLetters[3] = { "W", "E", "R" };
+			static const char* kTips[3] = { "MOVE (W)",
+				"ROTATE (E)", "SCALE (R)" };
+			for (int i = 0; i < 3; ++i) {
+				if (i > 0)
+					ImGui::SameLine();
+				if (letterTool(kLetters[i], int(m_gizmoMode) == i, kTips[i])
+						&& int(m_gizmoMode) != i)
+					m_gizmoMode = GizmoMode(i);
 			}
-			// ---- Terrain ---------------------------------------------------
-			if (ImGui::BeginTabItem("Terrain")) {
-				m_toolTab = 2;
-				const bool hasWorld = m_world != nullptr;
-				if (!hasWorld)
-					ImGui::BeginDisabled();
-				if (ImGui::Button("Create...##terr")) {
-					std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf),
-						"%s", UniqueTerrainName().c_str());
-					m_terrainMat = UINT32_MAX;
-					m_showTerrainDialog = true;
-				}
+			ImGui::SameLine();
+			ImGui::TextDisabled("click gizmo axes to drag | sel: %s",
+				(m_world && m_selected != UINT32_MAX)
+				? getNodeName(m_world->scene, int(m_selected)).c_str()
+				: "-");
+		}
+		ImGui::PopID();
+		vsep();
+		// ---- MODES: 1-4 (Layout/Lighting/Test/Profile; the numbers ARE
+		// the anywhere-hotkeys, the bar shows which one is live) ---------
+		ImGui::PushID("secModes");
+		{
+			static const char* kLetters[4] = { "1", "2", "3", "4" };
+			static const char* kTips[4] = { "LAYOUT mode (1)",
+				"LIGHTING mode (2)", "TEST mode (3)", "PROFILE mode (4)" };
+			for (int i = 0; i < 4; ++i) {
+				if (i > 0)
+					ImGui::SameLine();
+				if (letterTool(kLetters[i], int(m_mode) == i, kTips[i])
+						&& int(m_mode) != i)
+					SetMode(EditorMode(i));
+			}
+		}
+		ImGui::PopID();
+		vsep();
+		// ---- TERRAIN: the paint cluster (the brush controls live while
+		// a terrain group is selected; CREATION lives in the Create menu
+		// — the bar's job is the live tool state, not spawning) ---------
+		ImGui::PushID("secTerrain");
+		{
+			const bool hasWorld = m_world != nullptr;
+			const uint32_t group = hasWorld
+				? TerrainGroupOf(m_selected) : UINT32_MAX;
+			if (!hasWorld || group == UINT32_MAX)
+				ImGui::TextDisabled("(select a terrain)");
+			else {
 				ImGui::SameLine();
-				const uint32_t group = hasWorld
-					? TerrainGroupOf(m_selected) : UINT32_MAX;
-				if (group == UINT32_MAX)
-					ImGui::BeginDisabled();
-				ImGui::Checkbox("Paint##terr", &m_paintTerrain);
-				if (group == UINT32_MAX)
-					ImGui::EndDisabled();
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Paints the SELECTED terrain group "
-						"(LMB in a 3D viewport).");
-				if (!hasWorld)
-					ImGui::EndDisabled();
-				ImGui::SameLine();
-				static const char* kOps[] = { "Raise", "Lower", "Flatten",
-					"Smooth" };
-				int op = std::clamp(m_paintOp, 0, 3);
+				if (letterTool("P", m_paintTerrain,
+						"Paint the selected terrain group (LMB in a 3D "
+						"viewport)"))
+					m_paintTerrain = !m_paintTerrain;
+				static const char* kOps[4] = { "R", "L", "F", "S" };
+				static const char* kOpTips[4] = { "RAISE brush", "LOWER brush",
+					"FLATTEN brush", "SMOOTH brush" };
 				for (int k = 0; k < 4; ++k) {
-					if (k > 0)
-						ImGui::SameLine();
-					if (radioEnum(kOps[k], &op, k))
+					ImGui::SameLine();
+					if (letterTool(kOps[k], m_paintOp == k, kOpTips[k]))
 						m_paintOp = k;
 				}
 				ImGui::SameLine();
-				ImGui::SetNextItemWidth(120.0f);
-				ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f, 256.0f,
-					"%.1f m");
+				ImGui::SetNextItemWidth(90.0f);
+				ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f,
+					256.0f, "%.1f m");
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Brush radius (m)");
 				ImGui::SameLine();
-				ImGui::SetNextItemWidth(120.0f);
+				ImGui::SetNextItemWidth(90.0f);
 				ImGui::DragFloat("S##terr", &m_paintStrength, 0.01f, 0.01f,
 					64.0f, "%.2f");
-				ImGui::SameLine();
-				ImGui::TextDisabled("brush on %s",
-					group != UINT32_MAX
-					? ("group #" + std::to_string(group)).c_str()
-					: "(select a terrain)");
-				ImGui::EndTabItem();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Brush strength");
 			}
-			// ---- Placement -------------------------------------------------
-			if (ImGui::BeginTabItem("Placement")) {
-				m_toolTab = 3;
-				ImGui::Checkbox("Graph##tool", &m_placement.showGraph);
-				ImGui::SameLine();
-				ImGui::Checkbox("Overlay##tool", &m_placement.showOverlay);
-				ImGui::SameLine();
-				ImGui::Checkbox("Rejected##tool", &m_placement.showRejected);
-				ImGui::SameLine();
-				if (ImGui::Button("Refresh##tool"))
-					MarkPlacementDirty();
-				ImGui::SameLine();
-				if (ImGui::Button("New graph##tool")) {
-					m_placement.pushUndo();
-					m_placement.addGraph("");
-					MarkPlacementDirty();
-				}
-				ImGui::SameLine();
-				ImGui::TextDisabled("%s",
-					m_placement.preview.ok ? "compiled OK"
-					: m_placement.preview.error.empty()
-					? "no graph" : m_placement.preview.error.c_str());
-				ImGui::EndTabItem();
-			}
-			// ---- Modes -----------------------------------------------------
-			if (ImGui::BeginTabItem("Modes")) {
-				m_toolTab = 4;
-				int modeSel = int(m_mode);
-				if (radioEnum("Layout", &modeSel, 0))
-					SetMode(EditorMode::Layout);
-				ImGui::SameLine();
-				if (radioEnum("Lighting", &modeSel, 1))
-					SetMode(EditorMode::Lighting);
-				ImGui::SameLine();
-				if (radioEnum("Test", &modeSel, 2))
-					SetMode(EditorMode::Test);
-				ImGui::SameLine();
-				if (radioEnum("Profile", &modeSel, 3))
-					SetMode(EditorMode::Profile);
-				ImGui::SameLine();
-				ImGui::TextDisabled("keys 1-4 anywhere");
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
 		}
+		ImGui::PopID();
+		vsep();
+		// ---- PLACEMENT: the live overlay toggles + refresh (CREATION —
+		// the old "New graph" button — lives in the Create menu) --------
+		ImGui::PushID("secPlace");
+		{
+			if (letterTool("G", m_placement.showGraph,
+					"Show the placement GRAPH window"))
+				m_placement.showGraph = !m_placement.showGraph;
+			ImGui::SameLine();
+			if (letterTool("O", m_placement.showOverlay,
+					"Show the placement OVERLAY (the authored dots)"))
+				m_placement.showOverlay = !m_placement.showOverlay;
+			ImGui::SameLine();
+			if (letterTool("X", m_placement.showRejected,
+					"Show the REJECTED placements (why they bounced)"))
+				m_placement.showRejected = !m_placement.showRejected;
+			ImGui::SameLine();
+			if (ImGui::Button("Refresh##tool", ImVec2(0.0f, btnH)))
+				MarkPlacementDirty();
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s",
+				m_placement.preview.ok ? "compiled OK"
+				: m_placement.preview.error.empty()
+				? "no graph" : m_placement.preview.error.c_str());
+		}
+		ImGui::PopID();
 		ImGui::End();
 		return h;
 	}
@@ -1226,7 +1247,6 @@ namespace editor {
 
 	void EditorApp::DrawSceneOutliner() {
 		if (!m_world || m_world->scene.hierarchy.empty()) {
-			ImGui::TextDisabled("No scene. File > Open scene... (.gltf/.tour)");
 			return;
 		}
 		ImGui::SetNextItemWidth(-90.0f);
@@ -2997,9 +3017,12 @@ namespace editor {
 					256.0f);
 				ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f,
 					64.0f, "%.2f");
-				if (ImGui::Checkbox("Paint mode (LMB paints this terrain)",
-					&m_paintTerrain) && m_paintTerrain)
-					m_toolTab = 2; // surface the Terrain toolbar tab
+			if (ImGui::Checkbox("Paint mode (LMB paints this terrain)",
+				&m_paintTerrain)) {
+				// (The old "surface the Terrain toolbar tab" hint went
+				// with the tabs — the paint cluster is ALWAYS in the top
+				// toolbar's Terrain section now.)
+			}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("While on, LMB in a 3D viewport paints "
 						"the selected terrain instead of picking. Each stamp "
@@ -3191,98 +3214,6 @@ namespace editor {
 			stats.fullResidentCount);
 		if (ImGui::Button("Dump residency"))
 			DumpStreamerStats();
-	}
-
-	void EditorApp::DrawUvPanel() {
-		ImGui::Text("UV (selection)");
-		if (!m_world || m_selected == UINT32_MAX ||
-			m_selected >= m_world->scene.hierarchy.size()) {
-			ImGui::TextDisabled("Nothing selected.");
-			ImGui::TextWrapped("Click a mesh in the viewport or pick a node "
-				"(Scene tab). Baked views need a cooked pak + atlas.");
-			return;
-		}
-		Scene& scene = m_world->scene;
-		const uint32_t node = m_selected;
-		ImGui::Text("Node %u %s", node,
-			getNodeName(scene, int(node)).c_str());
-		// Mesh lightmap state.
-		if (auto mit = scene.meshForNode.find(node);
-			mit != scene.meshForNode.end()) {
-			if (smvk::StaticMesh* mesh = m_world->GetMesh(mit->second)) {
-				uint32_t tris = 0;
-				for (auto& s : mesh->geometry.surfaces)
-					tris += s.indexCount / 3;
-				ImGui::Text("Mesh: %u verts, %u tris",
-					mesh->geometry.vertexCount, tris);
-				if (mesh->lmChunk == 0xFFFFFFFFu)
-					ImGui::Text("Lightmap: none (probe/sky lit)");
-				else
-					ImGui::Text("Lightmap: baked, %u lobes", mesh->lmChunk);
-			}
-		}
-		else {
-			ImGui::TextDisabled("No mesh on this node.");
-		}
-		// Atlas rects owned by this node (meshKey == cook node id).
-		if (m_hasSglm) {
-			uint32_t rects = 0;
-			for (const auto& c : m_sglm.chunks)
-				if (c.meshKey == node)
-					++rects;
-			ImGui::Text("Atlas rects: %u", rects);
-			uint32_t shown = 0;
-			for (size_t i = 0; i < m_sglm.chunks.size() && shown < 12; ++i) {
-				const auto& c = m_sglm.chunks[i];
-				if (c.meshKey != node)
-					continue;
-				ImGui::TextDisabled("  chunk %zu: (%.0f,%.0f)-(%.0f,%.0f) %u lobes",
-					i, c.rectMin[0], c.rectMin[1], c.rectMax[0], c.rectMax[1],
-					c.lobeCount);
-				++shown;
-			}
-			if (rects > shown)
-				ImGui::TextDisabled("  ... (%u more)", rects - shown);
-		}
-		else {
-			ImGui::TextDisabled("No atlas loaded.");
-		}
-		// Material texture slots on this node.
-		if (auto matIt = scene.materialForNode.find(node);
-			matIt != scene.materialForNode.end()) {
-			if (smvk::Material* mat = m_world->GetMaterial(matIt->second)) {
-				const glm::ivec4& t0 = mat->values.textures;
-				ImGui::TextDisabled("maps: base:%d mr:%d normal:%d occ:%d emis:%d",
-					t0.x, t0.y, t0.z, t0.w, mat->values.textures2.x);
-			}
-		}
-		ImGui::Separator();
-		// UV editor window controls retired (see the DrawUvEditorWindow
-		// note in editor_viewports.cpp) — the canvas is gone; solid
-		// backgrounds everywhere.
-		ImGui::Text("Views");
-		if (ImGui::Button("UV0 fullscreen (F9)"))
-			ActiveViewMode() = ViewMode::Uv0;
-		ImGui::SameLine();
-		if (ImGui::Button("UV1 fullscreen (F10)"))
-			ActiveViewMode() = ViewMode::Uv1;
-		// Flat UV window buttons retired with the canvas.
-		//if (ImGui::Button("Flat UV diffuse")) {
-		//	m_showUvEditor = true;
-		//	m_uvWinMode = ViewMode::FlatUv0;
-		//}
-		//ImGui::SameLine();
-		//if (ImGui::Button("Flat UV lightmap") && m_lmGpu) {
-		//	m_showUvEditor = true;
-		//	m_uvWinMode = ViewMode::FlatUv1;
-		//}
-		if (ImGui::Button(
-			("UV inset: " + std::string(SecondViewName(m_secondView)) +
-				" (F5)").c_str()))
-			m_secondView = SecondView((int(m_secondView) + 1) % 3);
-		if (m_lmGpu && ImGui::Button("Baked irradiance (F8)"))
-			ActiveViewMode() = ViewMode::Baked;
-		ImGui::TextDisabled("UV0 = authored uvs; UV1 = atlas-space texCoord2.");
 	}
 
 	void EditorApp::DrawConsolePanel() {
@@ -3621,62 +3552,45 @@ namespace editor {
 		ImGui::End();
 	}
 
-	// ---- WYSIWYG Live view — THE CENTER VIEW PANEL (editor_app.h decl) -
-	// The Live view IS the 4:3 stage's content now (the layout rework's
-	// final form: the world render replaced the perspective viewport's
-	// editor-scene render when the View-menu toggle is on — the stage
-	// alternates between the authoring scene view and the game view, the
-	// camera input/chrome drive both). The GPU composite pass
-	// (RecordLiveViewComposePass, editor_render.cpp) is recorded AFTER the
-	// imgui pass and over-draws the captured rect — so NOTHING ImGui-side
-	// can live inside the stage while the composite runs. This draws only
-	// what lives AROUND it: the rect capture (from the stage — viewport
-	// 0's letterboxed rect, inset 3px so the chrome border survives the
-	// composite's edge), the LIVE badge in the letterbox strip (the desk
-	// margin the 4:3 lock guarantees on at least one axis), and the
-	// unavailable hint INSIDE the stage (visible only while there is no
-	// composite to cover it).
+	// ---- WYSIWYG Live view — THE LIT VIEW MODE (editor_app.h decl) ------
+	// NO special distinction anymore: the WYSIWYG render is simply what
+	// the Lit mode (F1, the viewports' DEFAULT) shows. The ACTIVE
+	// viewport in Lit renders through the engine's whole pipeline (the
+	// world layer's inline target composited over its rect — the same
+	// view the game gets); every other mode (F2 Unlit, F3.. the debug
+	// views) and the non-active viewports render the editor's own
+	// passes exactly as before. The GPU composite pass
+	// (RecordLiveViewComposePass, editor_render.cpp) is recorded AFTER
+	// the imgui pass and over-draws the captured rect — so nothing
+	// ImGui-side can live inside it while the composite runs. This draws
+	// only the rect capture (the ACTIVE viewport's rect, inset 3px so
+	// the chrome border survives the composite's edge) + the
+	// unavailable hint INSIDE the rect (visible only while there is no
+	// composite to cover it — no LIVE badge, no toggle: a panel like the
+	// others).
 	void EditorApp::DrawLiveViewStage() {
-		if (!m_showWysiwyg)
+		if (!LiveViewActive())
 			return;
-		const ViewportRect& stage = m_viewports[0].rect;
+		const ViewportRect& stage = m_viewports[m_activeVp].rect;
 		if (stage.w < 8.0f || stage.h < 8.0f)
 			return;
-		// The capture: the stage rect inset by the chrome border (2px) +
-		// 1, so the composite never paints over the border stroke.
+		// The capture: the rect inset by the chrome border (2px) + 1, so
+		// the composite never paints over the border stroke.
 		m_wysiwygLiveRectMin = ImVec2(stage.x + 3.0f, stage.y + 3.0f);
 		m_wysiwygLiveRectMax =
 			ImVec2(stage.x + stage.w - 3.0f, stage.y + stage.h - 3.0f);
 		m_wysiwygLiveRectFresh = true;
-		ImDrawList* dl = ImGui::GetBackgroundDrawList();
-		// The letterbox strips (the 4:3 fit leaves the margin on the
-		// other axis): the badge goes above the stage's top-left when
-		// the top strip fits it, else below the stage's bottom-left, else
-		// left of the stage (the height-bound fit case).
-		const float topStrip = stage.y - m_menuH;
-		const ImVec2 tl(stage.x, stage.y);
-		ImVec2 badgePos;
-		if (topStrip >= 20.0f)
-			badgePos = ImVec2(tl.x + 2.0f, tl.y - 19.0f);
-		else
-			badgePos = ImVec2(tl.x + 2.0f, tl.y + stage.h + 3.0f);
-		dl->AddRectFilled(badgePos,
-			ImVec2(badgePos.x + 46.0f, badgePos.y + 16.0f),
-			IM_COL32(150, 30, 30, 210));
-		dl->AddRect(badgePos,
-			ImVec2(badgePos.x + 46.0f, badgePos.y + 16.0f),
-			IM_COL32(255, 90, 90, 180));
-		dl->AddText(ImVec2(badgePos.x + 6.0f, badgePos.y + 2.0f),
-			IM_COL32(255, 200, 200, 255), "LIVE");
 		// The placeholder hint only reads while the renderer is
 		// unavailable (attach failed / no scene): the composite paints
-		// over the whole stage rect once it runs.
-		if (!(m_wysiwyg && m_wysiwygValid))
+		// over the whole rect once it runs.
+		if (!(m_wysiwyg && m_wysiwygValid)) {
+			ImDrawList* dl = ImGui::GetBackgroundDrawList();
 			dl->AddText(
 				ImVec2(stage.x + 14.0f, stage.y + 14.0f),
-				IM_COL32(160, 160, 170, 255), "Live view: %s", m_world
+				IM_COL32(160, 160, 170, 255), "Lit: %s", m_world
 				? "renderer unavailable (attach failed - see the console)"
 				: "no scene loaded");
+		}
 	}
 	// ---- GI probe viz window (View menu; editor_app.h decl) -----------
 	// The GI-authoring legend + control center: every probe-overlay
@@ -4029,6 +3943,133 @@ namespace editor {
 	// textures as FILE PATH refs (KTX2 loads into the pool with the path as
 	// the URI â€” cook re-embeds the stashed bytes). Deeper per-material pages
 	// (emissive/alpha/flags/travel) live in the material focus page.
+	// Texture thumbnail bindings (the material page's previews; see the
+	// header block). The sampler is shared with the cubemap face strip
+	// (created there once — the first user creates it).
+	ImTextureID EditorApp::TextureThumb(const smvk::TextureHandle& h) {
+		if (h.empty() || !m_context || !m_imgui)
+			return 0;
+		const uint64_t key = uint64_t(h.index())
+			| (uint64_t(h.gen()) << 32);
+		for (const auto& [k, id] : m_matThumbs)
+			if (k == key)
+				return id;
+		const void* vkView = m_context->GetTextureVkImageView(h);
+		if (!vkView)
+			return 0;
+		if (m_cubeFaceSampler == UINT32_MAX) {
+			m_cubeFaceSampler = m_context->GetOrCreateSampler(
+				smvk::SamplerCreateInfo{
+					.magFilter = smvk::Filter::Linear,
+					.minFilter = smvk::Filter::Linear,
+					.mipmapMode = smvk::MipmapMode::Nearest,
+					.addressU = smvk::AddressMode::ClampToEdge,
+					.addressV = smvk::AddressMode::ClampToEdge,
+					.addressW = smvk::AddressMode::ClampToEdge,
+					.maxAnisotropy = 1.0f });
+		}
+		const void* vkSampler =
+			m_context->GetVkSamplerOpaque(m_cubeFaceSampler);
+		if (!vkSampler)
+			return 0;
+		VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+			VkSampler(const_cast<void*>(vkSampler)),
+			VkImageView(const_cast<void*>(vkView)),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (set == VK_NULL_HANDLE)
+			return 0;
+		const ImTextureID id = ImTextureID(reinterpret_cast<ImU64>(set));
+		m_matThumbs.emplace_back(key, id);
+		return id;
+	}
+
+	void EditorApp::DropTextureThumbs() {
+		if (m_matThumbs.empty())
+			return;
+		for (auto& [k, id] : m_matThumbs)
+			if (id != 0)
+				ImGui_ImplVulkan_RemoveTexture(
+					reinterpret_cast<VkDescriptorSet>(ImU64(id)));
+		m_matThumbs.clear();
+	}
+
+	// The asset browser's SIDECAR thumbnails (the .material ball previews):
+	// the <file>.material.png the matball pass writes, loaded as an engine
+	// texture + bound for ImGui (the cubeface pattern). Path + mtime keyed —
+	// a refreshed sidecar (the Ball preview button re-rendered it) reloads,
+	// a deleted sidecar drops the entry and the tile falls back to the
+	// generic icon. stb_image (the loader half of the branding pair).
+	ImTextureID EditorApp::AssetSidecarThumb(const std::string& pngPath) {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		if (!m_context || !m_imgui || !fs::is_regular_file(pngPath, ec))
+			return 0;
+		const auto mt = fs::last_write_time(pngPath, ec);
+		if (ec)
+			return 0;
+		auto it = std::find_if(m_assetThumbs.begin(), m_assetThumbs.end(),
+			[&](const AssetThumb& t) { return t.path == pngPath; });
+		if (it != m_assetThumbs.end()) {
+			if (it->hasMtime && mt == it->mtime && it->imgui != 0)
+				return it->imgui; // current
+			// Stale (the sidecar re-rendered) or half-initialized: drop,
+			// rebuild below.
+			if (it->imgui != 0)
+				ImGui_ImplVulkan_RemoveTexture(
+					reinterpret_cast<VkDescriptorSet>(ImU64(it->imgui)));
+			it->tex = {};
+			m_assetThumbs.erase(it);
+		}
+		int w = 0, h = 0, comp = 0;
+		stbi_uc* data = stbi_load(pngPath.c_str(), &w, &h, &comp, 4);
+		if (!data || w <= 0 || h <= 0) {
+			stbi_image_free(data);
+			return 0;
+		}
+		smvk::ImageCreateInfo ci{};
+		ci.extent = smvk::Extent3D{ uint32_t(w), uint32_t(h), 1 };
+		ci.format = smvk::Format::RGBA8_SRGB; // the matball PNG is display-ready
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "asset sidecar thumb";
+		AssetThumb t;
+		t.tex = m_context->CreateTexture(ci, data);
+		stbi_image_free(data);
+		if (t.tex.empty())
+			return 0;
+		const void* vkView = m_context->GetTextureVkImageView(t.tex);
+		if (vkView) {
+			if (m_cubeFaceSampler == UINT32_MAX) {
+				m_cubeFaceSampler = m_context->GetOrCreateSampler(
+					smvk::SamplerCreateInfo{
+						.magFilter = smvk::Filter::Linear,
+						.minFilter = smvk::Filter::Linear,
+						.mipmapMode = smvk::MipmapMode::Nearest,
+						.addressU = smvk::AddressMode::ClampToEdge,
+						.addressV = smvk::AddressMode::ClampToEdge,
+						.addressW = smvk::AddressMode::ClampToEdge,
+						.maxAnisotropy = 1.0f });
+			}
+			const void* vkSampler =
+				m_context->GetVkSamplerOpaque(m_cubeFaceSampler);
+			if (vkSampler) {
+				VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+					VkSampler(const_cast<void*>(vkSampler)),
+					VkImageView(const_cast<void*>(vkView)),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				if (set != VK_NULL_HANDLE)
+					t.imgui = ImTextureID(reinterpret_cast<ImU64>(set));
+			}
+		}
+		if (t.imgui == 0)
+			return 0;
+		t.path = pngPath;
+		t.mtime = mt;
+		t.hasMtime = true;
+		m_assetThumbs.push_back(std::move(t));
+		return m_assetThumbs.back().imgui;
+	}
+
 	void EditorApp::DrawMaterialEditor() {
 		if (!m_world || m_world->materialLocations.empty()) {
 			ImGui::TextDisabled("No materials (open a scene).");
@@ -4064,14 +4105,43 @@ namespace editor {
 				}
 				ImGui::EndCombo();
 			}
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Focus >>")) {
-				m_materialTrail.push_back(m_materialFocus);
-				m_materialFocus = m_matEditorSel;
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Focus >>")) {
+			m_materialTrail.push_back(m_materialFocus);
+			m_materialFocus = m_matEditorSel;
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Opens the full material page in the "
+				"Inspector (emissive, alpha, flags, layer travel).");
+		// The BALL PREVIEW sidecar: renders the material on a sphere under
+		// the fixed default sky (matball.vert/frag.hlsl) into a 256x256
+		// PNG written next to the material's SOURCE .material asset
+		// (the sidecar: <file>.material.png — the asset browser's tile
+		// image). Queue-only: the render lands at the next frame's export
+		// position (editor_matball.cpp).
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Ball preview")) {
+			const auto& loc = m_world->materialLocations[m_matEditorSel];
+			std::string uri = loc.cluster
+				? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+				: "";
+			std::string sidecar;
+			if (!uri.empty()) {
+				namespace fs = std::filesystem;
+				fs::path host = fs::path(ResolveVfsRoot()) / uri;
+				if (uri.size() > 9
+					&& host.extension().generic_string() == ".material")
+					sidecar = host.generic_string() + ".png";
 			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Opens the full material page in the "
-					"Inspector (emissive, alpha, flags, layer travel).");
+			if (sidecar.empty())
+				sidecar = "exports/matball_"
+					+ std::to_string(m_matEditorSel) + ".png";
+			QueueMaterialBallPreview(m_matEditorSel, sidecar);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Renders this material on a sphere under "
+				"the default sky and writes the preview PNG next to "
+				"the source .material asset (the browser's tile).");
 		}
 		const uint32_t mat = m_matEditorSel;
 		smvk::Material* m = m_world->GetMaterial(mat);
@@ -4080,8 +4150,14 @@ namespace editor {
 			return;
 		}
 		// ---- PBR texture slots -------------------------------------------
-		// Slot attrs are pool-index scalars (-1 = none); the combo lists the
-		// cluster's registered textures (file path refs included).
+		// Slot attrs are pool-index scalars (-1 = none). The PICKER is the
+		// PROJECT TEXTURE REGISTRY (assets.db rows of kind "texture" — the
+		// same set the asset browser badges green): picking an asset
+		// imports it into the cluster pool (AddTextureFromFile — KTX2
+		// passthrough / PNG-JPG transcode) and binds the slot to the
+		// pool index. The old combo listed the CLUSTER's registered pool
+		// entries ("tex.N" + URIs) — an implementation detail, not an
+		// authoring list (retired in the material-page revamp).
 		ImGui::Separator();
 		ImGui::Text("Texture slots");
 		struct SlotDef { const char* label; const char* attr; int* slot; };
@@ -4096,20 +4172,65 @@ namespace editor {
 			{ "Occlusion", "occlusionTex", &tO },
 			{ "Emissive", "emissiveTex", &tE },
 		};
+		// The pool's registered URIs (internal: the slot's current-value
+		// label + thumbnail handle + the picked-asset dedup — a file
+		// already in the pool reuses its index instead of re-importing).
 		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> texList;
 		if (cl)
 			texList = cl->ListTextureUris();
+		// The PROJECT TEXTURE REGISTRY rows (name + abs path + guid).
+		struct TexAsset { std::string name; std::string abs; std::string guid; };
+		std::vector<TexAsset> texAssets;
+		if (m_assetDb.IsOpen()) {
+			std::vector<smvk::cache::AssetRecord> rows;
+			std::string derr;
+			if (m_assetDb.All(rows, derr)) {
+				texAssets.reserve(rows.size());
+				for (const auto& r : rows) {
+					if (r.kind != "texture")
+						continue;
+					const std::string abs = m_assetDb.ResolvePath(r.path);
+					if (abs.empty())
+						continue;
+					TexAsset t;
+					t.name = std::filesystem::path(abs)
+						.filename().generic_string();
+					t.abs = abs;
+					t.guid = r.guid;
+					texAssets.push_back(std::move(t));
+				}
+				std::sort(texAssets.begin(), texAssets.end(),
+					[](const TexAsset& a, const TexAsset& b) {
+						return a.name < b.name;
+					});
+			}
+		}
 		for (const SlotDef& s : slots) {
 			ImGui::PushID(s.attr);
-			std::string preview = *s.slot >= 0
-				? ("tex." + std::to_string(*s.slot)) : std::string("(none)");
-			// Reverse-lookup a friendly URI for the preview.
+			// The CURRENT value's friendly label: the bound texture's
+			// registered URI's FILE NAME (not the pool index — the revamp's
+			// point); the handle rides the same walk for the thumbnail.
+			std::string preview = "(none)";
+			smvk::TextureHandle slotTex{};
 			if (*s.slot >= 0)
 				for (const auto& [uri, th] : texList)
 					if (int(th.index()) == *s.slot) {
-						preview = uri.Str();
+						slotTex = th;
+						preview = std::filesystem::path(uri.Str())
+							.filename().generic_string();
 						break;
 					}
+			// The PREVIEW thumbnail: the bound texture at a glance (48px,
+			// uniform tiles — the aspect stretches; a grid look beats
+			// mixed heights). Empty slots skip (the combo's "(none)"
+			// already says it).
+			if (!slotTex.empty()) {
+				const ImTextureID tid = TextureThumb(slotTex);
+				if (tid != 0) {
+					ImGui::Image(tid, ImVec2(48, 48));
+					ImGui::SameLine();
+				}
+			}
 			if (ImGui::BeginCombo(s.label, preview.c_str())) {
 				if (ImGui::Selectable("(none)", *s.slot < 0)) {
 					EditCmd c{};
@@ -4120,19 +4241,36 @@ namespace editor {
 					ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
 					Do(c);
 				}
-				for (const auto& [uri, th] : texList) {
-					char item[420];
-					std::snprintf(item, sizeof(item), "%u: %s",
-						uint32_t(th.index()), uri.Str().c_str());
-					if (ImGui::Selectable(item, *s.slot == int(th.index()))) {
+				if (texAssets.empty())
+					ImGui::TextDisabled("(no texture assets in the project"
+						" — import or create them in the asset browser)");
+				for (const TexAsset& ta : texAssets) {
+					if (ImGui::Selectable(ta.name.c_str(),
+							preview == ta.name)) {
+						// Dedup: a file already in the pool reuses its index
+						// (AddTextureFromFile re-imports unconditionally).
+						int poolIdx = -1;
+						for (const auto& [uri, th] : texList)
+							if (uri.Str() == ta.abs) {
+								poolIdx = int(th.index());
+								break;
+							}
+						if (poolIdx < 0)
+							poolIdx = AddTextureFromFile(ta.abs);
+						if (poolIdx < 0)
+							continue; // import failed (logged): no edit
 						EditCmd c{};
 						c.verb = EditVerb::SetMatAttr;
 						c.matWorld = mat;
 						c.attr = s.attr;
-						c.number = double(th.index());
-						ReadSharedMatAttr(mat, s.attr, c.beforeVec4, c.beforeNum);
+						c.number = double(poolIdx);
+						ReadSharedMatAttr(mat, s.attr, c.beforeVec4,
+							c.beforeNum);
 						Do(c);
 					}
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("%s\n%s", ta.abs.c_str(),
+							ta.guid.c_str());
 				}
 				ImGui::EndCombo();
 			}
@@ -4727,87 +4865,6 @@ namespace editor {
 				"Open Project...).");
 	}
 
-	void EditorApp::DrawProjectDialog() {
-		// FORCED startup project selection: a blocking modal (no close â€”
-		// the editor is project-bound; smoke flows never see it). Recents
-		// first (one click; the current project sits on top), New/Browse
-		// for anything else. Opened from DrawMenuBar's popup tail.
-		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing,
-			ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(640, 0), ImGuiCond_Appearing);
-		if (!ImGui::BeginPopupModal("Select project", nullptr,
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
-			| ImGuiWindowFlags_NoSavedSettings))
-			return;
-		ImGui::Text("Select a project");
-		ImGui::TextDisabled(
-			"The editor is project-bound: scenes, imports, asset GUIDs "
-			"and the artifact cache all live in the project folder. "
-			"Pick a recent project below, or create/open one.");
-		ImGui::Separator();
-		ImGui::Text("Recent projects");
-		bool opened = false;
-		if (m_recentProjects.empty()) {
-			ImGui::TextDisabled("(none yet - create or browse for one)");
-		}
-		for (size_t i = 0; i < m_recentProjects.size(); ++i) {
-			const std::string& dir = m_recentProjects[i];
-			ImGui::PushID(int(i));
-			const std::string name =
-				std::filesystem::path(dir).filename().string();
-			const bool isProject = IsProjectDir(dir);
-			const bool current = (dir == m_projectRoot);
-			if (ImGui::Selectable(("##rec" + std::to_string(i)).c_str(),
-				current, ImGuiSelectableFlags_SpanAllColumns,
-				ImVec2(0, 0))) {
-				// Row click (single) opens too â€” the dialog is one step.
-				if (isProject) {
-					opened = OpenProject(dir);
-					if (!opened)
-						Log("Project dialog: cannot open '" + dir
-							+ "' (see log).");
-				}
-				else {
-					Log("Project dialog: '" + dir + "' is not a project "
-						"(no project.tourproj) - removed from recents.");
-					m_recentProjects.erase(m_recentProjects.begin()
-						+ std::ptrdiff_t(i));
-					SavePrefs();
-					ImGui::PopID();
-					break; // iterator invalidated
-				}
-			}
-			ImGui::SameLine();
-			ImGui::TextUnformatted(name.c_str());
-			ImGui::SameLine();
-			ImGui::TextDisabled("%s", dir.c_str());
-			ImGui::SameLine();
-			if (current)
-				ImGui::TextDisabled("(open)");
-			else if (!isProject)
-				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-					"(marker missing)");
-			ImGui::PopID();
-		}
-		ImGui::Separator();
-		if (ImGui::Button("New / Open Project...")) {
-			std::string picked;
-			if (NativePickFolder(picked) && !picked.empty()) {
-				opened = NewProjectOrOpen(picked);
-				if (!opened)
-					Log("Project dialog: cannot open '" + picked
-						+ "' (see log).");
-			}
-		}
-		if (opened) {
-			ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-			return;
-		}
-		ImGui::EndPopup();
-	}
-
 	void EditorApp::DrawAssetsPanel() {
 		// Asset browser: a GRID directory explorer of the project folder
 		// (Unity Project window style). Breadcrumb + Up; folders first;
@@ -5001,22 +5058,22 @@ namespace editor {
 			ImGui::OpenPopup("##newcookasset");
 		}
 		if (ImGui::BeginPopup("##newcookasset")) {
-			// NOTE: .gicook/.lmcook are NOT listed here on purpose — they
-			// are an internal consequence of baking (minted/updated per
-			// scene by RecordBakeAssetsFromCook), never user-created.
-			if (ImGui::MenuItem("Cubemap Asset (.cubemap)")) {
-				CreateCubemapAsset(m_assetsDir);
-			}
-			if (ImGui::MenuItem("GI Volume Asset (.gicvolume)")) {
-				CreateGicvolumeAsset(m_assetsDir);
-			}
-			// Texture asset (from a picked source image): the .texture
-			// import-settings record + identity (see CreateTextureAsset).
-			if (ImGui::MenuItem("Texture (from image)...")) {
-				std::string picked;
-				if (NativeOpenFile(picked, true) && !picked.empty())
-					CreateTextureAsset(picked, m_assetsDir);
-			}
+			//// NOTE: .gicook/.lmcook are NOT listed here on purpose — they
+			//// are an internal consequence of baking (minted/updated per
+			//// scene by RecordBakeAssetsFromCook), never user-created.
+			//if (ImGui::MenuItem("Cubemap Asset (.cubemap)")) {
+			//	CreateCubemapAsset(m_assetsDir);
+			//}
+			//if (ImGui::MenuItem("GI Volume Asset (.gicvolume)")) {
+			//	CreateGicvolumeAsset(m_assetsDir);
+			//}
+			//// Texture asset (from a picked source image): the .texture
+			//// import-settings record + identity (see CreateTextureAsset).
+			//if (ImGui::MenuItem("Texture (from image)...")) {
+			//	std::string picked;
+			//	if (NativeOpenFile(picked, true) && !picked.empty())
+			//		CreateTextureAsset(picked, m_assetsDir);
+			//}
 			ImGui::EndPopup();
 		}
 		if (m_assetDb.IsOpen()) {
@@ -5502,13 +5559,28 @@ namespace editor {
 			// icon centered (SVG texture, drawn shapes as fallback).
 			const ImVec2 ico(bmin.x + (tileSz.x - iconS) * 0.5f,
 				bmin.y + 6.0f);
-			const IconTex& icon = m_icons[size_t(e.icon)];
-			if (icon.imgui != 0) {
-				dl->AddImage(icon.imgui, ico,
+			// THE .material SIDECAR PREVIEW (the matball pass's PNG): the
+			// ball-under-default-sky thumbnail replaces the generic icon
+			// when the sidecar exists (the Material tab's Ball preview
+			// button renders it). Missing/stale = the generic icon (the
+			// button regenerates on demand).
+			ImTextureID sidecar = 0;
+			if (!e.dir && e.name.size() > 9
+				&& e.name.compare(e.name.size() - 9, 9, ".material") == 0)
+				sidecar = AssetSidecarThumb(e.abs + ".png");
+			if (sidecar != 0) {
+				dl->AddImage(sidecar, ico,
 					ImVec2(ico.x + iconS, ico.y + iconS));
 			}
 			else {
-				DrawAssetIconFallback(dl, ico, iconS, e.icon);
+				const IconTex& icon = m_icons[size_t(e.icon)];
+				if (icon.imgui != 0) {
+					dl->AddImage(icon.imgui, ico,
+						ImVec2(ico.x + iconS, ico.y + iconS));
+				}
+				else {
+					DrawAssetIconFallback(dl, ico, iconS, e.icon);
+				}
 			}
 			// Registered-asset badge (green dot, bottom-right of icon).
 			if (!e.dir && guidByAbs.contains(e.abs)) {

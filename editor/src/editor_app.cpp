@@ -44,6 +44,59 @@
 
 namespace editor {
 
+// The editor's ImGui THEME (applied once after the overlay init, before
+// the DPI scale — ApplyDpiScale copies sizing, the colors here own the
+// look): a rounded, blue-accented dark palette. The color set carries
+// opaque top-level surfaces by design (the 3D viewport must not bleed
+// through menus); the two surfaces it does NOT define (MenuBarBg,
+// TitleBgCollapsed) keep the default theme's and are alpha-forced opaque
+// at the call site below.
+void ApplyEditorStyle()
+{
+	ImGuiStyle& s = ImGui::GetStyle();
+
+	s.WindowRounding    = 6.0f;
+	s.ChildRounding     = 5.0f;
+	s.FrameRounding     = 4.0f;
+	s.PopupRounding     = 5.0f;
+	s.ScrollbarRounding = 6.0f;
+	s.GrabRounding      = 4.0f;
+	s.TabRounding       = 4.0f;
+
+	s.WindowPadding    = ImVec2(10, 10);
+	s.FramePadding     = ImVec2(8, 5);
+	s.ItemSpacing      = ImVec2(8, 6);
+	s.ItemInnerSpacing = ImVec2(6, 5);
+	s.ScrollbarSize    = 12.0f;
+	s.GrabMinSize      = 10.0f;
+
+	ImVec4* c = s.Colors;
+
+	c[ImGuiCol_WindowBg]          = ImVec4(.09f, .10f, .13f, 1);
+	c[ImGuiCol_ChildBg]           = ImVec4(.11f, .12f, .15f, 1);
+	c[ImGuiCol_PopupBg]           = ImVec4(.13f, .14f, .18f, 1);
+	c[ImGuiCol_Border]            = ImVec4(.20f, .22f, .28f, 1);
+	c[ImGuiCol_FrameBg]           = ImVec4(.15f, .17f, .21f, 1);
+	c[ImGuiCol_FrameBgHovered]    = ImVec4(.21f, .24f, .31f, 1);
+	c[ImGuiCol_FrameBgActive]     = ImVec4(.25f, .29f, .39f, 1);
+	c[ImGuiCol_TitleBg]           = ImVec4(.10f, .11f, .14f, 1);
+	c[ImGuiCol_TitleBgActive]     = ImVec4(.13f, .15f, .20f, 1);
+	c[ImGuiCol_Button]            = ImVec4(.23f, .27f, .39f, 1);
+	c[ImGuiCol_ButtonHovered]     = ImVec4(.32f, .38f, .56f, 1);
+	c[ImGuiCol_ButtonActive]      = ImVec4(.39f, .46f, .68f, 1);
+	c[ImGuiCol_Header]            = ImVec4(.22f, .26f, .39f, 1);
+	c[ImGuiCol_HeaderHovered]     = ImVec4(.29f, .34f, .49f, 1);
+	c[ImGuiCol_HeaderActive]      = ImVec4(.33f, .39f, .57f, 1);
+	c[ImGuiCol_Tab]               = ImVec4(.13f, .15f, .20f, 1);
+	c[ImGuiCol_TabHovered]        = ImVec4(.30f, .36f, .53f, 1);
+	c[ImGuiCol_TabSelected]       = ImVec4(.22f, .27f, .40f, 1);
+	c[ImGuiCol_CheckMark]         = ImVec4(.58f, .65f, 1.0f, 1);
+	c[ImGuiCol_SliderGrab]        = ImVec4(.48f, .57f, .91f, 1);
+	c[ImGuiCol_SliderGrabActive]  = ImVec4(.62f, .69f, 1.0f, 1);
+	c[ImGuiCol_Separator]         = ImVec4(.20f, .22f, .28f, 1);
+	c[ImGuiCol_SeparatorHovered]  = ImVec4(.38f, .44f, .64f, 1);
+}
+
 bool EditorApp::HasPakExtension(const std::string& path) {
 	if (path.size() < 4)
 		return false;
@@ -169,28 +222,22 @@ bool EditorApp::Initialize() {
 	LoadPrefs(); // load editor prefs (window sizes, panel widths, etc.)
 	SetRelativeMouseMode(false);
 
-	// Project: reopen the last project when kept (it owns the artifact
-	// cache: OpenProject opens cache.db + the asset directory there).
-	// Without a project the cache is OFF (no global disk — cooks and
-	// imports still work, the cache only accelerates processing).
-	{
-		const std::string last = m_projectRoot;
-		m_projectRoot.clear();
-		m_projectName.clear();
-		if (!last.empty() && !OpenProject(last)) {
-			Log("Last project unavailable — running without a project "
-				"(artifact cache off; open a project for imports).");
-		}
-		else if (last.empty()) {
-			Log("No project open — artifact cache off (File > New / "
-				"Open Project... to work project-bound).");
-		}
+	// THE BOOT PROJECT (the --project arg — REQUIRED since the
+	// editor/launcher split): EditorLauncher owns selection (recents +
+	// New/Browse) and spawns the editor with the pick; the old
+	// prefs-auto-reopen + the blocking in-editor project modal are GONE
+	// with that flow. A failed open fails the launch (the editor cannot
+	// run project-less — the artifact cache, the asset registry and the
+	// import pipeline are all project-bound). CLEARED first so the full
+	// open runs even when the prefs carried the same dir (OpenProject's
+	// already-open early-out would skip cache.db + the asset registry).
+	m_projectRoot.clear();
+	m_projectName.clear();
+	if (!OpenProject(m_bootProject)) {
+		Log("Boot project '" + m_bootProject + "' cannot open (not a "
+			"project / unreadable — see log). Failing the launch.");
+		return false;
 	}
-	// FORCED project selection on startup (interactive runs only):
-	// the editor is project-bound — the blocking dialog (recents +
-	// New/Browse) demands one. Smoke flows drive their own projects
-	// and never see it.
-	m_projectDialogPending = true;
 
 
 	m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
@@ -201,21 +248,19 @@ bool EditorApp::Initialize() {
 	}
 	else {
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
-		// Opaque menu/window surfaces: the dark theme leaves these
-		// slightly translucent (the 3D viewport bleeds through menus).
-		// ONLY the top-level surfaces change â€” every other entry keeps
-		// its theme alpha. Notably ChildBg stays transparent (it is
-		// transparent BLACK by design: forcing it opaque paints every
-		// child window black), and frames/scrollbars/tabs keep their
-		// designed translucency. Re-applied here, not in the shared
-		// overlay: the theme belongs to the app, and ApplyDpiScale
-		// preserves the colors it copies.
+		// The app's theme (ApplyEditorStyle above: rounded, blue-accented
+		// dark palette). Its color set defines OPAQUE top-level surfaces
+		// by design (the 3D viewport must not bleed through menus) — the
+		// two it does NOT define (MenuBarBg, TitleBgCollapsed) keep the
+		// default theme's and are alpha-forced here. Notably ChildBg is
+		// OPAQUE in this palette (the old theme kept it transparent black
+		// by design — forcing it opaque painted every child window black;
+		// here the color IS the design). Applied in the app, not the
+		// shared overlay: the theme belongs to the app, and
+		// ApplyDpiScale preserves the colors it copies.
+		ApplyEditorStyle();
 		ImGuiStyle& style = ImGui::GetStyle();
-		style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-		style.Colors[ImGuiCol_PopupBg].w = 1.0f;
 		style.Colors[ImGuiCol_MenuBarBg].w = 1.0f;
-		style.Colors[ImGuiCol_TitleBg].w = 1.0f;
-		style.Colors[ImGuiCol_TitleBgActive].w = 1.0f;
 		style.Colors[ImGuiCol_TitleBgCollapsed].w = 1.0f;
 		// SVG icon set (asset browser grid): the Vulkan backend must
 		// be up for the ImGui user-texture registration.
@@ -314,6 +359,9 @@ void EditorApp::LoadPrefs() {
 	m_outlinerH = 380.0f;
 	m_inspectorW = kEditorRightW;
 	m_bottomDockH = kEditorBottomH;
+	m_selMode = SelMode::Mesh;
+	m_gizmoMode = GizmoMode::Translate;
+	m_mode = EditorMode::Layout;
 	if (m_prefsPath.empty())
 		return;
 	std::ifstream in(m_prefsPath);
@@ -346,6 +394,15 @@ void EditorApp::LoadPrefs() {
 				// tabbed browser below): clamp to a sane band — the
 				// draw-time clamp handles the live column height.
 				m_outlinerH = std::clamp(std::stof(val), 160.0f, 900.0f);
+			// TOOLBAR MODES PERSIST: the select level, the gizmo mode and
+			// the editor mode restore across sessions (the toolbar's
+			// sections are the state's UI — same keys the letters show).
+			else if (section == "tools" && key == "sel")
+				m_selMode = SelMode(std::clamp(std::stoi(val), 0, 2));
+			else if (section == "tools" && key == "gizmo")
+				m_gizmoMode = GizmoMode(std::clamp(std::stoi(val), 0, 2));
+			else if (section == "tools" && key == "mode")
+				m_mode = EditorMode(std::clamp(std::stoi(val), 0, 3));
 			else if (section == "inspector" && key == "width")
 				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
 			else if (section == "bottomDock" && key == "height")
@@ -381,6 +438,8 @@ void EditorApp::SavePrefs() {
 	if (!out) return;
 	out << "# Tourmaline Editor prefs (panel layout, px)\n";
 	out << "[outliner]\nwidth=" << m_outlinerW << "\nheight=" << m_outlinerH << "\n";
+	out << "[tools]\nsel=" << int(m_selMode) << "\ngizmo=" << int(m_gizmoMode)
+		<< "\nmode=" << int(m_mode) << "\n";
 	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_projectRoot.empty())
@@ -463,6 +522,9 @@ void EditorApp::CloseScene() {
 		return;
 	SavePrefs();
 	m_world.reset();
+	// The material-page thumbnails' bindings reference the cluster's
+	// texture views — the pool dies with the world (see TextureThumb).
+	DropTextureThumbs();
 	m_gltfPath.clear();
 	m_gltfHostPath.clear();
 	m_importImages.clear();
@@ -589,6 +651,9 @@ void EditorApp::CloseScene() {
 		m_textureStreamer =
 			smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
 	}
+	// The thumbnails' bindings reference the OLD world's cluster texture
+	// views — the fresh world below orphans them (see TextureThumb).
+	DropTextureThumbs();
 	m_world = smvk::mem::MakeProcess<smvk::World>();
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):

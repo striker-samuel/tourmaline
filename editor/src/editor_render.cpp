@@ -2095,25 +2095,24 @@ namespace editor {
 		RenderWysiwygLayer(fb, extent);
 
 		// ---- scene passes (per viewport) + overlay ---------------------
-		// THE LIVE VIEW IS VP0'S STAGE CONTENT: when the View toggle is on,
-		// the perspective viewport's editor-scene render is REPLACED by the
-		// world layer's composite (RecordLiveViewComposePass covers the
-		// stage rect after the imgui pass) — recording the editor scene
-		// under it would be pure waste, and its depth/overlay state would
-		// fight the composite's. The stage stays vp0 in BOTH layouts: quad
-		// keeps the ortho quads rendering around a live perspective quad.
-		// The gizmo + inset ride the ACTIVE viewport — they skip while the
-		// active IS the live stage (their depth comes from the scene pass
-		// that no longer ran; drawing them over the game frame would be
-		// authoring chrome over WYSIWYG output).
+		// THE LIVE VIEW IS THE LIT VIEW MODE now (no toggle, no vp0
+		// special case): the ACTIVE viewport in Lit renders through the
+		// world layer's inline target (the composite covers its rect
+		// after the imgui pass) — recording the editor scene pass under
+		// it would be pure waste, and its depth/overlay state would
+		// fight the composite's. Every other viewport (and the active
+		// one in any NON-Lit mode) renders the editor passes as always.
+		// The gizmo + inset ride the ACTIVE viewport — they skip while
+		// the active IS the live one (their depth comes from the scene
+		// pass that no longer ran; drawing them over the game frame
+		// would be authoring chrome over WYSIWYG output).
 		m_rendergraph->NewFrame();
 		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-			if (m_showWysiwyg && vpIdx == 0)
-				continue; // the stage shows the live view's composite
+			if (LiveViewActive() && vpIdx == m_activeVp)
+				continue; // this rect shows the live view's composite
 			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
 		}
-		const bool activeIsLiveStage = m_showWysiwyg && m_activeVp == 0;
-		if (!activeIsLiveStage) {
+		if (!LiveViewActive()) {
 			RecordInsetPass(m_swapViews[fb.imageIndex], flight);
 			RecordGizmoPass(m_swapViews[fb.imageIndex]);
 		}
@@ -2130,6 +2129,14 @@ namespace editor {
 				Log("Lightmap export: offscreen target creation failed.");
 			m_lmExportQueued = false;
 		}
+		// One-shot MATERIAL BALL sidecar (the same export pattern): the
+		// queued material's offscreen ball records into this frame's
+		// graph; the post-submit wait + readback + PNG write land the
+		// sidecar next to the source .material asset.
+		const bool matBallThisFrame = m_matBallQueuedMat != UINT32_MAX
+			&& EnsureMatBallResources();
+		if (matBallThisFrame)
+			RecordMatBallPass();
 
 		if (m_imgui && m_imgui->IsInitialized()) {
 			m_imgui->NewFrame(extent);
@@ -2155,6 +2162,10 @@ namespace editor {
 			// The export pass ran in this submit: read it back + write PNG.
 			WaitForDeviceIdle();
 			ExportLightmapPng();
+		}
+		if (matBallThisFrame) {
+			WaitForDeviceIdle();
+			ExportMatBallPng();
 		}
 		++m_frameCounter;
 	}
@@ -2227,11 +2238,13 @@ namespace editor {
 	void EditorApp::UpdateWysiwygBoundary(float dt) {
 		m_wysiwygLayerRenderable = false;
 		// Launch/stop housekeeping, lazy per frame: launch while a world
-		// + the toggle are on; relaunch when the world OBJECT or the
-		// scene stem swaps (open/close/load) or right after a bake
-		// completes (the renderer's GI/cubemap loaders ran at attach —
-		// assets that landed later need a fresh attach to be seen).
-		const bool wantLive = m_showWysiwyg && m_world;
+		// + the LIT MODE (the active viewport's) are on; relaunch when the
+		// world OBJECT or the scene stem swaps (open/close/load) or right
+		// after a bake completes (the renderer's GI/cubemap loaders ran at
+		// attach — assets that landed later need a fresh attach to be
+		// seen). Lit is the viewports' DEFAULT mode, so the WYSIWYG render
+		// runs out of the box; F2/F3.. park it.
+		const bool wantLive = LiveViewActive() && m_world;
 		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
 				|| m_wysiwygSceneId != SceneIdForHost()))
 			LaunchWysiwyg();
@@ -2354,10 +2367,10 @@ namespace editor {
 			return e && std::atoi(e) != 0;
 		}();
 		if (triangleEmbed) {
-			if (!m_showWysiwyg)
+			if (!LiveViewActive())
 				return;
 			if (!m_wysiwygLiveRectFresh)
-				return; // same tab gate as the world drive
+				return; // same view-mode gate as the world drive
 			m_wysiwygLiveRectFresh = false;
 			if (!EnsureTriangleEmbed())
 				return;

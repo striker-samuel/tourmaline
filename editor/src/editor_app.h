@@ -366,6 +366,9 @@ public:
 	bool OpenAnySceneFile(const std::string& path);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
 	void SetOutPak(const std::string& p) { m_cook.outPak = p; }
+	// The REQUIRED --project pick (EditorLauncher's): set before Run,
+	// opened at Initialize (see m_bootProject's block below).
+	void SetBootProject(const std::string& dir) { m_bootProject = dir; }
 
 protected:
 	bool Initialize() override;
@@ -775,7 +778,7 @@ private:
 	// second row. Hides with the panels (m_uiMode); the combined
 	// menu+toolbar offset feeds m_menuH so panels, splitters and the
 	// viewport rects shift together.
-	int m_toolTab = 0; // 0 Select, 1 Transform, 2 Terrain, 3 Placement, 4 Modes
+	int m_toolTab = 0; // RETIRED with the tool tabs (the one-bar toolbar carries every section)
 	float DrawToolTabs(float top); // renders the toolbar; returns height
 	void DrawOutliner();
 	void DrawOutlinerNode(uint32_t node,
@@ -1360,18 +1363,27 @@ private:
 	// on scene swap and bake completion (its GI/cubemap loaders run at
 	// attach).
 	smvk::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
-	bool m_showWysiwyg = false;
-	bool m_wysiwygValid = false;     // onAttach succeeded (else the tab shows a hint)
+	// (The m_showWysiwyg toggle is RETIRED — the live view is simply the
+	// LIT view mode: LiveViewActive() below. No menu entry, no badge, no
+	// special gates — Lit is a panel like the others, its content just
+	// comes from the engine's whole pipeline.)
+	// True while the ACTIVE viewport renders the WYSIWYG live view —
+	// i.e. its view mode is Lit (F1, the viewports' default). Every other
+	// mode + the non-active viewports render the editor's own passes.
+	bool LiveViewActive() const {
+		return m_viewports[m_activeVp].viewMode == ViewMode::Lit;
+	}
+	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
 	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
 	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
-	// The stage rect (screen px, captured same-frame by
-	// DrawLiveViewStage in DrawUI — the CENTER 4:3 panel the live view
-	// became; the compose pass writes exactly it and the drive renders
-	// at its size). m_wysiwygLiveRectFresh: the stage capture ran
-	// this/last frame — the compose checks the current frame's flag
-	// (after DrawUI), the drive consumes the previous frame's and parks
-	// the world render while the view is off.
+	// The covered rect (screen px, captured same-frame by
+	// DrawLiveViewStage in DrawUI — the ACTIVE Lit viewport's rect; the
+	// compose pass writes exactly it and the drive renders at its
+	// size). m_wysiwygLiveRectFresh: the capture ran this/last frame —
+	// the compose checks the current frame's flag (after DrawUI), the
+	// drive consumes the previous frame's and parks the world render
+	// while the mode is off.
 	ImVec2 m_wysiwygLiveRectMin{ 0.0f, 0.0f };
 	ImVec2 m_wysiwygLiveRectMax{ 0.0f, 0.0f };
 	bool m_wysiwygLiveRectFresh = false;
@@ -1836,12 +1848,12 @@ private:
 	// capped): the startup project dialog lists them.
 	std::vector<std::string> m_recentProjects;
 	void PushRecentProject(const std::string& dir); // dedupe + cap + save
-	// FORCED startup project selection (interactive runs only — the
-	// smoke flows drive their own projects): a blocking modal with
-	// the recents + New/Browse. The editor is project-bound; no
-	// project, no work.
-	bool m_projectDialogPending = false;
-	void DrawProjectDialog();
+	// THE BOOT PROJECT (the --project arg — REQUIRED): EditorLauncher
+	// owns project selection (the old blocking in-editor modal is retired
+	// with the split) and spawns the editor with its pick. Set from the
+	// CLI before Run; Initialize opens it (a failed open fails the
+	// launch — the editor cannot run project-less).
+	std::string m_bootProject;
 	// Creates the project tree when the marker is missing, then opens
 	// it (an existing project dir just opens).
 	bool NewProjectOrOpen(const std::string& dir);
@@ -2587,13 +2599,70 @@ private:
 	bool CubeWatchSpec(std::string& dirOut, std::string& baseOut) const;
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
-	int m_rightTab = 0; // Inspector | UV | Render | Material
+	int m_rightTab = 0; // Inspector | Render | Material (the UV tab is retired)
 	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
+	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------
+	// An offscreen 256x256 pass — a unit sphere wearing the material's
+	// PBR look under a FIXED default sky (matball.vert/frag.hlsl — one
+	// program, a fullscreen sky tri + the sphere, the kDefaultEnv block
+	// in the FS) — read back post-submit and written as a display-ready
+	// PNG beside the material's SOURCE .material asset (the sidecar:
+	// <file>.png). The queue: QueueMaterialBallPreview sets the material
+	// index + the out path; RenderFrame's record position (the
+	// lightmap-export slot) records the pass; the post-submit wait +
+	// ExportMatBallPng lands the bytes. Resources build once
+	// (EnsureMatBallResources — the target, the sphere/sky geometry, the
+	// program).
+	bool m_matBallReady = false;
+	smvk::Holder<smvk::ImageHandle> m_matBallImage;
+	smvk::Holder<smvk::ImageViewHandle> m_matBallView;
+	smvk::LogicalImageViewHandle m_matBallLogical{};
+	smvk::Holder<smvk::BufferHandle> m_matBallSphereVB;
+	smvk::Holder<smvk::BufferHandle> m_matBallSphereIB;
+	smvk::Holder<smvk::BufferHandle> m_matBallSkyVB;
+	uint32_t m_matBallSphereIdx = 0;
+	smvk::Holder<smvk::ShaderModuleHandle> m_matBallVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_matBallFsModule;
+	smvk::ShaderProgram m_matBallProgram{};
+	glm::mat4 m_matBallViewProj{ 1.0f };
+	glm::vec3 m_matBallEye{ 0.0f };
+	uint32_t m_matBallQueuedMat = UINT32_MAX; // UINT32_MAX = idle
+	std::string m_matBallOutPath;
+	bool EnsureMatBallResources();
+	void RecordMatBallPass();       // the frame's record position
+	void ExportMatBallPng();        // the post-submit readback + write
+	bool QueueMaterialBallPreview(uint32_t matWorld,
+		const std::string& pngPath);
+	// ---- material editor texture thumbnails -------------------------------
+	// ImGui bindings for ENGINE textures (the cubeface pattern:
+	// GetTextureVkImageView + ImGui_ImplVulkan_AddTexture, cached by
+	// handle key). The bindings reference the cluster's texture views —
+	// DropTextureThumbs() releases them whenever the texture pool can
+	// churn (scene close/open, the tour relaunch).
+	ImTextureID TextureThumb(const smvk::TextureHandle& h);
+	void DropTextureThumbs();
+	// (keyed entries; linear — the material page shows ~5 at a time)
+	std::vector<std::pair<uint64_t, ImTextureID>> m_matThumbs;
+	// ---- asset browser SIDECAR thumbnails (the .material ball previews) --
+	// The <file>.material.png sidecars rendered by the matball pass, shown
+	// as the .material tiles' image. Cached by path + mtime (a refreshed
+	// sidecar re-loads); dropped when the file vanishes (the tile falls
+	// back to the generic icon).
+	struct AssetThumb {
+		std::string path;
+		std::filesystem::file_time_type mtime{};
+		bool hasMtime = false;
+		smvk::Holder<smvk::TextureHandle> tex;
+		ImTextureID imgui = 0; // backend binding; 0 = none
+	};
+	std::vector<AssetThumb> m_assetThumbs;
+	ImTextureID AssetSidecarThumb(const std::string& pngPath);
 	// Floating cook/bake tools (View menu). Export itself opens the
 	// native save dialog and starts the cook immediately.
 	bool m_showCookWindow = false;
 	void DrawSceneOutliner();
-	void DrawUvPanel();
+	// (DrawUvPanel retired with the UV tab: the readouts moved to the
+	// Inspector's material page + the F5/F8/F9/F10 view shortcuts stay.)
 	// Content root for definition-source resolution ("models/..." style
 	// references): the current scene's content dir, else ./content.
 	std::string ResolveVfsRoot() const;

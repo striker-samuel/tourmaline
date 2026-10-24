@@ -91,7 +91,6 @@ void EditorApp::RefreshPlacementPreview() {
 	GraphDoc* g = m_placement.current();
 	if (!g) {
 		pv.ok = false;
-		pv.error = "no placement graph (Graph + New)";
 		pv.dirty = false;
 		return;
 	}

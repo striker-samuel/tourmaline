@@ -824,8 +824,6 @@ namespace editor {
 	void EditorApp::DrawOverridesPanel() {
 		using smvk::tour::OverrideAttr;
 		if (!m_world) {
-			//ImGui::TextDisabled(
-			//	"No scene loaded (File > Open scene... .gltf/.pak).");
 			return;
 		}
 		// ---- add form: one compact row ----

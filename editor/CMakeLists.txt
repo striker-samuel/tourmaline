@@ -97,6 +97,18 @@ add_custom_command(TARGET Editor POST_BUILD
 
 tourmaline_stage_sdl3(Editor)
 
+# ---------------------------------------------------------------------------
+# THE EDITOR LAUNCHER (the editor/launcher split): a standalone project
+# picker (editor/launcher/main.cpp — console v1, zero engine deps) that
+# owns PROJECT SELECTION and spawns Editor.exe --project <dir>. The editor
+# REQUIRES the --project arg (see its main.cpp): no launcher, no launch.
+# Shares the editor.prefs recents (the same [projects] rows).
+# ---------------------------------------------------------------------------
+add_executable(EditorLauncher launcher/main.cpp)
+set_target_properties(EditorLauncher PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
 # The editor renders with the same compiled shaders as App
 # (default.vert / default_unlit / default_lit / shadow.vert / ...).
 # They are built by the engine's EngineScene_shaders target (compile_shaders()'s

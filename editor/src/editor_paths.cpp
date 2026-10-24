@@ -189,7 +189,6 @@ void EditorApp::DrawPathsPanel() {
 		return;
 	}
 	if (!m_world) {
-		ImGui::TextDisabled("No scene. File > Open file... (.gltf/.tour)");
 		ImGui::End();
 		return;
 	}
