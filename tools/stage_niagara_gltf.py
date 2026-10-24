@@ -8,9 +8,9 @@
 # IMPORTANT: the authoring shims are KEPT VERBATIM. RootNode's 100x scale
 # is the FBX cm->m unit conversion and Level's -90d X rotation is the
 # DCC Z-up -> glTF Y-up conversion. (World AABB with shims intact:
-# 111 x 32 x 119 m; with them neutralized: 1.1 x 1.2 x 0.3 m — the old
-# cook_bistro.py neutralization predates the node-transform conjugation
-# fix in engine/src/Utils/gltf.cpp and breaks the scene: tiny + on its
+# 111 x 32 x 119 m; with them neutralized: 1.1 x 1.2 x 0.3 m —
+# neutralization predates the node-transform conjugation fix in
+# engine/src/Utils/gltf.cpp and breaks the scene: tiny + on its
 # side.) Textures stay unresolved (DDS/PNG upstream): materials render
 # with baseColorFactor, fine for a geometry correctness check.
 import shutil

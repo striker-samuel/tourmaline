@@ -3,7 +3,7 @@
 
 #pragma once
 // Linear (bump-pointer) allocator over reserved virtual memory
-// (Phase 0 infrastructure, see ALLOCATION_ANALYSIS.md §3.1).
+// (Phase 0 infrastructure).
 //
 // Model: reserve a large virtual range at startup (no physical commit),
 // commit pages on demand as the bump pointer advances, never free.

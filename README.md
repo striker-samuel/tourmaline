@@ -4,38 +4,32 @@ A C++20 toy engine and renderer for learning real-time graphics on Vulkan 1.3 �
 a personal project by Samuel Martin, built from scratch (RHI, render graph,
 GPU-driven culling, content pipeline and editor included).
 
-Everything is Windows-first, MSVC-compiled, Ninja-driven and shader-hot: HLSL
-sources compile to SPIR-V at build time and load next to the executable.
+Windows (MSVC) and Linux (GCC 14, verified on Ubuntu 24.04) both build the
+full tree. Everything is Ninja-driven and shader-hot: HLSL sources compile
+to SPIR-V at build time and load next to the executable.
 
 ## Features
 
 - **Custom Vulkan 1.3 RHI** — bindless descriptor pools, render graph with
-  automatic barrier discipline, staging uploads, GPU timeline semaphores,
-  strict-resource exhaustion contract (call sites decide policy, the RHI
-  returns error handles).
-- **GPU-driven rendering** — HZB occlusion culling + GPU mesh filter with
-  LOD chains, clustered Forward+ lighting, indexed draws skipping eligible
-  mesh ranges (exactly-once discipline).
-- **GPU skinning** — glTF skeletal animation: `.anim` clips with the
-  root-bone basis fix, joint-palette skinning in the mesh pipeline,
-  animated-pose prepass/shadows/occluders sharing the deformed pose, and
-  deformed meshlet cones + per-draw union bounds (GfxSkinBounds) keeping
-  skinned culling conservative by default (`TOURMALINE_SKIN_CONE` A/B
-  lever); pinned end-to-end by the knight companion scene
-  (knight_anim_tests).
+  automatic barrier placement, staging uploads, GPU timeline semaphores.
+- **GPU-driven rendering** — HZB occlusion culling, GPU mesh filter with
+  LOD chains, clustered Forward+ lighting, GPU-indexed draws.
+- **GPU skinning** — glTF skeletal animation: `.anim` clips, joint-palette
+  skinning in the mesh pipeline, animated-pose shadows/occluders, and
+  conservative culling bounds for deformed meshes.
 - **Shadows** — cascaded sun + per-spot shadow atlases, EVSM soft shadows,
   deferred shadow maps (DPS) with debug visualizers.
 - **Lighting & GI** — analytic lights, SSR, raymarched volumetric fog with
-  fog-GI sampling, SSAO / SAO, lightmap baking (xatlas charting + Embree
-  ray tracing) and cubemap GI bakes cooked offline into the content packs.
+  fog-GI sampling, SSAO / SAO, lightmap and cubemap GI bakes (xatlas
+  charting + Embree ray tracing) cooked offline into the content packs.
 - **Post-processing** — auto exposure, bloom, GT7-style tonemap, DoF,
-  motion blur, SMAA (1x/T2x, shader port + embedded LUTs), optional
-  NVIDIA DLSS-SR / Reflex via the Streamline interposer.
+  motion blur, SMAA (1x/T2x), optional NVIDIA DLSS-SR / Reflex via the
+  Streamline interposer.
 - **Content pipeline** — loose glTF/KTX2 assets are imported, cooked and
-  packed into `*.pak` archives (LZ4-compressed, magic-versioned, no legacy
-  conversions), served through a VFS + artifact DB.
+  packed into LZ4-compressed `*.pak` archives, served through a VFS +
+  artifact DB.
 - **Editor** — ImGui-based world editor with gizmos, asset registry
-  (SQLite), fiber job backend, command system with recordable tours.
+  (SQLite), threaded job pool, command system with recordable tours.
 - **Profiling** — Optick CPU/GPU instrumentation, headless deterministic
   bench/capture modes, golden-image regression tooling.
 
@@ -72,25 +66,42 @@ usage breakdown and the Tourmaline Debug panel:
 
 ## Requirements
 
-- **Windows 10/11 x64**
-- **Visual Studio 2022+ (MSVC, C++20)** — `cl.exe` and the MSVC headers;
-  builds run from a plain shell via `vcvarsall`
-- **CMake 3.17+** and **Ninja** (the Visual Studio generator is rejected
-  at configure time — this repo is Ninja-only and out-of-source-only)
-- **Vulkan SDK** (provides `dxc.exe` used to compile HLSL → SPIR-V;
-  `VULKAN_SDK` env var must be set)
+Common to both platforms:
+
+- **CMake 3.17+** and **Ninja** — the repo is Ninja-only and
+  out-of-source-only (the Visual Studio generator is rejected at configure
+  time)
 - **KTX-Software** (KTX/KTX2 texture container) — set `KTX_ROOT` to its
-  install prefix, or pass `-Dktx_DIR=<prefix>/lib/cmake/ktx`
-- Optional: **NVIDIA Streamline 2.x runtime** — vendored binaries are
-  staged automatically next to the exe; if absent, DLSS simply reports
-  unavailable (no hard dependency)
+  install prefix, or pass `-DKtx_DIR=<prefix>/lib/cmake/ktx` (note the
+  capital-K package name)
+- Optional: **NVIDIA Streamline 2.14 runtime** (DLSS-SR / Reflex) — fetched
+  by the installers below; if absent, DLSS simply reports unavailable
+  (no hard dependency)
+
+Windows 10/11 x64:
+
+- **Visual Studio 2022+ (MSVC, C++20)** — builds run from a plain shell
+  via `vcvarsall`
+- **Vulkan SDK** — provides the `dxc.exe` that compiles HLSL → SPIR-V at
+  build time (`VULKAN_SDK` env var must be set)
+
+Linux (verified on Ubuntu 24.04):
+
+- **GCC 14+** (recommended — see the platform notes in the Linux build
+  section) or Clang
+- **Vulkan loader** (`libvulkan-dev` or an installed SDK) — the full
+  modern Vulkan headers are fetched by `install_dependencies.sh`, so the
+  distro's header age does not matter
+- KTX-Software has no distro package — build and install it once
+  (commands in the Linux build section)
 
 ## Dependencies
 
-Third-party code lives under `external/` in two forms: **unmodified upstream
-libraries are pinned git submodules** (clone with `--recursive`) and
-**trimmed/patched trees, single headers and binary packages are vendored**
-in-tree. The full license audit lives in
+Third-party code lives under `external/` in three forms: **unmodified
+upstream libraries are pinned git submodules** (clone with `--recursive`),
+**trimmed/patched trees and single headers are vendored** in-tree, and the
+**platform binary packages are fetched by the installers** (not in git).
+The full license audit lives in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Pinned submodules (unmodified upstream):
@@ -119,23 +130,57 @@ Vendored, header-only:
 - **stb** — `stb_image.h` / `stb_image_write.h`
 - **VulkanMemoryAllocator** — `vk_mem_alloc.h`
 
-Vendored, prebuilt binaries:
+Fetched by the platform installers (`install_dependencies.ps1` on Windows,
+`install_dependencies.sh` on Linux) — not in git:
 
-- **SDL3** 3.4.16 (dev package) — windowing, input, audio
-- **DXC** (DirectXShaderCompiler) — engine-side runtime HLSL→SPIR-V
-  compilation; build-time shader compiles use the Vulkan SDK's `dxc.exe`
-- **NVIDIA Streamline** 2.14.1 — DLSS-SR / Reflex interposer + runtimes
-  (optional at runtime: absent binaries just disable DLSS)
+- Windows: **SDL3** 3.4.16 prebuilt dev package, **DXC** (build-time
+  shader compiles via the Vulkan SDK's `dxc.exe`; the engine also links
+  the in-process `dxcompiler` for runtime HLSL→SPIR-V), **Streamline**
+  2.14.1 (DLSS-SR / Reflex interposer + runtimes)
+- Linux: **SDL3** 3.4.16 source tree (built as a subproject when no
+  system SDL3 exists), the official **DXC** Linux package, full
+  **Vulkan-Headers** (ahead of older distro headers), and
+  **DirectX-Headers / DirectXMath** (DirectXTex's non-Windows path)
 
 Vendored but not wired into the build (intentional):
 
 - **Box3D** — upcoming physics work
 - **zlib** — CRC/reference only
 
-Not vendored but required at build time: the **Vulkan SDK** and
-**KTX-Software** (see Requirements above).
+Not vendored but required at build time: the **Vulkan SDK** (Windows) and
+**KTX-Software** (both platforms — see Requirements above).
 
-## Linux
+## Build
+
+### Windows
+
+```powershell
+# 0. Submodules (skip if you cloned with --recursive):
+git submodule update --init --recursive
+
+# 1. Enter the MSVC environment (plain PowerShell; adjust the path to
+#    your Visual Studio version/edition):
+cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 && powershell"
+
+# 2. Point CMake at KTX (example location):
+$env:KTX_ROOT = 'C:\SDKs\ktx'
+
+# 3. Configure (Ninja, out-of-source, Release):
+cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release .
+
+# 4. Build a target:
+cmake --build out/build/x64-Release --target App       # pak-viewer app
+cmake --build out/build/x64-Release --target Editor   # the editor
+cmake --build out/build/x64-Release --target all       # everything (tools, samples, tests)
+
+# 5. Test:
+ctest --test-dir out/build/x64-Release --output-on-failure
+```
+
+Debug builds: same with `-DCMAKE_BUILD_TYPE=Debug` in `out/build/x64-Debug`.
+`build_app.bat` wraps the vcvarsall + build steps for the common case.
+
+### Linux
 
 The tree builds on Linux (tested on Ubuntu 24.04, GCC 14) — the same
 CMake/Ninja flow, with `install_dependencies.sh` instead of the `.ps1`:
@@ -200,33 +245,6 @@ Platform notes:
   the software rasterizer (lavapipe) crashes inside its compute-pipeline
   compiler on the engine's BDA-heavy shaders.
 
-## Build
-
-```powershell
-# 0. Submodules (skip if you cloned with --recursive):
-git submodule update --init --recursive
-
-# 1. Enter the MSVC environment (plain PowerShell):
-cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 && powershell"
-
-# 2. Point CMake at KTX (example location):
-$env:KTX_ROOT = 'C:\SDKs\ktx'
-
-# 3. Configure (Ninja, out-of-source, Release):
-cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release .
-
-# 4. Build a target:
-cmake --build out/build/x64-Release --target App       # pak-viewer app
-cmake --build out/build/x64-Release --target Editor   # the editor
-cmake --build out/build/x64-Release --target all       # everything (tools, samples, tests)
-
-# 5. Test:
-ctest --test-dir out/build/x64-Release --output-on-failure
-```
-
-Debug builds: same with `-DCMAKE_BUILD_TYPE=Debug` in `out/build/x64-Debug`.
-`build_app.bat` wraps the vcvarsall + build steps for the common case.
-
 ### How it's built
 
 - **CMake + Ninja, out-of-source only.** In-source configures and the
@@ -246,7 +264,7 @@ Debug builds: same with `-DCMAKE_BUILD_TYPE=Debug` in `out/build/x64-Debug`.
 - **Push-constant contract.** C++ structs (`engine/include/Engine/Rendergraph/`)
   and their HLSL mirrors stay layout-identical, guarded by
   `static_assert(sizeof(...))` and contract tests.
-- **27 plain executables as tests** (no gtest): hand-rolled `Check()`
+- **35 plain executables as tests** (no gtest): hand-rolled `Check()`
   runners with `checks=/failures=` summaries, wired through `ctest`.
 
 ## Run
@@ -271,13 +289,14 @@ $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must
 
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
   forced off — uncapped immediate present; `--present <mode>` wins).
-- `TOURMALINE_AO=off|ssao|sao`, `TOURMALINE_EVSM`, `TOURMALINE_SSR`,
+- The same env vars pin features headless for A/B benches:
+  `TOURMALINE_AO=off|ssao|sao`, `TOURMALINE_EVSM`, `TOURMALINE_SSR`,
   `TOURMALINE_TRANSPARENCY`, `TOURMALINE_VOLUMETRIC[_STEPS|_CVOL]`,
   `TOURMALINE_MESH`, `TOURMALINE_CULLFLAGS`, `TOURMALINE_ASYNC_COMPUTE`,
   `TOURMALINE_PROBE_PREMIX=0|1` (the Remember Me probe pre-mix — one
   blended-cubemap fetch + dominant-box parallax vs the per-pixel walk;
   see `docs/probe_premix_plan.md`)
-  pin features headless for A/B benches.
+  (Linux: same variables exported, `./App` instead of `.\App.exe`).
 
 ### Content pipeline
 
@@ -290,19 +309,19 @@ loose glTF / KTX2 assets
   -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
 ```
 
-`tools/cook_bistro.py` and friends show a full end-to-end example against
-the Bistro test scene (scripts reference local asset locations).
+The editor drives the same pipeline in-process (its Cook command wraps
+the same entry points the CLI tools expose).
 
 ## Repository layout
 
 ```
 engine/      engine static lib (RHI, render graph, renderers, assets, shaders)
-editor/      the ImGui-based editor (std::thread job pool — no Boost)
+editor/      the ImGui-based editor
 app/         App.exe — pak-viewer host shell
 tools/       gltf_import, cook, pak_cooker, gi_baker, cubemap_baker,
-             artifact_cache, python helpers (bench/cook/golden capture)
-samples/     minimal Vulkan samples (01_triangle, 02_blur)
-tests/       27 plain-exe test executables (ctest)
+             artifact_cache, python helpers (bench/golden capture)
+samples/     minimal Vulkan samples (01_triangle, 02_blur, 03_fuzz)
+tests/       35 plain-exe test executables (ctest)
 external/    third-party sources: pinned git submodules + vendored trees
              (see THIRD_PARTY_NOTICES.md)
 docs/        project guide + editor tour documentation

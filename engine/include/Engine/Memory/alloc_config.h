@@ -21,7 +21,7 @@
 // shard count/capacity (they are array bounds / static_asserts against
 // MAX_TEXTURES) and kDefaultAlign. Everything else below is.
 //
-// Lifetime model (see ALLOCATION_ANALYSIS.md):
+// Lifetime model:
 //   - Process   : reserved once at startup, never reset (VulkanCore,
 //                 Submitter, AppArena blocks, resource pools).
 //   - Frame     : bumped per frame, reset at frame start (FrameArena

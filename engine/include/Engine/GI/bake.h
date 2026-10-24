@@ -375,7 +375,7 @@ struct GiSceneBuildOptions {
 	bool maskTransmissive = false;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
 	// Decal overlay quads (cook-stamped Material.castsShadows == false on
-	// non-MASK materials: SMVK_materials_shadows, see tools/cook_bistro_v5.py)
+	// non-MASK materials: SMVK_materials_shadows)
 	// are left OUT of the trace soup entirely: a coplanar quad over a wall
 	// would shadow/tint the wall behind it (as an occluder) or attenuate
 	// every ray through it (as a BLEND pass-through tint), and steal

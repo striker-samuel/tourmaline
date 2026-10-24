@@ -1,8 +1,8 @@
 # Tourmaline — Project Guide for Future Agents
 
 Source of truth alongside `AGENTS.md` (build/run), `README.md` (project
-front page), `docs/editor_tour_and_context.md` (tour v1 spec) and
-`ALLOCATION_ANALYSIS.md` (allocator migration); `notes/` is gitignored.
+front page) and `docs/editor_tour_and_context.md` (tour v1 spec);
+`notes/` is gitignored.
 
 ## 1. What this is
 
