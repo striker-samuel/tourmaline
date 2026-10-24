@@ -679,11 +679,11 @@ namespace editor {
 		area.h = float(extent.height) - area.y;
 		area.x = 0.0f;
 		area.w = float(extent.width);
-		if (m_uiMode) {
-			area.x = m_outlinerW;
-			area.w = float(extent.width) - m_outlinerW - m_inspectorW;
-			area.h -= m_bottomDockH + kEditorStatusH;
-		}
+	if (m_uiMode) {
+		area.x = m_outlinerW;
+		area.w = float(extent.width) - m_outlinerW - m_inspectorW;
+		area.h -= BottomDockH() + kEditorStatusH;
+	}
 		area.w = std::max(area.w, 1.0f);
 		area.h = std::max(area.h, 1.0f);
 
@@ -712,7 +712,27 @@ namespace editor {
 				r.h = halfH;
 			}
 			else {
-				r = area;
+				// Single: THE BIG 4:3 STAGE — the main view is an
+				// aspect-locked panel centered in the central area, not a
+				// stretch-to-fill rect. The letterbox margins around it show
+				// the editor's desk (the frame clear color), the projection
+				// derives from the LOCKED rect (a 4:3 render under any
+				// window aspect — no more reflowing perspective as side
+				// panels resize), and authoring eyeballs a fixed composition
+				// (the 4:3 target's framing stays stable across the layout).
+				// Fit the LARGER dimension, center on both axes.
+				constexpr float kStageAspect = 4.0f / 3.0f;
+				const float areaAspect = area.w / area.h;
+				if (areaAspect > kStageAspect) {
+					r.h = area.h;
+					r.w = area.h * kStageAspect;
+				}
+				else {
+					r.w = area.w;
+					r.h = area.w / kStageAspect;
+				}
+				r.x = area.x + (area.w - r.w) * 0.5f;
+				r.y = area.y + (area.h - r.h) * 0.5f;
 			}
 			m_viewports[i].hovered =
 				mx >= r.x && my >= r.y && mx < r.x + r.w && my < r.y + r.h;
@@ -721,6 +741,22 @@ namespace editor {
 		}
 		// Central-rect member (legacy consumers: inset strip, overlay, chrome).
 		m_vp = m_viewports[m_activeVp].rect;
+		// TOURMALINE_LAYOUT_DIAG=1: one-line layout dump (the rework
+		// verification - stage rect/aspect + column heights, once).
+		{
+			static const bool on = [] {
+				const char* e = std::getenv("TOURMALINE_LAYOUT_DIAG");
+				return e && *e && !(*e == '0' && !e[1]);
+			}();
+			if (on) {
+				const ViewportRect& s = m_viewports[0].rect;
+				std::fprintf(stderr,
+					"[LAYOUT] area %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f | dockH %.0f outlinerW %.0f inspectorW %.0f\n",
+					area.w, area.h, area.x, area.y,
+					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f),
+					BottomDockH(), m_outlinerW, m_inspectorW);
+			}
+		}
 	}
 
 	bool EditorApp::SecondViewActive() const {
@@ -2059,11 +2095,28 @@ namespace editor {
 		RenderWysiwygLayer(fb, extent);
 
 		// ---- scene passes (per viewport) + overlay ---------------------
+		// THE LIVE VIEW IS VP0'S STAGE CONTENT: when the View toggle is on,
+		// the perspective viewport's editor-scene render is REPLACED by the
+		// world layer's composite (RecordLiveViewComposePass covers the
+		// stage rect after the imgui pass) — recording the editor scene
+		// under it would be pure waste, and its depth/overlay state would
+		// fight the composite's. The stage stays vp0 in BOTH layouts: quad
+		// keeps the ortho quads rendering around a live perspective quad.
+		// The gizmo + inset ride the ACTIVE viewport — they skip while the
+		// active IS the live stage (their depth comes from the scene pass
+		// that no longer ran; drawing them over the game frame would be
+		// authoring chrome over WYSIWYG output).
 		m_rendergraph->NewFrame();
-		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
+		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+			if (m_showWysiwyg && vpIdx == 0)
+				continue; // the stage shows the live view's composite
 			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
-		RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-		RecordGizmoPass(m_swapViews[fb.imageIndex]);
+		}
+		const bool activeIsLiveStage = m_showWysiwyg && m_activeVp == 0;
+		if (!activeIsLiveStage) {
+			RecordInsetPass(m_swapViews[fb.imageIndex], flight);
+			RecordGizmoPass(m_swapViews[fb.imageIndex]);
+		}
 		// One-shot lightmap PNG export: renders the offscreen target this
 		// frame, then reads it back after the submit (button in Bake panel).
 		const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
@@ -2329,11 +2382,11 @@ namespace editor {
 			m_triangleGraph->Execute(fb);
 			return; // the world renderer is BYPASSED in this mode
 		}
-		// The tab-visibility gate: DrawLiveViewTab sets the fresh flag
-		// when the dock tab DREW (last frame's flag — this sits before
-		// round 2's DrawUI). A hidden tab (another dock tab selected)
-		// parks the whole world render — the full-graph cost is only
-		// paid while the Live view is actually visible.
+		// The view-visibility gate: DrawLiveViewStage sets the fresh flag
+		// when the stage capture ran (last frame's flag — this sits before
+		// round 2's DrawUI). The view off (View menu) parks the whole
+		// world render — the full-graph cost is only paid while the Live
+		// view is actually showing.
 		if (!m_wysiwygLiveRectFresh)
 			return;
 		m_wysiwygLiveRectFresh = false;

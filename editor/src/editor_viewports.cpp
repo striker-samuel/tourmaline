@@ -1136,10 +1136,10 @@ void EditorApp::DrawPanelSplitters() {
 	const ImVec2 ds = ImGui::GetIO().DisplaySize;
 	// m_menuH = menu bar + tool topbar (the panels start below both).
 	const float menuH = m_menuH;
-	// Column splitters stop at the bottom dock (drag there resizes the
-	// side panel without fighting the dock's own handle). Everything
-	// stops above the status strip.
-	const float colH = ds.y - menuH - m_bottomDockH - kEditorStatusH;
+	// Column splitters stop at the status strip (the bottom dock is
+	// RETIRED — BottomDockH() is 0 and its ##splitB handle went with the
+	// strip; the columns now run to the status bar).
+	const float colH = ds.y - menuH - BottomDockH() - kEditorStatusH;
 	bool committed = false;
 	committed |= SplitterHandle("##splitL",
 		ImVec2(m_outlinerW - 3.0f, menuH),
@@ -1147,9 +1147,19 @@ void EditorApp::DrawPanelSplitters() {
 	committed |= SplitterHandle("##splitR",
 		ImVec2(ds.x - m_inspectorW - 3.0f, menuH),
 		ImVec2(6.0f, colH), false, &m_inspectorW, 200.0f, 720.0f, true);
-		committed |= SplitterHandle("##splitB",
-			ImVec2(0.0f, ds.y - m_bottomDockH - kEditorStatusH - 3.0f),
-		ImVec2(ds.x, 6.0f), true, &m_bottomDockH, 120.0f, 600.0f, true);
+	// The stacked LEFT column's split (Outliner above / the tabbed
+	// browser below): a horizontal handle spanning the column at the
+	// boundary. The clamp mirrors the draw-time one (the browser keeps
+	// >= 140px, the outliner >= 160px) — the saved value can't degenerate
+	// either panel.
+	{
+		const float outH = std::clamp(m_outlinerH, 160.0f,
+			std::max(colH - 140.0f, 200.0f));
+		committed |= SplitterHandle("##splitOut",
+			ImVec2(0.0f, menuH + outH - 3.0f),
+			ImVec2(m_outlinerW, 6.0f), true, &m_outlinerH, 160.0f,
+			std::max(colH - 140.0f, 200.0f), false);
+	}
 	if (committed)
 		SavePrefs();
 }

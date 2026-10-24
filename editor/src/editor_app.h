@@ -1365,12 +1365,13 @@ private:
 	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
 	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
-	// The tab's content rect (screen px, captured same-frame by
-	// DrawLiveViewTab in DrawUI; the compose pass writes exactly it and
-	// the drive renders at its size). m_wysiwygLiveRectFresh: the tab
-	// DREW this/last frame — the compose checks the current frame's
-	// flag (after DrawUI), the drive consumes the previous frame's and
-	// parks the world render while the tab is hidden.
+	// The stage rect (screen px, captured same-frame by
+	// DrawLiveViewStage in DrawUI — the CENTER 4:3 panel the live view
+	// became; the compose pass writes exactly it and the drive renders
+	// at its size). m_wysiwygLiveRectFresh: the stage capture ran
+	// this/last frame — the compose checks the current frame's flag
+	// (after DrawUI), the drive consumes the previous frame's and parks
+	// the world render while the view is off.
 	ImVec2 m_wysiwygLiveRectMin{ 0.0f, 0.0f };
 	ImVec2 m_wysiwygLiveRectMax{ 0.0f, 0.0f };
 	bool m_wysiwygLiveRectFresh = false;
@@ -1412,7 +1413,7 @@ private:
 	void UpdateWysiwygBoundary(float dt);   // WorldLayer::onUpdate
 	void RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent); // WorldLayer::onRender
 	void RecordLiveViewComposePass(smvk::LogicalImageViewHandle swapView); // editor_render.cpp, after the imgui pass
-	void DrawLiveViewTab(); // editor_ui.cpp (the bottom dock tab; captures the rect)
+	void DrawLiveViewStage(); // editor_ui.cpp (the center view panel; captures the stage rect + badge/hint)
 	// TOURMALINE_LIVE_TRIANGLE=1 (the embed bisect): instead of the world
 	// renderer, a MINIMAL second rendergraph — the 01_triangle sample's
 	// trivial pass (a fullscreen colored triangle via the inline-HLSL
@@ -1858,7 +1859,8 @@ private:
 	// (logged; the caller must NOT open the glTF). Every .gltf session
 	// entry (opens, tour-recorded sources, drops) lands here.
 	std::string ImportMeshArtifactFor(const std::string& gltfPath);
-	// Asset browser (bottom dock "Assets" tab): a GRID directory
+	// Asset browser (the LEFT column's "Assets" tab — moved from the
+	// bottom dock in the layout rework): a GRID directory
 	// explorer of the project folder (Unity Project window style):
 	// breadcrumb + Up navigation, folders first, SVG icons, registered
 	// asset badges (green dot = assets.db GUID), double-click opens
@@ -2251,8 +2253,24 @@ private:
 	// ---- panel sizes (drag the splitters to resize; constants above
 	// are the defaults) ----
 	float m_outlinerW = kEditorLeftW;
+	// The stacked left column's SPLIT: the Outliner (always visible, the
+	// upper window) owns this much height; the tabbed browser (Assets /
+	// Console / Overrides) fills the rest below. Absolute px like the
+	// dock-era height (clamped at draw time against the column height —
+	// the window can resize under the saved value).
+	float m_outlinerH = 380.0f;
 	float m_inspectorW = kEditorRightW;
 	float m_bottomDockH = kEditorBottomH;
+	// The bottom dock's EFFECTIVE height: ZERO since the dock was
+	// RETIRED (the layout rework's final form — the Live view moved
+	// into the CENTER view panel, the authoring tabs into the left
+	// column, so nothing hosts the strip anymore). The helper + the
+	// m_bottomDockH member + the [bottomDock] prefs keys stay wired so
+	// a future output strip can re-host the layout slot without
+	// touching every consumer again; until then every layout reader
+	// (panel heights, viewport rects, splitters) goes through this and
+	// gets 0.
+	float BottomDockH() const { return 0.0f; }
 	void DrawPanelSplitters(); // left/right/bottom resize handles
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;
@@ -2570,6 +2588,7 @@ private:
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
 	int m_rightTab = 0; // Inspector | UV | Render | Material
+	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
 	// Floating cook/bake tools (View menu). Export itself opens the
 	// native save dialog and starts the cook immediately.
 	bool m_showCookWindow = false;

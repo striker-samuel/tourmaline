@@ -311,6 +311,7 @@ void EditorApp::LoadPrefs() {
 	// unparseable (missing file, corrupt line, unknown key) keeps
 	// the in-code defaults below.
 	m_outlinerW = kEditorLeftW;
+	m_outlinerH = 380.0f;
 	m_inspectorW = kEditorRightW;
 	m_bottomDockH = kEditorBottomH;
 	if (m_prefsPath.empty())
@@ -340,6 +341,11 @@ void EditorApp::LoadPrefs() {
 			// tab look dead).
 			if (section == "outliner" && key == "width")
 				m_outlinerW = std::clamp(std::stof(val), 200.0f, 720.0f);
+			else if (section == "outliner" && key == "height")
+				// The stacked left column's split (Outliner above / the
+				// tabbed browser below): clamp to a sane band — the
+				// draw-time clamp handles the live column height.
+				m_outlinerH = std::clamp(std::stof(val), 160.0f, 900.0f);
 			else if (section == "inspector" && key == "width")
 				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
 			else if (section == "bottomDock" && key == "height")
@@ -374,7 +380,7 @@ void EditorApp::SavePrefs() {
 	std::ofstream out(m_prefsPath);
 	if (!out) return;
 	out << "# Tourmaline Editor prefs (panel layout, px)\n";
-	out << "[outliner]\nwidth=" << m_outlinerW << "\n";
+	out << "[outliner]\nwidth=" << m_outlinerW << "\nheight=" << m_outlinerH << "\n";
 	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
 	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_projectRoot.empty())

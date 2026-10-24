@@ -137,8 +137,22 @@ namespace editor {
 		// RenderFrame renders only the rect between them. I hides every
 		// panel for a fullscreen viewport (the menu bar + overlay remain).
 		if (m_uiMode) {
+			// LEFT COLUMN, STACKED (the layout rework's final form): the
+			// world Outliner is ALWAYS VISIBLE on top (an authoring
+			// constant — selection context at every glance), and the
+			// tabbed browser panel (Assets / Console / Overrides) fills
+			// the column below it. The horizontal splitter between them
+			// (DrawPanelSplitters' ##splitOut) adjusts the split; the
+			// draw-time clamp keeps both panels usable at any window
+			// size. The browser wraps its header actions + tiles to the
+			// host width (SameLineIfFits inside); the console + the
+			// override rule table scroll in the narrow column — width
+			// was the dock-era trade, the column layout takes it back.
+			const float colH = vh - menuH - BottomDockH() - kEditorStatusH;
+			const float outH = std::clamp(m_outlinerH, 160.0f,
+				std::max(colH - 140.0f, 200.0f));
 			ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, vh - menuH - m_bottomDockH - kEditorStatusH),
+			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, outH),
 				ImGuiCond_Always);
 			if (ImGui::Begin("Outliner", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -146,12 +160,38 @@ namespace editor {
 				DrawOutliner();
 			}
 			ImGui::End();
+			ImGui::SetNextWindowPos(ImVec2(0, menuH + outH), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, colH - outH),
+				ImGuiCond_Always);
+			if (ImGui::Begin("Assets", nullptr,
+				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+				ImGuiWindowFlags_NoResize)) {
+				if (ImGui::BeginTabBar("##leftTabs")) {
+					if (ImGui::BeginTabItem("Assets")) {
+						m_leftTab = 0;
+						DrawAssetsPanel();
+						ImGui::EndTabItem();
+					}
+					if (ImGui::BeginTabItem("Console")) {
+						m_leftTab = 1;
+						DrawConsolePanel();
+						ImGui::EndTabItem();
+					}
+					if (ImGui::BeginTabItem("Overrides")) {
+						m_leftTab = 2;
+						DrawOverridesPanel();
+						ImGui::EndTabItem();
+					}
+					ImGui::EndTabBar();
+				}
+			}
+			ImGui::End();
 
 			ImGui::SetNextWindowPos(
 				ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_inspectorW, menuH),
 				ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - m_bottomDockH - kEditorStatusH),
-				ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - BottomDockH() - kEditorStatusH),
+			ImGuiCond_Always);
 			if (ImGui::Begin("Inspector", nullptr,
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
 				ImGuiWindowFlags_NoResize)) {
@@ -180,49 +220,18 @@ namespace editor {
 				}
 			}
 			ImGui::End();
-
-			// Bottom dock (title-less, tabbed): the wide-override rule table
-			// lives next to the Console so both stay full-width. Sits
-			// above the status strip (see DrawStatusBar).
-			ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomDockH - kEditorStatusH), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(
-				ImVec2(float(ImGui::GetIO().DisplaySize.x), m_bottomDockH),
-				ImGuiCond_Always);
-			if (ImGui::Begin("BottomDock", nullptr,
-				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-				ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
-				if (ImGui::BeginTabBar("##bottomTabs")) {
-					// The WYSIWYG live view (View-menu toggle): the tab's
-					// CONTENT region is painted by the GPU composite pass
-					// recorded AFTER the imgui pass (RecordLiveViewComposePass)
-					// — the tab body itself only captures the rect. FIRST in
-					// the bar so enabling it selects it (no dead toggle).
-					if (m_showWysiwyg && ImGui::BeginTabItem("Live view")) {
-						DrawLiveViewTab();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Overrides")) {
-						DrawOverridesPanel();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Console")) {
-						DrawConsolePanel();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Assets")) {
-						DrawAssetsPanel();
-						ImGui::EndTabItem();
-					}
-					ImGui::EndTabBar();
-				}
-			}
-			ImGui::End();
 			DrawStatusBar();
-		} // m_uiMode
+		} // m_uiMode (panel columns)
 
 		DrawPanelSplitters(); // resize handles between panels and viewport
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
+		// THE LIVE VIEW LIVES IN THE VIEW PANEL NOW (the center 4:3
+		// stage): the capture + the LIVE badge + the unavailable hint.
+		// The bottom dock is RETIRED — nothing hosts it anymore (the
+		// Left-column tabs took the authoring panels, the world render
+		// took the stage).
+		DrawLiveViewStage();
 		// UV editor window retired (the Live view window replaced the
 		// canvas era; solid backgrounds everywhere now — no transparent
 		// content regions). See editor_viewports.cpp's DrawUvEditorWindow.
@@ -3612,25 +3621,60 @@ namespace editor {
 		ImGui::End();
 	}
 
-	// ---- WYSIWYG Live view TAB (the bottom dock; editor_app.h decl) --
-	// The tab's CONTENT region is painted by the GPU composite pass
-	// (RecordLiveViewComposePass, editor_render.cpp) recorded AFTER the
-	// imgui pass — it over-draws this exact rect, so the tab body stays
-	// EMPTY (no UV-canvas-era transparent-content-region tricks; the
-	// tab strip + panel chrome around it render normally under it).
-	// Here: capture the rect (same-frame for the compose pass) + the
-	// invalid-state hint (covered by the composite once valid).
-	void EditorApp::DrawLiveViewTab() {
-		const ImVec2 p = ImGui::GetCursorScreenPos();
-		const ImVec2 avail = ImGui::GetContentRegionAvail();
-		m_wysiwygLiveRectMin = p;
-		m_wysiwygLiveRectMax = ImVec2(p.x + avail.x, p.y + avail.y);
+	// ---- WYSIWYG Live view — THE CENTER VIEW PANEL (editor_app.h decl) -
+	// The Live view IS the 4:3 stage's content now (the layout rework's
+	// final form: the world render replaced the perspective viewport's
+	// editor-scene render when the View-menu toggle is on — the stage
+	// alternates between the authoring scene view and the game view, the
+	// camera input/chrome drive both). The GPU composite pass
+	// (RecordLiveViewComposePass, editor_render.cpp) is recorded AFTER the
+	// imgui pass and over-draws the captured rect — so NOTHING ImGui-side
+	// can live inside the stage while the composite runs. This draws only
+	// what lives AROUND it: the rect capture (from the stage — viewport
+	// 0's letterboxed rect, inset 3px so the chrome border survives the
+	// composite's edge), the LIVE badge in the letterbox strip (the desk
+	// margin the 4:3 lock guarantees on at least one axis), and the
+	// unavailable hint INSIDE the stage (visible only while there is no
+	// composite to cover it).
+	void EditorApp::DrawLiveViewStage() {
+		if (!m_showWysiwyg)
+			return;
+		const ViewportRect& stage = m_viewports[0].rect;
+		if (stage.w < 8.0f || stage.h < 8.0f)
+			return;
+		// The capture: the stage rect inset by the chrome border (2px) +
+		// 1, so the composite never paints over the border stroke.
+		m_wysiwygLiveRectMin = ImVec2(stage.x + 3.0f, stage.y + 3.0f);
+		m_wysiwygLiveRectMax =
+			ImVec2(stage.x + stage.w - 3.0f, stage.y + stage.h - 3.0f);
 		m_wysiwygLiveRectFresh = true;
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+		// The letterbox strips (the 4:3 fit leaves the margin on the
+		// other axis): the badge goes above the stage's top-left when
+		// the top strip fits it, else below the stage's bottom-left, else
+		// left of the stage (the height-bound fit case).
+		const float topStrip = stage.y - m_menuH;
+		const ImVec2 tl(stage.x, stage.y);
+		ImVec2 badgePos;
+		if (topStrip >= 20.0f)
+			badgePos = ImVec2(tl.x + 2.0f, tl.y - 19.0f);
+		else
+			badgePos = ImVec2(tl.x + 2.0f, tl.y + stage.h + 3.0f);
+		dl->AddRectFilled(badgePos,
+			ImVec2(badgePos.x + 46.0f, badgePos.y + 16.0f),
+			IM_COL32(150, 30, 30, 210));
+		dl->AddRect(badgePos,
+			ImVec2(badgePos.x + 46.0f, badgePos.y + 16.0f),
+			IM_COL32(255, 90, 90, 180));
+		dl->AddText(ImVec2(badgePos.x + 6.0f, badgePos.y + 2.0f),
+			IM_COL32(255, 200, 200, 255), "LIVE");
 		// The placeholder hint only reads while the renderer is
 		// unavailable (attach failed / no scene): the composite paints
-		// over this whole rect once it runs.
+		// over the whole stage rect once it runs.
 		if (!(m_wysiwyg && m_wysiwygValid))
-			ImGui::TextDisabled("Live view: %s", m_world
+			dl->AddText(
+				ImVec2(stage.x + 14.0f, stage.y + 14.0f),
+				IM_COL32(160, 160, 170, 255), "Live view: %s", m_world
 				? "renderer unavailable (attach failed - see the console)"
 				: "no scene loaded");
 	}
