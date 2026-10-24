@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             gcc-14 g++-14 \
             build-essential cmake ninja-build git curl unzip pkg-config \
-            glslang-tools libvulkan-dev zlib1g-dev mesa-vulkan-drivers \
+            glslang-tools libvulkan-dev zlib1g-dev mesa-vulkan-drivers xvfb \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxinerama-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
@@ -87,7 +87,9 @@ jobs:
       - name: Test
         run: |
           mkdir -p .ci-content
-          ctest --test-dir out/build/ci --output-on-failure
+          # xvfb: retirement_fuzz creates a real SDL window + offscreen
+          # Vulkan context - hosted runners have no display.
+          xvfb-run --auto-server-select ctest --test-dir out/build/ci --output-on-failure
         env:
           TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
 
@@ -105,11 +107,25 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Vulkan SDK (dxc.exe for the shader compiles)
-        uses: humbletim/install-vulkan-sdk@v1.2
+      - name: Cache Vulkan SDK install
+        id: vulkan-cache
+        uses: actions/cache@v4
         with:
-          version: 1.4.357.0
-          cache: true
+          path: C:\VulkanSDK\1.4.357.0
+          key: vulkan-sdk-1.4.357.0-windows
+
+      - name: Install Vulkan SDK (cache miss)
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        run: |
+          curl.exe -L -o $env:RUNNER_TEMP\vulkan-sdk.exe `
+            https://sdk.lunarg.com/sdk/download/1.4.357.0/windows/vulkan-sdk.exe
+          Start-Process -Wait -FilePath $env:RUNNER_TEMP\vulkan-sdk.exe `
+            -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
+
+      - name: Expose the Vulkan SDK (VULKAN_SDK + PATH)
+        run: |
+          Add-Content $env:GITHUB_ENV 'VULKAN_SDK=C:\VulkanSDK\1.4.357.0'
+          Add-Content $env:GITHUB_PATH 'C:\VulkanSDK\1.4.357.0\Bin'
 
       - name: Cache KTX-Software install
         id: ktx-cache
