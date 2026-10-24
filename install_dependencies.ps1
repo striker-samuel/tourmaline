@@ -155,8 +155,12 @@ function Copy-Tree([string]$src, [string]$dst, $subset, $drop, $excludeList, $ov
         $tSrc, $tRel = $t
         if (Test-Path $tSrc -PathType Leaf) {
             # file entry (e.g. .git-hash, sqlite3.c): lands at the target root
+            # (or inside the into= dir for subset pins like the sqlite
+            # amalgamation) - create the parent first: a FRESH checkout has
+            # no external/SQLiteCpp/sqlite3/ until this line makes it.
             $rel = [IO.Path]::GetFileName($tSrc)
             $relDst = Join-Path $dst $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path $relDst) | Out-Null
             Copy-Item $tSrc $relDst -Force
             $copied++
             continue
