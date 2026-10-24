@@ -3951,13 +3951,14 @@ namespace engine {
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
 		// ---- Analytic environment zones (see Rendergraph/envzones.h):
-		// envZoneCount > 0 publishes this frame's packed slice BDA. The
-		// records were built by UpdateEnvZones (called just before this
-		// function); count and contents are always in sync. Off / no
-		// zones / failed buffer = count 0 -> every consumer takes the
-		// plain resolved env path.
-		if (m_envZonesEnabled && m_world
-			&& m_world->scene.envZonesEnabled && m_envZoneFrameCount > 0
+		// ALWAYS ON (the rework): the default environment packs as an
+		// infinite zone (see UpdateEnvZones) and every consumer resolves
+		// the covering OBB per pixel. envZoneCount > 0 publishes this
+		// frame's packed slice BDA; the records were built by
+		// UpdateEnvZones (called just before this function) — count and
+		// contents are always in sync. A failed buffer = count 0 -> the
+		// consumers take the plain resolved env path.
+		if (m_envZoneFrameCount > 0
 			&& !m_resources.envZonesBuffer.empty()) {
 			constexpr size_t ENV_ZONE_FRAME_STRIDE =
 				sizeof(smvk::envzones::EnvZoneGpu)
@@ -7633,13 +7634,19 @@ namespace engine {
 	// there is no world extent, texel grid or 4-zone cap: the OBB is exact 3D,
 	// rotation-aware and EnvVolume's blendWeight/blendRadius ride the record.
 	// Records are sorted priority desc -> innermost (bounded volume) -> node id,
-	// so the shader's first influencing record wins. Failure/overflow is
-	// non-fatal (count 0 = the plain resolved env path).
+	// so the shader's first influencing record wins. ALWAYS ON since the
+	// rework: zone ZERO is the scene's DEFAULT environment, packed as a
+	// FULLY UNBOUNDED zone (all six faces infinite - "the default one
+	// spans inf"): everywhere is inside it, so the base look applies
+	// globally and the node zones override it by priority/innermost
+	// wherever they cover (the default sorts last: unbounded loses the
+	// innermost tie to any bounded node zone, and its authored
+	// zonePriority - 0 by default - sits under the node priorities).
+	// Failure/overflow is non-fatal (count 0 = the plain resolved env
+	// path, the default look still renders through it).
 	void WorldRenderer::UpdateEnvZones(uint32_t currentFrame) {
 		m_envZoneFrameCount = 0;
-		if (!m_world || !m_envZonesEnabled
-			|| !m_world->scene.envZonesEnabled
-			|| m_resources.envZonesBuffer.empty())
+		if (!m_world || m_resources.envZonesBuffer.empty())
 			return;
 		const ::Scene& scene = m_world->scene;
 		const SceneEnv& resolved = scene.environment;
@@ -7651,7 +7658,26 @@ namespace engine {
 			smvk::envzones::EnvZoneGpu gpu;
 		};
 		std::vector<Cand> cands;
-		cands.reserve(scene.envForNode.size());
+		cands.reserve(scene.envForNode.size() + 1);
+		// ZONE ZERO: the default environment, fully unbounded. The look
+		// derives against ITSELF (the self-ratio: skyTint 1, volumetrics
+		// 1 - the neutral base the node zones' ratios are taken against).
+		Cand defaultZoneCand{};
+		bool hasDefaultZone = false;
+		{
+			smvk::envzones::EnvZoneGpu gpu;
+			if (smvk::envzones::MakeEnvZoneGpu(glm::mat4(1.0f), 63u,
+					EnvZoneFromSceneEnv(scene.defaultEnvironment,
+						scene.defaultEnvironment),
+					scene.defaultEnvironment.zonePriority, 1.0f, 0.0f,
+					gpu)) {
+				defaultZoneCand = Cand{ NodeId(UINT32_MAX),
+					scene.defaultEnvironment.zonePriority,
+					std::numeric_limits<double>::infinity(), gpu };
+				hasDefaultZone = true;
+				cands.push_back(defaultZoneCand);
+			}
+		}
 		for (const auto& [node, env] : scene.envForNode) {
 			if (node >= scene.globalTransform.size())
 				continue;
@@ -7708,6 +7734,17 @@ namespace engine {
 				m_envZoneLastCount = uint32_t(cands.size());
 			}
 			cands.resize(smvk::envzones::kEnvZoneMaxZones);
+			// THE DEFAULT ZONE NEVER TRUNCATES AWAY: it sorts at the
+			// BOTTOM (priority 0, unbounded, sentinel id) so an overflow
+			// would drop it first — but it IS the global base look. If
+			// the resize cut it, it takes the last slot instead (a
+			// lowest-priority NODE zone loses its seat).
+			const auto defIt = std::find_if(cands.begin(), cands.end(),
+				[](const Cand& c) {
+					return c.node == NodeId(UINT32_MAX);
+				});
+			if (defIt == cands.end() && hasDefaultZone)
+				cands.back() = defaultZoneCand;
 		}
 		else {
 			m_envZoneLastCount = uint32_t(cands.size());
@@ -12234,22 +12271,21 @@ namespace engine {
 							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
-							// ---- Analytic environment zones (world/env
-							// separation; see Rendergraph/envzones.h): zone
-							// ENTITIES (scene.envForNode) are packed into a GPU
-							// buffer every frame and the terrain/volumetric
-							// shaders resolve the exact OBB coverage + blend
-							// radius per pixel. No map, no world-size/texel or
-							// 4-zone cap. The authored master switch persists
-							// through the tour/pak (Scene::envZonesEnabled);
-							// the checkbox below is the runtime override.
-							if (ImGui::CollapsingHeader("Zones (scene entities)")) {
-								ImGui::Checkbox("Zones enabled (runtime)",
-									&m_envZonesEnabled);
-								ImGui::TextDisabled("Authored: %s (editor Environment panel)",
-									m_world && m_world->scene.envZonesEnabled
-										? "on" : "off");
-								if (m_envZoneFrameCount == 0) {
+						// ---- Analytic environment zones (world/env
+						// separation; see Rendergraph/envzones.h): zone
+						// records (the scene's DEFAULT env as an infinite
+						// base zone + the scene.envForNode entities) are
+						// packed into a GPU buffer every frame and the
+						// terrain/volumetric shaders resolve the exact
+						// OBB coverage + blend radius per pixel. ALWAYS ON
+						// since the rework — the old runtime toggle and
+						// the authored Scene::envZonesEnabled master
+						// switch are retired.
+						if (ImGui::CollapsingHeader("Zones (scene entities)")) {
+							ImGui::TextDisabled("Always on: the default "
+								"environment is the infinite base zone; "
+								"node zones override by priority.");
+							if (m_envZoneFrameCount == 0) {
 									ImGui::TextDisabled("No active zone records this frame - "
 										"the plain env path renders.");
 								}

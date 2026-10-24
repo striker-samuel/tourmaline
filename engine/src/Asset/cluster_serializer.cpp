@@ -1743,15 +1743,16 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				}
 			}
 		}
-		// Analytic env-zone master switch (v15): one u32. Absent = the
-		// default ON (v14 and older blobs). Present must end the blob
-		// exactly (the shared trailing-bytes check below).
+		// Analytic env-zone master switch (v15): one u32 on the wire.
+		// ALWAYS ON since the zones rework (the default env packs as the
+		// infinite base zone; the toggle is retired) — the read stays for
+		// format compatibility, the parsed value is forced true.
 		scene.envZonesEnabled = true;
 		if (c.off < c.img.size()) {
 			const uint32_t zonesOn = c.u32();
 			if (!c.ok)
 				return fail("truncated scene env-zone flag");
-			scene.envZonesEnabled = zonesOn != 0u;
+			(void)zonesOn; // forced on above
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

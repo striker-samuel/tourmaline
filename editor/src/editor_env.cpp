@@ -126,17 +126,14 @@ void EditorApp::DrawEnvPanel() {
 		}
 		ImGui::EndCombo();
 	}
-	// Scene-level master switch for analytic zones (auto-on; persisted as
-	// env.zonesEnabled -> pak v15). Node sources are the zones.
-	ImGui::Checkbox("Enable environment zones##envzones",
-		&m_world->scene.envZonesEnabled);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip(
-			"Analytic per-pixel zones (terrain + volumetric fog).\n"
-			"On by default: any Environment node becomes a zone.\n"
-			"Saves through the tour and the pak.");
+	// (The scene-level "Enable environment zones" master switch is
+	// RETIRED with the always-on rework: zones ALWAYS run — the scene's
+	// DEFAULT environment packs as the infinite base zone (all six faces
+	// unbounded) and the node zones override it by priority/innermost.
+	// The env.zonesEnabled tour/pak key stays on the wire, forced true.)
 	// ZONE controls (node sources only — the node IS the zone: coverage
-	// from its transform, see ZoneCovers; the default block has no zone).
+	// from its transform, see ZoneCovers; the default block's zone is the
+	// built-in infinite one).
 	if (m_envCurrent != UINT32_MAX) {
 		EditorEnv& e = CurrentEnv();
 		ImGui::DragFloat("Zone priority##envzone", &e.zonePriority, 0.25f,

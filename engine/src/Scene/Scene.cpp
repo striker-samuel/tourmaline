@@ -491,10 +491,15 @@ void loadScene(const char* fileName, Scene& scene)
     }
   }
   // Env-zone master switch (appended; absent = the default ON stands).
+  // RETIRED with the always-on zones rework (the default env packs as the
+  // infinite base zone): the trailing u32 stays read for format
+  // compatibility, the value is forced true.
   {
     uint32_t zonesOn = 0;
-    if (fread(&zonesOn, sizeof(zonesOn), 1, f) == 1)
-      scene.envZonesEnabled = zonesOn != 0;
+    if (fread(&zonesOn, sizeof(zonesOn), 1, f) == 1) {
+      (void)zonesOn;
+      scene.envZonesEnabled = true;
+    }
   }
   // Cooked punctual lights are NOT carried in this legacy format: they
   // are Cluster pool assets (see Scene::lightForNode) and round-trip

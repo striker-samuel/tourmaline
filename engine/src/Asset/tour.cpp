@@ -3857,8 +3857,12 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// below is the second exception).
 	{
 		TourEnvBlocks eb = ParseTourEnvBlocks(doc);
-		if (eb.hasZonesEnabled)
-			scene.envZonesEnabled = eb.zonesEnabled;
+		// The env.zonesEnabled tour key is RETIRED with the always-on
+		// rework (the default env packs as the infinite base zone): the
+		// parse stays for format compatibility, the value is forced true.
+		(void)eb.hasZonesEnabled;
+		(void)eb.zonesEnabled;
+		scene.envZonesEnabled = true;
 		if (eb.hasBlocks) {
 			std::unordered_map<uint32_t, SceneEnv> table;
 			for (const auto& [n, e] : eb.nodeEnvs) {

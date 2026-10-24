@@ -2890,13 +2890,15 @@ public:
 	int m_terrainHfShadow = 1;
 	int m_terrainHfSteps = 16;
 	// Analytic environment zones (see Rendergraph/envzones.h): the
-	// renderer packs the world's zone entities into a per-flight GPU
-	// buffer every frame (UpdateEnvZones) and the terrain/volumetric
-	// shaders resolve the covering OBB per pixel. m_envZonesEnabled is
-	// the runtime master toggle (the debug panel checkbox); the AUTHORED
-	// switch is Scene::envZonesEnabled (tour/pak). Either off = every
-	// consumer takes the plain env path (envZoneCount 0).
-	bool m_envZonesEnabled = true;
+	// renderer packs the zone set into a per-flight GPU buffer every
+	// frame (UpdateEnvZones) and the terrain/volumetric shaders resolve
+	// the covering OBB per pixel. ALWAYS ON since the rework: the scene's
+	// DEFAULT environment packs as a FULLY UNBOUNDED zone (all six faces
+	// infinite — the "default one spans inf") and the node zones override
+	// it by priority/innermost wherever they cover. The old runtime
+	// toggle (m_envZonesEnabled) and the authored Scene::envZonesEnabled
+	// master switch are retired — the field stays on the tour/pak wire
+	// (forced true at every read) for format compatibility.
 	// Per-frame zone count for this flight slice (filled by
 	// UpdateEnvZones right before UpdateFrameUniforms).
 	uint32_t m_envZoneFrameCount = 0;
