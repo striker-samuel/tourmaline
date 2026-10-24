@@ -1060,6 +1060,12 @@ namespace smvk {
 		uint64_t m_asyncReadbackTicket = 0; // 0 = slot free
 		VkSemaphore m_asyncReadbackSemaphore = VK_NULL_HANDLE;
 		VkDeviceSize m_asyncReadbackBytes = 0;
+		// TOURMALINE_RB_DIAG=1 (the churn-death hunt's readback-collision
+		// probe, env-gated): the in-flight ticket's SOURCE buffers — the
+		// deferred buffer destroy checks these and flags a copy-still-
+		// in-flight destroy. Populated only while the diag is on; cleared
+		// at Poll completion alongside the ticket.
+		std::vector<smvk::BufferHandle> m_asyncReadbackSources;
 		bool EnsureAsyncStaging(VkDeviceSize size);
 
 		// Global sync bookkeeping – use global types for UploadStreamer visibility

@@ -37,6 +37,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/app.h>
+#include <Engine/App/Element.h> // the synchronized-tick element contract (WorldLayer)
 #include <Engine/App/world.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
@@ -78,9 +79,58 @@
 
 namespace editor {
 
+// ---------------------------------------------------------------------------
+// The WYSIWYG world LAYER (the synchronized-tick element — the pump's
+// phases replace the old mid-frame bolt-in): the world renderer rides
+// the element contract so the editor frame and the world frame stay in
+// ONE rhythm —
+//   onUpdate (the boundary phase, BEFORE the host's acquire): the lazy
+//     launch/stop/relaunch lifecycle (the heavy attach/detach destroys
+//     land with the previous frame fully presented), Tick + the camera
+//     drive + the extent settle (EnsureInlineExtent) + the readback
+//     housekeeping — ALL state work, nothing recording.
+//   onRender (the layer phase, between acquire and present in stack
+//     order): RenderLayerInto — the record only, at the between-rounds
+//     position the drive always had.
+//   onResize (the pump's recreate boundary, BEFORE the acquire): the
+//     world's OnSwapchainRecreated — the inline-target invalidation
+//     happens with no work in flight, the re-ensure lands in the next
+//     settle, at the boundary.
+// The old DriveWysiwygLive ran all of this MID-FRAME (between the
+// editor's recording rounds, the frame command buffer open) — the
+// frame-blind placement the gesture-crash hunt pinned.
+// ---------------------------------------------------------------------------
+class WorldLayer final : public engine::IAppElement {
+public:
+	explicit WorldLayer(class EditorApp* app) : m_app(app) {}
+	const char* ElementName() const override { return "World"; }
+	bool onAttach() override { return true; } // the world lifecycle is lazy (onUpdate)
+	void onDetach() override {}
+	void onUpdate(float dt) override;
+	void onResize(smvk::Extent2D swapExtent) override;
+	void onRender(engine::ElementFrame& frame) override;
+private:
+	class EditorApp* m_app = nullptr;
+};
+
 // Menu-bar gem mark (editor_branding.cpp): vector twin of
 // tourmaline_logo.png, drawn straight into the given draw list.
 void DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h);
+
+// The shared GI probe marker (editor_viewports.cpp): a regular octahedron
+// ortho-projected from a fixed 3/4 view, painter-sorted + Lambert-shaded —
+// the "gem" read that keeps individual probes distinct where same-color
+// dot clusters smear. Used by BOTH probe overlays (the cubemap manifest
+// rows in DrawCaptureBallOverlay and the .sggi lattice in
+// DrawBakeDensityOverlay); the color table stays the caller's.
+void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& center, float radius,
+	ImU32 col);
+
+// Octree-LEVEL ramp, byte-identical to the App's SG-GI probe overlay
+// (WorldRenderer: coarse red -> fine pink; shared density language).
+// Defined in editor_density.cpp; shared by the sggi density overlay and
+// the GI-viz window's legend swatches.
+extern const ImU32 kDensityLevelColors[8];
 
 // Viewport camera clip + FOV shared by editor_app.cpp / editor_render.cpp.
 inline constexpr float kEditorFovYDeg = 45.0f;
@@ -300,6 +350,11 @@ struct CookSettings {
 
 class EditorApp : public smvk::App {
 	using Super = smvk::App;
+	// The synchronized-tick world layer (see WorldLayer above): the
+	// element's phases drive the WYSIWYG halves — onUpdate (the
+	// boundary, before the host's acquire), onResize (the pump's
+	// recreate boundary), onRender (the between-rounds record position).
+	friend class WorldLayer;
 public:
 	EditorApp();
 	~EditorApp() override = default;
@@ -538,16 +593,18 @@ private:
 	bool m_showSelRadial = false; // Q radial popup request (mouse pos cached)
 	ImVec2 m_selRadialPos{ 0.0f, 0.0f };
 	bool m_inspectorCycle = true; // Up/Down arrows cycle the node selection
-	// UV editor window (separate from viewports): centered zoom + pan in
-	// UV units (uvT = (uv-0.5)*zoom + 0.5 + pan), channel mode, content
-	// rect (stored per DrawUI for input + the record pass).
-	bool m_showUvEditor = false; // View menu toggle
-	ViewMode m_uvWinMode = ViewMode::FlatUv0; // FlatUv0 = TEXCOORD0, FlatUv1 = uv2
-	float m_uvWinZoom = 1.0f;
-	glm::vec2 m_uvWinPan{ 0.0f, 0.0f };
-	ImVec2 m_uvWinRectMin{ 0.0f, 0.0f }; // canvas rect (screen px, last DrawUI)
-	ImVec2 m_uvWinRectMax{ 0.0f, 0.0f };
-	bool m_uvWinHovered = false; // canvas hover (last DrawUI; F-reset gate)
+	// UV editor window RETIRED (the Live view window replaced the canvas
+	// era; solid backgrounds everywhere — no transparent content
+	// regions). The members + plumbing below stay commented for a
+	// possible future re-enable (the flat-UV SHADERS were already
+	// commented out at their load site when this was retired).
+	//bool m_showUvEditor = false; // View menu toggle
+	//ViewMode m_uvWinMode = ViewMode::FlatUv0; // FlatUv0 = TEXCOORD0, FlatUv1 = uv2
+	//float m_uvWinZoom = 1.0f;
+	//glm::vec2 m_uvWinPan{ 0.0f, 0.0f };
+	//ImVec2 m_uvWinRectMin{ 0.0f, 0.0f }; // canvas rect (screen px, last DrawUI)
+	//ImVec2 m_uvWinRectMax{ 0.0f, 0.0f };
+	//bool m_uvWinHovered = false; // canvas hover (last DrawUI; F-reset gate)
 	bool IsSelected(uint32_t node) const;
 	void SetSelection(uint32_t node);        // single
 	void AddToSelection(uint32_t node);
@@ -604,33 +661,26 @@ private:
 	};
 	std::optional<SubHit> PickSubObject(int vpIdx, float mouseX,
 		float mouseY, smvk::Extent2D extent) const;
-	// Flat-UV window pick: mouse (canvas-local) -> UV point (inverse
-	// zoom/pan) -> brute-force point-in-triangle over the selection
-	// subtree (or whole scene when nothing selected). No accel structures.
-	std::optional<SubHit> PickFlatUvWindow(float mouseX, float mouseY) const;
+	// Flat-UV window pick RETIRED with the UV editor canvas.
+	//std::optional<SubHit> PickFlatUvWindow(float mouseX, float mouseY) const;
 	void ApplySubSelection(const SubHit& h); // node + face/vert per m_selMode
 	// Flat-UV NDC helpers (must match uvflat.vert.hlsli transform).
 	// Zoom/pan form (the UV window owns its nav state); the indexed
 	// shorthands below read the UV window state (single pane).
 	glm::vec2 UvToFlatNdc(glm::vec2 uv, float zoom, glm::vec2 pan) const;
 	glm::vec2 FlatNdcToUv(glm::vec2 ndc, float zoom, glm::vec2 pan) const;
-	glm::vec2 UvToFlatNdc(glm::vec2 uv) const; // UV window nav
-	glm::vec2 FlatNdcToUv(glm::vec2 ndc) const; // UV window nav
+	//glm::vec2 UvToFlatNdc(glm::vec2 uv) const; // UV window nav (retired)
+	//glm::vec2 FlatNdcToUv(glm::vec2 ndc) const; // UV window nav (retired)
 	// Resolve the selected face/vertex UVs for highlight batches.
 	bool SelectedFaceUvs(glm::vec2 outUv[3], ViewMode mode) const;
 	bool SelectedVertUv(glm::vec2& outUv, ViewMode mode) const;
 	// World-space positions for the 3D face/vertex highlight.
 	bool SelectedFaceWorld(glm::vec3 outW[3]) const;
 	bool SelectedVertWorld(glm::vec3& outW) const;
-	// UV editor window (separate from viewports): draw + input + record.
-	// DrawUvEditorWindow (called in DrawUI) lays the chrome + canvas item
-	// out and stores m_uvWinRect*/hover; RecordUvWindowPass runs RIGHT
-	// AFTER DrawUI and BEFORE the imgui pass, so the canvas fill sits under
-	// the chrome (same-frame rect; the window bg is alpha-0 and the canvas
-	// is an InvisibleButton — the GPU clear is the only background).
-	void DrawUvEditorWindow();
-	void RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
-		uint32_t flight);
+	// UV editor window RETIRED (see the members' note above).
+	//void DrawUvEditorWindow();
+	//void RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
+	//	uint32_t flight);
 	void DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex popup
 	// Rubber-band state (window pixels, viewport-local rect in m_vpBox*).
 	bool m_vpBoxDragging = false;
@@ -1268,7 +1318,120 @@ private:
 	// overlay (dot + C<idx> + influence/fade rings, camera-distance
 	// colored). LIGHTING mode only, like the rest of the light set.
 	bool m_showProbeOverlay = true;
+	// Octahedra marker variant for the probe overlays: the same loaded
+	// rows and camera-distance color table, but each probe draws as a
+	// shaded 3D octahedron instead of the flat dot (the shared
+	// DrawProbeOctahedron). Applies to BOTH probe marker sets — the
+	// cubemap manifest rows AND the .sggi lattice dots.
+	bool m_showProbeOctahedra = false;
+	// Probe-overlay visualization controls (GI probe viz window, View
+	// menu): rings/labels declutter switches, marker radius in px, and
+	// the distance cutoff the overlay culls at.
+	bool m_probeRings = true;   // influence/fade circles per probe
+	bool m_probeLabels = true;  // C<idx> text per probe
+	float m_probeMarkerSize = 3.5f; // marker radius (px)
 	float m_probeOverlayMaxDist = 80.0f; // overlay distance cutoff (m)
+	// Drawn-count witnesses for the viz window's "in view" legend lines:
+	// the last frame's marker counts (probe rows / sggi lattice), kept
+	// fresh by the two overlay draw passes.
+	uint32_t m_probeDrawnLast = 0;
+	uint32_t m_sggiDrawnLast = 0;
+	// ---- WYSIWYG LIVE VIEW (the full-graph renderer, View menu) ------
+	// The App's whole frame pipeline (CSM/EVSM shadows, AO, SSR,
+	// volumetrics, GI, bloom + the authored postfx grade) rendering in
+	// the BOTTOM DOCK's "Live view" TAB — the honest "what the cooked
+	// game will look like" reference, camera-following the ACTIVE
+	// viewport, docked in the panel layout (no floating window).
+	//
+	// Architecture (the offscreen compositor): a real
+	// engine::WorldRenderer driven through its INLINE OUTPUT seam — it
+	// renders into its PRIVATE LDR target (never the editor's swap) and
+	// records into the editor's command buffer between the editor's
+	// two graph rounds. The tab's content rect is painted by a GPU
+	// COMPOSITE PASS (the engine's UiComposite, alpha=1 = a pure copy)
+	// recorded AFTER the ImGui pass — it over-draws the tab's content
+	// region, so the tab content itself stays EMPTY (no
+	// transparent-content-region tricks, solid chrome everywhere).
+	// The inline tail releases the target to SHADER_READ in the world's
+	// own graph, and the editor imports the target as an external view
+	// for the composite's SetInputImages (cross-graph ordering rides
+	// the context-global sync tables). The world is the EDITOR'S OWN
+	// World object — edits show live, per frame; the renderer relaunches
+	// on scene swap and bake completion (its GI/cubemap loaders run at
+	// attach).
+	smvk::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
+	bool m_showWysiwyg = false;
+	bool m_wysiwygValid = false;     // onAttach succeeded (else the tab shows a hint)
+	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
+	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
+	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
+	// The tab's content rect (screen px, captured same-frame by
+	// DrawLiveViewTab in DrawUI; the compose pass writes exactly it and
+	// the drive renders at its size). m_wysiwygLiveRectFresh: the tab
+	// DREW this/last frame — the compose checks the current frame's
+	// flag (after DrawUI), the drive consumes the previous frame's and
+	// parks the world render while the tab is hidden.
+	ImVec2 m_wysiwygLiveRectMin{ 0.0f, 0.0f };
+	ImVec2 m_wysiwygLiveRectMax{ 0.0f, 0.0f };
+	bool m_wysiwygLiveRectFresh = false;
+	ImVec2 m_wysiwygCanvasSize{ 0.0f, 0.0f }; // the ACTIVE render extent (deadband/hold-filtered, see the drive)
+	// The frame-boundary quiesce flag (the user's fix — the old
+	// mid-frame wait was frame-blind): set by DriveWysiwygLive on any
+	// frame that recreates (or queues a recreate of) the inline target
+	// — the extent drift or the swap-recreate format mirror — and
+	// consumed AFTER the present in the frame pump (editor_app.cpp):
+	// the frame fully submitted, nothing recording, so the wait
+	// drains both timelines (the swapchain's AND the graphics
+	// Submitter's that the world renderer's readback submits ride)
+	// before the next frame's world chain re-ensure destroys anything.
+	bool m_wysiwygBoundaryQuiesce = false;
+	// The synchronized-tick park state (UpdateWysiwygBoundary ->
+	// RenderWysiwygLayer): the boundary half's gate decision — the
+	// layer renders only when the boundary half settled everything
+	// this frame (world valid + camera perspective + the inline extent
+	// settled).
+	bool m_wysiwygLayerRenderable = false;
+	// The world layer element instance (AddElement'd at Initialize;
+	// the base Run attaches it, the base MainLoop drives its phases).
+	std::shared_ptr<WorldLayer> m_worldLayer;
+	// The editor-graph compose plumbing: the UiComposite builder + the
+	// inline target's logical view imported into the EDITOR's graph
+	// (re-imported when the target recreates; the bindless index is
+	// context-global, read fresh at record time).
+	smvk::UiComposite m_wysiwygComposite;
+	smvk::LogicalImageViewHandle m_wysiwygComposeLogical{};
+	smvk::ImageViewHandle m_wysiwygComposePhysical{}; // the view the logical import was made from (re-import on recreate)
+	void LaunchWysiwyg();
+	void StopWysiwyg();
+	// The synchronized-tick halves (WorldLayer's phases drive these —
+	// the element contract replaced the mid-frame monolithic drive):
+	// the BOUNDARY half (onUpdate: BEFORE the host's acquire — all the
+	// state work: lifecycle, Tick, camera, the extent settle + the
+	// extent-change flag) and the LAYER half (onRender: between acquire
+	// and present at the between-rounds position — the record only).
+	void UpdateWysiwygBoundary(float dt);   // WorldLayer::onUpdate
+	void RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent); // WorldLayer::onRender
+	void RecordLiveViewComposePass(smvk::LogicalImageViewHandle swapView); // editor_render.cpp, after the imgui pass
+	void DrawLiveViewTab(); // editor_ui.cpp (the bottom dock tab; captures the rect)
+	// TOURMALINE_LIVE_TRIANGLE=1 (the embed bisect): instead of the world
+	// renderer, a MINIMAL second rendergraph — the 01_triangle sample's
+	// trivial pass (a fullscreen colored triangle via the inline-HLSL
+	// compiler) writing ONE persistent editor-owned image, Executed
+	// between the editor's rounds exactly like the Live view drive. Zero
+	// claims churn, zero world chain — isolates "a second graph's Execute
+	// + mid-frame submit between the rounds" from "the heavy world
+	// chain's per-extent target recreation". If the churn death
+	// reproduces here too, the embed seam itself is the trigger; if not,
+	// the world chain's churn is.
+	smvk::mem::LinearPtr<smvk::RenderGraph> m_triangleGraph{};
+	smvk::Holder<smvk::ImageHandle> m_triangleImage{};
+	smvk::Holder<smvk::ImageViewHandle> m_triangleView{};
+	smvk::LogicalImageViewHandle m_triangleLogical{};
+	smvk::ShaderProgram m_triangleProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> m_triangleVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_triangleFsModule;
+	bool m_triangleReady = false;
+	bool EnsureTriangleEmbed(); // editor_render.cpp (idempotent)
 	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
 	// Wide regex rules layered over the source asset. Precedence:
 	//   source < wide rules (in order, later wins) < per-node local edits.
@@ -1493,6 +1656,18 @@ private:
 	// relink is viewport-, cook- and bake-safe by construction).
 	bool m_showPathsPanel = false;
 	void DrawPathsPanel();
+
+	// ---- GI probe viz window (editor_ui.cpp, View menu) ----------------
+	// The GI-authoring legend + control center: every probe-overlay
+	// switch (cubemap rows, octahedra markers, rings, labels), the
+	// size/distance knobs, and the counts the user reasons with while
+	// authoring — cubemap manifest totals (level / pins / in view), the
+	// .sggi lattice per-LEVEL breakdown (probe count, effective cell
+	// size, lookup cells, max probes per cell = the per-cluster density
+	// answer), each with its ramp swatch. LIGHTING mode only (the
+	// overlays it documents are LIGHTING-gated too).
+	bool m_showGiVizWindow = false;
+	void DrawGiVizWindow();
 	// Texture plugs of one source asset (its .meta rows, cached while the
 	// panel drives them; re-read after writes).
 	std::vector<smvk::cache::AssetPlug> TexturePlugsOf(
@@ -1997,7 +2172,8 @@ private:
 	// + influence/fade rings, camera-distance colored), plus black balls
 	// for authored pins with no loaded probe behind them ("nothing
 	// rendered here yet"). Honors m_showProbeOverlay (loaded rows) and
-	// m_showCubemapGizmos (pins).
+	// m_showCubemapGizmos (pins); m_showProbeOctahedra swaps the dot for
+	// a shaded octahedron marker (same rows, same colors).
 	void DrawCaptureBallOverlay();
 	// One loaded probe row (the manifest sidecar's placement half).
 	struct CubemapProbeRow {
@@ -2257,10 +2433,9 @@ private:
 	// Gizmo/AABB line upload buffer.
 	smvk::Holder<smvk::BufferHandle> m_gizmoLines{};
 	uint32_t m_gizmoLinesCap = 0;
-	// UV editor window line upload (wires + highlight; own buffer so the
-	// gizmo batches and the window upload never fight for one buffer).
-	smvk::Holder<smvk::BufferHandle> m_uvWinLines{};
-	uint32_t m_uvWinLinesCap = 0;
+	// UV editor window line upload RETIRED with the canvas.
+	//smvk::Holder<smvk::BufferHandle> m_uvWinLines{};
+	//uint32_t m_uvWinLinesCap = 0;
 
 	// ---- imgui ----
 	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};

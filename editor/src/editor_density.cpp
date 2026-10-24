@@ -31,16 +31,18 @@
 
 namespace editor {
 
-namespace {
-
 // Octree-level ramp, byte-identical to the App's SG-GI probe overlay
 // (WorldRenderer: coarse red -> fine pink; shared density language).
+// Namespace-scope + extern in editor_app.h: the GI-viz window's legend
+// swatches share it (declared in editor_app.h next to DrawProbeOctahedron).
 const ImU32 kDensityLevelColors[8] = {
 	IM_COL32(255, 64, 64, 210), IM_COL32(255, 160, 32, 210),
 	IM_COL32(230, 230, 60, 210), IM_COL32(70, 230, 90, 210),
 	IM_COL32(60, 200, 255, 210), IM_COL32(110, 130, 255, 210),
 	IM_COL32(200, 100, 255, 210), IM_COL32(255, 110, 200, 210),
 };
+
+namespace {
 
 // Grid mirror constants (Cook.exe CLI defaults — the editor cook dialog
 // carries no grid knobs, so the grid branch is untunable here; the
@@ -273,6 +275,9 @@ void EditorApp::DrawBakeDensityOverlay() {
 	if (showCube)
 		CubemapProbeRowsFromFile(bakedRows);
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	// In-view witness for the viz window (same max-across-viewports
+	// semantics as DrawCaptureBallOverlay's m_probeDrawnLast).
+	m_sggiDrawnLast = 0;
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const glm::mat4 vpm = vp.viewProj;
@@ -301,13 +306,17 @@ void EditorApp::DrawBakeDensityOverlay() {
 				ImVec2 cpt;
 				if (!project(pr.center, cpt))
 					continue;
-				const ImU32 col =
-					kDensityLevelColors[std::min(pr.depth, 7u)];
+			const ImU32 col =
+				kDensityLevelColors[std::min(pr.depth, 7u)];
+			if (m_showProbeOctahedra)
+				DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
+			else
 				dl->AddCircleFilled(cpt, 2.5f, col);
-				if (pi >= kDensityRingCap)
-					continue;
-				// Influence ring: project a world-X offset of one
-				// radius (the App's trick); fade ring scales from it.
+			if (pi >= kDensityRingCap)
+				continue;
+			// Influence ring: project a world-X offset of one
+			// radius (the App's trick); fade ring scales from it.
+			if (m_probeRings) {
 				ImVec2 ept;
 				if (project(pr.center + glm::vec3(
 						std::max(pr.influence, 0.01f), 0.0f, 0.0f), ept)) {
@@ -326,9 +335,12 @@ void EditorApp::DrawBakeDensityOverlay() {
 						++rings;
 					}
 				}
+			}
+			if (m_probeLabels) {
 				char plab[16];
 				std::snprintf(plab, sizeof(plab), "P%u", pi);
 				dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f), col, plab);
+			}
 			}
 			char ccap[256];
 			if (m_cubemapDensity.empty())
@@ -367,13 +379,21 @@ void EditorApp::DrawBakeDensityOverlay() {
 					ImVec2 pt;
 					if (!project(p.position, pt))
 						continue;
-					const uint32_t lvl = std::min(p.level, 7u);
-					const float r = std::max(
-						4.0f - 0.7f * float(lvl), 1.5f);
+				const uint32_t lvl = std::min(p.level, 7u);
+				// Coarse levels read bigger (the App's ramp language);
+				// the octahedra variant keeps the same level radius so
+				// the two shape modes stay comparable at a glance.
+				const float r = std::max(
+					4.0f - 0.7f * float(lvl), 1.5f);
+				if (m_showProbeOctahedra)
+					DrawProbeOctahedron(dl, pt, r,
+						kDensityLevelColors[lvl]);
+				else
 					dl->AddCircleFilled(pt, r,
 						kDensityLevelColors[lvl]);
-					++drawn;
-				}
+				++drawn;
+			}
+			m_sggiDrawnLast = std::max(m_sggiDrawnLast, drawn);
 				char scap[256];
 				std::snprintf(scap, sizeof(scap),
 					"SGGI: %u/%zu drawn (<= %.0fm, stride %zu)",

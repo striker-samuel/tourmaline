@@ -1789,12 +1789,24 @@ namespace engine {
 		// RESOLVED, its clusters/resources already uploaded to the
 		// context - everything from here on renders by handles; this
 		// class never parses a pak or imports a scene.
-		if (!m_worldSource) {
+		if (m_borrowedWorld) {
+			// BORROWED (the editor's form): the host keeps owning +
+			// mutating the world; the frame reads the same object, so
+			// edits show up live. The host's stop/relaunch owns the
+			// lifetime (the world must outlive every rendered frame).
+			m_world = m_borrowedWorld;
+			m_worldOwned = {};
+		}
+		else if (!m_worldSource) {
 			std::cerr << "[WorldRenderer] no world: install a world "
-				"source (SetWorldSource)\n";
+				"source (SetWorldSource) or a borrowed world "
+				"(SetBorrowedWorld)\n";
 			return false;
 		}
-		m_world = m_worldSource(*m_context, contentVfs);
+		else {
+			m_worldOwned = m_worldSource(*m_context, contentVfs);
+			m_world = m_worldOwned.get();
+		}
 		if (!m_world) {
 			std::cerr << "[WorldRenderer] world source failed - "
 				"nothing to render (see the errors above)\n";
@@ -2296,6 +2308,11 @@ namespace engine {
 
 		// ImGui overlay - init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
+		// GATED on the ui pass: an embedded host (the editor's WYSIWYG
+		// live view) drives this renderer with ui=false and owns its own
+		// ImGuiOverlay — a second context here would steal the host's
+		// event hook (SetImGuiEventHook below) and fight the host's.
+		if (m_passes.ui) {
 		m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc imguiDesc{};
 		imguiDesc.fontPath = UI_FONT_PATH;
@@ -2313,6 +2330,7 @@ namespace engine {
 			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
 			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
 		}
+		} // m_passes.ui (the embedded-host gate above)
 
 		return true;
 	};
@@ -7011,6 +7029,14 @@ namespace engine {
 		}
 		m_viewportResources.swapImages.clear();
 
+		// INLINE OUTPUT: the swap views are never used (the frame's
+		// output leg writes the private inline target — see the
+		// RenderFrame override); never import them. The internal chain
+		// re-Ensures at the host-driven extent at the next frame
+		// (in place — resize-safe), so there is nothing else to do.
+		if (m_inlineOutput)
+			return;
+
 		const uint32_t count = m_swapchain->GetImageCount();
 		m_viewportResources.swapImages.reserve(count);
 		for (uint32_t i = 0; i < count; ++i) {
@@ -7205,6 +7231,127 @@ namespace engine {
 		m_captureExtent = extent;
 	}
 
+	// ------------------------------------------------------------------
+	// INLINE OUTPUT (see the SetInlineOutput contract in the header).
+	// The private LDR target: creation follows the capture pattern; the
+	// RETIRE follows the deferred-destroy swap (the old inline-target
+	// contract): NEVER destroy the old objects while in-flight frames
+	// reference them (the tonemap writes the image, the HOST's compose
+	// samples the view — VUID-vkDestroyImage-01000, device loss on
+	// resize churn). Create the new objects as locals, SWAP them into
+	// the members (Holder move-assign hands the old handles to the
+	// locals), retire at scope exit through the deferred-destroy queue.
+	// ------------------------------------------------------------------
+	bool WorldRenderer::EnsureInlineTarget(smvk::Extent2D extent) {
+		if (extent.width == 0 || extent.height == 0)
+			return false;
+		if (m_inlineTargetExtent.width == extent.width
+			&& m_inlineTargetExtent.height == extent.height
+			&& !m_inlineTargetLogical.empty())
+			return true;
+		const smvk::Format fmt = m_swapchain->GetSurfaceFormat();
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { extent.width, extent.height, 1 };
+		ci.format = fmt;
+		// Sampled: the host composites it bindless. TransferSrc: debug
+		// readbacks (the host's LIVE-DUMP-style diagnostics — see
+		// depth.h's DebugImageDumpArmed pattern).
+		ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled
+			| smvk::ImageUsage::TransferSrc;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "inlineTarget";
+		smvk::Holder<smvk::ImageHandle> newImage =
+			m_context->CreateImage(ci, nullptr);
+		if (newImage.empty()) {
+			smvk::OnResourceExhaustion("inline target image");
+			return false;
+		}
+		const smvk::ImageViewCreateInfo vci{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = fmt,
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+			.name = "inlineTargetView",
+		};
+		smvk::Holder<smvk::ImageViewHandle> newView =
+			m_context->CreateImageView(newImage, vci);
+		if (newView.empty()) {
+			smvk::OnResourceExhaustion("inline target view");
+			return false;
+		}
+		smvk::Holder<smvk::BindlessImageHandle> newBindless =
+			m_context->CreateBindlessImage(newView,
+				smvk::ImageLayout::ShaderReadOnlyOptimal);
+		if (newBindless.empty()) {
+			smvk::OnResourceExhaustion("inline target bindless");
+			return false;
+		}
+		const uint32_t newBindlessIndex =
+			m_context->GetBindlessIndex(newBindless);
+		const smvk::LogicalImageViewHandle newLogical =
+			m_rendergraph->AddExternalImageView(newView, fmt,
+				"inlineTargetLogical");
+		if (newLogical.empty())
+			return false;
+		if (!m_inlineTargetLogical.empty())
+			m_rendergraph->FreeImageView(m_inlineTargetLogical);
+		// SWAP: the members take the new handles; the locals received
+		// the old ones and retire them (deferred) at scope exit.
+		m_inlineTargetBindless = std::move(newBindless);
+		m_inlineTargetBindlessIndex = newBindlessIndex;
+		m_inlineTargetView = std::move(newView);
+		m_inlineTargetImage = std::move(newImage);
+		m_inlineTargetLogical = newLogical;
+		m_inlineTargetExtent = extent;
+		// The release scratch (1x1): rebuilt with the target through the
+		// same deferred-retire swap — the release pass of an IN-FLIGHT
+		// frame writes it, so a plain destroy would fault the same way
+		// the target's comment above describes.
+		{
+			smvk::ImageCreateInfo sci{};
+			sci.extent = { 1, 1, 1 };
+			sci.format = fmt;
+			sci.usage = smvk::ImageUsage::ColorAttachment;
+			sci.mipLevels = 1;
+			sci.arrayLayers = 1;
+			sci.name = "inlineScratch";
+			smvk::Holder<smvk::ImageHandle> newScratch =
+				m_context->CreateImage(sci, nullptr);
+			const smvk::ImageViewCreateInfo svci{
+				.viewType = smvk::ImageViewType::View2D,
+				.format = fmt,
+				.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+				.name = "inlineScratchView",
+			};
+			smvk::Holder<smvk::ImageViewHandle> newScratchView =
+				newScratch.empty() ? smvk::Holder<smvk::ImageViewHandle>{}
+				: m_context->CreateImageView(newScratch, svci);
+			smvk::LogicalImageViewHandle newScratchLogical =
+				newScratchView.empty() ? smvk::LogicalImageViewHandle{}
+				: m_rendergraph->AddExternalImageView(newScratchView, fmt,
+					"inlineScratchLogical");
+			if (!newScratchLogical.empty()) {
+				if (!m_inlineScratchLogical.empty())
+					m_rendergraph->FreeImageView(m_inlineScratchLogical);
+				m_inlineScratchImage = std::move(newScratch);
+				m_inlineScratchView = std::move(newScratchView);
+				m_inlineScratchLogical = newScratchLogical;
+			}
+		}
+		return true;
+	}
+
+	bool WorldRenderer::EnsureInlineExtent(smvk::Extent2D extent) {
+		if (!m_inlineOutput)
+			return false;
+		return EnsureInlineTarget(extent);
+	}
+
+	smvk::Format WorldRenderer::InlineTargetFormat() const {
+		return m_swapchain ? m_swapchain->GetSurfaceFormat()
+			: smvk::Format::Undefined;
+	}
+
 	void WorldRenderer::ExportScreenshot(smvk::Extent2D extent) {
 		if (m_captureImage.empty()) {
 			std::cerr << "[WorldRenderer] capture target unavailable - screenshot skipped\n";
@@ -7240,11 +7387,21 @@ namespace engine {
 	// ------------------------------------------------------------------
 	void WorldRenderer::OnSwapchainRecreated() {
 		// The host recreated ITS swapchain (the only sync-legal place to
-		// do so Ã¢â‚¬â€ the ELEMENT forwards its onResize here): rebuild our
+		// do so — the ELEMENT forwards its onResize here): rebuild our
 		// swap views + invalidate temporal histories. The frame path
 		// never recreates.
 		if (!m_swapchain)
 			return;
+		if (m_inlineOutput) {
+			// Inline output: no swap views to rebuild, but the private
+			// target's format MIRRORS the swap surface — force a
+			// recreate (the deferred-retire path in EnsureInlineTarget)
+			// at the next frame; the internal chain re-Ensures in
+			// place and the extent-drift guards invalidate histories.
+			m_inlineTargetExtent = { 0, 0 };
+			m_swapchain->ClearFramebufferResized();
+			return;
+		}
 		RebuildSwapViews();
 		m_swapchain->ClearFramebufferResized();
 	}
@@ -7614,19 +7771,35 @@ namespace engine {
 		// borrowed member. Cross-graph fbs are rejected in RenderLayer
 		// above.
 		const smvk::Extent2D swapExtent{ FrameSwapExtent(fb).width, FrameSwapExtent(fb).height };
+		// INLINE OUTPUT (see SetInlineOutput): the host drives the
+		// output extent; the output leg (tonemap / SMAA resolve / UI
+		// composite) writes the PRIVATE inline target as a full write at
+		// (0,0) — the swap image is never touched (the nvlddmkm-wedge
+		// history in the header). Everything downstream (renderExtent,
+		// the lens aspect, the AA targets, colors) derives from
+		// outExtent as usual, so the view matches the host's viewport.
+		const bool inlineOut = InlineOutputActive();
+		if (inlineOut && m_inlineTargetLogical.empty()
+			&& m_inlineTargetExtent.width != 0)
+			EnsureInlineTarget(m_inlineTargetExtent); // recreate after an invalidation (format drift)
 		// Layer rect (element system, see SetLayerRect / onRender): the
 		// sub-rect of the swap image this frame draws into. Internal targets
 		// size off it, the lens aspects to it, and the swap-writing passes
 		// (tonemap / SMAA resolve / UI composite) confine to it with Load
 		// semantics so sibling layers survive. Default = full swap.
-		const LayerRect layer = ClampedLayer(fb);
+		const LayerRect layer = inlineOut ? LayerRect::Full() : ClampedLayer(fb);
 		if (!layer.full && (layer.width == 0 || layer.height == 0))
 			return; // empty intersection: nothing to draw (counters already bumped above)
+		if (inlineOut && (m_inlineTargetExtent.width == 0
+				|| m_inlineTargetExtent.height == 0))
+			return; // no host extent yet: the host composites nothing this frame
 		const bool subRect = !layer.full;
 		const uint32_t outX = subRect ? layer.x : 0u;
 		const uint32_t outY = subRect ? layer.y : 0u;
 		smvk::Extent2D outExtent{ subRect ? layer.width : swapExtent.width,
 			subRect ? layer.height : swapExtent.height };
+		if (inlineOut)
+			outExtent = m_inlineTargetExtent;
 		const smvk::AttachmentLoadOp outLoad = subRect
 			? smvk::AttachmentLoadOp::Load : smvk::AttachmentLoadOp::Clear;
 		// DLSS owns the internal resolution when requested and runnable: the
@@ -7994,7 +8167,7 @@ namespace engine {
 		AppFrameContext fc{};
 		fc.ctx = m_context;
 		fc.rg = m_rendergraph.get();
-		fc.world = m_world.get();
+		fc.world = m_world;
 		fc.views = &m_renderViews;
 		fc.frameIndex = fb.frameIndex;
 		fc.mainViewIndex = mainRenderView;
@@ -8035,7 +8208,10 @@ namespace engine {
 		uint32_t gfxSlot = smvk::RenderViewSet::kInvalidIndex;
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
-		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
+		if (inlineOut)
+			colors.push_back(m_inlineTargetLogical); // the private LDR target — never a swap image
+		else
+			colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
 		// HDR target for scene - intermediate before tonemap. The aoTerm
 		// MRT twin (target1, the SSGI AO export) rides along whenever the
 		// SSGI targets exist; Main's lit FS family writes both, the debug
@@ -15171,6 +15347,32 @@ namespace engine {
 			//     .SetExtent(uiExtent)
 			//     .SetColor({m_viewportResources.ui.logicalView}, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store)
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
+		}
+
+		// INLINE RELEASE (see the SetInlineOutput contract): one tiny
+		// composite pass — the inline target sampled into the 1x1
+		// scratch — AFTER the last output writer (tonemap / SMAA
+		// resolve / UI composite above). The pass exists for its SIDE
+		// effect: SetInputImages records the COLOR_ATTACHMENT ->
+		// SHADER_READ transition, so the target ends the frame in
+		// exactly the layout the HOST's ImGui descriptor declares
+		// (CreateBindlessImage only records the expected layout;
+		// nothing else transitions a per-frame-written image for
+		// off-graph sampling — an undeclared sample would race the
+		// tonemap write and mismatch the descriptor's layout).
+		if (inlineOut && !m_inlineScratchLogical.empty()
+			&& (m_viewportResources.uiComposite.ShadersValid()
+				|| m_viewportResources.uiComposite.Ensure(*m_context))) {
+			m_viewportResources.uiComposite.AddCompositePass(*m_rendergraph,
+				m_inlineTargetLogical,
+				m_inlineTargetBindlessIndex,
+				linearSampler,
+				{ m_inlineScratchLogical },
+				smvk::Extent2D{ 1, 1 },
+				false,
+				"InlineRelease",
+				0,
+				0);
 		}
 
 		// Cooperative shadow list builds must land before Execute: the

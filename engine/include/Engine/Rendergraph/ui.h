@@ -191,6 +191,12 @@ struct UiComposite {
 	// Layer sub-rect (see Tonemapper::AddTonemapPass): offsetX/Y confine
 	// the composite to the element's rect. Load is unconditional here so
 	// sub-rect layers always preserve siblings.
+	// opaqueBlend: replace the dst instead of alpha-blending (a 1:1 copy
+	// that ignores the SOURCE alpha). For sources whose alpha channel is
+	// DATA, not opacity - the SMAA T2x chain packs the velocity magnitude
+	// into alpha (smaa_neighborhood - the resolve's history attenuation;
+	// the swapchain ignores it at present, but an embedded host's
+	// composite MUST NOT alpha-blend on it).
 	RenderPass& AddCompositePass(RenderGraph& rg,
 		LogicalImageViewHandle uiView,
 		uint32_t uiBindlessIndex,
@@ -200,7 +206,8 @@ struct UiComposite {
 		bool decodeOutput = false,
 		const char* name = nullptr,
 		uint32_t offsetX = 0,
-		uint32_t offsetY = 0) const {
+		uint32_t offsetY = 0,
+		bool opaqueBlend = false) const {
 		assert(ShadersValid());
 		assert(!uiView.empty());
 		assert(!swapViews.empty());
@@ -219,13 +226,15 @@ struct UiComposite {
 				AttachmentStoreOp::Store,
 				ClearColor(0, 0, 0, 1));
 		ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
-		pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+		pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
 			cmd.BindRenderPipeline(
 				progCopy,
 				VertexFormat::Empty,
 				DepthSettings::Disabled(),
 				StencilSettings::DefaultDisabled(),
-				BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
+				opaqueBlend
+					? BlendSettings::Opaque() // 1:1 copy: src replaces dst
+					: BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
 				MSAASettings::Count1(),
 				RasterSettings{ .cullMode = CullMode::None });
 			cmd.PushConstants(0, sizeof(UiCompositePush), &push, ShaderStage::All);

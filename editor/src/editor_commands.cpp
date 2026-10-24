@@ -1588,6 +1588,7 @@ void EditorApp::DraftCreateCubemap() {
 	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
 		? sel : DefaultCreateParent();
 	c.afterText = UniqueCubemapName();
+	// Use active cam target as default position; user can override via gizmo
 	c.afterVec = ActiveCam().target;
 	c.cubemapRadius = 1.5f;
 	Do(c);

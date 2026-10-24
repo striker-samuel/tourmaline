@@ -507,13 +507,13 @@ void EditorApp::ModalUnparentSelection() {
 }
 
 void EditorApp::ModalFrameSel() {
-	if (m_showUvEditor && m_uvWinHovered) {
-		// UV editor window: reset navigation (zoom 1, pan 0).
-		m_uvWinZoom = 1.0f;
-		m_uvWinPan = glm::vec2(0.0f);
-		Log("UV window reset (zoom 1, pan 0).");
-	}
-	else {
+	// UV editor window retired — F always frames the selection.
+	//if (m_showUvEditor && m_uvWinHovered) {
+	//	m_uvWinZoom = 1.0f;
+	//	m_uvWinPan = glm::vec2(0.0f);
+	//	Log("UV window reset (zoom 1, pan 0).");
+	//}
+	{
 		FrameSelection();
 	}
 }

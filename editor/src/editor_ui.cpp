@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // Editor UI: menu bar, outliner (hierarchy), inspector (transform /
@@ -192,6 +192,15 @@ namespace editor {
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
 				ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
 				if (ImGui::BeginTabBar("##bottomTabs")) {
+					// The WYSIWYG live view (View-menu toggle): the tab's
+					// CONTENT region is painted by the GPU composite pass
+					// recorded AFTER the imgui pass (RecordLiveViewComposePass)
+					// — the tab body itself only captures the rect. FIRST in
+					// the bar so enabling it selects it (no dead toggle).
+					if (m_showWysiwyg && ImGui::BeginTabItem("Live view")) {
+						DrawLiveViewTab();
+						ImGui::EndTabItem();
+					}
 					if (ImGui::BeginTabItem("Overrides")) {
 						DrawOverridesPanel();
 						ImGui::EndTabItem();
@@ -214,11 +223,17 @@ namespace editor {
 		DrawPanelSplitters(); // resize handles between panels and viewport
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
-		DrawUvEditorWindow(); // floating UV editor (View menu; canvas via GPU)
+		// UV editor window retired (the Live view window replaced the
+		// canvas era; solid backgrounds everywhere now — no transparent
+		// content regions). See editor_viewports.cpp's DrawUvEditorWindow.
+		//DrawUvEditorWindow(); // floating UV editor (View menu; canvas via GPU)
 		DrawCookWindow(); // floating cook/bake tools (View menu)
 		DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 		DrawReferencesPanel(); // Maya-style reference list (View menu)
 		DrawPathsPanel(); // consolidated file/path view (File menu)
+		DrawGiVizWindow(); // GI-authoring legend + probe overlay controls
+		// (The WYSIWYG live view is no floating window: it is the bottom
+		// dock's "Live view" TAB — see the BottomDock block above.)
 		if (m_placement.showGraph)
 			DrawPlacementGraph();
 		// Frame-time histogram (View menu / F12): a SEPARATE bottom strip —
@@ -441,36 +456,27 @@ namespace editor {
 		if (ImGui::BeginMenu("View")) {
 			ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
 				"F9..F11, P) â€” same view, same key, live view.");
-			if (ImGui::MenuItem("Unlit", "F2",
-				ActiveViewMode() == ViewMode::Unlit))
+			// Shading: the GI tri-view (the bake workflow's three looks),
+			// ONE block — the old F1/F2 pair ("Unlit"/"Lit") duplicated
+			// these (same ViewMode targets; the tri-view adds the ambient
+			// split below). Unlit (albedo) = pure albedo; Fully Lit
+			// renders the baked GI sources (world field + convex volumes
+			// + cubemaps); Realtime Lit = the analytic look (direct sun +
+			// sky IBL, no bake). The latter two both ride the Lit frame;
+			// the difference is the ambient source (SetAmbientMode All vs
+			// SkyIbl, driven every frame with the debug views).
+			if (ImGui::MenuItem("Unlit (albedo)", "F2",
+					ActiveViewMode() == ViewMode::Unlit))
 				ActiveViewMode() = ViewMode::Unlit;
-			if (ImGui::MenuItem("Lit (shadows + full pipeline)", "F1",
-				ActiveViewMode() == ViewMode::Lit))
+			if (ImGui::MenuItem("Fully Lit (with GI)", "F1",
+					ActiveViewMode() == ViewMode::Lit && m_litView == 0)) {
 				ActiveViewMode() = ViewMode::Lit;
-			ImGui::Separator();
-			// Lighting view (the GI tri-view, the bake workflow's three
-			// looks): Unlit (albedo), Fully Lit (With GI) — the live view
-			// renders the baked GI sources (world field + convex volumes +
-			// cubemaps) — and Realtime Lit — the analytic look without the
-			// bake (direct sun + sky IBL). The latter two both ride the Lit
-			// frame; the difference is the ambient source (SetAmbientMode
-			// All vs SkyIbl, driven every frame with the debug views).
-			{
-				const bool sel[3] = {
-					ActiveViewMode() == ViewMode::Unlit,
-					ActiveViewMode() == ViewMode::Lit && m_litView == 0,
-					ActiveViewMode() == ViewMode::Lit && m_litView == 1
-				};
-				if (ImGui::MenuItem("Unlit (albedo)", nullptr, sel[0]))
-					ActiveViewMode() = ViewMode::Unlit;
-				if (ImGui::MenuItem("Fully Lit (With GI)", nullptr, sel[1])) {
-					ActiveViewMode() = ViewMode::Lit;
-					m_litView = 0;
-				}
-				if (ImGui::MenuItem("Realtime Lit", nullptr, sel[2])) {
-					ActiveViewMode() = ViewMode::Lit;
-					m_litView = 1;
-				}
+				m_litView = 0;
+			}
+			if (ImGui::MenuItem("Realtime Lit", nullptr,
+					ActiveViewMode() == ViewMode::Lit && m_litView == 1)) {
+				ActiveViewMode() = ViewMode::Lit;
+				m_litView = 1;
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Meshlets", "F3",
@@ -592,10 +598,11 @@ namespace editor {
 				FrameSelection();
 			if (ImGui::MenuItem("Frame all", "Shift+F"))
 				FrameAll();
-			if (m_showUvEditor && ImGui::MenuItem("Reset UV window (zoom 1)")) {
-				m_uvWinZoom = 1.0f;
-				m_uvWinPan = glm::vec2(0.0f);
-			}
+			// UV editor window retired (see the DrawUvEditorWindow note).
+			//if (m_showUvEditor && ImGui::MenuItem("Reset UV window (zoom 1)")) {
+			//	m_uvWinZoom = 1.0f;
+			//	m_uvWinPan = glm::vec2(0.0f);
+			//}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
@@ -605,54 +612,44 @@ namespace editor {
 			if (ImGui::MenuItem("Path editor...", nullptr,
 				m_showPathsPanel))
 				m_showPathsPanel = !m_showPathsPanel;
-			ImGui::Separator();
-			ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
-			if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
-				m_showLightGizmos = !m_showLightGizmos;
-			if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
-				m_showCvolGizmos = !m_showCvolGizmos;
-			if (ImGui::MenuItem("Cubemap capture markers", nullptr,
-				m_showCubemapGizmos))
-				m_showCubemapGizmos = !m_showCubemapGizmos;
-			// App-parity probe overlay: the manifest sidecar's loaded rows
-			// as dot + C<idx> + influence/fade rings (same table, same
-			// colors as the App's probe-location overlay).
-			if (ImGui::MenuItem("Probe locations overlay", nullptr,
-				m_showProbeOverlay))
-				m_showProbeOverlay = !m_showProbeOverlay;
+		ImGui::Separator();
+		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
+		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
+			m_showLightGizmos = !m_showLightGizmos;
+		if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
+			m_showCvolGizmos = !m_showCvolGizmos;
+		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
+			m_showCubemapGizmos))
+			m_showCubemapGizmos = !m_showCubemapGizmos;
+		// GI VISUALIZATION CLUSTER — ONE entry: the probe-viz window
+		// owns every probe/density toggle (overlay on/off, octahedra
+		// markers, rings, labels, density previews, sizes, distances).
+		// The individual items used to live here too — that was the
+		// duplicated-entries state; the window is the single control
+		// surface for this cluster now.
+		if (ImGui::MenuItem("GI probe viz...", nullptr,
+			m_showGiVizWindow))
+			m_showGiVizWindow = !m_showGiVizWindow;
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Loaded baked probes per viewport (dot +\n"
-				"C<idx> + influence/fade rings, camera-distance\n"
-				"colored) — the App's probe overlay, LIGHTING only.");
-		// Bake-DENSITY overlays (no baker run): the cubemap probe set
-		// the current cook settings would place (predicted, depth
-		// red->pink) and the baked .sggi lattice (level red->pink).
-		// Answers "do the density settings fit the scene" in situ.
-		if (ImGui::MenuItem("Cubemap density preview", nullptr,
-			m_cubemapDensityOn)) {
-			m_cubemapDensityOn = !m_cubemapDensityOn;
-			if (m_cubemapDensityOn && m_cubemapDensity.empty())
-				RefreshCubemapDensity();
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Predicted cubemap placement from the cook\n"
-				"dialog's octree knobs (8 m grid mirror when the octree\n"
-				"is off) vs the baked manifest rows — LIGHTING only.\n"
-				"Refresh in the GI panel after changing settings.");
-		if (ImGui::MenuItem("GI octree density", nullptr,
-			m_sggiDensityOn)) {
-			m_sggiDensityOn = !m_sggiDensityOn;
-			if (m_sggiDensityOn && m_sggiDensity.probes.empty())
-				RefreshSggiDensity();
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Baked .sggi probe lattice as level-colored\n"
-				"dots + level histogram and effective cell sizes —\n"
-				"LIGHTING only. Refresh in the GI panel after baking.");
-			if (ImGui::MenuItem("Camera frustums", nullptr,
+			ImGui::SetTooltip("Legend + controls: the probe overlay,\n"
+				"octahedra markers, rings, labels, density previews,\n"
+				"sizes/distances, and the probe counts (in level /\n"
+				"in view / per octree level) — LIGHTING only.");
+			// The WYSIWYG live view: the App's whole frame pipeline in
+			// the bottom dock's Live view tab, camera-following the
+			// active viewport.
+			if (ImGui::MenuItem("Live view (WYSIWYG)...", nullptr,
+				m_showWysiwyg))
+				m_showWysiwyg = !m_showWysiwyg;
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("The full renderer - shadows, AO, SSR,\n"
+					"volumetrics, GI + the authored postfx grade - in\n"
+					"the bottom dock's Live view tab, following the\n"
+					"active viewport's camera.");
+		if (ImGui::MenuItem("Camera frustums", nullptr,
 				m_showCameraGizmos))
-				m_showCameraGizmos = !m_showCameraGizmos;
-			ImGui::Separator();
+			m_showCameraGizmos = !m_showCameraGizmos;
+		ImGui::Separator();
 			{
 				// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
 				const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
@@ -666,8 +663,9 @@ namespace editor {
 			}
 			if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 				m_uiMode = !m_uiMode;
-			if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
-				m_showUvEditor = !m_showUvEditor;
+			// UV editor window retired (see the DrawUvEditorWindow note).
+			//if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
+			//	m_showUvEditor = !m_showUvEditor;
 			if (ImGui::MenuItem("Cook & bake window", nullptr,
 					m_showCookWindow))
 				m_showCookWindow = !m_showCookWindow;
@@ -3250,50 +3248,25 @@ namespace editor {
 			}
 		}
 		ImGui::Separator();
-		ImGui::Text("UV editor window (View menu)");
-		{
-			if (ImGui::Checkbox("Show UV editor", &m_showUvEditor)) {
-				if (m_showUvEditor && m_uvWinMode == ViewMode::FlatUv1 && !m_lmGpu)
-					m_uvWinMode = ViewMode::FlatUv0; // atlas not loaded
-			}
-			const char* chans[2] = { "TEXCOORD0 (diffuse)", "uv2 (lightmap)" };
-			int cm = (m_uvWinMode == ViewMode::FlatUv1) ? 1 : 0;
-			if (ImGui::Combo("Channel", &cm, chans, 2)) {
-				if (cm == 1 && !m_lmGpu)
-					Log("No lightmap atlas loaded - UV1 channel unavailable.");
-				else
-					m_uvWinMode = (cm == 1) ? ViewMode::FlatUv1 : ViewMode::FlatUv0;
-			}
-			float z = m_uvWinZoom;
-			if (ImGui::SliderFloat("Zoom##uvwin", &z, 0.2f, 32.0f, "%.2f"))
-				m_uvWinZoom = std::clamp(z, 0.2f, 32.0f);
-			glm::vec2 p = m_uvWinPan;
-			float pp[2] = { p.x, p.y };
-			if (ImGui::DragFloat2("Pan (UV)##uvwin", pp, 0.01f, -4.0f, 4.0f))
-				m_uvWinPan = glm::vec2(pp[0], pp[1]);
-			if (ImGui::Button("Reset window (F)")) {
-				m_uvWinZoom = 1.0f;
-				m_uvWinPan = glm::vec2(0.0f);
-			}
-			ImGui::TextDisabled("MMB drag = pan, wheel = zoom, click = pick.");
-			ImGui::TextDisabled("Yellow = face, cyan = vertex highlight.");
-		}
-		ImGui::Separator();
+		// UV editor window controls retired (see the DrawUvEditorWindow
+		// note in editor_viewports.cpp) — the canvas is gone; solid
+		// backgrounds everywhere.
 		ImGui::Text("Views");
 		if (ImGui::Button("UV0 fullscreen (F9)"))
 			ActiveViewMode() = ViewMode::Uv0;
 		ImGui::SameLine();
 		if (ImGui::Button("UV1 fullscreen (F10)"))
 			ActiveViewMode() = ViewMode::Uv1;
-		if (ImGui::Button("Flat UV diffuse")) {
-			m_showUvEditor = true;
-			m_uvWinMode = ViewMode::FlatUv0;
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Flat UV lightmap") && m_lmGpu) {
-			m_showUvEditor = true;
-			m_uvWinMode = ViewMode::FlatUv1;
-		}
+		// Flat UV window buttons retired with the canvas.
+		//if (ImGui::Button("Flat UV diffuse")) {
+		//	m_showUvEditor = true;
+		//	m_uvWinMode = ViewMode::FlatUv0;
+		//}
+		//ImGui::SameLine();
+		//if (ImGui::Button("Flat UV lightmap") && m_lmGpu) {
+		//	m_showUvEditor = true;
+		//	m_uvWinMode = ViewMode::FlatUv1;
+		//}
 		if (ImGui::Button(
 			("UV inset: " + std::string(SecondViewName(m_secondView)) +
 				" (F5)").c_str()))
@@ -3636,6 +3609,147 @@ namespace editor {
 		ImGui::SetNextWindowSize(ImVec2(470, 620), ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("Cook & bake", &m_showCookWindow))
 			DrawCookPanel();
+		ImGui::End();
+	}
+
+	// ---- WYSIWYG Live view TAB (the bottom dock; editor_app.h decl) --
+	// The tab's CONTENT region is painted by the GPU composite pass
+	// (RecordLiveViewComposePass, editor_render.cpp) recorded AFTER the
+	// imgui pass — it over-draws this exact rect, so the tab body stays
+	// EMPTY (no UV-canvas-era transparent-content-region tricks; the
+	// tab strip + panel chrome around it render normally under it).
+	// Here: capture the rect (same-frame for the compose pass) + the
+	// invalid-state hint (covered by the composite once valid).
+	void EditorApp::DrawLiveViewTab() {
+		const ImVec2 p = ImGui::GetCursorScreenPos();
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		m_wysiwygLiveRectMin = p;
+		m_wysiwygLiveRectMax = ImVec2(p.x + avail.x, p.y + avail.y);
+		m_wysiwygLiveRectFresh = true;
+		// The placeholder hint only reads while the renderer is
+		// unavailable (attach failed / no scene): the composite paints
+		// over this whole rect once it runs.
+		if (!(m_wysiwyg && m_wysiwygValid))
+			ImGui::TextDisabled("Live view: %s", m_world
+				? "renderer unavailable (attach failed - see the console)"
+				: "no scene loaded");
+	}
+	// ---- GI probe viz window (View menu; editor_app.h decl) -----------
+	// The GI-authoring legend + control center: every probe-overlay
+	// switch in one place, the size/distance knobs, and the counts the
+	// user reasons with while placing probes — "how many am I
+	// authoring, here or anywhere in the level":
+	//   - Cubemap probes: manifest rows in the LEVEL, authored pins,
+	//     how many are in view, plus the camera-distance color legend.
+	//   - .sggi lattice: total probes, then the per-OCTREE-LEVEL
+	//     breakdown (probe count, effective cell size, lookup cells and
+	//     max probes per cell — the chunk/cluster density answer), each
+	//     row tagged with the level's ramp swatch.
+	// Read-live like the overlays (the manifest sidecar + the .sggi
+	// cache are queried per frame — the window can never disagree with
+	// what the viewports draw). LIGHTING mode only: the overlays it
+	// documents are LIGHTING-gated too.
+	void EditorApp::DrawGiVizWindow() {
+		if (!m_showGiVizWindow || m_mode != EditorMode::Lighting)
+			return;
+		ImGui::SetNextWindowSize(ImVec2(420, 560), ImGuiCond_FirstUseEver);
+		if (!ImGui::Begin("GI probe viz", &m_showGiVizWindow))
+			return;
+		// A 12px color swatch before a text line (the legend rows):
+		// drawlist rect + a dummy advance so the swatch rides IN the
+		// layout flow instead of fighting SameLine offsets.
+		const auto legendSwatch = [](ImU32 col) {
+			ImDrawList* wdl = ImGui::GetWindowDrawList();
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			wdl->AddRectFilled(p,
+				ImVec2(p.x + 12.0f, p.y + 12.0f), col);
+			ImGui::Dummy(ImVec2(16.0f, 14.0f));
+			ImGui::SameLine();
+		};
+
+		// ---- marker switches ----
+		// (The gizmo-family toggles — capture markers, light gizmos,
+		// cvol boxes — stay View-menu-only; this window owns the
+		// probe/density cluster, no overlap.)
+		ImGui::Checkbox("Cubemap probe overlay", &m_showProbeOverlay);
+		ImGui::Checkbox("Octahedra markers (all probe sets)",
+			&m_showProbeOctahedra);
+		ImGui::Checkbox("Influence/fade rings", &m_probeRings);
+		ImGui::Checkbox("C<idx>/P<idx> labels", &m_probeLabels);
+		ImGui::SliderFloat("Marker size", &m_probeMarkerSize, 1.0f, 12.0f,
+			"%.1f px");
+		ImGui::SliderFloat("Probe overlay distance",
+			&m_probeOverlayMaxDist, 5.0f, 300.0f, "%.0f m");
+
+		// ---- density preview toggles (same flags as the GI panel) ----
+		ImGui::Separator();
+		ImGui::TextUnformatted("Bake density previews (no baker run)");
+		if (ImGui::Checkbox("Cubemap density preview",
+				&m_cubemapDensityOn)
+			&& m_cubemapDensityOn && m_cubemapDensity.empty())
+			RefreshCubemapDensity();
+		ImGui::Checkbox("GI octree density (.sggi lattice)",
+			&m_sggiDensityOn);
+		if (m_sggiDensityOn && m_sggiDensity.probes.empty())
+			RefreshSggiDensity();
+		ImGui::SliderFloat("Octree overlay distance",
+			&m_sggiDensityMaxDist, 5.0f, 300.0f, "%.0f m");
+
+		// ---- legend: cubemap probes ----
+		ImGui::Separator();
+		ImGui::TextUnformatted("Cubemap probes (manifest sidecar)");
+		std::vector<CubemapProbeRow> rows;
+		CubemapProbeRowsFromFile(rows);
+		ImGui::Text("In level: %zu    in view: %u (cap 64)",
+			rows.size(), m_probeDrawnLast);
+		if (m_world) {
+			ImGui::Text("Authored pins: %zu node(s)",
+				m_world->scene.cubemapForNode.size());
+		}
+		legendSwatch(IM_COL32(80, 255, 120, 230));
+		ImGui::TextUnformatted("camera inside influence (full weight)");
+		legendSwatch(IM_COL32(255, 220, 80, 230));
+		ImGui::TextUnformatted("camera inside fade ring (blending)");
+		legendSwatch(IM_COL32(120, 140, 160, 160));
+		ImGui::TextUnformatted("beyond fade (probe idle for this view)");
+		legendSwatch(IM_COL32(0, 0, 0, 255));
+		ImGui::TextUnformatted(
+			"authored pin, no baked probe behind it (black ball)");
+
+		// ---- legend: .sggi lattice ----
+		ImGui::Separator();
+		ImGui::TextUnformatted("GI octree lattice (.sggi)");
+		const auto& vol = m_sggiDensity;
+		if (vol.probes.empty()) {
+			ImGui::TextDisabled("no volume loaded — %s",
+				m_sggiDensityInfo.empty()
+					? "bake GI, then toggle GI octree density"
+					: m_sggiDensityInfo.c_str());
+		} else {
+			ImGui::Text("In level: %zu probes, %u octree level(s)"
+				"    in view: %u",
+				vol.probes.size(), vol.levelCount, m_sggiDrawnLast);
+			// Per-level rows: probes counted from the sorted probe
+			// array (always present), cells + max-per-cell from
+			// BuildGrids' levelStats (the load path fills them; the
+			// guard keeps a sparse volume honest).
+			uint64_t perLevel[8] = {};
+			for (const smvk::gi::SgProbe& p : vol.probes)
+				++perLevel[std::min(p.level, 7u)];
+			ImGui::TextUnformatted(
+				"per level: probes / effective cell / cells / max per cell");
+			for (uint32_t l = 0; l < std::min(vol.levelCount, 8u); ++l) {
+				legendSwatch(kDensityLevelColors[l]);
+				const bool stats = l < vol.levelStats.size();
+				ImGui::Text("L%u: %llu  cell %.2f m  %u cell(s)  max %u",
+					l, (unsigned long long)perLevel[l],
+					vol.cellSize[l],
+					stats ? vol.levelStats[l].cellCount : 0u,
+					stats ? vol.levelStats[l].maxProbesPerCell : 0u);
+			}
+			ImGui::TextDisabled(
+				"ramp: coarse red -> fine pink (the App's SG-GI language)");
+		}
 		ImGui::End();
 	}
 

@@ -122,6 +122,15 @@ bool EditorApp::Initialize() {
 	// cook/bake workers ride it; see editor_fibers.h). Before anything
 	// that can Post a job.
 	m_fibers.Start(2);
+	// The synchronized-tick WORLD LAYER (see WorldLayer in
+	// editor_app.h): the base MainLoop drives its onUpdate (the
+	// boundary half — BEFORE this host's DrawFrame/acquire), the base
+	// Run attaches it after Initialize returns, and the
+	// between-rounds record position (RenderWysiwygLayer) runs from
+	// RenderFrame's drive slot. The base pump's rebuild check calls
+	// its onResize at the sync-legal recreate boundary.
+	m_worldLayer = std::make_shared<WorldLayer>(this);
+	AddElement(m_worldLayer);
 	// Dev quad-layout switch (TOURMALINE_EDITOR_VP_QUAD=1): start in the
 	// four-viewport layout so headless smoke runs exercise the per-
 	// viewport editor passes. The V toggle keeps working after.
@@ -1369,11 +1378,8 @@ void EditorApp::UpdateCamera(float dt) {
 	// angled perspective-like views â€” only the Projection combo changes
 	// the type. Ortho zoom scales the half-height.
 	SetupDefaultCameras();
-	// The UV editor window owns its wheel + MMB (window zoom/pan in
-	// DrawUvEditorWindow via ImGui): the 3D orbit camera never moves
-	// while the UV canvas is hovered.
-	if (m_showUvEditor && m_uvWinHovered)
-		return;
+	// UV editor window retired — the wheel + MMB always drive the 3D
+	// orbit camera (the canvas-hover gate went with the window).
 	// Locked look-through: orbit navigation is parked while the active
 	// viewport follows a live camera node (move the node via gizmo or
 	// the transform inspector â€” the view tracks it). A lost node falls
@@ -1752,10 +1758,43 @@ void EditorApp::DrawFrame() {
 	}
 	// ---- frame sync: acquire -> editor passes -> present (the host pump
 	// shape, driven editor-side for the custom frame flow). ----
+	// The pump's REBUILD CHECK (the base DrawFrame's shape — the
+	// sync-legal recreate boundary, BEFORE the acquire): the WM's
+	// resize (the OnFramebufferResized flag) recreates the swapchain
+	// HERE and the element stack's onResize rides it — the WorldLayer
+	// invalidates the world renderer's swap mirrors (the inline
+	// target's format-mirror + the swap views) with NOTHING in flight,
+	// instead of the old mid-frame discovery. The boundary quiesce
+	// below then drains the frames that were submitted under the old
+	// swap before the next frame's chain re-ensure.
+	if (m_swapchain->FramebufferResized()) {
+		m_swapchain->Recreate();
+		m_swapchain->ClearFramebufferResized();
+		if (m_worldLayer) {
+			const auto ext = m_swapchain->GetExtent();
+			m_worldLayer->onResize(ext);
+		}
+	}
 	auto fb = m_swapchain->AcquireFramebuffer();
 	if (fb.imageIndex >= 0)
 		RenderFrame(fb);
 	m_swapchain->EndAndPresentFramebuffer(fb);
+	// BOUNDARY QUIESCE (the frame-boundary-aware extent-change wait):
+	// any frame that recreated (or queued a recreate of) the world
+	// layer's inline target — the boundary half's extent drift, the
+	// layer's onResize (the pump's rebuild above), the relaunch —
+	// flags this. Waiting HERE (the frame boundary: the present landed,
+	// every command buffer closed, nothing mid-recording) drains both
+	// timelines (the swapchain's AND the graphics Submitter's that the
+	// world's own readback submits ride) so the NEXT boundary settle's
+	// chain destroys nothing in flight. The element tick sets the flag
+	// from UpdateWysiwygBoundary/onResize; the quiesce itself is a
+	// conservative guard (the death needed more than this — see the
+	// hunt record in docs/target_heap_packing.md).
+	if (m_wysiwygBoundaryQuiesce) {
+		m_wysiwygBoundaryQuiesce = false;
+		WaitForDeviceIdle();
+	}
 	// Fibers pump (main thread): deliver job completions (cook/bake
 	// finish logic runs here, after the frame is presented).
 	m_fibers.Pump();

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // EditorApp viewport renderer: Unlit / Lit forward passes.
@@ -32,6 +32,7 @@
 #include <Engine/Camera/camera.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/dxc_integration.h> // TOURMALINE_LIVE_TRIANGLE's inline-HLSL compile
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/core.h>
@@ -1049,6 +1050,8 @@ namespace editor {
 		}
 	}
 
+#if 0 // UV editor window canvas retired (the Live view window replaced
+       // it; solid backgrounds everywhere — no transparent chrome fills)
 	void EditorApp::RecordUvWindowPass(smvk::LogicalImageViewHandle swapView,
 		uint32_t flight) {
 		// UV editor window canvas: the selection's unwrapped shell + texture
@@ -1187,6 +1190,7 @@ namespace editor {
 			}
 		});
 	}
+#endif // UV editor window canvas retired
 
 	smvk::ShaderProgram& EditorApp::InsetProgram() {
 		switch (m_secondView) {
@@ -2041,6 +2045,19 @@ namespace editor {
 		}
 		m_rendergraph->Execute(fb);
 
+		// ---- WYSIWYG LIVE VIEW (the world layer's record) ---------------
+		// The between-rounds slot — now the LAYER contract's position:
+		// WorldLayer::onRender (the base MainLoop runs the element's
+		// onUpdate — the boundary half — BEFORE the editor's DrawFrame;
+		// this records into the frame at the layer position). The world
+		// render writes ONLY its private inline target + the 1x1 release
+		// scratch (never this swapchain — see the WorldRenderer inline
+		// contract), so its position relative to round 1 is free; it
+		// merely must precede round 2's Execute, whose ImGui pass
+		// samples the target (cross-round ordering rides the
+		// context-global sync-state tables, same as every round).
+		RenderWysiwygLayer(fb, extent);
+
 		// ---- scene passes (per viewport) + overlay ---------------------
 		m_rendergraph->NewFrame();
 		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx)
@@ -2064,11 +2081,15 @@ namespace editor {
 		if (m_imgui && m_imgui->IsInitialized()) {
 			m_imgui->NewFrame(extent);
 			DrawUI(extent);
-			// UV editor window canvas: after DrawUI (same-frame rect), before
-			// the imgui pass (the alpha-0 chrome draws over the fill).
-			RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
+			// UV editor window canvas retired (see RecordUvWindowPass).
+			//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
 			m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 				smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
+			// The WYSIWYG composite LAST: it over-draws the Live tab's
+			// content rect on top of the finished ImGui panels (the tab
+			// body is empty by design; see RecordLiveViewComposePass).
+			if (m_wysiwygLiveRectFresh)
+				RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
 		}
 		// Flush bindless descriptor writes (scene texture views, samplers)
 		// BEFORE Execute records — App does the same (see WorldRenderer).
@@ -2083,6 +2104,476 @@ namespace editor {
 			ExportLightmapPng();
 		}
 		++m_frameCounter;
+	}
+
+	// ---- WYSIWYG LIVE VIEW (the full-graph renderer; editor_app.h) ----
+	void EditorApp::LaunchWysiwyg() {
+		if (!m_world)
+			return;
+		StopWysiwyg();
+		// The full pipeline with ONLY the UI pass dropped: the editor
+		// owns the UI (its own overlay + panels) — a second ImGui
+		// context inside the renderer would steal the host's event
+		// hook (the onAttach gate keys on exactly this flag).
+		engine::WorldRendererConfig cfg = engine::WorldRendererConfig::All();
+		cfg.ui = false;
+		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this);
+		m_wysiwyg->Configure(cfg);
+		// The BORROWED form of the world contract (see WorldRenderer.h):
+		// the editor KEEPS owning + mutating its world — the renderer
+		// reads the same object, so edits (moves, material swaps, light
+		// changes) show up per frame with no rebinding. The editor's
+		// stop/relaunch owns the lifetime (DriveWysiwygLive's witnesses).
+		m_wysiwyg->SetBorrowedWorld(m_world.get());
+		m_wysiwyg->SetInlineOutput(true);
+		m_wysiwygValid = m_wysiwyg->onAttach();
+		m_wysiwygWorld = m_world.get();
+		m_wysiwygSceneId = SceneIdForHost();
+		if (!m_wysiwygValid) {
+			Log("Live view: renderer attach failed — see the console "
+				"(the window shows a hint).");
+			// Element contract: a failed attach is NOT detached — drop
+			// the instance; the Holders retire their objects deferred.
+			m_wysiwyg.reset();
+		}
+	}
+
+	void EditorApp::StopWysiwyg() {
+		m_wysiwygCanvasSize = ImVec2(0.0f, 0.0f);
+		m_wysiwygLiveRectFresh = false;
+		m_wysiwygLiveRectMin = ImVec2(0.0f, 0.0f);
+		m_wysiwygLiveRectMax = ImVec2(0.0f, 0.0f);
+		if (!m_wysiwygComposeLogical.empty()) {
+			m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
+			m_wysiwygComposeLogical = {};
+		}
+		if (m_wysiwyg) {
+			m_wysiwyg->onDetach(); // waits idle, releases while the context lives
+			m_wysiwyg.reset();
+		}
+		m_wysiwygValid = false;
+		m_wysiwygWorld = nullptr;
+		m_wysiwygSceneId.clear();
+	}
+
+	// ---- The synchronized-tick halves (WorldLayer's phases — see
+	// editor_app.h's WorldLayer). The OLD monolithic DriveWysiwygLive ran
+	// everything MID-FRAME (between the editor's recording rounds, the
+	// frame command buffer open, the flight slot taken) — the frame-blind
+	// placement the gesture-crash hunt pinned. The element contract now
+	// splits it at the pump's boundary:
+	//   UpdateWysiwygBoundary (onUpdate — the base MainLoop runs elements
+	//     BEFORE the host's DrawFrame/acquire): the lazy lifecycle (the
+	//     heavy attach/detach destroys land with the previous frame fully
+	//     presented), Tick + the camera drive, the extent settle (the
+	//     canvas gates + EnsureInlineExtent), and the park decision —
+	//     ALL state work, nothing recording, the acquire not yet taken.
+	//   RenderWysiwygLayer (onRender — the between-rounds position the
+	//     drive always had, but the layer contract's): RenderLayerInto —
+	//     the record only.
+	void EditorApp::UpdateWysiwygBoundary(float dt) {
+		m_wysiwygLayerRenderable = false;
+		// Launch/stop housekeeping, lazy per frame: launch while a world
+		// + the toggle are on; relaunch when the world OBJECT or the
+		// scene stem swaps (open/close/load) or right after a bake
+		// completes (the renderer's GI/cubemap loaders ran at attach —
+		// assets that landed later need a fresh attach to be seen).
+		const bool wantLive = m_showWysiwyg && m_world;
+		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
+				|| m_wysiwygSceneId != SceneIdForHost()))
+			LaunchWysiwyg();
+		if (!wantLive && m_wysiwyg)
+			StopWysiwyg();
+		if (m_wysiwygBakeWasRunning && !m_bakeRunning && m_wysiwyg)
+			LaunchWysiwyg(); // bake completion: relaunch to bind the fresh GI
+		m_wysiwygBakeWasRunning = m_bakeRunning;
+		if (!m_wysiwyg || !m_wysiwygValid)
+			return;
+		// Camera: the ACTIVE viewport's framing — the same view the
+		// editor preview renders (locked look-through or the orbit
+		// camera), fed to the renderer's positioner. Ortho cameras PARK
+		// the layer this frame (glm ortho carries proj[3][3] = 1; the
+		// renderer's lens is perspective-only) — the window keeps its
+		// last content rather than showing a mis-framed stretch.
+		glm::mat4 view, proj;
+		glm::vec3 eye;
+		float nearClip, farClip;
+		if (!BoundCameraView(m_activeVp, view, proj, eye, nearClip, farClip)) {
+			const EditorCam& cam =
+				m_editorCams[m_viewports[m_activeVp].camIdx];
+			view = EditorCamView(cam);
+			proj = EditorCamProj(cam, 1.0f);
+			eye = EditorCamEye(cam);
+		}
+		if (proj[3][3] > 0.5f)
+			return; // ortho: park this frame
+		const glm::vec3 fwd(-view[0][2], -view[1][2], -view[2][2]);
+		const glm::vec3 up(view[0][1], view[1][1], view[2][1]);
+		m_wysiwyg->CameraPositioner().lookAt(eye, eye + fwd, up);
+		// The lens: the fov extracted from the SAME projection (exact
+		// for both bound look-through and orbit cameras — proj[1][1] is
+		// cot(fovY/2); no parallel fov bookkeeping to drift).
+		m_wysiwyg->SetSceneFovY(
+			glm::degrees(2.0f * glm::atan(1.0f / proj[1][1])));
+		m_wysiwyg->Tick(dt);
+		// The render extent: the Live tab's content rect (captured by
+		// DrawLiveViewTab, one frame of lag) through the protective
+		// gates: a HOLD while a mouse button is down (the dock splitter
+		// + any drag — recreating the inline target at drag cadence
+		// churned the device to VK_ERROR_DEVICE_LOST) and a 16px
+		// deadband (layout rounding, scrollbar flip-flop — a 1px/frame
+		// creep also churned a run). The quad stretches the held
+		// difference; the target snaps once at release. Clamped to the
+		// swap extent (an oversized dock must not oversize the chain)
+		// and floored at 64.
+		float rx = m_wysiwygLiveRectMax.x - m_wysiwygLiveRectMin.x;
+		float ry = m_wysiwygLiveRectMax.y - m_wysiwygLiveRectMin.y;
+		{
+			const bool holding =
+				ImGui::IsMouseDown(ImGuiMouseButton_Left);
+			const float dw = std::abs(rx - m_wysiwygCanvasSize.x);
+			const float dh = std::abs(ry - m_wysiwygCanvasSize.y);
+			if (!holding
+				&& (m_wysiwygCanvasSize.x < 8.0f
+					|| dw > 16.0f || dh > 16.0f))
+				m_wysiwygCanvasSize = ImVec2(rx, ry);
+			// TOURMALINE_LIVE_EXTENT_CHURN=<N> (diag): re-create the
+			// target every N frames by toggling a 48px extent — a
+			// synthetic CONTINUOUS resize through the REAL retire/
+			// recreate path (EnsureInlineTarget + scratch + bindless +
+			// heap slot), deliberately bypassing the hold/deadband
+			// gates. The resize crash reproduces through this probe;
+			// it is the regression test for that fix.
+			static const int churnN = [] {
+				const char* e = std::getenv(
+					"TOURMALINE_LIVE_EXTENT_CHURN");
+				return e ? std::atoi(e) : 0;
+			}();
+			if (churnN > 0) {
+				static uint32_t churnTick = 0;
+				if (++churnTick % uint32_t(churnN) == 0) {
+					static bool churnBig = false;
+					churnBig = !churnBig;
+					rx += (churnBig ? 48.0f : 0.0f);
+					ry += (churnBig ? 48.0f : 0.0f);
+					m_wysiwygCanvasSize = ImVec2(rx, ry);
+				}
+			}
+		}
+		uint32_t cw = std::max(uint32_t(m_wysiwygCanvasSize.x), 64u);
+		uint32_t ch = std::max(uint32_t(m_wysiwygCanvasSize.y), 64u);
+		{
+			const smvk::Extent2D swapExt = m_swapchain->GetExtent();
+			if (swapExt.width > 64)
+				cw = std::min(cw, swapExt.width);
+			if (swapExt.height > 64)
+				ch = std::min(ch, swapExt.height);
+		}
+		// The EXTENT-CHANGE DETECTION (feeds the frame-boundary quiesce
+		// — editor_app.cpp's post-present site): any frame that recreates
+		// the inline target (EnsureInlineExtent's extent drift) flags the
+		// boundary wait. The WAIT runs after the present — the frame
+		// fully submitted, nothing recording — so the next chain
+		// re-ensure destroys nothing in flight.
+		const smvk::Extent2D inlineBefore =
+			m_wysiwyg->InlineTargetExtent();
+		if (!m_wysiwyg->EnsureInlineExtent(smvk::Extent2D{ cw, ch }))
+			return; // park: the target could not settle this frame
+		const smvk::Extent2D inlineAfter =
+			m_wysiwyg->InlineTargetExtent();
+		if (inlineAfter.width != inlineBefore.width
+			|| inlineAfter.height != inlineBefore.height)
+			m_wysiwygBoundaryQuiesce = true;
+		m_wysiwygLayerRenderable = true;
+	}
+
+	void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb,
+		smvk::Extent2D extent) {
+		// TOURMALINE_LIVE_TRIANGLE=1 (the embed bisect — see
+		// editor_app.h): the MINIMAL second graph — the triangle's
+		// trivial pass into a persistent target, Executed + submitted
+		// between the rounds exactly like the world layer. Runs INSTEAD
+		// of the world renderer (same tab-visibility gate below), so
+		// the churn env has nothing to churn — the pure
+		// embed-mechanism test.
+		static const bool triangleEmbed = [] {
+			const char* e = std::getenv("TOURMALINE_LIVE_TRIANGLE");
+			return e && std::atoi(e) != 0;
+		}();
+		if (triangleEmbed) {
+			if (!m_showWysiwyg)
+				return;
+			if (!m_wysiwygLiveRectFresh)
+				return; // same tab gate as the world drive
+			m_wysiwygLiveRectFresh = false;
+			if (!EnsureTriangleEmbed())
+				return;
+			m_triangleGraph->NewFrame();
+			m_triangleGraph->AddPass("TriangleEmbed")
+				.SetOffset(0, 0)
+				.SetExtent(smvk::Extent2D{ 256, 256 })
+				.SetColor({ m_triangleLogical },
+					smvk::AttachmentLoadOp::Clear,
+					smvk::AttachmentStoreOp::Store,
+					smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
+				.SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
+					cmd.BindRenderPipeline(m_triangleProgram,
+						smvk::VertexFormat::Empty,
+						smvk::DepthSettings::Disabled(),
+						smvk::StencilSettings::DefaultDisabled(),
+						smvk::BlendSettings::Opaque(),
+						smvk::MSAASettings::Count1(),
+						smvk::RasterSettings{});
+					cmd.Draw(3, 1, 0, 0);
+				});
+			m_triangleGraph->Execute(fb);
+			return; // the world renderer is BYPASSED in this mode
+		}
+		// The tab-visibility gate: DrawLiveViewTab sets the fresh flag
+		// when the dock tab DREW (last frame's flag — this sits before
+		// round 2's DrawUI). A hidden tab (another dock tab selected)
+		// parks the whole world render — the full-graph cost is only
+		// paid while the Live view is actually visible.
+		if (!m_wysiwygLiveRectFresh)
+			return;
+		m_wysiwygLiveRectFresh = false;
+		// The boundary half's park decision (no world / ortho / the
+		// extent settle failed this frame).
+		if (!m_wysiwyg || !m_wysiwygValid || !m_wysiwygLayerRenderable)
+			return;
+		engine::ElementFrame ef{};
+		ef.fb = &fb;
+		ef.swapExtent = extent;
+		ef.layer = engine::LayerRect::Full();
+		m_wysiwyg->RenderLayerInto(ef);
+		// TOURMALINE_LIVE_DUMP=1 (diag, one-shot at frame>30): sync
+		// readback of the inline target right after the world's Execute —
+		// the "does the world's inline leg produce a real image" oracle.
+		{
+			static const bool liveDump = [] {
+				const char* e = std::getenv("TOURMALINE_LIVE_DUMP");
+				return e && std::atoi(e) != 0;
+			}();
+			static bool liveDumpDone = false;
+			if (liveDump && !liveDumpDone && m_frameCounter > 30
+				&& !m_wysiwyg->InlineTargetImage().empty()) {
+				liveDumpDone = true;
+				const smvk::Extent2D le = m_wysiwyg->InlineTargetExtent();
+				std::vector<uint8_t> px(
+					size_t(le.width) * le.height * 4);
+				// The release pass left the target SHADER_READ.
+				if (m_context->DownloadDataFromImage(
+						m_wysiwyg->InlineTargetImage(),
+						smvk::ImageLayout::ShaderReadOnlyOptimal,
+						px.data(), px.size())) {
+					uint64_t sum = 0;
+					uint32_t coloredN = 0, blackN = 0, alphaN = 0;
+					const size_t n = px.size() / 4;
+					for (size_t i = 0; i < n; ++i) {
+						const uint8_t* p = &px[i * 4];
+						const int mx = std::max({ int(p[0]),
+							int(p[1]), int(p[2]) });
+						const int mn = std::min({ int(p[0]),
+							int(p[1]), int(p[2]) });
+						sum += uint64_t(p[0] + p[1] + p[2]) / 3;
+						if (mx < 12)
+							++blackN;
+						if (mx - mn > 40)
+							++coloredN;
+						if (p[3] > 128)
+							++alphaN;
+					}
+					std::fprintf(stderr,
+						"[LIVE-DUMP] %ux%u: meanLuma=%llu "
+						"black=%.1f%% colored=%.1f%% alpha>128=%.1f%%\n",
+						le.width, le.height,
+						(unsigned long long)(sum / n),
+						100.0 * blackN / double(n),
+						100.0 * coloredN / double(n),
+						100.0 * alphaN / double(n));
+					std::fflush(stderr);
+				}
+				else {
+					std::fprintf(stderr,
+						"[LIVE-DUMP] download FAILED\n");
+				}
+			}
+		}
+	}
+
+	// ---- The WorldLayer element (the pump contract — see
+	// editor_app.h). Thin forwarding: the editor owns the state; the
+	// element supplies the synchronized tick's phase boundaries.
+	void WorldLayer::onUpdate(float dt) {
+		m_app->UpdateWysiwygBoundary(dt);
+	}
+
+	void WorldLayer::onResize(smvk::Extent2D swapExtent) {
+		// The pump's recreate boundary (the base DrawFrame's rebuild
+		// check calls this BEFORE the acquire): the world's swap-view
+		// invalidation — the inline target's format MIRRORS the swap
+		// surface, so a recreate forces the target's re-create at the
+		// NEXT boundary settle, with nothing in flight now. Also flag
+		// the post-present quiesce: the whole chain re-ensures next
+		// frame (the extent may have changed with the swap).
+		if (!m_app->m_wysiwyg || !m_app->m_wysiwygValid)
+			return;
+		m_app->m_wysiwyg->OnSwapchainRecreated();
+		m_app->m_wysiwygBoundaryQuiesce = true;
+	}
+
+	void WorldLayer::onRender(engine::ElementFrame& frame) {
+		if (!frame.fb)
+			return;
+		m_app->RenderWysiwygLayer(*frame.fb, frame.swapExtent);
+	}
+
+	// TOURMALINE_LIVE_TRIANGLE's backing (the embed bisect — see
+	// editor_app.h): one persistent 256x256 editor-owned target + a
+	// second RenderGraph + the 01_triangle sample's inline-HLSL program,
+	// all created once. The DriveWysiwygLive triangle branch Executes
+	// this graph between the editor's rounds each frame — a mid-frame
+	// second submit with ZERO claims churn and zero world chain: the
+	// pure "is the embed seam the trigger" test.
+	bool EditorApp::EnsureTriangleEmbed() {
+		if (m_triangleReady)
+			return true;
+		// The graph + target (persistent — never recreated, never claimed
+		// through the target heap).
+		m_triangleGraph = smvk::mem::MakeProcess<smvk::RenderGraph>(
+			*m_context);
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { 256, 256, 1 };
+		ci.format = smvk::Format::RGBA8_UNorm;
+		ci.usage = smvk::ImageUsage::ColorAttachment;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "triangleEmbed";
+		m_triangleImage = m_context->CreateImage(ci, nullptr);
+		if (m_triangleImage.empty())
+			return false;
+		const smvk::ImageViewCreateInfo vci{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = smvk::Format::RGBA8_UNorm,
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+			.name = "triangleEmbedView",
+		};
+		m_triangleView = m_context->CreateImageView(m_triangleImage, vci);
+		if (m_triangleView.empty())
+			return false;
+		m_triangleLogical = m_triangleGraph->AddExternalImageView(
+			m_triangleView, smvk::Format::RGBA8_UNorm, "triangleLogical");
+		if (m_triangleLogical.empty())
+			return false;
+		// The 01_triangle sample's shaders verbatim (the inline-HLSL
+		// compiler — the same source the sample uses).
+		static constexpr const char* kVert = R"(
+struct VSOutput { float4 position : SV_Position; float3 color : COLOR0; };
+VSOutput mainVS(uint vertexID : SV_VertexID) {
+	static const float2 positions[3] = { float2(0.0, -0.5), float2(0.5, 0.5), float2(-0.5, 0.5) };
+	static const float3 colors[3] = { float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, 1.0) };
+	static const float4x4 projection = { 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
+	VSOutput output;
+	float4 position = float4(positions[vertexID], 0.0, 1.0);
+	output.position = mul(projection, position);
+	output.color = colors[vertexID];
+	return output;
+}
+)";
+		static constexpr const char* kFrag = R"(
+float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target {
+	return float4(color, 1.0);
+}
+)";
+		try {
+			m_triangleVsModule = m_context->CreateShaderModule(
+				CompileHLSLToSPIRV(kVert, DxcShaderStage::Vertex,
+					L"mainVS"),
+				"triangleEmbedVS");
+			m_triangleFsModule = m_context->CreateShaderModule(
+				CompileHLSLToSPIRV(kFrag, DxcShaderStage::Fragment,
+					L"mainPS"),
+				"triangleEmbedFS");
+		}
+		catch (const std::exception& e) {
+			std::fprintf(stderr, "[TRIANGLE-EMBED] shader compile: %s\n",
+				e.what());
+			return false;
+		}
+		if (m_triangleVsModule.empty() || m_triangleFsModule.empty())
+			return false;
+		const smvk::Shader vs{ .module = m_triangleVsModule,
+			.entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		const smvk::Shader fs{ .module = m_triangleFsModule,
+			.entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		m_triangleProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+		m_triangleReady = true;
+		return true;
+	}
+
+	// The Live tab's GPU composite (editor_app.h): the world renderer's
+	// private inline target copied 1:1 into the tab's content rect,
+	// recorded AFTER the ImGui pass so it over-draws the tab body (the
+	// tab content stays empty — no transparent-content-region tricks).
+	// The engine's UiComposite builder: alpha=1 from the tonemap = a
+	// pure copy; SetInputImages declares the sampled read so the
+	// cross-graph barrier rides the context-global sync tables (the
+	// world's inline-release pass left the target in SHADER_READ).
+	void EditorApp::RecordLiveViewComposePass(
+		smvk::LogicalImageViewHandle swapView) {
+		if (!m_wysiwyg || !m_wysiwygValid
+			|| m_wysiwyg->InlineTargetView().empty())
+			return;
+		// The tab's captured rect, clamped into the framebuffer (the
+		// dock can hang past the window edge while a splitter drags).
+		const ImVec2 fbs = ImGui::GetIO().DisplaySize;
+		const float x0 = std::clamp(m_wysiwygLiveRectMin.x, 0.0f, fbs.x);
+		const float y0 = std::clamp(m_wysiwygLiveRectMin.y, 0.0f, fbs.y);
+		const float x1 = std::clamp(m_wysiwygLiveRectMax.x, 0.0f, fbs.x);
+		const float y1 = std::clamp(m_wysiwygLiveRectMax.y, 0.0f, fbs.y);
+		const float w = x1 - x0, h = y1 - y0;
+		if (w < 8.0f || h < 8.0f)
+			return;
+		if (!m_wysiwygComposite.Ensure(*m_context))
+			return;
+		// The source: the world's inline target imported into the
+		// EDITOR's graph (re-imported whenever the handle changed — a
+		// target recreate; the old logical frees between rounds, safe
+		// against last round's recorded passes).
+		if (m_wysiwygComposePhysical != m_wysiwyg->InlineTargetView()) {
+			if (!m_wysiwygComposeLogical.empty())
+				m_rendergraph->FreeImageView(m_wysiwygComposeLogical);
+			m_wysiwygComposeLogical = m_rendergraph->AddExternalImageView(
+				m_wysiwyg->InlineTargetView(),
+				m_wysiwyg->InlineTargetFormat(),
+				"wysiwygInlineSource");
+			m_wysiwygComposePhysical = m_wysiwyg->InlineTargetView();
+			if (m_wysiwygComposeLogical.empty())
+				return;
+		}
+		// decodeOutput stays false: the target's format MIRRORS the
+		// swap surface, so the sample/store encode pair round-trips
+		// (sRGB swap: decode on sample, hardware re-encode on store;
+		// UNORM swap: raw bytes both ways).
+		// OPAQUE blend — the alpha-is-DATA lesson: the SMAA T2x chain
+		// packs the VELOCITY MAGNITUDE into the output alpha
+		// (smaa_neighborhood - the resolve's history attenuation; the
+		// swapchain ignores alpha at present, so the App never cared).
+		// A 1:1 host composite must NOT alpha-blend on that channel —
+		// a static camera has velocity ~0, alpha ~0, and an
+		// alpha-blending copy paints NOTHING (the "gray tab" bug:
+		// identical ON/OFF screenshots, the pass traced healthy).
+		// Opaque replaces the dst regardless of the source alpha.
+		m_wysiwygComposite.AddCompositePass(*m_rendergraph,
+			m_wysiwygComposeLogical,
+			m_wysiwyg->InlineTargetBindlessIndex(),
+			0 /* linear clamp sampler */,
+			{ swapView },
+			smvk::Extent2D{ uint32_t(w), uint32_t(h) },
+			false,
+			"WysiwygCompose",
+			uint32_t(x0), uint32_t(y0),
+			true /* opaqueBlend */);
 	}
 
 } // namespace editor

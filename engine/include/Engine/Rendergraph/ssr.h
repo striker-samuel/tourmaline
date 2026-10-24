@@ -904,6 +904,24 @@ struct ScreenSpaceReflections {
 			DestroyBuffer(rg, newRayList);
 			return false;
 		}
+		// Creation zero-fill of the counter (the ssgi-hzb / placement-count
+		// convention): the classify's wave-compaction InterlockedAdd appends
+		// FROM count[0] — the frame-to-frame invariant is the args pass's
+		// read-then-reset, but the FIRST frame on a fresh buffer starts from
+		// whatever the DEVICE_LOCAL allocation recycled. The extent churn's
+		// recreate can hand back the OLD buffer's pages — old count[1] (the
+		// frozen count, hundreds of thousands of rays) landing in the new
+		// count[0]: the classify appends past rayList capacity and the
+		// compute shader MMU-faults (the editor drag-burst DEVICE_LOST —
+		// pinned by the diagnostic checkpoint dying in SSRClassify, right
+		// after the extent re-ensure). 8 bytes of staging buys the invariant
+		// at the only gap in the counter's lifecycle.
+		{
+			const uint32_t counterZeros[2] = { 0, 0 };
+			ctx.UploadDataToBuffer(newRayCounter.buffer, counterZeros,
+				sizeof(counterZeros), PipelineStage(PipelineStageBit_Compute),
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+		}
 		if (!CreateBuffer(ctx, rg, 3u * sizeof(uint32_t),
 				"ssrIndirectArgs", newIndirectArgs)) {
 			DestroyTarget(rg, newRaw);

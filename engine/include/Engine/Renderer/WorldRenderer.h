@@ -1009,6 +1009,65 @@ public:
 	void SetLayerRect(LayerRect rect) { m_layerRect = rect; }
 	void SetLayerFull() { m_layerRect = LayerRect::Full(); }
 	[[nodiscard]] LayerRect GetLayerRect() const { return m_layerRect; }
+	// ------------------------------------------------------------------
+	// INLINE OUTPUT (an embedded host's live view — the editor's
+	// WYSIWYG). When active, the frame's final LDR leg (Tonemap / SMAA
+	// resolve / UI composite) writes a renderer-PRIVATE image at a
+	// HOST-DRIVEN extent instead of the host swapchain — the graph
+	// never touches swap images at all. History: writing the host's
+	// viewport RECT of its swap image directly reproducibly wedged
+	// nvlddmkm past the TDR window (VK_ERROR_DEVICE_LOST, deterministic
+	// 5/5; vanished the moment the final leg targeted a private image
+	// instead — same command buffer, same single submit, only the swap
+	// write removed). The host records this renderer's frame inside
+	// its own (Execute appends into the host's command buffer), then
+	// composites the private target into its viewport rect itself.
+	//
+	// The extent is the ACTIVE VIEWPORT's size: every render target
+	// sizes off it and the lens aspects to it, so the view matches the
+	// host's own framing for that rect (full writes at (0,0), no
+	// non-zero render-area origins — see the driver pathology above).
+	//
+	// Refuses the async-compute split implicitly through the host: the
+	// embedded host must keep the split off (its process sets
+	// TOURMALINE_ASYNC_COMPUTE=0 — a mid-recording G1 submit would cut
+	// the host's command buffer in two).
+	// ------------------------------------------------------------------
+	void SetInlineOutput(bool on) { m_inlineOutput = on; }
+	[[nodiscard]] bool InlineOutputActive() const { return m_inlineOutput; }
+	// The scene-lens FOV override (degrees). The embedded host drives
+	// the camera externally; this aligns the renderer's lens with the
+	// host's own camera so the framed view matches.
+	void SetSceneFovY(float degrees) {
+		m_sceneFovYDeg = degrees > 1.0f ? degrees : kCameraFovYDegrees;
+	}
+	// (Re)creates the private LDR target at the new extent (the host's
+	// viewport drift — moves are free, resizes recreate via the
+	// deferred-retire pattern; see EnsureInlineTarget). True when the
+	// target is valid to render into. The target's format MIRRORS the
+	// host swapchain's surface format so the host's 1:1 composite needs
+	// no re-encode.
+	bool EnsureInlineExtent(smvk::Extent2D extent);
+	[[nodiscard]] smvk::Extent2D InlineTargetExtent() const {
+		return m_inlineTargetExtent;
+	}
+	// The composited output for the HOST's own composite pass: the raw
+	// physical view (import into the HOST's rendergraph) + the
+	// context-global bindless index (sample through the global set —
+	// bindless indices are context-wide, graph-agnostic) + the format.
+	// View empty / index UINT32_MAX until the first EnsureInlineExtent.
+	[[nodiscard]] smvk::ImageViewHandle InlineTargetView() const {
+		return m_inlineTargetView;
+	}
+	[[nodiscard]] uint32_t InlineTargetBindlessIndex() const {
+		return m_inlineTargetBindlessIndex;
+	}
+	// The raw image handle (debug readbacks: the host dumps the target's
+	// bytes through the RMI's sync download).
+	[[nodiscard]] smvk::ImageHandle InlineTargetImage() const {
+		return m_inlineTargetImage;
+	}
+	[[nodiscard]] smvk::Format InlineTargetFormat() const;
 	// The frame camera positioner (the element's camera drive moves
 	// this; the frame build reads position/orientation off it). Named
 	// CameraPositioner, not Camera: a Camera()-named member would shadow
@@ -1027,21 +1086,27 @@ public:
 	// The host is responsible for all content loading. The renderer knows
 	// nothing about paks, scene files, or scene discovery.
 	//
-	// Called once during onAttach, after the context is created and before
-	// the world is used. The host loads the scene (clusters and resources)
-	// into the context, resolves all references, and returns the world to render.
-	// All rendering resources are accessed through handles.
-	//
-	// The renderer provides its content overlay so the host can mount content
-	// backends (pak-embedded textures, project roots, etc.). The renderer
-	// itself uses this overlay only to access its own pipeline resources.
-	//
-	// Returning nullptr indicates a load failure.
-	// If the callback is unset, there is no world to render.
-	// In either case, onAttach fails with an error.
+	// TWO ownership forms (the embedded host picks; the windowed App uses
+	// the source):
+	//  - OWNED (SetWorldSource): the source returns a LinearPtr the
+	//    renderer keeps — the host TRANSFERS the world in. The App's
+	//    form.
+	//  - BORROWED (SetBorrowedWorld): the host KEEPS owning + mutating
+	//    the world and lends the raw pointer — the editor's form: its
+	//    editing systems all dereference their own world; edits show up
+	//    per frame because it is the SAME object. The host must keep
+	//    the world alive across every rendered frame (stop or relaunch
+	//    the renderer before the world dies).
 	using WorldSource = std::function<smvk::mem::LinearPtr<smvk::World>(
 		smvk::ResourceManager& ctx, smvk::OverlayVfs& contentVfs)>;
 	void SetWorldSource(WorldSource source) { m_worldSource = std::move(source); }
+	// The borrowed form above (mutually exclusive with a set source; the
+	// last one installed wins — an unset source + a null borrowed world
+	// fails onAttach with an error, same as before).
+	void SetBorrowedWorld(smvk::World* world) {
+		m_borrowedWorld = world;
+		m_worldSource = nullptr;
+	}
 
 	// Texture streamer for the world's v4 texture tails (see
 	// Engine/Renderer/texture_streamer.h): null until Initialize creates
@@ -1260,7 +1325,12 @@ protected:
 	smvk::ResourceManager* m_context = nullptr;
 	smvk::Swapchain* m_swapchain = nullptr;
 	smvk::mem::LinearPtr<smvk::RenderGraph> m_rendergraph;
-	smvk::mem::LinearPtr<smvk::World> m_world;
+	// The WORLD the frame reads (owned OR borrowed — see the WORLD
+	// SOURCE contract): owned = the moved-in source result (below),
+	// borrowed = the host's live pointer (kept alive by the host).
+	smvk::World* m_world = nullptr;
+	smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
+	smvk::World* m_borrowedWorld = nullptr;        // the embedded-host form
 
 	// (Camera drive + UI-mode switching moved to WorldRendererElement:
 	// the element polls the input, accumulates the virtual cursor and
@@ -2524,6 +2594,31 @@ public:
 	smvk::Holder<smvk::ImageViewHandle> m_captureView;
 	smvk::LogicalImageViewHandle m_captureLogical{};
 	smvk::Extent2D m_captureExtent{ 0, 0 };
+	// INLINE OUTPUT (see the SetInlineOutput contract): the private
+	// LDR target + its world-graph logical view (the tonemap writes it)
+	// + the context-global bindless registration (the HOST's composite
+	// samples it). Creation/retire follows the capture pattern but with
+	// the deferred-retire swap (in-flight frames keep the old objects —
+	// see EnsureInlineTarget).
+	bool m_inlineOutput = false;
+	smvk::Extent2D m_inlineTargetExtent{ 0, 0 };
+	smvk::Holder<smvk::ImageHandle> m_inlineTargetImage;
+	smvk::Holder<smvk::ImageViewHandle> m_inlineTargetView;
+	smvk::Holder<smvk::BindlessImageHandle> m_inlineTargetBindless;
+	uint32_t m_inlineTargetBindlessIndex = UINT32_MAX;
+	smvk::LogicalImageViewHandle m_inlineTargetLogical{};
+	// The RELEASE scratch: a 1x1 color target the inline-mode tail
+	// composite writes into. The pass exists for its SIDE effect —
+	// SetInputImages on the inline target records the
+	// COLOR_ATTACHMENT -> SHADER_READ transition, leaving the target in
+	// exactly the layout the HOST's ImGui descriptor declares (the
+	// bindless registration only records the expected layout; nothing
+	// else transitions a per-frame-written image for off-graph
+	// sampling).
+	smvk::Holder<smvk::ImageHandle> m_inlineScratchImage;
+	smvk::Holder<smvk::ImageViewHandle> m_inlineScratchView;
+	smvk::LogicalImageViewHandle m_inlineScratchLogical{};
+	bool EnsureInlineTarget(smvk::Extent2D extent);
 	bool m_captureQueued = false; // emit the capture pass this frame
 	bool m_captureReadbackPending = false; // read back after the submit (DrawFrame)
 

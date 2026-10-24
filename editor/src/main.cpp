@@ -272,6 +272,23 @@ namespace {
 		setenv("TOURMALINE_PIPELINE_CACHE_DIR", "off", 0);
 #endif
 	}
+	// Async compute RE-ENABLED in the editor: the async-split G1/C submits
+	// ride the RenderGraph's OWN split command buffers — G2 records into the
+	// Framebuffer's splitCommandBuffer, which EndAndPresent submits with
+	// the C-done wait — the host's main command buffer is never cut. The
+	// old default-off (the mid-recording G1 submit argument) was a
+	// hosted-era hazard. The churn-death bisect that once pointed here
+	// ("reproduces with async OFF and one queue, vanishes under submission
+	// serialization") was chasing SYMPTOMS of the real root cause, later
+	// pinned by the VK_NV_device_diagnostic_checkpoints fault pinpoint:
+	// the SSR ray counter's missing creation zero-fill (see ssr.h) — the
+	// classify's atomic append started from whatever the allocator recycled
+	// into the fresh 8-byte buffer. SERIALIZE=all "survived" by allocator
+	// perturbation, not causally: serialized submission timings reshuffle
+	// the suballocator's freed-page reuse, so the wild garbage value simply
+	// didn't land in the tested window — the queue/split topology was never
+	// implicated. TOURMALINE_ASYNC_COMPUTE=0 still kills the split for A/B
+	// runs.
 #ifdef _WIN32
 	// Crash stack writer (see the comment block above): FIRST, before any
 	// subsystem init, so any boot-time fault is captured too.

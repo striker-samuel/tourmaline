@@ -106,13 +106,14 @@ glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc, float zoom, glm::vec2 pan) const
 	return (t - glm::vec2(0.5f) - pan) / z + glm::vec2(0.5f);
 }
 
-glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv) const {
-	return UvToFlatNdc(uv, m_uvWinZoom, m_uvWinPan);
-}
-
-glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc) const {
-	return FlatNdcToUv(ndc, m_uvWinZoom, m_uvWinPan);
-}
+// UV-window indexed shorthands RETIRED with the canvas (they read the
+// commented m_uvWinZoom/m_uvWinPan nav state).
+//glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv) const {
+//	return UvToFlatNdc(uv, m_uvWinZoom, m_uvWinPan);
+//}
+//glm::vec2 EditorApp::FlatNdcToUv(glm::vec2 ndc) const {
+//	return FlatNdcToUv(ndc, m_uvWinZoom, m_uvWinPan);
+//}
 
 glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
 	const glm::mat4& viewProj, glm::vec3& outOrigin) const {
@@ -383,6 +384,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
 	return best;
 }
 
+#if 0 // Flat-UV window pick retired with the UV editor canvas
 std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 	float mouseY) const {
 	// Flat-UV window pick (brute force, no accel): mouse -> NDC -> UV
@@ -460,6 +462,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 	}
 	return std::nullopt;
 }
+#endif // Flat-UV window pick retired
 
 void EditorApp::ApplySubSelection(const SubHit& h) {
 	if (h.node == UINT32_MAX)

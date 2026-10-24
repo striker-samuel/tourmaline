@@ -134,6 +134,17 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   tinted per texel by its baseColor texture (`GiTraceScene::TransmissionAt`;
   cutout holes pass unobstructed; the tint stays REAL in white-world GI
   bakes). Default OFF — MASK stays the opaque occluder (bistro foliage)
+- GPU-counter buffers (anything an `InterlockedAdd`/append reads-modify-writes
+  from its first use) MUST be creation-zero-filled via
+  `UploadDataToBuffer` (the ssgi-hzb / placement-count convention): DEVICE_LOCAL
+  fresh allocations recycle freed pages, so a churn-recreated counter can start
+  from a garbage count (the old frozen count landing in the new live slot) and
+  the consuming compute shader MMU-faults — the editor's drag-burst
+  DEVICE_LOST, pinned via `VK_NV_device_diagnostic_checkpoints`
+  (`DumpDeviceFaultInfo` prints the last-reached pass; TOURMALINE_CHECKPOINTS=0
+  kills the marker emission; shaders with `-Zi` live in the
+  x64-Release-ShaderDebug preset + `TOURMALINE_SHADER_DEBUG=ON` for
+  Nsight-Aftermath line tables)
 - Dont use F12 for any binding since it can trigger debugbreak
 - Dont ever bump format versions or add conversions to keep old data working. Bumping magic to break old files is ok. I have no important assets to keep
 

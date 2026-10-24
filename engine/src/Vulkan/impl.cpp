@@ -376,6 +376,26 @@ namespace {
 			indices.computeFamily = indices.graphicsFamily;
 		}
 
+		// TOURMALINE_MONOQUEUE=1 (diag): collapse transfer + compute onto
+		// the graphics family - ONE queue for everything (uploads, async
+		// passes, the frame). The bisect probe for cross-queue ordering
+		// races: a bug that only reproduces on the split queues (and
+		// vanishes here) lives in the cross-queue sync chains, not the
+		// resource lifetimes (SERIALIZE=all already proved submission
+		// serialization fixes the editor churn death).
+		static const bool monoQueue = [] {
+			const char* e = std::getenv("TOURMALINE_MONOQUEUE");
+			return e && std::atoi(e) != 0;
+		}();
+		if (monoQueue) {
+			indices.transferFamily = indices.graphicsFamily;
+			indices.computeFamily = indices.graphicsFamily;
+			std::fprintf(stderr,
+				"[MONOQUEUE] transfer+compute collapsed onto graphics "
+				"family %u\n",
+				indices.graphicsFamily.value_or(0));
+		}
+
 		return indices;
 	}
 	VkMemoryRequirements2 getDeviceImageMemoryRequirements(VkDevice device, const VkImageCreateInfo& imageCreateInfo) {
@@ -1733,6 +1753,66 @@ static bool RgAsyncSplitKilled()
 	}();
 	return killed;
 }
+// TOURMALINE_RB_DIAG=1: the readback-lifetime probe (the churn-death hunt's
+// readback collision detector — see SubmitAsyncDownloadDataFromBuffers +
+// DestroyBufferNow). Off by default: the hunt closed on the SSR ray
+// counter's missing creation zero-fill (ssr.h), the readback path was
+// exonerated across the whole battery.
+static bool RbDiagEnabled()
+{
+	static const bool on = [] {
+		const char* e = std::getenv("TOURMALINE_RB_DIAG");
+		return e && std::atoi(e) != 0;
+	}();
+	return on;
+}
+
+// ---- VK_NV_device_diagnostic_checkpoints: the pass-level fault pinpoint ----
+// Every RenderGraph pass records a checkpoint marker (its registry slot's
+// address); at DEVICE_LOST the driver returns the LAST markers each queue
+// reached — DumpDeviceFaultInfo prints them, naming the pass executing at
+// the fault (an MMU fault lands on the pass whose marker is last). The
+// registry is a fixed ring (cycled, never freed): the driver hands back
+// marker POINTERS at death, so the entries must outlive every in-flight
+// command buffer — a freed registry would turn the death dump into a
+// use-after-free of its own. TOURMALINE_CHECKPOINTS=0 kills the emission
+// (the extension stays enabled — the query at death is harmless).
+namespace {
+	struct CheckpointMarker {
+		uint32_t frame = 0;
+		uint32_t pos = 0;      // sorted position in the Execute walk
+		const char* passName = "UnnamedRenderPass";
+	};
+	constexpr size_t kCheckpointRing = 16384; // ~100 frames of 3-graph history
+	CheckpointMarker g_checkpointRing[kCheckpointRing];
+	std::atomic<size_t> g_checkpointNext{ 0 };
+	std::atomic<uint32_t> g_checkpointSeq{ 0 };
+	bool RgCheckpointsEnabled()
+	{
+		static const bool enabled = [] {
+			const char* e = std::getenv("TOURMALINE_CHECKPOINTS");
+			return !(e && *e && *e == '0' && !e[1]); // default ON
+		}();
+		return enabled;
+	}
+	// Records one marker into the ring + emits vkCmdSetCheckpointNV into the
+	// pass's destination command buffer. Returns nullptr when the extension
+	// is absent (the fn is probed once) or the knob is off — the caller skips.
+	PFN_vkCmdSetCheckpointNV g_fnVkCmdSetCheckpointNV = nullptr;
+	PFN_vkGetQueueCheckpointDataNV g_fnVkGetQueueCheckpointDataNV = nullptr;
+	void RgEmitPassCheckpoint(VkCommandBuffer cmd, uint32_t frame, uint32_t pos, const char* passName)
+	{
+		if (!g_fnVkCmdSetCheckpointNV || !RgCheckpointsEnabled())
+			return;
+		const size_t idx = g_checkpointNext.fetch_add(1) % kCheckpointRing;
+		CheckpointMarker& m = g_checkpointRing[idx];
+		m.frame = frame;
+		m.pos = pos;
+		m.passName = passName ? passName : "UnnamedRenderPass";
+		g_checkpointSeq.fetch_add(1, std::memory_order_release);
+		g_fnVkCmdSetCheckpointNV(cmd, &m);
+	}
+} // namespace
 
 // Synchronization
 inline void BufferBarrier(
@@ -2182,8 +2262,9 @@ int smvk::VulkanCore::CreateInstance() {
 
 	VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
 		VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-#if 1 // TMP-DIAG: GPU-assisted validation (disabled, remove later;
-		// when re-enabling, bump enabledValidationFeatureCount to 2)
+#if 0 // TMP-DIAG: GPU-assisted validation (crashes the layer under the
+		// editor churn - GPU-AV's own instrumentation faults before the
+		// interesting errors surface; core+sync checks carry the hunt)
 		, VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
 #endif
 	};
@@ -2191,7 +2272,7 @@ int smvk::VulkanCore::CreateInstance() {
 	VkValidationFeaturesEXT validationFeatures{};
 	validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
 	validationFeatures.pNext = &debugCreateInfo;
-	validationFeatures.enabledValidationFeatureCount = 2;
+	validationFeatures.enabledValidationFeatureCount = 1;
 	validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
 	validationFeatures.disabledValidationFeatureCount = 0;
 	validationFeatures.pDisabledValidationFeatures = nullptr;
@@ -2625,12 +2706,42 @@ bool smvk::VulkanCore::Init() {
 				? "not supported - Aftermath crash dumps stay without shader line maps (non-NVIDIA driver?)"
 				: "off (TOURMALINE_AFTERMATH=0, or this tree's SPIR-V carries no -Zi debug info)");
 
-			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
-			if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
-			if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
-			if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
-			if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
-			if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
+		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+		if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+		// VK_NV_device_diagnostic_checkpoints (the pass-level fault pinpoint,
+		// complements the fault/diagnostics extensions above): every RenderGraph
+		// pass records a vkCmdSetCheckpointNV marker (its registry slot —
+		// frame + sorted position + pass name); at DEVICE_LOST,
+		// vkGetQueueCheckpointDataNV hands back the LAST markers the GPU
+		// reached per queue — DumpDeviceFaultInfo prints them, naming the
+		// exact pass executing at the fault. Valid to query on a lost
+		// device (that is the extension's whole purpose). NVIDIA exposes it;
+		// probed, never required.
+		bool enableDiagCheckpoints = false;
+		{
+			uint32_t extCount = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr) == VK_SUCCESS
+				&& extCount != 0) {
+				std::vector<VkExtensionProperties> exts(extCount);
+				if (vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+					for (const auto& e : exts) {
+						if (std::strcmp(e.extensionName, "VK_NV_device_diagnostic_checkpoints") == 0) {
+							enableDiagCheckpoints = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		if (enableDiagCheckpoints) enabledExtensions.push_back("VK_NV_device_diagnostic_checkpoints");
+		std::fprintf(stderr, "[Vulkan] VK_NV_device_diagnostic_checkpoints %s\n",
+			enableDiagCheckpoints
+			? "supported - enabling (per-pass fault pinpoint: the last-reached pass at DEVICE_LOST)"
+			: "not supported (faults won't name the executing pass)");
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -2670,6 +2781,19 @@ bool smvk::VulkanCore::Init() {
 					"wireframe (PolygonMode::Line) pipelines clamp to Fill\n");
 			}
 			volkLoadDevice(device_);
+		// Diagnostic-checkpoint entry points (the extension is enabled
+		// above when present; the fn pointers gate the emission + the
+		// death-dump query — see RgEmitPassCheckpoint / DumpDeviceFaultInfo).
+		g_fnVkCmdSetCheckpointNV = reinterpret_cast<PFN_vkCmdSetCheckpointNV>(
+			vkGetDeviceProcAddr(device_, "vkCmdSetCheckpointNV"));
+		g_fnVkGetQueueCheckpointDataNV = reinterpret_cast<PFN_vkGetQueueCheckpointDataNV>(
+			vkGetDeviceProcAddr(device_, "vkGetQueueCheckpointDataNV"));
+		if (enableDiagCheckpoints && (!g_fnVkCmdSetCheckpointNV || !g_fnVkGetQueueCheckpointDataNV)) {
+			// Present-but-not-loadable: treat as absent (emission skips).
+			g_fnVkCmdSetCheckpointNV = nullptr;
+			g_fnVkGetQueueCheckpointDataNV = nullptr;
+			std::fprintf(stderr, "[Vulkan] VK_NV_device_diagnostic_checkpoints present but entry points missing - pinpoint disabled\n");
+		}
 			// Disk pipeline cache (see the CreateDiskPipelineCache block):
 			// created right after the device so every pipeline below compiles
 			// through it.
@@ -4519,8 +4643,28 @@ uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
 	if (!tp.valid()) {
 		return 0;
 	}
+	// TOURMALINE_RB_DIAG=1 (the churn DEVICE_LOST hunt's readback-collision
+	// probe, env-gated like DEFER-DIAG): records the ticket's SOURCE buffers
+	// so the deferred buffer destroy (DestroyBufferNow) can flag a
+	// copy-still-in-flight destroy. The hunt's verdict: NO collision ever
+	// fired across the whole battery (the death was the SSR ray counter's
+	// missing creation zero-fill — see ssr.h); the probe stays as the
+	// cheap guard for future readback-lifetime questions. Also the
+	// single-slot serialization check below (a submit while a prior
+	// ticket is in flight clobbers the slot — should be impossible).
+	if (RbDiagEnabled()) {
+		if (m_asyncReadbackTicket != 0) {
+			std::fprintf(stderr,
+				"[RB-DIAG] SLOT CLOBBER: submit while ticket %llu is still "
+				"in flight (the single-slot serialization is broken)\n",
+				static_cast<unsigned long long>(m_asyncReadbackTicket));
+		}
+		m_asyncReadbackSources.assign(downloads.size(), smvk::BufferHandle{});
+		for (size_t di = 0; di < downloads.size(); ++di)
+			m_asyncReadbackSources[di] = downloads[di].src;
+	}
 	// Same timeline as the upload chain (queue IS the streamer's
-	// Submitter â€” dedicated transfer or the shared graphics fallback), so
+	// Submitter — dedicated transfer or the shared graphics fallback), so
 	// merge: the next zero-fill batch waits this copy.
 	if (m_streamer)
 		m_streamer->chainExternalPoint(tp);
@@ -4560,6 +4704,8 @@ bool smvk::VulkanResourceManager::PollAsyncDownloadDataFromBuffers(
 	UnmapBuffer(m_asyncStaging);
 	m_asyncReadbackTicket = 0; // slot free for the next submit
 	m_asyncReadbackSemaphore = VK_NULL_HANDLE;
+	// TMP-DIAG: the copy landed — the sources are safe to destroy now.
+	m_asyncReadbackSources.clear();
 	return true;
 }
 
@@ -5565,8 +5711,35 @@ void smvk::VulkanResourceManager::ReleaseTargetHeapClaim(
 	const VmaVirtualBlock vb =
 		m_targetHeap.blocks[slot.block].virtualBlock;
 	const VmaVirtualAllocation alloc = slot.allocation;
-	DeferDestroy(std::packaged_task<void()>([vb, alloc] {
+	// TOURMALINE_DEFER_DIAG: the range-free execution census — pairs
+	// with the enqueue diag (the editor's marching offsets vs 03_fuzz's
+	// cycling: do the frees RUN?).
+	static const bool releaseDiag = [] {
+		const char* e = std::getenv("TOURMALINE_DEFER_DIAG");
+		return e && std::atoi(e) != 0;
+	}();
+	int* freeCount = nullptr;
+	if (releaseDiag) {
+		static int frees = 0;
+		freeCount = &frees;
+	}
+	DeferDestroy(std::packaged_task<void()>([vb, alloc, freeCount,
+		block = slot.block, off = slot.offset]() {
+		// TOURMALINE_DEFER_DIAG: the freed identity — pairs with the
+		// claim line's (block, offset) to see reuse (or the lack of it).
+		static const bool frDiag = [] {
+			const char* e = std::getenv("TOURMALINE_DEFER_DIAG");
+			return e && std::atoi(e) != 0;
+		}();
+		if (frDiag)
+			std::fprintf(stderr,
+				"[DEFER-DIAG] FREE block=%u offset=%llu\n",
+				block, (unsigned long long)off);
 		vmaVirtualFree(vb, alloc);
+		if (freeCount && ++*freeCount % 10 == 1)
+			std::fprintf(stderr,
+				"[DEFER-DIAG] vmaVirtualFree RAN (frees~%d)\n",
+				*freeCount);
 	}));
 }
 
@@ -7424,6 +7597,16 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		uint32_t families[2] = {};
 		families[0] = m_submitter->queueFamilyIndex();
 		families[1] = m_transferSubmitter->queueFamilyIndex();
+		// TMP-DIAG (the 04626 hunt): the family pair at every
+		// CONCURRENT buffer creation — the validation layer reports
+		// garbage/duplicate families here (VUID-01419 at boot +
+		// VUID-04626 DEVICE_LOST at submit).
+		std::fprintf(stderr,
+			"[BUF-DIAG] CONCURRENT buffer '%s' size=%llu families=[%u, %u] "
+			"(submitter=%p transfer=%p)\n",
+			debugName ? debugName : "?",
+			(unsigned long long)size, families[0], families[1],
+			(void*)m_submitter, (void*)m_transferSubmitter);
 		ci.queueFamilyIndexCount = 2;
 		ci.pQueueFamilyIndices = families;
 	}
@@ -7816,9 +7999,34 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 	// Run ready tasks OUTSIDE the lock: tasks may enqueue more deferred
 	// work (destroy -> DeferDestroy -> AddDeferredTask), which previously
 	// re-entered this non-recursive mutex from inside the drain loop (UB:
-	// deadlock or fast-fail depending on the CRT). Appends made during
-	// the run land behind the not-ready remainder, so the FIFO-by-retire-
+	// deadlock or fast-fail depending on the CRT). Appends made during the
+	// run land behind the not-ready remainder, so the FIFO-by-retire-
 	// point order is preserved.
+	// TOURMALINE_DEFER_DIAG=1: the drain side of the census.
+	{
+		static const bool deferDiag = [] {
+			const char* e = std::getenv("TOURMALINE_DEFER_DIAG");
+			return e && std::atoi(e) != 0;
+		}();
+		static uint32_t drainCalls = 0;
+		static uint32_t drainN = 0;
+		if (deferDiag) {
+			++drainCalls;
+			if (drainCalls % 30 == 1)
+				std::fprintf(stderr,
+					"[DEFER-DIAG] call#%u: ready=%zu pending=%zu "
+					"(drainsRun=%u)\n",
+					drainCalls, ready.size(), m_deferredTasks.size(),
+					drainN);
+		}
+		if (!ready.empty()) {
+			++drainN;
+			if (deferDiag && drainN % 10 == 1)
+				std::fprintf(stderr,
+					"[DEFER-DIAG] drain #%u: ran=%zu keptPending=%zu\n",
+					drainN, ready.size(), m_deferredTasks.size());
+		}
+	}
 	for (auto& task : ready)
 		task.task_();
 }
@@ -7906,6 +8114,36 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 	AddDeferredTask(std::move(task), TimelinePoint{
 		m_lastGraphicsSemaphore,
 		m_lastGraphicsValue + MAX_FRAMES_IN_FLIGHT });
+	// TOURMALINE_DEFER_DIAG=1: the deferred-queue drain census (why do
+	// the editor's target-heap range frees never land while 03_fuzz's
+	// claims mode cycles? the marching-offsets signature).
+	{
+		static const bool deferDiag = [] {
+			const char* e = std::getenv("TOURMALINE_DEFER_DIAG");
+			return e && std::atoi(e) != 0;
+		}();
+		if (deferDiag) {
+			static uint32_t enq = 0;
+			++enq;
+			if (enq % 10 == 1) {
+				uint64_t counterNow = 0;
+				const VkResult rq = m_lastGraphicsSemaphore
+					!= VK_NULL_HANDLE
+					? vkGetSemaphoreCounterValue(device_,
+						m_lastGraphicsSemaphore, &counterNow)
+					: VK_ERROR_INITIALIZATION_FAILED;
+				std::fprintf(stderr,
+					"[DEFER-DIAG] enqueue #%u keyed at value %llu "
+					"(lastGraphics=%llu sem=%p counterNow=%llu rq=%d)\n",
+					enq,
+					(unsigned long long)(m_lastGraphicsValue
+						+ MAX_FRAMES_IN_FLIGHT),
+					(unsigned long long)m_lastGraphicsValue,
+					(void*)m_lastGraphicsSemaphore,
+					(unsigned long long)counterNow, int(rq));
+			}
+		}
+	}
 }
 void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
@@ -8625,12 +8863,36 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 }
 namespace smvk {
 	namespace {
-		void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
-			Buffer db = *ctx->buffers_.get(handle);
-			ctx->RemoveBufferSyncState(handle);
-			vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
-			ctx->buffers_.destroy(handle);
+	void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
+		// TOURMALINE_RB_DIAG=1 (env-gated, the churn-death hunt's readback
+		// collision detector): this destroy runs from the DEFERRED retire
+		// (the swapchain's MAX_FRAMES_IN_FLIGHT margin), but the async
+		// readback ticket rides the Submitter's PRIVATE timeline — unordered
+		// from the swapchain's. If the buffer destroyed here is a source of
+		// a ticket still in flight, the copy reads a destroyed VkBuffer.
+		// The hunt's verdict: never fired (the death was the SSR ray
+		// counter's missing creation zero-fill — ssr.h); the guard stays for
+		// future readback-lifetime questions.
+		if (ctx->m_asyncReadbackTicket != 0 && !ctx->m_asyncReadbackSources.empty()) {
+			for (const auto& rbSrc : ctx->m_asyncReadbackSources) {
+				if (rbSrc == handle) {
+					std::fprintf(stderr,
+						"[RB-DIAG] READBACK COLLISION: destroying buffer "
+						"idx=%u gen=%u while readback ticket %llu is still "
+						"in flight (the copy's source dies under the "
+						"ticket)\n",
+						handle.index(), handle.gen(),
+						static_cast<unsigned long long>(
+							ctx->m_asyncReadbackTicket));
+					break;
+				}
+			}
 		}
+		Buffer db = *ctx->buffers_.get(handle);
+		ctx->RemoveBufferSyncState(handle);
+		vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
+		ctx->buffers_.destroy(handle);
+	}
 	}
 } // namespace smvk::<anonymous>
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
@@ -8984,6 +9246,10 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	return slot.cmd_;
 }
 
+// TMP-DIAG forward decl (the submit fault-dump below needs the later
+// definition at DumpDeviceFaultInfo).
+namespace { void DumpDeviceFaultInfo(); }
+
 smvk::TimelinePoint smvk::Submitter::submit(
 	CommandSubmitHandle handle,
 	std::span<const TimelineWait> waits,
@@ -9088,11 +9354,23 @@ smvk::TimelinePoint smvk::Submitter::submit(
 
 	{
 		std::lock_guard<std::mutex> qlock(GetQueueMutex(m_queue));
-		VK_CHECK(vkQueueSubmit2(
+		// TMP-DIAG (the editor churn DEVICE_LOST hunt): the submit's
+		// failure path dumps the VK_EXT_device_fault post-mortem BEFORE
+		// the abort (VK_CHECK dies silently; the fault info names the
+		// faulting addresses/commands).
+		const VkResult submitErr = vkQueueSubmit2(
 			m_queue,
 			1,
 			&submitInfo,
-			VK_NULL_HANDLE));
+			VK_NULL_HANDLE);
+		if (submitErr != VK_SUCCESS) {
+			std::fprintf(stderr,
+				"[Vulkan Error] %s:%d: %s\n", __FILE__, __LINE__,
+				vkResultToString(submitErr));
+			DumpDeviceFaultInfo();
+			std::fflush(stderr);
+			std::abort();
+		}
 	}
 
 	slot.state_ = CommandState::Submitted;
@@ -10040,6 +10318,49 @@ namespace {
 #else
 		(void)0;
 #endif
+		// ---- Checkpoint pinpoint (VK_NV_device_diagnostic_checkpoints) ----
+		// The last-reached pass markers per queue — THE answer to "which pass
+		// was executing at the fault". Valid on a lost device (the extension
+		// exists for exactly this query). Markers outside the registry ring
+		// (a pre-init fault) print raw.
+		if (g_fnVkGetQueueCheckpointDataNV) {
+			struct Q { VkQueue q; const char* name; };
+			const Q queues[] = {
+				{ graphicsQueue_, "graphics" },
+				{ computeQueue_, "compute" },
+				{ transferQueue_, "transfer" },
+			};
+			const CheckpointMarker* ringBegin = g_checkpointRing;
+			const CheckpointMarker* ringEnd = g_checkpointRing + kCheckpointRing;
+			for (const Q& q : queues) {
+				if (q.q == VK_NULL_HANDLE)
+					continue;
+				uint32_t cpCount = 0;
+				g_fnVkGetQueueCheckpointDataNV(q.q, &cpCount, nullptr);
+				if (cpCount == 0)
+					continue;
+				std::vector<VkCheckpointDataNV> cps(cpCount,
+					VkCheckpointDataNV{ VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV });
+				g_fnVkGetQueueCheckpointDataNV(q.q, &cpCount, cps.data());
+				FatalPrintf("[DeviceFault] %s queue: %u last checkpoints (NEWEST LAST):\n",
+					q.name, cpCount);
+				for (uint32_t c = 0; c < cpCount; ++c) {
+					const void* marker = cps[c].pCheckpointMarker;
+					if (marker >= ringBegin && marker < ringEnd) {
+						const CheckpointMarker& m =
+							*static_cast<const CheckpointMarker*>(marker);
+						FatalPrintf("[DeviceFault]   stage=%llu frame=%u sortedPos=%u pass='%s'\n",
+							(unsigned long long)cps[c].stage,
+							m.frame, m.pos, m.passName);
+					}
+					else {
+						FatalPrintf("[DeviceFault]   stage=%llu marker=%p (outside registry - pre-init?)\n",
+							(unsigned long long)cps[c].stage, marker);
+					}
+				}
+				FatalFlush();
+			}
+		}
 	}
 } // namespace
 smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
@@ -11379,6 +11700,17 @@ void smvk::App::WaitForDeviceIdle() {
 	}
 	if (r == VK_ERROR_DEVICE_LOST) {
 		fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST, proceeding with teardown\n");
+		// FIRST-surface fault dump (the editor's churn deaths land HERE —
+		// the boundary quiesce / teardown waits): the device-fault query +
+		// the diagnostic-checkpoint pinpoint (the last-reached pass per
+		// queue). Once per process: every later surface (the Submitter
+		// teardown waits, ~VulkanCore) sees the SAME dead device — one
+		// dump, taken at the freshest point.
+		static bool s_faultDumped = false;
+		if (!s_faultDumped) {
+			s_faultDumped = true;
+			DumpDeviceFaultInfo();
+		}
 	}
 }
 
@@ -12743,6 +13075,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				dstCmd = splitCB;
 		}
 		SMVK_PROFILE_GPU_CONTEXT(dstCmd);
+		// Pass-level diagnostic checkpoint (VK_NV_device_diagnostic_checkpoints,
+		// see RgEmitPassCheckpoint): marks this pass's slot in dstCmd so a
+		// DEVICE_LOST dump names the last-reached pass per queue — the fault
+		// pinpoint (fires ahead of the barriers + the pass recording; its
+		// sorted pos + stream make the returned marker unambiguous).
+		RgEmitPassCheckpoint(dstCmd, fb.frameIndex, static_cast<uint32_t>(pos),
+			passes_[sIdx].name_);
 		// Per-pass CPU+GPU scope covering barriers + recording. RenderPass
 		// names may be null (default ctor); Optick hashes the name and a
 		// null pointer crashes the profiler, so substitute a stable literal.

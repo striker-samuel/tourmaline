@@ -41,6 +41,8 @@
 #include <iostream>
 #include <string>
 
+#include <SDL3/SDL_video.h> // the window self-resize mode (SDL_SetWindowSize)
+
 #include <Engine/core.h>
 #include <Engine/Rendergraph/rendergraph.h>
 
@@ -67,9 +69,32 @@ private:
 		if (!Super::Initialize())
 			return false;
 		ImportSwapViews();
+		// The window self-resize sizes: the creation size + a
+		// maximized-ish alternate (the usable display bounds minus the
+		// taskbar — the closest synthetic to the editor's
+		// maximize/restore gesture).
+		if (GetWindow()) {
+			int bw = 0, bh = 0;
+			SDL_GetWindowSize(GetWindow(), &bw, &bh);
+			if (bw > 0 && bh > 0) {
+				m_resizeBaseW = uint32_t(bw);
+				m_resizeBaseH = uint32_t(bh);
+			}
+			SDL_DisplayID disp =
+				SDL_GetDisplayForWindow(GetWindow());
+			if (disp) {
+				SDL_Rect usable{};
+				if (SDL_GetDisplayUsableBounds(disp, &usable)) {
+					m_resizeAltW = uint32_t(usable.w);
+					m_resizeAltH = uint32_t(usable.h);
+				}
+			}
+		}
 		std::fprintf(stderr,
-			"[FUZZ] mode=%s frames=%d every=%d swapEvery=%d\n",
-			m_modeName, m_frames, m_every, m_swapEvery);
+			"[FUZZ] mode=%s frames=%d every=%d swapEvery=%d "
+			"resizeEvery=%d (%ux%u <-> %ux%u)\n",
+			m_modeName, m_frames, m_every, m_swapEvery, m_resizeEvery,
+			m_resizeBaseW, m_resizeBaseH, m_resizeAltW, m_resizeAltH);
 		return true;
 	}
 
@@ -172,58 +197,159 @@ private:
 	// range free lands BEHIND the image's deferred destroy in the FIFO)
 	// — verbatim depth.h. This is the EDITOR's death path (its world
 	// chain claims at [TargetHeap], marching offsets, ~33 claims ->
-	// DEVICE_LOST).
+	// DEVICE_LOST). FUZZ_CLAIM_TARGETS=<N> (default 1) churns N targets
+	// per extent toggle — the world chain's ~30-target burst per
+	// gesture, the remaining editor delta.
+	struct ClaimTarget {
+		smvk::Holder<smvk::TargetHeapClaimHandle> claim;
+		smvk::Holder<smvk::ImageHandle> image;
+		smvk::Holder<smvk::ImageViewHandle> view;
+		smvk::Holder<smvk::BindlessImageHandle> bindless;
+		smvk::LogicalImageViewHandle logical;
+		smvk::Extent2D extent{ 0, 0 };
+	};
+	std::vector<ClaimTarget> m_claimTargets;
+	uint32_t m_claimTargetCount = 1; // FUZZ_CLAIM_TARGETS
 	bool EnsureClaimTarget(uint32_t w, uint32_t h) {
-		if (m_claimExtent.width == w && m_claimExtent.height == h
-			&& !m_claimView.empty())
-			return true;
-		// LOCAL DECLARATION ORDER MATTERS (depth.h): newClaim FIRST
-		// destroys LAST - the free lands behind the image destroy.
-		smvk::Holder<smvk::TargetHeapClaimHandle> newClaim;
-		smvk::ImageCreateInfo ci{};
-		ci.extent = { w, h, 1 };
-		ci.format = smvk::Format::RGBA8_UNorm;
-		ci.usage = smvk::ImageUsage::ColorAttachment
-			| smvk::ImageUsage::Sampled;
-		ci.mipLevels = 1;
-		ci.arrayLayers = 1;
-		ci.name = "fuzzClaimTarget";
-		auto newImage = m_context->CreateHeapImage(ci);
-		if (newImage.empty())
-			return false;
-		newClaim = m_context->ClaimTargetHeapRange(newImage,
-			smvk::TargetPhase::Shadows, smvk::TargetPhase::Composite);
-		if (newClaim.empty())
-			return false;
-		const smvk::ImageViewCreateInfo vci{
-			.viewType = smvk::ImageViewType::View2D,
-			.format = smvk::Format::Undefined,
-			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
-			.name = "fuzzClaimTargetView",
-		};
-		auto newView = m_context->CreateImageView(newImage, vci);
-		if (newView.empty())
-			return false;
-		auto newBindless = m_context->CreateBindlessImage(newView,
-			smvk::ImageLayout::ShaderReadOnlyOptimal);
-		if (newBindless.empty())
-			return false;
-		const uint32_t newBindlessIndex =
-			m_context->GetBindlessIndex(newBindless);
-		const auto newLogical = m_rendergraph->AddExternalImageView(
-			newView, smvk::Format::RGBA8_UNorm, "fuzzClaimLogical");
-		if (newLogical.empty())
-			return false;
-		if (!m_claimLogical.empty())
-			m_rendergraph->FreeImageView(m_claimLogical);
-		m_claimClaim = std::move(newClaim);
-		m_claimBindless = std::move(newBindless);
-		m_claimBindlessIndex = newBindlessIndex;
-		m_claimView = std::move(newView);
-		m_claimImage = std::move(newImage);
-		m_claimLogical = newLogical;
-		m_claimExtent = { w, h };
-		return true;
+		if (m_claimTargets.size() != m_claimTargetCount)
+			m_claimTargets.resize(m_claimTargetCount);
+		bool allOk = true;
+		for (auto& t : m_claimTargets) {
+			if (t.extent.width == w && t.extent.height == h
+				&& !t.view.empty())
+				continue; // this one already at the right shape
+			ClaimTarget fresh;
+			fresh.image = m_context->CreateHeapImage(
+				[] (uint32_t w, uint32_t h) {
+					smvk::ImageCreateInfo ci{};
+					ci.extent = { w, h, 1 };
+					ci.format = smvk::Format::RGBA8_UNorm;
+					ci.usage = smvk::ImageUsage::ColorAttachment
+						| smvk::ImageUsage::Sampled;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "fuzzClaimTarget";
+					return ci;
+				}(w, h));
+			if (fresh.image.empty()) {
+				allOk = false;
+				break;
+			}
+			fresh.claim = m_context->ClaimTargetHeapRange(fresh.image,
+				smvk::TargetPhase::Shadows,
+				smvk::TargetPhase::Composite);
+			if (fresh.claim.empty()) {
+				allOk = false;
+				break;
+			}
+			const smvk::ImageViewCreateInfo vci{
+				.viewType = smvk::ImageViewType::View2D,
+				.format = smvk::Format::Undefined,
+				.subresourceRange = { smvk::ImageAspect::Color,
+					0, 1, 0, 1 },
+				.name = "fuzzClaimTargetView",
+			};
+			fresh.view = m_context->CreateImageView(fresh.image, vci);
+			if (fresh.view.empty()) {
+				allOk = false;
+				break;
+			}
+			fresh.bindless = m_context->CreateBindlessImage(fresh.view,
+				smvk::ImageLayout::ShaderReadOnlyOptimal);
+			if (fresh.bindless.empty()) {
+				allOk = false;
+				break;
+			}
+			fresh.logical = m_rendergraph->AddExternalImageView(
+				fresh.view, smvk::Format::RGBA8_UNorm,
+				"fuzzClaimLogical");
+			if (fresh.logical.empty()) {
+				allOk = false;
+				break;
+			}
+			if (!t.logical.empty())
+				m_rendergraph->FreeImageView(t.logical);
+			t = std::move(fresh);
+			t.extent = { w, h };
+		}
+		return allOk;
+	}
+
+	// ---- CONCURRENT BUFFER CHURN (the world chain's missing resource
+	// class): the world renderer's re-ensure recreates extent-sized
+	// CONCURRENT buffers (ssrRayList/ssrRadiance/gfx hiz/ds counters —
+	// CreateBuffer's Storage CONCURRENT path, families [graphics,
+	// transfer]) at every extent change — the editor's Sponza.tour
+	// mash died mid-burst exactly there (the last log lines before the
+	// DEVICE_LOST). The fuzzer never churned buffers — images only.
+	// FUZZ_CLAIM_BUFFERS=<N> churns N Storage buffers per extent toggle.
+	struct ChurnBuffer {
+		smvk::Holder<smvk::BufferHandle> buffer;
+		smvk::Extent2D extent{ 0, 0 };
+	};
+	std::vector<ChurnBuffer> m_churnBuffers;
+	uint32_t m_claimBufferCount = 0; // FUZZ_CLAIM_BUFFERS (0 = off)
+	bool EnsureChurnBuffers(uint32_t w, uint32_t h) {
+		if (m_churnBuffers.size() != m_claimBufferCount)
+			m_churnBuffers.resize(m_claimBufferCount);
+		bool allOk = true;
+		for (auto& b : m_churnBuffers) {
+			if (b.extent.width == w && b.extent.height == h
+				&& !b.buffer.empty())
+				continue;
+			// Extent-scaled like the real ones (ssrRayList ~ 1KB/px-ish
+			// rows, gfx hiz ~ 4B/px) — a few distinct sizes so the VMA
+			// churn sees the real allocation mix.
+			const size_t bytes = size_t(w) * h
+				* (4 + 16 + 16 + 32);
+			b.buffer = m_context->CreateBuffer(bytes,
+				smvk::BufferType_Storage, "fuzzChurnBuffer");
+			if (b.buffer.empty())
+				allOk = false;
+			b.extent = { w, h };
+		}
+		return allOk;
+	}
+
+	// ---- READBACK CHURN (the world renderer's per-frame async
+	// readbacks — the last submit class the fuzzer never made):
+	// SubmitAsyncDownloadDataFromBuffers over the churned extent-sized
+	// buffer — the same RM API the world's DS-counter/SDSM/exposure
+	// tickets use, riding the TRANSFER submitter's private timeline
+	// (unordered from the swapchain's that keys the deferred retires).
+	// The editor's death signature fits: the readback copy references
+	// the OLD churned buffer 1-2 frames in flight; the destroy keys on
+	// the swapchain's timeline; the readback's private timeline never
+	// ordered with it -> USE AFTER DESTROY -> DEVICE LOST.
+	uint32_t m_readbackEvery = 0; // FUZZ_READBACK (0 = off; every N frames)
+	uint64_t m_readbackTicket = 0;
+	std::vector<uint32_t> m_readbackScratch;
+	void TickReadback() {
+		// Poll the in-flight ticket (the world polls every frame —
+		// the copy completes 1-2 frames later, exactly the gap the
+		// churn exploit needs).
+		if (m_readbackTicket != 0) {
+			if (m_context->PollAsyncDownloadDataFromBuffers(
+					m_readbackTicket,
+					std::span<const smvk::BufferDownload>{}))
+				m_readbackTicket = 0;
+		}
+		// Submit the next copy over the FIRST churn buffer (the
+		// extent-sized Storage buffer the churn recreates each toggle —
+		// the destroyed-old-buffer reference the death needs).
+		if (m_readbackEvery > 0 && m_readbackTicket == 0
+			&& m_frame % uint32_t(m_readbackEvery) == 0
+			&& !m_churnBuffers.empty()
+			&& !m_churnBuffers[0].buffer.empty()) {
+			m_readbackScratch.assign(1024, 0);
+			smvk::BufferDownload dl{
+				m_churnBuffers[0].buffer,
+				m_readbackScratch.data(),
+				m_readbackScratch.size() * sizeof(uint32_t), 0 };
+			m_readbackTicket = m_context
+				->SubmitAsyncDownloadDataFromBuffers(
+					std::span<const smvk::BufferDownload>(&dl, 1));
+		}
 	}
 
 	void DrawFrame() override {
@@ -238,6 +364,57 @@ private:
 			m_swapchain->Recreate();
 			m_swapchain->ClearFramebufferResized();
 			ImportSwapViews();
+		}
+		// ---- WINDOW SELF-RESIZE (the WM-driven gesture path — the
+		// editor's maximize/restore crash class, WITHOUT the editor):
+		// FUZZ_RESIZE_STYLE (default 'jump') picks the gesture form:
+		//   jump: one SetWindowSize per cadence — a maximize/restore
+		//         (single big deltas, settle between).
+		//   drag: a small delta EVERY FRAME (the drag storm — the WM
+		//         fires a resize event per intermediate size, the flag
+		//         recreates the swapchain at EVERY intermediate: the
+		//         real window-edge-drag path; a user drag = hundreds of
+		//         intermediates, and the recreate SHOULD only happen at
+		//         the release — if the storm form dies, the engine is
+		//         recreating per-event instead of debouncing to the
+		//         settle). Ping-pongs within [base, alt].
+		if (m_resizeEvery > 0 && m_frame > 0
+			&& m_frame % uint32_t(m_resizeEvery) == 0) {
+			if (m_resizeDrag) {
+				m_resizePing = !m_resizePing;
+				int cw = 0, ch = 0;
+				SDL_GetWindowSize(GetWindow(), &cw, &ch);
+				if (cw <= 0 || ch <= 0) {
+					cw = int(m_resizeBaseW);
+					ch = int(m_resizeBaseH);
+				}
+				const int dir = m_resizePing ? 1 : -1;
+				const int stepW = 32, stepH = 18;
+				int nw = cw + dir * stepW, nh = ch + dir * stepH;
+				if (nw > int(m_resizeAltW)) {
+					nw = int(m_resizeAltW);
+					m_resizePing = false; // clamp + turn around
+				}
+				if (nw < int(m_resizeBaseW) / 2) {
+					nw = int(m_resizeBaseW) / 2;
+					m_resizePing = true;
+				}
+				if (nh > int(m_resizeAltH)) {
+					nh = int(m_resizeAltH);
+					m_resizePing = false;
+				}
+				if (nh < int(m_resizeBaseH) / 2) {
+					nh = int(m_resizeBaseH) / 2;
+					m_resizePing = true;
+				}
+				SDL_SetWindowSize(GetWindow(), nw, nh);
+			}
+			else {
+				m_resizeToggle = !m_resizeToggle;
+				SDL_SetWindowSize(GetWindow(),
+					int(m_resizeToggle ? m_resizeAltW : m_resizeBaseW),
+					int(m_resizeToggle ? m_resizeAltH : m_resizeBaseH));
+			}
 		}
 		// ---- swap churn (the resize path): Recreate at the frame
 		// boundary (the sync-legal spot), re-import the swap views.
@@ -261,8 +438,16 @@ private:
 			EnsureRhiTarget(w, h);
 		if (m_modeGraph)
 			EnsureGraphTarget(w, h);
-		if (m_modeClaims)
+		if (m_modeClaims) {
 			EnsureClaimTarget(w, h);
+			if (m_claimBufferCount > 0)
+				EnsureChurnBuffers(w, h);
+			// The readback tick BEFORE the pass churn (the world polls
+			// first thing in its update; the copy in flight spans the
+			// churn recreates — the destroyed-old-buffer window).
+			if (m_readbackEvery > 0)
+				TickReadback();
+		}
 
 		// ---- the frame graph: a clear pass over the graph-managed
 		// target (the transient-heap compile/detonate exercise) + the
@@ -286,17 +471,24 @@ private:
 						(void)cmd;
 					});
 			}
-			if (m_modeClaims && !m_claimLogical.empty()) {
-				m_rendergraph->AddPass("FuzzClaimClear")
-					.SetOffset(0, 0)
-					.SetExtent(smvk::Extent2D{ w, h })
-					.SetColor({ m_claimLogical },
-						smvk::AttachmentLoadOp::Clear,
-						smvk::AttachmentStoreOp::Store,
-						smvk::ClearColor(0.2f, 0.3f, 0.4f, 1.0f))
-					.SetRecordingFunc([](smvk::CommandBuffer& cmd) {
-						(void)cmd;
-					});
+			if (m_modeClaims) {
+				// A clear pass over EVERY claim target — the world
+				// chain's whole-set write per frame (all N targets
+				// touched, exactly like the world's passes).
+				for (const auto& t : m_claimTargets) {
+					if (t.logical.empty())
+						continue;
+					m_rendergraph->AddPass("FuzzClaimClear")
+						.SetOffset(0, 0)
+						.SetExtent(smvk::Extent2D{ w, h })
+						.SetColor({ t.logical },
+							smvk::AttachmentLoadOp::Clear,
+							smvk::AttachmentStoreOp::Store,
+							smvk::ClearColor(0.2f, 0.3f, 0.4f, 1.0f))
+						.SetRecordingFunc([](smvk::CommandBuffer& cmd) {
+							(void)cmd;
+						});
+				}
 			}
 			if (m_modeGraph && !m_graphView.empty()) {
 				m_rendergraph->AddPass("FuzzGraphClear")
@@ -341,6 +533,7 @@ private:
 	int m_frames = 600;
 	int m_every = 1;
 	int m_swapEvery = 0;
+	int m_resizeEvery = 0;      // FUZZ_RESIZE_EVERY: the window self-resize cadence (0 = off)
 	bool m_modeRhi = false;
 	bool m_modeGraph = false;
 	bool m_modeClaims = false;
@@ -348,6 +541,11 @@ private:
 	const char* m_modeName = m_modeBuf;
 	uint32_t m_frame = 0;
 	bool m_toggle = false;
+	bool m_resizeToggle = false;
+	bool m_resizePing = true;   // the drag form's direction
+	bool m_resizeDrag = false; // FUZZ_RESIZE_STYLE=drag: the storm form
+	uint32_t m_resizeBaseW = 1280, m_resizeBaseH = 720;   // captured at init
+	uint32_t m_resizeAltW = 1600, m_resizeAltH = 900;     // maximized-ish alternate
 	bool m_graphOnly = false; // FUZZ_GRAPH_ONLY=1: no swap pass (bisect knob)
 	bool m_attachRhi = false; // FUZZ_ATTACH_RHI=1: the external RHI target as the attachment (the control)
 	bool m_hostTransfer = false; // FUZZ_HOST_TRANSFER=1: the graph target on the VMA path (the control)
@@ -360,16 +558,9 @@ private:
 	smvk::LogicalImageViewHandle m_rhiLogical{};
 	smvk::Extent2D m_rhiExtent{ 0, 0 };
 
-	// the claims churn target (the DepthTarget pattern — the editor's
-	// world-chain path; the claim Holder FIRST so its free lands behind
-	// the image destroy at retirement)
-	smvk::Holder<smvk::TargetHeapClaimHandle> m_claimClaim;
-	smvk::Holder<smvk::ImageHandle> m_claimImage;
-	smvk::Holder<smvk::ImageViewHandle> m_claimView;
-	smvk::Holder<smvk::BindlessImageHandle> m_claimBindless;
-	uint32_t m_claimBindlessIndex = UINT32_MAX;
-	smvk::LogicalImageViewHandle m_claimLogical{};
-	smvk::Extent2D m_claimExtent{ 0, 0 };
+	// the claims churn targets live in the EnsureClaimTarget section
+	// (std::vector<ClaimTarget> m_claimTargets — N per the
+	// FUZZ_CLAIM_TARGETS knob, the world chain's multi-target burst)
 
 	// the graph churn target (the transient candidate)
 	smvk::LogicalImageHandle m_graphImage{};
@@ -383,6 +574,13 @@ public:
 		m_frames = EnvInt("FUZZ_FRAMES", 600);
 		m_every = EnvInt("FUZZ_EVERY", 1);
 		m_swapEvery = EnvInt("FUZZ_SWAP_EVERY", 0);
+		m_resizeEvery = EnvInt("FUZZ_RESIZE_EVERY", 0);
+		m_claimTargetCount = uint32_t(
+			EnvInt("FUZZ_CLAIM_TARGETS", 1));
+		m_claimBufferCount = uint32_t(
+			EnvInt("FUZZ_CLAIM_BUFFERS", 0));
+		m_readbackEvery = uint32_t(
+			EnvInt("FUZZ_READBACK", 0));
 		m_graphOnly = EnvInt("FUZZ_GRAPH_ONLY", 0) != 0;
 		m_attachRhi = EnvInt("FUZZ_ATTACH_RHI", 0) != 0;
 		m_hostTransfer = EnvInt("FUZZ_HOST_TRANSFER", 0) != 0;
@@ -400,9 +598,15 @@ public:
 			|| !std::strcmp(m_modeName, "all");
 		if (modeSwap && m_swapEvery <= 0)
 			m_swapEvery = 137; // a resize-ish cadence when the mode asks for it
-		if (!m_modeRhi && !m_modeGraph && !m_modeClaims && !modeSwap) {
+		const bool modeResize = !std::strcmp(m_modeName, "resize");
+		if (modeResize && m_resizeEvery <= 0)
+			m_resizeEvery = 60; // a gesture-per-second cadence by default
+		if (const char* style = std::getenv("FUZZ_RESIZE_STYLE"))
+			m_resizeDrag = !std::strcmp(style, "drag");
+		if (!m_modeRhi && !m_modeGraph && !m_modeClaims && !modeSwap
+			&& !modeResize) {
 			std::fprintf(stderr, "[FUZZ] unknown mode '%s' "
-				"(rhi|graph|swap|all)\n", m_modeName);
+				"(rhi|graph|claims|swap|resize|all)\n", m_modeName);
 			return EXIT_FAILURE;
 		}
 		// The App's bench budget is the auto-quit: 10 warmup + N
@@ -416,8 +620,8 @@ public:
 			return EXIT_FAILURE;
 		}
 		std::fprintf(stderr, "[FUZZ] PASS: ~%u frames survived "
-			"(mode=%s every=%d swapEvery=%d)\n", m_frame, m_modeName,
-			m_every, m_swapEvery);
+			"(mode=%s every=%d swapEvery=%d resizeEvery=%d)\n", m_frame,
+			m_modeName, m_every, m_swapEvery, m_resizeEvery);
 		return EXIT_SUCCESS;
 	}
 };

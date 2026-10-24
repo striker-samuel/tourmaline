@@ -118,7 +118,7 @@ void EditorApp::DrawSelectionRadial() {
 	ImGui::TextDisabled("Gizmo space");
 	{
 		// Handle orientation (World default): World = scene axes, Local =
-		// the node's rotated axes (scale is always local — no TRS form).
+		// the node's rotated axes (scale is always local â€” no TRS form).
 		const GizmoSpace spaces[2] = { GizmoSpace::World,
 			GizmoSpace::Local };
 		for (int i = 0; i < 2; ++i) {
@@ -325,12 +325,12 @@ void EditorApp::FinishBoxSelect() {
 void EditorApp::DrawViewportChrome() {
 	// Borders + per-viewport label (camera combo) + the rubber-band box.
 	// BACKGROUND list, not foreground: both composite above the Vulkan 3D
-	// scene, but the foreground list renders above EVERY ImGui window —
+	// scene, but the foreground list renders above EVERY ImGui window â€”
 	// the active viewport's (brighter, 2px) selection border painted over
 	// panels, combo dropdowns and tooltips touching the viewport edge.
 	// On the background list the chrome stays under all windows (a 1px
 	// edge spill hides beneath the abutting sibling panel, which is
-	// correct — panels are siblings, never covered by viewport chrome).
+	// correct â€” panels are siblings, never covered by viewport chrome).
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	const int count = ViewportCount();
 	for (int i = 0; i < count; ++i) {
@@ -343,7 +343,7 @@ void EditorApp::DrawViewportChrome() {
 	}
 	// ASSET DROP TARGETS: while an asset drag is in flight (the browser's
 	// mesh/material tiles), a transparent window covers each visible
-	// viewport — drop a MESH asset to add a scene reference, a MATERIAL
+	// viewport â€” drop a MESH asset to add a scene reference, a MATERIAL
 	// asset to assign it to the selection. The overlay exists ONLY
 	// during the drag (no clicks consumed otherwise; the highlight tint
 	// shows the drop zone).
@@ -403,7 +403,7 @@ void EditorApp::DrawViewportChrome() {
 	// Rubber-band box (window pixels), clipped to its viewport: a drag
 	// past the viewport edge used to paint the selection tint over the
 	// neighboring panels (same foreground-layer defect as the borders
-	// above — now background + clipped).
+	// above â€” now background + clipped).
 	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
 		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
 		dl->PushClipRect(ImVec2(vp.x, vp.y),
@@ -500,7 +500,7 @@ void EditorApp::DrawViewportChrome() {
 	//		ImGui::SameLine();
 	//		// View type combo (this panel's shading/debug view). Flat UV
 	//		// panes are not viewports anymore (separate UV editor
-	//		// window) — 3D modes only here.
+	//		// window) â€” 3D modes only here.
 	//		if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
 	//			for (int m = 0; m <= int(ViewMode::Pom); ++m) {
 	//				const ViewMode vm = ViewMode(m);
@@ -550,12 +550,12 @@ void EditorApp::DrawViewportChrome() {
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each
 // volume's hull (bake AABB clipped by its plane set, built in
-// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport —
+// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport â€”
 // wireframe at mode 1, + translucent priority-coded fill at mode 2.
 // Foreground = no depth, so the volumes read through geometry (the
 // point of the view: authoring shapes against walls/roofs).
 // Authored cvolume nodes label here too (their boxes ride the 3D
-// gizmo batches instead — depth-tested scene objects, all view
+// gizmo batches instead â€” depth-tested scene objects, all view
 // modes): name + priority at the box center, same priority hue.
 void EditorApp::DrawCvolPreviewOverlay() {
 	// MODAL: GI authoring previews belong to LIGHTING mode.
@@ -698,7 +698,7 @@ void EditorApp::UpdateOctreePreview() {
 		// Scene too large for a per-tile overlay at this size: keep
 		// the bounds box only (the GI panel says so).
 		Log("Octree preview: grid capped ("
-			+ std::to_string(nx * ny * nz) + " tiles) — bounds only.");
+			+ std::to_string(nx * ny * nz) + " tiles) â€” bounds only.");
 		return;
 	}
 	m_octreeTiles.reserve(size_t(nx * ny * nz));
@@ -714,7 +714,7 @@ void EditorApp::UpdateOctreePreview() {
 	Log("Octree preview: " + std::to_string(m_octreeTiles.size())
 		+ " tiles (" + std::to_string(nx) + "x" + std::to_string(ny)
 		+ "x" + std::to_string(nz) + " @ " + std::to_string(ts)
-		+ "m) — all dirty.");
+		+ "m) â€” all dirty.");
 }
 
 void EditorApp::DrawOctreePreviewOverlay() {
@@ -775,7 +775,7 @@ void EditorApp::DrawOctreePreviewOverlay() {
 			}
 		}
 		// Captures read through DrawCaptureBallOverlay (baked-aware balls,
-		// always on with the cubemap gizmos) — the precook grid draws
+		// always on with the cubemap gizmos) â€” the precook grid draws
 		// tiles + bounds only so the two never double up.
 		dl->PopClipRect();
 	}
@@ -860,9 +860,70 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 //      capped at 64 within the overlay max distance. Answers "is there a
 //      cubemap near X?" exactly like the App.
 //   2. AUTHORED pins with no loaded probe behind them: black balls (the
-//      editor-only half — "nothing rendered here yet"; bake to promote
+//      editor-only half â€” "nothing rendered here yet"; bake to promote
 //      them into half 1).
 // The click twin lives in PickGizmoMarker.
+// The shared GI probe marker (declared in editor_app.h): a regular
+// octahedron ortho-projected from a fixed 3/4 view â€” the gem read keeps
+// individual probes distinct where a same-color cluster of dots would
+// smear together. 6 axis vertices (+-X/+-Y/+-Z), 8 faces; a regular
+// octahedron's face outward normal is exactly normalize(a+b+c), so
+// shading needs no cross products. Painter's order (farthest along the
+// view vector first) + a fixed up-left key light carry the 3D read at
+// the ~7 px marker size, where a wireframe would collapse into noise.
+// Same color table as the caller's dot (col passed through, only
+// shaded per face).
+void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& cpt, float r,
+	ImU32 col) {
+	// Fixed view basis: camera on the +Z/+X/+Y side, looking at the
+	// origin (view = camera->origin; right/up span the screen).
+	const glm::vec3 view =
+		glm::normalize(glm::vec3(0.55f, 0.35f, 0.75f));
+	const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+	const glm::vec3 right = glm::normalize(glm::cross(worldUp, view));
+	const glm::vec3 up = glm::cross(view, right);
+	const glm::vec3 v[6] = {
+		worldUp, -worldUp,                          // +Y -Y
+		glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f), // +X -X
+		glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, -1.0f), // +Z -Z
+	};
+	ImVec2 p[6];
+	for (int k = 0; k < 6; ++k)
+		p[k] = ImVec2(cpt.x + glm::dot(v[k], right) * r,
+			cpt.y - glm::dot(v[k], up) * r); // screen Y grows down
+	// The 8 faces as vertex-index triples (mutually adjacent â€” no
+	// opposite pair in a triple): 4 around +Y, 4 around -Y.
+	static const int faces[8][3] = {
+		{0, 2, 4}, {0, 4, 3}, {0, 3, 5}, {0, 5, 2},
+		{1, 4, 2}, {1, 3, 4}, {1, 5, 3}, {1, 2, 5},
+	};
+	const glm::vec3 L = glm::normalize(glm::vec3(-0.35f, 0.75f, 0.55f));
+	int order[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	std::sort(order, order + 8, [&](int a, int b) {
+		const glm::vec3 ca =
+			v[faces[a][0]] + v[faces[a][1]] + v[faces[a][2]];
+		const glm::vec3 cb =
+			v[faces[b][0]] + v[faces[b][1]] + v[faces[b][2]];
+		return glm::dot(ca, view) > glm::dot(cb, view); // farthest first
+	});
+	// Face fill = the marker color scaled by the Lambert term (floor
+	// 0.4 so back faces stay a visible dark tint of the same hue).
+	const auto shade = [&](float k) {
+		return IM_COL32(
+			int(float((col >> IM_COL32_R_SHIFT) & 0xFF) * k),
+			int(float((col >> IM_COL32_G_SHIFT) & 0xFF) * k),
+			int(float((col >> IM_COL32_B_SHIFT) & 0xFF) * k),
+			int((col >> IM_COL32_A_SHIFT) & 0xFF));
+	};
+	for (int oi = 0; oi < 8; ++oi) {
+		const int* f = faces[order[oi]];
+		const glm::vec3 n = glm::normalize(v[f[0]] + v[f[1]] + v[f[2]]);
+		const float b = 0.4f + 0.6f
+			* std::max(0.0f, glm::dot(n, L));
+		dl->AddTriangleFilled(p[f[0]], p[f[1]], p[f[2]], shade(b));
+	}
+}
+
 void EditorApp::DrawCaptureBallOverlay() {
 	// MODAL: the light-authoring set shows only in LIGHTING mode.
 	if (m_mode != EditorMode::Lighting)
@@ -887,6 +948,10 @@ void EditorApp::DrawCaptureBallOverlay() {
 	const Scene& scene = m_world->scene;
 	const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
 	const float maxDist2 = maxDist * maxDist;
+	// In-view witness (the viz window's legend): the busiest viewport's
+	// marker count â€” reset per frame, kept as a max so multi-viewport
+	// layouts report the fullest view, not whichever drew last.
+	m_probeDrawnLast = 0;
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const glm::mat4 vpm = vp.viewProj;
@@ -939,35 +1004,51 @@ void EditorApp::DrawCaptureBallOverlay() {
 				else
 					col = IM_COL32(120, 140, 160, 160);
 				// Influence ring: project a world-X offset of one radius
-				// (the App's trick); fade ring scales from it.
-				ImVec2 ept;
-				if (projectInView(pr.center + glm::vec3(
-						std::max(pr.influence, 0.01f), 0.0f, 0.0f), ept)) {
-					const float dx = ept.x - cpt.x, dy = ept.y - cpt.y;
-					const float rPx = std::sqrt(dx * dx + dy * dy);
-					if (rPx > 2.0f && rPx < 4000.0f) {
-						dl->AddCircle(cpt, rPx,
-							col & IM_COL32(255, 255, 255, 90), 48);
-						if (pr.fade > 0.0f) {
-							const float fr = rPx * (pr.influence + pr.fade)
-								/ std::max(pr.influence, 1e-3f);
-							if (fr < 4000.0f)
-								dl->AddCircle(cpt, fr,
-									col & IM_COL32(255, 255, 255, 45), 48);
+				// (the App's trick); fade ring scales from it. The rings
+				// declutter switch lives in the GI probe viz window.
+				if (m_probeRings) {
+					ImVec2 ept;
+					if (projectInView(pr.center + glm::vec3(
+							std::max(pr.influence, 0.01f), 0.0f, 0.0f),
+							ept)) {
+						const float dx = ept.x - cpt.x, dy = ept.y - cpt.y;
+						const float rPx = std::sqrt(dx * dx + dy * dy);
+						if (rPx > 2.0f && rPx < 4000.0f) {
+							dl->AddCircle(cpt, rPx,
+								col & IM_COL32(255, 255, 255, 90), 48);
+							if (pr.fade > 0.0f) {
+								const float fr = rPx
+									* (pr.influence + pr.fade)
+									/ std::max(pr.influence, 1e-3f);
+								if (fr < 4000.0f)
+									dl->AddCircle(cpt, fr,
+										col & IM_COL32(255, 255, 255, 45), 48);
+							}
 						}
 					}
 				}
-				dl->AddCircleFilled(cpt, 3.5f, col);
-				char clab[16];
-				std::snprintf(clab, sizeof(clab), "C%u", idx);
-				dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f), col, clab);
+				if (m_showProbeOctahedra) {
+					DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
+				} else {
+					dl->AddCircleFilled(cpt, m_probeMarkerSize, col);
+				}
+				if (m_probeLabels) {
+					char clab[16];
+					std::snprintf(clab, sizeof(clab), "C%u", idx);
+					dl->AddText(ImVec2(cpt.x + 6.0f, cpt.y - 7.0f),
+						col, clab);
+				}
 				++drawn;
 			}
+			m_probeDrawnLast = std::max(m_probeDrawnLast, drawn);
 			// Caption (the App draws it top-left of the full display;
-			// per viewport here so quads stay readable).
+			// per viewport here so quads stay readable). The in-LEVEL
+			// total rides along â€” "how many am I authoring" is the
+			// legend question, answered right where the eye already is.
 			char ccap[96];
-			std::snprintf(ccap, sizeof(ccap), "Cubemap probes: %u drawn",
-				drawn);
+			std::snprintf(ccap, sizeof(ccap),
+				"Cubemap probes: %u in view / %zu in level",
+				drawn, rows.size());
 			dl->AddText(ImVec2(vp.rect.x + 9.0f, vp.rect.y + 37.0f),
 				IM_COL32(0, 0, 0, 200), ccap);
 			dl->AddText(ImVec2(vp.rect.x + 8.0f, vp.rect.y + 36.0f),
@@ -1014,7 +1095,7 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 	ImGui::SetNextWindowSize(sz, ImGuiCond_Always);
 	// API-sized strip: beat the style's 32x32 window minimum (it made
 	// the 6px strips ~32px tall, swallowing the bottom dock's tab strip
-	// — tab clicks hit the splitter instead) and kill the padding.
+	// â€” tab clicks hit the splitter instead) and kill the padding.
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 	bool released = false;
@@ -1030,7 +1111,7 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 		// (active id), the delta accumulates per frame while held, and
 		// the release ends the gesture exactly once. The strip window
 		// repositions from the value every frame, so it tracks the
-		// mouse 1:1 through the whole gesture — no jumps on grab or
+		// mouse 1:1 through the whole gesture â€” no jumps on grab or
 		// snap-back on release.
 		if (ImGui::IsItemActive()
 			&& ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
@@ -1072,10 +1153,10 @@ void EditorApp::DrawPanelSplitters() {
 	if (committed)
 		SavePrefs();
 }
-
+#if 0 // UV editor window retired (the Live view window replaced the canvas era)
 void EditorApp::DrawUvEditorWindow() {
 	// UV EDITOR WINDOW (floating, separate from the viewports): chrome
-	// here, canvas CONTENT from RecordUvWindowPass — which is added
+	// here, canvas CONTENT from RecordUvWindowPass â€” which is added
 	// right after DrawUI and before the imgui pass, so the fill sits
 	// UNDER this window's chrome. Window/title backgrounds are pushed
 	// alpha-0 and the canvas is an InvisibleButton (draws nothing):
@@ -1162,5 +1243,7 @@ void EditorApp::DrawUvEditorWindow() {
 	ImGui::End();
 	ImGui::PopStyleColor(4);
 }
+#endif // UV editor window retired (the Live view window replaced
+        // the canvas era — solid backgrounds everywhere now)
 
 } // namespace editor
