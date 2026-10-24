@@ -1,0 +1,159 @@
+# CI: build the full tree + run the test suite on both supported platforms.
+#
+#   Linux   - Ubuntu 24.04 + GCC 14 (the verified configuration; mesa's
+#             lavapipe ICD covers the one device-using test, retirement_fuzz)
+#   Windows - MSVC x64 + the Vulkan SDK (dxc.exe compiles the shaders)
+#
+# Caches:
+#   - KTX-Software 4.4.2 install (built from source on first miss)
+#   - external/.downloads (the installer scripts' pinned archives) keyed on
+#     the installer scripts' hash
+#
+# Not covered: the runtime render loop (needs a real GPU - see the README
+# platform notes).
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (Ubuntu 24.04, GCC 14)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (submodules recursive)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-14 g++-14 \
+            build-essential cmake ninja-build git curl unzip pkg-config \
+            glslang-tools libvulkan-dev zlib1g-dev mesa-vulkan-drivers \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxinerama-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
+            libdbus-1-dev libudev-dev libunwind-dev libpipewire-0.3-dev \
+            libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev libinput-dev
+
+      - name: Cache KTX-Software install
+        id: ktx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ktx
+          key: ktx-4.4.2-${{ runner.os }}
+
+      - name: Build and install KTX-Software 4.4.2 (cache miss)
+        if: steps.ktx-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v4.4.2 \
+            https://github.com/KhronosGroup/KTX-Software /tmp/ktx-src
+          cmake -S /tmp/ktx-src -B /tmp/ktx-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF \
+            -DCMAKE_INSTALL_PREFIX=$HOME/ktx
+          cmake --build /tmp/ktx-build
+          cmake --install /tmp/ktx-build
+
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: external/.downloads
+          key: deps-downloads-${{ runner.os }}-${{ hashFiles('install_dependencies.sh', 'install_dependencies.ps1') }}
+
+      - name: Fetch third-party deps (install_dependencies.sh)
+        run: ./install_dependencies.sh
+
+      - name: Configure
+        run: >
+          cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+          -DKTX_ROOT=$HOME/ktx .
+
+      - name: Build (all targets)
+        run: cmake --build out/build/ci
+
+      - name: Test
+        run: |
+          mkdir -p .ci-content
+          ctest --test-dir out/build/ci --output-on-failure
+        env:
+          TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
+
+  windows:
+    name: Windows (MSVC x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (submodules recursive)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Vulkan SDK (dxc.exe for the shader compiles)
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.357.0
+          cache: true
+
+      - name: Cache KTX-Software install
+        id: ktx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~\ktx
+          key: ktx-4.4.2-${{ runner.os }}
+
+      - name: Build and install KTX-Software 4.4.2 (cache miss)
+        if: steps.ktx-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v4.4.2 `
+            https://github.com/KhronosGroup/KTX-Software $env:TEMP\ktx-src
+          cmake -S $env:TEMP\ktx-src -B $env:TEMP\ktx-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF `
+            -DCMAKE_INSTALL_PREFIX=$HOME\ktx
+          cmake --build $env:TEMP\ktx-build
+          cmake --install $env:TEMP\ktx-build
+
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: external\.downloads
+          key: deps-downloads-${{ runner.os }}-${{ hashFiles('install_dependencies.sh', 'install_dependencies.ps1') }}
+
+      - name: Fetch third-party deps (install_dependencies.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File install_dependencies.ps1
+
+      - name: Configure
+        run: >
+          cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DKTX_ROOT=$HOME\ktx .
+
+      - name: Build (all targets)
+        run: cmake --build out/build/ci
+
+      - name: Test
+        run: |
+          New-Item -ItemType Directory -Force .ci-content | Out-Null
+          ctest --test-dir out/build/ci --output-on-failure `
+            -E "^retirement_fuzz_tests$"
+        env:
+          TOURMALINE_CONTENT_DIR: ${{ github.workspace }}\.ci-content
+        # retirement_fuzz_tests is excluded: it creates a real offscreen
+        # Vulkan device (deferred-retirement soak) and hosted Windows
+        # runners expose no Vulkan ICD. The Linux job runs it on lavapipe.

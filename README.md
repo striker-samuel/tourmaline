@@ -1,5 +1,7 @@
 # Tourmaline
 
+[![CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
+
 A C++20 toy engine and renderer for learning real-time graphics on Vulkan 1.3 —
 a personal project by Samuel Martin, built from scratch (RHI, render graph,
 GPU-driven culling, content pipeline and editor included).
